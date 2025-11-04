@@ -1,0 +1,432 @@
+package handlers
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/stack-service/stack_service/internal/adapters/due"
+	"github.com/stack-service/stack_service/internal/domain/entities"
+	"github.com/stack-service/stack_service/internal/infrastructure/repositories"
+	"go.uber.org/zap"
+)
+
+import (
+"net/http"
+
+	"github.com/gin-gonic/gin"
+"github.com/google/uuid"
+"github.com/stack-service/stack_service/internal/domain/entities"
+"github.com/stack-service/stack_service/internal/domain/services/due"
+	"github.com/stack-service/stack_service/pkg/logger"
+)
+
+// DueHandlers contains Due service handlers
+type DueHandlers struct {
+	dueService *due.Service
+	logger     *logger.Logger
+}
+
+// NewDueHandlers creates new Due handlers
+func NewDueHandlers(dueService *due.Service, logger *logger.Logger) *DueHandlers {
+	return &DueHandlers{
+		dueService: dueService,
+		logger:     logger,
+	}
+}
+
+// CreateDueAccountRequest represents the request payload for creating a Due account
+type CreateDueAccountRequest struct {
+	Type     entities.DueAccountType `json:"type" binding:"required,oneof=individual business"`
+	Name     string                  `json:"name" binding:"required"`
+	Email    string                  `json:"email" binding:"required,email"`
+	Country  string                  `json:"country" binding:"required,len=2"`
+	Category string                  `json:"category,omitempty"`
+}
+
+// CreateDueAccountResponse represents the response for creating a Due account
+type CreateDueAccountResponse struct {
+	Account *entities.DueAccount `json:"account"`
+}
+
+// GetDueAccountResponse represents the response for getting a Due account
+type GetDueAccountResponse struct {
+	Account *entities.DueAccount `json:"account"`
+}
+
+// CreateDueAccount creates a new Due account for the authenticated user
+func (h *DueHandlers) CreateDueAccount(c *gin.Context) {
+	userID, exists := c.Get("user_id")
+	if !exists {
+		h.logger.Error("User ID not found in context")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	userUUID, ok := userID.(uuid.UUID)
+	if !ok {
+		h.logger.Error("Invalid user ID type in context")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	var req CreateDueAccountRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("Invalid request payload", "error", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
+		return
+	}
+
+	// Convert to domain request
+	domainReq := &entities.CreateDueAccountRequest{
+		UserID:   userUUID,
+		Type:     req.Type,
+		Name:     req.Name,
+		Email:    req.Email,
+		Country:  req.Country,
+		Category: req.Category,
+	}
+
+	// Create Due account
+	account, err := h.dueService.CreateAccount(c.Request.Context(), domainReq)
+	if err != nil {
+		h.logger.Error("Failed to create Due account",
+			"user_id", userUUID.String(),
+			"error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create Due account"})
+		return
+	}
+
+	response := CreateDueAccountResponse{
+		Account: account,
+	}
+
+	c.JSON(http.StatusCreated, response)
+}
+
+// GetDueAccount retrieves the Due account for the authenticated user
+func (h *DueHandlers) GetDueAccount(c *gin.Context) {
+	userID, exists := c.Get("user_id")
+	if !exists {
+		h.logger.Error("User ID not found in context")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	userUUID, ok := userID.(uuid.UUID)
+	if !ok {
+		h.logger.Error("Invalid user ID type in context")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	// Get Due account
+	account, err := h.dueService.GetAccountByUserID(c.Request.Context(), userUUID)
+	if err != nil {
+		h.logger.Error("Failed to get Due account",
+			"user_id", userUUID.String(),
+			"error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get Due account"})
+		return
+	}
+
+	response := GetDueAccountResponse{
+		Account: account,
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// AcceptTOSRequest represents the request payload for accepting TOS
+type AcceptTOSRequest struct {
+	AccountID uuid.UUID `json:"account_id" binding:"required"`
+}
+
+// AcceptTOS marks the Terms of Service as accepted for a Due account
+func (h *DueHandlers) AcceptTOS(c *gin.Context) {
+	userID, exists := c.Get("user_id")
+	if !exists {
+		h.logger.Error("User ID not found in context")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	userUUID, ok := userID.(uuid.UUID)
+	if !ok {
+		h.logger.Error("Invalid user ID type in context")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	var req AcceptTOSRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("Invalid request payload", "error", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
+		return
+	}
+
+	// Verify the account belongs to the user
+	account, err := h.dueService.GetAccountByID(c.Request.Context(), req.AccountID)
+	if err != nil {
+		h.logger.Error("Failed to get Due account for TOS acceptance",
+			"account_id", req.AccountID.String(),
+			"error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get Due account"})
+		return
+	}
+
+	if account.UserID != userUUID {
+		h.logger.Error("Account does not belong to user",
+			"account_id", req.AccountID.String(),
+			"user_id", userUUID.String())
+		c.JSON(http.StatusForbidden, gin.H{"error": "Account does not belong to user"})
+		return
+	}
+
+	// Accept TOS
+	if err := h.dueService.AcceptTOS(c.Request.Context(), req.AccountID); err != nil {
+		h.logger.Error("Failed to accept TOS",
+			"account_id", req.AccountID.String(),
+			"error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to accept TOS"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Terms of Service accepted successfully"})
+}
+
+// SyncAccountStatus syncs the account status with the Due API
+func (h *DueHandlers) SyncAccountStatus(c *gin.Context) {
+	userID, exists := c.Get("user_id")
+	if !exists {
+		h.logger.Error("User ID not found in context")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	userUUID, ok := userID.(uuid.UUID)
+	if !ok {
+		h.logger.Error("Invalid user ID type in context")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	// Get account ID from URL parameter
+	accountIDStr := c.Param("account_id")
+	accountID, err := uuid.Parse(accountIDStr)
+	if err != nil {
+		h.logger.Error("Invalid account ID", "account_id", accountIDStr, "error", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid account ID"})
+		return
+	}
+
+	// Verify the account belongs to the user
+	account, err := h.dueService.GetAccountByID(c.Request.Context(), accountID)
+	if err != nil {
+		h.logger.Error("Failed to get Due account for status sync",
+			"account_id", accountID.String(),
+			"error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get Due account"})
+		return
+	}
+
+	if account.UserID != userUUID {
+		h.logger.Error("Account does not belong to user",
+			"account_id", accountID.String(),
+			"user_id", userUUID.String())
+		c.JSON(http.StatusForbidden, gin.H{"error": "Account does not belong to user"})
+		return
+	}
+
+	// Sync status
+	if err := h.dueService.SyncAccountStatus(c.Request.Context(), accountID); err != nil {
+		h.logger.Error("Failed to sync account status",
+			"account_id", accountID.String(),
+			"error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to sync account status"})
+		return
+	}
+
+	// Get updated account
+	updatedAccount, err := h.dueService.GetAccountByID(c.Request.Context(), accountID)
+	if err != nil {
+		h.logger.Error("Failed to get updated Due account",
+			"account_id", accountID.String(),
+			"error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get updated account"})
+		return
+	}
+
+	response := GetDueAccountResponse{
+		Account: updatedAccount,
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// LinkWalletToDueHandler links a Circle developer-controlled wallet to a Due account
+// POST /v1/due/wallets/link
+func LinkWalletToDueHandler(
+	dueClient *due.Client,
+	dueAccountRepo *repositories.DueAccountRepository,
+	linkedWalletRepo *repositories.DueLinkedWalletRepository,
+	walletRepo *repositories.WalletRepository,
+	logger *zap.Logger,
+) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Extract user ID from context (set by auth middleware)
+		userID, exists := c.Get("user_id")
+		if !exists {
+			logger.Error("User ID not found in context")
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+			return
+		}
+
+		userUUID, ok := userID.(uuid.UUID)
+		if !ok {
+			logger.Error("Invalid user ID type in context")
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+			return
+		}
+
+		// Parse request
+		var req entities.LinkWalletToDueRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			logger.Error("Invalid request payload", zap.Error(err))
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid request: %v", err)})
+			return
+		}
+
+		// Validate user ID matches authenticated user
+		if req.UserID != userUUID {
+			logger.Error("User ID mismatch",
+				zap.String("authenticated_user", userUUID.String()),
+				zap.String("request_user", req.UserID.String()))
+			c.JSON(http.StatusForbidden, gin.H{"error": "Cannot link wallet for another user"})
+			return
+		}
+
+		// Validate request
+		if err := req.Validate(); err != nil {
+			logger.Error("Request validation failed", zap.Error(err))
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		ctx := c.Request.Context()
+
+		// 1. Get the managed wallet
+		managedWallet, err := walletRepo.GetByID(ctx, req.ManagedWalletID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				logger.Error("Managed wallet not found",
+					zap.String("managed_wallet_id", req.ManagedWalletID.String()))
+				c.JSON(http.StatusNotFound, gin.H{"error": "Wallet not found"})
+				return
+			}
+			logger.Error("Failed to retrieve managed wallet",
+				zap.String("managed_wallet_id", req.ManagedWalletID.String()),
+				zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve wallet"})
+			return
+		}
+
+		// Verify wallet belongs to user
+		if managedWallet.UserID != userUUID {
+			logger.Error("Wallet does not belong to user",
+				zap.String("wallet_user_id", managedWallet.UserID.String()),
+				zap.String("authenticated_user", userUUID.String()))
+			c.JSON(http.StatusForbidden, gin.H{"error": "Wallet does not belong to user"})
+			return
+		}
+
+		// Check if wallet is already linked
+		exists, err := linkedWalletRepo.ExistsByManagedWalletID(ctx, req.ManagedWalletID)
+		if err != nil {
+			logger.Error("Failed to check if wallet is linked",
+				zap.String("managed_wallet_id", req.ManagedWalletID.String()),
+				zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check wallet status"})
+			return
+		}
+
+		if exists {
+			logger.Warn("Wallet is already linked to a Due account",
+				zap.String("managed_wallet_id", req.ManagedWalletID.String()))
+			c.JSON(http.StatusConflict, gin.H{"error": "Wallet is already linked to a Due account"})
+			return
+		}
+
+		// 2. Get the user's Due account
+		dueAccount, err := dueAccountRepo.GetByUserID(ctx, userUUID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				logger.Error("Due account not found for user",
+					zap.String("user_id", userUUID.String()))
+				c.JSON(http.StatusNotFound, gin.H{"error": "Due account not found. Please create a Due account first."})
+				return
+			}
+			logger.Error("Failed to retrieve Due account",
+				zap.String("user_id", userUUID.String()),
+				zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve Due account"})
+			return
+		}
+
+		// Verify Due account is active
+		if !dueAccount.IsActive() {
+			logger.Error("Due account is not active",
+				zap.String("due_account_id", dueAccount.DueID),
+				zap.String("status", string(dueAccount.Status)))
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Due account is not active"})
+			return
+		}
+
+		// 3. Link wallet to Due account via API
+		dueWallet, err := dueClient.LinkWallet(ctx, dueAccount.DueID, managedWallet.Address, string(managedWallet.Chain))
+		if err != nil {
+			logger.Error("Failed to link wallet to Due account via API",
+				zap.String("due_account_id", dueAccount.DueID),
+				zap.String("wallet_address", managedWallet.Address),
+				zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to link wallet: %v", err)})
+			return
+		}
+
+		// 4. Store linked wallet record in database
+		linkedWallet := &entities.DueLinkedWallet{
+			DueAccountID:     dueAccount.DueID,
+			UserID:           userUUID,
+			ManagedWalletID:  managedWallet.ID,
+			DueWalletID:      dueWallet.ID,
+			WalletAddress:    managedWallet.Address,
+			FormattedAddress: dueWallet.Address, // Due API returns formatted address
+			Blockchain:       string(managedWallet.Chain),
+			Status:           entities.DueLinkedWalletStatusLinked,
+		}
+
+		if err := linkedWalletRepo.Create(ctx, linkedWallet); err != nil {
+			logger.Error("Failed to store linked wallet record",
+				zap.String("due_wallet_id", dueWallet.ID),
+				zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store linked wallet record"})
+			return
+		}
+
+		logger.Info("Successfully linked wallet to Due account",
+			zap.String("user_id", userUUID.String()),
+			zap.String("managed_wallet_id", managedWallet.ID.String()),
+			zap.String("due_wallet_id", dueWallet.ID),
+			zap.String("due_account_id", dueAccount.DueID))
+
+		response := entities.LinkWalletToDueResponse{
+			LinkedWallet: linkedWallet,
+			Message:      "Wallet successfully linked to Due account for compliance monitoring",
+		}
+
+		c.JSON(http.StatusCreated, response)
+	}
+}

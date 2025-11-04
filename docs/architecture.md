@@ -21,15 +21,15 @@ This document covers the backend services. A separate Frontend Architecture Docu
 
 #### 2.1 Technical Summary
 
-This architecture is a **Go-based modular monolith** deployed on AWS Fargate (ECS). The system exposes a unified GraphQL API (via an API Gateway) to the React Native mobile app. It integrates three critical external partners: **Auth0/Cognito** (Identity), **Circle** (Wallets, USDC On/Off-Ramps), and **Alpaca** (Brokerage, Custody). Data is persisted in **PostgreSQL**. This design supports the MVP goal of providing a hybrid Web3-to-TradFi investment flow.
+This architecture is a **Go-based modular monolith** deployed on AWS Fargate (ECS). The system exposes a unified GraphQL API (via an API Gateway) to the React Native mobile app. It integrates five critical external partners: **Auth0/Cognito** (Identity), **Circle** (Wallets only), **Due** (USDC On/Off-Ramps, Virtual Accounts, Recipient Management), **Sumsub** (KYC/AML), and **Alpaca** (Brokerage, Custody). Data is persisted in **PostgreSQL**. This design supports the MVP goal of providing a hybrid Web3-to-TradFi investment flow.
 
 #### 2.2 High Level Overview
 
   * **Architectural Style:** Modular Monolith (to start).
   * **Repository Structure:** Monorepo (recommended).
   * **Service Architecture:** A single Go application separated into logical domain modules (Onboarding, Wallet, Funding, Investing, AI-CFO) that communicate internally.
-  * **Data Flow (Funding):** User deposits USDC (on-chain) -\> Monitored by Funding Service -\> Circle Off-Ramp (USDC to USD) -\> Alpaca Deposit (USD) -\> "Buying Power" updated.
-  * **Data Flow (Withdrawal):** User requests USD withdrawal -\> Alpaca debits account -\> Circle On-Ramp (USD to USDC) -\> Funding Service sends USDC (on-chain) to user.
+* **Data Flow (Funding):** User deposits USDC (on-chain) -> Monitored by Funding Service -> Due Off-Ramp (USDC to USD) -> Virtual Account -> Alpaca Deposit (USD) -> "Buying Power" updated.
+* **Data Flow (Withdrawal):** User requests USD withdrawal -> Alpaca debits account -> Virtual Account -> Due On-Ramp (USD to USDC) -> Funding Service sends USDC (on-chain) to user.
 
 #### 2.3 High Level Project Diagram
 
@@ -54,10 +54,11 @@ graph TD
 
     subgraph "External Partners"
         ONB --> IDP[Auth0 / Cognito]
-        ONB --> KYC[KYC/AML Provider]
+        ONB --> KYC[Sumsub (KYC/AML)]
         WAL --> CIR[Circle API (Developer Wallets)]
-        FND --> CIR
-        INV --> DW[Alpaca API (Brokerage)]
+        FND --> DUE[Due API (Off-Ramp/On-Ramp)]
+        FND --> DW[Alpaca API (Brokerage)]
+        INV --> DW
         AIC --> OG[0G (AI/Storage)]
     end
 ```
@@ -104,7 +105,9 @@ This section defines the specific technologies and versions that **MUST** be use
 | **API Style** | GraphQL                       | TBD (Lib: gqlgen)| API for mobile client                            | Approved, efficient data fetching for mobile, Go lib needed              |
 | **API Docs (BE)** | **gin-swagger** | **Latest** | Swagger/OpenAPI generation for Gin             | User specified, standard for documenting Gin APIs                         |
 | **Auth Provider** | TBD (Auth0 / Cognito)         | N/A             | User identity and authentication                 | Standard OIDC providers, need final selection                             |
-| **Wallet/Funding** | Circle API                    | Latest          | Developer Wallets, USDC On/Off-Ramp            | Mandated requirement                                       |
+| **Wallet** | Circle API                    | Latest          | Developer Wallets (custody only)               | Mandated requirement                                       |
+| **Off-Ramp/On-Ramp** | Due API                      | Latest          | USDC <-> USD conversion, Virtual Accounts, Recipient Mgmt | Technical constraint resolution                             |
+| **KYC/AML** | Sumsub API                   | Latest          | Identity verification and compliance           | Regulatory requirement                                      |
 | **Brokerage** | Alpaca API               | Latest          | Stock/Options trading, Custody                 | Mandated requirement                                       |
 | **AI/Storage** | 0G                            | Latest          | AI CFO features, data storage                  | Specified requirement                                      |
 | **IaC Tool** | Terraform                     | 1.6.x           | Infrastructure as Code                           | Industry standard, manages AWS resources                                  |
@@ -150,6 +153,19 @@ Based on the original architecture and the PRD, these are the core data entities
     * `chain`: Enum (`ethereum`, `solana`, etc.)
     * `address`: String (Chain-specific address, Indexed)
     * `circle_wallet_id`: String (Reference to Circle's wallet ID)
+    * `status`: Enum (`creating`, `active`, `inactive`)
+    * `created_at`: Timestamp
+    * `updated_at`: Timestamp
+* **Relationships:**
+    * Many-to-One with `users`
+
+#### 4.3 virtual_accounts
+* **Purpose:** Stores metadata about Due virtual accounts linked to user Alpaca brokerage accounts.
+* **Key Attributes:**
+    * `id`: UUID (Primary Key)
+    * `user_id`: UUID (Foreign Key to `users.id`)
+    * `due_virtual_account_id`: String (Reference to Due's virtual account ID)
+    * `alpaca_account_id`: String (Linked Alpaca account ID)
     * `status`: Enum (`creating`, `active`, `inactive`)
     * `created_at`: Timestamp
     * `updated_at`: Timestamp
@@ -272,14 +288,14 @@ The STACK backend will start as a **Go-based modular monolith**. Functionality i
       * **Dependencies:** `Circle API`, `Database (users, wallets tables)`.
       * **Technology Stack:** Go module.
 
-  * **Funding Service Module**
+* **Funding Service Module**
 
-      * **Responsibility:** Orchestrates the entire funding and withdrawal flow: monitors blockchain deposits, triggers Circle off-ramps (USDC-\>USD), confirms Alpaca funding, handles withdrawal requests (Alpaca-\>USD-\>USDC), and manages related state transitions.
-      * **Key Interfaces:**
-          * Internal: `HandleChainDepositEvent`, `InitiateOffRamp`, `ConfirmBrokerFunding`, `InitiateWithdrawal`, `HandleWithdrawalCompletion`. Listens for events from blockchain monitors/webhooks.
-          * External (via GraphQL Gateway): Query for deposit history/status, Mutation to initiate withdrawal.
-      * **Dependencies:** `Blockchain Monitors/Webhooks`, `Circle API`, `Alpaca API`, `Database (deposits, balances, users, wallets tables)`, `Queueing (SQS)` (for asynchronous steps).
-      * **Technology Stack:** Go module, SQS.
+    * **Responsibility:** Orchestrates the entire funding and withdrawal flow: monitors blockchain deposits, manages virtual accounts, triggers Due off-ramps (USDC->USD), confirms Alpaca funding, handles withdrawal requests (Alpaca->USD->USDC via Due), and manages related state transitions.
+    * **Key Interfaces:**
+        * Internal: `HandleChainDepositEvent`, `CreateVirtualAccount`, `InitiateOffRamp`, `ConfirmBrokerFunding`, `InitiateWithdrawal`, `HandleWithdrawalCompletion`. Listens for events from blockchain monitors/webhooks.
+        * External (via GraphQL Gateway): Query for deposit history/status, Mutation to initiate withdrawal.
+    * **Dependencies:** `Blockchain Monitors/Webhooks`, `Due API`, `Alpaca API`, `Database (deposits, balances, virtual_accounts, users, wallets tables)`, `Queueing (SQS)` (for asynchronous steps).
+    * **Technology Stack:** Go module, SQS.
 
   * **Investing Service Module**
 
@@ -328,18 +344,19 @@ graph TD
     AIC --> PG
     FND --> Q # For async funding steps
 
-    subgraph "External Partners"
+     subgraph "External Partners"
         IDP[Auth0/Cognito]
-        KYC[KYC Provider]
-        CIR[Circle API]
-        DW[Alpaca API]
+        KYC[Sumsub (KYC)]
+        CIR[Circle API (Wallets)]
+        DUE[Due API (Funding)]
+        DW[Alpaca API (Brokerage)]
         OG[0G API]
     end
 
     ONB --> IDP
     ONB --> KYC
     WAL --> CIR
-    FND --> CIR
+    FND --> DUE # For off-ramp/on-ramp
     FND --> DW # For funding broker
     INV --> DW # For trading/portfolio
     AIC --> OG
@@ -405,7 +422,7 @@ sequenceDiagram
     participant GW as API Gateway (GraphQL)
     participant WAL as Wallet Module (Go)
     participant FND as Funding Module (Go)
-    participant CIR as Circle API
+    participant DUE as Due API
     participant DW as Alpaca API
     participant PG as PostgreSQL
     participant Q as SQS Queue
@@ -420,26 +437,27 @@ sequenceDiagram
     %% Step 2: User Deposits USDC (On-Chain) %%
     User->>Blockchain: Sends USDC to Address
 
-    %% Step 3: Circle Detects Deposit & Notifies Backend %%
-    Blockchain->>CIR: Transaction Confirmed
-    CIR->>FND: Deposit Notification Webhook
+    %% Step 3: Monitor Deposit & Create Virtual Account %%
+    Blockchain->>FND: Deposit Detected (webhook/monitor)
     FND->>PG: Log Deposit (status: confirmed_on_chain)
+    FND->>DUE: Create Virtual Account (linked to Alpaca)
+    DUE-->>FND: Virtual Account Created
     FND->>Q: Enqueue Off-Ramp Task (depositId)
 
     %% Step 4: Async Off-Ramp Processing %%
     Q->>FND: Process Off-Ramp Task (depositId)
     FND->>PG: Update Deposit Status (status: off_ramp_initiated)
-    FND->>CIR: Initiate Payout (USDC -> USD to linked Bank/Broker)
-    CIR-->>FND: Payout Accepted/Pending
+    FND->>DUE: Initiate Off-Ramp (USDC -> USD to Virtual Account)
+    DUE-->>FND: Off-Ramp Accepted/Pending
 
-    %% Step 5: Circle Confirms Off-Ramp %%
-    CIR->>FND: Payout Completed Webhook
+    %% Step 5: Due Confirms Off-Ramp %%
+    DUE->>FND: Off-Ramp Completed Webhook
     FND->>PG: Update Deposit Status (status: off_ramp_complete)
     FND->>Q: Enqueue Broker Funding Task (depositId, usdAmount)
 
     %% Step 6: Async Broker Funding %%
     Q->>FND: Process Broker Funding Task
-    FND->>DW: Initiate Account Funding (USD Transfer)
+    FND->>DW: Initiate Account Funding (USD from Virtual Account)
     DW-->>FND: Funding Accepted/Pending
 
     %% Step 7: Alpaca Confirms Funding %%
@@ -495,7 +513,7 @@ sequenceDiagram
     participant GW as API Gateway (GraphQL)
     participant FND as Funding Module (Go)
     participant DW as Alpaca API
-    participant CIR as Circle API
+    participant DUE as Due API
     participant WAL as Wallet Module (Go)
     participant PG as PostgreSQL
     participant Q as SQS Queue
@@ -515,33 +533,33 @@ sequenceDiagram
 
     %% Async Broker Withdrawal %%
     Q->>FND: Process Broker Withdrawal Task
-    FND->>DW: Request USD Withdrawal
+    FND->>DW: Request USD Withdrawal to Virtual Account
     DW-->>FND: Withdrawal Accepted/Pending
 
     %% Alpaca Confirms USD Sent %%
     DW->>FND: Withdrawal Completed Webhook/Callback (e.g., ACH settled)
     FND->>PG: Update Withdrawal Status (status: broker_withdrawal_complete)
-    FND->>Q: Enqueue Circle On-Ramp Task
+    FND->>Q: Enqueue Due On-Ramp Task
 
-    %% Async Circle On-Ramp %%
-    Q->>FND: Process Circle On-Ramp Task
-    FND->>CIR: Initiate Payment/Transfer (USD -> USDC)
-    CIR-->>FND: Payment Accepted/Pending
+    %% Async Due On-Ramp %%
+    Q->>FND: Process Due On-Ramp Task
+    FND->>DUE: Initiate On-Ramp (USD from Virtual Account -> USDC)
+    DUE-->>FND: On-Ramp Accepted/Pending
 
-    %% Circle Confirms USDC Ready %%
-    CIR->>FND: Payment Completed Webhook
+    %% Due Confirms USDC Ready %%
+    DUE->>FND: On-Ramp Completed Webhook
     FND->>PG: Update Withdrawal Status (status: on_ramp_complete)
     FND->>Q: Enqueue On-Chain Transfer Task
 
     %% Async On-Chain Transfer %%
     Q->>FND: Process On-Chain Transfer Task
     FND->>WAL: Get User Wallet Details (Circle Wallet ID)
-    FND->>CIR: Initiate Transfer (Send USDC from Circle Wallet to targetAddress)
-    CIR-->>FND: Transfer Accepted/Pending (txHash)
+    FND->>DUE: Initiate Transfer (Send USDC from Virtual Account to targetAddress)
+    DUE-->>FND: Transfer Accepted/Pending (txHash)
     FND->>PG: Update Withdrawal Status (status: transfer_initiated, txHash)
 
-    %% Circle Confirms Transfer %%
-    CIR->>FND: Transfer Completed Webhook
+    %% Due Confirms Transfer %%
+    DUE->>FND: Transfer Completed Webhook
     FND->>PG: Update Withdrawal Status (status: complete)
     FND-->>GW: Notify User
     GW-->>App: Withdrawal Complete Notification

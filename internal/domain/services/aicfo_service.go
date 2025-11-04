@@ -20,21 +20,21 @@ import (
 
 // AICfoService provides AI-powered CFO functionality
 type AICfoService struct {
-	inferenceGateway   entities.ZeroGInferenceGateway
-	storageClient      entities.ZeroGStorageClient
-	namespaceManager   *zerog.NamespaceManager
+	inferenceGateway    entities.ZeroGInferenceGateway
+	storageClient       entities.ZeroGStorageClient
+	namespaceManager    *zerog.NamespaceManager
 	notificationService *NotificationService
-	
+
 	// Repositories for data access
-	portfolioRepo     PortfolioRepository
-	positionsRepo     PositionsRepository
-	balanceRepo       BalanceRepository
-	aiSummariesRepo   AISummariesRepository
-	userRepo          UserRepository
-	
-	logger            *zap.Logger
-	tracer            trace.Tracer
-	metrics           *AICfoMetrics
+	portfolioRepo   PortfolioRepository
+	positionsRepo   PositionsRepository
+	balanceRepo     BalanceRepository
+	aiSummariesRepo AISummariesRepository
+	userRepo        UserRepository
+
+	logger  *zap.Logger
+	tracer  trace.Tracer
+	metrics *AICfoMetrics
 }
 
 // Repository interfaces
@@ -65,40 +65,40 @@ type UserRepository interface {
 
 // Domain models
 type Position struct {
-	ID           uuid.UUID       `json:"id"`
-	UserID       uuid.UUID       `json:"user_id"`
-	BasketID     uuid.UUID       `json:"basket_id"`
-	BasketName   string          `json:"basket_name"`
-	Quantity     decimal.Decimal `json:"quantity"`
-	AvgPrice     decimal.Decimal `json:"avg_price"`
-	MarketValue  decimal.Decimal `json:"market_value"`
-	UpdatedAt    time.Time       `json:"updated_at"`
+	ID          uuid.UUID       `json:"id"`
+	UserID      uuid.UUID       `json:"user_id"`
+	BasketID    uuid.UUID       `json:"basket_id"`
+	BasketName  string          `json:"basket_name"`
+	Quantity    decimal.Decimal `json:"quantity"`
+	AvgPrice    decimal.Decimal `json:"avg_price"`
+	MarketValue decimal.Decimal `json:"market_value"`
+	UpdatedAt   time.Time       `json:"updated_at"`
 }
 
 type Balance struct {
-	UserID         uuid.UUID       `json:"user_id"`
-	BuyingPower    decimal.Decimal `json:"buying_power"`
+	UserID          uuid.UUID       `json:"user_id"`
+	BuyingPower     decimal.Decimal `json:"buying_power"`
 	PendingDeposits decimal.Decimal `json:"pending_deposits"`
-	Currency       string          `json:"currency"`
-	UpdatedAt      time.Time       `json:"updated_at"`
+	Currency        string          `json:"currency"`
+	UpdatedAt       time.Time       `json:"updated_at"`
 }
 
 type AISummary struct {
-	ID          uuid.UUID  `json:"id"`
-	UserID      uuid.UUID  `json:"user_id"`
-	WeekStart   time.Time  `json:"week_start"`
-	SummaryMD   string     `json:"summary_md"`
-	ArtifactURI string     `json:"artifact_uri"`
-	CreatedAt   time.Time  `json:"created_at"`
+	ID          uuid.UUID `json:"id"`
+	UserID      uuid.UUID `json:"user_id"`
+	WeekStart   time.Time `json:"week_start"`
+	SummaryMD   string    `json:"summary_md"`
+	ArtifactURI string    `json:"artifact_uri"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // AICfoMetrics contains observability metrics for the AI-CFO service
 type AICfoMetrics struct {
-	SummariesGenerated   metric.Int64Counter
-	AnalysesPerformed    metric.Int64Counter
-	ProcessingDuration   metric.Float64Histogram
-	ErrorsTotal          metric.Int64Counter
-	ActiveUsers          metric.Int64Gauge
+	SummariesGenerated metric.Int64Counter
+	AnalysesPerformed  metric.Int64Counter
+	ProcessingDuration metric.Float64Histogram
+	ErrorsTotal        metric.Int64Counter
+	ActiveUsers        metric.Int64Gauge
 }
 
 // NewAICfoService creates a new AI-CFO service
@@ -114,7 +114,7 @@ func NewAICfoService(
 	userRepo UserRepository,
 	logger *zap.Logger,
 ) (*AICfoService, error) {
-	
+
 	tracer := otel.Tracer("aicfo-service")
 	meter := otel.Meter("aicfo-service")
 
@@ -125,18 +125,18 @@ func NewAICfoService(
 	}
 
 	service := &AICfoService{
-		inferenceGateway:   inferenceGateway,
-		storageClient:      storageClient,
-		namespaceManager:   namespaceManager,
+		inferenceGateway:    inferenceGateway,
+		storageClient:       storageClient,
+		namespaceManager:    namespaceManager,
 		notificationService: notificationService,
-		portfolioRepo:      portfolioRepo,
-		positionsRepo:      positionsRepo,
-		balanceRepo:        balanceRepo,
-		aiSummariesRepo:    aiSummariesRepo,
-		userRepo:           userRepo,
-		logger:             logger,
-		tracer:             tracer,
-		metrics:            metrics,
+		portfolioRepo:       portfolioRepo,
+		positionsRepo:       positionsRepo,
+		balanceRepo:         balanceRepo,
+		aiSummariesRepo:     aiSummariesRepo,
+		userRepo:            userRepo,
+		logger:              logger,
+		tracer:              tracer,
+		metrics:             metrics,
 	}
 
 	logger.Info("AI-CFO service initialized successfully")
@@ -382,7 +382,7 @@ func (s *AICfoService) gatherPortfolioData(ctx context.Context, userID uuid.UUID
 		performanceHistory = []*entities.PerformancePoint{}
 	}
 
-valPerformanceHistory := make([]entities.PerformancePoint, len(performanceHistory))
+	valPerformanceHistory := make([]entities.PerformancePoint, len(performanceHistory))
 	for i, p := range performanceHistory {
 		valPerformanceHistory[i] = *p
 	}
@@ -394,10 +394,10 @@ valPerformanceHistory := make([]entities.PerformancePoint, len(performanceHistor
 		// Set default risk metrics
 		portfolioMetrics.RiskMetrics = &entities.RiskMetrics{
 			Volatility:      0.15,
-			Beta:           1.0,
-			SharpeRatio:    0.8,
-			MaxDrawdown:    0.10,
-			VaR:            0.05,
+			Beta:            1.0,
+			SharpeRatio:     0.8,
+			MaxDrawdown:     0.10,
+			VaR:             0.05,
 			Diversification: 0.75,
 		}
 	}
@@ -422,7 +422,7 @@ func (s *AICfoService) calculateRiskMetrics(ctx context.Context, metrics *entiti
 	}
 
 	volatility := s.calculateStandardDeviation(returns)
-	
+
 	// Calculate maximum drawdown
 	maxDrawdown := s.calculateMaxDrawdown(metrics.PerformanceHistory)
 
@@ -432,10 +432,10 @@ func (s *AICfoService) calculateRiskMetrics(ctx context.Context, metrics *entiti
 	// Estimate other metrics (in production, these would be more sophisticated)
 	metrics.RiskMetrics = &entities.RiskMetrics{
 		Volatility:      volatility,
-		Beta:           1.0, // TODO: Calculate actual beta against market
-		SharpeRatio:    s.calculateSharpeRatio(returns, volatility),
-		MaxDrawdown:    maxDrawdown,
-		VaR:            volatility * 1.65, // 95% VaR approximation
+		Beta:            1.0, // TODO: Calculate actual beta against market
+		SharpeRatio:     s.calculateSharpeRatio(returns, volatility),
+		MaxDrawdown:     maxDrawdown,
+		VaR:             volatility * 1.65, // 95% VaR approximation
 		Diversification: diversification,
 	}
 
@@ -478,7 +478,7 @@ func (s *AICfoService) calculateMaxDrawdown(history []entities.PerformancePoint)
 		if point.Value > maxValue {
 			maxValue = point.Value
 		}
-		
+
 		drawdown := (maxValue - point.Value) / maxValue
 		if drawdown > maxDrawdown {
 			maxDrawdown = drawdown
@@ -501,9 +501,9 @@ func (s *AICfoService) calculateDiversificationScore(positions []entities.Positi
 	}
 
 	// Convert HHI to diversification score (0-1, where 1 is perfectly diversified)
-	maxHHI := 1.0 // All in one position
+	maxHHI := 1.0                           // All in one position
 	minHHI := 1.0 / float64(len(positions)) // Equally weighted
-	
+
 	if maxHHI == minHHI {
 		return 1.0
 	}
@@ -533,9 +533,9 @@ func (s *AICfoService) calculateSharpeRatio(returns []float64, volatility float6
 // storeSummaryInStorage stores the summary content in 0G storage
 func (s *AICfoService) storeSummaryInStorage(ctx context.Context, summary *AISummary, result *entities.InferenceResult) error {
 	summaryStorage := s.namespaceManager.AISummaries()
-	
+
 	summaryData := []byte(summary.SummaryMD)
-	
+
 	_, err := summaryStorage.StoreWeeklySummary(
 		ctx,
 		summary.UserID.String(),
@@ -630,10 +630,10 @@ func (s *AICfoService) GetHealthStatus(ctx context.Context) (*entities.HealthSta
 	}
 
 	return &entities.HealthStatus{
-		Status:      status,
-		Latency:     time.Since(startTime),
-		Version:     "1.0.0",
-		Uptime:      24 * time.Hour, // TODO: Track actual uptime
+		Status:  status,
+		Latency: time.Since(startTime),
+		Version: "1.0.0",
+		Uptime:  24 * time.Hour, // TODO: Track actual uptime
 		Metrics: map[string]interface{}{
 			"inference_available": inferenceHealth != nil,
 			"storage_available":   storageHealth != nil,

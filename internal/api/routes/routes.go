@@ -1,6 +1,8 @@
 package routes
 
 import (
+	"time"
+
 	// "database/sql"
 
 	"github.com/stack-service/stack_service/internal/api/handlers"
@@ -19,12 +21,16 @@ import (
 func SetupRoutes(container *di.Container) *gin.Engine {
 	router := gin.New()
 
+	// Initialize caching middleware
+	cache := middleware.NewAPICache(container.RedisClient, container.Logger)
+
 	// Global middleware
 	router.Use(middleware.RequestID())
 	router.Use(middleware.Logger(container.Logger))
 	router.Use(middleware.Recovery(container.Logger))
 	router.Use(middleware.CORS(container.Config.Server.AllowedOrigins))
 	router.Use(middleware.RateLimit(container.Config.Server.RateLimitPerMin))
+	router.Use(middleware.GzipCompression()) // Enable gzip compression
 	router.Use(middleware.SecurityHeaders())
 
 	// Health check (no auth required)
@@ -60,6 +66,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 	// Initialize Alpaca handlers
 	alpacaHandlers := handlers.NewAlpacaHandlers(container.AlpacaClient, container.ZapLog)
+
+	// Initialize Due handlers
+	dueHandlers := handlers.NewDueHandlers(container.GetDueService(), container.Logger)
 
 	// API v1 routes
 	v1 := router.Group("/api/v1")
@@ -142,11 +151,24 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				security.DELETE("/passcode", securityHandlers.RemovePasscode)
 			}
 
-			// Funding routes (OpenAPI spec compliant)
+			// Funding routes (OpenAPI spec compliant) - Critical operations require signing
 			funding := protected.Group("/funding")
+			funding.Use(middleware.RequestSigning(container.Config, container.Logger, true)) // Enable for all funding endpoints
 			{
 				funding.POST("/deposit/address", fundingHandlers.CreateDepositAddress)
 				funding.GET("/confirmations", fundingHandlers.GetFundingConfirmations)
+				funding.POST("/virtual-accounts", fundingHandlers.CreateVirtualAccount)
+			}
+
+			// Due account routes - Financial operations require KYC and signing
+			due := protected.Group("/due")
+			due.Use(middleware.RequireKYC(container.GetOnboardingService(), container.ZapLog))
+			due.Use(middleware.RequestSigning(container.Config, container.Logger, true))
+			{
+				due.POST("/accounts", dueHandlers.CreateDueAccount)
+				due.GET("/accounts", dueHandlers.GetDueAccount)
+				due.POST("/accounts/tos", dueHandlers.AcceptTOS)
+				due.POST("/accounts/:account_id/sync", dueHandlers.SyncAccountStatus)
 			}
 
 			// Balance routes (part of funding but separate for clarity)
@@ -178,16 +200,31 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				wallets.GET("/:chain/address", walletHandlers.GetWalletByChain)
 			}
 
-			// Investment baskets
+			// Investment baskets - Add RBAC for basket management
 			baskets := protected.Group("/baskets")
 			{
 				baskets.GET("/", handlers.GetBaskets(container.DB, container.Config, container.Logger))
-				baskets.POST("/", handlers.CreateBasket(container.DB, container.Config, container.Logger))
-				baskets.GET("/:id", handlers.GetBasket(container.DB, container.Config, container.Logger))
-				baskets.PUT("/:id", handlers.UpdateBasket(container.DB, container.Config, container.Logger))
-				baskets.DELETE("/:id", handlers.DeleteBasket(container.DB, container.Config, container.Logger))
-				baskets.POST("/:id/invest", handlers.InvestInBasket(container.DB, container.Config, container.Logger))
-				baskets.POST("/:id/withdraw", handlers.WithdrawFromBasket(container.DB, container.Config, container.Logger))
+
+				// Basket creation and modification require premium or higher role
+				premiumOps := baskets.Group("/")
+				premiumOps.Use(middleware.RoleBasedAccessControl([]string{"premium", "trader", "admin", "super_admin"}, container.Logger))
+				{
+					premiumOps.POST("/", handlers.CreateBasket(container.DB, container.Config, container.Logger))
+					premiumOps.PUT("/:id", handlers.UpdateBasket(container.DB, container.Config, container.Logger))
+					premiumOps.DELETE("/:id", handlers.DeleteBasket(container.DB, container.Config, container.Logger))
+				}
+
+				// Cached basket retrieval for better performance
+				baskets.GET("/:id", cache.Cache(5*time.Minute, middleware.CacheByPath), handlers.GetBasket(container.DB, container.Config, container.Logger))
+
+				// Critical financial operations require IP whitelisting and premium role
+				financialOps := baskets.Group("/")
+				financialOps.Use(middleware.RoleBasedAccessControl([]string{"premium", "trader", "admin", "super_admin"}, container.Logger))
+				financialOps.Use(middleware.IPWhitelist(container.Config.Security.AllowedIPs, container.Logger))
+				{
+					financialOps.POST("/:id/invest", handlers.InvestInBasket(container.DB, container.Config, container.Logger))
+					financialOps.POST("/:id/withdraw", handlers.WithdrawFromBasket(container.DB, container.Config, container.Logger))
+				}
 			}
 
 			// Curated baskets (public/featured)
@@ -264,11 +301,13 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// Alpaca Assets - Tradable stocks and ETFs
 			assets := protected.Group("/assets")
 			{
-				assets.GET("/", alpacaHandlers.GetAssets)                      // List all assets with filtering
-				assets.GET("/search", alpacaHandlers.SearchAssets)             // Search assets
-				assets.GET("/popular", alpacaHandlers.GetPopularAssets)       // Get popular/trending assets
+				assets.GET("/", alpacaHandlers.GetAssets)                             // List all assets with filtering
+				assets.GET("/search", alpacaHandlers.SearchAssets)                    // Search assets
+				assets.GET("/popular", alpacaHandlers.GetPopularAssets)               // Get popular/trending assets
 				assets.GET("/exchange/:exchange", alpacaHandlers.GetAssetsByExchange) // Get assets by exchange
-				assets.GET("/:symbol_or_id", alpacaHandlers.GetAsset)         // Get specific asset details
+				// IMPORTANT: More specific routes MUST come before wildcard routes
+				assets.GET("/:symbol/details", alpacaHandlers.GetAssetDetails) // Get comprehensive asset details with position
+				assets.GET("/:symbol", alpacaHandlers.GetAsset)                // Get specific asset details (wildcard - must be last)
 			}
 		}
 

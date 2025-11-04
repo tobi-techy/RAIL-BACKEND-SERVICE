@@ -63,9 +63,9 @@ type BalanceRepository interface {
 
 // BrokerageAdapter interface for brokerage integration
 type BrokerageAdapter interface {
-	PlaceOrder(ctx context.Context, basketID uuid.UUID, side entities.OrderSide, amount decimal.Decimal) (*BrokerageOrderResponse, error)
-	GetOrderStatus(ctx context.Context, brokerageRef string) (*BrokerageOrderStatus, error)
-	CancelOrder(ctx context.Context, brokerageRef string) error
+	PlaceOrder(ctx context.Context, userID, basketID uuid.UUID, side entities.OrderSide, amount decimal.Decimal) (*BrokerageOrderResponse, error)
+	GetOrderStatus(ctx context.Context, userID uuid.UUID, brokerageRef string) (*BrokerageOrderStatus, error)
+	CancelOrder(ctx context.Context, userID uuid.UUID, brokerageRef string) error
 }
 
 // BrokerageOrderResponse represents brokerage order response
@@ -199,7 +199,7 @@ func (s *Service) CreateOrder(ctx context.Context, userID uuid.UUID, req *entiti
 
 	// Submit order to brokerage asynchronously
 	go func() {
-		brokerageResp, err := s.brokerageAPI.PlaceOrder(ctx, req.BasketID, req.Side, amount)
+		brokerageResp, err := s.brokerageAPI.PlaceOrder(ctx, userID, req.BasketID, req.Side, amount)
 		if err != nil {
 			s.logger.Error("Failed to submit order to brokerage", "order_id", order.ID, "error", err)
 			// Update order status to failed
@@ -299,7 +299,7 @@ func (s *Service) GetPortfolioOverview(ctx context.Context, userID uuid.UUID) (*
 						"chain", wallet.Chain)
 					continue
 				}
-				
+
 				// Fetch balance from Circle API for each wallet, filtering by USDC token address
 				balancesResp, err := s.circleClient.GetWalletBalances(ctx, wallet.CircleWalletID, usdcTokenAddress)
 				if err != nil {
@@ -311,11 +311,11 @@ func (s *Service) GetPortfolioOverview(ctx context.Context, userID uuid.UUID) (*
 						"error", err)
 				}
 
-					// Console.log equivalent in Go (using Info level)
-	s.logger.Info("GetPortfolioOverview result balance",
-		"balance", balancesResp,
-	)
-				
+				// Console.log equivalent in Go (using Info level)
+				s.logger.Info("GetPortfolioOverview result balance",
+					"balance", balancesResp,
+				)
+
 				// Log all token balances for debugging
 				if len(balancesResp.TokenBalances) == 0 {
 					s.logger.Debug("No token balances found for wallet",
@@ -330,7 +330,7 @@ func (s *Service) GetPortfolioOverview(ctx context.Context, userID uuid.UUID) (*
 							"amount", tb.Amount)
 					}
 				}
-				
+
 				// Extract USDC balance
 				usdcBalanceStr := balancesResp.GetUSDCBalance()
 				if usdcBalance, err := decimal.NewFromString(usdcBalanceStr); err == nil {
@@ -346,7 +346,7 @@ func (s *Service) GetPortfolioOverview(ctx context.Context, userID uuid.UUID) (*
 			}
 		}
 	}
-	
+
 	// Get database balance (buying power) as fallback
 	balance, err := s.balanceRepo.Get(ctx, userID)
 	if err != nil {
@@ -358,10 +358,16 @@ func (s *Service) GetPortfolioOverview(ctx context.Context, userID uuid.UUID) (*
 			UpdatedAt:   time.Now(),
 		}
 	}
-	
-	// Add Circle USDC balance to database buying power
+
+	// Use Circle USDC balance as primary buying power to avoid double-counting
+	// Fall back to database balance if no Circle balance available
 	// (USDC is 1:1 with USD buying power)
-	buyingPower := balance.BuyingPower.Add(totalUSDCBalance)
+	var buyingPower decimal.Decimal
+	if totalUSDCBalance.GreaterThan(decimal.Zero) {
+		buyingPower = totalUSDCBalance
+	} else {
+		buyingPower = balance.BuyingPower
+	}
 
 	// Calculate total portfolio (positions + buying power)
 	totalPortfolio := positionsValue.Add(buyingPower)
@@ -382,8 +388,6 @@ func (s *Service) GetPortfolioOverview(ctx context.Context, userID uuid.UUID) (*
 		performanceDecimal := gain.Div(totalInvested).Mul(decimal.NewFromInt(100))
 		performance, _ = performanceDecimal.Float64()
 	}
-
-
 
 	return &entities.PortfolioOverview{
 		TotalPortfolio:     totalPortfolio.StringFixed(2),

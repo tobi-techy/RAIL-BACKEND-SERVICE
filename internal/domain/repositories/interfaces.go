@@ -29,12 +29,12 @@ type PortfolioRepository interface {
 
 // Portfolio represents user portfolio information
 type Portfolio struct {
-	UserID        uuid.UUID           `json:"user_id"`
-	TotalValue    float64             `json:"total_value"`
-	CashBalance   float64             `json:"cash_balance"`
-	Holdings      []*Holding          `json:"holdings"`
-	Performance   *PerformanceMetrics `json:"performance"`
-	LastUpdated   time.Time           `json:"last_updated"`
+	UserID      uuid.UUID           `json:"user_id"`
+	TotalValue  float64             `json:"total_value"`
+	CashBalance float64             `json:"cash_balance"`
+	Holdings    []*Holding          `json:"holdings"`
+	Performance *PerformanceMetrics `json:"performance"`
+	LastUpdated time.Time           `json:"last_updated"`
 }
 
 // Holding represents a user's position in an asset
@@ -49,14 +49,14 @@ type Holding struct {
 
 // Transaction represents a portfolio transaction
 type Transaction struct {
-	ID          uuid.UUID   `json:"id"`
-	UserID      uuid.UUID   `json:"user_id"`
-	Type        string      `json:"type"` // buy, sell, dividend, etc.
-	Symbol      string      `json:"symbol"`
-	Quantity    float64     `json:"quantity"`
-	Price       float64     `json:"price"`
-	Amount      float64     `json:"amount"`
-	Timestamp   time.Time   `json:"timestamp"`
+	ID        uuid.UUID `json:"id"`
+	UserID    uuid.UUID `json:"user_id"`
+	Type      string    `json:"type"` // buy, sell, dividend, etc.
+	Symbol    string    `json:"symbol"`
+	Quantity  float64   `json:"quantity"`
+	Price     float64   `json:"price"`
+	Amount    float64   `json:"amount"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // PerformanceMetrics represents portfolio performance data

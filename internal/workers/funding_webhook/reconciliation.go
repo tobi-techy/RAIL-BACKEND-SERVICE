@@ -214,9 +214,9 @@ func (r *Reconciler) runReconciliation(ctx context.Context) {
 	threshold := r.config.Threshold
 	if threshold > 24*365*10*time.Hour { // Cap at 10 years to prevent overflow
 		r.logger.Warn("Threshold too large, capping at 10 years", "original", threshold)
-		threshold = 24*365*10*time.Hour
+		threshold = 24 * 365 * 10 * time.Hour
 	}
-	
+
 	candidates, err := r.jobRepo.GetPendingDepositsForReconciliation(ctx, threshold, r.config.BatchSize)
 	if err != nil {
 		r.logger.Error("Failed to get reconciliation candidates", "error", err)

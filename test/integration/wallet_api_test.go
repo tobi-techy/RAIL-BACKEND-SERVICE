@@ -185,7 +185,7 @@ func testSCAUnifiedAddresses(t *testing.T, cfg *config.Config, testLogger *logge
 		aptosWallet := entities.ManagedWallet{
 			ID:          uuid.New(),
 			UserID:      uuid.New(),
-			Chain:       entities.ChainAPTOS,
+			Chain:       entities.WalletChainAptos,
 			Address:     "0x1::aptos_coin::AptosCoin",
 			AccountType: entities.AccountTypeEOA, // Aptos uses EOA
 			Status:      entities.WalletStatusLive,

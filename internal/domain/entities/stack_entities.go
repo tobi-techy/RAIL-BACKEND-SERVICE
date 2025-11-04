@@ -224,12 +224,12 @@ type Portfolio struct {
 
 // PortfolioOverview represents complete portfolio overview with balance and performance
 type PortfolioOverview struct {
-	TotalPortfolio      string  `json:"totalPortfolio"`      // Total portfolio value (positions + buying power)
-	BuyingPower         string  `json:"buyingPower"`         // Available buying power
-	PositionsValue      string  `json:"positionsValue"`      // Total value of all positions
-	PerformanceLast30d  float64 `json:"performanceLast30d"`  // Performance % over last 30 days
-	Currency            string  `json:"currency"`            // Currency (USD)
-	LastUpdated         string  `json:"lastUpdated"`         // ISO timestamp of last update
+	TotalPortfolio     string  `json:"totalPortfolio"`     // Total portfolio value (positions + buying power)
+	BuyingPower        string  `json:"buyingPower"`        // Available buying power
+	PositionsValue     string  `json:"positionsValue"`     // Total value of all positions
+	PerformanceLast30d float64 `json:"performanceLast30d"` // Performance % over last 30 days
+	Currency           string  `json:"currency"`           // Currency (USD)
+	LastUpdated        string  `json:"lastUpdated"`        // ISO timestamp of last update
 }
 
 // PositionResponse represents a position in portfolio response

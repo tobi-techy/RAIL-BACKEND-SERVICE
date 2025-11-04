@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"compress/gzip"
 	"database/sql"
 	// "fmt"
 	"net/http"
@@ -184,6 +185,61 @@ func SecurityHeaders() gin.HandlerFunc {
 	}
 }
 
+// GzipCompression adds gzip compression to responses
+func GzipCompression() gin.HandlerFunc {
+	return gin.HandlerFunc(func(c *gin.Context) {
+		// Skip compression for small responses and certain content types
+		if c.Request.Method == "HEAD" {
+			c.Next()
+			return
+		}
+
+		// Check if client accepts gzip
+		if acceptEncoding := c.GetHeader("Accept-Encoding"); !strings.Contains(acceptEncoding, "gzip") {
+			c.Next()
+			return
+		}
+
+		// Skip compression for streaming responses and certain content types
+		contentType := c.GetHeader("Content-Type")
+		if strings.Contains(contentType, "text/event-stream") ||
+			strings.Contains(contentType, "application/octet-stream") {
+			c.Next()
+			return
+		}
+
+		// Use Gin's built-in gzip middleware
+		c.Header("Content-Encoding", "gzip")
+		c.Header("Vary", "Accept-Encoding")
+
+		// Create a gzip writer
+		gz, err := gzip.NewWriterLevel(c.Writer, gzip.DefaultCompression)
+		if err != nil {
+			c.Next()
+			return
+		}
+		defer gz.Close()
+
+		// Replace the writer
+		c.Writer = &gzipWriter{c.Writer, gz}
+		c.Next()
+	})
+}
+
+// gzipWriter wraps the ResponseWriter to handle gzip compression
+type gzipWriter struct {
+	gin.ResponseWriter
+	writer *gzip.Writer
+}
+
+func (g *gzipWriter) Write(data []byte) (int, error) {
+	return g.writer.Write(data)
+}
+
+func (g *gzipWriter) WriteString(s string) (int, error) {
+	return g.writer.Write([]byte(s))
+}
+
 // Authentication validates JWT tokens
 func Authentication(cfg *config.Config, log *logger.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -228,20 +284,9 @@ func Authentication(cfg *config.Config, log *logger.Logger) gin.HandlerFunc {
 	}
 }
 
-// AdminAuth checks if user has admin role
+// AdminAuth checks if user has admin role (legacy - use RoleBasedAccessControl)
 func AdminAuth(db *sql.DB, log *logger.Logger) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		userRole := c.GetString("user_role")
-		if userRole != "admin" && userRole != "super_admin" {
-			c.JSON(http.StatusForbidden, gin.H{
-				"error":      "Admin access required",
-				"request_id": c.GetString("request_id"),
-			})
-			c.Abort()
-			return
-		}
-		c.Next()
-	}
+	return RoleBasedAccessControl([]string{"admin", "super_admin"}, log)
 }
 
 // ValidateAPIKey validates API keys for external services

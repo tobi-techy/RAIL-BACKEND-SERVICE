@@ -105,21 +105,34 @@ jobs:
         version: v1.54
         
   security:
-    name: Security Scan
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Run Gosec Security Scanner
-      uses: securecodewarrior/github-action-gosec@master
+  name: Security Scan
+  runs-on: ubuntu-latest
+  
+  steps:
+  - uses: actions/checkout@v4
+  
+  - name: Run Gosec Security Scanner
+  uses: securecodewarrior/github-action-gosec@master
+  with:
+  args: '-no-fail -fmt sarif -out gosec-results.sarif ./...'
+  
+  - name: Upload Gosec SARIF file
+  uses: github/codeql-action/upload-sarif@v2
+  with:
+  sarif_file: gosec-results.sarif
+
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
       with:
-        args: '-no-fail -fmt sarif -out results.sarif ./...'
-        
-    - name: Upload SARIF file
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Upload Trivy SARIF file
       uses: github/codeql-action/upload-sarif@v2
       with:
-        sarif_file: results.sarif
+        sarif_file: trivy-results.sarif
 
   build:
     name: Build

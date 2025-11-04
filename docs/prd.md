@@ -56,10 +56,13 @@ The financial market for Gen Z is underserved. Traditional banking alienates you
     * Automatic creation of a secure, managed wallet using **Circle Developer-Controlled Wallets**.
     * No seed phrase complexity; custody abstracted away.
 
-2.  **Stablecoin Funding Flow (Deposit & Off-Ramp)**
+2.   **Stablecoin Funding Flow (Deposit & Off-Ramp)**
     * Support deposits of USDC from at least one EVM chain (e.g., Ethereum) and one non-EVM chain (e.g., Solana) into the user's Circle wallet.
-    * **NEW:** Orchestrate an immediate **USDC-to-USD off-ramp** via Circle.
-    * **NEW:** Transfer off-ramped USD directly into the user's **Alpaca** brokerage account to create "buying power" for instant trading.
+    * **NEW:** Create and manage virtual accounts linked to user Alpaca brokerage accounts.
+    * **NEW:** Orchestrate an immediate **USDC-to-USD off-ramp** via **Due API**.
+    * **NEW:** Transfer off-ramped USD directly into the user's linked Alpaca brokerage account to create \"buying power\" for instant trading.
+    * **NEW:** Integrate KYC verification via **Sumsub** for regulatory compliance.
+    * **NEW:** Implement recipient management for managing withdrawal destinations.
 
 3.  **Investment Flow (Stocks, ETFs, & Options)**
     * Ability to invest in curated baskets of stocks/ETFs.
@@ -67,7 +70,7 @@ The financial market for Gen Z is underserved. Traditional banking alienates you
     * Simple portfolio view with performance tracking (pulling data from Alpaca).
 
 4.  **Curated Investment Baskets**
-    * Launch with 5–10 “expert-curated” investment baskets (e.g., Tech Growth, Sustainability, ETFs).
+    * Launch with 5–10 "expert-curated" investment baskets (e.g., Tech Growth, Sustainability, ETFs).
     * Designed to simplify decision-making for new investors.
 
 5.  **AI CFO (MVP Version)**
@@ -77,7 +80,7 @@ The financial market for Gen Z is underserved. Traditional banking alienates you
 
 6.  **Brokerage & Withdrawal Flow**
     * Secure backend integration with **Alpaca** for trade execution and custody of traditional assets.
-    * **NEW:** Support for withdrawals, orchestrating a **USD-to-USDC on-ramp** from Alpaca via Circle to the user's selected chain.
+    * **NEW:** Support for withdrawals, orchestrating a **USD-to-USDC on-ramp** from Alpaca via **Due API** to the user's selected chain.
 
 ---
 
@@ -126,7 +129,9 @@ The financial market for Gen Z is underserved. Traditional banking alienates you
 
 ### Infrastructure & Integrations
 - **0G** for storage and AI capabilities.
-- **Circle** for **Developer-Controlled Wallets** and **USDC <-> USD on/off-ramps**.
+- **Circle** for **Developer-Controlled Wallets** (custody only - no off-ramp/on-ramp).
+- **Due** for **USDC <-> USD on/off-ramps**, virtual accounts, and recipient management.
+- **Sumsub** for KYC verification and compliance.
 - **Alpaca** for brokerage, trade execution, and custody of traditional assets.
 
 ### Architecture Strategy
@@ -170,12 +175,6 @@ The financial market for Gen Z is underserved. Traditional banking alienates you
 - Has a full legal/regulatory review been conducted for the *specific* USDC -> Alpaca flow?
 - What are the true at-scale costs of Circle's off-ramp + Alpaca's funding APIs?
 - How will fraud prevention and compliance (KYC/AML) be handled in this multi-partner flow?
-
----
-
-Next, I will update the **`epics.md`** file to align with this new PRD.
-
----
 
 # STACK MVP Epics (v0.2)
 

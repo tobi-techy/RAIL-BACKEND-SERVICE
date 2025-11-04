@@ -13,22 +13,55 @@ import (
 type WalletChain string
 
 const (
-	// Solana - Only SOL-DEVNET is currently supported
+	// Ethereum chains
+	ChainETH        WalletChain = "ETH"
+	ChainETHSepolia WalletChain = "ETH-SEPOLIA"
+
+	// Polygon chains
+	ChainMATIC     WalletChain = "MATIC"
+	ChainMATICAmoy WalletChain = "MATIC-AMOY"
+
+	// Solana chains
+	ChainSOL       WalletChain = "SOL"
 	ChainSOLDevnet WalletChain = "SOL-DEVNET"
-	
+
+	// Aptos chains
+	WalletChainAptos        WalletChain = "APTOS"
+	WalletChainAptosTestnet WalletChain = "APTOS-TESTNET"
+
+	// Avalanche chains
+	ChainAVAX WalletChain = "AVAX"
+
+	// Base chains
+	ChainBASE        WalletChain = "BASE"
+	ChainBASESepolia WalletChain = "BASE-SEPOLIA"
+
 	// USDC Token Addresses by Chain
 	// SOL-DEVNET USDC token address
 	USDCTokenAddressSOLDevnet = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
 )
 
-// GetMainnetChains returns production chains (currently empty)
+// GetMainnetChains returns production chains
 func GetMainnetChains() []WalletChain {
-	return []WalletChain{}
+	return []WalletChain{
+		ChainETH,
+		ChainMATIC,
+		ChainSOL,
+		WalletChainAptos,
+		ChainAVAX,
+		ChainBASE,
+	}
 }
 
 // GetTestnetChains returns testnet chains
 func GetTestnetChains() []WalletChain {
-	return []WalletChain{ChainSOLDevnet}
+	return []WalletChain{
+		ChainETHSepolia,
+		ChainMATICAmoy,
+		ChainSOLDevnet,
+		WalletChainAptosTestnet,
+		ChainBASESepolia,
+	}
 }
 
 // IsValid checks if the chain is supported
@@ -53,11 +86,21 @@ func (c WalletChain) IsTestnet() bool {
 	return false
 }
 
-// GetChainFamily returns the chain family (Solana only)
+// GetChainFamily returns the chain family
 func (c WalletChain) GetChainFamily() string {
 	switch c {
-	case ChainSOLDevnet:
+	case ChainETH, ChainETHSepolia:
+		return "Ethereum"
+	case ChainMATIC, ChainMATICAmoy:
+		return "Polygon"
+	case ChainSOL, ChainSOLDevnet:
 		return "Solana"
+	case WalletChainAptos, WalletChainAptosTestnet:
+		return "Aptos"
+	case ChainAVAX:
+		return "Avalanche"
+	case ChainBASE, ChainBASESepolia:
+		return "Base"
 	default:
 		return "Unknown"
 	}
@@ -68,6 +111,7 @@ func (c WalletChain) GetUSDCTokenAddress() string {
 	switch c {
 	case ChainSOLDevnet:
 		return USDCTokenAddressSOLDevnet
+	// Add more token addresses as they become available
 	default:
 		return ""
 	}

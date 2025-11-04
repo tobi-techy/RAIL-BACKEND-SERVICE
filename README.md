@@ -1,8 +1,31 @@
 # STACK - GenZ Web3 Investment Platform
 
-STACK is a Web3-native investment platform designed specifically for Gen Z users who are underserved by traditional banks and overwhelmed by complex crypto tools. It enables instant wealth-building through a hybrid model: fiat-to-stablecoin on-ramps, seamless investment in stocks/ETFs, and a protective AI CFO.
+> **The safe, fun, no-BS way for Gen Z to grow money without banks or crypto headaches.**
 
-The platform bridges the gap between traditional finance and Web3 by providing a safe, frictionless investment experience that demystifies Web3 while outperforming legacy banking in speed and fairness.
+STACK is a Web3-native investment platform that empowers Gen Z users to build wealth instantly through a hybrid TradFi-Web3 model. By abstracting away the complexity of both legacy banking and decentralized finance, STACK offers a borderless, instant funding mechanism via stablecoins, seamlessly bridged into a regulated environment for investing in stocks and ETFs.
+
+## 🌟 The Problem We Solve
+
+Gen Z investors are stuck between two flawed systems:
+
+1. **Traditional Banking (Jordan's Pain)**: Slow 3-5 day ACH transfers, clunky interfaces built for older generations, and punitive minimum balance fees that feel greedy and alienating.
+
+2. **Pure Web3 (Chris's Pain)**: Intimidating seed phrases, irreversible mistakes, shockingly high gas fees, and a technical barrier that makes crypto feel "not worth it."
+
+**STACK bridges this gap** by combining the transparency and accessibility banks lack with the real-world asset integration crypto apps miss, wrapped in a Gen Z-native experience that feels like "TikTok-meets-Cash App."
+
+## 💡 Our Solution
+
+A **Go-based modular monolith** deployed on AWS that provides:
+- **Instant, borderless funding** via USDC deposits from multiple chains (Ethereum, Solana, Polygon, BSC)
+- **Seamless Web3-to-TradFi bridge** through Circle Developer-Controlled Wallets and Alpaca brokerage integration
+- **Curated investment baskets** for simplified decision-making
+- **AI CFO protection** powered by 0G to guide users away from common financial mistakes
+- **Social investing features** like copy trading and user-curated baskets (post-MVP)
+
+## 🔗 Related Repositories
+
+- **Frontend (React Native Mobile App)**: [https://github.com/Sketchyjo/Stacks-frontend](https://github.com/Sketchyjo/Stacks-frontend)
 
 ## 🎯 Mission
 
@@ -24,15 +47,43 @@ To empower the next generation of investors with a platform that combines the ac
 ## 👥 Target Users
 
 ### Primary User Persona: "Taylor" - The Conscious & Connected Investor
+
+**Profile:**
 - **Age**: 22
-- **Profile**: Digitally native, balances part-time work with side hustles. Ambitious but cautious.
-- **Digital Habits**: Lives on TikTok, Instagram, Reddit, and Discord. Uses Notion/Pinterest for visual planning. Expects fast, engaging, intuitive experiences that feel like "TikTok-meets-Cash App."
-- **Financial Behaviors**: Keeps most funds in savings + P2P apps (Cash App, Venmo). Dabbles on Robinhood but distrusts its business model. Avoids crypto due to complexity.
-- **Values/Motivations**: Wants financial independence, safety, and alignment with identity (e.g., sustainability, social impact). Goals: travel fund, apartment savings, safety net.
+- **Occupation**: Part-time job + creative side hustle (e.g., Etsy)
+- **Tech Savvy**: Digitally native multi-tasker who is smart, ambitious, and seeks financial empowerment on her own terms
+
+**Digital Habits & UX Expectations:**
+- Lives on **TikTok, Instagram, Reddit**
+- Active member of at least one **Discord** community
+- Uses visual tools like **Pinterest** or **Notion** for planning
+- Expects UX to feel like **"TikTok-meets-Cash App"**: fast, visually clean, engaging, and intuitive
+
+**Current Financial Behaviors:**
+- Cautious and underserved by current options
+- Money sits in low-interest savings accounts or P2P apps (Cash App, Venmo)
+- Dabbles on Robinhood with small amounts but distrusts their business model (PFOF scandals)
+- Avoids crypto due to complexity and fear of irreversible mistakes
+
+**Values & Motivations:**
+- Primary driver: **Financial breathing room and independence**
+- Tangible goals: Building a travel fund, saving for an apartment, establishing a safety net
+- Investing is an act of taking control
+- Must align with identity values: **sustainability, social impact, fairness**
 
 ### Secondary Personas
-- **Jordan** - The Banking-Frustrated Beginner (Age 21): Clunky traditional banking, delays (3–5 day ACH transfers), and punitive fees. Feels alienated by outdated systems.
-- **Chris** - The Crypto-Curious but Overwhelmed (Age 19): Intimidated by seed phrases, high gas fees, and irreversible mistakes. Tried but abandoned crypto apps after losing money.
+
+**Jordan (Age 21) - The Banking-Frustrated Beginner:**
+- Frustrated by clunky traditional banking interfaces built for older generations
+- Tired of 3-5 day ACH transfer delays that cause missed investment opportunities
+- Hit with unexpected minimum balance fees ($12 for dropping below $300)
+- Feels the system is slow, greedy, and alienating
+
+**Chris (Age 19) - The Crypto-Curious but Overwhelmed:**
+- Intimidated by 12-word seed phrase warnings and fear of losing access
+- Lost $50 by accidentally sending crypto to the wrong network
+- Shocked by $28 gas fees that wiped out half of a $50 trade on Ethereum
+- Concluded "Crypto's a scam. Not worth it." and deleted wallet apps
 
 ## 🚀 Core Features (MVP)
 
@@ -67,87 +118,212 @@ To empower the next generation of investors with a platform that combines the ac
 
 ## 🏗️ Architecture Overview
 
-```
-stack_service/
-├── cmd/                    # Application entry points
-│   └── main.go
-├── internal/               # Private application code
-│   ├── api/               # API layer
-│   │   ├── handlers/      # HTTP request handlers
-│   │   ├── middleware/    # HTTP middleware
-│   │   └── routes/        # Route definitions
-│   ├── domain/            # Business domain
-│   │   ├── entities/      # Domain entities/models
-│   │   ├── repositories/  # Repository interfaces
-│   │   └── services/      # Business logic services
-│   ├── infrastructure/    # External concerns
-│   │   ├── adapters/      # External service adapters
-│   │   ├── circle/        # Circle API integration
-│   │   ├── config/        # Configuration management
-│   │   ├── database/      # Database connections
-│   │   ├── di/            # Dependency injection
-│   │   ├── repositories/  # Repository implementations
-│   │   └── zerog/        # 0G integration
-│   ├── workers/           # Background workers
-│   │   ├── aicfo_scheduler/ # AI CFO scheduler
-│   │   ├── funding_webhook/ # Funding webhook processor
-│   │   └── wallet_provisioning/ # Wallet provisioning worker
-│   └── zerog/             # 0G integration components
-├── pkg/                   # Public libraries
-│   ├── auth/              # Authentication utilities
-│   ├── crypto/            # Cryptographic functions
-│   ├── logger/            # Logging utilities
-│   ├── retry/             # Retry utilities
-│   └── webhook/           # Webhook security
-├── migrations/            # Database migrations
-├── configs/               # Configuration files
-├── deployments/           # Deployment configurations
-├── scripts/               # Build and deployment scripts
-└── tests/                 # Test files
-    ├── unit/              # Unit tests
-    ├── integration/       # Integration tests
-    └── e2e/               # End-to-end tests
+### Architectural Style
+
+**Modular Monolith** - A single Go application with strongly defined internal boundaries organized by domain modules. This architecture:
+- Enables faster MVP development compared to microservices
+- Maintains clear separation of concerns for future service extraction
+- Reduces operational complexity while preserving modularity
+
+### System Architecture
+
+```mermaid
+graph TD
+    U[Gen Z User Mobile] --> RN[React Native App]
+    
+    subgraph "STACK Backend - Go Modular Monolith on AWS Fargate"
+        RN --> GW[API Gateway - GraphQL]
+        GW --> ONB[Onboarding Module]
+        GW --> WAL[Wallet Module]
+        GW --> FND[Funding Module]
+        GW --> INV[Investing Module]
+        GW --> AIC[AI CFO Module]
+        
+        ONB --> PG[(PostgreSQL)]
+        WAL --> PG
+        FND --> PG
+        INV --> PG
+        AIC --> PG
+        FND --> SQS[AWS SQS Queue]
+    end
+    
+    subgraph "External Partners"
+        ONB --> IDP[Auth0/Cognito]
+        ONB --> KYC[KYC/AML Provider]
+        WAL --> CIR[Circle API]
+        FND --> CIR
+        INV --> ALP[Alpaca Brokerage]
+        AIC --> ZG[0G AI/Storage]
+    end
 ```
 
-### Domain Services (MVP)
-- **Onboarding Service**: sign-up, profile, KYC/AML orchestration, feature flags
-- **Wallet Service**: managed wallet lifecycle, address issuance, custody abstraction
-- **Funding Service**: deposit address generation, webhook listeners, confirmations, auto-convert → buying power
-- **Investing Service**: basket catalog, orders (buy/sell), portfolio & positions, P&L calc, brokerage adapter
-- **AI-CFO Service (Lite)**: weekly summaries, on-demand analysis, insight templates, uses 0G for inference & storage
+### Key Architectural Patterns
+
+1. **Repository Pattern**: All database interactions abstracted via Go interfaces
+2. **Adapter Pattern**: External partner integrations (Circle, Alpaca, 0G) use interfaces with concrete implementations
+3. **Asynchronous Orchestration (Sagas)**: Complex multi-step flows (funding, withdrawal) managed via SQS event-driven approach
+4. **Circuit Breaker Pattern**: Using `gobreaker` for all critical external dependencies
+5. **Interface-Driven Development**: All public functions interact with interfaces, not concrete types
+
+### Project Structure
+
+```
+stack-monorepo/
+├── cmd/api/                    # Main application entrypoint (main.go)
+├── internal/                   # Private application code
+│   ├── api/                    # GraphQL handlers, resolvers, middleware
+│   ├── core/                   # Business logic modules
+│   │   ├── onboarding/         # User sign-up, KYC, passcode
+│   │   ├── wallet/             # Circle wallet management
+│   │   ├── funding/            # USDC deposits, withdrawals, off/on-ramps
+│   │   ├── investing/          # Baskets, orders, portfolio, Alpaca integration
+│   │   └── aicfo/              # AI-powered summaries and analysis
+│   ├── adapters/               # External service integrations
+│   │   ├── circle/             # Circle Developer Wallets, USDC on/off-ramps
+│   │   ├── alpaca/             # Alpaca brokerage trading & custody
+│   │   ├── authprovider/       # Auth0/Cognito client
+│   │   ├── kycprovider/        # KYC/AML service integration
+│   │   └── zerog/              # 0G AI inference & storage
+│   ├── persistence/            # Database repositories
+│   │   ├── postgres/           # PostgreSQL implementations
+│   │   └── migrations/         # Database schema migrations
+│   └── config/                 # Configuration management
+├── pkg/common/                 # Shared utilities, types, errors
+├── infrastructure/aws/         # Terraform IaC for AWS resources
+├── api/graph/                  # GraphQL schema files
+└── scripts/                    # Build, test, deployment scripts
+```
+
+### Data Flow
+
+**Funding Flow (USDC → USD → Alpaca):**
+1. User deposits USDC to Circle wallet (on-chain)
+2. Circle webhook notifies backend → log deposit
+3. **Async**: Initiate Circle off-ramp (USDC → USD)
+4. Circle confirms → enqueue broker funding task
+5. **Async**: Fund Alpaca account with USD
+6. Alpaca confirms → update balance, notify user
+
+**Withdrawal Flow (Alpaca → USD → USDC):**
+1. User requests withdrawal
+2. **Async**: Alpaca USD withdrawal
+3. Alpaca confirms → enqueue Circle on-ramp
+4. **Async**: Circle converts USD → USDC
+5. **Async**: Transfer USDC on-chain to user address
+6. Circle confirms → update status, notify user
+
+**Investment Flow:**
+1. User places order (basket/option)
+2. Check balance at Alpaca
+3. Create order record → submit to Alpaca
+4. Alpaca accepts → update order status
+5. Alpaca fill webhook → update order, cache positions
+
+### Core Domain Modules (MVP)
+
+#### Onboarding Module
+- User sign-up with Auth0/Cognito integration
+- Profile management and passcode setup/verification
+- KYC/AML orchestration and status tracking
+- Feature flag management
+- Triggers wallet creation upon successful onboarding
+
+#### Wallet Module  
+- Manages Circle Developer-Controlled Wallets lifecycle
+- Multi-chain support (Ethereum, Solana, Polygon, BSC)
+- Generates deposit addresses per chain
+- Abstracts custody complexity from users
+- No seed phrases required
+
+#### Funding Module
+- Monitors blockchain deposits via Circle webhooks
+- Orchestrates multi-step funding flow:
+  - USDC deposit → Circle off-ramp → Alpaca funding
+- Handles withdrawal requests:
+  - Alpaca withdrawal → Circle on-ramp → on-chain transfer
+- Manages state transitions via SQS queues
+- Ensures idempotency for all operations
+
+#### Investing Module
+- Manages curated investment baskets (5-10 for MVP)
+- Places buy/sell orders with Alpaca for stocks/ETFs/options
+- Retrieves and caches portfolio positions
+- Calculates portfolio performance and P&L
+- Handles order status updates via Alpaca webhooks
+
+#### AI CFO Module
+- Generates automated weekly performance summaries
+- Provides on-demand portfolio analysis
+- Highlights diversification, risk, and potential mistakes
+- Powered by 0G for AI inference and secure storage
+- Builds trust by protecting users from common financial errors
 
 ## 🛠️ Technology Stack
 
-- **Language**: Go 1.21
-- **Framework**: Gin (HTTP router)
-- **Database**: PostgreSQL 15
-- **Cache**: Redis 7
-- **Authentication**: JWT tokens
-- **Blockchain**: Ethereum, Polygon, BSC, Solana
-- **Containerization**: Docker & Docker Compose
-- **Documentation**: Swagger/OpenAPI
-- **Testing**: Go testing, Testify
-- **Monitoring**: Prometheus, Grafana
-- **AI/Storage**: 0G Integration for AI inference and secure object storage
-- **Wallet Infrastructure**: Circle for stablecoins and wallet infrastructure
+### Backend
+- **Language**: Go 1.21.x
+- **Web Framework**: Gin v1.11.0 (high-performance, minimalist)
+- **API**: GraphQL via gqlgen library
+- **Database**: PostgreSQL 15.x (RDS managed)
+- **DB Driver**: lib/pq (standard Go PostgreSQL driver)
+- **Cache**: Redis 7.x (AWS ElastiCache)
+- **Queue**: AWS SQS (asynchronous task processing)
+- **Authentication**: JWT tokens via Auth0/Cognito
+
+### Observability & Resilience
+- **Logging**: Zap (structured JSON logging)
+- **Tracing**: OpenTelemetry (distributed tracing)
+- **Metrics**: Prometheus Client (Go)
+- **Circuit Breaker**: gobreaker (resilience pattern)
+- **Monitoring**: AWS CloudWatch / Datadog
+
+### External Partners
+- **Identity**: Auth0 or AWS Cognito (OIDC)
+- **Wallet/Funding**: Circle API (Developer-Controlled Wallets, USDC on/off-ramps)
+- **Brokerage**: Alpaca API (stock/options trading, custody)
+- **AI/Storage**: 0G (AI CFO features, secure data storage)
+- **KYC/AML**: Third-party KYC provider integration
+
+### Infrastructure
+- **Cloud**: AWS (Fargate/ECS, RDS, ElastiCache, SQS, Secrets Manager, S3, CloudFront, WAF)
+- **IaC**: Terraform 1.6.x (infrastructure as code)
+- **CI/CD**: GitHub Actions
+- **Containerization**: Docker
+- **API Documentation**: gin-swagger (OpenAPI/Swagger generation)
+
+### Frontend
+- **Framework**: React Native 0.72.x (cross-platform mobile)
+- **Language**: TypeScript 5.x
+- **Repository**: [Stacks-frontend](https://github.com/Sketchyjo/Stacks-frontend)
+
+### Blockchain Support
+- **EVM Chains**: Ethereum, Polygon, Binance Smart Chain
+- **Non-EVM**: Solana
+- **Stablecoin**: USDC (primary)
 
 ## 📊 Success Metrics
 
 ### Business Objectives
-- **User Acquisition**: 10,000 Monthly Active Users (MAU) within 6 months post-launch
-- **Monetization**: 5% conversion from free users to premium tier in Year 1
-- **Validation**: $1,000,000 in processed investment volume in Year 1
+- **User Acquisition**: Acquire **10,000 Monthly Active Users (MAU)** within 6 months of public launch
+- **Monetization**: Achieve **5% conversion rate** from active free users to premium subscription tier within first year
+- **Platform Validation**: Process **$1,000,000 in total investment volume** through the platform in first year
+- **Market Position**: Establish STACK as first mover in Gen Z-native hybrid Web3 + TradFi investment space
 
 ### User Success Metrics
-- **Empowerment**: Users feel more in control of their financial future (via surveys)
-- **Confidence**: Users feel safe and protected (via NPS and retention)
-- **Habit Formation**: % of users with recurring investments increases steadily
+- **Empowerment**: Users feel more in control of their financial future (measured via user surveys)
+- **Confidence**: Users feel protected and safe (measured via Net Promoter Score and retention rates)
+- **Habit Formation**: Users successfully establish regular investment habits (measured by % of users with recurring investments)
 
 ### Key Performance Indicators (KPIs)
 - **Engagement**: Daily Active Users (DAU), Monthly Active Users (MAU)
 - **Retention**: Week 1, Month 1, Month 3 retention rates
-- **Conversion**: Sign-up → Funded Account rate; Free → Premium rate
-- **Financial**: Total Assets Under Management (AUM)
+- **Conversion**: Sign-up → Funded Account rate; Free → Premium subscription rate
+- **Financial**: Total Assets Under Management (AUM), Average account size, Transaction volume
+
+### MVP Success Criteria
+- Onboard **100 users** who fund their accounts and make at least one investment
+- Validate end-to-end technical flow with **>99% success rate**
+- Achieve user satisfaction score of **7/10 or higher** on core experience
 
 ## 🚀 Quick Start
 
@@ -325,22 +501,52 @@ go tool cover -html=coverage.out
 - JWT authentication with refresh tokens
 - Password hashing with bcrypt
 - AES-256-GCM encryption for sensitive data
-- Rate limiting
-- CORS protection
-- Security headers
+- Rate limiting and request throttling
+- CORS protection and security headers
 - Input validation and sanitization
-- Audit logging
-- Session management
+- Comprehensive audit logging
+- Session management with secure cookies
 - KYC/AML integration for compliance
+- Row-level security (RLS) for database access
+- Database encryption at rest
+- AWS Secrets Manager integration
+- API key rotation and HMAC request signing
+- Extended role-based access control (RBAC)
+- IP whitelisting for sensitive operations
+- Automated security scanning (gosec + Trivy)
 
 ### Security Best Practices
-- All sensitive data is encrypted at rest
-- Private keys are encrypted before storage
-- API rate limiting prevents abuse
-- Comprehensive audit trails
-- Two-factor authentication support
-- IP whitelisting for admin endpoints
-- Secure custody abstraction via wallet manager
+- All sensitive data is encrypted at rest using AES-256-GCM
+- Private keys are encrypted before storage in AWS Secrets Manager
+- API rate limiting prevents abuse and DoS attacks
+- Comprehensive audit trails for all financial operations
+- Two-factor authentication support with passcode system
+- IP whitelisting for admin and financial operations
+- Secure custody abstraction via Circle managed wallets
+- Request signing for critical financial endpoints
+- Automated dependency vulnerability scanning
+- Database row-level security ensures users only access their data
+- API keys are automatically rotated with AWS Secrets Manager
+
+### Security Scanning
+The CI/CD pipeline includes automated security scanning:
+- **Gosec**: Static analysis for Go security issues
+- **Trivy**: Container and filesystem vulnerability scanning
+- **Dependency checking**: Automated scans for vulnerable dependencies
+
+### Secrets Management
+Sensitive configuration is managed through AWS Secrets Manager:
+- Database passwords, API keys, and encryption keys
+- Automatic rotation with configurable TTL
+- Cached secrets with secure in-memory storage
+- Audit logging for all secret access
+
+### Access Control
+- **User Roles**: user, premium, trader, admin, super_admin
+- **Hierarchical Permissions**: Higher roles inherit lower role permissions
+- **IP Whitelisting**: Critical operations restricted to approved IP ranges
+- **Request Signing**: HMAC signatures required for funding operations
+- **API Key Management**: Secure key generation and automatic rotation
 
 ## 🔧 Configuration
 
@@ -400,7 +606,54 @@ circle:
   base_url: "https://api.circle.com"
 ```
 
-## 🚀 Deployment
+## 🏗️ Infrastructure & Deployment
+
+### Deployment Strategy
+
+**Blue/Green Deployments** on AWS Fargate (ECS) enable zero-downtime releases:
+- Traffic shifting managed via Application Load Balancer (ALB) target groups
+- Automated rollback if health checks fail on new deployment
+- AWS CodeDeploy integration for orchestration
+
+### Environments
+
+| Environment | Purpose | Infrastructure | Partner APIs |
+|-------------|---------|----------------|-------------|
+| **Local** | Development | Docker Compose (Postgres, Redis, mocks) | Mocked services |
+| **Staging** | QA & E2E Testing | AWS (scaled down) | Partner sandbox APIs |
+| **Production** | Live system | AWS (HA configured) | Partner production APIs |
+
+### Rollback Strategy
+
+**Primary Method**: ECS Blue/Green deployment capabilities
+- If "green" deployment fails health checks, traffic stays on "blue" (stable) version
+- Manual rollback via ALB traffic redirection to blue target group
+
+**Trigger Conditions**:
+- Failed health checks post-deployment
+- Critical error rate spikes detected by monitoring
+- Failed automated post-deployment smoke tests
+
+**Database Rollbacks**:
+- Handled via migration tooling (e.g., goose down)
+- Critical schema changes must be backward compatible
+- Non-reversible migrations require careful planning
+
+### CI/CD Pipeline
+
+**Platform**: GitHub Actions (`.github/workflows/`)
+
+**Workflow**:
+```
+[Feature Branch PR] → [CI Tests + Lint] → [Merge to main] → [Staging Deploy] 
+  → [Manual QA] → [Production Deploy Trigger] → [Blue/Green Production Deploy]
+```
+
+**Quality Gates**:
+- `go test ./... -race` must pass
+- `golangci-lint` checks must pass
+- `gosec` security scanning must pass
+- Test coverage >80% for core modules
 
 ### Docker Deployment
 

@@ -59,6 +59,22 @@
       "value": "ethereum"
     }
   ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Collection-level pre-request script: inject Authorization header from token variable",
+          "const token = pm.environment.get('token') || pm.collectionVariables.get('token') || pm.globals.get('token');",
+          "if (token) {",
+          "  try { pm.request.headers.remove('Authorization'); } catch (e) { }",
+          "  pm.request.headers.add({ key: 'Authorization', value: 'Bearer ' + token });",
+          "}"
+        ]
+      }
+    }
+  ],
   "item": [
     {
       "name": "Misc",
@@ -3785,6 +3801,56 @@
               "body": "{\n  \"status\": \"error\",\n  \"error\": \"Portfolio History failed\",\n  \"code\": \"BAD_REQUEST\"\n}"
             }
           ]
+        },
+        {
+          "name": "Get Portfolio Overview (API v1)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/portfolio/overview",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "portfolio",
+                "overview"
+              ]
+            }
+          },
+          "response": [
+            {
+              "name": "Success",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"status\": \"success\",\n  \"data\": {\n    \"totalValue\": \"10000.00\",\n    \"buyingPower\": \"2500.00\"\n  }\n}"
+            },
+            {
+              "name": "Failure",
+              "status": "Bad Request",
+              "code": 400,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"status\": \"error\",\n  \"error\": \"Get Portfolio Overview failed\",\n  \"code\": \"BAD_REQUEST\"\n}"
+            }
+          ]
         }
       ]
     },
@@ -6374,6 +6440,126 @@
               "body": "{\n  \"status\": \"error\",\n  \"error\": \"Logout failed\",\n  \"code\": \"BAD_REQUEST\"\n}"
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "Assets",
+      "item": [
+        {
+          "name": "List Assets",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"active\",\n  \"page\": 1,\n  \"page_size\": 100,\n  \"filters\": { \"tradable\": true, \"fractionable\": false }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/assets",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "assets"
+              ],
+              "query": [
+                { "key": "status", "value": "active" },
+                { "key": "page", "value": "1" },
+                { "key": "page_size", "value": "100" }
+              ]
+            }
+          },
+          "response": [
+            {
+              "name": "Success",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\n  \"assets\": [],\n  \"total_count\": 0,\n  \"page\": 1,\n  \"page_size\": 100\n}"
+            }
+          ]
+        },
+        {
+          "name": "Search Assets",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"q\": \"AAPL\",\n  \"limit\": 10,\n  \"filters\": { \"tradable\": true }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/assets/search?q=AAPL&limit=10",
+              "host": ["{{base_url}}"],
+              "path": ["api","v1","assets","search"],
+              "query": [ { "key": "q", "value": "AAPL" }, { "key": "limit", "value": "10" } ]
+            }
+          },
+          "response": [ { "name": "Success", "status": "OK", "code": 200, "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": "{\n  \"assets\": [],\n  \"total_count\": 0\n}" } ]
+        },
+        {
+          "name": "Get Assets By Exchange",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{token}}" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"exchange\": \"NASDAQ\",\n  \"page\": 1,\n  \"page_size\": 50\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/assets/exchange/NASDAQ",
+              "host": ["{{base_url}}"],
+              "path": ["api","v1","assets","exchange","NASDAQ"]
+            }
+          },
+          "response": [ { "name": "Success", "status": "OK", "code": 200, "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": "{\n  \"assets\": [],\n  \"total_count\": 0\n}" } ]
+        },
+        {
+          "name": "Get Asset Details",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{token}}" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"symbol\": \"AAPL\",\n  \"account_id\": \"acct_123\",\n  \"include_news\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/assets/AAPL/details",
+              "host": ["{{base_url}}"],
+              "path": ["api","v1","assets","AAPL","details"],
+              "query": [ { "key": "include_news", "value": "true" } ]
+            }
+          },
+          "response": [ { "name": "Success", "status": "OK", "code": 200, "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": "{\n  \"asset_info\": { \"symbol\": \"AAPL\" },\n  \"metadata\": {}\n}" } ]
+        },
+        {
+          "name": "Get Asset (by symbol_or_id)",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{token}}" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"symbol_or_id\": \"AAPL\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/assets/AAPL",
+              "host": ["{{base_url}}"],
+              "path": ["api","v1","assets","AAPL"]
+            }
+          },
+          "response": [ { "name": "Success", "status": "OK", "code": 200, "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": "{\n  \"symbol\": \"AAPL\"\n}" } ]
         }
       ]
     }

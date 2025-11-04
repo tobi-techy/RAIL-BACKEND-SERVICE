@@ -1,0 +1,150 @@
+# STACK Service Configuration Example
+# Copy this file to config.yaml and update with your values
+
+environment: "development"
+log_level: "info"
+
+server:
+  port: 8080
+  host: "0.0.0.0"
+  read_timeout: 30
+  write_timeout: 30
+  allowed_origins:
+    - "http://localhost:3000"
+    - "https://app.stack.com"
+  rate_limit_per_min: 100
+
+database:
+  host: "localhost"
+  port: 5432
+  name: "stack_service"
+  user: "postgres"
+  password: "${DATABASE_PASSWORD}"  # Will be loaded from AWS Secrets Manager
+  ssl_mode: "require"
+  max_open_conns: 25
+  max_idle_conns: 5
+  conn_max_lifetime: 300
+
+redis:
+  host: "localhost"
+  port: 6379
+  password: "${REDIS_PASSWORD}"  # Will be loaded from AWS Secrets Manager
+  db: 0
+
+jwt:
+  secret: "${JWT_SECRET}"  # Will be loaded from AWS Secrets Manager
+  access_token_ttl: 3600   # 1 hour
+  refresh_token_ttl: 2592000  # 30 days
+  issuer: "stack-service"
+
+aws:
+  region: "us-east-1"
+  secrets_manager:
+    enabled: true
+    secret_names:
+      database_password: "prod/stack/database"
+      redis_password: "prod/stack/redis"
+      jwt_secret: "prod/stack/jwt"
+      circle_api_key: "prod/stack/circle"
+      alpaca_api_key: "prod/stack/alpaca"
+      zerog_api_key: "prod/stack/zerog"
+    cache_enabled: true
+    cache_ttl_minutes: 5
+
+blockchain:
+  networks:
+    ethereum:
+      name: "Ethereum"
+      chain_id: 1
+      rpc: "https://eth-mainnet.alchemyapi.io/v2/${ALCHEMY_API_KEY}"
+      websocket: "wss://eth-mainnet.alchemyapi.io/v2/${ALCHEMY_API_KEY}"
+      explorer: "https://etherscan.io"
+      native_currency:
+        name: "Ether"
+        symbol: "ETH"
+        decimals: 18
+
+security:
+  encryption_key: "${ENCRYPTION_KEY}"  # Will be loaded from AWS Secrets Manager
+  allowed_ips:
+    - "10.0.0.0/8"    # Internal network
+    - "172.16.0.0/12" # Docker networks
+    - "192.168.0.0/16" # Private networks
+  max_login_attempts: 5
+  lockout_duration: 900  # 15 minutes
+  require_mfa: true
+  password_min_length: 12
+  session_timeout: 3600
+  api_keys:
+    "sk_live_1234567890abcdef": "api_key_secret_1"
+    "sk_live_abcdef1234567890": "api_key_secret_2"
+
+circle:
+  api_key: "${CIRCLE_API_KEY}"
+  environment: "sandbox"
+  base_url: "https://api.circle.com"
+  entity_secret_ciphertext: "${CIRCLE_ENTITY_SECRET}"
+  default_wallet_set_id: "${CIRCLE_WALLET_SET_ID}"
+  default_wallet_set_name: "stack-main-wallet-set"
+  supported_chains:
+    - "SOL-DEVNET"
+
+kyc:
+  provider: "sumsub"
+  api_key: "${KYC_API_KEY}"
+  api_secret: "${KYC_API_SECRET}"
+  base_url: "https://api.sumsub.com"
+  callback_url: "https://api.stack.com/kyc/callback"
+  environment: "sandbox"
+  user_agent: "Stack-Service/1.0"
+  level_name: "basic-kyc-level"
+
+email:
+  provider: "sendgrid"
+  api_key: "${SENDGRID_API_KEY}"
+  from_email: "noreply@stack.com"
+  from_name: "STACK"
+  base_url: "https://api.stack.com"
+  environment: "production"
+  reply_to: "support@stack.com"
+
+sms:
+  provider: "twilio"
+  api_key: "${TWILIO_API_KEY}"
+  api_secret: "${TWILIO_API_SECRET}"
+  from_number: "+1234567890"
+  environment: "production"
+
+verification:
+  code_length: 6
+  code_ttl_minutes: 10
+  max_attempts: 3
+  rate_limit_per_hour: 5
+
+zerog:
+  storage:
+    rpc_endpoint: "${ZEROG_STORAGE_RPC}"
+    indexer_rpc: "${ZEROG_INDEXER_RPC}"
+    private_key: "${ZEROG_PRIVATE_KEY}"
+    min_replicas: 3
+    expected_replicas: 5
+  compute:
+    endpoint: "${ZEROG_COMPUTE_ENDPOINT}"
+    api_key: "${ZEROG_COMPUTE_API_KEY}"
+    model: "gpt-4"
+  timeout: 30
+  max_retries: 3
+  retry_backoff_ms: 1000
+  enable_metrics: true
+  enable_tracing: true
+
+alpaca:
+  api_key: "${ALPACA_API_KEY}"
+  secret_key: "${ALPACA_API_SECRET}"
+  base_url: "https://api.alpaca.markets"
+  data_base_url: "https://data.alpaca.markets"
+  environment: "paper"  # Use "live" for production
+  timeout: 30
+  rate_limit_rpm: 200  # Requests per minute
+  rate_limit_burst: 20  # Burst capacity
+  account_id: "${ALPACA_ACCOUNT_ID}"  # Alpaca account ID for trading

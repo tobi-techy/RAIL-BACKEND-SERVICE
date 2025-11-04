@@ -38,8 +38,6 @@ func Metrics() gin.HandlerFunc {
 	}
 }
 
-
-
 // Placeholder handlers for all the other endpoints
 // These will be implemented as we build out the domain logic
 

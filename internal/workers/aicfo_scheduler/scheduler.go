@@ -25,7 +25,7 @@ type Scheduler struct {
 	logger       *zap.Logger
 	tracer       trace.Tracer
 	metrics      *SchedulerMetrics
-	
+
 	// State management
 	mu       sync.RWMutex
 	running  bool
@@ -54,43 +54,43 @@ type User struct {
 }
 
 type HealthStatus struct {
-	Status  string    `json:"status"`
+	Status  string        `json:"status"`
 	Latency time.Duration `json:"latency"`
-	Errors  []string  `json:"errors"`
+	Errors  []string      `json:"errors"`
 }
 
 // Configuration
 type Config struct {
 	// Cron expression for when to run (default: Mondays at 6 AM UTC)
-	Schedule           string        `json:"schedule"`
-	
+	Schedule string `json:"schedule"`
+
 	// Batch processing configuration
-	BatchSize          int           `json:"batch_size"`
-	BatchTimeout       time.Duration `json:"batch_timeout"`
-	MaxConcurrentJobs  int           `json:"max_concurrent_jobs"`
-	
+	BatchSize         int           `json:"batch_size"`
+	BatchTimeout      time.Duration `json:"batch_timeout"`
+	MaxConcurrentJobs int           `json:"max_concurrent_jobs"`
+
 	// Retry configuration
-	MaxRetries         int           `json:"max_retries"`
-	RetryBackoff       time.Duration `json:"retry_backoff"`
-	
+	MaxRetries   int           `json:"max_retries"`
+	RetryBackoff time.Duration `json:"retry_backoff"`
+
 	// Health check configuration
 	HealthCheckEnabled bool          `json:"health_check_enabled"`
 	HealthCheckTimeout time.Duration `json:"health_check_timeout"`
-	
+
 	// Timezone for scheduling
-	Timezone           string        `json:"timezone"`
+	Timezone string `json:"timezone"`
 }
 
 // JobStatistics tracks scheduler performance metrics
 type JobStatistics struct {
-	TotalRuns         int64     `json:"total_runs"`
-	SuccessfulRuns    int64     `json:"successful_runs"`
-	FailedRuns        int64     `json:"failed_runs"`
-	LastRunTime       time.Time `json:"last_run_time"`
-	LastRunDuration   time.Duration `json:"last_run_duration"`
-	UsersProcessed    int64     `json:"users_processed"`
-	SummariesGenerated int64    `json:"summaries_generated"`
-	Errors            []JobError `json:"recent_errors"`
+	TotalRuns          int64         `json:"total_runs"`
+	SuccessfulRuns     int64         `json:"successful_runs"`
+	FailedRuns         int64         `json:"failed_runs"`
+	LastRunTime        time.Time     `json:"last_run_time"`
+	LastRunDuration    time.Duration `json:"last_run_duration"`
+	UsersProcessed     int64         `json:"users_processed"`
+	SummariesGenerated int64         `json:"summaries_generated"`
+	Errors             []JobError    `json:"recent_errors"`
 }
 
 // JobError represents an error that occurred during job execution
@@ -112,13 +112,13 @@ func (l *zapCronLogger) Printf(format string, args ...interface{}) {
 
 // SchedulerMetrics contains observability metrics
 type SchedulerMetrics struct {
-	JobsTotal            metric.Int64Counter
-	JobDuration          metric.Float64Histogram
-	JobErrors            metric.Int64Counter
-	UsersProcessed       metric.Int64Counter
-	SummariesGenerated   metric.Int64Counter
-	ActiveJobs           metric.Int64Gauge
-	LastRunTime          metric.Float64Gauge
+	JobsTotal          metric.Int64Counter
+	JobDuration        metric.Float64Histogram
+	JobErrors          metric.Int64Counter
+	UsersProcessed     metric.Int64Counter
+	SummariesGenerated metric.Int64Counter
+	ActiveJobs         metric.Int64Gauge
+	LastRunTime        metric.Float64Gauge
 }
 
 // DefaultConfig returns a default configuration
@@ -338,7 +338,7 @@ func (s *Scheduler) processUsersBatch(ctx context.Context, weekStart time.Time) 
 	// Process users in batches
 	for offset := 0; offset < totalUsers; offset += s.config.BatchSize {
 		batchCtx, cancel := context.WithTimeout(ctx, s.config.BatchTimeout)
-		
+
 		users, err := s.userRepo.GetActiveUsers(batchCtx, s.config.BatchSize, offset)
 		if err != nil {
 			cancel()
@@ -395,7 +395,7 @@ func (s *Scheduler) processBatch(ctx context.Context, users []*User, weekStart t
 	semaphore := make(chan struct{}, s.config.MaxConcurrentJobs)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	
+
 	var processedUsers int64
 	var generatedSummaries int64
 	var errors []JobError
@@ -404,13 +404,13 @@ func (s *Scheduler) processBatch(ctx context.Context, users []*User, weekStart t
 		wg.Add(1)
 		go func(u *User) {
 			defer wg.Done()
-			
+
 			// Acquire semaphore
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
 
 			processed, generated, err := s.processUser(ctx, u, weekStart)
-			
+
 			mu.Lock()
 			processedUsers += processed
 			generatedSummaries += generated
@@ -453,7 +453,7 @@ func (s *Scheduler) processUser(ctx context.Context, user *User, weekStart time.
 				zap.Int("attempt", attempt),
 				zap.Duration("backoff", backoff),
 			)
-			
+
 			select {
 			case <-ctx.Done():
 				return 1, 0, ctx.Err()
@@ -532,12 +532,12 @@ func (s *Scheduler) isRetryableError(err error) bool {
 
 // contains checks if a string contains a substring (case-insensitive)
 func contains(s, substr string) bool {
-	return len(s) >= len(substr) && 
-		   (s == substr || 
-		    len(s) > len(substr) && 
-		    (s[:len(substr)] == substr || 
-		     s[len(s)-len(substr):] == substr ||
-		     containsMiddle(s, substr)))
+	return len(s) >= len(substr) &&
+		(s == substr ||
+			len(s) > len(substr) &&
+				(s[:len(substr)] == substr ||
+					s[len(s)-len(substr):] == substr ||
+					containsMiddle(s, substr)))
 }
 
 func containsMiddle(s, substr string) bool {
@@ -596,23 +596,23 @@ func (s *Scheduler) GetStatus() *SchedulerStatus {
 	defer s.mu.RUnlock()
 
 	return &SchedulerStatus{
-		Running:     s.running,
-		LastRun:     s.lastRun,
-		NextRun:     s.nextRun,
-		Schedule:    s.config.Schedule,
-		Timezone:    s.config.Timezone,
-		Statistics:  *s.jobStats, // Copy the statistics
+		Running:    s.running,
+		LastRun:    s.lastRun,
+		NextRun:    s.nextRun,
+		Schedule:   s.config.Schedule,
+		Timezone:   s.config.Timezone,
+		Statistics: *s.jobStats, // Copy the statistics
 	}
 }
 
 // SchedulerStatus represents the current status of the scheduler
 type SchedulerStatus struct {
-	Running     bool           `json:"running"`
-	LastRun     time.Time      `json:"last_run"`
-	NextRun     time.Time      `json:"next_run"`
-	Schedule    string         `json:"schedule"`
-	Timezone    string         `json:"timezone"`
-	Statistics  JobStatistics  `json:"statistics"`
+	Running    bool          `json:"running"`
+	LastRun    time.Time     `json:"last_run"`
+	NextRun    time.Time     `json:"next_run"`
+	Schedule   string        `json:"schedule"`
+	Timezone   string        `json:"timezone"`
+	Statistics JobStatistics `json:"statistics"`
 }
 
 // TriggerManualRun triggers a manual execution of the weekly summary job
@@ -622,10 +622,10 @@ func (s *Scheduler) TriggerManualRun() error {
 	}
 
 	s.logger.Info("Triggering manual weekly summary job execution")
-	
+
 	// Run the job in a goroutine to avoid blocking
 	go s.executeWeeklySummaryJob()
-	
+
 	return nil
 }
 
@@ -633,7 +633,7 @@ func (s *Scheduler) TriggerManualRun() error {
 func (s *Scheduler) GetNextRun() time.Time {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	
+
 	entries := s.cron.Entries()
 	if len(entries) > 0 {
 		return entries[0].Next
@@ -686,12 +686,12 @@ func initSchedulerMetrics(meter metric.Meter) (*SchedulerMetrics, error) {
 	}
 
 	return &SchedulerMetrics{
-		JobsTotal:            jobsTotal,
-		JobDuration:          jobDuration,
-		JobErrors:            jobErrors,
-		UsersProcessed:       usersProcessed,
-		SummariesGenerated:   summariesGenerated,
-		ActiveJobs:           activeJobs,
-		LastRunTime:          lastRunTime,
+		JobsTotal:          jobsTotal,
+		JobDuration:        jobDuration,
+		JobErrors:          jobErrors,
+		UsersProcessed:     usersProcessed,
+		SummariesGenerated: summariesGenerated,
+		ActiveJobs:         activeJobs,
+		LastRunTime:        lastRunTime,
 	}, nil
 }
