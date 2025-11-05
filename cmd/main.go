@@ -16,6 +16,7 @@ import (
 	"github.com/stack-service/stack_service/internal/workers/funding_webhook"
 	walletprovisioning "github.com/stack-service/stack_service/internal/workers/wallet_provisioning"
 	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/stack-service/stack_service/pkg/metrics"
 
 	"github.com/gin-gonic/gin"
 )
@@ -50,7 +51,7 @@ func main() {
 	// Initialize logger
 	log := logger.New(cfg.LogLevel, cfg.Environment)
 
-	// Initialize database
+	// Initialize database with enhanced configuration
 	db, err := database.NewConnection(cfg.Database)
 	if err != nil {
 		log.Fatal("Failed to connect to database", "error", err)
@@ -135,20 +136,41 @@ func main() {
 	// Store webhook manager in container for access by handlers
 	container.FundingWebhookManager = webhookManager
 
-	// Create server
+	// Create server with enhanced configuration
 	server := &http.Server{
 		Addr:           fmt.Sprintf(":%d", cfg.Server.Port),
 		Handler:        router,
-		ReadTimeout:    30 * time.Second,
-		WriteTimeout:   30 * time.Second,
+		ReadTimeout:    time.Duration(cfg.Server.ReadTimeout) * time.Second,
+		WriteTimeout:   time.Duration(cfg.Server.WriteTimeout) * time.Second,
+		IdleTimeout:    120 * time.Second,
 		MaxHeaderBytes: 1 << 20, // 1MB
 	}
 
 	// Start server in goroutine
 	go func() {
-		log.Info("Starting server", "port", cfg.Server.Port, "environment", cfg.Environment)
+		log.Info("Starting server", 
+			"port", cfg.Server.Port, 
+			"environment", cfg.Environment,
+			"read_timeout", cfg.Server.ReadTimeout,
+			"write_timeout", cfg.Server.WriteTimeout,
+		)
+		
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatal("Failed to start server", "error", err)
+		}
+	}()
+
+	// Initialize metrics collection
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		
+		for range ticker.C {
+			// Update database connection metrics
+			stats := db.Stats()
+			metrics.DatabaseConnectionsGauge.WithLabelValues("open").Set(float64(stats.OpenConnections))
+			metrics.DatabaseConnectionsGauge.WithLabelValues("idle").Set(float64(stats.Idle))
+			metrics.DatabaseConnectionsGauge.WithLabelValues("in_use").Set(float64(stats.InUse))
 		}
 	}()
 
@@ -173,7 +195,7 @@ func main() {
 		}
 	}
 
-	// Give outstanding requests 30 seconds to complete
+	// Give outstanding requests time to complete
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -181,5 +203,5 @@ func main() {
 		log.Fatal("Server forced to shutdown", "error", err)
 	}
 
-	log.Info("Server exited")
+	log.Info("Server exited gracefully")
 }

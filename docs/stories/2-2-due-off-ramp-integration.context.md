@@ -2,178 +2,147 @@
   <metadata>
     <epicId>2</epicId>
     <storyId>2</storyId>
-    <title>Due Off-Ramp Integration</title>
+    <title>due-off-ramp-integration</title>
     <status>drafted</status>
-    <generatedAt>2025-11-03</generatedAt>
+    <generatedAt>2025-11-05</generatedAt>
     <generator>BMAD Story Context Workflow</generator>
-    <sourceStoryPath>docs/stories/2-2-due-off-ramp-integration.md</sourceStoryPath>
+    <sourceStoryPath>/Users/Aplle/Development/stack_service/docs/stories/2-2-due-off-ramp-integration.md</sourceStoryPath>
   </metadata>
 
   <story>
-    <asA>As a user who has deposited USDC to fund my brokerage account,</asA>
-    <iWant>I want the system to automatically convert my USDC to USD via Due API,</iWant>
-    <soThat>so that I can instantly access trading funds in my Alpaca brokerage account.</soThat>
-    <tasks>- [ ] Implement Due API transfer functionality (AC: #2, #3)
-  - [ ] Extend Due API client with transfer (USDC→USD) methods
-  - [ ] Add transfer request/response models to Due API adapter
-  - [ ] Implement transfer status checking and webhook handling
-  - [ ] Add unit tests for transfer functionality
-- [ ] Enhance Funding Service with Due transfer integration (AC: #2)
-  - [ ] Add InitiateDueTransfer method to FundingService interface
-  - [ ] Implement transfer logic with virtual account validation
-  - [ ] Update deposit status from 'confirmed_on_chain' to 'off_ramp_initiated'
-  - [ ] Add integration tests for transfer initiation
-- [ ] Integrate with blockchain deposit processing (AC: #1, #2)
-  - [ ] Modify deposit confirmation handler to trigger Due transfers
-  - [ ] Add async processing queue for off-ramp operations
-  - [ ] Implement webhook handler for Due transfer completion
-  - [ ] Add end-to-end tests for deposit-to-transfer flow
-- [ ] Implement comprehensive error handling and resilience (AC: #5, #6)
-  - [ ] Add exponential backoff retry for failed transfers
-  - [ ] Implement circuit breaker protection for Due API
-  - [ ] Add transfer failure notifications and status updates
-  - [ ] Create integration tests for error scenarios
-- [ ] Update database schema for enhanced tracking (AC: #4)
-  - [ ] Add off_ramp_initiated_at timestamp to deposits table
-  - [ ] Add off_ramp_completed_at timestamp to deposits table
-  - [ ] Add due_transfer_reference field for tracking
-  - [ ] Create and test database migration scripts
-- [ ] Add monitoring and audit logging (AC: #7)
-  - [ ] Implement structured logging for all Due API interactions
-  - [ ] Add correlation ID tracking across transfer operations
-  - [ ] Configure alerts for transfer failures and timeouts
-  - [ ] Add metrics for transfer success rates and timing</tasks>
+    <asA>user</asA>
+    <iWant>deposit USDC and have it automatically off-ramped to USD via Due API</iWant>
+    <soThat>the USD is transferred to my due api already created virtual account that would be linked to Alpaca broker, enabling instant buying power for trading</soThat>
+    <tasks>- [ ] Implement virtual account deposit webhook handler (AC: 1)
+  - [ ] Add POST endpoint for Due webhook events
+  - [ ] Validate webhook signature for security
+  - [ ] Parse deposit event data (amount, virtual account ID)
+  - [ ] Verify deposit is for a known virtual account
+  - [ ] Write unit test for webhook handler
+  - [ ] Write integration test with mocked webhook payload
+
+- [ ] Add off-ramp initiation logic to Funding Service (AC: 1, 2)
+  - [ ] Create InitiateOffRamp method in DUE adapter
+  - [ ] Add off-ramp status tracking to deposits table (off_ramp_initiated_at, off_ramp_completed_at)
+  - [ ] Implement circuit breaker for DUE API calls
+  - [ ] Add retry logic with exponential backoff
+  - [ ] Write unit tests for off-ramp initiation
+  - [ ] Write integration tests with mocked DUE API
+
+- [ ] Implement Alpaca brokerage funding after off-ramp completion (AC: 3, 4)
+  - [ ] Monitor off-ramp completion via DUE webhooks or polling
+  - [ ] Create InitiateBrokerFunding method in Alpaca adapter
+  - [ ] Update deposit status to broker_funded
+  - [ ] Update user balance in balances table
+  - [ ] Send real-time notification to user (via GraphQL subscription or push)
+  - [ ] Write unit tests for balance updates
+  - [ ] Write integration tests with mocked Alpaca API
+
+- [ ] Add comprehensive error handling and logging (AC: 5)
+  - [ ] Implement DUE-specific error parsing and mapping
+  - [ ] Add structured logging for all off-ramp steps
+  - [ ] Implement user notification for failed off-ramps
+  - [ ] Add metrics collection for success/failure rates
+  - [ ] Write tests for error scenarios
+
+- [ ] Update database schema for off-ramp tracking (AC: 6)
+  - [ ] Add off_ramp_tx_id field to deposits table
+  - [ ] Add alpaca_funding_tx_id field to deposits table
+  - [ ] Create database migration
+  - [ ] Update repository methods
+  - [ ] Write database tests</tasks>
   </story>
 
-  <acceptanceCriteria>1. **Deposit Detection**: System detects confirmed USDC deposits from supported blockchain networks (Ethereum, Solana)
-2. **Due Transfer Initiation**: Upon deposit confirmation, system creates Due API transfer request to convert USDC to USD
-3. **Virtual Account Crediting**: USD from Due conversion is credited to user's virtual account
-4. **Status Tracking**: Deposit status is updated from 'confirmed_on_chain' to 'off_ramp_initiated' to 'off_ramp_complete'
-5. **Error Handling**: Failed Due transfers are retried with exponential backoff and user notifications
-6. **Circuit Breaker**: Due API calls are protected by circuit breaker to prevent cascade failures
-7. **Audit Logging**: All Due API interactions are logged with correlation IDs for troubleshooting</acceptanceCriteria>
+  <acceptanceCriteria>1. Upon receipt of a virtual account deposit event from Due (via webhook), the system initiates an off-ramp request to convert USDC to USD. [Source: docs/prd.md#Functional-Requirements, docs/architecture.md#7.2-Funding-Flow]
+
+2. The off-ramp process completes successfully, converting the deposited USDC amount to equivalent USD. [Source: docs/prd.md#Functional-Requirements]
+
+3. The off-ramped USD is automatically transferred to the user's linked Alpaca brokerage account, increasing their buying power. [Source: docs/prd.md#Functional-Requirements, docs/architecture.md#7.2-Funding-Flow]
+
+4. The user's brokerage balance (buying_power_usd) is updated in real-time following successful Alpaca funding. [Source: docs/architecture.md#4.4-balances]
+
+5. Failed off-ramp attempts are logged and retried up to 3 times with exponential backoff, with final failures triggering user notification. [Source: docs/architecture.md#11.3-Error-Handling-Patterns]
+
+6. The system maintains audit trail of all off-ramp transactions in the deposits table. [Source: docs/architecture.md#4.3-deposits]</acceptanceCriteria>
 
   <artifacts>
     <docs>
-      <entry>
-        <path>docs/tech-spec-epic-2.md</path>
-        <title>Epic Technical Specification: Stablecoin Funding Flow</title>
-        <section>Acceptance Criteria #2: Deposit Processing</section>
-        <snippet>System automatically processes USDC deposits and converts to USD via Due</snippet>
-      </entry>
-      <entry>
+      <doc>
+        <path>docs/prd.md</path>
+        <title>Product Requirements Document</title>
+        <section>Functional Requirements</section>
+        <snippet>Support deposits of USDC from Ethereum (EVM) and Solana (non-EVM) chains. Orchestrate an immediate USDC-to-USD off-ramp via Due API after deposit. Transfer off-ramped USD directly into the user's linked Alpaca brokerage account.</snippet>
+      </doc>
+      <doc>
         <path>docs/architecture.md</path>
         <title>STACK Architecture Document</title>
-        <section>Data Flow (Funding)</section>
-        <snippet>User deposits USDC (on-chain) -> Monitored by Funding Service -> Due Off-Ramp (USDC to USD) -> Virtual Account -> Alpaca Deposit (USD)</snippet>
-      </entry>
-      <entry>
-        <path>docs/prd/epic-2-stablecoin-funding-flow.md</path>
-        <title>PRD: Stablecoin Funding Flow</title>
-        <section>Functional Requirements</section>
-        <snippet>Orchestrate an immediate USDC-to-USD off-ramp via Due API</snippet>
-      </entry>
+        <section>7.2 Funding Flow</section>
+        <snippet>User deposits USDC -> Funding Service monitors -> Due Off-Ramp -> Virtual Account -> Alpaca Deposit. Asynchronous orchestration (Sagas) for multi-step process.</snippet>
+      </doc>
+      <doc>
+        <path>docs/epics.md</path>
+        <title>STACK MVP Epics</title>
+        <section>Epic 2: Stablecoin Funding Flow</section>
+        <snippet>Enable users to fund their brokerage accounts instantly with stablecoins using Due for off-ramp/on-ramp functionality. Create virtual accounts linked to Alpaca brokerage accounts. Orchestrate immediate USDC-to-USD off-ramp via Due API.</snippet>
+      </doc>
     </docs>
     <code>
       <entry>
-        <path>internal/domain/services/funding/service.go</path>
+        <path>internal/core/funding/</path>
         <kind>service</kind>
-        <symbol>DueAdapter</symbol>
-        <lines>74-78</lines>
-        <reason>Existing DueAdapter interface that needs extension for transfer functionality</reason>
+        <symbol>FundingService</symbol>
+        <lines></lines>
+        <reason>Core service for funding operations, will contain off-ramp logic</reason>
       </entry>
       <entry>
-        <path>internal/adapters/due/client.go</path>
+        <path>internal/adapters/due/</path>
         <kind>adapter</kind>
-        <symbol>CreateVirtualAccount</symbol>
-        <lines>141-170</lines>
-        <reason>Existing Due API client pattern with circuit breaker and retry logic</reason>
+        <symbol>DueAdapter</symbol>
+        <lines></lines>
+        <reason>DUE API integration for off-ramp operations</reason>
       </entry>
       <entry>
-        <path>internal/adapters/due/models.go</path>
-        <kind>models</kind>
-        <symbol>CreateVirtualAccountRequest</symbol>
-        <lines>67-75</lines>
-        <reason>Existing Due API request/response models pattern</reason>
-      </entry>
-      <entry>
-        <path>internal/infrastructure/repositories/deposit_repository.go</path>
-        <kind>repository</kind>
-        <symbol>DepositRepository</symbol>
-        <lines>1-50</lines>
-        <reason>Existing deposit status tracking that needs extension for off-ramp states</reason>
-      </entry>
-      <entry>
-        <path>internal/infrastructure/repositories/virtual_account_repository.go</path>
-        <kind>repository</kind>
-        <symbol>VirtualAccountRepository</symbol>
-        <lines>1-50</lines>
-        <reason>Virtual account management for USD crediting</reason>
+        <path>internal/adapters/alpaca/</path>
+        <kind>adapter</kind>
+        <symbol>AlpacaAdapter</symbol>
+        <lines></lines>
+        <reason>Alpaca API integration for brokerage funding</reason>
       </entry>
     </code>
     <dependencies>
-      <entry>
-        <ecosystem>go</ecosystem>
-        <package>github.com/sony/gobreaker</package>
-        <version>v1.0.0</version>
-        <purpose>Circuit breaker for Due API resilience</purpose>
-      </entry>
-      <entry>
-        <ecosystem>go</ecosystem>
-        <package>go.uber.org/zap</package>
-        <version>v1.27.0</version>
-        <purpose>Structured logging for audit trails</purpose>
-      </entry>
-      <entry>
-        <ecosystem>go</ecosystem>
-        <package>github.com/google/uuid</package>
-        <version>v1.6.0</version>
-        <purpose>Correlation ID generation</purpose>
-      </entry>
-      <entry>
-        <ecosystem>go</ecosystem>
-        <package>github.com/lib/pq</package>
-        <version>v1.10.9</version>
-        <purpose>PostgreSQL database access</purpose>
-      </entry>
+      <go>
+        <github.com/sony/gobreaker>Circuit breaker for DUE API calls</github.com/sony/gobreaker>
+        <github.com/go-redis/redis/v8>Caching layer for session data</github.com/go-redis/redis/v8>
+        <github.com/lib/pq>PostgreSQL driver</github.com/lib/pq>
+        <go.uber.org/zap>Structured logging</go.uber.org/zap>
+      </go>
     </dependencies>
   </artifacts>
 
-  <constraints>- Adapter Pattern: All Due API calls must go through internal/adapters/due/ client
-- Repository Pattern: Database access must use internal/infrastructure/repositories/
-- Circuit Breaker: Due API calls must be protected with gobreaker
-- Exponential Backoff: Failed transfers must retry with configurable backoff
-- Correlation IDs: All API interactions must include correlation IDs for tracing
-- Structured Logging: Use Zap logger with JSON format for audit logging
-- Transaction Boundaries: Multi-step operations must use database transactions
-- Idempotency: Transfer operations must be idempotent to handle retries
-- Input Validation: All external inputs must be validated at API boundaries
-- Error Wrapping: Errors must be wrapped with context using fmt.Errorf with %w</constraints>
-
-  <interfaces>- FundingService.InitiateDueTransfer(ctx, depositID, virtualAccountID) (transferID, error)
-- DueAdapter.CreateTransfer(ctx, fromAccount, toAccount, amount, currency) (transfer, error)
-- DueAdapter.GetTransferStatus(ctx, transferID) (status, error)
-- DepositRepository.UpdateOffRampStatus(ctx, depositID, status, transferRef) error
-- BlockchainMonitor.OnDepositConfirmed(deposit) // webhook/event handler</interfaces>
-
+  <constraints>Asynchronous orchestration (Sagas) for multi-step funding flow, Adapter Pattern for DUE and Alpaca API integration, Circuit Breaker for external API resilience, Repository Pattern for database access. Required patterns: event-driven architecture for webhooks, exponential backoff for retries. Layer restrictions: business logic in core/, external calls in adapters/, data access in persistence/. Testing requirements: 80%+ code coverage, integration tests for API interactions. Coding standards: Go formatting with gofmt, error wrapping with context, structured logging with Zap.</constraints>
+  <interfaces>
+    <interface>
+      <name>DueOffRampAPI</name>
+      <kind>REST endpoint</kind>
+      <signature>POST /offramp {virtualAccountId, amount, currencyIn: USDC, currencyOut: USD}</signature>
+      <path>internal/adapters/due/</path>
+    </interface>
+    <interface>
+      <name>AlpacaFundingAPI</name>
+      <kind>REST endpoint</kind>
+      <signature>POST /funding {accountId, amount, currency: USD}</signature>
+      <path>internal/adapters/alpaca/</path>
+    </interface>
+    <interface>
+      <name>WebhookHandler</name>
+      <kind>HTTP handler</kind>
+      <signature>POST /webhooks/due/deposit {event: deposit, virtualAccountId, amount}</signature>
+      <path>internal/api/handlers/funding/</path>
+    </interface>
+  </interfaces>
   <tests>
-    <standards>- Unit tests for all exported functions with testify/assert
-- Integration tests using testcontainers for PostgreSQL
-- API tests for GraphQL endpoints with real schema validation
-- Circuit breaker tests for failure scenarios
-- Mock external APIs using httptest or go-vcr
-- Race condition tests with go run -race flag
-- Coverage target: 80%+ for critical business logic</standards>
-    <locations>- Unit tests: *_test.go in same package as implementation
-- Integration tests: test/integration/ directory
-- API tests: test/api/ directory
-- E2E tests: test/e2e/ directory</locations>
-    <ideas>- Test AC #1: Deposit detection triggers Due transfer initiation
-- Test AC #2: Due API transfer converts USDC to USD successfully
-- Test AC #3: Virtual account receives USD crediting
-- Test AC #4: Deposit status updates through all off-ramp states
-- Test AC #5: Failed transfers retry with exponential backoff
-- Test AC #6: Circuit breaker prevents cascade failures during Due API outages
-- Test AC #7: All Due API calls logged with correlation IDs</ideas>
+    <standards>Unit tests for all service methods and adapters using testify for assertions, integration tests with mocked external APIs using httptest, database tests for repository methods. Framework: Go standard testing package with testify extensions.</standards>
+    <locations>test/unit/ for unit tests, test/integration/ for integration tests, testdata/ for fixture files</locations>
+    <ideas>Test virtual account deposit webhook parsing and validation, test off-ramp initiation and status tracking, test Alpaca funding transfer and balance update, test error scenarios with circuit breaker activation, test retry logic with exponential backoff, test audit trail in deposits table.</ideas>
   </tests>
 </story-context>

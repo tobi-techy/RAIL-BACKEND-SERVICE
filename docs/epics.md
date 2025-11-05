@@ -60,7 +60,7 @@ Version: v0.2 (Pivot to Go + Alpaca)
 **Summary:** Provide beginner-friendly, expert-curated investment options.
 
 **In-Scope Features:**
-- 5–10 prebuilt baskets (Tech Growth, Sustainability, ETFs, etc.).
+- 5–10 prebuilt baskets (Tech Growth, Sustainability, ETFs, etc.) from real data from the alpaca api.
 - Balanced for simplicity + diversity.
 
 **Success Criteria:**

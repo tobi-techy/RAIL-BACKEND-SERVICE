@@ -254,19 +254,15 @@ func (s *Service) GetOnboardingStatus(ctx context.Context, userID uuid.UUID) (*e
 	requiredActions := s.determineRequiredActions(user, completedSteps)
 	canProceed := s.canProceed(user, completedSteps)
 
-	// Calculate completion percentage
-	completionPercentage := s.calculateCompletionPercentage(user, completedSteps)
-
 	return &entities.OnboardingStatusResponse{
-		UserID:               user.ID,
-		OnboardingStatus:     user.OnboardingStatus,
-		KYCStatus:            user.KYCStatus,
-		CurrentStep:          currentStep,
-		CompletedSteps:       completedSteps,
-		WalletStatus:         walletStatus,
-		CanProceed:           canProceed,
-		RequiredActions:      requiredActions,
-		CompletionPercentage: completionPercentage,
+		UserID:           user.ID,
+		OnboardingStatus: user.OnboardingStatus,
+		KYCStatus:        user.KYCStatus,
+		CurrentStep:      currentStep,
+		CompletedSteps:   completedSteps,
+		WalletStatus:     walletStatus,
+		CanProceed:       canProceed,
+		RequiredActions:  requiredActions,
 	}, nil
 }
 
@@ -438,20 +434,15 @@ func (s *Service) ProcessKYCCallback(ctx context.Context, providerRef string, st
 
 	switch status {
 	case entities.KYCStatusApproved:
-	now := time.Now()
-	kycApprovedAt = &now
+		now := time.Now()
+		kycApprovedAt = &now
 
-	// Mark KYC review step as completed
-	if err := s.markStepCompleted(ctx, user.ID, entities.StepKYCReview, map[string]any{
-	"status":      string(status),
-	"approved_at": now,
-	}); err != nil {
-	s.logger.Warn("Failed to mark KYC review step as completed", zap.Error(err))
-	}
-
-		// Complete onboarding since KYC is approved
-		if err := s.completeOnboardingAfterKYC(ctx, user.ID); err != nil {
-			s.logger.Warn("Failed to complete onboarding after KYC approval", zap.Error(err))
+		// Mark KYC review step as completed
+		if err := s.markStepCompleted(ctx, user.ID, entities.StepKYCReview, map[string]any{
+			"status":      string(status),
+			"approved_at": now,
+		}); err != nil {
+			s.logger.Warn("Failed to mark KYC review step as completed", zap.Error(err))
 		}
 
 	case entities.KYCStatusRejected:
@@ -543,42 +534,6 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 	return response, nil
 }
 
-// InitiateKYC allows users to manually initiate or re-initiate the KYC process
-// This provides a recovery mechanism for users stuck in KYCPending status
-func (s *Service) InitiateKYC(ctx context.Context, userID uuid.UUID) error {
-	s.logger.Info("Manually initiating KYC process", zap.String("userId", userID.String()))
-
-	// Verify user exists and is active
-	user, err := s.userRepo.GetByID(ctx, userID)
-	if err != nil {
-		return fmt.Errorf("failed to get user: %w", err)
-	}
-
-	if !user.IsActive {
-		return fmt.Errorf("user account is inactive")
-	}
-
-	// Check if user is in a state where KYC initiation makes sense
-	if user.OnboardingStatus == entities.OnboardingStatusCompleted {
-		return fmt.Errorf("onboarding is already completed")
-	}
-
-	// Initiate KYC process (this method handles checking if already in progress)
-	if err := s.initiateKYCProcess(ctx, userID); err != nil {
-		return fmt.Errorf("failed to initiate KYC process: %w", err)
-	}
-
-	// Log audit event
-	if err := s.auditService.LogOnboardingEvent(ctx, userID, "kyc_manual_initiation", "user", nil, map[string]any{
-		"trigger": "manual_request",
-	}); err != nil {
-		s.logger.Warn("Failed to log manual KYC initiation audit event", zap.Error(err))
-	}
-
-	s.logger.Info("KYC process manually initiated successfully", zap.String("userId", userID.String()))
-	return nil
-}
-
 // ProcessWalletCreationComplete handles wallet creation completion
 func (s *Service) ProcessWalletCreationComplete(ctx context.Context, userID uuid.UUID) error {
 	s.logger.Info("Processing wallet creation completion", zap.String("userId", userID.String()))
@@ -609,15 +564,9 @@ func (s *Service) ProcessWalletCreationComplete(ctx context.Context, userID uuid
 		s.logger.Warn("Failed to mark onboarding complete step as completed", zap.Error(err))
 	}
 
-	// Update user status to KYC pending (not completed yet)
-	if err := s.userRepo.UpdateOnboardingStatus(ctx, userID, entities.OnboardingStatusKYCPending); err != nil {
-	return fmt.Errorf("failed to update onboarding status: %w", err)
-	}
-
-	// Initiate KYC process
-	if err := s.initiateKYCProcess(ctx, userID); err != nil {
-		s.logger.Warn("Failed to initiate KYC process after wallet creation", zap.Error(err), zap.String("userId", userID.String()))
-		// Don't fail the wallet creation completion, just log the warning
+	// Update user status
+	if err := s.userRepo.UpdateOnboardingStatus(ctx, userID, entities.OnboardingStatusCompleted); err != nil {
+		return fmt.Errorf("failed to update onboarding status: %w", err)
 	}
 
 	// Send welcome email
@@ -634,130 +583,6 @@ func (s *Service) ProcessWalletCreationComplete(ctx context.Context, userID uuid
 
 	s.logger.Info("Onboarding completed successfully", zap.String("userId", userID.String()))
 
-	return nil
-}
-
-// completeOnboardingAfterKYC completes the onboarding process after successful KYC approval
-func (s *Service) completeOnboardingAfterKYC(ctx context.Context, userID uuid.UUID) error {
-	s.logger.Info("Completing onboarding after KYC approval", zap.String("userId", userID.String()))
-
-	user, err := s.userRepo.GetByID(ctx, userID)
-	if err != nil {
-		return fmt.Errorf("failed to get user for onboarding completion: %w", err)
-	}
-
-	// Mark onboarding complete step as completed
-	if err := s.markStepCompleted(ctx, userID, entities.StepOnboardingComplete, map[string]any{
-		"completed_at": time.Now(),
-		"kyc_approved": true,
-	}); err != nil {
-		s.logger.Warn("Failed to mark onboarding complete step as completed", zap.Error(err))
-	}
-
-	// Update user status to completed
-	if err := s.userRepo.UpdateOnboardingStatus(ctx, userID, entities.OnboardingStatusCompleted); err != nil {
-		return fmt.Errorf("failed to update onboarding status to completed: %w", err)
-	}
-
-	// Send welcome email with full access notification
-	if err := s.emailService.SendWelcomeEmail(ctx, user.Email); err != nil {
-		s.logger.Warn("Failed to send welcome email after KYC completion", zap.Error(err))
-	}
-
-	// Log audit event
-	if err := s.auditService.LogOnboardingEvent(ctx, userID, "onboarding_completed", "user",
-		map[string]any{"status": string(entities.OnboardingStatusKYCApproved)},
-		map[string]any{"status": string(entities.OnboardingStatusCompleted), "kyc_approved": true}); err != nil {
-		s.logger.Warn("Failed to log onboarding completion audit event", zap.Error(err))
-	}
-
-	s.logger.Info("Onboarding completed successfully after KYC approval", zap.String("userId", userID.String()))
-	return nil
-}
-
-// calculateCompletionPercentage calculates the onboarding completion percentage based on completed steps
-func (s *Service) calculateCompletionPercentage(user *entities.UserProfile, completedSteps []entities.OnboardingStepType) int {
-	// Define all required steps for completion
-	allSteps := []entities.OnboardingStepType{
-		entities.StepRegistration,
-		entities.StepEmailVerification,
-		entities.StepPasscodeCreation,
-		entities.StepWalletCreation,
-		entities.StepKYCSubmission,
-		entities.StepKYCReview,
-		entities.StepOnboardingComplete,
-	}
-
-	completedMap := make(map[entities.OnboardingStepType]bool)
-	for _, step := range completedSteps {
-		completedMap[step] = true
-	}
-
-	// Add inferred completed steps based on user status
-	if user.OnboardingStatus == entities.OnboardingStatusCompleted {
-		for _, step := range allSteps {
-			completedMap[step] = true
-		}
-	}
-
-	// Count completed steps
-	completedCount := 0
-	for _, step := range allSteps {
-		if completedMap[step] {
-			completedCount++
-		}
-	}
-
-	// Calculate percentage
-	if len(allSteps) == 0 {
-		return 100
-	}
-
-	percentage := (completedCount * 100) / len(allSteps)
-	if percentage > 100 {
-		percentage = 100
-	}
-
-	return percentage
-}
-
-// initiateKYCProcess automatically initiates KYC verification for users after wallet creation
-func (s *Service) initiateKYCProcess(ctx context.Context, userID uuid.UUID) error {
-	s.logger.Info("Initiating KYC process after wallet creation", zap.String("userId", userID.String()))
-
-	user, err := s.userRepo.GetByID(ctx, userID)
-	if err != nil {
-		return fmt.Errorf("failed to get user for KYC initiation: %w", err)
-	}
-
-	// Check if user already has KYC in progress or completed
-	kycStatus := entities.KYCStatus(user.KYCStatus)
-	if kycStatus == entities.KYCStatusProcessing || kycStatus == entities.KYCStatusApproved {
-		s.logger.Info("KYC already initiated or completed", zap.String("userId", userID.String()), zap.String("status", string(kycStatus)))
-		return nil
-	}
-
-	// Generate KYC URL for the user
-	kycURL, err := s.kycProvider.GenerateKYCURL(ctx, userID)
-	if err != nil {
-		return fmt.Errorf("failed to generate KYC URL: %w", err)
-	}
-
-	// Send KYC initiation email
-	if err := s.emailService.SendKYCStatusEmail(ctx, user.Email, entities.KYCStatusPending, nil); err != nil {
-		s.logger.Warn("Failed to send KYC initiation email", zap.Error(err), zap.String("userId", userID.String()))
-		// Don't fail the KYC initiation for email failure
-	}
-
-	// Log audit event
-	if err := s.auditService.LogOnboardingEvent(ctx, userID, "kyc_auto_initiated", "user", nil, map[string]any{
-		"kyc_url": kycURL,
-		"trigger": "wallet_creation_complete",
-	}); err != nil {
-		s.logger.Warn("Failed to log KYC initiation audit event", zap.Error(err))
-	}
-
-	s.logger.Info("KYC process initiated automatically", zap.String("userId", userID.String()))
 	return nil
 }
 
@@ -879,11 +704,11 @@ func (s *Service) markStepCompleted(ctx context.Context, userID uuid.UUID, step 
 			zap.Error(err),
 			zap.String("userId", userID.String()),
 			zap.String("step", string(step)))
-
+		
 		if createErr := s.createInitialOnboardingSteps(ctx, userID); createErr != nil {
 			return fmt.Errorf("failed to create initial onboarding steps: %w", createErr)
 		}
-
+		
 		// Retry getting the flow
 		flow, err = s.onboardingFlowRepo.GetByUserAndStep(ctx, userID, step)
 		if err != nil {
@@ -942,18 +767,12 @@ func (s *Service) determineNextStep(user *entities.UserProfile) entities.Onboard
 		return entities.StepWalletCreation
 	}
 
-	if user.OnboardingStatus == entities.OnboardingStatusKYCPending {
-		kycStatus := entities.KYCStatus(user.KYCStatus)
-		switch kycStatus {
-		case entities.KYCStatusPending, entities.KYCStatusProcessing:
-			return entities.StepKYCReview
-		case entities.KYCStatusRejected:
-			return entities.StepKYCSubmission
-		case entities.KYCStatusApproved:
-			return entities.StepOnboardingComplete
-		default:
-			return entities.StepKYCSubmission
-		}
+	kycStatus := entities.KYCStatus(user.KYCStatus)
+	switch kycStatus {
+	case entities.KYCStatusRejected:
+		return entities.StepKYCSubmission
+	case entities.KYCStatusProcessing:
+		return entities.StepKYCReview
 	}
 
 	return entities.StepWalletCreation

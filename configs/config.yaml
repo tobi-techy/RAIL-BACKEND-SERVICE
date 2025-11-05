@@ -1,0 +1,199 @@
+environment: development
+log_level: debug
+
+server:
+  port: 8080
+  host: 0.0.0.0
+  read_timeout: 30
+  write_timeout: 30
+  allowed_origins:
+    - "http://localhost:3000"
+    - "http://localhost:3001"
+  rate_limit_per_min: 100
+
+database:
+  host: localhost
+  port: 5432
+  dbname: stack_service_dev
+  user: postgres
+  password: postgres
+  sslmode: disable
+  max_open_conns: 25
+  max_idle_conns: 10
+  conn_max_lifetime: 300
+
+redis:
+  host: localhost
+  port: 6379
+  password: ""
+  db: 0
+
+jwt:
+  secret: "your-super-secret-jwt-key-change-in-production"
+  access_token_ttl: 604800    # 7 days
+  refresh_token_ttl: 2592000  # 30 days
+  issuer: "stack_service"
+  networks:
+    ethereum:
+      name: "Ethereum Mainnet"
+      chain_id: 1
+      rpc: "https://eth-mainnet.alchemyapi.io/v2/YOUR-API-KEY"
+      websocket: "wss://eth-mainnet.alchemyapi.io/v2/YOUR-API-KEY"
+      explorer: "https://etherscan.io"
+      native_currency:
+        name: "Ether"
+        symbol: "ETH"
+        decimals: 18
+      tokens:
+        usdc:
+          address: "0xA0b86a33E6C27C6b27D2e05Bb31F8e4D8f83A33f"
+          symbol: "USDC"
+          name: "USD Coin"
+          decimals: 6
+          chain_id: 1
+        usdt:
+          address: "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+          symbol: "USDT"
+          name: "Tether USD"
+          decimals: 6
+          chain_id: 1
+      gas_limit: 21000
+      max_gas_price: "100000000000" # 100 gwei
+    polygon:
+      name: "Polygon Mainnet"
+      chain_id: 137
+      rpc: "https://polygon-mainnet.g.alchemy.com/v2/YOUR-API-KEY"
+      websocket: "wss://polygon-mainnet.g.alchemy.com/v2/YOUR-API-KEY"
+      explorer: "https://polygonscan.com"
+      native_currency:
+        name: "Matic"
+        symbol: "MATIC"
+        decimals: 18
+      tokens:
+        usdc:
+          address: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+          symbol: "USDC"
+          name: "USD Coin"
+          decimals: 6
+          chain_id: 137
+      gas_limit: 21000
+      max_gas_price: "50000000000" # 50 gwei
+    bsc:
+      name: "Binance Smart Chain"
+      chain_id: 56
+      rpc: "https://bsc-dataseed1.binance.org/"
+      websocket: "wss://bsc-ws-node.nariox.org:443"
+      explorer: "https://bscscan.com"
+      native_currency:
+        name: "BNB"
+        symbol: "BNB"
+        decimals: 18
+      tokens:
+        busd:
+          address: "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56"
+          symbol: "BUSD"
+          name: "BUSD Token"
+          decimals: 18
+          chain_id: 56
+      gas_limit: 21000
+      max_gas_price: "20000000000" # 20 gwei
+
+payment:
+  processor_api_key: "your-payment-processor-api-key"
+  webhook_secret: "your-webhook-secret"
+  cards:
+    provider: "stripe" # stripe, square, etc.
+    api_key: "your-card-processor-api-key"
+    api_secret: "your-card-processor-secret"
+    webhook_url: "https://api.stackservice.com/webhooks/cards"
+    environment: "sandbox" # sandbox, production
+  supported_currencies:
+    - "USD"
+    - "EUR"
+    - "GBP"
+
+security:
+  encryption_key: "your-32-byte-encryption-key-here!!"
+  allowed_ips: []
+  max_login_attempts: 5
+  lockout_duration: 900    # 15 minutes
+  require_mfa: false
+  password_min_length: 8
+  session_timeout: 3600    # 1 hour
+
+circle:
+  api_key: "TEST_API_KEY:23387683755f3f749392263317fd3968:9f76b6e4170b99acae094ebcdc1886af"
+  environment: "testnet"
+  base_url: "https://api.circle.com/"
+  default_wallet_set_id: ""
+  default_wallet_set_name: "STACK-WalletSet"
+  supported_chains:
+    - "ETH"
+    - "MATIC"
+    - "SOL"
+    - "BASE"
+
+kyc:
+  provider: "sumsub" # sumsub, jumio, mock
+  api_key: "sbx:NmJUIclH31RUDLM7XtC9igsm.6N43aBvBtEGxoZv744sP83NVtyjI5AVl"
+  api_secret: "Z7Md1tcykSsXhF2FeJ3udOJjEacgUl2d"
+  base_url: "https://api.sumsub.com"
+  callback_url: "http://localhost:8080/api/v1/kyc/callback"
+  environment: "development"
+  user_agent: "Stack-Service/1.0"
+  level_name: "id-and-liveness"
+
+email:
+  provider: "resend" # resend, sendgrid, ses, mock
+  api_key: "re_JMRDKd4X_79kvpRkfGonpWDyvVKg5JbdH"
+  from_email: "no-reply@stackservice.com"
+  from_name: "Stacks"
+  reply_to: "support@stackservice.com"
+  base_url: "http://localhost:3000"
+  environment: "development"
+
+sms:
+  provider: "twilio" # twilio, mock
+  api_key: "AC779f2f78e54f465a88a41b37358a5b3d"
+  api_secret: "3c07e96f116caf751ac23b80ec703dc5"
+  from_number: "+1234567890"
+  environment: "development"
+
+verification:
+  code_length: 6
+  code_ttl_minutes: 10
+  max_attempts: 3
+  rate_limit_per_hour: 3
+
+# ZeroG network configuration
+zerog:
+  storage:
+    rpc_endpoint: "https://evmrpc-testnet.0g.ai/"
+    indexer_rpc: "https://indexer-storage-testnet-turbo.0g.ai"
+    private_key: "0x0000000000000000000000000000000000000000000000000000000000000001" # optional in development; set ZEROG_STORAGE_PRIVATE_KEY in prod
+    min_replicas: 1
+    expected_replicas: 3
+    namespaces:
+      ai_summaries: "ai-summaries/"
+      ai_artifacts: "ai-artifacts/"
+      model_prompts: "model-prompts/"
+  compute:
+    # REQUIRED: set a valid broker endpoint for the 0G compute broker
+    # You can also set via env: ZEROG_COMPUTE_BROKER_ENDPOINT
+    broker_endpoint: "https://broker-testnet.0g.ai" # replace with a valid endpoint
+    # REQUIRED: private key used for signing compute requests (set via env in prod)
+    # You can also set via env: ZEROG_COMPUTE_PRIVATE_KEY
+    private_key: "change-me"
+    provider_id: "default"
+    model_config:
+      default_model: "gpt-4"
+      max_tokens: 4096
+      temperature: 0.7
+      top_p: 0.9
+      frequency_penalty: 0.0
+      presence_penalty: 0.0
+    funding:
+      auto_topup: false
+      min_balance: 10.0
+      topup_amount: 50.0
+      max_account_limit: 1000.0

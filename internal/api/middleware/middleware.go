@@ -1,9 +1,7 @@
 package middleware
 
 import (
-	"compress/gzip"
 	"database/sql"
-	// "fmt"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -19,6 +17,10 @@ import (
 	"golang.org/x/time/rate"
 )
 
+const (
+	MaxRequestSize = 10 << 20 // 10MB
+)
+
 // RequestID adds a unique request ID to each request
 func RequestID() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -28,6 +30,46 @@ func RequestID() gin.HandlerFunc {
 		}
 		c.Set("request_id", requestID)
 		c.Header("X-Request-ID", requestID)
+		c.Next()
+	}
+}
+
+// RequestSizeLimit limits the size of incoming requests
+func RequestSizeLimit() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, MaxRequestSize)
+		c.Next()
+	}
+}
+
+// InputValidation validates common input patterns
+func InputValidation() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Validate common headers
+		userAgent := c.GetHeader("User-Agent")
+		if len(userAgent) > 500 {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":      "User-Agent header too long",
+				"request_id": c.GetString("request_id"),
+			})
+			c.Abort()
+			return
+		}
+
+		// Validate content type for POST/PUT requests
+		if c.Request.Method == "POST" || c.Request.Method == "PUT" {
+			contentType := c.GetHeader("Content-Type")
+			if contentType != "" && !strings.Contains(contentType, "application/json") && 
+			   !strings.Contains(contentType, "multipart/form-data") {
+				c.JSON(http.StatusUnsupportedMediaType, gin.H{
+					"error":      "Unsupported content type",
+					"request_id": c.GetString("request_id"),
+				})
+				c.Abort()
+				return
+			}
+		}
+
 		c.Next()
 	}
 }
@@ -181,63 +223,10 @@ func SecurityHeaders() gin.HandlerFunc {
 		c.Header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
 		c.Header("Content-Security-Policy", "default-src 'self'")
+		c.Header("X-Permitted-Cross-Domain-Policies", "none")
+		c.Header("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
 		c.Next()
 	}
-}
-
-// GzipCompression adds gzip compression to responses
-func GzipCompression() gin.HandlerFunc {
-	return gin.HandlerFunc(func(c *gin.Context) {
-		// Skip compression for small responses and certain content types
-		if c.Request.Method == "HEAD" {
-			c.Next()
-			return
-		}
-
-		// Check if client accepts gzip
-		if acceptEncoding := c.GetHeader("Accept-Encoding"); !strings.Contains(acceptEncoding, "gzip") {
-			c.Next()
-			return
-		}
-
-		// Skip compression for streaming responses and certain content types
-		contentType := c.GetHeader("Content-Type")
-		if strings.Contains(contentType, "text/event-stream") ||
-			strings.Contains(contentType, "application/octet-stream") {
-			c.Next()
-			return
-		}
-
-		// Use Gin's built-in gzip middleware
-		c.Header("Content-Encoding", "gzip")
-		c.Header("Vary", "Accept-Encoding")
-
-		// Create a gzip writer
-		gz, err := gzip.NewWriterLevel(c.Writer, gzip.DefaultCompression)
-		if err != nil {
-			c.Next()
-			return
-		}
-		defer gz.Close()
-
-		// Replace the writer
-		c.Writer = &gzipWriter{c.Writer, gz}
-		c.Next()
-	})
-}
-
-// gzipWriter wraps the ResponseWriter to handle gzip compression
-type gzipWriter struct {
-	gin.ResponseWriter
-	writer *gzip.Writer
-}
-
-func (g *gzipWriter) Write(data []byte) (int, error) {
-	return g.writer.Write(data)
-}
-
-func (g *gzipWriter) WriteString(s string) (int, error) {
-	return g.writer.Write([]byte(s))
 }
 
 // Authentication validates JWT tokens
@@ -284,9 +273,20 @@ func Authentication(cfg *config.Config, log *logger.Logger) gin.HandlerFunc {
 	}
 }
 
-// AdminAuth checks if user has admin role (legacy - use RoleBasedAccessControl)
+// AdminAuth checks if user has admin role
 func AdminAuth(db *sql.DB, log *logger.Logger) gin.HandlerFunc {
-	return RoleBasedAccessControl([]string{"admin", "super_admin"}, log)
+	return func(c *gin.Context) {
+		userRole := c.GetString("user_role")
+		if userRole != "admin" && userRole != "super_admin" {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error":      "Admin access required",
+				"request_id": c.GetString("request_id"),
+			})
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
 }
 
 // ValidateAPIKey validates API keys for external services

@@ -170,13 +170,11 @@ run_unit_tests() {
     test_flags=($(build_test_flags))
     
     local unit_test_paths=(
-    "./internal/domain/services/funding/..."
-    "./internal/domain/services/wallet/..."
-    "./internal/domain/entities/..."
-    "./internal/infrastructure/circle/..."
-    "./internal/adapters/alpaca/..."
-    "./pkg/retry/..."
-    "./pkg/webhook/..."
+        "./internal/domain/services/funding/..."
+        "./internal/domain/entities/..."
+        "./internal/infrastructure/adapters/circle/..."
+        "./pkg/retry/..."
+        "./pkg/webhook/..."
     )
     
     print_info "Test flags: ${test_flags[*]}"

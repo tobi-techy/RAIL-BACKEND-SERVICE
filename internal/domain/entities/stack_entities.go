@@ -79,15 +79,21 @@ type Wallet struct {
 
 // Deposit represents a stablecoin deposit
 type Deposit struct {
-	ID          uuid.UUID       `json:"id" db:"id"`
-	UserID      uuid.UUID       `json:"user_id" db:"user_id"`
-	Chain       Chain           `json:"chain" db:"chain"`
-	TxHash      string          `json:"tx_hash" db:"tx_hash"`
-	Token       Stablecoin      `json:"token" db:"token"`
-	Amount      decimal.Decimal `json:"amount" db:"amount"`
-	Status      string          `json:"status" db:"status"` // pending, confirmed, failed
-	ConfirmedAt *time.Time      `json:"confirmed_at" db:"confirmed_at"`
-	CreatedAt   time.Time       `json:"created_at" db:"created_at"`
+	ID                   uuid.UUID       `json:"id" db:"id"`
+	UserID               uuid.UUID       `json:"user_id" db:"user_id"`
+	Chain                Chain           `json:"chain" db:"chain"`
+	TxHash               string          `json:"tx_hash" db:"tx_hash"`
+	Token                Stablecoin      `json:"token" db:"token"`
+	Amount               decimal.Decimal `json:"amount" db:"amount"`
+	Status               string          `json:"status" db:"status"` // pending, confirmed, failed, off_ramp_initiated, off_ramp_completed, broker_funded
+	ConfirmedAt          *time.Time      `json:"confirmed_at" db:"confirmed_at"`
+	OffRampTxID          *string         `json:"off_ramp_tx_id" db:"off_ramp_tx_id"`
+	OffRampInitiatedAt   *time.Time      `json:"off_ramp_initiated_at" db:"off_ramp_initiated_at"`
+	OffRampCompletedAt   *time.Time      `json:"off_ramp_completed_at" db:"off_ramp_completed_at"`
+	AlpacaFundingTxID    *string         `json:"alpaca_funding_tx_id" db:"alpaca_funding_tx_id"`
+	AlpacaFundedAt       *time.Time      `json:"alpaca_funded_at" db:"alpaca_funded_at"`
+	VirtualAccountID     *uuid.UUID      `json:"virtual_account_id" db:"virtual_account_id"`
+	CreatedAt            time.Time       `json:"created_at" db:"created_at"`
 }
 
 // Balance represents user's buying power and pending deposits
@@ -224,12 +230,12 @@ type Portfolio struct {
 
 // PortfolioOverview represents complete portfolio overview with balance and performance
 type PortfolioOverview struct {
-	TotalPortfolio     string  `json:"totalPortfolio"`     // Total portfolio value (positions + buying power)
-	BuyingPower        string  `json:"buyingPower"`        // Available buying power
-	PositionsValue     string  `json:"positionsValue"`     // Total value of all positions
-	PerformanceLast30d float64 `json:"performanceLast30d"` // Performance % over last 30 days
-	Currency           string  `json:"currency"`           // Currency (USD)
-	LastUpdated        string  `json:"lastUpdated"`        // ISO timestamp of last update
+	TotalPortfolio      string  `json:"totalPortfolio"`      // Total portfolio value (positions + buying power)
+	BuyingPower         string  `json:"buyingPower"`         // Available buying power
+	PositionsValue      string  `json:"positionsValue"`      // Total value of all positions
+	PerformanceLast30d  float64 `json:"performanceLast30d"`  // Performance % over last 30 days
+	Currency            string  `json:"currency"`            // Currency (USD)
+	LastUpdated         string  `json:"lastUpdated"`         // ISO timestamp of last update
 }
 
 // PositionResponse represents a position in portfolio response
@@ -251,6 +257,41 @@ type ChainDepositWebhook struct {
 	TxHash    string     `json:"txHash"`
 	BlockTime time.Time  `json:"blockTime"`
 	Signature string     `json:"signature"`
+}
+
+// DueVirtualAccountDepositWebhook represents Due virtual account deposit event
+type DueVirtualAccountDepositWebhook struct {
+	Type string                 `json:"type"` // "virtual_account.deposit"
+	Data DueDepositWebhookData `json:"data"`
+}
+
+// DueDepositWebhookData represents deposit data in Due webhook
+type DueDepositWebhookData struct {
+	ID               string `json:"id"`               // Virtual account ID
+	Nonce            string `json:"nonce"`            // Reference/nonce
+	Amount           string `json:"amount"`           // Deposit amount
+	Currency         string `json:"currency"`         // Currency (USD, EUR, etc.)
+	Status           string `json:"status"`           // "completed"
+	DepositedAt      string `json:"depositedAt"`      // ISO timestamp
+	TransactionID    string `json:"transactionId"`    // Due transaction ID
+}
+
+// DueTransferWebhook represents Due transfer status update
+type DueTransferWebhook struct {
+	Type string                  `json:"type"` // "transfer.completed", "transfer.failed"
+	Data DueTransferWebhookData `json:"data"`
+}
+
+// DueTransferWebhookData represents transfer data in Due webhook
+type DueTransferWebhookData struct {
+	ID          string `json:"id"`          // Transfer ID
+	Status      string `json:"status"`      // "completed", "failed"
+	SourceID    string `json:"sourceId"`    // Source wallet/account ID
+	Destination struct {
+		Amount   string `json:"amount"`
+		Currency string `json:"currency"`
+	} `json:"destination"`
+	CreatedAt string `json:"createdAt"`
 }
 
 // BrokerageFillWebhook represents brokerage fill webhook

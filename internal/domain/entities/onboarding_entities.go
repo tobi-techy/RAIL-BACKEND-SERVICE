@@ -328,15 +328,14 @@ type OnboardingStartResponse struct {
 
 // OnboardingStatusResponse represents the current onboarding status
 type OnboardingStatusResponse struct {
-UserID               uuid.UUID            `json:"userId"`
-OnboardingStatus     OnboardingStatus     `json:"onboardingStatus"`
-KYCStatus            string               `json:"kycStatus"`
-CurrentStep          *OnboardingStepType  `json:"currentStep,omitempty"`
-CompletedSteps       []OnboardingStepType `json:"completedSteps"`
-WalletStatus         *WalletStatusSummary `json:"walletStatus,omitempty"`
-CanProceed           bool                 `json:"canProceed"`
-RequiredActions      []string             `json:"requiredActions,omitempty"`
-	CompletionPercentage int                  `json:"completionPercentage"`
+	UserID           uuid.UUID            `json:"userId"`
+	OnboardingStatus OnboardingStatus     `json:"onboardingStatus"`
+	KYCStatus        string               `json:"kycStatus"`
+	CurrentStep      *OnboardingStepType  `json:"currentStep,omitempty"`
+	CompletedSteps   []OnboardingStepType `json:"completedSteps"`
+	WalletStatus     *WalletStatusSummary `json:"walletStatus,omitempty"`
+	CanProceed       bool                 `json:"canProceed"`
+	RequiredActions  []string             `json:"requiredActions,omitempty"`
 }
 
 // WalletStatusSummary provides a summary of wallet provisioning status
