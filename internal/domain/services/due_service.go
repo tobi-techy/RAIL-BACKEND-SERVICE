@@ -102,28 +102,13 @@ func (s *DueService) LinkCircleWallet(ctx context.Context, walletAddress, chain 
 func (s *DueService) CreateUSDRecipient(ctx context.Context, userID uuid.UUID, accountNumber, routingNumber, accountName string) (string, error) {
 	s.logger.Info("Creating USD recipient", "user_id", userID)
 
-	recipientID := fmt.Sprintf("user_%s_usd", userID.String()[:8])
-
 	req := &due.CreateRecipientRequest{
-		ID:      recipientID,
-		Country: "US",
-		Name:    accountName,
-		Email:   fmt.Sprintf("user+%s@stack.app", userID.String()[:8]),
-		Details: map[string]interface{}{
-			"schema":        "bank_us",
-			"bankName":      "User Bank Account",
-			"accountName":   accountName,
-			"accountNumber": accountNumber,
-			"routingNumber": routingNumber,
-			"beneficiaryAddress": map[string]string{
-				"street_line_1": "123 Main St",
-				"city":          "New York",
-				"postal_code":   "10001",
-				"country":       "USA",
-				"state":         "NY",
-			},
+		Name: accountName,
+		Details: due.RecipientDetails{
+			Schema:  "bank_us",
+			Address: accountNumber,
 		},
-		IsActive: true,
+		IsExternal: true,
 	}
 
 	resp, err := s.dueClient.CreateRecipient(ctx, req)

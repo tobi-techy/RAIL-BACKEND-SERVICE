@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,8 +19,16 @@ import (
 
 // FundingHandlers contains funding service handlers
 type FundingHandlers struct {
-	fundingService *funding.Service
-	logger         *logger.Logger
+	fundingService     *funding.Service
+	withdrawalService  FundingWithdrawalService
+	logger             *logger.Logger
+}
+
+// FundingWithdrawalService interface for withdrawal operations
+type FundingWithdrawalService interface {
+	InitiateWithdrawal(ctx context.Context, req *entities.InitiateWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error)
+	GetWithdrawal(ctx context.Context, withdrawalID uuid.UUID) (*entities.Withdrawal, error)
+	GetUserWithdrawals(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error)
 }
 
 // InvestingHandlers contains investing service handlers
@@ -29,10 +38,11 @@ type InvestingHandlers struct {
 }
 
 // NewFundingHandlers creates new funding handlers
-func NewFundingHandlers(fundingService *funding.Service, logger *logger.Logger) *FundingHandlers {
+func NewFundingHandlers(fundingService *funding.Service, withdrawalService FundingWithdrawalService, logger *logger.Logger) *FundingHandlers {
 	return &FundingHandlers{
-		fundingService: fundingService,
-		logger:         logger,
+		fundingService:    fundingService,
+		withdrawalService: withdrawalService,
+		logger:            logger,
 	}
 }
 

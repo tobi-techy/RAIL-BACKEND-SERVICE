@@ -73,25 +73,24 @@ type LinkWalletResponse struct {
 
 // CreateRecipientRequest represents recipient creation request
 type CreateRecipientRequest struct {
-	ID         string                 `json:"id"`
-	Country    string                 `json:"country"`
-	Name       string                 `json:"name"`
-	Email      string                 `json:"email"`
-	Details    map[string]interface{} `json:"details"`
-	IsExternal bool                   `json:"isExternal,omitempty"`
-	IsActive   bool                   `json:"isActive,omitempty"`
+	Name       string           `json:"name"`
+	Details    RecipientDetails `json:"details"`
+	IsExternal bool             `json:"isExternal"`
+}
+
+// RecipientDetails contains recipient payment details
+type RecipientDetails struct {
+	Schema  string `json:"schema"`  // "evm" or "solana"
+	Address string `json:"address"` // Blockchain address
 }
 
 // CreateRecipientResponse represents recipient creation response
 type CreateRecipientResponse struct {
-	ID         string                 `json:"id"`
-	Country    string                 `json:"country"`
-	Name       string                 `json:"name"`
-	Email      string                 `json:"email"`
-	Details    map[string]interface{} `json:"details"`
-	IsExternal bool                   `json:"isExternal"`
-	IsActive   bool                   `json:"isActive"`
-	CreatedAt  time.Time              `json:"createdAt"`
+	ID         string           `json:"id"`
+	Label      string           `json:"label"`
+	Details    RecipientDetails `json:"details"`
+	IsExternal bool             `json:"isExternal"`
+	IsActive   bool             `json:"isActive"`
 }
 
 // TransferStatus represents transfer status
@@ -291,4 +290,74 @@ func (e *ErrorResponse) Error() string {
 		return fmt.Sprintf("Due API error [%d]: %s (code: %s, details: %v)", e.StatusCode, e.Message, e.Code, e.Details)
 	}
 	return fmt.Sprintf("Due API error [%d]: %s (code: %s)", e.StatusCode, e.Message, e.Code)
+}
+
+// On-Ramp Types (USD to USDC)
+
+// OnRampQuoteRequest represents a quote request for on-ramp
+type OnRampQuoteRequest struct {
+	Source      QuoteSource      `json:"source"`
+	Destination QuoteDestination `json:"destination"`
+}
+
+// QuoteSource represents the source of funds
+type QuoteSource struct {
+	Rail     string `json:"rail"`     // "ach"
+	Currency string `json:"currency"` // "USD"
+	Amount   string `json:"amount"`   // USD amount
+}
+
+// QuoteDestination represents the destination
+type QuoteDestination struct {
+	Rail     string `json:"rail"`     // "ethereum", "solana"
+	Currency string `json:"currency"` // "USDC"
+	Amount   string `json:"amount"`   // "0" to calculate
+}
+
+// OnRampQuoteResponse represents the quote response
+type OnRampQuoteResponse struct {
+	Token       string           `json:"token"`
+	Source      QuoteSource      `json:"source"`
+	Destination QuoteDestination `json:"destination"`
+	FXRate      float64          `json:"fxRate"`
+	FXMarkup    float64          `json:"fxMarkup"`
+	ExpiresAt   time.Time        `json:"expiresAt"`
+}
+
+// OnRampTransferRequest represents a transfer request
+type OnRampTransferRequest struct {
+	Quote     string `json:"quote"`     // Quote token
+	Sender    string `json:"sender"`    // Virtual account/wallet ID
+	Recipient string `json:"recipient"` // Recipient ID
+	Memo      string `json:"memo,omitempty"`
+}
+
+// OnRampTransferResponse represents the transfer response
+type OnRampTransferResponse struct {
+	ID                   string           `json:"id"`
+	OwnerID              string           `json:"ownerId"`
+	Status               string           `json:"status"`
+	Source               QuoteSource      `json:"source"`
+	Destination          QuoteDestination `json:"destination"`
+	FXRate               float64          `json:"fxRate"`
+	FXMarkup             float64          `json:"fxMarkup"`
+	TransferInstructions TransferInstructions `json:"transferInstructions"`
+	CreatedAt            time.Time        `json:"createdAt"`
+	ExpiresAt            time.Time        `json:"expiresAt"`
+}
+
+// TransferInstructions contains instructions for completing the transfer
+type TransferInstructions struct {
+	Type string `json:"type"` // "TransferIntent" or "FundingAddress"
+}
+
+// FundingAddressResponse represents funding address response
+type FundingAddressResponse struct {
+	Details FundingAddressDetails `json:"details"`
+}
+
+// FundingAddressDetails contains the funding address
+type FundingAddressDetails struct {
+	Address string `json:"address"`
+	Schema  string `json:"schema"`
 }
