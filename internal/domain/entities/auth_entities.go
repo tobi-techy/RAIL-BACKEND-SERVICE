@@ -117,34 +117,6 @@ type VerifyCodeResponse struct {
 	ExpiresAt    time.Time `json:"expiresAt"`
 }
 
-// UserRole defines available user roles
-type UserRole string
-
-const (
-	RoleUser       UserRole = "user"
-	RolePremium    UserRole = "premium"
-	RoleTrader     UserRole = "trader"
-	RoleAdmin      UserRole = "admin"
-	RoleSuperAdmin UserRole = "super_admin"
-)
-
-// IsValid checks if the role is valid
-func (r UserRole) IsValid() bool {
-	return r == RoleUser || r == RolePremium || r == RoleTrader || r == RoleAdmin || r == RoleSuperAdmin
-}
-
-// HasPermission checks if the role has the required permission level
-func (r UserRole) HasPermission(requiredRole UserRole) bool {
-	roleHierarchy := map[UserRole]int{
-		RoleUser:       1,
-		RolePremium:    2,
-		RoleTrader:     3,
-		RoleAdmin:      4,
-		RoleSuperAdmin: 5,
-	}
-	return roleHierarchy[r] >= roleHierarchy[requiredRole]
-}
-
 // User represents a complete user entity for database operations
 type User struct {
 	ID                 uuid.UUID        `json:"id" db:"id"`
@@ -160,7 +132,7 @@ type User struct {
 	KYCSubmittedAt     *time.Time       `json:"kycSubmittedAt" db:"kyc_submitted_at"`
 	KYCApprovedAt      *time.Time       `json:"kycApprovedAt" db:"kyc_approved_at"`
 	KYCRejectionReason *string          `json:"kycRejectionReason" db:"kyc_rejection_reason"`
-	Role               UserRole         `json:"role" db:"role"`
+	Role               string           `json:"role" db:"role"`
 	IsActive           bool             `json:"isActive" db:"is_active"`
 	LastLoginAt        *time.Time       `json:"lastLoginAt" db:"last_login_at"`
 	CreatedAt          time.Time        `json:"createdAt" db:"created_at"`

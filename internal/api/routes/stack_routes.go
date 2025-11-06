@@ -26,7 +26,7 @@ func SetupStackRoutes(db *sql.DB, cfg *config.Config, log *logger.Logger) *gin.E
 	router.Use(middleware.SecurityHeaders())
 
 	// Health check (no auth required)
-	router.GET("/health", handlers.HealthCheck())
+	router.GET("/health", handlers.BasicHealthCheck())
 	router.GET("/metrics", handlers.Metrics())
 
 	// Swagger documentation (development only)

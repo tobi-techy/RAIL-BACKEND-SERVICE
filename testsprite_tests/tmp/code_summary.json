@@ -1,0 +1,589 @@
+{
+  "tech_stack": [
+    "Go",
+    "Gin framework", 
+    "PostgreSQL",
+    "Redis",
+    "Docker",
+    "Circle API",
+    "JWT authentication",
+    "OpenTelemetry",
+    "Swagger/OpenAPI"
+  ],
+  "features": [
+    {
+      "name": "User Registration & Authentication",
+      "description": "User registration, login, token management, and profile management",
+      "files": [
+        "internal/api/handlers/handlers.go",
+        "internal/api/routes/routes.go",
+        "pkg/auth/jwt.go"
+      ],
+      "api_doc": {
+        "paths": {
+          "/api/v1/auth/register": {
+            "post": {
+              "summary": "Register new user",
+              "tags": ["Authentication"],
+              "requestBody": {
+                "required": true,
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "type": "object",
+                      "properties": {
+                        "email": {"type": "string", "format": "email"},
+                        "password": {"type": "string"},
+                        "phone": {"type": "string", "nullable": true}
+                      },
+                      "required": ["email", "password"]
+                    }
+                  }
+                }
+              },
+              "responses": {
+                "201": {"description": "User registered successfully"},
+                "400": {"description": "Invalid input"},
+                "409": {"description": "User already exists"}
+              }
+            }
+          },
+          "/api/v1/auth/login": {
+            "post": {
+              "summary": "User login",
+              "tags": ["Authentication"],
+              "requestBody": {
+                "required": true,
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "type": "object",
+                      "properties": {
+                        "email": {"type": "string", "format": "email"},
+                        "password": {"type": "string"}
+                      },
+                      "required": ["email", "password"]
+                    }
+                  }
+                }
+              },
+              "responses": {
+                "200": {"description": "Login successful"},
+                "401": {"description": "Invalid credentials"}
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "Onboarding Flow",
+      "description": "User onboarding process including KYC verification and status tracking",
+      "files": [
+        "internal/api/handlers/onboarding_handlers.go",
+        "internal/domain/entities/onboarding_entities.go",
+        "internal/domain/services/onboarding/service.go"
+      ],
+      "api_doc": {
+        "paths": {
+          "/api/v1/onboarding/start": {
+            "post": {
+              "summary": "Start user onboarding",
+              "description": "Initiates the onboarding process for a new user with email/phone verification",
+              "tags": ["Onboarding"],
+              "requestBody": {
+                "required": true,
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "type": "object",
+                      "properties": {
+                        "email": {"type": "string", "format": "email"},
+                        "phone": {"type": "string", "nullable": true}
+                      },
+                      "required": ["email"]
+                    }
+                  }
+                }
+              },
+              "responses": {
+                "201": {
+                  "description": "Onboarding started successfully",
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "userId": {"type": "string", "format": "uuid"},
+                          "onboardingStatus": {"type": "string"},
+                          "nextStep": {"type": "string"},
+                          "sessionToken": {"type": "string", "nullable": true}
+                        }
+                      }
+                    }
+                  }
+                },
+                "400": {"description": "Invalid request payload"},
+                "409": {"description": "User already exists"},
+                "500": {"description": "Internal server error"}
+              }
+            }
+          },
+          "/api/v1/onboarding/status": {
+            "get": {
+              "summary": "Get onboarding status",
+              "description": "Returns the current onboarding status including KYC and wallet provisioning status",
+              "tags": ["Onboarding"],
+              "parameters": [
+                {
+                  "name": "user_id",
+                  "in": "query",
+                  "schema": {"type": "string", "format": "uuid"},
+                  "description": "User ID (for admin use)"
+                }
+              ],
+              "responses": {
+                "200": {
+                  "description": "Onboarding status retrieved successfully",
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "userId": {"type": "string", "format": "uuid"},
+                          "onboardingStatus": {"type": "string"},
+                          "kycStatus": {"type": "string"},
+                          "currentStep": {"type": "string", "nullable": true},
+                          "completedSteps": {"type": "array", "items": {"type": "string"}},
+                          "walletStatus": {"type": "object", "nullable": true},
+                          "canProceed": {"type": "boolean"},
+                          "requiredActions": {"type": "array", "items": {"type": "string"}}
+                        }
+                      }
+                    }
+                  }
+                },
+                "400": {"description": "Invalid user ID"},
+                "404": {"description": "User not found"},
+                "500": {"description": "Internal server error"}
+              },
+              "security": [{"bearerAuth": []}]
+            }
+          },
+          "/api/v1/onboarding/kyc/submit": {
+            "post": {
+              "summary": "Submit KYC documents",
+              "description": "Submits KYC documents for verification",
+              "tags": ["Onboarding"],
+              "requestBody": {
+                "required": true,
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "type": "object",
+                      "properties": {
+                        "documentType": {"type": "string"},
+                        "documents": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "type": {"type": "string"},
+                              "fileUrl": {"type": "string", "format": "uri"},
+                              "contentType": {"type": "string"}
+                            },
+                            "required": ["type", "fileUrl", "contentType"]
+                          }
+                        },
+                        "personalInfo": {
+                          "type": "object",
+                          "properties": {
+                            "firstName": {"type": "string"},
+                            "lastName": {"type": "string"},
+                            "dateOfBirth": {"type": "string", "format": "date-time", "nullable": true},
+                            "country": {"type": "string"},
+                            "address": {"type": "object", "nullable": true}
+                          }
+                        },
+                        "metadata": {"type": "object"}
+                      },
+                      "required": ["documentType", "documents"]
+                    }
+                  }
+                }
+              },
+              "responses": {
+                "202": {"description": "KYC submission accepted"},
+                "400": {"description": "Invalid request"},
+                "403": {"description": "User not eligible for KYC"},
+                "500": {"description": "Internal server error"}
+              },
+              "security": [{"bearerAuth": []}]
+            }
+          },
+          "/api/v1/kyc/callback/{provider_ref}": {
+            "post": {
+              "summary": "Process KYC callback",
+              "description": "Handles callbacks from KYC providers with verification results",
+              "tags": ["Onboarding"],
+              "parameters": [
+                {
+                  "name": "provider_ref",
+                  "in": "path",
+                  "required": true,
+                  "schema": {"type": "string"}
+                }
+              ],
+              "requestBody": {
+                "required": true,
+                "content": {
+                  "application/json": {
+                    "schema": {"type": "object"}
+                  }
+                }
+              },
+              "responses": {
+                "200": {"description": "Callback processed"},
+                "400": {"description": "Invalid callback"},
+                "500": {"description": "Internal server error"}
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "Wallet Management",
+      "description": "Managed wallet creation and status tracking using Circle API",
+      "files": [
+        "internal/api/handlers/wallet_handlers.go",
+        "internal/domain/entities/wallet_entities.go", 
+        "internal/domain/services/wallet/service.go",
+        "internal/infrastructure/circle/client.go"
+      ],
+      "api_doc": {
+        "paths": {
+          "/api/v1/wallet/addresses": {
+            "get": {
+              "summary": "Get wallet addresses",
+              "description": "Returns wallet addresses for the authenticated user, optionally filtered by chain",
+              "tags": ["Wallet"],
+              "parameters": [
+                {
+                  "name": "chain",
+                  "in": "query",
+                  "schema": {
+                    "type": "string",
+                    "enum": ["ETH", "SOL", "APTOS", "ETH-SEPOLIA", "SOL-DEVNET", "APTOS-TESTNET"]
+                  },
+                  "description": "Blockchain network filter"
+                }
+              ],
+              "responses": {
+                "200": {
+                  "description": "Wallet addresses retrieved successfully",
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "wallets": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "chain": {"type": "string"},
+                                "address": {"type": "string"},
+                                "status": {"type": "string"}
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "400": {"description": "Invalid request"},
+                "404": {"description": "User not found"},
+                "500": {"description": "Internal server error"}
+              },
+              "security": [{"bearerAuth": []}]
+            }
+          },
+          "/api/v1/wallet/status": {
+            "get": {
+              "summary": "Get wallet status",
+              "description": "Returns comprehensive wallet status including provisioning progress",
+              "tags": ["Wallet"],
+              "responses": {
+                "200": {
+                  "description": "Wallet status retrieved successfully",
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "userId": {"type": "string", "format": "uuid"},
+                          "totalWallets": {"type": "integer"},
+                          "readyWallets": {"type": "integer"},
+                          "pendingWallets": {"type": "integer"},
+                          "failedWallets": {"type": "integer"},
+                          "walletsByChain": {"type": "object"},
+                          "provisioningJob": {"type": "object", "nullable": true}
+                        }
+                      }
+                    }
+                  }
+                },
+                "400": {"description": "Invalid user ID"},
+                "404": {"description": "User not found"},
+                "500": {"description": "Internal server error"}
+              },
+              "security": [{"bearerAuth": []}]
+            }
+          },
+          "/api/v1/admin/wallet/create": {
+            "post": {
+              "summary": "Create wallets for user (Admin only)",
+              "description": "Manually trigger wallet creation for a user",
+              "tags": ["Wallet", "Admin"],
+              "requestBody": {
+                "required": true,
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "type": "object",
+                      "properties": {
+                        "user_id": {"type": "string", "format": "uuid"},
+                        "chains": {"type": "array", "items": {"type": "string"}}
+                      },
+                      "required": ["user_id", "chains"]
+                    }
+                  }
+                }
+              },
+              "responses": {
+                "202": {"description": "Wallet creation initiated"},
+                "400": {"description": "Invalid request"},
+                "403": {"description": "Insufficient permissions"},
+                "500": {"description": "Internal server error"}
+              },
+              "security": [{"bearerAuth": []}]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "Funding Operations", 
+      "description": "Deposit address generation, balance tracking, and funding confirmations",
+      "files": [
+        "internal/api/handlers/funding_investing_handlers.go",
+        "internal/domain/services/funding/service.go"
+      ],
+      "api_doc": {
+        "paths": {
+          "/api/v1/funding/deposit-address": {
+            "post": {
+              "summary": "Generate or retrieve deposit address",
+              "description": "Generate or retrieve a deposit address for a specific chain",
+              "tags": ["Funding"],
+              "requestBody": {
+                "required": true,
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "type": "object",
+                      "properties": {
+                        "chain": {"type": "string", "enum": ["Aptos", "Solana", "polygon", "starknet"]}
+                      },
+                      "required": ["chain"]
+                    }
+                  }
+                }
+              },
+              "responses": {
+                "200": {"description": "Address returned"},
+                "400": {"description": "Invalid input"},
+                "401": {"description": "Unauthorized"}
+              },
+              "security": [{"bearerAuth": []}]
+            }
+          },
+          "/api/v1/funding/confirmations": {
+            "get": {
+              "summary": "List funding confirmations",
+              "description": "List recent funding confirmations for the authenticated user",
+              "tags": ["Funding"],
+              "parameters": [
+                {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}},
+                {"name": "cursor", "in": "query", "schema": {"type": "string"}}
+              ],
+              "responses": {
+                "200": {"description": "Paginated confirmations"},
+                "401": {"description": "Unauthorized"}
+              },
+              "security": [{"bearerAuth": []}]
+            }
+          },
+          "/api/v1/funding/balances": {
+            "get": {
+              "summary": "Get current balances",
+              "description": "Get the user's current balances (buying power, pending, etc.)",
+              "tags": ["Funding"],
+              "responses": {
+                "200": {"description": "Current balances"},
+                "401": {"description": "Unauthorized"}
+              },
+              "security": [{"bearerAuth": []}]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "Investing Operations",
+      "description": "Investment basket management, order processing, and portfolio tracking", 
+      "files": [
+        "internal/api/handlers/funding_investing_handlers.go",
+        "internal/domain/services/investing/service.go"
+      ],
+      "api_doc": {
+        "paths": {
+          "/api/v1/investing/baskets": {
+            "get": {
+              "summary": "List curated baskets",
+              "description": "List available investment baskets",
+              "tags": ["Investing"],
+              "responses": {
+                "200": {"description": "Curated basket catalog"},
+                "401": {"description": "Unauthorized"}
+              },
+              "security": [{"bearerAuth": []}]
+            }
+          },
+          "/api/v1/investing/baskets/{basketId}": {
+            "get": {
+              "summary": "Get basket details",
+              "description": "Get a single basket by ID",
+              "tags": ["Investing"],
+              "parameters": [
+                {"name": "basketId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}
+              ],
+              "responses": {
+                "200": {"description": "Basket details"},
+                "404": {"description": "Basket not found"}
+              },
+              "security": [{"bearerAuth": []}]
+            }
+          },
+          "/api/v1/investing/orders": {
+            "post": {
+              "summary": "Create order",
+              "description": "Place a basket order (buy/sell)",
+              "tags": ["Investing"],
+              "requestBody": {
+                "required": true,
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "type": "object",
+                      "properties": {
+                        "basketId": {"type": "string", "format": "uuid"},
+                        "side": {"type": "string", "enum": ["buy", "sell"]},
+                        "amount": {"type": "string"},
+                        "idempotencyKey": {"type": "string"}
+                      },
+                      "required": ["basketId", "side", "amount"]
+                    }
+                  }
+                }
+              },
+              "responses": {
+                "201": {"description": "Order accepted"},
+                "400": {"description": "Invalid input"},
+                "401": {"description": "Unauthorized"},
+                "409": {"description": "Conflict"}
+              },
+              "security": [{"bearerAuth": []}]
+            },
+            "get": {
+              "summary": "List orders",
+              "description": "List orders for the current user",
+              "tags": ["Investing"],
+              "parameters": [
+                {"name": "status", "in": "query", "schema": {"type": "string"}},
+                {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}},
+                {"name": "cursor", "in": "query", "schema": {"type": "string"}}
+              ],
+              "responses": {
+                "200": {"description": "Paginated order list"},
+                "401": {"description": "Unauthorized"}
+              },
+              "security": [{"bearerAuth": []}]
+            }
+          },
+          "/api/v1/investing/portfolio": {
+            "get": {
+              "summary": "Get portfolio",
+              "description": "Get current portfolio positions and valuations",
+              "tags": ["Investing"],
+              "responses": {
+                "200": {"description": "Current portfolio snapshot"},
+                "401": {"description": "Unauthorized"}
+              },
+              "security": [{"bearerAuth": []}]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "Health & System Monitoring",
+      "description": "Health checks and system metrics",
+      "files": [
+        "internal/api/handlers/handlers.go",
+        "internal/api/routes/routes.go"
+      ],
+      "api_doc": {
+        "paths": {
+          "/health": {
+            "get": {
+              "summary": "Health check",
+              "description": "Application health status",
+              "tags": ["System"],
+              "responses": {
+                "200": {
+                  "description": "Service is healthy",
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "service": {"type": "string"},
+                          "status": {"type": "string"},
+                          "timestamp": {"type": "integer"},
+                          "version": {"type": "string"}
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "/metrics": {
+            "get": {
+              "summary": "Prometheus metrics",
+              "description": "System metrics for monitoring",
+              "tags": ["System"],
+              "responses": {
+                "200": {"description": "Metrics data"}
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

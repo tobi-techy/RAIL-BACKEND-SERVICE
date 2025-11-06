@@ -119,7 +119,7 @@ func TestPortfolioOverviewNilServiceHandling(t *testing.T) {
 
 	// Verify we get a proper error response, not a panic
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-
+	
 	var errorResp entities.ErrorResponse
 	err := json.Unmarshal(w.Body.Bytes(), &errorResp)
 	require.NoError(t, err)
@@ -169,8 +169,6 @@ func TestPortfolioOverviewReflectsBalanceUpdates(t *testing.T) {
 		positionRepo,
 		balanceRepo,
 		nil, // brokerage adapter not needed for this test
-		nil, // wallet repo not needed for this test
-		nil, // circle client not needed for this test
 		log,
 	)
 
@@ -272,8 +270,6 @@ func TestPortfolioOverviewNewUser(t *testing.T) {
 		nil,
 		positionRepo,
 		balanceRepo,
-		nil,
-		nil,
 		nil,
 		log,
 	)

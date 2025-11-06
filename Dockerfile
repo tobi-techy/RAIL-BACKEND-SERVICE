@@ -1,57 +1,69 @@
 # Build stage
 FROM golang:1.24-alpine AS builder
 
-# Install necessary packages
-RUN apk add --no-cache git ca-certificates tzdata
+# Install necessary packages for building
+RUN apk add --no-cache git ca-certificates tzdata gcc musl-dev
+
+# Create non-root user for build
+RUN adduser -D -s /bin/sh builduser
 
 # Set working directory
 WORKDIR /app
 
-# Copy go mod files
+# Copy go mod files first for better caching
 COPY go.mod go.sum ./
 
 # Download dependencies
-RUN go mod download
+RUN go mod download && go mod verify
 
 # Copy source code
 COPY . .
 
-# Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main ./cmd/main.go
+# Change ownership to builduser
+RUN chown -R builduser:builduser /app
+USER builduser
 
-# Final stage
-FROM alpine:latest
+# Build the application with optimizations
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags='-w -s -extldflags "-static"' \
+    -a -installsuffix cgo \
+    -o main ./cmd/main.go
 
-# Install ca-certificates for SSL/TLS connections
-RUN apk --no-cache add ca-certificates tzdata netcat-openbsd
+# Final stage - minimal runtime image
+FROM scratch
 
-# Create non-root user
-RUN adduser -D -s /bin/sh appuser
+# Import ca-certificates from builder
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
-# Set working directory
-WORKDIR /root/
+# Import timezone data
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+
+# Create minimal filesystem structure
+COPY --from=builder /etc/passwd /etc/passwd
+COPY --from=builder /etc/group /etc/group
 
 # Copy binary from builder stage
-COPY --from=builder /app/main .
+COPY --from=builder /app/main /main
 
 # Copy config files
-COPY --from=builder /app/configs ./configs
+COPY --from=builder /app/configs /configs
 
 # Copy migrations
-COPY --from=builder /app/migrations ./migrations
+COPY --from=builder /app/migrations /migrations
 
-# Change ownership to appuser
-RUN chown -R appuser:appuser /root/
-
-# Switch to non-root user
-USER appuser
+# Use non-root user
+USER builduser
 
 # Expose port
 EXPOSE 8080
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
-  CMD nc -z localhost 8080 || exit 1
+# Add health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+  CMD ["/main", "--health-check"] || exit 1
+
+# Set environment variables for security
+ENV GIN_MODE=release
+ENV CGO_ENABLED=0
 
 # Run the binary
-CMD ["./main"]
+ENTRYPOINT ["/main"]

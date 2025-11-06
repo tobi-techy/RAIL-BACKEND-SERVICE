@@ -1,14 +1,11 @@
 package handlers
 
 import (
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/stack-service/stack_service/internal/adapters/alpaca"
 	"github.com/stack-service/stack_service/internal/domain/entities"
 	"go.uber.org/zap"
@@ -56,86 +53,48 @@ type AssetsResponse struct {
 // @Failure 500 {object} ErrorResponse
 // @Router /api/v1/assets [get]
 func (h *AlpacaHandlers) GetAssets(c *gin.Context) {
-	// Validate and parse pagination parameters first
-	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
-	if err != nil || page < 1 {
-		page = 1
-	}
-
-	pageSize, err := strconv.Atoi(c.DefaultQuery("page_size", "100"))
-	if err != nil || pageSize < 1 {
-		pageSize = 100
-	}
-	if pageSize > 500 {
-		pageSize = 500 // Max limit for performance
-	}
-
 	// Build query parameters for Alpaca API
 	query := make(map[string]string)
 
 	// Status filter (default: active)
 	status := c.DefaultQuery("status", "active")
-	query["status"] = status
+	if status != "" {
+		query["status"] = status
+	}
 
 	// Asset class filter
 	if assetClass := c.Query("asset_class"); assetClass != "" {
-		if assetClass != "us_equity" && assetClass != "crypto" {
-			c.JSON(http.StatusBadRequest, ErrorResponse{
-				Code:  "INVALID_ASSET_CLASS",
-				Error: "Asset class must be 'us_equity' or 'crypto'",
-			})
-			return
-		}
 		query["asset_class"] = assetClass
 	}
 
-	// Exchange filter with validation
+	// Exchange filter
 	if exchange := c.Query("exchange"); exchange != "" {
-		validExchanges := map[string]bool{
-			"NASDAQ": true, "NYSE": true, "ARCA": true, "BATS": true,
-			"AMEX": true, "NYSEARCA": true, "OTC": true,
-		}
-		if !validExchanges[strings.ToUpper(exchange)] {
-			c.JSON(http.StatusBadRequest, ErrorResponse{
-				Code:    "INVALID_EXCHANGE",
-				Error:   "Invalid exchange code",
-				Details: "Valid exchanges: NASDAQ, NYSE, ARCA, BATS, AMEX, NYSEARCA, OTC",
-			})
-			return
-		}
-		query["exchange"] = strings.ToUpper(exchange)
+		query["exchange"] = exchange
 	}
 
-	// Boolean filters with validation
-	booleanFilters := map[string]string{
-		"tradable":       "tradable",
-		"fractionable":   "fractionable",
-		"shortable":      "shortable",
-		"easy_to_borrow": "easy_to_borrow",
+	// Tradable filter (default: true for user-facing app)
+	tradable := c.DefaultQuery("tradable", "true")
+	if tradable != "" {
+		query["tradable"] = tradable
 	}
 
-	for paramName, queryName := range booleanFilters {
-		if value := c.Query(paramName); value != "" {
-			if value != "true" && value != "false" {
-				c.JSON(http.StatusBadRequest, ErrorResponse{
-					Code:  "INVALID_BOOLEAN_FILTER",
-					Error: fmt.Sprintf("Filter '%s' must be 'true' or 'false'", paramName),
-				})
-				return
-			}
-			query[queryName] = value
-		}
+	// Fractionable filter
+	if fractionable := c.Query("fractionable"); fractionable != "" {
+		query["fractionable"] = fractionable
 	}
 
-	// Set default tradable filter for user-facing app
-	if _, exists := query["tradable"]; !exists {
-		query["tradable"] = "true"
+	// Shortable filter
+	if shortable := c.Query("shortable"); shortable != "" {
+		query["shortable"] = shortable
+	}
+
+	// Easy to borrow filter
+	if easyToBorrow := c.Query("easy_to_borrow"); easyToBorrow != "" {
+		query["easy_to_borrow"] = easyToBorrow
 	}
 
 	h.logger.Info("Fetching assets from Alpaca",
-		zap.Any("filters", query),
-		zap.Int("page", page),
-		zap.Int("page_size", pageSize))
+		zap.Any("filters", query))
 
 	// Call Alpaca API
 	assets, err := h.alpacaClient.ListAssets(c.Request.Context(), query)
@@ -150,35 +109,33 @@ func (h *AlpacaHandlers) GetAssets(c *gin.Context) {
 		return
 	}
 
-	// Apply client-side search filter if provided (since Alpaca API doesn't support search)
-	searchTerm := strings.ToLower(strings.TrimSpace(c.Query("search")))
+	// Apply client-side search filter if provided
+	searchTerm := strings.ToLower(c.Query("search"))
 	if searchTerm != "" {
-		if len(searchTerm) < 2 {
-			c.JSON(http.StatusBadRequest, ErrorResponse{
-				Code:  "SEARCH_TOO_SHORT",
-				Error: "Search term must be at least 2 characters long",
-			})
-			return
-		}
-
-		filtered := make([]entities.AlpacaAssetResponse, 0, len(assets))
+		filtered := make([]entities.AlpacaAssetResponse, 0)
 		for _, asset := range assets {
-			symbolLower := strings.ToLower(asset.Symbol)
-			nameLower := strings.ToLower(asset.Name)
-
-			// Exact match gets priority, then prefix match, then contains
-			if symbolLower == searchTerm || nameLower == searchTerm {
-				filtered = append([]entities.AlpacaAssetResponse{asset}, filtered...) // prepend
-			} else if strings.HasPrefix(symbolLower, searchTerm) || strings.HasPrefix(nameLower, searchTerm) {
-				filtered = append([]entities.AlpacaAssetResponse{asset}, filtered...) // prepend
-			} else if strings.Contains(symbolLower, searchTerm) || strings.Contains(nameLower, searchTerm) {
+			if strings.Contains(strings.ToLower(asset.Symbol), searchTerm) ||
+				strings.Contains(strings.ToLower(asset.Name), searchTerm) {
 				filtered = append(filtered, asset)
 			}
 		}
 		assets = filtered
 	}
 
-	// Apply pagination
+	// Apply pagination (client-side since Alpaca returns all results)
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if page < 1 {
+		page = 1
+	}
+
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "100"))
+	if pageSize < 1 {
+		pageSize = 100
+	}
+	if pageSize > 500 {
+		pageSize = 500 // Max limit for performance
+	}
+
 	totalCount := len(assets)
 	start := (page - 1) * pageSize
 	end := start + pageSize
@@ -202,11 +159,9 @@ func (h *AlpacaHandlers) GetAssets(c *gin.Context) {
 
 	h.logger.Info("Successfully fetched assets",
 		zap.Int("total_count", totalCount),
-		zap.Int("filtered_count", len(assets)),
 		zap.Int("page", page),
 		zap.Int("page_size", pageSize),
-		zap.Int("returned_count", len(paginatedAssets)),
-		zap.String("search_term", searchTerm))
+		zap.Int("returned_count", len(paginatedAssets)))
 
 	c.JSON(http.StatusOK, AssetsResponse{
 		Assets:     paginatedAssets,
@@ -253,8 +208,8 @@ func (h *AlpacaHandlers) GetAsset(c *gin.Context) {
 				h.logger.Warn("Asset not found",
 					zap.String("symbol_or_id", symbolOrID))
 				c.JSON(http.StatusNotFound, ErrorResponse{
-					Code:    "ASSET_NOT_FOUND",
-					Error:   "Asset not found",
+					Code:  "ASSET_NOT_FOUND",
+					Error: "Asset not found",
 					Details: symbolOrID,
 				})
 				return
@@ -444,8 +399,8 @@ func (h *AlpacaHandlers) GetAssetsByExchange(c *gin.Context) {
 
 	if !validExchanges[exchange] {
 		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Code:    "INVALID_EXCHANGE",
-			Error:   "Invalid exchange code",
+			Code:  "INVALID_EXCHANGE",
+			Error: "Invalid exchange code",
 			Details: "Valid exchanges: NASDAQ, NYSE, ARCA, BATS, AMEX",
 		})
 		return
@@ -518,311 +473,4 @@ func (h *AlpacaHandlers) GetAssetsByExchange(c *gin.Context) {
 		Page:       page,
 		PageSize:   pageSize,
 	})
-}
-
-// AssetDetailResponse represents comprehensive asset details with position
-type AssetDetailResponse struct {
-	// Basic Asset Information
-	AssetInfo AssetInfo `json:"asset_info"`
-
-	// Position Information (if user holds this asset)
-	Position *PositionInfo `json:"position,omitempty"`
-
-	// Trading Information
-	TradingInfo TradingInfo `json:"trading_info"`
-
-	// Market Context
-	MarketContext MarketContext `json:"market_context"`
-
-	// Related News (latest 5)
-	RecentNews []NewsItem `json:"recent_news,omitempty"`
-
-	// Metadata
-	Metadata ResponseMetadata `json:"metadata"`
-}
-
-// AssetInfo contains core asset details
-type AssetInfo struct {
-	ID           string `json:"id"`
-	Symbol       string `json:"symbol"`
-	Name         string `json:"name"`
-	Class        string `json:"class"`
-	Exchange     string `json:"exchange"`
-	Status       string `json:"status"`
-	Tradable     bool   `json:"tradable"`
-	Marginable   bool   `json:"marginable"`
-	Shortable    bool   `json:"shortable"`
-	EasyToBorrow bool   `json:"easy_to_borrow"`
-	Fractionable bool   `json:"fractionable"`
-}
-
-// PositionInfo contains user's position in this asset
-type PositionInfo struct {
-	Quantity            string `json:"quantity"`
-	AvgEntryPrice       string `json:"avg_entry_price"`
-	MarketValue         string `json:"market_value"`
-	CostBasis           string `json:"cost_basis"`
-	UnrealizedPL        string `json:"unrealized_pl"`
-	UnrealizedPLPercent string `json:"unrealized_pl_percent"`
-	CurrentPrice        string `json:"current_price"`
-	Side                string `json:"side"` // long or short
-	QtyAvailable        string `json:"qty_available"`
-}
-
-// TradingInfo contains trading-specific information
-type TradingInfo struct {
-	MinOrderSize      *string `json:"min_order_size,omitempty"`
-	MinTradeIncrement *string `json:"min_trade_increment,omitempty"`
-	PriceIncrement    *string `json:"price_increment,omitempty"`
-	SupportsMarket    bool    `json:"supports_market_orders"`
-	SupportsLimit     bool    `json:"supports_limit_orders"`
-	SupportsStop      bool    `json:"supports_stop_orders"`
-	ExtendedHours     bool    `json:"extended_hours_trading"`
-}
-
-// MarketContext provides market-related context
-type MarketContext struct {
-	IsMarketOpen    bool       `json:"is_market_open"`
-	NextMarketOpen  *time.Time `json:"next_market_open,omitempty"`
-	NextMarketClose *time.Time `json:"next_market_close,omitempty"`
-	Timezone        string     `json:"timezone"`
-}
-
-// NewsItem represents a news article
-type NewsItem struct {
-	ID        int       `json:"id"`
-	Headline  string    `json:"headline"`
-	Summary   string    `json:"summary"`
-	Source    string    `json:"source"`
-	URL       string    `json:"url"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-// ResponseMetadata contains response metadata
-type ResponseMetadata struct {
-	Timestamp   time.Time `json:"timestamp"`
-	RequestID   string    `json:"request_id,omitempty"`
-	CacheStatus string    `json:"cache_status,omitempty"`
-}
-
-// GetAssetDetails retrieves comprehensive asset details with position data
-// @Summary Get comprehensive asset details
-// @Description Retrieve complete asset information including position data, trading info, and recent news
-// @Tags assets
-// @Produce json
-// @Param symbol path string true "Asset symbol (e.g., AAPL)"
-// @Param account_id query string false "Account ID to fetch position data"
-// @Param include_news query boolean false "Include recent news articles" default(true)
-// @Success 200 {object} AssetDetailResponse
-// @Failure 400 {object} ErrorResponse
-// @Failure 401 {object} ErrorResponse
-// @Failure 404 {object} ErrorResponse
-// @Failure 500 {object} ErrorResponse
-// @Router /api/v1/assets/{symbol}/details [get]
-func (h *AlpacaHandlers) GetAssetDetails(c *gin.Context) {
-	symbol := strings.ToUpper(strings.TrimSpace(c.Param("symbol")))
-
-	if symbol == "" {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Code:  "INVALID_PARAMETER",
-			Error: "Asset symbol is required",
-		})
-		return
-	}
-
-	// Get user ID from context (for position data)
-	userID, exists := c.Get("user_id")
-	var userUUID uuid.UUID
-	if exists {
-		if uid, ok := userID.(uuid.UUID); ok {
-			userUUID = uid
-		}
-	}
-
-	// Optional: account ID from query params
-	accountID := c.Query("account_id")
-	includeNews := c.DefaultQuery("include_news", "true") == "true"
-
-	h.logger.Info("Fetching comprehensive asset details",
-		zap.String("symbol", symbol),
-		zap.String("account_id", accountID),
-		zap.Bool("include_news", includeNews))
-
-	// 1. Fetch asset information
-	asset, err := h.alpacaClient.GetAsset(c.Request.Context(), symbol)
-	if err != nil {
-		if apiErr, ok := err.(*entities.AlpacaErrorResponse); ok {
-			if apiErr.Code == http.StatusNotFound {
-				c.JSON(http.StatusNotFound, ErrorResponse{
-					Code:    "ASSET_NOT_FOUND",
-					Error:   "Asset not found",
-					Details: symbol,
-				})
-				return
-			}
-		}
-		h.logger.Error("Failed to fetch asset details",
-			zap.String("symbol", symbol),
-			zap.Error(err))
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Code:  "ASSET_FETCH_ERROR",
-			Error: "Failed to retrieve asset details",
-		})
-		return
-	}
-
-	// 2. Build asset info
-	assetInfo := AssetInfo{
-		ID:           asset.ID,
-		Symbol:       asset.Symbol,
-		Name:         asset.Name,
-		Class:        string(asset.Class),
-		Exchange:     asset.Exchange,
-		Status:       string(asset.Status),
-		Tradable:     asset.Tradable,
-		Marginable:   asset.Marginable,
-		Shortable:    asset.Shortable,
-		EasyToBorrow: asset.EasyToBorrow,
-		Fractionable: asset.Fractionable,
-	}
-
-	// 3. Build trading info
-	tradingInfo := TradingInfo{
-		SupportsMarket: true, // Alpaca supports these by default
-		SupportsLimit:  true,
-		SupportsStop:   true,
-		ExtendedHours:  false, // Can be configured
-	}
-
-	if asset.MinOrderSize != nil {
-		minOrder := asset.MinOrderSize.String()
-		tradingInfo.MinOrderSize = &minOrder
-	}
-	if asset.MinTradeIncrement != nil {
-		minTrade := asset.MinTradeIncrement.String()
-		tradingInfo.MinTradeIncrement = &minTrade
-	}
-	if asset.PriceIncrement != nil {
-		priceInc := asset.PriceIncrement.String()
-		tradingInfo.PriceIncrement = &priceInc
-	}
-
-	// 4. Fetch position data (if account ID provided and user authenticated)
-	var positionInfo *PositionInfo
-	if accountID != "" && userUUID != uuid.Nil {
-		position, err := h.alpacaClient.GetPosition(c.Request.Context(), accountID, symbol)
-		if err == nil {
-			// User has a position in this asset
-			positionInfo = &PositionInfo{
-				Quantity:            position.Qty.String(),
-				AvgEntryPrice:       position.AvgEntryPrice.String(),
-				MarketValue:         position.MarketValue.String(),
-				CostBasis:           position.CostBasis.String(),
-				UnrealizedPL:        position.UnrealizedPL.String(),
-				UnrealizedPLPercent: position.UnrealizedPLPC.String(),
-				CurrentPrice:        position.CurrentPrice.String(),
-				Side:                position.Side,
-				QtyAvailable:        position.QtyAvailable.String(),
-			}
-		} else {
-			// No position or error fetching - log but don't fail
-			h.logger.Debug("No position found for asset",
-				zap.String("symbol", symbol),
-				zap.String("account_id", accountID))
-		}
-	}
-
-	// 5. Build market context
-	marketContext := buildMarketContext()
-
-	// 6. Fetch recent news (optional)
-	var recentNews []NewsItem
-	if includeNews {
-		newsReq := &entities.AlpacaNewsRequest{
-			Symbols: []string{symbol},
-			Limit:   5,
-			Sort:    "DESC",
-		}
-
-		newsResp, err := h.alpacaClient.GetNews(c.Request.Context(), newsReq)
-		if err == nil && len(newsResp.News) > 0 {
-			for _, article := range newsResp.News {
-				recentNews = append(recentNews, NewsItem{
-					ID:        article.ID,
-					Headline:  article.Headline,
-					Summary:   article.Summary,
-					Source:    article.Source,
-					URL:       article.URL,
-					CreatedAt: article.CreatedAt,
-				})
-			}
-		} else if err != nil {
-			h.logger.Warn("Failed to fetch news for asset",
-				zap.String("symbol", symbol),
-				zap.Error(err))
-		}
-	}
-
-	// 7. Build response
-	response := AssetDetailResponse{
-		AssetInfo:     assetInfo,
-		Position:      positionInfo,
-		TradingInfo:   tradingInfo,
-		MarketContext: marketContext,
-		RecentNews:    recentNews,
-		Metadata: ResponseMetadata{
-			Timestamp:   time.Now(),
-			RequestID:   c.GetString("request_id"),
-			CacheStatus: "miss",
-		},
-	}
-
-	h.logger.Info("Successfully fetched comprehensive asset details",
-		zap.String("symbol", symbol),
-		zap.Bool("has_position", positionInfo != nil),
-		zap.Int("news_count", len(recentNews)))
-
-	c.JSON(http.StatusOK, response)
-}
-
-// buildMarketContext creates market context information
-func buildMarketContext() MarketContext {
-	// Simple implementation - can be enhanced with actual market hours API
-	now := time.Now().In(time.FixedZone("EST", -5*3600))
-	weekday := now.Weekday()
-	hour := now.Hour()
-
-	// US market hours: 9:30 AM - 4:00 PM EST, Monday-Friday
-	isMarketOpen := weekday >= time.Monday && weekday <= time.Friday &&
-		((hour == 9 && now.Minute() >= 30) || (hour > 9 && hour < 16))
-
-	marketContext := MarketContext{
-		IsMarketOpen: isMarketOpen,
-		Timezone:     "America/New_York",
-	}
-
-	// Calculate next market open/close (simplified)
-	if !isMarketOpen {
-		// Calculate next market open
-		nextOpen := time.Date(now.Year(), now.Month(), now.Day(), 9, 30, 0, 0, now.Location())
-		if now.After(nextOpen) || weekday == time.Saturday || weekday == time.Sunday {
-			// Move to next business day
-			if weekday == time.Friday && now.Hour() >= 16 {
-				nextOpen = nextOpen.AddDate(0, 0, 3) // Monday
-			} else if weekday == time.Saturday {
-				nextOpen = nextOpen.AddDate(0, 0, 2) // Monday
-			} else if weekday == time.Sunday {
-				nextOpen = nextOpen.AddDate(0, 0, 1) // Monday
-			} else {
-				nextOpen = nextOpen.AddDate(0, 0, 1) // Next day
-			}
-		}
-		marketContext.NextMarketOpen = &nextOpen
-	} else {
-		// Market is open, calculate next close
-		nextClose := time.Date(now.Year(), now.Month(), now.Day(), 16, 0, 0, 0, now.Location())
-		marketContext.NextMarketClose = &nextClose
-	}
-
-	return marketContext
 }

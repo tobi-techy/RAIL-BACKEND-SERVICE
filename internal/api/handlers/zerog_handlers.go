@@ -46,8 +46,8 @@ type HealthRequest struct {
 	Service string `json:"service"` // "storage", "inference", or "all"
 }
 
-// HealthResponse represents the health check response
-type HealthResponse struct {
+// ZeroGHealthResponse represents the health check response
+type ZeroGHealthResponse struct {
 	Overall   string                    `json:"overall"`
 	Services  map[string]*ServiceHealth `json:"services"`
 	CheckedAt time.Time                 `json:"checked_at"`
@@ -122,7 +122,7 @@ type GenerateResponse struct {
 // @Accept json
 // @Produce json
 // @Param request body HealthRequest false "Health check request"
-// @Success 200 {object} HealthResponse
+// @Success 200 {object} ZeroGHealthResponse
 // @Failure 400 {object} ErrorResponse
 // @Failure 500 {object} ErrorResponse
 // @Router /_internal/0g/health [post]
@@ -143,7 +143,7 @@ func (h *ZeroGHandler) HealthCheck(c *gin.Context) {
 		zap.String("request_id", getRequestID(c)),
 	)
 
-	response := &HealthResponse{
+	response := &ZeroGHealthResponse{
 		Overall:   entities.HealthStatusHealthy,
 		Services:  make(map[string]*ServiceHealth),
 		CheckedAt: time.Now(),

@@ -11,8 +11,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/stack-service/stack_service/internal/config"
 	"github.com/stack-service/stack_service/internal/domain/entities"
-	infconfig "github.com/stack-service/stack_service/internal/infrastructure/config"
 	"github.com/stack-service/stack_service/pkg/retry"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -23,26 +23,26 @@ import (
 
 // Client handles communication with 0G compute/serving-broker network
 type Client struct {
-	config     *infconfig.ZeroGComputeConfig
+	config     *config.ComputeConfig
 	httpClient *http.Client
 	logger     *zap.Logger
 	tracer     trace.Tracer
 	metrics    *ClientMetrics
 
 	// Authentication and configuration
-	privateKey  string
-	brokerID    string
+	privateKey string
+	brokerID   string
 	providerURL string
 }
 
 // ClientMetrics contains observability metrics for the 0G compute client
 type ClientMetrics struct {
-	RequestsTotal      metric.Int64Counter
-	RequestDuration    metric.Float64Histogram
-	RequestErrors      metric.Int64Counter
-	ActiveConnections  metric.Int64Gauge
-	TokensUsed         metric.Int64Counter
-	ServiceDiscoveries metric.Int64Counter
+	RequestsTotal        metric.Int64Counter
+	RequestDuration      metric.Float64Histogram
+	RequestErrors        metric.Int64Counter
+	ActiveConnections    metric.Int64Gauge
+	TokensUsed           metric.Int64Counter
+	ServiceDiscoveries   metric.Int64Counter
 }
 
 // InferenceRequest represents a request to 0G compute network
@@ -57,16 +57,16 @@ type InferenceRequest struct {
 
 // ChatMessage represents a message in the conversation
 type ChatMessage struct {
-	Role    string `json:"role"` // system, user, assistant
+	Role    string `json:"role"`    // system, user, assistant
 	Content string `json:"content"`
 }
 
 // InferenceResponse represents a response from 0G compute network
 type InferenceResponse struct {
-	ID      string   `json:"id"`
-	Object  string   `json:"object"`
-	Created int64    `json:"created"`
-	Model   string   `json:"model"`
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	Model   string `json:"model"`
 	Choices []Choice `json:"choices"`
 	Usage   Usage    `json:"usage"`
 }
@@ -87,11 +87,11 @@ type Usage struct {
 
 // ServiceInfo represents information about available services
 type ServiceInfo struct {
-	ProviderID  string      `json:"provider_id"`
-	ServiceName string      `json:"service_name"`
-	Models      []ModelInfo `json:"models"`
-	Status      string      `json:"status"`
-	Endpoint    string      `json:"endpoint"`
+	ProviderID   string      `json:"provider_id"`
+	ServiceName  string      `json:"service_name"`
+	Models       []ModelInfo `json:"models"`
+	Status       string      `json:"status"`
+	Endpoint     string      `json:"endpoint"`
 }
 
 // ModelInfo represents information about an AI model
@@ -106,7 +106,7 @@ type ModelInfo struct {
 
 // NewClient creates a new 0G compute client
 func NewClient(
-	config *infconfig.ZeroGComputeConfig,
+	config *config.ComputeConfig,
 	privateKey string,
 	logger *zap.Logger,
 ) (*Client, error) {
@@ -144,11 +144,11 @@ func NewClient(
 		tracer:      tracer,
 		metrics:     metrics,
 		privateKey:  privateKey,
-		providerURL: config.BrokerEndpoint,
+		providerURL: config.Endpoint,
 	}
 
 	logger.Info("0G compute client initialized",
-		zap.String("endpoint", config.BrokerEndpoint),
+		zap.String("endpoint", config.Endpoint),
 		zap.Duration("timeout", config.Timeout),
 		zap.Int("max_retries", config.MaxRetries),
 	)
@@ -162,14 +162,14 @@ func (c *Client) HealthCheck(ctx context.Context) (*entities.HealthStatus, error
 	defer span.End()
 
 	startTime := time.Now()
-
+	
 	// Try to discover services as a health check
 	_, err := c.discoverServices(ctx)
 	latency := time.Since(startTime)
-
+	
 	status := entities.HealthStatusHealthy
 	var errors []string
-
+	
 	if err != nil {
 		status = entities.HealthStatusUnhealthy
 		errors = append(errors, err.Error())
@@ -177,14 +177,14 @@ func (c *Client) HealthCheck(ctx context.Context) (*entities.HealthStatus, error
 	}
 
 	return &entities.HealthStatus{
-		Status:  status,
-		Latency: latency,
-		Version: "1.0.0",
-		Uptime:  time.Hour, // TODO: Track actual uptime
+		Status:      status,
+		Latency:     latency,
+		Version:     "1.0.0",
+		Uptime:      time.Hour, // TODO: Track actual uptime
 		Metrics: map[string]interface{}{
-			"endpoint": c.config.BrokerEndpoint,
-			"timeout":  c.config.Timeout,
-			"retries":  c.config.MaxRetries,
+			"endpoint":   c.config.Endpoint,
+			"timeout":    c.config.Timeout,
+			"retries":    c.config.MaxRetries,
 		},
 		LastChecked: time.Now(),
 		Errors:      errors,
@@ -283,7 +283,7 @@ func (c *Client) doInferenceRequest(ctx context.Context, request *InferenceReque
 	// Set headers
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
-
+	
 	// Add authentication headers
 	if err := c.addAuthHeaders(httpReq, payload); err != nil {
 		return nil, fmt.Errorf("failed to add authentication headers: %w", err)
@@ -338,23 +338,23 @@ func (c *Client) doInferenceRequest(ctx context.Context, request *InferenceReque
 func (c *Client) addAuthHeaders(req *http.Request, payload []byte) error {
 	// Generate timestamp
 	timestamp := time.Now().Unix()
-
+	
 	// Create signature payload (method + url + timestamp + body_hash)
 	bodyHash := sha256.Sum256(payload)
-	signaturePayload := fmt.Sprintf("%s\n%s\n%d\n%s",
-		req.Method,
-		req.URL.Path,
-		timestamp,
+	signaturePayload := fmt.Sprintf("%s\n%s\n%d\n%s", 
+		req.Method, 
+		req.URL.Path, 
+		timestamp, 
 		hex.EncodeToString(bodyHash[:]))
 
 	// Sign the payload (simplified signature - in production, use proper cryptographic signing)
 	signature := c.generateSignature(signaturePayload)
-
+	
 	// Add authentication headers
 	req.Header.Set("X-0G-Timestamp", fmt.Sprintf("%d", timestamp))
 	req.Header.Set("X-0G-Signature", signature)
 	req.Header.Set("X-0G-Auth-Key", c.derivePublicKey())
-
+	
 	return nil
 }
 
@@ -438,7 +438,7 @@ func isRetryableError(err error) bool {
 	if zeroGErr, ok := err.(*entities.ZeroGError); ok {
 		return zeroGErr.Retryable
 	}
-
+	
 	// Network errors are generally retryable
 	return true
 }

@@ -3,575 +3,193 @@ package due
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/sony/gobreaker"
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"go.uber.org/zap"
-)
-
-const (
-	// Default timeouts and limits
-	defaultTimeout    = 30 * time.Second
-	maxRetries        = 3
-	baseBackoff       = 1 * time.Second
-	maxBackoff        = 16 * time.Second
-	jitterRange       = 0.1 // 10% jitter
-	defaultRetryAfter = 5 * time.Second
-	maxRetryAfter     = 60 * time.Second
-
-	// Due API rate limits (requests per minute) - conservative defaults
-	dueRateLimitRPM = 60
-	rateLimitBurst  = 10
+	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/stack-service/stack_service/pkg/retry"
 )
 
 // Config represents Due API configuration
 type Config struct {
-	APIKey         string
-	APISecret      string
-	BaseURL        string // Due API base URL
-	Environment    string // sandbox or production
-	Timeout        time.Duration
-	RateLimitRPM   int // Requests per minute (0 = use default)
-	RateLimitBurst int // Burst capacity (0 = use default)
+	APIKey     string
+	AccountID  string
+	BaseURL    string
+	Timeout    time.Duration
+	MaxRetries int
 }
 
 // Client represents a Due API client
 type Client struct {
-	config         Config
-	httpClient     *http.Client
-	circuitBreaker *gobreaker.CircuitBreaker
-	rateLimiter    *time.Ticker
-	requestTokens  chan struct{}
-	logger         *zap.Logger
+	config     Config
+	httpClient *http.Client
+	logger     *logger.Logger
 }
 
 // NewClient creates a new Due API client
-func NewClient(config Config, logger *zap.Logger) *Client {
+func NewClient(config Config, logger *logger.Logger) *Client {
 	if config.Timeout == 0 {
-		config.Timeout = defaultTimeout
-	}
-
-	// Set default rate limits if not provided
-	if config.RateLimitRPM == 0 {
-		config.RateLimitRPM = dueRateLimitRPM
-	}
-	if config.RateLimitBurst == 0 {
-		config.RateLimitBurst = rateLimitBurst
+		config.Timeout = 30 * time.Second
 	}
 
 	if config.BaseURL == "" {
-	if config.Environment == "production" {
-	config.BaseURL = "https://api.due.network"
-	} else {
-	config.BaseURL = "https://api.sandbox.due.network"
+		config.BaseURL = "https://api.due.network"
 	}
+
+	if config.MaxRetries == 0 {
+		config.MaxRetries = 3
 	}
-	config.BaseURL = strings.TrimRight(config.BaseURL, "/")
 
 	httpClient := &http.Client{
 		Timeout: config.Timeout,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				MinVersion: tls.VersionTLS12,
-			},
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 10,
-			IdleConnTimeout:     90 * time.Second,
-		},
 	}
-
-	// Initialize rate limiter
-	rateLimiter := time.NewTicker(time.Minute / time.Duration(config.RateLimitRPM))
-	requestTokens := make(chan struct{}, config.RateLimitBurst)
-
-	// Fill initial burst capacity
-	for i := 0; i < config.RateLimitBurst; i++ {
-		requestTokens <- struct{}{}
-	}
-
-	// Token replenishment goroutine
-	go func() {
-		for range rateLimiter.C {
-			select {
-			case requestTokens <- struct{}{}:
-			default:
-				// Channel is full, skip this token
-			}
-		}
-	}()
-
-	st := gobreaker.Settings{
-		Name:    "DueAPI",
-		MaxRequests: 5,
-		Interval:    10 * time.Second,
-		Timeout:     30 * time.Second,
-		ReadyToTrip: func(counts gobreaker.Counts) bool {
-			return counts.ConsecutiveFailures > 5
-		},
-		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
-			logger.Info("Circuit breaker state changed",
-				zap.String("name", name),
-				zap.String("from", from.String()),
-				zap.String("to", to.String()))
-		},
-	}
-
-	circuitBreaker := gobreaker.NewCircuitBreaker(st)
 
 	return &Client{
-		config:         config,
-		httpClient:     httpClient,
-		circuitBreaker: circuitBreaker,
-		rateLimiter:    rateLimiter,
-		requestTokens:  requestTokens,
-		logger:         logger,
+		config:     config,
+		httpClient: httpClient,
+		logger:     logger,
 	}
 }
 
-// CreateVirtualAccount creates a new virtual account through the Due API
-func (c *Client) CreateVirtualAccount(ctx context.Context, userID string, destination string, schemaIn string, currencyIn string, railOut string, currencyOut string) (*entities.VirtualAccount, error) {
-c.logger.Info("Creating Due virtual account",
-zap.String("user_id", userID),
-  zap.String("destination", destination),
- zap.String("schema_in", schemaIn),
-zap.String("currency_in", currencyIn),
-zap.String("rail_out", railOut),
- zap.String("currency_out", currencyOut))
- 
- 	req := CreateVirtualAccountRequest{
- 		Destination: destination,
- 		SchemaIn:    schemaIn,
- 		CurrencyIn:  currencyIn,
- 		RailOut:     railOut,
- 		CurrencyOut: currencyOut,
- 		Reference:   userID, // Use userID as reference for tracking
- 	}
-
-	var response CreateVirtualAccountResponse
-	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
-		return &response, c.doRequestWithRetry(ctx, "POST", "/v1/virtual_accounts", req, &response, false)
-	})
-
-	if err != nil {
-		c.logger.Error("Failed to create Due virtual account",
-			zap.String("user_id", userID),
-			zap.Error(err))
-		return nil, fmt.Errorf("create virtual account failed: %w", err)
-	}
-
-	// Parse userID from string to UUID
-	parsedUserID, err := uuid.Parse(userID)
-	if err != nil {
-	c.logger.Error("Invalid user ID format",
-	zap.String("user_id", userID),
-	zap.Error(err))
-	return nil, fmt.Errorf("invalid user ID: %w", err)
-	}
-	
-	// Convert Due API response to our domain entity
-	status := entities.VirtualAccountStatusCreating
-	if response.IsActive {
-	status = entities.VirtualAccountStatusActive
-	}
-	
-	virtualAccount := &entities.VirtualAccount{
-	ID:               uuid.New(),
-	UserID:           parsedUserID,
-	 DueAccountID:     response.Nonce, // Use nonce as the Due account identifier
- 		BrokerageAccountID: "", // Will be set later during linking
- 		Status:           status,
- 		CreatedAt:        response.CreatedAt,
- 		UpdatedAt:        response.CreatedAt, // API doesn't provide UpdatedAt, use CreatedAt
- 	}
-
-	c.logger.Info("Created Due virtual account successfully",
-		zap.String("virtual_account_id", virtualAccount.ID.String()),
-		zap.String("due_account_id", virtualAccount.DueAccountID),
-		zap.String("status", string(virtualAccount.Status)))
-
-	return virtualAccount, nil
+// CreateVirtualAccountRequest represents a request to create a virtual account via Due API
+type CreateVirtualAccountRequest struct {
+	Destination  string `json:"destination"`  // Crypto address or recipient ID for settlement
+	SchemaIn     string `json:"schemaIn"`     // Input payment method (bank_sepa, bank_us, evm, tron)
+	CurrencyIn   string `json:"currencyIn"`   // Input currency (EUR, USD, USDC, USDT)
+	RailOut      string `json:"railOut"`      // Settlement rail (ethereum, polygon, sepa, ach)
+	CurrencyOut  string `json:"currencyOut"`  // Output currency (USDC, EURC, EUR, USD)
+	Reference    string `json:"reference"`    // Unique reference for tracking
 }
 
-// CreateAccount creates a new Due account for a user
-func (c *Client) CreateAccount(ctx context.Context, req CreateAccountRequest) (*Account, error) {
-	c.logger.Info("Creating Due account",
-		zap.String("type", req.Type),
-		zap.String("name", req.Name),
-		zap.String("email", req.Email),
-		zap.String("country", req.Country))
+// VirtualAccountDetails contains the receiving account details
+type VirtualAccountDetails struct {
+	IBAN            string `json:"IBAN,omitempty"`
+	AccountNumber   string `json:"accountNumber,omitempty"`
+	RoutingNumber   string `json:"routingNumber,omitempty"`
+	BankName        string `json:"bankName,omitempty"`
+	BeneficiaryName string `json:"beneficiaryName,omitempty"`
+	Address         string `json:"address,omitempty"` // For crypto virtual accounts
+}
 
-	var response Account
-	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
-		return &response, c.doRequestWithRetry(ctx, "POST", "/v1/accounts", req, &response, false)
-	})
+// CreateVirtualAccountResponse represents the response from creating a virtual account
+type CreateVirtualAccountResponse struct {
+	OwnerID       string                `json:"ownerId"`
+	DestinationID string                `json:"destinationId"`
+	SchemaIn      string                `json:"schemaIn"`
+	CurrencyIn    string                `json:"currencyIn"`
+	RailOut       string                `json:"railOut"`
+	CurrencyOut   string                `json:"currencyOut"`
+	Nonce         string                `json:"nonce"` // Your reference (stored as unique identifier)
+	Details       VirtualAccountDetails `json:"details"`
+	IsActive      bool                  `json:"isActive"`
+	CreatedAt     string                `json:"createdAt"`
+}
 
-	if err != nil {
-		c.logger.Error("Failed to create Due account",
-			zap.String("email", req.Email),
-			zap.Error(err))
+// CreateAccount creates a Due account
+func (c *Client) CreateAccount(ctx context.Context, req *CreateAccountRequest) (*CreateAccountResponse, error) {
+	c.logger.Info("Creating Due account", "email", req.Email, "type", req.Type)
+
+	var response CreateAccountResponse
+	if err := c.doRequest(ctx, "POST", "/accounts", req, &response); err != nil {
+		c.logger.Error("Failed to create Due account", "error", err)
 		return nil, fmt.Errorf("create account failed: %w", err)
 	}
 
-	c.logger.Info("Created Due account successfully",
-		zap.String("account_id", response.ID),
-		zap.String("status", response.Status))
-
-	return &response, nil
-	}
-
-// CreateQuote creates a transfer quote for crypto-to-fiat conversion
-func (c *Client) CreateQuote(ctx context.Context, req CreateQuoteRequest) (*CreateQuoteResponse, error) {
-	c.logger.Info("Creating Due transfer quote",
-		zap.String("source_rail", req.Source.Rail),
-		zap.String("source_currency", req.Source.Currency),
-		zap.String("source_amount", req.Source.Amount),
-		zap.String("dest_rail", req.Destination.Rail),
-		zap.String("dest_currency", req.Destination.Currency))
-
-	var response CreateQuoteResponse
-	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
-		return &response, c.doRequestWithRetry(ctx, "POST", "/v1/transfers/quote", req, &response, false)
-	})
-
-	if err != nil {
-		c.logger.Error("Failed to create Due transfer quote", zap.Error(err))
-		return nil, fmt.Errorf("create quote failed: %w", err)
-	}
-
-	c.logger.Info("Created Due transfer quote successfully",
-		zap.String("quote_token", response.Token),
-		zap.Time("expires_at", response.ExpiresAt))
-
+	c.logger.Info("Created Due account", "account_id", response.ID, "status", response.Status)
 	return &response, nil
 }
 
-// CreateTransfer initiates a crypto-to-fiat transfer
-func (c *Client) CreateTransfer(ctx context.Context, req CreateTransferRequest) (*CreateTransferResponse, error) {
-	c.logger.Info("Creating Due transfer",
-		zap.String("quote", req.Quote),
-		zap.String("sender", req.Sender),
-		zap.String("recipient", req.Recipient),
-		zap.String("memo", req.Memo))
-
-	var response CreateTransferResponse
-	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
-		return &response, c.doRequestWithRetry(ctx, "POST", "/v1/transfers", req, &response, false)
-	})
-
-	if err != nil {
-		c.logger.Error("Failed to create Due transfer",
-			zap.String("quote", req.Quote),
-			zap.Error(err))
-		return nil, fmt.Errorf("create transfer failed: %w", err)
+// GetAccount retrieves a Due account by ID
+func (c *Client) GetAccount(ctx context.Context, accountID string) (*CreateAccountResponse, error) {
+	endpoint := fmt.Sprintf("/accounts/%s", accountID)
+	var response CreateAccountResponse
+	if err := c.doRequest(ctx, "GET", endpoint, nil, &response); err != nil {
+		return nil, fmt.Errorf("get account failed: %w", err)
 	}
-
-	c.logger.Info("Created Due transfer successfully",
-		zap.String("transfer_id", response.ID),
-		zap.String("status", response.Status),
-		zap.Time("expires_at", response.ExpiresAt))
-
 	return &response, nil
 }
 
-// CreateTransferIntent generates blockchain transaction data for signing
-func (c *Client) CreateTransferIntent(ctx context.Context, transferID string) (*CreateTransferIntentResponse, error) {
-	c.logger.Info("Creating Due transfer intent", zap.String("transfer_id", transferID))
+// LinkWallet links a wallet to a Due account
+func (c *Client) LinkWallet(ctx context.Context, req *LinkWalletRequest) (*LinkWalletResponse, error) {
+	c.logger.Info("Linking wallet to Due account", "address", req.Address)
 
-	var response CreateTransferIntentResponse
-	endpoint := fmt.Sprintf("/v1/transfers/%s/transfer_intent", transferID)
-	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
-		return &response, c.doRequestWithRetry(ctx, "POST", endpoint, nil, &response, false)
-	})
-
-	if err != nil {
-		c.logger.Error("Failed to create Due transfer intent",
-			zap.String("transfer_id", transferID),
-			zap.Error(err))
-		return nil, fmt.Errorf("create transfer intent failed: %w", err)
-	}
-
-	c.logger.Info("Created Due transfer intent successfully",
-		zap.String("intent_id", response.ID),
-		zap.Int("signables_count", len(response.Signables)))
-
-	return &response, nil
-}
-
-// SubmitTransferIntent submits a signed transfer intent to execute the transfer
-func (c *Client) SubmitTransferIntent(ctx context.Context, req SubmitTransferIntentRequest) error {
-	c.logger.Info("Submitting Due transfer intent",
-		zap.String("intent_id", req.ID),
-		zap.String("transfer_ref", req.Reference))
-
-	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
-		return nil, c.doRequestWithRetry(ctx, "POST", "/v1/transfer_intents/submit", req, nil, false)
-	})
-
-	if err != nil {
-		c.logger.Error("Failed to submit Due transfer intent",
-			zap.String("intent_id", req.ID),
-			zap.Error(err))
-		return fmt.Errorf("submit transfer intent failed: %w", err)
-	}
-
-	c.logger.Info("Submitted Due transfer intent successfully",
-		zap.String("intent_id", req.ID))
-
-	return nil
-}
-
-// CreateFundingAddress creates a temporary deposit address for direct transfers
-func (c *Client) CreateFundingAddress(ctx context.Context, transferID string) (*CreateFundingAddressResponse, error) {
-	c.logger.Info("Creating Due funding address", zap.String("transfer_id", transferID))
-
-	var response CreateFundingAddressResponse
-	endpoint := fmt.Sprintf("/v1/transfers/%s/funding_address", transferID)
-	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
-		return &response, c.doRequestWithRetry(ctx, "POST", endpoint, nil, &response, false)
-	})
-
-	if err != nil {
-		c.logger.Error("Failed to create Due funding address",
-			zap.String("transfer_id", transferID),
-			zap.Error(err))
-		return nil, fmt.Errorf("create funding address failed: %w", err)
-	}
-
-	c.logger.Info("Created Due funding address successfully",
-		zap.String("transfer_id", transferID),
-		zap.String("address", response.Details.Address))
-
-	return &response, nil
-}
-
-// GetTransfer retrieves transfer details by ID
-func (c *Client) GetTransfer(ctx context.Context, transferID string) (*GetTransferResponse, error) {
-	c.logger.Info("Getting Due transfer details", zap.String("transfer_id", transferID))
-
-	var response GetTransferResponse
-	endpoint := fmt.Sprintf("/v1/transfers/%s", transferID)
-	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
-		return &response, c.doRequestWithRetry(ctx, "GET", endpoint, nil, &response, false)
-	})
-
-	if err != nil {
-		c.logger.Error("Failed to get Due transfer details",
-			zap.String("transfer_id", transferID),
-			zap.Error(err))
-		return nil, fmt.Errorf("get transfer failed: %w", err)
-	}
-
-	c.logger.Info("Got Due transfer details successfully",
-		zap.String("transfer_id", transferID),
-		zap.String("status", response.Status))
-
-	return &response, nil
-}
-
-// LinkWallet links a wallet address to a Due account
-// Automatically formats the wallet address based on blockchain type
-func (c *Client) LinkWallet(ctx context.Context, accountID, walletAddress, blockchain string) (*Wallet, error) {
-	c.logger.Info("Linking wallet to Due account",
-		zap.String("account_id", accountID),
-		zap.String("wallet_address", walletAddress),
-		zap.String("blockchain", blockchain))
-
-	// Format wallet address according to Due API requirements
-	formattedAddress, err := formatWalletAddressForDue(walletAddress, blockchain)
-	if err != nil {
-		c.logger.Error("Failed to format wallet address",
-			zap.String("wallet_address", walletAddress),
-			zap.String("blockchain", blockchain),
-			zap.Error(err))
-		return nil, fmt.Errorf("invalid wallet address format: %w", err)
-	}
-
-	req := LinkWalletRequest{
-		Address: formattedAddress,
-	}
-
-	var response Wallet
-	_, err = c.circuitBreaker.Execute(func() (interface{}, error) {
-		// Create request with Due-Account-Id header
-		return &response, c.doWalletRequestWithRetry(ctx, "POST", "/v1/wallets", accountID, req, &response)
-	})
-
-	if err != nil {
-		c.logger.Error("Failed to link wallet to Due account",
-			zap.String("account_id", accountID),
-			zap.String("wallet_address", walletAddress),
-			zap.String("formatted_address", formattedAddress),
-			zap.Error(err))
+	var response LinkWalletResponse
+	if err := c.doRequest(ctx, "POST", "/wallets", req, &response); err != nil {
+		c.logger.Error("Failed to link wallet", "error", err)
 		return nil, fmt.Errorf("link wallet failed: %w", err)
 	}
 
-	c.logger.Info("Linked wallet to Due account successfully",
-		zap.String("wallet_id", response.ID),
-		zap.String("account_id", response.AccountID),
-		zap.String("formatted_address", formattedAddress))
+	c.logger.Info("Linked wallet successfully", "wallet_id", response.ID)
+	return &response, nil
+}
+
+// CreateRecipient creates a bank recipient for USD settlement
+func (c *Client) CreateRecipient(ctx context.Context, req *CreateRecipientRequest) (*CreateRecipientResponse, error) {
+	c.logger.Info("Creating recipient", "id", req.ID, "country", req.Country)
+
+	var response CreateRecipientResponse
+	if err := c.doRequest(ctx, "POST", "/recipients", req, &response); err != nil {
+		c.logger.Error("Failed to create recipient", "error", err)
+		return nil, fmt.Errorf("create recipient failed: %w", err)
+	}
+
+	c.logger.Info("Created recipient successfully", "recipient_id", response.ID)
+	return &response, nil
+}
+
+// CreateVirtualAccount creates a virtual account via Due API
+func (c *Client) CreateVirtualAccount(ctx context.Context, req *CreateVirtualAccountRequest) (*CreateVirtualAccountResponse, error) {
+	c.logger.Info("Creating virtual account via Due API",
+		"destination", req.Destination,
+		"schema_in", req.SchemaIn,
+		"reference", req.Reference)
+
+	endpoint := "/virtual_accounts"
+	
+	var response CreateVirtualAccountResponse
+	if err := c.doRequest(ctx, "POST", endpoint, req, &response); err != nil {
+		c.logger.Error("Failed to create virtual account",
+			"reference", req.Reference,
+			"error", err)
+		return nil, fmt.Errorf("create virtual account failed: %w", err)
+	}
+
+	c.logger.Info("Created virtual account successfully",
+		"nonce", response.Nonce,
+		"destination_id", response.DestinationID,
+		"is_active", response.IsActive)
 
 	return &response, nil
 }
 
-// formatWalletAddressForDue formats wallet addresses according to Due API requirements
-// Due expects addresses in the format: "evm:0x..." or "starknet:0x..."
-func formatWalletAddressForDue(address, blockchain string) (string, error) {
-	if address == "" {
-		return "", fmt.Errorf("wallet address cannot be empty")
+// GetVirtualAccount retrieves a virtual account by reference key
+func (c *Client) GetVirtualAccount(ctx context.Context, reference string) (*CreateVirtualAccountResponse, error) {
+	endpoint := fmt.Sprintf("/virtual_accounts/%s", reference)
+	
+	var response CreateVirtualAccountResponse
+	if err := c.doRequest(ctx, "GET", endpoint, nil, &response); err != nil {
+		c.logger.Error("Failed to get virtual account",
+			"reference", reference,
+			"error", err)
+		return nil, fmt.Errorf("get virtual account failed: %w", err)
 	}
-
-	// If address already has a schema prefix, validate and return it
-	if strings.Contains(address, ":") {
-		parts := strings.Split(address, ":")
-		if len(parts) != 2 {
-			return "", fmt.Errorf("invalid address format: %s", address)
-		}
-		schema := parts[0]
-		if schema != "evm" && schema != "starknet" {
-			return "", fmt.Errorf("unsupported address schema: %s", schema)
-		}
-		return address, nil
-	}
-
-	// Determine schema based on blockchain
-	var schema string
-	switch strings.ToUpper(blockchain) {
-	case "ETH", "ETH-SEPOLIA", "ETHEREUM", "ETHEREUM-SEPOLIA":
-		schema = "evm"
-	case "MATIC", "MATIC-AMOY", "POLYGON", "POLYGON-AMOY":
-		schema = "evm"
-	case "BASE", "BASE-SEPOLIA":
-		schema = "evm"
-	case "AVAX", "AVALANCHE":
-		schema = "evm"
-	case "STARKNET":
-		schema = "starknet"
-	default:
-		// Default to evm for unknown EVM-compatible chains
-		schema = "evm"
-	}
-
-	// Validate address format
-	if !strings.HasPrefix(address, "0x") {
-		return "", fmt.Errorf("invalid address format, must start with 0x: %s", address)
-	}
-
-	// Return formatted address
-	return fmt.Sprintf("%s:%s", schema, address), nil
-}
-
-// ListWallets retrieves all wallets linked to a Due account
-func (c *Client) ListWallets(ctx context.Context, accountID string) ([]Wallet, error) {
-	c.logger.Info("Listing wallets for Due account",
-		zap.String("account_id", accountID))
-
-	var response []Wallet
-	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
-		return &response, c.doWalletRequestWithRetry(ctx, "GET", "/v1/wallets", accountID, nil, &response)
-	})
-
-	if err != nil {
-		c.logger.Error("Failed to list wallets for Due account",
-			zap.String("account_id", accountID),
-			zap.Error(err))
-		return nil, fmt.Errorf("list wallets failed: %w", err)
-	}
-
-	c.logger.Info("Listed wallets for Due account successfully",
-		zap.String("account_id", accountID),
-		zap.Int("wallet_count", len(response)))
-
-	return response, nil
-}
-
-// GetAccount retrieves account details by ID
-func (c *Client) GetAccount(ctx context.Context, accountID string) (*Account, error) {
-	c.logger.Info("Getting Due account details",
-		zap.String("account_id", accountID))
-
-	var response Account
-	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
-		return &response, c.doRequestWithRetry(ctx, "GET", "/v1/accounts/"+accountID, nil, &response, false)
-	})
-
-	if err != nil {
-		c.logger.Error("Failed to get Due account details",
-			zap.String("account_id", accountID),
-			zap.Error(err))
-		return nil, fmt.Errorf("get account failed: %w", err)
-	}
-
-	c.logger.Info("Got Due account details successfully",
-		zap.String("account_id", response.ID),
-		zap.String("status", response.Status))
 
 	return &response, nil
 }
 
-// doWalletRequestWithRetry performs an HTTP request with exponential backoff retry for wallet endpoints
-func (c *Client) doWalletRequestWithRetry(ctx context.Context, method, endpoint, accountID string, body, response interface{}) error {
-	var lastErr error
-
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		if attempt > 0 {
-			backoff := calculateBackoff(attempt)
-			c.logger.Info("Retrying Due wallet API request",
-				zap.Int("attempt", attempt),
-				zap.Duration("backoff", backoff))
-
-			select {
-			case <-time.After(backoff):
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-
-		// Acquire rate limit token
-		select {
-		case <-c.requestTokens:
-			// Token acquired, proceed
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(c.config.Timeout):
-			return fmt.Errorf("rate limit token acquisition timeout")
-		}
-
-		err := c.doWalletRequest(ctx, method, endpoint, accountID, body, response)
-		if err == nil {
-			return nil
-		}
-
-		lastErr = err
-
-		// Check if error is retryable
-		if !isRetryableError(err) {
-			c.logger.Warn("Non-retryable error encountered",
-				zap.Error(err))
-			return err
-		}
-
-		c.logger.Warn("Retryable error encountered",
-			zap.Error(err),
-			zap.Int("attempt", attempt))
+// doRequest performs an HTTP request to the Due API
+func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, response interface{}) error {
+	// Ensure endpoint starts with /v1 if not already present
+	if !strings.HasPrefix(endpoint, "/v1/") && !strings.HasPrefix(endpoint, "/dev/") {
+		endpoint = "/v1" + endpoint
 	}
-
-	return fmt.Errorf("max retries exceeded: %w", lastErr)
-}
-
-// doWalletRequest performs a single HTTP request for wallet endpoints (requires Due-Account-Id header)
-func (c *Client) doWalletRequest(ctx context.Context, method, endpoint, accountID string, body, response interface{}) error {
-	baseURL := c.config.BaseURL
-	fullURL := baseURL + endpoint
+	fullURL := c.config.BaseURL + endpoint
 
 	var reqBody io.Reader
 	if body != nil {
@@ -587,161 +205,15 @@ func (c *Client) doWalletRequest(ctx context.Context, method, endpoint, accountI
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Set headers
+	// Set headers as per Due API documentation
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Due-Account-Id", accountID)
-
-	// Due API authentication
-	if c.config.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
-		// Or use API key/secret headers if that's the auth method
-		req.Header.Set("X-API-Key", c.config.APIKey)
-		if c.config.APISecret != "" {
-			req.Header.Set("X-API-Secret", c.config.APISecret)
-		}
-	}
-
-	c.logger.Debug("Sending Due wallet API request",
-		zap.String("method", method),
-		zap.String("url", fullURL),
-		zap.String("account_id", accountID))
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	c.logger.Debug("Received Due wallet API response",
-		zap.Int("status_code", resp.StatusCode),
-		zap.Int("body_size", len(respBody)))
-
-	// Check for error responses
-	if resp.StatusCode >= 400 {
-		var apiErr DueErrorResponse
-		if err := json.Unmarshal(respBody, &apiErr); err == nil && apiErr.Message != "" {
-			apiErr.Code = resp.StatusCode
-
-			// Handle rate limiting specifically
-			if resp.StatusCode == http.StatusTooManyRequests {
-				if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
-					if seconds, err := strconv.Atoi(retryAfter); err == nil {
-						c.logger.Warn("Rate limited by Due API",
-							zap.Int("retry_after_seconds", seconds),
-							zap.String("endpoint", endpoint))
-					}
-				}
-			}
-
-			return &apiErr
-		}
-		return fmt.Errorf("API error: status %d, body: %s", resp.StatusCode, string(respBody))
-	}
-
-	// Parse response if a response object is provided
-	if response != nil && len(respBody) > 0 {
-		if err := json.Unmarshal(respBody, response); err != nil {
-			return fmt.Errorf("failed to unmarshal response: %w", err)
-		}
-	}
-
-	return nil
-}
-
-// doRequestWithRetry performs an HTTP request with exponential backoff retry
-func (c *Client) doRequestWithRetry(ctx context.Context, method, endpoint string, body, response interface{}, useDataAPI bool) error {
-	var lastErr error
-
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		if attempt > 0 {
-			backoff := calculateBackoff(attempt)
-			c.logger.Info("Retrying Due API request",
-				zap.Int("attempt", attempt),
-				zap.Duration("backoff", backoff))
-
-			select {
-			case <-time.After(backoff):
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-
-		// Acquire rate limit token
-		select {
-		case <-c.requestTokens:
-			// Token acquired, proceed
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(c.config.Timeout):
-			return fmt.Errorf("rate limit token acquisition timeout")
-		}
-
-		err := c.doRequest(ctx, method, endpoint, body, response, useDataAPI)
-		if err == nil {
-			return nil
-		}
-
-		lastErr = err
-
-		// Check if error is retryable
-		if !isRetryableError(err) {
-			c.logger.Warn("Non-retryable error encountered",
-				zap.Error(err))
-			return err
-		}
-
-		c.logger.Warn("Retryable error encountered",
-			zap.Error(err),
-			zap.Int("attempt", attempt))
-	}
-
-	return fmt.Errorf("max retries exceeded: %w", lastErr)
-}
-
-// doRequest performs a single HTTP request
-func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, response interface{}, useDataAPI bool) error {
-	baseURL := c.config.BaseURL
-	if useDataAPI {
-		baseURL = c.config.BaseURL // Due API doesn't have separate data API
-	}
-
-	fullURL := baseURL + endpoint
-
-	var reqBody io.Reader
-	if body != nil {
-		jsonData, err := json.Marshal(body)
-		if err != nil {
-			return fmt.Errorf("failed to marshal request body: %w", err)
-		}
-		reqBody = bytes.NewReader(jsonData)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, method, fullURL, reqBody)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set headers
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-
-	// Due API authentication
-	if c.config.APIKey != "" {
 	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
-	}
-	if c.config.APISecret != "" {
-	req.Header.Set("Due-Account-Id", c.config.APISecret) // APISecret used for account ID
-	}
+	req.Header.Set("Due-Account-Id", c.config.AccountID)
 
 	c.logger.Debug("Sending Due API request",
-		zap.String("method", method),
-		zap.String("url", fullURL))
+		"method", method,
+		"url", fullURL)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -755,28 +227,11 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 	}
 
 	c.logger.Debug("Received Due API response",
-		zap.Int("status_code", resp.StatusCode),
-		zap.Int("body_size", len(respBody)))
+		"status_code", resp.StatusCode,
+		"body_size", len(respBody))
 
 	// Check for error responses
 	if resp.StatusCode >= 400 {
-		var apiErr DueErrorResponse
-		if err := json.Unmarshal(respBody, &apiErr); err == nil && apiErr.Message != "" {
-			apiErr.Code = resp.StatusCode
-
-			// Handle rate limiting specifically
-			if resp.StatusCode == http.StatusTooManyRequests {
-				if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
-					if seconds, err := strconv.Atoi(retryAfter); err == nil {
-						c.logger.Warn("Rate limited by Due API",
-							zap.Int("retry_after_seconds", seconds),
-							zap.String("endpoint", endpoint))
-					}
-				}
-			}
-
-			return &apiErr
-		}
 		return fmt.Errorf("API error: status %d, body: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -790,124 +245,328 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 	return nil
 }
 
-// Close gracefully shuts down the client and cleans up resources
-func (c *Client) Close() error {
-	if c.rateLimiter != nil {
-		c.rateLimiter.Stop()
-	}
-	c.logger.Info("Due client closed")
-	return nil
+// Config returns the client configuration
+func (c *Client) Config() Config {
+	return c.config
 }
 
-// GetMetrics returns circuit breaker and client metrics for monitoring
-func (c *Client) GetMetrics() map[string]interface{} {
-	counts := c.circuitBreaker.Counts()
-	return map[string]interface{}{
-		"circuit_breaker_state":         c.circuitBreaker.State().String(),
-		"requests_total":                counts.Requests,
-		"consecutive_successes":         counts.ConsecutiveSuccesses,
-		"consecutive_failures":          counts.ConsecutiveFailures,
-		"total_successes":               counts.TotalSuccesses,
-		"total_failures":                counts.TotalFailures,
-		"rate_limiter_tokens_available": len(c.requestTokens),
-		"rate_limiter_burst_capacity":   cap(c.requestTokens),
-		"client_timeout_seconds":        c.config.Timeout.Seconds(),
-		"environment":                   c.config.Environment,
+// ListRecipients retrieves all recipients with pagination
+func (c *Client) ListRecipients(ctx context.Context, limit, offset int) (*ListRecipientsResponse, error) {
+	params := url.Values{}
+	if limit > 0 {
+		params.Set("limit", strconv.Itoa(limit))
 	}
-}
-
-// calculateBackoff calculates exponential backoff with jitter
-func calculateBackoff(attempt int) time.Duration {
-	// Calculate exponential backoff: baseBackoff * 2^(attempt-1)
-	backoff := float64(baseBackoff) * math.Pow(2, float64(attempt-1))
-
-	// Apply max backoff limit
-	if backoff > float64(maxBackoff) {
-		backoff = float64(maxBackoff)
+	if offset > 0 {
+		params.Set("offset", strconv.Itoa(offset))
 	}
 
-	// Add jitter (±10%)
-	jitter := backoff * jitterRange * (2*getRandomFloat() - 1)
-	backoff += jitter
-
-	return time.Duration(backoff)
-}
-
-// getRandomFloat returns a random float between 0 and 1
-func getRandomFloat() float64 {
-	return float64(time.Now().UnixNano()%1000) / 1000.0
-}
-
-// isRetryableError determines if an error should trigger a retry
-func isRetryableError(err error) bool {
-	if err == nil {
-		return false
+	endpoint := "/v1/recipients"
+	if len(params) > 0 {
+		endpoint += "?" + params.Encode()
 	}
 
-	// Check for Due API errors
-	if apiErr, ok := err.(*DueErrorResponse); ok {
-		// Retry on rate limits and server errors
-		switch apiErr.Code {
-		case http.StatusTooManyRequests:
-			return true // Rate limited, worth retrying after backoff
-		case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-			return true // Server errors, worth retrying
-		case http.StatusRequestTimeout:
-			return true // Request timeout, worth retrying
-		default:
-			return false // Client errors (4xx except 429) should not be retried
+	var response ListRecipientsResponse
+	if err := c.doRequestWithRetry(ctx, "GET", endpoint, nil, &response); err != nil {
+		return nil, fmt.Errorf("list recipients failed: %w", err)
+	}
+	return &response, nil
+}
+
+// GetRecipient retrieves a recipient by ID
+func (c *Client) GetRecipient(ctx context.Context, recipientID string) (*CreateRecipientResponse, error) {
+	endpoint := fmt.Sprintf("/v1/recipients/%s", recipientID)
+	var response CreateRecipientResponse
+	if err := c.doRequestWithRetry(ctx, "GET", endpoint, nil, &response); err != nil {
+		return nil, fmt.Errorf("get recipient failed: %w", err)
+	}
+	return &response, nil
+}
+
+// ListVirtualAccounts retrieves all virtual accounts with filters
+func (c *Client) ListVirtualAccounts(ctx context.Context, filters *VirtualAccountFilters) (*ListVirtualAccountsResponse, error) {
+	params := url.Values{}
+	if filters != nil {
+		if filters.CurrencyIn != "" {
+			params.Set("currencyIn", filters.CurrencyIn)
+		}
+		if filters.RailOut != "" {
+			params.Set("railOut", filters.RailOut)
+		}
+		if filters.Limit > 0 {
+			params.Set("limit", strconv.Itoa(filters.Limit))
 		}
 	}
 
-	// Retry on network errors and timeouts
-	errStr := strings.ToLower(err.Error())
-	return strings.Contains(errStr, "timeout") ||
-		strings.Contains(errStr, "deadline exceeded") ||
-		strings.Contains(errStr, "context deadline exceeded") ||
-		strings.Contains(errStr, "connection refused") ||
-		strings.Contains(errStr, "connection reset") ||
-		strings.Contains(errStr, "connection closed") ||
-		strings.Contains(errStr, "eof") ||
-		strings.Contains(errStr, "temporary failure") ||
-		strings.Contains(errStr, "network is unreachable") ||
-		strings.Contains(errStr, "no such host")
+	endpoint := "/v1/virtual_accounts"
+	if len(params) > 0 {
+		endpoint += "?" + params.Encode()
+	}
+
+	var response ListVirtualAccountsResponse
+	if err := c.doRequestWithRetry(ctx, "GET", endpoint, nil, &response); err != nil {
+		return nil, fmt.Errorf("list virtual accounts failed: %w", err)
+	}
+	return &response, nil
 }
 
-// ListVirtualAccounts retrieves all virtual accounts for the account
- func (c *Client) ListVirtualAccounts(ctx context.Context, filters map[string]string) ([]VirtualAccountSummary, error) {
- 	c.logger.Info("Listing Due virtual accounts")
+// ListTransfers retrieves transfers with pagination and filters
+func (c *Client) ListTransfers(ctx context.Context, filters *TransferFilters) (*ListTransfersResponse, error) {
+	params := url.Values{}
+	if filters != nil {
+		if filters.Limit > 0 {
+			params.Set("limit", strconv.Itoa(filters.Limit))
+		}
+		if filters.Order != "" {
+			params.Set("order", filters.Order)
+		}
+		if filters.Status != "" {
+			params.Set("status", string(filters.Status))
+		}
+	}
 
- 	var response ListVirtualAccountsResponse
- 	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
- 		return &response, c.doRequestWithRetry(ctx, "GET", "/v1/virtual_accounts", nil, &response, false)
- 	})
+	endpoint := "/v1/transfers"
+	if len(params) > 0 {
+		endpoint += "?" + params.Encode()
+	}
 
- 	if err != nil {
- 		c.logger.Error("Failed to list Due virtual accounts", zap.Error(err))
- 		return nil, fmt.Errorf("list virtual accounts failed: %w", err)
- 	}
+	var response ListTransfersResponse
+	if err := c.doRequestWithRetry(ctx, "GET", endpoint, nil, &response); err != nil {
+		return nil, fmt.Errorf("list transfers failed: %w", err)
+	}
+	return &response, nil
+}
 
- 	c.logger.Info("Listed Due virtual accounts successfully", zap.Int("count", len(response.VirtualAccounts)))
+// GetChannels retrieves available payment channels
+func (c *Client) GetChannels(ctx context.Context) (*ChannelsResponse, error) {
+	var response ChannelsResponse
+	if err := c.doRequestWithRetry(ctx, "GET", "/v1/channels", nil, &response); err != nil {
+		return nil, fmt.Errorf("get channels failed: %w", err)
+	}
+	return &response, nil
+}
 
- 	return response.VirtualAccounts, nil
- }
+// CreateQuote creates a quote for a transfer
+func (c *Client) CreateQuote(ctx context.Context, req *CreateQuoteRequest) (*QuoteResponse, error) {
+	c.logger.Info("Creating transfer quote",
+		"sender", req.Sender,
+		"recipient", req.Recipient,
+		"amount", req.Amount)
 
-// GetVirtualAccount retrieves details for a specific virtual account by reference
- func (c *Client) GetVirtualAccount(ctx context.Context, reference string) (*GetVirtualAccountResponse, error) {
- 	c.logger.Info("Getting Due virtual account", zap.String("reference", reference))
+	var response QuoteResponse
+	if err := c.doRequestWithRetry(ctx, "POST", "/v1/transfers/quote", req, &response); err != nil {
+		c.logger.Error("Failed to create quote", "error", err)
+		return nil, fmt.Errorf("create quote failed: %w", err)
+	}
 
- 	var response GetVirtualAccountResponse
- 	endpoint := "/v1/virtual_accounts/" + reference
- 	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
- 		return &response, c.doRequestWithRetry(ctx, "GET", endpoint, nil, &response, false)
- 	})
+	c.logger.Info("Created quote", "quote_id", response.ID)
+	return &response, nil
+}
 
- 	if err != nil {
- 		c.logger.Error("Failed to get Due virtual account", zap.String("reference", reference), zap.Error(err))
- 		return nil, fmt.Errorf("get virtual account failed: %w", err)
- 	}
+// ListWallets retrieves all linked wallets
+func (c *Client) ListWallets(ctx context.Context) (*ListWalletsResponse, error) {
+	var response ListWalletsResponse
+	if err := c.doRequestWithRetry(ctx, "GET", "/v1/wallets", nil, &response); err != nil {
+		return nil, fmt.Errorf("list wallets failed: %w", err)
+	}
+	return &response, nil
+}
 
- 	c.logger.Info("Got Due virtual account successfully", zap.String("reference", reference))
+// GetWallet retrieves a wallet by ID
+func (c *Client) GetWallet(ctx context.Context, walletID string) (*LinkWalletResponse, error) {
+	endpoint := fmt.Sprintf("/v1/wallets/%s", walletID)
+	var response LinkWalletResponse
+	if err := c.doRequestWithRetry(ctx, "GET", endpoint, nil, &response); err != nil {
+		return nil, fmt.Errorf("get wallet failed: %w", err)
+	}
+	return &response, nil
+}
 
- 	return &response, nil
- 	}
+// CreateWebhookEndpoint creates a webhook endpoint
+func (c *Client) CreateWebhookEndpoint(ctx context.Context, req *CreateWebhookRequest) (*WebhookEndpointResponse, error) {
+	c.logger.Info("Creating webhook endpoint", "url", req.URL)
+
+	var response WebhookEndpointResponse
+	if err := c.doRequestWithRetry(ctx, "POST", "/v1/webhook_endpoints", req, &response); err != nil {
+		c.logger.Error("Failed to create webhook endpoint", "error", err)
+		return nil, fmt.Errorf("create webhook endpoint failed: %w", err)
+	}
+
+	c.logger.Info("Created webhook endpoint", "id", response.ID)
+	return &response, nil
+}
+
+// ListWebhookEndpoints retrieves all webhook endpoints
+func (c *Client) ListWebhookEndpoints(ctx context.Context) (*ListWebhookEndpointsResponse, error) {
+	var response ListWebhookEndpointsResponse
+	if err := c.doRequestWithRetry(ctx, "GET", "/v1/webhook_endpoints", nil, &response); err != nil {
+		return nil, fmt.Errorf("list webhook endpoints failed: %w", err)
+	}
+	return &response, nil
+}
+
+// DeleteWebhookEndpoint deletes a webhook endpoint
+func (c *Client) DeleteWebhookEndpoint(ctx context.Context, webhookID string) error {
+	endpoint := fmt.Sprintf("/v1/webhook_endpoints/%s", webhookID)
+	if err := c.doRequestWithRetry(ctx, "DELETE", endpoint, nil, nil); err != nil {
+		return fmt.Errorf("delete webhook endpoint failed: %w", err)
+	}
+	return nil
+}
+
+// doRequestWithRetry performs HTTP request with retry logic
+func (c *Client) doRequestWithRetry(ctx context.Context, method, endpoint string, body, response interface{}) error {
+	retryConfig := retry.RetryConfig{
+		MaxAttempts: c.config.MaxRetries,
+		BaseDelay:   500 * time.Millisecond,
+		MaxDelay:    5 * time.Second,
+		Multiplier:  2.0,
+	}
+
+	retryableFunc := func() error {
+		return c.doRequest(ctx, method, endpoint, body, response)
+	}
+
+	isRetryable := func(err error) bool {
+		if err == nil {
+			return false
+		}
+		// Retry on network errors and 5xx status codes
+		errStr := err.Error()
+		return strings.Contains(errStr, "connection refused") ||
+			strings.Contains(errStr, "timeout") ||
+			strings.Contains(errStr, "status 5")
+	}
+
+	return retry.WithExponentialBackoff(ctx, retryConfig, retryableFunc, isRetryable)
+}
+
+// GetKYCStatus retrieves current KYC status
+func (c *Client) GetKYCStatus(ctx context.Context, accountID string) (*KYCStatusResponse, error) {
+	endpoint := "/kyc"
+
+	var response KYCStatusResponse
+	if err := c.doRequestWithAccountID(ctx, "GET", endpoint, accountID, nil, &response); err != nil {
+		c.logger.Error("Failed to get KYC status", "error", err)
+		return nil, fmt.Errorf("get KYC status failed: %w", err)
+	}
+
+	c.logger.Info("Retrieved KYC status", "status", response.Status)
+	return &response, nil
+}
+
+// InitiateKYC initiates KYC process programmatically
+func (c *Client) InitiateKYC(ctx context.Context, accountID string) (*KYCInitiateResponse, error) {
+	endpoint := "/kyc"
+
+	var response KYCInitiateResponse
+	if err := c.doRequestWithAccountID(ctx, "POST", endpoint, accountID, nil, &response); err != nil {
+		c.logger.Error("Failed to initiate KYC", "error", err)
+		return nil, fmt.Errorf("initiate KYC failed: %w", err)
+	}
+
+	c.logger.Info("Initiated KYC process", "applicant_id", response.ApplicantID)
+	return &response, nil
+}
+
+// CreateTransfer creates a transfer for USDC to USD conversion
+func (c *Client) CreateTransfer(ctx context.Context, req *CreateTransferRequest) (*CreateTransferResponse, error) {
+	c.logger.Info("Creating transfer",
+		"source", req.SourceID,
+		"destination", req.DestinationID,
+		"amount", req.Amount)
+
+	var response CreateTransferResponse
+	if err := c.doRequest(ctx, "POST", "/transfers", req, &response); err != nil {
+		c.logger.Error("Failed to create transfer", "error", err)
+		return nil, fmt.Errorf("create transfer failed: %w", err)
+	}
+
+	c.logger.Info("Created transfer", "transfer_id", response.ID, "status", response.Status)
+	return &response, nil
+}
+
+// GetTransfer retrieves transfer details by ID
+func (c *Client) GetTransfer(ctx context.Context, transferID string) (*CreateTransferResponse, error) {
+	endpoint := fmt.Sprintf("/transfers/%s", transferID)
+
+	var response CreateTransferResponse
+	if err := c.doRequest(ctx, "GET", endpoint, nil, &response); err != nil {
+		c.logger.Error("Failed to get transfer", "transfer_id", transferID, "error", err)
+		return nil, fmt.Errorf("get transfer failed: %w", err)
+	}
+
+	return &response, nil
+}
+
+// AcceptTermsOfService accepts Terms of Service for an account
+func (c *Client) AcceptTermsOfService(ctx context.Context, accountID, tosToken string) (*TOSAcceptResponse, error) {
+	endpoint := fmt.Sprintf("/tos/%s/accept", tosToken)
+
+	var response TOSAcceptResponse
+	if err := c.doRequestWithAccountID(ctx, "POST", endpoint, accountID, nil, &response); err != nil {
+		c.logger.Error("Failed to accept ToS", "error", err)
+		return nil, fmt.Errorf("accept ToS failed: %w", err)
+	}
+
+	c.logger.Info("Accepted Terms of Service", "account_id", accountID)
+	return &response, nil
+}
+
+// doRequestWithAccountID performs HTTP request with Due-Account-Id header
+func (c *Client) doRequestWithAccountID(ctx context.Context, method, endpoint, accountID string, body, response interface{}) error {
+	fullURL := c.config.BaseURL + endpoint
+
+	var reqBody io.Reader
+	if body != nil {
+		jsonData, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("failed to marshal request body: %w", err)
+		}
+		reqBody = bytes.NewReader(jsonData)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, fullURL, reqBody)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set headers as per Due API documentation
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+	req.Header.Set("Due-Account-Id", accountID)
+
+	c.logger.Debug("Sending Due API request with account ID",
+		"method", method,
+		"url", fullURL,
+		"account_id", accountID)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	c.logger.Debug("Received Due API response",
+		"status_code", resp.StatusCode,
+		"body_size", len(respBody))
+
+	// Check for error responses
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("API error: status %d, body: %s", resp.StatusCode, string(respBody))
+	}
+
+	// Parse response if a response object is provided
+	if response != nil && len(respBody) > 0 {
+		if err := json.Unmarshal(respBody, response); err != nil {
+			return fmt.Errorf("failed to unmarshal response: %w", err)
+		}
+	}
+
+	return nil
+}

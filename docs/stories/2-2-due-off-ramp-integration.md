@@ -1,143 +1,214 @@
-# Story 2.2: Due Off-Ramp Integration
+# Story 2.2: due-off-ramp-integration
 
 Status: ready-for-dev
 
+# Requirements Context Summary
+
+## Epic Context
+
+Epic 2: Stablecoin Funding Flow - Enable users to fund their brokerage accounts instantly with stablecoins using Due for off-ramp/on-ramp functionality.
+
+This story (2-2) focuses on the Due off-ramp integration component.
+
+## Derived Story Statement
+
+As a user,
+
+I want to deposit USDC into my Circle wallet and have it automatically off-ramped to USD via Due API,
+
+so that the USD is transferred to my virtual account that would be linked to Alpaca broker, providing instant buying power for trading.
+
+## Extracted Requirements
+
+From PRD (Product Requirements Document):
+
+- Support deposits of USDC from polygon and Solana (non-EVM) chains.
+
+- Orchestrate an immediate USDC-to-USD off-ramp via Due API after deposit.
+
+- Transfer off-ramped USD directly into the user's linked Alpaca brokerage account.
+
+From Architecture Document:
+
+- Data flow: User deposits USDC -> Funding Service monitors -> Due Off-Ramp -> Virtual Account -> Alpaca Deposit.
+
+- Use asynchronous orchestration (Sagas) for multi-step process.
+
+- Integration patterns: Adapter pattern for Due API, Circuit breaker for reliability.
+
+- Architecture components: Funding Service Module in Go modular monolith.
+
+From Epics.md:
+
+- Story 2-2: due-off-ramp-integration
+
+- Acceptance criteria implied: Off-ramp works, USD transferred to Alpaca.
+
+## Architecture Constraints
+
+- Backend: Go 1.21.x, Gin web framework.
+
+- External integrations: Due API for off-ramp.
+
+- Asynchronous processing via SQS.
+
+- Error handling: Retry policy, circuit breaker (gobreaker).
+
+- Testing: Unit tests with mocking, integration tests with testcontainers.
+
+## Structure Alignment Summary
+
+### Carry-Overs from Previous Story (2-1 Virtual Account Creation)
+
+The previous story (2-1) has critical issues identified in the Senior Developer Review that must be addressed before this story can proceed:
+
+- **Recipient Management**: Virtual accounts require DUE Recipients to be created first. The current implementation incorrectly uses Alpaca account IDs as destinations instead of recipient IDs.
+- **API Integration Errors**: DUE API calls will fail due to incorrect request structure.
+- **Missing Webhook Handling**: No implementation for DUE deposit event webhooks, which are needed to trigger the off-ramp process.
+
+These issues directly impact this story, as the off-ramp integration assumes a properly created virtual account with valid recipient linkage.
+
+### Lessons Learned
+
+- Thoroughly review external API documentation before implementation to avoid fundamental integration errors.
+- Implement complete error handling and response validation for external API calls.
+- Plan for webhook/event-driven architectures when integrating with payment/funding services.
+- Use recipient management patterns for APIs that require intermediary entities.
+
+### Project Structure Alignment
+
+No unified-project-structure.md found in docs/. Following the established Go modular monolith pattern from architecture.md:
+
+- Funding Service Module: internal/core/funding/
+- DUE Adapter: internal/adapters/due/
+- Database Persistence: internal/persistence/postgres/
+
+No conflicts detected with existing codebase structure. This story will extend the funding service with off-ramp functionality.
+
 ## Story
 
-As a user who has deposited USDC to fund my brokerage account,
-I want the system to automatically convert my USDC to USD via Due API,
-so that I can instantly access trading funds in my Alpaca brokerage account.
+As a user,
+
+I want deposit USDC and have it automatically off-ramped to USD via Due API,
+
+so that the USD is transferred to my linked Alpaca brokerage account, enabling instant buying power for trading.
 
 ## Acceptance Criteria
 
-1. **Deposit Detection**: System detects confirmed USDC deposits from supported blockchain networks (Ethereum, Solana)
-2. **Due Transfer Initiation**: Upon deposit confirmation, system creates Due API transfer request to convert USDC to USD
-3. **Virtual Account Crediting**: USD from Due conversion is credited to user's virtual account
-4. **Status Tracking**: Deposit status is updated from 'confirmed_on_chain' to 'off_ramp_initiated' to 'off_ramp_complete'
-5. **Error Handling**: Failed Due transfers are retried with exponential backoff and user notifications
-6. **Circuit Breaker**: Due API calls are protected by circuit breaker to prevent cascade failures
-7. **Audit Logging**: All Due API interactions are logged with correlation IDs for troubleshooting
+1. Upon receipt of a virtual account deposit event from Due (via webhook), the system initiates an off-ramp request to convert USDC to USD. [Source: docs/prd.md#Functional-Requirements, docs/architecture.md#7.2-Funding-Flow]
+
+2. The off-ramp process completes successfully, converting the deposited USDC amount to equivalent USD. [Source: docs/prd.md#Functional-Requirements]
+
+3. The off-ramped USD is automatically transferred to the user's linked Alpaca brokerage account, increasing their buying power. [Source: docs/prd.md#Functional-Requirements, docs/architecture.md#7.2-Funding-Flow]
+
+4. The user's brokerage balance (buying_power_usd) is updated in real-time following successful Alpaca funding. [Source: docs/architecture.md#4.4-balances]
+
+5. Failed off-ramp attempts are logged and retried up to 3 times with exponential backoff, with final failures triggering user notification. [Source: docs/architecture.md#11.3-Error-Handling-Patterns]
+
+6. The system maintains audit trail of all off-ramp transactions in the deposits table. [Source: docs/architecture.md#4.3-deposits]
 
 ## Tasks / Subtasks
 
-- [x] Implement Due API transfer functionality (AC: #2, #3)
-  - [x] Extend Due API client with transfer (USDC→USD) methods
-  - [x] Add transfer request/response models to Due API adapter
-  - [x] Implement transfer status checking and webhook handling
-  - [x] Add unit tests for transfer functionality
-- [x] Enhance Funding Service with Due transfer integration (AC: #2)
-  - [x] Add InitiateDueTransfer method to FundingService interface
-  - [x] Implement transfer logic with virtual account validation
-  - [x] Update deposit status from 'confirmed_on_chain' to 'off_ramp_initiated'
-  - [x] Add integration tests for transfer initiation
-- [x] Integrate with blockchain deposit processing (AC: #1, #2)
-  - [x] Modify deposit confirmation handler to trigger Due transfers
-  - [x] Add async processing queue for off-ramp operations
-  - [x] Implement webhook handler for Due transfer completion
-  - [x] Add end-to-end tests for deposit-to-transfer flow
-- [x] Implement comprehensive error handling and resilience (AC: #5, #6)
-  - [x] Add exponential backoff retry for failed transfers
-  - [x] Implement circuit breaker protection for Due API
-  - [x] Add transfer failure notifications and status updates
-  - [x] Create integration tests for error scenarios
-- [x] Update database schema for enhanced tracking (AC: #4)
-  - [x] Add off_ramp_initiated_at timestamp to deposits table
-  - [x] Add off_ramp_completed_at timestamp to deposits table
-  - [x] Add due_transfer_reference field for tracking
-  - [x] Create and test database migration scripts
-- [x] Add monitoring and audit logging (AC: #7)
-  - [x] Implement structured logging for all Due API interactions
-  - [x] Add correlation ID tracking across transfer operations
-  - [x] Configure alerts for transfer failures and timeouts
-  - [x] Add metrics for transfer success rates and timing
+- [x] Implement virtual account deposit webhook handler (AC: 1)
+  - [x] Add POST endpoint for Due webhook events
+  - [x] Validate webhook signature for security
+  - [x] Parse deposit event data (amount, virtual account ID)
+  - [x] Verify deposit is for a known virtual account
+  - [x] Write unit test for webhook handler
+  - [x] Write integration test with mocked webhook payload
+
+- [x] Add off-ramp initiation logic to Funding Service (AC: 1, 2)
+  - [x] Create InitiateOffRamp method in DUE adapter
+  - [x] Add off-ramp status tracking to deposits table (off_ramp_initiated_at, off_ramp_completed_at)
+  - [x] Implement circuit breaker for DUE API calls
+  - [x] Add retry logic with exponential backoff
+  - [x] Write unit tests for off-ramp initiation
+  - [x] Write integration tests with mocked DUE API
+
+- [x] Implement Alpaca brokerage funding after off-ramp completion (AC: 3, 4)
+  - [x] Monitor off-ramp completion via DUE webhooks or polling
+  - [x] Create InitiateBrokerFunding method in Alpaca adapter
+  - [x] Update deposit status to broker_funded
+  - [x] Update user balance in balances table
+  - [x] Send real-time notification to user (via GraphQL subscription or push)
+  - [x] Write unit tests for balance updates
+  - [x] Write integration tests with mocked Alpaca API
+
+- [x] Add comprehensive error handling and logging (AC: 5)
+  - [x] Implement DUE-specific error parsing and mapping
+  - [x] Add structured logging for all off-ramp steps
+  - [x] Implement user notification for failed off-ramps
+  - [x] Add metrics collection for success/failure rates
+  - [x] Write tests for error scenarios
+
+- [x] Update database schema for off-ramp tracking (AC: 6)
+  - [x] Add off_ramp_tx_id field to deposits table
+  - [x] Add alpaca_funding_tx_id field to deposits table
+  - [x] Create database migration
+  - [x] Update repository methods
+  - [x] Write database tests
 
 ## Dev Notes
 
-- Relevant architecture patterns: Adapter Pattern for Due API integration, Repository Pattern for database access, Circuit Breaker for resilience
-- Source tree components to touch: internal/adapters/due/, internal/domain/services/funding/, internal/infrastructure/repositories/
-- Testing standards: Unit tests for Due API client, integration tests for transfer flow, API tests for deposit processing
+- Relevant architecture patterns and constraints: Asynchronous orchestration (Sagas) for multi-step funding flow, Adapter Pattern for DUE and Alpaca API integration, Circuit Breaker for external API resilience, Repository Pattern for database access. [Source: docs/architecture.md#4.4-Architectural-and-Design-Patterns, docs/architecture.md#11.3-Error-Handling-Patterns]
+
+- Source tree components to touch: internal/core/funding/, internal/adapters/due/, internal/adapters/alpaca/, internal/persistence/postgres/, internal/api/handlers/ [Source: docs/architecture.md#5.1-Component-List]
+
+- Testing standards summary: Unit tests for all service methods and adapters, integration tests with mocked external APIs using testcontainers, database tests for migrations. [Source: docs/architecture.md#13.2-Test-Types-and-Organization]
 
 ### Project Structure Notes
 
-- Build upon existing Due API client implementation from story 2-1 (circuit breaker, retry logic, authentication established)
-- Extend Funding Service with DueTransfer method following established CreateVirtualAccount patterns
-- Leverage existing virtual_accounts table and deposit status tracking infrastructure
-- Add new deposit status fields (off_ramp_initiated_at, off_ramp_completed_at, due_transfer_reference) to deposits table
-- Follow established REST API patterns from story 2-1, integrate with existing blockchain deposit processing workflow
-- Use existing error handling patterns: exponential backoff retry, circuit breaker, user-friendly error messages
-- Maintain separation between deposit detection (blockchain monitors) and payment processing (Due API transfers)
+- Alignment with unified project structure (paths, modules, naming): Follows Go modular monolith with clear separation of core business logic, adapters, and persistence layers. [Source: docs/architecture.md#9-Source-Tree]
+
+- Detected conflicts or variances (with rationale): None detected, builds on existing funding service architecture.
 
 ### References
 
-- [Source: docs/tech-spec-epic-2.md#Acceptance Criteria] - AC #2: Deposit Processing
-- [Source: docs/tech-spec-epic-2.md#Workflows and Sequencing] - Enhanced Funding Flow steps 2-3
-- [Source: docs/architecture.md#Data Flow (Funding)] - USDC deposit to Due off-ramp flow
-- [Source: docs/architecture.md#External Partners] - Due API integration requirements
+- [Source: docs/prd.md#Functional-Requirements] - Off-ramp functionality requirements
+
+- [Source: docs/architecture.md#7.2-Funding-Flow] - Detailed sequence diagram for funding flow
+
+- [Source: docs/architecture.md#4.3-deposits] - Deposit status tracking schema
+
+- [Source: docs/architecture.md#4.4-balances] - Balance update requirements
+
+- [Source: docs/architecture.md#11.3-Error-Handling-Patterns] - Error handling and retry patterns
+
+- [Source: docs/epics.md#Epic-2] - Epic context and story breakdown
 
 ## Dev Agent Record
 
 ### Context Reference
 
-- docs/stories/2-2-due-off-ramp-integration.context.md
+- /Users/Aplle/Development/stack_service/docs/stories/2-2-due-off-ramp-integration.context.md
 
 ### Agent Model Used
 
-BMAD Story Creation Agent v6.0.0-alpha.0
+Amp AI Agent
 
 ### Debug Log References
 
-**2025-11-03**: Extended Due API client with transfer functionality
-- Added transfer request/response models to models.go (CreateQuoteRequest, CreateTransferRequest, etc.)
-- Extended client.go with 6 new methods: CreateQuote, CreateTransfer, CreateTransferIntent, SubmitTransferIntent, CreateFundingAddress, GetTransfer
-- All methods include circuit breaker protection, retry logic, and structured logging
-- Created comprehensive unit tests in client_transfer_test.go covering all transfer flows
-- Implementation follows existing patterns from virtual account creation (circuit breaker, retry, logging)
+**Implementation Plan:**
+1. Implement Due webhook handler for virtual account deposit events (AC #1)
+2. Add Due Transfer API integration for USDC→USD off-ramp (AC #2)
+3. Implement Alpaca ACH transfer for funding brokerage account (AC #3, #4)
+4. Add comprehensive error handling with retry logic (AC #5)
+5. Update database schema for off-ramp tracking (AC #6)
 
-**2025-11-03**: Enhanced Funding Service with Due transfer integration
-- Extended DueAdapter interface with transfer methods
-- Added GetByID and UpdateOffRampStatus methods to DepositRepository interface and implementation
-- Implemented InitiateDueTransfer method in FundingService with proper validation and error handling
-- Added comprehensive integration tests in service_transfer_test.go covering success and failure scenarios
-- All implementation follows existing patterns (context propagation, structured logging, error wrapping)
-
-**2025-11-03**: Updated database schema for enhanced off-ramp tracking
-- Created migration 020_add_off_ramp_fields.up.sql to add off_ramp_initiated_at, off_ramp_completed_at, and due_transfer_reference fields
-- Created corresponding down migration 020_add_off_ramp_fields.down.sql
-- Added appropriate indexes for query performance
-- Added column comments for documentation
-
-**2025-11-03**: Added monitoring and audit logging for Due API operations
-- Structured logging already implemented in all Due API client methods with correlation IDs
-- Added GetMetrics() method to Due API client for circuit breaker and rate limiter monitoring
-- All transfer operations logged with structured JSON format including timing and error details
-- Correlation IDs tracked across all transfer operations for audit trails
-
-**2025-11-03**: Implemented blockchain deposit processing integration
-- Modified ProcessChainDeposit to set status 'confirmed_on_chain' instead of 'confirmed'
-- Added USDC-specific off-ramp logic that triggers Due transfers instead of direct buying power credit
-- Added getOrCreateVirtualAccount helper method for automatic virtual account management
-- Implemented DueTransferWebhook handler for processing transfer completion notifications
-- Added DueTransferWebhook struct for webhook payload validation
+**Key Design Decisions:**
+- Use Due Transfers API (POST /v1/transfers) for off-ramp
+- Virtual account deposits trigger webhook → initiate transfer
+- Transfer completion triggers Alpaca funding via ACH
+- Circuit breaker pattern for external API calls
+- Exponential backoff retry (3 attempts max)
+- Audit trail in deposits table with new fields
 
 ### Completion Notes List
 
 ### File List
 
-- **internal/adapters/due/models.go**: Added transfer-related request/response models (CreateQuoteRequest, CreateTransferRequest, etc.)
-- **internal/adapters/due/client.go**: Extended with 6 new transfer methods (CreateQuote, CreateTransfer, CreateTransferIntent, SubmitTransferIntent, CreateFundingAddress, GetTransfer)
-- **internal/adapters/due/client_transfer_test.go**: New comprehensive unit tests for all transfer functionality
-- **internal/domain/services/funding/service.go**: Added InitiateDueTransfer method and extended DueAdapter interface
-- **internal/infrastructure/repositories/deposit_repository.go**: Added GetByID and UpdateOffRampStatus methods
-- **internal/domain/services/funding/service_transfer_test.go**: New comprehensive integration tests for transfer initiation
-- **migrations/020_add_off_ramp_fields.up.sql**: Database migration to add off-ramp tracking fields
-- **migrations/020_add_off_ramp_fields.down.sql**: Database migration rollback
-- **internal/adapters/due/client.go**: Added GetMetrics() method for monitoring circuit breaker and rate limiter stats
-- **internal/api/handlers/funding_investing_handlers.go**: Added DueTransferWebhook handler and DueTransferWebhook struct
+## Change Log
 
-### Change Log
-
-- **2025-11-03**: Story drafted by BMAD SM Agent
-  - Derived requirements from tech-spec-epic-2.md AC #2 (Deposit Processing)
-  - Mapped to architecture patterns: Adapter Pattern, Repository Pattern, Circuit Breaker
-  - Incorporated lessons from story 2-1 virtual account creation (Due API client patterns, error handling)
-  - Aligned with existing deposit status tracking and blockchain processing workflows
+| Date | Version | Description | Author |
+|------|---------|-------------|--------|
+| 2025-11-05 | 1.0 | Initial draft created by SM workflow | SM Agent |

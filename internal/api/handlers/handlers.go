@@ -12,14 +12,14 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// HealthCheck returns the health status of the application
-// @Summary Health check endpoint
-// @Description Returns the health status of the application
+// BasicHealthCheck returns the basic health status of the application
+// @Summary Basic health check endpoint
+// @Description Returns the basic health status of the application
 // @Tags health
 // @Produce json
 // @Success 200 {object} map[string]interface{}
 // @Router /health [get]
-func HealthCheck() gin.HandlerFunc {
+func BasicHealthCheck() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"status":    "ok",
@@ -37,6 +37,8 @@ func Metrics() gin.HandlerFunc {
 		h.ServeHTTP(c.Writer, c.Request)
 	}
 }
+
+
 
 // Placeholder handlers for all the other endpoints
 // These will be implemented as we build out the domain logic

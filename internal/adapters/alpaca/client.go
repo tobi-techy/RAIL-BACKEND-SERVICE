@@ -10,10 +10,9 @@ import (
 	"math"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
-
+	
 	"github.com/sony/gobreaker"
 	"github.com/stack-service/stack_service/internal/domain/entities"
 	"go.uber.org/zap"
@@ -29,10 +28,6 @@ const (
 	defaultRetryAfter = 5 * time.Second
 	maxRetryAfter     = 60 * time.Second
 
-	// Alpaca API rate limits (requests per minute)
-	alpacaRateLimitRPM = 200
-	rateLimitBurst     = 20
-
 	// Alpaca API endpoints
 	accountsEndpoint  = "/v1/accounts"
 	ordersEndpoint    = "/v1/trading/accounts/%s/orders" // account_id parameter
@@ -43,14 +38,12 @@ const (
 
 // Config represents Alpaca API configuration
 type Config struct {
-	APIKey         string
-	APISecret      string
-	BaseURL        string // Broker API base URL
-	DataBaseURL    string // Market Data API base URL
-	Environment    string // sandbox or production
-	Timeout        time.Duration
-	RateLimitRPM   int // Requests per minute (0 = use default)
-	RateLimitBurst int // Burst capacity (0 = use default)
+	APIKey      string
+	APISecret   string
+	BaseURL     string // Broker API base URL
+	DataBaseURL string // Market Data API base URL
+	Environment string // sandbox or production
+	Timeout     time.Duration
 }
 
 // Client represents an Alpaca Broker API client
@@ -58,8 +51,6 @@ type Client struct {
 	config         Config
 	httpClient     *http.Client
 	circuitBreaker *gobreaker.CircuitBreaker
-	rateLimiter    *time.Ticker
-	requestTokens  chan struct{}
 	logger         *zap.Logger
 }
 
@@ -67,14 +58,6 @@ type Client struct {
 func NewClient(config Config, logger *zap.Logger) *Client {
 	if config.Timeout == 0 {
 		config.Timeout = defaultTimeout
-	}
-
-	// Set default rate limits if not provided
-	if config.RateLimitRPM == 0 {
-		config.RateLimitRPM = alpacaRateLimitRPM
-	}
-	if config.RateLimitBurst == 0 {
-		config.RateLimitBurst = rateLimitBurst
 	}
 
 	if config.BaseURL == "" {
@@ -103,26 +86,6 @@ func NewClient(config Config, logger *zap.Logger) *Client {
 		},
 	}
 
-	// Initialize rate limiter
-	rateLimiter := time.NewTicker(time.Minute / time.Duration(config.RateLimitRPM))
-	requestTokens := make(chan struct{}, config.RateLimitBurst)
-
-	// Fill initial burst capacity
-	for i := 0; i < config.RateLimitBurst; i++ {
-		requestTokens <- struct{}{}
-	}
-
-	// Token replenishment goroutine
-	go func() {
-		for range rateLimiter.C {
-			select {
-			case requestTokens <- struct{}{}:
-			default:
-				// Channel is full, skip this token
-			}
-		}
-	}()
-
 	st := gobreaker.Settings{
 		Name:        "AlpacaBrokerAPI",
 		MaxRequests: 5,
@@ -145,8 +108,6 @@ func NewClient(config Config, logger *zap.Logger) *Client {
 		config:         config,
 		httpClient:     httpClient,
 		circuitBreaker: circuitBreaker,
-		rateLimiter:    rateLimiter,
-		requestTokens:  requestTokens,
 		logger:         logger,
 	}
 }
@@ -487,16 +448,6 @@ func (c *Client) doRequestWithRetry(ctx context.Context, method, endpoint string
 			}
 		}
 
-		// Acquire rate limit token
-		select {
-		case <-c.requestTokens:
-			// Token acquired, proceed
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(c.config.Timeout):
-			return fmt.Errorf("rate limit token acquisition timeout")
-		}
-
 		err := c.doRequest(ctx, method, endpoint, body, response, useDataAPI)
 		if err == nil {
 			return nil
@@ -545,10 +496,9 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 	// Set headers
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-
-	// Alpaca requires API key and secret as specific headers
-	req.Header.Set("APCA-API-KEY-ID", c.config.APIKey)
-	req.Header.Set("APCA-API-SECRET-KEY", c.config.APISecret)
+	
+	// Alpaca uses Basic Auth with API key as username and secret as password
+	req.SetBasicAuth(c.config.APIKey, c.config.APISecret)
 
 	c.logger.Debug("Sending Alpaca API request",
 		zap.String("method", method),
@@ -574,18 +524,6 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 		var apiErr entities.AlpacaErrorResponse
 		if err := json.Unmarshal(respBody, &apiErr); err == nil && apiErr.Message != "" {
 			apiErr.Code = resp.StatusCode
-
-			// Handle rate limiting specifically
-			if resp.StatusCode == http.StatusTooManyRequests {
-				if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
-					if seconds, err := strconv.Atoi(retryAfter); err == nil {
-						c.logger.Warn("Rate limited by Alpaca API",
-							zap.Int("retry_after_seconds", seconds),
-							zap.String("endpoint", endpoint))
-					}
-				}
-			}
-
 			return &apiErr
 		}
 		return fmt.Errorf("API error: status %d, body: %s", resp.StatusCode, string(respBody))
@@ -623,15 +561,6 @@ func getRandomFloat() float64 {
 	return float64(time.Now().UnixNano()%1000) / 1000.0
 }
 
-// Close gracefully shuts down the client and cleans up resources
-func (c *Client) Close() error {
-	if c.rateLimiter != nil {
-		c.rateLimiter.Stop()
-	}
-	c.logger.Info("Alpaca client closed")
-	return nil
-}
-
 // isRetryableError determines if an error should trigger a retry
 func isRetryableError(err error) bool {
 	if err == nil {
@@ -641,28 +570,14 @@ func isRetryableError(err error) bool {
 	// Check for Alpaca API errors
 	if apiErr, ok := err.(*entities.AlpacaErrorResponse); ok {
 		// Retry on rate limits and server errors
-		switch apiErr.Code {
-		case http.StatusTooManyRequests:
-			return true // Rate limited, worth retrying after backoff
-		case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-			return true // Server errors, worth retrying
-		case http.StatusRequestTimeout:
-			return true // Request timeout, worth retrying
-		default:
-			return false // Client errors (4xx except 429) should not be retried
-		}
+		return apiErr.Code == http.StatusTooManyRequests ||
+			apiErr.Code >= 500
 	}
 
 	// Retry on network errors and timeouts
-	errStr := strings.ToLower(err.Error())
+	errStr := err.Error()
 	return strings.Contains(errStr, "timeout") ||
-		strings.Contains(errStr, "deadline exceeded") ||
-		strings.Contains(errStr, "context deadline exceeded") ||
 		strings.Contains(errStr, "connection refused") ||
 		strings.Contains(errStr, "connection reset") ||
-		strings.Contains(errStr, "connection closed") ||
-		strings.Contains(errStr, "eof") ||
-		strings.Contains(errStr, "temporary failure") ||
-		strings.Contains(errStr, "network is unreachable") ||
-		strings.Contains(errStr, "no such host")
+		strings.Contains(errStr, "EOF")
 }

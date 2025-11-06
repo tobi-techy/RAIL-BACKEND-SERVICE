@@ -1,4 +1,4 @@
-# generated: 2025-11-03
+# generated: 2025-11-05
 # project: stack_service
 # project_key: stack_service
 # tracking_system: file-system
@@ -29,7 +29,7 @@
 # - SM typically drafts next story after previous one is 'done' to incorporate learnings
 # - Dev moves story to 'review', SM reviews, then Dev moves to 'done'
 
-generated: 2025-11-03
+generated: 2025-11-05
 project: stack_service
 project_key: stack_service
 tracking_system: file-system
@@ -43,7 +43,7 @@ development_status:
   1-4-onboarding-completion-and-error-handling: done
   epic-1-retrospective: optional
   epic-2: contexted
-  2-1-virtual-account-creation: review
+  2-1-virtual-account-creation: in-progress
   2-2-due-off-ramp-integration: in-progress
   2-3-alpaca-account-funding: ready-for-dev
   2-4-due-withdrawal-integration: backlog

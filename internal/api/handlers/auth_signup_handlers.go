@@ -623,7 +623,7 @@ func Login(db *sql.DB, cfg *config.Config, log *logger.Logger, emailService *ada
 		tokens, err := auth.GenerateTokenPair(
 			user.ID,
 			user.Email,
-			string(user.Role),
+			user.Role,
 			cfg.JWT.Secret,
 			cfg.JWT.AccessTTL,
 			cfg.JWT.RefreshTTL,

@@ -1,16 +1,10 @@
 package routes
 
 import (
-	"time"
-
-	// "database/sql"
-
 	"github.com/stack-service/stack_service/internal/api/handlers"
 	"github.com/stack-service/stack_service/internal/api/middleware"
-
-	// "github.com/stack-service/stack_service/internal/infrastructure/config"
+	"github.com/stack-service/stack_service/internal/domain/services"
 	"github.com/stack-service/stack_service/internal/infrastructure/di"
-	// "github.com/stack-service/stack_service/pkg/logger"
 
 	"github.com/gin-gonic/gin"
 	swaggerFiles "github.com/swaggo/files"
@@ -21,20 +15,27 @@ import (
 func SetupRoutes(container *di.Container) *gin.Engine {
 	router := gin.New()
 
-	// Initialize caching middleware
-	cache := middleware.NewAPICache(container.RedisClient, container.Logger)
-
-	// Global middleware
+	// Global middleware - order matters for security
 	router.Use(middleware.RequestID())
+	router.Use(middleware.RequestSizeLimit())
+	router.Use(middleware.InputValidation())
 	router.Use(middleware.Logger(container.Logger))
 	router.Use(middleware.Recovery(container.Logger))
 	router.Use(middleware.CORS(container.Config.Server.AllowedOrigins))
 	router.Use(middleware.RateLimit(container.Config.Server.RateLimitPerMin))
-	router.Use(middleware.GzipCompression()) // Enable gzip compression
 	router.Use(middleware.SecurityHeaders())
 
-	// Health check (no auth required)
-	router.GET("/health", handlers.HealthCheck())
+	// Health checks (no auth required)
+	healthHandler := handlers.NewHealthHandler(
+		container.DB,
+		container.RedisClient,
+		container.CircleClient,
+		container.StorageClient,
+		container.Logger,
+	)
+	router.GET("/health", healthHandler.GetHealth)
+	router.GET("/ready", healthHandler.GetReadiness)
+	router.GET("/live", healthHandler.GetLiveness)
 	router.GET("/metrics", handlers.Metrics())
 
 	// Swagger documentation (development only)
@@ -44,7 +45,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 	// Initialize handlers with services from DI container
 	fundingHandlers := handlers.NewFundingHandlers(container.GetFundingService(), container.Logger)
-	// investingHandlers := handlers.NewInvestingHandlers(container.GetInvestingService(), container.Logger)
 	onboardingHandlers := handlers.NewOnboardingHandlers(container.GetOnboardingService(), container.ZapLog)
 	walletHandlers := handlers.NewWalletHandlers(container.GetWalletService(), container.ZapLog)
 	securityHandlers := handlers.NewSecurityHandlers(
@@ -55,20 +55,21 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.ZapLog,
 	)
 
+	// Initialize Due handlers
+	notificationService := services.NewNotificationService(container.Logger)
+	dueHandlers := handlers.NewDueHandler(container.GetDueService(), notificationService, container.Logger)
+
 	// Initialize AI-CFO and ZeroG handlers
 	aicfoHandlers := handlers.NewAICfoHandler(container.GetAICfoService(), container.ZapLog)
 	zeroGHandlers := handlers.NewZeroGHandler(
-		container.GetStorageClient(),
-		container.GetInferenceGateway(),
+	container.GetStorageClient(),
+	 container.GetInferenceGateway(),
 		container.GetNamespaceManager(),
 		container.ZapLog,
 	)
 
 	// Initialize Alpaca handlers
 	alpacaHandlers := handlers.NewAlpacaHandlers(container.AlpacaClient, container.ZapLog)
-
-	// Initialize Due handlers
-	dueHandlers := handlers.NewDueHandlers(container.GetDueService(), container.Logger)
 
 	// API v1 routes
 	v1 := router.Group("/api/v1")
@@ -151,24 +152,12 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				security.DELETE("/passcode", securityHandlers.RemovePasscode)
 			}
 
-			// Funding routes (OpenAPI spec compliant) - Critical operations require signing
+			// Funding routes (OpenAPI spec compliant)
 			funding := protected.Group("/funding")
-			funding.Use(middleware.RequestSigning(container.Config, container.Logger, true)) // Enable for all funding endpoints
 			{
 				funding.POST("/deposit/address", fundingHandlers.CreateDepositAddress)
 				funding.GET("/confirmations", fundingHandlers.GetFundingConfirmations)
-				funding.POST("/virtual-accounts", fundingHandlers.CreateVirtualAccount)
-			}
-
-			// Due account routes - Financial operations require KYC and signing
-			due := protected.Group("/due")
-			due.Use(middleware.RequireKYC(container.GetOnboardingService(), container.ZapLog))
-			due.Use(middleware.RequestSigning(container.Config, container.Logger, true))
-			{
-				due.POST("/accounts", dueHandlers.CreateDueAccount)
-				due.GET("/accounts", dueHandlers.GetDueAccount)
-				due.POST("/accounts/tos", dueHandlers.AcceptTOS)
-				due.POST("/accounts/:account_id/sync", dueHandlers.SyncAccountStatus)
+				funding.POST("/virtual-account", fundingHandlers.CreateVirtualAccount)
 			}
 
 			// Balance routes (part of funding but separate for clarity)
@@ -200,31 +189,16 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				wallets.GET("/:chain/address", walletHandlers.GetWalletByChain)
 			}
 
-			// Investment baskets - Add RBAC for basket management
+			// Investment baskets
 			baskets := protected.Group("/baskets")
 			{
 				baskets.GET("/", handlers.GetBaskets(container.DB, container.Config, container.Logger))
-
-				// Basket creation and modification require premium or higher role
-				premiumOps := baskets.Group("/")
-				premiumOps.Use(middleware.RoleBasedAccessControl([]string{"premium", "trader", "admin", "super_admin"}, container.Logger))
-				{
-					premiumOps.POST("/", handlers.CreateBasket(container.DB, container.Config, container.Logger))
-					premiumOps.PUT("/:id", handlers.UpdateBasket(container.DB, container.Config, container.Logger))
-					premiumOps.DELETE("/:id", handlers.DeleteBasket(container.DB, container.Config, container.Logger))
-				}
-
-				// Cached basket retrieval for better performance
-				baskets.GET("/:id", cache.Cache(5*time.Minute, middleware.CacheByPath), handlers.GetBasket(container.DB, container.Config, container.Logger))
-
-				// Critical financial operations require IP whitelisting and premium role
-				financialOps := baskets.Group("/")
-				financialOps.Use(middleware.RoleBasedAccessControl([]string{"premium", "trader", "admin", "super_admin"}, container.Logger))
-				financialOps.Use(middleware.IPWhitelist(container.Config.Security.AllowedIPs, container.Logger))
-				{
-					financialOps.POST("/:id/invest", handlers.InvestInBasket(container.DB, container.Config, container.Logger))
-					financialOps.POST("/:id/withdraw", handlers.WithdrawFromBasket(container.DB, container.Config, container.Logger))
-				}
+				baskets.POST("/", handlers.CreateBasket(container.DB, container.Config, container.Logger))
+				baskets.GET("/:id", handlers.GetBasket(container.DB, container.Config, container.Logger))
+				baskets.PUT("/:id", handlers.UpdateBasket(container.DB, container.Config, container.Logger))
+				baskets.DELETE("/:id", handlers.DeleteBasket(container.DB, container.Config, container.Logger))
+				baskets.POST("/:id/invest", handlers.InvestInBasket(container.DB, container.Config, container.Logger))
+				baskets.POST("/:id/withdraw", handlers.WithdrawFromBasket(container.DB, container.Config, container.Logger))
 			}
 
 			// Curated baskets (public/featured)
@@ -301,13 +275,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// Alpaca Assets - Tradable stocks and ETFs
 			assets := protected.Group("/assets")
 			{
-				assets.GET("/", alpacaHandlers.GetAssets)                             // List all assets with filtering
-				assets.GET("/search", alpacaHandlers.SearchAssets)                    // Search assets
-				assets.GET("/popular", alpacaHandlers.GetPopularAssets)               // Get popular/trending assets
+				assets.GET("/", alpacaHandlers.GetAssets)                      // List all assets with filtering
+				assets.GET("/search", alpacaHandlers.SearchAssets)             // Search assets
+				assets.GET("/popular", alpacaHandlers.GetPopularAssets)       // Get popular/trending assets
 				assets.GET("/exchange/:exchange", alpacaHandlers.GetAssetsByExchange) // Get assets by exchange
-				// IMPORTANT: More specific routes MUST come before wildcard routes
-				assets.GET("/:symbol/details", alpacaHandlers.GetAssetDetails) // Get comprehensive asset details with position
-				assets.GET("/:symbol", alpacaHandlers.GetAsset)                // Get specific asset details (wildcard - must be last)
+				assets.GET("/:symbol_or_id", alpacaHandlers.GetAsset)         // Get specific asset details
 			}
 		}
 
@@ -341,10 +313,56 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			admin.GET("/wallets", handlers.GetAdminWallets(container.DB, container.Config, container.Logger))
 		}
 
+		// Due API routes (protected)
+		due := protected.Group("/due")
+		{
+			// Account management
+			due.POST("/account", dueHandlers.CreateDueAccount)
+			due.GET("/account", dueHandlers.GetDueAccount)
+
+			// KYC management
+			due.GET("/kyc-link", dueHandlers.GetKYCLink)
+			due.GET("/kyc-status", dueHandlers.GetKYCStatus)
+			due.POST("/initiate-kyc", dueHandlers.InitiateKYC)
+
+			// Terms of Service
+			due.POST("/accept-tos", dueHandlers.AcceptTermsOfService)
+
+			// Wallet management
+			due.POST("/link-wallet", dueHandlers.LinkWallet)
+			due.GET("/wallets", dueHandlers.ListWallets)
+			due.GET("/wallets/:wallet_id", dueHandlers.GetWalletByID)
+
+			// Recipients
+			due.GET("/recipients", dueHandlers.ListRecipients)
+			due.GET("/recipients/:recipient_id", dueHandlers.GetRecipient)
+
+			// Virtual accounts
+			due.POST("/virtual-account", dueHandlers.CreateVirtualAccount)
+			due.GET("/virtual-accounts", dueHandlers.ListVirtualAccounts)
+
+			// Transfers
+			due.POST("/transfer", dueHandlers.CreateTransfer)
+			due.GET("/transfers", dueHandlers.ListTransfers)
+			due.GET("/transfer/:transfer_id", dueHandlers.GetTransfer)
+
+			// Quotes
+			due.POST("/quote", dueHandlers.CreateQuote)
+
+			// Channels (payment methods)
+			due.GET("/channels", dueHandlers.GetChannels)
+
+			// Webhook management
+			due.POST("/webhooks", dueHandlers.CreateWebhookEndpoint)
+			due.GET("/webhooks", dueHandlers.ListWebhookEndpoints)
+			due.DELETE("/webhooks/:webhook_id", dueHandlers.DeleteWebhookEndpoint)
+		}
+
 		// Webhooks (external systems) - OpenAPI spec compliant
 		webhooks := v1.Group("/webhooks")
 		{
 			webhooks.POST("/chain-deposit", fundingHandlers.ChainDepositWebhook)
+			webhooks.POST("/due", dueHandlers.HandleWebhook)
 			// webhooks.POST("/brokerage-fill", investingHandlers.BrokerageFillWebhook) // Commented out until service is implemented
 			// Legacy webhook handlers (to be deprecated)
 			webhooks.POST("/payment", handlers.PaymentWebhook(container.DB, container.Config, container.Logger))

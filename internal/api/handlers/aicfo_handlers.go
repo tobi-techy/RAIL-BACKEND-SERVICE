@@ -19,9 +19,9 @@ import (
 
 // AICfoHandler handles public AI-CFO operations
 type AICfoHandler struct {
-	aicfoService AICfoServiceInterface
-	logger       *zap.Logger
-	tracer       trace.Tracer
+	aicfoService  AICfoServiceInterface
+	logger        *zap.Logger
+	tracer        trace.Tracer
 }
 
 // AICfoServiceInterface defines the AI-CFO service interface
@@ -46,13 +46,13 @@ func NewAICfoHandler(
 
 // SummaryResponse represents a weekly summary response
 type SummaryResponse struct {
-	ID          string                 `json:"id"`
-	UserID      string                 `json:"user_id"`
-	WeekStart   string                 `json:"week_start"` // Format: 2006-01-02
-	Title       string                 `json:"title"`
-	Content     string                 `json:"content"` // Markdown content
-	CreatedAt   time.Time              `json:"created_at"`
-	ArtifactURI string                 `json:"artifact_uri,omitempty"`
+	ID          string    `json:"id"`
+	UserID      string    `json:"user_id"`
+	WeekStart   string    `json:"week_start"`   // Format: 2006-01-02
+	Title       string    `json:"title"`
+	Content     string    `json:"content"`      // Markdown content
+	CreatedAt   time.Time `json:"created_at"`
+	ArtifactURI string    `json:"artifact_uri,omitempty"`
 	Metadata    map[string]interface{} `json:"metadata,omitempty"`
 }
 
@@ -64,17 +64,17 @@ type AnalysisRequest struct {
 
 // AnalysisResponse represents an on-demand analysis response
 type AnalysisResponse struct {
-	RequestID       string                 `json:"request_id"`
-	AnalysisType    string                 `json:"analysis_type"`
-	Content         string                 `json:"content"`         // Analysis content
-	ContentType     string                 `json:"content_type"`    // text/markdown or application/json
-	Insights        []AnalysisInsight      `json:"insights"`        // Key insights
-	Recommendations []string               `json:"recommendations"` // Actionable recommendations
-	Metadata        map[string]interface{} `json:"metadata"`
-	TokensUsed      int                    `json:"tokens_used"`
-	ProcessingTime  string                 `json:"processing_time"`
-	CreatedAt       time.Time              `json:"created_at"`
-	ArtifactURI     string                 `json:"artifact_uri,omitempty"`
+	RequestID      string                 `json:"request_id"`
+	AnalysisType   string                 `json:"analysis_type"`
+	Content        string                 `json:"content"`        // Analysis content
+	ContentType    string                 `json:"content_type"`   // text/markdown or application/json
+	Insights       []AnalysisInsight      `json:"insights"`       // Key insights
+	Recommendations []string              `json:"recommendations"` // Actionable recommendations
+	Metadata       map[string]interface{} `json:"metadata"`
+	TokensUsed     int                    `json:"tokens_used"`
+	ProcessingTime string                 `json:"processing_time"`
+	CreatedAt      time.Time              `json:"created_at"`
+	ArtifactURI    string                 `json:"artifact_uri,omitempty"`
 }
 
 // AnalysisInsight represents a key insight from analysis
@@ -262,8 +262,8 @@ func (h *AICfoHandler) AnalyzeOnDemand(c *gin.Context) {
 	// Check rate limits
 	if err := h.checkRateLimit(c, userUUID); err != nil {
 		c.JSON(http.StatusTooManyRequests, ErrorResponse{
-			Error:   "Rate limit exceeded",
-			Code:    "RATE_LIMIT_EXCEEDED",
+			Error: "Rate limit exceeded",
+			Code:  "RATE_LIMIT_EXCEEDED",
 			Details: "You can request up to 10 analyses per hour",
 		})
 		return
@@ -322,8 +322,8 @@ func (h *AICfoHandler) AnalyzeOnDemand(c *gin.Context) {
 // generateSummaryTitle creates a user-friendly title for the summary
 func (h *AICfoHandler) generateSummaryTitle(weekStart time.Time) string {
 	weekEnd := weekStart.AddDate(0, 0, 6)
-	return fmt.Sprintf("Weekly Summary: %s - %s",
-		weekStart.Format("Jan 2"),
+	return fmt.Sprintf("Weekly Summary: %s - %s", 
+		weekStart.Format("Jan 2"), 
 		weekEnd.Format("Jan 2, 2006"),
 	)
 }
@@ -351,7 +351,7 @@ func (h *AICfoHandler) isValidAnalysisType(analysisType string) bool {
 func (h *AICfoHandler) checkRateLimit(c *gin.Context, userID uuid.UUID) error {
 	// In a production system, this would use Redis or another distributed cache
 	// For now, we'll use a simple in-memory approach or skip rate limiting
-
+	
 	// Get rate limit info from headers or middleware
 	rateLimitRemaining := c.GetHeader("X-RateLimit-Remaining")
 	if rateLimitRemaining == "0" {
@@ -361,7 +361,7 @@ func (h *AICfoHandler) checkRateLimit(c *gin.Context, userID uuid.UUID) error {
 	// Set rate limit headers (normally done by middleware)
 	c.Header("X-RateLimit-Limit", "10")
 	c.Header("X-RateLimit-Window", "3600")
-
+	
 	if rateLimitRemaining == "" {
 		c.Header("X-RateLimit-Remaining", "9")
 	} else {
@@ -369,7 +369,7 @@ func (h *AICfoHandler) checkRateLimit(c *gin.Context, userID uuid.UUID) error {
 			c.Header("X-RateLimit-Remaining", strconv.Itoa(remaining-1))
 		}
 	}
-
+	
 	return nil
 }
 
@@ -387,7 +387,7 @@ func (h *AICfoHandler) extractInsights(content string, analysisType string) []An
 			Impact:      "medium",
 			Confidence:  0.85,
 		})
-
+		
 	case entities.AnalysisTypePerformance:
 		insights = append(insights, AnalysisInsight{
 			Type:        "performance",
@@ -396,7 +396,7 @@ func (h *AICfoHandler) extractInsights(content string, analysisType string) []An
 			Impact:      "high",
 			Confidence:  0.92,
 		})
-
+		
 	case entities.AnalysisTypeDiversification:
 		insights = append(insights, AnalysisInsight{
 			Type:        "diversification",
@@ -405,7 +405,7 @@ func (h *AICfoHandler) extractInsights(content string, analysisType string) []An
 			Impact:      "medium",
 			Confidence:  0.78,
 		})
-
+		
 	case entities.AnalysisTypeAllocation:
 		insights = append(insights, AnalysisInsight{
 			Type:        "allocation",
@@ -452,7 +452,7 @@ func (h *AICfoHandler) HealthCheck(c *gin.Context) {
 	if err != nil {
 		span.RecordError(err)
 		h.logger.Error("Failed to get AI-CFO health status", zap.Error(err))
-
+		
 		c.JSON(http.StatusInternalServerError, ErrorResponse{
 			Error:   "Health check failed",
 			Code:    "HEALTH_CHECK_FAILED",
@@ -463,3 +463,4 @@ func (h *AICfoHandler) HealthCheck(c *gin.Context) {
 
 	c.JSON(http.StatusOK, health)
 }
+
