@@ -45,7 +45,7 @@ development_status:
   epic-2: contexted
   2-1-virtual-account-creation: in-progress
   2-2-due-off-ramp-integration: in-progress
-  2-3-alpaca-account-funding: ready-for-dev
+  2-3-alpaca-account-funding: done
   2-4-due-withdrawal-integration: backlog
   2-5-sumsub-kyc-integration: backlog
   2-6-recipient-management: backlog

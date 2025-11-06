@@ -11,7 +11,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stack-service/stack_service/internal/adapters/due"
 	"github.com/stack-service/stack_service/internal/api/handlers"
-	"github.com/stack-service/stack_service/internal/domain/services"
 	"github.com/stack-service/stack_service/pkg/logger"
 	"github.com/stretchr/testify/assert"
 )

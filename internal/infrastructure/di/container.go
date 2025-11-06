@@ -87,6 +87,32 @@ func (a *CircleAdapter) GetWalletBalances(ctx context.Context, walletID string, 
 	return a.client.GetWalletBalances(ctx, walletID, tokenAddress...)
 }
 
+// AlpacaFundingAdapter adapts alpaca.FundingAdapter to funding.AlpacaAdapter interface
+type AlpacaFundingAdapter struct {
+	adapter *alpaca.FundingAdapter
+	client  *alpaca.Client
+}
+
+func (a *AlpacaFundingAdapter) GetAccount(ctx context.Context, accountID string) (*entities.AlpacaAccountResponse, error) {
+	return a.client.GetAccount(ctx, accountID)
+}
+
+func (a *AlpacaFundingAdapter) InitiateInstantFunding(ctx context.Context, req *entities.AlpacaInstantFundingRequest) (*entities.AlpacaInstantFundingResponse, error) {
+	return a.adapter.InitiateInstantFunding(ctx, req)
+}
+
+func (a *AlpacaFundingAdapter) GetInstantFundingStatus(ctx context.Context, transferID string) (*entities.AlpacaInstantFundingResponse, error) {
+	return a.adapter.GetInstantFundingStatus(ctx, transferID)
+}
+
+func (a *AlpacaFundingAdapter) GetAccountBalance(ctx context.Context, accountID string) (*entities.AlpacaAccountResponse, error) {
+	return a.adapter.GetAccountBalance(ctx, accountID)
+}
+
+func (a *AlpacaFundingAdapter) CreateJournal(ctx context.Context, req *entities.AlpacaJournalRequest) (*entities.AlpacaJournalResponse, error) {
+	return a.adapter.CreateJournal(ctx, req)
+}
+
 func (a *AISummariesRepositoryAdapter) Create(ctx context.Context, summary *services.AISummary) error {
 	return a.repo.Create(ctx, toRepoAISummary(summary))
 }
@@ -408,11 +434,12 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize Due service with deposit and balance repositories
 	c.DueService = services.NewDueService(dueClient, c.DepositRepo, c.BalanceRepo, c.Logger)
 
-	// Initialize standalone Balance service
-	c.BalanceService = services.NewBalanceService(c.BalanceRepo, c.Logger)
+	// Initialize Alpaca funding adapter
+	alpacaFundingAdapter := alpaca.NewFundingAdapter(c.AlpacaClient, c.ZapLog)
 
-	// Initialize Alpaca adapter
-	alpacaAdapter := alpaca.NewAdapter(c.AlpacaClient, c.Logger)
+	// Initialize standalone Balance service with Alpaca adapter
+	alpacaBalanceAdapter := &AlpacaFundingAdapter{adapter: alpacaFundingAdapter, client: c.AlpacaClient}
+	c.BalanceService = services.NewBalanceService(c.BalanceRepo, alpacaBalanceAdapter, c.Logger)
 
 	// Initialize funding service with dependencies
 	circleAdapter := &CircleAdapter{client: c.CircleClient}
@@ -424,7 +451,7 @@ func (c *Container) initializeDomainServices() error {
 		virtualAccountRepo,
 		circleAdapter,
 		dueAdapter,
-		alpacaAdapter,
+		&AlpacaFundingAdapter{adapter: alpacaFundingAdapter, client: c.AlpacaClient},
 		c.Logger,
 	)
 
