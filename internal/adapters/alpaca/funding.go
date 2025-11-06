@@ -4,8 +4,15 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/shopspring/decimal"
+	"github.com/stack-service/stack_service/internal/domain/entities"
 	"go.uber.org/zap"
+)
+
+const (
+	instantFundingEndpoint = "/v1/instant_funding"
+	instantFundingLimitsEndpoint = "/v1/instant_funding/limits"
+	instantFundingSettlementsEndpoint = "/v1/instant_funding/settlements"
+	journalsEndpoint = "/v1/journals"
 )
 
 // FundingAdapter handles Alpaca account funding operations
@@ -22,80 +29,104 @@ func NewFundingAdapter(client *Client, logger *zap.Logger) *FundingAdapter {
 	}
 }
 
-// InitiateFunding initiates ACH transfer to fund Alpaca account
-func (a *FundingAdapter) InitiateFunding(ctx context.Context, req *FundingRequest) (*FundingResponse, error) {
-	a.logger.Info("Initiating Alpaca account funding",
-		zap.String("account_id", req.AccountID),
+// InitiateInstantFunding creates an instant funding transfer to extend buying power immediately
+func (a *FundingAdapter) InitiateInstantFunding(ctx context.Context, req *entities.AlpacaInstantFundingRequest) (*entities.AlpacaInstantFundingResponse, error) {
+	a.logger.Info("Initiating Alpaca instant funding",
+		zap.String("account_no", req.AccountNo),
 		zap.String("amount", req.Amount.String()))
 
-	// Note: Alpaca Broker API funding is typically done via ACH transfers
-	// The actual implementation depends on Alpaca's funding API
-	// For now, we'll verify the account exists and has proper status
-	
-	account, err := a.client.GetAccount(ctx, req.AccountID)
+	var response entities.AlpacaInstantFundingResponse
+	_, err := a.client.circuitBreaker.Execute(func() (interface{}, error) {
+		return &response, a.client.doRequestWithRetry(ctx, "POST", instantFundingEndpoint, req, &response, false)
+	})
+
 	if err != nil {
-		a.logger.Error("Failed to get Alpaca account",
-			zap.String("account_id", req.AccountID),
+		a.logger.Error("Failed to create instant funding transfer",
+			zap.String("account_no", req.AccountNo),
 			zap.Error(err))
-		return nil, fmt.Errorf("get account failed: %w", err)
+		return nil, fmt.Errorf("instant funding failed: %w", err)
 	}
 
-	// Verify account is active and can receive funds
-	if account.Status != "ACTIVE" {
-		return nil, fmt.Errorf("account not active: status=%s", account.Status)
-	}
+	a.logger.Info("Instant funding transfer created",
+		zap.String("transfer_id", response.ID),
+		zap.String("status", response.Status),
+		zap.String("deadline", response.Deadline))
 
-	a.logger.Info("Alpaca account verified for funding",
-		zap.String("account_id", account.ID),
-		zap.String("account_number", account.AccountNumber),
-		zap.String("status", string(account.Status)))
-
-	// Return funding response
-	// In production, this would include actual ACH transfer initiation
-	return &FundingResponse{
-		AccountID:     account.ID,
-		AccountNumber: account.AccountNumber,
-		Amount:        req.Amount,
-		Status:        "pending",
-		Reference:     req.Reference,
-	}, nil
+	return &response, nil
 }
 
-// GetAccountBalance retrieves current account balance
-func (a *FundingAdapter) GetAccountBalance(ctx context.Context, accountID string) (*BalanceResponse, error) {
+// GetInstantFundingStatus retrieves the status of an instant funding transfer
+func (a *FundingAdapter) GetInstantFundingStatus(ctx context.Context, transferID string) (*entities.AlpacaInstantFundingResponse, error) {
+	endpoint := fmt.Sprintf("%s/%s", instantFundingEndpoint, transferID)
+
+	var response entities.AlpacaInstantFundingResponse
+	_, err := a.client.circuitBreaker.Execute(func() (interface{}, error) {
+		return &response, a.client.doRequestWithRetry(ctx, "GET", endpoint, nil, &response, false)
+	})
+
+	if err != nil {
+		a.logger.Error("Failed to get instant funding status",
+			zap.String("transfer_id", transferID),
+			zap.Error(err))
+		return nil, fmt.Errorf("get instant funding status failed: %w", err)
+	}
+
+	return &response, nil
+}
+
+// GetInstantFundingLimits retrieves instant funding limits at correspondent level
+func (a *FundingAdapter) GetInstantFundingLimits(ctx context.Context) (*entities.AlpacaInstantFundingLimitsResponse, error) {
+	var response entities.AlpacaInstantFundingLimitsResponse
+	_, err := a.client.circuitBreaker.Execute(func() (interface{}, error) {
+		return &response, a.client.doRequestWithRetry(ctx, "GET", instantFundingLimitsEndpoint, nil, &response, false)
+	})
+
+	if err != nil {
+		a.logger.Error("Failed to get instant funding limits", zap.Error(err))
+		return nil, fmt.Errorf("get instant funding limits failed: %w", err)
+	}
+
+	return &response, nil
+}
+
+// CreateJournal creates a journal entry to transfer funds between accounts
+func (a *FundingAdapter) CreateJournal(ctx context.Context, req *entities.AlpacaJournalRequest) (*entities.AlpacaJournalResponse, error) {
+	a.logger.Info("Creating Alpaca journal",
+		zap.String("from_account", req.FromAccount),
+		zap.String("to_account", req.ToAccount),
+		zap.String("amount", req.Amount.String()))
+
+	var response entities.AlpacaJournalResponse
+	_, err := a.client.circuitBreaker.Execute(func() (interface{}, error) {
+		return &response, a.client.doRequestWithRetry(ctx, "POST", journalsEndpoint, req, &response, false)
+	})
+
+	if err != nil {
+		a.logger.Error("Failed to create journal",
+			zap.String("from_account", req.FromAccount),
+			zap.String("to_account", req.ToAccount),
+			zap.Error(err))
+		return nil, fmt.Errorf("create journal failed: %w", err)
+	}
+
+	a.logger.Info("Journal created successfully",
+		zap.String("journal_id", response.ID),
+		zap.String("status", response.Status))
+
+	return &response, nil
+}
+
+// GetAccountBalance retrieves current account balance with buying power
+func (a *FundingAdapter) GetAccountBalance(ctx context.Context, accountID string) (*entities.AlpacaAccountResponse, error) {
 	account, err := a.client.GetAccount(ctx, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("get account failed: %w", err)
 	}
 
-	return &BalanceResponse{
-		AccountID:   account.ID,
-		Cash:        account.Cash,
-		BuyingPower: account.BuyingPower,
-		Currency:    account.Currency,
-	}, nil
-}
+	a.logger.Info("Retrieved account balance",
+		zap.String("account_id", account.ID),
+		zap.String("buying_power", account.BuyingPower.String()),
+		zap.String("cash", account.Cash.String()))
 
-// FundingRequest represents a funding request
-type FundingRequest struct {
-	AccountID string
-	Amount    decimal.Decimal
-	Reference string
-}
-
-// FundingResponse represents a funding response
-type FundingResponse struct {
-	AccountID     string
-	AccountNumber string
-	Amount        decimal.Decimal
-	Status        string
-	Reference     string
-}
-
-// BalanceResponse represents account balance
-type BalanceResponse struct {
-	AccountID   string
-	Cash        decimal.Decimal
-	BuyingPower decimal.Decimal
-	Currency    string
+	return account, nil
 }

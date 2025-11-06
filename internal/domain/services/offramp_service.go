@@ -229,15 +229,15 @@ func (s *OffRampService) fundAlpacaAccount(ctx context.Context, deposit *entitie
 		Multiplier:  2.0,
 	}
 
-	var fundingResp *alpaca.FundingResponse
+	var fundingResp *entities.AlpacaInstantFundingResponse
 	retryFunc := func() error {
-		req := &alpaca.FundingRequest{
-			AccountID: virtualAccount.AlpacaAccountID,
-			Amount:    amount,
-			Reference: fmt.Sprintf("deposit_%s", deposit.ID.String()),
+		req := &entities.AlpacaInstantFundingRequest{
+			AccountNo:       virtualAccount.AlpacaAccountID,
+			SourceAccountNo: "SI",
+			Amount:          amount,
 		}
 
-		resp, err := s.alpacaAdapter.InitiateFunding(ctx, req)
+		resp, err := s.alpacaAdapter.InitiateInstantFunding(ctx, req)
 		if err != nil {
 			return err
 		}
@@ -255,7 +255,8 @@ func (s *OffRampService) fundAlpacaAccount(ctx context.Context, deposit *entitie
 
 	// Update deposit with Alpaca funding details
 	now := time.Now()
-	deposit.AlpacaFundingTxID = &fundingResp.Reference
+	fundingTxID := fundingResp.ID
+	deposit.AlpacaFundingTxID = &fundingTxID
 	deposit.AlpacaFundedAt = &now
 	deposit.Status = "broker_funded"
 

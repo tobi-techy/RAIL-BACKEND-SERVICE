@@ -329,6 +329,78 @@ type AlpacaNewsResponse struct {
 
 // Alpaca Error Response
 
+// Alpaca Funding Entities
+
+// AlpacaInstantFundingRequest represents a request to create an instant funding transfer
+type AlpacaInstantFundingRequest struct {
+	AccountNo       string          `json:"account_no"`
+	SourceAccountNo string          `json:"source_account_no"`
+	Amount          decimal.Decimal `json:"amount"`
+}
+
+// AlpacaInstantFundingResponse represents the response for an instant funding transfer
+type AlpacaInstantFundingResponse struct {
+	ID               string          `json:"id"`
+	AccountNo        string          `json:"account_no"`
+	SourceAccountNo  string          `json:"source_account_no"`
+	Amount           decimal.Decimal `json:"amount"`
+	RemainingPayable decimal.Decimal `json:"remaining_payable"`
+	TotalInterest    decimal.Decimal `json:"total_interest"`
+	Status           string          `json:"status"` // PENDING, EXECUTED, COMPLETED, CANCELED, FAILED
+	SystemDate       string          `json:"system_date"`
+	Deadline         string          `json:"deadline"`
+	CreatedAt        time.Time       `json:"created_at"`
+	Fees             []AlpacaFee     `json:"fees,omitempty"`
+	Interests        []AlpacaInterest `json:"interests,omitempty"`
+}
+
+// AlpacaFee represents a fee associated with instant funding
+type AlpacaFee struct {
+	Amount      decimal.Decimal `json:"amount"`
+	Description string          `json:"description"`
+}
+
+// AlpacaInterest represents interest charges for late settlement
+type AlpacaInterest struct {
+	Amount      decimal.Decimal `json:"amount"`
+	Description string          `json:"description"`
+}
+
+// AlpacaInstantFundingLimitsResponse represents instant funding limits
+type AlpacaInstantFundingLimitsResponse struct {
+	AmountAvailable decimal.Decimal `json:"amount_available"`
+	AmountInUse     decimal.Decimal `json:"amount_in_use"`
+	AmountLimit     decimal.Decimal `json:"amount_limit"`
+}
+
+// AlpacaJournalRequest represents a request to create a journal entry
+type AlpacaJournalRequest struct {
+	FromAccount                  string                        `json:"from_account"`
+	ToAccount                    string                        `json:"to_account"`
+	EntryType                    string                        `json:"entry_type"` // JNLC (cash), JNLS (securities)
+	Amount                       decimal.Decimal               `json:"amount"`
+	Description                  string                        `json:"description,omitempty"`
+	TransmitterName              string                        `json:"transmitter_name,omitempty"`
+	TransmitterAccountNumber     string                        `json:"transmitter_account_number,omitempty"`
+	TransmitterAddress           string                        `json:"transmitter_address,omitempty"`
+	TransmitterFinancialInstitution string                     `json:"transmitter_financial_institution,omitempty"`
+}
+
+// AlpacaJournalResponse represents the response for a journal entry
+type AlpacaJournalResponse struct {
+	ID          string          `json:"id"`
+	FromAccount string          `json:"from_account"`
+	ToAccount   string          `json:"to_account"`
+	EntryType   string          `json:"entry_type"`
+	Amount      decimal.Decimal `json:"amount"`
+	Status      string          `json:"status"` // pending, executed, canceled
+	SettleDate  string          `json:"settle_date,omitempty"`
+	SystemDate  string          `json:"system_date,omitempty"`
+	NetAmount   decimal.Decimal `json:"net_amount"`
+	Description string          `json:"description,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+}
+
 // AlpacaErrorResponse represents an error response from Alpaca API
 type AlpacaErrorResponse struct {
 	Code    int    `json:"code"`

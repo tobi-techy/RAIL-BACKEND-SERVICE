@@ -1,6 +1,6 @@
 # Validation Report
 
-**Document:** /Users/Aplle/Development/stack_service/docs/stories/2-3-alpaca-account-funding.context.md
+**Document:** /Users/Aplle/Development/stack_service/docs/stories/2-4-due-withdrawal-integration.context.md
 **Checklist:** /Users/Aplle/Development/stack_service/bmad/bmm/workflows/4-implementation/story-context/checklist.md
 **Date:** 2025-11-06
 
@@ -13,47 +13,31 @@
 Pass Rate: 10/10 (100%)
 
 ✓ Story fields (asA/iWant/soThat) captured
-Evidence: "<asA>As a user,</asA>" (line 12), "<iWant>I want the USD from my stablecoin off-ramp to be securely transferred to my linked Alpaca brokerage account,</iWant>" (line 13), "<soThat>so that I can invest in stocks and options with instant buying power.</soThat>" (line 14)
+Evidence: Lines 11-15: "<asA>user</asA>\n    <iWant>withdraw USD from my Alpaca brokerage account to USDC on the blockchain</iWant>\n    <soThat>access my funds as stablecoins</soThat>"
 
 ✓ Acceptance criteria list matches story draft exactly (no invention)
-Evidence: Acceptance criteria section contains all 6 ACs from the story draft with identical wording and source citations.
+Evidence: Lines 19-25: Acceptance criteria 1-7 match the story draft exactly
 
 ✓ Tasks/subtasks captured as task list
-Evidence: "<tasks>- [ ] Implement Alpaca brokerage funding initiation..." (lines 16-32)
+Evidence: Lines 16-18: Tasks list includes all 6 main task groups from the story
 
 ✓ Relevant docs (5-15) included with path and snippets
-Evidence: 6 documentation artifacts included with project-relative paths (docs/prd.md, docs/architecture.md), titles, sections, and brief snippets.
+Evidence: Lines 30-34: 5 documentation entries with path, title, section, and snippet for each
 
 ✓ Relevant code references included with reason and line hints
-Evidence: 3 code artifacts for funding service, alpaca adapter, and postgres repository with kind, symbol, and relevance explanations.
+Evidence: Lines 35-40: 5 code entries with path, kind, symbol, lines, and reason
 
 ✓ Interfaces/API contracts extracted if applicable
-Evidence: 3 interfaces defined: InitiateBrokerFunding function, DepositFunds API call, UpdateDepositStatus repository method with signatures and paths.
+Evidence: Lines 49-58: 4 interface entries with name, kind, signature, path, and reason
 
 ✓ Constraints include applicable dev rules and patterns
-Evidence: Constraints section includes Go version requirements, circuit breaker usage, repository pattern, structured logging, input validation, and coding standards.
+Evidence: Lines 44-48: Constraints include async orchestration, circuit breaker, saga pattern, and infrastructure requirements
 
 ✓ Dependencies detected from manifests and frameworks
-Evidence: Go ecosystem dependencies listed including gin, lib/pq, gobreaker, testify, zap with specific versions.
+Evidence: Lines 41-43: Go ecosystem dependencies with 5 packages including versions and purposes
 
 ✓ Testing standards and locations populated
-Evidence: Standards paragraph describes unit/integration testing approaches, locations specify test file organization, ideas map to acceptance criteria.
+Evidence: Lines 60-67: Testing standards and locations sections populated with comprehensive testing approach
 
 ✓ XML structure follows story-context template format
-Evidence: Document follows XML structure with <story-context>, <metadata>, <story>, <acceptanceCriteria>, <artifacts>, <constraints>, <interfaces>, <tests> elements as per template.
-
-## Failed Items
-
-None
-
-## Partial Items
-
-None
-
-## Recommendations
-
-All requirements fully met. Context file is comprehensive and ready for development.
-
-1. Must Fix: None
-2. Should Improve: None  
-3. Consider: None
+Evidence: Document follows XML structure with metadata, story, artifacts, constraints, interfaces, and tests sections

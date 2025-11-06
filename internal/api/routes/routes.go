@@ -44,7 +44,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	}
 
 	// Initialize handlers with services from DI container
-	fundingHandlers := handlers.NewFundingHandlers(container.GetFundingService(), container.Logger)
+	fundingHandlers := handlers.NewFundingHandlers(container.GetFundingService(), nil, container.Logger)
 	onboardingHandlers := handlers.NewOnboardingHandlers(container.GetOnboardingService(), container.ZapLog)
 	walletHandlers := handlers.NewWalletHandlers(container.GetWalletService(), container.ZapLog)
 	securityHandlers := handlers.NewSecurityHandlers(

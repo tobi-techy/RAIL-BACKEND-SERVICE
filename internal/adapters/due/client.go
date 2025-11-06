@@ -131,7 +131,7 @@ func (c *Client) LinkWallet(ctx context.Context, req *LinkWalletRequest) (*LinkW
 
 // CreateRecipient creates a bank recipient for USD settlement
 func (c *Client) CreateRecipient(ctx context.Context, req *CreateRecipientRequest) (*CreateRecipientResponse, error) {
-	c.logger.Info("Creating recipient", "id", req.ID, "country", req.Country)
+	c.logger.Info("Creating recipient", "name", req.Name)
 
 	var response CreateRecipientResponse
 	if err := c.doRequest(ctx, "POST", "/recipients", req, &response); err != nil {

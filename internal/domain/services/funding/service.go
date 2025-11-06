@@ -79,6 +79,10 @@ type DueAdapter interface {
 // AlpacaAdapter interface for Alpaca API integration
 type AlpacaAdapter interface {
 	GetAccount(ctx context.Context, accountID string) (*entities.AlpacaAccountResponse, error)
+	InitiateInstantFunding(ctx context.Context, req *entities.AlpacaInstantFundingRequest) (*entities.AlpacaInstantFundingResponse, error)
+	GetInstantFundingStatus(ctx context.Context, transferID string) (*entities.AlpacaInstantFundingResponse, error)
+	GetAccountBalance(ctx context.Context, accountID string) (*entities.AlpacaAccountResponse, error)
+	CreateJournal(ctx context.Context, req *entities.AlpacaJournalRequest) (*entities.AlpacaJournalResponse, error)
 }
 
 // NewService creates a new funding service
@@ -412,4 +416,64 @@ func (s *Service) CreateVirtualAccount(ctx context.Context, req *entities.Create
 		VirtualAccount: virtualAccount,
 		Message:        "Virtual account created successfully",
 	}, nil
+}
+
+// InitiateBrokerFunding initiates funding to Alpaca brokerage account after off-ramp completion
+func (s *Service) InitiateBrokerFunding(ctx context.Context, depositID uuid.UUID, alpacaAccountID string, amount decimal.Decimal) error {
+	s.logger.Info("Initiating broker funding",
+		"deposit_id", depositID.String(),
+		"alpaca_account_id", alpacaAccountID,
+		"amount", amount.String())
+
+	// Verify Alpaca account is active
+	alpacaAccount, err := s.alpacaAPI.GetAccount(ctx, alpacaAccountID)
+	if err != nil {
+		s.logger.Error("Failed to get Alpaca account", "error", err, "alpaca_account_id", alpacaAccountID)
+		return fmt.Errorf("failed to get Alpaca account: %w", err)
+	}
+
+	if alpacaAccount.Status != entities.AlpacaAccountStatusActive {
+		s.logger.Error("Alpaca account not active",
+			"alpaca_account_id", alpacaAccountID,
+			"status", alpacaAccount.Status)
+		return fmt.Errorf("Alpaca account not active: %s", alpacaAccount.Status)
+	}
+
+	// Create instant funding transfer to extend buying power immediately
+	instantFundingReq := &entities.AlpacaInstantFundingRequest{
+		AccountNo:       alpacaAccount.AccountNumber,
+		SourceAccountNo: "SI", // Source account for instant funding
+		Amount:          amount,
+	}
+
+	instantFundingResp, err := s.alpacaAPI.InitiateInstantFunding(ctx, instantFundingReq)
+	if err != nil {
+		s.logger.Error("Failed to initiate instant funding",
+			"error", err,
+			"alpaca_account_id", alpacaAccountID,
+			"amount", amount.String())
+		return fmt.Errorf("failed to initiate instant funding: %w", err)
+	}
+
+	s.logger.Info("Instant funding initiated successfully",
+		"transfer_id", instantFundingResp.ID,
+		"status", instantFundingResp.Status,
+		"deadline", instantFundingResp.Deadline,
+		"alpaca_account_id", alpacaAccountID)
+
+	// Update deposit status to broker_funded
+	now := time.Now()
+	if err := s.depositRepo.UpdateStatus(ctx, depositID, "broker_funded", &now); err != nil {
+		s.logger.Error("Failed to update deposit status",
+			"error", err,
+			"deposit_id", depositID.String())
+		return fmt.Errorf("failed to update deposit status: %w", err)
+	}
+
+	s.logger.Info("Broker funding completed",
+		"deposit_id", depositID.String(),
+		"transfer_id", instantFundingResp.ID,
+		"alpaca_account_id", alpacaAccountID)
+
+	return nil
 }

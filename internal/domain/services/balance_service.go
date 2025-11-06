@@ -6,21 +6,29 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+	"github.com/stack-service/stack_service/internal/domain/entities"
 	"github.com/stack-service/stack_service/internal/infrastructure/repositories"
 	"github.com/stack-service/stack_service/pkg/logger"
 )
 
+// AlpacaBalanceAdapter interface for Alpaca balance operations
+type AlpacaBalanceAdapter interface {
+	GetAccountBalance(ctx context.Context, accountID string) (*entities.AlpacaAccountResponse, error)
+}
+
 // BalanceService handles user balance operations
 type BalanceService struct {
-	balanceRepo *repositories.BalanceRepository
-	logger      *logger.Logger
+	balanceRepo   *repositories.BalanceRepository
+	alpacaAdapter AlpacaBalanceAdapter
+	logger        *logger.Logger
 }
 
 // NewBalanceService creates a new balance service
-func NewBalanceService(balanceRepo *repositories.BalanceRepository, logger *logger.Logger) *BalanceService {
+func NewBalanceService(balanceRepo *repositories.BalanceRepository, alpacaAdapter AlpacaBalanceAdapter, logger *logger.Logger) *BalanceService {
 	return &BalanceService{
-		balanceRepo: balanceRepo,
-		logger:      logger,
+		balanceRepo:   balanceRepo,
+		alpacaAdapter: alpacaAdapter,
+		logger:        logger,
 	}
 }
 
@@ -48,4 +56,30 @@ func (s *BalanceService) GetBalance(ctx context.Context, userID uuid.UUID) (deci
 	}
 
 	return balance.BuyingPower, nil
+}
+
+// SyncWithAlpaca syncs local balance with Alpaca buying power
+func (s *BalanceService) SyncWithAlpaca(ctx context.Context, userID uuid.UUID, alpacaAccountID string) error {
+	s.logger.Info("Syncing balance with Alpaca",
+		"user_id", userID.String(),
+		"alpaca_account_id", alpacaAccountID)
+
+	// Get current Alpaca balance
+	alpacaAccount, err := s.alpacaAdapter.GetAccountBalance(ctx, alpacaAccountID)
+	if err != nil {
+		s.logger.Error("Failed to get Alpaca balance", "error", err)
+		return fmt.Errorf("get Alpaca balance: %w", err)
+	}
+
+	// Update local balance to match Alpaca buying power
+	if err := s.balanceRepo.UpdateBuyingPower(ctx, userID, alpacaAccount.BuyingPower); err != nil {
+		s.logger.Error("Failed to sync balance", "error", err)
+		return fmt.Errorf("sync balance: %w", err)
+	}
+
+	s.logger.Info("Balance synced with Alpaca",
+		"user_id", userID.String(),
+		"buying_power", alpacaAccount.BuyingPower.String())
+
+	return nil
 }
