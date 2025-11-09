@@ -25,6 +25,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	router.Use(middleware.RateLimit(container.Config.Server.RateLimitPerMin))
 	router.Use(middleware.SecurityHeaders())
 
+	// CSRF protection
+	csrfStore := middleware.NewCSRFStore()
+
 	// Health checks (no auth required)
 	healthHandler := handlers.NewHealthHandler(
 		container.DB,
@@ -76,6 +79,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	{
 		// Authentication routes (no auth required)
 		auth := v1.Group("/auth")
+		auth.Use(middleware.CSRFProtection(csrfStore))
 		{
 
 			// New signup flow with verification
@@ -104,6 +108,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 		// Onboarding routes - OpenAPI spec compliant
 		onboarding := v1.Group("/onboarding")
+		onboarding.Use(middleware.CSRFProtection(csrfStore))
 		{
 			onboarding.POST("/start", onboardingHandlers.StartOnboarding)
 
@@ -124,6 +129,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		// Protected routes (auth required)
 		protected := v1.Group("/")
 		protected.Use(middleware.Authentication(container.Config, container.Logger))
+		protected.Use(middleware.CSRFProtection(csrfStore))
 		{
 			// User management
 			users := protected.Group("/users")
@@ -163,16 +169,14 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// Balance routes (part of funding but separate for clarity)
 			protected.GET("/balances", fundingHandlers.GetBalances)
 
-			// Investing routes (OpenAPI spec compliant) - Commented out until service is implemented
-			// investing := protected.Group("/investing")
-			// {
-			// 	investing.GET("/baskets", investingHandlers.GetBaskets)
-			// 	investing.GET("/baskets/:basketId", investingHandlers.GetBasket)
-			// 	investing.POST("/orders", investingHandlers.CreateOrder)
-			// 	investing.GET("/orders", investingHandlers.GetOrders)
-			// 	investing.GET("/orders/:orderId", investingHandlers.GetOrder)
-			// 	investing.GET("/portfolio", investingHandlers.GetPortfolio)
-			// }
+			// Investment routes
+			basketExecutor := container.InitializeBasketExecutor()
+			investmentHandlers := handlers.NewInvestmentHandlers(
+				basketExecutor,
+				container.GetBalanceService(),
+				container.ZapLog,
+			)
+			RegisterInvestmentRoutes(protected, investmentHandlers, container.Config, container.Logger)
 
 			// Wallet routes (OpenAPI spec compliant)
 			wallet := protected.Group("/wallet")
@@ -290,6 +294,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		admin := v1.Group("/admin")
 		admin.Use(middleware.Authentication(container.Config, container.Logger))
 		admin.Use(middleware.AdminAuth(container.DB, container.Logger))
+		admin.Use(middleware.CSRFProtection(csrfStore))
 		{
 			admin.GET("/users", handlers.GetAllUsers(container.DB, container.Config, container.Logger))
 			admin.GET("/users/:id", handlers.GetUserByID(container.DB, container.Config, container.Logger))

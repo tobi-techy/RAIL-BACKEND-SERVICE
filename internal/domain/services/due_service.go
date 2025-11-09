@@ -260,11 +260,13 @@ func (s *DueService) GetRecipient(ctx context.Context, recipientID string) (*due
 }
 
 // ListVirtualAccounts retrieves all virtual accounts with filters
-func (s *DueService) ListVirtualAccounts(ctx context.Context, currencyIn, railOut string, limit int) (*due.ListVirtualAccountsResponse, error) {
+func (s *DueService) ListVirtualAccounts(ctx context.Context, destination, schemaIn, currencyIn, railOut, currencyOut string) (*due.ListVirtualAccountsResponse, error) {
 	filters := &due.VirtualAccountFilters{
-		CurrencyIn: currencyIn,
-		RailOut:    railOut,
-		Limit:      limit,
+		Destination: destination,
+		SchemaIn:    schemaIn,
+		CurrencyIn:  currencyIn,
+		RailOut:     railOut,
+		CurrencyOut: currencyOut,
 	}
 
 	resp, err := s.dueClient.ListVirtualAccounts(ctx, filters)

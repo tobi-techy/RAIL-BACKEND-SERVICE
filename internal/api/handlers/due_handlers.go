@@ -568,24 +568,22 @@ func (h *DueHandler) GetRecipient(c *gin.Context) {
 // @Description Retrieves all virtual accounts with optional filters
 // @Tags Due
 // @Produce json
+// @Param destination query string false "Destination ID"
+// @Param schema_in query string false "Schema In (e.g., solana, evm)"
 // @Param currency_in query string false "Currency In (e.g., USDC)"
 // @Param rail_out query string false "Rail Out (e.g., ach)"
-// @Param limit query int false "Limit" default(50)
+// @Param currency_out query string false "Currency Out (e.g., USD)"
 // @Success 200 {object} map[string]interface{}
 // @Failure 500 {object} map[string]interface{}
 // @Router /api/v1/due/virtual-accounts [get]
 func (h *DueHandler) ListVirtualAccounts(c *gin.Context) {
+	destination := c.Query("destination")
+	schemaIn := c.Query("schema_in")
 	currencyIn := c.Query("currency_in")
 	railOut := c.Query("rail_out")
-	limit := 50
+	currencyOut := c.Query("currency_out")
 
-	if l := c.Query("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
-			limit = parsed
-		}
-	}
-
-	resp, err := h.dueService.ListVirtualAccounts(c.Request.Context(), currencyIn, railOut, limit)
+	resp, err := h.dueService.ListVirtualAccounts(c.Request.Context(), destination, schemaIn, currencyIn, railOut, currencyOut)
 	if err != nil {
 		h.logger.Error("Failed to list virtual accounts", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list virtual accounts"})

@@ -28,6 +28,10 @@ func RequestIDMiddleware() gin.HandlerFunc {
 // LoggingMiddleware provides structured request logging
 func LoggingMiddleware(logger *zap.Logger) gin.HandlerFunc {
 	return gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
+		requestID := ""
+		if id, ok := param.Keys["request_id"].(string); ok {
+			requestID = id
+		}
 		logger.Info("HTTP Request",
 			zap.String("method", param.Method),
 			zap.String("path", param.Path),
@@ -35,7 +39,7 @@ func LoggingMiddleware(logger *zap.Logger) gin.HandlerFunc {
 			zap.Duration("latency", param.Latency),
 			zap.String("client_ip", param.ClientIP),
 			zap.String("user_agent", param.Request.UserAgent()),
-			zap.String("request_id", param.Keys["request_id"].(string)),
+			zap.String("request_id", requestID),
 		)
 		return ""
 	})

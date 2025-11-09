@@ -555,10 +555,10 @@ func (h *AuthSignupHandlers) ResendCode(c *gin.Context) {
 // @Tags auth
 // @Accept json
 // @Produce json
-// @Param request body LoginRequest true "Login credentials"
-// @Success 200 {object} AuthResponse
-// @Failure 400 {object} ErrorResponse
-// @Failure 401 {object} ErrorResponse
+// @Param request body entities.LoginRequest true "Login credentials"
+// @Success 200 {object} entities.AuthResponse
+// @Failure 400 {object} entities.ErrorResponse
+// @Failure 401 {object} entities.ErrorResponse
 // @Router /api/v1/auth/login [post]
 func Login(db *sql.DB, cfg *config.Config, log *logger.Logger, emailService *adapters.EmailService) gin.HandlerFunc {
 	return func(c *gin.Context) {

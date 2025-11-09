@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/stack-service/stack_service/internal/infrastructure/config"
@@ -78,8 +79,9 @@ func RunMigrations(databaseURL string) error {
 		return fmt.Errorf("failed to create postgres driver: %w", err)
 	}
 
+	migrationPath := filepath.Clean("migrations")
 	m, err := migrate.NewWithDatabaseInstance(
-		"file://migrations",
+		"file://"+migrationPath,
 		"postgres",
 		driver,
 	)

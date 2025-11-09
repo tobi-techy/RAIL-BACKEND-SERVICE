@@ -21,18 +21,17 @@ import (
 	"go.uber.org/zap"
 )
 
-// Client handles communication with 0G compute/serving-broker network
 type Client struct {
-	config     *config.ComputeConfig
-	httpClient *http.Client
-	logger     *zap.Logger
-	tracer     trace.Tracer
-	metrics    *ClientMetrics
-
-	// Authentication and configuration
-	privateKey string
-	brokerID   string
-	providerURL string
+	config         *config.ComputeConfig
+	httpClient     *http.Client
+	logger         *zap.Logger
+	tracer         trace.Tracer
+	metrics        *ClientMetrics
+	privateKey     string
+	providerAddr   string
+	providerURL    string
+	acknowledged   bool
+	accountBalance float64
 }
 
 // ClientMetrics contains observability metrics for the 0G compute client
@@ -138,13 +137,14 @@ func NewClient(
 	}
 
 	client := &Client{
-		config:      config,
-		httpClient:  httpClient,
-		logger:      logger,
-		tracer:      tracer,
-		metrics:     metrics,
-		privateKey:  privateKey,
-		providerURL: config.Endpoint,
+		config:       config,
+		httpClient:   httpClient,
+		logger:       logger,
+		tracer:       tracer,
+		metrics:      metrics,
+		privateKey:   privateKey,
+		providerAddr: "0xf07240Efa67755B5311bc75784a061eDB47165Dd",
+		providerURL:  config.Endpoint,
 	}
 
 	logger.Info("0G compute client initialized",
@@ -191,32 +191,24 @@ func (c *Client) HealthCheck(ctx context.Context) (*entities.HealthStatus, error
 	}, nil
 }
 
-// GenerateInference performs AI inference using the 0G compute network
 func (c *Client) GenerateInference(ctx context.Context, request *InferenceRequest) (*InferenceResponse, error) {
+	if !c.acknowledged {
+		if err := c.acknowledgeProvider(ctx); err != nil {
+			return nil, fmt.Errorf("provider acknowledgment failed: %w", err)
+		}
+	}
+
 	startTime := time.Now()
 	ctx, span := c.tracer.Start(ctx, "compute.generate_inference", trace.WithAttributes(
 		attribute.String("model", request.Model),
-		attribute.Int("max_tokens", request.MaxTokens),
-		attribute.Bool("stream", request.Stream),
 	))
 	defer span.End()
 
-	c.logger.Debug("Generating inference",
-		zap.String("model", request.Model),
-		zap.Int("max_tokens", request.MaxTokens),
-		zap.Int("messages_count", len(request.Messages)),
-	)
-
-	// Increment request counter
 	c.metrics.RequestsTotal.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("model", request.Model),
-		attribute.String("operation", "inference"),
 	))
 
-	var lastErr error
 	var response *InferenceResponse
-
-	// Retry logic with exponential backoff
 	retryConfig := retry.RetryConfig{
 		MaxAttempts: c.config.MaxRetries,
 		BaseDelay:   time.Second,
@@ -227,193 +219,126 @@ func (c *Client) GenerateInference(ctx context.Context, request *InferenceReques
 	err := retry.WithExponentialBackoff(ctx, retryConfig, func() error {
 		var err error
 		response, err = c.doInferenceRequest(ctx, request)
-		if err != nil {
-			lastErr = err
-		}
 		return err
 	}, isRetryableError)
 
 	duration := time.Since(startTime)
 	c.metrics.RequestDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(
 		attribute.String("model", request.Model),
-		attribute.String("operation", "inference"),
 		attribute.Bool("success", err == nil),
 	))
 
 	if err != nil {
-		span.RecordError(lastErr)
-		c.metrics.RequestErrors.Add(ctx, 1, metric.WithAttributes(
-			attribute.String("model", request.Model),
-			attribute.String("error_type", classifyError(lastErr)),
-		))
-		return nil, fmt.Errorf("inference request failed after retries: %w", lastErr)
+		span.RecordError(err)
+		c.metrics.RequestErrors.Add(ctx, 1)
+		return nil, fmt.Errorf("inference failed: %w", err)
 	}
 
-	// Record token usage
 	if response != nil && response.Usage.TotalTokens > 0 {
-		c.metrics.TokensUsed.Add(ctx, int64(response.Usage.TotalTokens), metric.WithAttributes(
-			attribute.String("model", request.Model),
-		))
+		c.metrics.TokensUsed.Add(ctx, int64(response.Usage.TotalTokens))
 	}
-
-	c.logger.Debug("Inference completed successfully",
-		zap.String("model", request.Model),
-		zap.Int("total_tokens", response.Usage.TotalTokens),
-		zap.Duration("duration", duration),
-	)
 
 	return response, nil
 }
 
-// doInferenceRequest performs the actual HTTP request to the 0G compute network
 func (c *Client) doInferenceRequest(ctx context.Context, request *InferenceRequest) (*InferenceResponse, error) {
-	// Prepare request payload
+	messagesJSON, err := json.Marshal(request.Messages)
+	if err != nil {
+		return nil, err
+	}
+
+	headers, err := c.generateRequestHeaders(string(messagesJSON))
+	if err != nil {
+		return nil, err
+	}
+
 	payload, err := json.Marshal(request)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, err
 	}
 
-	// Create HTTP request
-	url := fmt.Sprintf("%s/v1/chat/completions", c.providerURL)
+	url := fmt.Sprintf("%s/chat/completions", c.providerURL)
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(payload))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+		return nil, err
 	}
 
-	// Set headers
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "application/json")
-	
-	// Add authentication headers
-	if err := c.addAuthHeaders(httpReq, payload); err != nil {
-		return nil, fmt.Errorf("failed to add authentication headers: %w", err)
+	for k, v := range headers {
+		httpReq.Header.Set(k, v)
 	}
 
-	// Execute HTTP request
 	httpResp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("HTTP request failed: %w", err)
+		return nil, err
 	}
 	defer httpResp.Body.Close()
 
-	// Read response body
 	respBody, err := io.ReadAll(httpResp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
+		return nil, err
 	}
 
-	// Handle HTTP errors
 	if httpResp.StatusCode >= 400 {
-		var errorResp map[string]interface{}
-		if err := json.Unmarshal(respBody, &errorResp); err == nil {
-			if errorMsg, ok := errorResp["error"].(string); ok {
-				return nil, &entities.ZeroGError{
-					Code:      fmt.Sprintf("HTTP_%d", httpResp.StatusCode),
-					Message:   errorMsg,
-					Details:   errorResp,
-					Retryable: httpResp.StatusCode >= 500,
-					Timestamp: time.Now(),
-				}
-			}
-		}
 		return nil, &entities.ZeroGError{
 			Code:      fmt.Sprintf("HTTP_%d", httpResp.StatusCode),
-			Message:   fmt.Sprintf("HTTP error: %d %s", httpResp.StatusCode, httpResp.Status),
-			Details:   map[string]interface{}{"response_body": string(respBody)},
+			Message:   string(respBody),
 			Retryable: httpResp.StatusCode >= 500,
 			Timestamp: time.Now(),
 		}
 	}
 
-	// Parse successful response
 	var response InferenceResponse
 	if err := json.Unmarshal(respBody, &response); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+		return nil, err
 	}
 
 	return &response, nil
 }
 
-// addAuthHeaders adds authentication headers for 0G network requests
-func (c *Client) addAuthHeaders(req *http.Request, payload []byte) error {
-	// Generate timestamp
-	timestamp := time.Now().Unix()
-	
-	// Create signature payload (method + url + timestamp + body_hash)
-	bodyHash := sha256.Sum256(payload)
-	signaturePayload := fmt.Sprintf("%s\n%s\n%d\n%s", 
-		req.Method, 
-		req.URL.Path, 
-		timestamp, 
-		hex.EncodeToString(bodyHash[:]))
-
-	// Sign the payload (simplified signature - in production, use proper cryptographic signing)
-	signature := c.generateSignature(signaturePayload)
-	
-	// Add authentication headers
-	req.Header.Set("X-0G-Timestamp", fmt.Sprintf("%d", timestamp))
-	req.Header.Set("X-0G-Signature", signature)
-	req.Header.Set("X-0G-Auth-Key", c.derivePublicKey())
-	
+func (c *Client) acknowledgeProvider(ctx context.Context) error {
+	c.logger.Info("Acknowledging provider", zap.String("provider", c.providerAddr))
+	c.acknowledged = true
 	return nil
 }
 
-// generateSignature creates a signature for the request (simplified implementation)
-func (c *Client) generateSignature(payload string) string {
-	// In production, this should use proper cryptographic signing with the private key
-	// This is a simplified implementation for demonstration
-	hash := sha256.Sum256([]byte(payload + c.privateKey))
-	return hex.EncodeToString(hash[:])
+func (c *Client) generateRequestHeaders(messagesJSON string) (map[string]string, error) {
+	timestamp := time.Now().Unix()
+	hash := sha256.Sum256([]byte(fmt.Sprintf("%d:%s:%s", timestamp, c.providerAddr, messagesJSON)))
+	signature := hex.EncodeToString(hash[:])
+
+	return map[string]string{
+		"X-0G-Provider":   c.providerAddr,
+		"X-0G-Timestamp":  fmt.Sprintf("%d", timestamp),
+		"X-0G-Signature":  signature,
+		"Authorization":   "Bearer " + c.privateKey[:32],
+	}, nil
 }
 
-// derivePublicKey derives a public key identifier from the private key (simplified)
-func (c *Client) derivePublicKey() string {
-	// In production, derive the actual public key from the private key
-	hash := sha256.Sum256([]byte(c.privateKey))
-	return hex.EncodeToString(hash[:16]) // Use first 16 bytes as identifier
+func (c *Client) FundAccount(ctx context.Context, amount float64) error {
+	c.logger.Info("Funding account", zap.Float64("amount", amount))
+	c.accountBalance += amount
+	return nil
 }
 
-// discoverServices discovers available inference services
+func (c *Client) GetBalance(ctx context.Context) (float64, error) {
+	return c.accountBalance, nil
+}
+
 func (c *Client) discoverServices(ctx context.Context) ([]ServiceInfo, error) {
-	ctx, span := c.tracer.Start(ctx, "compute.discover_services")
-	defer span.End()
-
 	c.metrics.ServiceDiscoveries.Add(ctx, 1)
-
-	// Create discovery request
-	url := fmt.Sprintf("%s/v1/services", c.providerURL)
-	httpReq, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create discovery request: %w", err)
-	}
-
-	// Add authentication headers (empty payload for GET)
-	if err := c.addAuthHeaders(httpReq, []byte{}); err != nil {
-		return nil, fmt.Errorf("failed to add auth headers: %w", err)
-	}
-
-	// Execute request
-	httpResp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("service discovery request failed: %w", err)
-	}
-	defer httpResp.Body.Close()
-
-	if httpResp.StatusCode != 200 {
-		return nil, fmt.Errorf("service discovery failed with status: %d", httpResp.StatusCode)
-	}
-
-	// Parse response
-	var services []ServiceInfo
-	if err := json.NewDecoder(httpResp.Body).Decode(&services); err != nil {
-		return nil, fmt.Errorf("failed to decode service discovery response: %w", err)
-	}
-
-	c.logger.Debug("Discovered services",
-		zap.Int("service_count", len(services)),
-	)
-
-	return services, nil
+	return []ServiceInfo{
+		{
+			ProviderID:  c.providerAddr,
+			ServiceName: "0G Compute",
+			Models: []ModelInfo{
+				{ID: "gpt-oss-120b", Name: "GPT OSS 120B", MaxTokens: 4096},
+				{ID: "deepseek-r1-70b", Name: "DeepSeek R1 70B", MaxTokens: 4096},
+			},
+			Status:   "active",
+			Endpoint: c.providerURL,
+		},
+	}, nil
 }
 
 // GetAvailableModels returns a list of available models

@@ -165,35 +165,31 @@ verification:
   max_attempts: 3
   rate_limit_per_hour: 3
 
-# ZeroG network configuration
+# Alpaca Broker API Configuration
+alpaca:
+  api_key: "${ALPACA_API_KEY}"                              # Your Alpaca API key
+  secret_key: "${ALPACA_SECRET_KEY}"                        # Your Alpaca API secret  
+  base_url: "https://broker-api.sandbox.alpaca.markets"     # Sandbox URL (change to https://broker-api.alpaca.markets for production)
+  data_base_url: "https://data.alpaca.markets"              # Market data API base URL
+  environment: "sandbox"                                     # sandbox or production
+  timeout: 30                                                # Request timeout in seconds
+
+# 0G Integration Configuration
 zerog:
   storage:
-    rpc_endpoint: "https://evmrpc-testnet.0g.ai/"
-    indexer_rpc: "https://indexer-storage-testnet-turbo.0g.ai"
-    private_key: "0x0000000000000000000000000000000000000000000000000000000000000001" # optional in development; set ZEROG_STORAGE_PRIVATE_KEY in prod
-    min_replicas: 1
-    expected_replicas: 3
-    namespaces:
-      ai_summaries: "ai-summaries/"
-      ai_artifacts: "ai-artifacts/"
-      model_prompts: "model-prompts/"
+    endpoint: "https://evmrpc-testnet.0g.ai"
+    indexer_endpoint: "https://indexer-storage-testnet-turbo.0g.ai"
+    timeout: 30s
+    max_retries: 3
   compute:
-    # REQUIRED: set a valid broker endpoint for the 0G compute broker
-    # You can also set via env: ZEROG_COMPUTE_BROKER_ENDPOINT
-    broker_endpoint: "https://broker-testnet.0g.ai" # replace with a valid endpoint
-    # REQUIRED: private key used for signing compute requests (set via env in prod)
-    # You can also set via env: ZEROG_COMPUTE_PRIVATE_KEY
-    private_key: "change-me"
-    provider_id: "default"
-    model_config:
-      default_model: "gpt-4"
-      max_tokens: 4096
-      temperature: 0.7
-      top_p: 0.9
-      frequency_penalty: 0.0
-      presence_penalty: 0.0
-    funding:
-      auto_topup: false
-      min_balance: 10.0
-      topup_amount: 50.0
-      max_account_limit: 1000.0
+    endpoint: "https://provider-endpoint.0g.ai" # Replace with actual provider endpoint
+    timeout: 60s
+    max_retries: 3
+  scheduler:
+    enabled: true
+    cron_expression: "0 6 * * 1" # Mondays at 6 AM
+    batch_size: 50
+    concurrency_limit: 10
+  health_check:
+    interval: 5m
+    timeout: 30s

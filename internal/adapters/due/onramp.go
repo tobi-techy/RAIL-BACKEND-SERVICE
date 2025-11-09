@@ -30,7 +30,7 @@ func (a *Adapter) CreateRecipient(ctx context.Context, name, address, chain stri
 	}
 
 	var resp CreateRecipientResponse
-	if err := a.client.doRequest(ctx, "POST", "/v1/recipients", req, &resp); err != nil {
+	if err := a.client.doRequest(ctx, "POST", "recipients", req, &resp); err != nil {
 		a.logger.Error("Failed to create recipient", "error", err)
 		return nil, fmt.Errorf("create recipient failed: %w", err)
 	}
@@ -64,7 +64,7 @@ func (a *Adapter) CreateOnRampQuote(ctx context.Context, usdAmount decimal.Decim
 	}
 
 	var resp OnRampQuoteResponse
-	if err := a.client.doRequest(ctx, "POST", "/v1/transfers/quote", req, &resp); err != nil {
+	if err := a.client.doRequest(ctx, "POST", "transfers/quote", req, &resp); err != nil {
 		a.logger.Error("Failed to create quote", "error", err)
 		return nil, fmt.Errorf("create quote failed: %w", err)
 	}
@@ -91,7 +91,7 @@ func (a *Adapter) CreateOnRampTransfer(ctx context.Context, quoteToken, senderWa
 	}
 
 	var resp OnRampTransferResponse
-	if err := a.client.doRequest(ctx, "POST", "/v1/transfers", req, &resp); err != nil {
+	if err := a.client.doRequest(ctx, "POST", "transfers", req, &resp); err != nil {
 		a.logger.Error("Failed to create transfer", "error", err)
 		return nil, fmt.Errorf("create transfer failed: %w", err)
 	}
@@ -107,7 +107,7 @@ func (a *Adapter) CreateOnRampTransfer(ctx context.Context, quoteToken, senderWa
 func (a *Adapter) CreateFundingAddress(ctx context.Context, transferID string) (*FundingAddressResponse, error) {
 	a.logger.Info("Creating funding address", "transfer_id", transferID)
 
-	endpoint := fmt.Sprintf("/v1/transfers/%s/funding_address", transferID)
+	endpoint := fmt.Sprintf("transfers/%s/funding_address", transferID)
 
 	var resp FundingAddressResponse
 	if err := a.client.doRequest(ctx, "POST", endpoint, nil, &resp); err != nil {
@@ -121,7 +121,7 @@ func (a *Adapter) CreateFundingAddress(ctx context.Context, transferID string) (
 
 // GetTransferStatus retrieves the status of a transfer
 func (a *Adapter) GetTransferStatus(ctx context.Context, transferID string) (*OnRampTransferResponse, error) {
-	endpoint := fmt.Sprintf("/v1/transfers/%s", transferID)
+	endpoint := fmt.Sprintf("transfers/%s", transferID)
 
 	var resp OnRampTransferResponse
 	if err := a.client.doRequest(ctx, "GET", endpoint, nil, &resp); err != nil {

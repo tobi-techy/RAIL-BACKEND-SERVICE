@@ -187,9 +187,12 @@ type ListRecipientsResponse struct {
 
 // VirtualAccountFilters represents filters for virtual accounts
 type VirtualAccountFilters struct {
-	CurrencyIn string
-	RailOut    string
-	Limit      int
+	Destination string // Required: recipient ID for the virtual account
+	SchemaIn    string // Required: input payment method schema
+	CurrencyIn  string // Required: input currency
+	RailOut     string // Required: output rail
+	CurrencyOut string // Required: output currency
+	Reference   string // Optional: reference for tracking
 }
 
 // ListVirtualAccountsResponse represents paginated virtual accounts response
@@ -360,4 +363,114 @@ type FundingAddressResponse struct {
 type FundingAddressDetails struct {
 	Address string `json:"address"`
 	Schema  string `json:"schema"`
+}
+
+// WalletBalanceResponse represents wallet balance response
+type WalletBalanceResponse struct {
+	Balances []Balance `json:"balances"`
+}
+
+// Balance represents a currency balance
+type Balance struct {
+	Currency string `json:"currency"`
+	Amount   string `json:"amount"`
+	Network  string `json:"network,omitempty"`
+}
+
+// TransferIntentRequest represents transfer intent request
+type TransferIntentRequest struct {
+	Signature string `json:"signature"`
+	PublicKey string `json:"publicKey"`
+}
+
+// SubmitTransferIntentRequest represents submit transfer intent request
+type SubmitTransferIntentRequest struct {
+	IntentID  string `json:"intentId"`
+	Signature string `json:"signature"`
+}
+
+// TransferIntentResponse represents transfer intent response
+type TransferIntentResponse struct {
+	ID        string    `json:"id"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// InitCredentialsRequest represents vault credentials initialization request
+type InitCredentialsRequest struct {
+	Email string `json:"email"`
+}
+
+// InitCredentialsResponse represents vault credentials initialization response
+type InitCredentialsResponse struct {
+	ChallengeID string `json:"challengeId"`
+	Challenge   string `json:"challenge"`
+}
+
+// CreateCredentialsRequest represents vault credentials creation request
+type CreateCredentialsRequest struct {
+	ChallengeID string `json:"challengeId"`
+	Attestation string `json:"attestation"`
+}
+
+// CredentialsResponse represents vault credentials response
+type CredentialsResponse struct {
+	ID        string    `json:"id"`
+	PublicKey string    `json:"publicKey"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// CreateVaultRequest represents vault creation request
+type CreateVaultRequest struct {
+	CredentialID string `json:"credentialId"`
+	Network      string `json:"network"` // ethereum, polygon, arbitrum, etc.
+}
+
+// VaultResponse represents vault response
+type VaultResponse struct {
+	ID        string    `json:"id"`
+	Address   string    `json:"address"`
+	Network   string    `json:"network"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// SignRequest represents transaction signing request
+type SignRequest struct {
+	VaultID string                 `json:"vaultId"`
+	Data    map[string]interface{} `json:"data"`
+}
+
+// SignResponse represents transaction signing response
+type SignResponse struct {
+	Signature string `json:"signature"`
+	TxHash    string `json:"txHash,omitempty"`
+}
+
+// FXMarketsResponse represents FX markets response
+type FXMarketsResponse struct {
+	Markets []FXMarket `json:"markets"`
+}
+
+// FXMarket represents an FX market pair
+type FXMarket struct {
+	From string  `json:"from"`
+	To   string  `json:"to"`
+	Rate float64 `json:"rate"`
+}
+
+// FXQuoteRequest represents FX quote request
+type FXQuoteRequest struct {
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Amount string `json:"amount"`
+}
+
+// FXQuoteResponse represents FX quote response
+type FXQuoteResponse struct {
+	From      string    `json:"from"`
+	To        string    `json:"to"`
+	Rate      float64   `json:"rate"`
+	Amount    string    `json:"amount"`
+	Total     string    `json:"total"`
+	ExpiresAt time.Time `json:"expiresAt"`
 }

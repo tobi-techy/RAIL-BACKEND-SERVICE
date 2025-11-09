@@ -14,9 +14,10 @@ type ZeroGConfig struct {
 
 // StorageConfig configures the 0G storage client
 type StorageConfig struct {
-	Endpoint   string        `yaml:"endpoint" mapstructure:"endpoint"`
-	Timeout    time.Duration `yaml:"timeout" mapstructure:"timeout"`
-	MaxRetries int           `yaml:"max_retries" mapstructure:"max_retries"`
+	Endpoint        string        `yaml:"endpoint" mapstructure:"endpoint"`
+	IndexerEndpoint string        `yaml:"indexer_endpoint" mapstructure:"indexer_endpoint"`
+	Timeout         time.Duration `yaml:"timeout" mapstructure:"timeout"`
+	MaxRetries      int           `yaml:"max_retries" mapstructure:"max_retries"`
 }
 
 // ComputeConfig configures the 0G compute/inference client
@@ -44,9 +45,10 @@ type HealthCheckConfig struct {
 func DefaultZeroGConfig() *ZeroGConfig {
 	return &ZeroGConfig{
 		Storage: StorageConfig{
-			Endpoint:   "http://localhost:5678",
-			Timeout:    30 * time.Second,
-			MaxRetries: 3,
+			Endpoint:        "https://evmrpc-testnet.0g.ai",
+			IndexerEndpoint: "https://indexer-storage-testnet-turbo.0g.ai",
+			Timeout:         30 * time.Second,
+			MaxRetries:      3,
 		},
 		Compute: ComputeConfig{
 			Endpoint:   "http://localhost:5679",

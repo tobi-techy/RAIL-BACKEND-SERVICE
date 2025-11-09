@@ -55,12 +55,14 @@ func InputValidation() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		c.Set("user_agent", userAgent)
 
 		// Validate content type for POST/PUT requests
 		if c.Request.Method == "POST" || c.Request.Method == "PUT" {
 			contentType := c.GetHeader("Content-Type")
 			if contentType != "" && !strings.Contains(contentType, "application/json") && 
-			   !strings.Contains(contentType, "multipart/form-data") {
+			   !strings.Contains(contentType, "multipart/form-data") && 
+			   !strings.Contains(contentType, "application/x-www-form-urlencoded") {
 				c.JSON(http.StatusUnsupportedMediaType, gin.H{
 					"error":      "Unsupported content type",
 					"request_id": c.GetString("request_id"),
@@ -292,7 +294,16 @@ func AdminAuth(db *sql.DB, log *logger.Logger) gin.HandlerFunc {
 // ValidateAPIKey validates API keys for external services
 func ValidateAPIKey(validKeys []string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		apiKey := c.GetHeader("X-API-Key")
+		if len(validKeys) == 0 {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":      "API key validation not configured",
+				"request_id": c.GetString("request_id"),
+			})
+			c.Abort()
+			return
+		}
+
+		apiKey := strings.TrimSpace(c.GetHeader("X-API-Key"))
 		if apiKey == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error":      "API key required",

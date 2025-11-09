@@ -156,9 +156,10 @@ type Container struct {
 	FundingEventJobRepo       *repositories.FundingEventJobRepository
 
 	// External Services
-	CircleClient *circle.Client
-	AlpacaClient *alpaca.Client
-	KYCProvider  *adapters.KYCProvider
+	CircleClient  *circle.Client
+	AlpacaClient  *alpaca.Client
+	AlpacaService *alpaca.Service
+	KYCProvider   *adapters.KYCProvider
 	EmailService *adapters.EmailService
 	SMSService   *adapters.SMSService
 	AuditService *adapters.AuditService
@@ -220,7 +221,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	}
 	circleClient := circle.NewClient(circleConfig, zapLog)
 
-	// Initialize Alpaca client
+	// Initialize Alpaca service
 	alpacaConfig := alpaca.Config{
 		APIKey:      cfg.Alpaca.APIKey,
 		APISecret:   cfg.Alpaca.APISecret,
@@ -230,6 +231,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		Timeout:     time.Duration(cfg.Alpaca.Timeout) * time.Second,
 	}
 	alpacaClient := alpaca.NewClient(alpacaConfig, zapLog)
+	alpacaService := alpaca.NewService(alpacaClient, zapLog)
 
 	// Initialize KYC provider with full configuration
 	kycProviderConfig := adapters.KYCProviderConfig{
@@ -334,9 +336,10 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		OnboardingJobRepo:         onboardingJobRepo,
 
 		// External Services
-		CircleClient: circleClient,
-		AlpacaClient: alpacaClient,
-		KYCProvider:  kycProvider,
+		CircleClient:  circleClient,
+		AlpacaClient:  alpacaClient,
+		AlpacaService: alpacaService,
+		KYCProvider:   kycProvider,
 		EmailService: emailService,
 		SMSService:   smsService,
 		AuditService: auditService,
@@ -447,7 +450,7 @@ func (c *Container) initializeDomainServices() error {
 		c.DepositRepo,
 		c.BalanceRepo,
 		simpleWalletRepo,
-		c.WalletRepo, // ManagedWalletRepository for real-time Circle balance fetching
+		c.WalletRepo,
 		virtualAccountRepo,
 		circleAdapter,
 		dueAdapter,
@@ -460,7 +463,7 @@ func (c *Container) initializeDomainServices() error {
 	orderRepo := repositories.NewOrderRepository(c.DB, c.ZapLog)
 	positionRepo := repositories.NewPositionRepository(c.DB, c.ZapLog)
 
-	// Initialize brokerage adapter with Alpaca client
+	// Initialize brokerage adapter with Alpaca service
 	brokerageAdapter := adapters.NewBrokerageAdapter(
 		c.AlpacaClient,
 		c.ZapLog,
@@ -472,8 +475,8 @@ func (c *Container) initializeDomainServices() error {
 		positionRepo,
 		c.BalanceRepo,
 		brokerageAdapter,
-		c.WalletRepo,   // Pass wallet repository for fetching wallets
-		c.CircleClient, // Pass Circle client for fetching real-time balances
+		c.WalletRepo,
+		c.CircleClient,
 		c.Logger,
 	)
 
