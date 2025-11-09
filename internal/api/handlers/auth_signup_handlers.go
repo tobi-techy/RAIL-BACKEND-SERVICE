@@ -686,7 +686,7 @@ func RefreshToken(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.Handle
 	return func(c *gin.Context) {
 		var req entities.RefreshTokenRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "Invalid request payload"})
+			respondBadRequest(c, "Invalid request payload", nil)
 			return
 		}
 
@@ -730,7 +730,7 @@ func ForgotPassword(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.Hand
 	return func(c *gin.Context) {
 		var req entities.ForgotPasswordRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "Invalid request payload"})
+			respondBadRequest(c, "Invalid request payload", nil)
 			return
 		}
 		// Check user exists
@@ -774,7 +774,7 @@ func ResetPassword(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.Handl
 	return func(c *gin.Context) {
 		var req entities.ResetPasswordRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "Invalid request payload"})
+			respondBadRequest(c, "Invalid request payload", nil)
 			return
 		}
 		// In this simplified implementation we don't track tokens server-side.
@@ -891,9 +891,11 @@ func UpdateProfile(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.Handl
 		}
 		if payload.FirstName != nil {
 			// not stored in DB yet, ignore
+			user.FirstName = payload.FirstName
 		}
 		if payload.LastName != nil {
 			// not stored in DB yet, ignore
+			user.LastName = payload.LastName
 		}
 		if err := userRepo.Update(ctx, user); err != nil {
 			c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "UPDATE_FAILED", Message: "Failed to update profile"})
@@ -918,7 +920,7 @@ func ChangePassword(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.Hand
 		}
 		var req entities.ChangePasswordRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "Invalid request payload"})
+			respondBadRequest(c, "Invalid request payload", nil)
 			return
 		}
 		userRepo := repositories.NewUserRepository(db, log.Zap())

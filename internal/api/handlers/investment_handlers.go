@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+	"github.com/stack-service/stack_service/internal/domain/entities"
 	"github.com/stack-service/stack_service/internal/domain/services"
 	"go.uber.org/zap"
 )
@@ -45,9 +46,9 @@ func (h *InvestmentHandlers) InvestInBasket(c *gin.Context) {
 
 	var req InvestBasketRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Code:  "INVALID_REQUEST",
-			Error: err.Error(),
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
+			Code:    "INVALID_REQUEST",
+			Message: err.Error(),
 		})
 		return
 	}
@@ -57,18 +58,18 @@ func (h *InvestmentHandlers) InvestInBasket(c *gin.Context) {
 	// Get user's buying power
 	balance, err := h.balanceService.GetBalance(c.Request.Context(), uid)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Code:  "BALANCE_ERROR",
-			Error: "Failed to get balance",
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+			Code:    "BALANCE_ERROR",
+			Message: "Failed to get balance",
 		})
 		return
 	}
 
 	// Check buying power
 	if balance.LessThan(req.Amount) {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Code:  "INSUFFICIENT_FUNDS",
-			Error: "Insufficient buying power",
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
+			Code:    "INSUFFICIENT_FUNDS",
+			Message: "Insufficient buying power",
 		})
 		return
 	}
@@ -79,9 +80,9 @@ func (h *InvestmentHandlers) InvestInBasket(c *gin.Context) {
 	// Get basket allocations
 	allocations := services.GetBasketAllocations(basketType)
 	if len(allocations) == 0 {
-		c.JSON(http.StatusNotFound, ErrorResponse{
-			Code:  "BASKET_NOT_FOUND",
-			Error: "Invalid basket type",
+		c.JSON(http.StatusNotFound, entities.ErrorResponse{
+			Code:    "BASKET_NOT_FOUND",
+			Message: "Invalid basket type",
 		})
 		return
 	}
@@ -97,9 +98,9 @@ func (h *InvestmentHandlers) InvestInBasket(c *gin.Context) {
 		h.logger.Error("Basket execution failed",
 			zap.String("user_id", userID),
 			zap.Error(err))
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Code:  "EXECUTION_ERROR",
-			Error: "Failed to execute basket",
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+			Code:    "EXECUTION_ERROR",
+			Message: "Failed to execute basket",
 		})
 		return
 	}

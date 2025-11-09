@@ -99,39 +99,23 @@ func IsWebhookRetryableError(err error) bool {
 func (h *FundingHandlers) CreateDepositAddress(c *gin.Context) {
 	var req entities.DepositAddressRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Code:    "INVALID_REQUEST",
-			Error: "Invalid request format",
-			Details: err.Error(),
-		})
+		respondBadRequest(c, "Invalid request format", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// Get user ID from JWT context
-	userID, exists := c.Get("user_id")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, ErrorResponse{
-			Code:    "UNAUTHORIZED",
-			Error:   "User not authenticated",
-		})
-		return
-	}
-
-	userUUID, ok := userID.(uuid.UUID)
-	if !ok {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Code:    "INTERNAL_ERROR",
-			Error:   "Invalid user ID format",
-		})
+	userUUID, err := getUserID(c)
+	if err != nil {
+		h.logger.Error("Failed to get user ID", "error", err)
+		respondUnauthorized(c, "User not authenticated")
 		return
 	}
 
 	response, err := h.fundingService.CreateDepositAddress(c.Request.Context(), userUUID, req.Chain)
 	if err != nil {
 		h.logger.Error("Failed to create deposit address", "error", err, "user_id", userUUID, "chain", req.Chain)
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
 			Code:    "DEPOSIT_ADDRESS_ERROR",
-			Error: "Failed to create deposit address",
+			Message: "Failed to create deposit address",
 		})
 		return
 	}
@@ -151,22 +135,10 @@ func (h *FundingHandlers) CreateDepositAddress(c *gin.Context) {
 // @Failure 500 {object} ErrorResponse
 // @Router /api/v1/funding/confirmations [get]
 func (h *FundingHandlers) GetFundingConfirmations(c *gin.Context) {
-	// Get user ID from JWT context
-	userID, exists := c.Get("user_id")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, ErrorResponse{
-			Code:    "UNAUTHORIZED",
-			Error: "User not authenticated",
-		})
-		return
-	}
-
-	userUUID, ok := userID.(uuid.UUID)
-	if !ok {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Code:    "INTERNAL_ERROR",
-			Error: "Invalid user ID format",
-		})
+	userUUID, err := getUserID(c)
+	if err != nil {
+		h.logger.Error("Failed to get user ID", "error", err)
+		respondUnauthorized(c, "User not authenticated")
 		return
 	}
 
@@ -189,9 +161,9 @@ func (h *FundingHandlers) GetFundingConfirmations(c *gin.Context) {
 	confirmations, err := h.fundingService.GetFundingConfirmations(c.Request.Context(), userUUID, limit, offset)
 	if err != nil {
 		h.logger.Error("Failed to get funding confirmations", "error", err, "user_id", userUUID)
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
 			Code:    "CONFIRMATIONS_ERROR",
-			Error: "Failed to retrieve funding confirmations",
+			Message: "Failed to retrieve funding confirmations",
 		})
 		return
 	}
@@ -221,31 +193,19 @@ func (h *FundingHandlers) GetFundingConfirmations(c *gin.Context) {
 // @Failure 500 {object} ErrorResponse
 // @Router /api/v1/funding/balances [get]
 func (h *FundingHandlers) GetBalances(c *gin.Context) {
-	// Get user ID from JWT context
-	userID, exists := c.Get("user_id")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, ErrorResponse{
-			Code:    "UNAUTHORIZED",
-			Error: "User not authenticated",
-		})
-		return
-	}
-
-	userUUID, ok := userID.(uuid.UUID)
-	if !ok {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Code:    "INTERNAL_ERROR",
-			Error: "Invalid user ID format",
-		})
+	userUUID, err := getUserID(c)
+	if err != nil {
+		h.logger.Error("Failed to get user ID", "error", err)
+		respondUnauthorized(c, "User not authenticated")
 		return
 	}
 
 	balances, err := h.fundingService.GetBalance(c.Request.Context(), userUUID)
 	if err != nil {
 		h.logger.Error("Failed to get balances", "error", err, "user_id", userUUID)
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
 			Code:    "BALANCES_ERROR",
-			Error: "Failed to retrieve balances",
+			Message: "Failed to retrieve balances",
 		})
 		return
 	}
@@ -269,30 +229,14 @@ func (h *FundingHandlers) GetBalances(c *gin.Context) {
 func (h *FundingHandlers) CreateVirtualAccount(c *gin.Context) {
 	var req entities.CreateVirtualAccountRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Code:    "INVALID_REQUEST",
-			Error:   "Invalid request format",
-			Details: err.Error(),
-		})
+		respondBadRequest(c, "Invalid request format", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// Get user ID from JWT context
-	userID, exists := c.Get("user_id")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, ErrorResponse{
-			Code:  "UNAUTHORIZED",
-			Error: "User not authenticated",
-		})
-		return
-	}
-
-	userUUID, ok := userID.(uuid.UUID)
-	if !ok {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Code:  "INTERNAL_ERROR",
-			Error: "Invalid user ID format",
-		})
+	userUUID, err := getUserID(c)
+	if err != nil {
+		h.logger.Error("Failed to get user ID", "error", err)
+		respondUnauthorized(c, "User not authenticated")
 		return
 	}
 
@@ -301,9 +245,9 @@ func (h *FundingHandlers) CreateVirtualAccount(c *gin.Context) {
 
 	// Validate Alpaca account ID
 	if req.AlpacaAccountID == "" {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 			Code:  "INVALID_REQUEST",
-			Error: "Alpaca account ID is required",
+			Message: "Alpaca account ID is required",
 		})
 		return
 	}
@@ -317,24 +261,24 @@ func (h *FundingHandlers) CreateVirtualAccount(c *gin.Context) {
 
 		// Handle specific error cases
 		if strings.Contains(err.Error(), "already exists") {
-			c.JSON(http.StatusConflict, ErrorResponse{
+			c.JSON(http.StatusConflict, entities.ErrorResponse{
 				Code:  "VIRTUAL_ACCOUNT_EXISTS",
-				Error: "Virtual account already exists for this Alpaca account",
+				Message: "Virtual account already exists for this Alpaca account",
 			})
 			return
 		}
 
 		if strings.Contains(err.Error(), "not active") {
-			c.JSON(http.StatusBadRequest, ErrorResponse{
+			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 				Code:  "ALPACA_ACCOUNT_INACTIVE",
-				Error: "Alpaca account is not active",
+				Message: "Alpaca account is not active",
 			})
 			return
 		}
 
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
 			Code:  "VIRTUAL_ACCOUNT_ERROR",
-			Error: "Failed to create virtual account",
+			Message: "Failed to create virtual account",
 		})
 		return
 	}
@@ -356,9 +300,9 @@ func (h *InvestingHandlers) GetBaskets(c *gin.Context) {
 	baskets, err := h.investingService.ListBaskets(c.Request.Context())
 	if err != nil {
 		h.logger.Error("Failed to get baskets", "error", err)
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
 			Code:    "BASKETS_ERROR",
-			Error: "Failed to retrieve baskets",
+			Message: "Failed to retrieve baskets",
 		})
 		return
 	}
@@ -381,9 +325,9 @@ func (h *InvestingHandlers) GetBasket(c *gin.Context) {
 	basketIDStr := c.Param("basketId")
 	basketID, err := uuid.Parse(basketIDStr)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 			Code:    "INVALID_BASKET_ID",
-			Error:   "Invalid basket ID format",
+			Message: "Invalid basket ID format",
 		})
 		return
 	}
@@ -391,16 +335,16 @@ func (h *InvestingHandlers) GetBasket(c *gin.Context) {
 	basket, err := h.investingService.GetBasket(c.Request.Context(), basketID)
 	if err != nil {
 		if err == investing.ErrBasketNotFound {
-			c.JSON(http.StatusNotFound, ErrorResponse{
+			c.JSON(http.StatusNotFound, entities.ErrorResponse{
 				Code:    "BASKET_NOT_FOUND",
-				Error:   "Basket not found",
+				Message: "Basket not found",
 			})
 			return
 		}
 		h.logger.Error("Failed to get basket", "error", err, "basket_id", basketID)
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
 			Code:    "BASKET_ERROR",
-			Error:   "Failed to retrieve basket",
+			Message: "Failed to retrieve basket",
 		})
 		return
 	}
@@ -424,30 +368,14 @@ func (h *InvestingHandlers) GetBasket(c *gin.Context) {
 func (h *InvestingHandlers) CreateOrder(c *gin.Context) {
 	var req entities.OrderCreateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Code:    "INVALID_REQUEST",
-			Error:   "Invalid request format",
-			Details: err.Error(),
-		})
+		respondBadRequest(c, "Invalid request format", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// Get user ID from JWT context
-	userID, exists := c.Get("user_id")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, ErrorResponse{
-			Code:    "UNAUTHORIZED",
-			Error:   "User not authenticated",
-		})
-		return
-	}
-
-	userUUID, ok := userID.(uuid.UUID)
-	if !ok {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Code:    "INTERNAL_ERROR",
-			Error:   "Invalid user ID format",
-		})
+	userUUID, err := getUserID(c)
+	if err != nil {
+		h.logger.Error("Failed to get user ID", "error", err)
+		respondUnauthorized(c, "User not authenticated")
 		return
 	}
 
@@ -455,34 +383,34 @@ func (h *InvestingHandlers) CreateOrder(c *gin.Context) {
 	if err != nil {
 		switch err {
 		case investing.ErrBasketNotFound:
-			c.JSON(http.StatusBadRequest, ErrorResponse{
+			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 				Code:    "BASKET_NOT_FOUND",
-				Error: "Specified basket does not exist",
+				Message: "Specified basket does not exist",
 			})
 			return
 		case investing.ErrInvalidAmount:
-			c.JSON(http.StatusBadRequest, ErrorResponse{
+			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 				Code:    "INVALID_AMOUNT",
-				Error: "Invalid order amount",
+				Message: "Invalid order amount",
 			})
 			return
 		case investing.ErrInsufficientFunds:
-			c.JSON(http.StatusForbidden, ErrorResponse{
+			c.JSON(http.StatusForbidden, entities.ErrorResponse{
 				Code:    "INSUFFICIENT_FUNDS",
-				Error: "Insufficient buying power for this order",
+				Message: "Insufficient buying power for this order",
 			})
 			return
 		case investing.ErrInsufficientPosition:
-			c.JSON(http.StatusForbidden, ErrorResponse{
+			c.JSON(http.StatusForbidden, entities.ErrorResponse{
 				Code:    "INSUFFICIENT_POSITION",
-				Error: "Insufficient position for sell order",
+				Message: "Insufficient position for sell order",
 			})
 			return
 		default:
 			h.logger.Error("Failed to create order", "error", err, "user_id", userUUID)
-			c.JSON(http.StatusInternalServerError, ErrorResponse{
+			c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
 				Code:    "ORDER_ERROR",
-				Error: "Failed to create order",
+				Message: "Failed to create order",
 			})
 			return
 		}
@@ -504,22 +432,10 @@ func (h *InvestingHandlers) CreateOrder(c *gin.Context) {
 // @Failure 500 {object} ErrorResponse
 // @Router /api/v1/investing/orders [get]
 func (h *InvestingHandlers) GetOrders(c *gin.Context) {
-	// Get user ID from JWT context
-	userID, exists := c.Get("user_id")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, ErrorResponse{
-			Code:    "UNAUTHORIZED",
-			Error: "User not authenticated",
-		})
-		return
-	}
-
-	userUUID, ok := userID.(uuid.UUID)
-	if !ok {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Code:    "INTERNAL_ERROR",
-			Error: "Invalid user ID format",
-		})
+	userUUID, err := getUserID(c)
+	if err != nil {
+		h.logger.Error("Failed to get user ID", "error", err)
+		respondUnauthorized(c, "User not authenticated")
 		return
 	}
 
@@ -536,9 +452,9 @@ func (h *InvestingHandlers) GetOrders(c *gin.Context) {
 	orders, err := h.investingService.ListOrders(c.Request.Context(), userUUID, limit, offset, statusFilter)
 	if err != nil {
 		h.logger.Error("Failed to get orders", "error", err, "user_id", userUUID)
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
 			Code:    "ORDERS_ERROR",
-			Error: "Failed to retrieve orders",
+			Message: "Failed to retrieve orders",
 		})
 		return
 	}
@@ -559,31 +475,19 @@ func (h *InvestingHandlers) GetOrders(c *gin.Context) {
 // @Failure 500 {object} ErrorResponse
 // @Router /api/v1/investing/orders/{orderId} [get]
 func (h *InvestingHandlers) GetOrder(c *gin.Context) {
-	// Get user ID from JWT context
-	userID, exists := c.Get("user_id")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, ErrorResponse{
-			Code:    "UNAUTHORIZED",
-			Error: "User not authenticated",
-		})
-		return
-	}
-
-	userUUID, ok := userID.(uuid.UUID)
-	if !ok {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Code:    "INTERNAL_ERROR",
-			Error: "Invalid user ID format",
-		})
+	userUUID, err := getUserID(c)
+	if err != nil {
+		h.logger.Error("Failed to get user ID", "error", err)
+		respondUnauthorized(c, "User not authenticated")
 		return
 	}
 
 	orderIDStr := c.Param("orderId")
 	orderID, err := uuid.Parse(orderIDStr)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 			Code:    "INVALID_ORDER_ID",
-			Error: "Invalid order ID format",
+			Message: "Invalid order ID format",
 		})
 		return
 	}
@@ -591,16 +495,16 @@ func (h *InvestingHandlers) GetOrder(c *gin.Context) {
 	order, err := h.investingService.GetOrder(c.Request.Context(), userUUID, orderID)
 	if err != nil {
 		if err == investing.ErrOrderNotFound {
-			c.JSON(http.StatusNotFound, ErrorResponse{
+			c.JSON(http.StatusNotFound, entities.ErrorResponse{
 				Code:    "ORDER_NOT_FOUND",
-				Error: "Order not found",
+				Message: "Order not found",
 			})
 			return
 		}
 		h.logger.Error("Failed to get order", "error", err, "user_id", userUUID, "order_id", orderID)
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
 			Code:    "ORDER_ERROR",
-			Error: "Failed to retrieve order",
+			Message: "Failed to retrieve order",
 		})
 		return
 	}
@@ -618,31 +522,19 @@ func (h *InvestingHandlers) GetOrder(c *gin.Context) {
 // @Failure 500 {object} ErrorResponse
 // @Router /api/v1/investing/portfolio [get]
 func (h *InvestingHandlers) GetPortfolio(c *gin.Context) {
-	// Get user ID from JWT context
-	userID, exists := c.Get("user_id")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, ErrorResponse{
-			Code:    "UNAUTHORIZED",
-			Error: "User not authenticated",
-		})
-		return
-	}
-
-	userUUID, ok := userID.(uuid.UUID)
-	if !ok {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Code:    "INTERNAL_ERROR",
-			Error: "Invalid user ID format",
-		})
+	userUUID, err := getUserID(c)
+	if err != nil {
+		h.logger.Error("Failed to get user ID", "error", err)
+		respondUnauthorized(c, "User not authenticated")
 		return
 	}
 
 	portfolio, err := h.investingService.GetPortfolio(c.Request.Context(), userUUID)
 	if err != nil {
 		h.logger.Error("Failed to get portfolio", "error", err, "user_id", userUUID)
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
 			Code:    "PORTFOLIO_ERROR",
-			Error: "Failed to retrieve portfolio",
+			Message: "Failed to retrieve portfolio",
 		})
 		return
 	}
@@ -666,28 +558,24 @@ func (h *InvestingHandlers) GetPortfolio(c *gin.Context) {
 func (h *FundingHandlers) ChainDepositWebhook(c *gin.Context) {
 	var webhook entities.ChainDepositWebhook
 	if err := c.ShouldBindJSON(&webhook); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Code:    "INVALID_WEBHOOK",
-			Error: "Invalid webhook payload",
-			Details: err.Error(),
-		})
+		respondBadRequest(c, "Invalid webhook payload", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
 	// TODO: Verify webhook signature for security
 	// Basic validation
 	if webhook.TxHash == "" {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 			Code:    "INVALID_WEBHOOK",
-			Error: "Missing transaction hash",
+			Message: "Missing transaction hash",
 		})
 		return
 	}
 	
 	if webhook.Amount == "" || webhook.Amount == "0" {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 			Code:    "INVALID_WEBHOOK",
-			Error: "Invalid amount",
+			Message: "Invalid amount",
 		})
 		return
 	}
@@ -723,10 +611,10 @@ func (h *FundingHandlers) ChainDepositWebhook(c *gin.Context) {
 			return
 		}
 			
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
 			Code:    "WEBHOOK_PROCESSING_ERROR",
-			Error: "Failed to process deposit webhook",
-			Details: webhook.TxHash,
+			Message: "Failed to process deposit webhook",
+			Details: map[string]interface{}{"tx_hash": webhook.TxHash},
 		})
 		return
 	}
@@ -753,11 +641,7 @@ func (h *FundingHandlers) ChainDepositWebhook(c *gin.Context) {
 func (h *InvestingHandlers) BrokerageFillWebhook(c *gin.Context) {
 	var webhook entities.BrokerageFillWebhook
 	if err := c.ShouldBindJSON(&webhook); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Code:    "INVALID_WEBHOOK",
-			Error: "Invalid webhook payload",
-			Details: err.Error(),
-		})
+		respondBadRequest(c, "Invalid webhook payload", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
@@ -765,9 +649,9 @@ func (h *InvestingHandlers) BrokerageFillWebhook(c *gin.Context) {
 	
 	if err := h.investingService.ProcessBrokerageFill(c.Request.Context(), &webhook); err != nil {
 		h.logger.Error("Failed to process brokerage fill webhook", "error", err, "order_id", webhook.OrderID)
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
 			Code:    "WEBHOOK_PROCESSING_ERROR",
-			Error: "Failed to process fill webhook",
+			Message: "Failed to process fill webhook",
 		})
 		return
 	}

@@ -86,13 +86,6 @@ type AnalysisInsight struct {
 	Confidence  float64 `json:"confidence"`  // 0.0 to 1.0
 }
 
-// ErrorResponse represents an error response
-type ErrorResponse struct {
-	Error   string `json:"error"`
-	Code    string `json:"code"`
-	Details string `json:"details,omitempty"`
-}
-
 // GetLatestSummary retrieves the user's latest weekly summary
 // @Summary Get latest weekly summary
 // @Description Retrieves the most recent AI-generated weekly portfolio summary for the authenticated user
@@ -111,8 +104,8 @@ func (h *AICfoHandler) GetLatestSummary(c *gin.Context) {
 	// Extract user ID from JWT token (set by auth middleware)
 	userID, exists := c.Get("user_id")
 	if !exists {
-		c.JSON(http.StatusUnauthorized, ErrorResponse{
-			Error: "User not authenticated",
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
+			Message: "User not authenticated",
 			Code:  "UNAUTHORIZED",
 		})
 		return
@@ -120,8 +113,8 @@ func (h *AICfoHandler) GetLatestSummary(c *gin.Context) {
 
 	userUUID, ok := userID.(uuid.UUID)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, ErrorResponse{
-			Error: "Invalid user ID format",
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
+			Message: "Invalid user ID format",
 			Code:  "INVALID_USER_ID",
 		})
 		return
@@ -145,17 +138,17 @@ func (h *AICfoHandler) GetLatestSummary(c *gin.Context) {
 		)
 
 		if err.Error() == "no summaries found for user" {
-			c.JSON(http.StatusNotFound, ErrorResponse{
-				Error: "No weekly summaries found",
+			c.JSON(http.StatusNotFound, entities.ErrorResponse{
+				Message: "No weekly summaries found",
 				Code:  "NOT_FOUND",
 			})
 			return
 		}
 
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "Failed to retrieve summary",
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+			Message: "Failed to retrieve summary",
 			Code:    "INTERNAL_ERROR",
-			Details: err.Error(),
+			Details: map[string]interface{}{"error": err.Error()},
 		})
 		return
 	}
@@ -206,8 +199,8 @@ func (h *AICfoHandler) AnalyzeOnDemand(c *gin.Context) {
 	// Extract user ID from JWT token
 	userID, exists := c.Get("user_id")
 	if !exists {
-		c.JSON(http.StatusUnauthorized, ErrorResponse{
-			Error: "User not authenticated",
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
+			Message: "User not authenticated",
 			Code:  "UNAUTHORIZED",
 		})
 		return
@@ -215,8 +208,8 @@ func (h *AICfoHandler) AnalyzeOnDemand(c *gin.Context) {
 
 	userUUID, ok := userID.(uuid.UUID)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, ErrorResponse{
-			Error: "Invalid user ID format",
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
+			Message: "Invalid user ID format",
 			Code:  "INVALID_USER_ID",
 		})
 		return
@@ -230,10 +223,10 @@ func (h *AICfoHandler) AnalyzeOnDemand(c *gin.Context) {
 			zap.String("user_id", userUUID.String()),
 			zap.String("request_id", getRequestID(c)),
 		)
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "Invalid request format",
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
+			Message: "Invalid request format",
 			Code:    "INVALID_REQUEST",
-			Details: err.Error(),
+			Details: map[string]interface{}{"error": err.Error()},
 		})
 		return
 	}
@@ -245,10 +238,10 @@ func (h *AICfoHandler) AnalyzeOnDemand(c *gin.Context) {
 
 	// Validate analysis type
 	if !h.isValidAnalysisType(req.AnalysisType) {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "Invalid analysis type",
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
+			Message: "Invalid analysis type",
 			Code:    "INVALID_ANALYSIS_TYPE",
-			Details: "Supported types: diversification, risk, performance, allocation, rebalancing",
+			Details: map[string]interface{}{"message": "Supported types: diversification, risk, performance, allocation, rebalancing"},
 		})
 		return
 	}
@@ -261,10 +254,10 @@ func (h *AICfoHandler) AnalyzeOnDemand(c *gin.Context) {
 
 	// Check rate limits
 	if err := h.checkRateLimit(c, userUUID); err != nil {
-		c.JSON(http.StatusTooManyRequests, ErrorResponse{
-			Error: "Rate limit exceeded",
+		c.JSON(http.StatusTooManyRequests, entities.ErrorResponse{
+			Message: "Rate limit exceeded",
 			Code:  "RATE_LIMIT_EXCEEDED",
-			Details: "You can request up to 10 analyses per hour",
+			Details: map[string]interface{}{"message": "You can request up to 10 analyses per hour"},
 		})
 		return
 	}
@@ -280,10 +273,10 @@ func (h *AICfoHandler) AnalyzeOnDemand(c *gin.Context) {
 			zap.String("request_id", getRequestID(c)),
 		)
 
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "Analysis failed",
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+			Message: "Analysis failed",
 			Code:    "ANALYSIS_FAILED",
-			Details: err.Error(),
+			Details: map[string]interface{}{"error": err.Error()},
 		})
 		return
 	}
@@ -453,10 +446,10 @@ func (h *AICfoHandler) HealthCheck(c *gin.Context) {
 		span.RecordError(err)
 		h.logger.Error("Failed to get AI-CFO health status", zap.Error(err))
 		
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "Health check failed",
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+			Message: "Health check failed",
 			Code:    "HEALTH_CHECK_FAILED",
-			Details: err.Error(),
+			Details: map[string]interface{}{"error": err.Error()},
 		})
 		return
 	}
