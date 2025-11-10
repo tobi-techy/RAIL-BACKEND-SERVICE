@@ -664,10 +664,8 @@ func (s *AICfoService) sendWeeklySummaryNotification(ctx context.Context, userID
 		return nil
 	}
 
-	// Send notification using the simple notification service
-	message := fmt.Sprintf("Weekly Summary Ready - %s. Your AI-powered portfolio analysis is now available.", summary.WeekStart.Format("Jan 2, 2006"))
-	
-	if err := s.notificationService.NotifyOffRampSuccess(ctx, userID, message); err != nil {
+	// Send notification using the notification service
+	if err := s.notificationService.SendWeeklySummary(ctx, userID, summary.WeekStart); err != nil {
 		s.logger.Warn("Failed to send notification", zap.Error(err))
 		// Don't fail for notification errors
 	}

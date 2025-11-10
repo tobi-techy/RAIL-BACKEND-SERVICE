@@ -1,0 +1,41 @@
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gosec
+    - gocyclo
+    - gofmt
+    - misspell
+    - unconvert
+    - unparam
+    - bodyclose
+    - noctx
+    - sqlclosecheck
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+  
+  gosec:
+    severity: medium
+    confidence: medium
+    excludes:
+      - G104
+  
+  gocyclo:
+    min-complexity: 15
+
+issues:
+  exclude-use-default: false
+  max-issues-per-linter: 0
+  max-same-issues: 0

@@ -20,6 +20,7 @@ type RedisClient interface {
 	Exists(ctx context.Context, key string) (bool, error)
 	Incr(ctx context.Context, key string) (int64, error)
 	Expire(ctx context.Context, key string, expiration time.Duration) error
+	Keys(ctx context.Context, pattern string) ([]string, error)
 	Ping(ctx context.Context) error
 	Close() error
 }
@@ -98,6 +99,11 @@ func (r *redisClient) Incr(ctx context.Context, key string) (int64, error) {
 // Expire sets a timeout on key. After the timeout has expired, the key will automatically be deleted.
 func (r *redisClient) Expire(ctx context.Context, key string, expiration time.Duration) error {
 	return r.client.Expire(ctx, key, expiration).Err()
+}
+
+// Keys returns all keys matching pattern
+func (r *redisClient) Keys(ctx context.Context, pattern string) ([]string, error) {
+	return r.client.Keys(ctx, pattern).Result()
 }
 
 // Ping checks the connection to Redis

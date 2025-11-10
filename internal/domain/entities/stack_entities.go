@@ -164,17 +164,6 @@ type AISummary struct {
 	CreatedAt time.Time `json:"created_at" db:"created_at"`
 }
 
-// AuditLog represents audit trail for compliance
-type AuditLog struct {
-	ID         uuid.UUID  `json:"id" db:"id"`
-	Actor      *uuid.UUID `json:"actor" db:"actor"` // User who performed action
-	Action     string     `json:"action" db:"action"`
-	Entity     string     `json:"entity" db:"entity"`
-	Before     *string    `json:"before" db:"before"` // JSON state before
-	After      *string    `json:"after" db:"after"`   // JSON state after
-	OccurredAt time.Time  `json:"occurred_at" db:"at"`
-}
-
 // === API Request/Response Models ===
 
 // DepositAddressRequest represents request for deposit address

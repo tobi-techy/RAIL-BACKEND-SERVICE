@@ -190,6 +190,11 @@ type Container struct {
 	// Workers
 	WalletProvisioningScheduler interface{} // Type interface{} to avoid circular dependency, will be set at runtime
 	FundingWebhookManager       interface{} // Type interface{} to avoid circular dependency, will be set at runtime
+
+	// Cache & Queue
+	CacheInvalidator *cache.CacheInvalidator
+	JobQueue         interface{} // Job queue for background processing
+	JobScheduler     interface{} // Job scheduler for cron jobs
 }
 
 // NewContainer creates a new dependency injection container
@@ -300,6 +305,9 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 
 	auditService := adapters.NewAuditService(db, zapLog)
 
+	// Initialize cache invalidator
+	cacheInvalidator := cache.NewCacheInvalidator(redisClient, zapLog, cache.InvalidateImmediate)
+
 	// Initialize entity secret service
 	entitySecretService := entitysecret.NewService(zapLog)
 
@@ -352,6 +360,9 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 
 		// Entity Secret Service
 		EntitySecretService: entitySecretService,
+
+		// Cache & Queue
+		CacheInvalidator: cacheInvalidator,
 	}
 
 	// Initialize domain services with their dependencies
@@ -481,7 +492,7 @@ func (c *Container) initializeDomainServices() error {
 	)
 
 	// Initialize notification service for AI-CFO
-	notificationService := services.NewNotificationService(c.Logger)
+	notificationService := services.NewNotificationService(c.ZapLog)
 
 	// Create repository adapter for AI-CFO service
 	aiSummariesAdapter := &AISummariesRepositoryAdapter{repo: c.AISummariesRepo}

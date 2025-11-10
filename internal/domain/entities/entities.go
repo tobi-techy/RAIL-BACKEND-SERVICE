@@ -164,18 +164,7 @@ type CardTransaction struct {
 	CreatedAt         time.Time       `json:"created_at" db:"created_at"`
 }
 
-// Notification represents user notifications
-type Notification struct {
-	ID        uuid.UUID  `json:"id" db:"id"`
-	UserID    uuid.UUID  `json:"user_id" db:"user_id"`
-	Title     string     `json:"title" db:"title"`
-	Message   string     `json:"message" db:"message"`
-	Type      string     `json:"type" db:"type"`         // info, warning, success, error
-	Category  string     `json:"category" db:"category"` // transaction, security, trading, etc.
-	IsRead    bool       `json:"is_read" db:"is_read"`
-	ReadAt    *time.Time `json:"read_at" db:"read_at"`
-	CreatedAt time.Time  `json:"created_at" db:"created_at"`
-}
+// Note: Notification type moved to notification.go with proper types and constants
 
 // LegacyAuditLog represents audit trails for security and compliance
 type LegacyAuditLog struct {

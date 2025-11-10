@@ -7,29 +7,20 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/stack-service/stack_service/internal/infrastructure/cache"
-	"github.com/stack-service/stack_service/internal/infrastructure/circle"
-	"github.com/stack-service/stack_service/internal/infrastructure/zerog"
 	"github.com/stack-service/stack_service/pkg/logger"
 )
 
 // HealthHandler handles health check endpoints
 type HealthHandler struct {
-	db           *sql.DB
-	redis        cache.RedisClient
-	circleClient *circle.Client
-	zeroGClient  *zerog.StorageClient
-	logger       *logger.Logger
+	db     *sql.DB
+	logger *logger.Logger
 }
 
 // NewHealthHandler creates a new health handler
-func NewHealthHandler(db *sql.DB, redis cache.RedisClient, circleClient *circle.Client, zeroGClient *zerog.StorageClient, logger *logger.Logger) *HealthHandler {
+func NewHealthHandler(db *sql.DB, logger *logger.Logger) *HealthHandler {
 	return &HealthHandler{
-		db:           db,
-		redis:        redis,
-		circleClient: circleClient,
-		zeroGClient:  zeroGClient,
-		logger:       logger,
+		db:     db,
+		logger: logger,
 	}
 }
 
@@ -53,7 +44,7 @@ type HealthResponse struct {
 
 var startTime = time.Now()
 
-// GetHealth performs comprehensive health checks
+// Health performs comprehensive health checks
 // @Summary Get application health status
 // @Description Performs health checks on all critical services
 // @Tags health
@@ -62,7 +53,7 @@ var startTime = time.Now()
 // @Success 200 {object} HealthResponse
 // @Failure 503 {object} HealthResponse
 // @Router /health [get]
-func (h *HealthHandler) GetHealth(c *gin.Context) {
+func (h *HealthHandler) Health(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
 
@@ -76,26 +67,7 @@ func (h *HealthHandler) GetHealth(c *gin.Context) {
 		overallStatus = "unhealthy"
 	}
 
-	// Redis health check
-	redisCheck := h.checkRedis(ctx)
-	checks["redis"] = redisCheck
-	if redisCheck.Status != "healthy" {
-		overallStatus = "degraded"
-	}
 
-	// Circle API health check
-	circleCheck := h.checkCircleAPI(ctx)
-	checks["circle_api"] = circleCheck
-	if circleCheck.Status != "healthy" {
-		overallStatus = "degraded"
-	}
-
-	// ZeroG health check
-	zeroGCheck := h.checkZeroG(ctx)
-	checks["zerog"] = zeroGCheck
-	if zeroGCheck.Status != "healthy" {
-		overallStatus = "degraded"
-	}
 
 	response := HealthResponse{
 		Status:    overallStatus,
@@ -113,7 +85,7 @@ func (h *HealthHandler) GetHealth(c *gin.Context) {
 	c.JSON(statusCode, response)
 }
 
-// GetReadiness checks if the application is ready to serve traffic
+// Ready checks if the application is ready to serve traffic
 // @Summary Get application readiness status
 // @Description Checks if critical services are available for serving requests
 // @Tags health
@@ -122,7 +94,7 @@ func (h *HealthHandler) GetHealth(c *gin.Context) {
 // @Success 200 {object} map[string]interface{}
 // @Failure 503 {object} map[string]interface{}
 // @Router /ready [get]
-func (h *HealthHandler) GetReadiness(c *gin.Context) {
+func (h *HealthHandler) Ready(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
@@ -151,7 +123,7 @@ func (h *HealthHandler) GetReadiness(c *gin.Context) {
 	c.JSON(statusCode, response)
 }
 
-// GetLiveness checks if the application is alive
+// Live checks if the application is alive
 // @Summary Get application liveness status
 // @Description Simple liveness check for container orchestration
 // @Tags health
@@ -159,7 +131,7 @@ func (h *HealthHandler) GetReadiness(c *gin.Context) {
 // @Produce json
 // @Success 200 {object} map[string]interface{}
 // @Router /live [get]
-func (h *HealthHandler) GetLiveness(c *gin.Context) {
+func (h *HealthHandler) Live(c *gin.Context) {
 	c.JSON(http.StatusOK, map[string]interface{}{
 		"status":    "alive",
 		"timestamp": time.Now(),
@@ -188,64 +160,4 @@ func (h *HealthHandler) checkDatabase(ctx context.Context) HealthCheck {
 	return check
 }
 
-// checkRedis performs Redis health check
-func (h *HealthHandler) checkRedis(ctx context.Context) HealthCheck {
-	start := time.Now()
-	check := HealthCheck{
-		Service:   "redis",
-		Timestamp: start,
-	}
 
-	err := h.redis.Ping(ctx)
-	check.Latency = time.Since(start)
-
-	if err != nil {
-		check.Status = "unhealthy"
-		check.Error = err.Error()
-	} else {
-		check.Status = "healthy"
-	}
-
-	return check
-}
-
-// checkCircleAPI performs Circle API health check
-func (h *HealthHandler) checkCircleAPI(ctx context.Context) HealthCheck {
-	start := time.Now()
-	check := HealthCheck{
-		Service:   "circle_api",
-		Timestamp: start,
-	}
-
-	// Simple ping to Circle API - implement based on Circle client capabilities
-	// For now, just check if client is configured
-	if h.circleClient == nil {
-		check.Status = "unhealthy"
-		check.Error = "Circle client not configured"
-	} else {
-		check.Status = "healthy"
-	}
-	
-	check.Latency = time.Since(start)
-	return check
-}
-
-// checkZeroG performs ZeroG health check
-func (h *HealthHandler) checkZeroG(ctx context.Context) HealthCheck {
-	start := time.Now()
-	check := HealthCheck{
-		Service:   "zerog",
-		Timestamp: start,
-	}
-
-	// Simple check for ZeroG client
-	if h.zeroGClient == nil {
-		check.Status = "unhealthy"
-		check.Error = "ZeroG client not configured"
-	} else {
-		check.Status = "healthy"
-	}
-	
-	check.Latency = time.Since(start)
-	return check
-}

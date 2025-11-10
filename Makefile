@@ -1,41 +1,71 @@
-.PHONY: test test-unit test-integration test-all
+.PHONY: build run test clean docker-build docker-run lint security-scan
 
-# Run unit tests
-test-unit:
-	go test -v ./test/unit/...
+VERSION ?= $(shell git describe --tags --always --dirty)
+COMMIT ?= $(shell git rev-parse --short HEAD)
+BUILD_TIME ?= $(shell date -u '+%Y-%m-%d_%H:%M:%S')
+LDFLAGS := -ldflags "-X github.com/stack-service/stack_service/pkg/version.Version=$(VERSION) \
+	-X github.com/stack-service/stack_service/pkg/version.GitCommit=$(COMMIT) \
+	-X github.com/stack-service/stack_service/pkg/version.BuildTime=$(BUILD_TIME) \
+	-w -s"
 
-# Run integration tests
-test-integration:
-	go test -tags=integration -v ./test/integration/...
-
-# Run all tests
-test-all: test-unit test-integration
-
-# Run tests with coverage
-test-coverage:
-	go test -coverprofile=coverage.out ./...
-	go tool cover -html=coverage.out
-
-# Run specific test
-test-run:
-	go test -v -run $(TEST) ./test/...
-
-# Lint code
-lint:
-	golangci-lint run
-
-# Format code
-fmt:
-	go fmt ./...
-
-# Build
 build:
-	go build -o bin/stack_service cmd/main.go
+	@echo "Building stack-service..."
+	CGO_ENABLED=0 go build $(LDFLAGS) -o bin/stack_service cmd/main.go
 
-# Run locally
 run:
+	@echo "Running stack-service..."
 	go run cmd/main.go
 
-# Clean
+test:
+	@echo "Running tests..."
+	go test -v -race -coverprofile=coverage.out ./...
+
+test-coverage:
+	@echo "Generating coverage report..."
+	go test -coverprofile=coverage.out ./...
+	go tool cover -html=coverage.out -o coverage.html
+
+lint:
+	@echo "Running linters..."
+	golangci-lint run ./...
+
+security-scan:
+	@echo "Running security scans..."
+	gosec -fmt=json -out=gosec-report.json ./...
+	trivy fs --security-checks vuln,config .
+
+docker-build:
+	@echo "Building Docker image..."
+	docker build -f Dockerfile.secure -t stack-service:$(VERSION) .
+
+docker-run:
+	@echo "Running Docker container..."
+	docker run -p 8080:8080 stack-service:$(VERSION)
+
 clean:
-	rm -rf bin/ coverage.out
+	@echo "Cleaning..."
+	rm -rf bin/ coverage.out coverage.html gosec-report.json
+
+deps:
+	@echo "Downloading dependencies..."
+	go mod download
+	go mod verify
+
+migrate-up:
+	@echo "Running migrations..."
+	go run cmd/main.go migrate
+
+migrate-down:
+	@echo "Rolling back migrations..."
+	migrate -path migrations -database "$(DATABASE_URL)" down
+
+dev:
+	@echo "Starting development environment..."
+	docker-compose up -d
+	@sleep 5
+	$(MAKE) migrate-up
+	$(MAKE) run
+
+stop:
+	@echo "Stopping development environment..."
+	docker-compose down

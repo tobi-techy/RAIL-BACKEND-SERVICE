@@ -60,7 +60,7 @@ type WalletService interface {
 }
 
 type KYCProvider interface {
-	SubmitKYC(ctx context.Context, userID uuid.UUID, documents []entities.KYCDocument, personalInfo *entities.KYCPersonalInfo) (string, error)
+	SubmitKYC(ctx context.Context, userID uuid.UUID, documents []entities.KYCDocumentUpload, personalInfo *entities.KYCPersonalInfo) (string, error)
 	GetKYCStatus(ctx context.Context, providerRef string) (*entities.KYCSubmission, error)
 	GenerateKYCURL(ctx context.Context, userID uuid.UUID) (string, error)
 }

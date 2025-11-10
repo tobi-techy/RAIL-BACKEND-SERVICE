@@ -43,9 +43,22 @@ func NewConnection(cfg config.DatabaseConfig) (*sql.DB, error) {
 		}
 
 		// Enhanced connection pool settings
-		db.SetMaxOpenConns(cfg.MaxOpenConns)
-		db.SetMaxIdleConns(cfg.MaxIdleConns)
-		db.SetConnMaxLifetime(time.Duration(cfg.ConnMaxLifetime) * time.Second)
+		maxOpen := cfg.MaxOpenConns
+		if maxOpen == 0 {
+			maxOpen = 25
+		}
+		maxIdle := cfg.MaxIdleConns
+		if maxIdle == 0 {
+			maxIdle = 5
+		}
+		connLifetime := cfg.ConnMaxLifetime
+		if connLifetime == 0 {
+			connLifetime = 300
+		}
+		db.SetMaxOpenConns(maxOpen)
+		db.SetMaxIdleConns(maxIdle)
+		db.SetConnMaxLifetime(time.Duration(connLifetime) * time.Second)
+		db.SetConnMaxIdleTime(5 * time.Minute)
 
 		// Test connection with timeout
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

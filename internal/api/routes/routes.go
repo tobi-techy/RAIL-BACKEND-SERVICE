@@ -17,6 +17,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 	// Global middleware - order matters for security
 	router.Use(middleware.RequestID())
+	router.Use(middleware.MetricsMiddleware())
 	router.Use(middleware.RequestSizeLimit())
 	router.Use(middleware.InputValidation())
 	router.Use(middleware.Logger(container.Logger))
@@ -24,21 +25,18 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	router.Use(middleware.CORS(container.Config.Server.AllowedOrigins))
 	router.Use(middleware.RateLimit(container.Config.Server.RateLimitPerMin))
 	router.Use(middleware.SecurityHeaders())
+	router.Use(middleware.APIVersionMiddleware(container.Config.Server.SupportedVersions))
+	router.Use(middleware.PaginationMiddleware())
 
 	// CSRF protection
 	csrfStore := middleware.NewCSRFStore()
 
 	// Health checks (no auth required)
-	healthHandler := handlers.NewHealthHandler(
-		container.DB,
-		container.RedisClient,
-		container.CircleClient,
-		container.StorageClient,
-		container.Logger,
-	)
-	router.GET("/health", healthHandler.GetHealth)
-	router.GET("/ready", healthHandler.GetReadiness)
-	router.GET("/live", healthHandler.GetLiveness)
+	healthHandler := handlers.NewHealthHandler(container.DB, container.Logger)
+	router.GET("/health", healthHandler.Health)
+	router.GET("/ready", healthHandler.Ready)
+	router.GET("/live", healthHandler.Live)
+	router.GET("/version", handlers.VersionHandler())
 	router.GET("/metrics", handlers.Metrics())
 
 	// Swagger documentation (development only)
@@ -59,7 +57,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	)
 
 	// Initialize Due handlers
-	notificationService := services.NewNotificationService(container.Logger)
+	notificationService := services.NewNotificationService(container.ZapLog)
 	dueHandlers := handlers.NewDueHandler(container.GetDueService(), notificationService, container.Logger)
 
 	// Initialize AI-CFO and ZeroG handlers
