@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: stack-service
+  labels:
+    app: stack-service
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: stack-service
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stack-service-metrics
+  labels:
+    app: stack-service
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: metrics
+  selector:
+    app: stack-service

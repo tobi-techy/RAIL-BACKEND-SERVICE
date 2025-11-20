@@ -497,7 +497,7 @@ func (r *WalletRepository) ListWithFilters(ctx context.Context, filters WalletLi
 	}
 
 	// Count query
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM managed_wallets %s", whereClause)
+	countQuery := "SELECT COUNT(*) FROM managed_wallets " + whereClause
 	var totalCount int64
 	err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&totalCount)
 	if err != nil {

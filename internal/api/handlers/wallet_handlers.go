@@ -49,14 +49,10 @@ func (h *WalletHandlers) GetWalletAddresses(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	// Get user ID from authenticated context
-	userID, err := h.getUserID(c)
+	userID, err := getUserID(c)
 	if err != nil {
 		h.logger.Warn("Invalid or missing user ID", zap.Error(err))
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "INVALID_USER_ID",
-			Message: "Invalid or missing user ID",
-			Details: map[string]interface{}{"error": err.Error()},
-		})
+		respondBadRequest(c, "Invalid or missing user ID", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
@@ -129,14 +125,10 @@ func (h *WalletHandlers) GetWalletStatus(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	// Get user ID from authenticated context
-	userID, err := h.getUserID(c)
+	userID, err := getUserID(c)
 	if err != nil {
 		h.logger.Warn("Invalid or missing user ID", zap.Error(err))
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "INVALID_USER_ID",
-			Message: "Invalid or missing user ID",
-			Details: map[string]interface{}{"error": err.Error()},
-		})
+		respondBadRequest(c, "Invalid or missing user ID", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
@@ -364,27 +356,7 @@ func (h *WalletHandlers) HealthCheck(c *gin.Context) {
 	})
 }
 
-// Helper methods
 
-func (h *WalletHandlers) getUserID(c *gin.Context) (uuid.UUID, error) {
-	// Try to get from authenticated user context first
-	if userIDStr, exists := c.Get("user_id"); exists {
-		if userID, ok := userIDStr.(uuid.UUID); ok {
-			return userID, nil
-		}
-		if userIDStr, ok := userIDStr.(string); ok {
-			return uuid.Parse(userIDStr)
-		}
-	}
-
-	// Fallback to query parameter for development/admin use
-	userIDQuery := c.Query("user_id")
-	if userIDQuery != "" {
-		return uuid.Parse(userIDQuery)
-	}
-
-	return uuid.Nil, fmt.Errorf("user ID not found in context or query parameters")
-}
 
 // Request/Response models
 

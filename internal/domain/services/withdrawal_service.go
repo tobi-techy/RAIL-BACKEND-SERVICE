@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/sony/gobreaker"
 	"github.com/stack-service/stack_service/internal/domain/entities"
 	"github.com/stack-service/stack_service/pkg/circuitbreaker"
 	"github.com/stack-service/stack_service/pkg/logger"
@@ -19,8 +18,8 @@ type WithdrawalService struct {
 	alpacaAPI       AlpacaAdapter
 	dueAPI          DueWithdrawalAdapter
 	logger          *logger.Logger
-	alpacaBreaker   *gobreaker.CircuitBreaker
-	dueBreaker      *gobreaker.CircuitBreaker
+	alpacaBreaker   *circuitbreaker.CircuitBreaker
+	dueBreaker      *circuitbreaker.CircuitBreaker
 	queuePublisher  queue.Publisher
 }
 
@@ -73,7 +72,13 @@ func NewWithdrawalService(
 	logger *logger.Logger,
 	queuePublisher queue.Publisher,
 ) *WithdrawalService {
-	cfg := circuitbreaker.DefaultConfig()
+	cfg := circuitbreaker.Config{
+		MaxRequests:      10,
+		Interval:         60 * time.Second,
+		Timeout:          60 * time.Second,
+		FailureThreshold: 5,
+		SuccessThreshold: 2,
+	}
 	if queuePublisher == nil {
 		queuePublisher = queue.NewMockPublisher()
 	}
@@ -82,8 +87,8 @@ func NewWithdrawalService(
 		alpacaAPI:       alpacaAPI,
 		dueAPI:          dueAPI,
 		logger:          logger,
-		alpacaBreaker:   circuitbreaker.New("alpaca-api", cfg),
-		dueBreaker:      circuitbreaker.New("due-api", cfg),
+		alpacaBreaker:   circuitbreaker.New(cfg),
+		dueBreaker:      circuitbreaker.New(cfg),
 		queuePublisher:  queuePublisher,
 	}
 }
@@ -98,13 +103,14 @@ func (s *WithdrawalService) InitiateWithdrawal(ctx context.Context, req *entitie
 
 	// Step 1: Validate Alpaca account and buying power
 	var alpacaAccount *entities.AlpacaAccountResponse
-	result, err := s.alpacaBreaker.Execute(func() (interface{}, error) {
-		return s.alpacaAPI.GetAccount(ctx, req.AlpacaAccountID)
+	var getAccountErr error
+	err := s.alpacaBreaker.Execute(ctx, func() error {
+		alpacaAccount, getAccountErr = s.alpacaAPI.GetAccount(ctx, req.AlpacaAccountID)
+		return getAccountErr
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get Alpaca account: %w", err)
 	}
-	alpacaAccount = result.(*entities.AlpacaAccountResponse)
 
 	if alpacaAccount.Status != entities.AlpacaAccountStatusActive {
 		return nil, fmt.Errorf("Alpaca account not active: %s", alpacaAccount.Status)
@@ -129,6 +135,7 @@ func (s *WithdrawalService) InitiateWithdrawal(ctx context.Context, req *entitie
 	}
 
 	if err := s.withdrawalRepo.Create(ctx, withdrawal); err != nil {
+		s.logger.Error("Failed to create withdrawal record", "error", err, "user_id", req.UserID.String())
 		return nil, fmt.Errorf("failed to create withdrawal record: %w", err)
 	}
 
@@ -202,13 +209,15 @@ func (s *WithdrawalService) debitAlpacaAccount(ctx context.Context, withdrawal *
 		Description: fmt.Sprintf("Withdrawal to USDC - %s", withdrawal.ID.String()),
 	}
 
-	result, err := s.alpacaBreaker.Execute(func() (interface{}, error) {
-		return s.alpacaAPI.CreateJournal(ctx, journalReq)
+	var journalResp *entities.AlpacaJournalResponse
+	var createJournalErr error
+	err := s.alpacaBreaker.Execute(ctx, func() error {
+		journalResp, createJournalErr = s.alpacaAPI.CreateJournal(ctx, journalReq)
+		return createJournalErr
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create journal: %w", err)
 	}
-	journalResp := result.(*entities.AlpacaJournalResponse)
 
 	// Update withdrawal with journal ID
 	if err := s.withdrawalRepo.UpdateAlpacaJournal(ctx, withdrawal.ID, journalResp.ID); err != nil {
@@ -236,13 +245,15 @@ func (s *WithdrawalService) processDueOnRamp(ctx context.Context, withdrawal *en
 		DestinationAddress: withdrawal.DestinationAddress,
 	}
 
-	result, err := s.dueBreaker.Execute(func() (interface{}, error) {
-		return s.dueAPI.ProcessWithdrawal(ctx, req)
+	var dueResp *ProcessWithdrawalResponse
+	var processErr error
+	err := s.dueBreaker.Execute(ctx, func() error {
+		dueResp, processErr = s.dueAPI.ProcessWithdrawal(ctx, req)
+		return processErr
 	})
 	if err != nil {
 		return fmt.Errorf("failed to process Due withdrawal: %w", err)
 	}
-	dueResp := result.(*ProcessWithdrawalResponse)
 
 	// Update withdrawal with Due transfer details
 	if err := s.withdrawalRepo.UpdateDueTransfer(ctx, withdrawal.ID, dueResp.TransferID, dueResp.RecipientID); err != nil {
@@ -277,14 +288,16 @@ func (s *WithdrawalService) monitorTransferCompletion(ctx context.Context, withd
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		time.Sleep(pollInterval)
 
-		result, err := s.dueBreaker.Execute(func() (interface{}, error) {
-			return s.dueAPI.GetTransferStatus(ctx, *w.DueTransferID)
+		var status *OnRampTransferResponse
+		var statusErr error
+		err := s.dueBreaker.Execute(ctx, func() error {
+			status, statusErr = s.dueAPI.GetTransferStatus(ctx, *w.DueTransferID)
+			return statusErr
 		})
 		if err != nil {
 			s.logger.Warn("Failed to get transfer status", "error", err, "attempt", attempt)
 			continue
 		}
-		status := result.(*OnRampTransferResponse)
 
 		s.logger.Info("Transfer status",
 			"withdrawal_id", withdrawal.ID.String(),
@@ -339,14 +352,15 @@ func (s *WithdrawalService) compensateAlpacaDebit(ctx context.Context, withdrawa
 		Description: fmt.Sprintf("Withdrawal reversal - %s", withdrawal.ID.String()),
 	}
 
-	result, err := s.alpacaBreaker.Execute(func() (interface{}, error) {
-		return s.alpacaAPI.CreateJournal(ctx, journalReq)
+	var reversalJournal *entities.AlpacaJournalResponse
+	var reversalErr error
+	err := s.alpacaBreaker.Execute(ctx, func() error {
+		reversalJournal, reversalErr = s.alpacaAPI.CreateJournal(ctx, journalReq)
+		return reversalErr
 	})
 	if err != nil {
 		return fmt.Errorf("failed to reverse journal: %w", err)
 	}
-
-	reversalJournal := result.(*entities.AlpacaJournalResponse)
 	s.logger.Info("Alpaca debit compensated",
 		"withdrawal_id", withdrawal.ID.String(),
 		"reversal_journal_id", reversalJournal.ID)

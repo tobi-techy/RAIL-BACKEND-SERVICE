@@ -156,9 +156,10 @@ type Container struct {
 	FundingEventJobRepo       *repositories.FundingEventJobRepository
 
 	// External Services
-	CircleClient *circle.Client
-	AlpacaClient *alpaca.Client
-	KYCProvider  *adapters.KYCProvider
+	CircleClient  *circle.Client
+	AlpacaClient  *alpaca.Client
+	AlpacaService *alpaca.Service
+	KYCProvider   *adapters.KYCProvider
 	EmailService *adapters.EmailService
 	SMSService   *adapters.SMSService
 	AuditService *adapters.AuditService
@@ -189,6 +190,11 @@ type Container struct {
 	// Workers
 	WalletProvisioningScheduler interface{} // Type interface{} to avoid circular dependency, will be set at runtime
 	FundingWebhookManager       interface{} // Type interface{} to avoid circular dependency, will be set at runtime
+
+	// Cache & Queue
+	CacheInvalidator *cache.CacheInvalidator
+	JobQueue         interface{} // Job queue for background processing
+	JobScheduler     interface{} // Job scheduler for cron jobs
 }
 
 // NewContainer creates a new dependency injection container
@@ -220,7 +226,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	}
 	circleClient := circle.NewClient(circleConfig, zapLog)
 
-	// Initialize Alpaca client
+	// Initialize Alpaca service
 	alpacaConfig := alpaca.Config{
 		APIKey:      cfg.Alpaca.APIKey,
 		APISecret:   cfg.Alpaca.APISecret,
@@ -230,6 +236,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		Timeout:     time.Duration(cfg.Alpaca.Timeout) * time.Second,
 	}
 	alpacaClient := alpaca.NewClient(alpacaConfig, zapLog)
+	alpacaService := alpaca.NewService(alpacaClient, zapLog)
 
 	// Initialize KYC provider with full configuration
 	kycProviderConfig := adapters.KYCProviderConfig{
@@ -298,6 +305,9 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 
 	auditService := adapters.NewAuditService(db, zapLog)
 
+	// Initialize cache invalidator
+	cacheInvalidator := cache.NewCacheInvalidator(redisClient, zapLog, cache.InvalidateImmediate)
+
 	// Initialize entity secret service
 	entitySecretService := entitysecret.NewService(zapLog)
 
@@ -334,9 +344,10 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		OnboardingJobRepo:         onboardingJobRepo,
 
 		// External Services
-		CircleClient: circleClient,
-		AlpacaClient: alpacaClient,
-		KYCProvider:  kycProvider,
+		CircleClient:  circleClient,
+		AlpacaClient:  alpacaClient,
+		AlpacaService: alpacaService,
+		KYCProvider:   kycProvider,
 		EmailService: emailService,
 		SMSService:   smsService,
 		AuditService: auditService,
@@ -349,6 +360,9 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 
 		// Entity Secret Service
 		EntitySecretService: entitySecretService,
+
+		// Cache & Queue
+		CacheInvalidator: cacheInvalidator,
 	}
 
 	// Initialize domain services with their dependencies
@@ -447,7 +461,7 @@ func (c *Container) initializeDomainServices() error {
 		c.DepositRepo,
 		c.BalanceRepo,
 		simpleWalletRepo,
-		c.WalletRepo, // ManagedWalletRepository for real-time Circle balance fetching
+		c.WalletRepo,
 		virtualAccountRepo,
 		circleAdapter,
 		dueAdapter,
@@ -460,7 +474,7 @@ func (c *Container) initializeDomainServices() error {
 	orderRepo := repositories.NewOrderRepository(c.DB, c.ZapLog)
 	positionRepo := repositories.NewPositionRepository(c.DB, c.ZapLog)
 
-	// Initialize brokerage adapter with Alpaca client
+	// Initialize brokerage adapter with Alpaca service
 	brokerageAdapter := adapters.NewBrokerageAdapter(
 		c.AlpacaClient,
 		c.ZapLog,
@@ -472,13 +486,13 @@ func (c *Container) initializeDomainServices() error {
 		positionRepo,
 		c.BalanceRepo,
 		brokerageAdapter,
-		c.WalletRepo,   // Pass wallet repository for fetching wallets
-		c.CircleClient, // Pass Circle client for fetching real-time balances
+		c.WalletRepo,
+		c.CircleClient,
 		c.Logger,
 	)
 
 	// Initialize notification service for AI-CFO
-	notificationService := services.NewNotificationService(c.Logger)
+	notificationService := services.NewNotificationService(c.ZapLog)
 
 	// Create repository adapter for AI-CFO service
 	aiSummariesAdapter := &AISummariesRepositoryAdapter{repo: c.AISummariesRepo}

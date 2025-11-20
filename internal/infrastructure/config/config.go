@@ -29,37 +29,45 @@ type Config struct {
 	ZeroG        ZeroGConfig        `mapstructure:"zerog"`
 	Alpaca       AlpacaConfig       `mapstructure:"Alpaca"`
 	Due          DueConfig          `mapstructure:"due"`
+	Workers      WorkerConfig       `mapstructure:"workers"`
 }
 
 type ServerConfig struct {
-	Port            int      `mapstructure:"port"`
-	Host            string   `mapstructure:"host"`
-	ReadTimeout     int      `mapstructure:"read_timeout"`
-	WriteTimeout    int      `mapstructure:"write_timeout"`
-	AllowedOrigins  []string `mapstructure:"allowed_origins"`
-	RateLimitPerMin int      `mapstructure:"rate_limit_per_min"`
+	Port              int      `mapstructure:"port"`
+	Host              string   `mapstructure:"host"`
+	ReadTimeout       int      `mapstructure:"read_timeout"`
+	WriteTimeout      int      `mapstructure:"write_timeout"`
+	AllowedOrigins    []string `mapstructure:"allowed_origins"`
+	RateLimitPerMin   int      `mapstructure:"rate_limit_per_min"`
+	SupportedVersions []string `mapstructure:"supported_versions"`
+	DefaultVersion    string   `mapstructure:"default_version"`
 }
 
 type DatabaseConfig struct {
-	URL             string `mapstructure:"url"`
-	Host            string `mapstructure:"host"`
-	Port            int    `mapstructure:"port"`
-	Name            string `mapstructure:"name"`
-	User            string `mapstructure:"user"`
-	Password        string `mapstructure:"password"`
-	SSLMode         string `mapstructure:"ssl_mode"`
-	MaxOpenConns    int    `mapstructure:"max_open_conns"`
-	MaxIdleConns    int    `mapstructure:"max_idle_conns"`
-	ConnMaxLifetime int    `mapstructure:"conn_max_lifetime"`
-	QueryTimeout    int    `mapstructure:"query_timeout"`
-	MaxRetries      int    `mapstructure:"max_retries"`
+	URL             string   `mapstructure:"url"`
+	Host            string   `mapstructure:"host"`
+	Port            int      `mapstructure:"port"`
+	Name            string   `mapstructure:"name"`
+	User            string   `mapstructure:"user"`
+	Password        string   `mapstructure:"password"`
+	SSLMode         string   `mapstructure:"ssl_mode"`
+	MaxOpenConns    int      `mapstructure:"max_open_conns"`
+	MaxIdleConns    int      `mapstructure:"max_idle_conns"`
+	ConnMaxLifetime int      `mapstructure:"conn_max_lifetime"`
+	QueryTimeout    int      `mapstructure:"query_timeout"`
+	MaxRetries      int      `mapstructure:"max_retries"`
+	ReadReplicas    []string `mapstructure:"read_replicas"`
 }
 
 type RedisConfig struct {
-	Host     string `mapstructure:"host"`
-	Port     int    `mapstructure:"port"`
-	Password string `mapstructure:"password"`
-	DB       int    `mapstructure:"db"`
+	Host         string   `mapstructure:"host"`
+	Port         int      `mapstructure:"port"`
+	Password     string   `mapstructure:"password"`
+	DB           int      `mapstructure:"db"`
+	ClusterMode  bool     `mapstructure:"cluster_mode"`
+	ClusterAddrs []string `mapstructure:"cluster_addrs"`
+	MaxRetries   int      `mapstructure:"max_retries"`
+	PoolSize     int      `mapstructure:"pool_size"`
 }
 
 type JWTConfig struct {
@@ -175,6 +183,12 @@ type DueConfig struct {
 	APIKey    string `mapstructure:"api_key"`
 	AccountID string `mapstructure:"account_id"`
 	BaseURL   string `mapstructure:"base_url"`
+}
+
+// WorkerConfig contains background worker configuration
+type WorkerConfig struct {
+	Count      int `mapstructure:"count"`
+	JobTimeout int `mapstructure:"job_timeout"`
 }
 
 // AlpacaConfig contains brokerage API configuration
@@ -307,6 +321,8 @@ func setDefaults() {
 	viper.SetDefault("server.read_timeout", 30)
 	viper.SetDefault("server.write_timeout", 30)
 	viper.SetDefault("server.rate_limit_per_min", 100)
+	viper.SetDefault("server.supported_versions", []string{"v1"})
+	viper.SetDefault("server.default_version", "v1")
 
 	// Database defaults
 	viper.SetDefault("database.host", "localhost")
@@ -324,6 +340,9 @@ func setDefaults() {
 	viper.SetDefault("redis.host", "localhost")
 	viper.SetDefault("redis.port", 6379)
 	viper.SetDefault("redis.db", 0)
+	viper.SetDefault("redis.cluster_mode", false)
+	viper.SetDefault("redis.max_retries", 3)
+	viper.SetDefault("redis.pool_size", 10)
 
 	// JWT defaults
 	viper.SetDefault("jwt.access_token_ttl", 604800)   // 7 days
@@ -408,6 +427,10 @@ func setDefaults() {
 
 	// Due defaults
 	viper.SetDefault("due.base_url", "https://api.due.network/v1")
+
+	// Worker defaults
+	viper.SetDefault("workers.count", 10)
+	viper.SetDefault("workers.job_timeout", 300)
 }
 
 func overrideFromEnv() {

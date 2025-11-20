@@ -413,8 +413,8 @@ func (c *StorageClient) performStore(ctx context.Context, namespace string, data
 		os.Remove(tempFile)
 	}()
 
-	// Write data to temporary file
-	if err := os.WriteFile(tempFile, data, 0644); err != nil {
+	// Write data to temporary file with secure permissions
+	if err := os.WriteFile(tempFile, data, 0600); err != nil {
 		return nil, &entities.ZeroGError{
 			Code:      entities.ErrorCodeInternalError,
 			Message:   fmt.Sprintf("failed to create temp file: %v", err),

@@ -102,9 +102,9 @@ func (h *AlpacaHandlers) GetAssets(c *gin.Context) {
 		h.logger.Error("Failed to fetch assets from Alpaca",
 			zap.Error(err),
 			zap.Any("filters", query))
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
 			Code:  "ASSETS_FETCH_ERROR",
-			Error: "Failed to retrieve assets",
+			Message: "Failed to retrieve assets",
 		})
 		return
 	}
@@ -186,9 +186,9 @@ func (h *AlpacaHandlers) GetAsset(c *gin.Context) {
 	symbolOrID := c.Param("symbol_or_id")
 
 	if symbolOrID == "" {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 			Code:  "INVALID_PARAMETER",
-			Error: "Asset symbol or ID is required",
+			Message: "Asset symbol or ID is required",
 		})
 		return
 	}
@@ -207,10 +207,10 @@ func (h *AlpacaHandlers) GetAsset(c *gin.Context) {
 			if apiErr.Code == http.StatusNotFound {
 				h.logger.Warn("Asset not found",
 					zap.String("symbol_or_id", symbolOrID))
-				c.JSON(http.StatusNotFound, ErrorResponse{
+				c.JSON(http.StatusNotFound, entities.ErrorResponse{
 					Code:  "ASSET_NOT_FOUND",
-					Error: "Asset not found",
-					Details: symbolOrID,
+					Message: "Asset not found",
+					Details: map[string]interface{}{"symbol": symbolOrID},
 				})
 				return
 			}
@@ -219,9 +219,9 @@ func (h *AlpacaHandlers) GetAsset(c *gin.Context) {
 		h.logger.Error("Failed to fetch asset from Alpaca",
 			zap.Error(err),
 			zap.String("symbol_or_id", symbolOrID))
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
 			Code:  "ASSET_FETCH_ERROR",
-			Error: "Failed to retrieve asset details",
+			Message: "Failed to retrieve asset details",
 		})
 		return
 	}
@@ -300,9 +300,9 @@ func (h *AlpacaHandlers) SearchAssets(c *gin.Context) {
 	searchQuery := strings.TrimSpace(c.Query("q"))
 
 	if searchQuery == "" {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 			Code:  "INVALID_PARAMETER",
-			Error: "Search query parameter 'q' is required",
+			Message: "Search query parameter 'q' is required",
 		})
 		return
 	}
@@ -329,9 +329,9 @@ func (h *AlpacaHandlers) SearchAssets(c *gin.Context) {
 	if err != nil {
 		h.logger.Error("Failed to fetch assets for search",
 			zap.Error(err))
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
 			Code:  "SEARCH_ERROR",
-			Error: "Failed to search assets",
+			Message: "Failed to search assets",
 		})
 		return
 	}
@@ -381,9 +381,9 @@ func (h *AlpacaHandlers) GetAssetsByExchange(c *gin.Context) {
 	exchange := strings.ToUpper(strings.TrimSpace(c.Param("exchange")))
 
 	if exchange == "" {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 			Code:  "INVALID_PARAMETER",
-			Error: "Exchange parameter is required",
+			Message: "Exchange parameter is required",
 		})
 		return
 	}
@@ -398,10 +398,10 @@ func (h *AlpacaHandlers) GetAssetsByExchange(c *gin.Context) {
 	}
 
 	if !validExchanges[exchange] {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 			Code:  "INVALID_EXCHANGE",
-			Error: "Invalid exchange code",
-			Details: "Valid exchanges: NASDAQ, NYSE, ARCA, BATS, AMEX",
+			Message: "Invalid exchange code",
+			Details: map[string]interface{}{"message": "Valid exchanges: NASDAQ, NYSE, ARCA, BATS, AMEX"},
 		})
 		return
 	}
@@ -421,9 +421,9 @@ func (h *AlpacaHandlers) GetAssetsByExchange(c *gin.Context) {
 		h.logger.Error("Failed to fetch assets by exchange",
 			zap.Error(err),
 			zap.String("exchange", exchange))
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
 			Code:  "ASSETS_FETCH_ERROR",
-			Error: "Failed to retrieve assets",
+			Message: "Failed to retrieve assets",
 		})
 		return
 	}

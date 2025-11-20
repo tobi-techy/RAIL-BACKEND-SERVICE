@@ -25,7 +25,9 @@ func SetupZeroGRoutes(
 	internal := router.Group("/_internal/0g")
 	{
 		// Apply internal auth middleware (API key validation)
-		internal.Use(middleware.ValidateAPIKey([]string{"test-api-key"})) // Placeholder - should be configurable
+		// TODO: Load API keys from secure configuration
+		log.Warn("Using placeholder API key - configure ZEROG_INTERNAL_API_KEYS in production")
+		internal.Use(middleware.ValidateAPIKey([]string{"test-api-key"}))
 		internal.Use(middleware.RequestID())
 		internal.Use(middleware.Logger(loggerInstance))
 

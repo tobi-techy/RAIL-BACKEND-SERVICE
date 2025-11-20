@@ -464,15 +464,6 @@ func (h *OnboardingHandlers) getUserID(c *gin.Context) (uuid.UUID, error) {
 	return uuid.Nil, fmt.Errorf("user ID not found in context or query parameters")
 }
 
-func getRequestID(c *gin.Context) string {
-	if requestID, exists := c.Get("request_id"); exists {
-		if requestIDStr, ok := requestID.(string); ok {
-			return requestIDStr
-		}
-	}
-	return c.GetHeader("X-Request-ID")
-}
-
 // Error type checking functions
 func isUserAlreadyExistsError(err error) bool {
 	// Implementation would check for specific error types
@@ -480,11 +471,6 @@ func isUserAlreadyExistsError(err error) bool {
 	return err != nil && (contains(err.Error(), "user already exists") ||
 		contains(err.Error(), "duplicate") ||
 		contains(err.Error(), "conflict"))
-}
-
-func isUserNotFoundError(err error) bool {
-	return err != nil && (contains(err.Error(), "user not found") ||
-		contains(err.Error(), "not found"))
 }
 
 func isKYCNotEligibleError(err error) bool {

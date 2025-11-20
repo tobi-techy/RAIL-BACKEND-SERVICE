@@ -29,7 +29,7 @@ func NewWorkerHandlers(scheduler interface{}, logger *zap.Logger) *WorkerHandler
 // @Tags admin
 // @Produce json
 // @Success 200 {object} map[string]interface{} "Worker status"
-// @Failure 500 {object} entities.ErrorResponse
+// @Failure 500 {object} map[string]interface{}
 // @Security BearerAuth
 // @Router /api/v1/admin/workers/status [get]
 func (h *WorkerHandlers) GetWorkerStatus(c *gin.Context) {
@@ -80,7 +80,7 @@ func (h *WorkerHandlers) GetWorkerStatus(c *gin.Context) {
 // @Tags admin
 // @Produce json
 // @Success 200 {object} map[string]interface{} "Worker metrics"
-// @Failure 500 {object} entities.ErrorResponse
+// @Failure 500 {object} map[string]interface{}
 // @Security BearerAuth
 // @Router /api/v1/admin/workers/metrics [get]
 func (h *WorkerHandlers) GetWorkerMetrics(c *gin.Context) {
@@ -131,8 +131,8 @@ func (h *WorkerHandlers) GetWorkerMetrics(c *gin.Context) {
 // @Produce json
 // @Param request body TriggerJobRequest true "Job ID to process"
 // @Success 202 {object} map[string]interface{} "Job processing triggered"
-// @Failure 400 {object} entities.ErrorResponse
-// @Failure 500 {object} entities.ErrorResponse
+// @Failure 400 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{}
 // @Security BearerAuth
 // @Router /api/v1/admin/workers/trigger [post]
 func (h *WorkerHandlers) TriggerJobProcessing(c *gin.Context) {
@@ -181,7 +181,7 @@ func (h *WorkerHandlers) TriggerJobProcessing(c *gin.Context) {
 // @Tags admin
 // @Produce json
 // @Success 200 {object} map[string]interface{} "Health status"
-// @Failure 503 {object} entities.ErrorResponse
+// @Failure 503 {object} map[string]interface{}
 // @Router /api/v1/admin/workers/health [get]
 func (h *WorkerHandlers) GetWorkerHealth(c *gin.Context) {
 	h.logger.Debug("Worker health check requested")
@@ -233,7 +233,7 @@ func (h *WorkerHandlers) GetWorkerHealth(c *gin.Context) {
 // @Tags admin
 // @Produce json
 // @Success 200 {object} map[string]interface{} "Scheduler restarted"
-// @Failure 500 {object} entities.ErrorResponse
+// @Failure 500 {object} map[string]interface{}
 // @Security BearerAuth
 // @Router /api/v1/admin/workers/restart [post]
 func (h *WorkerHandlers) RestartScheduler(c *gin.Context) {

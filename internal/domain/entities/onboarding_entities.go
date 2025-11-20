@@ -366,13 +366,13 @@ type KYCStatusResponse struct {
 // KYCSubmitRequest represents KYC submission request
 type KYCSubmitRequest struct {
 	DocumentType string                 `json:"documentType" validate:"required"`
-	Documents    []KYCDocument          `json:"documents" validate:"required,min=1"`
+	Documents    []KYCDocumentUpload    `json:"documents" validate:"required,min=1"`
 	PersonalInfo *KYCPersonalInfo       `json:"personalInfo,omitempty"`
 	Metadata     map[string]interface{} `json:"metadata,omitempty"`
 }
 
-// KYCDocument represents a document uploaded for KYC
-type KYCDocument struct {
+// KYCDocumentUpload represents a document uploaded for KYC
+type KYCDocumentUpload struct {
 	Type        string `json:"type" validate:"required"` // passport, drivers_license, etc.
 	FileURL     string `json:"fileUrl" validate:"required,url"`
 	ContentType string `json:"contentType" validate:"required"`

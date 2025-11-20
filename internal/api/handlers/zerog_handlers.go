@@ -213,10 +213,10 @@ func (h *ZeroGHandler) Store(c *gin.Context) {
 			zap.Error(err),
 			zap.String("request_id", getRequestID(c)),
 		)
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "Invalid request format",
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
+			Message: "Invalid request format",
 			Code:    "INVALID_REQUEST",
-			Details: err.Error(),
+			Details: map[string]interface{}{"error": err.Error()},
 		})
 		return
 	}
@@ -303,10 +303,10 @@ func (h *ZeroGHandler) Generate(c *gin.Context) {
 			zap.Error(err),
 			zap.String("request_id", getRequestID(c)),
 		)
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "Invalid request format",
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
+			Message: "Invalid request format",
 			Code:    "INVALID_REQUEST",
-			Details: err.Error(),
+			Details: map[string]interface{}{"error": err.Error()},
 		})
 		return
 	}
@@ -399,7 +399,7 @@ func (h *ZeroGHandler) Generate(c *gin.Context) {
 	default:
 		c.JSON(http.StatusBadRequest, GenerateResponse{
 			Success: false,
-			Error:   "Invalid generation type. Must be 'weekly_summary' or 'analysis'",
+			Error: "Invalid generation type. Must be 'weekly_summary' or 'analysis'",
 		})
 		return
 	}
