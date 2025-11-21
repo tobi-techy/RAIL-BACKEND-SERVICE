@@ -85,3 +85,10 @@ func (l *Logger) ForRequest(requestID, method, path string) *Logger {
 func (l *Logger) Zap() *zap.Logger {
 	return l.SugaredLogger.Desugar()
 }
+
+// NewLogger creates a Logger from a zap.Logger
+func NewLogger(zapLog *zap.Logger) *Logger {
+	return &Logger{
+		SugaredLogger: zapLog.Sugar(),
+	}
+}

@@ -1,8 +1,8 @@
 {
-  "status": "commited",
+  "status": "init",
   "type": "backend",
   "scope": "codebase",
-  "localEndpoint": "http://localhost:8080",
+  "localEndpoint": "http://localhost:8080/",
   "backendAuthType": "public",
   "executionArgs": {
     "projectName": "stack_service",
@@ -13,5 +13,6 @@
       "API_KEY": "sk-user-KnpxZncm-poHHRQ7M2QrgQnghdbTHQWHZNLVaZg6EqdDZMYLJ5NGS0jfbzRhGZhpCwl0Ydi5wG-QKRz1Xojg8yNdVlKRkEKt7L3C7oXw5gMFD4zZGks1eeuRMx_GCAuhqhM"
     }
   },
-  "proxy": "http://757d169e-1922-4cb6-b414-db8fb982c150:UbcBzkfuJQFByxM8pNozVl7pCtFFoer0@tun.testsprite.com:8080"
+  "proxy": "http://757d169e-1922-4cb6-b414-db8fb982c150:UbcBzkfuJQFByxM8pNozVl7pCtFFoer0@tun.testsprite.com:8080",
+  "serverPort": 50247
 }

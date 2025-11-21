@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stack-service/stack_service/internal/domain/entities"
 	"github.com/stack-service/stack_service/pkg/logger"
 	"github.com/stack-service/stack_service/pkg/retry"
 )
@@ -92,23 +93,23 @@ type CreateVirtualAccountResponse struct {
 }
 
 // CreateAccount creates a Due account
-func (c *Client) CreateAccount(ctx context.Context, req *CreateAccountRequest) (*CreateAccountResponse, error) {
+func (c *Client) CreateAccount(ctx context.Context, req *entities.CreateAccountRequest) (*entities.CreateAccountResponse, error) {
 	c.logger.Info("Creating Due account", "email", req.Email, "type", req.Type)
 
-	var response CreateAccountResponse
+	var response entities.CreateAccountResponse
 	if err := c.doRequest(ctx, "POST", "accounts", req, &response); err != nil {
 		c.logger.Error("Failed to create Due account", "error", err)
 		return nil, fmt.Errorf("create account failed: %w", err)
 	}
 
-	c.logger.Info("Created Due account", "account_id", response.ID, "status", response.Status)
+	c.logger.Info("Created Due account", "account_id", response.AccountID, "status", response.Status)
 	return &response, nil
 }
 
 // GetAccount retrieves a Due account by ID
-func (c *Client) GetAccount(ctx context.Context, accountID string) (*CreateAccountResponse, error) {
+func (c *Client) GetAccount(ctx context.Context, accountID string) (*entities.CreateAccountResponse, error) {
 	endpoint := fmt.Sprintf("accounts/%s", accountID)
-	var response CreateAccountResponse
+	var response entities.CreateAccountResponse
 	if err := c.doRequest(ctx, "GET", endpoint, nil, &response); err != nil {
 		return nil, fmt.Errorf("get account failed: %w", err)
 	}
@@ -466,6 +467,9 @@ func (c *Client) doRequestWithRetry(ctx context.Context, method, endpoint string
 		if err == nil {
 			return false
 		}
+		if apiErr, ok := err.(*ErrorResponse); ok {
+			return apiErr.StatusCode >= 500
+		}
 		// Retry on network errors and 5xx status codes
 		errStr := err.Error()
 		return strings.Contains(errStr, "connection refused") ||
@@ -604,6 +608,12 @@ func (c *Client) CreateFXQuote(ctx context.Context, req *FXQuoteRequest) (*FXQuo
 
 // doRequestWithAccountID performs HTTP request with Due-Account-Id header
 func (c *Client) doRequestWithAccountID(ctx context.Context, method, endpoint, accountID string, body, response interface{}) error {
+	if !strings.HasPrefix(endpoint, "/") {
+		endpoint = "/" + endpoint
+	}
+	if !strings.HasPrefix(endpoint, "/v1/") && !strings.HasPrefix(endpoint, "/dev/") {
+		endpoint = "/v1" + endpoint
+	}
 	fullURL := c.config.BaseURL + endpoint
 
 	var reqBody io.Reader

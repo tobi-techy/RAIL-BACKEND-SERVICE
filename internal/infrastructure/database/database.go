@@ -92,7 +92,7 @@ func RunMigrations(databaseURL string) error {
 		return fmt.Errorf("failed to create postgres driver: %w", err)
 	}
 
-	migrationPath := filepath.Clean("migrations")
+	migrationPath := filepath.ToSlash(filepath.Clean("migrations"))
 	m, err := migrate.NewWithDatabaseInstance(
 		"file://"+migrationPath,
 		"postgres",

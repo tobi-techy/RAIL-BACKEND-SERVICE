@@ -118,6 +118,8 @@ type UserProfile struct {
 	KYCSubmittedAt     *time.Time       `json:"kyc_submitted_at" db:"kyc_submitted_at"`
 	KYCApprovedAt      *time.Time       `json:"kyc_approved_at" db:"kyc_approved_at"`
 	KYCRejectionReason *string          `json:"kyc_rejection_reason" db:"kyc_rejection_reason"`
+	DueAccountID       *string          `json:"due_account_id" db:"due_account_id"`
+	AlpacaAccountID    *string          `json:"alpaca_account_id" db:"alpaca_account_id"`
 	IsActive           bool             `json:"is_active" db:"is_active"`
 	CreatedAt          time.Time        `json:"created_at" db:"created_at"`
 	UpdatedAt          time.Time        `json:"updated_at" db:"updated_at"`
@@ -395,3 +397,25 @@ type Address struct {
 	PostalCode string `json:"postalCode" validate:"required"`
 	Country    string `json:"country" validate:"required,len=2"`
 }
+
+// OnboardingCompleteRequest represents the request to complete onboarding
+type OnboardingCompleteRequest struct {
+	UserID      uuid.UUID  `json:"-" validate:"-"` // Set from auth context
+	FirstName   string     `json:"firstName" validate:"required"`
+	LastName    string     `json:"lastName" validate:"required"`
+	DateOfBirth *time.Time `json:"dateOfBirth" validate:"required"`
+	Country     string     `json:"country" validate:"required,len=2"`
+	Address     Address    `json:"address" validate:"required"`
+	Phone       *string    `json:"phone,omitempty" validate:"omitempty,e164"`
+}
+
+// OnboardingCompleteResponse represents the response after completing onboarding
+type OnboardingCompleteResponse struct {
+	UserID          uuid.UUID `json:"userId"`
+	DueAccountID    string    `json:"dueAccountId"`
+	AlpacaAccountID string    `json:"alpacaAccountId"`
+	Message         string    `json:"message"`
+	NextSteps       []string  `json:"nextSteps"`
+}
+
+

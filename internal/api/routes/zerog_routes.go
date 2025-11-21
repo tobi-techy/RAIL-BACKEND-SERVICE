@@ -1,20 +1,37 @@
 package routes
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/stack-service/stack_service/internal/api/handlers"
 	"github.com/stack-service/stack_service/internal/api/middleware"
 	"github.com/stack-service/stack_service/pkg/logger"
 	"go.uber.org/zap"
 )
 
+// SimpleAPIKeyValidator implements APIKeyValidator interface
+type SimpleAPIKeyValidator struct {
+	validKeys map[string]bool
+}
+
+func (v *SimpleAPIKeyValidator) ValidateAPIKey(ctx context.Context, key string) (*middleware.APIKeyInfo, error) {
+	if v.validKeys[key] {
+		return &middleware.APIKeyInfo{
+			ID:     uuid.New(),
+			UserID: nil,
+			Scopes: []string{"read", "write"},
+		}, nil
+	}
+	return nil, context.Canceled
+}
+
 // SetupZeroGRoutes configures the 0G-related API routes
 func SetupZeroGRoutes(
 	router *gin.Engine,
-	zeroGHandler *handlers.ZeroGHandler,
-	aicfoHandler *handlers.AICfoHandler,
+	integrationHandlers *handlers.IntegrationHandlers,
 	log *zap.Logger,
 ) {
 	// Create a logger instance compatible with middleware
@@ -27,30 +44,14 @@ func SetupZeroGRoutes(
 		// Apply internal auth middleware (API key validation)
 		// TODO: Load API keys from secure configuration
 		log.Warn("Using placeholder API key - configure ZEROG_INTERNAL_API_KEYS in production")
-		internal.Use(middleware.ValidateAPIKey([]string{"test-api-key"}))
+		internal.Use(middleware.ValidateAPIKey(&SimpleAPIKeyValidator{validKeys: map[string]bool{"test-api-key": true}}))
 		internal.Use(middleware.RequestID())
 		internal.Use(middleware.Logger(loggerInstance))
 
 		// Health check endpoints
 		health := internal.Group("/health")
 		{
-			// Using the single HealthCheck method with different parameters
-			health.GET("/storage", zeroGHandler.HealthCheck)
-			health.GET("/inference", zeroGHandler.HealthCheck)
-			health.GET("/namespace", zeroGHandler.HealthCheck)
-			health.GET("/all", zeroGHandler.HealthCheck)
-		}
-
-		// Storage operations
-		storage := internal.Group("/storage")
-		{
-			storage.POST("/store", zeroGHandler.Store)
-		}
-
-		// AI inference operations
-		inference := internal.Group("/inference")
-		{
-			inference.POST("/generate", zeroGHandler.Generate)
+			health.GET("/all", integrationHandlers.ZeroGHealthCheck)
 		}
 	}
 
@@ -58,7 +59,7 @@ func SetupZeroGRoutes(
 	api := router.Group("/api/v1/ai")
 	{
 		// Apply authentication middleware for public endpoints
-		api.Use(middleware.Authentication(nil, loggerInstance))
+		api.Use(middleware.Authentication(nil, loggerInstance, nil))
 		api.Use(middleware.RequestID())
 		api.Use(middleware.Logger(loggerInstance))
 		api.Use(middleware.RateLimit(10)) // Rate limiting for public APIs
@@ -66,14 +67,14 @@ func SetupZeroGRoutes(
 		// Weekly summary endpoints
 		summary := api.Group("/summary")
 		{
-			summary.GET("/latest", aicfoHandler.GetLatestSummary)
+			summary.GET("/latest", integrationHandlers.GetLatestSummary)
 		}
 
 		// On-demand analysis endpoints
-		api.POST("/analyze", aicfoHandler.AnalyzeOnDemand)
+		api.POST("/analyze", integrationHandlers.AnalyzeOnDemand)
 
 		// Health check endpoint (lighter auth requirements)
-		api.GET("/health", aicfoHandler.HealthCheck)
+		api.GET("/health", integrationHandlers.AICfoHealthCheck)
 	}
 }
 

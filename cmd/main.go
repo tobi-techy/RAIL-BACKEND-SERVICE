@@ -9,7 +9,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stack-service/stack_service/internal/api/routes"
+	"github.com/stack-service/stack_service/internal/domain/entities"
 	"github.com/stack-service/stack_service/internal/infrastructure/config"
 	"github.com/stack-service/stack_service/internal/infrastructure/database"
 	"github.com/stack-service/stack_service/internal/infrastructure/di"
@@ -17,6 +19,7 @@ import (
 	walletprovisioning "github.com/stack-service/stack_service/internal/workers/wallet_provisioning"
 	"github.com/stack-service/stack_service/pkg/logger"
 	"github.com/stack-service/stack_service/pkg/metrics"
+	"github.com/stack-service/stack_service/pkg/tracing"
 
 	"github.com/gin-gonic/gin"
 )
@@ -41,6 +44,37 @@ import (
 // @name Authorization
 // @description Type "Bearer" followed by a space and JWT token.
 
+// userRepositoryAdapter adapts infrastructure UserRepository to wallet provisioning UserRepository
+type userRepositoryAdapter struct {
+	repo interface {
+		GetByID(context.Context, uuid.UUID) (*entities.UserProfile, error)
+	}
+}
+
+func (a *userRepositoryAdapter) GetByID(ctx context.Context, id uuid.UUID) (*entities.User, error) {
+	profile, err := a.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &entities.User{
+		ID:                 profile.ID,
+		Email:              profile.Email,
+		Phone:              profile.Phone,
+		EmailVerified:      profile.EmailVerified,
+		PhoneVerified:      profile.PhoneVerified,
+		OnboardingStatus:   profile.OnboardingStatus,
+		KYCStatus:          profile.KYCStatus,
+		KYCProviderRef:     profile.KYCProviderRef,
+		KYCSubmittedAt:     profile.KYCSubmittedAt,
+		KYCApprovedAt:      profile.KYCApprovedAt,
+		KYCRejectionReason: profile.KYCRejectionReason,
+		DueAccountID:       profile.DueAccountID,
+		IsActive:           profile.IsActive,
+		CreatedAt:          profile.CreatedAt,
+		UpdatedAt:          profile.UpdatedAt,
+	}, nil
+}
+
 func main() {
 	// Load configuration
 	cfg, err := config.Load()
@@ -50,6 +84,21 @@ func main() {
 
 	// Initialize logger
 	log := logger.New(cfg.LogLevel, cfg.Environment)
+
+	// Initialize OpenTelemetry tracing
+	tracingConfig := tracing.Config{
+		Enabled:      cfg.Environment != "test",
+		CollectorURL: "localhost:4317",
+		Environment:  cfg.Environment,
+		SampleRate:   1.0, // 100% sampling in dev/staging, reduce in production
+	}
+
+	tracingShutdown, err := tracing.InitTracer(context.Background(), tracingConfig, log.Zap())
+	if err != nil {
+		log.Fatal("Failed to initialize tracing", "error", err)
+	}
+	defer tracingShutdown(context.Background())
+	log.Info("OpenTelemetry tracing initialized", "collector_url", tracingConfig.CollectorURL)
 
 	// Initialize database with enhanced configuration
 	db, err := database.NewConnection(cfg.Database)
@@ -81,11 +130,17 @@ func main() {
 	// Initialize router with DI container
 	router := routes.SetupRoutes(container)
 
+	// Setup security routes
+	routes.SetupSecurityRoutes(router, cfg, db, log.Zap())
+
 	// Initialize wallet provisioning worker and scheduler
 	workerConfig := walletprovisioning.DefaultConfig()
 	workerConfig.WalletSetNamePrefix = cfg.Circle.DefaultWalletSetName
 	workerConfig.ChainsToProvision = container.WalletService.SupportedChains()
 	workerConfig.DefaultWalletSetID = cfg.Circle.DefaultWalletSetID
+
+	// Create user repository adapter for wallet provisioning
+	userRepoAdapter := &userRepositoryAdapter{repo: container.UserRepo}
 
 	worker := walletprovisioning.NewWorker(
 		container.WalletRepo,
@@ -93,6 +148,8 @@ func main() {
 		container.WalletProvisioningJobRepo,
 		container.CircleClient,
 		container.AuditService,
+		userRepoAdapter,
+		container.DueService,
 		workerConfig,
 		log.Zap(),
 	)

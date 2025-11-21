@@ -22,6 +22,8 @@ type Service struct {
 	kycProvider         KYCProvider
 	emailService        EmailService
 	auditService        AuditService
+	dueAdapter          DueAdapter
+	alpacaAdapter       AlpacaAdapter
 	logger              *zap.Logger
 	defaultWalletChains []entities.WalletChain
 }
@@ -75,6 +77,14 @@ type AuditService interface {
 	LogOnboardingEvent(ctx context.Context, userID uuid.UUID, action, entity string, before, after interface{}) error
 }
 
+type DueAdapter interface {
+	CreateAccount(ctx context.Context, req *entities.CreateAccountRequest) (*entities.CreateAccountResponse, error)
+}
+
+type AlpacaAdapter interface {
+	CreateAccount(ctx context.Context, req *entities.AlpacaCreateAccountRequest) (*entities.AlpacaAccountResponse, error)
+}
+
 // NewService creates a new onboarding service
 func NewService(
 	userRepo UserRepository,
@@ -84,6 +94,8 @@ func NewService(
 	kycProvider KYCProvider,
 	emailService EmailService,
 	auditService AuditService,
+	dueAdapter DueAdapter,
+	alpacaAdapter AlpacaAdapter,
 	logger *zap.Logger,
 	defaultWalletChains []entities.WalletChain,
 ) *Service {
@@ -97,6 +109,8 @@ func NewService(
 		kycProvider:         kycProvider,
 		emailService:        emailService,
 		auditService:        auditService,
+		dueAdapter:          dueAdapter,
+		alpacaAdapter:       alpacaAdapter,
 		logger:              logger,
 		defaultWalletChains: normalizedChains,
 	}
@@ -290,6 +304,111 @@ func (s *Service) CompleteEmailVerification(ctx context.Context, userID uuid.UUI
 	}
 
 	return nil
+}
+
+// CompleteOnboarding handles the completion of onboarding with personal info and account creation
+func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.OnboardingCompleteRequest) (*entities.OnboardingCompleteResponse, error) {
+	s.logger.Info("Completing onboarding with account creation", zap.String("user_id", req.UserID.String()))
+
+	// Get user
+	user, err := s.userRepo.GetByID(ctx, req.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+
+	if !user.EmailVerified {
+		return nil, fmt.Errorf("email must be verified before completing onboarding")
+	}
+
+	// Update user with personal information
+	user.FirstName = &req.FirstName
+	user.LastName = &req.LastName
+	user.Phone = req.Phone
+	user.DateOfBirth = req.DateOfBirth
+	user.UpdatedAt = time.Now()
+
+	// Create Due account
+	dueReq := &entities.CreateAccountRequest{
+		Type:      "individual",
+		FirstName: req.FirstName,
+		LastName:  req.LastName,
+		Email:     user.Email,
+		Country:   req.Country,
+	}
+
+	dueResp, err := s.dueAdapter.CreateAccount(ctx, dueReq)
+	if err != nil {
+		s.logger.Error("Failed to create Due account", zap.Error(err))
+		return nil, fmt.Errorf("failed to create Due account: %w", err)
+	}
+
+	// Create Alpaca account
+	alpacaReq := &entities.AlpacaCreateAccountRequest{
+		Contact: entities.AlpacaContact{
+			EmailAddress:  user.Email,
+			PhoneNumber:   getStringValue(req.Phone),
+			StreetAddress: []string{req.Address.Street},
+			City:          req.Address.City,
+			State:         req.Address.State,
+			PostalCode:    req.Address.PostalCode,
+			Country:       req.Country,
+		},
+		Identity: entities.AlpacaIdentity{
+			GivenName:             req.FirstName,
+			FamilyName:            req.LastName,
+			DateOfBirth:           req.DateOfBirth.Format("2006-01-02"),
+			CountryOfCitizenship:  req.Country,
+			CountryOfBirth:        req.Country,
+			CountryOfTaxResidence: req.Country,
+			FundingSource:         []string{"employment_income"},
+		},
+		Disclosures: entities.AlpacaDisclosures{
+			EmploymentStatus: "employed",
+		},
+		Agreements: []entities.AlpacaAgreement{
+			{
+				Agreement: "customer_agreement",
+				SignedAt:  time.Now().Format(time.RFC3339),
+				IPAddress: "127.0.0.1", // Should be passed from request context
+			},
+		},
+	}
+
+	alpacaResp, err := s.alpacaAdapter.CreateAccount(ctx, alpacaReq)
+	if err != nil {
+		s.logger.Error("Failed to create Alpaca account", zap.Error(err))
+		return nil, fmt.Errorf("failed to create Alpaca account: %w", err)
+	}
+
+	// Update user with account IDs
+	user.DueAccountID = &dueResp.AccountID
+	user.AlpacaAccountID = &alpacaResp.ID
+	user.UpdatedAt = time.Now()
+
+	if err := s.userRepo.Update(ctx, user); err != nil {
+		return nil, fmt.Errorf("failed to update user with account IDs: %w", err)
+	}
+
+	// Log audit event
+	if err := s.auditService.LogOnboardingEvent(ctx, req.UserID, "accounts_created", "user", nil, map[string]any{
+		"due_account_id":    dueResp.AccountID,
+		"alpaca_account_id": alpacaResp.ID,
+	}); err != nil {
+		s.logger.Warn("Failed to log audit event", zap.Error(err))
+	}
+
+	s.logger.Info("Onboarding completed successfully",
+		zap.String("user_id", req.UserID.String()),
+		zap.String("due_account_id", dueResp.AccountID),
+		zap.String("alpaca_account_id", alpacaResp.ID))
+
+	return &entities.OnboardingCompleteResponse{
+		UserID:          req.UserID,
+		DueAccountID:    dueResp.AccountID,
+		AlpacaAccountID: alpacaResp.ID,
+		Message:         "Accounts created successfully. Please create your passcode to continue.",
+		NextSteps:       []string{"create_passcode"},
+	}, nil
 }
 
 // CompletePasscodeCreation handles passcode creation completion and triggers wallet creation
@@ -846,4 +965,12 @@ func (s *Service) canProceed(user *entities.UserProfile, completedSteps []entiti
 	default:
 		return true
 	}
+}
+
+// Helper function to safely convert *string to string
+func getStringValue(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

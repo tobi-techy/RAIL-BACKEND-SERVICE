@@ -17,7 +17,7 @@ database:
   url: ""
   host: localhost
   port: 5432
-  name: stack_service_dev
+  name: stack_service
   user: postgres
   password: postgres
   ssl_mode: disable
@@ -130,16 +130,16 @@ zerog:
       topup_amount: 50.0
       max_account_limit: 1000.0
 
-Alpaca:
-  api_key: ""
-  secret_key: ""
-  base_url: "https://api.alpaca.io"
-  data_base_url: "https://data.alpaca.markets"
+alpaca:
+  client_id: "CAQ5K26YD7DGSJBUCLOT3L373B"
+  secret_key: "Avw9W3Xf35fr4gNLGg8umUi5mvgivFdSccCFq1fWSvHr"
+  base_url: "https://broker-api.sandbox.alpaca.markets"
+  data_base_url: "https://data.sandbox.alpaca.markets"
   environment: "sandbox"
   timeout: 30
 
 due:
-  api_key: ""
+  api_key: "key_live_acct_EmIUtIyO9aEC1V3SL95trsDjuE65Mpzh"
   account_id: ""
   base_url: "https://api.due.network/v1"
 
@@ -161,5 +161,5 @@ due:
     weekly: 50000.00
     monthly: 200000.00
   risk_threshold: 0.9
-  
+
 

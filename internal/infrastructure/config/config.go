@@ -27,7 +27,7 @@ type Config struct {
 	SMS          SMSConfig          `mapstructure:"sms"`
 	Verification VerificationConfig `mapstructure:"verification"`
 	ZeroG        ZeroGConfig        `mapstructure:"zerog"`
-	Alpaca       AlpacaConfig       `mapstructure:"Alpaca"`
+	Alpaca       AlpacaConfig       `mapstructure:"alpaca"`
 	Due          DueConfig          `mapstructure:"due"`
 	Workers      WorkerConfig       `mapstructure:"workers"`
 }
@@ -193,8 +193,8 @@ type WorkerConfig struct {
 
 // AlpacaConfig contains brokerage API configuration
 type AlpacaConfig struct {
-	APIKey      string `mapstructure:"api_key"`
-	APISecret   string `mapstructure:"secret_key"`
+	ClientID    string `mapstructure:"client_id"`
+	SecretKey   string `mapstructure:"secret_key"`
 	BaseURL     string `mapstructure:"base_url"`
 	DataBaseURL string `mapstructure:"data_base_url"` // Market data API base URL
 	Environment string `mapstructure:"environment"`   // sandbox or production
@@ -422,8 +422,10 @@ func setDefaults() {
 	viper.SetDefault("zerog.compute.funding.max_account_limit", 1000.0)
 
 	// Alpaca defaults
-	viper.SetDefault("Alpaca.environment", "sandbox")
-	viper.SetDefault("Alpaca.base_url", "https://api.Alpaca.io")
+	viper.SetDefault("alpaca.environment", "sandbox")
+	viper.SetDefault("alpaca.base_url", "https://broker-api.sandbox.alpaca.markets")
+	viper.SetDefault("alpaca.data_base_url", "https://data.sandbox.alpaca.markets")
+	viper.SetDefault("alpaca.timeout", 30)
 
 	// Due defaults
 	viper.SetDefault("due.base_url", "https://api.due.network/v1")
@@ -580,20 +582,20 @@ func overrideFromEnv() {
 	}
 
 	// Alpaca
-	if dwAPIKey := os.Getenv("Alpaca_API_KEY"); dwAPIKey != "" {
-		viper.Set("Alpaca.api_key", dwAPIKey)
+	if alpacaAPIKey := os.Getenv("ALPACA_API_KEY"); alpacaAPIKey != "" {
+		viper.Set("alpaca.client_id", alpacaAPIKey)
 	}
-	if dwAPISecret := os.Getenv("Alpaca_API_SECRET"); dwAPISecret != "" {
-		viper.Set("Alpaca.api_secret", dwAPISecret)
+	if alpacaAPISecret := os.Getenv("ALPACA_API_SECRET"); alpacaAPISecret != "" {
+		viper.Set("alpaca.secret_key", alpacaAPISecret)
 	}
-	if dwBaseURL := os.Getenv("Alpaca_BASE_URL"); dwBaseURL != "" {
-		viper.Set("Alpaca.base_url", dwBaseURL)
+	if alpacaBaseURL := os.Getenv("ALPACA_BASE_URL"); alpacaBaseURL != "" {
+		viper.Set("alpaca.base_url", alpacaBaseURL)
 	}
-	if dwEnvironment := os.Getenv("Alpaca_ENVIRONMENT"); dwEnvironment != "" {
-		viper.Set("Alpaca.environment", dwEnvironment)
+	if alpacaDataBaseURL := os.Getenv("ALPACA_DATA_BASE_URL"); alpacaDataBaseURL != "" {
+		viper.Set("alpaca.data_base_url", alpacaDataBaseURL)
 	}
-	if dwAccountNo := os.Getenv("Alpaca_ACCOUNT_NO"); dwAccountNo != "" {
-		viper.Set("Alpaca.account_no", dwAccountNo)
+	if alpacaEnvironment := os.Getenv("ALPACA_ENVIRONMENT"); alpacaEnvironment != "" {
+		viper.Set("alpaca.environment", alpacaEnvironment)
 	}
 
 	// Due
