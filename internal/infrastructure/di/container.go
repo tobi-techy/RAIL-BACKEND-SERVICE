@@ -22,6 +22,7 @@ import (
 	"github.com/stack-service/stack_service/internal/domain/services/twofa"
 	"github.com/stack-service/stack_service/internal/domain/services/apikey"
 	"github.com/stack-service/stack_service/internal/domain/services/wallet"
+	"github.com/stack-service/stack_service/internal/domain/services/ledger"
 	"github.com/stack-service/stack_service/internal/adapters/alpaca"
 	"github.com/stack-service/stack_service/internal/adapters/due"
 	"github.com/stack-service/stack_service/internal/infrastructure/adapters"
@@ -157,6 +158,7 @@ type Container struct {
 	DepositRepo               *repositories.DepositRepository
 	BalanceRepo               *repositories.BalanceRepository
 	FundingEventJobRepo       *repositories.FundingEventJobRepository
+	LedgerRepo                *repositories.LedgerRepository
 
 	// External Services
 	CircleClient  *circle.Client
@@ -183,6 +185,7 @@ type Container struct {
 	DueService           *services.DueService
 	BalanceService       *services.BalanceService
 	EntitySecretService  *entitysecret.Service
+	LedgerService        *ledger.Service
 
 	// ZeroG Services
 	InferenceGateway *zerog.InferenceGateway
@@ -220,6 +223,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	depositRepo := repositories.NewDepositRepository(sqlxDB)
 	balanceRepo := repositories.NewBalanceRepository(db, zapLog)
 	fundingEventJobRepo := repositories.NewFundingEventJobRepository(db, log)
+	ledgerRepo := repositories.NewLedgerRepository(sqlxDB)
 	aiSummariesRepo := repositories.NewAISummaryRepository(db, zapLog)
 	onboardingJobRepo := repositories.NewOnboardingJobRepository(db, zapLog)
 
@@ -346,6 +350,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		DepositRepo:               depositRepo,
 		BalanceRepo:               balanceRepo,
 		FundingEventJobRepo:       fundingEventJobRepo,
+		LedgerRepo:                ledgerRepo,
 		AISummariesRepo:           aiSummariesRepo,
 		OnboardingJobRepo:         onboardingJobRepo,
 
@@ -467,6 +472,9 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize Alpaca funding adapter
 	alpacaFundingAdapter := alpaca.NewFundingAdapter(c.AlpacaClient, c.ZapLog)
 
+	// Initialize ledger service
+	c.LedgerService = ledger.NewService(c.LedgerRepo, sqlxDB, c.Logger)
+
 	// Initialize standalone Balance service with Alpaca adapter
 	alpacaBalanceAdapter := &AlpacaFundingAdapter{adapter: alpacaFundingAdapter, client: c.AlpacaClient}
 	c.BalanceService = services.NewBalanceService(c.BalanceRepo, alpacaBalanceAdapter, c.Logger)
@@ -587,6 +595,11 @@ func (c *Container) GetDueService() *services.DueService {
 // GetBalanceService returns the Balance service
 func (c *Container) GetBalanceService() *services.BalanceService {
 	return c.BalanceService
+}
+
+// GetLedgerService returns the Ledger service
+func (c *Container) GetLedgerService() *ledger.Service {
+	return c.LedgerService
 }
 
 // GetInferenceGateway returns the ZeroG inference gateway
