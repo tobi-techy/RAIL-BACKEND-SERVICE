@@ -112,7 +112,12 @@ func (s *Service) ProcessTransaction(ctx context.Context, tx *Transaction) (*Tra
 		case TransactionTypeTransfer:
 			return s.processTransfer(ctx, dbTx, tx)
 		default:
-			return errors.ValidationError("unsupported transaction type")
+			return &errors.AppError{
+				Type:       errors.ErrorTypeValidation,
+				Code:       errors.CodeInvalidValue,
+				Message:    "unsupported transaction type",
+				StatusCode: 400,
+			}
 		}
 	})
 
@@ -150,19 +155,39 @@ func (s *Service) ProcessTransaction(ctx context.Context, tx *Transaction) (*Tra
 // validateTransaction validates transaction data
 func (s *Service) validateTransaction(tx *Transaction) error {
 	if tx.UserID == uuid.Nil {
-		return errors.ValidationError("user_id is required")
+		return &errors.AppError{
+			Type:       errors.ErrorTypeValidation,
+			Code:       errors.CodeMissingField,
+			Message:    "user_id is required",
+			StatusCode: 400,
+		}
 	}
 
 	if tx.Amount.IsZero() || tx.Amount.IsNegative() {
-		return errors.ValidationError("amount must be positive")
+		return &errors.AppError{
+			Type:       errors.ErrorTypeValidation,
+			Code:       errors.CodeInvalidAmount,
+			Message:    "amount must be positive",
+			StatusCode: 400,
+		}
 	}
 
 	if tx.Currency == "" {
-		return errors.ValidationError("currency is required")
+		return &errors.AppError{
+			Type:       errors.ErrorTypeValidation,
+			Code:       errors.CodeMissingField,
+			Message:    "currency is required",
+			StatusCode: 400,
+		}
 	}
 
 	if tx.IdempotencyKey == "" {
-		return errors.ValidationError("idempotency_key is required")
+		return &errors.AppError{
+			Type:       errors.ErrorTypeValidation,
+			Code:       errors.CodeMissingField,
+			Message:    "idempotency_key is required",
+			StatusCode: 400,
+		}
 	}
 
 	return nil
@@ -221,7 +246,7 @@ func (s *Service) processWithdrawal(ctx context.Context, tx *sql.Tx, transaction
 	}
 
 	if currentBalance.LessThan(transaction.Amount) {
-		return errors.InsufficientFunds("insufficient balance for withdrawal")
+		return errors.ErrInsufficientFunds
 	}
 
 	// Update balance
@@ -279,11 +304,12 @@ func (s *Service) GetTransaction(ctx context.Context, id uuid.UUID) (*Transactio
 		&tx.CreatedAt, &tx.UpdatedAt, &tx.ProcessedAt,
 	)
 
+	if err == sql.ErrNoRows {
+		return nil, errors.ErrNotFound
+	}
+
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, errors.NotFound("transaction")
-		}
-		return nil, err
+		return nil, fmt.Errorf("failed to get transaction: %w", err)
 	}
 
 	return &tx, nil

@@ -23,39 +23,7 @@ const (
 	KYCStatusFailed               KYCStatus = "failed"
 )
 
-// CreateAccountRequest represents Due account creation request
-type CreateAccountRequest struct {
-	Type     AccountType `json:"type"`
-	Name     string      `json:"name"`
-	Email    string      `json:"email"`
-	Country  string      `json:"country"`
-	Category string      `json:"category,omitempty"`
-}
 
-// CreateAccountResponse represents Due account creation response
-type CreateAccountResponse struct {
-	ID     string         `json:"id"`
-	Type   AccountType    `json:"type"`
-	Name   string         `json:"name"`
-	Email  string         `json:"email"`
-	Country string        `json:"country"`
-	Status string         `json:"status"`
-	KYC    KYCInfo        `json:"kyc"`
-	TOS    TOSInfo        `json:"tos"`
-}
-
-// KYCInfo represents KYC information
-type KYCInfo struct {
-	Status KYCStatus `json:"status"`
-	Link   string    `json:"link"`
-}
-
-// TOSInfo represents Terms of Service information
-type TOSInfo struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
-	Link   string `json:"link"`
-}
 
 // LinkWalletRequest represents wallet linking request
 type LinkWalletRequest struct {

@@ -24,6 +24,13 @@ func NewAdapter(client *Client, logger *logger.Logger) *Adapter {
 	}
 }
 
+// CreateAccount creates a Due account
+func (a *Adapter) CreateAccount(ctx context.Context, req *entities.CreateAccountRequest) (*entities.CreateAccountResponse, error) {
+	a.logger.Info("Creating Due account", "email", req.Email, "type", req.Type)
+
+	return a.client.CreateAccount(ctx, req)
+}
+
 // CreateVirtualAccount creates a virtual account via Due API and returns domain entity
 func (a *Adapter) CreateVirtualAccount(ctx context.Context, userID uuid.UUID, alpacaAccountID string) (*entities.VirtualAccount, error) {
 	a.logger.Info("Creating virtual account via Due adapter",

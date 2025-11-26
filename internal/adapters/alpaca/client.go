@@ -38,8 +38,8 @@ const (
 
 // Config represents Alpaca API configuration
 type Config struct {
-	APIKey      string
-	APISecret   string
+	ClientID    string
+	SecretKey   string
 	BaseURL     string // Broker API base URL
 	DataBaseURL string // Market Data API base URL
 	Environment string // sandbox or production
@@ -497,8 +497,8 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	
-	// Alpaca uses Basic Auth with API key as username and secret as password
-	req.SetBasicAuth(c.config.APIKey, c.config.APISecret)
+	// Alpaca Broker API uses HTTP Basic authentication with API key and secret
+	req.SetBasicAuth(c.config.ClientID, c.config.SecretKey)
 
 	c.logger.Debug("Sending Alpaca API request",
 		zap.String("method", method),

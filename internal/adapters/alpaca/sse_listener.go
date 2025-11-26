@@ -71,7 +71,7 @@ func (l *SSEListener) listen(ctx context.Context, endpoint string, handler func(
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
 	req.Header.Set("Connection", "keep-alive")
-	req.SetBasicAuth(l.client.config.APIKey, l.client.config.APISecret)
+	req.SetBasicAuth(l.client.config.ClientID, l.client.config.SecretKey)
 
 	l.logger.Info("Connecting to Alpaca SSE stream", zap.String("endpoint", endpoint))
 

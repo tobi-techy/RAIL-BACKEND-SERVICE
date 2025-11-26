@@ -1,8 +1,10 @@
 package logger
 
 import (
+	"context"
 	"os"
 
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -81,7 +83,60 @@ func (l *Logger) ForRequest(requestID, method, path string) *Logger {
 	})
 }
 
+// WithTraceID adds trace ID from context to the logger
+func (l *Logger) WithTraceID(ctx context.Context) *Logger {
+	span := trace.SpanFromContext(ctx)
+	if !span.SpanContext().IsValid() {
+		return l
+	}
+	
+	return l.WithFields(map[string]interface{}{
+		"trace_id": span.SpanContext().TraceID().String(),
+		"span_id":  span.SpanContext().SpanID().String(),
+	})
+}
+
+// WithContext adds trace correlation from context (if present)
+func (l *Logger) WithContext(ctx context.Context) *Logger {
+	span := trace.SpanFromContext(ctx)
+	if !span.SpanContext().IsValid() {
+		return l
+	}
+	
+	return l.WithFields(map[string]interface{}{
+		"trace_id": span.SpanContext().TraceID().String(),
+		"span_id":  span.SpanContext().SpanID().String(),
+	})
+}
+
+// CtxDebug logs a debug message with trace correlation
+func (l *Logger) CtxDebug(ctx context.Context, msg string, keysAndValues ...interface{}) {
+	l.WithContext(ctx).Debugw(msg, keysAndValues...)
+}
+
+// CtxInfo logs an info message with trace correlation
+func (l *Logger) CtxInfo(ctx context.Context, msg string, keysAndValues ...interface{}) {
+	l.WithContext(ctx).Infow(msg, keysAndValues...)
+}
+
+// CtxWarn logs a warning message with trace correlation
+func (l *Logger) CtxWarn(ctx context.Context, msg string, keysAndValues ...interface{}) {
+	l.WithContext(ctx).Warnw(msg, keysAndValues...)
+}
+
+// CtxError logs an error message with trace correlation
+func (l *Logger) CtxError(ctx context.Context, msg string, keysAndValues ...interface{}) {
+	l.WithContext(ctx).Errorw(msg, keysAndValues...)
+}
+
 // Zap returns the underlying zap.Logger
 func (l *Logger) Zap() *zap.Logger {
 	return l.SugaredLogger.Desugar()
+}
+
+// NewLogger creates a Logger from a zap.Logger
+func NewLogger(zapLog *zap.Logger) *Logger {
+	return &Logger{
+		SugaredLogger: zapLog.Sugar(),
+	}
 }

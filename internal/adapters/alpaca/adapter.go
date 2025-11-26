@@ -21,6 +21,13 @@ func NewAdapter(client *Client, logger *logger.Logger) *Adapter {
 	}
 }
 
+// CreateAccount creates an Alpaca brokerage account
+func (a *Adapter) CreateAccount(ctx context.Context, req *entities.AlpacaCreateAccountRequest) (*entities.AlpacaAccountResponse, error) {
+	a.logger.Info("Creating Alpaca account", "email", req.Contact.EmailAddress)
+
+	return a.client.CreateAccount(ctx, req)
+}
+
 // GetAccount retrieves an Alpaca account by ID
 func (a *Adapter) GetAccount(ctx context.Context, accountID string) (*entities.AlpacaAccountResponse, error) {
 	return a.client.GetAccount(ctx, accountID)

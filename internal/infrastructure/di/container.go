@@ -18,7 +18,11 @@ import (
 	"github.com/stack-service/stack_service/internal/domain/services/investing"
 	"github.com/stack-service/stack_service/internal/domain/services/onboarding"
 	"github.com/stack-service/stack_service/internal/domain/services/passcode"
+	"github.com/stack-service/stack_service/internal/domain/services/session"
+	"github.com/stack-service/stack_service/internal/domain/services/twofa"
+	"github.com/stack-service/stack_service/internal/domain/services/apikey"
 	"github.com/stack-service/stack_service/internal/domain/services/wallet"
+	"github.com/stack-service/stack_service/internal/domain/services/ledger"
 	"github.com/stack-service/stack_service/internal/adapters/alpaca"
 	"github.com/stack-service/stack_service/internal/adapters/due"
 	"github.com/stack-service/stack_service/internal/infrastructure/adapters"
@@ -154,6 +158,7 @@ type Container struct {
 	DepositRepo               *repositories.DepositRepository
 	BalanceRepo               *repositories.BalanceRepository
 	FundingEventJobRepo       *repositories.FundingEventJobRepository
+	LedgerRepo                *repositories.LedgerRepository
 
 	// External Services
 	CircleClient  *circle.Client
@@ -170,6 +175,9 @@ type Container struct {
 	OnboardingJobService *services.OnboardingJobService
 	VerificationService  services.VerificationService
 	PasscodeService      *passcode.Service
+	SessionService       *session.Service
+	TwoFAService         *twofa.Service
+	APIKeyService        *apikey.Service
 	WalletService        *wallet.Service
 	FundingService       *funding.Service
 	InvestingService     *investing.Service
@@ -177,6 +185,7 @@ type Container struct {
 	DueService           *services.DueService
 	BalanceService       *services.BalanceService
 	EntitySecretService  *entitysecret.Service
+	LedgerService        *ledger.Service
 
 	// ZeroG Services
 	InferenceGateway *zerog.InferenceGateway
@@ -214,6 +223,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	depositRepo := repositories.NewDepositRepository(sqlxDB)
 	balanceRepo := repositories.NewBalanceRepository(db, zapLog)
 	fundingEventJobRepo := repositories.NewFundingEventJobRepository(db, log)
+	ledgerRepo := repositories.NewLedgerRepository(sqlxDB)
 	aiSummariesRepo := repositories.NewAISummaryRepository(db, zapLog)
 	onboardingJobRepo := repositories.NewOnboardingJobRepository(db, zapLog)
 
@@ -228,8 +238,8 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 
 	// Initialize Alpaca service
 	alpacaConfig := alpaca.Config{
-		APIKey:      cfg.Alpaca.APIKey,
-		APISecret:   cfg.Alpaca.APISecret,
+		ClientID:    cfg.Alpaca.ClientID,
+		SecretKey:   cfg.Alpaca.SecretKey,
 		BaseURL:     cfg.Alpaca.BaseURL,
 		DataBaseURL: cfg.Alpaca.DataBaseURL,
 		Environment: cfg.Alpaca.Environment,
@@ -340,6 +350,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		DepositRepo:               depositRepo,
 		BalanceRepo:               balanceRepo,
 		FundingEventJobRepo:       fundingEventJobRepo,
+		LedgerRepo:                ledgerRepo,
 		AISummariesRepo:           aiSummariesRepo,
 		OnboardingJobRepo:         onboardingJobRepo,
 
@@ -406,6 +417,18 @@ func (c *Container) initializeDomainServices() error {
 		walletServiceConfig,
 	)
 
+	// Initialize Due client and adapter
+	dueClient := due.NewClient(due.Config{
+		APIKey:    c.Config.Due.APIKey,
+		AccountID: c.Config.Due.AccountID,
+		BaseURL:   c.Config.Due.BaseURL,
+		Timeout:   30 * time.Second,
+	}, c.Logger)
+	dueAdapter := due.NewAdapter(dueClient, c.Logger)
+
+	// Initialize Alpaca adapter
+	alpacaAdapter := alpaca.NewAdapter(c.AlpacaClient, c.Logger)
+
 	// Initialize onboarding service (depends on wallet service)
 	c.OnboardingService = onboarding.NewService(
 		c.UserRepo,
@@ -415,6 +438,8 @@ func (c *Container) initializeDomainServices() error {
 		c.KYCProvider,
 		c.EmailService,
 		c.AuditService,
+		dueAdapter,
+		alpacaAdapter,
 		c.ZapLog,
 		append([]entities.WalletChain(nil), walletServiceConfig.SupportedChains...),
 	)
@@ -429,6 +454,11 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog,
 	)
 
+	// Initialize security services
+	c.SessionService = session.NewService(c.DB, c.ZapLog)
+	c.TwoFAService = twofa.NewService(c.DB, c.ZapLog, c.Config.Security.EncryptionKey)
+	c.APIKeyService = apikey.NewService(c.DB, c.ZapLog)
+
 	// Initialize simple wallet repository for funding service
 	simpleWalletRepo := repositories.NewSimpleWalletRepository(c.DB, c.Logger)
 
@@ -436,20 +466,14 @@ func (c *Container) initializeDomainServices() error {
 	sqlxDB := sqlx.NewDb(c.DB, "postgres")
 	virtualAccountRepo := repositories.NewVirtualAccountRepository(sqlxDB)
 
-	// Initialize Due client and adapter
-	dueClient := due.NewClient(due.Config{
-		APIKey:    c.Config.Due.APIKey,
-		AccountID: c.Config.Due.AccountID,
-		BaseURL:   c.Config.Due.BaseURL,
-		Timeout:   30 * time.Second,
-	}, c.Logger)
-	dueAdapter := due.NewAdapter(dueClient, c.Logger)
-
 	// Initialize Due service with deposit and balance repositories
 	c.DueService = services.NewDueService(dueClient, c.DepositRepo, c.BalanceRepo, c.Logger)
 
 	// Initialize Alpaca funding adapter
 	alpacaFundingAdapter := alpaca.NewFundingAdapter(c.AlpacaClient, c.ZapLog)
+
+	// Initialize ledger service
+	c.LedgerService = ledger.NewService(c.LedgerRepo, sqlxDB, c.Logger)
 
 	// Initialize standalone Balance service with Alpaca adapter
 	alpacaBalanceAdapter := &AlpacaFundingAdapter{adapter: alpacaFundingAdapter, client: c.AlpacaClient}
@@ -528,6 +552,21 @@ func (c *Container) GetPasscodeService() *passcode.Service {
 	return c.PasscodeService
 }
 
+// GetSessionService returns the session service
+func (c *Container) GetSessionService() *session.Service {
+	return c.SessionService
+}
+
+// GetTwoFAService returns the 2FA service
+func (c *Container) GetTwoFAService() *twofa.Service {
+	return c.TwoFAService
+}
+
+// GetAPIKeyService returns the API key service
+func (c *Container) GetAPIKeyService() *apikey.Service {
+	return c.APIKeyService
+}
+
 // GetWalletService returns the wallet service
 func (c *Container) GetWalletService() *wallet.Service {
 	return c.WalletService
@@ -556,6 +595,11 @@ func (c *Container) GetDueService() *services.DueService {
 // GetBalanceService returns the Balance service
 func (c *Container) GetBalanceService() *services.BalanceService {
 	return c.BalanceService
+}
+
+// GetLedgerService returns the Ledger service
+func (c *Container) GetLedgerService() *ledger.Service {
+	return c.LedgerService
 }
 
 // GetInferenceGateway returns the ZeroG inference gateway

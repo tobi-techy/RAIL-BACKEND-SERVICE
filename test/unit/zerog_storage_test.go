@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/stack-service/stack_service/internal/infrastructure/config"
-	"github.com/stack-service/stack_service/internal/zerog/clients"
+	"github.com/stack-service/stack_service/internal/infrastructure/zerog"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap"
 )
@@ -19,7 +19,7 @@ func TestStorageClient_Validation(t *testing.T) {
 		ExpectedReplicas: 3,
 	}
 
-	client, err := clients.NewStorageClient(cfg, logger)
+	client, err := zerog.NewStorageClient(cfg, logger)
 	assert.NoError(t, err)
 	assert.NotNil(t, client)
 

@@ -3,11 +3,10 @@ package middleware
 import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/internal/domain/services"
+	"github.com/stack-service/stack_service/internal/infrastructure/adapters"
 )
 
-func AuditMiddleware(auditService *services.AuditService) gin.HandlerFunc {
+func AuditMiddleware(auditService *adapters.AuditService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Next()
 
@@ -21,14 +20,14 @@ func AuditMiddleware(auditService *services.AuditService) gin.HandlerFunc {
 			return
 		}
 
-		action := entities.AuditAction(c.Request.Method + "_" + c.FullPath())
+		action := c.Request.Method + "_" + c.FullPath()
+		resource := c.FullPath()
 
-		auditService.Log(c.Request.Context(), &entities.AuditLog{
-			UserID:    userID,
-			Action:    action,
-			Resource:  c.FullPath(),
-			IPAddress: c.ClientIP(),
-			UserAgent: c.Request.UserAgent(),
+		// Log using infrastructure audit service
+		auditService.LogSystemEvent(c.Request.Context(), action, resource, map[string]interface{}{
+			"user_id":    userID.String(),
+			"ip_address": c.ClientIP(),
+			"user_agent": c.Request.UserAgent(),
 		})
 	}
 }

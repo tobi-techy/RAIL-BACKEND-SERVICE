@@ -41,3 +41,19 @@ type CreateVirtualAccountResponse struct {
 	VirtualAccount *VirtualAccount `json:"virtual_account"`
 	Message        string          `json:"message"`
 }
+
+// CreateAccountRequest represents a request to create a Due account
+type CreateAccountRequest struct {
+	Email     string `json:"email" validate:"required,email"`
+	FirstName string `json:"firstName" validate:"required"`
+	LastName  string `json:"lastName" validate:"required"`
+	Type      string `json:"type" validate:"required"`
+	Country   string `json:"country" validate:"required,len=2"`
+}
+
+// CreateAccountResponse represents the response from creating a Due account
+type CreateAccountResponse struct {
+	AccountID string `json:"accountId"`
+	Status    string `json:"status"`
+	Message   string `json:"message"`
+}

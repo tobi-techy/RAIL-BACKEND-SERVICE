@@ -1,163 +1,181 @@
 package handlers
 
 import (
-	"context"
-	"database/sql"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/stack-service/stack_service/pkg/health"
+	"go.uber.org/zap"
 )
 
 // HealthHandler handles health check endpoints
 type HealthHandler struct {
-	db     *sql.DB
-	logger *logger.Logger
+	livenessChecker  *health.HealthChecker
+	readinessChecker *health.HealthChecker
+	startupChecker   *health.HealthChecker
+	logger           *zap.Logger
+	version          string
+	startTime        time.Time
 }
 
 // NewHealthHandler creates a new health handler
-func NewHealthHandler(db *sql.DB, logger *logger.Logger) *HealthHandler {
+func NewHealthHandler(
+	livenessChecker *health.HealthChecker,
+	readinessChecker *health.HealthChecker,
+	startupChecker *health.HealthChecker,
+	logger *zap.Logger,
+	version string,
+) *HealthHandler {
 	return &HealthHandler{
-		db:     db,
-		logger: logger,
+		livenessChecker:  livenessChecker,
+		readinessChecker: readinessChecker,
+		startupChecker:   startupChecker,
+		logger:           logger,
+		version:          version,
+		startTime:        time.Now(),
 	}
 }
 
-// HealthCheck represents a health check result
-type HealthCheck struct {
-	Service   string        `json:"service"`
-	Status    string        `json:"status"`
-	Latency   time.Duration `json:"latency"`
-	Error     string        `json:"error,omitempty"`
-	Timestamp time.Time     `json:"timestamp"`
-}
-
-// HealthResponse represents the overall health response
-type HealthResponse struct {
-	Status    string                 `json:"status"`
-	Timestamp time.Time              `json:"timestamp"`
-	Version   string                 `json:"version"`
-	Uptime    time.Duration          `json:"uptime"`
-	Checks    map[string]HealthCheck `json:"checks"`
-}
-
-var startTime = time.Now()
-
-// Health performs comprehensive health checks
-// @Summary Get application health status
-// @Description Performs health checks on all critical services
+// Liveness handles the liveness probe
+// @Summary Liveness check
+// @Description Returns 200 if the service is alive
 // @Tags health
-// @Accept json
 // @Produce json
-// @Success 200 {object} HealthResponse
-// @Failure 503 {object} HealthResponse
-// @Router /health [get]
-func (h *HealthHandler) Health(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
-	defer cancel()
-
-	checks := make(map[string]HealthCheck)
-	overallStatus := "healthy"
-
-	// Database health check
-	dbCheck := h.checkDatabase(ctx)
-	checks["database"] = dbCheck
-	if dbCheck.Status != "healthy" {
-		overallStatus = "unhealthy"
-	}
-
-
-
-	response := HealthResponse{
-		Status:    overallStatus,
+// @Success 200 {object} health.HealthResponse
+// @Failure 503 {object} health.HealthResponse
+// @Router /health/liveness [get]
+func (h *HealthHandler) Liveness(c *gin.Context) {
+	status, checks := h.livenessChecker.Check(c.Request.Context())
+	
+	response := health.HealthResponse{
+		Status:    status,
 		Timestamp: time.Now(),
-		Version:   "1.0.0", // Should come from build info
-		Uptime:    time.Since(startTime),
+		Version:   h.version,
 		Checks:    checks,
 	}
-
-	statusCode := http.StatusOK
-	if overallStatus == "unhealthy" {
-		statusCode = http.StatusServiceUnavailable
-	}
-
-	c.JSON(statusCode, response)
-}
-
-// Ready checks if the application is ready to serve traffic
-// @Summary Get application readiness status
-// @Description Checks if critical services are available for serving requests
-// @Tags health
-// @Accept json
-// @Produce json
-// @Success 200 {object} map[string]interface{}
-// @Failure 503 {object} map[string]interface{}
-// @Router /ready [get]
-func (h *HealthHandler) Ready(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-	defer cancel()
-
-	// Check only critical services for readiness
-	dbCheck := h.checkDatabase(ctx)
 	
-	ready := dbCheck.Status == "healthy"
-	status := "ready"
-	if !ready {
-		status = "not_ready"
-	}
-
-	response := map[string]interface{}{
-		"status":    status,
-		"timestamp": time.Now(),
-		"checks": map[string]interface{}{
-			"database": dbCheck,
-		},
-	}
-
 	statusCode := http.StatusOK
-	if !ready {
+	if status == health.StatusUnhealthy {
 		statusCode = http.StatusServiceUnavailable
 	}
-
+	
+	h.logger.Debug("Liveness check",
+		zap.String("status", string(status)),
+		zap.Int("status_code", statusCode))
+	
 	c.JSON(statusCode, response)
 }
 
-// Live checks if the application is alive
-// @Summary Get application liveness status
-// @Description Simple liveness check for container orchestration
+// Readiness handles the readiness probe
+// @Summary Readiness check
+// @Description Returns 200 if the service is ready to accept traffic
 // @Tags health
-// @Accept json
 // @Produce json
-// @Success 200 {object} map[string]interface{}
-// @Router /live [get]
-func (h *HealthHandler) Live(c *gin.Context) {
-	c.JSON(http.StatusOK, map[string]interface{}{
-		"status":    "alive",
-		"timestamp": time.Now(),
-		"uptime":    time.Since(startTime),
+// @Success 200 {object} health.HealthResponse
+// @Failure 503 {object} health.HealthResponse
+// @Router /health/readiness [get]
+func (h *HealthHandler) Readiness(c *gin.Context) {
+	status, checks := h.readinessChecker.Check(c.Request.Context())
+	
+	response := health.HealthResponse{
+		Status:    status,
+		Timestamp: time.Now(),
+		Version:   h.version,
+		Checks:    checks,
+	}
+	
+	statusCode := http.StatusOK
+	switch status {
+	case health.StatusUnhealthy:
+		statusCode = http.StatusServiceUnavailable
+		h.logger.Warn("Readiness check failed",
+			zap.String("status", string(status)),
+			zap.Any("checks", checks))
+	case health.StatusDegraded:
+		// Still return 200 for degraded, but log it
+		h.logger.Warn("Service degraded",
+			zap.String("status", string(status)),
+			zap.Any("checks", checks))
+	}
+	
+	c.JSON(statusCode, response)
+}
+
+// Startup handles the startup probe
+// @Summary Startup check
+// @Description Returns 200 if the service has completed startup
+// @Tags health
+// @Produce json
+// @Success 200 {object} health.HealthResponse
+// @Failure 503 {object} health.HealthResponse
+// @Router /health/startup [get]
+func (h *HealthHandler) Startup(c *gin.Context) {
+	status, checks := h.startupChecker.Check(c.Request.Context())
+	
+	response := health.HealthResponse{
+		Status:    status,
+		Timestamp: time.Now(),
+		Version:   h.version,
+		Checks:    checks,
+	}
+	
+	statusCode := http.StatusOK
+	if status == health.StatusUnhealthy {
+		statusCode = http.StatusServiceUnavailable
+		h.logger.Warn("Startup check failed",
+			zap.String("status", string(status)),
+			zap.Any("checks", checks))
+	}
+	
+	c.JSON(statusCode, response)
+}
+
+// Health handles the general health endpoint (combines all checks)
+// @Summary General health check
+// @Description Returns overall service health with detailed component status
+// @Tags health
+// @Produce json
+// @Success 200 {object} health.HealthResponse
+// @Failure 503 {object} health.HealthResponse
+// @Router /health [get]
+func (h *HealthHandler) Health(c *gin.Context) {
+	status, checks := h.readinessChecker.Check(c.Request.Context())
+	
+	uptime := time.Since(h.startTime)
+	
+	response := health.HealthResponse{
+		Status:    status,
+		Timestamp: time.Now(),
+		Version:   h.version,
+		Checks:    checks,
+	}
+	
+	// Add global metadata
+	for name, check := range response.Checks {
+		check = check.WithMetadata("uptime_seconds", int(uptime.Seconds()))
+		response.Checks[name] = check
+	}
+	
+	statusCode := http.StatusOK
+	if status == health.StatusUnhealthy {
+		statusCode = http.StatusServiceUnavailable
+	}
+	
+	c.JSON(statusCode, response)
+}
+
+// Ping handles simple ping endpoint (no checks, always returns 200)
+// @Summary Ping
+// @Description Simple ping endpoint that always returns 200 OK
+// @Tags health
+// @Produce json
+// @Success 200 {object} map[string]string
+// @Router /ping [get]
+func (h *HealthHandler) Ping(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "ok",
+		"time":    time.Now().Unix(),
+		"version": h.version,
 	})
 }
-
-// checkDatabase performs database health check
-func (h *HealthHandler) checkDatabase(ctx context.Context) HealthCheck {
-	start := time.Now()
-	check := HealthCheck{
-		Service:   "database",
-		Timestamp: start,
-	}
-
-	err := h.db.PingContext(ctx)
-	check.Latency = time.Since(start)
-
-	if err != nil {
-		check.Status = "unhealthy"
-		check.Error = err.Error()
-	} else {
-		check.Status = "healthy"
-	}
-
-	return check
-}
-
-
