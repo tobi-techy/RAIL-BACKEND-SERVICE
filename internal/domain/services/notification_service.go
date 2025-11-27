@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stack-service/stack_service/internal/domain/entities"
 	"go.uber.org/zap"
 )
@@ -93,5 +94,13 @@ func (s *NotificationService) NotifyOffRampFailure(ctx context.Context, userID u
 	s.logger.Warn("Sending off-ramp failure notification",
 		zap.String("user_id", userID.String()),
 		zap.String("reason", reason))
+	return nil
+}
+
+func (s *NotificationService) NotifyTransactionDeclined(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, transactionType string) error {
+	s.logger.Info("Sending transaction declined notification",
+		zap.String("user_id", userID.String()),
+		zap.String("amount", amount.String()),
+		zap.String("type", transactionType))
 	return nil
 }

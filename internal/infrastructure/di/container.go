@@ -139,6 +139,7 @@ type Container struct {
 	ReconciliationService   *reconciliation.Service
 	ReconciliationScheduler *reconciliation.Scheduler
 	AllocationService       *allocation.Service
+	NotificationService     *services.NotificationService
 
 	// Additional Repositories
 	OnboardingJobRepo *repositories.OnboardingJobRepository
@@ -445,6 +446,9 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog,
 	)
 
+	// Initialize notification service
+	c.NotificationService = services.NewNotificationService(c.ZapLog)
+
 	c.InvestingService = investing.NewService(
 		basketRepo,
 		orderRepo,
@@ -454,11 +458,9 @@ func (c *Container) initializeDomainServices() error {
 		c.WalletRepo,
 		c.CircleClient,
 		c.AllocationService,
+		c.NotificationService,
 		c.Logger,
 	)
-
-	// Initialize notification service (AI-CFO removed; currently used for other flows only)
-	_ = services.NewNotificationService(c.ZapLog)
 
 	// Initialize reconciliation service
 	if err := c.initializeReconciliationService(); err != nil {
