@@ -1239,17 +1239,6 @@ definitions:
     required:
     - job_id
     type: object
-  internal_api_handlers.ZeroGHealthResponse:
-    properties:
-      checked_at:
-        type: string
-      overall:
-        type: string
-      services:
-        additionalProperties:
-          $ref: '#/definitions/internal_api_handlers.ServiceHealth'
-        type: object
-    type: object
   time.Duration:
     enum:
     - -9223372036854775808
@@ -1285,95 +1274,6 @@ info:
   title: Stack Service API
   version: "1.0"
 paths:
-  /_internal/0g/generate:
-    post:
-      consumes:
-      - application/json
-      description: Performs AI inference for weekly summaries or on-demand analysis
-      parameters:
-      - description: Generation request
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/internal_api_handlers.GenerateRequest'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/internal_api_handlers.GenerateResponse'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/internal_api_handlers.ErrorResponse'
-        "500":
-          description: Internal Server Error
-          schema:
-            $ref: '#/definitions/internal_api_handlers.ErrorResponse'
-      summary: Generate AI analysis
-      tags:
-      - internal
-  /_internal/0g/health:
-    post:
-      consumes:
-      - application/json
-      description: Performs health checks on 0G storage and inference services
-      parameters:
-      - description: Health check request
-        in: body
-        name: request
-        schema:
-          $ref: '#/definitions/internal_api_handlers.HealthRequest'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/internal_api_handlers.ZeroGHealthResponse'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/internal_api_handlers.ErrorResponse'
-        "500":
-          description: Internal Server Error
-          schema:
-            $ref: '#/definitions/internal_api_handlers.ErrorResponse'
-      summary: Health check for 0G services
-      tags:
-      - internal
-  /_internal/0g/store:
-    post:
-      consumes:
-      - application/json
-      description: Stores data in 0G storage with specified namespace and metadata
-      parameters:
-      - description: Storage request
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/internal_api_handlers.StoreRequest'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/internal_api_handlers.StoreResponse'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/internal_api_handlers.ErrorResponse'
-        "500":
-          description: Internal Server Error
-          schema:
-            $ref: '#/definitions/internal_api_handlers.ErrorResponse'
-      summary: Store data in 0G storage
-      tags:
-      - internal
   /ai/analyze:
     post:
       consumes:

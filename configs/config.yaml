@@ -97,39 +97,6 @@ verification:
   max_attempts: 3
   rate_limit_per_hour: 3
 
-zerog:
-  timeout: 30
-  max_retries: 3
-  retry_backoff_ms: 1000
-  enable_metrics: true
-  enable_tracing: true
-  storage:
-    rpc_endpoint: "https://evmrpc-testnet.0g.ai/"
-    indexer_rpc: "https://indexer-storage-testnet-turbo.0g.ai"
-    private_key: ""
-    min_replicas: 1
-    expected_replicas: 3
-    namespaces:
-      ai_summaries: "ai-summaries/"
-      ai_artifacts: "ai-artifacts/"
-      model_prompts: "model-prompts/"
-  compute:
-    broker_endpoint: ""
-    private_key: ""
-    provider_id: ""
-    model_config:
-      default_model: "gpt-4"
-      max_tokens: 4096
-      temperature: 0.7
-      top_p: 0.9
-      frequency_penalty: 0.0
-      presence_penalty: 0.0
-    funding:
-      auto_topup: false
-      min_balance: 10.0
-      topup_amount: 50.0
-      max_account_limit: 1000.0
-
 alpaca:
   client_id: "CAQ5K26YD7DGSJBUCLOT3L373B"
   secret_key: "Avw9W3Xf35fr4gNLGg8umUi5mvgivFdSccCFq1fWSvHr"

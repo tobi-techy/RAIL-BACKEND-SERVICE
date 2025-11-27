@@ -58,6 +58,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 	// Initialize handlers with services from DI container
 	coreHandlers := handlers.NewCoreHandlers(container.DB, container.Logger)
+	allocationHandlers := handlers.NewAllocationHandlers(
+		container.GetAllocationService(),
+		container.Logger,
+	)
 
 	// Health checks (no auth required)
 	router.GET("/health", coreHandlers.Health)
@@ -96,17 +100,13 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.ZapLog,
 	)
 
-	// Initialize integration handlers (includes AI-CFO, ZeroG, Alpaca, Due)
-	integrationHandlers := handlers.NewIntegrationHandlers(
-		container.AlpacaClient,
-		container.GetDueService(),
-		services.NewNotificationService(container.ZapLog),
-		container.GetStorageClient(),
-		container.GetInferenceGateway(),
-		container.GetNamespaceManager(),
-		container.GetAICfoService(),
-		container.Logger,
-	)
+// Initialize integration handlers (Alpaca, Due)
+integrationHandlers := handlers.NewIntegrationHandlers(
+	container.AlpacaClient,
+	container.GetDueService(),
+	services.NewNotificationService(container.ZapLog),
+	container.Logger,
+)
 
 	// Create session validator adapter
 	sessionValidator := NewSessionValidatorAdapter(container.GetSessionService())
@@ -226,6 +226,16 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				assets.GET("/", integrationHandlers.GetAssets)
 				assets.GET("/:symbol_or_id", integrationHandlers.GetAsset)
 			}
+
+			// Allocation routes - 70/30 Smart Allocation Mode
+			allocation := protected.Group("/user/:id/allocation")
+			{
+				allocation.POST("/enable", allocationHandlers.EnableAllocationMode)
+				allocation.POST("/pause", allocationHandlers.PauseAllocationMode)
+				allocation.POST("/resume", allocationHandlers.ResumeAllocationMode)
+				allocation.GET("/status", allocationHandlers.GetAllocationStatus)
+				allocation.GET("/balances", allocationHandlers.GetAllocationBalances)
+			}
 		}
 
 		// Admin bootstrap route (enforces super admin token after initial creation)
@@ -258,8 +268,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		}
 	}
 
-	// Setup ZeroG and AI routes
-	SetupZeroGRoutes(router, integrationHandlers, container.ZapLog)
+	// ZeroG and dedicated AI-CFO HTTP routes have been removed.
 
 	return router
 }

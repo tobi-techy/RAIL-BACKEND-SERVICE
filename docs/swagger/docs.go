@@ -24,9 +24,6 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
-        "/_internal/0g/generate": {
-            "post": {
-                "description": "Performs AI inference for weekly summaries or on-demand analysis",
                 "consumes": [
                     "application/json"
                 ],
@@ -70,7 +67,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/_internal/0g/health": {
+        "/ai/analyze": {
             "post": {
                 "description": "Performs health checks on 0G storage and inference services",
                 "consumes": [

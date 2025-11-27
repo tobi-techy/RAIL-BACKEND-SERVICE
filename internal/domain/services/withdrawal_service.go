@@ -6,21 +6,36 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stack-service/stack_service/internal/domain/entities"
 	"github.com/stack-service/stack_service/pkg/circuitbreaker"
 	"github.com/stack-service/stack_service/pkg/logger"
 	"github.com/stack-service/stack_service/pkg/queue"
 )
 
+// AllocationService interface for spending enforcement
+type AllocationService interface {
+	CanSpend(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (bool, error)
+	GetMode(ctx context.Context, userID uuid.UUID) (*entities.SmartAllocationMode, error)
+	LogDeclinedSpending(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, reason string) error
+}
+
+// AllocationNotificationManager interface for sending allocation notifications
+type AllocationNotificationManager interface {
+	NotifyTransactionDeclined(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, transactionType string) error
+}
+
 // WithdrawalService handles USD to USDC withdrawal operations
 type WithdrawalService struct {
-	withdrawalRepo  WithdrawalRepository
-	alpacaAPI       AlpacaAdapter
-	dueAPI          DueWithdrawalAdapter
-	logger          *logger.Logger
-	alpacaBreaker   *circuitbreaker.CircuitBreaker
-	dueBreaker      *circuitbreaker.CircuitBreaker
-	queuePublisher  queue.Publisher
+	withdrawalRepo        WithdrawalRepository
+	alpacaAPI             AlpacaAdapter
+	dueAPI                DueWithdrawalAdapter
+	allocationService     AllocationService
+	allocationNotifier    AllocationNotificationManager
+	logger                *logger.Logger
+	alpacaBreaker         *circuitbreaker.CircuitBreaker
+	dueBreaker            *circuitbreaker.CircuitBreaker
+	queuePublisher        queue.Publisher
 }
 
 // WithdrawalRepository interface for withdrawal persistence
@@ -69,6 +84,8 @@ func NewWithdrawalService(
 	withdrawalRepo WithdrawalRepository,
 	alpacaAPI AlpacaAdapter,
 	dueAPI DueWithdrawalAdapter,
+	allocationService AllocationService,
+	allocationNotifier AllocationNotificationManager,
 	logger *logger.Logger,
 	queuePublisher queue.Publisher,
 ) *WithdrawalService {
@@ -83,13 +100,15 @@ func NewWithdrawalService(
 		queuePublisher = queue.NewMockPublisher()
 	}
 	return &WithdrawalService{
-		withdrawalRepo:  withdrawalRepo,
-		alpacaAPI:       alpacaAPI,
-		dueAPI:          dueAPI,
-		logger:          logger,
-		alpacaBreaker:   circuitbreaker.New(cfg),
-		dueBreaker:      circuitbreaker.New(cfg),
-		queuePublisher:  queuePublisher,
+		withdrawalRepo:     withdrawalRepo,
+		alpacaAPI:          alpacaAPI,
+		dueAPI:             dueAPI,
+		allocationService:  allocationService,
+		allocationNotifier: allocationNotifier,
+		logger:             logger,
+		alpacaBreaker:      circuitbreaker.New(cfg),
+		dueBreaker:         circuitbreaker.New(cfg),
+		queuePublisher:     queuePublisher,
 	}
 }
 
@@ -101,7 +120,32 @@ func (s *WithdrawalService) InitiateWithdrawal(ctx context.Context, req *entitie
 		"chain", req.DestinationChain,
 		"address", req.DestinationAddress)
 
-	// Step 1: Validate Alpaca account and buying power
+	// Step 1: Check 70/30 allocation mode spending limit
+	if s.allocationService != nil {
+		canSpend, err := s.allocationService.CanSpend(ctx, req.UserID, req.Amount)
+		if err != nil {
+			s.logger.Error("Failed to check spending limit", "error", err, "user_id", req.UserID.String())
+			return nil, fmt.Errorf("failed to check spending limit: %w", err)
+		}
+
+		if !canSpend {
+			s.logger.Warn("Withdrawal declined - spending limit reached",
+				"user_id", req.UserID.String(),
+				"amount", req.Amount.String())
+			
+			// Log declined spending event
+			_ = s.allocationService.LogDeclinedSpending(ctx, req.UserID, req.Amount, "withdrawal")
+			
+			// Send notification to user
+			if s.allocationNotifier != nil {
+				_ = s.allocationNotifier.NotifyTransactionDeclined(ctx, req.UserID, req.Amount, "withdrawal")
+			}
+			
+			return nil, entities.ErrSpendingLimitReached
+		}
+	}
+
+	// Step 2: Validate Alpaca account and buying power
 	var alpacaAccount *entities.AlpacaAccountResponse
 	var getAccountErr error
 	err := s.alpacaBreaker.Execute(ctx, func() error {
@@ -121,7 +165,7 @@ func (s *WithdrawalService) InitiateWithdrawal(ctx context.Context, req *entitie
 			alpacaAccount.BuyingPower.String(), req.Amount.String())
 	}
 
-	// Step 2: Create withdrawal record
+	// Step 3: Create withdrawal record
 	withdrawal := &entities.Withdrawal{
 		ID:                 uuid.New(),
 		UserID:             req.UserID,
@@ -139,7 +183,7 @@ func (s *WithdrawalService) InitiateWithdrawal(ctx context.Context, req *entitie
 		return nil, fmt.Errorf("failed to create withdrawal record: %w", err)
 	}
 
-	// Step 3: Enqueue withdrawal processing to SQS
+	// Step 4: Enqueue withdrawal processing to SQS
 	msg := queue.WithdrawalMessage{
 		WithdrawalID: withdrawal.ID.String(),
 		Step:         "debit_alpaca",

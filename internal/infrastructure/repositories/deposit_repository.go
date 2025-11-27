@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/shopspring/decimal"
 	"github.com/stack-service/stack_service/internal/domain/entities"
 )
 
@@ -215,4 +216,21 @@ func (r *DepositRepository) UpdateStatus(ctx context.Context, id uuid.UUID, stat
 	}
 
 	return nil
+}
+
+// GetTotalCompletedDeposits returns the sum of all completed deposits
+func (r *DepositRepository) GetTotalCompletedDeposits(ctx context.Context) (decimal.Decimal, error) {
+	query := `
+		SELECT COALESCE(SUM(amount), 0)
+		FROM deposits
+		WHERE status = 'broker_funded'
+	`
+
+	var total decimal.Decimal
+	err := r.db.GetContext(ctx, &total, query)
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("failed to get total completed deposits: %w", err)
+	}
+
+	return total, nil
 }

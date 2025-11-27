@@ -13,13 +13,17 @@ type AccountType string
 
 const (
 	// User account types
-	AccountTypeUSDCBalance       AccountType = "usdc_balance"       // User's available USDC
+	AccountTypeUSDCBalance       AccountType = "usdc_balance"       // User's available USDC (legacy, pre-allocation mode)
 	AccountTypeFiatExposure      AccountType = "fiat_exposure"      // User's buying power at Alpaca (USD)
 	AccountTypePendingInvestment AccountType = "pending_investment" // User's reserved funds for in-flight trades
 
+	// Smart Allocation Mode account types
+	AccountTypeSpendingBalance AccountType = "spending_balance" // User's 70% spending balance (available for payments)
+	AccountTypeStashBalance    AccountType = "stash_balance"    // User's 30% stash balance (locked savings)
+
 	// System account types
-	AccountTypeSystemBufferUSDC AccountType = "system_buffer_usdc" // System on-chain USDC reserve
-	AccountTypeSystemBufferFiat AccountType = "system_buffer_fiat" // System operational USD buffer
+	AccountTypeSystemBufferUSDC  AccountType = "system_buffer_usdc" // System on-chain USDC reserve
+	AccountTypeSystemBufferFiat  AccountType = "system_buffer_fiat" // System operational USD buffer
 	AccountTypeBrokerOperational AccountType = "broker_operational" // Pre-funded cash at Alpaca
 )
 
@@ -27,7 +31,9 @@ const (
 func (a AccountType) IsUserAccountType() bool {
 	return a == AccountTypeUSDCBalance ||
 		a == AccountTypeFiatExposure ||
-		a == AccountTypePendingInvestment
+		a == AccountTypePendingInvestment ||
+		a == AccountTypeSpendingBalance ||
+		a == AccountTypeStashBalance
 }
 
 // IsSystemAccountType returns true if the account type is system-level
@@ -51,6 +57,7 @@ func (a AccountType) IsValid() bool {
 func (a AccountType) Validate() error {
 	switch a {
 	case AccountTypeUSDCBalance, AccountTypeFiatExposure, AccountTypePendingInvestment,
+		AccountTypeSpendingBalance, AccountTypeStashBalance,
 		AccountTypeSystemBufferUSDC, AccountTypeSystemBufferFiat, AccountTypeBrokerOperational:
 		return nil
 	default:
@@ -282,6 +289,10 @@ type UserBalances struct {
 	UpdatedAt          time.Time       `json:"updated_at"`
 }
 
+func (b *UserBalances) TotalValue() decimal.Decimal {
+	return b.CalculateTotalUSD()
+}
+
 // CalculateTotalUSD calculates total balance in USD equivalent
 // Assumes 1 USDC = 1 USD for simplicity
 func (b *UserBalances) CalculateTotalUSD() decimal.Decimal {
@@ -290,10 +301,10 @@ func (b *UserBalances) CalculateTotalUSD() decimal.Decimal {
 
 // SystemBuffers represents the operational buffer balances
 type SystemBuffers struct {
-	BufferUSDC         decimal.Decimal `json:"buffer_usdc"`
-	BufferFiat         decimal.Decimal `json:"buffer_fiat"`
-	BrokerOperational  decimal.Decimal `json:"broker_operational"`
-	UpdatedAt          time.Time       `json:"updated_at"`
+	BufferUSDC        decimal.Decimal `json:"buffer_usdc"`
+	BufferFiat        decimal.Decimal `json:"buffer_fiat"`
+	BrokerOperational decimal.Decimal `json:"broker_operational"`
+	UpdatedAt         time.Time       `json:"updated_at"`
 }
 
 // CreateTransactionRequest represents a request to create a ledger transaction

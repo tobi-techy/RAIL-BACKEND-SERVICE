@@ -822,3 +822,33 @@ func (r *UserRepository) ClearPasscode(ctx context.Context, userID uuid.UUID) er
 
 	return nil
 }
+
+// CreatePasswordResetToken stores a hashed password reset token
+func (r *UserRepository) CreatePasswordResetToken(ctx context.Context, userID uuid.UUID, tokenHash string, expiresAt time.Time) error {
+	query := `INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)`
+	_, err := r.db.ExecContext(ctx, query, userID, tokenHash, expiresAt)
+	if err != nil {
+		r.logger.Error("Failed to create password reset token", zap.Error(err), zap.String("user_id", userID.String()))
+		return fmt.Errorf("failed to create password reset token: %w", err)
+	}
+	return nil
+}
+
+// ValidatePasswordResetToken validates and marks token as used
+func (r *UserRepository) ValidatePasswordResetToken(ctx context.Context, tokenHash string) (uuid.UUID, error) {
+	var userID uuid.UUID
+	query := `
+		UPDATE password_reset_tokens 
+		SET used_at = NOW() 
+		WHERE token_hash = $1 AND expires_at > NOW() AND used_at IS NULL
+		RETURNING user_id`
+	err := r.db.QueryRowContext(ctx, query, tokenHash).Scan(&userID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return uuid.Nil, fmt.Errorf("invalid or expired token")
+		}
+		r.logger.Error("Failed to validate password reset token", zap.Error(err))
+		return uuid.Nil, fmt.Errorf("failed to validate token: %w", err)
+	}
+	return userID, nil
+}

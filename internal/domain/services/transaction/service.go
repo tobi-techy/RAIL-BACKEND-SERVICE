@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+	"github.com/stack-service/stack_service/internal/domain/entities"
 	"github.com/stack-service/stack_service/internal/infrastructure/database"
 	"github.com/stack-service/stack_service/pkg/errors"
 	"github.com/stack-service/stack_service/pkg/metrics"
@@ -53,20 +54,36 @@ type Transaction struct {
 	ProcessedAt   *time.Time        `json:"processed_at,omitempty"`
 }
 
+// AllocationService interface for spending enforcement
+type AllocationService interface {
+	CanSpend(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (bool, error)
+	GetMode(ctx context.Context, userID uuid.UUID) (*entities.SmartAllocationMode, error)
+	LogDeclinedSpending(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, reason string) error
+}
+
+// AllocationNotificationManager interface for sending allocation notifications
+type AllocationNotificationManager interface {
+	NotifyTransactionDeclined(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, transactionType string) error
+}
+
 // Service handles transaction processing with idempotency and integrity
 type Service struct {
-	db        *sql.DB
-	logger    *zap.Logger
-	processed map[string]*Transaction // In-memory cache for idempotency
-	mu        sync.RWMutex
+	db                 *sql.DB
+	allocationService  AllocationService
+	allocationNotifier AllocationNotificationManager
+	logger             *zap.Logger
+	processed          map[string]*Transaction // In-memory cache for idempotency
+	mu                 sync.RWMutex
 }
 
 // NewService creates a new transaction service
-func NewService(db *sql.DB, logger *zap.Logger) *Service {
+func NewService(db *sql.DB, allocationService AllocationService, allocationNotifier AllocationNotificationManager, logger *zap.Logger) *Service {
 	return &Service{
-		db:        db,
-		logger:    logger,
-		processed: make(map[string]*Transaction),
+		db:                 db,
+		allocationService:  allocationService,
+		allocationNotifier: allocationNotifier,
+		logger:             logger,
+		processed:          make(map[string]*Transaction),
 	}
 }
 
@@ -237,6 +254,33 @@ func (s *Service) processDeposit(ctx context.Context, tx *sql.Tx, transaction *T
 
 // processWithdrawal handles withdrawal transactions
 func (s *Service) processWithdrawal(ctx context.Context, tx *sql.Tx, transaction *Transaction) error {
+	// Check 70/30 allocation mode spending limit
+	if s.allocationService != nil {
+		canSpend, err := s.allocationService.CanSpend(ctx, transaction.UserID, transaction.Amount)
+		if err != nil {
+			s.logger.Error("Failed to check spending limit", 
+				zap.String("user_id", transaction.UserID.String()),
+				zap.Error(err))
+			return fmt.Errorf("failed to check spending limit: %w", err)
+		}
+
+		if !canSpend {
+			s.logger.Warn("Withdrawal declined - spending limit reached",
+				zap.String("user_id", transaction.UserID.String()),
+				zap.String("amount", transaction.Amount.String()))
+			
+			// Log declined spending event
+			_ = s.allocationService.LogDeclinedSpending(ctx, transaction.UserID, transaction.Amount, "withdrawal")
+			
+			// Send notification to user
+			if s.allocationNotifier != nil {
+				_ = s.allocationNotifier.NotifyTransactionDeclined(ctx, transaction.UserID, transaction.Amount, "withdrawal")
+			}
+			
+			return entities.ErrSpendingLimitReached
+		}
+	}
+
 	// Check sufficient balance
 	var currentBalance decimal.Decimal
 	query := `SELECT COALESCE(amount, 0) FROM balances WHERE user_id = $1 AND currency = $2`
@@ -264,6 +308,33 @@ func (s *Service) processWithdrawal(ctx context.Context, tx *sql.Tx, transaction
 
 // processInvestment handles investment transactions
 func (s *Service) processInvestment(ctx context.Context, tx *sql.Tx, transaction *Transaction) error {
+	// Check 70/30 allocation mode spending limit (same as withdrawal)
+	if s.allocationService != nil {
+		canSpend, err := s.allocationService.CanSpend(ctx, transaction.UserID, transaction.Amount)
+		if err != nil {
+			s.logger.Error("Failed to check spending limit", 
+				zap.String("user_id", transaction.UserID.String()),
+				zap.Error(err))
+			return fmt.Errorf("failed to check spending limit: %w", err)
+		}
+
+		if !canSpend {
+			s.logger.Warn("Investment declined - spending limit reached",
+				zap.String("user_id", transaction.UserID.String()),
+				zap.String("amount", transaction.Amount.String()))
+			
+			// Log declined spending event
+			_ = s.allocationService.LogDeclinedSpending(ctx, transaction.UserID, transaction.Amount, "investment")
+			
+			// Send notification to user
+			if s.allocationNotifier != nil {
+				_ = s.allocationNotifier.NotifyTransactionDeclined(ctx, transaction.UserID, transaction.Amount, "investment")
+			}
+			
+			return entities.ErrSpendingLimitReached
+		}
+	}
+
 	// Similar to withdrawal - deduct from cash balance
 	return s.processWithdrawal(ctx, tx, transaction)
 }

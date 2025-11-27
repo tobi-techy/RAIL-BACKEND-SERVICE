@@ -17,6 +17,7 @@ const (
 	NotificationTypeKYC         NotificationType = "kyc"
 	NotificationTypeSecurity    NotificationType = "security"
 	NotificationTypePortfolio   NotificationType = "portfolio"
+	NotificationTypeAllocation  NotificationType = "allocation"
 
 	ChannelEmail    NotificationChannel = "email"
 	ChannelPush     NotificationChannel = "push"

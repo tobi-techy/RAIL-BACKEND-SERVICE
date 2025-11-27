@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/shopspring/decimal"
 	"github.com/stack-service/stack_service/internal/domain/entities"
 )
 
@@ -187,4 +188,25 @@ func (r *WithdrawalRepository) MarkFailed(ctx context.Context, id uuid.UUID, err
 	}
 
 	return nil
+}
+
+// GetTotalCompletedWithdrawals returns the total amount of all completed withdrawals
+// Used by reconciliation service to verify withdrawal totals
+func (r *WithdrawalRepository) GetTotalCompletedWithdrawals(ctx context.Context) (decimal.Decimal, error) {
+	query := `
+		SELECT COALESCE(SUM(amount), 0) as total
+		FROM withdrawals
+		WHERE status = $1
+	`
+	
+	var total decimal.Decimal
+	err := r.db.QueryRowContext(ctx, query, entities.WithdrawalStatusCompleted).Scan(&total)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return decimal.Zero, nil
+		}
+		return decimal.Zero, fmt.Errorf("failed to get total completed withdrawals: %w", err)
+	}
+	
+	return total, nil
 }

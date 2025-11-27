@@ -59,7 +59,7 @@ To empower the next generation of investors with a platform that combines the ac
 ### 5. AI CFO (MVP Version)
 - Provides automated weekly performance summaries
 - On-demand portfolio analysis to highlight diversification, risk, and potential mistakes
-- Uses 0G for inference and storage capabilities
+- (Previous 0G-based implementation has been removed; endpoints remain but return NOT_IMPLEMENTED)
 
 ### 6. Brokerage Integration
 - Secure backend integration for trade execution and custody of traditional assets
@@ -85,14 +85,11 @@ stack_service/
 │   │   ├── circle/        # Circle API integration
 │   │   ├── config/        # Configuration management
 │   │   ├── database/      # Database connections
-│   │   ├── di/            # Dependency injection
-│   │   ├── repositories/  # Repository implementations
-│   │   └── zerog/        # 0G integration
-│   ├── workers/           # Background workers
-│   │   ├── aicfo_scheduler/ # AI CFO scheduler
-│   │   ├── funding_webhook/ # Funding webhook processor
-│   │   └── wallet_provisioning/ # Wallet provisioning worker
-│   └── zerog/             # 0G integration components
+│   │   │   ├── di/            # Dependency injection
+│   │   │   ├── repositories/  # Repository implementations
+│   │   ├── workers/           # Background workers
+│   │   │   ├── funding_webhook/ # Funding webhook processor
+│   │   │   └── wallet_provisioning/ # Wallet provisioning worker
 ├── pkg/                   # Public libraries
 │   ├── auth/              # Authentication utilities
 │   ├── crypto/            # Cryptographic functions
@@ -128,7 +125,7 @@ stack_service/
 - **Documentation**: Swagger/OpenAPI
 - **Testing**: Go testing, Testify
 - **Monitoring**: Prometheus, Grafana
-- **AI/Storage**: 0G Integration for AI inference and secure object storage
+- **AI/Storage**: (integration currently disabled; 0G support removed)
 - **Wallet Infrastructure**: Circle for stablecoins and wallet infrastructure
 
 ## 📊 Success Metrics
@@ -382,17 +379,6 @@ blockchain:
     solana:
       rpc: "https://api.mainnet-beta.solana.com"
 
-# 0G Integration
-zerog:
-  storage:
-    endpoint: "https://storage.0g.ai"
-    access_key: "${ZEROG_STORAGE_ACCESS_KEY}"
-    secret_key: "${ZEROG_STORAGE_SECRET_KEY}"
-    bucket: "stack-platform"
-  compute:
-    endpoint: "https://compute.0g.ai"
-    api_key: "${ZEROG_COMPUTE_API_KEY}"
-    model: "gpt-4"
 
 # Circle Integration
 circle:

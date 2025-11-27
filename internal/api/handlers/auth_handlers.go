@@ -491,6 +491,21 @@ func (h *AuthHandlers) ResendCode(c *gin.Context) {
 		identifier = *req.Email
 		identifierType = "email"
 		userProfile, err = h.userRepo.GetByEmail(ctx, identifier)
+		if err != nil {
+			h.logger.Error("Failed to get user by email", zap.Error(err), zap.String("identifier", identifier), zap.String("identifierType", identifierType))
+			if isUserNotFoundError(err) {
+				c.JSON(http.StatusNotFound, entities.ErrorResponse{
+					Code:    "USER_NOT_FOUND",
+					Message: "User not found",
+				})
+			} else {
+				c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+					Code:    "INTERNAL_ERROR",
+					Message: "Internal server error",
+				})
+			}
+			return
+		}
 	} else {
 		identifier = *req.Phone
 		identifierType = "phone"
@@ -725,11 +740,17 @@ func (h *AuthHandlers) ForgotPassword(c *gin.Context) {
 	ctx := c.Request.Context()
 	user, err := h.userRepo.GetByEmail(ctx, req.Email)
 	if err != nil {
-		// Do not reveal whether user exists
 		c.JSON(http.StatusOK, gin.H{"message": "If an account exists, password reset instructions will be sent"})
 		return
 	}
 	token, _ := crypto.GenerateSecureToken()
+	tokenHash, _ := crypto.HashPassword(token)
+	expiresAt := time.Now().Add(1 * time.Hour)
+	if err := h.userRepo.CreatePasswordResetToken(ctx, user.ID, tokenHash, expiresAt); err != nil {
+		h.logger.Error("Failed to store password reset token", zap.Error(err))
+		c.JSON(http.StatusOK, gin.H{"message": "If an account exists, password reset instructions will be sent"})
+		return
+	}
 	if h.emailService != nil {
 		if err := h.emailService.SendVerificationEmail(ctx, user.Email, token); err != nil {
 			h.logger.Error("Failed to send password reset email", zap.Error(err))
@@ -745,14 +766,17 @@ func (h *AuthHandlers) ResetPassword(c *gin.Context) {
 		respondBadRequest(c, "Invalid request payload", nil)
 		return
 	}
-	userIDStr := c.Query("user_id")
-	if userIDStr == "" {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "MISSING_USER_ID", Message: "user_id query param required in this test implementation"})
+	ctx := c.Request.Context()
+	tokenHash, err := crypto.HashPassword(req.Token)
+	if err != nil {
+		h.logger.Error("Failed to hash token", zap.Error(err))
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_TOKEN", Message: "Invalid reset token"})
 		return
 	}
-	userID, err := uuid.Parse(userIDStr)
+	userID, err := h.userRepo.ValidatePasswordResetToken(ctx, tokenHash)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_USER_ID", Message: "Invalid user_id"})
+		h.logger.Warn("Invalid password reset token", zap.Error(err))
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_TOKEN", Message: "Invalid or expired reset token"})
 		return
 	}
 	newHash, err := crypto.HashPassword(req.Password)
@@ -761,7 +785,7 @@ func (h *AuthHandlers) ResetPassword(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "HASH_FAILED", Message: "Failed to hash password"})
 		return
 	}
-	if err := h.userRepo.UpdatePassword(c.Request.Context(), userID, newHash); err != nil {
+	if err := h.userRepo.UpdatePassword(ctx, userID, newHash); err != nil {
 		h.logger.Error("Failed to update password", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "UPDATE_FAILED", Message: "Failed to update password"})
 		return

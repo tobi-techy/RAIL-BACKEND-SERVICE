@@ -86,7 +86,7 @@ CREATE INDEX idx_conversion_providers_status ON conversion_providers(status);
 
 CREATE TABLE buffer_thresholds (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    account_type account_type NOT NULL UNIQUE,  -- References ledger account_type enum
+    account_type VARCHAR(50) NOT NULL UNIQUE,  -- References ledger account_type
     
     -- Threshold configuration (in USD equivalent)
     min_threshold NUMERIC(20, 6) NOT NULL,      -- Alert and trigger conversion if below

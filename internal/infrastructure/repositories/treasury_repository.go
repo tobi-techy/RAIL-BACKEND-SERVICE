@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
@@ -313,38 +314,7 @@ func (r *TreasuryRepository) ListAllBufferStatuses(ctx context.Context) ([]*enti
 // CONVERSION JOB OPERATIONS
 // ============================================================================
 
-// CreateConversionJob creates a new conversion job
-func (r *TreasuryRepository) CreateConversionJob(ctx context.Context, job *entities.ConversionJob) error {
-	query := `
-		INSERT INTO conversion_jobs (
-			id, direction, amount, status, trigger_reason,
-			provider_id, provider_name, provider_tx_id, provider_response,
-			ledger_transaction_id, source_account_id, destination_account_id,
-			source_amount, destination_amount, exchange_rate, fees_paid,
-			scheduled_at, submitted_at, provider_completed_at, completed_at, failed_at,
-			error_message, error_code, retry_count, max_retries,
-			idempotency_key, notes, created_at, updated_at
-		) VALUES (
-			:id, :direction, :amount, :status, :trigger_reason,
-			:provider_id, :provider_name, :provider_tx_id, :provider_response,
-			:ledger_transaction_id, :source_account_id, :destination_account_id,
-			:source_amount, :destination_amount, :exchange_rate, :fees_paid,
-			:scheduled_at, :submitted_at, :provider_completed_at, :completed_at, :failed_at,
-			:error_message, :error_code, :retry_count, :max_retries,
-			:idempotency_key, :notes, :created_at, :updated_at
-		)
-	`
-	_, err := r.db.NamedExecContext(ctx, query, job)
-	if err != nil {
-		if pqErr, ok := err.(*pq.Error); ok {
-			if pqErr.Code == "23505" { // unique_violation
-				return fmt.Errorf("job with this idempotency key already exists: %w", err)
-			}
-		}
-		return fmt.Errorf("failed to create conversion job: %w", err)
-	}
-	return nil
-}
+
 
 // GetConversionJobByID retrieves a conversion job by ID
 func (r *TreasuryRepository) GetConversionJobByID(ctx context.Context, id uuid.UUID) (*entities.ConversionJob, error) {
@@ -478,17 +448,7 @@ func (r *TreasuryRepository) UpdateConversionJob(ctx context.Context, job *entit
 	return nil
 }
 
-// UpdateConversionJobStatus updates only the status of a job (lighter operation)
-func (r *TreasuryRepository) UpdateConversionJobStatus(ctx context.Context, jobID uuid.UUID, status entities.ConversionJobStatus) error {
-	query := `
-		UPDATE conversion_jobs SET status = $2 WHERE id = $1
-	`
-	_, err := r.db.ExecContext(ctx, query, jobID, status)
-	if err != nil {
-		return fmt.Errorf("failed to update conversion job status: %w", err)
-	}
-	return nil
-}
+
 
 // GetConversionJobHistory retrieves the audit history for a job
 func (r *TreasuryRepository) GetConversionJobHistory(ctx context.Context, jobID uuid.UUID) ([]*entities.ConversionJobHistory, error) {
@@ -503,6 +463,204 @@ func (r *TreasuryRepository) GetConversionJobHistory(ctx context.Context, jobID 
 		return nil, fmt.Errorf("failed to get conversion job history: %w", err)
 	}
 	return history, nil
+}
+
+// GetActiveProviders retrieves all active providers ordered by priority
+func (r *TreasuryRepository) GetActiveProviders(ctx context.Context) ([]*entities.ConversionProvider, error) {
+	return r.ListProviders(ctx, true)
+}
+
+// GetJobsByStatus retrieves jobs by a specific status without pagination
+func (r *TreasuryRepository) GetJobsByStatus(ctx context.Context, status entities.ConversionJobStatus) ([]*entities.ConversionJob, error) {
+	query := `
+		SELECT * FROM conversion_jobs
+		WHERE status = $1
+		ORDER BY created_at ASC
+	`
+	var jobs []*entities.ConversionJob
+	err := r.db.SelectContext(ctx, &jobs, query, status)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get jobs by status: %w", err)
+	}
+	return jobs, nil
+}
+
+// GetStaleJobs retrieves jobs that have been in processing state for too long
+func (r *TreasuryRepository) GetStaleJobs(ctx context.Context, staleThreshold time.Time) ([]*entities.ConversionJob, error) {
+	query := `
+		SELECT * FROM conversion_jobs
+		WHERE status IN ('provider_submitted', 'provider_processing')
+		  AND submitted_at IS NOT NULL
+		  AND submitted_at < $1
+		ORDER BY submitted_at ASC
+	`
+	var jobs []*entities.ConversionJob
+	err := r.db.SelectContext(ctx, &jobs, query, staleThreshold)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get stale jobs: %w", err)
+	}
+	return jobs, nil
+}
+
+// IncrementJobRetryCount increments the retry counter for a job
+func (r *TreasuryRepository) IncrementJobRetryCount(ctx context.Context, jobID uuid.UUID) error {
+	query := `
+		UPDATE conversion_jobs
+		SET retry_count = retry_count + 1
+		WHERE id = $1
+	`
+	_, err := r.db.ExecContext(ctx, query, jobID)
+	if err != nil {
+		return fmt.Errorf("failed to increment retry count: %w", err)
+	}
+	return nil
+}
+
+// UpdateJobLedgerTransaction links a ledger transaction to a conversion job
+func (r *TreasuryRepository) UpdateJobLedgerTransaction(ctx context.Context, jobID, ledgerTxID uuid.UUID) error {
+	query := `
+		UPDATE conversion_jobs
+		SET ledger_transaction_id = $2
+		WHERE id = $1
+	`
+	_, err := r.db.ExecContext(ctx, query, jobID, ledgerTxID)
+	if err != nil {
+		return fmt.Errorf("failed to update job ledger transaction: %w", err)
+	}
+	return nil
+}
+
+// UpdateConversionJobStatus updates job status and related fields
+func (r *TreasuryRepository) UpdateConversionJobStatus(ctx context.Context, req *entities.UpdateConversionJobStatusRequest) error {
+	// Build dynamic update query based on provided fields
+	query := `
+		UPDATE conversion_jobs SET
+			status = $2,
+			updated_at = NOW()
+	`
+	args := []interface{}{req.JobID, req.NewStatus}
+	argCount := 2
+
+	// Add optional fields
+	if req.ProviderTxID != nil {
+		argCount++
+		query += fmt.Sprintf(", provider_tx_id = $%d", argCount)
+		args = append(args, *req.ProviderTxID)
+	}
+	if req.ProviderResponse != nil {
+		argCount++
+		query += fmt.Sprintf(", provider_response = $%d", argCount)
+		args = append(args, *req.ProviderResponse)
+	}
+	if req.SourceAmount != nil {
+		argCount++
+		query += fmt.Sprintf(", source_amount = $%d", argCount)
+		args = append(args, *req.SourceAmount)
+	}
+	if req.DestinationAmount != nil {
+		argCount++
+		query += fmt.Sprintf(", destination_amount = $%d", argCount)
+		args = append(args, *req.DestinationAmount)
+	}
+	if req.ExchangeRate != nil {
+		argCount++
+		query += fmt.Sprintf(", exchange_rate = $%d", argCount)
+		args = append(args, *req.ExchangeRate)
+	}
+	if req.FeesPaid != nil {
+		argCount++
+		query += fmt.Sprintf(", fees_paid = $%d", argCount)
+		args = append(args, *req.FeesPaid)
+	}
+	if req.ErrorMessage != nil {
+		argCount++
+		query += fmt.Sprintf(", error_message = $%d", argCount)
+		args = append(args, *req.ErrorMessage)
+	}
+	if req.ErrorCode != nil {
+		argCount++
+		query += fmt.Sprintf(", error_code = $%d", argCount)
+		args = append(args, *req.ErrorCode)
+	}
+
+	// Set timestamps based on status
+	switch req.NewStatus {
+	case entities.ConversionJobStatusProviderSubmitted:
+		query += ", submitted_at = NOW()"
+	case entities.ConversionJobStatusProviderCompleted:
+		query += ", provider_completed_at = NOW()"
+	case entities.ConversionJobStatusCompleted:
+		query += ", completed_at = NOW()"
+	case entities.ConversionJobStatusFailed:
+		query += ", failed_at = NOW()"
+	}
+
+	query += " WHERE id = $1"
+
+	_, err := r.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to update conversion job status: %w", err)
+	}
+	return nil
+}
+
+// CreateConversionJob creates a new conversion job from request
+func (r *TreasuryRepository) CreateConversionJob(ctx context.Context, req *entities.CreateConversionJobRequest) (*entities.ConversionJob, error) {
+	now := time.Now()
+	job := &entities.ConversionJob{
+		ID:                   uuid.New(),
+		Direction:            req.Direction,
+		Amount:               req.Amount,
+		Status:               entities.ConversionJobStatusPending,
+		TriggerReason:        req.TriggerReason,
+		SourceAccountID:      &req.SourceAccountID,
+		DestinationAccountID: &req.DestinationAccountID,
+		ScheduledAt:          req.ScheduledAt,
+		IdempotencyKey:       &req.IdempotencyKey,
+		Notes:                req.Notes,
+		MaxRetries:           3,
+		RetryCount:           0,
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}
+
+	query := `
+		INSERT INTO conversion_jobs (
+			id, direction, amount, status, trigger_reason,
+			source_account_id, destination_account_id,
+			scheduled_at, idempotency_key, notes,
+			retry_count, max_retries,
+			created_at, updated_at
+		) VALUES (
+			$1, $2, $3, $4, $5,
+			$6, $7,
+			$8, $9, $10,
+			$11, $12,
+			$13, $14
+		)
+	`
+	_, err := r.db.ExecContext(ctx, query,
+		job.ID, job.Direction, job.Amount, job.Status, job.TriggerReason,
+		job.SourceAccountID, job.DestinationAccountID,
+		job.ScheduledAt, job.IdempotencyKey, job.Notes,
+		job.RetryCount, job.MaxRetries,
+		job.CreatedAt, job.UpdatedAt,
+	)
+	if err != nil {
+		if pqErr, ok := err.(*pq.Error); ok {
+			if pqErr.Code == "23505" { // unique_violation
+				return nil, fmt.Errorf("job with this idempotency key already exists: %w", err)
+			}
+		}
+		return nil, fmt.Errorf("failed to create conversion job: %w", err)
+	}
+
+	return job, nil
+}
+
+// GetAllBufferThresholds retrieves all buffer threshold configurations
+func (r *TreasuryRepository) GetAllBufferThresholds(ctx context.Context) ([]*entities.BufferThreshold, error) {
+	return r.ListBufferThresholds(ctx)
 }
 
 // ============================================================================

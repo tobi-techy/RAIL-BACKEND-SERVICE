@@ -26,10 +26,10 @@ type Config struct {
 	Email        EmailConfig        `mapstructure:"email"`
 	SMS          SMSConfig          `mapstructure:"sms"`
 	Verification VerificationConfig `mapstructure:"verification"`
-	ZeroG        ZeroGConfig        `mapstructure:"zerog"`
-	Alpaca       AlpacaConfig       `mapstructure:"alpaca"`
-	Due          DueConfig          `mapstructure:"due"`
-	Workers      WorkerConfig       `mapstructure:"workers"`
+	Alpaca         AlpacaConfig         `mapstructure:"alpaca"`
+	Due            DueConfig            `mapstructure:"due"`
+	Workers        WorkerConfig         `mapstructure:"workers"`
+	Reconciliation ReconciliationConfig `mapstructure:"reconciliation"`
 }
 
 type ServerConfig struct {
@@ -199,6 +199,15 @@ type AlpacaConfig struct {
 	DataBaseURL string `mapstructure:"data_base_url"` // Market data API base URL
 	Environment string `mapstructure:"environment"`   // sandbox or production
 	Timeout     int    `mapstructure:"timeout"`       // Request timeout in seconds
+}
+
+// ReconciliationConfig contains reconciliation service configuration
+type ReconciliationConfig struct {
+	Enabled              bool   `mapstructure:"enabled"`                // Enable/disable reconciliation
+	HourlyInterval       int    `mapstructure:"hourly_interval"`        // Interval in minutes for hourly runs
+	DailyRunTime         string `mapstructure:"daily_run_time"`         // Time of day for daily run (HH:MM format)
+	AutoCorrectLowSeverity bool `mapstructure:"auto_correct_low_severity"` // Auto-correct <$1 discrepancies
+	AlertWebhookURL      string `mapstructure:"alert_webhook_url"`      // Webhook URL for alerts
 }
 
 // ZeroGConfig contains configuration for 0G Network integration

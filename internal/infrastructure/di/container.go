@@ -10,59 +10,31 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/shopspring/decimal"
+	"github.com/stack-service/stack_service/internal/adapters/alpaca"
+	"github.com/stack-service/stack_service/internal/adapters/due"
 	"github.com/stack-service/stack_service/internal/domain/entities"
-	domainrepos "github.com/stack-service/stack_service/internal/domain/repositories"
 	"github.com/stack-service/stack_service/internal/domain/services"
+	"github.com/stack-service/stack_service/internal/domain/services/allocation"
+	"github.com/stack-service/stack_service/internal/domain/services/apikey"
 	entitysecret "github.com/stack-service/stack_service/internal/domain/services/entity_secret"
 	"github.com/stack-service/stack_service/internal/domain/services/funding"
 	"github.com/stack-service/stack_service/internal/domain/services/investing"
+	"github.com/stack-service/stack_service/internal/domain/services/ledger"
 	"github.com/stack-service/stack_service/internal/domain/services/onboarding"
 	"github.com/stack-service/stack_service/internal/domain/services/passcode"
+	"github.com/stack-service/stack_service/internal/domain/services/reconciliation"
 	"github.com/stack-service/stack_service/internal/domain/services/session"
 	"github.com/stack-service/stack_service/internal/domain/services/twofa"
-	"github.com/stack-service/stack_service/internal/domain/services/apikey"
 	"github.com/stack-service/stack_service/internal/domain/services/wallet"
-	"github.com/stack-service/stack_service/internal/domain/services/ledger"
-	"github.com/stack-service/stack_service/internal/adapters/alpaca"
-	"github.com/stack-service/stack_service/internal/adapters/due"
 	"github.com/stack-service/stack_service/internal/infrastructure/adapters"
 	"github.com/stack-service/stack_service/internal/infrastructure/cache"
 	"github.com/stack-service/stack_service/internal/infrastructure/circle"
 	"github.com/stack-service/stack_service/internal/infrastructure/config"
 	"github.com/stack-service/stack_service/internal/infrastructure/repositories"
-	"github.com/stack-service/stack_service/internal/infrastructure/zerog"
+	commonmetrics "github.com/stack-service/stack_service/pkg/common/metrics"
 	"github.com/stack-service/stack_service/pkg/logger"
 	"go.uber.org/zap"
 )
-
-// AISummariesRepositoryAdapter adapts the domain repository to the service interface
-type AISummariesRepositoryAdapter struct {
-	repo domainrepos.AISummaryRepository
-}
-
-// toRepoAISummary converts service AISummary to repository AISummary
-func toRepoAISummary(s *services.AISummary) *domainrepos.AISummary {
-	return &domainrepos.AISummary{
-		ID:          s.ID,
-		UserID:      s.UserID,
-		WeekStart:   s.WeekStart,
-		SummaryMD:   s.SummaryMD,
-		ArtifactURI: s.ArtifactURI,
-		CreatedAt:   s.CreatedAt,
-	}
-}
-
-// toServiceAISummary converts repository AISummary to service AISummary
-func toServiceAISummary(r *domainrepos.AISummary) *services.AISummary {
-	return &services.AISummary{
-		ID:          r.ID,
-		UserID:      r.UserID,
-		WeekStart:   r.WeekStart,
-		SummaryMD:   r.SummaryMD,
-		ArtifactURI: r.ArtifactURI,
-		CreatedAt:   r.CreatedAt,
-	}
-}
 
 // CircleAdapter adapts circle.Client to funding.CircleAdapter interface
 type CircleAdapter struct {
@@ -117,30 +89,6 @@ func (a *AlpacaFundingAdapter) CreateJournal(ctx context.Context, req *entities.
 	return a.adapter.CreateJournal(ctx, req)
 }
 
-func (a *AISummariesRepositoryAdapter) Create(ctx context.Context, summary *services.AISummary) error {
-	return a.repo.Create(ctx, toRepoAISummary(summary))
-}
-
-func (a *AISummariesRepositoryAdapter) GetLatestByUserID(ctx context.Context, userID uuid.UUID) (*services.AISummary, error) {
-	repoSummary, err := a.repo.GetLatestByUserID(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	return toServiceAISummary(repoSummary), nil
-}
-
-func (a *AISummariesRepositoryAdapter) GetByUserAndWeek(ctx context.Context, userID uuid.UUID, weekStart time.Time) (*services.AISummary, error) {
-	repoSummary, err := a.repo.GetByUserAndWeek(ctx, userID, weekStart)
-	if err != nil {
-		return nil, err
-	}
-	return toServiceAISummary(repoSummary), nil
-}
-
-func (a *AISummariesRepositoryAdapter) Update(ctx context.Context, summary *services.AISummary) error {
-	return a.repo.Update(ctx, toRepoAISummary(summary))
-}
-
 // Container holds all application dependencies
 type Container struct {
 	Config *config.Config
@@ -156,44 +104,44 @@ type Container struct {
 	WalletSetRepo             *repositories.WalletSetRepository
 	WalletProvisioningJobRepo *repositories.WalletProvisioningJobRepository
 	DepositRepo               *repositories.DepositRepository
+	WithdrawalRepo            *repositories.WithdrawalRepository
+	ConversionRepo            *repositories.ConversionRepository
 	BalanceRepo               *repositories.BalanceRepository
 	FundingEventJobRepo       *repositories.FundingEventJobRepository
 	LedgerRepo                *repositories.LedgerRepository
+	ReconciliationRepo        repositories.ReconciliationRepository
 
 	// External Services
 	CircleClient  *circle.Client
 	AlpacaClient  *alpaca.Client
 	AlpacaService *alpaca.Service
 	KYCProvider   *adapters.KYCProvider
-	EmailService *adapters.EmailService
-	SMSService   *adapters.SMSService
-	AuditService *adapters.AuditService
-	RedisClient  cache.RedisClient
+	EmailService  *adapters.EmailService
+	SMSService    *adapters.SMSService
+	AuditService  *adapters.AuditService
+	RedisClient   cache.RedisClient
 
 	// Domain Services
-	OnboardingService    *onboarding.Service
-	OnboardingJobService *services.OnboardingJobService
-	VerificationService  services.VerificationService
-	PasscodeService      *passcode.Service
-	SessionService       *session.Service
-	TwoFAService         *twofa.Service
-	APIKeyService        *apikey.Service
-	WalletService        *wallet.Service
-	FundingService       *funding.Service
-	InvestingService     *investing.Service
-	AICfoService         *services.AICfoService
-	DueService           *services.DueService
-	BalanceService       *services.BalanceService
-	EntitySecretService  *entitysecret.Service
-	LedgerService        *ledger.Service
+	OnboardingService       *onboarding.Service
+	OnboardingJobService    *services.OnboardingJobService
+	VerificationService     services.VerificationService
+	PasscodeService         *passcode.Service
+	SessionService          *session.Service
+	TwoFAService            *twofa.Service
+	APIKeyService           *apikey.Service
+	WalletService           *wallet.Service
+	FundingService          *funding.Service
+	InvestingService        *investing.Service
+	DueService              *services.DueService
+	BalanceService          *services.BalanceService
+	EntitySecretService     *entitysecret.Service
+	LedgerService           *ledger.Service
+	ReconciliationService   *reconciliation.Service
+	ReconciliationScheduler *reconciliation.Scheduler
+	AllocationService       *allocation.Service
+	NotificationService     *services.NotificationService
 
-	// ZeroG Services
-	InferenceGateway *zerog.InferenceGateway
-	StorageClient    *zerog.StorageClient
-	NamespaceManager *zerog.NamespaceManager
-
-	// Additional Repositories for AI-CFO
-	AISummariesRepo   domainrepos.AISummaryRepository
+	// Additional Repositories
 	OnboardingJobRepo *repositories.OnboardingJobRepository
 
 	// Workers
@@ -221,10 +169,12 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	walletSetRepo := repositories.NewWalletSetRepository(db, zapLog)
 	walletProvisioningJobRepo := repositories.NewWalletProvisioningJobRepository(db, zapLog)
 	depositRepo := repositories.NewDepositRepository(sqlxDB)
+	withdrawalRepo := repositories.NewWithdrawalRepository(sqlxDB)
+	conversionRepo := repositories.NewConversionRepository(sqlxDB)
 	balanceRepo := repositories.NewBalanceRepository(db, zapLog)
 	fundingEventJobRepo := repositories.NewFundingEventJobRepository(db, log)
 	ledgerRepo := repositories.NewLedgerRepository(sqlxDB)
-	aiSummariesRepo := repositories.NewAISummaryRepository(db, zapLog)
+	reconciliationRepo := repositories.NewPostgresReconciliationRepository(db)
 	onboardingJobRepo := repositories.NewOnboardingJobRepository(db, zapLog)
 
 	// Initialize external services
@@ -321,19 +271,6 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	// Initialize entity secret service
 	entitySecretService := entitysecret.NewService(zapLog)
 
-	// Initialize ZeroG services
-	storageClient, err := zerog.NewStorageClient(&cfg.ZeroG.Storage, zapLog)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize ZeroG storage client: %w", err)
-	}
-
-	inferenceGateway, err := zerog.NewInferenceGateway(&cfg.ZeroG.Compute, storageClient, zapLog)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize ZeroG inference gateway: %w", err)
-	}
-
-	namespaceManager := zerog.NewNamespaceManager(storageClient, &cfg.ZeroG.Storage.Namespaces, zapLog)
-
 	container := &Container{
 		Config: cfg,
 		DB:     db,
@@ -348,10 +285,12 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		WalletSetRepo:             walletSetRepo,
 		WalletProvisioningJobRepo: walletProvisioningJobRepo,
 		DepositRepo:               depositRepo,
+		WithdrawalRepo:            withdrawalRepo,
+		ConversionRepo:            conversionRepo,
 		BalanceRepo:               balanceRepo,
 		FundingEventJobRepo:       fundingEventJobRepo,
 		LedgerRepo:                ledgerRepo,
-		AISummariesRepo:           aiSummariesRepo,
+		ReconciliationRepo:        reconciliationRepo,
 		OnboardingJobRepo:         onboardingJobRepo,
 
 		// External Services
@@ -359,15 +298,10 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		AlpacaClient:  alpacaClient,
 		AlpacaService: alpacaService,
 		KYCProvider:   kycProvider,
-		EmailService: emailService,
-		SMSService:   smsService,
-		AuditService: auditService,
-		RedisClient:  redisClient,
-
-		// ZeroG Services
-		InferenceGateway: inferenceGateway,
-		StorageClient:    storageClient,
-		NamespaceManager: namespaceManager,
+		EmailService:  emailService,
+		SMSService:    smsService,
+		AuditService:  auditService,
+		RedisClient:   redisClient,
 
 		// Entity Secret Service
 		EntitySecretService: entitySecretService,
@@ -493,6 +427,14 @@ func (c *Container) initializeDomainServices() error {
 		c.Logger,
 	)
 
+	// Initialize allocation service
+	allocationRepo := repositories.NewAllocationRepository(sqlxDB, c.Logger)
+	c.AllocationService = allocation.NewService(
+		allocationRepo,
+		c.LedgerService,
+		c.Logger,
+	)
+
 	// Initialize investing service with repositories
 	basketRepo := repositories.NewBasketRepository(c.DB, c.ZapLog)
 	orderRepo := repositories.NewOrderRepository(c.DB, c.ZapLog)
@@ -504,6 +446,9 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog,
 	)
 
+	// Initialize notification service
+	c.NotificationService = services.NewNotificationService(c.ZapLog)
+
 	c.InvestingService = investing.NewService(
 		basketRepo,
 		orderRepo,
@@ -512,32 +457,15 @@ func (c *Container) initializeDomainServices() error {
 		brokerageAdapter,
 		c.WalletRepo,
 		c.CircleClient,
+		c.AllocationService,
+		c.NotificationService,
 		c.Logger,
 	)
 
-	// Initialize notification service for AI-CFO
-	notificationService := services.NewNotificationService(c.ZapLog)
-
-	// Create repository adapter for AI-CFO service
-	aiSummariesAdapter := &AISummariesRepositoryAdapter{repo: c.AISummariesRepo}
-
-	// Initialize AI-CFO service
-	aicfoService, err := services.NewAICfoService(
-		c.InferenceGateway,
-		c.StorageClient,
-		c.NamespaceManager,
-		notificationService,
-		nil, // portfolioRepo - TODO: implement when available
-		nil, // positionsRepo - TODO: implement when available
-		nil, // balanceRepo - TODO: implement GetUserBalance method
-		aiSummariesAdapter,
-		nil, // userRepo - TODO: implement GetUserPreferences method
-		c.ZapLog,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to initialize AI-CFO service: %w", err)
+	// Initialize reconciliation service
+	if err := c.initializeReconciliationService(); err != nil {
+		return fmt.Errorf("failed to initialize reconciliation service: %w", err)
 	}
-	c.AICfoService = aicfoService
 
 	return nil
 }
@@ -582,11 +510,6 @@ func (c *Container) GetInvestingService() *investing.Service {
 	return c.InvestingService
 }
 
-// GetAICfoService returns the AI-CFO service
-func (c *Container) GetAICfoService() *services.AICfoService {
-	return c.AICfoService
-}
-
 // GetDueService returns the Due service
 func (c *Container) GetDueService() *services.DueService {
 	return c.DueService
@@ -602,21 +525,6 @@ func (c *Container) GetLedgerService() *ledger.Service {
 	return c.LedgerService
 }
 
-// GetInferenceGateway returns the ZeroG inference gateway
-func (c *Container) GetInferenceGateway() *zerog.InferenceGateway {
-	return c.InferenceGateway
-}
-
-// GetStorageClient returns the ZeroG storage client
-func (c *Container) GetStorageClient() *zerog.StorageClient {
-	return c.StorageClient
-}
-
-// GetNamespaceManager returns the ZeroG namespace manager
-func (c *Container) GetNamespaceManager() *zerog.NamespaceManager {
-	return c.NamespaceManager
-}
-
 // GetVerificationService returns the verification service
 func (c *Container) GetVerificationService() services.VerificationService {
 	return c.VerificationService
@@ -625,6 +533,204 @@ func (c *Container) GetVerificationService() services.VerificationService {
 // GetOnboardingJobService returns the onboarding job service
 func (c *Container) GetOnboardingJobService() *services.OnboardingJobService {
 	return c.OnboardingJobService
+}
+
+// GetAllocationService returns the allocation service
+func (c *Container) GetAllocationService() *allocation.Service {
+	return c.AllocationService
+}
+
+// initializeReconciliationService initializes the reconciliation service and scheduler
+func (c *Container) initializeReconciliationService() error {
+	// Initialize metrics service (placeholder - extend pkg/metrics/reconciliation_metrics.go)
+	metricsService := &reconciliationMetricsService{}
+
+	// Create reconciliation service config
+	reconciliationConfig := &reconciliation.Config{
+		AutoCorrectLowSeverity: true,
+		ToleranceCircle:        decimal.NewFromFloat(10.0),
+		ToleranceAlpaca:        decimal.NewFromFloat(100.0),
+		EnableAlerting:         true,
+		AlertWebhookURL:        c.Config.Reconciliation.AlertWebhookURL,
+	}
+
+	// Initialize reconciliation service with all dependencies
+	c.ReconciliationService = reconciliation.NewService(
+		c.ReconciliationRepo,
+		c.LedgerRepo,
+		c.DepositRepo,
+		c.WithdrawalRepo,
+		c.ConversionRepo,
+		c.LedgerService,
+		&circleClientAdapter{
+			client:     c.CircleClient,
+			walletRepo: c.WalletRepo,
+		},
+		&alpacaClientAdapter{
+			client:  c.AlpacaClient,
+			service: c.AlpacaService,
+			db:      c.DB,
+		},
+		c.Logger,
+		metricsService,
+		reconciliationConfig,
+	)
+
+	// Initialize reconciliation scheduler
+	schedulerConfig := &reconciliation.SchedulerConfig{
+		HourlyInterval: 1 * time.Hour,
+		DailyInterval:  24 * time.Hour,
+	}
+
+	c.ReconciliationScheduler = reconciliation.NewScheduler(
+		c.ReconciliationService,
+		c.Logger,
+		schedulerConfig,
+	)
+
+	return nil
+}
+
+// Adapters for reconciliation service
+type circleClientAdapter struct {
+	client     *circle.Client
+	walletRepo *repositories.WalletRepository
+}
+
+func (a *circleClientAdapter) GetTotalUSDCBalance(ctx context.Context) (decimal.Decimal, error) {
+	// Query all active wallets from the database
+	filters := repositories.WalletListFilters{
+		Status: (*entities.WalletStatus)(ptrOf(entities.WalletStatusLive)),
+		Limit:  10000, // High limit to get all wallets
+		Offset: 0,
+	}
+
+	wallets, _, err := a.walletRepo.ListWithFilters(ctx, filters)
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("failed to list wallets: %w", err)
+	}
+
+	// Aggregate USDC balances from all wallets
+	totalBalance := decimal.Zero
+	for _, wallet := range wallets {
+		if wallet.CircleWalletID == "" {
+			continue // Skip wallets without Circle wallet ID
+		}
+
+		// Get balance for this wallet
+		balanceResp, err := a.client.GetWalletBalances(ctx, wallet.CircleWalletID)
+		if err != nil {
+			// Log error but continue with other wallets
+			continue
+		}
+
+		// Parse USDC balance
+		usdcBalanceStr := balanceResp.GetUSDCBalance()
+		if usdcBalanceStr != "0" {
+			usdcBalance, err := decimal.NewFromString(usdcBalanceStr)
+			if err == nil {
+				totalBalance = totalBalance.Add(usdcBalance)
+			}
+		}
+	}
+
+	return totalBalance, nil
+}
+
+type alpacaClientAdapter struct {
+	client  *alpaca.Client
+	service *alpaca.Service
+	db      *sql.DB
+}
+
+func (a *alpacaClientAdapter) GetTotalBuyingPower(ctx context.Context) (decimal.Decimal, error) {
+	// Query all users from database who have Alpaca accounts
+	query := `
+		SELECT alpaca_account_id 
+		FROM users 
+		WHERE alpaca_account_id IS NOT NULL AND alpaca_account_id != '' AND is_active = true
+	`
+
+	rows, err := a.db.QueryContext(ctx, query)
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("failed to query users with Alpaca accounts: %w", err)
+	}
+	defer rows.Close()
+
+	var accountIDs []string
+	for rows.Next() {
+		var accountID string
+		if err := rows.Scan(&accountID); err != nil {
+			continue
+		}
+		accountIDs = append(accountIDs, accountID)
+	}
+
+	// Aggregate buying power from all accounts
+	totalBuyingPower := decimal.Zero
+	for _, accountID := range accountIDs {
+		account, err := a.service.GetAccount(ctx, accountID)
+		if err != nil {
+			// Log error but continue with other accounts
+			continue
+		}
+
+		// Add buying power (already decimal.Decimal)
+		if !account.BuyingPower.IsZero() {
+			totalBuyingPower = totalBuyingPower.Add(account.BuyingPower)
+		}
+	}
+
+	return totalBuyingPower, nil
+}
+
+// Real metrics service using Prometheus metrics from pkg/common/metrics
+type reconciliationMetricsService struct{}
+
+func (m *reconciliationMetricsService) RecordReconciliationRun(runType string) {
+	// Increment run counter
+	commonmetrics.ReconciliationRunsTotal.WithLabelValues(runType, "started").Inc()
+	commonmetrics.ReconciliationRunsInProgress.WithLabelValues(runType).Inc()
+}
+
+func (m *reconciliationMetricsService) RecordReconciliationCompleted(runType string, totalChecks, passedChecks, failedChecks, exceptionsCount int) {
+	// Decrement in-progress counter
+	commonmetrics.ReconciliationRunsInProgress.WithLabelValues(runType).Dec()
+	// Increment completed counter
+	commonmetrics.ReconciliationRunsTotal.WithLabelValues(runType, "completed").Inc()
+}
+
+func (m *reconciliationMetricsService) RecordCheckResult(checkType string, passed bool, duration time.Duration) {
+	// Record check execution
+	commonmetrics.ReconciliationChecksTotal.WithLabelValues(checkType).Inc()
+	commonmetrics.ReconciliationCheckDuration.WithLabelValues(checkType).Observe(duration.Seconds())
+
+	if passed {
+		commonmetrics.ReconciliationChecksPassed.WithLabelValues(checkType).Inc()
+	} else {
+		commonmetrics.ReconciliationChecksFailed.WithLabelValues(checkType).Inc()
+	}
+}
+
+func (m *reconciliationMetricsService) RecordExceptionAutoCorrected(checkType string) {
+	// Record auto-corrected exception
+	commonmetrics.ReconciliationExceptionsAutoCorrected.WithLabelValues(checkType).Inc()
+}
+
+func (m *reconciliationMetricsService) RecordDiscrepancyAmount(checkType string, amount decimal.Decimal) {
+	// Record discrepancy amount
+	amountFloat, _ := amount.Float64()
+	commonmetrics.ReconciliationDiscrepancyAmount.WithLabelValues(checkType, "USD").Set(amountFloat)
+}
+
+func (m *reconciliationMetricsService) RecordReconciliationAlert(checkType, severity string) {
+	// Record alert sent
+	commonmetrics.ReconciliationAlertsTotal.WithLabelValues(checkType, severity).Inc()
+}
+
+// Helper function to create pointer to value
+func ptrOf[T any](v T) *T {
+	return &v
 }
 
 func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChain {

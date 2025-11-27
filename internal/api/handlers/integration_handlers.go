@@ -1,21 +1,16 @@
 package handlers
 
 import (
-	"context"
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/stack-service/stack_service/internal/adapters/alpaca"
 	"github.com/stack-service/stack_service/internal/domain/entities"
 	"github.com/stack-service/stack_service/internal/domain/services"
-	"github.com/stack-service/stack_service/internal/infrastructure/zerog"
 	"github.com/stack-service/stack_service/pkg/logger"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
 
@@ -28,24 +23,7 @@ type IntegrationHandlers struct {
 	dueService          *services.DueService
 	notificationService *services.NotificationService
 	
-	// 0G
-	storageClient    entities.ZeroGStorageClient
-	inferenceGateway entities.ZeroGInferenceGateway
-	namespaceManager *zerog.NamespaceManager
-	
-	// AI CFO
-	aicfoService AICfoServiceInterface
-	
 	logger *zap.Logger
-	tracer trace.Tracer
-}
-
-// AICfoServiceInterface defines the AI-CFO service interface
-type AICfoServiceInterface interface {
-	GenerateWeeklySummary(ctx context.Context, userID uuid.UUID, weekStart time.Time) (*services.AISummary, error)
-	PerformOnDemandAnalysis(ctx context.Context, userID uuid.UUID, analysisType string, parameters map[string]interface{}) (*entities.InferenceResult, error)
-	GetLatestSummary(ctx context.Context, userID uuid.UUID) (*services.AISummary, error)
-	GetHealthStatus(ctx context.Context) (*entities.HealthStatus, error)
 }
 
 // NewIntegrationHandlers creates new integration handlers
@@ -53,22 +31,13 @@ func NewIntegrationHandlers(
 	alpacaClient *alpaca.Client,
 	dueService *services.DueService,
 	notificationService *services.NotificationService,
-	storageClient entities.ZeroGStorageClient,
-	inferenceGateway entities.ZeroGInferenceGateway,
-	namespaceManager *zerog.NamespaceManager,
-	aicfoService AICfoServiceInterface,
 	logger *logger.Logger,
 ) *IntegrationHandlers {
 	return &IntegrationHandlers{
 		alpacaClient:        alpacaClient,
 		dueService:          dueService,
 		notificationService: notificationService,
-		storageClient:       storageClient,
-		inferenceGateway:    inferenceGateway,
-		namespaceManager:    namespaceManager,
-		aicfoService:        aicfoService,
 		logger:              logger.Zap(),
-		tracer:              otel.Tracer("integration-handlers"),
 	}
 }
 
@@ -308,277 +277,6 @@ func (h *IntegrationHandlers) handleKYCStatusChanged(c *gin.Context, event map[s
 	h.logger.Info("KYC status changed", zap.String("account_id", accountID), zap.String("status", status))
 }
 
-// ===== 0G HANDLERS =====
 
-type ZeroGHealthResponse struct {
-	Overall   string                    `json:"overall"`
-	Services  map[string]*ServiceHealth `json:"services"`
-	CheckedAt time.Time                 `json:"checked_at"`
-}
-
-type ServiceHealth struct {
-	Status  string                 `json:"status"`
-	Latency string                 `json:"latency"`
-	Version string                 `json:"version,omitempty"`
-	Metrics map[string]interface{} `json:"metrics,omitempty"`
-	Errors  []string               `json:"errors,omitempty"`
-}
-
-func (h *IntegrationHandlers) ZeroGHealthCheck(c *gin.Context) {
-	ctx, span := h.tracer.Start(c.Request.Context(), "handler.zerog_health_check")
-	defer span.End()
-
-	response := &ZeroGHealthResponse{
-		Overall:   entities.HealthStatusHealthy,
-		Services:  make(map[string]*ServiceHealth),
-		CheckedAt: time.Now(),
-	}
-
-	storageHealth := h.checkStorageHealth(ctx)
-	response.Services["storage"] = storageHealth
-	if storageHealth.Status != entities.HealthStatusHealthy {
-		response.Overall = entities.HealthStatusDegraded
-	}
-
-	inferenceHealth := h.checkInferenceHealth(ctx)
-	response.Services["inference"] = inferenceHealth
-	if inferenceHealth.Status != entities.HealthStatusHealthy {
-		if response.Overall == entities.HealthStatusHealthy {
-			response.Overall = entities.HealthStatusDegraded
-		} else {
-			response.Overall = entities.HealthStatusUnhealthy
-		}
-	}
-
-	c.JSON(http.StatusOK, response)
-}
-
-func (h *IntegrationHandlers) checkStorageHealth(ctx context.Context) *ServiceHealth {
-	start := time.Now()
-	health, err := h.storageClient.HealthCheck(ctx)
-	if err != nil {
-		return &ServiceHealth{
-			Status:  entities.HealthStatusUnhealthy,
-			Latency: time.Since(start).String(),
-			Errors:  []string{err.Error()},
-		}
-	}
-	return &ServiceHealth{
-		Status:  health.Status,
-		Latency: health.Latency.String(),
-		Version: health.Version,
-		Metrics: health.Metrics,
-		Errors:  health.Errors,
-	}
-}
-
-func (h *IntegrationHandlers) checkInferenceHealth(ctx context.Context) *ServiceHealth {
-	start := time.Now()
-	health, err := h.inferenceGateway.HealthCheck(ctx)
-	if err != nil {
-		return &ServiceHealth{
-			Status:  entities.HealthStatusUnhealthy,
-			Latency: time.Since(start).String(),
-			Errors:  []string{err.Error()},
-		}
-	}
-	return &ServiceHealth{
-		Status:  health.Status,
-		Latency: health.Latency.String(),
-		Version: health.Version,
-		Metrics: health.Metrics,
-		Errors:  health.Errors,
-	}
-}
-
-// ===== AI CFO HANDLERS =====
-
-type SummaryResponse struct {
-	ID          string                 `json:"id"`
-	UserID      string                 `json:"user_id"`
-	WeekStart   string                 `json:"week_start"`
-	Title       string                 `json:"title"`
-	Content     string                 `json:"content"`
-	CreatedAt   time.Time              `json:"created_at"`
-	ArtifactURI string                 `json:"artifact_uri,omitempty"`
-	Metadata    map[string]interface{} `json:"metadata,omitempty"`
-}
-
-type AnalysisRequest struct {
-	AnalysisType string                 `json:"analysis_type" binding:"required"`
-	Parameters   map[string]interface{} `json:"parameters,omitempty"`
-}
-
-type AnalysisResponse struct {
-	RequestID       string                 `json:"request_id"`
-	AnalysisType    string                 `json:"analysis_type"`
-	Content         string                 `json:"content"`
-	ContentType     string                 `json:"content_type"`
-	Insights        []AnalysisInsight      `json:"insights"`
-	Recommendations []string               `json:"recommendations"`
-	Metadata        map[string]interface{} `json:"metadata"`
-	TokensUsed      int                    `json:"tokens_used"`
-	ProcessingTime  string                 `json:"processing_time"`
-	CreatedAt       time.Time              `json:"created_at"`
-	ArtifactURI     string                 `json:"artifact_uri,omitempty"`
-}
-
-type AnalysisInsight struct {
-	Type        string  `json:"type"`
-	Title       string  `json:"title"`
-	Description string  `json:"description"`
-	Impact      string  `json:"impact"`
-	Confidence  float64 `json:"confidence"`
-}
-
-func (h *IntegrationHandlers) GetLatestSummary(c *gin.Context) {
-	ctx, span := h.tracer.Start(c.Request.Context(), "handler.get_latest_summary")
-	defer span.End()
-
-	userID, exists := c.Get("user_id")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
-			Message: "User not authenticated",
-			Code:    "UNAUTHORIZED",
-		})
-		return
-	}
-
-	userUUID, ok := userID.(uuid.UUID)
-	if !ok {
-		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
-			Message: "Invalid user ID format",
-			Code:    "INVALID_USER_ID",
-		})
-		return
-	}
-
-	summary, err := h.aicfoService.GetLatestSummary(ctx, userUUID)
-	if err != nil {
-		h.logger.Error("Failed to get latest summary", zap.Error(err), zap.String("user_id", userUUID.String()))
-		if err.Error() == "no summaries found for user" {
-			c.JSON(http.StatusNotFound, entities.ErrorResponse{
-				Message: "No weekly summaries found",
-				Code:    "NOT_FOUND",
-			})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-			Message: "Failed to retrieve summary",
-			Code:    "INTERNAL_ERROR",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, SummaryResponse{
-		ID:          summary.ID.String(),
-		UserID:      summary.UserID.String(),
-		WeekStart:   summary.WeekStart.Format("2006-01-02"),
-		Title:       h.generateSummaryTitle(summary.WeekStart),
-		Content:     summary.SummaryMD,
-		CreatedAt:   summary.CreatedAt,
-		ArtifactURI: summary.ArtifactURI,
-		Metadata: map[string]interface{}{
-			"week_start": summary.WeekStart.Format("2006-01-02"),
-			"week_end":   summary.WeekStart.AddDate(0, 0, 6).Format("2006-01-02"),
-		},
-	})
-}
-
-func (h *IntegrationHandlers) AnalyzeOnDemand(c *gin.Context) {
-	ctx, span := h.tracer.Start(c.Request.Context(), "handler.analyze_on_demand")
-	defer span.End()
-
-	userID, exists := c.Get("user_id")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Message: "User not authenticated", Code: "UNAUTHORIZED"})
-		return
-	}
-
-	userUUID := userID.(uuid.UUID)
-	var req AnalysisRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Message: "Invalid request format", Code: "INVALID_REQUEST"})
-		return
-	}
-
-	if !h.isValidAnalysisType(req.AnalysisType) {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Message: "Invalid analysis type", Code: "INVALID_ANALYSIS_TYPE"})
-		return
-	}
-
-	result, err := h.aicfoService.PerformOnDemandAnalysis(ctx, userUUID, req.AnalysisType, req.Parameters)
-	if err != nil {
-		h.logger.Error("Failed to perform analysis", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Message: "Analysis failed", Code: "ANALYSIS_FAILED"})
-		return
-	}
-
-	c.JSON(http.StatusOK, AnalysisResponse{
-		RequestID:       result.RequestID,
-		AnalysisType:    req.AnalysisType,
-		Content:         result.Content,
-		ContentType:     result.ContentType,
-		Insights:        h.extractInsights(result.Content, req.AnalysisType),
-		Recommendations: h.extractRecommendations(result.Content),
-		Metadata:        result.Metadata,
-		TokensUsed:      result.TokensUsed,
-		ProcessingTime:  result.ProcessingTime.String(),
-		CreatedAt:       result.CreatedAt,
-		ArtifactURI:     result.ArtifactURI,
-	})
-}
-
-func (h *IntegrationHandlers) AICfoHealthCheck(c *gin.Context) {
-	ctx, span := h.tracer.Start(c.Request.Context(), "handler.aicfo_health_check")
-	defer span.End()
-
-	health, err := h.aicfoService.GetHealthStatus(ctx)
-	if err != nil {
-		h.logger.Error("Failed to get AI-CFO health status", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Message: "Health check failed", Code: "HEALTH_CHECK_FAILED"})
-		return
-	}
-
-	c.JSON(http.StatusOK, health)
-}
-
-func (h *IntegrationHandlers) generateSummaryTitle(weekStart time.Time) string {
-	return "Weekly Summary: " + weekStart.Format("Jan 2") + " - " + weekStart.AddDate(0, 0, 6).Format("Jan 2, 2006")
-}
-
-func (h *IntegrationHandlers) isValidAnalysisType(analysisType string) bool {
-	validTypes := []string{entities.AnalysisTypeDiversification, entities.AnalysisTypeRisk, entities.AnalysisTypePerformance, entities.AnalysisTypeAllocation, entities.AnalysisTypeRebalancing}
-	for _, valid := range validTypes {
-		if analysisType == valid {
-			return true
-		}
-	}
-	return false
-}
-
-func (h *IntegrationHandlers) extractInsights(content string, analysisType string) []AnalysisInsight {
-	insights := []AnalysisInsight{}
-	switch analysisType {
-	case entities.AnalysisTypeRisk:
-		insights = append(insights, AnalysisInsight{Type: "risk", Title: "Portfolio Risk Level", Description: "Your portfolio maintains a moderate risk profile with good diversification", Impact: "medium", Confidence: 0.85})
-	case entities.AnalysisTypePerformance:
-		insights = append(insights, AnalysisInsight{Type: "performance", Title: "Strong Performance", Description: "Your portfolio has outperformed market benchmarks this period", Impact: "high", Confidence: 0.92})
-	case entities.AnalysisTypeDiversification:
-		insights = append(insights, AnalysisInsight{Type: "diversification", Title: "Well Diversified", Description: "Your portfolio shows good diversification across asset classes", Impact: "medium", Confidence: 0.78})
-	case entities.AnalysisTypeAllocation:
-		insights = append(insights, AnalysisInsight{Type: "allocation", Title: "Allocation Drift", Description: "Some positions may benefit from rebalancing to maintain target allocation", Impact: "medium", Confidence: 0.75})
-	}
-	return insights
-}
-
-func (h *IntegrationHandlers) extractRecommendations(content string) []string {
-	return []string{
-		"Monitor technology sector exposure and consider rebalancing if it exceeds 60% of portfolio",
-		"Review quarterly performance metrics to ensure alignment with long-term goals",
-		"Consider adding defensive positions if market volatility increases",
-		"Maintain current diversification strategy as it provides good risk-adjusted returns",
-	}
-}
 
 

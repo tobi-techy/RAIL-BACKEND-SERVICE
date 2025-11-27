@@ -32,40 +32,52 @@ END $$;
 -- ============================================================================
 
 -- Create usdc_balance accounts
-INSERT INTO ledger_accounts (id, user_id, account_type, balance, created_at, updated_at)
+INSERT INTO ledger_accounts (id, user_id, account_type, currency, balance, created_at, updated_at)
 SELECT 
     gen_random_uuid(),
     user_id,
-    'usdc_balance'::account_type,
+    'usdc_balance',
+    'USDC',
     0,  -- Will be set in STEP 4
     COALESCE(updated_at, NOW()),
     COALESCE(updated_at, NOW())
 FROM balances
-ON CONFLICT (user_id, account_type) DO NOTHING;
+WHERE NOT EXISTS (
+    SELECT 1 FROM ledger_accounts la 
+    WHERE la.user_id = balances.user_id AND la.account_type = 'usdc_balance'
+);
 
 -- Create fiat_exposure accounts
-INSERT INTO ledger_accounts (id, user_id, account_type, balance, created_at, updated_at)
+INSERT INTO ledger_accounts (id, user_id, account_type, currency, balance, created_at, updated_at)
 SELECT 
     gen_random_uuid(),
     user_id,
-    'fiat_exposure'::account_type,
+    'fiat_exposure',
+    'USD',
     0,  -- Will be set in STEP 4
     COALESCE(updated_at, NOW()),
     COALESCE(updated_at, NOW())
 FROM balances
-ON CONFLICT (user_id, account_type) DO NOTHING;
+WHERE NOT EXISTS (
+    SELECT 1 FROM ledger_accounts la 
+    WHERE la.user_id = balances.user_id AND la.account_type = 'fiat_exposure'
+);
 
 -- Create pending_investment accounts
-INSERT INTO ledger_accounts (id, user_id, account_type, balance, created_at, updated_at)
+INSERT INTO ledger_accounts (id, user_id, account_type, currency, balance, created_at, updated_at)
 SELECT 
     gen_random_uuid(),
     user_id,
-    'pending_investment'::account_type,
+    'pending_investment',
+    'USDC',
     0,  -- Always zero initially
     COALESCE(updated_at, NOW()),
     COALESCE(updated_at, NOW())
 FROM balances
-ON CONFLICT (user_id, account_type) DO NOTHING;
+WHERE NOT EXISTS (
+    SELECT 1 FROM ledger_accounts la 
+    WHERE la.user_id = balances.user_id AND la.account_type = 'pending_investment'
+);
 
 -- ============================================================================
 -- STEP 3: Create opening balance transactions for users with non-zero balances
@@ -83,9 +95,9 @@ WITH users_with_buying_power AS (
 INSERT INTO ledger_transactions (id, transaction_type, idempotency_key, status, description, created_at)
 SELECT 
     gen_random_uuid(),
-    'conversion'::transaction_type,
+    'conversion',
     'migration_057_buying_power_' || user_id::text,
-    'completed'::transaction_status,
+    'completed',
     'Opening balance migration: Buying power from balances table',
     balance_updated_at
 FROM users_with_buying_power;
@@ -119,7 +131,7 @@ SELECT
     gen_random_uuid(),
     t.transaction_id,
     a.account_id,
-    'credit'::entry_type,
+    'credit',
     t.buying_power,
     t.created_at
 FROM buying_power_txns t
@@ -132,7 +144,7 @@ SELECT
     gen_random_uuid(),
     t.transaction_id,
     (SELECT account_id FROM broker_account),
-    'debit'::entry_type,
+    'debit',
     t.buying_power,
     t.created_at
 FROM buying_power_txns t;
@@ -149,9 +161,9 @@ WITH users_with_pending AS (
 INSERT INTO ledger_transactions (id, transaction_type, idempotency_key, status, description, created_at)
 SELECT 
     gen_random_uuid(),
-    'deposit'::transaction_type,
+    'deposit',
     'migration_057_pending_' || user_id::text,
-    'pending'::transaction_status,
+    'pending',
     'Opening balance migration: Pending deposits from balances table',
     balance_updated_at
 FROM users_with_pending;
@@ -185,7 +197,7 @@ SELECT
     gen_random_uuid(),
     t.transaction_id,
     a.account_id,
-    'credit'::entry_type,
+    'credit',
     t.pending_deposits,
     t.created_at
 FROM pending_txns t
@@ -198,7 +210,7 @@ SELECT
     gen_random_uuid(),
     t.transaction_id,
     (SELECT account_id FROM system_usdc_account),
-    'debit'::entry_type,
+    'debit',
     t.pending_deposits,
     t.created_at
 FROM pending_txns t;

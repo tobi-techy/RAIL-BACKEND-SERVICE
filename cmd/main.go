@@ -197,6 +197,19 @@ func main() {
 	// Store webhook manager in container for access by handlers
 	container.FundingWebhookManager = webhookManager
 
+	// Initialize and start reconciliation scheduler
+	if cfg.Reconciliation.Enabled {
+		log.Info("Starting reconciliation scheduler", 
+			"auto_correct", cfg.Reconciliation.AutoCorrectLowSeverity,
+		)
+		if err := container.ReconciliationScheduler.Start(context.Background()); err != nil {
+			log.Fatal("Failed to start reconciliation scheduler", "error", err)
+		}
+		log.Info("Reconciliation scheduler started")
+	} else {
+		log.Info("Reconciliation scheduler disabled in configuration")
+	}
+
 	// Create server with enhanced configuration
 	server := &http.Server{
 		Addr:           fmt.Sprintf(":%d", cfg.Server.Port),
@@ -253,6 +266,14 @@ func main() {
 	if webhookMgr, ok := container.FundingWebhookManager.(*funding_webhook.Manager); ok {
 		if err := webhookMgr.Shutdown(30 * time.Second); err != nil {
 			log.Warn("Error stopping webhook manager", "error", err)
+		}
+	}
+
+	// Stop the reconciliation scheduler
+	if cfg.Reconciliation.Enabled && container.ReconciliationScheduler != nil {
+		log.Info("Stopping reconciliation scheduler...")
+		if err := container.ReconciliationScheduler.Stop(); err != nil {
+			log.Warn("Error stopping reconciliation scheduler", "error", err)
 		}
 	}
 

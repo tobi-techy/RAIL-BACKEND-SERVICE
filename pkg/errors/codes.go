@@ -87,12 +87,6 @@ const (
 	CodeDueTimeout         = "ERR_6201"
 	CodeDueAccountError    = "ERR_6202"
 
-	// 0G errors (6300-6399)
-	CodeZeroGAPIError      = "ERR_6300"
-	CodeZeroGTimeout       = "ERR_6301"
-	CodeZeroGStorageError  = "ERR_6302"
-	CodeZeroGInferenceError = "ERR_6303"
-
 	// Database errors (7000-7099)
 	CodeDatabaseError      = "ERR_7000"
 	CodeQueryFailed        = "ERR_7001"
@@ -190,14 +184,7 @@ var ErrorCodeMap = map[string]string{
 	CodeDueTimeout:         "Due API timeout",
 	CodeDueAccountError:    "Due account error",
 
-	CodeZeroGAPIError:      "0G API error",
-	CodeZeroGTimeout:       "0G API timeout",
-	CodeZeroGStorageError:  "0G storage error",
-	CodeZeroGInferenceError: "0G inference error",
-
 	// Database
-	CodeDatabaseError:      "Database error",
-	CodeQueryFailed:        "Query failed",
 	CodeConnectionFailed:   "Connection failed",
 	CodeTransactionFailed:  "Transaction failed",
 	CodeDuplicateKey:       "Duplicate entry",

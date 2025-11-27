@@ -5212,54 +5212,6 @@
                 }
             }
         },
-        "internal_api_handlers.StoreRequest": {
-            "type": "object",
-            "required": [
-                "data",
-                "namespace"
-            ],
-            "properties": {
-                "data": {
-                    "description": "Base64 encoded data",
-                    "type": "string"
-                },
-                "metadata": {
-                    "type": "object",
-                    "additionalProperties": {
-                        "type": "string"
-                    }
-                },
-                "namespace": {
-                    "type": "string"
-                },
-                "user_id": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_api_handlers.StoreResponse": {
-            "type": "object",
-            "properties": {
-                "content_hash": {
-                    "type": "string"
-                },
-                "error": {
-                    "type": "string"
-                },
-                "size": {
-                    "type": "integer"
-                },
-                "stored_at": {
-                    "type": "string"
-                },
-                "success": {
-                    "type": "boolean"
-                },
-                "uri": {
-                    "type": "string"
-                }
-            }
-        },
         "internal_api_handlers.SummaryResponse": {
             "type": "object",
             "properties": {
@@ -5300,23 +5252,6 @@
             "properties": {
                 "job_id": {
                     "type": "string"
-                }
-            }
-        },
-        "internal_api_handlers.ZeroGHealthResponse": {
-            "type": "object",
-            "properties": {
-                "checked_at": {
-                    "type": "string"
-                },
-                "overall": {
-                    "type": "string"
-                },
-                "services": {
-                    "type": "object",
-                    "additionalProperties": {
-                        "$ref": "#/definitions/internal_api_handlers.ServiceHealth"
-                    }
                 }
             }
         },

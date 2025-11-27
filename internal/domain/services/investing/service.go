@@ -21,16 +21,30 @@ type CircleClient interface {
 	GetWalletBalances(ctx context.Context, walletID string, tokenAddress ...string) (*entities.CircleWalletBalancesResponse, error)
 }
 
+// AllocationService interface for spending enforcement
+type AllocationService interface {
+	CanSpend(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (bool, error)
+	GetMode(ctx context.Context, userID uuid.UUID) (*entities.SmartAllocationMode, error)
+	LogDeclinedSpending(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, reason string) error
+}
+
+// AllocationNotificationManager interface for sending allocation notifications
+type AllocationNotificationManager interface {
+	NotifyTransactionDeclined(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, transactionType string) error
+}
+
 // Service handles investing operations - baskets, orders, portfolio management
 type Service struct {
-	basketRepo   BasketRepository
-	orderRepo    OrderRepository
-	positionRepo PositionRepository
-	balanceRepo  BalanceRepository
-	brokerageAPI BrokerageAdapter
-	walletRepo   WalletBalanceProvider
-	circleClient CircleClient
-	logger       *logger.Logger
+	basketRepo         BasketRepository
+	orderRepo          OrderRepository
+	positionRepo       PositionRepository
+	balanceRepo        BalanceRepository
+	brokerageAPI       BrokerageAdapter
+	walletRepo         WalletBalanceProvider
+	circleClient       CircleClient
+	allocationService  AllocationService
+	allocationNotifier AllocationNotificationManager
+	logger             *logger.Logger
 }
 
 // BasketRepository interface for basket operations
@@ -89,17 +103,21 @@ func NewService(
 	brokerageAPI BrokerageAdapter,
 	walletRepo WalletBalanceProvider,
 	circleClient CircleClient,
+	allocationService AllocationService,
+	allocationNotifier AllocationNotificationManager,
 	logger *logger.Logger,
 ) *Service {
 	return &Service{
-		basketRepo:   basketRepo,
-		orderRepo:    orderRepo,
-		positionRepo: positionRepo,
-		balanceRepo:  balanceRepo,
-		brokerageAPI: brokerageAPI,
-		walletRepo:   walletRepo,
-		circleClient: circleClient,
-		logger:       logger,
+		basketRepo:         basketRepo,
+		orderRepo:          orderRepo,
+		positionRepo:       positionRepo,
+		balanceRepo:        balanceRepo,
+		brokerageAPI:       brokerageAPI,
+		walletRepo:         walletRepo,
+		circleClient:       circleClient,
+		allocationService:  allocationService,
+		allocationNotifier: allocationNotifier,
+		logger:             logger,
 	}
 }
 
@@ -148,8 +166,34 @@ func (s *Service) CreateOrder(ctx context.Context, userID uuid.UUID, req *entiti
 		return nil, ErrInvalidAmount
 	}
 
-	// Check user has sufficient buying power for buy orders
+	// Check 70/30 allocation mode spending limit for buy orders
 	if req.Side == entities.OrderSideBuy {
+		if s.allocationService != nil {
+			canSpend, err := s.allocationService.CanSpend(ctx, userID, amount)
+			if err != nil {
+				s.logger.Error("Failed to check spending limit", "error", err, "user_id", userID)
+				return nil, fmt.Errorf("failed to check spending limit: %w", err)
+			}
+
+			if !canSpend {
+				s.logger.Warn("Order declined - spending limit reached",
+					"user_id", userID,
+					"basket_id", req.BasketID,
+					"amount", amount)
+				
+				// Log declined spending event
+				_ = s.allocationService.LogDeclinedSpending(ctx, userID, amount, "investment")
+				
+				// Send notification to user
+				if s.allocationNotifier != nil {
+					_ = s.allocationNotifier.NotifyTransactionDeclined(ctx, userID, amount, "investment")
+				}
+				
+				return nil, entities.ErrSpendingLimitReached
+			}
+		}
+
+		// Check user has sufficient buying power
 		balance, err := s.balanceRepo.Get(ctx, userID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get user balance: %w", err)

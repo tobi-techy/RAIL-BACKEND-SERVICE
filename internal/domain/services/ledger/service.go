@@ -349,6 +349,20 @@ func (s *Service) ReverseTransaction(ctx context.Context, originalTxID uuid.UUID
 		return fmt.Errorf("get original entries: %w", err)
 	}
 
+	// Begin database transaction for atomicity
+	tx, err := s.db.BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	txCtx := context.WithValue(ctx, "db_tx", tx)
+
+	// Mark original transaction as reversed first
+	if err := s.ledgerRepo.UpdateTransactionStatus(txCtx, originalTxID, entities.TransactionStatusReversed); err != nil {
+		return fmt.Errorf("update original transaction status: %w", err)
+	}
+
 	// Create reversal entries (flip debit/credit)
 	reversalEntries := make([]entities.CreateEntryRequest, len(entries))
 	for i, entry := range entries {
@@ -369,7 +383,7 @@ func (s *Service) ReverseTransaction(ctx context.Context, originalTxID uuid.UUID
 		}
 	}
 
-	// Create reversal transaction
+	// Create reversal transaction within same db transaction
 	idempotencyKey := fmt.Sprintf("reversal-%s", originalTxID.String())
 	desc := fmt.Sprintf("Reversal: %s", reason)
 
@@ -382,14 +396,15 @@ func (s *Service) ReverseTransaction(ctx context.Context, originalTxID uuid.UUID
 		Entries:         reversalEntries,
 	}
 
-	_, err = s.CreateTransaction(ctx, req)
+	// Note: CreateTransaction will use the existing tx from context
+	_, err = s.CreateTransaction(txCtx, req)
 	if err != nil {
 		return fmt.Errorf("create reversal transaction: %w", err)
 	}
 
-	// Mark original transaction as reversed
-	if err := s.ledgerRepo.UpdateTransactionStatus(ctx, originalTxID, entities.TransactionStatusReversed); err != nil {
-		return fmt.Errorf("update original transaction status: %w", err)
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit reversal: %w", err)
 	}
 
 	s.logger.Info("Transaction reversed",
@@ -418,4 +433,45 @@ func (s *Service) GetTransactionHistory(ctx context.Context, userID uuid.UUID, l
 	}
 
 	return allEntries, nil
+}
+
+// GetSystemBufferBalance retrieves the balance for a system buffer account
+func (s *Service) GetSystemBufferBalance(ctx context.Context, accountType string) (decimal.Decimal, error) {
+	// Convert string to AccountType enum
+	var accountTypeEnum entities.AccountType
+	switch accountType {
+	case "system_buffer_usdc", "liquidity_buffer":
+		accountTypeEnum = entities.AccountTypeSystemBufferUSDC
+	case "system_buffer_fiat", "fee_revenue":
+		accountTypeEnum = entities.AccountTypeSystemBufferFiat
+	case "broker_operational":
+		accountTypeEnum = entities.AccountTypeBrokerOperational
+	default:
+		return decimal.Zero, fmt.Errorf("unknown account type: %s", accountType)
+	}
+
+	account, err := s.GetSystemAccount(ctx, accountTypeEnum)
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("get system account: %w", err)
+	}
+
+	return account.Balance, nil
+}
+
+// GetTotalUserFiatExposure calculates total USD exposure across all users
+func (s *Service) GetTotalUserFiatExposure(ctx context.Context) (decimal.Decimal, error) {
+	// Query sum of all user fiat exposure accounts from database
+	query := `
+		SELECT COALESCE(SUM(balance), 0) as total
+		FROM ledger_accounts
+		WHERE account_type = $1 AND user_id IS NOT NULL
+	`
+	
+	var total decimal.Decimal
+	err := s.db.QueryRowContext(ctx, query, entities.AccountTypeFiatExposure).Scan(&total)
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("get total fiat exposure: %w", err)
+	}
+
+	return total, nil
 }

@@ -150,3 +150,112 @@ func (r *PositionRepository) CreateOrUpdate(ctx context.Context, position *entit
 	)
 	return nil
 }
+
+// GetPositionMetrics retrieves aggregated portfolio metrics for a user
+func (r *PositionRepository) GetPositionMetrics(ctx context.Context, userID uuid.UUID) (*entities.PortfolioMetrics, error) {
+	query := `
+		SELECT 
+			p.id,
+			p.basket_id,
+			b.name as basket_name,
+			p.quantity,
+			p.avg_price,
+			p.market_value,
+			p.updated_at
+		FROM positions p
+		INNER JOIN baskets b ON p.basket_id = b.id
+		WHERE p.user_id = $1
+		ORDER BY p.market_value DESC
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, userID)
+	if err != nil {
+		r.logger.Error("Failed to query positions for metrics",
+			zap.Error(err),
+			zap.String("user_id", userID.String()),
+		)
+		return nil, fmt.Errorf("failed to query positions for metrics: %w", err)
+	}
+	defer rows.Close()
+
+	var positions []*entities.Position
+	var basketNames = make(map[uuid.UUID]string)
+	for rows.Next() {
+		position := &entities.Position{}
+		var basketName string
+		if err := rows.Scan(
+			&position.ID,
+			&position.BasketID,
+			&basketName,
+			&position.Quantity,
+			&position.AvgPrice,
+			&position.MarketValue,
+			&position.UpdatedAt,
+		); err != nil {
+			r.logger.Error("Failed to scan position row", zap.Error(err))
+			return nil, fmt.Errorf("failed to scan position: %w", err)
+		}
+		position.UserID = userID
+		positions = append(positions, position)
+		basketNames[position.BasketID] = basketName
+	}
+
+	if err := rows.Err(); err != nil {
+		r.logger.Error("Error iterating position rows", zap.Error(err))
+		return nil, fmt.Errorf("error iterating positions: %w", err)
+	}
+
+	// Calculate aggregate metrics
+	var totalValue float64
+	allocationByBasket := make(map[string]float64)
+	positionMetrics := make([]entities.PositionMetrics, 0, len(positions))
+
+	for _, pos := range positions {
+		marketValue, _ := pos.MarketValue.Float64()
+		totalValue += marketValue
+	}
+
+	for _, pos := range positions {
+		quantity, _ := pos.Quantity.Float64()
+		avgPrice, _ := pos.AvgPrice.Float64()
+		marketValue, _ := pos.MarketValue.Float64()
+		costBasis := quantity * avgPrice
+		unrealizedPL := marketValue - costBasis
+		unrealizedPLPct := 0.0
+		if costBasis > 0 {
+			unrealizedPLPct = (unrealizedPL / costBasis) * 100
+		}
+		weight := 0.0
+		if totalValue > 0 {
+			weight = marketValue / totalValue
+		}
+
+		basketName := basketNames[pos.BasketID]
+		allocationByBasket[basketName] = weight
+
+		positionMetrics = append(positionMetrics, entities.PositionMetrics{
+			BasketID:        pos.BasketID,
+			BasketName:      basketName,
+			Quantity:        quantity,
+			AvgPrice:        avgPrice,
+			CurrentValue:    marketValue,
+			UnrealizedPL:    unrealizedPL,
+			UnrealizedPLPct: unrealizedPLPct,
+			Weight:          weight,
+		})
+	}
+
+	r.logger.Debug("Retrieved position metrics",
+		zap.String("user_id", userID.String()),
+		zap.Int("positions_count", len(positionMetrics)),
+		zap.Float64("total_value", totalValue),
+	)
+
+	// Return portfolio metrics with positions and allocations
+	return &entities.PortfolioMetrics{
+		TotalValue:         totalValue,
+		Positions:          positionMetrics,
+		AllocationByBasket: allocationByBasket,
+		// Performance history and risk metrics will be populated by the service
+	}, nil
+}

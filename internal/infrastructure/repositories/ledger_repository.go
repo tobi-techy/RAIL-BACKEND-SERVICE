@@ -636,3 +636,120 @@ func (r *LedgerRepository) GetSystemBuffers(ctx context.Context) (*entities.Syst
 
 	return buffers, nil
 }
+
+// ===== Reconciliation Methods =====
+
+// GetTotalDebitsAndCredits returns the sum of all debits and credits in the ledger
+func (r *LedgerRepository) GetTotalDebitsAndCredits(ctx context.Context) (totalDebits, totalCredits decimal.Decimal, err error) {
+	query := `
+		SELECT 
+			COALESCE(SUM(CASE WHEN entry_type = 'debit' THEN amount ELSE 0 END), 0) as total_debits,
+			COALESCE(SUM(CASE WHEN entry_type = 'credit' THEN amount ELSE 0 END), 0) as total_credits
+		FROM ledger_entries
+	`
+
+	var debitsStr, creditsStr string
+	err = r.db.QueryRowxContext(ctx, query).Scan(&debitsStr, &creditsStr)
+	if err != nil {
+		return decimal.Zero, decimal.Zero, fmt.Errorf("get total debits and credits: %w", err)
+	}
+
+	totalDebits, err = decimal.NewFromString(debitsStr)
+	if err != nil {
+		return decimal.Zero, decimal.Zero, fmt.Errorf("parse debits: %w", err)
+	}
+
+	totalCredits, err = decimal.NewFromString(creditsStr)
+	if err != nil {
+		return decimal.Zero, decimal.Zero, fmt.Errorf("parse credits: %w", err)
+	}
+
+	return totalDebits, totalCredits, nil
+}
+
+// CountOrphanedEntries returns the count of ledger entries without matching transactions
+func (r *LedgerRepository) CountOrphanedEntries(ctx context.Context) (int, error) {
+	query := `
+		SELECT COUNT(*)
+		FROM ledger_entries
+		WHERE transaction_id IS NULL
+	`
+
+	var count int
+	err := r.db.QueryRowxContext(ctx, query).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count orphaned entries: %w", err)
+	}
+
+	return count, nil
+}
+
+// CountInvalidTransactions returns the count of transactions without exactly 2 entries
+func (r *LedgerRepository) CountInvalidTransactions(ctx context.Context) (int, error) {
+	query := `
+		SELECT COUNT(*)
+		FROM (
+			SELECT transaction_id
+			FROM ledger_entries
+			WHERE transaction_id IS NOT NULL
+			GROUP BY transaction_id
+			HAVING COUNT(*) != 2
+		) as invalid_txs
+	`
+
+	var count int
+	err := r.db.QueryRowxContext(ctx, query).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count invalid transactions: %w", err)
+	}
+
+	return count, nil
+}
+
+// GetTotalDepositEntries returns the sum of all deposit-related ledger entries
+func (r *LedgerRepository) GetTotalDepositEntries(ctx context.Context) (decimal.Decimal, error) {
+	query := `
+		SELECT COALESCE(SUM(amount), 0)
+		FROM ledger_entries le
+		JOIN ledger_transactions lt ON le.transaction_id = lt.id
+		WHERE lt.transaction_type = 'deposit'
+		  AND le.entry_type = 'credit'
+	`
+
+	var totalStr string
+	err := r.db.QueryRowxContext(ctx, query).Scan(&totalStr)
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("get total deposit entries: %w", err)
+	}
+
+	total, err := decimal.NewFromString(totalStr)
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("parse total: %w", err)
+	}
+
+	return total, nil
+}
+
+// GetTotalWithdrawalEntries returns the sum of all withdrawal-related ledger entries
+func (r *LedgerRepository) GetTotalWithdrawalEntries(ctx context.Context) (decimal.Decimal, error) {
+	query := `
+		SELECT COALESCE(SUM(amount), 0)
+		FROM ledger_entries le
+		JOIN ledger_transactions lt ON le.transaction_id = lt.id
+		WHERE lt.transaction_type = 'withdrawal'
+		  AND le.entry_type = 'debit'
+	`
+
+	var totalStr string
+	err := r.db.QueryRowxContext(ctx, query).Scan(&totalStr)
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("get total withdrawal entries: %w", err)
+	}
+
+	total, err := decimal.NewFromString(totalStr)
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("parse total: %w", err)
+	}
+
+	return total, nil
+}
