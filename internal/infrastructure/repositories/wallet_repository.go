@@ -11,7 +11,7 @@ import (
 	"github.com/lib/pq"
 	"go.uber.org/zap"
 
-	"github.com/stack-service/stack_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 )
 
 // WalletListFilters represents filters for wallet listing

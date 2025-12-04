@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	serviceName    = "stack-service"
+	serviceName    = "rail-service"
 	serviceVersion = "1.0.0"
 )
 

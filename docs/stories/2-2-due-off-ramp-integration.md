@@ -180,7 +180,7 @@ so that the USD is transferred to my linked Alpaca brokerage account, enabling i
 
 ### Context Reference
 
-- /Users/Aplle/Development/stack_service/docs/stories/2-2-due-off-ramp-integration.context.md
+- /Users/Aplle/Development/rail_service/docs/stories/2-2-due-off-ramp-integration.context.md
 
 ### Agent Model Used
 

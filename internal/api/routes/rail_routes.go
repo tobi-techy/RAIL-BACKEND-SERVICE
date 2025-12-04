@@ -5,11 +5,11 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/stack-service/stack_service/internal/api/handlers"
-	"github.com/stack-service/stack_service/internal/api/middleware"
-	"github.com/stack-service/stack_service/internal/domain/services/session"
-	"github.com/stack-service/stack_service/internal/infrastructure/config"
-	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/rail-service/rail_service/internal/api/handlers"
+	"github.com/rail-service/rail_service/internal/api/middleware"
+	"github.com/rail-service/rail_service/internal/domain/services/session"
+	"github.com/rail-service/rail_service/internal/infrastructure/config"
+	"github.com/rail-service/rail_service/pkg/logger"
 
 	"github.com/gin-gonic/gin"
 	swaggerFiles "github.com/swaggo/files"

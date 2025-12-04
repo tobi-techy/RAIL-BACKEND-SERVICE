@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/stack-service/stack_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"go.uber.org/zap"
 )
 
@@ -651,6 +651,90 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 	}
 
 	return response, nil
+}
+
+// GetOnboardingProgress returns a detailed progress view of the user's onboarding
+func (s *Service) GetOnboardingProgress(ctx context.Context, userID uuid.UUID) (*entities.OnboardingProgressResponse, error) {
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+
+	completedSteps, err := s.onboardingFlowRepo.GetCompletedSteps(ctx, userID)
+	if err != nil {
+		s.logger.Warn("Failed to get completed steps", zap.Error(err))
+		completedSteps = []entities.OnboardingStepType{}
+	}
+	completedSteps = s.normalizeCompletedSteps(user, completedSteps)
+
+	completedMap := make(map[entities.OnboardingStepType]bool)
+	for _, step := range completedSteps {
+		completedMap[step] = true
+	}
+
+	// Define checklist items
+	checklist := []entities.OnboardingCheckItem{
+		{Step: entities.StepRegistration, Title: "Create Account", Description: "Sign up with email or phone", Required: true, Order: 1},
+		{Step: entities.StepEmailVerification, Title: "Verify Email", Description: "Confirm your email address", Required: true, Order: 2},
+		{Step: entities.StepPasscodeCreation, Title: "Set Passcode", Description: "Create a secure passcode", Required: true, Order: 3},
+		{Step: entities.StepWalletCreation, Title: "Setup Wallet", Description: "Create your crypto wallet", Required: true, Order: 4},
+		{Step: entities.StepKYCSubmission, Title: "Verify Identity", Description: "Complete KYC for full access", Required: false, Order: 5},
+	}
+
+	// Update status for each item
+	completedCount := 0
+	for i := range checklist {
+		if completedMap[checklist[i].Step] {
+			checklist[i].Status = entities.StepStatusCompleted
+			completedCount++
+		} else if i > 0 && checklist[i-1].Status != entities.StepStatusCompleted {
+			checklist[i].Status = entities.StepStatusPending
+		} else {
+			checklist[i].Status = entities.StepStatusPending
+		}
+	}
+
+	// Calculate progress percentage (only required steps)
+	requiredCount := 0
+	requiredCompleted := 0
+	for _, item := range checklist {
+		if item.Required {
+			requiredCount++
+			if item.Status == entities.StepStatusCompleted {
+				requiredCompleted++
+			}
+		}
+	}
+
+	percentComplete := 0
+	if requiredCount > 0 {
+		percentComplete = (requiredCompleted * 100) / requiredCount
+	}
+
+	// Determine current step
+	currentStep := s.determineCurrentStep(user, completedSteps)
+
+	// Estimate remaining time
+	estimatedTime := "Complete"
+	if percentComplete < 100 {
+		remainingSteps := requiredCount - requiredCompleted
+		estimatedTime = fmt.Sprintf("%d min", remainingSteps*2)
+	}
+
+	// Determine capabilities
+	kycApproved := entities.KYCStatus(user.KYCStatus) == entities.KYCStatusApproved
+	canInvest := user.OnboardingStatus == entities.OnboardingStatusCompleted
+	canWithdraw := canInvest && kycApproved
+
+	return &entities.OnboardingProgressResponse{
+		UserID:          user.ID,
+		PercentComplete: percentComplete,
+		Checklist:       checklist,
+		CurrentStep:     currentStep,
+		EstimatedTime:   estimatedTime,
+		CanInvest:       canInvest,
+		CanWithdraw:     canWithdraw,
+	}, nil
 }
 
 // ProcessWalletCreationComplete handles wallet creation completion

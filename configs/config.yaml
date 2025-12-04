@@ -129,4 +129,19 @@ due:
     monthly: 200000.00
   risk_threshold: 0.9
 
+  social_auth:
+  google:
+    client_id: ""
+    client_secret: ""
+    redirect_uri: ""
+  apple:
+    client_id: ""
+    client_secret: ""
+    redirect_uri: ""
+webauthn:
+  rp_display_name: "RAIL"
+  rp_id: "rail.app"
+  rp_origins:
+    - "https://rail.app"
+
 

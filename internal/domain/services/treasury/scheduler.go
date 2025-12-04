@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/rail-service/rail_service/pkg/logger"
 )
 
 // Scheduler manages periodic execution of treasury operations

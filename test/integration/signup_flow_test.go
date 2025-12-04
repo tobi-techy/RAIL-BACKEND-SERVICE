@@ -16,13 +16,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/internal/domain/services"
-	"github.com/stack-service/stack_service/internal/infrastructure/cache"
-	"github.com/stack-service/stack_service/internal/infrastructure/config"
-	"github.com/stack-service/stack_service/internal/infrastructure/database"
-	"github.com/stack-service/stack_service/internal/infrastructure/di"
-	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services"
+	"github.com/rail-service/rail_service/internal/infrastructure/cache"
+	"github.com/rail-service/rail_service/internal/infrastructure/config"
+	"github.com/rail-service/rail_service/internal/infrastructure/database"
+	"github.com/rail-service/rail_service/internal/infrastructure/di"
+	"github.com/rail-service/rail_service/pkg/logger"
 )
 
 type stubVerificationEmailSender struct {

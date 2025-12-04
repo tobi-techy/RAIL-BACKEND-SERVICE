@@ -6,9 +6,9 @@ import (
 	"fmt"
 
 	"github.com/shopspring/decimal"
-	"github.com/stack-service/stack_service/internal/adapters/due"
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/rail-service/rail_service/internal/adapters/due"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/pkg/logger"
 )
 
 // DueProvider implements the ConversionProvider interface for Due

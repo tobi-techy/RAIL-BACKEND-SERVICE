@@ -4,21 +4,23 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"github.com/gin-gonic/gin"
-	"github.com/go-playground/validator/v10"
-	"github.com/google/uuid"
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/internal/domain/services"
-	"github.com/stack-service/stack_service/internal/domain/services/onboarding"
-	"github.com/stack-service/stack_service/internal/infrastructure/adapters"
-	"github.com/stack-service/stack_service/internal/infrastructure/config"
-	"github.com/stack-service/stack_service/internal/infrastructure/repositories"
-	"github.com/stack-service/stack_service/pkg/auth"
-	"github.com/stack-service/stack_service/pkg/crypto"
-	"go.uber.org/zap"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
+	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services"
+	"github.com/rail-service/rail_service/internal/domain/services/onboarding"
+	"github.com/rail-service/rail_service/internal/domain/services/twofa"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
+	"github.com/rail-service/rail_service/internal/infrastructure/config"
+	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
+	"github.com/rail-service/rail_service/pkg/auth"
+	"github.com/rail-service/rail_service/pkg/crypto"
+	"go.uber.org/zap"
 )
 
 // AuthHandlers consolidates authentication, signup, and onboarding handlers
@@ -32,7 +34,23 @@ type AuthHandlers struct {
 	onboardingService    *onboarding.Service
 	emailService         *adapters.EmailService
 	kycProvider          *adapters.KYCProvider
+	sessionService       SessionService
+	twoFAService         TwoFAService
 	validator            *validator.Validate
+}
+
+// SessionService interface for session management
+type SessionService interface {
+	InvalidateSession(ctx context.Context, token string) error
+	InvalidateAllUserSessions(ctx context.Context, userID uuid.UUID) error
+}
+
+// TwoFAService interface for 2FA management
+type TwoFAService interface {
+	GenerateSecret(ctx context.Context, userID uuid.UUID, userEmail string) (*twofa.TwoFASetup, error)
+	VerifyAndEnable(ctx context.Context, userID uuid.UUID, code string) error
+	Disable(ctx context.Context, userID uuid.UUID, code string) error
+	GetStatus(ctx context.Context, userID uuid.UUID) (*twofa.TwoFAStatus, error)
 }
 
 // NewAuthHandlers creates a new instance of AuthHandlers
@@ -46,6 +64,8 @@ func NewAuthHandlers(
 	onboardingService *onboarding.Service,
 	emailService *adapters.EmailService,
 	kycProvider *adapters.KYCProvider,
+	sessionService SessionService,
+	twoFAService TwoFAService,
 ) *AuthHandlers {
 	return &AuthHandlers{
 		db:                   db,
@@ -57,6 +77,8 @@ func NewAuthHandlers(
 		onboardingService:    onboardingService,
 		emailService:         emailService,
 		kycProvider:          kycProvider,
+		sessionService:       sessionService,
+		twoFAService:         twoFAService,
 		validator:            validator.New(),
 	}
 }
@@ -340,11 +362,14 @@ func (h *AuthHandlers) VerifyCode(c *gin.Context) {
 	} else {
 		identifier = *req.Phone
 		identifierType = "phone"
-		// For now, we'll need to implement GetByPhone or use a different approach
-		h.logger.Warn("Phone verification not yet implemented", zap.String("identifier", identifier))
-		c.JSON(http.StatusNotImplemented, entities.ErrorResponse{
-			Code:    "NOT_IMPLEMENTED",
-			Message: "Phone verification not yet implemented",
+		userProfile, err = h.userRepo.GetByPhone(ctx, identifier)
+	}
+
+	if err != nil {
+		h.logger.Warn("User not found for verification", zap.Error(err), zap.String("identifier", identifier))
+		c.JSON(http.StatusNotFound, entities.ErrorResponse{
+			Code:    "USER_NOT_FOUND",
+			Message: "User not found",
 		})
 		return
 	}
@@ -491,30 +516,25 @@ func (h *AuthHandlers) ResendCode(c *gin.Context) {
 		identifier = *req.Email
 		identifierType = "email"
 		userProfile, err = h.userRepo.GetByEmail(ctx, identifier)
-		if err != nil {
-			h.logger.Error("Failed to get user by email", zap.Error(err), zap.String("identifier", identifier), zap.String("identifierType", identifierType))
-			if isUserNotFoundError(err) {
-				c.JSON(http.StatusNotFound, entities.ErrorResponse{
-					Code:    "USER_NOT_FOUND",
-					Message: "User not found",
-				})
-			} else {
-				c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-					Code:    "INTERNAL_ERROR",
-					Message: "Internal server error",
-				})
-			}
-			return
-		}
 	} else {
 		identifier = *req.Phone
 		identifierType = "phone"
-		// For now, we'll need to implement GetByPhone or use a different approach
-		h.logger.Warn("Phone verification not yet implemented", zap.String("identifier", identifier))
-		c.JSON(http.StatusNotImplemented, entities.ErrorResponse{
-			Code:    "NOT_IMPLEMENTED",
-			Message: "Phone verification not yet implemented",
-		})
+		userProfile, err = h.userRepo.GetByPhone(ctx, identifier)
+	}
+
+	if err != nil {
+		h.logger.Error("Failed to get user", zap.Error(err), zap.String("identifier", identifier), zap.String("identifierType", identifierType))
+		if isUserNotFoundError(err) {
+			c.JSON(http.StatusNotFound, entities.ErrorResponse{
+				Code:    "USER_NOT_FOUND",
+				Message: "User not found",
+			})
+		} else {
+			c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+				Code:    "INTERNAL_ERROR",
+				Message: "Internal server error",
+			})
+		}
 		return
 	}
 
@@ -726,7 +746,22 @@ func (h *AuthHandlers) RefreshToken(c *gin.Context) {
 
 // Logout handles user logout
 func (h *AuthHandlers) Logout(c *gin.Context) {
-	// For now, client can simply drop tokens. Optionally implement session invalidation.
+	ctx := c.Request.Context()
+
+	// Get the token from Authorization header
+	authHeader := c.GetHeader("Authorization")
+	if authHeader != "" && len(authHeader) > 7 && authHeader[:7] == "Bearer " {
+		token := authHeader[7:]
+
+		if h.sessionService != nil {
+			if err := h.sessionService.InvalidateSession(ctx, token); err != nil {
+				h.logger.Warn("Failed to invalidate session", zap.Error(err))
+			} else {
+				h.logger.Info("Session invalidated successfully")
+			}
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{"message": "Logged out"})
 }
 
@@ -935,12 +970,115 @@ func (h *AuthHandlers) DeleteAccount(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Account deactivated"})
 }
 
+// Enable2FA handles 2FA setup initiation
+// @Summary Enable 2FA
+// @Description Generates a 2FA secret and QR code for the user
+// @Tags auth
+// @Produce json
+// @Success 200 {object} TwoFASetup
+// @Failure 400 {object} entities.ErrorResponse
+// @Failure 401 {object} entities.ErrorResponse
+// @Failure 500 {object} entities.ErrorResponse
+// @Security BearerAuth
+// @Router /api/v1/users/me/enable-2fa [post]
 func (h *AuthHandlers) Enable2FA(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"message": "2FA enabled (stub)"})
+	ctx := c.Request.Context()
+
+	userID, err := h.getUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "UNAUTHORIZED", Message: "User not authenticated"})
+		return
+	}
+
+	// Check if request has a code (verification step)
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := c.ShouldBindJSON(&req); err == nil && req.Code != "" {
+		// Verify and enable
+		if h.twoFAService == nil {
+			c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{Code: "2FA_UNAVAILABLE", Message: "2FA service not available"})
+			return
+		}
+
+		if err := h.twoFAService.VerifyAndEnable(ctx, userID, req.Code); err != nil {
+			h.logger.Warn("Failed to verify 2FA code", zap.Error(err), zap.String("user_id", userID.String()))
+			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_CODE", Message: err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "2FA enabled successfully"})
+		return
+	}
+
+	// Generate new secret
+	user, err := h.userRepo.GetUserEntityByID(ctx, userID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, entities.ErrorResponse{Code: "USER_NOT_FOUND", Message: "User not found"})
+		return
+	}
+
+	if h.twoFAService == nil {
+		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{Code: "2FA_UNAVAILABLE", Message: "2FA service not available"})
+		return
+	}
+
+	setup, err := h.twoFAService.GenerateSecret(ctx, userID, user.Email)
+	if err != nil {
+		h.logger.Error("Failed to generate 2FA secret", zap.Error(err), zap.String("user_id", userID.String()))
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "2FA_SETUP_FAILED", Message: err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"secret":      setup.Secret,
+		"qrCodeUrl":   setup.QRCodeURL,
+		"backupCodes": setup.BackupCodes,
+	})
 }
 
+// Disable2FA handles 2FA disabling
+// @Summary Disable 2FA
+// @Description Disables 2FA for the user after verification
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param request body object{code=string} true "Verification code"
+// @Success 200 {object} map[string]string
+// @Failure 400 {object} entities.ErrorResponse
+// @Failure 401 {object} entities.ErrorResponse
+// @Failure 500 {object} entities.ErrorResponse
+// @Security BearerAuth
+// @Router /api/v1/users/me/disable-2fa [post]
 func (h *AuthHandlers) Disable2FA(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"message": "2FA disabled (stub)"})
+	ctx := c.Request.Context()
+
+	userID, err := h.getUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "UNAUTHORIZED", Message: "User not authenticated"})
+		return
+	}
+
+	var req struct {
+		Code string `json:"code" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "Verification code is required"})
+		return
+	}
+
+	if h.twoFAService == nil {
+		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{Code: "2FA_UNAVAILABLE", Message: "2FA service not available"})
+		return
+	}
+
+	if err := h.twoFAService.Disable(ctx, userID, req.Code); err != nil {
+		h.logger.Warn("Failed to disable 2FA", zap.Error(err), zap.String("user_id", userID.String()))
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "DISABLE_FAILED", Message: err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "2FA disabled successfully"})
 }
 
 
@@ -1090,6 +1228,46 @@ func (h *AuthHandlers) GetOnboardingStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
+// GetOnboardingProgress handles GET /onboarding/progress
+// @Summary Get onboarding progress
+// @Description Returns detailed progress information with checklist and completion percentage
+// @Tags onboarding
+// @Produce json
+// @Success 200 {object} entities.OnboardingProgressResponse
+// @Failure 400 {object} entities.ErrorResponse
+// @Failure 401 {object} entities.ErrorResponse
+// @Failure 500 {object} entities.ErrorResponse
+// @Security BearerAuth
+// @Router /api/v1/onboarding/progress [get]
+func (h *AuthHandlers) GetOnboardingProgress(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	userID, err := h.getUserIDFromContext(c)
+	if err != nil {
+		h.logger.Warn("Invalid or missing user ID for progress", zap.Error(err))
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
+			Code:    "INVALID_USER_ID",
+			Message: "Invalid or missing user ID",
+		})
+		return
+	}
+
+	progress, err := h.onboardingService.GetOnboardingProgress(ctx, userID)
+	if err != nil {
+		h.logger.Error("Failed to get onboarding progress",
+			zap.Error(err),
+			zap.String("user_id", userID.String()))
+
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+			Code:    "PROGRESS_ERROR",
+			Message: "Failed to retrieve onboarding progress",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, progress)
+}
+
 // GetKYCStatus handles GET /kyc/status
 // @Summary Get KYC status
 // @Description Returns the user's current KYC verification status and guidance
@@ -1129,6 +1307,62 @@ func (h *AuthHandlers) GetKYCStatus(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, status)
+}
+
+// GetKYCVerificationURL handles GET /kyc/verification-url
+// @Summary Get KYC verification URL
+// @Description Generates a URL for the user to complete KYC verification with the provider
+// @Tags onboarding
+// @Produce json
+// @Success 200 {object} map[string]interface{} "KYC verification URL"
+// @Failure 400 {object} entities.ErrorResponse
+// @Failure 401 {object} entities.ErrorResponse
+// @Failure 500 {object} entities.ErrorResponse
+// @Security BearerAuth
+// @Router /api/v1/kyc/verification-url [get]
+func (h *AuthHandlers) GetKYCVerificationURL(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	userID, err := h.getUserIDFromContext(c)
+	if err != nil {
+		h.logger.Warn("Invalid or missing user ID for KYC URL", zap.Error(err))
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
+			Code:    "INVALID_USER_ID",
+			Message: "Invalid or missing user ID",
+		})
+		return
+	}
+
+	if h.kycProvider == nil {
+		h.logger.Error("KYC provider not configured")
+		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{
+			Code:    "KYC_UNAVAILABLE",
+			Message: "KYC verification is not available",
+		})
+		return
+	}
+
+	url, err := h.kycProvider.GenerateKYCURL(ctx, userID)
+	if err != nil {
+		h.logger.Error("Failed to generate KYC URL",
+			zap.Error(err),
+			zap.String("user_id", userID.String()))
+
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+			Code:    "KYC_URL_ERROR",
+			Message: "Failed to generate KYC verification URL",
+		})
+		return
+	}
+
+	h.logger.Info("Generated KYC verification URL",
+		zap.String("user_id", userID.String()))
+
+	c.JSON(http.StatusOK, gin.H{
+		"url":     url,
+		"expires": "30m",
+		"message": "Complete your identity verification using this link",
+	})
 }
 
 // SubmitKYC handles POST /onboarding/kyc/submit

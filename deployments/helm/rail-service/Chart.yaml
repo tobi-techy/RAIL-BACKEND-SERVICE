@@ -1,6 +1,6 @@
 apiVersion: v2
-name: stack-service
-description: STACK GenZ Web3 Investment Platform
+name: rail-service
+description: Rail GenZ Web3 Investment Platform
 type: application
 version: 1.0.0
 appVersion: "1.0.0"
@@ -9,4 +9,4 @@ keywords:
   - investment
   - fintech
 maintainers:
-  - name: STACK Team
+  - name: Rail Team

@@ -3,11 +3,11 @@ package handlers
 import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/internal/domain/services"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services"
 	"go.uber.org/zap"
 	"net/http"
-	walletprovisioning "github.com/stack-service/stack_service/internal/workers/wallet_provisioning"
+	walletprovisioning "github.com/rail-service/rail_service/internal/workers/wallet_provisioning"
 )
 
 // NotificationWorkerHandlers consolidates notification and worker management handlers

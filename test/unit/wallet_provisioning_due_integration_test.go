@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	walletprovisioning "github.com/stack-service/stack_service/internal/workers/wallet_provisioning"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	walletprovisioning "github.com/rail-service/rail_service/internal/workers/wallet_provisioning"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"go.uber.org/zap"

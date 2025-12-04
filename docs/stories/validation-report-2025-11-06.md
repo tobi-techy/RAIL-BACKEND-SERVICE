@@ -1,7 +1,7 @@
 # Validation Report
 
-**Document:** /Users/Aplle/Development/stack_service/docs/stories/2-4-due-withdrawal-integration.md
-**Checklist:** /Users/Aplle/Development/stack_service/bmad/bmm/workflows/4-implementation/create-story/checklist.md
+**Document:** /Users/Aplle/Development/rail_service/docs/stories/2-4-due-withdrawal-integration.md
+**Checklist:** /Users/Aplle/Development/rail_service/bmad/bmm/workflows/4-implementation/create-story/checklist.md
 **Date:** 2025-11-06
 
 ## Summary
@@ -51,7 +51,7 @@ Evidence: Tasks cover all ACs though not explicitly numbered (e.g., "API endpoin
 Evidence: Lines 54-58: "- [Source: docs/PRD.md#Functional Requirements] - Business requirements for withdrawal flow\n  - [Source: docs/architecture.md#7.4 Withdrawal Flow] - Detailed sequence diagram\n..."
 
 ✓ File saved to stories directory from config (dev_story_location)
-Evidence: Document saved to /Users/Aplle/Development/stack_service/docs/stories/ as configured
+Evidence: Document saved to /Users/Aplle/Development/rail_service/docs/stories/ as configured
 
 ✓ If creating a new story number, epics.md explicitly enumerates this story under the target epic; otherwise generation HALTED with instruction to run PM/SM `*correct-course`
 Evidence: Story "2-4-due-withdrawal-integration" listed in Epic 2 stories (line 53 in epics.md)

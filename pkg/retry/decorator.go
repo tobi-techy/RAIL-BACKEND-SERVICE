@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 	
-	apperrors "github.com/stack-service/stack_service/pkg/errors"
+	apperrors "github.com/rail-service/rail_service/pkg/errors"
 	"go.uber.org/zap"
 )
 

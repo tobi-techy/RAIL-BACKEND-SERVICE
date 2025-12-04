@@ -10,8 +10,8 @@ import (
 	"github.com/lib/pq"
 	"go.uber.org/zap"
 
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/pkg/crypto"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/pkg/crypto"
 )
 
 // UserRepository implements the user repository interface using PostgreSQL
@@ -851,4 +851,75 @@ func (r *UserRepository) ValidatePasswordResetToken(ctx context.Context, tokenHa
 		return uuid.Nil, fmt.Errorf("failed to validate token: %w", err)
 	}
 	return userID, nil
+}
+
+// GetByPhone retrieves a user profile by phone number
+func (r *UserRepository) GetByPhone(ctx context.Context, phone string) (*entities.UserProfile, error) {
+	query := `
+        SELECT id, email, phone, first_name, last_name, date_of_birth,
+               auth_provider_id, email_verified, phone_verified,
+               onboarding_status, kyc_status, kyc_provider_ref,
+               kyc_submitted_at, kyc_approved_at, kyc_rejection_reason,
+               is_active, created_at, updated_at
+        FROM users 
+        WHERE phone = $1 AND is_active = true`
+
+	user := &entities.UserProfile{}
+	var kycApprovedAt, kycSubmittedAt sql.NullTime
+	var kycRejectionReason, kycProviderRef sql.NullString
+	var firstName, lastName sql.NullString
+	var dateOfBirth sql.NullTime
+
+	err := r.db.QueryRowContext(ctx, query, phone).Scan(
+		&user.ID,
+		&user.Email,
+		&user.Phone,
+		&firstName,
+		&lastName,
+		&dateOfBirth,
+		&user.AuthProviderID,
+		&user.EmailVerified,
+		&user.PhoneVerified,
+		&user.OnboardingStatus,
+		&user.KYCStatus,
+		&kycProviderRef,
+		&kycSubmittedAt,
+		&kycApprovedAt,
+		&kycRejectionReason,
+		&user.IsActive,
+		&user.CreatedAt,
+		&user.UpdatedAt,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("user not found")
+		}
+		r.logger.Error("Failed to get user by phone", zap.Error(err), zap.String("phone", phone))
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+
+	if firstName.Valid {
+		user.FirstName = &firstName.String
+	}
+	if lastName.Valid {
+		user.LastName = &lastName.String
+	}
+	if dateOfBirth.Valid {
+		user.DateOfBirth = &dateOfBirth.Time
+	}
+	if kycProviderRef.Valid {
+		user.KYCProviderRef = &kycProviderRef.String
+	}
+	if kycSubmittedAt.Valid {
+		user.KYCSubmittedAt = &kycSubmittedAt.Time
+	}
+	if kycApprovedAt.Valid {
+		user.KYCApprovedAt = &kycApprovedAt.Time
+	}
+	if kycRejectionReason.Valid {
+		user.KYCRejectionReason = &kycRejectionReason.String
+	}
+
+	return user, nil
 }

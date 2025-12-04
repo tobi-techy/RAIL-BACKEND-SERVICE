@@ -1,8 +1,8 @@
-{{- define "stack-service.name" -}}
+{{- define "rail-service.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
-{{- define "stack-service.fullname" -}}
+{{- define "rail-service.fullname" -}}
 {{- if .Values.fullnameOverride }}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
 {{- else }}
@@ -15,20 +15,20 @@
 {{- end }}
 {{- end }}
 
-{{- define "stack-service.chart" -}}
+{{- define "rail-service.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
-{{- define "stack-service.labels" -}}
-helm.sh/chart: {{ include "stack-service.chart" . }}
-{{ include "stack-service.selectorLabels" . }}
+{{- define "rail-service.labels" -}}
+helm.sh/chart: {{ include "rail-service.chart" . }}
+{{ include "rail-service.selectorLabels" . }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
-{{- define "stack-service.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "stack-service.name" . }}
+{{- define "rail-service.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "rail-service.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}

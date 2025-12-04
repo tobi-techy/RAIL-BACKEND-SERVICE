@@ -232,8 +232,8 @@ database:
   max_idle_conns: 5
   conn_max_lifetime: 300
   read_replicas:
-    - "postgres://replica1:5432/stack_service"
-    - "postgres://replica2:5432/stack_service"
+    - "postgres://replica1:5432/rail_service"
+    - "postgres://replica2:5432/rail_service"
 
 redis:
   cluster_mode: true

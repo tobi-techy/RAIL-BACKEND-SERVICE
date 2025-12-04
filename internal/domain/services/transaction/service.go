@@ -9,10 +9,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/internal/infrastructure/database"
-	"github.com/stack-service/stack_service/pkg/errors"
-	"github.com/stack-service/stack_service/pkg/metrics"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/infrastructure/database"
+	"github.com/rail-service/rail_service/pkg/errors"
+	"github.com/rail-service/rail_service/pkg/metrics"
 	"go.uber.org/zap"
 )
 

@@ -9,7 +9,7 @@ import (
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 
-	"github.com/stack-service/stack_service/internal/infrastructure/config"
+	"github.com/rail-service/rail_service/internal/infrastructure/config"
 )
 
 // RedisClient defines the interface for Redis operations

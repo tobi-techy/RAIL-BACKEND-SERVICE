@@ -7,13 +7,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
-	"github.com/stack-service/stack_service/internal/api/handlers"
-	"github.com/stack-service/stack_service/internal/api/middleware"
-	"github.com/stack-service/stack_service/internal/domain/services/apikey"
-	"github.com/stack-service/stack_service/internal/domain/services/session"
-	"github.com/stack-service/stack_service/internal/domain/services/twofa"
-	"github.com/stack-service/stack_service/internal/infrastructure/config"
-	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/rail-service/rail_service/internal/api/handlers"
+	"github.com/rail-service/rail_service/internal/api/middleware"
+	"github.com/rail-service/rail_service/internal/domain/services/apikey"
+	"github.com/rail-service/rail_service/internal/domain/services/session"
+	"github.com/rail-service/rail_service/internal/domain/services/twofa"
+	"github.com/rail-service/rail_service/internal/infrastructure/config"
+	"github.com/rail-service/rail_service/pkg/logger"
 )
 
 type APIKeyValidatorAdapter struct {

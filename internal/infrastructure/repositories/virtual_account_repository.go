@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
-	"github.com/stack-service/stack_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 )
 
 // VirtualAccountRepository implements the virtual account repository interface

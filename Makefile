@@ -3,17 +3,17 @@
 VERSION ?= $(shell git describe --tags --always --dirty)
 COMMIT ?= $(shell git rev-parse --short HEAD)
 BUILD_TIME ?= $(shell date -u '+%Y-%m-%d_%H:%M:%S')
-LDFLAGS := -ldflags "-X github.com/stack-service/stack_service/pkg/version.Version=$(VERSION) \
-	-X github.com/stack-service/stack_service/pkg/version.GitCommit=$(COMMIT) \
-	-X github.com/stack-service/stack_service/pkg/version.BuildTime=$(BUILD_TIME) \
+LDFLAGS := -ldflags "-X github.com/rail-service/rail_service/pkg/version.Version=$(VERSION) \
+	-X github.com/rail-service/rail_service/pkg/version.GitCommit=$(COMMIT) \
+	-X github.com/rail-service/rail_service/pkg/version.BuildTime=$(BUILD_TIME) \
 	-w -s"
 
 build:
-	@echo "Building stack-service..."
-	CGO_ENABLED=0 go build $(LDFLAGS) -o bin/stack_service cmd/main.go
+	@echo "Building rail-service..."
+	CGO_ENABLED=0 go build $(LDFLAGS) -o bin/rail_service cmd/main.go
 
 run:
-	@echo "Running stack-service..."
+	@echo "Running rail-service..."
 	go run cmd/main.go
 
 test:
@@ -36,11 +36,11 @@ security-scan:
 
 docker-build:
 	@echo "Building Docker image..."
-	docker build -f Dockerfile.secure -t stack-service:$(VERSION) .
+	docker build -f Dockerfile.secure -t rail-service:$(VERSION) .
 
 docker-run:
 	@echo "Running Docker container..."
-	docker run -p 8080:8080 stack-service:$(VERSION)
+	docker run -p 8080:8080 rail-service:$(VERSION)
 
 clean:
 	@echo "Cleaning..."

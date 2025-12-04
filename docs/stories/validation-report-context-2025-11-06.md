@@ -1,7 +1,7 @@
 # Validation Report
 
-**Document:** /Users/Aplle/Development/stack_service/docs/stories/2-4-due-withdrawal-integration.context.md
-**Checklist:** /Users/Aplle/Development/stack_service/bmad/bmm/workflows/4-implementation/story-context/checklist.md
+**Document:** /Users/Aplle/Development/rail_service/docs/stories/2-4-due-withdrawal-integration.context.md
+**Checklist:** /Users/Aplle/Development/rail_service/bmad/bmm/workflows/4-implementation/story-context/checklist.md
 **Date:** 2025-11-06
 
 ## Summary
