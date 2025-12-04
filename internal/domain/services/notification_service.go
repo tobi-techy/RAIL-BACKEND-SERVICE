@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-	"github.com/stack-service/stack_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"go.uber.org/zap"
 )
 
@@ -102,5 +102,43 @@ func (s *NotificationService) NotifyTransactionDeclined(ctx context.Context, use
 		zap.String("user_id", userID.String()),
 		zap.String("amount", amount.String()),
 		zap.String("type", transactionType))
+	return nil
+}
+
+// NotifyDepositConfirmed sends notification when a deposit is confirmed
+func (s *NotificationService) NotifyDepositConfirmed(ctx context.Context, userID uuid.UUID, amount, chain, txHash string) error {
+	s.logger.Info("Sending deposit confirmed notification",
+		zap.String("user_id", userID.String()),
+		zap.String("amount", amount),
+		zap.String("chain", chain),
+		zap.String("tx_hash", txHash))
+	return nil
+}
+
+// NotifyWithdrawalCompleted sends notification when a withdrawal is completed
+func (s *NotificationService) NotifyWithdrawalCompleted(ctx context.Context, userID uuid.UUID, amount, destinationAddress string) error {
+	s.logger.Info("Sending withdrawal completed notification",
+		zap.String("user_id", userID.String()),
+		zap.String("amount", amount),
+		zap.String("destination", destinationAddress))
+	return nil
+}
+
+// NotifyWithdrawalFailed sends notification when a withdrawal fails
+func (s *NotificationService) NotifyWithdrawalFailed(ctx context.Context, userID uuid.UUID, amount, reason string) error {
+	s.logger.Warn("Sending withdrawal failed notification",
+		zap.String("user_id", userID.String()),
+		zap.String("amount", amount),
+		zap.String("reason", reason))
+	return nil
+}
+
+// NotifyLargeBalanceChange sends notification for significant balance changes
+func (s *NotificationService) NotifyLargeBalanceChange(ctx context.Context, userID uuid.UUID, changeType string, amount decimal.Decimal, newBalance decimal.Decimal) error {
+	s.logger.Info("Sending large balance change notification",
+		zap.String("user_id", userID.String()),
+		zap.String("change_type", changeType),
+		zap.String("amount", amount.String()),
+		zap.String("new_balance", newBalance.String()))
 	return nil
 }

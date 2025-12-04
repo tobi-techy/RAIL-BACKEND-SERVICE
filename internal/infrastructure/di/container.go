@@ -10,29 +10,35 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/shopspring/decimal"
-	"github.com/stack-service/stack_service/internal/adapters/alpaca"
-	"github.com/stack-service/stack_service/internal/adapters/due"
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/internal/domain/services"
-	"github.com/stack-service/stack_service/internal/domain/services/allocation"
-	"github.com/stack-service/stack_service/internal/domain/services/apikey"
-	entitysecret "github.com/stack-service/stack_service/internal/domain/services/entity_secret"
-	"github.com/stack-service/stack_service/internal/domain/services/funding"
-	"github.com/stack-service/stack_service/internal/domain/services/investing"
-	"github.com/stack-service/stack_service/internal/domain/services/ledger"
-	"github.com/stack-service/stack_service/internal/domain/services/onboarding"
-	"github.com/stack-service/stack_service/internal/domain/services/passcode"
-	"github.com/stack-service/stack_service/internal/domain/services/reconciliation"
-	"github.com/stack-service/stack_service/internal/domain/services/session"
-	"github.com/stack-service/stack_service/internal/domain/services/twofa"
-	"github.com/stack-service/stack_service/internal/domain/services/wallet"
-	"github.com/stack-service/stack_service/internal/infrastructure/adapters"
-	"github.com/stack-service/stack_service/internal/infrastructure/cache"
-	"github.com/stack-service/stack_service/internal/infrastructure/circle"
-	"github.com/stack-service/stack_service/internal/infrastructure/config"
-	"github.com/stack-service/stack_service/internal/infrastructure/repositories"
-	commonmetrics "github.com/stack-service/stack_service/pkg/common/metrics"
-	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/rail-service/rail_service/internal/adapters/alpaca"
+	"github.com/rail-service/rail_service/internal/adapters/due"
+	"github.com/rail-service/rail_service/internal/api/handlers"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services"
+	"github.com/rail-service/rail_service/internal/domain/services/allocation"
+	"github.com/rail-service/rail_service/internal/domain/services/apikey"
+	"github.com/rail-service/rail_service/internal/domain/services/audit"
+	entitysecret "github.com/rail-service/rail_service/internal/domain/services/entity_secret"
+	"github.com/rail-service/rail_service/internal/domain/services/funding"
+	"github.com/rail-service/rail_service/internal/domain/services/integration"
+	"github.com/rail-service/rail_service/internal/domain/services/investing"
+	"github.com/rail-service/rail_service/internal/domain/services/ledger"
+	"github.com/rail-service/rail_service/internal/domain/services/limits"
+	"github.com/rail-service/rail_service/internal/domain/services/onboarding"
+	"github.com/rail-service/rail_service/internal/domain/services/passcode"
+	"github.com/rail-service/rail_service/internal/domain/services/reconciliation"
+	"github.com/rail-service/rail_service/internal/domain/services/session"
+	"github.com/rail-service/rail_service/internal/domain/services/socialauth"
+	"github.com/rail-service/rail_service/internal/domain/services/twofa"
+	"github.com/rail-service/rail_service/internal/domain/services/wallet"
+	"github.com/rail-service/rail_service/internal/domain/services/webauthn"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
+	"github.com/rail-service/rail_service/internal/infrastructure/cache"
+	"github.com/rail-service/rail_service/internal/infrastructure/circle"
+	"github.com/rail-service/rail_service/internal/infrastructure/config"
+	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
+	commonmetrics "github.com/rail-service/rail_service/pkg/common/metrics"
+	"github.com/rail-service/rail_service/pkg/logger"
 	"go.uber.org/zap"
 )
 
@@ -89,6 +95,103 @@ func (a *AlpacaFundingAdapter) CreateJournal(ctx context.Context, req *entities.
 	return a.adapter.CreateJournal(ctx, req)
 }
 
+// LedgerIntegrationAdapter adapts integration.LedgerIntegration to funding.LedgerIntegration interface
+type LedgerIntegrationAdapter struct {
+	integration *integration.LedgerIntegration
+}
+
+func (a *LedgerIntegrationAdapter) RecordDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID, chain, txHash string) error {
+	return a.integration.RecordDeposit(ctx, userID, amount, depositID, chain, txHash)
+}
+
+func (a *LedgerIntegrationAdapter) GetUserBalance(ctx context.Context, userID uuid.UUID) (*funding.LedgerBalanceView, error) {
+	view, err := a.integration.GetUserBalance(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return &funding.LedgerBalanceView{
+		USDCBalance:       view.USDCBalance,
+		FiatExposure:      view.FiatExposure,
+		PendingInvestment: view.PendingInvestment,
+		TotalValue:        view.TotalValue,
+	}, nil
+}
+
+// WithdrawalAlpacaAdapter adapts alpaca.Client to services.AlpacaAdapter interface for withdrawals
+type WithdrawalAlpacaAdapter struct {
+	client         *alpaca.Client
+	fundingAdapter *alpaca.FundingAdapter
+}
+
+func (a *WithdrawalAlpacaAdapter) GetAccount(ctx context.Context, accountID string) (*entities.AlpacaAccountResponse, error) {
+	return a.client.GetAccount(ctx, accountID)
+}
+
+func (a *WithdrawalAlpacaAdapter) CreateJournal(ctx context.Context, req *entities.AlpacaJournalRequest) (*entities.AlpacaJournalResponse, error) {
+	return a.fundingAdapter.CreateJournal(ctx, req)
+}
+
+// WithdrawalDueAdapter adapts due.Adapter to services.DueWithdrawalAdapter interface
+type WithdrawalDueAdapter struct {
+	adapter *due.Adapter
+}
+
+func (a *WithdrawalDueAdapter) ProcessWithdrawal(ctx context.Context, req *entities.InitiateWithdrawalRequest) (*services.ProcessWithdrawalResponse, error) {
+	resp, err := a.adapter.ProcessWithdrawal(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return &services.ProcessWithdrawalResponse{
+		TransferID:     resp.TransferID,
+		RecipientID:    resp.RecipientID,
+		FundingAddress: resp.FundingAddress,
+		SourceAmount:   resp.SourceAmount,
+		DestAmount:     resp.DestAmount,
+		Status:         resp.Status,
+	}, nil
+}
+
+func (a *WithdrawalDueAdapter) GetTransferStatus(ctx context.Context, transferID string) (*services.OnRampTransferResponse, error) {
+	resp, err := a.adapter.GetTransferStatus(ctx, transferID)
+	if err != nil {
+		return nil, err
+	}
+	return &services.OnRampTransferResponse{
+		ID:     resp.ID,
+		Status: resp.Status,
+	}, nil
+}
+
+// FundingNotificationAdapter adapts NotificationService to funding.FundingNotificationService
+type FundingNotificationAdapter struct {
+	svc *services.NotificationService
+}
+
+func (a *FundingNotificationAdapter) NotifyDepositConfirmed(ctx context.Context, userID uuid.UUID, amount, chain, txHash string) error {
+	return a.svc.NotifyDepositConfirmed(ctx, userID, amount, chain, txHash)
+}
+
+func (a *FundingNotificationAdapter) NotifyLargeBalanceChange(ctx context.Context, userID uuid.UUID, changeType string, amount decimal.Decimal, newBalance decimal.Decimal) error {
+	return a.svc.NotifyLargeBalanceChange(ctx, userID, changeType, amount, newBalance)
+}
+
+// WithdrawalNotificationAdapter adapts NotificationService to services.WithdrawalNotificationService
+type WithdrawalNotificationAdapter struct {
+	svc *services.NotificationService
+}
+
+func (a *WithdrawalNotificationAdapter) NotifyWithdrawalCompleted(ctx context.Context, userID uuid.UUID, amount, destinationAddress string) error {
+	return a.svc.NotifyWithdrawalCompleted(ctx, userID, amount, destinationAddress)
+}
+
+func (a *WithdrawalNotificationAdapter) NotifyWithdrawalFailed(ctx context.Context, userID uuid.UUID, amount, reason string) error {
+	return a.svc.NotifyWithdrawalFailed(ctx, userID, amount, reason)
+}
+
+func (a *WithdrawalNotificationAdapter) NotifyLargeBalanceChange(ctx context.Context, userID uuid.UUID, changeType string, amount decimal.Decimal, newBalance decimal.Decimal) error {
+	return a.svc.NotifyLargeBalanceChange(ctx, userID, changeType, amount, newBalance)
+}
+
 // Container holds all application dependencies
 type Container struct {
 	Config *config.Config
@@ -140,6 +243,11 @@ type Container struct {
 	ReconciliationScheduler *reconciliation.Scheduler
 	AllocationService       *allocation.Service
 	NotificationService     *services.NotificationService
+	SocialAuthService       *socialauth.Service
+	WebAuthnService         *webauthn.Service
+	LimitsService           *limits.Service
+	DomainAuditService      *audit.Service
+	WithdrawalService       *services.WithdrawalService
 
 	// Additional Repositories
 	OnboardingJobRepo *repositories.OnboardingJobRepository
@@ -222,13 +330,18 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 
 	// Initialize email service with full configuration
 	emailServiceConfig := adapters.EmailServiceConfig{
-		Provider:    cfg.Email.Provider,
-		APIKey:      cfg.Email.APIKey,
-		FromEmail:   cfg.Email.FromEmail,
-		FromName:    cfg.Email.FromName,
-		Environment: cfg.Email.Environment,
-		BaseURL:     cfg.Email.BaseURL,
-		ReplyTo:     cfg.Email.ReplyTo,
+		Provider:     cfg.Email.Provider,
+		APIKey:       cfg.Email.APIKey,
+		FromEmail:    cfg.Email.FromEmail,
+		FromName:     cfg.Email.FromName,
+		Environment:  cfg.Email.Environment,
+		BaseURL:      cfg.Email.BaseURL,
+		ReplyTo:      cfg.Email.ReplyTo,
+		SMTPHost:     cfg.Email.SMTPHost,
+		SMTPPort:     cfg.Email.SMTPPort,
+		SMTPUsername: cfg.Email.SMTPUsername,
+		SMTPPassword: cfg.Email.SMTPPassword,
+		SMTPUseTLS:   cfg.Email.SMTPUseTLS,
 	}
 	var emailService *adapters.EmailService
 	if strings.TrimSpace(cfg.Email.Provider) != "" {
@@ -393,6 +506,36 @@ func (c *Container) initializeDomainServices() error {
 	c.TwoFAService = twofa.NewService(c.DB, c.ZapLog, c.Config.Security.EncryptionKey)
 	c.APIKeyService = apikey.NewService(c.DB, c.ZapLog)
 
+	// Initialize social auth service
+	socialAuthConfig := socialauth.Config{
+		Google: socialauth.OAuthConfig{
+			ClientID:     c.Config.SocialAuth.Google.ClientID,
+			ClientSecret: c.Config.SocialAuth.Google.ClientSecret,
+			RedirectURI:  c.Config.SocialAuth.Google.RedirectURI,
+		},
+		Apple: socialauth.OAuthConfig{
+			ClientID:     c.Config.SocialAuth.Apple.ClientID,
+			ClientSecret: c.Config.SocialAuth.Apple.ClientSecret,
+			RedirectURI:  c.Config.SocialAuth.Apple.RedirectURI,
+		},
+	}
+	c.SocialAuthService = socialauth.NewService(c.DB, c.ZapLog, socialAuthConfig)
+
+	// Initialize WebAuthn service
+	if c.Config.WebAuthn.RPID != "" {
+		webauthnConfig := webauthn.Config{
+			RPDisplayName: c.Config.WebAuthn.RPDisplayName,
+			RPID:          c.Config.WebAuthn.RPID,
+			RPOrigins:     c.Config.WebAuthn.RPOrigins,
+		}
+		webauthnSvc, err := webauthn.NewService(c.DB, c.ZapLog, webauthnConfig)
+		if err != nil {
+			c.Logger.Warn("Failed to initialize WebAuthn service", zap.Error(err))
+		} else {
+			c.WebAuthnService = webauthnSvc
+		}
+	}
+
 	// Initialize simple wallet repository for funding service
 	simpleWalletRepo := repositories.NewSimpleWalletRepository(c.DB, c.Logger)
 
@@ -409,21 +552,31 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize ledger service
 	c.LedgerService = ledger.NewService(c.LedgerRepo, sqlxDB, c.Logger)
 
+	// Initialize ledger integration (bridges legacy and new ledger system)
+	ledgerIntegration := integration.NewLedgerIntegration(
+		c.LedgerService,
+		c.BalanceRepo,
+		c.Logger,
+		false, // shadowMode disabled - fully migrated to ledger
+		false, // strictMode
+	)
+
 	// Initialize standalone Balance service with Alpaca adapter
 	alpacaBalanceAdapter := &AlpacaFundingAdapter{adapter: alpacaFundingAdapter, client: c.AlpacaClient}
 	c.BalanceService = services.NewBalanceService(c.BalanceRepo, alpacaBalanceAdapter, c.Logger)
 
-	// Initialize funding service with dependencies
+	// Initialize funding service with ledger integration
 	circleAdapter := &CircleAdapter{client: c.CircleClient}
+	ledgerAdapter := &LedgerIntegrationAdapter{integration: ledgerIntegration}
 	c.FundingService = funding.NewService(
 		c.DepositRepo,
-		c.BalanceRepo,
 		simpleWalletRepo,
 		c.WalletRepo,
 		virtualAccountRepo,
 		circleAdapter,
 		dueAdapter,
 		&AlpacaFundingAdapter{adapter: alpacaFundingAdapter, client: c.AlpacaClient},
+		ledgerAdapter,
 		c.Logger,
 	)
 
@@ -467,6 +620,39 @@ func (c *Container) initializeDomainServices() error {
 		return fmt.Errorf("failed to initialize reconciliation service: %w", err)
 	}
 
+	// Initialize limits service for deposit/withdrawal limits
+	usageRepo := repositories.NewUsageRepository(c.DB, c.ZapLog)
+	c.LimitsService = limits.NewService(c.UserRepo, usageRepo, c.Logger)
+
+	// Initialize domain audit service for compliance logging
+	auditRepo := repositories.NewAuditRepository(sqlxDB)
+	c.DomainAuditService = audit.NewService(auditRepo, c.ZapLog)
+
+	// Wire limits and audit services to funding service
+	c.FundingService.SetLimitsService(c.LimitsService)
+	c.FundingService.SetAuditService(c.DomainAuditService)
+	c.FundingService.SetNotificationService(&FundingNotificationAdapter{svc: c.NotificationService})
+
+	// Initialize withdrawal service with adapters
+	withdrawalAlpacaAdapter := &WithdrawalAlpacaAdapter{
+		client:         c.AlpacaClient,
+		fundingAdapter: alpacaFundingAdapter,
+	}
+	withdrawalDueAdapter := &WithdrawalDueAdapter{adapter: dueAdapter}
+	c.WithdrawalService = services.NewWithdrawalService(
+		c.WithdrawalRepo,
+		withdrawalAlpacaAdapter,
+		withdrawalDueAdapter,
+		c.AllocationService,
+		nil, // AllocationNotificationManager - optional
+		c.Logger,
+		nil, // QueuePublisher - will use mock
+	)
+	// Wire limits, audit, and notification services to withdrawal service
+	c.WithdrawalService.SetLimitsService(c.LimitsService)
+	c.WithdrawalService.SetAuditService(c.DomainAuditService)
+	c.WithdrawalService.SetNotificationService(&WithdrawalNotificationAdapter{svc: c.NotificationService})
+
 	return nil
 }
 
@@ -490,6 +676,16 @@ func (c *Container) GetTwoFAService() *twofa.Service {
 	return c.TwoFAService
 }
 
+// GetSocialAuthService returns the social auth service
+func (c *Container) GetSocialAuthService() *socialauth.Service {
+	return c.SocialAuthService
+}
+
+// GetWebAuthnService returns the WebAuthn service
+func (c *Container) GetWebAuthnService() *webauthn.Service {
+	return c.WebAuthnService
+}
+
 // GetAPIKeyService returns the API key service
 func (c *Container) GetAPIKeyService() *apikey.Service {
 	return c.APIKeyService
@@ -503,6 +699,11 @@ func (c *Container) GetWalletService() *wallet.Service {
 // GetFundingService returns the funding service
 func (c *Container) GetFundingService() *funding.Service {
 	return c.FundingService
+}
+
+// GetWithdrawalService returns the withdrawal service
+func (c *Container) GetWithdrawalService() *services.WithdrawalService {
+	return c.WithdrawalService
 }
 
 // GetInvestingService returns the investing service
@@ -538,6 +739,19 @@ func (c *Container) GetOnboardingJobService() *services.OnboardingJobService {
 // GetAllocationService returns the allocation service
 func (c *Container) GetAllocationService() *allocation.Service {
 	return c.AllocationService
+}
+
+// GetLimitsService returns the limits service
+func (c *Container) GetLimitsService() *limits.Service {
+	return c.LimitsService
+}
+
+// GetLimitsHandler returns a new limits handler
+func (c *Container) GetLimitsHandler() *handlers.LimitsHandler {
+	if c.LimitsService == nil {
+		return nil
+	}
+	return handlers.NewLimitsHandler(c.LimitsService, c.Logger)
 }
 
 // initializeReconciliationService initializes the reconciliation service and scheduler

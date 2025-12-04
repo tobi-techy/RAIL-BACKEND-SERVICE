@@ -3,12 +3,12 @@ package routes
 import (
 	"context"
 
-	"github.com/stack-service/stack_service/internal/api/handlers"
-	"github.com/stack-service/stack_service/internal/api/middleware"
-	"github.com/stack-service/stack_service/internal/domain/services"
-	"github.com/stack-service/stack_service/internal/domain/services/session"
-	"github.com/stack-service/stack_service/internal/infrastructure/di"
-	"github.com/stack-service/stack_service/pkg/tracing"
+	"github.com/rail-service/rail_service/internal/api/handlers"
+	"github.com/rail-service/rail_service/internal/api/middleware"
+	"github.com/rail-service/rail_service/internal/domain/services"
+	"github.com/rail-service/rail_service/internal/domain/services/session"
+	"github.com/rail-service/rail_service/internal/infrastructure/di"
+	"github.com/rail-service/rail_service/pkg/tracing"
 
 	"github.com/gin-gonic/gin"
 	swaggerFiles "github.com/swaggo/files"
@@ -77,7 +77,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	walletFundingHandlers := handlers.NewWalletFundingHandlers(
 		container.GetWalletService(),
 		container.GetFundingService(),
-		nil, // FundingWithdrawalService
+		container.GetWithdrawalService(),
 		container.GetInvestingService(),
 		container.Logger,
 	)
@@ -91,11 +91,22 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.GetOnboardingService(),
 		container.EmailService,
 		container.KYCProvider,
+		container.GetSessionService(),
+		container.GetTwoFAService(),
 	)
 	securityHandlers := handlers.NewSecurityHandlers(
 		container.GetPasscodeService(),
 		container.GetOnboardingService(),
 		container.UserRepo,
+		container.Config,
+		container.ZapLog,
+	)
+
+	// Initialize social auth handlers
+	socialAuthHandlers := handlers.NewSocialAuthHandlers(
+		container.GetSocialAuthService(),
+		container.GetWebAuthnService(),
+		*container.UserRepo,
 		container.Config,
 		container.ZapLog,
 	)
@@ -125,6 +136,15 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 			auth.POST("/forgot-password", authHandlers.ForgotPassword)
 			auth.POST("/reset-password", authHandlers.ResetPassword)
 			auth.POST("/verify-email", authHandlers.VerifyEmail)
+			auth.POST("/verify-code", authHandlers.VerifyCode)
+			auth.POST("/resend-code", authHandlers.ResendCode)
+
+			// Social auth routes (no auth required)
+			auth.POST("/social/url", socialAuthHandlers.GetSocialAuthURL)
+			auth.POST("/social/login", socialAuthHandlers.SocialLogin)
+
+			// WebAuthn login (no auth required)
+			auth.POST("/webauthn/login/begin", socialAuthHandlers.BeginWebAuthnLogin)
 		}
 
 		// Onboarding routes - OpenAPI spec compliant
@@ -137,6 +157,7 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 			authenticatedOnboarding.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator))
 			{
 				authenticatedOnboarding.GET("/status", authHandlers.GetOnboardingStatus)
+				authenticatedOnboarding.GET("/progress", authHandlers.GetOnboardingProgress)
 				authenticatedOnboarding.POST("/complete", authHandlers.CompleteOnboarding)
 				authenticatedOnboarding.POST("/kyc/submit", authHandlers.SubmitKYC)
 			}
@@ -168,6 +189,7 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 			kycProtected := protected.Group("/kyc")
 			{
 				kycProtected.GET("/status", authHandlers.GetKYCStatus)
+				kycProtected.GET("/verification-url", authHandlers.GetKYCVerificationURL)
 			}
 
 			// Security routes for passcode management
@@ -178,6 +200,16 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 				security.PUT("/passcode", securityHandlers.UpdatePasscode)
 				security.POST("/passcode/verify", securityHandlers.VerifyPasscode)
 				security.DELETE("/passcode", securityHandlers.RemovePasscode)
+
+				// Social account management
+				security.GET("/social-accounts", socialAuthHandlers.GetLinkedAccounts)
+				security.POST("/social-accounts/link", socialAuthHandlers.LinkSocialAccount)
+				security.DELETE("/social-accounts/:provider", socialAuthHandlers.UnlinkSocialAccount)
+
+				// WebAuthn/Passkey management
+				security.GET("/passkeys", socialAuthHandlers.GetWebAuthnCredentials)
+				security.POST("/passkeys/register", socialAuthHandlers.BeginWebAuthnRegistration)
+				security.DELETE("/passkeys/:id", socialAuthHandlers.DeleteWebAuthnCredential)
 			}
 
 			// Funding routes (OpenAPI spec compliant)
@@ -186,10 +218,22 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 				funding.POST("/deposit/address", walletFundingHandlers.CreateDepositAddress)
 				funding.GET("/confirmations", walletFundingHandlers.GetFundingConfirmations)
 				funding.POST("/virtual-account", walletFundingHandlers.CreateVirtualAccount)
+				funding.GET("/transactions", walletFundingHandlers.GetTransactionHistory)
 			}
 
 			// Balance routes (part of funding but separate for clarity)
 			protected.GET("/balances", walletFundingHandlers.GetBalances)
+
+			// Limits routes - deposit/withdrawal limits based on KYC tier
+			limits := protected.Group("/limits")
+			{
+				limitsHandler := container.GetLimitsHandler()
+				if limitsHandler != nil {
+					limits.GET("", limitsHandler.GetUserLimits())
+					limits.POST("/validate/deposit", limitsHandler.ValidateDeposit())
+					limits.POST("/validate/withdrawal", limitsHandler.ValidateWithdrawal())
+				}
+			}
 
 			// Investment routes
 			basketExecutor := container.InitializeBasketExecutor()
