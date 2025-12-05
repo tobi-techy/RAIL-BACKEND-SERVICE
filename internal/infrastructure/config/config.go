@@ -32,6 +32,30 @@ type Config struct {
 	Reconciliation ReconciliationConfig `mapstructure:"reconciliation"`
 	SocialAuth     SocialAuthConfig     `mapstructure:"social_auth"`
 	WebAuthn       WebAuthnConfig       `mapstructure:"webauthn"`
+	AI             AIConfig             `mapstructure:"ai"`
+}
+
+// AIConfig contains AI provider configuration
+type AIConfig struct {
+	OpenAI  OpenAIConfig  `mapstructure:"openai"`
+	Gemini  GeminiConfig  `mapstructure:"gemini"`
+	Primary string        `mapstructure:"primary"` // "openai" or "gemini"
+}
+
+// OpenAIConfig contains OpenAI API configuration
+type OpenAIConfig struct {
+	APIKey      string  `mapstructure:"api_key"`
+	Model       string  `mapstructure:"model"`
+	MaxTokens   int     `mapstructure:"max_tokens"`
+	Temperature float64 `mapstructure:"temperature"`
+}
+
+// GeminiConfig contains Google Gemini API configuration
+type GeminiConfig struct {
+	APIKey      string  `mapstructure:"api_key"`
+	Model       string  `mapstructure:"model"`
+	MaxTokens   int     `mapstructure:"max_tokens"`
+	Temperature float64 `mapstructure:"temperature"`
 }
 
 type ServerConfig struct {
@@ -429,6 +453,15 @@ func setDefaults() {
 
 	viper.SetDefault("security.session_timeout", 3600) // 1 hour
 
+	// AI Provider defaults
+	viper.SetDefault("ai.primary", "openai")
+	viper.SetDefault("ai.openai.model", "gpt-4o-mini")
+	viper.SetDefault("ai.openai.max_tokens", 500)
+	viper.SetDefault("ai.openai.temperature", 0.7)
+	viper.SetDefault("ai.gemini.model", "gemini-1.5-flash")
+	viper.SetDefault("ai.gemini.max_tokens", 500)
+	viper.SetDefault("ai.gemini.temperature", 0.7)
+
 	// 0G Network defaults
 	// General 0G settings
 	viper.SetDefault("zerog.timeout", 30)            // 30 seconds
@@ -607,6 +640,17 @@ func overrideFromEnv() {
 	}
 	if smtpPass := os.Getenv("SMTP_PASSWORD"); smtpPass != "" {
 		viper.Set("email.smtp_password", smtpPass)
+	}
+
+	// AI Providers
+	if openaiKey := os.Getenv("OPENAI_API_KEY"); openaiKey != "" {
+		viper.Set("ai.openai.api_key", openaiKey)
+	}
+	if geminiKey := os.Getenv("GEMINI_API_KEY"); geminiKey != "" {
+		viper.Set("ai.gemini.api_key", geminiKey)
+	}
+	if aiPrimary := os.Getenv("AI_PRIMARY_PROVIDER"); aiPrimary != "" {
+		viper.Set("ai.primary", aiPrimary)
 	}
 
 	// 0G Network

@@ -262,6 +262,63 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 			portfolio := protected.Group("/portfolio")
 			{
 				portfolio.GET("/overview", walletFundingHandlers.GetPortfolio)
+
+				// AI Financial Manager - Portfolio endpoints
+				if container.GetPortfolioDataProvider() != nil {
+					portfolioActivityHandlers := handlers.NewPortfolioActivityHandlers(
+						container.GetPortfolioDataProvider(),
+						container.GetActivityDataProvider(),
+						container.GetStreakRepository(),
+						container.GetContributionsRepository(),
+						container.Logger,
+					)
+					portfolio.GET("/weekly-stats", portfolioActivityHandlers.GetWeeklyStats)
+					portfolio.GET("/allocations", portfolioActivityHandlers.GetAllocations)
+					portfolio.GET("/top-movers", portfolioActivityHandlers.GetTopMovers)
+					portfolio.GET("/performance", portfolioActivityHandlers.GetPerformance)
+				}
+			}
+
+			// Activity endpoints (AI Financial Manager)
+			if container.GetActivityDataProvider() != nil {
+				activity := protected.Group("/activity")
+				{
+					portfolioActivityHandlers := handlers.NewPortfolioActivityHandlers(
+						container.GetPortfolioDataProvider(),
+						container.GetActivityDataProvider(),
+						container.GetStreakRepository(),
+						container.GetContributionsRepository(),
+						container.Logger,
+					)
+					activity.GET("/contributions", portfolioActivityHandlers.GetContributions)
+					activity.GET("/streak", portfolioActivityHandlers.GetStreak)
+					activity.GET("/timeline", portfolioActivityHandlers.GetTimeline)
+				}
+			}
+
+			// AI Chat endpoints (AI Financial Manager)
+			if container.GetAIOrchestrator() != nil {
+				aiChatHandlers := handlers.NewAIChatHandlers(container.GetAIOrchestrator(), container.Logger)
+				aiGroup := protected.Group("/ai")
+				{
+					aiGroup.POST("/chat", aiChatHandlers.Chat)
+					aiGroup.GET("/wrapped", aiChatHandlers.GetWrapped)
+					aiGroup.GET("/quick-insight", aiChatHandlers.QuickInsight)
+					aiGroup.GET("/suggestions", aiChatHandlers.GetSuggestedQuestions)
+				}
+			}
+
+			// News endpoints (AI Financial Manager)
+			if container.GetNewsService() != nil {
+				newsHandlers := handlers.NewNewsHandlers(container.GetNewsService(), container.Logger)
+				news := protected.Group("/news")
+				{
+					news.GET("/feed", newsHandlers.GetFeed)
+					news.GET("/weekly", newsHandlers.GetWeeklyNews)
+					news.POST("/read", newsHandlers.MarkAsRead)
+					news.GET("/unread-count", newsHandlers.GetUnreadCount)
+					news.POST("/refresh", newsHandlers.RefreshNews)
+				}
 			}
 
 			// Alpaca Assets - Tradable stocks and ETFs

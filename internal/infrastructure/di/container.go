@@ -15,6 +15,7 @@ import (
 	"github.com/rail-service/rail_service/internal/api/handlers"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
+	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	"github.com/rail-service/rail_service/internal/domain/services/allocation"
 	"github.com/rail-service/rail_service/internal/domain/services/apikey"
 	"github.com/rail-service/rail_service/internal/domain/services/audit"
@@ -24,6 +25,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/internal/domain/services/limits"
+	newsservice "github.com/rail-service/rail_service/internal/domain/services/news"
 	"github.com/rail-service/rail_service/internal/domain/services/onboarding"
 	"github.com/rail-service/rail_service/internal/domain/services/passcode"
 	"github.com/rail-service/rail_service/internal/domain/services/reconciliation"
@@ -33,6 +35,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/wallet"
 	"github.com/rail-service/rail_service/internal/domain/services/webauthn"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
+	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/circle"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
@@ -248,6 +251,14 @@ type Container struct {
 	LimitsService           *limits.Service
 	DomainAuditService      *audit.Service
 	WithdrawalService       *services.WithdrawalService
+
+	// AI Financial Manager Services
+	AIProviderManager     *ai.ProviderManager
+	AIOrchestrator        *aiservice.Orchestrator
+	AIRecommender         *aiservice.Recommender
+	NewsService           *newsservice.Service
+	PortfolioDataProvider *aiservice.PortfolioDataProviderImpl
+	ActivityDataProvider  *aiservice.ActivityDataProviderImpl
 
 	// Additional Repositories
 	OnboardingJobRepo *repositories.OnboardingJobRepository
@@ -653,6 +664,11 @@ func (c *Container) initializeDomainServices() error {
 	c.WithdrawalService.SetAuditService(c.DomainAuditService)
 	c.WithdrawalService.SetNotificationService(&WithdrawalNotificationAdapter{svc: c.NotificationService})
 
+	// Initialize AI Financial Manager services
+	if err := c.initializeAIServices(sqlxDB, positionRepo, allocationRepo, basketRepo); err != nil {
+		c.ZapLog.Warn("AI services initialization failed, AI features disabled", zap.Error(err))
+	}
+
 	return nil
 }
 
@@ -982,4 +998,209 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 	}
 
 	return normalized
+}
+
+// initializeAIServices initializes AI Financial Manager services
+func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *repositories.PositionRepository, allocationRepo *repositories.AllocationRepository, basketRepo *repositories.BasketRepository) error {
+	// Check if AI is configured
+	if c.Config.AI.OpenAI.APIKey == "" && c.Config.AI.Gemini.APIKey == "" {
+		return fmt.Errorf("no AI provider configured")
+	}
+
+	// Initialize AI providers
+	var providers []ai.AIProvider
+
+	if c.Config.AI.OpenAI.APIKey != "" {
+		openaiConfig := &ai.ProviderConfig{
+			APIKey:      c.Config.AI.OpenAI.APIKey,
+			Model:       c.Config.AI.OpenAI.Model,
+			MaxTokens:   c.Config.AI.OpenAI.MaxTokens,
+			Temperature: c.Config.AI.OpenAI.Temperature,
+			Timeout:     30 * time.Second,
+		}
+		openaiProvider := ai.NewOpenAIProvider(openaiConfig, c.ZapLog)
+		providers = append(providers, openaiProvider)
+	}
+
+	if c.Config.AI.Gemini.APIKey != "" {
+		geminiConfig := &ai.ProviderConfig{
+			APIKey:      c.Config.AI.Gemini.APIKey,
+			Model:       c.Config.AI.Gemini.Model,
+			MaxTokens:   c.Config.AI.Gemini.MaxTokens,
+			Temperature: c.Config.AI.Gemini.Temperature,
+			Timeout:     30 * time.Second,
+		}
+		geminiProvider := ai.NewGeminiProvider(geminiConfig, c.ZapLog)
+		providers = append(providers, geminiProvider)
+	}
+
+	if len(providers) == 0 {
+		return fmt.Errorf("no AI providers available")
+	}
+
+	// Set primary and fallbacks based on config
+	var primary ai.AIProvider
+	var fallbacks []ai.AIProvider
+
+	if c.Config.AI.Primary == "gemini" && len(providers) > 1 {
+		primary = providers[1]
+		fallbacks = []ai.AIProvider{providers[0]}
+	} else {
+		primary = providers[0]
+		if len(providers) > 1 {
+			fallbacks = providers[1:]
+		}
+	}
+
+	c.AIProviderManager = ai.NewProviderManager(primary, fallbacks, nil, c.ZapLog)
+
+	// Initialize repositories for AI services
+	userNewsRepo := repositories.NewUserNewsRepository(c.DB, c.ZapLog)
+	streakRepo := repositories.NewInvestmentStreakRepository(c.DB, c.ZapLog)
+	contributionsRepo := repositories.NewUserContributionsRepository(c.DB, c.ZapLog)
+	portfolioRepo := repositories.NewPortfolioRepository(c.DB, c.ZapLog)
+
+	// Initialize data providers
+	c.PortfolioDataProvider = aiservice.NewPortfolioDataProvider(
+		&portfolioValueAdapter{repo: portfolioRepo},
+		positionRepo,
+		c.ZapLog,
+	)
+
+	c.ActivityDataProvider = aiservice.NewActivityDataProvider(
+		&contributionRepoAdapter{repo: contributionsRepo},
+		&streakRepoAdapter{repo: streakRepo},
+		c.ZapLog,
+	)
+
+	// Initialize news service
+	c.NewsService = newsservice.NewService(
+		&alpacaNewsAdapter{client: c.AlpacaClient},
+		userNewsRepo,
+		positionRepo,
+		c.ZapLog,
+	)
+
+	// Initialize AI orchestrator (use primary provider directly)
+	c.AIOrchestrator = aiservice.NewOrchestrator(
+		primary,
+		c.PortfolioDataProvider,
+		c.ActivityDataProvider,
+		&newsProviderAdapter{svc: c.NewsService},
+		c.ZapLog,
+	)
+
+	// Initialize basket recommender
+	c.AIRecommender = aiservice.NewRecommender(
+		primary,
+		&basketRepoAdapter{repo: basketRepo},
+		c.PortfolioDataProvider,
+		c.ZapLog,
+	)
+
+	c.ZapLog.Info("AI Financial Manager services initialized",
+		zap.String("primary_provider", primary.Name()),
+		zap.Int("fallback_count", len(fallbacks)),
+	)
+
+	return nil
+}
+
+// AI service adapters
+
+type portfolioValueAdapter struct {
+	repo *repositories.PortfolioRepository
+}
+
+func (a *portfolioValueAdapter) GetPortfolioValue(ctx context.Context, userID uuid.UUID, date time.Time) (decimal.Decimal, error) {
+	return a.repo.GetPortfolioValue(ctx, userID, date)
+}
+
+type contributionRepoAdapter struct {
+	repo *repositories.UserContributionsRepository
+}
+
+func (a *contributionRepoAdapter) GetByUserID(ctx context.Context, userID uuid.UUID, contributionType *entities.ContributionType, startDate, endDate *time.Time, limit, offset int) ([]*entities.UserContribution, error) {
+	return a.repo.GetByUserID(ctx, userID, contributionType, startDate, endDate, limit, offset)
+}
+
+func (a *contributionRepoAdapter) GetTotalByType(ctx context.Context, userID uuid.UUID, startDate, endDate time.Time) (map[entities.ContributionType]string, error) {
+	return a.repo.GetTotalByType(ctx, userID, startDate, endDate)
+}
+
+type streakRepoAdapter struct {
+	repo *repositories.InvestmentStreakRepository
+}
+
+func (a *streakRepoAdapter) GetByUserID(ctx context.Context, userID uuid.UUID) (*entities.InvestmentStreak, error) {
+	return a.repo.GetByUserID(ctx, userID)
+}
+
+type newsProviderAdapter struct {
+	svc *newsservice.Service
+}
+
+func (a *newsProviderAdapter) GetWeeklyNews(ctx context.Context, userID uuid.UUID) ([]*entities.UserNews, error) {
+	return a.svc.GetWeeklyNews(ctx, userID)
+}
+
+type basketRepoAdapter struct {
+	repo *repositories.BasketRepository
+}
+
+func (a *basketRepoAdapter) GetCuratedBaskets(ctx context.Context) ([]*entities.Basket, error) {
+	return a.repo.GetAll(ctx)
+}
+
+func (a *basketRepoAdapter) GetByID(ctx context.Context, id uuid.UUID) (*entities.Basket, error) {
+	return a.repo.GetByID(ctx, id)
+}
+
+type alpacaNewsAdapter struct {
+	client *alpaca.Client
+}
+
+func (a *alpacaNewsAdapter) GetNews(ctx context.Context, req *entities.AlpacaNewsRequest) (*entities.AlpacaNewsResponse, error) {
+	return a.client.GetNews(ctx, req)
+}
+
+// GetAIOrchestrator returns the AI orchestrator
+func (c *Container) GetAIOrchestrator() *aiservice.Orchestrator {
+	return c.AIOrchestrator
+}
+
+// GetAIRecommender returns the AI recommender
+func (c *Container) GetAIRecommender() *aiservice.Recommender {
+	return c.AIRecommender
+}
+
+// GetNewsService returns the news service
+func (c *Container) GetNewsService() *newsservice.Service {
+	return c.NewsService
+}
+
+// GetPortfolioDataProvider returns the portfolio data provider
+func (c *Container) GetPortfolioDataProvider() *aiservice.PortfolioDataProviderImpl {
+	return c.PortfolioDataProvider
+}
+
+// GetActivityDataProvider returns the activity data provider
+func (c *Container) GetActivityDataProvider() *aiservice.ActivityDataProviderImpl {
+	return c.ActivityDataProvider
+}
+
+// GetStreakRepository returns the investment streak repository adapter
+func (c *Container) GetStreakRepository() handlers.InvestmentStreakRepository {
+	if c.ActivityDataProvider == nil {
+		return nil
+	}
+	return &streakRepoAdapter{repo: repositories.NewInvestmentStreakRepository(c.DB, c.ZapLog)}
+}
+
+// GetContributionsRepository returns the user contributions repository adapter
+func (c *Container) GetContributionsRepository() handlers.UserContributionsRepository {
+	if c.ActivityDataProvider == nil {
+		return nil
+	}
+	return &contributionRepoAdapter{repo: repositories.NewUserContributionsRepository(c.DB, c.ZapLog)}
 }
