@@ -224,12 +224,13 @@ type WorkerConfig struct {
 
 // AlpacaConfig contains brokerage API configuration
 type AlpacaConfig struct {
-	ClientID    string `mapstructure:"client_id"`
-	SecretKey   string `mapstructure:"secret_key"`
-	BaseURL     string `mapstructure:"base_url"`
-	DataBaseURL string `mapstructure:"data_base_url"` // Market data API base URL
-	Environment string `mapstructure:"environment"`   // sandbox or production
-	Timeout     int    `mapstructure:"timeout"`       // Request timeout in seconds
+	ClientID      string `mapstructure:"client_id"`
+	SecretKey     string `mapstructure:"secret_key"`
+	BaseURL       string `mapstructure:"base_url"`
+	DataBaseURL   string `mapstructure:"data_base_url"`   // Market data API base URL
+	Environment   string `mapstructure:"environment"`     // sandbox or production
+	Timeout       int    `mapstructure:"timeout"`         // Request timeout in seconds
+	FirmAccountNo string `mapstructure:"firm_account_no"` // Firm account for instant funding
 }
 
 // ReconciliationConfig contains reconciliation service configuration

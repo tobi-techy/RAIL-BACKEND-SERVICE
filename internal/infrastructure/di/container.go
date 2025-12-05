@@ -16,7 +16,9 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
+	alpacaservice "github.com/rail-service/rail_service/internal/domain/services/alpaca"
 	"github.com/rail-service/rail_service/internal/domain/services/allocation"
+	analyticsservice "github.com/rail-service/rail_service/internal/domain/services/analytics"
 	"github.com/rail-service/rail_service/internal/domain/services/apikey"
 	"github.com/rail-service/rail_service/internal/domain/services/audit"
 	entitysecret "github.com/rail-service/rail_service/internal/domain/services/entity_secret"
@@ -25,6 +27,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/internal/domain/services/limits"
+	marketservice "github.com/rail-service/rail_service/internal/domain/services/market"
 	newsservice "github.com/rail-service/rail_service/internal/domain/services/news"
 	"github.com/rail-service/rail_service/internal/domain/services/onboarding"
 	"github.com/rail-service/rail_service/internal/domain/services/passcode"
@@ -262,6 +265,31 @@ type Container struct {
 
 	// Additional Repositories
 	OnboardingJobRepo *repositories.OnboardingJobRepository
+
+	// Alpaca Investment Repositories
+	AlpacaAccountRepo      *repositories.AlpacaAccountRepository
+	InvestmentOrderRepo    *repositories.InvestmentOrderRepository
+	InvestmentPositionRepo *repositories.InvestmentPositionRepository
+	AlpacaEventRepo        *repositories.AlpacaEventRepository
+	AlpacaInstantFundingRepo *repositories.AlpacaInstantFundingRepository
+
+	// Advanced Features Repositories
+	PortfolioSnapshotRepo     *repositories.PortfolioSnapshotRepository
+	ScheduledInvestmentRepo   *repositories.ScheduledInvestmentRepository
+	RebalancingConfigRepo     *repositories.RebalancingConfigRepository
+	MarketAlertRepo           *repositories.MarketAlertRepository
+
+	// Alpaca Investment Services
+	AlpacaAccountService   *alpacaservice.AccountService
+	AlpacaFundingBridge    *alpacaservice.FundingBridge
+	AlpacaEventProcessor   *alpacaservice.EventProcessor
+	AlpacaPortfolioSync    *alpacaservice.PortfolioSyncService
+
+	// Advanced Features Services
+	PortfolioAnalyticsService   *analyticsservice.PortfolioAnalyticsService
+	MarketDataService           *marketservice.MarketDataService
+	ScheduledInvestmentService  *investing.ScheduledInvestmentService
+	RebalancingService          *investing.RebalancingService
 
 	// Workers
 	WalletProvisioningScheduler interface{} // Type interface{} to avoid circular dependency, will be set at runtime
@@ -667,6 +695,16 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize AI Financial Manager services
 	if err := c.initializeAIServices(sqlxDB, positionRepo, allocationRepo, basketRepo); err != nil {
 		c.ZapLog.Warn("AI services initialization failed, AI features disabled", zap.Error(err))
+	}
+
+	// Initialize Alpaca investment infrastructure
+	if err := c.initializeAlpacaInvestmentServices(sqlxDB); err != nil {
+		c.ZapLog.Warn("Alpaca investment services initialization failed", zap.Error(err))
+	}
+
+	// Initialize advanced features (analytics, market data, scheduled investments, rebalancing)
+	if err := c.initializeAdvancedFeatures(sqlxDB); err != nil {
+		c.ZapLog.Warn("Advanced features initialization failed", zap.Error(err))
 	}
 
 	return nil
@@ -1203,4 +1241,305 @@ func (c *Container) GetContributionsRepository() handlers.UserContributionsRepos
 		return nil
 	}
 	return &contributionRepoAdapter{repo: repositories.NewUserContributionsRepository(c.DB, c.ZapLog)}
+}
+
+
+// initializeAlpacaInvestmentServices initializes Alpaca investment infrastructure
+func (c *Container) initializeAlpacaInvestmentServices(sqlxDB *sqlx.DB) error {
+	// Initialize repositories
+	c.AlpacaAccountRepo = repositories.NewAlpacaAccountRepository(sqlxDB)
+	c.InvestmentOrderRepo = repositories.NewInvestmentOrderRepository(sqlxDB)
+	c.InvestmentPositionRepo = repositories.NewInvestmentPositionRepository(sqlxDB)
+	c.AlpacaEventRepo = repositories.NewAlpacaEventRepository(sqlxDB)
+	c.AlpacaInstantFundingRepo = repositories.NewAlpacaInstantFundingRepository(sqlxDB)
+
+	// User profile adapter for account service
+	userProfileAdapter := repositories.NewUserProfileAdapter(c.UserRepo)
+
+	// Initialize Account Service
+	c.AlpacaAccountService = alpacaservice.NewAccountService(
+		c.AlpacaClient,
+		c.AlpacaAccountRepo,
+		userProfileAdapter,
+		c.ZapLog,
+	)
+
+	// Initialize Funding Bridge
+	c.AlpacaFundingBridge = alpacaservice.NewFundingBridge(
+		c.AlpacaClient,
+		c.AlpacaAccountRepo,
+		c.AlpacaInstantFundingRepo,
+		c.BalanceRepo,
+		c.Config.Alpaca.FirmAccountNo,
+		c.ZapLog,
+	)
+
+	// Initialize Event Processor
+	c.AlpacaEventProcessor = alpacaservice.NewEventProcessor(
+		c.AlpacaAccountRepo,
+		c.InvestmentOrderRepo,
+		c.InvestmentPositionRepo,
+		c.AlpacaEventRepo,
+		c.BalanceRepo,
+		c.ZapLog,
+	)
+
+	// Initialize Portfolio Sync Service
+	c.AlpacaPortfolioSync = alpacaservice.NewPortfolioSyncService(
+		c.AlpacaClient,
+		c.AlpacaAccountRepo,
+		c.InvestmentPositionRepo,
+		c.BalanceRepo,
+		c.ZapLog,
+	)
+
+	c.ZapLog.Info("Alpaca investment services initialized")
+	return nil
+}
+
+// initializeAdvancedFeatures initializes analytics, market data, and automation services
+func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
+	// Initialize repositories
+	c.PortfolioSnapshotRepo = repositories.NewPortfolioSnapshotRepository(sqlxDB)
+	c.ScheduledInvestmentRepo = repositories.NewScheduledInvestmentRepository(sqlxDB)
+	c.RebalancingConfigRepo = repositories.NewRebalancingConfigRepository(sqlxDB)
+	c.MarketAlertRepo = repositories.NewMarketAlertRepository(sqlxDB)
+
+	// Initialize Portfolio Analytics Service
+	c.PortfolioAnalyticsService = analyticsservice.NewPortfolioAnalyticsService(
+		c.PortfolioSnapshotRepo,
+		c.InvestmentPositionRepo,
+		c.AlpacaAccountRepo,
+		c.ZapLog,
+	)
+
+	// Initialize Market Data Service
+	c.MarketDataService = marketservice.NewMarketDataService(
+		c.AlpacaClient,
+		c.MarketAlertRepo,
+		&marketNotificationAdapter{svc: c.NotificationService},
+		c.ZapLog,
+	)
+
+	// Initialize Order Placer adapter for scheduled investments
+	orderPlacer := &orderPlacerAdapter{
+		investingService: c.InvestingService,
+		accountService:   c.AlpacaAccountService,
+		alpacaClient:     c.AlpacaClient,
+		orderRepo:        c.InvestmentOrderRepo,
+		logger:           c.ZapLog,
+	}
+
+	// Initialize Scheduled Investment Service
+	c.ScheduledInvestmentService = investing.NewScheduledInvestmentService(
+		c.ScheduledInvestmentRepo,
+		orderPlacer,
+		c.ZapLog,
+	)
+
+	// Initialize Rebalancing Service
+	c.RebalancingService = investing.NewRebalancingService(
+		c.RebalancingConfigRepo,
+		c.InvestmentPositionRepo,
+		c.MarketDataService,
+		orderPlacer,
+		c.ZapLog,
+	)
+
+	c.ZapLog.Info("Advanced features initialized")
+	return nil
+}
+
+// marketNotificationAdapter adapts NotificationService for market alerts
+type marketNotificationAdapter struct {
+	svc *services.NotificationService
+}
+
+func (a *marketNotificationAdapter) SendPushNotification(ctx context.Context, userID uuid.UUID, title, message string) error {
+	if a.svc == nil {
+		return nil
+	}
+	// Use existing notification service method
+	return a.svc.SendGenericNotification(ctx, userID, title, message)
+}
+
+// orderPlacerAdapter implements OrderPlacer interface for scheduled investments
+type orderPlacerAdapter struct {
+	investingService *investing.Service
+	accountService   *alpacaservice.AccountService
+	alpacaClient     *alpaca.Client
+	orderRepo        *repositories.InvestmentOrderRepository
+	logger           *zap.Logger
+}
+
+func (a *orderPlacerAdapter) PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, notional decimal.Decimal) (*entities.InvestmentOrder, error) {
+	// Get user's Alpaca account
+	account, err := a.accountService.GetUserAccount(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get account: %w", err)
+	}
+	if account == nil {
+		return nil, fmt.Errorf("user has no Alpaca account")
+	}
+
+	// Determine side based on notional sign
+	side := entities.AlpacaOrderSideBuy
+	if notional.LessThan(decimal.Zero) {
+		side = entities.AlpacaOrderSideSell
+		notional = notional.Abs()
+	}
+
+	// Create order via Alpaca
+	orderReq := &entities.AlpacaCreateOrderRequest{
+		Symbol:      symbol,
+		Notional:    &notional,
+		Side:        side,
+		Type:        entities.AlpacaOrderTypeMarket,
+		TimeInForce: entities.AlpacaTimeInForceDay,
+	}
+
+	alpacaOrder, err := a.alpacaClient.CreateOrder(ctx, account.AlpacaAccountID, orderReq)
+	if err != nil {
+		return nil, fmt.Errorf("create order: %w", err)
+	}
+
+	// Store order in database
+	now := time.Now()
+	order := &entities.InvestmentOrder{
+		ID:              uuid.New(),
+		UserID:          userID,
+		AlpacaAccountID: &account.ID,
+		AlpacaOrderID:   &alpacaOrder.ID,
+		ClientOrderID:   alpacaOrder.ClientOrderID,
+		Symbol:          symbol,
+		Side:            side,
+		OrderType:       entities.AlpacaOrderTypeMarket,
+		TimeInForce:     entities.AlpacaTimeInForceDay,
+		Notional:        &notional,
+		Status:          alpacaOrder.Status,
+		SubmittedAt:     &now,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+
+	if err := a.orderRepo.Create(ctx, order); err != nil {
+		a.logger.Error("Failed to store order", zap.Error(err))
+	}
+
+	return order, nil
+}
+
+// Getters for new services
+
+// GetAlpacaAccountService returns the Alpaca account service
+func (c *Container) GetAlpacaAccountService() *alpacaservice.AccountService {
+	return c.AlpacaAccountService
+}
+
+// GetAlpacaFundingBridge returns the Alpaca funding bridge
+func (c *Container) GetAlpacaFundingBridge() *alpacaservice.FundingBridge {
+	return c.AlpacaFundingBridge
+}
+
+// GetAlpacaEventProcessor returns the Alpaca event processor
+func (c *Container) GetAlpacaEventProcessor() *alpacaservice.EventProcessor {
+	return c.AlpacaEventProcessor
+}
+
+// GetAlpacaPortfolioSync returns the Alpaca portfolio sync service
+func (c *Container) GetAlpacaPortfolioSync() *alpacaservice.PortfolioSyncService {
+	return c.AlpacaPortfolioSync
+}
+
+// GetPortfolioAnalyticsService returns the portfolio analytics service
+func (c *Container) GetPortfolioAnalyticsService() *analyticsservice.PortfolioAnalyticsService {
+	return c.PortfolioAnalyticsService
+}
+
+// GetMarketDataService returns the market data service
+func (c *Container) GetMarketDataService() *marketservice.MarketDataService {
+	return c.MarketDataService
+}
+
+// GetScheduledInvestmentService returns the scheduled investment service
+func (c *Container) GetScheduledInvestmentService() *investing.ScheduledInvestmentService {
+	return c.ScheduledInvestmentService
+}
+
+// GetRebalancingService returns the rebalancing service
+func (c *Container) GetRebalancingService() *investing.RebalancingService {
+	return c.RebalancingService
+}
+
+// GetInvestmentHandlers returns investment handlers
+func (c *Container) GetInvestmentHandlers() *handlers.InvestmentHandlers {
+	if c.AlpacaAccountService == nil {
+		return nil
+	}
+	return handlers.NewInvestmentHandlers(
+		c.AlpacaAccountService,
+		c.AlpacaFundingBridge,
+		c.AlpacaPortfolioSync,
+		c.Logger,
+	)
+}
+
+// GetAlpacaWebhookHandlers returns Alpaca webhook handlers
+func (c *Container) GetAlpacaWebhookHandlers() *handlers.AlpacaWebhookHandlers {
+	if c.AlpacaEventProcessor == nil {
+		return nil
+	}
+	return handlers.NewAlpacaWebhookHandlers(c.AlpacaEventProcessor, c.Logger)
+}
+
+// GetAnalyticsHandlers returns analytics handlers
+func (c *Container) GetAnalyticsHandlers() *handlers.AnalyticsHandlers {
+	if c.PortfolioAnalyticsService == nil {
+		return nil
+	}
+	return handlers.NewAnalyticsHandlers(c.PortfolioAnalyticsService, c.Logger)
+}
+
+// GetMarketHandlers returns market data handlers
+func (c *Container) GetMarketHandlers() *handlers.MarketHandlers {
+	if c.MarketDataService == nil {
+		return nil
+	}
+	return handlers.NewMarketHandlers(c.MarketDataService, c.Logger)
+}
+
+// GetScheduledInvestmentHandlers returns scheduled investment handlers
+func (c *Container) GetScheduledInvestmentHandlers() *handlers.ScheduledInvestmentHandlers {
+	if c.ScheduledInvestmentService == nil {
+		return nil
+	}
+	return handlers.NewScheduledInvestmentHandlers(c.ScheduledInvestmentService, c.Logger)
+}
+
+// GetRebalancingHandlers returns rebalancing handlers
+func (c *Container) GetRebalancingHandlers() *handlers.RebalancingHandlers {
+	if c.RebalancingService == nil {
+		return nil
+	}
+	return handlers.NewRebalancingHandlers(c.RebalancingService, c.Logger)
+}
+
+// ListAllActiveUserIDs returns all active user IDs (for portfolio snapshot worker)
+func (c *Container) ListAllActiveUserIDs(ctx context.Context) ([]uuid.UUID, error) {
+	query := `SELECT id FROM users WHERE is_active = true`
+	rows, err := c.DB.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var userIDs []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		userIDs = append(userIDs, id)
+	}
+	return userIDs, rows.Err()
 }

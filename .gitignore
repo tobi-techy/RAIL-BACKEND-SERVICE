@@ -9,6 +9,7 @@ rail_service
 stack_service
 bin/
 dist/
+.kiro/
 
 # Test binary
 *.test

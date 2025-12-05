@@ -142,3 +142,13 @@ func (s *NotificationService) NotifyLargeBalanceChange(ctx context.Context, user
 		zap.String("new_balance", newBalance.String()))
 	return nil
 }
+
+
+// SendGenericNotification sends a generic notification with title and message
+func (s *NotificationService) SendGenericNotification(ctx context.Context, userID uuid.UUID, title, message string) error {
+	s.logger.Info("Sending generic notification",
+		zap.String("user_id", userID.String()),
+		zap.String("title", title),
+		zap.String("message", message))
+	return nil
+}

@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -391,15 +390,4 @@ func (h *SocialAuthHandlers) BeginWebAuthnLogin(c *gin.Context) {
 
 	// Note: In production, store session data in Redis/DB for FinishLogin
 	c.JSON(http.StatusOK, entities.WebAuthnLoginResponse{Options: options})
-}
-
-func getUserIDFromContext(c *gin.Context) (uuid.UUID, error) {
-	userIDVal, exists := c.Get("user_id")
-	if !exists {
-		return uuid.Nil, fmt.Errorf("user ID not found")
-	}
-	if userID, ok := userIDVal.(uuid.UUID); ok {
-		return userID, nil
-	}
-	return uuid.Nil, fmt.Errorf("invalid user ID")
 }

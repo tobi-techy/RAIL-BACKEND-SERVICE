@@ -23,6 +23,7 @@ import (
 	"go.uber.org/zap"
 )
 
+
 // AuthHandlers consolidates authentication, signup, and onboarding handlers
 type AuthHandlers struct {
 	db                   *sql.DB

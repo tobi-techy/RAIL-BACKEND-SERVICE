@@ -12,7 +12,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
-	
+
+	"github.com/shopspring/decimal"
 	"github.com/sony/gobreaker"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"go.uber.org/zap"
@@ -580,4 +581,169 @@ func isRetryableError(err error) bool {
 		strings.Contains(errStr, "connection refused") ||
 		strings.Contains(errStr, "connection reset") ||
 		strings.Contains(errStr, "EOF")
+}
+
+
+// Market Data API methods
+
+// GetLatestQuote returns the latest quote for a symbol
+func (c *Client) GetLatestQuote(ctx context.Context, symbol string) (*entities.MarketQuote, error) {
+	endpoint := fmt.Sprintf("/v2/stocks/%s/quotes/latest", symbol)
+	var resp struct {
+		Quote struct {
+			AskPrice  float64   `json:"ap"`
+			AskSize   int       `json:"as"`
+			BidPrice  float64   `json:"bp"`
+			BidSize   int       `json:"bs"`
+			Timestamp time.Time `json:"t"`
+		} `json:"quote"`
+	}
+
+	if err := c.doDataRequest(ctx, "GET", endpoint, nil, &resp); err != nil {
+		return nil, err
+	}
+
+	// Get trade for last price
+	tradeEndpoint := fmt.Sprintf("/v2/stocks/%s/trades/latest", symbol)
+	var tradeResp struct {
+		Trade struct {
+			Price     float64   `json:"p"`
+			Size      int       `json:"s"`
+			Timestamp time.Time `json:"t"`
+		} `json:"trade"`
+	}
+	_ = c.doDataRequest(ctx, "GET", tradeEndpoint, nil, &tradeResp)
+
+	return &entities.MarketQuote{
+		Symbol:    symbol,
+		Price:     decimal.NewFromFloat(tradeResp.Trade.Price),
+		Bid:       decimal.NewFromFloat(resp.Quote.BidPrice),
+		Ask:       decimal.NewFromFloat(resp.Quote.AskPrice),
+		Timestamp: resp.Quote.Timestamp,
+	}, nil
+}
+
+// GetLatestQuotes returns latest quotes for multiple symbols
+func (c *Client) GetLatestQuotes(ctx context.Context, symbols []string) (map[string]*entities.MarketQuote, error) {
+	endpoint := "/v2/stocks/quotes/latest?symbols=" + url.QueryEscape(strings.Join(symbols, ","))
+	var resp struct {
+		Quotes map[string]struct {
+			AskPrice  float64   `json:"ap"`
+			BidPrice  float64   `json:"bp"`
+			Timestamp time.Time `json:"t"`
+		} `json:"quotes"`
+	}
+
+	if err := c.doDataRequest(ctx, "GET", endpoint, nil, &resp); err != nil {
+		return nil, err
+	}
+
+	// Get trades for prices
+	tradeEndpoint := "/v2/stocks/trades/latest?symbols=" + url.QueryEscape(strings.Join(symbols, ","))
+	var tradeResp struct {
+		Trades map[string]struct {
+			Price     float64   `json:"p"`
+			Timestamp time.Time `json:"t"`
+		} `json:"trades"`
+	}
+	_ = c.doDataRequest(ctx, "GET", tradeEndpoint, nil, &tradeResp)
+
+	result := make(map[string]*entities.MarketQuote)
+	for sym, q := range resp.Quotes {
+		quote := &entities.MarketQuote{
+			Symbol:    sym,
+			Bid:       decimal.NewFromFloat(q.BidPrice),
+			Ask:       decimal.NewFromFloat(q.AskPrice),
+			Timestamp: q.Timestamp,
+		}
+		if t, ok := tradeResp.Trades[sym]; ok {
+			quote.Price = decimal.NewFromFloat(t.Price)
+		}
+		result[sym] = quote
+	}
+
+	return result, nil
+}
+
+// GetBars returns historical OHLCV bars
+func (c *Client) GetBars(ctx context.Context, symbol, timeframe string, start, end time.Time) ([]*entities.MarketBar, error) {
+	endpoint := fmt.Sprintf("/v2/stocks/%s/bars?timeframe=%s&start=%s&end=%s",
+		symbol, timeframe, start.Format(time.RFC3339), end.Format(time.RFC3339))
+
+	var resp struct {
+		Bars []struct {
+			Open      float64   `json:"o"`
+			High      float64   `json:"h"`
+			Low       float64   `json:"l"`
+			Close     float64   `json:"c"`
+			Volume    int64     `json:"v"`
+			Timestamp time.Time `json:"t"`
+		} `json:"bars"`
+	}
+
+	if err := c.doDataRequest(ctx, "GET", endpoint, nil, &resp); err != nil {
+		return nil, err
+	}
+
+	bars := make([]*entities.MarketBar, len(resp.Bars))
+	for i, b := range resp.Bars {
+		bars[i] = &entities.MarketBar{
+			Symbol:    symbol,
+			Open:      decimal.NewFromFloat(b.Open),
+			High:      decimal.NewFromFloat(b.High),
+			Low:       decimal.NewFromFloat(b.Low),
+			Close:     decimal.NewFromFloat(b.Close),
+			Volume:    b.Volume,
+			Timestamp: b.Timestamp,
+		}
+	}
+
+	return bars, nil
+}
+
+// doDataRequest makes a request to the Market Data API
+func (c *Client) doDataRequest(ctx context.Context, method, endpoint string, body, response interface{}) error {
+	fullURL := c.config.DataBaseURL + endpoint
+
+	var reqBody io.Reader
+	if body != nil {
+		jsonData, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("marshal request: %w", err)
+		}
+		reqBody = bytes.NewReader(jsonData)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, fullURL, reqBody)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("APCA-API-KEY-ID", c.config.ClientID)
+	req.Header.Set("APCA-API-SECRET-KEY", c.config.SecretKey)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("API error: status %d, body: %s", resp.StatusCode, string(respBody))
+	}
+
+	if response != nil && len(respBody) > 0 {
+		if err := json.Unmarshal(respBody, response); err != nil {
+			return fmt.Errorf("unmarshal response: %w", err)
+		}
+	}
+
+	return nil
 }
