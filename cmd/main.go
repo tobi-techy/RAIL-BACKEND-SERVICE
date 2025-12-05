@@ -16,6 +16,8 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/database"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
 	"github.com/rail-service/rail_service/internal/workers/funding_webhook"
+	portfolio_snapshot_worker "github.com/rail-service/rail_service/internal/workers/portfolio_snapshot_worker"
+	scheduled_investment_worker "github.com/rail-service/rail_service/internal/workers/scheduled_investment_worker"
 	walletprovisioning "github.com/rail-service/rail_service/internal/workers/wallet_provisioning"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/metrics"
@@ -210,6 +212,30 @@ func main() {
 		log.Info("Reconciliation scheduler disabled in configuration")
 	}
 
+	// Initialize and start scheduled investment worker
+	var scheduledInvestmentWorker *scheduled_investment_worker.Worker
+	if container.GetScheduledInvestmentService() != nil {
+		scheduledInvestmentWorker = scheduled_investment_worker.NewWorker(
+			container.GetScheduledInvestmentService(),
+			container.GetMarketDataService(),
+			log.Zap(),
+		)
+		go scheduledInvestmentWorker.Start(context.Background())
+		log.Info("Scheduled investment worker started")
+	}
+
+	// Initialize and start portfolio snapshot worker
+	var portfolioSnapshotWorker *portfolio_snapshot_worker.Worker
+	if container.GetPortfolioAnalyticsService() != nil {
+		portfolioSnapshotWorker = portfolio_snapshot_worker.NewWorker(
+			container.GetPortfolioAnalyticsService(),
+			container,
+			log.Zap(),
+		)
+		go portfolioSnapshotWorker.Start(context.Background())
+		log.Info("Portfolio snapshot worker started")
+	}
+
 	// Create server with enhanced configuration
 	server := &http.Server{
 		Addr:           fmt.Sprintf(":%d", cfg.Server.Port),
@@ -275,6 +301,18 @@ func main() {
 		if err := container.ReconciliationScheduler.Stop(); err != nil {
 			log.Warn("Error stopping reconciliation scheduler", "error", err)
 		}
+	}
+
+	// Stop scheduled investment worker
+	if scheduledInvestmentWorker != nil {
+		log.Info("Stopping scheduled investment worker...")
+		scheduledInvestmentWorker.Stop()
+	}
+
+	// Stop portfolio snapshot worker
+	if portfolioSnapshotWorker != nil {
+		log.Info("Stopping portfolio snapshot worker...")
+		portfolioSnapshotWorker.Stop()
 	}
 
 	// Give outstanding requests time to complete

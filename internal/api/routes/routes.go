@@ -367,6 +367,32 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 			webhooks.POST("/chain-deposit", walletFundingHandlers.ChainDepositWebhook)
 			webhooks.POST("/brokerage-fill", walletFundingHandlers.BrokerageFillWebhook)
 		}
+
+		// Register Alpaca investment routes
+		if container.GetInvestmentHandlers() != nil {
+			RegisterAlpacaRoutes(
+				v1,
+				container.GetInvestmentHandlers(),
+				container.GetAlpacaWebhookHandlers(),
+				container.Config,
+				container.Logger,
+				sessionValidator,
+			)
+		}
+
+		// Register advanced features routes (analytics, market, scheduled investments, rebalancing)
+		if container.GetAnalyticsHandlers() != nil {
+			RegisterAdvancedFeaturesRoutes(
+				v1,
+				container.GetAnalyticsHandlers(),
+				container.GetMarketHandlers(),
+				container.GetScheduledInvestmentHandlers(),
+				container.GetRebalancingHandlers(),
+				container.Config,
+				container.Logger,
+				sessionValidator,
+			)
+		}
 	}
 
 	// ZeroG and dedicated AI-CFO HTTP routes have been removed.
