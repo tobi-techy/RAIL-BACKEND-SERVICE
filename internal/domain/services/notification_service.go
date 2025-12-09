@@ -11,12 +11,56 @@ import (
 	"go.uber.org/zap"
 )
 
+// NotificationQueue defines async notification queueing
+type NotificationQueue interface {
+	QueueNotification(ctx context.Context, msg *QueuedNotification) error
+}
+
+// QueuedNotification represents a notification to be queued
+type QueuedNotification struct {
+	UserID    uuid.UUID              `json:"user_id"`
+	Type      string                 `json:"type"`
+	Title     string                 `json:"title"`
+	Body      string                 `json:"body"`
+	Data      map[string]interface{} `json:"data,omitempty"`
+	Priority  string            `json:"priority"`
+	Recipient string            `json:"recipient,omitempty"`
+}
+
+// SMSSender defines SMS sending operations
+type SMSSender interface {
+	SendSMS(ctx context.Context, phone, message string) error
+}
+
+// EmailSenderService defines email sending operations
+type EmailSenderService interface {
+	SendGenericEmail(ctx context.Context, to, subject, body string) error
+}
+
 type NotificationService struct {
-	logger *zap.Logger
+	logger      *zap.Logger
+	queue       NotificationQueue
+	smsSender   SMSSender
+	emailSender EmailSenderService
 }
 
 func NewNotificationService(logger *zap.Logger) *NotificationService {
 	return &NotificationService{logger: logger}
+}
+
+// SetQueue sets the notification queue (SNS/SQS)
+func (s *NotificationService) SetQueue(q NotificationQueue) {
+	s.queue = q
+}
+
+// SetSMSSender sets the SMS sender
+func (s *NotificationService) SetSMSSender(sender SMSSender) {
+	s.smsSender = sender
+}
+
+// SetEmailSender sets the email sender
+func (s *NotificationService) SetEmailSender(sender EmailSenderService) {
+	s.emailSender = sender
 }
 
 func (s *NotificationService) Send(ctx context.Context, notification *entities.Notification, prefs *entities.UserPreference) error {
@@ -57,18 +101,24 @@ func (s *NotificationService) shouldSend(notification *entities.Notification, pr
 }
 
 func (s *NotificationService) sendEmail(ctx context.Context, notification *entities.Notification) error {
-	s.logger.Info("Sending email notification", zap.String("user_id", notification.UserID.String()))
-	return nil
+	if s.emailSender != nil {
+		return s.emailSender.SendGenericEmail(ctx, "", notification.Title, notification.Message)
+	}
+	return s.queueNotification(ctx, notification.UserID, "email", notification.Title, notification.Message, nil)
 }
 
 func (s *NotificationService) sendPush(ctx context.Context, notification *entities.Notification) error {
-	s.logger.Info("Sending push notification", zap.String("user_id", notification.UserID.String()))
-	return nil
+	return s.queueNotification(ctx, notification.UserID, "push", notification.Title, notification.Message, notification.Data)
 }
 
 func (s *NotificationService) sendSMS(ctx context.Context, notification *entities.Notification) error {
-	s.logger.Info("Sending SMS notification", zap.String("user_id", notification.UserID.String()))
-	return nil
+	if s.smsSender != nil {
+		// Direct SMS for critical notifications
+		if notification.Priority == entities.PriorityCritical {
+			return s.smsSender.SendSMS(ctx, "", notification.Message)
+		}
+	}
+	return s.queueNotification(ctx, notification.UserID, "sms", "", notification.Message, nil)
 }
 
 func (s *NotificationService) sendInApp(ctx context.Context, notification *entities.Notification) error {
@@ -76,79 +126,72 @@ func (s *NotificationService) sendInApp(ctx context.Context, notification *entit
 	return nil
 }
 
+func (s *NotificationService) queueNotification(ctx context.Context, userID uuid.UUID, notifType, title, body string, data map[string]interface{}) error {
+	if s.queue == nil {
+		s.logger.Debug("Notification queue not configured, logging only",
+			zap.String("type", notifType),
+			zap.String("user_id", userID.String()))
+		return nil
+	}
+
+	return s.queue.QueueNotification(ctx, &QueuedNotification{
+		UserID:   userID,
+		Type:     notifType,
+		Title:    title,
+		Body:     body,
+		Data:     data,
+		Priority: "normal",
+	})
+}
+
 func (s *NotificationService) SendWeeklySummary(ctx context.Context, userID uuid.UUID, weekStart time.Time) error {
-	s.logger.Info("Sending weekly summary notification",
-		zap.String("user_id", userID.String()),
-		zap.String("week_start", weekStart.Format("2006-01-02")))
-	return nil
+	title := "Your Weekly Investment Summary"
+	body := fmt.Sprintf("Here's your investment summary for the week of %s", weekStart.Format("Jan 2, 2006"))
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "weekly_summary"})
 }
 
 func (s *NotificationService) NotifyOffRampSuccess(ctx context.Context, userID uuid.UUID, amount string) error {
-	s.logger.Info("Sending off-ramp success notification",
-		zap.String("user_id", userID.String()),
-		zap.String("amount", amount))
-	return nil
+	title := "Withdrawal Complete"
+	body := fmt.Sprintf("Your withdrawal of $%s has been processed successfully.", amount)
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "offramp_success", "amount": amount})
 }
 
 func (s *NotificationService) NotifyOffRampFailure(ctx context.Context, userID uuid.UUID, reason string) error {
-	s.logger.Warn("Sending off-ramp failure notification",
-		zap.String("user_id", userID.String()),
-		zap.String("reason", reason))
-	return nil
+	title := "Withdrawal Failed"
+	body := fmt.Sprintf("Your withdrawal could not be processed: %s", reason)
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "offramp_failure"})
 }
 
 func (s *NotificationService) NotifyTransactionDeclined(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, transactionType string) error {
-	s.logger.Info("Sending transaction declined notification",
-		zap.String("user_id", userID.String()),
-		zap.String("amount", amount.String()),
-		zap.String("type", transactionType))
-	return nil
+	title := "Transaction Declined"
+	body := fmt.Sprintf("Your %s of $%s was declined due to spending limits.", transactionType, amount.String())
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "transaction_declined"})
 }
 
-// NotifyDepositConfirmed sends notification when a deposit is confirmed
 func (s *NotificationService) NotifyDepositConfirmed(ctx context.Context, userID uuid.UUID, amount, chain, txHash string) error {
-	s.logger.Info("Sending deposit confirmed notification",
-		zap.String("user_id", userID.String()),
-		zap.String("amount", amount),
-		zap.String("chain", chain),
-		zap.String("tx_hash", txHash))
-	return nil
+	title := "Deposit Confirmed"
+	body := fmt.Sprintf("Your deposit of %s on %s has been confirmed.", amount, chain)
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "deposit_confirmed", "tx_hash": txHash})
 }
 
-// NotifyWithdrawalCompleted sends notification when a withdrawal is completed
 func (s *NotificationService) NotifyWithdrawalCompleted(ctx context.Context, userID uuid.UUID, amount, destinationAddress string) error {
-	s.logger.Info("Sending withdrawal completed notification",
-		zap.String("user_id", userID.String()),
-		zap.String("amount", amount),
-		zap.String("destination", destinationAddress))
-	return nil
+	title := "Withdrawal Complete"
+	body := fmt.Sprintf("Your withdrawal of $%s has been sent to %s...%s", amount, destinationAddress[:6], destinationAddress[len(destinationAddress)-4:])
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "withdrawal_completed"})
 }
 
-// NotifyWithdrawalFailed sends notification when a withdrawal fails
 func (s *NotificationService) NotifyWithdrawalFailed(ctx context.Context, userID uuid.UUID, amount, reason string) error {
-	s.logger.Warn("Sending withdrawal failed notification",
-		zap.String("user_id", userID.String()),
-		zap.String("amount", amount),
-		zap.String("reason", reason))
-	return nil
+	title := "Withdrawal Failed"
+	body := fmt.Sprintf("Your withdrawal of $%s failed: %s", amount, reason)
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "withdrawal_failed"})
 }
 
-// NotifyLargeBalanceChange sends notification for significant balance changes
 func (s *NotificationService) NotifyLargeBalanceChange(ctx context.Context, userID uuid.UUID, changeType string, amount decimal.Decimal, newBalance decimal.Decimal) error {
-	s.logger.Info("Sending large balance change notification",
-		zap.String("user_id", userID.String()),
-		zap.String("change_type", changeType),
-		zap.String("amount", amount.String()),
-		zap.String("new_balance", newBalance.String()))
-	return nil
+	title := "Large Balance Change"
+	body := fmt.Sprintf("A %s of $%s has been processed. New balance: $%s", changeType, amount.String(), newBalance.String())
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "balance_change"})
 }
 
-
-// SendGenericNotification sends a generic notification with title and message
 func (s *NotificationService) SendGenericNotification(ctx context.Context, userID uuid.UUID, title, message string) error {
-	s.logger.Info("Sending generic notification",
-		zap.String("user_id", userID.String()),
-		zap.String("title", title),
-		zap.String("message", message))
-	return nil
+	return s.queueNotification(ctx, userID, "push", title, message, nil)
 }

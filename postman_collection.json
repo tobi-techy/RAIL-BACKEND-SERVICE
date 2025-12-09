@@ -55,6 +55,31 @@
       "key": "password",
       "value": "SecureP@ssw0rd123!",
       "description": "Test user password"
+    },
+    {
+      "key": "symbol",
+      "value": "AAPL",
+      "description": "Stock symbol for testing"
+    },
+    {
+      "key": "scheduled_investment_id",
+      "value": "si_01HQZX8K9M2N3P4Q5R6S7T8U9V",
+      "description": "Scheduled investment UUID"
+    },
+    {
+      "key": "rebalancing_config_id",
+      "value": "rc_01HQZX8K9M2N3P4Q5R6S7T8U9V",
+      "description": "Rebalancing config UUID"
+    },
+    {
+      "key": "alert_id",
+      "value": "alert_01HQZX8K9M2N3P4Q5R6S7T8U9V",
+      "description": "Market alert UUID"
+    },
+    {
+      "key": "order_id",
+      "value": "ord_01HQZX8K9M2N3P4Q5R6S7T8U9V",
+      "description": "Order UUID"
     }
   ],
   "item": [
@@ -669,5 +694,415 @@
         }
       ]
     },
+    {
+      "name": "📊 Portfolio Analytics",
+      "description": "Advanced portfolio analytics and performance metrics",
+      "item": [
+        {
+          "name": "Get Performance Metrics",
+          "request": {
+            "method": "GET",
+            "header": [{"key": "Authorization", "value": "Bearer {{access_token}}"}],
+            "url": {
+              "raw": "{{base_url}}/api/v1/analytics/performance?period=1M",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "analytics", "performance"],
+              "query": [{"key": "period", "value": "1M"}]
+            },
+            "description": "Get portfolio performance metrics for specified period"
+          },
+          "response": [
+            {
+              "name": "✅ Performance Metrics",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"period\": \"1M\",\n  \"total_return\": \"8.5%\",\n  \"annualized_return\": \"12.3%\",\n  \"volatility\": \"15.2%\",\n  \"sharpe_ratio\": 0.81,\n  \"max_drawdown\": \"-5.1%\",\n  \"benchmark_return\": \"6.2%\",\n  \"alpha\": \"2.3%\",\n  \"beta\": 1.05\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Risk Metrics",
+          "request": {
+            "method": "GET",
+            "header": [{"key": "Authorization", "value": "Bearer {{access_token}}"}],
+            "url": {
+              "raw": "{{base_url}}/api/v1/analytics/risk",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "analytics", "risk"]
+            },
+            "description": "Get portfolio risk assessment metrics"
+          },
+          "response": [
+            {
+              "name": "✅ Risk Metrics",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"risk_score\": 7.2,\n  \"risk_level\": \"moderate_high\",\n  \"var_95\": \"-3.2%\",\n  \"var_99\": \"-5.8%\",\n  \"volatility\": \"15.2%\",\n  \"beta\": 1.05,\n  \"correlation_sp500\": 0.85,\n  \"concentration_risk\": \"medium\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Take Portfolio Snapshot",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{access_token}}"},
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/analytics/snapshot",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "analytics", "snapshot"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"force\": false\n}"
+            },
+            "description": "Manually trigger a portfolio snapshot"
+          },
+          "response": [
+            {
+              "name": "✅ Snapshot Created",
+              "status": "Created",
+              "code": 201,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"snapshot_id\": \"snap_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n  \"timestamp\": \"2024-01-15T16:00:00Z\",\n  \"total_value\": \"12500.75\",\n  \"positions_count\": 15,\n  \"message\": \"Portfolio snapshot created successfully\"\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "📈 Market Data",
+      "description": "Real-time market data and price alerts",
+      "item": [
+        {
+          "name": "Get Stock Quote",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/market/quote/{{symbol}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "market", "quote", "{{symbol}}"]
+            },
+            "description": "Get real-time quote for a single stock symbol"
+          },
+          "response": [
+            {
+              "name": "✅ Stock Quote",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"symbol\": \"AAPL\",\n  \"price\": \"192.53\",\n  \"change\": \"+2.15\",\n  \"change_percent\": \"+1.13%\",\n  \"volume\": \"45,234,567\",\n  \"market_cap\": \"3.01T\",\n  \"timestamp\": \"2024-01-15T16:00:00Z\",\n  \"market_status\": \"open\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Create Price Alert",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{access_token}}"},
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/market/alerts",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "market", "alerts"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"symbol\": \"{{symbol}}\",\n  \"condition\": \"above\",\n  \"target_price\": \"200.00\",\n  \"message\": \"AAPL reached $200!\"\n}"
+            },
+            "description": "Create a price alert for a stock symbol"
+          },
+          "response": [
+            {
+              "name": "✅ Alert Created",
+              "status": "Created",
+              "code": 201,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"alert_id\": \"alert_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n  \"symbol\": \"AAPL\",\n  \"condition\": \"above\",\n  \"target_price\": \"200.00\",\n  \"current_price\": \"192.53\",\n  \"status\": \"active\",\n  \"created_at\": \"2024-01-15T16:00:00Z\"\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "🔄 Scheduled Investments (DCA)",
+      "description": "Dollar-cost averaging and scheduled investment automation",
+      "item": [
+        {
+          "name": "Create Scheduled Investment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{access_token}}"},
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/scheduled-investments",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "scheduled-investments"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Weekly Tech Investment\",\n  \"symbol\": \"{{symbol}}\",\n  \"amount\": \"50.00\",\n  \"frequency\": \"weekly\",\n  \"start_date\": \"2024-01-22\",\n  \"end_date\": \"2024-12-31\"\n}"
+            },
+            "description": "Create a new scheduled investment (DCA) plan"
+          },
+          "response": [
+            {
+              "name": "✅ Scheduled Investment Created",
+              "status": "Created",
+              "code": 201,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"id\": \"si_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n  \"name\": \"Weekly Tech Investment\",\n  \"symbol\": \"AAPL\",\n  \"amount\": \"50.00\",\n  \"frequency\": \"weekly\",\n  \"status\": \"active\",\n  \"next_execution\": \"2024-01-22T10:00:00Z\",\n  \"created_at\": \"2024-01-15T16:00:00Z\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Scheduled Investments",
+          "request": {
+            "method": "GET",
+            "header": [{"key": "Authorization", "value": "Bearer {{access_token}}"}],
+            "url": {
+              "raw": "{{base_url}}/api/v1/scheduled-investments",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "scheduled-investments"]
+            },
+            "description": "Get all scheduled investments for the user"
+          },
+          "response": [
+            {
+              "name": "✅ Scheduled Investments",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"scheduled_investments\": [\n    {\n      \"id\": \"si_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n      \"name\": \"Weekly Tech Investment\",\n      \"symbol\": \"AAPL\",\n      \"amount\": \"50.00\",\n      \"frequency\": \"weekly\",\n      \"status\": \"active\",\n      \"next_execution\": \"2024-01-22T10:00:00Z\",\n      \"total_invested\": \"200.00\",\n      \"executions_count\": 4\n    }\n  ]\n}"
+            }
+          ]
+        },
+        {
+          "name": "Pause Scheduled Investment",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Authorization", "value": "Bearer {{access_token}}"}],
+            "url": {
+              "raw": "{{base_url}}/api/v1/scheduled-investments/{{scheduled_investment_id}}/pause",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "scheduled-investments", "{{scheduled_investment_id}}", "pause"]
+            },
+            "description": "Pause a scheduled investment"
+          },
+          "response": [
+            {
+              "name": "✅ Investment Paused",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"message\": \"Scheduled investment paused successfully\",\n  \"status\": \"paused\"\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "⚖️ Portfolio Rebalancing",
+      "description": "Automated portfolio rebalancing and drift detection",
+      "item": [
+        {
+          "name": "Create Rebalancing Config",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{access_token}}"},
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/rebalancing/configs",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rebalancing", "configs"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Balanced Portfolio\",\n  \"target_allocations\": {\n    \"AAPL\": 30,\n    \"GOOGL\": 25,\n    \"MSFT\": 20,\n    \"TSLA\": 15,\n    \"NVDA\": 10\n  },\n  \"drift_threshold\": 5.0,\n  \"rebalance_frequency\": \"monthly\"\n}"
+            },
+            "description": "Create a new portfolio rebalancing configuration"
+          },
+          "response": [
+            {
+              "name": "✅ Rebalancing Config Created",
+              "status": "Created",
+              "code": 201,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"id\": \"rc_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n  \"name\": \"Balanced Portfolio\",\n  \"target_allocations\": {\n    \"AAPL\": 30,\n    \"GOOGL\": 25,\n    \"MSFT\": 20,\n    \"TSLA\": 15,\n    \"NVDA\": 10\n  },\n  \"drift_threshold\": 5.0,\n  \"status\": \"active\",\n  \"created_at\": \"2024-01-15T16:00:00Z\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Check Portfolio Drift",
+          "request": {
+            "method": "GET",
+            "header": [{"key": "Authorization", "value": "Bearer {{access_token}}"}],
+            "url": {
+              "raw": "{{base_url}}/api/v1/rebalancing/configs/{{rebalancing_config_id}}/drift",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rebalancing", "configs", "{{rebalancing_config_id}}", "drift"]
+            },
+            "description": "Check current portfolio drift against target allocation"
+          },
+          "response": [
+            {
+              "name": "✅ Portfolio Drift",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"needs_rebalancing\": true,\n  \"max_drift\": 7.2,\n  \"drift_threshold\": 5.0,\n  \"current_allocations\": {\n    \"AAPL\": 37.2,\n    \"GOOGL\": 23.1,\n    \"MSFT\": 18.5,\n    \"TSLA\": 12.8,\n    \"NVDA\": 8.4\n  },\n  \"target_allocations\": {\n    \"AAPL\": 30,\n    \"GOOGL\": 25,\n    \"MSFT\": 20,\n    \"TSLA\": 15,\n    \"NVDA\": 10\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "Execute Rebalancing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{access_token}}"},
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/rebalancing/configs/{{rebalancing_config_id}}/execute",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rebalancing", "configs", "{{rebalancing_config_id}}", "execute"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"confirm\": true\n}"
+            },
+            "description": "Execute the rebalancing plan"
+          },
+          "response": [
+            {
+              "name": "✅ Rebalancing Executed",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"execution_id\": \"exec_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n  \"status\": \"executing\",\n  \"trades_submitted\": 5,\n  \"estimated_completion\": \"2024-01-15T16:05:00Z\",\n  \"message\": \"Rebalancing trades submitted successfully\"\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "🏦 Alpaca Investment",
+      "description": "Alpaca brokerage integration for stock trading",
+      "item": [
+        {
+          "name": "Get Brokerage Account",
+          "request": {
+            "method": "GET",
+            "header": [{"key": "Authorization", "value": "Bearer {{access_token}}"}],
+            "url": {
+              "raw": "{{base_url}}/api/v1/investment/account",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "investment", "account"]
+            },
+            "description": "Get Alpaca brokerage account information"
+          },
+          "response": [
+            {
+              "name": "✅ Brokerage Account",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"account_id\": \"alp_acc_789012\",\n  \"status\": \"ACTIVE\",\n  \"buying_power\": \"1250.75\",\n  \"cash\": \"150.25\",\n  \"portfolio_value\": \"1100.50\",\n  \"day_trade_count\": 0,\n  \"created_at\": \"2024-01-15T10:30:00Z\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Fund Brokerage Account",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{access_token}}"},
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/investment/fund",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "investment", "fund"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": \"500.00\",\n  \"source\": \"buying_power\"\n}"
+            },
+            "description": "Transfer funds to Alpaca brokerage account"
+          },
+          "response": [
+            {
+              "name": "✅ Funding Initiated",
+              "status": "Accepted",
+              "code": 202,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"transfer_id\": \"xfer_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n  \"amount\": \"500.00\",\n  \"status\": \"pending\",\n  \"estimated_completion\": \"2024-01-16T10:00:00Z\",\n  \"message\": \"Funding transfer initiated successfully\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Place Order",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{access_token}}"},
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/investment/orders",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "investment", "orders"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"symbol\": \"{{symbol}}\",\n  \"side\": \"buy\",\n  \"type\": \"market\",\n  \"time_in_force\": \"day\",\n  \"notional\": \"100.00\"\n}"
+            },
+            "description": "Place a stock order through Alpaca"
+          },
+          "response": [
+            {
+              "name": "✅ Order Placed",
+              "status": "Created",
+              "code": 201,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"order_id\": \"ord_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n  \"symbol\": \"AAPL\",\n  \"side\": \"buy\",\n  \"type\": \"market\",\n  \"notional\": \"100.00\",\n  \"status\": \"accepted\",\n  \"submitted_at\": \"2024-01-15T16:00:00Z\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Positions",
+          "request": {
+            "method": "GET",
+            "header": [{"key": "Authorization", "value": "Bearer {{access_token}}"}],
+            "url": {
+              "raw": "{{base_url}}/api/v1/investment/positions",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "investment", "positions"]
+            },
+            "description": "Get all stock positions in Alpaca account"
+          },
+          "response": [
+            {
+              "name": "✅ Stock Positions",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"positions\": [\n    {\n      \"symbol\": \"AAPL\",\n      \"qty\": \"1.25\",\n      \"market_value\": \"240.50\",\n      \"cost_basis\": \"230.00\",\n      \"unrealized_pl\": \"10.50\",\n      \"unrealized_plpc\": \"4.57%\",\n      \"side\": \"long\"\n    }\n  ],\n  \"total_market_value\": \"1100.50\",\n  \"total_unrealized_pl\": \"50.75\"\n}"
+            }
+          ]
+        }
+      ]
+    }
   ]
 }

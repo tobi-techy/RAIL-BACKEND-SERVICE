@@ -32,11 +32,14 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/onboarding"
 	"github.com/rail-service/rail_service/internal/domain/services/passcode"
 	"github.com/rail-service/rail_service/internal/domain/services/reconciliation"
+	"github.com/rail-service/rail_service/internal/domain/services/roundup"
+	"github.com/rail-service/rail_service/internal/domain/services/copytrading"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	"github.com/rail-service/rail_service/internal/domain/services/socialauth"
 	"github.com/rail-service/rail_service/internal/domain/services/twofa"
 	"github.com/rail-service/rail_service/internal/domain/services/wallet"
 	"github.com/rail-service/rail_service/internal/domain/services/webauthn"
+	"github.com/rail-service/rail_service/internal/domain/services/security"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
@@ -291,6 +294,14 @@ type Container struct {
 	ScheduledInvestmentService  *investing.ScheduledInvestmentService
 	RebalancingService          *investing.RebalancingService
 
+	// Round-up Services
+	RoundupRepo    *repositories.RoundupRepository
+	RoundupService *roundup.Service
+
+	// Copy Trading Services
+	CopyTradingRepo    *repositories.CopyTradingRepository
+	CopyTradingService *copytrading.Service
+
 	// Workers
 	WalletProvisioningScheduler interface{} // Type interface{} to avoid circular dependency, will be set at runtime
 	FundingWebhookManager       interface{} // Type interface{} to avoid circular dependency, will be set at runtime
@@ -299,6 +310,14 @@ type Container struct {
 	CacheInvalidator *cache.CacheInvalidator
 	JobQueue         interface{} // Job queue for background processing
 	JobScheduler     interface{} // Job scheduler for cron jobs
+
+	// Security Services
+	LoginProtectionService    *security.LoginProtectionService
+	DeviceTrackingService     *security.DeviceTrackingService
+	WithdrawalSecurityService *security.WithdrawalSecurityService
+	IPWhitelistService        *security.IPWhitelistService
+	PasswordPolicyService     *security.PasswordPolicyService
+	SecurityEventLogger       *security.SecurityEventLogger
 }
 
 // NewContainer creates a new dependency injection container
@@ -667,6 +686,14 @@ func (c *Container) initializeDomainServices() error {
 	auditRepo := repositories.NewAuditRepository(sqlxDB)
 	c.DomainAuditService = audit.NewService(auditRepo, c.ZapLog)
 
+	// Initialize security services
+	c.LoginProtectionService = security.NewLoginProtectionService(c.RedisClient.Client(), c.ZapLog)
+	c.DeviceTrackingService = security.NewDeviceTrackingService(c.DB, c.ZapLog)
+	c.WithdrawalSecurityService = security.NewWithdrawalSecurityService(c.DB, c.RedisClient.Client(), c.ZapLog)
+	c.IPWhitelistService = security.NewIPWhitelistService(c.DB, c.RedisClient.Client(), c.ZapLog)
+	c.PasswordPolicyService = security.NewPasswordPolicyService(c.Config.Environment == "production")
+	c.SecurityEventLogger = security.NewSecurityEventLogger(c.DB, c.ZapLog)
+
 	// Wire limits and audit services to funding service
 	c.FundingService.SetLimitsService(c.LimitsService)
 	c.FundingService.SetAuditService(c.DomainAuditService)
@@ -806,6 +833,36 @@ func (c *Container) GetLimitsHandler() *handlers.LimitsHandler {
 		return nil
 	}
 	return handlers.NewLimitsHandler(c.LimitsService, c.Logger)
+}
+
+// GetLoginProtectionService returns the login protection service
+func (c *Container) GetLoginProtectionService() *security.LoginProtectionService {
+	return c.LoginProtectionService
+}
+
+// GetDeviceTrackingService returns the device tracking service
+func (c *Container) GetDeviceTrackingService() *security.DeviceTrackingService {
+	return c.DeviceTrackingService
+}
+
+// GetWithdrawalSecurityService returns the withdrawal security service
+func (c *Container) GetWithdrawalSecurityService() *security.WithdrawalSecurityService {
+	return c.WithdrawalSecurityService
+}
+
+// GetIPWhitelistService returns the IP whitelist service
+func (c *Container) GetIPWhitelistService() *security.IPWhitelistService {
+	return c.IPWhitelistService
+}
+
+// GetPasswordPolicyService returns the password policy service
+func (c *Container) GetPasswordPolicyService() *security.PasswordPolicyService {
+	return c.PasswordPolicyService
+}
+
+// GetSecurityEventLogger returns the security event logger
+func (c *Container) GetSecurityEventLogger() *security.SecurityEventLogger {
+	return c.SecurityEventLogger
 }
 
 // initializeReconciliationService initializes the reconciliation service and scheduler
@@ -1346,6 +1403,25 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 		c.ZapLog,
 	)
 
+	// Initialize Round-up Service
+	c.RoundupRepo = repositories.NewRoundupRepository(sqlxDB)
+	c.RoundupService = roundup.NewService(
+		c.RoundupRepo,
+		c.AllocationService,
+		orderPlacer,
+		nil, // ContributionRecorder - can be added later
+		c.ZapLog,
+	)
+
+	// Initialize Copy Trading Service
+	c.CopyTradingRepo = repositories.NewCopyTradingRepository(sqlxDB)
+	c.CopyTradingService = copytrading.NewService(
+		c.CopyTradingRepo,
+		&copyTradingBalanceAdapter{ledgerService: c.LedgerService, userID: uuid.Nil},
+		&copyTradingTradingAdapter{alpacaClient: c.AlpacaClient, accountRepo: c.AlpacaAccountRepo},
+		c.ZapLog,
+	)
+
 	c.ZapLog.Info("Advanced features initialized")
 	return nil
 }
@@ -1361,6 +1437,97 @@ func (a *marketNotificationAdapter) SendPushNotification(ctx context.Context, us
 	}
 	// Use existing notification service method
 	return a.svc.SendGenericNotification(ctx, userID, title, message)
+}
+
+// copyTradingBalanceAdapter adapts LedgerService for copy trading balance operations
+type copyTradingBalanceAdapter struct {
+	ledgerService *ledger.Service
+	userID        uuid.UUID
+}
+
+func (a *copyTradingBalanceAdapter) GetAvailableBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
+	if a.ledgerService == nil {
+		return decimal.Zero, fmt.Errorf("ledger service not available")
+	}
+	balances, err := a.ledgerService.GetUserBalances(ctx, userID)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	return balances.USDCBalance, nil
+}
+
+func (a *copyTradingBalanceAdapter) DeductBalance(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, description string) error {
+	if a.ledgerService == nil {
+		return fmt.Errorf("ledger service not available")
+	}
+	// Reserve funds for copy trading allocation
+	return a.ledgerService.ReserveForInvestment(ctx, userID, amount)
+}
+
+func (a *copyTradingBalanceAdapter) AddBalance(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, description string) error {
+	if a.ledgerService == nil {
+		return fmt.Errorf("ledger service not available")
+	}
+	// Release reserved funds back to user
+	return a.ledgerService.ReleaseReservation(ctx, userID, amount)
+}
+
+// copyTradingTradingAdapter adapts Alpaca client for copy trading order execution
+type copyTradingTradingAdapter struct {
+	alpacaClient *alpaca.Client
+	accountRepo  *repositories.AlpacaAccountRepository
+}
+
+func (a *copyTradingTradingAdapter) PlaceOrder(ctx context.Context, userID uuid.UUID, symbol string, side string, quantity decimal.Decimal) (string, decimal.Decimal, error) {
+	if a.alpacaClient == nil || a.accountRepo == nil {
+		return "", decimal.Zero, fmt.Errorf("trading adapter not configured")
+	}
+
+	// Get user's Alpaca account
+	account, err := a.accountRepo.GetByUserID(ctx, userID)
+	if err != nil || account == nil {
+		return "", decimal.Zero, fmt.Errorf("user has no brokerage account")
+	}
+
+	// Place order via Alpaca
+	orderSide := entities.AlpacaOrderSideBuy
+	if side == "sell" {
+		orderSide = entities.AlpacaOrderSideSell
+	}
+
+	orderReq := &entities.AlpacaCreateOrderRequest{
+		Symbol:      symbol,
+		Qty:         &quantity,
+		Side:        orderSide,
+		Type:        entities.AlpacaOrderTypeMarket,
+		TimeInForce: entities.AlpacaTimeInForceDay,
+	}
+
+	resp, err := a.alpacaClient.CreateOrder(ctx, account.AlpacaAccountID, orderReq)
+	if err != nil {
+		return "", decimal.Zero, fmt.Errorf("failed to place order: %w", err)
+	}
+
+	// Get executed price (for market orders, use filled_avg_price or current price)
+	executedPrice := decimal.Zero
+	if resp.FilledAvgPrice != nil && !resp.FilledAvgPrice.IsZero() {
+		executedPrice = *resp.FilledAvgPrice
+	}
+
+	return resp.ID, executedPrice, nil
+}
+
+func (a *copyTradingTradingAdapter) GetCurrentPrice(ctx context.Context, symbol string) (decimal.Decimal, error) {
+	if a.alpacaClient == nil {
+		return decimal.Zero, fmt.Errorf("trading adapter not configured")
+	}
+
+	quote, err := a.alpacaClient.GetLatestQuote(ctx, symbol)
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("failed to get quote: %w", err)
+	}
+
+	return quote.Ask, nil
 }
 
 // orderPlacerAdapter implements OrderPlacer interface for scheduled investments
@@ -1522,6 +1689,37 @@ func (c *Container) GetRebalancingHandlers() *handlers.RebalancingHandlers {
 		return nil
 	}
 	return handlers.NewRebalancingHandlers(c.RebalancingService, c.Logger)
+}
+
+// GetRoundupService returns the round-up service
+func (c *Container) GetRoundupService() *roundup.Service {
+	return c.RoundupService
+}
+
+// GetRoundupHandlers returns round-up handlers
+func (c *Container) GetRoundupHandlers() *handlers.RoundupHandlers {
+	if c.RoundupService == nil {
+		return nil
+	}
+	return handlers.NewRoundupHandlers(c.RoundupService, c.ZapLog)
+}
+
+// GetCopyTradingService returns the copy trading service
+func (c *Container) GetCopyTradingService() *copytrading.Service {
+	return c.CopyTradingService
+}
+
+// GetCopyTradingHandlers returns copy trading handlers
+func (c *Container) GetCopyTradingHandlers() *handlers.CopyTradingHandlers {
+	if c.CopyTradingService == nil {
+		return nil
+	}
+	return handlers.NewCopyTradingHandlers(c.CopyTradingService, c.Logger)
+}
+
+// GetCopyTradingRepository returns the copy trading repository
+func (c *Container) GetCopyTradingRepository() *repositories.CopyTradingRepository {
+	return c.CopyTradingRepo
 }
 
 // ListAllActiveUserIDs returns all active user IDs (for portfolio snapshot worker)

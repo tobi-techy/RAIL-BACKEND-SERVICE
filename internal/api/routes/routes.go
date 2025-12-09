@@ -93,6 +93,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.KYCProvider,
 		container.GetSessionService(),
 		container.GetTwoFAService(),
+		container.RedisClient,
 	)
 	securityHandlers := handlers.NewSecurityHandlers(
 		container.GetPasscodeService(),
@@ -115,6 +116,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 integrationHandlers := handlers.NewIntegrationHandlers(
 	container.AlpacaClient,
 	container.GetDueService(),
+	container.Config.Due.WebhookSecret,
 	services.NewNotificationService(container.ZapLog),
 	container.Logger,
 )
@@ -125,9 +127,8 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 	// API v1 routes
 	v1 := router.Group("/api/v1")
 	{
-		// Authentication routes (no auth required)
+		// Authentication routes (no auth required, no CSRF - API clients don't need CSRF protection)
 		auth := v1.Group("/auth")
-		auth.Use(middleware.CSRFProtection(csrfStore))
 		{
 			auth.POST("/register", authHandlers.Register)
 			auth.POST("/login", authHandlers.Login)
@@ -147,9 +148,8 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 			auth.POST("/webauthn/login/begin", socialAuthHandlers.BeginWebAuthnLogin)
 		}
 
-		// Onboarding routes - OpenAPI spec compliant
+		// Onboarding routes - OpenAPI spec compliant (no CSRF for public start endpoint)
 		onboarding := v1.Group("/onboarding")
-		onboarding.Use(middleware.CSRFProtection(csrfStore))
 		{
 			onboarding.POST("/start", authHandlers.StartOnboarding)
 
@@ -210,6 +210,31 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 				security.GET("/passkeys", socialAuthHandlers.GetWebAuthnCredentials)
 				security.POST("/passkeys/register", socialAuthHandlers.BeginWebAuthnRegistration)
 				security.DELETE("/passkeys/:id", socialAuthHandlers.DeleteWebAuthnCredential)
+
+				// Device management
+				securityEnhancedHandlers := handlers.NewSecurityEnhancedHandlers(
+					container.GetDeviceTrackingService(),
+					container.GetIPWhitelistService(),
+					container.GetWithdrawalSecurityService(),
+					container.GetSecurityEventLogger(),
+					container.ZapLog,
+				)
+				security.GET("/devices", securityEnhancedHandlers.GetDevices)
+				security.POST("/devices/:id/trust", securityEnhancedHandlers.TrustDevice)
+				security.DELETE("/devices/:id", securityEnhancedHandlers.RevokeDevice)
+
+				// IP whitelist management
+				security.GET("/ip-whitelist", securityEnhancedHandlers.GetIPWhitelist)
+				security.POST("/ip-whitelist", securityEnhancedHandlers.AddIPToWhitelist)
+				security.POST("/ip-whitelist/:id/verify", securityEnhancedHandlers.VerifyWhitelistedIP)
+				security.DELETE("/ip-whitelist/:id", securityEnhancedHandlers.RemoveIPFromWhitelist)
+
+				// Security events
+				security.GET("/events", securityEnhancedHandlers.GetSecurityEvents)
+				security.GET("/current-ip", securityEnhancedHandlers.GetCurrentIP)
+
+				// Withdrawal confirmation
+				security.POST("/withdrawals/confirm", securityEnhancedHandlers.ConfirmWithdrawal)
 			}
 
 			// Funding routes (OpenAPI spec compliant)
@@ -392,6 +417,22 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 				container.Logger,
 				sessionValidator,
 			)
+		}
+
+		// Register round-up routes
+		RegisterRoundupRoutes(
+			v1,
+			container.GetRoundupHandlers(),
+			container.Config,
+			container.Logger,
+			sessionValidator,
+		)
+
+		// Register copy trading routes
+		if container.GetCopyTradingHandlers() != nil {
+			copyTradingHandlers := container.GetCopyTradingHandlers()
+			authMiddleware := middleware.Authentication(container.Config, container.Logger, sessionValidator)
+			SetupCopyTradingRoutes(v1, copyTradingHandlers, authMiddleware)
 		}
 	}
 

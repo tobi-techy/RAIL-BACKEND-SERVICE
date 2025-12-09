@@ -389,6 +389,60 @@ func (r *UserRepository) CreateUserFromAuth(ctx context.Context, req *entities.R
 	return user, nil
 }
 
+// CreateUserWithHash creates a new user with a pre-hashed password (used after verification)
+func (r *UserRepository) CreateUserWithHash(ctx context.Context, email string, phone *string, passwordHash string) (*entities.User, error) {
+	user := &entities.User{
+		ID:               uuid.New(),
+		Email:            email,
+		Phone:            phone,
+		PasswordHash:     passwordHash,
+		EmailVerified:    false,
+		PhoneVerified:    false,
+		OnboardingStatus: entities.OnboardingStatusStarted,
+		KYCStatus:        string(entities.KYCStatusPending),
+		Role:             "user",
+		IsActive:         true,
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
+	}
+
+	query := `
+		INSERT INTO users (
+			id, email, phone, password_hash, auth_provider_id, 
+			email_verified, phone_verified, onboarding_status, kyc_status,
+			role, is_active, created_at, updated_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+		)`
+
+	_, err := r.db.ExecContext(ctx, query,
+		user.ID,
+		user.Email,
+		user.Phone,
+		user.PasswordHash,
+		user.AuthProviderID,
+		user.EmailVerified,
+		user.PhoneVerified,
+		string(user.OnboardingStatus),
+		user.KYCStatus,
+		user.Role,
+		user.IsActive,
+		user.CreatedAt,
+		user.UpdatedAt,
+	)
+
+	if err != nil {
+		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
+			return nil, fmt.Errorf("user already exists")
+		}
+		r.logger.Error("Failed to create user", zap.Error(err))
+		return nil, fmt.Errorf("failed to create user: %w", err)
+	}
+
+	r.logger.Info("User created successfully", zap.String("user_id", user.ID.String()))
+	return user, nil
+}
+
 // GetUserByEmailForLogin retrieves a user by email for login purposes (includes password hash)
 func (r *UserRepository) GetUserByEmailForLogin(ctx context.Context, email string) (*entities.User, error) {
 	query := `

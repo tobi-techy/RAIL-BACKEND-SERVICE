@@ -75,3 +75,28 @@ func RegisterAdvancedFeaturesRoutes(
 		rebalancing.GET("/configs/:id/drift", rebalancingHandlers.CheckDrift)
 	}
 }
+
+// RegisterRoundupRoutes registers round-up routes
+func RegisterRoundupRoutes(
+	router *gin.RouterGroup,
+	roundupHandlers *handlers.RoundupHandlers,
+	cfg *config.Config,
+	log *logger.Logger,
+	sessionValidator middleware.SessionValidator,
+) {
+	if roundupHandlers == nil {
+		return
+	}
+
+	roundups := router.Group("/roundups")
+	roundups.Use(middleware.Authentication(cfg, log, sessionValidator))
+	{
+		roundups.GET("/settings", roundupHandlers.GetSettings)
+		roundups.PUT("/settings", roundupHandlers.UpdateSettings)
+		roundups.GET("/summary", roundupHandlers.GetSummary)
+		roundups.GET("/transactions", roundupHandlers.GetTransactions)
+		roundups.POST("/transactions", roundupHandlers.ProcessTransaction)
+		roundups.POST("/preview", roundupHandlers.CalculatePreview)
+		roundups.POST("/collect", roundupHandlers.CollectRoundups)
+	}
+}

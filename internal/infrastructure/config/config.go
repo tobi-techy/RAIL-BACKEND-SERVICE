@@ -12,20 +12,21 @@ import (
 
 // Config holds all configuration for the application
 type Config struct {
-	Environment  string             `mapstructure:"environment"`
-	LogLevel     string             `mapstructure:"log_level"`
-	Server       ServerConfig       `mapstructure:"server"`
-	Database     DatabaseConfig     `mapstructure:"database"`
-	Redis        RedisConfig        `mapstructure:"redis"`
-	JWT          JWTConfig          `mapstructure:"jwt"`
-	Blockchain   BlockchainConfig   `mapstructure:"blockchain"`
-	Payment      PaymentConfig      `mapstructure:"payment"`
-	Security     SecurityConfig     `mapstructure:"security"`
-	Circle       CircleConfig       `mapstructure:"circle"`
-	KYC          KYCConfig          `mapstructure:"kyc"`
-	Email        EmailConfig        `mapstructure:"email"`
-	SMS          SMSConfig          `mapstructure:"sms"`
-	Verification VerificationConfig `mapstructure:"verification"`
+	Environment    string             `mapstructure:"environment"`
+	LogLevel       string             `mapstructure:"log_level"`
+	Server         ServerConfig       `mapstructure:"server"`
+	Database       DatabaseConfig     `mapstructure:"database"`
+	Redis          RedisConfig        `mapstructure:"redis"`
+	JWT            JWTConfig          `mapstructure:"jwt"`
+	Blockchain     BlockchainConfig   `mapstructure:"blockchain"`
+	Payment        PaymentConfig      `mapstructure:"payment"`
+	Security       SecurityConfig     `mapstructure:"security"`
+	Circle         CircleConfig       `mapstructure:"circle"`
+	KYC            KYCConfig          `mapstructure:"kyc"`
+	Email          EmailConfig        `mapstructure:"email"`
+	SMS            SMSConfig          `mapstructure:"sms"`
+	Notification   NotificationConfig `mapstructure:"notification"`
+	Verification   VerificationConfig `mapstructure:"verification"`
 	Alpaca         AlpacaConfig         `mapstructure:"alpaca"`
 	Due            DueConfig            `mapstructure:"due"`
 	Workers        WorkerConfig         `mapstructure:"workers"`
@@ -195,11 +196,22 @@ type EmailConfig struct {
 }
 
 type SMSConfig struct {
-	Provider    string `mapstructure:"provider"` // "twilio"
+	Provider    string `mapstructure:"provider"` // "twilio" or "sns"
 	APIKey      string `mapstructure:"api_key"`
 	APISecret   string `mapstructure:"api_secret"`
 	FromNumber  string `mapstructure:"from_number"`
 	Environment string `mapstructure:"environment"` // "development", "staging", "production"
+}
+
+// NotificationConfig contains AWS SNS/SQS notification configuration
+type NotificationConfig struct {
+	Provider             string `mapstructure:"provider"` // "sns" or "local"
+	Region               string `mapstructure:"region"`
+	PushPlatformARN      string `mapstructure:"push_platform_arn"`
+	SMSTopicARN          string `mapstructure:"sms_topic_arn"`
+	EmailTopicARN        string `mapstructure:"email_topic_arn"`
+	NotificationQueueURL string `mapstructure:"notification_queue_url"`
+	DueWebhookSecret     string `mapstructure:"due_webhook_secret"`
 }
 
 type VerificationConfig struct {
@@ -211,9 +223,10 @@ type VerificationConfig struct {
 
 // DueConfig contains Due API configuration for virtual accounts
 type DueConfig struct {
-	APIKey    string `mapstructure:"api_key"`
-	AccountID string `mapstructure:"account_id"`
-	BaseURL   string `mapstructure:"base_url"`
+	APIKey        string `mapstructure:"api_key"`
+	AccountID     string `mapstructure:"account_id"`
+	BaseURL       string `mapstructure:"base_url"`
+	WebhookSecret string `mapstructure:"webhook_secret"`
 }
 
 // WorkerConfig contains background worker configuration

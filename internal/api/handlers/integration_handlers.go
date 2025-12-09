@@ -1,6 +1,10 @@
 package handlers
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,6 +25,7 @@ type IntegrationHandlers struct {
 	
 	// Due
 	dueService          *services.DueService
+	dueWebhookSecret    string
 	notificationService *services.NotificationService
 	
 	logger *zap.Logger
@@ -30,12 +35,14 @@ type IntegrationHandlers struct {
 func NewIntegrationHandlers(
 	alpacaClient *alpaca.Client,
 	dueService *services.DueService,
+	dueWebhookSecret string,
 	notificationService *services.NotificationService,
 	logger *logger.Logger,
 ) *IntegrationHandlers {
 	return &IntegrationHandlers{
 		alpacaClient:        alpacaClient,
 		dueService:          dueService,
+		dueWebhookSecret:    dueWebhookSecret,
 		notificationService: notificationService,
 		logger:              logger.Zap(),
 	}
@@ -202,8 +209,23 @@ func (h *IntegrationHandlers) CreateDueAccount(c *gin.Context) {
 }
 
 func (h *IntegrationHandlers) HandleDueWebhook(c *gin.Context) {
+	// Read raw body for signature verification
+	rawBody, err := c.GetRawData()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
+		return
+	}
+
+	// Verify webhook signature if secret is configured
+	signature := c.GetHeader("X-Due-Signature")
+	if !h.verifyDueSignature(signature, rawBody) {
+		h.logger.Warn("Invalid Due webhook signature")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
+		return
+	}
+
 	var event map[string]interface{}
-	if err := c.ShouldBindJSON(&event); err != nil {
+	if err := json.Unmarshal(rawBody, &event); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid webhook payload"})
 		return
 	}
@@ -217,17 +239,31 @@ func (h *IntegrationHandlers) HandleDueWebhook(c *gin.Context) {
 	h.logger.Info("Received Due webhook", zap.String("type", eventType))
 
 	switch eventType {
-	case "virtual_account.deposit":
+	case "virtual_account.deposit", "deposit.received", "deposit.confirmed":
 		h.handleVirtualAccountDeposit(c, event)
-	case "transfer.completed", "transfer.failed":
-		h.handleTransferStatusChanged(c, event)
+	case "transfer.completed":
+		h.handleTransferCompleted(c, event)
+	case "transfer.failed":
+		h.handleTransferFailed(c, event)
 	case "kyc.status_changed":
 		h.handleKYCStatusChanged(c, event)
 	default:
-		h.logger.Warn("Unknown webhook event type", zap.String("type", eventType))
+		h.logger.Info("Unhandled webhook event type", zap.String("type", eventType))
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "webhook processed"})
+}
+
+func (h *IntegrationHandlers) verifyDueSignature(signature string, body []byte) bool {
+	// Skip verification if no secret configured (dev mode)
+	if h.dueWebhookSecret == "" {
+		return true
+	}
+	
+	mac := hmac.New(sha256.New, []byte(h.dueWebhookSecret))
+	mac.Write(body)
+	expected := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(expected), []byte(signature))
 }
 
 func (h *IntegrationHandlers) handleVirtualAccountDeposit(c *gin.Context, event map[string]interface{}) {
@@ -262,6 +298,29 @@ func (h *IntegrationHandlers) handleTransferStatusChanged(c *gin.Context, event 
 	status, _ := data["status"].(string)
 
 	h.logger.Info("Transfer status changed", zap.String("transfer_id", transferID), zap.String("status", status))
+}
+
+func (h *IntegrationHandlers) handleTransferCompleted(c *gin.Context, event map[string]interface{}) {
+	data, ok := event["data"].(map[string]interface{})
+	if !ok {
+		h.logger.Error("Invalid transfer completed webhook data")
+		return
+	}
+
+	transferID, _ := data["id"].(string)
+	h.logger.Info("Transfer completed", zap.String("transfer_id", transferID))
+}
+
+func (h *IntegrationHandlers) handleTransferFailed(c *gin.Context, event map[string]interface{}) {
+	data, ok := event["data"].(map[string]interface{})
+	if !ok {
+		h.logger.Error("Invalid transfer failed webhook data")
+		return
+	}
+
+	transferID, _ := data["id"].(string)
+	reason, _ := data["reason"].(string)
+	h.logger.Info("Transfer failed", zap.String("transfer_id", transferID), zap.String("reason", reason))
 }
 
 func (h *IntegrationHandlers) handleKYCStatusChanged(c *gin.Context, event map[string]interface{}) {

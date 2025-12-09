@@ -1,0 +1,2922 @@
+{
+  "info": {
+    "_postman_id": "03cea75c-e8ff-435d-87cd-be9fe61b531f",
+    "name": "STACK Service API - MVP",
+    "description": "Complete Postman collection for STACK Web3 Investment Platform MVP endpoints. Includes authentication, onboarding, wallets, funding, investments, and AI CFO features.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "45750428",
+    "_collection_link": "https://joseph-7932550.postman.co/workspace/4f59d14e-de3a-4415-8620-89777575aa3f/collection/45750428-03cea75c-e8ff-435d-87cd-be9fe61b531f?action=share&source=collection_link&creator=45750428"
+  },
+  "item": [
+    {
+      "name": "🏥 Health & Monitoring",
+      "item": [
+        {
+          "name": "Health Check",
+          "id": "89df566a-4c98-453e-a50a-79466a7f7955",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Check if the API is running and healthy"
+          },
+          "response": [
+            {
+              "id": "484364eb-c252-4238-93f3-553c0863be62",
+              "name": "✅ Healthy",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/health",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "health"
+                  ]
+                },
+                "description": "Check if the API is running and healthy"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"status\": \"healthy\",\n  \"timestamp\": \"2024-01-15T10:30:00Z\",\n  \"version\": \"2.0.0\",\n  \"uptime\": \"72h15m30s\",\n  \"database\": \"connected\",\n  \"redis\": \"connected\"\n}"
+            }
+          ]
+        }
+      ],
+      "id": "857575fb-5db6-48e2-9a75-6fd62b7cfc5a",
+      "description": "System health checks and monitoring endpoints"
+    },
+    {
+      "name": "🔐 Authentication",
+      "item": [
+        {
+          "name": "Register User",
+          "id": "6df427e4-d992-4512-aa22-d01dcdcc22ae",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "register"
+              ]
+            },
+            "description": "Register a new user account with email and password. Sends verification code to email."
+          },
+          "response": [
+            {
+              "id": "2839b05b-4ff4-4619-9e3e-3bc8f2bf10e4",
+              "name": "✅ Registration Successful",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/v1/auth/register",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "auth",
+                    "register"
+                  ]
+                },
+                "description": "Register a new user account with email and password. Sends verification code to email."
+              },
+              "status": "Accepted",
+              "code": 202,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"message\": \"Verification code sent to alice@example.com. Please verify your account.\",\n  \"identifier\": \"alice@example.com\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Verify Email Code",
+          "id": "0e30d622-c23f-48e1-a9f3-e8cedf0658ac",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"code\": \"123456\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-code",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-code"
+              ]
+            },
+            "description": "Verify email with 6-digit code sent during registration"
+          },
+          "response": [
+            {
+              "id": "b323df80-48c7-402f-9a29-be3e08e65c7f",
+              "name": "✅ Email Verified",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"{{email}}\",\n  \"code\": \"123456\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/v1/auth/verify-code",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "auth",
+                    "verify-code"
+                  ]
+                },
+                "description": "Verify email with 6-digit code sent during registration"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"user\": {\n    \"id\": \"usr_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n    \"email\": \"alice@example.com\",\n    \"email_verified\": true,\n    \"onboarding_status\": \"wallets_pending\"\n  },\n  \"access_token\": \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...\",\n  \"refresh_token\": \"rt_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n  \"expires_at\": \"2024-01-22T10:30:00Z\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Resend Verification Code",
+          "id": "b0be0fb2-45e1-43ee-aa1c-4dfac2487526",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/resend-code",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "resend-code"
+              ]
+            },
+            "description": "Resend verification code to email"
+          },
+          "response": [
+            {
+              "id": "4025780b-68e2-49cd-9091-7301d832b54b",
+              "name": "✅ Code Resent",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"{{email}}\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/v1/auth/resend-code",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "auth",
+                    "resend-code"
+                  ]
+                },
+                "description": "Resend verification code to email"
+              },
+              "status": "Accepted",
+              "code": 202,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"message\": \"New verification code sent to alice@example.com.\",\n  \"identifier\": \"alice@example.com\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Login",
+          "id": "43be31f2-6204-4995-8bb0-96a45b77371f",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Authenticate user and receive JWT tokens"
+          },
+          "response": [
+            {
+              "id": "15e57f31-8834-4b02-877f-65dcbd8ca490",
+              "name": "✅ Login Successful",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/v1/auth/login",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "auth",
+                    "login"
+                  ]
+                },
+                "description": "Authenticate user and receive JWT tokens"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"user\": {\n    \"id\": \"usr_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n    \"email\": \"alice@example.com\",\n    \"first_name\": \"Alice\",\n    \"onboarding_status\": \"completed\"\n  },\n  \"access_token\": \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...\",\n  \"refresh_token\": \"rt_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n  \"expires_at\": \"2024-01-22T10:30:00Z\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Refresh Token",
+          "id": "1c786d5f-7a48-40f7-a3e5-418b9ae9b0e6",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refresh_token\": \"{{refresh_token}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/refresh",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "refresh"
+              ]
+            },
+            "description": "Get new access token using refresh token"
+          },
+          "response": [
+            {
+              "id": "54f1e205-fdd6-4ad5-8086-6823952b90e9",
+              "name": "✅ Token Refreshed",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"refresh_token\": \"{{refresh_token}}\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/v1/auth/refresh",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "auth",
+                    "refresh"
+                  ]
+                },
+                "description": "Get new access token using refresh token"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"access_token\": \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...\",\n  \"expires_at\": \"2024-01-22T10:30:00Z\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Logout",
+          "id": "ec9d5864-3177-403b-b3c2-1f716937e448",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/logout",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "logout"
+              ]
+            },
+            "description": "Logout user and invalidate tokens"
+          },
+          "response": [
+            {
+              "id": "f6691895-a5e9-426d-92fd-81e7201d6e22",
+              "name": "✅ Logged Out",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/auth/logout",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "auth",
+                    "logout"
+                  ]
+                },
+                "description": "Logout user and invalidate tokens"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"message\": \"Logged out\"\n}"
+            }
+          ]
+        }
+      ],
+      "id": "8314b133-e854-4226-8fff-e712a954cde7",
+      "description": "User authentication and account management endpoints"
+    },
+    {
+      "name": "🚀 Onboarding",
+      "item": [
+        {
+          "name": "Complete Onboarding",
+          "id": "7611032a-4461-49f9-83d2-a7f27ab1f021",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"first_name\": \"Alice\",\n  \"last_name\": \"Johnson\",\n  \"phone\": \"+1234567890\",\n  \"date_of_birth\": \"1998-05-15\",\n  \"country\": \"US\",\n  \"address\": {\n    \"street\": \"123 Main St\",\n    \"city\": \"San Francisco\",\n    \"state\": \"CA\",\n    \"zip_code\": \"94105\",\n    \"country\": \"US\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/onboarding/complete",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "onboarding",
+                "complete"
+              ]
+            },
+            "description": "Complete onboarding with personal information. Creates Due and Alpaca accounts."
+          },
+          "response": [
+            {
+              "id": "c8c20a37-7e7f-4550-819f-94b3a8233a1e",
+              "name": "✅ Onboarding Completed",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"first_name\": \"Alice\",\n  \"last_name\": \"Johnson\",\n  \"phone\": \"+1234567890\",\n  \"date_of_birth\": \"1998-05-15\",\n  \"country\": \"US\",\n  \"address\": {\n    \"street\": \"123 Main St\",\n    \"city\": \"San Francisco\",\n    \"state\": \"CA\",\n    \"zip_code\": \"94105\",\n    \"country\": \"US\"\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/v1/onboarding/complete",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "onboarding",
+                    "complete"
+                  ]
+                },
+                "description": "Complete onboarding with personal information. Creates Due and Alpaca accounts."
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"user_id\": \"usr_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n  \"due_account_id\": \"due_acc_123456\",\n  \"alpaca_account_id\": \"alp_acc_789012\",\n  \"next_step\": \"create_passcode\",\n  \"message\": \"Onboarding completed successfully. Please create a passcode to secure your account.\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Onboarding Status",
+          "id": "d6cdee49-f3ea-4b2a-9d49-a0f025f2ed54",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/onboarding/status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "onboarding",
+                "status"
+              ]
+            },
+            "description": "Get current onboarding progress and status"
+          },
+          "response": [
+            {
+              "id": "7e867820-c3f4-49ec-a2fa-6036dc6c74af",
+              "name": "✅ Onboarding Status",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/onboarding/status",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "onboarding",
+                    "status"
+                  ]
+                },
+                "description": "Get current onboarding progress and status"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"onboarding_status\": \"completed\",\n  \"current_step\": \"wallet_creation\",\n  \"completed_steps\": [\"profile_completion\", \"kyc_verification\"],\n  \"progress_percentage\": 100\n}"
+            }
+          ]
+        },
+        {
+          "name": "Submit KYC Documents",
+          "id": "a44bdceb-0e29-40db-99c0-09705f884b52",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"document_type\": \"drivers_license\",\n  \"document_number\": \"DL123456789\",\n  \"country\": \"US\",\n  \"state\": \"CA\",\n  \"address\": {\n    \"street\": \"123 Main St\",\n    \"city\": \"San Francisco\",\n    \"state\": \"CA\",\n    \"zip_code\": \"94105\",\n    \"country\": \"US\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/onboarding/kyc/submit",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "onboarding",
+                "kyc",
+                "submit"
+              ]
+            },
+            "description": "Submit KYC documents for identity verification"
+          },
+          "response": [
+            {
+              "id": "24653404-6e99-44cb-a216-301c0be77353",
+              "name": "✅ KYC Submitted",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"document_type\": \"drivers_license\",\n  \"document_number\": \"DL123456789\",\n  \"country\": \"US\",\n  \"state\": \"CA\",\n  \"address\": {\n    \"street\": \"123 Main St\",\n    \"city\": \"San Francisco\",\n    \"state\": \"CA\",\n    \"zip_code\": \"94105\",\n    \"country\": \"US\"\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/v1/onboarding/kyc/submit",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "onboarding",
+                    "kyc",
+                    "submit"
+                  ]
+                },
+                "description": "Submit KYC documents for identity verification"
+              },
+              "status": "Accepted",
+              "code": 202,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"message\": \"KYC documents submitted successfully\",\n  \"status\": \"processing\",\n  \"user_id\": \"usr_01HQZX8K9M2N3P4Q5R6S7T8U9V\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get KYC Status",
+          "id": "5a3c503d-3df2-41c8-95ec-f0decc700390",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/kyc/status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "kyc",
+                "status"
+              ]
+            },
+            "description": "Get current KYC verification status"
+          },
+          "response": [
+            {
+              "id": "2d0863ca-d293-4f78-bb01-76910430d53b",
+              "name": "✅ KYC Status",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/kyc/status",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "kyc",
+                    "status"
+                  ]
+                },
+                "description": "Get current KYC verification status"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"kyc_status\": \"approved\",\n  \"provider\": \"sumsub\",\n  \"submitted_at\": \"2024-01-15T10:30:00Z\",\n  \"approved_at\": \"2024-01-15T12:00:00Z\"\n}"
+            }
+          ]
+        }
+      ],
+      "id": "87d76650-5d9c-45ff-be28-3e2459058857",
+      "description": "User onboarding flow and KYC verification"
+    },
+    {
+      "name": "🔐 Security",
+      "item": [
+        {
+          "name": "Create Passcode",
+          "id": "c5c5b074-bc8d-4fe3-b337-d5be5b5554af",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"passcode\": \"1234\",\n  \"confirm_passcode\": \"1234\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/security/passcode",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "security",
+                "passcode"
+              ]
+            },
+            "description": "Create a 4-digit passcode for the user. Triggers wallet provisioning."
+          },
+          "response": [
+            {
+              "id": "87f26a07-47bb-4a85-b7a7-27240fdc59e7",
+              "name": "✅ Passcode Created",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"passcode\": \"1234\",\n  \"confirm_passcode\": \"1234\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/v1/security/passcode",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "security",
+                    "passcode"
+                  ]
+                },
+                "description": "Create a 4-digit passcode for the user. Triggers wallet provisioning."
+              },
+              "status": "Created",
+              "code": 201,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"message\": \"Passcode created successfully\",\n  \"status\": {\n    \"has_passcode\": true,\n    \"is_locked\": false,\n    \"attempts_remaining\": 3\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Passcode Status",
+          "id": "c486ba24-57ad-4ddb-b272-7537cc45eeb0",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/security/passcode",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "security",
+                "passcode"
+              ]
+            },
+            "description": "Get current passcode status for the user"
+          },
+          "response": [
+            {
+              "id": "37b42d41-e117-4b82-984e-105cdb1a48bf",
+              "name": "✅ Passcode Status",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/security/passcode",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "security",
+                    "passcode"
+                  ]
+                },
+                "description": "Get current passcode status for the user"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"has_passcode\": true,\n  \"is_locked\": false,\n  \"attempts_remaining\": 3,\n  \"locked_until\": null\n}"
+            }
+          ]
+        },
+        {
+          "name": "Verify Passcode",
+          "id": "73c48f1a-376b-42d1-a94c-df9079d57e9e",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"passcode\": \"1234\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/security/passcode/verify",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "security",
+                "passcode",
+                "verify"
+              ]
+            },
+            "description": "Verify passcode and get session tokens for sensitive operations"
+          },
+          "response": [
+            {
+              "id": "88804f93-97a4-4fcc-9cd8-3b66f801cb7a",
+              "name": "✅ Passcode Verified",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"passcode\": \"1234\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/v1/security/passcode/verify",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "security",
+                    "passcode",
+                    "verify"
+                  ]
+                },
+                "description": "Verify passcode and get session tokens for sensitive operations"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"verified\": true,\n  \"access_token\": \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...\",\n  \"refresh_token\": \"rt_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n  \"expires_at\": \"2024-01-22T10:30:00Z\",\n  \"passcode_session_token\": \"pst_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n  \"passcode_session_expires_at\": \"2024-01-15T11:30:00Z\"\n}"
+            }
+          ]
+        }
+      ],
+      "id": "614dbcaf-654d-4ee1-8abe-65845c7349b9",
+      "description": "Passcode management and security endpoints"
+    },
+    {
+      "name": "💰 Wallets",
+      "item": [
+        {
+          "name": "Get Wallet Status",
+          "id": "3da16d97-5fbf-4ffe-a956-4a5cb4b4481f",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/wallet/status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "wallet",
+                "status"
+              ]
+            },
+            "description": "Get wallet provisioning status"
+          },
+          "response": [
+            {
+              "id": "f51649bf-bfd5-4eae-a9a6-eac9072dd41f",
+              "name": "✅ Wallet Status",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/wallet/status",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "wallet",
+                    "status"
+                  ]
+                },
+                "description": "Get wallet provisioning status"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"status\": \"completed\",\n  \"wallets_created\": 4,\n  \"supported_chains\": [\"ethereum\", \"polygon\", \"bsc\", \"solana\"],\n  \"created_at\": \"2024-01-15T10:30:00Z\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Deposit Addresses",
+          "id": "17a17e1b-904c-4aeb-9daa-6a21b475d21c",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/wallet/addresses?chain={{chain}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "wallet",
+                "addresses"
+              ],
+              "query": [
+                {
+                  "key": "chain",
+                  "value": "{{chain}}"
+                }
+              ]
+            },
+            "description": "Get deposit addresses for a specific blockchain"
+          },
+          "response": [
+            {
+              "id": "cf0de3bd-32c1-494a-9a19-09d5c7c18ecb",
+              "name": "✅ Deposit Addresses",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/wallet/addresses?chain={{chain}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "wallet",
+                    "addresses"
+                  ],
+                  "query": [
+                    {
+                      "key": "chain",
+                      "value": "{{chain}}"
+                    }
+                  ]
+                },
+                "description": "Get deposit addresses for a specific blockchain"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"chain\": \"ethereum\",\n  \"addresses\": [\n    {\n      \"currency\": \"USDC\",\n      \"address\": \"0x742d35Cc6634C0532925a3b8D4C9db96590c4\",\n      \"qr_code\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...\"\n    }\n  ]\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Wallet by Chain",
+          "id": "0871c115-3244-4604-b480-b23387b8f9ab",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/wallets/{{chain}}/address",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "wallets",
+                "{{chain}}",
+                "address"
+              ]
+            },
+            "description": "Get wallet address for a specific blockchain"
+          },
+          "response": [
+            {
+              "id": "fdb4c991-31d2-4b34-b6d2-174c113029df",
+              "name": "✅ Chain Wallet",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/wallets/{{chain}}/address",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "wallets",
+                    "{{chain}}",
+                    "address"
+                  ]
+                },
+                "description": "Get wallet address for a specific blockchain"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"chain\": \"ethereum\",\n  \"address\": \"0x742d35Cc6634C0532925a3b8D4C9db96590c4\",\n  \"balance\": \"1.25\",\n  \"balance_usd\": \"1250.75\",\n  \"created_at\": \"2024-01-15T10:30:00Z\"\n}"
+            }
+          ]
+        }
+      ],
+      "id": "5d2cca67-631b-42a1-af6c-3c12475af3fe",
+      "description": "Multi-chain wallet management and addresses"
+    },
+    {
+      "name": "💸 Funding",
+      "item": [
+        {
+          "name": "Generate Deposit Address",
+          "id": "e7ad79e2-9a65-40bc-8124-c1962c973461",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"chain\": \"{{chain}}\",\n  \"currency\": \"USDC\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/funding/deposit/address",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "funding",
+                "deposit",
+                "address"
+              ]
+            },
+            "description": "Generate a new deposit address for funding"
+          },
+          "response": [
+            {
+              "id": "e04895b7-0ead-4e22-8250-ff00e78b10a6",
+              "name": "✅ Deposit Address Generated",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"chain\": \"{{chain}}\",\n  \"currency\": \"USDC\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/v1/funding/deposit/address",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "funding",
+                    "deposit",
+                    "address"
+                  ]
+                },
+                "description": "Generate a new deposit address for funding"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"deposit_id\": \"dep_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n  \"chain\": \"ethereum\",\n  \"currency\": \"USDC\",\n  \"address\": \"0x742d35Cc6634C0532925a3b8D4C9db96590c4\",\n  \"qr_code\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...\",\n  \"minimum_amount\": \"10.00\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Balances",
+          "id": "3f4cf9c8-abc8-457c-add5-0cfde4cbbdd0",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/balances",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "balances"
+              ]
+            },
+            "description": "Get user's current balances across all chains and currencies"
+          },
+          "response": [
+            {
+              "id": "771642f2-feca-4ba4-a8b3-f405f6c80603",
+              "name": "✅ User Balances",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/balances",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "balances"
+                  ]
+                },
+                "description": "Get user's current balances across all chains and currencies"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"total_balance_usd\": \"1250.75\",\n  \"buying_power_usd\": \"150.25\",\n  \"invested_usd\": \"1100.50\",\n  \"balances\": [\n    {\n      \"chain\": \"ethereum\",\n      \"currency\": \"USDC\",\n      \"balance\": \"150.25\",\n      \"balance_usd\": \"150.25\"\n    }\n  ]\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Funding Confirmations",
+          "id": "999ab2fb-87b5-4bdb-b247-8cf83c4c76c3",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/funding/confirmations",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "funding",
+                "confirmations"
+              ]
+            },
+            "description": "Get funding confirmation status"
+          },
+          "response": [
+            {
+              "id": "5bc02726-58de-4ab1-920b-cc944fe81deb",
+              "name": "✅ Funding Confirmations",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/funding/confirmations",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "funding",
+                    "confirmations"
+                  ]
+                },
+                "description": "Get funding confirmation status"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"confirmations\": [\n    {\n      \"id\": \"conf_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n      \"deposit_id\": \"dep_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n      \"tx_hash\": \"0x1234567890abcdef...\",\n      \"confirmations\": 12,\n      \"required_confirmations\": 12,\n      \"status\": \"confirmed\"\n    }\n  ]\n}"
+            }
+          ]
+        }
+      ],
+      "id": "96ecbcbb-13fd-4b7f-a67d-cb0ca17dfa13",
+      "description": "Deposit processing and funding management"
+    },
+    {
+      "name": "📊 Investment Baskets",
+      "item": [
+        {
+          "name": "Get Curated Baskets",
+          "id": "206bdc6c-78fa-48c7-8748-a25a93079667",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/curated/baskets",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "curated",
+                "baskets"
+              ]
+            },
+            "description": "Get all available curated investment baskets"
+          },
+          "response": [
+            {
+              "id": "9074da02-a365-465d-afd8-6414f113a78c",
+              "name": "✅ Curated Baskets",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/curated/baskets",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "curated",
+                    "baskets"
+                  ]
+                },
+                "description": "Get all available curated investment baskets"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"baskets\": [\n    {\n      \"id\": \"bsk_tech_growth\",\n      \"name\": \"Tech Growth\",\n      \"description\": \"High-growth technology companies\",\n      \"risk_level\": \"high\",\n      \"min_investment\": \"25.00\",\n      \"performance_1y\": \"15.2%\",\n      \"holdings\": [\n        {\"symbol\": \"AAPL\", \"weight\": \"20%\"},\n        {\"symbol\": \"GOOGL\", \"weight\": \"18%\"}\n      ]\n    }\n  ]\n}"
+            }
+          ]
+        },
+        {
+          "name": "Invest in Basket",
+          "id": "0e85a897-dcf4-4b1c-b4f9-5693b4323335",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": \"100.00\",\n  \"currency\": \"USD\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/curated/baskets/{{basket_id}}/invest",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "curated",
+                "baskets",
+                "{{basket_id}}",
+                "invest"
+              ]
+            },
+            "description": "Invest a specific amount in a curated basket"
+          },
+          "response": [
+            {
+              "id": "0fad00dd-e84e-4df9-9108-87cbd584adf6",
+              "name": "✅ Investment Successful",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"amount\": \"100.00\",\n  \"currency\": \"USD\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/v1/curated/baskets/{{basket_id}}/invest",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "curated",
+                    "baskets",
+                    "{{basket_id}}",
+                    "invest"
+                  ]
+                },
+                "description": "Invest a specific amount in a curated basket"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"investment_id\": \"inv_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n  \"basket_id\": \"bsk_tech_growth\",\n  \"amount_invested\": \"100.00\",\n  \"shares_purchased\": [\n    {\"symbol\": \"AAPL\", \"shares\": \"0.105\", \"amount\": \"20.00\"}\n  ],\n  \"status\": \"executed\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Portfolio",
+          "id": "c11bd8d1-03e8-41ba-b585-19acc531b1c7",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/portfolio/overview",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "portfolio",
+                "overview"
+              ]
+            },
+            "description": "Get user's complete investment portfolio"
+          },
+          "response": [
+            {
+              "id": "09f6dd64-3cc9-4f19-aa0e-1d49a7cbbf43",
+              "name": "✅ Portfolio Overview",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/portfolio/overview",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "portfolio",
+                    "overview"
+                  ]
+                },
+                "description": "Get user's complete investment portfolio"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"total_value\": \"1,250.75\",\n  \"total_invested\": \"1,200.00\",\n  \"total_return\": \"50.75\",\n  \"return_percentage\": \"4.23%\",\n  \"cash_balance\": \"150.25\",\n  \"positions\": [\n    {\n      \"symbol\": \"AAPL\",\n      \"shares\": \"1.25\",\n      \"current_value\": \"240.50\",\n      \"unrealized_pnl\": \"10.50\"\n    }\n  ]\n}"
+            }
+          ]
+        }
+      ],
+      "id": "09f0a3b8-71f3-45f2-9f2f-b12afb87499c",
+      "description": "Curated investment baskets and portfolio management"
+    },
+    {
+      "name": "📊 Portfolio Analytics",
+      "item": [
+        {
+          "name": "Get Performance Metrics",
+          "id": "95dd747b-c88f-47a4-b654-faf2e05bec64",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/analytics/performance?period=1M",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "analytics",
+                "performance"
+              ],
+              "query": [
+                {
+                  "key": "period",
+                  "value": "1M"
+                }
+              ]
+            },
+            "description": "Get portfolio performance metrics for specified period"
+          },
+          "response": [
+            {
+              "id": "09b56db6-6679-4c87-aae1-34358cdfeb31",
+              "name": "✅ Performance Metrics",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/analytics/performance?period=1M",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "analytics",
+                    "performance"
+                  ],
+                  "query": [
+                    {
+                      "key": "period",
+                      "value": "1M"
+                    }
+                  ]
+                },
+                "description": "Get portfolio performance metrics for specified period"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"period\": \"1M\",\n  \"total_return\": \"8.5%\",\n  \"annualized_return\": \"12.3%\",\n  \"volatility\": \"15.2%\",\n  \"sharpe_ratio\": 0.81,\n  \"max_drawdown\": \"-5.1%\",\n  \"benchmark_return\": \"6.2%\",\n  \"alpha\": \"2.3%\",\n  \"beta\": 1.05\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Risk Metrics",
+          "id": "5bc3185b-8cf2-4b2d-880a-edd82d8004ff",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/analytics/risk",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "analytics",
+                "risk"
+              ]
+            },
+            "description": "Get portfolio risk assessment metrics"
+          },
+          "response": [
+            {
+              "id": "41ecefe3-1120-44fd-b403-df2d3809769a",
+              "name": "✅ Risk Metrics",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/analytics/risk",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "analytics",
+                    "risk"
+                  ]
+                },
+                "description": "Get portfolio risk assessment metrics"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"risk_score\": 7.2,\n  \"risk_level\": \"moderate_high\",\n  \"var_95\": \"-3.2%\",\n  \"var_99\": \"-5.8%\",\n  \"volatility\": \"15.2%\",\n  \"beta\": 1.05,\n  \"correlation_sp500\": 0.85,\n  \"concentration_risk\": \"medium\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Take Portfolio Snapshot",
+          "id": "1d5fe8a0-af98-432b-9fd9-3ff33e57e1bc",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"force\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/analytics/snapshot",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "analytics",
+                "snapshot"
+              ]
+            },
+            "description": "Manually trigger a portfolio snapshot"
+          },
+          "response": [
+            {
+              "id": "f9a49ba0-9fc0-4a63-a6f3-715be56a1d5d",
+              "name": "✅ Snapshot Created",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"force\": false\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/v1/analytics/snapshot",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "analytics",
+                    "snapshot"
+                  ]
+                },
+                "description": "Manually trigger a portfolio snapshot"
+              },
+              "status": "Created",
+              "code": 201,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"snapshot_id\": \"snap_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n  \"timestamp\": \"2024-01-15T16:00:00Z\",\n  \"total_value\": \"12500.75\",\n  \"positions_count\": 15,\n  \"message\": \"Portfolio snapshot created successfully\"\n}"
+            }
+          ]
+        }
+      ],
+      "id": "89b8f74c-36b2-4d65-8e6d-c81acfd2a0a0",
+      "description": "Advanced portfolio analytics and performance metrics"
+    },
+    {
+      "name": "📈 Market Data",
+      "item": [
+        {
+          "name": "Get Stock Quote",
+          "id": "88502fb0-8ff0-4e9a-8bea-7fce35b80aa8",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/market/quote/{{symbol}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "market",
+                "quote",
+                "{{symbol}}"
+              ]
+            },
+            "description": "Get real-time quote for a single stock symbol"
+          },
+          "response": [
+            {
+              "id": "535a6613-ac1b-46e6-808f-fe9b91bfb13b",
+              "name": "✅ Stock Quote",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/market/quote/{{symbol}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "market",
+                    "quote",
+                    "{{symbol}}"
+                  ]
+                },
+                "description": "Get real-time quote for a single stock symbol"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"symbol\": \"AAPL\",\n  \"price\": \"192.53\",\n  \"change\": \"+2.15\",\n  \"change_percent\": \"+1.13%\",\n  \"volume\": \"45,234,567\",\n  \"market_cap\": \"3.01T\",\n  \"timestamp\": \"2024-01-15T16:00:00Z\",\n  \"market_status\": \"open\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Create Price Alert",
+          "id": "89c36938-ffb6-4b85-817e-3392dda347ac",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"symbol\": \"{{symbol}}\",\n  \"condition\": \"above\",\n  \"target_price\": \"200.00\",\n  \"message\": \"AAPL reached $200!\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/market/alerts",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "market",
+                "alerts"
+              ]
+            },
+            "description": "Create a price alert for a stock symbol"
+          },
+          "response": [
+            {
+              "id": "71e3e7bb-186c-4597-919c-d0286a752e3b",
+              "name": "✅ Alert Created",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"symbol\": \"{{symbol}}\",\n  \"condition\": \"above\",\n  \"target_price\": \"200.00\",\n  \"message\": \"AAPL reached $200!\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/v1/market/alerts",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "market",
+                    "alerts"
+                  ]
+                },
+                "description": "Create a price alert for a stock symbol"
+              },
+              "status": "Created",
+              "code": 201,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"alert_id\": \"alert_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n  \"symbol\": \"AAPL\",\n  \"condition\": \"above\",\n  \"target_price\": \"200.00\",\n  \"current_price\": \"192.53\",\n  \"status\": \"active\",\n  \"created_at\": \"2024-01-15T16:00:00Z\"\n}"
+            }
+          ]
+        }
+      ],
+      "id": "b380deb7-7e01-4007-b502-f2d6f4835284",
+      "description": "Real-time market data and price alerts"
+    },
+    {
+      "name": "🔄 Scheduled Investments (DCA)",
+      "item": [
+        {
+          "name": "Create Scheduled Investment",
+          "id": "46513f5f-06cd-49d4-80ae-ebe1d9477550",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Weekly Tech Investment\",\n  \"symbol\": \"{{symbol}}\",\n  \"amount\": \"50.00\",\n  \"frequency\": \"weekly\",\n  \"start_date\": \"2024-01-22\",\n  \"end_date\": \"2024-12-31\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/scheduled-investments",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "scheduled-investments"
+              ]
+            },
+            "description": "Create a new scheduled investment (DCA) plan"
+          },
+          "response": [
+            {
+              "id": "0bc43584-0390-46ce-a0f2-27387ca6d481",
+              "name": "✅ Scheduled Investment Created",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Weekly Tech Investment\",\n  \"symbol\": \"{{symbol}}\",\n  \"amount\": \"50.00\",\n  \"frequency\": \"weekly\",\n  \"start_date\": \"2024-01-22\",\n  \"end_date\": \"2024-12-31\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/v1/scheduled-investments",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "scheduled-investments"
+                  ]
+                },
+                "description": "Create a new scheduled investment (DCA) plan"
+              },
+              "status": "Created",
+              "code": 201,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"id\": \"si_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n  \"name\": \"Weekly Tech Investment\",\n  \"symbol\": \"AAPL\",\n  \"amount\": \"50.00\",\n  \"frequency\": \"weekly\",\n  \"status\": \"active\",\n  \"next_execution\": \"2024-01-22T10:00:00Z\",\n  \"created_at\": \"2024-01-15T16:00:00Z\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Scheduled Investments",
+          "id": "5a853c92-30e7-4be9-8131-b59abdafa0e3",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/scheduled-investments",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "scheduled-investments"
+              ]
+            },
+            "description": "Get all scheduled investments for the user"
+          },
+          "response": [
+            {
+              "id": "68c27735-ee70-4137-90a0-885600738d22",
+              "name": "✅ Scheduled Investments",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/scheduled-investments",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "scheduled-investments"
+                  ]
+                },
+                "description": "Get all scheduled investments for the user"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"scheduled_investments\": [\n    {\n      \"id\": \"si_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n      \"name\": \"Weekly Tech Investment\",\n      \"symbol\": \"AAPL\",\n      \"amount\": \"50.00\",\n      \"frequency\": \"weekly\",\n      \"status\": \"active\",\n      \"next_execution\": \"2024-01-22T10:00:00Z\",\n      \"total_invested\": \"200.00\",\n      \"executions_count\": 4\n    }\n  ]\n}"
+            }
+          ]
+        },
+        {
+          "name": "Pause Scheduled Investment",
+          "id": "e5356807-0331-49a3-ae46-a54d54477c82",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/scheduled-investments/{{scheduled_investment_id}}/pause",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "scheduled-investments",
+                "{{scheduled_investment_id}}",
+                "pause"
+              ]
+            },
+            "description": "Pause a scheduled investment"
+          },
+          "response": [
+            {
+              "id": "b56071f5-e366-4113-af88-fa30b019ddf3",
+              "name": "✅ Investment Paused",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/scheduled-investments/{{scheduled_investment_id}}/pause",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "scheduled-investments",
+                    "{{scheduled_investment_id}}",
+                    "pause"
+                  ]
+                },
+                "description": "Pause a scheduled investment"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"message\": \"Scheduled investment paused successfully\",\n  \"status\": \"paused\"\n}"
+            }
+          ]
+        }
+      ],
+      "id": "3724afd9-c604-401e-ba88-7eebddec0469",
+      "description": "Dollar-cost averaging and scheduled investment automation"
+    },
+    {
+      "name": "⚖️ Portfolio Rebalancing",
+      "item": [
+        {
+          "name": "Create Rebalancing Config",
+          "id": "62d91cd9-d22d-47ee-a6e6-c8fcd72d5052",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Balanced Portfolio\",\n  \"target_allocations\": {\n    \"AAPL\": 30,\n    \"GOOGL\": 25,\n    \"MSFT\": 20,\n    \"TSLA\": 15,\n    \"NVDA\": 10\n  },\n  \"drift_threshold\": 5.0,\n  \"rebalance_frequency\": \"monthly\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rebalancing/configs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "rebalancing",
+                "configs"
+              ]
+            },
+            "description": "Create a new portfolio rebalancing configuration"
+          },
+          "response": [
+            {
+              "id": "b32af56e-9017-4fe2-815f-60e908a1aa99",
+              "name": "✅ Rebalancing Config Created",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Balanced Portfolio\",\n  \"target_allocations\": {\n    \"AAPL\": 30,\n    \"GOOGL\": 25,\n    \"MSFT\": 20,\n    \"TSLA\": 15,\n    \"NVDA\": 10\n  },\n  \"drift_threshold\": 5.0,\n  \"rebalance_frequency\": \"monthly\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/v1/rebalancing/configs",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "rebalancing",
+                    "configs"
+                  ]
+                },
+                "description": "Create a new portfolio rebalancing configuration"
+              },
+              "status": "Created",
+              "code": 201,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"id\": \"rc_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n  \"name\": \"Balanced Portfolio\",\n  \"target_allocations\": {\n    \"AAPL\": 30,\n    \"GOOGL\": 25,\n    \"MSFT\": 20,\n    \"TSLA\": 15,\n    \"NVDA\": 10\n  },\n  \"drift_threshold\": 5.0,\n  \"status\": \"active\",\n  \"created_at\": \"2024-01-15T16:00:00Z\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Check Portfolio Drift",
+          "id": "db1b52c2-4d34-4bb1-aa5a-adf55c5a9790",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/rebalancing/configs/{{rebalancing_config_id}}/drift",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "rebalancing",
+                "configs",
+                "{{rebalancing_config_id}}",
+                "drift"
+              ]
+            },
+            "description": "Check current portfolio drift against target allocation"
+          },
+          "response": [
+            {
+              "id": "8079d163-d206-4698-a866-16756a9b68ea",
+              "name": "✅ Portfolio Drift",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/rebalancing/configs/{{rebalancing_config_id}}/drift",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "rebalancing",
+                    "configs",
+                    "{{rebalancing_config_id}}",
+                    "drift"
+                  ]
+                },
+                "description": "Check current portfolio drift against target allocation"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"needs_rebalancing\": true,\n  \"max_drift\": 7.2,\n  \"drift_threshold\": 5.0,\n  \"current_allocations\": {\n    \"AAPL\": 37.2,\n    \"GOOGL\": 23.1,\n    \"MSFT\": 18.5,\n    \"TSLA\": 12.8,\n    \"NVDA\": 8.4\n  },\n  \"target_allocations\": {\n    \"AAPL\": 30,\n    \"GOOGL\": 25,\n    \"MSFT\": 20,\n    \"TSLA\": 15,\n    \"NVDA\": 10\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "Execute Rebalancing",
+          "id": "fd9119b6-5ef0-4d61-bc8e-94fe30917a75",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"confirm\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rebalancing/configs/{{rebalancing_config_id}}/execute",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "rebalancing",
+                "configs",
+                "{{rebalancing_config_id}}",
+                "execute"
+              ]
+            },
+            "description": "Execute the rebalancing plan"
+          },
+          "response": [
+            {
+              "id": "794ab045-c272-4a91-b8ed-985426a29796",
+              "name": "✅ Rebalancing Executed",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"confirm\": true\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/v1/rebalancing/configs/{{rebalancing_config_id}}/execute",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "rebalancing",
+                    "configs",
+                    "{{rebalancing_config_id}}",
+                    "execute"
+                  ]
+                },
+                "description": "Execute the rebalancing plan"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"execution_id\": \"exec_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n  \"status\": \"executing\",\n  \"trades_submitted\": 5,\n  \"estimated_completion\": \"2024-01-15T16:05:00Z\",\n  \"message\": \"Rebalancing trades submitted successfully\"\n}"
+            }
+          ]
+        }
+      ],
+      "id": "192bb7c3-25d0-4234-8186-1434bc5d2597",
+      "description": "Automated portfolio rebalancing and drift detection"
+    },
+    {
+      "name": "🏦 Alpaca Investment",
+      "item": [
+        {
+          "name": "Get Brokerage Account",
+          "id": "b3e99af1-5e56-4b17-beac-6a17d5e17241",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/investment/account",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "investment",
+                "account"
+              ]
+            },
+            "description": "Get Alpaca brokerage account information"
+          },
+          "response": [
+            {
+              "id": "708e8087-c8fc-42ee-b4be-a9c175b23b44",
+              "name": "✅ Brokerage Account",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/investment/account",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "investment",
+                    "account"
+                  ]
+                },
+                "description": "Get Alpaca brokerage account information"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"account_id\": \"alp_acc_789012\",\n  \"status\": \"ACTIVE\",\n  \"buying_power\": \"1250.75\",\n  \"cash\": \"150.25\",\n  \"portfolio_value\": \"1100.50\",\n  \"day_trade_count\": 0,\n  \"created_at\": \"2024-01-15T10:30:00Z\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Fund Brokerage Account",
+          "id": "c1126363-2903-4e42-8627-46982f262781",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": \"500.00\",\n  \"source\": \"buying_power\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/investment/fund",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "investment",
+                "fund"
+              ]
+            },
+            "description": "Transfer funds to Alpaca brokerage account"
+          },
+          "response": [
+            {
+              "id": "85124924-737e-424e-b07c-36ab97c08518",
+              "name": "✅ Funding Initiated",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"amount\": \"500.00\",\n  \"source\": \"buying_power\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/v1/investment/fund",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "investment",
+                    "fund"
+                  ]
+                },
+                "description": "Transfer funds to Alpaca brokerage account"
+              },
+              "status": "Accepted",
+              "code": 202,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"transfer_id\": \"xfer_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n  \"amount\": \"500.00\",\n  \"status\": \"pending\",\n  \"estimated_completion\": \"2024-01-16T10:00:00Z\",\n  \"message\": \"Funding transfer initiated successfully\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Place Order",
+          "id": "b27bee78-b84a-4736-b0ca-616787b82c01",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"symbol\": \"{{symbol}}\",\n  \"side\": \"buy\",\n  \"type\": \"market\",\n  \"time_in_force\": \"day\",\n  \"notional\": \"100.00\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/investment/orders",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "investment",
+                "orders"
+              ]
+            },
+            "description": "Place a stock order through Alpaca"
+          },
+          "response": [
+            {
+              "id": "08209d49-818d-46fc-975f-ab99404a11d4",
+              "name": "✅ Order Placed",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"symbol\": \"{{symbol}}\",\n  \"side\": \"buy\",\n  \"type\": \"market\",\n  \"time_in_force\": \"day\",\n  \"notional\": \"100.00\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/v1/investment/orders",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "investment",
+                    "orders"
+                  ]
+                },
+                "description": "Place a stock order through Alpaca"
+              },
+              "status": "Created",
+              "code": 201,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"order_id\": \"ord_01HQZX8K9M2N3P4Q5R6S7T8U9V\",\n  \"symbol\": \"AAPL\",\n  \"side\": \"buy\",\n  \"type\": \"market\",\n  \"notional\": \"100.00\",\n  \"status\": \"accepted\",\n  \"submitted_at\": \"2024-01-15T16:00:00Z\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Positions",
+          "id": "7f93a65a-caad-4073-905d-0f066fe3c492",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/investment/positions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "investment",
+                "positions"
+              ]
+            },
+            "description": "Get all stock positions in Alpaca account"
+          },
+          "response": [
+            {
+              "id": "0aa4b197-74e5-45d0-9944-b52bab0ebe9d",
+              "name": "✅ Stock Positions",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{access_token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/investment/positions",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "investment",
+                    "positions"
+                  ]
+                },
+                "description": "Get all stock positions in Alpaca account"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "Text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"positions\": [\n    {\n      \"symbol\": \"AAPL\",\n      \"qty\": \"1.25\",\n      \"market_value\": \"240.50\",\n      \"cost_basis\": \"230.00\",\n      \"unrealized_pl\": \"10.50\",\n      \"unrealized_plpc\": \"4.57%\",\n      \"side\": \"long\"\n    }\n  ],\n  \"total_market_value\": \"1100.50\",\n  \"total_unrealized_pl\": \"50.75\"\n}"
+            }
+          ]
+        }
+      ],
+      "id": "8149c7e7-4b20-4c5b-ba1f-558caf2d9ae0",
+      "description": "Alpaca brokerage integration for stock trading"
+    }
+  ],
+  "variable": [
+    {
+      "id": "e13c03a1-5263-4a83-b5c6-df9fd83b5755",
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "description": "Base URL for the STACK API"
+    },
+    {
+      "id": "a1a64be5-e12f-417f-8900-c024e3bab21a",
+      "key": "access_token",
+      "value": "",
+      "description": "JWT access token from login"
+    },
+    {
+      "id": "583a5ccb-570f-4f7a-85ff-e39792fe24f5",
+      "key": "refresh_token",
+      "value": "",
+      "description": "JWT refresh token"
+    },
+    {
+      "id": "f9632a65-14d6-434b-b609-ee1abed09a62",
+      "key": "user_id",
+      "value": "usr_01HQZX8K9M2N3P4Q5R6S7T8U9V",
+      "description": "User UUID"
+    },
+    {
+      "id": "4a268cb6-ed23-4e21-82a0-a222657ab772",
+      "key": "wallet_id",
+      "value": "wal_01HQZX8K9M2N3P4Q5R6S7T8U9V",
+      "description": "Wallet UUID"
+    },
+    {
+      "id": "364e5ae8-6cfa-43db-825f-2b95714410f6",
+      "key": "basket_id",
+      "value": "bsk_01HQZX8K9M2N3P4Q5R6S7T8U9V",
+      "description": "Investment basket UUID"
+    },
+    {
+      "id": "efc8016a-15c4-4a44-9f2d-64500432432c",
+      "key": "deposit_id",
+      "value": "dep_01HQZX8K9M2N3P4Q5R6S7T8U9V",
+      "description": "Deposit transaction UUID"
+    },
+    {
+      "id": "23632cf9-ee98-4fed-a5fb-ac2e6249cc04",
+      "key": "chain",
+      "value": "ethereum",
+      "description": "Blockchain network (ethereum, polygon, bsc, solana)"
+    },
+    {
+      "id": "9605fe76-282e-4c62-aefe-cdc63b2dcfc6",
+      "key": "email",
+      "value": "alice@example.com",
+      "description": "Test user email"
+    },
+    {
+      "id": "6c5e970f-c377-4d4b-8865-a39d30a5eb5d",
+      "key": "password",
+      "value": "SecureP@ssw0rd123!",
+      "description": "Test user password"
+    },
+    {
+      "id": "154ba7b1-8a50-439d-82ea-b3a13bd33516",
+      "key": "symbol",
+      "value": "AAPL",
+      "description": "Stock symbol for testing"
+    },
+    {
+      "id": "b64f816f-cc20-4460-b9f1-68df614f64ec",
+      "key": "scheduled_investment_id",
+      "value": "si_01HQZX8K9M2N3P4Q5R6S7T8U9V",
+      "description": "Scheduled investment UUID"
+    },
+    {
+      "id": "ee74bace-7053-414f-a180-69ceddd94f1c",
+      "key": "rebalancing_config_id",
+      "value": "rc_01HQZX8K9M2N3P4Q5R6S7T8U9V",
+      "description": "Rebalancing config UUID"
+    },
+    {
+      "id": "95787b25-c1e1-4dea-b4b0-2a66e40cad38",
+      "key": "alert_id",
+      "value": "alert_01HQZX8K9M2N3P4Q5R6S7T8U9V",
+      "description": "Market alert UUID"
+    },
+    {
+      "id": "a9e65a53-e306-4f82-915f-fd892fcc4c9b",
+      "key": "order_id",
+      "value": "ord_01HQZX8K9M2N3P4Q5R6S7T8U9V",
+      "description": "Order UUID"
+    }
+  ]
+}

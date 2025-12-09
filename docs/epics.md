@@ -69,7 +69,7 @@ Version: v0.2 (Pivot to Go + Alpaca)
 
 ---
 
-## Epic 4: Investment Flow (Stocks & Options)
+## Epic 4: Investment Flow (Stocks & Options & crypto)
 **Summary:** Allow users to invest seamlessly in traditional assets with clear portfolio visibility.
 
 **In-Scope Features:**
