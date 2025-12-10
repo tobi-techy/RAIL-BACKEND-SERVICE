@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/services/security"
 	"go.uber.org/zap"
@@ -198,7 +199,7 @@ func LoginProtection(loginService *security.LoginProtectionService, logger *zap.
 		var req struct {
 			Email string `json:"email"`
 		}
-		if err := c.ShouldBindJSON(&req); err != nil || req.Email == "" {
+		if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil || req.Email == "" {
 			c.Next()
 			return
 		}

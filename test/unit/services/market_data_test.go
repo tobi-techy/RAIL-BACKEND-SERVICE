@@ -52,6 +52,15 @@ func (m *mockAlertRepo) GetAllActive(ctx context.Context) ([]*entities.MarketAle
 	return result, nil
 }
 
+func (m *mockAlertRepo) GetByID(ctx context.Context, id uuid.UUID) (*entities.MarketAlert, error) {
+	for _, a := range m.alerts {
+		if a.ID == id {
+			return a, nil
+		}
+	}
+	return nil, nil
+}
+
 func (m *mockAlertRepo) MarkTriggered(ctx context.Context, id uuid.UUID, currentPrice decimal.Decimal) error {
 	for _, a := range m.alerts {
 		if a.ID == id {
@@ -152,7 +161,7 @@ func TestMarketDataService_DeleteAlert(t *testing.T) {
 
 	svc := market.NewMarketDataService(nil, alertRepo, notifier, logger)
 
-	err := svc.DeleteAlert(context.Background(), alertID)
+	err := svc.DeleteAlert(context.Background(), userID, alertID)
 	require.NoError(t, err)
 	assert.Len(t, alertRepo.alerts, 0)
 }

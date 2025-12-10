@@ -132,8 +132,19 @@ func main() {
 	// Initialize router with DI container
 	router := routes.SetupRoutes(container)
 
-	// Setup security routes
-	routes.SetupSecurityRoutes(router, cfg, db, log.Zap())
+	// Setup security routes with enhanced security features
+	routes.SetupSecurityRoutesEnhanced(
+		router,
+		cfg,
+		db,
+		log.Zap(),
+		container.GetTokenBlacklist(),
+		container.GetTieredRateLimiter(),
+		container.GetLoginAttemptTracker(),
+		container.GetIPWhitelistService(),
+		container.GetDeviceTrackingService(),
+		container.GetLoginProtectionService(),
+	)
 
 	// Initialize wallet provisioning worker and scheduler
 	workerConfig := walletprovisioning.DefaultConfig()

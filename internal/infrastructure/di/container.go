@@ -46,8 +46,10 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/circle"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
+	"github.com/rail-service/rail_service/pkg/auth"
 	commonmetrics "github.com/rail-service/rail_service/pkg/common/metrics"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/rail-service/rail_service/pkg/ratelimit"
 	"go.uber.org/zap"
 )
 
@@ -318,6 +320,19 @@ type Container struct {
 	IPWhitelistService        *security.IPWhitelistService
 	PasswordPolicyService     *security.PasswordPolicyService
 	SecurityEventLogger       *security.SecurityEventLogger
+	PasswordService           *security.PasswordService
+	
+	// Enhanced Security Services (MFA, Geo, Fraud, Incident Response)
+	MFAService              *security.MFAService
+	GeoSecurityService      *security.GeoSecurityService
+	FraudDetectionService   *security.FraudDetectionService
+	IncidentResponseService *security.IncidentResponseService
+	
+	// Token and Rate Limiting
+	TokenBlacklist      *auth.TokenBlacklist
+	JWTService          *auth.JWTService
+	TieredRateLimiter   *ratelimit.TieredLimiter
+	LoginAttemptTracker *ratelimit.LoginAttemptTracker
 }
 
 // NewContainer creates a new dependency injection container
@@ -691,8 +706,43 @@ func (c *Container) initializeDomainServices() error {
 	c.DeviceTrackingService = security.NewDeviceTrackingService(c.DB, c.ZapLog)
 	c.WithdrawalSecurityService = security.NewWithdrawalSecurityService(c.DB, c.RedisClient.Client(), c.ZapLog)
 	c.IPWhitelistService = security.NewIPWhitelistService(c.DB, c.RedisClient.Client(), c.ZapLog)
-	c.PasswordPolicyService = security.NewPasswordPolicyService(c.Config.Environment == "production")
+	c.PasswordPolicyService = security.NewPasswordPolicyService(c.Config.Security.CheckPasswordBreaches)
 	c.SecurityEventLogger = security.NewSecurityEventLogger(c.DB, c.ZapLog)
+	c.PasswordService = security.NewPasswordService(c.DB, c.ZapLog, c.Config.Security.CheckPasswordBreaches)
+
+	// Initialize enhanced security services (MFA, Geo, Fraud, Incident Response)
+	c.MFAService = security.NewMFAService(c.DB, c.RedisClient.Client(), c.ZapLog, c.Config.Security.EncryptionKey, nil) // SMS provider can be injected later
+	c.GeoSecurityService = security.NewGeoSecurityService(c.DB, c.RedisClient.Client(), c.ZapLog, "") // IP API key can be configured
+	c.FraudDetectionService = security.NewFraudDetectionService(c.DB, c.RedisClient.Client(), c.ZapLog)
+	c.IncidentResponseService = security.NewIncidentResponseService(c.DB, c.RedisClient.Client(), c.ZapLog, nil, c.SecurityEventLogger)
+
+	// Initialize token blacklist and JWT service
+	if c.Config.Security.EnableTokenBlacklist {
+		c.TokenBlacklist = auth.NewTokenBlacklist(c.RedisClient.Client())
+		c.JWTService = auth.NewJWTService(
+			c.Config.JWT.Secret,
+			c.Config.Security.AccessTokenTTL,
+			c.Config.Security.RefreshTokenTTL,
+			c.TokenBlacklist,
+		)
+	}
+
+	// Initialize tiered rate limiter
+	tieredConfig := ratelimit.TieredConfig{
+		GlobalLimit:  1000,
+		GlobalWindow: time.Minute,
+		IPLimit:      int64(c.Config.Server.RateLimitPerMin),
+		IPWindow:     time.Minute,
+		UserLimit:    200,
+		UserWindow:   time.Minute,
+		EndpointLimits: map[string]ratelimit.EndpointLimit{
+			"POST /api/v1/auth/login": {Limit: 5, Window: 15 * time.Minute},
+			"POST /api/v1/auth/register": {Limit: 3, Window: time.Hour},
+			"POST /api/v1/funding/withdraw": {Limit: 10, Window: time.Hour},
+		},
+	}
+	c.TieredRateLimiter = ratelimit.NewTieredLimiter(c.RedisClient.Client(), tieredConfig, c.ZapLog)
+	c.LoginAttemptTracker = ratelimit.NewLoginAttemptTracker(c.RedisClient.Client(), c.ZapLog)
 
 	// Wire limits and audit services to funding service
 	c.FundingService.SetLimitsService(c.LimitsService)
@@ -863,6 +913,51 @@ func (c *Container) GetPasswordPolicyService() *security.PasswordPolicyService {
 // GetSecurityEventLogger returns the security event logger
 func (c *Container) GetSecurityEventLogger() *security.SecurityEventLogger {
 	return c.SecurityEventLogger
+}
+
+// GetPasswordService returns the enhanced password service
+func (c *Container) GetPasswordService() *security.PasswordService {
+	return c.PasswordService
+}
+
+// GetMFAService returns the unified MFA service
+func (c *Container) GetMFAService() *security.MFAService {
+	return c.MFAService
+}
+
+// GetGeoSecurityService returns the geo security service
+func (c *Container) GetGeoSecurityService() *security.GeoSecurityService {
+	return c.GeoSecurityService
+}
+
+// GetFraudDetectionService returns the fraud detection service
+func (c *Container) GetFraudDetectionService() *security.FraudDetectionService {
+	return c.FraudDetectionService
+}
+
+// GetIncidentResponseService returns the incident response service
+func (c *Container) GetIncidentResponseService() *security.IncidentResponseService {
+	return c.IncidentResponseService
+}
+
+// GetTokenBlacklist returns the token blacklist service
+func (c *Container) GetTokenBlacklist() *auth.TokenBlacklist {
+	return c.TokenBlacklist
+}
+
+// GetJWTService returns the enhanced JWT service
+func (c *Container) GetJWTService() *auth.JWTService {
+	return c.JWTService
+}
+
+// GetTieredRateLimiter returns the tiered rate limiter
+func (c *Container) GetTieredRateLimiter() *ratelimit.TieredLimiter {
+	return c.TieredRateLimiter
+}
+
+// GetLoginAttemptTracker returns the login attempt tracker
+func (c *Container) GetLoginAttemptTracker() *ratelimit.LoginAttemptTracker {
+	return c.LoginAttemptTracker
 }
 
 // initializeReconciliationService initializes the reconciliation service and scheduler

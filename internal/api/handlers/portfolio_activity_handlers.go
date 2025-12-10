@@ -206,6 +206,16 @@ func (h *PortfolioActivityHandlers) GetStreak(c *gin.Context) {
 		return
 	}
 
+	// Handle nil streak - return safe defaults
+	if streak == nil {
+		c.JSON(http.StatusOK, gin.H{
+			"current_streak":       0,
+			"longest_streak":       0,
+			"last_investment_date": nil,
+		})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"current_streak":       streak.CurrentStreak,
 		"longest_streak":       streak.LongestStreak,

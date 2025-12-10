@@ -93,6 +93,12 @@ func (h *ScheduledInvestmentHandlers) GetScheduledInvestments(c *gin.Context) {
 // GetScheduledInvestment returns a specific scheduled investment
 // GET /api/v1/scheduled-investments/:id
 func (h *ScheduledInvestmentHandlers) GetScheduledInvestment(c *gin.Context) {
+	userID, err := getUserID(c)
+	if err != nil {
+		respondUnauthorized(c, "User not authenticated")
+		return
+	}
+
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		respondBadRequest(c, "Invalid ID")
@@ -110,15 +116,40 @@ func (h *ScheduledInvestmentHandlers) GetScheduledInvestment(c *gin.Context) {
 		return
 	}
 
+	// Ownership check
+	if si.UserID != userID {
+		h.logger.Warn("Unauthorized scheduled investment access", "user_id", userID.String(), "si_id", id.String())
+		respondError(c, http.StatusForbidden, "FORBIDDEN", "You do not own this scheduled investment", nil)
+		return
+	}
+
 	c.JSON(http.StatusOK, si)
 }
 
 // UpdateScheduledInvestment updates a scheduled investment
 // PATCH /api/v1/scheduled-investments/:id
 func (h *ScheduledInvestmentHandlers) UpdateScheduledInvestment(c *gin.Context) {
+	userID, err := getUserID(c)
+	if err != nil {
+		respondUnauthorized(c, "User not authenticated")
+		return
+	}
+
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		respondBadRequest(c, "Invalid ID")
+		return
+	}
+
+	// Verify ownership first
+	si, err := h.service.GetScheduledInvestment(c.Request.Context(), id)
+	if err != nil || si == nil {
+		respondNotFound(c, "Scheduled investment not found")
+		return
+	}
+	if si.UserID != userID {
+		h.logger.Warn("Unauthorized scheduled investment update", "user_id", userID.String(), "si_id", id.String())
+		respondError(c, http.StatusForbidden, "FORBIDDEN", "You do not own this scheduled investment", nil)
 		return
 	}
 
@@ -149,9 +180,27 @@ func (h *ScheduledInvestmentHandlers) UpdateScheduledInvestment(c *gin.Context) 
 // PauseScheduledInvestment pauses a scheduled investment
 // POST /api/v1/scheduled-investments/:id/pause
 func (h *ScheduledInvestmentHandlers) PauseScheduledInvestment(c *gin.Context) {
+	userID, err := getUserID(c)
+	if err != nil {
+		respondUnauthorized(c, "User not authenticated")
+		return
+	}
+
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		respondBadRequest(c, "Invalid ID")
+		return
+	}
+
+	// Verify ownership first
+	si, err := h.service.GetScheduledInvestment(c.Request.Context(), id)
+	if err != nil || si == nil {
+		respondNotFound(c, "Scheduled investment not found")
+		return
+	}
+	if si.UserID != userID {
+		h.logger.Warn("Unauthorized scheduled investment pause", "user_id", userID.String(), "si_id", id.String())
+		respondError(c, http.StatusForbidden, "FORBIDDEN", "You do not own this scheduled investment", nil)
 		return
 	}
 
@@ -167,9 +216,27 @@ func (h *ScheduledInvestmentHandlers) PauseScheduledInvestment(c *gin.Context) {
 // ResumeScheduledInvestment resumes a paused scheduled investment
 // POST /api/v1/scheduled-investments/:id/resume
 func (h *ScheduledInvestmentHandlers) ResumeScheduledInvestment(c *gin.Context) {
+	userID, err := getUserID(c)
+	if err != nil {
+		respondUnauthorized(c, "User not authenticated")
+		return
+	}
+
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		respondBadRequest(c, "Invalid ID")
+		return
+	}
+
+	// Verify ownership first
+	si, err := h.service.GetScheduledInvestment(c.Request.Context(), id)
+	if err != nil || si == nil {
+		respondNotFound(c, "Scheduled investment not found")
+		return
+	}
+	if si.UserID != userID {
+		h.logger.Warn("Unauthorized scheduled investment resume", "user_id", userID.String(), "si_id", id.String())
+		respondError(c, http.StatusForbidden, "FORBIDDEN", "You do not own this scheduled investment", nil)
 		return
 	}
 
@@ -185,9 +252,27 @@ func (h *ScheduledInvestmentHandlers) ResumeScheduledInvestment(c *gin.Context) 
 // CancelScheduledInvestment cancels a scheduled investment
 // DELETE /api/v1/scheduled-investments/:id
 func (h *ScheduledInvestmentHandlers) CancelScheduledInvestment(c *gin.Context) {
+	userID, err := getUserID(c)
+	if err != nil {
+		respondUnauthorized(c, "User not authenticated")
+		return
+	}
+
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		respondBadRequest(c, "Invalid ID")
+		return
+	}
+
+	// Verify ownership first
+	si, err := h.service.GetScheduledInvestment(c.Request.Context(), id)
+	if err != nil || si == nil {
+		respondNotFound(c, "Scheduled investment not found")
+		return
+	}
+	if si.UserID != userID {
+		h.logger.Warn("Unauthorized scheduled investment cancel", "user_id", userID.String(), "si_id", id.String())
+		respondError(c, http.StatusForbidden, "FORBIDDEN", "You do not own this scheduled investment", nil)
 		return
 	}
 
@@ -203,9 +288,27 @@ func (h *ScheduledInvestmentHandlers) CancelScheduledInvestment(c *gin.Context) 
 // GetExecutionHistory returns execution history for a scheduled investment
 // GET /api/v1/scheduled-investments/:id/executions
 func (h *ScheduledInvestmentHandlers) GetExecutionHistory(c *gin.Context) {
+	userID, err := getUserID(c)
+	if err != nil {
+		respondUnauthorized(c, "User not authenticated")
+		return
+	}
+
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		respondBadRequest(c, "Invalid ID")
+		return
+	}
+
+	// Verify ownership first
+	si, err := h.service.GetScheduledInvestment(c.Request.Context(), id)
+	if err != nil || si == nil {
+		respondNotFound(c, "Scheduled investment not found")
+		return
+	}
+	if si.UserID != userID {
+		h.logger.Warn("Unauthorized execution history access", "user_id", userID.String(), "si_id", id.String())
+		respondError(c, http.StatusForbidden, "FORBIDDEN", "You do not own this scheduled investment", nil)
 		return
 	}
 

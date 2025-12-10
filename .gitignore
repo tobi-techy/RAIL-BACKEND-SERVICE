@@ -90,3 +90,7 @@ test/coverage/
 # Security audit results
 security-audit-*.txt
 vulnerability-scan-*.json
+
+# Auto-generated Postman collection
+postman_collection_generated.json
+postman_collection_auto_generated.json

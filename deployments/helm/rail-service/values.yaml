@@ -5,6 +5,9 @@ image:
   pullPolicy: IfNotPresent
   tag: "latest"
 
+# Domain configuration
+domain: api.rail-platform.com
+
 service:
   type: ClusterIP
   port: 80
@@ -18,14 +21,14 @@ ingress:
     nginx.ingress.kubernetes.io/rate-limit: "100"
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
   hosts:
-    - host: api.rail-platform.com
+    - host: "{{ .Values.domain }}"
       paths:
         - path: /
           pathType: Prefix
   tls:
     - secretName: rail-service-tls
       hosts:
-        - api.rail-platform.com
+        - "{{ .Values.domain }}"
 
 resources:
   limits:
@@ -48,17 +51,3 @@ securityContext:
   fsGroup: 65534
   seccompProfile:
     type: RuntimeDefault
-
-containerSecurityContext:
-  allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: true
-  runAsNonRoot: true
-  capabilities:
-    drop:
-    - ALL
-
-canary:
-  enabled: false
-  weight: 10
-
-environment: production

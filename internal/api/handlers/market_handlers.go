@@ -139,13 +139,24 @@ func (h *MarketHandlers) GetAlerts(c *gin.Context) {
 // DeleteAlert deletes a market alert
 // DELETE /api/v1/market/alerts/:id
 func (h *MarketHandlers) DeleteAlert(c *gin.Context) {
+	userID, err := getUserID(c)
+	if err != nil {
+		respondUnauthorized(c, "User not authenticated")
+		return
+	}
+
 	alertID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		respondBadRequest(c, "Invalid alert ID")
 		return
 	}
 
-	if err := h.marketService.DeleteAlert(c.Request.Context(), alertID); err != nil {
+	if err := h.marketService.DeleteAlert(c.Request.Context(), userID, alertID); err != nil {
+		if err.Error() == "forbidden" {
+			h.logger.Warn("Unauthorized alert deletion attempt", "user_id", userID.String(), "alert_id", alertID.String())
+			respondError(c, http.StatusForbidden, "FORBIDDEN", "You do not own this alert", nil)
+			return
+		}
 		h.logger.Error("Failed to delete alert", "error", err)
 		respondInternalError(c, "Failed to delete alert")
 		return

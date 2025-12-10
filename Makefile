@@ -1,4 +1,4 @@
-.PHONY: build run test clean docker-build docker-run lint security-scan
+.PHONY: build run test clean docker-build docker-run lint security-scan postman-collection
 
 VERSION ?= $(shell git describe --tags --always --dirty)
 COMMIT ?= $(shell git rev-parse --short HEAD)
@@ -33,6 +33,11 @@ security-scan:
 	@echo "Running security scans..."
 	gosec -fmt=json -out=gosec-report.json ./...
 	trivy fs --security-checks vuln,config .
+
+postman-collection:
+	@echo "Generating Postman collection from codebase..."
+	python3 scripts/postman_generator/generate.py postman_collection_generated.json
+	@echo "✅ Collection generated: postman_collection_generated.json"
 
 docker-build:
 	@echo "Building Docker image..."

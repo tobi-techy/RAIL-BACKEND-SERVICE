@@ -40,17 +40,39 @@ redis:
 
 jwt:
   secret: "your-jwt-secret-key-change-in-production"
-  access_token_ttl: 604800
-  refresh_token_ttl: 2592000
+  access_token_ttl: 900      # 15 minutes (short-lived for security)
+  refresh_token_ttl: 604800  # 7 days
   issuer: "stack_service"
 
 security:
-  encryption_key: "your-32-byte-encryption-key-here!"
+  mfa_grace_period_days: 7
+  high_value_threshold: 50000
+  geo_api_key: ""
+  enable_geo_blocking: true
+  enable_vpn_detection: true
+  fraud_score_threshold: 0.7
+  fraud_review_threshold: 0.5
+  incident_alert_webhook: ""
+  auto_block_threshold: 20
+  encryption_key: "9foZ22ccMYtiFckFMoLRUdLQzm3bxKeE5eC8dlXOrHDPKGwTOxuEd0jTCTBPCveb"
   max_login_attempts: 5
   lockout_duration: 900
   require_mfa: false
   password_min_length: 8
   session_timeout: 3600
+  # Enhanced security settings
+  bcrypt_cost: 12                    # Increased from default 10 for stronger hashing
+  password_history_count: 5          # Prevent reuse of last 5 passwords
+  password_expiration_days: 90       # Force password change every 90 days
+  access_token_ttl: 900              # 15 minutes (override JWT setting)
+  refresh_token_ttl: 604800          # 7 days
+  enable_token_blacklist: true       # Enable token revocation via Redis
+  check_password_breaches: true      # Check passwords against HaveIBeenPwned
+  captcha_threshold: 3               # Require CAPTCHA after 3 failed login attempts
+  secrets_provider: "env"            # "env" or "aws_secrets_manager"
+  aws_secrets_region: "us-east-1"    # AWS region for Secrets Manager
+  aws_secrets_prefix: "rail/"        # Prefix for secret names in AWS
+  secret_rotation_days: 90           # Rotate secrets every 90 days
 
 workers:
   count: 10
@@ -129,7 +151,7 @@ due:
     monthly: 200000.00
   risk_threshold: 0.9
 
-  social_auth:
+social_auth:
   google:
     client_id: ""
     client_secret: ""
@@ -138,6 +160,7 @@ due:
     client_id: ""
     client_secret: ""
     redirect_uri: ""
+
 webauthn:
   rp_display_name: "RAIL"
   rp_id: "rail.app"

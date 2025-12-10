@@ -27,7 +27,7 @@ spec:
           type: RuntimeDefault
       containers:
       - name: rail-service
-        image: ghcr.io/stack/rail-service:latest
+        image: ghcr.io/rail/rail-service:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8080
