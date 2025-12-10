@@ -10,8 +10,8 @@ import (
 	"github.com/google/uuid"
 	// "github.com/lib/pq"
 
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/pkg/logger"
 )
 
 // FundingEventJobRepository manages funding event job persistence

@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/shopspring/decimal"
-	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/rail-service/rail_service/pkg/logger"
 )
 
 // OffRampAdapter handles USDC to USD off-ramp operations

@@ -2,23 +2,29 @@ package handlers
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
-	"github.com/gin-gonic/gin"
-	"github.com/go-playground/validator/v10"
-	"github.com/google/uuid"
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/internal/domain/services/funding"
-	"github.com/stack-service/stack_service/internal/domain/services/investing"
-	"github.com/stack-service/stack_service/internal/domain/services/wallet"
-	"github.com/stack-service/stack_service/internal/infrastructure/config"
-	"github.com/stack-service/stack_service/pkg/logger"
-	"github.com/stack-service/stack_service/pkg/retry"
-	"go.uber.org/zap"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
+	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/funding"
+	"github.com/rail-service/rail_service/internal/domain/services/investing"
+	"github.com/rail-service/rail_service/internal/domain/services/wallet"
+	"github.com/rail-service/rail_service/internal/infrastructure/config"
+	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/rail-service/rail_service/pkg/retry"
+	"go.uber.org/zap"
 )
 
 // WalletFundingHandlers consolidates wallet, funding, investing, and withdrawal handlers
@@ -28,6 +34,7 @@ type WalletFundingHandlers struct {
 	withdrawalService FundingWithdrawalService
 	investingService  *investing.Service
 	validator         *validator.Validate
+	webhookSecret     string
 	logger            *logger.Logger
 }
 
@@ -47,6 +54,11 @@ func NewWalletFundingHandlers(
 		validator:         validator.New(),
 		logger:            logger,
 	}
+}
+
+// SetWebhookSecret sets the webhook secret for signature verification
+func (h *WalletFundingHandlers) SetWebhookSecret(secret string) {
+	h.webhookSecret = secret
 }
 
 
@@ -1279,13 +1291,35 @@ func (h *WalletFundingHandlers) GetPortfolio(c *gin.Context) {
 // @Failure 500 {object} ErrorResponse
 // @Router /api/v1/webhooks/chain-deposit [post]
 func (h *WalletFundingHandlers) ChainDepositWebhook(c *gin.Context) {
+	// Read raw body for signature verification
+	rawBody, err := c.GetRawData()
+	if err != nil {
+		respondBadRequest(c, "Failed to read request body", nil)
+		return
+	}
+
+	// Verify webhook signature if secret is configured
+	if h.webhookSecret != "" {
+		signature := c.GetHeader("X-Webhook-Signature")
+		if signature == "" {
+			signature = c.GetHeader("X-Hub-Signature-256")
+		}
+		if err := verifyWebhookSignature(rawBody, signature, h.webhookSecret); err != nil {
+			h.logger.Warn("Webhook signature verification failed", zap.Error(err))
+			c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
+				Code:    "INVALID_SIGNATURE",
+				Message: "Webhook signature verification failed",
+			})
+			return
+		}
+	}
+
 	var webhook entities.ChainDepositWebhook
-	if err := c.ShouldBindJSON(&webhook); err != nil {
+	if err := json.Unmarshal(rawBody, &webhook); err != nil {
 		respondBadRequest(c, "Invalid webhook payload", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// TODO: Verify webhook signature for security
 	// Basic validation
 	if webhook.TxHash == "" {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
@@ -1311,7 +1345,7 @@ func (h *WalletFundingHandlers) ChainDepositWebhook(c *gin.Context) {
 		Multiplier:  2.0,
 	}
 	
-	err := retry.WithExponentialBackoff(
+	err = retry.WithExponentialBackoff(
 		c.Request.Context(),
 		retryConfig,
 		func() error {
@@ -1362,13 +1396,31 @@ func (h *WalletFundingHandlers) ChainDepositWebhook(c *gin.Context) {
 // @Failure 500 {object} ErrorResponse
 // @Router /api/v1/webhooks/brokerage-fill [post]
 func (h *WalletFundingHandlers) BrokerageFillWebhook(c *gin.Context) {
+	// Read raw body for signature verification
+	rawBody, err := c.GetRawData()
+	if err != nil {
+		respondBadRequest(c, "Failed to read request body", nil)
+		return
+	}
+
+	// Verify webhook signature if secret is configured
+	if h.webhookSecret != "" {
+		signature := c.GetHeader("X-Webhook-Signature")
+		if err := verifyWebhookSignature(rawBody, signature, h.webhookSecret); err != nil {
+			h.logger.Warn("Webhook signature verification failed", zap.Error(err))
+			c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
+				Code:    "INVALID_SIGNATURE",
+				Message: "Webhook signature verification failed",
+			})
+			return
+		}
+	}
+
 	var webhook entities.BrokerageFillWebhook
 	if err := c.ShouldBindJSON(&webhook); err != nil {
 		respondBadRequest(c, "Invalid webhook payload", map[string]interface{}{"error": err.Error()})
 		return
 	}
-
-	// TODO: Verify webhook signature for security
 	
 	if err := h.investingService.ProcessBrokerageFill(c.Request.Context(), &webhook); err != nil {
 		h.logger.Error("Failed to process brokerage fill webhook", "error", err, "order_id", webhook.OrderID)
@@ -1545,4 +1597,114 @@ func (h *WalletFundingHandlers) GetUserWithdrawals(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, withdrawals)
+}
+
+// GetTransactionHistory returns unified transaction history for the user
+// @Summary Get transaction history
+// @Description Retrieve unified transaction history including deposits, withdrawals, investments, and conversions
+// @Tags funding
+// @Produce json
+// @Param limit query int false "Number of results to return" default(20)
+// @Param offset query int false "Number of results to skip" default(0)
+// @Param type query string false "Filter by transaction type (deposit, withdrawal, investment, conversion)"
+// @Param status query string false "Filter by status"
+// @Success 200 {object} funding.TransactionHistoryResponse
+// @Failure 401 {object} entities.ErrorResponse
+// @Failure 500 {object} entities.ErrorResponse
+// @Router /api/v1/funding/transactions [get]
+func (h *WalletFundingHandlers) GetTransactionHistory(c *gin.Context) {
+	userUUID, err := getUserID(c)
+	if err != nil {
+		h.logger.Error("Failed to get user ID", "error", err)
+		respondUnauthorized(c, "User not authenticated")
+		return
+	}
+
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if limit > 100 {
+		limit = 100
+	}
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+
+	// Build filter from query params
+	var filter *funding.TransactionFilter
+	if typeParam := c.Query("type"); typeParam != "" {
+		filter = &funding.TransactionFilter{
+			Types: strings.Split(typeParam, ","),
+		}
+	}
+	if statusParam := c.Query("status"); statusParam != "" {
+		if filter == nil {
+			filter = &funding.TransactionFilter{}
+		}
+		filter.Status = &statusParam
+	}
+
+	// Get transaction history from funding service
+	// Note: This requires TransactionHistoryService to be added to WalletFundingHandlers
+	// For now, return deposits as a simplified implementation
+	confirmations, err := h.fundingService.GetFundingConfirmations(c.Request.Context(), userUUID, limit, offset)
+	if err != nil {
+		h.logger.Error("Failed to get transaction history", "error", err, "user_id", userUUID)
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+			Code:    "TRANSACTION_HISTORY_ERROR",
+			Message: "Failed to retrieve transaction history",
+		})
+		return
+	}
+
+	// Convert to unified format
+	transactions := make([]*funding.UnifiedTransaction, 0, len(confirmations))
+	for _, conf := range confirmations {
+		transactions = append(transactions, &funding.UnifiedTransaction{
+			ID:          conf.ID,
+			UserID:      userUUID,
+			Type:        "deposit",
+			Status:      conf.Status,
+			Amount:      mustParseDecimal(conf.Amount),
+			Currency:    "USDC",
+			Description: "USDC deposit",
+			Chain:       string(conf.Chain),
+			TxHash:      conf.TxHash,
+			CreatedAt:   conf.ConfirmedAt,
+		})
+	}
+
+	response := &funding.TransactionHistoryResponse{
+		Transactions: transactions,
+		Total:        len(transactions),
+		Limit:        limit,
+		Offset:       offset,
+		HasMore:      len(transactions) == limit,
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+func mustParseDecimal(s string) decimal.Decimal {
+	d, _ := decimal.NewFromString(s)
+	return d
+}
+
+// verifyWebhookSignature verifies HMAC-SHA256 webhook signature
+func verifyWebhookSignature(payload []byte, signature, secret string) error {
+	if signature == "" {
+		return fmt.Errorf("missing webhook signature")
+	}
+	
+	// Remove common prefixes
+	signature = strings.TrimPrefix(signature, "sha256=")
+	signature = strings.TrimPrefix(signature, "hmac-sha256=")
+	
+	// Calculate expected signature
+	h := hmac.New(sha256.New, []byte(secret))
+	h.Write(payload)
+	expected := hex.EncodeToString(h.Sum(nil))
+	
+	// Constant-time comparison to prevent timing attacks
+	if !hmac.Equal([]byte(expected), []byte(signature)) {
+		return fmt.Errorf("signature mismatch")
+	}
+	
+	return nil
 }

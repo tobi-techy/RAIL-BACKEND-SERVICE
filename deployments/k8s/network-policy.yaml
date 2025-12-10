@@ -1,11 +1,11 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: stack-service
+  name: rail-service
 spec:
   podSelector:
     matchLabels:
-      app: stack-service
+      app: rail-service
   policyTypes:
   - Ingress
   - Egress

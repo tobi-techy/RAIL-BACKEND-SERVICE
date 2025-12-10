@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-echo "Applying security fixes to stack_service..."
+echo "Applying security fixes to rail_service..."
 
 # Add sanitize import to go.mod if needed
 if ! grep -q "sanitize" go.mod 2>/dev/null; then

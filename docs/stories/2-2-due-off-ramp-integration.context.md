@@ -6,7 +6,7 @@
     <status>drafted</status>
     <generatedAt>2025-11-05</generatedAt>
     <generator>BMAD Story Context Workflow</generator>
-    <sourceStoryPath>/Users/Aplle/Development/stack_service/docs/stories/2-2-due-off-ramp-integration.md</sourceStoryPath>
+    <sourceStoryPath>/Users/Aplle/Development/rail_service/docs/stories/2-2-due-off-ramp-integration.md</sourceStoryPath>
   </metadata>
 
   <story>

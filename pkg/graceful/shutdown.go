@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/rail-service/rail_service/pkg/logger"
 )
 
 type Shutdowner interface {

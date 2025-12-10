@@ -8,21 +8,64 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/pkg/logger"
 )
+
+// LedgerBalanceView represents user balance from ledger
+type LedgerBalanceView struct {
+	USDCBalance       decimal.Decimal
+	FiatExposure      decimal.Decimal
+	PendingInvestment decimal.Decimal
+	TotalValue        decimal.Decimal
+}
+
+// LedgerIntegration interface for ledger operations
+type LedgerIntegration interface {
+	RecordDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID, chain, txHash string) error
+	GetUserBalance(ctx context.Context, userID uuid.UUID) (*LedgerBalanceView, error)
+}
+
+// LimitsService interface for transaction limit validation
+type LimitsService interface {
+	ValidateDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (*entities.LimitCheckResult, error)
+	RecordDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error
+}
+
+// CacheClient interface for caching operations
+type CacheClient interface {
+	Get(ctx context.Context, key string, dest interface{}) error
+	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error
+}
+
+// AuditService interface for compliance audit logging
+type AuditService interface {
+	LogDeposit(ctx context.Context, userID uuid.UUID, depositID uuid.UUID, amount string, chain string, status string) error
+}
+
+// FundingNotificationService interface for sending funding-related notifications
+type FundingNotificationService interface {
+	NotifyDepositConfirmed(ctx context.Context, userID uuid.UUID, amount, chain, txHash string) error
+	NotifyLargeBalanceChange(ctx context.Context, userID uuid.UUID, changeType string, amount decimal.Decimal, newBalance decimal.Decimal) error
+}
 
 // Service handles funding operations - deposit addresses, confirmations, balance conversion
 type Service struct {
-	depositRepo         DepositRepository
-	balanceRepo         BalanceRepository
-	walletRepo          WalletRepository
-	managedWalletRepo   ManagedWalletRepository
-	virtualAccountRepo  VirtualAccountRepository
-	circleAPI           CircleAdapter
-	dueAPI              DueAdapter
-	alpacaAPI           AlpacaAdapter
-	logger              *logger.Logger
+	depositRepo          DepositRepository
+	walletRepo           WalletRepository
+	managedWalletRepo    ManagedWalletRepository
+	virtualAccountRepo   VirtualAccountRepository
+	circleAPI            CircleAdapter
+	dueAPI               DueAdapter
+	alpacaAPI            AlpacaAdapter
+	ledgerIntegration    LedgerIntegration
+	limitsService        LimitsService
+	validationService    *ValidationService
+	auditService         AuditService
+	notificationService  FundingNotificationService
+	cache                CacheClient
+	config               *FundingConfig
+	logger               *logger.Logger
 }
 
 // DepositRepository interface for deposit persistence
@@ -31,13 +74,6 @@ type DepositRepository interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Deposit, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status string, confirmedAt *time.Time) error
 	GetByTxHash(ctx context.Context, txHash string) (*entities.Deposit, error)
-}
-
-// BalanceRepository interface for balance management
-type BalanceRepository interface {
-	Get(ctx context.Context, userID uuid.UUID) (*entities.Balance, error)
-	UpdateBuyingPower(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error
-	UpdatePendingDeposits(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error
 }
 
 // WalletRepository interface for wallet operations
@@ -88,30 +124,63 @@ type AlpacaAdapter interface {
 // NewService creates a new funding service
 func NewService(
 	depositRepo DepositRepository,
-	balanceRepo BalanceRepository,
 	walletRepo WalletRepository,
 	managedWalletRepo ManagedWalletRepository,
 	virtualAccountRepo VirtualAccountRepository,
 	circleAPI CircleAdapter,
 	dueAPI DueAdapter,
 	alpacaAPI AlpacaAdapter,
+	ledgerIntegration LedgerIntegration,
 	logger *logger.Logger,
 ) *Service {
 	return &Service{
 		depositRepo:         depositRepo,
-		balanceRepo:         balanceRepo,
 		walletRepo:          walletRepo,
 		managedWalletRepo:   managedWalletRepo,
 		virtualAccountRepo:  virtualAccountRepo,
 		circleAPI:           circleAPI,
 		dueAPI:              dueAPI,
 		alpacaAPI:           alpacaAPI,
+		ledgerIntegration:   ledgerIntegration,
+		config:              DefaultFundingConfig(),
 		logger:              logger,
 	}
 }
 
+// SetValidationService sets the validation service (optional)
+func (s *Service) SetValidationService(vs *ValidationService) {
+	s.validationService = vs
+}
+
+// SetLimitsService sets the limits service for deposit/withdrawal validation (optional)
+func (s *Service) SetLimitsService(ls LimitsService) {
+	s.limitsService = ls
+}
+
+// SetCache sets the cache client (optional)
+func (s *Service) SetCache(cache CacheClient) {
+	s.cache = cache
+}
+
+// SetAuditService sets the audit service for compliance logging (optional)
+func (s *Service) SetAuditService(as AuditService) {
+	s.auditService = as
+}
+
+// SetNotificationService sets the notification service (optional)
+func (s *Service) SetNotificationService(ns FundingNotificationService) {
+	s.notificationService = ns
+}
+
 // CreateDepositAddress generates or retrieves deposit address for a chain
 func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, chain entities.Chain) (*entities.DepositAddressResponse, error) {
+	// Check rate limit for new address creation
+	if s.validationService != nil {
+		if err := s.validationService.CheckDepositRateLimit(ctx, userID); err != nil {
+			return nil, err
+		}
+	}
+
 	// Check if user already has a wallet for this chain
 	wallet, err := s.walletRepo.GetByUserAndChain(ctx, userID, chain)
 	if err != nil && err.Error() != "wallet not found" {
@@ -184,20 +253,24 @@ func (s *Service) GetFundingConfirmations(ctx context.Context, userID uuid.UUID,
 	return confirmations, nil
 }
 
-// GetBalance returns user's current balance with real-time Circle wallet balances
+// GetBalance returns user's current balance from ledger with caching
 func (s *Service) GetBalance(ctx context.Context, userID uuid.UUID) (*entities.BalancesResponse, error) {
-	s.logger.Info("Fetching user balance with real-time Circle wallet data", "user_id", userID.String())
-
-	// Get user's managed wallets
-	managedWallets, err := s.managedWalletRepo.GetByUserID(ctx, userID)
-	if err != nil {
-		s.logger.Error("Failed to get managed wallets", "error", err, "user_id", userID.String())
-		// Fallback to database balance
-		return s.getDatabaseBalance(ctx, userID)
+	// Try cache first
+	if s.cache != nil {
+		var cached entities.BalancesResponse
+		cacheKey := BalanceCacheKey(userID)
+		if err := s.cache.Get(ctx, cacheKey, &cached); err == nil {
+			s.logger.Debug("Balance retrieved from cache", "user_id", userID.String())
+			return &cached, nil
+		}
 	}
 
-	if len(managedWallets) == 0 {
-		s.logger.Info("No managed wallets found for user, returning zero balance", "user_id", userID.String())
+	s.logger.Info("Fetching user balance from ledger", "user_id", userID.String())
+
+	// Get balance from ledger integration
+	ledgerBalance, err := s.ledgerIntegration.GetUserBalance(ctx, userID)
+	if err != nil {
+		s.logger.Error("Failed to get ledger balance", "error", err, "user_id", userID.String())
 		return &entities.BalancesResponse{
 			BuyingPower:     "0.00",
 			PendingDeposits: "0.00",
@@ -205,106 +278,54 @@ func (s *Service) GetBalance(ctx context.Context, userID uuid.UUID) (*entities.B
 		}, nil
 	}
 
-	// Aggregate USDC balance from all Circle wallets
-	totalUSDCBalance := decimal.Zero
-	walletsProcessed := 0
+	// USDC balance is available funds, fiat exposure is buying power at broker
+	// Total buying power = USDC + fiat exposure
+	totalBuyingPower := ledgerBalance.USDCBalance.Add(ledgerBalance.FiatExposure)
 
-	for _, wallet := range managedWallets {
-		if wallet.CircleWalletID == "" || wallet.Status != entities.WalletStatusLive {
-			s.logger.Debug("Skipping wallet - not ready",
-				"wallet_id", wallet.ID.String(),
-				"circle_wallet_id", wallet.CircleWalletID,
-				"status", wallet.Status)
-			continue
-		}
-
-		// Fetch real-time balance from Circle API
-		balanceResp, err := s.circleAPI.GetWalletBalances(ctx, wallet.CircleWalletID)
-		if err != nil {
-			s.logger.Warn("Failed to fetch Circle wallet balance, skipping",
-				"error", err,
-				"wallet_id", wallet.ID.String(),
-				"circle_wallet_id", wallet.CircleWalletID,
-				"chain", wallet.Chain)
-			continue
-		}
-
-		// Extract USDC balance
-		usdcBalanceStr := balanceResp.GetUSDCBalance()
-		if usdcBalanceStr != "0" {
-			usdcBalance, err := decimal.NewFromString(usdcBalanceStr)
-			if err != nil {
-				s.logger.Warn("Failed to parse USDC balance",
-					"error", err,
-					"balance_str", usdcBalanceStr,
-					"circle_wallet_id", wallet.CircleWalletID)
-				continue
-			}
-
-			totalUSDCBalance = totalUSDCBalance.Add(usdcBalance)
-			walletsProcessed++
-
-			s.logger.Info("Retrieved wallet balance",
-				"circle_wallet_id", wallet.CircleWalletID,
-				"chain", wallet.Chain,
-				"usdc_balance", usdcBalanceStr,
-				"running_total", totalUSDCBalance.String())
-		}
-	}
-
-	s.logger.Info("Aggregated Circle wallet balances",
-		"user_id", userID.String(),
-		"total_usdc", totalUSDCBalance.String(),
-		"wallets_processed", walletsProcessed,
-		"total_wallets", len(managedWallets))
-
-	// Get pending deposits from database
-	pendingDeposits := decimal.Zero
-	dbBalance, err := s.balanceRepo.Get(ctx, userID)
-	if err == nil {
-		pendingDeposits = dbBalance.PendingDeposits
-	}
-
-	// USDC is 1:1 with USD, so buying power = USDC balance
-	return &entities.BalancesResponse{
-		BuyingPower:     totalUSDCBalance.String(),
-		PendingDeposits: pendingDeposits.String(),
+	response := &entities.BalancesResponse{
+		BuyingPower:     totalBuyingPower.String(),
+		PendingDeposits: ledgerBalance.PendingInvestment.String(),
 		Currency:        "USD",
-	}, nil
-}
-
-// getDatabaseBalance retrieves balance from database as fallback
-func (s *Service) getDatabaseBalance(ctx context.Context, userID uuid.UUID) (*entities.BalancesResponse, error) {
-	balance, err := s.balanceRepo.Get(ctx, userID)
-	if err != nil {
-		if err.Error() == "balance not found" {
-			// Return zero balance for new users
-			return &entities.BalancesResponse{
-				BuyingPower:     "0.00",
-				PendingDeposits: "0.00",
-				Currency:        "USD",
-			}, nil
-		}
-		return nil, fmt.Errorf("failed to get balance: %w", err)
 	}
 
-	return &entities.BalancesResponse{
-		BuyingPower:     balance.BuyingPower.String(),
-		PendingDeposits: balance.PendingDeposits.String(),
-		Currency:        balance.Currency,
-	}, nil
+	// Cache the result
+	if s.cache != nil && s.config != nil {
+		cacheKey := BalanceCacheKey(userID)
+		_ = s.cache.Set(ctx, cacheKey, response, s.config.BalanceCacheTTL)
+	}
+
+	s.logger.Info("Balance retrieved from ledger",
+		"user_id", userID.String(),
+		"usdc_balance", ledgerBalance.USDCBalance.String(),
+		"fiat_exposure", ledgerBalance.FiatExposure.String(),
+		"pending_investment", ledgerBalance.PendingInvestment.String(),
+		"total_buying_power", totalBuyingPower.String())
+
+	return response, nil
 }
 
 // ProcessChainDeposit processes incoming chain deposit webhook
 func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.ChainDepositWebhook) error {
 	s.logger.Info("Processing chain deposit", "chain", webhook.Chain, "tx_hash", webhook.TxHash, "amount", webhook.Amount)
 
-	// Validate the deposit with Circle
+	// Parse and validate amount
 	amountFloat, err := strconv.ParseFloat(webhook.Amount, 64)
 	if err != nil {
 		return fmt.Errorf("invalid deposit amount %q: %w", webhook.Amount, err)
 	}
 	amount := decimal.NewFromFloat(amountFloat)
+
+	// Validate minimum deposit amount
+	if s.validationService != nil {
+		if err := s.validationService.ValidateDepositAmount(amount); err != nil {
+			s.logger.Warn("Deposit below minimum amount", "tx_hash", webhook.TxHash, "amount", amount.String())
+			return err
+		}
+	} else if amount.LessThan(decimal.NewFromFloat(entities.MinDepositAmountUSDC)) {
+		return fmt.Errorf("deposit amount %s is below minimum %v USDC", amount.String(), entities.MinDepositAmountUSDC)
+	}
+
+	// Validate the deposit with Circle
 	isValid, err := s.circleAPI.ValidateDeposit(ctx, webhook.TxHash, amount)
 	if err != nil {
 		return fmt.Errorf("failed to validate deposit: %w", err)
@@ -338,6 +359,20 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 		return fmt.Errorf("failed to convert to USD: %w", err)
 	}
 
+	// Validate against user's deposit limits (if limits service is configured)
+	if s.limitsService != nil {
+		result, err := s.limitsService.ValidateDeposit(ctx, wallet.UserID, usdAmount)
+		if err != nil {
+			s.logger.Warn("Deposit limit validation failed",
+				"user_id", wallet.UserID.String(),
+				"amount", usdAmount.String(),
+				"error", err.Error(),
+				"limit_type", result.LimitType,
+			)
+			return fmt.Errorf("deposit limit exceeded: %w", err)
+		}
+	}
+
 	// Create deposit record
 	now := time.Now()
 	deposit := &entities.Deposit{
@@ -356,9 +391,40 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 		return fmt.Errorf("failed to create deposit record: %w", err)
 	}
 
-	// Update user's buying power
-	if err := s.balanceRepo.UpdateBuyingPower(ctx, wallet.UserID, usdAmount); err != nil {
-		return fmt.Errorf("failed to update buying power: %w", err)
+	// Record deposit in ledger (replaces legacy balance update)
+	if err := s.ledgerIntegration.RecordDeposit(ctx, wallet.UserID, usdAmount, deposit.ID, string(webhook.Chain), webhook.TxHash); err != nil {
+		return fmt.Errorf("failed to record deposit in ledger: %w", err)
+	}
+
+	// Record deposit usage against limits
+	if s.limitsService != nil {
+		if err := s.limitsService.RecordDeposit(ctx, wallet.UserID, usdAmount); err != nil {
+			s.logger.Warn("Failed to record deposit usage", "error", err, "user_id", wallet.UserID.String())
+			// Don't fail the deposit, just log the warning
+		}
+	}
+
+	// Create audit log entry for compliance
+	if s.auditService != nil {
+		if err := s.auditService.LogDeposit(ctx, wallet.UserID, deposit.ID, usdAmount.String(), string(webhook.Chain), deposit.Status); err != nil {
+			s.logger.Warn("Failed to create audit log for deposit", "error", err, "deposit_id", deposit.ID.String())
+			// Don't fail the deposit, audit logging is non-critical
+		}
+	}
+
+	// Send deposit confirmation notification
+	if s.notificationService != nil {
+		if err := s.notificationService.NotifyDepositConfirmed(ctx, wallet.UserID, usdAmount.String(), string(webhook.Chain), webhook.TxHash); err != nil {
+			s.logger.Warn("Failed to send deposit notification", "error", err, "user_id", wallet.UserID.String())
+		}
+		// Notify for large deposits (>= $1000)
+		largeDepositThreshold := decimal.NewFromInt(1000)
+		if usdAmount.GreaterThanOrEqual(largeDepositThreshold) {
+			// Get new balance for notification
+			if balance, err := s.ledgerIntegration.GetUserBalance(ctx, wallet.UserID); err == nil {
+				_ = s.notificationService.NotifyLargeBalanceChange(ctx, wallet.UserID, "deposit", usdAmount, balance.TotalValue)
+			}
+		}
 	}
 
 	s.logger.Info("Deposit processed successfully",

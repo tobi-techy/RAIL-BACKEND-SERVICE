@@ -1,0 +1,53 @@
+replicaCount: 3
+
+image:
+  repository: ghcr.io/rail/rail-service
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+# Domain configuration
+domain: api.rail-platform.com
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  hosts:
+    - host: "{{ .Values.domain }}"
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: rail-service-tls
+      hosts:
+        - "{{ .Values.domain }}"
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  fsGroup: 65534
+  seccompProfile:
+    type: RuntimeDefault

@@ -103,6 +103,15 @@ type VerificationCodeData struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// PendingRegistration stores registration data in Redis until email/phone is verified
+type PendingRegistration struct {
+	Email        string    `json:"email,omitempty"`
+	Phone        string    `json:"phone,omitempty"`
+	PasswordHash string    `json:"password_hash"`
+	CreatedAt    time.Time `json:"created_at"`
+	ExpiresAt    time.Time `json:"expires_at"`
+}
+
 // SignUpResponse represents the response after successful signup
 type SignUpResponse struct {
 	Message    string `json:"message"`

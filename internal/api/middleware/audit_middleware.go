@@ -3,31 +3,24 @@ package middleware
 import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/stack-service/stack_service/internal/infrastructure/adapters"
+	"github.com/rail-service/rail_service/internal/domain/services/audit"
 )
 
-func AuditMiddleware(auditService *adapters.AuditService) gin.HandlerFunc {
+// AuditContext middleware adds IP address and user agent to context for audit logging
+func AuditContext() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		ipAddress := c.ClientIP()
+		userAgent := c.Request.UserAgent()
+
+		var userID *uuid.UUID
+		if id, exists := c.Get("user_id"); exists {
+			if uid, ok := id.(uuid.UUID); ok {
+				userID = &uid
+			}
+		}
+
+		ctx := audit.WithAuditContext(c.Request.Context(), ipAddress, userAgent, userID)
+		c.Request = c.Request.WithContext(ctx)
 		c.Next()
-
-		userIDStr := c.GetString("user_id")
-		if userIDStr == "" {
-			return
-		}
-
-		userID, err := uuid.Parse(userIDStr)
-		if err != nil {
-			return
-		}
-
-		action := c.Request.Method + "_" + c.FullPath()
-		resource := c.FullPath()
-
-		// Log using infrastructure audit service
-		auditService.LogSystemEvent(c.Request.Context(), action, resource, map[string]interface{}{
-			"user_id":    userID.String(),
-			"ip_address": c.ClientIP(),
-			"user_agent": c.Request.UserAgent(),
-		})
 	}
 }

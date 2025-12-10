@@ -6,13 +6,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/shopspring/decimal"
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/internal/domain/services/ledger"
-	"github.com/stack-service/stack_service/internal/infrastructure/repositories"
-	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/ledger"
+	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
+	"github.com/rail-service/rail_service/pkg/logger"
 )
 
 // Engine orchestrates treasury operations: buffer management, conversions, and net settlement
@@ -526,13 +525,13 @@ func (e *Engine) PostLedgerEntries(ctx context.Context, job *entities.Conversion
 		destAmount = *statusResp.DestinationAmount
 	}
 
-	// Get source and destination accounts
-	sourceAccount, err := e.ledgerService.GetSystemAccount(ctx, getAccountTypeFromID(*job.SourceAccountID))
+	// Get source and destination accounts by ID
+	sourceAccount, err := e.ledgerService.GetAccountByID(ctx, *job.SourceAccountID)
 	if err != nil {
 		return fmt.Errorf("failed to get source account: %w", err)
 	}
 
-	destAccount, err := e.ledgerService.GetSystemAccount(ctx, getAccountTypeFromID(*job.DestinationAccountID))
+	destAccount, err := e.ledgerService.GetAccountByID(ctx, *job.DestinationAccountID)
 	if err != nil {
 		return fmt.Errorf("failed to get dest account: %w", err)
 	}
@@ -687,12 +686,6 @@ func (e *Engine) markJobForRetry(ctx context.Context, job *entities.ConversionJo
 	}
 
 	return e.treasuryRepo.UpdateConversionJobStatus(ctx, updateReq)
-}
-
-func getAccountTypeFromID(accountID uuid.UUID) entities.AccountType {
-	// This is a placeholder - in practice, you'd query the ledger
-	// Or pass account type through the job metadata
-	return entities.AccountTypeSystemBufferUSDC
 }
 
 func stringPtr(s string) *string {

@@ -2,7 +2,7 @@
 
 ## Overview
 
-This directory contains all deployment configurations for the STACK service including:
+This directory contains all deployment configurations for the RAIL service including:
 - Kubernetes manifests
 - Helm charts
 - Terraform infrastructure as code
@@ -23,7 +23,7 @@ This directory contains all deployment configurations for the STACK service incl
 kubectl apply -f k8s/
 
 # Using Helm
-helm install stack-service ./helm/stack-service \
+helm install rail-service ./helm/rail-service \
   --namespace production \
   --values ./helm/values-production.yaml
 ```
@@ -87,7 +87,7 @@ terraform apply
 ./scripts/rollback.sh
 
 # Using Helm directly
-helm rollback stack-service -n production
+helm rollback rail-service -n production
 ```
 
 ### Automatic Rollback

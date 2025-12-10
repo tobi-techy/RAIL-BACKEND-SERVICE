@@ -1,9 +1,9 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: stack-service
+  name: rail-service
   labels:
-    app: stack-service
+    app: rail-service
 spec:
   replicas: 3
   strategy:
@@ -13,11 +13,11 @@ spec:
       maxUnavailable: 0
   selector:
     matchLabels:
-      app: stack-service
+      app: rail-service
   template:
     metadata:
       labels:
-        app: stack-service
+        app: rail-service
     spec:
       securityContext:
         runAsNonRoot: true
@@ -26,8 +26,8 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       containers:
-      - name: stack-service
-        image: ghcr.io/stack/stack-service:latest
+      - name: rail-service
+        image: ghcr.io/rail/rail-service:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8080
@@ -35,7 +35,7 @@ spec:
           protocol: TCP
         envFrom:
         - configMapRef:
-            name: stack-service-config
+            name: rail-service-config
         env:
         - name: DATABASE_URL
           valueFrom:

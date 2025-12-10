@@ -641,3 +641,4 @@ chat:
 **Risk 7: Provider Outages**
 * Impact: AI features unavailable
 * Mitigation: Dual provider setup \(OpenAI \+ Gemini\), graceful degradation, cached fallbacks
+

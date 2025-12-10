@@ -8,8 +8,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/stack-service/stack_service/pkg/logger"
-	"github.com/stack-service/stack_service/pkg/version"
+	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/rail-service/rail_service/pkg/version"
 )
 
 // CoreHandlers contains health, version, and metrics handlers

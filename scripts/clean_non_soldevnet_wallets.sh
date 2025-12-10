@@ -14,7 +14,7 @@ NC='\033[0m' # No Color
 echo -e "${YELLOW}=== Clean Non-SOL-DEVNET Wallets ===${NC}\n"
 
 # Database connection details (edit these or set as environment variables)
-DB_NAME="${DATABASE_NAME:-stack_service_dev}"
+DB_NAME="${DATABASE_NAME:-rail_service_dev}"
 DB_USER="${DATABASE_USER:-postgres}"
 DB_HOST="${DATABASE_HOST:-localhost}"
 DB_PORT="${DATABASE_PORT:-5432}"

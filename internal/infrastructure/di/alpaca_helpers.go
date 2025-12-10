@@ -2,8 +2,8 @@ package di
 
 import (
 	"github.com/jmoiron/sqlx"
-	"github.com/stack-service/stack_service/internal/domain/services"
-	"github.com/stack-service/stack_service/internal/infrastructure/repositories"
+	"github.com/rail-service/rail_service/internal/domain/services"
+	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 )
 
 // InitializeBasketExecutor creates a new basket executor

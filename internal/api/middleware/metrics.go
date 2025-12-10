@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/stack-service/stack_service/pkg/metrics"
+	"github.com/rail-service/rail_service/pkg/metrics"
 )
 
 func MetricsMiddleware() gin.HandlerFunc {

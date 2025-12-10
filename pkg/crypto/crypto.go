@@ -5,7 +5,9 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 
@@ -113,4 +115,49 @@ func GenerateSecureToken() (string, error) {
 		return "", fmt.Errorf("failed to generate secure token: %w", err)
 	}
 	return hex.EncodeToString(bytes), nil
+}
+
+// DecodeJWTClaims decodes JWT claims without verification (for trusted tokens)
+func DecodeJWTClaims(token string) (map[string]interface{}, error) {
+	parts := splitJWT(token)
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid JWT format")
+	}
+
+	// Decode payload (second part)
+	payload, err := base64URLDecode(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode payload: %w", err)
+	}
+
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, fmt.Errorf("failed to parse claims: %w", err)
+	}
+
+	return claims, nil
+}
+
+func splitJWT(token string) []string {
+	var parts []string
+	start := 0
+	for i := 0; i < len(token); i++ {
+		if token[i] == '.' {
+			parts = append(parts, token[start:i])
+			start = i + 1
+		}
+	}
+	parts = append(parts, token[start:])
+	return parts
+}
+
+func base64URLDecode(s string) ([]byte, error) {
+	// Add padding if needed
+	switch len(s) % 4 {
+	case 2:
+		s += "=="
+	case 3:
+		s += "="
+	}
+	return base64.URLEncoding.DecodeString(s)
 }

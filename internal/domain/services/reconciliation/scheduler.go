@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/rail-service/rail_service/pkg/logger"
 )
 
 // Scheduler handles automated reconciliation runs

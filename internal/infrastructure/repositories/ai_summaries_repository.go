@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	domainrepos "github.com/stack-service/stack_service/internal/domain/repositories"
+	domainrepos "github.com/rail-service/rail_service/internal/domain/repositories"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"

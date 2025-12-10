@@ -102,7 +102,7 @@ fi
 
 # Create backup
 echo "💾 Creating backup..."
-BACKUP_DIR="../stack_service_backup_$(date +%Y%m%d_%H%M%S)"
+BACKUP_DIR="../rail_service_backup_$(date +%Y%m%d_%H%M%S)"
 cp -r . "$BACKUP_DIR"
 echo "✅ Backup created at: $BACKUP_DIR"
 

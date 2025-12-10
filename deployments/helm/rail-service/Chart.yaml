@@ -1,0 +1,12 @@
+apiVersion: v2
+name: rail-service
+description: Rail GenZ Web3 Investment Platform
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - web3
+  - investment
+  - fintech
+maintainers:
+  - name: Rail Team

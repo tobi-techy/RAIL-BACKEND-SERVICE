@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/stack-service/stack_service/internal/infrastructure/config"
-	"github.com/stack-service/stack_service/pkg/auth"
-	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/rail-service/rail_service/internal/infrastructure/config"
+	"github.com/rail-service/rail_service/pkg/auth"
+	"github.com/rail-service/rail_service/pkg/logger"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"

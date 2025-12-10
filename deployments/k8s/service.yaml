@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: stack-service
+  name: rail-service
   labels:
-    app: stack-service
+    app: rail-service
 spec:
   type: ClusterIP
   ports:
@@ -12,14 +12,14 @@ spec:
     protocol: TCP
     name: http
   selector:
-    app: stack-service
+    app: rail-service
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: stack-service-metrics
+  name: rail-service-metrics
   labels:
-    app: stack-service
+    app: rail-service
 spec:
   type: ClusterIP
   ports:
@@ -28,4 +28,4 @@ spec:
     protocol: TCP
     name: metrics
   selector:
-    app: stack-service
+    app: rail-service

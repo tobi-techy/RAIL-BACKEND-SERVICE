@@ -13,7 +13,7 @@ import (
 	"github.com/pquerna/otp/totp"
 	"go.uber.org/zap"
 
-	"github.com/stack-service/stack_service/pkg/crypto"
+	"github.com/rail-service/rail_service/pkg/crypto"
 )
 
 type Service struct {

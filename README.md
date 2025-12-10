@@ -1,6 +1,6 @@
-# STACK - GenZ Web3 Investment Platform
+# RAIL - GenZ Web3 Investment Platform
 
-STACK is a Web3-native investment platform designed specifically for Gen Z users who are underserved by traditional banks and overwhelmed by complex crypto tools. It enables instant wealth-building through a hybrid model: fiat-to-stablecoin on-ramps, seamless investment in stocks/ETFs, and a protective AI CFO.
+RAIL is a Web3-native investment platform designed specifically for Gen Z users who are underserved by traditional banks and overwhelmed by complex crypto tools. It enables instant wealth-building through a hybrid model: fiat-to-stablecoin on-ramps, seamless investment in stocks/ETFs, and a protective AI CFO.
 
 The platform bridges the gap between traditional finance and Web3 by providing a safe, frictionless investment experience that demystifies Web3 while outperforming legacy banking in speed and fairness.
 
@@ -14,7 +14,7 @@ To empower the next generation of investors with a platform that combines the ac
 - Drive rapid adoption with 10,000 Monthly Active Users (MAU) within the first 6 months of launch
 - Establish a recurring revenue stream by converting at least 5% of free users into premium subscribers in year one
 - Validate market viability by processing $1,000,000 in investments within the first year
-- Position STACK as the first mover in the Gen Z-native hybrid Web3 + traditional finance investment space
+- Position RAIL as the first mover in the Gen Z-native hybrid Web3 + traditional finance investment space
 
 ### User Goals
 - Create a safe, frictionless investment platform that demystifies Web3 while outperforming legacy banking in speed and fairness
@@ -68,7 +68,7 @@ To empower the next generation of investors with a platform that combines the ac
 ## 🏗️ Architecture Overview
 
 ```
-stack_service/
+rail_service/
 ├── cmd/                    # Application entry points
 │   └── main.go
 ├── internal/               # Private application code
@@ -160,7 +160,7 @@ stack_service/
 
 1. **Clone the repository**
 ```bash
-git clone https://github.com/your-org/stack_service.git
+git clone https://github.com/your-org/rail_service.git
 cd stack_service
 ```
 
@@ -205,7 +205,7 @@ go mod download
 
 2. **Set environment variables**
 ```bash
-export DATABASE_URL="postgres://postgres:postgres@localhost:5432/stack_service_dev?sslmode=disable"
+export DATABASE_URL="postgres://postgres:postgres@localhost:5432/rail_service_dev?sslmode=disable"
 export JWT_SECRET="your-super-secret-jwt-key"
 export ENCRYPTION_KEY="your-32-byte-encryption-key"
 ```
@@ -392,7 +392,7 @@ circle:
 
 1. **Build production image**
 ```bash
-docker build -t stack_service:latest .
+docker build -t rail_service:latest .
 ```
 
 2. **Run container**
@@ -403,7 +403,7 @@ docker run -p 8080:8080 \
   -e CIRCLE_API_KEY="..." \
   -e ZEROG_STORAGE_ACCESS_KEY="..." \
   -e ZEROG_COMPUTE_API_KEY="..." \
-  stack_service:latest
+  rail_service:latest
 ```
 
 ### Kubernetes Deployment

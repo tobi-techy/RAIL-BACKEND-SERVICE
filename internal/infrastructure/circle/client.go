@@ -16,8 +16,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 	"github.com/sony/gobreaker"
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	entitysecret "github.com/stack-service/stack_service/internal/domain/services/entity_secret"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	entitysecret "github.com/rail-service/rail_service/internal/domain/services/entity_secret"
 	"go.uber.org/zap"
 )
 

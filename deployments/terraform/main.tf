@@ -13,8 +13,8 @@ terraform {
   }
   
   backend "s3" {
-    bucket         = "stack-terraform-state"
-    key            = "stack-service/terraform.tfstate"
+    bucket         = "rail-terraform-state"
+    key            = "rail-service/terraform.tfstate"
     region         = "us-east-1"
     encrypt        = true
     dynamodb_table = "terraform-lock"
@@ -26,7 +26,7 @@ provider "aws" {
   
   default_tags {
     tags = {
-      Project     = "stack-service"
+      Project     = "rail-service"
       Environment = var.environment
       ManagedBy   = "terraform"
     }

@@ -7,10 +7,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/pkg/circuitbreaker"
-	"github.com/stack-service/stack_service/pkg/logger"
-	"github.com/stack-service/stack_service/pkg/queue"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/pkg/circuitbreaker"
+	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/rail-service/rail_service/pkg/queue"
 )
 
 // AllocationService interface for spending enforcement
@@ -25,6 +25,24 @@ type AllocationNotificationManager interface {
 	NotifyTransactionDeclined(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, transactionType string) error
 }
 
+// WithdrawalLimitsService interface for withdrawal limit validation
+type WithdrawalLimitsService interface {
+	ValidateWithdrawal(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (*entities.LimitCheckResult, error)
+	RecordWithdrawal(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error
+}
+
+// WithdrawalAuditService interface for compliance audit logging
+type WithdrawalAuditService interface {
+	LogWithdrawal(ctx context.Context, userID uuid.UUID, withdrawalID uuid.UUID, amount string, status string) error
+}
+
+// WithdrawalNotificationService interface for sending withdrawal-related notifications
+type WithdrawalNotificationService interface {
+	NotifyWithdrawalCompleted(ctx context.Context, userID uuid.UUID, amount, destinationAddress string) error
+	NotifyWithdrawalFailed(ctx context.Context, userID uuid.UUID, amount, reason string) error
+	NotifyLargeBalanceChange(ctx context.Context, userID uuid.UUID, changeType string, amount decimal.Decimal, newBalance decimal.Decimal) error
+}
+
 // WithdrawalService handles USD to USDC withdrawal operations
 type WithdrawalService struct {
 	withdrawalRepo        WithdrawalRepository
@@ -32,6 +50,9 @@ type WithdrawalService struct {
 	dueAPI                DueWithdrawalAdapter
 	allocationService     AllocationService
 	allocationNotifier    AllocationNotificationManager
+	limitsService         WithdrawalLimitsService
+	auditService          WithdrawalAuditService
+	notificationService   WithdrawalNotificationService
 	logger                *logger.Logger
 	alpacaBreaker         *circuitbreaker.CircuitBreaker
 	dueBreaker            *circuitbreaker.CircuitBreaker
@@ -112,6 +133,21 @@ func NewWithdrawalService(
 	}
 }
 
+// SetLimitsService sets the limits service for withdrawal validation (optional)
+func (s *WithdrawalService) SetLimitsService(ls WithdrawalLimitsService) {
+	s.limitsService = ls
+}
+
+// SetAuditService sets the audit service for compliance logging (optional)
+func (s *WithdrawalService) SetAuditService(as WithdrawalAuditService) {
+	s.auditService = as
+}
+
+// SetNotificationService sets the notification service (optional)
+func (s *WithdrawalService) SetNotificationService(ns WithdrawalNotificationService) {
+	s.notificationService = ns
+}
+
 // InitiateWithdrawal initiates a USD to USDC withdrawal
 func (s *WithdrawalService) InitiateWithdrawal(ctx context.Context, req *entities.InitiateWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error) {
 	s.logger.Info("Initiating withdrawal",
@@ -120,7 +156,24 @@ func (s *WithdrawalService) InitiateWithdrawal(ctx context.Context, req *entitie
 		"chain", req.DestinationChain,
 		"address", req.DestinationAddress)
 
-	// Step 1: Check 70/30 allocation mode spending limit
+	// Step 1: Validate against withdrawal limits (KYC tier-based)
+	if s.limitsService != nil {
+		result, err := s.limitsService.ValidateWithdrawal(ctx, req.UserID, req.Amount)
+		if err != nil {
+			s.logger.Warn("Withdrawal limit validation failed",
+				"user_id", req.UserID.String(),
+				"amount", req.Amount.String(),
+				"error", err.Error(),
+			)
+			if result != nil {
+				return nil, fmt.Errorf("withdrawal limit exceeded (%s): %s remaining until %v",
+					result.LimitType, result.RemainingCapacity.String(), result.ResetsAt)
+			}
+			return nil, fmt.Errorf("withdrawal limit exceeded: %w", err)
+		}
+	}
+
+	// Step 2: Check 70/30 allocation mode spending limit
 	if s.allocationService != nil {
 		canSpend, err := s.allocationService.CanSpend(ctx, req.UserID, req.Amount)
 		if err != nil {
@@ -145,7 +198,7 @@ func (s *WithdrawalService) InitiateWithdrawal(ctx context.Context, req *entitie
 		}
 	}
 
-	// Step 2: Validate Alpaca account and buying power
+	// Step 3: Validate Alpaca account and buying power
 	var alpacaAccount *entities.AlpacaAccountResponse
 	var getAccountErr error
 	err := s.alpacaBreaker.Execute(ctx, func() error {
@@ -165,7 +218,7 @@ func (s *WithdrawalService) InitiateWithdrawal(ctx context.Context, req *entitie
 			alpacaAccount.BuyingPower.String(), req.Amount.String())
 	}
 
-	// Step 3: Create withdrawal record
+	// Step 4: Create withdrawal record
 	withdrawal := &entities.Withdrawal{
 		ID:                 uuid.New(),
 		UserID:             req.UserID,
@@ -183,7 +236,23 @@ func (s *WithdrawalService) InitiateWithdrawal(ctx context.Context, req *entitie
 		return nil, fmt.Errorf("failed to create withdrawal record: %w", err)
 	}
 
-	// Step 4: Enqueue withdrawal processing to SQS
+	// Record withdrawal usage against limits
+	if s.limitsService != nil {
+		if err := s.limitsService.RecordWithdrawal(ctx, req.UserID, req.Amount); err != nil {
+			s.logger.Warn("Failed to record withdrawal usage", "error", err, "user_id", req.UserID.String())
+			// Don't fail the withdrawal, just log the warning
+		}
+	}
+
+	// Create audit log entry for compliance
+	if s.auditService != nil {
+		if err := s.auditService.LogWithdrawal(ctx, req.UserID, withdrawal.ID, req.Amount.String(), string(withdrawal.Status)); err != nil {
+			s.logger.Warn("Failed to create audit log for withdrawal", "error", err, "withdrawal_id", withdrawal.ID.String())
+			// Don't fail the withdrawal, audit logging is non-critical
+		}
+	}
+
+	// Step 5: Enqueue withdrawal processing to SQS
 	msg := queue.WithdrawalMessage{
 		WithdrawalID: withdrawal.ID.String(),
 		Step:         "debit_alpaca",
@@ -354,9 +423,22 @@ func (s *WithdrawalService) monitorTransferCompletion(ctx context.Context, withd
 			if err := s.withdrawalRepo.MarkCompleted(ctx, withdrawal.ID); err != nil {
 				return fmt.Errorf("failed to mark completed: %w", err)
 			}
+			// Send withdrawal completed notification
+			if s.notificationService != nil {
+				_ = s.notificationService.NotifyWithdrawalCompleted(ctx, withdrawal.UserID, withdrawal.Amount.String(), withdrawal.DestinationAddress)
+				// Notify for large withdrawals (>= $1000)
+				largeWithdrawalThreshold := decimal.NewFromInt(1000)
+				if withdrawal.Amount.GreaterThanOrEqual(largeWithdrawalThreshold) {
+					_ = s.notificationService.NotifyLargeBalanceChange(ctx, withdrawal.UserID, "withdrawal", withdrawal.Amount, decimal.Zero)
+				}
+			}
 			return nil
 
 		case "failed":
+			// Send withdrawal failed notification
+			if s.notificationService != nil {
+				_ = s.notificationService.NotifyWithdrawalFailed(ctx, withdrawal.UserID, withdrawal.Amount.String(), "Due transfer failed")
+			}
 			return fmt.Errorf("Due transfer failed")
 
 		default:

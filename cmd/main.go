@@ -10,16 +10,18 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/stack-service/stack_service/internal/api/routes"
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/internal/infrastructure/config"
-	"github.com/stack-service/stack_service/internal/infrastructure/database"
-	"github.com/stack-service/stack_service/internal/infrastructure/di"
-	"github.com/stack-service/stack_service/internal/workers/funding_webhook"
-	walletprovisioning "github.com/stack-service/stack_service/internal/workers/wallet_provisioning"
-	"github.com/stack-service/stack_service/pkg/logger"
-	"github.com/stack-service/stack_service/pkg/metrics"
-	"github.com/stack-service/stack_service/pkg/tracing"
+	"github.com/rail-service/rail_service/internal/api/routes"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/infrastructure/config"
+	"github.com/rail-service/rail_service/internal/infrastructure/database"
+	"github.com/rail-service/rail_service/internal/infrastructure/di"
+	"github.com/rail-service/rail_service/internal/workers/funding_webhook"
+	portfolio_snapshot_worker "github.com/rail-service/rail_service/internal/workers/portfolio_snapshot_worker"
+	scheduled_investment_worker "github.com/rail-service/rail_service/internal/workers/scheduled_investment_worker"
+	walletprovisioning "github.com/rail-service/rail_service/internal/workers/wallet_provisioning"
+	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/rail-service/rail_service/pkg/metrics"
+	"github.com/rail-service/rail_service/pkg/tracing"
 
 	"github.com/gin-gonic/gin"
 )
@@ -130,8 +132,19 @@ func main() {
 	// Initialize router with DI container
 	router := routes.SetupRoutes(container)
 
-	// Setup security routes
-	routes.SetupSecurityRoutes(router, cfg, db, log.Zap())
+	// Setup security routes with enhanced security features
+	routes.SetupSecurityRoutesEnhanced(
+		router,
+		cfg,
+		db,
+		log.Zap(),
+		container.GetTokenBlacklist(),
+		container.GetTieredRateLimiter(),
+		container.GetLoginAttemptTracker(),
+		container.GetIPWhitelistService(),
+		container.GetDeviceTrackingService(),
+		container.GetLoginProtectionService(),
+	)
 
 	// Initialize wallet provisioning worker and scheduler
 	workerConfig := walletprovisioning.DefaultConfig()
@@ -210,6 +223,30 @@ func main() {
 		log.Info("Reconciliation scheduler disabled in configuration")
 	}
 
+	// Initialize and start scheduled investment worker
+	var scheduledInvestmentWorker *scheduled_investment_worker.Worker
+	if container.GetScheduledInvestmentService() != nil {
+		scheduledInvestmentWorker = scheduled_investment_worker.NewWorker(
+			container.GetScheduledInvestmentService(),
+			container.GetMarketDataService(),
+			log.Zap(),
+		)
+		go scheduledInvestmentWorker.Start(context.Background())
+		log.Info("Scheduled investment worker started")
+	}
+
+	// Initialize and start portfolio snapshot worker
+	var portfolioSnapshotWorker *portfolio_snapshot_worker.Worker
+	if container.GetPortfolioAnalyticsService() != nil {
+		portfolioSnapshotWorker = portfolio_snapshot_worker.NewWorker(
+			container.GetPortfolioAnalyticsService(),
+			container,
+			log.Zap(),
+		)
+		go portfolioSnapshotWorker.Start(context.Background())
+		log.Info("Portfolio snapshot worker started")
+	}
+
 	// Create server with enhanced configuration
 	server := &http.Server{
 		Addr:           fmt.Sprintf(":%d", cfg.Server.Port),
@@ -275,6 +312,18 @@ func main() {
 		if err := container.ReconciliationScheduler.Stop(); err != nil {
 			log.Warn("Error stopping reconciliation scheduler", "error", err)
 		}
+	}
+
+	// Stop scheduled investment worker
+	if scheduledInvestmentWorker != nil {
+		log.Info("Stopping scheduled investment worker...")
+		scheduledInvestmentWorker.Stop()
+	}
+
+	// Stop portfolio snapshot worker
+	if portfolioSnapshotWorker != nil {
+		log.Info("Stopping portfolio snapshot worker...")
+		portfolioSnapshotWorker.Stop()
 	}
 
 	// Give outstanding requests time to complete

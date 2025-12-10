@@ -2,7 +2,7 @@
 set -e
 
 NAMESPACE="${NAMESPACE:-production}"
-RELEASE_NAME="${RELEASE_NAME:-stack-service}"
+RELEASE_NAME="${RELEASE_NAME:-rail-service}"
 
 echo "Rolling back $RELEASE_NAME in namespace $NAMESPACE..."
 
