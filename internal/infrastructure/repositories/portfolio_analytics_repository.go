@@ -245,6 +245,18 @@ func (r *MarketAlertRepository) GetByUserID(ctx context.Context, userID uuid.UUI
 	return alerts, err
 }
 
+func (r *MarketAlertRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.MarketAlert, error) {
+	var alert entities.MarketAlert
+	err := r.db.GetContext(ctx, &alert, `SELECT * FROM market_alerts WHERE id = $1`, id)
+	if err != nil {
+		if err.Error() == "sql: no rows in result set" {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &alert, nil
+}
+
 func (r *MarketAlertRepository) GetActiveBySymbol(ctx context.Context, symbol string) ([]*entities.MarketAlert, error) {
 	var alerts []*entities.MarketAlert
 	err := r.db.SelectContext(ctx, &alerts, `SELECT * FROM market_alerts WHERE symbol = $1 AND status = 'active'`, symbol)

@@ -235,6 +235,19 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 
 				// Withdrawal confirmation
 				security.POST("/withdrawals/confirm", securityEnhancedHandlers.ConfirmWithdrawal)
+
+				// MFA management
+				mfaHandlers := handlers.NewMFAHandlers(
+					container.GetMFAService(),
+					container.GetGeoSecurityService(),
+					container.GetIncidentResponseService(),
+					container.ZapLog,
+				)
+				security.GET("/mfa", mfaHandlers.GetMFASettings)
+				security.POST("/mfa/sms", mfaHandlers.SetupSMSMFA)
+				security.POST("/mfa/send-code", mfaHandlers.SendMFACode)
+				security.POST("/mfa/verify", mfaHandlers.VerifyMFACode)
+				security.GET("/geo-info", mfaHandlers.GetGeoInfo)
 			}
 
 			// Funding routes (OpenAPI spec compliant)
@@ -377,6 +390,30 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 			admin.POST("/wallet/create", walletFundingHandlers.CreateWalletsForUser)
 			admin.POST("/wallet/retry-provisioning", walletFundingHandlers.RetryWalletProvisioning)
 			admin.GET("/wallet/health", walletFundingHandlers.HealthCheck)
+
+			// Security admin routes
+			adminMFAHandlers := handlers.NewMFAHandlers(
+				container.GetMFAService(),
+				container.GetGeoSecurityService(),
+				container.GetIncidentResponseService(),
+				container.ZapLog,
+			)
+			adminSecurity := admin.Group("/security")
+			{
+				// Security dashboard
+				adminSecurity.GET("/dashboard", adminMFAHandlers.GetSecurityDashboard)
+
+				// Incident management
+				adminSecurity.GET("/incidents", adminMFAHandlers.GetOpenIncidents)
+				adminSecurity.GET("/incidents/:id", adminMFAHandlers.GetIncident)
+				adminSecurity.PUT("/incidents/:id/status", adminMFAHandlers.UpdateIncidentStatus)
+				adminSecurity.POST("/incidents/:id/playbook", adminMFAHandlers.ExecutePlaybook)
+
+				// Geo-blocking management
+				adminSecurity.GET("/blocked-countries", adminMFAHandlers.GetBlockedCountries)
+				adminSecurity.POST("/blocked-countries", adminMFAHandlers.BlockCountry)
+				adminSecurity.DELETE("/blocked-countries/:country_code", adminMFAHandlers.UnblockCountry)
+			}
 		}
 
 		// Due API routes (protected)

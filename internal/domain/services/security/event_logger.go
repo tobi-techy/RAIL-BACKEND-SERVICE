@@ -30,7 +30,10 @@ const (
 	EventAPIKeyRevoked      EventType = "api_key_revoked"
 
 	SeverityInfo     Severity = "info"
+	SeverityLow      Severity = "low"
+	SeverityMedium   Severity = "medium"
 	SeverityWarning  Severity = "warning"
+	SeverityHigh     Severity = "high"
 	SeverityCritical Severity = "critical"
 )
 

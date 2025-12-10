@@ -157,6 +157,20 @@ type SecurityConfig struct {
 	RequireMFA        bool     `mapstructure:"require_mfa"`
 	PasswordMinLength int      `mapstructure:"password_min_length"`
 	SessionTimeout    int      `mapstructure:"session_timeout"`
+	
+	// Enhanced security settings
+	BcryptCost              int    `mapstructure:"bcrypt_cost"`               // bcrypt cost factor (12-14 recommended)
+	PasswordHistoryCount    int    `mapstructure:"password_history_count"`    // number of passwords to track
+	PasswordExpirationDays  int    `mapstructure:"password_expiration_days"`  // days until password expires (0=disabled)
+	AccessTokenTTL          int    `mapstructure:"access_token_ttl"`          // short-lived access token TTL in seconds
+	RefreshTokenTTL         int    `mapstructure:"refresh_token_ttl"`         // refresh token TTL in seconds
+	EnableTokenBlacklist    bool   `mapstructure:"enable_token_blacklist"`    // enable token revocation
+	CheckPasswordBreaches   bool   `mapstructure:"check_password_breaches"`   // check HaveIBeenPwned
+	CaptchaThreshold        int    `mapstructure:"captcha_threshold"`         // failed attempts before CAPTCHA
+	SecretsProvider         string `mapstructure:"secrets_provider"`          // "env", "aws_secrets_manager"
+	AWSSecretsRegion        string `mapstructure:"aws_secrets_region"`        // AWS region for Secrets Manager
+	AWSSecretsPrefix        string `mapstructure:"aws_secrets_prefix"`        // prefix for secret names
+	SecretRotationDays      int    `mapstructure:"secret_rotation_days"`      // days between secret rotations
 }
 
 type CircleConfig struct {
@@ -466,6 +480,20 @@ func setDefaults() {
 	viper.SetDefault("verification.rate_limit_per_hour", 3)
 
 	viper.SetDefault("security.session_timeout", 3600) // 1 hour
+	
+	// Enhanced security defaults
+	viper.SetDefault("security.bcrypt_cost", 12)                    // Increased from default 10
+	viper.SetDefault("security.password_history_count", 5)          // Track last 5 passwords
+	viper.SetDefault("security.password_expiration_days", 90)       // 90-day password expiration
+	viper.SetDefault("security.access_token_ttl", 900)              // 15 minutes (short-lived)
+	viper.SetDefault("security.refresh_token_ttl", 604800)          // 7 days
+	viper.SetDefault("security.enable_token_blacklist", true)       // Enable token revocation
+	viper.SetDefault("security.check_password_breaches", true)      // Check HaveIBeenPwned
+	viper.SetDefault("security.captcha_threshold", 3)               // CAPTCHA after 3 failed attempts
+	viper.SetDefault("security.secrets_provider", "env")            // Default to env vars
+	viper.SetDefault("security.aws_secrets_region", "us-east-1")    // Default AWS region
+	viper.SetDefault("security.aws_secrets_prefix", "rail/")        // Prefix for secrets
+	viper.SetDefault("security.secret_rotation_days", 90)           // 90-day rotation cycle
 
 	// AI Provider defaults
 	viper.SetDefault("ai.primary", "openai")

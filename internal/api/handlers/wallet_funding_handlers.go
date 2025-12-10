@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -1314,7 +1315,7 @@ func (h *WalletFundingHandlers) ChainDepositWebhook(c *gin.Context) {
 	}
 
 	var webhook entities.ChainDepositWebhook
-	if err := c.ShouldBindJSON(&webhook); err != nil {
+	if err := json.Unmarshal(rawBody, &webhook); err != nil {
 		respondBadRequest(c, "Invalid webhook payload", map[string]interface{}{"error": err.Error()})
 		return
 	}

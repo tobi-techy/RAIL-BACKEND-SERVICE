@@ -15,6 +15,7 @@ import (
 // AlertRepository interface for market alerts
 type AlertRepository interface {
 	Create(ctx context.Context, alert *entities.MarketAlert) error
+	GetByID(ctx context.Context, id uuid.UUID) (*entities.MarketAlert, error)
 	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.MarketAlert, error)
 	GetActiveBySymbol(ctx context.Context, symbol string) ([]*entities.MarketAlert, error)
 	GetAllActive(ctx context.Context) ([]*entities.MarketAlert, error)
@@ -150,8 +151,18 @@ func (s *MarketDataService) GetUserAlerts(ctx context.Context, userID uuid.UUID)
 	return s.alertRepo.GetByUserID(ctx, userID)
 }
 
-// DeleteAlert removes an alert
-func (s *MarketDataService) DeleteAlert(ctx context.Context, alertID uuid.UUID) error {
+// DeleteAlert removes an alert after verifying ownership
+func (s *MarketDataService) DeleteAlert(ctx context.Context, userID, alertID uuid.UUID) error {
+	alert, err := s.alertRepo.GetByID(ctx, alertID)
+	if err != nil {
+		return fmt.Errorf("get alert: %w", err)
+	}
+	if alert == nil {
+		return fmt.Errorf("alert not found")
+	}
+	if alert.UserID != userID {
+		return fmt.Errorf("forbidden")
+	}
 	return s.alertRepo.Delete(ctx, alertID)
 }
 

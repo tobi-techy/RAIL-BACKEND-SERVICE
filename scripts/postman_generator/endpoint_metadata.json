@@ -1,0 +1,516 @@
+{
+  "Register": {
+    "description": "Register a new user account. Email verification required.",
+    "body": {
+      "email": "user@example.com",
+      "password": "SecurePass123!",
+      "first_name": "John",
+      "last_name": "Doe",
+      "phone": "+1234567890"
+    },
+    "response": {
+      "user_id": "usr_123abc",
+      "email": "user@example.com",
+      "verification_required": true,
+      "message": "Verification code sent to email"
+    }
+  },
+  "Login": {
+    "description": "Login with email and password. Returns JWT tokens.",
+    "body": {
+      "email": "user@example.com",
+      "password": "SecurePass123!"
+    },
+    "response": {
+      "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "token_type": "Bearer",
+      "expires_in": 604800,
+      "user": {
+        "id": "usr_123abc",
+        "email": "user@example.com",
+        "first_name": "John",
+        "last_name": "Doe",
+        "kyc_status": "pending"
+      }
+    }
+  },
+  "VerifyCode": {
+    "description": "Verify email with 6-digit code sent during registration",
+    "body": {
+      "email": "user@example.com",
+      "code": "123456"
+    },
+    "response": {
+      "verified": true,
+      "message": "Email verified successfully"
+    }
+  },
+  "ResendCode": {
+    "description": "Resend verification code to email",
+    "body": {
+      "email": "user@example.com"
+    },
+    "response": {
+      "message": "Verification code sent"
+    }
+  },
+  "RefreshToken": {
+    "description": "Refresh access token using refresh token",
+    "body": {
+      "refresh_token": "{{refresh_token}}"
+    },
+    "response": {
+      "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "token_type": "Bearer",
+      "expires_in": 604800
+    }
+  },
+  "Logout": {
+    "description": "Logout and invalidate current session",
+    "response": {
+      "message": "Logged out successfully"
+    }
+  },
+  "ForgotPassword": {
+    "description": "Request password reset link via email",
+    "body": {
+      "email": "user@example.com"
+    },
+    "response": {
+      "message": "Password reset link sent to email"
+    }
+  },
+  "ResetPassword": {
+    "description": "Reset password using token from email",
+    "body": {
+      "token": "reset_token_here",
+      "new_password": "NewSecurePass123!"
+    },
+    "response": {
+      "message": "Password reset successfully"
+    }
+  },
+  "StartOnboarding": {
+    "description": "Start the onboarding process for a new user",
+    "body": {
+      "user_id": "{{user_id}}"
+    },
+    "response": {
+      "onboarding_id": "onb_123abc",
+      "status": "started",
+      "next_step": "kyc_verification"
+    }
+  },
+  "GetOnboardingStatus": {
+    "description": "Get current onboarding status",
+    "response": {
+      "status": "in_progress",
+      "completed_steps": ["email_verification", "profile_setup"],
+      "pending_steps": ["kyc_verification", "wallet_creation"],
+      "progress_percent": 50
+    }
+  },
+  "SubmitKYC": {
+    "description": "Submit KYC documents for verification",
+    "body": {
+      "document_type": "passport",
+      "document_number": "AB123456",
+      "document_front": "base64_encoded_image",
+      "document_back": "base64_encoded_image",
+      "selfie": "base64_encoded_image"
+    },
+    "response": {
+      "kyc_id": "kyc_123abc",
+      "status": "pending_review",
+      "message": "Documents submitted successfully"
+    }
+  },
+  "GetKYCStatus": {
+    "description": "Get KYC verification status",
+    "response": {
+      "status": "approved",
+      "tier": "tier_2",
+      "verified_at": "2025-12-09T10:00:00Z",
+      "limits": {
+        "daily_deposit": 10000,
+        "daily_withdrawal": 5000
+      }
+    }
+  },
+  "GetProfile": {
+    "description": "Get user profile information",
+    "response": {
+      "id": "usr_123abc",
+      "email": "user@example.com",
+      "first_name": "John",
+      "last_name": "Doe",
+      "phone": "+1234567890",
+      "kyc_status": "approved",
+      "created_at": "2025-12-01T10:00:00Z"
+    }
+  },
+  "UpdateProfile": {
+    "description": "Update user profile information",
+    "body": {
+      "first_name": "John",
+      "last_name": "Smith",
+      "phone": "+1234567890"
+    },
+    "response": {
+      "message": "Profile updated successfully"
+    }
+  },
+  "ChangePassword": {
+    "description": "Change user password",
+    "body": {
+      "current_password": "OldPass123!",
+      "new_password": "NewPass123!"
+    },
+    "response": {
+      "message": "Password changed successfully"
+    }
+  },
+  "CreatePasscode": {
+    "description": "Create a 6-digit passcode for quick authentication",
+    "body": {
+      "passcode": "123456"
+    },
+    "response": {
+      "message": "Passcode created successfully"
+    }
+  },
+  "VerifyPasscode": {
+    "description": "Verify passcode",
+    "body": {
+      "passcode": "123456"
+    },
+    "response": {
+      "valid": true,
+      "message": "Passcode verified"
+    }
+  },
+  "GetWalletAddresses": {
+    "description": "Get all wallet addresses for the authenticated user",
+    "response": {
+      "wallets": [
+        {
+          "chain": "ethereum",
+          "address": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
+          "status": "active",
+          "created_at": "2025-12-01T10:00:00Z"
+        },
+        {
+          "chain": "solana",
+          "address": "DYw8jCTfwHNRJhhmFcbXvVDTqWMEVFBX6ZKUmG5CNSKK",
+          "status": "active",
+          "created_at": "2025-12-01T10:00:00Z"
+        }
+      ]
+    }
+  },
+  "GetWalletStatus": {
+    "description": "Get wallet provisioning status",
+    "response": {
+      "status": "active",
+      "wallets_created": 2,
+      "pending_wallets": 0
+    }
+  },
+  "CreateDepositAddress": {
+    "description": "Generate a deposit address for a specific chain",
+    "body": {
+      "chain": "ethereum"
+    },
+    "response": {
+      "address": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
+      "chain": "ethereum",
+      "qr_code": "data:image/png;base64,..."
+    }
+  },
+  "GetBalances": {
+    "description": "Get all balances across wallets and accounts",
+    "response": {
+      "total_balance_usd": 10250.50,
+      "wallets": [
+        {
+          "chain": "ethereum",
+          "balance": 500.25,
+          "currency": "USDC",
+          "balance_usd": 500.25
+        },
+        {
+          "chain": "solana",
+          "balance": 250.00,
+          "currency": "USDC",
+          "balance_usd": 250.00
+        }
+      ],
+      "brokerage": {
+        "cash": 1500.25,
+        "equity": 8000.00,
+        "total": 9500.25
+      }
+    }
+  },
+  "GetFundingConfirmations": {
+    "description": "Get deposit confirmation status",
+    "response": {
+      "confirmations": [
+        {
+          "tx_hash": "0xabc123...",
+          "chain": "ethereum",
+          "amount": 100.00,
+          "currency": "USDC",
+          "confirmations": 12,
+          "required_confirmations": 12,
+          "status": "confirmed"
+        }
+      ]
+    }
+  },
+  "GetBrokerageAccount": {
+    "description": "Get Alpaca brokerage account details",
+    "response": {
+      "account_id": "acc_123abc",
+      "status": "ACTIVE",
+      "cash": 1500.00,
+      "portfolio_value": 9500.00,
+      "buying_power": 1500.00,
+      "equity": 8000.00,
+      "last_equity": 7950.00
+    }
+  },
+  "CreateBrokerageAccount": {
+    "description": "Create Alpaca brokerage account",
+    "response": {
+      "account_id": "acc_123abc",
+      "status": "ACTIVE",
+      "message": "Brokerage account created successfully"
+    }
+  },
+  "FundBrokerageAccount": {
+    "description": "Transfer funds from wallet to brokerage account",
+    "body": {
+      "amount": 1000.00,
+      "currency": "USD"
+    },
+    "response": {
+      "transfer_id": "xfr_123abc",
+      "status": "pending",
+      "amount": 1000.00,
+      "estimated_completion": "2025-12-10T10:00:00Z"
+    }
+  },
+  "PlaceOrder": {
+    "description": "Place a stock/ETF order",
+    "body": {
+      "symbol": "AAPL",
+      "qty": 10,
+      "side": "buy",
+      "type": "market",
+      "time_in_force": "day"
+    },
+    "response": {
+      "order_id": "ord_123abc",
+      "status": "accepted",
+      "symbol": "AAPL",
+      "qty": 10,
+      "filled_qty": 0,
+      "side": "buy",
+      "type": "market",
+      "submitted_at": "2025-12-09T10:00:00Z"
+    }
+  },
+  "GetOrders": {
+    "description": "Get all orders",
+    "response": {
+      "orders": [
+        {
+          "order_id": "ord_123abc",
+          "symbol": "AAPL",
+          "qty": 10,
+          "filled_qty": 10,
+          "side": "buy",
+          "type": "market",
+          "status": "filled",
+          "filled_avg_price": 150.50
+        }
+      ]
+    }
+  },
+  "GetPositions": {
+    "description": "Get all open positions",
+    "response": {
+      "positions": [
+        {
+          "symbol": "AAPL",
+          "qty": 10,
+          "avg_entry_price": 150.00,
+          "current_price": 155.00,
+          "market_value": 1550.00,
+          "cost_basis": 1500.00,
+          "unrealized_pl": 50.00,
+          "unrealized_plpc": 3.33,
+          "side": "long"
+        }
+      ]
+    }
+  },
+  "GetPortfolio": {
+    "description": "Get complete portfolio overview",
+    "response": {
+      "total_value": 10000.00,
+      "cash": 2000.00,
+      "equity": 8000.00,
+      "day_change": 150.00,
+      "day_change_percent": 1.5,
+      "positions": [],
+      "allocations": {
+        "stocks": 60.0,
+        "cash": 40.0
+      }
+    }
+  },
+  "GetPerformanceMetrics": {
+    "description": "Get portfolio performance metrics",
+    "response": {
+      "total_return": 250.00,
+      "total_return_percent": 2.5,
+      "day_return": 50.00,
+      "week_return": 150.00,
+      "month_return": 200.00,
+      "year_return": 250.00
+    }
+  },
+  "GetQuote": {
+    "description": "Get real-time stock quote",
+    "response": {
+      "symbol": "AAPL",
+      "price": 155.00,
+      "change": 2.50,
+      "change_percent": 1.64,
+      "volume": 50000000,
+      "timestamp": "2025-12-09T15:30:00Z"
+    }
+  },
+  "CreateScheduledInvestment": {
+    "description": "Create a scheduled investment (DCA)",
+    "body": {
+      "symbol": "AAPL",
+      "amount": 100.00,
+      "frequency": "weekly",
+      "start_date": "2025-12-10"
+    },
+    "response": {
+      "schedule_id": "sch_123abc",
+      "status": "active",
+      "next_execution": "2025-12-10T10:00:00Z"
+    }
+  },
+  "GetScheduledInvestments": {
+    "description": "Get all scheduled investments",
+    "response": {
+      "schedules": [
+        {
+          "schedule_id": "sch_123abc",
+          "symbol": "AAPL",
+          "amount": 100.00,
+          "frequency": "weekly",
+          "status": "active",
+          "next_execution": "2025-12-10T10:00:00Z"
+        }
+      ]
+    }
+  },
+  "CreateRebalancingConfig": {
+    "description": "Create portfolio rebalancing configuration",
+    "body": {
+      "target_allocations": {
+        "AAPL": 30.0,
+        "GOOGL": 30.0,
+        "MSFT": 40.0
+      },
+      "threshold": 5.0,
+      "frequency": "monthly"
+    },
+    "response": {
+      "config_id": "cfg_123abc",
+      "status": "active",
+      "next_check": "2025-12-15T10:00:00Z"
+    }
+  },
+  "ListConductors": {
+    "description": "List all available copy trading conductors",
+    "response": {
+      "conductors": [
+        {
+          "id": "cnd_123abc",
+          "name": "Pro Trader",
+          "return_30d": 15.5,
+          "followers": 1250,
+          "risk_score": 6.5,
+          "min_investment": 1000.00
+        }
+      ]
+    }
+  },
+  "CreateDraft": {
+    "description": "Follow a conductor (create draft)",
+    "body": {
+      "conductor_id": "cnd_123abc",
+      "allocation_amount": 1000.00
+    },
+    "response": {
+      "draft_id": "drf_123abc",
+      "status": "active",
+      "conductor_id": "cnd_123abc",
+      "allocation": 1000.00
+    }
+  },
+  "GetSettings": {
+    "description": "Get round-up settings",
+    "response": {
+      "enabled": true,
+      "multiplier": 1.0,
+      "round_up_to": 1.00,
+      "total_rounded_up": 125.50
+    }
+  },
+  "UpdateSettings": {
+    "description": "Update round-up settings",
+    "body": {
+      "enabled": true,
+      "multiplier": 2.0,
+      "round_up_to": 1.00
+    },
+    "response": {
+      "message": "Settings updated successfully"
+    }
+  },
+  "Chat": {
+    "description": "Chat with AI financial assistant",
+    "body": {
+      "message": "How is my portfolio performing?"
+    },
+    "response": {
+      "response": "Your portfolio is up 2.5% this month with strong performance in tech stocks.",
+      "suggestions": ["View detailed analytics", "Rebalance portfolio"]
+    }
+  },
+  "GetFeed": {
+    "description": "Get personalized news feed",
+    "response": {
+      "articles": [
+        {
+          "id": "art_123abc",
+          "title": "Tech Stocks Rally",
+          "summary": "Major tech stocks see gains...",
+          "url": "https://example.com/article",
+          "published_at": "2025-12-09T10:00:00Z",
+          "read": false
+        }
+      ]
+    }
+  }
+}

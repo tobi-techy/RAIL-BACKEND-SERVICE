@@ -12,8 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
-	"github.com/rail-service/rail_service/internal/infrastructure/repositories/mocks"
-	"github.com/rail-service/rail_service/pkg/common/logger"
+	"github.com/rail-service/rail_service/pkg/logger"
 )
 
 // Mock implementations
