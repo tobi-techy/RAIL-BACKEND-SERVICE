@@ -1,13 +1,13 @@
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: stack-service
+  name: rail-service
   labels:
-    app: stack-service
+    app: rail-service
 spec:
   selector:
     matchLabels:
-      app: stack-service
+      app: rail-service
   endpoints:
   - port: metrics
     path: /metrics

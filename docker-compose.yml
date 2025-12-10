@@ -9,7 +9,7 @@ services:
       - "8080:8080"
     environment:
       - ENVIRONMENT=development
-      - DATABASE_URL=postgres://postgres:postgres@db:5432/stack_service_dev?sslmode=disable
+      - DATABASE_URL=postgres://postgres:postgres@db:5432/rail_service_dev?sslmode=disable
       - REDIS_HOST=redis
       - JWT_SECRET=${JWT_SECRET:-development-jwt-secret-key-change-in-production}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:-development-encryption-key-32-byte!}
@@ -19,7 +19,7 @@ services:
       redis:
         condition: service_started
     networks:
-      - stack-network
+      - rail-network
     volumes:
       - ./configs:/configs:ro
     restart: unless-stopped
@@ -42,7 +42,7 @@ services:
   db:
     image: postgres:15-alpine
     environment:
-      - POSTGRES_DB=stack_service_dev
+      - POSTGRES_DB=rail_service_dev
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=${DB_PASSWORD:-postgres}
       - POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256
@@ -52,7 +52,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
     networks:
-      - stack-network
+      - rail-network
     restart: unless-stopped
     deploy:
       resources:
@@ -60,7 +60,7 @@ services:
           memory: 1G
           cpus: '1.0'
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d stack_service_dev"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d rail_service_dev"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -85,7 +85,7 @@ services:
       - redis_data:/data
       - ./configs/redis.conf:/usr/local/etc/redis/redis.conf:ro
     networks:
-      - stack-network
+      - rail-network
     restart: unless-stopped
     deploy:
       resources:
@@ -103,7 +103,7 @@ services:
   pgadmin:
     image: dpage/pgadmin4:latest
     environment:
-      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_EMAIL:-admin@stackservice.com}
+      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_EMAIL:-admin@railservice.com}
       - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_PASSWORD:-admin}
       - PGADMIN_CONFIG_SERVER_MODE=False
     ports:
@@ -111,7 +111,7 @@ services:
     volumes:
       - pgadmin_data:/var/lib/pgadmin
     networks:
-      - stack-network
+      - rail-network
     depends_on:
       - db
     profiles:
@@ -126,11 +126,21 @@ services:
     volumes:
       - redisinsight_data:/db
     networks:
-      - stack-network
+      - rail-network
     depends_on:
       - redis
     profiles:
       - admin
+    restart: unless-stopped
+
+  # Mailpit (Email Testing)
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "8025:8025"  # Web UI
+      - "1025:1025"  # SMTP
+    networks:
+      - rail-network
     restart: unless-stopped
 
   # Prometheus (Metrics)
@@ -142,7 +152,7 @@ services:
       - ./configs/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     networks:
-      - stack-network
+      - rail-network
     profiles:
       - monitoring
     restart: unless-stopped
@@ -169,7 +179,7 @@ services:
       - ./configs/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
       - ./configs/grafana/datasources:/etc/grafana/provisioning/datasources:ro
     networks:
-      - stack-network
+      - rail-network
     depends_on:
       - prometheus
     profiles:
@@ -186,7 +196,7 @@ services:
       - ./configs/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./configs/ssl:/etc/nginx/ssl:ro
     networks:
-      - stack-network
+      - rail-network
     depends_on:
       - app
     profiles:
@@ -208,7 +218,7 @@ volumes:
     driver: local
 
 networks:
-  stack-network:
+  rail-network:
     driver: bridge
     ipam:
       config:

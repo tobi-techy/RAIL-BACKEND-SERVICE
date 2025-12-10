@@ -13,7 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/stack-service/stack_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

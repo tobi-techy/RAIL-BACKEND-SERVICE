@@ -7,9 +7,9 @@ import (
 	"github.com/robfig/cron/v3"
 	"go.uber.org/zap"
 
-	"github.com/stack-service/stack_service/internal/api/middleware"
-	"github.com/stack-service/stack_service/internal/domain/services/apikey"
-	"github.com/stack-service/stack_service/internal/domain/services/session"
+	"github.com/rail-service/rail_service/internal/api/middleware"
+	"github.com/rail-service/rail_service/internal/domain/services/apikey"
+	"github.com/rail-service/rail_service/internal/domain/services/session"
 )
 
 type Worker struct {

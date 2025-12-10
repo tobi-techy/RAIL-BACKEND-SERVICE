@@ -7,9 +7,9 @@ import (
 	"github.com/go-playground/validator/v10"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/internal/domain/services/allocation"
-	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/allocation"
+	"github.com/rail-service/rail_service/pkg/logger"
 	"go.uber.org/zap"
 )
 

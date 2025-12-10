@@ -9,9 +9,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/shopspring/decimal"
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/internal/infrastructure/repositories"
-	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
+	"github.com/rail-service/rail_service/pkg/logger"
 )
 
 // Service handles ledger operations using double-entry bookkeeping
@@ -212,6 +212,15 @@ func (s *Service) GetSystemAccount(ctx context.Context, accountType entities.Acc
 		return nil, fmt.Errorf("get system account: %w", err)
 	}
 
+	return account, nil
+}
+
+// GetAccountByID retrieves an account by its ID
+func (s *Service) GetAccountByID(ctx context.Context, accountID uuid.UUID) (*entities.LedgerAccount, error) {
+	account, err := s.ledgerRepo.GetAccountByID(ctx, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("get account by id: %w", err)
+	}
 	return account, nil
 }
 

@@ -9,7 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/stack-service/stack_service/internal/infrastructure/repositories"
+	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"go.uber.org/zap"
 )
 

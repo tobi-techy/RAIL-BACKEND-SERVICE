@@ -1,9 +1,9 @@
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: stack-service
+  name: rail-service
 spec:
   minAvailable: 2
   selector:
     matchLabels:
-      app: stack-service
+      app: rail-service

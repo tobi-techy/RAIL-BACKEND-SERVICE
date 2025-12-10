@@ -6,19 +6,19 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	walletprovisioning "github.com/stack-service/stack_service/internal/workers/wallet_provisioning"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	walletprovisioning "github.com/rail-service/rail_service/internal/workers/wallet_provisioning"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"go.uber.org/zap"
 )
 
-// MockUserRepository implements the UserRepository interface for testing
-type MockUserRepository struct {
+// MockWalletUserRepository implements the UserRepository interface for testing
+type MockWalletUserRepository struct {
 	mock.Mock
 }
 
-func (m *MockUserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.User, error) {
+func (m *MockWalletUserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.User, error) {
 	args := m.Called(ctx, id)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
@@ -194,7 +194,7 @@ func TestWalletProvisioningWithDueLinking(t *testing.T) {
 	mockJobRepo := &MockProvisioningJobRepository{}
 	mockCircleClient := &MockCircleClient{}
 	mockAuditService := &MockAuditService{}
-	mockUserRepo := &MockUserRepository{}
+	mockUserRepo := &MockWalletUserRepository{}
 	mockDueService := &MockDueService{}
 
 	// Test data
@@ -301,7 +301,7 @@ func TestWalletProvisioningWithoutDueAccount(t *testing.T) {
 	mockJobRepo := &MockProvisioningJobRepository{}
 	mockCircleClient := &MockCircleClient{}
 	mockAuditService := &MockAuditService{}
-	mockUserRepo := &MockUserRepository{}
+	mockUserRepo := &MockWalletUserRepository{}
 	mockDueService := &MockDueService{}
 
 	// Test data

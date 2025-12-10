@@ -7,13 +7,16 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
-	"github.com/stack-service/stack_service/internal/api/handlers"
-	"github.com/stack-service/stack_service/internal/api/middleware"
-	"github.com/stack-service/stack_service/internal/domain/services/apikey"
-	"github.com/stack-service/stack_service/internal/domain/services/session"
-	"github.com/stack-service/stack_service/internal/domain/services/twofa"
-	"github.com/stack-service/stack_service/internal/infrastructure/config"
-	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/rail-service/rail_service/internal/api/handlers"
+	"github.com/rail-service/rail_service/internal/api/middleware"
+	"github.com/rail-service/rail_service/internal/domain/services/apikey"
+	"github.com/rail-service/rail_service/internal/domain/services/security"
+	"github.com/rail-service/rail_service/internal/domain/services/session"
+	"github.com/rail-service/rail_service/internal/domain/services/twofa"
+	"github.com/rail-service/rail_service/internal/infrastructure/config"
+	"github.com/rail-service/rail_service/pkg/auth"
+	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/rail-service/rail_service/pkg/ratelimit"
 )
 
 type APIKeyValidatorAdapter struct {
@@ -36,11 +39,18 @@ func (a *APIKeyValidatorAdapter) ValidateAPIKey(ctx context.Context, key string)
 	}, nil
 }
 
-func SetupSecurityRoutes(
+// SetupSecurityRoutesEnhanced sets up security routes with enhanced security features
+func SetupSecurityRoutesEnhanced(
 	router *gin.Engine,
 	cfg *config.Config,
 	db *sql.DB,
 	zapLog *zap.Logger,
+	tokenBlacklist *auth.TokenBlacklist,
+	tieredLimiter *ratelimit.TieredLimiter,
+	loginTracker *ratelimit.LoginAttemptTracker,
+	ipWhitelistService *security.IPWhitelistService,
+	deviceTrackingService *security.DeviceTrackingService,
+	loginProtectionService *security.LoginProtectionService,
 ) {
 	// Initialize services
 	sessionService := session.NewService(db, zapLog)
@@ -68,13 +78,35 @@ func SetupSecurityRoutes(
 	// API v1 routes
 	v1 := router.Group("/api/v1")
 	{
-		// Apply global rate limiting
-		v1.Use(middleware.RateLimit(100)) // 100 requests per minute globally
+		// Apply tiered rate limiting if available
+		if tieredLimiter != nil {
+			v1.Use(middleware.TieredRateLimiting(tieredLimiter, log))
+		} else {
+			v1.Use(middleware.RateLimit(100))
+		}
 
-		// Authentication required routes
+		// Apply login protection middleware to auth routes
+		authRoutes := v1.Group("/auth")
+		if loginTracker != nil {
+			authRoutes.Use(middleware.LoginRateLimiting(loginTracker, log))
+		}
+		if loginProtectionService != nil {
+			authRoutes.Use(middleware.LoginProtection(loginProtectionService, zapLog))
+		}
+
+		// Authentication required routes with enhanced auth
 		auth := v1.Group("")
-		auth.Use(middleware.Authentication(cfg, log, sessionValidator))
-		auth.Use(userRateLimiter.UserRateLimit(60)) // 60 requests per minute per user
+		if tokenBlacklist != nil {
+			auth.Use(middleware.EnhancedAuthentication(cfg, tokenBlacklist, log, sessionValidator))
+		} else {
+			auth.Use(middleware.Authentication(cfg, log, sessionValidator))
+		}
+		auth.Use(userRateLimiter.UserRateLimit(60))
+
+		// Apply device tracking if available
+		if deviceTrackingService != nil {
+			auth.Use(middleware.DeviceVerification(deviceTrackingService, zapLog))
+		}
 		{
 			// 2FA Management
 			twofa := auth.Group("/2fa")
@@ -105,13 +137,27 @@ func SetupSecurityRoutes(
 			}
 		}
 
+		// Sensitive operations requiring IP whitelist
+		sensitive := v1.Group("/sensitive")
+		if tokenBlacklist != nil {
+			sensitive.Use(middleware.EnhancedAuthentication(cfg, tokenBlacklist, log, sessionValidator))
+		} else {
+			sensitive.Use(middleware.Authentication(cfg, log, sessionValidator))
+		}
+		if ipWhitelistService != nil {
+			sensitive.Use(middleware.RequireIPWhitelist(ipWhitelistService, zapLog))
+		}
+
 		// Admin routes
 		admin := v1.Group("/admin")
-		admin.Use(middleware.Authentication(cfg, log, sessionValidator))
+		if tokenBlacklist != nil {
+			admin.Use(middleware.EnhancedAuthentication(cfg, tokenBlacklist, log, sessionValidator))
+		} else {
+			admin.Use(middleware.Authentication(cfg, log, sessionValidator))
+		}
 		admin.Use(middleware.AdminAuth(db, log))
-		admin.Use(userRateLimiter.UserRateLimit(120)) // Higher limit for admins
+		admin.Use(userRateLimiter.UserRateLimit(120))
 		{
-			// Admin API key management
 			admin.GET("/api-keys", securityHandlers.AdminListAPIKeys)
 			admin.DELETE("/api-keys/:id", securityHandlers.AdminRevokeAPIKey)
 		}
@@ -120,7 +166,6 @@ func SetupSecurityRoutes(
 		api := v1.Group("/external")
 		api.Use(middleware.ValidateAPIKey(apikeyValidator))
 		{
-			// Webhook endpoints
 			webhooks := api.Group("/webhooks")
 			{
 				webhooks.POST("/funding", func(c *gin.Context) {
@@ -129,4 +174,14 @@ func SetupSecurityRoutes(
 			}
 		}
 	}
+}
+
+// SetupSecurityRoutes is the legacy function for backward compatibility
+func SetupSecurityRoutes(
+	router *gin.Engine,
+	cfg *config.Config,
+	db *sql.DB,
+	zapLog *zap.Logger,
+) {
+	SetupSecurityRoutesEnhanced(router, cfg, db, zapLog, nil, nil, nil, nil, nil, nil)
 }

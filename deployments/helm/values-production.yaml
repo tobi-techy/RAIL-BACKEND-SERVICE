@@ -1,34 +1,23 @@
-replicaCount: 5
+replicaCount: 3
+
+domain: api.rail-platform.com
 
 image:
-  repository: ghcr.io/stack/stack-service
-  pullPolicy: IfNotPresent
   tag: "latest"
-
-ingress:
-  hosts:
-    - host: api.stack-platform.com
-      paths:
-        - path: /
-          pathType: Prefix
-  tls:
-    - secretName: stack-service-tls
-      hosts:
-        - api.stack-platform.com
 
 resources:
   limits:
-    cpu: 1000m
-    memory: 1Gi
-  requests:
     cpu: 500m
     memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
 
 autoscaling:
-  enabled: true
-  minReplicas: 5
-  maxReplicas: 20
-  targetCPUUtilizationPercentage: 70
-  targetMemoryUtilizationPercentage: 80
+  minReplicas: 3
+  maxReplicas: 10
 
-environment: production
+ingress:
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/rate-limit: "100"

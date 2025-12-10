@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/stack-service/stack_service/internal/infrastructure/config"
+	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/sony/gobreaker"
 
 	"github.com/golang-migrate/migrate/v4"

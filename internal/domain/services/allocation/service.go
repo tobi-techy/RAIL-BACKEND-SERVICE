@@ -7,9 +7,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/internal/domain/services/ledger"
-	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/ledger"
+	"github.com/rail-service/rail_service/pkg/logger"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"

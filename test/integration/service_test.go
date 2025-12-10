@@ -1,4 +1,4 @@
-package reconciliation
+package integration
 
 import (
 	"context"
@@ -11,10 +11,8 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
-	"stack_service/internal/domain/entities"
-	"stack_service/internal/infrastructure/repositories/mocks"
-	"stack_service/pkg/common/logger"
-	"stack_service/pkg/common/metrics"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/pkg/logger"
 )
 
 // Mock implementations
@@ -207,12 +205,12 @@ func TestService_CheckCircleBalance(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name              string
-		ledgerBalance     decimal.Decimal
-		circleBalance     decimal.Decimal
-		expectPassed      bool
-		expectExceptions  int
-		expectedSeverity  entities.ExceptionSeverity
+		name             string
+		ledgerBalance    decimal.Decimal
+		circleBalance    decimal.Decimal
+		expectPassed     bool
+		expectExceptions int
+		expectedSeverity entities.ExceptionSeverity
 	}{
 		{
 			name:             "balances match exactly",

@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/stack-service/stack_service/pkg/health"
+	"github.com/rail-service/rail_service/pkg/health"
 	"go.uber.org/zap"
 )
 

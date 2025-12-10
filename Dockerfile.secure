@@ -21,11 +21,11 @@ ARG BUILD_TIME=unknown
 
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -ldflags="-w -s -extldflags '-static' \
-    -X github.com/stack-service/stack_service/pkg/version.Version=${VERSION} \
-    -X github.com/stack-service/stack_service/pkg/version.GitCommit=${GIT_COMMIT} \
-    -X github.com/stack-service/stack_service/pkg/version.BuildTime=${BUILD_TIME}" \
+    -X github.com/rail-service/rail_service/pkg/version.Version=${VERSION} \
+    -X github.com/rail-service/rail_service/pkg/version.GitCommit=${GIT_COMMIT} \
+    -X github.com/rail-service/rail_service/pkg/version.BuildTime=${BUILD_TIME}" \
     -a -installsuffix cgo \
-    -o stack_service cmd/main.go
+    -o rail_service cmd/main.go
 
 # Final stage - minimal runtime
 FROM scratch
@@ -36,7 +36,7 @@ COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 COPY --from=builder /etc/passwd /etc/passwd
 
 # Copy binary
-COPY --from=builder /build/stack_service /stack_service
+COPY --from=builder /build/rail_service /rail_service
 
 # Use non-root user
 USER appuser
@@ -46,6 +46,6 @@ EXPOSE 8080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD ["/stack_service", "health"]
+    CMD ["/rail_service", "health"]
 
-ENTRYPOINT ["/stack_service"]
+ENTRYPOINT ["/rail_service"]

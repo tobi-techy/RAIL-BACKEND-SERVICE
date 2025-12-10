@@ -418,4 +418,25 @@ type OnboardingCompleteResponse struct {
 	NextSteps       []string  `json:"nextSteps"`
 }
 
+// OnboardingProgressResponse represents the user's onboarding progress
+type OnboardingProgressResponse struct {
+	UserID          uuid.UUID              `json:"userId"`
+	PercentComplete int                    `json:"percentComplete"`
+	Checklist       []OnboardingCheckItem  `json:"checklist"`
+	CurrentStep     *OnboardingStepType    `json:"currentStep,omitempty"`
+	EstimatedTime   string                 `json:"estimatedTime"`
+	CanInvest       bool                   `json:"canInvest"`
+	CanWithdraw     bool                   `json:"canWithdraw"`
+}
+
+// OnboardingCheckItem represents a single item in the onboarding checklist
+type OnboardingCheckItem struct {
+	Step        OnboardingStepType `json:"step"`
+	Title       string             `json:"title"`
+	Description string             `json:"description"`
+	Status      StepStatus         `json:"status"`
+	Required    bool               `json:"required"`
+	Order       int                `json:"order"`
+}
+
 

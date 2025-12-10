@@ -6,9 +6,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/internal/domain/services/ledger"
-	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/ledger"
+	"github.com/rail-service/rail_service/pkg/logger"
 )
 
 // LedgerIntegration provides a facade for legacy services to integrate with ledger
@@ -350,6 +350,180 @@ type UserBalanceView struct {
 	FiatExposure      decimal.Decimal // USD buying power at broker
 	PendingInvestment decimal.Decimal // Reserved for in-flight trades
 	TotalValue        decimal.Decimal // Total across all accounts
+}
+
+// GetUSDCBalance returns the USDC balance
+func (v *UserBalanceView) GetUSDCBalance() decimal.Decimal {
+	return v.USDCBalance
+}
+
+// GetFiatExposure returns the fiat exposure
+func (v *UserBalanceView) GetFiatExposure() decimal.Decimal {
+	return v.FiatExposure
+}
+
+// GetPendingInvestment returns the pending investment amount
+func (v *UserBalanceView) GetPendingInvestment() decimal.Decimal {
+	return v.PendingInvestment
+}
+
+// GetTotalValue returns the total value
+func (v *UserBalanceView) GetTotalValue() decimal.Decimal {
+	return v.TotalValue
+}
+
+// RecordDeposit records a deposit in the ledger system
+// This is the primary method for processing chain deposits
+func (i *LedgerIntegration) RecordDeposit(
+	ctx context.Context,
+	userID uuid.UUID,
+	amount decimal.Decimal,
+	depositID uuid.UUID,
+	chain string,
+	txHash string,
+) error {
+	i.logger.Info("Recording deposit in ledger",
+		"user_id", userID,
+		"amount", amount,
+		"deposit_id", depositID,
+		"chain", chain,
+		"tx_hash", txHash)
+
+	// Get or create user USDC account
+	userAccount, err := i.ledgerService.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeUSDCBalance)
+	if err != nil {
+		return fmt.Errorf("failed to get user account: %w", err)
+	}
+
+	// Get system buffer account
+	systemAccount, err := i.ledgerService.GetSystemAccount(ctx, entities.AccountTypeSystemBufferUSDC)
+	if err != nil {
+		return fmt.Errorf("failed to get system buffer account: %w", err)
+	}
+
+	// Create ledger transaction with deposit reference
+	description := fmt.Sprintf("USDC deposit from %s: %s", chain, txHash)
+	idempotencyKey := fmt.Sprintf("deposit-%s", depositID.String())
+	refType := "deposit"
+
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeDeposit,
+		ReferenceID:     &depositID,
+		ReferenceType:   &refType,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &description,
+		Metadata: map[string]any{
+			"chain":   chain,
+			"tx_hash": txHash,
+		},
+		Entries: []entities.CreateEntryRequest{
+			{
+				AccountID:   userAccount.ID,
+				EntryType:   entities.EntryTypeDebit, // Increase user balance
+				Amount:      amount,
+				Currency:    "USDC",
+				Description: &description,
+			},
+			{
+				AccountID:   systemAccount.ID,
+				EntryType:   entities.EntryTypeCredit, // Decrease system buffer
+				Amount:      amount,
+				Currency:    "USDC",
+				Description: &description,
+			},
+		},
+	}
+
+	_, err = i.ledgerService.CreateTransaction(ctx, req)
+	if err != nil {
+		return fmt.Errorf("failed to create deposit ledger transaction: %w", err)
+	}
+
+	i.logger.Info("Deposit recorded in ledger",
+		"user_id", userID,
+		"deposit_id", depositID,
+		"amount", amount)
+
+	return nil
+}
+
+// RecordWithdrawal records a withdrawal in the ledger system
+func (i *LedgerIntegration) RecordWithdrawal(
+	ctx context.Context,
+	userID uuid.UUID,
+	amount decimal.Decimal,
+	withdrawalID uuid.UUID,
+	chain string,
+	address string,
+) error {
+	i.logger.Info("Recording withdrawal in ledger",
+		"user_id", userID,
+		"amount", amount,
+		"withdrawal_id", withdrawalID)
+
+	// Get user USDC account
+	userAccount, err := i.ledgerService.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeUSDCBalance)
+	if err != nil {
+		return fmt.Errorf("failed to get user account: %w", err)
+	}
+
+	// Get system buffer account
+	systemAccount, err := i.ledgerService.GetSystemAccount(ctx, entities.AccountTypeSystemBufferUSDC)
+	if err != nil {
+		return fmt.Errorf("failed to get system buffer account: %w", err)
+	}
+
+	// Check sufficient balance
+	if userAccount.Balance.LessThan(amount) {
+		return fmt.Errorf("insufficient balance: have %s, need %s", userAccount.Balance, amount)
+	}
+
+	// Create ledger transaction
+	description := fmt.Sprintf("USDC withdrawal to %s: %s", chain, address)
+	idempotencyKey := fmt.Sprintf("withdrawal-%s", withdrawalID.String())
+	refType := "withdrawal"
+
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeWithdrawal,
+		ReferenceID:     &withdrawalID,
+		ReferenceType:   &refType,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &description,
+		Metadata: map[string]any{
+			"chain":   chain,
+			"address": address,
+		},
+		Entries: []entities.CreateEntryRequest{
+			{
+				AccountID:   userAccount.ID,
+				EntryType:   entities.EntryTypeCredit, // Decrease user balance
+				Amount:      amount,
+				Currency:    "USDC",
+				Description: &description,
+			},
+			{
+				AccountID:   systemAccount.ID,
+				EntryType:   entities.EntryTypeDebit, // Increase system buffer
+				Amount:      amount,
+				Currency:    "USDC",
+				Description: &description,
+			},
+		},
+	}
+
+	_, err = i.ledgerService.CreateTransaction(ctx, req)
+	if err != nil {
+		return fmt.Errorf("failed to create withdrawal ledger transaction: %w", err)
+	}
+
+	return nil
+}
+
+// GetLedgerService returns the underlying ledger service for direct access
+func (i *LedgerIntegration) GetLedgerService() *ledger.Service {
+	return i.ledgerService
 }
 
 func stringPtr(s string) *string {

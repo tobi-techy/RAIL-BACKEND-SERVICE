@@ -1,7 +1,7 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: stack-service
+  name: rail-service
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
     nginx.ingress.kubernetes.io/rate-limit: "100"
@@ -10,16 +10,16 @@ spec:
   ingressClassName: nginx
   tls:
   - hosts:
-    - api.stack-platform.com
-    secretName: stack-service-tls
+    - api.rail-platform.com
+    secretName: rail-service-tls
   rules:
-  - host: api.stack-platform.com
+  - host: api.rail-platform.com
     http:
       paths:
       - path: /
         pathType: Prefix
         backend:
           service:
-            name: stack-service
+            name: rail-service
             port:
               number: 80

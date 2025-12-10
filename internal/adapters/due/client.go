@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/pkg/logger"
-	"github.com/stack-service/stack_service/pkg/retry"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/rail-service/rail_service/pkg/retry"
 )
 
 // Config represents Due API configuration

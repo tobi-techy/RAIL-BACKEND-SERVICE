@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/stack-service/stack_service/pkg/webhook"
+	"github.com/rail-service/rail_service/pkg/webhook"
 	"github.com/stretchr/testify/assert"
 )
 

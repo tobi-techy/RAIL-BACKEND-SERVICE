@@ -3,12 +3,12 @@ package routes
 import (
 	"context"
 
-	"github.com/stack-service/stack_service/internal/api/handlers"
-	"github.com/stack-service/stack_service/internal/api/middleware"
-	"github.com/stack-service/stack_service/internal/domain/services"
-	"github.com/stack-service/stack_service/internal/domain/services/session"
-	"github.com/stack-service/stack_service/internal/infrastructure/di"
-	"github.com/stack-service/stack_service/pkg/tracing"
+	"github.com/rail-service/rail_service/internal/api/handlers"
+	"github.com/rail-service/rail_service/internal/api/middleware"
+	"github.com/rail-service/rail_service/internal/domain/services"
+	"github.com/rail-service/rail_service/internal/domain/services/session"
+	"github.com/rail-service/rail_service/internal/infrastructure/di"
+	"github.com/rail-service/rail_service/pkg/tracing"
 
 	"github.com/gin-gonic/gin"
 	swaggerFiles "github.com/swaggo/files"
@@ -77,7 +77,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	walletFundingHandlers := handlers.NewWalletFundingHandlers(
 		container.GetWalletService(),
 		container.GetFundingService(),
-		nil, // FundingWithdrawalService
+		container.GetWithdrawalService(),
 		container.GetInvestingService(),
 		container.Logger,
 	)
@@ -91,6 +91,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.GetOnboardingService(),
 		container.EmailService,
 		container.KYCProvider,
+		container.GetSessionService(),
+		container.GetTwoFAService(),
+		container.RedisClient,
 	)
 	securityHandlers := handlers.NewSecurityHandlers(
 		container.GetPasscodeService(),
@@ -100,10 +103,20 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.ZapLog,
 	)
 
+	// Initialize social auth handlers
+	socialAuthHandlers := handlers.NewSocialAuthHandlers(
+		container.GetSocialAuthService(),
+		container.GetWebAuthnService(),
+		*container.UserRepo,
+		container.Config,
+		container.ZapLog,
+	)
+
 // Initialize integration handlers (Alpaca, Due)
 integrationHandlers := handlers.NewIntegrationHandlers(
 	container.AlpacaClient,
 	container.GetDueService(),
+	container.Config.Due.WebhookSecret,
 	services.NewNotificationService(container.ZapLog),
 	container.Logger,
 )
@@ -114,9 +127,8 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 	// API v1 routes
 	v1 := router.Group("/api/v1")
 	{
-		// Authentication routes (no auth required)
+		// Authentication routes (no auth required, no CSRF - API clients don't need CSRF protection)
 		auth := v1.Group("/auth")
-		auth.Use(middleware.CSRFProtection(csrfStore))
 		{
 			auth.POST("/register", authHandlers.Register)
 			auth.POST("/login", authHandlers.Login)
@@ -125,11 +137,19 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 			auth.POST("/forgot-password", authHandlers.ForgotPassword)
 			auth.POST("/reset-password", authHandlers.ResetPassword)
 			auth.POST("/verify-email", authHandlers.VerifyEmail)
+			auth.POST("/verify-code", authHandlers.VerifyCode)
+			auth.POST("/resend-code", authHandlers.ResendCode)
+
+			// Social auth routes (no auth required)
+			auth.POST("/social/url", socialAuthHandlers.GetSocialAuthURL)
+			auth.POST("/social/login", socialAuthHandlers.SocialLogin)
+
+			// WebAuthn login (no auth required)
+			auth.POST("/webauthn/login/begin", socialAuthHandlers.BeginWebAuthnLogin)
 		}
 
-		// Onboarding routes - OpenAPI spec compliant
+		// Onboarding routes - OpenAPI spec compliant (no CSRF for public start endpoint)
 		onboarding := v1.Group("/onboarding")
-		onboarding.Use(middleware.CSRFProtection(csrfStore))
 		{
 			onboarding.POST("/start", authHandlers.StartOnboarding)
 
@@ -137,6 +157,7 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 			authenticatedOnboarding.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator))
 			{
 				authenticatedOnboarding.GET("/status", authHandlers.GetOnboardingStatus)
+				authenticatedOnboarding.GET("/progress", authHandlers.GetOnboardingProgress)
 				authenticatedOnboarding.POST("/complete", authHandlers.CompleteOnboarding)
 				authenticatedOnboarding.POST("/kyc/submit", authHandlers.SubmitKYC)
 			}
@@ -168,6 +189,7 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 			kycProtected := protected.Group("/kyc")
 			{
 				kycProtected.GET("/status", authHandlers.GetKYCStatus)
+				kycProtected.GET("/verification-url", authHandlers.GetKYCVerificationURL)
 			}
 
 			// Security routes for passcode management
@@ -178,6 +200,54 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 				security.PUT("/passcode", securityHandlers.UpdatePasscode)
 				security.POST("/passcode/verify", securityHandlers.VerifyPasscode)
 				security.DELETE("/passcode", securityHandlers.RemovePasscode)
+
+				// Social account management
+				security.GET("/social-accounts", socialAuthHandlers.GetLinkedAccounts)
+				security.POST("/social-accounts/link", socialAuthHandlers.LinkSocialAccount)
+				security.DELETE("/social-accounts/:provider", socialAuthHandlers.UnlinkSocialAccount)
+
+				// WebAuthn/Passkey management
+				security.GET("/passkeys", socialAuthHandlers.GetWebAuthnCredentials)
+				security.POST("/passkeys/register", socialAuthHandlers.BeginWebAuthnRegistration)
+				security.DELETE("/passkeys/:id", socialAuthHandlers.DeleteWebAuthnCredential)
+
+				// Device management
+				securityEnhancedHandlers := handlers.NewSecurityEnhancedHandlers(
+					container.GetDeviceTrackingService(),
+					container.GetIPWhitelistService(),
+					container.GetWithdrawalSecurityService(),
+					container.GetSecurityEventLogger(),
+					container.ZapLog,
+				)
+				security.GET("/devices", securityEnhancedHandlers.GetDevices)
+				security.POST("/devices/:id/trust", securityEnhancedHandlers.TrustDevice)
+				security.DELETE("/devices/:id", securityEnhancedHandlers.RevokeDevice)
+
+				// IP whitelist management
+				security.GET("/ip-whitelist", securityEnhancedHandlers.GetIPWhitelist)
+				security.POST("/ip-whitelist", securityEnhancedHandlers.AddIPToWhitelist)
+				security.POST("/ip-whitelist/:id/verify", securityEnhancedHandlers.VerifyWhitelistedIP)
+				security.DELETE("/ip-whitelist/:id", securityEnhancedHandlers.RemoveIPFromWhitelist)
+
+				// Security events
+				security.GET("/events", securityEnhancedHandlers.GetSecurityEvents)
+				security.GET("/current-ip", securityEnhancedHandlers.GetCurrentIP)
+
+				// Withdrawal confirmation
+				security.POST("/withdrawals/confirm", securityEnhancedHandlers.ConfirmWithdrawal)
+
+				// MFA management
+				mfaHandlers := handlers.NewMFAHandlers(
+					container.GetMFAService(),
+					container.GetGeoSecurityService(),
+					container.GetIncidentResponseService(),
+					container.ZapLog,
+				)
+				security.GET("/mfa", mfaHandlers.GetMFASettings)
+				security.POST("/mfa/sms", mfaHandlers.SetupSMSMFA)
+				security.POST("/mfa/send-code", mfaHandlers.SendMFACode)
+				security.POST("/mfa/verify", mfaHandlers.VerifyMFACode)
+				security.GET("/geo-info", mfaHandlers.GetGeoInfo)
 			}
 
 			// Funding routes (OpenAPI spec compliant)
@@ -186,10 +256,22 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 				funding.POST("/deposit/address", walletFundingHandlers.CreateDepositAddress)
 				funding.GET("/confirmations", walletFundingHandlers.GetFundingConfirmations)
 				funding.POST("/virtual-account", walletFundingHandlers.CreateVirtualAccount)
+				funding.GET("/transactions", walletFundingHandlers.GetTransactionHistory)
 			}
 
 			// Balance routes (part of funding but separate for clarity)
 			protected.GET("/balances", walletFundingHandlers.GetBalances)
+
+			// Limits routes - deposit/withdrawal limits based on KYC tier
+			limits := protected.Group("/limits")
+			{
+				limitsHandler := container.GetLimitsHandler()
+				if limitsHandler != nil {
+					limits.GET("", limitsHandler.GetUserLimits())
+					limits.POST("/validate/deposit", limitsHandler.ValidateDeposit())
+					limits.POST("/validate/withdrawal", limitsHandler.ValidateWithdrawal())
+				}
+			}
 
 			// Investment routes
 			basketExecutor := container.InitializeBasketExecutor()
@@ -218,6 +300,63 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 			portfolio := protected.Group("/portfolio")
 			{
 				portfolio.GET("/overview", walletFundingHandlers.GetPortfolio)
+
+				// AI Financial Manager - Portfolio endpoints
+				if container.GetPortfolioDataProvider() != nil {
+					portfolioActivityHandlers := handlers.NewPortfolioActivityHandlers(
+						container.GetPortfolioDataProvider(),
+						container.GetActivityDataProvider(),
+						container.GetStreakRepository(),
+						container.GetContributionsRepository(),
+						container.Logger,
+					)
+					portfolio.GET("/weekly-stats", portfolioActivityHandlers.GetWeeklyStats)
+					portfolio.GET("/allocations", portfolioActivityHandlers.GetAllocations)
+					portfolio.GET("/top-movers", portfolioActivityHandlers.GetTopMovers)
+					portfolio.GET("/performance", portfolioActivityHandlers.GetPerformance)
+				}
+			}
+
+			// Activity endpoints (AI Financial Manager)
+			if container.GetActivityDataProvider() != nil {
+				activity := protected.Group("/activity")
+				{
+					portfolioActivityHandlers := handlers.NewPortfolioActivityHandlers(
+						container.GetPortfolioDataProvider(),
+						container.GetActivityDataProvider(),
+						container.GetStreakRepository(),
+						container.GetContributionsRepository(),
+						container.Logger,
+					)
+					activity.GET("/contributions", portfolioActivityHandlers.GetContributions)
+					activity.GET("/streak", portfolioActivityHandlers.GetStreak)
+					activity.GET("/timeline", portfolioActivityHandlers.GetTimeline)
+				}
+			}
+
+			// AI Chat endpoints (AI Financial Manager)
+			if container.GetAIOrchestrator() != nil {
+				aiChatHandlers := handlers.NewAIChatHandlers(container.GetAIOrchestrator(), container.Logger)
+				aiGroup := protected.Group("/ai")
+				{
+					aiGroup.POST("/chat", aiChatHandlers.Chat)
+					aiGroup.GET("/wrapped", aiChatHandlers.GetWrapped)
+					aiGroup.GET("/quick-insight", aiChatHandlers.QuickInsight)
+					aiGroup.GET("/suggestions", aiChatHandlers.GetSuggestedQuestions)
+				}
+			}
+
+			// News endpoints (AI Financial Manager)
+			if container.GetNewsService() != nil {
+				newsHandlers := handlers.NewNewsHandlers(container.GetNewsService(), container.Logger)
+				news := protected.Group("/news")
+				{
+					news.GET("/feed", newsHandlers.GetFeed)
+					news.GET("/weekly", newsHandlers.GetWeeklyNews)
+					news.POST("/read", newsHandlers.MarkAsRead)
+					news.GET("/unread-count", newsHandlers.GetUnreadCount)
+					news.POST("/refresh", newsHandlers.RefreshNews)
+				}
 			}
 
 			// Alpaca Assets - Tradable stocks and ETFs
@@ -251,6 +390,30 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 			admin.POST("/wallet/create", walletFundingHandlers.CreateWalletsForUser)
 			admin.POST("/wallet/retry-provisioning", walletFundingHandlers.RetryWalletProvisioning)
 			admin.GET("/wallet/health", walletFundingHandlers.HealthCheck)
+
+			// Security admin routes
+			adminMFAHandlers := handlers.NewMFAHandlers(
+				container.GetMFAService(),
+				container.GetGeoSecurityService(),
+				container.GetIncidentResponseService(),
+				container.ZapLog,
+			)
+			adminSecurity := admin.Group("/security")
+			{
+				// Security dashboard
+				adminSecurity.GET("/dashboard", adminMFAHandlers.GetSecurityDashboard)
+
+				// Incident management
+				adminSecurity.GET("/incidents", adminMFAHandlers.GetOpenIncidents)
+				adminSecurity.GET("/incidents/:id", adminMFAHandlers.GetIncident)
+				adminSecurity.PUT("/incidents/:id/status", adminMFAHandlers.UpdateIncidentStatus)
+				adminSecurity.POST("/incidents/:id/playbook", adminMFAHandlers.ExecutePlaybook)
+
+				// Geo-blocking management
+				adminSecurity.GET("/blocked-countries", adminMFAHandlers.GetBlockedCountries)
+				adminSecurity.POST("/blocked-countries", adminMFAHandlers.BlockCountry)
+				adminSecurity.DELETE("/blocked-countries/:country_code", adminMFAHandlers.UnblockCountry)
+			}
 		}
 
 		// Due API routes (protected)
@@ -265,6 +428,48 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 		{
 			webhooks.POST("/chain-deposit", walletFundingHandlers.ChainDepositWebhook)
 			webhooks.POST("/brokerage-fill", walletFundingHandlers.BrokerageFillWebhook)
+		}
+
+		// Register Alpaca investment routes
+		if container.GetInvestmentHandlers() != nil {
+			RegisterAlpacaRoutes(
+				v1,
+				container.GetInvestmentHandlers(),
+				container.GetAlpacaWebhookHandlers(),
+				container.Config,
+				container.Logger,
+				sessionValidator,
+			)
+		}
+
+		// Register advanced features routes (analytics, market, scheduled investments, rebalancing)
+		if container.GetAnalyticsHandlers() != nil {
+			RegisterAdvancedFeaturesRoutes(
+				v1,
+				container.GetAnalyticsHandlers(),
+				container.GetMarketHandlers(),
+				container.GetScheduledInvestmentHandlers(),
+				container.GetRebalancingHandlers(),
+				container.Config,
+				container.Logger,
+				sessionValidator,
+			)
+		}
+
+		// Register round-up routes
+		RegisterRoundupRoutes(
+			v1,
+			container.GetRoundupHandlers(),
+			container.Config,
+			container.Logger,
+			sessionValidator,
+		)
+
+		// Register copy trading routes
+		if container.GetCopyTradingHandlers() != nil {
+			copyTradingHandlers := container.GetCopyTradingHandlers()
+			authMiddleware := middleware.Authentication(container.Config, container.Logger, sessionValidator)
+			SetupCopyTradingRoutes(v1, copyTradingHandlers, authMiddleware)
 		}
 	}
 

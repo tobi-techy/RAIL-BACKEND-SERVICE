@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/stack-service/stack_service/pkg/tracing"
+	"github.com/rail-service/rail_service/pkg/tracing"
 	"go.uber.org/zap"
 )
 

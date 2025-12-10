@@ -6,7 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-	"github.com/stack-service/stack_service/internal/domain/services"
+	"github.com/rail-service/rail_service/internal/domain/services"
 	"go.uber.org/zap"
 )
 
