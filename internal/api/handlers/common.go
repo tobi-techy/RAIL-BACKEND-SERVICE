@@ -164,3 +164,184 @@ func parseBoolParam(c *gin.Context, param string, defaultVal bool) bool {
 	}
 	return defaultVal
 }
+
+// UserContext holds extracted user information from the request context
+type UserContext struct {
+	UserID uuid.UUID
+	Email  string
+	Role   string
+}
+
+// ExtractUserContext extracts user context from gin context, returns error if unauthorized
+func ExtractUserContext(c *gin.Context) (*UserContext, error) {
+	userID, err := getUserID(c)
+	if err != nil {
+		return nil, fmt.Errorf("unauthorized: %w", err)
+	}
+
+	return &UserContext{
+		UserID: userID,
+		Email:  c.GetString("user_email"),
+		Role:   c.GetString("user_role"),
+	}, nil
+}
+
+// RequireUserContext extracts user context or sends unauthorized error
+func RequireUserContext(c *gin.Context) *UserContext {
+	ctx, err := ExtractUserContext(c)
+	if err != nil {
+		respondUnauthorized(c, "User not authenticated")
+		return nil
+	}
+	return ctx
+}
+
+// RequireAdminContext extracts user context and verifies admin role
+func RequireAdminContext(c *gin.Context) *UserContext {
+	ctx := RequireUserContext(c)
+	if ctx == nil {
+		return nil
+	}
+
+	if ctx.Role != "admin" && ctx.Role != "super_admin" {
+		respondForbidden(c, "Admin privileges required")
+		return nil
+	}
+
+	return ctx
+}
+
+// RequireSuperAdminContext extracts user context and verifies super admin role
+func RequireSuperAdminContext(c *gin.Context) *UserContext {
+	ctx := RequireUserContext(c)
+	if ctx == nil {
+		return nil
+	}
+
+	if ctx.Role != "super_admin" {
+		respondForbidden(c, "Super admin privileges required")
+		return nil
+	}
+
+	return ctx
+}
+
+// PaginationParams holds pagination parameters
+type PaginationParams struct {
+	Limit  int
+	Offset int
+}
+
+// ExtractPagination extracts pagination parameters from query
+func ExtractPagination(c *gin.Context, defaultLimit, maxLimit int) PaginationParams {
+	limit := parseIntParam(c, "limit", defaultLimit)
+	if limit > maxLimit {
+		limit = maxLimit
+	}
+	if limit < 1 {
+		limit = defaultLimit
+	}
+
+	offset := parseIntParam(c, "offset", 0)
+	if offset < 0 {
+		offset = 0
+	}
+
+	// Also support cursor-based pagination
+	if cursor := c.Query("cursor"); cursor != "" {
+		if o, err := parseInt(cursor); err == nil && o >= 0 {
+			offset = o
+		}
+	}
+
+	return PaginationParams{
+		Limit:  limit,
+		Offset: offset,
+	}
+}
+
+// BindAndValidate binds JSON to a struct and validates it
+// Returns true if successful, false if error was sent
+func BindAndValidate(c *gin.Context, req interface{}) bool {
+	if err := c.ShouldBindJSON(req); err != nil {
+		respondBadRequest(c, "Invalid request format", map[string]interface{}{"error": err.Error()})
+		return false
+	}
+	return true
+}
+
+// ParsePathUUID parses a UUID from path parameter
+// Returns true if successful, false if error was sent
+func ParsePathUUID(c *gin.Context, param string) (uuid.UUID, bool) {
+	str := c.Param(param)
+	if str == "" {
+		respondBadRequest(c, fmt.Sprintf("Missing %s parameter", param), nil)
+		return uuid.Nil, false
+	}
+
+	id, err := uuid.Parse(str)
+	if err != nil {
+		respondBadRequest(c, fmt.Sprintf("Invalid %s format", param), map[string]interface{}{"value": str})
+		return uuid.Nil, false
+	}
+
+	return id, true
+}
+
+// HandleServiceError handles common service errors and sends appropriate HTTP response
+// Returns true if error was handled, false if no error
+func HandleServiceError(c *gin.Context, err error, resourceName string) bool {
+	if err == nil {
+		return false
+	}
+
+	errMsg := err.Error()
+
+	// Check for common error patterns
+	switch {
+	case errMsg == "not found" || errMsg == resourceName+" not found" || errMsg == "sql: no rows in result set":
+		respondNotFound(c, fmt.Sprintf("%s not found", resourceName))
+	case containsCI(errMsg, "already exists"):
+		respondConflict(c, fmt.Sprintf("%s already exists", resourceName))
+	case containsCI(errMsg, "unauthorized"):
+		respondUnauthorized(c, errMsg)
+	case containsCI(errMsg, "forbidden") || containsCI(errMsg, "permission"):
+		respondForbidden(c, errMsg)
+	case containsCI(errMsg, "invalid"):
+		respondBadRequest(c, errMsg, nil)
+	case containsCI(errMsg, "insufficient"):
+		respondBadRequest(c, errMsg, nil)
+	default:
+		respondInternalError(c, "An unexpected error occurred")
+	}
+
+	return true
+}
+
+// containsCI checks if substr is in s (case-insensitive)
+func containsCI(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		(len(s) > 0 && containsLowerStr(toLowerStr(s), toLowerStr(substr))))
+}
+
+func containsLowerStr(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
+func toLowerStr(s string) string {
+	b := make([]byte, len(s))
+	for i := range s {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + 32
+		} else {
+			b[i] = c
+		}
+	}
+	return string(b)
+}
