@@ -133,6 +133,18 @@ due:
   account_id: ""
   base_url: "https://api.due.network/v1"
 
+bridge:
+  api_key: "${BRIDGE_API_KEY}"
+  base_url: "https://api.bridge.xyz"
+  environment: "sandbox"
+  timeout: 30
+  max_retries: 3
+  supported_chains:
+    - "ethereum"
+    - "polygon"
+    - "base"
+    - "solana"
+
   transaction_limits:
   deposit:
     daily: 10000.00

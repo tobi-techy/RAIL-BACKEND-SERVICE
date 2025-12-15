@@ -13,17 +13,90 @@ import (
 type WalletChain string
 
 const (
-	// Solana - Only SOL-DEVNET is currently supported
+	// Solana - Only SOL-DEVNET is currently supported by Circle
 	ChainSOLDevnet WalletChain = "SOL-DEVNET"
+	
+	// Bridge-supported chains (mainnet)
+	WalletChainEthereum WalletChain = "ethereum"
+	WalletChainPolygon  WalletChain = "polygon"
+	WalletChainBase     WalletChain = "base"
+	WalletChainSolana   WalletChain = "solana"
+	WalletChainBSC      WalletChain = "bsc"
+	
+	// Due-only chain
+	WalletChainStarknet WalletChain = "starknet"
 	
 	// USDC Token Addresses by Chain
 	// SOL-DEVNET USDC token address
 	USDCTokenAddressSOLDevnet = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
 )
 
-// GetMainnetChains returns production chains (currently empty)
+// WalletProvider represents the provider for wallet management
+type WalletProvider string
+
+const (
+	WalletProviderCircle WalletProvider = "circle"  // Primary provider
+	WalletProviderBridge WalletProvider = "bridge"  // Fallback for ETH, Polygon, BSC, Base
+	WalletProviderDue    WalletProvider = "due"     // Fallback for Starknet only
+)
+
+// CircleSupportedChains returns chains supported by Circle
+func CircleSupportedChains() []WalletChain {
+	return []WalletChain{ChainSOLDevnet} // Circle currently only supports SOL-DEVNET
+}
+
+// IsCircleSupported returns true if Circle supports this chain
+func (c WalletChain) IsCircleSupported() bool {
+	for _, supported := range CircleSupportedChains() {
+		if c == supported {
+			return true
+		}
+	}
+	return false
+}
+
+// GetProviderForChain returns the appropriate provider for a chain
+// Circle is primary, Bridge/Due are fallbacks for unsupported chains
+func GetProviderForChain(chain WalletChain) WalletProvider {
+	// Circle is primary - use if supported
+	if chain.IsCircleSupported() {
+		return WalletProviderCircle
+	}
+	
+	// Fallback providers for chains Circle doesn't support
+	switch chain {
+	case WalletChainStarknet:
+		return WalletProviderDue
+	case WalletChainEthereum, WalletChainPolygon, WalletChainBase, WalletChainSolana, WalletChainBSC:
+		return WalletProviderBridge
+	default:
+		return WalletProviderCircle // Default to Circle
+	}
+}
+
+// IsBridgeChain returns true if the chain is handled by Bridge (fallback)
+func (c WalletChain) IsBridgeChain() bool {
+	return GetProviderForChain(c) == WalletProviderBridge
+}
+
+// IsDueChain returns true if the chain is handled by Due (fallback)
+func (c WalletChain) IsDueChain() bool {
+	return GetProviderForChain(c) == WalletProviderDue
+}
+
+// GetBridgeChains returns all Bridge-supported chains (fallback)
+func GetBridgeChains() []WalletChain {
+	return []WalletChain{WalletChainEthereum, WalletChainPolygon, WalletChainBase, WalletChainSolana, WalletChainBSC}
+}
+
+// GetDueChains returns all Due-supported chains (fallback)
+func GetDueChains() []WalletChain {
+	return []WalletChain{WalletChainStarknet}
+}
+
+// GetMainnetChains returns production chains
 func GetMainnetChains() []WalletChain {
-	return []WalletChain{}
+	return []WalletChain{WalletChainEthereum, WalletChainPolygon, WalletChainBase, WalletChainSolana, WalletChainBSC, WalletChainStarknet}
 }
 
 // GetTestnetChains returns testnet chains
@@ -53,11 +126,15 @@ func (c WalletChain) IsTestnet() bool {
 	return false
 }
 
-// GetChainFamily returns the chain family (Solana only)
+// GetChainFamily returns the chain family
 func (c WalletChain) GetChainFamily() string {
 	switch c {
-	case ChainSOLDevnet:
+	case ChainSOLDevnet, WalletChainSolana:
 		return "Solana"
+	case WalletChainEthereum, WalletChainPolygon, WalletChainBase, WalletChainBSC:
+		return "EVM"
+	case WalletChainStarknet:
+		return "Starknet"
 	default:
 		return "Unknown"
 	}
@@ -149,6 +226,8 @@ type ManagedWallet struct {
 	Chain          WalletChain       `json:"chain" db:"chain"`
 	Address        string            `json:"address" db:"address"`
 	CircleWalletID string            `json:"circle_wallet_id" db:"circle_wallet_id"`
+	BridgeWalletID string            `json:"bridge_wallet_id,omitempty" db:"bridge_wallet_id"`
+	Provider       WalletProvider    `json:"provider" db:"provider"`
 	WalletSetID    uuid.UUID         `json:"wallet_set_id" db:"wallet_set_id"`
 	AccountType    WalletAccountType `json:"account_type" db:"account_type"`
 	Status         WalletStatus      `json:"status" db:"status"`
@@ -173,12 +252,26 @@ func (w *ManagedWallet) Validate() error {
 		return fmt.Errorf("wallet address is required")
 	}
 
-	if w.CircleWalletID == "" {
-		return fmt.Errorf("circle wallet ID is required")
-	}
-
-	if w.WalletSetID == uuid.Nil {
-		return fmt.Errorf("wallet set ID is required")
+	// Validate provider-specific IDs
+	switch w.Provider {
+	case WalletProviderBridge:
+		if w.BridgeWalletID == "" {
+			return fmt.Errorf("bridge wallet ID is required for Bridge provider")
+		}
+	case WalletProviderCircle:
+		if w.CircleWalletID == "" {
+			return fmt.Errorf("circle wallet ID is required for Circle provider")
+		}
+		if w.WalletSetID == uuid.Nil {
+			return fmt.Errorf("wallet set ID is required for Circle provider")
+		}
+	case WalletProviderDue:
+		// Due wallets may not have external IDs
+	default:
+		// Legacy validation for backward compatibility
+		if w.CircleWalletID == "" && w.BridgeWalletID == "" {
+			return fmt.Errorf("wallet ID is required")
+		}
 	}
 
 	if !w.AccountType.IsValid() {
