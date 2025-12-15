@@ -126,6 +126,7 @@ alpaca:
   data_base_url: "https://data.sandbox.alpaca.markets"
   environment: "sandbox"
   timeout: 30
+  auth_method: "oauth2"  # oauth2 or legacy
 
 due:
   api_key: "key_live_acct_EmIUtIyO9aEC1V3SL95trsDjuE65Mpzh"

@@ -508,12 +508,74 @@ func (e *Engine) postWithdrawalLedgerEntries(ctx context.Context, withdrawal *en
 
 // executeCircleTransfer executes the actual on-chain transfer via Circle
 func (e *Engine) executeCircleTransfer(ctx context.Context, withdrawal *entities.Withdrawal) (string, error) {
-	// Get system's Circle wallet for the destination chain
-	// In practice, you'd have a Circle wallet per chain
-	
-	// TODO: Implement Circle transfer via appropriate Circle API method
-	// This is a placeholder - actual implementation depends on Circle API capabilities
-	return "", fmt.Errorf("circle transfer not yet implemented")
+	// Get user's managed wallet for the destination chain
+	wallets, err := e.managedWalletRepo.GetByUserID(ctx, withdrawal.UserID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get user wallets: %w", err)
+	}
+
+	// Find wallet for the withdrawal chain
+	var sourceWallet *entities.ManagedWallet
+	withdrawalChain := entities.WalletChain(withdrawal.DestinationChain)
+	for _, w := range wallets {
+		if w.Chain == withdrawalChain {
+			sourceWallet = w
+			break
+		}
+	}
+
+	if sourceWallet == nil {
+		return "", fmt.Errorf("no wallet found for chain %s", withdrawal.DestinationChain)
+	}
+
+	// Create Circle transfer request using existing entities
+	transferReq := entities.CircleTransferRequest{
+		WalletID:            sourceWallet.CircleWalletID,
+		DestinationAddress:  withdrawal.DestinationAddress,
+		Amounts:             []string{withdrawal.Amount.String()},
+		TokenID:             getUSDCTokenIDForWalletChain(withdrawalChain),
+		IDempotencyKey:      withdrawal.ID.String(),
+	}
+
+	// Execute transfer via Circle API
+	response, err := e.circleClient.TransferFunds(ctx, transferReq)
+	if err != nil {
+		return "", fmt.Errorf("circle transfer failed: %w", err)
+	}
+
+	// Extract transfer ID from response
+	transferID := ""
+	if id, ok := response["id"].(string); ok {
+		transferID = id
+	} else if data, ok := response["data"].(map[string]interface{}); ok {
+		if id, ok := data["id"].(string); ok {
+			transferID = id
+		}
+	}
+
+	e.logger.Info("Circle transfer initiated",
+		"withdrawal_id", withdrawal.ID,
+		"transfer_id", transferID,
+		"wallet_id", sourceWallet.CircleWalletID)
+
+	return transferID, nil
+}
+
+// getUSDCTokenIDForWalletChain returns the USDC token ID for a given wallet chain
+func getUSDCTokenIDForWalletChain(chain entities.WalletChain) string {
+	// Circle USDC token IDs vary by chain
+	// These are placeholder values - actual IDs should come from config
+	chainFamily := chain.GetChainFamily()
+	switch chainFamily {
+	case "SOL":
+		return "usdc-sol"
+	case "MATIC":
+		return "usdc-polygon"
+	case "ETH":
+		return "usdc-eth"
+	default:
+		return "usdc"
+	}
 }
 
 // ProcessPendingWithdrawals processes all pending withdrawals

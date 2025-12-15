@@ -2,6 +2,10 @@ package handlers
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -151,26 +155,36 @@ func (h *CircleWebhookHandler) processIncomingTransfer(ctx context.Context, webh
 	return nil
 }
 
-// verifySignature verifies the Circle webhook signature
+// verifySignature verifies the Circle webhook signature using HMAC-SHA256
 func (h *CircleWebhookHandler) verifySignature(signature string, body []byte) bool {
-	// Implement Circle's signature verification algorithm
-	// This typically involves HMAC-SHA256 with the webhook secret
-	// See Circle documentation for exact algorithm
-	
-	// For now, return true if secret is not configured (dev mode)
+	// Skip verification in dev mode if secret is not configured
 	if h.webhookSecret == "" {
 		h.logger.Warn("Webhook secret not configured - skipping signature verification")
 		return true
 	}
 
-	// TODO: Implement actual signature verification
-	// Example (pseudo-code):
-	// expectedSignature := hmac.New(sha256.New, []byte(h.webhookSecret))
-	// expectedSignature.Write(body)
-	// expected := hex.EncodeToString(expectedSignature.Sum(nil))
-	// return subtle.ConstantTimeCompare([]byte(expected), []byte(signature)) == 1
+	// Circle uses HMAC-SHA256 for webhook signatures
+	mac := hmac.New(sha256.New, []byte(h.webhookSecret))
+	mac.Write(body)
+	expectedSignature := hex.EncodeToString(mac.Sum(nil))
+
+	// Use constant-time comparison to prevent timing attacks
+	if subtle.ConstantTimeCompare([]byte(expectedSignature), []byte(signature)) != 1 {
+		h.logger.Warn("Webhook signature verification failed",
+			"expected_prefix", expectedSignature[:16]+"...",
+			"received_prefix", truncateString(signature, 16)+"...")
+		return false
+	}
 
 	return true
+}
+
+// truncateString safely truncates a string to max length
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen]
 }
 
 // mapCircleChainToChain maps Circle's chain identifier to our Chain type

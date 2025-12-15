@@ -12,12 +12,12 @@ import (
 
 // Adapter implements the DueAdapter interface
 type Adapter struct {
-	client *Client
+	client DueClient
 	logger *logger.Logger
 }
 
 // NewAdapter creates a new Due adapter
-func NewAdapter(client *Client, logger *logger.Logger) *Adapter {
+func NewAdapter(client DueClient, logger *logger.Logger) *Adapter {
 	return &Adapter{
 		client: client,
 		logger: logger,

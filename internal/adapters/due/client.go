@@ -116,6 +116,15 @@ func (c *Client) GetAccount(ctx context.Context, accountID string) (*entities.Cr
 	return &response, nil
 }
 
+// GetAccountCategories retrieves available account categories
+func (c *Client) GetAccountCategories(ctx context.Context) (*AccountCategoriesResponse, error) {
+	var response AccountCategoriesResponse
+	if err := c.doRequestWithRetry(ctx, "GET", "account_categories", nil, &response); err != nil {
+		return nil, fmt.Errorf("get account categories failed: %w", err)
+	}
+	return &response, nil
+}
+
 // LinkWallet links a wallet to a Due account
 func (c *Client) LinkWallet(ctx context.Context, req *LinkWalletRequest) (*LinkWalletResponse, error) {
 	c.logger.Info("Linking wallet to Due account", "address", req.Address)
@@ -450,6 +459,36 @@ func (c *Client) DeleteWebhookEndpoint(ctx context.Context, webhookID string) er
 	return nil
 }
 
+// ListWebhookEvents retrieves webhook events
+func (c *Client) ListWebhookEvents(ctx context.Context, filters *WebhookEventFilters) (*ListWebhookEventsResponse, error) {
+	params := url.Values{}
+	if filters != nil {
+		if filters.Limit > 0 {
+			params.Set("limit", strconv.Itoa(filters.Limit))
+		}
+		if filters.EventType != "" {
+			params.Set("eventType", filters.EventType)
+		}
+		if filters.StartDate != "" {
+			params.Set("startDate", filters.StartDate)
+		}
+		if filters.EndDate != "" {
+			params.Set("endDate", filters.EndDate)
+		}
+	}
+
+	endpoint := "webhook_events"
+	if len(params) > 0 {
+		endpoint += "?" + params.Encode()
+	}
+
+	var response ListWebhookEventsResponse
+	if err := c.doRequestWithRetry(ctx, "GET", endpoint, nil, &response); err != nil {
+		return nil, fmt.Errorf("list webhook events failed: %w", err)
+	}
+	return &response, nil
+}
+
 // doRequestWithRetry performs HTTP request with retry logic
 func (c *Client) doRequestWithRetry(ctx context.Context, method, endpoint string, body, response interface{}) error {
 	retryConfig := retry.RetryConfig{
@@ -540,7 +579,7 @@ func (c *Client) GetTransfer(ctx context.Context, transferID string) (*CreateTra
 
 // AcceptTermsOfService accepts Terms of Service for an account
 func (c *Client) AcceptTermsOfService(ctx context.Context, accountID, tosToken string) (*TOSAcceptResponse, error) {
-	endpoint := fmt.Sprintf("tos/%s/accept", tosToken)
+	endpoint := fmt.Sprintf("tos/%s", tosToken)
 
 	var response TOSAcceptResponse
 	if err := c.doRequestWithAccountID(ctx, "POST", endpoint, accountID, nil, &response); err != nil {
@@ -549,6 +588,24 @@ func (c *Client) AcceptTermsOfService(ctx context.Context, accountID, tosToken s
 	}
 
 	c.logger.Info("Accepted Terms of Service", "account_id", accountID)
+	return &response, nil
+}
+
+// GetKYCLink gets standard KYC/KYB link
+func (c *Client) GetKYCLink(ctx context.Context, accountID string) (*KYCLinkResponse, error) {
+	var response KYCLinkResponse
+	if err := c.doRequestWithAccountID(ctx, "GET", "kyc", accountID, nil, &response); err != nil {
+		return nil, fmt.Errorf("get KYC link failed: %w", err)
+	}
+	return &response, nil
+}
+
+// CreateKYCSession creates a KYC/KYB access session
+func (c *Client) CreateKYCSession(ctx context.Context, accountID string, req *KYCSessionRequest) (*KYCSessionResponse, error) {
+	var response KYCSessionResponse
+	if err := c.doRequestWithAccountID(ctx, "POST", "kyc/session", accountID, req, &response); err != nil {
+		return nil, fmt.Errorf("create KYC session failed: %w", err)
+	}
 	return &response, nil
 }
 
@@ -593,6 +650,83 @@ func (c *Client) GetFXMarkets(ctx context.Context) (*FXMarketsResponse, error) {
 	var response FXMarketsResponse
 	if err := c.doRequestWithRetry(ctx, "GET", "/fx/markets", nil, &response); err != nil {
 		return nil, fmt.Errorf("get FX markets failed: %w", err)
+	}
+	return &response, nil
+}
+
+// UpdateVirtualAccount updates a virtual account
+func (c *Client) UpdateVirtualAccount(ctx context.Context, key string, req *UpdateVirtualAccountRequest) (*CreateVirtualAccountResponse, error) {
+	endpoint := fmt.Sprintf("virtual_accounts/%s", key)
+	var response CreateVirtualAccountResponse
+	if err := c.doRequestWithRetry(ctx, "POST", endpoint, req, &response); err != nil {
+		return nil, fmt.Errorf("update virtual account failed: %w", err)
+	}
+	return &response, nil
+}
+
+// CreateFundingAddress creates a funding address for a transfer
+func (c *Client) CreateFundingAddress(ctx context.Context, transferID string, req *FundingAddressRequest) (*FundingAddressResponse, error) {
+	endpoint := fmt.Sprintf("transfers/%s/funding_address", transferID)
+	var response FundingAddressResponse
+	if err := c.doRequestWithRetry(ctx, "POST", endpoint, req, &response); err != nil {
+		return nil, fmt.Errorf("create funding address failed: %w", err)
+	}
+	return &response, nil
+}
+
+// GetTOSData retrieves Terms of Service data
+func (c *Client) GetTOSData(ctx context.Context, token string) (*TOSDataResponse, error) {
+	endpoint := fmt.Sprintf("tos/%s", token)
+	var response TOSDataResponse
+	if err := c.doRequestWithRetry(ctx, "GET", endpoint, nil, &response); err != nil {
+		return nil, fmt.Errorf("get TOS data failed: %w", err)
+	}
+	return &response, nil
+}
+
+// ListFinancialInstitutions lists financial institutions by country and schema
+func (c *Client) ListFinancialInstitutions(ctx context.Context, country, schema string) (*FinancialInstitutionsResponse, error) {
+	endpoint := fmt.Sprintf("financial_institutions/%s/%s", country, schema)
+	var response FinancialInstitutionsResponse
+	if err := c.doRequestWithRetry(ctx, "GET", endpoint, nil, &response); err != nil {
+		return nil, fmt.Errorf("list financial institutions failed: %w", err)
+	}
+	return &response, nil
+}
+
+// GetFinancialInstitution gets a specific financial institution
+func (c *Client) GetFinancialInstitution(ctx context.Context, institutionID string) (*FinancialInstitution, error) {
+	endpoint := fmt.Sprintf("financial_institutions/%s", institutionID)
+	var response FinancialInstitution
+	if err := c.doRequestWithRetry(ctx, "GET", endpoint, nil, &response); err != nil {
+		return nil, fmt.Errorf("get financial institution failed: %w", err)
+	}
+	return &response, nil
+}
+
+// CreateOnRampTransfer creates an on-ramp transfer
+func (c *Client) CreateOnRampTransfer(ctx context.Context, req *OnRampTransferRequest) (*OnRampTransferResponse, error) {
+	var response OnRampTransferResponse
+	if err := c.doRequestWithRetry(ctx, "POST", "transfers", req, &response); err != nil {
+		return nil, fmt.Errorf("create on-ramp transfer failed: %w", err)
+	}
+	return &response, nil
+}
+
+// CreateOnRampQuote creates an on-ramp quote
+func (c *Client) CreateOnRampQuote(ctx context.Context, req *OnRampQuoteRequest) (*OnRampQuoteResponse, error) {
+	var response OnRampQuoteResponse
+	if err := c.doRequestWithRetry(ctx, "POST", "transfers/quote", req, &response); err != nil {
+		return nil, fmt.Errorf("create on-ramp quote failed: %w", err)
+	}
+	return &response, nil
+}
+
+// SimulatePayIn simulates a pay-in for testing (sandbox only)
+func (c *Client) SimulatePayIn(ctx context.Context, req *SimulatePayInRequest) (*SimulatePayInResponse, error) {
+	var response SimulatePayInResponse
+	if err := c.doRequestWithRetry(ctx, "POST", "/dev/payin", req, &response); err != nil {
+		return nil, fmt.Errorf("simulate pay-in failed: %w", err)
 	}
 	return &response, nil
 }
