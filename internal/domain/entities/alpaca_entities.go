@@ -178,20 +178,21 @@ const (
 
 // AlpacaCreateOrderRequest represents a request to create an order
 type AlpacaCreateOrderRequest struct {
-	Symbol        string            `json:"symbol"`
-	Qty           *decimal.Decimal  `json:"qty,omitempty"`      // Quantity (fractional shares supported)
-	Notional      *decimal.Decimal  `json:"notional,omitempty"` // Dollar amount (for market orders)
-	Side          AlpacaOrderSide   `json:"side"`
-	Type          AlpacaOrderType   `json:"type"`
-	TimeInForce   AlpacaTimeInForce `json:"time_in_force"`
-	LimitPrice    *decimal.Decimal  `json:"limit_price,omitempty"`
-	StopPrice     *decimal.Decimal  `json:"stop_price,omitempty"`
-	TrailPrice    *decimal.Decimal  `json:"trail_price,omitempty"`
-	TrailPercent  *decimal.Decimal  `json:"trail_percent,omitempty"`
-	ExtendedHours bool              `json:"extended_hours,omitempty"`
-	ClientOrderID string            `json:"client_order_id,omitempty"`
-	OrderClass    string            `json:"order_class,omitempty"` // simple, bracket, oco, oto
-	Commission    *decimal.Decimal  `json:"commission,omitempty"`
+	Symbol         string            `json:"symbol"`
+	Qty            *decimal.Decimal  `json:"qty,omitempty"`      // Quantity (fractional shares supported)
+	Notional       *decimal.Decimal  `json:"notional,omitempty"` // Dollar amount (for market orders)
+	Side           AlpacaOrderSide   `json:"side"`
+	Type           AlpacaOrderType   `json:"type"`
+	TimeInForce    AlpacaTimeInForce `json:"time_in_force"`
+	LimitPrice     *decimal.Decimal  `json:"limit_price,omitempty"`
+	StopPrice      *decimal.Decimal  `json:"stop_price,omitempty"`
+	TrailPrice     *decimal.Decimal  `json:"trail_price,omitempty"`
+	TrailPercent   *decimal.Decimal  `json:"trail_percent,omitempty"`
+	ExtendedHours  bool              `json:"extended_hours,omitempty"`
+	ClientOrderID  string            `json:"client_order_id,omitempty"`
+	OrderClass     string            `json:"order_class,omitempty"` // simple, bracket, oco, oto
+	Commission     *decimal.Decimal  `json:"commission,omitempty"`
+	CommissionType string            `json:"commission_type,omitempty"` // notional, qty, bps
 }
 
 // AlpacaOrderResponse represents the response when creating/getting an order
@@ -226,6 +227,7 @@ type AlpacaOrderResponse struct {
 	TrailPrice     *decimal.Decimal      `json:"trail_price,omitempty"`
 	TrailPercent   *decimal.Decimal      `json:"trail_percent,omitempty"`
 	Commission     decimal.Decimal       `json:"commission"`
+	CommissionType string                `json:"commission_type,omitempty"`
 }
 
 // Alpaca Asset Entities
@@ -410,4 +412,30 @@ type AlpacaErrorResponse struct {
 
 func (e *AlpacaErrorResponse) Error() string {
 	return e.Message
+}
+
+// Additional Alpaca Entities
+
+// AlpacaActivityResponse represents account activity (trades, dividends, etc.)
+type AlpacaActivityResponse struct {
+	ID            string          `json:"id"`
+	AccountID     string          `json:"account_id"`
+	ActivityType  string          `json:"activity_type"` // FILL, DIV, etc.
+	Date          string          `json:"date"`
+	NetAmount     decimal.Decimal `json:"net_amount"`
+	Symbol        string          `json:"symbol,omitempty"`
+	Qty           decimal.Decimal `json:"qty,omitempty"`
+	Price         decimal.Decimal `json:"price,omitempty"`
+	Side          string          `json:"side,omitempty"`
+	Description   string          `json:"description,omitempty"`
+}
+
+// AlpacaPortfolioHistoryResponse represents portfolio performance over time
+type AlpacaPortfolioHistoryResponse struct {
+	Timestamp    []int64           `json:"timestamp"`
+	Equity       []decimal.Decimal `json:"equity"`
+	ProfitLoss   []decimal.Decimal `json:"profit_loss"`
+	ProfitLossPC []decimal.Decimal `json:"profit_loss_pct"`
+	BaseValue    decimal.Decimal   `json:"base_value"`
+	Timeframe    string            `json:"timeframe"`
 }

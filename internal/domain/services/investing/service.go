@@ -77,7 +77,7 @@ type BalanceRepository interface {
 
 // BrokerageAdapter interface for brokerage integration
 type BrokerageAdapter interface {
-	PlaceOrder(ctx context.Context, basketID uuid.UUID, side entities.OrderSide, amount decimal.Decimal) (*BrokerageOrderResponse, error)
+	PlaceOrder(ctx context.Context, userID, basketID uuid.UUID, side entities.OrderSide, amount decimal.Decimal) (*BrokerageOrderResponse, error)
 	GetOrderStatus(ctx context.Context, brokerageRef string) (*BrokerageOrderStatus, error)
 	CancelOrder(ctx context.Context, brokerageRef string) error
 }
@@ -90,8 +90,10 @@ type BrokerageOrderResponse struct {
 
 // BrokerageOrderStatus represents brokerage order status
 type BrokerageOrderStatus struct {
-	Status entities.OrderStatus
-	Fills  []entities.BrokerageFill
+	Status         entities.OrderStatus
+	Fills          []entities.BrokerageFill
+	FilledQty      decimal.Decimal
+	FilledAvgPrice decimal.Decimal
 }
 
 // NewService creates a new investing service
@@ -243,7 +245,7 @@ func (s *Service) CreateOrder(ctx context.Context, userID uuid.UUID, req *entiti
 
 	// Submit order to brokerage asynchronously
 	go func() {
-		brokerageResp, err := s.brokerageAPI.PlaceOrder(ctx, req.BasketID, req.Side, amount)
+		brokerageResp, err := s.brokerageAPI.PlaceOrder(ctx, userID, req.BasketID, req.Side, amount)
 		if err != nil {
 			s.logger.Error("Failed to submit order to brokerage", "order_id", order.ID, "error", err)
 			// Update order status to failed

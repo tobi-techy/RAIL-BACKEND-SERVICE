@@ -2,6 +2,7 @@ package alpaca
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"go.uber.org/zap"
@@ -36,6 +37,10 @@ func (s *Service) GetAccount(ctx context.Context, accountID string) (*entities.A
 
 // Trading operations
 func (s *Service) CreateOrder(ctx context.Context, accountID string, req *entities.AlpacaCreateOrderRequest) (*entities.AlpacaOrderResponse, error) {
+	// Validate order before submission
+	if err := ValidateOrderRequest(req); err != nil {
+		return nil, fmt.Errorf("order validation failed: %w", err)
+	}
 	return s.client.CreateOrder(ctx, accountID, req)
 }
 
@@ -50,6 +55,16 @@ func (s *Service) ListOrders(ctx context.Context, accountID string, query map[st
 // Position operations
 func (s *Service) ListPositions(ctx context.Context, accountID string) ([]entities.AlpacaPositionResponse, error) {
 	return s.client.ListPositions(ctx, accountID)
+}
+
+// Account activities
+func (s *Service) GetAccountActivities(ctx context.Context, accountID string, query map[string]string) ([]entities.AlpacaActivityResponse, error) {
+	return s.client.GetAccountActivities(ctx, accountID, query)
+}
+
+// Portfolio history
+func (s *Service) GetPortfolioHistory(ctx context.Context, accountID string, query map[string]string) (*entities.AlpacaPortfolioHistoryResponse, error) {
+	return s.client.GetPortfolioHistory(ctx, accountID, query)
 }
 
 // Funding operations

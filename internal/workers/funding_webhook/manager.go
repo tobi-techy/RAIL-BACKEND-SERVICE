@@ -42,7 +42,7 @@ func NewManager(
 	}
 
 	// Create chain validator
-	validator := NewChainValidator(logger)
+	validator := NewChainValidator(logger, nil) // Use default RPC endpoints
 
 	// Create reconciler
 	reconciler, err := NewReconciler(

@@ -425,9 +425,12 @@ func (s *Service) GetBalances(ctx context.Context, userID uuid.UUID) (*entities.
 		return nil, fmt.Errorf("failed to get stash balance: %w", err)
 	}
 
-	// Calculate spending used (for now, set to zero - will be calculated based on transactions)
-	// TODO: Implement spending tracking
-	spendingUsed := decimal.Zero
+	// Calculate spending used from transactions in current period
+	spendingUsed, err := s.calculateSpendingUsed(ctx, userID, mode)
+	if err != nil {
+		s.logger.Warn("Failed to calculate spending used, defaulting to zero", "error", err)
+		spendingUsed = decimal.Zero
+	}
 
 	balances := &entities.AllocationBalances{
 		UserID:          userID,
@@ -485,6 +488,51 @@ func (s *Service) LogDeclinedSpending(ctx context.Context, userID uuid.UUID, amo
 // ============================================================================
 // Helper Methods
 // ============================================================================
+
+// calculateSpendingUsed calculates the total spending used in the current period
+func (s *Service) calculateSpendingUsed(ctx context.Context, userID uuid.UUID, mode *entities.SmartAllocationMode) (decimal.Decimal, error) {
+	if mode == nil || !mode.Active {
+		return decimal.Zero, nil
+	}
+
+	// Get start of current period - default to daily reset
+	periodStart := s.getPeriodStart("daily")
+
+	// Query spending events from allocation events table
+	events, err := s.allocationRepo.GetEventsByDateRange(ctx, userID, periodStart, time.Now())
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("failed to get allocation events: %w", err)
+	}
+
+	// Sum up spending amounts from events
+	total := decimal.Zero
+	for _, event := range events {
+		// SpendingAmount represents the amount allocated to spending
+		total = total.Add(event.SpendingAmount)
+	}
+
+	return total, nil
+}
+
+// getPeriodStart returns the start of the current period based on reset frequency
+func (s *Service) getPeriodStart(resetPeriod string) time.Time {
+	now := time.Now()
+	switch resetPeriod {
+	case "daily":
+		return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	case "weekly":
+		weekday := int(now.Weekday())
+		if weekday == 0 {
+			weekday = 7 // Sunday
+		}
+		return now.AddDate(0, 0, -(weekday-1)).Truncate(24 * time.Hour)
+	case "monthly":
+		return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	default:
+		// Default to daily
+		return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	}
+}
 
 // initializeAllocationAccounts creates spending and stash accounts for a user
 func (s *Service) initializeAllocationAccounts(ctx context.Context, userID uuid.UUID) error {

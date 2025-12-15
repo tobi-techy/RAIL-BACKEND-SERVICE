@@ -234,3 +234,21 @@ func (r *DepositRepository) GetTotalCompletedDeposits(ctx context.Context) (deci
 
 	return total, nil
 }
+
+// CountPendingByUserID counts pending deposits for a user (for Station status)
+func (r *DepositRepository) CountPendingByUserID(ctx context.Context, userID uuid.UUID) (int, error) {
+	query := `
+		SELECT COUNT(*)
+		FROM deposits
+		WHERE user_id = $1
+		AND status IN ('pending', 'processing', 'confirming', 'off_ramp_pending')
+	`
+
+	var count int
+	err := r.db.GetContext(ctx, &count, query, userID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count pending deposits: %w", err)
+	}
+
+	return count, nil
+}

@@ -74,3 +74,13 @@ dev:
 stop:
 	@echo "Stopping development environment..."
 	docker-compose down
+# Alpaca Integration Testing
+.PHONY: test-alpaca setup-alpaca
+test-alpaca:
+	@echo "🧪 Running Alpaca Integration Tests..."
+	go run scripts/test_alpaca.go
+	go test -v ./test/integration/alpaca_integration_test.go
+
+setup-alpaca:
+	@echo "🚀 Setting up Alpaca testing environment..."
+	./scripts/setup_alpaca_test.sh

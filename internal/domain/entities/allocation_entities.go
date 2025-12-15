@@ -14,6 +14,13 @@ var (
 	ErrSpendingLimitReached = errors.New("spending limit reached: 70% allocation depleted")
 )
 
+// Default allocation ratios (Rail MVP - non-negotiable)
+// Per PRD: "70% → Spend Balance, 30% → Invest Engine"
+var (
+	DefaultSpendingRatio = decimal.NewFromFloat(0.70)
+	DefaultStashRatio    = decimal.NewFromFloat(0.30)
+)
+
 // SmartAllocationMode represents the 70/30 allocation mode state for a user
 type SmartAllocationMode struct {
 	UserID         uuid.UUID       `json:"user_id" db:"user_id"`
