@@ -28,22 +28,30 @@ type OrderPlacer interface {
 	PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, notional decimal.Decimal) (*entities.InvestmentOrder, error)
 }
 
+// BasketOrderPlacer interface for placing basket orders
+type BasketOrderPlacer interface {
+	PlaceOrder(ctx context.Context, userID, basketID uuid.UUID, side entities.OrderSide, amount decimal.Decimal) (*BrokerageOrderResponse, error)
+}
+
 // ScheduledInvestmentService handles recurring investments and DCA
 type ScheduledInvestmentService struct {
-	repo        ScheduledInvestmentRepository
-	orderPlacer OrderPlacer
-	logger      *zap.Logger
+	repo              ScheduledInvestmentRepository
+	orderPlacer       OrderPlacer
+	basketOrderPlacer BasketOrderPlacer
+	logger            *zap.Logger
 }
 
 func NewScheduledInvestmentService(
 	repo ScheduledInvestmentRepository,
 	orderPlacer OrderPlacer,
+	basketOrderPlacer BasketOrderPlacer,
 	logger *zap.Logger,
 ) *ScheduledInvestmentService {
 	return &ScheduledInvestmentService{
-		repo:        repo,
-		orderPlacer: orderPlacer,
-		logger:      logger,
+		repo:              repo,
+		orderPlacer:       orderPlacer,
+		basketOrderPlacer: basketOrderPlacer,
+		logger:            logger,
 	}
 }
 
@@ -185,8 +193,31 @@ func (s *ScheduledInvestmentService) executeScheduledInvestment(ctx context.Cont
 	if si.Symbol != nil {
 		order, execErr = s.orderPlacer.PlaceMarketOrder(ctx, si.UserID, *si.Symbol, si.Amount)
 	} else if si.BasketID != nil {
-		// TODO: Implement basket order placement
-		execErr = fmt.Errorf("basket orders not yet implemented")
+		// Place basket order via brokerage adapter
+		if s.basketOrderPlacer != nil {
+			orderResp, err := s.basketOrderPlacer.PlaceOrder(ctx, si.UserID, *si.BasketID, entities.OrderSideBuy, si.Amount)
+			if err != nil {
+				execErr = fmt.Errorf("failed to place basket order: %w", err)
+			} else {
+				// Create order record for tracking
+				notional := si.Amount
+				order = &entities.InvestmentOrder{
+					ID:            uuid.New(),
+					UserID:        si.UserID,
+					BasketID:      si.BasketID,
+					ClientOrderID: orderResp.OrderRef,
+					Symbol:        "BASKET",
+					Side:          entities.AlpacaOrderSideBuy,
+					OrderType:     entities.AlpacaOrderTypeMarket,
+					TimeInForce:   entities.AlpacaTimeInForceDay,
+					Notional:      &notional,
+					Status:        entities.AlpacaOrderStatusNew,
+					CreatedAt:     time.Now(),
+				}
+			}
+		} else {
+			execErr = fmt.Errorf("basket order placer not configured")
+		}
 	}
 
 	if execErr != nil {

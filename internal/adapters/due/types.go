@@ -247,12 +247,133 @@ type ListWebhookEndpointsResponse struct {
 	Total int                       `json:"total"`
 }
 
+// WebhookEventFilters represents filters for webhook events
+type WebhookEventFilters struct {
+	Limit     int    `json:"limit,omitempty"`
+	EventType string `json:"eventType,omitempty"`
+	StartDate string `json:"startDate,omitempty"`
+	EndDate   string `json:"endDate,omitempty"`
+}
+
+// WebhookEventData represents webhook event data
+type WebhookEventData struct {
+	ID        string                 `json:"id"`
+	Type      string                 `json:"type"`
+	Data      map[string]interface{} `json:"data"`
+	CreatedAt time.Time              `json:"createdAt"`
+	Delivered bool                   `json:"delivered"`
+}
+
+// ListWebhookEventsResponse represents list of webhook events
+type ListWebhookEventsResponse struct {
+	Data  []WebhookEventData `json:"data"`
+	Total int                `json:"total"`
+}
+
+// AccountCategory represents an account category
+type AccountCategory struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Type        string   `json:"type"` // "individual" or "business"
+	Countries   []string `json:"countries"`
+	Currencies  []string `json:"currencies"`
+	IsActive    bool     `json:"isActive"`
+}
+
+// AccountCategoriesResponse represents account categories response
+type AccountCategoriesResponse struct {
+	Categories []AccountCategory `json:"categories"`
+}
+
 // ErrorResponse represents Due API error response
 type ErrorResponse struct {
 	StatusCode int                    `json:"statusCode"`
 	Message    string                 `json:"message"`
 	Code       string                 `json:"code"`
 	Details    map[string]interface{} `json:"details,omitempty"`
+}
+
+// KYCLinkResponse represents KYC link response
+type KYCLinkResponse struct {
+	Link        string    `json:"link"`
+	Status      KYCStatus `json:"status"`
+	ApplicantID string    `json:"applicantId,omitempty"`
+}
+
+// KYCSessionRequest represents KYC session creation request
+type KYCSessionRequest struct {
+	RedirectURL string `json:"redirectUrl"`
+	WebhookURL  string `json:"webhookUrl,omitempty"`
+}
+
+// KYCSessionResponse represents KYC session response
+type KYCSessionResponse struct {
+	SessionID   string `json:"sessionId"`
+	AccessToken string `json:"accessToken"`
+	ExpiresAt   string `json:"expiresAt"`
+	RedirectURL string `json:"redirectUrl"`
+}
+
+// UpdateVirtualAccountRequest represents virtual account update request
+type UpdateVirtualAccountRequest struct {
+	IsActive bool `json:"isActive"`
+}
+
+// FundingAddressRequest represents funding address creation request
+type FundingAddressRequest struct {
+	Rail string `json:"rail"` // "ethereum", "polygon", etc.
+}
+
+// FundingAddressResponse represents funding address response
+type FundingAddressResponse struct {
+	Address   string                `json:"address"`
+	Rail      string                `json:"rail"`
+	Currency  string                `json:"currency"`
+	ExpiresAt string                `json:"expiresAt"`
+	Details   FundingAddressDetails `json:"details"`
+}
+
+// TOSDataResponse represents Terms of Service data
+type TOSDataResponse struct {
+	Token      string `json:"token"`
+	EntityName string `json:"entityName"`
+	Content    string `json:"content"`
+	Version    string `json:"version"`
+	Required   bool   `json:"required"`
+}
+
+// FinancialInstitution represents a financial institution
+type FinancialInstitution struct {
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Country     string            `json:"country"`
+	Schema      string            `json:"schema"`
+	Currency    string            `json:"currency"`
+	Fields      map[string]string `json:"fields"`
+	IsActive    bool              `json:"isActive"`
+}
+
+// FinancialInstitutionsResponse represents list of financial institutions
+type FinancialInstitutionsResponse struct {
+	Data  []FinancialInstitution `json:"data"`
+	Total int                    `json:"total"`
+}
+
+// SimulatePayInRequest represents sandbox pay-in simulation request
+type SimulatePayInRequest struct {
+	VirtualAccountKey string `json:"virtualAccountKey"`
+	Amount           string `json:"amount"`
+	Currency         string `json:"currency"`
+	Reference        string `json:"reference"`
+}
+
+// SimulatePayInResponse represents sandbox pay-in simulation response
+type SimulatePayInResponse struct {
+	ID        string `json:"id"`
+	Status    string `json:"status"`
+	Amount    string `json:"amount"`
+	Currency  string `json:"currency"`
+	Reference string `json:"reference"`
 }
 
 // Error implements error interface
@@ -320,11 +441,6 @@ type OnRampTransferResponse struct {
 // TransferInstructions contains instructions for completing the transfer
 type TransferInstructions struct {
 	Type string `json:"type"` // "TransferIntent" or "FundingAddress"
-}
-
-// FundingAddressResponse represents funding address response
-type FundingAddressResponse struct {
-	Details FundingAddressDetails `json:"details"`
 }
 
 // FundingAddressDetails contains the funding address

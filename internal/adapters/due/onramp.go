@@ -29,14 +29,14 @@ func (a *Adapter) CreateRecipient(ctx context.Context, name, address, chain stri
 		IsExternal: false, // User's own wallet
 	}
 
-	var resp CreateRecipientResponse
-	if err := a.client.doRequest(ctx, "POST", "recipients", req, &resp); err != nil {
+	resp, err := a.client.CreateRecipient(ctx, req)
+	if err != nil {
 		a.logger.Error("Failed to create recipient", "error", err)
 		return nil, fmt.Errorf("create recipient failed: %w", err)
 	}
 
 	a.logger.Info("Recipient created", "recipient_id", resp.ID)
-	return &resp, nil
+	return resp, nil
 }
 
 // CreateOnRampQuote generates a quote for USD to USDC conversion
@@ -63,8 +63,8 @@ func (a *Adapter) CreateOnRampQuote(ctx context.Context, usdAmount decimal.Decim
 		},
 	}
 
-	var resp OnRampQuoteResponse
-	if err := a.client.doRequest(ctx, "POST", "transfers/quote", req, &resp); err != nil {
+	resp, err := a.client.CreateOnRampQuote(ctx, req)
+	if err != nil {
 		a.logger.Error("Failed to create quote", "error", err)
 		return nil, fmt.Errorf("create quote failed: %w", err)
 	}
@@ -74,7 +74,7 @@ func (a *Adapter) CreateOnRampQuote(ctx context.Context, usdAmount decimal.Decim
 		"destination_amount", resp.Destination.Amount,
 		"fx_rate", resp.FXRate)
 
-	return &resp, nil
+	return resp, nil
 }
 
 // CreateOnRampTransfer initiates USD to USDC on-ramp transfer
@@ -90,8 +90,8 @@ func (a *Adapter) CreateOnRampTransfer(ctx context.Context, quoteToken, senderWa
 		Memo:      memo,
 	}
 
-	var resp OnRampTransferResponse
-	if err := a.client.doRequest(ctx, "POST", "transfers", req, &resp); err != nil {
+	resp, err := a.client.CreateOnRampTransfer(ctx, req)
+	if err != nil {
 		a.logger.Error("Failed to create transfer", "error", err)
 		return nil, fmt.Errorf("create transfer failed: %w", err)
 	}
@@ -100,36 +100,55 @@ func (a *Adapter) CreateOnRampTransfer(ctx context.Context, quoteToken, senderWa
 		"transfer_id", resp.ID,
 		"status", resp.Status)
 
-	return &resp, nil
+	return resp, nil
 }
 
 // CreateFundingAddress creates a funding address for the transfer
 func (a *Adapter) CreateFundingAddress(ctx context.Context, transferID string) (*FundingAddressResponse, error) {
 	a.logger.Info("Creating funding address", "transfer_id", transferID)
 
-	endpoint := fmt.Sprintf("transfers/%s/funding_address", transferID)
+	req := &FundingAddressRequest{
+		Rail: "ethereum", // Default to ethereum
+	}
 
-	var resp FundingAddressResponse
-	if err := a.client.doRequest(ctx, "POST", endpoint, nil, &resp); err != nil {
+	resp, err := a.client.CreateFundingAddress(ctx, transferID, req)
+	if err != nil {
 		a.logger.Error("Failed to create funding address", "error", err)
 		return nil, fmt.Errorf("create funding address failed: %w", err)
 	}
 
 	a.logger.Info("Funding address created", "address", resp.Details.Address)
-	return &resp, nil
+	return resp, nil
 }
 
 // GetTransferStatus retrieves the status of a transfer
 func (a *Adapter) GetTransferStatus(ctx context.Context, transferID string) (*OnRampTransferResponse, error) {
-	endpoint := fmt.Sprintf("transfers/%s", transferID)
-
-	var resp OnRampTransferResponse
-	if err := a.client.doRequest(ctx, "GET", endpoint, nil, &resp); err != nil {
+	resp, err := a.client.GetTransfer(ctx, transferID)
+	if err != nil {
 		a.logger.Error("Failed to get transfer status", "error", err, "transfer_id", transferID)
 		return nil, fmt.Errorf("get transfer status failed: %w", err)
 	}
 
-	return &resp, nil
+	// Convert CreateTransferResponse to OnRampTransferResponse
+	onRampResp := &OnRampTransferResponse{
+		ID:      resp.ID,
+		OwnerID: resp.OwnerID,
+		Status:  string(resp.Status),
+		Source: QuoteSource{
+			Rail:     resp.Source.Rail,
+			Currency: resp.Source.Currency,
+			Amount:   resp.Source.Amount,
+		},
+		Destination: QuoteDestination{
+			Rail:     resp.Destination.Rail,
+			Currency: resp.Destination.Currency,
+			Amount:   resp.Destination.Amount,
+		},
+		FXRate:    resp.FXRate,
+		CreatedAt: resp.CreatedAt,
+	}
+
+	return onRampResp, nil
 }
 
 // ProcessWithdrawal orchestrates the full USD to USDC withdrawal flow

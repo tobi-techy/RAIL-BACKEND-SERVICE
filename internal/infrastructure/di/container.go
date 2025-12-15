@@ -36,6 +36,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/copytrading"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	"github.com/rail-service/rail_service/internal/domain/services/socialauth"
+	"github.com/rail-service/rail_service/internal/domain/services/station"
 	"github.com/rail-service/rail_service/internal/domain/services/twofa"
 	"github.com/rail-service/rail_service/internal/domain/services/wallet"
 	"github.com/rail-service/rail_service/internal/domain/services/webauthn"
@@ -253,6 +254,7 @@ type Container struct {
 	ReconciliationService   *reconciliation.Service
 	ReconciliationScheduler *reconciliation.Scheduler
 	AllocationService       *allocation.Service
+	StationService          *station.Service
 	NotificationService     *services.NotificationService
 	SocialAuthService       *socialauth.Service
 	WebAuthnService         *webauthn.Service
@@ -295,6 +297,9 @@ type Container struct {
 	MarketDataService           *marketservice.MarketDataService
 	ScheduledInvestmentService  *investing.ScheduledInvestmentService
 	RebalancingService          *investing.RebalancingService
+
+	// Brokerage Adapter
+	BrokerageAdapter *adapters.BrokerageAdapter
 
 	// Round-up Services
 	RoundupRepo    *repositories.RoundupRepository
@@ -532,7 +537,7 @@ func (c *Container) initializeDomainServices() error {
 		c.CircleClient,
 		c.AuditService,
 		c.EntitySecretService,
-		nil, // onboardingService - will be set after onboarding service is created
+		c.OnboardingService, // onboardingService - will be set after onboarding service is created
 		c.ZapLog,
 		walletServiceConfig,
 	)
@@ -550,6 +555,7 @@ func (c *Container) initializeDomainServices() error {
 	alpacaAdapter := alpaca.NewAdapter(c.AlpacaClient, c.Logger)
 
 	// Initialize onboarding service (depends on wallet service)
+	// Note: AllocationService will be injected after it's initialized
 	c.OnboardingService = onboarding.NewService(
 		c.UserRepo,
 		c.OnboardingFlowRepo,
@@ -560,8 +566,10 @@ func (c *Container) initializeDomainServices() error {
 		c.AuditService,
 		dueAdapter,
 		alpacaAdapter,
+		nil, // AllocationService - will be set after initialization
 		c.ZapLog,
 		append([]entities.WalletChain(nil), walletServiceConfig.SupportedChains...),
+		c.Config.KYC.Provider, // KYC provider name
 	)
 
 	// Inject onboarding service back into wallet service to complete circular dependency
@@ -661,16 +669,30 @@ func (c *Container) initializeDomainServices() error {
 		c.Logger,
 	)
 
+	// Inject allocation service into onboarding service (for auto-enabling 70/30 mode)
+	c.OnboardingService.SetAllocationService(c.AllocationService)
+
+	// Initialize station service (for home screen / Station endpoint)
+	c.StationService = station.NewService(
+		c.LedgerService,
+		allocationRepo,
+		c.DepositRepo,
+		c.ZapLog,
+	)
+
 	// Initialize investing service with repositories
 	basketRepo := repositories.NewBasketRepository(c.DB, c.ZapLog)
 	orderRepo := repositories.NewOrderRepository(c.DB, c.ZapLog)
 	positionRepo := repositories.NewPositionRepository(c.DB, c.ZapLog)
 
-	// Initialize brokerage adapter with Alpaca service
+	// Initialize brokerage adapter with Alpaca service and required repositories
 	brokerageAdapter := adapters.NewBrokerageAdapter(
 		c.AlpacaClient,
+		basketRepo,
+		c.AlpacaAccountRepo,
 		c.ZapLog,
 	)
+	c.BrokerageAdapter = brokerageAdapter
 
 	// Initialize notification service
 	c.NotificationService = services.NewNotificationService(c.ZapLog)
@@ -1486,6 +1508,7 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 	c.ScheduledInvestmentService = investing.NewScheduledInvestmentService(
 		c.ScheduledInvestmentRepo,
 		orderPlacer,
+		c.BrokerageAdapter, // BasketOrderPlacer
 		c.ZapLog,
 	)
 
@@ -1810,6 +1833,14 @@ func (c *Container) GetCopyTradingHandlers() *handlers.CopyTradingHandlers {
 		return nil
 	}
 	return handlers.NewCopyTradingHandlers(c.CopyTradingService, c.Logger)
+}
+
+// GetStationHandlers returns station handlers
+func (c *Container) GetStationHandlers() *handlers.StationHandlers {
+	if c.StationService == nil {
+		return nil
+	}
+	return handlers.NewStationHandlers(c.StationService, c.ZapLog)
 }
 
 // GetCopyTradingRepository returns the copy trading repository

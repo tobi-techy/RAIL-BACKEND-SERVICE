@@ -175,8 +175,10 @@ func LoginRateLimiting(tracker *ratelimit.LoginAttemptTracker, log *logger.Logge
 				c.Abort()
 				return
 			}
-			// TODO: Verify CAPTCHA token with provider (reCAPTCHA, hCaptcha, etc.)
-			c.Set("captcha_verified", true)
+			// Verify CAPTCHA token - verification is done via CaptchaVerifier injected at route level
+			// For now, mark as verified if token is present (actual verification happens in handler)
+			c.Set("captcha_token", captchaToken)
+			c.Set("captcha_verified", false) // Will be verified by handler with CaptchaVerifier
 		}
 
 		// Store tracker in context for post-login handling

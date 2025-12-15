@@ -30,11 +30,14 @@ const (
 	maxRetryAfter     = 60 * time.Second
 
 	// Alpaca API endpoints
-	accountsEndpoint  = "/v1/accounts"
-	ordersEndpoint    = "/v1/trading/accounts/%s/orders" // account_id parameter
-	assetsEndpoint    = "/v1/assets"
-	positionsEndpoint = "/v1/trading/accounts/%s/positions" // account_id parameter
-	newsEndpoint      = "/v1beta1/news"
+	accountsEndpoint    = "/v1/accounts"
+	ordersEndpoint      = "/v1/trading/accounts/%s/orders"      // account_id parameter
+	assetsEndpoint      = "/v1/assets"
+	positionsEndpoint   = "/v1/trading/accounts/%s/positions"   // account_id parameter
+	activitiesEndpoint  = "/v1/trading/accounts/%s/activities"  // account_id parameter
+	portfolioEndpoint   = "/v1/trading/accounts/%s/portfolio"   // account_id parameter
+	watchlistsEndpoint  = "/v1/trading/accounts/%s/watchlists"  // account_id parameter
+	newsEndpoint        = "/v1beta1/news"
 )
 
 // Config represents Alpaca API configuration
@@ -52,6 +55,7 @@ type Client struct {
 	config         Config
 	httpClient     *http.Client
 	circuitBreaker *gobreaker.CircuitBreaker
+	tokenManager   *TokenManager
 	logger         *zap.Logger
 }
 
@@ -105,10 +109,13 @@ func NewClient(config Config, logger *zap.Logger) *Client {
 
 	circuitBreaker := gobreaker.NewCircuitBreaker(st)
 
+	tokenManager := NewTokenManager(config.ClientID, config.SecretKey, config.Environment, logger)
+
 	return &Client{
 		config:         config,
 		httpClient:     httpClient,
 		circuitBreaker: circuitBreaker,
+		tokenManager:   tokenManager,
 		logger:         logger,
 	}
 }
@@ -437,7 +444,13 @@ func (c *Client) doRequestWithRetry(ctx context.Context, method, endpoint string
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
-			backoff := calculateBackoff(attempt)
+			var backoff time.Duration
+			if alpacaErr, ok := lastErr.(AlpacaError); ok && alpacaErr.IsRetryable() {
+				backoff = alpacaErr.RetryAfter()
+			} else {
+				backoff = calculateBackoff(attempt)
+			}
+
 			c.logger.Info("Retrying Alpaca API request",
 				zap.Int("attempt", attempt),
 				zap.Duration("backoff", backoff))
@@ -457,9 +470,13 @@ func (c *Client) doRequestWithRetry(ctx context.Context, method, endpoint string
 		lastErr = err
 
 		// Check if error is retryable
-		if !isRetryableError(err) {
-			c.logger.Warn("Non-retryable error encountered",
-				zap.Error(err))
+		if alpacaErr, ok := err.(AlpacaError); ok {
+			if !alpacaErr.IsRetryable() {
+				c.logger.Warn("Non-retryable Alpaca error", zap.Error(err))
+				return err
+			}
+		} else if !isRetryableError(err) {
+			c.logger.Warn("Non-retryable error", zap.Error(err))
 			return err
 		}
 
@@ -498,8 +515,19 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	
-	// Alpaca Broker API uses HTTP Basic authentication with API key and secret
-	req.SetBasicAuth(c.config.ClientID, c.config.SecretKey)
+	// Authentication
+	if useDataAPI {
+		// Market Data API uses header-based auth
+		req.Header.Set("APCA-API-KEY-ID", c.config.ClientID)
+		req.Header.Set("APCA-API-SECRET-KEY", c.config.SecretKey)
+	} else {
+		// Broker API uses OAuth2 Bearer token
+		token, err := c.tokenManager.GetValidToken(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get access token: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	c.logger.Debug("Sending Alpaca API request",
 		zap.String("method", method),
@@ -522,12 +550,7 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 
 	// Check for error responses
 	if resp.StatusCode >= 400 {
-		var apiErr entities.AlpacaErrorResponse
-		if err := json.Unmarshal(respBody, &apiErr); err == nil && apiErr.Message != "" {
-			apiErr.Code = resp.StatusCode
-			return &apiErr
-		}
-		return fmt.Errorf("API error: status %d, body: %s", resp.StatusCode, string(respBody))
+		return parseAlpacaError(resp.StatusCode, respBody)
 	}
 
 	// Parse response if a response object is provided
@@ -663,6 +686,60 @@ func (c *Client) GetLatestQuotes(ctx context.Context, symbols []string) (map[str
 	}
 
 	return result, nil
+}
+
+// Account Activities Methods
+
+// GetAccountActivities retrieves account activities (trades, dividends, etc.)
+func (c *Client) GetAccountActivities(ctx context.Context, accountID string, query map[string]string) ([]entities.AlpacaActivityResponse, error) {
+	endpoint := fmt.Sprintf(activitiesEndpoint, accountID)
+	if len(query) > 0 {
+		params := url.Values{}
+		for k, v := range query {
+			params.Add(k, v)
+		}
+		endpoint = fmt.Sprintf("%s?%s", endpoint, params.Encode())
+	}
+
+	var response []entities.AlpacaActivityResponse
+	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
+		return &response, c.doRequestWithRetry(ctx, "GET", endpoint, nil, &response, false)
+	})
+
+	if err != nil {
+		c.logger.Error("Failed to get account activities",
+			zap.String("account_id", accountID),
+			zap.Error(err))
+		return nil, fmt.Errorf("get account activities failed: %w", err)
+	}
+
+	return response, nil
+}
+
+// GetPortfolioHistory retrieves portfolio performance history
+func (c *Client) GetPortfolioHistory(ctx context.Context, accountID string, query map[string]string) (*entities.AlpacaPortfolioHistoryResponse, error) {
+	endpoint := fmt.Sprintf(portfolioEndpoint+"/history", accountID)
+	if len(query) > 0 {
+		params := url.Values{}
+		for k, v := range query {
+			params.Add(k, v)
+		}
+		endpoint = fmt.Sprintf("%s?%s", endpoint, params.Encode())
+	}
+
+	var response entities.AlpacaPortfolioHistoryResponse
+	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
+		return &response, c.doRequestWithRetry(ctx, "GET", endpoint, nil, &response, false)
+	})
+
+	if err != nil {
+		c.logger.Error("Failed to get portfolio history",
+			zap.String("account_id", accountID),
+			zap.Error(err))
+		return nil, fmt.Errorf("get portfolio history failed: %w", err)
+	}
+
+	return &response, nil
 }
 
 // GetBars returns historical OHLCV bars

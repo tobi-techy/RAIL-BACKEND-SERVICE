@@ -3,16 +3,19 @@ package routes
 import (
 	"context"
 
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
+	swaggerFiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
+
 	"github.com/rail-service/rail_service/internal/api/handlers"
 	"github.com/rail-service/rail_service/internal/api/middleware"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
 	"github.com/rail-service/rail_service/pkg/tracing"
-
-	"github.com/gin-gonic/gin"
-	swaggerFiles "github.com/swaggo/files"
-	ginSwagger "github.com/swaggo/gin-swagger"
 )
 
 type SessionValidatorAdapter struct {
@@ -262,6 +265,17 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 			// Balance routes (part of funding but separate for clarity)
 			protected.GET("/balances", walletFundingHandlers.GetBalances)
 
+			// Account routes - Station (home screen) endpoint
+			account := protected.Group("/account")
+			{
+				stationHandlers := container.GetStationHandlers()
+				if stationHandlers != nil {
+					// Station endpoint - returns home screen data per PRD
+					// "Total balance, Spend balance, Invest balance, System status"
+					account.GET("/station", stationHandlers.GetStation)
+				}
+			}
+
 			// Limits routes - deposit/withdrawal limits based on KYC tier
 			limits := protected.Group("/limits")
 			{
@@ -275,10 +289,75 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 
 			// Investment routes
 			basketExecutor := container.InitializeBasketExecutor()
-			if basketExecutor != nil {
-				// TODO: Implement InvestmentHandlers
-				// investmentHandlers := handlers.NewInvestmentHandlers(...)
-				// RegisterInvestmentRoutes(protected, investmentHandlers, ...)
+			investingService := container.GetInvestingService()
+			if basketExecutor != nil && investingService != nil {
+				// Curated baskets endpoints
+				baskets := protected.Group("/baskets")
+				{
+					baskets.GET("", func(c *gin.Context) {
+						// Get curated baskets
+						ctx := c.Request.Context()
+						basketList, err := investingService.ListBaskets(ctx)
+						if err != nil {
+							c.JSON(500, gin.H{"error": "INTERNAL_ERROR", "message": "Failed to get baskets"})
+							return
+						}
+						c.JSON(200, gin.H{"baskets": basketList})
+					})
+					baskets.GET("/:id", func(c *gin.Context) {
+						// Get basket by ID
+						ctx := c.Request.Context()
+						basketID, err := uuid.Parse(c.Param("id"))
+						if err != nil {
+							c.JSON(400, gin.H{"error": "INVALID_ID", "message": "Invalid basket ID"})
+							return
+						}
+						basket, err := investingService.GetBasket(ctx, basketID)
+						if err != nil {
+							c.JSON(500, gin.H{"error": "INTERNAL_ERROR", "message": "Failed to get basket"})
+							return
+						}
+						if basket == nil {
+							c.JSON(404, gin.H{"error": "NOT_FOUND", "message": "Basket not found"})
+							return
+						}
+						c.JSON(200, basket)
+					})
+					baskets.POST("/:id/invest", func(c *gin.Context) {
+						// Invest in basket
+						ctx := c.Request.Context()
+						userID, _ := uuid.Parse(c.GetString("user_id"))
+						basketID, err := uuid.Parse(c.Param("id"))
+						if err != nil {
+							c.JSON(400, gin.H{"error": "INVALID_ID", "message": "Invalid basket ID"})
+							return
+						}
+						var req struct {
+							Amount string `json:"amount" binding:"required"`
+						}
+						if err := c.ShouldBindJSON(&req); err != nil {
+							c.JSON(400, gin.H{"error": "INVALID_REQUEST", "message": err.Error()})
+							return
+						}
+						amount, err := decimal.NewFromString(req.Amount)
+						if err != nil {
+							c.JSON(400, gin.H{"error": "INVALID_AMOUNT", "message": "Invalid amount format"})
+							return
+						}
+						// Create order request
+						orderReq := &entities.OrderCreateRequest{
+							BasketID: basketID,
+							Side:     entities.OrderSideBuy,
+							Amount:   amount.String(),
+						}
+						order, err := investingService.CreateOrder(ctx, userID, orderReq)
+						if err != nil {
+							c.JSON(500, gin.H{"error": "INVESTMENT_FAILED", "message": err.Error()})
+							return
+						}
+						c.JSON(201, gin.H{"order": order})
+					})
+				}
 			}
 
 			// Wallet routes (OpenAPI spec compliant)
