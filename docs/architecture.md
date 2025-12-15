@@ -50,6 +50,15 @@ graph TD
 - **Investing Service**: basket catalog, orders (buy/sell), portfolio & positions, P&L calc, brokerage adapter.
 - **AI‑CFO Service (Lite)**: weekly summaries, on‑demand analysis, insight templates, uses 0G for inference & storage.
 
+## 2.1) Post-MVP Domain Services
+
+- **Conductor Service**: Professional investor platform for copy trading
+  - Conductor application and approval workflow
+  - Track creation and management (asset baskets: stocks, options, crypto)
+  - Copy trading engine to replicate conductor portfolios
+  - Performance tracking and conductor rankings
+- **AI‑CFO Service (Lite)**: weekly summaries, on‑demand analysis, insight templates, uses 0G for inference & storage.
+
 ---
 
 ## 3) Key Sequences
