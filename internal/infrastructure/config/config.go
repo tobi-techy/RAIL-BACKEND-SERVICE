@@ -29,6 +29,7 @@ type Config struct {
 	Verification   VerificationConfig `mapstructure:"verification"`
 	Alpaca         AlpacaConfig         `mapstructure:"alpaca"`
 	Due            DueConfig            `mapstructure:"due"`
+	Bridge         BridgeConfig         `mapstructure:"bridge"`
 	Workers        WorkerConfig         `mapstructure:"workers"`
 	Reconciliation ReconciliationConfig `mapstructure:"reconciliation"`
 	SocialAuth     SocialAuthConfig     `mapstructure:"social_auth"`
@@ -241,6 +242,16 @@ type DueConfig struct {
 	AccountID     string `mapstructure:"account_id"`
 	BaseURL       string `mapstructure:"base_url"`
 	WebhookSecret string `mapstructure:"webhook_secret"`
+}
+
+// BridgeConfig contains Bridge API configuration for wallets, virtual accounts, KYC, and cards
+type BridgeConfig struct {
+	APIKey          string   `mapstructure:"api_key"`
+	BaseURL         string   `mapstructure:"base_url"`
+	Environment     string   `mapstructure:"environment"`
+	Timeout         int      `mapstructure:"timeout"`
+	MaxRetries      int      `mapstructure:"max_retries"`
+	SupportedChains []string `mapstructure:"supported_chains"`
 }
 
 // WorkerConfig contains background worker configuration
