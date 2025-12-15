@@ -1,8 +1,14 @@
 package reconciliation
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/google/uuid"
@@ -44,6 +50,9 @@ type Config struct {
 	ToleranceAlpaca        decimal.Decimal
 	EnableAlerting         bool
 	AlertWebhookURL        string
+	AlertWebhookSecret     string
+	PagerDutyRoutingKey    string
+	SlackWebhookURL        string
 }
 
 // LedgerService interface for ledger operations
@@ -302,7 +311,15 @@ func (s *Service) sendAlerts(ctx context.Context, exceptions []*entities.Reconci
 		go s.sendWebhookAlert(ctx, highPriorityExceptions)
 	}
 
-	// TODO: Integrate with PagerDuty, Slack, or other alerting systems
+	// Send PagerDuty alerts for critical issues
+	if s.config.PagerDutyRoutingKey != "" {
+		go s.sendPagerDutyAlerts(ctx, highPriorityExceptions)
+	}
+
+	// Send Slack notification
+	if s.config.SlackWebhookURL != "" {
+		go s.sendSlackAlert(ctx, highPriorityExceptions)
+	}
 }
 
 // filterHighPriorityExceptions filters exceptions by severity
@@ -318,8 +335,170 @@ func (s *Service) filterHighPriorityExceptions(exceptions []*entities.Reconcilia
 
 // sendWebhookAlert sends a webhook notification for exceptions
 func (s *Service) sendWebhookAlert(ctx context.Context, exceptions []*entities.ReconciliationException) {
-	// TODO: Implement webhook alerting
-	s.logger.Info("Would send webhook alert", "exceptions_count", len(exceptions))
+	if s.config.AlertWebhookURL == "" {
+		return
+	}
+
+	payload := struct {
+		EventType  string                              `json:"event_type"`
+		Timestamp  time.Time                           `json:"timestamp"`
+		Severity   string                              `json:"severity"`
+		Count      int                                 `json:"count"`
+		Exceptions []*entities.ReconciliationException `json:"exceptions"`
+	}{
+		EventType:  "reconciliation_alert",
+		Timestamp:  time.Now().UTC(),
+		Severity:   s.getHighestSeverity(exceptions),
+		Count:      len(exceptions),
+		Exceptions: exceptions,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		s.logger.Error("Failed to marshal webhook payload", "error", err)
+		return
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", s.config.AlertWebhookURL, bytes.NewReader(body))
+	if err != nil {
+		s.logger.Error("Failed to create webhook request", "error", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// Add HMAC signature if secret is configured
+	if s.config.AlertWebhookSecret != "" {
+		mac := hmac.New(sha256.New, []byte(s.config.AlertWebhookSecret))
+		mac.Write(body)
+		signature := hex.EncodeToString(mac.Sum(nil))
+		req.Header.Set("X-Webhook-Signature", signature)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		s.logger.Error("Webhook request failed", "error", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		s.logger.Error("Webhook returned error status", "status", resp.StatusCode)
+	} else {
+		s.logger.Info("Webhook alert sent successfully", "exceptions_count", len(exceptions))
+	}
+}
+
+// sendPagerDutyAlerts sends alerts to PagerDuty for critical issues
+func (s *Service) sendPagerDutyAlerts(ctx context.Context, exceptions []*entities.ReconciliationException) {
+	for _, exc := range exceptions {
+		if exc.Severity != entities.ExceptionSeverityCritical {
+			continue
+		}
+
+		affectedUserID := ""
+		if exc.AffectedUserID != nil {
+			affectedUserID = exc.AffectedUserID.String()
+		}
+
+		payload := map[string]interface{}{
+			"routing_key":  s.config.PagerDutyRoutingKey,
+			"event_action": "trigger",
+			"payload": map[string]interface{}{
+				"summary":  fmt.Sprintf("Reconciliation Exception: %s", exc.CheckType),
+				"severity": "critical",
+				"source":   "rail-reconciliation",
+				"custom_details": map[string]interface{}{
+					"check_type":       exc.CheckType,
+					"affected_user_id": affectedUserID,
+					"description":      exc.Description,
+					"created_at":       exc.CreatedAt,
+				},
+			},
+		}
+
+		body, _ := json.Marshal(payload)
+		req, _ := http.NewRequestWithContext(ctx, "POST", "https://events.pagerduty.com/v2/enqueue", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			s.logger.Error("PagerDuty request failed", "error", err)
+			continue
+		}
+		resp.Body.Close()
+	}
+}
+
+// sendSlackAlert sends a summary alert to Slack
+func (s *Service) sendSlackAlert(ctx context.Context, exceptions []*entities.ReconciliationException) {
+	blocks := []map[string]interface{}{
+		{
+			"type": "header",
+			"text": map[string]string{
+				"type": "plain_text",
+				"text": "🚨 Reconciliation Alert",
+			},
+		},
+		{
+			"type": "section",
+			"text": map[string]string{
+				"type": "mrkdwn",
+				"text": fmt.Sprintf("*%d high-priority exceptions detected*", len(exceptions)),
+			},
+		},
+	}
+
+	for i, exc := range exceptions {
+		if i >= 5 { // Limit to 5 exceptions in Slack message
+			blocks = append(blocks, map[string]interface{}{
+				"type": "section",
+				"text": map[string]string{
+					"type": "mrkdwn",
+					"text": fmt.Sprintf("_...and %d more_", len(exceptions)-5),
+				},
+			})
+			break
+		}
+		blocks = append(blocks, map[string]interface{}{
+			"type": "section",
+			"fields": []map[string]string{
+				{"type": "mrkdwn", "text": fmt.Sprintf("*Type:* %s", exc.CheckType)},
+				{"type": "mrkdwn", "text": fmt.Sprintf("*Severity:* %s", exc.Severity)},
+			},
+		})
+	}
+
+	payload := map[string]interface{}{"blocks": blocks}
+	body, _ := json.Marshal(payload)
+
+	req, _ := http.NewRequestWithContext(ctx, "POST", s.config.SlackWebhookURL, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		s.logger.Error("Slack request failed", "error", err)
+		return
+	}
+	resp.Body.Close()
+	s.logger.Info("Slack alert sent successfully")
+}
+
+// getHighestSeverity returns the highest severity from exceptions
+func (s *Service) getHighestSeverity(exceptions []*entities.ReconciliationException) string {
+	for _, exc := range exceptions {
+		if exc.Severity == entities.ExceptionSeverityCritical {
+			return string(entities.ExceptionSeverityCritical)
+		}
+	}
+	for _, exc := range exceptions {
+		if exc.Severity == entities.ExceptionSeverityHigh {
+			return string(entities.ExceptionSeverityHigh)
+		}
+	}
+	return string(entities.ExceptionSeverityMedium)
 }
 
 // recordMetrics records reconciliation metrics

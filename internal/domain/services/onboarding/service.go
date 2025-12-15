@@ -24,8 +24,10 @@ type Service struct {
 	auditService        AuditService
 	dueAdapter          DueAdapter
 	alpacaAdapter       AlpacaAdapter
+	allocationService   AllocationService
 	logger              *zap.Logger
 	defaultWalletChains []entities.WalletChain
+	kycProviderName     string
 }
 
 // Repository interfaces
@@ -85,6 +87,11 @@ type AlpacaAdapter interface {
 	CreateAccount(ctx context.Context, req *entities.AlpacaCreateAccountRequest) (*entities.AlpacaAccountResponse, error)
 }
 
+// AllocationService interface for enabling 70/30 allocation mode
+type AllocationService interface {
+	EnableMode(ctx context.Context, userID uuid.UUID, ratios entities.AllocationRatios) error
+}
+
 // NewService creates a new onboarding service
 func NewService(
 	userRepo UserRepository,
@@ -96,10 +103,16 @@ func NewService(
 	auditService AuditService,
 	dueAdapter DueAdapter,
 	alpacaAdapter AlpacaAdapter,
+	allocationService AllocationService,
 	logger *zap.Logger,
 	defaultWalletChains []entities.WalletChain,
+	kycProviderName string,
 ) *Service {
 	normalizedChains := normalizeDefaultWalletChains(defaultWalletChains, logger)
+
+	if kycProviderName == "" {
+		kycProviderName = "sumsub" // Default KYC provider
+	}
 
 	return &Service{
 		userRepo:            userRepo,
@@ -111,9 +124,16 @@ func NewService(
 		auditService:        auditService,
 		dueAdapter:          dueAdapter,
 		alpacaAdapter:       alpacaAdapter,
+		allocationService:   allocationService,
 		logger:              logger,
 		defaultWalletChains: normalizedChains,
+		kycProviderName:     kycProviderName,
 	}
+}
+
+// SetAllocationService sets the allocation service (used to resolve circular dependency)
+func (s *Service) SetAllocationService(allocationService AllocationService) {
+	s.allocationService = allocationService
 }
 
 func normalizeDefaultWalletChains(chains []entities.WalletChain, logger *zap.Logger) []entities.WalletChain {
@@ -439,6 +459,24 @@ func (s *Service) CompletePasscodeCreation(ctx context.Context, userID uuid.UUID
 			zap.String("userId", userID.String()))
 	}
 
+	// Auto-enable 70/30 allocation mode (Rail MVP default - non-negotiable)
+	// Per PRD: "This rule is system-defined, always on in MVP, not user-editable"
+	if s.allocationService != nil {
+		defaultRatios := entities.AllocationRatios{
+			SpendingRatio: entities.DefaultSpendingRatio, // 0.70
+			StashRatio:    entities.DefaultStashRatio,    // 0.30
+		}
+		if err := s.allocationService.EnableMode(ctx, userID, defaultRatios); err != nil {
+			s.logger.Error("Failed to enable default 70/30 allocation mode",
+				zap.Error(err),
+				zap.String("userId", userID.String()))
+			// Don't fail onboarding - allocation can be retried
+		} else {
+			s.logger.Info("Auto-enabled 70/30 allocation mode for user",
+				zap.String("userId", userID.String()))
+		}
+	}
+
 	// Log audit event
 	if err := s.auditService.LogOnboardingEvent(ctx, userID, "passcode_created", "user", nil, map[string]any{
 		"created_at": time.Now(),
@@ -473,7 +511,7 @@ func (s *Service) SubmitKYC(ctx context.Context, userID uuid.UUID, req *entities
 	submission := &entities.KYCSubmission{
 		ID:             uuid.New(),
 		UserID:         userID,
-		Provider:       "jumio", // TODO: make configurable
+		Provider:       s.kycProviderName,
 		ProviderRef:    providerRef,
 		SubmissionType: req.DocumentType,
 		Status:         entities.KYCStatusProcessing,
