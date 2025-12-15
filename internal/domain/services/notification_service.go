@@ -6,279 +6,192 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/trace"
+	"github.com/shopspring/decimal"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"go.uber.org/zap"
 )
 
-// EmailSender defines the contract required for sending rich email content
-type EmailSender interface {
-	SendCustomEmail(ctx context.Context, to, subject, htmlContent, textContent string) error
+// NotificationQueue defines async notification queueing
+type NotificationQueue interface {
+	QueueNotification(ctx context.Context, msg *QueuedNotification) error
 }
 
-// NotificationService handles sending notifications to users
+// QueuedNotification represents a notification to be queued
+type QueuedNotification struct {
+	UserID    uuid.UUID              `json:"user_id"`
+	Type      string                 `json:"type"`
+	Title     string                 `json:"title"`
+	Body      string                 `json:"body"`
+	Data      map[string]interface{} `json:"data,omitempty"`
+	Priority  string            `json:"priority"`
+	Recipient string            `json:"recipient,omitempty"`
+}
+
+// SMSSender defines SMS sending operations
+type SMSSender interface {
+	SendSMS(ctx context.Context, phone, message string) error
+}
+
+// EmailSenderService defines email sending operations
+type EmailSenderService interface {
+	SendGenericEmail(ctx context.Context, to, subject, body string) error
+}
+
 type NotificationService struct {
-	emailService EmailSender
-	logger       *zap.Logger
-	tracer       trace.Tracer
-	metrics      *NotificationMetrics
+	logger      *zap.Logger
+	queue       NotificationQueue
+	smsSender   SMSSender
+	emailSender EmailSenderService
 }
 
-// NotificationMetrics contains observability metrics for notifications
-type NotificationMetrics struct {
-	NotificationsSent   metric.Int64Counter
-	NotificationErrors  metric.Int64Counter
-	NotificationLatency metric.Float64Histogram
+func NewNotificationService(logger *zap.Logger) *NotificationService {
+	return &NotificationService{logger: logger}
 }
 
-// WeeklySummaryNotification represents a weekly summary notification
-type WeeklySummaryNotification struct {
-	UserID      uuid.UUID
-	Email       string
-	WeekStart   time.Time
-	WeekEnd     time.Time
-	SummaryID   uuid.UUID
-	SummaryMD   string
-	ArtifactURI string
+// SetQueue sets the notification queue (SNS/SQS)
+func (s *NotificationService) SetQueue(q NotificationQueue) {
+	s.queue = q
 }
 
-// NewNotificationService creates a new notification service
-func NewNotificationService(
-	emailService EmailSender,
-	logger *zap.Logger,
-) (*NotificationService, error) {
-	tracer := otel.Tracer("notification-service")
-	meter := otel.Meter("notification-service")
+// SetSMSSender sets the SMS sender
+func (s *NotificationService) SetSMSSender(sender SMSSender) {
+	s.smsSender = sender
+}
 
-	// Initialize metrics
-	metrics, err := initNotificationMetrics(meter)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize notification metrics: %w", err)
+// SetEmailSender sets the email sender
+func (s *NotificationService) SetEmailSender(sender EmailSenderService) {
+	s.emailSender = sender
+}
+
+func (s *NotificationService) Send(ctx context.Context, notification *entities.Notification, prefs *entities.UserPreference) error {
+	if !s.shouldSend(notification, prefs) {
+		s.logger.Debug("Notification skipped due to user preferences", zap.String("type", string(notification.Type)))
+		return nil
 	}
 
-	return &NotificationService{
-		emailService: emailService,
-		logger:       logger,
-		tracer:       tracer,
-		metrics:      metrics,
-	}, nil
+	switch notification.Channel {
+	case entities.ChannelEmail:
+		return s.sendEmail(ctx, notification)
+	case entities.ChannelPush:
+		return s.sendPush(ctx, notification)
+	case entities.ChannelSMS:
+		return s.sendSMS(ctx, notification)
+	case entities.ChannelInApp:
+		return s.sendInApp(ctx, notification)
+	default:
+		return fmt.Errorf("unsupported notification channel: %s", notification.Channel)
+	}
 }
 
-// SendWeeklySummaryNotification sends an email notification for a new weekly summary
-func (n *NotificationService) SendWeeklySummaryNotification(ctx context.Context, notification *WeeklySummaryNotification) error {
-	startTime := time.Now()
-	ctx, span := n.tracer.Start(ctx, "notification.send_weekly_summary", trace.WithAttributes(
-		attribute.String("user_id", notification.UserID.String()),
-		attribute.String("email", notification.Email),
-		attribute.String("week_start", notification.WeekStart.Format("2006-01-02")),
-	))
-	defer span.End()
-
-	n.logger.Info("Sending weekly summary notification",
-		zap.String("user_id", notification.UserID.String()),
-		zap.String("email", notification.Email),
-		zap.String("week_start", notification.WeekStart.Format("2006-01-02")),
-	)
-
-	// Create email content
-	subject := n.generateEmailSubject(notification)
-	htmlBody := n.generateEmailHTML(notification)
-	textBody := n.generateEmailText(notification)
-
-	// Send email using a custom method that accesses the private sendEmail
-	err := n.sendWeeklySummaryEmail(ctx, notification.Email, subject, htmlBody, textBody)
-
-	// Record metrics
-	duration := time.Since(startTime)
-	n.metrics.NotificationLatency.Record(ctx, duration.Seconds(), metric.WithAttributes(
-		attribute.String("type", "weekly_summary"),
-		attribute.String("channel", "email"),
-		attribute.Bool("success", err == nil),
-	))
-
-	if err != nil {
-		span.RecordError(err)
-		n.metrics.NotificationErrors.Add(ctx, 1, metric.WithAttributes(
-			attribute.String("type", "weekly_summary"),
-			attribute.String("channel", "email"),
-		))
-		n.logger.Error("Failed to send weekly summary notification",
-			zap.Error(err),
-			zap.String("user_id", notification.UserID.String()),
-			zap.String("email", notification.Email),
-		)
-		return fmt.Errorf("failed to send weekly summary notification: %w", err)
+func (s *NotificationService) shouldSend(notification *entities.Notification, prefs *entities.UserPreference) bool {
+	if notification.Priority == entities.PriorityCritical {
+		return true
 	}
 
-	n.metrics.NotificationsSent.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("type", "weekly_summary"),
-		attribute.String("channel", "email"),
-	))
+	switch notification.Channel {
+	case entities.ChannelEmail:
+		return prefs.EmailNotifications
+	case entities.ChannelPush:
+		return prefs.PushNotifications
+	case entities.ChannelSMS:
+		return prefs.SMSNotifications
+	default:
+		return true
+	}
+}
 
-	n.logger.Info("Weekly summary notification sent successfully",
-		zap.String("user_id", notification.UserID.String()),
-		zap.String("email", notification.Email),
-		zap.Duration("duration", duration),
-	)
+func (s *NotificationService) sendEmail(ctx context.Context, notification *entities.Notification) error {
+	if s.emailSender != nil {
+		return s.emailSender.SendGenericEmail(ctx, "", notification.Title, notification.Message)
+	}
+	return s.queueNotification(ctx, notification.UserID, "email", notification.Title, notification.Message, nil)
+}
 
+func (s *NotificationService) sendPush(ctx context.Context, notification *entities.Notification) error {
+	return s.queueNotification(ctx, notification.UserID, "push", notification.Title, notification.Message, notification.Data)
+}
+
+func (s *NotificationService) sendSMS(ctx context.Context, notification *entities.Notification) error {
+	if s.smsSender != nil {
+		// Direct SMS for critical notifications
+		if notification.Priority == entities.PriorityCritical {
+			return s.smsSender.SendSMS(ctx, "", notification.Message)
+		}
+	}
+	return s.queueNotification(ctx, notification.UserID, "sms", "", notification.Message, nil)
+}
+
+func (s *NotificationService) sendInApp(ctx context.Context, notification *entities.Notification) error {
+	s.logger.Info("Sending in-app notification", zap.String("user_id", notification.UserID.String()))
 	return nil
 }
 
-// SendPushNotification sends a push notification (placeholder for future implementation)
-func (n *NotificationService) SendPushNotification(ctx context.Context, userID uuid.UUID, title, body string) error {
-	ctx, span := n.tracer.Start(ctx, "notification.send_push", trace.WithAttributes(
-		attribute.String("user_id", userID.String()),
-		attribute.String("title", title),
-	))
-	defer span.End()
-
-	// Placeholder for push notification implementation
-	n.logger.Info("Push notification sent (placeholder)",
-		zap.String("user_id", userID.String()),
-		zap.String("title", title),
-		zap.String("body", body),
-	)
-
-	n.metrics.NotificationsSent.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("type", "push"),
-		attribute.String("channel", "mobile"),
-	))
-
-	return nil
-}
-
-// generateEmailSubject creates the email subject for weekly summary notifications
-func (n *NotificationService) generateEmailSubject(notification *WeeklySummaryNotification) string {
-	return fmt.Sprintf("Your Weekly Portfolio Summary - %s to %s",
-		notification.WeekStart.Format("Jan 2"),
-		notification.WeekEnd.Format("Jan 2, 2006"),
-	)
-}
-
-// generateEmailHTML creates the HTML email body
-func (n *NotificationService) generateEmailHTML(notification *WeeklySummaryNotification) string {
-	return fmt.Sprintf(`
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Weekly Portfolio Summary</title>
-    <style>
-        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
-        .header { background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
-        .summary-content { background-color: #ffffff; padding: 20px; border: 1px solid #dee2e6; border-radius: 8px; margin-bottom: 20px; }
-        .cta-button { display: inline-block; padding: 12px 24px; background-color: #007bff; color: white; text-decoration: none; border-radius: 4px; margin: 10px 0; }
-        .disclaimer { font-size: 12px; color: #6c757d; margin-top: 20px; padding-top: 20px; border-top: 1px solid #dee2e6; }
-        .footer { text-align: center; margin-top: 30px; font-size: 12px; color: #6c757d; }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h1>📊 Weekly Portfolio Summary</h1>
-        <p><strong>Week of %s - %s</strong></p>
-        <p>Your AI-powered portfolio analysis is ready!</p>
-    </div>
-
-    <div class="summary-content">
-        <h2>New Summary Available</h2>
-        <p>Your personalized weekly portfolio summary has been generated using advanced AI analysis. This summary includes:</p>
-        <ul>
-            <li>Portfolio performance overview</li>
-            <li>Risk assessment and insights</li>
-            <li>Asset allocation analysis</li>
-            <li>Market context and trends</li>
-            <li>Key areas for consideration</li>
-        </ul>
-        
-        <p>
-            <a href="#" class="cta-button">View Your Summary</a>
-        </p>
-    </div>
-
-    <div class="disclaimer">
-        <p><strong>Important Disclaimer:</strong> This analysis is for informational purposes only and does not constitute financial advice. All investment decisions should be made based on your own research and consideration of your financial situation. Past performance does not guarantee future results.</p>
-    </div>
-
-    <div class="footer">
-        <p>© 2024 STACK Portfolio Management Platform</p>
-        <p>This email was sent to you because you have enabled weekly portfolio summary notifications.</p>
-    </div>
-</body>
-</html>`,
-		notification.WeekStart.Format("January 2, 2006"),
-		notification.WeekEnd.Format("January 2, 2006"),
-	)
-}
-
-// generateEmailText creates the plain text email body
-func (n *NotificationService) generateEmailText(notification *WeeklySummaryNotification) string {
-	return fmt.Sprintf(`
-STACK Portfolio Management - Weekly Summary
-
-Week of %s - %s
-
-Your AI-powered portfolio analysis is ready!
-
-Your personalized weekly portfolio summary has been generated using advanced AI analysis. This summary includes:
-
-- Portfolio performance overview
-- Risk assessment and insights  
-- Asset allocation analysis
-- Market context and trends
-- Key areas for consideration
-
-View your summary in the STACK app or web platform.
-
-IMPORTANT DISCLAIMER: This analysis is for informational purposes only and does not constitute financial advice. All investment decisions should be made based on your own research and consideration of your financial situation. Past performance does not guarantee future results.
-
----
-© 2024 STACK Portfolio Management Platform
-This email was sent to you because you have enabled weekly portfolio summary notifications.
-`,
-		notification.WeekStart.Format("January 2, 2006"),
-		notification.WeekEnd.Format("January 2, 2006"),
-	)
-}
-
-// sendWeeklySummaryEmail sends an email using the email service's private method
-// This is a workaround since the email service doesn't have a public SendEmail method with our desired interface
-func (n *NotificationService) sendWeeklySummaryEmail(ctx context.Context, to, subject, htmlContent, textContent string) error {
-	if n.emailService == nil {
-		return fmt.Errorf("email service not configured")
+func (s *NotificationService) queueNotification(ctx context.Context, userID uuid.UUID, notifType, title, body string, data map[string]interface{}) error {
+	if s.queue == nil {
+		s.logger.Debug("Notification queue not configured, logging only",
+			zap.String("type", notifType),
+			zap.String("user_id", userID.String()))
+		return nil
 	}
 
-	if err := n.emailService.SendCustomEmail(ctx, to, subject, htmlContent, textContent); err != nil {
-		return fmt.Errorf("failed to dispatch weekly summary email: %w", err)
-	}
-	return nil
+	return s.queue.QueueNotification(ctx, &QueuedNotification{
+		UserID:   userID,
+		Type:     notifType,
+		Title:    title,
+		Body:     body,
+		Data:     data,
+		Priority: "normal",
+	})
 }
 
-// initNotificationMetrics initializes OpenTelemetry metrics
-func initNotificationMetrics(meter metric.Meter) (*NotificationMetrics, error) {
-	notificationsSent, err := meter.Int64Counter("notifications_sent_total",
-		metric.WithDescription("Total number of notifications sent"))
-	if err != nil {
-		return nil, err
-	}
+func (s *NotificationService) SendWeeklySummary(ctx context.Context, userID uuid.UUID, weekStart time.Time) error {
+	title := "Your Weekly Investment Summary"
+	body := fmt.Sprintf("Here's your investment summary for the week of %s", weekStart.Format("Jan 2, 2006"))
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "weekly_summary"})
+}
 
-	notificationErrors, err := meter.Int64Counter("notification_errors_total",
-		metric.WithDescription("Total number of notification errors"))
-	if err != nil {
-		return nil, err
-	}
+func (s *NotificationService) NotifyOffRampSuccess(ctx context.Context, userID uuid.UUID, amount string) error {
+	title := "Withdrawal Complete"
+	body := fmt.Sprintf("Your withdrawal of $%s has been processed successfully.", amount)
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "offramp_success", "amount": amount})
+}
 
-	notificationLatency, err := meter.Float64Histogram("notification_latency_seconds",
-		metric.WithDescription("Notification sending latency in seconds"))
-	if err != nil {
-		return nil, err
-	}
+func (s *NotificationService) NotifyOffRampFailure(ctx context.Context, userID uuid.UUID, reason string) error {
+	title := "Withdrawal Failed"
+	body := fmt.Sprintf("Your withdrawal could not be processed: %s", reason)
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "offramp_failure"})
+}
 
-	return &NotificationMetrics{
-		NotificationsSent:   notificationsSent,
-		NotificationErrors:  notificationErrors,
-		NotificationLatency: notificationLatency,
-	}, nil
+func (s *NotificationService) NotifyTransactionDeclined(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, transactionType string) error {
+	title := "Transaction Declined"
+	body := fmt.Sprintf("Your %s of $%s was declined due to spending limits.", transactionType, amount.String())
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "transaction_declined"})
+}
+
+func (s *NotificationService) NotifyDepositConfirmed(ctx context.Context, userID uuid.UUID, amount, chain, txHash string) error {
+	title := "Deposit Confirmed"
+	body := fmt.Sprintf("Your deposit of %s on %s has been confirmed.", amount, chain)
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "deposit_confirmed", "tx_hash": txHash})
+}
+
+func (s *NotificationService) NotifyWithdrawalCompleted(ctx context.Context, userID uuid.UUID, amount, destinationAddress string) error {
+	title := "Withdrawal Complete"
+	body := fmt.Sprintf("Your withdrawal of $%s has been sent to %s...%s", amount, destinationAddress[:6], destinationAddress[len(destinationAddress)-4:])
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "withdrawal_completed"})
+}
+
+func (s *NotificationService) NotifyWithdrawalFailed(ctx context.Context, userID uuid.UUID, amount, reason string) error {
+	title := "Withdrawal Failed"
+	body := fmt.Sprintf("Your withdrawal of $%s failed: %s", amount, reason)
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "withdrawal_failed"})
+}
+
+func (s *NotificationService) NotifyLargeBalanceChange(ctx context.Context, userID uuid.UUID, changeType string, amount decimal.Decimal, newBalance decimal.Decimal) error {
+	title := "Large Balance Change"
+	body := fmt.Sprintf("A %s of $%s has been processed. New balance: $%s", changeType, amount.String(), newBalance.String())
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "balance_change"})
+}
+
+func (s *NotificationService) SendGenericNotification(ctx context.Context, userID uuid.UUID, title, message string) error {
+	return s.queueNotification(ctx, userID, "push", title, message, nil)
 }

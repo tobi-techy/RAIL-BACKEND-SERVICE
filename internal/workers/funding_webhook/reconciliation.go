@@ -1,19 +1,22 @@
 package funding_webhook
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/internal/domain/services/funding"
-	"github.com/stack-service/stack_service/internal/infrastructure/adapters"
-	"github.com/stack-service/stack_service/internal/infrastructure/repositories"
-	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/funding"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
+	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
+	"github.com/rail-service/rail_service/pkg/logger"
 )
 
 // ReconciliationConfig holds configuration for reconciliation worker
@@ -436,16 +439,52 @@ const (
 
 // ChainValidator validates transactions on-chain
 type ChainValidator struct {
-	logger *logger.Logger
-	// TODO: Add RPC clients for different chains
-	// solanaClient *solana.Client
-	// evmClients   map[string]*ethclient.Client
+	logger      *logger.Logger
+	httpClient  *http.Client
+	solanaRPC   string
+	polygonRPC  string
+	aptosRPC    string
+	starknetRPC string
+}
+
+// ChainValidatorConfig holds RPC endpoints for chain validation
+type ChainValidatorConfig struct {
+	SolanaRPC   string
+	PolygonRPC  string
+	AptosRPC    string
+	StarknetRPC string
 }
 
 // NewChainValidator creates a new chain validator
-func NewChainValidator(logger *logger.Logger) *ChainValidator {
+func NewChainValidator(logger *logger.Logger, config *ChainValidatorConfig) *ChainValidator {
+	cfg := &ChainValidatorConfig{
+		SolanaRPC:   "https://api.mainnet-beta.solana.com",
+		PolygonRPC:  "https://polygon-rpc.com",
+		AptosRPC:    "https://fullnode.mainnet.aptoslabs.com/v1",
+		StarknetRPC: "https://starknet-mainnet.public.blastapi.io",
+	}
+	if config != nil {
+		if config.SolanaRPC != "" {
+			cfg.SolanaRPC = config.SolanaRPC
+		}
+		if config.PolygonRPC != "" {
+			cfg.PolygonRPC = config.PolygonRPC
+		}
+		if config.AptosRPC != "" {
+			cfg.AptosRPC = config.AptosRPC
+		}
+		if config.StarknetRPC != "" {
+			cfg.StarknetRPC = config.StarknetRPC
+		}
+	}
+
 	return &ChainValidator{
-		logger: logger,
+		logger:      logger,
+		httpClient:  &http.Client{Timeout: 15 * time.Second},
+		solanaRPC:   cfg.SolanaRPC,
+		polygonRPC:  cfg.PolygonRPC,
+		aptosRPC:    cfg.AptosRPC,
+		starknetRPC: cfg.StarknetRPC,
 	}
 }
 
@@ -459,7 +498,7 @@ func (v *ChainValidator) ValidateTransaction(ctx context.Context, chain entities
 	case entities.ChainAptos:
 		return v.validateAptosTransaction(ctx, txHash)
 	case entities.ChainPolygon:
-		return v.validateEVMTransaction(ctx, "polygon", txHash)
+		return v.validateEVMTransaction(ctx, v.polygonRPC, txHash)
 	case entities.ChainStarknet:
 		return v.validateStarknetTransaction(ctx, txHash)
 	default:
@@ -467,48 +506,230 @@ func (v *ChainValidator) ValidateTransaction(ctx context.Context, chain entities
 	}
 }
 
-// validateSolanaTransaction validates a Solana transaction
+// validateSolanaTransaction validates a Solana transaction via JSON-RPC
 func (v *ChainValidator) validateSolanaTransaction(ctx context.Context, txHash string) (TransactionStatus, error) {
-	// TODO: Implement Solana RPC validation
-	// Example implementation:
-	// 1. Call getTransaction(txHash) with commitment "finalized"
-	// 2. Check transaction.meta.err field
-	// 3. If err is null, transaction succeeded
-	// 4. If err is not null, transaction failed
-	// 5. If transaction not found, return NotFound
+	payload := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "getTransaction",
+		"params": []interface{}{
+			txHash,
+			map[string]string{"commitment": "finalized", "encoding": "json"},
+		},
+	}
 
-	v.logger.Debug("Solana validation not implemented yet", "tx_hash", txHash)
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, "POST", v.solanaRPC, bytes.NewReader(body))
+	if err != nil {
+		return TransactionStatusPending, err
+	}
+	req.Header.Set("Content-Type", "application/json")
 
-	// Placeholder: return pending to avoid false negatives
-	return TransactionStatusPending, nil
+	resp, err := v.httpClient.Do(req)
+	if err != nil {
+		v.logger.Debug("Solana RPC request failed", "error", err)
+		return TransactionStatusPending, nil // Return pending on network errors
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Result *struct {
+			Meta *struct {
+				Err interface{} `json:"err"`
+			} `json:"meta"`
+		} `json:"result"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return TransactionStatusPending, nil
+	}
+
+	if result.Result == nil {
+		return TransactionStatusNotFound, nil
+	}
+
+	if result.Result.Meta != nil && result.Result.Meta.Err != nil {
+		return TransactionStatusFailed, nil
+	}
+
+	return TransactionStatusConfirmed, nil
 }
 
-// validateAptosTransaction validates an Aptos transaction
+// validateAptosTransaction validates an Aptos transaction via REST API
 func (v *ChainValidator) validateAptosTransaction(ctx context.Context, txHash string) (TransactionStatus, error) {
-	// TODO: Implement Aptos REST API validation
-	// Example: GET https://fullnode.mainnet.aptoslabs.com/v1/transactions/by_hash/{txHash}
+	url := fmt.Sprintf("%s/transactions/by_hash/%s", v.aptosRPC, txHash)
 
-	v.logger.Debug("Aptos validation not implemented yet", "tx_hash", txHash)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return TransactionStatusPending, err
+	}
+
+	resp, err := v.httpClient.Do(req)
+	if err != nil {
+		v.logger.Debug("Aptos request failed", "error", err)
+		return TransactionStatusPending, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 404 {
+		return TransactionStatusNotFound, nil
+	}
+
+	var result struct {
+		Type    string `json:"type"`
+		Success bool   `json:"success"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return TransactionStatusPending, nil
+	}
+
+	if result.Type == "pending_transaction" {
+		return TransactionStatusPending, nil
+	}
+
+	if result.Success {
+		return TransactionStatusConfirmed, nil
+	}
+	return TransactionStatusFailed, nil
+}
+
+// validateEVMTransaction validates an EVM chain transaction via JSON-RPC
+func (v *ChainValidator) validateEVMTransaction(ctx context.Context, rpcURL string, txHash string) (TransactionStatus, error) {
+	payload := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "eth_getTransactionReceipt",
+		"params":  []string{txHash},
+	}
+
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, "POST", rpcURL, bytes.NewReader(body))
+	if err != nil {
+		return TransactionStatusPending, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := v.httpClient.Do(req)
+	if err != nil {
+		v.logger.Debug("EVM RPC request failed", "error", err)
+		return TransactionStatusPending, nil
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Result *struct {
+			Status      string `json:"status"`
+			BlockNumber string `json:"blockNumber"`
+		} `json:"result"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return TransactionStatusPending, nil
+	}
+
+	if result.Result == nil {
+		// Receipt not found - check if transaction exists
+		return v.checkEVMTransactionExists(ctx, rpcURL, txHash)
+	}
+
+	// Status: 0x1 = success, 0x0 = failed
+	if result.Result.Status == "0x1" {
+		return TransactionStatusConfirmed, nil
+	}
+	return TransactionStatusFailed, nil
+}
+
+// checkEVMTransactionExists checks if a transaction exists (pending)
+func (v *ChainValidator) checkEVMTransactionExists(ctx context.Context, rpcURL string, txHash string) (TransactionStatus, error) {
+	payload := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "eth_getTransactionByHash",
+		"params":  []string{txHash},
+	}
+
+	body, _ := json.Marshal(payload)
+	req, _ := http.NewRequestWithContext(ctx, "POST", rpcURL, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := v.httpClient.Do(req)
+	if err != nil {
+		return TransactionStatusPending, nil
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Result interface{} `json:"result"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return TransactionStatusPending, nil
+	}
+
+	if result.Result == nil {
+		return TransactionStatusNotFound, nil
+	}
 	return TransactionStatusPending, nil
 }
 
-// validateEVMTransaction validates an EVM chain transaction (Polygon, etc.)
-func (v *ChainValidator) validateEVMTransaction(ctx context.Context, network string, txHash string) (TransactionStatus, error) {
-	// TODO: Implement EVM RPC validation
-	// Example using ethclient:
-	// 1. Call eth_getTransactionReceipt(txHash)
-	// 2. Check receipt.Status (1 = success, 0 = failed)
-	// 3. Check receipt.BlockNumber is not null (confirmed)
-	// 4. If receipt is null, transaction not found or pending
-
-	v.logger.Debug("EVM validation not implemented yet", "network", network, "tx_hash", txHash)
-	return TransactionStatusPending, nil
-}
-
-// validateStarknetTransaction validates a Starknet transaction
+// validateStarknetTransaction validates a Starknet transaction via JSON-RPC
 func (v *ChainValidator) validateStarknetTransaction(ctx context.Context, txHash string) (TransactionStatus, error) {
-	// TODO: Implement Starknet RPC validation
+	payload := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "starknet_getTransactionReceipt",
+		"params":  []string{txHash},
+	}
 
-	v.logger.Debug("Starknet validation not implemented yet", "tx_hash", txHash)
-	return TransactionStatusPending, nil
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, "POST", v.starknetRPC, bytes.NewReader(body))
+	if err != nil {
+		return TransactionStatusPending, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := v.httpClient.Do(req)
+	if err != nil {
+		v.logger.Debug("Starknet RPC request failed", "error", err)
+		return TransactionStatusPending, nil
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Result *struct {
+			Status string `json:"status"`
+		} `json:"result"`
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return TransactionStatusPending, nil
+	}
+
+	if result.Error != nil {
+		if result.Error.Code == 29 { // Transaction hash not found
+			return TransactionStatusNotFound, nil
+		}
+		return TransactionStatusPending, nil
+	}
+
+	if result.Result == nil {
+		return TransactionStatusNotFound, nil
+	}
+
+	switch result.Result.Status {
+	case "ACCEPTED_ON_L1", "ACCEPTED_ON_L2":
+		return TransactionStatusConfirmed, nil
+	case "REJECTED":
+		return TransactionStatusFailed, nil
+	default:
+		return TransactionStatusPending, nil
+	}
 }

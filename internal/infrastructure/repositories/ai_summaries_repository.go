@@ -7,8 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/stack-service/stack_service/internal/domain/repositories"
-	"github.com/stack-service/stack_service/internal/domain/services"
+	domainrepos "github.com/rail-service/rail_service/internal/domain/repositories"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -23,7 +22,7 @@ type AISummaryRepository struct {
 }
 
 // NewAISummaryRepository creates a new AI summary repository
-func NewAISummaryRepository(db *sql.DB, logger *zap.Logger) repositories.AISummaryRepository {
+func NewAISummaryRepository(db *sql.DB, logger *zap.Logger) domainrepos.AISummaryRepository {
 	return &AISummaryRepository{
 		db:     db,
 		logger: logger,
@@ -32,7 +31,7 @@ func NewAISummaryRepository(db *sql.DB, logger *zap.Logger) repositories.AISumma
 }
 
 // Create creates a new AI summary record
-func (r *AISummaryRepository) Create(ctx context.Context, summary *services.AISummary) error {
+func (r *AISummaryRepository) Create(ctx context.Context, summary *domainrepos.AISummary) error {
 	ctx, span := r.tracer.Start(ctx, "repository.create_ai_summary", trace.WithAttributes(
 		attribute.String("user_id", summary.UserID.String()),
 		attribute.String("week_start", summary.WeekStart.Format("2006-01-02")),
@@ -80,7 +79,7 @@ func (r *AISummaryRepository) Create(ctx context.Context, summary *services.AISu
 }
 
 // GetByID retrieves an AI summary by its ID
-func (r *AISummaryRepository) GetByID(ctx context.Context, id uuid.UUID) (*services.AISummary, error) {
+func (r *AISummaryRepository) GetByID(ctx context.Context, id uuid.UUID) (*domainrepos.AISummary, error) {
 	ctx, span := r.tracer.Start(ctx, "repository.get_ai_summary_by_id", trace.WithAttributes(
 		attribute.String("summary_id", id.String()),
 	))
@@ -94,7 +93,7 @@ func (r *AISummaryRepository) GetByID(ctx context.Context, id uuid.UUID) (*servi
 
 	row := r.db.QueryRowContext(ctx, query, id)
 	
-	summary := &services.AISummary{}
+	summary := &domainrepos.AISummary{}
 	err := row.Scan(
 		&summary.ID,
 		&summary.UserID,
@@ -122,7 +121,7 @@ func (r *AISummaryRepository) GetByID(ctx context.Context, id uuid.UUID) (*servi
 }
 
 // GetLatestByUserID retrieves the most recent AI summary for a user
-func (r *AISummaryRepository) GetLatestByUserID(ctx context.Context, userID uuid.UUID) (*services.AISummary, error) {
+func (r *AISummaryRepository) GetLatestByUserID(ctx context.Context, userID uuid.UUID) (*domainrepos.AISummary, error) {
 	ctx, span := r.tracer.Start(ctx, "repository.get_latest_ai_summary", trace.WithAttributes(
 		attribute.String("user_id", userID.String()),
 	))
@@ -138,7 +137,7 @@ func (r *AISummaryRepository) GetLatestByUserID(ctx context.Context, userID uuid
 
 	row := r.db.QueryRowContext(ctx, query, userID)
 	
-	summary := &services.AISummary{}
+	summary := &domainrepos.AISummary{}
 	err := row.Scan(
 		&summary.ID,
 		&summary.UserID,
@@ -176,7 +175,7 @@ func (r *AISummaryRepository) GetLatestByUserID(ctx context.Context, userID uuid
 }
 
 // GetByUserAndWeek retrieves an AI summary for a specific user and week
-func (r *AISummaryRepository) GetByUserAndWeek(ctx context.Context, userID uuid.UUID, weekStart time.Time) (*services.AISummary, error) {
+func (r *AISummaryRepository) GetByUserAndWeek(ctx context.Context, userID uuid.UUID, weekStart time.Time) (*domainrepos.AISummary, error) {
 	ctx, span := r.tracer.Start(ctx, "repository.get_ai_summary_by_week", trace.WithAttributes(
 		attribute.String("user_id", userID.String()),
 		attribute.String("week_start", weekStart.Format("2006-01-02")),
@@ -191,7 +190,7 @@ func (r *AISummaryRepository) GetByUserAndWeek(ctx context.Context, userID uuid.
 
 	row := r.db.QueryRowContext(ctx, query, userID, weekStart)
 	
-	summary := &services.AISummary{}
+	summary := &domainrepos.AISummary{}
 	err := row.Scan(
 		&summary.ID,
 		&summary.UserID,
@@ -220,7 +219,7 @@ func (r *AISummaryRepository) GetByUserAndWeek(ctx context.Context, userID uuid.
 }
 
 // ListByUserID retrieves AI summaries for a user with pagination
-func (r *AISummaryRepository) ListByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*services.AISummary, error) {
+func (r *AISummaryRepository) ListByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*domainrepos.AISummary, error) {
 	ctx, span := r.tracer.Start(ctx, "repository.list_ai_summaries", trace.WithAttributes(
 		attribute.String("user_id", userID.String()),
 		attribute.Int("limit", limit),
@@ -247,9 +246,9 @@ func (r *AISummaryRepository) ListByUserID(ctx context.Context, userID uuid.UUID
 	}
 	defer rows.Close()
 
-	var summaries []*services.AISummary
+	var summaries []*domainrepos.AISummary
 	for rows.Next() {
-		summary := &services.AISummary{}
+		summary := &domainrepos.AISummary{}
 		err := rows.Scan(
 			&summary.ID,
 			&summary.UserID,
@@ -287,7 +286,7 @@ func (r *AISummaryRepository) ListByUserID(ctx context.Context, userID uuid.UUID
 }
 
 // Update updates an existing AI summary record
-func (r *AISummaryRepository) Update(ctx context.Context, summary *services.AISummary) error {
+func (r *AISummaryRepository) Update(ctx context.Context, summary *domainrepos.AISummary) error {
 	ctx, span := r.tracer.Start(ctx, "repository.update_ai_summary", trace.WithAttributes(
 		attribute.String("summary_id", summary.ID.String()),
 		attribute.String("user_id", summary.UserID.String()),
@@ -378,22 +377,3 @@ func (r *AISummaryRepository) Delete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-// GetSummaryByWeek is an alias for GetByUserAndWeek to match service interface
-func (r *AISummaryRepository) GetSummaryByWeek(ctx context.Context, userID uuid.UUID, weekStart time.Time) (*services.AISummary, error) {
-	return r.GetByUserAndWeek(ctx, userID, weekStart)
-}
-
-// CreateSummary is an alias for Create to match service interface  
-func (r *AISummaryRepository) CreateSummary(ctx context.Context, summary *services.AISummary) error {
-	return r.Create(ctx, summary)
-}
-
-// GetLatestSummary is an alias for GetLatestByUserID to match service interface
-func (r *AISummaryRepository) GetLatestSummary(ctx context.Context, userID uuid.UUID) (*services.AISummary, error) {
-	return r.GetLatestByUserID(ctx, userID)
-}
-
-// UpdateSummary is an alias for Update to match service interface
-func (r *AISummaryRepository) UpdateSummary(ctx context.Context, summary *services.AISummary) error {
-	return r.Update(ctx, summary)
-}

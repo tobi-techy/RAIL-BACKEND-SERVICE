@@ -1,126 +1,198 @@
 package routes
 
 import (
-	// "database/sql"
-
-	"github.com/stack-service/stack_service/internal/api/handlers"
-	"github.com/stack-service/stack_service/internal/api/middleware"
-
-	// "github.com/stack-service/stack_service/internal/infrastructure/config"
-	"github.com/stack-service/stack_service/internal/infrastructure/di"
-	// "github.com/stack-service/stack_service/pkg/logger"
+	"context"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
+
+	"github.com/rail-service/rail_service/internal/api/handlers"
+	"github.com/rail-service/rail_service/internal/api/middleware"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services"
+	"github.com/rail-service/rail_service/internal/domain/services/session"
+	"github.com/rail-service/rail_service/internal/infrastructure/di"
+	"github.com/rail-service/rail_service/pkg/tracing"
 )
+
+type SessionValidatorAdapter struct {
+	svc *session.Service
+}
+
+func NewSessionValidatorAdapter(svc *session.Service) *SessionValidatorAdapter {
+	return &SessionValidatorAdapter{svc: svc}
+}
+
+func (a *SessionValidatorAdapter) ValidateSession(ctx context.Context, token string) (*middleware.SessionInfo, error) {
+	sess, err := a.svc.ValidateSession(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+	return &middleware.SessionInfo{
+		ID:     sess.ID,
+		UserID: sess.UserID,
+	}, nil
+}
 
 // SetupRoutes configures all application routes
 func SetupRoutes(container *di.Container) *gin.Engine {
 	router := gin.New()
 
-	// Global middleware
+	// Global middleware - order matters for security
+	router.Use(tracing.HTTPMiddleware()) // Tracing should be early in the chain
 	router.Use(middleware.RequestID())
+	router.Use(middleware.MetricsMiddleware())
+	router.Use(middleware.RequestSizeLimit())
+	router.Use(middleware.InputValidation())
 	router.Use(middleware.Logger(container.Logger))
 	router.Use(middleware.Recovery(container.Logger))
 	router.Use(middleware.CORS(container.Config.Server.AllowedOrigins))
 	router.Use(middleware.RateLimit(container.Config.Server.RateLimitPerMin))
 	router.Use(middleware.SecurityHeaders())
+	router.Use(middleware.APIVersionMiddleware(container.Config.Server.SupportedVersions))
+	router.Use(middleware.PaginationMiddleware())
 
-	// Health check (no auth required)
-	router.GET("/health", handlers.HealthCheck())
-	router.GET("/metrics", handlers.Metrics())
+	// CSRF protection
+	csrfStore := middleware.NewCSRFStore()
+	router.Use(middleware.CSRFToken(csrfStore))
+
+	// Initialize handlers with services from DI container
+	coreHandlers := handlers.NewCoreHandlers(container.DB, container.Logger)
+	allocationHandlers := handlers.NewAllocationHandlers(
+		container.GetAllocationService(),
+		container.Logger,
+	)
+
+	// Health checks (no auth required)
+	router.GET("/health", coreHandlers.Health)
+	router.GET("/ready", coreHandlers.Ready)
+	router.GET("/live", coreHandlers.Live)
+	router.GET("/version", coreHandlers.Version)
+	router.GET("/metrics", coreHandlers.Metrics)
 
 	// Swagger documentation (development only)
 	if container.Config.Environment != "production" {
 		router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 	}
-
-	// Initialize handlers with services from DI container
-	fundingHandlers := handlers.NewFundingHandlers(container.GetFundingService(), container.Logger)
-	// investingHandlers := handlers.NewInvestingHandlers(container.GetInvestingService(), container.Logger)
-	onboardingHandlers := handlers.NewOnboardingHandlers(container.GetOnboardingService(), container.ZapLog)
-	walletHandlers := handlers.NewWalletHandlers(container.GetWalletService(), container.ZapLog)
-	securityHandlers := handlers.NewSecurityHandlers(container.GetPasscodeService(), container.GetOnboardingService(), container.ZapLog)
-
-	// Initialize AI-CFO and ZeroG handlers
-	aicfoHandlers := handlers.NewAICfoHandler(container.GetAICfoService(), container.ZapLog)
-	zeroGHandlers := handlers.NewZeroGHandler(
-		container.GetStorageClient(),
-		container.GetInferenceGateway(),
-		container.GetNamespaceManager(),
+	walletFundingHandlers := handlers.NewWalletFundingHandlers(
+		container.GetWalletService(),
+		container.GetFundingService(),
+		container.GetWithdrawalService(),
+		container.GetInvestingService(),
+		container.Logger,
+	)
+	authHandlers := handlers.NewAuthHandlers(
+		container.DB,
+		container.Config,
+		container.ZapLog,
+		*container.UserRepo,
+		container.GetVerificationService(),
+		*container.GetOnboardingJobService(),
+		container.GetOnboardingService(),
+		container.EmailService,
+		container.KYCProvider,
+		container.GetSessionService(),
+		container.GetTwoFAService(),
+		container.RedisClient,
+	)
+	securityHandlers := handlers.NewSecurityHandlers(
+		container.GetPasscodeService(),
+		container.GetOnboardingService(),
+		container.UserRepo,
+		container.Config,
 		container.ZapLog,
 	)
+
+	// Initialize social auth handlers
+	socialAuthHandlers := handlers.NewSocialAuthHandlers(
+		container.GetSocialAuthService(),
+		container.GetWebAuthnService(),
+		*container.UserRepo,
+		container.Config,
+		container.ZapLog,
+	)
+
+// Initialize integration handlers (Alpaca, Due)
+integrationHandlers := handlers.NewIntegrationHandlers(
+	container.AlpacaClient,
+	container.GetDueService(),
+	container.Config.Due.WebhookSecret,
+	services.NewNotificationService(container.ZapLog),
+	container.Logger,
+)
+
+	// Create session validator adapter
+	sessionValidator := NewSessionValidatorAdapter(container.GetSessionService())
 
 	// API v1 routes
 	v1 := router.Group("/api/v1")
 	{
-		// Authentication routes (no auth required)
+		// Authentication routes (no auth required, no CSRF - API clients don't need CSRF protection)
 		auth := v1.Group("/auth")
 		{
+			auth.POST("/register", authHandlers.Register)
+			auth.POST("/login", authHandlers.Login)
+			auth.POST("/refresh", authHandlers.RefreshToken)
+			auth.POST("/logout", authHandlers.Logout)
+			auth.POST("/forgot-password", authHandlers.ForgotPassword)
+			auth.POST("/reset-password", authHandlers.ResetPassword)
+			auth.POST("/verify-email", authHandlers.VerifyEmail)
+			auth.POST("/verify-code", authHandlers.VerifyCode)
+			auth.POST("/resend-code", authHandlers.ResendCode)
 
-			// New signup flow with verification
-			authSignupHandlers := handlers.NewAuthSignupHandlers(
-				container.DB,
-				container.Config,
-				container.ZapLog,
-				*container.UserRepo,
-				container.GetVerificationService(),
-				*container.GetOnboardingJobService(),
-				container.GetOnboardingService(),
-				container.EmailService,
-				container.KYCProvider,
-			)
-			auth.POST("/register", authSignupHandlers.Register)
-			auth.POST("/verify-code", authSignupHandlers.VerifyCode)
-			auth.POST("/resend-code", authSignupHandlers.ResendCode)
+			// Social auth routes (no auth required)
+			auth.POST("/social/url", socialAuthHandlers.GetSocialAuthURL)
+			auth.POST("/social/login", socialAuthHandlers.SocialLogin)
 
-			auth.POST("/login", handlers.Login(container.DB, container.Config, container.Logger, container.EmailService))
-			auth.POST("/refresh", handlers.RefreshToken(container.DB, container.Config, container.Logger))
-			auth.POST("/logout", handlers.Logout(container.DB, container.Config, container.Logger))
-			auth.POST("/forgot-password", handlers.ForgotPassword(container.DB, container.Config, container.Logger))
-			auth.POST("/reset-password", handlers.ResetPassword(container.DB, container.Config, container.Logger))
-			auth.POST("/verify-email", handlers.VerifyEmail(container.DB, container.Config, container.Logger))
+			// WebAuthn login (no auth required)
+			auth.POST("/webauthn/login/begin", socialAuthHandlers.BeginWebAuthnLogin)
 		}
 
-		// Onboarding routes - OpenAPI spec compliant
+		// Onboarding routes - OpenAPI spec compliant (no CSRF for public start endpoint)
 		onboarding := v1.Group("/onboarding")
 		{
-			onboarding.POST("/start", onboardingHandlers.StartOnboarding)
+			onboarding.POST("/start", authHandlers.StartOnboarding)
 
 			authenticatedOnboarding := onboarding.Group("/")
-			authenticatedOnboarding.Use(middleware.Authentication(container.Config, container.Logger))
+			authenticatedOnboarding.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator))
 			{
-				authenticatedOnboarding.GET("/status", onboardingHandlers.GetOnboardingStatus)
-				authenticatedOnboarding.POST("/kyc/submit", onboardingHandlers.SubmitKYC)
+				authenticatedOnboarding.GET("/status", authHandlers.GetOnboardingStatus)
+				authenticatedOnboarding.GET("/progress", authHandlers.GetOnboardingProgress)
+				authenticatedOnboarding.POST("/complete", authHandlers.CompleteOnboarding)
+				authenticatedOnboarding.POST("/kyc/submit", authHandlers.SubmitKYC)
 			}
 		}
 
 		// KYC provider webhooks (no auth required for external callbacks)
 		kyc := v1.Group("/kyc")
 		{
-			kyc.POST("/callback/:provider_ref", onboardingHandlers.ProcessKYCCallback)
+			kyc.POST("/callback/:provider_ref", authHandlers.ProcessKYCCallback)
 		}
 
 		// Protected routes (auth required)
 		protected := v1.Group("/")
-		protected.Use(middleware.Authentication(container.Config, container.Logger))
+		protected.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator))
+		protected.Use(middleware.CSRFProtection(csrfStore))
 		{
 			// User management
 			users := protected.Group("/users")
 			{
-				users.GET("/me", handlers.GetProfile(container.DB, container.Config, container.Logger))
-				users.PUT("/me", handlers.UpdateProfile(container.DB, container.Config, container.Logger))
-				users.POST("/me/change-password", handlers.ChangePassword(container.DB, container.Config, container.Logger))
-				users.DELETE("/me", handlers.DeleteAccount(container.DB, container.Config, container.Logger))
-				users.POST("/me/enable-2fa", handlers.Enable2FA(container.DB, container.Config, container.Logger))
-				users.POST("/me/disable-2fa", handlers.Disable2FA(container.DB, container.Config, container.Logger))
+				users.GET("/me", authHandlers.GetProfile)
+				users.PUT("/me", authHandlers.UpdateProfile)
+				users.POST("/me/change-password", authHandlers.ChangePassword)
+				users.DELETE("/me", authHandlers.DeleteAccount)
+				users.POST("/me/enable-2fa", authHandlers.Enable2FA)
+				users.POST("/me/disable-2fa", authHandlers.Disable2FA)
 			}
 
 			// KYC status utilities (auth required but no KYC gate)
 			kycProtected := protected.Group("/kyc")
 			{
-				kycProtected.GET("/status", onboardingHandlers.GetKYCStatus)
+				kycProtected.GET("/status", authHandlers.GetKYCStatus)
+				kycProtected.GET("/verification-url", authHandlers.GetKYCVerificationURL)
 			}
 
 			// Security routes for passcode management
@@ -131,165 +203,356 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				security.PUT("/passcode", securityHandlers.UpdatePasscode)
 				security.POST("/passcode/verify", securityHandlers.VerifyPasscode)
 				security.DELETE("/passcode", securityHandlers.RemovePasscode)
+
+				// Social account management
+				security.GET("/social-accounts", socialAuthHandlers.GetLinkedAccounts)
+				security.POST("/social-accounts/link", socialAuthHandlers.LinkSocialAccount)
+				security.DELETE("/social-accounts/:provider", socialAuthHandlers.UnlinkSocialAccount)
+
+				// WebAuthn/Passkey management
+				security.GET("/passkeys", socialAuthHandlers.GetWebAuthnCredentials)
+				security.POST("/passkeys/register", socialAuthHandlers.BeginWebAuthnRegistration)
+				security.DELETE("/passkeys/:id", socialAuthHandlers.DeleteWebAuthnCredential)
+
+				// Device management
+				securityEnhancedHandlers := handlers.NewSecurityEnhancedHandlers(
+					container.GetDeviceTrackingService(),
+					container.GetIPWhitelistService(),
+					container.GetWithdrawalSecurityService(),
+					container.GetSecurityEventLogger(),
+					container.ZapLog,
+				)
+				security.GET("/devices", securityEnhancedHandlers.GetDevices)
+				security.POST("/devices/:id/trust", securityEnhancedHandlers.TrustDevice)
+				security.DELETE("/devices/:id", securityEnhancedHandlers.RevokeDevice)
+
+				// IP whitelist management
+				security.GET("/ip-whitelist", securityEnhancedHandlers.GetIPWhitelist)
+				security.POST("/ip-whitelist", securityEnhancedHandlers.AddIPToWhitelist)
+				security.POST("/ip-whitelist/:id/verify", securityEnhancedHandlers.VerifyWhitelistedIP)
+				security.DELETE("/ip-whitelist/:id", securityEnhancedHandlers.RemoveIPFromWhitelist)
+
+				// Security events
+				security.GET("/events", securityEnhancedHandlers.GetSecurityEvents)
+				security.GET("/current-ip", securityEnhancedHandlers.GetCurrentIP)
+
+				// Withdrawal confirmation
+				security.POST("/withdrawals/confirm", securityEnhancedHandlers.ConfirmWithdrawal)
+
+				// MFA management
+				mfaHandlers := handlers.NewMFAHandlers(
+					container.GetMFAService(),
+					container.GetGeoSecurityService(),
+					container.GetIncidentResponseService(),
+					container.ZapLog,
+				)
+				security.GET("/mfa", mfaHandlers.GetMFASettings)
+				security.POST("/mfa/sms", mfaHandlers.SetupSMSMFA)
+				security.POST("/mfa/send-code", mfaHandlers.SendMFACode)
+				security.POST("/mfa/verify", mfaHandlers.VerifyMFACode)
+				security.GET("/geo-info", mfaHandlers.GetGeoInfo)
 			}
 
 			// Funding routes (OpenAPI spec compliant)
 			funding := protected.Group("/funding")
 			{
-				funding.POST("/deposit/address", fundingHandlers.CreateDepositAddress)
-				funding.GET("/confirmations", fundingHandlers.GetFundingConfirmations)
+				funding.POST("/deposit/address", walletFundingHandlers.CreateDepositAddress)
+				funding.GET("/confirmations", walletFundingHandlers.GetFundingConfirmations)
+				funding.POST("/virtual-account", walletFundingHandlers.CreateVirtualAccount)
+				funding.GET("/transactions", walletFundingHandlers.GetTransactionHistory)
 			}
 
 			// Balance routes (part of funding but separate for clarity)
-			protected.GET("/balances", fundingHandlers.GetBalances)
+			protected.GET("/balances", walletFundingHandlers.GetBalances)
 
-			// Investing routes (OpenAPI spec compliant) - Commented out until service is implemented
-			// investing := protected.Group("/investing")
-			// {
-			// 	investing.GET("/baskets", investingHandlers.GetBaskets)
-			// 	investing.GET("/baskets/:basketId", investingHandlers.GetBasket)
-			// 	investing.POST("/orders", investingHandlers.CreateOrder)
-			// 	investing.GET("/orders", investingHandlers.GetOrders)
-			// 	investing.GET("/orders/:orderId", investingHandlers.GetOrder)
-			// 	investing.GET("/portfolio", investingHandlers.GetPortfolio)
-			// }
+			// Account routes - Station (home screen) endpoint
+			account := protected.Group("/account")
+			{
+				stationHandlers := container.GetStationHandlers()
+				if stationHandlers != nil {
+					// Station endpoint - returns home screen data per PRD
+					// "Total balance, Spend balance, Invest balance, System status"
+					account.GET("/station", stationHandlers.GetStation)
+				}
+			}
+
+			// Limits routes - deposit/withdrawal limits based on KYC tier
+			limits := protected.Group("/limits")
+			{
+				limitsHandler := container.GetLimitsHandler()
+				if limitsHandler != nil {
+					limits.GET("", limitsHandler.GetUserLimits())
+					limits.POST("/validate/deposit", limitsHandler.ValidateDeposit())
+					limits.POST("/validate/withdrawal", limitsHandler.ValidateWithdrawal())
+				}
+			}
+
+			// Investment routes
+			basketExecutor := container.InitializeBasketExecutor()
+			investingService := container.GetInvestingService()
+			if basketExecutor != nil && investingService != nil {
+				// Curated baskets endpoints
+				baskets := protected.Group("/baskets")
+				{
+					baskets.GET("", func(c *gin.Context) {
+						// Get curated baskets
+						ctx := c.Request.Context()
+						basketList, err := investingService.ListBaskets(ctx)
+						if err != nil {
+							c.JSON(500, gin.H{"error": "INTERNAL_ERROR", "message": "Failed to get baskets"})
+							return
+						}
+						c.JSON(200, gin.H{"baskets": basketList})
+					})
+					baskets.GET("/:id", func(c *gin.Context) {
+						// Get basket by ID
+						ctx := c.Request.Context()
+						basketID, err := uuid.Parse(c.Param("id"))
+						if err != nil {
+							c.JSON(400, gin.H{"error": "INVALID_ID", "message": "Invalid basket ID"})
+							return
+						}
+						basket, err := investingService.GetBasket(ctx, basketID)
+						if err != nil {
+							c.JSON(500, gin.H{"error": "INTERNAL_ERROR", "message": "Failed to get basket"})
+							return
+						}
+						if basket == nil {
+							c.JSON(404, gin.H{"error": "NOT_FOUND", "message": "Basket not found"})
+							return
+						}
+						c.JSON(200, basket)
+					})
+					baskets.POST("/:id/invest", func(c *gin.Context) {
+						// Invest in basket
+						ctx := c.Request.Context()
+						userID, _ := uuid.Parse(c.GetString("user_id"))
+						basketID, err := uuid.Parse(c.Param("id"))
+						if err != nil {
+							c.JSON(400, gin.H{"error": "INVALID_ID", "message": "Invalid basket ID"})
+							return
+						}
+						var req struct {
+							Amount string `json:"amount" binding:"required"`
+						}
+						if err := c.ShouldBindJSON(&req); err != nil {
+							c.JSON(400, gin.H{"error": "INVALID_REQUEST", "message": err.Error()})
+							return
+						}
+						amount, err := decimal.NewFromString(req.Amount)
+						if err != nil {
+							c.JSON(400, gin.H{"error": "INVALID_AMOUNT", "message": "Invalid amount format"})
+							return
+						}
+						// Create order request
+						orderReq := &entities.OrderCreateRequest{
+							BasketID: basketID,
+							Side:     entities.OrderSideBuy,
+							Amount:   amount.String(),
+						}
+						order, err := investingService.CreateOrder(ctx, userID, orderReq)
+						if err != nil {
+							c.JSON(500, gin.H{"error": "INVESTMENT_FAILED", "message": err.Error()})
+							return
+						}
+						c.JSON(201, gin.H{"order": order})
+					})
+				}
+			}
 
 			// Wallet routes (OpenAPI spec compliant)
 			wallet := protected.Group("/wallet")
 			{
-				wallet.GET("/addresses", walletHandlers.GetWalletAddresses)
-				wallet.GET("/status", walletHandlers.GetWalletStatus)
+				wallet.GET("/addresses", walletFundingHandlers.GetWalletAddresses)
+				wallet.GET("/status", walletFundingHandlers.GetWalletStatus)
 			}
 
 			// Enhanced wallet endpoints
 			wallets := protected.Group("/wallets")
 			{
-				wallets.POST("/initiate", walletHandlers.InitiateWalletCreation)
-				wallets.POST("/provision", walletHandlers.ProvisionWallets)
-				wallets.GET("/:chain/address", walletHandlers.GetWalletByChain)
+				wallets.POST("/initiate", walletFundingHandlers.InitiateWalletCreation)
+				wallets.POST("/provision", walletFundingHandlers.ProvisionWallets)
+				wallets.GET("/:chain/address", walletFundingHandlers.GetWalletByChain)
 			}
 
-			// Investment baskets
-			baskets := protected.Group("/baskets")
+			// Portfolio endpoints (STACK MVP spec compliant)
+			portfolio := protected.Group("/portfolio")
 			{
-				baskets.GET("/", handlers.GetBaskets(container.DB, container.Config, container.Logger))
-				baskets.POST("/", handlers.CreateBasket(container.DB, container.Config, container.Logger))
-				baskets.GET("/:id", handlers.GetBasket(container.DB, container.Config, container.Logger))
-				baskets.PUT("/:id", handlers.UpdateBasket(container.DB, container.Config, container.Logger))
-				baskets.DELETE("/:id", handlers.DeleteBasket(container.DB, container.Config, container.Logger))
-				baskets.POST("/:id/invest", handlers.InvestInBasket(container.DB, container.Config, container.Logger))
-				baskets.POST("/:id/withdraw", handlers.WithdrawFromBasket(container.DB, container.Config, container.Logger))
+				portfolio.GET("/overview", walletFundingHandlers.GetPortfolio)
+
+				// AI Financial Manager - Portfolio endpoints
+				if container.GetPortfolioDataProvider() != nil {
+					portfolioActivityHandlers := handlers.NewPortfolioActivityHandlers(
+						container.GetPortfolioDataProvider(),
+						container.GetActivityDataProvider(),
+						container.GetStreakRepository(),
+						container.GetContributionsRepository(),
+						container.Logger,
+					)
+					portfolio.GET("/weekly-stats", portfolioActivityHandlers.GetWeeklyStats)
+					portfolio.GET("/allocations", portfolioActivityHandlers.GetAllocations)
+					portfolio.GET("/top-movers", portfolioActivityHandlers.GetTopMovers)
+					portfolio.GET("/performance", portfolioActivityHandlers.GetPerformance)
+				}
 			}
 
-			// Curated baskets (public/featured)
-			curated := protected.Group("/curated")
-			{
-				curated.GET("/baskets", handlers.GetCuratedBaskets(container.DB, container.Config, container.Logger))
-				curated.GET("/baskets/:id", handlers.GetCuratedBasket(container.DB, container.Config, container.Logger))
-				curated.POST("/baskets/:id/invest", handlers.InvestInCuratedBasket(container.DB, container.Config, container.Logger))
+			// Activity endpoints (AI Financial Manager)
+			if container.GetActivityDataProvider() != nil {
+				activity := protected.Group("/activity")
+				{
+					portfolioActivityHandlers := handlers.NewPortfolioActivityHandlers(
+						container.GetPortfolioDataProvider(),
+						container.GetActivityDataProvider(),
+						container.GetStreakRepository(),
+						container.GetContributionsRepository(),
+						container.Logger,
+					)
+					activity.GET("/contributions", portfolioActivityHandlers.GetContributions)
+					activity.GET("/streak", portfolioActivityHandlers.GetStreak)
+					activity.GET("/timeline", portfolioActivityHandlers.GetTimeline)
+				}
 			}
 
-			// Copy trading
-			copy := protected.Group("/copy")
-			{
-				copy.GET("/traders", handlers.GetTopTraders(container.DB, container.Config, container.Logger))
-				copy.GET("/traders/:id", handlers.GetTrader(container.DB, container.Config, container.Logger))
-				copy.POST("/traders/:id/follow", handlers.FollowTrader(container.DB, container.Config, container.Logger))
-				copy.DELETE("/traders/:id/unfollow", handlers.UnfollowTrader(container.DB, container.Config, container.Logger))
-				copy.GET("/following", handlers.GetFollowedTraders(container.DB, container.Config, container.Logger))
-				copy.GET("/followers", handlers.GetFollowers(container.DB, container.Config, container.Logger))
+			// AI Chat endpoints (AI Financial Manager)
+			if container.GetAIOrchestrator() != nil {
+				aiChatHandlers := handlers.NewAIChatHandlers(container.GetAIOrchestrator(), container.Logger)
+				aiGroup := protected.Group("/ai")
+				{
+					aiGroup.POST("/chat", aiChatHandlers.Chat)
+					aiGroup.GET("/wrapped", aiChatHandlers.GetWrapped)
+					aiGroup.GET("/quick-insight", aiChatHandlers.QuickInsight)
+					aiGroup.GET("/suggestions", aiChatHandlers.GetSuggestedQuestions)
+				}
 			}
 
-			// Cards and payments
-			cards := protected.Group("/cards")
-			{
-				cards.Use(middleware.RequireKYC(container.GetOnboardingService(), container.ZapLog))
-				cards.GET("/", handlers.GetCards(container.DB, container.Config, container.Logger))
-				cards.POST("/", handlers.CreateCard(container.DB, container.Config, container.Logger))
-				cards.GET("/:id", handlers.GetCard(container.DB, container.Config, container.Logger))
-				cards.PUT("/:id", handlers.UpdateCard(container.DB, container.Config, container.Logger))
-				cards.DELETE("/:id", handlers.DeleteCard(container.DB, container.Config, container.Logger))
-				cards.POST("/:id/freeze", handlers.FreezeCard(container.DB, container.Config, container.Logger))
-				cards.POST("/:id/unfreeze", handlers.UnfreezeCard(container.DB, container.Config, container.Logger))
-				cards.GET("/:id/transactions", handlers.GetCardTransactions(container.DB, container.Config, container.Logger))
+			// News endpoints (AI Financial Manager)
+			if container.GetNewsService() != nil {
+				newsHandlers := handlers.NewNewsHandlers(container.GetNewsService(), container.Logger)
+				news := protected.Group("/news")
+				{
+					news.GET("/feed", newsHandlers.GetFeed)
+					news.GET("/weekly", newsHandlers.GetWeeklyNews)
+					news.POST("/read", newsHandlers.MarkAsRead)
+					news.GET("/unread-count", newsHandlers.GetUnreadCount)
+					news.POST("/refresh", newsHandlers.RefreshNews)
+				}
 			}
 
-			// Transactions
-			transactions := protected.Group("/transactions")
+			// Alpaca Assets - Tradable stocks and ETFs
+			assets := protected.Group("/assets")
 			{
-				transactions.GET("/", handlers.GetTransactions(container.DB, container.Config, container.Logger))
-				transactions.GET("/:id", handlers.GetTransaction(container.DB, container.Config, container.Logger))
-				transactions.POST("/deposit", handlers.Deposit(container.DB, container.Config, container.Logger))
-				transactions.POST("/withdraw",
-					middleware.RequireKYC(container.GetOnboardingService(), container.ZapLog),
-					handlers.Withdraw(container.DB, container.Config, container.Logger))
-				transactions.POST("/transfer", handlers.Transfer(container.DB, container.Config, container.Logger))
-				transactions.POST("/swap", handlers.SwapTokens(container.DB, container.Config, container.Logger))
+				assets.GET("/", integrationHandlers.GetAssets)
+				assets.GET("/:symbol_or_id", integrationHandlers.GetAsset)
 			}
 
-			// Analytics and portfolio
-			analytics := protected.Group("/analytics")
+			// Allocation routes - 70/30 Smart Allocation Mode
+			allocation := protected.Group("/user/:id/allocation")
 			{
-				analytics.GET("/portfolio", handlers.GetPortfolioAnalytics(container.DB, container.Config, container.Logger))
-				analytics.GET("/performance", handlers.GetPerformanceMetrics(container.DB, container.Config, container.Logger))
-				analytics.GET("/allocation", handlers.GetAssetAllocation(container.DB, container.Config, container.Logger))
-				analytics.GET("/history", handlers.GetPortfolioHistory(container.DB, container.Config, container.Logger))
-			}
-
-			// Notifications
-			notifications := protected.Group("/notifications")
-			{
-				notifications.GET("/", handlers.GetNotifications(container.DB, container.Config, container.Logger))
-				notifications.PUT("/:id/read", handlers.MarkNotificationRead(container.DB, container.Config, container.Logger))
-				notifications.PUT("/read-all", handlers.MarkAllNotificationsRead(container.DB, container.Config, container.Logger))
-				notifications.DELETE("/:id", handlers.DeleteNotification(container.DB, container.Config, container.Logger))
+				allocation.POST("/enable", allocationHandlers.EnableAllocationMode)
+				allocation.POST("/pause", allocationHandlers.PauseAllocationMode)
+				allocation.POST("/resume", allocationHandlers.ResumeAllocationMode)
+				allocation.GET("/status", allocationHandlers.GetAllocationStatus)
+				allocation.GET("/balances", allocationHandlers.GetAllocationBalances)
 			}
 		}
 
 		// Admin bootstrap route (enforces super admin token after initial creation)
-		v1.POST("/admin/users", handlers.CreateAdmin(container.DB, container.Config, container.Logger))
+		// v1.POST("/admin/users", authHandlers.CreateAdmin)
 
 		// Admin routes (admin auth required)
 		admin := v1.Group("/admin")
-		admin.Use(middleware.Authentication(container.Config, container.Logger))
+		admin.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator))
 		admin.Use(middleware.AdminAuth(container.DB, container.Logger))
+		admin.Use(middleware.CSRFProtection(csrfStore))
 		{
-			admin.GET("/users", handlers.GetAllUsers(container.DB, container.Config, container.Logger))
-			admin.GET("/users/:id", handlers.GetUserByID(container.DB, container.Config, container.Logger))
-			admin.PUT("/users/:id/status", handlers.UpdateUserStatus(container.DB, container.Config, container.Logger))
-			admin.GET("/transactions", handlers.GetAllTransactions(container.DB, container.Config, container.Logger))
-			admin.GET("/analytics/system", handlers.GetSystemAnalytics(container.DB, container.Config, container.Logger))
-			admin.POST("/baskets/curated", handlers.CreateCuratedBasket(container.DB, container.Config, container.Logger))
-			admin.PUT("/baskets/curated/:id", handlers.UpdateCuratedBasket(container.DB, container.Config, container.Logger))
-
 			// Wallet admin routes
-			admin.POST("/wallet/create", walletHandlers.CreateWalletsForUser)
-			admin.POST("/wallet/retry-provisioning", walletHandlers.RetryWalletProvisioning)
-			admin.GET("/wallet/health", walletHandlers.HealthCheck)
+			admin.POST("/wallet/create", walletFundingHandlers.CreateWalletsForUser)
+			admin.POST("/wallet/retry-provisioning", walletFundingHandlers.RetryWalletProvisioning)
+			admin.GET("/wallet/health", walletFundingHandlers.HealthCheck)
 
-			// Wallet set management
-			admin.POST("/wallet-sets", handlers.CreateWalletSet(container.DB, container.Config, container.Logger))
-			admin.GET("/wallet-sets", handlers.GetWalletSets(container.DB, container.Config, container.Logger))
-			admin.GET("/wallet-sets/:id", handlers.GetWalletSetByID(container.DB, container.Config, container.Logger))
+			// Security admin routes
+			adminMFAHandlers := handlers.NewMFAHandlers(
+				container.GetMFAService(),
+				container.GetGeoSecurityService(),
+				container.GetIncidentResponseService(),
+				container.ZapLog,
+			)
+			adminSecurity := admin.Group("/security")
+			{
+				// Security dashboard
+				adminSecurity.GET("/dashboard", adminMFAHandlers.GetSecurityDashboard)
 
-			// Enhanced wallet management
-			admin.GET("/wallets", handlers.GetAdminWallets(container.DB, container.Config, container.Logger))
+				// Incident management
+				adminSecurity.GET("/incidents", adminMFAHandlers.GetOpenIncidents)
+				adminSecurity.GET("/incidents/:id", adminMFAHandlers.GetIncident)
+				adminSecurity.PUT("/incidents/:id/status", adminMFAHandlers.UpdateIncidentStatus)
+				adminSecurity.POST("/incidents/:id/playbook", adminMFAHandlers.ExecutePlaybook)
+
+				// Geo-blocking management
+				adminSecurity.GET("/blocked-countries", adminMFAHandlers.GetBlockedCountries)
+				adminSecurity.POST("/blocked-countries", adminMFAHandlers.BlockCountry)
+				adminSecurity.DELETE("/blocked-countries/:country_code", adminMFAHandlers.UnblockCountry)
+			}
+		}
+
+		// Due API routes (protected)
+		due := protected.Group("/due")
+		{
+			// Account management
+			due.POST("/account", integrationHandlers.CreateDueAccount)
 		}
 
 		// Webhooks (external systems) - OpenAPI spec compliant
 		webhooks := v1.Group("/webhooks")
 		{
-			webhooks.POST("/chain-deposit", fundingHandlers.ChainDepositWebhook)
-			// webhooks.POST("/brokerage-fill", investingHandlers.BrokerageFillWebhook) // Commented out until service is implemented
-			// Legacy webhook handlers (to be deprecated)
-			webhooks.POST("/payment", handlers.PaymentWebhook(container.DB, container.Config, container.Logger))
-			webhooks.POST("/blockchain", handlers.BlockchainWebhook(container.DB, container.Config, container.Logger))
-			webhooks.POST("/cards", handlers.CardWebhook(container.DB, container.Config, container.Logger))
+			webhooks.POST("/chain-deposit", walletFundingHandlers.ChainDepositWebhook)
+			webhooks.POST("/brokerage-fill", walletFundingHandlers.BrokerageFillWebhook)
+		}
+
+		// Register Alpaca investment routes
+		if container.GetInvestmentHandlers() != nil {
+			RegisterAlpacaRoutes(
+				v1,
+				container.GetInvestmentHandlers(),
+				container.GetAlpacaWebhookHandlers(),
+				container.Config,
+				container.Logger,
+				sessionValidator,
+			)
+		}
+
+		// Register advanced features routes (analytics, market, scheduled investments, rebalancing)
+		if container.GetAnalyticsHandlers() != nil {
+			RegisterAdvancedFeaturesRoutes(
+				v1,
+				container.GetAnalyticsHandlers(),
+				container.GetMarketHandlers(),
+				container.GetScheduledInvestmentHandlers(),
+				container.GetRebalancingHandlers(),
+				container.Config,
+				container.Logger,
+				sessionValidator,
+			)
+		}
+
+		// Register round-up routes
+		RegisterRoundupRoutes(
+			v1,
+			container.GetRoundupHandlers(),
+			container.Config,
+			container.Logger,
+			sessionValidator,
+		)
+
+		// Register copy trading routes
+		if container.GetCopyTradingHandlers() != nil {
+			copyTradingHandlers := container.GetCopyTradingHandlers()
+			authMiddleware := middleware.Authentication(container.Config, container.Logger, sessionValidator)
+			SetupCopyTradingRoutes(v1, copyTradingHandlers, authMiddleware)
 		}
 	}
 
-	// Setup ZeroG and AI routes
-	SetupZeroGRoutes(router, zeroGHandlers, aicfoHandlers, container.ZapLog)
+	// ZeroG and dedicated AI-CFO HTTP routes have been removed.
 
 	return router
 }

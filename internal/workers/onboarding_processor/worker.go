@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
-	"github.com/stack-service/stack_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 )
 
 // Dependencies interfaces for the worker
@@ -310,12 +310,10 @@ func (w *Worker) createWallets(ctx context.Context, job *entities.OnboardingJob,
 		}
 	}
 
-	// Default chains if not specified - use testnet for test API key compatibility
+	// Default to SOL-DEVNET if not specified
 	if len(chains) == 0 {
 		chains = []entities.WalletChain{
-			entities.ChainETHSepolia,
 			entities.ChainSOLDevnet,
-			entities.ChainAPTOSTestnet,
 		}
 	}
 

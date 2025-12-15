@@ -14,129 +14,72 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/internal/infrastructure/config"
-	"github.com/stack-service/stack_service/pkg/auth"
-	"github.com/stack-service/stack_service/pkg/crypto"
-	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/infrastructure/config"
+	"github.com/rail-service/rail_service/pkg/auth"
+	"github.com/rail-service/rail_service/pkg/crypto"
+	"github.com/rail-service/rail_service/pkg/logger"
+	"go.uber.org/zap"
 )
 
-type adminHandler struct {
-	db  *sql.DB
-	cfg *config.Config
-	log *logger.Logger
+// AdminHandlers handles admin-related operations
+type AdminHandlers struct {
+	db     *sql.DB
+	cfg    *config.Config
+	logger *zap.Logger
 }
 
-func newAdminHandler(db *sql.DB, cfg *config.Config, log *logger.Logger) *adminHandler {
-	return &adminHandler{
-		db:  db,
-		cfg: cfg,
-		log: log,
+// NewAdminHandlers creates a new AdminHandlers instance
+func NewAdminHandlers(db *sql.DB, cfg *config.Config, logger *zap.Logger) *AdminHandlers {
+	return &AdminHandlers{
+		db:     db,
+		cfg:    cfg,
+		logger: logger,
 	}
 }
 
-// CreateAdmin handles creation of privileged users.
-func CreateAdmin(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.HandlerFunc {
-	handler := newAdminHandler(db, cfg, log)
-	return handler.createAdmin
-}
-
-// GetAllUsers returns a list of users with optional filters.
-func GetAllUsers(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.HandlerFunc {
-	handler := newAdminHandler(db, cfg, log)
-	return handler.getAllUsers
-}
-
-// GetUserByID returns a user by identifier.
-func GetUserByID(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.HandlerFunc {
-	handler := newAdminHandler(db, cfg, log)
-	return handler.getUserByID
-}
-
-// UpdateUserStatus toggles a user's active state.
-func UpdateUserStatus(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.HandlerFunc {
-	handler := newAdminHandler(db, cfg, log)
-	return handler.updateUserStatus
-}
-
-// GetAllTransactions returns platform transactions relevant to admins.
-func GetAllTransactions(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.HandlerFunc {
-	handler := newAdminHandler(db, cfg, log)
-	return handler.getAllTransactions
-}
-
-// GetSystemAnalytics aggregates high level metrics.
-func GetSystemAnalytics(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.HandlerFunc {
-	handler := newAdminHandler(db, cfg, log)
-	return handler.getSystemAnalytics
-}
-
-// CreateCuratedBasket allows admins to register curated baskets.
-func CreateCuratedBasket(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.HandlerFunc {
-	handler := newAdminHandler(db, cfg, log)
-	return handler.createCuratedBasket
-}
-
-// UpdateCuratedBasket modifies a curated basket definition.
-func UpdateCuratedBasket(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.HandlerFunc {
-	handler := newAdminHandler(db, cfg, log)
-	return handler.updateCuratedBasket
-}
-
-func (h *adminHandler) createAdmin(c *gin.Context) {
+// CreateAdmin handles POST /api/v1/admin/create
+func (h *AdminHandlers) CreateAdmin(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
 	var req entities.CreateAdminRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		h.log.Warnw("invalid create admin payload", "error", err)
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "INVALID_REQUEST",
-			"message": "Invalid request payload",
-		})
+		h.logger.Warn("invalid create admin payload", zap.Error(err))
+		SendBadRequest(c, ErrCodeInvalidRequest, MsgInvalidRequest)
 		return
 	}
 
 	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
 	if req.Email == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "INVALID_EMAIL",
-			"message": "Email is required",
-		})
+		SendBadRequest(c, ErrCodeInvalidEmail, "Email is required")
 		return
 	}
 
-	if len(req.Password) < max(8, h.cfg.Security.PasswordMinLength) {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "WEAK_PASSWORD",
-			"message": fmt.Sprintf("Password must be at least %d characters", max(8, h.cfg.Security.PasswordMinLength)),
-		})
+	minPasswordLen := h.getMinPasswordLength()
+	if len(req.Password) < minPasswordLen {
+		SendBadRequest(c, ErrCodeWeakPassword,
+			fmt.Sprintf("Password must be at least %d characters", minPasswordLen))
 		return
 	}
 
 	adminCount, err := h.countAdmins(ctx)
 	if err != nil {
-		h.log.Errorw("failed to count admins", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "INTERNAL_ERROR",
-			"message": "Failed to process request",
-		})
+		h.logger.Error("failed to count admins", zap.Error(err))
+		SendInternalError(c, ErrCodeInternalError, "Failed to process request")
 		return
 	}
 
 	desiredRole := entities.AdminRoleAdmin
 	if req.Role != nil {
 		if !req.Role.IsValid() {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error":   "INVALID_ROLE",
-				"message": "Role must be admin or super_admin",
-			})
+			SendBadRequest(c, ErrCodeInvalidRole, "Role must be admin or super_admin")
 			return
 		}
 		desiredRole = *req.Role
 	}
 
+	// First admin is always super_admin
 	if adminCount == 0 {
 		desiredRole = entities.AdminRoleSuperAdmin
 	} else {
@@ -145,9 +88,9 @@ func (h *adminHandler) createAdmin(c *gin.Context) {
 			if errors.Is(err, errUnauthorized) {
 				status = http.StatusUnauthorized
 			}
-			c.JSON(status, gin.H{
-				"error":   "ADMIN_PRIVILEGES_REQUIRED",
-				"message": err.Error(),
+			c.JSON(status, entities.ErrorResponse{
+				Code:    ErrCodeAdminRequired,
+				Message: err.Error(),
 			})
 			return
 		}
@@ -155,32 +98,304 @@ func (h *adminHandler) createAdmin(c *gin.Context) {
 
 	exists, err := h.emailExists(ctx, req.Email)
 	if err != nil {
-		h.log.Errorw("failed to check email existence", "error", err, "email", req.Email)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "INTERNAL_ERROR",
-			"message": "Failed to process request",
-		})
+		h.logger.Error("failed to check email existence", zap.Error(err), zap.String("email", req.Email))
+		SendInternalError(c, ErrCodeInternalError, "Failed to process request")
 		return
 	}
 
 	if exists {
-		c.JSON(http.StatusConflict, gin.H{
-			"error":   "USER_EXISTS",
-			"message": "User already exists with this email",
-		})
+		SendConflict(c, ErrCodeUserExists, "User already exists with this email")
 		return
 	}
 
 	passwordHash, err := crypto.HashPassword(req.Password)
 	if err != nil {
-		h.log.Errorw("failed to hash password for admin", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "PASSWORD_HASH_FAILED",
-			"message": "Failed to process password",
-		})
+		h.logger.Error("failed to hash password for admin", zap.Error(err))
+		SendInternalError(c, ErrCodePasswordHashFailed, "Failed to process password")
 		return
 	}
 
+	adminResp, err := h.insertAdmin(ctx, req, passwordHash, desiredRole)
+	if err != nil {
+		h.logger.Error("failed to create admin user", zap.Error(err))
+		SendInternalError(c, ErrCodeCreateFailed, "Failed to create admin")
+		return
+	}
+
+	tokenPair, err := auth.GenerateTokenPair(
+		adminResp.ID,
+		adminResp.Email,
+		string(adminResp.Role),
+		h.cfg.JWT.Secret,
+		h.cfg.JWT.AccessTTL,
+		h.cfg.JWT.RefreshTTL,
+	)
+	if err != nil {
+		h.logger.Error("failed to generate admin session tokens", zap.Error(err), zap.String("admin_id", adminResp.ID.String()))
+		SendInternalError(c, ErrCodeTokenGenFailed, "Failed to generate admin session tokens")
+		return
+	}
+
+	response := entities.AdminCreationResponse{
+		AdminUserResponse: *adminResp,
+		AdminSession: entities.AdminSession{
+			AccessToken:  tokenPair.AccessToken,
+			RefreshToken: tokenPair.RefreshToken,
+			ExpiresAt:    tokenPair.ExpiresAt,
+		},
+	}
+
+	SendCreated(c, response)
+}
+
+// GetAllUsers handles GET /api/v1/admin/users
+func (h *AdminHandlers) GetAllUsers(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	limit, offset := h.parsePagination(c)
+
+	conditions, args, err := h.parseUserFilters(c)
+	if err != nil {
+		return // Error already sent
+	}
+
+	query := h.buildUserListQuery(conditions, limit, offset)
+
+	rows, err := h.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		h.logger.Error("failed to list users", zap.Error(err))
+		SendInternalError(c, ErrCodeInternalError, "Failed to retrieve users")
+		return
+	}
+	defer rows.Close()
+
+	users, err := h.scanUsers(rows)
+	if err != nil {
+		h.logger.Error("failed to scan users", zap.Error(err))
+		SendInternalError(c, ErrCodeInternalError, "Failed to parse user record")
+		return
+	}
+
+	SendSuccess(c, gin.H{
+		"items": users,
+		"count": len(users),
+	})
+}
+
+// GetUserByID handles GET /api/v1/admin/users/:id
+func (h *AdminHandlers) GetUserByID(c *gin.Context) {
+	userID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		SendBadRequest(c, ErrCodeInvalidID, "Invalid user ID")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	resp, err := h.getUserByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			SendNotFound(c, ErrCodeUserNotFound, MsgUserNotFound)
+			return
+		}
+		h.logger.Error("failed to get user by id", zap.Error(err), zap.String("user_id", userID.String()))
+		SendInternalError(c, ErrCodeInternalError, "Failed to retrieve user")
+		return
+	}
+
+	SendSuccess(c, resp)
+}
+
+// UpdateUserStatus handles PATCH /api/v1/admin/users/:id/status
+func (h *AdminHandlers) UpdateUserStatus(c *gin.Context) {
+	userID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		SendBadRequest(c, ErrCodeInvalidID, "Invalid user ID")
+		return
+	}
+
+	var req entities.UpdateUserStatusRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		SendBadRequest(c, ErrCodeInvalidRequest, MsgInvalidRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	resp, err := h.updateUserStatus(ctx, userID, req.IsActive)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			SendNotFound(c, ErrCodeUserNotFound, MsgUserNotFound)
+			return
+		}
+		h.logger.Error("failed to update user status", zap.Error(err), zap.String("user_id", userID.String()))
+		SendInternalError(c, ErrCodeInternalError, "Failed to update user status")
+		return
+	}
+
+	SendSuccess(c, resp)
+}
+
+// GetAllTransactions handles GET /api/v1/admin/transactions
+func (h *AdminHandlers) GetAllTransactions(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	limit, offset := h.parsePagination(c)
+
+	transactions, err := h.listTransactions(ctx, limit, offset)
+	if err != nil {
+		h.logger.Error("failed to list transactions", zap.Error(err))
+		SendInternalError(c, ErrCodeInternalError, "Failed to retrieve transactions")
+		return
+	}
+
+	SendSuccess(c, gin.H{
+		"items": transactions,
+		"count": len(transactions),
+	})
+}
+
+// GetSystemAnalytics handles GET /api/v1/admin/analytics
+func (h *AdminHandlers) GetSystemAnalytics(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	analytics, err := h.getSystemAnalytics(ctx)
+	if err != nil {
+		h.logger.Error("failed to load system analytics", zap.Error(err))
+		SendInternalError(c, ErrCodeInternalError, "Failed to retrieve analytics")
+		return
+	}
+
+	SendSuccess(c, analytics)
+}
+
+// CreateCuratedBasket handles POST /api/v1/admin/baskets
+func (h *AdminHandlers) CreateCuratedBasket(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	var req entities.CuratedBasketRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		SendBadRequest(c, ErrCodeInvalidRequest, MsgInvalidRequest)
+		return
+	}
+
+	if err := validateBasketRequest(&req); err != nil {
+		SendBadRequest(c, ErrCodeValidationError, err.Error())
+		return
+	}
+
+	basket, err := h.createBasket(ctx, &req)
+	if err != nil {
+		h.logger.Error("failed to create basket", zap.Error(err))
+		SendInternalError(c, ErrCodeCreateFailed, "Failed to create curated basket")
+		return
+	}
+
+	SendCreated(c, basket)
+}
+
+// UpdateCuratedBasket handles PUT /api/v1/admin/baskets/:id
+func (h *AdminHandlers) UpdateCuratedBasket(c *gin.Context) {
+	basketID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		SendBadRequest(c, ErrCodeInvalidID, "Invalid basket ID")
+		return
+	}
+
+	var req entities.CuratedBasketRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		SendBadRequest(c, ErrCodeInvalidRequest, MsgInvalidRequest)
+		return
+	}
+
+	if err := validateBasketRequest(&req); err != nil {
+		SendBadRequest(c, ErrCodeValidationError, err.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	basket, err := h.updateBasket(ctx, basketID, &req)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			SendNotFound(c, ErrCodeNotFound, "Basket not found")
+			return
+		}
+		h.logger.Error("failed to update basket", zap.Error(err), zap.String("basket_id", basketID.String()))
+		SendInternalError(c, ErrCodeUpdateFailed, "Failed to update curated basket")
+		return
+	}
+
+	SendSuccess(c, basket)
+}
+
+// Helper methods
+
+func (h *AdminHandlers) getMinPasswordLength() int {
+	if h.cfg.Security.PasswordMinLength > 8 {
+		return h.cfg.Security.PasswordMinLength
+	}
+	return 8
+}
+
+func (h *AdminHandlers) countAdmins(ctx context.Context) (int64, error) {
+	var count int64
+	err := h.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM users WHERE role IN ('admin','super_admin')`).Scan(&count)
+	return count, err
+}
+
+func (h *AdminHandlers) emailExists(ctx context.Context, email string) (bool, error) {
+	var exists bool
+	err := h.db.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM users WHERE LOWER(email) = $1)`, email).Scan(&exists)
+	return exists, err
+}
+
+func (h *AdminHandlers) ensureSuperAdmin(c *gin.Context) error {
+	if role := c.GetString("user_role"); role != "" {
+		if role == string(entities.AdminRoleSuperAdmin) {
+			return nil
+		}
+		return errors.New("super_admin role required")
+	}
+
+	authHeader := c.GetHeader("Authorization")
+	if authHeader == "" {
+		return errUnauthorized
+	}
+
+	const bearer = "Bearer "
+	if !strings.HasPrefix(authHeader, bearer) {
+		return errUnauthorized
+	}
+
+	token := strings.TrimSpace(authHeader[len(bearer):])
+	if token == "" {
+		return errUnauthorized
+	}
+
+	claims, err := auth.ValidateToken(token, h.cfg.JWT.Secret)
+	if err != nil {
+		h.logger.Warn("failed to validate token for admin creation", zap.Error(err))
+		return errUnauthorized
+	}
+
+	if claims.Role != string(entities.AdminRoleSuperAdmin) {
+		return errors.New("super_admin role required")
+	}
+
+	return nil
+}
+
+func (h *AdminHandlers) insertAdmin(ctx context.Context, req entities.CreateAdminRequest, passwordHash string, role entities.AdminRole) (*entities.AdminUserResponse, error) {
 	now := time.Now().UTC()
 	adminID := uuid.New()
 
@@ -200,11 +415,11 @@ func (h *adminHandler) createAdmin(c *gin.Context) {
 	var adminResp entities.AdminUserResponse
 	var lastLogin sql.NullTime
 
-	err = h.db.QueryRowContext(ctx, query,
+	err := h.db.QueryRowContext(ctx, query,
 		adminID,
 		req.Email,
 		passwordHash,
-		string(desiredRole),
+		string(role),
 		string(onboardingStatus),
 		string(kycStatus),
 		now,
@@ -225,75 +440,42 @@ func (h *adminHandler) createAdmin(c *gin.Context) {
 	)
 
 	if err != nil {
-		h.log.Errorw("failed to create admin user", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "CREATE_FAILED",
-			"message": "Failed to create admin",
-		})
-		return
+		return nil, err
 	}
 
 	if lastLogin.Valid {
 		adminResp.LastLoginAt = &lastLogin.Time
 	}
 
-	tokenPair, err := auth.GenerateTokenPair(
-		adminResp.ID,
-		adminResp.Email,
-		string(adminResp.Role),
-		h.cfg.JWT.Secret,
-		h.cfg.JWT.AccessTTL,
-		h.cfg.JWT.RefreshTTL,
-	)
-	if err != nil {
-		h.log.Errorw("failed to generate admin session tokens", "error", err, "admin_id", adminResp.ID)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "TOKEN_GENERATION_FAILED",
-			"message": "Failed to generate admin session tokens",
-		})
-		return
-	}
-
-	response := entities.AdminCreationResponse{
-		AdminUserResponse: adminResp,
-		AdminSession: entities.AdminSession{
-			AccessToken:  tokenPair.AccessToken,
-			RefreshToken: tokenPair.RefreshToken,
-			ExpiresAt:    tokenPair.ExpiresAt,
-		},
-	}
-
-	c.JSON(http.StatusCreated, response)
+	return &adminResp, nil
 }
 
-func (h *adminHandler) getAllUsers(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-	defer cancel()
-
-	limit := 50
+func (h *AdminHandlers) parsePagination(c *gin.Context) (limit, offset int) {
+	limit = 50
 	if v := strings.TrimSpace(c.DefaultQuery("limit", "50")); v != "" {
 		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 && parsed <= 200 {
 			limit = parsed
 		}
 	}
 
-	offset := 0
+	offset = 0
 	if v := strings.TrimSpace(c.Query("offset")); v != "" {
 		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 {
 			offset = parsed
 		}
 	}
 
+	return limit, offset
+}
+
+func (h *AdminHandlers) parseUserFilters(c *gin.Context) ([]string, []interface{}, error) {
 	var conditions []string
 	var args []interface{}
 
 	if roleParam := strings.TrimSpace(c.Query("role")); roleParam != "" {
 		if roleParam != "user" && roleParam != "admin" && roleParam != "super_admin" {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error":   "INVALID_ROLE",
-				"message": "Role must be user, admin, or super_admin",
-			})
-			return
+			SendBadRequest(c, ErrCodeInvalidRole, "Role must be user, admin, or super_admin")
+			return nil, nil, errors.New("invalid role")
 		}
 		args = append(args, roleParam)
 		conditions = append(conditions, fmt.Sprintf("role = $%d", len(args)))
@@ -302,16 +484,17 @@ func (h *adminHandler) getAllUsers(c *gin.Context) {
 	if isActive := strings.TrimSpace(c.Query("isActive")); isActive != "" {
 		active, err := strconv.ParseBool(isActive)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error":   "INVALID_STATUS",
-				"message": "isActive must be a boolean",
-			})
-			return
+			SendBadRequest(c, ErrCodeInvalidStatus, "isActive must be a boolean")
+			return nil, nil, err
 		}
 		args = append(args, active)
 		conditions = append(conditions, fmt.Sprintf("is_active = $%d", len(args)))
 	}
 
+	return conditions, args, nil
+}
+
+func (h *AdminHandlers) buildUserListQuery(conditions []string, limit, offset int) string {
 	queryBuilder := strings.Builder{}
 	queryBuilder.WriteString(`
 		SELECT id, email, role, is_active, onboarding_status, kyc_status, last_login_at, created_at, updated_at
@@ -325,17 +508,10 @@ func (h *adminHandler) getAllUsers(c *gin.Context) {
 	queryBuilder.WriteString(" ORDER BY created_at DESC")
 	queryBuilder.WriteString(fmt.Sprintf(" LIMIT %d OFFSET %d", limit, offset))
 
-	rows, err := h.db.QueryContext(ctx, queryBuilder.String(), args...)
-	if err != nil {
-		h.log.Errorw("failed to list users", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "INTERNAL_ERROR",
-			"message": "Failed to retrieve users",
-		})
-		return
-	}
-	defer rows.Close()
+	return queryBuilder.String()
+}
 
+func (h *AdminHandlers) scanUsers(rows *sql.Rows) ([]entities.AdminUserResponse, error) {
 	var users []entities.AdminUserResponse
 	for rows.Next() {
 		var user entities.AdminUserResponse
@@ -351,39 +527,17 @@ func (h *adminHandler) getAllUsers(c *gin.Context) {
 			&user.CreatedAt,
 			&user.UpdatedAt,
 		); err != nil {
-			h.log.Errorw("failed to scan user", "error", err)
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error":   "INTERNAL_ERROR",
-				"message": "Failed to parse user record",
-			})
-			return
+			return nil, err
 		}
 		if lastLogin.Valid {
 			user.LastLoginAt = &lastLogin.Time
 		}
 		users = append(users, user)
 	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"items": users,
-		"count": len(users),
-	})
+	return users, rows.Err()
 }
 
-func (h *adminHandler) getUserByID(c *gin.Context) {
-	userIDParam := c.Param("id")
-	userID, err := uuid.Parse(userIDParam)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "INVALID_ID",
-			"message": "Invalid user ID",
-		})
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-	defer cancel()
-
+func (h *AdminHandlers) getUserByID(ctx context.Context, userID uuid.UUID) (*entities.AdminUserResponse, error) {
 	query := `
 		SELECT id, email, role, is_active, onboarding_status, kyc_status, last_login_at, created_at, updated_at
 		FROM users
@@ -392,7 +546,7 @@ func (h *adminHandler) getUserByID(c *gin.Context) {
 	var resp entities.AdminUserResponse
 	var lastLogin sql.NullTime
 
-	err = h.db.QueryRowContext(ctx, query, userID).Scan(
+	err := h.db.QueryRowContext(ctx, query, userID).Scan(
 		&resp.ID,
 		&resp.Email,
 		&resp.Role,
@@ -405,51 +559,17 @@ func (h *adminHandler) getUserByID(c *gin.Context) {
 	)
 
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error":   "NOT_FOUND",
-				"message": "User not found",
-			})
-			return
-		}
-		h.log.Errorw("failed to get user by id", "error", err, "user_id", userID)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "INTERNAL_ERROR",
-			"message": "Failed to retrieve user",
-		})
-		return
+		return nil, err
 	}
 
 	if lastLogin.Valid {
 		resp.LastLoginAt = &lastLogin.Time
 	}
 
-	c.JSON(http.StatusOK, resp)
+	return &resp, nil
 }
 
-func (h *adminHandler) updateUserStatus(c *gin.Context) {
-	userIDParam := c.Param("id")
-	userID, err := uuid.Parse(userIDParam)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "INVALID_ID",
-			"message": "Invalid user ID",
-		})
-		return
-	}
-
-	var req entities.UpdateUserStatusRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "INVALID_REQUEST",
-			"message": "Invalid request payload",
-		})
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-	defer cancel()
-
+func (h *AdminHandlers) updateUserStatus(ctx context.Context, userID uuid.UUID, isActive bool) (*entities.AdminUserResponse, error) {
 	query := `
 		UPDATE users
 		SET is_active = $1, updated_at = $2
@@ -459,7 +579,7 @@ func (h *adminHandler) updateUserStatus(c *gin.Context) {
 	var resp entities.AdminUserResponse
 	var lastLogin sql.NullTime
 
-	err = h.db.QueryRowContext(ctx, query, req.IsActive, time.Now().UTC(), userID).Scan(
+	err := h.db.QueryRowContext(ctx, query, isActive, time.Now().UTC(), userID).Scan(
 		&resp.ID,
 		&resp.Email,
 		&resp.Role,
@@ -472,46 +592,17 @@ func (h *adminHandler) updateUserStatus(c *gin.Context) {
 	)
 
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error":   "NOT_FOUND",
-				"message": "User not found",
-			})
-			return
-		}
-		h.log.Errorw("failed to update user status", "error", err, "user_id", userID)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "INTERNAL_ERROR",
-			"message": "Failed to update user status",
-		})
-		return
+		return nil, err
 	}
 
 	if lastLogin.Valid {
 		resp.LastLoginAt = &lastLogin.Time
 	}
 
-	c.JSON(http.StatusOK, resp)
+	return &resp, nil
 }
 
-func (h *adminHandler) getAllTransactions(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-	defer cancel()
-
-	limit := 50
-	if v := strings.TrimSpace(c.DefaultQuery("limit", "50")); v != "" {
-		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 && parsed <= 200 {
-			limit = parsed
-		}
-	}
-
-	offset := 0
-	if v := strings.TrimSpace(c.Query("offset")); v != "" {
-		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 {
-			offset = parsed
-		}
-	}
-
+func (h *AdminHandlers) listTransactions(ctx context.Context, limit, offset int) ([]entities.AdminTransaction, error) {
 	query := `
 		SELECT id, user_id, chain, tx_hash, token, amount, status, created_at
 		FROM deposits
@@ -520,12 +611,7 @@ func (h *adminHandler) getAllTransactions(c *gin.Context) {
 
 	rows, err := h.db.QueryContext(ctx, query, limit, offset)
 	if err != nil {
-		h.log.Errorw("failed to list transactions", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "INTERNAL_ERROR",
-			"message": "Failed to retrieve transactions",
-		})
-		return
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -545,12 +631,7 @@ func (h *adminHandler) getAllTransactions(c *gin.Context) {
 			&tx.Status,
 			&tx.CreatedAt,
 		); err != nil {
-			h.log.Errorw("failed to scan transaction", "error", err)
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error":   "INTERNAL_ERROR",
-				"message": "Failed to parse transaction",
-			})
-			return
+			return nil, err
 		}
 
 		tx.Type = "deposit"
@@ -563,16 +644,10 @@ func (h *adminHandler) getAllTransactions(c *gin.Context) {
 		transactions = append(transactions, tx)
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"items": transactions,
-		"count": len(transactions),
-	})
+	return transactions, rows.Err()
 }
 
-func (h *adminHandler) getSystemAnalytics(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-	defer cancel()
-
+func (h *AdminHandlers) getSystemAnalytics(ctx context.Context) (*entities.SystemAnalytics, error) {
 	query := `
 		SELECT
 			(SELECT COUNT(*) FROM users) AS total_users,
@@ -594,49 +669,19 @@ func (h *adminHandler) getSystemAnalytics(c *gin.Context) {
 		&analytics.TotalWallets,
 	)
 	if err != nil {
-		h.log.Errorw("failed to load system analytics", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "INTERNAL_ERROR",
-			"message": "Failed to retrieve analytics",
-		})
-		return
+		return nil, err
 	}
 
 	analytics.TotalDeposits = totalDeposits.String()
 	analytics.GeneratedAt = time.Now().UTC()
 
-	c.JSON(http.StatusOK, analytics)
+	return &analytics, nil
 }
 
-func (h *adminHandler) createCuratedBasket(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-	defer cancel()
-
-	var req entities.CuratedBasketRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "INVALID_REQUEST",
-			"message": "Invalid request payload",
-		})
-		return
-	}
-
-	if err := h.validateBasketRequest(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "VALIDATION_FAILED",
-			"message": err.Error(),
-		})
-		return
-	}
-
+func (h *AdminHandlers) createBasket(ctx context.Context, req *entities.CuratedBasketRequest) (*entities.Basket, error) {
 	payload, err := json.Marshal(req.Composition)
 	if err != nil {
-		h.log.Errorw("failed to marshal basket composition", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "INTERNAL_ERROR",
-			"message": "Failed to process composition",
-		})
-		return
+		return nil, fmt.Errorf("failed to marshal composition: %w", err)
 	}
 
 	now := time.Now().UTC()
@@ -669,66 +714,21 @@ func (h *adminHandler) createCuratedBasket(c *gin.Context) {
 	)
 
 	if err != nil {
-		h.log.Errorw("failed to create basket", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "CREATE_FAILED",
-			"message": "Failed to create curated basket",
-		})
-		return
+		return nil, err
 	}
 
 	if err := json.Unmarshal(compositionRaw, &basket.Composition); err != nil {
-		h.log.Errorw("failed to unmarshal basket composition", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "INTERNAL_ERROR",
-			"message": "Failed to process basket composition",
-		})
-		return
+		return nil, fmt.Errorf("failed to unmarshal composition: %w", err)
 	}
 
-	c.JSON(http.StatusCreated, basket)
+	return &basket, nil
 }
 
-func (h *adminHandler) updateCuratedBasket(c *gin.Context) {
-	basketIDParam := c.Param("id")
-	basketID, err := uuid.Parse(basketIDParam)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "INVALID_ID",
-			"message": "Invalid basket ID",
-		})
-		return
-	}
-
-	var req entities.CuratedBasketRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "INVALID_REQUEST",
-			"message": "Invalid request payload",
-		})
-		return
-	}
-
-	if err := h.validateBasketRequest(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "VALIDATION_FAILED",
-			"message": err.Error(),
-		})
-		return
-	}
-
+func (h *AdminHandlers) updateBasket(ctx context.Context, basketID uuid.UUID, req *entities.CuratedBasketRequest) (*entities.Basket, error) {
 	payload, err := json.Marshal(req.Composition)
 	if err != nil {
-		h.log.Errorw("failed to marshal basket composition", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "INTERNAL_ERROR",
-			"message": "Failed to process composition",
-		})
-		return
+		return nil, fmt.Errorf("failed to marshal composition: %w", err)
 	}
-
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-	defer cancel()
 
 	query := `
 		UPDATE baskets
@@ -761,90 +761,18 @@ func (h *adminHandler) updateCuratedBasket(c *gin.Context) {
 	)
 
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error":   "NOT_FOUND",
-				"message": "Basket not found",
-			})
-			return
-		}
-		h.log.Errorw("failed to update basket", "error", err, "basket_id", basketID)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "UPDATE_FAILED",
-			"message": "Failed to update curated basket",
-		})
-		return
+		return nil, err
 	}
 
 	if err := json.Unmarshal(compositionRaw, &basket.Composition); err != nil {
-		h.log.Errorw("failed to unmarshal basket composition", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "INTERNAL_ERROR",
-			"message": "Failed to process basket composition",
-		})
-		return
+		return nil, fmt.Errorf("failed to unmarshal composition: %w", err)
 	}
 
-	c.JSON(http.StatusOK, basket)
+	return &basket, nil
 }
 
-func (h *adminHandler) countAdmins(ctx context.Context) (int64, error) {
-	var count int64
-	err := h.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM users WHERE role IN ('admin','super_admin')`,
-	).Scan(&count)
-	return count, err
-}
-
-func (h *adminHandler) emailExists(ctx context.Context, email string) (bool, error) {
-	var exists bool
-	err := h.db.QueryRowContext(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM users WHERE LOWER(email) = $1
-		)`, email,
-	).Scan(&exists)
-	return exists, err
-}
-
-var errUnauthorized = errors.New("authentication required")
-
-func (h *adminHandler) ensureSuperAdmin(c *gin.Context) error {
-	if role := c.GetString("user_role"); role != "" {
-		if role == string(entities.AdminRoleSuperAdmin) {
-			return nil
-		}
-		return errors.New("super_admin role required")
-	}
-
-	authHeader := c.GetHeader("Authorization")
-	if authHeader == "" {
-		return errUnauthorized
-	}
-
-	const bearer = "Bearer "
-	if !strings.HasPrefix(authHeader, bearer) {
-		return errUnauthorized
-	}
-
-	token := strings.TrimSpace(authHeader[len(bearer):])
-	if token == "" {
-		return errUnauthorized
-	}
-
-	claims, err := auth.ValidateToken(token, h.cfg.JWT.Secret)
-	if err != nil {
-		h.log.Warnw("failed to validate token for admin creation", "error", err)
-		return errUnauthorized
-	}
-
-	if claims.Role != string(entities.AdminRoleSuperAdmin) {
-		return errors.New("super_admin role required")
-	}
-
-	return nil
-}
-
-func (h *adminHandler) validateBasketRequest(req *entities.CuratedBasketRequest) error {
+// validateBasketRequest validates basket creation/update requests
+func validateBasketRequest(req *entities.CuratedBasketRequest) error {
 	if len(req.Composition) == 0 {
 		return errors.New("composition must contain at least one component")
 	}
@@ -874,109 +802,136 @@ func (h *adminHandler) validateBasketRequest(req *entities.CuratedBasketRequest)
 	return nil
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
+// AdminWalletHandlers handles admin wallet operations
+type AdminWalletHandlers struct {
+	db  *sql.DB
+	cfg *config.Config
+	log *logger.Logger
+}
+
+// NewAdminWalletHandlers creates a new AdminWalletHandlers
+func NewAdminWalletHandlers(db *sql.DB, cfg *config.Config, log *logger.Logger) *AdminWalletHandlers {
+	return &AdminWalletHandlers{db: db, cfg: cfg, log: log}
 }
 
 // CreateWalletSet handles POST /api/v1/admin/wallet-sets
-// @Summary Create wallet set
-// @Description Creates a new Circle wallet set for managing user wallets
-// @Tags admin
-// @Accept json
-// @Produce json
-// @Param request body entities.CreateWalletSetRequest true "Wallet set creation request"
-// @Success 201 {object} entities.WalletSet
-// @Failure 400 {object} entities.ErrorResponse
-// @Failure 500 {object} entities.ErrorResponse
-// @Security BearerAuth
-// @Router /api/v1/admin/wallet-sets [post]
-func CreateWalletSet(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.HandlerFunc {
-	handler := newAdminHandler(db, cfg, log)
-	return handler.createWalletSet
-}
-
-// GetWalletSets handles GET /api/v1/admin/wallet-sets
-// @Summary List wallet sets
-// @Description Returns a list of all wallet sets with optional pagination
-// @Tags admin
-// @Produce json
-// @Param limit query int false "Number of items per page" default(50)
-// @Param offset query int false "Number of items to skip" default(0)
-// @Success 200 {object} entities.WalletSetsListResponse
-// @Failure 500 {object} entities.ErrorResponse
-// @Security BearerAuth
-// @Router /api/v1/admin/wallet-sets [get]
-func GetWalletSets(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.HandlerFunc {
-	handler := newAdminHandler(db, cfg, log)
-	return handler.getWalletSets
-}
-
-// GetWalletSetByID handles GET /api/v1/admin/wallet-sets/:id
-// @Summary Get wallet set by ID
-// @Description Returns wallet set details by ID
-// @Tags admin
-// @Produce json
-// @Param id path string true "Wallet Set ID"
-// @Success 200 {object} entities.WalletSetDetailResponse
-// @Failure 400 {object} entities.ErrorResponse
-// @Failure 404 {object} entities.ErrorResponse
-// @Failure 500 {object} entities.ErrorResponse
-// @Security BearerAuth
-// @Router /api/v1/admin/wallet-sets/{id} [get]
-func GetWalletSetByID(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.HandlerFunc {
-	handler := newAdminHandler(db, cfg, log)
-	return handler.getWalletSetByID
-}
-
-// GetAdminWallets handles GET /api/v1/admin/wallets
-// @Summary List all wallets (admin)
-// @Description Returns a list of all user wallets with optional filters
-// @Tags admin
-// @Produce json
-// @Param limit query int false "Number of items per page" default(50)
-// @Param offset query int false "Number of items to skip" default(0)
-// @Param user_id query string false "Filter by user ID"
-// @Param chain query string false "Filter by blockchain chain"
-// @Param account_type query string false "Filter by account type" Enums(EOA,SCA)
-// @Param status query string false "Filter by wallet status" Enums(creating,live,failed)
-// @Success 200 {object} entities.AdminWalletsListResponse
-// @Failure 500 {object} entities.ErrorResponse
-// @Security BearerAuth
-// @Router /api/v1/admin/wallets [get]
-func GetAdminWallets(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.HandlerFunc {
-	handler := newAdminHandler(db, cfg, log)
-	return handler.getAdminWallets
-}
-
-func (h *adminHandler) createWalletSet(c *gin.Context) {
+func (h *AdminWalletHandlers) CreateWalletSet(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
 
 	var req entities.CreateWalletSetRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.log.Warnw("invalid create wallet set payload", "error", err)
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "INVALID_REQUEST",
-			"message": "Invalid request payload",
-		})
+		SendBadRequest(c, ErrCodeInvalidRequest, MsgInvalidRequest)
 		return
 	}
 
-	// Validate required fields
 	if req.Name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "MISSING_NAME",
-			"message": "Wallet set name is required",
-		})
+		SendBadRequest(c, "MISSING_NAME", "Wallet set name is required")
 		return
 	}
 
-	// Entity secret is now generated dynamically, no validation needed
+	walletSet, err := h.createWalletSet(ctx, &req)
+	if err != nil {
+		h.log.Errorw("failed to create wallet set", "error", err)
+		SendInternalError(c, ErrCodeCreateFailed, "Failed to create wallet set")
+		return
+	}
 
-	// Create wallet set in database
+	SendCreated(c, walletSet)
+}
+
+// GetWalletSets handles GET /api/v1/admin/wallet-sets
+func (h *AdminWalletHandlers) GetWalletSets(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	limit, offset := parsePaginationParams(c)
+
+	walletSets, err := h.listWalletSets(ctx, limit, offset)
+	if err != nil {
+		h.log.Errorw("failed to list wallet sets", "error", err)
+		SendInternalError(c, ErrCodeInternalError, "Failed to retrieve wallet sets")
+		return
+	}
+
+	SendSuccess(c, gin.H{
+		"items": walletSets,
+		"count": len(walletSets),
+	})
+}
+
+// GetWalletSetByID handles GET /api/v1/admin/wallet-sets/:id
+func (h *AdminWalletHandlers) GetWalletSetByID(c *gin.Context) {
+	walletSetID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		SendBadRequest(c, ErrCodeInvalidID, "Invalid wallet set ID")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	walletSet, err := h.getWalletSetByID(ctx, walletSetID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			SendNotFound(c, ErrCodeNotFound, "Wallet set not found")
+			return
+		}
+		h.log.Errorw("failed to get wallet set by id", "error", err, "wallet_set_id", walletSetID)
+		SendInternalError(c, ErrCodeInternalError, "Failed to retrieve wallet set")
+		return
+	}
+
+	SendSuccess(c, walletSet)
+}
+
+// GetAdminWallets handles GET /api/v1/admin/wallets
+func (h *AdminWalletHandlers) GetAdminWallets(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	limit, offset := parsePaginationParams(c)
+
+	filters, err := h.parseWalletFilters(c)
+	if err != nil {
+		return // Error already sent
+	}
+
+	wallets, err := h.listWallets(ctx, filters, limit, offset)
+	if err != nil {
+		h.log.Errorw("failed to list wallets", "error", err)
+		SendInternalError(c, ErrCodeInternalError, "Failed to retrieve wallets")
+		return
+	}
+
+	SendSuccess(c, gin.H{
+		"items": wallets,
+		"count": len(wallets),
+	})
+}
+
+// Helper methods
+
+func parsePaginationParams(c *gin.Context) (limit, offset int) {
+	limit = 50
+	if v := strings.TrimSpace(c.DefaultQuery("limit", "50")); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 && parsed <= 200 {
+			limit = parsed
+		}
+	}
+
+	offset = 0
+	if v := strings.TrimSpace(c.Query("offset")); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+
+	return limit, offset
+}
+
+func (h *AdminWalletHandlers) createWalletSet(ctx context.Context, req *entities.CreateWalletSetRequest) (*entities.WalletSet, error) {
 	walletSetID := uuid.New()
 	now := time.Now().UTC()
 
@@ -992,7 +947,7 @@ func (h *adminHandler) createWalletSet(c *gin.Context) {
 	err := h.db.QueryRowContext(ctx, query,
 		walletSetID,
 		req.Name,
-		req.CircleWalletSetID, // This would be empty for new sets
+		req.CircleWalletSetID,
 		string(entities.WalletSetStatusActive),
 		now,
 		now,
@@ -1006,35 +961,13 @@ func (h *adminHandler) createWalletSet(c *gin.Context) {
 	)
 
 	if err != nil {
-		h.log.Errorw("failed to create wallet set", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "CREATE_FAILED",
-			"message": "Failed to create wallet set",
-		})
-		return
+		return nil, err
 	}
 
-	c.JSON(http.StatusCreated, walletSet)
+	return &walletSet, nil
 }
 
-func (h *adminHandler) getWalletSets(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-	defer cancel()
-
-	limit := 50
-	if v := strings.TrimSpace(c.DefaultQuery("limit", "50")); v != "" {
-		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 && parsed <= 200 {
-			limit = parsed
-		}
-	}
-
-	offset := 0
-	if v := strings.TrimSpace(c.Query("offset")); v != "" {
-		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 {
-			offset = parsed
-		}
-	}
-
+func (h *AdminWalletHandlers) listWalletSets(ctx context.Context, limit, offset int) ([]entities.WalletSet, error) {
 	query := `
 		SELECT id, name, circle_wallet_set_id, status, created_at, updated_at
 		FROM wallet_sets
@@ -1043,12 +976,7 @@ func (h *adminHandler) getWalletSets(c *gin.Context) {
 
 	rows, err := h.db.QueryContext(ctx, query, limit, offset)
 	if err != nil {
-		h.log.Errorw("failed to list wallet sets", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "INTERNAL_ERROR",
-			"message": "Failed to retrieve wallet sets",
-		})
-		return
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -1063,43 +991,22 @@ func (h *adminHandler) getWalletSets(c *gin.Context) {
 			&walletSet.CreatedAt,
 			&walletSet.UpdatedAt,
 		); err != nil {
-			h.log.Errorw("failed to scan wallet set", "error", err)
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error":   "INTERNAL_ERROR",
-				"message": "Failed to parse wallet set record",
-			})
-			return
+			return nil, err
 		}
 		walletSets = append(walletSets, walletSet)
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"items": walletSets,
-		"count": len(walletSets),
-	})
+	return walletSets, rows.Err()
 }
 
-func (h *adminHandler) getWalletSetByID(c *gin.Context) {
-	walletSetIDParam := c.Param("id")
-	walletSetID, err := uuid.Parse(walletSetIDParam)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "INVALID_ID",
-			"message": "Invalid wallet set ID",
-		})
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-	defer cancel()
-
+func (h *AdminWalletHandlers) getWalletSetByID(ctx context.Context, walletSetID uuid.UUID) (*entities.WalletSet, error) {
 	query := `
 		SELECT id, name, circle_wallet_set_id, status, created_at, updated_at
 		FROM wallet_sets
 		WHERE id = $1`
 
 	var walletSet entities.WalletSet
-	err = h.db.QueryRowContext(ctx, query, walletSetID).Scan(
+	err := h.db.QueryRowContext(ctx, query, walletSetID).Scan(
 		&walletSet.ID,
 		&walletSet.Name,
 		&walletSet.CircleWalletSetID,
@@ -1109,89 +1016,79 @@ func (h *adminHandler) getWalletSetByID(c *gin.Context) {
 	)
 
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error":   "NOT_FOUND",
-				"message": "Wallet set not found",
-			})
-			return
-		}
-		h.log.Errorw("failed to get wallet set by id", "error", err, "wallet_set_id", walletSetID)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "INTERNAL_ERROR",
-			"message": "Failed to retrieve wallet set",
-		})
-		return
+		return nil, err
 	}
 
-	c.JSON(http.StatusOK, walletSet)
+	return &walletSet, nil
 }
 
-func (h *adminHandler) getAdminWallets(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-	defer cancel()
+type walletFilters struct {
+	userID      *uuid.UUID
+	chain       *string
+	accountType *string
+	status      *string
+}
 
-	limit := 50
-	if v := strings.TrimSpace(c.DefaultQuery("limit", "50")); v != "" {
-		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 && parsed <= 200 {
-			limit = parsed
-		}
-	}
+func (h *AdminWalletHandlers) parseWalletFilters(c *gin.Context) (*walletFilters, error) {
+	filters := &walletFilters{}
 
-	offset := 0
-	if v := strings.TrimSpace(c.Query("offset")); v != "" {
-		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 {
-			offset = parsed
-		}
-	}
-
-	var conditions []string
-	var args []interface{}
-	argIndex := 1
-
-	// Add filters
 	if userIDParam := strings.TrimSpace(c.Query("user_id")); userIDParam != "" {
 		userID, err := uuid.Parse(userIDParam)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error":   "INVALID_USER_ID",
-				"message": "Invalid user ID format",
-			})
-			return
+			SendBadRequest(c, ErrCodeInvalidUserID, "Invalid user ID format")
+			return nil, err
 		}
-		args = append(args, userID)
-		conditions = append(conditions, fmt.Sprintf("user_id = $%d", argIndex))
-		argIndex++
+		filters.userID = &userID
 	}
 
 	if chainParam := strings.TrimSpace(c.Query("chain")); chainParam != "" {
-		args = append(args, chainParam)
-		conditions = append(conditions, fmt.Sprintf("chain = $%d", argIndex))
-		argIndex++
+		filters.chain = &chainParam
 	}
 
 	if accountTypeParam := strings.TrimSpace(c.Query("account_type")); accountTypeParam != "" {
 		if accountTypeParam != "EOA" && accountTypeParam != "SCA" {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error":   "INVALID_ACCOUNT_TYPE",
-				"message": "Account type must be EOA or SCA",
-			})
-			return
+			SendBadRequest(c, "INVALID_ACCOUNT_TYPE", "Account type must be EOA or SCA")
+			return nil, errors.New("invalid account type")
 		}
-		args = append(args, accountTypeParam)
-		conditions = append(conditions, fmt.Sprintf("account_type = $%d", argIndex))
-		argIndex++
+		filters.accountType = &accountTypeParam
 	}
 
 	if statusParam := strings.TrimSpace(c.Query("status")); statusParam != "" {
 		if statusParam != "creating" && statusParam != "live" && statusParam != "failed" {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error":   "INVALID_STATUS",
-				"message": "Status must be creating, live, or failed",
-			})
-			return
+			SendBadRequest(c, ErrCodeInvalidStatus, "Status must be creating, live, or failed")
+			return nil, errors.New("invalid status")
 		}
-		args = append(args, statusParam)
+		filters.status = &statusParam
+	}
+
+	return filters, nil
+}
+
+func (h *AdminWalletHandlers) listWallets(ctx context.Context, filters *walletFilters, limit, offset int) ([]entities.ManagedWallet, error) {
+	var conditions []string
+	var args []interface{}
+	argIndex := 1
+
+	if filters.userID != nil {
+		args = append(args, *filters.userID)
+		conditions = append(conditions, fmt.Sprintf("user_id = $%d", argIndex))
+		argIndex++
+	}
+
+	if filters.chain != nil {
+		args = append(args, *filters.chain)
+		conditions = append(conditions, fmt.Sprintf("chain = $%d", argIndex))
+		argIndex++
+	}
+
+	if filters.accountType != nil {
+		args = append(args, *filters.accountType)
+		conditions = append(conditions, fmt.Sprintf("account_type = $%d", argIndex))
+		argIndex++
+	}
+
+	if filters.status != nil {
+		args = append(args, *filters.status)
 		conditions = append(conditions, fmt.Sprintf("status = $%d", argIndex))
 		argIndex++
 	}
@@ -1213,12 +1110,7 @@ func (h *adminHandler) getAdminWallets(c *gin.Context) {
 
 	rows, err := h.db.QueryContext(ctx, queryBuilder.String(), args...)
 	if err != nil {
-		h.log.Errorw("failed to list wallets", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "INTERNAL_ERROR",
-			"message": "Failed to retrieve wallets",
-		})
-		return
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -1237,18 +1129,10 @@ func (h *adminHandler) getAdminWallets(c *gin.Context) {
 			&wallet.CreatedAt,
 			&wallet.UpdatedAt,
 		); err != nil {
-			h.log.Errorw("failed to scan wallet", "error", err)
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error":   "INTERNAL_ERROR",
-				"message": "Failed to parse wallet record",
-			})
-			return
+			return nil, err
 		}
 		wallets = append(wallets, wallet)
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"items": wallets,
-		"count": len(wallets),
-	})
+	return wallets, rows.Err()
 }

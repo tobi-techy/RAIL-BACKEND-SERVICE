@@ -1,0 +1,23 @@
+replicaCount: 3
+
+domain: api.rail-platform.com
+
+image:
+  tag: "latest"
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+autoscaling:
+  minReplicas: 3
+  maxReplicas: 10
+
+ingress:
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/rate-limit: "100"

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/stack-service/stack_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"go.uber.org/zap"
 )
 
@@ -19,6 +19,7 @@ type Service struct {
 	circleClient        CircleClient
 	auditService        AuditService
 	entitySecretService EntitySecretService
+	onboardingService   OnboardingService
 	logger              *zap.Logger
 	config              Config
 }
@@ -77,6 +78,10 @@ type EntitySecretService interface {
 	GenerateEntitySecretCiphertext(ctx context.Context) (string, error)
 }
 
+type OnboardingService interface {
+	ProcessWalletCreationComplete(ctx context.Context, userID uuid.UUID) error
+}
+
 // NewService creates a new wallet service
 func NewService(
 	walletRepo WalletRepository,
@@ -85,6 +90,7 @@ func NewService(
 	circleClient CircleClient,
 	auditService AuditService,
 	entitySecretService EntitySecretService,
+	onboardingService OnboardingService,
 	logger *zap.Logger,
 	cfg Config,
 ) *Service {
@@ -104,19 +110,21 @@ func NewService(
 		circleClient:        circleClient,
 		auditService:        auditService,
 		entitySecretService: entitySecretService,
+		onboardingService:   onboardingService,
 		logger:              logger,
 		config:              cfg,
 	}
 }
 
+// SetOnboardingService sets the onboarding service (for dependency injection after creation)
+func (s *Service) SetOnboardingService(onboardingService OnboardingService) {
+	s.onboardingService = onboardingService
+}
+
 func normalizeSupportedChains(chains []entities.WalletChain, logger *zap.Logger) []entities.WalletChain {
 	if len(chains) == 0 {
-		// Use testnet chains for test API key compatibility
 		return []entities.WalletChain{
-			entities.ChainETHSepolia,
-			entities.ChainMATICAmoy,
 			entities.ChainSOLDevnet,
-			entities.ChainBASESepolia,
 		}
 	}
 
@@ -136,12 +144,8 @@ func normalizeSupportedChains(chains []entities.WalletChain, logger *zap.Logger)
 	}
 
 	if len(normalized) == 0 {
-		// Use testnet chains for test API key compatibility
 		return []entities.WalletChain{
-			entities.ChainETHSepolia,
-			entities.ChainMATICAmoy,
 			entities.ChainSOLDevnet,
-			entities.ChainBASESepolia,
 		}
 	}
 
@@ -266,11 +270,16 @@ func (s *Service) ProcessWalletProvisioningJob(ctx context.Context, jobID uuid.U
 			zap.Int("walletCount", successCount))
 
 		// Trigger onboarding completion callback
-		// This would typically be done via an event bus or message queue
-		// For now, we'll log it for the onboarding service to pick up
-		s.logger.Info("Wallet provisioning completed",
-			zap.String("userID", job.UserID.String()),
-			zap.String("event", "wallet_provisioning_completed"))
+		if s.onboardingService != nil {
+			if err := s.onboardingService.ProcessWalletCreationComplete(ctx, job.UserID); err != nil {
+				s.logger.Warn("Failed to process wallet creation complete in onboarding service",
+					zap.Error(err),
+					zap.String("userID", job.UserID.String()))
+			} else {
+				s.logger.Info("Wallet provisioning completed and onboarding status updated",
+					zap.String("userID", job.UserID.String()))
+			}
+		}
 
 	} else if successCount > 0 {
 		// Partial success - mark as failed but note partial success

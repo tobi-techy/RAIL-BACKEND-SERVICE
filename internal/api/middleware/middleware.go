@@ -1,21 +1,48 @@
 package middleware
 
 import (
+	"context"
 	"database/sql"
-	// "fmt"
 	"net/http"
 	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/stack-service/stack_service/internal/infrastructure/config"
-	"github.com/stack-service/stack_service/pkg/auth"
-	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/rail-service/rail_service/internal/infrastructure/config"
+	"github.com/rail-service/rail_service/pkg/auth"
+	"github.com/rail-service/rail_service/pkg/logger"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"golang.org/x/time/rate"
+)
+
+// SessionValidator interface for session validation
+type SessionValidator interface {
+	ValidateSession(ctx context.Context, token string) (*SessionInfo, error)
+}
+
+// APIKeyValidator interface for API key validation
+type APIKeyValidator interface {
+	ValidateAPIKey(ctx context.Context, key string) (*APIKeyInfo, error)
+}
+
+// SessionInfo represents session information
+type SessionInfo struct {
+	ID     uuid.UUID
+	UserID uuid.UUID
+}
+
+// APIKeyInfo represents API key information
+type APIKeyInfo struct {
+	ID     uuid.UUID
+	UserID *uuid.UUID
+	Scopes []string
+}
+
+const (
+	MaxRequestSize = 10 << 20 // 10MB
 )
 
 // RequestID adds a unique request ID to each request
@@ -27,6 +54,48 @@ func RequestID() gin.HandlerFunc {
 		}
 		c.Set("request_id", requestID)
 		c.Header("X-Request-ID", requestID)
+		c.Next()
+	}
+}
+
+// RequestSizeLimit limits the size of incoming requests
+func RequestSizeLimit() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, MaxRequestSize)
+		c.Next()
+	}
+}
+
+// InputValidation validates common input patterns
+func InputValidation() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Validate common headers
+		userAgent := c.GetHeader("User-Agent")
+		if len(userAgent) > 500 {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":      "User-Agent header too long",
+				"request_id": c.GetString("request_id"),
+			})
+			c.Abort()
+			return
+		}
+		c.Set("user_agent", userAgent)
+
+		// Validate content type for POST/PUT requests
+		if c.Request.Method == "POST" || c.Request.Method == "PUT" {
+			contentType := c.GetHeader("Content-Type")
+			if contentType != "" && !strings.Contains(contentType, "application/json") && 
+			   !strings.Contains(contentType, "multipart/form-data") && 
+			   !strings.Contains(contentType, "application/x-www-form-urlencoded") {
+				c.JSON(http.StatusUnsupportedMediaType, gin.H{
+					"error":      "Unsupported content type",
+					"request_id": c.GetString("request_id"),
+				})
+				c.Abort()
+				return
+			}
+		}
+
 		c.Next()
 	}
 }
@@ -180,12 +249,14 @@ func SecurityHeaders() gin.HandlerFunc {
 		c.Header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
 		c.Header("Content-Security-Policy", "default-src 'self'")
+		c.Header("X-Permitted-Cross-Domain-Policies", "none")
+		c.Header("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
 		c.Next()
 	}
 }
 
-// Authentication validates JWT tokens
-func Authentication(cfg *config.Config, log *logger.Logger) gin.HandlerFunc {
+// Authentication validates JWT tokens with session management
+func Authentication(cfg *config.Config, log *logger.Logger, sessionService SessionValidator) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
@@ -219,6 +290,20 @@ func Authentication(cfg *config.Config, log *logger.Logger) gin.HandlerFunc {
 			return
 		}
 
+		// Validate session if service is provided
+		if sessionService != nil {
+			session, err := sessionService.ValidateSession(c.Request.Context(), tokenString)
+			if err != nil {
+				c.JSON(http.StatusUnauthorized, gin.H{
+					"error":      "Session invalid or expired",
+					"request_id": c.GetString("request_id"),
+				})
+				c.Abort()
+				return
+			}
+			c.Set("session_id", session.ID)
+		}
+
 		// Add user info to context
 		c.Set("user_id", claims.UserID)
 		c.Set("user_role", claims.Role)
@@ -244,10 +329,10 @@ func AdminAuth(db *sql.DB, log *logger.Logger) gin.HandlerFunc {
 	}
 }
 
-// ValidateAPIKey validates API keys for external services
-func ValidateAPIKey(validKeys []string) gin.HandlerFunc {
+// ValidateAPIKey validates API keys using the API key service
+func ValidateAPIKey(apikeyService APIKeyValidator) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		apiKey := c.GetHeader("X-API-Key")
+		apiKey := strings.TrimSpace(c.GetHeader("X-API-Key"))
 		if apiKey == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error":      "API key required",
@@ -257,21 +342,21 @@ func ValidateAPIKey(validKeys []string) gin.HandlerFunc {
 			return
 		}
 
-		valid := false
-		for _, key := range validKeys {
-			if key == apiKey {
-				valid = true
-				break
-			}
-		}
-
-		if !valid {
+		keyInfo, err := apikeyService.ValidateAPIKey(c.Request.Context(), apiKey)
+		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error":      "Invalid API key",
 				"request_id": c.GetString("request_id"),
 			})
 			c.Abort()
 			return
+		}
+
+		// Add API key info to context
+		c.Set("api_key_id", keyInfo.ID)
+		c.Set("api_key_scopes", keyInfo.Scopes)
+		if keyInfo.UserID != nil {
+			c.Set("user_id", *keyInfo.UserID)
 		}
 
 		c.Next()

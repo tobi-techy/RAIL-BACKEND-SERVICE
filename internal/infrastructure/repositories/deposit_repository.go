@@ -7,179 +7,248 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"go.uber.org/zap"
+	"github.com/jmoiron/sqlx"
+	"github.com/shopspring/decimal"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 )
 
-// DepositRepository handles deposit persistence operations
+// DepositRepository implements the deposit repository interface
 type DepositRepository struct {
-	db     *sql.DB
-	logger *zap.Logger
+	db *sqlx.DB
 }
 
 // NewDepositRepository creates a new deposit repository
-func NewDepositRepository(db *sql.DB, logger *zap.Logger) *DepositRepository {
-	return &DepositRepository{
-		db:     db,
-		logger: logger,
-	}
+func NewDepositRepository(db *sqlx.DB) *DepositRepository {
+	return &DepositRepository{db: db}
 }
 
-// Create creates a new deposit record
+// Create creates a new deposit
 func (r *DepositRepository) Create(ctx context.Context, deposit *entities.Deposit) error {
 	query := `
-		INSERT INTO deposits (id, user_id, chain, tx_hash, token, amount, status, confirmed_at, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO deposits (
+			id, user_id, virtual_account_id, amount, status,
+			tx_hash, chain, off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
+			alpaca_funding_tx_id, alpaca_funded_at, created_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+		)
 	`
 
 	_, err := r.db.ExecContext(ctx, query,
 		deposit.ID,
 		deposit.UserID,
-		deposit.Chain,
-		deposit.TxHash,
-		deposit.Token,
+		deposit.VirtualAccountID,
 		deposit.Amount,
 		deposit.Status,
-		deposit.ConfirmedAt,
+		deposit.TxHash,
+		deposit.Chain,
+		deposit.OffRampTxID,
+		deposit.OffRampInitiatedAt,
+		deposit.OffRampCompletedAt,
+		deposit.AlpacaFundingTxID,
+		deposit.AlpacaFundedAt,
 		deposit.CreatedAt,
 	)
 
 	if err != nil {
-		r.logger.Error("failed to create deposit",
-			zap.Error(err),
-			zap.String("deposit_id", deposit.ID.String()),
-			zap.String("tx_hash", deposit.TxHash),
-		)
 		return fmt.Errorf("failed to create deposit: %w", err)
 	}
-
-	r.logger.Info("deposit created successfully",
-		zap.String("deposit_id", deposit.ID.String()),
-		zap.String("user_id", deposit.UserID.String()),
-		zap.String("tx_hash", deposit.TxHash),
-		zap.String("amount", deposit.Amount.String()),
-	)
 
 	return nil
 }
 
-// GetByUserID retrieves deposits for a specific user with pagination
+// GetByID retrieves a deposit by ID
+func (r *DepositRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.Deposit, error) {
+	query := `
+		SELECT id, user_id, virtual_account_id, amount, status,
+			   tx_hash, chain, off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
+			   alpaca_funding_tx_id, alpaca_funded_at, created_at
+		FROM deposits
+		WHERE id = $1
+	`
+
+	var deposit entities.Deposit
+	err := r.db.GetContext(ctx, &deposit, query, id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("deposit not found: %w", err)
+		}
+		return nil, fmt.Errorf("failed to get deposit: %w", err)
+	}
+
+	return &deposit, nil
+}
+
+// GetByOffRampTxID retrieves a deposit by off-ramp transaction ID
+func (r *DepositRepository) GetByOffRampTxID(ctx context.Context, txID string) (*entities.Deposit, error) {
+	query := `
+		SELECT id, user_id, virtual_account_id, amount, status,
+			   tx_hash, chain, off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
+			   alpaca_funding_tx_id, alpaca_funded_at, created_at
+		FROM deposits
+		WHERE off_ramp_tx_id = $1
+	`
+
+	var deposit entities.Deposit
+	err := r.db.GetContext(ctx, &deposit, query, txID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("deposit not found: %w", err)
+		}
+		return nil, fmt.Errorf("failed to get deposit: %w", err)
+	}
+
+	return &deposit, nil
+}
+
+// Update updates a deposit
+func (r *DepositRepository) Update(ctx context.Context, deposit *entities.Deposit) error {
+	query := `
+		UPDATE deposits
+		SET virtual_account_id = $2,
+			amount = $3,
+			status = $4,
+			tx_hash = $5,
+			chain = $6,
+			off_ramp_tx_id = $7,
+			off_ramp_initiated_at = $8,
+			off_ramp_completed_at = $9,
+			alpaca_funding_tx_id = $10,
+			alpaca_funded_at = $11
+		WHERE id = $1
+	`
+
+	_, err := r.db.ExecContext(ctx, query,
+		deposit.ID,
+		deposit.VirtualAccountID,
+		deposit.Amount,
+		deposit.Status,
+		deposit.TxHash,
+		deposit.Chain,
+		deposit.OffRampTxID,
+		deposit.OffRampInitiatedAt,
+		deposit.OffRampCompletedAt,
+		deposit.AlpacaFundingTxID,
+		deposit.AlpacaFundedAt,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to update deposit: %w", err)
+	}
+
+	return nil
+}
+
+// ListByUserID retrieves all deposits for a user
+func (r *DepositRepository) ListByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.Deposit, error) {
+	query := `
+		SELECT id, user_id, virtual_account_id, amount, status,
+			   tx_hash, chain, off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
+			   alpaca_funding_tx_id, alpaca_funded_at, created_at
+		FROM deposits
+		WHERE user_id = $1
+		ORDER BY created_at DESC
+	`
+
+	var deposits []*entities.Deposit
+	err := r.db.SelectContext(ctx, &deposits, query, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list deposits: %w", err)
+	}
+
+	return deposits, nil
+}
+
+// GetByUserID retrieves deposits for a user with pagination
 func (r *DepositRepository) GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Deposit, error) {
 	query := `
-		SELECT id, user_id, chain, tx_hash, token, amount, status, confirmed_at, created_at
+		SELECT id, user_id, virtual_account_id, amount, status,
+			   tx_hash, chain, off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
+			   alpaca_funding_tx_id, alpaca_funded_at, created_at
 		FROM deposits
 		WHERE user_id = $1
 		ORDER BY created_at DESC
 		LIMIT $2 OFFSET $3
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, userID, limit, offset)
-	if err != nil {
-		r.logger.Error("failed to query deposits by user ID",
-			zap.Error(err),
-			zap.String("user_id", userID.String()),
-		)
-		return nil, fmt.Errorf("failed to query deposits: %w", err)
-	}
-	defer rows.Close()
-
 	var deposits []*entities.Deposit
-	for rows.Next() {
-		deposit := &entities.Deposit{}
-		err := rows.Scan(
-			&deposit.ID,
-			&deposit.UserID,
-			&deposit.Chain,
-			&deposit.TxHash,
-			&deposit.Token,
-			&deposit.Amount,
-			&deposit.Status,
-			&deposit.ConfirmedAt,
-			&deposit.CreatedAt,
-		)
-		if err != nil {
-			r.logger.Error("failed to scan deposit row",
-				zap.Error(err),
-				zap.String("user_id", userID.String()),
-			)
-			return nil, fmt.Errorf("failed to scan deposit: %w", err)
-		}
-		deposits = append(deposits, deposit)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows iteration error: %w", err)
+	err := r.db.SelectContext(ctx, &deposits, query, userID, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get deposits: %w", err)
 	}
 
 	return deposits, nil
 }
 
-// UpdateStatus updates the status of a deposit
-func (r *DepositRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status string, confirmedAt *time.Time) error {
-	query := `
-		UPDATE deposits 
-		SET status = $2, confirmed_at = $3
-		WHERE id = $1
-	`
-
-	result, err := r.db.ExecContext(ctx, query, id, status, confirmedAt)
-	if err != nil {
-		r.logger.Error("failed to update deposit status",
-			zap.Error(err),
-			zap.String("deposit_id", id.String()),
-			zap.String("status", status),
-		)
-		return fmt.Errorf("failed to update deposit status: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-
-	if rowsAffected == 0 {
-		return fmt.Errorf("deposit not found: %s", id.String())
-	}
-
-	r.logger.Info("deposit status updated",
-		zap.String("deposit_id", id.String()),
-		zap.String("status", status),
-	)
-
-	return nil
-}
-
 // GetByTxHash retrieves a deposit by transaction hash
 func (r *DepositRepository) GetByTxHash(ctx context.Context, txHash string) (*entities.Deposit, error) {
 	query := `
-		SELECT id, user_id, chain, tx_hash, token, amount, status, confirmed_at, created_at
+		SELECT id, user_id, virtual_account_id, amount, status,
+			   tx_hash, chain, off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
+			   alpaca_funding_tx_id, alpaca_funded_at, created_at
 		FROM deposits
 		WHERE tx_hash = $1
 	`
 
-	deposit := &entities.Deposit{}
-	err := r.db.QueryRowContext(ctx, query, txHash).Scan(
-		&deposit.ID,
-		&deposit.UserID,
-		&deposit.Chain,
-		&deposit.TxHash,
-		&deposit.Token,
-		&deposit.Amount,
-		&deposit.Status,
-		&deposit.ConfirmedAt,
-		&deposit.CreatedAt,
-	)
-
+	var deposit entities.Deposit
+	err := r.db.GetContext(ctx, &deposit, query, txHash)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("deposit not found")
 		}
-		r.logger.Error("failed to get deposit by tx hash",
-			zap.Error(err),
-			zap.String("tx_hash", txHash),
-		)
 		return nil, fmt.Errorf("failed to get deposit: %w", err)
 	}
 
-	return deposit, nil
+	return &deposit, nil
+}
+
+// UpdateStatus updates the status of a deposit
+func (r *DepositRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status string, confirmedAt *time.Time) error {
+	query := `
+		UPDATE deposits
+		SET status = $2
+		WHERE id = $1
+	`
+
+	_, err := r.db.ExecContext(ctx, query, id, status)
+	if err != nil {
+		return fmt.Errorf("failed to update deposit status: %w", err)
+	}
+
+	return nil
+}
+
+// GetTotalCompletedDeposits returns the sum of all completed deposits
+func (r *DepositRepository) GetTotalCompletedDeposits(ctx context.Context) (decimal.Decimal, error) {
+	query := `
+		SELECT COALESCE(SUM(amount), 0)
+		FROM deposits
+		WHERE status = 'broker_funded'
+	`
+
+	var total decimal.Decimal
+	err := r.db.GetContext(ctx, &total, query)
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("failed to get total completed deposits: %w", err)
+	}
+
+	return total, nil
+}
+
+// CountPendingByUserID counts pending deposits for a user (for Station status)
+func (r *DepositRepository) CountPendingByUserID(ctx context.Context, userID uuid.UUID) (int, error) {
+	query := `
+		SELECT COUNT(*)
+		FROM deposits
+		WHERE user_id = $1
+		AND status IN ('pending', 'processing', 'confirming', 'off_ramp_pending')
+	`
+
+	var count int
+	err := r.db.GetContext(ctx, &count, query, userID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count pending deposits: %w", err)
+	}
+
+	return count, nil
 }

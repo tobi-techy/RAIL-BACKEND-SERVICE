@@ -21,7 +21,7 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/text/language"
 
-	"github.com/stack-service/stack_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 )
 
 // KYCProviderConfig holds KYC provider configuration
@@ -241,7 +241,7 @@ func (k *KYCProvider) sumsubLevelCandidates() []string {
 }
 
 // SubmitKYC submits KYC documents to the provider
-func (k *KYCProvider) SubmitKYC(ctx context.Context, userID uuid.UUID, documents []entities.KYCDocument, personalInfo *entities.KYCPersonalInfo) (string, error) {
+func (k *KYCProvider) SubmitKYC(ctx context.Context, userID uuid.UUID, documents []entities.KYCDocumentUpload, personalInfo *entities.KYCPersonalInfo) (string, error) {
 	k.logger.Info("Submitting KYC documents",
 		zap.String("user_id", userID.String()),
 		zap.Int("document_count", len(documents)))
@@ -256,7 +256,7 @@ func (k *KYCProvider) SubmitKYC(ctx context.Context, userID uuid.UUID, documents
 	}
 }
 
-func (k *KYCProvider) submitKYCToJumio(ctx context.Context, userID uuid.UUID, documents []entities.KYCDocument, personalInfo *entities.KYCPersonalInfo) (string, error) {
+func (k *KYCProvider) submitKYCToJumio(ctx context.Context, userID uuid.UUID, documents []entities.KYCDocumentUpload, personalInfo *entities.KYCPersonalInfo) (string, error) {
 	request := JumioInitiateRequest{
 		CustomerInternalReference: userID.String(),
 		UserReference:             fmt.Sprintf("user_%s", userID.String()[:8]),
@@ -308,7 +308,7 @@ func (k *KYCProvider) submitKYCToJumio(ctx context.Context, userID uuid.UUID, do
 	return jumioResp.WorkflowExecution.ID, nil
 }
 
-func (k *KYCProvider) submitKYCToSumsub(ctx context.Context, userID uuid.UUID, documents []entities.KYCDocument, personalInfo *entities.KYCPersonalInfo) (string, error) {
+func (k *KYCProvider) submitKYCToSumsub(ctx context.Context, userID uuid.UUID, documents []entities.KYCDocumentUpload, personalInfo *entities.KYCPersonalInfo) (string, error) {
 	applicantID, err := k.ensureSumsubApplicant(ctx, userID, personalInfo)
 	if err != nil {
 		return "", err
@@ -461,7 +461,7 @@ func (k *KYCProvider) lookupSumsubApplicant(ctx context.Context, externalUserID 
 	return applicant.ID, nil
 }
 
-func (k *KYCProvider) uploadSumsubDocument(ctx context.Context, applicantID string, doc entities.KYCDocument, personalInfo *entities.KYCPersonalInfo) error {
+func (k *KYCProvider) uploadSumsubDocument(ctx context.Context, applicantID string, doc entities.KYCDocumentUpload, personalInfo *entities.KYCPersonalInfo) error {
 	if strings.TrimSpace(doc.FileURL) == "" {
 		return fmt.Errorf("document file URL is empty")
 	}

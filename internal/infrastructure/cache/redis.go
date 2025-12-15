@@ -9,7 +9,7 @@ import (
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 
-	"github.com/stack-service/stack_service/internal/infrastructure/config"
+	"github.com/rail-service/rail_service/internal/infrastructure/config"
 )
 
 // RedisClient defines the interface for Redis operations
@@ -20,7 +20,10 @@ type RedisClient interface {
 	Exists(ctx context.Context, key string) (bool, error)
 	Incr(ctx context.Context, key string) (int64, error)
 	Expire(ctx context.Context, key string, expiration time.Duration) error
+	Keys(ctx context.Context, pattern string) ([]string, error)
+	Ping(ctx context.Context) error
 	Close() error
+	Client() *redis.Client
 }
 
 // redisClient implements RedisClient using go-redis
@@ -99,7 +102,22 @@ func (r *redisClient) Expire(ctx context.Context, key string, expiration time.Du
 	return r.client.Expire(ctx, key, expiration).Err()
 }
 
+// Keys returns all keys matching pattern
+func (r *redisClient) Keys(ctx context.Context, pattern string) ([]string, error) {
+	return r.client.Keys(ctx, pattern).Result()
+}
+
+// Ping checks the connection to Redis
+func (r *redisClient) Ping(ctx context.Context) error {
+	return r.client.Ping(ctx).Err()
+}
+
 // Close closes the Redis client
 func (r *redisClient) Close() error {
 	return r.client.Close()
+}
+
+// Client returns the underlying Redis client for advanced operations
+func (r *redisClient) Client() *redis.Client {
+	return r.client
 }

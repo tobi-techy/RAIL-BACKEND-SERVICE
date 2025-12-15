@@ -118,6 +118,8 @@ type UserProfile struct {
 	KYCSubmittedAt     *time.Time       `json:"kyc_submitted_at" db:"kyc_submitted_at"`
 	KYCApprovedAt      *time.Time       `json:"kyc_approved_at" db:"kyc_approved_at"`
 	KYCRejectionReason *string          `json:"kyc_rejection_reason" db:"kyc_rejection_reason"`
+	DueAccountID       *string          `json:"due_account_id" db:"due_account_id"`
+	AlpacaAccountID    *string          `json:"alpaca_account_id" db:"alpaca_account_id"`
 	IsActive           bool             `json:"is_active" db:"is_active"`
 	CreatedAt          time.Time        `json:"created_at" db:"created_at"`
 	UpdatedAt          time.Time        `json:"updated_at" db:"updated_at"`
@@ -366,13 +368,13 @@ type KYCStatusResponse struct {
 // KYCSubmitRequest represents KYC submission request
 type KYCSubmitRequest struct {
 	DocumentType string                 `json:"documentType" validate:"required"`
-	Documents    []KYCDocument          `json:"documents" validate:"required,min=1"`
+	Documents    []KYCDocumentUpload    `json:"documents" validate:"required,min=1"`
 	PersonalInfo *KYCPersonalInfo       `json:"personalInfo,omitempty"`
 	Metadata     map[string]interface{} `json:"metadata,omitempty"`
 }
 
-// KYCDocument represents a document uploaded for KYC
-type KYCDocument struct {
+// KYCDocumentUpload represents a document uploaded for KYC
+type KYCDocumentUpload struct {
 	Type        string `json:"type" validate:"required"` // passport, drivers_license, etc.
 	FileURL     string `json:"fileUrl" validate:"required,url"`
 	ContentType string `json:"contentType" validate:"required"`
@@ -395,3 +397,46 @@ type Address struct {
 	PostalCode string `json:"postalCode" validate:"required"`
 	Country    string `json:"country" validate:"required,len=2"`
 }
+
+// OnboardingCompleteRequest represents the request to complete onboarding
+type OnboardingCompleteRequest struct {
+	UserID      uuid.UUID  `json:"-" validate:"-"` // Set from auth context
+	FirstName   string     `json:"firstName" validate:"required"`
+	LastName    string     `json:"lastName" validate:"required"`
+	DateOfBirth *time.Time `json:"dateOfBirth" validate:"required"`
+	Country     string     `json:"country" validate:"required,len=2"`
+	Address     Address    `json:"address" validate:"required"`
+	Phone       *string    `json:"phone,omitempty" validate:"omitempty,e164"`
+}
+
+// OnboardingCompleteResponse represents the response after completing onboarding
+type OnboardingCompleteResponse struct {
+	UserID          uuid.UUID `json:"userId"`
+	DueAccountID    string    `json:"dueAccountId"`
+	AlpacaAccountID string    `json:"alpacaAccountId"`
+	Message         string    `json:"message"`
+	NextSteps       []string  `json:"nextSteps"`
+}
+
+// OnboardingProgressResponse represents the user's onboarding progress
+type OnboardingProgressResponse struct {
+	UserID          uuid.UUID              `json:"userId"`
+	PercentComplete int                    `json:"percentComplete"`
+	Checklist       []OnboardingCheckItem  `json:"checklist"`
+	CurrentStep     *OnboardingStepType    `json:"currentStep,omitempty"`
+	EstimatedTime   string                 `json:"estimatedTime"`
+	CanInvest       bool                   `json:"canInvest"`
+	CanWithdraw     bool                   `json:"canWithdraw"`
+}
+
+// OnboardingCheckItem represents a single item in the onboarding checklist
+type OnboardingCheckItem struct {
+	Step        OnboardingStepType `json:"step"`
+	Title       string             `json:"title"`
+	Description string             `json:"description"`
+	Status      StepStatus         `json:"status"`
+	Required    bool               `json:"required"`
+	Order       int                `json:"order"`
+}
+
+

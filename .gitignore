@@ -1,147 +1,96 @@
-# Binaries for programs and plugins
+# Binaries
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
+main
+rail_service
+stack_service
+bin/
+dist/
+.kiro/
 
-# Go workspace file
-go.work
-
-# Test binary, built with `go test -c`
+# Test binary
 *.test
+
+STACK Service API - MVP
 
 # Output of the go coverage tool
 *.out
 coverage.html
-coverage.txt
-
-# Go build cache
-bin/
-build/
-dist/
 
 # Dependency directories
 vendor/
 
-# Go mod cache
-go.mod.backup
-go.sum.backup
+# Go workspace file
+go.work
 
-# IDE and editor files
+# Environment files
+.env
+.env.local
+.env.*.local
+*.env
+!.env.example
+
+# Security sensitive files
+*.key
+*.pem
+*.p12
+*.pfx
+*secret*
+*credentials*
+
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# OS generated files
+# OS
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db
 
-# Environment variables
-.env
-.env.local
-.env.*.local
+# Logs
+*.log
+logs/
 
-# Configuration files with secrets
-configs/config.yaml
-configs/config.yml
-!configs/config.yaml.example
-!configs/config.yml.example
-
-# Database files
+# Database
 *.db
 *.sqlite
 *.sqlite3
-
-# Log files
-*.log
-logs/
 
 # Temporary files
 tmp/
 temp/
 *.tmp
 
-# Docker files
-docker-compose.override.yml
+# Build artifacts
+build/
+out/
 
-# Kubernetes secrets
-deployments/k8s/*secret*.yaml
-deployments/k8s/*config*.yaml
+# Configuration overrides
+configs/config.local.yaml
+configs/*.local.yaml
+configs/
 
-# SSL certificates
-*.pem
-*.key
-*.crt
-*.csr
+# Test artifacts
+test/results/
+test/coverage/
 
-# Swagger generated files
-docs/swagger/
-
-# Test coverage reports
-coverage/
-
-# Node modules (if any)
-node_modules/
-
-# Python files (if any)
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Generated files
-*.pb.go
-*_gen.go
-
-# Local development files
-.local/
-.cache/
+# Docker
+.dockerignore
 
 # Backup files
-*.backup
 *.bak
+*.backup
+*~
 
-# Upload directories
-uploads/
-files/
+# Security audit results
+security-audit-*.txt
+vulnerability-scan-*.json
 
-# Redis dump files
-dump.rdb
-
-# Application specific
-stack_service
-main
-app
-
-# Prometheus data
-prometheus_data/
-
-# Grafana data
-grafana_data/
-
-# pgAdmin data
-pgadmin_data/
-
-# Docker volumes
-postgres_data/
-redis_data/
-redisinsight_data/
-
-# Terraform files (if used)
-*.tfstate
-*.tfstate.*
-.terraform/
-
-# Helm charts (if used)
-charts/*/charts/
-charts/*/requirements.lock
-
-# Sensitive test files
-*_secret_test.go
+# Auto-generated Postman collection
+postman_collection_generated.json
+postman_collection_auto_generated.json

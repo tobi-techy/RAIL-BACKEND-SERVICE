@@ -13,9 +13,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/internal/infrastructure/config"
-	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/infrastructure/config"
+	"github.com/rail-service/rail_service/pkg/logger"
 )
 
 // TestWalletAPI tests the wallet management API endpoints
@@ -51,7 +51,7 @@ func TestWalletAPI(t *testing.T) {
 		},
 		JWT: config.JWTConfig{
 			Secret:     "test-secret-key-for-jwt-token-generation",
-			AccessTTL:  900,    // 15 minutes in seconds
+			AccessTTL:  604800, // 7 days in seconds
 			RefreshTTL: 604800, // 7 days in seconds
 		},
 		Environment: "test",

@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
-	"github.com/stack-service/stack_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 )
 
 // OnboardingJobService handles onboarding job business logic
@@ -77,9 +77,7 @@ func (s *OnboardingJobService) CreateOnboardingJob(ctx context.Context, userID u
 		UserEmail: userEmail,
 		UserPhone: userPhone,
 		WalletChains: []string{
-			string(entities.ChainETH),
-			string(entities.ChainSOL),
-			string(entities.ChainAPTOS),
+			string(entities.ChainSOLDevnet),
 		},
 		Metadata: map[string]interface{}{
 			"created_by": "signup_flow",

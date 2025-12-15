@@ -11,21 +11,18 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/internal/domain/services"
-	"github.com/stack-service/stack_service/internal/infrastructure/cache"
-	"github.com/stack-service/stack_service/internal/infrastructure/config"
-	"github.com/stack-service/stack_service/internal/infrastructure/database"
-	"github.com/stack-service/stack_service/internal/infrastructure/di"
-	"github.com/stack-service/stack_service/internal/infrastructure/repositories"
-	"github.com/stack-service/stack_service/pkg/logger"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services"
+	"github.com/rail-service/rail_service/internal/infrastructure/cache"
+	"github.com/rail-service/rail_service/internal/infrastructure/config"
+	"github.com/rail-service/rail_service/internal/infrastructure/database"
+	"github.com/rail-service/rail_service/internal/infrastructure/di"
+	"github.com/rail-service/rail_service/pkg/logger"
 )
 
 type stubVerificationEmailSender struct {
@@ -73,8 +70,8 @@ func TestSignUpFlow(t *testing.T) {
 		},
 		JWT: config.JWTConfig{
 			Secret:     "test-secret-key",
-			AccessTTL:  3600,
-			RefreshTTL: 2592000,
+			AccessTTL:  604800,  // 7 days
+			RefreshTTL: 2592000, // 30 days
 		},
 		Email: config.EmailConfig{
 			Provider:    "",

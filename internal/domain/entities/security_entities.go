@@ -41,9 +41,12 @@ type PasscodeStatusResponse struct {
 
 // PasscodeVerificationResponse is returned after a successful verification
 type PasscodeVerificationResponse struct {
-	Verified     bool      `json:"verified"`
-	SessionToken string    `json:"sessionToken"`
-	ExpiresAt    time.Time `json:"expiresAt"`
+	Verified                 bool      `json:"verified"`
+	AccessToken              string    `json:"accessToken"`
+	RefreshToken             string    `json:"refreshToken"`
+	ExpiresAt                time.Time `json:"expiresAt"`
+	PasscodeSessionToken     string    `json:"passcodeSessionToken"`     // Short-lived token for sensitive operations
+	PasscodeSessionExpiresAt time.Time `json:"passcodeSessionExpiresAt"` // Expiration for passcode session
 }
 
 // PasscodeMetadata captures persisted passcode security information

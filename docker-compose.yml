@@ -2,45 +2,79 @@
 services:
   # Main application
   app:
-    build: .
+    build: 
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8080:8080"
     environment:
       - ENVIRONMENT=development
-      - DATABASE_URL=postgres://postgres:postgres@db:5432/stack_service_dev?sslmode=disable
+      - DATABASE_URL=postgres://postgres:postgres@db:5432/rail_service_dev?sslmode=disable
       - REDIS_HOST=redis
-      - JWT_SECRET=development-jwt-secret-key-change-in-production
-      - ENCRYPTION_KEY=development-encryption-key-32-byte!
+      - JWT_SECRET=${JWT_SECRET:-development-jwt-secret-key-change-in-production}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-development-encryption-key-32-byte!}
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_started
     networks:
-      - stack-network
+      - rail-network
     volumes:
-      - ./configs:/root/configs
+      - ./configs:/configs:ro
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "/main", "--health-check"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   # PostgreSQL Database
   db:
     image: postgres:15-alpine
     environment:
-      - POSTGRES_DB=stack_service_dev
+      - POSTGRES_DB=rail_service_dev
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-postgres}
+      - POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
     networks:
-      - stack-network
+      - rail-network
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d stack_service_dev"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d rail_service_dev"]
       interval: 10s
       timeout: 5s
       retries: 5
+    command: >
+      postgres
+      -c shared_preload_libraries=pg_stat_statements
+      -c pg_stat_statements.track=all
+      -c max_connections=200
+      -c shared_buffers=256MB
+      -c effective_cache_size=1GB
+      -c maintenance_work_mem=64MB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=16MB
+      -c default_statistics_target=100
 
   # Redis Cache
   redis:
@@ -49,28 +83,40 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+      - ./configs/redis.conf:/usr/local/etc/redis/redis.conf:ro
     networks:
-      - stack-network
+      - rail-network
     restart: unless-stopped
-    command: redis-server --appendonly yes
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    command: redis-server /usr/local/etc/redis/redis.conf
 
   # Database Admin (pgAdmin)
   pgadmin:
     image: dpage/pgadmin4:latest
     environment:
-      - PGADMIN_DEFAULT_EMAIL=admin@stackservice.com
-      - PGADMIN_DEFAULT_PASSWORD=admin
+      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_EMAIL:-admin@railservice.com}
+      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_PASSWORD:-admin}
       - PGADMIN_CONFIG_SERVER_MODE=False
     ports:
       - "5050:80"
     volumes:
       - pgadmin_data:/var/lib/pgadmin
     networks:
-      - stack-network
+      - rail-network
     depends_on:
       - db
     profiles:
       - admin
+    restart: unless-stopped
 
   # Redis Admin (RedisInsight)
   redis-insight:
@@ -80,11 +126,22 @@ services:
     volumes:
       - redisinsight_data:/db
     networks:
-      - stack-network
+      - rail-network
     depends_on:
       - redis
     profiles:
       - admin
+    restart: unless-stopped
+
+  # Mailpit (Email Testing)
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "8025:8025"  # Web UI
+      - "1025:1025"  # SMTP
+    networks:
+      - rail-network
+    restart: unless-stopped
 
   # Prometheus (Metrics)
   prometheus:
@@ -92,12 +149,20 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ./configs/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./configs/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     networks:
-      - stack-network
+      - rail-network
     profiles:
       - monitoring
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
 
   # Grafana (Dashboards)
   grafana:
@@ -105,24 +170,56 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SECURITY_DISABLE_GRAVATAR=true
+      - GF_ANALYTICS_REPORTING_ENABLED=false
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./configs/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./configs/grafana/datasources:/etc/grafana/provisioning/datasources:ro
     networks:
-      - stack-network
+      - rail-network
     depends_on:
       - prometheus
     profiles:
       - monitoring
+    restart: unless-stopped
+
+  # Nginx reverse proxy (production)
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./configs/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./configs/ssl:/etc/nginx/ssl:ro
+    networks:
+      - rail-network
+    depends_on:
+      - app
+    profiles:
+      - production
+    restart: unless-stopped
 
 volumes:
   postgres_data:
+    driver: local
   redis_data:
+    driver: local
   pgadmin_data:
+    driver: local
   redisinsight_data:
+    driver: local
   prometheus_data:
+    driver: local
   grafana_data:
+    driver: local
 
 networks:
-  stack-network:
+  rail-network:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

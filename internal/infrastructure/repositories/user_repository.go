@@ -10,8 +10,8 @@ import (
 	"github.com/lib/pq"
 	"go.uber.org/zap"
 
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/pkg/crypto"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/pkg/crypto"
 )
 
 // UserRepository implements the user repository interface using PostgreSQL
@@ -386,6 +386,60 @@ func (r *UserRepository) CreateUserFromAuth(ctx context.Context, req *entities.R
 		zap.String("user_id", user.ID.String()),
 		zap.String("email", user.Email))
 
+	return user, nil
+}
+
+// CreateUserWithHash creates a new user with a pre-hashed password (used after verification)
+func (r *UserRepository) CreateUserWithHash(ctx context.Context, email string, phone *string, passwordHash string) (*entities.User, error) {
+	user := &entities.User{
+		ID:               uuid.New(),
+		Email:            email,
+		Phone:            phone,
+		PasswordHash:     passwordHash,
+		EmailVerified:    false,
+		PhoneVerified:    false,
+		OnboardingStatus: entities.OnboardingStatusStarted,
+		KYCStatus:        string(entities.KYCStatusPending),
+		Role:             "user",
+		IsActive:         true,
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
+	}
+
+	query := `
+		INSERT INTO users (
+			id, email, phone, password_hash, auth_provider_id, 
+			email_verified, phone_verified, onboarding_status, kyc_status,
+			role, is_active, created_at, updated_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+		)`
+
+	_, err := r.db.ExecContext(ctx, query,
+		user.ID,
+		user.Email,
+		user.Phone,
+		user.PasswordHash,
+		user.AuthProviderID,
+		user.EmailVerified,
+		user.PhoneVerified,
+		string(user.OnboardingStatus),
+		user.KYCStatus,
+		user.Role,
+		user.IsActive,
+		user.CreatedAt,
+		user.UpdatedAt,
+	)
+
+	if err != nil {
+		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
+			return nil, fmt.Errorf("user already exists")
+		}
+		r.logger.Error("Failed to create user", zap.Error(err))
+		return nil, fmt.Errorf("failed to create user: %w", err)
+	}
+
+	r.logger.Info("User created successfully", zap.String("user_id", user.ID.String()))
 	return user, nil
 }
 
@@ -821,4 +875,105 @@ func (r *UserRepository) ClearPasscode(ctx context.Context, userID uuid.UUID) er
 	}
 
 	return nil
+}
+
+// CreatePasswordResetToken stores a hashed password reset token
+func (r *UserRepository) CreatePasswordResetToken(ctx context.Context, userID uuid.UUID, tokenHash string, expiresAt time.Time) error {
+	query := `INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)`
+	_, err := r.db.ExecContext(ctx, query, userID, tokenHash, expiresAt)
+	if err != nil {
+		r.logger.Error("Failed to create password reset token", zap.Error(err), zap.String("user_id", userID.String()))
+		return fmt.Errorf("failed to create password reset token: %w", err)
+	}
+	return nil
+}
+
+// ValidatePasswordResetToken validates and marks token as used
+func (r *UserRepository) ValidatePasswordResetToken(ctx context.Context, tokenHash string) (uuid.UUID, error) {
+	var userID uuid.UUID
+	query := `
+		UPDATE password_reset_tokens 
+		SET used_at = NOW() 
+		WHERE token_hash = $1 AND expires_at > NOW() AND used_at IS NULL
+		RETURNING user_id`
+	err := r.db.QueryRowContext(ctx, query, tokenHash).Scan(&userID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return uuid.Nil, fmt.Errorf("invalid or expired token")
+		}
+		r.logger.Error("Failed to validate password reset token", zap.Error(err))
+		return uuid.Nil, fmt.Errorf("failed to validate token: %w", err)
+	}
+	return userID, nil
+}
+
+// GetByPhone retrieves a user profile by phone number
+func (r *UserRepository) GetByPhone(ctx context.Context, phone string) (*entities.UserProfile, error) {
+	query := `
+        SELECT id, email, phone, first_name, last_name, date_of_birth,
+               auth_provider_id, email_verified, phone_verified,
+               onboarding_status, kyc_status, kyc_provider_ref,
+               kyc_submitted_at, kyc_approved_at, kyc_rejection_reason,
+               is_active, created_at, updated_at
+        FROM users 
+        WHERE phone = $1 AND is_active = true`
+
+	user := &entities.UserProfile{}
+	var kycApprovedAt, kycSubmittedAt sql.NullTime
+	var kycRejectionReason, kycProviderRef sql.NullString
+	var firstName, lastName sql.NullString
+	var dateOfBirth sql.NullTime
+
+	err := r.db.QueryRowContext(ctx, query, phone).Scan(
+		&user.ID,
+		&user.Email,
+		&user.Phone,
+		&firstName,
+		&lastName,
+		&dateOfBirth,
+		&user.AuthProviderID,
+		&user.EmailVerified,
+		&user.PhoneVerified,
+		&user.OnboardingStatus,
+		&user.KYCStatus,
+		&kycProviderRef,
+		&kycSubmittedAt,
+		&kycApprovedAt,
+		&kycRejectionReason,
+		&user.IsActive,
+		&user.CreatedAt,
+		&user.UpdatedAt,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("user not found")
+		}
+		r.logger.Error("Failed to get user by phone", zap.Error(err), zap.String("phone", phone))
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+
+	if firstName.Valid {
+		user.FirstName = &firstName.String
+	}
+	if lastName.Valid {
+		user.LastName = &lastName.String
+	}
+	if dateOfBirth.Valid {
+		user.DateOfBirth = &dateOfBirth.Time
+	}
+	if kycProviderRef.Valid {
+		user.KYCProviderRef = &kycProviderRef.String
+	}
+	if kycSubmittedAt.Valid {
+		user.KYCSubmittedAt = &kycSubmittedAt.Time
+	}
+	if kycApprovedAt.Valid {
+		user.KYCApprovedAt = &kycApprovedAt.Time
+	}
+	if kycRejectionReason.Valid {
+		user.KYCRejectionReason = &kycRejectionReason.String
+	}
+
+	return user, nil
 }

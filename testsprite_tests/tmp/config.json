@@ -1,0 +1,18 @@
+{
+  "status": "init",
+  "type": "backend",
+  "scope": "codebase",
+  "localEndpoint": "http://localhost:8080/",
+  "backendAuthType": "public",
+  "executionArgs": {
+    "projectName": "stack_service",
+    "projectPath": "/Users/Aplle/development/stack_service",
+    "testIds": [],
+    "additionalInstruction": "Focus on testing the specific requirements:\n\nA. Sign-Up & KYC:\n1. User can sign up with email or phone; verification (OTP/email link) required before continuing.\n2. KYC flow requests ID + selfie; status clearly shown: Pending / Approved / Failed; failed state offers next steps.\n\nB. Managed Wallet Creation (Automated):\n1. On KYC = Approved, backend provisions developer-controlled wallets via Circle for EVM (unified address across EVM chains where possible), Solana, and Aptos (EOA only). Creation uses Circle Wallet Set + Wallet APIs; Solana/Aptos are EOA only; SCAs are not supported on Solana/Aptos.\n2. Persist wallet metadata in wallets table; associate chain, address, provider ref, status.\n3. User never sees private keys; custody abstracted.\n4. Show success state and land on dashboard; handle friendly errors & retries; target ≥90% completion in tests.\n\nC. App/Backend API Contracts (STACK):\n- POST /api/v1/onboarding/start → create user + kick off KYC.\n- GET /api/v1/onboarding/status → returns KYC + wallet provisioning status.\n- GET /api/v1/wallet/addresses?chain=eth|sol|aptos → returns deposit/receive address for requested chain.\n- GET /api/v1/wallet/status → returns per-chain wallet readiness.\n\nD. Observability & Audit:\n- Log provisioning attempts and results in audit_logs with provider refs; emit metrics for success/failure and time-to-ready.\n\nTest both happy path and error scenarios. Ensure comprehensive API testing including edge cases, error handling, and data validation. Target >= 90% completion rate for wallet provisioning flows.",
+    "envs": {
+      "API_KEY": "sk-user-KnpxZncm-poHHRQ7M2QrgQnghdbTHQWHZNLVaZg6EqdDZMYLJ5NGS0jfbzRhGZhpCwl0Ydi5wG-QKRz1Xojg8yNdVlKRkEKt7L3C7oXw5gMFD4zZGks1eeuRMx_GCAuhqhM"
+    }
+  },
+  "proxy": "http://757d169e-1922-4cb6-b414-db8fb982c150:UbcBzkfuJQFByxM8pNozVl7pCtFFoer0@tun.testsprite.com:8080",
+  "serverPort": 50247
+}

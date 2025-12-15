@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: rail-service
+  labels:
+    app: rail-service
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: rail-service
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rail-service-metrics
+  labels:
+    app: rail-service
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: metrics
+  selector:
+    app: rail-service

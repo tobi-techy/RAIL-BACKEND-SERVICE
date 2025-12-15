@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-	"github.com/stack-service/stack_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"go.uber.org/zap"
 )
 
@@ -184,6 +184,48 @@ func (r *BalanceRepository) Create(ctx context.Context, balance *entities.Balanc
 	)
 
 	return nil
+}
+
+// DeductBuyingPower deducts amount from user's buying power
+func (r *BalanceRepository) DeductBuyingPower(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error {
+	query := `
+		UPDATE balances 
+		SET 
+			buying_power = buying_power - $2,
+			updated_at = $3
+		WHERE user_id = $1 AND buying_power >= $2
+	`
+
+	result, err := r.db.ExecContext(ctx, query, userID, amount, time.Now())
+	if err != nil {
+		r.logger.Error("failed to deduct buying power",
+			zap.Error(err),
+			zap.String("user_id", userID.String()),
+			zap.String("amount", amount.String()),
+		)
+		return fmt.Errorf("failed to deduct buying power: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("insufficient buying power or user not found")
+	}
+
+	r.logger.Info("buying power deducted",
+		zap.String("user_id", userID.String()),
+		zap.String("amount", amount.String()),
+	)
+
+	return nil
+}
+
+// AddBuyingPower adds amount to user's buying power
+func (r *BalanceRepository) AddBuyingPower(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error {
+	return r.UpdateBuyingPower(ctx, userID, amount)
 }
 
 // TransferFromPendingToBuyingPower atomically moves amount from pending to buying power

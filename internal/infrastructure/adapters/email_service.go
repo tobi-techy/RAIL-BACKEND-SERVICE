@@ -3,11 +3,13 @@ package adapters
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"html"
 	"io"
 	"net/http"
+	"net/smtp"
 	"strings"
 	"time"
 
@@ -15,7 +17,7 @@ import (
 	"github.com/sendgrid/sendgrid-go/helpers/mail"
 	"go.uber.org/zap"
 
-	"github.com/stack-service/stack_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 )
 
 const (
@@ -41,6 +43,12 @@ type EmailServiceConfig struct {
 	Environment string // "development", "staging", "production"
 	BaseURL     string // For verification links
 	ReplyTo     string
+	// SMTP settings (for mailpit, smtp providers)
+	SMTPHost     string
+	SMTPPort     int
+	SMTPUsername string
+	SMTPPassword string
+	SMTPUseTLS   bool
 }
 
 // EmailService implements the email service interface
@@ -78,6 +86,13 @@ func NewEmailService(logger *zap.Logger, config EmailServiceConfig) (*EmailServi
 			return nil, fmt.Errorf("resend api key is required")
 		}
 		httpClient = &http.Client{Timeout: 30 * time.Second}
+	case "mailpit", "smtp":
+		if config.SMTPHost == "" {
+			return nil, fmt.Errorf("smtp host is required for %s provider", provider)
+		}
+		if config.SMTPPort == 0 {
+			config.SMTPPort = 1025 // default mailpit port
+		}
 	default:
 		return nil, fmt.Errorf("unsupported email provider: %s", provider)
 	}
@@ -103,6 +118,8 @@ func (e *EmailService) sendEmail(ctx context.Context, to, subject, htmlContent, 
 		return e.sendViaResend(ctxWithTimeout, to, subject, htmlContent, textContent)
 	case "sendgrid":
 		return e.sendViaSendgrid(ctxWithTimeout, to, subject, htmlContent, textContent)
+	case "mailpit", "smtp":
+		return e.sendViaSMTP(ctxWithTimeout, to, subject, htmlContent, textContent)
 	default:
 		return fmt.Errorf("unsupported email provider: %s", provider)
 	}
@@ -253,6 +270,95 @@ func (e *EmailService) sendViaResend(ctx context.Context, to, subject, htmlConte
 		zap.Int("status_code", resp.StatusCode))
 
 	return nil
+}
+
+func (e *EmailService) sendViaSMTP(_ context.Context, to, subject, htmlContent, textContent string) error {
+	from := e.config.FromEmail
+	if e.config.FromName != "" {
+		from = fmt.Sprintf("%s <%s>", e.config.FromName, e.config.FromEmail)
+	}
+
+	// Build MIME message
+	var msg bytes.Buffer
+	msg.WriteString(fmt.Sprintf("From: %s\r\n", from))
+	msg.WriteString(fmt.Sprintf("To: %s\r\n", to))
+	msg.WriteString(fmt.Sprintf("Subject: %s\r\n", subject))
+	if e.config.ReplyTo != "" {
+		msg.WriteString(fmt.Sprintf("Reply-To: %s\r\n", e.config.ReplyTo))
+	}
+	msg.WriteString("MIME-Version: 1.0\r\n")
+	msg.WriteString("Content-Type: text/html; charset=\"UTF-8\"\r\n")
+	msg.WriteString("\r\n")
+	msg.WriteString(htmlContent)
+
+	addr := fmt.Sprintf("%s:%d", e.config.SMTPHost, e.config.SMTPPort)
+
+	var auth smtp.Auth
+	if e.config.SMTPUsername != "" {
+		auth = smtp.PlainAuth("", e.config.SMTPUsername, e.config.SMTPPassword, e.config.SMTPHost)
+	}
+
+	var err error
+	if e.config.SMTPUseTLS {
+		err = e.sendSMTPWithTLS(addr, auth, e.config.FromEmail, to, msg.Bytes())
+	} else {
+		err = smtp.SendMail(addr, auth, e.config.FromEmail, []string{to}, msg.Bytes())
+	}
+
+	if err != nil {
+		e.logger.Error("Failed to send email via SMTP",
+			zap.String("provider", e.config.Provider),
+			zap.String("to", to),
+			zap.String("host", e.config.SMTPHost),
+			zap.Error(err))
+		return fmt.Errorf("smtp send failed: %w", err)
+	}
+
+	e.logger.Info("Email sent successfully",
+		zap.String("provider", e.config.Provider),
+		zap.String("to", to),
+		zap.String("subject", subject))
+
+	return nil
+}
+
+func (e *EmailService) sendSMTPWithTLS(addr string, auth smtp.Auth, from, to string, msg []byte) error {
+	conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: e.config.SMTPHost})
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	client, err := smtp.NewClient(conn, e.config.SMTPHost)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	if auth != nil {
+		if err = client.Auth(auth); err != nil {
+			return err
+		}
+	}
+	if err = client.Mail(from); err != nil {
+		return err
+	}
+	if err = client.Rcpt(to); err != nil {
+		return err
+	}
+	w, err := client.Data()
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(msg)
+	if err != nil {
+		return err
+	}
+	err = w.Close()
+	if err != nil {
+		return err
+	}
+	return client.Quit()
 }
 
 func isNonProductionEnv(env string) bool {

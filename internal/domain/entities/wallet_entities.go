@@ -13,32 +13,22 @@ import (
 type WalletChain string
 
 const (
-	// EVM chains
-	ChainETH         WalletChain = "ETH"
-	ChainETHSepolia  WalletChain = "ETH-SEPOLIA"
-	ChainMATIC       WalletChain = "MATIC"
-	ChainMATICAmoy   WalletChain = "MATIC-AMOY"
-	ChainAVAX        WalletChain = "AVAX"
-	ChainBASE        WalletChain = "BASE"
-	ChainBASESepolia WalletChain = "BASE-SEPOLIA"
-
-	// Solana
-	ChainSOL       WalletChain = "SOL"
+	// Solana - Only SOL-DEVNET is currently supported
 	ChainSOLDevnet WalletChain = "SOL-DEVNET"
-
-	// Aptos
-	ChainAPTOS        WalletChain = "APTOS"
-	ChainAPTOSTestnet WalletChain = "APTOS-TESTNET"
+	
+	// USDC Token Addresses by Chain
+	// SOL-DEVNET USDC token address
+	USDCTokenAddressSOLDevnet = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
 )
 
-// GetMainnetChains returns production chains
+// GetMainnetChains returns production chains (currently empty)
 func GetMainnetChains() []WalletChain {
-	return []WalletChain{ChainETH, ChainMATIC, ChainAVAX, ChainSOL, ChainAPTOS, ChainBASE}
+	return []WalletChain{}
 }
 
 // GetTestnetChains returns testnet chains
 func GetTestnetChains() []WalletChain {
-	return []WalletChain{ChainETHSepolia, ChainSOLDevnet, ChainAPTOSTestnet, ChainMATICAmoy, ChainBASESepolia}
+	return []WalletChain{ChainSOLDevnet}
 }
 
 // IsValid checks if the chain is supported
@@ -63,17 +53,23 @@ func (c WalletChain) IsTestnet() bool {
 	return false
 }
 
-// GetChainFamily returns the chain family (EVM, Solana, Aptos)
+// GetChainFamily returns the chain family (Solana only)
 func (c WalletChain) GetChainFamily() string {
 	switch c {
-	case ChainETH, ChainETHSepolia, ChainMATIC, ChainMATICAmoy, ChainAVAX, ChainBASE, ChainBASESepolia:
-		return "EVM"
-	case ChainSOL, ChainSOLDevnet:
+	case ChainSOLDevnet:
 		return "Solana"
-	case ChainAPTOS, ChainAPTOSTestnet:
-		return "Aptos"
 	default:
 		return "Unknown"
+	}
+}
+
+// GetUSDCTokenAddress returns the USDC token address for the chain
+func (c WalletChain) GetUSDCTokenAddress() string {
+	switch c {
+	case ChainSOLDevnet:
+		return USDCTokenAddressSOLDevnet
+	default:
+		return ""
 	}
 }
 
@@ -456,8 +452,8 @@ func (r *CircleWalletCreateResponse) UnmarshalJSON(data []byte) error {
 		Data struct {
 			Wallets []CircleWalletData `json:"wallets"`
 		} `json:"data"`
-		Wallet  *CircleWalletData   `json:"wallet"`
-		Wallets []CircleWalletData  `json:"wallets"`
+		Wallet  *CircleWalletData  `json:"wallet"`
+		Wallets []CircleWalletData `json:"wallets"`
 	}{}
 
 	if err := json.Unmarshal(data, &aux); err != nil {
@@ -707,4 +703,81 @@ type CircleTransferRequest struct {
 	TxHash                 string   `json:"txHash,omitempty"`
 	TxType                 string   `json:"txType,omitempty"`
 	WalletSetID            string   `json:"walletSetId,omitempty"`
+}
+
+// CircleTokenInfo represents token metadata from Circle API
+type CircleTokenInfo struct {
+	ID           string    `json:"id"`
+	Blockchain   string    `json:"blockchain"`
+	TokenAddress string    `json:"tokenAddress,omitempty"`
+	Standard     string    `json:"standard,omitempty"`
+	Name         string    `json:"name"`
+	Symbol       string    `json:"symbol"`
+	Decimals     int       `json:"decimals"`
+	IsNative     bool      `json:"isNative"`
+	UpdateDate   time.Time `json:"updateDate"`
+	CreateDate   time.Time `json:"createDate"`
+}
+
+// CircleTokenBalance represents a single token balance from Circle API
+type CircleTokenBalance struct {
+	Token      CircleTokenInfo `json:"token"`
+	Amount     string          `json:"amount"`
+	UpdateDate time.Time       `json:"updateDate"`
+}
+
+// CircleWalletBalancesResponse represents the Circle API response for wallet balances
+type CircleWalletBalancesResponse struct {
+	TokenBalances []CircleTokenBalance `json:"tokenBalances"`
+}
+
+// UnmarshalJSON normalizes Circle balance responses that wrap data
+func (r *CircleWalletBalancesResponse) UnmarshalJSON(data []byte) error {
+	aux := struct {
+		Data struct {
+			TokenBalances []CircleTokenBalance `json:"tokenBalances"`
+		} `json:"data"`
+		TokenBalances []CircleTokenBalance `json:"tokenBalances"`
+	}{}
+
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	// Check if wrapped in data.tokenBalances first
+	if len(aux.Data.TokenBalances) > 0 {
+		r.TokenBalances = aux.Data.TokenBalances
+		return nil
+	}
+
+	// Fallback to direct tokenBalances field
+	if len(aux.TokenBalances) > 0 {
+		r.TokenBalances = aux.TokenBalances
+		return nil
+	}
+
+	// Default to empty array (not nil)
+	r.TokenBalances = []CircleTokenBalance{}
+	return nil
+}
+
+// GetUSDCBalance extracts USDC balance from token balances
+func (r *CircleWalletBalancesResponse) GetUSDCBalance() string {
+	for _, balance := range r.TokenBalances {
+		// Check if token is USDC (case-insensitive)
+		if strings.EqualFold(balance.Token.Symbol, "USDC") {
+			return balance.Amount
+		}
+	}
+	return "0"
+}
+
+// GetNativeBalance extracts native token balance (e.g., MATIC, ETH)
+func (r *CircleWalletBalancesResponse) GetNativeBalance() string {
+	for _, balance := range r.TokenBalances {
+		if balance.Token.IsNative {
+			return balance.Amount
+		}
+	}
+	return "0"
 }

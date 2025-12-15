@@ -11,9 +11,9 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	"github.com/stack-service/stack_service/internal/infrastructure/cache"
-	"github.com/stack-service/stack_service/pkg/crypto"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/infrastructure/cache"
+	"github.com/rail-service/rail_service/pkg/crypto"
 )
 
 const (
@@ -175,19 +175,19 @@ func (s *Service) UpdatePasscode(ctx context.Context, userID uuid.UUID, current,
 	return s.GetStatus(ctx, userID)
 }
 
-// VerifyPasscode validates the supplied passcode and issues a temporary session token
-func (s *Service) VerifyPasscode(ctx context.Context, userID uuid.UUID, passcode string) (*entities.PasscodeVerificationResponse, error) {
+// VerifyPasscode validates the supplied passcode and creates a session token for sensitive operations
+func (s *Service) VerifyPasscode(ctx context.Context, userID uuid.UUID, passcode string) (string, time.Time, error) {
 	meta, err := s.userRepo.GetPasscodeMetadata(ctx, userID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch passcode metadata: %w", err)
+		return "", time.Time{}, fmt.Errorf("failed to fetch passcode metadata: %w", err)
 	}
 
 	if meta.HashedPasscode == nil || *meta.HashedPasscode == "" {
-		return nil, ErrPasscodeNotSet
+		return "", time.Time{}, ErrPasscodeNotSet
 	}
 
 	if isLocked(meta) {
-		return nil, ErrPasscodeLocked
+		return "", time.Time{}, ErrPasscodeLocked
 	}
 
 	if !crypto.ValidatePassword(passcode, *meta.HashedPasscode) {
@@ -197,9 +197,9 @@ func (s *Service) VerifyPasscode(ctx context.Context, userID uuid.UUID, passcode
 				zap.Error(incErr),
 				zap.String("user_id", userID.String()))
 		} else if isLocked(newMeta) {
-			return nil, ErrPasscodeLocked
+			return "", time.Time{}, ErrPasscodeLocked
 		}
-		return nil, ErrPasscodeMismatch
+		return "", time.Time{}, ErrPasscodeMismatch
 	}
 
 	if err := s.userRepo.ResetPasscodeFailures(ctx, userID); err != nil {
@@ -208,17 +208,17 @@ func (s *Service) VerifyPasscode(ctx context.Context, userID uuid.UUID, passcode
 			zap.String("user_id", userID.String()))
 	}
 
+	// Create a short-lived session token for sensitive operations
 	session, token, err := s.createSession(ctx, userID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create passcode session: %w", err)
+		return "", time.Time{}, fmt.Errorf("failed to create passcode session: %w", err)
 	}
 
-	s.logger.Info("Passcode verified successfully", zap.String("user_id", userID.String()))
-	return &entities.PasscodeVerificationResponse{
-		Verified:     true,
-		SessionToken: token,
-		ExpiresAt:    session.ExpiresAt,
-	}, nil
+	s.logger.Info("Passcode verified successfully and session token created",
+		zap.String("user_id", userID.String()),
+		zap.Time("session_expires_at", session.ExpiresAt))
+
+	return token, session.ExpiresAt, nil
 }
 
 // RemovePasscode disables the passcode requirement after validating the current passcode

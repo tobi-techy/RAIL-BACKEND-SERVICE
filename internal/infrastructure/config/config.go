@@ -12,50 +12,89 @@ import (
 
 // Config holds all configuration for the application
 type Config struct {
-	Environment  string             `mapstructure:"environment"`
-	LogLevel     string             `mapstructure:"log_level"`
-	Server       ServerConfig       `mapstructure:"server"`
-	Database     DatabaseConfig     `mapstructure:"database"`
-	Redis        RedisConfig        `mapstructure:"redis"`
-	JWT          JWTConfig          `mapstructure:"jwt"`
-	Blockchain   BlockchainConfig   `mapstructure:"blockchain"`
-	Payment      PaymentConfig      `mapstructure:"payment"`
-	Security     SecurityConfig     `mapstructure:"security"`
-	Circle       CircleConfig       `mapstructure:"circle"`
-	KYC          KYCConfig          `mapstructure:"kyc"`
-	Email        EmailConfig        `mapstructure:"email"`
-	SMS          SMSConfig          `mapstructure:"sms"`
-	Verification VerificationConfig `mapstructure:"verification"`
-	ZeroG        ZeroGConfig        `mapstructure:"zerog"`
+	Environment    string             `mapstructure:"environment"`
+	LogLevel       string             `mapstructure:"log_level"`
+	Server         ServerConfig       `mapstructure:"server"`
+	Database       DatabaseConfig     `mapstructure:"database"`
+	Redis          RedisConfig        `mapstructure:"redis"`
+	JWT            JWTConfig          `mapstructure:"jwt"`
+	Blockchain     BlockchainConfig   `mapstructure:"blockchain"`
+	Payment        PaymentConfig      `mapstructure:"payment"`
+	Security       SecurityConfig     `mapstructure:"security"`
+	Circle         CircleConfig       `mapstructure:"circle"`
+	KYC            KYCConfig          `mapstructure:"kyc"`
+	Email          EmailConfig        `mapstructure:"email"`
+	SMS            SMSConfig          `mapstructure:"sms"`
+	Notification   NotificationConfig `mapstructure:"notification"`
+	Verification   VerificationConfig `mapstructure:"verification"`
+	Alpaca         AlpacaConfig         `mapstructure:"alpaca"`
+	Due            DueConfig            `mapstructure:"due"`
+	Workers        WorkerConfig         `mapstructure:"workers"`
+	Reconciliation ReconciliationConfig `mapstructure:"reconciliation"`
+	SocialAuth     SocialAuthConfig     `mapstructure:"social_auth"`
+	WebAuthn       WebAuthnConfig       `mapstructure:"webauthn"`
+	AI             AIConfig             `mapstructure:"ai"`
+}
+
+// AIConfig contains AI provider configuration
+type AIConfig struct {
+	OpenAI  OpenAIConfig  `mapstructure:"openai"`
+	Gemini  GeminiConfig  `mapstructure:"gemini"`
+	Primary string        `mapstructure:"primary"` // "openai" or "gemini"
+}
+
+// OpenAIConfig contains OpenAI API configuration
+type OpenAIConfig struct {
+	APIKey      string  `mapstructure:"api_key"`
+	Model       string  `mapstructure:"model"`
+	MaxTokens   int     `mapstructure:"max_tokens"`
+	Temperature float64 `mapstructure:"temperature"`
+}
+
+// GeminiConfig contains Google Gemini API configuration
+type GeminiConfig struct {
+	APIKey      string  `mapstructure:"api_key"`
+	Model       string  `mapstructure:"model"`
+	MaxTokens   int     `mapstructure:"max_tokens"`
+	Temperature float64 `mapstructure:"temperature"`
 }
 
 type ServerConfig struct {
-	Port            int      `mapstructure:"port"`
-	Host            string   `mapstructure:"host"`
-	ReadTimeout     int      `mapstructure:"read_timeout"`
-	WriteTimeout    int      `mapstructure:"write_timeout"`
-	AllowedOrigins  []string `mapstructure:"allowed_origins"`
-	RateLimitPerMin int      `mapstructure:"rate_limit_per_min"`
+	Port              int      `mapstructure:"port"`
+	Host              string   `mapstructure:"host"`
+	ReadTimeout       int      `mapstructure:"read_timeout"`
+	WriteTimeout      int      `mapstructure:"write_timeout"`
+	AllowedOrigins    []string `mapstructure:"allowed_origins"`
+	RateLimitPerMin   int      `mapstructure:"rate_limit_per_min"`
+	SupportedVersions []string `mapstructure:"supported_versions"`
+	DefaultVersion    string   `mapstructure:"default_version"`
 }
 
 type DatabaseConfig struct {
-	URL             string `mapstructure:"url"`
-	Host            string `mapstructure:"host"`
-	Port            int    `mapstructure:"port"`
-	Name            string `mapstructure:"name"`
-	User            string `mapstructure:"user"`
-	Password        string `mapstructure:"password"`
-	SSLMode         string `mapstructure:"ssl_mode"`
-	MaxOpenConns    int    `mapstructure:"max_open_conns"`
-	MaxIdleConns    int    `mapstructure:"max_idle_conns"`
-	ConnMaxLifetime int    `mapstructure:"conn_max_lifetime"`
+	URL             string   `mapstructure:"url"`
+	Host            string   `mapstructure:"host"`
+	Port            int      `mapstructure:"port"`
+	Name            string   `mapstructure:"name"`
+	User            string   `mapstructure:"user"`
+	Password        string   `mapstructure:"password"`
+	SSLMode         string   `mapstructure:"ssl_mode"`
+	MaxOpenConns    int      `mapstructure:"max_open_conns"`
+	MaxIdleConns    int      `mapstructure:"max_idle_conns"`
+	ConnMaxLifetime int      `mapstructure:"conn_max_lifetime"`
+	QueryTimeout    int      `mapstructure:"query_timeout"`
+	MaxRetries      int      `mapstructure:"max_retries"`
+	ReadReplicas    []string `mapstructure:"read_replicas"`
 }
 
 type RedisConfig struct {
-	Host     string `mapstructure:"host"`
-	Port     int    `mapstructure:"port"`
-	Password string `mapstructure:"password"`
-	DB       int    `mapstructure:"db"`
+	Host         string   `mapstructure:"host"`
+	Port         int      `mapstructure:"port"`
+	Password     string   `mapstructure:"password"`
+	DB           int      `mapstructure:"db"`
+	ClusterMode  bool     `mapstructure:"cluster_mode"`
+	ClusterAddrs []string `mapstructure:"cluster_addrs"`
+	MaxRetries   int      `mapstructure:"max_retries"`
+	PoolSize     int      `mapstructure:"pool_size"`
 }
 
 type JWTConfig struct {
@@ -118,16 +157,30 @@ type SecurityConfig struct {
 	RequireMFA        bool     `mapstructure:"require_mfa"`
 	PasswordMinLength int      `mapstructure:"password_min_length"`
 	SessionTimeout    int      `mapstructure:"session_timeout"`
+	
+	// Enhanced security settings
+	BcryptCost              int    `mapstructure:"bcrypt_cost"`               // bcrypt cost factor (12-14 recommended)
+	PasswordHistoryCount    int    `mapstructure:"password_history_count"`    // number of passwords to track
+	PasswordExpirationDays  int    `mapstructure:"password_expiration_days"`  // days until password expires (0=disabled)
+	AccessTokenTTL          int    `mapstructure:"access_token_ttl"`          // short-lived access token TTL in seconds
+	RefreshTokenTTL         int    `mapstructure:"refresh_token_ttl"`         // refresh token TTL in seconds
+	EnableTokenBlacklist    bool   `mapstructure:"enable_token_blacklist"`    // enable token revocation
+	CheckPasswordBreaches   bool   `mapstructure:"check_password_breaches"`   // check HaveIBeenPwned
+	CaptchaThreshold        int    `mapstructure:"captcha_threshold"`         // failed attempts before CAPTCHA
+	SecretsProvider         string `mapstructure:"secrets_provider"`          // "env", "aws_secrets_manager"
+	AWSSecretsRegion        string `mapstructure:"aws_secrets_region"`        // AWS region for Secrets Manager
+	AWSSecretsPrefix        string `mapstructure:"aws_secrets_prefix"`        // prefix for secret names
+	SecretRotationDays      int    `mapstructure:"secret_rotation_days"`      // days between secret rotations
 }
 
 type CircleConfig struct {
-	APIKey                     string   `mapstructure:"api_key"`
-	Environment                string   `mapstructure:"environment"` // sandbox or production
-	BaseURL                    string   `mapstructure:"base_url"`
-	EntitySecretCiphertext     string   `mapstructure:"entity_secret_ciphertext"` // Pre-registered ciphertext from Circle Dashboard
-	DefaultWalletSetID         string   `mapstructure:"default_wallet_set_id"`
-	DefaultWalletSetName       string   `mapstructure:"default_wallet_set_name"`
-	SupportedChains            []string `mapstructure:"supported_chains"`
+	APIKey                 string   `mapstructure:"api_key"`
+	Environment            string   `mapstructure:"environment"` // sandbox or production
+	BaseURL                string   `mapstructure:"base_url"`
+	EntitySecretCiphertext string   `mapstructure:"entity_secret_ciphertext"` // Pre-registered ciphertext from Circle Dashboard
+	DefaultWalletSetID     string   `mapstructure:"default_wallet_set_id"`
+	DefaultWalletSetName   string   `mapstructure:"default_wallet_set_name"`
+	SupportedChains        []string `mapstructure:"supported_chains"`
 }
 
 type KYCConfig struct {
@@ -142,21 +195,37 @@ type KYCConfig struct {
 }
 
 type EmailConfig struct {
-	Provider    string `mapstructure:"provider"` // "sendgrid", "resend"
-	APIKey      string `mapstructure:"api_key"`
-	FromEmail   string `mapstructure:"from_email"`
-	FromName    string `mapstructure:"from_name"`
-	BaseURL     string `mapstructure:"base_url"`    // For verification links
-	Environment string `mapstructure:"environment"` // "development", "staging", "production"
-	ReplyTo     string `mapstructure:"reply_to"`
+	Provider     string `mapstructure:"provider"` // "sendgrid", "resend", "mailpit", "smtp"
+	APIKey       string `mapstructure:"api_key"`
+	FromEmail    string `mapstructure:"from_email"`
+	FromName     string `mapstructure:"from_name"`
+	BaseURL      string `mapstructure:"base_url"`    // For verification links
+	Environment  string `mapstructure:"environment"` // "development", "staging", "production"
+	ReplyTo      string `mapstructure:"reply_to"`
+	SMTPHost     string `mapstructure:"smtp_host"`
+	SMTPPort     int    `mapstructure:"smtp_port"`
+	SMTPUsername string `mapstructure:"smtp_username"`
+	SMTPPassword string `mapstructure:"smtp_password"`
+	SMTPUseTLS   bool   `mapstructure:"smtp_use_tls"`
 }
 
 type SMSConfig struct {
-	Provider    string `mapstructure:"provider"` // "twilio"
+	Provider    string `mapstructure:"provider"` // "twilio" or "sns"
 	APIKey      string `mapstructure:"api_key"`
 	APISecret   string `mapstructure:"api_secret"`
 	FromNumber  string `mapstructure:"from_number"`
 	Environment string `mapstructure:"environment"` // "development", "staging", "production"
+}
+
+// NotificationConfig contains AWS SNS/SQS notification configuration
+type NotificationConfig struct {
+	Provider             string `mapstructure:"provider"` // "sns" or "local"
+	Region               string `mapstructure:"region"`
+	PushPlatformARN      string `mapstructure:"push_platform_arn"`
+	SMSTopicARN          string `mapstructure:"sms_topic_arn"`
+	EmailTopicARN        string `mapstructure:"email_topic_arn"`
+	NotificationQueueURL string `mapstructure:"notification_queue_url"`
+	DueWebhookSecret     string `mapstructure:"due_webhook_secret"`
 }
 
 type VerificationConfig struct {
@@ -164,6 +233,60 @@ type VerificationConfig struct {
 	CodeTTLMinutes   int `mapstructure:"code_ttl_minutes"`
 	MaxAttempts      int `mapstructure:"max_attempts"`
 	RateLimitPerHour int `mapstructure:"rate_limit_per_hour"`
+}
+
+// DueConfig contains Due API configuration for virtual accounts
+type DueConfig struct {
+	APIKey        string `mapstructure:"api_key"`
+	AccountID     string `mapstructure:"account_id"`
+	BaseURL       string `mapstructure:"base_url"`
+	WebhookSecret string `mapstructure:"webhook_secret"`
+}
+
+// WorkerConfig contains background worker configuration
+type WorkerConfig struct {
+	Count      int `mapstructure:"count"`
+	JobTimeout int `mapstructure:"job_timeout"`
+}
+
+// AlpacaConfig contains brokerage API configuration
+type AlpacaConfig struct {
+	ClientID      string `mapstructure:"client_id"`
+	SecretKey     string `mapstructure:"secret_key"`
+	BaseURL       string `mapstructure:"base_url"`
+	DataBaseURL   string `mapstructure:"data_base_url"`   // Market data API base URL
+	Environment   string `mapstructure:"environment"`     // sandbox or production
+	Timeout       int    `mapstructure:"timeout"`         // Request timeout in seconds
+	FirmAccountNo string `mapstructure:"firm_account_no"` // Firm account for instant funding
+}
+
+// ReconciliationConfig contains reconciliation service configuration
+type ReconciliationConfig struct {
+	Enabled              bool   `mapstructure:"enabled"`                // Enable/disable reconciliation
+	HourlyInterval       int    `mapstructure:"hourly_interval"`        // Interval in minutes for hourly runs
+	DailyRunTime         string `mapstructure:"daily_run_time"`         // Time of day for daily run (HH:MM format)
+	AutoCorrectLowSeverity bool `mapstructure:"auto_correct_low_severity"` // Auto-correct <$1 discrepancies
+	AlertWebhookURL      string `mapstructure:"alert_webhook_url"`      // Webhook URL for alerts
+}
+
+// SocialAuthConfig contains OAuth provider configuration
+type SocialAuthConfig struct {
+	Google OAuthProviderConfig `mapstructure:"google"`
+	Apple  OAuthProviderConfig `mapstructure:"apple"`
+}
+
+// OAuthProviderConfig contains OAuth provider credentials
+type OAuthProviderConfig struct {
+	ClientID     string `mapstructure:"client_id"`
+	ClientSecret string `mapstructure:"client_secret"`
+	RedirectURI  string `mapstructure:"redirect_uri"`
+}
+
+// WebAuthnConfig contains WebAuthn/Passkey configuration
+type WebAuthnConfig struct {
+	RPDisplayName string   `mapstructure:"rp_display_name"` // Relying Party display name
+	RPID          string   `mapstructure:"rp_id"`           // Relying Party ID (domain)
+	RPOrigins     []string `mapstructure:"rp_origins"`      // Allowed origins
 }
 
 // ZeroGConfig contains configuration for 0G Network integration
@@ -286,6 +409,8 @@ func setDefaults() {
 	viper.SetDefault("server.read_timeout", 30)
 	viper.SetDefault("server.write_timeout", 30)
 	viper.SetDefault("server.rate_limit_per_min", 100)
+	viper.SetDefault("server.supported_versions", []string{"v1"})
+	viper.SetDefault("server.default_version", "v1")
 
 	// Database defaults
 	viper.SetDefault("database.host", "localhost")
@@ -293,17 +418,22 @@ func setDefaults() {
 	viper.SetDefault("database.name", "stack_service")
 	viper.SetDefault("database.user", "postgres")
 	viper.SetDefault("database.ssl_mode", "disable")
-	viper.SetDefault("database.max_open_conns", 25)
-	viper.SetDefault("database.max_idle_conns", 10)
-	viper.SetDefault("database.conn_max_lifetime", 300)
+	viper.SetDefault("database.max_open_conns", 100)
+	viper.SetDefault("database.max_idle_conns", 25)
+	viper.SetDefault("database.conn_max_lifetime", 3600)
+	viper.SetDefault("database.query_timeout", 30)
+	viper.SetDefault("database.max_retries", 3)
 
 	// Redis defaults
 	viper.SetDefault("redis.host", "localhost")
 	viper.SetDefault("redis.port", 6379)
 	viper.SetDefault("redis.db", 0)
+	viper.SetDefault("redis.cluster_mode", false)
+	viper.SetDefault("redis.max_retries", 3)
+	viper.SetDefault("redis.pool_size", 10)
 
 	// JWT defaults
-	viper.SetDefault("jwt.access_token_ttl", 3600)     // 1 hour
+	viper.SetDefault("jwt.access_token_ttl", 604800)   // 7 days
 	viper.SetDefault("jwt.refresh_token_ttl", 2592000) // 30 days
 	viper.SetDefault("jwt.issuer", "stack_service")
 
@@ -319,7 +449,7 @@ func setDefaults() {
 	viper.SetDefault("circle.base_url", "")
 	viper.SetDefault("circle.default_wallet_set_id", "")
 	viper.SetDefault("circle.default_wallet_set_name", "STACK-WalletSet")
-	viper.SetDefault("circle.supported_chains", []string{"ETH", "MATIC", "SOL", "BASE"})
+	viper.SetDefault("circle.supported_chains", []string{"SOL-DEVNET"})
 
 	// KYC defaults
 	viper.SetDefault("kyc.provider", "")
@@ -335,6 +465,9 @@ func setDefaults() {
 	viper.SetDefault("email.environment", "development")
 	viper.SetDefault("email.base_url", "http://localhost:3000")
 	viper.SetDefault("email.reply_to", "")
+	viper.SetDefault("email.smtp_host", "localhost")
+	viper.SetDefault("email.smtp_port", 1025)
+	viper.SetDefault("email.smtp_use_tls", false)
 
 	// SMS defaults
 	viper.SetDefault("sms.provider", "")
@@ -347,6 +480,29 @@ func setDefaults() {
 	viper.SetDefault("verification.rate_limit_per_hour", 3)
 
 	viper.SetDefault("security.session_timeout", 3600) // 1 hour
+	
+	// Enhanced security defaults
+	viper.SetDefault("security.bcrypt_cost", 12)                    // Increased from default 10
+	viper.SetDefault("security.password_history_count", 5)          // Track last 5 passwords
+	viper.SetDefault("security.password_expiration_days", 90)       // 90-day password expiration
+	viper.SetDefault("security.access_token_ttl", 900)              // 15 minutes (short-lived)
+	viper.SetDefault("security.refresh_token_ttl", 604800)          // 7 days
+	viper.SetDefault("security.enable_token_blacklist", true)       // Enable token revocation
+	viper.SetDefault("security.check_password_breaches", true)      // Check HaveIBeenPwned
+	viper.SetDefault("security.captcha_threshold", 3)               // CAPTCHA after 3 failed attempts
+	viper.SetDefault("security.secrets_provider", "env")            // Default to env vars
+	viper.SetDefault("security.aws_secrets_region", "us-east-1")    // Default AWS region
+	viper.SetDefault("security.aws_secrets_prefix", "rail/")        // Prefix for secrets
+	viper.SetDefault("security.secret_rotation_days", 90)           // 90-day rotation cycle
+
+	// AI Provider defaults
+	viper.SetDefault("ai.primary", "openai")
+	viper.SetDefault("ai.openai.model", "gpt-4o-mini")
+	viper.SetDefault("ai.openai.max_tokens", 500)
+	viper.SetDefault("ai.openai.temperature", 0.7)
+	viper.SetDefault("ai.gemini.model", "gemini-1.5-flash")
+	viper.SetDefault("ai.gemini.max_tokens", 500)
+	viper.SetDefault("ai.gemini.temperature", 0.7)
 
 	// 0G Network defaults
 	// General 0G settings
@@ -378,6 +534,19 @@ func setDefaults() {
 	viper.SetDefault("zerog.compute.funding.min_balance", 10.0)
 	viper.SetDefault("zerog.compute.funding.topup_amount", 50.0)
 	viper.SetDefault("zerog.compute.funding.max_account_limit", 1000.0)
+
+	// Alpaca defaults
+	viper.SetDefault("alpaca.environment", "sandbox")
+	viper.SetDefault("alpaca.base_url", "https://broker-api.sandbox.alpaca.markets")
+	viper.SetDefault("alpaca.data_base_url", "https://data.sandbox.alpaca.markets")
+	viper.SetDefault("alpaca.timeout", 30)
+
+	// Due defaults
+	viper.SetDefault("due.base_url", "https://api.due.network/v1")
+
+	// Worker defaults
+	viper.SetDefault("workers.count", 10)
+	viper.SetDefault("workers.job_timeout", 300)
 }
 
 func overrideFromEnv() {
@@ -502,6 +671,29 @@ func overrideFromEnv() {
 	if replyTo := os.Getenv("EMAIL_REPLY_TO"); replyTo != "" {
 		viper.Set("email.reply_to", replyTo)
 	}
+	if smtpHost := os.Getenv("SMTP_HOST"); smtpHost != "" {
+		viper.Set("email.smtp_host", smtpHost)
+	}
+	if smtpPort := os.Getenv("SMTP_PORT"); smtpPort != "" {
+		viper.Set("email.smtp_port", smtpPort)
+	}
+	if smtpUser := os.Getenv("SMTP_USERNAME"); smtpUser != "" {
+		viper.Set("email.smtp_username", smtpUser)
+	}
+	if smtpPass := os.Getenv("SMTP_PASSWORD"); smtpPass != "" {
+		viper.Set("email.smtp_password", smtpPass)
+	}
+
+	// AI Providers
+	if openaiKey := os.Getenv("OPENAI_API_KEY"); openaiKey != "" {
+		viper.Set("ai.openai.api_key", openaiKey)
+	}
+	if geminiKey := os.Getenv("GEMINI_API_KEY"); geminiKey != "" {
+		viper.Set("ai.gemini.api_key", geminiKey)
+	}
+	if aiPrimary := os.Getenv("AI_PRIMARY_PROVIDER"); aiPrimary != "" {
+		viper.Set("ai.primary", aiPrimary)
+	}
 
 	// 0G Network
 	// Storage configuration
@@ -524,6 +716,34 @@ func overrideFromEnv() {
 	}
 	if zeroGProviderID := os.Getenv("ZEROG_COMPUTE_PROVIDER_ID"); zeroGProviderID != "" {
 		viper.Set("zerog.compute.provider_id", zeroGProviderID)
+	}
+
+	// Alpaca
+	if alpacaAPIKey := os.Getenv("ALPACA_API_KEY"); alpacaAPIKey != "" {
+		viper.Set("alpaca.client_id", alpacaAPIKey)
+	}
+	if alpacaAPISecret := os.Getenv("ALPACA_API_SECRET"); alpacaAPISecret != "" {
+		viper.Set("alpaca.secret_key", alpacaAPISecret)
+	}
+	if alpacaBaseURL := os.Getenv("ALPACA_BASE_URL"); alpacaBaseURL != "" {
+		viper.Set("alpaca.base_url", alpacaBaseURL)
+	}
+	if alpacaDataBaseURL := os.Getenv("ALPACA_DATA_BASE_URL"); alpacaDataBaseURL != "" {
+		viper.Set("alpaca.data_base_url", alpacaDataBaseURL)
+	}
+	if alpacaEnvironment := os.Getenv("ALPACA_ENVIRONMENT"); alpacaEnvironment != "" {
+		viper.Set("alpaca.environment", alpacaEnvironment)
+	}
+
+	// Due
+	if dueAPIKey := os.Getenv("DUE_API_KEY"); dueAPIKey != "" {
+		viper.Set("due.api_key", dueAPIKey)
+	}
+	if dueAccountID := os.Getenv("DUE_ACCOUNT_ID"); dueAccountID != "" {
+		viper.Set("due.account_id", dueAccountID)
+	}
+	if dueBaseURL := os.Getenv("DUE_BASE_URL"); dueBaseURL != "" {
+		viper.Set("due.base_url", dueBaseURL)
 	}
 }
 

@@ -1,0 +1,93 @@
+# Security Configuration for STACK Service
+
+security:
+  # CSRF Protection
+  csrf:
+    enabled: true
+    token_length: 32
+    token_ttl: 3600  # 1 hour
+    
+  # Rate Limiting
+  rate_limit:
+    enabled: true
+    requests_per_minute: 100
+    burst: 150
+    
+  # Input Validation
+  input:
+    max_request_size: 10485760  # 10MB
+    max_string_length: 10000
+    max_array_length: 1000
+    
+  # SQL Injection Prevention
+  database:
+    use_prepared_statements: true
+    allowed_order_columns:
+      users: ["id", "email", "created_at", "updated_at"]
+      wallets: ["id", "chain", "created_at", "status"]
+      deposits: ["id", "amount", "created_at", "status"]
+      transactions: ["id", "created_at", "amount"]
+    max_limit: 1000
+    default_limit: 50
+    
+  # XSS Prevention
+  xss:
+    escape_html: true
+    content_security_policy: "default-src 'self'"
+    
+  # Headers
+  headers:
+    x_content_type_options: "nosniff"
+    x_frame_options: "DENY"
+    x_xss_protection: "1; mode=block"
+    strict_transport_security: "max-age=31536000; includeSubDomains"
+    referrer_policy: "strict-origin-when-cross-origin"
+    
+  # File Operations
+  files:
+    allowed_extensions: [".jpg", ".jpeg", ".png", ".pdf"]
+    max_file_size: 5242880  # 5MB
+    upload_directory: "/tmp/uploads"
+    sensitive_file_permissions: "0600"
+    regular_file_permissions: "0644"
+    
+  # Logging
+  logging:
+    sanitize_logs: true
+    mask_sensitive_fields: ["password", "token", "secret", "key", "ssn", "credit_card"]
+    max_log_length: 1000
+    
+  # Password Policy
+  password:
+    min_length: 12
+    require_uppercase: true
+    require_lowercase: true
+    require_numbers: true
+    require_special: true
+    max_age_days: 90
+    
+  # Session Management
+  session:
+    secure_cookie: true
+    http_only: true
+    same_site: "strict"
+    max_age: 3600
+    
+  # API Security
+  api:
+    require_https: true
+    validate_content_type: true
+    allowed_origins: ["https://app.stack.com"]
+    
+# Audit Configuration
+audit:
+  enabled: true
+  log_all_requests: false
+  log_sensitive_operations: true
+  sensitive_operations:
+    - "user_creation"
+    - "password_change"
+    - "role_change"
+    - "wallet_creation"
+    - "withdrawal"
+    - "kyc_submission"

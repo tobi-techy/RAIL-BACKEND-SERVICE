@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/stack-service/stack_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"go.uber.org/zap"
 )
 
@@ -22,8 +22,12 @@ type Service struct {
 	kycProvider         KYCProvider
 	emailService        EmailService
 	auditService        AuditService
+	dueAdapter          DueAdapter
+	alpacaAdapter       AlpacaAdapter
+	allocationService   AllocationService
 	logger              *zap.Logger
 	defaultWalletChains []entities.WalletChain
+	kycProviderName     string
 }
 
 // Repository interfaces
@@ -60,7 +64,7 @@ type WalletService interface {
 }
 
 type KYCProvider interface {
-	SubmitKYC(ctx context.Context, userID uuid.UUID, documents []entities.KYCDocument, personalInfo *entities.KYCPersonalInfo) (string, error)
+	SubmitKYC(ctx context.Context, userID uuid.UUID, documents []entities.KYCDocumentUpload, personalInfo *entities.KYCPersonalInfo) (string, error)
 	GetKYCStatus(ctx context.Context, providerRef string) (*entities.KYCSubmission, error)
 	GenerateKYCURL(ctx context.Context, userID uuid.UUID) (string, error)
 }
@@ -75,6 +79,19 @@ type AuditService interface {
 	LogOnboardingEvent(ctx context.Context, userID uuid.UUID, action, entity string, before, after interface{}) error
 }
 
+type DueAdapter interface {
+	CreateAccount(ctx context.Context, req *entities.CreateAccountRequest) (*entities.CreateAccountResponse, error)
+}
+
+type AlpacaAdapter interface {
+	CreateAccount(ctx context.Context, req *entities.AlpacaCreateAccountRequest) (*entities.AlpacaAccountResponse, error)
+}
+
+// AllocationService interface for enabling 70/30 allocation mode
+type AllocationService interface {
+	EnableMode(ctx context.Context, userID uuid.UUID, ratios entities.AllocationRatios) error
+}
+
 // NewService creates a new onboarding service
 func NewService(
 	userRepo UserRepository,
@@ -84,10 +101,18 @@ func NewService(
 	kycProvider KYCProvider,
 	emailService EmailService,
 	auditService AuditService,
+	dueAdapter DueAdapter,
+	alpacaAdapter AlpacaAdapter,
+	allocationService AllocationService,
 	logger *zap.Logger,
 	defaultWalletChains []entities.WalletChain,
+	kycProviderName string,
 ) *Service {
 	normalizedChains := normalizeDefaultWalletChains(defaultWalletChains, logger)
+
+	if kycProviderName == "" {
+		kycProviderName = "sumsub" // Default KYC provider
+	}
 
 	return &Service{
 		userRepo:            userRepo,
@@ -97,19 +122,25 @@ func NewService(
 		kycProvider:         kycProvider,
 		emailService:        emailService,
 		auditService:        auditService,
+		dueAdapter:          dueAdapter,
+		alpacaAdapter:       alpacaAdapter,
+		allocationService:   allocationService,
 		logger:              logger,
 		defaultWalletChains: normalizedChains,
+		kycProviderName:     kycProviderName,
 	}
+}
+
+// SetAllocationService sets the allocation service (used to resolve circular dependency)
+func (s *Service) SetAllocationService(allocationService AllocationService) {
+	s.allocationService = allocationService
 }
 
 func normalizeDefaultWalletChains(chains []entities.WalletChain, logger *zap.Logger) []entities.WalletChain {
 	if len(chains) == 0 {
-		logger.Warn("No default wallet chains configured; falling back to ETH-SEPOLIA/MATIC-AMOY/SOL-DEVNET/BASE-SEPOLIA")
+		logger.Warn("No default wallet chains configured; falling back to SOL-DEVNET")
 		return []entities.WalletChain{
-			entities.ChainETHSepolia,
-			entities.ChainMATICAmoy,
 			entities.ChainSOLDevnet,
-			entities.ChainBASESepolia,
 		}
 	}
 
@@ -129,12 +160,9 @@ func normalizeDefaultWalletChains(chains []entities.WalletChain, logger *zap.Log
 	}
 
 	if len(normalized) == 0 {
-		logger.Warn("Configured wallet chains invalid; falling back to ETH-SEPOLIA/MATIC-AMOY/SOL-DEVNET/BASE-SEPOLIA")
+		logger.Warn("Configured wallet chains invalid; falling back to SOL-DEVNET")
 		return []entities.WalletChain{
-			entities.ChainETHSepolia,
-			entities.ChainMATICAmoy,
 			entities.ChainSOLDevnet,
-			entities.ChainBASESepolia,
 		}
 	}
 
@@ -298,6 +326,111 @@ func (s *Service) CompleteEmailVerification(ctx context.Context, userID uuid.UUI
 	return nil
 }
 
+// CompleteOnboarding handles the completion of onboarding with personal info and account creation
+func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.OnboardingCompleteRequest) (*entities.OnboardingCompleteResponse, error) {
+	s.logger.Info("Completing onboarding with account creation", zap.String("user_id", req.UserID.String()))
+
+	// Get user
+	user, err := s.userRepo.GetByID(ctx, req.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+
+	if !user.EmailVerified {
+		return nil, fmt.Errorf("email must be verified before completing onboarding")
+	}
+
+	// Update user with personal information
+	user.FirstName = &req.FirstName
+	user.LastName = &req.LastName
+	user.Phone = req.Phone
+	user.DateOfBirth = req.DateOfBirth
+	user.UpdatedAt = time.Now()
+
+	// Create Due account
+	dueReq := &entities.CreateAccountRequest{
+		Type:      "individual",
+		FirstName: req.FirstName,
+		LastName:  req.LastName,
+		Email:     user.Email,
+		Country:   req.Country,
+	}
+
+	dueResp, err := s.dueAdapter.CreateAccount(ctx, dueReq)
+	if err != nil {
+		s.logger.Error("Failed to create Due account", zap.Error(err))
+		return nil, fmt.Errorf("failed to create Due account: %w", err)
+	}
+
+	// Create Alpaca account
+	alpacaReq := &entities.AlpacaCreateAccountRequest{
+		Contact: entities.AlpacaContact{
+			EmailAddress:  user.Email,
+			PhoneNumber:   getStringValue(req.Phone),
+			StreetAddress: []string{req.Address.Street},
+			City:          req.Address.City,
+			State:         req.Address.State,
+			PostalCode:    req.Address.PostalCode,
+			Country:       req.Country,
+		},
+		Identity: entities.AlpacaIdentity{
+			GivenName:             req.FirstName,
+			FamilyName:            req.LastName,
+			DateOfBirth:           req.DateOfBirth.Format("2006-01-02"),
+			CountryOfCitizenship:  req.Country,
+			CountryOfBirth:        req.Country,
+			CountryOfTaxResidence: req.Country,
+			FundingSource:         []string{"employment_income"},
+		},
+		Disclosures: entities.AlpacaDisclosures{
+			EmploymentStatus: "employed",
+		},
+		Agreements: []entities.AlpacaAgreement{
+			{
+				Agreement: "customer_agreement",
+				SignedAt:  time.Now().Format(time.RFC3339),
+				IPAddress: "127.0.0.1", // Should be passed from request context
+			},
+		},
+	}
+
+	alpacaResp, err := s.alpacaAdapter.CreateAccount(ctx, alpacaReq)
+	if err != nil {
+		s.logger.Error("Failed to create Alpaca account", zap.Error(err))
+		return nil, fmt.Errorf("failed to create Alpaca account: %w", err)
+	}
+
+	// Update user with account IDs
+	user.DueAccountID = &dueResp.AccountID
+	user.AlpacaAccountID = &alpacaResp.ID
+	user.UpdatedAt = time.Now()
+
+	if err := s.userRepo.Update(ctx, user); err != nil {
+		return nil, fmt.Errorf("failed to update user with account IDs: %w", err)
+	}
+
+	// Log audit event
+	if err := s.auditService.LogOnboardingEvent(ctx, req.UserID, "accounts_created", "user", nil, map[string]any{
+		"due_account_id":    dueResp.AccountID,
+		"alpaca_account_id": alpacaResp.ID,
+	}); err != nil {
+		s.logger.Warn("Failed to log audit event", zap.Error(err))
+	}
+
+	s.logger.Info("Onboarding completed successfully",
+		zap.String("user_id", req.UserID.String()),
+		zap.String("due_account_id", dueResp.AccountID),
+		zap.String("alpaca_account_id", alpacaResp.ID))
+
+	return &entities.OnboardingCompleteResponse{
+		UserID:          req.UserID,
+		DueAccountID:    dueResp.AccountID,
+		AlpacaAccountID: alpacaResp.ID,
+		Message:         "Accounts created successfully. Please create your passcode to continue.",
+		NextSteps:       []string{"create_passcode"},
+	}, nil
+}
+
 // CompletePasscodeCreation handles passcode creation completion and triggers wallet creation
 func (s *Service) CompletePasscodeCreation(ctx context.Context, userID uuid.UUID) error {
 	s.logger.Info("Processing passcode creation completion", zap.String("userId", userID.String()))
@@ -324,6 +457,24 @@ func (s *Service) CompletePasscodeCreation(ctx context.Context, userID uuid.UUID
 		s.logger.Warn("Failed to enqueue wallet provisioning after passcode creation",
 			zap.Error(err),
 			zap.String("userId", userID.String()))
+	}
+
+	// Auto-enable 70/30 allocation mode (Rail MVP default - non-negotiable)
+	// Per PRD: "This rule is system-defined, always on in MVP, not user-editable"
+	if s.allocationService != nil {
+		defaultRatios := entities.AllocationRatios{
+			SpendingRatio: entities.DefaultSpendingRatio, // 0.70
+			StashRatio:    entities.DefaultStashRatio,    // 0.30
+		}
+		if err := s.allocationService.EnableMode(ctx, userID, defaultRatios); err != nil {
+			s.logger.Error("Failed to enable default 70/30 allocation mode",
+				zap.Error(err),
+				zap.String("userId", userID.String()))
+			// Don't fail onboarding - allocation can be retried
+		} else {
+			s.logger.Info("Auto-enabled 70/30 allocation mode for user",
+				zap.String("userId", userID.String()))
+		}
 	}
 
 	// Log audit event
@@ -360,7 +511,7 @@ func (s *Service) SubmitKYC(ctx context.Context, userID uuid.UUID, req *entities
 	submission := &entities.KYCSubmission{
 		ID:             uuid.New(),
 		UserID:         userID,
-		Provider:       "jumio", // TODO: make configurable
+		Provider:       s.kycProviderName,
 		ProviderRef:    providerRef,
 		SubmissionType: req.DocumentType,
 		Status:         entities.KYCStatusProcessing,
@@ -538,6 +689,90 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 	}
 
 	return response, nil
+}
+
+// GetOnboardingProgress returns a detailed progress view of the user's onboarding
+func (s *Service) GetOnboardingProgress(ctx context.Context, userID uuid.UUID) (*entities.OnboardingProgressResponse, error) {
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+
+	completedSteps, err := s.onboardingFlowRepo.GetCompletedSteps(ctx, userID)
+	if err != nil {
+		s.logger.Warn("Failed to get completed steps", zap.Error(err))
+		completedSteps = []entities.OnboardingStepType{}
+	}
+	completedSteps = s.normalizeCompletedSteps(user, completedSteps)
+
+	completedMap := make(map[entities.OnboardingStepType]bool)
+	for _, step := range completedSteps {
+		completedMap[step] = true
+	}
+
+	// Define checklist items
+	checklist := []entities.OnboardingCheckItem{
+		{Step: entities.StepRegistration, Title: "Create Account", Description: "Sign up with email or phone", Required: true, Order: 1},
+		{Step: entities.StepEmailVerification, Title: "Verify Email", Description: "Confirm your email address", Required: true, Order: 2},
+		{Step: entities.StepPasscodeCreation, Title: "Set Passcode", Description: "Create a secure passcode", Required: true, Order: 3},
+		{Step: entities.StepWalletCreation, Title: "Setup Wallet", Description: "Create your crypto wallet", Required: true, Order: 4},
+		{Step: entities.StepKYCSubmission, Title: "Verify Identity", Description: "Complete KYC for full access", Required: false, Order: 5},
+	}
+
+	// Update status for each item
+	completedCount := 0
+	for i := range checklist {
+		if completedMap[checklist[i].Step] {
+			checklist[i].Status = entities.StepStatusCompleted
+			completedCount++
+		} else if i > 0 && checklist[i-1].Status != entities.StepStatusCompleted {
+			checklist[i].Status = entities.StepStatusPending
+		} else {
+			checklist[i].Status = entities.StepStatusPending
+		}
+	}
+
+	// Calculate progress percentage (only required steps)
+	requiredCount := 0
+	requiredCompleted := 0
+	for _, item := range checklist {
+		if item.Required {
+			requiredCount++
+			if item.Status == entities.StepStatusCompleted {
+				requiredCompleted++
+			}
+		}
+	}
+
+	percentComplete := 0
+	if requiredCount > 0 {
+		percentComplete = (requiredCompleted * 100) / requiredCount
+	}
+
+	// Determine current step
+	currentStep := s.determineCurrentStep(user, completedSteps)
+
+	// Estimate remaining time
+	estimatedTime := "Complete"
+	if percentComplete < 100 {
+		remainingSteps := requiredCount - requiredCompleted
+		estimatedTime = fmt.Sprintf("%d min", remainingSteps*2)
+	}
+
+	// Determine capabilities
+	kycApproved := entities.KYCStatus(user.KYCStatus) == entities.KYCStatusApproved
+	canInvest := user.OnboardingStatus == entities.OnboardingStatusCompleted
+	canWithdraw := canInvest && kycApproved
+
+	return &entities.OnboardingProgressResponse{
+		UserID:          user.ID,
+		PercentComplete: percentComplete,
+		Checklist:       checklist,
+		CurrentStep:     currentStep,
+		EstimatedTime:   estimatedTime,
+		CanInvest:       canInvest,
+		CanWithdraw:     canWithdraw,
+	}, nil
 }
 
 // ProcessWalletCreationComplete handles wallet creation completion
@@ -852,4 +1087,12 @@ func (s *Service) canProceed(user *entities.UserProfile, completedSteps []entiti
 	default:
 		return true
 	}
+}
+
+// Helper function to safely convert *string to string
+func getStringValue(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

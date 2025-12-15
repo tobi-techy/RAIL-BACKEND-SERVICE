@@ -16,8 +16,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 	"github.com/sony/gobreaker"
-	"github.com/stack-service/stack_service/internal/domain/entities"
-	entitysecret "github.com/stack-service/stack_service/internal/domain/services/entity_secret"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	entitysecret "github.com/rail-service/rail_service/internal/domain/services/entity_secret"
 	"go.uber.org/zap"
 )
 
@@ -175,7 +175,7 @@ func (c *Client) CreateWalletSet(ctx context.Context, name string, _ string) (*e
 		return nil, fmt.Errorf("create wallet set failed: %w", err)
 	}
 
-fmt.Printf("response to create wallet set: %+v\n", response)
+	fmt.Printf("response to create wallet set: %+v\n", response)
 
 	c.logger.Info("Created developer-controlled wallet set successfully",
 		zap.String("name", name),
@@ -607,16 +607,31 @@ func (c *Client) GetEntityPublicKey(ctx context.Context) (string, error) {
 }
 
 // GetWalletBalances retrieves token balances for a specific wallet
-func (c *Client) GetWalletBalances(ctx context.Context, walletID string) (map[string]interface{}, error) {
+// tokenAddress is optional - if provided, filters results to only that token
+func (c *Client) GetWalletBalances(ctx context.Context, walletID string, tokenAddress ...string) (*entities.CircleWalletBalancesResponse, error) {
 	endpoint := fmt.Sprintf("%s/%s/balances", c.config.BalancesEndpoint, walletID)
+	
+	// Add tokenAddress query parameter if provided
+	if len(tokenAddress) > 0 && tokenAddress[0] != "" {
+		endpoint = fmt.Sprintf("%s?tokenAddress=%s", endpoint, tokenAddress[0])
+		c.logger.Info("Getting wallet balances", 
+			zap.String("walletId", walletID),
+			zap.String("tokenAddress", tokenAddress[0]),
+			zap.String("endpoint", endpoint),
+			zap.String("fullURL", c.config.BaseURL+endpoint))
+	} else {
+		c.logger.Info("Getting wallet balances", 
+			zap.String("walletId", walletID),
+			zap.String("endpoint", endpoint),
+			zap.String("fullURL", c.config.BaseURL+endpoint))
+	}
 
-	c.logger.Info("Getting wallet balances", zap.String("walletId", walletID))
-
-	var response map[string]interface{}
+	var response entities.CircleWalletBalancesResponse
 	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
 		return &response, c.doRequestWithRetry(ctx, "GET", endpoint, nil, &response)
 	})
-
+     
+	
 	if err != nil {
 		c.logger.Error("Failed to get wallet balances",
 			zap.String("walletId", walletID),
@@ -625,9 +640,12 @@ func (c *Client) GetWalletBalances(ctx context.Context, walletID string) (map[st
 	}
 
 	c.logger.Info("Retrieved wallet balances successfully",
-		zap.String("walletId", walletID))
+		zap.String("walletId", walletID),
+		zap.Int("tokenCount", len(response.TokenBalances)),
+		zap.String("usdcBalance", response.GetUSDCBalance()))
+		c.logger.Info("log the response", zap.Any("response", response))
 
-	return response, nil
+	return &response, nil
 }
 
 // TransferFunds transfers funds between accounts using developer-controlled wallets
