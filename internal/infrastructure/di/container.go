@@ -34,6 +34,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/reconciliation"
 	"github.com/rail-service/rail_service/internal/domain/services/roundup"
 	"github.com/rail-service/rail_service/internal/domain/services/copytrading"
+	"github.com/rail-service/rail_service/internal/domain/services/card"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	"github.com/rail-service/rail_service/internal/domain/services/socialauth"
 	"github.com/rail-service/rail_service/internal/domain/services/station"
@@ -380,6 +381,10 @@ type Container struct {
 	// Copy Trading Services
 	CopyTradingRepo    *repositories.CopyTradingRepository
 	CopyTradingService *copytrading.Service
+
+	// Card Services
+	CardRepo    *repositories.CardRepository
+	CardService *card.Service
 
 	// Workers
 	WalletProvisioningScheduler interface{} // Type interface{} to avoid circular dependency, will be set at runtime
@@ -1617,6 +1622,17 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 		c.ZapLog,
 	)
 
+	// Initialize Card Service
+	c.CardRepo = repositories.NewCardRepository(sqlxDB)
+	c.CardService = card.NewService(
+		c.CardRepo,
+		c.BridgeAdapter,
+		&cardUserProfileAdapter{userRepo: c.UserRepo},
+		&cardWalletAdapter{walletService: c.WalletService},
+		&cardBalanceAdapter{ledgerService: c.LedgerService},
+		c.ZapLog,
+	)
+
 	c.ZapLog.Info("Advanced features initialized")
 	return nil
 }
@@ -1791,6 +1807,58 @@ func (a *orderPlacerAdapter) PlaceMarketOrder(ctx context.Context, userID uuid.U
 	return order, nil
 }
 
+// Card service adapters
+
+// cardUserProfileAdapter adapts UserRepository for card service
+type cardUserProfileAdapter struct {
+	userRepo *repositories.UserRepository
+}
+
+func (a *cardUserProfileAdapter) GetByID(ctx context.Context, id uuid.UUID) (*entities.UserProfile, error) {
+	if a.userRepo == nil {
+		return nil, fmt.Errorf("user repository not available")
+	}
+	return a.userRepo.GetByID(ctx, id)
+}
+
+// cardWalletAdapter adapts WalletService for card service
+type cardWalletAdapter struct {
+	walletService *wallet.Service
+}
+
+func (a *cardWalletAdapter) GetUserWalletByChain(ctx context.Context, userID uuid.UUID, chain string) (*entities.ManagedWallet, error) {
+	if a.walletService == nil {
+		return nil, fmt.Errorf("wallet service not available")
+	}
+	walletChain := entities.WalletChain(strings.ToUpper(chain))
+	return a.walletService.GetWalletByUserAndChain(ctx, userID, walletChain)
+}
+
+// cardBalanceAdapter adapts LedgerService for card balance operations
+type cardBalanceAdapter struct {
+	ledgerService *ledger.Service
+}
+
+func (a *cardBalanceAdapter) GetSpendBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
+	if a.ledgerService == nil {
+		return decimal.Zero, fmt.Errorf("ledger service not available")
+	}
+	// Get spending balance account directly
+	account, err := a.ledgerService.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	return account.Balance, nil
+}
+
+func (a *cardBalanceAdapter) DeductSpendBalance(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, reference string) error {
+	if a.ledgerService == nil {
+		return fmt.Errorf("ledger service not available")
+	}
+	// Create a debit entry for card transaction
+	return a.ledgerService.RecordCardTransaction(ctx, userID, amount, reference)
+}
+
 // Getters for new services
 
 // GetAlpacaAccountService returns the Alpaca account service
@@ -1910,6 +1978,19 @@ func (c *Container) GetCopyTradingHandlers() *handlers.CopyTradingHandlers {
 		return nil
 	}
 	return handlers.NewCopyTradingHandlers(c.CopyTradingService, c.Logger)
+}
+
+// GetCardService returns the card service
+func (c *Container) GetCardService() *card.Service {
+	return c.CardService
+}
+
+// GetCardHandlers returns card handlers
+func (c *Container) GetCardHandlers() *handlers.CardHandlers {
+	if c.CardService == nil {
+		return nil
+	}
+	return handlers.NewCardHandlers(c.CardService, c.ZapLog)
 }
 
 // GetStationHandlers returns station handlers

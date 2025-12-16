@@ -548,6 +548,15 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 			authMiddleware := middleware.Authentication(container.Config, container.Logger, sessionValidator)
 			SetupCopyTradingRoutes(v1, copyTradingHandlers, authMiddleware)
 		}
+
+		// Register card routes
+		RegisterCardRoutes(
+			v1,
+			container.GetCardHandlers(),
+			container.Config,
+			container.Logger,
+			sessionValidator,
+		)
 	}
 
 	// ZeroG and dedicated AI-CFO HTTP routes have been removed.

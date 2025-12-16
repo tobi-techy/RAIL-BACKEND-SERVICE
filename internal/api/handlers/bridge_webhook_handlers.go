@@ -19,6 +19,11 @@ type BridgeWebhookService interface {
 	ProcessFiatDeposit(ctx *gin.Context, event *BridgeDepositEvent) error
 	ProcessTransferCompleted(ctx *gin.Context, transferID string, amount decimal.Decimal) error
 	ProcessCustomerStatusChanged(ctx *gin.Context, customerID string, status string) error
+	// Card transaction methods
+	ProcessCardAuthorization(ctx *gin.Context, cardID string, amount decimal.Decimal, merchantName, merchantCategory string) error
+	ProcessCardTransaction(ctx *gin.Context, cardID, transID string, amount decimal.Decimal, merchantName, merchantCategory, status string) error
+	ProcessCardTransactionDeclined(ctx *gin.Context, cardID, transID, declineReason string) error
+	ProcessCardStatusChanged(ctx *gin.Context, cardID, status string) error
 }
 
 // BridgeWebhookHandler handles Bridge API webhook notifications
@@ -117,6 +122,14 @@ func (h *BridgeWebhookHandler) HandleWebhook(c *gin.Context) {
 		h.handleTransferCompleted(c, payload)
 	case "transfer.failed":
 		h.handleTransferFailed(c, payload)
+	case "card.authorization.request":
+		h.handleCardAuthorization(c, payload)
+	case "card.transaction.completed", "card.transaction.captured":
+		h.handleCardTransaction(c, payload)
+	case "card.transaction.declined":
+		h.handleCardTransactionDeclined(c, payload)
+	case "card.status_changed":
+		h.handleCardStatusChanged(c, payload)
 	case "customer.status_changed", "customer.kyc.approved", "customer.kyc.rejected":
 		h.handleCustomerStatusChanged(c, payload)
 	default:
@@ -202,6 +215,115 @@ func (h *BridgeWebhookHandler) handleCustomerStatusChanged(c *gin.Context, paylo
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
 }
 
+func (h *BridgeWebhookHandler) handleCardAuthorization(c *gin.Context, payload BridgeWebhookPayload) {
+	cardID := payload.EventObjectID
+	
+	var amount decimal.Decimal
+	if amountStr, ok := payload.EventObject["amount"].(string); ok {
+		amount, _ = decimal.NewFromString(amountStr)
+	}
+	
+	merchantName := ""
+	if mn, ok := payload.EventObject["merchant_name"].(string); ok {
+		merchantName = mn
+	}
+	merchantCategory := ""
+	if mc, ok := payload.EventObject["merchant_category"].(string); ok {
+		merchantCategory = mc
+	}
+
+	h.logger.Info("Card authorization request",
+		zap.String("card_id", cardID),
+		zap.String("amount", amount.String()),
+		zap.String("merchant", merchantName))
+
+	if h.service != nil {
+		if err := h.service.ProcessCardAuthorization(c, cardID, amount, merchantName, merchantCategory); err != nil {
+			h.logger.Error("Failed to process card authorization", zap.Error(err))
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "success"})
+}
+
+func (h *BridgeWebhookHandler) handleCardTransaction(c *gin.Context, payload BridgeWebhookPayload) {
+	cardID := payload.EventObjectID
+	transID := ""
+	if tid, ok := payload.EventObject["transaction_id"].(string); ok {
+		transID = tid
+	}
+	
+	var amount decimal.Decimal
+	if amountStr, ok := payload.EventObject["amount"].(string); ok {
+		amount, _ = decimal.NewFromString(amountStr)
+	}
+	
+	merchantName := ""
+	if mn, ok := payload.EventObject["merchant_name"].(string); ok {
+		merchantName = mn
+	}
+	merchantCategory := ""
+	if mc, ok := payload.EventObject["merchant_category"].(string); ok {
+		merchantCategory = mc
+	}
+
+	h.logger.Info("Card transaction completed",
+		zap.String("card_id", cardID),
+		zap.String("transaction_id", transID),
+		zap.String("amount", amount.String()))
+
+	if h.service != nil {
+		if err := h.service.ProcessCardTransaction(c, cardID, transID, amount, merchantName, merchantCategory, "completed"); err != nil {
+			h.logger.Error("Failed to process card transaction", zap.Error(err))
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "success"})
+}
+
+func (h *BridgeWebhookHandler) handleCardTransactionDeclined(c *gin.Context, payload BridgeWebhookPayload) {
+	cardID := payload.EventObjectID
+	transID := ""
+	if tid, ok := payload.EventObject["transaction_id"].(string); ok {
+		transID = tid
+	}
+	
+	declineReason := ""
+	if dr, ok := payload.EventObject["decline_reason"].(string); ok {
+		declineReason = dr
+	}
+
+	h.logger.Warn("Card transaction declined",
+		zap.String("card_id", cardID),
+		zap.String("transaction_id", transID),
+		zap.String("reason", declineReason))
+
+	if h.service != nil {
+		if err := h.service.ProcessCardTransactionDeclined(c, cardID, transID, declineReason); err != nil {
+			h.logger.Error("Failed to process declined transaction", zap.Error(err))
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "acknowledged"})
+}
+
+func (h *BridgeWebhookHandler) handleCardStatusChanged(c *gin.Context, payload BridgeWebhookPayload) {
+	cardID := payload.EventObjectID
+	status := payload.EventObjectStatus
+
+	h.logger.Info("Card status changed",
+		zap.String("card_id", cardID),
+		zap.String("status", status))
+
+	if h.service != nil {
+		if err := h.service.ProcessCardStatusChanged(c, cardID, status); err != nil {
+			h.logger.Error("Failed to process card status change", zap.Error(err))
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "success"})
+}
+
 func (h *BridgeWebhookHandler) verifySignature(signature string, body []byte) bool {
 	if h.webhookSecret == "" {
 		h.logger.Warn("Bridge webhook secret not configured - skipping verification")
@@ -267,5 +389,43 @@ func (s *BridgeWebhookServiceImpl) ProcessCustomerStatusChanged(ctx *gin.Context
 	if s.customerService != nil {
 		return s.customerService.UpdateCustomerStatus(ctx, customerID, status)
 	}
+	return nil
+}
+
+// Card processing methods - these will be wired to the card service
+
+func (s *BridgeWebhookServiceImpl) ProcessCardAuthorization(ctx *gin.Context, cardID string, amount decimal.Decimal, merchantName, merchantCategory string) error {
+	s.logger.Info("Card authorization processed",
+		zap.String("card_id", cardID),
+		zap.String("amount", amount.String()),
+		zap.String("merchant", merchantName))
+	// Card service will be injected to handle real-time authorization
+	return nil
+}
+
+func (s *BridgeWebhookServiceImpl) ProcessCardTransaction(ctx *gin.Context, cardID, transID string, amount decimal.Decimal, merchantName, merchantCategory, status string) error {
+	s.logger.Info("Card transaction recorded",
+		zap.String("card_id", cardID),
+		zap.String("transaction_id", transID),
+		zap.String("amount", amount.String()),
+		zap.String("status", status))
+	// Card service will be injected to record transactions
+	return nil
+}
+
+func (s *BridgeWebhookServiceImpl) ProcessCardTransactionDeclined(ctx *gin.Context, cardID, transID, declineReason string) error {
+	s.logger.Warn("Card transaction declined",
+		zap.String("card_id", cardID),
+		zap.String("transaction_id", transID),
+		zap.String("reason", declineReason))
+	// Card service will be injected to record declined transactions
+	return nil
+}
+
+func (s *BridgeWebhookServiceImpl) ProcessCardStatusChanged(ctx *gin.Context, cardID, status string) error {
+	s.logger.Info("Card status changed",
+		zap.String("card_id", cardID),
+		zap.String("status", status))
+	// Card service will be injected to sync card status
 	return nil
 }
