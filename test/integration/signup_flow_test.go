@@ -90,7 +90,7 @@ func TestSignUpFlow(t *testing.T) {
 	}
 
 	// Initialize logger
-	log := logger.NewLogger("test")
+	log := logger.New("debug", "test")
 	zapLog := log.Zap()
 
 	// Initialize Redis client

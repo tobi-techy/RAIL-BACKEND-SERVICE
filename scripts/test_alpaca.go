@@ -1,3 +1,5 @@
+//go:build ignore
+
 package main
 
 import (
@@ -37,7 +39,7 @@ func main() {
 
 	// Test 1: Authentication & List Accounts
 	fmt.Println("\n1. Testing Authentication...")
-	accounts, err := service.ListAccounts(ctx, nil)
+	accounts, err := client.ListAccounts(ctx, nil)
 	if err != nil {
 		log.Fatalf("❌ Authentication failed: %v", err)
 	}
@@ -98,9 +100,10 @@ func main() {
 
 		// Test 6: Order Validation
 		fmt.Println("\n6. Testing Order Validation...")
+		qty := decimal.NewFromFloat(0.1)
 		testOrder := &entities.AlpacaCreateOrderRequest{
 			Symbol:      "AAPL",
-			Qty:         decimal.NewFromFloat(0.1),
+			Qty:         &qty,
 			Side:        entities.AlpacaOrderSideBuy,
 			Type:        entities.AlpacaOrderTypeMarket,
 			TimeInForce: entities.AlpacaTimeInForceDay,
