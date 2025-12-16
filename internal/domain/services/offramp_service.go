@@ -9,7 +9,7 @@ import (
 	"github.com/shopspring/decimal"
 	"github.com/sony/gobreaker"
 	"github.com/rail-service/rail_service/internal/adapters/alpaca"
-	"github.com/rail-service/rail_service/internal/adapters/due"
+	"github.com/rail-service/rail_service/internal/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/repositories"
 	"github.com/rail-service/rail_service/pkg/logger"
@@ -17,9 +17,9 @@ import (
 	"github.com/rail-service/rail_service/pkg/retry"
 )
 
-// OffRampService handles off-ramp operations
+// OffRampService handles off-ramp operations via Bridge
 type OffRampService struct {
-	dueAdapter         *due.OffRampAdapter
+	bridgeAdapter      *bridge.Adapter
 	alpacaAdapter      *alpaca.FundingAdapter
 	depositRepo        repositories.DepositRepository
 	virtualAccountRepo repositories.VirtualAccountRepository
@@ -31,7 +31,7 @@ type OffRampService struct {
 
 // NewOffRampService creates a new off-ramp service
 func NewOffRampService(
-	dueAdapter *due.OffRampAdapter,
+	bridgeAdapter *bridge.Adapter,
 	alpacaAdapter *alpaca.FundingAdapter,
 	depositRepo repositories.DepositRepository,
 	virtualAccountRepo repositories.VirtualAccountRepository,
@@ -39,7 +39,6 @@ func NewOffRampService(
 	notificationSvc *NotificationService,
 	logger *logger.Logger,
 ) *OffRampService {
-	// Configure circuit breaker
 	st := gobreaker.Settings{
 		Name:        "OffRampService",
 		MaxRequests: 3,
@@ -51,7 +50,7 @@ func NewOffRampService(
 	}
 
 	return &OffRampService{
-		dueAdapter:         dueAdapter,
+		bridgeAdapter:      bridgeAdapter,
 		alpacaAdapter:      alpacaAdapter,
 		depositRepo:        depositRepo,
 		virtualAccountRepo: virtualAccountRepo,
@@ -62,24 +61,23 @@ func NewOffRampService(
 	}
 }
 
-// InitiateOffRamp initiates the off-ramp process for a deposit
+// InitiateOffRamp initiates the off-ramp process via Bridge
 func (s *OffRampService) InitiateOffRamp(ctx context.Context, virtualAccountID, amount string) error {
 	start := time.Now()
 	defer func() {
 		metrics.OffRampDuration.WithLabelValues("initiated").Observe(time.Since(start).Seconds())
 	}()
 
-	s.logger.Info("Initiating off-ramp",
+	s.logger.Info("Initiating off-ramp via Bridge",
 		"virtual_account_id", virtualAccountID,
 		"amount", amount)
 
-	// Get virtual account details
-	virtualAccount, err := s.virtualAccountRepo.GetByDueAccountID(ctx, virtualAccountID)
+	// Get virtual account details by Bridge account ID
+	virtualAccount, err := s.virtualAccountRepo.GetByBridgeAccountID(ctx, virtualAccountID)
 	if err != nil {
 		return fmt.Errorf("failed to get virtual account: %w", err)
 	}
 
-	// Parse amount
 	amountDecimal, err := decimal.NewFromString(amount)
 	if err != nil {
 		return fmt.Errorf("invalid amount: %w", err)
@@ -99,13 +97,7 @@ func (s *OffRampService) InitiateOffRamp(ctx context.Context, virtualAccountID, 
 		return fmt.Errorf("failed to create deposit: %w", err)
 	}
 
-	// Create Due recipient for Alpaca account if not exists
-	recipientID, err := s.ensureRecipient(ctx, virtualAccount.AlpacaAccountID)
-	if err != nil {
-		return fmt.Errorf("failed to ensure recipient: %w", err)
-	}
-
-	// Initiate off-ramp with retry
+	// Initiate Bridge transfer with retry
 	retryConfig := retry.RetryConfig{
 		MaxAttempts: 3,
 		BaseDelay:   1 * time.Second,
@@ -113,80 +105,67 @@ func (s *OffRampService) InitiateOffRamp(ctx context.Context, virtualAccountID, 
 		Multiplier:  2.0,
 	}
 
-	var offRampResp *due.OffRampResponse
+	var transferResp *bridge.Transfer
 	retryFunc := func() error {
-		req := &due.OffRampRequest{
-			VirtualAccountID: virtualAccountID,
-			RecipientID:      recipientID,
-			Amount:           amountDecimal,
-			Reference:        fmt.Sprintf("deposit_%s", deposit.ID.String()),
+		req := &bridge.CreateTransferRequest{
+			Amount: amount,
+			Source: bridge.TransferSource{
+				PaymentRail: bridge.PaymentRailEthereum,
+				Currency:    bridge.CurrencyUSDC,
+			},
+			Destination: bridge.TransferDestination{
+				PaymentRail: bridge.PaymentRailEthereum,
+				Currency:    bridge.CurrencyUSD,
+			},
 		}
 
-		resp, err := s.dueAdapter.InitiateOffRamp(ctx, req)
+		resp, err := s.bridgeAdapter.TransferFunds(ctx, req)
 		if err != nil {
 			return err
 		}
-		offRampResp = resp
+		transferResp = resp
 		return nil
 	}
 
 	isRetryable := func(err error) bool {
-		// Retry on transient errors
 		return err != nil
 	}
 
 	if err := retry.WithExponentialBackoff(ctx, retryConfig, retryFunc, isRetryable); err != nil {
-		// Update deposit status to failed
 		deposit.Status = "failed"
 		_ = s.depositRepo.Update(ctx, deposit)
-
-		// Track metrics
 		metrics.OffRampTotal.WithLabelValues("failed").Inc()
-		metrics.OffRampRetries.WithLabelValues("max_attempts").Inc()
-
-		// Notify user of failure
 		_ = s.notificationSvc.NotifyOffRampFailure(ctx, virtualAccount.UserID, err.Error())
-
 		return fmt.Errorf("off-ramp initiation failed: %w", err)
 	}
 
-	// Update deposit with off-ramp details
+	// Update deposit with transfer details
 	now := time.Now()
-	deposit.OffRampTxID = &offRampResp.TransferID
+	deposit.OffRampTxID = &transferResp.ID
 	deposit.OffRampInitiatedAt = &now
 
 	if err := s.depositRepo.Update(ctx, deposit); err != nil {
-		s.logger.Error("Failed to update deposit with off-ramp details",
-			"deposit_id", deposit.ID.String(),
-			"error", err)
+		s.logger.Error("Failed to update deposit", "deposit_id", deposit.ID.String(), "error", err)
 	}
 
-	// Track metrics
 	metrics.OffRampTotal.WithLabelValues("success").Inc()
 	amountFloat, _ := amountDecimal.Float64()
 	metrics.OffRampAmount.WithLabelValues("initiated").Observe(amountFloat)
 
 	s.logger.Info("Off-ramp initiated successfully",
 		"deposit_id", deposit.ID.String(),
-		"transfer_id", offRampResp.TransferID)
+		"transfer_id", transferResp.ID)
 
 	return nil
 }
 
-// HandleTransferCompleted handles completed transfer events
+// HandleTransferCompleted handles completed transfer events from Bridge
 func (s *OffRampService) HandleTransferCompleted(ctx context.Context, transferID string) error {
-	s.logger.Info("Handling transfer completion", "transfer_id", transferID)
+	s.logger.Info("Handling Bridge transfer completion", "transfer_id", transferID)
 
-	// Find deposit by transfer ID
 	deposit, err := s.depositRepo.GetByOffRampTxID(ctx, transferID)
 	if err != nil {
 		return fmt.Errorf("failed to get deposit: %w", err)
-	}
-
-	// Get transfer status
-	transferStatus, err := s.dueAdapter.GetTransferStatus(ctx, transferID)
-	if err != nil {
-		return fmt.Errorf("failed to get transfer status: %w", err)
 	}
 
 	// Update deposit status
@@ -198,11 +177,9 @@ func (s *OffRampService) HandleTransferCompleted(ctx context.Context, transferID
 		return fmt.Errorf("failed to update deposit: %w", err)
 	}
 
-	// Initiate Alpaca funding
-	if err := s.fundAlpacaAccount(ctx, deposit, transferStatus.DestAmount); err != nil {
-		s.logger.Error("Failed to fund Alpaca account",
-			"deposit_id", deposit.ID.String(),
-			"error", err)
+	// Fund Alpaca account
+	if err := s.fundAlpacaAccount(ctx, deposit, deposit.Amount); err != nil {
+		s.logger.Error("Failed to fund Alpaca account", "deposit_id", deposit.ID.String(), "error", err)
 		return fmt.Errorf("alpaca funding failed: %w", err)
 	}
 
@@ -211,17 +188,13 @@ func (s *OffRampService) HandleTransferCompleted(ctx context.Context, transferID
 
 // fundAlpacaAccount funds the Alpaca brokerage account
 func (s *OffRampService) fundAlpacaAccount(ctx context.Context, deposit *entities.Deposit, amount decimal.Decimal) error {
-	s.logger.Info("Funding Alpaca account",
-		"deposit_id", deposit.ID.String(),
-		"amount", amount.String())
+	s.logger.Info("Funding Alpaca account", "deposit_id", deposit.ID.String(), "amount", amount.String())
 
-	// Get virtual account to get Alpaca account ID
 	virtualAccount, err := s.virtualAccountRepo.GetByID(ctx, *deposit.VirtualAccountID)
 	if err != nil {
 		return fmt.Errorf("failed to get virtual account: %w", err)
 	}
 
-	// Initiate funding with retry
 	retryConfig := retry.RetryConfig{
 		MaxAttempts: 3,
 		BaseDelay:   1 * time.Second,
@@ -236,7 +209,6 @@ func (s *OffRampService) fundAlpacaAccount(ctx context.Context, deposit *entitie
 			SourceAccountNo: "SI",
 			Amount:          amount,
 		}
-
 		resp, err := s.alpacaAdapter.InitiateInstantFunding(ctx, req)
 		if err != nil {
 			return err
@@ -253,7 +225,6 @@ func (s *OffRampService) fundAlpacaAccount(ctx context.Context, deposit *entitie
 		return fmt.Errorf("alpaca funding failed: %w", err)
 	}
 
-	// Update deposit with Alpaca funding details
 	now := time.Now()
 	fundingTxID := fundingResp.ID
 	deposit.AlpacaFundingTxID = &fundingTxID
@@ -264,14 +235,10 @@ func (s *OffRampService) fundAlpacaAccount(ctx context.Context, deposit *entitie
 		return fmt.Errorf("failed to update deposit: %w", err)
 	}
 
-	// Update user balance
 	if err := s.balanceService.UpdateBuyingPower(ctx, deposit.UserID, amount); err != nil {
-		s.logger.Error("Failed to update buying power",
-			"deposit_id", deposit.ID.String(),
-			"error", err)
+		s.logger.Error("Failed to update buying power", "deposit_id", deposit.ID.String(), "error", err)
 	}
 
-	// Notify user of success
 	_ = s.notificationSvc.NotifyOffRampSuccess(ctx, deposit.UserID, amount.String())
 
 	s.logger.Info("Alpaca account funded successfully",
@@ -279,12 +246,4 @@ func (s *OffRampService) fundAlpacaAccount(ctx context.Context, deposit *entitie
 		"account_id", virtualAccount.AlpacaAccountID)
 
 	return nil
-}
-
-// ensureRecipient ensures a Due recipient exists for the Alpaca account
-func (s *OffRampService) ensureRecipient(ctx context.Context, alpacaAccountID string) (string, error) {
-	// In production, this would check if recipient exists and create if needed
-	// For now, return the Alpaca account ID as recipient ID
-	// This assumes recipients are pre-created during virtual account setup
-	return alpacaAccountID, nil
 }

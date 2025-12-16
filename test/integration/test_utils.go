@@ -1,4 +1,4 @@
-package test
+package integration
 
 import (
 	"fmt"
@@ -19,7 +19,7 @@ func getEnvOrSkip(t *testing.T, key string) string {
 
 // generateTestEmail generates a unique test email
 func generateTestEmail() string {
-	rand.Seed(time.Now().UnixNano())
-	randomNum := rand.Intn(10000)
-	return fmt.Sprintf("test-%d@example.com", randomNum)
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	randomNum := rng.Intn(10000)
+	return fmt.Sprintf("test-%d-%d@example.com", time.Now().UnixNano(), randomNum)
 }

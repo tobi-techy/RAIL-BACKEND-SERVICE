@@ -24,6 +24,11 @@ func NewAdapter(client BridgeClient, logger *zap.Logger) *Adapter {
 	}
 }
 
+// Client returns the underlying Bridge client
+func (a *Adapter) Client() BridgeClient {
+	return a.client
+}
+
 // CreateCustomerWithWallet creates a customer and associated wallet in one operation
 func (a *Adapter) CreateCustomerWithWallet(ctx context.Context, req *CreateCustomerWithWalletRequest) (*CreateCustomerWithWalletResponse, error) {
 	a.logger.Info("Creating Bridge customer with wallet", 

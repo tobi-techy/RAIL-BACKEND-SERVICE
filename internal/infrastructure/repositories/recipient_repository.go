@@ -24,11 +24,11 @@ func NewRecipientRepository(db *sqlx.DB) *RecipientRepository {
 // Create stores a new recipient
 func (r *RecipientRepository) Create(ctx context.Context, rec *recipient.Recipient) error {
 	query := `
-		INSERT INTO recipients (id, user_id, due_id, name, schema, address, is_default, is_verified, created_at, updated_at)
+		INSERT INTO recipients (id, user_id, provider_id, name, schema, address, is_default, is_verified, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
 
 	_, err := r.db.ExecContext(ctx, query,
-		rec.ID, rec.UserID, rec.DueID, rec.Name, rec.Schema, rec.Address,
+		rec.ID, rec.UserID, rec.ProviderID, rec.Name, rec.Schema, rec.Address,
 		rec.IsDefault, rec.IsVerified, rec.CreatedAt, rec.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("failed to create recipient: %w", err)
@@ -39,7 +39,7 @@ func (r *RecipientRepository) Create(ctx context.Context, rec *recipient.Recipie
 // GetByID retrieves a recipient by ID
 func (r *RecipientRepository) GetByID(ctx context.Context, id uuid.UUID) (*recipient.Recipient, error) {
 	var rec recipient.Recipient
-	query := `SELECT id, user_id, due_id, name, schema, address, is_default, is_verified, created_at, updated_at
+	query := `SELECT id, user_id, provider_id, name, schema, address, is_default, is_verified, created_at, updated_at
 		FROM recipients WHERE id = $1`
 
 	if err := r.db.GetContext(ctx, &rec, query, id); err != nil {
@@ -54,7 +54,7 @@ func (r *RecipientRepository) GetByID(ctx context.Context, id uuid.UUID) (*recip
 // GetByUserID retrieves all recipients for a user
 func (r *RecipientRepository) GetByUserID(ctx context.Context, userID uuid.UUID) ([]*recipient.Recipient, error) {
 	var recipients []*recipient.Recipient
-	query := `SELECT id, user_id, due_id, name, schema, address, is_default, is_verified, created_at, updated_at
+	query := `SELECT id, user_id, provider_id, name, schema, address, is_default, is_verified, created_at, updated_at
 		FROM recipients WHERE user_id = $1 ORDER BY is_default DESC, created_at DESC`
 
 	if err := r.db.SelectContext(ctx, &recipients, query, userID); err != nil {
@@ -63,13 +63,13 @@ func (r *RecipientRepository) GetByUserID(ctx context.Context, userID uuid.UUID)
 	return recipients, nil
 }
 
-// GetByDueID retrieves a recipient by Due ID
-func (r *RecipientRepository) GetByDueID(ctx context.Context, dueID string) (*recipient.Recipient, error) {
+// GetByProviderID retrieves a recipient by provider ID
+func (r *RecipientRepository) GetByProviderID(ctx context.Context, providerID string) (*recipient.Recipient, error) {
 	var rec recipient.Recipient
-	query := `SELECT id, user_id, due_id, name, schema, address, is_default, is_verified, created_at, updated_at
-		FROM recipients WHERE due_id = $1`
+	query := `SELECT id, user_id, provider_id, name, schema, address, is_default, is_verified, created_at, updated_at
+		FROM recipients WHERE provider_id = $1`
 
-	if err := r.db.GetContext(ctx, &rec, query, dueID); err != nil {
+	if err := r.db.GetContext(ctx, &rec, query, providerID); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -81,7 +81,7 @@ func (r *RecipientRepository) GetByDueID(ctx context.Context, dueID string) (*re
 // GetDefault retrieves the default recipient for a user
 func (r *RecipientRepository) GetDefault(ctx context.Context, userID uuid.UUID) (*recipient.Recipient, error) {
 	var rec recipient.Recipient
-	query := `SELECT id, user_id, due_id, name, schema, address, is_default, is_verified, created_at, updated_at
+	query := `SELECT id, user_id, provider_id, name, schema, address, is_default, is_verified, created_at, updated_at
 		FROM recipients WHERE user_id = $1 AND is_default = true LIMIT 1`
 
 	if err := r.db.GetContext(ctx, &rec, query, userID); err != nil {

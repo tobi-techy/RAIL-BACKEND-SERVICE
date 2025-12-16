@@ -1,6 +1,6 @@
 //go:build integration
 
-package test
+package integration
 
 import (
 	"context"
@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/rail-service/rail_service/internal/adapters/bridge"
-	"github.com/rail-service/rail_service/pkg/logger"
-	"github.com/rail-service/rail_service/test/integration"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
@@ -30,9 +28,8 @@ func setupIntegrationClient(t *testing.T) *bridge.Client {
 	}
 
 	zapLogger, _ := zap.NewDevelopment()
-	svcLogger := logger.NewLogger(zapLogger, "test")
 	
-	return bridge.NewClient(config, svcLogger)
+	return bridge.NewClient(config, zapLogger)
 }
 
 func TestBridgeIntegration_FullFlow(t *testing.T) {
@@ -41,7 +38,8 @@ func TestBridgeIntegration_FullFlow(t *testing.T) {
 	}
 
 	client := setupIntegrationClient(t)
-	adapter := bridge.NewAdapter(client, logger.NewLogger(nil, "test"))
+	zapLogger := zap.NewNop()
+	adapter := bridge.NewAdapter(client, zapLogger)
 	ctx := context.Background()
 
 	t.Run("Health Check", func(t *testing.T) {
@@ -203,13 +201,21 @@ func TestBridgeIntegration_TransferOperations(t *testing.T) {
 	client := setupIntegrationClient(t)
 	ctx := context.Background()
 
-	// Create a customer with wallets
-	customer, wallet1, err := client.CreateCustomer(ctx, &bridge.CreateCustomerRequest{
+	// Create a customer
+	customer, err := client.CreateCustomer(ctx, &bridge.CreateCustomerRequest{
 		Type:      bridge.CustomerTypeIndividual,
 		FirstName: "Transfer",
 		LastName:  "Test",
 		Email:     generateTestEmail(),
 		Phone:     "+12345678903",
+	})
+	require.NoError(t, err)
+
+	// Create first wallet
+	wallet1, err := client.CreateWallet(ctx, customer.ID, &bridge.CreateWalletRequest{
+		Chain:      bridge.PaymentRailEthereum,
+		Currency:   bridge.CurrencyUSDC,
+		WalletType: bridge.WalletTypeUser,
 	})
 	require.NoError(t, err)
 
