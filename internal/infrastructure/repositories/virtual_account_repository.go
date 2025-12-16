@@ -24,11 +24,11 @@ func NewVirtualAccountRepository(db *sqlx.DB) *VirtualAccountRepository {
 func (r *VirtualAccountRepository) Create(ctx context.Context, account *entities.VirtualAccount) error {
 	query := `
 		INSERT INTO virtual_accounts (
-			id, user_id, due_account_id, alpaca_account_id,
+			id, user_id, due_account_id, alpaca_account_id, bridge_account_id,
 			account_number, routing_number, status, currency,
 			created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
 		)
 	`
 
@@ -37,6 +37,7 @@ func (r *VirtualAccountRepository) Create(ctx context.Context, account *entities
 		account.UserID,
 		account.DueAccountID,
 		account.AlpacaAccountID,
+		account.BridgeAccountID,
 		account.AccountNumber,
 		account.RoutingNumber,
 		account.Status,
@@ -55,7 +56,7 @@ func (r *VirtualAccountRepository) Create(ctx context.Context, account *entities
 // GetByID retrieves a virtual account by ID
 func (r *VirtualAccountRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.VirtualAccount, error) {
 	query := `
-		SELECT id, user_id, due_account_id, alpaca_account_id,
+		SELECT id, user_id, due_account_id, alpaca_account_id, bridge_account_id,
 			   account_number, routing_number, status, currency,
 			   created_at, updated_at
 		FROM virtual_accounts
@@ -77,7 +78,7 @@ func (r *VirtualAccountRepository) GetByID(ctx context.Context, id uuid.UUID) (*
 // GetByDueAccountID retrieves a virtual account by Due account ID
 func (r *VirtualAccountRepository) GetByDueAccountID(ctx context.Context, dueAccountID string) (*entities.VirtualAccount, error) {
 	query := `
-		SELECT id, user_id, due_account_id, alpaca_account_id,
+		SELECT id, user_id, due_account_id, alpaca_account_id, bridge_account_id,
 			   account_number, routing_number, status, currency,
 			   created_at, updated_at
 		FROM virtual_accounts
@@ -99,7 +100,7 @@ func (r *VirtualAccountRepository) GetByDueAccountID(ctx context.Context, dueAcc
 // GetByUserID retrieves all virtual accounts for a user
 func (r *VirtualAccountRepository) GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.VirtualAccount, error) {
 	query := `
-		SELECT id, user_id, due_account_id, alpaca_account_id,
+		SELECT id, user_id, due_account_id, alpaca_account_id, bridge_account_id,
 			   account_number, routing_number, status, currency,
 			   created_at, updated_at
 		FROM virtual_accounts
@@ -122,11 +123,12 @@ func (r *VirtualAccountRepository) Update(ctx context.Context, account *entities
 		UPDATE virtual_accounts
 		SET due_account_id = $2,
 			alpaca_account_id = $3,
-			account_number = $4,
-			routing_number = $5,
-			status = $6,
-			currency = $7,
-			updated_at = $8
+			bridge_account_id = $4,
+			account_number = $5,
+			routing_number = $6,
+			status = $7,
+			currency = $8,
+			updated_at = $9
 		WHERE id = $1
 	`
 
@@ -134,6 +136,7 @@ func (r *VirtualAccountRepository) Update(ctx context.Context, account *entities
 		account.ID,
 		account.DueAccountID,
 		account.AlpacaAccountID,
+		account.BridgeAccountID,
 		account.AccountNumber,
 		account.RoutingNumber,
 		account.Status,
@@ -151,7 +154,7 @@ func (r *VirtualAccountRepository) Update(ctx context.Context, account *entities
 // GetByAlpacaAccountID retrieves a virtual account by Alpaca account ID
 func (r *VirtualAccountRepository) GetByAlpacaAccountID(ctx context.Context, alpacaAccountID string) (*entities.VirtualAccount, error) {
 	query := `
-		SELECT id, user_id, due_account_id, alpaca_account_id,
+		SELECT id, user_id, due_account_id, alpaca_account_id, bridge_account_id,
 			   account_number, routing_number, status, currency,
 			   created_at, updated_at
 		FROM virtual_accounts

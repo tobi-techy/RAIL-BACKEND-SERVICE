@@ -6,6 +6,10 @@
 echo "🚀 Testing Bridge API Integration..."
 echo ""
 
+# Initialize failure tracking
+FAILURES=0
+declare -A CHECK_RESULTS
+
 # Check if environment variables are set
 if [ -z "$BRIDGE_API_KEY" ]; then
     echo "❌ BRIDGE_API_KEY environment variable is required"
@@ -14,6 +18,7 @@ if [ -z "$BRIDGE_API_KEY" ]; then
 fi
 
 echo "✅ Environment variables configured"
+CHECK_RESULTS["env_vars"]="passed"
 
 # Check if key files exist
 echo "📁 Checking for key implementation files..."
@@ -46,10 +51,12 @@ done
 if [ $missing_files -gt 0 ]; then
     echo ""
     echo "❌ $missing_files files are missing"
-    exit 1
+    CHECK_RESULTS["impl_files"]="failed ($missing_files missing)"
+    ((FAILURES++))
 else
     echo ""
     echo "✅ All implementation files present"
+    CHECK_RESULTS["impl_files"]="passed"
 fi
 
 # Check domain entity updates
@@ -63,32 +70,51 @@ domain_files=(
     "internal/domain/entities/rail_entities.go"
 )
 
+domain_issues=0
 for file in "${domain_files[@]}"; do
     if [ -f "$file" ]; then
         if grep -q "BridgeCustomerID\|BridgeWalletID\|BridgeAccountID" "$file"; then
             echo "  ✅ $file (Bridge fields added)"
         else
             echo "  ⚠️  $file (may need Bridge fields)"
+            ((domain_issues++))
         fi
     else
         echo "  ❌ $file (missing)"
+        ((domain_issues++))
     fi
 done
+
+if [ $domain_issues -gt 0 ]; then
+    CHECK_RESULTS["domain_entities"]="warning ($domain_issues issues)"
+else
+    CHECK_RESULTS["domain_entities"]="passed"
+fi
 
 # Check configuration
 echo ""
 echo "⚙️ Configuration check..."
 
+config_issues=0
 if grep -q "BRIDGE_API_KEY\|BRIDGE_BASE_URL\|BRIDGE_ENVIRONMENT" ".env.example"; then
     echo "  ✅ Bridge environment variables in .env.example"
 else
     echo "  ❌ Bridge environment variables missing from .env.example"
+    ((config_issues++))
 fi
 
 if grep -q "BridgeConfig\|bridge\." "internal/infrastructure/config/config.go"; then
     echo "  ✅ Bridge configuration in config.go"
 else
     echo "  ❌ Bridge configuration missing from config.go"
+    ((config_issues++))
+fi
+
+if [ $config_issues -gt 0 ]; then
+    CHECK_RESULTS["configuration"]="failed ($config_issues issues)"
+    ((FAILURES++))
+else
+    CHECK_RESULTS["configuration"]="passed"
 fi
 
 # Check DI integration
@@ -97,19 +123,33 @@ echo "🔌 DI Container integration check..."
 
 if grep -q "BridgeClient\|BridgeAdapter\|BridgeKYCAdapter\|BridgeFundingAdapter" "internal/infrastructure/di/container.go"; then
     echo "  ✅ Bridge adapters integrated in DI container"
+    CHECK_RESULTS["di_container"]="passed"
 else
     echo "  ❌ Bridge adapters missing from DI container"
+    CHECK_RESULTS["di_container"]="failed"
+    ((FAILURES++))
 fi
 
 # Summary
 echo ""
 echo "📋 Bridge Integration Summary:"
-echo "  ✅ Configuration: Environment variables and defaults"
-echo "  ✅ Client & Adapter: Core Bridge implementation"
-echo "  ✅ Domain Integration: Entity field mappings"
-echo "  ✅ DI Container: Service wiring"
-echo "  ✅ Testing: Unit and integration tests"
-echo "  ✅ Documentation: Setup guide and examples"
+
+print_check() {
+    local name="$1"
+    local result="${CHECK_RESULTS[$2]}"
+    if [[ "$result" == "passed" ]]; then
+        echo "  ✅ $name"
+    elif [[ "$result" == warning* ]]; then
+        echo "  ⚠️  $name: $result"
+    else
+        echo "  ❌ $name: $result"
+    fi
+}
+
+print_check "Configuration: Environment variables and defaults" "configuration"
+print_check "Client & Adapter: Core Bridge implementation" "impl_files"
+print_check "Domain Integration: Entity field mappings" "domain_entities"
+print_check "DI Container: Service wiring" "di_container"
 
 echo ""
 echo "🎯 Next Steps:"
@@ -119,4 +159,10 @@ echo "  3. Run unit tests: go test ./test/unit/bridge_adapter_test.go -v"
 echo "  4. Run integration tests: go test -tags=integration ./test/integration/... -v"
 
 echo ""
-echo "🎉 Bridge API integration is ready for testing!"
+if [ $FAILURES -gt 0 ]; then
+    echo "❌ Bridge API integration has $FAILURES failure(s)"
+    exit 1
+else
+    echo "🎉 Bridge API integration is ready for testing!"
+    exit 0
+fi

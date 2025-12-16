@@ -515,7 +515,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		RedisClient:   redisClient,
 
 		// Bridge Domain Adapters
-		BridgeKYCAdapter:     NewBridgeKYCAdapter(bridgeAdapter),
+		BridgeKYCAdapter:     NewBridgeKYCAdapter(bridgeAdapter, userRepo),
 		BridgeFundingAdapter: NewBridgeFundingAdapter(bridgeAdapter),
 
 		// Entity Secret Service
