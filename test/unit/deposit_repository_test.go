@@ -54,11 +54,11 @@ func TestDepositRepository_Create(t *testing.T) {
 	ctx := context.Background()
 
 	deposit := &entities.Deposit{
-		ID:       uuid.New(),
-		UserID:   uuid.New(),
-		Amount:   decimal.NewFromFloat(100.0),
-		Currency: "USDC",
-		Status:   "pending",
+		ID:     uuid.New(),
+		UserID: uuid.New(),
+		Amount: decimal.NewFromFloat(100.0),
+		Token:  entities.StablecoinUSDC,
+		Status: "pending",
 	}
 
 	repo.On("Create", ctx, deposit).Return(nil)
@@ -77,7 +77,7 @@ func TestDepositRepository_GetByOffRampTxID(t *testing.T) {
 		ID:          uuid.New(),
 		UserID:      uuid.New(),
 		Amount:      decimal.NewFromFloat(100.0),
-		Currency:    "USDC",
+		Token:       entities.USDC,
 		Status:      "off_ramp_completed",
 		OffRampTxID: &txID,
 	}
@@ -96,11 +96,11 @@ func TestDepositRepository_Update(t *testing.T) {
 	ctx := context.Background()
 
 	deposit := &entities.Deposit{
-		ID:       uuid.New(),
-		UserID:   uuid.New(),
-		Amount:   decimal.NewFromFloat(100.0),
-		Currency: "USDC",
-		Status:   "broker_funded",
+		ID:     uuid.New(),
+		UserID: uuid.New(),
+		Amount: decimal.NewFromFloat(100.0),
+		Token:  entities.StablecoinUSDC,
+		Status: "broker_funded",
 	}
 
 	repo.On("Update", ctx, deposit).Return(nil)
@@ -117,18 +117,18 @@ func TestDepositRepository_ListByUserID(t *testing.T) {
 
 	expectedDeposits := []*entities.Deposit{
 		{
-			ID:       uuid.New(),
-			UserID:   userID,
-			Amount:   decimal.NewFromFloat(100.0),
-			Currency: "USDC",
-			Status:   "completed",
+			ID:     uuid.New(),
+			UserID: userID,
+			Amount: decimal.NewFromFloat(100.0),
+			Token:  entities.StablecoinUSDC,
+			Status: "completed",
 		},
 		{
-			ID:       uuid.New(),
-			UserID:   userID,
-			Amount:   decimal.NewFromFloat(50.0),
-			Currency: "USDC",
-			Status:   "pending",
+			ID:     uuid.New(),
+			UserID: userID,
+			Amount: decimal.NewFromFloat(50.0),
+			Token:  entities.StablecoinUSDC,
+			Status: "pending",
 		},
 	}
 

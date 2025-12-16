@@ -34,7 +34,7 @@ func setupIntegrationClient(t *testing.T) *due.Client {
 		Timeout:   30 * time.Second,
 	}
 	
-	log := logger.NewLogger("integration-test", "debug")
+	log := logger.New("debug", "integration-test")
 	return due.NewClient(config, log)
 }
 

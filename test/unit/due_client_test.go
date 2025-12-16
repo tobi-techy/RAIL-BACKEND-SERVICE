@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/rail-service/rail_service/internal/adapters/due"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,7 +23,7 @@ func setupTestClient(handler http.HandlerFunc) (*due.Client, *httptest.Server) {
 		BaseURL:   server.URL,
 		Timeout:   5 * time.Second,
 	}
-	log := logger.NewLogger("test", "debug")
+	log := logger.New("debug", "test")
 	client := due.NewClient(config, log)
 	return client, server
 }
@@ -32,32 +33,30 @@ func TestCreateAccount(t *testing.T) {
 		assert.Equal(t, "POST", r.Method)
 		assert.Equal(t, "/v1/accounts", r.URL.Path)
 		assert.Equal(t, "Bearer test_key", r.Header.Get("Authorization"))
-		
-		resp := due.CreateAccountResponse{
-			ID:      "acc_123",
-			Type:    due.AccountTypeIndividual,
-			Name:    "Test User",
-			Email:   "test@example.com",
-			Country: "US",
-			Status:  "active",
+
+		resp := entities.CreateAccountResponse{
+			AccountID: "acc_123",
+			Status:    "active",
+			Message:   "Account created successfully",
 		}
 		json.NewEncoder(w).Encode(resp)
 	}
-	
+
 	client, server := setupTestClient(handler)
 	defer server.Close()
-	
-	req := &due.CreateAccountRequest{
-		Type:    due.AccountTypeIndividual,
-		Name:    "Test User",
-		Email:   "test@example.com",
-		Country: "US",
+
+	req := &entities.CreateAccountRequest{
+		Email:     "test@example.com",
+		FirstName: "Test",
+		LastName:  "User",
+		Type:      "individual",
+		Country:   "US",
 	}
-	
+
 	resp, err := client.CreateAccount(context.Background(), req)
 	require.NoError(t, err)
-	assert.Equal(t, "acc_123", resp.ID)
-	assert.Equal(t, "Test User", resp.Name)
+	assert.Equal(t, "acc_123", resp.AccountID)
+	assert.Equal(t, "active", resp.Status)
 }
 
 func TestGetWalletBalance(t *testing.T) {
@@ -142,13 +141,14 @@ func TestErrorResponseParsing(t *testing.T) {
 	client, server := setupTestClient(handler)
 	defer server.Close()
 	
-	req := &due.CreateAccountRequest{
-		Type:    due.AccountTypeIndividual,
-		Name:    "Test",
-		Email:   "test@example.com",
-		Country: "US",
+	req := &entities.CreateAccountRequest{
+		Email:     "test@example.com",
+		FirstName: "Test",
+		LastName:  "User",
+		Type:      "individual",
+		Country:   "US",
 	}
-	
+
 	_, err := client.CreateAccount(context.Background(), req)
 	require.Error(t, err)
 	
