@@ -75,19 +75,27 @@ These features define Rail. Without them, the product is invalid.
 
 **Requirements:**
 
-* Single primary funding method (bank transfer or on-ramp)
+* Virtual accounts for fiat deposits (USD, GBP)
+* Multi-chain USDC deposits (Ethereum, Polygon, BSC, Solana)
 * Instant or near-instant confirmation
 * Deposit triggers automatic split
 
+**Funding Methods:**
+
+* **Virtual Accounts**: Bank transfer to user's dedicated USD or GBP virtual account
+* **Crypto On-Ramp**: USDC deposits from any supported chain
+
 **UX Rules:**
 
-* Use language: “Load money”
+* Use language: "Load money"
 * No deposit settings
 * No allocation choices
 
 **Acceptance Criteria:**
 
 * Deposit → split → system state update in < 60 seconds
+* Virtual accounts support USD and GBP
+* USDC accepted from Ethereum, Polygon, BSC, and Solana
 
 ---
 
@@ -144,7 +152,69 @@ This balance must feel like a checking account replacement.
 
 ---
 
-## 4.6 Round-Ups Automation
+## 4.6 Conductors — Expert-Led Tracks
+
+For users who want guided growth without self-directed decisions, Rail offers Conductors.
+
+**What is a Conductor?**
+
+A Conductor is a verified professional investor who creates and manages Tracks — curated portfolios of assets that followers can automatically mirror.
+
+**The Metaphor**
+
+* A **Conductor** leads the investment journey
+* A **Track** is the path they create (a portfolio of assets like Apple, ETFs, etc.)
+* **Followers** ride the track — their capital automatically mirrors the Conductor's moves
+
+**How It Works**
+
+1. Conductors apply, get reviewed, and are approved based on credentials and experience
+2. Approved Conductors create Tracks with specific asset allocations
+3. Users browse Tracks and choose to follow one or more
+4. A portion of the user's Active Rail is allocated to the Track
+5. When the Conductor adjusts the Track, followers' positions update automatically
+
+**Conductor Application Flow**
+
+* Submit application with investment experience and credentials
+* Admin review for background check and compliance
+* Approval grants Conductor status
+* Conductor creates profile and first Track
+
+**Track Characteristics**
+
+* Named strategy (e.g., "Tech Growth", "Dividend Income")
+* Curated assets with target weights
+* Risk level indicator
+* Performance history visible to potential followers
+
+**User Experience**
+
+* Discover Conductors and their Tracks
+* View performance, risk level, and follower count
+* Follow with one tap — allocate a portion of Active Rail
+* Unfollow anytime — positions liquidate back to Active Rail
+
+**Why Conductors Fit Rail's Philosophy**
+
+Conductors extend Rail's core principle: users delegate decisions to systems (or experts) that act on their behalf. Following a Track requires no ongoing input — the Conductor leads, the system mirrors, the user benefits.
+
+This is not self-directed investing. This is choosing who to trust, then letting go.
+
+Rail’s experience is designed around trust through action, not education.
+
+**Core principles:**
+
+* Fewer decisions increase confidence
+* Speed creates belief
+* Defaults outperform settings
+* State matters more than detail
+
+If a screen requires explanation, it’s wrong.
+If a user hesitates, something failed.
+
+
+## 4.7 Round-Ups Automation
 
 **Requirements:**
 
@@ -158,7 +228,7 @@ This balance must feel like a checking account replacement.
 
 ---
 
-## 4.7 Home Screen (Station)
+## 4.8 Home Screen (Station)
 
 **Requirements:**
 
@@ -184,8 +254,7 @@ These features increase retention but are not required to validate the model.
 * Push notifications
 * Transaction categorization
 * Basic spend history
-
----
+* Conductors (Copy Trading)
 
 ## 6. Tier 2 — Future Expansion (Explicitly Out of Scope)
 

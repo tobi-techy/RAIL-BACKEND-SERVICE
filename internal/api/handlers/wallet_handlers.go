@@ -423,7 +423,7 @@ func (h *WalletHandlers) validateChains(chainStrs []string) ([]entities.WalletCh
 func (h *WalletHandlers) validateInitiationChains(chainStrs []string) ([]entities.WalletChain, error) {
 	chains := chainStrs
 	if len(chains) == 0 {
-		chains = []string{string(entities.ChainSOLDevnet)}
+		chains = []string{string(entities.WalletChainSOLDevnet)}
 	}
 
 	var chainEntities []entities.WalletChain
