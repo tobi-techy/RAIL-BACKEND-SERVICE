@@ -18,6 +18,7 @@ import (
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	alpacaservice "github.com/rail-service/rail_service/internal/domain/services/alpaca"
 	"github.com/rail-service/rail_service/internal/domain/services/allocation"
+	"github.com/rail-service/rail_service/internal/domain/services/autoinvest"
 	analyticsservice "github.com/rail-service/rail_service/internal/domain/services/analytics"
 	"github.com/rail-service/rail_service/internal/domain/services/apikey"
 	"github.com/rail-service/rail_service/internal/domain/services/audit"
@@ -254,6 +255,7 @@ type Container struct {
 	ReconciliationService   *reconciliation.Service
 	ReconciliationScheduler *reconciliation.Scheduler
 	AllocationService       *allocation.Service
+	AutoInvestService       *autoinvest.Service
 	StationService          *station.Service
 	NotificationService     *services.NotificationService
 	SocialAuthService       *socialauth.Service
@@ -669,6 +671,19 @@ func (c *Container) initializeDomainServices() error {
 		c.Logger,
 	)
 
+	// Initialize auto-invest service
+	autoInvestRepo := repositories.NewAutoInvestRepository(sqlxDB)
+	c.AutoInvestService = autoinvest.NewService(
+		c.LedgerService,
+		nil, // InvestingService - will be set after initialization
+		allocationRepo,
+		autoInvestRepo,
+		c.Logger,
+	)
+
+	// Wire auto-invest service to allocation service for automatic triggering
+	c.AllocationService.SetAutoInvestService(c.AutoInvestService)
+
 	// Inject allocation service into onboarding service (for auto-enabling 70/30 mode)
 	c.OnboardingService.SetAllocationService(c.AllocationService)
 
@@ -709,6 +724,9 @@ func (c *Container) initializeDomainServices() error {
 		c.NotificationService,
 		c.Logger,
 	)
+
+	// Wire investing service to auto-invest service (circular dependency resolution)
+	c.AutoInvestService.SetInvestingService(c.InvestingService)
 
 	// Initialize reconciliation service
 	if err := c.initializeReconciliationService(); err != nil {
@@ -892,6 +910,11 @@ func (c *Container) GetOnboardingJobService() *services.OnboardingJobService {
 // GetAllocationService returns the allocation service
 func (c *Container) GetAllocationService() *allocation.Service {
 	return c.AllocationService
+}
+
+// GetAutoInvestService returns the auto-invest service
+func (c *Container) GetAutoInvestService() *autoinvest.Service {
+	return c.AutoInvestService
 }
 
 // GetLimitsService returns the limits service
