@@ -115,11 +115,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.ZapLog,
 	)
 
-// Initialize integration handlers (Alpaca, Due)
+// Initialize integration handlers (Alpaca only - Due replaced by Bridge)
 integrationHandlers := handlers.NewIntegrationHandlers(
 	container.AlpacaClient,
-	container.GetDueService(),
-	container.Config.Due.WebhookSecret,
+	nil, // Due service removed - Bridge handles virtual accounts
+	"",  // Due webhook secret removed
 	services.NewNotificationService(container.ZapLog),
 	container.Logger,
 )
@@ -495,18 +495,16 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 			}
 		}
 
-		// Due API routes (protected)
-		due := protected.Group("/due")
-		{
-			// Account management
-			due.POST("/account", integrationHandlers.CreateDueAccount)
-		}
-
 		// Webhooks (external systems) - OpenAPI spec compliant
 		webhooks := v1.Group("/webhooks")
 		{
 			webhooks.POST("/chain-deposit", walletFundingHandlers.ChainDepositWebhook)
 			webhooks.POST("/brokerage-fill", walletFundingHandlers.BrokerageFillWebhook)
+			
+			// Bridge webhooks for fiat deposits and transfers
+			if bridgeWebhookHandler := container.GetBridgeWebhookHandler(); bridgeWebhookHandler != nil {
+				webhooks.POST("/bridge", bridgeWebhookHandler.HandleWebhook)
+			}
 		}
 
 		// Register Alpaca investment routes

@@ -28,7 +28,6 @@ type Config struct {
 	Notification   NotificationConfig `mapstructure:"notification"`
 	Verification   VerificationConfig `mapstructure:"verification"`
 	Alpaca         AlpacaConfig         `mapstructure:"alpaca"`
-	Due            DueConfig            `mapstructure:"due"`
 	Bridge         BridgeConfig         `mapstructure:"bridge"`
 	Workers        WorkerConfig         `mapstructure:"workers"`
 	Reconciliation ReconciliationConfig `mapstructure:"reconciliation"`
@@ -226,7 +225,6 @@ type NotificationConfig struct {
 	SMSTopicARN          string `mapstructure:"sms_topic_arn"`
 	EmailTopicARN        string `mapstructure:"email_topic_arn"`
 	NotificationQueueURL string `mapstructure:"notification_queue_url"`
-	DueWebhookSecret     string `mapstructure:"due_webhook_secret"`
 }
 
 type VerificationConfig struct {
@@ -234,14 +232,6 @@ type VerificationConfig struct {
 	CodeTTLMinutes   int `mapstructure:"code_ttl_minutes"`
 	MaxAttempts      int `mapstructure:"max_attempts"`
 	RateLimitPerHour int `mapstructure:"rate_limit_per_hour"`
-}
-
-// DueConfig contains Due API configuration for virtual accounts
-type DueConfig struct {
-	APIKey        string `mapstructure:"api_key"`
-	AccountID     string `mapstructure:"account_id"`
-	BaseURL       string `mapstructure:"base_url"`
-	WebhookSecret string `mapstructure:"webhook_secret"`
 }
 
 // BridgeConfig contains Bridge API configuration for wallets, virtual accounts, KYC, and cards
@@ -252,6 +242,7 @@ type BridgeConfig struct {
 	Timeout         int      `mapstructure:"timeout"`
 	MaxRetries      int      `mapstructure:"max_retries"`
 	SupportedChains []string `mapstructure:"supported_chains"`
+	WebhookSecret   string   `mapstructure:"webhook_secret"`
 }
 
 // WorkerConfig contains background worker configuration
@@ -535,9 +526,6 @@ func setDefaults() {
 	viper.SetDefault("alpaca.data_base_url", "https://data.sandbox.alpaca.markets")
 	viper.SetDefault("alpaca.timeout", 30)
 
-	// Due defaults
-	viper.SetDefault("due.base_url", "https://api.due.network/v1")
-
 	// Bridge defaults
 	viper.SetDefault("bridge.environment", "sandbox")
 	viper.SetDefault("bridge.base_url", "https://api.bridge.xyz")
@@ -736,17 +724,6 @@ func overrideFromEnv() {
 		viper.Set("alpaca.environment", alpacaEnvironment)
 	}
 
-	// Due
-	if dueAPIKey := os.Getenv("DUE_API_KEY"); dueAPIKey != "" {
-		viper.Set("due.api_key", dueAPIKey)
-	}
-	if dueAccountID := os.Getenv("DUE_ACCOUNT_ID"); dueAccountID != "" {
-		viper.Set("due.account_id", dueAccountID)
-	}
-	if dueBaseURL := os.Getenv("DUE_BASE_URL"); dueBaseURL != "" {
-		viper.Set("due.base_url", dueBaseURL)
-	}
-
 	// Bridge API
 	if bridgeAPIKey := os.Getenv("BRIDGE_API_KEY"); bridgeAPIKey != "" {
 		viper.Set("bridge.api_key", bridgeAPIKey)
@@ -779,6 +756,9 @@ func overrideFromEnv() {
 		if len(chains) > 0 {
 			viper.Set("bridge.supported_chains", chains)
 		}
+	}
+	if bridgeWebhookSecret := os.Getenv("BRIDGE_WEBHOOK_SECRET"); bridgeWebhookSecret != "" {
+		viper.Set("bridge.webhook_secret", bridgeWebhookSecret)
 	}
 }
 

@@ -206,3 +206,91 @@ func (r *VirtualAccountRepository) ExistsByUserAndAlpacaAccount(ctx context.Cont
 
 	return exists, nil
 }
+
+// GetByBridgeAccountID retrieves a virtual account by Bridge account ID
+func (r *VirtualAccountRepository) GetByBridgeAccountID(ctx context.Context, bridgeAccountID string) (*entities.VirtualAccount, error) {
+	query := `
+		SELECT id, user_id, due_account_id, alpaca_account_id, bridge_account_id,
+			   account_number, routing_number, status, currency,
+			   created_at, updated_at
+		FROM virtual_accounts
+		WHERE bridge_account_id = $1
+	`
+
+	var account entities.VirtualAccount
+	err := r.db.GetContext(ctx, &account, query, bridgeAccountID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("virtual account not found")
+		}
+		return nil, fmt.Errorf("failed to get virtual account by bridge id: %w", err)
+	}
+
+	return &account, nil
+}
+
+// GetDueAccountsForMigration retrieves Due virtual accounts that need Bridge migration
+func (r *VirtualAccountRepository) GetDueAccountsForMigration(ctx context.Context, limit int) ([]*entities.VirtualAccount, error) {
+	query := `
+		SELECT id, user_id, due_account_id, alpaca_account_id, bridge_account_id,
+			   account_number, routing_number, status, currency,
+			   created_at, updated_at
+		FROM virtual_accounts
+		WHERE due_account_id IS NOT NULL 
+		  AND due_account_id != ''
+		  AND (bridge_account_id IS NULL OR bridge_account_id = '')
+		  AND status = 'active'
+		ORDER BY created_at ASC
+		LIMIT $1
+	`
+
+	var accounts []*entities.VirtualAccount
+	err := r.db.SelectContext(ctx, &accounts, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get due accounts for migration: %w", err)
+	}
+
+	return accounts, nil
+}
+
+// UpdateBridgeAccountID updates the Bridge account ID for a virtual account
+func (r *VirtualAccountRepository) UpdateBridgeAccountID(ctx context.Context, id uuid.UUID, bridgeAccountID string) error {
+	query := `
+		UPDATE virtual_accounts
+		SET bridge_account_id = $2, updated_at = NOW()
+		WHERE id = $1
+	`
+
+	_, err := r.db.ExecContext(ctx, query, id, bridgeAccountID)
+	if err != nil {
+		return fmt.Errorf("failed to update bridge account id: %w", err)
+	}
+
+	return nil
+}
+
+// GetActiveByUserIDAndCurrency retrieves active virtual accounts for a user by currency
+func (r *VirtualAccountRepository) GetActiveByUserIDAndCurrency(ctx context.Context, userID uuid.UUID, currency string) (*entities.VirtualAccount, error) {
+	query := `
+		SELECT id, user_id, due_account_id, alpaca_account_id, bridge_account_id,
+			   account_number, routing_number, status, currency,
+			   created_at, updated_at
+		FROM virtual_accounts
+		WHERE user_id = $1 AND currency = $2 AND status = 'active'
+		ORDER BY 
+			CASE WHEN bridge_account_id IS NOT NULL THEN 0 ELSE 1 END,
+			created_at DESC
+		LIMIT 1
+	`
+
+	var account entities.VirtualAccount
+	err := r.db.GetContext(ctx, &account, query, userID, currency)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get virtual account: %w", err)
+	}
+
+	return &account, nil
+}

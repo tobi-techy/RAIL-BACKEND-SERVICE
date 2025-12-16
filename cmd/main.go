@@ -162,7 +162,6 @@ func main() {
 		container.CircleClient,
 		container.AuditService,
 		userRepoAdapter,
-		container.DueService,
 		workerConfig,
 		log.Zap(),
 	)
