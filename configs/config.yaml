@@ -170,8 +170,10 @@ social_auth:
     client_secret: ""
     redirect_uri: ""
   apple:
-    client_id: ""
-    client_secret: ""
+    client_id: ""        # Bundle ID or Services ID
+    team_id: ""          # Apple Developer Team ID
+    key_id: ""           # Key ID from Apple Developer Portal
+    private_key: ""      # P8 private key content (base64 encoded)
     redirect_uri: ""
 
 webauthn:

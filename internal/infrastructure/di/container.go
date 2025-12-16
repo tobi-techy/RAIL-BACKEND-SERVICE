@@ -594,10 +594,12 @@ func (c *Container) initializeDomainServices() error {
 			ClientSecret: c.Config.SocialAuth.Google.ClientSecret,
 			RedirectURI:  c.Config.SocialAuth.Google.RedirectURI,
 		},
-		Apple: socialauth.OAuthConfig{
-			ClientID:     c.Config.SocialAuth.Apple.ClientID,
-			ClientSecret: c.Config.SocialAuth.Apple.ClientSecret,
-			RedirectURI:  c.Config.SocialAuth.Apple.RedirectURI,
+		Apple: socialauth.AppleOAuthConfig{
+			ClientID:    c.Config.SocialAuth.Apple.ClientID,
+			TeamID:      c.Config.SocialAuth.Apple.TeamID,
+			KeyID:       c.Config.SocialAuth.Apple.KeyID,
+			PrivateKey:  c.Config.SocialAuth.Apple.PrivateKey,
+			RedirectURI: c.Config.SocialAuth.Apple.RedirectURI,
 		},
 	}
 	c.SocialAuthService = socialauth.NewService(c.DB, c.ZapLog, socialAuthConfig)
