@@ -11,6 +11,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/adapters/alpaca"
+	"github.com/rail-service/rail_service/internal/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/adapters/due"
 	"github.com/rail-service/rail_service/internal/api/handlers"
 	"github.com/rail-service/rail_service/internal/domain/entities"
@@ -230,11 +231,17 @@ type Container struct {
 	CircleClient  *circle.Client
 	AlpacaClient  *alpaca.Client
 	AlpacaService *alpaca.Service
+	BridgeClient  *bridge.Client
+	BridgeAdapter *bridge.Adapter
 	KYCProvider   *adapters.KYCProvider
 	EmailService  *adapters.EmailService
 	SMSService    *adapters.SMSService
 	AuditService  *adapters.AuditService
 	RedisClient   cache.RedisClient
+
+	// Bridge Domain Adapters
+	BridgeKYCAdapter     *BridgeKYCAdapter
+	BridgeFundingAdapter *BridgeFundingAdapter
 
 	// Domain Services
 	OnboardingService       *onboarding.Service
@@ -384,6 +391,17 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	alpacaClient := alpaca.NewClient(alpacaConfig, zapLog)
 	alpacaService := alpaca.NewService(alpacaClient, zapLog)
 
+	// Initialize Bridge service
+	bridgeConfig := bridge.Config{
+		APIKey:      cfg.Bridge.APIKey,
+		BaseURL:     cfg.Bridge.BaseURL,
+		Environment: cfg.Bridge.Environment,
+		Timeout:     time.Duration(cfg.Bridge.Timeout) * time.Second,
+		MaxRetries:  cfg.Bridge.MaxRetries,
+	}
+	bridgeClient := bridge.NewClient(bridgeConfig, zapLog)
+	bridgeAdapter := bridge.NewAdapter(bridgeClient, zapLog)
+
 	// Initialize KYC provider with full configuration
 	kycProviderConfig := adapters.KYCProviderConfig{
 		Provider:    cfg.KYC.Provider,
@@ -488,11 +506,17 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		CircleClient:  circleClient,
 		AlpacaClient:  alpacaClient,
 		AlpacaService: alpacaService,
+		BridgeClient:  bridgeClient,
+		BridgeAdapter: bridgeAdapter,
 		KYCProvider:   kycProvider,
 		EmailService:  emailService,
 		SMSService:    smsService,
 		AuditService:  auditService,
 		RedisClient:   redisClient,
+
+		// Bridge Domain Adapters
+		BridgeKYCAdapter:     NewBridgeKYCAdapter(bridgeAdapter),
+		BridgeFundingAdapter: NewBridgeFundingAdapter(bridgeAdapter),
 
 		// Entity Secret Service
 		EntitySecretService: entitySecretService,
@@ -1179,7 +1203,7 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 	if len(raw) == 0 {
 		logger.Warn("circle.supported_chains not configured; defaulting to SOL-DEVNET")
 		return []entities.WalletChain{
-			entities.ChainSOLDevnet,
+			entities.WalletChainSOLDevnet,
 		}
 	}
 
@@ -1205,7 +1229,7 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 	if len(normalized) == 0 {
 		logger.Warn("circle.supported_chains contained no valid entries; defaulting to SOL-DEVNET")
 		return []entities.WalletChain{
-			entities.ChainSOLDevnet,
+			entities.WalletChainSOLDevnet,
 		}
 	}
 

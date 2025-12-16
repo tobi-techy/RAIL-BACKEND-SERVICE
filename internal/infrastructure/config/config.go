@@ -515,23 +515,6 @@ func setDefaults() {
 	viper.SetDefault("ai.gemini.max_tokens", 500)
 	viper.SetDefault("ai.gemini.temperature", 0.7)
 
-	// 0G Network defaults
-	// General 0G settings
-	viper.SetDefault("zerog.timeout", 30)            // 30 seconds
-	viper.SetDefault("zerog.max_retries", 3)         // 3 retry attempts
-	viper.SetDefault("zerog.retry_backoff_ms", 1000) // 1 second
-	viper.SetDefault("zerog.enable_metrics", true)   // Enable metrics
-	viper.SetDefault("zerog.enable_tracing", true)   // Enable tracing
-
-	// Storage defaults - 0G Testnet endpoints
-	viper.SetDefault("zerog.storage.rpc_endpoint", "https://evmrpc-testnet.0g.ai/")
-	viper.SetDefault("zerog.storage.indexer_rpc", "https://indexer-storage-testnet-turbo.0g.ai")
-	viper.SetDefault("zerog.storage.min_replicas", 1)
-	viper.SetDefault("zerog.storage.expected_replicas", 3)
-	viper.SetDefault("zerog.storage.namespaces.ai_summaries", "ai-summaries/")
-	viper.SetDefault("zerog.storage.namespaces.ai_artifacts", "ai-artifacts/")
-	viper.SetDefault("zerog.storage.namespaces.model_prompts", "model-prompts/")
-
 	// Compute defaults
 	viper.SetDefault("zerog.compute.broker_endpoint", "")
 	viper.SetDefault("zerog.compute.provider_id", "")
@@ -554,6 +537,13 @@ func setDefaults() {
 
 	// Due defaults
 	viper.SetDefault("due.base_url", "https://api.due.network/v1")
+
+	// Bridge defaults
+	viper.SetDefault("bridge.environment", "sandbox")
+	viper.SetDefault("bridge.base_url", "https://api.bridge.xyz")
+	viper.SetDefault("bridge.timeout", 30)
+	viper.SetDefault("bridge.max_retries", 3)
+	viper.SetDefault("bridge.supported_chains", []string{"ETH", "MATIC", "AVAX", "SOL"})
 
 	// Worker defaults
 	viper.SetDefault("workers.count", 10)
@@ -755,6 +745,40 @@ func overrideFromEnv() {
 	}
 	if dueBaseURL := os.Getenv("DUE_BASE_URL"); dueBaseURL != "" {
 		viper.Set("due.base_url", dueBaseURL)
+	}
+
+	// Bridge API
+	if bridgeAPIKey := os.Getenv("BRIDGE_API_KEY"); bridgeAPIKey != "" {
+		viper.Set("bridge.api_key", bridgeAPIKey)
+	}
+	if bridgeBaseURL := os.Getenv("BRIDGE_BASE_URL"); bridgeBaseURL != "" {
+		viper.Set("bridge.base_url", bridgeBaseURL)
+	}
+	if bridgeEnvironment := os.Getenv("BRIDGE_ENVIRONMENT"); bridgeEnvironment != "" {
+		viper.Set("bridge.environment", bridgeEnvironment)
+	}
+	if bridgeTimeout := os.Getenv("BRIDGE_TIMEOUT"); bridgeTimeout != "" {
+		if timeout, err := strconv.Atoi(bridgeTimeout); err == nil {
+			viper.Set("bridge.timeout", timeout)
+		}
+	}
+	if bridgeMaxRetries := os.Getenv("BRIDGE_MAX_RETRIES"); bridgeMaxRetries != "" {
+		if retries, err := strconv.Atoi(bridgeMaxRetries); err == nil {
+			viper.Set("bridge.max_retries", retries)
+		}
+	}
+	if bridgeSupportedChains := os.Getenv("BRIDGE_SUPPORTED_CHAINS"); bridgeSupportedChains != "" {
+		parts := strings.Split(bridgeSupportedChains, ",")
+		var chains []string
+		for _, part := range parts {
+			trimmed := strings.TrimSpace(part)
+			if trimmed != "" {
+				chains = append(chains, strings.ToUpper(trimmed))
+			}
+		}
+		if len(chains) > 0 {
+			viper.Set("bridge.supported_chains", chains)
+		}
 	}
 }
 

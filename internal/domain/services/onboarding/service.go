@@ -140,7 +140,7 @@ func normalizeDefaultWalletChains(chains []entities.WalletChain, logger *zap.Log
 	if len(chains) == 0 {
 		logger.Warn("No default wallet chains configured; falling back to SOL-DEVNET")
 		return []entities.WalletChain{
-			entities.ChainSOLDevnet,
+			entities.WalletChainSOLDevnet,
 		}
 	}
 
@@ -162,7 +162,7 @@ func normalizeDefaultWalletChains(chains []entities.WalletChain, logger *zap.Log
 	if len(normalized) == 0 {
 		logger.Warn("Configured wallet chains invalid; falling back to SOL-DEVNET")
 		return []entities.WalletChain{
-			entities.ChainSOLDevnet,
+			entities.WalletChainSOLDevnet,
 		}
 	}
 

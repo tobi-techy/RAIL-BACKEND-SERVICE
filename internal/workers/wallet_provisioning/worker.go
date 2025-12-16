@@ -87,7 +87,7 @@ func DefaultConfig() Config {
 		MaxBackoffDuration:  30 * time.Minute,
 		JitterFactor:        0.1,
 		ChainsToProvision: []entities.WalletChain{
-			entities.ChainSOLDevnet,
+			entities.WalletChainSOLDevnet,
 		},
 		WalletSetNamePrefix: "STACK-WalletSet",
 		DefaultWalletSetID:  "",
@@ -726,7 +726,7 @@ func (w *Worker) linkWalletToDue(ctx context.Context, userID uuid.UUID, wallet *
 // mapChainForDue maps internal chain names to Due-compatible formats
 func (w *Worker) mapChainForDue(chain entities.WalletChain) string {
 	switch chain {
-	case entities.ChainSOLDevnet:
+	case entities.WalletChainSOLDevnet:
 		return "SOL-DEVNET"
 	// Add more chain mappings as needed
 	// case entities.ChainETH:

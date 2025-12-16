@@ -68,6 +68,15 @@ This is delegated momentum.
 
 Rail operates as a rules-based capital engine with a permanent default allocation model.
 
+### Funding Methods
+
+Users can load money into Rail through two channels:
+
+* **Virtual Accounts**: Dedicated USD or GBP virtual accounts for bank transfers
+* **Crypto On-Ramp**: USDC deposits from Ethereum, Polygon, BSC, or Solana
+
+Both methods trigger the same automatic split behavior.
+
 ### The Rail Split
 
 Every deposit into Rail is automatically divided the moment it clears:
@@ -133,6 +142,65 @@ Every transaction can:
 * Generate cashback that flows directly into the Invest Engine
 
 Users never “decide” to invest more. Spending naturally compounds into growth.
+
+## 6.5 Conductors — Expert-Led Tracks
+
+For users who want guided growth without self-directed decisions, Rail offers Conductors.
+
+**What is a Conductor?**
+
+A Conductor is a verified professional investor who creates and manages Tracks — curated portfolios of assets that followers can automatically mirror.
+
+**The Metaphor**
+
+* A **Conductor** leads the investment journey
+* A **Track** is the path they create (a portfolio of assets like Apple, ETFs, etc.)
+* **Followers** ride the track — their capital automatically mirrors the Conductor's moves
+
+**How It Works**
+
+1. Conductors apply, get reviewed, and are approved based on credentials and experience
+2. Approved Conductors create Tracks with specific asset allocations
+3. Users browse Tracks and choose to follow one or more
+4. A portion of the user's Active Rail is allocated to the Track
+5. When the Conductor adjusts the Track, followers' positions update automatically
+
+**Conductor Application Flow**
+
+* Must have an existing Rail account before applying
+* Submit application with investment experience and credentials
+* Admin review for background check and compliance
+* Approval grants Conductor status
+* Conductor creates profile and first Track
+
+**Track Characteristics**
+
+* Named strategy (e.g., "Tech Growth", "Dividend Income")
+* Curated assets with target weights
+* Risk level indicator
+* Performance history visible to potential followers
+
+**User Experience**
+
+* Discover Conductors and their Tracks
+* View performance, risk level, and follower count
+* Follow with one tap — allocate a portion of Active Rail
+* Unfollow anytime — positions liquidate back to Active Rail
+
+**Why Conductors Fit Rail's Philosophy**
+
+Conductors extend Rail's core principle: users delegate decisions to systems (or experts) that act on their behalf. Following a Track requires no ongoing input — the Conductor leads, the system mirrors, the user benefits.
+
+This is not self-directed investing. This is choosing who to trust, then letting go.
+
+Rail’s experience is designed around trust through action, not education.
+
+**Core principles:**
+
+* Fewer decisions increase confidence
+* Speed creates belief
+* Defaults outperform settings
+* State matters more than detail
 
 ## 7. User Experience Principles
 

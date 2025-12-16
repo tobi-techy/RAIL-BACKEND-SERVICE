@@ -3,17 +3,53 @@ package bridge
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
+	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/rail-service/rail_service/pkg/logger"
-	"github.com/rail-service/rail_service/pkg/retry"
+	"go.uber.org/zap"
 )
+
+// idempotencyKeyCtxKey is the context key for idempotency keys
+type idempotencyKeyCtxKey struct{}
+
+// WithIdempotencyKey returns a context with the specified idempotency key
+func WithIdempotencyKey(ctx context.Context, key string) context.Context {
+	return context.WithValue(ctx, idempotencyKeyCtxKey{}, key)
+}
+
+// getIdempotencyKey retrieves idempotency key from context or generates a deterministic one
+func getIdempotencyKey(ctx context.Context, method, endpoint string, body []byte) string {
+	// Check if caller provided an idempotency key
+	if key, ok := ctx.Value(idempotencyKeyCtxKey{}).(string); ok && key != "" {
+		return key
+	}
+	
+	// Generate deterministic key based on request content for automatic retry safety
+	// This ensures the same logical operation always gets the same key
+	h := sha256.New()
+	h.Write([]byte(method))
+	h.Write([]byte(endpoint))
+	if len(body) > 0 {
+		h.Write(body)
+	}
+	// Add a timestamp component (truncated to minute) to allow retrying failed operations
+	// after a reasonable time window while still protecting against immediate duplicates
+	h.Write([]byte(time.Now().UTC().Truncate(time.Minute).Format(time.RFC3339)))
+	return hex.EncodeToString(h.Sum(nil))[:32]
+}
+
+// GenerateIdempotencyKey creates a new unique idempotency key for one-time use
+func GenerateIdempotencyKey() string {
+	return uuid.New().String()
+}
 
 // Config represents Bridge API configuration
 type Config struct {
@@ -28,11 +64,11 @@ type Config struct {
 type Client struct {
 	config     Config
 	httpClient *http.Client
-	logger     *logger.Logger
+	logger     *zap.Logger
 }
 
 // NewClient creates a new Bridge API client
-func NewClient(config Config, logger *logger.Logger) *Client {
+func NewClient(config Config, logger *zap.Logger) *Client {
 	if config.Timeout == 0 {
 		config.Timeout = 30 * time.Second
 	}
@@ -80,14 +116,15 @@ func (c *Client) UpdateCustomer(ctx context.Context, customerID string, req *Cre
 // ListCustomers lists all customers
 func (c *Client) ListCustomers(ctx context.Context, cursor string, limit int) (*ListCustomersResponse, error) {
 	endpoint := "/v0/customers"
-	if cursor != "" || limit > 0 {
-		endpoint += "?"
-		if cursor != "" {
-			endpoint += fmt.Sprintf("cursor=%s&", cursor)
-		}
-		if limit > 0 {
-			endpoint += fmt.Sprintf("limit=%d", limit)
-		}
+	params := url.Values{}
+	if cursor != "" {
+		params.Set("cursor", cursor)
+	}
+	if limit > 0 {
+		params.Set("limit", strconv.Itoa(limit))
+	}
+	if len(params) > 0 {
+		endpoint += "?" + params.Encode()
 	}
 	var resp ListCustomersResponse
 	if err := c.doRequest(ctx, http.MethodGet, endpoint, nil, &resp); err != nil {
@@ -260,16 +297,16 @@ func (c *Client) Ping(ctx context.Context) error {
 func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, response interface{}) error {
 	fullURL := c.config.BaseURL + endpoint
 
-	var reqBody io.Reader
+	var reqBody []byte
 	if body != nil {
-		jsonData, err := json.Marshal(body)
+		var err error
+		reqBody, err = json.Marshal(body)
 		if err != nil {
 			return fmt.Errorf("failed to marshal request body: %w", err)
 		}
-		reqBody = bytes.NewReader(jsonData)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, fullURL, reqBody)
+	req, err := http.NewRequestWithContext(ctx, method, fullURL, bytes.NewReader(reqBody))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
@@ -278,10 +315,11 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Api-Key", c.config.APIKey)
 	if method == http.MethodPost || method == http.MethodPut {
-		req.Header.Set("Idempotency-Key", uuid.New().String())
+		idempotencyKey := getIdempotencyKey(ctx, method, endpoint, reqBody)
+		req.Header.Set("Idempotency-Key", idempotencyKey)
 	}
 
-	c.logger.Debug("Sending Bridge API request", "method", method, "url", fullURL)
+	c.logger.Debug("Sending Bridge API request", zap.String("method", method), zap.String("url", fullURL))
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -294,7 +332,7 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 		return fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	c.logger.Debug("Received Bridge API response", "status_code", resp.StatusCode, "body_size", len(respBody))
+	c.logger.Debug("Received Bridge API response", zap.Int("status_code", resp.StatusCode), zap.Int("body_size", len(respBody)))
 
 	if resp.StatusCode >= 400 {
 		var errResp ErrorResponse
@@ -312,35 +350,6 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 	}
 
 	return nil
-}
-
-// doRequestWithRetry performs HTTP request with retry logic
-func (c *Client) doRequestWithRetry(ctx context.Context, method, endpoint string, body, response interface{}) error {
-	retryConfig := retry.RetryConfig{
-		MaxAttempts: c.config.MaxRetries,
-		BaseDelay:   500 * time.Millisecond,
-		MaxDelay:    5 * time.Second,
-		Multiplier:  2.0,
-	}
-
-	retryableFunc := func() error {
-		return c.doRequest(ctx, method, endpoint, body, response)
-	}
-
-	isRetryable := func(err error) bool {
-		if err == nil {
-			return false
-		}
-		if apiErr, ok := err.(*ErrorResponse); ok {
-			return apiErr.StatusCode >= 500 || apiErr.IsRateLimited()
-		}
-		errStr := err.Error()
-		return strings.Contains(errStr, "connection refused") ||
-			strings.Contains(errStr, "timeout") ||
-			strings.Contains(errStr, "status 5")
-	}
-
-	return retry.WithExponentialBackoff(ctx, retryConfig, retryableFunc, isRetryable)
 }
 
 // Config returns the client configuration
