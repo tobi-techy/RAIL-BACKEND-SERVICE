@@ -2,6 +2,7 @@ package di
 
 import (
 	"context"
+	"errors"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -9,23 +10,34 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 )
 
+// ErrBridgeCustomerNotFound indicates the user has no Bridge customer ID
+var ErrBridgeCustomerNotFound = errors.New("bridge customer ID not found for user")
+
+// UserProfileRepository interface for fetching user profile
+type UserProfileRepository interface {
+	GetByID(ctx context.Context, id uuid.UUID) (*entities.UserProfile, error)
+}
+
 // BridgeKYCAdapter implements KYC operations using Bridge API
 type BridgeKYCAdapter struct {
-	adapter *bridge.Adapter
+	adapter  *bridge.Adapter
+	userRepo UserProfileRepository
 }
 
 // NewBridgeKYCAdapter creates a new Bridge KYC adapter
-func NewBridgeKYCAdapter(adapter *bridge.Adapter) *BridgeKYCAdapter {
+func NewBridgeKYCAdapter(adapter *bridge.Adapter, userRepo UserProfileRepository) *BridgeKYCAdapter {
 	return &BridgeKYCAdapter{
-		adapter: adapter,
+		adapter:  adapter,
+		userRepo: userRepo,
 	}
 }
 
 // SubmitKYC implements KYCProvider interface for Bridge
 func (a *BridgeKYCAdapter) SubmitKYC(ctx context.Context, userID uuid.UUID, documents []entities.KYCDocumentUpload, personalInfo *entities.KYCPersonalInfo) (string, error) {
-	// Get customer ID from user profile - for now use a placeholder approach
-	// In real implementation, we'd retrieve Bridge customer ID from user profile
-	customerID := userID.String() // Placeholder - should be BridgeCustomerID from user profile
+	customerID, err := a.getBridgeCustomerID(ctx, userID)
+	if err != nil {
+		return "", err
+	}
 
 	kycLink, err := a.adapter.GetKYCLinkForCustomer(ctx, customerID)
 	if err != nil {
@@ -37,25 +49,23 @@ func (a *BridgeKYCAdapter) SubmitKYC(ctx context.Context, userID uuid.UUID, docu
 
 // GetKYCStatus implements KYCProvider interface for Bridge
 func (a *BridgeKYCAdapter) GetKYCStatus(ctx context.Context, providerRef string) (*entities.KYCSubmission, error) {
-	// Get customer status from Bridge
 	status, err := a.adapter.GetCustomerStatus(ctx, providerRef)
 	if err != nil {
 		return nil, err
 	}
 
-	// Convert Bridge status to RAIL KYC submission status
-	kycSubmission := &entities.KYCSubmission{
+	return &entities.KYCSubmission{
 		Status:      status.KYCStatus,
 		ProviderRef: providerRef,
-	}
-
-	return kycSubmission, nil
+	}, nil
 }
 
 // GenerateKYCURL implements KYCProvider interface for Bridge
 func (a *BridgeKYCAdapter) GenerateKYCURL(ctx context.Context, userID uuid.UUID) (string, error) {
-	// For Bridge, we need customer ID - use user ID as placeholder
-	customerID := userID.String()
+	customerID, err := a.getBridgeCustomerID(ctx, userID)
+	if err != nil {
+		return "", err
+	}
 
 	kycLink, err := a.adapter.GetKYCLinkForCustomer(ctx, customerID)
 	if err != nil {
@@ -63,6 +73,22 @@ func (a *BridgeKYCAdapter) GenerateKYCURL(ctx context.Context, userID uuid.UUID)
 	}
 
 	return kycLink.KYCLink, nil
+}
+
+// getBridgeCustomerID retrieves the Bridge customer ID from user profile
+// TODO: Track issue to ensure BridgeCustomerID is stored during onboarding
+// and handle the case where a Bridge customer does not yet exist
+func (a *BridgeKYCAdapter) getBridgeCustomerID(ctx context.Context, userID uuid.UUID) (string, error) {
+	profile, err := a.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+
+	if profile.BridgeCustomerID == nil || *profile.BridgeCustomerID == "" {
+		return "", ErrBridgeCustomerNotFound
+	}
+
+	return *profile.BridgeCustomerID, nil
 }
 
 // BridgeFundingAdapter implements funding operations using Bridge API

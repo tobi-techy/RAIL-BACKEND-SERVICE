@@ -260,6 +260,7 @@ type Wallet struct {
 	Currency   Currency    `json:"currency"`
 	Address    string      `json:"address"`
 	WalletType WalletType  `json:"wallet_type"`
+	Status     string      `json:"status"`
 	CreatedAt  time.Time   `json:"created_at"`
 }
 

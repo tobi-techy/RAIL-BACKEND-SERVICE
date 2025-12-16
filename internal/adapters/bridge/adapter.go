@@ -206,7 +206,7 @@ func (a *Adapter) HealthCheck(ctx context.Context) error {
 // Domain entity conversion functions
 
 // ToDomainUser converts Bridge Customer to domain User entity
-func (c *Customer) ToDomainUser() *entities.User {
+func (c *Customer) ToDomainUser(domainUserID uuid.UUID) *entities.User {
 	if c == nil {
 		return nil
 	}
@@ -216,7 +216,7 @@ func (c *Customer) ToDomainUser() *entities.User {
 	onboardingStatus := mapBridgeCustomerStatusToOnboardingStatus(c.Status)
 
 	return &entities.User{
-		ID:              uuid.New(), // Generate new UUID for domain
+		ID:              domainUserID,
 		Email:           c.Email,
 		Phone:           &c.Phone,
 		KYCStatus:       string(kycStatus),
@@ -232,7 +232,7 @@ func (c *Customer) ToDomainUser() *entities.User {
 }
 
 // ToDomainUserProfile converts Bridge Customer to domain UserProfile entity
-func (c *Customer) ToDomainUserProfile() *entities.UserProfile {
+func (c *Customer) ToDomainUserProfile(domainProfileID uuid.UUID) *entities.UserProfile {
 	if c == nil {
 		return nil
 	}
@@ -242,7 +242,7 @@ func (c *Customer) ToDomainUserProfile() *entities.UserProfile {
 	bridgeCustomerID := c.ID
 
 	return &entities.UserProfile{
-		ID:                uuid.New(), // Generate new UUID for domain
+		ID:                domainProfileID,
 		Email:             c.Email,
 		FirstName:         &c.FirstName,
 		LastName:          &c.LastName,
@@ -256,16 +256,16 @@ func (c *Customer) ToDomainUserProfile() *entities.UserProfile {
 }
 
 // ToDomainManagedWallet converts Bridge Wallet to domain ManagedWallet entity
-func (w *Wallet) ToDomainManagedWallet(userID uuid.UUID) *entities.ManagedWallet {
+func (w *Wallet) ToDomainManagedWallet(domainWalletID uuid.UUID, userID uuid.UUID) *entities.ManagedWallet {
 	if w == nil {
 		return nil
 	}
 
 	chain := mapBridgePaymentRailToWalletChain(w.Chain)
-	status := mapBridgeWalletStatusToWalletStatus(w.WalletType)
+	status := mapBridgeWalletStatusToWalletStatus(w.Status)
 
 	return &entities.ManagedWallet{
-		ID:          uuid.New(), // Generate new UUID for domain
+		ID:          domainWalletID,
 		UserID:      userID,
 		Chain:       chain,
 		Address:     w.Address,
@@ -277,7 +277,7 @@ func (w *Wallet) ToDomainManagedWallet(userID uuid.UUID) *entities.ManagedWallet
 }
 
 // ToDomainVirtualAccount converts Bridge VirtualAccount to domain VirtualAccount entity
-func (va *VirtualAccount) ToDomainVirtualAccount(userID uuid.UUID) *entities.VirtualAccount {
+func (va *VirtualAccount) ToDomainVirtualAccount(domainVirtualAccountID uuid.UUID, userID uuid.UUID) *entities.VirtualAccount {
 	if va == nil {
 		return nil
 	}
@@ -285,9 +285,9 @@ func (va *VirtualAccount) ToDomainVirtualAccount(userID uuid.UUID) *entities.Vir
 	status := mapBridgeVirtualAccountStatusToVirtualAccountStatus(va.Status)
 
 	return &entities.VirtualAccount{
-		ID:               uuid.New(), // Generate new UUID for domain
+		ID:               domainVirtualAccountID,
 		UserID:           userID,
-		BridgeAccountID:  va.ID,
+		BridgeAccountID:  &va.ID,
 		Status:           status,
 		Currency:         "USD", // Bridge virtual accounts are USD
 		CreatedAt:        time.Now(),
@@ -352,10 +352,14 @@ func mapBridgePaymentRailToWalletChain(rail PaymentRail) entities.WalletChain {
 	}
 }
 
-func mapBridgeWalletStatusToWalletStatus(walletType WalletType) entities.WalletStatus {
-	switch walletType {
-	case WalletTypeUser, WalletTypeTreasury:
+func mapBridgeWalletStatusToWalletStatus(walletStatus string) entities.WalletStatus {
+	switch walletStatus {
+	case "active", "live":
 		return entities.WalletStatusLive
+	case "creating", "pending":
+		return entities.WalletStatusCreating
+	case "failed":
+		return entities.WalletStatusFailed
 	default:
 		return entities.WalletStatusCreating
 	}
