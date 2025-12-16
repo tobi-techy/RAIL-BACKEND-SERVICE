@@ -857,6 +857,7 @@ func (c *Container) initializeDomainServices() error {
 	c.FundingService.SetLimitsService(c.LimitsService)
 	c.FundingService.SetAuditService(c.DomainAuditService)
 	c.FundingService.SetNotificationService(&FundingNotificationAdapter{svc: c.NotificationService})
+	c.FundingService.SetAllocationService(c.AllocationService) // Enable automatic 70/30 deposit split
 
 	// Initialize withdrawal service with adapters (Bridge replaces Due)
 	withdrawalAlpacaAdapter := &WithdrawalAlpacaAdapter{
