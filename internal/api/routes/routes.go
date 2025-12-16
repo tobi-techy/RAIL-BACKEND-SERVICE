@@ -124,6 +124,13 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 	container.Logger,
 )
 
+	// Initialize Bridge KYC handlers for optimized KYC flow
+	bridgeKYCHandlers := handlers.NewBridgeKYCHandlers(
+		container.BridgeClient,
+		*container.UserRepo,
+		container.ZapLog,
+	)
+
 	// Create session validator adapter
 	sessionValidator := NewSessionValidatorAdapter(container.GetSessionService())
 
@@ -193,6 +200,9 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 			{
 				kycProtected.GET("/status", authHandlers.GetKYCStatus)
 				kycProtected.GET("/verification-url", authHandlers.GetKYCVerificationURL)
+				// Bridge KYC - optimized for sub-2-minute verification
+				kycProtected.GET("/bridge/link", bridgeKYCHandlers.GetBridgeKYCLink)
+				kycProtected.GET("/bridge/status", bridgeKYCHandlers.GetBridgeKYCStatus)
 			}
 
 			// Security routes for passcode management

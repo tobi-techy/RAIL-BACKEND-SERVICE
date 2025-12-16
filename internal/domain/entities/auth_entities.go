@@ -144,6 +144,7 @@ type User struct {
 	DueAccountID       *string          `json:"dueAccountId" db:"due_account_id"`
 	DueKYCStatus       *string          `json:"dueKycStatus" db:"due_kyc_status"`
 	DueKYCLink         *string          `json:"dueKycLink" db:"due_kyc_link"`
+	BridgeCustomerID   *string          `json:"bridgeCustomerId" db:"bridge_customer_id"`
 	Role               string           `json:"role" db:"role"`
 	IsActive           bool             `json:"isActive" db:"is_active"`
 	LastLoginAt        *time.Time       `json:"lastLoginAt" db:"last_login_at"`

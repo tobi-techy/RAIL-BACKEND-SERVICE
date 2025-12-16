@@ -11,6 +11,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/adapters/alpaca"
+	"github.com/rail-service/rail_service/internal/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/adapters/due"
 	"github.com/rail-service/rail_service/internal/api/handlers"
 	"github.com/rail-service/rail_service/internal/domain/entities"
@@ -309,6 +310,9 @@ type Container struct {
 	CopyTradingRepo    *repositories.CopyTradingRepository
 	CopyTradingService *copytrading.Service
 
+	// Bridge API Client
+	BridgeClient *bridge.Client
+
 	// Workers
 	WalletProvisioningScheduler interface{} // Type interface{} to avoid circular dependency, will be set at runtime
 	FundingWebhookManager       interface{} // Type interface{} to avoid circular dependency, will be set at runtime
@@ -383,6 +387,16 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	}
 	alpacaClient := alpaca.NewClient(alpacaConfig, zapLog)
 	alpacaService := alpaca.NewService(alpacaClient, zapLog)
+
+	// Initialize Bridge client for wallets, KYC, and cards
+	bridgeConfig := bridge.Config{
+		APIKey:      cfg.Bridge.APIKey,
+		BaseURL:     cfg.Bridge.BaseURL,
+		Environment: cfg.Bridge.Environment,
+		Timeout:     time.Duration(cfg.Bridge.Timeout) * time.Second,
+		MaxRetries:  cfg.Bridge.MaxRetries,
+	}
+	bridgeClient := bridge.NewClient(bridgeConfig, log)
 
 	// Initialize KYC provider with full configuration
 	kycProviderConfig := adapters.KYCProviderConfig{
@@ -488,6 +502,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		CircleClient:  circleClient,
 		AlpacaClient:  alpacaClient,
 		AlpacaService: alpacaService,
+		BridgeClient:  bridgeClient,
 		KYCProvider:   kycProvider,
 		EmailService:  emailService,
 		SMSService:    smsService,
