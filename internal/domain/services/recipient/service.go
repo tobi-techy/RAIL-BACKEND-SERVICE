@@ -3,10 +3,10 @@ package recipient
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/rail-service/rail_service/internal/adapters/due"
 	"go.uber.org/zap"
 )
 
@@ -14,7 +14,7 @@ import (
 type Recipient struct {
 	ID         uuid.UUID `json:"id"`
 	UserID     uuid.UUID `json:"user_id"`
-	DueID      string    `json:"due_id"`
+	ProviderID string    `json:"provider_id"` // Bridge wallet/address ID
 	Name       string    `json:"name"`
 	Schema     string    `json:"schema"`  // "evm" or "solana"
 	Address    string    `json:"address"` // Blockchain address
@@ -29,7 +29,7 @@ type Repository interface {
 	Create(ctx context.Context, r *Recipient) error
 	GetByID(ctx context.Context, id uuid.UUID) (*Recipient, error)
 	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*Recipient, error)
-	GetByDueID(ctx context.Context, dueID string) (*Recipient, error)
+	GetByProviderID(ctx context.Context, providerID string) (*Recipient, error)
 	GetDefault(ctx context.Context, userID uuid.UUID) (*Recipient, error)
 	SetDefault(ctx context.Context, userID, recipientID uuid.UUID) error
 	Delete(ctx context.Context, id uuid.UUID) error
@@ -46,71 +46,55 @@ type CreateRequest struct {
 
 // Service handles recipient management
 type Service struct {
-	repo      Repository
-	dueClient *due.Client
-	logger    *zap.Logger
+	repo   Repository
+	logger *zap.Logger
 }
 
 // NewService creates a new recipient service
-func NewService(repo Repository, dueClient *due.Client, logger *zap.Logger) *Service {
-	return &Service{repo: repo, dueClient: dueClient, logger: logger}
+func NewService(repo Repository, logger *zap.Logger) *Service {
+	return &Service{repo: repo, logger: logger}
 }
 
-// Create creates a new recipient in Due and stores locally
+// Create creates a new recipient and stores locally
 func (s *Service) Create(ctx context.Context, req *CreateRequest) (*Recipient, error) {
-	// Validate schema
 	if req.Schema != "evm" && req.Schema != "solana" {
 		return nil, fmt.Errorf("invalid schema: must be 'evm' or 'solana'")
 	}
 
-	// Validate address format
 	if err := s.validateAddress(req.Schema, req.Address); err != nil {
 		return nil, fmt.Errorf("invalid address: %w", err)
 	}
 
-	// Create recipient in Due API
-	dueReq := &due.CreateRecipientRequest{
-		Name: req.Name,
-		Details: due.RecipientDetails{
-			Schema:  req.Schema,
-			Address: req.Address,
-		},
-		IsExternal: true,
-	}
+	// Generate provider ID (address-based for Bridge)
+	providerID := fmt.Sprintf("%s:%s", req.Schema, req.Address)
 
-	dueResp, err := s.dueClient.CreateRecipient(ctx, dueReq)
-	if err != nil {
-		s.logger.Error("Failed to create recipient in Due", zap.Error(err))
-		return nil, fmt.Errorf("failed to create recipient: %w", err)
-	}
-
-	// Store locally
 	recipient := &Recipient{
 		ID:         uuid.New(),
 		UserID:     req.UserID,
-		DueID:      dueResp.ID,
+		ProviderID: providerID,
 		Name:       req.Name,
 		Schema:     req.Schema,
 		Address:    req.Address,
 		IsDefault:  req.IsDefault,
-		IsVerified: dueResp.IsActive,
+		IsVerified: true, // Address validation passed
 		CreatedAt:  time.Now(),
 		UpdatedAt:  time.Now(),
 	}
 
 	if err := s.repo.Create(ctx, recipient); err != nil {
-		s.logger.Error("Failed to store recipient", zap.Error(err))
-		return nil, fmt.Errorf("failed to store recipient: %w", err)
+		return nil, fmt.Errorf("failed to create recipient: %w", err)
 	}
 
-	// Set as default if requested
 	if req.IsDefault {
-		_ = s.repo.SetDefault(ctx, req.UserID, recipient.ID)
+		if err := s.repo.SetDefault(ctx, req.UserID, recipient.ID); err != nil {
+			s.logger.Warn("Failed to set default recipient", zap.Error(err))
+		}
 	}
 
 	s.logger.Info("Recipient created",
-		zap.String("id", recipient.ID.String()),
-		zap.String("due_id", dueResp.ID))
+		zap.String("recipient_id", recipient.ID.String()),
+		zap.String("user_id", req.UserID.String()),
+		zap.String("address", req.Address))
 
 	return recipient, nil
 }
@@ -140,38 +124,19 @@ func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
 	return s.repo.Delete(ctx, id)
 }
 
-// GetDueRecipientID returns the Due recipient ID for withdrawals
-func (s *Service) GetDueRecipientID(ctx context.Context, userID uuid.UUID, recipientID *uuid.UUID) (string, error) {
-	var recipient *Recipient
-	var err error
-
-	if recipientID != nil {
-		recipient, err = s.repo.GetByID(ctx, *recipientID)
-	} else {
-		recipient, err = s.repo.GetDefault(ctx, userID)
-	}
-
-	if err != nil {
-		return "", fmt.Errorf("recipient not found: %w", err)
-	}
-	if recipient == nil {
-		return "", fmt.Errorf("no recipient configured")
-	}
-
-	return recipient.DueID, nil
-}
-
 // validateAddress validates blockchain address format
 func (s *Service) validateAddress(schema, address string) error {
 	switch schema {
 	case "evm":
-		if len(address) != 42 || address[:2] != "0x" {
+		if len(address) != 42 || !strings.HasPrefix(address, "0x") {
 			return fmt.Errorf("invalid EVM address format")
 		}
 	case "solana":
 		if len(address) < 32 || len(address) > 44 {
 			return fmt.Errorf("invalid Solana address format")
 		}
+	default:
+		return fmt.Errorf("unsupported schema: %s", schema)
 	}
 	return nil
 }

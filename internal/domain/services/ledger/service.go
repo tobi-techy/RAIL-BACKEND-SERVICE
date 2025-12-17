@@ -484,3 +484,69 @@ func (s *Service) GetTotalUserFiatExposure(ctx context.Context) (decimal.Decimal
 
 	return total, nil
 }
+
+// RecordCardTransaction records a card transaction by debiting the spend balance
+func (s *Service) RecordCardTransaction(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, reference string) error {
+	// Get user's spend balance account (spending_balance for Smart Allocation Mode)
+	spendAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return fmt.Errorf("get spend account: %w", err)
+	}
+
+	// Check sufficient balance
+	if spendAccount.Balance.LessThan(amount) {
+		return fmt.Errorf("insufficient spend balance: have %s, need %s",
+			spendAccount.Balance.String(), amount.String())
+	}
+
+	// Get system card settlement account (or create one)
+	settlementAccount, err := s.GetSystemAccount(ctx, entities.AccountTypeSystemBufferFiat)
+	if err != nil {
+		return fmt.Errorf("get settlement account: %w", err)
+	}
+
+	// Create card transaction
+	idempotencyKey := fmt.Sprintf("card-tx-%s-%s-%d", userID.String(), reference, time.Now().UnixNano())
+	desc := fmt.Sprintf("Card transaction: %s", reference)
+	refType := "card_transaction"
+
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeCardPayment,
+		ReferenceType:   &refType,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &desc,
+		Entries: []entities.CreateEntryRequest{
+			{
+				AccountID:   spendAccount.ID,
+				EntryType:   entities.EntryTypeCredit, // Debit from user's perspective
+				Amount:      amount,
+				Currency:    "USD",
+				Description: &desc,
+			},
+			{
+				AccountID:   settlementAccount.ID,
+				EntryType:   entities.EntryTypeDebit, // Credit to settlement
+				Amount:      amount,
+				Currency:    "USD",
+				Description: &desc,
+			},
+		},
+	}
+
+	_, err = s.CreateTransaction(ctx, req)
+	if err != nil {
+		return fmt.Errorf("create card transaction: %w", err)
+	}
+
+	s.logger.Info("Card transaction recorded",
+		"user_id", userID,
+		"amount", amount.String(),
+		"reference", reference)
+
+	return nil
+}
+
+func stringPtr(s string) *string {
+	return &s
+}

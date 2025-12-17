@@ -128,17 +128,13 @@ alpaca:
   timeout: 30
   auth_method: "oauth2"  # oauth2 or legacy
 
-due:
-  api_key: "key_live_acct_EmIUtIyO9aEC1V3SL95trsDjuE65Mpzh"
-  account_id: ""
-  base_url: "https://api.due.network/v1"
-
 bridge:
   api_key: "${BRIDGE_API_KEY}"
   base_url: "https://api.bridge.xyz"
   environment: "sandbox"
   timeout: 30
   max_retries: 3
+  webhook_secret: "${BRIDGE_WEBHOOK_SECRET}"
   supported_chains:
     - "ethereum"
     - "polygon"

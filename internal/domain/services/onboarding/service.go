@@ -22,7 +22,7 @@ type Service struct {
 	kycProvider         KYCProvider
 	emailService        EmailService
 	auditService        AuditService
-	dueAdapter          DueAdapter
+	bridgeAdapter       BridgeAdapter
 	alpacaAdapter       AlpacaAdapter
 	allocationService   AllocationService
 	logger              *zap.Logger
@@ -79,8 +79,8 @@ type AuditService interface {
 	LogOnboardingEvent(ctx context.Context, userID uuid.UUID, action, entity string, before, after interface{}) error
 }
 
-type DueAdapter interface {
-	CreateAccount(ctx context.Context, req *entities.CreateAccountRequest) (*entities.CreateAccountResponse, error)
+type BridgeAdapter interface {
+	CreateCustomer(ctx context.Context, req *entities.CreateAccountRequest) (*entities.CreateAccountResponse, error)
 }
 
 type AlpacaAdapter interface {
@@ -101,7 +101,7 @@ func NewService(
 	kycProvider KYCProvider,
 	emailService EmailService,
 	auditService AuditService,
-	dueAdapter DueAdapter,
+	bridgeAdapter BridgeAdapter,
 	alpacaAdapter AlpacaAdapter,
 	allocationService AllocationService,
 	logger *zap.Logger,
@@ -122,7 +122,7 @@ func NewService(
 		kycProvider:         kycProvider,
 		emailService:        emailService,
 		auditService:        auditService,
-		dueAdapter:          dueAdapter,
+		bridgeAdapter:       bridgeAdapter,
 		alpacaAdapter:       alpacaAdapter,
 		allocationService:   allocationService,
 		logger:              logger,
@@ -140,7 +140,7 @@ func normalizeDefaultWalletChains(chains []entities.WalletChain, logger *zap.Log
 	if len(chains) == 0 {
 		logger.Warn("No default wallet chains configured; falling back to SOL-DEVNET")
 		return []entities.WalletChain{
-			entities.ChainSOLDevnet,
+			entities.WalletChainSOLDevnet,
 		}
 	}
 
@@ -162,7 +162,7 @@ func normalizeDefaultWalletChains(chains []entities.WalletChain, logger *zap.Log
 	if len(normalized) == 0 {
 		logger.Warn("Configured wallet chains invalid; falling back to SOL-DEVNET")
 		return []entities.WalletChain{
-			entities.ChainSOLDevnet,
+			entities.WalletChainSOLDevnet,
 		}
 	}
 
@@ -347,8 +347,8 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 	user.DateOfBirth = req.DateOfBirth
 	user.UpdatedAt = time.Now()
 
-	// Create Due account
-	dueReq := &entities.CreateAccountRequest{
+	// Create Bridge customer
+	bridgeReq := &entities.CreateAccountRequest{
 		Type:      "individual",
 		FirstName: req.FirstName,
 		LastName:  req.LastName,
@@ -356,10 +356,10 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 		Country:   req.Country,
 	}
 
-	dueResp, err := s.dueAdapter.CreateAccount(ctx, dueReq)
+	bridgeResp, err := s.bridgeAdapter.CreateCustomer(ctx, bridgeReq)
 	if err != nil {
-		s.logger.Error("Failed to create Due account", zap.Error(err))
-		return nil, fmt.Errorf("failed to create Due account: %w", err)
+		s.logger.Error("Failed to create Bridge customer", zap.Error(err))
+		return nil, fmt.Errorf("failed to create Bridge customer: %w", err)
 	}
 
 	// Create Alpaca account
@@ -400,8 +400,8 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 		return nil, fmt.Errorf("failed to create Alpaca account: %w", err)
 	}
 
-	// Update user with account IDs
-	user.DueAccountID = &dueResp.AccountID
+	// Update user with account IDs (Bridge customer ID stored as DueAccountID for backward compatibility)
+	user.DueAccountID = &bridgeResp.AccountID
 	user.AlpacaAccountID = &alpacaResp.ID
 	user.UpdatedAt = time.Now()
 
@@ -411,20 +411,20 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 
 	// Log audit event
 	if err := s.auditService.LogOnboardingEvent(ctx, req.UserID, "accounts_created", "user", nil, map[string]any{
-		"due_account_id":    dueResp.AccountID,
-		"alpaca_account_id": alpacaResp.ID,
+		"bridge_customer_id": bridgeResp.AccountID,
+		"alpaca_account_id":  alpacaResp.ID,
 	}); err != nil {
 		s.logger.Warn("Failed to log audit event", zap.Error(err))
 	}
 
 	s.logger.Info("Onboarding completed successfully",
 		zap.String("user_id", req.UserID.String()),
-		zap.String("due_account_id", dueResp.AccountID),
+		zap.String("bridge_customer_id", bridgeResp.AccountID),
 		zap.String("alpaca_account_id", alpacaResp.ID))
 
 	return &entities.OnboardingCompleteResponse{
 		UserID:          req.UserID,
-		DueAccountID:    dueResp.AccountID,
+		DueAccountID:    bridgeResp.AccountID, // Bridge customer ID
 		AlpacaAccountID: alpacaResp.ID,
 		Message:         "Accounts created successfully. Please create your passcode to continue.",
 		NextSteps:       []string{"create_passcode"},

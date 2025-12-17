@@ -120,6 +120,7 @@ type UserProfile struct {
 	KYCRejectionReason *string          `json:"kyc_rejection_reason" db:"kyc_rejection_reason"`
 	DueAccountID       *string          `json:"due_account_id" db:"due_account_id"`
 	AlpacaAccountID    *string          `json:"alpaca_account_id" db:"alpaca_account_id"`
+	BridgeCustomerID    *string          `json:"bridge_customer_id" db:"bridge_customer_id"`
 	IsActive           bool             `json:"is_active" db:"is_active"`
 	CreatedAt          time.Time        `json:"created_at" db:"created_at"`
 	UpdatedAt          time.Time        `json:"updated_at" db:"updated_at"`

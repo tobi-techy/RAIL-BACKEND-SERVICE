@@ -56,7 +56,7 @@ type Service struct {
 	managedWalletRepo    ManagedWalletRepository
 	virtualAccountRepo   VirtualAccountRepository
 	circleAPI            CircleAdapter
-	dueAPI               DueAdapter
+	bridgeVAService      *BridgeVirtualAccountService
 	alpacaAPI            AlpacaAdapter
 	ledgerIntegration    LedgerIntegration
 	limitsService        LimitsService
@@ -107,11 +107,6 @@ type VirtualAccountRepository interface {
 	ExistsByUserAndAlpacaAccount(ctx context.Context, userID uuid.UUID, alpacaAccountID string) (bool, error)
 }
 
-// DueAdapter interface for Due API integration
-type DueAdapter interface {
-	CreateVirtualAccount(ctx context.Context, userID uuid.UUID, alpacaAccountID string) (*entities.VirtualAccount, error)
-}
-
 // AlpacaAdapter interface for Alpaca API integration
 type AlpacaAdapter interface {
 	GetAccount(ctx context.Context, accountID string) (*entities.AlpacaAccountResponse, error)
@@ -128,22 +123,20 @@ func NewService(
 	managedWalletRepo ManagedWalletRepository,
 	virtualAccountRepo VirtualAccountRepository,
 	circleAPI CircleAdapter,
-	dueAPI DueAdapter,
 	alpacaAPI AlpacaAdapter,
 	ledgerIntegration LedgerIntegration,
 	logger *logger.Logger,
 ) *Service {
 	return &Service{
-		depositRepo:         depositRepo,
-		walletRepo:          walletRepo,
-		managedWalletRepo:   managedWalletRepo,
-		virtualAccountRepo:  virtualAccountRepo,
-		circleAPI:           circleAPI,
-		dueAPI:              dueAPI,
-		alpacaAPI:           alpacaAPI,
-		ledgerIntegration:   ledgerIntegration,
-		config:              DefaultFundingConfig(),
-		logger:              logger,
+		depositRepo:        depositRepo,
+		walletRepo:         walletRepo,
+		managedWalletRepo:  managedWalletRepo,
+		virtualAccountRepo: virtualAccountRepo,
+		circleAPI:          circleAPI,
+		alpacaAPI:          alpacaAPI,
+		ledgerIntegration:  ledgerIntegration,
+		config:             DefaultFundingConfig(),
+		logger:             logger,
 	}
 }
 
@@ -170,6 +163,11 @@ func (s *Service) SetAuditService(as AuditService) {
 // SetNotificationService sets the notification service (optional)
 func (s *Service) SetNotificationService(ns FundingNotificationService) {
 	s.notificationService = ns
+}
+
+// SetBridgeVAService sets the Bridge virtual account service (optional)
+func (s *Service) SetBridgeVAService(bva *BridgeVirtualAccountService) {
+	s.bridgeVAService = bva
 }
 
 // CreateDepositAddress generates or retrieves deposit address for a chain
@@ -438,6 +436,7 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 }
 
 // CreateVirtualAccount creates a virtual account linked to an Alpaca brokerage account
+// Now uses Bridge API instead of Due
 func (s *Service) CreateVirtualAccount(ctx context.Context, req *entities.CreateVirtualAccountRequest) (*entities.CreateVirtualAccountResponse, error) {
 	s.logger.Info("Creating virtual account", "user_id", req.UserID.String(), "alpaca_account_id", req.AlpacaAccountID)
 
@@ -462,20 +461,38 @@ func (s *Service) CreateVirtualAccount(ctx context.Context, req *entities.Create
 		return nil, fmt.Errorf("Alpaca account is not active: %s", alpacaAccount.Status)
 	}
 
-	// Create virtual account via Due API
-	virtualAccount, err := s.dueAPI.CreateVirtualAccount(ctx, req.UserID, req.AlpacaAccountID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create virtual account via Due API: %w", err)
+	// Bridge virtual account service must be configured
+	if s.bridgeVAService == nil {
+		return nil, fmt.Errorf("bridge virtual account service not configured")
 	}
 
-	// Store virtual account in database
+	// Get deposit instructions from Bridge (virtual account already created during onboarding)
+	accounts, err := s.bridgeVAService.GetVirtualAccounts(ctx, req.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get virtual accounts: %w", err)
+	}
+
+	var virtualAccount *entities.VirtualAccount
+	for _, acc := range accounts {
+		if acc.Currency == "USD" && acc.Status == entities.VirtualAccountStatusActive {
+			virtualAccount = acc
+			break
+		}
+	}
+
+	if virtualAccount == nil {
+		return nil, fmt.Errorf("no active USD virtual account found for user")
+	}
+
+	// Update with Alpaca account ID
+	virtualAccount.AlpacaAccountID = req.AlpacaAccountID
 	if err := s.virtualAccountRepo.Create(ctx, virtualAccount); err != nil {
 		return nil, fmt.Errorf("failed to store virtual account: %w", err)
 	}
 
-	s.logger.Info("Virtual account created successfully",
+	s.logger.Info("Virtual account linked successfully",
 		"virtual_account_id", virtualAccount.ID.String(),
-		"due_account_id", virtualAccount.DueAccountID,
+		"bridge_account_id", virtualAccount.BridgeAccountID,
 		"alpaca_account_id", virtualAccount.AlpacaAccountID)
 
 	return &entities.CreateVirtualAccountResponse{
