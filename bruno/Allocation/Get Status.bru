@@ -1,0 +1,24 @@
+meta {
+  name: Get Allocation Status
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/user/{{userId}}/allocation/status
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+docs {
+  # Get Allocation Status
+  
+  Returns current allocation mode status:
+  - Active/Paused state
+  - Current ratios (70/30)
+  - Last allocation timestamp
+}

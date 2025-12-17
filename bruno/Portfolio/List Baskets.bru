@@ -1,0 +1,27 @@
+meta {
+  name: List Investment Baskets
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/baskets
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+docs {
+  # List Curated Investment Baskets
+  
+  Per PRD: 5-10 expert-curated investment baskets.
+  
+  Examples:
+  - Tech Growth
+  - Sustainability
+  - ETFs
+  - Dividend Income
+}

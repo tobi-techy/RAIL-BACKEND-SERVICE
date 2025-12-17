@@ -1,0 +1,40 @@
+meta {
+  name: Register
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/auth/register
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "email": "test@example.com",
+    "password": "SecurePass123!",
+    "first_name": "Test",
+    "last_name": "User"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  apiVersion: v1
+}
+
+script:post-response {
+  if (res.status === 201 || res.status === 200) {
+    const body = res.getBody();
+    if (body.access_token) {
+      bru.setEnvVar("accessToken", body.access_token);
+    }
+    if (body.refresh_token) {
+      bru.setEnvVar("refreshToken", body.refresh_token);
+    }
+    if (body.user && body.user.id) {
+      bru.setEnvVar("userId", body.user.id);
+    }
+  }
+}

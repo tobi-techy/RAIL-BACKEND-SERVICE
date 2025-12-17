@@ -1,0 +1,21 @@
+meta {
+  name: List My Drafts
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/copy/drafts
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+docs {
+  # List My Drafts (Following)
+  
+  Returns all conductors the user is currently following.
+}

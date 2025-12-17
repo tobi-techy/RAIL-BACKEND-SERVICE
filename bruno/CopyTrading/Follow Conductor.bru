@@ -1,0 +1,36 @@
+meta {
+  name: Follow Conductor (Create Draft)
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/copy/drafts
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "conductor_id": "<conductor_uuid>",
+    "allocated_capital": "500.00",
+    "copy_ratio": "1.0",
+    "auto_adjust": false
+  }
+}
+
+docs {
+  # Follow Conductor (Create Draft)
+  
+  Per PRD Epic 8: Users can follow a Track with one tap.
+  
+  - allocated_capital: Amount to allocate from Active Rail
+  - copy_ratio: 0-1, percentage of signals to copy (default 1.0)
+  - auto_adjust: Auto-adjust allocation based on performance
+  
+  When Conductor updates their Track, follower positions update automatically.
+}

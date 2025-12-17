@@ -1,0 +1,22 @@
+meta {
+  name: Get Wallet Status
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/wallet/status
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+docs {
+  # Get Wallet Status
+  
+  Returns wallet provisioning status for all chains.
+  Wallets are automatically created during onboarding.
+}
