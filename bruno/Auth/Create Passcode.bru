@@ -1,0 +1,27 @@
+meta {
+  name: Create Passcode
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/security/passcode
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "passcode": "123456"
+  }
+}
+
+docs {
+  # Create Passcode
+  
+  Per PRD Epic 1: Passcode setup for secondary authentication on sensitive actions.
+}

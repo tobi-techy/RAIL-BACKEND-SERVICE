@@ -1,0 +1,23 @@
+meta {
+  name: Get Round-Up Settings
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/roundups/settings
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+docs {
+  # Get Round-Up Settings
+  
+  Per PRD Epic 6: Simple ON/OFF toggle for round-ups.
+  
+  Returns current round-up configuration.
+}

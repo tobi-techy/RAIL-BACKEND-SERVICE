@@ -1,0 +1,25 @@
+meta {
+  name: Unfollow (Unlink Draft)
+  type: http
+  seq: 7
+}
+
+delete {
+  url: {{baseUrl}}/api/{{apiVersion}}/copy/drafts/:draftId
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+params:path {
+  draftId: <draft_uuid>
+}
+
+docs {
+  # Unfollow Conductor
+  
+  Per PRD Epic 8: Users can unfollow anytime - positions liquidate back to Active Rail.
+}

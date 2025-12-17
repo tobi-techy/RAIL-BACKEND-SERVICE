@@ -1,0 +1,20 @@
+headers {
+  Content-Type: application/json
+  Accept: application/json
+  X-API-Version: {{apiVersion}}
+}
+
+auth {
+  mode: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+script:pre-request {
+  // Add CSRF token if available
+  if (bru.getEnvVar("csrfToken")) {
+    req.setHeader("X-CSRF-Token", bru.getEnvVar("csrfToken"));
+  }
+}

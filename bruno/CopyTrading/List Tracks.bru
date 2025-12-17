@@ -1,0 +1,28 @@
+meta {
+  name: List Tracks
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/copy/tracks
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+query {
+  page: 1
+  page_size: 20
+}
+
+docs {
+  # List Available Tracks
+  
+  Per PRD Epic 8: Users can discover and follow Tracks.
+  
+  Returns active tracks sorted by followers count.
+}

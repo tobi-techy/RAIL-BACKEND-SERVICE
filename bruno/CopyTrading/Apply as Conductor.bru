@@ -1,0 +1,35 @@
+meta {
+  name: Apply as Conductor
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/copy/conductors/apply
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "display_name": "Growth Investor",
+    "bio": "Experienced investor focused on tech growth stocks and ETFs.",
+    "investment_strategy": "I focus on long-term growth through diversified tech and innovation ETFs. My strategy emphasizes low-cost index funds with tactical allocation to high-growth sectors.",
+    "experience": "5+ years of personal investing with consistent market-beating returns.",
+    "social_links": {
+      "twitter": "https://twitter.com/growthinvestor"
+    }
+  }
+}
+
+docs {
+  # Apply as Conductor
+  
+  Per PRD Epic 8: Only existing Rail users can apply to be Conductors.
+  
+  Application goes through admin review before approval.
+}

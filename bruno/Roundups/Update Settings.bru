@@ -1,0 +1,34 @@
+meta {
+  name: Update Round-Up Settings
+  type: http
+  seq: 2
+}
+
+put {
+  url: {{baseUrl}}/api/{{apiVersion}}/roundups/settings
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "enabled": true,
+    "multiplier": 1
+  }
+}
+
+docs {
+  # Update Round-Up Settings
+  
+  Per PRD Epic 6: Enable/disable round-ups.
+  
+  - enabled: true/false (simple ON/OFF)
+  - multiplier: 1x, 2x, 3x (optional enhancement)
+  
+  Round-ups route spare change to Invest Engine.
+  Round-up amount = next dollar - transaction amount
+}

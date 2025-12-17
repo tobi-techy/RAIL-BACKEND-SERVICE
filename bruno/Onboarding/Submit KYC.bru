@@ -1,0 +1,36 @@
+meta {
+  name: Submit KYC
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/onboarding/kyc/submit
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "date_of_birth": "1995-06-15",
+    "address": {
+      "street": "123 Main St",
+      "city": "San Francisco",
+      "state": "CA",
+      "postal_code": "94102",
+      "country": "US"
+    },
+    "ssn_last_four": "1234"
+  }
+}
+
+docs {
+  # Submit KYC
+  
+  Per PRD: Lightweight KYC via partner integration.
+  KYC status gates funding features.
+}

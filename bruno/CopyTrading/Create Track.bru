@@ -1,0 +1,56 @@
+meta {
+  name: Create Track
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/copy/tracks
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "name": "Tech Growth Portfolio",
+    "description": "A diversified portfolio focused on technology sector growth through major tech ETFs and blue-chip stocks.",
+    "risk_level": "medium",
+    "allocations": [
+      {
+        "asset_ticker": "QQQ",
+        "asset_name": "Invesco QQQ Trust",
+        "target_weight": "40"
+      },
+      {
+        "asset_ticker": "VGT",
+        "asset_name": "Vanguard Information Technology ETF",
+        "target_weight": "30"
+      },
+      {
+        "asset_ticker": "AAPL",
+        "asset_name": "Apple Inc.",
+        "target_weight": "15"
+      },
+      {
+        "asset_ticker": "MSFT",
+        "asset_name": "Microsoft Corporation",
+        "target_weight": "15"
+      }
+    ]
+  }
+}
+
+docs {
+  # Create Track
+  
+  Per PRD Epic 8: Conductors can create Tracks with specific assets and weights.
+  
+  Requirements:
+  - Allocations must sum to 100%
+  - Risk level: low, medium, high
+  - Only approved Conductors can create tracks
+}

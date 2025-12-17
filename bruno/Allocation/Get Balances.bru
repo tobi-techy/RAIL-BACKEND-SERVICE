@@ -1,0 +1,25 @@
+meta {
+  name: Get Allocation Balances
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/user/{{userId}}/allocation/balances
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+docs {
+  # Get Allocation Balances
+  
+  Returns detailed allocation balances:
+  - Spending balance (70% allocation)
+  - Stash/Invest balance (30% allocation)
+  - Total balance
+  - Spending used in current period
+}

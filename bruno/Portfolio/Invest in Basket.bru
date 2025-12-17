@@ -1,0 +1,34 @@
+meta {
+  name: Invest in Basket
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/baskets/:basketId/invest
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+params:path {
+  basketId: <basket_uuid>
+}
+
+body:json {
+  {
+    "amount": "100.00"
+  }
+}
+
+docs {
+  # Invest in Basket
+  
+  Per PRD Epic 5: Auto-allocation with no user interaction required.
+  
+  Invests specified amount into the curated basket.
+  Trades executed via Alpaca integration.
+}
