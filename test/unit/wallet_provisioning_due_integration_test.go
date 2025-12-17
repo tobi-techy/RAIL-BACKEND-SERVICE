@@ -250,7 +250,7 @@ func TestWalletProvisioningWithDueLinking(t *testing.T) {
 	
 	mockWalletSetRepo.On("GetActive", mock.Anything).Return(testWalletSet, nil)
 	
-	mockWalletRepo.On("GetByUserAndChain", mock.Anything, userID, entities.ChainSOLDevnet).Return(nil, assert.AnError)
+	mockWalletRepo.On("GetByUserAndChain", mock.Anything, userID, entities.WalletChainSOLDevnet).Return(nil, assert.AnError)
 	mockWalletRepo.On("Create", mock.Anything, mock.AnythingOfType("*entities.ManagedWallet")).Return(nil)
 	
 	mockCircleClient.On("CreateWallet", mock.Anything, mock.AnythingOfType("entities.CircleWalletCreateRequest")).Return(circleWalletResp, nil)
@@ -356,7 +356,7 @@ func TestWalletProvisioningWithoutDueAccount(t *testing.T) {
 	
 	mockWalletSetRepo.On("GetActive", mock.Anything).Return(testWalletSet, nil)
 	
-	mockWalletRepo.On("GetByUserAndChain", mock.Anything, userID, entities.ChainSOLDevnet).Return(nil, assert.AnError)
+	mockWalletRepo.On("GetByUserAndChain", mock.Anything, userID, entities.WalletChainSOLDevnet).Return(nil, assert.AnError)
 	mockWalletRepo.On("Create", mock.Anything, mock.AnythingOfType("*entities.ManagedWallet")).Return(nil)
 	
 	mockCircleClient.On("CreateWallet", mock.Anything, mock.AnythingOfType("entities.CircleWalletCreateRequest")).Return(circleWalletResp, nil)
