@@ -379,6 +379,148 @@ func (s *PortfolioAnalyticsService) calcMaxDrawdown(snapshots []*entities.Portfo
 	return maxDD, maxDDDate
 }
 
+// GetPortfolioHistory returns historical portfolio data for charting
+func (s *PortfolioAnalyticsService) GetPortfolioHistory(ctx context.Context, userID uuid.UUID, period string) (*entities.PortfolioHistory, error) {
+	now := time.Now()
+	var startDate time.Time
+
+	switch period {
+	case "1D":
+		startDate = now.AddDate(0, 0, -1)
+	case "1W":
+		startDate = now.AddDate(0, 0, -7)
+	case "1M":
+		startDate = now.AddDate(0, -1, 0)
+	case "3M":
+		startDate = now.AddDate(0, -3, 0)
+	case "6M":
+		startDate = now.AddDate(0, -6, 0)
+	case "1Y":
+		startDate = now.AddDate(-1, 0, 0)
+	case "ALL":
+		startDate = time.Time{} // Get all available data
+	default:
+		startDate = now.AddDate(0, -1, 0) // Default to 1 month
+	}
+
+	snapshots, err := s.snapshotRepo.GetByUserIDAndDateRange(ctx, userID, startDate, now)
+	if err != nil {
+		return nil, err
+	}
+
+	history := &entities.PortfolioHistory{
+		Period:     period,
+		DataPoints: make([]entities.PortfolioHistoryPoint, 0, len(snapshots)),
+	}
+
+	if len(snapshots) == 0 {
+		return history, nil
+	}
+
+	for _, snap := range snapshots {
+		history.DataPoints = append(history.DataPoints, entities.PortfolioHistoryPoint{
+			Date:         snap.SnapshotDate,
+			Value:        snap.TotalValue,
+			DayChange:    snap.DayGainLoss,
+			DayChangePct: snap.DayGainLossPct,
+		})
+	}
+
+	history.StartValue = snapshots[0].TotalValue
+	history.EndValue = snapshots[len(snapshots)-1].TotalValue
+	history.Change = history.EndValue.Sub(history.StartValue)
+	if history.StartValue.GreaterThan(decimal.Zero) {
+		history.ChangePct = history.Change.Div(history.StartValue).Mul(decimal.NewFromInt(100))
+	}
+
+	return history, nil
+}
+
+// GetDashboard returns a comprehensive portfolio dashboard
+func (s *PortfolioAnalyticsService) GetDashboard(ctx context.Context, userID uuid.UUID) (*entities.PortfolioDashboard, error) {
+	dashboard := &entities.PortfolioDashboard{
+		GeneratedAt: time.Now(),
+	}
+
+	// Get account and positions for summary
+	account, err := s.accountRepo.GetByUserID(ctx, userID)
+	if err != nil {
+		s.logger.Warn("Failed to get account for dashboard", zap.Error(err))
+	}
+
+	positions, err := s.positionRepo.GetByUserID(ctx, userID)
+	if err != nil {
+		s.logger.Warn("Failed to get positions for dashboard", zap.Error(err))
+	}
+
+	// Build summary
+	var investedValue, costBasis, dayGainLoss decimal.Decimal
+	for _, pos := range positions {
+		investedValue = investedValue.Add(pos.MarketValue)
+		costBasis = costBasis.Add(pos.CostBasis)
+		dayGainLoss = dayGainLoss.Add(pos.MarketValue.Sub(pos.Qty.Mul(pos.LastdayPrice)))
+	}
+
+	var cashBalance decimal.Decimal
+	if account != nil {
+		cashBalance = account.Cash
+	}
+
+	totalValue := cashBalance.Add(investedValue)
+	totalGainLoss := investedValue.Sub(costBasis)
+	var totalGainLossPct, dayGainLossPct decimal.Decimal
+	if costBasis.GreaterThan(decimal.Zero) {
+		totalGainLossPct = totalGainLoss.Div(costBasis).Mul(decimal.NewFromInt(100))
+	}
+	if investedValue.Sub(dayGainLoss).GreaterThan(decimal.Zero) {
+		dayGainLossPct = dayGainLoss.Div(investedValue.Sub(dayGainLoss)).Mul(decimal.NewFromInt(100))
+	}
+
+	dashboard.Summary = entities.DashboardSummary{
+		TotalValue:       totalValue,
+		CashBalance:      cashBalance,
+		InvestedValue:    investedValue,
+		TotalGainLoss:    totalGainLoss,
+		TotalGainLossPct: totalGainLossPct,
+		DayGainLoss:      dayGainLoss,
+		DayGainLossPct:   dayGainLossPct,
+		PositionCount:    len(positions),
+		LastUpdated:      time.Now(),
+	}
+
+	// Get performance metrics
+	performance, err := s.GetPerformanceMetrics(ctx, userID)
+	if err != nil {
+		s.logger.Warn("Failed to get performance metrics for dashboard", zap.Error(err))
+	}
+	dashboard.Performance = performance
+
+	// Get risk metrics
+	risk, err := s.GetRiskMetrics(ctx, userID)
+	if err != nil {
+		s.logger.Warn("Failed to get risk metrics for dashboard", zap.Error(err))
+	}
+	dashboard.Risk = risk
+
+	// Get diversification analysis
+	diversification, err := s.GetDiversificationAnalysis(ctx, userID)
+	if err != nil {
+		s.logger.Warn("Failed to get diversification analysis for dashboard", zap.Error(err))
+	}
+	dashboard.Diversification = diversification
+
+	// Get recent history (last 30 days)
+	history, err := s.GetPortfolioHistory(ctx, userID, "1M")
+	if err != nil {
+		s.logger.Warn("Failed to get portfolio history for dashboard", zap.Error(err))
+	}
+	if history != nil {
+		dashboard.RecentHistory = history.DataPoints
+	}
+
+	return dashboard, nil
+}
+
 func mean(data []float64) float64 {
 	if len(data) == 0 {
 		return 0

@@ -146,3 +146,125 @@ func TestPortfolioAnalyticsService_GetPerformanceMetrics_NoData(t *testing.T) {
 	require.NotNil(t, metrics)
 	assert.True(t, metrics.TotalReturn.IsZero())
 }
+
+func TestPortfolioAnalyticsService_GetPortfolioHistory(t *testing.T) {
+	userID := uuid.New()
+	logger := zap.NewNop()
+
+	now := time.Now().Truncate(24 * time.Hour)
+	snapshotRepo := &mockSnapshotRepo{
+		snapshots: []*entities.PortfolioSnapshot{
+			{UserID: userID, SnapshotDate: now.AddDate(0, 0, -6), TotalValue: decimal.NewFromInt(10000), DayGainLoss: decimal.NewFromInt(100)},
+			{UserID: userID, SnapshotDate: now.AddDate(0, 0, -5), TotalValue: decimal.NewFromInt(10200), DayGainLoss: decimal.NewFromInt(200)},
+			{UserID: userID, SnapshotDate: now.AddDate(0, 0, -4), TotalValue: decimal.NewFromInt(10100), DayGainLoss: decimal.NewFromInt(-100)},
+			{UserID: userID, SnapshotDate: now.AddDate(0, 0, -3), TotalValue: decimal.NewFromInt(10400), DayGainLoss: decimal.NewFromInt(300)},
+			{UserID: userID, SnapshotDate: now.AddDate(0, 0, -2), TotalValue: decimal.NewFromInt(10500), DayGainLoss: decimal.NewFromInt(100)},
+		},
+	}
+	positionRepo := &mockPositionProvider{}
+	accountRepo := &mockAccountProvider{}
+
+	svc := analytics.NewPortfolioAnalyticsService(snapshotRepo, positionRepo, accountRepo, logger)
+
+	history, err := svc.GetPortfolioHistory(context.Background(), userID, "1W")
+	require.NoError(t, err)
+	require.NotNil(t, history)
+
+	assert.Equal(t, "1W", history.Period)
+	assert.Len(t, history.DataPoints, 5)
+	assert.Equal(t, decimal.NewFromInt(10000), history.StartValue)
+	assert.Equal(t, decimal.NewFromInt(10500), history.EndValue)
+	assert.Equal(t, decimal.NewFromInt(500), history.Change)
+}
+
+func TestPortfolioAnalyticsService_GetPortfolioHistory_EmptyData(t *testing.T) {
+	userID := uuid.New()
+	logger := zap.NewNop()
+
+	snapshotRepo := &mockSnapshotRepo{}
+	positionRepo := &mockPositionProvider{}
+	accountRepo := &mockAccountProvider{}
+
+	svc := analytics.NewPortfolioAnalyticsService(snapshotRepo, positionRepo, accountRepo, logger)
+
+	history, err := svc.GetPortfolioHistory(context.Background(), userID, "1M")
+	require.NoError(t, err)
+	require.NotNil(t, history)
+
+	assert.Equal(t, "1M", history.Period)
+	assert.Empty(t, history.DataPoints)
+}
+
+func TestPortfolioAnalyticsService_GetDashboard(t *testing.T) {
+	userID := uuid.New()
+	logger := zap.NewNop()
+
+	now := time.Now().Truncate(24 * time.Hour)
+	snapshotRepo := &mockSnapshotRepo{
+		snapshots: []*entities.PortfolioSnapshot{
+			{UserID: userID, SnapshotDate: now.AddDate(0, 0, -1), TotalValue: decimal.NewFromInt(10000)},
+			{UserID: userID, SnapshotDate: now, TotalValue: decimal.NewFromInt(10500)},
+		},
+	}
+	positionRepo := &mockPositionProvider{
+		positions: []*entities.InvestmentPosition{
+			{UserID: userID, Symbol: "AAPL", MarketValue: decimal.NewFromInt(5000), CostBasis: decimal.NewFromInt(4500), LastdayPrice: decimal.NewFromInt(95), Qty: decimal.NewFromInt(50)},
+			{UserID: userID, Symbol: "GOOGL", MarketValue: decimal.NewFromInt(5000), CostBasis: decimal.NewFromInt(4800), LastdayPrice: decimal.NewFromInt(95), Qty: decimal.NewFromInt(50)},
+		},
+	}
+	accountRepo := &mockAccountProvider{
+		account: &entities.AlpacaAccount{UserID: userID, Cash: decimal.NewFromInt(500)},
+	}
+
+	svc := analytics.NewPortfolioAnalyticsService(snapshotRepo, positionRepo, accountRepo, logger)
+
+	dashboard, err := svc.GetDashboard(context.Background(), userID)
+	require.NoError(t, err)
+	require.NotNil(t, dashboard)
+
+	// Check summary
+	assert.Equal(t, decimal.NewFromInt(10500), dashboard.Summary.TotalValue)
+	assert.Equal(t, decimal.NewFromInt(500), dashboard.Summary.CashBalance)
+	assert.Equal(t, decimal.NewFromInt(10000), dashboard.Summary.InvestedValue)
+	assert.Equal(t, 2, dashboard.Summary.PositionCount)
+
+	// Check that other sections are populated
+	assert.NotNil(t, dashboard.Performance)
+	assert.NotNil(t, dashboard.Risk)
+	assert.NotNil(t, dashboard.Diversification)
+	assert.NotEmpty(t, dashboard.GeneratedAt)
+}
+
+func TestPortfolioAnalyticsService_GetRiskMetrics(t *testing.T) {
+	userID := uuid.New()
+	logger := zap.NewNop()
+
+	now := time.Now().Truncate(24 * time.Hour)
+	// Create snapshots with varying values to generate volatility
+	snapshots := make([]*entities.PortfolioSnapshot, 30)
+	baseValue := 10000.0
+	for i := 0; i < 30; i++ {
+		// Simulate some volatility
+		value := baseValue + float64(i*50) + float64((i%3-1)*100)
+		snapshots[i] = &entities.PortfolioSnapshot{
+			UserID:       userID,
+			SnapshotDate: now.AddDate(0, 0, -30+i),
+			TotalValue:   decimal.NewFromFloat(value),
+		}
+	}
+
+	snapshotRepo := &mockSnapshotRepo{snapshots: snapshots}
+	positionRepo := &mockPositionProvider{}
+	accountRepo := &mockAccountProvider{}
+
+	svc := analytics.NewPortfolioAnalyticsService(snapshotRepo, positionRepo, accountRepo, logger)
+
+	metrics, err := svc.GetRiskMetrics(context.Background(), userID)
+	require.NoError(t, err)
+	require.NotNil(t, metrics)
+
+	// Should have calculated volatility
+	assert.True(t, metrics.Volatility.GreaterThan(decimal.Zero))
+	// Should have a risk level
+	assert.NotEmpty(t, metrics.RiskLevel)
+}
