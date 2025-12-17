@@ -368,3 +368,232 @@ func (r *CopyTradingRepository) GetExecutionLogsByDraft(ctx context.Context, dra
 	}
 	return logs, nil
 }
+
+// === Conductor Application Operations ===
+
+// CreateApplication creates a new conductor application
+func (r *CopyTradingRepository) CreateApplication(ctx context.Context, app *entities.ConductorApplication) error {
+	query := `
+		INSERT INTO conductor_applications (id, user_id, display_name, bio, investment_strategy,
+		                                    experience, social_links, status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	`
+	_, err := r.db.ExecContext(ctx, query,
+		app.ID, app.UserID, app.DisplayName, app.Bio, app.InvestmentStrategy,
+		app.Experience, app.SocialLinks, app.Status, app.CreatedAt, app.UpdatedAt)
+	return err
+}
+
+// GetApplicationByID returns an application by ID
+func (r *CopyTradingRepository) GetApplicationByID(ctx context.Context, id uuid.UUID) (*entities.ConductorApplication, error) {
+	query := `
+		SELECT id, user_id, display_name, bio, investment_strategy, experience, social_links,
+		       status, reviewed_by, reviewed_at, rejection_reason, created_at, updated_at
+		FROM conductor_applications WHERE id = $1
+	`
+	var app entities.ConductorApplication
+	if err := r.db.GetContext(ctx, &app, query, id); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get application: %w", err)
+	}
+	return &app, nil
+}
+
+// GetApplicationByUserID returns an application by user ID
+func (r *CopyTradingRepository) GetApplicationByUserID(ctx context.Context, userID uuid.UUID) (*entities.ConductorApplication, error) {
+	query := `
+		SELECT id, user_id, display_name, bio, investment_strategy, experience, social_links,
+		       status, reviewed_by, reviewed_at, rejection_reason, created_at, updated_at
+		FROM conductor_applications WHERE user_id = $1
+		ORDER BY created_at DESC LIMIT 1
+	`
+	var app entities.ConductorApplication
+	if err := r.db.GetContext(ctx, &app, query, userID); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get application: %w", err)
+	}
+	return &app, nil
+}
+
+// GetPendingApplications returns pending applications with pagination
+func (r *CopyTradingRepository) GetPendingApplications(ctx context.Context, limit, offset int) ([]*entities.ConductorApplication, int, error) {
+	query := `
+		SELECT id, user_id, display_name, bio, investment_strategy, experience, social_links,
+		       status, reviewed_by, reviewed_at, rejection_reason, created_at, updated_at
+		FROM conductor_applications WHERE status = 'pending'
+		ORDER BY created_at ASC
+		LIMIT $1 OFFSET $2
+	`
+	var apps []*entities.ConductorApplication
+	if err := r.db.SelectContext(ctx, &apps, query, limit, offset); err != nil {
+		return nil, 0, fmt.Errorf("failed to get applications: %w", err)
+	}
+
+	var total int
+	countQuery := `SELECT COUNT(*) FROM conductor_applications WHERE status = 'pending'`
+	if err := r.db.GetContext(ctx, &total, countQuery); err != nil {
+		return nil, 0, fmt.Errorf("failed to count applications: %w", err)
+	}
+
+	return apps, total, nil
+}
+
+// UpdateApplicationStatus updates the status of an application
+func (r *CopyTradingRepository) UpdateApplicationStatus(ctx context.Context, id uuid.UUID, status entities.ConductorApplicationStatus, reviewerID *uuid.UUID, reason string) error {
+	now := time.Now().UTC()
+	query := `
+		UPDATE conductor_applications
+		SET status = $1, reviewed_by = $2, reviewed_at = $3, rejection_reason = $4, updated_at = $3
+		WHERE id = $5
+	`
+	_, err := r.db.ExecContext(ctx, query, status, reviewerID, now, reason, id)
+	return err
+}
+
+// CreateConductor creates a new conductor
+func (r *CopyTradingRepository) CreateConductor(ctx context.Context, conductor *entities.Conductor) error {
+	query := `
+		INSERT INTO conductors (id, user_id, display_name, bio, avatar_url, status, fee_rate,
+		                        source_aum, total_return, win_rate, max_drawdown, sharpe_ratio,
+		                        total_trades, followers_count, min_draft_amount, is_verified,
+		                        verified_at, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+	`
+	_, err := r.db.ExecContext(ctx, query,
+		conductor.ID, conductor.UserID, conductor.DisplayName, conductor.Bio, conductor.AvatarURL,
+		conductor.Status, conductor.FeeRate, conductor.SourceAUM, conductor.TotalReturn,
+		conductor.WinRate, conductor.MaxDrawdown, conductor.SharpeRatio, conductor.TotalTrades,
+		conductor.FollowersCount, conductor.MinDraftAmount, conductor.IsVerified,
+		conductor.VerifiedAt, conductor.CreatedAt, conductor.UpdatedAt)
+	return err
+}
+
+// === Track Operations ===
+
+// CreateTrack creates a new track
+func (r *CopyTradingRepository) CreateTrack(ctx context.Context, track *entities.Track) error {
+	query := `
+		INSERT INTO tracks (id, conductor_id, name, description, risk_level, is_active,
+		                    followers_count, total_return, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	`
+	_, err := r.db.ExecContext(ctx, query,
+		track.ID, track.ConductorID, track.Name, track.Description, track.RiskLevel,
+		track.IsActive, track.FollowersCount, track.TotalReturn, track.CreatedAt, track.UpdatedAt)
+	return err
+}
+
+// GetTrackByID returns a track by ID
+func (r *CopyTradingRepository) GetTrackByID(ctx context.Context, id uuid.UUID) (*entities.Track, error) {
+	query := `
+		SELECT id, conductor_id, name, description, risk_level, is_active,
+		       followers_count, total_return, created_at, updated_at
+		FROM tracks WHERE id = $1
+	`
+	var track entities.Track
+	if err := r.db.GetContext(ctx, &track, query, id); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get track: %w", err)
+	}
+	return &track, nil
+}
+
+// GetTracksByConductorID returns all tracks for a conductor
+func (r *CopyTradingRepository) GetTracksByConductorID(ctx context.Context, conductorID uuid.UUID) ([]*entities.Track, error) {
+	query := `
+		SELECT id, conductor_id, name, description, risk_level, is_active,
+		       followers_count, total_return, created_at, updated_at
+		FROM tracks WHERE conductor_id = $1
+		ORDER BY created_at DESC
+	`
+	var tracks []*entities.Track
+	if err := r.db.SelectContext(ctx, &tracks, query, conductorID); err != nil {
+		return nil, fmt.Errorf("failed to get tracks: %w", err)
+	}
+	return tracks, nil
+}
+
+// GetActiveTracks returns active tracks with pagination
+func (r *CopyTradingRepository) GetActiveTracks(ctx context.Context, limit, offset int) ([]*entities.Track, int, error) {
+	query := `
+		SELECT id, conductor_id, name, description, risk_level, is_active,
+		       followers_count, total_return, created_at, updated_at
+		FROM tracks WHERE is_active = TRUE
+		ORDER BY followers_count DESC
+		LIMIT $1 OFFSET $2
+	`
+	var tracks []*entities.Track
+	if err := r.db.SelectContext(ctx, &tracks, query, limit, offset); err != nil {
+		return nil, 0, fmt.Errorf("failed to get tracks: %w", err)
+	}
+
+	var total int
+	countQuery := `SELECT COUNT(*) FROM tracks WHERE is_active = TRUE`
+	if err := r.db.GetContext(ctx, &total, countQuery); err != nil {
+		return nil, 0, fmt.Errorf("failed to count tracks: %w", err)
+	}
+
+	return tracks, total, nil
+}
+
+// UpdateTrack updates a track
+func (r *CopyTradingRepository) UpdateTrack(ctx context.Context, track *entities.Track) error {
+	query := `
+		UPDATE tracks SET name = $1, description = $2, risk_level = $3, is_active = $4, updated_at = $5
+		WHERE id = $6
+	`
+	_, err := r.db.ExecContext(ctx, query, track.Name, track.Description, track.RiskLevel, track.IsActive, track.UpdatedAt, track.ID)
+	return err
+}
+
+// DeleteTrack deletes a track (soft delete via is_active)
+func (r *CopyTradingRepository) DeleteTrack(ctx context.Context, id uuid.UUID) error {
+	query := `UPDATE tracks SET is_active = FALSE, updated_at = NOW() WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, id)
+	return err
+}
+
+// === Track Allocation Operations ===
+
+// CreateTrackAllocations creates allocations for a track
+func (r *CopyTradingRepository) CreateTrackAllocations(ctx context.Context, allocations []entities.TrackAllocation) error {
+	query := `
+		INSERT INTO track_allocations (id, track_id, asset_ticker, asset_name, target_weight, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`
+	for _, alloc := range allocations {
+		_, err := r.db.ExecContext(ctx, query,
+			alloc.ID, alloc.TrackID, alloc.AssetTicker, alloc.AssetName, alloc.TargetWeight, alloc.CreatedAt, alloc.UpdatedAt)
+		if err != nil {
+			return fmt.Errorf("failed to create allocation: %w", err)
+		}
+	}
+	return nil
+}
+
+// GetTrackAllocations returns allocations for a track
+func (r *CopyTradingRepository) GetTrackAllocations(ctx context.Context, trackID uuid.UUID) ([]entities.TrackAllocation, error) {
+	query := `
+		SELECT id, track_id, asset_ticker, asset_name, target_weight, created_at, updated_at
+		FROM track_allocations WHERE track_id = $1
+		ORDER BY target_weight DESC
+	`
+	var allocations []entities.TrackAllocation
+	if err := r.db.SelectContext(ctx, &allocations, query, trackID); err != nil {
+		return nil, fmt.Errorf("failed to get allocations: %w", err)
+	}
+	return allocations, nil
+}
+
+// DeleteTrackAllocations deletes all allocations for a track
+func (r *CopyTradingRepository) DeleteTrackAllocations(ctx context.Context, trackID uuid.UUID) error {
+	query := `DELETE FROM track_allocations WHERE track_id = $1`
+	_, err := r.db.ExecContext(ctx, query, trackID)
+	return err
+}

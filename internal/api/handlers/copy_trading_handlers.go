@@ -346,3 +346,316 @@ func (h *CopyTradingHandlers) GetDraftHistory(c *gin.Context) {
 		"count":      len(logs),
 	})
 }
+
+// === Conductor Application Handlers ===
+
+// ApplyAsConductor submits an application to become a conductor
+// POST /api/v1/copy/conductors/apply
+func (h *CopyTradingHandlers) ApplyAsConductor(c *gin.Context) {
+	userID, err := getUserID(c)
+	if err != nil {
+		respondUnauthorized(c, "User not authenticated")
+		return
+	}
+
+	var req entities.CreateConductorApplicationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondBadRequest(c, "Invalid request body: "+err.Error())
+		return
+	}
+
+	app, err := h.service.ApplyAsConductor(c.Request.Context(), userID, &req)
+	if err != nil {
+		h.logger.Error("Failed to submit conductor application", "error", err, "user_id", userID.String())
+		switch err.Error() {
+		case "user must have an existing Rail account":
+			respondError(c, http.StatusBadRequest, "NO_ACCOUNT", "You must have an existing Rail account to apply", nil)
+		case "user is already a conductor":
+			respondError(c, http.StatusConflict, "ALREADY_CONDUCTOR", "You are already a conductor", nil)
+		case "application already pending review":
+			respondError(c, http.StatusConflict, "APPLICATION_PENDING", "Your application is already pending review", nil)
+		default:
+			respondInternalError(c, "Failed to submit application")
+		}
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"message":     "Application submitted successfully",
+		"application": app,
+	})
+}
+
+// GetMyApplication returns the current user's conductor application
+// GET /api/v1/copy/conductors/application
+func (h *CopyTradingHandlers) GetMyApplication(c *gin.Context) {
+	userID, err := getUserID(c)
+	if err != nil {
+		respondUnauthorized(c, "User not authenticated")
+		return
+	}
+
+	app, err := h.service.GetMyApplication(c.Request.Context(), userID)
+	if err != nil {
+		h.logger.Error("Failed to get application", "error", err)
+		respondInternalError(c, "Failed to get application")
+		return
+	}
+
+	if app == nil {
+		respondNotFound(c, "No application found")
+		return
+	}
+
+	c.JSON(http.StatusOK, app)
+}
+
+// ListPendingApplications returns pending conductor applications (admin only)
+// GET /api/v1/admin/copy/applications
+func (h *CopyTradingHandlers) ListPendingApplications(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+
+	apps, total, err := h.service.ListPendingApplications(c.Request.Context(), page, pageSize)
+	if err != nil {
+		h.logger.Error("Failed to list applications", "error", err)
+		respondInternalError(c, "Failed to list applications")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"applications": apps,
+		"total":        total,
+		"page":         page,
+		"page_size":    pageSize,
+	})
+}
+
+// ReviewApplication approves or rejects a conductor application (admin only)
+// POST /api/v1/admin/copy/applications/:id/review
+func (h *CopyTradingHandlers) ReviewApplication(c *gin.Context) {
+	reviewerID, err := getUserID(c)
+	if err != nil {
+		respondUnauthorized(c, "User not authenticated")
+		return
+	}
+
+	applicationID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		respondBadRequest(c, "Invalid application ID")
+		return
+	}
+
+	var req entities.ReviewConductorApplicationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondBadRequest(c, "Invalid request body")
+		return
+	}
+
+	if !req.Approved && req.RejectionReason == "" {
+		respondBadRequest(c, "Rejection reason is required when rejecting")
+		return
+	}
+
+	if err := h.service.ReviewApplication(c.Request.Context(), applicationID, reviewerID, &req); err != nil {
+		h.logger.Error("Failed to review application", "error", err)
+		if err.Error() == "application not found" {
+			respondNotFound(c, "Application not found")
+			return
+		}
+		respondError(c, http.StatusBadRequest, "REVIEW_FAILED", err.Error(), nil)
+		return
+	}
+
+	status := "approved"
+	if !req.Approved {
+		status = "rejected"
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Application " + status + " successfully",
+	})
+}
+
+// === Track Handlers ===
+
+// CreateTrack creates a new track for a conductor
+// POST /api/v1/copy/tracks
+func (h *CopyTradingHandlers) CreateTrack(c *gin.Context) {
+	userID, err := getUserID(c)
+	if err != nil {
+		respondUnauthorized(c, "User not authenticated")
+		return
+	}
+
+	var req entities.CreateTrackRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondBadRequest(c, "Invalid request body: "+err.Error())
+		return
+	}
+
+	track, err := h.service.CreateTrack(c.Request.Context(), userID, &req)
+	if err != nil {
+		h.logger.Error("Failed to create track", "error", err, "user_id", userID.String())
+		switch err.Error() {
+		case "user is not a conductor":
+			respondError(c, http.StatusForbidden, "NOT_CONDUCTOR", "You must be a conductor to create tracks", nil)
+		case "conductor account is not active":
+			respondError(c, http.StatusForbidden, "CONDUCTOR_INACTIVE", "Your conductor account is not active", nil)
+		default:
+			if len(err.Error()) > 10 && err.Error()[:10] == "allocations" {
+				respondBadRequest(c, err.Error())
+			} else {
+				respondInternalError(c, "Failed to create track")
+			}
+		}
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"message": "Track created successfully",
+		"track":   track,
+	})
+}
+
+// ListTracks returns available tracks
+// GET /api/v1/copy/tracks
+func (h *CopyTradingHandlers) ListTracks(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+
+	tracks, total, err := h.service.ListTracks(c.Request.Context(), page, pageSize)
+	if err != nil {
+		h.logger.Error("Failed to list tracks", "error", err)
+		respondInternalError(c, "Failed to list tracks")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"tracks":    tracks,
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+	})
+}
+
+// GetTrack returns a track with its allocations
+// GET /api/v1/copy/tracks/:id
+func (h *CopyTradingHandlers) GetTrack(c *gin.Context) {
+	trackID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		respondBadRequest(c, "Invalid track ID")
+		return
+	}
+
+	track, err := h.service.GetTrack(c.Request.Context(), trackID)
+	if err != nil {
+		if err.Error() == "track not found" {
+			respondNotFound(c, "Track not found")
+			return
+		}
+		h.logger.Error("Failed to get track", "error", err)
+		respondInternalError(c, "Failed to get track")
+		return
+	}
+
+	c.JSON(http.StatusOK, track)
+}
+
+// GetConductorTracks returns all tracks for a conductor
+// GET /api/v1/copy/conductors/:id/tracks
+func (h *CopyTradingHandlers) GetConductorTracks(c *gin.Context) {
+	conductorID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		respondBadRequest(c, "Invalid conductor ID")
+		return
+	}
+
+	tracks, err := h.service.GetConductorTracks(c.Request.Context(), conductorID)
+	if err != nil {
+		h.logger.Error("Failed to get conductor tracks", "error", err)
+		respondInternalError(c, "Failed to get tracks")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"tracks": tracks,
+		"count":  len(tracks),
+	})
+}
+
+// UpdateTrack updates a track's details
+// PUT /api/v1/copy/tracks/:id
+func (h *CopyTradingHandlers) UpdateTrack(c *gin.Context) {
+	userID, err := getUserID(c)
+	if err != nil {
+		respondUnauthorized(c, "User not authenticated")
+		return
+	}
+
+	trackID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		respondBadRequest(c, "Invalid track ID")
+		return
+	}
+
+	var req entities.UpdateTrackRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondBadRequest(c, "Invalid request body")
+		return
+	}
+
+	track, err := h.service.UpdateTrack(c.Request.Context(), userID, trackID, &req)
+	if err != nil {
+		h.logger.Error("Failed to update track", "error", err)
+		if err.Error() == "track not found" {
+			respondNotFound(c, "Track not found")
+			return
+		}
+		if err.Error() == "unauthorized to update this track" {
+			respondUnauthorized(c, "Not authorized to update this track")
+			return
+		}
+		respondError(c, http.StatusBadRequest, "UPDATE_FAILED", err.Error(), nil)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Track updated successfully",
+		"track":   track,
+	})
+}
+
+// DeleteTrack deactivates a track
+// DELETE /api/v1/copy/tracks/:id
+func (h *CopyTradingHandlers) DeleteTrack(c *gin.Context) {
+	userID, err := getUserID(c)
+	if err != nil {
+		respondUnauthorized(c, "User not authenticated")
+		return
+	}
+
+	trackID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		respondBadRequest(c, "Invalid track ID")
+		return
+	}
+
+	if err := h.service.DeleteTrack(c.Request.Context(), userID, trackID); err != nil {
+		h.logger.Error("Failed to delete track", "error", err)
+		if err.Error() == "track not found" {
+			respondNotFound(c, "Track not found")
+			return
+		}
+		if err.Error() == "unauthorized to delete this track" {
+			respondUnauthorized(c, "Not authorized to delete this track")
+			return
+		}
+		respondError(c, http.StatusBadRequest, "DELETE_FAILED", err.Error(), nil)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Track deleted successfully",
+	})
+}
