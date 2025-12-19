@@ -273,8 +273,8 @@ type ReconciliationConfig struct {
 
 // SocialAuthConfig contains OAuth provider configuration
 type SocialAuthConfig struct {
-	Google OAuthProviderConfig `mapstructure:"google"`
-	Apple  OAuthProviderConfig `mapstructure:"apple"`
+	Google OAuthProviderConfig      `mapstructure:"google"`
+	Apple  AppleOAuthProviderConfig `mapstructure:"apple"`
 }
 
 // OAuthProviderConfig contains OAuth provider credentials
@@ -282,6 +282,15 @@ type OAuthProviderConfig struct {
 	ClientID     string `mapstructure:"client_id"`
 	ClientSecret string `mapstructure:"client_secret"`
 	RedirectURI  string `mapstructure:"redirect_uri"`
+}
+
+// AppleOAuthProviderConfig contains Apple Sign-In specific configuration
+type AppleOAuthProviderConfig struct {
+	ClientID    string `mapstructure:"client_id"`    // Bundle ID or Services ID
+	TeamID      string `mapstructure:"team_id"`      // Apple Developer Team ID
+	KeyID       string `mapstructure:"key_id"`       // Key ID from Apple Developer Portal
+	PrivateKey  string `mapstructure:"private_key"`  // P8 private key content (base64 encoded)
+	RedirectURI string `mapstructure:"redirect_uri"`
 }
 
 // WebAuthnConfig contains WebAuthn/Passkey configuration
