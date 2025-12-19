@@ -384,6 +384,8 @@ type Container struct {
 	CopyTradingRepo    *repositories.CopyTradingRepository
 	CopyTradingService *copytrading.Service
 
+	// Bridge API Client
+	BridgeClient *bridge.Client
 	// Card Services
 	CardRepo    *repositories.CardRepository
 	CardService *card.Service
