@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
@@ -187,5 +188,82 @@ func (r *OrderRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status
 		zap.String("order_id", id.String()),
 		zap.String("status", string(status)),
 	)
+	return nil
+}
+
+// GetStuckOrders returns orders stuck in non-terminal states beyond the SLA threshold
+// Used for status enquiry reconciliation when webhooks fail
+func (r *OrderRepository) GetStuckOrders(ctx context.Context, slaThreshold time.Duration) ([]*entities.Order, error) {
+	cutoff := time.Now().Add(-slaThreshold)
+	query := `
+		SELECT id, user_id, basket_id, side, amount, status, brokerage_ref, created_at, updated_at
+		FROM orders
+		WHERE status NOT IN ($1, $2, $3, $4)
+		  AND updated_at < $5
+		ORDER BY updated_at ASC
+		LIMIT 100
+	`
+
+	rows, err := r.db.QueryContext(ctx, query,
+		entities.OrderStatusFilled,
+		entities.OrderStatusFailed,
+		entities.OrderStatusCanceled,
+		entities.OrderStatusRejected,
+		cutoff,
+	)
+	if err != nil {
+		r.logger.Error("Failed to query stuck orders", zap.Error(err))
+		return nil, fmt.Errorf("failed to get stuck orders: %w", err)
+	}
+	defer rows.Close()
+
+	var orders []*entities.Order
+	for rows.Next() {
+		order := &entities.Order{}
+		if err := rows.Scan(
+			&order.ID,
+			&order.UserID,
+			&order.BasketID,
+			&order.Side,
+			&order.Amount,
+			&order.Status,
+			&order.BrokerageRef,
+			&order.CreatedAt,
+			&order.UpdatedAt,
+		); err != nil {
+			r.logger.Error("Failed to scan stuck order row", zap.Error(err))
+			return nil, fmt.Errorf("failed to scan order: %w", err)
+		}
+		orders = append(orders, order)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating stuck orders: %w", err)
+	}
+
+	r.logger.Info("Found stuck orders", zap.Int("count", len(orders)))
+	return orders, nil
+}
+
+// MarkTimeout marks an order as timed out (no response within SLA)
+func (r *OrderRepository) MarkTimeout(ctx context.Context, id uuid.UUID) error {
+	query := `
+		UPDATE orders
+		SET status = $1, updated_at = NOW()
+		WHERE id = $2
+	`
+
+	result, err := r.db.ExecContext(ctx, query, entities.OrderStatusTimeout, id)
+	if err != nil {
+		r.logger.Error("Failed to mark order timeout", zap.Error(err), zap.String("order_id", id.String()))
+		return fmt.Errorf("failed to mark order timeout: %w", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return fmt.Errorf("order not found: %s", id.String())
+	}
+
+	r.logger.Info("Order marked as timeout", zap.String("order_id", id.String()))
 	return nil
 }

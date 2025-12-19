@@ -70,6 +70,22 @@ func (s *Service) LogWithdrawal(ctx context.Context, userID uuid.UUID, withdrawa
 	})
 }
 
+// LogStatusTransition logs a status transition for any entity (deposit, withdrawal, order, etc.)
+func (s *Service) LogStatusTransition(ctx context.Context, userID uuid.UUID, entityID uuid.UUID, entityType, fromStatus, toStatus, triggeredBy string) error {
+	s.logger.Info("Status transition",
+		zap.String("entity_id", entityID.String()),
+		zap.String("entity_type", entityType),
+		zap.String("from_status", fromStatus),
+		zap.String("to_status", toStatus),
+		zap.String("triggered_by", triggeredBy),
+	)
+	return s.Log(ctx, userID, entities.AuditActionStatusTransition, entityType, &entityID, map[string]interface{}{
+		"from_status":  fromStatus,
+		"to_status":    toStatus,
+		"triggered_by": triggeredBy,
+	})
+}
+
 // LogTrade logs a trade operation
 func (s *Service) LogTrade(ctx context.Context, userID uuid.UUID, orderID uuid.UUID, symbol string, side string, amount string) error {
 	return s.Log(ctx, userID, entities.AuditActionTrade, "order", &orderID, map[string]interface{}{

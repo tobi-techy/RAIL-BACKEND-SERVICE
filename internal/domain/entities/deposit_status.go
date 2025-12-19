@@ -6,21 +6,25 @@ import "fmt"
 type DepositStatus string
 
 const (
-	DepositStatusPending          DepositStatus = "pending"
-	DepositStatusConfirmed        DepositStatus = "confirmed"
-	DepositStatusFailed           DepositStatus = "failed"
-	DepositStatusExpired          DepositStatus = "expired"
+	DepositStatusInitiated        DepositStatus = "initiated"         // Request created internally
+	DepositStatusPending          DepositStatus = "pending"           // Sent to processor
+	DepositStatusConfirmed        DepositStatus = "confirmed"         // Processor confirmed
+	DepositStatusFailed           DepositStatus = "failed"            // Terminal: failed
+	DepositStatusExpired          DepositStatus = "expired"           // Terminal: timed out before confirmation
+	DepositStatusTimeout          DepositStatus = "timeout"           // No response within SLA (can still resolve)
 	DepositStatusOffRampInitiated DepositStatus = "off_ramp_initiated"
 	DepositStatusOffRampCompleted DepositStatus = "off_ramp_completed"
-	DepositStatusBrokerFunded     DepositStatus = "broker_funded"
+	DepositStatusBrokerFunded     DepositStatus = "broker_funded"     // Terminal: success
 )
 
 // ValidDepositStatuses contains all valid deposit statuses
 var ValidDepositStatuses = map[DepositStatus]bool{
+	DepositStatusInitiated:        true,
 	DepositStatusPending:          true,
 	DepositStatusConfirmed:        true,
 	DepositStatusFailed:           true,
 	DepositStatusExpired:          true,
+	DepositStatusTimeout:          true,
 	DepositStatusOffRampInitiated: true,
 	DepositStatusOffRampCompleted: true,
 	DepositStatusBrokerFunded:     true,
@@ -28,7 +32,9 @@ var ValidDepositStatuses = map[DepositStatus]bool{
 
 // ValidTransitions defines allowed status transitions
 var ValidDepositTransitions = map[DepositStatus][]DepositStatus{
-	DepositStatusPending:          {DepositStatusConfirmed, DepositStatusFailed, DepositStatusExpired},
+	DepositStatusInitiated:        {DepositStatusPending, DepositStatusFailed},
+	DepositStatusPending:          {DepositStatusConfirmed, DepositStatusFailed, DepositStatusExpired, DepositStatusTimeout},
+	DepositStatusTimeout:          {DepositStatusConfirmed, DepositStatusFailed, DepositStatusExpired}, // Can still resolve
 	DepositStatusConfirmed:        {DepositStatusOffRampInitiated, DepositStatusFailed},
 	DepositStatusOffRampInitiated: {DepositStatusOffRampCompleted, DepositStatusFailed},
 	DepositStatusOffRampCompleted: {DepositStatusBrokerFunded, DepositStatusFailed},
@@ -63,7 +69,12 @@ func (s DepositStatus) IsTerminal() bool {
 
 // IsPending returns true if deposit is still pending
 func (s DepositStatus) IsPending() bool {
-	return s == DepositStatusPending
+	return s == DepositStatusPending || s == DepositStatusInitiated || s == DepositStatusTimeout
+}
+
+// IsAwaitingResponse returns true if waiting for external response
+func (s DepositStatus) IsAwaitingResponse() bool {
+	return s == DepositStatusPending || s == DepositStatusTimeout
 }
 
 // ValidateTransition validates and returns error if transition is invalid
@@ -79,8 +90,13 @@ func (s DepositStatus) ValidateTransition(newStatus DepositStatus) error {
 
 // Deposit configuration constants
 // Note: For deposit/withdrawal limits based on KYC tier, see limits_entities.go
+// All monetary values in minor units (cents): 100 = $1.00
 const (
-	MinDepositAmountUSDC = 1.0   // Minimum deposit amount in USDC (matches MinDepositAmount in limits_entities.go)
-	DepositTimeoutHours  = 24    // Hours before pending deposit expires
-	MaxDepositsPerDay    = 1000  // Maximum deposit addresses per user per day
+	MinDepositAmountMinorUnits int64 = 100  // Minimum deposit: $1.00 in cents
+	DepositTimeoutHours        int   = 24   // Hours before pending deposit expires
+	MaxDepositsPerDay          int   = 1000 // Maximum deposit addresses per user per day
 )
+
+// MinDepositAmountUSDC is deprecated, use MinDepositAmountMinorUnits
+// Kept for backward compatibility
+const MinDepositAmountUSDC = 1.0

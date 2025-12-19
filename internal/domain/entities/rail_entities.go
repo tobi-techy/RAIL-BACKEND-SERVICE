@@ -1,6 +1,7 @@
 package entities
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -43,13 +44,82 @@ const (
 type OrderStatus string
 
 const (
-	OrderStatusAccepted        OrderStatus = "accepted"
-	OrderStatusPending         OrderStatus = "pending"
-	OrderStatusPartiallyFilled OrderStatus = "partially_filled"
-	OrderStatusFilled          OrderStatus = "filled"
-	OrderStatusFailed          OrderStatus = "failed"
-	OrderStatusCanceled        OrderStatus = "canceled"
+	OrderStatusInitiated       OrderStatus = "initiated"        // Request created internally
+	OrderStatusAccepted        OrderStatus = "accepted"         // Accepted by system
+	OrderStatusPending         OrderStatus = "pending"          // Sent to brokerage
+	OrderStatusPartiallyFilled OrderStatus = "partially_filled" // Partially executed
+	OrderStatusFilled          OrderStatus = "filled"           // Terminal: fully executed
+	OrderStatusFailed          OrderStatus = "failed"           // Terminal: failed
+	OrderStatusCanceled        OrderStatus = "canceled"         // Terminal: canceled
+	OrderStatusTimeout         OrderStatus = "timeout"          // No response within SLA
+	OrderStatusRejected        OrderStatus = "rejected"         // Terminal: rejected by brokerage
 )
+
+// ValidOrderStatuses contains all valid order statuses
+var ValidOrderStatuses = map[OrderStatus]bool{
+	OrderStatusInitiated:       true,
+	OrderStatusAccepted:        true,
+	OrderStatusPending:         true,
+	OrderStatusPartiallyFilled: true,
+	OrderStatusFilled:          true,
+	OrderStatusFailed:          true,
+	OrderStatusCanceled:        true,
+	OrderStatusTimeout:         true,
+	OrderStatusRejected:        true,
+}
+
+// ValidOrderTransitions defines allowed status transitions
+var ValidOrderTransitions = map[OrderStatus][]OrderStatus{
+	OrderStatusInitiated:       {OrderStatusAccepted, OrderStatusFailed, OrderStatusRejected},
+	OrderStatusAccepted:        {OrderStatusPending, OrderStatusFailed, OrderStatusCanceled},
+	OrderStatusPending:         {OrderStatusPartiallyFilled, OrderStatusFilled, OrderStatusFailed, OrderStatusCanceled, OrderStatusTimeout, OrderStatusRejected},
+	OrderStatusPartiallyFilled: {OrderStatusFilled, OrderStatusFailed, OrderStatusCanceled, OrderStatusTimeout},
+	OrderStatusTimeout:         {OrderStatusFilled, OrderStatusFailed, OrderStatusCanceled}, // Can still resolve
+	OrderStatusFilled:          {},                                                          // Terminal
+	OrderStatusFailed:          {},                                                          // Terminal
+	OrderStatusCanceled:        {},                                                          // Terminal
+	OrderStatusRejected:        {},                                                          // Terminal
+}
+
+// IsValid checks if the status is valid
+func (s OrderStatus) IsValid() bool {
+	return ValidOrderStatuses[s]
+}
+
+// CanTransitionTo checks if transition to new status is allowed
+func (s OrderStatus) CanTransitionTo(newStatus OrderStatus) bool {
+	allowed, exists := ValidOrderTransitions[s]
+	if !exists {
+		return false
+	}
+	for _, status := range allowed {
+		if status == newStatus {
+			return true
+		}
+	}
+	return false
+}
+
+// IsTerminal returns true if this is a terminal state
+func (s OrderStatus) IsTerminal() bool {
+	return s == OrderStatusFilled || s == OrderStatusFailed || s == OrderStatusCanceled || s == OrderStatusRejected
+}
+
+// IsPending returns true if order is still in progress
+func (s OrderStatus) IsPending() bool {
+	return !s.IsTerminal() && s != OrderStatusTimeout
+}
+
+// ValidateTransition validates and returns error if transition is invalid
+func (s OrderStatus) ValidateTransition(newStatus OrderStatus) error {
+	if !newStatus.IsValid() {
+		return fmt.Errorf("invalid order status: %s", newStatus)
+	}
+	if !s.CanTransitionTo(newStatus) {
+		return fmt.Errorf("invalid status transition from %s to %s", s, newStatus)
+	}
+	return nil
+}
 
 // RiskLevel represents basket risk levels
 type RiskLevel string

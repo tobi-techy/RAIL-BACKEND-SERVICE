@@ -3,7 +3,6 @@ package funding
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -313,12 +312,11 @@ func (s *Service) GetBalance(ctx context.Context, userID uuid.UUID) (*entities.B
 func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.ChainDepositWebhook) error {
 	s.logger.Info("Processing chain deposit", "chain", webhook.Chain, "tx_hash", webhook.TxHash, "amount", webhook.Amount)
 
-	// Parse and validate amount
-	amountFloat, err := strconv.ParseFloat(webhook.Amount, 64)
+	// Parse amount directly to decimal (never use float for money)
+	amount, err := decimal.NewFromString(webhook.Amount)
 	if err != nil {
 		return fmt.Errorf("invalid deposit amount %q: %w", webhook.Amount, err)
 	}
-	amount := decimal.NewFromFloat(amountFloat)
 
 	// Validate minimum deposit amount
 	if s.validationService != nil {

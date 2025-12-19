@@ -1,6 +1,7 @@
 package entities
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,6 +17,70 @@ const (
 	CardStatusFrozen    CardStatus = "frozen"
 	CardStatusCancelled CardStatus = "cancelled"
 )
+
+// CardTransactionStatus represents the status of a card transaction
+type CardTransactionStatus string
+
+const (
+	CardTxStatusPending   CardTransactionStatus = "pending"   // Authorization requested
+	CardTxStatusCompleted CardTransactionStatus = "completed" // Terminal: captured/settled
+	CardTxStatusDeclined  CardTransactionStatus = "declined"  // Terminal: declined
+	CardTxStatusReversed  CardTransactionStatus = "reversed"  // Terminal: refunded/reversed
+	CardTxStatusTimeout   CardTransactionStatus = "timeout"   // No response within SLA
+)
+
+// ValidCardTxStatuses contains all valid card transaction statuses
+var ValidCardTxStatuses = map[CardTransactionStatus]bool{
+	CardTxStatusPending:   true,
+	CardTxStatusCompleted: true,
+	CardTxStatusDeclined:  true,
+	CardTxStatusReversed:  true,
+	CardTxStatusTimeout:   true,
+}
+
+// ValidCardTxTransitions defines allowed status transitions
+var ValidCardTxTransitions = map[CardTransactionStatus][]CardTransactionStatus{
+	CardTxStatusPending:   {CardTxStatusCompleted, CardTxStatusDeclined, CardTxStatusTimeout},
+	CardTxStatusTimeout:   {CardTxStatusCompleted, CardTxStatusDeclined, CardTxStatusReversed},
+	CardTxStatusCompleted: {CardTxStatusReversed}, // Can be refunded
+	CardTxStatusDeclined:  {},                     // Terminal
+	CardTxStatusReversed:  {},                     // Terminal
+}
+
+// IsValid checks if the status is valid
+func (s CardTransactionStatus) IsValid() bool {
+	return ValidCardTxStatuses[s]
+}
+
+// CanTransitionTo checks if transition to new status is allowed
+func (s CardTransactionStatus) CanTransitionTo(newStatus CardTransactionStatus) bool {
+	allowed, exists := ValidCardTxTransitions[s]
+	if !exists {
+		return false
+	}
+	for _, status := range allowed {
+		if status == newStatus {
+			return true
+		}
+	}
+	return false
+}
+
+// IsTerminal returns true if this is a terminal state
+func (s CardTransactionStatus) IsTerminal() bool {
+	return s == CardTxStatusDeclined || s == CardTxStatusReversed
+}
+
+// ValidateTransition validates and returns error if transition is invalid
+func (s CardTransactionStatus) ValidateTransition(newStatus CardTransactionStatus) error {
+	if !newStatus.IsValid() {
+		return fmt.Errorf("invalid card transaction status: %s", newStatus)
+	}
+	if !s.CanTransitionTo(newStatus) {
+		return fmt.Errorf("invalid status transition from %s to %s", s, newStatus)
+	}
+	return nil
+}
 
 // CardType represents the type of card
 type CardType string
