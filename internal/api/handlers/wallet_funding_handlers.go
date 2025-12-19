@@ -516,7 +516,7 @@ func (h *WalletFundingHandlers) InitiateWalletCreation(c *gin.Context) {
 	// Default to SOL-DEVNET if not specified
 	chains := req.Chains
 	if len(chains) == 0 {
-		chains = []string{string(entities.ChainSOLDevnet)}
+		chains = []string{string(entities.WalletChainSOLDevnet)}
 	}
 
 	// Validate chains - ensure only testnet chains

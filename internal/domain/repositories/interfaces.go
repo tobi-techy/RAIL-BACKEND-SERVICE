@@ -96,5 +96,7 @@ type VirtualAccountRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*entities.VirtualAccount, error)
 	GetByDueAccountID(ctx context.Context, dueAccountID string) (*entities.VirtualAccount, error)
 	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.VirtualAccount, error)
+	GetByAlpacaAccountID(ctx context.Context, alpacaAccountID string) (*entities.VirtualAccount, error)
+	GetByBridgeAccountID(ctx context.Context, bridgeAccountID string) (*entities.VirtualAccount, error)
 	Update(ctx context.Context, account *entities.VirtualAccount) error
 }

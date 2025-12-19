@@ -60,12 +60,12 @@ CUSTOMER_RESPONSE=$(curl -s -w "\n%{http_code}" \
     --header "Content-Type: application/json" \
     --header "Api-Key: ${BRIDGE_API_KEY}" \
     --header "Idempotency-Key: $(uuidgen)" \
-    --data '{
-        "type": "individual",
-        "first_name": "Test",
-        "last_name": "User",
-        "email": "test-'$(date +%s)'@example.com"
-    }')
+    --data "{
+        \"type\": \"individual\",
+        \"first_name\": \"Test\",
+        \"last_name\": \"User\",
+        \"email\": \"test-$(date +%s)@example.com\"
+    }")
 
 HTTP_CODE=$(echo "$CUSTOMER_RESPONSE" | tail -n1)
 BODY=$(echo "$CUSTOMER_RESPONSE" | sed '$d')
