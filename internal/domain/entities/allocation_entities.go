@@ -86,17 +86,19 @@ func (m *SmartAllocationMode) Resume() {
 type AllocationEventType string
 
 const (
-	AllocationEventTypeDeposit  AllocationEventType = "deposit"
-	AllocationEventTypeCashback AllocationEventType = "cashback"
-	AllocationEventTypeRoundup  AllocationEventType = "roundup"
-	AllocationEventTypeTransfer AllocationEventType = "transfer"
+	AllocationEventTypeDeposit       AllocationEventType = "deposit"
+	AllocationEventTypeFiatDeposit   AllocationEventType = "fiat_deposit"
+	AllocationEventTypeCryptoDeposit AllocationEventType = "crypto_deposit"
+	AllocationEventTypeCashback      AllocationEventType = "cashback"
+	AllocationEventTypeRoundup       AllocationEventType = "roundup"
+	AllocationEventTypeTransfer      AllocationEventType = "transfer"
 )
 
 // Validate checks if the event type is valid
 func (t AllocationEventType) Validate() error {
 	switch t {
-	case AllocationEventTypeDeposit, AllocationEventTypeCashback, 
-		 AllocationEventTypeRoundup, AllocationEventTypeTransfer:
+	case AllocationEventTypeDeposit, AllocationEventTypeFiatDeposit, AllocationEventTypeCryptoDeposit,
+		AllocationEventTypeCashback, AllocationEventTypeRoundup, AllocationEventTypeTransfer:
 		return nil
 	default:
 		return fmt.Errorf("invalid allocation event type: %s", t)

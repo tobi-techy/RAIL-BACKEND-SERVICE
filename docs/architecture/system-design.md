@@ -189,10 +189,11 @@ Rail is an automated wealth system that eliminates financial decision-making for
 | Service | Responsibility | External Dependencies |
 |---------|---------------|----------------------|
 | **Onboarding** | User registration, KYC, wallet provisioning | KYC Provider, Circle |
-| **Funding** | Deposit processing, 70/30 split execution | Circle, Blockchain RPCs |
+| **Funding** | Virtual accounts (USD/GBP), multi-chain USDC deposits, 70/30 split | Circle, Due Network, Blockchain RPCs |
 | **Spending** | Card transactions, round-ups, balance management | Card Issuer |
 | **Investing** | Auto-allocation, trade execution, portfolio | Alpaca |
 | **Wallet** | Multi-chain wallet management, custody | Circle |
+| **Conductor** | Copy trading, track management, trade mirroring | Alpaca |
 
 ---
 
@@ -207,47 +208,65 @@ Rail is an automated wealth system that eliminates financial decision-making for
 │                                                                              │
 │  USER                                                                        │
 │    │                                                                         │
-│    │ 1. Load Money                                                           │
-│    ▼                                                                         │
-│  ┌──────────────┐                                                            │
-│  │   Funding    │  2. Receive deposit notification                           │
-│  │   Service    │◀─────────────────────────────────────┐                     │
-│  └──────┬───────┘                                      │                     │
-│         │                                              │                     │
-│         │ 3. Validate & Confirm                  ┌─────┴─────┐               │
-│         │                                        │  Circle   │               │
-│         ▼                                        │  Webhook  │               │
-│  ┌──────────────┐                                └───────────┘               │
-│  │    Split     │                                                            │
-│  │   Engine     │  4. Apply 70/30 Rule                                       │
-│  └──────┬───────┘                                                            │
-│         │                                                                    │
-│    ┌────┴────┐                                                               │
-│    │         │                                                               │
-│    ▼         ▼                                                               │
-│  ┌────┐   ┌────┐                                                             │
-│  │70% │   │30% │                                                             │
-│  └──┬─┘   └──┬─┘                                                             │
-│     │        │                                                               │
-│     ▼        ▼                                                               │
-│  ┌──────────────┐    ┌──────────────┐                                        │
-│  │    Spend     │    │   Invest     │                                        │
-│  │   Balance    │    │   Engine     │                                        │
-│  └──────────────┘    └──────┬───────┘                                        │
-│                             │                                                │
-│                             │ 5. Auto-allocate                               │
-│                             ▼                                                │
-│                      ┌──────────────┐                                        │
-│                      │   Strategy   │                                        │
-│                      │   Selector   │                                        │
-│                      └──────┬───────┘                                        │
-│                             │                                                │
-│                             │ 6. Execute trades                              │
-│                             ▼                                                │
-│                      ┌──────────────┐                                        │
-│                      │    Alpaca    │                                        │
-│                      │  (Brokerage) │                                        │
-│                      └──────────────┘                                        │
+│    │ 1. Load Money (choose method)                                           │
+│    │                                                                         │
+│    ├─────────────────────────┬─────────────────────────┐                     │
+│    │                         │                         │                     │
+│    ▼                         ▼                         │                     │
+│  ┌──────────────┐    ┌──────────────┐                  │                     │
+│  │   Virtual    │    │  Multi-Chain │                  │                     │
+│  │   Account    │    │    USDC      │                  │                     │
+│  │  (USD/GBP)   │    │   Deposit    │                  │                     │
+│  └──────┬───────┘    └──────┬───────┘                  │                     │
+│         │                   │                          │                     │
+│         │ Bank Transfer     │ ETH/Polygon/BSC/Solana   │                     │
+│         ▼                   ▼                          │                     │
+│  ┌──────────────┐    ┌──────────────┐                  │                     │
+│  │ Due Network  │    │   Circle     │                  │                     │
+│  │   Webhook    │    │   Webhook    │                  │                     │
+│  └──────┬───────┘    └──────┬───────┘                  │                     │
+│         │                   │                          │                     │
+│         └─────────┬─────────┘                          │                     │
+│                   │                                    │                     │
+│                   ▼                                    │                     │
+│            ┌──────────────┐                            │                     │
+│            │   Funding    │  2. Receive notification   │                     │
+│            │   Service    │                            │                     │
+│            └──────┬───────┘                            │                     │
+│                   │                                    │                     │
+│                   │ 3. Validate & Confirm              │                     │
+│                   ▼                                    │                     │
+│            ┌──────────────┐                            │                     │
+│            │    Split     │  4. Apply 70/30 Rule       │                     │
+│            │   Engine     │                            │                     │
+│            └──────┬───────┘                            │                     │
+│                   │                                                          │
+│              ┌────┴────┐                                                     │
+│              │         │                                                     │
+│              ▼         ▼                                                     │
+│            ┌────┐   ┌────┐                                                   │
+│            │70% │   │30% │                                                   │
+│            └──┬─┘   └──┬─┘                                                   │
+│               │        │                                                     │
+│               ▼        ▼                                                     │
+│        ┌──────────────┐    ┌──────────────┐                                  │
+│        │    Spend     │    │   Invest     │                                  │
+│        │   Balance    │    │   Engine     │                                  │
+│        └──────────────┘    └──────┬───────┘                                  │
+│                                   │                                          │
+│                                   │ 5. Auto-allocate                         │
+│                                   ▼                                          │
+│                            ┌──────────────┐                                  │
+│                            │   Strategy   │                                  │
+│                            │   Selector   │                                  │
+│                            └──────┬───────┘                                  │
+│                                   │                                          │
+│                                   │ 6. Execute trades                        │
+│                                   ▼                                          │
+│                            ┌──────────────┐                                  │
+│                            │    Alpaca    │                                  │
+│                            │  (Brokerage) │                                  │
+│                            └──────────────┘                                  │
 │                                                                              │
 │  ⏱️ Target: < 60 seconds end-to-end                                          │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -293,6 +312,88 @@ Rail is an automated wealth system that eliminates financial decision-making for
 │  LEDGER UPDATE:                                                              │
 │  ├─ Spend Balance: -$5.00                                                    │
 │  └─ Invest Balance: +$0.50                                                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 5.3 Conductor Copy Trading Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      CONDUCTOR COPY TRADING FLOW                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  CONDUCTOR                                                                   │
+│    │                                                                         │
+│    │ 1. Update Track (add/remove/reweight asset)                             │
+│    ▼                                                                         │
+│  ┌──────────────┐                                                            │
+│  │    Track     │  2. Record track trade                                     │
+│  │   Service    │  3. Update target weights                                  │
+│  └──────┬───────┘                                                            │
+│         │                                                                    │
+│         │ 4. Emit TrackUpdated event                                         │
+│         ▼                                                                    │
+│  ┌──────────────┐                                                            │
+│  │    Copy      │  5. Get all active followers                               │
+│  │   Engine     │  6. Calculate proportional trades                          │
+│  └──────┬───────┘                                                            │
+│         │                                                                    │
+│         │ 7. For each follower                                               │
+│         ▼                                                                    │
+│  ┌──────────────┐                                                            │
+│  │   Trade      │  8. Queue follower trades                                  │
+│  │   Queue      │  9. Execute via brokerage                                  │
+│  └──────┬───────┘                                                            │
+│         │                                                                    │
+│         ▼                                                                    │
+│  ┌──────────────┐                                                            │
+│  │    Alpaca    │  10. Execute trades                                        │
+│  │  (Brokerage) │  11. Update follower positions                             │
+│  └──────────────┘                                                            │
+│                                                                              │
+│  ⏱️ Target: Trades mirrored within 5 minutes of conductor action             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 5.4 Conductor Application Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     CONDUCTOR APPLICATION FLOW                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  EXISTING RAIL USER                                                          │
+│    │                                                                         │
+│    │ 1. Submit application (requires active Rail account)                    │
+│    ▼                                                                         │
+│  ┌──────────────┐                                                            │
+│  │  Application │  • Investment experience                                   │
+│  │    Form      │  • Credentials/certifications                              │
+│  │              │  • Strategy description                                    │
+│  └──────┬───────┘                                                            │
+│         │                                                                    │
+│         │ 2. Queue for review                                                │
+│         ▼                                                                    │
+│  ┌──────────────┐                                                            │
+│  │    Admin     │  • Background check                                        │
+│  │   Review     │  • Credential verification                                 │
+│  │              │  • Compliance review                                       │
+│  └──────┬───────┘                                                            │
+│         │                                                                    │
+│    ┌────┴────┐                                                               │
+│    │         │                                                               │
+│    ▼         ▼                                                               │
+│  ┌────┐   ┌────┐                                                             │
+│  │ ✓  │   │ ✗  │                                                             │
+│  └──┬─┘   └──┬─┘                                                             │
+│     │        │                                                               │
+│     │        └──▶ Rejection reason sent, can reapply                         │
+│     ▼                                                                        │
+│  ┌──────────────┐                                                            │
+│  │  Conductor   │  • Create profile                                          │
+│  │  Onboarding  │  • Set up first Track                                      │
+│  │              │  • Agree to terms                                          │
+│  └──────────────┘                                                            │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -429,6 +530,57 @@ Rail is an automated wealth system that eliminates financial decision-making for
 │  │ quantity        │         │ quantity        │                            │
 │  │ avg_cost        │         │ price           │                            │
 │  │ current_value   │         │ broker_ref      │                            │
+│  └─────────────────┘         └─────────────────┘                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 7.2 Conductor Domain Schema
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       CONDUCTOR DATABASE SCHEMA                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌─────────────────┐         ┌─────────────────┐                            │
+│  │   conductor_    │         │   conductors    │                            │
+│  │  applications   │         ├─────────────────┤                            │
+│  ├─────────────────┤         │ id (PK)         │                            │
+│  │ id (PK)         │────────▶│ user_id (FK)    │                            │
+│  │ user_id (FK)    │         │ application_id  │                            │
+│  │ status          │         │ display_name    │                            │
+│  │ experience_yrs  │         │ bio             │                            │
+│  │ credentials     │         │ total_followers │                            │
+│  │ reviewed_by     │         │ total_aum       │                            │
+│  │ reviewed_at     │         │ status          │                            │
+│  └─────────────────┘         └────────┬────────┘                            │
+│                                       │                                      │
+│                                       │ 1:N                                  │
+│                                       ▼                                      │
+│  ┌─────────────────┐         ┌─────────────────┐                            │
+│  │  track_assets   │         │     tracks      │                            │
+│  ├─────────────────┤         ├─────────────────┤                            │
+│  │ id (PK)         │◀────────│ id (PK)         │                            │
+│  │ track_id (FK)   │         │ conductor_id(FK)│                            │
+│  │ symbol          │         │ name            │                            │
+│  │ asset_type      │         │ description     │                            │
+│  │ target_weight   │         │ risk_level      │                            │
+│  │ current_weight  │         │ status          │                            │
+│  └─────────────────┘         │ follower_count  │                            │
+│                              │ performance_*   │                            │
+│                              └────────┬────────┘                            │
+│                                       │                                      │
+│                                       │ 1:N                                  │
+│                                       ▼                                      │
+│  ┌─────────────────┐         ┌─────────────────┐                            │
+│  │ follower_trades │         │ track_followers │                            │
+│  ├─────────────────┤         ├─────────────────┤                            │
+│  │ id (PK)         │◀────────│ id (PK)         │                            │
+│  │ follower_id(FK) │         │ track_id (FK)   │                            │
+│  │ user_id (FK)    │         │ user_id (FK)    │                            │
+│  │ symbol          │         │ allocation_amt  │                            │
+│  │ side            │         │ allocation_pct  │                            │
+│  │ quantity        │         │ status          │                            │
+│  │ status          │         │ started_at      │                            │
 │  └─────────────────┘         └─────────────────┘                            │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```

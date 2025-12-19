@@ -47,7 +47,7 @@ type WithdrawalNotificationService interface {
 type WithdrawalService struct {
 	withdrawalRepo        WithdrawalRepository
 	alpacaAPI             AlpacaAdapter
-	dueAPI                DueWithdrawalAdapter
+	withdrawalProvider    WithdrawalProviderAdapter
 	allocationService     AllocationService
 	allocationNotifier    AllocationNotificationManager
 	limitsService         WithdrawalLimitsService
@@ -55,7 +55,7 @@ type WithdrawalService struct {
 	notificationService   WithdrawalNotificationService
 	logger                *logger.Logger
 	alpacaBreaker         *circuitbreaker.CircuitBreaker
-	dueBreaker            *circuitbreaker.CircuitBreaker
+	providerBreaker       *circuitbreaker.CircuitBreaker
 	queuePublisher        queue.Publisher
 }
 
@@ -78,8 +78,8 @@ type AlpacaAdapter interface {
 	CreateJournal(ctx context.Context, req *entities.AlpacaJournalRequest) (*entities.AlpacaJournalResponse, error)
 }
 
-// DueWithdrawalAdapter interface for Due on-ramp operations
-type DueWithdrawalAdapter interface {
+// WithdrawalProviderAdapter interface for withdrawal/off-ramp operations (Bridge)
+type WithdrawalProviderAdapter interface {
 	ProcessWithdrawal(ctx context.Context, req *entities.InitiateWithdrawalRequest) (*ProcessWithdrawalResponse, error)
 	GetTransferStatus(ctx context.Context, transferID string) (*OnRampTransferResponse, error)
 }
@@ -104,7 +104,7 @@ type OnRampTransferResponse struct {
 func NewWithdrawalService(
 	withdrawalRepo WithdrawalRepository,
 	alpacaAPI AlpacaAdapter,
-	dueAPI DueWithdrawalAdapter,
+	withdrawalProvider WithdrawalProviderAdapter,
 	allocationService AllocationService,
 	allocationNotifier AllocationNotificationManager,
 	logger *logger.Logger,
@@ -123,12 +123,12 @@ func NewWithdrawalService(
 	return &WithdrawalService{
 		withdrawalRepo:     withdrawalRepo,
 		alpacaAPI:          alpacaAPI,
-		dueAPI:             dueAPI,
+		withdrawalProvider: withdrawalProvider,
 		allocationService:  allocationService,
 		allocationNotifier: allocationNotifier,
 		logger:             logger,
 		alpacaBreaker:      circuitbreaker.New(cfg),
-		dueBreaker:         circuitbreaker.New(cfg),
+		providerBreaker:    circuitbreaker.New(cfg),
 		queuePublisher:     queuePublisher,
 	}
 }
@@ -358,40 +358,40 @@ func (s *WithdrawalService) processDueOnRamp(ctx context.Context, withdrawal *en
 		DestinationAddress: withdrawal.DestinationAddress,
 	}
 
-	var dueResp *ProcessWithdrawalResponse
+	var providerResp *ProcessWithdrawalResponse
 	var processErr error
-	err := s.dueBreaker.Execute(ctx, func() error {
-		dueResp, processErr = s.dueAPI.ProcessWithdrawal(ctx, req)
+	err := s.providerBreaker.Execute(ctx, func() error {
+		providerResp, processErr = s.withdrawalProvider.ProcessWithdrawal(ctx, req)
 		return processErr
 	})
 	if err != nil {
-		return fmt.Errorf("failed to process Due withdrawal: %w", err)
+		return fmt.Errorf("failed to process withdrawal: %w", err)
 	}
 
-	// Update withdrawal with Due transfer details
-	if err := s.withdrawalRepo.UpdateDueTransfer(ctx, withdrawal.ID, dueResp.TransferID, dueResp.RecipientID); err != nil {
-		return fmt.Errorf("failed to update Due transfer: %w", err)
+	// Update withdrawal with transfer details
+	if err := s.withdrawalRepo.UpdateDueTransfer(ctx, withdrawal.ID, providerResp.TransferID, providerResp.RecipientID); err != nil {
+		return fmt.Errorf("failed to update transfer: %w", err)
 	}
 
-	s.logger.Info("Due on-ramp initiated",
+	s.logger.Info("Withdrawal transfer initiated",
 		"withdrawal_id", withdrawal.ID.String(),
-		"transfer_id", dueResp.TransferID)
+		"transfer_id", providerResp.TransferID)
 
 	return nil
 }
 
-// monitorTransferCompletion monitors the Due transfer until completion
+// monitorTransferCompletion monitors the transfer until completion
 func (s *WithdrawalService) monitorTransferCompletion(ctx context.Context, withdrawal *entities.Withdrawal) error {
 	s.logger.Info("Monitoring transfer completion", "withdrawal_id", withdrawal.ID.String())
 
-	// Reload withdrawal to get Due transfer ID
+	// Reload withdrawal to get transfer ID
 	w, err := s.withdrawalRepo.GetByID(ctx, withdrawal.ID)
 	if err != nil {
 		return fmt.Errorf("failed to get withdrawal: %w", err)
 	}
 
 	if w.DueTransferID == nil {
-		return fmt.Errorf("no Due transfer ID found")
+		return fmt.Errorf("no transfer ID found")
 	}
 
 	// Poll for transfer status (max 30 attempts, 10 seconds apart = 5 minutes)
@@ -403,8 +403,8 @@ func (s *WithdrawalService) monitorTransferCompletion(ctx context.Context, withd
 
 		var status *OnRampTransferResponse
 		var statusErr error
-		err := s.dueBreaker.Execute(ctx, func() error {
-			status, statusErr = s.dueAPI.GetTransferStatus(ctx, *w.DueTransferID)
+		err := s.providerBreaker.Execute(ctx, func() error {
+			status, statusErr = s.withdrawalProvider.GetTransferStatus(ctx, *w.DueTransferID)
 			return statusErr
 		})
 		if err != nil {

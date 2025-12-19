@@ -11,7 +11,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 
-	// "github.com/rail-service/rail_service/internal/infrastructure/adapters"
 	"go.uber.org/zap"
 )
 
@@ -42,10 +41,6 @@ type CircleClient interface {
 	GetWalletSet(ctx context.Context, walletSetID string) (*entities.CircleWalletSetResponse, error)
 	CreateWallet(ctx context.Context, req entities.CircleWalletCreateRequest) (*entities.CircleWalletCreateResponse, error)
 	GetWallet(ctx context.Context, walletID string) (*entities.CircleWalletCreateResponse, error)
-}
-
-type DueService interface {
-	LinkCircleWallet(ctx context.Context, walletAddress, chain string) error
 }
 
 type AuditService interface {
@@ -87,7 +82,7 @@ func DefaultConfig() Config {
 		MaxBackoffDuration:  30 * time.Minute,
 		JitterFactor:        0.1,
 		ChainsToProvision: []entities.WalletChain{
-			entities.ChainSOLDevnet,
+			entities.WalletChainSOLDevnet,
 		},
 		WalletSetNamePrefix: "STACK-WalletSet",
 		DefaultWalletSetID:  "",
@@ -102,7 +97,6 @@ type Worker struct {
 	circleClient  CircleClient
 	auditService  AuditService
 	userRepo      UserRepository
-	dueService    DueService
 	config        Config
 	logger        *zap.Logger
 	metrics       *Metrics
@@ -116,7 +110,6 @@ func NewWorker(
 	circleClient CircleClient,
 	auditService AuditService,
 	userRepo UserRepository,
-	dueService DueService,
 	config Config,
 	logger *zap.Logger,
 ) *Worker {
@@ -132,7 +125,6 @@ func NewWorker(
 		circleClient:  circleClient,
 		auditService:  auditService,
 		userRepo:      userRepo,
-		dueService:    dueService,
 		config:        config,
 		logger:        logger,
 		metrics: &Metrics{
@@ -356,16 +348,6 @@ func (w *Worker) createWalletForChain(ctx context.Context, job *entities.WalletP
 	resourceID := wallet.ID.String()
 	w.auditService.LogWalletWorkerEvent(ctx, job.UserID, "developer_wallet_created", "wallet",
 		nil, wallet, &resourceID, "success", nil)
-
-	// Link wallet to Due account if user has Due account
-	if err := w.linkWalletToDue(ctx, job.UserID, wallet); err != nil {
-		w.logger.Warn("Failed to link wallet to Due account",
-			zap.Error(err),
-			zap.String("user_id", job.UserID.String()),
-			zap.String("wallet_address", address),
-			zap.String("chain", string(chain)))
-		// Don't fail wallet creation if Due linking fails
-	}
 
 	w.logger.Info("Created developer-controlled wallet successfully",
 		zap.String("user_id", job.UserID.String()),
@@ -666,76 +648,6 @@ func (w *Worker) updateMetrics(err error, duration time.Duration) {
 // GetMetrics returns current worker metrics
 func (w *Worker) GetMetrics() Metrics {
 	return *w.metrics
-}
-
-// linkWalletToDue links a newly created wallet to the user's Due account
-func (w *Worker) linkWalletToDue(ctx context.Context, userID uuid.UUID, wallet *entities.ManagedWallet) error {
-	// Get user to check if they have a Due account
-	user, err := w.userRepo.GetByID(ctx, userID)
-	if err != nil {
-		return fmt.Errorf("failed to get user: %w", err)
-	}
-
-	// Skip if user doesn't have a Due account
-	if user.DueAccountID == nil || *user.DueAccountID == "" {
-		w.logger.Debug("User has no Due account, skipping wallet linking",
-			zap.String("user_id", userID.String()))
-		return nil
-	}
-
-	// Map chain to Due format
-	chainForDue := w.mapChainForDue(wallet.Chain)
-	if chainForDue == "" {
-		w.logger.Debug("Chain not supported by Due, skipping wallet linking",
-			zap.String("chain", string(wallet.Chain)))
-		return nil
-	}
-
-	w.logger.Info("Linking wallet to Due account",
-		zap.String("user_id", userID.String()),
-		zap.String("due_account_id", *user.DueAccountID),
-		zap.String("wallet_address", wallet.Address),
-		zap.String("chain", chainForDue))
-
-	// Link wallet to Due account
-	if err := w.dueService.LinkCircleWallet(ctx, wallet.Address, chainForDue); err != nil {
-		return fmt.Errorf("failed to link wallet to Due: %w", err)
-	}
-
-	// Log successful linking
-	resourceID := wallet.ID.String()
-	w.auditService.LogWalletWorkerEvent(ctx, userID, "wallet_linked_to_due", "wallet",
-		map[string]interface{}{
-			"wallet_address": wallet.Address,
-			"chain":          string(wallet.Chain),
-		},
-		map[string]interface{}{
-			"due_account_id": *user.DueAccountID,
-			"linked_at":      time.Now(),
-		},
-		&resourceID, "success", nil)
-
-	w.logger.Info("Successfully linked wallet to Due account",
-		zap.String("user_id", userID.String()),
-		zap.String("due_account_id", *user.DueAccountID),
-		zap.String("wallet_address", wallet.Address))
-
-	return nil
-}
-
-// mapChainForDue maps internal chain names to Due-compatible formats
-func (w *Worker) mapChainForDue(chain entities.WalletChain) string {
-	switch chain {
-	case entities.ChainSOLDevnet:
-		return "SOL-DEVNET"
-	// Add more chain mappings as needed
-	// case entities.ChainETH:
-	// 	return "ETH"
-	// case entities.ChainMATIC:
-	// 	return "MATIC"
-	default:
-		return ""
-	}
 }
 
 // Helper function

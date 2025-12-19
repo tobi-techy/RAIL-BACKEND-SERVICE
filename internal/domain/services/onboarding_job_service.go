@@ -77,7 +77,7 @@ func (s *OnboardingJobService) CreateOnboardingJob(ctx context.Context, userID u
 		UserEmail: userEmail,
 		UserPhone: userPhone,
 		WalletChains: []string{
-			string(entities.ChainSOLDevnet),
+			string(entities.WalletChainSOLDevnet),
 		},
 		Metadata: map[string]interface{}{
 			"created_by": "signup_flow",

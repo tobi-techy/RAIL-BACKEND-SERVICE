@@ -11,7 +11,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/adapters/alpaca"
-	"github.com/rail-service/rail_service/internal/adapters/due"
+	"github.com/rail-service/rail_service/internal/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/api/handlers"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
@@ -34,6 +34,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/reconciliation"
 	"github.com/rail-service/rail_service/internal/domain/services/roundup"
 	"github.com/rail-service/rail_service/internal/domain/services/copytrading"
+	"github.com/rail-service/rail_service/internal/domain/services/card"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	"github.com/rail-service/rail_service/internal/domain/services/socialauth"
 	"github.com/rail-service/rail_service/internal/domain/services/station"
@@ -143,34 +144,99 @@ func (a *WithdrawalAlpacaAdapter) CreateJournal(ctx context.Context, req *entiti
 	return a.fundingAdapter.CreateJournal(ctx, req)
 }
 
-// WithdrawalDueAdapter adapts due.Adapter to services.DueWithdrawalAdapter interface
-type WithdrawalDueAdapter struct {
-	adapter *due.Adapter
+// WithdrawalBridgeAdapter adapts bridge.Adapter to services.WithdrawalProviderAdapter interface
+type WithdrawalBridgeAdapter struct {
+	adapter *bridge.Adapter
 }
 
-func (a *WithdrawalDueAdapter) ProcessWithdrawal(ctx context.Context, req *entities.InitiateWithdrawalRequest) (*services.ProcessWithdrawalResponse, error) {
-	resp, err := a.adapter.ProcessWithdrawal(ctx, req)
+func (a *WithdrawalBridgeAdapter) ProcessWithdrawal(ctx context.Context, req *entities.InitiateWithdrawalRequest) (*services.ProcessWithdrawalResponse, error) {
+	// Create Bridge transfer for withdrawal
+	transferReq := &bridge.CreateTransferRequest{
+		Amount: req.Amount.String(),
+		Source: bridge.TransferSource{
+			PaymentRail: bridge.PaymentRailEthereum, // Default source
+			Currency:    bridge.CurrencyUSDC,
+		},
+		Destination: bridge.TransferDestination{
+			PaymentRail: mapChainToPaymentRail(req.DestinationChain),
+			Currency:    bridge.CurrencyUSDC,
+			ToAddress:   req.DestinationAddress,
+		},
+	}
+
+	transfer, err := a.adapter.TransferFunds(ctx, transferReq)
 	if err != nil {
 		return nil, err
 	}
+
 	return &services.ProcessWithdrawalResponse{
-		TransferID:     resp.TransferID,
-		RecipientID:    resp.RecipientID,
-		FundingAddress: resp.FundingAddress,
-		SourceAmount:   resp.SourceAmount,
-		DestAmount:     resp.DestAmount,
-		Status:         resp.Status,
+		TransferID:   transfer.ID,
+		SourceAmount: transfer.Amount,
+		DestAmount:   transfer.Amount,
+		Status:       string(transfer.Status),
 	}, nil
 }
 
-func (a *WithdrawalDueAdapter) GetTransferStatus(ctx context.Context, transferID string) (*services.OnRampTransferResponse, error) {
-	resp, err := a.adapter.GetTransferStatus(ctx, transferID)
+func (a *WithdrawalBridgeAdapter) GetTransferStatus(ctx context.Context, transferID string) (*services.OnRampTransferResponse, error) {
+	transfer, err := a.adapter.Client().GetTransfer(ctx, transferID)
 	if err != nil {
 		return nil, err
 	}
 	return &services.OnRampTransferResponse{
-		ID:     resp.ID,
-		Status: resp.Status,
+		ID:     transfer.ID,
+		Status: string(transfer.Status),
+	}, nil
+}
+
+func mapChainToPaymentRail(chain string) bridge.PaymentRail {
+	switch chain {
+	case "ETH", "ethereum":
+		return bridge.PaymentRailEthereum
+	case "MATIC", "polygon":
+		return bridge.PaymentRailPolygon
+	case "SOL", "solana":
+		return bridge.PaymentRailSolana
+	case "BASE", "base":
+		return bridge.PaymentRailBase
+	default:
+		return bridge.PaymentRailEthereum
+	}
+}
+
+// BridgeOnboardingAdapter adapts bridge.Adapter to onboarding.BridgeAdapter interface
+type BridgeOnboardingAdapter struct {
+	adapter *bridge.Adapter
+}
+
+func (a *BridgeOnboardingAdapter) CreateCustomer(ctx context.Context, req *entities.CreateAccountRequest) (*entities.CreateAccountResponse, error) {
+	bridgeReq := &bridge.CreateCustomerRequest{
+		Type:      bridge.CustomerTypeIndividual,
+		FirstName: req.FirstName,
+		LastName:  req.LastName,
+		Email:     req.Email,
+	}
+
+	customer, err := a.adapter.CreateCustomerWithWallet(ctx, &bridge.CreateCustomerWithWalletRequest{
+		FirstName: req.FirstName,
+		LastName:  req.LastName,
+		Email:     req.Email,
+		Chain:     bridge.PaymentRailEthereum, // Default chain
+	})
+	if err != nil {
+		// Fallback to just creating customer without wallet
+		cust, err := a.adapter.Client().CreateCustomer(ctx, bridgeReq)
+		if err != nil {
+			return nil, err
+		}
+		return &entities.CreateAccountResponse{
+			AccountID: cust.ID,
+			Status:    string(cust.Status),
+		}, nil
+	}
+
+	return &entities.CreateAccountResponse{
+		AccountID: customer.Customer.ID,
+		Status:    string(customer.Customer.Status),
 	}, nil
 }
 
@@ -230,11 +296,19 @@ type Container struct {
 	CircleClient  *circle.Client
 	AlpacaClient  *alpaca.Client
 	AlpacaService *alpaca.Service
+	BridgeClient  *bridge.Client
+	BridgeAdapter *bridge.Adapter
 	KYCProvider   *adapters.KYCProvider
 	EmailService  *adapters.EmailService
 	SMSService    *adapters.SMSService
 	AuditService  *adapters.AuditService
 	RedisClient   cache.RedisClient
+
+	// Bridge Domain Adapters
+	BridgeKYCAdapter              *BridgeKYCAdapter
+	BridgeFundingAdapter          *BridgeFundingAdapter
+	BridgeVirtualAccountService   *funding.BridgeVirtualAccountService
+	BridgeWebhookHandler          *handlers.BridgeWebhookHandler
 
 	// Domain Services
 	OnboardingService       *onboarding.Service
@@ -247,7 +321,6 @@ type Container struct {
 	WalletService           *wallet.Service
 	FundingService          *funding.Service
 	InvestingService        *investing.Service
-	DueService              *services.DueService
 	BalanceService          *services.BalanceService
 	EntitySecretService     *entitysecret.Service
 	LedgerService           *ledger.Service
@@ -308,6 +381,10 @@ type Container struct {
 	// Copy Trading Services
 	CopyTradingRepo    *repositories.CopyTradingRepository
 	CopyTradingService *copytrading.Service
+
+	// Card Services
+	CardRepo    *repositories.CardRepository
+	CardService *card.Service
 
 	// Workers
 	WalletProvisioningScheduler interface{} // Type interface{} to avoid circular dependency, will be set at runtime
@@ -383,6 +460,17 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	}
 	alpacaClient := alpaca.NewClient(alpacaConfig, zapLog)
 	alpacaService := alpaca.NewService(alpacaClient, zapLog)
+
+	// Initialize Bridge service
+	bridgeConfig := bridge.Config{
+		APIKey:      cfg.Bridge.APIKey,
+		BaseURL:     cfg.Bridge.BaseURL,
+		Environment: cfg.Bridge.Environment,
+		Timeout:     time.Duration(cfg.Bridge.Timeout) * time.Second,
+		MaxRetries:  cfg.Bridge.MaxRetries,
+	}
+	bridgeClient := bridge.NewClient(bridgeConfig, zapLog)
+	bridgeAdapter := bridge.NewAdapter(bridgeClient, zapLog)
 
 	// Initialize KYC provider with full configuration
 	kycProviderConfig := adapters.KYCProviderConfig{
@@ -488,11 +576,17 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		CircleClient:  circleClient,
 		AlpacaClient:  alpacaClient,
 		AlpacaService: alpacaService,
+		BridgeClient:  bridgeClient,
+		BridgeAdapter: bridgeAdapter,
 		KYCProvider:   kycProvider,
 		EmailService:  emailService,
 		SMSService:    smsService,
 		AuditService:  auditService,
 		RedisClient:   redisClient,
+
+		// Bridge Domain Adapters
+		BridgeKYCAdapter:     NewBridgeKYCAdapter(bridgeAdapter, userRepo),
+		BridgeFundingAdapter: NewBridgeFundingAdapter(bridgeAdapter),
 
 		// Entity Secret Service
 		EntitySecretService: entitySecretService,
@@ -500,6 +594,9 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		// Cache & Queue
 		CacheInvalidator: cacheInvalidator,
 	}
+
+	// Initialize Bridge virtual account service and webhook handler
+	container.initializeBridgeServices()
 
 	// Initialize domain services with their dependencies
 	if err := container.initializeDomainServices(); err != nil {
@@ -542,17 +639,11 @@ func (c *Container) initializeDomainServices() error {
 		walletServiceConfig,
 	)
 
-	// Initialize Due client and adapter
-	dueClient := due.NewClient(due.Config{
-		APIKey:    c.Config.Due.APIKey,
-		AccountID: c.Config.Due.AccountID,
-		BaseURL:   c.Config.Due.BaseURL,
-		Timeout:   30 * time.Second,
-	}, c.Logger)
-	dueAdapter := due.NewAdapter(dueClient, c.Logger)
-
 	// Initialize Alpaca adapter
 	alpacaAdapter := alpaca.NewAdapter(c.AlpacaClient, c.Logger)
+
+	// Initialize Bridge onboarding adapter
+	bridgeOnboardingAdapter := &BridgeOnboardingAdapter{adapter: c.BridgeAdapter}
 
 	// Initialize onboarding service (depends on wallet service)
 	// Note: AllocationService will be injected after it's initialized
@@ -564,7 +655,7 @@ func (c *Container) initializeDomainServices() error {
 		c.KYCProvider,
 		c.EmailService,
 		c.AuditService,
-		dueAdapter,
+		bridgeOnboardingAdapter,
 		alpacaAdapter,
 		nil, // AllocationService - will be set after initialization
 		c.ZapLog,
@@ -624,9 +715,6 @@ func (c *Container) initializeDomainServices() error {
 	sqlxDB := sqlx.NewDb(c.DB, "postgres")
 	virtualAccountRepo := repositories.NewVirtualAccountRepository(sqlxDB)
 
-	// Initialize Due service with deposit and balance repositories
-	c.DueService = services.NewDueService(dueClient, c.DepositRepo, c.BalanceRepo, c.Logger)
-
 	// Initialize Alpaca funding adapter
 	alpacaFundingAdapter := alpaca.NewFundingAdapter(c.AlpacaClient, c.ZapLog)
 
@@ -646,7 +734,7 @@ func (c *Container) initializeDomainServices() error {
 	alpacaBalanceAdapter := &AlpacaFundingAdapter{adapter: alpacaFundingAdapter, client: c.AlpacaClient}
 	c.BalanceService = services.NewBalanceService(c.BalanceRepo, alpacaBalanceAdapter, c.Logger)
 
-	// Initialize funding service with ledger integration
+	// Initialize funding service with ledger integration (Bridge replaces Due)
 	circleAdapter := &CircleAdapter{client: c.CircleClient}
 	ledgerAdapter := &LedgerIntegrationAdapter{integration: ledgerIntegration}
 	c.FundingService = funding.NewService(
@@ -655,7 +743,6 @@ func (c *Container) initializeDomainServices() error {
 		c.WalletRepo,
 		virtualAccountRepo,
 		circleAdapter,
-		dueAdapter,
 		&AlpacaFundingAdapter{adapter: alpacaFundingAdapter, client: c.AlpacaClient},
 		ledgerAdapter,
 		c.Logger,
@@ -770,17 +857,18 @@ func (c *Container) initializeDomainServices() error {
 	c.FundingService.SetLimitsService(c.LimitsService)
 	c.FundingService.SetAuditService(c.DomainAuditService)
 	c.FundingService.SetNotificationService(&FundingNotificationAdapter{svc: c.NotificationService})
+	c.FundingService.SetAllocationService(c.AllocationService) // Enable automatic 70/30 deposit split
 
-	// Initialize withdrawal service with adapters
+	// Initialize withdrawal service with adapters (Bridge replaces Due)
 	withdrawalAlpacaAdapter := &WithdrawalAlpacaAdapter{
 		client:         c.AlpacaClient,
 		fundingAdapter: alpacaFundingAdapter,
 	}
-	withdrawalDueAdapter := &WithdrawalDueAdapter{adapter: dueAdapter}
+	withdrawalBridgeAdapter := &WithdrawalBridgeAdapter{adapter: c.BridgeAdapter}
 	c.WithdrawalService = services.NewWithdrawalService(
 		c.WithdrawalRepo,
 		withdrawalAlpacaAdapter,
-		withdrawalDueAdapter,
+		withdrawalBridgeAdapter,
 		c.AllocationService,
 		nil, // AllocationNotificationManager - optional
 		c.Logger,
@@ -862,11 +950,6 @@ func (c *Container) GetWithdrawalService() *services.WithdrawalService {
 // GetInvestingService returns the investing service
 func (c *Container) GetInvestingService() *investing.Service {
 	return c.InvestingService
-}
-
-// GetDueService returns the Due service
-func (c *Container) GetDueService() *services.DueService {
-	return c.DueService
 }
 
 // GetBalanceService returns the Balance service
@@ -1179,7 +1262,7 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 	if len(raw) == 0 {
 		logger.Warn("circle.supported_chains not configured; defaulting to SOL-DEVNET")
 		return []entities.WalletChain{
-			entities.ChainSOLDevnet,
+			entities.WalletChainSOLDevnet,
 		}
 	}
 
@@ -1205,7 +1288,7 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 	if len(normalized) == 0 {
 		logger.Warn("circle.supported_chains contained no valid entries; defaulting to SOL-DEVNET")
 		return []entities.WalletChain{
-			entities.ChainSOLDevnet,
+			entities.WalletChainSOLDevnet,
 		}
 	}
 
@@ -1540,6 +1623,17 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 		c.ZapLog,
 	)
 
+	// Initialize Card Service
+	c.CardRepo = repositories.NewCardRepository(sqlxDB)
+	c.CardService = card.NewService(
+		c.CardRepo,
+		c.BridgeAdapter,
+		&cardUserProfileAdapter{userRepo: c.UserRepo},
+		&cardWalletAdapter{walletService: c.WalletService},
+		&cardBalanceAdapter{ledgerService: c.LedgerService},
+		c.ZapLog,
+	)
+
 	c.ZapLog.Info("Advanced features initialized")
 	return nil
 }
@@ -1714,6 +1808,58 @@ func (a *orderPlacerAdapter) PlaceMarketOrder(ctx context.Context, userID uuid.U
 	return order, nil
 }
 
+// Card service adapters
+
+// cardUserProfileAdapter adapts UserRepository for card service
+type cardUserProfileAdapter struct {
+	userRepo *repositories.UserRepository
+}
+
+func (a *cardUserProfileAdapter) GetByID(ctx context.Context, id uuid.UUID) (*entities.UserProfile, error) {
+	if a.userRepo == nil {
+		return nil, fmt.Errorf("user repository not available")
+	}
+	return a.userRepo.GetByID(ctx, id)
+}
+
+// cardWalletAdapter adapts WalletService for card service
+type cardWalletAdapter struct {
+	walletService *wallet.Service
+}
+
+func (a *cardWalletAdapter) GetUserWalletByChain(ctx context.Context, userID uuid.UUID, chain string) (*entities.ManagedWallet, error) {
+	if a.walletService == nil {
+		return nil, fmt.Errorf("wallet service not available")
+	}
+	walletChain := entities.WalletChain(strings.ToUpper(chain))
+	return a.walletService.GetWalletByUserAndChain(ctx, userID, walletChain)
+}
+
+// cardBalanceAdapter adapts LedgerService for card balance operations
+type cardBalanceAdapter struct {
+	ledgerService *ledger.Service
+}
+
+func (a *cardBalanceAdapter) GetSpendBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
+	if a.ledgerService == nil {
+		return decimal.Zero, fmt.Errorf("ledger service not available")
+	}
+	// Get spending balance account directly
+	account, err := a.ledgerService.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	return account.Balance, nil
+}
+
+func (a *cardBalanceAdapter) DeductSpendBalance(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, reference string) error {
+	if a.ledgerService == nil {
+		return fmt.Errorf("ledger service not available")
+	}
+	// Create a debit entry for card transaction
+	return a.ledgerService.RecordCardTransaction(ctx, userID, amount, reference)
+}
+
 // Getters for new services
 
 // GetAlpacaAccountService returns the Alpaca account service
@@ -1835,6 +1981,19 @@ func (c *Container) GetCopyTradingHandlers() *handlers.CopyTradingHandlers {
 	return handlers.NewCopyTradingHandlers(c.CopyTradingService, c.Logger)
 }
 
+// GetCardService returns the card service
+func (c *Container) GetCardService() *card.Service {
+	return c.CardService
+}
+
+// GetCardHandlers returns card handlers
+func (c *Container) GetCardHandlers() *handlers.CardHandlers {
+	if c.CardService == nil {
+		return nil
+	}
+	return handlers.NewCardHandlers(c.CardService, c.ZapLog)
+}
+
 // GetStationHandlers returns station handlers
 func (c *Container) GetStationHandlers() *handlers.StationHandlers {
 	if c.StationService == nil {
@@ -1866,4 +2025,39 @@ func (c *Container) ListAllActiveUserIDs(ctx context.Context) ([]uuid.UUID, erro
 		userIDs = append(userIDs, id)
 	}
 	return userIDs, rows.Err()
+}
+
+// GetBridgeWebhookHandler returns the Bridge webhook handler
+func (c *Container) GetBridgeWebhookHandler() *handlers.BridgeWebhookHandler {
+	return c.BridgeWebhookHandler
+}
+
+// GetBridgeVirtualAccountService returns the Bridge virtual account service
+func (c *Container) GetBridgeVirtualAccountService() *funding.BridgeVirtualAccountService {
+	return c.BridgeVirtualAccountService
+}
+
+// initializeBridgeServices initializes Bridge-related services
+func (c *Container) initializeBridgeServices() {
+	if c.BridgeClient == nil {
+		c.ZapLog.Warn("Bridge client not configured, skipping Bridge services initialization")
+		return
+	}
+
+	// Bridge virtual account service will be initialized after allocation service
+	// For now, just set up the webhook handler with a placeholder service
+	webhookSecret := c.Config.Bridge.WebhookSecret
+	if webhookSecret == "" {
+		c.ZapLog.Warn("Bridge webhook secret not configured")
+	}
+
+	// Create a minimal webhook service for now
+	// Full service will be wired after domain services are initialized
+	c.BridgeWebhookHandler = handlers.NewBridgeWebhookHandler(
+		nil, // Service will be set later
+		c.ZapLog,
+		webhookSecret,
+	)
+
+	c.ZapLog.Info("Bridge webhook handler initialized")
 }
