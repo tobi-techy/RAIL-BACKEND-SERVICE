@@ -814,6 +814,15 @@ func (c *Container) initializeDomainServices() error {
 		c.Logger,
 	)
 
+	// Wire auto-invest service with OrderPlacer now that InvestingService is available
+	autoInvestOrderPlacer := &autoInvestOrderPlacerAdapter{
+		accountService: c.AlpacaAccountService,
+		alpacaClient:   c.AlpacaClient,
+		orderRepo:      c.InvestmentOrderRepo,
+		logger:         c.ZapLog,
+	}
+	c.AutoInvestService.SetOrderPlacer(autoInvestOrderPlacer)
+
 	// Initialize reconciliation service
 	if err := c.initializeReconciliationService(); err != nil {
 		return fmt.Errorf("failed to initialize reconciliation service: %w", err)
@@ -1762,6 +1771,64 @@ func (a *copyTradingTradingAdapter) GetCurrentPrice(ctx context.Context, symbol 
 	}
 
 	return quote.Ask, nil
+}
+
+// autoInvestOrderPlacerAdapter implements autoinvest.OrderPlacer interface
+type autoInvestOrderPlacerAdapter struct {
+	accountService *alpacaservice.AccountService
+	alpacaClient   *alpaca.Client
+	orderRepo      *repositories.InvestmentOrderRepository
+	logger         *zap.Logger
+}
+
+func (a *autoInvestOrderPlacerAdapter) PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal) (*entities.AlpacaOrderResponse, error) {
+	// Get user's Alpaca account
+	account, err := a.accountService.GetUserAccount(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get account: %w", err)
+	}
+	if account == nil {
+		return nil, fmt.Errorf("user has no Alpaca account")
+	}
+
+	// Create market order via Alpaca
+	orderReq := &entities.AlpacaCreateOrderRequest{
+		Symbol:      symbol,
+		Notional:    &amount,
+		Side:        entities.AlpacaOrderSideBuy,
+		Type:        entities.AlpacaOrderTypeMarket,
+		TimeInForce: entities.AlpacaTimeInForceDay,
+	}
+
+	alpacaOrder, err := a.alpacaClient.CreateOrder(ctx, account.AlpacaAccountID, orderReq)
+	if err != nil {
+		return nil, fmt.Errorf("create order: %w", err)
+	}
+
+	// Store order in database for tracking
+	now := time.Now()
+	order := &entities.InvestmentOrder{
+		ID:              uuid.New(),
+		UserID:          userID,
+		AlpacaAccountID: &account.ID,
+		AlpacaOrderID:   &alpacaOrder.ID,
+		ClientOrderID:   alpacaOrder.ClientOrderID,
+		Symbol:          symbol,
+		Side:            entities.AlpacaOrderSideBuy,
+		OrderType:       entities.AlpacaOrderTypeMarket,
+		TimeInForce:     entities.AlpacaTimeInForceDay,
+		Notional:        &amount,
+		Status:          alpacaOrder.Status,
+		SubmittedAt:     &now,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+
+	if err := a.orderRepo.Create(ctx, order); err != nil {
+		a.logger.Error("Failed to store auto-invest order", zap.Error(err))
+	}
+
+	return alpacaOrder, nil
 }
 
 // orderPlacerAdapter implements OrderPlacer interface for scheduled investments

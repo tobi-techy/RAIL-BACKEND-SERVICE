@@ -60,6 +60,12 @@ func NewService(
 	}
 }
 
+// SetOrderPlacer sets the order placer after initialization.
+// This is used to break circular dependencies in the DI container.
+func (s *Service) SetOrderPlacer(orderPlacer OrderPlacer) {
+	s.orderPlacer = orderPlacer
+}
+
 // TriggerRequest contains parameters for triggering auto-investment.
 // This type is aliased in the allocation package as AutoInvestTriggerRequest.
 type TriggerRequest struct {
