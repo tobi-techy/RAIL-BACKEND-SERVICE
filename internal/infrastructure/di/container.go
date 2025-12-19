@@ -384,8 +384,6 @@ type Container struct {
 	CopyTradingRepo    *repositories.CopyTradingRepository
 	CopyTradingService *copytrading.Service
 
-	// Bridge API Client
-	BridgeClient *bridge.Client
 	// Card Services
 	CardRepo    *repositories.CardRepository
 	CardService *card.Service
@@ -762,13 +760,13 @@ func (c *Container) initializeDomainServices() error {
 		c.Logger,
 	)
 
-	// Initialize auto-invest service
-	autoInvestRepo := repositories.NewAutoInvestRepository(sqlxDB)
+	// Initialize auto-invest service (OrderPlacer will be set after InvestingService is created)
+	_ = repositories.NewAutoInvestRepository(sqlxDB) // Keep for future use
+	autoInvestConfig := autoinvest.Config{}
 	c.AutoInvestService = autoinvest.NewService(
 		c.LedgerService,
-		nil, // InvestingService - will be set after initialization
-		allocationRepo,
-		autoInvestRepo,
+		nil, // OrderPlacer - will be set after InvestingService initialization
+		autoInvestConfig,
 		c.Logger,
 	)
 
@@ -815,9 +813,6 @@ func (c *Container) initializeDomainServices() error {
 		c.NotificationService,
 		c.Logger,
 	)
-
-	// Wire investing service to auto-invest service (circular dependency resolution)
-	c.AutoInvestService.SetInvestingService(c.InvestingService)
 
 	// Initialize reconciliation service
 	if err := c.initializeReconciliationService(); err != nil {
