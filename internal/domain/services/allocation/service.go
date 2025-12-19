@@ -39,11 +39,17 @@ type AllocationRepository interface {
 	CountDeclinesInDateRange(ctx context.Context, userID uuid.UUID, startDate, endDate time.Time) (int, error)
 }
 
+// AutoInvestService interface for triggering auto-investments
+type AutoInvestService interface {
+	TriggerAutoInvestment(ctx context.Context, userID uuid.UUID) error
+}
+
 // Service handles smart allocation mode operations
 type Service struct {
-	allocationRepo AllocationRepository
-	ledgerService  *ledger.Service
-	logger         *logger.Logger
+	allocationRepo    AllocationRepository
+	ledgerService     *ledger.Service
+	autoInvestService AutoInvestService
+	logger            *logger.Logger
 }
 
 // NewService creates a new allocation service
@@ -57,6 +63,11 @@ func NewService(
 		ledgerService:  ledgerService,
 		logger:         logger,
 	}
+}
+
+// SetAutoInvestService sets the auto-invest service (to avoid circular dependency)
+func (s *Service) SetAutoInvestService(autoInvestService AutoInvestService) {
+	s.autoInvestService = autoInvestService
 }
 
 // ============================================================================
@@ -325,6 +336,15 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		"total", req.Amount,
 		"spending", spendingAmount,
 		"stash", stashAmount)
+
+	// Trigger auto-investment check (async to not block deposit flow)
+	if s.autoInvestService != nil {
+		go func() {
+			if err := s.autoInvestService.TriggerAutoInvestment(ctx, req.UserID); err != nil {
+				s.logger.Error("Failed to trigger auto-investment", "error", err, "user_id", req.UserID)
+			}
+		}()
+	}
 
 	return nil
 }
