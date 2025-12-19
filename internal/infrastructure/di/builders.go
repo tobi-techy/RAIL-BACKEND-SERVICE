@@ -85,10 +85,12 @@ func (b *SecurityServicesBuilder) Build(userRepo *repositories.UserRepository) (
 			ClientSecret: b.cfg.SocialAuth.Google.ClientSecret,
 			RedirectURI:  b.cfg.SocialAuth.Google.RedirectURI,
 		},
-		Apple: socialauth.OAuthConfig{
-			ClientID:     b.cfg.SocialAuth.Apple.ClientID,
-			ClientSecret: b.cfg.SocialAuth.Apple.ClientSecret,
-			RedirectURI:  b.cfg.SocialAuth.Apple.RedirectURI,
+		Apple: socialauth.AppleOAuthConfig{
+			ClientID:    b.cfg.SocialAuth.Apple.ClientID,
+			TeamID:      b.cfg.SocialAuth.Apple.TeamID,
+			KeyID:       b.cfg.SocialAuth.Apple.KeyID,
+			PrivateKey:  b.cfg.SocialAuth.Apple.PrivateKey,
+			RedirectURI: b.cfg.SocialAuth.Apple.RedirectURI,
 		},
 	}
 	services.SocialAuthService = socialauth.NewService(b.db, b.logger, socialAuthConfig)
