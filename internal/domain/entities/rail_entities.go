@@ -11,6 +11,13 @@ import (
 type Chain string
 
 const (
+	ChainETH       Chain = "ETH"
+	ChainMATIC    Chain = "MATIC"
+	ChainAVAX     Chain = "AVAX"
+	ChainSOL      Chain = "SOL"
+	ChainARB      Chain = "ARB"
+	ChainBASE     Chain = "BASE"
+	ChainOP       Chain = "OP"
 	ChainAptos    Chain = "Aptos"
 	ChainSolana   Chain = "Solana"
 	ChainPolygon  Chain = "polygon"

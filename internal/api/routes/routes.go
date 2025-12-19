@@ -115,11 +115,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.ZapLog,
 	)
 
-// Initialize integration handlers (Alpaca, Due)
+// Initialize integration handlers (Alpaca only - Due replaced by Bridge)
 integrationHandlers := handlers.NewIntegrationHandlers(
 	container.AlpacaClient,
-	container.GetDueService(),
-	container.Config.Due.WebhookSecret,
+	nil, // Due service removed - Bridge handles virtual accounts
+	"",  // Due webhook secret removed
 	services.NewNotificationService(container.ZapLog),
 	container.Logger,
 )
@@ -261,6 +261,21 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 				security.POST("/mfa/send-code", mfaHandlers.SendMFACode)
 				security.POST("/mfa/verify", mfaHandlers.VerifyMFACode)
 				security.GET("/geo-info", mfaHandlers.GetGeoInfo)
+			}
+
+			// Mobile-optimized API endpoints for better app performance
+			mobile := protected.Group("/mobile")
+			{
+				mobileHandlers := handlers.NewMobileHandlers(
+					container.StationService,
+					container.GetAllocationService(),
+					container.GetInvestingService(),
+					*container.UserRepo,
+					container.ZapLog,
+				)
+				mobile.GET("/home", mobileHandlers.GetMobileHome)
+				mobile.POST("/batch", mobileHandlers.BatchExecute)
+				mobile.POST("/sync", mobileHandlers.Sync)
 			}
 
 			// Funding routes (OpenAPI spec compliant)
@@ -505,18 +520,16 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 			}
 		}
 
-		// Due API routes (protected)
-		due := protected.Group("/due")
-		{
-			// Account management
-			due.POST("/account", integrationHandlers.CreateDueAccount)
-		}
-
 		// Webhooks (external systems) - OpenAPI spec compliant
 		webhooks := v1.Group("/webhooks")
 		{
 			webhooks.POST("/chain-deposit", walletFundingHandlers.ChainDepositWebhook)
 			webhooks.POST("/brokerage-fill", walletFundingHandlers.BrokerageFillWebhook)
+			
+			// Bridge webhooks for fiat deposits and transfers
+			if bridgeWebhookHandler := container.GetBridgeWebhookHandler(); bridgeWebhookHandler != nil {
+				webhooks.POST("/bridge", bridgeWebhookHandler.HandleWebhook)
+			}
 		}
 
 		// Register Alpaca investment routes
@@ -560,6 +573,15 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 			authMiddleware := middleware.Authentication(container.Config, container.Logger, sessionValidator)
 			SetupCopyTradingRoutes(v1, copyTradingHandlers, authMiddleware)
 		}
+
+		// Register card routes
+		RegisterCardRoutes(
+			v1,
+			container.GetCardHandlers(),
+			container.Config,
+			container.Logger,
+			sessionValidator,
+		)
 	}
 
 	// ZeroG and dedicated AI-CFO HTTP routes have been removed.

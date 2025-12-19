@@ -2,24 +2,37 @@ package socialauth
 
 import (
 	"context"
+	"crypto/rsa"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/url"
+	"strings"
+	"sync"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
-	"github.com/rail-service/rail_service/pkg/crypto"
+)
+
+const (
+	appleAuthURL     = "https://appleid.apple.com/auth/authorize"
+	appleTokenURL    = "https://appleid.apple.com/auth/token"
+	appleKeysURL     = "https://appleid.apple.com/auth/keys"
+	appleIssuer      = "https://appleid.apple.com"
+	appleKeysCacheTTL = 24 * time.Hour
 )
 
 type Config struct {
 	Google OAuthConfig
-	Apple  OAuthConfig
+	Apple  AppleOAuthConfig
 }
 
 type OAuthConfig struct {
@@ -28,11 +41,27 @@ type OAuthConfig struct {
 	RedirectURI  string
 }
 
+type AppleOAuthConfig struct {
+	ClientID    string // Bundle ID or Services ID
+	TeamID      string // Apple Developer Team ID
+	KeyID       string // Key ID from Apple Developer Portal
+	PrivateKey  string // P8 private key content
+	RedirectURI string
+}
+
+// applePublicKeys caches Apple's public keys
+type applePublicKeys struct {
+	keys      map[string]*rsa.PublicKey
+	fetchedAt time.Time
+	mu        sync.RWMutex
+}
+
 type Service struct {
-	db     *sql.DB
-	logger *zap.Logger
-	config Config
-	client *http.Client
+	db        *sql.DB
+	logger    *zap.Logger
+	config    Config
+	client    *http.Client
+	appleKeys *applePublicKeys
 }
 
 func NewService(db *sql.DB, logger *zap.Logger, config Config) *Service {
@@ -41,6 +70,9 @@ func NewService(db *sql.DB, logger *zap.Logger, config Config) *Service {
 		logger: logger,
 		config: config,
 		client: &http.Client{Timeout: 10 * time.Second},
+		appleKeys: &applePublicKeys{
+			keys: make(map[string]*rsa.PublicKey),
+		},
 	}
 }
 
@@ -277,28 +309,213 @@ func (s *Service) getAppleAuthURL(redirectURI, state string) string {
 		"state":         {state},
 		"response_mode": {"form_post"},
 	}
-	return "https://appleid.apple.com/auth/authorize?" + params.Encode()
+	return appleAuthURL + "?" + params.Encode()
 }
 
 func (s *Service) authenticateApple(ctx context.Context, req *entities.SocialLoginRequest) (*SocialUserInfo, error) {
-	// Apple authentication requires JWT client secret generation
-	// This is a simplified implementation
+	// Apple Sign In sends id_token directly from iOS SDK
 	if req.IDToken == "" {
 		return nil, fmt.Errorf("Apple Sign In requires id_token")
 	}
 
-	// Decode ID token (in production, verify signature with Apple's public keys)
-	claims, err := crypto.DecodeJWTClaims(req.IDToken)
+	// Verify and decode the ID token
+	claims, err := s.verifyAppleIDToken(ctx, req.IDToken)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode Apple ID token: %w", err)
+		s.logger.Error("Failed to verify Apple ID token", zap.Error(err))
+		return nil, fmt.Errorf("invalid Apple ID token: %w", err)
+	}
+
+	// Extract user info from claims
+	sub, ok := claims["sub"].(string)
+	if !ok || sub == "" {
+		return nil, fmt.Errorf("missing subject in Apple ID token")
 	}
 
 	email, _ := claims["email"].(string)
-	sub, _ := claims["sub"].(string)
+	
+	// Apple only sends name on first sign-in, extract from request if provided
+	name := ""
+	if req.Name != "" {
+		name = req.Name
+	}
+
+	s.logger.Info("Apple Sign In successful",
+		zap.String("sub", sub),
+		zap.String("email", email))
 
 	return &SocialUserInfo{
 		Provider:   entities.SocialProviderApple,
 		ProviderID: sub,
 		Email:      email,
+		Name:       name,
 	}, nil
+}
+
+// verifyAppleIDToken verifies an Apple ID token using Apple's public keys
+func (s *Service) verifyAppleIDToken(ctx context.Context, idToken string) (jwt.MapClaims, error) {
+	// Fetch Apple's public keys
+	publicKey, err := s.getApplePublicKey(ctx, idToken)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get Apple public key: %w", err)
+	}
+
+	// Parse and verify the token
+	token, err := jwt.Parse(idToken, func(token *jwt.Token) (interface{}, error) {
+		// Verify signing method
+		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return publicKey, nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse token: %w", err)
+	}
+
+	if !token.Valid {
+		return nil, fmt.Errorf("invalid token")
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return nil, fmt.Errorf("invalid claims format")
+	}
+
+	// Verify issuer
+	iss, _ := claims["iss"].(string)
+	if iss != appleIssuer {
+		return nil, fmt.Errorf("invalid issuer: %s", iss)
+	}
+
+	// Verify audience (client_id)
+	aud, _ := claims["aud"].(string)
+	if aud != s.config.Apple.ClientID {
+		return nil, fmt.Errorf("invalid audience: %s", aud)
+	}
+
+	// Verify expiration
+	exp, ok := claims["exp"].(float64)
+	if !ok || time.Now().Unix() > int64(exp) {
+		return nil, fmt.Errorf("token expired")
+	}
+
+	return claims, nil
+}
+
+// getApplePublicKey fetches and caches Apple's public keys
+func (s *Service) getApplePublicKey(ctx context.Context, idToken string) (*rsa.PublicKey, error) {
+	// Extract key ID from token header
+	parts := strings.Split(idToken, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid token format")
+	}
+
+	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode header: %w", err)
+	}
+
+	var header struct {
+		Kid string `json:"kid"`
+		Alg string `json:"alg"`
+	}
+	if err := json.Unmarshal(headerBytes, &header); err != nil {
+		return nil, fmt.Errorf("failed to parse header: %w", err)
+	}
+
+	// Check cache
+	s.appleKeys.mu.RLock()
+	if key, ok := s.appleKeys.keys[header.Kid]; ok && time.Since(s.appleKeys.fetchedAt) < appleKeysCacheTTL {
+		s.appleKeys.mu.RUnlock()
+		return key, nil
+	}
+	s.appleKeys.mu.RUnlock()
+
+	// Fetch fresh keys
+	if err := s.fetchApplePublicKeys(ctx); err != nil {
+		return nil, err
+	}
+
+	s.appleKeys.mu.RLock()
+	defer s.appleKeys.mu.RUnlock()
+
+	key, ok := s.appleKeys.keys[header.Kid]
+	if !ok {
+		return nil, fmt.Errorf("key not found: %s", header.Kid)
+	}
+
+	return key, nil
+}
+
+// fetchApplePublicKeys fetches Apple's public keys from their JWKS endpoint
+func (s *Service) fetchApplePublicKeys(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", appleKeysURL, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to fetch Apple keys: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Apple keys endpoint returned %d", resp.StatusCode)
+	}
+
+	var jwks struct {
+		Keys []struct {
+			Kty string `json:"kty"`
+			Kid string `json:"kid"`
+			Use string `json:"use"`
+			Alg string `json:"alg"`
+			N   string `json:"n"`
+			E   string `json:"e"`
+		} `json:"keys"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
+		return fmt.Errorf("failed to decode JWKS: %w", err)
+	}
+
+	s.appleKeys.mu.Lock()
+	defer s.appleKeys.mu.Unlock()
+
+	s.appleKeys.keys = make(map[string]*rsa.PublicKey)
+	s.appleKeys.fetchedAt = time.Now()
+
+	for _, key := range jwks.Keys {
+		if key.Kty != "RSA" {
+			continue
+		}
+
+		// Decode modulus
+		nBytes, err := base64.RawURLEncoding.DecodeString(key.N)
+		if err != nil {
+			s.logger.Warn("Failed to decode key modulus", zap.String("kid", key.Kid), zap.Error(err))
+			continue
+		}
+
+		// Decode exponent
+		eBytes, err := base64.RawURLEncoding.DecodeString(key.E)
+		if err != nil {
+			s.logger.Warn("Failed to decode key exponent", zap.String("kid", key.Kid), zap.Error(err))
+			continue
+		}
+
+		// Convert exponent bytes to int
+		var e int
+		for _, b := range eBytes {
+			e = e<<8 + int(b)
+		}
+
+		s.appleKeys.keys[key.Kid] = &rsa.PublicKey{
+			N: new(big.Int).SetBytes(nBytes),
+			E: e,
+		}
+	}
+
+	s.logger.Info("Fetched Apple public keys", zap.Int("count", len(s.appleKeys.keys)))
+	return nil
 }

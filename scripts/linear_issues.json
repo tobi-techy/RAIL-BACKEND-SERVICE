@@ -1,0 +1,175 @@
+{
+  "epics": [
+    {
+      "title": "MVP Critical Path - Core Automation Features",
+      "description": "Critical features required for MVP launch including automatic splitting, investment engine, and debit card system.",
+      "target_date": "2025-01-26",
+      "priority": "urgent"
+    },
+    {
+      "title": "Post-MVP Feature Enhancements", 
+      "description": "Important features to ship shortly after MVP including physical cards and copy trading.",
+      "target_date": "2025-04-15",
+      "priority": "high"
+    },
+    {
+      "title": "Future Platform Improvements",
+      "description": "Long-term platform improvements for scalability and user experience.",
+      "target_date": "2025-07-15", 
+      "priority": "medium"
+    }
+  ],
+  "issues": [
+    {
+      "title": "Implement Apple Sign-In Authentication",
+      "priority": "urgent",
+      "labels": ["mvp", "authentication", "p0", "ios"],
+      "epic": "MVP Critical Path - Core Automation Features",
+      "estimate": 5,
+      "description": "Implement Apple Sign-In as the primary authentication method for iOS users. The social auth framework exists but Apple-specific implementation is missing.",
+      "acceptance_criteria": [
+        "Users can sign up using Apple Sign-In",
+        "Apple ID tokens are validated server-side",
+        "User accounts created automatically from Apple profile", 
+        "Seamless onboarding flow completes in < 2 minutes"
+      ],
+      "technical_notes": "Extend existing social auth service in internal/domain/services/socialauth/. Add Apple provider configuration to config.go. Implement Apple ID token verification. Update auth handlers to support Apple Sign-In flow."
+    },
+    {
+      "title": "Implement Automatic 70/30 Deposit Split Engine",
+      "priority": "urgent",
+      "labels": ["mvp", "funding", "automation", "p0"],
+      "epic": "MVP Critical Path - Core Automation Features",
+      "estimate": 8,
+      "description": "Implement the core system rule where every deposit is automatically split 70% to Spend Balance and 30% to Invest Balance without any user interaction.",
+      "acceptance_criteria": [
+        "All deposits automatically split 70/30",
+        "Split occurs within 60 seconds of deposit confirmation",
+        "No user settings or allocation choices shown",
+        "Balance updates reflect split immediately",
+        "Works for both crypto and fiat deposits"
+      ],
+      "technical_notes": "Enhance funding webhook handlers in internal/workers/funding_webhook/. Integrate with allocation service. Update balance service for real-time updates. Add split logic to deposit confirmation flow."
+    },
+    {
+      "title": "Implement Virtual Debit Card System", 
+      "priority": "urgent",
+      "labels": ["mvp", "debit-card", "payments", "p0"],
+      "epic": "MVP Critical Path - Core Automation Features",
+      "estimate": 13,
+      "description": "Implement virtual debit card issuance and management system. Cards should be issued immediately upon first funding and linked directly to Spend Balance.",
+      "acceptance_criteria": [
+        "Virtual card issued on first funding",
+        "Card transactions deduct from Spend Balance in real-time",
+        "Authorization fails when insufficient balance",
+        "Card details accessible via API",
+        "Transaction history tracked"
+      ],
+      "technical_notes": "Research and integrate card issuer API (Stripe Issuing, Marqeta, etc.). Create card service in internal/domain/services/card/. Add card handlers. Integrate with balance service for real-time authorization."
+    },
+    {
+      "title": "Complete Automatic Investment Engine Implementation",
+      "priority": "urgent", 
+      "labels": ["mvp", "investing", "automation", "p0"],
+      "epic": "MVP Critical Path - Core Automation Features",
+      "estimate": 10,
+      "description": "Complete the automatic investment engine to deploy 30% invest balance without user interaction. Alpaca integration exists but auto-deployment logic is missing.",
+      "acceptance_criteria": [
+        "30% of deposits auto-invested without user action",
+        "Default investment strategy defined and implemented",
+        "No individual trades or assets shown to users", 
+        "Positions tracked in backend systems",
+        "Investment triggers on balance threshold"
+      ],
+      "technical_notes": "Enhance investing service. Define global fallback strategy (diversified ETF portfolio). Add auto-investment triggers to allocation service. Integrate with existing Alpaca service."
+    },
+    {
+      "title": "Setup USD/GBP Virtual Accounts via Due Network",
+      "priority": "urgent",
+      "labels": ["mvp", "funding", "fiat", "p0"], 
+      "epic": "MVP Critical Path - Core Automation Features",
+      "estimate": 8,
+      "description": "Setup dedicated virtual accounts for USD and GBP bank transfers using the existing Due Network integration.",
+      "acceptance_criteria": [
+        "Users receive unique USD virtual account details",
+        "Users receive unique GBP virtual account details",
+        "Bank transfers credited within standard timeframes",
+        "Automatic 70/30 split triggered on fiat deposits",
+        "Virtual account details accessible via API"
+      ],
+      "technical_notes": "Extend Due Network adapter in internal/adapters/due/. Add fiat virtual account creation to onboarding flow. Update funding handlers to support fiat deposits."
+    },
+    {
+      "title": "Implement Physical Debit Card System",
+      "priority": "high",
+      "labels": ["p1", "debit-card", "physical-card"],
+      "epic": "Post-MVP Feature Enhancements", 
+      "estimate": 8,
+      "description": "Implement physical card ordering, shipping, and management system for users who request physical cards.",
+      "acceptance_criteria": [
+        "Users can order physical cards",
+        "Shipping address collection and validation",
+        "Card activation via app",
+        "Physical card linked to same Spend Balance as virtual card"
+      ],
+      "dependencies": ["Implement Virtual Debit Card System"]
+    },
+    {
+      "title": "Optimize KYC Flow for Sub-2-Minute Onboarding",
+      "priority": "high",
+      "labels": ["p1", "kyc", "onboarding", "optimization"],
+      "epic": "Post-MVP Feature Enhancements",
+      "estimate": 5,
+      "description": "Optimize existing KYC flow to achieve the < 2 minute onboarding target while maintaining compliance.",
+      "acceptance_criteria": [
+        "KYC completion time reduced to < 2 minutes",
+        "Document upload optimized for mobile", 
+        "Real-time progress feedback",
+        "Maintain compliance standards"
+      ]
+    },
+    {
+      "title": "Implement Copy Trading System (Conductors)",
+      "priority": "medium",
+      "labels": ["p1", "copy-trading", "post-mvp"],
+      "epic": "Post-MVP Feature Enhancements",
+      "estimate": 21,
+      "description": "Implement the copy trading system allowing users to follow professional investors (Conductors) and mirror their portfolios.",
+      "acceptance_criteria": [
+        "Conductor application and approval workflow",
+        "Track creation with asset allocation",
+        "Automatic trade mirroring for followers", 
+        "Track discovery and follow functionality"
+      ],
+      "dependencies": ["Complete Automatic Investment Engine Implementation"]
+    },
+    {
+      "title": "Enhance Portfolio Analytics Beyond Basic Tracking",
+      "priority": "low",
+      "labels": ["p2", "analytics", "future"],
+      "epic": "Future Platform Improvements",
+      "estimate": 13,
+      "description": "Implement advanced portfolio analytics beyond basic balance tracking for better user insights.",
+      "acceptance_criteria": [
+        "Performance metrics calculation",
+        "Risk analysis implementation",
+        "Historical tracking system",
+        "Reporting dashboards"
+      ]
+    },
+    {
+      "title": "Optimize APIs for Mobile App Performance", 
+      "priority": "low",
+      "labels": ["p2", "mobile", "api-optimization"],
+      "epic": "Future Platform Improvements",
+      "estimate": 8,
+      "description": "Create mobile-optimized API endpoints for better app performance and user experience.",
+      "acceptance_criteria": [
+        "Batch API endpoints implemented",
+        "Reduced payload sizes",
+        "Offline capability support",
+        "Push notification integration"
+      ]
+    }
+  ]
+}

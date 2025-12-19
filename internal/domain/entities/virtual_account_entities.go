@@ -22,6 +22,7 @@ type VirtualAccount struct {
 	UserID          uuid.UUID            `json:"user_id" db:"user_id"`
 	DueAccountID    string               `json:"due_account_id" db:"due_account_id"`
 	AlpacaAccountID string               `json:"alpaca_account_id" db:"alpaca_account_id"`
+	BridgeAccountID *string              `json:"bridge_account_id,omitempty" db:"bridge_account_id"`
 	AccountNumber   string               `json:"account_number" db:"account_number"`
 	RoutingNumber   string               `json:"routing_number" db:"routing_number"`
 	Status          VirtualAccountStatus `json:"status" db:"status"`
