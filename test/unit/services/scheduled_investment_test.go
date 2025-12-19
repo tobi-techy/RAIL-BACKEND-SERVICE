@@ -105,13 +105,23 @@ func (m *mockOrderPlacer) PlaceMarketOrder(ctx context.Context, userID uuid.UUID
 	return order, nil
 }
 
+type mockBasketOrderPlacer struct{}
+
+func (m *mockBasketOrderPlacer) PlaceOrder(ctx context.Context, userID, basketID uuid.UUID, side entities.OrderSide, amount decimal.Decimal) (*investing.BrokerageOrderResponse, error) {
+	return &investing.BrokerageOrderResponse{
+		OrderRef: uuid.New().String(),
+		Status:   entities.OrderStatusPending,
+	}, nil
+}
+
 func TestScheduledInvestmentService_Create(t *testing.T) {
 	userID := uuid.New()
 	logger := zap.NewNop()
 	repo := &mockScheduledInvestmentRepo{}
 	orderPlacer := &mockOrderPlacer{}
+	basketOrderPlacer := &mockBasketOrderPlacer{}
 
-	svc := investing.NewScheduledInvestmentService(repo, orderPlacer, logger)
+	svc := investing.NewScheduledInvestmentService(repo, orderPlacer, basketOrderPlacer, logger)
 
 	symbol := "AAPL"
 	req := &investing.CreateScheduledInvestmentRequest{
@@ -135,7 +145,7 @@ func TestScheduledInvestmentService_Create(t *testing.T) {
 func TestScheduledInvestmentService_Pause(t *testing.T) {
 	userID := uuid.New()
 	logger := zap.NewNop()
-	
+
 	si := &entities.ScheduledInvestment{
 		ID:     uuid.New(),
 		UserID: userID,
@@ -143,8 +153,9 @@ func TestScheduledInvestmentService_Pause(t *testing.T) {
 	}
 	repo := &mockScheduledInvestmentRepo{investments: []*entities.ScheduledInvestment{si}}
 	orderPlacer := &mockOrderPlacer{}
+	basketOrderPlacer := &mockBasketOrderPlacer{}
 
-	svc := investing.NewScheduledInvestmentService(repo, orderPlacer, logger)
+	svc := investing.NewScheduledInvestmentService(repo, orderPlacer, basketOrderPlacer, logger)
 
 	err := svc.PauseScheduledInvestment(context.Background(), si.ID)
 	require.NoError(t, err)
@@ -164,8 +175,9 @@ func TestScheduledInvestmentService_GetUserScheduledInvestments(t *testing.T) {
 		},
 	}
 	orderPlacer := &mockOrderPlacer{}
+	basketOrderPlacer := &mockBasketOrderPlacer{}
 
-	svc := investing.NewScheduledInvestmentService(repo, orderPlacer, logger)
+	svc := investing.NewScheduledInvestmentService(repo, orderPlacer, basketOrderPlacer, logger)
 
 	investments, err := svc.GetUserScheduledInvestments(context.Background(), userID)
 	require.NoError(t, err)
