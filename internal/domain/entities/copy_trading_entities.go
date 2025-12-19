@@ -204,3 +204,109 @@ type DraftSummary struct {
 
 // MinimumTradeValue is the minimum trade value in USD
 var MinimumTradeValue = decimal.NewFromFloat(1.00)
+
+// ConductorApplicationStatus represents the status of a conductor application
+type ConductorApplicationStatus string
+
+const (
+	ConductorApplicationStatusPending  ConductorApplicationStatus = "pending"
+	ConductorApplicationStatusApproved ConductorApplicationStatus = "approved"
+	ConductorApplicationStatusRejected ConductorApplicationStatus = "rejected"
+)
+
+// ConductorApplication represents a user's application to become a conductor
+type ConductorApplication struct {
+	ID                  uuid.UUID                  `json:"id" db:"id"`
+	UserID              uuid.UUID                  `json:"user_id" db:"user_id"`
+	DisplayName         string                     `json:"display_name" db:"display_name"`
+	Bio                 string                     `json:"bio" db:"bio"`
+	InvestmentStrategy  string                     `json:"investment_strategy" db:"investment_strategy"`
+	Experience          string                     `json:"experience" db:"experience"`
+	SocialLinks         map[string]string          `json:"social_links,omitempty" db:"social_links"`
+	Status              ConductorApplicationStatus `json:"status" db:"status"`
+	ReviewedBy          *uuid.UUID                 `json:"reviewed_by,omitempty" db:"reviewed_by"`
+	ReviewedAt          *time.Time                 `json:"reviewed_at,omitempty" db:"reviewed_at"`
+	RejectionReason     string                     `json:"rejection_reason,omitempty" db:"rejection_reason"`
+	CreatedAt           time.Time                  `json:"created_at" db:"created_at"`
+	UpdatedAt           time.Time                  `json:"updated_at" db:"updated_at"`
+}
+
+// CreateConductorApplicationRequest represents a request to apply as a conductor
+type CreateConductorApplicationRequest struct {
+	DisplayName        string            `json:"display_name" binding:"required,min=2,max=50"`
+	Bio                string            `json:"bio" binding:"required,min=10,max=500"`
+	InvestmentStrategy string            `json:"investment_strategy" binding:"required,min=20,max=1000"`
+	Experience         string            `json:"experience" binding:"required,min=10,max=500"`
+	SocialLinks        map[string]string `json:"social_links,omitempty"`
+}
+
+// ReviewConductorApplicationRequest represents an admin review of an application
+type ReviewConductorApplicationRequest struct {
+	Approved        bool   `json:"approved"`
+	RejectionReason string `json:"rejection_reason,omitempty"`
+}
+
+// Track represents a curated portfolio strategy created by a conductor
+type Track struct {
+	ID             uuid.UUID       `json:"id" db:"id"`
+	ConductorID    uuid.UUID       `json:"conductor_id" db:"conductor_id"`
+	Name           string          `json:"name" db:"name"`
+	Description    string          `json:"description" db:"description"`
+	RiskLevel      string          `json:"risk_level" db:"risk_level"` // low, medium, high
+	IsActive       bool            `json:"is_active" db:"is_active"`
+	FollowersCount int             `json:"followers_count" db:"followers_count"`
+	TotalReturn    decimal.Decimal `json:"total_return" db:"total_return"`
+	CreatedAt      time.Time       `json:"created_at" db:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at" db:"updated_at"`
+
+	// Joined fields
+	Allocations []TrackAllocation `json:"allocations,omitempty" db:"-"`
+	Conductor   *Conductor        `json:"conductor,omitempty" db:"-"`
+}
+
+// TrackAllocation represents an asset allocation within a track
+type TrackAllocation struct {
+	ID           uuid.UUID       `json:"id" db:"id"`
+	TrackID      uuid.UUID       `json:"track_id" db:"track_id"`
+	AssetTicker  string          `json:"asset_ticker" db:"asset_ticker"`
+	AssetName    string          `json:"asset_name" db:"asset_name"`
+	TargetWeight decimal.Decimal `json:"target_weight" db:"target_weight"` // Percentage (0-100)
+	CreatedAt    time.Time       `json:"created_at" db:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at" db:"updated_at"`
+}
+
+// CreateTrackRequest represents a request to create a new track
+type CreateTrackRequest struct {
+	Name        string                        `json:"name" binding:"required,min=2,max=100"`
+	Description string                        `json:"description" binding:"required,min=10,max=500"`
+	RiskLevel   string                        `json:"risk_level" binding:"required,oneof=low medium high"`
+	Allocations []CreateTrackAllocationRequest `json:"allocations" binding:"required,min=1,max=20"`
+}
+
+// CreateTrackAllocationRequest represents an allocation in a track creation request
+type CreateTrackAllocationRequest struct {
+	AssetTicker  string          `json:"asset_ticker" binding:"required"`
+	AssetName    string          `json:"asset_name" binding:"required"`
+	TargetWeight decimal.Decimal `json:"target_weight" binding:"required"`
+}
+
+// UpdateTrackRequest represents a request to update track allocations
+type UpdateTrackRequest struct {
+	Name        *string                       `json:"name,omitempty"`
+	Description *string                       `json:"description,omitempty"`
+	RiskLevel   *string                       `json:"risk_level,omitempty"`
+	Allocations []CreateTrackAllocationRequest `json:"allocations,omitempty"`
+}
+
+// TrackSummary is a condensed view of a track for listing
+type TrackSummary struct {
+	ID             uuid.UUID       `json:"id"`
+	ConductorID    uuid.UUID       `json:"conductor_id"`
+	ConductorName  string          `json:"conductor_name"`
+	Name           string          `json:"name"`
+	Description    string          `json:"description"`
+	RiskLevel      string          `json:"risk_level"`
+	FollowersCount int             `json:"followers_count"`
+	TotalReturn    decimal.Decimal `json:"total_return"`
+	IsActive       bool            `json:"is_active"`
+}

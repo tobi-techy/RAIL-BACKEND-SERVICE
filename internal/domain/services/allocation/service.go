@@ -3,11 +3,13 @@ package allocation
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/autoinvest"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"go.opentelemetry.io/otel"
@@ -39,9 +41,9 @@ type AllocationRepository interface {
 	CountDeclinesInDateRange(ctx context.Context, userID uuid.UUID, startDate, endDate time.Time) (int, error)
 }
 
-// AutoInvestService interface for triggering auto-investments
+// AutoInvestService defines the interface for auto-investment operations
 type AutoInvestService interface {
-	TriggerAutoInvestment(ctx context.Context, userID uuid.UUID) error
+	TriggerAutoInvestment(ctx context.Context, req autoinvest.TriggerRequest) error
 }
 
 // Service handles smart allocation mode operations
@@ -337,11 +339,41 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		"spending", spendingAmount,
 		"stash", stashAmount)
 
-	// Trigger auto-investment check (async to not block deposit flow)
-	if s.autoInvestService != nil {
+	// Trigger auto-investment asynchronously if service is configured
+	// Use detached context to avoid cancellation when parent returns
+	if s.autoInvestService != nil && stashAccount != nil {
+		// Generate correlation ID from deposit for idempotency
+		correlationID := event.ID.String()
+		if req.DepositID != nil {
+			correlationID = req.DepositID.String()
+		}
+
+		userID := req.UserID
+		stashID := stashAccount.ID
+
 		go func() {
-			if err := s.autoInvestService.TriggerAutoInvestment(ctx, req.UserID); err != nil {
-				s.logger.Error("Failed to trigger auto-investment", "error", err, "user_id", req.UserID)
+			// Panic recovery to prevent goroutine crashes from affecting the system
+			defer func() {
+				if r := recover(); r != nil {
+					s.logger.Error("Panic in auto-invest goroutine",
+						"user_id", userID,
+						"panic", r,
+						"stack", string(debug.Stack()))
+				}
+			}()
+
+			// Use detached context with timeout instead of request context
+			bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			if err := s.autoInvestService.TriggerAutoInvestment(bgCtx, autoinvest.TriggerRequest{
+				UserID:        userID,
+				StashID:       stashID,
+				CorrelationID: correlationID,
+			}); err != nil {
+				s.logger.Error("Failed to trigger auto-investment",
+					"user_id", userID,
+					"error", err)
 			}
 		}()
 	}

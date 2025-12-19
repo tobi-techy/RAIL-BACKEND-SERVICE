@@ -16,42 +16,23 @@ import (
 	"go.uber.org/zap"
 )
 
-// TransactionType represents the type of transaction
-type TransactionType string
-
-const (
-	TransactionTypeDeposit    TransactionType = "deposit"
-	TransactionTypeWithdrawal TransactionType = "withdrawal"
-	TransactionTypeInvestment TransactionType = "investment"
-	TransactionTypeTransfer   TransactionType = "transfer"
-)
-
-// TransactionStatus represents the status of a transaction
-type TransactionStatus string
-
-const (
-	TransactionStatusPending   TransactionStatus = "pending"
-	TransactionStatusProcessed TransactionStatus = "processed"
-	TransactionStatusFailed    TransactionStatus = "failed"
-	TransactionStatusCancelled TransactionStatus = "cancelled"
-)
-
 // Transaction represents a financial transaction
+// Uses entities.TransactionType and entities.TransactionStatus for consistency
 type Transaction struct {
-	ID            uuid.UUID         `json:"id"`
-	UserID        uuid.UUID         `json:"user_id"`
-	Type          TransactionType   `json:"type"`
-	Status        TransactionStatus `json:"status"`
-	Amount        decimal.Decimal   `json:"amount"`
-	Currency      string            `json:"currency"`
-	FromAccount   *string           `json:"from_account,omitempty"`
-	ToAccount     *string           `json:"to_account,omitempty"`
-	Reference     *string           `json:"reference,omitempty"`
-	Metadata      map[string]interface{} `json:"metadata,omitempty"`
-	IdempotencyKey string           `json:"idempotency_key"`
-	CreatedAt     time.Time         `json:"created_at"`
-	UpdatedAt     time.Time         `json:"updated_at"`
-	ProcessedAt   *time.Time        `json:"processed_at,omitempty"`
+	ID            uuid.UUID                   `json:"id"`
+	UserID        uuid.UUID                   `json:"user_id"`
+	Type          entities.TransactionType    `json:"type"`
+	Status        entities.TransactionStatus  `json:"status"`
+	Amount        decimal.Decimal             `json:"amount"`
+	Currency      string                      `json:"currency"`
+	FromAccount   *string                     `json:"from_account,omitempty"`
+	ToAccount     *string                     `json:"to_account,omitempty"`
+	Reference     *string                     `json:"reference,omitempty"`
+	Metadata      map[string]interface{}      `json:"metadata,omitempty"`
+	IdempotencyKey string                     `json:"idempotency_key"`
+	CreatedAt     time.Time                   `json:"created_at"`
+	UpdatedAt     time.Time                   `json:"updated_at"`
+	ProcessedAt   *time.Time                  `json:"processed_at,omitempty"`
 }
 
 // AllocationService interface for spending enforcement
@@ -107,7 +88,7 @@ func (s *Service) ProcessTransaction(ctx context.Context, tx *Transaction) (*Tra
 	if tx.ID == uuid.Nil {
 		tx.ID = uuid.New()
 	}
-	tx.Status = TransactionStatusPending
+	tx.Status = entities.TransactionStatusPending
 	tx.CreatedAt = time.Now().UTC()
 	tx.UpdatedAt = tx.CreatedAt
 
@@ -120,13 +101,13 @@ func (s *Service) ProcessTransaction(ctx context.Context, tx *Transaction) (*Tra
 
 		// Process based on transaction type
 		switch tx.Type {
-		case TransactionTypeDeposit:
+		case entities.TransactionTypeDeposit:
 			return s.processDeposit(ctx, dbTx, tx)
-		case TransactionTypeWithdrawal:
+		case entities.TransactionTypeWithdrawal:
 			return s.processWithdrawal(ctx, dbTx, tx)
-		case TransactionTypeInvestment:
+		case entities.TransactionTypeInvestment:
 			return s.processInvestment(ctx, dbTx, tx)
-		case TransactionTypeTransfer:
+		case entities.TransactionTypeInternalTransfer:
 			return s.processTransfer(ctx, dbTx, tx)
 		default:
 			return &errors.AppError{
@@ -139,8 +120,8 @@ func (s *Service) ProcessTransaction(ctx context.Context, tx *Transaction) (*Tra
 	})
 
 	if err != nil {
-		tx.Status = TransactionStatusFailed
-		s.updateTransactionStatus(ctx, tx.ID, TransactionStatusFailed)
+		tx.Status = entities.TransactionStatusFailed
+		s.updateTransactionStatus(ctx, tx.ID, entities.TransactionStatusFailed)
 		
 		metrics.RecordTransaction(string(tx.Type), "failed", tx.Currency, 0)
 		return nil, err
@@ -148,11 +129,11 @@ func (s *Service) ProcessTransaction(ctx context.Context, tx *Transaction) (*Tra
 
 	// Mark as processed
 	now := time.Now().UTC()
-	tx.Status = TransactionStatusProcessed
+	tx.Status = entities.TransactionStatusCompleted
 	tx.ProcessedAt = &now
 	tx.UpdatedAt = now
 
-	s.updateTransactionStatus(ctx, tx.ID, TransactionStatusProcessed)
+	s.updateTransactionStatus(ctx, tx.ID, entities.TransactionStatusCompleted)
 	s.setProcessedTransaction(tx.IdempotencyKey, tx)
 
 	// Record metrics
@@ -228,7 +209,7 @@ func (s *Service) insertTransaction(ctx context.Context, tx *sql.Tx, transaction
 }
 
 // updateTransactionStatus updates transaction status
-func (s *Service) updateTransactionStatus(ctx context.Context, id uuid.UUID, status TransactionStatus) error {
+func (s *Service) updateTransactionStatus(ctx context.Context, id uuid.UUID, status entities.TransactionStatus) error {
 	query := `UPDATE transactions SET status = $1, updated_at = $2 WHERE id = $3`
 	_, err := s.db.ExecContext(ctx, query, status, time.Now().UTC(), id)
 	return err

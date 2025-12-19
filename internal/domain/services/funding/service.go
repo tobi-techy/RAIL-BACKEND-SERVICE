@@ -3,7 +3,6 @@ package funding
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -101,6 +100,7 @@ type CircleAdapter interface {
 // VirtualAccountRepository interface for virtual account persistence
 type VirtualAccountRepository interface {
 	Create(ctx context.Context, account *entities.VirtualAccount) error
+	Update(ctx context.Context, account *entities.VirtualAccount) error
 	GetByID(ctx context.Context, id uuid.UUID) (*entities.VirtualAccount, error)
 	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.VirtualAccount, error)
 	GetByAlpacaAccountID(ctx context.Context, alpacaAccountID string) (*entities.VirtualAccount, error)
@@ -312,12 +312,11 @@ func (s *Service) GetBalance(ctx context.Context, userID uuid.UUID) (*entities.B
 func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.ChainDepositWebhook) error {
 	s.logger.Info("Processing chain deposit", "chain", webhook.Chain, "tx_hash", webhook.TxHash, "amount", webhook.Amount)
 
-	// Parse and validate amount
-	amountFloat, err := strconv.ParseFloat(webhook.Amount, 64)
+	// Parse amount directly to decimal (never use float for money)
+	amount, err := decimal.NewFromString(webhook.Amount)
 	if err != nil {
 		return fmt.Errorf("invalid deposit amount %q: %w", webhook.Amount, err)
 	}
-	amount := decimal.NewFromFloat(amountFloat)
 
 	// Validate minimum deposit amount
 	if s.validationService != nil {
@@ -520,10 +519,10 @@ func (s *Service) CreateVirtualAccount(ctx context.Context, req *entities.Create
 		return nil, fmt.Errorf("no active USD virtual account found for user")
 	}
 
-	// Update with Alpaca account ID
+	// Update existing virtual account with Alpaca account ID
 	virtualAccount.AlpacaAccountID = req.AlpacaAccountID
-	if err := s.virtualAccountRepo.Create(ctx, virtualAccount); err != nil {
-		return nil, fmt.Errorf("failed to store virtual account: %w", err)
+	if err := s.virtualAccountRepo.Update(ctx, virtualAccount); err != nil {
+		return nil, fmt.Errorf("failed to update virtual account: %w", err)
 	}
 
 	s.logger.Info("Virtual account linked successfully",

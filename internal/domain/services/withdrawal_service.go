@@ -493,3 +493,96 @@ func (s *WithdrawalService) compensateAlpacaDebit(ctx context.Context, withdrawa
 
 	return nil
 }
+
+// StuckWithdrawalRepository interface for stuck withdrawal queries
+type StuckWithdrawalRepository interface {
+	GetStuckWithdrawals(ctx context.Context, slaThreshold time.Duration) ([]*entities.Withdrawal, error)
+	MarkTimeout(ctx context.Context, id uuid.UUID) error
+}
+
+// ReconcileStuckWithdrawals queries provider for actual status of stuck withdrawals
+// This is a fallback when webhooks fail - implements status enquiry pattern
+func (s *WithdrawalService) ReconcileStuckWithdrawals(ctx context.Context, slaThreshold time.Duration) error {
+	s.logger.Info("Starting stuck withdrawal reconciliation", "sla_threshold", slaThreshold.String())
+
+	// Type assert to get the extended interface
+	stuckRepo, ok := s.withdrawalRepo.(StuckWithdrawalRepository)
+	if !ok {
+		return fmt.Errorf("withdrawal repository does not support GetStuckWithdrawals")
+	}
+
+	stuckWithdrawals, err := stuckRepo.GetStuckWithdrawals(ctx, slaThreshold)
+	if err != nil {
+		return fmt.Errorf("failed to get stuck withdrawals: %w", err)
+	}
+
+	s.logger.Info("Found stuck withdrawals", "count", len(stuckWithdrawals))
+
+	for _, w := range stuckWithdrawals {
+		if err := s.reconcileSingleWithdrawal(ctx, w, stuckRepo); err != nil {
+			s.logger.Warn("Failed to reconcile withdrawal",
+				"withdrawal_id", w.ID.String(),
+				"error", err.Error())
+			continue
+		}
+	}
+
+	return nil
+}
+
+// reconcileSingleWithdrawal queries the provider for actual status and updates accordingly
+func (s *WithdrawalService) reconcileSingleWithdrawal(ctx context.Context, w *entities.Withdrawal, stuckRepo StuckWithdrawalRepository) error {
+	// Only query provider if we have a transfer ID
+	if w.DueTransferID == nil {
+		// No transfer ID means it's stuck before provider submission
+		// Mark as timeout so it can be retried or manually resolved
+		s.logger.Warn("Withdrawal stuck without transfer ID, marking timeout",
+			"withdrawal_id", w.ID.String(),
+			"status", w.Status)
+		return stuckRepo.MarkTimeout(ctx, w.ID)
+	}
+
+	// Query provider for actual status
+	var status *OnRampTransferResponse
+	var statusErr error
+	err := s.providerBreaker.Execute(ctx, func() error {
+		status, statusErr = s.withdrawalProvider.GetTransferStatus(ctx, *w.DueTransferID)
+		return statusErr
+	})
+	if err != nil {
+		s.logger.Warn("Failed to get transfer status from provider",
+			"withdrawal_id", w.ID.String(),
+			"transfer_id", *w.DueTransferID,
+			"error", err.Error())
+		// Mark as timeout - provider unreachable
+		return stuckRepo.MarkTimeout(ctx, w.ID)
+	}
+
+	s.logger.Info("Got status from provider for stuck withdrawal",
+		"withdrawal_id", w.ID.String(),
+		"provider_status", status.Status)
+
+	// Update based on actual status from provider
+	switch status.Status {
+	case "completed":
+		if err := s.withdrawalRepo.MarkCompleted(ctx, w.ID); err != nil {
+			return fmt.Errorf("failed to mark completed: %w", err)
+		}
+		s.logger.Info("Reconciled stuck withdrawal as completed", "withdrawal_id", w.ID.String())
+
+	case "failed":
+		if err := s.withdrawalRepo.MarkFailed(ctx, w.ID, "Provider reported failure during reconciliation"); err != nil {
+			return fmt.Errorf("failed to mark failed: %w", err)
+		}
+		s.logger.Info("Reconciled stuck withdrawal as failed", "withdrawal_id", w.ID.String())
+
+	default:
+		// Still processing - mark as timeout if beyond SLA
+		if err := stuckRepo.MarkTimeout(ctx, w.ID); err != nil {
+			return fmt.Errorf("failed to mark timeout: %w", err)
+		}
+		s.logger.Info("Marked stuck withdrawal as timeout", "withdrawal_id", w.ID.String())
+	}
+
+	return nil
+}

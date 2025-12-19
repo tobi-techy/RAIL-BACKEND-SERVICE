@@ -28,17 +28,20 @@ type BridgeWebhookService interface {
 
 // BridgeWebhookHandler handles Bridge API webhook notifications
 type BridgeWebhookHandler struct {
-	service       BridgeWebhookService
-	logger        *zap.Logger
-	webhookSecret string
+	service                    BridgeWebhookService
+	logger                     *zap.Logger
+	webhookSecret              string
+	skipWebhookVerification    bool // Explicit opt-out flag for development/testing only
 }
 
 // NewBridgeWebhookHandler creates a new Bridge webhook handler
-func NewBridgeWebhookHandler(service BridgeWebhookService, logger *zap.Logger, webhookSecret string) *BridgeWebhookHandler {
+// skipWebhookVerification should only be true in development/testing environments
+func NewBridgeWebhookHandler(service BridgeWebhookService, logger *zap.Logger, webhookSecret string, skipWebhookVerification bool) *BridgeWebhookHandler {
 	return &BridgeWebhookHandler{
-		service:       service,
-		logger:        logger,
-		webhookSecret: webhookSecret,
+		service:                 service,
+		logger:                  logger,
+		webhookSecret:           webhookSecret,
+		skipWebhookVerification: skipWebhookVerification,
 	}
 }
 
@@ -181,7 +184,16 @@ func (h *BridgeWebhookHandler) handleTransferCompleted(c *gin.Context, payload B
 
 	var amount decimal.Decimal
 	if amountStr, ok := payload.EventObject["amount"].(string); ok {
-		amount, _ = decimal.NewFromString(amountStr)
+		var err error
+		amount, err = decimal.NewFromString(amountStr)
+		if err != nil {
+			h.logger.Error("Failed to parse transfer amount",
+				zap.String("transfer_id", transferID),
+				zap.String("raw_amount", amountStr),
+				zap.Error(err))
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid amount format"})
+			return
+		}
 	}
 
 	if err := h.service.ProcessTransferCompleted(c, transferID, amount); err != nil {
@@ -220,7 +232,16 @@ func (h *BridgeWebhookHandler) handleCardAuthorization(c *gin.Context, payload B
 	
 	var amount decimal.Decimal
 	if amountStr, ok := payload.EventObject["amount"].(string); ok {
-		amount, _ = decimal.NewFromString(amountStr)
+		var err error
+		amount, err = decimal.NewFromString(amountStr)
+		if err != nil {
+			h.logger.Error("Failed to parse card authorization amount",
+				zap.String("card_id", cardID),
+				zap.String("raw_amount", amountStr),
+				zap.Error(err))
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid amount format"})
+			return
+		}
 	}
 	
 	merchantName := ""
@@ -255,7 +276,17 @@ func (h *BridgeWebhookHandler) handleCardTransaction(c *gin.Context, payload Bri
 	
 	var amount decimal.Decimal
 	if amountStr, ok := payload.EventObject["amount"].(string); ok {
-		amount, _ = decimal.NewFromString(amountStr)
+		var err error
+		amount, err = decimal.NewFromString(amountStr)
+		if err != nil {
+			h.logger.Error("Failed to parse card transaction amount",
+				zap.String("card_id", cardID),
+				zap.String("transaction_id", transID),
+				zap.String("raw_amount", amountStr),
+				zap.Error(err))
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid amount format"})
+			return
+		}
 	}
 	
 	merchantName := ""
@@ -326,8 +357,12 @@ func (h *BridgeWebhookHandler) handleCardStatusChanged(c *gin.Context, payload B
 
 func (h *BridgeWebhookHandler) verifySignature(signature string, body []byte) bool {
 	if h.webhookSecret == "" {
-		h.logger.Warn("Bridge webhook secret not configured - skipping verification")
-		return true
+		if h.skipWebhookVerification {
+			h.logger.Warn("Bridge webhook secret not configured - SKIPPING VERIFICATION (development mode)")
+			return true
+		}
+		h.logger.Error("Bridge webhook secret not configured - rejecting webhook for security")
+		return false
 	}
 
 	mac := hmac.New(sha256.New, []byte(h.webhookSecret))
@@ -341,6 +376,7 @@ func (h *BridgeWebhookHandler) verifySignature(signature string, body []byte) bo
 type BridgeWebhookServiceImpl struct {
 	virtualAccountService BridgeVirtualAccountProcessor
 	customerService       BridgeCustomerProcessor
+	cardService           BridgeCardProcessor
 	notifier              BridgeWebhookNotifier
 	logger                *zap.Logger
 }
@@ -355,6 +391,14 @@ type BridgeCustomerProcessor interface {
 	UpdateCustomerStatus(ctx *gin.Context, customerID string, status string) error
 }
 
+// BridgeCardProcessor processes card events
+type BridgeCardProcessor interface {
+	ProcessAuthorization(ctx *gin.Context, cardID string, amount decimal.Decimal, merchantName, merchantCategory string) error
+	RecordTransaction(ctx *gin.Context, cardID, transactionID string, amount decimal.Decimal, merchantName, merchantCategory, status string) error
+	RecordDeclinedTransaction(ctx *gin.Context, cardID, transactionID, declineReason string) error
+	SyncCardStatus(ctx *gin.Context, cardID, status string) error
+}
+
 // BridgeWebhookNotifier sends notifications for Bridge events
 type BridgeWebhookNotifier interface {
 	NotifyDepositReceived(ctx *gin.Context, userID uuid.UUID, amount, currency string) error
@@ -365,12 +409,14 @@ type BridgeWebhookNotifier interface {
 func NewBridgeWebhookService(
 	virtualAccountService BridgeVirtualAccountProcessor,
 	customerService BridgeCustomerProcessor,
+	cardService BridgeCardProcessor,
 	notifier BridgeWebhookNotifier,
 	logger *zap.Logger,
 ) *BridgeWebhookServiceImpl {
 	return &BridgeWebhookServiceImpl{
 		virtualAccountService: virtualAccountService,
 		customerService:       customerService,
+		cardService:           cardService,
 		notifier:              notifier,
 		logger:                logger,
 	}
@@ -392,40 +438,40 @@ func (s *BridgeWebhookServiceImpl) ProcessCustomerStatusChanged(ctx *gin.Context
 	return nil
 }
 
-// Card processing methods - these will be wired to the card service
+// Card processing methods - wired to CardService
 
 func (s *BridgeWebhookServiceImpl) ProcessCardAuthorization(ctx *gin.Context, cardID string, amount decimal.Decimal, merchantName, merchantCategory string) error {
-	s.logger.Info("Card authorization processed",
-		zap.String("card_id", cardID),
-		zap.String("amount", amount.String()),
-		zap.String("merchant", merchantName))
-	// Card service will be injected to handle real-time authorization
-	return nil
+	if s.cardService == nil {
+		s.logger.Warn("Card service not configured, skipping authorization processing",
+			zap.String("card_id", cardID))
+		return nil
+	}
+	return s.cardService.ProcessAuthorization(ctx, cardID, amount, merchantName, merchantCategory)
 }
 
 func (s *BridgeWebhookServiceImpl) ProcessCardTransaction(ctx *gin.Context, cardID, transID string, amount decimal.Decimal, merchantName, merchantCategory, status string) error {
-	s.logger.Info("Card transaction recorded",
-		zap.String("card_id", cardID),
-		zap.String("transaction_id", transID),
-		zap.String("amount", amount.String()),
-		zap.String("status", status))
-	// Card service will be injected to record transactions
-	return nil
+	if s.cardService == nil {
+		s.logger.Warn("Card service not configured, skipping transaction processing",
+			zap.String("card_id", cardID))
+		return nil
+	}
+	return s.cardService.RecordTransaction(ctx, cardID, transID, amount, merchantName, merchantCategory, status)
 }
 
 func (s *BridgeWebhookServiceImpl) ProcessCardTransactionDeclined(ctx *gin.Context, cardID, transID, declineReason string) error {
-	s.logger.Warn("Card transaction declined",
-		zap.String("card_id", cardID),
-		zap.String("transaction_id", transID),
-		zap.String("reason", declineReason))
-	// Card service will be injected to record declined transactions
-	return nil
+	if s.cardService == nil {
+		s.logger.Warn("Card service not configured, skipping declined transaction processing",
+			zap.String("card_id", cardID))
+		return nil
+	}
+	return s.cardService.RecordDeclinedTransaction(ctx, cardID, transID, declineReason)
 }
 
 func (s *BridgeWebhookServiceImpl) ProcessCardStatusChanged(ctx *gin.Context, cardID, status string) error {
-	s.logger.Info("Card status changed",
-		zap.String("card_id", cardID),
-		zap.String("status", status))
-	// Card service will be injected to sync card status
-	return nil
+	if s.cardService == nil {
+		s.logger.Warn("Card service not configured, skipping status change processing",
+			zap.String("card_id", cardID))
+		return nil
+	}
+	return s.cardService.SyncCardStatus(ctx, cardID, status)
 }

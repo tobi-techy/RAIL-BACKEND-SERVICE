@@ -1,0 +1,20 @@
+meta {
+  name: Get Card Transactions
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/cards/transactions
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+query {
+  limit: 20
+  offset: 0
+}

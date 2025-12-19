@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS allocation_events (
     total_amount NUMERIC(36,18) NOT NULL CHECK (total_amount > 0),
     stash_amount NUMERIC(36,18) NOT NULL CHECK (stash_amount >= 0),
     spending_amount NUMERIC(36,18) NOT NULL CHECK (spending_amount >= 0),
-    event_type VARCHAR(20) NOT NULL CHECK (event_type IN ('deposit', 'cashback', 'roundup', 'transfer')),
+    event_type VARCHAR(20) NOT NULL CHECK (event_type IN ('deposit', 'fiat_deposit', 'crypto_deposit', 'cashback', 'roundup', 'transfer')),
     source_tx_id TEXT,
     metadata JSONB,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()

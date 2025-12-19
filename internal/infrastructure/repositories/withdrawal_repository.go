@@ -210,3 +210,48 @@ func (r *WithdrawalRepository) GetTotalCompletedWithdrawals(ctx context.Context)
 	
 	return total, nil
 }
+
+// GetStuckWithdrawals returns withdrawals stuck in non-terminal states beyond the SLA threshold
+// Used for status enquiry reconciliation when webhooks fail
+func (r *WithdrawalRepository) GetStuckWithdrawals(ctx context.Context, slaThreshold time.Duration) ([]*entities.Withdrawal, error) {
+	cutoff := time.Now().Add(-slaThreshold)
+	query := `
+		SELECT id, user_id, alpaca_account_id, amount, destination_chain, destination_address,
+			status, alpaca_journal_id, due_transfer_id, due_recipient_id, tx_hash, error_message,
+			created_at, updated_at, completed_at
+		FROM withdrawals
+		WHERE status NOT IN ($1, $2, $3)
+		  AND updated_at < $4
+		ORDER BY updated_at ASC
+		LIMIT 100
+	`
+
+	var withdrawals []*entities.Withdrawal
+	err := r.db.SelectContext(ctx, &withdrawals, query,
+		entities.WithdrawalStatusCompleted,
+		entities.WithdrawalStatusFailed,
+		entities.WithdrawalStatusReversed,
+		cutoff,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get stuck withdrawals: %w", err)
+	}
+
+	return withdrawals, nil
+}
+
+// MarkTimeout marks a withdrawal as timed out (no response within SLA)
+func (r *WithdrawalRepository) MarkTimeout(ctx context.Context, id uuid.UUID) error {
+	query := `
+		UPDATE withdrawals
+		SET status = $1, updated_at = $2
+		WHERE id = $3
+	`
+
+	_, err := r.db.ExecContext(ctx, query, entities.WithdrawalStatusTimeout, time.Now(), id)
+	if err != nil {
+		return fmt.Errorf("failed to mark withdrawal timeout: %w", err)
+	}
+
+	return nil
+}

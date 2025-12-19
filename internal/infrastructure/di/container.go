@@ -2078,12 +2078,16 @@ func (c *Container) initializeBridgeServices() {
 		c.ZapLog.Warn("Bridge webhook secret not configured")
 	}
 
+	// Determine if webhook verification should be skipped (only in development)
+	skipWebhookVerification := c.Config.Environment == "development" && webhookSecret == ""
+
 	// Create a minimal webhook service for now
 	// Full service will be wired after domain services are initialized
 	c.BridgeWebhookHandler = handlers.NewBridgeWebhookHandler(
 		nil, // Service will be set later
 		c.ZapLog,
 		webhookSecret,
+		skipWebhookVerification,
 	)
 
 	c.ZapLog.Info("Bridge webhook handler initialized")
