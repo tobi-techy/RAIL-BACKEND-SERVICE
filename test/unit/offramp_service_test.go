@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-	"github.com/rail-service/rail_service/internal/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/adapters/due"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/pkg/logger"
@@ -16,11 +15,11 @@ import (
 	"github.com/stretchr/testify/mock"
 )
 
-type MockDueAdapter struct {
+type MockOffRampDueAdapter struct {
 	mock.Mock
 }
 
-func (m *MockDueAdapter) InitiateOffRamp(ctx context.Context, req *due.OffRampRequest) (*due.OffRampResponse, error) {
+func (m *MockOffRampDueAdapter) InitiateOffRamp(ctx context.Context, req *due.OffRampRequest) (*due.OffRampResponse, error) {
 	args := m.Called(ctx, req)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
@@ -28,7 +27,7 @@ func (m *MockDueAdapter) InitiateOffRamp(ctx context.Context, req *due.OffRampRe
 	return args.Get(0).(*due.OffRampResponse), args.Error(1)
 }
 
-func (m *MockDueAdapter) GetTransferStatus(ctx context.Context, transferID string) (*due.OffRampResponse, error) {
+func (m *MockOffRampDueAdapter) GetTransferStatus(ctx context.Context, transferID string) (*due.OffRampResponse, error) {
 	args := m.Called(ctx, transferID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
@@ -36,28 +35,28 @@ func (m *MockDueAdapter) GetTransferStatus(ctx context.Context, transferID strin
 	return args.Get(0).(*due.OffRampResponse), args.Error(1)
 }
 
-type MockAlpacaAdapter struct {
+type MockOffRampAlpacaAdapter struct {
 	mock.Mock
 }
 
-func (m *MockAlpacaAdapter) InitiateFunding(ctx context.Context, req *alpaca.FundingRequest) (*alpaca.FundingResponse, error) {
+func (m *MockOffRampAlpacaAdapter) InitiateFunding(ctx context.Context, req *entities.AlpacaInstantFundingRequest) (*entities.AlpacaInstantFundingResponse, error) {
 	args := m.Called(ctx, req)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).(*alpaca.FundingResponse), args.Error(1)
+	return args.Get(0).(*entities.AlpacaInstantFundingResponse), args.Error(1)
 }
 
-type MockDepositRepo struct {
+type MockOffRampDepositRepo struct {
 	mock.Mock
 }
 
-func (m *MockDepositRepo) Create(ctx context.Context, deposit *entities.Deposit) error {
+func (m *MockOffRampDepositRepo) Create(ctx context.Context, deposit *entities.Deposit) error {
 	args := m.Called(ctx, deposit)
 	return args.Error(0)
 }
 
-func (m *MockDepositRepo) GetByOffRampTxID(ctx context.Context, txID string) (*entities.Deposit, error) {
+func (m *MockOffRampDepositRepo) GetByOffRampTxID(ctx context.Context, txID string) (*entities.Deposit, error) {
 	args := m.Called(ctx, txID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
@@ -65,16 +64,16 @@ func (m *MockDepositRepo) GetByOffRampTxID(ctx context.Context, txID string) (*e
 	return args.Get(0).(*entities.Deposit), args.Error(1)
 }
 
-func (m *MockDepositRepo) Update(ctx context.Context, deposit *entities.Deposit) error {
+func (m *MockOffRampDepositRepo) Update(ctx context.Context, deposit *entities.Deposit) error {
 	args := m.Called(ctx, deposit)
 	return args.Error(0)
 }
 
-type MockVirtualAccountRepo struct {
+type MockOffRampVirtualAccountRepo struct {
 	mock.Mock
 }
 
-func (m *MockVirtualAccountRepo) GetByDueAccountID(ctx context.Context, dueAccountID string) (*entities.VirtualAccount, error) {
+func (m *MockOffRampVirtualAccountRepo) GetByDueAccountID(ctx context.Context, dueAccountID string) (*entities.VirtualAccount, error) {
 	args := m.Called(ctx, dueAccountID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
@@ -82,7 +81,7 @@ func (m *MockVirtualAccountRepo) GetByDueAccountID(ctx context.Context, dueAccou
 	return args.Get(0).(*entities.VirtualAccount), args.Error(1)
 }
 
-func (m *MockVirtualAccountRepo) GetByID(ctx context.Context, id uuid.UUID) (*entities.VirtualAccount, error) {
+func (m *MockOffRampVirtualAccountRepo) GetByID(ctx context.Context, id uuid.UUID) (*entities.VirtualAccount, error) {
 	args := m.Called(ctx, id)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
@@ -91,10 +90,10 @@ func (m *MockVirtualAccountRepo) GetByID(ctx context.Context, id uuid.UUID) (*en
 }
 
 func TestInitiateOffRamp_Success(t *testing.T) {
-	mockDue := new(MockDueAdapter)
-	mockDeposit := new(MockDepositRepo)
-	mockVA := new(MockVirtualAccountRepo)
-	log := logger.NewLogger("test")
+	mockDue := new(MockOffRampDueAdapter)
+	mockDeposit := new(MockOffRampDepositRepo)
+	mockVA := new(MockOffRampVirtualAccountRepo)
+	log := logger.New("debug", "test")
 
 	vaID := uuid.New()
 	userID := uuid.New()
@@ -126,10 +125,10 @@ func TestInitiateOffRamp_Success(t *testing.T) {
 }
 
 func TestInitiateOffRamp_VirtualAccountNotFound(t *testing.T) {
-	mockDue := new(MockDueAdapter)
-	mockDeposit := new(MockDepositRepo)
-	mockVA := new(MockVirtualAccountRepo)
-	log := logger.NewLogger("test")
+	mockDue := new(MockOffRampDueAdapter)
+	mockDeposit := new(MockOffRampDepositRepo)
+	mockVA := new(MockOffRampVirtualAccountRepo)
+	log := logger.New("debug", "test")
 
 	mockVA.On("GetByDueAccountID", mock.Anything, "va_invalid").Return(nil, errors.New("not found"))
 
@@ -141,10 +140,10 @@ func TestInitiateOffRamp_VirtualAccountNotFound(t *testing.T) {
 }
 
 func TestHandleTransferCompleted_Success(t *testing.T) {
-	mockDue := new(MockDueAdapter)
-	mockAlpaca := new(MockAlpacaAdapter)
-	mockDeposit := new(MockDepositRepo)
-	mockVA := new(MockVirtualAccountRepo)
+	mockDue := new(MockOffRampDueAdapter)
+	mockAlpaca := new(MockOffRampAlpacaAdapter)
+	mockDeposit := new(MockOffRampDepositRepo)
+	mockVA := new(MockOffRampVirtualAccountRepo)
 
 	depositID := uuid.New()
 	vaID := uuid.New()
@@ -169,10 +168,10 @@ func TestHandleTransferCompleted_Success(t *testing.T) {
 		AlpacaAccountID: "alpaca_123",
 	}, nil)
 
-	mockAlpaca.On("InitiateFunding", mock.Anything, mock.AnythingOfType("*alpaca.FundingRequest")).Return(&alpaca.FundingResponse{
-		AccountID: "alpaca_123",
-		Status:    "pending",
-		Reference: "ref_123",
+	mockAlpaca.On("InitiateFunding", mock.Anything, mock.AnythingOfType("*entities.AlpacaInstantFundingRequest")).Return(&entities.AlpacaInstantFundingResponse{
+		ID:        "funding_123",
+		AccountNo: "alpaca_123",
+		Status:    "PENDING",
 	}, nil)
 
 	err := handleTransferCompletedTest(context.Background(), mockDue, mockAlpaca, mockDeposit, mockVA, transferID)
@@ -184,7 +183,7 @@ func TestHandleTransferCompleted_Success(t *testing.T) {
 	mockAlpaca.AssertExpectations(t)
 }
 
-func initiateOffRampTest(ctx context.Context, dueAdapter *MockDueAdapter, depositRepo *MockDepositRepo, vaRepo *MockVirtualAccountRepo, log *logger.Logger, vaID, amount string) error {
+func initiateOffRampTest(ctx context.Context, dueAdapter *MockOffRampDueAdapter, depositRepo *MockOffRampDepositRepo, vaRepo *MockOffRampVirtualAccountRepo, log *logger.Logger, vaID, amount string) error {
 	va, err := vaRepo.GetByDueAccountID(ctx, vaID)
 	if err != nil {
 		return errors.New("failed to get virtual account: " + err.Error())
@@ -196,10 +195,9 @@ func initiateOffRampTest(ctx context.Context, dueAdapter *MockDueAdapter, deposi
 		UserID:           va.UserID,
 		VirtualAccountID: &va.ID,
 		Amount:           amountDecimal,
-		Currency:         "USDC",
+		Token:            entities.StablecoinUSDC,
 		Status:           "off_ramp_initiated",
 		CreatedAt:        time.Now(),
-		UpdatedAt:        time.Now(),
 	}
 
 	if err := depositRepo.Create(ctx, deposit); err != nil {
@@ -221,7 +219,7 @@ func initiateOffRampTest(ctx context.Context, dueAdapter *MockDueAdapter, deposi
 	return depositRepo.Update(ctx, deposit)
 }
 
-func handleTransferCompletedTest(ctx context.Context, dueAdapter *MockDueAdapter, alpacaAdapter *MockAlpacaAdapter, depositRepo *MockDepositRepo, vaRepo *MockVirtualAccountRepo, transferID string) error {
+func handleTransferCompletedTest(ctx context.Context, dueAdapter *MockOffRampDueAdapter, alpacaAdapter *MockOffRampAlpacaAdapter, depositRepo *MockOffRampDepositRepo, vaRepo *MockOffRampVirtualAccountRepo, transferID string) error {
 	deposit, err := depositRepo.GetByOffRampTxID(ctx, transferID)
 	if err != nil {
 		return err
@@ -242,8 +240,8 @@ func handleTransferCompletedTest(ctx context.Context, dueAdapter *MockDueAdapter
 		return err
 	}
 
-	fundReq := &alpaca.FundingRequest{
-		AccountID: va.AlpacaAccountID,
+	fundReq := &entities.AlpacaInstantFundingRequest{
+		AccountNo: va.AlpacaAccountID,
 		Amount:    decimal.NewFromFloat(99.5),
 	}
 
