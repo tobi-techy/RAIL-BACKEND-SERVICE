@@ -39,6 +39,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	"github.com/rail-service/rail_service/internal/domain/services/socialauth"
 	"github.com/rail-service/rail_service/internal/domain/services/station"
+	"github.com/rail-service/rail_service/internal/domain/services/strategy"
 	"github.com/rail-service/rail_service/internal/domain/services/twofa"
 	"github.com/rail-service/rail_service/internal/domain/services/wallet"
 	"github.com/rail-service/rail_service/internal/domain/services/webauthn"
@@ -329,6 +330,7 @@ type Container struct {
 	ReconciliationScheduler *reconciliation.Scheduler
 	AllocationService       *allocation.Service
 	AutoInvestService       *autoinvest.Service
+	StrategyEngine          *strategy.Engine
 	StationService          *station.Service
 	NotificationService     *services.NotificationService
 	SocialAuthService       *socialauth.Service
@@ -822,6 +824,10 @@ func (c *Container) initializeDomainServices() error {
 		logger:         c.ZapLog,
 	}
 	c.AutoInvestService.SetOrderPlacer(autoInvestOrderPlacer)
+
+	// Initialize strategy engine and wire to auto-invest service
+	c.StrategyEngine = strategy.NewEngine(&strategyUserProfileAdapter{userRepo: c.UserRepo}, c.Logger)
+	c.AutoInvestService.SetStrategyEngine(c.StrategyEngine)
 
 	// Initialize reconciliation service
 	if err := c.initializeReconciliationService(); err != nil {
@@ -1829,6 +1835,18 @@ func (a *autoInvestOrderPlacerAdapter) PlaceMarketOrder(ctx context.Context, use
 	}
 
 	return alpacaOrder, nil
+}
+
+// strategyUserProfileAdapter adapts UserRepository for strategy engine
+type strategyUserProfileAdapter struct {
+	userRepo *repositories.UserRepository
+}
+
+func (a *strategyUserProfileAdapter) GetByID(ctx context.Context, id uuid.UUID) (*entities.UserProfile, error) {
+	if a.userRepo == nil {
+		return nil, fmt.Errorf("user repository not available")
+	}
+	return a.userRepo.GetByID(ctx, id)
 }
 
 // orderPlacerAdapter implements OrderPlacer interface for scheduled investments
