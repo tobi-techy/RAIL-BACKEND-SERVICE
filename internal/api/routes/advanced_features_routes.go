@@ -23,9 +23,11 @@ func RegisterAdvancedFeaturesRoutes(
 	analytics := router.Group("/analytics")
 	analytics.Use(middleware.Authentication(cfg, log, sessionValidator))
 	{
+		analytics.GET("/dashboard", analyticsHandlers.GetDashboard)
 		analytics.GET("/performance", analyticsHandlers.GetPerformanceMetrics)
 		analytics.GET("/risk", analyticsHandlers.GetRiskMetrics)
 		analytics.GET("/diversification", analyticsHandlers.GetDiversificationAnalysis)
+		analytics.GET("/history", analyticsHandlers.GetPortfolioHistory)
 		analytics.POST("/snapshot", analyticsHandlers.TakeSnapshot)
 	}
 
