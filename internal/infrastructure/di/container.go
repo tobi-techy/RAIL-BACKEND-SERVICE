@@ -1670,6 +1670,8 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 		&cardBalanceAdapter{ledgerService: c.LedgerService},
 		c.ZapLog,
 	)
+	// Wire ledger service to card service for transaction ledger entries
+	c.CardService.SetLedgerService(c.LedgerService)
 
 	c.ZapLog.Info("Advanced features initialized")
 	return nil
