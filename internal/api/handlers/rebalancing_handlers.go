@@ -30,10 +30,10 @@ func (h *RebalancingHandlers) CreateRebalancingConfig(c *gin.Context) {
 	}
 
 	var req struct {
-		Name         string             `json:"name" binding:"required"`
-		Allocations  map[string]float64 `json:"allocations" binding:"required"`
-		ThresholdPct float64            `json:"threshold_pct"`
-		Frequency    *string            `json:"frequency"`
+		Name         string            `json:"name" binding:"required"`
+		Allocations  map[string]string `json:"allocations" binding:"required"` // String for precise decimal (e.g., "25.5")
+		ThresholdPct string            `json:"threshold_pct"`                  // String for precise decimal (e.g., "5.0")
+		Frequency    *string           `json:"frequency"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondBadRequest(c, "Invalid request: "+err.Error())
@@ -42,12 +42,22 @@ func (h *RebalancingHandlers) CreateRebalancingConfig(c *gin.Context) {
 
 	allocations := make(map[string]decimal.Decimal)
 	for sym, pct := range req.Allocations {
-		allocations[sym] = decimal.NewFromFloat(pct)
+		d, err := decimal.NewFromString(pct)
+		if err != nil {
+			respondBadRequest(c, "Invalid allocation percentage for "+sym)
+			return
+		}
+		allocations[sym] = d
 	}
 
 	thresholdPct := decimal.NewFromFloat(5.0)
-	if req.ThresholdPct > 0 {
-		thresholdPct = decimal.NewFromFloat(req.ThresholdPct)
+	if req.ThresholdPct != "" {
+		t, err := decimal.NewFromString(req.ThresholdPct)
+		if err != nil {
+			respondBadRequest(c, "Invalid threshold_pct format")
+			return
+		}
+		thresholdPct = t
 	}
 
 	config, err := h.service.CreateRebalancingConfig(c.Request.Context(), userID, req.Name, allocations, thresholdPct, req.Frequency)
@@ -112,8 +122,8 @@ func (h *RebalancingHandlers) UpdateRebalancingConfig(c *gin.Context) {
 	}
 
 	var req struct {
-		Allocations  map[string]float64 `json:"allocations"`
-		ThresholdPct *float64           `json:"threshold_pct"`
+		Allocations  map[string]string `json:"allocations"`   // String for precise decimal (e.g., "25.5")
+		ThresholdPct *string           `json:"threshold_pct"` // String for precise decimal (e.g., "5.0")
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondBadRequest(c, "Invalid request")
@@ -124,13 +134,22 @@ func (h *RebalancingHandlers) UpdateRebalancingConfig(c *gin.Context) {
 	if req.Allocations != nil {
 		allocations = make(map[string]decimal.Decimal)
 		for sym, pct := range req.Allocations {
-			allocations[sym] = decimal.NewFromFloat(pct)
+			d, err := decimal.NewFromString(pct)
+			if err != nil {
+				respondBadRequest(c, "Invalid allocation percentage for "+sym)
+				return
+			}
+			allocations[sym] = d
 		}
 	}
 
 	var thresholdPct *decimal.Decimal
 	if req.ThresholdPct != nil {
-		t := decimal.NewFromFloat(*req.ThresholdPct)
+		t, err := decimal.NewFromString(*req.ThresholdPct)
+		if err != nil {
+			respondBadRequest(c, "Invalid threshold_pct format")
+			return
+		}
 		thresholdPct = &t
 	}
 

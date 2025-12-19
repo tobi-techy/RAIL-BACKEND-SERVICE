@@ -31,16 +31,22 @@ func (h *ScheduledInvestmentHandlers) CreateScheduledInvestment(c *gin.Context) 
 	}
 
 	var req struct {
-		Name       *string  `json:"name"`
-		Symbol     *string  `json:"symbol"`
-		BasketID   *string  `json:"basket_id"`
-		Amount     float64  `json:"amount" binding:"required,gt=0"`
-		Frequency  string   `json:"frequency" binding:"required"`
-		DayOfWeek  *int     `json:"day_of_week"`
-		DayOfMonth *int     `json:"day_of_month"`
+		Name       *string `json:"name"`
+		Symbol     *string `json:"symbol"`
+		BasketID   *string `json:"basket_id"`
+		Amount     string  `json:"amount" binding:"required"` // String for precise decimal (e.g., "100.00")
+		Frequency  string  `json:"frequency" binding:"required"`
+		DayOfWeek  *int    `json:"day_of_week"`
+		DayOfMonth *int    `json:"day_of_month"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondBadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	amount, err := decimal.NewFromString(req.Amount)
+	if err != nil || amount.LessThanOrEqual(decimal.Zero) {
+		respondBadRequest(c, "Invalid amount format, must be positive decimal string")
 		return
 	}
 
@@ -48,7 +54,7 @@ func (h *ScheduledInvestmentHandlers) CreateScheduledInvestment(c *gin.Context) 
 		UserID:     userID,
 		Name:       req.Name,
 		Symbol:     req.Symbol,
-		Amount:     decimal.NewFromFloat(req.Amount),
+		Amount:     amount,
 		Frequency:  req.Frequency,
 		DayOfWeek:  req.DayOfWeek,
 		DayOfMonth: req.DayOfMonth,
@@ -154,8 +160,8 @@ func (h *ScheduledInvestmentHandlers) UpdateScheduledInvestment(c *gin.Context) 
 	}
 
 	var req struct {
-		Amount    *float64 `json:"amount"`
-		Frequency *string  `json:"frequency"`
+		Amount    *string `json:"amount"`    // String for precise decimal (e.g., "100.00")
+		Frequency *string `json:"frequency"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondBadRequest(c, "Invalid request")
@@ -164,7 +170,11 @@ func (h *ScheduledInvestmentHandlers) UpdateScheduledInvestment(c *gin.Context) 
 
 	var amount *decimal.Decimal
 	if req.Amount != nil {
-		a := decimal.NewFromFloat(*req.Amount)
+		a, err := decimal.NewFromString(*req.Amount)
+		if err != nil || a.LessThanOrEqual(decimal.Zero) {
+			respondBadRequest(c, "Invalid amount format, must be positive decimal string")
+			return
+		}
 		amount = &a
 	}
 
