@@ -253,6 +253,21 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 				security.GET("/geo-info", mfaHandlers.GetGeoInfo)
 			}
 
+			// Mobile-optimized API endpoints for better app performance
+			mobile := protected.Group("/mobile")
+			{
+				mobileHandlers := handlers.NewMobileHandlers(
+					container.StationService,
+					container.GetAllocationService(),
+					container.GetInvestingService(),
+					*container.UserRepo,
+					container.ZapLog,
+				)
+				mobile.GET("/home", mobileHandlers.GetMobileHome)
+				mobile.POST("/batch", mobileHandlers.BatchExecute)
+				mobile.POST("/sync", mobileHandlers.Sync)
+			}
+
 			// Funding routes (OpenAPI spec compliant)
 			funding := protected.Group("/funding")
 			{

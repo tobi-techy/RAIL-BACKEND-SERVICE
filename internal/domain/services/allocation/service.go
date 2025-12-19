@@ -67,7 +67,7 @@ func NewService(
 	}
 }
 
-// SetAutoInvestService sets the auto-invest service (optional dependency)
+// SetAutoInvestService sets the auto-invest service (to avoid circular dependency)
 func (s *Service) SetAutoInvestService(autoInvestService AutoInvestService) {
 	s.autoInvestService = autoInvestService
 }

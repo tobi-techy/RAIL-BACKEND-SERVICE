@@ -63,6 +63,7 @@ type Service struct {
 	validationService    *ValidationService
 	auditService         AuditService
 	notificationService  FundingNotificationService
+	allocationService    AllocationService
 	cache                CacheClient
 	config               *FundingConfig
 	logger               *logger.Logger
@@ -169,6 +170,11 @@ func (s *Service) SetNotificationService(ns FundingNotificationService) {
 // SetBridgeVAService sets the Bridge virtual account service (optional)
 func (s *Service) SetBridgeVAService(bva *BridgeVirtualAccountService) {
 	s.bridgeVAService = bva
+}
+
+// SetAllocationService sets the allocation service for automatic 70/30 split (optional)
+func (s *Service) SetAllocationService(as AllocationService) {
+	s.allocationService = as
 }
 
 // CreateDepositAddress generates or retrieves deposit address for a chain
@@ -393,6 +399,36 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 	// Record deposit in ledger (replaces legacy balance update)
 	if err := s.ledgerIntegration.RecordDeposit(ctx, wallet.UserID, usdAmount, deposit.ID, string(webhook.Chain), webhook.TxHash); err != nil {
 		return fmt.Errorf("failed to record deposit in ledger: %w", err)
+	}
+
+	// Process automatic 70/30 allocation split
+	// This is the core system rule: every deposit is automatically split
+	if s.allocationService != nil {
+		allocationReq := &entities.IncomingFundsRequest{
+			UserID:     wallet.UserID,
+			Amount:     usdAmount,
+			EventType:  entities.AllocationEventTypeCryptoDeposit,
+			DepositID:  &deposit.ID,
+			SourceTxID: &webhook.TxHash,
+			Metadata: map[string]any{
+				"source":   "crypto",
+				"chain":    string(webhook.Chain),
+				"token":    string(webhook.Token),
+				"tx_hash":  webhook.TxHash,
+			},
+		}
+		if err := s.allocationService.ProcessIncomingFunds(ctx, allocationReq); err != nil {
+			s.logger.Error("Failed to process allocation split",
+				"user_id", wallet.UserID,
+				"amount", usdAmount,
+				"error", err)
+			// Don't fail the deposit - allocation can be retried
+			// The funds are safely in the ledger
+		} else {
+			s.logger.Info("Automatic 70/30 allocation split completed",
+				"user_id", wallet.UserID,
+				"amount", usdAmount)
+		}
 	}
 
 	// Record deposit usage against limits

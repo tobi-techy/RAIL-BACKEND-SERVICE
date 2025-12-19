@@ -37,6 +37,10 @@ type SocialLoginRequest struct {
 	AccessToken string         `json:"accessToken,omitempty"`
 	Code        string         `json:"code,omitempty"`
 	RedirectURI string         `json:"redirectUri,omitempty"`
+	// Apple Sign-In specific fields (name only sent on first sign-in)
+	Name      string `json:"name,omitempty"`
+	GivenName string `json:"givenName,omitempty"`
+	FamilyName string `json:"familyName,omitempty"`
 }
 
 // SocialLoginResponse represents the response after social login
