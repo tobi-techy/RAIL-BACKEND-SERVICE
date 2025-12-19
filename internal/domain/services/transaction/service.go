@@ -4,35 +4,40 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/database"
 	"github.com/rail-service/rail_service/pkg/errors"
 	"github.com/rail-service/rail_service/pkg/metrics"
 	"go.uber.org/zap"
 )
 
+const (
+	idempotencyKeyPrefix = "tx:idempotency:"
+	idempotencyTTL       = 24 * time.Hour
+)
+
 // Transaction represents a financial transaction
 // Uses entities.TransactionType and entities.TransactionStatus for consistency
 type Transaction struct {
-	ID            uuid.UUID                   `json:"id"`
-	UserID        uuid.UUID                   `json:"user_id"`
-	Type          entities.TransactionType    `json:"type"`
-	Status        entities.TransactionStatus  `json:"status"`
-	Amount        decimal.Decimal             `json:"amount"`
-	Currency      string                      `json:"currency"`
-	FromAccount   *string                     `json:"from_account,omitempty"`
-	ToAccount     *string                     `json:"to_account,omitempty"`
-	Reference     *string                     `json:"reference,omitempty"`
-	Metadata      map[string]interface{}      `json:"metadata,omitempty"`
+	ID             uuid.UUID                  `json:"id"`
+	UserID         uuid.UUID                  `json:"user_id"`
+	Type           entities.TransactionType   `json:"type"`
+	Status         entities.TransactionStatus `json:"status"`
+	Amount         decimal.Decimal            `json:"amount"`
+	Currency       string                     `json:"currency"`
+	FromAccount    *string                    `json:"from_account,omitempty"`
+	ToAccount      *string                    `json:"to_account,omitempty"`
+	Reference      *string                    `json:"reference,omitempty"`
+	Metadata       map[string]interface{}     `json:"metadata,omitempty"`
 	IdempotencyKey string                     `json:"idempotency_key"`
-	CreatedAt     time.Time                   `json:"created_at"`
-	UpdatedAt     time.Time                   `json:"updated_at"`
-	ProcessedAt   *time.Time                  `json:"processed_at,omitempty"`
+	CreatedAt      time.Time                  `json:"created_at"`
+	UpdatedAt      time.Time                  `json:"updated_at"`
+	ProcessedAt    *time.Time                 `json:"processed_at,omitempty"`
 }
 
 // AllocationService interface for spending enforcement
@@ -50,29 +55,28 @@ type AllocationNotificationManager interface {
 // Service handles transaction processing with idempotency and integrity
 type Service struct {
 	db                 *sql.DB
+	cache              cache.RedisClient
 	allocationService  AllocationService
 	allocationNotifier AllocationNotificationManager
 	logger             *zap.Logger
-	processed          map[string]*Transaction // In-memory cache for idempotency
-	mu                 sync.RWMutex
 }
 
 // NewService creates a new transaction service
-func NewService(db *sql.DB, allocationService AllocationService, allocationNotifier AllocationNotificationManager, logger *zap.Logger) *Service {
+func NewService(db *sql.DB, redisCache cache.RedisClient, allocationService AllocationService, allocationNotifier AllocationNotificationManager, logger *zap.Logger) *Service {
 	return &Service{
 		db:                 db,
+		cache:              redisCache,
 		allocationService:  allocationService,
 		allocationNotifier: allocationNotifier,
 		logger:             logger,
-		processed:          make(map[string]*Transaction),
 	}
 }
 
 // ProcessTransaction processes a transaction with idempotency guarantees
 func (s *Service) ProcessTransaction(ctx context.Context, tx *Transaction) (*Transaction, error) {
-	// Check idempotency
-	if existing := s.getProcessedTransaction(tx.IdempotencyKey); existing != nil {
-		s.logger.Info("Transaction already processed", 
+	// Check idempotency via Redis
+	if existing, err := s.getProcessedTransaction(ctx, tx.IdempotencyKey); err == nil && existing != nil {
+		s.logger.Info("Transaction already processed",
 			zap.String("idempotency_key", tx.IdempotencyKey),
 			zap.String("transaction_id", existing.ID.String()),
 		)
@@ -122,7 +126,7 @@ func (s *Service) ProcessTransaction(ctx context.Context, tx *Transaction) (*Tra
 	if err != nil {
 		tx.Status = entities.TransactionStatusFailed
 		s.updateTransactionStatus(ctx, tx.ID, entities.TransactionStatusFailed)
-		
+
 		metrics.RecordTransaction(string(tx.Type), "failed", tx.Currency, 0)
 		return nil, err
 	}
@@ -134,7 +138,7 @@ func (s *Service) ProcessTransaction(ctx context.Context, tx *Transaction) (*Tra
 	tx.UpdatedAt = now
 
 	s.updateTransactionStatus(ctx, tx.ID, entities.TransactionStatusCompleted)
-	s.setProcessedTransaction(tx.IdempotencyKey, tx)
+	s.setProcessedTransaction(ctx, tx.IdempotencyKey, tx)
 
 	// Record metrics
 	amount, _ := tx.Amount.Float64()
@@ -327,18 +331,30 @@ func (s *Service) processTransfer(ctx context.Context, tx *sql.Tx, transaction *
 	return s.processWithdrawal(ctx, tx, transaction)
 }
 
-// getProcessedTransaction retrieves processed transaction by idempotency key
-func (s *Service) getProcessedTransaction(key string) *Transaction {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.processed[key]
+// getProcessedTransaction retrieves processed transaction by idempotency key from Redis
+func (s *Service) getProcessedTransaction(ctx context.Context, key string) (*Transaction, error) {
+	if s.cache == nil {
+		return nil, nil
+	}
+	var tx Transaction
+	err := s.cache.Get(ctx, idempotencyKeyPrefix+key, &tx)
+	if err != nil {
+		return nil, nil // Key not found or error - treat as not cached
+	}
+	return &tx, nil
 }
 
-// setProcessedTransaction stores processed transaction
-func (s *Service) setProcessedTransaction(key string, tx *Transaction) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.processed[key] = tx
+// setProcessedTransaction stores processed transaction in Redis
+func (s *Service) setProcessedTransaction(ctx context.Context, key string, tx *Transaction) {
+	if s.cache == nil {
+		return
+	}
+	if err := s.cache.Set(ctx, idempotencyKeyPrefix+key, tx, idempotencyTTL); err != nil {
+		s.logger.Warn("Failed to cache idempotency key",
+			zap.String("key", key),
+			zap.Error(err),
+		)
+	}
 }
 
 // GetTransaction retrieves a transaction by ID

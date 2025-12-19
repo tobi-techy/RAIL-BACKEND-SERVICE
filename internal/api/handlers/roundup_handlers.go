@@ -43,12 +43,12 @@ func (h *RoundupHandlers) GetSettings(c *gin.Context) {
 
 // UpdateSettingsRequest represents the request body for updating settings
 type UpdateSettingsRequest struct {
-	Enabled            *bool    `json:"enabled,omitempty"`
-	Multiplier         *float64 `json:"multiplier,omitempty"`
-	Threshold          *float64 `json:"threshold,omitempty"`
-	AutoInvestEnabled  *bool    `json:"auto_invest_enabled,omitempty"`
-	AutoInvestBasketID *string  `json:"auto_invest_basket_id,omitempty"`
-	AutoInvestSymbol   *string  `json:"auto_invest_symbol,omitempty"`
+	Enabled            *bool   `json:"enabled,omitempty"`
+	Multiplier         *string `json:"multiplier,omitempty"`  // String for precise decimal (e.g., "2.0")
+	Threshold          *string `json:"threshold,omitempty"`   // String for precise decimal (e.g., "10.00")
+	AutoInvestEnabled  *bool   `json:"auto_invest_enabled,omitempty"`
+	AutoInvestBasketID *string `json:"auto_invest_basket_id,omitempty"`
+	AutoInvestSymbol   *string `json:"auto_invest_symbol,omitempty"`
 }
 
 // UpdateSettings handles PUT /api/v1/roundups/settings
@@ -73,11 +73,19 @@ func (h *RoundupHandlers) UpdateSettings(c *gin.Context) {
 	}
 
 	if req.Multiplier != nil {
-		m := decimal.NewFromFloat(*req.Multiplier)
+		m, err := decimal.NewFromString(*req.Multiplier)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid multiplier format"})
+			return
+		}
 		svcReq.Multiplier = &m
 	}
 	if req.Threshold != nil {
-		t := decimal.NewFromFloat(*req.Threshold)
+		t, err := decimal.NewFromString(*req.Threshold)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid threshold format"})
+			return
+		}
 		svcReq.Threshold = &t
 	}
 	if req.AutoInvestBasketID != nil {
@@ -99,7 +107,7 @@ func (h *RoundupHandlers) UpdateSettings(c *gin.Context) {
 
 // ProcessTransactionRequest represents a transaction to process for round-up
 type ProcessTransactionRequest struct {
-	Amount       float64 `json:"amount" binding:"required,gt=0"`
+	Amount       string  `json:"amount" binding:"required"` // String for precise decimal (e.g., "10.50")
 	SourceType   string  `json:"source_type" binding:"required,oneof=card bank manual"`
 	SourceRef    *string `json:"source_ref,omitempty"`
 	MerchantName *string `json:"merchant_name,omitempty"`
@@ -119,9 +127,15 @@ func (h *RoundupHandlers) ProcessTransaction(c *gin.Context) {
 		return
 	}
 
+	amount, err := decimal.NewFromString(req.Amount)
+	if err != nil || amount.LessThanOrEqual(decimal.Zero) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid amount format, must be positive decimal string"})
+		return
+	}
+
 	tx, err := h.service.ProcessTransaction(c.Request.Context(), &roundup.ProcessTransactionRequest{
 		UserID:       userID,
-		Amount:       decimal.NewFromFloat(req.Amount),
+		Amount:       amount,
 		SourceType:   entities.RoundupSourceType(req.SourceType),
 		SourceRef:    req.SourceRef,
 		MerchantName: req.MerchantName,
@@ -200,20 +214,20 @@ func (h *RoundupHandlers) CalculatePreview(c *gin.Context) {
 	}
 
 	var req struct {
-		Amount float64 `json:"amount" binding:"required,gt=0"`
+		Amount string `json:"amount" binding:"required"` // String for precise decimal (e.g., "10.50")
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
 
-	settings, err := h.service.GetSettings(c.Request.Context(), userID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get settings"})
+	amount, err := decimal.NewFromString(req.Amount)
+	if err != nil || amount.LessThanOrEqual(decimal.Zero) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid amount format, must be positive decimal string"})
 		return
 	}
 
-	amount := decimal.NewFromFloat(req.Amount)
+	settings, err := h.service.GetSettings(c.Request.Context(), userID)
 	rounded, spareChange, multiplied := entities.CalculateRoundup(amount, settings.Multiplier)
 
 	c.JSON(http.StatusOK, gin.H{
