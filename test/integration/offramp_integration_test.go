@@ -16,7 +16,7 @@ import (
 )
 
 func TestWebhookHandler_TransferStatusChanged(t *testing.T) {
-	log := logger.NewLogger("test")
+	log := logger.New("debug", "test")
 	
 	// Mock off-ramp service
 	mockService := &MockOffRampService{}
@@ -54,7 +54,7 @@ func TestWebhookHandler_TransferStatusChanged(t *testing.T) {
 }
 
 func TestWebhookHandler_VirtualAccountDeposit(t *testing.T) {
-	log := logger.NewLogger("test")
+	log := logger.New("debug", "test")
 	
 	mockService := &MockOffRampService{}
 	handler := handlers.NewDueWebhookHandler(mockService, log)

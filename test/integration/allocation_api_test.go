@@ -65,7 +65,7 @@ func TestEnableAllocationModeAPI_Success(t *testing.T) {
 	router := gin.New()
 	
 	// Mock logger
-	log := logger.NewLogger("test", "debug")
+	log := logger.New("debug", "test")
 	
 	// Mock allocation service (would need proper interface in production)
 	// For now, this demonstrates the API contract

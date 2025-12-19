@@ -93,7 +93,7 @@ func setupTestService(t *testing.T) (*Service, *mocks.MockReconciliationReposito
 	metricsService.On("RecordReconciliationCompleted", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 	metricsService.On("RecordCheckResult", mock.Anything, mock.Anything, mock.Anything).Return()
 
-	testLogger := logger.NewLogger("test", "debug")
+	testLogger := logger.New("debug", "test")
 
 	config := &Config{
 		AutoCorrectLowSeverity: true,
