@@ -92,3 +92,48 @@ func (h *AnalyticsHandlers) TakeSnapshot(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "Snapshot captured"})
 }
+
+// GetPortfolioHistory returns historical portfolio data for charting
+// GET /api/v1/analytics/history?period=1M
+func (h *AnalyticsHandlers) GetPortfolioHistory(c *gin.Context) {
+	userID, err := getUserID(c)
+	if err != nil {
+		respondUnauthorized(c, "User not authenticated")
+		return
+	}
+
+	period := c.DefaultQuery("period", "1M")
+	validPeriods := map[string]bool{"1D": true, "1W": true, "1M": true, "3M": true, "6M": true, "1Y": true, "ALL": true}
+	if !validPeriods[period] {
+		respondBadRequest(c, "Invalid period. Valid values: 1D, 1W, 1M, 3M, 6M, 1Y, ALL")
+		return
+	}
+
+	history, err := h.analyticsService.GetPortfolioHistory(c.Request.Context(), userID, period)
+	if err != nil {
+		h.logger.Error("Failed to get portfolio history", "error", err, "period", period)
+		respondInternalError(c, "Failed to get portfolio history")
+		return
+	}
+
+	c.JSON(http.StatusOK, history)
+}
+
+// GetDashboard returns comprehensive portfolio dashboard
+// GET /api/v1/analytics/dashboard
+func (h *AnalyticsHandlers) GetDashboard(c *gin.Context) {
+	userID, err := getUserID(c)
+	if err != nil {
+		respondUnauthorized(c, "User not authenticated")
+		return
+	}
+
+	dashboard, err := h.analyticsService.GetDashboard(c.Request.Context(), userID)
+	if err != nil {
+		h.logger.Error("Failed to get portfolio dashboard", "error", err)
+		respondInternalError(c, "Failed to get portfolio dashboard")
+		return
+	}
+
+	c.JSON(http.StatusOK, dashboard)
+}

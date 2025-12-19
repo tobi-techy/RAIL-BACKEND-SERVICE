@@ -65,12 +65,53 @@ type DiversificationAnalysis struct {
 
 // HoldingWeight represents a position's weight in portfolio
 type HoldingWeight struct {
-	Symbol     string          `json:"symbol"`
-	Name       string          `json:"name"`
-	Weight     decimal.Decimal `json:"weight"`
-	Value      decimal.Decimal `json:"value"`
-	GainLoss   decimal.Decimal `json:"gain_loss"`
+	Symbol      string          `json:"symbol"`
+	Name        string          `json:"name"`
+	Weight      decimal.Decimal `json:"weight"`
+	Value       decimal.Decimal `json:"value"`
+	GainLoss    decimal.Decimal `json:"gain_loss"`
 	GainLossPct decimal.Decimal `json:"gain_loss_pct"`
+}
+
+// PortfolioHistory represents historical portfolio data for charting
+type PortfolioHistory struct {
+	Period     string                   `json:"period"` // 1D, 1W, 1M, 3M, 6M, 1Y, ALL
+	DataPoints []PortfolioHistoryPoint  `json:"data_points"`
+	StartValue decimal.Decimal          `json:"start_value"`
+	EndValue   decimal.Decimal          `json:"end_value"`
+	Change     decimal.Decimal          `json:"change"`
+	ChangePct  decimal.Decimal          `json:"change_pct"`
+}
+
+// PortfolioHistoryPoint represents a single point in portfolio history
+type PortfolioHistoryPoint struct {
+	Date       time.Time       `json:"date"`
+	Value      decimal.Decimal `json:"value"`
+	DayChange  decimal.Decimal `json:"day_change"`
+	DayChangePct decimal.Decimal `json:"day_change_pct"`
+}
+
+// PortfolioDashboard aggregates all analytics for a comprehensive view
+type PortfolioDashboard struct {
+	Summary        DashboardSummary         `json:"summary"`
+	Performance    *PerformanceMetrics      `json:"performance"`
+	Risk           *RiskMetrics             `json:"risk"`
+	Diversification *DiversificationAnalysis `json:"diversification"`
+	RecentHistory  []PortfolioHistoryPoint  `json:"recent_history"`
+	GeneratedAt    time.Time                `json:"generated_at"`
+}
+
+// DashboardSummary provides quick portfolio overview
+type DashboardSummary struct {
+	TotalValue      decimal.Decimal `json:"total_value"`
+	CashBalance     decimal.Decimal `json:"cash_balance"`
+	InvestedValue   decimal.Decimal `json:"invested_value"`
+	TotalGainLoss   decimal.Decimal `json:"total_gain_loss"`
+	TotalGainLossPct decimal.Decimal `json:"total_gain_loss_pct"`
+	DayGainLoss     decimal.Decimal `json:"day_gain_loss"`
+	DayGainLossPct  decimal.Decimal `json:"day_gain_loss_pct"`
+	PositionCount   int             `json:"position_count"`
+	LastUpdated     time.Time       `json:"last_updated"`
 }
 
 // ScheduledInvestment represents a recurring investment
