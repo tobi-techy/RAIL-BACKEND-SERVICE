@@ -55,6 +55,13 @@ type BalanceProvider interface {
 	DeductSpendBalance(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, reference string) error
 }
 
+// LedgerService provides ledger operations for card transactions
+type LedgerService interface {
+	GetAccountBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (decimal.Decimal, error)
+	GetOrCreateUserAccount(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (*entities.LedgerAccount, error)
+	CreateTransaction(ctx context.Context, req *entities.CreateTransactionRequest) (*entities.LedgerTransaction, error)
+}
+
 // Service handles card business logic
 type Service struct {
 	repo            CardRepository
@@ -62,6 +69,7 @@ type Service struct {
 	userProvider    UserProfileProvider
 	walletProvider  WalletProvider
 	balanceProvider BalanceProvider
+	ledgerService   LedgerService
 	logger          *zap.Logger
 	defaultChain    string
 }
@@ -84,6 +92,12 @@ func NewService(
 		logger:          logger,
 		defaultChain:    "ethereum", // Default chain for card funding
 	}
+}
+
+// SetLedgerService sets the ledger service after initialization.
+// This is used to break circular dependencies in the DI container.
+func (s *Service) SetLedgerService(ledgerService LedgerService) {
+	s.ledgerService = ledgerService
 }
 
 // CreateVirtualCard creates a virtual card for a user on first funding
@@ -302,6 +316,15 @@ func (s *Service) RecordTransaction(ctx context.Context, bridgeCardID, bridgeTra
 	if existing != nil {
 		// Update status if changed
 		if existing.Status != status {
+			// If transitioning to completed, deduct from spend balance
+			if status == "completed" && existing.Status != "completed" {
+				if err := s.settleTransaction(ctx, card.UserID, amount, bridgeTransID, merchantName); err != nil {
+					s.logger.Error("Failed to settle card transaction",
+						zap.String("transaction_id", bridgeTransID),
+						zap.Error(err))
+					return err
+				}
+			}
 			return s.repo.UpdateTransactionStatus(ctx, existing.ID, status, declineReason)
 		}
 		return nil
@@ -320,7 +343,101 @@ func (s *Service) RecordTransaction(ctx context.Context, bridgeCardID, bridgeTra
 		DeclineReason:    declineReason,
 	}
 
-	return s.repo.CreateTransaction(ctx, tx)
+	if err := s.repo.CreateTransaction(ctx, tx); err != nil {
+		return err
+	}
+
+	// If transaction is already completed (captured), deduct from spend balance
+	if status == "completed" {
+		if err := s.settleTransaction(ctx, card.UserID, amount, bridgeTransID, merchantName); err != nil {
+			s.logger.Error("Failed to settle card transaction",
+				zap.String("transaction_id", bridgeTransID),
+				zap.Error(err))
+			return err
+		}
+	}
+
+	return nil
+}
+
+// settleTransaction deducts from spend balance and creates ledger entry
+func (s *Service) settleTransaction(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, transactionID, merchantName string) error {
+	s.logger.Info("Settling card transaction",
+		zap.String("user_id", userID.String()),
+		zap.String("amount", amount.String()),
+		zap.String("transaction_id", transactionID))
+
+	// Deduct from spend balance via balance provider
+	if s.balanceProvider != nil {
+		if err := s.balanceProvider.DeductSpendBalance(ctx, userID, amount, transactionID); err != nil {
+			return fmt.Errorf("failed to deduct spend balance: %w", err)
+		}
+	}
+
+	// Create ledger entry if ledger service is available
+	if s.ledgerService != nil {
+		if err := s.createCardTransactionLedgerEntry(ctx, userID, amount, transactionID, merchantName); err != nil {
+			s.logger.Error("Failed to create ledger entry for card transaction",
+				zap.String("transaction_id", transactionID),
+				zap.Error(err))
+			// Don't fail the transaction if ledger entry fails - balance already deducted
+		}
+	}
+
+	return nil
+}
+
+// createCardTransactionLedgerEntry creates a ledger entry for a card transaction
+func (s *Service) createCardTransactionLedgerEntry(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, transactionID, merchantName string) error {
+	spendAccount, err := s.ledgerService.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return fmt.Errorf("failed to get spend account: %w", err)
+	}
+
+	desc := fmt.Sprintf("Card transaction: %s", merchantName)
+	if merchantName == "" {
+		desc = fmt.Sprintf("Card transaction: %s", transactionID)
+	}
+	idempotencyKey := fmt.Sprintf("card-tx:%s", transactionID)
+
+	txReq := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeCardPayment,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &desc,
+		Entries: []entities.CreateEntryRequest{
+			{
+				AccountID:   spendAccount.ID,
+				EntryType:   entities.EntryTypeCredit, // Decrease spend balance
+				Amount:      amount,
+				Currency:    "USD",
+				Description: &desc,
+			},
+		},
+	}
+
+	_, err = s.ledgerService.CreateTransaction(ctx, txReq)
+	return err
+}
+
+// ProcessAuthorization implements BridgeCardProcessor interface for webhook handling
+func (s *Service) ProcessAuthorization(ctx context.Context, cardID string, amount decimal.Decimal, merchantName, merchantCategory string) error {
+	approved, declineReason, err := s.ProcessCardAuthorization(ctx, cardID, amount, merchantName, merchantCategory)
+	if err != nil {
+		return err
+	}
+	if !approved {
+		s.logger.Warn("Card authorization declined",
+			zap.String("card_id", cardID),
+			zap.String("reason", declineReason))
+	}
+	return nil
+}
+
+// RecordDeclinedTransaction implements BridgeCardProcessor interface for webhook handling
+func (s *Service) RecordDeclinedTransaction(ctx context.Context, cardID, transactionID, declineReason string) error {
+	reason := declineReason
+	return s.RecordTransaction(ctx, cardID, transactionID, "authorization", decimal.Zero, "", "", "declined", &reason)
 }
 
 // SyncCardStatus syncs card status from Bridge

@@ -39,6 +39,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	"github.com/rail-service/rail_service/internal/domain/services/socialauth"
 	"github.com/rail-service/rail_service/internal/domain/services/station"
+	"github.com/rail-service/rail_service/internal/domain/services/strategy"
 	"github.com/rail-service/rail_service/internal/domain/services/twofa"
 	"github.com/rail-service/rail_service/internal/domain/services/wallet"
 	"github.com/rail-service/rail_service/internal/domain/services/webauthn"
@@ -329,6 +330,7 @@ type Container struct {
 	ReconciliationScheduler *reconciliation.Scheduler
 	AllocationService       *allocation.Service
 	AutoInvestService       *autoinvest.Service
+	StrategyEngine          *strategy.Engine
 	StationService          *station.Service
 	NotificationService     *services.NotificationService
 	SocialAuthService       *socialauth.Service
@@ -384,8 +386,6 @@ type Container struct {
 	CopyTradingRepo    *repositories.CopyTradingRepository
 	CopyTradingService *copytrading.Service
 
-	// Bridge API Client
-	BridgeClient *bridge.Client
 	// Card Services
 	CardRepo    *repositories.CardRepository
 	CardService *card.Service
@@ -762,13 +762,13 @@ func (c *Container) initializeDomainServices() error {
 		c.Logger,
 	)
 
-	// Initialize auto-invest service
-	autoInvestRepo := repositories.NewAutoInvestRepository(sqlxDB)
+	// Initialize auto-invest service (OrderPlacer will be set after InvestingService is created)
+	_ = repositories.NewAutoInvestRepository(sqlxDB) // Keep for future use
+	autoInvestConfig := autoinvest.Config{}
 	c.AutoInvestService = autoinvest.NewService(
 		c.LedgerService,
-		nil, // InvestingService - will be set after initialization
-		allocationRepo,
-		autoInvestRepo,
+		nil, // OrderPlacer - will be set after InvestingService initialization
+		autoInvestConfig,
 		c.Logger,
 	)
 
@@ -816,8 +816,18 @@ func (c *Container) initializeDomainServices() error {
 		c.Logger,
 	)
 
-	// Wire investing service to auto-invest service (circular dependency resolution)
-	c.AutoInvestService.SetInvestingService(c.InvestingService)
+	// Wire auto-invest service with OrderPlacer now that InvestingService is available
+	autoInvestOrderPlacer := &autoInvestOrderPlacerAdapter{
+		accountService: c.AlpacaAccountService,
+		alpacaClient:   c.AlpacaClient,
+		orderRepo:      c.InvestmentOrderRepo,
+		logger:         c.ZapLog,
+	}
+	c.AutoInvestService.SetOrderPlacer(autoInvestOrderPlacer)
+
+	// Initialize strategy engine and wire to auto-invest service
+	c.StrategyEngine = strategy.NewEngine(&strategyUserProfileAdapter{userRepo: c.UserRepo}, c.Logger)
+	c.AutoInvestService.SetStrategyEngine(c.StrategyEngine)
 
 	// Initialize reconciliation service
 	if err := c.initializeReconciliationService(); err != nil {
@@ -1660,6 +1670,8 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 		&cardBalanceAdapter{ledgerService: c.LedgerService},
 		c.ZapLog,
 	)
+	// Wire ledger service to card service for transaction ledger entries
+	c.CardService.SetLedgerService(c.LedgerService)
 
 	c.ZapLog.Info("Advanced features initialized")
 	return nil
@@ -1767,6 +1779,76 @@ func (a *copyTradingTradingAdapter) GetCurrentPrice(ctx context.Context, symbol 
 	}
 
 	return quote.Ask, nil
+}
+
+// autoInvestOrderPlacerAdapter implements autoinvest.OrderPlacer interface
+type autoInvestOrderPlacerAdapter struct {
+	accountService *alpacaservice.AccountService
+	alpacaClient   *alpaca.Client
+	orderRepo      *repositories.InvestmentOrderRepository
+	logger         *zap.Logger
+}
+
+func (a *autoInvestOrderPlacerAdapter) PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal) (*entities.AlpacaOrderResponse, error) {
+	// Get user's Alpaca account
+	account, err := a.accountService.GetUserAccount(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get account: %w", err)
+	}
+	if account == nil {
+		return nil, fmt.Errorf("user has no Alpaca account")
+	}
+
+	// Create market order via Alpaca
+	orderReq := &entities.AlpacaCreateOrderRequest{
+		Symbol:      symbol,
+		Notional:    &amount,
+		Side:        entities.AlpacaOrderSideBuy,
+		Type:        entities.AlpacaOrderTypeMarket,
+		TimeInForce: entities.AlpacaTimeInForceDay,
+	}
+
+	alpacaOrder, err := a.alpacaClient.CreateOrder(ctx, account.AlpacaAccountID, orderReq)
+	if err != nil {
+		return nil, fmt.Errorf("create order: %w", err)
+	}
+
+	// Store order in database for tracking
+	now := time.Now()
+	order := &entities.InvestmentOrder{
+		ID:              uuid.New(),
+		UserID:          userID,
+		AlpacaAccountID: &account.ID,
+		AlpacaOrderID:   &alpacaOrder.ID,
+		ClientOrderID:   alpacaOrder.ClientOrderID,
+		Symbol:          symbol,
+		Side:            entities.AlpacaOrderSideBuy,
+		OrderType:       entities.AlpacaOrderTypeMarket,
+		TimeInForce:     entities.AlpacaTimeInForceDay,
+		Notional:        &amount,
+		Status:          alpacaOrder.Status,
+		SubmittedAt:     &now,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+
+	if err := a.orderRepo.Create(ctx, order); err != nil {
+		a.logger.Error("Failed to store auto-invest order", zap.Error(err))
+	}
+
+	return alpacaOrder, nil
+}
+
+// strategyUserProfileAdapter adapts UserRepository for strategy engine
+type strategyUserProfileAdapter struct {
+	userRepo *repositories.UserRepository
+}
+
+func (a *strategyUserProfileAdapter) GetByID(ctx context.Context, id uuid.UUID) (*entities.UserProfile, error) {
+	if a.userRepo == nil {
+		return nil, fmt.Errorf("user repository not available")
+	}
+	return a.userRepo.GetByID(ctx, id)
 }
 
 // orderPlacerAdapter implements OrderPlacer interface for scheduled investments

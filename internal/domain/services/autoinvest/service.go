@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/strategy"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -37,12 +38,18 @@ type OrderPlacer interface {
 	PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal) (*entities.AlpacaOrderResponse, error)
 }
 
+// StrategyEngine defines strategy selection operations
+type StrategyEngine interface {
+	GetStrategy(ctx context.Context, userID uuid.UUID) (*strategy.StrategyResult, error)
+}
+
 // Service handles automatic investment from stash balance
 type Service struct {
-	ledgerService LedgerService
-	orderPlacer   OrderPlacer
-	config        Config
-	logger        *logger.Logger
+	ledgerService  LedgerService
+	orderPlacer    OrderPlacer
+	strategyEngine StrategyEngine
+	config         Config
+	logger         *logger.Logger
 }
 
 // NewService creates a new auto-invest service
@@ -58,6 +65,18 @@ func NewService(
 		config:        config,
 		logger:        logger,
 	}
+}
+
+// SetOrderPlacer sets the order placer after initialization.
+// This is used to break circular dependencies in the DI container.
+func (s *Service) SetOrderPlacer(orderPlacer OrderPlacer) {
+	s.orderPlacer = orderPlacer
+}
+
+// SetStrategyEngine sets the strategy engine after initialization.
+// This is used to break circular dependencies in the DI container.
+func (s *Service) SetStrategyEngine(engine StrategyEngine) {
+	s.strategyEngine = engine
 }
 
 // TriggerRequest contains parameters for triggering auto-investment.
@@ -129,40 +148,95 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 		return fmt.Errorf("failed to transfer to buying power: %w", err)
 	}
 
+	// Get strategy allocation
+	strategyResult, err := s.getStrategyAllocation(ctx, userID)
+	if err != nil {
+		s.logger.Warn("Failed to get strategy, using fallback single asset",
+			"user_id", userID,
+			"error", err)
+		// Fallback to single SPY order if strategy engine fails
+		return s.placeSingleOrder(ctx, userID, stashID, "SPY", amount, correlationID)
+	}
+
+	s.logger.Info("Executing strategy-based auto-investment",
+		"user_id", userID,
+		"strategy", strategyResult.StrategyName,
+		"allocations", len(strategyResult.Allocations),
+		"total_amount", amount)
+
+	// Place orders for each allocation
+	return s.placeStrategyOrders(ctx, userID, stashID, amount, correlationID, strategyResult)
+}
+
+// getStrategyAllocation retrieves the strategy allocation for a user
+func (s *Service) getStrategyAllocation(ctx context.Context, userID uuid.UUID) (*strategy.StrategyResult, error) {
+	if s.strategyEngine == nil {
+		// Return default fallback if no strategy engine configured
+		return &strategy.StrategyResult{
+			StrategyName: "Default Fallback",
+			Allocations: []strategy.Allocation{
+				{Symbol: "SPY", Weight: decimal.NewFromInt(100)},
+			},
+		}, nil
+	}
+
+	return s.strategyEngine.GetStrategy(ctx, userID)
+}
+
+// placeStrategyOrders places orders for each allocation in the strategy
+func (s *Service) placeStrategyOrders(ctx context.Context, userID, stashID uuid.UUID, totalAmount decimal.Decimal, correlationID string, result *strategy.StrategyResult) error {
+	hundred := decimal.NewFromInt(100)
+	var lastErr error
+
+	for i, alloc := range result.Allocations {
+		// Calculate amount for this allocation: totalAmount * (weight / 100)
+		allocAmount := totalAmount.Mul(alloc.Weight).Div(hundred)
+
+		// Skip if allocation amount is too small
+		if allocAmount.LessThan(decimal.NewFromFloat(1.0)) {
+			s.logger.Debug("Skipping allocation due to small amount",
+				"symbol", alloc.Symbol,
+				"amount", allocAmount)
+			continue
+		}
+
+		// Generate unique correlation ID for each order
+		orderCorrelationID := fmt.Sprintf("%s:%d:%s", correlationID, i, alloc.Symbol)
+
+		if err := s.placeSingleOrder(ctx, userID, stashID, alloc.Symbol, allocAmount, orderCorrelationID); err != nil {
+			s.logger.Error("Failed to place order for allocation",
+				"user_id", userID,
+				"symbol", alloc.Symbol,
+				"amount", allocAmount,
+				"error", err)
+			lastErr = err
+			// Continue with other allocations even if one fails
+		}
+	}
+
+	return lastErr
+}
+
+// placeSingleOrder places a single market order
+func (s *Service) placeSingleOrder(ctx context.Context, userID, stashID uuid.UUID, symbol string, amount decimal.Decimal, correlationID string) error {
 	// Generate deterministic idempotency key for order
 	idempotencyKey := s.generateIdempotencyKey(userID, stashID, amount, correlationID)
 
-	// Place market order (using default symbol for now - could be configurable)
-	order, createErr := s.orderPlacer.PlaceMarketOrder(ctx, userID, "SPY", amount)
+	order, createErr := s.orderPlacer.PlaceMarketOrder(ctx, userID, symbol, amount)
 	if createErr != nil {
-		span.RecordError(createErr)
-		s.logger.Error("Failed to create order, attempting rollback",
+		s.logger.Error("Failed to create order",
 			"user_id", userID,
+			"symbol", symbol,
 			"amount", amount,
 			"idempotency_key", idempotencyKey,
 			"error", createErr)
-
-		// Attempt rollback: transfer fiat exposure back to stash
-		rollbackErr := s.transferFiatExposureToStash(ctx, userID, stashID, amount, correlationID)
-		if rollbackErr != nil {
-			// Log both errors for incident response
-			s.logger.Error("Rollback failed after order creation failure",
-				"user_id", userID,
-				"amount", amount,
-				"create_error", createErr,
-				"rollback_error", rollbackErr)
-			span.RecordError(rollbackErr)
-
-			// Return combined error so callers see both failures
-			return fmt.Errorf("order creation failed: %w; rollback also failed: %v", createErr, rollbackErr)
-		}
-
-		return fmt.Errorf("order creation failed (rollback succeeded): %w", createErr)
+		return fmt.Errorf("order creation failed for %s: %w", symbol, createErr)
 	}
 
 	s.logger.Info("Auto-investment order created",
 		"user_id", userID,
 		"order_id", order.ID,
+		"symbol", symbol,
 		"amount", amount)
 
 	return nil
