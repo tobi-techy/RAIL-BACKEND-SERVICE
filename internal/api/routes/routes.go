@@ -299,6 +299,12 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 					// "Total balance, Spend balance, Invest balance, System status"
 					account.GET("/station", stationHandlers.GetStation)
 				}
+
+				// Investment Stash endpoint - comprehensive investment data
+				investmentStashHandlers := container.GetInvestmentStashHandlers()
+				if investmentStashHandlers != nil {
+					account.GET("/investment-stash", investmentStashHandlers.GetInvestmentStash)
+				}
 			}
 
 			// Limits routes - deposit/withdrawal limits based on KYC tier
