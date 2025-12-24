@@ -790,5 +790,15 @@ func validate(config *Config) error {
 		return fmt.Errorf("circle supported chains configuration is required")
 	}
 
+	// Validate webhook secrets in production
+	if config.Environment == "production" {
+		if config.Bridge.WebhookSecret == "" {
+			return fmt.Errorf("bridge webhook secret is required in production")
+		}
+		if config.Payment.WebhookSecret == "" {
+			return fmt.Errorf("payment webhook secret is required in production")
+		}
+	}
+
 	return nil
 }
