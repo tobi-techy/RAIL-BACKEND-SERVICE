@@ -776,13 +776,8 @@ func (h *AuthHandlers) ResetPassword(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	tokenHash, err := crypto.HashPassword(req.Token)
-	if err != nil {
-		h.logger.Error("Failed to hash token", zap.Error(err))
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_TOKEN", Message: "Invalid reset token"})
-		return
-	}
-	userID, err := h.userRepo.ValidatePasswordResetToken(ctx, tokenHash)
+	// Pass raw token to repository - bcrypt comparison happens there
+	userID, err := h.userRepo.ValidatePasswordResetToken(ctx, req.Token)
 	if err != nil {
 		h.logger.Warn("Invalid password reset token", zap.Error(err))
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_TOKEN", Message: "Invalid or expired reset token"})

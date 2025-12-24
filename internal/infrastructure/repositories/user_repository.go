@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"go.uber.org/zap"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/pkg/crypto"
@@ -888,23 +889,40 @@ func (r *UserRepository) CreatePasswordResetToken(ctx context.Context, userID uu
 	return nil
 }
 
-// ValidatePasswordResetToken validates and marks token as used
-func (r *UserRepository) ValidatePasswordResetToken(ctx context.Context, tokenHash string) (uuid.UUID, error) {
-	var userID uuid.UUID
+// ValidatePasswordResetToken validates a raw token against stored hashes and marks as used
+func (r *UserRepository) ValidatePasswordResetToken(ctx context.Context, rawToken string) (uuid.UUID, error) {
+	// Fetch all valid (non-expired, unused) tokens
 	query := `
-		UPDATE password_reset_tokens 
-		SET used_at = NOW() 
-		WHERE token_hash = $1 AND expires_at > NOW() AND used_at IS NULL
-		RETURNING user_id`
-	err := r.db.QueryRowContext(ctx, query, tokenHash).Scan(&userID)
+		SELECT id, user_id, token_hash 
+		FROM password_reset_tokens 
+		WHERE expires_at > NOW() AND used_at IS NULL`
+	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return uuid.Nil, fmt.Errorf("invalid or expired token")
-		}
-		r.logger.Error("Failed to validate password reset token", zap.Error(err))
+		r.logger.Error("Failed to query password reset tokens", zap.Error(err))
 		return uuid.Nil, fmt.Errorf("failed to validate token: %w", err)
 	}
-	return userID, nil
+	defer rows.Close()
+
+	// Compare raw token with each stored hash using bcrypt
+	for rows.Next() {
+		var tokenID uuid.UUID
+		var userID uuid.UUID
+		var storedHash string
+		if err := rows.Scan(&tokenID, &userID, &storedHash); err != nil {
+			continue
+		}
+		// Use bcrypt comparison (handles salt correctly)
+		if bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(rawToken)) == nil {
+			// Token matches - mark as used
+			updateQuery := `UPDATE password_reset_tokens SET used_at = NOW() WHERE id = $1`
+			if _, err := r.db.ExecContext(ctx, updateQuery, tokenID); err != nil {
+				r.logger.Error("Failed to mark token as used", zap.Error(err))
+				return uuid.Nil, fmt.Errorf("failed to validate token: %w", err)
+			}
+			return userID, nil
+		}
+	}
+	return uuid.Nil, fmt.Errorf("invalid or expired token")
 }
 
 // GetByPhone retrieves a user profile by phone number
