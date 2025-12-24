@@ -141,21 +141,28 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 		auth := v1.Group("/auth")
 		{
 			auth.POST("/register", authHandlers.Register)
-			auth.POST("/login", authHandlers.Login)
 			auth.POST("/refresh", authHandlers.RefreshToken)
 			auth.POST("/logout", authHandlers.Logout)
-			auth.POST("/forgot-password", authHandlers.ForgotPassword)
-			auth.POST("/reset-password", authHandlers.ResetPassword)
 			auth.POST("/verify-email", authHandlers.VerifyEmail)
-			auth.POST("/verify-code", authHandlers.VerifyCode)
 			auth.POST("/resend-code", authHandlers.ResendCode)
 
+			// Sensitive auth endpoints with stricter rate limiting (5 requests/minute)
+			// Protects against brute force attacks on credentials and verification codes
+			authRateLimited := auth.Group("/")
+			authRateLimited.Use(middleware.AuthRateLimit(5))
+			{
+				authRateLimited.POST("/login", authHandlers.Login)
+				authRateLimited.POST("/verify-code", authHandlers.VerifyCode)
+				authRateLimited.POST("/forgot-password", authHandlers.ForgotPassword)
+				authRateLimited.POST("/reset-password", authHandlers.ResetPassword)
+			}
+
 			// Social auth routes (no auth required)
-			auth.POST("/social/url", socialAuthHandlers.GetSocialAuthURL)
-			auth.POST("/social/login", socialAuthHandlers.SocialLogin)
+			authRateLimited.POST("/social/url", socialAuthHandlers.GetSocialAuthURL)
+			authRateLimited.POST("/social/login", socialAuthHandlers.SocialLogin)
 
 			// WebAuthn login (no auth required)
-			auth.POST("/webauthn/login/begin", socialAuthHandlers.BeginWebAuthnLogin)
+			authRateLimited.POST("/webauthn/login/begin", socialAuthHandlers.BeginWebAuthnLogin)
 		}
 
 		// Onboarding routes - OpenAPI spec compliant (no CSRF for public start endpoint)
