@@ -29,13 +29,14 @@ import (
 
 // WalletFundingHandlers consolidates wallet, funding, investing, and withdrawal handlers
 type WalletFundingHandlers struct {
-	walletService     *wallet.Service
-	fundingService    *funding.Service
-	withdrawalService FundingWithdrawalService
-	investingService  *investing.Service
-	validator         *validator.Validate
-	webhookSecret     string
-	logger            *logger.Logger
+	walletService           *wallet.Service
+	fundingService          *funding.Service
+	withdrawalService       FundingWithdrawalService
+	investingService        *investing.Service
+	validator               *validator.Validate
+	webhookSecret           string
+	skipSignatureVerify     bool // Only true in development when secret is not configured
+	logger                  *logger.Logger
 }
 
 // NewWalletFundingHandlers creates a new instance of consolidated wallet/funding handlers
@@ -57,8 +58,10 @@ func NewWalletFundingHandlers(
 }
 
 // SetWebhookSecret sets the webhook secret for signature verification
-func (h *WalletFundingHandlers) SetWebhookSecret(secret string) {
+// skipVerify should only be true in development/testing environments
+func (h *WalletFundingHandlers) SetWebhookSecret(secret string, skipVerify bool) {
 	h.webhookSecret = secret
+	h.skipSignatureVerify = skipVerify
 }
 
 
@@ -1298,8 +1301,19 @@ func (h *WalletFundingHandlers) ChainDepositWebhook(c *gin.Context) {
 		return
 	}
 
-	// Verify webhook signature if secret is configured
-	if h.webhookSecret != "" {
+	// Verify webhook signature - fail closed if not configured
+	if h.webhookSecret == "" {
+		if h.skipSignatureVerify {
+			h.logger.Warn("Webhook secret not configured - SKIPPING VERIFICATION (development mode only)")
+		} else {
+			h.logger.Error("Webhook secret not configured - rejecting webhook for security")
+			c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
+				Code:    "WEBHOOK_NOT_CONFIGURED",
+				Message: "Webhook signature verification not configured",
+			})
+			return
+		}
+	} else {
 		signature := c.GetHeader("X-Webhook-Signature")
 		if signature == "" {
 			signature = c.GetHeader("X-Hub-Signature-256")
@@ -1403,8 +1417,19 @@ func (h *WalletFundingHandlers) BrokerageFillWebhook(c *gin.Context) {
 		return
 	}
 
-	// Verify webhook signature if secret is configured
-	if h.webhookSecret != "" {
+	// Verify webhook signature - fail closed if not configured
+	if h.webhookSecret == "" {
+		if h.skipSignatureVerify {
+			h.logger.Warn("Webhook secret not configured - SKIPPING VERIFICATION (development mode only)")
+		} else {
+			h.logger.Error("Webhook secret not configured - rejecting webhook for security")
+			c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
+				Code:    "WEBHOOK_NOT_CONFIGURED",
+				Message: "Webhook signature verification not configured",
+			})
+			return
+		}
+	} else {
 		signature := c.GetHeader("X-Webhook-Signature")
 		if err := verifyWebhookSignature(rawBody, signature, h.webhookSecret); err != nil {
 			h.logger.Warn("Webhook signature verification failed", zap.Error(err))
@@ -1417,7 +1442,7 @@ func (h *WalletFundingHandlers) BrokerageFillWebhook(c *gin.Context) {
 	}
 
 	var webhook entities.BrokerageFillWebhook
-	if err := c.ShouldBindJSON(&webhook); err != nil {
+	if err := json.Unmarshal(rawBody, &webhook); err != nil {
 		respondBadRequest(c, "Invalid webhook payload", map[string]interface{}{"error": err.Error()})
 		return
 	}
