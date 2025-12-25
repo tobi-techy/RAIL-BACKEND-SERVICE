@@ -838,13 +838,9 @@ func (h *AuthHandlers) VerifyEmail(c *gin.Context) {
 		h.logger.Warn("Email verification code invalid or expired",
 			zap.Error(err),
 			zap.String("email", req.Email))
-		errMsg := "Invalid or expired verification code"
-		if err != nil {
-			errMsg = err.Error()
-		}
 		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
 			Code:    "INVALID_CODE",
-			Message: errMsg,
+			Message: "Invalid or expired verification code",
 		})
 		return
 	}
