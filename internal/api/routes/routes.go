@@ -41,6 +41,19 @@ func (a *SessionValidatorAdapter) ValidateSession(ctx context.Context, token str
 func SetupRoutes(container *di.Container) *gin.Engine {
 	router := gin.New()
 
+	// Configure trusted proxies for secure IP detection in rate limiting
+	// This prevents IP spoofing via X-Forwarded-For headers
+	// In production, set this to your actual proxy/load balancer IPs
+	trustedProxies := container.Config.Server.TrustedProxies
+	if len(trustedProxies) == 0 {
+		// Default: trust only localhost (for local development with nginx/proxy)
+		trustedProxies = []string{"127.0.0.1", "::1"}
+	}
+	if err := router.SetTrustedProxies(trustedProxies); err != nil {
+		// Log warning but continue - ClientIP will fall back to RemoteAddr
+		container.Logger.Warn("Failed to set trusted proxies: %v", err)
+	}
+
 	// Global middleware - order matters for security
 	router.Use(tracing.HTTPMiddleware()) // Tracing should be early in the chain
 	router.Use(middleware.RequestID())
