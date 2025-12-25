@@ -96,9 +96,39 @@ func TestAuthRateLimiter_ZeroRequestsPerMinute(t *testing.T) {
 	defer limiter.Stop()
 	assert.NotNil(t, limiter)
 
+	// Test actual behavior with zero limit
+	router := gin.New()
+	router.Use(limiter.Limit())
+	router.POST("/login", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/login", nil)
+	req.RemoteAddr = "192.168.1.1:12345"
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	// Assert expected behavior - should this block all requests or allow all?
+	// Example: assert.Equal(t, http.StatusTooManyRequests, w.Code)
+
 	limiter2 := NewAuthRateLimiter(-5)
 	defer limiter2.Stop()
 	assert.NotNil(t, limiter2)
+
+	// Test actual behavior with negative limit
+	router2 := gin.New()
+	router2.Use(limiter2.Limit())
+	router2.POST("/login", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
+	req2 := httptest.NewRequest(http.MethodPost, "/login", nil)
+	req2.RemoteAddr = "192.168.1.1:12345"
+	w2 := httptest.NewRecorder()
+	router2.ServeHTTP(w2, req2)
+	assert.Equal(t, http.StatusOK, w2.Code)
 }
 
 func TestAuthRateLimiter_TTLCleanup(t *testing.T) {
