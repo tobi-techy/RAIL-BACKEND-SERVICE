@@ -79,6 +79,7 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 		cards          []*entities.BridgeCard
 		roundupSummary *entities.RoundupSummary
 		cardTxns       []*entities.BridgeCardTransaction
+		userLimits     *entities.UserLimitsResponse
 	)
 
 	// Parallel fetch - allocation balances
@@ -110,7 +111,10 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 		}
 		m, err := h.allocationService.GetMode(ctx, userID)
 		if err != nil {
-			h.logger.Warn("Failed to get allocation mode", zap.Error(err))
+			h.logger.Warn("Failed to get allocation mode", zap.Error(err), zap.String("user_id", userID.String()))
+			mu.Lock()
+			warnings = append(warnings, "allocation_mode_unavailable")
+			mu.Unlock()
 			return
 		}
 		mu.Lock()
@@ -148,6 +152,9 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 		r, err := h.roundupService.GetSummary(ctx, userID)
 		if err != nil {
 			h.logger.Warn("Failed to get roundup summary", zap.Error(err), zap.String("user_id", userID.String()))
+			mu.Lock()
+			warnings = append(warnings, "roundups_unavailable")
+			mu.Unlock()
 			return
 		}
 		mu.Lock()
@@ -164,7 +171,10 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 		}
 		txns, err := h.cardService.GetUserTransactions(ctx, userID, 10, 0)
 		if err != nil {
-			h.logger.Warn("Failed to get card transactions", zap.Error(err))
+			h.logger.Warn("Failed to get card transactions", zap.Error(err), zap.String("user_id", userID.String()))
+			mu.Lock()
+			warnings = append(warnings, "transactions_unavailable")
+			mu.Unlock()
 			return
 		}
 		mu.Lock()
@@ -172,10 +182,30 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 		mu.Unlock()
 	}()
 
+	// Parallel fetch - user limits
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if h.limitsService == nil {
+			return
+		}
+		l, err := h.limitsService.GetUserLimits(ctx, userID)
+		if err != nil {
+			h.logger.Warn("Failed to get user limits", zap.Error(err), zap.String("user_id", userID.String()))
+			mu.Lock()
+			warnings = append(warnings, "limits_unavailable")
+			mu.Unlock()
+			return
+		}
+		mu.Lock()
+		userLimits = l
+		mu.Unlock()
+	}()
+
 	wg.Wait()
 
 	// Build response
-	response := h.buildResponse(userID, balances, allocationMode, cards, roundupSummary, cardTxns, warnings)
+	response := h.buildResponse(userID, balances, allocationMode, cards, roundupSummary, cardTxns, userLimits, warnings)
 
 	c.JSON(http.StatusOK, response)
 }
@@ -188,6 +218,7 @@ func (h *SpendingStashHandlers) buildResponse(
 	cards []*entities.BridgeCard,
 	roundupSummary *entities.RoundupSummary,
 	cardTxns []*entities.BridgeCardTransaction,
+	userLimits *entities.UserLimitsResponse,
 	warnings []string,
 ) *SpendingStashResponse {
 	response := &SpendingStashResponse{
@@ -197,7 +228,7 @@ func (h *SpendingStashHandlers) buildResponse(
 		AllocationInfo:     SpendingAllocationInfo{Active: false, SpendingRatio: "0.70"},
 		RecentTransactions: []TransactionSummary{},
 		Analytics:          h.buildDefaultAnalytics(),
-		Limits:             h.buildDefaultLimits(),
+		Limits:             h.buildLimits(userLimits),
 		Stats: SpendingStats{
 			TotalSpentAllTime: "0.00",
 			TotalRoundUps:     "0.00",
@@ -248,10 +279,7 @@ func (h *SpendingStashHandlers) buildResponse(
 			if tx.MerchantCategory != nil {
 				category = *tx.MerchantCategory
 			}
-			categoryIcon := CategoryIcons[category]
-			if categoryIcon == "" {
-				categoryIcon = "more-horizontal"
-			}
+			categoryIcon := GetCategoryIcon(category)
 
 			merchantName := ""
 			if tx.MerchantName != nil {
@@ -280,9 +308,9 @@ func (h *SpendingStashHandlers) buildResponse(
 	}
 
 	// Populate round-ups summary
-	if roundupSummary != nil && roundupSummary.Settings.Enabled {
+	if roundupSummary != nil && roundupSummary.Settings != nil && roundupSummary.Settings.Enabled {
 		multiplier := 1
-		if !roundupSummary.Settings.Multiplier.IsZero() {
+		if roundupSummary.Settings.Multiplier.IsPositive() {
 			multiplier = int(roundupSummary.Settings.Multiplier.IntPart())
 		}
 		response.RoundUps = &RoundUpsSummary{
@@ -355,10 +383,7 @@ func (h *SpendingStashHandlers) calculateAnalytics(txns []*entities.BridgeCardTr
 		if !thisMonthTotal.IsZero() {
 			pct = amount.Div(thisMonthTotal).Mul(decimal.NewFromInt(100))
 		}
-		icon := CategoryIcons[cat]
-		if icon == "" {
-			icon = "more-horizontal"
-		}
+		icon := GetCategoryIcon(cat)
 		topCategories = append(topCategories, SpendingCategory{
 			Category:         cat,
 			CategoryIcon:     icon,
@@ -405,16 +430,29 @@ func (h *SpendingStashHandlers) buildDefaultAnalytics() SpendingAnalytics {
 	}
 }
 
-// buildDefaultLimits returns default spending limits
-func (h *SpendingStashHandlers) buildDefaultLimits() SpendingLimits {
+// buildLimits returns spending limits from user limits or defaults
+func (h *SpendingStashHandlers) buildLimits(userLimits *entities.UserLimitsResponse) SpendingLimits {
+	if userLimits == nil {
+		return SpendingLimits{
+			DailySpendLimit:       "1000.00",
+			DailySpendUsed:        "0.00",
+			DailySpendRemaining:   "1000.00",
+			DailyResetAt:          time.Now().Add(24 * time.Hour).Truncate(24 * time.Hour).Format(time.RFC3339),
+			MonthlySpendLimit:     "10000.00",
+			MonthlySpendUsed:      "0.00",
+			MonthlySpendRemaining: "10000.00",
+			PerTransactionLimit:   "500.00",
+		}
+	}
+
 	return SpendingLimits{
-		DailySpendLimit:       "1000.00",
-		DailySpendUsed:        "0.00",
-		DailySpendRemaining:   "1000.00",
-		DailyResetAt:          time.Now().Add(24 * time.Hour).Truncate(24 * time.Hour).Format(time.RFC3339),
-		MonthlySpendLimit:     "10000.00",
-		MonthlySpendUsed:      "0.00",
-		MonthlySpendRemaining: "10000.00",
-		PerTransactionLimit:   "500.00",
+		DailySpendLimit:       userLimits.Withdrawal.Daily.Limit,
+		DailySpendUsed:        userLimits.Withdrawal.Daily.Used,
+		DailySpendRemaining:   userLimits.Withdrawal.Daily.Remaining,
+		DailyResetAt:          userLimits.Withdrawal.Daily.ResetsAt.Format(time.RFC3339),
+		MonthlySpendLimit:     userLimits.Withdrawal.Monthly.Limit,
+		MonthlySpendUsed:      userLimits.Withdrawal.Monthly.Used,
+		MonthlySpendRemaining: userLimits.Withdrawal.Monthly.Remaining,
+		PerTransactionLimit:   userLimits.Withdrawal.Minimum,
 	}
 }

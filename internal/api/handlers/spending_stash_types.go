@@ -131,8 +131,8 @@ type SpendingStats struct {
 	MostFrequentCategory string `json:"most_frequent_category,omitempty"`
 }
 
-// CategoryIcons maps categories to icons
-var CategoryIcons = map[string]string{
+// categoryIcons maps categories to icons (unexported for thread safety)
+var categoryIcons = map[string]string{
 	"Food & Dining":    "utensils",
 	"Shopping":         "shopping-bag",
 	"Transportation":   "car",
@@ -143,4 +143,12 @@ var CategoryIcons = map[string]string{
 	"Education":        "book",
 	"Personal Care":    "user",
 	"Other":            "more-horizontal",
+}
+
+// GetCategoryIcon returns the icon for a category, defaulting to "Other" icon if not found
+func GetCategoryIcon(category string) string {
+	if icon, ok := categoryIcons[category]; ok {
+		return icon
+	}
+	return categoryIcons["Other"]
 }
