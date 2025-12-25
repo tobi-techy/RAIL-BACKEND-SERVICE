@@ -432,27 +432,35 @@ func (h *SpendingStashHandlers) buildDefaultAnalytics() SpendingAnalytics {
 
 // buildLimits returns spending limits from user limits or defaults
 func (h *SpendingStashHandlers) buildLimits(userLimits *entities.UserLimitsResponse) SpendingLimits {
+	defaults := SpendingLimits{
+		DailySpendLimit:       "1000.00",
+		DailySpendUsed:        "0.00",
+		DailySpendRemaining:   "1000.00",
+		DailyResetAt:          time.Now().Add(24 * time.Hour).Truncate(24 * time.Hour).Format(time.RFC3339),
+		MonthlySpendLimit:     "10000.00",
+		MonthlySpendUsed:      "0.00",
+		MonthlySpendRemaining: "10000.00",
+		PerTransactionLimit:   "500.00",
+	}
+
 	if userLimits == nil {
-		return SpendingLimits{
-			DailySpendLimit:       "1000.00",
-			DailySpendUsed:        "0.00",
-			DailySpendRemaining:   "1000.00",
-			DailyResetAt:          time.Now().Add(24 * time.Hour).Truncate(24 * time.Hour).Format(time.RFC3339),
-			MonthlySpendLimit:     "10000.00",
-			MonthlySpendUsed:      "0.00",
-			MonthlySpendRemaining: "10000.00",
-			PerTransactionLimit:   "500.00",
-		}
+		return defaults
+	}
+
+	// Withdrawal is a value type, but check for zero values as safety
+	withdrawal := userLimits.Withdrawal
+	if withdrawal.Daily.Limit == "" || withdrawal.Monthly.Limit == "" {
+		return defaults
 	}
 
 	return SpendingLimits{
-		DailySpendLimit:       userLimits.Withdrawal.Daily.Limit,
-		DailySpendUsed:        userLimits.Withdrawal.Daily.Used,
-		DailySpendRemaining:   userLimits.Withdrawal.Daily.Remaining,
-		DailyResetAt:          userLimits.Withdrawal.Daily.ResetsAt.Format(time.RFC3339),
-		MonthlySpendLimit:     userLimits.Withdrawal.Monthly.Limit,
-		MonthlySpendUsed:      userLimits.Withdrawal.Monthly.Used,
-		MonthlySpendRemaining: userLimits.Withdrawal.Monthly.Remaining,
-		PerTransactionLimit:   userLimits.Withdrawal.Minimum,
+		DailySpendLimit:       withdrawal.Daily.Limit,
+		DailySpendUsed:        withdrawal.Daily.Used,
+		DailySpendRemaining:   withdrawal.Daily.Remaining,
+		DailyResetAt:          withdrawal.Daily.ResetsAt.Format(time.RFC3339),
+		MonthlySpendLimit:     withdrawal.Monthly.Limit,
+		MonthlySpendUsed:      withdrawal.Monthly.Used,
+		MonthlySpendRemaining: withdrawal.Monthly.Remaining,
+		PerTransactionLimit:   withdrawal.Minimum,
 	}
 }
