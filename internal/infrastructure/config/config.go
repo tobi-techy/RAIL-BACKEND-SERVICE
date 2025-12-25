@@ -68,6 +68,7 @@ type ServerConfig struct {
 	RateLimitPerMin   int      `mapstructure:"rate_limit_per_min"`
 	SupportedVersions []string `mapstructure:"supported_versions"`
 	DefaultVersion    string   `mapstructure:"default_version"`
+	TrustedProxies    []string `mapstructure:"trusted_proxies"` // IPs of trusted reverse proxies for secure X-Forwarded-For handling
 }
 
 type DatabaseConfig struct {
