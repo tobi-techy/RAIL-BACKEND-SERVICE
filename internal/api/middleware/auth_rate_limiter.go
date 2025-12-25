@@ -15,6 +15,13 @@ const (
 	defaultCleanupTTL      = 10 * time.Minute
 )
 
+// Package-level singleton for AuthRateLimit middleware
+var (
+	authRateLimiterInstance *AuthRateLimiter
+	authRateLimiterOnce     sync.Once
+	authRateLimiterMu       sync.Mutex
+)
+
 // limiterEntry stores a rate limiter with its last access time for TTL-based cleanup
 type limiterEntry struct {
 	limiter  *rate.Limiter
@@ -30,12 +37,30 @@ type AuthRateLimiter struct {
 	burst      int
 	cleanupTTL time.Duration
 	stopCh     chan struct{}
+	stopped    bool
 }
 
-// NewAuthRateLimiter creates a rate limiter for auth endpoints
-// requestsPerMinute: max requests allowed per minute per IP
-// Input validation: clamps requestsPerMinute to minimum of 1 to prevent division by zero
+// NewAuthRateLimiter creates a rate limiter for auth endpoints.
+// requestsPerMinute: max requests allowed per minute per IP.
+// Input validation: clamps requestsPerMinute to minimum of 1 to prevent division by zero.
+// Note: Each call creates a new instance with its own cleanup goroutine.
+// For middleware use, prefer AuthRateLimit() which uses a singleton.
 func NewAuthRateLimiter(requestsPerMinute int) *AuthRateLimiter {
+	return newAuthRateLimiter(requestsPerMinute, defaultCleanupTTL)
+}
+
+// NewAuthRateLimiterWithTTL creates a rate limiter with custom cleanup TTL.
+// Note: Each call creates a new instance with its own cleanup goroutine.
+// Caller must call Stop() to prevent goroutine leaks.
+func NewAuthRateLimiterWithTTL(requestsPerMinute int, cleanupTTL time.Duration) *AuthRateLimiter {
+	if cleanupTTL <= 0 {
+		cleanupTTL = defaultCleanupTTL
+	}
+	return newAuthRateLimiter(requestsPerMinute, cleanupTTL)
+}
+
+// newAuthRateLimiter is the internal constructor
+func newAuthRateLimiter(requestsPerMinute int, cleanupTTL time.Duration) *AuthRateLimiter {
 	// Clamp to minimum of 1 to prevent division by zero and ensure valid burst
 	if requestsPerMinute <= 0 {
 		requestsPerMinute = 1
@@ -45,33 +70,12 @@ func NewAuthRateLimiter(requestsPerMinute int) *AuthRateLimiter {
 		limiters:   make(map[string]*limiterEntry),
 		rate:       rate.Every(time.Minute / time.Duration(requestsPerMinute)),
 		burst:      requestsPerMinute,
-		cleanupTTL: defaultCleanupTTL,
+		cleanupTTL: cleanupTTL,
 		stopCh:     make(chan struct{}),
+		stopped:    false,
 	}
 
 	// Start background cleanup goroutine
-	go al.cleanupLoop(defaultCleanupInterval)
-
-	return al
-}
-
-// NewAuthRateLimiterWithTTL creates a rate limiter with custom cleanup TTL
-func NewAuthRateLimiterWithTTL(requestsPerMinute int, cleanupTTL time.Duration) *AuthRateLimiter {
-	if requestsPerMinute <= 0 {
-		requestsPerMinute = 1
-	}
-	if cleanupTTL <= 0 {
-		cleanupTTL = defaultCleanupTTL
-	}
-
-	al := &AuthRateLimiter{
-		limiters:   make(map[string]*limiterEntry),
-		rate:       rate.Every(time.Minute / time.Duration(requestsPerMinute)),
-		burst:      requestsPerMinute,
-		cleanupTTL: cleanupTTL,
-		stopCh:     make(chan struct{}),
-	}
-
 	go al.cleanupLoop(defaultCleanupInterval)
 
 	return al
@@ -105,39 +109,54 @@ func (al *AuthRateLimiter) cleanup() {
 	}
 }
 
-// Stop stops the background cleanup goroutine
+// Stop stops the background cleanup goroutine.
+// Safe to call multiple times.
 func (al *AuthRateLimiter) Stop() {
-	close(al.stopCh)
+	al.mu.Lock()
+	if !al.stopped {
+		al.stopped = true
+		close(al.stopCh)
+	}
+	al.mu.Unlock()
 }
 
-// getLimiter returns the rate limiter for the given key, creating one if needed
-// Updates lastSeen time on each access
+// getLimiter returns the rate limiter for the given key, creating one if needed.
+// Updates lastSeen time on each access.
+// Handles race condition where entry may be deleted between read and write locks.
 func (al *AuthRateLimiter) getLimiter(key string) *rate.Limiter {
 	now := time.Now()
 
+	// Fast path: check if entry exists with read lock
 	al.mu.RLock()
 	entry, exists := al.limiters[key]
 	al.mu.RUnlock()
 
 	if exists {
-		// Update lastSeen time
+		// Entry existed during read, but may have been cleaned up.
+		// Acquire write lock and re-verify before updating.
 		al.mu.Lock()
-		if entry, exists = al.limiters[key]; exists {
+		entry, exists = al.limiters[key]
+		if exists {
+			// Entry still exists, update lastSeen and return
 			entry.lastSeen = now
+			al.mu.Unlock()
+			return entry.limiter
 		}
+		// Entry was deleted between read and write lock - fall through to create new one
 		al.mu.Unlock()
-		return entry.limiter
 	}
 
+	// Slow path: create new entry with write lock
 	al.mu.Lock()
 	defer al.mu.Unlock()
 
-	// Double-check after acquiring write lock
+	// Double-check after acquiring write lock (another goroutine may have created it)
 	if entry, exists = al.limiters[key]; exists {
 		entry.lastSeen = now
 		return entry.limiter
 	}
 
+	// Create new limiter
 	limiter := rate.NewLimiter(al.rate, al.burst)
 	al.limiters[key] = &limiterEntry{
 		limiter:  limiter,
@@ -146,15 +165,11 @@ func (al *AuthRateLimiter) getLimiter(key string) *rate.Limiter {
 	return limiter
 }
 
-// getClientIP safely extracts the client IP address
+// getClientIP safely extracts the client IP address.
 // Note: c.ClientIP() trusts X-Forwarded-For headers. For production use,
 // ensure Gin trusted proxies are configured via engine.SetTrustedProxies()
 // with your actual proxy IPs (e.g., []string{"10.0.0.0/8"} for internal proxies).
-// If no trusted proxies are configured, this falls back to RemoteAddr.
 func getClientIP(c *gin.Context) string {
-	// c.ClientIP() is safe when trusted proxies are properly configured
-	// The application should call engine.SetTrustedProxies() during initialization
-	// with the appropriate proxy IPs to prevent IP spoofing attacks
 	return c.ClientIP()
 }
 
@@ -176,10 +191,46 @@ func (al *AuthRateLimiter) Limit() gin.HandlerFunc {
 	}
 }
 
-// AuthRateLimit creates middleware with specified requests per minute
+// AuthRateLimit creates middleware with specified requests per minute.
+// This function uses a singleton pattern - the first call creates the limiter,
+// subsequent calls return the same instance. This prevents goroutine leaks
+// from multiple cleanup goroutines.
+//
+// To stop the singleton (e.g., in tests or shutdown), call StopAuthRateLimiter().
 func AuthRateLimit(requestsPerMinute int) gin.HandlerFunc {
-	limiter := NewAuthRateLimiter(requestsPerMinute)
-	return limiter.Limit()
+	authRateLimiterOnce.Do(func() {
+		authRateLimiterInstance = NewAuthRateLimiter(requestsPerMinute)
+	})
+	return authRateLimiterInstance.Limit()
+}
+
+// GetAuthRateLimiter returns the singleton AuthRateLimiter instance, or nil if not initialized.
+func GetAuthRateLimiter() *AuthRateLimiter {
+	authRateLimiterMu.Lock()
+	defer authRateLimiterMu.Unlock()
+	return authRateLimiterInstance
+}
+
+// StopAuthRateLimiter stops the singleton AuthRateLimiter's cleanup goroutine.
+// Should be called during application shutdown or in test cleanup.
+func StopAuthRateLimiter() {
+	authRateLimiterMu.Lock()
+	defer authRateLimiterMu.Unlock()
+	if authRateLimiterInstance != nil {
+		authRateLimiterInstance.Stop()
+	}
+}
+
+// ResetAuthRateLimiter stops and resets the singleton for testing purposes.
+// This allows tests to create fresh instances.
+func ResetAuthRateLimiter() {
+	authRateLimiterMu.Lock()
+	defer authRateLimiterMu.Unlock()
+	if authRateLimiterInstance != nil {
+		authRateLimiterInstance.Stop()
+		authRateLimiterInstance = nil
+	}
+	authRateLimiterOnce = sync.Once{}
 }
 
 // Size returns the current number of entries in the limiter map (for testing/monitoring)

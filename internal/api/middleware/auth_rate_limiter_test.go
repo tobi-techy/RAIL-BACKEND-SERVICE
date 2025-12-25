@@ -90,12 +90,12 @@ func TestAuthRateLimiter_SeparateLimitsPerIP(t *testing.T) {
 
 func TestAuthRateLimiter_ZeroRequestsPerMinute(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	// Should not panic with zero or negative values
 	limiter := NewAuthRateLimiter(0)
 	defer limiter.Stop()
 	assert.NotNil(t, limiter)
-	
+
 	limiter2 := NewAuthRateLimiter(-5)
 	defer limiter2.Stop()
 	assert.NotNil(t, limiter2)
@@ -103,7 +103,7 @@ func TestAuthRateLimiter_ZeroRequestsPerMinute(t *testing.T) {
 
 func TestAuthRateLimiter_TTLCleanup(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	// Create limiter with very short TTL for testing
 	limiter := NewAuthRateLimiterWithTTL(10, 100*time.Millisecond)
 	defer limiter.Stop()
@@ -126,7 +126,7 @@ func TestAuthRateLimiter_TTLCleanup(t *testing.T) {
 
 	// Wait for cleanup to run (TTL + cleanup interval buffer)
 	time.Sleep(300 * time.Millisecond)
-	
+
 	// Force cleanup
 	limiter.cleanup()
 
@@ -150,4 +150,58 @@ func TestAuthRateLimiter_Size(t *testing.T) {
 	// Same IP doesn't create new entry
 	limiter.getLimiter("ip1")
 	assert.Equal(t, 2, limiter.Size())
+}
+
+func TestAuthRateLimiter_StopIdempotent(t *testing.T) {
+	limiter := NewAuthRateLimiter(10)
+
+	// Stop should be safe to call multiple times
+	limiter.Stop()
+	limiter.Stop()
+	limiter.Stop()
+}
+
+func TestAuthRateLimit_Singleton(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// Reset singleton before test
+	ResetAuthRateLimiter()
+	defer ResetAuthRateLimiter()
+
+	// First call creates the singleton
+	middleware1 := AuthRateLimit(5)
+	assert.NotNil(t, middleware1)
+
+	instance1 := GetAuthRateLimiter()
+	assert.NotNil(t, instance1)
+
+	// Second call returns the same instance
+	middleware2 := AuthRateLimit(10) // Different rate, but should return same instance
+	assert.NotNil(t, middleware2)
+
+	instance2 := GetAuthRateLimiter()
+	assert.Same(t, instance1, instance2, "Should return same singleton instance")
+}
+
+func TestAuthRateLimiter_RaceConditionHandling(t *testing.T) {
+	// Test that getLimiter handles the case where entry is deleted between read and write
+	limiter := NewAuthRateLimiterWithTTL(10, 50*time.Millisecond)
+	defer limiter.Stop()
+
+	// Create an entry
+	l1 := limiter.getLimiter("test-ip")
+	assert.NotNil(t, l1)
+	assert.Equal(t, 1, limiter.Size())
+
+	// Wait for TTL to expire
+	time.Sleep(100 * time.Millisecond)
+
+	// Force cleanup to delete the entry
+	limiter.cleanup()
+	assert.Equal(t, 0, limiter.Size())
+
+	// Get limiter again - should create new one without panic
+	l2 := limiter.getLimiter("test-ip")
+	assert.NotNil(t, l2)
+	assert.Equal(t, 1, limiter.Size())
 }
