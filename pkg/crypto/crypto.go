@@ -117,6 +117,59 @@ func GenerateSecureToken() (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
+// SelectorVerifierToken contains the components of a selector-verifier token
+type SelectorVerifierToken struct {
+	Selector     string // Public, indexed for fast DB lookup (16 bytes hex = 32 chars)
+	Verifier     string // Secret, hashed before storage (32 bytes hex = 64 chars)
+	VerifierHash string // bcrypt hash of verifier for storage
+	FullToken    string // selector:verifier combined token sent to user
+}
+
+// GenerateSelectorVerifierToken generates a token using the selector-verifier pattern
+// This allows fast DB lookup via selector, then single bcrypt comparison of verifier
+func GenerateSelectorVerifierToken() (*SelectorVerifierToken, error) {
+	// Generate 16-byte selector (32 hex chars)
+	selectorBytes := make([]byte, 16)
+	if _, err := rand.Read(selectorBytes); err != nil {
+		return nil, fmt.Errorf("failed to generate selector: %w", err)
+	}
+	selector := hex.EncodeToString(selectorBytes)
+
+	// Generate 32-byte verifier (64 hex chars)
+	verifierBytes := make([]byte, 32)
+	if _, err := rand.Read(verifierBytes); err != nil {
+		return nil, fmt.Errorf("failed to generate verifier: %w", err)
+	}
+	verifier := hex.EncodeToString(verifierBytes)
+
+	// Hash the verifier for storage
+	verifierHash, err := HashPassword(verifier)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash verifier: %w", err)
+	}
+
+	return &SelectorVerifierToken{
+		Selector:     selector,
+		Verifier:     verifier,
+		VerifierHash: verifierHash,
+		FullToken:    selector + ":" + verifier,
+	}, nil
+}
+
+// ParseSelectorVerifierToken splits a full token into selector and verifier
+func ParseSelectorVerifierToken(fullToken string) (selector, verifier string, err error) {
+	// Find the colon separator
+	for i := 0; i < len(fullToken); i++ {
+		if fullToken[i] == ':' {
+			if i == 0 || i == len(fullToken)-1 {
+				return "", "", fmt.Errorf("invalid token format")
+			}
+			return fullToken[:i], fullToken[i+1:], nil
+		}
+	}
+	return "", "", fmt.Errorf("invalid token format: missing separator")
+}
+
 // DecodeJWTClaims decodes JWT claims without verification (for trusted tokens)
 func DecodeJWTClaims(token string) (map[string]interface{}, error) {
 	parts := splitJWT(token)
