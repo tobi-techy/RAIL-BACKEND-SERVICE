@@ -70,12 +70,11 @@ func (h *InvestmentStashHandlers) GetInvestmentStash(c *gin.Context) {
 
 	// Data containers
 	var (
-		balances         *entities.AllocationBalances
-		portfolio        *entities.Portfolio
-		drafts           []*entities.DraftSummary
-		conductorApp     *entities.ConductorApplication
-		conductor        *entities.Conductor
-		allocationMode   *entities.SmartAllocationMode
+		balances       *entities.AllocationBalances
+		portfolio      *entities.Portfolio
+		drafts         []*entities.DraftSummary
+		conductorApp   *entities.ConductorApplication
+		allocationMode *entities.SmartAllocationMode
 	)
 
 	// Parallel fetch - allocation balances
@@ -175,7 +174,7 @@ func (h *InvestmentStashHandlers) GetInvestmentStash(c *gin.Context) {
 	wg.Wait()
 
 	// Build response
-	response := h.buildResponse(userID, balances, portfolio, drafts, conductorApp, conductor, allocationMode, warnings)
+	response := h.buildResponse(userID, balances, portfolio, drafts, conductorApp, allocationMode, warnings)
 
 	c.JSON(http.StatusOK, response)
 }
@@ -187,7 +186,6 @@ func (h *InvestmentStashHandlers) buildResponse(
 	portfolio *entities.Portfolio,
 	drafts []*entities.DraftSummary,
 	conductorApp *entities.ConductorApplication,
-	conductor *entities.Conductor,
 	allocationMode *entities.SmartAllocationMode,
 	warnings []string,
 ) *InvestmentStashResponse {
@@ -227,15 +225,31 @@ func (h *InvestmentStashHandlers) buildResponse(
 	if portfolio != nil && len(portfolio.Positions) > 0 {
 		totalValue := decimal.Zero
 		for _, pos := range portfolio.Positions {
-			marketValue, _ := decimal.NewFromString(pos.MarketValue)
+			marketValue, err := decimal.NewFromString(pos.MarketValue)
+			if err != nil {
+				h.logger.Error("Failed to parse market value for total calculation", zap.Error(err), zap.String("value", pos.MarketValue))
+				continue
+			}
 			totalValue = totalValue.Add(marketValue)
 		}
 
 		positions := make([]PositionSummary, 0, len(portfolio.Positions))
 		for _, pos := range portfolio.Positions {
-			marketValue, _ := decimal.NewFromString(pos.MarketValue)
-			avgCost, _ := decimal.NewFromString(pos.AvgPrice)
-			qty, _ := decimal.NewFromString(pos.Quantity)
+			marketValue, err := decimal.NewFromString(pos.MarketValue)
+			if err != nil {
+				h.logger.Error("Failed to parse market value", zap.Error(err), zap.String("value", pos.MarketValue))
+				continue
+			}
+			avgCost, err := decimal.NewFromString(pos.AvgPrice)
+			if err != nil {
+				h.logger.Error("Failed to parse avg price", zap.Error(err), zap.String("value", pos.AvgPrice))
+				continue
+			}
+			qty, err := decimal.NewFromString(pos.Quantity)
+			if err != nil {
+				h.logger.Error("Failed to parse quantity", zap.Error(err), zap.String("value", pos.Quantity))
+				continue
+			}
 			costBasis := avgCost.Mul(qty)
 			gain := marketValue.Sub(costBasis)
 			gainPct := decimal.Zero
@@ -262,8 +276,10 @@ func (h *InvestmentStashHandlers) buildResponse(
 		response.Stats.PositionCount = len(positions)
 
 		// Update total investment balance with portfolio value
-		portfolioValue, _ := decimal.NewFromString(portfolio.TotalValue)
-		if balances != nil {
+		portfolioValue, err := decimal.NewFromString(portfolio.TotalValue)
+		if err != nil {
+			h.logger.Error("Failed to parse portfolio total value", zap.Error(err), zap.String("value", portfolio.TotalValue))
+		} else if balances != nil {
 			response.TotalInvestmentBalance = balances.StashBalance.Add(portfolioValue).StringFixed(2)
 		} else {
 			response.TotalInvestmentBalance = portfolioValue.StringFixed(2)
@@ -297,7 +313,7 @@ func (h *InvestmentStashHandlers) buildResponse(
 	}
 
 	// Populate conductor application status
-	response.ConductorStatus = h.buildConductorStatus(conductorApp, conductor)
+	response.ConductorStatus = h.buildConductorStatus(conductorApp)
 
 	// Set default performance metrics (placeholder - would need historical data)
 	response.Performance = PerformanceMetrics{
@@ -317,18 +333,10 @@ func (h *InvestmentStashHandlers) buildResponse(
 }
 
 // buildConductorStatus builds the conductor application status
-func (h *InvestmentStashHandlers) buildConductorStatus(app *entities.ConductorApplication, conductor *entities.Conductor) *ConductorApplicationStatus {
+func (h *InvestmentStashHandlers) buildConductorStatus(app *entities.ConductorApplication) *ConductorApplicationStatus {
 	status := &ConductorApplicationStatus{
 		Status:   "none",
 		CanApply: true,
-	}
-
-	if conductor != nil {
-		status.Status = "approved"
-		status.CanApply = false
-		status.ConductorID = conductor.ID.String()
-		status.FollowerCount = conductor.FollowersCount
-		return status
 	}
 
 	if app != nil {

@@ -2113,6 +2113,9 @@ func (c *Container) GetStationHandlers() *handlers.StationHandlers {
 
 // GetInvestmentStashHandlers returns investment stash handlers
 func (c *Container) GetInvestmentStashHandlers() *handlers.InvestmentStashHandlers {
+	if c.AllocationService == nil || c.InvestingService == nil || c.CopyTradingService == nil {
+		return nil
+	}
 	return handlers.NewInvestmentStashHandlers(
 		c.AllocationService,
 		c.InvestingService,
