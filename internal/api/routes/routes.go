@@ -324,6 +324,10 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 					account.GET("/station", stationHandlers.GetStation)
 				}
 
+				// Spending Stash endpoint - comprehensive spending data
+				spendingStashHandlers := container.GetSpendingStashHandlers()
+				if spendingStashHandlers != nil {
+					account.GET("/spending-stash", spendingStashHandlers.GetSpendingStash)
 				// Investment Stash endpoint - comprehensive investment data
 				investmentStashHandlers := container.GetInvestmentStashHandlers()
 				if investmentStashHandlers != nil {
