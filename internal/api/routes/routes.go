@@ -97,6 +97,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.GetInvestingService(),
 		container.Logger,
 	)
+	// Configure webhook secret - only skip verification in development when secret is not set
+	skipWebhookVerify := container.Config.Environment == "development" && container.Config.Payment.WebhookSecret == ""
+	walletFundingHandlers.SetWebhookSecret(container.Config.Payment.WebhookSecret, skipWebhookVerify)
+
 	authHandlers := handlers.NewAuthHandlers(
 		container.DB,
 		container.Config,
