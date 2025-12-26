@@ -23,7 +23,7 @@ Rail is an automated wealth system that eliminates financial decision-making for
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              RAIL PLATFORM                                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
+│                                                                             │ 
 │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                   │
 │  │   iOS App    │    │  API Gateway │    │   Backend    │                   │
 │  │   (Client)   │───▶│   (Gin/Go)   │───▶│   Services   │                   │

@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"go.uber.org/zap"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/pkg/crypto"
@@ -877,10 +878,10 @@ func (r *UserRepository) ClearPasscode(ctx context.Context, userID uuid.UUID) er
 	return nil
 }
 
-// CreatePasswordResetToken stores a hashed password reset token
-func (r *UserRepository) CreatePasswordResetToken(ctx context.Context, userID uuid.UUID, tokenHash string, expiresAt time.Time) error {
-	query := `INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)`
-	_, err := r.db.ExecContext(ctx, query, userID, tokenHash, expiresAt)
+// CreatePasswordResetToken stores a password reset token using selector-verifier pattern
+func (r *UserRepository) CreatePasswordResetToken(ctx context.Context, userID uuid.UUID, selector, verifierHash string, expiresAt time.Time) error {
+	query := `INSERT INTO password_reset_tokens (user_id, selector, token_hash, expires_at) VALUES ($1, $2, $3, $4)`
+	_, err := r.db.ExecContext(ctx, query, userID, selector, verifierHash, expiresAt)
 	if err != nil {
 		r.logger.Error("Failed to create password reset token", zap.Error(err), zap.String("user_id", userID.String()))
 		return fmt.Errorf("failed to create password reset token: %w", err)
@@ -888,22 +889,60 @@ func (r *UserRepository) CreatePasswordResetToken(ctx context.Context, userID uu
 	return nil
 }
 
-// ValidatePasswordResetToken validates and marks token as used
-func (r *UserRepository) ValidatePasswordResetToken(ctx context.Context, tokenHash string) (uuid.UUID, error) {
-	var userID uuid.UUID
+// ValidatePasswordResetToken validates a token using selector-verifier pattern and marks as used
+func (r *UserRepository) ValidatePasswordResetToken(ctx context.Context, rawToken string) (uuid.UUID, error) {
+	// Parse selector and verifier from the token
+	selector, verifier, err := crypto.ParseSelectorVerifierToken(rawToken)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("invalid or expired token")
+	}
+
+	// Use transaction with row lock to prevent race conditions
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		r.logger.Error("Failed to begin transaction", zap.Error(err))
+		return uuid.Nil, fmt.Errorf("failed to validate token: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Fast lookup by selector with row lock (FOR UPDATE)
 	query := `
-		UPDATE password_reset_tokens 
-		SET used_at = NOW() 
-		WHERE token_hash = $1 AND expires_at > NOW() AND used_at IS NULL
-		RETURNING user_id`
-	err := r.db.QueryRowContext(ctx, query, tokenHash).Scan(&userID)
+		SELECT id, user_id, token_hash 
+		FROM password_reset_tokens 
+		WHERE selector = $1 AND expires_at > NOW() AND used_at IS NULL
+		FOR UPDATE`
+
+	var tokenID uuid.UUID
+	var userID uuid.UUID
+	var storedHash string
+
+	err = tx.QueryRowContext(ctx, query, selector).Scan(&tokenID, &userID, &storedHash)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return uuid.Nil, fmt.Errorf("invalid or expired token")
 		}
-		r.logger.Error("Failed to validate password reset token", zap.Error(err))
+		r.logger.Error("Failed to query password reset token", zap.Error(err))
 		return uuid.Nil, fmt.Errorf("failed to validate token: %w", err)
 	}
+
+	// Single bcrypt comparison of verifier
+	if bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(verifier)) != nil {
+		return uuid.Nil, fmt.Errorf("invalid or expired token")
+	}
+
+	// Token matches - mark as used
+	updateQuery := `UPDATE password_reset_tokens SET used_at = NOW() WHERE id = $1`
+	if _, err := tx.ExecContext(ctx, updateQuery, tokenID); err != nil {
+		r.logger.Error("Failed to mark token as used", zap.Error(err))
+		return uuid.Nil, fmt.Errorf("failed to validate token: %w", err)
+	}
+
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		r.logger.Error("Failed to commit transaction", zap.Error(err))
+		return uuid.Nil, fmt.Errorf("failed to validate token: %w", err)
+	}
+
 	return userID, nil
 }
 

@@ -752,16 +752,21 @@ func (h *AuthHandlers) ForgotPassword(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "If an account exists, password reset instructions will be sent"})
 		return
 	}
-	token, _ := crypto.GenerateSecureToken()
-	tokenHash, _ := crypto.HashPassword(token)
+	// Generate selector-verifier token for secure, fast validation
+	svToken, err := crypto.GenerateSelectorVerifierToken()
+	if err != nil {
+		h.logger.Error("Failed to generate password reset token", zap.Error(err))
+		c.JSON(http.StatusOK, gin.H{"message": "If an account exists, password reset instructions will be sent"})
+		return
+	}
 	expiresAt := time.Now().Add(1 * time.Hour)
-	if err := h.userRepo.CreatePasswordResetToken(ctx, user.ID, tokenHash, expiresAt); err != nil {
+	if err := h.userRepo.CreatePasswordResetToken(ctx, user.ID, svToken.Selector, svToken.VerifierHash, expiresAt); err != nil {
 		h.logger.Error("Failed to store password reset token", zap.Error(err))
 		c.JSON(http.StatusOK, gin.H{"message": "If an account exists, password reset instructions will be sent"})
 		return
 	}
 	if h.emailService != nil {
-		if err := h.emailService.SendVerificationEmail(ctx, user.Email, token); err != nil {
+		if err := h.emailService.SendVerificationEmail(ctx, user.Email, svToken.FullToken); err != nil {
 			h.logger.Error("Failed to send password reset email", zap.Error(err))
 		}
 	}
@@ -776,13 +781,8 @@ func (h *AuthHandlers) ResetPassword(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	tokenHash, err := crypto.HashPassword(req.Token)
-	if err != nil {
-		h.logger.Error("Failed to hash token", zap.Error(err))
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_TOKEN", Message: "Invalid reset token"})
-		return
-	}
-	userID, err := h.userRepo.ValidatePasswordResetToken(ctx, tokenHash)
+	// Pass raw token to repository - bcrypt comparison happens there
+	userID, err := h.userRepo.ValidatePasswordResetToken(ctx, req.Token)
 	if err != nil {
 		h.logger.Warn("Invalid password reset token", zap.Error(err))
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_TOKEN", Message: "Invalid or expired reset token"})
