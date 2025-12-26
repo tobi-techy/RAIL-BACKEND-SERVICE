@@ -2111,6 +2111,19 @@ func (c *Container) GetStationHandlers() *handlers.StationHandlers {
 	return handlers.NewStationHandlers(c.StationService, c.ZapLog)
 }
 
+// GetInvestmentStashHandlers returns investment stash handlers
+func (c *Container) GetInvestmentStashHandlers() *handlers.InvestmentStashHandlers {
+	if c.AllocationService == nil || c.InvestingService == nil || c.CopyTradingService == nil {
+		return nil
+	}
+	return handlers.NewInvestmentStashHandlers(
+		c.AllocationService,
+		c.InvestingService,
+		c.CopyTradingService,
+		c.ZapLog,
+	)
+}
+
 // GetCopyTradingRepository returns the copy trading repository
 func (c *Container) GetCopyTradingRepository() *repositories.CopyTradingRepository {
 	return c.CopyTradingRepo
