@@ -897,17 +897,26 @@ func (r *UserRepository) ValidatePasswordResetToken(ctx context.Context, rawToke
 		return uuid.Nil, fmt.Errorf("invalid or expired token")
 	}
 
-	// Fast lookup by selector (indexed)
+	// Use transaction with row lock to prevent race conditions
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		r.logger.Error("Failed to begin transaction", zap.Error(err))
+		return uuid.Nil, fmt.Errorf("failed to validate token: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Fast lookup by selector with row lock (FOR UPDATE)
 	query := `
 		SELECT id, user_id, token_hash 
 		FROM password_reset_tokens 
-		WHERE selector = $1 AND expires_at > NOW() AND used_at IS NULL`
+		WHERE selector = $1 AND expires_at > NOW() AND used_at IS NULL
+		FOR UPDATE`
 
 	var tokenID uuid.UUID
 	var userID uuid.UUID
 	var storedHash string
 
-	err = r.db.QueryRowContext(ctx, query, selector).Scan(&tokenID, &userID, &storedHash)
+	err = tx.QueryRowContext(ctx, query, selector).Scan(&tokenID, &userID, &storedHash)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return uuid.Nil, fmt.Errorf("invalid or expired token")
@@ -923,8 +932,14 @@ func (r *UserRepository) ValidatePasswordResetToken(ctx context.Context, rawToke
 
 	// Token matches - mark as used
 	updateQuery := `UPDATE password_reset_tokens SET used_at = NOW() WHERE id = $1`
-	if _, err := r.db.ExecContext(ctx, updateQuery, tokenID); err != nil {
+	if _, err := tx.ExecContext(ctx, updateQuery, tokenID); err != nil {
 		r.logger.Error("Failed to mark token as used", zap.Error(err))
+		return uuid.Nil, fmt.Errorf("failed to validate token: %w", err)
+	}
+
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		r.logger.Error("Failed to commit transaction", zap.Error(err))
 		return uuid.Nil, fmt.Errorf("failed to validate token: %w", err)
 	}
 
