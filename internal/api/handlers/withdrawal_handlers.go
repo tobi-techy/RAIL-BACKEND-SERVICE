@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"go.uber.org/zap"
@@ -20,17 +21,24 @@ type WithdrawalServiceInterface interface {
 	GetUserWithdrawals(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error)
 }
 
+// BalanceChecker interface for balance validation (defense-in-depth)
+type BalanceChecker interface {
+	GetBuyingPower(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
+}
+
 // WithdrawalHandlers handles withdrawal-related operations
 type WithdrawalHandlers struct {
 	withdrawalService WithdrawalServiceInterface
+	balanceChecker    BalanceChecker
 	validator         *validator.Validate
 	logger            *logger.Logger
 }
 
 // NewWithdrawalHandlers creates a new WithdrawalHandlers instance
-func NewWithdrawalHandlers(withdrawalService WithdrawalServiceInterface, logger *logger.Logger) *WithdrawalHandlers {
+func NewWithdrawalHandlers(withdrawalService WithdrawalServiceInterface, balanceChecker BalanceChecker, logger *logger.Logger) *WithdrawalHandlers {
 	return &WithdrawalHandlers{
 		withdrawalService: withdrawalService,
+		balanceChecker:    balanceChecker,
 		validator:         validator.New(),
 		logger:            logger,
 	}
@@ -54,6 +62,27 @@ func (h *WithdrawalHandlers) InitiateWithdrawal(c *gin.Context) {
 	if err := h.validateWithdrawalRequest(&req); err != nil {
 		SendBadRequest(c, err.code, err.message)
 		return
+	}
+
+	// Defense-in-depth: Check balance at handler level before service call
+	if h.balanceChecker != nil {
+		buyingPower, err := h.balanceChecker.GetBuyingPower(c.Request.Context(), userID)
+		if err != nil {
+			h.logger.Error("Failed to check buying power",
+				"error", err,
+				"user_id", userID)
+			SendInternalError(c, "BALANCE_CHECK_ERROR", "Failed to verify balance")
+			return
+		}
+
+		if buyingPower.LessThan(req.Amount) {
+			h.logger.Warn("Withdrawal rejected - insufficient balance (handler check)",
+				"user_id", userID,
+				"requested", req.Amount.String(),
+				"available", buyingPower.String())
+			SendBadRequest(c, ErrCodeInsufficientFunds, "Insufficient buying power for withdrawal")
+			return
+		}
 	}
 
 	response, err := h.withdrawalService.InitiateWithdrawal(c.Request.Context(), &req)

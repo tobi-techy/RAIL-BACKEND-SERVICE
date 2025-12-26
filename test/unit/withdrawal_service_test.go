@@ -70,6 +70,11 @@ func (m *MockWithdrawalRepository) MarkFailed(ctx context.Context, id uuid.UUID,
 	return args.Error(0)
 }
 
+func (m *MockWithdrawalRepository) GetPendingWithdrawalsTotal(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
+	args := m.Called(ctx, userID)
+	return args.Get(0).(decimal.Decimal), args.Error(1)
+}
+
 type MockAlpacaAdapter struct {
 	mock.Mock
 }
@@ -126,7 +131,7 @@ func TestInitiateWithdrawal_Success(t *testing.T) {
 	log := logger.New("debug", "test")
 	mockQueue := &MockQueuePublisher{}
 
-	service := services.NewWithdrawalService(mockRepo, mockAlpaca, mockDue, log, mockQueue)
+	service := services.NewWithdrawalService(mockRepo, mockAlpaca, mockDue, nil, nil, log, mockQueue)
 
 	userID := uuid.New()
 	alpacaAccountID := "test-account"
@@ -146,6 +151,7 @@ func TestInitiateWithdrawal_Success(t *testing.T) {
 		BuyingPower: decimal.NewFromFloat(500.00),
 	}
 
+	mockRepo.On("GetPendingWithdrawalsTotal", mock.Anything, userID).Return(decimal.Zero, nil)
 	mockAlpaca.On("GetAccount", mock.Anything, alpacaAccountID).Return(alpacaAccount, nil)
 	mockRepo.On("Create", mock.Anything, mock.AnythingOfType("*entities.Withdrawal")).Return(nil)
 	mockQueue.On("Publish", mock.Anything, "withdrawal-processing", mock.Anything).Return(nil)
@@ -167,7 +173,7 @@ func TestInitiateWithdrawal_InsufficientFunds(t *testing.T) {
 	log := logger.New("debug", "test")
 	mockQueue := &MockQueuePublisher{}
 
-	service := services.NewWithdrawalService(mockRepo, mockAlpaca, mockDue, log, mockQueue)
+	service := services.NewWithdrawalService(mockRepo, mockAlpaca, mockDue, nil, nil, log, mockQueue)
 
 	userID := uuid.New()
 	alpacaAccountID := "test-account"
@@ -187,6 +193,7 @@ func TestInitiateWithdrawal_InsufficientFunds(t *testing.T) {
 		BuyingPower: decimal.NewFromFloat(100.00),
 	}
 
+	mockRepo.On("GetPendingWithdrawalsTotal", mock.Anything, userID).Return(decimal.Zero, nil)
 	mockAlpaca.On("GetAccount", mock.Anything, alpacaAccountID).Return(alpacaAccount, nil)
 
 	resp, err := service.InitiateWithdrawal(context.Background(), req)
@@ -204,7 +211,7 @@ func TestInitiateWithdrawal_InactiveAccount(t *testing.T) {
 	log := logger.New("debug", "test")
 	mockQueue := &MockQueuePublisher{}
 
-	service := services.NewWithdrawalService(mockRepo, mockAlpaca, mockDue, log, mockQueue)
+	service := services.NewWithdrawalService(mockRepo, mockAlpaca, mockDue, nil, nil, log, mockQueue)
 
 	userID := uuid.New()
 	alpacaAccountID := "test-account"
@@ -224,6 +231,7 @@ func TestInitiateWithdrawal_InactiveAccount(t *testing.T) {
 		BuyingPower: decimal.NewFromFloat(500.00),
 	}
 
+	mockRepo.On("GetPendingWithdrawalsTotal", mock.Anything, userID).Return(decimal.Zero, nil)
 	mockAlpaca.On("GetAccount", mock.Anything, alpacaAccountID).Return(alpacaAccount, nil)
 
 	resp, err := service.InitiateWithdrawal(context.Background(), req)
@@ -241,7 +249,7 @@ func TestGetWithdrawal_Success(t *testing.T) {
 	log := logger.New("debug", "test")
 	mockQueue := &MockQueuePublisher{}
 
-	service := services.NewWithdrawalService(mockRepo, mockAlpaca, mockDue, log, mockQueue)
+	service := services.NewWithdrawalService(mockRepo, mockAlpaca, mockDue, nil, nil, log, mockQueue)
 
 	withdrawalID := uuid.New()
 	expectedWithdrawal := &entities.Withdrawal{
@@ -274,7 +282,7 @@ func TestGetWithdrawal_NotFound(t *testing.T) {
 	log := logger.New("debug", "test")
 	mockQueue := &MockQueuePublisher{}
 
-	service := services.NewWithdrawalService(mockRepo, mockAlpaca, mockDue, log, mockQueue)
+	service := services.NewWithdrawalService(mockRepo, mockAlpaca, mockDue, nil, nil, log, mockQueue)
 
 	withdrawalID := uuid.New()
 
@@ -294,7 +302,7 @@ func TestGetUserWithdrawals_Success(t *testing.T) {
 	log := logger.New("debug", "test")
 	mockQueue := &MockQueuePublisher{}
 
-	service := services.NewWithdrawalService(mockRepo, mockAlpaca, mockDue, log, mockQueue)
+	service := services.NewWithdrawalService(mockRepo, mockAlpaca, mockDue, nil, nil, log, mockQueue)
 
 	userID := uuid.New()
 	expectedWithdrawals := []*entities.Withdrawal{

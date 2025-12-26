@@ -70,6 +70,7 @@ type WithdrawalRepository interface {
 	UpdateTxHash(ctx context.Context, id uuid.UUID, txHash string) error
 	MarkCompleted(ctx context.Context, id uuid.UUID) error
 	MarkFailed(ctx context.Context, id uuid.UUID, errorMsg string) error
+	GetPendingWithdrawalsTotal(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
 }
 
 // AlpacaAdapter interface for Alpaca operations
@@ -156,7 +157,14 @@ func (s *WithdrawalService) InitiateWithdrawal(ctx context.Context, req *entitie
 		"chain", req.DestinationChain,
 		"address", req.DestinationAddress)
 
-	// Step 1: Validate against withdrawal limits (KYC tier-based)
+	// Step 1: Check for pending withdrawals to prevent race conditions
+	pendingTotal, err := s.withdrawalRepo.GetPendingWithdrawalsTotal(ctx, req.UserID)
+	if err != nil {
+		s.logger.Error("Failed to check pending withdrawals", "error", err, "user_id", req.UserID.String())
+		return nil, fmt.Errorf("failed to check pending withdrawals: %w", err)
+	}
+
+	// Step 2: Validate against withdrawal limits (KYC tier-based)
 	if s.limitsService != nil {
 		result, err := s.limitsService.ValidateWithdrawal(ctx, req.UserID, req.Amount)
 		if err != nil {
@@ -198,10 +206,10 @@ func (s *WithdrawalService) InitiateWithdrawal(ctx context.Context, req *entitie
 		}
 	}
 
-	// Step 3: Validate Alpaca account and buying power
+	// Step 4: Validate Alpaca account and buying power (accounting for pending withdrawals)
 	var alpacaAccount *entities.AlpacaAccountResponse
 	var getAccountErr error
-	err := s.alpacaBreaker.Execute(ctx, func() error {
+	err = s.alpacaBreaker.Execute(ctx, func() error {
 		alpacaAccount, getAccountErr = s.alpacaAPI.GetAccount(ctx, req.AlpacaAccountID)
 		return getAccountErr
 	})
@@ -213,12 +221,20 @@ func (s *WithdrawalService) InitiateWithdrawal(ctx context.Context, req *entitie
 		return nil, fmt.Errorf("Alpaca account not active: %s", alpacaAccount.Status)
 	}
 
-	if alpacaAccount.BuyingPower.LessThan(req.Amount) {
-		return nil, fmt.Errorf("insufficient buying power: have %s, need %s",
-			alpacaAccount.BuyingPower.String(), req.Amount.String())
+	// Calculate effective available balance (buying power minus pending withdrawals)
+	effectiveBalance := alpacaAccount.BuyingPower.Sub(pendingTotal)
+	if effectiveBalance.LessThan(req.Amount) {
+		s.logger.Warn("Insufficient balance after accounting for pending withdrawals",
+			"user_id", req.UserID.String(),
+			"buying_power", alpacaAccount.BuyingPower.String(),
+			"pending_withdrawals", pendingTotal.String(),
+			"effective_balance", effectiveBalance.String(),
+			"requested", req.Amount.String())
+		return nil, fmt.Errorf("insufficient buying power: have %s (with %s pending), need %s",
+			effectiveBalance.String(), pendingTotal.String(), req.Amount.String())
 	}
 
-	// Step 4: Create withdrawal record
+	// Step 5: Create withdrawal record
 	withdrawal := &entities.Withdrawal{
 		ID:                 uuid.New(),
 		UserID:             req.UserID,
@@ -252,7 +268,7 @@ func (s *WithdrawalService) InitiateWithdrawal(ctx context.Context, req *entitie
 		}
 	}
 
-	// Step 5: Enqueue withdrawal processing to SQS
+	// Step 6: Enqueue withdrawal processing to SQS
 	msg := queue.WithdrawalMessage{
 		WithdrawalID: withdrawal.ID.String(),
 		Step:         "debit_alpaca",
