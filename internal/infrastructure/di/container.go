@@ -2118,6 +2118,15 @@ func (c *Container) GetSpendingStashHandlers() *handlers.SpendingStashHandlers {
 		c.CardService,
 		c.RoundupService,
 		c.LimitsService,
+// GetInvestmentStashHandlers returns investment stash handlers
+func (c *Container) GetInvestmentStashHandlers() *handlers.InvestmentStashHandlers {
+	if c.AllocationService == nil || c.InvestingService == nil || c.CopyTradingService == nil {
+		return nil
+	}
+	return handlers.NewInvestmentStashHandlers(
+		c.AllocationService,
+		c.InvestingService,
+		c.CopyTradingService,
 		c.ZapLog,
 	)
 }

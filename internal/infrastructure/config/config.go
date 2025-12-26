@@ -68,6 +68,7 @@ type ServerConfig struct {
 	RateLimitPerMin   int      `mapstructure:"rate_limit_per_min"`
 	SupportedVersions []string `mapstructure:"supported_versions"`
 	DefaultVersion    string   `mapstructure:"default_version"`
+	TrustedProxies    []string `mapstructure:"trusted_proxies"` // IPs of trusted reverse proxies for secure X-Forwarded-For handling
 }
 
 type DatabaseConfig struct {
@@ -788,6 +789,16 @@ func validate(config *Config) error {
 
 	if len(config.Circle.SupportedChains) == 0 {
 		return fmt.Errorf("circle supported chains configuration is required")
+	}
+
+	// Validate webhook secrets in production
+	if config.Environment == "production" {
+		if config.Bridge.WebhookSecret == "" {
+			return fmt.Errorf("bridge webhook secret is required in production")
+		}
+		if config.Payment.WebhookSecret == "" {
+			return fmt.Errorf("payment webhook secret is required in production")
+		}
 	}
 
 	return nil
