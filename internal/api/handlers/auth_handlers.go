@@ -686,13 +686,14 @@ func (h *AuthHandlers) Login(c *gin.Context) {
 
 // RefreshToken handles JWT token refresh
 func (h *AuthHandlers) RefreshToken(c *gin.Context) {
+	ctx := c.Request.Context()
+
 	var req entities.RefreshTokenRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondBadRequest(c, "Invalid request payload", nil)
 		return
 	}
 
-	// Validate refresh token format before processing
 	refreshToken := strings.TrimSpace(req.RefreshToken)
 	if refreshToken == "" {
 		h.logger.Warn("Empty refresh token provided")
@@ -700,7 +701,7 @@ func (h *AuthHandlers) RefreshToken(c *gin.Context) {
 		return
 	}
 
-	// Basic JWT format validation (should have 3 segments separated by dots)
+	// Basic JWT format validation
 	segments := strings.Split(refreshToken, ".")
 	if len(segments) != 3 {
 		h.logger.Warn("Malformed token", zap.Int("segments_count", len(segments)))
@@ -708,14 +709,42 @@ func (h *AuthHandlers) RefreshToken(c *gin.Context) {
 		return
 	}
 
-	// Refresh access token using pkg/auth
-	pair, err := auth.RefreshAccessToken(refreshToken, h.cfg.JWT.Secret, h.cfg.JWT.AccessTTL)
+	// Validate refresh token and extract user ID
+	userID, err := auth.ValidateRefreshToken(refreshToken, h.cfg.JWT.Secret)
 	if err != nil {
-		h.logger.Warn("Failed to refresh token", zap.Error(err))
+		h.logger.Warn("Failed to validate refresh token", zap.Error(err))
 		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "INVALID_TOKEN", Message: "Invalid refresh token"})
 		return
 	}
-	c.JSON(http.StatusOK, pair)
+
+	// Fetch current user data from database
+	user, err := h.userRepo.GetUserEntityByID(ctx, userID)
+	if err != nil {
+		h.logger.Warn("User not found during token refresh", zap.Error(err), zap.String("user_id", userID.String()))
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "USER_NOT_FOUND", Message: "User not found"})
+		return
+	}
+
+	// Validate user is still active
+	if !user.IsActive {
+		h.logger.Warn("Inactive user attempted token refresh", zap.String("user_id", userID.String()))
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "ACCOUNT_INACTIVE", Message: "Account is inactive"})
+		return
+	}
+
+	// Generate new access token with current user data
+	accessToken, expiresAt, err := auth.GenerateAccessToken(user.ID, user.Email, user.Role, h.cfg.JWT.Secret, h.cfg.JWT.AccessTTL)
+	if err != nil {
+		h.logger.Error("Failed to generate access token", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "TOKEN_GENERATION_FAILED", Message: "Failed to generate access token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, auth.TokenPair{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		ExpiresAt:    expiresAt,
+	})
 }
 
 // Logout handles user logout
