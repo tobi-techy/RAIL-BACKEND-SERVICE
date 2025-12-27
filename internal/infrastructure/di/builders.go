@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
-	"github.com/rail-service/rail_service/internal/adapters/alpaca"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/domain/services"
 	"github.com/rail-service/rail_service/internal/domain/services/apikey"
 	"github.com/rail-service/rail_service/internal/domain/services/passcode"
