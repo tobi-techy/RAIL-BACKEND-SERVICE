@@ -832,30 +832,74 @@ func (h *AuthHandlers) ResetPassword(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Password has been reset"})
 }
 
-// VerifyEmail handles email verification
+// VerifyEmail handles email verification via verification code
+// This endpoint requires a valid verification code sent to the user's email
+// @Summary Verify email address
+// @Description Verify user's email using the verification code sent to their email
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param request body entities.VerifyEmailRequest true "Email verification request with code"
+// @Success 200 {object} map[string]string
+// @Failure 400 {object} entities.ErrorResponse
+// @Failure 401 {object} entities.ErrorResponse
+// @Failure 404 {object} entities.ErrorResponse
+// @Failure 500 {object} entities.ErrorResponse
+// @Router /api/v1/auth/verify-email [post]
 func (h *AuthHandlers) VerifyEmail(c *gin.Context) {
-	userIDStr := c.Query("user_id")
-	if userIDStr == "" {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "MISSING_USER_ID", Message: "user_id query param required"})
-		return
-	}
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_USER_ID", Message: "Invalid user_id"})
-		return
-	}
 	ctx := c.Request.Context()
-	user, err := h.userRepo.GetUserEntityByID(ctx, userID)
+
+	var req struct {
+		Email string `json:"email" binding:"required,email"`
+		Code  string `json:"code" binding:"required,len=6"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
+			Code:    "INVALID_REQUEST",
+			Message: "Email and 6-digit verification code are required",
+			Details: map[string]interface{}{"error": err.Error()},
+		})
+		return
+	}
+
+	// Verify the code using the verification service
+	isValid, err := h.verificationService.VerifyCode(ctx, "email", req.Email, req.Code)
+	if err != nil || !isValid {
+		h.logger.Warn("Email verification code invalid or expired",
+			zap.Error(err),
+			zap.String("email", req.Email))
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
+			Code:    "INVALID_CODE",
+			Message: "Invalid or expired verification code",
+		})
+		return
+	}
+
+	// Find user by email
+	user, err := h.userRepo.GetByEmail(ctx, req.Email)
 	if err != nil {
-		c.JSON(http.StatusNotFound, entities.ErrorResponse{Code: "USER_NOT_FOUND", Message: "User not found"})
+		c.JSON(http.StatusNotFound, entities.ErrorResponse{
+			Code:    "USER_NOT_FOUND",
+			Message: "User not found",
+		})
 		return
 	}
+
+	// Mark email as verified
 	user.EmailVerified = true
-	if err := h.userRepo.Update(ctx, user.ToUserProfile()); err != nil {
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "VERIFY_FAILED", Message: "Failed to verify email"})
+	if err := h.userRepo.Update(ctx, user); err != nil {
+		h.logger.Error("Failed to update user email verification status",
+			zap.Error(err),
+			zap.String("email", req.Email))
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+			Code:    "VERIFY_FAILED",
+			Message: "Failed to verify email",
+		})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "Email verified"})
+
+	h.logger.Info("Email verified successfully", zap.String("email", req.Email))
+	c.JSON(http.StatusOK, gin.H{"message": "Email verified successfully"})
 }
 
 // GetProfile returns user profile

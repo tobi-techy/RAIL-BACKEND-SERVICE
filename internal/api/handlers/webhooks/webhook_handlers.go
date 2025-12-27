@@ -22,30 +22,31 @@ import (
 
 // WebhookHandlers handles webhook processing
 type WebhookHandlers struct {
-	fundingService   *funding.Service
-	investingService *investing.Service
-	validator        *validator.Validate
-	webhookSecret    string
-	logger           *logger.Logger
+	fundingService          *funding.Service
+	investingService        *investing.Service
+	validator               *validator.Validate
+	webhookSecret           string
+	skipSignatureVerify     bool // Only true in development when secret is not configured
+	logger                  *logger.Logger
 }
 
 // NewWebhookHandlers creates a new WebhookHandlers instance
+// skipSignatureVerify should only be true in development/testing environments
 func NewWebhookHandlers(
 	fundingService *funding.Service,
 	investingService *investing.Service,
 	logger *logger.Logger,
+	webhookSecret string,
+	skipSignatureVerify bool,
 ) *WebhookHandlers {
 	return &WebhookHandlers{
-		fundingService:   fundingService,
-		investingService: investingService,
-		validator:        validator.New(),
-		logger:           logger,
+		fundingService:      fundingService,
+		investingService:    investingService,
+		validator:           validator.New(),
+		webhookSecret:       webhookSecret,
+		skipSignatureVerify: skipSignatureVerify,
+		logger:              logger,
 	}
-}
-
-// SetWebhookSecret sets the webhook secret for signature verification
-func (h *WebhookHandlers) SetWebhookSecret(secret string) {
-	h.webhookSecret = secret
 }
 
 // ChainDepositWebhook handles POST /api/v1/webhooks/chain-deposit
@@ -228,7 +229,16 @@ func (h *WebhookHandlers) CircleWebhook(c *gin.Context) {
 		signature = c.GetHeader("X-Webhook-Signature")
 	}
 
-	if h.webhookSecret != "" && signature != "" {
+	// Verify signature - fail closed if not configured
+	if h.webhookSecret == "" {
+		if h.skipSignatureVerify {
+			h.logger.Warn("Circle webhook secret not configured - SKIPPING VERIFICATION (development mode only)")
+		} else {
+			h.logger.Error("Circle webhook secret not configured - rejecting webhook for security")
+			common.SendUnauthorized(c, "Webhook signature verification not configured")
+			return
+		}
+	} else {
 		if err := verifyHMACSignature(rawBody, signature, h.webhookSecret); err != nil {
 			h.logger.Warn("Circle webhook signature verification failed", zap.Error(err))
 			common.SendUnauthorized(c, "Webhook signature verification failed")
@@ -266,7 +276,12 @@ func (h *WebhookHandlers) CircleWebhook(c *gin.Context) {
 
 func (h *WebhookHandlers) verifySignature(c *gin.Context, rawBody []byte) error {
 	if h.webhookSecret == "" {
-		return nil // No secret configured, skip verification
+		if h.skipSignatureVerify {
+			h.logger.Warn("Webhook secret not configured - SKIPPING VERIFICATION (development mode only)")
+			return nil
+		}
+		h.logger.Error("Webhook secret not configured - rejecting webhook for security")
+		return fmt.Errorf("webhook signature verification not configured")
 	}
 
 	signature := c.GetHeader("X-Webhook-Signature")

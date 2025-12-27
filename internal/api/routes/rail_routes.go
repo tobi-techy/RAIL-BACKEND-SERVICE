@@ -53,6 +53,9 @@ func SetupStackRoutes(db *sql.DB, cfg *config.Config, log *logger.Logger, zapLog
 		nil, // investing service
 		log,
 	)
+	// Configure webhook secret - only skip verification in development when secret is not set
+	skipWebhookVerify := cfg.Environment == "development" && cfg.Payment.WebhookSecret == ""
+	walletFundingHandlers.SetWebhookSecret(cfg.Payment.WebhookSecret, skipWebhookVerify)
 
 	// API v1 routes matching OpenAPI specification
 	v1 := router.Group("/v1")

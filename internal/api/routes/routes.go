@@ -41,6 +41,19 @@ func (a *SessionValidatorAdapter) ValidateSession(ctx context.Context, token str
 func SetupRoutes(container *di.Container) *gin.Engine {
 	router := gin.New()
 
+	// Configure trusted proxies for secure IP detection in rate limiting
+	// This prevents IP spoofing via X-Forwarded-For headers
+	// In production, set this to your actual proxy/load balancer IPs
+	trustedProxies := container.Config.Server.TrustedProxies
+	if len(trustedProxies) == 0 {
+		// Default: trust only localhost (for local development with nginx/proxy)
+		trustedProxies = []string{"127.0.0.1", "::1"}
+	}
+	if err := router.SetTrustedProxies(trustedProxies); err != nil {
+		// Log warning but continue - ClientIP will fall back to RemoteAddr
+		container.Logger.Warn("Failed to set trusted proxies: %v", err)
+	}
+
 	// Global middleware - order matters for security
 	router.Use(tracing.HTTPMiddleware()) // Tracing should be early in the chain
 	router.Use(middleware.RequestID())
@@ -84,6 +97,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.GetInvestingService(),
 		container.Logger,
 	)
+	// Configure webhook secret - only skip verification in development when secret is not set
+	skipWebhookVerify := container.Config.Environment == "development" && container.Config.Payment.WebhookSecret == ""
+	walletFundingHandlers.SetWebhookSecret(container.Config.Payment.WebhookSecret, skipWebhookVerify)
+
 	authHandlers := handlers.NewAuthHandlers(
 		container.DB,
 		container.Config,
@@ -141,21 +158,28 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 		auth := v1.Group("/auth")
 		{
 			auth.POST("/register", authHandlers.Register)
-			auth.POST("/login", authHandlers.Login)
 			auth.POST("/refresh", authHandlers.RefreshToken)
 			auth.POST("/logout", authHandlers.Logout)
-			auth.POST("/forgot-password", authHandlers.ForgotPassword)
-			auth.POST("/reset-password", authHandlers.ResetPassword)
 			auth.POST("/verify-email", authHandlers.VerifyEmail)
-			auth.POST("/verify-code", authHandlers.VerifyCode)
 			auth.POST("/resend-code", authHandlers.ResendCode)
 
+			// Sensitive auth endpoints with stricter rate limiting (5 requests/minute)
+			// Protects against brute force attacks on credentials and verification codes
+			authRateLimited := auth.Group("/")
+			authRateLimited.Use(middleware.AuthRateLimit(5))
+			{
+				authRateLimited.POST("/login", authHandlers.Login)
+				authRateLimited.POST("/verify-code", authHandlers.VerifyCode)
+				authRateLimited.POST("/forgot-password", authHandlers.ForgotPassword)
+				authRateLimited.POST("/reset-password", authHandlers.ResetPassword)
+			}
+
 			// Social auth routes (no auth required)
-			auth.POST("/social/url", socialAuthHandlers.GetSocialAuthURL)
-			auth.POST("/social/login", socialAuthHandlers.SocialLogin)
+			authRateLimited.POST("/social/url", socialAuthHandlers.GetSocialAuthURL)
+			authRateLimited.POST("/social/login", socialAuthHandlers.SocialLogin)
 
 			// WebAuthn login (no auth required)
-			auth.POST("/webauthn/login/begin", socialAuthHandlers.BeginWebAuthnLogin)
+			authRateLimited.POST("/webauthn/login/begin", socialAuthHandlers.BeginWebAuthnLogin)
 		}
 
 		// Onboarding routes - OpenAPI spec compliant (no CSRF for public start endpoint)
@@ -298,6 +322,12 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 					// Station endpoint - returns home screen data per PRD
 					// "Total balance, Spend balance, Invest balance, System status"
 					account.GET("/station", stationHandlers.GetStation)
+				}
+
+				// Investment Stash endpoint - comprehensive investment data
+				investmentStashHandlers := container.GetInvestmentStashHandlers()
+				if investmentStashHandlers != nil {
+					account.GET("/investment-stash", investmentStashHandlers.GetInvestmentStash)
 				}
 			}
 
