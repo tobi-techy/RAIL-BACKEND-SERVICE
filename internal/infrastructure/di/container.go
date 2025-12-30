@@ -9,19 +9,18 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
-	"github.com/shopspring/decimal"
-	"github.com/rail-service/rail_service/internal/adapters/alpaca"
-	"github.com/rail-service/rail_service/internal/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/api/handlers"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
-	alpacaservice "github.com/rail-service/rail_service/internal/domain/services/alpaca"
 	"github.com/rail-service/rail_service/internal/domain/services/allocation"
-	"github.com/rail-service/rail_service/internal/domain/services/autoinvest"
+	alpacaservice "github.com/rail-service/rail_service/internal/domain/services/alpaca"
 	analyticsservice "github.com/rail-service/rail_service/internal/domain/services/analytics"
 	"github.com/rail-service/rail_service/internal/domain/services/apikey"
 	"github.com/rail-service/rail_service/internal/domain/services/audit"
+	"github.com/rail-service/rail_service/internal/domain/services/autoinvest"
+	"github.com/rail-service/rail_service/internal/domain/services/card"
+	"github.com/rail-service/rail_service/internal/domain/services/copytrading"
 	entitysecret "github.com/rail-service/rail_service/internal/domain/services/entity_secret"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/domain/services/integration"
@@ -34,8 +33,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/passcode"
 	"github.com/rail-service/rail_service/internal/domain/services/reconciliation"
 	"github.com/rail-service/rail_service/internal/domain/services/roundup"
-	"github.com/rail-service/rail_service/internal/domain/services/copytrading"
-	"github.com/rail-service/rail_service/internal/domain/services/card"
+	"github.com/rail-service/rail_service/internal/domain/services/security"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	"github.com/rail-service/rail_service/internal/domain/services/socialauth"
 	"github.com/rail-service/rail_service/internal/domain/services/station"
@@ -43,8 +41,9 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/twofa"
 	"github.com/rail-service/rail_service/internal/domain/services/wallet"
 	"github.com/rail-service/rail_service/internal/domain/services/webauthn"
-	"github.com/rail-service/rail_service/internal/domain/services/security"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/circle"
@@ -54,6 +53,7 @@ import (
 	commonmetrics "github.com/rail-service/rail_service/pkg/common/metrics"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/ratelimit"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -307,10 +307,10 @@ type Container struct {
 	RedisClient   cache.RedisClient
 
 	// Bridge Domain Adapters
-	BridgeKYCAdapter              *BridgeKYCAdapter
-	BridgeFundingAdapter          *BridgeFundingAdapter
-	BridgeVirtualAccountService   *funding.BridgeVirtualAccountService
-	BridgeWebhookHandler          *handlers.BridgeWebhookHandler
+	BridgeKYCAdapter            *BridgeKYCAdapter
+	BridgeFundingAdapter        *BridgeFundingAdapter
+	BridgeVirtualAccountService *funding.BridgeVirtualAccountService
+	BridgeWebhookHandler        *handlers.BridgeWebhookHandler
 
 	// Domain Services
 	OnboardingService       *onboarding.Service
@@ -351,29 +351,29 @@ type Container struct {
 	OnboardingJobRepo *repositories.OnboardingJobRepository
 
 	// Alpaca Investment Repositories
-	AlpacaAccountRepo      *repositories.AlpacaAccountRepository
-	InvestmentOrderRepo    *repositories.InvestmentOrderRepository
-	InvestmentPositionRepo *repositories.InvestmentPositionRepository
-	AlpacaEventRepo        *repositories.AlpacaEventRepository
+	AlpacaAccountRepo        *repositories.AlpacaAccountRepository
+	InvestmentOrderRepo      *repositories.InvestmentOrderRepository
+	InvestmentPositionRepo   *repositories.InvestmentPositionRepository
+	AlpacaEventRepo          *repositories.AlpacaEventRepository
 	AlpacaInstantFundingRepo *repositories.AlpacaInstantFundingRepository
 
 	// Advanced Features Repositories
-	PortfolioSnapshotRepo     *repositories.PortfolioSnapshotRepository
-	ScheduledInvestmentRepo   *repositories.ScheduledInvestmentRepository
-	RebalancingConfigRepo     *repositories.RebalancingConfigRepository
-	MarketAlertRepo           *repositories.MarketAlertRepository
+	PortfolioSnapshotRepo   *repositories.PortfolioSnapshotRepository
+	ScheduledInvestmentRepo *repositories.ScheduledInvestmentRepository
+	RebalancingConfigRepo   *repositories.RebalancingConfigRepository
+	MarketAlertRepo         *repositories.MarketAlertRepository
 
 	// Alpaca Investment Services
-	AlpacaAccountService   *alpacaservice.AccountService
-	AlpacaFundingBridge    *alpacaservice.FundingBridge
-	AlpacaEventProcessor   *alpacaservice.EventProcessor
-	AlpacaPortfolioSync    *alpacaservice.PortfolioSyncService
+	AlpacaAccountService *alpacaservice.AccountService
+	AlpacaFundingBridge  *alpacaservice.FundingBridge
+	AlpacaEventProcessor *alpacaservice.EventProcessor
+	AlpacaPortfolioSync  *alpacaservice.PortfolioSyncService
 
 	// Advanced Features Services
-	PortfolioAnalyticsService   *analyticsservice.PortfolioAnalyticsService
-	MarketDataService           *marketservice.MarketDataService
-	ScheduledInvestmentService  *investing.ScheduledInvestmentService
-	RebalancingService          *investing.RebalancingService
+	PortfolioAnalyticsService  *analyticsservice.PortfolioAnalyticsService
+	MarketDataService          *marketservice.MarketDataService
+	ScheduledInvestmentService *investing.ScheduledInvestmentService
+	RebalancingService         *investing.RebalancingService
 
 	// Brokerage Adapter
 	BrokerageAdapter *adapters.BrokerageAdapter
@@ -407,13 +407,13 @@ type Container struct {
 	PasswordPolicyService     *security.PasswordPolicyService
 	SecurityEventLogger       *security.SecurityEventLogger
 	PasswordService           *security.PasswordService
-	
+
 	// Enhanced Security Services (MFA, Geo, Fraud, Incident Response)
 	MFAService              *security.MFAService
 	GeoSecurityService      *security.GeoSecurityService
 	FraudDetectionService   *security.FraudDetectionService
 	IncidentResponseService *security.IncidentResponseService
-	
+
 	// Token and Rate Limiting
 	TokenBlacklist      *auth.TokenBlacklist
 	JWTService          *auth.JWTService
@@ -853,7 +853,7 @@ func (c *Container) initializeDomainServices() error {
 
 	// Initialize enhanced security services (MFA, Geo, Fraud, Incident Response)
 	c.MFAService = security.NewMFAService(c.DB, c.RedisClient.Client(), c.ZapLog, c.Config.Security.EncryptionKey, nil) // SMS provider can be injected later
-	c.GeoSecurityService = security.NewGeoSecurityService(c.DB, c.RedisClient.Client(), c.ZapLog, "") // IP API key can be configured
+	c.GeoSecurityService = security.NewGeoSecurityService(c.DB, c.RedisClient.Client(), c.ZapLog, "")                   // IP API key can be configured
 	c.FraudDetectionService = security.NewFraudDetectionService(c.DB, c.RedisClient.Client(), c.ZapLog)
 	c.IncidentResponseService = security.NewIncidentResponseService(c.DB, c.RedisClient.Client(), c.ZapLog, nil, c.SecurityEventLogger)
 
@@ -877,8 +877,8 @@ func (c *Container) initializeDomainServices() error {
 		UserLimit:    200,
 		UserWindow:   time.Minute,
 		EndpointLimits: map[string]ratelimit.EndpointLimit{
-			"POST /api/v1/auth/login": {Limit: 5, Window: 15 * time.Minute},
-			"POST /api/v1/auth/register": {Limit: 3, Window: time.Hour},
+			"POST /api/v1/auth/login":       {Limit: 5, Window: 15 * time.Minute},
+			"POST /api/v1/auth/register":    {Limit: 3, Window: time.Hour},
 			"POST /api/v1/funding/withdraw": {Limit: 10, Window: time.Hour},
 		},
 	}
@@ -1537,7 +1537,6 @@ func (c *Container) GetContributionsRepository() handlers.UserContributionsRepos
 	return &contributionRepoAdapter{repo: repositories.NewUserContributionsRepository(c.DB, c.ZapLog)}
 }
 
-
 // initializeAlpacaInvestmentServices initializes Alpaca investment infrastructure
 func (c *Container) initializeAlpacaInvestmentServices(sqlxDB *sqlx.DB) error {
 	// Initialize repositories
@@ -2118,6 +2117,10 @@ func (c *Container) GetSpendingStashHandlers() *handlers.SpendingStashHandlers {
 		c.CardService,
 		c.RoundupService,
 		c.LimitsService,
+		c.ZapLog,
+	)
+}
+
 // GetInvestmentStashHandlers returns investment stash handlers
 func (c *Container) GetInvestmentStashHandlers() *handlers.InvestmentStashHandlers {
 	if c.AllocationService == nil || c.InvestingService == nil || c.CopyTradingService == nil {

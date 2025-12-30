@@ -132,14 +132,14 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.ZapLog,
 	)
 
-// Initialize integration handlers (Alpaca only - Due replaced by Bridge)
-integrationHandlers := handlers.NewIntegrationHandlers(
-	container.AlpacaClient,
-	nil, // Due service removed - Bridge handles virtual accounts
-	"",  // Due webhook secret removed
-	services.NewNotificationService(container.ZapLog),
-	container.Logger,
-)
+	// Initialize integration handlers (Alpaca only - Due replaced by Bridge)
+	integrationHandlers := handlers.NewIntegrationHandlers(
+		container.AlpacaClient,
+		nil, // Due service removed - Bridge handles virtual accounts
+		"",  // Due webhook secret removed
+		services.NewNotificationService(container.ZapLog),
+		container.Logger,
+	)
 
 	// Initialize Bridge KYC handlers for optimized KYC flow
 	bridgeKYCHandlers := handlers.NewBridgeKYCHandlers(
@@ -328,6 +328,8 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 				spendingStashHandlers := container.GetSpendingStashHandlers()
 				if spendingStashHandlers != nil {
 					account.GET("/spending-stash", spendingStashHandlers.GetSpendingStash)
+				}
+
 				// Investment Stash endpoint - comprehensive investment data
 				investmentStashHandlers := container.GetInvestmentStashHandlers()
 				if investmentStashHandlers != nil {
@@ -559,7 +561,7 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 		{
 			webhooks.POST("/chain-deposit", walletFundingHandlers.ChainDepositWebhook)
 			webhooks.POST("/brokerage-fill", walletFundingHandlers.BrokerageFillWebhook)
-			
+
 			// Bridge webhooks for fiat deposits and transfers
 			if bridgeWebhookHandler := container.GetBridgeWebhookHandler(); bridgeWebhookHandler != nil {
 				webhooks.POST("/bridge", bridgeWebhookHandler.HandleWebhook)

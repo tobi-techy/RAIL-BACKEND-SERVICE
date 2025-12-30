@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-	alpacaAdapter "github.com/rail-service/rail_service/internal/adapters/alpaca"
+	alpacaAdapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"go.uber.org/zap"
 )

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rail-service/rail_service/internal/adapters/bridge"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )

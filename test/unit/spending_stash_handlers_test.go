@@ -18,21 +18,21 @@ import (
 	"go.uber.org/zap"
 )
 
-// MockAllocationService implements the methods needed by SpendingStashHandlers
-type MockAllocationService struct {
+// MockSpendingAllocationService implements the methods needed by SpendingStashHandlers
+type MockSpendingAllocationService struct {
 	Balances *entities.AllocationBalances
 	Mode     *entities.SmartAllocationMode
 	Err      error
 }
 
-func (m *MockAllocationService) GetBalances(ctx context.Context, userID uuid.UUID) (*entities.AllocationBalances, error) {
+func (m *MockSpendingAllocationService) GetBalances(ctx context.Context, userID uuid.UUID) (*entities.AllocationBalances, error) {
 	if m.Err != nil {
 		return nil, m.Err
 	}
 	return m.Balances, nil
 }
 
-func (m *MockAllocationService) GetMode(ctx context.Context, userID uuid.UUID) (*entities.SmartAllocationMode, error) {
+func (m *MockSpendingAllocationService) GetMode(ctx context.Context, userID uuid.UUID) (*entities.SmartAllocationMode, error) {
 	if m.Err != nil {
 		return nil, m.Err
 	}
@@ -88,7 +88,7 @@ func (m *MockLimitsService) GetUserLimits(ctx context.Context, userID uuid.UUID)
 
 // SpendingStashTestHandler wraps the real handler logic for testing
 type SpendingStashTestHandler struct {
-	allocationService *MockAllocationService
+	allocationService *MockSpendingAllocationService
 	cardService       *MockCardService
 	roundupService    *MockRoundupService
 	limitsService     *MockLimitsService
@@ -96,7 +96,7 @@ type SpendingStashTestHandler struct {
 }
 
 func NewSpendingStashTestHandler(
-	alloc *MockAllocationService,
+	alloc *MockSpendingAllocationService,
 	card *MockCardService,
 	roundup *MockRoundupService,
 	limits *MockLimitsService,
@@ -356,7 +356,7 @@ func TestGetSpendingStash_Success(t *testing.T) {
 	}
 
 	handler := NewSpendingStashTestHandler(
-		&MockAllocationService{Balances: balances, Mode: mode},
+		&MockSpendingAllocationService{Balances: balances, Mode: mode},
 		&MockCardService{Cards: cards, Txns: cardTxns},
 		&MockRoundupService{Summary: roundupSummary},
 		&MockLimitsService{Limits: userLimits},
@@ -441,7 +441,7 @@ func TestGetSpendingStash_NoCard(t *testing.T) {
 	}
 
 	handler := NewSpendingStashTestHandler(
-		&MockAllocationService{Balances: balances},
+		&MockSpendingAllocationService{Balances: balances},
 		&MockCardService{Cards: nil, Txns: nil},
 		nil,
 		nil,
@@ -467,7 +467,7 @@ func TestGetSpendingStash_ServiceErrors(t *testing.T) {
 	userID := uuid.New()
 
 	handler := NewSpendingStashTestHandler(
-		&MockAllocationService{Err: assert.AnError},
+		&MockSpendingAllocationService{Err: assert.AnError},
 		&MockCardService{Err: assert.AnError},
 		&MockRoundupService{Err: assert.AnError},
 		&MockLimitsService{Err: assert.AnError},

@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/allocation"
 	"github.com/rail-service/rail_service/internal/domain/services/card"
@@ -57,7 +58,7 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	userID, err := getUserID(c)
+	userID, err := common.GetUserID(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
 			Code:    "UNAUTHORIZED",

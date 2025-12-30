@@ -255,3 +255,30 @@ func (r *WithdrawalRepository) MarkTimeout(ctx context.Context, id uuid.UUID) er
 
 	return nil
 }
+
+
+// GetPendingWithdrawalsTotal returns the total amount of pending withdrawals for a user
+// Used to prevent race conditions by accounting for in-flight withdrawals
+func (r *WithdrawalRepository) GetPendingWithdrawalsTotal(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
+	query := `
+		SELECT COALESCE(SUM(amount), 0) as total
+		FROM withdrawals
+		WHERE user_id = $1
+		  AND status NOT IN ($2, $3, $4)
+	`
+
+	var total decimal.Decimal
+	err := r.db.QueryRowContext(ctx, query, userID,
+		entities.WithdrawalStatusCompleted,
+		entities.WithdrawalStatusFailed,
+		entities.WithdrawalStatusReversed,
+	).Scan(&total)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return decimal.Zero, nil
+		}
+		return decimal.Zero, fmt.Errorf("failed to get pending withdrawals total: %w", err)
+	}
+
+	return total, nil
+}

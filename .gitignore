@@ -4,12 +4,12 @@
 *.dll
 *.so
 *.dylib
-main
+/main
+/clear_db
 rail_service
 stack_service
 bin/
 dist/
-.kiro/
 
 # Test binary
 *.test
