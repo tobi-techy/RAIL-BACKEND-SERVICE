@@ -154,8 +154,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	// API v1 routes
 	v1 := router.Group("/api/v1")
 	{
-		// Authentication routes (no auth required, no CSRF - API clients don't need CSRF protection)
+		// Authentication routes (no auth required)
+		// CSRF protection via custom header requirement (X-Requested-With)
+		// This prevents CSRF attacks while allowing legitimate API clients
 		auth := v1.Group("/auth")
+		auth.Use(middleware.AuthCSRFProtection())
 		{
 			auth.POST("/register", authHandlers.Register)
 			auth.POST("/refresh", authHandlers.RefreshToken)
@@ -182,10 +185,16 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			authRateLimited.POST("/webauthn/login/begin", socialAuthHandlers.BeginWebAuthnLogin)
 		}
 
-		// Onboarding routes - OpenAPI spec compliant (no CSRF for public start endpoint)
+		// Onboarding routes - OpenAPI spec compliant
+		// CSRF protection via custom header requirement for public start endpoint
 		onboarding := v1.Group("/onboarding")
 		{
-			onboarding.POST("/start", authHandlers.StartOnboarding)
+			// Public endpoint with CSRF protection
+			onboardingPublic := onboarding.Group("/")
+			onboardingPublic.Use(middleware.AuthCSRFProtection())
+			{
+				onboardingPublic.POST("/start", authHandlers.StartOnboarding)
+			}
 
 			authenticatedOnboarding := onboarding.Group("/")
 			authenticatedOnboarding.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator))
