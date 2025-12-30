@@ -93,6 +93,7 @@ func main() {
 		CollectorURL: "localhost:4317",
 		Environment:  cfg.Environment,
 		SampleRate:   1.0, // 100% sampling in dev/staging, reduce in production
+		Insecure:     cfg.Environment == "development", // Only allow insecure in development
 	}
 
 	tracingShutdown, err := tracing.InitTracer(context.Background(), tracingConfig, log.Zap())
