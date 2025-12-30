@@ -1,4 +1,4 @@
-<![CDATA[# Rail
+# Rail
 
 <p align="center">
   <strong>An automated wealth system where money begins working the moment it arrives.</strong>
@@ -37,7 +37,7 @@ Rail is a rules-based capital engine designed for Gen Z users who want financial
 Modern investing demands too much from users:
 
 - **Choice Overload**: Choose assets they don't understand
-- **Risk Assessment**: Assess risk they can't quantify  
+- **Risk Assessment**: Assess risk they can't quantify
 - **Market Timing**: Time markets they don't trust
 - **Decision Regret**: Live with decisions they constantly second-guess
 
@@ -65,26 +65,22 @@ Rail exists to eliminate responsibility without eliminating upside.
 Every deposit is automatically divided the moment it clears:
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    DEPOSIT ARRIVES                          │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-                          ▼
-              ┌───────────────────────┐
-              │     SPLIT ENGINE      │
-              │   (Automatic 70/30)   │
-              └───────────┬───────────┘
-                          │
-            ┌─────────────┴─────────────┐
-            │                           │
-            ▼                           ▼
-   ┌─────────────────┐        ┌─────────────────┐
-   │   70% SPEND     │        │   30% INVEST    │
-   │                 │        │                 │
-   │ • Liquid        │        │ • Auto-deployed │
-   │ • Card-linked   │        │ • AI-managed    │
-   │ • Real-time     │        │ • Rules-based   │
-   └─────────────────┘        └─────────────────┘
+                    DEPOSIT ARRIVES
+                          |
+                          v
+                    SPLIT ENGINE
+                  (Automatic 70/30)
+                          |
+            +-------------+-------------+
+            |                           |
+            v                           v
+      +----------+              +----------+
+      | 70% SPEND|              |30% INVEST|
+      +----------+              +----------+
+      | - Liquid |              | - Auto   |
+      | - Card   |              | - AI     |
+      | - Real   |              | - Rules  |
+      +----------+              +----------+
 ```
 
 | Property | Description |
@@ -103,8 +99,8 @@ Rail supports two funding channels, both triggering identical split behavior:
 #### 1. Virtual Accounts (Fiat)
 
 ```
-Bank Account ──► bridge Network Virtual Account ──► Rail
-                      (USD or GBP)
+Bank Account --> Bridge Network Virtual Account --> Rail
+                        (USD or GBP)
 ```
 
 - Dedicated USD or GBP virtual account per user
@@ -115,8 +111,8 @@ Bank Account ──► bridge Network Virtual Account ──► Rail
 #### 2. Crypto On-Ramp (Stablecoins)
 
 ```
-External Wallet ──► Circle Deposit Address ──► Rail
-                    (USDC on any chain)
+External Wallet --> Circle Deposit Address --> Rail
+                      (USDC on any chain)
 ```
 
 | Chain | Token | Confirmation Time |
@@ -141,13 +137,14 @@ The primary financial surface, designed to fully replace a traditional checking 
 - Transaction history
 
 **Round-Up Automation:**
+
 ```
 Card Transaction: $4.50
 Round-up Amount:  $5.00 - $4.50 = $0.50
-                           │
-                           ▼
-                    Invest Engine
-                  (Queued for allocation)
+                          |
+                          v
+                   Invest Engine
+                (Queued for allocation)
 ```
 
 - Simple ON/OFF toggle
@@ -162,33 +159,29 @@ Capital deploys automatically with zero user interaction.
 
 ```
 30% Deposit Arrives
-        │
-        ▼
-┌───────────────────┐
-│ Strategy Selector │
-│                   │
-│ Inputs:           │
-│ • Age             │
-│ • Region          │
-│ • Deposit size    │
-│ • Deposit freq    │
-└─────────┬─────────┘
-          │
-          ▼
-┌───────────────────┐
-│  Asset Allocation │
-│                   │
-│ Example:          │
-│ • ETFs: 60%       │
-│ • Tech: 25%       │
-│ • Stable: 15%     │
-└─────────┬─────────┘
-          │
-          ▼
-┌───────────────────┐
-│  Alpaca Brokerage │
-│  (Trade Execution)│
-└───────────────────┘
+        |
+        v
++-------------------+
+| Strategy Selector |
+| - Age             |
+| - Region          |
+| - Deposit size    |
+| - Deposit freq    |
++--------+----------+
+         |
+         v
++-------------------+
+| Asset Allocation  |
+| - ETFs: 60%       |
+| - Tech: 25%       |
+| - Stable: 15%     |
++--------+----------+
+         |
+         v
++-------------------+
+| Alpaca Brokerage  |
+| (Trade Execution) |
++-------------------+
 ```
 
 **UX Rules:**
@@ -209,78 +202,30 @@ For users who want guided growth without self-directed decisions.
 **How Copy Trading Works:**
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    CONDUCTOR UPDATES TRACK                   │
-│              (Adds AAPL, removes TSLA, reweights)           │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-                          ▼
-              ┌───────────────────────┐
-              │     Copy Engine       │
-              │                       │
-              │ 1. Get all followers  │
-              │ 2. Calculate trades   │
-              │ 3. Queue execution    │
-              └───────────┬───────────┘
-                          │
-          ┌───────────────┼───────────────┐
-          │               │               │
-          ▼               ▼               ▼
-    ┌──────────┐   ┌──────────┐   ┌──────────┐
-    │Follower A│   │Follower B│   │Follower C│
-    │ $1,000   │   │ $5,000   │   │ $500     │
-    │allocated │   │allocated │   │allocated │
-    └──────────┘   └──────────┘   └──────────┘
-          │               │               │
-          └───────────────┼───────────────┘
-                          │
-                          ▼
-              ┌───────────────────────┐
-              │   Alpaca Brokerage    │
-              │  (Proportional trades)│
-              └───────────────────────┘
+       CONDUCTOR UPDATES TRACK
+    (Adds AAPL, removes TSLA, reweights)
+                  |
+                  v
+           +------------+
+           | Copy Engine|
+           +------------+
+                  |
+     +------------+------------+
+     |            |            |
+     v            v            v
++----------+ +----------+ +----------+
+|Follower A| |Follower B| |Follower C|
+|  $1,000  | |  $5,000  | |   $500   |
++----------+ +----------+ +----------+
+     |            |            |
+     +------------+------------+
+                  |
+                  v
+        +------------------+
+        | Alpaca Brokerage |
+        +------------------+
 
-⏱️ Target: Trades mirrored within 5 minutes
-```
-
-**Conductor Application Flow:**
-
-```
-Existing Rail User
-        │
-        ▼ Submit Application
-┌───────────────────┐
-│ Application Form  │
-│                   │
-│ • Experience      │
-│ • Credentials     │
-│ • Strategy desc   │
-└─────────┬─────────┘
-          │
-          ▼
-┌───────────────────┐
-│   Admin Review    │
-│                   │
-│ • Background check│
-│ • Credential verify│
-│ • Compliance review│
-└─────────┬─────────┘
-          │
-    ┌─────┴─────┐
-    │           │
-    ▼           ▼
-┌───────┐   ┌───────┐
-│Approved│   │Rejected│
-└───┬───┘   └───────┘
-    │
-    ▼
-┌───────────────────┐
-│ Conductor Setup   │
-│                   │
-│ • Create profile  │
-│ • Build 1st Track │
-│ • Accept terms    │
-└───────────────────┘
+Target: Trades mirrored within 5 minutes
 ```
 
 **Track Characteristics:**
@@ -298,22 +243,22 @@ Existing Rail User
 Answers one question only: *"Is my money working?"*
 
 ```
-┌─────────────────────────────────────────┐
-│              THE STATION                │
-├─────────────────────────────────────────┤
-│                                         │
-│         Total Balance                   │
-│           $2,450.00                     │
-│                                         │
-│  ┌─────────────┐  ┌─────────────┐      │
-│  │   SPEND     │  │   INVEST    │      │
-│  │  $1,715.00  │  │   $735.00   │      │
-│  │    (70%)    │  │    (30%)    │      │
-│  └─────────────┘  └─────────────┘      │
-│                                         │
-│         Status: ● ACTIVE                │
-│                                         │
-└─────────────────────────────────────────┘
++---------------------------------------+
+|            THE STATION                |
++---------------------------------------+
+|                                       |
+|         Total Balance                 |
+|           $2,450.00                   |
+|                                       |
+|  +-----------+    +-----------+       |
+|  |   SPEND   |    |  INVEST   |       |
+|  | $1,715.00 |    |  $735.00  |       |
+|  |   (70%)   |    |   (30%)   |       |
+|  +-----------+    +-----------+       |
+|                                       |
+|         Status: * ACTIVE              |
+|                                       |
++---------------------------------------+
 ```
 
 **System States:**
@@ -339,93 +284,31 @@ Rail communicates direction, not detail.
 ### High-Level System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              RAIL PLATFORM                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                   │
-│  │   iOS App    │    │  API Gateway │    │   Backend    │                   │
-│  │   (Client)   │───▶│   (Gin/Go)   │───▶│   Services   │                   │
-│  └──────────────┘    └──────────────┘    └──────────────┘                   │
-│                                                 │                            │
-│                    ┌────────────────────────────┼────────────────────────┐   │
-│                    │                            │                        │   │
-│                    ▼                            ▼                        ▼   │
-│           ┌──────────────┐            ┌──────────────┐          ┌──────────┐│
-│           │   Spend      │            │   Invest     │          │   Card   ││
-│           │   Engine     │            │   Engine     │          │  Service ││
-│           └──────────────┘            └──────────────┘          └──────────┘│
-│                    │                            │                        │   │
-│                    ▼                            ▼                        ▼   │
-│  ┌─────────────────────────────────────────────────────────────────────────┐│
-│  │                        DATA & INFRASTRUCTURE LAYER                      ││
-│  │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐        ││
-│  │  │ PostgreSQL │  │   Redis    │  │   Circle   │  │   Alpaca   │        ││
-│  │  │  (Ledger)  │  │  (Cache)   │  │  (Wallet)  │  │ (Brokerage)│        ││
-│  │  └────────────┘  └────────────┘  └────────────┘  └────────────┘        ││
-│  └─────────────────────────────────────────────────────────────────────────┘│
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Domain Model
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           RAIL DOMAIN MODEL                                  │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │                            USER DOMAIN                               │    │
-│  │  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐       │    │
-│  │  │   User   │───▶│  Profile │───▶│   KYC    │───▶│ Settings │       │    │
-│  │  └──────────┘    └──────────┘    └──────────┘    └──────────┘       │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                    │                                         │
-│                                    ▼                                         │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │                          ACCOUNT DOMAIN                              │    │
-│  │  ┌──────────────────────────────────────────────────────────────┐   │    │
-│  │  │                      RAIL ACCOUNT                             │   │    │
-│  │  │  ┌────────────────┐              ┌────────────────┐          │   │    │
-│  │  │  │  SPEND BALANCE │              │ INVEST BALANCE │          │   │    │
-│  │  │  │     (70%)      │              │     (30%)      │          │   │    │
-│  │  │  └────────────────┘              └────────────────┘          │   │    │
-│  │  └──────────────────────────────────────────────────────────────┘   │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                    │                                         │
-│                                    ▼                                         │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │                        TRANSACTION DOMAIN                            │    │
-│  │  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐       │    │
-│  │  │ Deposits │    │  Spends  │    │ Round-ups│    │  Trades  │       │    │
-│  │  └──────────┘    └──────────┘    └──────────┘    └──────────┘       │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Bounded Contexts
-
-```
-┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
-│   ONBOARDING    │  │    FUNDING      │  │    SPENDING     │
-│    CONTEXT      │  │    CONTEXT      │  │    CONTEXT      │
-├─────────────────┤  ├─────────────────┤  ├─────────────────┤
-│ • Registration  │  │ • Deposits      │  │ • Card Txns     │
-│ • Apple Sign-In │  │ • Split Engine  │  │ • Round-ups     │
-│ • KYC/AML       │  │ • Confirmations │  │ • Balance Mgmt  │
-│ • Wallet Setup  │  │ • Webhooks      │  │ • Ledger Ops    │
-└────────┬────────┘  └────────┬────────┘  └────────┬────────┘
-         │                    │                    │
-         └────────────────────┼────────────────────┘
-                              │
-                              ▼
-         ┌─────────────────────────────────────────────┐
-         │              INVESTING CONTEXT              │
-         ├─────────────────────────────────────────────┤
-         │ • Auto-allocation    • Strategy Engine      │
-         │ • Trade Execution    • Portfolio Tracking   │
-         │ • Position Mgmt      • Performance Calc     │
-         └─────────────────────────────────────────────┘
++------------------------------------------------------------------+
+|                         RAIL PLATFORM                             |
++------------------------------------------------------------------+
+|                                                                   |
+|  +----------+    +------------+    +-----------+                  |
+|  | iOS App  | -> | API Gateway| -> | Backend   |                  |
+|  | (Client) |    | (Gin/Go)   |    | Services  |                  |
+|  +----------+    +------------+    +-----+-----+                  |
+|                                          |                        |
+|                  +-----------+-----------+-----------+            |
+|                  |           |           |           |            |
+|                  v           v           v           v            |
+|            +--------+  +--------+  +--------+  +--------+         |
+|            | Spend  |  | Invest |  |  Card  |  | Wallet |         |
+|            | Engine |  | Engine |  | Service|  | Service|         |
+|            +--------+  +--------+  +--------+  +--------+         |
+|                                                                   |
+|  +---------------------------------------------------------------+|
+|  |                 DATA & INFRASTRUCTURE LAYER                   ||
+|  |  +----------+  +-------+  +--------+  +--------+              ||
+|  |  |PostgreSQL|  | Redis |  | Circle |  | Alpaca |              ||
+|  |  | (Ledger) |  |(Cache)|  |(Wallet)|  |(Broker)|              ||
+|  |  +----------+  +-------+  +--------+  +--------+              ||
+|  +---------------------------------------------------------------+|
++------------------------------------------------------------------+
 ```
 
 ### Service Decomposition
@@ -433,7 +316,7 @@ Rail communicates direction, not detail.
 | Service | Responsibility | External Dependencies |
 |---------|---------------|----------------------|
 | **Onboarding** | Registration, KYC orchestration, wallet provisioning | KYC Provider, Circle |
-| **Funding** | Virtual accounts (USD/GBP), multi-chain USDC deposits, 70/30 split execution | Circle, bridge Network, Blockchain RPCs |
+| **Funding** | Virtual accounts (USD/GBP), multi-chain USDC deposits, 70/30 split execution | Circle, Bridge Network, Blockchain RPCs |
 | **Spending** | Card transactions, round-ups, balance management, ledger operations | Card Issuer |
 | **Investing** | Auto-allocation, trade execution, portfolio management | Alpaca |
 | **Wallet** | Multi-chain wallet management, address generation, custody | Circle |
@@ -444,564 +327,41 @@ Rail communicates direction, not detail.
 ```
 rail_service/
 ├── cmd/                            # Application entry points
-│   └── main.go                     # Server initialization, graceful shutdown
+│   └── main.go                     # Server initialization
 │
 ├── internal/                       # Private application code
 │   ├── api/
 │   │   ├── handlers/               # HTTP request handlers
-│   │   │   ├── auth_handlers.go
-│   │   │   ├── funding_handlers.go
-│   │   │   ├── spending_handlers.go
-│   │   │   └── investing_handlers.go
-│   │   ├── middleware/             # Cross-cutting concerns
-│   │   │   ├── auth.go             # JWT validation
-│   │   │   ├── ratelimit.go        # Rate limiting
-│   │   │   ├── logging.go          # Request logging
-│   │   │   └── cors.go             # CORS handling
+│   │   ├── middleware/             # Auth, logging, rate limiting
 │   │   └── routes/                 # Route definitions
-│   │       └── router.go
 │   │
 │   ├── domain/
 │   │   ├── entities/               # Core business entities
-│   │   │   ├── user.go
-│   │   │   ├── account.go
-│   │   │   ├── wallet.go
-│   │   │   ├── deposit.go
-│   │   │   ├── transaction.go
-│   │   │   └── position.go
 │   │   ├── repositories/           # Repository interfaces
-│   │   │   ├── user_repository.go
-│   │   │   ├── account_repository.go
-│   │   │   └── wallet_repository.go
 │   │   └── services/               # Business logic
-│   │       ├── onboarding/
-│   │       │   └── onboarding_service.go
-│   │       ├── wallet/
-│   │       │   └── wallet_service.go
-│   │       ├── funding/
-│   │       │   ├── funding_service.go
-│   │       │   └── split_engine.go
-│   │       └── investing/
-│   │           ├── investing_service.go
-│   │           └── strategy_selector.go
 │   │
 │   ├── infrastructure/
 │   │   ├── adapters/               # External service integrations
-│   │   │   └── email/
 │   │   ├── cache/                  # Redis caching layer
 │   │   ├── circle/                 # Circle API client
-│   │   │   ├── client.go
-│   │   │   ├── wallets.go
-│   │   │   └── webhooks.go
 │   │   ├── config/                 # Configuration management
-│   │   │   └── config.go
 │   │   ├── database/               # PostgreSQL connection
-│   │   │   ├── postgres.go
-│   │   │   └── migrations.go
 │   │   ├── di/                     # Dependency injection
-│   │   │   └── container.go
 │   │   └── repositories/           # Repository implementations
-│   │       ├── postgres_user_repo.go
-│   │       └── postgres_account_repo.go
 │   │
 │   ├── adapters/
 │   │   ├── alpaca/                 # Brokerage integration
-│   │   │   ├── client.go
-│   │   │   ├── trading.go
-│   │   │   └── positions.go
-│   │   └── bridge/                    # Virtual accounts
-│   │       ├── client.go
-│   │       └── accounts.go
+│   │   └── bridge/                 # Virtual accounts
 │   │
 │   └── workers/                    # Background job processors
-│       ├── funding_webhook/        # Deposit processing
-│       ├── wallet_provisioning/    # Wallet creation
-│       ├── investment_allocator/   # Trade batching
-│       └── onboarding_processor/   # Async KYC
 │
 ├── pkg/                            # Public reusable libraries
-│   ├── auth/                       # JWT utilities
-│   ├── crypto/                     # AES-256-GCM encryption
-│   ├── logger/                     # Structured logging (Zap)
-│   ├── retry/                      # Exponential backoff
-│   └── circuitbreaker/             # Circuit breaker pattern
-│
 ├── migrations/                     # Database migrations
-│   ├── 001_initial_tables.up.sql
-│   ├── 001_initial_tables.down.sql
-│   └── ...
-│
 ├── configs/                        # Configuration files
-│   ├── config.yaml
-│   └── config.yaml.example
-│
 ├── scripts/                        # Build and maintenance
-│   ├── db_wipe.sh
-│   ├── db_reset.sh
-│   └── test_api.sh
-│
 ├── docs/                           # Documentation
-│   ├── architecture/
-│   ├── prd.md
-│   └── Rail-Brief.md
-│
-└── test/
-    ├── unit/
-    └── integration/
+└── test/                           # Test suites
 ```
-]]>
-<![CDATA[
-
----
-
-## Data Flow Architecture
-
-### Core Flow: Deposit → Split → Deploy
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    DEPOSIT → SPLIT → DEPLOY FLOW                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  USER                                                                        │
-│    │                                                                         │
-│    │ 1. Load Money (choose method)                                           │
-│    │                                                                         │
-│    ├─────────────────────────┬─────────────────────────┐                     │
-│    │                         │                         │                     │
-│    ▼                         ▼                         │                     │
-│  ┌──────────────┐    ┌──────────────┐                  │                     │
-│  │   Virtual    │    │  Multi-Chain │                  │                     │
-│  │   Account    │    │    USDC      │                  │                     │
-│  │  (USD/GBP)   │    │   Deposit    │                  │                     │
-│  └──────┬───────┘    └──────┬───────┘                  │                     │
-│         │                   │                          │                     │
-│         │ Bank Transfer     │ ETH/Polygon/BSC/Solana   │                     │
-│         ▼                   ▼                          │                     │
-│  ┌──────────────┐    ┌──────────────┐                  │                     │
-│  │ bridge Network  │    │   Circle     │                  │                     │
-│  │   Webhook    │    │   Webhook    │                  │                     │
-│  └──────┬───────┘    └──────┬───────┘                  │                     │
-│         │                   │                          │                     │
-│         └─────────┬─────────┘                          │                     │
-│                   │                                    │                     │
-│                   ▼                                    │                     │
-│            ┌──────────────┐                            │                     │
-│            │   Funding    │  2. Receive notification   │                     │
-│            │   Service    │                            │                     │
-│            └──────┬───────┘                            │                     │
-│                   │                                    │                     │
-│                   │ 3. Validate & Confirm              │                     │
-│                   ▼                                    │                     │
-│            ┌──────────────┐                            │                     │
-│            │    Split     │  4. Apply 70/30 Rule       │                     │
-│            │   Engine     │                            │                     │
-│            └──────┬───────┘                            │                     │
-│                   │                                                          │
-│              ┌────┴────┐                                                     │
-│              │         │                                                     │
-│              ▼         ▼                                                     │
-│            ┌────┐   ┌────┐                                                   │
-│            │70% │   │30% │                                                   │
-│            └──┬─┘   └──┬─┘                                                   │
-│               │        │                                                     │
-│               ▼        ▼                                                     │
-│        ┌──────────────┐    ┌──────────────┐                                  │
-│        │    Spend     │    │   Invest     │                                  │
-│        │   Balance    │    │   Engine     │                                  │
-│        └──────────────┘    └──────┬───────┘                                  │
-│                                   │                                          │
-│                                   │ 5. Auto-allocate                         │
-│                                   ▼                                          │
-│                            ┌──────────────┐                                  │
-│                            │   Strategy   │                                  │
-│                            │   Selector   │                                  │
-│                            └──────┬───────┘                                  │
-│                                   │                                          │
-│                                   │ 6. Execute trades                        │
-│                                   ▼                                          │
-│                            ┌──────────────┐                                  │
-│                            │    Alpaca    │                                  │
-│                            │  (Brokerage) │                                  │
-│                            └──────────────┘                                  │
-│                                                                              │
-│  ⏱️ Target: < 60 seconds end-to-end                                          │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Card Transaction Flow with Round-ups
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                      CARD TRANSACTION + ROUND-UP FLOW                        │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  USER                                                                        │
-│    │                                                                         │
-│    │ Swipe Card ($4.50)                                                      │
-│    ▼                                                                         │
-│  ┌──────────────┐                                                            │
-│  │    Card      │                                                            │
-│  │   Issuer     │                                                            │
-│  └──────┬───────┘                                                            │
-│         │                                                                    │
-│         │ Authorization Request                                              │
-│         ▼                                                                    │
-│  ┌──────────────┐                                                            │
-│  │   Spending   │  1. Check Spend Balance                                    │
-│  │   Service    │  2. Authorize $4.50                                        │
-│  └──────┬───────┘                                                            │
-│         │                                                                    │
-│         │ If Round-ups ON                                                    │
-│         ▼                                                                    │
-│  ┌──────────────┐                                                            │
-│  │   Round-up   │  3. Calculate: $5.00 - $4.50 = $0.50                       │
-│  │   Engine     │                                                            │
-│  └──────┬───────┘                                                            │
-│         │                                                                    │
-│         │ Route $0.50                                                        │
-│         ▼                                                                    │
-│  ┌──────────────┐                                                            │
-│  │   Invest     │  4. Add to Invest Balance                                  │
-│  │   Engine     │  5. Queue for allocation                                   │
-│  └──────────────┘                                                            │
-│                                                                              │
-│  LEDGER UPDATE:                                                              │
-│  ├─ Spend Balance: -$5.00                                                    │
-│  └─ Invest Balance: +$0.50                                                   │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Onboarding Sequence
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         ONBOARDING SEQUENCE                                  │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  iOS App          API Gateway       Onboarding       KYC Provider    Circle  │
-│    │                  │               Service            │             │     │
-│    │  1. Apple Sign-In│                 │                │             │     │
-│    │─────────────────▶│                 │                │             │     │
-│    │                  │  2. Create User │                │             │     │
-│    │                  │────────────────▶│                │             │     │
-│    │                  │                 │  3. Init KYC   │             │     │
-│    │                  │                 │───────────────▶│             │     │
-│    │                  │                 │                │             │     │
-│    │                  │                 │  4. KYC Result │             │     │
-│    │                  │                 │◀───────────────│             │     │
-│    │                  │                 │                │             │     │
-│    │                  │                 │  5. Create Wallet            │     │
-│    │                  │                 │─────────────────────────────▶│     │
-│    │                  │                 │                              │     │
-│    │                  │                 │  6. Wallet Created           │     │
-│    │                  │                 │◀─────────────────────────────│     │
-│    │                  │                 │                │             │     │
-│    │  7. Onboarding Complete           │                │             │     │
-│    │◀─────────────────│◀────────────────│                │             │     │
-│    │                  │                 │                │             │     │
-│                                                                              │
-│  ⏱️ Target: < 2 minutes total                                                │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Database Schema
-
-### Core Entities
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         CORE DATABASE SCHEMA                                 │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌─────────────────┐         ┌─────────────────┐                            │
-│  │      users      │         │    profiles     │                            │
-│  ├─────────────────┤         ├─────────────────┤                            │
-│  │ id (PK)         │────────▶│ user_id (FK)    │                            │
-│  │ email           │         │ first_name      │                            │
-│  │ phone           │         │ last_name       │                            │
-│  │ passcode_hash   │         │ kyc_status      │                            │
-│  │ created_at      │         │ kyc_provider_id │                            │
-│  └────────┬────────┘         └─────────────────┘                            │
-│           │                                                                  │
-│           │ 1:N                                                              │
-│           ▼                                                                  │
-│  ┌─────────────────┐         ┌─────────────────┐                            │
-│  │    accounts     │         │    wallets      │                            │
-│  ├─────────────────┤         ├─────────────────┤                            │
-│  │ id (PK)         │         │ id (PK)         │                            │
-│  │ user_id (FK)    │         │ user_id (FK)    │                            │
-│  │ spend_balance   │         │ chain           │                            │
-│  │ invest_balance  │         │ address         │                            │
-│  │ total_balance   │         │ provider_ref    │                            │
-│  │ status          │         │ status          │                            │
-│  └────────┬────────┘         └─────────────────┘                            │
-│           │                                                                  │
-│           │ 1:N                                                              │
-│           ▼                                                                  │
-│  ┌─────────────────┐         ┌─────────────────┐                            │
-│  │  transactions   │         │    deposits     │                            │
-│  ├─────────────────┤         ├─────────────────┤                            │
-│  │ id (PK)         │         │ id (PK)         │                            │
-│  │ account_id (FK) │         │ wallet_id (FK)  │                            │
-│  │ type            │         │ amount          │                            │
-│  │ amount          │         │ chain           │                            │
-│  │ balance_type    │         │ tx_hash         │                            │
-│  │ reference_id    │         │ status          │                            │
-│  │ created_at      │         │ split_executed  │                            │
-│  └─────────────────┘         └─────────────────┘                            │
-│                                                                              │
-│  ┌─────────────────┐         ┌─────────────────┐                            │
-│  │   positions     │         │     trades      │                            │
-│  ├─────────────────┤         ├─────────────────┤                            │
-│  │ id (PK)         │         │ id (PK)         │                            │
-│  │ account_id (FK) │         │ position_id(FK) │                            │
-│  │ symbol          │         │ side            │                            │
-│  │ quantity        │         │ quantity        │                            │
-│  │ avg_cost        │         │ price           │                            │
-│  │ current_value   │         │ broker_ref      │                            │
-│  └─────────────────┘         └─────────────────┘                            │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Conductor Domain Schema
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                       CONDUCTOR DATABASE SCHEMA                              │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌─────────────────┐         ┌─────────────────┐                            │
-│  │   conductor_    │         │   conductors    │                            │
-│  │  applications   │         ├─────────────────┤                            │
-│  ├─────────────────┤         │ id (PK)         │                            │
-│  │ id (PK)         │────────▶│ user_id (FK)    │                            │
-│  │ user_id (FK)    │         │ application_id  │                            │
-│  │ status          │         │ display_name    │                            │
-│  │ experience_yrs  │         │ bio             │                            │
-│  │ credentials     │         │ total_followers │                            │
-│  │ reviewed_by     │         │ total_aum       │                            │
-│  │ reviewed_at     │         │ status          │                            │
-│  └─────────────────┘         └────────┬────────┘                            │
-│                                       │                                      │
-│                                       │ 1:N                                  │
-│                                       ▼                                      │
-│  ┌─────────────────┐         ┌─────────────────┐                            │
-│  │  track_assets   │         │     tracks      │                            │
-│  ├─────────────────┤         ├─────────────────┤                            │
-│  │ id (PK)         │◀────────│ id (PK)         │                            │
-│  │ track_id (FK)   │         │ conductor_id(FK)│                            │
-│  │ symbol          │         │ name            │                            │
-│  │ asset_type      │         │ description     │                            │
-│  │ target_weight   │         │ risk_level      │                            │
-│  │ current_weight  │         │ status          │                            │
-│  └─────────────────┘         │ follower_count  │                            │
-│                              │ performance_*   │                            │
-│                              └────────┬────────┘                            │
-│                                       │                                      │
-│                                       │ 1:N                                  │
-│                                       ▼                                      │
-│  ┌─────────────────┐         ┌─────────────────┐                            │
-│  │ follower_trades │         │ track_followers │                            │
-│  ├─────────────────┤         ├─────────────────┤                            │
-│  │ id (PK)         │◀────────│ id (PK)         │                            │
-│  │ follower_id(FK) │         │ track_id (FK)   │                            │
-│  │ user_id (FK)    │         │ user_id (FK)    │                            │
-│  │ symbol          │         │ allocation_amt  │                            │
-│  │ side            │         │ allocation_pct  │                            │
-│  │ quantity        │         │ status          │                            │
-│  │ status          │         │ started_at      │                            │
-│  └─────────────────┘         └─────────────────┘                            │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Account State Machine
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        ACCOUNT STATE MACHINE                                 │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│                          ┌─────────────┐                                     │
-│                          │   CREATED   │                                     │
-│                          └──────┬──────┘                                     │
-│                                 │                                            │
-│                                 │ KYC Submitted                              │
-│                                 ▼                                            │
-│                          ┌─────────────┐                                     │
-│                          │ KYC_PENDING │                                     │
-│                          └──────┬──────┘                                     │
-│                                 │                                            │
-│                    ┌────────────┼────────────┐                               │
-│                    │            │            │                               │
-│                    ▼            │            ▼                               │
-│             ┌───────────┐       │     ┌───────────┐                          │
-│             │KYC_FAILED │       │     │KYC_REVIEW │                          │
-│             └───────────┘       │     └─────┬─────┘                          │
-│                                 │           │                                │
-│                                 ▼           │                                │
-│                          ┌─────────────┐    │                                │
-│                          │   ACTIVE    │◀───┘                                │
-│                          └──────┬──────┘                                     │
-│                                 │                                            │
-│                    ┌────────────┼────────────┐                               │
-│                    │            │            │                               │
-│                    ▼            ▼            ▼                               │
-│             ┌───────────┐ ┌───────────┐ ┌───────────┐                        │
-│             │  FROZEN   │ │ SUSPENDED │ │  CLOSED   │                        │
-│             └───────────┘ └───────────┘ └───────────┘                        │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Background Workers
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                       BACKGROUND WORKERS                                     │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │                        WORKER POOL                                   │    │
-│  │                                                                      │    │
-│  │  ┌──────────────────┐    ┌──────────────────┐                       │    │
-│  │  │ Wallet           │    │ Funding          │                       │    │
-│  │  │ Provisioning     │    │ Webhook          │                       │    │
-│  │  ├──────────────────┤    ├──────────────────┤                       │    │
-│  │  │ • Create wallets │    │ • Process events │                       │    │
-│  │  │ • Multi-chain    │    │ • Confirm txns   │                       │    │
-│  │  │ • Retry logic    │    │ • Trigger split  │                       │    │
-│  │  └──────────────────┘    └──────────────────┘                       │    │
-│  │                                                                      │    │
-│  │  ┌──────────────────┐    ┌──────────────────┐                       │    │
-│  │  │ Onboarding       │    │ Investment       │                       │    │
-│  │  │ Processor        │    │ Allocator        │                       │    │
-│  │  ├──────────────────┤    ├──────────────────┤                       │    │
-│  │  │ • Async KYC      │    │ • Batch trades   │                       │    │
-│  │  │ • Status updates │    │ • Rebalancing    │                       │    │
-│  │  │ • Notifications  │    │ • Round-up batch │                       │    │
-│  │  └──────────────────┘    └──────────────────┘                       │    │
-│  │                                                                      │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                    │                                         │
-│                                    ▼                                         │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │                         JOB QUEUE (Redis)                            │    │
-│  │  • Retry with exponential backoff                                    │    │
-│  │  • Dead letter queue for failures                                    │    │
-│  │  • Priority queues for critical jobs                                 │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## External Integrations
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                       EXTERNAL INTEGRATIONS                                  │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│                           ┌──────────────┐                                   │
-│                           │  RAIL CORE   │                                   │
-│                           └──────┬───────┘                                   │
-│                                  │                                           │
-│    ┌─────────────────────────────┼─────────────────────────────┐             │
-│    │                             │                             │             │
-│    ▼                             ▼                             ▼             │
-│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐           │
-│  │     CIRCLE       │  │     ALPACA       │  │   bridge NETWORK    │           │
-│  │  (Wallet Infra)  │  │   (Brokerage)    │  │ (Virtual Accts)  │           │
-│  ├──────────────────┤  ├──────────────────┤  ├──────────────────┤           │
-│  │ • Wallet Create  │  │ • Trade Execute  │  │ • USD/GBP Accts  │           │
-│  │ • Deposit Addr   │  │ • Market Data    │  │ • Bank Transfers │           │
-│  │ • USDC Custody   │  │ • Positions      │  │ • Off-ramping    │           │
-│  │ • Webhooks       │  │ • Account Mgmt   │  │ • Webhooks       │           │
-│  └──────────────────┘  └──────────────────┘  └──────────────────┘           │
-│                                                                              │
-│    ┌─────────────────────────────────────────────────────────────┐          │
-│    │                    BLOCKCHAIN NETWORKS                       │          │
-│    │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐     │          │
-│    │  │ Ethereum │  │ Polygon  │  │   BSC    │  │  Solana  │     │          │
-│    │  │  (EVM)   │  │  (EVM)   │  │  (EVM)   │  │(Non-EVM) │     │          │
-│    │  └──────────┘  └──────────┘  └──────────┘  └──────────┘     │          │
-│    └─────────────────────────────────────────────────────────────┘          │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Integration Details
-
-| Provider | Purpose | Key Operations |
-|----------|---------|----------------|
-| **Circle** | Wallet infrastructure & stablecoin custody | Create wallets, generate deposit addresses, USDC transfers, webhook notifications |
-| **Alpaca** | Stock/ETF brokerage | Execute trades, fetch positions, market data, account management |
-| **bridge Network** | Virtual bank accounts | Create USD/GBP accounts, process bank transfers, off-ramp to fiat |
-| **KYC Provider** | Identity verification | Document verification, AML screening, compliance checks |
-| **Card Issuer** | Payment cards | Virtual/physical cards, authorization, settlements |
-
----
-
-## Security Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         SECURITY ARCHITECTURE                                │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │                        PERIMETER SECURITY                            │    │
-│  │  • WAF (Web Application Firewall)                                    │    │
-│  │  • DDoS Protection                                                   │    │
-│  │  • Rate Limiting (100 req/min default)                               │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                    │                                         │
-│                                    ▼                                         │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │                      AUTHENTICATION LAYER                            │    │
-│  │  • Apple Sign-In (Primary)                                           │    │
-│  │  • JWT Tokens (Access: 15min, Refresh: 7 days)                       │    │
-│  │  • Passcode Authentication (6-digit)                                 │    │
-│  │  • Session Management via Redis                                      │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                    │                                         │
-│                                    ▼                                         │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │                      AUTHORIZATION LAYER                             │    │
-│  │  • Resource-based access control                                     │    │
-│  │  • User-scoped data isolation                                        │    │
-│  │  • KYC status gating for financial features                          │    │
-│  │  • Conductor role verification                                       │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                    │                                         │
-│                                    ▼                                         │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │                        DATA SECURITY                                 │    │
-│  │  • AES-256-GCM encryption at rest                                    │    │
-│  │  • TLS 1.3 in transit                                                │    │
-│  │  • Encrypted wallet keys (never stored plaintext)                    │    │
-│  │  • PII masking in logs                                               │    │
-│  │  • Audit trail for all financial transactions                        │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Security Measures
-
-| Layer | Implementation |
-|-------|----------------|
-| **Transport** | TLS 1.3, certificate pinning on iOS |
-| **Authentication** | Apple Sign-In, JWT with RS256, bcrypt password hashing |
-| **Encryption** | AES-256-GCM for sensitive data, encrypted database columns |
-| **Rate Limiting** | 100 req/min per user, 1000 req/min per IP |
-| **Audit** | Full audit trail for financial operations, immutable logs |
-| **Compliance** | KYC/AML verification required before funding |
-]]>
-<![CDATA[
 
 ---
 
@@ -1033,7 +393,7 @@ rail_service/
 |---------|----------|---------|
 | Wallet Infrastructure | Circle | Multi-chain wallets, USDC custody |
 | Brokerage | Alpaca | Stock/ETF trading |
-| Virtual Accounts | bridge Network | USD/GBP bank accounts |
+| Virtual Accounts | Bridge Network | USD/GBP bank accounts |
 | Email | SendGrid | Transactional emails |
 
 ### Observability
@@ -1044,15 +404,6 @@ rail_service/
 | Prometheus | Metrics collection |
 | Grafana | Metrics visualization |
 | OpenTelemetry | Distributed tracing |
-
-### Development Tools
-
-| Tool | Purpose |
-|------|---------|
-| Docker | Containerization |
-| Docker Compose | Local development orchestration |
-| Testify | Testing assertions & mocking |
-| Swagger | API documentation |
 
 ---
 
@@ -1100,7 +451,7 @@ docker-compose --profile admin --profile monitoring up -d
 
 ### Environment Variables
 
-#### Required
+**Required:**
 
 ```bash
 export DATABASE_URL="postgres://postgres:postgres@localhost:5432/rail?sslmode=disable"
@@ -1109,7 +460,7 @@ export ENCRYPTION_KEY="your-32-byte-encryption-key"
 export CIRCLE_API_KEY="your-circle-api-key"
 ```
 
-#### Optional
+**Optional:**
 
 ```bash
 export LOG_LEVEL="info"              # debug, info, warn, error
@@ -1162,7 +513,7 @@ Authorization: Bearer <access_token>
 
 ### Endpoint Categories
 
-#### Public Endpoints
+**Public Endpoints:**
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -1171,7 +522,7 @@ Authorization: Bearer <access_token>
 | POST | `/api/v1/auth/refresh` | Refresh access token |
 | POST | `/api/v1/auth/logout` | End session |
 
-#### Authenticated Endpoints
+**Authenticated Endpoints:**
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -1179,7 +530,7 @@ Authorization: Bearer <access_token>
 | GET | `/api/v1/onboarding/status` | Check onboarding progress |
 | POST | `/api/v1/onboarding/kyc/submit` | Submit KYC documents |
 
-#### Authenticated + KYC Required
+**Authenticated + KYC Required:**
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -1196,20 +547,21 @@ Authorization: Bearer <access_token>
 | GET | `/api/v1/investing/balance` | Invest balance |
 | GET | `/api/v1/investing/status` | Allocation status |
 
-#### Webhook Endpoints
+**Webhook Endpoints:**
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/api/v1/webhooks/circle` | Circle deposit notifications |
-| POST | `/api/v1/webhooks/bridge` | bridge Network notifications |
+| POST | `/api/v1/webhooks/bridge` | Bridge Network notifications |
 | POST | `/api/v1/webhooks/alpaca` | Alpaca trade notifications |
 
 ### Response Format
 
 **Success Response:**
+
 ```json
 {
-  "data": { ... },
+  "data": { },
   "meta": {
     "request_id": "uuid",
     "timestamp": "2025-01-01T00:00:00Z"
@@ -1218,12 +570,13 @@ Authorization: Bearer <access_token>
 ```
 
 **Error Response:**
+
 ```json
 {
   "error": {
     "code": "VALIDATION_ERROR",
     "message": "Human readable message",
-    "details": { ... }
+    "details": { }
   },
   "meta": {
     "request_id": "uuid",
@@ -1272,19 +625,6 @@ go tool cover -html=coverage.out
 go tool cover -func=coverage.out
 ```
 
-### Test Scripts
-
-```bash
-# Test wallet API
-./scripts/test_wallet_api.sh
-
-# Test funding flow
-./scripts/test_due_flow.sh
-
-# Test balance API
-./scripts/test_balance_api.sh
-```
-
 ---
 
 ## Monitoring & Observability
@@ -1305,7 +645,7 @@ Prometheus metrics available at `GET /metrics`:
 |--------|------|-------------|
 | `rail_http_requests_total` | Counter | Total HTTP requests |
 | `rail_http_request_duration_seconds` | Histogram | Request latency |
-| `rail_deposit_split_duration_seconds` | Histogram | Deposit→Split latency |
+| `rail_deposit_split_duration_seconds` | Histogram | Deposit to Split latency |
 | `rail_trade_execution_total` | Counter | Trade executions |
 | `rail_active_users` | Gauge | Currently active users |
 
@@ -1335,7 +675,7 @@ Structured JSON logs with correlation IDs:
 
 | Metric | Target | Measurement |
 |--------|--------|-------------|
-| Deposit → Split latency | < 60 seconds | P95 |
+| Deposit to Split latency | < 60 seconds | P95 |
 | API response time | < 200ms | P95 |
 | Trade execution | < 5 seconds | P95 |
 | iOS app launch | < 2 seconds | Cold start |
@@ -1463,4 +803,3 @@ MIT License - see [LICENSE](LICENSE)
 - **Issues**: GitHub Issues
 - **API Docs**: `/swagger/index.html`
 - **Metrics**: `/metrics`
-]]>
