@@ -172,6 +172,10 @@ type SecurityConfig struct {
 	AWSSecretsRegion        string `mapstructure:"aws_secrets_region"`        // AWS region for Secrets Manager
 	AWSSecretsPrefix        string `mapstructure:"aws_secrets_prefix"`        // prefix for secret names
 	SecretRotationDays      int    `mapstructure:"secret_rotation_days"`      // days between secret rotations
+	
+	// Admin creation security settings
+	AdminBootstrapToken    string `mapstructure:"admin_bootstrap_token"`     // Required token for first admin creation
+	DisableAdminCreation   bool   `mapstructure:"disable_admin_creation"`    // Completely disable admin creation endpoint
 }
 
 type CircleConfig struct {
@@ -769,6 +773,16 @@ func overrideFromEnv() {
 	}
 	if bridgeWebhookSecret := os.Getenv("BRIDGE_WEBHOOK_SECRET"); bridgeWebhookSecret != "" {
 		viper.Set("bridge.webhook_secret", bridgeWebhookSecret)
+	}
+
+	// Admin security settings
+	if adminBootstrapToken := os.Getenv("ADMIN_BOOTSTRAP_TOKEN"); adminBootstrapToken != "" {
+		viper.Set("security.admin_bootstrap_token", adminBootstrapToken)
+	}
+	if disableAdminCreation := os.Getenv("DISABLE_ADMIN_CREATION"); disableAdminCreation != "" {
+		if disabled, err := strconv.ParseBool(disableAdminCreation); err == nil {
+			viper.Set("security.disable_admin_creation", disabled)
+		}
 	}
 }
 
