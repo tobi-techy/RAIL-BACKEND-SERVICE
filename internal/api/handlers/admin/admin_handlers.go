@@ -44,6 +44,19 @@ func (h *AdminHandlers) CreateAdmin(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
+	// Security: Check if admin creation is disabled
+	if h.cfg.Security.DisableAdminCreation {
+		h.logger.Warn("admin creation attempt blocked - endpoint disabled",
+			zap.String("client_ip", c.ClientIP()),
+			zap.String("user_agent", c.GetHeader("User-Agent")),
+		)
+		c.JSON(http.StatusForbidden, entities.ErrorResponse{
+			Code:    "ADMIN_CREATION_DISABLED",
+			Message: "Admin creation endpoint is disabled",
+		})
+		return
+	}
+
 	var req entities.CreateAdminRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.logger.Warn("invalid create admin payload", zap.Error(err))
@@ -80,11 +93,44 @@ func (h *AdminHandlers) CreateAdmin(c *gin.Context) {
 		desiredRole = *req.Role
 	}
 
-	// First admin is always super_admin
+	// First admin requires bootstrap token for security
 	if adminCount == 0 {
+		// Audit log: first admin creation attempt
+		h.logger.Info("first admin creation attempt",
+			zap.String("email", req.Email),
+			zap.String("client_ip", c.ClientIP()),
+			zap.String("user_agent", c.GetHeader("User-Agent")),
+		)
+
+		// Security: Require bootstrap token for first admin creation
+		if err := h.validateBootstrapToken(c); err != nil {
+			h.logger.Warn("first admin creation rejected - invalid bootstrap token",
+				zap.String("email", req.Email),
+				zap.String("client_ip", c.ClientIP()),
+				zap.Error(err),
+			)
+			c.JSON(http.StatusForbidden, entities.ErrorResponse{
+				Code:    "BOOTSTRAP_TOKEN_REQUIRED",
+				Message: "Valid bootstrap token required for first admin creation",
+			})
+			return
+		}
+
 		desiredRole = entities.AdminRoleSuperAdmin
 	} else {
+		// Audit log: subsequent admin creation attempt
+		h.logger.Info("admin creation attempt",
+			zap.String("email", req.Email),
+			zap.String("client_ip", c.ClientIP()),
+			zap.String("requested_role", string(desiredRole)),
+		)
+
 		if err := h.ensureSuperAdmin(c); err != nil {
+			h.logger.Warn("admin creation rejected - insufficient permissions",
+				zap.String("email", req.Email),
+				zap.String("client_ip", c.ClientIP()),
+				zap.Error(err),
+			)
 			status := http.StatusForbidden
 			if errors.Is(err, errUnauthorized) {
 				status = http.StatusUnauthorized
@@ -136,6 +182,15 @@ func (h *AdminHandlers) CreateAdmin(c *gin.Context) {
 		common.SendInternalError(c, common.ErrCodeTokenGenFailed, "Failed to generate admin session tokens")
 		return
 	}
+
+	// Audit log: successful admin creation
+	h.logger.Info("admin created successfully",
+		zap.String("admin_id", adminResp.ID.String()),
+		zap.String("email", adminResp.Email),
+		zap.String("role", string(adminResp.Role)),
+		zap.String("client_ip", c.ClientIP()),
+		zap.Bool("is_first_admin", adminCount == 0),
+	)
 
 	response := entities.AdminCreationResponse{
 		AdminUserResponse: *adminResp,
@@ -358,6 +413,48 @@ func (h *AdminHandlers) emailExists(ctx context.Context, email string) (bool, er
 	err := h.db.QueryRowContext(ctx,
 		`SELECT EXISTS (SELECT 1 FROM users WHERE LOWER(email) = $1)`, email).Scan(&exists)
 	return exists, err
+}
+
+// validateBootstrapToken validates the bootstrap token for first admin creation
+// The token can be provided via X-Bootstrap-Token header or bootstrap_token in request body
+func (h *AdminHandlers) validateBootstrapToken(c *gin.Context) error {
+	configuredToken := h.cfg.Security.AdminBootstrapToken
+	
+	// If no bootstrap token is configured, reject all first admin creation attempts
+	// This is a security measure to prevent unauthorized first admin creation
+	if configuredToken == "" {
+		return errors.New("bootstrap token not configured - first admin creation disabled")
+	}
+
+	// Check X-Bootstrap-Token header first
+	providedToken := c.GetHeader("X-Bootstrap-Token")
+	if providedToken == "" {
+		// Fallback: check query parameter (less secure, but useful for CLI tools)
+		providedToken = c.Query("bootstrap_token")
+	}
+
+	if providedToken == "" {
+		return errors.New("bootstrap token required")
+	}
+
+	// Constant-time comparison to prevent timing attacks
+	if !constantTimeCompare(providedToken, configuredToken) {
+		return errors.New("invalid bootstrap token")
+	}
+
+	return nil
+}
+
+// constantTimeCompare performs a constant-time string comparison to prevent timing attacks
+func constantTimeCompare(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	var result byte
+	for i := 0; i < len(a); i++ {
+		result |= a[i] ^ b[i]
+	}
+	return result == 0
 }
 
 func (h *AdminHandlers) ensureSuperAdmin(c *gin.Context) error {
