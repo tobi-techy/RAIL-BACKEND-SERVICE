@@ -74,6 +74,7 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.U
         SELECT id, email, phone, first_name, last_name, date_of_birth,
                auth_provider_id, email_verified, phone_verified,
                onboarding_status, kyc_status, kyc_approved_at, kyc_rejection_reason,
+               bridge_customer_id, alpaca_account_id,
                is_active, created_at, updated_at
         FROM users 
         WHERE id = $1`
@@ -83,6 +84,7 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.U
 	var kycRejectionReason sql.NullString
 	var firstName, lastName sql.NullString
 	var dateOfBirth sql.NullTime
+	var bridgeCustomerID, alpacaAccountID sql.NullString
 
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
 		&user.ID,
@@ -98,6 +100,8 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.U
 		&user.KYCStatus,
 		&kycApprovedAt,
 		&kycRejectionReason,
+		&bridgeCustomerID,
+		&alpacaAccountID,
 		&user.IsActive,
 		&user.CreatedAt,
 		&user.UpdatedAt,
@@ -117,9 +121,34 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.U
 	if kycRejectionReason.Valid {
 		user.KYCRejectionReason = &kycRejectionReason.String
 	}
-	// firstName, lastName, dateOfBirth fields not yet implemented in UserProfile entity
+	if bridgeCustomerID.Valid {
+		user.BridgeCustomerID = &bridgeCustomerID.String
+	}
+	if alpacaAccountID.Valid {
+		user.AlpacaAccountID = &alpacaAccountID.String
+	}
 
 	return user, nil
+}
+
+// GetBridgeCustomerID retrieves the Bridge customer ID for a user
+func (r *UserRepository) GetBridgeCustomerID(ctx context.Context, userID uuid.UUID) (string, error) {
+	query := `SELECT bridge_customer_id FROM users WHERE id = $1`
+
+	var bridgeCustomerID sql.NullString
+	err := r.db.QueryRowContext(ctx, query, userID).Scan(&bridgeCustomerID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", fmt.Errorf("user not found")
+		}
+		return "", fmt.Errorf("failed to get bridge customer ID: %w", err)
+	}
+
+	if !bridgeCustomerID.Valid || bridgeCustomerID.String == "" {
+		return "", nil
+	}
+
+	return bridgeCustomerID.String, nil
 }
 
 // GetByEmail retrieves a user by email
@@ -235,7 +264,8 @@ func (r *UserRepository) Update(ctx context.Context, user *entities.UserProfile)
 			email = $2, phone = $3, first_name = $4, last_name = $5, 
 			date_of_birth = $6, auth_provider_id = $7, email_verified = $8, 
 			phone_verified = $9, onboarding_status = $10, kyc_status = $11, 
-			kyc_approved_at = $12, kyc_rejection_reason = $13, updated_at = $14
+			kyc_approved_at = $12, kyc_rejection_reason = $13,
+			bridge_customer_id = $14, alpaca_account_id = $15, updated_at = $16
 		WHERE id = $1`
 
 	_, err := r.db.ExecContext(ctx, query,
@@ -252,6 +282,8 @@ func (r *UserRepository) Update(ctx context.Context, user *entities.UserProfile)
 		user.KYCStatus,
 		user.KYCApprovedAt,
 		user.KYCRejectionReason,
+		user.BridgeCustomerID,
+		user.AlpacaAccountID,
 		time.Now(),
 	)
 

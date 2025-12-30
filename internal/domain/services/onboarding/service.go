@@ -400,8 +400,8 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 		return nil, fmt.Errorf("failed to create Alpaca account: %w", err)
 	}
 
-	// Update user with account IDs (Bridge customer ID stored as DueAccountID for backward compatibility)
-	user.DueAccountID = &bridgeResp.AccountID
+	// Update user with account IDs
+	user.BridgeCustomerID = &bridgeResp.AccountID
 	user.AlpacaAccountID = &alpacaResp.ID
 	user.UpdatedAt = time.Now()
 

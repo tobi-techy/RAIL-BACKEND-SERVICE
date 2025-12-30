@@ -76,8 +76,6 @@ func (a *BridgeKYCAdapter) GenerateKYCURL(ctx context.Context, userID uuid.UUID)
 }
 
 // getBridgeCustomerID retrieves the Bridge customer ID from user profile
-// TODO: Track issue to ensure BridgeCustomerID is stored during onboarding
-// and handle the case where a Bridge customer does not yet exist
 func (a *BridgeKYCAdapter) getBridgeCustomerID(ctx context.Context, userID uuid.UUID) (string, error) {
 	profile, err := a.userRepo.GetByID(ctx, userID)
 	if err != nil {
