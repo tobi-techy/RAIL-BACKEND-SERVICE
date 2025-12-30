@@ -93,9 +93,8 @@ func ValidateToken(tokenString, secret string) (*Claims, error) {
 	return nil, fmt.Errorf("invalid token")
 }
 
-// RefreshAccessToken generates a new access token from a valid refresh token
-func RefreshAccessToken(refreshToken, secret string, accessTTL int) (*TokenPair, error) {
-	// Parse refresh token
+// ValidateRefreshToken validates a refresh token and returns the user ID
+func ValidateRefreshToken(refreshToken, secret string) (uuid.UUID, error) {
 	token, err := jwt.ParseWithClaims(refreshToken, &jwt.RegisteredClaims{}, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
@@ -104,45 +103,47 @@ func RefreshAccessToken(refreshToken, secret string, accessTTL int) (*TokenPair,
 	})
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse refresh token: %w", err)
+		return uuid.Nil, fmt.Errorf("failed to parse refresh token: %w", err)
 	}
 
-	if claims, ok := token.Claims.(*jwt.RegisteredClaims); ok && token.Valid {
-		userID, err := uuid.Parse(claims.Subject)
-		if err != nil {
-			return nil, fmt.Errorf("invalid user ID in token: %w", err)
-		}
-
-		// Note: For a full implementation, you'd need to fetch user details from DB
-		// Here we're just generating a new token with minimal info
-		now := time.Now()
-		accessExp := now.Add(time.Duration(accessTTL) * time.Second)
-
-		accessClaims := Claims{
-			UserID: userID,
-			RegisteredClaims: jwt.RegisteredClaims{
-				ExpiresAt: jwt.NewNumericDate(accessExp),
-				IssuedAt:  jwt.NewNumericDate(now),
-				NotBefore: jwt.NewNumericDate(now),
-				Issuer:    "rail_service",
-				Subject:   userID.String(),
-			},
-		}
-
-		accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
-		accessTokenString, err := accessToken.SignedString([]byte(secret))
-		if err != nil {
-			return nil, fmt.Errorf("failed to sign new access token: %w", err)
-		}
-
-		return &TokenPair{
-			AccessToken:  accessTokenString,
-			RefreshToken: refreshToken, // Return the same refresh token
-			ExpiresAt:    accessExp,
-		}, nil
+	claims, ok := token.Claims.(*jwt.RegisteredClaims)
+	if !ok || !token.Valid {
+		return uuid.Nil, fmt.Errorf("invalid refresh token")
 	}
 
-	return nil, fmt.Errorf("invalid refresh token")
+	userID, err := uuid.Parse(claims.Subject)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("invalid user ID in token: %w", err)
+	}
+
+	return userID, nil
+}
+
+// GenerateAccessToken generates a new access token with the provided user details
+func GenerateAccessToken(userID uuid.UUID, email, role, secret string, accessTTL int) (string, time.Time, error) {
+	now := time.Now()
+	accessExp := now.Add(time.Duration(accessTTL) * time.Second)
+
+	accessClaims := Claims{
+		UserID: userID,
+		Email:  email,
+		Role:   role,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(accessExp),
+			IssuedAt:  jwt.NewNumericDate(now),
+			NotBefore: jwt.NewNumericDate(now),
+			Issuer:    "rail_service",
+			Subject:   userID.String(),
+		},
+	}
+
+	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
+	accessTokenString, err := accessToken.SignedString([]byte(secret))
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("failed to sign access token: %w", err)
+	}
+
+	return accessTokenString, accessExp, nil
 }
 
 // ExtractUserIDFromToken extracts user ID from token without full validation
