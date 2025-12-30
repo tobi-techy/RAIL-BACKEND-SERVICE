@@ -3,6 +3,7 @@ package di
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -12,6 +13,9 @@ import (
 
 // ErrBridgeCustomerNotFound indicates the user has no Bridge customer ID
 var ErrBridgeCustomerNotFound = errors.New("bridge customer ID not found for user")
+
+// ErrUnsupportedChain indicates the requested chain is not supported by Bridge
+var ErrUnsupportedChain = errors.New("unsupported chain")
 
 // UserProfileRepository interface for fetching user profile
 type UserProfileRepository interface {
@@ -108,7 +112,7 @@ func (a *BridgeFundingAdapter) GenerateDepositAddress(ctx context.Context, chain
 	// Convert domain chain to Bridge payment rail
 	paymentRail := mapChainToBridgePaymentRail(chain)
 	if paymentRail == "" {
-		return "", nil // TODO: Return proper error for unsupported chains
+		return "", fmt.Errorf("%w: %s. Supported chains: ETH, MATIC, AVAX, SOL, ARB, BASE, OP", ErrUnsupportedChain, chain)
 	}
 
 	// For Bridge, wallets are created with customers
