@@ -696,3 +696,114 @@ func (c *Client) GetMetrics() map[string]interface{} {
 		"total_failures":        counts.TotalFailures,
 	}
 }
+
+// InitiateCCTPBurn initiates a CCTP burn transaction on Polygon to bridge USDC to another chain
+func (c *Client) InitiateCCTPBurn(ctx context.Context, req *entities.CCTPBurnRequest) (*entities.CCTPBurnResponse, error) {
+	if req.IdempotencyKey == "" {
+		req.IdempotencyKey = uuid.NewString()
+	}
+
+	entitySecretCiphertext, err := c.entitySecretService.GenerateEntitySecretCiphertext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate entity secret: %w", err)
+	}
+
+	// Build CCTP transfer request using Circle's developer wallet transfer endpoint
+	transferReq := map[string]interface{}{
+		"idempotencyKey":         req.IdempotencyKey,
+		"entitySecretCiphertext": entitySecretCiphertext,
+		"walletId":               req.WalletID,
+		"amounts":                []string{req.Amount.String()},
+		"destinationAddress":     req.MintRecipient,
+		"tokenId":                "usdc-polygon",
+	}
+
+	c.logger.Info("Initiating CCTP burn",
+		zap.String("walletId", req.WalletID),
+		zap.String("amount", req.Amount.String()),
+		zap.Uint32("destDomain", req.DestDomain),
+		zap.String("mintRecipient", req.MintRecipient))
+
+	var response map[string]interface{}
+	_, err = c.circuitBreaker.Execute(func() (interface{}, error) {
+		return &response, c.doRequestWithRetry(ctx, "POST", c.config.TransferEndpoint, transferReq, &response)
+	})
+
+	if err != nil {
+		c.logger.Error("Failed to initiate CCTP burn",
+			zap.String("walletId", req.WalletID),
+			zap.Error(err))
+		return nil, fmt.Errorf("cctp burn failed: %w", err)
+	}
+
+	result := &entities.CCTPBurnResponse{Status: "pending"}
+	if id, ok := response["id"].(string); ok {
+		result.TransactionID = id
+	}
+	if txHash, ok := response["txHash"].(string); ok {
+		result.TxHash = txHash
+	}
+
+	c.logger.Info("CCTP burn initiated",
+		zap.String("transactionId", result.TransactionID),
+		zap.String("txHash", result.TxHash))
+
+	return result, nil
+}
+
+// GetCCTPTransaction retrieves the status of a CCTP/transfer transaction
+func (c *Client) GetCCTPTransaction(ctx context.Context, transactionID string) (*entities.CCTPTransactionStatus, error) {
+	endpoint := fmt.Sprintf("/v1/w3s/developer/transactions/%s", transactionID)
+
+	var response map[string]interface{}
+	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
+		return &response, c.doRequestWithRetry(ctx, "GET", endpoint, nil, &response)
+	})
+
+	if err != nil {
+		c.logger.Error("Failed to get CCTP transaction",
+			zap.String("transactionId", transactionID),
+			zap.Error(err))
+		return nil, fmt.Errorf("failed to get transaction: %w", err)
+	}
+
+	// Handle nested data structure
+	data, ok := response["data"].(map[string]interface{})
+	if !ok {
+		data = response
+	}
+	txData, ok := data["transaction"].(map[string]interface{})
+	if !ok {
+		txData = data
+	}
+
+	status := &entities.CCTPTransactionStatus{
+		ID:     transactionID,
+		Status: "pending",
+	}
+
+	if id, ok := txData["id"].(string); ok {
+		status.ID = id
+	}
+	if txHash, ok := txData["txHash"].(string); ok {
+		status.TxHash = txHash
+	}
+	if state, ok := txData["state"].(string); ok {
+		status.Status = state
+	}
+	if chain, ok := txData["blockchain"].(string); ok {
+		status.Chain = chain
+	}
+	if confirmDate, ok := txData["firstConfirmDate"].(string); ok {
+		if t, err := time.Parse(time.RFC3339, confirmDate); err == nil {
+			status.ConfirmedAt = &t
+		}
+	}
+
+	c.logger.Info("Retrieved CCTP transaction status",
+		zap.String("transactionId", status.ID),
+		zap.String("status", status.Status),
+		zap.String("txHash", status.TxHash))
+
+	return status, nil
+}
