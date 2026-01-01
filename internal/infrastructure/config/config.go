@@ -29,11 +29,25 @@ type Config struct {
 	Verification   VerificationConfig `mapstructure:"verification"`
 	Alpaca         AlpacaConfig         `mapstructure:"alpaca"`
 	Bridge         BridgeConfig         `mapstructure:"bridge"`
+	Grid           GridConfig           `mapstructure:"grid"`
+	CCTP           CCTPConfig           `mapstructure:"cctp"`
 	Workers        WorkerConfig         `mapstructure:"workers"`
 	Reconciliation ReconciliationConfig `mapstructure:"reconciliation"`
 	SocialAuth     SocialAuthConfig     `mapstructure:"social_auth"`
 	WebAuthn       WebAuthnConfig       `mapstructure:"webauthn"`
 	AI             AIConfig             `mapstructure:"ai"`
+}
+
+// GridConfig contains Grid API configuration
+type GridConfig struct {
+	BaseURL string `mapstructure:"base_url"`
+	APIKey  string `mapstructure:"api_key"`
+}
+
+// CCTPConfig contains CCTP Iris API configuration
+type CCTPConfig struct {
+	BaseURL     string `mapstructure:"base_url"`
+	Environment string `mapstructure:"environment"` // "sandbox" or "mainnet"
 }
 
 // AIConfig contains AI provider configuration
