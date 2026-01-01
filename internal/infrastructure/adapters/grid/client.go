@@ -151,6 +151,61 @@ func (c *Client) Ping(ctx context.Context) error {
 	return nil
 }
 
+// KYC Operations
+
+// RequestKYCLink requests a KYC verification link for an account
+func (c *Client) RequestKYCLink(ctx context.Context, address string) (*KYCLinkResponse, error) {
+	var resp KYCLinkResponse
+	endpoint := fmt.Sprintf("/api/grid/v1/accounts/%s/kyc", url.PathEscape(address))
+	if err := c.doRequest(ctx, http.MethodPost, endpoint, nil, &resp); err != nil {
+		return nil, fmt.Errorf("request KYC link failed: %w", err)
+	}
+	return &resp, nil
+}
+
+// GetKYCStatus retrieves the KYC status for an account
+func (c *Client) GetKYCStatus(ctx context.Context, address string) (*KYCStatus, error) {
+	var resp KYCStatus
+	endpoint := fmt.Sprintf("/api/grid/v1/accounts/%s/kyc", url.PathEscape(address))
+	if err := c.doRequest(ctx, http.MethodGet, endpoint, nil, &resp); err != nil {
+		return nil, fmt.Errorf("get KYC status failed: %w", err)
+	}
+	return &resp, nil
+}
+
+// Virtual Account Operations
+
+// RequestVirtualAccount requests a virtual account for fiat on-ramp
+func (c *Client) RequestVirtualAccount(ctx context.Context, address string) (*VirtualAccount, error) {
+	var resp VirtualAccount
+	endpoint := fmt.Sprintf("/api/grid/v1/accounts/%s/virtual-accounts", url.PathEscape(address))
+	if err := c.doRequest(ctx, http.MethodPost, endpoint, nil, &resp); err != nil {
+		return nil, fmt.Errorf("request virtual account failed: %w", err)
+	}
+	return &resp, nil
+}
+
+// ListVirtualAccounts lists all virtual accounts for an address
+func (c *Client) ListVirtualAccounts(ctx context.Context, address string) ([]VirtualAccount, error) {
+	var resp VirtualAccountsResponse
+	endpoint := fmt.Sprintf("/api/grid/v1/accounts/%s/virtual-accounts", url.PathEscape(address))
+	if err := c.doRequest(ctx, http.MethodGet, endpoint, nil, &resp); err != nil {
+		return nil, fmt.Errorf("list virtual accounts failed: %w", err)
+	}
+	return resp.VirtualAccounts, nil
+}
+
+// Payment Intent Operations
+
+// CreatePaymentIntent creates a payment intent for off-ramp
+func (c *Client) CreatePaymentIntent(ctx context.Context, req *PaymentIntentRequest) (*PaymentIntent, error) {
+	var resp PaymentIntent
+	if err := c.doRequest(ctx, http.MethodPost, "/api/grid/v1/payments/intents", req, &resp); err != nil {
+		return nil, fmt.Errorf("create payment intent failed: %w", err)
+	}
+	return &resp, nil
+}
+
 // doRequest performs an HTTP request with circuit breaker and retry logic
 func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, response interface{}) error {
 	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {

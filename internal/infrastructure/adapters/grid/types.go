@@ -73,3 +73,63 @@ type APIError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
+
+// KYC Types
+
+// KYCLinkResponse is returned when requesting a KYC link
+type KYCLinkResponse struct {
+	URL       string    `json:"url"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// KYCStatus represents the current KYC status
+type KYCStatus struct {
+	Status    string    `json:"status"` // pending, approved, rejected
+	UpdatedAt time.Time `json:"updated_at"`
+	Reasons   []string  `json:"reasons,omitempty"` // Rejection reasons if rejected
+}
+
+// Virtual Account Types
+
+// VirtualAccount represents a fiat virtual account for on-ramp
+type VirtualAccount struct {
+	ID            string `json:"id"`
+	AccountNumber string `json:"account_number"`
+	RoutingNumber string `json:"routing_number"`
+	BankName      string `json:"bank_name"`
+	Currency      string `json:"currency"` // USD
+	Status        string `json:"status"`
+}
+
+// VirtualAccountsResponse wraps the list of virtual accounts
+type VirtualAccountsResponse struct {
+	VirtualAccounts []VirtualAccount `json:"virtual_accounts"`
+}
+
+// Payment Intent Types (Off-ramp)
+
+// PaymentIntentRequest is the request to create a payment intent
+type PaymentIntentRequest struct {
+	AccountAddress string          `json:"account_address"`
+	Amount         decimal.Decimal `json:"amount"`
+	Currency       string          `json:"currency"`
+	Destination    PaymentDest     `json:"destination"`
+}
+
+// PaymentDest represents the destination for a payment
+type PaymentDest struct {
+	Type          string `json:"type"` // ach, wire, sepa
+	AccountNumber string `json:"account_number"`
+	RoutingNumber string `json:"routing_number,omitempty"`
+	IBAN          string `json:"iban,omitempty"`
+	BIC           string `json:"bic,omitempty"`
+}
+
+// PaymentIntent represents a payment intent for off-ramp
+type PaymentIntent struct {
+	ID        string          `json:"id"`
+	Status    string          `json:"status"`
+	Amount    decimal.Decimal `json:"amount"`
+	Currency  string          `json:"currency"`
+	CreatedAt time.Time       `json:"created_at"`
+}

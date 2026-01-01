@@ -38,3 +38,13 @@ func (e *ErrorResponse) IsOTPExpired() bool {
 func (e *ErrorResponse) IsInvalidOTP() bool {
 	return e.Code == "INVALID_OTP"
 }
+
+// IsEnterpriseRequired returns true if the feature requires enterprise access
+func (e *ErrorResponse) IsEnterpriseRequired() bool {
+	return e.Code == "ENTERPRISE_REQUIRED" || e.Code == "FEATURE_NOT_AVAILABLE"
+}
+
+// IsKYCRequired returns true if KYC is required for the operation
+func (e *ErrorResponse) IsKYCRequired() bool {
+	return e.Code == "KYC_REQUIRED"
+}
