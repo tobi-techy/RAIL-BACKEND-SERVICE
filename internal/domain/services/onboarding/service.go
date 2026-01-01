@@ -59,6 +59,7 @@ type KYCSubmissionRepository interface {
 type WalletService interface {
 	CreateWalletsForUser(ctx context.Context, userID uuid.UUID, chains []entities.WalletChain) error
 	GetWalletStatus(ctx context.Context, userID uuid.UUID) (*entities.WalletStatusResponse, error)
+	RegisterExternalWallet(ctx context.Context, userID uuid.UUID, wallet *entities.ExternalWallet) error
 }
 
 // GridService handles Grid account creation, KYC, and virtual accounts
@@ -522,11 +523,31 @@ func (s *Service) CompletePasscodeCreation(ctx context.Context, userID uuid.UUID
 		return fmt.Errorf("failed to update onboarding status: %w", err)
 	}
 
-	// Kick off wallet provisioning after passcode creation
-	if err := s.walletService.CreateWalletsForUser(ctx, userID, s.defaultWalletChains); err != nil {
-		s.logger.Warn("Failed to enqueue wallet provisioning after passcode creation",
-			zap.Error(err),
-			zap.String("userId", userID.String()))
+	// Check if user has Grid account (Solana wallet already created during OTP verification)
+	gridAccount, err := s.gridService.GetAccount(ctx, userID)
+	if err == nil && gridAccount != nil && gridAccount.Address != "" {
+		// Register Grid wallet in managed_wallets for compatibility
+		if err := s.walletService.RegisterExternalWallet(ctx, userID, &entities.ExternalWallet{
+			Chain:    entities.WalletChainSolana,
+			Address:  gridAccount.Address,
+			Provider: entities.WalletProviderGrid,
+		}); err != nil {
+			s.logger.Warn("Failed to register Grid wallet", zap.Error(err))
+		} else {
+			s.logger.Info("Registered Grid Solana wallet",
+				zap.String("userId", userID.String()),
+				zap.String("address", gridAccount.Address))
+		}
+	}
+
+	// Only create Circle wallets for non-Solana chains (Grid provides Solana wallet)
+	nonSolanaChains := filterOutSolana(s.defaultWalletChains)
+	if len(nonSolanaChains) > 0 {
+		if err := s.walletService.CreateWalletsForUser(ctx, userID, nonSolanaChains); err != nil {
+			s.logger.Warn("Failed to enqueue wallet provisioning for non-Solana chains",
+				zap.Error(err),
+				zap.String("userId", userID.String()))
+		}
 	}
 
 	// Auto-enable 70/30 allocation mode (Rail MVP default - non-negotiable)
@@ -556,6 +577,17 @@ func (s *Service) CompletePasscodeCreation(ctx context.Context, userID uuid.UUID
 
 	s.logger.Info("Passcode creation completed and wallet provisioning initiated", zap.String("userId", userID.String()))
 	return nil
+}
+
+// filterOutSolana removes Solana chains from the list (Grid provides Solana wallet)
+func filterOutSolana(chains []entities.WalletChain) []entities.WalletChain {
+	result := make([]entities.WalletChain, 0, len(chains))
+	for _, chain := range chains {
+		if chain != entities.WalletChainSolana && chain != entities.WalletChainSOLDevnet {
+			result = append(result, chain)
+		}
+	}
+	return result
 }
 
 // InitiateGridKYC initiates KYC through Grid and returns the KYC URL

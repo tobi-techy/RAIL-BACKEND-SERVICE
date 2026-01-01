@@ -161,7 +161,15 @@ func (ws *WalletSet) Validate() error {
 	return nil
 }
 
-// ManagedWallet represents a Circle-managed wallet
+// WalletProvider represents the provider of a wallet
+type WalletProvider string
+
+const (
+	WalletProviderCircle WalletProvider = "circle"
+	WalletProviderGrid   WalletProvider = "grid"
+)
+
+// ManagedWallet represents a managed wallet (Circle or Grid)
 type ManagedWallet struct {
 	ID             uuid.UUID         `json:"id" db:"id"`
 	UserID         uuid.UUID         `json:"user_id" db:"user_id"`
@@ -171,6 +179,7 @@ type ManagedWallet struct {
 	BridgeWalletID string            `json:"bridge_wallet_id" db:"bridge_wallet_id"`
 	WalletSetID    uuid.UUID         `json:"wallet_set_id" db:"wallet_set_id"`
 	AccountType    WalletAccountType `json:"account_type" db:"account_type"`
+	Provider       WalletProvider    `json:"provider" db:"provider"`
 	Status         WalletStatus      `json:"status" db:"status"`
 	CreatedAt      time.Time         `json:"created_at" db:"created_at"`
 	UpdatedAt      time.Time         `json:"updated_at" db:"updated_at"`
@@ -193,12 +202,14 @@ func (w *ManagedWallet) Validate() error {
 		return fmt.Errorf("wallet address is required")
 	}
 
-	if w.CircleWalletID == "" {
-		return fmt.Errorf("circle wallet ID is required")
+	// CircleWalletID only required for Circle wallets
+	if w.Provider == WalletProviderCircle && w.CircleWalletID == "" {
+		return fmt.Errorf("circle wallet ID is required for Circle wallets")
 	}
 
-	if w.WalletSetID == uuid.Nil {
-		return fmt.Errorf("wallet set ID is required")
+	// WalletSetID only required for Circle wallets
+	if w.Provider == WalletProviderCircle && w.WalletSetID == uuid.Nil {
+		return fmt.Errorf("wallet set ID is required for Circle wallets")
 	}
 
 	if !w.AccountType.IsValid() {
@@ -335,6 +346,13 @@ type WalletAddressResponse struct {
 // WalletAddressesResponse represents response with wallet addresses
 type WalletAddressesResponse struct {
 	Wallets []WalletAddressResponse `json:"wallets"`
+}
+
+// ExternalWallet represents a wallet from an external provider (e.g., Grid)
+type ExternalWallet struct {
+	Chain    WalletChain    `json:"chain"`
+	Address  string         `json:"address"`
+	Provider WalletProvider `json:"provider"`
 }
 
 // WalletStatusResponse represents wallet status for all chains

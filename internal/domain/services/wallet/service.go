@@ -351,6 +351,51 @@ func (s *Service) GetWalletAddresses(ctx context.Context, userID uuid.UUID, chai
 	}, nil
 }
 
+// RegisterExternalWallet registers an external wallet (e.g., Grid Solana wallet) in managed_wallets
+func (s *Service) RegisterExternalWallet(ctx context.Context, userID uuid.UUID, wallet *entities.ExternalWallet) error {
+	s.logger.Info("Registering external wallet",
+		zap.String("userID", userID.String()),
+		zap.String("chain", string(wallet.Chain)),
+		zap.String("provider", string(wallet.Provider)))
+
+	// Check if wallet already exists for this chain
+	existing, err := s.walletRepo.GetByUserAndChain(ctx, userID, wallet.Chain)
+	if err == nil && existing != nil {
+		s.logger.Info("Wallet already exists for chain, skipping registration",
+			zap.String("userID", userID.String()),
+			zap.String("chain", string(wallet.Chain)))
+		return nil
+	}
+
+	managedWallet := &entities.ManagedWallet{
+		ID:          uuid.New(),
+		UserID:      userID,
+		Chain:       wallet.Chain,
+		Address:     wallet.Address,
+		Provider:    wallet.Provider,
+		AccountType: entities.AccountTypeEOA,
+		Status:      entities.WalletStatusLive, // Grid wallets are immediately live
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	if err := s.walletRepo.Create(ctx, managedWallet); err != nil {
+		return fmt.Errorf("failed to register external wallet: %w", err)
+	}
+
+	// Log audit event
+	if err := s.auditService.LogWalletEvent(ctx, userID, "external_wallet_registered", "wallet", nil, managedWallet); err != nil {
+		s.logger.Warn("Failed to log audit event", zap.Error(err))
+	}
+
+	s.logger.Info("External wallet registered successfully",
+		zap.String("userID", userID.String()),
+		zap.String("chain", string(wallet.Chain)),
+		zap.String("address", wallet.Address))
+
+	return nil
+}
+
 // GetWalletStatus returns comprehensive wallet status for a user
 func (s *Service) GetWalletStatus(ctx context.Context, userID uuid.UUID) (*entities.WalletStatusResponse, error) {
 	s.logger.Debug("Getting wallet status", zap.String("userID", userID.String()))
