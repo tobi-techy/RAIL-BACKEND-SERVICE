@@ -42,7 +42,11 @@ func New(level, environment string) *Logger {
 	// Build logger
 	logger, err := config.Build()
 	if err != nil {
-		panic(err)
+		// Fallback to a basic logger if configuration fails
+		baseLogger := zap.NewNop()
+		return &Logger{
+			SugaredLogger: baseLogger.Sugar(),
+		}
 	}
 
 	return &Logger{
@@ -89,7 +93,7 @@ func (l *Logger) WithTraceID(ctx context.Context) *Logger {
 	if !span.SpanContext().IsValid() {
 		return l
 	}
-	
+
 	return l.WithFields(map[string]interface{}{
 		"trace_id": span.SpanContext().TraceID().String(),
 		"span_id":  span.SpanContext().SpanID().String(),
@@ -102,7 +106,7 @@ func (l *Logger) WithContext(ctx context.Context) *Logger {
 	if !span.SpanContext().IsValid() {
 		return l
 	}
-	
+
 	return l.WithFields(map[string]interface{}{
 		"trace_id": span.SpanContext().TraceID().String(),
 		"span_id":  span.SpanContext().SpanID().String(),

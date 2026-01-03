@@ -1716,7 +1716,7 @@ func (h *AuthHandlers) CompleteOnboarding(c *gin.Context) {
 
 	h.logger.Info("Onboarding completed successfully",
 		zap.String("user_id", response.UserID.String()),
-		zap.String("bridge_customer_id", response.DueAccountID),
+		zap.String("bridge_customer_id", response.BridgeCustomerID),
 		zap.String("alpaca_account_id", response.AlpacaAccountID))
 
 	c.JSON(http.StatusOK, response)

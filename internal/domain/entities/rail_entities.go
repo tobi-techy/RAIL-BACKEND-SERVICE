@@ -325,41 +325,6 @@ type ChainDepositWebhook struct {
 	Signature string     `json:"signature"`
 }
 
-// DueVirtualAccountDepositWebhook represents Due virtual account deposit event
-type DueVirtualAccountDepositWebhook struct {
-	Type string                 `json:"type"` // "virtual_account.deposit"
-	Data DueDepositWebhookData `json:"data"`
-}
-
-// DueDepositWebhookData represents deposit data in Due webhook
-type DueDepositWebhookData struct {
-	ID               string `json:"id"`               // Virtual account ID
-	Nonce            string `json:"nonce"`            // Reference/nonce
-	Amount           string `json:"amount"`           // Deposit amount
-	Currency         string `json:"currency"`         // Currency (USD, EUR, etc.)
-	Status           string `json:"status"`           // "completed"
-	DepositedAt      string `json:"depositedAt"`      // ISO timestamp
-	TransactionID    string `json:"transactionId"`    // Due transaction ID
-}
-
-// DueTransferWebhook represents Due transfer status update
-type DueTransferWebhook struct {
-	Type string                  `json:"type"` // "transfer.completed", "transfer.failed"
-	Data DueTransferWebhookData `json:"data"`
-}
-
-// DueTransferWebhookData represents transfer data in Due webhook
-type DueTransferWebhookData struct {
-	ID          string `json:"id"`          // Transfer ID
-	Status      string `json:"status"`      // "completed", "failed"
-	SourceID    string `json:"sourceId"`    // Source wallet/account ID
-	Destination struct {
-		Amount   string `json:"amount"`
-		Currency string `json:"currency"`
-	} `json:"destination"`
-	CreatedAt string `json:"createdAt"`
-}
-
 // BrokerageFillWebhook represents brokerage fill webhook
 type BrokerageFillWebhook struct {
 	OrderID   uuid.UUID       `json:"orderId"`

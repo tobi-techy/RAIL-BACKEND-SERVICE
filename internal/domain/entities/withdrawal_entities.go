@@ -15,7 +15,7 @@ const (
 	WithdrawalStatusInitiated       WithdrawalStatus = "initiated"        // Request created internally
 	WithdrawalStatusPending         WithdrawalStatus = "pending"          // Sent to processor
 	WithdrawalStatusAlpacaDebited   WithdrawalStatus = "alpaca_debited"   // Funds debited from Alpaca
-	WithdrawalStatusDueProcessing   WithdrawalStatus = "due_processing"   // Due/Bridge processing
+	WithdrawalStatusBridgeProcessing WithdrawalStatus = "bridge_processing" // Bridge processing
 	WithdrawalStatusOnChainTransfer WithdrawalStatus = "onchain_transfer" // On-chain transfer in progress
 	WithdrawalStatusTimeout         WithdrawalStatus = "timeout"          // No response within SLA
 	WithdrawalStatusCompleted       WithdrawalStatus = "completed"        // Terminal: success
@@ -28,7 +28,7 @@ var ValidWithdrawalStatuses = map[WithdrawalStatus]bool{
 	WithdrawalStatusInitiated:       true,
 	WithdrawalStatusPending:         true,
 	WithdrawalStatusAlpacaDebited:   true,
-	WithdrawalStatusDueProcessing:   true,
+	WithdrawalStatusBridgeProcessing: true,
 	WithdrawalStatusOnChainTransfer: true,
 	WithdrawalStatusTimeout:         true,
 	WithdrawalStatusCompleted:       true,
@@ -40,8 +40,8 @@ var ValidWithdrawalStatuses = map[WithdrawalStatus]bool{
 var ValidWithdrawalTransitions = map[WithdrawalStatus][]WithdrawalStatus{
 	WithdrawalStatusInitiated:       {WithdrawalStatusPending, WithdrawalStatusFailed},
 	WithdrawalStatusPending:         {WithdrawalStatusAlpacaDebited, WithdrawalStatusFailed, WithdrawalStatusTimeout},
-	WithdrawalStatusAlpacaDebited:   {WithdrawalStatusDueProcessing, WithdrawalStatusFailed, WithdrawalStatusReversed},
-	WithdrawalStatusDueProcessing:   {WithdrawalStatusOnChainTransfer, WithdrawalStatusFailed, WithdrawalStatusTimeout, WithdrawalStatusReversed},
+	WithdrawalStatusAlpacaDebited:   {WithdrawalStatusBridgeProcessing, WithdrawalStatusFailed, WithdrawalStatusReversed},
+	WithdrawalStatusBridgeProcessing: {WithdrawalStatusOnChainTransfer, WithdrawalStatusFailed, WithdrawalStatusTimeout, WithdrawalStatusReversed},
 	WithdrawalStatusOnChainTransfer: {WithdrawalStatusCompleted, WithdrawalStatusFailed, WithdrawalStatusTimeout},
 	WithdrawalStatusTimeout:         {WithdrawalStatusCompleted, WithdrawalStatusFailed, WithdrawalStatusReversed}, // Can still resolve
 	WithdrawalStatusCompleted:       {},                                                                            // Terminal
@@ -99,8 +99,8 @@ type Withdrawal struct {
 	DestinationAddress string           `json:"destination_address" db:"destination_address"`
 	Status             WithdrawalStatus `json:"status" db:"status"`
 	AlpacaJournalID    *string          `json:"alpaca_journal_id,omitempty" db:"alpaca_journal_id"`
-	DueTransferID      *string          `json:"due_transfer_id,omitempty" db:"due_transfer_id"`
-	DueRecipientID     *string          `json:"due_recipient_id,omitempty" db:"due_recipient_id"`
+	BridgeTransferID   *string          `json:"bridge_transfer_id,omitempty" db:"bridge_transfer_id"`
+	BridgeRecipientID  *string          `json:"bridge_recipient_id,omitempty" db:"bridge_recipient_id"`
 	TxHash             *string          `json:"tx_hash,omitempty" db:"tx_hash"`
 	ErrorMessage       *string          `json:"error_message,omitempty" db:"error_message"`
 	CreatedAt          time.Time        `json:"created_at" db:"created_at"`

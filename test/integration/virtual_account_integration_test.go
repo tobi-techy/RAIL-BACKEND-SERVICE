@@ -132,7 +132,7 @@ func TestVirtualAccountRepository_DatabaseOperations(t *testing.T) {
 	virtualAccount := &entities.VirtualAccount{
 		ID:              uuid.New(),
 		UserID:          uuid.New(),
-		DueAccountID:    "due-test-123",
+		BridgeCustomerID:    "due-test-123",
 		AlpacaAccountID: "alpaca-test-123",
 		AccountNumber:   "1234567890",
 		RoutingNumber:   "021000021",
