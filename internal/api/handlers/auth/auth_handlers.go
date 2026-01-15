@@ -283,77 +283,49 @@ func (h *AuthHandlers) bootstrapKYCApplicant(ctx context.Context, user *entities
 // @Failure 404 {object} entities.ErrorResponse
 // @Failure 500 {object} entities.ErrorResponse
 // @Router /api/v1/auth/verify-code [post]
-func (h *AuthHandlers) VerifyCode(c *gin.Context) {
+// Verify handles unified verification for both new registrations and existing users
+func (h *AuthHandlers) Verify(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	var req entities.VerifyCodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		h.logger.Warn("Invalid verify code request", zap.Error(err))
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "INVALID_REQUEST",
-			Message: "Invalid request payload",
-			Details: map[string]interface{}{"error": err.Error()},
-		})
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "Invalid request payload"})
 		return
 	}
 
 	if req.Email == nil && req.Phone == nil {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "VALIDATION_ERROR",
-			Message: "Either email or phone is required",
-		})
-		return
-	}
-	if req.Email != nil && req.Phone != nil {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "VALIDATION_ERROR",
-			Message: "Only one of email or phone can be provided",
-		})
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "VALIDATION_ERROR", Message: "Either email or phone is required"})
 		return
 	}
 
-	var identifier string
-	var identifierType string
-
+	var identifier, identifierType string
 	if req.Email != nil {
-		identifier = strings.TrimSpace(*req.Email)
-		identifierType = "email"
+		identifier, identifierType = strings.TrimSpace(*req.Email), "email"
 	} else {
-		identifier = strings.TrimSpace(*req.Phone)
-		identifierType = "phone"
+		identifier, identifierType = strings.TrimSpace(*req.Phone), "phone"
 	}
 
-	// Verify the code first
 	isValid, err := h.verificationService.VerifyCode(ctx, identifierType, identifier, req.Code)
 	if err != nil || !isValid {
-		h.logger.Warn("Verification code invalid or expired", zap.Error(err), zap.String("identifier", identifier))
-		errMsg := "Invalid or expired verification code"
-		if err != nil {
-			errMsg = err.Error()
-		}
-		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
-			Code:    "INVALID_CODE",
-			Message: errMsg,
-		})
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "INVALID_CODE", Message: "Invalid or expired verification code"})
 		return
 	}
 
-	// Check for pending registration in Redis
+	// Check for pending registration (new user flow)
 	pendingKey := fmt.Sprintf("pending_registration:%s:%s", identifierType, identifier)
 	var pending entities.PendingRegistration
-	err = h.redisClient.Get(ctx, pendingKey, &pending)
-	if err != nil {
-		h.logger.Warn("No pending registration found", zap.Error(err), zap.String("identifier", identifier))
-		c.JSON(http.StatusNotFound, entities.ErrorResponse{
-			Code:    "REGISTRATION_NOT_FOUND",
-			Message: "No pending registration found. Please register first.",
-		})
+	if err := h.redisClient.Get(ctx, pendingKey, &pending); err == nil {
+		h.completeNewUserVerification(c, ctx, identifier, identifierType, pending, pendingKey)
 		return
 	}
 
-	// Create the user now that verification is complete
+	// Existing user verification
+	h.completeExistingUserVerification(c, ctx, identifier, identifierType)
+}
+
+func (h *AuthHandlers) completeNewUserVerification(c *gin.Context, ctx context.Context, identifier, identifierType string, pending entities.PendingRegistration, pendingKey string) {
 	var phone *string
-	email := ""
+	var email string
 	if identifierType == "email" {
 		email = identifier
 	} else {
@@ -362,82 +334,78 @@ func (h *AuthHandlers) VerifyCode(c *gin.Context) {
 
 	user, err := h.userRepo.CreateUserWithHash(ctx, email, phone, pending.PasswordHash)
 	if err != nil {
-		h.logger.Error("Failed to create user after verification", zap.Error(err), zap.String("identifier", identifier))
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-			Code:    "USER_CREATION_FAILED",
-			Message: "Failed to create user account",
-		})
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "USER_CREATION_FAILED", Message: "Failed to create user account"})
 		return
 	}
 
-	// Mark as verified
 	if identifierType == "email" {
 		user.EmailVerified = true
 	} else {
 		user.PhoneVerified = true
 	}
-	user.OnboardingStatus = entities.OnboardingStatusWalletsPending
+	user.OnboardingStatus = entities.OnboardingStatusStarted
 
-	userProfile := &entities.UserProfile{
-		ID:               user.ID,
-		Email:            user.Email,
-		Phone:            user.Phone,
-		EmailVerified:    user.EmailVerified,
-		PhoneVerified:    user.PhoneVerified,
-		OnboardingStatus: user.OnboardingStatus,
-		KYCStatus:        user.KYCStatus,
-	}
-	if err := h.userRepo.Update(ctx, userProfile); err != nil {
-		h.logger.Error("Failed to update user verification status", zap.Error(err), zap.String("user_id", user.ID.String()))
-	}
-
-	// Clean up pending registration
+	_ = h.userRepo.Update(ctx, &entities.UserProfile{
+		ID: user.ID, Email: user.Email, Phone: user.Phone,
+		EmailVerified: user.EmailVerified, PhoneVerified: user.PhoneVerified,
+		OnboardingStatus: user.OnboardingStatus, KYCStatus: user.KYCStatus,
+	})
 	_ = h.redisClient.Del(ctx, pendingKey)
 
-	// Bootstrap KYC (non-blocking)
+	// Auto-start onboarding flow
+	var onboardingResp *entities.OnboardingStatusResponse
+	if h.onboardingService != nil {
+		_ = h.onboardingService.CompleteEmailVerification(ctx, user.ID)
+		onboardingResp, _ = h.onboardingService.GetOnboardingStatus(ctx, user.ID)
+	}
+
 	go h.bootstrapKYCApplicant(context.Background(), user)
 
-	// Trigger async onboarding jobs
-	userPhone := ""
-	if user.Phone != nil {
-		userPhone = *user.Phone
-	}
-	_, _ = h.onboardingJobService.CreateOnboardingJob(ctx, user.ID, user.Email, userPhone)
-
-	// Generate JWT tokens
-	tokens, err := auth.GenerateTokenPair(
-		user.ID,
-		user.Email,
-		"user",
-		h.cfg.JWT.Secret,
-		h.cfg.JWT.AccessTTL,
-		h.cfg.JWT.RefreshTTL,
-	)
+	tokens, err := auth.GenerateTokenPair(user.ID, user.Email, "user", h.cfg.JWT.Secret, h.cfg.JWT.AccessTTL, h.cfg.JWT.RefreshTTL)
 	if err != nil {
-		h.logger.Error("Failed to generate tokens after verification", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-			Code:    "TOKEN_GENERATION_FAILED",
-			Message: "Failed to generate authentication tokens",
-		})
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "TOKEN_GENERATION_FAILED", Message: "Failed to generate tokens"})
 		return
 	}
 
-	h.logger.Info("User created and verified", zap.String("user_id", user.ID.String()), zap.String("identifier", identifier))
-	c.JSON(http.StatusOK, entities.VerifyCodeResponse{
-		User: &entities.UserInfo{
-			ID:               user.ID,
-			Email:            user.Email,
-			Phone:            user.Phone,
-			EmailVerified:    user.EmailVerified,
-			PhoneVerified:    user.PhoneVerified,
-			OnboardingStatus: user.OnboardingStatus,
-			KYCStatus:        user.KYCStatus,
-			CreatedAt:        user.CreatedAt,
-		},
-		AccessToken:  tokens.AccessToken,
-		RefreshToken: tokens.RefreshToken,
-		ExpiresAt:    tokens.ExpiresAt,
-	})
+	h.logger.Info("User created and verified", zap.String("user_id", user.ID.String()))
+
+	response := gin.H{
+		"user":              &entities.UserInfo{ID: user.ID, Email: user.Email, Phone: user.Phone, EmailVerified: user.EmailVerified, PhoneVerified: user.PhoneVerified, OnboardingStatus: user.OnboardingStatus, KYCStatus: user.KYCStatus, CreatedAt: user.CreatedAt},
+		"accessToken":       tokens.AccessToken,
+		"refreshToken":      tokens.RefreshToken,
+		"expiresAt":         tokens.ExpiresAt,
+		"onboarding_status": user.OnboardingStatus,
+		"next_step":         "complete_profile",
+	}
+	if onboardingResp != nil {
+		response["onboarding"] = onboardingResp
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func (h *AuthHandlers) completeExistingUserVerification(c *gin.Context, ctx context.Context, identifier, identifierType string) {
+	if identifierType != "email" {
+		c.JSON(http.StatusNotFound, entities.ErrorResponse{Code: "USER_NOT_FOUND", Message: "User not found"})
+		return
+	}
+
+	user, err := h.userRepo.GetByEmail(ctx, identifier)
+	if err != nil || user == nil {
+		c.JSON(http.StatusNotFound, entities.ErrorResponse{Code: "USER_NOT_FOUND", Message: "User not found"})
+		return
+	}
+
+	user.EmailVerified = true
+	if err := h.userRepo.Update(ctx, user); err != nil {
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "VERIFY_FAILED", Message: "Failed to verify email"})
+		return
+	}
+
+	if h.onboardingService != nil {
+		_ = h.onboardingService.CompleteEmailVerification(ctx, user.ID)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Email verified successfully", "verified": true})
 }
 
 // ResendCode handles requests to resend a verification code
@@ -832,77 +800,14 @@ func (h *AuthHandlers) ResetPassword(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Password has been reset"})
 }
 
-// VerifyEmail handles email verification via verification code
-// This endpoint requires a valid verification code sent to the user's email
-// @Summary Verify email address
-// @Description Verify user's email using the verification code sent to their email
-// @Tags auth
-// @Accept json
+// GetProfile returns user profile with optional includes
+// @Summary Get current user profile
+// @Description Get user profile. Use ?include=onboarding,kyc for additional data
+// @Tags users
 // @Produce json
-// @Param request body entities.VerifyEmailRequest true "Email verification request with code"
-// @Success 200 {object} map[string]string
-// @Failure 400 {object} entities.ErrorResponse
-// @Failure 401 {object} entities.ErrorResponse
-// @Failure 404 {object} entities.ErrorResponse
-// @Failure 500 {object} entities.ErrorResponse
-// @Router /api/v1/auth/verify-email [post]
-func (h *AuthHandlers) VerifyEmail(c *gin.Context) {
-	ctx := c.Request.Context()
-
-	var req struct {
-		Email string `json:"email" binding:"required,email"`
-		Code  string `json:"code" binding:"required,len=6"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "INVALID_REQUEST",
-			Message: "Email and 6-digit verification code are required",
-			Details: map[string]interface{}{"error": err.Error()},
-		})
-		return
-	}
-
-	// Verify the code using the verification service
-	isValid, err := h.verificationService.VerifyCode(ctx, "email", req.Email, req.Code)
-	if err != nil || !isValid {
-		h.logger.Warn("Email verification code invalid or expired",
-			zap.Error(err),
-			zap.String("email", req.Email))
-		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
-			Code:    "INVALID_CODE",
-			Message: "Invalid or expired verification code",
-		})
-		return
-	}
-
-	// Find user by email
-	user, err := h.userRepo.GetByEmail(ctx, req.Email)
-	if err != nil {
-		c.JSON(http.StatusNotFound, entities.ErrorResponse{
-			Code:    "USER_NOT_FOUND",
-			Message: "User not found",
-		})
-		return
-	}
-
-	// Mark email as verified
-	user.EmailVerified = true
-	if err := h.userRepo.Update(ctx, user); err != nil {
-		h.logger.Error("Failed to update user email verification status",
-			zap.Error(err),
-			zap.String("email", req.Email))
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-			Code:    "VERIFY_FAILED",
-			Message: "Failed to verify email",
-		})
-		return
-	}
-
-	h.logger.Info("Email verified successfully", zap.String("email", req.Email))
-	c.JSON(http.StatusOK, gin.H{"message": "Email verified successfully"})
-}
-
-// GetProfile returns user profile
+// @Param include query string false "Comma-separated includes: onboarding,kyc"
+// @Success 200 {object} entities.UserInfo
+// @Router /api/v1/users/me [get]
 func (h *AuthHandlers) GetProfile(c *gin.Context) {
 	ctx := c.Request.Context()
 	userIDVal, exists := c.Get("user_id")
@@ -920,7 +825,35 @@ func (h *AuthHandlers) GetProfile(c *gin.Context) {
 		c.JSON(http.StatusNotFound, entities.ErrorResponse{Code: "USER_NOT_FOUND", Message: "User not found"})
 		return
 	}
-	c.JSON(http.StatusOK, user.ToUserInfo())
+
+	// Check for include param
+	includeParam := c.Query("include")
+	if includeParam == "" {
+		c.JSON(http.StatusOK, user.ToUserInfo())
+		return
+	}
+
+	includes := strings.Split(includeParam, ",")
+	response := gin.H{"user": user.ToUserInfo()}
+
+	for _, inc := range includes {
+		switch strings.TrimSpace(inc) {
+		case "onboarding":
+			if h.onboardingService != nil {
+				if status, err := h.onboardingService.GetOnboardingStatus(ctx, userID); err == nil {
+					response["onboarding"] = status
+				}
+			}
+		case "kyc":
+			if h.onboardingService != nil {
+				if kycStatus, err := h.onboardingService.GetKYCStatus(ctx, userID); err == nil {
+					response["kyc"] = kycStatus
+				}
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, response)
 }
 
 func (h *AuthHandlers) UpdateProfile(c *gin.Context) {
@@ -1129,228 +1062,19 @@ func (h *AuthHandlers) Disable2FA(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "2FA disabled successfully"})
 }
 
-
-
-// StartOnboarding handles POST /onboarding/start
-// @Summary Start user onboarding
-// @Description Initiates the onboarding process for a new user with email/phone verification
-// @Tags onboarding
-// @Accept json
-// @Produce json
-// @Param request body entities.OnboardingStartRequest true "Onboarding start data"
-// @Success 201 {object} entities.OnboardingStartResponse
-// @Failure 400 {object} entities.ErrorResponse
-// @Failure 409 {object} entities.ErrorResponse "User already exists"
-// @Failure 500 {object} entities.ErrorResponse
-// @Router /api/v1/onboarding/start [post]
-func (h *AuthHandlers) StartOnboarding(c *gin.Context) {
-	ctx := c.Request.Context()
-
-	h.logger.Info("Starting onboarding process",
-		zap.String("request_id", common.GetRequestID(c)),
-		zap.String("ip", c.ClientIP()))
-
-	var req entities.OnboardingStartRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		h.logger.Warn("Invalid request payload", zap.Error(err))
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "INVALID_REQUEST",
-			Message: "Invalid request payload",
-			Details: map[string]interface{}{"error": err.Error()},
-		})
-		return
-	}
-
-	// Validate request
-	if err := h.validator.Struct(req); err != nil {
-		h.logger.Warn("Request validation failed", zap.Error(err))
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "VALIDATION_ERROR",
-			Message: "Request validation failed",
-			Details: map[string]interface{}{"validation_errors": err.Error()},
-		})
-		return
-	}
-
-	// Process onboarding start
-	response, err := h.onboardingService.StartOnboarding(ctx, &req)
-	if err != nil {
-		h.logger.Error("Failed to start onboarding",
-			zap.Error(err),
-			zap.String("email", req.Email))
-
-		// Check for specific error types
-		if isUserAlreadyExistsError(err) {
-			c.JSON(http.StatusConflict, entities.ErrorResponse{
-				Code:    "USER_EXISTS",
-				Message: "User already exists with this email",
-				Details: map[string]interface{}{"email": req.Email},
-			})
-			return
-		}
-
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-			Code:    "ONBOARDING_FAILED",
-			Message: "Failed to start onboarding process",
-			Details: map[string]interface{}{"error": "Internal server error"},
-		})
-		return
-	}
-
-	h.logger.Info("Onboarding started successfully",
-		zap.String("user_id", response.UserID.String()),
-		zap.String("email", req.Email))
-
-	c.JSON(http.StatusCreated, response)
-}
-
-// GetOnboardingStatus handles GET /onboarding/status
-// @Summary Get onboarding status
-// @Description Returns the current onboarding status for the authenticated user
-// @Tags onboarding
-// @Produce json
-// @Param user_id query string false "User ID (for admin use)"
-// @Success 200 {object} entities.OnboardingStatusResponse
-// @Failure 400 {object} entities.ErrorResponse
-// @Failure 404 {object} entities.ErrorResponse "User not found"
-// @Failure 500 {object} entities.ErrorResponse
-// @Security BearerAuth
-// @Router /api/v1/onboarding/status [get]
-func (h *AuthHandlers) GetOnboardingStatus(c *gin.Context) {
-	ctx := c.Request.Context()
-
-	// Get user ID from authenticated context or query parameter
-	userID, err := common.GetUserIDFromContext(c)
-	if err != nil {
-		h.logger.Warn("Invalid or missing user ID", zap.Error(err))
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "INVALID_USER_ID",
-			Message: "Invalid or missing user ID",
-			Details: map[string]interface{}{"error": err.Error()},
-		})
-		return
-	}
-
-	h.logger.Debug("Getting onboarding status",
-		zap.String("user_id", userID.String()),
-		zap.String("request_id", common.GetRequestID(c)))
-
-	// Get onboarding status
-	response, err := h.onboardingService.GetOnboardingStatus(ctx, userID)
-	if err != nil {
-		h.logger.Error("Failed to get onboarding status",
-			zap.Error(err),
-			zap.String("user_id", userID.String()))
-
-		// Handle inactive account explicitly
-		if strings.Contains(strings.ToLower(err.Error()), "inactive") {
-			c.JSON(http.StatusForbidden, entities.ErrorResponse{
-				Code:    "USER_INACTIVE",
-				Message: "User account is inactive",
-				Details: map[string]interface{}{"user_id": userID.String()},
-			})
-			return
-		}
-
-		if common.IsUserNotFoundError(err) {
-			c.JSON(http.StatusNotFound, entities.ErrorResponse{
-				Code:    "USER_NOT_FOUND",
-				Message: "User not found",
-				Details: map[string]interface{}{"user_id": userID.String()},
-			})
-			return
-		}
-
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-			Code:    "STATUS_RETRIEVAL_FAILED",
-			Message: "Failed to retrieve onboarding status",
-			Details: map[string]interface{}{"error": "Internal server error"},
-		})
-		return
-	}
-
-	h.logger.Debug("Retrieved onboarding status successfully",
-		zap.String("user_id", userID.String()),
-		zap.String("status", string(response.OnboardingStatus)))
-
-	c.JSON(http.StatusOK, response)
-}
-
-// GetOnboardingProgress handles GET /onboarding/progress
-// @Summary Get onboarding progress
-// @Description Returns detailed progress information with checklist and completion percentage
-// @Tags onboarding
-// @Produce json
-// @Success 200 {object} entities.OnboardingProgressResponse
-// @Failure 400 {object} entities.ErrorResponse
-// @Failure 401 {object} entities.ErrorResponse
-// @Failure 500 {object} entities.ErrorResponse
-// @Security BearerAuth
-// @Router /api/v1/onboarding/progress [get]
-func (h *AuthHandlers) GetOnboardingProgress(c *gin.Context) {
-	ctx := c.Request.Context()
-
-	userID, err := common.GetUserIDFromContext(c)
-	if err != nil {
-		h.logger.Warn("Invalid or missing user ID for progress", zap.Error(err))
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "INVALID_USER_ID",
-			Message: "Invalid or missing user ID",
-		})
-		return
-	}
-
-	progress, err := h.onboardingService.GetOnboardingProgress(ctx, userID)
-	if err != nil {
-		h.logger.Error("Failed to get onboarding progress",
-			zap.Error(err),
-			zap.String("user_id", userID.String()))
-
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-			Code:    "PROGRESS_ERROR",
-			Message: "Failed to retrieve onboarding progress",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, progress)
-}
-
 // GetKYCStatus handles GET /kyc/status
-// @Summary Get KYC status
-// @Description Returns the user's current KYC verification status and guidance
-// @Tags onboarding
-// @Produce json
-// @Success 200 {object} entities.KYCStatusResponse
-// @Failure 400 {object} entities.ErrorResponse
-// @Failure 401 {object} entities.ErrorResponse
-// @Failure 500 {object} entities.ErrorResponse
-// @Security BearerAuth
-// @Router /api/v1/kyc/status [get]
 func (h *AuthHandlers) GetKYCStatus(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	userID, err := common.GetUserIDFromContext(c)
 	if err != nil {
-		h.logger.Warn("Invalid or missing user ID for KYC status", zap.Error(err))
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "INVALID_USER_ID",
-			Message: "Invalid or missing user ID",
-			Details: map[string]interface{}{"error": err.Error()},
-		})
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_USER_ID", Message: "Invalid or missing user ID"})
 		return
 	}
 
 	status, err := h.onboardingService.GetKYCStatus(ctx, userID)
 	if err != nil {
-		h.logger.Error("Failed to get KYC status",
-			zap.Error(err),
-			zap.String("user_id", userID.String()))
-
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-			Code:    "KYC_STATUS_ERROR",
-			Message: "Failed to retrieve KYC status",
-		})
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "KYC_STATUS_ERROR", Message: "Failed to retrieve KYC status"})
 		return
 	}
 
@@ -1654,72 +1378,49 @@ func (h *AuthHandlers) ProcessKYCCallback(c *gin.Context) {
 func (h *AuthHandlers) CompleteOnboarding(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	// Get user ID from authenticated context
 	userID, err := common.GetUserID(c)
 	if err != nil {
-		h.logger.Warn("Invalid or missing user ID", zap.Error(err))
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "INVALID_USER_ID",
-			Message: "Invalid or missing user ID",
-			Details: map[string]interface{}{"error": err.Error()},
-		})
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_USER_ID", Message: "Invalid or missing user ID"})
 		return
 	}
-
-	h.logger.Info("Completing onboarding",
-		zap.String("user_id", userID.String()),
-		zap.String("request_id", common.GetRequestID(c)))
 
 	var req entities.OnboardingCompleteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		h.logger.Warn("Invalid onboarding complete request payload", zap.Error(err))
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "INVALID_REQUEST",
-			Message: "Invalid request payload",
-			Details: map[string]interface{}{"error": err.Error()},
-		})
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "Invalid request payload"})
 		return
 	}
-
-	// Set user ID from authenticated context
 	req.UserID = userID
 
-	// Validate request
 	if err := h.validator.Struct(req); err != nil {
-		h.logger.Warn("Onboarding complete request validation failed", zap.Error(err))
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "VALIDATION_ERROR",
-			Message: "Request validation failed",
-			Details: map[string]interface{}{"validation_errors": err.Error()},
-		})
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "VALIDATION_ERROR", Message: "Request validation failed"})
 		return
 	}
 
-	// Complete onboarding
 	response, err := h.onboardingService.CompleteOnboarding(ctx, &req)
 	if err != nil {
-		h.logger.Error("Failed to complete onboarding",
-			zap.Error(err),
-			zap.String("user_id", req.UserID.String()),
-			zap.String("first_name", req.FirstName),
-			zap.String("last_name", req.LastName),
-			zap.String("country", req.Country),
-			zap.String("request_id", common.GetRequestID(c)))
-
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-			Code:    "ONBOARDING_COMPLETION_FAILED",
-			Message: "Failed to complete onboarding",
-			Details: map[string]interface{}{"error": "Internal server error"},
-		})
+		h.logger.Error("Failed to complete onboarding", zap.Error(err), zap.String("user_id", req.UserID.String()))
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "ONBOARDING_COMPLETION_FAILED", Message: "Failed to complete onboarding"})
 		return
 	}
 
-	h.logger.Info("Onboarding completed successfully",
-		zap.String("user_id", response.UserID.String()),
-		zap.String("bridge_customer_id", response.BridgeCustomerID),
-		zap.String("alpaca_account_id", response.AlpacaAccountID))
+	// Return full status so client doesn't need follow-up calls
+	fullResponse := gin.H{
+		"user_id":            response.UserID,
+		"bridge_customer_id": response.BridgeCustomerID,
+		"alpaca_account_id":  response.AlpacaAccountID,
+		"message":            response.Message,
+		"next_steps":         response.NextSteps,
+	}
 
-	c.JSON(http.StatusOK, response)
+	if onboardingStatus, err := h.onboardingService.GetOnboardingStatus(ctx, userID); err == nil {
+		fullResponse["onboarding"] = onboardingStatus
+	}
+	if kycStatus, err := h.onboardingService.GetKYCStatus(ctx, userID); err == nil {
+		fullResponse["kyc"] = kycStatus
+	}
+
+	h.logger.Info("Onboarding completed", zap.String("user_id", response.UserID.String()))
+	c.JSON(http.StatusOK, fullResponse)
 }
 
 // Helper methods

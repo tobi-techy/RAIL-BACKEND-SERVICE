@@ -154,44 +154,36 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	// API v1 routes
 	v1 := router.Group("/api/v1")
 	{
-		// Authentication routes (no auth required, no CSRF - API clients don't need CSRF protection)
+		// Authentication routes (no auth required)
 		auth := v1.Group("/auth")
 		{
 			auth.POST("/register", authHandlers.Register)
+			auth.POST("/verify", middleware.AuthRateLimit(5), authHandlers.Verify)
 			auth.POST("/refresh", authHandlers.RefreshToken)
 			auth.POST("/logout", authHandlers.Logout)
-			auth.POST("/verify-email", authHandlers.VerifyEmail)
 			auth.POST("/resend-code", authHandlers.ResendCode)
 
-			// Sensitive auth endpoints with stricter rate limiting (5 requests/minute)
-			// Protects against brute force attacks on credentials and verification codes
+			// Sensitive auth endpoints with stricter rate limiting
 			authRateLimited := auth.Group("/")
 			authRateLimited.Use(middleware.AuthRateLimit(5))
 			{
 				authRateLimited.POST("/login", authHandlers.Login)
-				authRateLimited.POST("/verify-code", authHandlers.VerifyCode)
 				authRateLimited.POST("/forgot-password", authHandlers.ForgotPassword)
 				authRateLimited.POST("/reset-password", authHandlers.ResetPassword)
 			}
 
-			// Social auth routes (no auth required)
+			// Social auth routes
 			authRateLimited.POST("/social/url", socialAuthHandlers.GetSocialAuthURL)
 			authRateLimited.POST("/social/login", socialAuthHandlers.SocialLogin)
-
-			// WebAuthn login (no auth required)
 			authRateLimited.POST("/webauthn/login/begin", socialAuthHandlers.BeginWebAuthnLogin)
 		}
 
-		// Onboarding routes - OpenAPI spec compliant (no CSRF for public start endpoint)
+		// Onboarding routes
 		onboarding := v1.Group("/onboarding")
 		{
-			onboarding.POST("/start", authHandlers.StartOnboarding)
-
 			authenticatedOnboarding := onboarding.Group("/")
 			authenticatedOnboarding.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator))
 			{
-				authenticatedOnboarding.GET("/status", authHandlers.GetOnboardingStatus)
-				authenticatedOnboarding.GET("/progress", authHandlers.GetOnboardingProgress)
 				authenticatedOnboarding.POST("/complete", authHandlers.CompleteOnboarding)
 				authenticatedOnboarding.POST("/kyc/submit", authHandlers.SubmitKYC)
 			}
