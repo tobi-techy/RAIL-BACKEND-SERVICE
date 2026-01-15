@@ -12,23 +12,25 @@ import (
 
 // Config holds all configuration for the application
 type Config struct {
-	Environment    string             `mapstructure:"environment"`
-	LogLevel       string             `mapstructure:"log_level"`
-	Server         ServerConfig       `mapstructure:"server"`
-	Database       DatabaseConfig     `mapstructure:"database"`
-	Redis          RedisConfig        `mapstructure:"redis"`
-	JWT            JWTConfig          `mapstructure:"jwt"`
-	Blockchain     BlockchainConfig   `mapstructure:"blockchain"`
-	Payment        PaymentConfig      `mapstructure:"payment"`
-	Security       SecurityConfig     `mapstructure:"security"`
-	Circle         CircleConfig       `mapstructure:"circle"`
-	KYC            KYCConfig          `mapstructure:"kyc"`
-	Email          EmailConfig        `mapstructure:"email"`
-	SMS            SMSConfig          `mapstructure:"sms"`
-	Notification   NotificationConfig `mapstructure:"notification"`
-	Verification   VerificationConfig `mapstructure:"verification"`
+	Environment    string               `mapstructure:"environment"`
+	LogLevel       string               `mapstructure:"log_level"`
+	Server         ServerConfig         `mapstructure:"server"`
+	Database       DatabaseConfig       `mapstructure:"database"`
+	Redis          RedisConfig          `mapstructure:"redis"`
+	JWT            JWTConfig            `mapstructure:"jwt"`
+	Blockchain     BlockchainConfig     `mapstructure:"blockchain"`
+	Payment        PaymentConfig        `mapstructure:"payment"`
+	Security       SecurityConfig       `mapstructure:"security"`
+	Circle         CircleConfig         `mapstructure:"circle"`
+	KYC            KYCConfig            `mapstructure:"kyc"`
+	Email          EmailConfig          `mapstructure:"email"`
+	SMS            SMSConfig            `mapstructure:"sms"`
+	Notification   NotificationConfig   `mapstructure:"notification"`
+	Verification   VerificationConfig   `mapstructure:"verification"`
 	Alpaca         AlpacaConfig         `mapstructure:"alpaca"`
 	Bridge         BridgeConfig         `mapstructure:"bridge"`
+	Grid           GridConfig           `mapstructure:"grid"`
+	CCTP           CCTPConfig           `mapstructure:"cctp"`
 	Workers        WorkerConfig         `mapstructure:"workers"`
 	Reconciliation ReconciliationConfig `mapstructure:"reconciliation"`
 	SocialAuth     SocialAuthConfig     `mapstructure:"social_auth"`
@@ -36,11 +38,23 @@ type Config struct {
 	AI             AIConfig             `mapstructure:"ai"`
 }
 
+// GridConfig contains Grid API configuration
+type GridConfig struct {
+	BaseURL string `mapstructure:"base_url"`
+	APIKey  string `mapstructure:"api_key"`
+}
+
+// CCTPConfig contains CCTP Iris API configuration
+type CCTPConfig struct {
+	BaseURL     string `mapstructure:"base_url"`
+	Environment string `mapstructure:"environment"` // "sandbox" or "mainnet"
+}
+
 // AIConfig contains AI provider configuration
 type AIConfig struct {
-	OpenAI  OpenAIConfig  `mapstructure:"openai"`
-	Gemini  GeminiConfig  `mapstructure:"gemini"`
-	Primary string        `mapstructure:"primary"` // "openai" or "gemini"
+	OpenAI  OpenAIConfig `mapstructure:"openai"`
+	Gemini  GeminiConfig `mapstructure:"gemini"`
+	Primary string       `mapstructure:"primary"` // "openai" or "gemini"
 }
 
 // OpenAIConfig contains OpenAI API configuration
@@ -158,24 +172,24 @@ type SecurityConfig struct {
 	RequireMFA        bool     `mapstructure:"require_mfa"`
 	PasswordMinLength int      `mapstructure:"password_min_length"`
 	SessionTimeout    int      `mapstructure:"session_timeout"`
-	
+
 	// Enhanced security settings
-	BcryptCost              int    `mapstructure:"bcrypt_cost"`               // bcrypt cost factor (12-14 recommended)
-	PasswordHistoryCount    int    `mapstructure:"password_history_count"`    // number of passwords to track
-	PasswordExpirationDays  int    `mapstructure:"password_expiration_days"`  // days until password expires (0=disabled)
-	AccessTokenTTL          int    `mapstructure:"access_token_ttl"`          // short-lived access token TTL in seconds
-	RefreshTokenTTL         int    `mapstructure:"refresh_token_ttl"`         // refresh token TTL in seconds
-	EnableTokenBlacklist    bool   `mapstructure:"enable_token_blacklist"`    // enable token revocation
-	CheckPasswordBreaches   bool   `mapstructure:"check_password_breaches"`   // check HaveIBeenPwned
-	CaptchaThreshold        int    `mapstructure:"captcha_threshold"`         // failed attempts before CAPTCHA
-	SecretsProvider         string `mapstructure:"secrets_provider"`          // "env", "aws_secrets_manager"
-	AWSSecretsRegion        string `mapstructure:"aws_secrets_region"`        // AWS region for Secrets Manager
-	AWSSecretsPrefix        string `mapstructure:"aws_secrets_prefix"`        // prefix for secret names
-	SecretRotationDays      int    `mapstructure:"secret_rotation_days"`      // days between secret rotations
-	
+	BcryptCost             int    `mapstructure:"bcrypt_cost"`              // bcrypt cost factor (12-14 recommended)
+	PasswordHistoryCount   int    `mapstructure:"password_history_count"`   // number of passwords to track
+	PasswordExpirationDays int    `mapstructure:"password_expiration_days"` // days until password expires (0=disabled)
+	AccessTokenTTL         int    `mapstructure:"access_token_ttl"`         // short-lived access token TTL in seconds
+	RefreshTokenTTL        int    `mapstructure:"refresh_token_ttl"`        // refresh token TTL in seconds
+	EnableTokenBlacklist   bool   `mapstructure:"enable_token_blacklist"`   // enable token revocation
+	CheckPasswordBreaches  bool   `mapstructure:"check_password_breaches"`  // check HaveIBeenPwned
+	CaptchaThreshold       int    `mapstructure:"captcha_threshold"`        // failed attempts before CAPTCHA
+	SecretsProvider        string `mapstructure:"secrets_provider"`         // "env", "aws_secrets_manager"
+	AWSSecretsRegion       string `mapstructure:"aws_secrets_region"`       // AWS region for Secrets Manager
+	AWSSecretsPrefix       string `mapstructure:"aws_secrets_prefix"`       // prefix for secret names
+	SecretRotationDays     int    `mapstructure:"secret_rotation_days"`     // days between secret rotations
+
 	// Admin creation security settings
-	AdminBootstrapToken    string `mapstructure:"admin_bootstrap_token"`     // Required token for first admin creation
-	DisableAdminCreation   bool   `mapstructure:"disable_admin_creation"`    // Completely disable admin creation endpoint
+	AdminBootstrapToken  string `mapstructure:"admin_bootstrap_token"`  // Required token for first admin creation
+	DisableAdminCreation bool   `mapstructure:"disable_admin_creation"` // Completely disable admin creation endpoint
 }
 
 type CircleConfig struct {
@@ -269,11 +283,11 @@ type AlpacaConfig struct {
 
 // ReconciliationConfig contains reconciliation service configuration
 type ReconciliationConfig struct {
-	Enabled              bool   `mapstructure:"enabled"`                // Enable/disable reconciliation
-	HourlyInterval       int    `mapstructure:"hourly_interval"`        // Interval in minutes for hourly runs
-	DailyRunTime         string `mapstructure:"daily_run_time"`         // Time of day for daily run (HH:MM format)
-	AutoCorrectLowSeverity bool `mapstructure:"auto_correct_low_severity"` // Auto-correct <$1 discrepancies
-	AlertWebhookURL      string `mapstructure:"alert_webhook_url"`      // Webhook URL for alerts
+	Enabled                bool   `mapstructure:"enabled"`                   // Enable/disable reconciliation
+	HourlyInterval         int    `mapstructure:"hourly_interval"`           // Interval in minutes for hourly runs
+	DailyRunTime           string `mapstructure:"daily_run_time"`            // Time of day for daily run (HH:MM format)
+	AutoCorrectLowSeverity bool   `mapstructure:"auto_correct_low_severity"` // Auto-correct <$1 discrepancies
+	AlertWebhookURL        string `mapstructure:"alert_webhook_url"`         // Webhook URL for alerts
 }
 
 // SocialAuthConfig contains OAuth provider configuration
@@ -291,10 +305,10 @@ type OAuthProviderConfig struct {
 
 // AppleOAuthProviderConfig contains Apple Sign-In specific configuration
 type AppleOAuthProviderConfig struct {
-	ClientID    string `mapstructure:"client_id"`    // Bundle ID or Services ID
-	TeamID      string `mapstructure:"team_id"`      // Apple Developer Team ID
-	KeyID       string `mapstructure:"key_id"`       // Key ID from Apple Developer Portal
-	PrivateKey  string `mapstructure:"private_key"`  // P8 private key content (base64 encoded)
+	ClientID    string `mapstructure:"client_id"`   // Bundle ID or Services ID
+	TeamID      string `mapstructure:"team_id"`     // Apple Developer Team ID
+	KeyID       string `mapstructure:"key_id"`      // Key ID from Apple Developer Portal
+	PrivateKey  string `mapstructure:"private_key"` // P8 private key content (base64 encoded)
 	RedirectURI string `mapstructure:"redirect_uri"`
 }
 
@@ -434,9 +448,9 @@ func setDefaults() {
 	viper.SetDefault("database.name", "stack_service")
 	viper.SetDefault("database.user", "postgres")
 	viper.SetDefault("database.ssl_mode", "disable")
-	viper.SetDefault("database.max_open_conns", 100)
-	viper.SetDefault("database.max_idle_conns", 25)
-	viper.SetDefault("database.conn_max_lifetime", 3600)
+	viper.SetDefault("database.max_open_conns", 25)      // Reduced for better resource management
+	viper.SetDefault("database.max_idle_conns", 5)       // Reduced to prevent connection churn
+	viper.SetDefault("database.conn_max_lifetime", 1800) // 30 minutes instead of 1 hour
 	viper.SetDefault("database.query_timeout", 30)
 	viper.SetDefault("database.max_retries", 3)
 
@@ -449,8 +463,8 @@ func setDefaults() {
 	viper.SetDefault("redis.pool_size", 10)
 
 	// JWT defaults
-	viper.SetDefault("jwt.access_token_ttl", 604800)   // 7 days
-	viper.SetDefault("jwt.refresh_token_ttl", 2592000) // 30 days
+	viper.SetDefault("jwt.access_token_ttl", 3600)   // 1 hour
+	viper.SetDefault("jwt.refresh_token_ttl", 86400) // 24 hours
 	viper.SetDefault("jwt.issuer", "stack_service")
 
 	// Security defaults
@@ -496,20 +510,20 @@ func setDefaults() {
 	viper.SetDefault("verification.rate_limit_per_hour", 3)
 
 	viper.SetDefault("security.session_timeout", 3600) // 1 hour
-	
+
 	// Enhanced security defaults
-	viper.SetDefault("security.bcrypt_cost", 12)                    // Increased from default 10
-	viper.SetDefault("security.password_history_count", 5)          // Track last 5 passwords
-	viper.SetDefault("security.password_expiration_days", 90)       // 90-day password expiration
-	viper.SetDefault("security.access_token_ttl", 900)              // 15 minutes (short-lived)
-	viper.SetDefault("security.refresh_token_ttl", 604800)          // 7 days
-	viper.SetDefault("security.enable_token_blacklist", true)       // Enable token revocation
-	viper.SetDefault("security.check_password_breaches", true)      // Check HaveIBeenPwned
-	viper.SetDefault("security.captcha_threshold", 3)               // CAPTCHA after 3 failed attempts
-	viper.SetDefault("security.secrets_provider", "env")            // Default to env vars
-	viper.SetDefault("security.aws_secrets_region", "us-east-1")    // Default AWS region
-	viper.SetDefault("security.aws_secrets_prefix", "rail/")        // Prefix for secrets
-	viper.SetDefault("security.secret_rotation_days", 90)           // 90-day rotation cycle
+	viper.SetDefault("security.bcrypt_cost", 12)                 // Increased from default 10
+	viper.SetDefault("security.password_history_count", 5)       // Track last 5 passwords
+	viper.SetDefault("security.password_expiration_days", 90)    // 90-day password expiration
+	viper.SetDefault("security.access_token_ttl", 900)           // 15 minutes (short-lived)
+	viper.SetDefault("security.refresh_token_ttl", 604800)       // 7 days
+	viper.SetDefault("security.enable_token_blacklist", true)    // Enable token revocation
+	viper.SetDefault("security.check_password_breaches", true)   // Check HaveIBeenPwned
+	viper.SetDefault("security.captcha_threshold", 3)            // CAPTCHA after 3 failed attempts
+	viper.SetDefault("security.secrets_provider", "env")         // Default to env vars
+	viper.SetDefault("security.aws_secrets_region", "us-east-1") // Default AWS region
+	viper.SetDefault("security.aws_secrets_prefix", "rail/")     // Prefix for secrets
+	viper.SetDefault("security.secret_rotation_days", 90)        // 90-day rotation cycle
 
 	// AI Provider defaults
 	viper.SetDefault("ai.primary", "openai")

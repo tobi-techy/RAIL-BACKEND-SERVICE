@@ -400,8 +400,8 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 		return nil, fmt.Errorf("failed to create Alpaca account: %w", err)
 	}
 
-	// Update user with account IDs (Bridge customer ID stored as DueAccountID for backward compatibility)
-	user.DueAccountID = &bridgeResp.AccountID
+	// Update user with account IDs
+	user.BridgeCustomerID = &bridgeResp.AccountID
 	user.AlpacaAccountID = &alpacaResp.ID
 	user.UpdatedAt = time.Now()
 
@@ -423,11 +423,11 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 		zap.String("alpaca_account_id", alpacaResp.ID))
 
 	return &entities.OnboardingCompleteResponse{
-		UserID:          req.UserID,
-		DueAccountID:    bridgeResp.AccountID, // Bridge customer ID
-		AlpacaAccountID: alpacaResp.ID,
-		Message:         "Accounts created successfully. Please create your passcode to continue.",
-		NextSteps:       []string{"create_passcode"},
+		UserID:           req.UserID,
+		BridgeCustomerID: bridgeResp.AccountID,
+		AlpacaAccountID:  alpacaResp.ID,
+		Message:          "Accounts created successfully. Please create your passcode to continue.",
+		NextSteps:        []string{"create_passcode"},
 	}, nil
 }
 

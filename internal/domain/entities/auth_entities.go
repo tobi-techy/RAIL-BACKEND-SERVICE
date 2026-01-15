@@ -141,10 +141,9 @@ type User struct {
 	KYCSubmittedAt     *time.Time       `json:"kycSubmittedAt" db:"kyc_submitted_at"`
 	KYCApprovedAt      *time.Time       `json:"kycApprovedAt" db:"kyc_approved_at"`
 	KYCRejectionReason *string          `json:"kycRejectionReason" db:"kyc_rejection_reason"`
-	DueAccountID       *string          `json:"dueAccountId" db:"due_account_id"`
-	DueKYCStatus       *string          `json:"dueKycStatus" db:"due_kyc_status"`
-	DueKYCLink         *string          `json:"dueKycLink" db:"due_kyc_link"`
 	BridgeCustomerID   *string          `json:"bridgeCustomerId" db:"bridge_customer_id"`
+	BridgeKYCStatus    *string          `json:"bridgeKycStatus" db:"bridge_kyc_status"`
+	BridgeKYCLink      *string          `json:"bridgeKycLink" db:"bridge_kyc_link"`
 	Role               string           `json:"role" db:"role"`
 	IsActive           bool             `json:"isActive" db:"is_active"`
 	LastLoginAt        *time.Time       `json:"lastLoginAt" db:"last_login_at"`

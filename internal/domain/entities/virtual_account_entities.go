@@ -20,7 +20,7 @@ const (
 type VirtualAccount struct {
 	ID              uuid.UUID            `json:"id" db:"id"`
 	UserID          uuid.UUID            `json:"user_id" db:"user_id"`
-	DueAccountID    string               `json:"due_account_id" db:"due_account_id"`
+	BridgeCustomerID string              `json:"bridge_customer_id" db:"bridge_customer_id"`
 	AlpacaAccountID string               `json:"alpaca_account_id" db:"alpaca_account_id"`
 	BridgeAccountID *string              `json:"bridge_account_id,omitempty" db:"bridge_account_id"`
 	AccountNumber   string               `json:"account_number" db:"account_number"`
@@ -43,7 +43,7 @@ type CreateVirtualAccountResponse struct {
 	Message        string          `json:"message"`
 }
 
-// CreateAccountRequest represents a request to create a Due account
+// CreateAccountRequest represents a request to create a Bridge account
 type CreateAccountRequest struct {
 	Email     string `json:"email" validate:"required,email"`
 	FirstName string `json:"firstName" validate:"required"`
@@ -52,7 +52,7 @@ type CreateAccountRequest struct {
 	Country   string `json:"country" validate:"required,len=2"`
 }
 
-// CreateAccountResponse represents the response from creating a Due account
+// CreateAccountResponse represents the response from creating a Bridge account
 type CreateAccountResponse struct {
 	AccountID string `json:"accountId"`
 	Status    string `json:"status"`

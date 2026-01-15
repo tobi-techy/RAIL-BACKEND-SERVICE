@@ -11,7 +11,7 @@ import (
 	"github.com/rail-service/rail_service/pkg/logger"
 )
 
-// BridgeMigrationService handles migration of virtual accounts from Due to Bridge
+// BridgeMigrationService handles migration of virtual accounts from legacy to Bridge
 type BridgeMigrationService struct {
 	bridgeClient       bridge.BridgeClient
 	virtualAccountRepo MigrationVirtualAccountRepository
@@ -21,7 +21,7 @@ type BridgeMigrationService struct {
 
 // MigrationVirtualAccountRepository defines repository operations for migration
 type MigrationVirtualAccountRepository interface {
-	GetDueAccountsForMigration(ctx context.Context, limit int) ([]*entities.VirtualAccount, error)
+	GetAccountsForMigration(ctx context.Context, limit int) ([]*entities.VirtualAccount, error)
 	UpdateBridgeAccountID(ctx context.Context, id uuid.UUID, bridgeAccountID string) error
 	Update(ctx context.Context, account *entities.VirtualAccount) error
 }
@@ -63,16 +63,16 @@ type MigrationError struct {
 	Error            string    `json:"error"`
 }
 
-// MigrateDueAccounts migrates Due virtual accounts to Bridge
+// MigrateAccounts migrates legacy virtual accounts to Bridge
 // This maintains both providers during transition
-func (s *BridgeMigrationService) MigrateDueAccounts(ctx context.Context, batchSize int) (*MigrationResult, error) {
+func (s *BridgeMigrationService) MigrateAccounts(ctx context.Context, batchSize int) (*MigrationResult, error) {
 	startTime := time.Now()
 	result := &MigrationResult{}
 
-	s.logger.Info("Starting Due to Bridge migration", "batch_size", batchSize)
+	s.logger.Info("Starting legacy to Bridge migration", "batch_size", batchSize)
 
 	// Get Due accounts that need migration (no Bridge account ID yet)
-	accounts, err := s.virtualAccountRepo.GetDueAccountsForMigration(ctx, batchSize)
+	accounts, err := s.virtualAccountRepo.GetAccountsForMigration(ctx, batchSize)
 	if err != nil {
 		return nil, fmt.Errorf("get accounts for migration: %w", err)
 	}
@@ -146,7 +146,7 @@ func (s *BridgeMigrationService) migrateAccount(ctx context.Context, account *en
 
 	s.logger.Info("Account migrated successfully",
 		"virtual_account_id", account.ID,
-		"due_account_id", account.DueAccountID,
+		"bridge_customer_id", account.BridgeCustomerID,
 		"bridge_account_id", bridgeVA.ID)
 
 	return nil
@@ -154,7 +154,7 @@ func (s *BridgeMigrationService) migrateAccount(ctx context.Context, account *en
 
 // GetMigrationStatus returns the current migration status
 func (s *BridgeMigrationService) GetMigrationStatus(ctx context.Context) (*MigrationStatus, error) {
-	accounts, err := s.virtualAccountRepo.GetDueAccountsForMigration(ctx, 10000)
+	accounts, err := s.virtualAccountRepo.GetAccountsForMigration(ctx, 10000)
 	if err != nil {
 		return nil, fmt.Errorf("get migration status: %w", err)
 	}

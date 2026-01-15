@@ -54,7 +54,7 @@ func (r *WithdrawalRepository) Create(ctx context.Context, withdrawal *entities.
 func (r *WithdrawalRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.Withdrawal, error) {
 	query := `
 		SELECT id, user_id, alpaca_account_id, amount, destination_chain, destination_address,
-			status, alpaca_journal_id, due_transfer_id, due_recipient_id, tx_hash, error_message,
+			status, alpaca_journal_id, bridge_transfer_id, bridge_recipient_id, tx_hash, error_message,
 			created_at, updated_at, completed_at
 		FROM withdrawals
 		WHERE id = $1
@@ -76,7 +76,7 @@ func (r *WithdrawalRepository) GetByID(ctx context.Context, id uuid.UUID) (*enti
 func (r *WithdrawalRepository) GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error) {
 	query := `
 		SELECT id, user_id, alpaca_account_id, amount, destination_chain, destination_address,
-			status, alpaca_journal_id, due_transfer_id, due_recipient_id, tx_hash, error_message,
+			status, alpaca_journal_id, bridge_transfer_id, bridge_recipient_id, tx_hash, error_message,
 			created_at, updated_at, completed_at
 		FROM withdrawals
 		WHERE user_id = $1
@@ -125,17 +125,17 @@ func (r *WithdrawalRepository) UpdateAlpacaJournal(ctx context.Context, id uuid.
 	return nil
 }
 
-// UpdateDueTransfer updates the Due transfer details
-func (r *WithdrawalRepository) UpdateDueTransfer(ctx context.Context, id uuid.UUID, transferID, recipientID string) error {
+// UpdateBridgeTransfer updates the Bridge transfer details
+func (r *WithdrawalRepository) UpdateBridgeTransfer(ctx context.Context, id uuid.UUID, transferID, recipientID string) error {
 	query := `
 		UPDATE withdrawals
-		SET due_transfer_id = $1, due_recipient_id = $2, status = $3, updated_at = $4
+		SET bridge_transfer_id = $1, bridge_recipient_id = $2, status = $3, updated_at = $4
 		WHERE id = $5
 	`
 
-	_, err := r.db.ExecContext(ctx, query, transferID, recipientID, entities.WithdrawalStatusDueProcessing, time.Now(), id)
+	_, err := r.db.ExecContext(ctx, query, transferID, recipientID, entities.WithdrawalStatusBridgeProcessing, time.Now(), id)
 	if err != nil {
-		return fmt.Errorf("failed to update due transfer: %w", err)
+		return fmt.Errorf("failed to update bridge transfer: %w", err)
 	}
 
 	return nil
