@@ -868,19 +868,23 @@ func (c *Container) initializeDomainServices() error {
 		)
 	}
 
-	// Initialize tiered rate limiter
+	// Initialize tiered rate limiter with configuration
+	endpointLimits := make(map[string]ratelimit.EndpointLimit)
+	for key, limit := range c.Config.RateLimit.EndpointLimits {
+		endpointLimits[key] = ratelimit.EndpointLimit{
+			Limit:  limit.Limit,
+			Window: time.Duration(limit.Window) * time.Second,
+		}
+	}
+
 	tieredConfig := ratelimit.TieredConfig{
-		GlobalLimit:  1000,
-		GlobalWindow: time.Minute,
-		IPLimit:      int64(c.Config.Server.RateLimitPerMin),
-		IPWindow:     time.Minute,
-		UserLimit:    200,
-		UserWindow:   time.Minute,
-		EndpointLimits: map[string]ratelimit.EndpointLimit{
-			"POST /api/v1/auth/login":       {Limit: 5, Window: 15 * time.Minute},
-			"POST /api/v1/auth/register":    {Limit: 3, Window: time.Hour},
-			"POST /api/v1/funding/withdraw": {Limit: 10, Window: time.Hour},
-		},
+		GlobalLimit:    c.Config.RateLimit.GlobalLimit,
+		GlobalWindow:   time.Duration(c.Config.RateLimit.GlobalWindow) * time.Second,
+		IPLimit:        c.Config.RateLimit.IPLimit,
+		IPWindow:       time.Duration(c.Config.RateLimit.IPWindow) * time.Second,
+		UserLimit:      c.Config.RateLimit.UserLimit,
+		UserWindow:     time.Duration(c.Config.RateLimit.UserWindow) * time.Second,
+		EndpointLimits: endpointLimits,
 	}
 	c.TieredRateLimiter = ratelimit.NewTieredLimiter(c.RedisClient.Client(), tieredConfig, c.ZapLog)
 	c.LoginAttemptTracker = ratelimit.NewLoginAttemptTracker(c.RedisClient.Client(), c.ZapLog)
@@ -1095,6 +1099,11 @@ func (c *Container) GetJWTService() *auth.JWTService {
 // GetTieredRateLimiter returns the tiered rate limiter
 func (c *Container) GetTieredRateLimiter() *ratelimit.TieredLimiter {
 	return c.TieredRateLimiter
+}
+
+// GetRateLimitConfig returns the rate limit configuration
+func (c *Container) GetRateLimitConfig() *config.RateLimitConfig {
+	return &c.Config.RateLimit
 }
 
 // GetLoginAttemptTracker returns the login attempt tracker
@@ -2028,7 +2037,14 @@ func (c *Container) GetAlpacaWebhookHandlers() *handlers.AlpacaWebhookHandlers {
 	if c.AlpacaEventProcessor == nil {
 		return nil
 	}
-	return handlers.NewAlpacaWebhookHandlers(c.AlpacaEventProcessor, c.Logger)
+	// Get webhook secret from config
+	webhookSecret := c.Config.Alpaca.WebhookSecret
+	if webhookSecret == "" {
+		c.ZapLog.Warn("Alpaca webhook secret not configured")
+	}
+	// Determine if webhook verification should be skipped (only in development)
+	skipWebhookVerification := c.Config.Environment == "development" && webhookSecret == ""
+	return handlers.NewAlpacaWebhookHandlers(c.AlpacaEventProcessor, c.Logger, webhookSecret, skipWebhookVerification)
 }
 
 // GetAnalyticsHandlers returns analytics handlers

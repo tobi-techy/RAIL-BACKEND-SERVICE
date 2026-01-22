@@ -13,14 +13,56 @@ server:
     - "http://localhost:3000"
     - "http://localhost:8080"
 
+# Distributed Rate Limiting Configuration
+# Uses Redis-backed sliding window algorithm for multi-instance rate limiting
+rate_limit:
+  enabled: true
+  global_limit: 10000          # Global requests per window (all instances combined)
+  global_window: 60            # Global window in seconds (1 minute)
+  ip_limit: 500                # Requests per IP per window
+  ip_window: 60                # IP window in seconds (1 minute)
+  user_limit: 200              # Requests per authenticated user per window
+  user_window: 60              # User window in seconds (1 minute)
+  key_prefix: "ratelimit"      # Redis key prefix for rate limiting
+  fail_open: true              # Allow requests if Redis is unavailable (false in production)
+  response_headers: true       # Include X-RateLimit headers in responses
+
+  # Endpoint-specific rate limits (overrides user_limit for specific endpoints)
+  # Format: endpoint_limits.METHOD:/api/v1/path.limit
+  endpoint_limits:
+    POST:/api/v1/auth/login:
+      limit: 5
+      window: 900              # 15 minutes
+    POST:/api/v1/auth/register:
+      limit: 3
+      window: 3600             # 1 hour
+    POST:/api/v1/funding/withdraw:
+      limit: 10
+      window: 3600             # 1 hour
+    POST:/api/v1/auth/forgot-password:
+      limit: 3
+      window: 3600             # 1 hour
+    POST:/api/v1/auth/reset-password:
+      limit: 5
+      window: 3600             # 1 hour
+    POST:/api/v1/auth/resend-code:
+      limit: 5
+      window: 900              # 15 minutes
+    GET:/api/v1/portfolio:
+      limit: 60
+      window: 60               # 1 minute
+    GET:/api/v1/balances:
+      limit: 60
+      window: 60               # 1 minute
+
 database:
-  url: ""
-  host: localhost
-  port: 5432
-  name: stack_service
-  user: postgres
-  password: postgres
-  ssl_mode: disable
+  url: "${DATABASE_URL:-}"
+  host: "${DATABASE_HOST:-localhost}"
+  port: ${DATABASE_PORT:-5432}
+  name: "${DATABASE_NAME:-rail_service}"
+  user: "${DATABASE_USER:-postgres}"
+  password: "${DATABASE_PASSWORD:-postgres}"
+  ssl_mode: "${DATABASE_SSL_MODE:-disable}"  # PRODUCTION: Use 'require' or 'verify-full'
   max_open_conns: 25
   max_idle_conns: 5
   conn_max_lifetime: 300
@@ -29,20 +71,32 @@ database:
   read_replicas: []
 
 redis:
-  host: localhost
-  port: 6379
-  password: ""
-  db: 0
-  cluster_mode: false
-  cluster_addrs: []
+  # Single node mode (development/staging)
+  host: "${REDIS_HOST:-localhost}"
+  port: ${REDIS_PORT:-6379}
+  password: "${REDIS_PASSWORD:-}"
+  db: ${REDIS_DB:-0}
+  # Cluster mode (production) - requires multiple Redis nodes
+  cluster_mode: ${REDIS_CLUSTER_MODE:-false}
+  cluster_addrs: ${REDIS_CLUSTER_ADDRS:-[]}  # Comma-separated list: "host1:port1,host2:port2"
   max_retries: 3
   pool_size: 10
+  # Connection pool settings for HA
+  max_idle_conns: 50
+  max_active_conns: 200
+  idle_timeout: 300  # 5 minutes
+  # Cluster configuration
+  route_randomly: true
+  route_by_latency: true
 
 jwt:
-  secret: "your-jwt-secret-key-change-in-production"
+  # CRITICAL SECURITY WARNING: This secret must be generated securely and never committed to version control
+  # Generate with: openssl rand -base64 32
+  # Minimum 32 characters required for HMAC-SHA256
+  secret: "${JWT_SECRET:-change-this-in-production-insecure-default}"  # MUST BE OVERRIDDEN IN PRODUCTION
   access_token_ttl: 900      # 15 minutes (short-lived for security)
   refresh_token_ttl: 604800  # 7 days
-  issuer: "stack_service"
+  issuer: "rail_service"
 
 security:
   mfa_grace_period_days: 7
@@ -54,11 +108,14 @@ security:
   fraud_review_threshold: 0.5
   incident_alert_webhook: ""
   auto_block_threshold: 20
-  encryption_key: "9foZ22ccMYtiFckFMoLRUdLQzm3bxKeE5eC8dlXOrHDPKGwTOxuEd0jTCTBPCveb"
+  # CRITICAL SECURITY WARNING: This key must be exactly 32 bytes for AES-256-GCM encryption
+  # Generate with: openssl rand -base64 32 | head -c 32
+  # NEVER commit this to version control or use default values in production
+  encryption_key: "${ENCRYPTION_KEY:-9foZ22ccMYtiFckFMoLRUdLQzm3bxKeE5eC8dlXOrHDPKGwTOxuEd0jTCTBPCveb}"  # MUST BE OVERRIDDEN IN PRODUCTION
   max_login_attempts: 5
   lockout_duration: 900
   require_mfa: false
-  password_min_length: 8
+  password_min_length: 12  # Changed from 8 to match security requirements
   session_timeout: 3600
   # Enhanced security settings
   bcrypt_cost: 12                    # Increased from default 10 for stronger hashing
@@ -120,13 +177,15 @@ verification:
   rate_limit_per_hour: 3
 
 alpaca:
-  client_id: "CAQ5K26YD7DGSJBUCLOT3L373B"
-  secret_key: "Avw9W3Xf35fr4gNLGg8umUi5mvgivFdSccCFq1fWSvHr"
-  base_url: "https://broker-api.sandbox.alpaca.markets"
-  data_base_url: "https://data.sandbox.alpaca.markets"
-  environment: "sandbox"
+  client_id: "${ALPACA_API_KEY}"
+  secret_key: "${ALPACA_API_SECRET}"
+  base_url: "${ALPACA_BASE_URL:-https://broker-api.sandbox.alpaca.markets}"
+  data_base_url: "${ALPACA_DATA_BASE_URL:-https://data.sandbox.alpaca.markets}"
+  environment: "${ALPACA_ENVIRONMENT:-sandbox}"
   timeout: 30
   auth_method: "oauth2"  # oauth2 or legacy
+  # Webhook signature verification secret (generate with: openssl rand -base64 32)
+  webhook_secret: "${ALPACA_WEBHOOK_SECRET:-}"
 
 bridge:
   api_key: "${BRIDGE_API_KEY}"

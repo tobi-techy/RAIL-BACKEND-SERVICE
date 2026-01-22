@@ -15,6 +15,7 @@ type Config struct {
 	Environment    string               `mapstructure:"environment"`
 	LogLevel       string               `mapstructure:"log_level"`
 	Server         ServerConfig         `mapstructure:"server"`
+	RateLimit      RateLimitConfig      `mapstructure:"rate_limit"`
 	Database       DatabaseConfig       `mapstructure:"database"`
 	Redis          RedisConfig          `mapstructure:"redis"`
 	JWT            JWTConfig            `mapstructure:"jwt"`
@@ -55,6 +56,27 @@ type AIConfig struct {
 	OpenAI  OpenAIConfig `mapstructure:"openai"`
 	Gemini  GeminiConfig `mapstructure:"gemini"`
 	Primary string       `mapstructure:"primary"` // "openai" or "gemini"
+}
+
+// RateLimitConfig contains distributed rate limiting configuration
+type RateLimitConfig struct {
+	Enabled         bool                           `mapstructure:"enabled"`
+	GlobalLimit     int64                          `mapstructure:"global_limit"`
+	GlobalWindow    int                            `mapstructure:"global_window"` // Window in seconds
+	IPLimit         int64                          `mapstructure:"ip_limit"`
+	IPWindow        int                            `mapstructure:"ip_window"` // Window in seconds
+	UserLimit       int64                          `mapstructure:"user_limit"`
+	UserWindow      int                            `mapstructure:"user_window"` // Window in seconds
+	EndpointLimits  map[string]EndpointLimitConfig `mapstructure:"endpoint_limits"`
+	KeyPrefix       string                         `mapstructure:"key_prefix"`
+	FailOpen        bool                           `mapstructure:"fail_open"` // Allow requests if Redis is unavailable
+	ResponseHeaders bool                           `mapstructure:"response_headers"`
+}
+
+// EndpointLimitConfig contains rate limit for a specific endpoint
+type EndpointLimitConfig struct {
+	Limit  int64 `mapstructure:"limit"`
+	Window int   `mapstructure:"window"` // Window in seconds
 }
 
 // OpenAIConfig contains OpenAI API configuration
@@ -102,14 +124,19 @@ type DatabaseConfig struct {
 }
 
 type RedisConfig struct {
-	Host         string   `mapstructure:"host"`
-	Port         int      `mapstructure:"port"`
-	Password     string   `mapstructure:"password"`
-	DB           int      `mapstructure:"db"`
-	ClusterMode  bool     `mapstructure:"cluster_mode"`
-	ClusterAddrs []string `mapstructure:"cluster_addrs"`
-	MaxRetries   int      `mapstructure:"max_retries"`
-	PoolSize     int      `mapstructure:"pool_size"`
+	Host           string   `mapstructure:"host"`
+	Port           int      `mapstructure:"port"`
+	Password       string   `mapstructure:"password"`
+	DB             int      `mapstructure:"db"`
+	ClusterMode    bool     `mapstructure:"cluster_mode"`
+	ClusterAddrs   []string `mapstructure:"cluster_addrs"`
+	MaxRetries     int      `mapstructure:"max_retries"`
+	PoolSize       int      `mapstructure:"pool_size"`
+	MaxIdleConns   int      `mapstructure:"max_idle_conns"`
+	MaxActiveConns int      `mapstructure:"max_active_conns"`
+	IdleTimeout    int      `mapstructure:"idle_timeout"`
+	RouteRandomly  bool     `mapstructure:"route_randomly"`
+	RouteByLatency bool     `mapstructure:"route_by_latency"`
 }
 
 type JWTConfig struct {
@@ -279,6 +306,7 @@ type AlpacaConfig struct {
 	Environment   string `mapstructure:"environment"`     // sandbox or production
 	Timeout       int    `mapstructure:"timeout"`         // Request timeout in seconds
 	FirmAccountNo string `mapstructure:"firm_account_no"` // Firm account for instant funding
+	WebhookSecret string `mapstructure:"webhook_secret"`  // Secret for verifying Alpaca webhooks
 }
 
 // ReconciliationConfig contains reconciliation service configuration
@@ -564,6 +592,43 @@ func setDefaults() {
 	// Worker defaults
 	viper.SetDefault("workers.count", 10)
 	viper.SetDefault("workers.job_timeout", 300)
+
+	// Rate limiting defaults
+	viper.SetDefault("rate_limit.enabled", true)
+	viper.SetDefault("rate_limit.global_limit", 10000)
+	viper.SetDefault("rate_limit.global_window", 60) // 1 minute
+	viper.SetDefault("rate_limit.ip_limit", 500)
+	viper.SetDefault("rate_limit.ip_window", 60) // 1 minute
+	viper.SetDefault("rate_limit.user_limit", 200)
+	viper.SetDefault("rate_limit.user_window", 60) // 1 minute
+	viper.SetDefault("rate_limit.key_prefix", "ratelimit")
+	viper.SetDefault("rate_limit.fail_open", true)
+	viper.SetDefault("rate_limit.response_headers", true)
+
+	// Endpoint-specific rate limits (per minute)
+	viper.SetDefault("rate_limit.endpoint_limits.POST:/api/v1/auth/login.limit", 5)
+	viper.SetDefault("rate_limit.endpoint_limits.POST:/api/v1/auth/login.window", 900) // 15 minutes
+
+	viper.SetDefault("rate_limit.endpoint_limits.POST:/api/v1/auth/register.limit", 3)
+	viper.SetDefault("rate_limit.endpoint_limits.POST:/api/v1/auth/register.window", 3600) // 1 hour
+
+	viper.SetDefault("rate_limit.endpoint_limits.POST:/api/v1/funding/withdraw.limit", 10)
+	viper.SetDefault("rate_limit.endpoint_limits.POST:/api/v1/funding/withdraw.window", 3600) // 1 hour
+
+	viper.SetDefault("rate_limit.endpoint_limits.POST:/api/v1/auth/forgot-password.limit", 3)
+	viper.SetDefault("rate_limit.endpoint_limits.POST:/api/v1/auth/forgot-password.window", 3600) // 1 hour
+
+	viper.SetDefault("rate_limit.endpoint_limits.POST:/api/v1/auth/reset-password.limit", 5)
+	viper.SetDefault("rate_limit.endpoint_limits.POST:/api/v1/auth/reset-password.window", 3600) // 1 hour
+
+	viper.SetDefault("rate_limit.endpoint_limits.POST:/api/v1/auth/resend-code.limit", 5)
+	viper.SetDefault("rate_limit.endpoint_limits.POST:/api/v1/auth/resend-code.window", 900) // 15 minutes
+
+	viper.SetDefault("rate_limit.endpoint_limits.GET:/api/v1/portfolio.limit", 60)
+	viper.SetDefault("rate_limit.endpoint_limits.GET:/api/v1/portfolio.window", 60) // 1 minute
+
+	viper.SetDefault("rate_limit.endpoint_limits.GET:/api/v1/balances.limit", 60)
+	viper.SetDefault("rate_limit.endpoint_limits.GET:/api/v1/balances.window", 60) // 1 minute
 }
 
 func overrideFromEnv() {
@@ -750,6 +815,9 @@ func overrideFromEnv() {
 	}
 	if alpacaEnvironment := os.Getenv("ALPACA_ENVIRONMENT"); alpacaEnvironment != "" {
 		viper.Set("alpaca.environment", alpacaEnvironment)
+	}
+	if alpacaWebhookSecret := os.Getenv("ALPACA_WEBHOOK_SECRET"); alpacaWebhookSecret != "" {
+		viper.Set("alpaca.webhook_secret", alpacaWebhookSecret)
 	}
 
 	// Bridge API

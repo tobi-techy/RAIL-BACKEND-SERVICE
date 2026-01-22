@@ -15,6 +15,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
+	"github.com/rail-service/rail_service/pkg/ratelimit"
 	"github.com/rail-service/rail_service/pkg/tracing"
 )
 
@@ -63,7 +64,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	router.Use(middleware.Logger(container.Logger))
 	router.Use(middleware.Recovery(container.Logger))
 	router.Use(middleware.CORS(container.Config.Server.AllowedOrigins))
-	router.Use(middleware.RateLimit(container.Config.Server.RateLimitPerMin))
+	router.Use(createRateLimitMiddleware(container))
 	router.Use(middleware.SecurityHeaders())
 	router.Use(middleware.APIVersionMiddleware(container.Config.Server.SupportedVersions))
 	router.Use(middleware.PaginationMiddleware())
@@ -615,4 +616,17 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	// ZeroG and dedicated AI-CFO HTTP routes have been removed.
 
 	return router
+}
+
+func createDistributedRateLimiter(container *di.Container) *ratelimit.DistributedRateLimiter {
+	rateLimitConfig := container.GetRateLimitConfig()
+
+	limiter := container.GetTieredRateLimiter()
+
+	return ratelimit.NewDistributedRateLimiter(limiter, *rateLimitConfig, container.Logger.Zap())
+}
+
+func createRateLimitMiddleware(container *di.Container) gin.HandlerFunc {
+	distributedRL := createDistributedRateLimiter(container)
+	return distributedRL.Middleware()
 }
