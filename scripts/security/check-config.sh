@@ -7,7 +7,7 @@
 # and warns about default/insecure values before deployment.
 #
 # Usage: ./scripts/security/check-config.sh [environment]
-#   environment: development, staging, production (default: current ENVIRONMENT value)
+#   environment: development, staging, production (default: current ORIGINAL_ENVIRONMENT value)
 # ============================================================================
 
 # Don't exit on error - we want to check all issues
@@ -20,11 +20,14 @@ GREEN='\033[0;32m'
 NC='\033[0m' # No Color
 
 # Default environment
-ENVIRONMENT="${1:-${ENVIRONMENT:-development}}"
+ORIGINAL_ENVIRONMENT="${1:-${ORIGINAL_ENVIRONMENT:-development}}"
+
+# Save original environment to prevent .env from overriding
+ORIGINAL_ORIGINAL_ENVIRONMENT="$ORIGINAL_ENVIRONMENT"
 
 echo "========================================="
 echo "RAIL Backend Security Configuration Check"
-echo "Environment: ${ENVIRONMENT}"
+echo "Environment: ${ORIGINAL_ENVIRONMENT}"
 echo "========================================="
 echo ""
 
@@ -68,7 +71,7 @@ echo "1. Checking Database Security..."
 echo "----------------------------------------"
 
 # Check SSL mode for production
-if [ "$ENVIRONMENT" = "production" ]; then
+if [ "$ORIGINAL_ORIGINAL_ENVIRONMENT" = "production" ]; then
     if [[ "$DATABASE_URL" != *"sslmode=require"* ]] && [[ "$DATABASE_URL" != *"sslmode=verify-ca"* ]] && [[ "$DATABASE_URL" != *"sslmode=verify-full"* ]]; then
         error "Database SSL is not enabled in production. DATABASE_URL must use sslmode=require or stricter"
     else
@@ -76,7 +79,7 @@ if [ "$ENVIRONMENT" = "production" ]; then
     fi
 else
     if [[ "$DATABASE_URL" == *"sslmode=disable"* ]]; then
-        warning "Database SSL is disabled (acceptable for $ENVIRONMENT)"
+        warning "Database SSL is disabled (acceptable for $ORIGINAL_ORIGINAL_ENVIRONMENT)"
     else
         success "Database SSL mode: $(safe_extract "$DATABASE_URL" 'sslmode=[^&]*')"
     fi
@@ -89,10 +92,10 @@ echo "----------------------------------------"
 # Check JWT_SECRET
 if [ "$JWT_SECRET" = "your-super-secret-jwt-key-change-in-production-min-32-chars" ] || \
    [ "$JWT_SECRET" = "" ]; then
-    if [ "$ENVIRONMENT" = "production" ]; then
+    if [ "$ORIGINAL_ENVIRONMENT" = "production" ]; then
         error "JWT_SECRET is using default value or is empty"
     else
-        warning "JWT_SECRET is using default value (acceptable for $ENVIRONMENT, change before deployment)"
+        warning "JWT_SECRET is using default value (acceptable for $ORIGINAL_ENVIRONMENT, change before deployment)"
     fi
 else
     JWT_LENGTH=${#JWT_SECRET}
@@ -106,10 +109,10 @@ fi
 # Check ENCRYPTION_KEY
 if [ "$ENCRYPTION_KEY" = "your-32-byte-encryption-key-!!" ] || \
    [ "$ENCRYPTION_KEY" = "" ]; then
-    if [ "$ENVIRONMENT" = "production" ]; then
+    if [ "$ORIGINAL_ENVIRONMENT" = "production" ]; then
         error "ENCRYPTION_KEY is using default value or is empty"
     else
-        warning "ENCRYPTION_KEY is using default value (acceptable for $ENVIRONMENT, change before deployment)"
+        warning "ENCRYPTION_KEY is using default value (acceptable for $ORIGINAL_ENVIRONMENT, change before deployment)"
     fi
 else
     ENC_LENGTH=${#ENCRYPTION_KEY}
@@ -127,7 +130,7 @@ echo "----------------------------------------"
 # Check password minimum length
 PASSWORD_MIN_LENGTH=${PASSWORD_MIN_LENGTH:-8}
 if [ "$PASSWORD_MIN_LENGTH" -lt 12 ]; then
-    if [ "$ENVIRONMENT" = "production" ]; then
+    if [ "$ORIGINAL_ENVIRONMENT" = "production" ]; then
         error "Password minimum length is less than 12 (currently: $PASSWORD_MIN_LENGTH)"
     else
         warning "Password minimum length is $PASSWORD_MIN_LENGTH (recommended: 12)"
@@ -141,7 +144,7 @@ echo "4. Checking External API Keys..."
 echo "----------------------------------------"
 
 # Check for missing API keys in production
-if [ "$ENVIRONMENT" = "production" ]; then
+if [ "$ORIGINAL_ENVIRONMENT" = "production" ]; then
     MISSING_KEYS=()
 
     [ -z "$CIRCLE_API_KEY" ] && MISSING_KEYS+=("CIRCLE_API_KEY")
@@ -157,7 +160,7 @@ if [ "$ENVIRONMENT" = "production" ]; then
         success "All required API keys are set"
     fi
 else
-    success "API key check skipped for $ENVIRONMENT"
+    success "API key check skipped for $ORIGINAL_ENVIRONMENT"
 fi
 
 echo ""
@@ -165,7 +168,7 @@ echo "5. Checking Environment Flags..."
 echo "----------------------------------------"
 
 # Check debug mode
-if [ "$ENVIRONMENT" = "production" ]; then
+if [ "$ORIGINAL_ENVIRONMENT" = "production" ]; then
     if [ "$DEBUG_MODE" = "true" ]; then
         error "DEBUG_MODE is enabled in production"
     else
@@ -184,7 +187,7 @@ if [ "$ENVIRONMENT" = "production" ]; then
         success "pprof is disabled"
     fi
 else
-    success "Debug flags check skipped for $ENVIRONMENT"
+    success "Debug flags check skipped for $ORIGINAL_ENVIRONMENT"
 fi
 
 echo ""
