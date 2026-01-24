@@ -419,6 +419,15 @@ type Container struct {
 	JWTService          *auth.JWTService
 	TieredRateLimiter   *ratelimit.TieredLimiter
 	LoginAttemptTracker *ratelimit.LoginAttemptTracker
+
+	// Device-Bound JWT (Priority 1)
+	DeviceSessionRepo     *repositories.DeviceSessionRepository
+	DeviceBindingAuditRepo *repositories.DeviceBindingAuditRepository
+	DeviceBoundJWTService *auth.DeviceBoundJWTService
+
+	// Adaptive Rate Limiting (Priority 3)
+	RiskScoringEngine   *ratelimit.RiskScoringEngine
+	AdaptiveRateLimiter *ratelimit.AdaptiveRateLimiter
 }
 
 // NewContainer creates a new dependency injection container
@@ -888,6 +897,40 @@ func (c *Container) initializeDomainServices() error {
 	}
 	c.TieredRateLimiter = ratelimit.NewTieredLimiter(c.RedisClient.Client(), tieredConfig, c.ZapLog)
 	c.LoginAttemptTracker = ratelimit.NewLoginAttemptTracker(c.RedisClient.Client(), c.ZapLog)
+
+	// Initialize Device-Bound JWT (Priority 1)
+	if c.Config.Security.DeviceBinding.Enabled {
+		sqlxDB := sqlx.NewDb(c.DB, "postgres")
+		c.DeviceSessionRepo = repositories.NewDeviceSessionRepository(sqlxDB)
+		c.DeviceBindingAuditRepo = repositories.NewDeviceBindingAuditRepository(sqlxDB)
+		c.DeviceBoundJWTService = auth.NewDeviceBoundJWTService(
+			c.JWTService,
+			c.DeviceSessionRepo,
+			c.DeviceBindingAuditRepo,
+			auth.DeviceBindingConfig{
+				Enabled:               c.Config.Security.DeviceBinding.Enabled,
+				MaxConcurrentSessions: c.Config.Security.DeviceBinding.MaxConcurrentSessions,
+				SessionTTL:            time.Duration(c.Config.Security.DeviceBinding.SessionTTLHours) * time.Hour,
+				StrictValidation:      c.Config.Security.DeviceBinding.StrictValidation,
+			},
+			c.ZapLog,
+		)
+	}
+
+	// Initialize Adaptive Rate Limiter (Priority 3)
+	if c.Config.Security.AdaptiveRateLimit.Enabled {
+		c.RiskScoringEngine = ratelimit.NewRiskScoringEngine(
+			c.RedisClient.Client(),
+			ratelimit.DefaultRiskWeights(),
+			c.ZapLog,
+		)
+		c.AdaptiveRateLimiter = ratelimit.NewAdaptiveRateLimiter(
+			c.RedisClient.Client(),
+			c.RiskScoringEngine,
+			ratelimit.DefaultAdaptiveConfig(),
+			c.ZapLog,
+		)
+	}
 
 	// Wire limits and audit services to funding service
 	c.FundingService.SetLimitsService(c.LimitsService)

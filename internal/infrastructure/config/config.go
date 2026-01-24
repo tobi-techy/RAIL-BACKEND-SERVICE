@@ -108,19 +108,32 @@ type ServerConfig struct {
 }
 
 type DatabaseConfig struct {
-	URL             string   `mapstructure:"url"`
-	Host            string   `mapstructure:"host"`
-	Port            int      `mapstructure:"port"`
-	Name            string   `mapstructure:"name"`
-	User            string   `mapstructure:"user"`
-	Password        string   `mapstructure:"password"`
-	SSLMode         string   `mapstructure:"ssl_mode"`
-	MaxOpenConns    int      `mapstructure:"max_open_conns"`
-	MaxIdleConns    int      `mapstructure:"max_idle_conns"`
-	ConnMaxLifetime int      `mapstructure:"conn_max_lifetime"`
-	QueryTimeout    int      `mapstructure:"query_timeout"`
-	MaxRetries      int      `mapstructure:"max_retries"`
-	ReadReplicas    []string `mapstructure:"read_replicas"`
+	URL             string              `mapstructure:"url"`
+	Host            string              `mapstructure:"host"`
+	Port            int                 `mapstructure:"port"`
+	Name            string              `mapstructure:"name"`
+	User            string              `mapstructure:"user"`
+	Password        string              `mapstructure:"password"`
+	SSLMode         string              `mapstructure:"ssl_mode"`
+	MaxOpenConns    int                 `mapstructure:"max_open_conns"`
+	MaxIdleConns    int                 `mapstructure:"max_idle_conns"`
+	ConnMaxLifetime int                 `mapstructure:"conn_max_lifetime"`
+	QueryTimeout    int                 `mapstructure:"query_timeout"`
+	MaxRetries      int                 `mapstructure:"max_retries"`
+	ReadReplicas    []ReadReplicaConfig `mapstructure:"read_replicas"`
+
+	// Multi-region failover configuration
+	PrimaryRegion   string `mapstructure:"primary_region"`
+	FailoverEnabled bool   `mapstructure:"failover_enabled"`
+}
+
+type ReadReplicaConfig struct {
+	Region string `mapstructure:"region"`
+	Host   string `mapstructure:"host"`
+	Port   int    `mapstructure:"port"`
+	Name   string `mapstructure:"name"`
+	User   string `mapstructure:"user"`
+	Weight int    `mapstructure:"weight"` // Traffic distribution weight (0-100)
 }
 
 type RedisConfig struct {
@@ -217,6 +230,36 @@ type SecurityConfig struct {
 	// Admin creation security settings
 	AdminBootstrapToken  string `mapstructure:"admin_bootstrap_token"`  // Required token for first admin creation
 	DisableAdminCreation bool   `mapstructure:"disable_admin_creation"` // Completely disable admin creation endpoint
+
+	// Device binding settings
+	DeviceBinding DeviceBindingConfig `mapstructure:"device_binding"`
+
+	// Webhook replay protection
+	WebhookReplay WebhookReplayConfig `mapstructure:"webhook_replay"`
+
+	// Adaptive rate limiting
+	AdaptiveRateLimit AdaptiveRateLimitConfig `mapstructure:"adaptive_rate_limit"`
+}
+
+// DeviceBindingConfig for device-bound JWT tokens
+type DeviceBindingConfig struct {
+	Enabled               bool `mapstructure:"enabled"`
+	MaxConcurrentSessions int  `mapstructure:"max_concurrent_sessions"`
+	SessionTTLHours       int  `mapstructure:"session_ttl_hours"`
+	StrictValidation      bool `mapstructure:"strict_validation"`
+}
+
+// WebhookReplayConfig for webhook replay protection
+type WebhookReplayConfig struct {
+	Enabled         bool `mapstructure:"enabled"`
+	WindowSeconds   int  `mapstructure:"window_seconds"`
+	MaxNonceAgeSecs int  `mapstructure:"max_nonce_age_seconds"`
+}
+
+// AdaptiveRateLimitConfig for risk-based rate limiting
+type AdaptiveRateLimitConfig struct {
+	Enabled           bool `mapstructure:"enabled"`
+	EnableRiskScoring bool `mapstructure:"enable_risk_scoring"`
 }
 
 type CircleConfig struct {
@@ -552,6 +595,21 @@ func setDefaults() {
 	viper.SetDefault("security.aws_secrets_region", "us-east-1") // Default AWS region
 	viper.SetDefault("security.aws_secrets_prefix", "rail/")     // Prefix for secrets
 	viper.SetDefault("security.secret_rotation_days", 90)        // 90-day rotation cycle
+
+	// Device binding defaults
+	viper.SetDefault("security.device_binding.enabled", true)
+	viper.SetDefault("security.device_binding.max_concurrent_sessions", 3)
+	viper.SetDefault("security.device_binding.session_ttl_hours", 24)
+	viper.SetDefault("security.device_binding.strict_validation", true)
+
+	// Webhook replay protection defaults
+	viper.SetDefault("security.webhook_replay.enabled", true)
+	viper.SetDefault("security.webhook_replay.window_seconds", 300)
+	viper.SetDefault("security.webhook_replay.max_nonce_age_seconds", 300)
+
+	// Adaptive rate limiting defaults
+	viper.SetDefault("security.adaptive_rate_limit.enabled", true)
+	viper.SetDefault("security.adaptive_rate_limit.enable_risk_scoring", true)
 
 	// AI Provider defaults
 	viper.SetDefault("ai.primary", "openai")
