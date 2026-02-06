@@ -1,7 +1,7 @@
 meta {
   name: Create Virtual Account
   type: http
-  seq: 1
+  seq: 3
 }
 
 post {
@@ -16,15 +16,6 @@ auth:bearer {
 
 body:json {
   {
-    "currency": "USD"
+    "alpaca_account_id": "{{alpacaAccountId}}"
   }
-}
-
-docs {
-  # Create Virtual Account (USD/GBP)
-  
-  Per PRD Epic 2: Virtual Accounts for bank transfers
-  - Supports USD and GBP currencies
-  - Dedicated virtual account for fiat deposits
-  - Powered by Bridge integration
 }

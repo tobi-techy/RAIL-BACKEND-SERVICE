@@ -1,7 +1,7 @@
 meta {
-  name: Chain Deposit Webhook (Crypto)
+  name: Chain Deposit
   type: http
-  seq: 2
+  seq: 1
 }
 
 post {
@@ -12,19 +12,6 @@ post {
 
 body:json {
   {
-    "chain": "ethereum",
-    "tx_hash": "0x123...",
-    "from_address": "0xabc...",
-    "to_address": "0xdef...",
-    "amount": "100.00",
-    "token": "USDC",
-    "confirmations": 12
+    "event": "test"
   }
-}
-
-docs {
-  # Chain Deposit Webhook
-  
-  Receives USDC deposit notifications from blockchain monitors.
-  Triggers automatic 70/30 split on confirmation.
 }

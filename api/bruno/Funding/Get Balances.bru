@@ -1,7 +1,7 @@
 meta {
   name: Get Balances
   type: http
-  seq: 3
+  seq: 5
 }
 
 get {
@@ -12,16 +12,4 @@ get {
 
 auth:bearer {
   token: {{accessToken}}
-}
-
-docs {
-  # Get User Balances
-  
-  Per PRD Epic 3: Real-time balance with 99.9% accuracy
-  
-  Returns:
-  - Total balance
-  - Spend balance (70%)
-  - Invest balance (30%)
-  - Available for spending
 }

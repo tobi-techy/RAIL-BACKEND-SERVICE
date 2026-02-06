@@ -1,0 +1,17 @@
+meta {
+  name: Alpaca NTA Webhook
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/webhooks/alpaca/nta
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "event": "test"
+  }
+}

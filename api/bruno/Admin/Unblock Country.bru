@@ -1,0 +1,15 @@
+meta {
+  name: Unblock Country
+  type: http
+  seq: 11
+}
+
+delete {
+  url: {{baseUrl}}/api/{{apiVersion}}/admin/security/blocked-countries/{{countryCode}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

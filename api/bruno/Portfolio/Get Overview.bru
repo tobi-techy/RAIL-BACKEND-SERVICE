@@ -1,5 +1,5 @@
 meta {
-  name: Get Portfolio Overview
+  name: Get Overview
   type: http
   seq: 1
 }
@@ -12,12 +12,4 @@ get {
 
 auth:bearer {
   token: {{accessToken}}
-}
-
-docs {
-  # Get Portfolio Overview
-  
-  Per PRD Epic 5: Users don't see individual trades or assets.
-  
-  Returns high-level portfolio summary without asset details.
 }

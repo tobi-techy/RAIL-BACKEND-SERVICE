@@ -17,8 +17,9 @@ type RegisterRequest struct {
 
 // LoginRequest represents a user login request
 type LoginRequest struct {
-	Email    string `json:"email" validate:"required,email"`
-	Password string `json:"password" validate:"required"`
+	Email    *string `json:"email,omitempty" validate:"omitempty,email"`
+	Phone    *string `json:"phone,omitempty" validate:"omitempty,e164"`
+	Password string  `json:"password" validate:"required"`
 }
 
 // AuthResponse represents the response after successful authentication
@@ -75,11 +76,10 @@ type ChangePasswordRequest struct {
 	NewPassword     string `json:"newPassword" validate:"required,min=8"`
 }
 
-// SignUpRequest represents a user signup request with email OR phone
+// SignUpRequest represents a user signup request with email OR phone (no password - password set during onboarding)
 type SignUpRequest struct {
-	Email    *string `json:"email,omitempty" validate:"omitempty,email"`
-	Phone    *string `json:"phone,omitempty" validate:"omitempty,e164"`
-	Password string  `json:"password" validate:"required,min=8"`
+	Email *string `json:"email,omitempty" validate:"omitempty,email"`
+	Phone *string `json:"phone,omitempty" validate:"omitempty,e164"`
 }
 
 // VerifyCodeRequest represents a verification code request
@@ -105,11 +105,10 @@ type VerificationCodeData struct {
 
 // PendingRegistration stores registration data in Redis until email/phone is verified
 type PendingRegistration struct {
-	Email        string    `json:"email,omitempty"`
-	Phone        string    `json:"phone,omitempty"`
-	PasswordHash string    `json:"password_hash"`
-	CreatedAt    time.Time `json:"created_at"`
-	ExpiresAt    time.Time `json:"expires_at"`
+	Email     string    `json:"email,omitempty"`
+	Phone     string    `json:"phone,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // SignUpResponse represents the response after successful signup

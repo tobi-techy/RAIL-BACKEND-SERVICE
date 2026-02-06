@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/rail-service/rail_service/internal/api/handlers"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
@@ -146,23 +147,26 @@ func testEmailSignupFlow(t *testing.T, router *gin.Engine, redisClient cache.Red
 	}
 
 	signupBody, _ := json.Marshal(signupReq)
-	req := httptest.NewRequest("POST", "/api/v1/auth/signup", bytes.NewBuffer(signupBody))
+	req := httptest.NewRequest("POST", "/api/v1/auth/register", bytes.NewBuffer(signupBody))
 	req.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, http.StatusAccepted, w.Code)
 
 	var signupResp entities.SignUpResponse
 	err := json.Unmarshal(w.Body.Bytes(), &signupResp)
 	require.NoError(t, err)
-	assert.Equal(t, "Verification code sent", signupResp.Message)
-	assert.Contains(t, signupResp.Identifier, "***")
+	assert.Contains(t, signupResp.Identifier, "test@example.com")
+
+	// Request verification code explicitly
+	sendReq := entities.ResendCodeRequest{Email: stringPtr("test@example.com")}
+	requestVerificationCode(t, router, sendReq)
 
 	// Step 2: Verify code (get the actual code from Redis)
 	ctx := context.Background()
-	key := fmt.Sprintf("verify:email:%s", "test@example.com")
+	key := fmt.Sprintf("verification:email:%s", "test@example.com")
 
 	var codeData entities.VerificationCodeData
 	err = redisClient.GetJSON(ctx, key, &codeData)
@@ -174,7 +178,7 @@ func testEmailSignupFlow(t *testing.T, router *gin.Engine, redisClient cache.Red
 	}
 
 	verifyBody, _ := json.Marshal(verifyReq)
-	req = httptest.NewRequest("POST", "/api/v1/auth/verify-code", bytes.NewBuffer(verifyBody))
+	req = httptest.NewRequest("POST", "/api/v1/auth/verify", bytes.NewBuffer(verifyBody))
 	req.Header.Set("Content-Type", "application/json")
 
 	w = httptest.NewRecorder()
@@ -198,25 +202,24 @@ func testPhoneSignupFlow(t *testing.T, router *gin.Engine, redisClient cache.Red
 	}
 
 	signupBody, _ := json.Marshal(signupReq)
-	req := httptest.NewRequest("POST", "/api/v1/auth/signup", bytes.NewBuffer(signupBody))
+	req := httptest.NewRequest("POST", "/api/v1/auth/register", bytes.NewBuffer(signupBody))
 	req.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, http.StatusAccepted, w.Code)
 
-	var signupResp entities.SignUpResponse
-	err := json.Unmarshal(w.Body.Bytes(), &signupResp)
-	require.NoError(t, err)
-	assert.Equal(t, "Verification code sent", signupResp.Message)
+	// Request verification code
+	sendReq := entities.ResendCodeRequest{Phone: stringPtr("+1234567890")}
+	requestVerificationCode(t, router, sendReq)
 
 	// Step 2: Verify code
 	ctx := context.Background()
-	key := fmt.Sprintf("verify:phone:%s", "+1234567890")
+	key := fmt.Sprintf("verification:phone:%s", "+1234567890")
 
 	var codeData entities.VerificationCodeData
-	err = redisClient.GetJSON(ctx, key, &codeData)
+	err := redisClient.GetJSON(ctx, key, &codeData)
 	require.NoError(t, err)
 
 	verifyReq := entities.VerifyCodeRequest{
@@ -225,7 +228,7 @@ func testPhoneSignupFlow(t *testing.T, router *gin.Engine, redisClient cache.Red
 	}
 
 	verifyBody, _ := json.Marshal(verifyReq)
-	req = httptest.NewRequest("POST", "/api/v1/auth/verify-code", bytes.NewBuffer(verifyBody))
+	req = httptest.NewRequest("POST", "/api/v1/auth/verify", bytes.NewBuffer(verifyBody))
 	req.Header.Set("Content-Type", "application/json")
 
 	w = httptest.NewRecorder()
@@ -243,24 +246,31 @@ func testPhoneSignupFlow(t *testing.T, router *gin.Engine, redisClient cache.Red
 func testRateLimiting(t *testing.T, router *gin.Engine, redisClient cache.RedisClient) {
 	email := "ratelimit@example.com"
 
-	// Send multiple signup requests to trigger rate limiting
-	for i := 0; i < 4; i++ {
-		signupReq := entities.SignUpRequest{
-			Email:    stringPtr(email),
-			Password: "password123",
-		}
+	// Register once
+	signupReq := entities.SignUpRequest{
+		Email:    stringPtr(email),
+		Password: "password123",
+	}
+	signupBody, _ := json.Marshal(signupReq)
+	req := httptest.NewRequest("POST", "/api/v1/auth/register", bytes.NewBuffer(signupBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusAccepted, w.Code)
 
-		signupBody, _ := json.Marshal(signupReq)
-		req := httptest.NewRequest("POST", "/api/v1/auth/signup", bytes.NewBuffer(signupBody))
+	// Request verification code repeatedly to trigger resend rate limiting
+	for i := 0; i < 6; i++ {
+		sendReq := entities.ResendCodeRequest{Email: stringPtr(email)}
+		body, _ := json.Marshal(sendReq)
+		req := httptest.NewRequest("POST", "/api/v1/auth/resend-code", bytes.NewBuffer(body))
 		req.Header.Set("Content-Type", "application/json")
 
-		w := httptest.NewRecorder()
+		w = httptest.NewRecorder()
 		router.ServeHTTP(w, req)
 
-		if i < 3 {
-			assert.Equal(t, http.StatusOK, w.Code)
+		if i < 5 {
+			assert.Equal(t, http.StatusAccepted, w.Code)
 		} else {
-			// Fourth request should be rate limited
 			assert.Equal(t, http.StatusTooManyRequests, w.Code)
 		}
 	}
@@ -274,12 +284,14 @@ func testInvalidVerificationCode(t *testing.T, router *gin.Engine, redisClient c
 	}
 
 	signupBody, _ := json.Marshal(signupReq)
-	req := httptest.NewRequest("POST", "/api/v1/auth/signup", bytes.NewBuffer(signupBody))
+	req := httptest.NewRequest("POST", "/api/v1/auth/register", bytes.NewBuffer(signupBody))
 	req.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
-	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, http.StatusAccepted, w.Code)
+
+	requestVerificationCode(t, router, entities.ResendCodeRequest{Email: stringPtr("invalid@example.com")})
 
 	// Try to verify with invalid code
 	verifyReq := entities.VerifyCodeRequest{
@@ -288,7 +300,7 @@ func testInvalidVerificationCode(t *testing.T, router *gin.Engine, redisClient c
 	}
 
 	verifyBody, _ := json.Marshal(verifyReq)
-	req = httptest.NewRequest("POST", "/api/v1/auth/verify-code", bytes.NewBuffer(verifyBody))
+	req = httptest.NewRequest("POST", "/api/v1/auth/verify", bytes.NewBuffer(verifyBody))
 	req.Header.Set("Content-Type", "application/json")
 
 	w = httptest.NewRecorder()
@@ -308,34 +320,39 @@ func stringPtr(s string) *string {
 }
 
 func setupTestRouter(container *di.Container) *gin.Engine {
-	// This would be similar to the main router setup
-	// For now, return a basic router with the auth endpoints
 	router := gin.New()
 
-	// Add auth routes
+	authHandlers := handlers.NewAuthHandlers(
+		container.DB,
+		container.Config,
+		container.ZapLog,
+		*container.UserRepo,
+		container.GetVerificationService(),
+		container.GetOnboardingService(),
+		container.EmailService,
+		container.KYCProvider,
+		container.GetSessionService(),
+		container.GetTwoFAService(),
+		container.RedisClient,
+	)
+
 	auth := router.Group("/api/v1/auth")
 	{
-		auth.POST("/signup", handlers.SignUp(
-			container.DB,
-			container.Config,
-			container.Logger,
-			container.GetVerificationService(),
-			container.GetOnboardingJobService(),
-		))
-		auth.POST("/verify-code", handlers.VerifyCode(
-			container.DB,
-			container.Config,
-			container.Logger,
-			container.GetVerificationService(),
-			container.GetOnboardingJobService(),
-		))
-		auth.POST("/resend-code", handlers.ResendCode(
-			container.DB,
-			container.Config,
-			container.Logger,
-			container.GetVerificationService(),
-		))
+		auth.POST("/register", authHandlers.Register)
+		auth.POST("/verify", authHandlers.Verify)
+		auth.POST("/resend-code", authHandlers.ResendCode)
 	}
 
 	return router
+}
+
+func requestVerificationCode(t *testing.T, router *gin.Engine, reqBody entities.ResendCodeRequest) {
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/api/v1/auth/resend-code", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusAccepted, w.Code)
 }

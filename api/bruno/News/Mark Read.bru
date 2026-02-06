@@ -1,0 +1,23 @@
+meta {
+  name: Mark Read
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/news/read
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "ids": [
+      "news-id"
+    ]
+  }
+}

@@ -23,11 +23,16 @@ const (
 // StationResponse represents the home screen data
 // Per PRD: "Total balance, Spend balance, Invest balance, System status"
 type StationResponse struct {
-	TotalBalance   string       `json:"total_balance"`
-	SpendBalance   string       `json:"spend_balance"`
-	InvestBalance  string       `json:"invest_balance"`
-	SystemStatus   SystemStatus `json:"system_status"`
-	AllocationMode *AllocationModeInfo `json:"allocation_mode,omitempty"`
+	TotalBalance             string              `json:"total_balance"`
+	SpendBalance             string              `json:"spend_balance"`
+	InvestBalance            string              `json:"invest_balance"`
+	Currency                 string              `json:"currency"`
+	PendingAmount            string              `json:"pending_amount"`
+	PendingTransactionsCount int                 `json:"pending_transactions_count"`
+	SystemStatus             SystemStatus        `json:"system_status"`
+	SystemStatusMessage      string              `json:"system_status_message,omitempty"`
+	LastActivityAt           string              `json:"last_activity_at,omitempty"`
+	AllocationMode           *AllocationModeInfo `json:"allocation_mode,omitempty"`
 }
 
 // AllocationModeInfo provides allocation mode details
@@ -42,6 +47,7 @@ type StationService interface {
 	GetUserBalances(ctx context.Context, userID uuid.UUID) (*station.Balances, error)
 	GetAllocationMode(ctx context.Context, userID uuid.UUID) (*entities.SmartAllocationMode, error)
 	HasPendingDeposits(ctx context.Context, userID uuid.UUID) (bool, error)
+	GetPendingInfo(ctx context.Context, userID uuid.UUID) (int, error)
 }
 
 // StationHandlers handles station/home screen endpoints
@@ -105,21 +111,31 @@ func (h *StationHandlers) GetStation(c *gin.Context) {
 	mode, err := h.stationService.GetAllocationMode(ctx, userID)
 	if err != nil {
 		h.logger.Warn("Failed to get allocation mode", zap.Error(err), zap.String("user_id", userID.String()))
-		// Don't fail - continue with nil mode
+	}
+
+	// Get pending info
+	pendingCount, err := h.stationService.GetPendingInfo(ctx, userID)
+	if err != nil {
+		h.logger.Warn("Failed to get pending info", zap.Error(err))
+		pendingCount = 0
 	}
 
 	// Determine system status
-	systemStatus := h.determineSystemStatus(ctx, userID, mode)
+	systemStatus, statusMessage := h.determineSystemStatus(ctx, userID, mode)
 
 	// Build response
 	response := StationResponse{
-		TotalBalance:  balances.TotalBalance.StringFixed(2),
-		SpendBalance:  balances.SpendingBalance.StringFixed(2),
-		InvestBalance: balances.StashBalance.StringFixed(2),
-		SystemStatus:  systemStatus,
+		TotalBalance:             balances.TotalBalance.StringFixed(2),
+		SpendBalance:             balances.SpendingBalance.StringFixed(2),
+		InvestBalance:            balances.StashBalance.StringFixed(2),
+		Currency:                 "USD",
+		PendingAmount:            balances.PendingAmount.StringFixed(2),
+		PendingTransactionsCount: pendingCount,
+		SystemStatus:             systemStatus,
+		SystemStatusMessage:      statusMessage,
 	}
 
-	// Add allocation mode info if active
+	// Add allocation mode info if available
 	if mode != nil {
 		response.AllocationMode = &AllocationModeInfo{
 			Active:        mode.Active,
@@ -131,24 +147,23 @@ func (h *StationHandlers) GetStation(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// determineSystemStatus determines the current system status
-func (h *StationHandlers) determineSystemStatus(ctx context.Context, userID uuid.UUID, mode *entities.SmartAllocationMode) SystemStatus {
+// determineSystemStatus determines the current system status and message
+func (h *StationHandlers) determineSystemStatus(ctx context.Context, userID uuid.UUID, mode *entities.SmartAllocationMode) (SystemStatus, string) {
 	// Check if allocation mode is paused
 	if mode != nil && !mode.Active {
-		return SystemStatusPaused
+		return SystemStatusPaused, "Allocation mode is paused"
 	}
 
 	// Check for pending deposits (allocating state)
 	hasPending, err := h.stationService.HasPendingDeposits(ctx, userID)
 	if err != nil {
 		h.logger.Warn("Failed to check pending deposits", zap.Error(err))
-		// Default to active on error
-		return SystemStatusActive
+		return SystemStatusActive, "All systems operational"
 	}
 
 	if hasPending {
-		return SystemStatusAllocating
+		return SystemStatusAllocating, "Processing pending transactions"
 	}
 
-	return SystemStatusActive
+	return SystemStatusActive, "All systems operational"
 }

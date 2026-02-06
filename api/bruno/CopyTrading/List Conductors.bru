@@ -13,21 +13,3 @@ get {
 auth:bearer {
   token: {{accessToken}}
 }
-
-query {
-  page: 1
-  page_size: 20
-  sort_by: followers
-}
-
-docs {
-  # List Conductors
-  
-  Per PRD Epic 8: Browse Conductors and their Tracks.
-  
-  Sort options:
-  - followers (default)
-  - return
-  - aum
-  - win_rate
-}

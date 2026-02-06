@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
@@ -195,17 +196,30 @@ func LoginProtection(loginService *security.LoginProtectionService, logger *zap.
 			return
 		}
 
-		// Get identifier (email) from request
+		// Get identifier (email/phone) from request
 		var req struct {
-			Email string `json:"email"`
+			Email *string `json:"email"`
+			Phone *string `json:"phone"`
 		}
-		if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil || req.Email == "" {
+		if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil {
+			c.Next()
+			return
+		}
+
+		identifier := ""
+		if req.Email != nil && strings.TrimSpace(*req.Email) != "" {
+			identifier = strings.TrimSpace(*req.Email)
+		} else if req.Phone != nil && strings.TrimSpace(*req.Phone) != "" {
+			identifier = strings.TrimSpace(*req.Phone)
+		}
+
+		if identifier == "" {
 			c.Next()
 			return
 		}
 
 		// Check if login is allowed
-		result, err := loginService.CheckLoginAllowed(c.Request.Context(), req.Email)
+		result, err := loginService.CheckLoginAllowed(c.Request.Context(), identifier)
 		if err != nil {
 			logger.Error("Login protection check failed", zap.Error(err))
 			c.Next()
@@ -214,7 +228,7 @@ func LoginProtection(loginService *security.LoginProtectionService, logger *zap.
 
 		if !result.Allowed {
 			logger.Warn("Login blocked - account locked",
-				zap.String("email", req.Email),
+				zap.String("email", identifier),
 				zap.String("ip", c.ClientIP()))
 
 			c.JSON(http.StatusTooManyRequests, gin.H{
@@ -229,7 +243,10 @@ func LoginProtection(loginService *security.LoginProtectionService, logger *zap.
 
 		// Store service in context for post-login handling
 		c.Set("login_protection", loginService)
-		c.Set("login_email", req.Email)
+		c.Set("login_identifier", identifier)
+		if req.Email != nil && strings.TrimSpace(*req.Email) != "" {
+			c.Set("login_email", strings.TrimSpace(*req.Email))
+		}
 
 		c.Next()
 	}

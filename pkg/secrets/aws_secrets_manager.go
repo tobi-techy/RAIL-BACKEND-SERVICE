@@ -12,13 +12,19 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 )
 
+// cachedSecret represents a cached secret value with expiration
+type cachedSecret struct {
+	value     string
+	expiresAt time.Time
+}
+
 // AWSSecretsManagerProvider implements Provider using AWS Secrets Manager
 type AWSSecretsManagerProvider struct {
-	client    *secretsmanager.Client
-	prefix    string
-	cache     map[string]cachedSecret
-	cacheMu   sync.RWMutex
-	cacheTTL  time.Duration
+	client   *secretsmanager.Client
+	prefix   string
+	cache    map[string]cachedSecret
+	cacheMu  sync.RWMutex
+	cacheTTL time.Duration
 }
 
 // NewAWSSecretsManagerProvider creates a new AWS Secrets Manager provider
@@ -73,7 +79,7 @@ func (p *AWSSecretsManagerProvider) GetSecret(ctx context.Context, key string) (
 
 func (p *AWSSecretsManagerProvider) SetSecret(ctx context.Context, key, value string) error {
 	secretName := p.prefix + key
-	
+
 	// Try to update existing secret first
 	_, err := p.client.PutSecretValue(ctx, &secretsmanager.PutSecretValueInput{
 		SecretId:     aws.String(secretName),
@@ -100,7 +106,7 @@ func (p *AWSSecretsManagerProvider) SetSecret(ctx context.Context, key, value st
 
 func (p *AWSSecretsManagerProvider) DeleteSecret(ctx context.Context, key string) error {
 	secretName := p.prefix + key
-	
+
 	_, err := p.client.DeleteSecret(ctx, &secretsmanager.DeleteSecretInput{
 		SecretId:                   aws.String(secretName),
 		ForceDeleteWithoutRecovery: aws.Bool(false),
@@ -120,12 +126,12 @@ func (p *AWSSecretsManagerProvider) DeleteSecret(ctx context.Context, key string
 // RotateSecret rotates a secret with a new value
 func (p *AWSSecretsManagerProvider) RotateSecret(ctx context.Context, key string, newValue string) error {
 	secretName := p.prefix + key
-	
+
 	// Create new version with staging label
 	_, err := p.client.PutSecretValue(ctx, &secretsmanager.PutSecretValueInput{
-		SecretId:           aws.String(secretName),
-		SecretString:       aws.String(newValue),
-		VersionStages:      []string{"AWSPENDING"},
+		SecretId:      aws.String(secretName),
+		SecretString:  aws.String(newValue),
+		VersionStages: []string{"AWSPENDING"},
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create pending secret version: %w", err)

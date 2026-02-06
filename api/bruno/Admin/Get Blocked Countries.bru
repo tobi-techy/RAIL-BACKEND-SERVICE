@@ -1,0 +1,15 @@
+meta {
+  name: Get Blocked Countries
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/admin/security/blocked-countries
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

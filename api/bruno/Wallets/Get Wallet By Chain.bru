@@ -1,0 +1,15 @@
+meta {
+  name: Get Wallet By Chain
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/wallets/{{chain}}/address
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

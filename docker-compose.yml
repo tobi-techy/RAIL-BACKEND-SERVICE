@@ -11,7 +11,8 @@ services:
       - ENVIRONMENT=development
       - DATABASE_URL=postgres://postgres:postgres@db:5432/rail_service_dev?sslmode=disable
       - REDIS_HOST=redis
-      - JWT_SECRET=${JWT_SECRET:-development-jwt-secret-key-change-in-production}
+      - REDIS_PASSWORD=
+      - JWT_SECRET=OHaBIojXokB99wJXpJXlNAiaZgm3yNpuBv/pwasCDi0=
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:-development-encryption-key-32-byte!}
     depends_on:
       db:

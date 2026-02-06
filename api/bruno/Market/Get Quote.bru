@@ -1,0 +1,11 @@
+meta {
+  name: Get Quote
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/market/quote/{{symbol}}
+  body: none
+  auth: none
+}

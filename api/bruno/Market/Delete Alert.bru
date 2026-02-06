@@ -1,0 +1,15 @@
+meta {
+  name: Delete Alert
+  type: http
+  seq: 6
+}
+
+delete {
+  url: {{baseUrl}}/api/{{apiVersion}}/market/alerts/{{alertId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

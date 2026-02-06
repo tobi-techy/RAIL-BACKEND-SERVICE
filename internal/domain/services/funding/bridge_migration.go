@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/pkg/logger"
 )
 
@@ -49,11 +49,11 @@ func NewBridgeMigrationService(
 
 // MigrationResult represents the result of a migration batch
 type MigrationResult struct {
-	TotalProcessed int                `json:"total_processed"`
-	Successful     int                `json:"successful"`
-	Failed         int                `json:"failed"`
-	Errors         []MigrationError   `json:"errors,omitempty"`
-	Duration       time.Duration      `json:"duration"`
+	TotalProcessed int              `json:"total_processed"`
+	Successful     int              `json:"successful"`
+	Failed         int              `json:"failed"`
+	Errors         []MigrationError `json:"errors,omitempty"`
+	Duration       time.Duration    `json:"duration"`
 }
 
 // MigrationError represents a single migration failure
@@ -127,7 +127,7 @@ func (s *BridgeMigrationService) migrateAccount(ctx context.Context, account *en
 		},
 		Destination: bridge.VirtualAccountDestination{
 			Currency:    bridge.CurrencyUSDC,
-			PaymentRail: bridge.PaymentRailEthereum, // Default to Ethereum
+			PaymentRail: bridge.PaymentRailSolana, // Solana-only support
 		},
 	}
 

@@ -1,0 +1,21 @@
+meta {
+  name: Sync
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/mobile/sync
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "lastSyncAt": "2025-01-01T00:00:00Z"
+  }
+}

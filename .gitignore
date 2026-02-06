@@ -32,6 +32,7 @@ go.work
 .env.*.local
 *.env
 !.env.example
+# CRITICAL: Never commit environment files with actual secrets
 
 # Security sensitive files
 *.key
@@ -40,6 +41,15 @@ go.work
 *.pfx
 *secret*
 *credentials*
+.secrets.baseline  # Generated file, not to be tracked
+
+# Additional secret patterns
+*.aes
+*.enc
+.creds
+credentials.json
+secrets.yaml
+secrets.yml
 
 # IDE
 .vscode/

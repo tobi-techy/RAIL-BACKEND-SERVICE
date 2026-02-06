@@ -1,0 +1,23 @@
+meta {
+  name: Update Passcode
+  type: http
+  seq: 3
+}
+
+put {
+  url: {{baseUrl}}/api/{{apiVersion}}/security/passcode
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "currentPasscode": "123456",
+    "newPasscode": "654321",
+    "confirmPasscode": "654321"
+  }
+}

@@ -1,0 +1,24 @@
+meta {
+  name: Process Transaction
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/roundups/transactions
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "amount": "12.34",
+    "source_type": "card",
+    "source_ref": "tx_12345",
+    "merchant_name": "Test Store"
+  }
+}

@@ -72,9 +72,6 @@ func CSRFProtection(store *CSRFStore) gin.HandlerFunc {
 		}
 
 		token := c.GetHeader("X-CSRF-Token")
-		if token == "" {
-			token = c.PostForm("csrf_token")
-		}
 
 		if token == "" || !store.Validate(token) {
 			c.JSON(http.StatusForbidden, gin.H{

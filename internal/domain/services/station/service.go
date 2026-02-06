@@ -5,16 +5,18 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
 // Balances represents user balance data for the Station
 type Balances struct {
-	SpendingBalance decimal.Decimal
-	StashBalance    decimal.Decimal
-	TotalBalance    decimal.Decimal
+	SpendingBalance          decimal.Decimal
+	StashBalance             decimal.Decimal
+	TotalBalance             decimal.Decimal
+	PendingAmount            decimal.Decimal
+	PendingTransactionsCount int
 }
 
 // LedgerService interface for balance retrieval
@@ -100,4 +102,13 @@ func (s *Service) HasPendingDeposits(ctx context.Context, userID uuid.UUID) (boo
 		return false, fmt.Errorf("failed to count pending deposits: %w", err)
 	}
 	return count > 0, nil
+}
+
+// GetPendingInfo retrieves pending transaction count
+func (s *Service) GetPendingInfo(ctx context.Context, userID uuid.UUID) (int, error) {
+	count, err := s.depositRepo.CountPendingByUserID(ctx, userID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count pending deposits: %w", err)
+	}
+	return count, nil
 }

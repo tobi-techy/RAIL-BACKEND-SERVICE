@@ -1,0 +1,11 @@
+meta {
+  name: Get Quotes
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/market/quotes?symbols=AAPL,GOOGL,MSFT
+  body: none
+  auth: none
+}

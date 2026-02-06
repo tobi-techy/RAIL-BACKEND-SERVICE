@@ -1,0 +1,21 @@
+meta {
+  name: Add IP Whitelist
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/security/ip-whitelist
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "ip": "203.0.113.10"
+  }
+}

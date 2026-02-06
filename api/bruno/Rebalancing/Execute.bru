@@ -1,0 +1,15 @@
+meta {
+  name: Execute
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/rebalancing/configs/{{configId}}/execute
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

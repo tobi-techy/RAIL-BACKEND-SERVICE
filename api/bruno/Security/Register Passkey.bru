@@ -1,0 +1,21 @@
+meta {
+  name: Register Passkey
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/security/passkeys/register
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "name": "My Passkey"
+  }
+}

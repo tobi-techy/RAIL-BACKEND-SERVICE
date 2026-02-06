@@ -1,7 +1,7 @@
 meta {
-  name: Get Wallet Addresses
+  name: Get Addresses
   type: http
-  seq: 1
+  seq: 2
 }
 
 get {
@@ -12,18 +12,4 @@ get {
 
 auth:bearer {
   token: {{accessToken}}
-}
-
-query {
-  chain: eth
-}
-
-docs {
-  # Get Wallet Addresses
-  
-  Returns deposit addresses for supported chains:
-  - eth (Ethereum)
-  - polygon
-  - bsc
-  - sol (Solana)
 }

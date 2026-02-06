@@ -1,6 +1,7 @@
 package investing
 
 import (
+	"errors"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"net/http"
 	"strings"
@@ -8,9 +9,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/services/market"
+	alpacaAdapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/shopspring/decimal"
 )
 
 // MarketHandlers handles market data and alerts endpoints
@@ -35,7 +37,7 @@ func (h *MarketHandlers) GetQuote(c *gin.Context) {
 	quote, err := h.marketService.GetQuote(c.Request.Context(), symbol)
 	if err != nil {
 		h.logger.Error("Failed to get quote", "error", err, "symbol", symbol)
-		common.RespondInternalError(c, "Failed to get quote")
+		h.handleMarketDataError(c, err, "Failed to get quote")
 		return
 	}
 
@@ -55,7 +57,7 @@ func (h *MarketHandlers) GetQuotes(c *gin.Context) {
 	quotes, err := h.marketService.GetQuotes(c.Request.Context(), symbols)
 	if err != nil {
 		h.logger.Error("Failed to get quotes", "error", err)
-		common.RespondInternalError(c, "Failed to get quotes")
+		h.handleMarketDataError(c, err, "Failed to get quotes")
 		return
 	}
 
@@ -82,7 +84,7 @@ func (h *MarketHandlers) GetBars(c *gin.Context) {
 	bars, err := h.marketService.GetBars(c.Request.Context(), symbol, timeframe, start, end)
 	if err != nil {
 		h.logger.Error("Failed to get bars", "error", err, "symbol", symbol)
-		common.RespondInternalError(c, "Failed to get bars")
+		h.handleMarketDataError(c, err, "Failed to get bars")
 		return
 	}
 
@@ -164,4 +166,30 @@ func (h *MarketHandlers) DeleteAlert(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Alert deleted"})
+}
+
+func (h *MarketHandlers) handleMarketDataError(c *gin.Context, err error, fallbackMessage string) {
+	var rateLimitErr *alpacaAdapter.RateLimitError
+	var clientErr *alpacaAdapter.ClientError
+	var serverErr *alpacaAdapter.ServerError
+
+	switch {
+	case errors.As(err, &rateLimitErr):
+		common.RespondError(c, http.StatusTooManyRequests, common.ErrCodeServiceUnavailable, "Market data provider rate limit exceeded", nil)
+	case errors.As(err, &clientErr):
+		switch clientErr.StatusCode {
+		case http.StatusUnauthorized, http.StatusForbidden:
+			common.RespondError(c, http.StatusBadGateway, "UPSTREAM_AUTH_ERROR", "Market data provider authentication failed", nil)
+		case http.StatusNotFound:
+			common.RespondNotFound(c, "Symbol not found")
+		default:
+			common.RespondError(c, http.StatusBadGateway, "UPSTREAM_REQUEST_FAILED", "Market data provider request failed", map[string]interface{}{
+				"status_code": clientErr.StatusCode,
+			})
+		}
+	case errors.As(err, &serverErr):
+		common.RespondError(c, http.StatusBadGateway, common.ErrCodeServiceUnavailable, "Market data provider unavailable", nil)
+	default:
+		common.RespondInternalError(c, fallbackMessage)
+	}
 }

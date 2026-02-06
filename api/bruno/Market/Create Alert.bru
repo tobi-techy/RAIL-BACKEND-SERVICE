@@ -1,0 +1,23 @@
+meta {
+  name: Create Alert
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/market/alerts
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "symbol": "AAPL",
+    "price": "200",
+    "direction": "above"
+  }
+}

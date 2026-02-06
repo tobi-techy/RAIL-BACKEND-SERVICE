@@ -1,0 +1,15 @@
+meta {
+  name: Cancel
+  type: http
+  seq: 5
+}
+
+delete {
+  url: {{baseUrl}}/api/{{apiVersion}}/scheduled-investments/{{scheduledInvestmentId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

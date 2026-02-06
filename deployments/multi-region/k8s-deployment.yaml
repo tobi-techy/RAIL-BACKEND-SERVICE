@@ -1,0 +1,127 @@
+# Multi-Region K8s Deployment
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rail-backend-config
+  namespace: rail
+data:
+  ENVIRONMENT: "production"
+  REGION: "${REGION}"
+  DATABASE_URL: "${DATABASE_URL}"
+  REDIS_HOST: "${REDIS_HOST}"
+  JWT_SECRET: "${JWT_SECRET}"
+  ENCRYPTION_KEY: "${ENCRYPTION_KEY}"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rail-backend
+  namespace: rail
+  labels:
+    app: rail-backend
+    version: v1
+spec:
+  replicas: 6
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: rail-backend
+  template:
+    metadata:
+      labels:
+        app: rail-backend
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      serviceAccountName: rail-backend
+      containers:
+      - name: rail-backend
+        image: ${ECR_URL}:${IMAGE_TAG}
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 9090
+          name: metrics
+        envFrom:
+        - configMapRef:
+            name: rail-backend-config
+        - secretRef:
+            name: rail-backend-secrets
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rail-backend
+  namespace: rail
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+spec:
+  type: LoadBalancer
+  selector:
+    app: rail-backend
+  ports:
+  - port: 443
+    targetPort: 8080
+    protocol: TCP
+    name: https
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rail-backend
+  namespace: rail
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "30"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+spec:
+  tls:
+  - hosts:
+    - api.rail-service.com
+    secretName: rail-tls
+  rules:
+  - host: api.rail-service.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: rail-backend
+            port:
+              number: 443

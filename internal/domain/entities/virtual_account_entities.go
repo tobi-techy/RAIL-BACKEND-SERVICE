@@ -45,11 +45,15 @@ type CreateVirtualAccountResponse struct {
 
 // CreateAccountRequest represents a request to create a Bridge account
 type CreateAccountRequest struct {
-	Email     string `json:"email" validate:"required,email"`
-	FirstName string `json:"firstName" validate:"required"`
-	LastName  string `json:"lastName" validate:"required"`
-	Type      string `json:"type" validate:"required"`
-	Country   string `json:"country" validate:"required,len=2"`
+	Email             string     `json:"email" validate:"required,email"`
+	FirstName         string     `json:"firstName" validate:"required"`
+	LastName          string     `json:"lastName" validate:"required"`
+	Type              string     `json:"type" validate:"required"`
+	Country           string     `json:"country" validate:"required,len=2"`
+	Address           *Address   `json:"address,omitempty"`
+	DateOfBirth       *time.Time `json:"dateOfBirth,omitempty"`
+	SSN               string     `json:"ssn,omitempty"`
+	SignedAgreementID string     `json:"signedAgreementId,omitempty"`
 }
 
 // CreateAccountResponse represents the response from creating a Bridge account

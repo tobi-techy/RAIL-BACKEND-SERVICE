@@ -15,6 +15,7 @@ type Config struct {
 	Environment    string               `mapstructure:"environment"`
 	LogLevel       string               `mapstructure:"log_level"`
 	Server         ServerConfig         `mapstructure:"server"`
+	RateLimit      RateLimitConfig      `mapstructure:"rate_limit"`
 	Database       DatabaseConfig       `mapstructure:"database"`
 	Redis          RedisConfig          `mapstructure:"redis"`
 	JWT            JWTConfig            `mapstructure:"jwt"`
@@ -57,6 +58,27 @@ type AIConfig struct {
 	Primary string       `mapstructure:"primary"` // "openai" or "gemini"
 }
 
+// RateLimitConfig contains distributed rate limiting configuration
+type RateLimitConfig struct {
+	Enabled         bool                           `mapstructure:"enabled"`
+	GlobalLimit     int64                          `mapstructure:"global_limit"`
+	GlobalWindow    int                            `mapstructure:"global_window"` // Window in seconds
+	IPLimit         int64                          `mapstructure:"ip_limit"`
+	IPWindow        int                            `mapstructure:"ip_window"` // Window in seconds
+	UserLimit       int64                          `mapstructure:"user_limit"`
+	UserWindow      int                            `mapstructure:"user_window"` // Window in seconds
+	EndpointLimits  map[string]EndpointLimitConfig `mapstructure:"endpoint_limits"`
+	KeyPrefix       string                         `mapstructure:"key_prefix"`
+	FailOpen        bool                           `mapstructure:"fail_open"` // Allow requests if Redis is unavailable
+	ResponseHeaders bool                           `mapstructure:"response_headers"`
+}
+
+// EndpointLimitConfig contains rate limit for a specific endpoint
+type EndpointLimitConfig struct {
+	Limit  int64 `mapstructure:"limit"`
+	Window int   `mapstructure:"window"` // Window in seconds
+}
+
 // OpenAIConfig contains OpenAI API configuration
 type OpenAIConfig struct {
 	APIKey      string  `mapstructure:"api_key"`
@@ -86,30 +108,48 @@ type ServerConfig struct {
 }
 
 type DatabaseConfig struct {
-	URL             string   `mapstructure:"url"`
-	Host            string   `mapstructure:"host"`
-	Port            int      `mapstructure:"port"`
-	Name            string   `mapstructure:"name"`
-	User            string   `mapstructure:"user"`
-	Password        string   `mapstructure:"password"`
-	SSLMode         string   `mapstructure:"ssl_mode"`
-	MaxOpenConns    int      `mapstructure:"max_open_conns"`
-	MaxIdleConns    int      `mapstructure:"max_idle_conns"`
-	ConnMaxLifetime int      `mapstructure:"conn_max_lifetime"`
-	QueryTimeout    int      `mapstructure:"query_timeout"`
-	MaxRetries      int      `mapstructure:"max_retries"`
-	ReadReplicas    []string `mapstructure:"read_replicas"`
+	URL             string              `mapstructure:"url"`
+	Host            string              `mapstructure:"host"`
+	Port            int                 `mapstructure:"port"`
+	Name            string              `mapstructure:"name"`
+	User            string              `mapstructure:"user"`
+	Password        string              `mapstructure:"password"`
+	SSLMode         string              `mapstructure:"ssl_mode"`
+	MaxOpenConns    int                 `mapstructure:"max_open_conns"`
+	MaxIdleConns    int                 `mapstructure:"max_idle_conns"`
+	ConnMaxLifetime int                 `mapstructure:"conn_max_lifetime"`
+	QueryTimeout    int                 `mapstructure:"query_timeout"`
+	MaxRetries      int                 `mapstructure:"max_retries"`
+	ReadReplicas    []ReadReplicaConfig `mapstructure:"read_replicas"`
+
+	// Multi-region failover configuration
+	PrimaryRegion   string `mapstructure:"primary_region"`
+	FailoverEnabled bool   `mapstructure:"failover_enabled"`
+}
+
+type ReadReplicaConfig struct {
+	Region string `mapstructure:"region"`
+	Host   string `mapstructure:"host"`
+	Port   int    `mapstructure:"port"`
+	Name   string `mapstructure:"name"`
+	User   string `mapstructure:"user"`
+	Weight int    `mapstructure:"weight"` // Traffic distribution weight (0-100)
 }
 
 type RedisConfig struct {
-	Host         string   `mapstructure:"host"`
-	Port         int      `mapstructure:"port"`
-	Password     string   `mapstructure:"password"`
-	DB           int      `mapstructure:"db"`
-	ClusterMode  bool     `mapstructure:"cluster_mode"`
-	ClusterAddrs []string `mapstructure:"cluster_addrs"`
-	MaxRetries   int      `mapstructure:"max_retries"`
-	PoolSize     int      `mapstructure:"pool_size"`
+	Host           string   `mapstructure:"host"`
+	Port           int      `mapstructure:"port"`
+	Password       string   `mapstructure:"password"`
+	DB             int      `mapstructure:"db"`
+	ClusterMode    bool     `mapstructure:"cluster_mode"`
+	ClusterAddrs   []string `mapstructure:"cluster_addrs"`
+	MaxRetries     int      `mapstructure:"max_retries"`
+	PoolSize       int      `mapstructure:"pool_size"`
+	MaxIdleConns   int      `mapstructure:"max_idle_conns"`
+	MaxActiveConns int      `mapstructure:"max_active_conns"`
+	IdleTimeout    int      `mapstructure:"idle_timeout"`
+	RouteRandomly  bool     `mapstructure:"route_randomly"`
+	RouteByLatency bool     `mapstructure:"route_by_latency"`
 }
 
 type JWTConfig struct {
@@ -190,6 +230,36 @@ type SecurityConfig struct {
 	// Admin creation security settings
 	AdminBootstrapToken  string `mapstructure:"admin_bootstrap_token"`  // Required token for first admin creation
 	DisableAdminCreation bool   `mapstructure:"disable_admin_creation"` // Completely disable admin creation endpoint
+
+	// Device binding settings
+	DeviceBinding DeviceBindingConfig `mapstructure:"device_binding"`
+
+	// Webhook replay protection
+	WebhookReplay WebhookReplayConfig `mapstructure:"webhook_replay"`
+
+	// Adaptive rate limiting
+	AdaptiveRateLimit AdaptiveRateLimitConfig `mapstructure:"adaptive_rate_limit"`
+}
+
+// DeviceBindingConfig for device-bound JWT tokens
+type DeviceBindingConfig struct {
+	Enabled               bool `mapstructure:"enabled"`
+	MaxConcurrentSessions int  `mapstructure:"max_concurrent_sessions"`
+	SessionTTLHours       int  `mapstructure:"session_ttl_hours"`
+	StrictValidation      bool `mapstructure:"strict_validation"`
+}
+
+// WebhookReplayConfig for webhook replay protection
+type WebhookReplayConfig struct {
+	Enabled         bool `mapstructure:"enabled"`
+	WindowSeconds   int  `mapstructure:"window_seconds"`
+	MaxNonceAgeSecs int  `mapstructure:"max_nonce_age_seconds"`
+}
+
+// AdaptiveRateLimitConfig for risk-based rate limiting
+type AdaptiveRateLimitConfig struct {
+	Enabled           bool `mapstructure:"enabled"`
+	EnableRiskScoring bool `mapstructure:"enable_risk_scoring"`
 }
 
 type CircleConfig struct {
@@ -276,9 +346,12 @@ type AlpacaConfig struct {
 	SecretKey     string `mapstructure:"secret_key"`
 	BaseURL       string `mapstructure:"base_url"`
 	DataBaseURL   string `mapstructure:"data_base_url"`   // Market data API base URL
+	DataAPIKey    string `mapstructure:"data_api_key"`    // Separate key for market data
+	DataAPISecret string `mapstructure:"data_api_secret"` // Separate secret for market data
 	Environment   string `mapstructure:"environment"`     // sandbox or production
 	Timeout       int    `mapstructure:"timeout"`         // Request timeout in seconds
 	FirmAccountNo string `mapstructure:"firm_account_no"` // Firm account for instant funding
+	WebhookSecret string `mapstructure:"webhook_secret"`  // Secret for verifying Alpaca webhooks
 }
 
 // ReconciliationConfig contains reconciliation service configuration
@@ -409,6 +482,10 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("error unmarshaling config: %w", err)
 	}
 
+	if strings.TrimSpace(config.Email.Provider) == "" && isDevEnvironment(config.Environment) {
+		config.Email.Provider = "mailpit"
+	}
+
 	// Build database URL if not provided
 	if config.Database.URL == "" {
 		config.Database.URL = fmt.Sprintf(
@@ -525,6 +602,21 @@ func setDefaults() {
 	viper.SetDefault("security.aws_secrets_prefix", "rail/")     // Prefix for secrets
 	viper.SetDefault("security.secret_rotation_days", 90)        // 90-day rotation cycle
 
+	// Device binding defaults
+	viper.SetDefault("security.device_binding.enabled", true)
+	viper.SetDefault("security.device_binding.max_concurrent_sessions", 3)
+	viper.SetDefault("security.device_binding.session_ttl_hours", 24)
+	viper.SetDefault("security.device_binding.strict_validation", true)
+
+	// Webhook replay protection defaults
+	viper.SetDefault("security.webhook_replay.enabled", true)
+	viper.SetDefault("security.webhook_replay.window_seconds", 300)
+	viper.SetDefault("security.webhook_replay.max_nonce_age_seconds", 300)
+
+	// Adaptive rate limiting defaults
+	viper.SetDefault("security.adaptive_rate_limit.enabled", true)
+	viper.SetDefault("security.adaptive_rate_limit.enable_risk_scoring", true)
+
 	// AI Provider defaults
 	viper.SetDefault("ai.primary", "openai")
 	viper.SetDefault("ai.openai.model", "gpt-4o-mini")
@@ -564,6 +656,43 @@ func setDefaults() {
 	// Worker defaults
 	viper.SetDefault("workers.count", 10)
 	viper.SetDefault("workers.job_timeout", 300)
+
+	// Rate limiting defaults
+	viper.SetDefault("rate_limit.enabled", true)
+	viper.SetDefault("rate_limit.global_limit", 10000)
+	viper.SetDefault("rate_limit.global_window", 60) // 1 minute
+	viper.SetDefault("rate_limit.ip_limit", 500)
+	viper.SetDefault("rate_limit.ip_window", 60) // 1 minute
+	viper.SetDefault("rate_limit.user_limit", 200)
+	viper.SetDefault("rate_limit.user_window", 60) // 1 minute
+	viper.SetDefault("rate_limit.key_prefix", "ratelimit")
+	viper.SetDefault("rate_limit.fail_open", true)
+	viper.SetDefault("rate_limit.response_headers", true)
+
+	// Endpoint-specific rate limits (per minute)
+	viper.SetDefault("rate_limit.endpoint_limits.POST:/api/v1/auth/login.limit", 5)
+	viper.SetDefault("rate_limit.endpoint_limits.POST:/api/v1/auth/login.window", 900) // 15 minutes
+
+	viper.SetDefault("rate_limit.endpoint_limits.POST:/api/v1/auth/register.limit", 3)
+	viper.SetDefault("rate_limit.endpoint_limits.POST:/api/v1/auth/register.window", 3600) // 1 hour
+
+	viper.SetDefault("rate_limit.endpoint_limits.POST:/api/v1/funding/withdraw.limit", 10)
+	viper.SetDefault("rate_limit.endpoint_limits.POST:/api/v1/funding/withdraw.window", 3600) // 1 hour
+
+	viper.SetDefault("rate_limit.endpoint_limits.POST:/api/v1/auth/forgot-password.limit", 3)
+	viper.SetDefault("rate_limit.endpoint_limits.POST:/api/v1/auth/forgot-password.window", 3600) // 1 hour
+
+	viper.SetDefault("rate_limit.endpoint_limits.POST:/api/v1/auth/reset-password.limit", 5)
+	viper.SetDefault("rate_limit.endpoint_limits.POST:/api/v1/auth/reset-password.window", 3600) // 1 hour
+
+	viper.SetDefault("rate_limit.endpoint_limits.POST:/api/v1/auth/resend-code.limit", 5)
+	viper.SetDefault("rate_limit.endpoint_limits.POST:/api/v1/auth/resend-code.window", 900) // 15 minutes
+
+	viper.SetDefault("rate_limit.endpoint_limits.GET:/api/v1/portfolio.limit", 60)
+	viper.SetDefault("rate_limit.endpoint_limits.GET:/api/v1/portfolio.window", 60) // 1 minute
+
+	viper.SetDefault("rate_limit.endpoint_limits.GET:/api/v1/balances.limit", 60)
+	viper.SetDefault("rate_limit.endpoint_limits.GET:/api/v1/balances.window", 60) // 1 minute
 }
 
 func overrideFromEnv() {
@@ -738,9 +867,19 @@ func overrideFromEnv() {
 	// Alpaca
 	if alpacaAPIKey := os.Getenv("ALPACA_API_KEY"); alpacaAPIKey != "" {
 		viper.Set("alpaca.client_id", alpacaAPIKey)
+	} else if apcaAPIKeyID := os.Getenv("APCA_API_KEY_ID"); apcaAPIKeyID != "" {
+		viper.Set("alpaca.client_id", apcaAPIKeyID)
 	}
 	if alpacaAPISecret := os.Getenv("ALPACA_API_SECRET"); alpacaAPISecret != "" {
 		viper.Set("alpaca.secret_key", alpacaAPISecret)
+	} else if apcaAPISecretKey := os.Getenv("APCA_API_SECRET_KEY"); apcaAPISecretKey != "" {
+		viper.Set("alpaca.secret_key", apcaAPISecretKey)
+	}
+	if alpacaDataAPIKey := os.Getenv("ALPACA_DATA_API_KEY"); alpacaDataAPIKey != "" {
+		viper.Set("alpaca.data_api_key", alpacaDataAPIKey)
+	}
+	if alpacaDataAPISecret := os.Getenv("ALPACA_DATA_API_SECRET"); alpacaDataAPISecret != "" {
+		viper.Set("alpaca.data_api_secret", alpacaDataAPISecret)
 	}
 	if alpacaBaseURL := os.Getenv("ALPACA_BASE_URL"); alpacaBaseURL != "" {
 		viper.Set("alpaca.base_url", alpacaBaseURL)
@@ -750,6 +889,9 @@ func overrideFromEnv() {
 	}
 	if alpacaEnvironment := os.Getenv("ALPACA_ENVIRONMENT"); alpacaEnvironment != "" {
 		viper.Set("alpaca.environment", alpacaEnvironment)
+	}
+	if alpacaWebhookSecret := os.Getenv("ALPACA_WEBHOOK_SECRET"); alpacaWebhookSecret != "" {
+		viper.Set("alpaca.webhook_secret", alpacaWebhookSecret)
 	}
 
 	// Bridge API
@@ -830,4 +972,13 @@ func validate(config *Config) error {
 	}
 
 	return nil
+}
+
+func isDevEnvironment(env string) bool {
+	switch strings.ToLower(strings.TrimSpace(env)) {
+	case "", "dev", "development", "local", "test", "testing":
+		return true
+	default:
+		return false
+	}
 }

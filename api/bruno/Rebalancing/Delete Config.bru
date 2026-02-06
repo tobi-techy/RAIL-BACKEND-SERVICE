@@ -1,0 +1,15 @@
+meta {
+  name: Delete Config
+  type: http
+  seq: 5
+}
+
+delete {
+  url: {{baseUrl}}/api/{{apiVersion}}/rebalancing/configs/{{configId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

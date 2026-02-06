@@ -1,7 +1,7 @@
 meta {
   name: Submit KYC
   type: http
-  seq: 3
+  seq: 2
 }
 
 post {
@@ -16,21 +16,26 @@ auth:bearer {
 
 body:json {
   {
-    "date_of_birth": "1995-06-15",
-    "address": {
-      "street": "123 Main St",
-      "city": "San Francisco",
-      "state": "CA",
-      "postal_code": "94102",
-      "country": "US"
-    },
-    "ssn_last_four": "1234"
+    "documentType": "passport",
+    "documents": [
+      {
+        "type": "passport",
+        "fileUrl": "https://example.com/passport.jpg",
+        "contentType": "image/jpeg"
+      }
+    ],
+    "personalInfo": {
+      "firstName": "Test",
+      "lastName": "User",
+      "dateOfBirth": "1990-01-01",
+      "country": "US",
+      "address": {
+        "street": "123 Main St",
+        "city": "San Francisco",
+        "state": "CA",
+        "postalCode": "94105",
+        "country": "US"
+      }
+    }
   }
-}
-
-docs {
-  # Submit KYC
-  
-  Per PRD: Lightweight KYC via partner integration.
-  KYC status gates funding features.
 }

@@ -1,0 +1,21 @@
+meta {
+  name: Send MFA Code
+  type: http
+  seq: 24
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/security/mfa/send-code
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "method": "sms"
+  }
+}

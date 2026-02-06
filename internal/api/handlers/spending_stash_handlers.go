@@ -8,13 +8,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/allocation"
 	"github.com/rail-service/rail_service/internal/domain/services/card"
 	"github.com/rail-service/rail_service/internal/domain/services/limits"
 	"github.com/rail-service/rail_service/internal/domain/services/roundup"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -67,11 +67,7 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 		return
 	}
 
-	var (
-		wg       sync.WaitGroup
-		mu       sync.Mutex
-		warnings []string
-	)
+	var wg sync.WaitGroup
 
 	// Data containers
 	var (
@@ -93,14 +89,9 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 		b, err := h.allocationService.GetBalances(ctx, userID)
 		if err != nil {
 			h.logger.Warn("Failed to get allocation balances", zap.Error(err), zap.String("user_id", userID.String()))
-			mu.Lock()
-			warnings = append(warnings, "balances_unavailable")
-			mu.Unlock()
 			return
 		}
-		mu.Lock()
 		balances = b
-		mu.Unlock()
 	}()
 
 	// Parallel fetch - allocation mode
@@ -113,14 +104,9 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 		m, err := h.allocationService.GetMode(ctx, userID)
 		if err != nil {
 			h.logger.Warn("Failed to get allocation mode", zap.Error(err), zap.String("user_id", userID.String()))
-			mu.Lock()
-			warnings = append(warnings, "allocation_mode_unavailable")
-			mu.Unlock()
 			return
 		}
-		mu.Lock()
 		allocationMode = m
-		mu.Unlock()
 	}()
 
 	// Parallel fetch - cards
@@ -133,14 +119,9 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 		c, err := h.cardService.GetUserCards(ctx, userID)
 		if err != nil {
 			h.logger.Warn("Failed to get user cards", zap.Error(err), zap.String("user_id", userID.String()))
-			mu.Lock()
-			warnings = append(warnings, "card_unavailable")
-			mu.Unlock()
 			return
 		}
-		mu.Lock()
 		cards = c
-		mu.Unlock()
 	}()
 
 	// Parallel fetch - round-ups summary
@@ -153,17 +134,12 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 		r, err := h.roundupService.GetSummary(ctx, userID)
 		if err != nil {
 			h.logger.Warn("Failed to get roundup summary", zap.Error(err), zap.String("user_id", userID.String()))
-			mu.Lock()
-			warnings = append(warnings, "roundups_unavailable")
-			mu.Unlock()
 			return
 		}
-		mu.Lock()
 		roundupSummary = r
-		mu.Unlock()
 	}()
 
-	// Parallel fetch - card transactions (for recent transactions)
+	// Parallel fetch - card transactions
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -173,14 +149,9 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 		txns, err := h.cardService.GetUserTransactions(ctx, userID, 10, 0)
 		if err != nil {
 			h.logger.Warn("Failed to get card transactions", zap.Error(err), zap.String("user_id", userID.String()))
-			mu.Lock()
-			warnings = append(warnings, "transactions_unavailable")
-			mu.Unlock()
 			return
 		}
-		mu.Lock()
 		cardTxns = txns
-		mu.Unlock()
 	}()
 
 	// Parallel fetch - user limits
@@ -193,20 +164,15 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 		l, err := h.limitsService.GetUserLimits(ctx, userID)
 		if err != nil {
 			h.logger.Warn("Failed to get user limits", zap.Error(err), zap.String("user_id", userID.String()))
-			mu.Lock()
-			warnings = append(warnings, "limits_unavailable")
-			mu.Unlock()
 			return
 		}
-		mu.Lock()
 		userLimits = l
-		mu.Unlock()
 	}()
 
 	wg.Wait()
 
 	// Build response
-	response := h.buildResponse(userID, balances, allocationMode, cards, roundupSummary, cardTxns, userLimits, warnings)
+	response := h.buildResponse(userID, balances, allocationMode, cards, roundupSummary, cardTxns, userLimits)
 
 	c.JSON(http.StatusOK, response)
 }
@@ -220,21 +186,22 @@ func (h *SpendingStashHandlers) buildResponse(
 	roundupSummary *entities.RoundupSummary,
 	cardTxns []*entities.BridgeCardTransaction,
 	userLimits *entities.UserLimitsResponse,
-	warnings []string,
 ) *SpendingStashResponse {
 	response := &SpendingStashResponse{
 		SpendingBalance:    "0.00",
 		AvailableToSpend:   "0.00",
 		PendingAmount:      "0.00",
+		Currency:           "USD",
 		AllocationInfo:     SpendingAllocationInfo{Active: false, SpendingRatio: "0.70"},
 		RecentTransactions: []TransactionSummary{},
-		Analytics:          h.buildDefaultAnalytics(),
-		Limits:             h.buildLimits(userLimits),
+		Limits: SpendingLimits{
+			Daily:          LimitDetail{Limit: "1000.00", Used: "0.00", Remaining: "1000.00"},
+			Monthly:        LimitDetail{Limit: "10000.00", Used: "0.00", Remaining: "10000.00"},
+			PerTransaction: "500.00",
+		},
 		Stats: SpendingStats{
 			TotalSpentAllTime: "0.00",
-			TotalRoundUps:     "0.00",
 		},
-		Warnings: warnings,
 	}
 
 	// Populate balance summary
@@ -248,25 +215,20 @@ func (h *SpendingStashHandlers) buildResponse(
 	if allocationMode != nil {
 		response.AllocationInfo.Active = allocationMode.Active
 		response.AllocationInfo.SpendingRatio = allocationMode.RatioSpending.StringFixed(2)
-		if allocationMode.ResumedAt != nil {
-			response.AllocationInfo.LastReceivedAt = allocationMode.ResumedAt.Format(time.RFC3339)
-		}
 	}
 
-	// Populate card info (use first active card)
+	// Populate card info
 	if len(cards) > 0 {
 		for _, c := range cards {
 			if c.Status == entities.CardStatusActive || c.Status == entities.CardStatusFrozen {
 				response.Card = &CardSummary{
-					ID:              c.ID.String(),
-					Type:            string(c.Type),
-					Status:          string(c.Status),
-					LastFour:        c.Last4,
-					SpendingEnabled: c.Status == entities.CardStatusActive,
-					ATMEnabled:      c.Status == entities.CardStatusActive,
-					CreatedAt:       c.CreatedAt.Format(time.RFC3339),
+					ID:        c.ID.String(),
+					Type:      string(c.Type),
+					Status:    string(c.Status),
+					LastFour:  c.Last4,
+					IsFrozen:  c.Status == entities.CardStatusFrozen,
+					CreatedAt: c.CreatedAt.Format(time.RFC3339),
 				}
-				response.Stats.CardCreatedAt = c.CreatedAt.Format(time.RFC3339)
 				break
 			}
 		}
@@ -280,7 +242,6 @@ func (h *SpendingStashHandlers) buildResponse(
 			if tx.MerchantCategory != nil {
 				category = *tx.MerchantCategory
 			}
-			categoryIcon := GetCategoryIcon(category)
 
 			merchantName := ""
 			if tx.MerchantName != nil {
@@ -288,25 +249,23 @@ func (h *SpendingStashHandlers) buildResponse(
 			}
 
 			transactions = append(transactions, TransactionSummary{
-				ID:           tx.ID.String(),
-				Type:         "card",
-				Amount:       tx.Amount.Neg().StringFixed(2), // Card transactions are debits
-				Currency:     tx.Currency,
-				Description:  merchantName, // Use merchant name as description
-				MerchantName: merchantName,
-				Category:     category,
-				CategoryIcon: categoryIcon,
-				Status:       tx.Status,
-				CreatedAt:    tx.CreatedAt.Format(time.RFC3339),
+				ID:          tx.ID.String(),
+				Type:        "card",
+				Amount:      tx.Amount.Neg().StringFixed(2),
+				Currency:    tx.Currency,
+				Description: merchantName,
+				Category:    category,
+				Status:      tx.Status,
+				CreatedAt:   tx.CreatedAt.Format(time.RFC3339),
 			})
 		}
 		response.RecentTransactions = transactions
 		response.Stats.TotalTransactions = len(transactions)
-
-		if len(transactions) > 0 {
-			response.Stats.FirstTransactionAt = transactions[len(transactions)-1].CreatedAt
-		}
 	}
+
+	// Calculate spending summary from transactions
+	response.SpendingSummary = h.calculateSpendingSummary(cardTxns)
+	response.TopCategories = h.calculateTopCategories(cardTxns)
 
 	// Populate round-ups summary
 	if roundupSummary != nil && roundupSummary.Settings != nil && roundupSummary.Settings.Enabled {
@@ -315,153 +274,141 @@ func (h *SpendingStashHandlers) buildResponse(
 			multiplier = int(roundupSummary.Settings.Multiplier.IntPart())
 		}
 		response.RoundUps = &RoundUpsSummary{
-			Enabled:          roundupSummary.Settings.Enabled,
+			IsEnabled:        roundupSummary.Settings.Enabled,
 			Multiplier:       multiplier,
 			TotalAccumulated: roundupSummary.TotalCollected.StringFixed(2),
-			PendingAmount:    roundupSummary.PendingAmount.StringFixed(2),
-			InvestedAmount:   roundupSummary.TotalInvested.StringFixed(2),
-			ThisMonthTotal:   "0.00", // Would need additional query
 			TransactionCount: roundupSummary.TransactionCount,
 		}
-		response.Stats.TotalRoundUps = roundupSummary.TotalCollected.StringFixed(2)
 	}
 
-	// Calculate analytics from transactions
-	response.Analytics = h.calculateAnalytics(cardTxns)
+	// Populate limits
+	response.Limits = h.buildLimits(userLimits)
 
 	return response
 }
 
-// calculateAnalytics calculates spending analytics from transactions
-func (h *SpendingStashHandlers) calculateAnalytics(txns []*entities.BridgeCardTransaction) SpendingAnalytics {
-	analytics := h.buildDefaultAnalytics()
+// calculateSpendingSummary calculates spending summary from transactions
+func (h *SpendingStashHandlers) calculateSpendingSummary(txns []*entities.BridgeCardTransaction) *SpendingSummary {
+	summary := &SpendingSummary{
+		ThisMonthTotal: "0.00",
+		DailyAverage:   "0.00",
+		Trend:          "stable",
+	}
 
 	if len(txns) == 0 {
-		return analytics
+		return summary
 	}
 
 	now := time.Now()
 	thisMonthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 
 	var thisMonthTotal decimal.Decimal
-	var thisMonthCount int
-	categoryTotals := make(map[string]decimal.Decimal)
-	categoryCounts := make(map[string]int)
-
 	for _, tx := range txns {
 		if tx.CreatedAt.After(thisMonthStart) || tx.CreatedAt.Equal(thisMonthStart) {
 			thisMonthTotal = thisMonthTotal.Add(tx.Amount.Abs())
-			thisMonthCount++
+		}
+	}
+
+	summary.ThisMonthTotal = thisMonthTotal.StringFixed(2)
+	summary.TransactionCount = len(txns)
+
+	// Calculate daily average
+	daysInMonth := now.Day()
+	if daysInMonth > 0 && !thisMonthTotal.IsZero() {
+		dailyAvg := thisMonthTotal.Div(decimal.NewFromInt(int64(daysInMonth)))
+		summary.DailyAverage = dailyAvg.StringFixed(2)
+	}
+
+	return summary
+}
+
+// calculateTopCategories calculates top spending categories
+func (h *SpendingStashHandlers) calculateTopCategories(txns []*entities.BridgeCardTransaction) []CategorySummary {
+	if len(txns) == 0 {
+		return []CategorySummary{}
+	}
+
+	now := time.Now()
+	thisMonthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+
+	var thisMonthTotal decimal.Decimal
+	categoryTotals := make(map[string]decimal.Decimal)
+
+	for _, tx := range txns {
+		if tx.CreatedAt.After(thisMonthStart) || tx.CreatedAt.Equal(thisMonthStart) {
+			amount := tx.Amount.Abs()
+			thisMonthTotal = thisMonthTotal.Add(amount)
 
 			category := "Other"
 			if tx.MerchantCategory != nil {
 				category = *tx.MerchantCategory
 			}
-			categoryTotals[category] = categoryTotals[category].Add(tx.Amount.Abs())
-			categoryCounts[category]++
+			categoryTotals[category] = categoryTotals[category].Add(amount)
 		}
 	}
 
-	analytics.TotalSpentThisMonth = thisMonthTotal.StringFixed(2)
-	analytics.TransactionsThisMonth = thisMonthCount
-
-	if thisMonthCount > 0 {
-		avg := thisMonthTotal.Div(decimal.NewFromInt(int64(thisMonthCount)))
-		analytics.AvgTransactionThisMonth = avg.StringFixed(2)
+	if thisMonthTotal.IsZero() {
+		return []CategorySummary{}
 	}
 
-	// Calculate daily average
-	daysInMonth := now.Day()
-	if daysInMonth > 0 {
-		dailyAvg := thisMonthTotal.Div(decimal.NewFromInt(int64(daysInMonth)))
-		analytics.DailyAverage = dailyAvg.StringFixed(2)
-	}
-
-	// Build top categories
-	topCategories := make([]SpendingCategory, 0)
-	for cat, amount := range categoryTotals {
-		pct := decimal.Zero
-		if !thisMonthTotal.IsZero() {
-			pct = amount.Div(thisMonthTotal).Mul(decimal.NewFromInt(100))
-		}
-		icon := GetCategoryIcon(cat)
-		topCategories = append(topCategories, SpendingCategory{
-			Category:         cat,
-			CategoryIcon:     icon,
-			Amount:           amount.StringFixed(2),
-			Percent:          pct.StringFixed(1) + "%",
-			TransactionCount: categoryCounts[cat],
-			Trend:            "stable",
+	// Build category summaries
+	categories := make([]CategorySummary, 0, len(categoryTotals))
+	for name, amount := range categoryTotals {
+		pct, _ := amount.Div(thisMonthTotal).Mul(decimal.NewFromInt(100)).Float64()
+		categories = append(categories, CategorySummary{
+			Name:    name,
+			Amount:  amount.StringFixed(2),
+			Percent: pct,
 		})
 	}
 
-	// Sort by amount (simple bubble sort for small list)
-	for i := 0; i < len(topCategories); i++ {
-		for j := i + 1; j < len(topCategories); j++ {
-			amtI, _ := decimal.NewFromString(topCategories[i].Amount)
-			amtJ, _ := decimal.NewFromString(topCategories[j].Amount)
+	// Sort by amount (descending)
+	for i := 0; i < len(categories); i++ {
+		for j := i + 1; j < len(categories); j++ {
+			amtI, _ := decimal.NewFromString(categories[i].Amount)
+			amtJ, _ := decimal.NewFromString(categories[j].Amount)
 			if amtJ.GreaterThan(amtI) {
-				topCategories[i], topCategories[j] = topCategories[j], topCategories[i]
+				categories[i], categories[j] = categories[j], categories[i]
 			}
 		}
 	}
 
 	// Limit to top 5
-	if len(topCategories) > 5 {
-		topCategories = topCategories[:5]
+	if len(categories) > 5 {
+		categories = categories[:5]
 	}
-	analytics.TopCategories = topCategories
 
-	return analytics
-}
-
-// buildDefaultAnalytics returns default analytics
-func (h *SpendingStashHandlers) buildDefaultAnalytics() SpendingAnalytics {
-	return SpendingAnalytics{
-		TotalSpentThisMonth:     "0.00",
-		TransactionsThisMonth:   0,
-		AvgTransactionThisMonth: "0.00",
-		TotalSpentLastMonth:     "0.00",
-		TransactionsLastMonth:   0,
-		SpendingChange:          "0.00",
-		SpendingChangePct:       "0.00%",
-		SpendingTrend:           "stable",
-		TopCategories:           []SpendingCategory{},
-		DailyAverage:            "0.00",
-	}
+	return categories
 }
 
 // buildLimits returns spending limits from user limits or defaults
 func (h *SpendingStashHandlers) buildLimits(userLimits *entities.UserLimitsResponse) SpendingLimits {
 	defaults := SpendingLimits{
-		DailySpendLimit:       "1000.00",
-		DailySpendUsed:        "0.00",
-		DailySpendRemaining:   "1000.00",
-		DailyResetAt:          time.Now().Add(24 * time.Hour).Truncate(24 * time.Hour).Format(time.RFC3339),
-		MonthlySpendLimit:     "10000.00",
-		MonthlySpendUsed:      "0.00",
-		MonthlySpendRemaining: "10000.00",
-		PerTransactionLimit:   "500.00",
+		Daily:          LimitDetail{Limit: "1000.00", Used: "0.00", Remaining: "1000.00"},
+		Monthly:        LimitDetail{Limit: "10000.00", Used: "0.00", Remaining: "10000.00"},
+		PerTransaction: "500.00",
 	}
 
 	if userLimits == nil {
 		return defaults
 	}
 
-	// Withdrawal is a value type, but check for zero values as safety
 	withdrawal := userLimits.Withdrawal
 	if withdrawal.Daily.Limit == "" || withdrawal.Monthly.Limit == "" {
 		return defaults
 	}
 
 	return SpendingLimits{
-		DailySpendLimit:       withdrawal.Daily.Limit,
-		DailySpendUsed:        withdrawal.Daily.Used,
-		DailySpendRemaining:   withdrawal.Daily.Remaining,
-		DailyResetAt:          withdrawal.Daily.ResetsAt.Format(time.RFC3339),
-		MonthlySpendLimit:     withdrawal.Monthly.Limit,
-		MonthlySpendUsed:      withdrawal.Monthly.Used,
-		MonthlySpendRemaining: withdrawal.Monthly.Remaining,
-		PerTransactionLimit:   withdrawal.Minimum,
+		Daily: LimitDetail{
+			Limit:     withdrawal.Daily.Limit,
+			Used:      withdrawal.Daily.Used,
+			Remaining: withdrawal.Daily.Remaining,
+		},
+		Monthly: LimitDetail{
+			Limit:     withdrawal.Monthly.Limit,
+			Used:      withdrawal.Monthly.Used,
+			Remaining: withdrawal.Monthly.Remaining,
+		},
+		PerTransaction: withdrawal.Minimum,
 	}
 }

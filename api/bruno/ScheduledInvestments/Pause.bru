@@ -1,0 +1,15 @@
+meta {
+  name: Pause
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/scheduled-investments/{{scheduledInvestmentId}}/pause
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
