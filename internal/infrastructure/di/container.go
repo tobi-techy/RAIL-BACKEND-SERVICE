@@ -500,12 +500,14 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 
 	// Initialize Alpaca service
 	alpacaConfig := alpaca.Config{
-		ClientID:    cfg.Alpaca.ClientID,
-		SecretKey:   cfg.Alpaca.SecretKey,
-		BaseURL:     cfg.Alpaca.BaseURL,
-		DataBaseURL: cfg.Alpaca.DataBaseURL,
-		Environment: cfg.Alpaca.Environment,
-		Timeout:     time.Duration(cfg.Alpaca.Timeout) * time.Second,
+		ClientID:      cfg.Alpaca.ClientID,
+		SecretKey:     cfg.Alpaca.SecretKey,
+		BaseURL:       cfg.Alpaca.BaseURL,
+		DataBaseURL:   cfg.Alpaca.DataBaseURL,
+		DataAPIKey:    cfg.Alpaca.DataAPIKey,
+		DataAPISecret: cfg.Alpaca.DataAPISecret,
+		Environment:   cfg.Alpaca.Environment,
+		Timeout:       time.Duration(cfg.Alpaca.Timeout) * time.Second,
 	}
 	alpacaClient := alpaca.NewClient(alpacaConfig, zapLog)
 	alpacaService := alpaca.NewService(alpacaClient, zapLog)

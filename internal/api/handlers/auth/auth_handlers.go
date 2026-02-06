@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 	"github.com/go-playground/validator/v10"
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
@@ -705,7 +706,7 @@ func (h *AuthHandlers) Login(c *gin.Context) {
 
 	// Parse request
 	var req entities.LoginRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil {
 		h.logger.Warn("Invalid login request", zap.Error(err))
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 			Code:    "INVALID_REQUEST",

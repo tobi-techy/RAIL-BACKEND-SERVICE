@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/shopspring/decimal"
 	"github.com/sony/gobreaker"
-	"github.com/rail-service/rail_service/internal/domain/entities"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
@@ -31,24 +31,26 @@ const (
 	maxRetryAfter     = 60 * time.Second
 
 	// Alpaca API endpoints
-	accountsEndpoint    = "/v1/accounts"
-	ordersEndpoint      = "/v1/trading/accounts/%s/orders"      // account_id parameter
-	assetsEndpoint      = "/v1/assets"
-	positionsEndpoint   = "/v1/trading/accounts/%s/positions"   // account_id parameter
-	activitiesEndpoint  = "/v1/trading/accounts/%s/activities"  // account_id parameter
-	portfolioEndpoint   = "/v1/trading/accounts/%s/portfolio"   // account_id parameter
-	watchlistsEndpoint  = "/v1/trading/accounts/%s/watchlists"  // account_id parameter
-	newsEndpoint        = "/v1beta1/news"
+	accountsEndpoint   = "/v1/accounts"
+	ordersEndpoint     = "/v1/trading/accounts/%s/orders" // account_id parameter
+	assetsEndpoint     = "/v1/assets"
+	positionsEndpoint  = "/v1/trading/accounts/%s/positions"  // account_id parameter
+	activitiesEndpoint = "/v1/trading/accounts/%s/activities" // account_id parameter
+	portfolioEndpoint  = "/v1/trading/accounts/%s/portfolio"  // account_id parameter
+	watchlistsEndpoint = "/v1/trading/accounts/%s/watchlists" // account_id parameter
+	newsEndpoint       = "/v1beta1/news"
 )
 
 // Config represents Alpaca API configuration
 type Config struct {
-	ClientID    string
-	SecretKey   string
-	BaseURL     string // Broker API base URL
-	DataBaseURL string // Market Data API base URL
-	Environment string // sandbox or production
-	Timeout     time.Duration
+	ClientID      string
+	SecretKey     string
+	BaseURL       string // Broker API base URL
+	DataBaseURL   string // Market Data API base URL
+	DataAPIKey    string // Separate key for market data
+	DataAPISecret string // Separate secret for market data
+	Environment   string // sandbox or production
+	Timeout       time.Duration
 }
 
 // Client represents an Alpaca Broker API client
@@ -515,10 +517,10 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 	// Set headers
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	
+
 	// Inject distributed trace context for cross-service correlation
 	injectTraceContext(ctx, req.Header)
-	
+
 	// Authentication
 	if useDataAPI {
 		// Market Data API uses header-based auth
@@ -609,7 +611,6 @@ func isRetryableError(err error) bool {
 		strings.Contains(errStr, "connection reset") ||
 		strings.Contains(errStr, "EOF")
 }
-
 
 // Market Data API methods
 
@@ -802,8 +803,18 @@ func (c *Client) doDataRequest(ctx context.Context, method, endpoint string, bod
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("APCA-API-KEY-ID", c.config.ClientID)
-	req.Header.Set("APCA-API-SECRET-KEY", c.config.SecretKey)
+	
+	// Use separate data API credentials if available, otherwise fall back to broker credentials
+	dataKeyID := c.config.DataAPIKey
+	dataSecret := c.config.DataAPISecret
+	if dataKeyID == "" {
+		dataKeyID = c.config.ClientID
+	}
+	if dataSecret == "" {
+		dataSecret = c.config.SecretKey
+	}
+	req.Header.Set("APCA-API-KEY-ID", dataKeyID)
+	req.Header.Set("APCA-API-SECRET-KEY", dataSecret)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -817,7 +828,7 @@ func (c *Client) doDataRequest(ctx context.Context, method, endpoint string, bod
 	}
 
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("API error: status %d, body: %s", resp.StatusCode, string(respBody))
+		return parseAlpacaError(resp.StatusCode, respBody)
 	}
 
 	if response != nil && len(respBody) > 0 {
@@ -829,7 +840,6 @@ func (c *Client) doDataRequest(ctx context.Context, method, endpoint string, bod
 	return nil
 }
 
-
 // injectTraceContext injects OpenTelemetry trace context into HTTP headers
 func injectTraceContext(ctx context.Context, headers http.Header) {
 	// Use W3C Trace Context format (traceparent, tracestate)
@@ -837,7 +847,7 @@ func injectTraceContext(ctx context.Context, headers http.Header) {
 	if !span.SpanContext().IsValid() {
 		return
 	}
-	
+
 	// Set traceparent header: version-traceid-spanid-flags
 	traceID := span.SpanContext().TraceID().String()
 	spanID := span.SpanContext().SpanID().String()

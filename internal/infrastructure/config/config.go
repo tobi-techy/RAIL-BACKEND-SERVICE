@@ -346,6 +346,8 @@ type AlpacaConfig struct {
 	SecretKey     string `mapstructure:"secret_key"`
 	BaseURL       string `mapstructure:"base_url"`
 	DataBaseURL   string `mapstructure:"data_base_url"`   // Market data API base URL
+	DataAPIKey    string `mapstructure:"data_api_key"`    // Separate key for market data
+	DataAPISecret string `mapstructure:"data_api_secret"` // Separate secret for market data
 	Environment   string `mapstructure:"environment"`     // sandbox or production
 	Timeout       int    `mapstructure:"timeout"`         // Request timeout in seconds
 	FirmAccountNo string `mapstructure:"firm_account_no"` // Firm account for instant funding
@@ -865,9 +867,19 @@ func overrideFromEnv() {
 	// Alpaca
 	if alpacaAPIKey := os.Getenv("ALPACA_API_KEY"); alpacaAPIKey != "" {
 		viper.Set("alpaca.client_id", alpacaAPIKey)
+	} else if apcaAPIKeyID := os.Getenv("APCA_API_KEY_ID"); apcaAPIKeyID != "" {
+		viper.Set("alpaca.client_id", apcaAPIKeyID)
 	}
 	if alpacaAPISecret := os.Getenv("ALPACA_API_SECRET"); alpacaAPISecret != "" {
 		viper.Set("alpaca.secret_key", alpacaAPISecret)
+	} else if apcaAPISecretKey := os.Getenv("APCA_API_SECRET_KEY"); apcaAPISecretKey != "" {
+		viper.Set("alpaca.secret_key", apcaAPISecretKey)
+	}
+	if alpacaDataAPIKey := os.Getenv("ALPACA_DATA_API_KEY"); alpacaDataAPIKey != "" {
+		viper.Set("alpaca.data_api_key", alpacaDataAPIKey)
+	}
+	if alpacaDataAPISecret := os.Getenv("ALPACA_DATA_API_SECRET"); alpacaDataAPISecret != "" {
+		viper.Set("alpaca.data_api_secret", alpacaDataAPISecret)
 	}
 	if alpacaBaseURL := os.Getenv("ALPACA_BASE_URL"); alpacaBaseURL != "" {
 		viper.Set("alpaca.base_url", alpacaBaseURL)
