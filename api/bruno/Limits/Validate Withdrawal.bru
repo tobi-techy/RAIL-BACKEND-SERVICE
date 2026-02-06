@@ -1,0 +1,22 @@
+meta {
+  name: Validate Withdrawal
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/limits/validate/withdrawal
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "amount": "50.00",
+    "currency": "USD"
+  }
+}

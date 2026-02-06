@@ -1,7 +1,7 @@
 meta {
-  name: Social Login (Apple)
+  name: Social Login
   type: http
-  seq: 4
+  seq: 10
 }
 
 post {
@@ -12,36 +12,8 @@ post {
 
 body:json {
   {
-    "provider": "apple",
-    "id_token": "<apple_id_token>",
-    "authorization_code": "<apple_auth_code>"
+    "provider": "google",
+    "idToken": "id-token",
+    "redirectUri": "https://example.com/callback"
   }
-}
-
-script:post-response {
-  if (res.status === 200) {
-    const body = res.getBody();
-    if (body.access_token) {
-      bru.setEnvVar("accessToken", body.access_token);
-    }
-    if (body.refresh_token) {
-      bru.setEnvVar("refreshToken", body.refresh_token);
-    }
-    if (body.user && body.user.id) {
-      bru.setEnvVar("userId", body.user.id);
-    }
-  }
-}
-
-docs {
-  # Apple Sign-In (Primary Auth Method)
-  
-  Per PRD: Apple Sign-In is the primary authentication method for Rail.
-  
-  ## Flow:
-  1. iOS app initiates Apple Sign-In
-  2. User authenticates with Apple
-  3. App receives id_token and authorization_code
-  4. App sends tokens to this endpoint
-  5. Backend validates and creates/logs in user
 }

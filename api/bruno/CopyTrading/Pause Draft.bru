@@ -1,0 +1,15 @@
+meta {
+  name: Pause Draft
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/copy/drafts/{{draftId}}/pause
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

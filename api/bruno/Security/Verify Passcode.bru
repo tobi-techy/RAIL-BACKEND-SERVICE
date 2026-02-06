@@ -1,0 +1,21 @@
+meta {
+  name: Verify Passcode
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/security/passcode/verify
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "passcode": "123456"
+  }
+}

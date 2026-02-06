@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -90,6 +91,13 @@ func (s *verificationService) GenerateAndSendCode(ctx context.Context, identifie
 		return "", fmt.Errorf("failed to generate verification code: %w", err)
 	}
 
+	if isDevEnvironment(s.config.Environment) {
+		s.logger.Info("DEV MODE: Verification code generated",
+			zap.String("identifier_type", identifierType),
+			zap.String("identifier", identifier),
+			zap.String("code", code))
+	}
+
 	verificationData := entities.VerificationCodeData{
 		Code:      code,
 		Attempts:  0,
@@ -106,6 +114,12 @@ func (s *verificationService) GenerateAndSendCode(ctx context.Context, identifie
 	var sendErr error
 	if identifierType == "email" {
 		if s.emailSender == nil {
+			if isDevEnvironment(s.config.Environment) {
+				s.logger.Info("DEV MODE: Verification code for email",
+					zap.String("email", identifier),
+					zap.String("code", code))
+				return code, nil
+			}
 			return "", fmt.Errorf("email service not configured")
 		}
 		sendErr = s.emailSender.SendVerificationEmail(ctx, identifier, code)
@@ -125,6 +139,15 @@ func (s *verificationService) GenerateAndSendCode(ctx context.Context, identifie
 
 	s.logger.Info("Verification code generated and sent", zap.String("identifier", identifier), zap.String("code", code))
 	return code, nil
+}
+
+func isDevEnvironment(env string) bool {
+	switch strings.ToLower(strings.TrimSpace(env)) {
+	case "", "dev", "development", "local", "test", "testing":
+		return true
+	default:
+		return false
+	}
 }
 
 // VerifyCode validates the provided code against the stored one

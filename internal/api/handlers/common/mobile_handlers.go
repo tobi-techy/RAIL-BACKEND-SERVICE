@@ -23,7 +23,13 @@ type MobileHandlers struct {
 	allocationService *allocation.Service
 	investingService  *investing.Service
 	userRepo          repositories.UserRepository
+	cardRepo          CardRepository
 	logger            *zap.Logger
+}
+
+// CardRepository interface for card status checks
+type CardRepository interface {
+	GetActiveVirtualCard(ctx context.Context, userID uuid.UUID) (*entities.BridgeCard, error)
 }
 
 // NewMobileHandlers creates a new mobile handlers instance
@@ -32,6 +38,7 @@ func NewMobileHandlers(
 	allocationService *allocation.Service,
 	investingService *investing.Service,
 	userRepo repositories.UserRepository,
+	cardRepo CardRepository,
 	logger *zap.Logger,
 ) *MobileHandlers {
 	return &MobileHandlers{
@@ -39,6 +46,7 @@ func NewMobileHandlers(
 		allocationService: allocationService,
 		investingService:  investingService,
 		userRepo:          userRepo,
+		cardRepo:          cardRepo,
 		logger:            logger,
 	}
 }
@@ -107,6 +115,14 @@ func (h *MobileHandlers) GetMobileHome(c *gin.Context) {
 		systemStatus = "paused"
 	}
 
+	// Check if user has an active card
+	hasCard := false
+	if h.cardRepo != nil {
+		if card, _ := h.cardRepo.GetActiveVirtualCard(ctx, userID); card != nil {
+			hasCard = true
+		}
+	}
+
 	response := MobileHomeResponse{
 		TotalBalance:   balances.TotalBalance.StringFixed(2),
 		SpendBalance:   balances.SpendingBalance.StringFixed(2),
@@ -114,7 +130,7 @@ func (h *MobileHandlers) GetMobileHome(c *gin.Context) {
 		Currency:       "USD",
 		SystemStatus:   systemStatus,
 		KYCVerified:    kycVerified,
-		HasCard:        false, // TODO: check card status
+		HasCard:        hasCard,
 		LastSyncAt:     time.Now().UTC().Format(time.RFC3339),
 		SyncVersion:    time.Now().Unix(),
 		PendingActions: 0,

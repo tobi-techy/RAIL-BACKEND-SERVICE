@@ -16,6 +16,7 @@ import (
 	"github.com/shopspring/decimal"
 	"github.com/sony/gobreaker"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
 
@@ -515,6 +516,9 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	
+	// Inject distributed trace context for cross-service correlation
+	injectTraceContext(ctx, req.Header)
+	
 	// Authentication
 	if useDataAPI {
 		// Market Data API uses header-based auth
@@ -823,4 +827,23 @@ func (c *Client) doDataRequest(ctx context.Context, method, endpoint string, bod
 	}
 
 	return nil
+}
+
+
+// injectTraceContext injects OpenTelemetry trace context into HTTP headers
+func injectTraceContext(ctx context.Context, headers http.Header) {
+	// Use W3C Trace Context format (traceparent, tracestate)
+	span := trace.SpanFromContext(ctx)
+	if !span.SpanContext().IsValid() {
+		return
+	}
+	
+	// Set traceparent header: version-traceid-spanid-flags
+	traceID := span.SpanContext().TraceID().String()
+	spanID := span.SpanContext().SpanID().String()
+	flags := "00"
+	if span.SpanContext().IsSampled() {
+		flags = "01"
+	}
+	headers.Set("traceparent", "00-"+traceID+"-"+spanID+"-"+flags)
 }

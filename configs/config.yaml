@@ -2,7 +2,7 @@ environment: development
 log_level: info
 
 server:
-  port: 8080
+  port: 8081
   host: 0.0.0.0
   read_timeout: 30
   write_timeout: 30
@@ -56,13 +56,13 @@ rate_limit:
       window: 60               # 1 minute
 
 database:
-  url: "${DATABASE_URL:-}"
-  host: "${DATABASE_HOST:-localhost}"
-  port: ${DATABASE_PORT:-5432}
-  name: "${DATABASE_NAME:-rail_service}"
-  user: "${DATABASE_USER:-postgres}"
-  password: "${DATABASE_PASSWORD:-postgres}"
-  ssl_mode: "${DATABASE_SSL_MODE:-disable}"  # PRODUCTION: Use 'require' or 'verify-full'
+  url: "${DATABASE_URL}"
+  host: "${DATABASE_HOST}"
+  port: 5432
+  name: "${DATABASE_NAME}"
+  user: "${DATABASE_USER}"
+  password: "${DATABASE_PASSWORD}"
+  ssl_mode: "${DATABASE_SSL_MODE}"  # PRODUCTION: Use 'require' or 'verify-full'
   max_open_conns: 25
   max_idle_conns: 5
   conn_max_lifetime: 300
@@ -72,13 +72,13 @@ database:
 
 redis:
   # Single node mode (development/staging)
-  host: "${REDIS_HOST:-localhost}"
-  port: ${REDIS_PORT:-6379}
-  password: "${REDIS_PASSWORD:-}"
-  db: ${REDIS_DB:-0}
+  host: "${REDIS_HOST}"
+  port: 6379
+  password: ""
+  db: 0
   # Cluster mode (production) - requires multiple Redis nodes
-  cluster_mode: ${REDIS_CLUSTER_MODE:-false}
-  cluster_addrs: ${REDIS_CLUSTER_ADDRS:-[]}  # Comma-separated list: "host1:port1,host2:port2"
+  cluster_mode: false
+  cluster_addrs: ""  # Comma-separated list: "host1:port1,host2:port2"
   max_retries: 3
   pool_size: 10
   # Connection pool settings for HA
@@ -155,13 +155,18 @@ kyc:
   level_name: "basic-kyc"
 
 email:
-  provider: ""
+  provider: "mailpit"
   api_key: ""
-  from_email: "no-reply@stackservice.com"
-  from_name: "Stack Service"
+  from_email: "no-reply@rail.app"
+  from_name: "RAIL Service"
   base_url: "http://localhost:3000"
   environment: "development"
   reply_to: ""
+  smtp_host: "mailpit"
+  smtp_port: 1025
+  smtp_username: ""
+  smtp_password: ""
+  smtp_use_tls: false
 
 sms:
   provider: ""
@@ -189,15 +194,12 @@ alpaca:
 
 bridge:
   api_key: "${BRIDGE_API_KEY}"
-  base_url: "https://api.bridge.xyz"
+  base_url: "${BRIDGE_BASE_URL:-https://api.sandbox.bridge.xyz}"
   environment: "sandbox"
   timeout: 30
   max_retries: 3
   webhook_secret: "${BRIDGE_WEBHOOK_SECRET}"
   supported_chains:
-    - "ethereum"
-    - "polygon"
-    - "base"
     - "solana"
 
   transaction_limits:

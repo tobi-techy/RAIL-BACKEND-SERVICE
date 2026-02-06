@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
 
@@ -88,6 +89,10 @@ func NewClient(config Config, logger *zap.Logger) *Client {
 
 // CreateCustomer creates a new customer
 func (c *Client) CreateCustomer(ctx context.Context, req *CreateCustomerRequest) (*Customer, error) {
+	// Debug log the request
+	reqJSON, _ := json.Marshal(req)
+	c.logger.Info("Creating Bridge customer", zap.String("request", string(reqJSON)))
+	
 	var customer Customer
 	if err := c.doRequest(ctx, http.MethodPost, "/v0/customers", req, &customer); err != nil {
 		return nil, fmt.Errorf("create customer failed: %w", err)
@@ -331,6 +336,9 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 			idempotencyKey := getIdempotencyKey(ctx, method, endpoint, reqBody)
 			req.Header.Set("Idempotency-Key", idempotencyKey)
 		}
+		
+		// Inject distributed trace context
+		injectTraceContext(ctx, req.Header)
 
 		c.logger.Debug("Sending Bridge API request", zap.String("method", method), zap.String("url", fullURL))
 
@@ -379,4 +387,21 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 // Config returns the client configuration
 func (c *Client) Config() Config {
 	return c.config
+}
+
+
+// injectTraceContext injects OpenTelemetry trace context into HTTP headers
+func injectTraceContext(ctx context.Context, headers http.Header) {
+	span := trace.SpanFromContext(ctx)
+	if !span.SpanContext().IsValid() {
+		return
+	}
+	
+	traceID := span.SpanContext().TraceID().String()
+	spanID := span.SpanContext().SpanID().String()
+	flags := "00"
+	if span.SpanContext().IsSampled() {
+		flags = "01"
+	}
+	headers.Set("traceparent", "00-"+traceID+"-"+spanID+"-"+flags)
 }

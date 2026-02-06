@@ -1,0 +1,15 @@
+meta {
+  name: Cancel Order
+  type: http
+  seq: 13
+}
+
+delete {
+  url: {{baseUrl}}/api/{{apiVersion}}/investment/orders/{{orderId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

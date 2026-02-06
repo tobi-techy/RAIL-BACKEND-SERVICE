@@ -12,7 +12,7 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
-	"rail_service/pkg/auth"
+	"github.com/rail-service/rail_service/pkg/auth"
 )
 
 // DeviceBoundValidator interface for device-bound token validation

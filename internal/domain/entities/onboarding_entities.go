@@ -398,15 +398,25 @@ type Address struct {
 	Country    string `json:"country" validate:"required,len=2"`
 }
 
-// OnboardingCompleteRequest represents the request to complete onboarding
+// OnboardingCompleteRequest represents the request to complete onboarding with password, personal info, and account creation
 type OnboardingCompleteRequest struct {
-	UserID      uuid.UUID  `json:"-" validate:"-"` // Set from auth context
-	FirstName   string     `json:"firstName" validate:"required"`
-	LastName    string     `json:"lastName" validate:"required"`
-	DateOfBirth *time.Time `json:"dateOfBirth" validate:"required"`
-	Country     string     `json:"country" validate:"required,len=2"`
-	Address     Address    `json:"address" validate:"required"`
-	Phone       *string    `json:"phone,omitempty" validate:"omitempty,e164"`
+	UserID            uuid.UUID  `json:"-" validate:"-"` // Set from auth context
+	Email             *string    `json:"email,omitempty" validate:"omitempty,email"`
+	Password          string     `json:"password" validate:"required,min=12"` // Password set during onboarding
+	FirstName         string     `json:"firstName" validate:"required"`
+	LastName          string     `json:"lastName" validate:"required"`
+	DateOfBirth       *time.Time `json:"dateOfBirth" validate:"required"`
+	Country           string     `json:"country" validate:"required,len=2"`
+	Address           Address    `json:"address" validate:"required"`
+	Phone             *string    `json:"phone,omitempty" validate:"omitempty,e164"`
+	SSN               string     `json:"ssn,omitempty" validate:"omitempty"`
+	SignedAgreementID string     `json:"signedAgreementId,omitempty" validate:"omitempty"`
+	// Optional additional onboarding info
+	EmploymentStatus *string  `json:"employmentStatus,omitempty" validate:"omitempty"`
+	YearlyIncome     *int64   `json:"yearlyIncome,omitempty" validate:"omitempty,gte=0"`
+	UserExperience   *string  `json:"userExperience,omitempty" validate:"omitempty"`
+	InvestmentGoals  []string `json:"investmentGoals,omitempty" validate:"omitempty,dive,min=1"`
+	IPAddress        string   `json:"-" validate:"-"` // Populated from request context
 }
 
 // OnboardingCompleteResponse represents the response after completing onboarding
@@ -420,13 +430,13 @@ type OnboardingCompleteResponse struct {
 
 // OnboardingProgressResponse represents the user's onboarding progress
 type OnboardingProgressResponse struct {
-	UserID          uuid.UUID              `json:"userId"`
-	PercentComplete int                    `json:"percentComplete"`
-	Checklist       []OnboardingCheckItem  `json:"checklist"`
-	CurrentStep     *OnboardingStepType    `json:"currentStep,omitempty"`
-	EstimatedTime   string                 `json:"estimatedTime"`
-	CanInvest       bool                   `json:"canInvest"`
-	CanWithdraw     bool                   `json:"canWithdraw"`
+	UserID          uuid.UUID             `json:"userId"`
+	PercentComplete int                   `json:"percentComplete"`
+	Checklist       []OnboardingCheckItem `json:"checklist"`
+	CurrentStep     *OnboardingStepType   `json:"currentStep,omitempty"`
+	EstimatedTime   string                `json:"estimatedTime"`
+	CanInvest       bool                  `json:"canInvest"`
+	CanWithdraw     bool                  `json:"canWithdraw"`
 }
 
 // OnboardingCheckItem represents a single item in the onboarding checklist
@@ -438,5 +448,3 @@ type OnboardingCheckItem struct {
 	Required    bool               `json:"required"`
 	Order       int                `json:"order"`
 }
-
-

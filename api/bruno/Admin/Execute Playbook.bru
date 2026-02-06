@@ -1,0 +1,15 @@
+meta {
+  name: Execute Playbook
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/admin/security/incidents/{{incidentId}}/playbook
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

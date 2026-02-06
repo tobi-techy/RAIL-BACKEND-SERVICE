@@ -21,12 +21,14 @@ Configure in `environments/local.bru`:
 | `refreshToken` | JWT refresh token (auto-set after login) |
 | `userId` | Current user ID (auto-set after login) |
 | `csrfToken` | CSRF token for protected endpoints |
+| `basketId`, `cardId`, `draftId`, `conductorId`, etc. | Optional IDs used by specific requests |
+| `alpacaAccountId` | Alpaca account ID (set after onboarding complete) |
 
 ## Collection Structure (by Epic)
 
-### Epic 1: User Onboarding & Authentication (`Auth/`, `Onboarding/`)
-- Register, Login, Social Login (Apple Sign-In)
-- Start Onboarding, Get Status, Submit KYC
+### Epic 1: User Onboarding & Authentication (`Auth/`, `Onboarding/`, `Users/`, `KYC/`)
+- Register, Verify, Login, Social Login
+- Complete Onboarding, Submit KYC, KYC Status
 - **Goal**: Download to funded account in < 2 minutes
 
 ### Epic 2: Funding & Deposits (`Funding/`)
@@ -60,23 +62,23 @@ Configure in `environments/local.bru`:
 - Total balance, Spend/Invest split, System status
 - **Goal**: Answer "Is my money working?" at a glance
 
-### Epic 8: Conductors - Copy Trading (`CopyTrading/`, `Admin/`)
-- Apply as Conductor, Create Track
-- List Conductors/Tracks, Follow/Unfollow
-- Admin: Review Applications
+### Epic 8: Conductors - Copy Trading (`CopyTrading/`)
+- List Conductors, View Signals
+- Create/Pause/Resume/Resize Drafts
 - **Goal**: One-tap follow with automatic trade mirroring
 
 ## Testing Flow
 
 ### 1. Basic User Flow
 ```
-1. Auth/Register or Auth/Social Login
-2. Onboarding/Start Onboarding
-3. Onboarding/Submit KYC
-4. Funding/Create Virtual Account
-5. Funding/Get Balances
-6. Allocation/Enable Mode
-7. Funding/Get Station
+1. Auth/Register
+2. Auth/Verify (returns tokens)
+3. Onboarding/Complete Onboarding (sets password)
+4. Onboarding/Submit KYC
+5. Funding/Create Virtual Account
+6. Funding/Get Balances
+7. Allocation/Enable Mode
+8. Account/Get Station
 ```
 
 ### 2. Card Flow
@@ -91,19 +93,10 @@ Configure in `environments/local.bru`:
 ```
 1. Login
 2. CopyTrading/List Conductors
-3. CopyTrading/List Tracks
-4. CopyTrading/Follow Conductor
-5. CopyTrading/List My Drafts
-6. CopyTrading/Unfollow
-```
-
-### 4. Become a Conductor Flow
-```
-1. Login (existing user)
-2. CopyTrading/Apply as Conductor
-3. Admin/List Pending Applications (admin)
-4. Admin/Review Conductor Application (admin)
-5. CopyTrading/Create Track
+3. CopyTrading/Create Draft
+4. CopyTrading/List My Drafts
+5. CopyTrading/Pause or Resize Draft
+6. CopyTrading/Unlink Draft
 ```
 
 ## Core System Rule
@@ -119,4 +112,5 @@ This is system-defined and always on in MVP.
 - All protected endpoints require Bearer token authentication
 - CSRF token is required for state-changing operations
 - Tokens are automatically saved to environment after login
+- Register + Verify creates the user without a password; `Onboarding/Complete Onboarding` sets the password
 - Use `local` environment for development testing

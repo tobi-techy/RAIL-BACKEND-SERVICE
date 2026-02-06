@@ -1,0 +1,15 @@
+meta {
+  name: Get Card Transactions
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/cards/{{cardId}}/transactions
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

@@ -6,17 +6,17 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
-	"github.com/sony/gobreaker"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/repositories"
 	"github.com/rail-service/rail_service/internal/domain/services/balance"
 	"github.com/rail-service/rail_service/internal/domain/services/notification"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
-	"github.com/rail-service/rail_service/internal/domain/entities"
-	"github.com/rail-service/rail_service/internal/domain/repositories"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/metrics"
 	"github.com/rail-service/rail_service/pkg/retry"
+	"github.com/shopspring/decimal"
+	"github.com/sony/gobreaker"
 )
 
 // OffRampService handles off-ramp operations via Bridge
@@ -112,11 +112,11 @@ func (s *OffRampService) InitiateOffRamp(ctx context.Context, virtualAccountID, 
 		req := &bridge.CreateTransferRequest{
 			Amount: amount,
 			Source: bridge.TransferSource{
-				PaymentRail: bridge.PaymentRailEthereum,
+				PaymentRail: bridge.PaymentRailSolana,
 				Currency:    bridge.CurrencyUSDC,
 			},
 			Destination: bridge.TransferDestination{
-				PaymentRail: bridge.PaymentRailEthereum,
+				PaymentRail: bridge.PaymentRailSolana,
 				Currency:    bridge.CurrencyUSD,
 			},
 		}

@@ -1,0 +1,22 @@
+meta {
+  name: Verify MFA Code
+  type: http
+  seq: 25
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/security/mfa/verify
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "code": "123456",
+    "method": "sms"
+  }
+}

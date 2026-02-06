@@ -1,5 +1,5 @@
 meta {
-  name: Enable 70/30 Allocation Mode
+  name: Enable Mode
   type: http
   seq: 1
 }
@@ -16,18 +16,7 @@ auth:bearer {
 
 body:json {
   {
-    "spending_ratio": "0.70",
-    "stash_ratio": "0.30"
+    "spending_ratio": 0.7,
+    "stash_ratio": 0.3
   }
-}
-
-docs {
-  # Enable Smart Allocation Mode
-  
-  Per PRD Core Rule: Every deposit is automatically split 70/30.
-  
-  - 70% → Spend Balance (everyday expenses)
-  - 30% → Invest Engine (automatic allocation)
-  
-  This rule is system-defined and always on in MVP.
 }

@@ -1,7 +1,7 @@
 meta {
-  name: Get Allocation Balances
+  name: Get Balances
   type: http
-  seq: 3
+  seq: 5
 }
 
 get {
@@ -12,14 +12,4 @@ get {
 
 auth:bearer {
   token: {{accessToken}}
-}
-
-docs {
-  # Get Allocation Balances
-  
-  Returns detailed allocation balances:
-  - Spending balance (70% allocation)
-  - Stash/Invest balance (30% allocation)
-  - Total balance
-  - Spending used in current period
 }

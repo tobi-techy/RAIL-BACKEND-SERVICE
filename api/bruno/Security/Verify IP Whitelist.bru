@@ -1,0 +1,21 @@
+meta {
+  name: Verify IP Whitelist
+  type: http
+  seq: 17
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/security/ip-whitelist/{{ipWhitelistId}}/verify
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "code": "123456"
+  }
+}

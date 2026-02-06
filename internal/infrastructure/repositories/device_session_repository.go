@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 
-	"rail_service/pkg/auth"
+	"github.com/rail-service/rail_service/pkg/auth"
 )
 
 // DeviceSessionRepository implements auth.SessionStore

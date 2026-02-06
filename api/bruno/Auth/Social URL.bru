@@ -1,0 +1,18 @@
+meta {
+  name: Social URL
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/auth/social/url
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "provider": "google",
+    "redirectUri": "https://example.com/callback"
+  }
+}

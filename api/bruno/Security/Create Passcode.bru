@@ -1,0 +1,22 @@
+meta {
+  name: Create Passcode
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/security/passcode
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "passcode": "123456",
+    "confirmPasscode": "123456"
+  }
+}

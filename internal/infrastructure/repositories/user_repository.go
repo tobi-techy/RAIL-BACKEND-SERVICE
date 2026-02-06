@@ -391,6 +391,7 @@ func (r *UserRepository) CreateUserFromAuth(ctx context.Context, req *entities.R
 }
 
 // CreateUserWithHash creates a new user with a pre-hashed password (used after verification)
+// If passwordHash is empty, user will need to set password during onboarding
 func (r *UserRepository) CreateUserWithHash(ctx context.Context, email string, phone *string, passwordHash string) (*entities.User, error) {
 	user := &entities.User{
 		ID:               uuid.New(),

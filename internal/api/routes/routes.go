@@ -2,6 +2,7 @@ package routes
 
 import (
 	"context"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -108,7 +109,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.ZapLog,
 		*container.UserRepo,
 		container.GetVerificationService(),
-		*container.GetOnboardingJobService(),
 		container.GetOnboardingService(),
 		container.EmailService,
 		container.KYCProvider,
@@ -167,6 +167,12 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// Sensitive auth endpoints with stricter rate limiting
 			authRateLimited := auth.Group("/")
 			authRateLimited.Use(middleware.AuthRateLimit(5))
+			if container.LoginAttemptTracker != nil {
+				authRateLimited.Use(middleware.LoginRateLimiting(container.LoginAttemptTracker, container.Logger))
+			}
+			if lp := container.GetLoginProtectionService(); lp != nil {
+				authRateLimited.Use(middleware.LoginProtection(lp, container.ZapLog))
+			}
 			{
 				authRateLimited.POST("/login", authHandlers.Login)
 				authRateLimited.POST("/forgot-password", authHandlers.ForgotPassword)
@@ -288,6 +294,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					container.GetAllocationService(),
 					container.GetInvestingService(),
 					*container.UserRepo,
+					container.CardRepo,
 					container.ZapLog,
 				)
 				mobile.GET("/home", mobileHandlers.GetMobileHome)
@@ -296,7 +303,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			}
 
 			// Funding routes (OpenAPI spec compliant)
+			// Apply timeout for routes that make external API calls
 			funding := protected.Group("/funding")
+			funding.Use(middleware.TimeoutMiddleware(30 * time.Second))
 			{
 				funding.POST("/deposit/address", walletFundingHandlers.CreateDepositAddress)
 				funding.GET("/confirmations", walletFundingHandlers.GetFundingConfirmations)
@@ -550,7 +559,22 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		}
 
 		// Webhooks (external systems) - OpenAPI spec compliant
+		// Apply webhook security middleware (rate limiting, IP whitelisting, replay protection)
+		webhookConfig := middleware.DefaultWebhookSecurityConfig()
+		webhookConfig.SkipVerification = container.Config.Environment == "development"
+		webhookConfig.Secrets = map[string]string{
+			"bridge": container.Config.Bridge.WebhookSecret,
+			"alpaca": container.Config.Alpaca.WebhookSecret,
+		}
+
 		webhooks := v1.Group("/webhooks")
+		if redisNative := container.RedisClient.Client(); redisNative != nil {
+			webhooks.Use(middleware.WebhookSecurityWithRedisV8(
+				redisNative,
+				webhookConfig,
+				container.ZapLog,
+			))
+		}
 		{
 			webhooks.POST("/chain-deposit", walletFundingHandlers.ChainDepositWebhook)
 			webhooks.POST("/brokerage-fill", walletFundingHandlers.BrokerageFillWebhook)

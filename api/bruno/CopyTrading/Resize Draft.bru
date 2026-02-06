@@ -1,0 +1,21 @@
+meta {
+  name: Resize Draft
+  type: http
+  seq: 9
+}
+
+put {
+  url: {{baseUrl}}/api/{{apiVersion}}/copy/drafts/{{draftId}}/resize
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "allocation": "150.00"
+  }
+}

@@ -1,0 +1,15 @@
+meta {
+  name: Unlink Social Account
+  type: http
+  seq: 8
+}
+
+delete {
+  url: {{baseUrl}}/api/{{apiVersion}}/security/social-accounts/{{provider}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

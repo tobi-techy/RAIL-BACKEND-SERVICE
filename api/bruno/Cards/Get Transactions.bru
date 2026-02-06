@@ -1,7 +1,7 @@
 meta {
-  name: Get Card Transactions
+  name: Get Transactions
   type: http
-  seq: 4
+  seq: 6
 }
 
 get {
@@ -12,9 +12,4 @@ get {
 
 auth:bearer {
   token: {{accessToken}}
-}
-
-query {
-  limit: 20
-  offset: 0
 }

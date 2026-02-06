@@ -60,5 +60,5 @@ CREATE INDEX idx_webhook_events_provider_event ON webhook_events(provider, event
 CREATE INDEX idx_webhook_events_nonce ON webhook_events(provider, nonce) WHERE nonce IS NOT NULL;
 CREATE INDEX idx_webhook_events_processed_at ON webhook_events(processed_at);
 
--- Cleanup old webhook events (keep 7 days)
-CREATE INDEX idx_webhook_events_cleanup ON webhook_events(processed_at) WHERE processed_at < NOW() - INTERVAL '7 days';
+-- Cleanup old webhook events (keep 7 days) - use simple index, cleanup via scheduled job
+CREATE INDEX idx_webhook_events_cleanup ON webhook_events(processed_at);

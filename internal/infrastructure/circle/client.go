@@ -18,6 +18,7 @@ import (
 	"github.com/sony/gobreaker"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	entitysecret "github.com/rail-service/rail_service/internal/domain/services/entity_secret"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
 
@@ -384,6 +385,9 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, request
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "Stack-Service/1.0")
 	req.Header.Set("X-Request-ID", requestID)
+	
+	// Inject distributed trace context
+	injectTraceContext(ctx, req.Header)
 
 	c.logger.Debug("Making Circle API request",
 		zap.String("request_id", requestID),
@@ -806,4 +810,21 @@ func (c *Client) GetCCTPTransaction(ctx context.Context, transactionID string) (
 		zap.String("txHash", status.TxHash))
 
 	return status, nil
+}
+
+
+// injectTraceContext injects OpenTelemetry trace context into HTTP headers
+func injectTraceContext(ctx context.Context, headers http.Header) {
+	span := trace.SpanFromContext(ctx)
+	if !span.SpanContext().IsValid() {
+		return
+	}
+	
+	traceID := span.SpanContext().TraceID().String()
+	spanID := span.SpanContext().SpanID().String()
+	flags := "00"
+	if span.SpanContext().IsSampled() {
+		flags = "01"
+	}
+	headers.Set("traceparent", "00-"+traceID+"-"+spanID+"-"+flags)
 }

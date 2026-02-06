@@ -1,0 +1,25 @@
+meta {
+  name: Create Wallets For User
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/admin/wallet/create
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "user_id": "{{userId}}",
+    "chains": [
+      "ethereum",
+      "polygon"
+    ]
+  }
+}

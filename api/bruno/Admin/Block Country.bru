@@ -1,0 +1,23 @@
+meta {
+  name: Block Country
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/admin/security/blocked-countries
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "country_code": "IR",
+    "country_name": "Iran",
+    "reason": "Compliance"
+  }
+}

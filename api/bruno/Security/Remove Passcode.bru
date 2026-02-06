@@ -1,0 +1,21 @@
+meta {
+  name: Remove Passcode
+  type: http
+  seq: 5
+}
+
+delete {
+  url: {{baseUrl}}/api/{{apiVersion}}/security/passcode
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "passcode": "123456"
+  }
+}

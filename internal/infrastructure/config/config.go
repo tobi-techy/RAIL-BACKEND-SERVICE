@@ -480,6 +480,10 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("error unmarshaling config: %w", err)
 	}
 
+	if strings.TrimSpace(config.Email.Provider) == "" && isDevEnvironment(config.Environment) {
+		config.Email.Provider = "mailpit"
+	}
+
 	// Build database URL if not provided
 	if config.Database.URL == "" {
 		config.Database.URL = fmt.Sprintf(
@@ -956,4 +960,13 @@ func validate(config *Config) error {
 	}
 
 	return nil
+}
+
+func isDevEnvironment(env string) bool {
+	switch strings.ToLower(strings.TrimSpace(env)) {
+	case "", "dev", "development", "local", "test", "testing":
+		return true
+	default:
+		return false
+	}
 }

@@ -156,7 +156,7 @@ func (a *WithdrawalBridgeAdapter) ProcessWithdrawal(ctx context.Context, req *en
 	transferReq := &bridge.CreateTransferRequest{
 		Amount: req.Amount.String(),
 		Source: bridge.TransferSource{
-			PaymentRail: bridge.PaymentRailEthereum, // Default source
+			PaymentRail: bridge.PaymentRailSolana, // Solana-only support
 			Currency:    bridge.CurrencyUSDC,
 		},
 		Destination: bridge.TransferDestination{
@@ -201,7 +201,7 @@ func mapChainToPaymentRail(chain string) bridge.PaymentRail {
 	case "BASE", "base":
 		return bridge.PaymentRailBase
 	default:
-		return bridge.PaymentRailEthereum
+		return bridge.PaymentRailSolana
 	}
 }
 
@@ -218,27 +218,63 @@ func (a *BridgeOnboardingAdapter) CreateCustomer(ctx context.Context, req *entit
 		Email:     req.Email,
 	}
 
-	customer, err := a.adapter.CreateCustomerWithWallet(ctx, &bridge.CreateCustomerWithWalletRequest{
-		FirstName: req.FirstName,
-		LastName:  req.LastName,
-		Email:     req.Email,
-		Chain:     bridge.PaymentRailEthereum, // Default chain
-	})
-	if err != nil {
-		// Fallback to just creating customer without wallet
-		cust, err := a.adapter.Client().CreateCustomer(ctx, bridgeReq)
-		if err != nil {
-			return nil, err
+	// Add residential address if provided
+	if req.Address != nil {
+		// Convert 2-letter country code to 3-letter (Bridge requires ISO 3166-1 alpha-3)
+		country := req.Country
+		if len(country) == 2 {
+			switch country {
+			case "US":
+				country = "USA"
+			case "GB":
+				country = "GBR"
+			case "CA":
+				country = "CAN"
+			// Add more as needed
+			}
 		}
-		return &entities.CreateAccountResponse{
-			AccountID: cust.ID,
-			Status:    string(cust.Status),
-		}, nil
+		
+		bridgeReq.ResidentialAddress = &bridge.Address{
+			StreetLine1: req.Address.Street,
+			City:        req.Address.City,
+			Subdivision: req.Address.State,
+			PostalCode:  req.Address.PostalCode,
+			Country:     country,
+		}
 	}
 
+	// Add birth date if provided
+	if req.DateOfBirth != nil {
+		bridgeReq.BirthDate = req.DateOfBirth.Format("2006-01-02")
+	}
+
+	// Add SSN if provided (required for production, optional for sandbox)
+	if req.SSN != "" {
+		bridgeReq.IdentifyingInformation = []bridge.IdentifyingInfo{
+			{
+				Type:           "ssn",
+				IssuingCountry: "usa",
+				Number:         req.SSN,
+			},
+		}
+	}
+	
+	// For sandbox: use dummy signed_agreement_id if not provided
+	// For production: this must be obtained from Bridge ToS API first
+	// Note: Sandbox may auto-approve without signed_agreement_id
+	if req.SignedAgreementID != "" {
+		bridgeReq.SignedAgreementID = req.SignedAgreementID
+	}
+
+	// Use direct customer creation (not CreateCustomerWithWallet) to ensure all fields are sent
+	cust, err := a.adapter.Client().CreateCustomer(ctx, bridgeReq)
+	if err != nil {
+		return nil, err
+	}
+	
 	return &entities.CreateAccountResponse{
-		AccountID: customer.Customer.ID,
-		Status:    string(customer.Customer.Status),
+		AccountID: cust.ID,
+		Status:    string(cust.Status),
 	}, nil
 }
 
@@ -421,9 +457,9 @@ type Container struct {
 	LoginAttemptTracker *ratelimit.LoginAttemptTracker
 
 	// Device-Bound JWT (Priority 1)
-	DeviceSessionRepo     *repositories.DeviceSessionRepository
+	DeviceSessionRepo      *repositories.DeviceSessionRepository
 	DeviceBindingAuditRepo *repositories.DeviceBindingAuditRepository
-	DeviceBoundJWTService *auth.DeviceBoundJWTService
+	DeviceBoundJWTService  *auth.DeviceBoundJWTService
 
 	// Adaptive Rate Limiting (Priority 3)
 	RiskScoringEngine   *ratelimit.RiskScoringEngine
@@ -1348,6 +1384,11 @@ func ptrOf[T any](v T) *T {
 }
 
 func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChain {
+	solanaOnly := map[entities.WalletChain]struct{}{
+		entities.WalletChainSolana:    {},
+		entities.WalletChainSOLDevnet: {},
+	}
+
 	if len(raw) == 0 {
 		logger.Warn("circle.supported_chains not configured; defaulting to SOL-DEVNET")
 		return []entities.WalletChain{
@@ -1367,6 +1408,10 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 			logger.Warn("Ignoring unsupported wallet chain from configuration", zap.String("chain", string(chain)))
 			continue
 		}
+		if _, allowed := solanaOnly[chain]; !allowed {
+			logger.Warn("Ignoring chain due to Solana-only support", zap.String("chain", string(chain)))
+			continue
+		}
 		if _, ok := seen[chain]; ok {
 			continue
 		}
@@ -1375,7 +1420,7 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 	}
 
 	if len(normalized) == 0 {
-		logger.Warn("circle.supported_chains contained no valid entries; defaulting to SOL-DEVNET")
+		logger.Warn("circle.supported_chains contained no valid Solana entries; defaulting to SOL-DEVNET")
 		return []entities.WalletChain{
 			entities.WalletChainSOLDevnet,
 		}
@@ -2188,7 +2233,6 @@ func (c *Container) GetInvestmentStashHandlers() *handlers.InvestmentStashHandle
 	return handlers.NewInvestmentStashHandlers(
 		c.AllocationService,
 		c.InvestingService,
-		c.CopyTradingService,
 		c.ZapLog,
 	)
 }
