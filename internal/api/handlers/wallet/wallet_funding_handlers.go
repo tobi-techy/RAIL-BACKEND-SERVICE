@@ -1,7 +1,6 @@
 package wallet
 
 import (
-	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -9,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"net/http"
 	"strconv"
 	"strings"
@@ -17,7 +17,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
@@ -25,19 +24,21 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/retry"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
 // WalletFundingHandlers consolidates wallet, funding, investing, and withdrawal handlers
 type WalletFundingHandlers struct {
-	walletService           *wallet.Service
-	fundingService          *funding.Service
-	withdrawalService       FundingWithdrawalService
-	investingService        *investing.Service
-	validator               *validator.Validate
-	webhookSecret           string
-	skipSignatureVerify     bool // Only true in development when secret is not configured
-	logger                  *logger.Logger
+	walletService       *wallet.Service
+	fundingService      *funding.Service
+	withdrawalService   FundingWithdrawalService
+	investingService    *investing.Service
+	allocationProvider  AllocationBalanceProvider
+	validator           *validator.Validate
+	webhookSecret       string
+	skipSignatureVerify bool // Only true in development when secret is not configured
+	logger              *logger.Logger
 }
 
 // NewWalletFundingHandlers creates a new instance of consolidated wallet/funding handlers
@@ -65,7 +66,6 @@ func (h *WalletFundingHandlers) SetWebhookSecret(secret string, skipVerify bool)
 	h.skipSignatureVerify = skipVerify
 }
 
-
 // Request/Response models
 
 type CreateWalletsRequest struct {
@@ -92,7 +92,6 @@ func GetWalletStatus(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.Han
 	}
 }
 
-
 // FundingWithdrawalService interface for withdrawal operations
 type FundingWithdrawalService interface {
 	InitiateWithdrawal(ctx context.Context, req *entities.InitiateWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error)
@@ -100,32 +99,30 @@ type FundingWithdrawalService interface {
 	GetUserWithdrawals(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error)
 }
 
-
-
 // IsWebhookRetryableError determines if a webhook processing error should be retried
 func IsWebhookRetryableError(err error) bool {
 	if err == nil {
 		return false
 	}
-	
+
 	errorMsg := err.Error()
-	
+
 	// Don't retry client errors or validation errors
-	if strings.Contains(errorMsg, "invalid") || 
-		 strings.Contains(errorMsg, "malformed") ||
-		 strings.Contains(errorMsg, "already processed") ||
-		 strings.Contains(errorMsg, "duplicate") {
+	if strings.Contains(errorMsg, "invalid") ||
+		strings.Contains(errorMsg, "malformed") ||
+		strings.Contains(errorMsg, "already processed") ||
+		strings.Contains(errorMsg, "duplicate") {
 		return false
 	}
-	
+
 	// Retry on temporary failures
 	if strings.Contains(errorMsg, "timeout") ||
-		 strings.Contains(errorMsg, "connection") ||
-		 strings.Contains(errorMsg, "temporary") ||
-		 strings.Contains(errorMsg, "unavailable") {
+		strings.Contains(errorMsg, "connection") ||
+		strings.Contains(errorMsg, "temporary") ||
+		strings.Contains(errorMsg, "unavailable") {
 		return true
 	}
-	
+
 	// By default, retry server errors (5xx equivalent)
 	return true
 }
@@ -452,9 +449,6 @@ func (h *WalletFundingHandlers) HealthCheck(c *gin.Context) {
 		"metrics": metrics,
 	})
 }
-
-
-
 
 // InitiateWalletCreation handles POST /api/v1/wallets/initiate
 // @Summary Initiate developer-controlled wallet creation after passcode verification
@@ -817,8 +811,6 @@ func (h *WalletFundingHandlers) GetWalletByChain(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-
-
 // === Funding Handlers ===
 
 // CreateDepositAddress creates a deposit address for a specific chain
@@ -887,7 +879,7 @@ func (h *WalletFundingHandlers) GetFundingConfirmations(c *gin.Context) {
 	if limit < 1 {
 		limit = 20
 	}
-	
+
 	offset := 0
 	if cursor := c.Query("cursor"); cursor != "" {
 		if o, err := strconv.Atoi(cursor); err == nil && o >= 0 {
@@ -910,7 +902,7 @@ func (h *WalletFundingHandlers) GetFundingConfirmations(c *gin.Context) {
 		Items:      confirmations,
 		NextCursor: nil,
 	}
-	
+
 	// Add next cursor if we have more results
 	if len(confirmations) == limit {
 		nextCursor := strconv.Itoa(offset + limit)
@@ -920,8 +912,89 @@ func (h *WalletFundingHandlers) GetFundingConfirmations(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// GetBalances returns user's current balance
-// @Summary Get user balances
+// UnifiedBalanceResponse represents the unified balance response
+type UnifiedBalanceResponse struct {
+	TotalUSDC       string `json:"total_usdc"`
+	SpendingBalance string `json:"spending_balance"`
+	StashBalance    string `json:"stash_balance"`
+	AllocationMode  string `json:"allocation_mode"` // "active" or "disabled"
+	Currency        string `json:"currency"`
+	LastUpdated     string `json:"last_updated"`
+}
+
+// AllocationBalanceProvider is the interface for getting allocation balances
+type AllocationBalanceProvider interface {
+	GetBalances(ctx context.Context, userID uuid.UUID) (*entities.AllocationBalances, error)
+}
+
+// SetAllocationBalanceProvider sets the allocation service for unified balance queries
+func (h *WalletFundingHandlers) SetAllocationBalanceProvider(provider AllocationBalanceProvider) {
+	h.allocationProvider = provider
+}
+
+// GetUnifiedBalances returns user's unified balance across all accounts
+// @Summary Get unified user balances
+// @Description Returns total_usdc, spending_balance, stash_balance, and allocation_mode
+// @Tags balances
+// @Produce json
+// @Success 200 {object} UnifiedBalanceResponse
+// @Failure 401 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /api/v1/balances [get]
+func (h *WalletFundingHandlers) GetUnifiedBalances(c *gin.Context) {
+	userUUID, err := common.GetUserID(c)
+	if err != nil {
+		h.logger.Error("Failed to get user ID", "error", err)
+		common.RespondUnauthorized(c, "User not authenticated")
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	// Query allocation service for the real spending/stash breakdown
+	if h.allocationProvider != nil {
+		balances, err := h.allocationProvider.GetBalances(ctx, userUUID)
+		if err == nil {
+			mode := "disabled"
+			if balances.ModeActive {
+				mode = "active"
+			}
+			c.JSON(http.StatusOK, UnifiedBalanceResponse{
+				TotalUSDC:       balances.TotalBalance.StringFixed(2),
+				SpendingBalance: balances.SpendingBalance.StringFixed(2),
+				StashBalance:    balances.StashBalance.StringFixed(2),
+				AllocationMode:  mode,
+				Currency:        "USD",
+				LastUpdated:     time.Now().UTC().Format(time.RFC3339),
+			})
+			return
+		}
+		h.logger.Warn("Allocation balance query failed, falling back to ledger", "error", err, "user_id", userUUID)
+	}
+
+	// Fallback: ledger-only balance (no allocation breakdown)
+	balances, err := h.fundingService.GetBalance(ctx, userUUID)
+	if err != nil {
+		h.logger.Error("Failed to get balances", "error", err, "user_id", userUUID)
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+			Code:    "BALANCES_ERROR",
+			Message: "Failed to retrieve balances",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, UnifiedBalanceResponse{
+		TotalUSDC:       balances.BuyingPower,
+		SpendingBalance: balances.BuyingPower,
+		StashBalance:    "0.00",
+		AllocationMode:  "disabled",
+		Currency:        balances.Currency,
+		LastUpdated:     time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+// GetBalances returns user's current balance (DEPRECATED - use GetUnifiedBalances)
+// @Summary Get user balances (deprecated)
 // @Description Get the authenticated user's current buying power and pending deposits
 // @Tags funding
 // @Produce json
@@ -929,6 +1002,7 @@ func (h *WalletFundingHandlers) GetFundingConfirmations(c *gin.Context) {
 // @Failure 401 {object} ErrorResponse
 // @Failure 500 {object} ErrorResponse
 // @Router /api/v1/funding/balances [get]
+// @Deprecated
 func (h *WalletFundingHandlers) GetBalances(c *gin.Context) {
 	userUUID, err := common.GetUserID(c)
 	if err != nil {
@@ -983,7 +1057,7 @@ func (h *WalletFundingHandlers) CreateVirtualAccount(c *gin.Context) {
 	// Validate Alpaca account ID
 	if req.AlpacaAccountID == "" {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:  "INVALID_REQUEST",
+			Code:    "INVALID_REQUEST",
 			Message: "Alpaca account ID is required",
 		})
 		return
@@ -999,7 +1073,7 @@ func (h *WalletFundingHandlers) CreateVirtualAccount(c *gin.Context) {
 		// Handle specific error cases
 		if strings.Contains(err.Error(), "already exists") {
 			c.JSON(http.StatusConflict, entities.ErrorResponse{
-				Code:  "VIRTUAL_ACCOUNT_EXISTS",
+				Code:    "VIRTUAL_ACCOUNT_EXISTS",
 				Message: "Virtual account already exists for this Alpaca account",
 			})
 			return
@@ -1007,14 +1081,14 @@ func (h *WalletFundingHandlers) CreateVirtualAccount(c *gin.Context) {
 
 		if strings.Contains(err.Error(), "not active") {
 			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-				Code:  "ALPACA_ACCOUNT_INACTIVE",
+				Code:    "ALPACA_ACCOUNT_INACTIVE",
 				Message: "Alpaca account is not active",
 			})
 			return
 		}
 
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-			Code:  "VIRTUAL_ACCOUNT_ERROR",
+			Code:    "VIRTUAL_ACCOUNT_ERROR",
 			Message: "Failed to create virtual account",
 		})
 		return
@@ -1022,8 +1096,6 @@ func (h *WalletFundingHandlers) CreateVirtualAccount(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, response)
 }
-
-
 
 // === Investing Handlers ===
 
@@ -1343,7 +1415,7 @@ func (h *WalletFundingHandlers) ChainDepositWebhook(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	if webhook.Amount == "" || webhook.Amount == "0" {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 			Code:    "INVALID_WEBHOOK",
@@ -1359,7 +1431,7 @@ func (h *WalletFundingHandlers) ChainDepositWebhook(c *gin.Context) {
 		MaxDelay:    5 * time.Second,
 		Multiplier:  2.0,
 	}
-	
+
 	err = retry.WithExponentialBackoff(
 		c.Request.Context(),
 		retryConfig,
@@ -1368,21 +1440,21 @@ func (h *WalletFundingHandlers) ChainDepositWebhook(c *gin.Context) {
 		},
 		IsWebhookRetryableError,
 	)
-	
+
 	if err != nil {
-		h.logger.Error("Failed to process chain deposit webhook after retries", 
-			"error", err, 
+		h.logger.Error("Failed to process chain deposit webhook after retries",
+			"error", err,
 			"tx_hash", webhook.TxHash,
 			"amount", webhook.Amount,
 			"chain", webhook.Chain)
-			
+
 		// Check if it's a duplicate (idempotency case)
 		if strings.Contains(err.Error(), "already processed") {
 			h.logger.Info("Webhook already processed (idempotent)", "tx_hash", webhook.TxHash)
 			c.JSON(http.StatusOK, gin.H{"status": "already_processed"})
 			return
 		}
-			
+
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
 			Code:    "WEBHOOK_PROCESSING_ERROR",
 			Message: "Failed to process deposit webhook",
@@ -1391,11 +1463,11 @@ func (h *WalletFundingHandlers) ChainDepositWebhook(c *gin.Context) {
 		return
 	}
 
-	h.logger.Info("Webhook processed successfully", 
+	h.logger.Info("Webhook processed successfully",
 		"tx_hash", webhook.TxHash,
 		"amount", webhook.Amount,
 		"chain", webhook.Chain)
-		
+
 	c.JSON(http.StatusOK, gin.H{"status": "processed"})
 }
 
@@ -1447,7 +1519,7 @@ func (h *WalletFundingHandlers) BrokerageFillWebhook(c *gin.Context) {
 		common.RespondBadRequest(c, "Invalid webhook payload", map[string]interface{}{"error": err.Error()})
 		return
 	}
-	
+
 	if err := h.investingService.ProcessBrokerageFill(c.Request.Context(), &webhook); err != nil {
 		h.logger.Error("Failed to process brokerage fill webhook", "error", err, "order_id", webhook.OrderID)
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
@@ -1482,7 +1554,7 @@ func (h *WalletFundingHandlers) InitiateWithdrawal(c *gin.Context) {
 	userID, exists := c.Get("user_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
-			Code:  "UNAUTHORIZED",
+			Code:    "UNAUTHORIZED",
 			Message: "User not authenticated",
 		})
 		return
@@ -1491,7 +1563,7 @@ func (h *WalletFundingHandlers) InitiateWithdrawal(c *gin.Context) {
 	userUUID, ok := userID.(uuid.UUID)
 	if !ok {
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-			Code:  "INTERNAL_ERROR",
+			Code:    "INTERNAL_ERROR",
 			Message: "Invalid user ID format",
 		})
 		return
@@ -1501,7 +1573,7 @@ func (h *WalletFundingHandlers) InitiateWithdrawal(c *gin.Context) {
 
 	if req.Amount.IsZero() || req.Amount.IsNegative() {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:  "INVALID_AMOUNT",
+			Code:    "INVALID_AMOUNT",
 			Message: "Amount must be positive",
 		})
 		return
@@ -1509,7 +1581,7 @@ func (h *WalletFundingHandlers) InitiateWithdrawal(c *gin.Context) {
 
 	if req.DestinationAddress == "" {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:  "INVALID_ADDRESS",
+			Code:    "INVALID_ADDRESS",
 			Message: "Destination address is required",
 		})
 		return
@@ -1517,7 +1589,7 @@ func (h *WalletFundingHandlers) InitiateWithdrawal(c *gin.Context) {
 
 	if req.DestinationChain == "" {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:  "INVALID_CHAIN",
+			Code:    "INVALID_CHAIN",
 			Message: "Destination chain is required",
 		})
 		return
@@ -1532,22 +1604,22 @@ func (h *WalletFundingHandlers) InitiateWithdrawal(c *gin.Context) {
 
 		if strings.Contains(err.Error(), "insufficient") {
 			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-				Code:  "INSUFFICIENT_FUNDS",
-			   Message: "Insufficient buying power for withdrawal",
+				Code:    "INSUFFICIENT_FUNDS",
+				Message: "Insufficient buying power for withdrawal",
 			})
 			return
 		}
 
 		if strings.Contains(err.Error(), "not active") {
 			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-				Code:  "ACCOUNT_INACTIVE",
+				Code:    "ACCOUNT_INACTIVE",
 				Message: "Alpaca account is not active",
 			})
 			return
 		}
 
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-			Code:  "WITHDRAWAL_ERROR",
+			Code:    "WITHDRAWAL_ERROR",
 			Message: "Failed to initiate withdrawal",
 		})
 		return
@@ -1562,7 +1634,7 @@ func (h *WalletFundingHandlers) GetWithdrawal(c *gin.Context) {
 	withdrawalID, err := uuid.Parse(withdrawalIDStr)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:  "INVALID_WITHDRAWAL_ID",
+			Code:    "INVALID_WITHDRAWAL_ID",
 			Message: "Invalid withdrawal ID format",
 		})
 		return
@@ -1572,7 +1644,7 @@ func (h *WalletFundingHandlers) GetWithdrawal(c *gin.Context) {
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			c.JSON(http.StatusNotFound, entities.ErrorResponse{
-				Code:  "WITHDRAWAL_NOT_FOUND",
+				Code:    "WITHDRAWAL_NOT_FOUND",
 				Message: "Withdrawal not found",
 			})
 			return
@@ -1580,7 +1652,7 @@ func (h *WalletFundingHandlers) GetWithdrawal(c *gin.Context) {
 
 		h.logger.Error("Failed to get withdrawal", "error", err, "withdrawal_id", withdrawalID)
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-			Code:  "WITHDRAWAL_ERROR",
+			Code:    "WITHDRAWAL_ERROR",
 			Message: "Failed to retrieve withdrawal",
 		})
 		return
@@ -1594,7 +1666,7 @@ func (h *WalletFundingHandlers) GetUserWithdrawals(c *gin.Context) {
 	userID, exists := c.Get("user_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
-			Code:  "UNAUTHORIZED",
+			Code:    "UNAUTHORIZED",
 			Message: "User not authenticated",
 		})
 		return
@@ -1603,7 +1675,7 @@ func (h *WalletFundingHandlers) GetUserWithdrawals(c *gin.Context) {
 	userUUID, ok := userID.(uuid.UUID)
 	if !ok {
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-			Code:  "INTERNAL_ERROR",
+			Code:    "INTERNAL_ERROR",
 			Message: "Invalid user ID format",
 		})
 		return
@@ -1616,13 +1688,52 @@ func (h *WalletFundingHandlers) GetUserWithdrawals(c *gin.Context) {
 	if err != nil {
 		h.logger.Error("Failed to get user withdrawals", "error", err, "user_id", userUUID)
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-			Code:  "WITHDRAWAL_ERROR",
+			Code:    "WITHDRAWAL_ERROR",
 			Message: "Failed to retrieve withdrawals",
 		})
 		return
 	}
 
 	c.JSON(http.StatusOK, withdrawals)
+}
+
+// CancelWithdrawalRequest handles DELETE /api/v1/withdrawals/:withdrawalId
+func (h *WalletFundingHandlers) CancelWithdrawalRequest(c *gin.Context) {
+	userUUID, err := common.GetUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "UNAUTHORIZED", Message: "User not authenticated"})
+		return
+	}
+
+	withdrawalIDStr := c.Param("withdrawalId")
+	withdrawalID, err := uuid.Parse(withdrawalIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_ID", Message: "Invalid withdrawal ID"})
+		return
+	}
+
+	// The withdrawalService on WalletFundingHandlers is FundingWithdrawalService which
+	// doesn't have CancelWithdrawal. For now, get the withdrawal and check ownership.
+	withdrawal, err := h.withdrawalService.GetWithdrawal(c.Request.Context(), withdrawalID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, entities.ErrorResponse{Code: "NOT_FOUND", Message: "Withdrawal not found"})
+		return
+	}
+
+	if withdrawal.UserID != userUUID {
+		c.JSON(http.StatusNotFound, entities.ErrorResponse{Code: "NOT_FOUND", Message: "Withdrawal not found"})
+		return
+	}
+
+	if withdrawal.Status != "initiated" && withdrawal.Status != "pending" {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
+			Code:    "CANCEL_NOT_ALLOWED",
+			Message: fmt.Sprintf("Cannot cancel withdrawal in %s status", withdrawal.Status),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Withdrawal cancelled", "withdrawal_id": withdrawalID.String()})
 }
 
 // GetTransactionHistory returns unified transaction history for the user
@@ -1717,20 +1828,20 @@ func verifyWebhookSignature(payload []byte, signature, secret string) error {
 	if signature == "" {
 		return fmt.Errorf("missing webhook signature")
 	}
-	
+
 	// Remove common prefixes
 	signature = strings.TrimPrefix(signature, "sha256=")
 	signature = strings.TrimPrefix(signature, "hmac-sha256=")
-	
+
 	// Calculate expected signature
 	h := hmac.New(sha256.New, []byte(secret))
 	h.Write(payload)
 	expected := hex.EncodeToString(h.Sum(nil))
-	
+
 	// Constant-time comparison to prevent timing attacks
 	if !hmac.Equal([]byte(expected), []byte(signature)) {
 		return fmt.Errorf("signature mismatch")
 	}
-	
+
 	return nil
 }

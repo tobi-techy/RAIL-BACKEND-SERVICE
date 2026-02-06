@@ -42,7 +42,7 @@ func SetupStackRoutes(db *sql.DB, cfg *config.Config, log *logger.Logger, zapLog
 	}
 
 	// Create session service and adapter
-	sessionService := session.NewService(db, zapLog)
+	sessionService := session.NewService(db, nil, zapLog)
 	sessionValidator := NewSessionValidatorAdapter(sessionService)
 
 	// Initialize wallet funding handlers

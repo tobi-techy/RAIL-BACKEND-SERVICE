@@ -5,43 +5,58 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"time"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
+const (
+	sessionCacheTTL    = 30 * time.Second
+	sessionCachePrefix = "session:"
+)
+
+// RedisClient interface for session caching
+type RedisClient interface {
+	Get(ctx context.Context, key string) *redis.StringCmd
+	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd
+	Del(ctx context.Context, keys ...string) *redis.IntCmd
+}
+
 type Service struct {
 	db     *sql.DB
+	redis  RedisClient
 	logger *zap.Logger
 }
 
 type Session struct {
-	ID                uuid.UUID
-	UserID            uuid.UUID
-	TokenHash         string
-	RefreshTokenHash  string
-	IPAddress         string
-	UserAgent         string
-	DeviceFingerprint string
-	Location          string
-	IsActive          bool
-	ExpiresAt         time.Time
-	CreatedAt         time.Time
-	LastUsedAt        *time.Time
+	ID                uuid.UUID  `json:"id"`
+	UserID            uuid.UUID  `json:"user_id"`
+	TokenHash         string     `json:"token_hash"`
+	RefreshTokenHash  string     `json:"refresh_token_hash"`
+	IPAddress         string     `json:"ip_address"`
+	UserAgent         string     `json:"user_agent"`
+	DeviceFingerprint string     `json:"device_fingerprint"`
+	Location          string     `json:"location"`
+	IsActive          bool       `json:"is_active"`
+	ExpiresAt         time.Time  `json:"expires_at"`
+	CreatedAt         time.Time  `json:"created_at"`
+	LastUsedAt        *time.Time `json:"last_used_at,omitempty"`
 }
 
-func NewService(db *sql.DB, logger *zap.Logger) *Service {
+func NewService(db *sql.DB, redis RedisClient, logger *zap.Logger) *Service {
 	return &Service{
 		db:     db,
+		redis:  redis,
 		logger: logger,
 	}
 }
 
 // CreateSession creates a new user session
 func (s *Service) CreateSession(ctx context.Context, userID uuid.UUID, accessToken, refreshToken, ipAddress, userAgent, deviceFingerprint, location string, expiresAt time.Time) (*Session, error) {
-	// Check concurrent session limit
 	if err := s.enforceConcurrentSessionLimit(ctx, userID, 5); err != nil {
 		return nil, fmt.Errorf("failed to enforce session limit: %w", err)
 	}
@@ -76,13 +91,23 @@ func (s *Service) CreateSession(ctx context.Context, userID uuid.UUID, accessTok
 		return nil, fmt.Errorf("failed to create session: %w", err)
 	}
 
+	// Cache the new session
+	s.cacheSession(ctx, tokenHash, session)
+
 	return session, nil
 }
 
-// ValidateSession validates a session by token hash
+// ValidateSession validates a session by token hash with Redis caching
 func (s *Service) ValidateSession(ctx context.Context, token string) (*Session, error) {
 	tokenHash := s.hashToken(token)
 
+	// Try cache first
+	if session := s.getSessionFromCache(ctx, tokenHash); session != nil {
+		go s.updateLastUsed(context.Background(), session.ID)
+		return session, nil
+	}
+
+	// Cache miss - query database
 	query := `
 		SELECT id, user_id, token_hash, refresh_token_hash, ip_address, user_agent, 
 		       device_fingerprint, location, is_active, expires_at, created_at, last_used_at
@@ -102,8 +127,10 @@ func (s *Service) ValidateSession(ctx context.Context, token string) (*Session, 
 		return nil, fmt.Errorf("failed to validate session: %w", err)
 	}
 
-	// Update last used timestamp
-	s.updateLastUsed(ctx, session.ID)
+	// Cache for future requests
+	s.cacheSession(ctx, tokenHash, session)
+
+	go s.updateLastUsed(context.Background(), session.ID)
 
 	return session, nil
 }
@@ -112,8 +139,11 @@ func (s *Service) ValidateSession(ctx context.Context, token string) (*Session, 
 func (s *Service) InvalidateSession(ctx context.Context, token string) error {
 	tokenHash := s.hashToken(token)
 
+	// Remove from cache
+	s.invalidateSessionCache(ctx, tokenHash)
+
 	query := `UPDATE sessions SET is_active = false WHERE token_hash = $1`
-	
+
 	_, err := s.db.ExecContext(ctx, query, tokenHash)
 	if err != nil {
 		return fmt.Errorf("failed to invalidate session: %w", err)
@@ -124,9 +154,22 @@ func (s *Service) InvalidateSession(ctx context.Context, token string) error {
 
 // InvalidateAllUserSessions invalidates all sessions for a user
 func (s *Service) InvalidateAllUserSessions(ctx context.Context, userID uuid.UUID) error {
+	// Get all token hashes for user to invalidate cache
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT token_hash FROM sessions WHERE user_id = $1 AND is_active = true", userID)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var tokenHash string
+			if rows.Scan(&tokenHash) == nil {
+				s.invalidateSessionCache(ctx, tokenHash)
+			}
+		}
+	}
+
 	query := `UPDATE sessions SET is_active = false WHERE user_id = $1 AND is_active = true`
-	
-	_, err := s.db.ExecContext(ctx, query, userID)
+
+	_, err = s.db.ExecContext(ctx, query, userID)
 	if err != nil {
 		return fmt.Errorf("failed to invalidate user sessions: %w", err)
 	}
@@ -168,7 +211,7 @@ func (s *Service) GetUserSessions(ctx context.Context, userID uuid.UUID) ([]*Ses
 // CleanupExpiredSessions removes expired sessions
 func (s *Service) CleanupExpiredSessions(ctx context.Context) error {
 	query := `DELETE FROM sessions WHERE expires_at < NOW() OR (is_active = false AND updated_at < NOW() - INTERVAL '7 days')`
-	
+
 	result, err := s.db.ExecContext(ctx, query)
 	if err != nil {
 		return fmt.Errorf("failed to cleanup expired sessions: %w", err)
@@ -181,17 +224,15 @@ func (s *Service) CleanupExpiredSessions(ctx context.Context) error {
 }
 
 func (s *Service) enforceConcurrentSessionLimit(ctx context.Context, userID uuid.UUID, limit int) error {
-	// Count active sessions
 	var count int
-	err := s.db.QueryRowContext(ctx, 
-		"SELECT COUNT(*) FROM sessions WHERE user_id = $1 AND is_active = true AND expires_at > NOW()", 
+	err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM sessions WHERE user_id = $1 AND is_active = true AND expires_at > NOW()",
 		userID).Scan(&count)
 	if err != nil {
 		return fmt.Errorf("failed to count sessions: %w", err)
 	}
 
 	if count >= limit {
-		// Invalidate oldest session
 		_, err = s.db.ExecContext(ctx, `
 			UPDATE sessions 
 			SET is_active = false 
@@ -210,7 +251,7 @@ func (s *Service) enforceConcurrentSessionLimit(ctx context.Context, userID uuid
 }
 
 func (s *Service) updateLastUsed(ctx context.Context, sessionID uuid.UUID) {
-	_, err := s.db.ExecContext(ctx, 
+	_, err := s.db.ExecContext(ctx,
 		"UPDATE sessions SET last_used_at = NOW() WHERE id = $1", sessionID)
 	if err != nil {
 		s.logger.Warn("Failed to update session last used", zap.Error(err))
@@ -220,4 +261,46 @@ func (s *Service) updateLastUsed(ctx context.Context, sessionID uuid.UUID) {
 func (s *Service) hashToken(token string) string {
 	hash := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(hash[:])
+}
+
+// Cache helpers
+func (s *Service) cacheSession(ctx context.Context, tokenHash string, session *Session) {
+	if s.redis == nil {
+		return
+	}
+	data, err := json.Marshal(session)
+	if err != nil {
+		s.logger.Warn("Failed to marshal session for cache", zap.Error(err))
+		return
+	}
+	if err := s.redis.Set(ctx, sessionCachePrefix+tokenHash, data, sessionCacheTTL).Err(); err != nil {
+		s.logger.Warn("Failed to cache session", zap.Error(err))
+	}
+}
+
+func (s *Service) getSessionFromCache(ctx context.Context, tokenHash string) *Session {
+	if s.redis == nil {
+		return nil
+	}
+	data, err := s.redis.Get(ctx, sessionCachePrefix+tokenHash).Bytes()
+	if err != nil {
+		return nil // Cache miss
+	}
+	var session Session
+	if err := json.Unmarshal(data, &session); err != nil {
+		return nil
+	}
+	// Verify not expired
+	if session.ExpiresAt.Before(time.Now()) || !session.IsActive {
+		s.invalidateSessionCache(ctx, tokenHash)
+		return nil
+	}
+	return &session
+}
+
+func (s *Service) invalidateSessionCache(ctx context.Context, tokenHash string) {
+	if s.redis == nil {
+		return
+	}
+	s.redis.Del(ctx, sessionCachePrefix+tokenHash)
 }

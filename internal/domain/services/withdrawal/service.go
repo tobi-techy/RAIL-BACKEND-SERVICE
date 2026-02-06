@@ -476,6 +476,25 @@ func (s *WithdrawalService) GetUserWithdrawals(ctx context.Context, userID uuid.
 	return s.withdrawalRepo.GetByUserID(ctx, userID, limit, offset)
 }
 
+// CancelWithdrawal cancels a pending withdrawal
+func (s *WithdrawalService) CancelWithdrawal(ctx context.Context, withdrawalID uuid.UUID, userID uuid.UUID) error {
+	withdrawal, err := s.withdrawalRepo.GetByID(ctx, withdrawalID)
+	if err != nil {
+		return fmt.Errorf("not found: %w", err)
+	}
+
+	if withdrawal.UserID != userID {
+		return fmt.Errorf("not found")
+	}
+
+	// Only allow cancellation of initiated/pending withdrawals
+	if withdrawal.Status != entities.WithdrawalStatusInitiated && withdrawal.Status != entities.WithdrawalStatusPending {
+		return fmt.Errorf("cannot cancel withdrawal in %s status", withdrawal.Status)
+	}
+
+	return s.withdrawalRepo.MarkFailed(ctx, withdrawalID, "cancelled by user")
+}
+
 // compensateAlpacaDebit reverses the Alpaca journal entry on failure
 func (s *WithdrawalService) compensateAlpacaDebit(ctx context.Context, withdrawal *entities.Withdrawal) error {
 	if withdrawal.AlpacaJournalID == nil {

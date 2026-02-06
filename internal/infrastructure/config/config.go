@@ -519,15 +519,15 @@ func setDefaults() {
 	viper.SetDefault("server.supported_versions", []string{"v1"})
 	viper.SetDefault("server.default_version", "v1")
 
-	// Database defaults
+	// Database defaults - tuned for performance
 	viper.SetDefault("database.host", "localhost")
 	viper.SetDefault("database.port", 5432)
 	viper.SetDefault("database.name", "stack_service")
 	viper.SetDefault("database.user", "postgres")
 	viper.SetDefault("database.ssl_mode", "disable")
-	viper.SetDefault("database.max_open_conns", 25)      // Reduced for better resource management
-	viper.SetDefault("database.max_idle_conns", 5)       // Reduced to prevent connection churn
-	viper.SetDefault("database.conn_max_lifetime", 1800) // 30 minutes instead of 1 hour
+	viper.SetDefault("database.max_open_conns", 50)       // Increased for concurrent requests
+	viper.SetDefault("database.max_idle_conns", 25)       // Keep more idle connections ready
+	viper.SetDefault("database.conn_max_lifetime", 300)   // 5 minutes - recycle connections more often
 	viper.SetDefault("database.query_timeout", 30)
 	viper.SetDefault("database.max_retries", 3)
 

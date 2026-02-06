@@ -103,6 +103,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	skipWebhookVerify := container.Config.Environment == "development" && container.Config.Payment.WebhookSecret == ""
 	walletFundingHandlers.SetWebhookSecret(container.Config.Payment.WebhookSecret, skipWebhookVerify)
 
+	// Wire allocation service for unified balance queries
+	if allocationSvc := container.GetAllocationService(); allocationSvc != nil {
+		walletFundingHandlers.SetAllocationBalanceProvider(allocationSvc)
+	}
+
 	authHandlers := handlers.NewAuthHandlers(
 		container.DB,
 		container.Config,
@@ -299,19 +304,50 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				mobile.POST("/sync", mobileHandlers.Sync)
 			}
 
-			// Funding routes (OpenAPI spec compliant)
-			// Apply timeout for routes that make external API calls
+			// Funding routes (legacy - kept for backward compat, prefer /deposits)
 			funding := protected.Group("/funding")
 			funding.Use(middleware.TimeoutMiddleware(30 * time.Second))
 			{
 				funding.POST("/deposit/address", walletFundingHandlers.CreateDepositAddress)
-				funding.GET("/confirmations", walletFundingHandlers.GetFundingConfirmations)
 				funding.POST("/virtual-account", walletFundingHandlers.CreateVirtualAccount)
-				funding.GET("/transactions", walletFundingHandlers.GetTransactionHistory)
+
+				// Instant Funding - simplified API for trading
+				// POST /funding/instant - Request instant buying power
+				// GET /funding/instant/status - Check instant funding state
+				if instantFundingHandlers := container.GetInstantFundingHandlers(); instantFundingHandlers != nil {
+					funding.POST("/instant", instantFundingHandlers.RequestInstantFunding)
+					funding.GET("/instant/status", instantFundingHandlers.GetInstantFundingStatus)
+				}
 			}
 
-			// Balance routes (part of funding but separate for clarity)
-			protected.GET("/balances", walletFundingHandlers.GetBalances)
+			// Unified Balance route
+			protected.GET("/balances", walletFundingHandlers.GetUnifiedBalances)
+
+			// Unified Deposit routes
+			deposits := protected.Group("/deposits")
+			deposits.Use(middleware.TimeoutMiddleware(30 * time.Second))
+			{
+				deposits.POST("", walletFundingHandlers.CreateDeposit)
+				deposits.GET("", walletFundingHandlers.ListDeposits)
+				deposits.GET("/:id", walletFundingHandlers.GetDeposit)
+			}
+
+			// Unified Withdrawal routes with security middleware
+			withdrawals := protected.Group("/withdrawals")
+			withdrawals.Use(middleware.TimeoutMiddleware(30 * time.Second))
+			// Apply withdrawal security: rate limits (3/day) and daily max ($10k new, $100k established)
+			if withdrawalSecurityStore := container.GetWithdrawalSecurityStore(); withdrawalSecurityStore != nil {
+				withdrawals.Use(middleware.WithdrawalSecurityMiddleware(
+					withdrawalSecurityStore,
+					middleware.DefaultWithdrawalSecurityConfig(),
+				))
+			}
+			{
+				withdrawals.POST("", walletFundingHandlers.InitiateWithdrawal)
+				withdrawals.GET("", walletFundingHandlers.GetUserWithdrawals)
+				withdrawals.GET("/:withdrawalId", walletFundingHandlers.GetWithdrawal)
+				withdrawals.DELETE("/:withdrawalId", walletFundingHandlers.CancelWithdrawalRequest)
+			}
 
 			// Account routes - Station (home screen) endpoint
 			account := protected.Group("/account")
@@ -450,7 +486,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						container.Logger,
 					)
 					portfolio.GET("/weekly-stats", portfolioActivityHandlers.GetWeeklyStats)
-					portfolio.GET("/allocations", portfolioActivityHandlers.GetAllocations)
 					portfolio.GET("/top-movers", portfolioActivityHandlers.GetTopMovers)
 					portfolio.GET("/performance", portfolioActivityHandlers.GetPerformance)
 				}
@@ -505,13 +540,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				assets.GET("/:symbol_or_id", integrationHandlers.GetAsset)
 			}
 
-			// Allocation routes - 70/30 Smart Allocation Mode
-			allocation := protected.Group("/user/:id/allocation")
+			// Allocation routes - 70/30 Smart Allocation Mode (ON/OFF)
+			allocation := protected.Group("/allocation")
 			{
 				allocation.POST("/enable", allocationHandlers.EnableAllocationMode)
-				allocation.POST("/pause", allocationHandlers.PauseAllocationMode)
-				allocation.POST("/resume", allocationHandlers.ResumeAllocationMode)
-				allocation.GET("/status", allocationHandlers.GetAllocationStatus)
+				allocation.POST("/disable", allocationHandlers.DisableAllocationMode)
 				allocation.GET("/balances", allocationHandlers.GetAllocationBalances)
 			}
 		}
@@ -575,6 +608,12 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		{
 			webhooks.POST("/chain-deposit", walletFundingHandlers.ChainDepositWebhook)
 			webhooks.POST("/brokerage-fill", walletFundingHandlers.BrokerageFillWebhook)
+
+			// Unified funding webhook - routes based on source header/payload
+			// POST /webhooks/funding - handles Bridge, Circle, and Alpaca webhooks
+			if unifiedWebhookHandler := container.GetUnifiedFundingWebhookHandler(); unifiedWebhookHandler != nil {
+				webhooks.POST("/funding", unifiedWebhookHandler.HandleFundingWebhook)
+			}
 
 			// Bridge webhooks for fiat deposits and transfers
 			if bridgeWebhookHandler := container.GetBridgeWebhookHandler(); bridgeWebhookHandler != nil {

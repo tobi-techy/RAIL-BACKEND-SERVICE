@@ -81,9 +81,17 @@ func NewClient(config Config, logger *zap.Logger) *Client {
 	}
 
 	return &Client{
-		config:     config,
-		httpClient: &http.Client{Timeout: config.Timeout},
-		logger:     logger,
+		config: config,
+		httpClient: &http.Client{
+			Timeout: config.Timeout,
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 10,
+				IdleConnTimeout:     90 * time.Second,
+				DisableKeepAlives:   false,
+			},
+		},
+		logger: logger,
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 type FundingConfig struct {
 	MinDepositAmount     decimal.Decimal
 	MaxDepositsPerDay    int
+	MaxDailyDepositAmount decimal.Decimal // Daily deposit limit ($100k default)
 	DepositTimeoutHours  int
 	WebhookSecret        string
 	BalanceCacheTTL      time.Duration
@@ -25,20 +26,27 @@ type FundingConfig struct {
 // DefaultFundingConfig returns default configuration
 func DefaultFundingConfig() *FundingConfig {
 	return &FundingConfig{
-		MinDepositAmount:     decimal.NewFromFloat(entities.MinDepositAmountUSDC),
-		MaxDepositsPerDay:    entities.MaxDepositsPerDay,
-		DepositTimeoutHours:  entities.DepositTimeoutHours,
-		WebhookSecret:        "",
-		BalanceCacheTTL:      30 * time.Second,
-		RateLimitWindow:      24 * time.Hour,
+		MinDepositAmount:      decimal.NewFromFloat(entities.MinDepositAmountUSDC),
+		MaxDepositsPerDay:     entities.MaxDepositsPerDay,
+		MaxDailyDepositAmount: decimal.NewFromInt(100000), // $100k daily limit
+		DepositTimeoutHours:   entities.DepositTimeoutHours,
+		WebhookSecret:         "",
+		BalanceCacheTTL:       30 * time.Second,
+		RateLimitWindow:       24 * time.Hour,
 	}
+}
+
+// DepositSecurityStore interface for deposit limit checks
+type DepositSecurityStore interface {
+	GetTodayDepositTotal(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
 }
 
 // ValidationService handles funding validation logic
 type ValidationService struct {
-	cache            cache.RedisClient
-	webhookValidator *webhook.WebhookValidator
-	config           *FundingConfig
+	cache               cache.RedisClient
+	webhookValidator    *webhook.WebhookValidator
+	depositSecurityStore DepositSecurityStore
+	config              *FundingConfig
 }
 
 // NewValidationService creates a new validation service
@@ -60,6 +68,11 @@ func NewValidationService(redisClient cache.RedisClient, config *FundingConfig) 
 	}
 }
 
+// SetDepositSecurityStore sets the deposit security store for daily limit checks
+func (v *ValidationService) SetDepositSecurityStore(store DepositSecurityStore) {
+	v.depositSecurityStore = store
+}
+
 // ValidateWebhookSignature validates webhook signature
 func (v *ValidationService) ValidateWebhookSignature(payload []byte, signature string, timestamp int64) error {
 	if v.webhookValidator == nil {
@@ -75,6 +88,31 @@ func (v *ValidationService) ValidateDepositAmount(amount decimal.Decimal) error 
 		return fmt.Errorf("deposit amount %s is below minimum %s USDC", 
 			amount.String(), v.config.MinDepositAmount.String())
 	}
+	return nil
+}
+
+// ValidateDailyDepositLimit checks if deposit would exceed daily limit ($100k/day)
+func (v *ValidationService) ValidateDailyDepositLimit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error {
+	if v.depositSecurityStore == nil {
+		return nil // No store configured, skip validation
+	}
+
+	todayTotal, err := v.depositSecurityStore.GetTodayDepositTotal(ctx, userID)
+	if err != nil {
+		// On error, allow the request but log
+		return nil
+	}
+
+	newTotal := todayTotal.Add(amount)
+	if newTotal.GreaterThan(v.config.MaxDailyDepositAmount) {
+		remaining := v.config.MaxDailyDepositAmount.Sub(todayTotal)
+		if remaining.LessThanOrEqual(decimal.Zero) {
+			return fmt.Errorf("daily deposit limit of $%s reached", v.config.MaxDailyDepositAmount.StringFixed(2))
+		}
+		return fmt.Errorf("deposit would exceed daily limit ($%s remaining of $%s daily max)",
+			remaining.StringFixed(2), v.config.MaxDailyDepositAmount.StringFixed(2))
+	}
+
 	return nil
 }
 
