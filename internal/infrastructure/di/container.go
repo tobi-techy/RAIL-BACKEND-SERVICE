@@ -336,7 +336,6 @@ type Container struct {
 	AlpacaService *alpaca.Service
 	BridgeClient  *bridge.Client
 	BridgeAdapter *bridge.Adapter
-	KYCProvider   *adapters.KYCProvider
 	EmailService  *adapters.EmailService
 	SMSService    *adapters.SMSService
 	AuditService  *adapters.AuditService
@@ -523,29 +522,8 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	bridgeClient := bridge.NewClient(bridgeConfig, zapLog)
 	bridgeAdapter := bridge.NewAdapter(bridgeClient, zapLog)
 
-	// Initialize KYC provider with full configuration
-	kycProviderConfig := adapters.KYCProviderConfig{
-		Provider:    cfg.KYC.Provider,
-		APIKey:      cfg.KYC.APIKey,
-		APISecret:   cfg.KYC.APISecret,
-		BaseURL:     cfg.KYC.BaseURL,
-		Environment: cfg.KYC.Environment,
-		CallbackURL: cfg.KYC.CallbackURL,
-		UserAgent:   cfg.KYC.UserAgent,
-		LevelName:   cfg.KYC.LevelName,
-	}
-	var kycProvider *adapters.KYCProvider
-	var err error
-	if strings.TrimSpace(cfg.KYC.Provider) != "" {
-		kycProvider, err = adapters.NewKYCProvider(zapLog, kycProviderConfig)
-		if err != nil {
-			return nil, fmt.Errorf("failed to initialize KYC provider: %w", err)
-		}
-	} else {
-		zapLog.Warn("KYC provider not configured; KYC features disabled")
-	}
-
 	// Initialize email service with full configuration
+	var err error
 	emailServiceConfig := adapters.EmailServiceConfig{
 		Provider:     cfg.Email.Provider,
 		APIKey:       cfg.Email.APIKey,
@@ -629,7 +607,6 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		AlpacaService: alpacaService,
 		BridgeClient:  bridgeClient,
 		BridgeAdapter: bridgeAdapter,
-		KYCProvider:   kycProvider,
 		EmailService:  emailService,
 		SMSService:    smsService,
 		AuditService:  auditService,
@@ -703,7 +680,6 @@ func (c *Container) initializeDomainServices() error {
 		c.OnboardingFlowRepo,
 		c.KYCSubmissionRepo,
 		c.WalletService, // Domain service dependency
-		c.KYCProvider,
 		c.EmailService,
 		c.AuditService,
 		bridgeOnboardingAdapter,
@@ -711,7 +687,6 @@ func (c *Container) initializeDomainServices() error {
 		nil, // AllocationService - will be set after initialization
 		c.ZapLog,
 		append([]entities.WalletChain(nil), walletServiceConfig.SupportedChains...),
-		c.Config.KYC.Provider, // KYC provider name
 	)
 
 	// Inject onboarding service back into wallet service to complete circular dependency

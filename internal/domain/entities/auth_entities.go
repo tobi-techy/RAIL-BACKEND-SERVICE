@@ -141,6 +141,7 @@ type User struct {
 	KYCApprovedAt      *time.Time       `json:"kycApprovedAt" db:"kyc_approved_at"`
 	KYCRejectionReason *string          `json:"kycRejectionReason" db:"kyc_rejection_reason"`
 	BridgeCustomerID   *string          `json:"bridgeCustomerId" db:"bridge_customer_id"`
+	AlpacaAccountID    *string          `json:"alpacaAccountId" db:"alpaca_account_id"`
 	BridgeKYCStatus    *string          `json:"bridgeKycStatus" db:"bridge_kyc_status"`
 	BridgeKYCLink      *string          `json:"bridgeKycLink" db:"bridge_kyc_link"`
 	Role               string           `json:"role" db:"role"`

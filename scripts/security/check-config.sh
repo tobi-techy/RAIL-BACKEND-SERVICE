@@ -151,8 +151,6 @@ if [ "$ORIGINAL_ENVIRONMENT" = "production" ]; then
     [ -z "$ALPACA_API_KEY" ] && MISSING_KEYS+=("ALPACA_API_KEY")
     [ -z "$ALPACA_API_SECRET" ] && MISSING_KEYS+=("ALPACA_API_SECRET")
     [ -z "$BRIDGE_API_KEY" ] && MISSING_KEYS+=("BRIDGE_API_KEY")
-    [ -z "$SUMSUB_APP_TOKEN" ] && MISSING_KEYS+=("SUMSUB_APP_TOKEN")
-    [ -z "$SUMSUB_SECRET_KEY" ] && MISSING_KEYS+=("SUMSUB_SECRET_KEY")
 
     if [ ${#MISSING_KEYS[@]} -gt 0 ]; then
         error "Missing production API keys: ${MISSING_KEYS[*]}"

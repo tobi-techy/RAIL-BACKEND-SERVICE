@@ -64,8 +64,14 @@ func (s *CSRFStore) Validate(token string) bool {
 	return true
 }
 
-func CSRFProtection(store *CSRFStore) gin.HandlerFunc {
+func CSRFProtection(store *CSRFStore, isDev bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Skip CSRF in development for API testing
+		if isDev {
+			c.Next()
+			return
+		}
+
 		if c.Request.Method == "GET" || c.Request.Method == "HEAD" || c.Request.Method == "OPTIONS" {
 			c.Next()
 			return

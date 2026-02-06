@@ -46,7 +46,7 @@ func NewBridgeKYCHandlers(
 func (h *BridgeKYCHandlers) GetBridgeKYCLink(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	userIDStr, exists := c.Get("userID")
+	userIDStr, exists := c.Get("user_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
 			Code:    "UNAUTHORIZED",
@@ -131,7 +131,7 @@ func (h *BridgeKYCHandlers) GetBridgeKYCLink(c *gin.Context) {
 func (h *BridgeKYCHandlers) GetBridgeKYCStatus(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	userIDStr, exists := c.Get("userID")
+	userIDStr, exists := c.Get("user_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
 			Code:    "UNAUTHORIZED",

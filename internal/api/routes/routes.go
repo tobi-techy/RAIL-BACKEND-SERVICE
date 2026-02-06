@@ -111,7 +111,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.GetVerificationService(),
 		container.GetOnboardingService(),
 		container.EmailService,
-		container.KYCProvider,
 		container.GetSessionService(),
 		container.GetTwoFAService(),
 		container.RedisClient,
@@ -192,7 +191,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			authenticatedOnboarding.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator))
 			{
 				authenticatedOnboarding.POST("/complete", authHandlers.CompleteOnboarding)
-				authenticatedOnboarding.POST("/kyc/submit", authHandlers.SubmitKYC)
 			}
 		}
 
@@ -205,7 +203,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		// Protected routes (auth required)
 		protected := v1.Group("/")
 		protected.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator))
-		protected.Use(middleware.CSRFProtection(csrfStore))
+		protected.Use(middleware.CSRFProtection(csrfStore, container.Config.Environment == "development"))
 		{
 			// User management
 			users := protected.Group("/users")
@@ -222,7 +220,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			kycProtected := protected.Group("/kyc")
 			{
 				kycProtected.GET("/status", authHandlers.GetKYCStatus)
-				kycProtected.GET("/verification-url", authHandlers.GetKYCVerificationURL)
 				// Bridge KYC - optimized for sub-2-minute verification
 				kycProtected.GET("/bridge/link", bridgeKYCHandlers.GetBridgeKYCLink)
 				kycProtected.GET("/bridge/status", bridgeKYCHandlers.GetBridgeKYCStatus)
@@ -526,7 +523,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		admin := v1.Group("/admin")
 		admin.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator))
 		admin.Use(middleware.AdminAuth(container.DB, container.Logger))
-		admin.Use(middleware.CSRFProtection(csrfStore))
+		admin.Use(middleware.CSRFProtection(csrfStore, container.Config.Environment == "development"))
 		{
 			// Wallet admin routes
 			admin.POST("/wallet/create", walletFundingHandlers.CreateWalletsForUser)
