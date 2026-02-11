@@ -2,6 +2,7 @@ package tracing
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 
 	"go.opentelemetry.io/otel"
@@ -13,6 +14,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.17.0"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/credentials"
 )
 
 const (
@@ -23,9 +25,15 @@ const (
 // Config holds tracing configuration
 type Config struct {
 	Enabled      bool
-	CollectorURL string // OTLP collector endpoint
-	Environment  string
+	CollectorURL string  // OTLP collector endpoint
+	Environment  string  // development, staging, production
 	SampleRate   float64 // 0.0 to 1.0
+	Insecure     bool    // Allow insecure connection (only for development)
+}
+
+// IsProduction returns true if the environment is production or staging
+func (c Config) IsProduction() bool {
+	return c.Environment == "production" || c.Environment == "staging"
 }
 
 // InitTracer initializes the OpenTelemetry tracer provider
@@ -49,13 +57,42 @@ func InitTracer(ctx context.Context, cfg Config, logger *zap.Logger) (func(conte
 		return nil, fmt.Errorf("failed to create resource: %w", err)
 	}
 
+	// Build gRPC client options based on environment
+	grpcOpts := []otlptracegrpc.Option{
+		otlptracegrpc.WithEndpoint(cfg.CollectorURL),
+	}
+
+	// Security: Use TLS by default, only allow insecure in development
+	if cfg.IsProduction() {
+		// Production/Staging: Always use TLS
+		if cfg.Insecure {
+			logger.Warn("Insecure gRPC connection requested in production environment - forcing TLS",
+				zap.String("environment", cfg.Environment))
+		}
+		tlsConfig := &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		}
+		grpcOpts = append(grpcOpts, otlptracegrpc.WithTLSCredentials(credentials.NewTLS(tlsConfig)))
+		logger.Info("OpenTelemetry tracing configured with TLS",
+			zap.String("environment", cfg.Environment))
+	} else if cfg.Insecure {
+		// Development: Allow insecure only if explicitly configured
+		grpcOpts = append(grpcOpts, otlptracegrpc.WithInsecure())
+		logger.Warn("OpenTelemetry tracing using insecure gRPC connection",
+			zap.String("environment", cfg.Environment),
+			zap.String("security_note", "This should only be used in development"))
+	} else {
+		// Development without explicit insecure flag: still use TLS
+		tlsConfig := &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		}
+		grpcOpts = append(grpcOpts, otlptracegrpc.WithTLSCredentials(credentials.NewTLS(tlsConfig)))
+		logger.Info("OpenTelemetry tracing configured with TLS",
+			zap.String("environment", cfg.Environment))
+	}
+
 	// Create OTLP trace exporter
-	traceExporter, err := otlptrace.New(ctx,
-		otlptracegrpc.NewClient(
-			otlptracegrpc.WithEndpoint(cfg.CollectorURL),
-			otlptracegrpc.WithInsecure(), // Use TLS in production
-		),
-	)
+	traceExporter, err := otlptrace.New(ctx, otlptracegrpc.NewClient(grpcOpts...))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create trace exporter: %w", err)
 	}
@@ -91,7 +128,8 @@ func InitTracer(ctx context.Context, cfg Config, logger *zap.Logger) (func(conte
 	logger.Info("OpenTelemetry tracing initialized",
 		zap.String("collector_url", cfg.CollectorURL),
 		zap.Float64("sample_rate", cfg.SampleRate),
-		zap.String("environment", cfg.Environment))
+		zap.String("environment", cfg.Environment),
+		zap.Bool("tls_enabled", !cfg.Insecure || cfg.IsProduction()))
 
 	// Return shutdown function
 	return tp.Shutdown, nil
