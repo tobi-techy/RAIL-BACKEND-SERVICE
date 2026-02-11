@@ -118,9 +118,8 @@ type UserProfile struct {
 	KYCSubmittedAt     *time.Time       `json:"kyc_submitted_at" db:"kyc_submitted_at"`
 	KYCApprovedAt      *time.Time       `json:"kyc_approved_at" db:"kyc_approved_at"`
 	KYCRejectionReason *string          `json:"kyc_rejection_reason" db:"kyc_rejection_reason"`
-	DueAccountID       *string          `json:"due_account_id" db:"due_account_id"`
+	BridgeCustomerID   *string          `json:"bridge_customer_id" db:"bridge_customer_id"`
 	AlpacaAccountID    *string          `json:"alpaca_account_id" db:"alpaca_account_id"`
-	BridgeCustomerID    *string          `json:"bridge_customer_id" db:"bridge_customer_id"`
 	IsActive           bool             `json:"is_active" db:"is_active"`
 	CreatedAt          time.Time        `json:"created_at" db:"created_at"`
 	UpdatedAt          time.Time        `json:"updated_at" db:"updated_at"`
@@ -399,35 +398,45 @@ type Address struct {
 	Country    string `json:"country" validate:"required,len=2"`
 }
 
-// OnboardingCompleteRequest represents the request to complete onboarding
+// OnboardingCompleteRequest represents the request to complete onboarding with password, personal info, and account creation
 type OnboardingCompleteRequest struct {
-	UserID      uuid.UUID  `json:"-" validate:"-"` // Set from auth context
-	FirstName   string     `json:"firstName" validate:"required"`
-	LastName    string     `json:"lastName" validate:"required"`
-	DateOfBirth *time.Time `json:"dateOfBirth" validate:"required"`
-	Country     string     `json:"country" validate:"required,len=2"`
-	Address     Address    `json:"address" validate:"required"`
-	Phone       *string    `json:"phone,omitempty" validate:"omitempty,e164"`
+	UserID            uuid.UUID  `json:"-" validate:"-"` // Set from auth context
+	Email             *string    `json:"email,omitempty" validate:"omitempty,email"`
+	Password          string     `json:"password" validate:"required,min=12"` // Password set during onboarding
+	FirstName         string     `json:"firstName" validate:"required"`
+	LastName          string     `json:"lastName" validate:"required"`
+	DateOfBirth       *time.Time `json:"dateOfBirth" validate:"required"`
+	Country           string     `json:"country" validate:"required,len=2"`
+	Address           Address    `json:"address" validate:"required"`
+	Phone             *string    `json:"phone,omitempty" validate:"omitempty,e164"`
+	SSN               string     `json:"ssn,omitempty" validate:"omitempty"`
+	SignedAgreementID string     `json:"signedAgreementId,omitempty" validate:"omitempty"`
+	// Optional additional onboarding info
+	EmploymentStatus *string  `json:"employmentStatus,omitempty" validate:"omitempty"`
+	YearlyIncome     *int64   `json:"yearlyIncome,omitempty" validate:"omitempty,gte=0"`
+	UserExperience   *string  `json:"userExperience,omitempty" validate:"omitempty"`
+	InvestmentGoals  []string `json:"investmentGoals,omitempty" validate:"omitempty,dive,min=1"`
+	IPAddress        string   `json:"-" validate:"-"` // Populated from request context
 }
 
 // OnboardingCompleteResponse represents the response after completing onboarding
 type OnboardingCompleteResponse struct {
-	UserID          uuid.UUID `json:"userId"`
-	DueAccountID    string    `json:"dueAccountId"`
-	AlpacaAccountID string    `json:"alpacaAccountId"`
-	Message         string    `json:"message"`
-	NextSteps       []string  `json:"nextSteps"`
+	UserID           uuid.UUID `json:"userId"`
+	BridgeCustomerID string    `json:"bridgeCustomerId"`
+	AlpacaAccountID  string    `json:"alpacaAccountId"`
+	Message          string    `json:"message"`
+	NextSteps        []string  `json:"nextSteps"`
 }
 
 // OnboardingProgressResponse represents the user's onboarding progress
 type OnboardingProgressResponse struct {
-	UserID          uuid.UUID              `json:"userId"`
-	PercentComplete int                    `json:"percentComplete"`
-	Checklist       []OnboardingCheckItem  `json:"checklist"`
-	CurrentStep     *OnboardingStepType    `json:"currentStep,omitempty"`
-	EstimatedTime   string                 `json:"estimatedTime"`
-	CanInvest       bool                   `json:"canInvest"`
-	CanWithdraw     bool                   `json:"canWithdraw"`
+	UserID          uuid.UUID             `json:"userId"`
+	PercentComplete int                   `json:"percentComplete"`
+	Checklist       []OnboardingCheckItem `json:"checklist"`
+	CurrentStep     *OnboardingStepType   `json:"currentStep,omitempty"`
+	EstimatedTime   string                `json:"estimatedTime"`
+	CanInvest       bool                  `json:"canInvest"`
+	CanWithdraw     bool                  `json:"canWithdraw"`
 }
 
 // OnboardingCheckItem represents a single item in the onboarding checklist
@@ -439,5 +448,3 @@ type OnboardingCheckItem struct {
 	Required    bool               `json:"required"`
 	Order       int                `json:"order"`
 }
-
-

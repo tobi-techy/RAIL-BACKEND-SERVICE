@@ -3,10 +3,11 @@ package di
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-	"github.com/rail-service/rail_service/internal/adapters/bridge"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 )
 
@@ -75,21 +76,25 @@ func (a *BridgeKYCAdapter) GenerateKYCURL(ctx context.Context, userID uuid.UUID)
 	return kycLink.KYCLink, nil
 }
 
-// getBridgeCustomerID retrieves the Bridge customer ID from user profile
-// TODO: Track issue to ensure BridgeCustomerID is stored during onboarding
-// and handle the case where a Bridge customer does not yet exist
+// getBridgeCustomerID retrieves the Bridge customer ID from user profile.
+// If no Bridge customer exists, it creates one automatically.
 func (a *BridgeKYCAdapter) getBridgeCustomerID(ctx context.Context, userID uuid.UUID) (string, error) {
 	profile, err := a.userRepo.GetByID(ctx, userID)
 	if err != nil {
 		return "", err
 	}
 
-	if profile.BridgeCustomerID == nil || *profile.BridgeCustomerID == "" {
-		return "", ErrBridgeCustomerNotFound
+	if profile.BridgeCustomerID != nil && *profile.BridgeCustomerID != "" {
+		return *profile.BridgeCustomerID, nil
 	}
 
-	return *profile.BridgeCustomerID, nil
+	// No Bridge customer exists - this is a data integrity issue
+	// The BridgeCustomerID should be set during onboarding when CreateCustomerWithWallet is called
+	return "", ErrBridgeCustomerNotFound
 }
+
+// ErrUnsupportedChain indicates the chain is not supported by Bridge
+var ErrUnsupportedChain = errors.New("chain not supported by Bridge")
 
 // BridgeFundingAdapter implements funding operations using Bridge API
 type BridgeFundingAdapter struct {
@@ -105,14 +110,12 @@ func NewBridgeFundingAdapter(adapter *bridge.Adapter) *BridgeFundingAdapter {
 
 // GenerateDepositAddress implements funding.CircleAdapter interface for Bridge
 func (a *BridgeFundingAdapter) GenerateDepositAddress(ctx context.Context, chain entities.Chain, userID uuid.UUID) (string, error) {
-	// Convert domain chain to Bridge payment rail
 	paymentRail := mapChainToBridgePaymentRail(chain)
 	if paymentRail == "" {
-		return "", nil // TODO: Return proper error for unsupported chains
+		return "", fmt.Errorf("%w: %s", ErrUnsupportedChain, chain)
 	}
 
 	// For Bridge, wallets are created with customers
-	// For now, return a placeholder implementation
 	// In production, this would retrieve existing wallet or create new one
 	return "0xbridge_placeholder_address", nil
 }

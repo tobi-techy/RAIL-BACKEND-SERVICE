@@ -9,18 +9,18 @@ import (
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 
-	"github.com/rail-service/rail_service/internal/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 )
 
 var (
-	ErrCardNotFound       = errors.New("card not found")
-	ErrCardAlreadyExists  = errors.New("user already has an active card of this type")
-	ErrCardFrozen         = errors.New("card is frozen")
-	ErrCardCancelled      = errors.New("card is cancelled")
-	ErrInsufficientFunds  = errors.New("insufficient spend balance")
-	ErrCustomerNotFound   = errors.New("bridge customer not found")
-	ErrWalletNotFound     = errors.New("wallet not found for card creation")
+	ErrCardNotFound      = errors.New("card not found")
+	ErrCardAlreadyExists = errors.New("user already has an active card of this type")
+	ErrCardFrozen        = errors.New("card is frozen")
+	ErrCardCancelled     = errors.New("card is cancelled")
+	ErrInsufficientFunds = errors.New("insufficient spend balance")
+	ErrCustomerNotFound  = errors.New("bridge customer not found")
+	ErrWalletNotFound    = errors.New("wallet not found for card creation")
 )
 
 // CardRepository defines card persistence operations
@@ -131,7 +131,7 @@ func (s *Service) CreateVirtualCard(ctx context.Context, userID uuid.UUID) (*ent
 	// Create card account on Bridge
 	bridgeReq := &bridge.CreateCardAccountRequest{
 		Currency: bridge.CurrencyUSDC,
-		Chain:    bridge.PaymentRailEthereum,
+		Chain:    bridge.PaymentRailSolana,
 		CryptoAccount: bridge.CryptoAccount{
 			Type:    "wallet",
 			Address: wallet.Address,

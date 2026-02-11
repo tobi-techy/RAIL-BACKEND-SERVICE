@@ -1,0 +1,17 @@
+meta {
+  name: Alpaca Account Webhook
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/webhooks/alpaca/account
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "event": "test"
+  }
+}

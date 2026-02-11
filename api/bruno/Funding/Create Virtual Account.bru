@@ -1,0 +1,21 @@
+meta {
+  name: Create Virtual Account
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/funding/virtual-account
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "alpaca_account_id": "{{alpacaAccountId}}"
+  }
+}

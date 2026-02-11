@@ -1,0 +1,41 @@
+meta {
+  name: Submit KYC
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/onboarding/kyc/submit
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "documentType": "passport",
+    "documents": [
+      {
+        "type": "passport",
+        "fileUrl": "https://example.com/passport.jpg",
+        "contentType": "image/jpeg"
+      }
+    ],
+    "personalInfo": {
+      "firstName": "Test",
+      "lastName": "User",
+      "dateOfBirth": "1990-01-01",
+      "country": "US",
+      "address": {
+        "street": "123 Main St",
+        "city": "San Francisco",
+        "state": "CA",
+        "postalCode": "94105",
+        "country": "US"
+      }
+    }
+  }
+}

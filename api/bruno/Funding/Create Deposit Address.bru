@@ -1,0 +1,21 @@
+meta {
+  name: Create Deposit Address
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/funding/deposit/address
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "chain": "ethereum"
+  }
+}

@@ -1,0 +1,22 @@
+meta {
+  name: Validate Deposit
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/limits/validate/deposit
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "amount": "100.00",
+    "currency": "USD"
+  }
+}

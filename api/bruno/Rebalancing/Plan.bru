@@ -1,0 +1,15 @@
+meta {
+  name: Plan
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/rebalancing/configs/{{configId}}/plan
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

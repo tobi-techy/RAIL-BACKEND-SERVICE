@@ -1,0 +1,19 @@
+meta {
+  name: Social Login
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/auth/social/login
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "provider": "google",
+    "idToken": "id-token",
+    "redirectUri": "https://example.com/callback"
+  }
+}

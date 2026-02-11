@@ -1,0 +1,21 @@
+meta {
+  name: Preview
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/roundups/preview
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "amount": "12.34"
+  }
+}

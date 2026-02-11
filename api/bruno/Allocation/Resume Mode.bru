@@ -1,0 +1,15 @@
+meta {
+  name: Resume Mode
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/user/{{userId}}/allocation/resume
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

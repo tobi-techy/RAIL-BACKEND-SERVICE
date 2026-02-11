@@ -37,17 +37,17 @@ spec:
         - name: DATABASE_URL
           valueFrom:
             secretKeyRef:
-              name: stack-secrets
+              name: rail-secrets
               key: database-url
         - name: JWT_SECRET
           valueFrom:
             secretKeyRef:
-              name: stack-secrets
+              name: rail-secrets
               key: jwt-secret
         - name: ENCRYPTION_KEY
           valueFrom:
             secretKeyRef:
-              name: stack-secrets
+              name: rail-secrets
               key: encryption-key
         livenessProbe:
           httpGet:

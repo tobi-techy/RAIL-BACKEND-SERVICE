@@ -1,0 +1,17 @@
+meta {
+  name: Bridge Webhook
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/webhooks/bridge
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "event": "test"
+  }
+}

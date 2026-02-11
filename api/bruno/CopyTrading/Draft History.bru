@@ -1,0 +1,15 @@
+meta {
+  name: Draft History
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/copy/drafts/{{draftId}}/history
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

@@ -2,6 +2,7 @@ package routes
 
 import (
 	"context"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -15,6 +16,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
+	"github.com/rail-service/rail_service/pkg/ratelimit"
 	"github.com/rail-service/rail_service/pkg/tracing"
 )
 
@@ -63,7 +65,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	router.Use(middleware.Logger(container.Logger))
 	router.Use(middleware.Recovery(container.Logger))
 	router.Use(middleware.CORS(container.Config.Server.AllowedOrigins))
-	router.Use(middleware.RateLimit(container.Config.Server.RateLimitPerMin))
+	router.Use(createRateLimitMiddleware(container))
 	router.Use(middleware.SecurityHeaders())
 	router.Use(middleware.APIVersionMiddleware(container.Config.Server.SupportedVersions))
 	router.Use(middleware.PaginationMiddleware())
@@ -107,7 +109,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.ZapLog,
 		*container.UserRepo,
 		container.GetVerificationService(),
-		*container.GetOnboardingJobService(),
 		container.GetOnboardingService(),
 		container.EmailService,
 		container.KYCProvider,
@@ -132,14 +133,14 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.ZapLog,
 	)
 
-// Initialize integration handlers (Alpaca only - Due replaced by Bridge)
-integrationHandlers := handlers.NewIntegrationHandlers(
-	container.AlpacaClient,
-	nil, // Due service removed - Bridge handles virtual accounts
-	"",  // Due webhook secret removed
-	services.NewNotificationService(container.ZapLog),
-	container.Logger,
-)
+	// Initialize integration handlers (Alpaca only - Due replaced by Bridge)
+	integrationHandlers := handlers.NewIntegrationHandlers(
+		container.AlpacaClient,
+		nil, // Due service removed - Bridge handles virtual accounts
+		"",  // Due webhook secret removed
+		services.NewNotificationService(container.ZapLog),
+		container.Logger,
+	)
 
 	// Initialize Bridge KYC handlers for optimized KYC flow
 	bridgeKYCHandlers := handlers.NewBridgeKYCHandlers(
@@ -154,44 +155,42 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 	// API v1 routes
 	v1 := router.Group("/api/v1")
 	{
-		// Authentication routes (no auth required, no CSRF - API clients don't need CSRF protection)
+		// Authentication routes (no auth required)
 		auth := v1.Group("/auth")
 		{
 			auth.POST("/register", authHandlers.Register)
+			auth.POST("/verify", middleware.AuthRateLimit(5), authHandlers.Verify)
 			auth.POST("/refresh", authHandlers.RefreshToken)
 			auth.POST("/logout", authHandlers.Logout)
-			auth.POST("/verify-email", authHandlers.VerifyEmail)
 			auth.POST("/resend-code", authHandlers.ResendCode)
 
-			// Sensitive auth endpoints with stricter rate limiting (5 requests/minute)
-			// Protects against brute force attacks on credentials and verification codes
+			// Sensitive auth endpoints with stricter rate limiting
 			authRateLimited := auth.Group("/")
 			authRateLimited.Use(middleware.AuthRateLimit(5))
+			if container.LoginAttemptTracker != nil {
+				authRateLimited.Use(middleware.LoginRateLimiting(container.LoginAttemptTracker, container.Logger))
+			}
+			if lp := container.GetLoginProtectionService(); lp != nil {
+				authRateLimited.Use(middleware.LoginProtection(lp, container.ZapLog))
+			}
 			{
 				authRateLimited.POST("/login", authHandlers.Login)
-				authRateLimited.POST("/verify-code", authHandlers.VerifyCode)
 				authRateLimited.POST("/forgot-password", authHandlers.ForgotPassword)
 				authRateLimited.POST("/reset-password", authHandlers.ResetPassword)
 			}
 
-			// Social auth routes (no auth required)
+			// Social auth routes
 			authRateLimited.POST("/social/url", socialAuthHandlers.GetSocialAuthURL)
 			authRateLimited.POST("/social/login", socialAuthHandlers.SocialLogin)
-
-			// WebAuthn login (no auth required)
 			authRateLimited.POST("/webauthn/login/begin", socialAuthHandlers.BeginWebAuthnLogin)
 		}
 
-		// Onboarding routes - OpenAPI spec compliant (no CSRF for public start endpoint)
+		// Onboarding routes
 		onboarding := v1.Group("/onboarding")
 		{
-			onboarding.POST("/start", authHandlers.StartOnboarding)
-
 			authenticatedOnboarding := onboarding.Group("/")
 			authenticatedOnboarding.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator))
 			{
-				authenticatedOnboarding.GET("/status", authHandlers.GetOnboardingStatus)
-				authenticatedOnboarding.GET("/progress", authHandlers.GetOnboardingProgress)
 				authenticatedOnboarding.POST("/complete", authHandlers.CompleteOnboarding)
 				authenticatedOnboarding.POST("/kyc/submit", authHandlers.SubmitKYC)
 			}
@@ -295,6 +294,7 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 					container.GetAllocationService(),
 					container.GetInvestingService(),
 					*container.UserRepo,
+					container.CardRepo,
 					container.ZapLog,
 				)
 				mobile.GET("/home", mobileHandlers.GetMobileHome)
@@ -303,7 +303,9 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 			}
 
 			// Funding routes (OpenAPI spec compliant)
+			// Apply timeout for routes that make external API calls
 			funding := protected.Group("/funding")
+			funding.Use(middleware.TimeoutMiddleware(30 * time.Second))
 			{
 				funding.POST("/deposit/address", walletFundingHandlers.CreateDepositAddress)
 				funding.GET("/confirmations", walletFundingHandlers.GetFundingConfirmations)
@@ -322,6 +324,12 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 					// Station endpoint - returns home screen data per PRD
 					// "Total balance, Spend balance, Invest balance, System status"
 					account.GET("/station", stationHandlers.GetStation)
+				}
+
+				// Spending Stash endpoint - comprehensive spending data
+				spendingStashHandlers := container.GetSpendingStashHandlers()
+				if spendingStashHandlers != nil {
+					account.GET("/spending-stash", spendingStashHandlers.GetSpendingStash)
 				}
 
 				// Investment Stash endpoint - comprehensive investment data
@@ -551,11 +559,26 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 		}
 
 		// Webhooks (external systems) - OpenAPI spec compliant
+		// Apply webhook security middleware (rate limiting, IP whitelisting, replay protection)
+		webhookConfig := middleware.DefaultWebhookSecurityConfig()
+		webhookConfig.SkipVerification = container.Config.Environment == "development"
+		webhookConfig.Secrets = map[string]string{
+			"bridge": container.Config.Bridge.WebhookSecret,
+			"alpaca": container.Config.Alpaca.WebhookSecret,
+		}
+
 		webhooks := v1.Group("/webhooks")
+		if redisNative := container.RedisClient.Client(); redisNative != nil {
+			webhooks.Use(middleware.WebhookSecurityWithRedisV8(
+				redisNative,
+				webhookConfig,
+				container.ZapLog,
+			))
+		}
 		{
 			webhooks.POST("/chain-deposit", walletFundingHandlers.ChainDepositWebhook)
 			webhooks.POST("/brokerage-fill", walletFundingHandlers.BrokerageFillWebhook)
-			
+
 			// Bridge webhooks for fiat deposits and transfers
 			if bridgeWebhookHandler := container.GetBridgeWebhookHandler(); bridgeWebhookHandler != nil {
 				webhooks.POST("/bridge", bridgeWebhookHandler.HandleWebhook)
@@ -617,4 +640,17 @@ integrationHandlers := handlers.NewIntegrationHandlers(
 	// ZeroG and dedicated AI-CFO HTTP routes have been removed.
 
 	return router
+}
+
+func createDistributedRateLimiter(container *di.Container) *ratelimit.DistributedRateLimiter {
+	rateLimitConfig := container.GetRateLimitConfig()
+
+	limiter := container.GetTieredRateLimiter()
+
+	return ratelimit.NewDistributedRateLimiter(limiter, *rateLimitConfig, container.Logger.Zap())
+}
+
+func createRateLimitMiddleware(container *di.Container) gin.HandlerFunc {
+	distributedRL := createDistributedRateLimiter(container)
+	return distributedRL.Middleware()
 }

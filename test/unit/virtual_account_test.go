@@ -16,7 +16,7 @@ func TestVirtualAccountEntity(t *testing.T) {
 	virtualAccount := &entities.VirtualAccount{
 		ID:              uuid.New(),
 		UserID:          userID,
-		DueAccountID:    "due-test-123",
+		BridgeCustomerID:    "due-test-123",
 		AlpacaAccountID: alpacaAccountID,
 		AccountNumber:   "1234567890",
 		RoutingNumber:   "021000021",

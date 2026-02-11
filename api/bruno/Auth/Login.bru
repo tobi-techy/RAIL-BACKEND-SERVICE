@@ -1,0 +1,40 @@
+meta {
+  name: Login
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/auth/login
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "email": "test@example.com",
+    "password": "SecurePass123!"
+  }
+}
+script:post-response {
+  if (res.status === 200) {
+    const body = res.getBody();
+    const accessToken = body.accessToken || body.access_token;
+    const refreshToken = body.refreshToken || body.refresh_token;
+    if (accessToken) {
+      bru.setEnvVar("accessToken", accessToken);
+    }
+    if (refreshToken) {
+      bru.setEnvVar("refreshToken", refreshToken);
+    }
+    if (body.user && body.user.id) {
+      bru.setEnvVar("userId", body.user.id);
+    }
+    // Extract CSRF token from response headers
+    const csrfToken = res.getHeader("X-CSRF-Token");
+    if (csrfToken) {
+      bru.setEnvVar("csrfToken", csrfToken);
+    }
+  }
+}
+

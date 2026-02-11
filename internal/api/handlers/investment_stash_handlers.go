@@ -8,34 +8,31 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
+	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/allocation"
-	"github.com/rail-service/rail_service/internal/domain/services/copytrading"
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
 // InvestmentStashHandlers handles the investment stash screen endpoint
 type InvestmentStashHandlers struct {
-	allocationService  *allocation.Service
-	investingService   *investing.Service
-	copyTradingService *copytrading.Service
-	logger             *zap.Logger
+	allocationService *allocation.Service
+	investingService  *investing.Service
+	logger            *zap.Logger
 }
 
 // NewInvestmentStashHandlers creates new investment stash handlers
 func NewInvestmentStashHandlers(
 	allocationService *allocation.Service,
 	investingService *investing.Service,
-	copyTradingService *copytrading.Service,
 	logger *zap.Logger,
 ) *InvestmentStashHandlers {
 	return &InvestmentStashHandlers{
-		allocationService:  allocationService,
-		investingService:   investingService,
-		copyTradingService: copyTradingService,
-		logger:             logger,
+		allocationService: allocationService,
+		investingService:  investingService,
+		logger:            logger,
 	}
 }
 
@@ -44,6 +41,8 @@ func NewInvestmentStashHandlers(
 // @Description Returns comprehensive investment data for the investment stash screen
 // @Tags account
 // @Produce json
+// @Param page query int false "Page number" default(1)
+// @Param page_size query int false "Page size" default(20)
 // @Success 200 {object} InvestmentStashResponse
 // @Failure 401 {object} entities.ErrorResponse
 // @Failure 500 {object} entities.ErrorResponse
@@ -53,7 +52,7 @@ func (h *InvestmentStashHandlers) GetInvestmentStash(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	userID, err := getUserID(c)
+	userID, err := common.GetUserID(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
 			Code:    "UNAUTHORIZED",
@@ -62,18 +61,21 @@ func (h *InvestmentStashHandlers) GetInvestmentStash(c *gin.Context) {
 		return
 	}
 
+	// Parse pagination params
+	page := 1
+	pageSize := 20
+	_ = page // For future pagination implementation
+	_ = pageSize
+
 	var (
-		wg       sync.WaitGroup
-		mu       sync.Mutex
-		warnings []string
+		wg sync.WaitGroup
+		mu sync.Mutex
 	)
 
 	// Data containers
 	var (
 		balances       *entities.AllocationBalances
 		portfolio      *entities.Portfolio
-		drafts         []*entities.DraftSummary
-		conductorApp   *entities.ConductorApplication
 		allocationMode *entities.SmartAllocationMode
 	)
 
@@ -87,9 +89,6 @@ func (h *InvestmentStashHandlers) GetInvestmentStash(c *gin.Context) {
 		b, err := h.allocationService.GetBalances(ctx, userID)
 		if err != nil {
 			h.logger.Warn("Failed to get allocation balances", zap.Error(err), zap.String("user_id", userID.String()))
-			mu.Lock()
-			warnings = append(warnings, "balances_unavailable")
-			mu.Unlock()
 			return
 		}
 		mu.Lock()
@@ -124,9 +123,6 @@ func (h *InvestmentStashHandlers) GetInvestmentStash(c *gin.Context) {
 		p, err := h.investingService.GetPortfolio(ctx, userID)
 		if err != nil {
 			h.logger.Warn("Failed to get portfolio", zap.Error(err), zap.String("user_id", userID.String()))
-			mu.Lock()
-			warnings = append(warnings, "positions_unavailable")
-			mu.Unlock()
 			return
 		}
 		mu.Lock()
@@ -134,47 +130,10 @@ func (h *InvestmentStashHandlers) GetInvestmentStash(c *gin.Context) {
 		mu.Unlock()
 	}()
 
-	// Parallel fetch - copy trading drafts (following)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if h.copyTradingService == nil {
-			return
-		}
-		d, err := h.copyTradingService.GetUserDrafts(ctx, userID)
-		if err != nil {
-			h.logger.Warn("Failed to get user drafts", zap.Error(err), zap.String("user_id", userID.String()))
-			mu.Lock()
-			warnings = append(warnings, "following_unavailable")
-			mu.Unlock()
-			return
-		}
-		mu.Lock()
-		drafts = d
-		mu.Unlock()
-	}()
-
-	// Parallel fetch - conductor application status
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if h.copyTradingService == nil {
-			return
-		}
-		app, err := h.copyTradingService.GetMyApplication(ctx, userID)
-		if err != nil {
-			h.logger.Warn("Failed to get conductor application", zap.Error(err))
-			return
-		}
-		mu.Lock()
-		conductorApp = app
-		mu.Unlock()
-	}()
-
 	wg.Wait()
 
 	// Build response
-	response := h.buildResponse(userID, balances, portfolio, drafts, conductorApp, allocationMode, warnings)
+	response := h.buildResponse(userID, balances, portfolio, allocationMode)
 
 	c.JSON(http.StatusOK, response)
 }
@@ -184,26 +143,24 @@ func (h *InvestmentStashHandlers) buildResponse(
 	userID uuid.UUID,
 	balances *entities.AllocationBalances,
 	portfolio *entities.Portfolio,
-	drafts []*entities.DraftSummary,
-	conductorApp *entities.ConductorApplication,
 	allocationMode *entities.SmartAllocationMode,
-	warnings []string,
 ) *InvestmentStashResponse {
 	response := &InvestmentStashResponse{
 		TotalInvestmentBalance: "0.00",
 		TotalCostBasis:         "0.00",
 		TotalGain:              "0.00",
-		TotalGainPercent:       "0.00%",
-		Performance:            PerformanceMetrics{},
-		Positions:              []PositionSummary{},
-		Baskets:                []BasketInvestmentSummary{},
-		Following:              []FollowedConductorSummary{},
-		AllocationInfo:         InvestmentAllocationInfo{Active: false, StashRatio: "0.30"},
+		TotalGainPercent:       "0.00",
+		Positions: &PositionList{
+			Items:      []PositionSummary{},
+			TotalCount: 0,
+			Page:       1,
+			PageSize:   20,
+		},
+		AllocationInfo: InvestmentAllocationInfo{Active: false, StashRatio: "0.30"},
 		Stats: InvestmentStats{
 			TotalDeposits:    "0.00",
 			TotalWithdrawals: "0.00",
 		},
-		Warnings: warnings,
 	}
 
 	// Populate balance summary from allocation balances
@@ -256,24 +213,41 @@ func (h *InvestmentStashHandlers) buildResponse(
 			if !costBasis.IsZero() {
 				gainPct = gain.Div(costBasis).Mul(decimal.NewFromInt(100))
 			}
-			weight := decimal.Zero
+			weight := float64(0)
 			if !totalValue.IsZero() {
-				weight = marketValue.Div(totalValue).Mul(decimal.NewFromInt(100))
+				weight, _ = marketValue.Div(totalValue).Mul(decimal.NewFromInt(100)).Float64()
 			}
 
 			positions = append(positions, PositionSummary{
-				Symbol:            pos.BasketID.String(), // Using basket ID as symbol for now
+				Symbol:            pos.BasketID.String(),
 				Quantity:          pos.Quantity,
 				MarketValue:       pos.MarketValue,
 				CostBasis:         costBasis.StringFixed(2),
 				AvgCost:           pos.AvgPrice,
 				UnrealizedGain:    gain.StringFixed(2),
-				UnrealizedGainPct: gainPct.StringFixed(2) + "%",
-				PortfolioWeight:   weight.StringFixed(2) + "%",
+				UnrealizedGainPct: gainPct.StringFixed(2),
+				PortfolioWeight:   weight,
 			})
 		}
-		response.Positions = positions
+		response.Positions.Items = positions
+		response.Positions.TotalCount = len(positions)
 		response.Stats.PositionCount = len(positions)
+
+		// Calculate totals
+		totalCostBasis := decimal.Zero
+		totalGain := decimal.Zero
+		for _, pos := range positions {
+			cost, _ := decimal.NewFromString(pos.CostBasis)
+			gain, _ := decimal.NewFromString(pos.UnrealizedGain)
+			totalCostBasis = totalCostBasis.Add(cost)
+			totalGain = totalGain.Add(gain)
+		}
+		response.TotalCostBasis = totalCostBasis.StringFixed(2)
+		response.TotalGain = totalGain.StringFixed(2)
+		if !totalCostBasis.IsZero() {
+			totalGainPct := totalGain.Div(totalCostBasis).Mul(decimal.NewFromInt(100))
+			response.TotalGainPercent = totalGainPct.StringFixed(2)
+		}
 
 		// Update total investment balance with portfolio value
 		portfolioValue, err := decimal.NewFromString(portfolio.TotalValue)
@@ -286,80 +260,5 @@ func (h *InvestmentStashHandlers) buildResponse(
 		}
 	}
 
-	// Populate following (copy trading drafts)
-	if drafts != nil && len(drafts) > 0 {
-		following := make([]FollowedConductorSummary, 0, len(drafts))
-		for _, draft := range drafts {
-			if draft.Status == entities.DraftStatusActive || draft.Status == entities.DraftStatusPaused {
-				gainPct := decimal.Zero
-				if !draft.AllocatedCapital.IsZero() {
-					gainPct = draft.TotalProfitLoss.Div(draft.AllocatedCapital).Mul(decimal.NewFromInt(100))
-				}
-
-				following = append(following, FollowedConductorSummary{
-					FollowID:      draft.ID.String(),
-					ConductorID:   draft.ConductorID.String(),
-					ConductorName: draft.ConductorName,
-					Allocated:     draft.AllocatedCapital.StringFixed(2),
-					CurrentValue:  draft.CurrentAUM.StringFixed(2),
-					Gain:          draft.TotalProfitLoss.StringFixed(2),
-					GainPercent:   gainPct.StringFixed(2) + "%",
-					FollowedAt:    draft.CreatedAt.Format(time.RFC3339),
-				})
-			}
-		}
-		response.Following = following
-		response.Stats.FollowingCount = len(following)
-	}
-
-	// Populate conductor application status
-	response.ConductorStatus = h.buildConductorStatus(conductorApp)
-
-	// Set default performance metrics (placeholder - would need historical data)
-	response.Performance = PerformanceMetrics{
-		Day:        "0.00",
-		DayPct:     "0.00%",
-		Week:       "0.00",
-		WeekPct:    "0.00%",
-		Month:      "0.00",
-		MonthPct:   "0.00%",
-		YTD:        "0.00",
-		YTDPct:     "0.00%",
-		AllTime:    "0.00",
-		AllTimePct: "0.00%",
-	}
-
 	return response
-}
-
-// buildConductorStatus builds the conductor application status
-func (h *InvestmentStashHandlers) buildConductorStatus(app *entities.ConductorApplication) *ConductorApplicationStatus {
-	status := &ConductorApplicationStatus{
-		Status:   "none",
-		CanApply: true,
-	}
-
-	if app != nil {
-		switch app.Status {
-		case entities.ConductorApplicationStatusPending:
-			status.Status = "pending"
-			status.CanApply = false
-			status.AppliedAt = app.CreatedAt.Format(time.RFC3339)
-		case entities.ConductorApplicationStatusApproved:
-			status.Status = "approved"
-			status.CanApply = false
-			if app.ReviewedAt != nil {
-				status.ApprovedAt = app.ReviewedAt.Format(time.RFC3339)
-			}
-		case entities.ConductorApplicationStatusRejected:
-			status.Status = "rejected"
-			status.CanApply = true // Can reapply after rejection
-			if app.ReviewedAt != nil {
-				status.RejectedAt = app.ReviewedAt.Format(time.RFC3339)
-			}
-			status.RejectionReason = app.RejectionReason
-		}
-	}
-
-	return status
 }

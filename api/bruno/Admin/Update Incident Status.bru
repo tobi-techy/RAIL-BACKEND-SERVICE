@@ -1,0 +1,21 @@
+meta {
+  name: Update Incident Status
+  type: http
+  seq: 7
+}
+
+put {
+  url: {{baseUrl}}/api/{{apiVersion}}/admin/security/incidents/{{incidentId}}/status
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "status": "resolved"
+  }
+}

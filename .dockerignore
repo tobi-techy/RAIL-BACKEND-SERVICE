@@ -33,8 +33,7 @@ dist/
 vendor/
 
 # Configs (use mounted configs in production)
-configs/*.yaml
-!configs/config.yaml.example
+!configs/config.yaml
 
 # Scripts
 scripts/

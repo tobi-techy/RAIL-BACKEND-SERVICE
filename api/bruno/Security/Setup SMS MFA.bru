@@ -1,0 +1,21 @@
+meta {
+  name: Setup SMS MFA
+  type: http
+  seq: 23
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/security/mfa/sms
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "phone_number": "+15555550123"
+  }
+}

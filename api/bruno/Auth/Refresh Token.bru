@@ -1,0 +1,35 @@
+meta {
+  name: Refresh Token
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/auth/refresh
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "refreshToken": "{{refreshToken}}"
+  }
+}
+script:post-response {
+  if (res.status === 200) {
+    const body = res.getBody();
+    const accessToken = body.access_token || body.accessToken;
+    const refreshToken = body.refresh_token || body.refreshToken;
+    if (accessToken) {
+      bru.setEnvVar("accessToken", accessToken);
+    }
+    if (refreshToken) {
+      bru.setEnvVar("refreshToken", refreshToken);
+    }
+    const csrfToken = res.getHeader("X-CSRF-Token");
+    if (csrfToken) {
+      bru.setEnvVar("csrfToken", csrfToken);
+    }
+  }
+}
+

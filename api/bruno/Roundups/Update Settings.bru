@@ -1,0 +1,24 @@
+meta {
+  name: Update Settings
+  type: http
+  seq: 2
+}
+
+put {
+  url: {{baseUrl}}/api/{{apiVersion}}/roundups/settings
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "enabled": true,
+    "multiplier": "1.0",
+    "threshold": "5.00",
+    "auto_invest_enabled": false
+  }
+}

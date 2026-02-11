@@ -1,0 +1,22 @@
+meta {
+  name: Enable Mode
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/user/{{userId}}/allocation/enable
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "spending_ratio": 0.7,
+    "stash_ratio": 0.3
+  }
+}

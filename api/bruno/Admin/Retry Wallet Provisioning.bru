@@ -1,0 +1,15 @@
+meta {
+  name: Retry Wallet Provisioning
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/admin/wallet/retry-provisioning?limit=10
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

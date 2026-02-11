@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"time"
-	
+
 	apperrors "github.com/rail-service/rail_service/pkg/errors"
 	"go.uber.org/zap"
 )
@@ -17,16 +17,16 @@ type Retrier struct {
 }
 
 // NewRetrier creates a new retrier
-func NewRetrier(policy Policy, logger *zap.Logger) *Retrier {
+func NewRetrier(policy Policy, logger *zap.Logger) (*Retrier, error) {
 	if err := policy.Validate(); err != nil {
-		panic(fmt.Sprintf("invalid retry policy: %v", err))
+		return nil, fmt.Errorf("invalid retry policy: %w", err)
 	}
-	
+
 	return &Retrier{
 		policy:  policy,
 		backoff: NewBackoff(policy),
 		logger:  logger,
-	}
+	}, nil
 }
 
 // Do executes a function with retry logic
@@ -46,7 +46,7 @@ func (r *Retrier) DoWithData(ctx context.Context, operation func() (interface{},
 func (r *Retrier) DoWithResult(ctx context.Context, operation func() (interface{}, error)) (interface{}, error) {
 	var lastErr error
 	var result interface{}
-	
+
 	for attempt := 0; attempt <= r.policy.MaxRetries; attempt++ {
 		// Check context cancellation
 		select {
@@ -54,10 +54,10 @@ func (r *Retrier) DoWithResult(ctx context.Context, operation func() (interface{
 			return nil, ctx.Err()
 		default:
 		}
-		
+
 		// Execute operation
 		result, lastErr = operation()
-		
+
 		// Success
 		if lastErr == nil {
 			if attempt > 0 {
@@ -67,7 +67,7 @@ func (r *Retrier) DoWithResult(ctx context.Context, operation func() (interface{
 			}
 			return result, nil
 		}
-		
+
 		// Check if error is retryable
 		if !r.isRetryable(lastErr) {
 			r.logger.Debug("Error is not retryable",
@@ -75,7 +75,7 @@ func (r *Retrier) DoWithResult(ctx context.Context, operation func() (interface{
 				zap.Int("attempt", attempt))
 			return nil, lastErr
 		}
-		
+
 		// No more retries
 		if attempt >= r.policy.MaxRetries {
 			r.logger.Warn("Max retries exceeded",
@@ -84,16 +84,16 @@ func (r *Retrier) DoWithResult(ctx context.Context, operation func() (interface{
 				zap.Int("max_retries", r.policy.MaxRetries))
 			return nil, fmt.Errorf("%w: %v", ErrMaxRetriesExceeded, lastErr)
 		}
-		
+
 		// Calculate backoff
 		backoffDuration := r.backoff.Calculate(attempt + 1)
-		
+
 		r.logger.Debug("Retrying operation",
 			zap.Error(lastErr),
 			zap.Int("attempt", attempt+1),
 			zap.Int("max_retries", r.policy.MaxRetries),
 			zap.Duration("backoff", backoffDuration))
-		
+
 		// Wait for backoff
 		select {
 		case <-ctx.Done():
@@ -102,7 +102,7 @@ func (r *Retrier) DoWithResult(ctx context.Context, operation func() (interface{
 			// Continue to next attempt
 		}
 	}
-	
+
 	return nil, fmt.Errorf("%w: %v", ErrMaxRetriesExceeded, lastErr)
 }
 
@@ -111,25 +111,31 @@ func (r *Retrier) isRetryable(err error) bool {
 	if err == nil {
 		return false
 	}
-	
+
 	// Use custom retryable function if provided
 	if r.policy.RetryableFunc != nil {
 		return r.policy.RetryableFunc(err)
 	}
-	
+
 	// Use default error classification
 	return apperrors.ShouldRetry(err)
 }
 
 // Do is a package-level helper for one-off retries
 func Do(ctx context.Context, policy Policy, logger *zap.Logger, operation func() error) error {
-	retrier := NewRetrier(policy, logger)
+	retrier, err := NewRetrier(policy, logger)
+	if err != nil {
+		return err
+	}
 	return retrier.Do(ctx, operation)
 }
 
 // DoWithResult is a package-level helper for one-off retries with results
 func DoWithResult(ctx context.Context, policy Policy, logger *zap.Logger, operation func() (interface{}, error)) (interface{}, error) {
-	retrier := NewRetrier(policy, logger)
+	retrier, err := NewRetrier(policy, logger)
+	if err != nil {
+		return nil, err
+	}
 	return retrier.DoWithResult(ctx, operation)
 }
 
@@ -139,10 +145,14 @@ type Decorator struct {
 }
 
 // NewDecorator creates a new retry decorator
-func NewDecorator(policy Policy, logger *zap.Logger) *Decorator {
-	return &Decorator{
-		retrier: NewRetrier(policy, logger),
+func NewDecorator(policy Policy, logger *zap.Logger) (*Decorator, error) {
+	retrier, err := NewRetrier(policy, logger)
+	if err != nil {
+		return nil, err
 	}
+	return &Decorator{
+		retrier: retrier,
+	}, nil
 }
 
 // Decorate wraps a function with retry logic

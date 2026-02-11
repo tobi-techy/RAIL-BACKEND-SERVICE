@@ -1,0 +1,15 @@
+meta {
+  name: Get Balances
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/user/{{userId}}/allocation/balances
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

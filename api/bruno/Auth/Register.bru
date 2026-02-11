@@ -1,0 +1,22 @@
+meta {
+  name: Register
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/auth/register
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "email": "omotadetobiloba@gmail.com"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  apiVersion: v1
+}

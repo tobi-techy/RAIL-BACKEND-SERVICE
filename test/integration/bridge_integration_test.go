@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rail-service/rail_service/internal/adapters/bridge"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
@@ -22,13 +22,13 @@ func setupIntegrationClient(t *testing.T) *bridge.Client {
 	config := bridge.Config{
 		APIKey:      apiKey,
 		BaseURL:     baseURL,
-		Environment:  "sandbox",
-		Timeout:      30 * time.Second,
-		MaxRetries:   3,
+		Environment: "sandbox",
+		Timeout:     30 * time.Second,
+		MaxRetries:  3,
 	}
 
 	zapLogger, _ := zap.NewDevelopment()
-	
+
 	return bridge.NewClient(config, zapLogger)
 }
 
@@ -53,7 +53,7 @@ func TestBridgeIntegration_FullFlow(t *testing.T) {
 		LastName:  "User",
 		Email:     generateTestEmail(),
 		Phone:     "+12345678900",
-		Chain:     bridge.PaymentRailEthereum,
+		Chain:     bridge.PaymentRailSolana,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, customer)
@@ -158,10 +158,8 @@ func TestBridgeIntegration_WalletOperations(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Create multiple wallets for different chains
+	// Create wallets for supported chain(s)
 	testChains := []bridge.PaymentRail{
-		bridge.PaymentRailEthereum,
-		bridge.PaymentRailPolygon,
 		bridge.PaymentRailSolana,
 	}
 
@@ -213,7 +211,7 @@ func TestBridgeIntegration_TransferOperations(t *testing.T) {
 
 	// Create first wallet
 	wallet1, err := client.CreateWallet(ctx, customer.ID, &bridge.CreateWalletRequest{
-		Chain:      bridge.PaymentRailEthereum,
+		Chain:      bridge.PaymentRailSolana,
 		Currency:   bridge.CurrencyUSDC,
 		WalletType: bridge.WalletTypeUser,
 	})
@@ -221,7 +219,7 @@ func TestBridgeIntegration_TransferOperations(t *testing.T) {
 
 	// Create second wallet for transfer destination
 	wallet2, err := client.CreateWallet(ctx, customer.ID, &bridge.CreateWalletRequest{
-		Chain:      bridge.PaymentRailPolygon,
+		Chain:      bridge.PaymentRailSolana,
 		Currency:   bridge.CurrencyUSDC,
 		WalletType: bridge.WalletTypeUser,
 	})
@@ -278,7 +276,7 @@ func TestBridgeIntegration_ErrorHandling(t *testing.T) {
 
 	// Test creating wallet for non-existent customer
 	walletReq := &bridge.CreateWalletRequest{
-		Chain:      bridge.PaymentRailEthereum,
+		Chain:      bridge.PaymentRailSolana,
 		Currency:   bridge.CurrencyUSDC,
 		WalletType: bridge.WalletTypeUser,
 	}

@@ -1,0 +1,15 @@
+meta {
+  name: Reconcile Portfolio
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/investment/reconcile
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

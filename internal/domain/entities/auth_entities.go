@@ -17,8 +17,9 @@ type RegisterRequest struct {
 
 // LoginRequest represents a user login request
 type LoginRequest struct {
-	Email    string `json:"email" validate:"required,email"`
-	Password string `json:"password" validate:"required"`
+	Email    *string `json:"email,omitempty" validate:"omitempty,email"`
+	Phone    *string `json:"phone,omitempty" validate:"omitempty,e164"`
+	Password string  `json:"password" validate:"required"`
 }
 
 // AuthResponse represents the response after successful authentication
@@ -75,11 +76,10 @@ type ChangePasswordRequest struct {
 	NewPassword     string `json:"newPassword" validate:"required,min=8"`
 }
 
-// SignUpRequest represents a user signup request with email OR phone
+// SignUpRequest represents a user signup request with email OR phone (no password - password set during onboarding)
 type SignUpRequest struct {
-	Email    *string `json:"email,omitempty" validate:"omitempty,email"`
-	Phone    *string `json:"phone,omitempty" validate:"omitempty,e164"`
-	Password string  `json:"password" validate:"required,min=8"`
+	Email *string `json:"email,omitempty" validate:"omitempty,email"`
+	Phone *string `json:"phone,omitempty" validate:"omitempty,e164"`
 }
 
 // VerifyCodeRequest represents a verification code request
@@ -105,11 +105,10 @@ type VerificationCodeData struct {
 
 // PendingRegistration stores registration data in Redis until email/phone is verified
 type PendingRegistration struct {
-	Email        string    `json:"email,omitempty"`
-	Phone        string    `json:"phone,omitempty"`
-	PasswordHash string    `json:"password_hash"`
-	CreatedAt    time.Time `json:"created_at"`
-	ExpiresAt    time.Time `json:"expires_at"`
+	Email     string    `json:"email,omitempty"`
+	Phone     string    `json:"phone,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // SignUpResponse represents the response after successful signup
@@ -141,10 +140,9 @@ type User struct {
 	KYCSubmittedAt     *time.Time       `json:"kycSubmittedAt" db:"kyc_submitted_at"`
 	KYCApprovedAt      *time.Time       `json:"kycApprovedAt" db:"kyc_approved_at"`
 	KYCRejectionReason *string          `json:"kycRejectionReason" db:"kyc_rejection_reason"`
-	DueAccountID       *string          `json:"dueAccountId" db:"due_account_id"`
-	DueKYCStatus       *string          `json:"dueKycStatus" db:"due_kyc_status"`
-	DueKYCLink         *string          `json:"dueKycLink" db:"due_kyc_link"`
 	BridgeCustomerID   *string          `json:"bridgeCustomerId" db:"bridge_customer_id"`
+	BridgeKYCStatus    *string          `json:"bridgeKycStatus" db:"bridge_kyc_status"`
+	BridgeKYCLink      *string          `json:"bridgeKycLink" db:"bridge_kyc_link"`
 	Role               string           `json:"role" db:"role"`
 	IsActive           bool             `json:"isActive" db:"is_active"`
 	LastLoginAt        *time.Time       `json:"lastLoginAt" db:"last_login_at"`

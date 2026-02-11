@@ -1,0 +1,15 @@
+meta {
+  name: Remove IP Whitelist
+  type: http
+  seq: 18
+}
+
+delete {
+  url: {{baseUrl}}/api/{{apiVersion}}/security/ip-whitelist/{{ipWhitelistId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

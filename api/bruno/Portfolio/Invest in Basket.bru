@@ -1,0 +1,21 @@
+meta {
+  name: Invest in Basket
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/baskets/{{basketId}}/invest
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "amount": "100.00"
+  }
+}

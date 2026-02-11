@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/pkg/crypto"
 	"go.uber.org/zap"
 )
 
@@ -39,6 +41,7 @@ type UserRepository interface {
 	Update(ctx context.Context, user *entities.UserProfile) error
 	UpdateOnboardingStatus(ctx context.Context, userID uuid.UUID, status entities.OnboardingStatus) error
 	UpdateKYCStatus(ctx context.Context, userID uuid.UUID, status string, approvedAt *time.Time, rejectionReason *string) error
+	UpdatePassword(ctx context.Context, userID uuid.UUID, hash string) error
 }
 
 type OnboardingFlowRepository interface {
@@ -326,7 +329,7 @@ func (s *Service) CompleteEmailVerification(ctx context.Context, userID uuid.UUI
 	return nil
 }
 
-// CompleteOnboarding handles the completion of onboarding with personal info and account creation
+// CompleteOnboarding handles the completion of onboarding with personal info, password, account creation, and wallet provisioning
 func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.OnboardingCompleteRequest) (*entities.OnboardingCompleteResponse, error) {
 	s.logger.Info("Completing onboarding with account creation", zap.String("user_id", req.UserID.String()))
 
@@ -340,6 +343,17 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 		return nil, fmt.Errorf("email must be verified before completing onboarding")
 	}
 
+	// Hash and set password
+	passwordHash, err := crypto.HashPassword(req.Password)
+	if err != nil {
+		s.logger.Error("Failed to hash password", zap.Error(err))
+		return nil, fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	if err := s.userRepo.UpdatePassword(ctx, req.UserID, passwordHash); err != nil {
+		return nil, fmt.Errorf("failed to set password: %w", err)
+	}
+
 	// Update user with personal information
 	user.FirstName = &req.FirstName
 	user.LastName = &req.LastName
@@ -349,11 +363,15 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 
 	// Create Bridge customer
 	bridgeReq := &entities.CreateAccountRequest{
-		Type:      "individual",
-		FirstName: req.FirstName,
-		LastName:  req.LastName,
-		Email:     user.Email,
-		Country:   req.Country,
+		Type:              "individual",
+		FirstName:         req.FirstName,
+		LastName:          req.LastName,
+		Email:             user.Email,
+		Country:           req.Country,
+		Address:           &req.Address,
+		DateOfBirth:       req.DateOfBirth,
+		SSN:               req.SSN,
+		SignedAgreementID: req.SignedAgreementID,
 	}
 
 	bridgeResp, err := s.bridgeAdapter.CreateCustomer(ctx, bridgeReq)
@@ -362,7 +380,36 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 		return nil, fmt.Errorf("failed to create Bridge customer: %w", err)
 	}
 
+	user.BridgeCustomerID = &bridgeResp.AccountID
+	user.UpdatedAt = time.Now()
+	if err := s.userRepo.Update(ctx, user); err != nil {
+		return nil, fmt.Errorf("failed to persist Bridge customer information: %w", err)
+	}
+
 	// Create Alpaca account
+	ipAddress := req.IPAddress
+	if strings.TrimSpace(ipAddress) == "" {
+		ipAddress = "127.0.0.1"
+	}
+	employmentStatus := "employed"
+	if req.EmploymentStatus != nil && strings.TrimSpace(*req.EmploymentStatus) != "" {
+		employmentStatus = strings.TrimSpace(*req.EmploymentStatus)
+	}
+
+	// Convert 2-letter country code to 3-letter (Alpaca requires ISO 3166-1 alpha-3)
+	country := req.Country
+	if len(country) == 2 {
+		switch country {
+		case "US":
+			country = "USA"
+		case "GB":
+			country = "GBR"
+		case "CA":
+			country = "CAN"
+		// Add more as needed
+		}
+	}
+
 	alpacaReq := &entities.AlpacaCreateAccountRequest{
 		Contact: entities.AlpacaContact{
 			EmailAddress:  user.Email,
@@ -371,25 +418,27 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 			City:          req.Address.City,
 			State:         req.Address.State,
 			PostalCode:    req.Address.PostalCode,
-			Country:       req.Country,
+			Country:       country,
 		},
 		Identity: entities.AlpacaIdentity{
 			GivenName:             req.FirstName,
 			FamilyName:            req.LastName,
 			DateOfBirth:           req.DateOfBirth.Format("2006-01-02"),
-			CountryOfCitizenship:  req.Country,
-			CountryOfBirth:        req.Country,
-			CountryOfTaxResidence: req.Country,
+			TaxID:                 req.SSN,
+			TaxIDType:             "USA_SSN",
+			CountryOfCitizenship:  country,
+			CountryOfBirth:        country,
+			CountryOfTaxResidence: country,
 			FundingSource:         []string{"employment_income"},
 		},
 		Disclosures: entities.AlpacaDisclosures{
-			EmploymentStatus: "employed",
+			EmploymentStatus: employmentStatus,
 		},
 		Agreements: []entities.AlpacaAgreement{
 			{
 				Agreement: "customer_agreement",
 				SignedAt:  time.Now().Format(time.RFC3339),
-				IPAddress: "127.0.0.1", // Should be passed from request context
+				IPAddress: ipAddress,
 			},
 		},
 	}
@@ -400,8 +449,7 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 		return nil, fmt.Errorf("failed to create Alpaca account: %w", err)
 	}
 
-	// Update user with account IDs (Bridge customer ID stored as DueAccountID for backward compatibility)
-	user.DueAccountID = &bridgeResp.AccountID
+	// Update user with account IDs
 	user.AlpacaAccountID = &alpacaResp.ID
 	user.UpdatedAt = time.Now()
 
@@ -409,10 +457,59 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 		return nil, fmt.Errorf("failed to update user with account IDs: %w", err)
 	}
 
+	// Mark passcode creation step as completed and trigger wallet creation
+	stepData := map[string]any{
+		"completed_at": time.Now(),
+	}
+	if req.EmploymentStatus != nil {
+		if trimmed := strings.TrimSpace(*req.EmploymentStatus); trimmed != "" {
+			stepData["employment_status"] = trimmed
+		}
+	}
+	if req.YearlyIncome != nil {
+		stepData["yearly_income"] = *req.YearlyIncome
+	}
+	if req.UserExperience != nil {
+		if trimmed := strings.TrimSpace(*req.UserExperience); trimmed != "" {
+			stepData["user_experience"] = trimmed
+		}
+	}
+	if len(req.InvestmentGoals) > 0 {
+		stepData["investment_goals"] = req.InvestmentGoals
+	}
+
+	if err := s.markStepCompleted(ctx, req.UserID, entities.StepPasscodeCreation, stepData); err != nil {
+		s.logger.Warn("Failed to mark passcode creation step as completed", zap.Error(err))
+	}
+
+	// Transition to wallet provisioning
+	if err := s.userRepo.UpdateOnboardingStatus(ctx, req.UserID, entities.OnboardingStatusWalletsPending); err != nil {
+		return nil, fmt.Errorf("failed to update onboarding status: %w", err)
+	}
+
+	// Trigger wallet provisioning
+	if err := s.walletService.CreateWalletsForUser(ctx, req.UserID, s.defaultWalletChains); err != nil {
+		s.logger.Error("Failed to trigger wallet provisioning", zap.Error(err), zap.String("userId", req.UserID.String()))
+		return nil, fmt.Errorf("failed to create wallets: %w", err)
+	}
+
+	// Auto-enable 70/30 allocation mode (Rail MVP default - non-negotiable)
+	if s.allocationService != nil {
+		defaultRatios := entities.AllocationRatios{
+			SpendingRatio: entities.DefaultSpendingRatio,
+			StashRatio:    entities.DefaultStashRatio,
+		}
+		if err := s.allocationService.EnableMode(ctx, req.UserID, defaultRatios); err != nil {
+			s.logger.Error("Failed to enable default 70/30 allocation mode", zap.Error(err), zap.String("userId", req.UserID.String()))
+		}
+	}
+
 	// Log audit event
 	if err := s.auditService.LogOnboardingEvent(ctx, req.UserID, "accounts_created", "user", nil, map[string]any{
 		"bridge_customer_id": bridgeResp.AccountID,
 		"alpaca_account_id":  alpacaResp.ID,
+		"password_set":       true,
+		"wallets_queued":     true,
 	}); err != nil {
 		s.logger.Warn("Failed to log audit event", zap.Error(err))
 	}
@@ -420,14 +517,15 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 	s.logger.Info("Onboarding completed successfully",
 		zap.String("user_id", req.UserID.String()),
 		zap.String("bridge_customer_id", bridgeResp.AccountID),
-		zap.String("alpaca_account_id", alpacaResp.ID))
+		zap.String("alpaca_account_id", alpacaResp.ID),
+		zap.Bool("wallets_queued", true))
 
 	return &entities.OnboardingCompleteResponse{
-		UserID:          req.UserID,
-		DueAccountID:    bridgeResp.AccountID, // Bridge customer ID
-		AlpacaAccountID: alpacaResp.ID,
-		Message:         "Accounts created successfully. Please create your passcode to continue.",
-		NextSteps:       []string{"create_passcode"},
+		UserID:           req.UserID,
+		BridgeCustomerID: bridgeResp.AccountID,
+		AlpacaAccountID:  alpacaResp.ID,
+		Message:          "Onboarding completed successfully. Your wallets are being provisioned.",
+		NextSteps:        []string{"wallets_creating"},
 	}, nil
 }
 
@@ -945,11 +1043,11 @@ func (s *Service) markStepCompleted(ctx context.Context, userID uuid.UUID, step 
 			zap.Error(err),
 			zap.String("userId", userID.String()),
 			zap.String("step", string(step)))
-		
+
 		if createErr := s.createInitialOnboardingSteps(ctx, userID); createErr != nil {
 			return fmt.Errorf("failed to create initial onboarding steps: %w", createErr)
 		}
-		
+
 		// Retry getting the flow
 		flow, err = s.onboardingFlowRepo.GetByUserAndStep(ctx, userID, step)
 		if err != nil {

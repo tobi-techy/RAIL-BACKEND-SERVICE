@@ -9,19 +9,18 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
-	"github.com/shopspring/decimal"
-	"github.com/rail-service/rail_service/internal/adapters/alpaca"
-	"github.com/rail-service/rail_service/internal/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/api/handlers"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
-	alpacaservice "github.com/rail-service/rail_service/internal/domain/services/alpaca"
 	"github.com/rail-service/rail_service/internal/domain/services/allocation"
-	"github.com/rail-service/rail_service/internal/domain/services/autoinvest"
+	alpacaservice "github.com/rail-service/rail_service/internal/domain/services/alpaca"
 	analyticsservice "github.com/rail-service/rail_service/internal/domain/services/analytics"
 	"github.com/rail-service/rail_service/internal/domain/services/apikey"
 	"github.com/rail-service/rail_service/internal/domain/services/audit"
+	"github.com/rail-service/rail_service/internal/domain/services/autoinvest"
+	"github.com/rail-service/rail_service/internal/domain/services/card"
+	"github.com/rail-service/rail_service/internal/domain/services/copytrading"
 	entitysecret "github.com/rail-service/rail_service/internal/domain/services/entity_secret"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/domain/services/integration"
@@ -34,8 +33,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/passcode"
 	"github.com/rail-service/rail_service/internal/domain/services/reconciliation"
 	"github.com/rail-service/rail_service/internal/domain/services/roundup"
-	"github.com/rail-service/rail_service/internal/domain/services/copytrading"
-	"github.com/rail-service/rail_service/internal/domain/services/card"
+	"github.com/rail-service/rail_service/internal/domain/services/security"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	"github.com/rail-service/rail_service/internal/domain/services/socialauth"
 	"github.com/rail-service/rail_service/internal/domain/services/station"
@@ -43,8 +41,9 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/twofa"
 	"github.com/rail-service/rail_service/internal/domain/services/wallet"
 	"github.com/rail-service/rail_service/internal/domain/services/webauthn"
-	"github.com/rail-service/rail_service/internal/domain/services/security"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/circle"
@@ -54,6 +53,7 @@ import (
 	commonmetrics "github.com/rail-service/rail_service/pkg/common/metrics"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/ratelimit"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -156,7 +156,7 @@ func (a *WithdrawalBridgeAdapter) ProcessWithdrawal(ctx context.Context, req *en
 	transferReq := &bridge.CreateTransferRequest{
 		Amount: req.Amount.String(),
 		Source: bridge.TransferSource{
-			PaymentRail: bridge.PaymentRailEthereum, // Default source
+			PaymentRail: bridge.PaymentRailSolana, // Solana-only support
 			Currency:    bridge.CurrencyUSDC,
 		},
 		Destination: bridge.TransferDestination{
@@ -201,7 +201,7 @@ func mapChainToPaymentRail(chain string) bridge.PaymentRail {
 	case "BASE", "base":
 		return bridge.PaymentRailBase
 	default:
-		return bridge.PaymentRailEthereum
+		return bridge.PaymentRailSolana
 	}
 }
 
@@ -218,27 +218,63 @@ func (a *BridgeOnboardingAdapter) CreateCustomer(ctx context.Context, req *entit
 		Email:     req.Email,
 	}
 
-	customer, err := a.adapter.CreateCustomerWithWallet(ctx, &bridge.CreateCustomerWithWalletRequest{
-		FirstName: req.FirstName,
-		LastName:  req.LastName,
-		Email:     req.Email,
-		Chain:     bridge.PaymentRailEthereum, // Default chain
-	})
-	if err != nil {
-		// Fallback to just creating customer without wallet
-		cust, err := a.adapter.Client().CreateCustomer(ctx, bridgeReq)
-		if err != nil {
-			return nil, err
+	// Add residential address if provided
+	if req.Address != nil {
+		// Convert 2-letter country code to 3-letter (Bridge requires ISO 3166-1 alpha-3)
+		country := req.Country
+		if len(country) == 2 {
+			switch country {
+			case "US":
+				country = "USA"
+			case "GB":
+				country = "GBR"
+			case "CA":
+				country = "CAN"
+			// Add more as needed
+			}
 		}
-		return &entities.CreateAccountResponse{
-			AccountID: cust.ID,
-			Status:    string(cust.Status),
-		}, nil
+		
+		bridgeReq.ResidentialAddress = &bridge.Address{
+			StreetLine1: req.Address.Street,
+			City:        req.Address.City,
+			Subdivision: req.Address.State,
+			PostalCode:  req.Address.PostalCode,
+			Country:     country,
+		}
 	}
 
+	// Add birth date if provided
+	if req.DateOfBirth != nil {
+		bridgeReq.BirthDate = req.DateOfBirth.Format("2006-01-02")
+	}
+
+	// Add SSN if provided (required for production, optional for sandbox)
+	if req.SSN != "" {
+		bridgeReq.IdentifyingInformation = []bridge.IdentifyingInfo{
+			{
+				Type:           "ssn",
+				IssuingCountry: "usa",
+				Number:         req.SSN,
+			},
+		}
+	}
+	
+	// For sandbox: use dummy signed_agreement_id if not provided
+	// For production: this must be obtained from Bridge ToS API first
+	// Note: Sandbox may auto-approve without signed_agreement_id
+	if req.SignedAgreementID != "" {
+		bridgeReq.SignedAgreementID = req.SignedAgreementID
+	}
+
+	// Use direct customer creation (not CreateCustomerWithWallet) to ensure all fields are sent
+	cust, err := a.adapter.Client().CreateCustomer(ctx, bridgeReq)
+	if err != nil {
+		return nil, err
+	}
+	
 	return &entities.CreateAccountResponse{
-		AccountID: customer.Customer.ID,
-		Status:    string(customer.Customer.Status),
+		AccountID: cust.ID,
+		Status:    string(cust.Status),
 	}, nil
 }
 
@@ -307,10 +343,10 @@ type Container struct {
 	RedisClient   cache.RedisClient
 
 	// Bridge Domain Adapters
-	BridgeKYCAdapter              *BridgeKYCAdapter
-	BridgeFundingAdapter          *BridgeFundingAdapter
-	BridgeVirtualAccountService   *funding.BridgeVirtualAccountService
-	BridgeWebhookHandler          *handlers.BridgeWebhookHandler
+	BridgeKYCAdapter            *BridgeKYCAdapter
+	BridgeFundingAdapter        *BridgeFundingAdapter
+	BridgeVirtualAccountService *funding.BridgeVirtualAccountService
+	BridgeWebhookHandler        *handlers.BridgeWebhookHandler
 
 	// Domain Services
 	OnboardingService       *onboarding.Service
@@ -351,29 +387,29 @@ type Container struct {
 	OnboardingJobRepo *repositories.OnboardingJobRepository
 
 	// Alpaca Investment Repositories
-	AlpacaAccountRepo      *repositories.AlpacaAccountRepository
-	InvestmentOrderRepo    *repositories.InvestmentOrderRepository
-	InvestmentPositionRepo *repositories.InvestmentPositionRepository
-	AlpacaEventRepo        *repositories.AlpacaEventRepository
+	AlpacaAccountRepo        *repositories.AlpacaAccountRepository
+	InvestmentOrderRepo      *repositories.InvestmentOrderRepository
+	InvestmentPositionRepo   *repositories.InvestmentPositionRepository
+	AlpacaEventRepo          *repositories.AlpacaEventRepository
 	AlpacaInstantFundingRepo *repositories.AlpacaInstantFundingRepository
 
 	// Advanced Features Repositories
-	PortfolioSnapshotRepo     *repositories.PortfolioSnapshotRepository
-	ScheduledInvestmentRepo   *repositories.ScheduledInvestmentRepository
-	RebalancingConfigRepo     *repositories.RebalancingConfigRepository
-	MarketAlertRepo           *repositories.MarketAlertRepository
+	PortfolioSnapshotRepo   *repositories.PortfolioSnapshotRepository
+	ScheduledInvestmentRepo *repositories.ScheduledInvestmentRepository
+	RebalancingConfigRepo   *repositories.RebalancingConfigRepository
+	MarketAlertRepo         *repositories.MarketAlertRepository
 
 	// Alpaca Investment Services
-	AlpacaAccountService   *alpacaservice.AccountService
-	AlpacaFundingBridge    *alpacaservice.FundingBridge
-	AlpacaEventProcessor   *alpacaservice.EventProcessor
-	AlpacaPortfolioSync    *alpacaservice.PortfolioSyncService
+	AlpacaAccountService *alpacaservice.AccountService
+	AlpacaFundingBridge  *alpacaservice.FundingBridge
+	AlpacaEventProcessor *alpacaservice.EventProcessor
+	AlpacaPortfolioSync  *alpacaservice.PortfolioSyncService
 
 	// Advanced Features Services
-	PortfolioAnalyticsService   *analyticsservice.PortfolioAnalyticsService
-	MarketDataService           *marketservice.MarketDataService
-	ScheduledInvestmentService  *investing.ScheduledInvestmentService
-	RebalancingService          *investing.RebalancingService
+	PortfolioAnalyticsService  *analyticsservice.PortfolioAnalyticsService
+	MarketDataService          *marketservice.MarketDataService
+	ScheduledInvestmentService *investing.ScheduledInvestmentService
+	RebalancingService         *investing.RebalancingService
 
 	// Brokerage Adapter
 	BrokerageAdapter *adapters.BrokerageAdapter
@@ -407,18 +443,27 @@ type Container struct {
 	PasswordPolicyService     *security.PasswordPolicyService
 	SecurityEventLogger       *security.SecurityEventLogger
 	PasswordService           *security.PasswordService
-	
+
 	// Enhanced Security Services (MFA, Geo, Fraud, Incident Response)
 	MFAService              *security.MFAService
 	GeoSecurityService      *security.GeoSecurityService
 	FraudDetectionService   *security.FraudDetectionService
 	IncidentResponseService *security.IncidentResponseService
-	
+
 	// Token and Rate Limiting
 	TokenBlacklist      *auth.TokenBlacklist
 	JWTService          *auth.JWTService
 	TieredRateLimiter   *ratelimit.TieredLimiter
 	LoginAttemptTracker *ratelimit.LoginAttemptTracker
+
+	// Device-Bound JWT (Priority 1)
+	DeviceSessionRepo      *repositories.DeviceSessionRepository
+	DeviceBindingAuditRepo *repositories.DeviceBindingAuditRepository
+	DeviceBoundJWTService  *auth.DeviceBoundJWTService
+
+	// Adaptive Rate Limiting (Priority 3)
+	RiskScoringEngine   *ratelimit.RiskScoringEngine
+	AdaptiveRateLimiter *ratelimit.AdaptiveRateLimiter
 }
 
 // NewContainer creates a new dependency injection container
@@ -455,12 +500,14 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 
 	// Initialize Alpaca service
 	alpacaConfig := alpaca.Config{
-		ClientID:    cfg.Alpaca.ClientID,
-		SecretKey:   cfg.Alpaca.SecretKey,
-		BaseURL:     cfg.Alpaca.BaseURL,
-		DataBaseURL: cfg.Alpaca.DataBaseURL,
-		Environment: cfg.Alpaca.Environment,
-		Timeout:     time.Duration(cfg.Alpaca.Timeout) * time.Second,
+		ClientID:      cfg.Alpaca.ClientID,
+		SecretKey:     cfg.Alpaca.SecretKey,
+		BaseURL:       cfg.Alpaca.BaseURL,
+		DataBaseURL:   cfg.Alpaca.DataBaseURL,
+		DataAPIKey:    cfg.Alpaca.DataAPIKey,
+		DataAPISecret: cfg.Alpaca.DataAPISecret,
+		Environment:   cfg.Alpaca.Environment,
+		Timeout:       time.Duration(cfg.Alpaca.Timeout) * time.Second,
 	}
 	alpacaClient := alpaca.NewClient(alpacaConfig, zapLog)
 	alpacaService := alpaca.NewService(alpacaClient, zapLog)
@@ -853,7 +900,7 @@ func (c *Container) initializeDomainServices() error {
 
 	// Initialize enhanced security services (MFA, Geo, Fraud, Incident Response)
 	c.MFAService = security.NewMFAService(c.DB, c.RedisClient.Client(), c.ZapLog, c.Config.Security.EncryptionKey, nil) // SMS provider can be injected later
-	c.GeoSecurityService = security.NewGeoSecurityService(c.DB, c.RedisClient.Client(), c.ZapLog, "") // IP API key can be configured
+	c.GeoSecurityService = security.NewGeoSecurityService(c.DB, c.RedisClient.Client(), c.ZapLog, "")                   // IP API key can be configured
 	c.FraudDetectionService = security.NewFraudDetectionService(c.DB, c.RedisClient.Client(), c.ZapLog)
 	c.IncidentResponseService = security.NewIncidentResponseService(c.DB, c.RedisClient.Client(), c.ZapLog, nil, c.SecurityEventLogger)
 
@@ -868,22 +915,60 @@ func (c *Container) initializeDomainServices() error {
 		)
 	}
 
-	// Initialize tiered rate limiter
+	// Initialize tiered rate limiter with configuration
+	endpointLimits := make(map[string]ratelimit.EndpointLimit)
+	for key, limit := range c.Config.RateLimit.EndpointLimits {
+		endpointLimits[key] = ratelimit.EndpointLimit{
+			Limit:  limit.Limit,
+			Window: time.Duration(limit.Window) * time.Second,
+		}
+	}
+
 	tieredConfig := ratelimit.TieredConfig{
-		GlobalLimit:  1000,
-		GlobalWindow: time.Minute,
-		IPLimit:      int64(c.Config.Server.RateLimitPerMin),
-		IPWindow:     time.Minute,
-		UserLimit:    200,
-		UserWindow:   time.Minute,
-		EndpointLimits: map[string]ratelimit.EndpointLimit{
-			"POST /api/v1/auth/login": {Limit: 5, Window: 15 * time.Minute},
-			"POST /api/v1/auth/register": {Limit: 3, Window: time.Hour},
-			"POST /api/v1/funding/withdraw": {Limit: 10, Window: time.Hour},
-		},
+		GlobalLimit:    c.Config.RateLimit.GlobalLimit,
+		GlobalWindow:   time.Duration(c.Config.RateLimit.GlobalWindow) * time.Second,
+		IPLimit:        c.Config.RateLimit.IPLimit,
+		IPWindow:       time.Duration(c.Config.RateLimit.IPWindow) * time.Second,
+		UserLimit:      c.Config.RateLimit.UserLimit,
+		UserWindow:     time.Duration(c.Config.RateLimit.UserWindow) * time.Second,
+		EndpointLimits: endpointLimits,
 	}
 	c.TieredRateLimiter = ratelimit.NewTieredLimiter(c.RedisClient.Client(), tieredConfig, c.ZapLog)
 	c.LoginAttemptTracker = ratelimit.NewLoginAttemptTracker(c.RedisClient.Client(), c.ZapLog)
+
+	// Initialize Device-Bound JWT (Priority 1)
+	if c.Config.Security.DeviceBinding.Enabled {
+		sqlxDB := sqlx.NewDb(c.DB, "postgres")
+		c.DeviceSessionRepo = repositories.NewDeviceSessionRepository(sqlxDB)
+		c.DeviceBindingAuditRepo = repositories.NewDeviceBindingAuditRepository(sqlxDB)
+		c.DeviceBoundJWTService = auth.NewDeviceBoundJWTService(
+			c.JWTService,
+			c.DeviceSessionRepo,
+			c.DeviceBindingAuditRepo,
+			auth.DeviceBindingConfig{
+				Enabled:               c.Config.Security.DeviceBinding.Enabled,
+				MaxConcurrentSessions: c.Config.Security.DeviceBinding.MaxConcurrentSessions,
+				SessionTTL:            time.Duration(c.Config.Security.DeviceBinding.SessionTTLHours) * time.Hour,
+				StrictValidation:      c.Config.Security.DeviceBinding.StrictValidation,
+			},
+			c.ZapLog,
+		)
+	}
+
+	// Initialize Adaptive Rate Limiter (Priority 3)
+	if c.Config.Security.AdaptiveRateLimit.Enabled {
+		c.RiskScoringEngine = ratelimit.NewRiskScoringEngine(
+			c.RedisClient.Client(),
+			ratelimit.DefaultRiskWeights(),
+			c.ZapLog,
+		)
+		c.AdaptiveRateLimiter = ratelimit.NewAdaptiveRateLimiter(
+			c.RedisClient.Client(),
+			c.RiskScoringEngine,
+			ratelimit.DefaultAdaptiveConfig(),
+			c.ZapLog,
+		)
+	}
 
 	// Wire limits and audit services to funding service
 	c.FundingService.SetLimitsService(c.LimitsService)
@@ -1097,6 +1182,11 @@ func (c *Container) GetTieredRateLimiter() *ratelimit.TieredLimiter {
 	return c.TieredRateLimiter
 }
 
+// GetRateLimitConfig returns the rate limit configuration
+func (c *Container) GetRateLimitConfig() *config.RateLimitConfig {
+	return &c.Config.RateLimit
+}
+
 // GetLoginAttemptTracker returns the login attempt tracker
 func (c *Container) GetLoginAttemptTracker() *ratelimit.LoginAttemptTracker {
 	return c.LoginAttemptTracker
@@ -1296,6 +1386,11 @@ func ptrOf[T any](v T) *T {
 }
 
 func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChain {
+	solanaOnly := map[entities.WalletChain]struct{}{
+		entities.WalletChainSolana:    {},
+		entities.WalletChainSOLDevnet: {},
+	}
+
 	if len(raw) == 0 {
 		logger.Warn("circle.supported_chains not configured; defaulting to SOL-DEVNET")
 		return []entities.WalletChain{
@@ -1315,6 +1410,10 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 			logger.Warn("Ignoring unsupported wallet chain from configuration", zap.String("chain", string(chain)))
 			continue
 		}
+		if _, allowed := solanaOnly[chain]; !allowed {
+			logger.Warn("Ignoring chain due to Solana-only support", zap.String("chain", string(chain)))
+			continue
+		}
 		if _, ok := seen[chain]; ok {
 			continue
 		}
@@ -1323,7 +1422,7 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 	}
 
 	if len(normalized) == 0 {
-		logger.Warn("circle.supported_chains contained no valid entries; defaulting to SOL-DEVNET")
+		logger.Warn("circle.supported_chains contained no valid Solana entries; defaulting to SOL-DEVNET")
 		return []entities.WalletChain{
 			entities.WalletChainSOLDevnet,
 		}
@@ -1536,7 +1635,6 @@ func (c *Container) GetContributionsRepository() handlers.UserContributionsRepos
 	}
 	return &contributionRepoAdapter{repo: repositories.NewUserContributionsRepository(c.DB, c.ZapLog)}
 }
-
 
 // initializeAlpacaInvestmentServices initializes Alpaca investment infrastructure
 func (c *Container) initializeAlpacaInvestmentServices(sqlxDB *sqlx.DB) error {
@@ -2029,7 +2127,14 @@ func (c *Container) GetAlpacaWebhookHandlers() *handlers.AlpacaWebhookHandlers {
 	if c.AlpacaEventProcessor == nil {
 		return nil
 	}
-	return handlers.NewAlpacaWebhookHandlers(c.AlpacaEventProcessor, c.Logger)
+	// Get webhook secret from config
+	webhookSecret := c.Config.Alpaca.WebhookSecret
+	if webhookSecret == "" {
+		c.ZapLog.Warn("Alpaca webhook secret not configured")
+	}
+	// Determine if webhook verification should be skipped (only in development)
+	skipWebhookVerification := c.Config.Environment == "development" && webhookSecret == ""
+	return handlers.NewAlpacaWebhookHandlers(c.AlpacaEventProcessor, c.Logger, webhookSecret, skipWebhookVerification)
 }
 
 // GetAnalyticsHandlers returns analytics handlers
@@ -2111,6 +2216,17 @@ func (c *Container) GetStationHandlers() *handlers.StationHandlers {
 	return handlers.NewStationHandlers(c.StationService, c.ZapLog)
 }
 
+// GetSpendingStashHandlers returns spending stash handlers
+func (c *Container) GetSpendingStashHandlers() *handlers.SpendingStashHandlers {
+	return handlers.NewSpendingStashHandlers(
+		c.AllocationService,
+		c.CardService,
+		c.RoundupService,
+		c.LimitsService,
+		c.ZapLog,
+	)
+}
+
 // GetInvestmentStashHandlers returns investment stash handlers
 func (c *Container) GetInvestmentStashHandlers() *handlers.InvestmentStashHandlers {
 	if c.AllocationService == nil || c.InvestingService == nil || c.CopyTradingService == nil {
@@ -2119,7 +2235,6 @@ func (c *Container) GetInvestmentStashHandlers() *handlers.InvestmentStashHandle
 	return handlers.NewInvestmentStashHandlers(
 		c.AllocationService,
 		c.InvestingService,
-		c.CopyTradingService,
 		c.ZapLog,
 	)
 }

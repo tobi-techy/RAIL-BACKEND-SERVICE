@@ -1,0 +1,11 @@
+meta {
+  name: Get Bars
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/market/bars/{{symbol}}?timeframe=1D&limit=30
+  body: none
+  auth: none
+}
