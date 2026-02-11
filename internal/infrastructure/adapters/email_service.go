@@ -370,61 +370,37 @@ func isNonProductionEnv(env string) bool {
 	}
 }
 
-// SendVerificationEmail sends an email verification message
-func (e *EmailService) SendVerificationEmail(ctx context.Context, email, verificationToken string) error {
+// SendVerificationEmail sends a verification code email
+func (e *EmailService) SendVerificationEmail(ctx context.Context, email, code string) error {
 	e.logger.Info("Sending verification email",
-		zap.String("email", email),
-		zap.String("token", verificationToken))
+		zap.String("email", email))
 
-	verificationURL := fmt.Sprintf("%s/verify-email?token=%s", e.config.BaseURL, verificationToken)
+	subject := "Your Rail verification code"
 
-	subject := "Verify Your Email Address - Stack Service"
+	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
+<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:40px 20px;">
+<tr><td align="center">
+<table width="480" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;">
+<tr><td style="padding:40px 40px 0 40px;">
+  <p style="font-family:-apple-system,SF Pro Display,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;color:#1d1d1f;margin:0 0 8px 0;letter-spacing:-0.5px;">Rail</p>
+</td></tr>
+<tr><td style="padding:32px 40px;">
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;color:#1d1d1f;margin:0 0 24px 0;line-height:1.5;">Here's your verification code. Enter it in the app to continue.</p>
+  <table width="100%%" cellpadding="0" cellspacing="0"><tr><td align="center" style="background-color:#f5f5f7;border-radius:12px;padding:24px;">
+    <p style="font-family:-apple-system,SF Pro Display,SF Pro Rounded,Helvetica Neue,monospace;font-size:36px;font-weight:700;color:#1d1d1f;margin:0;letter-spacing:8px;">%s</p>
+  </td></tr></table>
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:13px;color:#86868b;margin:24px 0 0 0;line-height:1.5;">This code expires in 10 minutes. If you didn't request this, you can safely ignore this email.</p>
+</td></tr>
+<tr><td style="padding:0 40px 40px 40px;border-top:1px solid #f5f5f7;">
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;color:#86868b;margin:20px 0 0 0;line-height:1.5;">Rail — Your money, working from the moment it arrives.</p>
+</td></tr>
+</table>
+</td></tr></table>
+</body></html>`, html.EscapeString(code))
 
-	htmlContent := fmt.Sprintf(`
-		<!DOCTYPE html>
-		<html>
-		<head>
-			<title>Email Verification</title>
-		</head>
-		<body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-			<div style="background-color: #f8f9fa; padding: 30px; border-radius: 8px; text-align: center;">
-				<h1 style="color: #333; margin-bottom: 20px;">Welcome to Stack Service!</h1>
-				<p style="color: #666; font-size: 16px; line-height: 1.5; margin-bottom: 30px;">
-					Thank you for joining Stack Service. To complete your registration and secure your account,
-					please verify your email address by clicking the button below.
-				</p>
-				<a href="%s" 
-				   style="display: inline-block; background-color: #007bff; color: white; padding: 15px 30px; 
-				          text-decoration: none; border-radius: 5px; font-weight: bold; margin-bottom: 20px;">
-					Verify Email Address
-				</a>
-				<p style="color: #888; font-size: 14px; margin-top: 30px;">
-					If you cannot click the button, copy and paste this link into your browser:<br>
-					<a href="%s" style="color: #007bff; word-break: break-all;">%s</a>
-				</p>
-				<p style="color: #888; font-size: 12px; margin-top: 20px;">
-					This link will expire in 24 hours. If you did not create an account with Stack Service, 
-					please ignore this email.
-				</p>
-			</div>
-		</body>
-		</html>
-	`, verificationURL, verificationURL, verificationURL)
-
-	textContent := fmt.Sprintf(`
-Welcome to Stack Service!
-
-Thank you for joining Stack Service. To complete your registration and secure your account,
-please verify your email address by visiting the following link:
-
-%s
-
-This link will expire in 24 hours. If you did not create an account with Stack Service,
-please ignore this email.
-
-Best regards,
-The Stack Service Team
-	`, verificationURL)
+	textContent := fmt.Sprintf("Your Rail verification code is: %s\n\nThis code expires in 10 minutes.\nIf you didn't request this, ignore this email.\n\n— Rail", code)
 
 	return e.sendEmail(ctx, email, subject, htmlContent, textContent)
 }
@@ -436,90 +412,93 @@ func (e *EmailService) SendKYCStatusEmail(ctx context.Context, email string, sta
 		zap.String("status", string(status)),
 		zap.Strings("rejection_reasons", rejectionReasons))
 
-	var subject, htmlContent, textContent string
+	var subject, heading, body, extra string
 
 	switch status {
 	case entities.KYCStatusApproved:
-		subject = "✅ KYC Verification Approved - Stack Service"
-		htmlContent = e.buildKYCApprovedHTML()
-		textContent = e.buildKYCApprovedText()
-
+		subject = "Identity verified"
+		heading = "You're verified."
+		body = "Your identity verification is complete. You can now fund your account and start using Rail."
 	case entities.KYCStatusRejected:
-		subject = "❌ KYC Verification Requires Additional Information - Stack Service"
-		htmlContent = e.buildKYCRejectedHTML(rejectionReasons)
-		textContent = e.buildKYCRejectedText(rejectionReasons)
-
+		subject = "Verification needs attention"
+		heading = "We need a bit more."
+		body = "We couldn't complete your verification. Please review the details below and resubmit."
+		for _, reason := range rejectionReasons {
+			extra += fmt.Sprintf(`<p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:14px;color:#424245;margin:0 0 8px 0;line-height:1.5;">%s</p>`, html.EscapeString(reason))
+		}
+		if extra != "" {
+			extra = fmt.Sprintf(`<table width="100%%%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;border-radius:12px;"><tr><td style="padding:20px 24px;">%s</td></tr></table>`, extra)
+		}
 	case entities.KYCStatusProcessing:
-		subject = "⏳ KYC Verification In Progress - Stack Service"
-		htmlContent = e.buildKYCProcessingHTML()
-		textContent = e.buildKYCProcessingText()
-
+		subject = "Verification in progress"
+		heading = "We're on it."
+		body = "Your documents are being reviewed. You'll hear from us within 24-48 hours."
 	default:
-		subject = "KYC Status Update - Stack Service"
-		htmlContent = e.buildKYCGenericHTML(string(status))
-		textContent = e.buildKYCGenericText(string(status))
+		subject = "Verification update"
+		heading = "Status update"
+		body = fmt.Sprintf("Your verification status has been updated to: %s", string(status))
 	}
+
+	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
+<table width="100%%%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:40px 20px;">
+<tr><td align="center">
+<table width="480" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;">
+<tr><td style="padding:40px 40px 0 40px;">
+  <p style="font-family:-apple-system,SF Pro Display,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;color:#1d1d1f;margin:0;letter-spacing:-0.5px;">Rail</p>
+</td></tr>
+<tr><td style="padding:32px 40px;">
+  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:22px;font-weight:600;color:#1d1d1f;margin:0 0 16px 0;letter-spacing:-0.3px;">%s</p>
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;color:#1d1d1f;margin:0 0 24px 0;line-height:1.5;">%s</p>%s
+</td></tr>
+<tr><td style="padding:0 40px 40px 40px;border-top:1px solid #f5f5f7;">
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;color:#86868b;margin:20px 0 0 0;line-height:1.5;">Rail — Your money, working from the moment it arrives.</p>
+</td></tr>
+</table>
+</td></tr></table>
+</body></html>`, html.EscapeString(heading), html.EscapeString(body), extra)
+
+	textContent := fmt.Sprintf("%s\n\n%s\n\n— Rail", heading, body)
 
 	return e.sendEmail(ctx, email, subject, htmlContent, textContent)
 }
 
 // SendWelcomeEmail sends a welcome email to a new user
 func (e *EmailService) SendWelcomeEmail(ctx context.Context, email string) error {
-	e.logger.Info("Sending welcome email",
-		zap.String("email", email))
+	e.logger.Info("Sending welcome email", zap.String("email", email))
 
-	subject := "🎉 Welcome to Stack Service!"
+	subject := "Welcome to Rail"
 
-	htmlContent := fmt.Sprintf(`
-		<!DOCTYPE html>
-		<html>
-		<head><title>Welcome to Stack Service</title></head>
-		<body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-			<div style="background-color: #f8f9fa; padding: 30px; border-radius: 8px; text-align: center;">
-				<h1 style="color: #333; margin-bottom: 20px;">Welcome to Stack Service! 🎉</h1>
-				<p style="color: #666; font-size: 16px; line-height: 1.5; margin-bottom: 30px;">
-					Thank you for joining Stack Service! We're excited to have you on board.
-					Your account has been successfully created and verified.
-				</p>
-				<div style="background-color: white; padding: 20px; border-radius: 8px; margin: 20px 0;">
-					<h3 style="color: #333; margin-bottom: 15px;">Next Steps:</h3>
-					<ul style="text-align: left; color: #666; line-height: 1.8;">
-						<li>Complete your KYC verification</li>
-						<li>Set up your digital wallets</li>
-						<li>Start exploring our platform</li>
-					</ul>
-				</div>
-				<a href="%s/dashboard" 
-				   style="display: inline-block; background-color: #28a745; color: white; padding: 15px 30px; 
-				          text-decoration: none; border-radius: 5px; font-weight: bold; margin: 20px 0;">
-					Get Started
-				</a>
-				<p style="color: #888; font-size: 12px; margin-top: 30px;">
-					If you have any questions, feel free to contact our support team.
-				</p>
-			</div>
-		</body>
-		</html>
-	`, e.config.BaseURL)
+	htmlContent := `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:40px 20px;">
+<tr><td align="center">
+<table width="480" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;">
+<tr><td style="padding:40px 40px 0 40px;">
+  <p style="font-family:-apple-system,SF Pro Display,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;color:#1d1d1f;margin:0 0 8px 0;letter-spacing:-0.5px;">Rail</p>
+</td></tr>
+<tr><td style="padding:32px 40px;">
+  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:22px;font-weight:600;color:#1d1d1f;margin:0 0 16px 0;letter-spacing:-0.3px;">You're in.</p>
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;color:#1d1d1f;margin:0 0 24px 0;line-height:1.5;">Your Rail account is set up. From here, every deposit automatically splits 70/30 between spending and investing — no decisions required.</p>
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;border-radius:12px;">
+    <tr><td style="padding:20px 24px;">
+      <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:14px;font-weight:600;color:#1d1d1f;margin:0 0 12px 0;">What happens next</p>
+      <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:14px;color:#424245;margin:0 0 8px 0;line-height:1.5;">1. Complete identity verification</p>
+      <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:14px;color:#424245;margin:0 0 8px 0;line-height:1.5;">2. Fund your account</p>
+      <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:14px;color:#424245;margin:0;line-height:1.5;">3. Your money starts working</p>
+    </td></tr>
+  </table>
+</td></tr>
+<tr><td style="padding:0 40px 40px 40px;border-top:1px solid #f5f5f7;">
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;color:#86868b;margin:20px 0 0 0;line-height:1.5;">Rail — Your money, working from the moment it arrives.</p>
+</td></tr>
+</table>
+</td></tr></table>
+</body></html>`
 
-	textContent := fmt.Sprintf(`
-Welcome to Stack Service!
-
-Thank you for joining Stack Service! We're excited to have you on board.
-Your account has been successfully created and verified.
-
-Next Steps:
-- Complete your KYC verification
-- Set up your digital wallets  
-- Start exploring our platform
-
-Get started by visiting: %s/dashboard
-
-If you have any questions, feel free to contact our support team.
-
-Best regards,
-The Stack Service Team
-	`, e.config.BaseURL)
+	textContent := "Welcome to Rail.\n\nYour account is set up. Every deposit automatically splits 70/30 between spending and investing.\n\nNext steps:\n1. Complete identity verification\n2. Fund your account\n3. Your money starts working\n\n— Rail"
 
 	return e.sendEmail(ctx, email, subject, htmlContent, textContent)
 }
@@ -551,33 +530,41 @@ func (e *EmailService) SendLoginAlertEmail(ctx context.Context, email string, de
 	}
 
 	safeIP := html.EscapeString(strings.TrimSpace(details.IP))
-	safeForwarded := html.EscapeString(forwarded)
 	safeLocation := html.EscapeString(location)
 	safeUserAgent := html.EscapeString(userAgent)
 	loginTime := details.LoginAt.UTC().Format(time.RFC1123)
 
-	subject := "New Login Detected - Stack Service"
+	subject := "New login to your Rail account"
 
-	htmlContent := fmt.Sprintf(`
-		<!DOCTYPE html>
-		<html>
-		<head><title>New Login Detected</title></head>
-		<body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-			<div style="background-color: #f8f9fa; padding: 24px; border-radius: 8px; border: 1px solid #e9ecef;">
-				<h2 style="color: #333; margin-bottom: 16px;">We noticed a new login to your account</h2>
-				<p style="color: #555; line-height: 1.6;">If this was you, you're all set. If not, secure your account right away.</p>
-				<div style="background-color: white; border-radius: 8px; padding: 16px; margin: 20px 0; border: 1px solid #dee2e6;">
-					<p style="margin: 4px 0; color: #333;"><strong>IP Address:</strong> %s</p>
-					<p style="margin: 4px 0; color: #333;"><strong>Forwarded For:</strong> %s</p>
-					<p style="margin: 4px 0; color: #333;"><strong>Location:</strong> %s</p>
-					<p style="margin: 4px 0; color: #333;"><strong>Device:</strong> %s</p>
-					<p style="margin: 4px 0; color: #333;"><strong>Time (UTC):</strong> %s</p>
-				</div>
-				<p style="color: #555; line-height: 1.6;">If you did not perform this login, please reset your password immediately and contact support.</p>
-			</div>
-		</body>
-		</html>
-	`, safeIP, safeForwarded, safeLocation, safeUserAgent, loginTime)
+	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
+<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:40px 20px;">
+<tr><td align="center">
+<table width="480" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;">
+<tr><td style="padding:40px 40px 0 40px;">
+  <p style="font-family:-apple-system,SF Pro Display,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;color:#1d1d1f;margin:0 0 8px 0;letter-spacing:-0.5px;">Rail</p>
+</td></tr>
+<tr><td style="padding:32px 40px;">
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;color:#1d1d1f;margin:0 0 24px 0;line-height:1.5;">We detected a new login to your account. If this was you, no action is needed.</p>
+  <table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;border-radius:12px;">
+    <tr><td style="padding:20px 24px;">
+      <table width="100%%" cellpadding="0" cellspacing="0">
+        <tr><td style="padding:4px 0;"><p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:13px;color:#86868b;margin:0;">IP Address</p><p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:14px;color:#1d1d1f;margin:2px 0 12px 0;">%s</p></td></tr>
+        <tr><td style="padding:4px 0;"><p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:13px;color:#86868b;margin:0;">Location</p><p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:14px;color:#1d1d1f;margin:2px 0 12px 0;">%s</p></td></tr>
+        <tr><td style="padding:4px 0;"><p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:13px;color:#86868b;margin:0;">Device</p><p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:14px;color:#1d1d1f;margin:2px 0 12px 0;">%s</p></td></tr>
+        <tr><td style="padding:4px 0;"><p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:13px;color:#86868b;margin:0;">Time (UTC)</p><p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:14px;color:#1d1d1f;margin:2px 0 0 0;">%s</p></td></tr>
+      </table>
+    </td></tr>
+  </table>
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:13px;color:#86868b;margin:24px 0 0 0;line-height:1.5;">If this wasn't you, reset your password immediately and contact support.</p>
+</td></tr>
+<tr><td style="padding:0 40px 40px 40px;border-top:1px solid #f5f5f7;">
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;color:#86868b;margin:20px 0 0 0;line-height:1.5;">Rail — Your money, working from the moment it arrives.</p>
+</td></tr>
+</table>
+</td></tr></table>
+</body></html>`, safeIP, safeLocation, safeUserAgent, loginTime)
 
 	textContent := fmt.Sprintf(`
 New login detected on your Stack Service account.
@@ -598,153 +585,4 @@ If this wasn't you, please reset your password immediately and contact support.
 	return e.sendEmail(ctx, email, subject, htmlContent, textContent)
 }
 
-// KYC Email Templates
-
-func (e *EmailService) buildKYCApprovedHTML() string {
-	return fmt.Sprintf(`
-	<!DOCTYPE html>
-	<html>
-	<head><title>KYC Approved</title></head>
-	<body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-		<div style="background-color: #d4edda; padding: 30px; border-radius: 8px; text-align: center; border: 1px solid #c3e6cb;">
-			<h1 style="color: #155724; margin-bottom: 20px;">✅ Verification Complete!</h1>
-			<p style="color: #155724; font-size: 16px; line-height: 1.5; margin-bottom: 30px;">
-				Congratulations! Your identity verification has been successfully approved.
-				You can now proceed to create your digital wallets and access all platform features.
-			</p>
-			<a href="%s/wallets/create" 
-			   style="display: inline-block; background-color: #28a745; color: white; padding: 15px 30px; 
-			          text-decoration: none; border-radius: 5px; font-weight: bold;">
-				Create Your Wallets
-			</a>
-		</div>
-	</body>
-	</html>
-	`, e.config.BaseURL)
-}
-
-func (e *EmailService) buildKYCApprovedText() string {
-	return fmt.Sprintf(`
-Verification Complete!
-
-Congratulations! Your identity verification has been successfully approved.
-You can now proceed to create your digital wallets and access all platform features.
-
-Create your wallets: %s/wallets/create
-
-Best regards,
-The Stack Service Team
-	`, e.config.BaseURL)
-}
-
-func (e *EmailService) buildKYCRejectedHTML(rejectionReasons []string) string {
-	reasons := ""
-	for _, reason := range rejectionReasons {
-		reasons += fmt.Sprintf("<li style='margin-bottom: 8px;'>%s</li>", reason)
-	}
-
-	return fmt.Sprintf(`
-	<!DOCTYPE html>
-	<html>
-	<head><title>KYC Additional Information Required</title></head>
-	<body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-		<div style="background-color: #fff3cd; padding: 30px; border-radius: 8px; border: 1px solid #ffeaa7;">
-			<h1 style="color: #856404; margin-bottom: 20px;">Additional Information Required</h1>
-			<p style="color: #856404; font-size: 16px; line-height: 1.5; margin-bottom: 20px;">
-				We need additional information to complete your identity verification.
-				Please review the following items and resubmit your documents:
-			</p>
-			<ul style="color: #856404; margin: 20px 0; padding-left: 20px;">%s</ul>
-			<a href="%s/kyc/resubmit" 
-			   style="display: inline-block; background-color: #ffc107; color: #212529; padding: 15px 30px; 
-			          text-decoration: none; border-radius: 5px; font-weight: bold; margin-top: 20px;">
-				Resubmit Documents
-			</a>
-		</div>
-	</body>
-	</html>
-	`, reasons, e.config.BaseURL)
-}
-
-func (e *EmailService) buildKYCRejectedText(rejectionReasons []string) string {
-	reasons := ""
-	for i, reason := range rejectionReasons {
-		reasons += fmt.Sprintf("%d. %s\n", i+1, reason)
-	}
-
-	return fmt.Sprintf(`
-Additional Information Required
-
-We need additional information to complete your identity verification.
-Please review the following items and resubmit your documents:
-
-%s
-Resubmit documents: %s/kyc/resubmit
-
-Best regards,
-The Stack Service Team
-	`, reasons, e.config.BaseURL)
-}
-
-func (e *EmailService) buildKYCProcessingHTML() string {
-	return `
-	<!DOCTYPE html>
-	<html>
-	<head><title>KYC Processing</title></head>
-	<body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-		<div style="background-color: #cce5ff; padding: 30px; border-radius: 8px; text-align: center; border: 1px solid #99d6ff;">
-			<h1 style="color: #004085; margin-bottom: 20px;">⏳ Verification In Progress</h1>
-			<p style="color: #004085; font-size: 16px; line-height: 1.5; margin-bottom: 20px;">
-				Your identity verification documents are currently being reviewed by our team.
-				You will receive an update within 24-48 hours.
-			</p>
-			<p style="color: #004085; font-size: 14px;">
-				Thank you for your patience!
-			</p>
-		</div>
-	</body>
-	</html>
-	`
-}
-
-func (e *EmailService) buildKYCProcessingText() string {
-	return `
-Verification In Progress
-
-Your identity verification documents are currently being reviewed by our team.
-You will receive an update within 24-48 hours.
-
-Thank you for your patience!
-
-Best regards,
-The Stack Service Team
-	`
-}
-
-func (e *EmailService) buildKYCGenericHTML(status string) string {
-	return fmt.Sprintf(`
-	<!DOCTYPE html>
-	<html>
-	<head><title>KYC Status Update</title></head>
-	<body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-		<div style="background-color: #f8f9fa; padding: 30px; border-radius: 8px; border: 1px solid #dee2e6;">
-			<h1 style="color: #495057; margin-bottom: 20px;">KYC Status Update</h1>
-			<p style="color: #495057; font-size: 16px; line-height: 1.5;">
-				Your KYC verification status has been updated to: <strong>%s</strong>
-			</p>
-		</div>
-	</body>
-	</html>
-	`, status)
-}
-
-func (e *EmailService) buildKYCGenericText(status string) string {
-	return fmt.Sprintf(`
-KYC Status Update
-
-Your KYC verification status has been updated to: %s
-
-Best regards,
-The Stack Service Team
-	`, status)
-}
+// KYC Email Templates are now handled inline by SendKYCStatusEmail
