@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -41,6 +42,9 @@ func NewRedisClient(cfg *config.RedisConfig, logger *zap.Logger) (RedisClient, e
 	}
 	if cfg.Password != "" {
 		opts.Password = cfg.Password
+	}
+	if cfg.TLS {
+		opts.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 
 	rdb := redis.NewClient(opts)

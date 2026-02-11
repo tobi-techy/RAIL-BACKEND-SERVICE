@@ -50,7 +50,7 @@ jobs:
         image: postgres:15-alpine
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: stack_service_test
+          POSTGRES_DB: rail_service_test
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -78,7 +78,7 @@ jobs:
       
       - name: Run tests
         env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/stack_service_test?sslmode=disable
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/rail_service_test?sslmode=disable
           REDIS_URL: redis://localhost:6379
         run: |
           go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
@@ -150,7 +150,7 @@ jobs:
     if: github.ref == 'refs/heads/develop'
     environment:
       name: staging
-      url: https://staging.stack-api.example.com
+      url: https://api.staging.rail-platform.com
     steps:
       - uses: actions/checkout@v4
       
@@ -162,7 +162,7 @@ jobs:
       
       - name: Deploy with Helm
         run: |
-          helm upgrade --install stack-service ./deployments/helm/stack-service \
+          helm upgrade --install rail-service ./deployments/helm/rail-service \
             --namespace staging \
             --create-namespace \
             --set image.tag=${{ github.sha }} \
@@ -177,7 +177,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     environment:
       name: production
-      url: https://api.stack-platform.com
+      url: https://api.rail-platform.com
     steps:
       - uses: actions/checkout@v4
       
@@ -189,7 +189,7 @@ jobs:
       
       - name: Canary deployment (10%)
         run: |
-          helm upgrade --install stack-service-canary ./deployments/helm/stack-service \
+          helm upgrade --install rail-service-canary ./deployments/helm/rail-service \
             --namespace production \
             --set image.tag=${{ github.sha }} \
             --set replicaCount=1 \
@@ -203,7 +203,7 @@ jobs:
       
       - name: Promote to full deployment
         run: |
-          helm upgrade --install stack-service ./deployments/helm/stack-service \
+          helm upgrade --install rail-service ./deployments/helm/rail-service \
             --namespace production \
             --set image.tag=${{ github.sha }} \
             --set canary.enabled=false \
@@ -213,4 +213,4 @@ jobs:
       - name: Rollback on failure
         if: failure()
         run: |
-          helm rollback stack-service --namespace production
+          helm rollback rail-service --namespace production

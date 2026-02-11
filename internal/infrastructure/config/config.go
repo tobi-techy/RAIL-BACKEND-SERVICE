@@ -141,6 +141,7 @@ type RedisConfig struct {
 	Port           int      `mapstructure:"port"`
 	Password       string   `mapstructure:"password"`
 	DB             int      `mapstructure:"db"`
+	TLS            bool     `mapstructure:"tls"`
 	ClusterMode    bool     `mapstructure:"cluster_mode"`
 	ClusterAddrs   []string `mapstructure:"cluster_addrs"`
 	MaxRetries     int      `mapstructure:"max_retries"`
@@ -535,6 +536,7 @@ func setDefaults() {
 	viper.SetDefault("redis.host", "localhost")
 	viper.SetDefault("redis.port", 6379)
 	viper.SetDefault("redis.db", 0)
+	viper.SetDefault("redis.tls", false)
 	viper.SetDefault("redis.cluster_mode", false)
 	viper.SetDefault("redis.max_retries", 3)
 	viper.SetDefault("redis.pool_size", 10)
