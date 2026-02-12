@@ -94,6 +94,11 @@ func NewEmailService(logger *zap.Logger, config EmailServiceConfig) (*EmailServi
 		if config.SMTPPort == 0 {
 			config.SMTPPort = 1025 // default mailpit port
 		}
+	case "mailtrap":
+		if strings.TrimSpace(config.APIKey) == "" {
+			return nil, fmt.Errorf("mailtrap api key is required")
+		}
+		httpClient = &http.Client{Timeout: 15 * time.Second}
 	default:
 		return nil, fmt.Errorf("unsupported email provider: %s", provider)
 	}
