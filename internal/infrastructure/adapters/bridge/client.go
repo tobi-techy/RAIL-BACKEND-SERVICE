@@ -81,9 +81,17 @@ func NewClient(config Config, logger *zap.Logger) *Client {
 	}
 
 	return &Client{
-		config:     config,
-		httpClient: &http.Client{Timeout: config.Timeout},
-		logger:     logger,
+		config: config,
+		httpClient: &http.Client{
+			Timeout: config.Timeout,
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 10,
+				IdleConnTimeout:     90 * time.Second,
+				DisableKeepAlives:   false,
+			},
+		},
+		logger: logger,
 	}
 }
 
@@ -157,6 +165,7 @@ func (c *Client) GetKYCLink(ctx context.Context, customerID string) (*KYCLinkRes
 	if err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v0/customers/%s/kyc_link", url.PathEscape(customerID)), nil, &resp); err != nil {
 		return nil, fmt.Errorf("get KYC link failed: %w", err)
 	}
+	c.logger.Info("Bridge KYC link response", zap.String("customer_id", customerID), zap.String("kyc_link", resp.KYCLink), zap.String("expires_at", resp.ExpiresAt))
 	return &resp, nil
 }
 
@@ -374,7 +383,7 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 			continue
 		}
 
-		c.logger.Debug("Received Bridge API response", zap.Int("status_code", resp.StatusCode), zap.Int("body_size", len(respBody)))
+		c.logger.Debug("Received Bridge API response", zap.Int("status_code", resp.StatusCode), zap.Int("body_size", len(respBody)), zap.String("body", string(respBody)))
 
 		// Retry on 5xx errors
 		if resp.StatusCode >= 500 {

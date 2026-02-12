@@ -21,7 +21,6 @@ type Service struct {
 	onboardingFlowRepo  OnboardingFlowRepository
 	kycSubmissionRepo   KYCSubmissionRepository
 	walletService       WalletService
-	kycProvider         KYCProvider
 	emailService        EmailService
 	auditService        AuditService
 	bridgeAdapter       BridgeAdapter
@@ -29,7 +28,6 @@ type Service struct {
 	allocationService   AllocationService
 	logger              *zap.Logger
 	defaultWalletChains []entities.WalletChain
-	kycProviderName     string
 }
 
 // Repository interfaces
@@ -66,12 +64,6 @@ type WalletService interface {
 	GetWalletStatus(ctx context.Context, userID uuid.UUID) (*entities.WalletStatusResponse, error)
 }
 
-type KYCProvider interface {
-	SubmitKYC(ctx context.Context, userID uuid.UUID, documents []entities.KYCDocumentUpload, personalInfo *entities.KYCPersonalInfo) (string, error)
-	GetKYCStatus(ctx context.Context, providerRef string) (*entities.KYCSubmission, error)
-	GenerateKYCURL(ctx context.Context, userID uuid.UUID) (string, error)
-}
-
 type EmailService interface {
 	SendVerificationEmail(ctx context.Context, email, verificationToken string) error
 	SendKYCStatusEmail(ctx context.Context, email string, status entities.KYCStatus, rejectionReasons []string) error
@@ -102,7 +94,6 @@ func NewService(
 	onboardingFlowRepo OnboardingFlowRepository,
 	kycSubmissionRepo KYCSubmissionRepository,
 	walletService WalletService,
-	kycProvider KYCProvider,
 	emailService EmailService,
 	auditService AuditService,
 	bridgeAdapter BridgeAdapter,
@@ -110,20 +101,14 @@ func NewService(
 	allocationService AllocationService,
 	logger *zap.Logger,
 	defaultWalletChains []entities.WalletChain,
-	kycProviderName string,
 ) *Service {
 	normalizedChains := normalizeDefaultWalletChains(defaultWalletChains, logger)
-
-	if kycProviderName == "" {
-		kycProviderName = "sumsub" // Default KYC provider
-	}
 
 	return &Service{
 		userRepo:            userRepo,
 		onboardingFlowRepo:  onboardingFlowRepo,
 		kycSubmissionRepo:   kycSubmissionRepo,
 		walletService:       walletService,
-		kycProvider:         kycProvider,
 		emailService:        emailService,
 		auditService:        auditService,
 		bridgeAdapter:       bridgeAdapter,
@@ -131,7 +116,6 @@ func NewService(
 		allocationService:   allocationService,
 		logger:              logger,
 		defaultWalletChains: normalizedChains,
-		kycProviderName:     kycProviderName,
 	}
 }
 
@@ -538,79 +522,6 @@ func (s *Service) CompletePasscodeCreation(ctx context.Context, userID uuid.UUID
 	}
 
 	s.logger.Info("Passcode creation completed and wallet provisioning initiated", zap.String("userId", userID.String()))
-	return nil
-}
-
-// SubmitKYC handles KYC document submission
-func (s *Service) SubmitKYC(ctx context.Context, userID uuid.UUID, req *entities.KYCSubmitRequest) error {
-	s.logger.Info("Submitting KYC documents", zap.String("userId", userID.String()))
-
-	user, err := s.userRepo.GetByID(ctx, userID)
-	if err != nil {
-		return fmt.Errorf("failed to get user: %w", err)
-	}
-
-	if !user.CanStartKYC() {
-		return fmt.Errorf("user cannot start KYC process")
-	}
-
-	// Submit to KYC provider
-	providerRef, err := s.kycProvider.SubmitKYC(ctx, userID, req.Documents, req.PersonalInfo)
-	if err != nil {
-		return fmt.Errorf("failed to submit KYC to provider: %w", err)
-	}
-
-	// Create KYC submission record
-	submission := &entities.KYCSubmission{
-		ID:             uuid.New(),
-		UserID:         userID,
-		Provider:       s.kycProviderName,
-		ProviderRef:    providerRef,
-		SubmissionType: req.DocumentType,
-		Status:         entities.KYCStatusProcessing,
-		VerificationData: map[string]any{
-			"document_type": req.DocumentType,
-			"documents":     req.Documents,
-			"personal_info": req.PersonalInfo,
-			"metadata":      req.Metadata,
-		},
-		SubmittedAt: time.Now(),
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
-	}
-
-	if err := s.kycSubmissionRepo.Create(ctx, submission); err != nil {
-		return fmt.Errorf("failed to create KYC submission record: %w", err)
-	}
-
-	// Update user KYC tracking fields
-	now := time.Now()
-	user.KYCStatus = string(entities.KYCStatusProcessing)
-	user.KYCProviderRef = &providerRef
-	user.KYCSubmittedAt = &now
-	user.UpdatedAt = now
-
-	if err := s.userRepo.Update(ctx, user); err != nil {
-		return fmt.Errorf("failed to update user KYC status: %w", err)
-	}
-
-	// Update onboarding flow
-	if err := s.markStepCompleted(ctx, userID, entities.StepKYCSubmission, map[string]any{
-		"provider_ref": providerRef,
-		"submitted_at": now,
-	}); err != nil {
-		s.logger.Warn("Failed to mark KYC submission step as completed", zap.Error(err))
-	}
-
-	// Log audit event
-	if err := s.auditService.LogOnboardingEvent(ctx, userID, "kyc_submitted", "kyc_submission", nil, submission); err != nil {
-		s.logger.Warn("Failed to log audit event", zap.Error(err))
-	}
-
-	s.logger.Info("KYC submitted successfully",
-		zap.String("userId", userID.String()),
-		zap.String("providerRef", providerRef))
-
 	return nil
 }
 

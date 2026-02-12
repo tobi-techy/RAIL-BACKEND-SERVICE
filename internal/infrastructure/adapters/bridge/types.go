@@ -184,7 +184,7 @@ type Customer struct {
 
 // KYCLinkResponse represents a KYC link response
 type KYCLinkResponse struct {
-	KYCLink   string `json:"kyc_link"`
+	KYCLink   string `json:"url"`
 	ExpiresAt string `json:"expires_at,omitempty"`
 }
 

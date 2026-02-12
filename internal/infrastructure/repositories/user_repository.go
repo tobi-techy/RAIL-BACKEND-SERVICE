@@ -235,16 +235,17 @@ func (r *UserRepository) Update(ctx context.Context, user *entities.UserProfile)
 			email = $2, phone = $3, first_name = $4, last_name = $5, 
 			date_of_birth = $6, auth_provider_id = $7, email_verified = $8, 
 			phone_verified = $9, onboarding_status = $10, kyc_status = $11, 
-			kyc_approved_at = $12, kyc_rejection_reason = $13, updated_at = $14
+			kyc_approved_at = $12, kyc_rejection_reason = $13, 
+			bridge_customer_id = $14, alpaca_account_id = $15, updated_at = $16
 		WHERE id = $1`
 
 	_, err := r.db.ExecContext(ctx, query,
 		user.ID,
 		user.Email,
 		user.Phone,
-		"",  // first_name - not yet implemented in UserProfile
-		"",  // last_name - not yet implemented in UserProfile
-		nil, // date_of_birth - not yet implemented in UserProfile
+		user.FirstName,
+		user.LastName,
+		user.DateOfBirth,
 		user.AuthProviderID,
 		user.EmailVerified,
 		user.PhoneVerified,
@@ -252,6 +253,8 @@ func (r *UserRepository) Update(ctx context.Context, user *entities.UserProfile)
 		user.KYCStatus,
 		user.KYCApprovedAt,
 		user.KYCRejectionReason,
+		user.BridgeCustomerID,
+		user.AlpacaAccountID,
 		time.Now(),
 	)
 
@@ -592,13 +595,14 @@ func (r *UserRepository) GetUserEntityByID(ctx context.Context, id uuid.UUID) (*
 		SELECT id, email, phone, auth_provider_id,
 		       email_verified, phone_verified, onboarding_status, kyc_status,
 		       kyc_provider_ref, kyc_submitted_at, kyc_approved_at, kyc_rejection_reason,
-		       role, is_active, last_login_at, created_at, updated_at
+		       role, is_active, last_login_at, created_at, updated_at,
+		       bridge_customer_id, alpaca_account_id
 		FROM users 
 		WHERE id = $1 AND is_active = true`
 
 	user := &entities.User{}
 	var kycSubmittedAt, kycApprovedAt, lastLoginAt sql.NullTime
-	var kycRejectionReason, kycProviderRef sql.NullString
+	var kycRejectionReason, kycProviderRef, bridgeCustomerID, alpacaAccountID sql.NullString
 
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
 		&user.ID,
@@ -618,6 +622,8 @@ func (r *UserRepository) GetUserEntityByID(ctx context.Context, id uuid.UUID) (*
 		&lastLoginAt,
 		&user.CreatedAt,
 		&user.UpdatedAt,
+		&bridgeCustomerID,
+		&alpacaAccountID,
 	)
 
 	if err != nil {
@@ -643,6 +649,12 @@ func (r *UserRepository) GetUserEntityByID(ctx context.Context, id uuid.UUID) (*
 	}
 	if lastLoginAt.Valid {
 		user.LastLoginAt = &lastLoginAt.Time
+	}
+	if bridgeCustomerID.Valid {
+		user.BridgeCustomerID = &bridgeCustomerID.String
+	}
+	if alpacaAccountID.Valid {
+		user.AlpacaAccountID = &alpacaAccountID.String
 	}
 
 	return user, nil

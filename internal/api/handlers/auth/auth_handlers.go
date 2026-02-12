@@ -37,7 +37,6 @@ type AuthHandlers struct {
 	verificationService services.VerificationService
 	onboardingService   *onboarding.Service
 	emailService        *adapters.EmailService
-	kycProvider         *adapters.KYCProvider
 	sessionService      SessionService
 	twoFAService        TwoFAService
 	redisClient         RedisClient
@@ -75,7 +74,6 @@ func NewAuthHandlers(
 	verificationService services.VerificationService,
 	onboardingService *onboarding.Service,
 	emailService *adapters.EmailService,
-	kycProvider *adapters.KYCProvider,
 	sessionService SessionService,
 	twoFAService TwoFAService,
 	redisClient RedisClient,
@@ -88,7 +86,6 @@ func NewAuthHandlers(
 		verificationService: verificationService,
 		onboardingService:   onboardingService,
 		emailService:        emailService,
-		kycProvider:         kycProvider,
 		sessionService:      sessionService,
 		twoFAService:        twoFAService,
 		redisClient:         redisClient,
@@ -266,37 +263,6 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 	})
 }
 
-func (h *AuthHandlers) bootstrapKYCApplicant(ctx context.Context, user *entities.User) {
-	if h.kycProvider == nil || user == nil {
-		return
-	}
-
-	if strings.ToLower(h.cfg.KYC.Provider) != "sumsub" {
-		return
-	}
-
-	applicantID, err := h.kycProvider.EnsureApplicant(ctx, user.ID, nil)
-	if err != nil {
-		h.logger.Warn("Failed to initialize KYC applicant", zap.Error(err), zap.String("user_id", user.ID.String()))
-		return
-	}
-	if applicantID == "" {
-		h.logger.Debug("No KYC applicant created for provider",
-			zap.String("user_id", user.ID.String()),
-			zap.String("provider", strings.ToLower(h.cfg.KYC.Provider)))
-		return
-	}
-
-	if err := h.userRepo.UpdateKYCProvider(ctx, user.ID, applicantID, entities.KYCStatusPending); err != nil {
-		h.logger.Warn("Failed to update user with KYC provider reference", zap.Error(err), zap.String("user_id", user.ID.String()))
-		return
-	}
-
-	h.logger.Info("Initialized KYC applicant with Sumsub",
-		zap.String("user_id", user.ID.String()),
-		zap.String("provider_ref", applicantID))
-}
-
 // VerifyCode handles verification code submission
 // @Summary Verify user account with code
 // @Description Verify the email or phone number using a 6-digit code
@@ -386,8 +352,6 @@ func (h *AuthHandlers) completeNewUserVerification(c *gin.Context, ctx context.C
 		_ = h.onboardingService.CompleteEmailVerification(ctx, user.ID)
 		onboardingResp, _ = h.onboardingService.GetOnboardingStatus(ctx, user.ID)
 	}
-
-	go h.bootstrapKYCApplicant(context.Background(), user)
 
 	tokens, err := auth.GenerateTokenPair(user.ID, user.Email, "user", h.cfg.JWT.Secret, h.cfg.JWT.AccessTTL, h.cfg.JWT.RefreshTTL)
 	if err != nil {
@@ -1273,155 +1237,6 @@ func (h *AuthHandlers) GetKYCStatus(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, status)
-}
-
-// GetKYCVerificationURL handles GET /kyc/verification-url
-// @Summary Get KYC verification URL
-// @Description Generates a URL for the user to complete KYC verification with the provider
-// @Tags onboarding
-// @Produce json
-// @Success 200 {object} map[string]interface{} "KYC verification URL"
-// @Failure 400 {object} entities.ErrorResponse
-// @Failure 401 {object} entities.ErrorResponse
-// @Failure 500 {object} entities.ErrorResponse
-// @Security BearerAuth
-// @Router /api/v1/kyc/verification-url [get]
-func (h *AuthHandlers) GetKYCVerificationURL(c *gin.Context) {
-	ctx := c.Request.Context()
-
-	userID, err := common.GetUserIDFromContext(c)
-	if err != nil {
-		h.logger.Warn("Invalid or missing user ID for KYC URL", zap.Error(err))
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "INVALID_USER_ID",
-			Message: "Invalid or missing user ID",
-		})
-		return
-	}
-
-	if h.kycProvider == nil {
-		h.logger.Error("KYC provider not configured")
-		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{
-			Code:    "KYC_UNAVAILABLE",
-			Message: "KYC verification is not available",
-		})
-		return
-	}
-
-	url, err := h.kycProvider.GenerateKYCURL(ctx, userID)
-	if err != nil {
-		h.logger.Error("Failed to generate KYC URL",
-			zap.Error(err),
-			zap.String("user_id", userID.String()))
-
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-			Code:    "KYC_URL_ERROR",
-			Message: "Failed to generate KYC verification URL",
-		})
-		return
-	}
-
-	h.logger.Info("Generated KYC verification URL",
-		zap.String("user_id", userID.String()))
-
-	c.JSON(http.StatusOK, gin.H{
-		"url":     url,
-		"expires": "30m",
-		"message": "Complete your identity verification using this link",
-	})
-}
-
-// SubmitKYC handles POST /onboarding/kyc/submit
-// @Summary Submit KYC documents
-// @Description Submits KYC documents for verification
-// @Tags onboarding
-// @Accept json
-// @Produce json
-// @Param request body entities.KYCSubmitRequest true "KYC submission data"
-// @Success 202 {object} map[string]interface{} "KYC submission accepted"
-// @Failure 400 {object} entities.ErrorResponse
-// @Failure 403 {object} entities.ErrorResponse "User not eligible for KYC"
-// @Failure 500 {object} entities.ErrorResponse
-// @Security BearerAuth
-// @Router /api/v1/onboarding/kyc/submit [post]
-func (h *AuthHandlers) SubmitKYC(c *gin.Context) {
-	ctx := c.Request.Context()
-
-	// Get user ID from authenticated context
-	userID, err := common.GetUserID(c)
-	if err != nil {
-		h.logger.Warn("Invalid or missing user ID", zap.Error(err))
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "INVALID_USER_ID",
-			Message: "Invalid or missing user ID",
-			Details: map[string]interface{}{"error": err.Error()},
-		})
-		return
-	}
-
-	h.logger.Info("Submitting KYC documents",
-		zap.String("user_id", userID.String()),
-		zap.String("request_id", common.GetRequestID(c)))
-
-	var req entities.KYCSubmitRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		h.logger.Warn("Invalid KYC request payload", zap.Error(err))
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "INVALID_REQUEST",
-			Message: "Invalid KYC request payload",
-			Details: map[string]interface{}{"error": err.Error()},
-		})
-		return
-	}
-
-	// Validate request
-	if err := h.validator.Struct(req); err != nil {
-		h.logger.Warn("KYC request validation failed", zap.Error(err))
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "VALIDATION_ERROR",
-			Message: "KYC request validation failed",
-			Details: map[string]interface{}{"validation_errors": err.Error()},
-		})
-		return
-	}
-
-	// Submit KYC
-	err = h.onboardingService.SubmitKYC(ctx, userID, &req)
-	if err != nil {
-		h.logger.Error("Failed to submit KYC",
-			zap.Error(err),
-			zap.String("user_id", userID.String()))
-
-		if isKYCNotEligibleError(err) {
-			c.JSON(http.StatusForbidden, entities.ErrorResponse{
-				Code:    "KYC_NOT_ELIGIBLE",
-				Message: "User is not eligible for KYC submission",
-				Details: map[string]interface{}{"error": err.Error()},
-			})
-			return
-		}
-
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-			Code:    "KYC_SUBMISSION_FAILED",
-			Message: "Failed to submit KYC documents",
-			Details: map[string]interface{}{"error": "Internal server error"},
-		})
-		return
-	}
-
-	h.logger.Info("KYC submitted successfully",
-		zap.String("user_id", userID.String()))
-
-	c.JSON(http.StatusAccepted, gin.H{
-		"message": "KYC documents submitted successfully",
-		"status":  "processing",
-		"user_id": userID.String(),
-		"next_steps": []string{
-			"Wait for KYC review",
-			"You can continue using core features while verification completes",
-			"KYC unlocks virtual accounts, cards, and fiat withdrawals",
-		},
-	})
 }
 
 // ProcessKYCCallback handles KYC provider callbacks

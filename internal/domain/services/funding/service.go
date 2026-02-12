@@ -146,6 +146,11 @@ func (s *Service) SetValidationService(vs *ValidationService) {
 	s.validationService = vs
 }
 
+// GetValidationService returns the validation service
+func (s *Service) GetValidationService() *ValidationService {
+	return s.validationService
+}
+
 // SetLimitsService sets the limits service for deposit/withdrawal validation (optional)
 func (s *Service) SetLimitsService(ls LimitsService) {
 	s.limitsService = ls

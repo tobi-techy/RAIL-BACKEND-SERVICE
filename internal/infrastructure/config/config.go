@@ -274,7 +274,7 @@ type CircleConfig struct {
 }
 
 type KYCConfig struct {
-	Provider    string `mapstructure:"provider"` // "sumsub", "jumio"
+	Provider    string `mapstructure:"provider"` // legacy config, Bridge KYC is now the only provider
 	APIKey      string `mapstructure:"api_key"`
 	APISecret   string `mapstructure:"api_secret"`
 	BaseURL     string `mapstructure:"base_url"`
@@ -520,15 +520,15 @@ func setDefaults() {
 	viper.SetDefault("server.supported_versions", []string{"v1"})
 	viper.SetDefault("server.default_version", "v1")
 
-	// Database defaults
+	// Database defaults - tuned for performance
 	viper.SetDefault("database.host", "localhost")
 	viper.SetDefault("database.port", 5432)
 	viper.SetDefault("database.name", "stack_service")
 	viper.SetDefault("database.user", "postgres")
 	viper.SetDefault("database.ssl_mode", "disable")
-	viper.SetDefault("database.max_open_conns", 25)      // Reduced for better resource management
-	viper.SetDefault("database.max_idle_conns", 5)       // Reduced to prevent connection churn
-	viper.SetDefault("database.conn_max_lifetime", 1800) // 30 minutes instead of 1 hour
+	viper.SetDefault("database.max_open_conns", 50)       // Increased for concurrent requests
+	viper.SetDefault("database.max_idle_conns", 25)       // Keep more idle connections ready
+	viper.SetDefault("database.conn_max_lifetime", 300)   // 5 minutes - recycle connections more often
 	viper.SetDefault("database.query_timeout", 30)
 	viper.SetDefault("database.max_retries", 3)
 
@@ -752,39 +752,6 @@ func overrideFromEnv() {
 	}
 	if circleEnv := os.Getenv("CIRCLE_ENVIRONMENT"); circleEnv != "" {
 		viper.Set("circle.environment", circleEnv)
-	}
-
-	// KYC Provider
-	if kycAPIKey := os.Getenv("KYC_API_KEY"); kycAPIKey != "" {
-		viper.Set("kyc.api_key", kycAPIKey)
-	}
-	if sumsubToken := os.Getenv("SUMSUB_APP_TOKEN"); sumsubToken != "" {
-		viper.Set("kyc.api_key", sumsubToken)
-		viper.Set("kyc.provider", "sumsub")
-	}
-	if kycAPISecret := os.Getenv("KYC_API_SECRET"); kycAPISecret != "" {
-		viper.Set("kyc.api_secret", kycAPISecret)
-	}
-	if sumsubSecret := os.Getenv("SUMSUB_SECRET_KEY"); sumsubSecret != "" {
-		viper.Set("kyc.api_secret", sumsubSecret)
-	}
-	if kycProvider := os.Getenv("KYC_PROVIDER"); kycProvider != "" {
-		viper.Set("kyc.provider", kycProvider)
-	}
-	if kycCallbackURL := os.Getenv("KYC_CALLBACK_URL"); kycCallbackURL != "" {
-		viper.Set("kyc.callback_url", kycCallbackURL)
-	}
-	if kycBaseURL := os.Getenv("KYC_BASE_URL"); kycBaseURL != "" {
-		viper.Set("kyc.base_url", kycBaseURL)
-	}
-	if sumsubBaseURL := os.Getenv("SUMSUB_BASE_URL"); sumsubBaseURL != "" {
-		viper.Set("kyc.base_url", sumsubBaseURL)
-	}
-	if kycLevelName := os.Getenv("KYC_LEVEL_NAME"); kycLevelName != "" {
-		viper.Set("kyc.level_name", kycLevelName)
-	}
-	if sumsubLevelName := os.Getenv("SUMSUB_LEVEL_NAME"); sumsubLevelName != "" {
-		viper.Set("kyc.level_name", sumsubLevelName)
 	}
 
 	// Email Service

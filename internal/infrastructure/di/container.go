@@ -10,6 +10,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/api/handlers"
+	fundinghandlers "github.com/rail-service/rail_service/internal/api/handlers/funding"
+	"github.com/rail-service/rail_service/internal/api/handlers/webhooks"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
@@ -350,7 +352,6 @@ type Container struct {
 	AlpacaService *alpaca.Service
 	BridgeClient  *bridge.Client
 	BridgeAdapter *bridge.Adapter
-	KYCProvider   *adapters.KYCProvider
 	EmailService  *adapters.EmailService
 	SMSService    *adapters.SMSService
 	AuditService  *adapters.AuditService
@@ -478,6 +479,19 @@ type Container struct {
 	// Adaptive Rate Limiting (Priority 3)
 	RiskScoringEngine   *ratelimit.RiskScoringEngine
 	AdaptiveRateLimiter *ratelimit.AdaptiveRateLimiter
+
+	// Instant Funding Services
+	InstantFundingRepo     *repositories.InstantFundingRepository
+	UserAccountRepo        *repositories.UserAccountRepository
+	InstantFundingService  *funding.InstantFundingService
+	InstantFundingHandlers *fundinghandlers.InstantFundingHandlers
+
+	// Security Stores
+	WithdrawalSecurityStore *repositories.WithdrawalSecurityStore
+	DepositSecurityStore    *repositories.DepositSecurityStore
+
+	// Unified Webhook Handler
+	UnifiedFundingWebhookHandler *webhooks.UnifiedFundingWebhookHandler
 }
 
 // NewContainer creates a new dependency injection container
@@ -537,29 +551,8 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	bridgeClient := bridge.NewClient(bridgeConfig, zapLog)
 	bridgeAdapter := bridge.NewAdapter(bridgeClient, zapLog)
 
-	// Initialize KYC provider with full configuration
-	kycProviderConfig := adapters.KYCProviderConfig{
-		Provider:    cfg.KYC.Provider,
-		APIKey:      cfg.KYC.APIKey,
-		APISecret:   cfg.KYC.APISecret,
-		BaseURL:     cfg.KYC.BaseURL,
-		Environment: cfg.KYC.Environment,
-		CallbackURL: cfg.KYC.CallbackURL,
-		UserAgent:   cfg.KYC.UserAgent,
-		LevelName:   cfg.KYC.LevelName,
-	}
-	var kycProvider *adapters.KYCProvider
-	var err error
-	if strings.TrimSpace(cfg.KYC.Provider) != "" {
-		kycProvider, err = adapters.NewKYCProvider(zapLog, kycProviderConfig)
-		if err != nil {
-			return nil, fmt.Errorf("failed to initialize KYC provider: %w", err)
-		}
-	} else {
-		zapLog.Warn("KYC provider not configured; KYC features disabled")
-	}
-
 	// Initialize email service with full configuration
+	var err error
 	emailServiceConfig := adapters.EmailServiceConfig{
 		Provider:     cfg.Email.Provider,
 		APIKey:       cfg.Email.APIKey,
@@ -643,7 +636,6 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		AlpacaService: alpacaService,
 		BridgeClient:  bridgeClient,
 		BridgeAdapter: bridgeAdapter,
-		KYCProvider:   kycProvider,
 		EmailService:  emailService,
 		SMSService:    smsService,
 		AuditService:  auditService,
@@ -717,7 +709,6 @@ func (c *Container) initializeDomainServices() error {
 		c.OnboardingFlowRepo,
 		c.KYCSubmissionRepo,
 		c.WalletService, // Domain service dependency
-		c.KYCProvider,
 		c.EmailService,
 		c.AuditService,
 		bridgeOnboardingAdapter,
@@ -725,7 +716,6 @@ func (c *Container) initializeDomainServices() error {
 		nil, // AllocationService - will be set after initialization
 		c.ZapLog,
 		append([]entities.WalletChain(nil), walletServiceConfig.SupportedChains...),
-		c.Config.KYC.Provider, // KYC provider name
 	)
 
 	// Inject onboarding service back into wallet service to complete circular dependency
@@ -739,7 +729,7 @@ func (c *Container) initializeDomainServices() error {
 	)
 
 	// Initialize security services
-	c.SessionService = session.NewService(c.DB, c.ZapLog)
+	c.SessionService = session.NewService(c.DB, c.RedisClient.Client(), c.ZapLog)
 	c.TwoFAService = twofa.NewService(c.DB, c.ZapLog, c.Config.Security.EncryptionKey)
 	c.APIKeyService = apikey.NewService(c.DB, c.ZapLog)
 
@@ -2315,4 +2305,74 @@ func (c *Container) initializeBridgeServices() {
 	)
 
 	c.ZapLog.Info("Bridge webhook handler initialized")
+}
+
+
+// GetInstantFundingHandlers returns the instant funding handlers
+func (c *Container) GetInstantFundingHandlers() *fundinghandlers.InstantFundingHandlers {
+	return c.InstantFundingHandlers
+}
+
+// GetWithdrawalSecurityStore returns the withdrawal security store
+func (c *Container) GetWithdrawalSecurityStore() *repositories.WithdrawalSecurityStore {
+	return c.WithdrawalSecurityStore
+}
+
+// GetDepositSecurityStore returns the deposit security store
+func (c *Container) GetDepositSecurityStore() *repositories.DepositSecurityStore {
+	return c.DepositSecurityStore
+}
+
+// GetUnifiedFundingWebhookHandler returns the unified funding webhook handler
+func (c *Container) GetUnifiedFundingWebhookHandler() *webhooks.UnifiedFundingWebhookHandler {
+	return c.UnifiedFundingWebhookHandler
+}
+
+// initializeInstantFundingServices initializes instant funding services
+func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
+	// Initialize repositories
+	c.InstantFundingRepo = repositories.NewInstantFundingRepository(sqlxDB)
+	c.UserAccountRepo = repositories.NewUserAccountRepository(sqlxDB)
+	c.WithdrawalSecurityStore = repositories.NewWithdrawalSecurityStore(sqlxDB)
+	c.DepositSecurityStore = repositories.NewDepositSecurityStore(sqlxDB)
+
+	// Initialize virtual account repo for instant funding
+	virtualAccountRepo := repositories.NewVirtualAccountRepository(sqlxDB)
+
+	// Create Alpaca adapter for instant funding
+	alpacaAdapter := &InstantFundingAlpacaAdapterImpl{
+		service: c.AlpacaService,
+	}
+
+	// Initialize instant funding service
+	c.InstantFundingService = funding.NewInstantFundingService(
+		alpacaAdapter,
+		virtualAccountRepo,
+		c.InstantFundingRepo,
+		c.UserAccountRepo,
+		c.ZapLog,
+		c.Config.Alpaca.FirmAccountNo,
+	)
+
+	// Initialize handlers
+	c.InstantFundingHandlers = fundinghandlers.NewInstantFundingHandlers(
+		c.InstantFundingService,
+		c.ZapLog,
+	)
+
+	// Wire deposit security store to validation service
+	if c.FundingService != nil && c.FundingService.GetValidationService() != nil {
+		c.FundingService.GetValidationService().SetDepositSecurityStore(c.DepositSecurityStore)
+	}
+
+	c.ZapLog.Info("Instant funding services initialized")
+}
+
+// InstantFundingAlpacaAdapterImpl adapts alpaca.Service to funding.InstantFundingAlpacaAdapter
+type InstantFundingAlpacaAdapterImpl struct {
+	service *alpaca.Service
+}
+
+func (a *InstantFundingAlpacaAdapterImpl) CreateJournal(ctx context.Context, req *entities.AlpacaJournalRequest) (*entities.AlpacaJournalResponse, error) {
+	return a.service.CreateJournal(ctx, req)
 }

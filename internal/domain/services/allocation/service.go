@@ -25,17 +25,11 @@ type AllocationRepository interface {
 	GetMode(ctx context.Context, userID uuid.UUID) (*entities.SmartAllocationMode, error)
 	CreateMode(ctx context.Context, mode *entities.SmartAllocationMode) error
 	UpdateMode(ctx context.Context, mode *entities.SmartAllocationMode) error
-	PauseMode(ctx context.Context, userID uuid.UUID) error
-	ResumeMode(ctx context.Context, userID uuid.UUID) error
 
 	// Event operations
 	CreateEvent(ctx context.Context, event *entities.AllocationEvent) error
 	GetEventsByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.AllocationEvent, error)
 	GetEventsByDateRange(ctx context.Context, userID uuid.UUID, startDate, endDate time.Time) ([]*entities.AllocationEvent, error)
-
-	// Summary operations
-	CreateWeeklySummary(ctx context.Context, summary *entities.WeeklyAllocationSummary) error
-	GetLatestWeeklySummary(ctx context.Context, userID uuid.UUID) (*entities.WeeklyAllocationSummary, error)
 
 	// Aggregate operations
 	CountDeclinesInDateRange(ctx context.Context, userID uuid.UUID, startDate, endDate time.Time) (int, error)
@@ -163,37 +157,35 @@ func (s *Service) EnableMode(ctx context.Context, userID uuid.UUID, ratios entit
 	return nil
 }
 
-// PauseMode pauses the smart allocation mode for a user
-func (s *Service) PauseMode(ctx context.Context, userID uuid.UUID) error {
-	ctx, span := tracer.Start(ctx, "allocation.PauseMode",
+// DisableMode disables the smart allocation mode for a user (sets active=false)
+func (s *Service) DisableMode(ctx context.Context, userID uuid.UUID) error {
+	ctx, span := tracer.Start(ctx, "allocation.DisableMode",
 		trace.WithAttributes(attribute.String("user_id", userID.String())))
 	defer span.End()
 
-	s.logger.Info("Pausing smart allocation mode", "user_id", userID)
+	s.logger.Info("Disabling smart allocation mode", "user_id", userID)
 
-	if err := s.allocationRepo.PauseMode(ctx, userID); err != nil {
+	mode, err := s.allocationRepo.GetMode(ctx, userID)
+	if err != nil {
 		span.RecordError(err)
-		return fmt.Errorf("failed to pause mode: %w", err)
+		return fmt.Errorf("failed to get allocation mode: %w", err)
 	}
 
-	s.logger.Info("Successfully paused smart allocation mode", "user_id", userID)
-	return nil
-}
-
-// ResumeMode resumes the smart allocation mode for a user
-func (s *Service) ResumeMode(ctx context.Context, userID uuid.UUID) error {
-	ctx, span := tracer.Start(ctx, "allocation.ResumeMode",
-		trace.WithAttributes(attribute.String("user_id", userID.String())))
-	defer span.End()
-
-	s.logger.Info("Resuming smart allocation mode", "user_id", userID)
-
-	if err := s.allocationRepo.ResumeMode(ctx, userID); err != nil {
-		span.RecordError(err)
-		return fmt.Errorf("failed to resume mode: %w", err)
+	if mode == nil {
+		return nil // Nothing to disable
 	}
 
-	s.logger.Info("Successfully resumed smart allocation mode", "user_id", userID)
+	mode.Active = false
+	now := time.Now()
+	mode.PausedAt = &now
+	mode.UpdatedAt = now
+
+	if err := s.allocationRepo.UpdateMode(ctx, mode); err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("failed to disable mode: %w", err)
+	}
+
+	s.logger.Info("Successfully disabled smart allocation mode", "user_id", userID)
 	return nil
 }
 
