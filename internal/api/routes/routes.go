@@ -160,7 +160,13 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	v1 := router.Group("/api/v1")
 	{
 		// Authentication routes (no auth required)
+<<<<<<< omotadetobiloba/sta-84-security-missing-csrf-protection-on-state-changing-auth
+		// CSRF protection via custom header requirement (X-Requested-With)
+		// This prevents CSRF attacks while allowing legitimate API clients
+=======
+>>>>>>> main
 		auth := v1.Group("/auth")
+		auth.Use(middleware.AuthCSRFProtection())
 		{
 			auth.POST("/register", authHandlers.Register)
 			auth.POST("/verify", middleware.AuthRateLimit(5), authHandlers.Verify)
