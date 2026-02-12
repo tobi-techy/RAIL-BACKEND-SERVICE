@@ -1,6 +1,9 @@
 package bridge
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // ErrorResponse represents a Bridge API error response
 type ErrorResponse struct {
@@ -8,10 +11,21 @@ type ErrorResponse struct {
 	Code       string                 `json:"code"`
 	Message    string                 `json:"message"`
 	Details    map[string]interface{} `json:"details,omitempty"`
+	Source     *ErrorSource           `json:"source,omitempty"`
+}
+
+// ErrorSource contains the location and key of the error
+type ErrorSource struct {
+	Location string                 `json:"location,omitempty"`
+	Key      map[string]interface{} `json:"key,omitempty"`
 }
 
 // Error implements the error interface
 func (e *ErrorResponse) Error() string {
+	if e.Source != nil && len(e.Source.Key) > 0 {
+		keyJSON, _ := json.Marshal(e.Source.Key)
+		return fmt.Sprintf("Bridge API error [%d]: %s (code: %s, source: %s)", e.StatusCode, e.Message, e.Code, string(keyJSON))
+	}
 	if len(e.Details) > 0 {
 		return fmt.Sprintf("Bridge API error [%d]: %s (code: %s, details: %v)", e.StatusCode, e.Message, e.Code, e.Details)
 	}

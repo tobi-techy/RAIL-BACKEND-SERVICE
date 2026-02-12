@@ -1,0 +1,25 @@
+meta {
+  name: Cancel Withdrawal
+  type: http
+  seq: 9
+}
+
+delete {
+  url: {{baseUrl}}/api/{{apiVersion}}/withdrawals/:withdrawalId
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+params:path {
+  withdrawalId: {{withdrawalId}}
+}
+
+docs {
+  # Cancel Withdrawal
+  
+  Cancel a pending withdrawal request.
+}

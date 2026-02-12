@@ -7,7 +7,8 @@ type BridgeClient interface {
 	// Customer Management
 	CreateCustomer(ctx context.Context, req *CreateCustomerRequest) (*Customer, error)
 	GetCustomer(ctx context.Context, customerID string) (*Customer, error)
-	UpdateCustomer(ctx context.Context, customerID string, req *CreateCustomerRequest) (*Customer, error)
+	GetCustomerByEmail(ctx context.Context, email string) (*Customer, error)
+	UpdateCustomer(ctx context.Context, customerID string, req *UpdateCustomerRequest) (*Customer, error)
 	ListCustomers(ctx context.Context, cursor string, limit int) (*ListCustomersResponse, error)
 
 	// KYC

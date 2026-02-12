@@ -1611,7 +1611,6 @@ func (h *AuthHandlers) CompleteOnboarding(c *gin.Context) {
 	fullResponse := gin.H{
 		"user_id":            response.UserID,
 		"bridge_customer_id": response.BridgeCustomerID,
-		"alpaca_account_id":  response.AlpacaAccountID,
 		"message":            response.Message,
 		"next_steps":         response.NextSteps,
 	}

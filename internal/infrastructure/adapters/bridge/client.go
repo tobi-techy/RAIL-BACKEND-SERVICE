@@ -71,7 +71,7 @@ type Client struct {
 // NewClient creates a new Bridge API client
 func NewClient(config Config, logger *zap.Logger) *Client {
 	if config.Timeout == 0 {
-		config.Timeout = 30 * time.Second
+		config.Timeout = 60 * time.Second // Bridge sandbox can be slow
 	}
 	if config.BaseURL == "" {
 		config.BaseURL = "https://api.bridge.xyz"
@@ -110,12 +110,25 @@ func (c *Client) GetCustomer(ctx context.Context, customerID string) (*Customer,
 }
 
 // UpdateCustomer updates a customer
-func (c *Client) UpdateCustomer(ctx context.Context, customerID string, req *CreateCustomerRequest) (*Customer, error) {
+func (c *Client) UpdateCustomer(ctx context.Context, customerID string, req *UpdateCustomerRequest) (*Customer, error) {
 	var customer Customer
 	if err := c.doRequest(ctx, http.MethodPut, fmt.Sprintf("/v0/customers/%s", url.PathEscape(customerID)), req, &customer); err != nil {
 		return nil, fmt.Errorf("update customer failed: %w", err)
 	}
 	return &customer, nil
+}
+
+// GetCustomerByEmail finds a customer by email address
+func (c *Client) GetCustomerByEmail(ctx context.Context, email string) (*Customer, error) {
+	endpoint := "/v0/customers?email=" + url.QueryEscape(email)
+	var resp ListCustomersResponse
+	if err := c.doRequest(ctx, http.MethodGet, endpoint, nil, &resp); err != nil {
+		return nil, fmt.Errorf("get customer by email failed: %w", err)
+	}
+	if len(resp.Data) == 0 {
+		return nil, nil
+	}
+	return &resp.Data[0], nil
 }
 
 // ListCustomers lists all customers
@@ -311,20 +324,26 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 		}
 	}
 
+	// Use a detached context with the client's timeout to prevent request context
+	// cancellation from aborting external API calls. This ensures Bridge operations
+	// complete even if the HTTP client disconnects.
+	reqCtx, cancel := context.WithTimeout(context.Background(), c.config.Timeout)
+	defer cancel()
+
 	var lastErr error
 	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
 		if attempt > 0 {
 			// Exponential backoff: 1s, 2s, 4s...
 			backoff := time.Duration(1<<(attempt-1)) * time.Second
 			select {
-			case <-ctx.Done():
-				return ctx.Err()
+			case <-reqCtx.Done():
+				return reqCtx.Err()
 			case <-time.After(backoff):
 			}
 			c.logger.Debug("Retrying Bridge API request", zap.Int("attempt", attempt), zap.String("method", method), zap.String("url", fullURL))
 		}
 
-		req, err := http.NewRequestWithContext(ctx, method, fullURL, bytes.NewReader(reqBody))
+		req, err := http.NewRequestWithContext(reqCtx, method, fullURL, bytes.NewReader(reqBody))
 		if err != nil {
 			return fmt.Errorf("failed to create request: %w", err)
 		}

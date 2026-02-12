@@ -1,0 +1,25 @@
+meta {
+  name: Get Deposit
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/deposits/:id
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+params:path {
+  id: {{depositId}}
+}
+
+docs {
+  # Get Deposit
+  
+  Get details of a specific deposit by ID.
+}

@@ -5,8 +5,8 @@ meta {
 }
 
 post {
-  url: {{baseUrl}}/api/{{apiVersion}}/user/{{userId}}/allocation/enable
-  body: json
+  url: {{baseUrl}}/api/{{apiVersion}}/allocation/enable
+  body: none
   auth: bearer
 }
 
@@ -14,9 +14,10 @@ auth:bearer {
   token: {{accessToken}}
 }
 
-body:json {
-  {
-    "spending_ratio": 0.7,
-    "stash_ratio": 0.3
-  }
+docs {
+  # Enable 70/30 Allocation Mode
+  
+  Enable automatic 70/30 split for all incoming deposits:
+  - 70% → Spending (liquid, card access)
+  - 30% → Stash (auto-invested via Alpaca)
 }

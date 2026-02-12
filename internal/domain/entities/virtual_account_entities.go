@@ -52,6 +52,7 @@ type CreateAccountRequest struct {
 	Country           string     `json:"country" validate:"required,len=2"`
 	Address           *Address   `json:"address,omitempty"`
 	DateOfBirth       *time.Time `json:"dateOfBirth,omitempty"`
+	Phone             *string    `json:"phone,omitempty"`
 	SSN               string     `json:"ssn,omitempty"`
 	SignedAgreementID string     `json:"signedAgreementId,omitempty"`
 }

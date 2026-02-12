@@ -98,6 +98,26 @@ func (a *Adapter) CreateVirtualAccountForCustomer(ctx context.Context, customerI
 	return virtualAccount, nil
 }
 
+// UpdateCustomer updates an existing Bridge customer with KYC data
+func (a *Adapter) UpdateCustomer(ctx context.Context, customerID string, req *UpdateCustomerRequest) (*Customer, error) {
+	a.logger.Info("Updating Bridge customer with KYC data", 
+		zap.String("customer_id", customerID))
+
+	customer, err := a.client.UpdateCustomer(ctx, customerID, req)
+	if err != nil {
+		a.logger.Error("Failed to update Bridge customer", 
+			zap.String("customer_id", customerID), 
+			zap.Error(err))
+		return nil, fmt.Errorf("update customer failed: %w", err)
+	}
+
+	a.logger.Info("Successfully updated customer",
+		zap.String("customer_id", customerID),
+		zap.String("status", string(customer.Status)))
+
+	return customer, nil
+}
+
 // GetCustomerStatus retrieves and maps customer status to domain KYC status
 func (a *Adapter) GetCustomerStatus(ctx context.Context, customerID string) (*CustomerStatusResponse, error) {
 	a.logger.Info("Getting Bridge customer status", zap.String("customer_id", customerID))
