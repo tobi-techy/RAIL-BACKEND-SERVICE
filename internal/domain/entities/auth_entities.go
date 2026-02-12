@@ -144,7 +144,6 @@ type User struct {
 	AlpacaAccountID    *string          `json:"alpacaAccountId" db:"alpaca_account_id"`
 	BridgeKYCStatus    *string          `json:"bridgeKycStatus" db:"bridge_kyc_status"`
 	BridgeKYCLink      *string          `json:"bridgeKycLink" db:"bridge_kyc_link"`
-	AlpacaAccountID    *string          `json:"alpacaAccountId" db:"alpaca_account_id"`
 	Role               string           `json:"role" db:"role"`
 	IsActive           bool             `json:"isActive" db:"is_active"`
 	LastLoginAt        *time.Time       `json:"lastLoginAt" db:"last_login_at"`
