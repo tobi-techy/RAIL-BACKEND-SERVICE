@@ -1,0 +1,25 @@
+meta {
+  name: Get Withdrawal
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/withdrawals/:withdrawalId
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+params:path {
+  withdrawalId: {{withdrawalId}}
+}
+
+docs {
+  # Get Withdrawal
+  
+  Get details of a specific withdrawal by ID.
+}

@@ -1,0 +1,21 @@
+meta {
+  name: List Withdrawals
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/withdrawals
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+docs {
+  # List Withdrawals
+  
+  Get all withdrawals for the authenticated user.
+}

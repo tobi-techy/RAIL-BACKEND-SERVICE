@@ -12,10 +12,11 @@ post {
 
 body:json {
   {
-    "email": "test@example.com",
-    "password": "SecurePass123!"
+    "email": "test-final-feb6-v2@gmail.com",
+    "password": "NewSecurePass123!"
   }
 }
+
 script:post-response {
   if (res.status === 200) {
     const body = res.getBody();
@@ -37,4 +38,3 @@ script:post-response {
     }
   }
 }
-

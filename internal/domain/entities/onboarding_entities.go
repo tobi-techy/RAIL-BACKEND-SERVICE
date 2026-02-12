@@ -350,45 +350,6 @@ type WalletStatusSummary struct {
 	WalletsByChain  map[string]string `json:"walletsByChain"` // chain -> status
 }
 
-// KYCStatusResponse captures a user's verification state with contextual guidance
-type KYCStatusResponse struct {
-	UserID            uuid.UUID  `json:"userId"`
-	Status            string     `json:"status"`
-	Verified          bool       `json:"verified"`
-	HasSubmitted      bool       `json:"hasSubmitted"`
-	RequiresKYC       bool       `json:"requiresKyc"`
-	RequiredFor       []string   `json:"requiredFor"`
-	LastSubmittedAt   *time.Time `json:"lastSubmittedAt,omitempty"`
-	ApprovedAt        *time.Time `json:"approvedAt,omitempty"`
-	RejectionReason   *string    `json:"rejectionReason,omitempty"`
-	ProviderReference *string    `json:"providerReference,omitempty"`
-	NextSteps         []string   `json:"nextSteps,omitempty"`
-}
-
-// KYCSubmitRequest represents KYC submission request
-type KYCSubmitRequest struct {
-	DocumentType string                 `json:"documentType" validate:"required"`
-	Documents    []KYCDocumentUpload    `json:"documents" validate:"required,min=1"`
-	PersonalInfo *KYCPersonalInfo       `json:"personalInfo,omitempty"`
-	Metadata     map[string]interface{} `json:"metadata,omitempty"`
-}
-
-// KYCDocumentUpload represents a document uploaded for KYC
-type KYCDocumentUpload struct {
-	Type        string `json:"type" validate:"required"` // passport, drivers_license, etc.
-	FileURL     string `json:"fileUrl" validate:"required,url"`
-	ContentType string `json:"contentType" validate:"required"`
-}
-
-// KYCPersonalInfo represents personal information for KYC
-type KYCPersonalInfo struct {
-	FirstName   string     `json:"firstName" validate:"required"`
-	LastName    string     `json:"lastName" validate:"required"`
-	DateOfBirth *time.Time `json:"dateOfBirth,omitempty"`
-	Country     string     `json:"country" validate:"required,len=2"`
-	Address     *Address   `json:"address,omitempty"`
-}
-
 // Address represents a physical address
 type Address struct {
 	Street     string `json:"street" validate:"required"`
@@ -409,7 +370,6 @@ type OnboardingCompleteRequest struct {
 	Country           string     `json:"country" validate:"required,len=2"`
 	Address           Address    `json:"address" validate:"required"`
 	Phone             *string    `json:"phone,omitempty" validate:"omitempty,e164"`
-	SSN               string     `json:"ssn,omitempty" validate:"omitempty"`
 	SignedAgreementID string     `json:"signedAgreementId,omitempty" validate:"omitempty"`
 	// Optional additional onboarding info
 	EmploymentStatus *string  `json:"employmentStatus,omitempty" validate:"omitempty"`
@@ -417,15 +377,16 @@ type OnboardingCompleteRequest struct {
 	UserExperience   *string  `json:"userExperience,omitempty" validate:"omitempty"`
 	InvestmentGoals  []string `json:"investmentGoals,omitempty" validate:"omitempty,dive,min=1"`
 	IPAddress        string   `json:"-" validate:"-"` // Populated from request context
+	// NOTE: SSN removed - now collected in KYC flow via POST /kyc/submit
 }
 
 // OnboardingCompleteResponse represents the response after completing onboarding
 type OnboardingCompleteResponse struct {
 	UserID           uuid.UUID `json:"userId"`
 	BridgeCustomerID string    `json:"bridgeCustomerId"`
-	AlpacaAccountID  string    `json:"alpacaAccountId"`
 	Message          string    `json:"message"`
 	NextSteps        []string  `json:"nextSteps"`
+	// NOTE: AlpacaAccountID removed - created later in KYC flow
 }
 
 // OnboardingProgressResponse represents the user's onboarding progress

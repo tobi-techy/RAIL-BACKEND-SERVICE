@@ -1,0 +1,24 @@
+meta {
+  name: Get Instant Funding Status
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/funding/instant/status
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+docs {
+  # Get Instant Funding Status
+  
+  Check current instant funding state including:
+  - Active instant funding amount
+  - Available limit remaining
+  - Max limit based on account age
+}

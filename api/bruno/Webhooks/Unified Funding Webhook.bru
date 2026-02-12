@@ -1,0 +1,41 @@
+meta {
+  name: Unified Funding Webhook
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/webhooks/funding
+  body: json
+  auth: none
+}
+
+headers {
+  X-Webhook-Source: bridge
+  X-Webhook-Signature: {{webhookSignature}}
+}
+
+body:json {
+  {
+    "event_type": "deposit.completed",
+    "data": {
+      "virtual_account_id": "va_123",
+      "amount": "1000.00",
+      "currency": "USD",
+      "transaction_ref": "tx_abc123"
+    }
+  }
+}
+
+docs {
+  # Unified Funding Webhook
+  
+  Single endpoint that routes webhooks from Bridge, Circle, and Alpaca.
+  
+  ## Headers
+  - X-Webhook-Source: bridge | circle | alpaca
+  - X-Webhook-Signature: HMAC signature for verification
+  
+  ## Auto-detection
+  If no header, routes based on payload structure.
+}

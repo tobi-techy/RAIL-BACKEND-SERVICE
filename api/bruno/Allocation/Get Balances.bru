@@ -1,15 +1,26 @@
 meta {
   name: Get Balances
   type: http
-  seq: 5
+  seq: 3
 }
 
 get {
-  url: {{baseUrl}}/api/{{apiVersion}}/user/{{userId}}/allocation/balances
+  url: {{baseUrl}}/api/{{apiVersion}}/allocation/balances
   body: none
   auth: bearer
 }
 
 auth:bearer {
   token: {{accessToken}}
+}
+
+docs {
+  # Get Allocation Balances
+  
+  Get current spending and stash balances with allocation mode status.
+  
+  ## Response
+  - spending: Available for card/withdrawals (70%)
+  - stash: Auto-invested amount (30%)
+  - mode: Current allocation settings
 }

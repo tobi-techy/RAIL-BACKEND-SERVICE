@@ -84,6 +84,7 @@ type AuditService interface {
 
 type BridgeAdapter interface {
 	CreateCustomer(ctx context.Context, req *entities.CreateAccountRequest) (*entities.CreateAccountResponse, error)
+	GetCustomerByEmail(ctx context.Context, email string) (*entities.CreateAccountResponse, error)
 }
 
 type AlpacaAdapter interface {
@@ -329,7 +330,8 @@ func (s *Service) CompleteEmailVerification(ctx context.Context, userID uuid.UUI
 	return nil
 }
 
-// CompleteOnboarding handles the completion of onboarding with personal info, password, account creation, and wallet provisioning
+// CompleteOnboarding handles the completion of onboarding with personal info, password, and Bridge customer creation
+// Alpaca account creation is now handled separately via the KYC flow
 func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.OnboardingCompleteRequest) (*entities.OnboardingCompleteResponse, error) {
 	s.logger.Info("Completing onboarding with account creation", zap.String("user_id", req.UserID.String()))
 
@@ -361,101 +363,47 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 	user.DateOfBirth = req.DateOfBirth
 	user.UpdatedAt = time.Now()
 
-	// Create Bridge customer
-	bridgeReq := &entities.CreateAccountRequest{
-		Type:              "individual",
-		FirstName:         req.FirstName,
-		LastName:          req.LastName,
-		Email:             user.Email,
-		Country:           req.Country,
-		Address:           &req.Address,
-		DateOfBirth:       req.DateOfBirth,
-		SSN:               req.SSN,
-		SignedAgreementID: req.SignedAgreementID,
-	}
+	// Create Bridge customer with minimal data (no KYC yet)
+	if user.BridgeCustomerID == nil || *user.BridgeCustomerID == "" {
+		bridgeReq := &entities.CreateAccountRequest{
+			Type:              "individual",
+			FirstName:         req.FirstName,
+			LastName:          req.LastName,
+			Email:             user.Email,
+			Country:           req.Country,
+			Address:           &req.Address,
+			DateOfBirth:       req.DateOfBirth,
+			Phone:             req.Phone,
+			SignedAgreementID: req.SignedAgreementID,
+			// NOTE: No SSN/tax_id here - that's collected in KYC flow
+		}
 
-	bridgeResp, err := s.bridgeAdapter.CreateCustomer(ctx, bridgeReq)
-	if err != nil {
-		s.logger.Error("Failed to create Bridge customer", zap.Error(err))
-		return nil, fmt.Errorf("failed to create Bridge customer: %w", err)
-	}
+		bridgeResp, err := s.bridgeAdapter.CreateCustomer(ctx, bridgeReq)
+		if err != nil {
+			// Check if customer already exists in Bridge (email uniqueness)
+			if strings.Contains(err.Error(), "already exists") {
+				existingCustomer, lookupErr := s.bridgeAdapter.GetCustomerByEmail(ctx, user.Email)
+				if lookupErr != nil || existingCustomer == nil {
+					s.logger.Error("Failed to create Bridge customer and lookup failed", zap.Error(err), zap.Error(lookupErr))
+					return nil, fmt.Errorf("failed to create Bridge customer: %w", err)
+				}
+				s.logger.Info("Found existing Bridge customer by email", zap.String("bridge_customer_id", existingCustomer.AccountID))
+				user.BridgeCustomerID = &existingCustomer.AccountID
+			} else {
+				s.logger.Error("Failed to create Bridge customer", zap.Error(err))
+				return nil, fmt.Errorf("failed to create Bridge customer: %w", err)
+			}
+		} else {
+			user.BridgeCustomerID = &bridgeResp.AccountID
+		}
 
-	user.BridgeCustomerID = &bridgeResp.AccountID
-	user.UpdatedAt = time.Now()
-	if err := s.userRepo.Update(ctx, user); err != nil {
-		return nil, fmt.Errorf("failed to persist Bridge customer information: %w", err)
-	}
-
-	// Create Alpaca account
-	ipAddress := req.IPAddress
-	if strings.TrimSpace(ipAddress) == "" {
-		ipAddress = "127.0.0.1"
-	}
-	employmentStatus := "employed"
-	if req.EmploymentStatus != nil && strings.TrimSpace(*req.EmploymentStatus) != "" {
-		employmentStatus = strings.TrimSpace(*req.EmploymentStatus)
-	}
-
-	// Convert 2-letter country code to 3-letter (Alpaca requires ISO 3166-1 alpha-3)
-	country := req.Country
-	if len(country) == 2 {
-		switch country {
-		case "US":
-			country = "USA"
-		case "GB":
-			country = "GBR"
-		case "CA":
-			country = "CAN"
-		// Add more as needed
+		user.UpdatedAt = time.Now()
+		if err := s.userRepo.Update(ctx, user); err != nil {
+			return nil, fmt.Errorf("failed to persist Bridge customer information: %w", err)
 		}
 	}
 
-	alpacaReq := &entities.AlpacaCreateAccountRequest{
-		Contact: entities.AlpacaContact{
-			EmailAddress:  user.Email,
-			PhoneNumber:   getStringValue(req.Phone),
-			StreetAddress: []string{req.Address.Street},
-			City:          req.Address.City,
-			State:         req.Address.State,
-			PostalCode:    req.Address.PostalCode,
-			Country:       country,
-		},
-		Identity: entities.AlpacaIdentity{
-			GivenName:             req.FirstName,
-			FamilyName:            req.LastName,
-			DateOfBirth:           req.DateOfBirth.Format("2006-01-02"),
-			TaxID:                 req.SSN,
-			TaxIDType:             "USA_SSN",
-			CountryOfCitizenship:  country,
-			CountryOfBirth:        country,
-			CountryOfTaxResidence: country,
-			FundingSource:         []string{"employment_income"},
-		},
-		Disclosures: entities.AlpacaDisclosures{
-			EmploymentStatus: employmentStatus,
-		},
-		Agreements: []entities.AlpacaAgreement{
-			{
-				Agreement: "customer_agreement",
-				SignedAt:  time.Now().Format(time.RFC3339),
-				IPAddress: ipAddress,
-			},
-		},
-	}
-
-	alpacaResp, err := s.alpacaAdapter.CreateAccount(ctx, alpacaReq)
-	if err != nil {
-		s.logger.Error("Failed to create Alpaca account", zap.Error(err))
-		return nil, fmt.Errorf("failed to create Alpaca account: %w", err)
-	}
-
-	// Update user with account IDs
-	user.AlpacaAccountID = &alpacaResp.ID
-	user.UpdatedAt = time.Now()
-
-	if err := s.userRepo.Update(ctx, user); err != nil {
-		return nil, fmt.Errorf("failed to update user with account IDs: %w", err)
-	}
+	// NOTE: Alpaca account creation removed - now handled in KYC flow via POST /kyc/submit
 
 	// Mark passcode creation step as completed and trigger wallet creation
 	stepData := map[string]any{
@@ -504,10 +452,16 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 		}
 	}
 
+	// Get final IDs from user (may have been set in this request or previously)
+
+	bridgeCustomerID := ""
+	if user.BridgeCustomerID != nil {
+		bridgeCustomerID = *user.BridgeCustomerID
+	}
+
 	// Log audit event
-	if err := s.auditService.LogOnboardingEvent(ctx, req.UserID, "accounts_created", "user", nil, map[string]any{
-		"bridge_customer_id": bridgeResp.AccountID,
-		"alpaca_account_id":  alpacaResp.ID,
+	if err := s.auditService.LogOnboardingEvent(ctx, req.UserID, "signup_completed", "user", nil, map[string]any{
+		"bridge_customer_id": bridgeCustomerID,
 		"password_set":       true,
 		"wallets_queued":     true,
 	}); err != nil {
@@ -516,16 +470,17 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 
 	s.logger.Info("Onboarding completed successfully",
 		zap.String("user_id", req.UserID.String()),
-		zap.String("bridge_customer_id", bridgeResp.AccountID),
-		zap.String("alpaca_account_id", alpacaResp.ID),
+		zap.String("bridge_customer_id", bridgeCustomerID),
 		zap.Bool("wallets_queued", true))
 
 	return &entities.OnboardingCompleteResponse{
 		UserID:           req.UserID,
-		BridgeCustomerID: bridgeResp.AccountID,
-		AlpacaAccountID:  alpacaResp.ID,
-		Message:          "Onboarding completed successfully. Your wallets are being provisioned.",
-		NextSteps:        []string{"wallets_creating"},
+		BridgeCustomerID: bridgeCustomerID,
+		Message:          "Signup completed successfully. Complete KYC to unlock all features.",
+		NextSteps: []string{
+			"Complete KYC verification to unlock fiat deposits, cards, and investing",
+			"You can deposit crypto immediately",
+		},
 	}, nil
 }
 
@@ -1193,4 +1148,56 @@ func getStringValue(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+
+// countryAlpha2ToAlpha3 converts ISO 3166-1 alpha-2 to alpha-3 country codes
+func countryAlpha2ToAlpha3(alpha2 string) string {
+	codes := map[string]string{
+		"AF": "AFG", "AL": "ALB", "DZ": "DZA", "AS": "ASM", "AD": "AND",
+		"AO": "AGO", "AI": "AIA", "AQ": "ATA", "AG": "ATG", "AR": "ARG",
+		"AM": "ARM", "AW": "ABW", "AU": "AUS", "AT": "AUT", "AZ": "AZE",
+		"BS": "BHS", "BH": "BHR", "BD": "BGD", "BB": "BRB", "BY": "BLR",
+		"BE": "BEL", "BZ": "BLZ", "BJ": "BEN", "BM": "BMU", "BT": "BTN",
+		"BO": "BOL", "BA": "BIH", "BW": "BWA", "BR": "BRA", "BN": "BRN",
+		"BG": "BGR", "BF": "BFA", "BI": "BDI", "KH": "KHM", "CM": "CMR",
+		"CA": "CAN", "CV": "CPV", "KY": "CYM", "CF": "CAF", "TD": "TCD",
+		"CL": "CHL", "CN": "CHN", "CO": "COL", "KM": "COM", "CG": "COG",
+		"CD": "COD", "CR": "CRI", "CI": "CIV", "HR": "HRV", "CU": "CUB",
+		"CY": "CYP", "CZ": "CZE", "DK": "DNK", "DJ": "DJI", "DM": "DMA",
+		"DO": "DOM", "EC": "ECU", "EG": "EGY", "SV": "SLV", "GQ": "GNQ",
+		"ER": "ERI", "EE": "EST", "ET": "ETH", "FJ": "FJI", "FI": "FIN",
+		"FR": "FRA", "GA": "GAB", "GM": "GMB", "GE": "GEO", "DE": "DEU",
+		"GH": "GHA", "GR": "GRC", "GD": "GRD", "GT": "GTM", "GN": "GIN",
+		"GW": "GNB", "GY": "GUY", "HT": "HTI", "HN": "HND", "HK": "HKG",
+		"HU": "HUN", "IS": "ISL", "IN": "IND", "ID": "IDN", "IR": "IRN",
+		"IQ": "IRQ", "IE": "IRL", "IL": "ISR", "IT": "ITA", "JM": "JAM",
+		"JP": "JPN", "JO": "JOR", "KZ": "KAZ", "KE": "KEN", "KI": "KIR",
+		"KP": "PRK", "KR": "KOR", "KW": "KWT", "KG": "KGZ", "LA": "LAO",
+		"LV": "LVA", "LB": "LBN", "LS": "LSO", "LR": "LBR", "LY": "LBY",
+		"LI": "LIE", "LT": "LTU", "LU": "LUX", "MO": "MAC", "MK": "MKD",
+		"MG": "MDG", "MW": "MWI", "MY": "MYS", "MV": "MDV", "ML": "MLI",
+		"MT": "MLT", "MH": "MHL", "MR": "MRT", "MU": "MUS", "MX": "MEX",
+		"FM": "FSM", "MD": "MDA", "MC": "MCO", "MN": "MNG", "ME": "MNE",
+		"MA": "MAR", "MZ": "MOZ", "MM": "MMR", "NA": "NAM", "NR": "NRU",
+		"NP": "NPL", "NL": "NLD", "NZ": "NZL", "NI": "NIC", "NE": "NER",
+		"NG": "NGA", "NO": "NOR", "OM": "OMN", "PK": "PAK", "PW": "PLW",
+		"PA": "PAN", "PG": "PNG", "PY": "PRY", "PE": "PER", "PH": "PHL",
+		"PL": "POL", "PT": "PRT", "PR": "PRI", "QA": "QAT", "RO": "ROU",
+		"RU": "RUS", "RW": "RWA", "KN": "KNA", "LC": "LCA", "VC": "VCT",
+		"WS": "WSM", "SM": "SMR", "ST": "STP", "SA": "SAU", "SN": "SEN",
+		"RS": "SRB", "SC": "SYC", "SL": "SLE", "SG": "SGP", "SK": "SVK",
+		"SI": "SVN", "SB": "SLB", "SO": "SOM", "ZA": "ZAF", "ES": "ESP",
+		"LK": "LKA", "SD": "SDN", "SR": "SUR", "SZ": "SWZ", "SE": "SWE",
+		"CH": "CHE", "SY": "SYR", "TW": "TWN", "TJ": "TJK", "TZ": "TZA",
+		"TH": "THA", "TL": "TLS", "TG": "TGO", "TO": "TON", "TT": "TTO",
+		"TN": "TUN", "TR": "TUR", "TM": "TKM", "TV": "TUV", "UG": "UGA",
+		"UA": "UKR", "AE": "ARE", "GB": "GBR", "US": "USA", "UY": "URY",
+		"UZ": "UZB", "VU": "VUT", "VE": "VEN", "VN": "VNM", "YE": "YEM",
+		"ZM": "ZMB", "ZW": "ZWE",
+	}
+	if alpha3, ok := codes[alpha2]; ok {
+		return alpha3
+	}
+	return alpha2 // Return as-is if not found (might already be alpha-3)
 }

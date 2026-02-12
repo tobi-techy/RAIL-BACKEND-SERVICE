@@ -278,6 +278,20 @@ func (a *BridgeOnboardingAdapter) CreateCustomer(ctx context.Context, req *entit
 	}, nil
 }
 
+func (a *BridgeOnboardingAdapter) GetCustomerByEmail(ctx context.Context, email string) (*entities.CreateAccountResponse, error) {
+	cust, err := a.adapter.Client().GetCustomerByEmail(ctx, email)
+	if err != nil {
+		return nil, err
+	}
+	if cust == nil {
+		return nil, nil
+	}
+	return &entities.CreateAccountResponse{
+		AccountID: cust.ID,
+		Status:    string(cust.Status),
+	}, nil
+}
+
 // FundingNotificationAdapter adapts NotificationService to funding.FundingNotificationService
 type FundingNotificationAdapter struct {
 	svc *services.NotificationService
