@@ -20,6 +20,7 @@ type WithdrawalServiceInterface interface {
 	InitiateWithdrawal(ctx context.Context, req *entities.InitiateWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error)
 	GetWithdrawal(ctx context.Context, withdrawalID uuid.UUID) (*entities.Withdrawal, error)
 	GetUserWithdrawals(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error)
+	CancelWithdrawal(ctx context.Context, withdrawalID uuid.UUID, userID uuid.UUID) error
 }
 
 // BalanceChecker interface for balance validation (defense-in-depth)
@@ -121,7 +122,7 @@ func (h *WithdrawalHandlers) GetWithdrawal(c *gin.Context) {
 	common.SendSuccess(c, withdrawal)
 }
 
-// GetUserWithdrawals handles GET /api/v1/funding/withdrawals
+// GetUserWithdrawals handles GET /api/v1/withdrawals
 func (h *WithdrawalHandlers) GetUserWithdrawals(c *gin.Context) {
 	userID, ok := h.extractUserID(c)
 	if !ok {
@@ -141,6 +142,36 @@ func (h *WithdrawalHandlers) GetUserWithdrawals(c *gin.Context) {
 	}
 
 	common.SendSuccess(c, withdrawals)
+}
+
+// CancelWithdrawal handles DELETE /api/v1/withdrawals/:withdrawalId
+func (h *WithdrawalHandlers) CancelWithdrawal(c *gin.Context) {
+	userID, ok := h.extractUserID(c)
+	if !ok {
+		return
+	}
+
+	withdrawalID, err := uuid.Parse(c.Param("withdrawalId"))
+	if err != nil {
+		common.SendBadRequest(c, "INVALID_WITHDRAWAL_ID", "Invalid withdrawal ID format")
+		return
+	}
+
+	if err := h.withdrawalService.CancelWithdrawal(c.Request.Context(), withdrawalID, userID); err != nil {
+		errMsg := err.Error()
+		switch {
+		case strings.Contains(errMsg, "not found"):
+			common.SendNotFound(c, common.ErrCodeWithdrawalNotFound, "Withdrawal not found")
+		case strings.Contains(errMsg, "cannot cancel"):
+			common.SendBadRequest(c, "CANCEL_NOT_ALLOWED", errMsg)
+		default:
+			h.logger.Error("Failed to cancel withdrawal", "error", err, "withdrawal_id", withdrawalID)
+			common.SendInternalError(c, "WITHDRAWAL_ERROR", "Failed to cancel withdrawal")
+		}
+		return
+	}
+
+	common.SendSuccess(c, gin.H{"message": "Withdrawal cancelled"})
 }
 
 // Helper types and methods

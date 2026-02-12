@@ -1,0 +1,37 @@
+meta {
+  name: Verify
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/auth/verify
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "email": "test1-final-feb6-v2@gmail.com",
+    "code": "956449"
+  }
+}
+
+script:post-response {
+  if (res.status === 200) {
+    const body = res.getBody();
+    if (body.accessToken) {
+      bru.setEnvVar("accessToken", body.accessToken);
+    }
+    if (body.refreshToken) {
+      bru.setEnvVar("refreshToken", body.refreshToken);
+    }
+    if (body.user && body.user.id) {
+      bru.setEnvVar("userId", body.user.id);
+    }
+    const csrfToken = res.getHeader("X-CSRF-Token");
+    if (csrfToken) {
+      bru.setEnvVar("csrfToken", csrfToken);
+    }
+  }
+}

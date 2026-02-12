@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/pkg/crypto"
 	"go.uber.org/zap"
 )
 
@@ -19,7 +21,6 @@ type Service struct {
 	onboardingFlowRepo  OnboardingFlowRepository
 	kycSubmissionRepo   KYCSubmissionRepository
 	walletService       WalletService
-	kycProvider         KYCProvider
 	emailService        EmailService
 	auditService        AuditService
 	bridgeAdapter       BridgeAdapter
@@ -27,7 +28,6 @@ type Service struct {
 	allocationService   AllocationService
 	logger              *zap.Logger
 	defaultWalletChains []entities.WalletChain
-	kycProviderName     string
 }
 
 // Repository interfaces
@@ -39,6 +39,7 @@ type UserRepository interface {
 	Update(ctx context.Context, user *entities.UserProfile) error
 	UpdateOnboardingStatus(ctx context.Context, userID uuid.UUID, status entities.OnboardingStatus) error
 	UpdateKYCStatus(ctx context.Context, userID uuid.UUID, status string, approvedAt *time.Time, rejectionReason *string) error
+	UpdatePassword(ctx context.Context, userID uuid.UUID, hash string) error
 }
 
 type OnboardingFlowRepository interface {
@@ -63,12 +64,6 @@ type WalletService interface {
 	GetWalletStatus(ctx context.Context, userID uuid.UUID) (*entities.WalletStatusResponse, error)
 }
 
-type KYCProvider interface {
-	SubmitKYC(ctx context.Context, userID uuid.UUID, documents []entities.KYCDocumentUpload, personalInfo *entities.KYCPersonalInfo) (string, error)
-	GetKYCStatus(ctx context.Context, providerRef string) (*entities.KYCSubmission, error)
-	GenerateKYCURL(ctx context.Context, userID uuid.UUID) (string, error)
-}
-
 type EmailService interface {
 	SendVerificationEmail(ctx context.Context, email, verificationToken string) error
 	SendKYCStatusEmail(ctx context.Context, email string, status entities.KYCStatus, rejectionReasons []string) error
@@ -81,6 +76,7 @@ type AuditService interface {
 
 type BridgeAdapter interface {
 	CreateCustomer(ctx context.Context, req *entities.CreateAccountRequest) (*entities.CreateAccountResponse, error)
+	GetCustomerByEmail(ctx context.Context, email string) (*entities.CreateAccountResponse, error)
 }
 
 type AlpacaAdapter interface {
@@ -98,7 +94,6 @@ func NewService(
 	onboardingFlowRepo OnboardingFlowRepository,
 	kycSubmissionRepo KYCSubmissionRepository,
 	walletService WalletService,
-	kycProvider KYCProvider,
 	emailService EmailService,
 	auditService AuditService,
 	bridgeAdapter BridgeAdapter,
@@ -106,20 +101,14 @@ func NewService(
 	allocationService AllocationService,
 	logger *zap.Logger,
 	defaultWalletChains []entities.WalletChain,
-	kycProviderName string,
 ) *Service {
 	normalizedChains := normalizeDefaultWalletChains(defaultWalletChains, logger)
-
-	if kycProviderName == "" {
-		kycProviderName = "sumsub" // Default KYC provider
-	}
 
 	return &Service{
 		userRepo:            userRepo,
 		onboardingFlowRepo:  onboardingFlowRepo,
 		kycSubmissionRepo:   kycSubmissionRepo,
 		walletService:       walletService,
-		kycProvider:         kycProvider,
 		emailService:        emailService,
 		auditService:        auditService,
 		bridgeAdapter:       bridgeAdapter,
@@ -127,7 +116,6 @@ func NewService(
 		allocationService:   allocationService,
 		logger:              logger,
 		defaultWalletChains: normalizedChains,
-		kycProviderName:     kycProviderName,
 	}
 }
 
@@ -326,7 +314,8 @@ func (s *Service) CompleteEmailVerification(ctx context.Context, userID uuid.UUI
 	return nil
 }
 
-// CompleteOnboarding handles the completion of onboarding with personal info and account creation
+// CompleteOnboarding handles the completion of onboarding with personal info, password, and Bridge customer creation
+// Alpaca account creation is now handled separately via the KYC flow
 func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.OnboardingCompleteRequest) (*entities.OnboardingCompleteResponse, error) {
 	s.logger.Info("Completing onboarding with account creation", zap.String("user_id", req.UserID.String()))
 
@@ -340,6 +329,17 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 		return nil, fmt.Errorf("email must be verified before completing onboarding")
 	}
 
+	// Hash and set password
+	passwordHash, err := crypto.HashPassword(req.Password)
+	if err != nil {
+		s.logger.Error("Failed to hash password", zap.Error(err))
+		return nil, fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	if err := s.userRepo.UpdatePassword(ctx, req.UserID, passwordHash); err != nil {
+		return nil, fmt.Errorf("failed to set password: %w", err)
+	}
+
 	// Update user with personal information
 	user.FirstName = &req.FirstName
 	user.LastName = &req.LastName
@@ -347,87 +347,124 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 	user.DateOfBirth = req.DateOfBirth
 	user.UpdatedAt = time.Now()
 
-	// Create Bridge customer
-	bridgeReq := &entities.CreateAccountRequest{
-		Type:      "individual",
-		FirstName: req.FirstName,
-		LastName:  req.LastName,
-		Email:     user.Email,
-		Country:   req.Country,
+	// Create Bridge customer with minimal data (no KYC yet)
+	if user.BridgeCustomerID == nil || *user.BridgeCustomerID == "" {
+		bridgeReq := &entities.CreateAccountRequest{
+			Type:              "individual",
+			FirstName:         req.FirstName,
+			LastName:          req.LastName,
+			Email:             user.Email,
+			Country:           req.Country,
+			Address:           &req.Address,
+			DateOfBirth:       req.DateOfBirth,
+			Phone:             req.Phone,
+			SignedAgreementID: req.SignedAgreementID,
+			// NOTE: No SSN/tax_id here - that's collected in KYC flow
+		}
+
+		bridgeResp, err := s.bridgeAdapter.CreateCustomer(ctx, bridgeReq)
+		if err != nil {
+			// Check if customer already exists in Bridge (email uniqueness)
+			if strings.Contains(err.Error(), "already exists") {
+				existingCustomer, lookupErr := s.bridgeAdapter.GetCustomerByEmail(ctx, user.Email)
+				if lookupErr != nil || existingCustomer == nil {
+					s.logger.Error("Failed to create Bridge customer and lookup failed", zap.Error(err), zap.Error(lookupErr))
+					return nil, fmt.Errorf("failed to create Bridge customer: %w", err)
+				}
+				s.logger.Info("Found existing Bridge customer by email", zap.String("bridge_customer_id", existingCustomer.AccountID))
+				user.BridgeCustomerID = &existingCustomer.AccountID
+			} else {
+				s.logger.Error("Failed to create Bridge customer", zap.Error(err))
+				return nil, fmt.Errorf("failed to create Bridge customer: %w", err)
+			}
+		} else {
+			user.BridgeCustomerID = &bridgeResp.AccountID
+		}
+
+		user.UpdatedAt = time.Now()
+		if err := s.userRepo.Update(ctx, user); err != nil {
+			return nil, fmt.Errorf("failed to persist Bridge customer information: %w", err)
+		}
 	}
 
-	bridgeResp, err := s.bridgeAdapter.CreateCustomer(ctx, bridgeReq)
-	if err != nil {
-		s.logger.Error("Failed to create Bridge customer", zap.Error(err))
-		return nil, fmt.Errorf("failed to create Bridge customer: %w", err)
+	// NOTE: Alpaca account creation removed - now handled in KYC flow via POST /kyc/submit
+
+	// Mark passcode creation step as completed and trigger wallet creation
+	stepData := map[string]any{
+		"completed_at": time.Now(),
+	}
+	if req.EmploymentStatus != nil {
+		if trimmed := strings.TrimSpace(*req.EmploymentStatus); trimmed != "" {
+			stepData["employment_status"] = trimmed
+		}
+	}
+	if req.YearlyIncome != nil {
+		stepData["yearly_income"] = *req.YearlyIncome
+	}
+	if req.UserExperience != nil {
+		if trimmed := strings.TrimSpace(*req.UserExperience); trimmed != "" {
+			stepData["user_experience"] = trimmed
+		}
+	}
+	if len(req.InvestmentGoals) > 0 {
+		stepData["investment_goals"] = req.InvestmentGoals
 	}
 
-	// Create Alpaca account
-	alpacaReq := &entities.AlpacaCreateAccountRequest{
-		Contact: entities.AlpacaContact{
-			EmailAddress:  user.Email,
-			PhoneNumber:   getStringValue(req.Phone),
-			StreetAddress: []string{req.Address.Street},
-			City:          req.Address.City,
-			State:         req.Address.State,
-			PostalCode:    req.Address.PostalCode,
-			Country:       req.Country,
-		},
-		Identity: entities.AlpacaIdentity{
-			GivenName:             req.FirstName,
-			FamilyName:            req.LastName,
-			DateOfBirth:           req.DateOfBirth.Format("2006-01-02"),
-			CountryOfCitizenship:  req.Country,
-			CountryOfBirth:        req.Country,
-			CountryOfTaxResidence: req.Country,
-			FundingSource:         []string{"employment_income"},
-		},
-		Disclosures: entities.AlpacaDisclosures{
-			EmploymentStatus: "employed",
-		},
-		Agreements: []entities.AlpacaAgreement{
-			{
-				Agreement: "customer_agreement",
-				SignedAt:  time.Now().Format(time.RFC3339),
-				IPAddress: "127.0.0.1", // Should be passed from request context
-			},
-		},
+	if err := s.markStepCompleted(ctx, req.UserID, entities.StepPasscodeCreation, stepData); err != nil {
+		s.logger.Warn("Failed to mark passcode creation step as completed", zap.Error(err))
 	}
 
-	alpacaResp, err := s.alpacaAdapter.CreateAccount(ctx, alpacaReq)
-	if err != nil {
-		s.logger.Error("Failed to create Alpaca account", zap.Error(err))
-		return nil, fmt.Errorf("failed to create Alpaca account: %w", err)
+	// Transition to wallet provisioning
+	if err := s.userRepo.UpdateOnboardingStatus(ctx, req.UserID, entities.OnboardingStatusWalletsPending); err != nil {
+		return nil, fmt.Errorf("failed to update onboarding status: %w", err)
 	}
 
-	// Update user with account IDs (Bridge customer ID stored as DueAccountID for backward compatibility)
-	user.DueAccountID = &bridgeResp.AccountID
-	user.AlpacaAccountID = &alpacaResp.ID
-	user.UpdatedAt = time.Now()
+	// Trigger wallet provisioning
+	if err := s.walletService.CreateWalletsForUser(ctx, req.UserID, s.defaultWalletChains); err != nil {
+		s.logger.Error("Failed to trigger wallet provisioning", zap.Error(err), zap.String("userId", req.UserID.String()))
+		return nil, fmt.Errorf("failed to create wallets: %w", err)
+	}
 
-	if err := s.userRepo.Update(ctx, user); err != nil {
-		return nil, fmt.Errorf("failed to update user with account IDs: %w", err)
+	// Auto-enable 70/30 allocation mode (Rail MVP default - non-negotiable)
+	if s.allocationService != nil {
+		defaultRatios := entities.AllocationRatios{
+			SpendingRatio: entities.DefaultSpendingRatio,
+			StashRatio:    entities.DefaultStashRatio,
+		}
+		if err := s.allocationService.EnableMode(ctx, req.UserID, defaultRatios); err != nil {
+			s.logger.Error("Failed to enable default 70/30 allocation mode", zap.Error(err), zap.String("userId", req.UserID.String()))
+		}
+	}
+
+	// Get final IDs from user (may have been set in this request or previously)
+
+	bridgeCustomerID := ""
+	if user.BridgeCustomerID != nil {
+		bridgeCustomerID = *user.BridgeCustomerID
 	}
 
 	// Log audit event
-	if err := s.auditService.LogOnboardingEvent(ctx, req.UserID, "accounts_created", "user", nil, map[string]any{
-		"bridge_customer_id": bridgeResp.AccountID,
-		"alpaca_account_id":  alpacaResp.ID,
+	if err := s.auditService.LogOnboardingEvent(ctx, req.UserID, "signup_completed", "user", nil, map[string]any{
+		"bridge_customer_id": bridgeCustomerID,
+		"password_set":       true,
+		"wallets_queued":     true,
 	}); err != nil {
 		s.logger.Warn("Failed to log audit event", zap.Error(err))
 	}
 
 	s.logger.Info("Onboarding completed successfully",
 		zap.String("user_id", req.UserID.String()),
-		zap.String("bridge_customer_id", bridgeResp.AccountID),
-		zap.String("alpaca_account_id", alpacaResp.ID))
+		zap.String("bridge_customer_id", bridgeCustomerID),
+		zap.Bool("wallets_queued", true))
 
 	return &entities.OnboardingCompleteResponse{
-		UserID:          req.UserID,
-		DueAccountID:    bridgeResp.AccountID, // Bridge customer ID
-		AlpacaAccountID: alpacaResp.ID,
-		Message:         "Accounts created successfully. Please create your passcode to continue.",
-		NextSteps:       []string{"create_passcode"},
+		UserID:           req.UserID,
+		BridgeCustomerID: bridgeCustomerID,
+		Message:          "Signup completed successfully. Complete KYC to unlock all features.",
+		NextSteps: []string{
+			"Complete KYC verification to unlock fiat deposits, cards, and investing",
+			"You can deposit crypto immediately",
+		},
 	}, nil
 }
 
@@ -485,79 +522,6 @@ func (s *Service) CompletePasscodeCreation(ctx context.Context, userID uuid.UUID
 	}
 
 	s.logger.Info("Passcode creation completed and wallet provisioning initiated", zap.String("userId", userID.String()))
-	return nil
-}
-
-// SubmitKYC handles KYC document submission
-func (s *Service) SubmitKYC(ctx context.Context, userID uuid.UUID, req *entities.KYCSubmitRequest) error {
-	s.logger.Info("Submitting KYC documents", zap.String("userId", userID.String()))
-
-	user, err := s.userRepo.GetByID(ctx, userID)
-	if err != nil {
-		return fmt.Errorf("failed to get user: %w", err)
-	}
-
-	if !user.CanStartKYC() {
-		return fmt.Errorf("user cannot start KYC process")
-	}
-
-	// Submit to KYC provider
-	providerRef, err := s.kycProvider.SubmitKYC(ctx, userID, req.Documents, req.PersonalInfo)
-	if err != nil {
-		return fmt.Errorf("failed to submit KYC to provider: %w", err)
-	}
-
-	// Create KYC submission record
-	submission := &entities.KYCSubmission{
-		ID:             uuid.New(),
-		UserID:         userID,
-		Provider:       s.kycProviderName,
-		ProviderRef:    providerRef,
-		SubmissionType: req.DocumentType,
-		Status:         entities.KYCStatusProcessing,
-		VerificationData: map[string]any{
-			"document_type": req.DocumentType,
-			"documents":     req.Documents,
-			"personal_info": req.PersonalInfo,
-			"metadata":      req.Metadata,
-		},
-		SubmittedAt: time.Now(),
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
-	}
-
-	if err := s.kycSubmissionRepo.Create(ctx, submission); err != nil {
-		return fmt.Errorf("failed to create KYC submission record: %w", err)
-	}
-
-	// Update user KYC tracking fields
-	now := time.Now()
-	user.KYCStatus = string(entities.KYCStatusProcessing)
-	user.KYCProviderRef = &providerRef
-	user.KYCSubmittedAt = &now
-	user.UpdatedAt = now
-
-	if err := s.userRepo.Update(ctx, user); err != nil {
-		return fmt.Errorf("failed to update user KYC status: %w", err)
-	}
-
-	// Update onboarding flow
-	if err := s.markStepCompleted(ctx, userID, entities.StepKYCSubmission, map[string]any{
-		"provider_ref": providerRef,
-		"submitted_at": now,
-	}); err != nil {
-		s.logger.Warn("Failed to mark KYC submission step as completed", zap.Error(err))
-	}
-
-	// Log audit event
-	if err := s.auditService.LogOnboardingEvent(ctx, userID, "kyc_submitted", "kyc_submission", nil, submission); err != nil {
-		s.logger.Warn("Failed to log audit event", zap.Error(err))
-	}
-
-	s.logger.Info("KYC submitted successfully",
-		zap.String("userId", userID.String()),
-		zap.String("providerRef", providerRef))
-
 	return nil
 }
 
@@ -945,11 +909,11 @@ func (s *Service) markStepCompleted(ctx context.Context, userID uuid.UUID, step 
 			zap.Error(err),
 			zap.String("userId", userID.String()),
 			zap.String("step", string(step)))
-		
+
 		if createErr := s.createInitialOnboardingSteps(ctx, userID); createErr != nil {
 			return fmt.Errorf("failed to create initial onboarding steps: %w", createErr)
 		}
-		
+
 		// Retry getting the flow
 		flow, err = s.onboardingFlowRepo.GetByUserAndStep(ctx, userID, step)
 		if err != nil {
@@ -1095,4 +1059,56 @@ func getStringValue(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+
+// countryAlpha2ToAlpha3 converts ISO 3166-1 alpha-2 to alpha-3 country codes
+func countryAlpha2ToAlpha3(alpha2 string) string {
+	codes := map[string]string{
+		"AF": "AFG", "AL": "ALB", "DZ": "DZA", "AS": "ASM", "AD": "AND",
+		"AO": "AGO", "AI": "AIA", "AQ": "ATA", "AG": "ATG", "AR": "ARG",
+		"AM": "ARM", "AW": "ABW", "AU": "AUS", "AT": "AUT", "AZ": "AZE",
+		"BS": "BHS", "BH": "BHR", "BD": "BGD", "BB": "BRB", "BY": "BLR",
+		"BE": "BEL", "BZ": "BLZ", "BJ": "BEN", "BM": "BMU", "BT": "BTN",
+		"BO": "BOL", "BA": "BIH", "BW": "BWA", "BR": "BRA", "BN": "BRN",
+		"BG": "BGR", "BF": "BFA", "BI": "BDI", "KH": "KHM", "CM": "CMR",
+		"CA": "CAN", "CV": "CPV", "KY": "CYM", "CF": "CAF", "TD": "TCD",
+		"CL": "CHL", "CN": "CHN", "CO": "COL", "KM": "COM", "CG": "COG",
+		"CD": "COD", "CR": "CRI", "CI": "CIV", "HR": "HRV", "CU": "CUB",
+		"CY": "CYP", "CZ": "CZE", "DK": "DNK", "DJ": "DJI", "DM": "DMA",
+		"DO": "DOM", "EC": "ECU", "EG": "EGY", "SV": "SLV", "GQ": "GNQ",
+		"ER": "ERI", "EE": "EST", "ET": "ETH", "FJ": "FJI", "FI": "FIN",
+		"FR": "FRA", "GA": "GAB", "GM": "GMB", "GE": "GEO", "DE": "DEU",
+		"GH": "GHA", "GR": "GRC", "GD": "GRD", "GT": "GTM", "GN": "GIN",
+		"GW": "GNB", "GY": "GUY", "HT": "HTI", "HN": "HND", "HK": "HKG",
+		"HU": "HUN", "IS": "ISL", "IN": "IND", "ID": "IDN", "IR": "IRN",
+		"IQ": "IRQ", "IE": "IRL", "IL": "ISR", "IT": "ITA", "JM": "JAM",
+		"JP": "JPN", "JO": "JOR", "KZ": "KAZ", "KE": "KEN", "KI": "KIR",
+		"KP": "PRK", "KR": "KOR", "KW": "KWT", "KG": "KGZ", "LA": "LAO",
+		"LV": "LVA", "LB": "LBN", "LS": "LSO", "LR": "LBR", "LY": "LBY",
+		"LI": "LIE", "LT": "LTU", "LU": "LUX", "MO": "MAC", "MK": "MKD",
+		"MG": "MDG", "MW": "MWI", "MY": "MYS", "MV": "MDV", "ML": "MLI",
+		"MT": "MLT", "MH": "MHL", "MR": "MRT", "MU": "MUS", "MX": "MEX",
+		"FM": "FSM", "MD": "MDA", "MC": "MCO", "MN": "MNG", "ME": "MNE",
+		"MA": "MAR", "MZ": "MOZ", "MM": "MMR", "NA": "NAM", "NR": "NRU",
+		"NP": "NPL", "NL": "NLD", "NZ": "NZL", "NI": "NIC", "NE": "NER",
+		"NG": "NGA", "NO": "NOR", "OM": "OMN", "PK": "PAK", "PW": "PLW",
+		"PA": "PAN", "PG": "PNG", "PY": "PRY", "PE": "PER", "PH": "PHL",
+		"PL": "POL", "PT": "PRT", "PR": "PRI", "QA": "QAT", "RO": "ROU",
+		"RU": "RUS", "RW": "RWA", "KN": "KNA", "LC": "LCA", "VC": "VCT",
+		"WS": "WSM", "SM": "SMR", "ST": "STP", "SA": "SAU", "SN": "SEN",
+		"RS": "SRB", "SC": "SYC", "SL": "SLE", "SG": "SGP", "SK": "SVK",
+		"SI": "SVN", "SB": "SLB", "SO": "SOM", "ZA": "ZAF", "ES": "ESP",
+		"LK": "LKA", "SD": "SDN", "SR": "SUR", "SZ": "SWZ", "SE": "SWE",
+		"CH": "CHE", "SY": "SYR", "TW": "TWN", "TJ": "TJK", "TZ": "TZA",
+		"TH": "THA", "TL": "TLS", "TG": "TGO", "TO": "TON", "TT": "TTO",
+		"TN": "TUN", "TR": "TUR", "TM": "TKM", "TV": "TUV", "UG": "UGA",
+		"UA": "UKR", "AE": "ARE", "GB": "GBR", "US": "USA", "UY": "URY",
+		"UZ": "UZB", "VU": "VUT", "VE": "VEN", "VN": "VNM", "YE": "YEM",
+		"ZM": "ZMB", "ZW": "ZWE",
+	}
+	if alpha3, ok := codes[alpha2]; ok {
+		return alpha3
+	}
+	return alpha2 // Return as-is if not found (might already be alpha-3)
 }

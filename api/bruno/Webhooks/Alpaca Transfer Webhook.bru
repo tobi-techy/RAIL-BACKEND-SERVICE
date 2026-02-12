@@ -1,0 +1,17 @@
+meta {
+  name: Alpaca Transfer Webhook
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/webhooks/alpaca/transfer
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "event": "test"
+  }
+}

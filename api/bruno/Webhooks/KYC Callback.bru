@@ -1,0 +1,17 @@
+meta {
+  name: KYC Callback
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/kyc/callback/{{providerRef}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "status": "approved"
+  }
+}

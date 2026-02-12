@@ -2,6 +2,7 @@ package routes
 
 import (
 	"context"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -15,6 +16,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
+	"github.com/rail-service/rail_service/pkg/ratelimit"
 	"github.com/rail-service/rail_service/pkg/tracing"
 )
 
@@ -63,7 +65,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	router.Use(middleware.Logger(container.Logger))
 	router.Use(middleware.Recovery(container.Logger))
 	router.Use(middleware.CORS(container.Config.Server.AllowedOrigins))
-	router.Use(middleware.RateLimit(container.Config.Server.RateLimitPerMin))
+	router.Use(createRateLimitMiddleware(container))
 	router.Use(middleware.SecurityHeaders())
 	router.Use(middleware.APIVersionMiddleware(container.Config.Server.SupportedVersions))
 	router.Use(middleware.PaginationMiddleware())
@@ -101,16 +103,19 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	skipWebhookVerify := container.Config.Environment == "development" && container.Config.Payment.WebhookSecret == ""
 	walletFundingHandlers.SetWebhookSecret(container.Config.Payment.WebhookSecret, skipWebhookVerify)
 
+	// Wire allocation service for unified balance queries
+	if allocationSvc := container.GetAllocationService(); allocationSvc != nil {
+		walletFundingHandlers.SetAllocationBalanceProvider(allocationSvc)
+	}
+
 	authHandlers := handlers.NewAuthHandlers(
 		container.DB,
 		container.Config,
 		container.ZapLog,
 		*container.UserRepo,
 		container.GetVerificationService(),
-		*container.GetOnboardingJobService(),
 		container.GetOnboardingService(),
 		container.EmailService,
-		container.KYCProvider,
 		container.GetSessionService(),
 		container.GetTwoFAService(),
 		container.RedisClient,
@@ -155,54 +160,48 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	v1 := router.Group("/api/v1")
 	{
 		// Authentication routes (no auth required)
+<<<<<<< omotadetobiloba/sta-84-security-missing-csrf-protection-on-state-changing-auth
 		// CSRF protection via custom header requirement (X-Requested-With)
 		// This prevents CSRF attacks while allowing legitimate API clients
+=======
+>>>>>>> main
 		auth := v1.Group("/auth")
 		auth.Use(middleware.AuthCSRFProtection())
 		{
 			auth.POST("/register", authHandlers.Register)
+			auth.POST("/verify", middleware.AuthRateLimit(5), authHandlers.Verify)
 			auth.POST("/refresh", authHandlers.RefreshToken)
 			auth.POST("/logout", authHandlers.Logout)
-			auth.POST("/verify-email", authHandlers.VerifyEmail)
 			auth.POST("/resend-code", authHandlers.ResendCode)
 
-			// Sensitive auth endpoints with stricter rate limiting (5 requests/minute)
-			// Protects against brute force attacks on credentials and verification codes
+			// Sensitive auth endpoints with stricter rate limiting
 			authRateLimited := auth.Group("/")
 			authRateLimited.Use(middleware.AuthRateLimit(5))
+			if container.LoginAttemptTracker != nil {
+				authRateLimited.Use(middleware.LoginRateLimiting(container.LoginAttemptTracker, container.Logger))
+			}
+			if lp := container.GetLoginProtectionService(); lp != nil {
+				authRateLimited.Use(middleware.LoginProtection(lp, container.ZapLog))
+			}
 			{
 				authRateLimited.POST("/login", authHandlers.Login)
-				authRateLimited.POST("/verify-code", authHandlers.VerifyCode)
 				authRateLimited.POST("/forgot-password", authHandlers.ForgotPassword)
 				authRateLimited.POST("/reset-password", authHandlers.ResetPassword)
 			}
 
-			// Social auth routes (no auth required)
+			// Social auth routes
 			authRateLimited.POST("/social/url", socialAuthHandlers.GetSocialAuthURL)
 			authRateLimited.POST("/social/login", socialAuthHandlers.SocialLogin)
-
-			// WebAuthn login (no auth required)
 			authRateLimited.POST("/webauthn/login/begin", socialAuthHandlers.BeginWebAuthnLogin)
 		}
 
-		// Onboarding routes - OpenAPI spec compliant
-		// CSRF protection via custom header requirement for public start endpoint
+		// Onboarding routes
 		onboarding := v1.Group("/onboarding")
 		{
-			// Public endpoint with CSRF protection
-			onboardingPublic := onboarding.Group("/")
-			onboardingPublic.Use(middleware.AuthCSRFProtection())
-			{
-				onboardingPublic.POST("/start", authHandlers.StartOnboarding)
-			}
-
 			authenticatedOnboarding := onboarding.Group("/")
 			authenticatedOnboarding.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator))
 			{
-				authenticatedOnboarding.GET("/status", authHandlers.GetOnboardingStatus)
-				authenticatedOnboarding.GET("/progress", authHandlers.GetOnboardingProgress)
 				authenticatedOnboarding.POST("/complete", authHandlers.CompleteOnboarding)
-				authenticatedOnboarding.POST("/kyc/submit", authHandlers.SubmitKYC)
 			}
 		}
 
@@ -215,7 +214,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		// Protected routes (auth required)
 		protected := v1.Group("/")
 		protected.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator))
-		protected.Use(middleware.CSRFProtection(csrfStore))
+		protected.Use(middleware.CSRFProtection(csrfStore, container.Config.Environment == "development"))
 		{
 			// User management
 			users := protected.Group("/users")
@@ -232,7 +231,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			kycProtected := protected.Group("/kyc")
 			{
 				kycProtected.GET("/status", authHandlers.GetKYCStatus)
-				kycProtected.GET("/verification-url", authHandlers.GetKYCVerificationURL)
 				// Bridge KYC - optimized for sub-2-minute verification
 				kycProtected.GET("/bridge/link", bridgeKYCHandlers.GetBridgeKYCLink)
 				kycProtected.GET("/bridge/status", bridgeKYCHandlers.GetBridgeKYCStatus)
@@ -304,6 +302,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					container.GetAllocationService(),
 					container.GetInvestingService(),
 					*container.UserRepo,
+					container.CardRepo,
 					container.ZapLog,
 				)
 				mobile.GET("/home", mobileHandlers.GetMobileHome)
@@ -311,17 +310,50 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				mobile.POST("/sync", mobileHandlers.Sync)
 			}
 
-			// Funding routes (OpenAPI spec compliant)
+			// Funding routes (legacy - kept for backward compat, prefer /deposits)
 			funding := protected.Group("/funding")
+			funding.Use(middleware.TimeoutMiddleware(30 * time.Second))
 			{
 				funding.POST("/deposit/address", walletFundingHandlers.CreateDepositAddress)
-				funding.GET("/confirmations", walletFundingHandlers.GetFundingConfirmations)
 				funding.POST("/virtual-account", walletFundingHandlers.CreateVirtualAccount)
-				funding.GET("/transactions", walletFundingHandlers.GetTransactionHistory)
+
+				// Instant Funding - simplified API for trading
+				// POST /funding/instant - Request instant buying power
+				// GET /funding/instant/status - Check instant funding state
+				if instantFundingHandlers := container.GetInstantFundingHandlers(); instantFundingHandlers != nil {
+					funding.POST("/instant", instantFundingHandlers.RequestInstantFunding)
+					funding.GET("/instant/status", instantFundingHandlers.GetInstantFundingStatus)
+				}
 			}
 
-			// Balance routes (part of funding but separate for clarity)
-			protected.GET("/balances", walletFundingHandlers.GetBalances)
+			// Unified Balance route
+			protected.GET("/balances", walletFundingHandlers.GetUnifiedBalances)
+
+			// Unified Deposit routes
+			deposits := protected.Group("/deposits")
+			deposits.Use(middleware.TimeoutMiddleware(30 * time.Second))
+			{
+				deposits.POST("", walletFundingHandlers.CreateDeposit)
+				deposits.GET("", walletFundingHandlers.ListDeposits)
+				deposits.GET("/:id", walletFundingHandlers.GetDeposit)
+			}
+
+			// Unified Withdrawal routes with security middleware
+			withdrawals := protected.Group("/withdrawals")
+			withdrawals.Use(middleware.TimeoutMiddleware(30 * time.Second))
+			// Apply withdrawal security: rate limits (3/day) and daily max ($10k new, $100k established)
+			if withdrawalSecurityStore := container.GetWithdrawalSecurityStore(); withdrawalSecurityStore != nil {
+				withdrawals.Use(middleware.WithdrawalSecurityMiddleware(
+					withdrawalSecurityStore,
+					middleware.DefaultWithdrawalSecurityConfig(),
+				))
+			}
+			{
+				withdrawals.POST("", walletFundingHandlers.InitiateWithdrawal)
+				withdrawals.GET("", walletFundingHandlers.GetUserWithdrawals)
+				withdrawals.GET("/:withdrawalId", walletFundingHandlers.GetWithdrawal)
+				withdrawals.DELETE("/:withdrawalId", walletFundingHandlers.CancelWithdrawalRequest)
+			}
 
 			// Account routes - Station (home screen) endpoint
 			account := protected.Group("/account")
@@ -460,7 +492,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						container.Logger,
 					)
 					portfolio.GET("/weekly-stats", portfolioActivityHandlers.GetWeeklyStats)
-					portfolio.GET("/allocations", portfolioActivityHandlers.GetAllocations)
 					portfolio.GET("/top-movers", portfolioActivityHandlers.GetTopMovers)
 					portfolio.GET("/performance", portfolioActivityHandlers.GetPerformance)
 				}
@@ -515,13 +546,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				assets.GET("/:symbol_or_id", integrationHandlers.GetAsset)
 			}
 
-			// Allocation routes - 70/30 Smart Allocation Mode
-			allocation := protected.Group("/user/:id/allocation")
+			// Allocation routes - 70/30 Smart Allocation Mode (ON/OFF)
+			allocation := protected.Group("/allocation")
 			{
 				allocation.POST("/enable", allocationHandlers.EnableAllocationMode)
-				allocation.POST("/pause", allocationHandlers.PauseAllocationMode)
-				allocation.POST("/resume", allocationHandlers.ResumeAllocationMode)
-				allocation.GET("/status", allocationHandlers.GetAllocationStatus)
+				allocation.POST("/disable", allocationHandlers.DisableAllocationMode)
 				allocation.GET("/balances", allocationHandlers.GetAllocationBalances)
 			}
 		}
@@ -533,7 +562,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		admin := v1.Group("/admin")
 		admin.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator))
 		admin.Use(middleware.AdminAuth(container.DB, container.Logger))
-		admin.Use(middleware.CSRFProtection(csrfStore))
+		admin.Use(middleware.CSRFProtection(csrfStore, container.Config.Environment == "development"))
 		{
 			// Wallet admin routes
 			admin.POST("/wallet/create", walletFundingHandlers.CreateWalletsForUser)
@@ -566,10 +595,31 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		}
 
 		// Webhooks (external systems) - OpenAPI spec compliant
+		// Apply webhook security middleware (rate limiting, IP whitelisting, replay protection)
+		webhookConfig := middleware.DefaultWebhookSecurityConfig()
+		webhookConfig.SkipVerification = container.Config.Environment == "development"
+		webhookConfig.Secrets = map[string]string{
+			"bridge": container.Config.Bridge.WebhookSecret,
+			"alpaca": container.Config.Alpaca.WebhookSecret,
+		}
+
 		webhooks := v1.Group("/webhooks")
+		if redisNative := container.RedisClient.Client(); redisNative != nil {
+			webhooks.Use(middleware.WebhookSecurityWithRedisV8(
+				redisNative,
+				webhookConfig,
+				container.ZapLog,
+			))
+		}
 		{
 			webhooks.POST("/chain-deposit", walletFundingHandlers.ChainDepositWebhook)
 			webhooks.POST("/brokerage-fill", walletFundingHandlers.BrokerageFillWebhook)
+
+			// Unified funding webhook - routes based on source header/payload
+			// POST /webhooks/funding - handles Bridge, Circle, and Alpaca webhooks
+			if unifiedWebhookHandler := container.GetUnifiedFundingWebhookHandler(); unifiedWebhookHandler != nil {
+				webhooks.POST("/funding", unifiedWebhookHandler.HandleFundingWebhook)
+			}
 
 			// Bridge webhooks for fiat deposits and transfers
 			if bridgeWebhookHandler := container.GetBridgeWebhookHandler(); bridgeWebhookHandler != nil {
@@ -632,4 +682,17 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	// ZeroG and dedicated AI-CFO HTTP routes have been removed.
 
 	return router
+}
+
+func createDistributedRateLimiter(container *di.Container) *ratelimit.DistributedRateLimiter {
+	rateLimitConfig := container.GetRateLimitConfig()
+
+	limiter := container.GetTieredRateLimiter()
+
+	return ratelimit.NewDistributedRateLimiter(limiter, *rateLimitConfig, container.Logger.Zap())
+}
+
+func createRateLimitMiddleware(container *di.Container) gin.HandlerFunc {
+	distributedRL := createDistributedRateLimiter(container)
+	return distributedRL.Middleware()
 }

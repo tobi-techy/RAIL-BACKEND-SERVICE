@@ -1,7 +1,7 @@
 meta {
-  name: Bridge Webhook (Fiat Deposits)
+  name: Bridge Webhook
   type: http
-  seq: 1
+  seq: 3
 }
 
 post {
@@ -10,25 +10,8 @@ post {
   auth: none
 }
 
-headers {
-  X-Bridge-Signature: <webhook_signature>
-}
-
 body:json {
   {
-    "event_type": "deposit.completed",
-    "data": {
-      "id": "dep_123",
-      "amount": "100.00",
-      "currency": "USD",
-      "status": "completed"
-    }
+    "event": "test"
   }
-}
-
-docs {
-  # Bridge Webhook
-  
-  Receives fiat deposit notifications from Bridge.
-  Triggers automatic 70/30 split on deposit completion.
 }

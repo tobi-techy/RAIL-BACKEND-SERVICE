@@ -1,0 +1,15 @@
+meta {
+  name: Revoke Device
+  type: http
+  seq: 14
+}
+
+delete {
+  url: {{baseUrl}}/api/{{apiVersion}}/security/devices/{{deviceId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

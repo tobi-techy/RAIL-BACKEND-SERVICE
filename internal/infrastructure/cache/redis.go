@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -35,11 +36,18 @@ type redisClient struct {
 
 // NewRedisClient creates a new Redis client
 func NewRedisClient(cfg *config.RedisConfig, logger *zap.Logger) (RedisClient, error) {
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
-		Password: cfg.Password, // no password set
-		DB:       cfg.DB,       // use default DB
-	})
+	opts := &redis.Options{
+		Addr: fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+		DB:   cfg.DB,
+	}
+	if cfg.Password != "" {
+		opts.Password = cfg.Password
+	}
+	if cfg.TLS {
+		opts.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+
+	rdb := redis.NewClient(opts)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

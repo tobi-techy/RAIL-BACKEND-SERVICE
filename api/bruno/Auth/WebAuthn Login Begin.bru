@@ -1,0 +1,17 @@
+meta {
+  name: WebAuthn Login Begin
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/auth/webauthn/login/begin
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "email": "omotadetobiloba@gmail.com"
+  }
+}

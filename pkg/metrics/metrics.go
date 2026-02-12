@@ -124,7 +124,7 @@ var (
 			Name: "stack_rate_limit_hits_total",
 			Help: "Total number of rate limit hits",
 		},
-		[]string{"endpoint", "ip"},
+		[]string{"tier", "endpoint"},
 	)
 
 	// Audit metrics
@@ -183,8 +183,8 @@ func RecordAuthenticationAttempt(result string) {
 }
 
 // RecordRateLimitHit records rate limit hit
-func RecordRateLimitHit(endpoint, ip string) {
-	RateLimitHitsTotal.WithLabelValues(endpoint, ip).Inc()
+func RecordRateLimitHit(tier, endpoint string) {
+	RateLimitHitsTotal.WithLabelValues(tier, endpoint).Inc()
 }
 
 // RecordAuditEvent records audit event

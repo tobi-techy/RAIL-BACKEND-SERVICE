@@ -1,0 +1,55 @@
+meta {
+  name: Complete Onboarding
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/onboarding/complete
+  body: json
+  auth: bearer
+}
+
+headers {
+  Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiYWY4OGExNTMtYzZmYS00ZmFlLThiNjctMTdjM2U3MzhkNGU5IiwiZW1haWwiOiJvbW90YWRldG9iaWxvYmFAZ21haWwuY29tIiwicm9sZSI6InVzZXIiLCJpc3MiOiJyYWlsX3NlcnZpY2UiLCJzdWIiOiJhZjg4YTE1My1jNmZhLTRmYWUtOGI2Ny0xN2MzZTczOGQ0ZTkiLCJleHAiOjE3NzAzMjY5ODEsIm5iZiI6MTc3MDMyNjA4MSwiaWF0IjoxNzcwMzI2MDgxfQ.aicM7Ca3sBhp2lsEyvFdNHzGmuxfLH8JjWF2cwCi9E0
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+      "email": "test1-final-feb6-v2@gmail.com",
+      "password": "SecurePass123!",
+      "firstName": "Test",
+      "lastName": "User",
+      "dateOfBirth": "1990-01-01T00:00:00Z",
+      "country": "US",
+      "address": {
+        "street": "123 Main St",
+        "city": "San Francisco",
+        "state": "CA",
+        "postalCode": "94105",
+        "country": "US"
+      },
+      "phone": "+15555550123",
+      "ssn": "524-32-7865",
+      "employmentStatus": "employed",
+      "yearlyIncome": 120000,
+      "userExperience": "beginner",
+      "investmentGoals": ["long_term_growth"]
+    }
+}
+
+script:post-response {
+  if (res.status === 200) {
+    const body = res.getBody();
+    if (body.user_id) {
+      bru.setEnvVar("userId", body.user_id);
+    }
+    if (body.alpaca_account_id) {
+      bru.setEnvVar("alpacaAccountId", body.alpaca_account_id);
+    }
+  }
+}

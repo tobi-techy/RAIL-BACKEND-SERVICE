@@ -1,0 +1,15 @@
+meta {
+  name: Get Passkeys
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/security/passkeys
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

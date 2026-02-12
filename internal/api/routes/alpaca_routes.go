@@ -9,6 +9,7 @@ import (
 )
 
 // RegisterAlpacaRoutes registers Alpaca investment and webhook routes
+// NOTE: Internal Alpaca funding endpoints removed - use /funding/instant instead
 func RegisterAlpacaRoutes(
 	router *gin.RouterGroup,
 	investmentHandlers *handlers.InvestmentHandlers,
@@ -25,10 +26,11 @@ func RegisterAlpacaRoutes(
 		investment.GET("/account", investmentHandlers.GetBrokerageAccount)
 		investment.POST("/account", investmentHandlers.CreateBrokerageAccount)
 
-		// Funding
+		// Funding - simplified (internal Alpaca details hidden)
+		// REMOVED: /funding/limits - exposes internal settlement details
+		// REMOVED: /funding/pending - exposes internal settlement details
+		// Use /funding/instant and /funding/instant/status instead
 		investment.POST("/fund", investmentHandlers.FundBrokerageAccount)
-		investment.GET("/funding/limits", investmentHandlers.GetFundingLimits)
-		investment.GET("/funding/pending", investmentHandlers.GetPendingFunding)
 		investment.GET("/buying-power", investmentHandlers.GetBuyingPower)
 
 		// Positions

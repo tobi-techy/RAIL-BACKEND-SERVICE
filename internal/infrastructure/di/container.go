@@ -10,6 +10,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/api/handlers"
+	fundinghandlers "github.com/rail-service/rail_service/internal/api/handlers/funding"
+	"github.com/rail-service/rail_service/internal/api/handlers/webhooks"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
@@ -156,7 +158,7 @@ func (a *WithdrawalBridgeAdapter) ProcessWithdrawal(ctx context.Context, req *en
 	transferReq := &bridge.CreateTransferRequest{
 		Amount: req.Amount.String(),
 		Source: bridge.TransferSource{
-			PaymentRail: bridge.PaymentRailEthereum, // Default source
+			PaymentRail: bridge.PaymentRailSolana, // Solana-only support
 			Currency:    bridge.CurrencyUSDC,
 		},
 		Destination: bridge.TransferDestination{
@@ -201,7 +203,7 @@ func mapChainToPaymentRail(chain string) bridge.PaymentRail {
 	case "BASE", "base":
 		return bridge.PaymentRailBase
 	default:
-		return bridge.PaymentRailEthereum
+		return bridge.PaymentRailSolana
 	}
 }
 
@@ -218,27 +220,77 @@ func (a *BridgeOnboardingAdapter) CreateCustomer(ctx context.Context, req *entit
 		Email:     req.Email,
 	}
 
-	customer, err := a.adapter.CreateCustomerWithWallet(ctx, &bridge.CreateCustomerWithWalletRequest{
-		FirstName: req.FirstName,
-		LastName:  req.LastName,
-		Email:     req.Email,
-		Chain:     bridge.PaymentRailEthereum, // Default chain
-	})
-	if err != nil {
-		// Fallback to just creating customer without wallet
-		cust, err := a.adapter.Client().CreateCustomer(ctx, bridgeReq)
-		if err != nil {
-			return nil, err
+	// Add residential address if provided
+	if req.Address != nil {
+		// Convert 2-letter country code to 3-letter (Bridge requires ISO 3166-1 alpha-3)
+		country := req.Country
+		if len(country) == 2 {
+			switch country {
+			case "US":
+				country = "USA"
+			case "GB":
+				country = "GBR"
+			case "CA":
+				country = "CAN"
+			// Add more as needed
+			}
 		}
-		return &entities.CreateAccountResponse{
-			AccountID: cust.ID,
-			Status:    string(cust.Status),
-		}, nil
+		
+		bridgeReq.ResidentialAddress = &bridge.Address{
+			StreetLine1: req.Address.Street,
+			City:        req.Address.City,
+			Subdivision: req.Address.State,
+			PostalCode:  req.Address.PostalCode,
+			Country:     country,
+		}
 	}
 
+	// Add birth date if provided
+	if req.DateOfBirth != nil {
+		bridgeReq.BirthDate = req.DateOfBirth.Format("2006-01-02")
+	}
+
+	// Add SSN if provided (required for production, optional for sandbox)
+	if req.SSN != "" {
+		bridgeReq.IdentifyingInformation = []bridge.IdentifyingInfo{
+			{
+				Type:           "ssn",
+				IssuingCountry: "usa",
+				Number:         req.SSN,
+			},
+		}
+	}
+	
+	// For sandbox: use dummy signed_agreement_id if not provided
+	// For production: this must be obtained from Bridge ToS API first
+	// Note: Sandbox may auto-approve without signed_agreement_id
+	if req.SignedAgreementID != "" {
+		bridgeReq.SignedAgreementID = req.SignedAgreementID
+	}
+
+	// Use direct customer creation (not CreateCustomerWithWallet) to ensure all fields are sent
+	cust, err := a.adapter.Client().CreateCustomer(ctx, bridgeReq)
+	if err != nil {
+		return nil, err
+	}
+	
 	return &entities.CreateAccountResponse{
-		AccountID: customer.Customer.ID,
-		Status:    string(customer.Customer.Status),
+		AccountID: cust.ID,
+		Status:    string(cust.Status),
+	}, nil
+}
+
+func (a *BridgeOnboardingAdapter) GetCustomerByEmail(ctx context.Context, email string) (*entities.CreateAccountResponse, error) {
+	cust, err := a.adapter.Client().GetCustomerByEmail(ctx, email)
+	if err != nil {
+		return nil, err
+	}
+	if cust == nil {
+		return nil, nil
+	}
+	return &entities.CreateAccountResponse{
+		AccountID: cust.ID,
+		Status:    string(cust.Status),
 	}, nil
 }
 
@@ -300,7 +352,6 @@ type Container struct {
 	AlpacaService *alpaca.Service
 	BridgeClient  *bridge.Client
 	BridgeAdapter *bridge.Adapter
-	KYCProvider   *adapters.KYCProvider
 	EmailService  *adapters.EmailService
 	SMSService    *adapters.SMSService
 	AuditService  *adapters.AuditService
@@ -419,6 +470,28 @@ type Container struct {
 	JWTService          *auth.JWTService
 	TieredRateLimiter   *ratelimit.TieredLimiter
 	LoginAttemptTracker *ratelimit.LoginAttemptTracker
+
+	// Device-Bound JWT (Priority 1)
+	DeviceSessionRepo      *repositories.DeviceSessionRepository
+	DeviceBindingAuditRepo *repositories.DeviceBindingAuditRepository
+	DeviceBoundJWTService  *auth.DeviceBoundJWTService
+
+	// Adaptive Rate Limiting (Priority 3)
+	RiskScoringEngine   *ratelimit.RiskScoringEngine
+	AdaptiveRateLimiter *ratelimit.AdaptiveRateLimiter
+
+	// Instant Funding Services
+	InstantFundingRepo     *repositories.InstantFundingRepository
+	UserAccountRepo        *repositories.UserAccountRepository
+	InstantFundingService  *funding.InstantFundingService
+	InstantFundingHandlers *fundinghandlers.InstantFundingHandlers
+
+	// Security Stores
+	WithdrawalSecurityStore *repositories.WithdrawalSecurityStore
+	DepositSecurityStore    *repositories.DepositSecurityStore
+
+	// Unified Webhook Handler
+	UnifiedFundingWebhookHandler *webhooks.UnifiedFundingWebhookHandler
 }
 
 // NewContainer creates a new dependency injection container
@@ -455,12 +528,14 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 
 	// Initialize Alpaca service
 	alpacaConfig := alpaca.Config{
-		ClientID:    cfg.Alpaca.ClientID,
-		SecretKey:   cfg.Alpaca.SecretKey,
-		BaseURL:     cfg.Alpaca.BaseURL,
-		DataBaseURL: cfg.Alpaca.DataBaseURL,
-		Environment: cfg.Alpaca.Environment,
-		Timeout:     time.Duration(cfg.Alpaca.Timeout) * time.Second,
+		ClientID:      cfg.Alpaca.ClientID,
+		SecretKey:     cfg.Alpaca.SecretKey,
+		BaseURL:       cfg.Alpaca.BaseURL,
+		DataBaseURL:   cfg.Alpaca.DataBaseURL,
+		DataAPIKey:    cfg.Alpaca.DataAPIKey,
+		DataAPISecret: cfg.Alpaca.DataAPISecret,
+		Environment:   cfg.Alpaca.Environment,
+		Timeout:       time.Duration(cfg.Alpaca.Timeout) * time.Second,
 	}
 	alpacaClient := alpaca.NewClient(alpacaConfig, zapLog)
 	alpacaService := alpaca.NewService(alpacaClient, zapLog)
@@ -476,29 +551,8 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	bridgeClient := bridge.NewClient(bridgeConfig, zapLog)
 	bridgeAdapter := bridge.NewAdapter(bridgeClient, zapLog)
 
-	// Initialize KYC provider with full configuration
-	kycProviderConfig := adapters.KYCProviderConfig{
-		Provider:    cfg.KYC.Provider,
-		APIKey:      cfg.KYC.APIKey,
-		APISecret:   cfg.KYC.APISecret,
-		BaseURL:     cfg.KYC.BaseURL,
-		Environment: cfg.KYC.Environment,
-		CallbackURL: cfg.KYC.CallbackURL,
-		UserAgent:   cfg.KYC.UserAgent,
-		LevelName:   cfg.KYC.LevelName,
-	}
-	var kycProvider *adapters.KYCProvider
-	var err error
-	if strings.TrimSpace(cfg.KYC.Provider) != "" {
-		kycProvider, err = adapters.NewKYCProvider(zapLog, kycProviderConfig)
-		if err != nil {
-			return nil, fmt.Errorf("failed to initialize KYC provider: %w", err)
-		}
-	} else {
-		zapLog.Warn("KYC provider not configured; KYC features disabled")
-	}
-
 	// Initialize email service with full configuration
+	var err error
 	emailServiceConfig := adapters.EmailServiceConfig{
 		Provider:     cfg.Email.Provider,
 		APIKey:       cfg.Email.APIKey,
@@ -582,7 +636,6 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		AlpacaService: alpacaService,
 		BridgeClient:  bridgeClient,
 		BridgeAdapter: bridgeAdapter,
-		KYCProvider:   kycProvider,
 		EmailService:  emailService,
 		SMSService:    smsService,
 		AuditService:  auditService,
@@ -656,7 +709,6 @@ func (c *Container) initializeDomainServices() error {
 		c.OnboardingFlowRepo,
 		c.KYCSubmissionRepo,
 		c.WalletService, // Domain service dependency
-		c.KYCProvider,
 		c.EmailService,
 		c.AuditService,
 		bridgeOnboardingAdapter,
@@ -664,7 +716,6 @@ func (c *Container) initializeDomainServices() error {
 		nil, // AllocationService - will be set after initialization
 		c.ZapLog,
 		append([]entities.WalletChain(nil), walletServiceConfig.SupportedChains...),
-		c.Config.KYC.Provider, // KYC provider name
 	)
 
 	// Inject onboarding service back into wallet service to complete circular dependency
@@ -678,7 +729,7 @@ func (c *Container) initializeDomainServices() error {
 	)
 
 	// Initialize security services
-	c.SessionService = session.NewService(c.DB, c.ZapLog)
+	c.SessionService = session.NewService(c.DB, c.RedisClient.Client(), c.ZapLog)
 	c.TwoFAService = twofa.NewService(c.DB, c.ZapLog, c.Config.Security.EncryptionKey)
 	c.APIKeyService = apikey.NewService(c.DB, c.ZapLog)
 
@@ -868,22 +919,60 @@ func (c *Container) initializeDomainServices() error {
 		)
 	}
 
-	// Initialize tiered rate limiter
+	// Initialize tiered rate limiter with configuration
+	endpointLimits := make(map[string]ratelimit.EndpointLimit)
+	for key, limit := range c.Config.RateLimit.EndpointLimits {
+		endpointLimits[key] = ratelimit.EndpointLimit{
+			Limit:  limit.Limit,
+			Window: time.Duration(limit.Window) * time.Second,
+		}
+	}
+
 	tieredConfig := ratelimit.TieredConfig{
-		GlobalLimit:  1000,
-		GlobalWindow: time.Minute,
-		IPLimit:      int64(c.Config.Server.RateLimitPerMin),
-		IPWindow:     time.Minute,
-		UserLimit:    200,
-		UserWindow:   time.Minute,
-		EndpointLimits: map[string]ratelimit.EndpointLimit{
-			"POST /api/v1/auth/login":       {Limit: 5, Window: 15 * time.Minute},
-			"POST /api/v1/auth/register":    {Limit: 3, Window: time.Hour},
-			"POST /api/v1/funding/withdraw": {Limit: 10, Window: time.Hour},
-		},
+		GlobalLimit:    c.Config.RateLimit.GlobalLimit,
+		GlobalWindow:   time.Duration(c.Config.RateLimit.GlobalWindow) * time.Second,
+		IPLimit:        c.Config.RateLimit.IPLimit,
+		IPWindow:       time.Duration(c.Config.RateLimit.IPWindow) * time.Second,
+		UserLimit:      c.Config.RateLimit.UserLimit,
+		UserWindow:     time.Duration(c.Config.RateLimit.UserWindow) * time.Second,
+		EndpointLimits: endpointLimits,
 	}
 	c.TieredRateLimiter = ratelimit.NewTieredLimiter(c.RedisClient.Client(), tieredConfig, c.ZapLog)
 	c.LoginAttemptTracker = ratelimit.NewLoginAttemptTracker(c.RedisClient.Client(), c.ZapLog)
+
+	// Initialize Device-Bound JWT (Priority 1)
+	if c.Config.Security.DeviceBinding.Enabled {
+		sqlxDB := sqlx.NewDb(c.DB, "postgres")
+		c.DeviceSessionRepo = repositories.NewDeviceSessionRepository(sqlxDB)
+		c.DeviceBindingAuditRepo = repositories.NewDeviceBindingAuditRepository(sqlxDB)
+		c.DeviceBoundJWTService = auth.NewDeviceBoundJWTService(
+			c.JWTService,
+			c.DeviceSessionRepo,
+			c.DeviceBindingAuditRepo,
+			auth.DeviceBindingConfig{
+				Enabled:               c.Config.Security.DeviceBinding.Enabled,
+				MaxConcurrentSessions: c.Config.Security.DeviceBinding.MaxConcurrentSessions,
+				SessionTTL:            time.Duration(c.Config.Security.DeviceBinding.SessionTTLHours) * time.Hour,
+				StrictValidation:      c.Config.Security.DeviceBinding.StrictValidation,
+			},
+			c.ZapLog,
+		)
+	}
+
+	// Initialize Adaptive Rate Limiter (Priority 3)
+	if c.Config.Security.AdaptiveRateLimit.Enabled {
+		c.RiskScoringEngine = ratelimit.NewRiskScoringEngine(
+			c.RedisClient.Client(),
+			ratelimit.DefaultRiskWeights(),
+			c.ZapLog,
+		)
+		c.AdaptiveRateLimiter = ratelimit.NewAdaptiveRateLimiter(
+			c.RedisClient.Client(),
+			c.RiskScoringEngine,
+			ratelimit.DefaultAdaptiveConfig(),
+			c.ZapLog,
+		)
+	}
 
 	// Wire limits and audit services to funding service
 	c.FundingService.SetLimitsService(c.LimitsService)
@@ -1097,6 +1186,11 @@ func (c *Container) GetTieredRateLimiter() *ratelimit.TieredLimiter {
 	return c.TieredRateLimiter
 }
 
+// GetRateLimitConfig returns the rate limit configuration
+func (c *Container) GetRateLimitConfig() *config.RateLimitConfig {
+	return &c.Config.RateLimit
+}
+
 // GetLoginAttemptTracker returns the login attempt tracker
 func (c *Container) GetLoginAttemptTracker() *ratelimit.LoginAttemptTracker {
 	return c.LoginAttemptTracker
@@ -1296,6 +1390,11 @@ func ptrOf[T any](v T) *T {
 }
 
 func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChain {
+	solanaOnly := map[entities.WalletChain]struct{}{
+		entities.WalletChainSolana:    {},
+		entities.WalletChainSOLDevnet: {},
+	}
+
 	if len(raw) == 0 {
 		logger.Warn("circle.supported_chains not configured; defaulting to SOL-DEVNET")
 		return []entities.WalletChain{
@@ -1315,6 +1414,10 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 			logger.Warn("Ignoring unsupported wallet chain from configuration", zap.String("chain", string(chain)))
 			continue
 		}
+		if _, allowed := solanaOnly[chain]; !allowed {
+			logger.Warn("Ignoring chain due to Solana-only support", zap.String("chain", string(chain)))
+			continue
+		}
 		if _, ok := seen[chain]; ok {
 			continue
 		}
@@ -1323,7 +1426,7 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 	}
 
 	if len(normalized) == 0 {
-		logger.Warn("circle.supported_chains contained no valid entries; defaulting to SOL-DEVNET")
+		logger.Warn("circle.supported_chains contained no valid Solana entries; defaulting to SOL-DEVNET")
 		return []entities.WalletChain{
 			entities.WalletChainSOLDevnet,
 		}
@@ -2028,7 +2131,14 @@ func (c *Container) GetAlpacaWebhookHandlers() *handlers.AlpacaWebhookHandlers {
 	if c.AlpacaEventProcessor == nil {
 		return nil
 	}
-	return handlers.NewAlpacaWebhookHandlers(c.AlpacaEventProcessor, c.Logger)
+	// Get webhook secret from config
+	webhookSecret := c.Config.Alpaca.WebhookSecret
+	if webhookSecret == "" {
+		c.ZapLog.Warn("Alpaca webhook secret not configured")
+	}
+	// Determine if webhook verification should be skipped (only in development)
+	skipWebhookVerification := c.Config.Environment == "development" && webhookSecret == ""
+	return handlers.NewAlpacaWebhookHandlers(c.AlpacaEventProcessor, c.Logger, webhookSecret, skipWebhookVerification)
 }
 
 // GetAnalyticsHandlers returns analytics handlers
@@ -2129,7 +2239,6 @@ func (c *Container) GetInvestmentStashHandlers() *handlers.InvestmentStashHandle
 	return handlers.NewInvestmentStashHandlers(
 		c.AllocationService,
 		c.InvestingService,
-		c.CopyTradingService,
 		c.ZapLog,
 	)
 }
@@ -2196,4 +2305,74 @@ func (c *Container) initializeBridgeServices() {
 	)
 
 	c.ZapLog.Info("Bridge webhook handler initialized")
+}
+
+
+// GetInstantFundingHandlers returns the instant funding handlers
+func (c *Container) GetInstantFundingHandlers() *fundinghandlers.InstantFundingHandlers {
+	return c.InstantFundingHandlers
+}
+
+// GetWithdrawalSecurityStore returns the withdrawal security store
+func (c *Container) GetWithdrawalSecurityStore() *repositories.WithdrawalSecurityStore {
+	return c.WithdrawalSecurityStore
+}
+
+// GetDepositSecurityStore returns the deposit security store
+func (c *Container) GetDepositSecurityStore() *repositories.DepositSecurityStore {
+	return c.DepositSecurityStore
+}
+
+// GetUnifiedFundingWebhookHandler returns the unified funding webhook handler
+func (c *Container) GetUnifiedFundingWebhookHandler() *webhooks.UnifiedFundingWebhookHandler {
+	return c.UnifiedFundingWebhookHandler
+}
+
+// initializeInstantFundingServices initializes instant funding services
+func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
+	// Initialize repositories
+	c.InstantFundingRepo = repositories.NewInstantFundingRepository(sqlxDB)
+	c.UserAccountRepo = repositories.NewUserAccountRepository(sqlxDB)
+	c.WithdrawalSecurityStore = repositories.NewWithdrawalSecurityStore(sqlxDB)
+	c.DepositSecurityStore = repositories.NewDepositSecurityStore(sqlxDB)
+
+	// Initialize virtual account repo for instant funding
+	virtualAccountRepo := repositories.NewVirtualAccountRepository(sqlxDB)
+
+	// Create Alpaca adapter for instant funding
+	alpacaAdapter := &InstantFundingAlpacaAdapterImpl{
+		service: c.AlpacaService,
+	}
+
+	// Initialize instant funding service
+	c.InstantFundingService = funding.NewInstantFundingService(
+		alpacaAdapter,
+		virtualAccountRepo,
+		c.InstantFundingRepo,
+		c.UserAccountRepo,
+		c.ZapLog,
+		c.Config.Alpaca.FirmAccountNo,
+	)
+
+	// Initialize handlers
+	c.InstantFundingHandlers = fundinghandlers.NewInstantFundingHandlers(
+		c.InstantFundingService,
+		c.ZapLog,
+	)
+
+	// Wire deposit security store to validation service
+	if c.FundingService != nil && c.FundingService.GetValidationService() != nil {
+		c.FundingService.GetValidationService().SetDepositSecurityStore(c.DepositSecurityStore)
+	}
+
+	c.ZapLog.Info("Instant funding services initialized")
+}
+
+// InstantFundingAlpacaAdapterImpl adapts alpaca.Service to funding.InstantFundingAlpacaAdapter
+type InstantFundingAlpacaAdapterImpl struct {
+	service *alpaca.Service
+}
+
+func (a *InstantFundingAlpacaAdapterImpl) CreateJournal(ctx context.Context, req *entities.AlpacaJournalRequest) (*entities.AlpacaJournalResponse, error) {
+	return a.service.CreateJournal(ctx, req)
 }

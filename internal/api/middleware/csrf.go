@@ -68,12 +68,23 @@ func (s *CSRFStore) Validate(token string) bool {
 	return true
 }
 
+<<<<<<< omotadetobiloba/sta-84-security-missing-csrf-protection-on-state-changing-auth
 // CSRFProtection validates CSRF tokens for state-changing requests.
 // For browser clients: requires X-CSRF-Token header
 // For API clients: requires X-Requested-With header (custom header requirement)
 func CSRFProtection(store *CSRFStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Skip CSRF for safe methods
+=======
+func CSRFProtection(store *CSRFStore, isDev bool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Skip CSRF in development for API testing
+		if isDev {
+			c.Next()
+			return
+		}
+
+>>>>>>> main
 		if c.Request.Method == "GET" || c.Request.Method == "HEAD" || c.Request.Method == "OPTIONS" {
 			c.Next()
 			return
@@ -89,9 +100,6 @@ func CSRFProtection(store *CSRFStore) gin.HandlerFunc {
 
 		// For browser clients, validate CSRF token
 		token := c.GetHeader("X-CSRF-Token")
-		if token == "" {
-			token = c.PostForm("csrf_token")
-		}
 
 		if token == "" || !store.Validate(token) {
 			c.JSON(http.StatusForbidden, gin.H{

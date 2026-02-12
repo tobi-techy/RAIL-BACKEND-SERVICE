@@ -71,7 +71,7 @@ func (b *SecurityServicesBuilder) Build(userRepo *repositories.UserRepository) (
 	services := &SecurityServices{}
 
 	// Core authentication services
-	services.SessionService = session.NewService(b.db, b.logger)
+	services.SessionService = session.NewService(b.db, b.redisClient.Client(), b.logger)
 	services.TwoFAService = twofa.NewService(b.db, b.logger, b.cfg.Security.EncryptionKey)
 	services.APIKeyService = apikey.NewService(b.db, b.logger)
 
@@ -248,5 +248,60 @@ func (b *RepositoryBuilder) Build() *Repositories {
 		LedgerRepo:                repositories.NewLedgerRepository(b.sqlxDB),
 		ReconciliationRepo:        repositories.NewPostgresReconciliationRepository(b.db),
 		OnboardingJobRepo:         repositories.NewOnboardingJobRepository(b.db, b.logger),
+	}
+}
+
+
+// InvestingServicesBuilder builds investing-related services
+type InvestingServicesBuilder struct {
+	db     *sql.DB
+	sqlxDB *sqlx.DB
+	cfg    *config.Config
+	logger *zap.Logger
+	alpaca *alpaca.Client
+}
+
+// NewInvestingServicesBuilder creates a new investing services builder
+func NewInvestingServicesBuilder(db *sql.DB, cfg *config.Config, logger *zap.Logger, alpaca *alpaca.Client) *InvestingServicesBuilder {
+	return &InvestingServicesBuilder{
+		db:     db,
+		sqlxDB: sqlx.NewDb(db, "postgres"),
+		cfg:    cfg,
+		logger: logger,
+		alpaca: alpaca,
+	}
+}
+
+// InvestingRepositories holds investing-related repositories
+type InvestingRepositories struct {
+	AlpacaAccountRepo        *repositories.AlpacaAccountRepository
+	InvestmentOrderRepo      *repositories.InvestmentOrderRepository
+	InvestmentPositionRepo   *repositories.InvestmentPositionRepository
+	AlpacaEventRepo          *repositories.AlpacaEventRepository
+	AlpacaInstantFundingRepo *repositories.AlpacaInstantFundingRepository
+	PortfolioSnapshotRepo    *repositories.PortfolioSnapshotRepository
+	ScheduledInvestmentRepo  *repositories.ScheduledInvestmentRepository
+	RebalancingConfigRepo    *repositories.RebalancingConfigRepository
+	MarketAlertRepo          *repositories.MarketAlertRepository
+	BasketRepo               *repositories.BasketRepository
+	CopyTradingRepo          *repositories.CopyTradingRepository
+	RoundupRepo              *repositories.RoundupRepository
+}
+
+// BuildRepositories builds all investing-related repositories
+func (b *InvestingServicesBuilder) BuildRepositories() *InvestingRepositories {
+	return &InvestingRepositories{
+		AlpacaAccountRepo:        repositories.NewAlpacaAccountRepository(b.sqlxDB),
+		InvestmentOrderRepo:      repositories.NewInvestmentOrderRepository(b.sqlxDB),
+		InvestmentPositionRepo:   repositories.NewInvestmentPositionRepository(b.sqlxDB),
+		AlpacaEventRepo:          repositories.NewAlpacaEventRepository(b.sqlxDB),
+		AlpacaInstantFundingRepo: repositories.NewAlpacaInstantFundingRepository(b.sqlxDB),
+		PortfolioSnapshotRepo:    repositories.NewPortfolioSnapshotRepository(b.sqlxDB),
+		ScheduledInvestmentRepo:  repositories.NewScheduledInvestmentRepository(b.sqlxDB),
+		RebalancingConfigRepo:    repositories.NewRebalancingConfigRepository(b.sqlxDB),
+		MarketAlertRepo:          repositories.NewMarketAlertRepository(b.sqlxDB),
+		BasketRepo:               repositories.NewBasketRepository(b.db, b.logger),
+		CopyTradingRepo:          repositories.NewCopyTradingRepository(b.sqlxDB),
+		RoundupRepo:              repositories.NewRoundupRepository(b.sqlxDB),
 	}
 }

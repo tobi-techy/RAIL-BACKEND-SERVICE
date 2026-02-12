@@ -1,0 +1,22 @@
+meta {
+  name: Create Draft
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/copy/drafts
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "conductorId": "{{conductorId}}",
+    "allocation": "100.00"
+  }
+}

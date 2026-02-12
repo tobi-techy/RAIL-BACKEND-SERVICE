@@ -82,11 +82,6 @@ const (
 	CodeAlpacaRateLimit    = "ERR_6102"
 	CodeAlpacaInvalidAccount = "ERR_6103"
 
-	// Due errors (6200-6299)
-	CodeDueAPIError        = "ERR_6200"
-	CodeDueTimeout         = "ERR_6201"
-	CodeDueAccountError    = "ERR_6202"
-
 	// Database errors (7000-7099)
 	CodeDatabaseError      = "ERR_7000"
 	CodeQueryFailed        = "ERR_7001"
@@ -179,10 +174,6 @@ var ErrorCodeMap = map[string]string{
 	CodeAlpacaTimeout:      "Alpaca API timeout",
 	CodeAlpacaRateLimit:    "Alpaca API rate limit exceeded",
 	CodeAlpacaInvalidAccount: "Invalid Alpaca account",
-
-	CodeDueAPIError:        "Due API error",
-	CodeDueTimeout:         "Due API timeout",
-	CodeDueAccountError:    "Due account error",
 
 	// Database
 	CodeConnectionFailed:   "Connection failed",

@@ -1,11 +1,11 @@
 meta {
-  name: Get Allocation Balances
+  name: Get Balances
   type: http
   seq: 3
 }
 
 get {
-  url: {{baseUrl}}/api/{{apiVersion}}/user/{{userId}}/allocation/balances
+  url: {{baseUrl}}/api/{{apiVersion}}/allocation/balances
   body: none
   auth: bearer
 }
@@ -17,9 +17,10 @@ auth:bearer {
 docs {
   # Get Allocation Balances
   
-  Returns detailed allocation balances:
-  - Spending balance (70% allocation)
-  - Stash/Invest balance (30% allocation)
-  - Total balance
-  - Spending used in current period
+  Get current spending and stash balances with allocation mode status.
+  
+  ## Response
+  - spending: Available for card/withdrawals (70%)
+  - stash: Auto-invested amount (30%)
+  - mode: Current allocation settings
 }

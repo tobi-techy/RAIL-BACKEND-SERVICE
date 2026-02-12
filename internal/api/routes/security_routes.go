@@ -53,7 +53,7 @@ func SetupSecurityRoutesEnhanced(
 	loginProtectionService *security.LoginProtectionService,
 ) {
 	// Initialize services
-	sessionService := session.NewService(db, zapLog)
+	sessionService := session.NewService(db, nil, zapLog)
 	twofaService := twofa.NewService(db, zapLog, cfg.Security.EncryptionKey)
 	apikeyService := apikey.NewService(db, zapLog)
 

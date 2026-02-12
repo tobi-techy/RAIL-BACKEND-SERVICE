@@ -1,0 +1,23 @@
+meta {
+  name: Link Social Account
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/security/social-accounts/link
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "provider": "google",
+    "idToken": "id-token",
+    "redirectUri": "https://example.com/callback"
+  }
+}

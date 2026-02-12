@@ -1,0 +1,38 @@
+meta {
+  name: Initiate Withdrawal
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/withdrawals
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "amount": "100.00",
+    "destination_chain": "ethereum",
+    "destination_address": "0x..."
+  }
+}
+
+docs {
+  # Initiate Withdrawal
+  
+  Start a withdrawal to external wallet.
+  
+  ## Security Limits
+  - Rate limit: 3 per day
+  - Daily max (new accounts <30 days): $10,000
+  - Daily max (established accounts): $100,000
+  
+  ## Validation
+  - Checks 70% spending allocation limit
+  - Validates Alpaca buying power
+}

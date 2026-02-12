@@ -1,0 +1,15 @@
+meta {
+  name: List Orders
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/investment/orders
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

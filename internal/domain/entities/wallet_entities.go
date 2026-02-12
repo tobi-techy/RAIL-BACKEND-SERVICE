@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 )
 
 // WalletChain represents supported blockchain networks for Circle integration
@@ -800,4 +801,29 @@ func (r *CircleWalletBalancesResponse) GetNativeBalance() string {
 		}
 	}
 	return "0"
+}
+
+// CCTPBurnRequest represents a request to initiate a CCTP burn transaction
+type CCTPBurnRequest struct {
+	WalletID       string          `json:"walletId"`
+	Amount         decimal.Decimal `json:"amount"`
+	DestDomain     uint32          `json:"destinationDomain"`
+	MintRecipient  string          `json:"mintRecipient"`
+	IdempotencyKey string          `json:"idempotencyKey,omitempty"`
+}
+
+// CCTPBurnResponse represents the response from a CCTP burn initiation
+type CCTPBurnResponse struct {
+	TransactionID string `json:"id"`
+	TxHash        string `json:"txHash"`
+	Status        string `json:"status"`
+}
+
+// CCTPTransactionStatus represents the status of a CCTP transaction
+type CCTPTransactionStatus struct {
+	ID          string     `json:"id"`
+	TxHash      string     `json:"txHash"`
+	Status      string     `json:"status"` // pending, confirmed, failed
+	Chain       string     `json:"blockchain"`
+	ConfirmedAt *time.Time `json:"firstConfirmDate,omitempty"`
 }

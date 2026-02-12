@@ -40,32 +40,32 @@ spec:
         - name: DATABASE_URL
           valueFrom:
             secretKeyRef:
-              name: stack-secrets
+              name: rail-secrets
               key: database-url
         - name: JWT_SECRET
           valueFrom:
             secretKeyRef:
-              name: stack-secrets
+              name: rail-secrets
               key: jwt-secret
         - name: ENCRYPTION_KEY
           valueFrom:
             secretKeyRef:
-              name: stack-secrets
+              name: rail-secrets
               key: encryption-key
         - name: CIRCLE_API_KEY
           valueFrom:
             secretKeyRef:
-              name: stack-secrets
+              name: rail-secrets
               key: circle-api-key
         - name: ZEROG_STORAGE_ACCESS_KEY
           valueFrom:
             secretKeyRef:
-              name: stack-secrets
+              name: rail-secrets
               key: zerog-storage-key
         - name: ZEROG_COMPUTE_API_KEY
           valueFrom:
             secretKeyRef:
-              name: stack-secrets
+              name: rail-secrets
               key: zerog-compute-key
         resources:
           requests:

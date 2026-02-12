@@ -39,16 +39,6 @@ func (m *MockAllocationRepository) UpdateMode(ctx context.Context, mode *entitie
 	return args.Error(0)
 }
 
-func (m *MockAllocationRepository) PauseMode(ctx context.Context, userID uuid.UUID) error {
-	args := m.Called(ctx, userID)
-	return args.Error(0)
-}
-
-func (m *MockAllocationRepository) ResumeMode(ctx context.Context, userID uuid.UUID) error {
-	args := m.Called(ctx, userID)
-	return args.Error(0)
-}
-
 func (m *MockAllocationRepository) CreateEvent(ctx context.Context, event *entities.AllocationEvent) error {
 	args := m.Called(ctx, event)
 	return args.Error(0)
@@ -68,19 +58,6 @@ func (m *MockAllocationRepository) GetEventsByDateRange(ctx context.Context, use
 		return nil, args.Error(1)
 	}
 	return args.Get(0).([]*entities.AllocationEvent), args.Error(1)
-}
-
-func (m *MockAllocationRepository) CreateWeeklySummary(ctx context.Context, summary *entities.WeeklyAllocationSummary) error {
-	args := m.Called(ctx, summary)
-	return args.Error(0)
-}
-
-func (m *MockAllocationRepository) GetLatestWeeklySummary(ctx context.Context, userID uuid.UUID) (*entities.WeeklyAllocationSummary, error) {
-	args := m.Called(ctx, userID)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(*entities.WeeklyAllocationSummary), args.Error(1)
 }
 
 func (m *MockAllocationRepository) CountDeclinesInDateRange(ctx context.Context, userID uuid.UUID, startDate, endDate time.Time) (int, error) {

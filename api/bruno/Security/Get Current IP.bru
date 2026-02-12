@@ -1,0 +1,15 @@
+meta {
+  name: Get Current IP
+  type: http
+  seq: 20
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/security/current-ip
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

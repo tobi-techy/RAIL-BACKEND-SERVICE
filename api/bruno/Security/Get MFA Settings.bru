@@ -1,0 +1,15 @@
+meta {
+  name: Get MFA Settings
+  type: http
+  seq: 22
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/security/mfa
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

@@ -1,0 +1,15 @@
+meta {
+  name: Enable 2FA
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/users/me/enable-2fa
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

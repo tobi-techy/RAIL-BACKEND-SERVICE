@@ -42,7 +42,7 @@ type APIKeyInfo struct {
 }
 
 const (
-	MaxRequestSize = 10 << 20 // 10MB
+	MaxRequestSize = 1 << 20 // 1MiB
 )
 
 // RequestID adds a unique request ID to each request

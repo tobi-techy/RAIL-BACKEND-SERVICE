@@ -1,7 +1,7 @@
 meta {
   name: Login
   type: http
-  seq: 2
+  seq: 3
 }
 
 post {
@@ -12,25 +12,24 @@ post {
 
 body:json {
   {
-    "email": "test@example.com",
-    "password": "SecurePass123!"
+    "email": "test-final-feb6-v2@gmail.com",
+    "password": "NewSecurePass123!"
   }
 }
 
 script:post-response {
   if (res.status === 200) {
     const body = res.getBody();
-    if (body.access_token) {
-      bru.setEnvVar("accessToken", body.access_token);
+    const accessToken = body.accessToken || body.access_token;
+    const refreshToken = body.refreshToken || body.refresh_token;
+    if (accessToken) {
+      bru.setEnvVar("accessToken", accessToken);
     }
-    if (body.refresh_token) {
-      bru.setEnvVar("refreshToken", body.refresh_token);
+    if (refreshToken) {
+      bru.setEnvVar("refreshToken", refreshToken);
     }
     if (body.user && body.user.id) {
       bru.setEnvVar("userId", body.user.id);
-    }
-    if (body.session_id) {
-      bru.setEnvVar("sessionId", body.session_id);
     }
     // Extract CSRF token from response headers
     const csrfToken = res.getHeader("X-CSRF-Token");

@@ -1,0 +1,25 @@
+meta {
+  name: Place Order
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/investment/orders
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "symbol": "AAPL",
+    "notional": "10.00",
+    "side": "buy",
+    "type": "market",
+    "time_in_force": "day"
+  }
+}

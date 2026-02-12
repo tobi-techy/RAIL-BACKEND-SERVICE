@@ -1,0 +1,21 @@
+meta {
+  name: List Deposits
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/deposits
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+docs {
+  # List Deposits
+  
+  Get all deposits for the authenticated user.
+}

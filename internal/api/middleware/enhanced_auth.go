@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/logger"
@@ -48,7 +49,7 @@ func EnhancedAuthentication(cfg *config.Config, blacklist *auth.TokenBlacklist, 
 		}
 
 		tokenString := tokenParts[1]
-		
+
 		// Validate token signature and claims
 		claims, err := auth.ValidateToken(tokenString, cfg.JWT.Secret)
 		if err != nil {
@@ -64,7 +65,7 @@ func EnhancedAuthentication(cfg *config.Config, blacklist *auth.TokenBlacklist, 
 		// Check token blacklist
 		if blacklist != nil {
 			tokenHash := hashToken(tokenString)
-			
+
 			// Check if specific token is blacklisted
 			isBlacklisted, err := blacklist.IsBlacklisted(c.Request.Context(), tokenHash)
 			if err != nil {
@@ -132,18 +133,34 @@ func LoginRateLimiting(tracker *ratelimit.LoginAttemptTracker, log *logger.Logge
 
 		// Get identifier from request body
 		var req struct {
-			Email string `json:"email"`
+			Email *string `json:"email"`
+			Phone *string `json:"phone"`
 		}
-		if err := c.ShouldBindJSON(&req); err != nil || req.Email == "" {
+		if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil {
+			c.Next()
+			return
+		}
+
+		identifier := ""
+		if req.Email != nil && strings.TrimSpace(*req.Email) != "" {
+			identifier = strings.TrimSpace(*req.Email)
+		} else if req.Phone != nil && strings.TrimSpace(*req.Phone) != "" {
+			identifier = strings.TrimSpace(*req.Phone)
+		}
+
+		if identifier == "" {
 			c.Next()
 			return
 		}
 
 		// Re-bind for downstream handlers
-		c.Set("login_email", req.Email)
+		c.Set("login_identifier", identifier)
+		if req.Email != nil && strings.TrimSpace(*req.Email) != "" {
+			c.Set("login_email", strings.TrimSpace(*req.Email))
+		}
 
 		// Check if login is allowed
-		result, err := tracker.CheckLoginAllowed(c.Request.Context(), req.Email)
+		result, err := tracker.CheckLoginAllowed(c.Request.Context(), identifier)
 		if err != nil {
 			log.Errorw("Failed to check login attempts", "error", err)
 			c.Next()
@@ -167,10 +184,10 @@ func LoginRateLimiting(tracker *ratelimit.LoginAttemptTracker, log *logger.Logge
 			captchaToken := c.GetHeader("X-Captcha-Token")
 			if captchaToken == "" {
 				c.JSON(http.StatusForbidden, gin.H{
-					"error":          "CAPTCHA_REQUIRED",
-					"message":        "CAPTCHA verification required",
+					"error":           "CAPTCHA_REQUIRED",
+					"message":         "CAPTCHA verification required",
 					"failed_attempts": result.FailedAttempts,
-					"request_id":     c.GetString("request_id"),
+					"request_id":      c.GetString("request_id"),
 				})
 				c.Abort()
 				return

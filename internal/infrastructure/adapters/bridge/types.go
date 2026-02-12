@@ -127,6 +127,11 @@ type CreateCustomerRequest struct {
 	IdentifyingInformation []IdentifyingInfo `json:"identifying_information,omitempty"`
 }
 
+// UpdateCustomerRequest represents a request to update a customer with KYC data
+type UpdateCustomerRequest struct {
+	IdentifyingInformation []IdentifyingInfo `json:"identifying_information,omitempty"`
+}
+
 // Capabilities represents customer capabilities
 type Capabilities struct {
 	PayinCrypto  CapabilityStatus `json:"payin_crypto"`
@@ -179,7 +184,7 @@ type Customer struct {
 
 // KYCLinkResponse represents a KYC link response
 type KYCLinkResponse struct {
-	KYCLink   string `json:"kyc_link"`
+	KYCLink   string `json:"url"`
 	ExpiresAt string `json:"expires_at,omitempty"`
 }
 

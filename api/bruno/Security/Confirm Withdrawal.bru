@@ -1,0 +1,21 @@
+meta {
+  name: Confirm Withdrawal
+  type: http
+  seq: 21
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/security/withdrawals/confirm
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "token": "withdrawal-confirmation-token"
+  }
+}

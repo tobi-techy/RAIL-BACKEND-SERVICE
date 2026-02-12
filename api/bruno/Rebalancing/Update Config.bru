@@ -1,0 +1,25 @@
+meta {
+  name: Update Config
+  type: http
+  seq: 4
+}
+
+patch {
+  url: {{baseUrl}}/api/{{apiVersion}}/rebalancing/configs/{{configId}}
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "allocations": {
+      "AAPL": "60.0",
+      "MSFT": "40.0"
+    },
+    "threshold_pct": "4.0"
+  }
+}

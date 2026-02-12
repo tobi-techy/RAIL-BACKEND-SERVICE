@@ -1,7 +1,7 @@
 meta {
-  name: Create Deposit Address (Crypto)
+  name: Create Deposit Address
   type: http
-  seq: 2
+  seq: 1
 }
 
 post {
@@ -18,18 +18,4 @@ body:json {
   {
     "chain": "ethereum"
   }
-}
-
-docs {
-  # Create Crypto Deposit Address
-  
-  Per PRD Epic 2: Multi-Chain USDC Deposits
-  
-  Supported chains:
-  - ethereum
-  - polygon
-  - bsc (Binance Smart Chain)
-  - solana
-  
-  USDC deposits trigger automatic 70/30 split.
 }

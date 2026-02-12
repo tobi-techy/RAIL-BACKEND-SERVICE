@@ -66,7 +66,7 @@ type WithdrawalRepository interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status entities.WithdrawalStatus) error
 	UpdateAlpacaJournal(ctx context.Context, id uuid.UUID, journalID string) error
-	UpdateDueTransfer(ctx context.Context, id uuid.UUID, transferID, recipientID string) error
+	UpdateBridgeTransfer(ctx context.Context, id uuid.UUID, transferID, recipientID string) error
 	UpdateTxHash(ctx context.Context, id uuid.UUID, txHash string) error
 	MarkCompleted(ctx context.Context, id uuid.UUID) error
 	MarkFailed(ctx context.Context, id uuid.UUID, errorMsg string) error
@@ -302,7 +302,7 @@ func (s *WithdrawalService) processWithdrawalAsync(ctx context.Context, withdraw
 	}
 
 	// Step 2: Process Due on-ramp (USD → USDC)
-	if err := s.processDueOnRamp(ctx, withdrawal); err != nil {
+	if err := s.processBridgeTransfer(ctx, withdrawal); err != nil {
 		s.logger.Error("Failed to process Due on-ramp", "error", err, "withdrawal_id", withdrawal.ID.String())
 		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
 		// Compensation: Credit back Alpaca account
@@ -360,9 +360,9 @@ func (s *WithdrawalService) debitAlpacaAccount(ctx context.Context, withdrawal *
 	return nil
 }
 
-// processDueOnRamp processes the Due on-ramp (USD → USDC)
-func (s *WithdrawalService) processDueOnRamp(ctx context.Context, withdrawal *entities.Withdrawal) error {
-	s.logger.Info("Processing Due on-ramp",
+// processBridgeTransfer processes the Due on-ramp (USD → USDC)
+func (s *WithdrawalService) processBridgeTransfer(ctx context.Context, withdrawal *entities.Withdrawal) error {
+	s.logger.Info("Processing Bridge transfer",
 		"withdrawal_id", withdrawal.ID.String(),
 		"amount", withdrawal.Amount.String())
 
@@ -385,7 +385,7 @@ func (s *WithdrawalService) processDueOnRamp(ctx context.Context, withdrawal *en
 	}
 
 	// Update withdrawal with transfer details
-	if err := s.withdrawalRepo.UpdateDueTransfer(ctx, withdrawal.ID, providerResp.TransferID, providerResp.RecipientID); err != nil {
+	if err := s.withdrawalRepo.UpdateBridgeTransfer(ctx, withdrawal.ID, providerResp.TransferID, providerResp.RecipientID); err != nil {
 		return fmt.Errorf("failed to update transfer: %w", err)
 	}
 
@@ -406,7 +406,7 @@ func (s *WithdrawalService) monitorTransferCompletion(ctx context.Context, withd
 		return fmt.Errorf("failed to get withdrawal: %w", err)
 	}
 
-	if w.DueTransferID == nil {
+	if w.BridgeTransferID == nil {
 		return fmt.Errorf("no transfer ID found")
 	}
 
@@ -420,7 +420,7 @@ func (s *WithdrawalService) monitorTransferCompletion(ctx context.Context, withd
 		var status *OnRampTransferResponse
 		var statusErr error
 		err := s.providerBreaker.Execute(ctx, func() error {
-			status, statusErr = s.withdrawalProvider.GetTransferStatus(ctx, *w.DueTransferID)
+			status, statusErr = s.withdrawalProvider.GetTransferStatus(ctx, *w.BridgeTransferID)
 			return statusErr
 		})
 		if err != nil {
@@ -453,9 +453,9 @@ func (s *WithdrawalService) monitorTransferCompletion(ctx context.Context, withd
 		case "failed":
 			// Send withdrawal failed notification
 			if s.notificationService != nil {
-				_ = s.notificationService.NotifyWithdrawalFailed(ctx, withdrawal.UserID, withdrawal.Amount.String(), "Due transfer failed")
+				_ = s.notificationService.NotifyWithdrawalFailed(ctx, withdrawal.UserID, withdrawal.Amount.String(), "Bridge transfer failed")
 			}
-			return fmt.Errorf("Due transfer failed")
+			return fmt.Errorf("Bridge transfer failed")
 
 		default:
 			// Continue polling
@@ -474,6 +474,25 @@ func (s *WithdrawalService) GetWithdrawal(ctx context.Context, withdrawalID uuid
 // GetUserWithdrawals retrieves withdrawals for a user
 func (s *WithdrawalService) GetUserWithdrawals(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error) {
 	return s.withdrawalRepo.GetByUserID(ctx, userID, limit, offset)
+}
+
+// CancelWithdrawal cancels a pending withdrawal
+func (s *WithdrawalService) CancelWithdrawal(ctx context.Context, withdrawalID uuid.UUID, userID uuid.UUID) error {
+	withdrawal, err := s.withdrawalRepo.GetByID(ctx, withdrawalID)
+	if err != nil {
+		return fmt.Errorf("not found: %w", err)
+	}
+
+	if withdrawal.UserID != userID {
+		return fmt.Errorf("not found")
+	}
+
+	// Only allow cancellation of initiated/pending withdrawals
+	if withdrawal.Status != entities.WithdrawalStatusInitiated && withdrawal.Status != entities.WithdrawalStatusPending {
+		return fmt.Errorf("cannot cancel withdrawal in %s status", withdrawal.Status)
+	}
+
+	return s.withdrawalRepo.MarkFailed(ctx, withdrawalID, "cancelled by user")
 }
 
 // compensateAlpacaDebit reverses the Alpaca journal entry on failure
@@ -549,7 +568,7 @@ func (s *WithdrawalService) ReconcileStuckWithdrawals(ctx context.Context, slaTh
 // reconcileSingleWithdrawal queries the provider for actual status and updates accordingly
 func (s *WithdrawalService) reconcileSingleWithdrawal(ctx context.Context, w *entities.Withdrawal, stuckRepo StuckWithdrawalRepository) error {
 	// Only query provider if we have a transfer ID
-	if w.DueTransferID == nil {
+	if w.BridgeTransferID == nil {
 		// No transfer ID means it's stuck before provider submission
 		// Mark as timeout so it can be retried or manually resolved
 		s.logger.Warn("Withdrawal stuck without transfer ID, marking timeout",
@@ -562,13 +581,13 @@ func (s *WithdrawalService) reconcileSingleWithdrawal(ctx context.Context, w *en
 	var status *OnRampTransferResponse
 	var statusErr error
 	err := s.providerBreaker.Execute(ctx, func() error {
-		status, statusErr = s.withdrawalProvider.GetTransferStatus(ctx, *w.DueTransferID)
+		status, statusErr = s.withdrawalProvider.GetTransferStatus(ctx, *w.BridgeTransferID)
 		return statusErr
 	})
 	if err != nil {
 		s.logger.Warn("Failed to get transfer status from provider",
 			"withdrawal_id", w.ID.String(),
-			"transfer_id", *w.DueTransferID,
+			"transfer_id", *w.BridgeTransferID,
 			"error", err.Error())
 		// Mark as timeout - provider unreachable
 		return stuckRepo.MarkTimeout(ctx, w.ID)

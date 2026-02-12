@@ -1,7 +1,7 @@
 meta {
   name: Refresh Token
   type: http
-  seq: 3
+  seq: 4
 }
 
 post {
@@ -12,18 +12,24 @@ post {
 
 body:json {
   {
-    "refresh_token": "{{refreshToken}}"
+    "refreshToken": "{{refreshToken}}"
   }
 }
-
 script:post-response {
   if (res.status === 200) {
     const body = res.getBody();
-    if (body.access_token) {
-      bru.setEnvVar("accessToken", body.access_token);
+    const accessToken = body.access_token || body.accessToken;
+    const refreshToken = body.refresh_token || body.refreshToken;
+    if (accessToken) {
+      bru.setEnvVar("accessToken", accessToken);
     }
-    if (body.refresh_token) {
-      bru.setEnvVar("refreshToken", body.refresh_token);
+    if (refreshToken) {
+      bru.setEnvVar("refreshToken", refreshToken);
+    }
+    const csrfToken = res.getHeader("X-CSRF-Token");
+    if (csrfToken) {
+      bru.setEnvVar("csrfToken", csrfToken);
     }
   }
 }
+

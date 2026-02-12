@@ -1,0 +1,31 @@
+meta {
+  name: Create Deposit
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/deposits
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "amount": "1000.00",
+    "chain": "ethereum"
+  }
+}
+
+docs {
+  # Create Deposit
+  
+  Initiate a new deposit. Triggers automatic 70/30 allocation split.
+  
+  ## Daily Limit
+  - $100,000 per day
+}

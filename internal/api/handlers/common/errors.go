@@ -200,10 +200,12 @@ func SendConflict(c *gin.Context, code, message string) {
 
 // SendInternalError sends a 500 Internal Server Error
 func SendInternalError(c *gin.Context, code, message string) {
-	c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-		Code:    code,
-		Message: message,
-	})
+    // Default internal error response with potential PII redaction
+    // Caller can use RedactPII on any sensitive fields before invoking this helper
+    c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+        Code:    code,
+        Message: message,
+    })
 }
 
 // SendServiceUnavailable sends a 503 Service Unavailable error

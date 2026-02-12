@@ -1,0 +1,17 @@
+meta {
+  name: Alpaca Trade Webhook
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/{{apiVersion}}/webhooks/alpaca/trade
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "event": "test"
+  }
+}

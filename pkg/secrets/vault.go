@@ -41,11 +41,6 @@ type CachedProvider struct {
 	ttl      time.Duration
 }
 
-type cachedSecret struct {
-	value     string
-	expiresAt time.Time
-}
-
 func NewCachedProvider(provider Provider, ttl time.Duration) *CachedProvider {
 	return &CachedProvider{
 		provider: provider,

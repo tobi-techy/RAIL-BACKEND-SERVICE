@@ -1,0 +1,15 @@
+meta {
+  name: Get Incident
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/admin/security/incidents/{{incidentId}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

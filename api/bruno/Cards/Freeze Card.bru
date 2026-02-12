@@ -1,19 +1,15 @@
 meta {
   name: Freeze Card
   type: http
-  seq: 3
+  seq: 4
 }
 
 post {
-  url: {{baseUrl}}/api/{{apiVersion}}/cards/:cardId/freeze
+  url: {{baseUrl}}/api/{{apiVersion}}/cards/{{cardId}}/freeze
   body: none
   auth: bearer
 }
 
 auth:bearer {
   token: {{accessToken}}
-}
-
-params:path {
-  cardId: <card_uuid>
 }
