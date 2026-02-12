@@ -71,7 +71,7 @@ func (b *SecurityServicesBuilder) Build(userRepo *repositories.UserRepository) (
 	services := &SecurityServices{}
 
 	// Core authentication services
-	services.SessionService = session.NewService(b.db, b.logger)
+	services.SessionService = session.NewService(b.db, b.redisClient.Client(), b.logger)
 	services.TwoFAService = twofa.NewService(b.db, b.logger, b.cfg.Security.EncryptionKey)
 	services.APIKeyService = apikey.NewService(b.db, b.logger)
 
