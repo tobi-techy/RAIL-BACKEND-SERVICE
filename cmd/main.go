@@ -28,6 +28,46 @@ import (
 // @description Type "Bearer" followed by a space and JWT token.
 
 func main() {
+	// Load configuration
+	cfg, err := config.Load()
+	if err != nil {
+		panic(fmt.Sprintf("Failed to load config: %v", err))
+	}
+
+	// Initialize logger
+	log := logger.New(cfg.LogLevel, cfg.Environment)
+
+	// Initialize OpenTelemetry tracing
+	tracingConfig := tracing.Config{
+		Enabled:      cfg.Environment != "test",
+		CollectorURL: "localhost:4317",
+		Environment:  cfg.Environment,
+		SampleRate:   1.0, // 100% sampling in dev/staging, reduce in production
+		Insecure:     cfg.Environment == "development", // Only allow insecure in development
+	}
+
+	tracingShutdown, err := tracing.InitTracer(context.Background(), tracingConfig, log.Zap())
+	if err != nil {
+		log.Fatal("Failed to initialize tracing", "error", err)
+	}
+	defer tracingShutdown(context.Background())
+	log.Info("OpenTelemetry tracing initialized", "collector_url", tracingConfig.CollectorURL)
+
+	// Initialize database with enhanced configuration
+	db, err := database.NewConnection(cfg.Database)
+	if err != nil {
+		log.Fatal("Failed to connect to database", "error", err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			log.Warn("Failed to close database connection", "error", err)
+		}
+	}()
+
+	// Run migrations
+	if err := database.RunMigrations(cfg.Database.URL); err != nil {
+		log.Fatal("Failed to run migrations", "error", err)
+	}
 	// Create and initialize application
 	app := app.NewApplication()
 
