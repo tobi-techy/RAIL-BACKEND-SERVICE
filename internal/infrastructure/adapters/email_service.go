@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"net"
 	"net/http"
 	"net/smtp"
 	"strings"
@@ -302,7 +303,7 @@ func (e *EmailService) sendViaSMTP(_ context.Context, to, subject, htmlContent, 
 	if e.config.SMTPUseTLS {
 		err = e.sendSMTPWithTLS(addr, auth, e.config.FromEmail, to, msg.Bytes())
 	} else {
-		err = smtp.SendMail(addr, auth, e.config.FromEmail, []string{to}, msg.Bytes())
+		err = e.sendSMTPWithSTARTTLS(addr, auth, e.config.FromEmail, to, msg.Bytes())
 	}
 
 	if err != nil {
@@ -323,9 +324,9 @@ func (e *EmailService) sendViaSMTP(_ context.Context, to, subject, htmlContent, 
 }
 
 func (e *EmailService) sendSMTPWithTLS(addr string, auth smtp.Auth, from, to string, msg []byte) error {
-	conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: e.config.SMTPHost})
+	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", addr, &tls.Config{ServerName: e.config.SMTPHost})
 	if err != nil {
-		return err
+		return fmt.Errorf("tls dial failed: %w", err)
 	}
 	defer conn.Close()
 
@@ -334,6 +335,51 @@ func (e *EmailService) sendSMTPWithTLS(addr string, auth smtp.Auth, from, to str
 		return err
 	}
 	defer client.Close()
+
+	if auth != nil {
+		if err = client.Auth(auth); err != nil {
+			return err
+		}
+	}
+	if err = client.Mail(from); err != nil {
+		return err
+	}
+	if err = client.Rcpt(to); err != nil {
+		return err
+	}
+	w, err := client.Data()
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(msg)
+	if err != nil {
+		return err
+	}
+	err = w.Close()
+	if err != nil {
+		return err
+	}
+	return client.Quit()
+}
+
+func (e *EmailService) sendSMTPWithSTARTTLS(addr string, auth smtp.Auth, from, to string, msg []byte) error {
+	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("smtp dial failed: %w", err)
+	}
+	defer conn.Close()
+
+	client, err := smtp.NewClient(conn, e.config.SMTPHost)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	if ok, _ := client.Extension("STARTTLS"); ok {
+		if err = client.StartTLS(&tls.Config{ServerName: e.config.SMTPHost}); err != nil {
+			return fmt.Errorf("starttls failed: %w", err)
+		}
+	}
 
 	if auth != nil {
 		if err = client.Auth(auth); err != nil {
