@@ -474,20 +474,20 @@ func (e *EmailService) SendVerificationEmail(ctx context.Context, email, code st
 	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
 <body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
-<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:40px 20px;">
+<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:20px 16px;">
 <tr><td align="center">
-<table width="480" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;">
-<tr><td style="padding:40px 40px 0 40px;">
+<table cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;width:100%%;max-width:480px;">
+<tr><td style="padding:32px 24px 0 24px;">
   <p style="font-family:-apple-system,SF Pro Display,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;color:#1d1d1f;margin:0 0 8px 0;letter-spacing:-0.5px;">Rail</p>
 </td></tr>
-<tr><td style="padding:32px 40px;">
+<tr><td style="padding:24px 24px;">
   <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;color:#1d1d1f;margin:0 0 24px 0;line-height:1.5;">Here's your verification code. Enter it in the app to continue.</p>
   <table width="100%%" cellpadding="0" cellspacing="0"><tr><td align="center" style="background-color:#f5f5f7;border-radius:12px;padding:24px;">
-    <p style="font-family:-apple-system,SF Pro Display,SF Pro Rounded,Helvetica Neue,monospace;font-size:36px;font-weight:700;color:#1d1d1f;margin:0;letter-spacing:8px;">%s</p>
+    <p style="font-family:-apple-system,SF Pro Display,SF Pro Rounded,Helvetica Neue,monospace;font-size:32px;font-weight:700;color:#1d1d1f;margin:0;letter-spacing:6px;">%s</p>
   </td></tr></table>
   <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:13px;color:#86868b;margin:24px 0 0 0;line-height:1.5;">This code expires in 10 minutes. If you didn't request this, you can safely ignore this email.</p>
 </td></tr>
-<tr><td style="padding:0 40px 40px 40px;border-top:1px solid #f5f5f7;">
+<tr><td style="padding:0 24px 32px 24px;border-top:1px solid #f5f5f7;">
   <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;color:#86868b;margin:20px 0 0 0;line-height:1.5;">Rail — Your money, working from the moment it arrives.</p>
 </td></tr>
 </table>
@@ -536,17 +536,17 @@ func (e *EmailService) SendKYCStatusEmail(ctx context.Context, email string, sta
 	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
 <body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
-<table width="100%%%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:40px 20px;">
+<table width="100%%%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:20px 16px;">
 <tr><td align="center">
-<table width="480" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;">
-<tr><td style="padding:40px 40px 0 40px;">
+<table cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;width:100%%;max-width:480px;">
+<tr><td style="padding:32px 24px 0 24px;">
   <p style="font-family:-apple-system,SF Pro Display,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;color:#1d1d1f;margin:0;letter-spacing:-0.5px;">Rail</p>
 </td></tr>
-<tr><td style="padding:32px 40px;">
+<tr><td style="padding:24px 24px;">
   <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:22px;font-weight:600;color:#1d1d1f;margin:0 0 16px 0;letter-spacing:-0.3px;">%s</p>
   <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;color:#1d1d1f;margin:0 0 24px 0;line-height:1.5;">%s</p>%s
 </td></tr>
-<tr><td style="padding:0 40px 40px 40px;border-top:1px solid #f5f5f7;">
+<tr><td style="padding:0 24px 32px 24px;border-top:1px solid #f5f5f7;">
   <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;color:#86868b;margin:20px 0 0 0;line-height:1.5;">Rail — Your money, working from the moment it arrives.</p>
 </td></tr>
 </table>
@@ -567,13 +567,13 @@ func (e *EmailService) SendWelcomeEmail(ctx context.Context, email string) error
 	htmlContent := `<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
 <body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
-<table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:40px 20px;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:20px 16px;">
 <tr><td align="center">
-<table width="480" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;">
-<tr><td style="padding:40px 40px 0 40px;">
+<table cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;width:100%%;max-width:480px;">
+<tr><td style="padding:32px 24px 0 24px;">
   <p style="font-family:-apple-system,SF Pro Display,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;color:#1d1d1f;margin:0 0 8px 0;letter-spacing:-0.5px;">Rail</p>
 </td></tr>
-<tr><td style="padding:32px 40px;">
+<tr><td style="padding:24px 24px;">
   <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:22px;font-weight:600;color:#1d1d1f;margin:0 0 16px 0;letter-spacing:-0.3px;">You're in.</p>
   <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;color:#1d1d1f;margin:0 0 24px 0;line-height:1.5;">Your Rail account is set up. From here, every deposit automatically splits 70/30 between spending and investing — no decisions required.</p>
   <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;border-radius:12px;">
@@ -585,7 +585,7 @@ func (e *EmailService) SendWelcomeEmail(ctx context.Context, email string) error
     </td></tr>
   </table>
 </td></tr>
-<tr><td style="padding:0 40px 40px 40px;border-top:1px solid #f5f5f7;">
+<tr><td style="padding:0 24px 32px 24px;border-top:1px solid #f5f5f7;">
   <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;color:#86868b;margin:20px 0 0 0;line-height:1.5;">Rail — Your money, working from the moment it arrives.</p>
 </td></tr>
 </table>
@@ -633,13 +633,13 @@ func (e *EmailService) SendLoginAlertEmail(ctx context.Context, email string, de
 	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
 <body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
-<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:40px 20px;">
+<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:20px 16px;">
 <tr><td align="center">
-<table width="480" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;">
-<tr><td style="padding:40px 40px 0 40px;">
+<table cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;width:100%%;max-width:480px;">
+<tr><td style="padding:32px 24px 0 24px;">
   <p style="font-family:-apple-system,SF Pro Display,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;color:#1d1d1f;margin:0 0 8px 0;letter-spacing:-0.5px;">Rail</p>
 </td></tr>
-<tr><td style="padding:32px 40px;">
+<tr><td style="padding:24px 24px;">
   <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;color:#1d1d1f;margin:0 0 24px 0;line-height:1.5;">We detected a new login to your account. If this was you, no action is needed.</p>
   <table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;border-radius:12px;">
     <tr><td style="padding:20px 24px;">
@@ -653,7 +653,7 @@ func (e *EmailService) SendLoginAlertEmail(ctx context.Context, email string, de
   </table>
   <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:13px;color:#86868b;margin:24px 0 0 0;line-height:1.5;">If this wasn't you, reset your password immediately and contact support.</p>
 </td></tr>
-<tr><td style="padding:0 40px 40px 40px;border-top:1px solid #f5f5f7;">
+<tr><td style="padding:0 24px 32px 24px;border-top:1px solid #f5f5f7;">
   <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;color:#86868b;margin:20px 0 0 0;line-height:1.5;">Rail — Your money, working from the moment it arrives.</p>
 </td></tr>
 </table>
