@@ -28,65 +28,21 @@ import (
 // @description Type "Bearer" followed by a space and JWT token.
 
 func main() {
-	// Load configuration
-	cfg, err := config.Load()
-	if err != nil {
-		panic(fmt.Sprintf("Failed to load config: %v", err))
-	}
+	application := app.NewApplication()
 
-	// Initialize logger
-	log := logger.New(cfg.LogLevel, cfg.Environment)
-
-	// Initialize OpenTelemetry tracing
-	tracingConfig := tracing.Config{
-		Enabled:      cfg.Environment != "test",
-		CollectorURL: "localhost:4317",
-		Environment:  cfg.Environment,
-		SampleRate:   1.0, // 100% sampling in dev/staging, reduce in production
-		Insecure:     cfg.Environment == "development", // Only allow insecure in development
-	}
-
-	tracingShutdown, err := tracing.InitTracer(context.Background(), tracingConfig, log.Zap())
-	if err != nil {
-		log.Fatal("Failed to initialize tracing", "error", err)
-	}
-	defer tracingShutdown(context.Background())
-	log.Info("OpenTelemetry tracing initialized", "collector_url", tracingConfig.CollectorURL)
-
-	// Initialize database with enhanced configuration
-	db, err := database.NewConnection(cfg.Database)
-	if err != nil {
-		log.Fatal("Failed to connect to database", "error", err)
-	}
-	defer func() {
-		if err := db.Close(); err != nil {
-			log.Warn("Failed to close database connection", "error", err)
-		}
-	}()
-
-	// Run migrations
-	if err := database.RunMigrations(cfg.Database.URL); err != nil {
-		log.Fatal("Failed to run migrations", "error", err)
-	}
-	// Create and initialize application
-	app := app.NewApplication()
-
-	if err := app.Initialize(); err != nil {
+	if err := application.Initialize(); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to initialize application: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Start the application
-	if err := app.Start(); err != nil {
+	if err := application.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to start application: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Wait for shutdown signal
-	app.WaitForShutdown()
+	application.WaitForShutdown()
 
-	// Graceful shutdown
-	if err := app.Shutdown(); err != nil {
+	if err := application.Shutdown(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error during shutdown: %v\n", err)
 		os.Exit(1)
 	}
