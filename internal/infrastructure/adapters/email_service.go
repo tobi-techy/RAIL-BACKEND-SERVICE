@@ -119,6 +119,8 @@ func (e *EmailService) sendEmail(ctx context.Context, to, subject, htmlContent, 
 		return e.sendViaResend(ctxWithTimeout, to, subject, htmlContent, textContent)
 	case "sendgrid":
 		return e.sendViaSendgrid(ctxWithTimeout, to, subject, htmlContent, textContent)
+	case "mailtrap":
+		return e.sendViaMailtrap(ctxWithTimeout, to, subject, htmlContent, textContent)
 	case "mailpit", "smtp":
 		return e.sendViaSMTP(ctxWithTimeout, to, subject, htmlContent, textContent)
 	default:
@@ -273,6 +275,47 @@ func (e *EmailService) sendViaResend(ctx context.Context, to, subject, htmlConte
 	return nil
 }
 
+
+func (e *EmailService) sendViaMailtrap(ctx context.Context, to, subject, htmlContent, textContent string) error {
+	payload := map[string]interface{}{
+		"from":     map[string]string{"email": e.config.FromEmail, "name": e.config.FromName},
+		"to":       []map[string]string{{"email": to}},
+		"subject":  subject,
+		"html":     htmlContent,
+		"text":     textContent,
+		"category": "Rail",
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal mailtrap payload: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://sandbox.api.mailtrap.io/api/send/"+e.config.SMTPUsername, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create mailtrap request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+e.config.APIKey)
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		e.logger.Error("Mailtrap API request failed", zap.String("to", to), zap.Error(err))
+		return fmt.Errorf("mailtrap api failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 400 {
+		e.logger.Error("Mailtrap API error", zap.Int("status", resp.StatusCode), zap.String("body", string(respBody)))
+		return fmt.Errorf("mailtrap api error: status %d, body: %s", resp.StatusCode, string(respBody))
+	}
+
+	e.logger.Info("Email sent successfully", zap.String("provider", "mailtrap"), zap.String("to", to), zap.String("subject", subject))
+	return nil
+}
 func (e *EmailService) sendViaSMTP(_ context.Context, to, subject, htmlContent, textContent string) error {
 	from := e.config.FromEmail
 	if e.config.FromName != "" {
