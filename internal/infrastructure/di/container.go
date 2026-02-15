@@ -551,21 +551,16 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	bridgeClient := bridge.NewClient(bridgeConfig, zapLog)
 	bridgeAdapter := bridge.NewAdapter(bridgeClient, zapLog)
 
-	// Initialize email service with full configuration
+	// Initialize email service with Unosend configuration
 	var err error
 	emailServiceConfig := adapters.EmailServiceConfig{
-		Provider:     cfg.Email.Provider,
-		APIKey:       cfg.Email.APIKey,
-		FromEmail:    cfg.Email.FromEmail,
-		FromName:     cfg.Email.FromName,
-		Environment:  cfg.Email.Environment,
-		BaseURL:      cfg.Email.BaseURL,
-		ReplyTo:      cfg.Email.ReplyTo,
-		SMTPHost:     cfg.Email.SMTPHost,
-		SMTPPort:     cfg.Email.SMTPPort,
-		SMTPUsername: cfg.Email.SMTPUsername,
-		SMTPPassword: cfg.Email.SMTPPassword,
-		SMTPUseTLS:   cfg.Email.SMTPUseTLS,
+		Provider:    cfg.Email.Provider,
+		APIKey:      cfg.Email.APIKey,
+		FromEmail:   cfg.Email.FromEmail,
+		FromName:    cfg.Email.FromName,
+		Environment: cfg.Email.Environment,
+		BaseURL:     cfg.Email.BaseURL,
+		ReplyTo:     cfg.Email.ReplyTo,
 	}
 	var emailService *adapters.EmailService
 	if strings.TrimSpace(cfg.Email.Provider) != "" {
