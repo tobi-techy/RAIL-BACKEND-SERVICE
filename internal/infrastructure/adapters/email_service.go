@@ -3,27 +3,21 @@ package adapters
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"html"
 	"io"
-	"net"
 	"net/http"
-	"net/smtp"
 	"strings"
 	"time"
 
-	"github.com/sendgrid/sendgrid-go"
-	"github.com/sendgrid/sendgrid-go/helpers/mail"
 	"go.uber.org/zap"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
 )
 
 const (
-	resendAPIBaseURL        = "https://api.resend.com"
-	resendSandboxFromSender = "onboarding@resend.dev"
+	unosendAPIBaseURL = "https://www.unosend.co/api/v1"
 )
 
 // LoginAlertDetails represents metadata associated with a login notification email
@@ -44,19 +38,12 @@ type EmailServiceConfig struct {
 	Environment string // "development", "staging", "production"
 	BaseURL     string // For verification links
 	ReplyTo     string
-	// SMTP settings (for mailpit, smtp providers)
-	SMTPHost     string
-	SMTPPort     int
-	SMTPUsername string
-	SMTPPassword string
-	SMTPUseTLS   bool
 }
 
 // EmailService implements the email service interface
 type EmailService struct {
 	logger     *zap.Logger
 	config     EmailServiceConfig
-	client     *sendgrid.Client
 	httpClient *http.Client
 }
 
@@ -67,150 +54,49 @@ func NewEmailService(logger *zap.Logger, config EmailServiceConfig) (*EmailServi
 		return nil, fmt.Errorf("email provider is required")
 	}
 
+	if provider != "unosend" {
+		return nil, fmt.Errorf("unsupported email provider: %s (only unosend is supported)", provider)
+	}
+
 	if strings.TrimSpace(config.FromEmail) == "" {
 		return nil, fmt.Errorf("email from address is required")
 	}
 
-	var (
-		client     *sendgrid.Client
-		httpClient *http.Client
-	)
-
-	switch provider {
-	case "sendgrid":
-		if strings.TrimSpace(config.APIKey) == "" {
-			return nil, fmt.Errorf("sendgrid api key is required")
-		}
-		client = sendgrid.NewSendClient(config.APIKey)
-	case "resend":
-		if strings.TrimSpace(config.APIKey) == "" {
-			return nil, fmt.Errorf("resend api key is required")
-		}
-		httpClient = &http.Client{Timeout: 30 * time.Second}
-	case "mailpit", "smtp":
-		if config.SMTPHost == "" {
-			return nil, fmt.Errorf("smtp host is required for %s provider", provider)
-		}
-		if config.SMTPPort == 0 {
-			config.SMTPPort = 1025 // default mailpit port
-		}
-	case "mailtrap":
-		if strings.TrimSpace(config.APIKey) == "" {
-			return nil, fmt.Errorf("mailtrap api key is required")
-		}
-		httpClient = &http.Client{Timeout: 15 * time.Second}
-	default:
-		return nil, fmt.Errorf("unsupported email provider: %s", provider)
+	if strings.TrimSpace(config.APIKey) == "" {
+		return nil, fmt.Errorf("unosend api key is required")
 	}
+
+	httpClient := &http.Client{Timeout: 30 * time.Second}
 
 	return &EmailService{
 		logger:     logger,
 		config:     config,
-		client:     client,
 		httpClient: httpClient,
 	}, nil
 }
 
-// sendEmail is a helper method to send emails via the configured provider
+// sendEmail is a helper method to send emails via Unosend
 func (e *EmailService) sendEmail(ctx context.Context, to, subject, htmlContent, textContent string) error {
-	provider := strings.ToLower(e.config.Provider)
-
 	// Add timeout to context
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	switch provider {
-	case "resend":
-		return e.sendViaResend(ctxWithTimeout, to, subject, htmlContent, textContent)
-	case "sendgrid":
-		return e.sendViaSendgrid(ctxWithTimeout, to, subject, htmlContent, textContent)
-	case "mailtrap":
-		return e.sendViaMailtrap(ctxWithTimeout, to, subject, htmlContent, textContent)
-	case "mailpit", "smtp":
-		return e.sendViaSMTP(ctxWithTimeout, to, subject, htmlContent, textContent)
-	default:
-		return fmt.Errorf("unsupported email provider: %s", provider)
-	}
+	return e.sendViaUnosend(ctxWithTimeout, to, subject, htmlContent, textContent)
 }
 
-func (e *EmailService) sendViaSendgrid(ctx context.Context, to, subject, htmlContent, textContent string) error {
-	if e.client == nil {
-		return fmt.Errorf("sendgrid client not configured")
-	}
-
-	from := mail.NewEmail(e.config.FromName, e.config.FromEmail)
-	toEmail := mail.NewEmail("", to)
-	message := mail.NewSingleEmail(from, subject, toEmail, textContent, htmlContent)
-
-	if strings.TrimSpace(e.config.ReplyTo) != "" {
-		message.SetReplyTo(mail.NewEmail(e.config.FromName, e.config.ReplyTo))
-	}
-
-	response, err := e.client.SendWithContext(ctx, message)
-	if err != nil {
-		e.logger.Error("Failed to send email",
-			zap.String("provider", "sendgrid"),
-			zap.String("to", to),
-			zap.String("subject", subject),
-			zap.Error(err))
-		return fmt.Errorf("failed to send email: %w", err)
-	}
-
-	if response.StatusCode >= 400 {
-		e.logger.Error("Email service returned error",
-			zap.String("provider", "sendgrid"),
-			zap.String("to", to),
-			zap.String("subject", subject),
-			zap.Int("status_code", response.StatusCode),
-			zap.String("response_body", response.Body))
-		return fmt.Errorf("email service error: status %d, body: %s", response.StatusCode, response.Body)
-	}
-
-	e.logger.Info("Email sent successfully",
-		zap.String("provider", "sendgrid"),
-		zap.String("to", to),
-		zap.String("subject", subject),
-		zap.Int("status_code", response.StatusCode))
-
-	return nil
-}
-
-func (e *EmailService) sendViaResend(ctx context.Context, to, subject, htmlContent, textContent string) error {
+func (e *EmailService) sendViaUnosend(ctx context.Context, to, subject, htmlContent, textContent string) error {
 	if e.httpClient == nil {
-		return fmt.Errorf("resend client not configured")
+		return fmt.Errorf("unosend client not configured")
 	}
 
 	fromEmail := strings.TrimSpace(e.config.FromEmail)
 	if fromEmail == "" {
-		return fmt.Errorf("resend from email is required")
+		return fmt.Errorf("unosend from email is required")
 	}
 
 	from := fromEmail
 	if strings.TrimSpace(e.config.FromName) != "" {
 		from = fmt.Sprintf("%s <%s>", e.config.FromName, fromEmail)
-	}
-
-	if isNonProductionEnv(e.config.Environment) {
-		domainParts := strings.SplitN(fromEmail, "@", 2)
-		if len(domainParts) != 2 || strings.TrimSpace(domainParts[1]) == "" {
-			return fmt.Errorf("invalid resend from address: %s", fromEmail)
-		}
-
-		domain := strings.ToLower(strings.TrimSpace(domainParts[1]))
-		if domain != "resend.dev" {
-			originalFrom := from
-			fromEmail = resendSandboxFromSender
-			if strings.TrimSpace(e.config.FromName) != "" {
-				from = fmt.Sprintf("%s <%s>", e.config.FromName, resendSandboxFromSender)
-			} else {
-				from = resendSandboxFromSender
-			}
-
-			e.logger.Warn("Overriding Resend sender address for non-production environment",
-				zap.String("original_from", originalFrom),
-				zap.String("overridden_from", from),
-				zap.String("environment", e.config.Environment))
-		}
 	}
 
 	payload := map[string]any{
@@ -229,12 +115,12 @@ func (e *EmailService) sendViaResend(ctx context.Context, to, subject, htmlConte
 
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("failed to marshal resend payload: %w", err)
+		return fmt.Errorf("failed to marshal unosend payload: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, resendAPIBaseURL+"/emails", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, unosendAPIBaseURL+"/emails", bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("failed to create resend request: %w", err)
+		return fmt.Errorf("failed to create unosend request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -242,226 +128,41 @@ func (e *EmailService) sendViaResend(ctx context.Context, to, subject, htmlConte
 
 	resp, err := e.httpClient.Do(req)
 	if err != nil {
-		e.logger.Error("Failed to send email via Resend",
-			zap.String("provider", "resend"),
+		e.logger.Error("Failed to send email via Unosend",
+			zap.String("provider", "unosend"),
 			zap.String("to", to),
 			zap.String("subject", subject),
 			zap.Error(err))
-		return fmt.Errorf("resend send request failed: %w", err)
+		return fmt.Errorf("unosend send request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode >= 400 {
 		logFields := []zap.Field{
-			zap.String("provider", "resend"),
+			zap.String("provider", "unosend"),
 			zap.String("to", to),
 			zap.String("subject", subject),
 			zap.Int("status_code", resp.StatusCode),
-			zap.String("environment", e.config.Environment),
 			zap.String("response_body", string(respBody)),
 		}
 
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			e.logger.Error("Resend authentication failed", logFields...)
+			e.logger.Error("Unosend authentication failed", logFields...)
 		} else {
-			e.logger.Error("Resend returned error", logFields...)
+			e.logger.Error("Unosend returned error", logFields...)
 		}
 
-		return fmt.Errorf("resend email error: status %d", resp.StatusCode)
+		return fmt.Errorf("unosend email error: status %d", resp.StatusCode)
 	}
 
 	e.logger.Info("Email sent successfully",
-		zap.String("provider", "resend"),
+		zap.String("provider", "unosend"),
 		zap.String("to", to),
 		zap.String("subject", subject),
 		zap.Int("status_code", resp.StatusCode))
 
 	return nil
-}
-
-
-func (e *EmailService) sendViaMailtrap(ctx context.Context, to, subject, htmlContent, textContent string) error {
-	payload := map[string]interface{}{
-		"from":     map[string]string{"email": e.config.FromEmail, "name": e.config.FromName},
-		"to":       []map[string]string{{"email": to}},
-		"subject":  subject,
-		"html":     htmlContent,
-		"text":     textContent,
-		"category": "Rail",
-	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal mailtrap payload: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://sandbox.api.mailtrap.io/api/send/"+e.config.SMTPUsername, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("failed to create mailtrap request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+e.config.APIKey)
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		e.logger.Error("Mailtrap API request failed", zap.String("to", to), zap.Error(err))
-		return fmt.Errorf("mailtrap api failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode >= 400 {
-		e.logger.Error("Mailtrap API error", zap.Int("status", resp.StatusCode), zap.String("body", string(respBody)))
-		return fmt.Errorf("mailtrap api error: status %d, body: %s", resp.StatusCode, string(respBody))
-	}
-
-	e.logger.Info("Email sent successfully", zap.String("provider", "mailtrap"), zap.String("to", to), zap.String("subject", subject))
-	return nil
-}
-func (e *EmailService) sendViaSMTP(_ context.Context, to, subject, htmlContent, textContent string) error {
-	from := e.config.FromEmail
-	if e.config.FromName != "" {
-		from = fmt.Sprintf("%s <%s>", e.config.FromName, e.config.FromEmail)
-	}
-
-	// Build MIME message
-	var msg bytes.Buffer
-	msg.WriteString(fmt.Sprintf("From: %s\r\n", from))
-	msg.WriteString(fmt.Sprintf("To: %s\r\n", to))
-	msg.WriteString(fmt.Sprintf("Subject: %s\r\n", subject))
-	if e.config.ReplyTo != "" {
-		msg.WriteString(fmt.Sprintf("Reply-To: %s\r\n", e.config.ReplyTo))
-	}
-	msg.WriteString("MIME-Version: 1.0\r\n")
-	msg.WriteString("Content-Type: text/html; charset=\"UTF-8\"\r\n")
-	msg.WriteString("\r\n")
-	msg.WriteString(htmlContent)
-
-	addr := fmt.Sprintf("%s:%d", e.config.SMTPHost, e.config.SMTPPort)
-
-	var auth smtp.Auth
-	if e.config.SMTPUsername != "" {
-		auth = smtp.PlainAuth("", e.config.SMTPUsername, e.config.SMTPPassword, e.config.SMTPHost)
-	}
-
-	var err error
-	if e.config.SMTPUseTLS {
-		err = e.sendSMTPWithTLS(addr, auth, e.config.FromEmail, to, msg.Bytes())
-	} else {
-		err = e.sendSMTPWithSTARTTLS(addr, auth, e.config.FromEmail, to, msg.Bytes())
-	}
-
-	if err != nil {
-		e.logger.Error("Failed to send email via SMTP",
-			zap.String("provider", e.config.Provider),
-			zap.String("to", to),
-			zap.String("host", e.config.SMTPHost),
-			zap.Error(err))
-		return fmt.Errorf("smtp send failed: %w", err)
-	}
-
-	e.logger.Info("Email sent successfully",
-		zap.String("provider", e.config.Provider),
-		zap.String("to", to),
-		zap.String("subject", subject))
-
-	return nil
-}
-
-func (e *EmailService) sendSMTPWithTLS(addr string, auth smtp.Auth, from, to string, msg []byte) error {
-	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", addr, &tls.Config{ServerName: e.config.SMTPHost})
-	if err != nil {
-		return fmt.Errorf("tls dial failed: %w", err)
-	}
-	defer conn.Close()
-
-	client, err := smtp.NewClient(conn, e.config.SMTPHost)
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-
-	if auth != nil {
-		if err = client.Auth(auth); err != nil {
-			return err
-		}
-	}
-	if err = client.Mail(from); err != nil {
-		return err
-	}
-	if err = client.Rcpt(to); err != nil {
-		return err
-	}
-	w, err := client.Data()
-	if err != nil {
-		return err
-	}
-	_, err = w.Write(msg)
-	if err != nil {
-		return err
-	}
-	err = w.Close()
-	if err != nil {
-		return err
-	}
-	return client.Quit()
-}
-
-func (e *EmailService) sendSMTPWithSTARTTLS(addr string, auth smtp.Auth, from, to string, msg []byte) error {
-	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
-	if err != nil {
-		return fmt.Errorf("smtp dial failed: %w", err)
-	}
-	defer conn.Close()
-
-	client, err := smtp.NewClient(conn, e.config.SMTPHost)
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-
-	if ok, _ := client.Extension("STARTTLS"); ok {
-		if err = client.StartTLS(&tls.Config{ServerName: e.config.SMTPHost}); err != nil {
-			return fmt.Errorf("starttls failed: %w", err)
-		}
-	}
-
-	if auth != nil {
-		if err = client.Auth(auth); err != nil {
-			return err
-		}
-	}
-	if err = client.Mail(from); err != nil {
-		return err
-	}
-	if err = client.Rcpt(to); err != nil {
-		return err
-	}
-	w, err := client.Data()
-	if err != nil {
-		return err
-	}
-	_, err = w.Write(msg)
-	if err != nil {
-		return err
-	}
-	err = w.Close()
-	if err != nil {
-		return err
-	}
-	return client.Quit()
-}
-
-func isNonProductionEnv(env string) bool {
-	switch strings.ToLower(strings.TrimSpace(env)) {
-	case "", "dev", "development", "local", "staging", "test", "testing":
-		return true
-	default:
-		return false
-	}
 }
 
 // SendVerificationEmail sends a verification code email

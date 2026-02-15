@@ -285,18 +285,13 @@ type KYCConfig struct {
 }
 
 type EmailConfig struct {
-	Provider     string `mapstructure:"provider"` // "sendgrid", "resend", "mailpit", "smtp"
-	APIKey       string `mapstructure:"api_key"`
-	FromEmail    string `mapstructure:"from_email"`
-	FromName     string `mapstructure:"from_name"`
-	BaseURL      string `mapstructure:"base_url"`    // For verification links
-	Environment  string `mapstructure:"environment"` // "development", "staging", "production"
-	ReplyTo      string `mapstructure:"reply_to"`
-	SMTPHost     string `mapstructure:"smtp_host"`
-	SMTPPort     int    `mapstructure:"smtp_port"`
-	SMTPUsername string `mapstructure:"smtp_username"`
-	SMTPPassword string `mapstructure:"smtp_password"`
-	SMTPUseTLS   bool   `mapstructure:"smtp_use_tls"`
+	Provider    string `mapstructure:"provider"` // "unosend"
+	APIKey      string `mapstructure:"api_key"`
+	FromEmail   string `mapstructure:"from_email"`
+	FromName    string `mapstructure:"from_name"`
+	BaseURL     string `mapstructure:"base_url"`    // For verification links
+	Environment string `mapstructure:"environment"` // "development", "staging", "production"
+	ReplyTo     string `mapstructure:"reply_to"`
 }
 
 type SMSConfig struct {
@@ -484,7 +479,7 @@ func Load() (*Config, error) {
 	}
 
 	if strings.TrimSpace(config.Email.Provider) == "" && isDevEnvironment(config.Environment) {
-		config.Email.Provider = "mailpit"
+		config.Email.Provider = "unosend"
 	}
 
 	// Build database URL if not provided
@@ -754,13 +749,9 @@ func overrideFromEnv() {
 		viper.Set("circle.environment", circleEnv)
 	}
 
-	// Email Service
-	if emailAPIKey := os.Getenv("EMAIL_API_KEY"); emailAPIKey != "" {
-		viper.Set("email.api_key", emailAPIKey)
-	}
-	if resendAPIKey := os.Getenv("RESEND_API_KEY"); resendAPIKey != "" {
-		viper.Set("email.api_key", resendAPIKey)
-		viper.Set("email.provider", "resend")
+	// Email Service (Unosend only)
+	if unosendAPIKey := os.Getenv("UNOSEND_API_KEY"); unosendAPIKey != "" {
+		viper.Set("email.api_key", unosendAPIKey)
 	}
 	if emailProvider := os.Getenv("EMAIL_PROVIDER"); emailProvider != "" {
 		viper.Set("email.provider", emailProvider)
@@ -774,29 +765,11 @@ func overrideFromEnv() {
 	if fromEmail := os.Getenv("EMAIL_FROM_EMAIL"); fromEmail != "" {
 		viper.Set("email.from_email", fromEmail)
 	}
-	if resendFrom := os.Getenv("RESEND_FROM_EMAIL"); resendFrom != "" {
-		viper.Set("email.from_email", resendFrom)
-	}
 	if fromName := os.Getenv("EMAIL_FROM_NAME"); fromName != "" {
 		viper.Set("email.from_name", fromName)
 	}
-	if resendFromName := os.Getenv("RESEND_FROM_NAME"); resendFromName != "" {
-		viper.Set("email.from_name", resendFromName)
-	}
 	if replyTo := os.Getenv("EMAIL_REPLY_TO"); replyTo != "" {
 		viper.Set("email.reply_to", replyTo)
-	}
-	if smtpHost := os.Getenv("SMTP_HOST"); smtpHost != "" {
-		viper.Set("email.smtp_host", smtpHost)
-	}
-	if smtpPort := os.Getenv("SMTP_PORT"); smtpPort != "" {
-		viper.Set("email.smtp_port", smtpPort)
-	}
-	if smtpUser := os.Getenv("SMTP_USERNAME"); smtpUser != "" {
-		viper.Set("email.smtp_username", smtpUser)
-	}
-	if smtpPass := os.Getenv("SMTP_PASSWORD"); smtpPass != "" {
-		viper.Set("email.smtp_password", smtpPass)
 	}
 
 	// AI Providers
