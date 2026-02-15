@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -77,6 +78,16 @@ func CSRFProtection(store *CSRFStore, isDev bool) gin.HandlerFunc {
 			return
 		}
 
+		// Skip CSRF for API clients (mobile apps, native clients)
+		// CSRF is primarily for browser-based attacks; API clients use token-based auth
+		contentType := c.GetHeader("Content-Type")
+		userAgent := c.GetHeader("User-Agent")
+		if (c.GetHeader("Accept") == "application/json" && contentType == "application/json") ||
+			isNativeClient(userAgent) {
+			c.Next()
+			return
+		}
+
 		token := c.GetHeader("X-CSRF-Token")
 
 		if token == "" || !store.Validate(token) {
@@ -90,6 +101,24 @@ func CSRFProtection(store *CSRFStore, isDev bool) gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+// isNativeClient checks if the request is from a native mobile app
+func isNativeClient(userAgent string) bool {
+	// Check for common native mobile app user agents
+	nativePatterns := []string{
+		"RailMoney",     // Your app
+		"Dalvik",        // Android
+		"CFNetwork",     // iOS
+		"okhttp",        // OkHttp (Android)
+		"MobileIron",    // Enterprise apps
+	}
+	for _, pattern := range nativePatterns {
+		if strings.Contains(userAgent, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 func CSRFToken(store *CSRFStore) gin.HandlerFunc {
