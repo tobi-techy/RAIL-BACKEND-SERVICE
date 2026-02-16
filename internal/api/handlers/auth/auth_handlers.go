@@ -145,10 +145,10 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 	existingUnverified := false
 
 	if req.Email != nil {
-		identifier = strings.TrimSpace(*req.Email)
+		identifier = normalizeAuthIdentifier("email", *req.Email)
 		identifierType = "email"
 	} else {
-		identifier = strings.TrimSpace(*req.Phone)
+		identifier = normalizeAuthIdentifier("phone", *req.Phone)
 		identifierType = "phone"
 	}
 
@@ -319,9 +319,9 @@ func (h *AuthHandlers) Verify(c *gin.Context) {
 
 	var identifier, identifierType string
 	if req.Email != nil {
-		identifier, identifierType = strings.TrimSpace(*req.Email), "email"
+		identifier, identifierType = normalizeAuthIdentifier("email", *req.Email), "email"
 	} else {
-		identifier, identifierType = strings.TrimSpace(*req.Phone), "phone"
+		identifier, identifierType = normalizeAuthIdentifier("phone", *req.Phone), "phone"
 	}
 
 	isValid, err := h.verificationService.VerifyCode(ctx, identifierType, identifier, req.Code)
@@ -479,10 +479,10 @@ func (h *AuthHandlers) ResendCode(c *gin.Context) {
 	var identifierType string
 
 	if req.Email != nil {
-		identifier = strings.TrimSpace(*req.Email)
+		identifier = normalizeAuthIdentifier("email", *req.Email)
 		identifierType = "email"
 	} else if req.Phone != nil {
-		identifier = strings.TrimSpace(*req.Phone)
+		identifier = normalizeAuthIdentifier("phone", *req.Phone)
 		identifierType = "phone"
 	}
 
@@ -602,6 +602,14 @@ func (h *AuthHandlers) ResendCode(c *gin.Context) {
 
 func isRedisNilError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "redis: nil")
+}
+
+func normalizeAuthIdentifier(identifierType, identifier string) string {
+	normalized := strings.TrimSpace(identifier)
+	if identifierType == "email" {
+		return strings.ToLower(normalized)
+	}
+	return normalized
 }
 
 func (h *AuthHandlers) recordLoginFailure(c *gin.Context, providedIdentifier string) {
