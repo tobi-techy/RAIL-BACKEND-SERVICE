@@ -211,6 +211,12 @@ func (h *UnifiedFundingWebhookHandler) routeToBridge(c *gin.Context, body []byte
 
 // processBridgeVirtualAccountEvent handles Bridge virtual account events
 func (h *UnifiedFundingWebhookHandler) processBridgeVirtualAccountEvent(c *gin.Context, payload *BridgeWebhookPayload) {
+	if h.bridgeHandler == nil || h.bridgeHandler.service == nil {
+		h.logger.Warn("Bridge webhook service not configured")
+		c.JSON(http.StatusOK, gin.H{"status": "skipped", "reason": "service not configured"})
+		return
+	}
+
 	switch payload.EventType {
 	case "deposit.received", "deposit.completed":
 		eventData, _ := json.Marshal(payload.EventObject)
@@ -238,6 +244,12 @@ func (h *UnifiedFundingWebhookHandler) processBridgeTransferEvent(c *gin.Context
 
 // processBridgeCustomerEvent handles Bridge customer events
 func (h *UnifiedFundingWebhookHandler) processBridgeCustomerEvent(c *gin.Context, payload *BridgeWebhookPayload) {
+	if h.bridgeHandler == nil || h.bridgeHandler.service == nil {
+		h.logger.Warn("Bridge webhook service not configured")
+		c.JSON(http.StatusOK, gin.H{"status": "skipped", "reason": "service not configured"})
+		return
+	}
+
 	if payload.EventType == "customer.status_changed" {
 		eventData, _ := json.Marshal(payload.EventObject)
 		var customerEvent BridgeCustomerEvent
@@ -272,16 +284,18 @@ func (h *UnifiedFundingWebhookHandler) routeToCircle(c *gin.Context, body []byte
 		zap.String("notification_type", webhook.NotificationType),
 		zap.String("transfer_id", webhook.TransferID))
 
-	// Process based on notification type
-	switch webhook.NotificationType {
-	case "transfers.created", "transfers.completed":
+	// Process based on notification type.
+	switch {
+	case (strings.HasPrefix(strings.ToLower(webhook.NotificationType), "transfers.") ||
+		strings.HasPrefix(strings.ToLower(webhook.NotificationType), "transactions.")) &&
+		!strings.HasSuffix(strings.ToLower(webhook.NotificationType), ".failed"):
 		ctx := c.Request.Context()
 		if err := h.circleHandler.processIncomingTransfer(ctx, &webhook); err != nil {
 			h.logger.Error("Failed to process Circle transfer", zap.Error(err))
 			c.JSON(http.StatusOK, gin.H{"status": "error", "message": err.Error()})
 			return
 		}
-	case "transfers.failed":
+	case strings.HasSuffix(strings.ToLower(webhook.NotificationType), ".failed"):
 		h.logger.Warn("Circle transfer failed", zap.String("transfer_id", webhook.TransferID))
 	}
 

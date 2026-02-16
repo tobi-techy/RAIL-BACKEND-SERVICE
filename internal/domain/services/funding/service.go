@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/shopspring/decimal"
 )
 
 // LedgerBalanceView represents user balance from ledger
@@ -50,22 +50,22 @@ type FundingNotificationService interface {
 
 // Service handles funding operations - deposit addresses, confirmations, balance conversion
 type Service struct {
-	depositRepo          DepositRepository
-	walletRepo           WalletRepository
-	managedWalletRepo    ManagedWalletRepository
-	virtualAccountRepo   VirtualAccountRepository
-	circleAPI            CircleAdapter
-	bridgeVAService      *BridgeVirtualAccountService
-	alpacaAPI            AlpacaAdapter
-	ledgerIntegration    LedgerIntegration
-	limitsService        LimitsService
-	validationService    *ValidationService
-	auditService         AuditService
-	notificationService  FundingNotificationService
-	allocationService    AllocationService
-	cache                CacheClient
-	config               *FundingConfig
-	logger               *logger.Logger
+	depositRepo         DepositRepository
+	walletRepo          WalletRepository
+	managedWalletRepo   ManagedWalletRepository
+	virtualAccountRepo  VirtualAccountRepository
+	circleAPI           CircleAdapter
+	bridgeVAService     *BridgeVirtualAccountService
+	alpacaAPI           AlpacaAdapter
+	ledgerIntegration   LedgerIntegration
+	limitsService       LimitsService
+	validationService   *ValidationService
+	auditService        AuditService
+	notificationService FundingNotificationService
+	allocationService   AllocationService
+	cache               CacheClient
+	config              *FundingConfig
+	logger              *logger.Logger
 }
 
 // DepositRepository interface for deposit persistence
@@ -87,6 +87,7 @@ type WalletRepository interface {
 type ManagedWalletRepository interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.ManagedWallet, error)
 	GetByCircleWalletID(ctx context.Context, circleWalletID string) (*entities.ManagedWallet, error)
+	GetByAddress(ctx context.Context, address string) (*entities.ManagedWallet, error)
 }
 
 // CircleAdapter interface for Circle API integration
@@ -355,10 +356,18 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 		return nil
 	}
 
-	// Find the wallet to get user ID
+	// Find the wallet to get user ID.
+	// Prefer legacy wallets table for backward compatibility, then fall back to managed_wallets.
+	var userID uuid.UUID
 	wallet, err := s.walletRepo.GetByAddress(ctx, webhook.Address)
 	if err != nil {
-		return fmt.Errorf("failed to find wallet for address %s: %w", webhook.Address, err)
+		managedWallet, managedErr := s.managedWalletRepo.GetByAddress(ctx, webhook.Address)
+		if managedErr != nil {
+			return fmt.Errorf("failed to find wallet for address %s: legacy_error=%v managed_error=%w", webhook.Address, err, managedErr)
+		}
+		userID = managedWallet.UserID
+	} else {
+		userID = wallet.UserID
 	}
 
 	// Convert stablecoin to USD buying power
@@ -369,10 +378,10 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 
 	// Validate against user's deposit limits (if limits service is configured)
 	if s.limitsService != nil {
-		result, err := s.limitsService.ValidateDeposit(ctx, wallet.UserID, usdAmount)
+		result, err := s.limitsService.ValidateDeposit(ctx, userID, usdAmount)
 		if err != nil {
 			s.logger.Warn("Deposit limit validation failed",
-				"user_id", wallet.UserID.String(),
+				"user_id", userID.String(),
 				"amount", usdAmount.String(),
 				"error", err.Error(),
 				"limit_type", result.LimitType,
@@ -385,7 +394,7 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 	now := time.Now()
 	deposit := &entities.Deposit{
 		ID:          uuid.New(),
-		UserID:      wallet.UserID,
+		UserID:      userID,
 		Chain:       webhook.Chain,
 		TxHash:      webhook.TxHash,
 		Token:       webhook.Token,
@@ -400,7 +409,7 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 	}
 
 	// Record deposit in ledger (replaces legacy balance update)
-	if err := s.ledgerIntegration.RecordDeposit(ctx, wallet.UserID, usdAmount, deposit.ID, string(webhook.Chain), webhook.TxHash); err != nil {
+	if err := s.ledgerIntegration.RecordDeposit(ctx, userID, usdAmount, deposit.ID, string(webhook.Chain), webhook.TxHash); err != nil {
 		return fmt.Errorf("failed to record deposit in ledger: %w", err)
 	}
 
@@ -408,43 +417,43 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 	// This is the core system rule: every deposit is automatically split
 	if s.allocationService != nil {
 		allocationReq := &entities.IncomingFundsRequest{
-			UserID:     wallet.UserID,
+			UserID:     userID,
 			Amount:     usdAmount,
 			EventType:  entities.AllocationEventTypeCryptoDeposit,
 			DepositID:  &deposit.ID,
 			SourceTxID: &webhook.TxHash,
 			Metadata: map[string]any{
-				"source":   "crypto",
-				"chain":    string(webhook.Chain),
-				"token":    string(webhook.Token),
-				"tx_hash":  webhook.TxHash,
+				"source":  "crypto",
+				"chain":   string(webhook.Chain),
+				"token":   string(webhook.Token),
+				"tx_hash": webhook.TxHash,
 			},
 		}
 		if err := s.allocationService.ProcessIncomingFunds(ctx, allocationReq); err != nil {
 			s.logger.Error("Failed to process allocation split",
-				"user_id", wallet.UserID,
+				"user_id", userID,
 				"amount", usdAmount,
 				"error", err)
 			// Don't fail the deposit - allocation can be retried
 			// The funds are safely in the ledger
 		} else {
 			s.logger.Info("Automatic 70/30 allocation split completed",
-				"user_id", wallet.UserID,
+				"user_id", userID,
 				"amount", usdAmount)
 		}
 	}
 
 	// Record deposit usage against limits
 	if s.limitsService != nil {
-		if err := s.limitsService.RecordDeposit(ctx, wallet.UserID, usdAmount); err != nil {
-			s.logger.Warn("Failed to record deposit usage", "error", err, "user_id", wallet.UserID.String())
+		if err := s.limitsService.RecordDeposit(ctx, userID, usdAmount); err != nil {
+			s.logger.Warn("Failed to record deposit usage", "error", err, "user_id", userID.String())
 			// Don't fail the deposit, just log the warning
 		}
 	}
 
 	// Create audit log entry for compliance
 	if s.auditService != nil {
-		if err := s.auditService.LogDeposit(ctx, wallet.UserID, deposit.ID, usdAmount.String(), string(webhook.Chain), deposit.Status); err != nil {
+		if err := s.auditService.LogDeposit(ctx, userID, deposit.ID, usdAmount.String(), string(webhook.Chain), deposit.Status); err != nil {
 			s.logger.Warn("Failed to create audit log for deposit", "error", err, "deposit_id", deposit.ID.String())
 			// Don't fail the deposit, audit logging is non-critical
 		}
@@ -452,21 +461,21 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 
 	// Send deposit confirmation notification
 	if s.notificationService != nil {
-		if err := s.notificationService.NotifyDepositConfirmed(ctx, wallet.UserID, usdAmount.String(), string(webhook.Chain), webhook.TxHash); err != nil {
-			s.logger.Warn("Failed to send deposit notification", "error", err, "user_id", wallet.UserID.String())
+		if err := s.notificationService.NotifyDepositConfirmed(ctx, userID, usdAmount.String(), string(webhook.Chain), webhook.TxHash); err != nil {
+			s.logger.Warn("Failed to send deposit notification", "error", err, "user_id", userID.String())
 		}
 		// Notify for large deposits (>= $1000)
 		largeDepositThreshold := decimal.NewFromInt(1000)
 		if usdAmount.GreaterThanOrEqual(largeDepositThreshold) {
 			// Get new balance for notification
-			if balance, err := s.ledgerIntegration.GetUserBalance(ctx, wallet.UserID); err == nil {
-				_ = s.notificationService.NotifyLargeBalanceChange(ctx, wallet.UserID, "deposit", usdAmount, balance.TotalValue)
+			if balance, err := s.ledgerIntegration.GetUserBalance(ctx, userID); err == nil {
+				_ = s.notificationService.NotifyLargeBalanceChange(ctx, userID, "deposit", usdAmount, balance.TotalValue)
 			}
 		}
 	}
 
 	s.logger.Info("Deposit processed successfully",
-		"user_id", wallet.UserID,
+		"user_id", userID,
 		"amount", webhook.Amount,
 		"usd_amount", usdAmount.String(),
 		"tx_hash", webhook.TxHash,
