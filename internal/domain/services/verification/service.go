@@ -67,6 +67,8 @@ func NewVerificationService(
 
 // GenerateAndSendCode generates a 6-digit code, stores it in Redis, and sends it via email or SMS
 func (s *verificationService) GenerateAndSendCode(ctx context.Context, identifierType, identifier string) (string, error) {
+	identifier = normalizeVerificationIdentifier(identifierType, identifier)
+
 	// Check rate limit for sending codes
 	sendAttemptsKey := fmt.Sprintf("send_attempts:%s:%s", identifierType, identifier)
 	sendAttempts, err := s.redisClient.Incr(ctx, sendAttemptsKey)
@@ -133,6 +135,14 @@ func (s *verificationService) GenerateAndSendCode(ctx context.Context, identifie
 	}
 
 	if sendErr != nil {
+		if isDevEnvironment(s.config.Environment) {
+			s.logger.Warn("DEV MODE: Failed to send verification code, using locally generated code",
+				zap.String("identifier_type", identifierType),
+				zap.String("identifier", identifier),
+				zap.String("code", code),
+				zap.Error(sendErr))
+			return code, nil
+		}
 		s.logger.Error("Failed to send verification code", zap.Error(sendErr), zap.String("identifier", identifier))
 		return "", fmt.Errorf("failed to send verification code: %w", sendErr)
 	}
@@ -152,6 +162,8 @@ func isDevEnvironment(env string) bool {
 
 // VerifyCode validates the provided code against the stored one
 func (s *verificationService) VerifyCode(ctx context.Context, identifierType, identifier, code string) (bool, error) {
+	identifier = normalizeVerificationIdentifier(identifierType, identifier)
+
 	key := fmt.Sprintf("verification:%s:%s", identifierType, identifier)
 	var storedData entities.VerificationCodeData
 	err := s.redisClient.Get(ctx, key, &storedData)
@@ -194,6 +206,8 @@ func (s *verificationService) VerifyCode(ctx context.Context, identifierType, id
 
 // CanResendCode checks if a new verification code can be sent based on rate limits
 func (s *verificationService) CanResendCode(ctx context.Context, identifierType, identifier string) (bool, error) {
+	identifier = normalizeVerificationIdentifier(identifierType, identifier)
+
 	sendAttemptsKey := fmt.Sprintf("send_attempts:%s:%s", identifierType, identifier)
 	var sendAttemptsStr string
 	err := s.redisClient.Get(ctx, sendAttemptsKey, &sendAttemptsStr) // Get as string to check existence
@@ -212,6 +226,8 @@ func (s *verificationService) CanResendCode(ctx context.Context, identifierType,
 
 // RecordSendAttempt records a send attempt for rate limiting
 func (s *verificationService) RecordSendAttempt(ctx context.Context, identifierType, identifier string) error {
+	identifier = normalizeVerificationIdentifier(identifierType, identifier)
+
 	sendAttemptsKey := fmt.Sprintf("send_attempts:%s:%s", identifierType, identifier)
 	sendAttempts, err := s.redisClient.Incr(ctx, sendAttemptsKey)
 	if err != nil {
@@ -239,4 +255,12 @@ func generateNumericCode(length int) (string, error) {
 		b[i] = digits[num.Int64()]
 	}
 	return string(b), nil
+}
+
+func normalizeVerificationIdentifier(identifierType, identifier string) string {
+	normalized := strings.TrimSpace(identifier)
+	if identifierType == "email" {
+		return strings.ToLower(normalized)
+	}
+	return normalized
 }
