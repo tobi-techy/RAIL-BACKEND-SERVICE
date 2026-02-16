@@ -251,11 +251,11 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		return fmt.Errorf("failed to get stash account: %w", err)
 	}
 
-	// Get system buffer account
-	systemAccount, err := s.ledgerService.GetSystemAccount(ctx, entities.AccountTypeSystemBufferUSDC)
+	// Get user's USDC balance account (source of funds for allocation)
+	usdcAccount, err := s.ledgerService.GetOrCreateUserAccount(ctx, req.UserID, entities.AccountTypeUSDCBalance)
 	if err != nil {
 		span.RecordError(err)
-		return fmt.Errorf("failed to get system account: %w", err)
+		return fmt.Errorf("failed to get USDC account: %w", err)
 	}
 
 	// Create ledger transaction for allocation split
@@ -298,8 +298,8 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 				Description: stringPtr(fmt.Sprintf("Stash allocation: %s", stashAmount.String())),
 			},
 			{
-				AccountID:   systemAccount.ID,
-				EntryType:   entities.EntryTypeCredit, // Decrease system buffer
+				AccountID:   usdcAccount.ID,
+				EntryType:   entities.EntryTypeCredit, // Decrease USDC balance (source)
 				Amount:      req.Amount,
 				Currency:    "USDC",
 				Description: &desc,
