@@ -521,9 +521,9 @@ func setDefaults() {
 	viper.SetDefault("database.name", "stack_service")
 	viper.SetDefault("database.user", "postgres")
 	viper.SetDefault("database.ssl_mode", "disable")
-	viper.SetDefault("database.max_open_conns", 50)       // Increased for concurrent requests
-	viper.SetDefault("database.max_idle_conns", 25)       // Keep more idle connections ready
-	viper.SetDefault("database.conn_max_lifetime", 300)   // 5 minutes - recycle connections more often
+	viper.SetDefault("database.max_open_conns", 50)     // Increased for concurrent requests
+	viper.SetDefault("database.max_idle_conns", 25)     // Keep more idle connections ready
+	viper.SetDefault("database.conn_max_lifetime", 300) // 5 minutes - recycle connections more often
 	viper.SetDefault("database.query_timeout", 30)
 	viper.SetDefault("database.max_retries", 3)
 
@@ -546,6 +546,9 @@ func setDefaults() {
 	viper.SetDefault("security.lockout_duration", 900) // 15 minutes
 	viper.SetDefault("security.require_mfa", false)
 	viper.SetDefault("security.password_min_length", 8)
+
+	// Payment/webhook defaults
+	viper.SetDefault("payment.webhook_secret", "")
 
 	// Circle defaults
 	viper.SetDefault("circle.environment", "sandbox")
@@ -747,6 +750,12 @@ func overrideFromEnv() {
 	}
 	if circleEnv := os.Getenv("CIRCLE_ENVIRONMENT"); circleEnv != "" {
 		viper.Set("circle.environment", circleEnv)
+	}
+	if paymentWebhookSecret := os.Getenv("PAYMENT_WEBHOOK_SECRET"); paymentWebhookSecret != "" {
+		viper.Set("payment.webhook_secret", paymentWebhookSecret)
+	} else if circleWebhookSecret := os.Getenv("CIRCLE_WEBHOOK_SECRET"); circleWebhookSecret != "" {
+		// Backward-compatible fallback used by existing deployments.
+		viper.Set("payment.webhook_secret", circleWebhookSecret)
 	}
 
 	// Email Service (Unosend only)

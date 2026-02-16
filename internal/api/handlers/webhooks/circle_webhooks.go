@@ -9,32 +9,45 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
-	"github.com/rail-service/rail_service/internal/domain/services/onchain"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/shopspring/decimal"
 )
+
+// CircleDepositProcessor defines deposit-processing operations used by Circle webhook handlers.
+type CircleDepositProcessor interface {
+	ProcessChainDeposit(ctx context.Context, webhook *entities.ChainDepositWebhook) error
+}
+
+// CircleManagedWalletRepository resolves Circle wallet IDs to managed wallets.
+type CircleManagedWalletRepository interface {
+	GetByCircleWalletID(ctx context.Context, circleWalletID string) (*entities.ManagedWallet, error)
+}
 
 // CircleWebhookHandler handles Circle API webhook notifications
 type CircleWebhookHandler struct {
-	onchainEngine *onchain.Engine
-	logger        *logger.Logger
-	webhookSecret string // For signature verification
+	fundingService    CircleDepositProcessor
+	managedWalletRepo CircleManagedWalletRepository
+	logger            *logger.Logger
+	webhookSecret     string // For signature verification
 }
 
 // NewCircleWebhookHandler creates a new Circle webhook handler
 func NewCircleWebhookHandler(
-	onchainEngine *onchain.Engine,
+	fundingService CircleDepositProcessor,
+	managedWalletRepo CircleManagedWalletRepository,
 	logger *logger.Logger,
 	webhookSecret string,
 ) *CircleWebhookHandler {
 	return &CircleWebhookHandler{
-		onchainEngine: onchainEngine,
-		logger:        logger,
-		webhookSecret: webhookSecret,
+		fundingService:    fundingService,
+		managedWalletRepo: managedWalletRepo,
+		logger:            logger,
+		webhookSecret:     webhookSecret,
 	}
 }
 
@@ -77,9 +90,12 @@ func (h *CircleWebhookHandler) HandleTransferNotification(c *gin.Context) {
 		"transfer_id", webhook.TransferID,
 		"status", webhook.Transfer.Status)
 
-	// Process based on notification type
-	switch webhook.NotificationType {
-	case "transfers.created", "transfers.completed":
+	// Process based on notification type.
+	// Circle can emit variants such as transfers.* and transactions.*.
+	switch {
+	case (strings.HasPrefix(strings.ToLower(webhook.NotificationType), "transfers.") ||
+		strings.HasPrefix(strings.ToLower(webhook.NotificationType), "transactions.")) &&
+		!strings.HasSuffix(strings.ToLower(webhook.NotificationType), ".failed"):
 		if err := h.processIncomingTransfer(ctx, &webhook); err != nil {
 			h.logger.Error("Failed to process incoming transfer",
 				"transfer_id", webhook.TransferID,
@@ -90,7 +106,7 @@ func (h *CircleWebhookHandler) HandleTransferNotification(c *gin.Context) {
 			return
 		}
 
-	case "transfers.failed":
+	case strings.HasSuffix(strings.ToLower(webhook.NotificationType), ".failed"):
 		h.logger.Warn("Circle transfer failed",
 			"transfer_id", webhook.TransferID,
 			"error", webhook.Transfer.ErrorCode)
@@ -106,10 +122,15 @@ func (h *CircleWebhookHandler) HandleTransferNotification(c *gin.Context) {
 
 // processIncomingTransfer processes an incoming USDC transfer
 func (h *CircleWebhookHandler) processIncomingTransfer(ctx context.Context, webhook *CircleTransferWebhook) error {
+	notificationType := strings.ToLower(strings.TrimSpace(webhook.NotificationType))
+	if strings.HasPrefix(notificationType, "transactions.") {
+		return h.processIncomingTransactionNotification(ctx, webhook)
+	}
+
 	transfer := webhook.Transfer
 
 	// Only process inbound transfers (deposits)
-	if transfer.Source.Type != "blockchain" {
+	if !strings.EqualFold(transfer.Source.Type, "blockchain") {
 		h.logger.Debug("Ignoring non-blockchain transfer",
 			"transfer_id", webhook.TransferID,
 			"source_type", transfer.Source.Type)
@@ -122,35 +143,148 @@ func (h *CircleWebhookHandler) processIncomingTransfer(ctx context.Context, webh
 		return fmt.Errorf("invalid amount: %w", err)
 	}
 
-	// Map Circle wallet ID to user
-	// This requires querying managed_wallets table
-	circleWalletID := transfer.Destination.ID
-
-	// Determine chain from transfer
-	chain := h.mapCircleChainToChain(transfer.Source.Chain)
-
-	// Build deposit request
-	// Note: UserID needs to be determined from circleWalletID via managed_wallets
-	// For now, we'll let the engine handle that lookup
-	depositReq := &onchain.DepositRequest{
-		UserID:         uuid.Nil, // Will be looked up by engine
-		CircleWalletID: circleWalletID,
-		Chain:          chain,
-		TxHash:         transfer.TransactionHash,
-		Token:          entities.StablecoinUSDC,
-		Amount:         amount,
-		FromAddress:    transfer.Source.Address,
+	// Only process USDC deposits.
+	if !strings.EqualFold(transfer.Amount.Currency, string(entities.StablecoinUSDC)) {
+		h.logger.Debug("Ignoring non-USDC transfer",
+			"transfer_id", webhook.TransferID,
+			"currency", transfer.Amount.Currency)
+		return nil
 	}
 
-	// Process deposit via onchain engine
-	if err := h.onchainEngine.ProcessDeposit(ctx, depositReq); err != nil {
+	// Resolve destination wallet from Circle wallet ID.
+	circleWalletID := transfer.Destination.ID
+	if circleWalletID == "" {
+		return fmt.Errorf("missing destination circle wallet ID")
+	}
+	managedWallet, err := h.managedWalletRepo.GetByCircleWalletID(ctx, circleWalletID)
+	if err != nil {
+		return fmt.Errorf("failed to resolve managed wallet for circle wallet %s: %w", circleWalletID, err)
+	}
+
+	// Determine chain from transfer payload, with wallet-chain fallback.
+	chain := h.mapCircleChainToChain(transfer.Source.Chain)
+	if chain == "" {
+		chain = h.mapWalletChainToChain(managedWallet.Chain)
+	}
+	if chain == "" {
+		chain = entities.ChainSOL
+	}
+
+	blockTime := time.Now()
+	if parsed, parseErr := time.Parse(time.RFC3339, transfer.CreateDate); parseErr == nil {
+		blockTime = parsed
+	}
+
+	chainWebhook := &entities.ChainDepositWebhook{
+		Chain:     chain,
+		Address:   managedWallet.Address,
+		TxHash:    transfer.TransactionHash,
+		Token:     entities.StablecoinUSDC,
+		Amount:    amount.String(),
+		BlockTime: blockTime,
+	}
+
+	// Process through the canonical funding deposit flow.
+	if err := h.fundingService.ProcessChainDeposit(ctx, chainWebhook); err != nil {
 		return fmt.Errorf("failed to process deposit: %w", err)
 	}
 
 	h.logger.Info("Circle transfer processed successfully",
 		"transfer_id", webhook.TransferID,
+		"user_id", managedWallet.UserID.String(),
 		"amount", amount,
-		"tx_hash", transfer.TransactionHash)
+		"tx_hash", transfer.TransactionHash,
+		"address", managedWallet.Address,
+		"chain", chain)
+
+	return nil
+}
+
+// processIncomingTransactionNotification handles Circle wallets notifications like transactions.inbound.
+func (h *CircleWebhookHandler) processIncomingTransactionNotification(ctx context.Context, webhook *CircleTransferWebhook) error {
+	if len(webhook.Notification) == 0 {
+		return fmt.Errorf("missing notification payload for %s", webhook.NotificationType)
+	}
+
+	var n CircleTransactionNotification
+	if err := json.Unmarshal(webhook.Notification, &n); err != nil {
+		return fmt.Errorf("failed to parse transaction notification: %w", err)
+	}
+
+	// Only inbound wallet deposits.
+	if !strings.EqualFold(n.TransactionType, "INBOUND") {
+		h.logger.Debug("Ignoring non-inbound transaction notification",
+			"notification_type", webhook.NotificationType,
+			"transaction_type", n.TransactionType)
+		return nil
+	}
+
+	// Only process final successful states.
+	state := strings.ToUpper(strings.TrimSpace(n.State))
+	if state != "COMPLETED" && state != "CONFIRMED" {
+		h.logger.Debug("Ignoring non-final transaction notification state",
+			"notification_type", webhook.NotificationType,
+			"state", n.State)
+		return nil
+	}
+
+	if len(n.Amounts) == 0 {
+		return fmt.Errorf("missing amount in transaction notification")
+	}
+	amount, err := decimal.NewFromString(n.Amounts[0])
+	if err != nil {
+		return fmt.Errorf("invalid amount in transaction notification: %w", err)
+	}
+
+	txHash := strings.TrimSpace(n.TxHash)
+	if txHash == "" {
+		txHash = strings.TrimSpace(n.TransactionHash)
+	}
+	if txHash == "" {
+		return fmt.Errorf("missing tx hash in transaction notification")
+	}
+
+	chain := h.mapCircleChainToChain(n.Blockchain)
+	if chain == "" {
+		chain = entities.ChainSOL
+	}
+
+	address := strings.TrimSpace(n.DestinationAddress)
+	if address == "" && strings.TrimSpace(n.WalletID) != "" {
+		managedWallet, err := h.managedWalletRepo.GetByCircleWalletID(ctx, n.WalletID)
+		if err == nil {
+			address = managedWallet.Address
+		}
+	}
+	if address == "" {
+		return fmt.Errorf("missing destination address in transaction notification")
+	}
+
+	blockTime := time.Now()
+	if parsed, parseErr := time.Parse(time.RFC3339, n.CreateDate); parseErr == nil {
+		blockTime = parsed
+	}
+
+	chainWebhook := &entities.ChainDepositWebhook{
+		Chain:     chain,
+		Address:   address,
+		TxHash:    txHash,
+		Token:     entities.StablecoinUSDC,
+		Amount:    amount.String(),
+		BlockTime: blockTime,
+	}
+
+	if err := h.fundingService.ProcessChainDeposit(ctx, chainWebhook); err != nil {
+		return fmt.Errorf("failed to process transaction notification deposit: %w", err)
+	}
+
+	h.logger.Info("Circle transaction notification processed successfully",
+		"notification_type", webhook.NotificationType,
+		"wallet_id", n.WalletID,
+		"amount", amount.String(),
+		"tx_hash", txHash,
+		"address", address,
+		"chain", chain)
 
 	return nil
 }
@@ -189,18 +323,47 @@ func truncateString(s string, maxLen int) string {
 
 // mapCircleChainToChain maps Circle's chain identifier to our Chain type
 func (h *CircleWebhookHandler) mapCircleChainToChain(circleChain string) entities.Chain {
-	switch circleChain {
-	case "SOL", "solana":
-		return entities.ChainSolana
-	case "MATIC", "polygon":
-		return entities.ChainPolygon
-	case "APTOS", "aptos":
-		return entities.ChainAptos
-	case "STARKNET", "starknet":
-		return entities.ChainStarknet
+	switch strings.ToUpper(strings.TrimSpace(circleChain)) {
+	case "SOL", "SOLANA", "SOL-DEVNET":
+		return entities.ChainSOL
+	case "MATIC", "POLYGON":
+		return entities.ChainMATIC
+	case "ETH", "ETHEREUM", "ETH-SEPOLIA":
+		return entities.ChainETH
+	case "AVAX", "AVALANCHE":
+		return entities.ChainAVAX
+	case "BASE":
+		return entities.ChainBASE
+	case "ARB", "ARBITRUM":
+		return entities.ChainARB
+	case "OP", "OPTIMISM":
+		return entities.ChainOP
 	default:
-		h.logger.Warn("Unknown Circle chain", "chain", circleChain)
-		return entities.ChainSolana // Default fallback
+		if circleChain != "" {
+			h.logger.Warn("Unknown Circle chain", "chain", circleChain)
+		}
+		return ""
+	}
+}
+
+func (h *CircleWebhookHandler) mapWalletChainToChain(chain entities.WalletChain) entities.Chain {
+	switch chain {
+	case entities.WalletChainSOLDevnet, entities.WalletChainSolana:
+		return entities.ChainSOL
+	case entities.WalletChainPolygon:
+		return entities.ChainMATIC
+	case entities.WalletChainEthereum:
+		return entities.ChainETH
+	case entities.WalletChainAvalanche:
+		return entities.ChainAVAX
+	case entities.WalletChainBase:
+		return entities.ChainBASE
+	case entities.WalletChainArbitrum:
+		return entities.ChainARB
+	case entities.WalletChainOptimism:
+		return entities.ChainOP
+	default:
+		return ""
 	}
 }
 
@@ -213,19 +376,20 @@ type CircleTransferWebhook struct {
 	NotificationType string          `json:"notificationType"`
 	TransferID       string          `json:"transferId"`
 	Transfer         CircleTransfer  `json:"transfer"`
+	Notification     json.RawMessage `json:"notification"`
 	Timestamp        string          `json:"timestamp"`
 }
 
 // CircleTransfer represents the transfer details
 type CircleTransfer struct {
-	ID              string                  `json:"id"`
-	Source          CircleTransferEndpoint  `json:"source"`
-	Destination     CircleTransferEndpoint  `json:"destination"`
-	Amount          CircleAmount            `json:"amount"`
-	TransactionHash string                  `json:"transactionHash"`
-	Status          string                  `json:"status"`
-	CreateDate      string                  `json:"createDate"`
-	ErrorCode       string                  `json:"errorCode,omitempty"`
+	ID              string                 `json:"id"`
+	Source          CircleTransferEndpoint `json:"source"`
+	Destination     CircleTransferEndpoint `json:"destination"`
+	Amount          CircleAmount           `json:"amount"`
+	TransactionHash string                 `json:"transactionHash"`
+	Status          string                 `json:"status"`
+	CreateDate      string                 `json:"createDate"`
+	ErrorCode       string                 `json:"errorCode,omitempty"`
 }
 
 // CircleTransferEndpoint represents source or destination
@@ -240,6 +404,22 @@ type CircleTransferEndpoint struct {
 type CircleAmount struct {
 	Amount   string `json:"amount"`
 	Currency string `json:"currency"`
+}
+
+// CircleTransactionNotification represents a Circle wallets transaction webhook payload.
+type CircleTransactionNotification struct {
+	ID                 string   `json:"id"`
+	Blockchain         string   `json:"blockchain"`
+	WalletID           string   `json:"walletId"`
+	TokenID            string   `json:"tokenId"`
+	DestinationAddress string   `json:"destinationAddress"`
+	Amounts            []string `json:"amounts"`
+	State              string   `json:"state"`
+	TransactionType    string   `json:"transactionType"`
+	TxHash             string   `json:"txHash"`
+	TransactionHash    string   `json:"transactionHash"`
+	CreateDate         string   `json:"createDate"`
+	UpdateDate         string   `json:"updateDate"`
 }
 
 // ============================================================================

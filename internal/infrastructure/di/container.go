@@ -232,10 +232,10 @@ func (a *BridgeOnboardingAdapter) CreateCustomer(ctx context.Context, req *entit
 				country = "GBR"
 			case "CA":
 				country = "CAN"
-			// Add more as needed
+				// Add more as needed
 			}
 		}
-		
+
 		bridgeReq.ResidentialAddress = &bridge.Address{
 			StreetLine1: req.Address.Street,
 			City:        req.Address.City,
@@ -260,7 +260,7 @@ func (a *BridgeOnboardingAdapter) CreateCustomer(ctx context.Context, req *entit
 			},
 		}
 	}
-	
+
 	// For sandbox: use dummy signed_agreement_id if not provided
 	// For production: this must be obtained from Bridge ToS API first
 	// Note: Sandbox may auto-approve without signed_agreement_id
@@ -273,7 +273,7 @@ func (a *BridgeOnboardingAdapter) CreateCustomer(ctx context.Context, req *entit
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &entities.CreateAccountResponse{
 		AccountID: cust.ID,
 		Status:    string(cust.Status),
@@ -1008,6 +1008,32 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize advanced features (analytics, market data, scheduled investments, rebalancing)
 	if err := c.initializeAdvancedFeatures(sqlxDB); err != nil {
 		c.ZapLog.Warn("Advanced features initialization failed", zap.Error(err))
+	}
+
+	// Initialize unified funding webhook handler (Bridge + Circle + Alpaca).
+	// This enables /api/v1/webhooks/funding routing.
+	circleWebhookSecret := strings.TrimSpace(c.Config.Payment.WebhookSecret)
+	circleWebhookHandler := webhooks.NewCircleWebhookHandler(
+		c.FundingService,
+		c.WalletRepo,
+		c.Logger,
+		circleWebhookSecret,
+	)
+	alpacaWebhookHandler := c.GetAlpacaWebhookHandlers()
+	c.UnifiedFundingWebhookHandler = webhooks.NewUnifiedFundingWebhookHandler(
+		c.BridgeWebhookHandler,
+		circleWebhookHandler,
+		alpacaWebhookHandler,
+		c.ZapLog,
+	)
+	if bridgeSecret := strings.TrimSpace(c.Config.Bridge.WebhookSecret); bridgeSecret != "" {
+		c.UnifiedFundingWebhookHandler.SetWebhookSecret("bridge", bridgeSecret)
+	}
+	if circleWebhookSecret != "" {
+		c.UnifiedFundingWebhookHandler.SetWebhookSecret("circle", circleWebhookSecret)
+	}
+	if alpacaSecret := strings.TrimSpace(c.Config.Alpaca.WebhookSecret); alpacaSecret != "" {
+		c.UnifiedFundingWebhookHandler.SetWebhookSecret("alpaca", alpacaSecret)
 	}
 
 	return nil
@@ -2301,7 +2327,6 @@ func (c *Container) initializeBridgeServices() {
 
 	c.ZapLog.Info("Bridge webhook handler initialized")
 }
-
 
 // GetInstantFundingHandlers returns the instant funding handlers
 func (c *Container) GetInstantFundingHandlers() *fundinghandlers.InstantFundingHandlers {
