@@ -15,6 +15,8 @@ import (
 
 var kycRequiredFeatures = []string{"virtual_account", "cards", "fiat_withdrawal"}
 
+const onboardingBridgeRequestTimeout = 10 * time.Second
+
 // Service handles onboarding operations - user creation, KYC flow, wallet provisioning
 type Service struct {
 	userRepo            UserRepository
@@ -362,11 +364,15 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 			// NOTE: No SSN/tax_id here - that's collected in KYC flow
 		}
 
-		bridgeResp, err := s.bridgeAdapter.CreateCustomer(ctx, bridgeReq)
+		bridgeCtx, bridgeCancel := withTimeout(ctx, onboardingBridgeRequestTimeout)
+		bridgeResp, err := s.bridgeAdapter.CreateCustomer(bridgeCtx, bridgeReq)
+		bridgeCancel()
 		if err != nil {
 			// Check if customer already exists in Bridge (email uniqueness)
 			if strings.Contains(err.Error(), "already exists") {
-				existingCustomer, lookupErr := s.bridgeAdapter.GetCustomerByEmail(ctx, user.Email)
+				lookupCtx, lookupCancel := withTimeout(ctx, onboardingBridgeRequestTimeout)
+				existingCustomer, lookupErr := s.bridgeAdapter.GetCustomerByEmail(lookupCtx, user.Email)
+				lookupCancel()
 				if lookupErr != nil || existingCustomer == nil {
 					s.logger.Error("Failed to create Bridge customer and lookup failed", zap.Error(err), zap.Error(lookupErr))
 					return nil, fmt.Errorf("failed to create Bridge customer: %w", err)
@@ -959,6 +965,13 @@ func (s *Service) triggerWalletCreation(ctx context.Context, userID uuid.UUID) e
 	return nil
 }
 
+func withTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if deadline, ok := parent.Deadline(); ok && time.Until(deadline) <= timeout {
+		return parent, func() {}
+	}
+	return context.WithTimeout(parent, timeout)
+}
+
 func (s *Service) determineNextStep(user *entities.UserProfile) entities.OnboardingStepType {
 	if !user.EmailVerified {
 		return entities.StepEmailVerification
@@ -1060,7 +1073,6 @@ func getStringValue(s *string) string {
 	}
 	return *s
 }
-
 
 // countryAlpha2ToAlpha3 converts ISO 3166-1 alpha-2 to alpha-3 country codes
 func countryAlpha2ToAlpha3(alpha2 string) string {

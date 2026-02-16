@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -44,6 +45,13 @@ type AuthHandlers struct {
 	redisClient         RedisClient
 	validator           *validator.Validate
 }
+
+const (
+	authFlowTimeout            = 8 * time.Second
+	onboardingCompleteTimeout  = 12 * time.Second
+	onboardingStatusReqTimeout = 3 * time.Second
+	profileReadTimeout         = 4 * time.Second
+)
 
 // RedisClient interface for pending registration storage
 type RedisClient interface {
@@ -111,7 +119,8 @@ func NewAuthHandlers(
 // @Failure 500 {object} entities.ErrorResponse
 // @Router /api/v1/auth/register [post]
 func (h *AuthHandlers) Register(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), authFlowTimeout)
+	defer cancel()
 
 	var req entities.SignUpRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -275,16 +284,16 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 			h.logger.Info("Pending registration created for unverified user", zap.String("identifier", identifier))
 		}
 
-		h.logger.Info("Verification code sent for existing unverified user", zap.String("identifier", identifier))
+		h.logger.Info("Verification code queued for existing unverified user", zap.String("identifier", identifier))
 		c.JSON(http.StatusAccepted, entities.SignUpResponse{
-			Message:    fmt.Sprintf("Verification code sent to %s. If you did not receive it, call /api/v1/auth/resend-code.", identifier),
+			Message:    fmt.Sprintf("Verification code queued for delivery to %s. If you do not receive it soon, call /api/v1/auth/resend-code.", identifier),
 			Identifier: identifier,
 		})
 		return
 	}
 
 	c.JSON(http.StatusAccepted, entities.SignUpResponse{
-		Message:    fmt.Sprintf("Registration received for %s. Verification code sent. If you did not receive it, call /api/v1/auth/resend-code. You will set your password during onboarding.", identifier),
+		Message:    fmt.Sprintf("Registration received for %s. Verification code queued for delivery. If you do not receive it soon, call /api/v1/auth/resend-code. You will set your password during onboarding.", identifier),
 		Identifier: identifier,
 	})
 }
@@ -304,7 +313,8 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 // @Router /api/v1/auth/verify [post]
 // Verify handles unified verification for both new registrations and existing users
 func (h *AuthHandlers) Verify(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), authFlowTimeout)
+	defer cancel()
 
 	var req entities.VerifyCodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -447,7 +457,8 @@ func (h *AuthHandlers) completeExistingUserVerification(c *gin.Context, ctx cont
 // @Failure 500 {object} entities.ErrorResponse
 // @Router /api/v1/auth/resend-code [post]
 func (h *AuthHandlers) ResendCode(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), authFlowTimeout)
+	defer cancel()
 
 	var req entities.ResendCodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -590,12 +601,12 @@ func (h *AuthHandlers) ResendCode(c *gin.Context) {
 	}
 
 	if userProfile != nil {
-		h.logger.Info("Verification code re-sent", zap.String("user_id", userProfile.ID.String()), zap.String("identifier", identifier))
+		h.logger.Info("Verification code re-queued", zap.String("user_id", userProfile.ID.String()), zap.String("identifier", identifier))
 	} else {
-		h.logger.Info("Verification code sent for pending registration", zap.String("identifier", identifier))
+		h.logger.Info("Verification code queued for pending registration", zap.String("identifier", identifier))
 	}
 	c.JSON(http.StatusAccepted, entities.SignUpResponse{
-		Message:    fmt.Sprintf("Verification code sent to %s.", identifier),
+		Message:    fmt.Sprintf("Verification code queued for delivery to %s.", identifier),
 		Identifier: identifier,
 	})
 }
@@ -1162,7 +1173,8 @@ func (h *AuthHandlers) ResetPassword(c *gin.Context) {
 // @Success 200 {object} entities.UserInfo
 // @Router /api/v1/users/me [get]
 func (h *AuthHandlers) GetProfile(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), profileReadTimeout)
+	defer cancel()
 	userIDVal, exists := c.Get("user_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "UNAUTHORIZED", Message: "User not authenticated"})
@@ -1189,21 +1201,57 @@ func (h *AuthHandlers) GetProfile(c *gin.Context) {
 	includes := strings.Split(includeParam, ",")
 	response := gin.H{"user": user.ToUserInfo()}
 
+	if h.onboardingService == nil {
+		c.JSON(http.StatusOK, response)
+		return
+	}
+
+	var (
+		includeOnboarding bool
+		includeKYC        bool
+	)
 	for _, inc := range includes {
 		switch strings.TrimSpace(inc) {
 		case "onboarding":
-			if h.onboardingService != nil {
-				if status, err := h.onboardingService.GetOnboardingStatus(ctx, userID); err == nil {
-					response["onboarding"] = status
-				}
-			}
+			includeOnboarding = true
 		case "kyc":
-			if h.onboardingService != nil {
-				if kycStatus, err := h.onboardingService.GetKYCStatus(ctx, userID); err == nil {
-					response["kyc"] = kycStatus
-				}
-			}
+			includeKYC = true
 		}
+	}
+
+	var (
+		onboardingStatus *entities.OnboardingStatusResponse
+		kycStatus        *entities.KYCStatusResponse
+	)
+	var wg sync.WaitGroup
+
+	if includeOnboarding {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if status, err := h.onboardingService.GetOnboardingStatus(ctx, userID); err == nil {
+				onboardingStatus = status
+			}
+		}()
+	}
+
+	if includeKYC {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if status, err := h.onboardingService.GetKYCStatus(ctx, userID); err == nil {
+				kycStatus = status
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	if onboardingStatus != nil {
+		response["onboarding"] = onboardingStatus
+	}
+	if kycStatus != nil {
+		response["kyc"] = kycStatus
 	}
 
 	c.JSON(http.StatusOK, response)
@@ -1580,7 +1628,8 @@ func (h *AuthHandlers) ProcessKYCCallback(c *gin.Context) {
 // @Security BearerAuth
 // @Router /api/v1/onboarding/complete [post]
 func (h *AuthHandlers) CompleteOnboarding(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), onboardingCompleteTimeout)
+	defer cancel()
 
 	userID, err := common.GetUserID(c)
 	if err != nil {
@@ -1625,10 +1674,37 @@ func (h *AuthHandlers) CompleteOnboarding(c *gin.Context) {
 		"next_steps":         response.NextSteps,
 	}
 
-	if onboardingStatus, err := h.onboardingService.GetOnboardingStatus(ctx, userID); err == nil {
+	statusCtx, statusCancel := context.WithTimeout(ctx, onboardingStatusReqTimeout)
+	defer statusCancel()
+
+	var (
+		onboardingStatus *entities.OnboardingStatusResponse
+		kycStatus        *entities.KYCStatusResponse
+	)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		if status, err := h.onboardingService.GetOnboardingStatus(statusCtx, userID); err == nil {
+			onboardingStatus = status
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		if status, err := h.onboardingService.GetKYCStatus(statusCtx, userID); err == nil {
+			kycStatus = status
+		}
+	}()
+
+	wg.Wait()
+
+	if onboardingStatus != nil {
 		fullResponse["onboarding"] = onboardingStatus
 	}
-	if kycStatus, err := h.onboardingService.GetKYCStatus(ctx, userID); err == nil {
+	if kycStatus != nil {
 		fullResponse["kyc"] = kycStatus
 	}
 

@@ -3,6 +3,8 @@ package funding
 import (
 	"context"
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -45,18 +47,18 @@ type ActivityItemResponse struct {
 
 // StationResponse represents the home screen data
 type StationResponse struct {
-	TotalBalance             string                  `json:"total_balance"`
-	SpendBalance             string                  `json:"spend_balance"`
-	InvestBalance            string                  `json:"invest_balance"`
-	Currency                 string                  `json:"currency"`
-	CurrencyLocale           string                  `json:"currency_locale"`
-	PendingAmount            string                  `json:"pending_amount"`
-	PendingTransactionsCount int                     `json:"pending_transactions_count"`
-	SystemStatus             SystemStatus            `json:"system_status"`
-	AccountNickname          *string                 `json:"account_nickname,omitempty"`
-	BalanceTrends            *BalanceTrendsResponse  `json:"balance_trends,omitempty"`
-	RecentActivity           []ActivityItemResponse  `json:"recent_activity"`
-	UnreadAlertCount         int                     `json:"unread_alert_count"`
+	TotalBalance             string                 `json:"total_balance"`
+	SpendBalance             string                 `json:"spend_balance"`
+	InvestBalance            string                 `json:"invest_balance"`
+	Currency                 string                 `json:"currency"`
+	CurrencyLocale           string                 `json:"currency_locale"`
+	PendingAmount            string                 `json:"pending_amount"`
+	PendingTransactionsCount int                    `json:"pending_transactions_count"`
+	SystemStatus             SystemStatus           `json:"system_status"`
+	AccountNickname          *string                `json:"account_nickname,omitempty"`
+	BalanceTrends            *BalanceTrendsResponse `json:"balance_trends,omitempty"`
+	RecentActivity           []ActivityItemResponse `json:"recent_activity"`
+	UnreadAlertCount         int                    `json:"unread_alert_count"`
 }
 
 // StationService interface for station data retrieval
@@ -77,6 +79,8 @@ type StationHandlers struct {
 	logger         *zap.Logger
 }
 
+const stationRequestTimeout = 4 * time.Second
+
 // NewStationHandlers creates new station handlers
 func NewStationHandlers(stationService StationService, logger *zap.Logger) *StationHandlers {
 	return &StationHandlers{
@@ -96,7 +100,8 @@ func NewStationHandlers(stationService StationService, logger *zap.Logger) *Stat
 // @Security BearerAuth
 // @Router /api/v1/account/station [get]
 func (h *StationHandlers) GetStation(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), stationRequestTimeout)
+	defer cancel()
 
 	userIDVal, exists := c.Get("user_id")
 	if !exists {
@@ -116,10 +121,69 @@ func (h *StationHandlers) GetStation(c *gin.Context) {
 		return
 	}
 
-	// Get user balances
-	balances, err := h.stationService.GetUserBalances(ctx, userID)
-	if err != nil {
-		h.logger.Error("Failed to get user balances", zap.Error(err), zap.String("user_id", userID.String()))
+	var (
+		balances     *station.Balances
+		settings     = &station.UserSettings{CurrencyLocale: "en-US"}
+		pendingCount int
+		activity     []*station.ActivityItem
+		unreadCount  int
+		trends       *station.BalanceTrends
+		balanceErr   error
+	)
+
+	var wg sync.WaitGroup
+	balanceReady := make(chan struct{})
+	wg.Add(6)
+
+	go func() {
+		defer wg.Done()
+		balances, balanceErr = h.stationService.GetUserBalances(ctx, userID)
+		close(balanceReady)
+	}()
+
+	go func() {
+		defer wg.Done()
+		if s, err := h.stationService.GetUserSettings(ctx, userID); err == nil && s != nil {
+			settings = s
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		if c, err := h.stationService.GetPendingInfo(ctx, userID); err == nil {
+			pendingCount = c
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		if a, err := h.stationService.GetRecentActivity(ctx, userID, 5); err == nil {
+			activity = a
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		if n, err := h.stationService.GetUnreadNotificationCount(ctx, userID); err == nil {
+			unreadCount = n
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		<-balanceReady
+		if balanceErr != nil || balances == nil {
+			return
+		}
+		if t, err := h.stationService.GetBalanceTrends(ctx, userID, balances.SpendingBalance, balances.StashBalance); err == nil {
+			trends = t
+		}
+	}()
+
+	wg.Wait()
+
+	if balanceErr != nil {
+		h.logger.Error("Failed to get user balances", zap.Error(balanceErr), zap.String("user_id", userID.String()))
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
 			Code:    "BALANCE_ERROR",
 			Message: "Failed to retrieve balances",
@@ -127,14 +191,8 @@ func (h *StationHandlers) GetStation(c *gin.Context) {
 		return
 	}
 
-	// Get user settings
-	settings, _ := h.stationService.GetUserSettings(ctx, userID)
-
-	// Get pending info
-	pendingCount, _ := h.stationService.GetPendingInfo(ctx, userID)
-
-	// Determine system status
-	systemStatus := h.determineSystemStatus(ctx, userID)
+	// Determine system status from already-fetched pending count.
+	systemStatus := h.determineSystemStatus(pendingCount)
 
 	// Build response
 	response := StationResponse{
@@ -150,8 +208,8 @@ func (h *StationHandlers) GetStation(c *gin.Context) {
 		RecentActivity:           []ActivityItemResponse{},
 	}
 
-	// Get balance trends
-	if trends, err := h.stationService.GetBalanceTrends(ctx, userID, balances.SpendingBalance, balances.StashBalance); err == nil && trends != nil {
+	// Balance trends are fetched in parallel after balances resolve.
+	if trends != nil {
 		response.BalanceTrends = &BalanceTrendsResponse{
 			Spend: BalanceTrendResponse{
 				DayChange:   trends.Spend.DayChange.StringFixed(2),
@@ -166,35 +224,25 @@ func (h *StationHandlers) GetStation(c *gin.Context) {
 		}
 	}
 
-	// Get recent activity (last 5 transactions)
-	if activity, err := h.stationService.GetRecentActivity(ctx, userID, 5); err == nil {
-		for _, item := range activity {
-			response.RecentActivity = append(response.RecentActivity, ActivityItemResponse{
-				ID:          item.ID.String(),
-				Type:        item.Type,
-				Amount:      item.Amount.StringFixed(2),
-				Description: item.Description,
-				CreatedAt:   item.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-			})
-		}
+	// Recent activity was fetched in parallel.
+	for _, item := range activity {
+		response.RecentActivity = append(response.RecentActivity, ActivityItemResponse{
+			ID:          item.ID.String(),
+			Type:        item.Type,
+			Amount:      item.Amount.StringFixed(2),
+			Description: item.Description,
+			CreatedAt:   item.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		})
 	}
 
-	// Get unread alert count
-	response.UnreadAlertCount, _ = h.stationService.GetUnreadNotificationCount(ctx, userID)
+	response.UnreadAlertCount = unreadCount
 
 	c.JSON(http.StatusOK, response)
 }
 
 // determineSystemStatus determines the current system status
-func (h *StationHandlers) determineSystemStatus(ctx context.Context, userID uuid.UUID) SystemStatus {
-	// Check for pending deposits (allocating state)
-	hasPending, err := h.stationService.HasPendingDeposits(ctx, userID)
-	if err != nil {
-		h.logger.Warn("Failed to check pending deposits", zap.Error(err))
-		return SystemStatusActive
-	}
-
-	if hasPending {
+func (h *StationHandlers) determineSystemStatus(pendingCount int) SystemStatus {
+	if pendingCount > 0 {
 		return SystemStatusAllocating
 	}
 

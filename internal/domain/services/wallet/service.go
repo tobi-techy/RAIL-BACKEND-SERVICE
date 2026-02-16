@@ -24,7 +24,10 @@ type Service struct {
 	config              Config
 }
 
-const defaultWalletSetNamePrefix = "STACK-WalletSet"
+const (
+	defaultWalletSetNamePrefix     = "STACK-WalletSet"
+	walletProvisioningAsyncTimeout = 90 * time.Second
+)
 
 // Config captures runtime configuration for the wallet service
 type Config struct {
@@ -200,15 +203,22 @@ func (s *Service) CreateWalletsForUser(ctx context.Context, userID uuid.UUID, ch
 		return fmt.Errorf("failed to create provisioning job: %w", err)
 	}
 
-	// Process the job immediately (in production this might be done by a background worker)
-	if err := s.ProcessWalletProvisioningJob(ctx, job.ID); err != nil {
-		s.logger.Error("Failed to process wallet provisioning job",
-			zap.Error(err),
-			zap.String("jobID", job.ID.String()))
-		return fmt.Errorf("failed to process provisioning job: %w", err)
-	}
+	// Process asynchronously so API requests return immediately after queueing.
+	go s.processWalletProvisioningAsync(job.ID, userID)
 
 	return nil
+}
+
+func (s *Service) processWalletProvisioningAsync(jobID, userID uuid.UUID) {
+	bgCtx, cancel := context.WithTimeout(context.Background(), walletProvisioningAsyncTimeout)
+	defer cancel()
+
+	if err := s.ProcessWalletProvisioningJob(bgCtx, jobID); err != nil {
+		s.logger.Error("Asynchronous wallet provisioning job failed",
+			zap.Error(err),
+			zap.String("jobID", jobID.String()),
+			zap.String("userID", userID.String()))
+	}
 }
 
 // ProcessWalletProvisioningJob processes a wallet provisioning job
@@ -441,16 +451,18 @@ func (s *Service) RetryFailedWalletProvisioning(ctx context.Context, limit int) 
 	s.logger.Info("Found retryable jobs", zap.Int("count", len(jobs)))
 
 	for _, job := range jobs {
-		if time.Now().After(*job.NextRetryAt) {
-			s.logger.Info("Retrying wallet provisioning job",
-				zap.String("jobID", job.ID.String()),
-				zap.String("userID", job.UserID.String()))
+		if job.NextRetryAt != nil && time.Now().Before(*job.NextRetryAt) {
+			continue
+		}
 
-			if err := s.ProcessWalletProvisioningJob(ctx, job.ID); err != nil {
-				s.logger.Error("Failed to retry provisioning job",
-					zap.Error(err),
-					zap.String("jobID", job.ID.String()))
-			}
+		s.logger.Info("Retrying wallet provisioning job",
+			zap.String("jobID", job.ID.String()),
+			zap.String("userID", job.UserID.String()))
+
+		if err := s.ProcessWalletProvisioningJob(ctx, job.ID); err != nil {
+			s.logger.Error("Failed to retry provisioning job",
+				zap.Error(err),
+				zap.String("jobID", job.ID.String()))
 		}
 	}
 

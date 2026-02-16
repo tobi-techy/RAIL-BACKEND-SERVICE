@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 
 const (
 	unosendAPIBaseURL = "https://www.unosend.co/api/v1"
+	emailSendTimeout  = 8 * time.Second
 )
 
 // LoginAlertDetails represents metadata associated with a login notification email
@@ -66,7 +68,17 @@ func NewEmailService(logger *zap.Logger, config EmailServiceConfig) (*EmailServi
 		return nil, fmt.Errorf("unosend api key is required")
 	}
 
-	httpClient := &http.Client{Timeout: 30 * time.Second}
+	httpClient := &http.Client{
+		Timeout: emailSendTimeout,
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   3 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			TLSHandshakeTimeout:   3 * time.Second,
+			ResponseHeaderTimeout: 5 * time.Second,
+		},
+	}
 
 	return &EmailService{
 		logger:     logger,
@@ -78,7 +90,7 @@ func NewEmailService(logger *zap.Logger, config EmailServiceConfig) (*EmailServi
 // sendEmail is a helper method to send emails via Unosend
 func (e *EmailService) sendEmail(ctx context.Context, to, subject, htmlContent, textContent string) error {
 	// Add timeout to context
-	ctxWithTimeout, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, emailSendTimeout)
 	defer cancel()
 
 	return e.sendViaUnosend(ctxWithTimeout, to, subject, htmlContent, textContent)

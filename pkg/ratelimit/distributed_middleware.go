@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
@@ -18,6 +19,8 @@ type DistributedRateLimiter struct {
 	logger   *zap.Logger
 	failOpen bool
 }
+
+const failOpenCheckTimeout = 250 * time.Millisecond
 
 func NewDistributedRateLimiter(limiter *TieredLimiter, cfg config.RateLimitConfig, logger *zap.Logger) *DistributedRateLimiter {
 	return &DistributedRateLimiter{
@@ -49,7 +52,13 @@ func (rl *DistributedRateLimiter) Middleware() gin.HandlerFunc {
 		var err error
 
 		if rl.limiter != nil {
-			result, err = rl.limiter.Check(c.Request.Context(), ip, userID, endpoint)
+			checkCtx := c.Request.Context()
+			cancel := func() {}
+			if rl.failOpen {
+				checkCtx, cancel = context.WithTimeout(checkCtx, failOpenCheckTimeout)
+			}
+			result, err = rl.limiter.Check(checkCtx, ip, userID, endpoint)
+			cancel()
 			if err != nil {
 				rl.logger.Error("Rate limit check failed",
 					zap.Error(err),

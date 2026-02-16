@@ -21,6 +21,13 @@ const (
 	maxVerificationAttempts = 3
 	rateLimitWindow         = 1 * time.Minute
 	maxSendAttempts         = 5
+	sendOperationTimeout    = 5 * time.Second
+	redisOperationTimeout   = 2 * time.Second
+	sendWorkerCount         = 2
+	sendQueueSize           = 512
+	sendQueueEnqueueWait    = 50 * time.Millisecond
+	sendRetryCount          = 2
+	sendRetryBackoff        = 500 * time.Millisecond
 )
 
 // VerificationService defines the interface for managing verification codes
@@ -46,6 +53,13 @@ type verificationService struct {
 	smsSender   VerificationSMSSender
 	logger      *zap.Logger
 	config      *config.Config
+	sendQueue   chan sendRequest
+}
+
+type sendRequest struct {
+	identifierType string
+	identifier     string
+	code           string
 }
 
 // NewVerificationService creates a new VerificationService
@@ -56,29 +70,39 @@ func NewVerificationService(
 	logger *zap.Logger,
 	cfg *config.Config,
 ) VerificationService {
-	return &verificationService{
+	svc := &verificationService{
 		redisClient: redisClient,
 		emailSender: emailSender,
 		smsSender:   smsSender,
 		logger:      logger,
 		config:      cfg,
+		sendQueue:   make(chan sendRequest, sendQueueSize),
 	}
+
+	for i := 0; i < sendWorkerCount; i++ {
+		go svc.sendWorker(i)
+	}
+
+	return svc
 }
 
 // GenerateAndSendCode generates a 6-digit code, stores it in Redis, and sends it via email or SMS
 func (s *verificationService) GenerateAndSendCode(ctx context.Context, identifierType, identifier string) (string, error) {
+	opCtx, cancel := withTimeout(ctx, sendOperationTimeout)
+	defer cancel()
+
 	identifier = normalizeVerificationIdentifier(identifierType, identifier)
 
 	// Check rate limit for sending codes
 	sendAttemptsKey := fmt.Sprintf("send_attempts:%s:%s", identifierType, identifier)
-	sendAttempts, err := s.redisClient.Incr(ctx, sendAttemptsKey)
+	sendAttempts, err := s.redisClient.Incr(opCtx, sendAttemptsKey)
 	if err != nil {
 		s.logger.Error("Failed to increment send attempts counter", zap.Error(err), zap.String("key", sendAttemptsKey))
 		return "", fmt.Errorf("failed to check send rate limit: %w", err)
 	}
 	if sendAttempts == 1 {
 		// Set expiration for the first attempt in the window
-		if err := s.redisClient.Expire(ctx, sendAttemptsKey, rateLimitWindow); err != nil {
+		if err := s.redisClient.Expire(opCtx, sendAttemptsKey, rateLimitWindow); err != nil {
 			s.logger.Error("Failed to set expiration for send attempts counter", zap.Error(err), zap.String("key", sendAttemptsKey))
 		}
 	}
@@ -108,46 +132,46 @@ func (s *verificationService) GenerateAndSendCode(ctx context.Context, identifie
 	}
 
 	key := fmt.Sprintf("verification:%s:%s", identifierType, identifier)
-	if err := s.redisClient.Set(ctx, key, verificationData, verificationCodeTTL); err != nil {
+	if err := s.redisClient.Set(opCtx, key, verificationData, verificationCodeTTL); err != nil {
 		s.logger.Error("Failed to store verification code in Redis", zap.Error(err), zap.String("key", key))
 		return "", fmt.Errorf("failed to store verification code: %w", err)
 	}
 
-	var sendErr error
-	if identifierType == "email" {
-		if s.emailSender == nil {
+	// Fail fast if delivery infrastructure is not configured for this identifier type.
+	if err := s.validateDelivery(identifierType); err != nil {
+		return "", err
+	}
+
+	req := sendRequest{
+		identifierType: identifierType,
+		identifier:     identifier,
+		code:           code,
+	}
+
+	if err := s.enqueueSend(opCtx, req); err != nil {
+		s.logger.Warn("Verification send queue full, falling back to synchronous send",
+			zap.Error(err),
+			zap.String("identifier_type", identifierType),
+			zap.String("identifier", identifier))
+
+		sendCtx, cancel := withTimeout(opCtx, sendOperationTimeout)
+		defer cancel()
+
+		if sendErr := s.sendCode(sendCtx, req); sendErr != nil {
 			if isDevEnvironment(s.config.Environment) {
-				s.logger.Info("DEV MODE: Verification code for email",
-					zap.String("email", identifier),
-					zap.String("code", code))
+				s.logger.Warn("DEV MODE: Failed to send verification code, using locally generated code",
+					zap.String("identifier_type", identifierType),
+					zap.String("identifier", identifier),
+					zap.String("code", code),
+					zap.Error(sendErr))
 				return code, nil
 			}
-			return "", fmt.Errorf("email service not configured")
+			s.logger.Error("Failed to send verification code", zap.Error(sendErr), zap.String("identifier", identifier))
+			return "", fmt.Errorf("failed to send verification code: %w", sendErr)
 		}
-		sendErr = s.emailSender.SendVerificationEmail(ctx, identifier, code)
-	} else if identifierType == "phone" {
-		if s.smsSender == nil {
-			return "", fmt.Errorf("sms service not configured")
-		}
-		sendErr = s.smsSender.SendVerificationSMS(ctx, identifier, code)
-	} else {
-		return "", fmt.Errorf("unsupported identifier type: %s", identifierType)
 	}
 
-	if sendErr != nil {
-		if isDevEnvironment(s.config.Environment) {
-			s.logger.Warn("DEV MODE: Failed to send verification code, using locally generated code",
-				zap.String("identifier_type", identifierType),
-				zap.String("identifier", identifier),
-				zap.String("code", code),
-				zap.Error(sendErr))
-			return code, nil
-		}
-		s.logger.Error("Failed to send verification code", zap.Error(sendErr), zap.String("identifier", identifier))
-		return "", fmt.Errorf("failed to send verification code: %w", sendErr)
-	}
-
-	s.logger.Info("Verification code generated and sent", zap.String("identifier", identifier), zap.String("code", code))
+	s.logger.Info("Verification code generated and queued", zap.String("identifier", identifier), zap.String("code", code))
 	return code, nil
 }
 
@@ -162,11 +186,14 @@ func isDevEnvironment(env string) bool {
 
 // VerifyCode validates the provided code against the stored one
 func (s *verificationService) VerifyCode(ctx context.Context, identifierType, identifier, code string) (bool, error) {
+	opCtx, cancel := withTimeout(ctx, redisOperationTimeout)
+	defer cancel()
+
 	identifier = normalizeVerificationIdentifier(identifierType, identifier)
 
 	key := fmt.Sprintf("verification:%s:%s", identifierType, identifier)
 	var storedData entities.VerificationCodeData
-	err := s.redisClient.Get(ctx, key, &storedData)
+	err := s.redisClient.Get(opCtx, key, &storedData)
 	if err != nil {
 		if err.Error() == fmt.Sprintf("key '%s' not found: redis: nil", key) { // Specific check for redis.Nil
 			s.logger.Warn("Verification code not found or expired", zap.String("identifier", identifier))
@@ -176,41 +203,48 @@ func (s *verificationService) VerifyCode(ctx context.Context, identifierType, id
 		return false, fmt.Errorf("failed to retrieve verification code: %w", err)
 	}
 
-	// Increment attempt count
+	// Code is valid, delete it from Redis.
+	if storedData.Code == code {
+		if err := s.redisClient.Del(opCtx, key); err != nil {
+			s.logger.Error("Failed to delete verification code from Redis after successful verification", zap.Error(err), zap.String("key", key))
+			// Non-critical error, but log it
+		}
+
+		s.logger.Info("Verification successful", zap.String("identifier", identifier))
+		return true, nil
+	}
+
+	// Track only failed attempts.
 	storedData.Attempts++
-	if err := s.redisClient.Set(ctx, key, storedData, storedData.ExpiresAt.Sub(time.Now())); err != nil {
+	if storedData.Attempts > maxVerificationAttempts {
+		s.logger.Warn("Too many verification attempts for code", zap.String("identifier", identifier))
+		_ = s.redisClient.Del(opCtx, key) // Invalidate code after too many attempts
+		return false, fmt.Errorf("too many verification attempts. Please request a new code")
+	}
+
+	ttl := time.Until(storedData.ExpiresAt)
+	if ttl <= 0 {
+		ttl = time.Second
+	}
+	if err := s.redisClient.Set(opCtx, key, storedData, ttl); err != nil {
 		s.logger.Error("Failed to update verification code attempts in Redis", zap.Error(err), zap.String("key", key))
 		// Non-critical error, continue with verification
 	}
 
-	if storedData.Attempts > maxVerificationAttempts {
-		s.logger.Warn("Too many verification attempts for code", zap.String("identifier", identifier))
-		s.redisClient.Del(ctx, key) // Invalidate code after too many attempts
-		return false, fmt.Errorf("too many verification attempts. Please request a new code")
-	}
-
-	if storedData.Code != code {
-		s.logger.Warn("Invalid verification code provided", zap.String("identifier", identifier), zap.Int("attempts", storedData.Attempts))
-		return false, fmt.Errorf("invalid verification code")
-	}
-
-	// Code is valid, delete it from Redis
-	if err := s.redisClient.Del(ctx, key); err != nil {
-		s.logger.Error("Failed to delete verification code from Redis after successful verification", zap.Error(err), zap.String("key", key))
-		// Non-critical error, but log it
-	}
-
-	s.logger.Info("Verification successful", zap.String("identifier", identifier))
-	return true, nil
+	s.logger.Warn("Invalid verification code provided", zap.String("identifier", identifier), zap.Int("attempts", storedData.Attempts))
+	return false, fmt.Errorf("invalid verification code")
 }
 
 // CanResendCode checks if a new verification code can be sent based on rate limits
 func (s *verificationService) CanResendCode(ctx context.Context, identifierType, identifier string) (bool, error) {
+	opCtx, cancel := withTimeout(ctx, redisOperationTimeout)
+	defer cancel()
+
 	identifier = normalizeVerificationIdentifier(identifierType, identifier)
 
 	sendAttemptsKey := fmt.Sprintf("send_attempts:%s:%s", identifierType, identifier)
 	var sendAttemptsStr string
-	err := s.redisClient.Get(ctx, sendAttemptsKey, &sendAttemptsStr) // Get as string to check existence
+	err := s.redisClient.Get(opCtx, sendAttemptsKey, &sendAttemptsStr) // Get as string to check existence
 	if err != nil && err.Error() != fmt.Sprintf("key '%s' not found: redis: nil", sendAttemptsKey) {
 		s.logger.Error("Failed to check send attempts counter", zap.Error(err), zap.String("key", sendAttemptsKey))
 		return false, fmt.Errorf("failed to check resend eligibility: %w", err)
@@ -226,21 +260,120 @@ func (s *verificationService) CanResendCode(ctx context.Context, identifierType,
 
 // RecordSendAttempt records a send attempt for rate limiting
 func (s *verificationService) RecordSendAttempt(ctx context.Context, identifierType, identifier string) error {
+	opCtx, cancel := withTimeout(ctx, redisOperationTimeout)
+	defer cancel()
+
 	identifier = normalizeVerificationIdentifier(identifierType, identifier)
 
 	sendAttemptsKey := fmt.Sprintf("send_attempts:%s:%s", identifierType, identifier)
-	sendAttempts, err := s.redisClient.Incr(ctx, sendAttemptsKey)
+	sendAttempts, err := s.redisClient.Incr(opCtx, sendAttemptsKey)
 	if err != nil {
 		s.logger.Error("Failed to increment send attempts counter", zap.Error(err), zap.String("key", sendAttemptsKey))
 		return fmt.Errorf("failed to record send attempt: %w", err)
 	}
 	if sendAttempts == 1 {
 		// Set expiration for the first attempt in the window
-		if err := s.redisClient.Expire(ctx, sendAttemptsKey, rateLimitWindow); err != nil {
+		if err := s.redisClient.Expire(opCtx, sendAttemptsKey, rateLimitWindow); err != nil {
 			s.logger.Error("Failed to set expiration for send attempts counter", zap.Error(err), zap.String("key", sendAttemptsKey))
 		}
 	}
 	return nil
+}
+
+func withTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if deadline, ok := parent.Deadline(); ok && time.Until(deadline) <= timeout {
+		return parent, func() {}
+	}
+	return context.WithTimeout(parent, timeout)
+}
+
+func (s *verificationService) validateDelivery(identifierType string) error {
+	switch identifierType {
+	case "email":
+		if s.emailSender == nil && !isDevEnvironment(s.config.Environment) {
+			return fmt.Errorf("email service not configured")
+		}
+	case "phone":
+		if s.smsSender == nil {
+			return fmt.Errorf("sms service not configured")
+		}
+	default:
+		return fmt.Errorf("unsupported identifier type: %s", identifierType)
+	}
+	return nil
+}
+
+func (s *verificationService) enqueueSend(ctx context.Context, req sendRequest) error {
+	queueCtx, cancel := withTimeout(ctx, sendQueueEnqueueWait)
+	defer cancel()
+
+	select {
+	case s.sendQueue <- req:
+		return nil
+	case <-queueCtx.Done():
+		return fmt.Errorf("verification send queue timeout: %w", queueCtx.Err())
+	}
+}
+
+func (s *verificationService) sendWorker(workerID int) {
+	for req := range s.sendQueue {
+		var lastErr error
+		for attempt := 1; attempt <= sendRetryCount; attempt++ {
+			attemptCtx, cancel := context.WithTimeout(context.Background(), sendOperationTimeout)
+			lastErr = s.sendCode(attemptCtx, req)
+			cancel()
+			if lastErr == nil {
+				s.logger.Debug("Verification code delivered",
+					zap.Int("worker_id", workerID),
+					zap.Int("attempt", attempt),
+					zap.String("identifier_type", req.identifierType),
+					zap.String("identifier", req.identifier))
+				break
+			}
+
+			if attempt < sendRetryCount {
+				time.Sleep(sendRetryBackoff * time.Duration(attempt))
+			}
+		}
+
+		if lastErr != nil {
+			if isDevEnvironment(s.config.Environment) {
+				s.logger.Warn("DEV MODE: verification code dispatch failed in worker",
+					zap.Int("worker_id", workerID),
+					zap.String("identifier_type", req.identifierType),
+					zap.String("identifier", req.identifier),
+					zap.String("code", req.code),
+					zap.Error(lastErr))
+				continue
+			}
+
+			s.logger.Error("Verification code dispatch failed in worker",
+				zap.Int("worker_id", workerID),
+				zap.String("identifier_type", req.identifierType),
+				zap.String("identifier", req.identifier),
+				zap.Error(lastErr))
+		}
+	}
+}
+
+func (s *verificationService) sendCode(ctx context.Context, req sendRequest) error {
+	switch req.identifierType {
+	case "email":
+		if s.emailSender == nil {
+			if isDevEnvironment(s.config.Environment) {
+				return nil
+			}
+			return fmt.Errorf("email service not configured")
+		}
+		return s.emailSender.SendVerificationEmail(ctx, req.identifier, req.code)
+	case "phone":
+		if s.smsSender == nil {
+			return fmt.Errorf("sms service not configured")
+		}
+		return s.smsSender.SendVerificationSMS(ctx, req.identifier, req.code)
+	default:
+		return fmt.Errorf("unsupported identifier type: %s", req.identifierType)
+	}
 }
 
 // generateNumericCode generates a random numeric string of specified length
