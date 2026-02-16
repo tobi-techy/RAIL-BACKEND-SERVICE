@@ -2,10 +2,10 @@ package webhooks
 
 import (
 	"context"
-	"crypto/hmac"
+	"crypto/ecdsa"
 	"crypto/sha256"
-	"crypto/subtle"
-	"encoding/hex"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -33,7 +33,8 @@ type CircleWebhookHandler struct {
 	fundingService    CircleDepositProcessor
 	managedWalletRepo CircleManagedWalletRepository
 	logger            *logger.Logger
-	webhookSecret     string // For signature verification
+	circleAPIKey      string // For fetching public keys
+	circleBaseURL     string
 }
 
 // NewCircleWebhookHandler creates a new Circle webhook handler
@@ -41,13 +42,15 @@ func NewCircleWebhookHandler(
 	fundingService CircleDepositProcessor,
 	managedWalletRepo CircleManagedWalletRepository,
 	logger *logger.Logger,
-	webhookSecret string,
+	circleAPIKey string,
+	circleBaseURL string,
 ) *CircleWebhookHandler {
 	return &CircleWebhookHandler{
 		fundingService:    fundingService,
 		managedWalletRepo: managedWalletRepo,
 		logger:            logger,
-		webhookSecret:     webhookSecret,
+		circleAPIKey:      circleAPIKey,
+		circleBaseURL:     circleBaseURL,
 	}
 }
 
@@ -56,22 +59,23 @@ func NewCircleWebhookHandler(
 func (h *CircleWebhookHandler) HandleTransferNotification(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	// Verify webhook signature
-	signature := c.GetHeader("X-Circle-Signature")
-	if signature == "" {
-		h.logger.Warn("Missing Circle webhook signature")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing signature"})
-		return
-	}
-
 	// Read raw body for signature verification
 	var rawBody []byte
 	if c.Request.Body != nil {
 		rawBody, _ = c.GetRawData()
 	}
 
-	// Verify signature (implement actual verification based on Circle docs)
-	if !h.verifySignature(signature, rawBody) {
+	// Verify webhook signature using Circle's ECDSA verification
+	keyID := c.GetHeader("X-Circle-Key-Id")
+	signature := c.GetHeader("X-Circle-Signature")
+	
+	if keyID == "" || signature == "" {
+		h.logger.Warn("Missing Circle webhook headers")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing signature headers"})
+		return
+	}
+
+	if !h.verifySignature(ctx, keyID, signature, rawBody) {
 		h.logger.Error("Invalid Circle webhook signature")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
 		return
@@ -289,28 +293,94 @@ func (h *CircleWebhookHandler) processIncomingTransactionNotification(ctx contex
 	return nil
 }
 
-// verifySignature verifies the Circle webhook signature using HMAC-SHA256
-func (h *CircleWebhookHandler) verifySignature(signature string, body []byte) bool {
-	// Skip verification in dev mode if secret is not configured
-	if h.webhookSecret == "" {
-		h.logger.Warn("Webhook secret not configured - skipping signature verification")
+// verifySignature verifies the Circle webhook signature using ECDSA-SHA256
+func (h *CircleWebhookHandler) verifySignature(ctx context.Context, keyID, signature string, body []byte) bool {
+	// Skip verification in dev mode if API key is not configured
+	if h.circleAPIKey == "" {
+		h.logger.Warn("Circle API key not configured - skipping signature verification")
 		return true
 	}
 
-	// Circle uses HMAC-SHA256 for webhook signatures
-	mac := hmac.New(sha256.New, []byte(h.webhookSecret))
-	mac.Write(body)
-	expectedSignature := hex.EncodeToString(mac.Sum(nil))
+	// Fetch the public key from Circle API
+	publicKeyBase64, err := h.fetchPublicKey(ctx, keyID)
+	if err != nil {
+		h.logger.Error("Failed to fetch Circle public key", "error", err, "key_id", keyID)
+		return false
+	}
 
-	// Use constant-time comparison to prevent timing attacks
-	if subtle.ConstantTimeCompare([]byte(expectedSignature), []byte(signature)) != 1 {
-		h.logger.Warn("Webhook signature verification failed",
-			"expected_prefix", expectedSignature[:16]+"...",
-			"received_prefix", truncateString(signature, 16)+"...")
+	// Decode the base64 public key
+	publicKeyBytes, err := base64.StdEncoding.DecodeString(publicKeyBase64)
+	if err != nil {
+		h.logger.Error("Failed to decode Circle public key", "error", err)
+		return false
+	}
+
+	// Parse the DER-encoded public key
+	publicKeyInterface, err := x509.ParsePKIXPublicKey(publicKeyBytes)
+	if err != nil {
+		h.logger.Error("Failed to parse Circle public key", "error", err)
+		return false
+	}
+
+	publicKey, ok := publicKeyInterface.(*ecdsa.PublicKey)
+	if !ok {
+		h.logger.Error("Circle public key is not ECDSA")
+		return false
+	}
+
+	// Decode the base64 signature
+	signatureBytes, err := base64.StdEncoding.DecodeString(signature)
+	if err != nil {
+		h.logger.Error("Failed to decode Circle signature", "error", err)
+		return false
+	}
+
+	// Hash the message body
+	hash := sha256.Sum256(body)
+
+	// Verify the signature using ECDSA
+	if !ecdsa.VerifyASN1(publicKey, hash[:], signatureBytes) {
+		h.logger.Warn("Circle webhook signature verification failed")
 		return false
 	}
 
 	return true
+}
+
+// fetchPublicKey fetches the public key from Circle API
+func (h *CircleWebhookHandler) fetchPublicKey(ctx context.Context, keyID string) (string, error) {
+	url := fmt.Sprintf("%s/v2/notifications/publicKey/%s", h.circleBaseURL, keyID)
+	
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return "", err
+	}
+	
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", h.circleAPIKey))
+	req.Header.Set("Accept", "application/json")
+	
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to fetch public key: status %d", resp.StatusCode)
+	}
+	
+	var result struct {
+		Data struct {
+			PublicKey string `json:"publicKey"`
+		} `json:"data"`
+	}
+	
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	
+	return result.Data.PublicKey, nil
 }
 
 // truncateString safely truncates a string to max length
