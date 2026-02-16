@@ -10,9 +10,15 @@ import (
 
 // Claims represents JWT claims
 type Claims struct {
-	UserID uuid.UUID `json:"user_id"`
-	Email  string    `json:"email"`
-	Role   string    `json:"role"`
+	UserID    uuid.UUID `json:"user_id"`
+	Email     string    `json:"email"`
+	Role      string    `json:"role"`
+	TokenType string    `json:"token_type,omitempty"` // access
+	jwt.RegisteredClaims
+}
+
+type RefreshClaims struct {
+	TokenType string `json:"token_type,omitempty"` // refresh
 	jwt.RegisteredClaims
 }
 
@@ -31,9 +37,10 @@ func GenerateTokenPair(userID uuid.UUID, email, role, secret string, accessTTL, 
 
 	// Access token claims
 	accessClaims := Claims{
-		UserID: userID,
-		Email:  email,
-		Role:   role,
+		UserID:    userID,
+		Email:     email,
+		Role:      role,
+		TokenType: "access",
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(accessExp),
 			IssuedAt:  jwt.NewNumericDate(now),
@@ -44,12 +51,15 @@ func GenerateTokenPair(userID uuid.UUID, email, role, secret string, accessTTL, 
 	}
 
 	// Refresh token claims (minimal)
-	refreshClaims := jwt.RegisteredClaims{
-		ExpiresAt: jwt.NewNumericDate(refreshExp),
-		IssuedAt:  jwt.NewNumericDate(now),
-		NotBefore: jwt.NewNumericDate(now),
-		Issuer:    "rail_service",
-		Subject:   userID.String(),
+	refreshClaims := RefreshClaims{
+		TokenType: "refresh",
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(refreshExp),
+			IssuedAt:  jwt.NewNumericDate(now),
+			NotBefore: jwt.NewNumericDate(now),
+			Issuer:    "rail_service",
+			Subject:   userID.String(),
+		},
 	}
 
 	// Create access token
@@ -95,7 +105,7 @@ func ValidateToken(tokenString, secret string) (*Claims, error) {
 
 // ValidateRefreshToken validates a refresh token and returns the user ID
 func ValidateRefreshToken(refreshToken, secret string) (uuid.UUID, error) {
-	token, err := jwt.ParseWithClaims(refreshToken, &jwt.RegisteredClaims{}, func(token *jwt.Token) (interface{}, error) {
+	token, err := jwt.ParseWithClaims(refreshToken, jwt.MapClaims{}, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
@@ -106,12 +116,35 @@ func ValidateRefreshToken(refreshToken, secret string) (uuid.UUID, error) {
 		return uuid.Nil, fmt.Errorf("failed to parse refresh token: %w", err)
 	}
 
-	claims, ok := token.Claims.(*jwt.RegisteredClaims)
+	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok || !token.Valid {
 		return uuid.Nil, fmt.Errorf("invalid refresh token")
 	}
 
-	userID, err := uuid.Parse(claims.Subject)
+	tokenType, hasTokenType := claims["token_type"]
+	if hasTokenType {
+		if tokenTypeStr, ok := tokenType.(string); !ok || tokenTypeStr != "refresh" {
+			return uuid.Nil, fmt.Errorf("invalid refresh token type")
+		}
+	} else {
+		// Backward compatibility: reject tokens that look like access tokens.
+		if _, has := claims["role"]; has {
+			return uuid.Nil, fmt.Errorf("access token cannot be used as refresh token")
+		}
+		if _, has := claims["email"]; has {
+			return uuid.Nil, fmt.Errorf("access token cannot be used as refresh token")
+		}
+		if _, has := claims["user_id"]; has {
+			return uuid.Nil, fmt.Errorf("access token cannot be used as refresh token")
+		}
+	}
+
+	sub, ok := claims["sub"].(string)
+	if !ok || sub == "" {
+		return uuid.Nil, fmt.Errorf("invalid user ID in token subject")
+	}
+
+	userID, err := uuid.Parse(sub)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("invalid user ID in token: %w", err)
 	}
@@ -125,9 +158,10 @@ func GenerateAccessToken(userID uuid.UUID, email, role, secret string, accessTTL
 	accessExp := now.Add(time.Duration(accessTTL) * time.Second)
 
 	accessClaims := Claims{
-		UserID: userID,
-		Email:  email,
-		Role:   role,
+		UserID:    userID,
+		Email:     email,
+		Role:      role,
+		TokenType: "access",
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(accessExp),
 			IssuedAt:  jwt.NewNumericDate(now),

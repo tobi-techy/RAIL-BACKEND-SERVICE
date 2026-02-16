@@ -16,6 +16,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
 	"github.com/rail-service/rail_service/internal/domain/services/onboarding"
+	"github.com/rail-service/rail_service/internal/domain/services/passcode"
 	"github.com/rail-service/rail_service/internal/domain/services/security"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	"github.com/rail-service/rail_service/internal/domain/services/twofa"
@@ -39,6 +40,7 @@ type AuthHandlers struct {
 	emailService        *adapters.EmailService
 	sessionService      SessionService
 	twoFAService        TwoFAService
+	passcodeService     *passcode.Service
 	redisClient         RedisClient
 	validator           *validator.Validate
 }
@@ -55,6 +57,7 @@ type SessionService interface {
 	InvalidateSession(ctx context.Context, token string) error
 	InvalidateAllUserSessions(ctx context.Context, userID uuid.UUID) error
 	CreateSession(ctx context.Context, userID uuid.UUID, accessToken, refreshToken, ipAddress, userAgent, deviceFingerprint, location string, expiresAt time.Time) (*session.Session, error)
+	RotateSessionTokensByRefreshToken(ctx context.Context, userID uuid.UUID, currentRefreshToken, newAccessToken, newRefreshToken string, newExpiresAt time.Time) (*session.Session, error)
 }
 
 // TwoFAService interface for 2FA management
@@ -76,6 +79,7 @@ func NewAuthHandlers(
 	emailService *adapters.EmailService,
 	sessionService SessionService,
 	twoFAService TwoFAService,
+	passcodeService *passcode.Service,
 	redisClient RedisClient,
 ) *AuthHandlers {
 	return &AuthHandlers{
@@ -88,6 +92,7 @@ func NewAuthHandlers(
 		emailService:        emailService,
 		sessionService:      sessionService,
 		twoFAService:        twoFAService,
+		passcodeService:     passcodeService,
 		redisClient:         redisClient,
 		validator:           validator.New(),
 	}
@@ -249,6 +254,27 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 	}
 
 	if existingUnverified {
+		// For existing unverified user, ensure pending registration entry exists
+		// This allows them to complete verification flow with the new code
+		pendingTTL := 10 * time.Minute
+		pending := entities.PendingRegistration{
+			CreatedAt: time.Now(),
+			ExpiresAt: time.Now().Add(pendingTTL),
+		}
+		if identifierType == "email" {
+			pending.Email = identifier
+		} else {
+			pending.Phone = identifier
+		}
+
+		pendingKey = fmt.Sprintf("pending_registration:%s:%s", identifierType, identifier)
+		if err := h.redisClient.Set(ctx, pendingKey, pending, pendingTTL); err != nil {
+			h.logger.Warn("Failed to store pending registration for unverified user", zap.Error(err))
+			// Don't fail - the verification code was already sent, allow user to proceed
+		} else {
+			h.logger.Info("Pending registration created for unverified user", zap.String("identifier", identifier))
+		}
+
 		h.logger.Info("Verification code sent for existing unverified user", zap.String("identifier", identifier))
 		c.JSON(http.StatusAccepted, entities.SignUpResponse{
 			Message:    fmt.Sprintf("Verification code sent to %s. If you did not receive it, call /api/v1/auth/resend-code.", identifier),
@@ -811,6 +837,152 @@ func (h *AuthHandlers) Login(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
+type PasscodeLoginRequest struct {
+	Email    *string `json:"email"`
+	Phone    *string `json:"phone"`
+	Passcode string  `json:"passcode" binding:"required"`
+}
+
+// PasscodeLogin handles passcode-based re-authentication without requiring an active JWT.
+// This is used by returning users who already have local user data and passcode configured.
+func (h *AuthHandlers) PasscodeLogin(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	if h.passcodeService == nil {
+		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{
+			Code:    "PASSCODE_AUTH_UNAVAILABLE",
+			Message: "Passcode authentication is currently unavailable",
+		})
+		return
+	}
+
+	var req PasscodeLoginRequest
+	if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
+			Code:    "INVALID_REQUEST",
+			Message: "Invalid request payload",
+			Details: map[string]interface{}{"error": err.Error()},
+		})
+		return
+	}
+
+	identifier := ""
+	identifierType := ""
+	if req.Email != nil && strings.TrimSpace(*req.Email) != "" {
+		identifier = strings.TrimSpace(*req.Email)
+		identifierType = "email"
+	} else if req.Phone != nil && strings.TrimSpace(*req.Phone) != "" {
+		identifier = strings.TrimSpace(*req.Phone)
+		identifierType = "phone"
+	}
+	if identifier == "" || strings.TrimSpace(req.Passcode) == "" {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
+			Code:    "VALIDATION_ERROR",
+			Message: "Email or phone and passcode are required",
+		})
+		return
+	}
+
+	var (
+		userProfile *entities.UserProfile
+		err         error
+	)
+	if identifierType == "email" {
+		userProfile, err = h.userRepo.GetByEmail(ctx, identifier)
+	} else {
+		userProfile, err = h.userRepo.GetByPhone(ctx, identifier)
+	}
+	if err != nil || userProfile == nil {
+		h.recordLoginFailure(c, identifier)
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
+			Code:    "INVALID_CREDENTIALS",
+			Message: "Invalid credentials",
+		})
+		return
+	}
+
+	if !userProfile.IsActive {
+		h.recordLoginFailure(c, identifier)
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
+			Code:    "ACCOUNT_INACTIVE",
+			Message: "Account is inactive. Please contact support.",
+		})
+		return
+	}
+
+	passcodeSessionToken, passcodeSessionExpiresAt, err := h.passcodeService.VerifyPasscode(ctx, userProfile.ID, req.Passcode)
+	if err != nil {
+		switch {
+		case err == passcode.ErrPasscodeNotSet:
+			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
+				Code:    "PASSCODE_NOT_SET",
+				Message: "No passcode configured yet.",
+			})
+		case err == passcode.ErrPasscodeLocked:
+			status, statusErr := h.passcodeService.GetStatus(ctx, userProfile.ID)
+			details := map[string]interface{}{}
+			if statusErr == nil && status != nil && status.LockedUntil != nil {
+				details["lockedUntil"] = status.LockedUntil
+			}
+			c.JSON(http.StatusLocked, entities.ErrorResponse{
+				Code:    "PASSCODE_LOCKED",
+				Message: "Too many failed attempts. Please try again later.",
+				Details: details,
+			})
+		case err == passcode.ErrPasscodeMismatch:
+			h.recordLoginFailure(c, identifier)
+			c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
+				Code:    "INVALID_PASSCODE",
+				Message: "Passcode verification failed.",
+			})
+		default:
+			h.logger.Error("Failed to verify passcode for passcode login",
+				zap.Error(err),
+				zap.String("user_id", userProfile.ID.String()))
+			c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+				Code:    "PASSCODE_VERIFY_FAILED",
+				Message: "Failed to verify passcode",
+			})
+		}
+		return
+	}
+
+	tokens, err := auth.GenerateTokenPair(
+		userProfile.ID,
+		userProfile.Email,
+		"user",
+		h.cfg.JWT.Secret,
+		h.cfg.JWT.AccessTTL,
+		h.cfg.JWT.RefreshTTL,
+	)
+	if err != nil {
+		h.logger.Error("Failed to generate tokens for passcode login", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+			Code:    "TOKEN_GENERATION_FAILED",
+			Message: "Failed to generate authentication tokens",
+		})
+		return
+	}
+
+	if h.sessionService != nil {
+		ipAddress, userAgent, fingerprint, location := extractSessionDetails(c)
+		if _, err := h.sessionService.CreateSession(ctx, userProfile.ID, tokens.AccessToken, tokens.RefreshToken, ipAddress, userAgent, fingerprint, location, tokens.ExpiresAt); err != nil {
+			h.logger.Warn("Failed to create session after passcode login", zap.Error(err), zap.String("user_id", userProfile.ID.String()))
+		}
+	}
+
+	h.recordLoginSuccess(c, identifier)
+
+	c.JSON(http.StatusOK, entities.PasscodeVerificationResponse{
+		Verified:                 true,
+		AccessToken:              tokens.AccessToken,
+		RefreshToken:             tokens.RefreshToken,
+		ExpiresAt:                tokens.ExpiresAt,
+		PasscodeSessionToken:     passcodeSessionToken,
+		PasscodeSessionExpiresAt: passcodeSessionExpiresAt,
+	})
+}
+
 // RefreshToken handles JWT token refresh
 func (h *AuthHandlers) RefreshToken(c *gin.Context) {
 	ctx := c.Request.Context()
@@ -859,18 +1031,33 @@ func (h *AuthHandlers) RefreshToken(c *gin.Context) {
 		return
 	}
 
-	// Generate new access token with current user data
-	accessToken, expiresAt, err := auth.GenerateAccessToken(user.ID, user.Email, user.Role, h.cfg.JWT.Secret, h.cfg.JWT.AccessTTL)
+	// Generate a new token pair (rotates refresh token as well).
+	tokens, err := auth.GenerateTokenPair(
+		user.ID,
+		user.Email,
+		user.Role,
+		h.cfg.JWT.Secret,
+		h.cfg.JWT.AccessTTL,
+		h.cfg.JWT.RefreshTTL,
+	)
 	if err != nil {
-		h.logger.Error("Failed to generate access token", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "TOKEN_GENERATION_FAILED", Message: "Failed to generate access token"})
+		h.logger.Error("Failed to generate token pair", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "TOKEN_GENERATION_FAILED", Message: "Failed to generate authentication tokens"})
 		return
 	}
 
+	if h.sessionService != nil {
+		if _, err := h.sessionService.RotateSessionTokensByRefreshToken(ctx, user.ID, refreshToken, tokens.AccessToken, tokens.RefreshToken, tokens.ExpiresAt); err != nil {
+			h.logger.Warn("Failed to rotate session tokens on refresh", zap.Error(err), zap.String("user_id", user.ID.String()))
+			c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "INVALID_TOKEN", Message: "Invalid refresh token"})
+			return
+		}
+	}
+
 	c.JSON(http.StatusOK, auth.TokenPair{
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-		ExpiresAt:    expiresAt,
+		AccessToken:  tokens.AccessToken,
+		RefreshToken: tokens.RefreshToken,
+		ExpiresAt:    tokens.ExpiresAt,
 	})
 }
 
