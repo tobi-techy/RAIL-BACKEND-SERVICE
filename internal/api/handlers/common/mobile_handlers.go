@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -26,6 +27,11 @@ type MobileHandlers struct {
 	cardRepo          CardRepository
 	logger            *zap.Logger
 }
+
+const (
+	mobileRequestTimeout = 4 * time.Second
+	batchMaxConcurrent   = 4
+)
 
 // CardRepository interface for card status checks
 type CardRepository interface {
@@ -54,22 +60,22 @@ func NewMobileHandlers(
 // MobileHomeResponse is a compact response for the mobile home screen
 type MobileHomeResponse struct {
 	// Core balances (minimal payload)
-	TotalBalance    string `json:"total_balance"`
-	SpendBalance    string `json:"spend_balance"`
-	InvestBalance   string `json:"invest_balance"`
-	Currency        string `json:"currency"`
-	
+	TotalBalance  string `json:"total_balance"`
+	SpendBalance  string `json:"spend_balance"`
+	InvestBalance string `json:"invest_balance"`
+	Currency      string `json:"currency"`
+
 	// Status indicators
-	SystemStatus    string `json:"system_status"` // active, allocating, paused
-	KYCVerified     bool   `json:"kyc_verified"`
-	HasCard         bool   `json:"has_card"`
-	
+	SystemStatus string `json:"system_status"` // active, allocating, paused
+	KYCVerified  bool   `json:"kyc_verified"`
+	HasCard      bool   `json:"has_card"`
+
 	// Sync metadata for offline support
-	LastSyncAt      string `json:"last_sync_at"`
-	SyncVersion     int64  `json:"sync_version"`
-	
+	LastSyncAt  string `json:"last_sync_at"`
+	SyncVersion int64  `json:"sync_version"`
+
 	// Optional: recent activity count (not full list)
-	PendingActions  int    `json:"pending_actions"`
+	PendingActions int `json:"pending_actions"`
 }
 
 // GetMobileHome handles GET /mobile/home
@@ -83,7 +89,8 @@ type MobileHomeResponse struct {
 // @Security BearerAuth
 // @Router /api/v1/mobile/home [get]
 func (h *MobileHandlers) GetMobileHome(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), mobileRequestTimeout)
+	defer cancel()
 
 	userID, err := h.GetUserID(c)
 	if err != nil {
@@ -94,10 +101,39 @@ func (h *MobileHandlers) GetMobileHome(c *gin.Context) {
 		return
 	}
 
-	// Get allocation balances
-	balances, err := h.allocationService.GetBalances(ctx, userID)
-	if err != nil {
-		h.logger.Error("Failed to get balances", zap.Error(err), zap.String("user_id", userID.String()))
+	var (
+		balances   *entities.AllocationBalances
+		balanceErr error
+		user       *entities.User
+		hasCard    bool
+	)
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	go func() {
+		defer wg.Done()
+		balances, balanceErr = h.allocationService.GetBalancesLite(ctx, userID)
+	}()
+
+	go func() {
+		defer wg.Done()
+		user, _ = h.userRepo.GetUserEntityByID(ctx, userID)
+	}()
+
+	go func() {
+		defer wg.Done()
+		if h.cardRepo != nil {
+			if card, _ := h.cardRepo.GetActiveVirtualCard(ctx, userID); card != nil {
+				hasCard = true
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	if balanceErr != nil {
+		h.logger.Error("Failed to get balances", zap.Error(balanceErr), zap.String("user_id", userID.String()))
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
 			Code:    "BALANCE_ERROR",
 			Message: "Failed to retrieve balances",
@@ -105,22 +141,11 @@ func (h *MobileHandlers) GetMobileHome(c *gin.Context) {
 		return
 	}
 
-	// Get user for KYC status
-	user, _ := h.userRepo.GetUserEntityByID(ctx, userID)
 	kycVerified := user != nil && user.KYCStatus == "approved"
 
-	// Determine system status
 	systemStatus := "active"
-	if balances != nil && !balances.ModeActive {
+	if !balances.ModeActive {
 		systemStatus = "paused"
-	}
-
-	// Check if user has an active card
-	hasCard := false
-	if h.cardRepo != nil {
-		if card, _ := h.cardRepo.GetActiveVirtualCard(ctx, userID); card != nil {
-			hasCard = true
-		}
 	}
 
 	response := MobileHomeResponse{
@@ -176,7 +201,8 @@ type BatchResponseItem struct {
 // @Security BearerAuth
 // @Router /api/v1/mobile/batch [post]
 func (h *MobileHandlers) BatchExecute(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), mobileRequestTimeout)
+	defer cancel()
 
 	userID, err := h.GetUserID(c)
 	if err != nil {
@@ -197,10 +223,21 @@ func (h *MobileHandlers) BatchExecute(c *gin.Context) {
 	}
 
 	responses := make([]BatchResponseItem, len(req.Requests))
+	sem := make(chan struct{}, batchMaxConcurrent)
+	var wg sync.WaitGroup
 
 	for i, item := range req.Requests {
-		responses[i] = h.executeBatchItem(ctx, userID, item)
+		i, item := i, item
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			responses[i] = h.executeBatchItem(ctx, userID, item)
+		}()
 	}
+
+	wg.Wait()
 
 	c.JSON(http.StatusOK, BatchResponse{Responses: responses})
 }
@@ -211,7 +248,7 @@ func (h *MobileHandlers) executeBatchItem(ctx context.Context, userID uuid.UUID,
 
 	switch item.Path {
 	case "/balances":
-		balances, err := h.allocationService.GetBalances(ctx, userID)
+		balances, err := h.allocationService.GetBalancesLite(ctx, userID)
 		if err != nil {
 			errMsg := "Failed to get balances"
 			response.Status = 500
@@ -245,9 +282,9 @@ func (h *MobileHandlers) executeBatchItem(ctx context.Context, userID uuid.UUID,
 		} else {
 			response.Status = 200
 			response.Data = map[string]interface{}{
-				"email":        user.Email,
-				"kyc_status":   user.KYCStatus,
-				"onboarding":   user.OnboardingStatus,
+				"email":      user.Email,
+				"kyc_status": user.KYCStatus,
+				"onboarding": user.OnboardingStatus,
 			}
 		}
 
@@ -285,7 +322,8 @@ type SyncResponse struct {
 // @Security BearerAuth
 // @Router /api/v1/mobile/sync [post]
 func (h *MobileHandlers) Sync(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), mobileRequestTimeout)
+	defer cancel()
 
 	userID, err := h.GetUserID(c)
 	if err != nil {
@@ -312,29 +350,49 @@ func (h *MobileHandlers) Sync(c *gin.Context) {
 	hasChanges := req.LastSyncVersion < currentVersion
 
 	if hasChanges {
+		var (
+			wg sync.WaitGroup
+			mu sync.Mutex
+		)
+
 		for _, dataType := range req.RequestedData {
-			switch dataType {
-			case "balances":
-				if balances, err := h.allocationService.GetBalances(ctx, userID); err == nil {
-					data["balances"] = map[string]string{
-						"total":  balances.TotalBalance.StringFixed(2),
-						"spend":  balances.SpendingBalance.StringFixed(2),
-						"invest": balances.StashBalance.StringFixed(2),
+			dataType := dataType
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				switch dataType {
+				case "balances":
+					if balances, err := h.allocationService.GetBalancesLite(ctx, userID); err == nil {
+						payload := map[string]string{
+							"total":  balances.TotalBalance.StringFixed(2),
+							"spend":  balances.SpendingBalance.StringFixed(2),
+							"invest": balances.StashBalance.StringFixed(2),
+						}
+						mu.Lock()
+						data["balances"] = payload
+						mu.Unlock()
+					}
+				case "portfolio":
+					if portfolio, err := h.investingService.GetPortfolioOverview(ctx, userID); err == nil {
+						mu.Lock()
+						data["portfolio"] = portfolio
+						mu.Unlock()
+					}
+				case "profile":
+					if user, err := h.userRepo.GetUserEntityByID(ctx, userID); err == nil {
+						payload := map[string]interface{}{
+							"email":      user.Email,
+							"kyc_status": user.KYCStatus,
+						}
+						mu.Lock()
+						data["profile"] = payload
+						mu.Unlock()
 					}
 				}
-			case "portfolio":
-				if portfolio, err := h.investingService.GetPortfolioOverview(ctx, userID); err == nil {
-					data["portfolio"] = portfolio
-				}
-			case "profile":
-				if user, err := h.userRepo.GetUserEntityByID(ctx, userID); err == nil {
-					data["profile"] = map[string]interface{}{
-						"email":      user.Email,
-						"kyc_status": user.KYCStatus,
-					}
-				}
-			}
+			}()
 		}
+
+		wg.Wait()
 	}
 
 	c.JSON(http.StatusOK, SyncResponse{

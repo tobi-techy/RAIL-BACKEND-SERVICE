@@ -4,14 +4,15 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/autoinvest"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/shopspring/decimal"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -38,6 +39,10 @@ type AllocationRepository interface {
 // AutoInvestService defines the interface for auto-investment operations
 type AutoInvestService interface {
 	TriggerAutoInvestment(ctx context.Context, req autoinvest.TriggerRequest) error
+}
+
+type spendingTotalReader interface {
+	GetTotalSpendingAdded(ctx context.Context, userID uuid.UUID, startDate, endDate time.Time) (decimal.Decimal, error)
 }
 
 // Service handles smart allocation mode operations
@@ -455,24 +460,45 @@ func (s *Service) GetBalances(ctx context.Context, userID uuid.UUID) (*entities.
 		}, nil
 	}
 
-	// Get spending balance
-	spendingBalance, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
-	if err != nil {
-		span.RecordError(err)
-		return nil, fmt.Errorf("failed to get spending balance: %w", err)
-	}
+	var (
+		spendingBalance decimal.Decimal
+		stashBalance    decimal.Decimal
+		spendingUsed    decimal.Decimal
+		spendingErr     error
+		stashErr        error
+		spendingUsedErr error
+	)
 
-	// Get stash balance
-	stashBalance, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
-	if err != nil {
-		span.RecordError(err)
-		return nil, fmt.Errorf("failed to get stash balance: %w", err)
-	}
+	var wg sync.WaitGroup
+	wg.Add(3)
 
-	// Calculate spending used from transactions in current period
-	spendingUsed, err := s.calculateSpendingUsed(ctx, userID, mode)
-	if err != nil {
-		s.logger.Warn("Failed to calculate spending used, defaulting to zero", "error", err)
+	go func() {
+		defer wg.Done()
+		spendingBalance, spendingErr = s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
+	}()
+
+	go func() {
+		defer wg.Done()
+		stashBalance, stashErr = s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
+	}()
+
+	go func() {
+		defer wg.Done()
+		spendingUsed, spendingUsedErr = s.calculateSpendingUsed(ctx, userID, mode)
+	}()
+
+	wg.Wait()
+
+	if spendingErr != nil {
+		span.RecordError(spendingErr)
+		return nil, fmt.Errorf("failed to get spending balance: %w", spendingErr)
+	}
+	if stashErr != nil {
+		span.RecordError(stashErr)
+		return nil, fmt.Errorf("failed to get stash balance: %w", stashErr)
+	}
+	if spendingUsedErr != nil {
+		s.logger.Warn("Failed to calculate spending used, defaulting to zero", "error", spendingUsedErr)
 		spendingUsed = decimal.Zero
 	}
 
@@ -493,6 +519,76 @@ func (s *Service) GetBalances(ctx context.Context, userID uuid.UUID) (*entities.
 		attribute.String("stash_balance", stashBalance.String()),
 		attribute.String("total_balance", balances.TotalBalance.String()),
 	)
+
+	return balances, nil
+}
+
+// GetBalancesLite retrieves current balances without historical spending calculations.
+// This is intended for latency-sensitive endpoints where only live balances are needed.
+func (s *Service) GetBalancesLite(ctx context.Context, userID uuid.UUID) (*entities.AllocationBalances, error) {
+	ctx, span := tracer.Start(ctx, "allocation.GetBalancesLite",
+		trace.WithAttributes(attribute.String("user_id", userID.String())))
+	defer span.End()
+
+	mode, err := s.allocationRepo.GetMode(ctx, userID)
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("failed to get allocation mode: %w", err)
+	}
+
+	if mode == nil {
+		return &entities.AllocationBalances{
+			UserID:            userID,
+			SpendingBalance:   decimal.Zero,
+			StashBalance:      decimal.Zero,
+			SpendingUsed:      decimal.Zero,
+			SpendingRemaining: decimal.Zero,
+			TotalBalance:      decimal.Zero,
+			ModeActive:        false,
+			UpdatedAt:         time.Now(),
+		}, nil
+	}
+
+	var (
+		spendingBalance decimal.Decimal
+		stashBalance    decimal.Decimal
+		spendingErr     error
+		stashErr        error
+	)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		spendingBalance, spendingErr = s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
+	}()
+
+	go func() {
+		defer wg.Done()
+		stashBalance, stashErr = s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
+	}()
+
+	wg.Wait()
+
+	if spendingErr != nil {
+		span.RecordError(spendingErr)
+		return nil, fmt.Errorf("failed to get spending balance: %w", spendingErr)
+	}
+	if stashErr != nil {
+		span.RecordError(stashErr)
+		return nil, fmt.Errorf("failed to get stash balance: %w", stashErr)
+	}
+
+	balances := &entities.AllocationBalances{
+		UserID:          userID,
+		SpendingBalance: spendingBalance,
+		StashBalance:    stashBalance,
+		SpendingUsed:    decimal.Zero,
+		ModeActive:      mode.Active,
+		UpdatedAt:       time.Now(),
+	}
+	balances.CalculateTotals()
 
 	return balances, nil
 }
@@ -542,6 +638,13 @@ func (s *Service) calculateSpendingUsed(ctx context.Context, userID uuid.UUID, m
 	// Get start of current period - default to daily reset
 	periodStart := s.getPeriodStart("daily")
 
+	if repoWithTotals, ok := s.allocationRepo.(spendingTotalReader); ok {
+		total, err := repoWithTotals.GetTotalSpendingAdded(ctx, userID, periodStart, time.Now())
+		if err == nil {
+			return total, nil
+		}
+	}
+
 	// Query spending events from allocation events table
 	events, err := s.allocationRepo.GetEventsByDateRange(ctx, userID, periodStart, time.Now())
 	if err != nil {
@@ -569,7 +672,7 @@ func (s *Service) getPeriodStart(resetPeriod string) time.Time {
 		if weekday == 0 {
 			weekday = 7 // Sunday
 		}
-		return now.AddDate(0, 0, -(weekday-1)).Truncate(24 * time.Hour)
+		return now.AddDate(0, 0, -(weekday - 1)).Truncate(24 * time.Hour)
 	case "monthly":
 		return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 	default:
