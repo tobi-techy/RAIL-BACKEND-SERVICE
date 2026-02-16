@@ -1012,12 +1012,12 @@ func (c *Container) initializeDomainServices() error {
 
 	// Initialize unified funding webhook handler (Bridge + Circle + Alpaca).
 	// This enables /api/v1/webhooks/funding routing.
-	circleWebhookSecret := strings.TrimSpace(c.Config.Payment.WebhookSecret)
 	circleWebhookHandler := webhooks.NewCircleWebhookHandler(
 		c.FundingService,
 		c.WalletRepo,
 		c.Logger,
-		circleWebhookSecret,
+		c.Config.Circle.APIKey,
+		c.Config.Circle.BaseURL,
 	)
 	alpacaWebhookHandler := c.GetAlpacaWebhookHandlers()
 	c.UnifiedFundingWebhookHandler = webhooks.NewUnifiedFundingWebhookHandler(
@@ -1029,9 +1029,7 @@ func (c *Container) initializeDomainServices() error {
 	if bridgeSecret := strings.TrimSpace(c.Config.Bridge.WebhookSecret); bridgeSecret != "" {
 		c.UnifiedFundingWebhookHandler.SetWebhookSecret("bridge", bridgeSecret)
 	}
-	if circleWebhookSecret != "" {
-		c.UnifiedFundingWebhookHandler.SetWebhookSecret("circle", circleWebhookSecret)
-	}
+	// Circle uses ECDSA verification, no webhook secret needed in unified handler
 	if alpacaSecret := strings.TrimSpace(c.Config.Alpaca.WebhookSecret); alpacaSecret != "" {
 		c.UnifiedFundingWebhookHandler.SetWebhookSecret("alpaca", alpacaSecret)
 	}
