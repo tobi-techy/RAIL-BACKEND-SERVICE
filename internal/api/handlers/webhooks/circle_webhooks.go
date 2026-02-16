@@ -253,6 +253,9 @@ func (h *CircleWebhookHandler) processIncomingTransactionNotification(ctx contex
 		chain = entities.ChainSOL
 	}
 
+	// Map token ID to token symbol (default to USDC for now)
+	token := h.mapTokenIDToToken(n.TokenID)
+
 	address := strings.TrimSpace(n.DestinationAddress)
 	if address == "" && strings.TrimSpace(n.WalletID) != "" {
 		managedWallet, err := h.managedWalletRepo.GetByCircleWalletID(ctx, n.WalletID)
@@ -273,7 +276,7 @@ func (h *CircleWebhookHandler) processIncomingTransactionNotification(ctx contex
 		Chain:     chain,
 		Address:   address,
 		TxHash:    txHash,
-		Token:     entities.StablecoinUSDC,
+		Token:     token,
 		Amount:    amount.String(),
 		BlockTime: blockTime,
 	}
@@ -435,6 +438,14 @@ func (h *CircleWebhookHandler) mapWalletChainToChain(chain entities.WalletChain)
 	default:
 		return ""
 	}
+}
+
+// mapTokenIDToToken maps Circle's token ID to our token type
+func (h *CircleWebhookHandler) mapTokenIDToToken(tokenID string) entities.Stablecoin {
+	// For now, default to USDC as it's the primary stablecoin
+	// Circle's token IDs are UUIDs, we'd need a lookup table for proper mapping
+	// Most deposits will be USDC anyway
+	return entities.StablecoinUSDC
 }
 
 // ============================================================================
