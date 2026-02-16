@@ -118,12 +118,14 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.EmailService,
 		container.GetSessionService(),
 		container.GetTwoFAService(),
+		container.GetPasscodeService(),
 		container.RedisClient,
 	)
 	securityHandlers := handlers.NewSecurityHandlers(
 		container.GetPasscodeService(),
 		container.GetOnboardingService(),
 		container.UserRepo,
+		container.GetSessionService(),
 		container.Config,
 		container.ZapLog,
 	)
@@ -164,7 +166,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		{
 			auth.POST("/register", authHandlers.Register)
 			auth.POST("/verify", middleware.AuthRateLimit(5), authHandlers.Verify)
-			auth.POST("/refresh", authHandlers.RefreshToken)
+			auth.POST("/refresh", middleware.AuthRateLimit(10), authHandlers.RefreshToken)
 			auth.POST("/logout", authHandlers.Logout)
 			auth.POST("/resend-code", authHandlers.ResendCode)
 
@@ -179,6 +181,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			}
 			{
 				authRateLimited.POST("/login", authHandlers.Login)
+				authRateLimited.POST("/passcode-login", authHandlers.PasscodeLogin)
 				authRateLimited.POST("/forgot-password", authHandlers.ForgotPassword)
 				authRateLimited.POST("/reset-password", authHandlers.ResetPassword)
 			}

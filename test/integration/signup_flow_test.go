@@ -330,9 +330,9 @@ func setupTestRouter(container *di.Container) *gin.Engine {
 		container.GetVerificationService(),
 		container.GetOnboardingService(),
 		container.EmailService,
-		container.KYCProvider,
 		container.GetSessionService(),
 		container.GetTwoFAService(),
+		container.GetPasscodeService(),
 		container.RedisClient,
 	)
 

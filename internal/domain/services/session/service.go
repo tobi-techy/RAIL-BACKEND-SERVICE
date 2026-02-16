@@ -177,6 +177,62 @@ func (s *Service) InvalidateAllUserSessions(ctx context.Context, userID uuid.UUI
 	return nil
 }
 
+// RotateSessionTokensByRefreshToken rotates access/refresh token hashes for an existing active session.
+func (s *Service) RotateSessionTokensByRefreshToken(
+	ctx context.Context,
+	userID uuid.UUID,
+	currentRefreshToken string,
+	newAccessToken string,
+	newRefreshToken string,
+	newExpiresAt time.Time,
+) (*Session, error) {
+	currentRefreshHash := s.hashToken(currentRefreshToken)
+	newAccessHash := s.hashToken(newAccessToken)
+	newRefreshHash := s.hashToken(newRefreshToken)
+
+	session := &Session{}
+	query := `
+		SELECT id, user_id, token_hash, refresh_token_hash, ip_address, user_agent,
+		       device_fingerprint, location, is_active, expires_at, created_at, last_used_at
+		FROM sessions
+		WHERE user_id = $1 AND refresh_token_hash = $2 AND is_active = true AND expires_at > NOW()`
+	err := s.db.QueryRowContext(ctx, query, userID, currentRefreshHash).Scan(
+		&session.ID, &session.UserID, &session.TokenHash, &session.RefreshTokenHash,
+		&session.IPAddress, &session.UserAgent, &session.DeviceFingerprint, &session.Location,
+		&session.IsActive, &session.ExpiresAt, &session.CreatedAt, &session.LastUsedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("active session not found for refresh token")
+		}
+		return nil, fmt.Errorf("failed to load session for refresh token: %w", err)
+	}
+
+	updateQuery := `
+		UPDATE sessions
+		SET token_hash = $1, refresh_token_hash = $2, expires_at = $3, last_used_at = NOW(), updated_at = NOW()
+		WHERE id = $4 AND user_id = $5 AND is_active = true`
+	result, err := s.db.ExecContext(ctx, updateQuery, newAccessHash, newRefreshHash, newExpiresAt, session.ID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to rotate session tokens: %w", err)
+	}
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return nil, fmt.Errorf("session not updated during token rotation")
+	}
+
+	// Invalidate old access token cache and cache new hash.
+	s.invalidateSessionCache(ctx, session.TokenHash)
+	session.TokenHash = newAccessHash
+	session.RefreshTokenHash = newRefreshHash
+	session.ExpiresAt = newExpiresAt
+	now := time.Now()
+	session.LastUsedAt = &now
+	s.cacheSession(ctx, newAccessHash, session)
+
+	return session, nil
+}
+
 // GetUserSessions returns active sessions for a user
 func (s *Service) GetUserSessions(ctx context.Context, userID uuid.UUID) ([]*Session, error) {
 	query := `

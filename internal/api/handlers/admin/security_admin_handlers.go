@@ -1,12 +1,12 @@
 package admin
 
 import (
-	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,7 +14,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/apikey"
 	"github.com/rail-service/rail_service/internal/domain/services/onboarding"
@@ -27,6 +26,7 @@ import (
 	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/crypto"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -788,8 +788,6 @@ func (h *adminHandler) updateCuratedBasket(c *gin.Context) {
 
 var errUnauthorized = errors.New("authentication required")
 
-
-
 func (h *adminHandler) validateBasketRequestHelper(req *entities.CuratedBasketRequest) error {
 	if len(req.Composition) == 0 {
 		return errors.New("composition must contain at least one component")
@@ -1284,6 +1282,7 @@ type SecurityHandlers struct {
 	passcodeService   *passcode.Service
 	onboardingService *onboarding.Service
 	userRepo          *repositories.UserRepository
+	sessionService    *session.Service
 	config            *config.Config
 	logger            *zap.Logger
 }
@@ -1293,6 +1292,7 @@ func NewSecurityHandlers(
 	passcodeService *passcode.Service,
 	onboardingService *onboarding.Service,
 	userRepo *repositories.UserRepository,
+	sessionService *session.Service,
 	cfg *config.Config,
 	logger *zap.Logger,
 ) *SecurityHandlers {
@@ -1300,6 +1300,7 @@ func NewSecurityHandlers(
 		passcodeService:   passcodeService,
 		onboardingService: onboardingService,
 		userRepo:          userRepo,
+		sessionService:    sessionService,
 		config:            cfg,
 		logger:            logger,
 	}
@@ -1514,6 +1515,20 @@ func (h *SecurityHandlers) VerifyPasscode(c *gin.Context) {
 			zap.String("request_id", common.GetRequestID(c)))
 		h.respondWithInternalError(c, "TOKEN_GENERATION_FAILED", "Failed to generate authentication tokens")
 		return
+	}
+
+	if h.sessionService != nil {
+		ipAddress := c.ClientIP()
+		userAgent := c.Request.UserAgent()
+		deviceFingerprint := strings.TrimSpace(c.GetHeader("X-Device-Fingerprint"))
+		location := strings.TrimSpace(c.GetHeader("X-Geo-Location"))
+
+		if _, err := h.sessionService.CreateSession(ctx, user.ID, tokens.AccessToken, tokens.RefreshToken, ipAddress, userAgent, deviceFingerprint, location, tokens.ExpiresAt); err != nil {
+			h.logger.Warn("Failed to create session after passcode verification",
+				zap.Error(err),
+				zap.String("user_id", user.ID.String()),
+				zap.String("request_id", common.GetRequestID(c)))
+		}
 	}
 
 	h.logger.Info("Passcode verified and tokens issued",
