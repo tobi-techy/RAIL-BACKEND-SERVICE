@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -197,7 +198,7 @@ func (r *LedgerRepository) GetOrCreateUserAccount(ctx context.Context, userID uu
 	}
 
 	// Create new account if not found
-	if err != nil && err != sql.ErrNoRows {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("get account: %w", err)
 	}
 
@@ -210,6 +211,11 @@ func (r *LedgerRepository) GetOrCreateUserAccount(ctx context.Context, userID uu
 	}
 
 	if err := r.CreateAccount(ctx, account); err != nil {
+		// Handle concurrent create race: another request may have created it.
+		existing, getErr := r.GetAccountByUserAndType(ctx, userID, accountType)
+		if getErr == nil {
+			return existing, nil
+		}
 		return nil, fmt.Errorf("create account: %w", err)
 	}
 
