@@ -21,6 +21,7 @@ type AllocationService interface {
 type Config struct {
 	CheckInterval time.Duration
 	BatchSize     int
+	MaxDepositAge time.Duration
 }
 
 // DefaultConfig returns sensible defaults for periodic recovery.
@@ -28,6 +29,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		CheckInterval: 15 * time.Second,
 		BatchSize:     100,
+		MaxDepositAge: 6 * time.Hour,
 	}
 }
 
@@ -48,6 +50,7 @@ type Worker struct {
 	logger            *zap.Logger
 	checkInterval     time.Duration
 	batchSize         int
+	maxDepositAge     time.Duration
 	stopCh            chan struct{}
 }
 
@@ -62,6 +65,9 @@ func NewWorker(db *sql.DB, allocationService AllocationService, logger *zap.Logg
 	if config.BatchSize <= 0 {
 		config.BatchSize = DefaultConfig().BatchSize
 	}
+	if config.MaxDepositAge <= 0 {
+		config.MaxDepositAge = DefaultConfig().MaxDepositAge
+	}
 
 	return &Worker{
 		db:                db,
@@ -69,6 +75,7 @@ func NewWorker(db *sql.DB, allocationService AllocationService, logger *zap.Logg
 		logger:            logger,
 		checkInterval:     config.CheckInterval,
 		batchSize:         config.BatchSize,
+		maxDepositAge:     config.MaxDepositAge,
 		stopCh:            make(chan struct{}),
 	}
 }
@@ -78,6 +85,7 @@ func (w *Worker) Start(ctx context.Context) {
 	w.logger.Info("Starting deposit allocation recovery worker",
 		zap.Duration("check_interval", w.checkInterval),
 		zap.Int("batch_size", w.batchSize),
+		zap.Duration("max_deposit_age", w.maxDepositAge),
 	)
 
 	ticker := time.NewTicker(w.checkInterval)
@@ -158,6 +166,8 @@ func (w *Worker) reconcile(ctx context.Context) {
 }
 
 func (w *Worker) listUnallocatedDeposits(ctx context.Context, limit int) ([]depositCandidate, error) {
+	cutoff := time.Now().Add(-w.maxDepositAge)
+
 	const query = `
 		SELECT
 			d.id,
@@ -168,16 +178,21 @@ func (w *Worker) listUnallocatedDeposits(ctx context.Context, limit int) ([]depo
 			d.token,
 			d.created_at
 		FROM deposits d
+		INNER JOIN ledger_accounts la
+			ON la.user_id = d.user_id
+			AND la.account_type = 'usdc_balance'
+			AND la.balance > 0
 		LEFT JOIN ledger_transactions lt
 			ON lt.reference_id = d.id
 			AND lt.reference_type = 'allocation_split'
 		WHERE d.status IN ('confirmed', 'off_ramp_initiated', 'off_ramp_completed', 'broker_funded')
+			AND d.created_at >= $2
 			AND lt.id IS NULL
 		ORDER BY d.created_at ASC
 		LIMIT $1
 	`
 
-	rows, err := w.db.QueryContext(ctx, query, limit)
+	rows, err := w.db.QueryContext(ctx, query, limit, cutoff)
 	if err != nil {
 		return nil, fmt.Errorf("query unallocated deposits: %w", err)
 	}
