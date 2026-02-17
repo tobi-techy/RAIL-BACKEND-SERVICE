@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -274,12 +275,20 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		metadata["deposit_id"] = req.DepositID.String()
 	}
 
+	idempotencySeed := fmt.Sprintf("allocation:%s:%d", req.UserID.String(), time.Now().UnixNano())
+	if req.DepositID != nil {
+		idempotencySeed = "allocation:deposit:" + req.DepositID.String()
+	} else if req.SourceTxID != nil {
+		idempotencySeed = "allocation:source_tx:" + *req.SourceTxID
+	}
+	idempotencyKey := fmt.Sprintf("allocation-%s", uuid.NewSHA1(uuid.NameSpaceOID, []byte(idempotencySeed)).String())
+
 	ledgerReq := &entities.CreateTransactionRequest{
 		UserID:          &req.UserID,
 		TransactionType: entities.TransactionTypeInternalTransfer,
 		ReferenceID:     req.DepositID,
 		ReferenceType:   stringPtr("allocation_split"),
-		IdempotencyKey:  fmt.Sprintf("allocation-%s-%d", req.UserID.String(), time.Now().UnixNano()),
+		IdempotencyKey:  idempotencyKey,
 		Description:     &desc,
 		Metadata:        metadata,
 		Entries: []entities.CreateEntryRequest{
@@ -313,8 +322,14 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 	}
 
 	// Create allocation event for audit trail
+	eventID := uuid.New()
+	if req.DepositID != nil {
+		eventID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("allocation-event:deposit:"+req.DepositID.String()))
+	} else if req.SourceTxID != nil {
+		eventID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("allocation-event:source_tx:"+*req.SourceTxID))
+	}
 	event := &entities.AllocationEvent{
-		ID:             uuid.New(),
+		ID:             eventID,
 		UserID:         req.UserID,
 		TotalAmount:    req.Amount,
 		StashAmount:    stashAmount,
@@ -326,8 +341,16 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 	}
 
 	if err := s.allocationRepo.CreateEvent(ctx, event); err != nil {
-		// Log error but don't fail - ledger entry is already created
-		s.logger.Error("Failed to create allocation event", "error", err, "user_id", req.UserID)
+		// Duplicate events can happen on webhook replay when the ledger transaction was already created.
+		// Treat duplicate-key conflicts as benign idempotent outcomes.
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate key") {
+			s.logger.Debug("Allocation event already exists; skipping duplicate",
+				"user_id", req.UserID,
+				"event_id", event.ID.String())
+		} else {
+			// Log error but don't fail - ledger entry is already created
+			s.logger.Error("Failed to create allocation event", "error", err, "user_id", req.UserID)
+		}
 	}
 
 	s.logger.Info("Successfully processed incoming funds with allocation",

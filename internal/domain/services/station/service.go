@@ -141,6 +141,31 @@ func (s *Service) SetTransactionRepository(repo TransactionRepository) {
 
 // GetUserBalances retrieves the user's spend and invest balances
 func (s *Service) GetUserBalances(ctx context.Context, userID uuid.UUID) (*Balances, error) {
+	mode, err := s.allocationRepo.GetMode(ctx, userID)
+	if err != nil {
+		s.logger.Warn("Failed to get allocation mode, falling back to legacy balance view",
+			zap.Error(err),
+			zap.String("user_id", userID.String()))
+	}
+
+	// If smart allocation mode is not active, show legacy USDC balance directly
+	// so deposits reflect immediately in Station.
+	if mode == nil || !mode.Active {
+		usdcBalance, balErr := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeUSDCBalance)
+		if balErr != nil {
+			s.logger.Warn("Failed to get USDC balance, defaulting to zero",
+				zap.Error(balErr),
+				zap.String("user_id", userID.String()))
+			usdcBalance = decimal.Zero
+		}
+
+		return &Balances{
+			SpendingBalance: usdcBalance,
+			StashBalance:    decimal.Zero,
+			TotalBalance:    usdcBalance,
+		}, nil
+	}
+
 	var (
 		spendingBalance decimal.Decimal
 		stashBalance    decimal.Decimal
