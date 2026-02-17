@@ -8,8 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/shopspring/decimal"
 )
 
 // WithdrawalRepository handles withdrawal persistence
@@ -55,7 +55,7 @@ func (r *WithdrawalRepository) GetByID(ctx context.Context, id uuid.UUID) (*enti
 	query := `
 		SELECT id, user_id, alpaca_account_id, amount, destination_chain, destination_address,
 			status, alpaca_journal_id, bridge_transfer_id, bridge_recipient_id, tx_hash, error_message,
-			created_at, updated_at, completed_at
+			idempotency_key, created_at, updated_at, completed_at
 		FROM withdrawals
 		WHERE id = $1
 	`
@@ -77,7 +77,7 @@ func (r *WithdrawalRepository) GetByUserID(ctx context.Context, userID uuid.UUID
 	query := `
 		SELECT id, user_id, alpaca_account_id, amount, destination_chain, destination_address,
 			status, alpaca_journal_id, bridge_transfer_id, bridge_recipient_id, tx_hash, error_message,
-			created_at, updated_at, completed_at
+			idempotency_key, created_at, updated_at, completed_at
 		FROM withdrawals
 		WHERE user_id = $1
 		ORDER BY created_at DESC
@@ -91,6 +91,28 @@ func (r *WithdrawalRepository) GetByUserID(ctx context.Context, userID uuid.UUID
 	}
 
 	return withdrawals, nil
+}
+
+// GetByIdempotencyKey retrieves a withdrawal by idempotency key
+func (r *WithdrawalRepository) GetByIdempotencyKey(ctx context.Context, key string) (*entities.Withdrawal, error) {
+	query := `
+		SELECT id, user_id, alpaca_account_id, amount, destination_chain, destination_address,
+			status, alpaca_journal_id, bridge_transfer_id, bridge_recipient_id, tx_hash, error_message,
+			idempotency_key, created_at, updated_at, completed_at
+		FROM withdrawals
+		WHERE idempotency_key = $1
+	`
+
+	var withdrawal entities.Withdrawal
+	err := r.db.GetContext(ctx, &withdrawal, query, key)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get withdrawal by idempotency key: %w", err)
+	}
+
+	return &withdrawal, nil
 }
 
 // UpdateStatus updates the withdrawal status
@@ -198,7 +220,7 @@ func (r *WithdrawalRepository) GetTotalCompletedWithdrawals(ctx context.Context)
 		FROM withdrawals
 		WHERE status = $1
 	`
-	
+
 	var total decimal.Decimal
 	err := r.db.QueryRowContext(ctx, query, entities.WithdrawalStatusCompleted).Scan(&total)
 	if err != nil {
@@ -207,7 +229,7 @@ func (r *WithdrawalRepository) GetTotalCompletedWithdrawals(ctx context.Context)
 		}
 		return decimal.Zero, fmt.Errorf("failed to get total completed withdrawals: %w", err)
 	}
-	
+
 	return total, nil
 }
 
@@ -255,7 +277,6 @@ func (r *WithdrawalRepository) MarkTimeout(ctx context.Context, id uuid.UUID) er
 
 	return nil
 }
-
 
 // GetPendingWithdrawalsTotal returns the total amount of pending withdrawals for a user
 // Used to prevent race conditions by accounting for in-flight withdrawals

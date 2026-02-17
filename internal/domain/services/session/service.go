@@ -195,7 +195,7 @@ func (s *Service) RotateSessionTokensByRefreshToken(
 		SELECT id, user_id, token_hash, refresh_token_hash, ip_address, user_agent,
 		       device_fingerprint, location, is_active, expires_at, created_at, last_used_at
 		FROM sessions
-		WHERE user_id = $1 AND refresh_token_hash = $2 AND is_active = true AND expires_at > NOW()`
+		WHERE user_id = $1 AND refresh_token_hash = $2 AND is_active = true`
 	err := s.db.QueryRowContext(ctx, query, userID, currentRefreshHash).Scan(
 		&session.ID, &session.UserID, &session.TokenHash, &session.RefreshTokenHash,
 		&session.IPAddress, &session.UserAgent, &session.DeviceFingerprint, &session.Location,
@@ -210,7 +210,7 @@ func (s *Service) RotateSessionTokensByRefreshToken(
 
 	updateQuery := `
 		UPDATE sessions
-		SET token_hash = $1, refresh_token_hash = $2, expires_at = $3, last_used_at = NOW(), updated_at = NOW()
+		SET token_hash = $1, refresh_token_hash = $2, expires_at = $3, last_used_at = NOW()
 		WHERE id = $4 AND user_id = $5 AND is_active = true`
 	result, err := s.db.ExecContext(ctx, updateQuery, newAccessHash, newRefreshHash, newExpiresAt, session.ID, userID)
 	if err != nil {
@@ -266,7 +266,10 @@ func (s *Service) GetUserSessions(ctx context.Context, userID uuid.UUID) ([]*Ses
 
 // CleanupExpiredSessions removes expired sessions
 func (s *Service) CleanupExpiredSessions(ctx context.Context) error {
-	query := `DELETE FROM sessions WHERE expires_at < NOW() OR (is_active = false AND updated_at < NOW() - INTERVAL '7 days')`
+	query := `
+		DELETE FROM sessions
+		WHERE expires_at < NOW()
+		   OR (is_active = false AND COALESCE(last_used_at, created_at) < NOW() - INTERVAL '7 days')`
 
 	result, err := s.db.ExecContext(ctx, query)
 	if err != nil {

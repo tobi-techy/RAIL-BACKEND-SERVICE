@@ -6,11 +6,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/pkg/circuitbreaker"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/queue"
+	"github.com/shopspring/decimal"
 )
 
 // AllocationService interface for spending enforcement
@@ -45,18 +45,18 @@ type WithdrawalNotificationService interface {
 
 // WithdrawalService handles USD to USDC withdrawal operations
 type WithdrawalService struct {
-	withdrawalRepo        WithdrawalRepository
-	alpacaAPI             AlpacaAdapter
-	withdrawalProvider    WithdrawalProviderAdapter
-	allocationService     AllocationService
-	allocationNotifier    AllocationNotificationManager
-	limitsService         WithdrawalLimitsService
-	auditService          WithdrawalAuditService
-	notificationService   WithdrawalNotificationService
-	logger                *logger.Logger
-	alpacaBreaker         *circuitbreaker.CircuitBreaker
-	providerBreaker       *circuitbreaker.CircuitBreaker
-	queuePublisher        queue.Publisher
+	withdrawalRepo      WithdrawalRepository
+	alpacaAPI           AlpacaAdapter
+	withdrawalProvider  WithdrawalProviderAdapter
+	allocationService   AllocationService
+	allocationNotifier  AllocationNotificationManager
+	limitsService       WithdrawalLimitsService
+	auditService        WithdrawalAuditService
+	notificationService WithdrawalNotificationService
+	logger              *logger.Logger
+	alpacaBreaker       *circuitbreaker.CircuitBreaker
+	providerBreaker     *circuitbreaker.CircuitBreaker
+	queuePublisher      queue.Publisher
 }
 
 // WithdrawalRepository interface for withdrawal persistence
@@ -64,6 +64,7 @@ type WithdrawalRepository interface {
 	Create(ctx context.Context, withdrawal *entities.Withdrawal) error
 	GetByID(ctx context.Context, id uuid.UUID) (*entities.Withdrawal, error)
 	GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error)
+	GetByIdempotencyKey(ctx context.Context, key string) (*entities.Withdrawal, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status entities.WithdrawalStatus) error
 	UpdateAlpacaJournal(ctx context.Context, id uuid.UUID, journalID string) error
 	UpdateBridgeTransfer(ctx context.Context, id uuid.UUID, transferID, recipientID string) error
@@ -157,6 +158,25 @@ func (s *WithdrawalService) InitiateWithdrawal(ctx context.Context, req *entitie
 		"chain", req.DestinationChain,
 		"address", req.DestinationAddress)
 
+	// Step 0: Check idempotency key - return existing withdrawal if found
+	if req.IdempotencyKey != "" {
+		existing, err := s.withdrawalRepo.GetByIdempotencyKey(ctx, req.IdempotencyKey)
+		if err != nil {
+			s.logger.Error("Failed to check idempotency key", "error", err, "key", req.IdempotencyKey)
+			return nil, fmt.Errorf("failed to check idempotency: %w", err)
+		}
+		if existing != nil {
+			s.logger.Info("Returning existing withdrawal for idempotency key",
+				"idempotency_key", req.IdempotencyKey,
+				"withdrawal_id", existing.ID.String())
+			return &entities.InitiateWithdrawalResponse{
+				WithdrawalID: existing.ID,
+				Status:       existing.Status,
+				Message:      "Withdrawal already exists",
+			}, nil
+		}
+	}
+
 	// Step 1: Check for pending withdrawals to prevent race conditions
 	pendingTotal, err := s.withdrawalRepo.GetPendingWithdrawalsTotal(ctx, req.UserID)
 	if err != nil {
@@ -193,15 +213,15 @@ func (s *WithdrawalService) InitiateWithdrawal(ctx context.Context, req *entitie
 			s.logger.Warn("Withdrawal declined - spending limit reached",
 				"user_id", req.UserID.String(),
 				"amount", req.Amount.String())
-			
+
 			// Log declined spending event
 			_ = s.allocationService.LogDeclinedSpending(ctx, req.UserID, req.Amount, "withdrawal")
-			
+
 			// Send notification to user
 			if s.allocationNotifier != nil {
 				_ = s.allocationNotifier.NotifyTransactionDeclined(ctx, req.UserID, req.Amount, "withdrawal")
 			}
-			
+
 			return nil, entities.ErrSpendingLimitReached
 		}
 	}
@@ -242,9 +262,14 @@ func (s *WithdrawalService) InitiateWithdrawal(ctx context.Context, req *entitie
 		Amount:             req.Amount,
 		DestinationChain:   req.DestinationChain,
 		DestinationAddress: req.DestinationAddress,
-		Status:             entities.WithdrawalStatusPending,
+		Status:             entities.WithdrawalStatusInitiated,
 		CreatedAt:          time.Now(),
 		UpdatedAt:          time.Now(),
+	}
+
+	// Set idempotency key if provided
+	if req.IdempotencyKey != "" {
+		withdrawal.IdempotencyKey = &req.IdempotencyKey
 	}
 
 	if err := s.withdrawalRepo.Create(ctx, withdrawal); err != nil {
@@ -252,19 +277,10 @@ func (s *WithdrawalService) InitiateWithdrawal(ctx context.Context, req *entitie
 		return nil, fmt.Errorf("failed to create withdrawal record: %w", err)
 	}
 
-	// Record withdrawal usage against limits
-	if s.limitsService != nil {
-		if err := s.limitsService.RecordWithdrawal(ctx, req.UserID, req.Amount); err != nil {
-			s.logger.Warn("Failed to record withdrawal usage", "error", err, "user_id", req.UserID.String())
-			// Don't fail the withdrawal, just log the warning
-		}
-	}
-
 	// Create audit log entry for compliance
 	if s.auditService != nil {
 		if err := s.auditService.LogWithdrawal(ctx, req.UserID, withdrawal.ID, req.Amount.String(), string(withdrawal.Status)); err != nil {
 			s.logger.Warn("Failed to create audit log for withdrawal", "error", err, "withdrawal_id", withdrawal.ID.String())
-			// Don't fail the withdrawal, audit logging is non-critical
 		}
 	}
 
@@ -438,6 +454,12 @@ func (s *WithdrawalService) monitorTransferCompletion(ctx context.Context, withd
 			// Mark withdrawal as completed
 			if err := s.withdrawalRepo.MarkCompleted(ctx, withdrawal.ID); err != nil {
 				return fmt.Errorf("failed to mark completed: %w", err)
+			}
+			// Record withdrawal usage against limits ONLY after successful completion
+			if s.limitsService != nil {
+				if err := s.limitsService.RecordWithdrawal(ctx, withdrawal.UserID, withdrawal.Amount); err != nil {
+					s.logger.Warn("Failed to record withdrawal usage", "error", err, "withdrawal_id", withdrawal.ID.String())
+				}
 			}
 			// Send withdrawal completed notification
 			if s.notificationService != nil {

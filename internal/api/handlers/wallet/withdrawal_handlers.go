@@ -1,17 +1,17 @@
 package wallet
 
 import (
-	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"context"
+	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -30,19 +30,21 @@ type BalanceChecker interface {
 
 // WithdrawalHandlers handles withdrawal-related operations
 type WithdrawalHandlers struct {
-	withdrawalService WithdrawalServiceInterface
-	balanceChecker    BalanceChecker
-	validator         *validator.Validate
-	logger            *logger.Logger
+	withdrawalService   WithdrawalServiceInterface
+	balanceChecker      BalanceChecker
+	userProfileProvider UserProfileProvider
+	validator           *validator.Validate
+	logger              *logger.Logger
 }
 
 // NewWithdrawalHandlers creates a new WithdrawalHandlers instance
-func NewWithdrawalHandlers(withdrawalService WithdrawalServiceInterface, balanceChecker BalanceChecker, logger *logger.Logger) *WithdrawalHandlers {
+func NewWithdrawalHandlers(withdrawalService WithdrawalServiceInterface, balanceChecker BalanceChecker, userProfileProvider UserProfileProvider, logger *logger.Logger) *WithdrawalHandlers {
 	return &WithdrawalHandlers{
-		withdrawalService: withdrawalService,
-		balanceChecker:    balanceChecker,
-		validator:         validator.New(),
-		logger:            logger,
+		withdrawalService:   withdrawalService,
+		balanceChecker:      balanceChecker,
+		userProfileProvider: userProfileProvider,
+		validator:           validator.New(),
+		logger:              logger,
 	}
 }
 
@@ -60,6 +62,25 @@ func (h *WithdrawalHandlers) InitiateWithdrawal(c *gin.Context) {
 	}
 
 	req.UserID = userID
+
+	// Fetch user's AlpacaAccountID from their profile (not from request - security)
+	if h.userProfileProvider != nil {
+		profile, err := h.userProfileProvider.GetByID(c.Request.Context(), userID)
+		if err != nil {
+			h.logger.Error("Failed to get user profile for withdrawal",
+				"error", err,
+				"user_id", userID)
+			common.SendBadRequest(c, "NO_ALPACA_ACCOUNT", "No linked brokerage account found")
+			return
+		}
+		if profile.AlpacaAccountID == nil || *profile.AlpacaAccountID == "" {
+			h.logger.Warn("Withdrawal rejected - no Alpaca account",
+				"user_id", userID)
+			common.SendBadRequest(c, "NO_ALPACA_ACCOUNT", "No linked brokerage account found")
+			return
+		}
+		req.AlpacaAccountID = *profile.AlpacaAccountID
+	}
 
 	if err := h.validateWithdrawalRequest(&req); err != nil {
 		common.SendBadRequest(c, err.code, err.message)
@@ -202,6 +223,14 @@ func (h *WithdrawalHandlers) validateWithdrawalRequest(req *entities.InitiateWit
 		return &validationError{
 			code:    common.ErrCodeInvalidAmount,
 			message: "Amount must be positive",
+		}
+	}
+
+	// Validate minimum withdrawal amount
+	if req.Amount.LessThan(entities.MinWithdrawalAmount) {
+		return &validationError{
+			code:    common.ErrCodeInvalidAmount,
+			message: "Minimum withdrawal amount is " + entities.MinWithdrawalAmount.String(),
 		}
 	}
 
