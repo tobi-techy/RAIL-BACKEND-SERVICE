@@ -20,11 +20,6 @@ import (
 // Withdrawal types
 type (
 	WithdrawalService             = withdrawal.WithdrawalService
-	AlpacaAdapter                 = withdrawal.AlpacaAdapter
-	WithdrawalProviderAdapter     = withdrawal.WithdrawalProviderAdapter
-	WithdrawalNotificationService = withdrawal.WithdrawalNotificationService
-	ProcessWithdrawalResponse     = withdrawal.ProcessWithdrawalResponse
-	OnRampTransferResponse        = withdrawal.OnRampTransferResponse
 )
 
 // Notification types

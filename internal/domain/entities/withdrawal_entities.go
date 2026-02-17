@@ -8,45 +8,103 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// WithdrawalType represents the type of withdrawal
+type WithdrawalType string
+
+const (
+	WithdrawalTypeCrypto WithdrawalType = "crypto" // USDC to external crypto wallet
+	WithdrawalTypeFiat   WithdrawalType = "fiat"   // USDC to fiat via Bridge offramp
+)
+
+// ValidWithdrawalTypes contains all valid withdrawal types
+var ValidWithdrawalTypes = map[WithdrawalType]bool{
+	WithdrawalTypeCrypto: true,
+	WithdrawalTypeFiat:   true,
+}
+
+// WithdrawalCurrency represents the withdrawal currency
+type WithdrawalCurrency string
+
+const (
+	WithdrawalCurrencyUSDC WithdrawalCurrency = "USDC"
+	WithdrawalCurrencyUSD  WithdrawalCurrency = "USD"
+	WithdrawalCurrencyEUR  WithdrawalCurrency = "EUR"
+)
+
+// ValidWithdrawalCurrencies contains all valid withdrawal currencies
+var ValidWithdrawalCurrencies = map[WithdrawalCurrency]bool{
+	WithdrawalCurrencyUSDC: true,
+	WithdrawalCurrencyUSD:  true,
+	WithdrawalCurrencyEUR:  true,
+}
+
+// WithdrawalSourceAccount represents the source account for withdrawal
+type WithdrawalSourceAccount string
+
+const (
+	WithdrawalSourceSpendingBalance WithdrawalSourceAccount = "spending_balance"
+	WithdrawalSourceStashBalance    WithdrawalSourceAccount = "stash_balance"
+)
+
+// ValidWithdrawalSourceAccounts contains all valid source accounts
+var ValidWithdrawalSourceAccounts = map[WithdrawalSourceAccount]bool{
+	WithdrawalSourceSpendingBalance: true,
+	WithdrawalSourceStashBalance:    true,
+}
+
+// DestinationType represents the destination type for withdrawal
+type DestinationType string
+
+const (
+	DestinationTypeCryptoWallet DestinationType = "crypto_wallet"
+	DestinationTypeBankAccount  DestinationType = "bank_account"
+)
+
+// ValidDestinationTypes contains all valid destination types
+var ValidDestinationTypes = map[DestinationType]bool{
+	DestinationTypeCryptoWallet: true,
+	DestinationTypeBankAccount:  true,
+}
+
 // WithdrawalStatus represents the status of a withdrawal
 type WithdrawalStatus string
 
 const (
-	WithdrawalStatusInitiated        WithdrawalStatus = "initiated"         // Request created internally
-	WithdrawalStatusPending          WithdrawalStatus = "pending"           // Sent to processor
-	WithdrawalStatusAlpacaDebited    WithdrawalStatus = "alpaca_debited"    // Funds debited from Alpaca
-	WithdrawalStatusBridgeProcessing WithdrawalStatus = "bridge_processing" // Bridge processing
-	WithdrawalStatusOnChainTransfer  WithdrawalStatus = "onchain_transfer"  // On-chain transfer in progress
-	WithdrawalStatusTimeout          WithdrawalStatus = "timeout"           // No response within SLA
-	WithdrawalStatusCompleted        WithdrawalStatus = "completed"         // Terminal: success
-	WithdrawalStatusFailed           WithdrawalStatus = "failed"            // Terminal: failed
-	WithdrawalStatusReversed         WithdrawalStatus = "reversed"          // Terminal: reversed/refunded
+	WithdrawalStatusInitiated              WithdrawalStatus = "initiated"                // Request created
+	WithdrawalStatusPending                WithdrawalStatus = "pending"                  // Sent to processor
+	WithdrawalStatusProcessing             WithdrawalStatus = "processing"              // Provider processing
+	WithdrawalStatusAwaitingConfirmation   WithdrawalStatus = "awaiting_confirmation"    // Waiting for on-chain/fiat confirmation
+	WithdrawalStatusOnChainTransfer        WithdrawalStatus = "onchain_transfer"        // On-chain transfer in progress
+	WithdrawalStatusTimeout                WithdrawalStatus = "timeout"                  // No response within SLA
+	WithdrawalStatusCompleted              WithdrawalStatus = "completed"                // Terminal: success
+	WithdrawalStatusFailed                 WithdrawalStatus = "failed"                   // Terminal: failed
+	WithdrawalStatusReversed               WithdrawalStatus = "reversed"                 // Terminal: reversed/refunded
 )
 
 // ValidWithdrawalStatuses contains all valid withdrawal statuses
 var ValidWithdrawalStatuses = map[WithdrawalStatus]bool{
-	WithdrawalStatusInitiated:        true,
-	WithdrawalStatusPending:          true,
-	WithdrawalStatusAlpacaDebited:    true,
-	WithdrawalStatusBridgeProcessing: true,
-	WithdrawalStatusOnChainTransfer:  true,
-	WithdrawalStatusTimeout:          true,
-	WithdrawalStatusCompleted:        true,
-	WithdrawalStatusFailed:           true,
-	WithdrawalStatusReversed:         true,
+	WithdrawalStatusInitiated:            true,
+	WithdrawalStatusPending:              true,
+	WithdrawalStatusProcessing:           true,
+	WithdrawalStatusAwaitingConfirmation: true,
+	WithdrawalStatusOnChainTransfer:      true,
+	WithdrawalStatusTimeout:              true,
+	WithdrawalStatusCompleted:            true,
+	WithdrawalStatusFailed:               true,
+	WithdrawalStatusReversed:             true,
 }
 
 // ValidWithdrawalTransitions defines allowed status transitions
 var ValidWithdrawalTransitions = map[WithdrawalStatus][]WithdrawalStatus{
-	WithdrawalStatusInitiated:        {WithdrawalStatusPending, WithdrawalStatusFailed},
-	WithdrawalStatusPending:          {WithdrawalStatusAlpacaDebited, WithdrawalStatusFailed, WithdrawalStatusTimeout},
-	WithdrawalStatusAlpacaDebited:    {WithdrawalStatusBridgeProcessing, WithdrawalStatusFailed, WithdrawalStatusReversed},
-	WithdrawalStatusBridgeProcessing: {WithdrawalStatusOnChainTransfer, WithdrawalStatusFailed, WithdrawalStatusTimeout, WithdrawalStatusReversed},
-	WithdrawalStatusOnChainTransfer:  {WithdrawalStatusCompleted, WithdrawalStatusFailed, WithdrawalStatusTimeout},
-	WithdrawalStatusTimeout:          {WithdrawalStatusCompleted, WithdrawalStatusFailed, WithdrawalStatusReversed}, // Can still resolve
-	WithdrawalStatusCompleted:        {},                                                                            // Terminal
-	WithdrawalStatusFailed:           {WithdrawalStatusReversed},                                                    // Can be reversed
-	WithdrawalStatusReversed:         {},                                                                            // Terminal
+	WithdrawalStatusInitiated:            {WithdrawalStatusPending, WithdrawalStatusFailed},
+	WithdrawalStatusPending:              {WithdrawalStatusProcessing, WithdrawalStatusFailed, WithdrawalStatusTimeout},
+	WithdrawalStatusProcessing:           {WithdrawalStatusAwaitingConfirmation, WithdrawalStatusFailed, WithdrawalStatusReversed},
+	WithdrawalStatusAwaitingConfirmation: {WithdrawalStatusCompleted, WithdrawalStatusFailed, WithdrawalStatusTimeout},
+	WithdrawalStatusOnChainTransfer:      {WithdrawalStatusCompleted, WithdrawalStatusFailed, WithdrawalStatusTimeout},
+	WithdrawalStatusTimeout:              {WithdrawalStatusCompleted, WithdrawalStatusFailed, WithdrawalStatusReversed}, // Can still resolve
+	WithdrawalStatusCompleted:            {},                                                                              // Terminal
+	WithdrawalStatusFailed:               {WithdrawalStatusReversed},                                                    // Can be reversed
+	WithdrawalStatusReversed:             {},                                                                              // Terminal
 }
 
 // IsValid checks if the status is valid
@@ -89,34 +147,140 @@ func (s WithdrawalStatus) ValidateTransition(newStatus WithdrawalStatus) error {
 	return nil
 }
 
-// Withdrawal represents a USD to USDC withdrawal
+// Withdrawal represents a withdrawal from Circle wallet
 type Withdrawal struct {
-	ID                 uuid.UUID        `json:"id" db:"id"`
-	UserID             uuid.UUID        `json:"user_id" db:"user_id"`
-	AlpacaAccountID    string           `json:"alpaca_account_id" db:"alpaca_account_id"`
-	Amount             decimal.Decimal  `json:"amount" db:"amount"`
-	DestinationChain   string           `json:"destination_chain" db:"destination_chain"`
-	DestinationAddress string           `json:"destination_address" db:"destination_address"`
-	Status             WithdrawalStatus `json:"status" db:"status"`
-	AlpacaJournalID    *string          `json:"alpaca_journal_id,omitempty" db:"alpaca_journal_id"`
-	BridgeTransferID   *string          `json:"bridge_transfer_id,omitempty" db:"bridge_transfer_id"`
-	BridgeRecipientID  *string          `json:"bridge_recipient_id,omitempty" db:"bridge_recipient_id"`
-	TxHash             *string          `json:"tx_hash,omitempty" db:"tx_hash"`
-	ErrorMessage       *string          `json:"error_message,omitempty" db:"error_message"`
-	IdempotencyKey     *string          `json:"idempotency_key,omitempty" db:"idempotency_key"`
-	CreatedAt          time.Time        `json:"created_at" db:"created_at"`
-	UpdatedAt          time.Time        `json:"updated_at" db:"updated_at"`
-	CompletedAt        *time.Time       `json:"completed_at,omitempty" db:"completed_at"`
+	ID                 uuid.UUID             `json:"id" db:"id"`
+	UserID             uuid.UUID             `json:"user_id" db:"user_id"`
+	WithdrawalType     WithdrawalType        `json:"withdrawal_type" db:"withdrawal_type"`
+	Currency           WithdrawalCurrency    `json:"currency" db:"currency"`
+	Amount             decimal.Decimal       `json:"amount" db:"amount"`
+	SourceAccount      WithdrawalSourceAccount `json:"source_account" db:"source_account"`
+	CircleWalletID     *string               `json:"circle_wallet_id,omitempty" db:"circle_wallet_id"`
+	DestinationType    DestinationType       `json:"destination_type" db:"destination_type"`
+	DestinationAddress *string                `json:"destination_address,omitempty" db:"destination_address"`
+	BankAccountID      *uuid.UUID            `json:"bank_account_id,omitempty" db:"bank_account_id"`
+	FeeAmount          decimal.Decimal       `json:"fee_amount" db:"fee_amount"`
+	FeeCurrency        WithdrawalCurrency    `json:"fee_currency" db:"fee_currency"`
+	Status             WithdrawalStatus      `json:"status" db:"status"`
+	BridgeTransferID   *string               `json:"bridge_transfer_id,omitempty" db:"bridge_transfer_id"`
+	TxHash             *string               `json:"tx_hash,omitempty" db:"tx_hash"`
+	ErrorMessage       *string               `json:"error_message,omitempty" db:"error_message"`
+	IdempotencyKey     *string               `json:"idempotency_key,omitempty" db:"idempotency_key"`
+	CreatedAt          time.Time             `json:"created_at" db:"created_at"`
+	UpdatedAt          time.Time             `json:"updated_at" db:"updated_at"`
+	CompletedAt        *time.Time            `json:"completed_at,omitempty" db:"completed_at"`
 }
 
-// InitiateWithdrawalRequest represents a withdrawal request
-type InitiateWithdrawalRequest struct {
-	UserID             uuid.UUID       `json:"user_id"`
-	Amount             decimal.Decimal `json:"amount"`
-	DestinationChain   string          `json:"destination_chain"`
-	DestinationAddress string          `json:"destination_address"`
-	AlpacaAccountID    string          // Populated server-side from user profile
-	IdempotencyKey     string          // Generated server-side, not from client
+// Validate validates the withdrawal entity
+func (w *Withdrawal) Validate() error {
+	if w.ID == uuid.Nil {
+		return fmt.Errorf("withdrawal ID is required")
+	}
+	if w.UserID == uuid.Nil {
+		return fmt.Errorf("user ID is required")
+	}
+	if !ValidWithdrawalTypes[w.WithdrawalType] {
+		return fmt.Errorf("invalid withdrawal type: %s", w.WithdrawalType)
+	}
+	if !ValidWithdrawalCurrencies[w.Currency] {
+		return fmt.Errorf("invalid currency: %s", w.Currency)
+	}
+	if !ValidWithdrawalSourceAccounts[w.SourceAccount] {
+		return fmt.Errorf("invalid source account: %s", w.SourceAccount)
+	}
+	if !ValidDestinationTypes[w.DestinationType] {
+		return fmt.Errorf("invalid destination type: %s", w.DestinationType)
+	}
+	if w.Amount.LessThanOrEqual(decimal.Zero) {
+		return fmt.Errorf("amount must be positive")
+	}
+	if w.FeeAmount.IsNegative() {
+		return fmt.Errorf("fee amount cannot be negative")
+	}
+	if w.FeeCurrency != "" && !ValidWithdrawalCurrencies[w.FeeCurrency] {
+		return fmt.Errorf("invalid fee currency: %s", w.FeeCurrency)
+	}
+	return nil
+}
+
+// IsCrypto returns true if this is a crypto withdrawal
+func (w *Withdrawal) IsCrypto() bool {
+	return w.WithdrawalType == WithdrawalTypeCrypto
+}
+
+// IsFiat returns true if this is a fiat withdrawal
+func (w *Withdrawal) IsFiat() bool {
+	return w.WithdrawalType == WithdrawalTypeFiat
+}
+
+// InitiateCryptoWithdrawalRequest represents a crypto withdrawal request
+type InitiateCryptoWithdrawalRequest struct {
+	UserID             uuid.UUID                   `json:"user_id"`
+	Amount             decimal.Decimal             `json:"amount"`
+	DestinationAddress string                      `json:"destination_address"`
+	DestinationChain  string                       `json:"destination_chain"`
+	SourceAccount      WithdrawalSourceAccount     `json:"source_account"`
+	CircleWalletID    string                       `json:"circle_wallet_id"`
+	IdempotencyKey     string                      // Generated server-side
+}
+
+// Validate validates the crypto withdrawal request
+func (r *InitiateCryptoWithdrawalRequest) Validate() error {
+	if r.UserID == uuid.Nil {
+		return fmt.Errorf("user ID is required")
+	}
+	if r.Amount.LessThan(MinWithdrawalAmount) {
+		return fmt.Errorf("amount must be at least %s", MinWithdrawalAmount.String())
+	}
+	if r.DestinationAddress == "" {
+		return fmt.Errorf("destination address is required")
+	}
+	if r.DestinationChain == "" {
+		return fmt.Errorf("destination chain is required")
+	}
+	if !ValidWithdrawalSourceAccounts[r.SourceAccount] {
+		return fmt.Errorf("invalid source account: %s", r.SourceAccount)
+	}
+	if r.CircleWalletID == "" {
+		return fmt.Errorf("circle wallet ID is required")
+	}
+	return nil
+}
+
+// InitiateFiatWithdrawalRequest represents a fiat withdrawal request
+type InitiateFiatWithdrawalRequest struct {
+	UserID         uuid.UUID               `json:"user_id"`
+	Amount         decimal.Decimal         `json:"amount"`
+	Currency       WithdrawalCurrency      `json:"currency"`
+	RoutingNumber  string                  `json:"routing_number"`
+	SourceAccount  WithdrawalSourceAccount `json:"source_account"`
+	IdempotencyKey string                  // Generated server-side
+}
+
+// Validate validates the fiat withdrawal request
+func (r *InitiateFiatWithdrawalRequest) Validate() error {
+	if r.UserID == uuid.Nil {
+		return fmt.Errorf("user ID is required")
+	}
+	if r.Amount.LessThan(MinWithdrawalAmount) {
+		return fmt.Errorf("amount must be at least %s", MinWithdrawalAmount.String())
+	}
+	if !ValidWithdrawalCurrencies[r.Currency] {
+		return fmt.Errorf("invalid currency: %s", r.Currency)
+	}
+	if r.Currency == WithdrawalCurrencyEUR {
+		minAmountEUR := decimal.NewFromFloat(10.00)
+		if r.Amount.LessThan(minAmountEUR) {
+			return fmt.Errorf("amount must be at least %s EUR", minAmountEUR.String())
+		}
+	}
+	if len(r.RoutingNumber) != 9 {
+		return fmt.Errorf("routing number must be 9 digits")
+	}
+	if !ValidWithdrawalSourceAccounts[r.SourceAccount] {
+		return fmt.Errorf("invalid source account: %s", r.SourceAccount)
+	}
+	return nil
 }
 
 // InitiateWithdrawalResponse represents the response to a withdrawal request
@@ -124,4 +288,14 @@ type InitiateWithdrawalResponse struct {
 	WithdrawalID uuid.UUID        `json:"withdrawal_id"`
 	Status       WithdrawalStatus `json:"status"`
 	Message      string           `json:"message"`
+}
+
+// WithdrawalFee represents withdrawal fee information
+type WithdrawalFee struct {
+	Amount   decimal.Decimal    `json:"amount"`
+	Currency WithdrawalCurrency `json:"currency"`
+	Breakdown struct {
+		NetworkFee decimal.Decimal `json:"network_fee"`
+		ServiceFee decimal.Decimal `json:"service_fee"`
+	} `json:"breakdown"`
 }

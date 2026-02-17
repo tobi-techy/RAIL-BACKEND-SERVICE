@@ -43,7 +43,13 @@ type AuthHandlers struct {
 	twoFAService        TwoFAService
 	passcodeService     *passcode.Service
 	redisClient         RedisClient
+	deletionService     AccountDeletionService
 	validator           *validator.Validate
+}
+
+// AccountDeletionService interface for account deletion
+type AccountDeletionService interface {
+	DeleteAccount(ctx context.Context, userID uuid.UUID, reason string) (fundsSwept string, txHash string, err error)
 }
 
 const (
@@ -89,6 +95,7 @@ func NewAuthHandlers(
 	twoFAService TwoFAService,
 	passcodeService *passcode.Service,
 	redisClient RedisClient,
+	deletionService AccountDeletionService,
 ) *AuthHandlers {
 	return &AuthHandlers{
 		db:                  db,
@@ -102,6 +109,7 @@ func NewAuthHandlers(
 		twoFAService:        twoFAService,
 		passcodeService:     passcodeService,
 		redisClient:         redisClient,
+		deletionService:     deletionService,
 		validator:           validator.New(),
 	}
 }
@@ -1349,6 +1357,30 @@ func (h *AuthHandlers) DeleteAccount(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "INTERNAL_ERROR", Message: "Invalid user id in context"})
 		return
 	}
+
+	// Parse optional reason from request body
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	// Use deletion service if available (sweeps funds + hard delete)
+	if h.deletionService != nil {
+		fundsSwept, txHash, err := h.deletionService.DeleteAccount(ctx, userID, req.Reason)
+		if err != nil {
+			h.logger.Error("Failed to delete account", zap.Error(err), zap.String("user_id", userID.String()))
+			c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "DELETE_FAILED", Message: "Failed to delete account"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"message":       "Account deleted permanently",
+			"funds_swept":   fundsSwept,
+			"sweep_tx_hash": txHash,
+		})
+		return
+	}
+
+	// Fallback: just deactivate if deletion service not configured
 	if err := h.userRepo.DeactivateUser(ctx, userID); err != nil {
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "DELETE_FAILED", Message: "Failed to delete account"})
 		return

@@ -9,8 +9,9 @@ import (
 )
 
 type WithdrawalService interface {
-	InitiateWithdrawal(ctx context.Context, req *entities.InitiateWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error)
-	GetWithdrawal(ctx context.Context, withdrawalID uuid.UUID) (*entities.Withdrawal, error)
+	InitiateCryptoWithdrawal(ctx context.Context, req *entities.InitiateCryptoWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error)
+	InitiateFiatWithdrawal(ctx context.Context, req *entities.InitiateFiatWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error)
+	GetWithdrawal(ctx context.Context, userID, withdrawalID uuid.UUID) (*entities.Withdrawal, error)
 }
 
 type WithdrawalResolver struct {
@@ -21,36 +22,82 @@ func NewWithdrawalResolver(service WithdrawalService) *WithdrawalResolver {
 	return &WithdrawalResolver{service: service}
 }
 
-type InitiateWithdrawalInput struct {
-	AlpacaAccountID    string
+type InitiateCryptoWithdrawalInput struct {
 	Amount             float64
-	DestinationChain   string
 	DestinationAddress string
+	DestinationChain   string
+	SourceAccount      string
+	CircleWalletID     string
 }
 
-func (r *WithdrawalResolver) InitiateWithdrawal(ctx context.Context, input InitiateWithdrawalInput) (*entities.InitiateWithdrawalResponse, error) {
+type InitiateFiatWithdrawalInput struct {
+	Amount        float64
+	Currency      string
+	RoutingNumber string
+	SourceAccount string
+}
+
+func (r *WithdrawalResolver) InitiateCryptoWithdrawal(ctx context.Context, input InitiateCryptoWithdrawalInput) (*entities.InitiateWithdrawalResponse, error) {
 	userID, ok := ctx.Value("user_id").(uuid.UUID)
 	if !ok {
 		return nil, ErrUnauthorized
 	}
 
-	req := &entities.InitiateWithdrawalRequest{
-		UserID:             userID,
-		AlpacaAccountID:    input.AlpacaAccountID,
-		Amount:             decimal.NewFromFloat(input.Amount),
-		DestinationChain:   input.DestinationChain,
-		DestinationAddress: input.DestinationAddress,
+	sourceAccount := entities.WithdrawalSourceSpendingBalance
+	if input.SourceAccount == "stash_balance" {
+		sourceAccount = entities.WithdrawalSourceStashBalance
 	}
 
-	return r.service.InitiateWithdrawal(ctx, req)
+	req := &entities.InitiateCryptoWithdrawalRequest{
+		UserID:             userID,
+		Amount:             decimal.NewFromFloat(input.Amount),
+		DestinationAddress: input.DestinationAddress,
+		DestinationChain:   input.DestinationChain,
+		SourceAccount:      sourceAccount,
+		CircleWalletID:     input.CircleWalletID,
+	}
+
+	return r.service.InitiateCryptoWithdrawal(ctx, req)
+}
+
+func (r *WithdrawalResolver) InitiateFiatWithdrawal(ctx context.Context, input InitiateFiatWithdrawalInput) (*entities.InitiateWithdrawalResponse, error) {
+	userID, ok := ctx.Value("user_id").(uuid.UUID)
+	if !ok {
+		return nil, ErrUnauthorized
+	}
+
+	sourceAccount := entities.WithdrawalSourceSpendingBalance
+	if input.SourceAccount == "stash_balance" {
+		sourceAccount = entities.WithdrawalSourceStashBalance
+	}
+
+	currency := entities.WithdrawalCurrencyUSD
+	if input.Currency == "EUR" {
+		currency = entities.WithdrawalCurrencyEUR
+	}
+
+	req := &entities.InitiateFiatWithdrawalRequest{
+		UserID:        userID,
+		Amount:        decimal.NewFromFloat(input.Amount),
+		Currency:      currency,
+		RoutingNumber: input.RoutingNumber,
+		SourceAccount: sourceAccount,
+	}
+
+	return r.service.InitiateFiatWithdrawal(ctx, req)
 }
 
 func (r *WithdrawalResolver) Withdrawal(ctx context.Context, id string) (*entities.Withdrawal, error) {
+	userID, ok := ctx.Value("user_id").(uuid.UUID)
+	if !ok {
+		return nil, ErrUnauthorized
+	}
+
 	withdrawalID, err := uuid.Parse(id)
 	if err != nil {
 		return nil, err
 	}
-	return r.service.GetWithdrawal(ctx, withdrawalID)
+	return r.service.GetWithdrawal(ctx, userID, withdrawalID)
 }
 
 var ErrUnauthorized = &struct{ error }{error: nil}

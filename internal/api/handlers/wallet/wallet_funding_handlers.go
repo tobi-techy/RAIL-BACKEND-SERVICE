@@ -8,8 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/rail-service/rail_service/internal/api/handlers/common"
-	"github.com/rail-service/rail_service/pkg/idempotency"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
@@ -106,8 +105,9 @@ func GetWalletStatus(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.Han
 
 // FundingWithdrawalService interface for withdrawal operations
 type FundingWithdrawalService interface {
-	InitiateWithdrawal(ctx context.Context, req *entities.InitiateWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error)
-	GetWithdrawal(ctx context.Context, withdrawalID uuid.UUID) (*entities.Withdrawal, error)
+	InitiateCryptoWithdrawal(ctx context.Context, req *entities.InitiateCryptoWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error)
+	InitiateFiatWithdrawal(ctx context.Context, req *entities.InitiateFiatWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error)
+	GetWithdrawal(ctx context.Context, userID, withdrawalID uuid.UUID) (*entities.Withdrawal, error)
 	GetUserWithdrawals(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error)
 }
 
@@ -1546,23 +1546,24 @@ func (h *WalletFundingHandlers) BrokerageFillWebhook(c *gin.Context) {
 
 // WithdrawalService interface for withdrawal operations
 type WithdrawalService interface {
-	InitiateWithdrawal(ctx context.Context, req *entities.InitiateWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error)
-	GetWithdrawal(ctx context.Context, withdrawalID uuid.UUID) (*entities.Withdrawal, error)
+	InitiateCryptoWithdrawal(ctx context.Context, req *entities.InitiateCryptoWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error)
+	InitiateFiatWithdrawal(ctx context.Context, req *entities.InitiateFiatWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error)
+	GetWithdrawal(ctx context.Context, userID, withdrawalID uuid.UUID) (*entities.Withdrawal, error)
 	GetUserWithdrawals(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error)
 }
 
-// InitiateWithdrawal initiates a USD to USDC withdrawal
+// InitiateWithdrawal initiates a crypto withdrawal (legacy endpoint - use /api/v1/withdrawals/crypto instead)
+// @Deprecated Use POST /api/v1/withdrawals/crypto for crypto withdrawals
 func (h *WalletFundingHandlers) InitiateWithdrawal(c *gin.Context) {
-	var req entities.InitiateWithdrawalRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "INVALID_REQUEST",
-			Message: "Invalid request format",
-			Details: map[string]interface{}{"error": err.Error()},
-		})
-		return
-	}
+	// This is a legacy endpoint - redirect to new crypto withdrawal flow
+	c.JSON(http.StatusGone, entities.ErrorResponse{
+		Code:    "ENDPOINT_DEPRECATED",
+		Message: "This endpoint is deprecated. Use POST /api/v1/withdrawals/crypto for crypto withdrawals or POST /api/v1/withdrawals/fiat for fiat withdrawals",
+	})
+}
 
+// GetWithdrawal retrieves a withdrawal by ID
+func (h *WalletFundingHandlers) GetWithdrawal(c *gin.Context) {
 	userID, exists := c.Get("user_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
@@ -1581,104 +1582,6 @@ func (h *WalletFundingHandlers) InitiateWithdrawal(c *gin.Context) {
 		return
 	}
 
-	req.UserID = userUUID
-
-	// Fetch user's AlpacaAccountID from their profile (not from request - security)
-	if h.userProfileProvider != nil {
-		profile, err := h.userProfileProvider.GetByID(c.Request.Context(), userUUID)
-		if err != nil {
-			h.logger.Error("Failed to get user profile for withdrawal",
-				"error", err,
-				"user_id", userUUID)
-			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-				Code:    "NO_ALPACA_ACCOUNT",
-				Message: "No linked brokerage account found",
-			})
-			return
-		}
-		if profile.AlpacaAccountID == nil || *profile.AlpacaAccountID == "" {
-			h.logger.Warn("Withdrawal rejected - no Alpaca account",
-				"user_id", userUUID)
-			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-				Code:    "NO_ALPACA_ACCOUNT",
-				Message: "No linked brokerage account found",
-			})
-			return
-		}
-		req.AlpacaAccountID = *profile.AlpacaAccountID
-	}
-
-	// Generate idempotency key server-side to prevent duplicate withdrawals
-	req.IdempotencyKey = idempotency.GenerateKey()
-
-	if req.Amount.IsZero() || req.Amount.IsNegative() {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "INVALID_AMOUNT",
-			Message: "Amount must be positive",
-		})
-		return
-	}
-
-	// Validate minimum withdrawal amount
-	if req.Amount.LessThan(entities.MinWithdrawalAmount) {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "BELOW_MINIMUM",
-			Message: fmt.Sprintf("Minimum withdrawal amount is %s", entities.MinWithdrawalAmount.String()),
-		})
-		return
-	}
-
-	if req.DestinationAddress == "" {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "INVALID_ADDRESS",
-			Message: "Destination address is required",
-		})
-		return
-	}
-
-	if req.DestinationChain == "" {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "INVALID_CHAIN",
-			Message: "Destination chain is required",
-		})
-		return
-	}
-
-	response, err := h.withdrawalService.InitiateWithdrawal(c.Request.Context(), &req)
-	if err != nil {
-		h.logger.Error("Failed to initiate withdrawal",
-			"error", err,
-			"user_id", userUUID,
-			"amount", req.Amount.String())
-
-		if strings.Contains(err.Error(), "insufficient") {
-			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-				Code:    "INSUFFICIENT_FUNDS",
-				Message: "Insufficient buying power for withdrawal",
-			})
-			return
-		}
-
-		if strings.Contains(err.Error(), "not active") {
-			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-				Code:    "ACCOUNT_INACTIVE",
-				Message: "Alpaca account is not active",
-			})
-			return
-		}
-
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-			Code:    "WITHDRAWAL_ERROR",
-			Message: "Failed to initiate withdrawal",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, response)
-}
-
-// GetWithdrawal retrieves a withdrawal by ID
-func (h *WalletFundingHandlers) GetWithdrawal(c *gin.Context) {
 	withdrawalIDStr := c.Param("withdrawalId")
 	withdrawalID, err := uuid.Parse(withdrawalIDStr)
 	if err != nil {
@@ -1689,9 +1592,9 @@ func (h *WalletFundingHandlers) GetWithdrawal(c *gin.Context) {
 		return
 	}
 
-	withdrawal, err := h.withdrawalService.GetWithdrawal(c.Request.Context(), withdrawalID)
+	withdrawal, err := h.withdrawalService.GetWithdrawal(c.Request.Context(), userUUID, withdrawalID)
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not belong") {
 			c.JSON(http.StatusNotFound, entities.ErrorResponse{
 				Code:    "WITHDRAWAL_NOT_FOUND",
 				Message: "Withdrawal not found",
@@ -1761,20 +1664,14 @@ func (h *WalletFundingHandlers) CancelWithdrawalRequest(c *gin.Context) {
 		return
 	}
 
-	// The withdrawalService on WalletFundingHandlers is FundingWithdrawalService which
-	// doesn't have CancelWithdrawal. For now, get the withdrawal and check ownership.
-	withdrawal, err := h.withdrawalService.GetWithdrawal(c.Request.Context(), withdrawalID)
+	// Get the withdrawal and check ownership
+	withdrawal, err := h.withdrawalService.GetWithdrawal(c.Request.Context(), userUUID, withdrawalID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, entities.ErrorResponse{Code: "NOT_FOUND", Message: "Withdrawal not found"})
 		return
 	}
 
-	if withdrawal.UserID != userUUID {
-		c.JSON(http.StatusNotFound, entities.ErrorResponse{Code: "NOT_FOUND", Message: "Withdrawal not found"})
-		return
-	}
-
-	if withdrawal.Status != "initiated" && withdrawal.Status != "pending" {
+	if !withdrawal.Status.IsPending() {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 			Code:    "CANCEL_NOT_ALLOWED",
 			Message: fmt.Sprintf("Cannot cancel withdrawal in %s status", withdrawal.Status),

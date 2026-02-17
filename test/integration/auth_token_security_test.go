@@ -102,6 +102,7 @@ func setupAuthTokenTestRouter(t *testing.T) (*gin.Engine, cache.RedisClient, fun
 		container.GetTwoFAService(),
 		container.GetPasscodeService(),
 		container.RedisClient,
+		container.GetAccountDeletionService(),
 	)
 	securityHandlers := handlers.NewSecurityHandlers(
 		container.GetPasscodeService(),
