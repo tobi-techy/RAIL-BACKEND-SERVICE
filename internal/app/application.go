@@ -16,7 +16,9 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/database"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
+	deposit_allocation_recovery "github.com/rail-service/rail_service/internal/workers/deposit_allocation_recovery"
 	"github.com/rail-service/rail_service/internal/workers/funding_webhook"
+	kyc_autoinvest "github.com/rail-service/rail_service/internal/workers/kyc_autoinvest"
 	portfolio_snapshot_worker "github.com/rail-service/rail_service/internal/workers/portfolio_snapshot_worker"
 	scheduled_investment_worker "github.com/rail-service/rail_service/internal/workers/scheduled_investment_worker"
 	walletprovisioning "github.com/rail-service/rail_service/internal/workers/wallet_provisioning"
@@ -37,6 +39,8 @@ type Application struct {
 	webhookManager            *funding_webhook.Manager
 	scheduledInvestmentWorker *scheduled_investment_worker.Worker
 	portfolioSnapshotWorker   *portfolio_snapshot_worker.Worker
+	depositAllocationWorker   *deposit_allocation_recovery.Worker
+	kycAutoInvestWorker       *kyc_autoinvest.Worker
 
 	// Tracing
 	tracingShutdown func(context.Context) error
@@ -155,6 +159,30 @@ func (app *Application) initializeWorkers() error {
 		)
 		go app.portfolioSnapshotWorker.Start(context.Background())
 		app.log.Info("Portfolio snapshot worker started")
+	}
+
+	// Deposit allocation recovery worker
+	if app.container.DB != nil && app.container.GetAllocationService() != nil {
+		app.depositAllocationWorker = deposit_allocation_recovery.NewWorker(
+			app.container.DB,
+			app.container.GetAllocationService(),
+			app.log.Zap(),
+			deposit_allocation_recovery.DefaultConfig(),
+		)
+		go app.depositAllocationWorker.Start(context.Background())
+		app.log.Info("Deposit allocation recovery worker started")
+	}
+
+	// KYC auto-invest worker
+	if app.container.DB != nil && app.container.GetAutoInvestService() != nil {
+		app.kycAutoInvestWorker = kyc_autoinvest.NewWorker(
+			app.container.DB,
+			app.container.GetAutoInvestService(),
+			app.log.Zap(),
+			kyc_autoinvest.DefaultConfig(),
+		)
+		go app.kycAutoInvestWorker.Start(context.Background())
+		app.log.Info("KYC auto-invest worker started")
 	}
 
 	return nil
@@ -362,6 +390,18 @@ func (app *Application) stopWorkers() {
 	if app.portfolioSnapshotWorker != nil {
 		app.log.Info("Stopping portfolio snapshot worker...")
 		app.portfolioSnapshotWorker.Stop()
+	}
+
+	// Stop deposit allocation recovery worker
+	if app.depositAllocationWorker != nil {
+		app.log.Info("Stopping deposit allocation recovery worker...")
+		app.depositAllocationWorker.Stop()
+	}
+
+	// Stop KYC auto-invest worker
+	if app.kycAutoInvestWorker != nil {
+		app.log.Info("Stopping KYC auto-invest worker...")
+		app.kycAutoInvestWorker.Stop()
 	}
 }
 
