@@ -365,6 +365,30 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 			); err != nil {
 				return fmt.Errorf("existing deposit found but failed to reconcile ledger: %w", err)
 			}
+
+			// Re-run allocation split for replay recovery. Allocation service handles idempotency.
+			if s.allocationService != nil {
+				allocationReq := &entities.IncomingFundsRequest{
+					UserID:     existingDeposit.UserID,
+					Amount:     existingDeposit.Amount,
+					EventType:  entities.AllocationEventTypeCryptoDeposit,
+					DepositID:  &existingDeposit.ID,
+					SourceTxID: &existingDeposit.TxHash,
+					Metadata: map[string]any{
+						"source":  "crypto",
+						"chain":   string(existingDeposit.Chain),
+						"token":   string(existingDeposit.Token),
+						"tx_hash": existingDeposit.TxHash,
+					},
+				}
+				if err := s.allocationService.ProcessIncomingFunds(ctx, allocationReq); err != nil {
+					s.logger.Error("Failed to reconcile allocation split for existing deposit",
+						"user_id", existingDeposit.UserID,
+						"deposit_id", existingDeposit.ID.String(),
+						"error", err)
+					// Keep webhook idempotent and non-failing for allocation issues.
+				}
+			}
 		}
 		s.logger.Info("Deposit already processed", "tx_hash", webhook.TxHash, "deposit_id", existingDeposit.ID.String())
 		return nil
