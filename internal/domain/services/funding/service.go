@@ -352,7 +352,21 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 	}
 
 	if existingDeposit != nil {
-		s.logger.Info("Deposit already processed", "tx_hash", webhook.TxHash)
+		// If a previous attempt inserted the deposit row but failed during ledger posting,
+		// replay should reconcile the ledger entry idempotently using the same deposit ID.
+		if existingDeposit.Status == "confirmed" {
+			if err := s.ledgerIntegration.RecordDeposit(
+				ctx,
+				existingDeposit.UserID,
+				existingDeposit.Amount,
+				existingDeposit.ID,
+				string(existingDeposit.Chain),
+				existingDeposit.TxHash,
+			); err != nil {
+				return fmt.Errorf("existing deposit found but failed to reconcile ledger: %w", err)
+			}
+		}
+		s.logger.Info("Deposit already processed", "tx_hash", webhook.TxHash, "deposit_id", existingDeposit.ID.String())
 		return nil
 	}
 
