@@ -29,7 +29,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		CheckInterval: 15 * time.Second,
 		BatchSize:     100,
-		MaxDepositAge: 6 * time.Hour,
+		MaxDepositAge: 30 * time.Minute,
 	}
 }
 
@@ -181,11 +181,17 @@ func (w *Worker) listUnallocatedDeposits(ctx context.Context, limit int) ([]depo
 		INNER JOIN ledger_accounts la
 			ON la.user_id = d.user_id
 			AND la.account_type = 'usdc_balance'
-			AND la.balance > 0
+			AND la.balance >= d.amount
 		LEFT JOIN ledger_transactions lt
 			ON lt.reference_id = d.id
 			AND lt.reference_type = 'allocation_split'
 		WHERE d.status IN ('confirmed', 'off_ramp_initiated', 'off_ramp_completed', 'broker_funded')
+			AND EXISTS (
+				SELECT 1
+				FROM ledger_transactions dep_lt
+				WHERE dep_lt.reference_id = d.id
+					AND dep_lt.reference_type = 'deposit'
+			)
 			AND d.created_at >= $2
 			AND lt.id IS NULL
 		ORDER BY d.created_at ASC
