@@ -356,6 +356,15 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 		return nil
 	}
 
+	token := webhook.Token
+	if token == "" {
+		// Defensive fallback for webhook variants that omit token metadata.
+		s.logger.Warn("Deposit webhook missing token; defaulting to USDC",
+			"tx_hash", webhook.TxHash,
+			"chain", webhook.Chain)
+		token = entities.StablecoinUSDC
+	}
+
 	// Find the wallet to get user ID.
 	// Prefer legacy wallets table for backward compatibility, then fall back to managed_wallets.
 	var userID uuid.UUID
@@ -371,7 +380,7 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 	}
 
 	// Convert stablecoin to USD buying power
-	usdAmount, err := s.circleAPI.ConvertToUSD(ctx, amount, webhook.Token)
+	usdAmount, err := s.circleAPI.ConvertToUSD(ctx, amount, token)
 	if err != nil {
 		return fmt.Errorf("failed to convert to USD: %w", err)
 	}
@@ -397,7 +406,7 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 		UserID:      userID,
 		Chain:       webhook.Chain,
 		TxHash:      webhook.TxHash,
-		Token:       webhook.Token,
+		Token:       token,
 		Amount:      amount,
 		Status:      "confirmed",
 		ConfirmedAt: &now,
@@ -425,7 +434,7 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 			Metadata: map[string]any{
 				"source":  "crypto",
 				"chain":   string(webhook.Chain),
-				"token":   string(webhook.Token),
+				"token":   string(token),
 				"tx_hash": webhook.TxHash,
 			},
 		}
