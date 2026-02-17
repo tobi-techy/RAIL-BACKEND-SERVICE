@@ -362,11 +362,21 @@ func (e *Engine) ExecuteWithdrawal(ctx context.Context, withdrawalID uuid.UUID) 
 		return fmt.Errorf("failed to get withdrawal: %w", err)
 	}
 
+	// Only process crypto withdrawals in onchain engine
+	if withdrawal.WithdrawalType != entities.WithdrawalTypeCrypto {
+		return fmt.Errorf("onchain engine only handles crypto withdrawals, got: %s", withdrawal.WithdrawalType)
+	}
+
+	destAddr := ""
+	if withdrawal.DestinationAddress != nil {
+		destAddr = *withdrawal.DestinationAddress
+	}
+
 	e.logger.Info("Executing withdrawal",
 		"withdrawal_id", withdrawalID,
 		"user_id", withdrawal.UserID,
 		"amount", withdrawal.Amount,
-		"chain", withdrawal.DestinationChain)
+		"destination", destAddr)
 
 	// Check if already processed
 	if withdrawal.Status != entities.WithdrawalStatusPending {
@@ -458,13 +468,17 @@ func (e *Engine) postWithdrawalLedgerEntries(ctx context.Context, withdrawal *en
 	}
 
 	// Create ledger transaction
-	desc := fmt.Sprintf("Withdrawal: %s USDC to %s on %s", 
-		withdrawal.Amount.String(), withdrawal.DestinationAddress, withdrawal.DestinationChain)
+	destAddr := ""
+	if withdrawal.DestinationAddress != nil {
+		destAddr = *withdrawal.DestinationAddress
+	}
+	desc := fmt.Sprintf("Withdrawal: %s USDC to %s", 
+		withdrawal.Amount.String(), destAddr)
 	
 	metadata := map[string]interface{}{
 		"withdrawal_id":       withdrawal.ID.String(),
-		"destination_address": withdrawal.DestinationAddress,
-		"destination_chain":   withdrawal.DestinationChain,
+		"destination_address": destAddr,
+		"withdrawal_type":     string(withdrawal.WithdrawalType),
 	}
 
 	ledgerReq := &entities.CreateTransactionRequest{
@@ -508,32 +522,25 @@ func (e *Engine) postWithdrawalLedgerEntries(ctx context.Context, withdrawal *en
 
 // executeCircleTransfer executes the actual on-chain transfer via Circle
 func (e *Engine) executeCircleTransfer(ctx context.Context, withdrawal *entities.Withdrawal) (string, error) {
-	// Get user's managed wallet for the destination chain
-	wallets, err := e.managedWalletRepo.GetByUserID(ctx, withdrawal.UserID)
-	if err != nil {
-		return "", fmt.Errorf("failed to get user wallets: %w", err)
+	// For crypto withdrawals, use the Circle wallet ID from the withdrawal
+	if withdrawal.CircleWalletID == nil || *withdrawal.CircleWalletID == "" {
+		return "", fmt.Errorf("circle wallet ID not set on withdrawal")
 	}
 
-	// Find wallet for the withdrawal chain
-	var sourceWallet *entities.ManagedWallet
-	withdrawalChain := entities.WalletChain(withdrawal.DestinationChain)
-	for _, w := range wallets {
-		if w.Chain == withdrawalChain {
-			sourceWallet = w
-			break
-		}
+	destAddr := ""
+	if withdrawal.DestinationAddress != nil {
+		destAddr = *withdrawal.DestinationAddress
+	}
+	if destAddr == "" {
+		return "", fmt.Errorf("destination address not set on withdrawal")
 	}
 
-	if sourceWallet == nil {
-		return "", fmt.Errorf("no wallet found for chain %s", withdrawal.DestinationChain)
-	}
-
-	// Create Circle transfer request using existing entities
+	// Create Circle transfer request
 	transferReq := entities.CircleTransferRequest{
-		WalletID:            sourceWallet.CircleWalletID,
-		DestinationAddress:  withdrawal.DestinationAddress,
+		WalletID:            *withdrawal.CircleWalletID,
+		DestinationAddress:  destAddr,
 		Amounts:             []string{withdrawal.Amount.String()},
-		TokenID:             getUSDCTokenIDForWalletChain(withdrawalChain),
+		TokenID:             "USDC",
 		IDempotencyKey:      withdrawal.ID.String(),
 	}
 
@@ -556,26 +563,9 @@ func (e *Engine) executeCircleTransfer(ctx context.Context, withdrawal *entities
 	e.logger.Info("Circle transfer initiated",
 		"withdrawal_id", withdrawal.ID,
 		"transfer_id", transferID,
-		"wallet_id", sourceWallet.CircleWalletID)
+		"wallet_id", *withdrawal.CircleWalletID)
 
 	return transferID, nil
-}
-
-// getUSDCTokenIDForWalletChain returns the USDC token ID for a given wallet chain
-func getUSDCTokenIDForWalletChain(chain entities.WalletChain) string {
-	// Circle USDC token IDs vary by chain
-	// These are placeholder values - actual IDs should come from config
-	chainFamily := chain.GetChainFamily()
-	switch chainFamily {
-	case "SOL":
-		return "usdc-sol"
-	case "MATIC":
-		return "usdc-polygon"
-	case "ETH":
-		return "usdc-eth"
-	default:
-		return "usdc"
-	}
 }
 
 // ProcessPendingWithdrawals processes all pending withdrawals

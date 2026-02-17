@@ -271,6 +271,7 @@ type CircleConfig struct {
 	DefaultWalletSetID     string   `mapstructure:"default_wallet_set_id"`
 	DefaultWalletSetName   string   `mapstructure:"default_wallet_set_name"`
 	SupportedChains        []string `mapstructure:"supported_chains"`
+	TreasuryWalletAddress  string   `mapstructure:"treasury_wallet_address"` // Company wallet for account closure fund sweeps
 }
 
 type KYCConfig struct {

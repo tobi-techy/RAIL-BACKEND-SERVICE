@@ -123,6 +123,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.GetTwoFAService(),
 		container.GetPasscodeService(),
 		container.RedisClient,
+		container.GetAccountDeletionService(),
 	)
 	securityHandlers := handlers.NewSecurityHandlers(
 		container.GetPasscodeService(),

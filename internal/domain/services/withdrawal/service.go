@@ -7,22 +7,60 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
-	"github.com/rail-service/rail_service/pkg/circuitbreaker"
 	"github.com/rail-service/rail_service/pkg/logger"
-	"github.com/rail-service/rail_service/pkg/queue"
 	"github.com/shopspring/decimal"
 )
 
-// AllocationService interface for spending enforcement
-type AllocationService interface {
-	CanSpend(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (bool, error)
-	GetMode(ctx context.Context, userID uuid.UUID) (*entities.SmartAllocationMode, error)
-	LogDeclinedSpending(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, reason string) error
+// Crypto withdrawal constants
+const (
+	CryptoWithdrawalMinAmount    = 10.00  // Minimum crypto withdrawal
+	FiatWithdrawalMinAmountUSD  = 10.00  // Minimum USD fiat withdrawal
+	FiatWithdrawalMinAmountEUR  = 10.00  // Minimum EUR fiat withdrawal
+	CryptoWithdrawalFeePercent  = 0.0    // Circle transfers are free (network fees apply)
+	FiatWithdrawalFeePercentUSD = 0.01   // 1% + $0.50 for USD
+	FiatWithdrawalFeeFixedUSD   = 0.50
+	FiatWithdrawalFeePercentEUR = 0.01   // 1% + €0.50 for EUR
+	FiatWithdrawalFeeFixedEUR   = 0.50
+)
+
+// LedgerService interface for ledger operations
+type LedgerService interface {
+	GetAccountBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (decimal.Decimal, error)
+	CreateTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, txType entities.TransactionType, amount decimal.Decimal, metadata map[string]interface{}) error
 }
 
-// AllocationNotificationManager interface for sending allocation notifications
-type AllocationNotificationManager interface {
-	NotifyTransactionDeclined(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, transactionType string) error
+// BankAccountRepository interface for bank account persistence
+type BankAccountRepository interface {
+	Create(ctx context.Context, bankAccount *entities.BankAccount) error
+	GetByID(ctx context.Context, id uuid.UUID) (*entities.BankAccount, error)
+	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.BankAccount, error)
+	Update(ctx context.Context, bankAccount *entities.BankAccount) error
+	Delete(ctx context.Context, id uuid.UUID) error
+	GetByBridgeRecipientID(ctx context.Context, recipientID string) (*entities.BankAccount, error)
+}
+
+// StashTransferRepository interface for stash transfer persistence
+type StashTransferRepository interface {
+	Create(ctx context.Context, transfer *entities.StashTransfer) error
+	GetByID(ctx context.Context, id uuid.UUID) (*entities.StashTransfer, error)
+	GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.StashTransfer, error)
+	UpdateStatus(ctx context.Context, id uuid.UUID, status entities.StashTransferStatus) error
+	MarkCompleted(ctx context.Context, id uuid.UUID) error
+	MarkFailed(ctx context.Context, id uuid.UUID) error
+}
+
+// WithdrawalRepository interface for withdrawal persistence
+type WithdrawalRepository interface {
+	Create(ctx context.Context, withdrawal *entities.Withdrawal) error
+	GetByID(ctx context.Context, id uuid.UUID) (*entities.Withdrawal, error)
+	GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error)
+	GetByIdempotencyKey(ctx context.Context, key string) (*entities.Withdrawal, error)
+	UpdateStatus(ctx context.Context, id uuid.UUID, status entities.WithdrawalStatus) error
+	UpdateBridgeTransfer(ctx context.Context, id uuid.UUID, transferID string) error
+	UpdateTxHash(ctx context.Context, id uuid.UUID, txHash string) error
+	MarkCompleted(ctx context.Context, id uuid.UUID) error
+	MarkFailed(ctx context.Context, id uuid.UUID, errorMsg string) error
+	GetPendingWithdrawalsTotal(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
 }
 
 // WithdrawalLimitsService interface for withdrawal limit validation
@@ -38,137 +76,86 @@ type WithdrawalAuditService interface {
 
 // WithdrawalNotificationService interface for sending withdrawal-related notifications
 type WithdrawalNotificationService interface {
-	NotifyWithdrawalCompleted(ctx context.Context, userID uuid.UUID, amount, destinationAddress string) error
-	NotifyWithdrawalFailed(ctx context.Context, userID uuid.UUID, amount, reason string) error
+	NotifyWithdrawalCompleted(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, destination string) error
+	NotifyWithdrawalFailed(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, reason string) error
 	NotifyLargeBalanceChange(ctx context.Context, userID uuid.UUID, changeType string, amount decimal.Decimal, newBalance decimal.Decimal) error
 }
 
-// WithdrawalService handles USD to USDC withdrawal operations
+// CircleClient interface for Circle wallet operations
+type CircleClient interface {
+	TransferFunds(ctx context.Context, req entities.CircleTransferRequest) (map[string]interface{}, error)
+	GetWallet(ctx context.Context, walletID string) (map[string]interface{}, error)
+}
+
+// BridgeAdapter interface for Bridge offramp operations
+type BridgeAdapter interface {
+	CreateRecipient(ctx context.Context, req map[string]interface{}) (string, error)
+	InitiateTransfer(ctx context.Context, req map[string]interface{}) (map[string]interface{}, error)
+	GetTransferStatus(ctx context.Context, transferID string) (map[string]interface{}, error)
+}
+
+// WithdrawalService handles crypto and fiat withdrawal operations
 type WithdrawalService struct {
-	withdrawalRepo      WithdrawalRepository
-	alpacaAPI           AlpacaAdapter
-	withdrawalProvider  WithdrawalProviderAdapter
-	allocationService   AllocationService
-	allocationNotifier  AllocationNotificationManager
-	limitsService       WithdrawalLimitsService
-	auditService        WithdrawalAuditService
-	notificationService WithdrawalNotificationService
-	logger              *logger.Logger
-	alpacaBreaker       *circuitbreaker.CircuitBreaker
-	providerBreaker     *circuitbreaker.CircuitBreaker
-	queuePublisher      queue.Publisher
-}
-
-// WithdrawalRepository interface for withdrawal persistence
-type WithdrawalRepository interface {
-	Create(ctx context.Context, withdrawal *entities.Withdrawal) error
-	GetByID(ctx context.Context, id uuid.UUID) (*entities.Withdrawal, error)
-	GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error)
-	GetByIdempotencyKey(ctx context.Context, key string) (*entities.Withdrawal, error)
-	UpdateStatus(ctx context.Context, id uuid.UUID, status entities.WithdrawalStatus) error
-	UpdateAlpacaJournal(ctx context.Context, id uuid.UUID, journalID string) error
-	UpdateBridgeTransfer(ctx context.Context, id uuid.UUID, transferID, recipientID string) error
-	UpdateTxHash(ctx context.Context, id uuid.UUID, txHash string) error
-	MarkCompleted(ctx context.Context, id uuid.UUID) error
-	MarkFailed(ctx context.Context, id uuid.UUID, errorMsg string) error
-	GetPendingWithdrawalsTotal(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
-}
-
-// AlpacaAdapter interface for Alpaca operations
-type AlpacaAdapter interface {
-	GetAccount(ctx context.Context, accountID string) (*entities.AlpacaAccountResponse, error)
-	CreateJournal(ctx context.Context, req *entities.AlpacaJournalRequest) (*entities.AlpacaJournalResponse, error)
-}
-
-// WithdrawalProviderAdapter interface for withdrawal/off-ramp operations (Bridge)
-type WithdrawalProviderAdapter interface {
-	ProcessWithdrawal(ctx context.Context, req *entities.InitiateWithdrawalRequest) (*ProcessWithdrawalResponse, error)
-	GetTransferStatus(ctx context.Context, transferID string) (*OnRampTransferResponse, error)
-}
-
-// ProcessWithdrawalResponse contains withdrawal processing result
-type ProcessWithdrawalResponse struct {
-	TransferID     string
-	RecipientID    string
-	FundingAddress string
-	SourceAmount   string
-	DestAmount     string
-	Status         string
-}
-
-// OnRampTransferResponse contains transfer status
-type OnRampTransferResponse struct {
-	ID     string
-	Status string
+	withdrawalRepo        WithdrawalRepository
+	bankAccountRepo      BankAccountRepository
+	stashTransferRepo    StashTransferRepository
+	ledgerService        LedgerService
+	limitsService        WithdrawalLimitsService
+	auditService         WithdrawalAuditService
+	notificationService  WithdrawalNotificationService
+	circleClient         CircleClient
+	bridgeAdapter        BridgeAdapter
+	logger               *logger.Logger
 }
 
 // NewWithdrawalService creates a new withdrawal service
 func NewWithdrawalService(
 	withdrawalRepo WithdrawalRepository,
-	alpacaAPI AlpacaAdapter,
-	withdrawalProvider WithdrawalProviderAdapter,
-	allocationService AllocationService,
-	allocationNotifier AllocationNotificationManager,
+	ledgerService LedgerService,
+	bankAccountRepo BankAccountRepository,
+	limitsService WithdrawalLimitsService,
+	auditService WithdrawalAuditService,
+	notificationService WithdrawalNotificationService,
+	circleClient CircleClient,
+	bridgeAdapter BridgeAdapter,
 	logger *logger.Logger,
-	queuePublisher queue.Publisher,
 ) *WithdrawalService {
-	cfg := circuitbreaker.Config{
-		MaxRequests:      10,
-		Interval:         60 * time.Second,
-		Timeout:          60 * time.Second,
-		FailureThreshold: 5,
-		SuccessThreshold: 2,
-	}
-	if queuePublisher == nil {
-		queuePublisher = queue.NewMockPublisher()
-	}
 	return &WithdrawalService{
-		withdrawalRepo:     withdrawalRepo,
-		alpacaAPI:          alpacaAPI,
-		withdrawalProvider: withdrawalProvider,
-		allocationService:  allocationService,
-		allocationNotifier: allocationNotifier,
-		logger:             logger,
-		alpacaBreaker:      circuitbreaker.New(cfg),
-		providerBreaker:    circuitbreaker.New(cfg),
-		queuePublisher:     queuePublisher,
+		withdrawalRepo:       withdrawalRepo,
+		ledgerService:       ledgerService,
+		bankAccountRepo:     bankAccountRepo,
+		limitsService:       limitsService,
+		auditService:        auditService,
+		notificationService: notificationService,
+		circleClient:        circleClient,
+		bridgeAdapter:       bridgeAdapter,
+		logger:              logger,
 	}
 }
 
-// SetLimitsService sets the limits service for withdrawal validation (optional)
-func (s *WithdrawalService) SetLimitsService(ls WithdrawalLimitsService) {
-	s.limitsService = ls
-}
-
-// SetAuditService sets the audit service for compliance logging (optional)
-func (s *WithdrawalService) SetAuditService(as WithdrawalAuditService) {
-	s.auditService = as
-}
-
-// SetNotificationService sets the notification service (optional)
-func (s *WithdrawalService) SetNotificationService(ns WithdrawalNotificationService) {
-	s.notificationService = ns
-}
-
-// InitiateWithdrawal initiates a USD to USDC withdrawal
-func (s *WithdrawalService) InitiateWithdrawal(ctx context.Context, req *entities.InitiateWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error) {
-	s.logger.Info("Initiating withdrawal",
+// InitiateCryptoWithdrawal initiates a crypto withdrawal (USDC to external wallet)
+func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *entities.InitiateCryptoWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error) {
+	s.logger.Info("Initiating crypto withdrawal",
 		"user_id", req.UserID.String(),
 		"amount", req.Amount.String(),
-		"chain", req.DestinationChain,
-		"address", req.DestinationAddress)
+		"destination", req.DestinationAddress,
+		"source_account", req.SourceAccount)
 
-	// Step 0: Check idempotency key - return existing withdrawal if found
+	// Step 1: Validate request
+	if err := req.Validate(); err != nil {
+		s.logger.Warn("Invalid crypto withdrawal request", "error", err.Error())
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	// Step 2: Check idempotency
 	if req.IdempotencyKey != "" {
 		existing, err := s.withdrawalRepo.GetByIdempotencyKey(ctx, req.IdempotencyKey)
 		if err != nil {
-			s.logger.Error("Failed to check idempotency key", "error", err, "key", req.IdempotencyKey)
+			s.logger.Error("Failed to check idempotency key", "error", err)
 			return nil, fmt.Errorf("failed to check idempotency: %w", err)
 		}
 		if existing != nil {
-			s.logger.Info("Returning existing withdrawal for idempotency key",
-				"idempotency_key", req.IdempotencyKey,
-				"withdrawal_id", existing.ID.String())
+			s.logger.Info("Returning existing withdrawal for idempotency key", "withdrawal_id", existing.ID.String())
 			return &entities.InitiateWithdrawalResponse{
 				WithdrawalID: existing.ID,
 				Status:       existing.Status,
@@ -177,22 +164,11 @@ func (s *WithdrawalService) InitiateWithdrawal(ctx context.Context, req *entitie
 		}
 	}
 
-	// Step 1: Check for pending withdrawals to prevent race conditions
-	pendingTotal, err := s.withdrawalRepo.GetPendingWithdrawalsTotal(ctx, req.UserID)
-	if err != nil {
-		s.logger.Error("Failed to check pending withdrawals", "error", err, "user_id", req.UserID.String())
-		return nil, fmt.Errorf("failed to check pending withdrawals: %w", err)
-	}
-
-	// Step 2: Validate against withdrawal limits (KYC tier-based)
+	// Step 3: Validate against withdrawal limits
 	if s.limitsService != nil {
 		result, err := s.limitsService.ValidateWithdrawal(ctx, req.UserID, req.Amount)
 		if err != nil {
-			s.logger.Warn("Withdrawal limit validation failed",
-				"user_id", req.UserID.String(),
-				"amount", req.Amount.String(),
-				"error", err.Error(),
-			)
+			s.logger.Warn("Withdrawal limit validation failed", "error", err.Error())
 			if result != nil {
 				return nil, fmt.Errorf("withdrawal limit exceeded (%s): %s remaining until %v",
 					result.LimitType, result.RemainingCapacity.String(), result.ResetsAt)
@@ -201,445 +177,517 @@ func (s *WithdrawalService) InitiateWithdrawal(ctx context.Context, req *entitie
 		}
 	}
 
-	// Step 2: Check 70/30 allocation mode spending limit
-	if s.allocationService != nil {
-		canSpend, err := s.allocationService.CanSpend(ctx, req.UserID, req.Amount)
-		if err != nil {
-			s.logger.Error("Failed to check spending limit", "error", err, "user_id", req.UserID.String())
-			return nil, fmt.Errorf("failed to check spending limit: %w", err)
-		}
-
-		if !canSpend {
-			s.logger.Warn("Withdrawal declined - spending limit reached",
-				"user_id", req.UserID.String(),
-				"amount", req.Amount.String())
-
-			// Log declined spending event
-			_ = s.allocationService.LogDeclinedSpending(ctx, req.UserID, req.Amount, "withdrawal")
-
-			// Send notification to user
-			if s.allocationNotifier != nil {
-				_ = s.allocationNotifier.NotifyTransactionDeclined(ctx, req.UserID, req.Amount, "withdrawal")
-			}
-
-			return nil, entities.ErrSpendingLimitReached
-		}
-	}
-
-	// Step 4: Validate Alpaca account and buying power (accounting for pending withdrawals)
-	var alpacaAccount *entities.AlpacaAccountResponse
-	var getAccountErr error
-	err = s.alpacaBreaker.Execute(ctx, func() error {
-		alpacaAccount, getAccountErr = s.alpacaAPI.GetAccount(ctx, req.AlpacaAccountID)
-		return getAccountErr
-	})
+	// Step 4: Check balance based on source account
+	balance, err := s.getSourceBalance(ctx, req.UserID, req.SourceAccount)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get Alpaca account: %w", err)
+		s.logger.Error("Failed to get source balance", "error", err)
+		return nil, fmt.Errorf("failed to get balance: %w", err)
 	}
 
-	if alpacaAccount.Status != entities.AlpacaAccountStatusActive {
-		return nil, fmt.Errorf("Alpaca account not active: %s", alpacaAccount.Status)
+	if balance.LessThan(req.Amount) {
+		return nil, fmt.Errorf("insufficient balance: have %s, need %s", balance.String(), req.Amount.String())
 	}
 
-	// Calculate effective available balance (buying power minus pending withdrawals)
-	effectiveBalance := alpacaAccount.BuyingPower.Sub(pendingTotal)
-	if effectiveBalance.LessThan(req.Amount) {
-		s.logger.Warn("Insufficient balance after accounting for pending withdrawals",
-			"user_id", req.UserID.String(),
-			"buying_power", alpacaAccount.BuyingPower.String(),
-			"pending_withdrawals", pendingTotal.String(),
-			"effective_balance", effectiveBalance.String(),
-			"requested", req.Amount.String())
-		return nil, fmt.Errorf("insufficient buying power: have %s (with %s pending), need %s",
-			effectiveBalance.String(), pendingTotal.String(), req.Amount.String())
+	// Step 5: Calculate fee
+	fee := s.calculateCryptoWithdrawalFee(req.Amount)
+	totalAmount := req.Amount.Add(fee)
+
+	if balance.LessThan(totalAmount) {
+		return nil, fmt.Errorf("insufficient balance for withdrawal + fee: have %s, need %s", balance.String(), totalAmount.String())
 	}
 
-	// Step 5: Create withdrawal record
+	// Step 6: Create withdrawal record
+	idempotencyKey := req.IdempotencyKey
+	if idempotencyKey == "" {
+		idempotencyKey = uuid.New().String()
+	}
+
 	withdrawal := &entities.Withdrawal{
 		ID:                 uuid.New(),
 		UserID:             req.UserID,
-		AlpacaAccountID:    req.AlpacaAccountID,
+		WithdrawalType:     entities.WithdrawalTypeCrypto,
+		Currency:           entities.WithdrawalCurrencyUSDC,
 		Amount:             req.Amount,
-		DestinationChain:   req.DestinationChain,
-		DestinationAddress: req.DestinationAddress,
+		SourceAccount:      req.SourceAccount,
+		CircleWalletID:     &req.CircleWalletID,
+		DestinationType:    entities.DestinationTypeCryptoWallet,
+		DestinationAddress: &req.DestinationAddress,
+		FeeAmount:          fee,
+		FeeCurrency:        entities.WithdrawalCurrencyUSDC,
 		Status:             entities.WithdrawalStatusInitiated,
+		IdempotencyKey:     &idempotencyKey,
 		CreatedAt:          time.Now(),
 		UpdatedAt:          time.Now(),
 	}
 
-	// Set idempotency key if provided
-	if req.IdempotencyKey != "" {
-		withdrawal.IdempotencyKey = &req.IdempotencyKey
-	}
-
 	if err := s.withdrawalRepo.Create(ctx, withdrawal); err != nil {
-		s.logger.Error("Failed to create withdrawal record", "error", err, "user_id", req.UserID.String())
-		return nil, fmt.Errorf("failed to create withdrawal record: %w", err)
+		s.logger.Error("Failed to create withdrawal", "error", err)
+		return nil, fmt.Errorf("failed to create withdrawal: %w", err)
 	}
 
-	// Create audit log entry for compliance
-	if s.auditService != nil {
-		if err := s.auditService.LogWithdrawal(ctx, req.UserID, withdrawal.ID, req.Amount.String(), string(withdrawal.Status)); err != nil {
-			s.logger.Warn("Failed to create audit log for withdrawal", "error", err, "withdrawal_id", withdrawal.ID.String())
+	// Step 7: Execute Circle transfer
+	txHash, err := s.executeCryptoTransfer(ctx, withdrawal, req.DestinationAddress, req.DestinationChain)
+	if err != nil {
+		s.logger.Error("Failed to execute crypto transfer", "error", err)
+		// Mark withdrawal as failed
+		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
+		return nil, fmt.Errorf("failed to execute transfer: %w", err)
+	}
+
+	// Update tx hash
+	if txHash != "" {
+		if err := s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, txHash); err != nil {
+			s.logger.Error("Failed to update tx hash", "error", err)
 		}
 	}
 
-	// Step 6: Enqueue withdrawal processing to SQS
-	msg := queue.WithdrawalMessage{
-		WithdrawalID: withdrawal.ID.String(),
-		Step:         "debit_alpaca",
+	// Step 8: Update status to completed (Circle transfers are instant)
+	now := time.Now()
+	if err := s.withdrawalRepo.MarkCompleted(ctx, withdrawal.ID); err != nil {
+		s.logger.Error("Failed to mark withdrawal completed", "error", err)
+		return nil, fmt.Errorf("failed to complete withdrawal: %w", err)
 	}
-	if err := s.queuePublisher.Publish(ctx, "withdrawal-processing", msg); err != nil {
-		s.logger.Error("Failed to enqueue withdrawal", "error", err)
-		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "failed to enqueue processing")
-		return nil, fmt.Errorf("failed to enqueue withdrawal: %w", err)
+	withdrawal.Status = entities.WithdrawalStatusCompleted
+	withdrawal.CompletedAt = &now
+
+	// Step 9: Record against limits
+	if s.limitsService != nil {
+		if err := s.limitsService.RecordWithdrawal(ctx, req.UserID, req.Amount); err != nil {
+			s.logger.Error("Failed to record withdrawal against limits", "error", err)
+		}
 	}
 
-	s.logger.Info("Withdrawal initiated",
+	// Step 10: Send notification
+	if s.notificationService != nil {
+		_ = s.notificationService.NotifyWithdrawalCompleted(ctx, req.UserID, req.Amount, req.DestinationAddress)
+	}
+
+	s.logger.Info("Crypto withdrawal completed",
 		"withdrawal_id", withdrawal.ID.String(),
-		"status", withdrawal.Status)
+		"amount", req.Amount.String(),
+		"tx_hash", txHash)
 
 	return &entities.InitiateWithdrawalResponse{
 		WithdrawalID: withdrawal.ID,
 		Status:       withdrawal.Status,
-		Message:      "Withdrawal initiated successfully",
+		Message:      "Withdrawal completed successfully",
 	}, nil
 }
 
-// processWithdrawalAsync processes the withdrawal in the background
-func (s *WithdrawalService) processWithdrawalAsync(ctx context.Context, withdrawal *entities.Withdrawal) {
-	s.logger.Info("Processing withdrawal async", "withdrawal_id", withdrawal.ID.String())
+// InitiateFiatWithdrawal initiates a fiat withdrawal (USDC to fiat via Bridge)
+func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *entities.InitiateFiatWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error) {
+	s.logger.Info("Initiating fiat withdrawal",
+		"user_id", req.UserID.String(),
+		"amount", req.Amount.String(),
+		"currency", req.Currency,
+		"routing_number", req.RoutingNumber,
+		"source_account", req.SourceAccount)
 
-	// Step 1: Debit USD from Alpaca account
-	if err := s.debitAlpacaAccount(ctx, withdrawal); err != nil {
-		s.logger.Error("Failed to debit Alpaca account", "error", err, "withdrawal_id", withdrawal.ID.String())
-		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
-		return
+	// Step 1: Validate request
+	if err := req.Validate(); err != nil {
+		s.logger.Warn("Invalid fiat withdrawal request", "error", err.Error())
+		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
-	// Step 2: Process Due on-ramp (USD → USDC)
-	if err := s.processBridgeTransfer(ctx, withdrawal); err != nil {
-		s.logger.Error("Failed to process Due on-ramp", "error", err, "withdrawal_id", withdrawal.ID.String())
-		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
-		// Compensation: Credit back Alpaca account
-		if compErr := s.compensateAlpacaDebit(ctx, withdrawal); compErr != nil {
-			s.logger.Error("Compensation failed", "error", compErr, "withdrawal_id", withdrawal.ID.String())
-		}
-		return
-	}
-
-	// Step 3: Monitor transfer completion
-	if err := s.monitorTransferCompletion(ctx, withdrawal); err != nil {
-		s.logger.Error("Failed to monitor transfer", "error", err, "withdrawal_id", withdrawal.ID.String())
-		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
-		return
-	}
-
-	s.logger.Info("Withdrawal completed successfully", "withdrawal_id", withdrawal.ID.String())
-}
-
-// debitAlpacaAccount debits USD from Alpaca brokerage account
-func (s *WithdrawalService) debitAlpacaAccount(ctx context.Context, withdrawal *entities.Withdrawal) error {
-	s.logger.Info("Debiting Alpaca account",
-		"withdrawal_id", withdrawal.ID.String(),
-		"alpaca_account_id", withdrawal.AlpacaAccountID,
-		"amount", withdrawal.Amount.String())
-
-	// Create journal entry to debit USD from user's account to virtual account
-	journalReq := &entities.AlpacaJournalRequest{
-		FromAccount: withdrawal.AlpacaAccountID,
-		ToAccount:   "SI", // System/virtual account
-		EntryType:   "JNLC",
-		Amount:      withdrawal.Amount,
-		Description: fmt.Sprintf("Withdrawal to USDC - %s", withdrawal.ID.String()),
-	}
-
-	var journalResp *entities.AlpacaJournalResponse
-	var createJournalErr error
-	err := s.alpacaBreaker.Execute(ctx, func() error {
-		journalResp, createJournalErr = s.alpacaAPI.CreateJournal(ctx, journalReq)
-		return createJournalErr
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create journal: %w", err)
-	}
-
-	// Update withdrawal with journal ID
-	if err := s.withdrawalRepo.UpdateAlpacaJournal(ctx, withdrawal.ID, journalResp.ID); err != nil {
-		return fmt.Errorf("failed to update journal ID: %w", err)
-	}
-
-	s.logger.Info("Alpaca account debited",
-		"withdrawal_id", withdrawal.ID.String(),
-		"journal_id", journalResp.ID)
-
-	return nil
-}
-
-// processBridgeTransfer processes the Due on-ramp (USD → USDC)
-func (s *WithdrawalService) processBridgeTransfer(ctx context.Context, withdrawal *entities.Withdrawal) error {
-	s.logger.Info("Processing Bridge transfer",
-		"withdrawal_id", withdrawal.ID.String(),
-		"amount", withdrawal.Amount.String())
-
-	req := &entities.InitiateWithdrawalRequest{
-		UserID:             withdrawal.UserID,
-		AlpacaAccountID:    withdrawal.AlpacaAccountID,
-		Amount:             withdrawal.Amount,
-		DestinationChain:   withdrawal.DestinationChain,
-		DestinationAddress: withdrawal.DestinationAddress,
-	}
-
-	var providerResp *ProcessWithdrawalResponse
-	var processErr error
-	err := s.providerBreaker.Execute(ctx, func() error {
-		providerResp, processErr = s.withdrawalProvider.ProcessWithdrawal(ctx, req)
-		return processErr
-	})
-	if err != nil {
-		return fmt.Errorf("failed to process withdrawal: %w", err)
-	}
-
-	// Update withdrawal with transfer details
-	if err := s.withdrawalRepo.UpdateBridgeTransfer(ctx, withdrawal.ID, providerResp.TransferID, providerResp.RecipientID); err != nil {
-		return fmt.Errorf("failed to update transfer: %w", err)
-	}
-
-	s.logger.Info("Withdrawal transfer initiated",
-		"withdrawal_id", withdrawal.ID.String(),
-		"transfer_id", providerResp.TransferID)
-
-	return nil
-}
-
-// monitorTransferCompletion monitors the transfer until completion
-func (s *WithdrawalService) monitorTransferCompletion(ctx context.Context, withdrawal *entities.Withdrawal) error {
-	s.logger.Info("Monitoring transfer completion", "withdrawal_id", withdrawal.ID.String())
-
-	// Reload withdrawal to get transfer ID
-	w, err := s.withdrawalRepo.GetByID(ctx, withdrawal.ID)
-	if err != nil {
-		return fmt.Errorf("failed to get withdrawal: %w", err)
-	}
-
-	if w.BridgeTransferID == nil {
-		return fmt.Errorf("no transfer ID found")
-	}
-
-	// Poll for transfer status (max 30 attempts, 10 seconds apart = 5 minutes)
-	maxAttempts := 30
-	pollInterval := 10 * time.Second
-
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		time.Sleep(pollInterval)
-
-		var status *OnRampTransferResponse
-		var statusErr error
-		err := s.providerBreaker.Execute(ctx, func() error {
-			status, statusErr = s.withdrawalProvider.GetTransferStatus(ctx, *w.BridgeTransferID)
-			return statusErr
-		})
+	// Step 2: Check idempotency
+	if req.IdempotencyKey != "" {
+		existing, err := s.withdrawalRepo.GetByIdempotencyKey(ctx, req.IdempotencyKey)
 		if err != nil {
-			s.logger.Warn("Failed to get transfer status", "error", err, "attempt", attempt)
-			continue
+			s.logger.Error("Failed to check idempotency key", "error", err)
+			return nil, fmt.Errorf("failed to check idempotency: %w", err)
 		}
-
-		s.logger.Info("Transfer status",
-			"withdrawal_id", withdrawal.ID.String(),
-			"status", status.Status,
-			"attempt", attempt)
-
-		switch status.Status {
-		case "completed":
-			// Mark withdrawal as completed
-			if err := s.withdrawalRepo.MarkCompleted(ctx, withdrawal.ID); err != nil {
-				return fmt.Errorf("failed to mark completed: %w", err)
-			}
-			// Record withdrawal usage against limits ONLY after successful completion
-			if s.limitsService != nil {
-				if err := s.limitsService.RecordWithdrawal(ctx, withdrawal.UserID, withdrawal.Amount); err != nil {
-					s.logger.Warn("Failed to record withdrawal usage", "error", err, "withdrawal_id", withdrawal.ID.String())
-				}
-			}
-			// Send withdrawal completed notification
-			if s.notificationService != nil {
-				_ = s.notificationService.NotifyWithdrawalCompleted(ctx, withdrawal.UserID, withdrawal.Amount.String(), withdrawal.DestinationAddress)
-				// Notify for large withdrawals (>= $1000)
-				largeWithdrawalThreshold := decimal.NewFromInt(1000)
-				if withdrawal.Amount.GreaterThanOrEqual(largeWithdrawalThreshold) {
-					_ = s.notificationService.NotifyLargeBalanceChange(ctx, withdrawal.UserID, "withdrawal", withdrawal.Amount, decimal.Zero)
-				}
-			}
-			return nil
-
-		case "failed":
-			// Send withdrawal failed notification
-			if s.notificationService != nil {
-				_ = s.notificationService.NotifyWithdrawalFailed(ctx, withdrawal.UserID, withdrawal.Amount.String(), "Bridge transfer failed")
-			}
-			return fmt.Errorf("Bridge transfer failed")
-
-		default:
-			// Continue polling
-			continue
+		if existing != nil {
+			s.logger.Info("Returning existing withdrawal for idempotency key", "withdrawal_id", existing.ID.String())
+			return &entities.InitiateWithdrawalResponse{
+				WithdrawalID: existing.ID,
+				Status:       existing.Status,
+				Message:      "Withdrawal already exists",
+			}, nil
 		}
 	}
 
-	return fmt.Errorf("transfer monitoring timeout after %d attempts", maxAttempts)
+	// Step 3: Validate against withdrawal limits
+	if s.limitsService != nil {
+		result, err := s.limitsService.ValidateWithdrawal(ctx, req.UserID, req.Amount)
+		if err != nil {
+			s.logger.Warn("Withdrawal limit validation failed", "error", err.Error())
+			if result != nil {
+				return nil, fmt.Errorf("withdrawal limit exceeded (%s): %s remaining until %v",
+					result.LimitType, result.RemainingCapacity.String(), result.ResetsAt)
+			}
+			return nil, fmt.Errorf("withdrawal limit exceeded: %w", err)
+		}
+	}
+
+	// Step 4: Check balance based on source account
+	balance, err := s.getSourceBalance(ctx, req.UserID, req.SourceAccount)
+	if err != nil {
+		s.logger.Error("Failed to get source balance", "error", err)
+		return nil, fmt.Errorf("failed to get balance: %w", err)
+	}
+
+	if balance.LessThan(req.Amount) {
+		return nil, fmt.Errorf("insufficient balance: have %s, need %s", balance.String(), req.Amount.String())
+	}
+
+	// Step 5: Calculate fee
+	fee := s.calculateFiatWithdrawalFee(req.Amount, req.Currency)
+	totalAmount := req.Amount.Add(fee)
+
+	if balance.LessThan(totalAmount) {
+		return nil, fmt.Errorf("insufficient balance for withdrawal + fee: have %s, need %s", balance.String(), totalAmount.String())
+	}
+
+	// Step 6: Create or get bank account with routing number
+	bankAccount, err := s.getOrCreateBankAccount(ctx, req.UserID, req.RoutingNumber, req.Currency)
+	if err != nil {
+		s.logger.Error("Failed to create bank account", "error", err)
+		return nil, fmt.Errorf("failed to setup bank account: %w", err)
+	}
+
+	// Step 7: Create withdrawal record
+	idempotencyKey := req.IdempotencyKey
+	if idempotencyKey == "" {
+		idempotencyKey = uuid.New().String()
+	}
+
+	withdrawal := &entities.Withdrawal{
+		ID:              uuid.New(),
+		UserID:          req.UserID,
+		WithdrawalType:  entities.WithdrawalTypeFiat,
+		Currency:        req.Currency,
+		Amount:          req.Amount,
+		SourceAccount:   req.SourceAccount,
+		DestinationType: entities.DestinationTypeBankAccount,
+		BankAccountID:   &bankAccount.ID,
+		FeeAmount:       fee,
+		FeeCurrency:     entities.WithdrawalCurrencyUSDC, // Fees deducted in USDC
+		Status:          entities.WithdrawalStatusInitiated,
+		IdempotencyKey:  &idempotencyKey,
+		CreatedAt:       time.Now(),
+		UpdatedAt:       time.Now(),
+	}
+
+	if err := s.withdrawalRepo.Create(ctx, withdrawal); err != nil {
+		s.logger.Error("Failed to create withdrawal", "error", err)
+		return nil, fmt.Errorf("failed to create withdrawal: %w", err)
+	}
+
+	// Step 8: Execute Bridge offramp transfer
+	transferID, err := s.executeFiatTransfer(ctx, withdrawal, bankAccount)
+	if err != nil {
+		s.logger.Error("Failed to execute fiat transfer", "error", err)
+		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
+		return nil, fmt.Errorf("failed to execute transfer: %w", err)
+	}
+
+	// Update bridge transfer ID
+	if err := s.withdrawalRepo.UpdateBridgeTransfer(ctx, withdrawal.ID, transferID); err != nil {
+		s.logger.Error("Failed to update bridge transfer ID", "error", err)
+	}
+
+	// Update status to processing
+	if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusProcessing); err != nil {
+		s.logger.Error("Failed to update withdrawal status", "error", err)
+		return nil, fmt.Errorf("failed to update status: %w", err)
+	}
+
+	withdrawal.Status = entities.WithdrawalStatusProcessing
+
+	s.logger.Info("Fiat withdrawal initiated",
+		"withdrawal_id", withdrawal.ID.String(),
+		"amount", req.Amount.String(),
+		"transfer_id", transferID)
+
+	return &entities.InitiateWithdrawalResponse{
+		WithdrawalID: withdrawal.ID,
+		Status:       withdrawal.Status,
+		Message:      "Fiat withdrawal initiated. Processing may take 1-3 business days.",
+	}, nil
 }
 
-// GetWithdrawal retrieves a withdrawal by ID
-func (s *WithdrawalService) GetWithdrawal(ctx context.Context, withdrawalID uuid.UUID) (*entities.Withdrawal, error) {
-	return s.withdrawalRepo.GetByID(ctx, withdrawalID)
+// getOrCreateBankAccount finds existing bank account by routing number or creates new one
+func (s *WithdrawalService) getOrCreateBankAccount(ctx context.Context, userID uuid.UUID, routingNumber string, currency entities.WithdrawalCurrency) (*entities.BankAccount, error) {
+	// Check if user already has a bank account with this routing number
+	existingAccounts, err := s.bankAccountRepo.GetByUserID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check existing accounts: %w", err)
+	}
+
+	for _, acc := range existingAccounts {
+		if acc.RoutingNumber != nil && *acc.RoutingNumber == routingNumber {
+			s.logger.Info("Found existing bank account", "bank_account_id", acc.ID.String())
+			return acc, nil
+		}
+	}
+
+	// Create new bank account
+	routingLast4 := routingNumber[len(routingNumber)-4:]
+	bankCurrency := entities.BankAccountCurrencyUSD
+	if currency == entities.WithdrawalCurrencyEUR {
+		bankCurrency = entities.BankAccountCurrencyEUR
+	}
+
+	bankAccount := &entities.BankAccount{
+		ID:                 uuid.New(),
+		UserID:             userID,
+		BankName:           "Bank", // Will be resolved by Bridge
+		AccountNumberLast4: "0000", // Placeholder - Bridge handles full account
+		RoutingNumber:      &routingNumber,
+		RoutingNumberLast4: &routingLast4,
+		Currency:           bankCurrency,
+		IsVerified:         false,
+		CreatedAt:          time.Now(),
+		UpdatedAt:          time.Now(),
+	}
+
+	// Register with Bridge to get recipient ID
+	if s.bridgeAdapter != nil {
+		recipientReq := map[string]interface{}{
+			"routing_number": routingNumber,
+			"currency":       string(currency),
+		}
+
+		recipientID, err := s.bridgeAdapter.CreateRecipient(ctx, recipientReq)
+		if err != nil {
+			return nil, fmt.Errorf("failed to register with Bridge: %w", err)
+		}
+
+		bankAccount.BridgeRecipientID = &recipientID
+		bankAccount.IsVerified = true
+	}
+
+	if err := s.bankAccountRepo.Create(ctx, bankAccount); err != nil {
+		return nil, fmt.Errorf("failed to save bank account: %w", err)
+	}
+
+	s.logger.Info("Created new bank account",
+		"bank_account_id", bankAccount.ID.String(),
+		"routing_number_last4", routingLast4)
+
+	return bankAccount, nil
 }
 
-// GetUserWithdrawals retrieves withdrawals for a user
-func (s *WithdrawalService) GetUserWithdrawals(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error) {
-	return s.withdrawalRepo.GetByUserID(ctx, userID, limit, offset)
+// GetWithdrawalFee returns the fee for a withdrawal
+func (s *WithdrawalService) GetWithdrawalFee(ctx context.Context, withdrawalType entities.WithdrawalType, amount decimal.Decimal, currency entities.WithdrawalCurrency) (*entities.WithdrawalFee, error) {
+	if amount.LessThanOrEqual(decimal.Zero) {
+		return nil, fmt.Errorf("amount must be positive")
+	}
+
+	feeResponse := &entities.WithdrawalFee{
+		Amount:   amount,
+		Currency: currency,
+	}
+
+	switch withdrawalType {
+	case entities.WithdrawalTypeCrypto:
+		fee := s.calculateCryptoWithdrawalFee(amount)
+		feeResponse.Amount = fee
+		feeResponse.Currency = entities.WithdrawalCurrencyUSDC
+		feeResponse.Breakdown.NetworkFee = fee
+		feeResponse.Breakdown.ServiceFee = decimal.Zero
+	case entities.WithdrawalTypeFiat:
+		fee := s.calculateFiatWithdrawalFee(amount, currency)
+		feeResponse.Amount = fee
+		feeResponse.Currency = entities.WithdrawalCurrencyUSDC
+		feeResponse.Breakdown.ServiceFee = fee
+		feeResponse.Breakdown.NetworkFee = decimal.Zero
+	default:
+		return nil, fmt.Errorf("invalid withdrawal type: %s", withdrawalType)
+	}
+
+	return feeResponse, nil
 }
 
 // CancelWithdrawal cancels a pending withdrawal
-func (s *WithdrawalService) CancelWithdrawal(ctx context.Context, withdrawalID uuid.UUID, userID uuid.UUID) error {
+func (s *WithdrawalService) CancelWithdrawal(ctx context.Context, userID, withdrawalID uuid.UUID) error {
+	s.logger.Info("Cancelling withdrawal",
+		"user_id", userID.String(),
+		"withdrawal_id", withdrawalID.String())
+
 	withdrawal, err := s.withdrawalRepo.GetByID(ctx, withdrawalID)
 	if err != nil {
-		return fmt.Errorf("not found: %w", err)
+		return fmt.Errorf("withdrawal not found: %w", err)
 	}
 
 	if withdrawal.UserID != userID {
-		return fmt.Errorf("not found")
+		return fmt.Errorf("withdrawal does not belong to user")
 	}
 
-	// Only allow cancellation of initiated/pending withdrawals
-	if withdrawal.Status != entities.WithdrawalStatusInitiated && withdrawal.Status != entities.WithdrawalStatusPending {
-		return fmt.Errorf("cannot cancel withdrawal in %s status", withdrawal.Status)
+	if !withdrawal.Status.IsPending() {
+		return fmt.Errorf("cannot cancel withdrawal in status: %s", withdrawal.Status)
 	}
 
-	return s.withdrawalRepo.MarkFailed(ctx, withdrawalID, "cancelled by user")
-}
-
-// compensateAlpacaDebit reverses the Alpaca journal entry on failure
-func (s *WithdrawalService) compensateAlpacaDebit(ctx context.Context, withdrawal *entities.Withdrawal) error {
-	if withdrawal.AlpacaJournalID == nil {
-		return nil
+	// For fiat withdrawals, we may need to cancel the Bridge transfer
+	if withdrawal.IsFiat() && withdrawal.BridgeTransferID != nil {
+		// TODO: Add Bridge cancellation logic if supported
+		s.logger.Info("Fiat withdrawal cancellation - Bridge cancellation not implemented yet",
+			"transfer_id", *withdrawal.BridgeTransferID)
 	}
 
-	s.logger.Info("Compensating Alpaca debit",
-		"withdrawal_id", withdrawal.ID.String(),
-		"journal_id", *withdrawal.AlpacaJournalID)
-
-	journalReq := &entities.AlpacaJournalRequest{
-		FromAccount: "SI",
-		ToAccount:   withdrawal.AlpacaAccountID,
-		EntryType:   "JNLC",
-		Amount:      withdrawal.Amount,
-		Description: fmt.Sprintf("Withdrawal reversal - %s", withdrawal.ID.String()),
+	if err := s.withdrawalRepo.MarkFailed(ctx, withdrawalID, "Cancelled by user"); err != nil {
+		return fmt.Errorf("failed to cancel withdrawal: %w", err)
 	}
 
-	var reversalJournal *entities.AlpacaJournalResponse
-	var reversalErr error
-	err := s.alpacaBreaker.Execute(ctx, func() error {
-		reversalJournal, reversalErr = s.alpacaAPI.CreateJournal(ctx, journalReq)
-		return reversalErr
-	})
-	if err != nil {
-		return fmt.Errorf("failed to reverse journal: %w", err)
-	}
-	s.logger.Info("Alpaca debit compensated",
-		"withdrawal_id", withdrawal.ID.String(),
-		"reversal_journal_id", reversalJournal.ID)
-
-	return nil
-}
-
-// StuckWithdrawalRepository interface for stuck withdrawal queries
-type StuckWithdrawalRepository interface {
-	GetStuckWithdrawals(ctx context.Context, slaThreshold time.Duration) ([]*entities.Withdrawal, error)
-	MarkTimeout(ctx context.Context, id uuid.UUID) error
-}
-
-// ReconcileStuckWithdrawals queries provider for actual status of stuck withdrawals
-// This is a fallback when webhooks fail - implements status enquiry pattern
-func (s *WithdrawalService) ReconcileStuckWithdrawals(ctx context.Context, slaThreshold time.Duration) error {
-	s.logger.Info("Starting stuck withdrawal reconciliation", "sla_threshold", slaThreshold.String())
-
-	// Type assert to get the extended interface
-	stuckRepo, ok := s.withdrawalRepo.(StuckWithdrawalRepository)
-	if !ok {
-		return fmt.Errorf("withdrawal repository does not support GetStuckWithdrawals")
-	}
-
-	stuckWithdrawals, err := stuckRepo.GetStuckWithdrawals(ctx, slaThreshold)
-	if err != nil {
-		return fmt.Errorf("failed to get stuck withdrawals: %w", err)
-	}
-
-	s.logger.Info("Found stuck withdrawals", "count", len(stuckWithdrawals))
-
-	for _, w := range stuckWithdrawals {
-		if err := s.reconcileSingleWithdrawal(ctx, w, stuckRepo); err != nil {
-			s.logger.Warn("Failed to reconcile withdrawal",
-				"withdrawal_id", w.ID.String(),
-				"error", err.Error())
-			continue
-		}
+	// Send notification
+	if s.notificationService != nil {
+		_ = s.notificationService.NotifyWithdrawalFailed(ctx, userID, withdrawal.Amount, "Cancelled by user")
 	}
 
 	return nil
 }
 
-// reconcileSingleWithdrawal queries the provider for actual status and updates accordingly
-func (s *WithdrawalService) reconcileSingleWithdrawal(ctx context.Context, w *entities.Withdrawal, stuckRepo StuckWithdrawalRepository) error {
-	// Only query provider if we have a transfer ID
-	if w.BridgeTransferID == nil {
-		// No transfer ID means it's stuck before provider submission
-		// Mark as timeout so it can be retried or manually resolved
-		s.logger.Warn("Withdrawal stuck without transfer ID, marking timeout",
-			"withdrawal_id", w.ID.String(),
-			"status", w.Status)
-		return stuckRepo.MarkTimeout(ctx, w.ID)
-	}
-
-	// Query provider for actual status
-	var status *OnRampTransferResponse
-	var statusErr error
-	err := s.providerBreaker.Execute(ctx, func() error {
-		status, statusErr = s.withdrawalProvider.GetTransferStatus(ctx, *w.BridgeTransferID)
-		return statusErr
-	})
+// GetWithdrawal gets a withdrawal by ID
+func (s *WithdrawalService) GetWithdrawal(ctx context.Context, userID, withdrawalID uuid.UUID) (*entities.Withdrawal, error) {
+	withdrawal, err := s.withdrawalRepo.GetByID(ctx, withdrawalID)
 	if err != nil {
-		s.logger.Warn("Failed to get transfer status from provider",
-			"withdrawal_id", w.ID.String(),
-			"transfer_id", *w.BridgeTransferID,
-			"error", err.Error())
-		// Mark as timeout - provider unreachable
-		return stuckRepo.MarkTimeout(ctx, w.ID)
+		return nil, fmt.Errorf("withdrawal not found: %w", err)
 	}
 
-	s.logger.Info("Got status from provider for stuck withdrawal",
-		"withdrawal_id", w.ID.String(),
-		"provider_status", status.Status)
+	if withdrawal.UserID != userID {
+		return nil, fmt.Errorf("withdrawal does not belong to user")
+	}
 
-	// Update based on actual status from provider
-	switch status.Status {
-	case "completed":
-		if err := s.withdrawalRepo.MarkCompleted(ctx, w.ID); err != nil {
-			return fmt.Errorf("failed to mark completed: %w", err)
-		}
-		s.logger.Info("Reconciled stuck withdrawal as completed", "withdrawal_id", w.ID.String())
+	return withdrawal, nil
+}
 
-	case "failed":
-		if err := s.withdrawalRepo.MarkFailed(ctx, w.ID, "Provider reported failure during reconciliation"); err != nil {
-			return fmt.Errorf("failed to mark failed: %w", err)
-		}
-		s.logger.Info("Reconciled stuck withdrawal as failed", "withdrawal_id", w.ID.String())
+// GetUserWithdrawals gets all withdrawals for a user
+func (s *WithdrawalService) GetUserWithdrawals(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
 
+	return s.withdrawalRepo.GetByUserID(ctx, userID, limit, offset)
+}
+
+// getSourceBalance gets the balance for the specified source account
+func (s *WithdrawalService) getSourceBalance(ctx context.Context, userID uuid.UUID, sourceAccount entities.WithdrawalSourceAccount) (decimal.Decimal, error) {
+	var accountType entities.AccountType
+	switch sourceAccount {
+	case entities.WithdrawalSourceSpendingBalance:
+		accountType = entities.AccountTypeSpendingBalance
+	case entities.WithdrawalSourceStashBalance:
+		accountType = entities.AccountTypeStashBalance
 	default:
-		// Still processing - mark as timeout if beyond SLA
-		if err := stuckRepo.MarkTimeout(ctx, w.ID); err != nil {
-			return fmt.Errorf("failed to mark timeout: %w", err)
-		}
-		s.logger.Info("Marked stuck withdrawal as timeout", "withdrawal_id", w.ID.String())
+		return decimal.Zero, fmt.Errorf("invalid source account: %s", sourceAccount)
 	}
 
-	return nil
+	return s.ledgerService.GetAccountBalance(ctx, userID, accountType)
+}
+
+// calculateCryptoWithdrawalFee calculates the fee for a crypto withdrawal
+func (s *WithdrawalService) calculateCryptoWithdrawalFee(amount decimal.Decimal) decimal.Decimal {
+	// Circle transfers are free for internal transfers
+	// Network fees may apply for external transfers (minimal for USDC on Solana/Ethereum)
+	return decimal.Zero
+}
+
+// calculateFiatWithdrawalFee calculates the fee for a fiat withdrawal
+func (s *WithdrawalService) calculateFiatWithdrawalFee(amount decimal.Decimal, currency entities.WithdrawalCurrency) decimal.Decimal {
+	var fee decimal.Decimal
+	switch currency {
+	case entities.WithdrawalCurrencyUSD:
+		percentFee := amount.Mul(decimal.NewFromFloat(FiatWithdrawalFeePercentUSD))
+		fixedFee := decimal.NewFromFloat(FiatWithdrawalFeeFixedUSD)
+		fee = percentFee.Add(fixedFee)
+	case entities.WithdrawalCurrencyEUR:
+		percentFee := amount.Mul(decimal.NewFromFloat(FiatWithdrawalFeePercentEUR))
+		fixedFee := decimal.NewFromFloat(FiatWithdrawalFeeFixedEUR)
+		fee = percentFee.Add(fixedFee)
+	default:
+		fee = decimal.Zero
+	}
+	return fee
+}
+
+// executeCryptoTransfer executes a crypto transfer via Circle
+func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, destinationChain string) (string, error) {
+	if s.circleClient == nil {
+		return "", fmt.Errorf("circle client not configured")
+	}
+
+	walletID := withdrawal.CircleWalletID
+	if walletID == nil || *walletID == "" {
+		return "", fmt.Errorf("circle wallet ID not provided")
+	}
+
+	// Format amount for Circle API (USDC uses 6 decimals)
+	amountStr := withdrawal.Amount.StringFixed(6)
+
+	req := entities.CircleTransferRequest{
+		WalletID:            *walletID,
+		TokenID:             "USDC", // USDC token
+		Amounts:             []string{amountStr},
+		DestinationAddress:  destinationAddress,
+		IDempotencyKey:      *withdrawal.IdempotencyKey,
+	}
+
+	// Add destination chain if specified
+	if destinationChain != "" {
+		// Circle handles chain routing automatically for most cases
+		s.logger.Debug("Destination chain specified", "chain", destinationChain)
+	}
+
+	response, err := s.circleClient.TransferFunds(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("circle transfer failed: %w", err)
+	}
+
+	// Extract transaction hash from response
+	// The response format depends on Circle's API
+	var txHash string
+	if txHashVal, ok := response["transactionHash"].(string); ok {
+		txHash = txHashVal
+	} else if txHashVal, ok := response["txHash"].(string); ok {
+		txHash = txHashVal
+	}
+
+	s.logger.Info("Crypto transfer executed",
+		"withdrawal_id", withdrawal.ID.String(),
+		"tx_hash", txHash)
+
+	return txHash, nil
+}
+
+// executeFiatTransfer executes a fiat transfer via Bridge offramp
+func (s *WithdrawalService) executeFiatTransfer(ctx context.Context, withdrawal *entities.Withdrawal, bankAccount *entities.BankAccount) (string, error) {
+	if s.bridgeAdapter == nil {
+		return "", fmt.Errorf("bridge adapter not configured")
+	}
+
+	if bankAccount.BridgeRecipientID == nil || *bankAccount.BridgeRecipientID == "" {
+		return "", fmt.Errorf("bank account not registered with Bridge")
+	}
+
+	// Format amount
+	amountStr := withdrawal.Amount.StringFixed(2)
+
+	// Create transfer request
+	req := map[string]interface{}{
+		"source":         "USDC",
+		"amount":         amountStr,
+		"currency":       string(withdrawal.Currency),
+		"recipient_id":   *bankAccount.BridgeRecipientID,
+		"idempotency_key": *withdrawal.IdempotencyKey,
+	}
+
+	response, err := s.bridgeAdapter.InitiateTransfer(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("bridge transfer failed: %w", err)
+	}
+
+	// Extract transfer ID from response
+	transferID, ok := response["id"].(string)
+	if !ok {
+		return "", fmt.Errorf("failed to get transfer ID from response")
+	}
+
+	s.logger.Info("Fiat transfer initiated",
+		"withdrawal_id", withdrawal.ID.String(),
+		"transfer_id", transferID)
+
+	return transferID, nil
 }

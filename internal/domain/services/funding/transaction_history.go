@@ -236,14 +236,15 @@ func (s *TransactionHistoryService) withdrawalToUnified(w *entities.Withdrawal) 
 		Type:        "withdrawal",
 		Status:      string(w.Status),
 		Amount:      w.Amount,
-		Currency:    "USD",
-		Description: "USD to USDC withdrawal",
-		Chain:       w.DestinationChain,
-		Address:     w.DestinationAddress,
+		Currency:    string(w.Currency),
+		Description: fmt.Sprintf("%s withdrawal", w.WithdrawalType),
+		Chain:       "",
+		Address:     derefString(w.DestinationAddress),
 		CreatedAt:   w.CreatedAt,
 		CompletedAt: completedAt,
 		Metadata: map[string]any{
-			"alpaca_account_id": w.AlpacaAccountID,
+			"withdrawal_type": string(w.WithdrawalType),
+			"source_account":  string(w.SourceAccount),
 		},
 	}
 }

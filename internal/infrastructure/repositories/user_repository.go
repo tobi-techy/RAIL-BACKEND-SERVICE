@@ -719,6 +719,24 @@ func (r *UserRepository) DeactivateUser(ctx context.Context, userID uuid.UUID) e
 	return nil
 }
 
+// HardDelete permanently removes a user and all related data (cascades via FK constraints)
+func (r *UserRepository) HardDelete(ctx context.Context, userID uuid.UUID) error {
+	query := `DELETE FROM users WHERE id = $1`
+	result, err := r.db.ExecContext(ctx, query, userID)
+	if err != nil {
+		r.logger.Error("Failed to hard delete user", zap.Error(err), zap.String("user_id", userID.String()))
+		return fmt.Errorf("failed to delete user: %w", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return fmt.Errorf("user not found")
+	}
+
+	r.logger.Info("User permanently deleted", zap.String("user_id", userID.String()))
+	return nil
+}
+
 // GetPasscodeMetadata retrieves persisted passcode metadata for a user
 func (r *UserRepository) GetPasscodeMetadata(ctx context.Context, userID uuid.UUID) (*entities.PasscodeMetadata, error) {
 	query := `

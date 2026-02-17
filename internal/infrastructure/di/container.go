@@ -14,6 +14,7 @@ import (
 	"github.com/rail-service/rail_service/internal/api/handlers/webhooks"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
+	"github.com/rail-service/rail_service/internal/domain/services/account"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	"github.com/rail-service/rail_service/internal/domain/services/allocation"
 	alpacaservice "github.com/rail-service/rail_service/internal/domain/services/alpaca"
@@ -134,37 +135,102 @@ func (a *LedgerIntegrationAdapter) GetUserBalance(ctx context.Context, userID uu
 	}, nil
 }
 
-// WithdrawalAlpacaAdapter adapts alpaca.Client to services.AlpacaAdapter interface for withdrawals
-type WithdrawalAlpacaAdapter struct {
-	client         *alpaca.Client
-	fundingAdapter *alpaca.FundingAdapter
+// WithdrawalLedgerAdapter adapts ledger.Service to withdrawal.LedgerService interface
+type WithdrawalLedgerAdapter struct {
+	ledgerService *ledger.Service
 }
 
-func (a *WithdrawalAlpacaAdapter) GetAccount(ctx context.Context, accountID string) (*entities.AlpacaAccountResponse, error) {
-	return a.client.GetAccount(ctx, accountID)
+func (a *WithdrawalLedgerAdapter) GetAccountBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (decimal.Decimal, error) {
+	account, err := a.ledgerService.GetOrCreateUserAccount(ctx, userID, accountType)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	return account.Balance, nil
 }
 
-func (a *WithdrawalAlpacaAdapter) CreateJournal(ctx context.Context, req *entities.AlpacaJournalRequest) (*entities.AlpacaJournalResponse, error) {
-	return a.fundingAdapter.CreateJournal(ctx, req)
+func (a *WithdrawalLedgerAdapter) CreateTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, txType entities.TransactionType, amount decimal.Decimal, metadata map[string]interface{}) error {
+	account, err := a.ledgerService.GetOrCreateUserAccount(ctx, userID, accountType)
+	if err != nil {
+		return err
+	}
+	
+	desc := "Withdrawal transaction"
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: txType,
+		Description:     &desc,
+		Metadata:        metadata,
+		Entries: []entities.CreateEntryRequest{
+			{
+				AccountID:   account.ID,
+				EntryType:   entities.EntryTypeCredit,
+				Amount:      amount,
+				Currency:    "USDC",
+				Description: &desc,
+			},
+		},
+	}
+	
+	_, err = a.ledgerService.CreateTransaction(ctx, req)
+	return err
 }
 
-// WithdrawalBridgeAdapter adapts bridge.Adapter to services.WithdrawalProviderAdapter interface
+// WithdrawalCircleAdapter adapts circle.Client to withdrawal.CircleClient interface
+type WithdrawalCircleAdapter struct {
+	client *circle.Client
+}
+
+func (a *WithdrawalCircleAdapter) TransferFunds(ctx context.Context, req entities.CircleTransferRequest) (map[string]interface{}, error) {
+	resp, err := a.client.TransferFunds(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (a *WithdrawalCircleAdapter) GetWallet(ctx context.Context, walletID string) (map[string]interface{}, error) {
+	wallet, err := a.client.GetWallet(ctx, walletID)
+	if err != nil {
+		return nil, err
+	}
+	// Extract address from wallet data
+	address := wallet.Wallet.Address
+	if address == "" && len(wallet.Wallet.Addresses) > 0 {
+		address = wallet.Wallet.Addresses[0].Address
+	}
+	return map[string]interface{}{
+		"id":      wallet.Wallet.ID,
+		"address": address,
+	}, nil
+}
+
+// WithdrawalBridgeAdapter adapts bridge.Adapter to withdrawal.BridgeAdapter interface
 type WithdrawalBridgeAdapter struct {
 	adapter *bridge.Adapter
 }
 
-func (a *WithdrawalBridgeAdapter) ProcessWithdrawal(ctx context.Context, req *entities.InitiateWithdrawalRequest) (*services.ProcessWithdrawalResponse, error) {
-	// Create Bridge transfer for withdrawal
+func (a *WithdrawalBridgeAdapter) CreateRecipient(ctx context.Context, req map[string]interface{}) (string, error) {
+	// Create Bridge recipient for fiat withdrawal
+	// This would call the Bridge API to create a recipient
+	return "", fmt.Errorf("not implemented - use Bridge API directly")
+}
+
+func (a *WithdrawalBridgeAdapter) InitiateTransfer(ctx context.Context, req map[string]interface{}) (map[string]interface{}, error) {
+	// Initiate Bridge transfer for fiat withdrawal
+	amount, _ := req["amount"].(string)
+	currency, _ := req["currency"].(string)
+	recipientID, _ := req["recipient_id"].(string)
+
 	transferReq := &bridge.CreateTransferRequest{
-		Amount: req.Amount.String(),
+		Amount: amount,
 		Source: bridge.TransferSource{
-			PaymentRail: bridge.PaymentRailSolana, // Solana-only support
+			PaymentRail: bridge.PaymentRailSolana,
 			Currency:    bridge.CurrencyUSDC,
 		},
 		Destination: bridge.TransferDestination{
-			PaymentRail: mapChainToPaymentRail(req.DestinationChain),
-			Currency:    bridge.CurrencyUSDC,
-			ToAddress:   req.DestinationAddress,
+			PaymentRail: mapCurrencyToPaymentRail(currency),
+			Currency:    bridge.Currency(currency),
+			ToAddress:   recipientID,
 		},
 	}
 
@@ -173,23 +239,28 @@ func (a *WithdrawalBridgeAdapter) ProcessWithdrawal(ctx context.Context, req *en
 		return nil, err
 	}
 
-	return &services.ProcessWithdrawalResponse{
-		TransferID:   transfer.ID,
-		SourceAmount: transfer.Amount,
-		DestAmount:   transfer.Amount,
-		Status:       string(transfer.Status),
+	return map[string]interface{}{
+		"id":     transfer.ID,
+		"status": string(transfer.Status),
+		"amount": transfer.Amount,
 	}, nil
 }
 
-func (a *WithdrawalBridgeAdapter) GetTransferStatus(ctx context.Context, transferID string) (*services.OnRampTransferResponse, error) {
+func (a *WithdrawalBridgeAdapter) GetTransferStatus(ctx context.Context, transferID string) (map[string]interface{}, error) {
 	transfer, err := a.adapter.Client().GetTransfer(ctx, transferID)
 	if err != nil {
 		return nil, err
 	}
-	return &services.OnRampTransferResponse{
-		ID:     transfer.ID,
-		Status: string(transfer.Status),
+	return map[string]interface{}{
+		"id":     transfer.ID,
+		"status": string(transfer.Status),
 	}, nil
+}
+
+func mapCurrencyToPaymentRail(currency string) bridge.PaymentRail {
+	// For fiat withdrawals via Bridge, we use Solana as the source chain
+	// Bridge handles the conversion to fiat internally
+	return bridge.PaymentRailSolana
 }
 
 func mapChainToPaymentRail(chain string) bridge.PaymentRail {
@@ -307,21 +378,39 @@ func (a *FundingNotificationAdapter) NotifyLargeBalanceChange(ctx context.Contex
 	return a.svc.NotifyLargeBalanceChange(ctx, userID, changeType, amount, newBalance)
 }
 
-// WithdrawalNotificationAdapter adapts NotificationService to services.WithdrawalNotificationService
+// WithdrawalNotificationAdapter adapts NotificationService to withdrawal.WithdrawalNotificationService
 type WithdrawalNotificationAdapter struct {
 	svc *services.NotificationService
 }
 
-func (a *WithdrawalNotificationAdapter) NotifyWithdrawalCompleted(ctx context.Context, userID uuid.UUID, amount, destinationAddress string) error {
-	return a.svc.NotifyWithdrawalCompleted(ctx, userID, amount, destinationAddress)
+func (a *WithdrawalNotificationAdapter) NotifyWithdrawalCompleted(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, destination string) error {
+	return a.svc.NotifyWithdrawalCompleted(ctx, userID, amount.String(), destination)
 }
 
-func (a *WithdrawalNotificationAdapter) NotifyWithdrawalFailed(ctx context.Context, userID uuid.UUID, amount, reason string) error {
-	return a.svc.NotifyWithdrawalFailed(ctx, userID, amount, reason)
+func (a *WithdrawalNotificationAdapter) NotifyWithdrawalFailed(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, reason string) error {
+	return a.svc.NotifyWithdrawalFailed(ctx, userID, amount.String(), reason)
 }
 
 func (a *WithdrawalNotificationAdapter) NotifyLargeBalanceChange(ctx context.Context, userID uuid.UUID, changeType string, amount decimal.Decimal, newBalance decimal.Decimal) error {
 	return a.svc.NotifyLargeBalanceChange(ctx, userID, changeType, amount, newBalance)
+}
+
+// deletionLedgerAdapter adapts LedgerService to account.LedgerService
+type deletionLedgerAdapter struct {
+	ledgerService *ledger.Service
+}
+
+func (a *deletionLedgerAdapter) GetUserBalances(ctx context.Context, userID uuid.UUID) (*entities.UserBalances, error) {
+	return a.ledgerService.GetUserBalances(ctx, userID)
+}
+
+// deletionUserRepoAdapter adapts UserRepository to account.UserRepository
+type deletionUserRepoAdapter struct {
+	userRepo *repositories.UserRepository
+}
+
+func (a *deletionUserRepoAdapter) HardDelete(ctx context.Context, userID uuid.UUID) error {
+	return a.userRepo.HardDelete(ctx, userID)
 }
 
 // Container holds all application dependencies
@@ -489,6 +578,9 @@ type Container struct {
 	// Security Stores
 	WithdrawalSecurityStore *repositories.WithdrawalSecurityStore
 	DepositSecurityStore    *repositories.DepositSecurityStore
+
+	// Account Management
+	AccountDeletionService *account.DeletionService
 
 	// Unified Webhook Handler
 	UnifiedFundingWebhookHandler *webhooks.UnifiedFundingWebhookHandler
@@ -975,25 +1067,29 @@ func (c *Container) initializeDomainServices() error {
 	c.FundingService.SetNotificationService(&FundingNotificationAdapter{svc: c.NotificationService})
 	c.FundingService.SetAllocationService(c.AllocationService) // Enable automatic 70/30 deposit split
 
-	// Initialize withdrawal service with adapters (Bridge replaces Due)
-	withdrawalAlpacaAdapter := &WithdrawalAlpacaAdapter{
-		client:         c.AlpacaClient,
-		fundingAdapter: alpacaFundingAdapter,
-	}
+	// Initialize withdrawal service with adapters
 	withdrawalBridgeAdapter := &WithdrawalBridgeAdapter{adapter: c.BridgeAdapter}
+	
+	// Create bank account repository
+	bankAccountRepo := repositories.NewBankAccountRepository(sqlxDB)
+	
+	// Create adapters for withdrawal service
+	withdrawalLedgerAdapter := &WithdrawalLedgerAdapter{ledgerService: c.LedgerService}
+	withdrawalCircleAdapter := &WithdrawalCircleAdapter{client: c.CircleClient}
+	withdrawalNotificationAdapter := &WithdrawalNotificationAdapter{svc: c.NotificationService}
+	
+	// Create withdrawal service with new architecture
 	c.WithdrawalService = services.NewWithdrawalService(
 		c.WithdrawalRepo,
-		withdrawalAlpacaAdapter,
-		withdrawalBridgeAdapter,
-		c.AllocationService,
-		nil, // AllocationNotificationManager - optional
+		withdrawalLedgerAdapter,  // LedgerService adapter
+		bankAccountRepo,          // BankAccountRepository
+		c.LimitsService,          // WithdrawalLimitsService
+		c.DomainAuditService,     // WithdrawalAuditService
+		withdrawalNotificationAdapter, // WithdrawalNotificationService adapter
+		withdrawalCircleAdapter,  // CircleClient adapter
+		withdrawalBridgeAdapter,  // BridgeAdapter
 		c.Logger,
-		nil, // QueuePublisher - will use mock
 	)
-	// Wire limits, audit, and notification services to withdrawal service
-	c.WithdrawalService.SetLimitsService(c.LimitsService)
-	c.WithdrawalService.SetAuditService(c.DomainAuditService)
-	c.WithdrawalService.SetNotificationService(&WithdrawalNotificationAdapter{svc: c.NotificationService})
 
 	// Initialize AI Financial Manager services
 	if err := c.initializeAIServices(sqlxDB, positionRepo, allocationRepo, basketRepo); err != nil {
@@ -1033,6 +1129,17 @@ func (c *Container) initializeDomainServices() error {
 	if alpacaSecret := strings.TrimSpace(c.Config.Alpaca.WebhookSecret); alpacaSecret != "" {
 		c.UnifiedFundingWebhookHandler.SetWebhookSecret("alpaca", alpacaSecret)
 	}
+
+	// Initialize account deletion service
+	c.AccountDeletionService = account.NewDeletionService(
+		&deletionLedgerAdapter{ledgerService: c.LedgerService},
+		c.WalletRepo,
+		c.CircleClient,
+		&deletionUserRepoAdapter{userRepo: c.UserRepo},
+		c.DomainAuditService,
+		c.Config.Circle.TreasuryWalletAddress,
+		c.Logger,
+	)
 
 	return nil
 }
@@ -1203,6 +1310,11 @@ func (c *Container) GetJWTService() *auth.JWTService {
 // GetTieredRateLimiter returns the tiered rate limiter
 func (c *Container) GetTieredRateLimiter() *ratelimit.TieredLimiter {
 	return c.TieredRateLimiter
+}
+
+// GetAccountDeletionService returns the account deletion service
+func (c *Container) GetAccountDeletionService() *account.DeletionService {
+	return c.AccountDeletionService
 }
 
 // GetRateLimitConfig returns the rate limit configuration

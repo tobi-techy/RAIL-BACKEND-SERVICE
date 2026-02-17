@@ -26,23 +26,30 @@ func NewWithdrawalRepository(db *sqlx.DB) *WithdrawalRepository {
 func (r *WithdrawalRepository) Create(ctx context.Context, withdrawal *entities.Withdrawal) error {
 	query := `
 		INSERT INTO withdrawals (
-			id, user_id, alpaca_account_id, amount, destination_chain, destination_address,
-			status, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			id, user_id, withdrawal_type, currency, amount, source_account,
+			circle_wallet_id, destination_type, destination_address, bank_account_id,
+			fee_amount, fee_currency, status, idempotency_key, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 	`
 
 	_, err := r.db.ExecContext(ctx, query,
 		withdrawal.ID,
 		withdrawal.UserID,
-		withdrawal.AlpacaAccountID,
+		withdrawal.WithdrawalType,
+		withdrawal.Currency,
 		withdrawal.Amount,
-		withdrawal.DestinationChain,
+		withdrawal.SourceAccount,
+		withdrawal.CircleWalletID,
+		withdrawal.DestinationType,
 		withdrawal.DestinationAddress,
+		withdrawal.BankAccountID,
+		withdrawal.FeeAmount,
+		withdrawal.FeeCurrency,
 		withdrawal.Status,
+		withdrawal.IdempotencyKey,
 		withdrawal.CreatedAt,
 		withdrawal.UpdatedAt,
 	)
-
 	if err != nil {
 		return fmt.Errorf("failed to create withdrawal: %w", err)
 	}
@@ -53,8 +60,9 @@ func (r *WithdrawalRepository) Create(ctx context.Context, withdrawal *entities.
 // GetByID retrieves a withdrawal by ID
 func (r *WithdrawalRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.Withdrawal, error) {
 	query := `
-		SELECT id, user_id, alpaca_account_id, amount, destination_chain, destination_address,
-			status, alpaca_journal_id, bridge_transfer_id, bridge_recipient_id, tx_hash, error_message,
+		SELECT id, user_id, withdrawal_type, currency, amount, source_account,
+			circle_wallet_id, destination_type, destination_address, bank_account_id,
+			fee_amount, fee_currency, status, bridge_transfer_id, tx_hash, error_message,
 			idempotency_key, created_at, updated_at, completed_at
 		FROM withdrawals
 		WHERE id = $1
@@ -75,8 +83,9 @@ func (r *WithdrawalRepository) GetByID(ctx context.Context, id uuid.UUID) (*enti
 // GetByUserID retrieves withdrawals for a user
 func (r *WithdrawalRepository) GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error) {
 	query := `
-		SELECT id, user_id, alpaca_account_id, amount, destination_chain, destination_address,
-			status, alpaca_journal_id, bridge_transfer_id, bridge_recipient_id, tx_hash, error_message,
+		SELECT id, user_id, withdrawal_type, currency, amount, source_account,
+			circle_wallet_id, destination_type, destination_address, bank_account_id,
+			fee_amount, fee_currency, status, bridge_transfer_id, tx_hash, error_message,
 			idempotency_key, created_at, updated_at, completed_at
 		FROM withdrawals
 		WHERE user_id = $1
@@ -96,8 +105,9 @@ func (r *WithdrawalRepository) GetByUserID(ctx context.Context, userID uuid.UUID
 // GetByIdempotencyKey retrieves a withdrawal by idempotency key
 func (r *WithdrawalRepository) GetByIdempotencyKey(ctx context.Context, key string) (*entities.Withdrawal, error) {
 	query := `
-		SELECT id, user_id, alpaca_account_id, amount, destination_chain, destination_address,
-			status, alpaca_journal_id, bridge_transfer_id, bridge_recipient_id, tx_hash, error_message,
+		SELECT id, user_id, withdrawal_type, currency, amount, source_account,
+			circle_wallet_id, destination_type, destination_address, bank_account_id,
+			fee_amount, fee_currency, status, bridge_transfer_id, tx_hash, error_message,
 			idempotency_key, created_at, updated_at, completed_at
 		FROM withdrawals
 		WHERE idempotency_key = $1
@@ -117,11 +127,7 @@ func (r *WithdrawalRepository) GetByIdempotencyKey(ctx context.Context, key stri
 
 // UpdateStatus updates the withdrawal status
 func (r *WithdrawalRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status entities.WithdrawalStatus) error {
-	query := `
-		UPDATE withdrawals
-		SET status = $1, updated_at = $2
-		WHERE id = $3
-	`
+	query := `UPDATE withdrawals SET status = $1, updated_at = $2 WHERE id = $3`
 
 	_, err := r.db.ExecContext(ctx, query, status, time.Now(), id)
 	if err != nil {
@@ -131,31 +137,11 @@ func (r *WithdrawalRepository) UpdateStatus(ctx context.Context, id uuid.UUID, s
 	return nil
 }
 
-// UpdateAlpacaJournal updates the Alpaca journal ID
-func (r *WithdrawalRepository) UpdateAlpacaJournal(ctx context.Context, id uuid.UUID, journalID string) error {
-	query := `
-		UPDATE withdrawals
-		SET alpaca_journal_id = $1, status = $2, updated_at = $3
-		WHERE id = $4
-	`
+// UpdateBridgeTransfer updates the Bridge transfer ID
+func (r *WithdrawalRepository) UpdateBridgeTransfer(ctx context.Context, id uuid.UUID, transferID string) error {
+	query := `UPDATE withdrawals SET bridge_transfer_id = $1, updated_at = $2 WHERE id = $3`
 
-	_, err := r.db.ExecContext(ctx, query, journalID, entities.WithdrawalStatusAlpacaDebited, time.Now(), id)
-	if err != nil {
-		return fmt.Errorf("failed to update alpaca journal: %w", err)
-	}
-
-	return nil
-}
-
-// UpdateBridgeTransfer updates the Bridge transfer details
-func (r *WithdrawalRepository) UpdateBridgeTransfer(ctx context.Context, id uuid.UUID, transferID, recipientID string) error {
-	query := `
-		UPDATE withdrawals
-		SET bridge_transfer_id = $1, bridge_recipient_id = $2, status = $3, updated_at = $4
-		WHERE id = $5
-	`
-
-	_, err := r.db.ExecContext(ctx, query, transferID, recipientID, entities.WithdrawalStatusBridgeProcessing, time.Now(), id)
+	_, err := r.db.ExecContext(ctx, query, transferID, time.Now(), id)
 	if err != nil {
 		return fmt.Errorf("failed to update bridge transfer: %w", err)
 	}
@@ -165,11 +151,7 @@ func (r *WithdrawalRepository) UpdateBridgeTransfer(ctx context.Context, id uuid
 
 // UpdateTxHash updates the transaction hash
 func (r *WithdrawalRepository) UpdateTxHash(ctx context.Context, id uuid.UUID, txHash string) error {
-	query := `
-		UPDATE withdrawals
-		SET tx_hash = $1, status = $2, updated_at = $3
-		WHERE id = $4
-	`
+	query := `UPDATE withdrawals SET tx_hash = $1, status = $2, updated_at = $3 WHERE id = $4`
 
 	_, err := r.db.ExecContext(ctx, query, txHash, entities.WithdrawalStatusOnChainTransfer, time.Now(), id)
 	if err != nil {
@@ -182,11 +164,7 @@ func (r *WithdrawalRepository) UpdateTxHash(ctx context.Context, id uuid.UUID, t
 // MarkCompleted marks the withdrawal as completed
 func (r *WithdrawalRepository) MarkCompleted(ctx context.Context, id uuid.UUID) error {
 	now := time.Now()
-	query := `
-		UPDATE withdrawals
-		SET status = $1, completed_at = $2, updated_at = $3
-		WHERE id = $4
-	`
+	query := `UPDATE withdrawals SET status = $1, completed_at = $2, updated_at = $3 WHERE id = $4`
 
 	_, err := r.db.ExecContext(ctx, query, entities.WithdrawalStatusCompleted, now, now, id)
 	if err != nil {
@@ -198,11 +176,7 @@ func (r *WithdrawalRepository) MarkCompleted(ctx context.Context, id uuid.UUID) 
 
 // MarkFailed marks the withdrawal as failed
 func (r *WithdrawalRepository) MarkFailed(ctx context.Context, id uuid.UUID, errorMsg string) error {
-	query := `
-		UPDATE withdrawals
-		SET status = $1, error_message = $2, updated_at = $3
-		WHERE id = $4
-	`
+	query := `UPDATE withdrawals SET status = $1, error_message = $2, updated_at = $3 WHERE id = $4`
 
 	_, err := r.db.ExecContext(ctx, query, entities.WithdrawalStatusFailed, errorMsg, time.Now(), id)
 	if err != nil {
@@ -212,74 +186,7 @@ func (r *WithdrawalRepository) MarkFailed(ctx context.Context, id uuid.UUID, err
 	return nil
 }
 
-// GetTotalCompletedWithdrawals returns the total amount of all completed withdrawals
-// Used by reconciliation service to verify withdrawal totals
-func (r *WithdrawalRepository) GetTotalCompletedWithdrawals(ctx context.Context) (decimal.Decimal, error) {
-	query := `
-		SELECT COALESCE(SUM(amount), 0) as total
-		FROM withdrawals
-		WHERE status = $1
-	`
-
-	var total decimal.Decimal
-	err := r.db.QueryRowContext(ctx, query, entities.WithdrawalStatusCompleted).Scan(&total)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return decimal.Zero, nil
-		}
-		return decimal.Zero, fmt.Errorf("failed to get total completed withdrawals: %w", err)
-	}
-
-	return total, nil
-}
-
-// GetStuckWithdrawals returns withdrawals stuck in non-terminal states beyond the SLA threshold
-// Used for status enquiry reconciliation when webhooks fail
-func (r *WithdrawalRepository) GetStuckWithdrawals(ctx context.Context, slaThreshold time.Duration) ([]*entities.Withdrawal, error) {
-	cutoff := time.Now().Add(-slaThreshold)
-	query := `
-		SELECT id, user_id, alpaca_account_id, amount, destination_chain, destination_address,
-			status, alpaca_journal_id, due_transfer_id, due_recipient_id, tx_hash, error_message,
-			created_at, updated_at, completed_at
-		FROM withdrawals
-		WHERE status NOT IN ($1, $2, $3)
-		  AND updated_at < $4
-		ORDER BY updated_at ASC
-		LIMIT 100
-	`
-
-	var withdrawals []*entities.Withdrawal
-	err := r.db.SelectContext(ctx, &withdrawals, query,
-		entities.WithdrawalStatusCompleted,
-		entities.WithdrawalStatusFailed,
-		entities.WithdrawalStatusReversed,
-		cutoff,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get stuck withdrawals: %w", err)
-	}
-
-	return withdrawals, nil
-}
-
-// MarkTimeout marks a withdrawal as timed out (no response within SLA)
-func (r *WithdrawalRepository) MarkTimeout(ctx context.Context, id uuid.UUID) error {
-	query := `
-		UPDATE withdrawals
-		SET status = $1, updated_at = $2
-		WHERE id = $3
-	`
-
-	_, err := r.db.ExecContext(ctx, query, entities.WithdrawalStatusTimeout, time.Now(), id)
-	if err != nil {
-		return fmt.Errorf("failed to mark withdrawal timeout: %w", err)
-	}
-
-	return nil
-}
-
 // GetPendingWithdrawalsTotal returns the total amount of pending withdrawals for a user
-// Used to prevent race conditions by accounting for in-flight withdrawals
 func (r *WithdrawalRepository) GetPendingWithdrawalsTotal(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
 	query := `
 		SELECT COALESCE(SUM(amount), 0) as total
@@ -302,4 +209,84 @@ func (r *WithdrawalRepository) GetPendingWithdrawalsTotal(ctx context.Context, u
 	}
 
 	return total, nil
+}
+
+// GetTotalCompletedWithdrawals returns the total amount of all completed withdrawals
+func (r *WithdrawalRepository) GetTotalCompletedWithdrawals(ctx context.Context) (decimal.Decimal, error) {
+	query := `SELECT COALESCE(SUM(amount), 0) as total FROM withdrawals WHERE status = $1`
+
+	var total decimal.Decimal
+	err := r.db.QueryRowContext(ctx, query, entities.WithdrawalStatusCompleted).Scan(&total)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return decimal.Zero, nil
+		}
+		return decimal.Zero, fmt.Errorf("failed to get total completed withdrawals: %w", err)
+	}
+
+	return total, nil
+}
+
+// GetStuckWithdrawals returns withdrawals stuck in non-terminal states beyond the SLA threshold
+func (r *WithdrawalRepository) GetStuckWithdrawals(ctx context.Context, slaThreshold time.Duration) ([]*entities.Withdrawal, error) {
+	cutoff := time.Now().Add(-slaThreshold)
+	query := `
+		SELECT id, user_id, withdrawal_type, currency, amount, source_account,
+			circle_wallet_id, destination_type, destination_address, bank_account_id,
+			fee_amount, fee_currency, status, bridge_transfer_id, tx_hash, error_message,
+			idempotency_key, created_at, updated_at, completed_at
+		FROM withdrawals
+		WHERE status NOT IN ($1, $2, $3)
+		  AND updated_at < $4
+		ORDER BY updated_at ASC
+		LIMIT 100
+	`
+
+	var withdrawals []*entities.Withdrawal
+	err := r.db.SelectContext(ctx, &withdrawals, query,
+		entities.WithdrawalStatusCompleted,
+		entities.WithdrawalStatusFailed,
+		entities.WithdrawalStatusReversed,
+		cutoff,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get stuck withdrawals: %w", err)
+	}
+
+	return withdrawals, nil
+}
+
+// MarkTimeout marks a withdrawal as timed out
+func (r *WithdrawalRepository) MarkTimeout(ctx context.Context, id uuid.UUID) error {
+	query := `UPDATE withdrawals SET status = $1, updated_at = $2 WHERE id = $3`
+
+	_, err := r.db.ExecContext(ctx, query, entities.WithdrawalStatusTimeout, time.Now(), id)
+	if err != nil {
+		return fmt.Errorf("failed to mark withdrawal timeout: %w", err)
+	}
+
+	return nil
+}
+
+// GetByBridgeTransferID retrieves a withdrawal by Bridge transfer ID
+func (r *WithdrawalRepository) GetByBridgeTransferID(ctx context.Context, transferID string) (*entities.Withdrawal, error) {
+	query := `
+		SELECT id, user_id, withdrawal_type, currency, amount, source_account,
+			circle_wallet_id, destination_type, destination_address, bank_account_id,
+			fee_amount, fee_currency, status, bridge_transfer_id, tx_hash, error_message,
+			idempotency_key, created_at, updated_at, completed_at
+		FROM withdrawals
+		WHERE bridge_transfer_id = $1
+	`
+
+	var withdrawal entities.Withdrawal
+	err := r.db.GetContext(ctx, &withdrawal, query, transferID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get withdrawal by bridge transfer ID: %w", err)
+	}
+
+	return &withdrawal, nil
 }
