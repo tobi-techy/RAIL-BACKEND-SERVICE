@@ -15,6 +15,7 @@ func RegisterCardRoutes(
 	cfg *config.Config,
 	log *logger.Logger,
 	sessionValidator middleware.SessionValidator,
+	userReader middleware.UserEntityReader,
 ) {
 	if cardHandlers == nil {
 		log.Warn("Card handlers not initialized, skipping card routes")
@@ -24,25 +25,26 @@ func RegisterCardRoutes(
 	// Protected card routes
 	cards := v1.Group("/cards")
 	cards.Use(middleware.Authentication(cfg, log, sessionValidator))
+	cards.Use(middleware.RequireBridgeCapability(userReader, log.Zap()))
 	{
 		// List all user cards
 		cards.GET("", cardHandlers.GetCards)
-		
+
 		// Create a new card (virtual)
 		cards.POST("", cardHandlers.CreateCard)
-		
+
 		// Get all card transactions for user
 		cards.GET("/transactions", cardHandlers.GetAllTransactions)
-		
+
 		// Get specific card
 		cards.GET("/:id", cardHandlers.GetCard)
-		
+
 		// Freeze card
 		cards.POST("/:id/freeze", cardHandlers.FreezeCard)
-		
+
 		// Unfreeze card
 		cards.POST("/:id/unfreeze", cardHandlers.UnfreezeCard)
-		
+
 		// Get card transactions
 		cards.GET("/:id/transactions", cardHandlers.GetCardTransactions)
 	}

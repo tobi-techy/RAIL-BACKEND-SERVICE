@@ -153,7 +153,7 @@ func (a *WithdrawalLedgerAdapter) CreateTransaction(ctx context.Context, userID 
 	if err != nil {
 		return err
 	}
-	
+
 	desc := "Withdrawal transaction"
 	req := &entities.CreateTransactionRequest{
 		UserID:          &userID,
@@ -170,7 +170,7 @@ func (a *WithdrawalLedgerAdapter) CreateTransaction(ctx context.Context, userID 
 			},
 		},
 	}
-	
+
 	_, err = a.ledgerService.CreateTransaction(ctx, req)
 	return err
 }
@@ -1069,25 +1069,26 @@ func (c *Container) initializeDomainServices() error {
 
 	// Initialize withdrawal service with adapters
 	withdrawalBridgeAdapter := &WithdrawalBridgeAdapter{adapter: c.BridgeAdapter}
-	
+
 	// Create bank account repository
 	bankAccountRepo := repositories.NewBankAccountRepository(sqlxDB)
-	
+
 	// Create adapters for withdrawal service
 	withdrawalLedgerAdapter := &WithdrawalLedgerAdapter{ledgerService: c.LedgerService}
 	withdrawalCircleAdapter := &WithdrawalCircleAdapter{client: c.CircleClient}
 	withdrawalNotificationAdapter := &WithdrawalNotificationAdapter{svc: c.NotificationService}
-	
+
 	// Create withdrawal service with new architecture
 	c.WithdrawalService = services.NewWithdrawalService(
 		c.WithdrawalRepo,
-		withdrawalLedgerAdapter,  // LedgerService adapter
-		bankAccountRepo,          // BankAccountRepository
-		c.LimitsService,          // WithdrawalLimitsService
-		c.DomainAuditService,     // WithdrawalAuditService
+		c.UserRepo,                    // UserRepository for Bridge KYC checks
+		withdrawalLedgerAdapter,       // LedgerService adapter
+		bankAccountRepo,               // BankAccountRepository
+		c.LimitsService,               // WithdrawalLimitsService
+		c.DomainAuditService,          // WithdrawalAuditService
 		withdrawalNotificationAdapter, // WithdrawalNotificationService adapter
-		withdrawalCircleAdapter,  // CircleClient adapter
-		withdrawalBridgeAdapter,  // BridgeAdapter
+		withdrawalCircleAdapter,       // CircleClient adapter
+		withdrawalBridgeAdapter,       // BridgeAdapter
 		c.Logger,
 	)
 
