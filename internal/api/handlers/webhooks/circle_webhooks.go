@@ -68,7 +68,7 @@ func (h *CircleWebhookHandler) HandleTransferNotification(c *gin.Context) {
 	// Verify webhook signature using Circle's ECDSA verification
 	keyID := c.GetHeader("X-Circle-Key-Id")
 	signature := c.GetHeader("X-Circle-Signature")
-	
+
 	if keyID == "" || signature == "" {
 		h.logger.Warn("Missing Circle webhook headers")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing signature headers"})
@@ -225,7 +225,10 @@ func (h *CircleWebhookHandler) processIncomingTransactionNotification(ctx contex
 
 	// Only process final successful states.
 	state := strings.ToUpper(strings.TrimSpace(n.State))
-	if state != "COMPLETED" && state != "CONFIRMED" {
+	switch state {
+	case "COMPLETE", "COMPLETED", "CONFIRMED":
+		// Process final successful states.
+	default:
 		h.logger.Debug("Ignoring non-final transaction notification state",
 			"notification_type", webhook.NotificationType,
 			"state", n.State)
@@ -353,36 +356,36 @@ func (h *CircleWebhookHandler) verifySignature(ctx context.Context, keyID, signa
 // fetchPublicKey fetches the public key from Circle API
 func (h *CircleWebhookHandler) fetchPublicKey(ctx context.Context, keyID string) (string, error) {
 	url := fmt.Sprintf("%s/v2/notifications/publicKey/%s", h.circleBaseURL, keyID)
-	
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return "", err
 	}
-	
+
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", h.circleAPIKey))
 	req.Header.Set("Accept", "application/json")
-	
+
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("failed to fetch public key: status %d", resp.StatusCode)
 	}
-	
+
 	var result struct {
 		Data struct {
 			PublicKey string `json:"publicKey"`
 		} `json:"data"`
 	}
-	
+
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", err
 	}
-	
+
 	return result.Data.PublicKey, nil
 }
 
