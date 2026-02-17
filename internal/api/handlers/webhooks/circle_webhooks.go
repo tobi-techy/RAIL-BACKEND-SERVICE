@@ -171,7 +171,7 @@ func (h *CircleWebhookHandler) processIncomingTransfer(ctx context.Context, webh
 		chain = h.mapWalletChainToChain(managedWallet.Chain)
 	}
 	if chain == "" {
-		chain = entities.ChainSOL
+		chain = entities.ChainSolana
 	}
 
 	blockTime := time.Now()
@@ -253,7 +253,7 @@ func (h *CircleWebhookHandler) processIncomingTransactionNotification(ctx contex
 
 	chain := h.mapCircleChainToChain(n.Blockchain)
 	if chain == "" {
-		chain = entities.ChainSOL
+		chain = entities.ChainSolana
 	}
 
 	// Map token ID to token symbol (default to USDC for now)
@@ -401,7 +401,7 @@ func truncateString(s string, maxLen int) string {
 func (h *CircleWebhookHandler) mapCircleChainToChain(circleChain string) entities.Chain {
 	switch strings.ToUpper(strings.TrimSpace(circleChain)) {
 	case "SOL", "SOLANA", "SOL-DEVNET":
-		return entities.ChainSOL
+		return entities.ChainSolana
 	case "MATIC", "POLYGON":
 		return entities.ChainMATIC
 	case "ETH", "ETHEREUM", "ETH-SEPOLIA":
@@ -425,7 +425,7 @@ func (h *CircleWebhookHandler) mapCircleChainToChain(circleChain string) entitie
 func (h *CircleWebhookHandler) mapWalletChainToChain(chain entities.WalletChain) entities.Chain {
 	switch chain {
 	case entities.WalletChainSOLDevnet, entities.WalletChainSolana:
-		return entities.ChainSOL
+		return entities.ChainSolana
 	case entities.WalletChainPolygon:
 		return entities.ChainMATIC
 	case entities.WalletChainEthereum:
