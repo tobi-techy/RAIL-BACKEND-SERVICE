@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
+	"github.com/rail-service/rail_service/pkg/idempotency"
 	"net/http"
 	"strconv"
 	"strings"
@@ -28,6 +29,11 @@ import (
 	"go.uber.org/zap"
 )
 
+// UserProfileProvider interface for fetching user profile
+type UserProfileProvider interface {
+	GetByID(ctx context.Context, id uuid.UUID) (*entities.UserProfile, error)
+}
+
 // WalletFundingHandlers consolidates wallet, funding, investing, and withdrawal handlers
 type WalletFundingHandlers struct {
 	walletService       *wallet.Service
@@ -35,6 +41,7 @@ type WalletFundingHandlers struct {
 	withdrawalService   FundingWithdrawalService
 	investingService    *investing.Service
 	allocationProvider  AllocationBalanceProvider
+	userProfileProvider UserProfileProvider
 	validator           *validator.Validate
 	webhookSecret       string
 	skipSignatureVerify bool // Only true in development when secret is not configured
@@ -64,6 +71,11 @@ func NewWalletFundingHandlers(
 func (h *WalletFundingHandlers) SetWebhookSecret(secret string, skipVerify bool) {
 	h.webhookSecret = secret
 	h.skipSignatureVerify = skipVerify
+}
+
+// SetUserProfileProvider sets the user profile provider for withdrawal validation
+func (h *WalletFundingHandlers) SetUserProfileProvider(provider UserProfileProvider) {
+	h.userProfileProvider = provider
 }
 
 // Request/Response models
@@ -1571,10 +1583,47 @@ func (h *WalletFundingHandlers) InitiateWithdrawal(c *gin.Context) {
 
 	req.UserID = userUUID
 
+	// Fetch user's AlpacaAccountID from their profile (not from request - security)
+	if h.userProfileProvider != nil {
+		profile, err := h.userProfileProvider.GetByID(c.Request.Context(), userUUID)
+		if err != nil {
+			h.logger.Error("Failed to get user profile for withdrawal",
+				"error", err,
+				"user_id", userUUID)
+			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
+				Code:    "NO_ALPACA_ACCOUNT",
+				Message: "No linked brokerage account found",
+			})
+			return
+		}
+		if profile.AlpacaAccountID == nil || *profile.AlpacaAccountID == "" {
+			h.logger.Warn("Withdrawal rejected - no Alpaca account",
+				"user_id", userUUID)
+			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
+				Code:    "NO_ALPACA_ACCOUNT",
+				Message: "No linked brokerage account found",
+			})
+			return
+		}
+		req.AlpacaAccountID = *profile.AlpacaAccountID
+	}
+
+	// Generate idempotency key server-side to prevent duplicate withdrawals
+	req.IdempotencyKey = idempotency.GenerateKey()
+
 	if req.Amount.IsZero() || req.Amount.IsNegative() {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 			Code:    "INVALID_AMOUNT",
 			Message: "Amount must be positive",
+		})
+		return
+	}
+
+	// Validate minimum withdrawal amount
+	if req.Amount.LessThan(entities.MinWithdrawalAmount) {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
+			Code:    "BELOW_MINIMUM",
+			Message: fmt.Sprintf("Minimum withdrawal amount is %s", entities.MinWithdrawalAmount.String()),
 		})
 		return
 	}

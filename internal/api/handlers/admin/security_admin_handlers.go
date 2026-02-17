@@ -1522,8 +1522,13 @@ func (h *SecurityHandlers) VerifyPasscode(c *gin.Context) {
 		userAgent := c.Request.UserAgent()
 		deviceFingerprint := strings.TrimSpace(c.GetHeader("X-Device-Fingerprint"))
 		location := strings.TrimSpace(c.GetHeader("X-Geo-Location"))
+		sessionTTL := time.Duration(h.config.JWT.RefreshTTL) * time.Second
+		if sessionTTL <= 0 {
+			sessionTTL = time.Duration(h.config.JWT.AccessTTL) * time.Second
+		}
+		sessionExpiresAt := time.Now().Add(sessionTTL)
 
-		if _, err := h.sessionService.CreateSession(ctx, user.ID, tokens.AccessToken, tokens.RefreshToken, ipAddress, userAgent, deviceFingerprint, location, tokens.ExpiresAt); err != nil {
+		if _, err := h.sessionService.CreateSession(ctx, user.ID, tokens.AccessToken, tokens.RefreshToken, ipAddress, userAgent, deviceFingerprint, location, sessionExpiresAt); err != nil {
 			h.logger.Warn("Failed to create session after passcode verification",
 				zap.Error(err),
 				zap.String("user_id", user.ID.String()),

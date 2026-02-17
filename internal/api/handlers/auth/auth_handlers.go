@@ -397,7 +397,8 @@ func (h *AuthHandlers) completeNewUserVerification(c *gin.Context, ctx context.C
 
 	if h.sessionService != nil {
 		ipAddress, userAgent, fingerprint, location := extractSessionDetails(c)
-		if _, err := h.sessionService.CreateSession(ctx, user.ID, tokens.AccessToken, tokens.RefreshToken, ipAddress, userAgent, fingerprint, location, tokens.ExpiresAt); err != nil {
+		sessionExpiresAt := h.sessionExpiryFromRefreshTTL()
+		if _, err := h.sessionService.CreateSession(ctx, user.ID, tokens.AccessToken, tokens.RefreshToken, ipAddress, userAgent, fingerprint, location, sessionExpiresAt); err != nil {
 			h.logger.Warn("Failed to create session", zap.Error(err), zap.String("user_id", user.ID.String()))
 		}
 	}
@@ -806,7 +807,8 @@ func (h *AuthHandlers) Login(c *gin.Context) {
 
 	if h.sessionService != nil {
 		ipAddress, userAgent, fingerprint, location := extractSessionDetails(c)
-		if _, err := h.sessionService.CreateSession(ctx, user.ID, tokens.AccessToken, tokens.RefreshToken, ipAddress, userAgent, fingerprint, location, tokens.ExpiresAt); err != nil {
+		sessionExpiresAt := h.sessionExpiryFromRefreshTTL()
+		if _, err := h.sessionService.CreateSession(ctx, user.ID, tokens.AccessToken, tokens.RefreshToken, ipAddress, userAgent, fingerprint, location, sessionExpiresAt); err != nil {
 			h.logger.Warn("Failed to create session", zap.Error(err), zap.String("user_id", user.ID.String()))
 		}
 	}
@@ -985,7 +987,8 @@ func (h *AuthHandlers) PasscodeLogin(c *gin.Context) {
 
 	if h.sessionService != nil {
 		ipAddress, userAgent, fingerprint, location := extractSessionDetails(c)
-		if _, err := h.sessionService.CreateSession(ctx, userProfile.ID, tokens.AccessToken, tokens.RefreshToken, ipAddress, userAgent, fingerprint, location, tokens.ExpiresAt); err != nil {
+		sessionExpiresAt := h.sessionExpiryFromRefreshTTL()
+		if _, err := h.sessionService.CreateSession(ctx, userProfile.ID, tokens.AccessToken, tokens.RefreshToken, ipAddress, userAgent, fingerprint, location, sessionExpiresAt); err != nil {
 			h.logger.Warn("Failed to create session after passcode login", zap.Error(err), zap.String("user_id", userProfile.ID.String()))
 		}
 	}
@@ -1066,7 +1069,8 @@ func (h *AuthHandlers) RefreshToken(c *gin.Context) {
 	}
 
 	if h.sessionService != nil {
-		if _, err := h.sessionService.RotateSessionTokensByRefreshToken(ctx, user.ID, refreshToken, tokens.AccessToken, tokens.RefreshToken, tokens.ExpiresAt); err != nil {
+		sessionExpiresAt := h.sessionExpiryFromRefreshTTL()
+		if _, err := h.sessionService.RotateSessionTokensByRefreshToken(ctx, user.ID, refreshToken, tokens.AccessToken, tokens.RefreshToken, sessionExpiresAt); err != nil {
 			h.logger.Warn("Failed to rotate session tokens on refresh", zap.Error(err), zap.String("user_id", user.ID.String()))
 			c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "INVALID_TOKEN", Message: "Invalid refresh token"})
 			return
@@ -1756,6 +1760,14 @@ func extractSessionDetails(c *gin.Context) (ipAddress, userAgent, deviceFingerpr
 		location = strings.TrimSpace(c.GetHeader("CF-IPCountry"))
 	}
 	return ipAddress, userAgent, deviceFingerprint, location
+}
+
+func (h *AuthHandlers) sessionExpiryFromRefreshTTL() time.Time {
+	ttl := time.Duration(h.cfg.JWT.RefreshTTL) * time.Second
+	if ttl <= 0 {
+		ttl = time.Duration(h.cfg.JWT.AccessTTL) * time.Second
+	}
+	return time.Now().Add(ttl)
 }
 
 func (h *AuthHandlers) getUserID(c *gin.Context) (uuid.UUID, error) {

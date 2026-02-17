@@ -442,9 +442,9 @@ func (h *CircleWebhookHandler) mapWalletChainToChain(chain entities.WalletChain)
 
 // mapTokenIDToToken maps Circle's token ID to our token type
 func (h *CircleWebhookHandler) mapTokenIDToToken(tokenID string) entities.Stablecoin {
-	// For now, default to USDC as it's the primary stablecoin
-	// Circle's token IDs are UUIDs, we'd need a lookup table for proper mapping
-	// Most deposits will be USDC anyway
+	// Default to USDC - Circle's primary stablecoin for deposits
+	// Token ID is a UUID from Circle, but we only support USDC currently
+	h.logger.Debug("Mapping token ID to USDC", "token_id", tokenID)
 	return entities.StablecoinUSDC
 }
 

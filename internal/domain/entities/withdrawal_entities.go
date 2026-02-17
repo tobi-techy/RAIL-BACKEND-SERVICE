@@ -12,41 +12,41 @@ import (
 type WithdrawalStatus string
 
 const (
-	WithdrawalStatusInitiated       WithdrawalStatus = "initiated"        // Request created internally
-	WithdrawalStatusPending         WithdrawalStatus = "pending"          // Sent to processor
-	WithdrawalStatusAlpacaDebited   WithdrawalStatus = "alpaca_debited"   // Funds debited from Alpaca
+	WithdrawalStatusInitiated        WithdrawalStatus = "initiated"         // Request created internally
+	WithdrawalStatusPending          WithdrawalStatus = "pending"           // Sent to processor
+	WithdrawalStatusAlpacaDebited    WithdrawalStatus = "alpaca_debited"    // Funds debited from Alpaca
 	WithdrawalStatusBridgeProcessing WithdrawalStatus = "bridge_processing" // Bridge processing
-	WithdrawalStatusOnChainTransfer WithdrawalStatus = "onchain_transfer" // On-chain transfer in progress
-	WithdrawalStatusTimeout         WithdrawalStatus = "timeout"          // No response within SLA
-	WithdrawalStatusCompleted       WithdrawalStatus = "completed"        // Terminal: success
-	WithdrawalStatusFailed          WithdrawalStatus = "failed"           // Terminal: failed
-	WithdrawalStatusReversed        WithdrawalStatus = "reversed"         // Terminal: reversed/refunded
+	WithdrawalStatusOnChainTransfer  WithdrawalStatus = "onchain_transfer"  // On-chain transfer in progress
+	WithdrawalStatusTimeout          WithdrawalStatus = "timeout"           // No response within SLA
+	WithdrawalStatusCompleted        WithdrawalStatus = "completed"         // Terminal: success
+	WithdrawalStatusFailed           WithdrawalStatus = "failed"            // Terminal: failed
+	WithdrawalStatusReversed         WithdrawalStatus = "reversed"          // Terminal: reversed/refunded
 )
 
 // ValidWithdrawalStatuses contains all valid withdrawal statuses
 var ValidWithdrawalStatuses = map[WithdrawalStatus]bool{
-	WithdrawalStatusInitiated:       true,
-	WithdrawalStatusPending:         true,
-	WithdrawalStatusAlpacaDebited:   true,
+	WithdrawalStatusInitiated:        true,
+	WithdrawalStatusPending:          true,
+	WithdrawalStatusAlpacaDebited:    true,
 	WithdrawalStatusBridgeProcessing: true,
-	WithdrawalStatusOnChainTransfer: true,
-	WithdrawalStatusTimeout:         true,
-	WithdrawalStatusCompleted:       true,
-	WithdrawalStatusFailed:          true,
-	WithdrawalStatusReversed:        true,
+	WithdrawalStatusOnChainTransfer:  true,
+	WithdrawalStatusTimeout:          true,
+	WithdrawalStatusCompleted:        true,
+	WithdrawalStatusFailed:           true,
+	WithdrawalStatusReversed:         true,
 }
 
 // ValidWithdrawalTransitions defines allowed status transitions
 var ValidWithdrawalTransitions = map[WithdrawalStatus][]WithdrawalStatus{
-	WithdrawalStatusInitiated:       {WithdrawalStatusPending, WithdrawalStatusFailed},
-	WithdrawalStatusPending:         {WithdrawalStatusAlpacaDebited, WithdrawalStatusFailed, WithdrawalStatusTimeout},
-	WithdrawalStatusAlpacaDebited:   {WithdrawalStatusBridgeProcessing, WithdrawalStatusFailed, WithdrawalStatusReversed},
+	WithdrawalStatusInitiated:        {WithdrawalStatusPending, WithdrawalStatusFailed},
+	WithdrawalStatusPending:          {WithdrawalStatusAlpacaDebited, WithdrawalStatusFailed, WithdrawalStatusTimeout},
+	WithdrawalStatusAlpacaDebited:    {WithdrawalStatusBridgeProcessing, WithdrawalStatusFailed, WithdrawalStatusReversed},
 	WithdrawalStatusBridgeProcessing: {WithdrawalStatusOnChainTransfer, WithdrawalStatusFailed, WithdrawalStatusTimeout, WithdrawalStatusReversed},
-	WithdrawalStatusOnChainTransfer: {WithdrawalStatusCompleted, WithdrawalStatusFailed, WithdrawalStatusTimeout},
-	WithdrawalStatusTimeout:         {WithdrawalStatusCompleted, WithdrawalStatusFailed, WithdrawalStatusReversed}, // Can still resolve
-	WithdrawalStatusCompleted:       {},                                                                            // Terminal
-	WithdrawalStatusFailed:          {WithdrawalStatusReversed},                                                    // Can be reversed
-	WithdrawalStatusReversed:        {},                                                                            // Terminal
+	WithdrawalStatusOnChainTransfer:  {WithdrawalStatusCompleted, WithdrawalStatusFailed, WithdrawalStatusTimeout},
+	WithdrawalStatusTimeout:          {WithdrawalStatusCompleted, WithdrawalStatusFailed, WithdrawalStatusReversed}, // Can still resolve
+	WithdrawalStatusCompleted:        {},                                                                            // Terminal
+	WithdrawalStatusFailed:           {WithdrawalStatusReversed},                                                    // Can be reversed
+	WithdrawalStatusReversed:         {},                                                                            // Terminal
 }
 
 // IsValid checks if the status is valid
@@ -103,6 +103,7 @@ type Withdrawal struct {
 	BridgeRecipientID  *string          `json:"bridge_recipient_id,omitempty" db:"bridge_recipient_id"`
 	TxHash             *string          `json:"tx_hash,omitempty" db:"tx_hash"`
 	ErrorMessage       *string          `json:"error_message,omitempty" db:"error_message"`
+	IdempotencyKey     *string          `json:"idempotency_key,omitempty" db:"idempotency_key"`
 	CreatedAt          time.Time        `json:"created_at" db:"created_at"`
 	UpdatedAt          time.Time        `json:"updated_at" db:"updated_at"`
 	CompletedAt        *time.Time       `json:"completed_at,omitempty" db:"completed_at"`
@@ -111,10 +112,11 @@ type Withdrawal struct {
 // InitiateWithdrawalRequest represents a withdrawal request
 type InitiateWithdrawalRequest struct {
 	UserID             uuid.UUID       `json:"user_id"`
-	AlpacaAccountID    string          `json:"alpaca_account_id"`
 	Amount             decimal.Decimal `json:"amount"`
 	DestinationChain   string          `json:"destination_chain"`
 	DestinationAddress string          `json:"destination_address"`
+	AlpacaAccountID    string          // Populated server-side from user profile
+	IdempotencyKey     string          // Generated server-side, not from client
 }
 
 // InitiateWithdrawalResponse represents the response to a withdrawal request

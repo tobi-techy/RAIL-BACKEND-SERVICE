@@ -103,6 +103,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	skipWebhookVerify := container.Config.Environment == "development" && container.Config.Payment.WebhookSecret == ""
 	walletFundingHandlers.SetWebhookSecret(container.Config.Payment.WebhookSecret, skipWebhookVerify)
 
+	// Wire user profile provider for withdrawal AlpacaAccountID lookup
+	walletFundingHandlers.SetUserProfileProvider(container.UserRepo)
+
 	// Wire allocation service for unified balance queries
 	if allocationSvc := container.GetAllocationService(); allocationSvc != nil {
 		walletFundingHandlers.SetAllocationBalanceProvider(allocationSvc)
