@@ -253,10 +253,10 @@ func NewKYCSubmissionRepository(db *sql.DB, logger *zap.Logger) *KYCSubmissionRe
 func (r *KYCSubmissionRepository) Create(ctx context.Context, submission *entities.KYCSubmission) error {
 	query := `
 		INSERT INTO kyc_submissions (
-			id, user_id, provider_ref, status, submitted_at, 
-			reviewed_at, rejection_reasons, verification_data, created_at, updated_at
+			id, user_id, provider, provider_ref, submission_type, status, submitted_at, 
+			reviewed_at, expires_at, rejection_reasons, verification_data, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 		)`
 
 	rejectionReasonsJSON, _ := stringSliceToJSON(submission.RejectionReasons)
@@ -268,10 +268,13 @@ func (r *KYCSubmissionRepository) Create(ctx context.Context, submission *entiti
 	_, err = r.db.ExecContext(ctx, query,
 		submission.ID,
 		submission.UserID,
+		submission.Provider,
 		submission.ProviderRef,
+		submission.SubmissionType,
 		string(submission.Status),
 		submission.SubmittedAt,
 		submission.ReviewedAt,
+		submission.ExpiresAt,
 		rejectionReasonsJSON,
 		verificationDataJSON,
 		submission.CreatedAt,
@@ -290,8 +293,8 @@ func (r *KYCSubmissionRepository) Create(ctx context.Context, submission *entiti
 // GetByUserID retrieves all KYC submissions for a user
 func (r *KYCSubmissionRepository) GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.KYCSubmission, error) {
 	query := `
-		SELECT id, user_id, provider_ref, status, submitted_at, 
-		       reviewed_at, rejection_reasons, verification_data, created_at, updated_at
+		SELECT id, user_id, provider, provider_ref, submission_type, status, submitted_at, 
+		       reviewed_at, expires_at, rejection_reasons, verification_data, created_at, updated_at
 		FROM kyc_submissions 
 		WHERE user_id = $1
 		ORDER BY created_at DESC`
@@ -306,17 +309,20 @@ func (r *KYCSubmissionRepository) GetByUserID(ctx context.Context, userID uuid.U
 	var submissions []*entities.KYCSubmission
 	for rows.Next() {
 		submission := &entities.KYCSubmission{}
-		var reviewedAt sql.NullTime
+		var reviewedAt, expiresAt sql.NullTime
 		var rejectionReasonsJSON sql.NullString
 		var verificationDataJSON []byte
 
 		err := rows.Scan(
 			&submission.ID,
 			&submission.UserID,
+			&submission.Provider,
 			&submission.ProviderRef,
+			&submission.SubmissionType,
 			&submission.Status,
 			&submission.SubmittedAt,
 			&reviewedAt,
+			&expiresAt,
 			&rejectionReasonsJSON,
 			&verificationDataJSON,
 			&submission.CreatedAt,
@@ -329,6 +335,9 @@ func (r *KYCSubmissionRepository) GetByUserID(ctx context.Context, userID uuid.U
 
 		if reviewedAt.Valid {
 			submission.ReviewedAt = &reviewedAt.Time
+		}
+		if expiresAt.Valid {
+			submission.ExpiresAt = &expiresAt.Time
 		}
 
 		if rejectionReasonsJSON.Valid {
@@ -350,23 +359,26 @@ func (r *KYCSubmissionRepository) GetByUserID(ctx context.Context, userID uuid.U
 // GetByProviderRef retrieves a KYC submission by provider reference
 func (r *KYCSubmissionRepository) GetByProviderRef(ctx context.Context, providerRef string) (*entities.KYCSubmission, error) {
 	query := `
-		SELECT id, user_id, provider_ref, status, submitted_at, 
-		       reviewed_at, rejection_reasons, verification_data, created_at, updated_at
+		SELECT id, user_id, provider, provider_ref, submission_type, status, submitted_at, 
+		       reviewed_at, expires_at, rejection_reasons, verification_data, created_at, updated_at
 		FROM kyc_submissions 
 		WHERE provider_ref = $1`
 
 	submission := &entities.KYCSubmission{}
-	var reviewedAt sql.NullTime
+	var reviewedAt, expiresAt sql.NullTime
 	var rejectionReasonsJSON sql.NullString
 	var verificationDataJSON []byte
 
 	err := r.db.QueryRowContext(ctx, query, providerRef).Scan(
 		&submission.ID,
 		&submission.UserID,
+		&submission.Provider,
 		&submission.ProviderRef,
+		&submission.SubmissionType,
 		&submission.Status,
 		&submission.SubmittedAt,
 		&reviewedAt,
+		&expiresAt,
 		&rejectionReasonsJSON,
 		&verificationDataJSON,
 		&submission.CreatedAt,
@@ -383,6 +395,9 @@ func (r *KYCSubmissionRepository) GetByProviderRef(ctx context.Context, provider
 
 	if reviewedAt.Valid {
 		submission.ReviewedAt = &reviewedAt.Time
+	}
+	if expiresAt.Valid {
+		submission.ExpiresAt = &expiresAt.Time
 	}
 
 	if rejectionReasonsJSON.Valid {
@@ -433,25 +448,28 @@ func (r *KYCSubmissionRepository) Update(ctx context.Context, submission *entiti
 // GetLatestByUserID retrieves the most recent KYC submission for a user
 func (r *KYCSubmissionRepository) GetLatestByUserID(ctx context.Context, userID uuid.UUID) (*entities.KYCSubmission, error) {
 	query := `
-		SELECT id, user_id, provider_ref, status, submitted_at, 
-		       reviewed_at, rejection_reasons, verification_data, created_at, updated_at
+		SELECT id, user_id, provider, provider_ref, submission_type, status, submitted_at, 
+		       reviewed_at, expires_at, rejection_reasons, verification_data, created_at, updated_at
 		FROM kyc_submissions 
 		WHERE user_id = $1
 		ORDER BY created_at DESC
 		LIMIT 1`
 
 	submission := &entities.KYCSubmission{}
-	var reviewedAt sql.NullTime
+	var reviewedAt, expiresAt sql.NullTime
 	var rejectionReasonsJSON sql.NullString
 	var verificationDataJSON []byte
 
 	err := r.db.QueryRowContext(ctx, query, userID).Scan(
 		&submission.ID,
 		&submission.UserID,
+		&submission.Provider,
 		&submission.ProviderRef,
+		&submission.SubmissionType,
 		&submission.Status,
 		&submission.SubmittedAt,
 		&reviewedAt,
+		&expiresAt,
 		&rejectionReasonsJSON,
 		&verificationDataJSON,
 		&submission.CreatedAt,
@@ -468,6 +486,9 @@ func (r *KYCSubmissionRepository) GetLatestByUserID(ctx context.Context, userID 
 
 	if reviewedAt.Valid {
 		submission.ReviewedAt = &reviewedAt.Time
+	}
+	if expiresAt.Valid {
+		submission.ExpiresAt = &expiresAt.Time
 	}
 
 	if rejectionReasonsJSON.Valid {

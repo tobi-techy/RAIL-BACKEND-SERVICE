@@ -17,10 +17,12 @@ func RegisterAlpacaRoutes(
 	cfg *config.Config,
 	log *logger.Logger,
 	sessionValidator middleware.SessionValidator,
+	userReader middleware.UserEntityReader,
 ) {
 	// Investment routes (authenticated)
 	investment := router.Group("/investment")
 	investment.Use(middleware.Authentication(cfg, log, sessionValidator))
+	investment.Use(middleware.RequireAlpacaCapability(userReader, log.Zap()))
 	{
 		// Account management
 		investment.GET("/account", investmentHandlers.GetBrokerageAccount)

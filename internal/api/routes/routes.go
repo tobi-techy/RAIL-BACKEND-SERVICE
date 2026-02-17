@@ -11,11 +11,15 @@ import (
 	ginSwagger "github.com/swaggo/gin-swagger"
 
 	"github.com/rail-service/rail_service/internal/api/handlers"
+	kychandlers "github.com/rail-service/rail_service/internal/api/handlers/kyc"
 	"github.com/rail-service/rail_service/internal/api/middleware"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
+	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
+	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
+	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/rail-service/rail_service/pkg/ratelimit"
 	"github.com/rail-service/rail_service/pkg/tracing"
 )
@@ -158,6 +162,16 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		*container.UserRepo,
 		container.ZapLog,
 	)
+	kycUserRepoAdapter := repositories.NewKYCUserRepositoryAdapter(container.UserRepo)
+	kycService := kycservice.NewService(
+		kycUserRepoAdapter,
+		container.KYCSubmissionRepo,
+		container.BridgeAdapter,
+		alpacaadapter.NewAdapter(container.AlpacaClient, container.Logger),
+		container.ZapLog,
+	)
+	kycHTTPHandlers := kychandlers.NewHandler(kycService, container.Logger)
+	kycEligibilityMiddleware := middleware.NewKYCMiddleware(container.UserRepo, container.Logger)
 
 	// Create session validator adapter
 	sessionValidator := NewSessionValidatorAdapter(container.GetSessionService())
@@ -231,6 +245,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// KYC status utilities (auth required but no KYC gate)
 			kycProtected := protected.Group("/kyc")
 			{
+				kycProtected.POST("/submit", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.SubmitKYC)
 				kycProtected.GET("/status", authHandlers.GetKYCStatus)
 				// Bridge KYC - optimized for sub-2-minute verification
 				kycProtected.GET("/bridge/link", bridgeKYCHandlers.GetBridgeKYCLink)
@@ -637,6 +652,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				container.Config,
 				container.Logger,
 				sessionValidator,
+				container.UserRepo,
 			)
 		}
 
@@ -677,6 +693,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			container.Config,
 			container.Logger,
 			sessionValidator,
+			container.UserRepo,
 		)
 	}
 

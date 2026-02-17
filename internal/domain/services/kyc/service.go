@@ -35,10 +35,11 @@ type AlpacaAdapter interface {
 }
 
 type Service struct {
-	userRepo      UserRepository
-	bridgeAdapter BridgeAdapter
-	alpacaAdapter AlpacaAdapter
-	logger        *zap.Logger
+	userRepo          UserRepository
+	kycSubmissionRepo KYCSubmissionRepository
+	bridgeAdapter     BridgeAdapter
+	alpacaAdapter     AlpacaAdapter
+	logger            *zap.Logger
 }
 
 type UserRepository interface {
@@ -47,17 +48,23 @@ type UserRepository interface {
 	Update(ctx context.Context, user *entities.User) error
 }
 
+type KYCSubmissionRepository interface {
+	Create(ctx context.Context, submission *entities.KYCSubmission) error
+}
+
 func NewService(
 	userRepo UserRepository,
+	kycSubmissionRepo KYCSubmissionRepository,
 	bridgeAdapter BridgeAdapter,
 	alpacaAdapter AlpacaAdapter,
 	logger *zap.Logger,
 ) *Service {
 	return &Service{
-		userRepo:      userRepo,
-		bridgeAdapter: bridgeAdapter,
-		alpacaAdapter: alpacaAdapter,
-		logger:        logger,
+		userRepo:          userRepo,
+		kycSubmissionRepo: kycSubmissionRepo,
+		bridgeAdapter:     bridgeAdapter,
+		alpacaAdapter:     alpacaAdapter,
+		logger:            logger,
 	}
 }
 
@@ -109,8 +116,45 @@ func (s *Service) SubmitKYC(ctx context.Context, req *entities.KYCSubmitRequest)
 
 	// Update user status
 	if bridgeResult.Success || alpacaResult.Success {
+		submittedAt := time.Now()
+		providerRef := uuid.NewString()
+		providerReferencePersisted := false
+
+		if s.kycSubmissionRepo != nil {
+			expiresAt := submittedAt.Add(30 * 24 * time.Hour)
+			submission := &entities.KYCSubmission{
+				ID:             uuid.New(),
+				UserID:         req.UserID,
+				Provider:       "bridge_alpaca",
+				ProviderRef:    providerRef,
+				SubmissionType: "unified_kyc",
+				Status:         entities.KYCStatusProcessing,
+				VerificationData: map[string]any{
+					"bridge_success": bridgeResult.Success,
+					"bridge_status":  bridgeResult.Status,
+					"alpaca_success": alpacaResult.Success,
+					"alpaca_status":  alpacaResult.Status,
+				},
+				SubmittedAt: submittedAt,
+				ExpiresAt:   &expiresAt,
+				CreatedAt:   submittedAt,
+				UpdatedAt:   submittedAt,
+			}
+
+			if err := s.kycSubmissionRepo.Create(ctx, submission); err != nil {
+				s.logger.Warn("Failed to persist KYC submission provider reference",
+					zap.Error(err),
+					zap.String("user_id", req.UserID.String()),
+				)
+			} else {
+				providerReferencePersisted = true
+				user.KYCProviderRef = &providerRef
+				response.ProviderReference = &providerRef
+			}
+		}
+
 		user.KYCStatus = "pending"
-		user.KYCSubmittedAt = timePtr(time.Now())
+		user.KYCSubmittedAt = timePtr(submittedAt)
 
 		if alpacaResult.Success {
 			// Extract account ID from alpaca response status (format: "account_id:status")
@@ -123,6 +167,12 @@ func (s *Service) SubmitKYC(ctx context.Context, req *entities.KYCSubmitRequest)
 		if err := s.userRepo.Update(ctx, user); err != nil {
 			s.logger.Error("Failed to update user after KYC submission",
 				zap.Error(err),
+				zap.String("user_id", req.UserID.String()),
+			)
+		}
+
+		if !providerReferencePersisted {
+			s.logger.Warn("KYC provider reference not persisted; callback correlation may be unavailable",
 				zap.String("user_id", req.UserID.String()),
 			)
 		}
@@ -183,8 +233,8 @@ func (s *Service) submitToAlpaca(ctx context.Context, user *entities.UserProfile
 	// Build Alpaca account request
 	alpacaReq := &entities.AlpacaCreateAccountRequest{
 		Contact: entities.AlpacaContact{
-			EmailAddress: user.Email,
-			PhoneNumber:  stringValue(user.Phone),
+			EmailAddress:  user.Email,
+			PhoneNumber:   stringValue(user.Phone),
 			StreetAddress: []string{
 				// Address should be from user profile (stored during signup)
 				// For now, we'll need to add address fields to user table
@@ -272,12 +322,12 @@ func (s *Service) validateRequest(req *entities.KYCSubmitRequest) error {
 func isValidSSN(ssn string) bool {
 	// Remove dashes
 	ssn = strings.ReplaceAll(ssn, "-", "")
-	
+
 	// Must be 9 digits
 	if len(ssn) != 9 {
 		return false
 	}
-	
+
 	// Must be all digits
 	matched, _ := regexp.MatchString(`^\d{9}$`, ssn)
 	return matched

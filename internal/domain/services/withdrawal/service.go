@@ -13,13 +13,13 @@ import (
 
 // Crypto withdrawal constants
 const (
-	CryptoWithdrawalMinAmount    = 10.00  // Minimum crypto withdrawal
-	FiatWithdrawalMinAmountUSD  = 10.00  // Minimum USD fiat withdrawal
-	FiatWithdrawalMinAmountEUR  = 10.00  // Minimum EUR fiat withdrawal
-	CryptoWithdrawalFeePercent  = 0.0    // Circle transfers are free (network fees apply)
-	FiatWithdrawalFeePercentUSD = 0.01   // 1% + $0.50 for USD
+	CryptoWithdrawalMinAmount   = 10.00 // Minimum crypto withdrawal
+	FiatWithdrawalMinAmountUSD  = 10.00 // Minimum USD fiat withdrawal
+	FiatWithdrawalMinAmountEUR  = 10.00 // Minimum EUR fiat withdrawal
+	CryptoWithdrawalFeePercent  = 0.0   // Circle transfers are free (network fees apply)
+	FiatWithdrawalFeePercentUSD = 0.01  // 1% + $0.50 for USD
 	FiatWithdrawalFeeFixedUSD   = 0.50
-	FiatWithdrawalFeePercentEUR = 0.01   // 1% + €0.50 for EUR
+	FiatWithdrawalFeePercentEUR = 0.01 // 1% + €0.50 for EUR
 	FiatWithdrawalFeeFixedEUR   = 0.50
 )
 
@@ -63,6 +63,11 @@ type WithdrawalRepository interface {
 	GetPendingWithdrawalsTotal(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
 }
 
+// UserRepository interface for KYC/capability checks.
+type UserRepository interface {
+	GetUserEntityByID(ctx context.Context, id uuid.UUID) (*entities.User, error)
+}
+
 // WithdrawalLimitsService interface for withdrawal limit validation
 type WithdrawalLimitsService interface {
 	ValidateWithdrawal(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (*entities.LimitCheckResult, error)
@@ -96,21 +101,23 @@ type BridgeAdapter interface {
 
 // WithdrawalService handles crypto and fiat withdrawal operations
 type WithdrawalService struct {
-	withdrawalRepo        WithdrawalRepository
-	bankAccountRepo      BankAccountRepository
-	stashTransferRepo    StashTransferRepository
-	ledgerService        LedgerService
-	limitsService        WithdrawalLimitsService
-	auditService         WithdrawalAuditService
-	notificationService  WithdrawalNotificationService
-	circleClient         CircleClient
-	bridgeAdapter        BridgeAdapter
-	logger               *logger.Logger
+	withdrawalRepo      WithdrawalRepository
+	userRepo            UserRepository
+	bankAccountRepo     BankAccountRepository
+	stashTransferRepo   StashTransferRepository
+	ledgerService       LedgerService
+	limitsService       WithdrawalLimitsService
+	auditService        WithdrawalAuditService
+	notificationService WithdrawalNotificationService
+	circleClient        CircleClient
+	bridgeAdapter       BridgeAdapter
+	logger              *logger.Logger
 }
 
 // NewWithdrawalService creates a new withdrawal service
 func NewWithdrawalService(
 	withdrawalRepo WithdrawalRepository,
+	userRepo UserRepository,
 	ledgerService LedgerService,
 	bankAccountRepo BankAccountRepository,
 	limitsService WithdrawalLimitsService,
@@ -121,7 +128,8 @@ func NewWithdrawalService(
 	logger *logger.Logger,
 ) *WithdrawalService {
 	return &WithdrawalService{
-		withdrawalRepo:       withdrawalRepo,
+		withdrawalRepo:      withdrawalRepo,
+		userRepo:            userRepo,
 		ledgerService:       ledgerService,
 		bankAccountRepo:     bankAccountRepo,
 		limitsService:       limitsService,
@@ -289,7 +297,21 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
-	// Step 2: Check idempotency
+	// Step 2: Ensure user is eligible for Bridge-based fiat withdrawal.
+	if s.userRepo != nil {
+		user, err := s.userRepo.GetUserEntityByID(ctx, req.UserID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to verify user KYC status: %w", err)
+		}
+
+		bridgeActive := user.BridgeKYCStatus != nil && *user.BridgeKYCStatus == "active"
+		legacyApproved := user.KYCStatus == "approved"
+		if !bridgeActive && !legacyApproved {
+			return nil, fmt.Errorf("bridge kyc verification required for fiat withdrawals")
+		}
+	}
+
+	// Step 3: Check idempotency
 	if req.IdempotencyKey != "" {
 		existing, err := s.withdrawalRepo.GetByIdempotencyKey(ctx, req.IdempotencyKey)
 		if err != nil {
@@ -306,7 +328,7 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 		}
 	}
 
-	// Step 3: Validate against withdrawal limits
+	// Step 4: Validate against withdrawal limits
 	if s.limitsService != nil {
 		result, err := s.limitsService.ValidateWithdrawal(ctx, req.UserID, req.Amount)
 		if err != nil {
@@ -319,7 +341,7 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 		}
 	}
 
-	// Step 4: Check balance based on source account
+	// Step 5: Check balance based on source account
 	balance, err := s.getSourceBalance(ctx, req.UserID, req.SourceAccount)
 	if err != nil {
 		s.logger.Error("Failed to get source balance", "error", err)
@@ -330,7 +352,7 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 		return nil, fmt.Errorf("insufficient balance: have %s, need %s", balance.String(), req.Amount.String())
 	}
 
-	// Step 5: Calculate fee
+	// Step 6: Calculate fee
 	fee := s.calculateFiatWithdrawalFee(req.Amount, req.Currency)
 	totalAmount := req.Amount.Add(fee)
 
@@ -338,14 +360,14 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 		return nil, fmt.Errorf("insufficient balance for withdrawal + fee: have %s, need %s", balance.String(), totalAmount.String())
 	}
 
-	// Step 6: Create or get bank account with routing number
+	// Step 7: Create or get bank account with routing number
 	bankAccount, err := s.getOrCreateBankAccount(ctx, req.UserID, req.RoutingNumber, req.Currency)
 	if err != nil {
 		s.logger.Error("Failed to create bank account", "error", err)
 		return nil, fmt.Errorf("failed to setup bank account: %w", err)
 	}
 
-	// Step 7: Create withdrawal record
+	// Step 8: Create withdrawal record
 	idempotencyKey := req.IdempotencyKey
 	if idempotencyKey == "" {
 		idempotencyKey = uuid.New().String()
@@ -373,7 +395,7 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 		return nil, fmt.Errorf("failed to create withdrawal: %w", err)
 	}
 
-	// Step 8: Execute Bridge offramp transfer
+	// Step 9: Execute Bridge offramp transfer
 	transferID, err := s.executeFiatTransfer(ctx, withdrawal, bankAccount)
 	if err != nil {
 		s.logger.Error("Failed to execute fiat transfer", "error", err)
@@ -618,11 +640,11 @@ func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawa
 	amountStr := withdrawal.Amount.StringFixed(6)
 
 	req := entities.CircleTransferRequest{
-		WalletID:            *walletID,
-		TokenID:             "USDC", // USDC token
-		Amounts:             []string{amountStr},
-		DestinationAddress:  destinationAddress,
-		IDempotencyKey:      *withdrawal.IdempotencyKey,
+		WalletID:           *walletID,
+		TokenID:            "USDC", // USDC token
+		Amounts:            []string{amountStr},
+		DestinationAddress: destinationAddress,
+		IDempotencyKey:     *withdrawal.IdempotencyKey,
 	}
 
 	// Add destination chain if specified
@@ -667,10 +689,10 @@ func (s *WithdrawalService) executeFiatTransfer(ctx context.Context, withdrawal 
 
 	// Create transfer request
 	req := map[string]interface{}{
-		"source":         "USDC",
-		"amount":         amountStr,
-		"currency":       string(withdrawal.Currency),
-		"recipient_id":   *bankAccount.BridgeRecipientID,
+		"source":          "USDC",
+		"amount":          amountStr,
+		"currency":        string(withdrawal.Currency),
+		"recipient_id":    *bankAccount.BridgeRecipientID,
 		"idempotency_key": *withdrawal.IdempotencyKey,
 	}
 

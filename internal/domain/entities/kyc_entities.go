@@ -43,33 +43,34 @@ type KYCDisclosures struct {
 
 // KYCSubmitResponse is returned after KYC submission.
 type KYCSubmitResponse struct {
-	Status       string            `json:"status"` // "submitted", "partial_failure"
-	BridgeResult KYCProviderResult `json:"bridge_result"`
-	AlpacaResult KYCProviderResult `json:"alpaca_result"`
-	Message      string            `json:"message"`
+	Status            string            `json:"status"` // "submitted", "partial_failure"
+	ProviderReference *string           `json:"provider_reference,omitempty"`
+	BridgeResult      KYCProviderResult `json:"bridge_result"`
+	AlpacaResult      KYCProviderResult `json:"alpaca_result"`
+	Message           string            `json:"message"`
 }
 
 // KYCProviderResult represents the result from a single provider.
 type KYCProviderResult struct {
 	Success bool   `json:"success"`
-	Status  string `json:"status"`           // Provider-specific status
-	Error   string `json:"error,omitempty"`  // Error message if failed
+	Status  string `json:"status"`          // Provider-specific status
+	Error   string `json:"error,omitempty"` // Error message if failed
 }
 
 // KYCStatusResponse for checking current KYC state.
 type KYCStatusResponse struct {
-	UserID            uuid.UUID  `json:"user_id"`
-	Status            string     `json:"status"`
-	Verified          bool       `json:"verified"`
-	HasSubmitted      bool       `json:"has_submitted"`
-	RequiresKYC       bool       `json:"requires_kyc"`
-	RequiredFor       []string   `json:"required_for,omitempty"`
-	LastSubmittedAt   *time.Time `json:"last_submitted_at,omitempty"`
-	ApprovedAt        *time.Time `json:"approved_at,omitempty"`
-	RejectionReason   *string    `json:"rejection_reason,omitempty"`
-	ProviderReference *string    `json:"provider_reference,omitempty"`
-	NextSteps         []string   `json:"next_steps,omitempty"`
-	OverallStatus     string     `json:"overall_status,omitempty"` // pending, approved, rejected, not_started
+	UserID            uuid.UUID         `json:"user_id"`
+	Status            string            `json:"status"`
+	Verified          bool              `json:"verified"`
+	HasSubmitted      bool              `json:"has_submitted"`
+	RequiresKYC       bool              `json:"requires_kyc"`
+	RequiredFor       []string          `json:"required_for,omitempty"`
+	LastSubmittedAt   *time.Time        `json:"last_submitted_at,omitempty"`
+	ApprovedAt        *time.Time        `json:"approved_at,omitempty"`
+	RejectionReason   *string           `json:"rejection_reason,omitempty"`
+	ProviderReference *string           `json:"provider_reference,omitempty"`
+	NextSteps         []string          `json:"next_steps,omitempty"`
+	OverallStatus     string            `json:"overall_status,omitempty"` // pending, approved, rejected, not_started
 	Bridge            KYCProviderStatus `json:"bridge,omitempty"`
 	Alpaca            KYCProviderStatus `json:"alpaca,omitempty"`
 	Capabilities      KYCCapabilities   `json:"capabilities,omitempty"`
