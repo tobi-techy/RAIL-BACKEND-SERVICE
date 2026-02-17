@@ -38,12 +38,17 @@ func (r *OnboardingFlowRepository) Create(ctx context.Context, flow *entities.On
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
 		)`
 
-	_, err := r.db.ExecContext(ctx, query,
+	dataJSON, err := mapToJSON(flow.Data)
+	if err != nil {
+		return fmt.Errorf("failed to marshal onboarding flow data: %w", err)
+	}
+
+	_, err = r.db.ExecContext(ctx, query,
 		flow.ID,
 		flow.UserID,
 		string(flow.Step),
 		string(flow.Status),
-		flow.Data,
+		dataJSON,
 		flow.ErrorMessage,
 		flow.StartedAt,
 		flow.CompletedAt,
@@ -80,13 +85,14 @@ func (r *OnboardingFlowRepository) GetByUserID(ctx context.Context, userID uuid.
 	for rows.Next() {
 		flow := &entities.OnboardingFlow{}
 		var startedAt, completedAt sql.NullTime
+		var dataJSON []byte
 
 		err := rows.Scan(
 			&flow.ID,
 			&flow.UserID,
 			&flow.Step,
 			&flow.Status,
-			&flow.Data,
+			&dataJSON,
 			&flow.ErrorMessage,
 			&startedAt,
 			&completedAt,
@@ -103,6 +109,12 @@ func (r *OnboardingFlowRepository) GetByUserID(ctx context.Context, userID uuid.
 		}
 		if completedAt.Valid {
 			flow.CompletedAt = &completedAt.Time
+		}
+
+		flow.Data, err = jsonToMap(dataJSON)
+		if err != nil {
+			r.logger.Error("Failed to unmarshal onboarding flow data", zap.Error(err), zap.String("flow_id", flow.ID.String()))
+			return nil, fmt.Errorf("failed to unmarshal onboarding flow data: %w", err)
 		}
 
 		flows = append(flows, flow)
@@ -123,13 +135,14 @@ func (r *OnboardingFlowRepository) GetByUserAndStep(ctx context.Context, userID 
 
 	flow := &entities.OnboardingFlow{}
 	var startedAt, completedAt sql.NullTime
+	var dataJSON []byte
 
 	err := r.db.QueryRowContext(ctx, query, userID, string(step)).Scan(
 		&flow.ID,
 		&flow.UserID,
 		&flow.Step,
 		&flow.Status,
-		&flow.Data,
+		&dataJSON,
 		&flow.ErrorMessage,
 		&startedAt,
 		&completedAt,
@@ -153,6 +166,12 @@ func (r *OnboardingFlowRepository) GetByUserAndStep(ctx context.Context, userID 
 		flow.CompletedAt = &completedAt.Time
 	}
 
+	flow.Data, err = jsonToMap(dataJSON)
+	if err != nil {
+		r.logger.Error("Failed to unmarshal onboarding flow data", zap.Error(err), zap.String("flow_id", flow.ID.String()))
+		return nil, fmt.Errorf("failed to unmarshal onboarding flow data: %w", err)
+	}
+
 	return flow, nil
 }
 
@@ -164,10 +183,15 @@ func (r *OnboardingFlowRepository) Update(ctx context.Context, flow *entities.On
 			started_at = $5, completed_at = $6, updated_at = $7
 		WHERE id = $1`
 
-	_, err := r.db.ExecContext(ctx, query,
+	dataJSON, err := mapToJSON(flow.Data)
+	if err != nil {
+		return fmt.Errorf("failed to marshal onboarding flow data: %w", err)
+	}
+
+	_, err = r.db.ExecContext(ctx, query,
 		flow.ID,
 		string(flow.Status),
-		flow.Data,
+		dataJSON,
 		flow.ErrorMessage,
 		flow.StartedAt,
 		flow.CompletedAt,
@@ -230,14 +254,18 @@ func (r *KYCSubmissionRepository) Create(ctx context.Context, submission *entiti
 	query := `
 		INSERT INTO kyc_submissions (
 			id, user_id, provider_ref, status, submitted_at, 
-			reviewed_at, rejection_reasons, metadata, created_at, updated_at
+			reviewed_at, rejection_reasons, verification_data, created_at, updated_at
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
 		)`
 
 	rejectionReasonsJSON, _ := stringSliceToJSON(submission.RejectionReasons)
+	verificationDataJSON, err := mapToJSON(submission.VerificationData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal KYC verification data: %w", err)
+	}
 
-	_, err := r.db.ExecContext(ctx, query,
+	_, err = r.db.ExecContext(ctx, query,
 		submission.ID,
 		submission.UserID,
 		submission.ProviderRef,
@@ -245,7 +273,7 @@ func (r *KYCSubmissionRepository) Create(ctx context.Context, submission *entiti
 		submission.SubmittedAt,
 		submission.ReviewedAt,
 		rejectionReasonsJSON,
-		submission.VerificationData,
+		verificationDataJSON,
 		submission.CreatedAt,
 		submission.UpdatedAt,
 	)
@@ -263,7 +291,7 @@ func (r *KYCSubmissionRepository) Create(ctx context.Context, submission *entiti
 func (r *KYCSubmissionRepository) GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.KYCSubmission, error) {
 	query := `
 		SELECT id, user_id, provider_ref, status, submitted_at, 
-		       reviewed_at, rejection_reasons, metadata, created_at, updated_at
+		       reviewed_at, rejection_reasons, verification_data, created_at, updated_at
 		FROM kyc_submissions 
 		WHERE user_id = $1
 		ORDER BY created_at DESC`
@@ -280,6 +308,7 @@ func (r *KYCSubmissionRepository) GetByUserID(ctx context.Context, userID uuid.U
 		submission := &entities.KYCSubmission{}
 		var reviewedAt sql.NullTime
 		var rejectionReasonsJSON sql.NullString
+		var verificationDataJSON []byte
 
 		err := rows.Scan(
 			&submission.ID,
@@ -289,7 +318,7 @@ func (r *KYCSubmissionRepository) GetByUserID(ctx context.Context, userID uuid.U
 			&submission.SubmittedAt,
 			&reviewedAt,
 			&rejectionReasonsJSON,
-			&submission.VerificationData,
+			&verificationDataJSON,
 			&submission.CreatedAt,
 			&submission.UpdatedAt,
 		)
@@ -306,6 +335,12 @@ func (r *KYCSubmissionRepository) GetByUserID(ctx context.Context, userID uuid.U
 			submission.RejectionReasons, _ = jsonToStringSlice(rejectionReasonsJSON.String)
 		}
 
+		submission.VerificationData, err = jsonToMap(verificationDataJSON)
+		if err != nil {
+			r.logger.Error("Failed to unmarshal KYC verification data", zap.Error(err), zap.String("submission_id", submission.ID.String()))
+			return nil, fmt.Errorf("failed to unmarshal KYC verification data: %w", err)
+		}
+
 		submissions = append(submissions, submission)
 	}
 
@@ -316,13 +351,14 @@ func (r *KYCSubmissionRepository) GetByUserID(ctx context.Context, userID uuid.U
 func (r *KYCSubmissionRepository) GetByProviderRef(ctx context.Context, providerRef string) (*entities.KYCSubmission, error) {
 	query := `
 		SELECT id, user_id, provider_ref, status, submitted_at, 
-		       reviewed_at, rejection_reasons, metadata, created_at, updated_at
+		       reviewed_at, rejection_reasons, verification_data, created_at, updated_at
 		FROM kyc_submissions 
 		WHERE provider_ref = $1`
 
 	submission := &entities.KYCSubmission{}
 	var reviewedAt sql.NullTime
 	var rejectionReasonsJSON sql.NullString
+	var verificationDataJSON []byte
 
 	err := r.db.QueryRowContext(ctx, query, providerRef).Scan(
 		&submission.ID,
@@ -332,7 +368,7 @@ func (r *KYCSubmissionRepository) GetByProviderRef(ctx context.Context, provider
 		&submission.SubmittedAt,
 		&reviewedAt,
 		&rejectionReasonsJSON,
-		&submission.VerificationData,
+		&verificationDataJSON,
 		&submission.CreatedAt,
 		&submission.UpdatedAt,
 	)
@@ -353,25 +389,35 @@ func (r *KYCSubmissionRepository) GetByProviderRef(ctx context.Context, provider
 		submission.RejectionReasons, _ = jsonToStringSlice(rejectionReasonsJSON.String)
 	}
 
+	submission.VerificationData, err = jsonToMap(verificationDataJSON)
+	if err != nil {
+		r.logger.Error("Failed to unmarshal KYC verification data", zap.Error(err), zap.String("submission_id", submission.ID.String()))
+		return nil, fmt.Errorf("failed to unmarshal KYC verification data: %w", err)
+	}
+
 	return submission, nil
 }
 
 // Update updates a KYC submission
 func (r *KYCSubmissionRepository) Update(ctx context.Context, submission *entities.KYCSubmission) error {
 	rejectionReasonsJSON, _ := stringSliceToJSON(submission.RejectionReasons)
+	verificationDataJSON, err := mapToJSON(submission.VerificationData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal KYC verification data: %w", err)
+	}
 
 	query := `
 		UPDATE kyc_submissions SET 
 			status = $2, reviewed_at = $3, rejection_reasons = $4, 
-			metadata = $5, updated_at = $6
+			verification_data = $5, updated_at = $6
 		WHERE id = $1`
 
-	_, err := r.db.ExecContext(ctx, query,
+	_, err = r.db.ExecContext(ctx, query,
 		submission.ID,
 		string(submission.Status),
 		submission.ReviewedAt,
 		rejectionReasonsJSON,
-		submission.VerificationData,
+		verificationDataJSON,
 		time.Now(),
 	)
 
@@ -388,7 +434,7 @@ func (r *KYCSubmissionRepository) Update(ctx context.Context, submission *entiti
 func (r *KYCSubmissionRepository) GetLatestByUserID(ctx context.Context, userID uuid.UUID) (*entities.KYCSubmission, error) {
 	query := `
 		SELECT id, user_id, provider_ref, status, submitted_at, 
-		       reviewed_at, rejection_reasons, metadata, created_at, updated_at
+		       reviewed_at, rejection_reasons, verification_data, created_at, updated_at
 		FROM kyc_submissions 
 		WHERE user_id = $1
 		ORDER BY created_at DESC
@@ -397,6 +443,7 @@ func (r *KYCSubmissionRepository) GetLatestByUserID(ctx context.Context, userID 
 	submission := &entities.KYCSubmission{}
 	var reviewedAt sql.NullTime
 	var rejectionReasonsJSON sql.NullString
+	var verificationDataJSON []byte
 
 	err := r.db.QueryRowContext(ctx, query, userID).Scan(
 		&submission.ID,
@@ -406,7 +453,7 @@ func (r *KYCSubmissionRepository) GetLatestByUserID(ctx context.Context, userID 
 		&submission.SubmittedAt,
 		&reviewedAt,
 		&rejectionReasonsJSON,
-		&submission.VerificationData,
+		&verificationDataJSON,
 		&submission.CreatedAt,
 		&submission.UpdatedAt,
 	)
@@ -425,6 +472,12 @@ func (r *KYCSubmissionRepository) GetLatestByUserID(ctx context.Context, userID 
 
 	if rejectionReasonsJSON.Valid {
 		submission.RejectionReasons, _ = jsonToStringSlice(rejectionReasonsJSON.String)
+	}
+
+	submission.VerificationData, err = jsonToMap(verificationDataJSON)
+	if err != nil {
+		r.logger.Error("Failed to unmarshal KYC verification data", zap.Error(err), zap.String("submission_id", submission.ID.String()))
+		return nil, fmt.Errorf("failed to unmarshal KYC verification data: %w", err)
 	}
 
 	return submission, nil
@@ -673,4 +726,28 @@ func jsonToStringSlice(jsonStr string) ([]string, error) {
 	}
 	err := json.Unmarshal([]byte(jsonStr), &slice)
 	return slice, err
+}
+
+func mapToJSON(data map[string]any) ([]byte, error) {
+	if data == nil {
+		return []byte("{}"), nil
+	}
+	return json.Marshal(data)
+}
+
+func jsonToMap(data []byte) (map[string]any, error) {
+	if len(data) == 0 || string(data) == "null" {
+		return map[string]any{}, nil
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+
+	if result == nil {
+		result = map[string]any{}
+	}
+
+	return result, nil
 }

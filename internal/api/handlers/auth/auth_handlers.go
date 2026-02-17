@@ -48,7 +48,7 @@ type AuthHandlers struct {
 
 const (
 	authFlowTimeout            = 8 * time.Second
-	onboardingCompleteTimeout  = 12 * time.Second
+	onboardingCompleteTimeout  = 30 * time.Second
 	onboardingStatusReqTimeout = 3 * time.Second
 	profileReadTimeout         = 4 * time.Second
 )
