@@ -286,9 +286,10 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		"spending_ratio", mode.RatioSpending,
 		"stash_ratio", mode.RatioStash)
 
-	// Calculate split amounts
+	// Calculate split amounts.
+	// Compute stash as remainder to avoid precision drift and ensure exact total.
 	spendingAmount := req.Amount.Mul(mode.RatioSpending)
-	stashAmount := req.Amount.Mul(mode.RatioStash)
+	stashAmount := req.Amount.Sub(spendingAmount)
 
 	// Get allocation accounts
 	spendingAccount, err := s.ledgerService.GetOrCreateUserAccount(ctx, req.UserID, entities.AccountTypeSpendingBalance)
@@ -310,7 +311,7 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		return fmt.Errorf("failed to get USDC account: %w", err)
 	}
 
-	// Create ledger transaction for allocation split
+	// Create idempotency and metadata for allocation transfers
 	desc := fmt.Sprintf("Allocation split: %s USDC (70/30 mode)", req.Amount.String())
 	metadata := map[string]any{
 		"event_type":      req.EventType,
@@ -332,44 +333,38 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 	} else if req.SourceTxID != nil {
 		idempotencySeed = "allocation:source_tx:" + *req.SourceTxID
 	}
-	idempotencyKey := fmt.Sprintf("allocation-%s", uuid.NewSHA1(uuid.NameSpaceOID, []byte(idempotencySeed)).String())
+	allocationBaseKey := fmt.Sprintf("allocation-%s", uuid.NewSHA1(uuid.NameSpaceOID, []byte(idempotencySeed)).String())
 
-	ledgerReq := &entities.CreateTransactionRequest{
-		UserID:          &req.UserID,
-		TransactionType: entities.TransactionTypeInternalTransfer,
-		ReferenceID:     req.DepositID,
-		ReferenceType:   stringPtr("allocation_split"),
-		IdempotencyKey:  idempotencyKey,
-		Description:     &desc,
-		Metadata:        metadata,
-		Entries: []entities.CreateEntryRequest{
-			{
-				AccountID:   spendingAccount.ID,
-				EntryType:   entities.EntryTypeDebit, // Increase spending balance
-				Amount:      spendingAmount,
-				Currency:    "USDC",
-				Description: stringPtr(fmt.Sprintf("Spending allocation: %s", spendingAmount.String())),
-			},
-			{
-				AccountID:   stashAccount.ID,
-				EntryType:   entities.EntryTypeDebit, // Increase stash balance
-				Amount:      stashAmount,
-				Currency:    "USDC",
-				Description: stringPtr(fmt.Sprintf("Stash allocation: %s", stashAmount.String())),
-			},
-			{
-				AccountID:   usdcAccount.ID,
-				EntryType:   entities.EntryTypeCredit, // Decrease USDC balance (source)
-				Amount:      req.Amount,
-				Currency:    "USDC",
-				Description: &desc,
-			},
-		},
+	if err := s.createAllocationTransfer(
+		ctx,
+		req,
+		spendingAccount.ID,
+		usdcAccount.ID,
+		spendingAmount,
+		"spending",
+		allocationBaseKey+"-spending",
+		fmt.Sprintf("Spending allocation: %s", spendingAmount.String()),
+		desc,
+		metadata,
+	); err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("failed to create spending allocation transfer: %w", err)
 	}
 
-	if _, err := s.ledgerService.CreateTransaction(ctx, ledgerReq); err != nil {
+	if err := s.createAllocationTransfer(
+		ctx,
+		req,
+		stashAccount.ID,
+		usdcAccount.ID,
+		stashAmount,
+		"stash",
+		allocationBaseKey+"-stash",
+		fmt.Sprintf("Stash allocation: %s", stashAmount.String()),
+		desc,
+		metadata,
+	); err != nil {
 		span.RecordError(err)
-		return fmt.Errorf("failed to create ledger transaction: %w", err)
+		return fmt.Errorf("failed to create stash allocation transfer: %w", err)
 	}
 
 	// Create allocation event for audit trail
@@ -767,6 +762,62 @@ func (s *Service) initializeAllocationAccounts(ctx context.Context, userID uuid.
 	_, err = s.ledgerService.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
 	if err != nil {
 		return fmt.Errorf("failed to create stash balance account: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Service) createAllocationTransfer(
+	ctx context.Context,
+	req *entities.IncomingFundsRequest,
+	targetAccountID uuid.UUID,
+	sourceAccountID uuid.UUID,
+	amount decimal.Decimal,
+	allocationType string,
+	idempotencyKey string,
+	targetDescription string,
+	rootDescription string,
+	baseMetadata map[string]any,
+) error {
+	if amount.IsZero() {
+		return nil
+	}
+
+	metadata := make(map[string]any, len(baseMetadata)+1)
+	for k, v := range baseMetadata {
+		metadata[k] = v
+	}
+	metadata["allocation_type"] = allocationType
+
+	reqTx := &entities.CreateTransactionRequest{
+		UserID:          &req.UserID,
+		TransactionType: entities.TransactionTypeInternalTransfer,
+		ReferenceID:     req.DepositID,
+		ReferenceType:   stringPtr("allocation_split"),
+		IdempotencyKey:  idempotencyKey,
+		Description:     &rootDescription,
+		Metadata:        metadata,
+		Entries: []entities.CreateEntryRequest{
+			{
+				AccountID:   targetAccountID,
+				EntryType:   entities.EntryTypeDebit,
+				Amount:      amount,
+				Currency:    "USDC",
+				Description: stringPtr(targetDescription),
+			},
+			{
+				AccountID:   sourceAccountID,
+				EntryType:   entities.EntryTypeCredit,
+				Amount:      amount,
+				Currency:    "USDC",
+				Description: &rootDescription,
+			},
+		},
+	}
+
+	_, err := s.ledgerService.CreateTransaction(ctx, reqTx)
+	if err != nil {
+		return fmt.Errorf("create allocation transfer (%s): %w", allocationType, err)
 	}
 
 	return nil

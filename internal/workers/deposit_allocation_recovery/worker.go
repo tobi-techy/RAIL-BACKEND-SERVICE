@@ -182,9 +182,10 @@ func (w *Worker) listUnallocatedDeposits(ctx context.Context, limit int) ([]depo
 			ON la.user_id = d.user_id
 			AND la.account_type = 'usdc_balance'
 			AND la.balance >= d.amount
-		LEFT JOIN ledger_transactions lt
-			ON lt.reference_id = d.id
-			AND lt.reference_type = 'allocation_split'
+		LEFT JOIN allocation_events ae
+			ON ae.user_id = d.user_id
+			AND ae.source_tx_id = d.tx_hash
+			AND ae.event_type IN ('deposit', 'fiat_deposit', 'crypto_deposit')
 		WHERE d.status IN ('confirmed', 'off_ramp_initiated', 'off_ramp_completed', 'broker_funded')
 			AND EXISTS (
 				SELECT 1
@@ -193,7 +194,7 @@ func (w *Worker) listUnallocatedDeposits(ctx context.Context, limit int) ([]depo
 					AND dep_lt.reference_type = 'deposit'
 			)
 			AND d.created_at >= $2
-			AND lt.id IS NULL
+			AND ae.id IS NULL
 		ORDER BY d.created_at ASC
 		LIMIT $1
 	`
