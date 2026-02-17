@@ -221,12 +221,63 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		return fmt.Errorf("failed to get allocation mode: %w", err)
 	}
 
-	// If mode is not active, skip splitting (legacy flow handles it)
+	// Ensure deposits are always split instantly.
 	if mode == nil || !mode.Active {
-		s.logger.Debug("Allocation mode not active, skipping split",
-			"user_id", req.UserID,
-			"mode_exists", mode != nil)
-		return nil
+		isDepositEvent := req.EventType == entities.AllocationEventTypeDeposit ||
+			req.EventType == entities.AllocationEventTypeFiatDeposit ||
+			req.EventType == entities.AllocationEventTypeCryptoDeposit
+		if !isDepositEvent {
+			s.logger.Debug("Allocation mode not active, skipping non-deposit split",
+				"user_id", req.UserID,
+				"event_type", req.EventType,
+				"mode_exists", mode != nil)
+			return nil
+		}
+
+		now := time.Now()
+		if mode == nil {
+			// First deposit for this user: auto-enable default 70/30 mode.
+			ratios := entities.DefaultAllocationRatios()
+			mode = &entities.SmartAllocationMode{
+				UserID:        req.UserID,
+				Active:        true,
+				RatioSpending: ratios.SpendingRatio,
+				RatioStash:    ratios.StashRatio,
+				ResumedAt:     &now,
+				CreatedAt:     now,
+				UpdatedAt:     now,
+			}
+			if err := s.allocationRepo.CreateMode(ctx, mode); err != nil {
+				span.RecordError(err)
+				return fmt.Errorf("failed to auto-create allocation mode: %w", err)
+			}
+			if err := s.initializeAllocationAccounts(ctx, req.UserID); err != nil {
+				span.RecordError(err)
+				return fmt.Errorf("failed to initialize allocation accounts: %w", err)
+			}
+			s.logger.Info("Auto-enabled allocation mode for deposit",
+				"user_id", req.UserID,
+				"spending_ratio", mode.RatioSpending,
+				"stash_ratio", mode.RatioStash)
+		} else {
+			// Mode exists but inactive: auto-resume for deposit processing.
+			mode.Active = true
+			mode.ResumedAt = &now
+			mode.PausedAt = nil
+			mode.UpdatedAt = now
+			if err := s.allocationRepo.UpdateMode(ctx, mode); err != nil {
+				span.RecordError(err)
+				return fmt.Errorf("failed to auto-resume allocation mode: %w", err)
+			}
+			if err := s.initializeAllocationAccounts(ctx, req.UserID); err != nil {
+				span.RecordError(err)
+				return fmt.Errorf("failed to ensure allocation accounts: %w", err)
+			}
+			s.logger.Info("Auto-resumed allocation mode for deposit",
+				"user_id", req.UserID,
+				"spending_ratio", mode.RatioSpending,
+				"stash_ratio", mode.RatioStash)
+		}
 	}
 
 	s.logger.Info("Processing incoming funds with allocation split",
