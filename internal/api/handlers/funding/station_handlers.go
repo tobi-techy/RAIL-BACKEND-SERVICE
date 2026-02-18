@@ -50,6 +50,7 @@ type StationResponse struct {
 	TotalBalance             string                 `json:"total_balance"`
 	SpendBalance             string                 `json:"spend_balance"`
 	InvestBalance            string                 `json:"invest_balance"`
+	BrokerCash               string                 `json:"broker_cash"`
 	Currency                 string                 `json:"currency"`
 	CurrencyLocale           string                 `json:"currency_locale"`
 	PendingAmount            string                 `json:"pending_amount"`
@@ -175,7 +176,7 @@ func (h *StationHandlers) GetStation(c *gin.Context) {
 		if balanceErr != nil || balances == nil {
 			return
 		}
-		if t, err := h.stationService.GetBalanceTrends(ctx, userID, balances.SpendingBalance, balances.StashBalance); err == nil {
+		if t, err := h.stationService.GetBalanceTrends(ctx, userID, balances.SpendingBalance, balances.InvestBalance); err == nil {
 			trends = t
 		}
 	}()
@@ -198,7 +199,8 @@ func (h *StationHandlers) GetStation(c *gin.Context) {
 	response := StationResponse{
 		TotalBalance:             balances.TotalBalance.StringFixed(2),
 		SpendBalance:             balances.SpendingBalance.StringFixed(2),
-		InvestBalance:            balances.StashBalance.StringFixed(2),
+		InvestBalance:            balances.InvestBalance.StringFixed(2),
+		BrokerCash:               balances.FiatExposure.StringFixed(2),
 		Currency:                 "USD",
 		CurrencyLocale:           settings.CurrencyLocale,
 		PendingAmount:            balances.PendingAmount.StringFixed(2),

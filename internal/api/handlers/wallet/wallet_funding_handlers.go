@@ -929,6 +929,8 @@ type UnifiedBalanceResponse struct {
 	TotalUSDC       string `json:"total_usdc"`
 	SpendingBalance string `json:"spending_balance"`
 	StashBalance    string `json:"stash_balance"`
+	InvestedBalance string `json:"invested_balance"`
+	BrokerCash      string `json:"broker_cash"`
 	AllocationMode  string `json:"allocation_mode"` // "active" or "disabled"
 	Currency        string `json:"currency"`
 	LastUpdated     string `json:"last_updated"`
@@ -975,6 +977,8 @@ func (h *WalletFundingHandlers) GetUnifiedBalances(c *gin.Context) {
 				TotalUSDC:       balances.TotalBalance.StringFixed(2),
 				SpendingBalance: balances.SpendingBalance.StringFixed(2),
 				StashBalance:    balances.StashBalance.StringFixed(2),
+				InvestedBalance: balances.InvestBalance.StringFixed(2),
+				BrokerCash:      balances.FiatExposure.StringFixed(2),
 				AllocationMode:  mode,
 				Currency:        "USD",
 				LastUpdated:     time.Now().UTC().Format(time.RFC3339),
@@ -999,6 +1003,8 @@ func (h *WalletFundingHandlers) GetUnifiedBalances(c *gin.Context) {
 		TotalUSDC:       balances.BuyingPower,
 		SpendingBalance: balances.BuyingPower,
 		StashBalance:    "0.00",
+		InvestedBalance: "0.00",
+		BrokerCash:      "0.00",
 		AllocationMode:  "disabled",
 		Currency:        balances.Currency,
 		LastUpdated:     time.Now().UTC().Format(time.RFC3339),

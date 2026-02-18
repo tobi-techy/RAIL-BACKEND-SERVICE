@@ -515,18 +515,35 @@ func (s *Service) GetBalances(ctx context.Context, userID uuid.UUID) (*entities.
 		return nil, fmt.Errorf("failed to get allocation mode: %w", err)
 	}
 
-	// If mode doesn't exist, return zero balances
+	// Always read USDC/fiat so totals remain accurate when funds move to broker cash.
+	usdcBalance, err := s.getOptionalAccountBalance(ctx, userID, entities.AccountTypeUSDCBalance)
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("failed to get usdc balance: %w", err)
+	}
+	fiatExposure, err := s.getOptionalAccountBalance(ctx, userID, entities.AccountTypeFiatExposure)
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("failed to get fiat exposure: %w", err)
+	}
+
+	// If mode doesn't exist, map legacy balance view:
+	// - spending reflects liquid USDC
+	// - invest reflects broker cash (fiat exposure)
 	if mode == nil {
-		return &entities.AllocationBalances{
+		balances := &entities.AllocationBalances{
 			UserID:            userID,
-			SpendingBalance:   decimal.Zero,
+			SpendingBalance:   usdcBalance,
 			StashBalance:      decimal.Zero,
+			USDCBalance:       usdcBalance,
+			FiatExposure:      fiatExposure,
 			SpendingUsed:      decimal.Zero,
 			SpendingRemaining: decimal.Zero,
-			TotalBalance:      decimal.Zero,
 			ModeActive:        false,
 			UpdatedAt:         time.Now(),
-		}, nil
+		}
+		balances.CalculateTotals()
+		return balances, nil
 	}
 
 	var (
@@ -575,6 +592,8 @@ func (s *Service) GetBalances(ctx context.Context, userID uuid.UUID) (*entities.
 		UserID:          userID,
 		SpendingBalance: spendingBalance,
 		StashBalance:    stashBalance,
+		USDCBalance:     usdcBalance,
+		FiatExposure:    fiatExposure,
 		SpendingUsed:    spendingUsed,
 		ModeActive:      mode.Active,
 		UpdatedAt:       time.Now(),
@@ -586,6 +605,7 @@ func (s *Service) GetBalances(ctx context.Context, userID uuid.UUID) (*entities.
 	span.SetAttributes(
 		attribute.String("spending_balance", spendingBalance.String()),
 		attribute.String("stash_balance", stashBalance.String()),
+		attribute.String("fiat_exposure", fiatExposure.String()),
 		attribute.String("total_balance", balances.TotalBalance.String()),
 	)
 
@@ -605,17 +625,31 @@ func (s *Service) GetBalancesLite(ctx context.Context, userID uuid.UUID) (*entit
 		return nil, fmt.Errorf("failed to get allocation mode: %w", err)
 	}
 
+	usdcBalance, err := s.getOptionalAccountBalance(ctx, userID, entities.AccountTypeUSDCBalance)
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("failed to get usdc balance: %w", err)
+	}
+	fiatExposure, err := s.getOptionalAccountBalance(ctx, userID, entities.AccountTypeFiatExposure)
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("failed to get fiat exposure: %w", err)
+	}
+
 	if mode == nil {
-		return &entities.AllocationBalances{
+		balances := &entities.AllocationBalances{
 			UserID:            userID,
-			SpendingBalance:   decimal.Zero,
+			SpendingBalance:   usdcBalance,
 			StashBalance:      decimal.Zero,
+			USDCBalance:       usdcBalance,
+			FiatExposure:      fiatExposure,
 			SpendingUsed:      decimal.Zero,
 			SpendingRemaining: decimal.Zero,
-			TotalBalance:      decimal.Zero,
 			ModeActive:        false,
 			UpdatedAt:         time.Now(),
-		}, nil
+		}
+		balances.CalculateTotals()
+		return balances, nil
 	}
 
 	var (
@@ -653,6 +687,8 @@ func (s *Service) GetBalancesLite(ctx context.Context, userID uuid.UUID) (*entit
 		UserID:          userID,
 		SpendingBalance: spendingBalance,
 		StashBalance:    stashBalance,
+		USDCBalance:     usdcBalance,
+		FiatExposure:    fiatExposure,
 		SpendingUsed:    decimal.Zero,
 		ModeActive:      mode.Active,
 		UpdatedAt:       time.Now(),
@@ -660,6 +696,19 @@ func (s *Service) GetBalancesLite(ctx context.Context, userID uuid.UUID) (*entit
 	balances.CalculateTotals()
 
 	return balances, nil
+}
+
+func (s *Service) getOptionalAccountBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (decimal.Decimal, error) {
+	balance, err := s.ledgerService.GetAccountBalance(ctx, userID, accountType)
+	if err == nil {
+		return balance, nil
+	}
+
+	if strings.Contains(err.Error(), "account not found") {
+		return decimal.Zero, nil
+	}
+
+	return decimal.Zero, err
 }
 
 // ============================================================================
