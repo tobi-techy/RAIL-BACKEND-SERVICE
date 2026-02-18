@@ -284,6 +284,8 @@ func (e *LedgerEntry) IsCredit() bool {
 type UserBalances struct {
 	UserID             uuid.UUID       `json:"user_id"`
 	USDCBalance        decimal.Decimal `json:"usdc_balance"`
+	SpendingBalance    decimal.Decimal `json:"spending_balance"`
+	StashBalance       decimal.Decimal `json:"stash_balance"`
 	FiatExposure       decimal.Decimal `json:"fiat_exposure"`
 	PendingInvestment  decimal.Decimal `json:"pending_investment"`
 	TotalUSDEquivalent decimal.Decimal `json:"total_usd_equivalent"`
@@ -297,7 +299,11 @@ func (b *UserBalances) TotalValue() decimal.Decimal {
 // CalculateTotalUSD calculates total balance in USD equivalent
 // Assumes 1 USDC = 1 USD for simplicity
 func (b *UserBalances) CalculateTotalUSD() decimal.Decimal {
-	return b.USDCBalance.Add(b.FiatExposure).Add(b.PendingInvestment)
+	return b.USDCBalance.
+		Add(b.SpendingBalance).
+		Add(b.StashBalance).
+		Add(b.FiatExposure).
+		Add(b.PendingInvestment)
 }
 
 // SystemBuffers represents the operational buffer balances

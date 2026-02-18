@@ -16,6 +16,9 @@ import (
 type Balances struct {
 	SpendingBalance          decimal.Decimal
 	StashBalance             decimal.Decimal
+	InvestBalance            decimal.Decimal
+	FiatExposure             decimal.Decimal
+	UnallocatedUSDC          decimal.Decimal
 	TotalBalance             decimal.Decimal
 	PendingAmount            decimal.Decimal
 	PendingTransactionsCount int
@@ -149,7 +152,7 @@ func (s *Service) GetUserBalances(ctx context.Context, userID uuid.UUID) (*Balan
 	}
 
 	// If smart allocation mode is not active, show legacy USDC balance directly
-	// so deposits reflect immediately in Station.
+	// and include broker cash so users never see funds "disappear" after transfers.
 	if mode == nil || !mode.Active {
 		usdcBalance, balErr := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeUSDCBalance)
 		if balErr != nil {
@@ -158,21 +161,35 @@ func (s *Service) GetUserBalances(ctx context.Context, userID uuid.UUID) (*Balan
 				zap.String("user_id", userID.String()))
 			usdcBalance = decimal.Zero
 		}
+		fiatExposure, fiatErr := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeFiatExposure)
+		if fiatErr != nil {
+			s.logger.Warn("Failed to get fiat exposure balance, defaulting to zero",
+				zap.Error(fiatErr),
+				zap.String("user_id", userID.String()))
+			fiatExposure = decimal.Zero
+		}
+
+		totalBalance := usdcBalance.Add(fiatExposure)
 
 		return &Balances{
 			SpendingBalance: usdcBalance,
 			StashBalance:    decimal.Zero,
-			TotalBalance:    usdcBalance,
+			InvestBalance:   fiatExposure,
+			FiatExposure:    fiatExposure,
+			UnallocatedUSDC: decimal.Zero,
+			TotalBalance:    totalBalance,
 		}, nil
 	}
 
 	var (
 		spendingBalance decimal.Decimal
 		stashBalance    decimal.Decimal
+		fiatExposure    decimal.Decimal
+		usdcBalance     decimal.Decimal
 	)
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(4)
 
 	go func() {
 		defer wg.Done()
@@ -200,13 +217,43 @@ func (s *Service) GetUserBalances(ctx context.Context, userID uuid.UUID) (*Balan
 		stashBalance = balance
 	}()
 
+	go func() {
+		defer wg.Done()
+		balance, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeFiatExposure)
+		if err != nil {
+			s.logger.Warn("Failed to get fiat exposure, defaulting to zero",
+				zap.Error(err),
+				zap.String("user_id", userID.String()))
+			fiatExposure = decimal.Zero
+			return
+		}
+		fiatExposure = balance
+	}()
+
+	go func() {
+		defer wg.Done()
+		balance, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeUSDCBalance)
+		if err != nil {
+			s.logger.Warn("Failed to get unallocated USDC, defaulting to zero",
+				zap.Error(err),
+				zap.String("user_id", userID.String()))
+			usdcBalance = decimal.Zero
+			return
+		}
+		usdcBalance = balance
+	}()
+
 	wg.Wait()
 
-	totalBalance := spendingBalance.Add(stashBalance)
+	investBalance := stashBalance.Add(fiatExposure)
+	totalBalance := spendingBalance.Add(investBalance).Add(usdcBalance)
 
 	return &Balances{
 		SpendingBalance: spendingBalance,
 		StashBalance:    stashBalance,
+		InvestBalance:   investBalance,
+		FiatExposure:    fiatExposure,
+		UnallocatedUSDC: usdcBalance,
 		TotalBalance:    totalBalance,
 	}, nil
 }

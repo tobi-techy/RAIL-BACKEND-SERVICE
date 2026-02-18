@@ -595,6 +595,8 @@ func (r *LedgerRepository) GetUserBalances(ctx context.Context, userID uuid.UUID
 	balances := &entities.UserBalances{
 		UserID:            userID,
 		USDCBalance:       decimal.Zero,
+		SpendingBalance:   decimal.Zero,
+		StashBalance:      decimal.Zero,
 		FiatExposure:      decimal.Zero,
 		PendingInvestment: decimal.Zero,
 	}
@@ -612,6 +614,10 @@ func (r *LedgerRepository) GetUserBalances(ctx context.Context, userID uuid.UUID
 		switch accountType {
 		case entities.AccountTypeUSDCBalance:
 			balances.USDCBalance = balance
+		case entities.AccountTypeSpendingBalance:
+			balances.SpendingBalance = balance
+		case entities.AccountTypeStashBalance:
+			balances.StashBalance = balance
 		case entities.AccountTypeFiatExposure:
 			balances.FiatExposure = balance
 		case entities.AccountTypePendingInvestment:

@@ -42,7 +42,7 @@ type EnableAllocationModeRequest struct {
 
 // AllocationModeResponse represents the allocation mode status response
 type AllocationModeResponse struct {
-	Message string                       `json:"message"`
+	Message string                        `json:"message"`
 	Mode    *entities.SmartAllocationMode `json:"mode,omitempty"`
 }
 
@@ -50,6 +50,9 @@ type AllocationModeResponse struct {
 type AllocationBalancesResponse struct {
 	SpendingBalance   string `json:"spending_balance"`
 	StashBalance      string `json:"stash_balance"`
+	InvestBalance     string `json:"invest_balance"`
+	BrokerCash        string `json:"broker_cash"`
+	USDCBalance       string `json:"usdc_balance"`
 	SpendingUsed      string `json:"spending_used"`
 	SpendingRemaining string `json:"spending_remaining"`
 	TotalBalance      string `json:"total_balance"`
@@ -170,6 +173,9 @@ func (h *AllocationHandlers) GetAllocationBalances(c *gin.Context) {
 	c.JSON(http.StatusOK, AllocationBalancesResponse{
 		SpendingBalance:   balances.SpendingBalance.String(),
 		StashBalance:      balances.StashBalance.String(),
+		InvestBalance:     balances.InvestBalance.String(),
+		BrokerCash:        balances.FiatExposure.String(),
+		USDCBalance:       balances.USDCBalance.String(),
 		SpendingUsed:      balances.SpendingUsed.String(),
 		SpendingRemaining: balances.SpendingRemaining.String(),
 		TotalBalance:      balances.TotalBalance.String(),

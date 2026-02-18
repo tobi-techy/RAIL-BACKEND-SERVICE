@@ -63,6 +63,7 @@ type MobileHomeResponse struct {
 	TotalBalance  string `json:"total_balance"`
 	SpendBalance  string `json:"spend_balance"`
 	InvestBalance string `json:"invest_balance"`
+	BrokerCash    string `json:"broker_cash"`
 	Currency      string `json:"currency"`
 
 	// Status indicators
@@ -151,7 +152,8 @@ func (h *MobileHandlers) GetMobileHome(c *gin.Context) {
 	response := MobileHomeResponse{
 		TotalBalance:   balances.TotalBalance.StringFixed(2),
 		SpendBalance:   balances.SpendingBalance.StringFixed(2),
-		InvestBalance:  balances.StashBalance.StringFixed(2),
+		InvestBalance:  balances.InvestBalance.StringFixed(2),
+		BrokerCash:     balances.FiatExposure.StringFixed(2),
 		Currency:       "USD",
 		SystemStatus:   systemStatus,
 		KYCVerified:    kycVerified,
@@ -256,9 +258,10 @@ func (h *MobileHandlers) executeBatchItem(ctx context.Context, userID uuid.UUID,
 		} else {
 			response.Status = 200
 			response.Data = map[string]string{
-				"total":  balances.TotalBalance.StringFixed(2),
-				"spend":  balances.SpendingBalance.StringFixed(2),
-				"invest": balances.StashBalance.StringFixed(2),
+				"total":       balances.TotalBalance.StringFixed(2),
+				"spend":       balances.SpendingBalance.StringFixed(2),
+				"invest":      balances.InvestBalance.StringFixed(2),
+				"broker_cash": balances.FiatExposure.StringFixed(2),
 			}
 		}
 
@@ -364,9 +367,10 @@ func (h *MobileHandlers) Sync(c *gin.Context) {
 				case "balances":
 					if balances, err := h.allocationService.GetBalancesLite(ctx, userID); err == nil {
 						payload := map[string]string{
-							"total":  balances.TotalBalance.StringFixed(2),
-							"spend":  balances.SpendingBalance.StringFixed(2),
-							"invest": balances.StashBalance.StringFixed(2),
+							"total":       balances.TotalBalance.StringFixed(2),
+							"spend":       balances.SpendingBalance.StringFixed(2),
+							"invest":      balances.InvestBalance.StringFixed(2),
+							"broker_cash": balances.FiatExposure.StringFixed(2),
 						}
 						mu.Lock()
 						data["balances"] = payload
