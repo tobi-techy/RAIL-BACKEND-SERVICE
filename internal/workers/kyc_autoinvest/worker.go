@@ -160,6 +160,7 @@ func (w *Worker) listCandidates(ctx context.Context, limit int) ([]investCandida
 		WHERE la.account_type = 'stash_balance'
 			AND la.balance > 0
 			AND u.kyc_status = 'approved'
+			AND u.bridge_kyc_status = 'active'
 			AND u.is_active = true
 			AND u.alpaca_account_id IS NOT NULL
 		ORDER BY la.updated_at ASC

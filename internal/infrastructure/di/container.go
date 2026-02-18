@@ -902,13 +902,16 @@ func (c *Container) initializeDomainServices() error {
 
 	// Initialize auto-invest service (OrderPlacer will be set after InvestingService is created)
 	_ = repositories.NewAutoInvestRepository(sqlxDB) // Keep for future use
-	autoInvestConfig := autoinvest.Config{}
+	autoInvestConfig := autoinvest.Config{
+		MinThreshold: decimal.NewFromInt(10),
+	}
 	c.AutoInvestService = autoinvest.NewService(
 		c.LedgerService,
 		nil, // OrderPlacer - will be set after InvestingService initialization
 		autoInvestConfig,
 		c.Logger,
 	)
+	c.AutoInvestService.SetUserRepository(c.UserRepo)
 
 	// Wire auto-invest service to allocation service for automatic triggering
 	c.AllocationService.SetAutoInvestService(c.AutoInvestService)
@@ -1122,6 +1125,7 @@ func (c *Container) initializeDomainServices() error {
 		circleWebhookHandler,
 		alpacaWebhookHandler,
 		c.ZapLog,
+		c.Config.Environment == "development",
 	)
 	if bridgeSecret := strings.TrimSpace(c.Config.Bridge.WebhookSecret); bridgeSecret != "" {
 		c.UnifiedFundingWebhookHandler.SetWebhookSecret("bridge", bridgeSecret)

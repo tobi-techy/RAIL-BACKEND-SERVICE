@@ -5,12 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/strategy"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/shopspring/decimal"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -43,11 +44,17 @@ type StrategyEngine interface {
 	GetStrategy(ctx context.Context, userID uuid.UUID) (*strategy.StrategyResult, error)
 }
 
+// UserRepository defines user eligibility checks for auto-invest.
+type UserRepository interface {
+	GetUserEntityByID(ctx context.Context, id uuid.UUID) (*entities.User, error)
+}
+
 // Service handles automatic investment from stash balance
 type Service struct {
 	ledgerService  LedgerService
 	orderPlacer    OrderPlacer
 	strategyEngine StrategyEngine
+	userRepo       UserRepository
 	config         Config
 	logger         *logger.Logger
 }
@@ -79,6 +86,11 @@ func (s *Service) SetStrategyEngine(engine StrategyEngine) {
 	s.strategyEngine = engine
 }
 
+// SetUserRepository sets the user repository for eligibility checks.
+func (s *Service) SetUserRepository(userRepo UserRepository) {
+	s.userRepo = userRepo
+}
+
 // TriggerRequest contains parameters for triggering auto-investment.
 // This type is aliased in the allocation package as AutoInvestTriggerRequest.
 type TriggerRequest struct {
@@ -103,6 +115,18 @@ func (s *Service) TriggerAutoInvestment(ctx context.Context, req TriggerRequest)
 		return fmt.Errorf("correlation_id is required for idempotency")
 	}
 
+	eligible, reason, err := s.isUserEligibleForAutoInvest(ctx, req.UserID)
+	if err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("failed to validate auto-invest eligibility: %w", err)
+	}
+	if !eligible {
+		s.logger.Info("Skipping auto-invest for ineligible user",
+			"user_id", req.UserID,
+			"reason", reason)
+		return nil
+	}
+
 	// Get stash balance
 	stashBalance, err := s.ledgerService.GetAccountBalance(ctx, req.UserID, entities.AccountTypeStashBalance)
 	if err != nil {
@@ -110,22 +134,30 @@ func (s *Service) TriggerAutoInvestment(ctx context.Context, req TriggerRequest)
 		return fmt.Errorf("failed to get stash balance: %w", err)
 	}
 
-	// Check if balance meets threshold
-	if stashBalance.LessThan(s.config.MinThreshold) {
+	// Keep a threshold amount in stash and only invest the amount above threshold.
+	threshold := s.config.MinThreshold
+	if threshold.IsNegative() {
+		threshold = decimal.Zero
+	}
+
+	if stashBalance.LessThanOrEqual(threshold) {
 		s.logger.Debug("Stash balance below threshold, skipping auto-invest",
 			"user_id", req.UserID,
 			"balance", stashBalance,
-			"threshold", s.config.MinThreshold)
+			"threshold", threshold)
 		return nil
 	}
+
+	investableAmount := stashBalance.Sub(threshold)
 
 	s.logger.Info("Triggering auto-investment",
 		"user_id", req.UserID,
 		"stash_id", req.StashID,
-		"balance", stashBalance)
+		"stash_balance", stashBalance,
+		"investable_amount", investableAmount,
+		"retained_stash", threshold)
 
-	// Execute the investment with full stash balance
-	if err := s.executeAutoInvestment(ctx, req.UserID, req.StashID, stashBalance, req.CorrelationID); err != nil {
+	if err := s.executeAutoInvestment(ctx, req.UserID, req.StashID, investableAmount, req.CorrelationID); err != nil {
 		span.RecordError(err)
 		return fmt.Errorf("failed to execute auto-investment: %w", err)
 	}
@@ -166,6 +198,32 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 
 	// Place orders for each allocation
 	return s.placeStrategyOrders(ctx, userID, stashID, amount, correlationID, strategyResult)
+}
+
+func (s *Service) isUserEligibleForAutoInvest(ctx context.Context, userID uuid.UUID) (bool, string, error) {
+	// If no user repository is wired, preserve existing behavior.
+	if s.userRepo == nil {
+		return true, "", nil
+	}
+
+	user, err := s.userRepo.GetUserEntityByID(ctx, userID)
+	if err != nil {
+		return false, "", err
+	}
+	if user == nil {
+		return false, "user_not_found", nil
+	}
+	if !user.IsActive {
+		return false, "user_inactive", nil
+	}
+	if user.BridgeKYCStatus == nil || strings.ToLower(strings.TrimSpace(*user.BridgeKYCStatus)) != "active" {
+		return false, "bridge_kyc_not_active", nil
+	}
+	if user.AlpacaAccountID == nil || strings.TrimSpace(*user.AlpacaAccountID) == "" {
+		return false, "missing_alpaca_account", nil
+	}
+
+	return true, "", nil
 }
 
 // getStrategyAllocation retrieves the strategy allocation for a user
