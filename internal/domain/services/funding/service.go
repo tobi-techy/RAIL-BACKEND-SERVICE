@@ -534,7 +534,23 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 // CreateVirtualAccount creates a virtual account linked to an Alpaca brokerage account
 // Now uses Bridge API instead of Due
 func (s *Service) CreateVirtualAccount(ctx context.Context, req *entities.CreateVirtualAccountRequest) (*entities.CreateVirtualAccountResponse, error) {
-	s.logger.Info("Creating virtual account", "user_id", req.UserID.String(), "alpaca_account_id", req.AlpacaAccountID)
+	if req == nil {
+		return nil, fmt.Errorf("request is required")
+	}
+	if s.virtualAccountRepo == nil {
+		return nil, fmt.Errorf("virtual account repository not configured")
+	}
+	if s.alpacaAPI == nil {
+		return nil, fmt.Errorf("alpaca api not configured")
+	}
+	// Bridge virtual account service must be configured
+	if s.bridgeVAService == nil {
+		return nil, fmt.Errorf("bridge virtual account service not configured")
+	}
+
+	if s.logger != nil {
+		s.logger.Info("Creating virtual account", "user_id", req.UserID.String(), "alpaca_account_id", req.AlpacaAccountID)
+	}
 
 	// Check if virtual account already exists for this user and Alpaca account
 	exists, err := s.virtualAccountRepo.ExistsByUserAndAlpacaAccount(ctx, req.UserID, req.AlpacaAccountID)
@@ -543,7 +559,9 @@ func (s *Service) CreateVirtualAccount(ctx context.Context, req *entities.Create
 	}
 
 	if exists {
-		s.logger.Info("Virtual account already exists", "user_id", req.UserID.String(), "alpaca_account_id", req.AlpacaAccountID)
+		if s.logger != nil {
+			s.logger.Info("Virtual account already exists", "user_id", req.UserID.String(), "alpaca_account_id", req.AlpacaAccountID)
+		}
 		return nil, fmt.Errorf("virtual account already exists for this Alpaca account")
 	}
 
@@ -555,11 +573,6 @@ func (s *Service) CreateVirtualAccount(ctx context.Context, req *entities.Create
 
 	if alpacaAccount.Status != entities.AlpacaAccountStatusActive {
 		return nil, fmt.Errorf("Alpaca account is not active: %s", alpacaAccount.Status)
-	}
-
-	// Bridge virtual account service must be configured
-	if s.bridgeVAService == nil {
-		return nil, fmt.Errorf("bridge virtual account service not configured")
 	}
 
 	// Get deposit instructions from Bridge (virtual account already created during onboarding)
@@ -586,10 +599,12 @@ func (s *Service) CreateVirtualAccount(ctx context.Context, req *entities.Create
 		return nil, fmt.Errorf("failed to update virtual account: %w", err)
 	}
 
-	s.logger.Info("Virtual account linked successfully",
-		"virtual_account_id", virtualAccount.ID.String(),
-		"bridge_account_id", virtualAccount.BridgeAccountID,
-		"alpaca_account_id", virtualAccount.AlpacaAccountID)
+	if s.logger != nil {
+		s.logger.Info("Virtual account linked successfully",
+			"virtual_account_id", virtualAccount.ID.String(),
+			"bridge_account_id", virtualAccount.BridgeAccountID,
+			"alpaca_account_id", virtualAccount.AlpacaAccountID)
+	}
 
 	return &entities.CreateVirtualAccountResponse{
 		VirtualAccount: virtualAccount,

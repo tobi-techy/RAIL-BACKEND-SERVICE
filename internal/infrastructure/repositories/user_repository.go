@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -408,11 +409,15 @@ func (r *UserRepository) UpdateKYCProvider(ctx context.Context, userID uuid.UUID
 
 // CreateUserFromAuth creates a new user with authentication data
 func (r *UserRepository) CreateUserFromAuth(ctx context.Context, req *entities.RegisterRequest) (*entities.User, error) {
-	// Hash password
-	passwordHash, err := crypto.HashPassword(req.Password)
-	if err != nil {
-		r.logger.Error("Failed to hash password", zap.Error(err))
-		return nil, fmt.Errorf("failed to hash password: %w", err)
+	passwordHash := ""
+	if strings.TrimSpace(req.Password) != "" {
+		// Hash password when provided. Empty password means passwordless account setup.
+		var err error
+		passwordHash, err = crypto.HashPassword(req.Password)
+		if err != nil {
+			r.logger.Error("Failed to hash password", zap.Error(err))
+			return nil, fmt.Errorf("failed to hash password: %w", err)
+		}
 	}
 
 	// Create user entity
@@ -441,7 +446,7 @@ func (r *UserRepository) CreateUserFromAuth(ctx context.Context, req *entities.R
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 		)`
 
-	_, err = r.db.ExecContext(ctx, query,
+	_, err := r.db.ExecContext(ctx, query,
 		user.ID,
 		user.Email,
 		user.Phone,

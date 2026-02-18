@@ -8,10 +8,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/shopspring/decimal"
 )
 
 // Service handles ledger operations using double-entry bookkeeping
@@ -161,6 +161,10 @@ func (s *Service) updateAccountBalanceInTx(ctx context.Context, accountID uuid.U
 
 // GetAccountBalance retrieves the current balance for an account
 func (s *Service) GetAccountBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (decimal.Decimal, error) {
+	if s == nil || s.ledgerRepo == nil {
+		return decimal.Zero, fmt.Errorf("ledger repository not configured")
+	}
+
 	account, err := s.ledgerRepo.GetAccountByUserAndType(ctx, userID, accountType)
 	if err != nil {
 		return decimal.Zero, fmt.Errorf("get account: %w", err)
@@ -475,7 +479,7 @@ func (s *Service) GetTotalUserFiatExposure(ctx context.Context) (decimal.Decimal
 		FROM ledger_accounts
 		WHERE account_type = $1 AND user_id IS NOT NULL
 	`
-	
+
 	var total decimal.Decimal
 	err := s.db.QueryRowContext(ctx, query, entities.AccountTypeFiatExposure).Scan(&total)
 	if err != nil {

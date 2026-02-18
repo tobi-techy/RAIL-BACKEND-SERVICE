@@ -545,6 +545,9 @@ func (s *Service) GetBalances(ctx context.Context, userID uuid.UUID) (*entities.
 		balances.CalculateTotals()
 		return balances, nil
 	}
+	if s.ledgerService == nil {
+		return nil, fmt.Errorf("ledger service not configured")
+	}
 
 	var (
 		spendingBalance decimal.Decimal
@@ -651,6 +654,9 @@ func (s *Service) GetBalancesLite(ctx context.Context, userID uuid.UUID) (*entit
 		balances.CalculateTotals()
 		return balances, nil
 	}
+	if s.ledgerService == nil {
+		return nil, fmt.Errorf("ledger service not configured")
+	}
 
 	var (
 		spendingBalance decimal.Decimal
@@ -699,6 +705,10 @@ func (s *Service) GetBalancesLite(ctx context.Context, userID uuid.UUID) (*entit
 }
 
 func (s *Service) getOptionalAccountBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (decimal.Decimal, error) {
+	if s.ledgerService == nil {
+		return decimal.Zero, nil
+	}
+
 	balance, err := s.ledgerService.GetAccountBalance(ctx, userID, accountType)
 	if err == nil {
 		return balance, nil

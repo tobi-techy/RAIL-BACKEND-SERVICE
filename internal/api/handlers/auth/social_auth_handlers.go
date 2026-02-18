@@ -3,6 +3,7 @@ package auth
 import (
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -109,14 +110,35 @@ func (h *SocialAuthHandlers) SocialLogin(c *gin.Context) {
 			userID = existingUser.ID
 			if err := h.socialAuthService.LinkAccount(ctx, userID, socialInfo); err != nil {
 				h.logger.Error("Failed to link social account", zap.Error(err))
+				c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+					Code:    "LINK_FAILED",
+					Message: "Failed to link social account",
+				})
+				return
 			}
 			user, _ = h.userRepo.GetUserEntityByID(ctx, userID)
 		} else {
 			// Create new user
 			isNewUser = true
+
+			if strings.TrimSpace(socialInfo.Email) == "" {
+				h.logger.Warn("Social provider did not return email for new account",
+					zap.String("provider", string(req.Provider)))
+				c.JSON(http.StatusBadRequest, entities.ErrorResponse{
+					Code:    "EMAIL_REQUIRED",
+					Message: "Email from social provider is required to create account",
+				})
+				return
+			}
+
+			password := uuid.New().String() // Keep existing behavior for non-Apple providers
+			if req.Provider == entities.SocialProviderApple {
+				password = "" // Apple signup: password is optional at account creation
+			}
+
 			newUser, err := h.userRepo.CreateUserFromAuth(ctx, &entities.RegisterRequest{
 				Email:    socialInfo.Email,
-				Password: uuid.New().String(), // Random password for social users
+				Password: password,
 			})
 			if err != nil {
 				h.logger.Error("Failed to create user", zap.Error(err))
@@ -127,14 +149,23 @@ func (h *SocialAuthHandlers) SocialLogin(c *gin.Context) {
 			// Mark email as verified (social providers verify email)
 			newUser.EmailVerified = true
 			newUser.OnboardingStatus = entities.OnboardingStatusWalletsPending
-			h.userRepo.Update(ctx, newUser.ToUserProfile())
+			if err := h.userRepo.Update(ctx, newUser.ToUserProfile()); err != nil {
+				h.logger.Error("Failed to update social user profile after creation", zap.Error(err), zap.String("user_id", newUser.ID.String()))
+				c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "USER_UPDATE_FAILED", Message: "Failed to finalize account setup"})
+				return
+			}
 
 			userID = newUser.ID
 			user = newUser
 
 			// Link social account
 			if err := h.socialAuthService.LinkAccount(ctx, userID, socialInfo); err != nil {
-				h.logger.Warn("Failed to link social account", zap.Error(err))
+				h.logger.Error("Failed to link social account", zap.Error(err), zap.String("user_id", userID.String()))
+				c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+					Code:    "LINK_FAILED",
+					Message: "Failed to link social account",
+				})
+				return
 			}
 		}
 	} else {
