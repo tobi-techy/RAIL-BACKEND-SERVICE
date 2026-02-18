@@ -280,21 +280,14 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					container.ZapLog,
 				)
 				security.GET("/devices", securityEnhancedHandlers.GetDevices)
-				security.POST("/devices/:id/trust", securityEnhancedHandlers.TrustDevice)
-				security.DELETE("/devices/:id", securityEnhancedHandlers.RevokeDevice)
 
 				// IP whitelist management
 				security.GET("/ip-whitelist", securityEnhancedHandlers.GetIPWhitelist)
-				security.POST("/ip-whitelist", securityEnhancedHandlers.AddIPToWhitelist)
 				security.POST("/ip-whitelist/:id/verify", securityEnhancedHandlers.VerifyWhitelistedIP)
-				security.DELETE("/ip-whitelist/:id", securityEnhancedHandlers.RemoveIPFromWhitelist)
 
 				// Security events
 				security.GET("/events", securityEnhancedHandlers.GetSecurityEvents)
 				security.GET("/current-ip", securityEnhancedHandlers.GetCurrentIP)
-
-				// Withdrawal confirmation
-				security.POST("/withdrawals/confirm", securityEnhancedHandlers.ConfirmWithdrawal)
 
 				// MFA management
 				mfaHandlers := handlers.NewMFAHandlers(
@@ -308,6 +301,17 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				security.POST("/mfa/send-code", mfaHandlers.SendMFACode)
 				security.POST("/mfa/verify", mfaHandlers.VerifyMFACode)
 				security.GET("/geo-info", mfaHandlers.GetGeoInfo)
+
+				// Sensitive operations require a short-lived passcode session token.
+				securitySensitive := security.Group("/")
+				securitySensitive.Use(middleware.RequirePasscodeSession(container.GetPasscodeService(), true, container.ZapLog))
+				{
+					securitySensitive.POST("/devices/:id/trust", securityEnhancedHandlers.TrustDevice)
+					securitySensitive.DELETE("/devices/:id", securityEnhancedHandlers.RevokeDevice)
+					securitySensitive.POST("/ip-whitelist", securityEnhancedHandlers.AddIPToWhitelist)
+					securitySensitive.DELETE("/ip-whitelist/:id", securityEnhancedHandlers.RemoveIPFromWhitelist)
+					securitySensitive.POST("/withdrawals/confirm", securityEnhancedHandlers.ConfirmWithdrawal)
+				}
 			}
 
 			// Mobile-optimized API endpoints for better app performance

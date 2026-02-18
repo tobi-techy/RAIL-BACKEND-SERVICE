@@ -867,9 +867,10 @@ func (h *AuthHandlers) Login(c *gin.Context) {
 }
 
 type PasscodeLoginRequest struct {
-	Email    *string `json:"email"`
-	Phone    *string `json:"phone"`
-	Passcode string  `json:"passcode" binding:"required"`
+	Email        *string `json:"email"`
+	Phone        *string `json:"phone"`
+	Passcode     string  `json:"passcode" binding:"required"`
+	RefreshToken string  `json:"refresh_token" binding:"required"`
 }
 
 // PasscodeLogin handles passcode-based re-authentication without requiring an active JWT.
@@ -881,6 +882,13 @@ func (h *AuthHandlers) PasscodeLogin(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{
 			Code:    "PASSCODE_AUTH_UNAVAILABLE",
 			Message: "Passcode authentication is currently unavailable",
+		})
+		return
+	}
+	if h.sessionService == nil {
+		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{
+			Code:    "SESSION_SERVICE_UNAVAILABLE",
+			Message: "Session service is currently unavailable",
 		})
 		return
 	}
@@ -904,10 +912,10 @@ func (h *AuthHandlers) PasscodeLogin(c *gin.Context) {
 		identifier = strings.TrimSpace(*req.Phone)
 		identifierType = "phone"
 	}
-	if identifier == "" || strings.TrimSpace(req.Passcode) == "" {
+	if identifier == "" || strings.TrimSpace(req.Passcode) == "" || strings.TrimSpace(req.RefreshToken) == "" {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 			Code:    "VALIDATION_ERROR",
-			Message: "Email or phone and passcode are required",
+			Message: "Email or phone, passcode, and refresh token are required",
 		})
 		return
 	}
@@ -935,6 +943,25 @@ func (h *AuthHandlers) PasscodeLogin(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
 			Code:    "ACCOUNT_INACTIVE",
 			Message: "Account is inactive. Please contact support.",
+		})
+		return
+	}
+
+	refreshToken := strings.TrimSpace(req.RefreshToken)
+	refreshUserID, err := auth.ValidateRefreshToken(refreshToken, h.cfg.JWT.Secret)
+	if err != nil {
+		h.recordLoginFailure(c, identifier)
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
+			Code:    "INVALID_REFRESH_TOKEN",
+			Message: "Invalid refresh token",
+		})
+		return
+	}
+	if refreshUserID != userProfile.ID {
+		h.recordLoginFailure(c, identifier)
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
+			Code:    "INVALID_CREDENTIALS",
+			Message: "Invalid credentials",
 		})
 		return
 	}
@@ -993,12 +1020,15 @@ func (h *AuthHandlers) PasscodeLogin(c *gin.Context) {
 		return
 	}
 
-	if h.sessionService != nil {
-		ipAddress, userAgent, fingerprint, location := extractSessionDetails(c)
-		sessionExpiresAt := h.sessionExpiryFromRefreshTTL()
-		if _, err := h.sessionService.CreateSession(ctx, userProfile.ID, tokens.AccessToken, tokens.RefreshToken, ipAddress, userAgent, fingerprint, location, sessionExpiresAt); err != nil {
-			h.logger.Warn("Failed to create session after passcode login", zap.Error(err), zap.String("user_id", userProfile.ID.String()))
-		}
+	sessionExpiresAt := h.sessionExpiryFromRefreshTTL()
+	if _, err := h.sessionService.RotateSessionTokensByRefreshToken(ctx, userProfile.ID, refreshToken, tokens.AccessToken, tokens.RefreshToken, sessionExpiresAt); err != nil {
+		h.recordLoginFailure(c, identifier)
+		h.logger.Warn("Failed to rotate session tokens after passcode login", zap.Error(err), zap.String("user_id", userProfile.ID.String()))
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
+			Code:    "INVALID_REFRESH_TOKEN",
+			Message: "Refresh token is invalid or expired",
+		})
+		return
 	}
 
 	h.recordLoginSuccess(c, identifier)
