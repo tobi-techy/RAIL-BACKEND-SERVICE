@@ -1,9 +1,7 @@
 package webhooks
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -16,11 +14,11 @@ import (
 // UnifiedFundingWebhookHandler routes funding webhooks from multiple sources
 // POST /webhooks/funding
 type UnifiedFundingWebhookHandler struct {
-	bridgeHandler  *BridgeWebhookHandler
-	circleHandler  *CircleWebhookHandler
-	alpacaHandler  *AlpacaWebhookHandlers
-	logger         *zap.Logger
-	webhookSecrets map[string]string // source -> secret
+	bridgeHandler             *BridgeWebhookHandler
+	circleHandler             *CircleWebhookHandler
+	alpacaHandler             *AlpacaWebhookHandlers
+	logger                    *zap.Logger
+	allowInsecureVerification bool
 }
 
 // NewUnifiedFundingWebhookHandler creates a unified webhook handler
@@ -29,19 +27,29 @@ func NewUnifiedFundingWebhookHandler(
 	circleHandler *CircleWebhookHandler,
 	alpacaHandler *AlpacaWebhookHandlers,
 	logger *zap.Logger,
+	allowInsecureVerification bool,
 ) *UnifiedFundingWebhookHandler {
 	return &UnifiedFundingWebhookHandler{
-		bridgeHandler:  bridgeHandler,
-		circleHandler:  circleHandler,
-		alpacaHandler:  alpacaHandler,
-		logger:         logger,
-		webhookSecrets: make(map[string]string),
+		bridgeHandler:             bridgeHandler,
+		circleHandler:             circleHandler,
+		alpacaHandler:             alpacaHandler,
+		logger:                    logger,
+		allowInsecureVerification: allowInsecureVerification,
 	}
 }
 
 // SetWebhookSecret sets the webhook secret for a source
 func (h *UnifiedFundingWebhookHandler) SetWebhookSecret(source, secret string) {
-	h.webhookSecrets[source] = secret
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case string(WebhookSourceBridge):
+		if h.bridgeHandler != nil {
+			h.bridgeHandler.webhookSecret = secret
+		}
+	case string(WebhookSourceAlpaca):
+		if h.alpacaHandler != nil {
+			h.alpacaHandler.webhookSecret = secret
+		}
+	}
 }
 
 // WebhookSource identifies the source of a webhook
@@ -118,7 +126,7 @@ func (h *UnifiedFundingWebhookHandler) detectSource(c *gin.Context, body []byte)
 	if c.GetHeader("X-Circle-Signature") != "" {
 		return WebhookSourceCircle
 	}
-	if c.GetHeader("X-Alpaca-Signature") != "" {
+	if c.GetHeader("X-Alpaca-Signature") != "" || c.GetHeader("Alpaca-Signature") != "" {
 		return WebhookSourceAlpaca
 	}
 
@@ -144,35 +152,46 @@ func (h *UnifiedFundingWebhookHandler) detectSource(c *gin.Context, body []byte)
 
 // verifySignature verifies the webhook signature based on source
 func (h *UnifiedFundingWebhookHandler) verifySignature(c *gin.Context, source WebhookSource, body []byte) bool {
-	secret, ok := h.webhookSecrets[string(source)]
-	if !ok || secret == "" {
-		// No secret configured - allow in development
-		return true
-	}
-
-	var signature string
 	switch source {
 	case WebhookSourceBridge:
-		signature = c.GetHeader("X-Bridge-Signature")
+		if h.bridgeHandler == nil {
+			return false
+		}
+		signature := c.GetHeader("X-Bridge-Signature")
 		if signature == "" {
 			signature = c.GetHeader("Bridge-Signature")
 		}
+		return h.bridgeHandler.verifySignature(signature, body)
 	case WebhookSourceCircle:
-		signature = c.GetHeader("X-Circle-Signature")
+		if h.circleHandler == nil {
+			return false
+		}
+		keyID := c.GetHeader("X-Circle-Key-Id")
+		signature := c.GetHeader("X-Circle-Signature")
+		if keyID == "" || signature == "" {
+			return false
+		}
+		if strings.TrimSpace(h.circleHandler.circleAPIKey) == "" {
+			if h.allowInsecureVerification {
+				h.logger.Warn("Circle API key not configured - allowing unified webhook verification bypass in development mode")
+				return true
+			}
+			h.logger.Error("Circle API key not configured - rejecting unified webhook for security")
+			return false
+		}
+		return h.circleHandler.verifySignature(c.Request.Context(), keyID, signature, body)
 	case WebhookSourceAlpaca:
-		signature = c.GetHeader("X-Alpaca-Signature")
-	}
-
-	if signature == "" {
+		if h.alpacaHandler == nil {
+			return false
+		}
+		signature := c.GetHeader("X-Alpaca-Signature")
+		if signature == "" {
+			signature = c.GetHeader("Alpaca-Signature")
+		}
+		return h.alpacaHandler.verifySignature(signature, body)
+	default:
 		return false
 	}
-
-	// Compute expected signature
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write(body)
-	expected := hex.EncodeToString(mac.Sum(nil))
-
-	return hmac.Equal([]byte(signature), []byte(expected))
 }
 
 // routeToBridge routes to Bridge webhook handler
@@ -321,6 +340,8 @@ func (h *UnifiedFundingWebhookHandler) routeToAlpaca(c *gin.Context, body []byte
 	h.logger.Info("Processing Alpaca webhook", zap.String("event", eventType))
 
 	// Route based on event type
+	// Restore request body because downstream handlers expect to read it.
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
 	switch {
 	case strings.HasPrefix(eventType, "trade"):
 		h.alpacaHandler.HandleTradeUpdate(c)
