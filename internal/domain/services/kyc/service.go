@@ -14,17 +14,25 @@ import (
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
 )
 
 var (
-	ErrInvalidSSN         = errors.New("invalid SSN format")
-	ErrInvalidImage       = errors.New("invalid image format")
-	ErrImageTooLarge      = errors.New("image exceeds 10MB limit")
-	ErrKYCAlreadyApproved = errors.New("KYC already approved")
-	ErrNoBridgeCustomer   = errors.New("no Bridge customer ID found")
+	ErrInvalidSSN           = errors.New("invalid SSN format")
+	ErrInvalidITIN          = errors.New("invalid ITIN format")
+	ErrUnsupportedTaxIDType = errors.New("unsupported tax_id_type for issuing_country")
+	ErrInvalidImage         = errors.New("invalid image format")
+	ErrImageTooLarge        = errors.New("image exceeds 10MB limit")
+	ErrKYCAlreadyApproved   = errors.New("KYC already approved")
+	ErrNoBridgeCustomer     = errors.New("no Bridge customer ID found")
+	ErrSumsubNotConfigured  = errors.New("sumsub KYC provider is not configured")
 )
 
 const maxImageSize = 10 * 1024 * 1024 // 10MB
+
+const (
+	defaultKYCSyncMaxAttempts = 5
+)
 
 type BridgeAdapter interface {
 	UpdateCustomer(ctx context.Context, customerID string, req *bridge.UpdateCustomerRequest) (*bridge.Customer, error)
@@ -35,11 +43,15 @@ type AlpacaAdapter interface {
 }
 
 type Service struct {
-	userRepo          UserRepository
-	kycSubmissionRepo KYCSubmissionRepository
-	bridgeAdapter     BridgeAdapter
-	alpacaAdapter     AlpacaAdapter
-	logger            *zap.Logger
+	userRepo               UserRepository
+	kycSubmissionRepo      KYCSubmissionRepository
+	bridgeAdapter          BridgeAdapter
+	alpacaAdapter          AlpacaAdapter
+	sumsubAdapter          SumsubAdapter
+	sumsubWebhookEventRepo SumsubWebhookEventRepository
+	kycSyncJobRepo         KYCSyncJobRepository
+	sumsubLevelName        string
+	logger                 *zap.Logger
 }
 
 type UserRepository interface {
@@ -50,6 +62,23 @@ type UserRepository interface {
 
 type KYCSubmissionRepository interface {
 	Create(ctx context.Context, submission *entities.KYCSubmission) error
+	GetByProviderRef(ctx context.Context, providerRef string) (*entities.KYCSubmission, error)
+	Update(ctx context.Context, submission *entities.KYCSubmission) error
+}
+
+type SumsubWebhookEventRepository interface {
+	CreateIfNotExists(ctx context.Context, event *entities.SumsubWebhookEvent) (bool, error)
+}
+
+type KYCSyncJobRepository interface {
+	Enqueue(ctx context.Context, job *entities.KYCSyncJob) (bool, error)
+}
+
+type SumsubAdapter interface {
+	CreateApplicant(ctx context.Context, req *sumsub.CreateApplicantRequest, levelName string) (*sumsub.ApplicantResponse, error)
+	CreateAccessToken(ctx context.Context, applicantID, externalUserID, levelName string, ttlSeconds int) (*sumsub.AccessTokenResponse, error)
+	GetApplicantData(ctx context.Context, applicantID string) (*sumsub.ApplicantDataResponse, error)
+	VerifyWebhookSignature(body []byte, digestHeader, digestAlgHeader string) error
 }
 
 func NewService(
@@ -57,14 +86,22 @@ func NewService(
 	kycSubmissionRepo KYCSubmissionRepository,
 	bridgeAdapter BridgeAdapter,
 	alpacaAdapter AlpacaAdapter,
+	sumsubAdapter SumsubAdapter,
+	sumsubWebhookEventRepo SumsubWebhookEventRepository,
+	kycSyncJobRepo KYCSyncJobRepository,
+	sumsubLevelName string,
 	logger *zap.Logger,
 ) *Service {
 	return &Service{
-		userRepo:          userRepo,
-		kycSubmissionRepo: kycSubmissionRepo,
-		bridgeAdapter:     bridgeAdapter,
-		alpacaAdapter:     alpacaAdapter,
-		logger:            logger,
+		userRepo:               userRepo,
+		kycSubmissionRepo:      kycSubmissionRepo,
+		bridgeAdapter:          bridgeAdapter,
+		alpacaAdapter:          alpacaAdapter,
+		sumsubAdapter:          sumsubAdapter,
+		sumsubWebhookEventRepo: sumsubWebhookEventRepo,
+		kycSyncJobRepo:         kycSyncJobRepo,
+		sumsubLevelName:        strings.TrimSpace(sumsubLevelName),
+		logger:                 logger,
 	}
 }
 
@@ -197,6 +234,390 @@ func (s *Service) SubmitKYC(ctx context.Context, req *entities.KYCSubmitRequest)
 	return response, nil
 }
 
+// StartSumsubSession creates a Sumsub applicant and WebSDK access token.
+func (s *Service) StartSumsubSession(ctx context.Context, userID uuid.UUID, req *entities.KYCSumsubSessionRequest) (*entities.KYCSumsubSessionResponse, error) {
+	if s.sumsubAdapter == nil {
+		return nil, ErrSumsubNotConfigured
+	}
+	if err := s.validateSumsubSessionRequest(req); err != nil {
+		return nil, err
+	}
+
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+	profile, err := s.userRepo.GetProfileByUserID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user profile: %w", err)
+	}
+	if profile.BridgeCustomerID == nil || *profile.BridgeCustomerID == "" {
+		return nil, ErrNoBridgeCustomer
+	}
+	if profile.KYCStatus == "approved" && profile.AlpacaAccountID != nil {
+		return nil, ErrKYCAlreadyApproved
+	}
+
+	levelName := s.sumsubLevelName
+	if levelName == "" {
+		levelName = "basic-kyc"
+	}
+
+	applyReq := &sumsub.CreateApplicantRequest{
+		ExternalUserID: userID.String(),
+		Email:          profile.Email,
+		Phone:          stringValue(profile.Phone),
+		FixedInfo: &sumsub.ApplicantFixedInfo{
+			FirstName: stringValue(profile.FirstName),
+			LastName:  stringValue(profile.LastName),
+			DOB:       formatDate(profile.DateOfBirth),
+			Country:   strings.ToUpper(req.IssuingCountry),
+		},
+	}
+
+	applicant, createApplicantErr := s.sumsubAdapter.CreateApplicant(ctx, applyReq, levelName)
+	applicantID := ""
+	inspectionID := ""
+	if createApplicantErr != nil {
+		if user.KYCProviderRef != nil && strings.TrimSpace(*user.KYCProviderRef) != "" {
+			applicantID = strings.TrimSpace(*user.KYCProviderRef)
+			s.logger.Warn("Falling back to existing Sumsub applicant for session token",
+				zap.Error(createApplicantErr),
+				zap.String("user_id", userID.String()),
+				zap.String("applicant_id", applicantID))
+		} else {
+			return nil, fmt.Errorf("failed to create sumsub applicant: %w", createApplicantErr)
+		}
+	} else {
+		applicantID = applicant.ID
+		inspectionID = applicant.InspectionID
+	}
+
+	accessToken, err := s.sumsubAdapter.CreateAccessToken(ctx, applicantID, userID.String(), levelName, 3600)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create sumsub access token: %w", err)
+	}
+
+	now := time.Now()
+	expiresAt := now.Add(30 * 24 * time.Hour)
+	verificationData := map[string]any{
+		"sumsub_level_name":    levelName,
+		"sumsub_inspection_id": inspectionID,
+		"tax_id":               req.TaxID,
+		"tax_id_type":          req.TaxIDType,
+		"issuing_country":      req.IssuingCountry,
+		"disclosures": map[string]any{
+			"is_control_person":               req.Disclosures.IsControlPerson,
+			"is_affiliated_exchange_or_finra": req.Disclosures.IsAffiliatedExchangeOrFINRA,
+			"is_politically_exposed":          req.Disclosures.IsPoliticallyExposed,
+			"immediate_family_exposed":        req.Disclosures.ImmediateFamilyExposed,
+		},
+	}
+
+	existingSubmission, existingErr := s.kycSubmissionRepo.GetByProviderRef(ctx, applicantID)
+	if existingErr != nil && !isSubmissionNotFoundErr(existingErr) {
+		return nil, fmt.Errorf("failed to load existing sumsub submission: %w", existingErr)
+	}
+	if existingErr != nil {
+		submission := &entities.KYCSubmission{
+			ID:               uuid.New(),
+			UserID:           userID,
+			Provider:         "sumsub",
+			ProviderRef:      applicantID,
+			SubmissionType:   "sumsub_websdk",
+			Status:           entities.KYCStatusProcessing,
+			VerificationData: verificationData,
+			SubmittedAt:      now,
+			ExpiresAt:        &expiresAt,
+			CreatedAt:        now,
+			UpdatedAt:        now,
+		}
+		if err := s.kycSubmissionRepo.Create(ctx, submission); err != nil {
+			return nil, fmt.Errorf("failed to persist sumsub submission: %w", err)
+		}
+	} else {
+		existingSubmission.Status = entities.KYCStatusProcessing
+		existingSubmission.VerificationData = verificationData
+		existingSubmission.SubmittedAt = now
+		existingSubmission.ExpiresAt = &expiresAt
+		existingSubmission.UpdatedAt = now
+		if err := s.kycSubmissionRepo.Update(ctx, existingSubmission); err != nil {
+			return nil, fmt.Errorf("failed to update existing sumsub submission: %w", err)
+		}
+	}
+
+	user.KYCStatus = string(entities.KYCStatusPending)
+	user.KYCSubmittedAt = &now
+	user.KYCProviderRef = &applicantID
+	if err := s.userRepo.Update(ctx, user); err != nil {
+		s.logger.Warn("Failed to update user after Sumsub session creation",
+			zap.Error(err),
+			zap.String("user_id", userID.String()))
+	}
+
+	return &entities.KYCSumsubSessionResponse{
+		Status:      "pending",
+		ApplicantID: applicantID,
+		Token:       accessToken.Token,
+		LevelName:   levelName,
+	}, nil
+}
+
+// EnqueueSumsubWebhook persists webhook receipt and queues async sync processing.
+func (s *Service) EnqueueSumsubWebhook(ctx context.Context, payload *entities.SumsubWebhookPayload, rawPayload []byte) (bool, error) {
+	if payload == nil {
+		return false, fmt.Errorf("missing sumsub payload")
+	}
+	if strings.TrimSpace(payload.ApplicantID) == "" {
+		return false, fmt.Errorf("missing sumsub applicantId")
+	}
+	if s.kycSyncJobRepo == nil {
+		return false, fmt.Errorf("kyc sync job repository is not configured")
+	}
+
+	dedupeKey := sumsubWebhookDedupeKey(payload)
+	now := time.Now()
+
+	job := &entities.KYCSyncJob{
+		ID:            uuid.New(),
+		DedupeKey:     dedupeKey,
+		ApplicantID:   strings.TrimSpace(payload.ApplicantID),
+		CorrelationID: strings.TrimSpace(payload.CorrelationID),
+		EventType:     strings.TrimSpace(payload.Type),
+		Payload:       append([]byte(nil), rawPayload...),
+		Status:        entities.KYCSyncJobStatusPending,
+		AttemptCount:  0,
+		MaxAttempts:   defaultKYCSyncMaxAttempts,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := job.Validate(); err != nil {
+		return false, err
+	}
+
+	queued, err := s.kycSyncJobRepo.Enqueue(ctx, job)
+	if err != nil {
+		return false, err
+	}
+	if !queued {
+		return false, nil
+	}
+
+	if s.sumsubWebhookEventRepo != nil {
+		event := &entities.SumsubWebhookEvent{
+			ID:            uuid.New(),
+			DedupeKey:     dedupeKey,
+			ApplicantID:   strings.TrimSpace(payload.ApplicantID),
+			CorrelationID: strings.TrimSpace(payload.CorrelationID),
+			EventType:     strings.TrimSpace(payload.Type),
+			Payload:       append([]byte(nil), rawPayload...),
+			ReceivedAt:    now,
+			CreatedAt:     now,
+		}
+		if _, eventErr := s.sumsubWebhookEventRepo.CreateIfNotExists(ctx, event); eventErr != nil {
+			s.logger.Warn("Failed to persist Sumsub webhook event record",
+				zap.Error(eventErr),
+				zap.String("dedupe_key", dedupeKey),
+				zap.String("applicant_id", payload.ApplicantID))
+		}
+	}
+
+	return true, nil
+}
+
+// ProcessSumsubWebhook applies Sumsub verification outcomes and syncs providers.
+func (s *Service) ProcessSumsubWebhook(ctx context.Context, payload *entities.SumsubWebhookPayload) error {
+	if payload == nil {
+		return fmt.Errorf("missing sumsub payload")
+	}
+	if strings.TrimSpace(payload.ApplicantID) == "" {
+		return fmt.Errorf("missing sumsub applicantId")
+	}
+
+	submission, err := s.kycSubmissionRepo.GetByProviderRef(ctx, payload.ApplicantID)
+	if err != nil {
+		return fmt.Errorf("failed to load KYC submission for applicant %s: %w", payload.ApplicantID, err)
+	}
+
+	switch strings.ToLower(strings.TrimSpace(payload.Type)) {
+	case "applicantreviewed":
+		answer := strings.ToUpper(strings.TrimSpace(payload.ReviewResult.ReviewAnswer))
+		switch answer {
+		case "GREEN":
+			return s.processSumsubApproved(ctx, submission, payload)
+		case "RED":
+			return s.processSumsubRejected(ctx, submission, payload)
+		default:
+			return s.markSubmissionProcessing(ctx, submission, payload)
+		}
+	default:
+		return s.markSubmissionProcessing(ctx, submission, payload)
+	}
+}
+
+// VerifySumsubWebhookSignature validates Sumsub webhook digest headers.
+func (s *Service) VerifySumsubWebhookSignature(body []byte, digestHeader, digestAlgHeader string) error {
+	if s.sumsubAdapter == nil {
+		return ErrSumsubNotConfigured
+	}
+	return s.sumsubAdapter.VerifyWebhookSignature(body, digestHeader, digestAlgHeader)
+}
+
+func (s *Service) processSumsubApproved(ctx context.Context, submission *entities.KYCSubmission, payload *entities.SumsubWebhookPayload) error {
+	if submission.Status == entities.KYCStatusApproved {
+		return nil
+	}
+
+	if err := s.hydrateSubmissionFromSumsubApplicant(ctx, submission); err != nil {
+		s.logger.Warn("Failed to hydrate KYC submission from Sumsub applicant data",
+			zap.Error(err),
+			zap.String("submission_id", submission.ID.String()),
+			zap.String("applicant_id", submission.ProviderRef))
+	}
+
+	user, err := s.userRepo.GetByID(ctx, submission.UserID)
+	if err != nil {
+		return fmt.Errorf("failed to get user: %w", err)
+	}
+	profile, err := s.userRepo.GetProfileByUserID(ctx, submission.UserID)
+	if err != nil {
+		return fmt.Errorf("failed to get user profile: %w", err)
+	}
+
+	request := sumsubRequestFromVerificationData(submission.VerificationData)
+	request.UserID = submission.UserID
+	request.IPAddress = "sumsub"
+
+	bridgeResult := entities.KYCProviderResult{Success: false, Status: "skipped", Error: "Bridge customer not found"}
+	if profile.BridgeCustomerID != nil && *profile.BridgeCustomerID != "" {
+		bridgeResult = s.submitToBridgeFromSumsub(ctx, *profile.BridgeCustomerID, request)
+	}
+	alpacaResult := s.submitToAlpaca(ctx, profile, request)
+
+	now := time.Now()
+	if bridgeResult.Success {
+		bridgeStatus := "active"
+		user.BridgeKYCStatus = &bridgeStatus
+	}
+	if alpacaResult.Success {
+		user.KYCStatus = string(entities.KYCStatusApproved)
+		user.KYCApprovedAt = &now
+		user.KYCRejectionReason = nil
+		parts := strings.Split(alpacaResult.Status, ":")
+		if len(parts) > 0 && strings.TrimSpace(parts[0]) != "" {
+			user.AlpacaAccountID = &parts[0]
+		}
+	} else {
+		user.KYCStatus = string(entities.KYCStatusProcessing)
+	}
+	if user.KYCSubmittedAt == nil {
+		user.KYCSubmittedAt = &now
+	}
+	if err := s.userRepo.Update(ctx, user); err != nil {
+		return fmt.Errorf("failed to update user after sumsub approval: %w", err)
+	}
+
+	submission.UpdatedAt = now
+	if submission.VerificationData == nil {
+		submission.VerificationData = map[string]any{}
+	}
+	submission.VerificationData["sumsub_webhook_type"] = payload.Type
+	submission.VerificationData["sumsub_review_status"] = payload.ReviewStatus
+	submission.VerificationData["sumsub_review_answer"] = payload.ReviewResult.ReviewAnswer
+	submission.VerificationData["bridge_sync"] = map[string]any{
+		"success": bridgeResult.Success,
+		"status":  bridgeResult.Status,
+		"error":   bridgeResult.Error,
+	}
+	submission.VerificationData["alpaca_sync"] = map[string]any{
+		"success": alpacaResult.Success,
+		"status":  alpacaResult.Status,
+		"error":   alpacaResult.Error,
+	}
+
+	if bridgeResult.Success && alpacaResult.Success {
+		submission.MarkReviewed(entities.KYCStatusApproved, nil)
+	} else {
+		submission.Status = entities.KYCStatusProcessing
+	}
+
+	if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {
+		return fmt.Errorf("failed to update sumsub submission: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Service) processSumsubRejected(ctx context.Context, submission *entities.KYCSubmission, payload *entities.SumsubWebhookPayload) error {
+	rejectionReasons := extractRejectReasons(payload.ReviewResult.RejectLabels)
+	user, err := s.userRepo.GetByID(ctx, submission.UserID)
+	if err != nil {
+		return fmt.Errorf("failed to get user: %w", err)
+	}
+
+	now := time.Now()
+	user.KYCStatus = string(entities.KYCStatusRejected)
+	user.KYCApprovedAt = nil
+	user.KYCSubmittedAt = &now
+	if len(rejectionReasons) > 0 {
+		reason := strings.Join(rejectionReasons, "; ")
+		user.KYCRejectionReason = &reason
+	}
+	if err := s.userRepo.Update(ctx, user); err != nil {
+		return fmt.Errorf("failed to update user after sumsub rejection: %w", err)
+	}
+
+	submission.MarkReviewed(entities.KYCStatusRejected, rejectionReasons)
+	if submission.VerificationData == nil {
+		submission.VerificationData = map[string]any{}
+	}
+	submission.VerificationData["sumsub_webhook_type"] = payload.Type
+	submission.VerificationData["sumsub_review_status"] = payload.ReviewStatus
+	submission.VerificationData["sumsub_review_answer"] = payload.ReviewResult.ReviewAnswer
+	if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {
+		return fmt.Errorf("failed to update rejected sumsub submission: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Service) markSubmissionProcessing(ctx context.Context, submission *entities.KYCSubmission, payload *entities.SumsubWebhookPayload) error {
+	submission.Status = entities.KYCStatusProcessing
+	submission.UpdatedAt = time.Now()
+	if submission.VerificationData == nil {
+		submission.VerificationData = map[string]any{}
+	}
+	submission.VerificationData["sumsub_webhook_type"] = payload.Type
+	submission.VerificationData["sumsub_review_status"] = payload.ReviewStatus
+	if payload.ReviewResult.ReviewAnswer != "" {
+		submission.VerificationData["sumsub_review_answer"] = payload.ReviewResult.ReviewAnswer
+	}
+	return s.kycSubmissionRepo.Update(ctx, submission)
+}
+
+func (s *Service) hydrateSubmissionFromSumsubApplicant(ctx context.Context, submission *entities.KYCSubmission) error {
+	if s.sumsubAdapter == nil || submission == nil {
+		return nil
+	}
+
+	applicantID := strings.TrimSpace(submission.ProviderRef)
+	if applicantID == "" {
+		return nil
+	}
+
+	applicant, err := s.sumsubAdapter.GetApplicantData(ctx, applicantID)
+	if err != nil {
+		return err
+	}
+
+	if submission.VerificationData == nil {
+		submission.VerificationData = map[string]any{}
+	}
+	mergeApplicantDataIntoVerification(submission.VerificationData, applicant)
+
+	return nil
+}
+
 func (s *Service) submitToBridge(ctx context.Context, customerID string, profile *entities.UserProfile, req *entities.KYCSubmitRequest) entities.KYCProviderResult {
 	// Build Bridge update request
 	updateReq := &bridge.UpdateCustomerRequest{
@@ -220,6 +641,34 @@ func (s *Service) submitToBridge(ctx context.Context, customerID string, profile
 		return entities.KYCProviderResult{
 			Success: false,
 			Error:   "Failed to submit to Bridge",
+		}
+	}
+
+	return entities.KYCProviderResult{
+		Success: true,
+		Status:  string(customer.Status),
+	}
+}
+
+func (s *Service) submitToBridgeFromSumsub(ctx context.Context, customerID string, req *entities.KYCSubmitRequest) entities.KYCProviderResult {
+	updateReq := &bridge.UpdateCustomerRequest{
+		IdentifyingInformation: []bridge.IdentifyingInfo{
+			{
+				Type:           mapTaxIDTypeToBridge(req.TaxIDType),
+				IssuingCountry: strings.ToLower(req.IssuingCountry),
+				Number:         req.TaxID,
+			},
+		},
+	}
+
+	customer, err := s.bridgeAdapter.UpdateCustomer(ctx, customerID, updateReq)
+	if err != nil {
+		s.logger.Error("Bridge sync from Sumsub failed",
+			zap.Error(err),
+			zap.String("user_id", req.UserID.String()))
+		return entities.KYCProviderResult{
+			Success: false,
+			Error:   "Failed to sync Sumsub KYC to Bridge",
 		}
 	}
 
@@ -291,10 +740,18 @@ func (s *Service) submitToAlpaca(ctx context.Context, user *entities.UserProfile
 }
 
 func (s *Service) validateRequest(req *entities.KYCSubmitRequest) error {
-	// Validate SSN format
-	if req.TaxIDType == "ssn" {
+	if !isTaxIDTypeSupportedForCountry(req.IssuingCountry, req.TaxIDType) {
+		return ErrUnsupportedTaxIDType
+	}
+
+	switch strings.ToLower(req.TaxIDType) {
+	case "ssn":
 		if !isValidSSN(req.TaxID) {
 			return ErrInvalidSSN
+		}
+	case "itin":
+		if !isValidITIN(req.TaxID) {
+			return ErrInvalidITIN
 		}
 	}
 
@@ -319,6 +776,26 @@ func (s *Service) validateRequest(req *entities.KYCSubmitRequest) error {
 	return nil
 }
 
+func (s *Service) validateSumsubSessionRequest(req *entities.KYCSumsubSessionRequest) error {
+	if req == nil {
+		return fmt.Errorf("missing request")
+	}
+	if !isTaxIDTypeSupportedForCountry(req.IssuingCountry, req.TaxIDType) {
+		return ErrUnsupportedTaxIDType
+	}
+	switch strings.ToLower(req.TaxIDType) {
+	case "ssn":
+		if !isValidSSN(req.TaxID) {
+			return ErrInvalidSSN
+		}
+	case "itin":
+		if !isValidITIN(req.TaxID) {
+			return ErrInvalidITIN
+		}
+	}
+	return nil
+}
+
 func isValidSSN(ssn string) bool {
 	// Remove dashes
 	ssn = strings.ReplaceAll(ssn, "-", "")
@@ -330,6 +807,13 @@ func isValidSSN(ssn string) bool {
 
 	// Must be all digits
 	matched, _ := regexp.MatchString(`^\d{9}$`, ssn)
+	return matched
+}
+
+func isValidITIN(itin string) bool {
+	// ITIN is 9 digits and starts with 9.
+	itin = strings.ReplaceAll(itin, "-", "")
+	matched, _ := regexp.MatchString(`^9\d{8}$`, itin)
 	return matched
 }
 
@@ -351,9 +835,21 @@ func isValidBase64Image(data string) bool {
 }
 
 func mapTaxIDTypeToBridge(taxIDType string) string {
-	switch taxIDType {
+	switch strings.ToLower(strings.TrimSpace(taxIDType)) {
 	case "ssn":
 		return "ssn"
+	case "itin":
+		return "itin"
+	case "nino":
+		return "nino"
+	case "utr":
+		return "utr"
+	case "nin":
+		return "nin"
+	case "bvn":
+		return "bvn"
+	case "tin":
+		return "tin"
 	case "passport":
 		return "passport"
 	case "national_id":
@@ -364,11 +860,63 @@ func mapTaxIDTypeToBridge(taxIDType string) string {
 }
 
 func mapTaxIDTypeToAlpaca(taxIDType string) string {
-	switch taxIDType {
+	switch strings.ToLower(strings.TrimSpace(taxIDType)) {
 	case "ssn":
 		return "USA_SSN"
+	case "itin":
+		return "USA_ITIN"
+	case "nino":
+		return "GBR_NINO"
+	case "utr":
+		return "GBR_UTR"
+	case "passport":
+		return "PASSPORT"
+	case "national_id":
+		return "NATIONAL_ID"
+	case "nin", "bvn", "tin":
+		return "NOT_SPECIFIED"
 	default:
 		return "NOT_SPECIFIED"
+	}
+}
+
+func isTaxIDTypeSupportedForCountry(issuingCountry, taxIDType string) bool {
+	country := strings.ToUpper(strings.TrimSpace(issuingCountry))
+	idType := strings.ToLower(strings.TrimSpace(taxIDType))
+	if country == "" || idType == "" {
+		return false
+	}
+
+	switch country {
+	case "USA":
+		switch idType {
+		case "ssn", "itin":
+			return true
+		default:
+			return false
+		}
+	case "GBR":
+		switch idType {
+		case "nino", "utr", "passport", "national_id":
+			return true
+		default:
+			return false
+		}
+	case "NGA":
+		switch idType {
+		case "nin", "bvn", "tin", "passport", "national_id":
+			return true
+		default:
+			return false
+		}
+	default:
+		// Keep compatibility for unsupported countries while v1 targets USA/GBR/NGA.
+		switch idType {
+		case "ssn", "itin", "nino", "utr", "nin", "bvn", "tin", "passport", "national_id":
+			return true
+		default:
+			return false
+		}
 	}
 }
 
@@ -388,6 +936,271 @@ func stringValue(s *string) string {
 
 func timePtr(t time.Time) *time.Time {
 	return &t
+}
+
+func sumsubWebhookDedupeKey(payload *entities.SumsubWebhookPayload) string {
+	eventType := strings.ToLower(strings.TrimSpace(payload.Type))
+	if eventType == "" {
+		eventType = "unknown"
+	}
+	if corr := strings.TrimSpace(payload.CorrelationID); corr != "" {
+		return fmt.Sprintf("sumsub:%s:corr:%s", eventType, corr)
+	}
+	if inspectionID := strings.TrimSpace(payload.InspectionID); inspectionID != "" {
+		return fmt.Sprintf("sumsub:%s:inspection:%s", eventType, inspectionID)
+	}
+	if createdAt := strings.TrimSpace(payload.CreatedAtMs); createdAt != "" {
+		return fmt.Sprintf("sumsub:%s:applicant:%s:created:%s", eventType, strings.TrimSpace(payload.ApplicantID), createdAt)
+	}
+	return fmt.Sprintf("sumsub:%s:applicant:%s", eventType, strings.TrimSpace(payload.ApplicantID))
+}
+
+func mergeApplicantDataIntoVerification(data map[string]any, applicant *sumsub.ApplicantDataResponse) {
+	if data == nil || applicant == nil {
+		return
+	}
+
+	snapshot := map[string]any{
+		"applicant_id":       strings.TrimSpace(applicant.ID),
+		"inspection_id":      strings.TrimSpace(applicant.InspectionID),
+		"external_user_id":   strings.TrimSpace(applicant.ExternalUserID),
+		"level_name":         strings.TrimSpace(applicant.LevelName),
+		"review_status":      strings.TrimSpace(applicant.ReviewStatus),
+		"fetched_at":         time.Now().UTC().Format(time.RFC3339),
+		"first_name":         "",
+		"last_name":          "",
+		"dob":                "",
+		"country":            "",
+		"tax_id":             "",
+		"id_doc_type":        "",
+		"id_doc_country":     "",
+		"id_doc_number_tail": "",
+	}
+
+	country := ""
+	if applicant.Info != nil {
+		if firstName := strings.TrimSpace(applicant.Info.FirstName); firstName != "" {
+			snapshot["first_name"] = firstName
+		}
+		if lastName := strings.TrimSpace(applicant.Info.LastName); lastName != "" {
+			snapshot["last_name"] = lastName
+		}
+		if dob := strings.TrimSpace(applicant.Info.DOB); dob != "" {
+			snapshot["dob"] = dob
+		}
+
+		country = normalizeCountryCode(applicant.Info.Country)
+		if country != "" {
+			snapshot["country"] = country
+		}
+
+		if taxID := strings.TrimSpace(applicant.Info.TaxID); taxID != "" {
+			snapshot["tax_id"] = taxID
+		}
+
+		if len(applicant.Info.IDDocs) > 0 {
+			idDoc := applicant.Info.IDDocs[0]
+			docType := normalizeDocType(idDoc.IDDocType)
+			docCountry := normalizeCountryCode(idDoc.Country)
+			docNumber := strings.TrimSpace(idDoc.Number)
+
+			if docType != "" {
+				snapshot["id_doc_type"] = docType
+			}
+			if docCountry != "" {
+				snapshot["id_doc_country"] = docCountry
+				if country == "" {
+					country = docCountry
+				}
+			}
+			if docNumber != "" {
+				snapshot["id_doc_number_tail"] = tail(docNumber, 4)
+			}
+
+			if getMapString(data, "tax_id") == "" && docNumber != "" {
+				data["tax_id"] = docNumber
+			}
+			if getMapString(data, "tax_id_type") == "" {
+				if inferred := inferTaxIDTypeFromDoc(docType); inferred != "" {
+					data["tax_id_type"] = inferred
+				}
+			}
+		}
+	}
+
+	if country == "" && applicant.FixedInfo != nil {
+		country = normalizeCountryCode(applicant.FixedInfo.Country)
+	}
+	if country != "" {
+		data["issuing_country"] = country
+	}
+
+	if taxID, ok := snapshot["tax_id"].(string); ok && strings.TrimSpace(taxID) != "" && getMapString(data, "tax_id") == "" {
+		data["tax_id"] = strings.TrimSpace(taxID)
+	}
+	if getMapString(data, "tax_id_type") == "" {
+		if inferred := inferTaxIDTypeFromCountry(country); inferred != "" {
+			data["tax_id_type"] = inferred
+		}
+	}
+
+	if existing, ok := data["sumsub_applicant_snapshot"].(map[string]any); ok {
+		for k, v := range snapshot {
+			existing[k] = v
+		}
+	} else {
+		data["sumsub_applicant_snapshot"] = snapshot
+	}
+}
+
+func normalizeCountryCode(country string) string {
+	value := strings.ToUpper(strings.TrimSpace(country))
+	switch value {
+	case "US", "USA":
+		return "USA"
+	case "GB", "UK", "GBR":
+		return "GBR"
+	case "NG", "NGA":
+		return "NGA"
+	default:
+		if len(value) == 3 {
+			return value
+		}
+		return ""
+	}
+}
+
+func normalizeDocType(docType string) string {
+	docType = strings.ToUpper(strings.TrimSpace(docType))
+	switch docType {
+	case "ID_CARD", "IDCARD", "NATIONAL_ID":
+		return "NATIONAL_ID"
+	case "PASSPORT":
+		return "PASSPORT"
+	default:
+		return docType
+	}
+}
+
+func inferTaxIDTypeFromDoc(docType string) string {
+	switch strings.ToUpper(strings.TrimSpace(docType)) {
+	case "PASSPORT":
+		return "passport"
+	case "NATIONAL_ID", "ID_CARD":
+		return "national_id"
+	default:
+		return ""
+	}
+}
+
+func inferTaxIDTypeFromCountry(country string) string {
+	switch strings.ToUpper(strings.TrimSpace(country)) {
+	case "USA":
+		return "ssn"
+	case "GBR":
+		return "nino"
+	case "NGA":
+		return "nin"
+	default:
+		return ""
+	}
+}
+
+func tail(value string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	trimmed := strings.TrimSpace(value)
+	if len(trimmed) <= n {
+		return trimmed
+	}
+	return trimmed[len(trimmed)-n:]
+}
+
+func sumsubRequestFromVerificationData(data map[string]any) *entities.KYCSubmitRequest {
+	req := &entities.KYCSubmitRequest{
+		TaxID:          getMapString(data, "tax_id"),
+		TaxIDType:      getMapString(data, "tax_id_type"),
+		IssuingCountry: strings.ToUpper(getMapString(data, "issuing_country")),
+	}
+	if req.TaxIDType == "" {
+		req.TaxIDType = "ssn"
+	}
+	if req.IssuingCountry == "" {
+		req.IssuingCountry = "USA"
+	}
+	req.Disclosures = entities.KYCDisclosures{
+		IsControlPerson:             getNestedMapBool(data, "disclosures", "is_control_person"),
+		IsAffiliatedExchangeOrFINRA: getNestedMapBool(data, "disclosures", "is_affiliated_exchange_or_finra"),
+		IsPoliticallyExposed:        getNestedMapBool(data, "disclosures", "is_politically_exposed"),
+		ImmediateFamilyExposed:      getNestedMapBool(data, "disclosures", "immediate_family_exposed"),
+	}
+	return req
+}
+
+func getMapString(data map[string]any, key string) string {
+	if data == nil {
+		return ""
+	}
+	value, ok := data[key]
+	if !ok || value == nil {
+		return ""
+	}
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", v))
+	}
+}
+
+func getNestedMapBool(data map[string]any, parent, child string) bool {
+	if data == nil {
+		return false
+	}
+	rawParent, ok := data[parent]
+	if !ok || rawParent == nil {
+		return false
+	}
+	parentMap, ok := rawParent.(map[string]any)
+	if !ok {
+		return false
+	}
+	rawChild, ok := parentMap[child]
+	if !ok || rawChild == nil {
+		return false
+	}
+	switch v := rawChild.(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(strings.TrimSpace(v), "true")
+	default:
+		return false
+	}
+}
+
+func extractRejectReasons(labels []entities.SumsubRejectLabel) []string {
+	if len(labels) == 0 {
+		return nil
+	}
+	reasons := make([]string, 0, len(labels))
+	for _, label := range labels {
+		switch {
+		case strings.TrimSpace(label.Description) != "":
+			reasons = append(reasons, strings.TrimSpace(label.Description))
+		case strings.TrimSpace(label.Label) != "":
+			reasons = append(reasons, strings.TrimSpace(label.Label))
+		}
+	}
+	return reasons
+}
+
+func isSubmissionNotFoundErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "not found")
 }
 
 // GetKYCStatus returns the current KYC status and capabilities for a user.

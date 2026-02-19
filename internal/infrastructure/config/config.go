@@ -275,14 +275,15 @@ type CircleConfig struct {
 }
 
 type KYCConfig struct {
-	Provider    string `mapstructure:"provider"` // legacy config, Bridge KYC is now the only provider
-	APIKey      string `mapstructure:"api_key"`
-	APISecret   string `mapstructure:"api_secret"`
-	BaseURL     string `mapstructure:"base_url"`
-	CallbackURL string `mapstructure:"callback_url"`
-	Environment string `mapstructure:"environment"` // "development", "sandbox", "production"
-	UserAgent   string `mapstructure:"user_agent"`
-	LevelName   string `mapstructure:"level_name"`
+	Provider      string `mapstructure:"provider"` // legacy config, Bridge KYC is now the only provider
+	APIKey        string `mapstructure:"api_key"`
+	APISecret     string `mapstructure:"api_secret"`
+	WebhookSecret string `mapstructure:"webhook_secret"`
+	BaseURL       string `mapstructure:"base_url"`
+	CallbackURL   string `mapstructure:"callback_url"`
+	Environment   string `mapstructure:"environment"` // "development", "sandbox", "production"
+	UserAgent     string `mapstructure:"user_agent"`
+	LevelName     string `mapstructure:"level_name"`
 }
 
 type EmailConfig struct {
@@ -562,7 +563,8 @@ func setDefaults() {
 	// KYC defaults
 	viper.SetDefault("kyc.provider", "")
 	viper.SetDefault("kyc.environment", "development")
-	viper.SetDefault("kyc.base_url", "https://netverify.com")
+	viper.SetDefault("kyc.webhook_secret", "")
+	viper.SetDefault("kyc.base_url", "https://api.sumsub.com")
 	viper.SetDefault("kyc.user_agent", "Stack-Service/1.0")
 	viper.SetDefault("kyc.level_name", "basic-kyc")
 
@@ -759,6 +761,38 @@ func overrideFromEnv() {
 		viper.Set("payment.webhook_secret", circleWebhookSecret)
 	}
 
+	// KYC provider (Sumsub)
+	if kycProvider := os.Getenv("KYC_PROVIDER"); kycProvider != "" {
+		viper.Set("kyc.provider", kycProvider)
+	}
+	if sumsubAppToken := os.Getenv("SUMSUB_APP_TOKEN"); sumsubAppToken != "" {
+		viper.Set("kyc.api_key", sumsubAppToken)
+	}
+	if kycAPIKey := os.Getenv("KYC_API_KEY"); kycAPIKey != "" {
+		viper.Set("kyc.api_key", kycAPIKey)
+	}
+	if sumsubSecretKey := os.Getenv("SUMSUB_SECRET_KEY"); sumsubSecretKey != "" {
+		viper.Set("kyc.api_secret", sumsubSecretKey)
+	}
+	if kycAPISecret := os.Getenv("KYC_API_SECRET"); kycAPISecret != "" {
+		viper.Set("kyc.api_secret", kycAPISecret)
+	}
+	if sumsubWebhookSecret := os.Getenv("SUMSUB_WEBHOOK_SECRET"); sumsubWebhookSecret != "" {
+		viper.Set("kyc.webhook_secret", sumsubWebhookSecret)
+	}
+	if kycWebhookSecret := os.Getenv("KYC_WEBHOOK_SECRET"); kycWebhookSecret != "" {
+		viper.Set("kyc.webhook_secret", kycWebhookSecret)
+	}
+	if sumsubBaseURL := os.Getenv("SUMSUB_BASE_URL"); sumsubBaseURL != "" {
+		viper.Set("kyc.base_url", sumsubBaseURL)
+	}
+	if sumsubLevelName := os.Getenv("SUMSUB_LEVEL_NAME"); sumsubLevelName != "" {
+		viper.Set("kyc.level_name", sumsubLevelName)
+	}
+	if sumsubEnvironment := os.Getenv("SUMSUB_ENVIRONMENT"); sumsubEnvironment != "" {
+		viper.Set("kyc.environment", sumsubEnvironment)
+	}
+
 	// Email Service (Unosend only)
 	if unosendAPIKey := os.Getenv("UNOSEND_API_KEY"); unosendAPIKey != "" {
 		viper.Set("email.api_key", unosendAPIKey)
@@ -913,10 +947,29 @@ func validate(config *Config) error {
 		return fmt.Errorf("circle supported chains configuration is required")
 	}
 
+	if strings.EqualFold(strings.TrimSpace(config.KYC.Provider), "sumsub") {
+		if strings.TrimSpace(config.KYC.APIKey) == "" {
+			return fmt.Errorf("sumsub app token is required when kyc.provider=sumsub")
+		}
+		if strings.TrimSpace(config.KYC.APISecret) == "" {
+			return fmt.Errorf("sumsub secret key is required when kyc.provider=sumsub")
+		}
+		if strings.TrimSpace(config.KYC.BaseURL) == "" {
+			return fmt.Errorf("sumsub base url is required when kyc.provider=sumsub")
+		}
+		if strings.TrimSpace(config.KYC.LevelName) == "" {
+			return fmt.Errorf("sumsub level name is required when kyc.provider=sumsub")
+		}
+	}
+
 	// Validate webhook secrets in production
 	if config.Environment == "production" {
 		if config.Bridge.WebhookSecret == "" {
 			return fmt.Errorf("bridge webhook secret is required in production")
+		}
+		if strings.EqualFold(strings.TrimSpace(config.KYC.Provider), "sumsub") &&
+			strings.TrimSpace(config.KYC.WebhookSecret) == "" {
+			return fmt.Errorf("sumsub webhook secret is required in production when kyc.provider=sumsub")
 		}
 		if config.Payment.WebhookSecret == "" {
 			return fmt.Errorf("payment webhook secret is required in production")

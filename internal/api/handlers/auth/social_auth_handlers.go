@@ -1,26 +1,53 @@
 package auth
 
 import (
-	"github.com/rail-service/rail_service/internal/api/handlers/common"
+	"context"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-webauthn/webauthn/protocol"
+	webauthnlib "github.com/go-webauthn/webauthn/webauthn"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
+	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/socialauth"
-	"github.com/rail-service/rail_service/internal/domain/services/webauthn"
+	webauthnsvc "github.com/rail-service/rail_service/internal/domain/services/webauthn"
+	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/crypto"
 )
 
+const (
+	webauthnSessionRegistrationPrefix = "webauthn:registration"
+	webauthnSessionLoginPrefix        = "webauthn:login"
+	defaultWebAuthnSessionTTL         = 5 * time.Minute
+)
+
+type webAuthnRegistrationSession struct {
+	SessionData    webauthnlib.SessionData `json:"sessionData"`
+	UserID         uuid.UUID               `json:"userId"`
+	Email          string                  `json:"email"`
+	DisplayName    string                  `json:"displayName"`
+	CredentialName string                  `json:"credentialName"`
+}
+
+type webAuthnLoginSession struct {
+	SessionData webauthnlib.SessionData `json:"sessionData"`
+	UserID      uuid.UUID               `json:"userId"`
+	Email       string                  `json:"email"`
+}
+
 type SocialAuthHandlers struct {
 	socialAuthService *socialauth.Service
-	webauthnService   *webauthn.Service
+	webauthnService   *webauthnsvc.Service
+	redisClient       cache.RedisClient
 	userRepo          repositories.UserRepository
 	cfg               *config.Config
 	logger            *zap.Logger
@@ -28,14 +55,16 @@ type SocialAuthHandlers struct {
 
 func NewSocialAuthHandlers(
 	socialAuthService *socialauth.Service,
-	webauthnService *webauthn.Service,
+	webauthnService *webauthnsvc.Service,
 	userRepo repositories.UserRepository,
+	redisClient cache.RedisClient,
 	cfg *config.Config,
 	logger *zap.Logger,
 ) *SocialAuthHandlers {
 	return &SocialAuthHandlers{
 		socialAuthService: socialAuthService,
 		webauthnService:   webauthnService,
+		redisClient:       redisClient,
 		userRepo:          userRepo,
 		cfg:               cfg,
 		logger:            logger,
@@ -311,6 +340,10 @@ func (h *SocialAuthHandlers) BeginWebAuthnRegistration(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{Code: "WEBAUTHN_UNAVAILABLE", Message: "WebAuthn not configured"})
 		return
 	}
+	if h.redisClient == nil {
+		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{Code: "WEBAUTHN_SESSION_UNAVAILABLE", Message: "WebAuthn session store unavailable"})
+		return
+	}
 
 	user, err := h.userRepo.GetUserEntityByID(ctx, userID)
 	if err != nil {
@@ -323,17 +356,32 @@ func (h *SocialAuthHandlers) BeginWebAuthnRegistration(c *gin.Context) {
 		displayName = *user.Phone
 	}
 
-	options, _, err := h.webauthnService.BeginRegistration(ctx, userID, user.Email, displayName)
+	options, sessionData, err := h.webauthnService.BeginRegistration(ctx, userID, user.Email, displayName)
 	if err != nil {
 		h.logger.Error("Failed to begin WebAuthn registration", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "REGISTRATION_ERROR", Message: err.Error()})
 		return
 	}
 
-	// Note: In production, store session data in Redis/DB for FinishRegistration
-	c.Set("webauthn_cred_name", req.Name)
+	sessionID, err := crypto.GenerateRandomString(32)
+	if err != nil {
+		h.logger.Error("Failed to generate WebAuthn registration session ID", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "SESSION_ERROR", Message: "Failed to create registration session"})
+		return
+	}
+	if err := h.storeWebAuthnRegistrationSession(ctx, sessionID, &webAuthnRegistrationSession{
+		SessionData:    *sessionData,
+		UserID:         userID,
+		Email:          user.Email,
+		DisplayName:    displayName,
+		CredentialName: strings.TrimSpace(req.Name),
+	}); err != nil {
+		h.logger.Error("Failed to persist WebAuthn registration session", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "SESSION_ERROR", Message: "Failed to create registration session"})
+		return
+	}
 
-	c.JSON(http.StatusOK, entities.WebAuthnRegisterResponse{Options: options})
+	c.JSON(http.StatusOK, entities.WebAuthnRegisterResponse{Options: options, SessionID: sessionID})
 }
 
 // GetWebAuthnCredentials returns user's passkeys
@@ -405,6 +453,10 @@ func (h *SocialAuthHandlers) BeginWebAuthnLogin(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{Code: "WEBAUTHN_UNAVAILABLE", Message: "WebAuthn not configured"})
 		return
 	}
+	if h.redisClient == nil {
+		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{Code: "WEBAUTHN_SESSION_UNAVAILABLE", Message: "WebAuthn session store unavailable"})
+		return
+	}
 
 	// Get user by email
 	user, err := h.userRepo.GetByEmail(ctx, req.Email)
@@ -413,13 +465,223 @@ func (h *SocialAuthHandlers) BeginWebAuthnLogin(c *gin.Context) {
 		return
 	}
 
-	options, _, err := h.webauthnService.BeginLogin(ctx, user.ID, user.Email)
+	options, sessionData, err := h.webauthnService.BeginLogin(ctx, user.ID, user.Email)
 	if err != nil {
 		h.logger.Error("Failed to begin WebAuthn login", zap.Error(err))
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "LOGIN_ERROR", Message: err.Error()})
 		return
 	}
 
-	// Note: In production, store session data in Redis/DB for FinishLogin
-	c.JSON(http.StatusOK, entities.WebAuthnLoginResponse{Options: options})
+	sessionID, err := crypto.GenerateRandomString(32)
+	if err != nil {
+		h.logger.Error("Failed to generate WebAuthn login session ID", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "SESSION_ERROR", Message: "Failed to create login session"})
+		return
+	}
+	if err := h.storeWebAuthnLoginSession(ctx, sessionID, &webAuthnLoginSession{
+		SessionData: *sessionData,
+		UserID:      user.ID,
+		Email:       user.Email,
+	}); err != nil {
+		h.logger.Error("Failed to persist WebAuthn login session", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "SESSION_ERROR", Message: "Failed to create login session"})
+		return
+	}
+
+	c.JSON(http.StatusOK, entities.WebAuthnLoginResponse{Options: options, SessionID: sessionID})
+}
+
+// FinishWebAuthnRegistration completes passkey registration.
+func (h *SocialAuthHandlers) FinishWebAuthnRegistration(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "UNAUTHORIZED", Message: "Not authenticated"})
+		return
+	}
+
+	var req entities.WebAuthnRegisterFinishRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.SessionID) == "" || len(req.Response) == 0 {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "sessionId and response are required"})
+		return
+	}
+
+	if h.webauthnService == nil {
+		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{Code: "WEBAUTHN_UNAVAILABLE", Message: "WebAuthn not configured"})
+		return
+	}
+	if h.redisClient == nil {
+		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{Code: "WEBAUTHN_SESSION_UNAVAILABLE", Message: "WebAuthn session store unavailable"})
+		return
+	}
+
+	session, err := h.getWebAuthnRegistrationSession(ctx, req.SessionID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_SESSION", Message: "Registration session is invalid or expired"})
+		return
+	}
+	if session.UserID != userID {
+		c.JSON(http.StatusForbidden, entities.ErrorResponse{Code: "SESSION_USER_MISMATCH", Message: "Registration session does not belong to this user"})
+		return
+	}
+
+	parsedResponse, err := protocol.ParseCredentialCreationResponseBytes(req.Response)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_WEBAUTHN_RESPONSE", Message: "Failed to parse registration response"})
+		return
+	}
+
+	credentialName := strings.TrimSpace(req.Name)
+	if credentialName == "" {
+		credentialName = strings.TrimSpace(session.CredentialName)
+	}
+	if credentialName == "" {
+		credentialName = "Passkey"
+	}
+
+	if err := h.webauthnService.FinishRegistration(
+		ctx,
+		userID,
+		session.Email,
+		session.DisplayName,
+		credentialName,
+		&session.SessionData,
+		parsedResponse,
+	); err != nil {
+		h.logger.Error("Failed to finish WebAuthn registration", zap.Error(err), zap.String("user_id", userID.String()))
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "REGISTRATION_FAILED", Message: "Passkey registration failed"})
+		return
+	}
+
+	h.deleteWebAuthnSession(ctx, webauthnSessionRegistrationPrefix, req.SessionID)
+
+	c.JSON(http.StatusCreated, gin.H{
+		"message": "Passkey registered successfully",
+		"name":    credentialName,
+	})
+}
+
+// FinishWebAuthnLogin completes passkey authentication and returns JWT tokens.
+func (h *SocialAuthHandlers) FinishWebAuthnLogin(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	var req entities.WebAuthnLoginFinishRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.SessionID) == "" || len(req.Response) == 0 {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "sessionId and response are required"})
+		return
+	}
+
+	if h.webauthnService == nil {
+		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{Code: "WEBAUTHN_UNAVAILABLE", Message: "WebAuthn not configured"})
+		return
+	}
+	if h.redisClient == nil {
+		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{Code: "WEBAUTHN_SESSION_UNAVAILABLE", Message: "WebAuthn session store unavailable"})
+		return
+	}
+
+	session, err := h.getWebAuthnLoginSession(ctx, req.SessionID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_SESSION", Message: "Login session is invalid or expired"})
+		return
+	}
+
+	parsedResponse, err := protocol.ParseCredentialRequestResponseBytes(req.Response)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_WEBAUTHN_RESPONSE", Message: "Failed to parse login response"})
+		return
+	}
+
+	if err := h.webauthnService.FinishLogin(ctx, session.UserID, session.Email, &session.SessionData, parsedResponse); err != nil {
+		h.logger.Warn("Failed to finish WebAuthn login", zap.Error(err), zap.String("user_id", session.UserID.String()))
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "LOGIN_FAILED", Message: "Passkey authentication failed"})
+		return
+	}
+
+	user, err := h.userRepo.GetUserEntityByID(ctx, session.UserID)
+	if err != nil || user == nil {
+		c.JSON(http.StatusNotFound, entities.ErrorResponse{Code: "USER_NOT_FOUND", Message: "User not found"})
+		return
+	}
+	if !user.IsActive {
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "ACCOUNT_INACTIVE", Message: "Account is inactive"})
+		return
+	}
+
+	tokens, err := auth.GenerateTokenPair(user.ID, user.Email, user.Role, h.cfg.JWT.Secret, h.cfg.JWT.AccessTTL, h.cfg.JWT.RefreshTTL)
+	if err != nil {
+		h.logger.Error("Failed to generate tokens after WebAuthn login", zap.Error(err), zap.String("user_id", user.ID.String()))
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "TOKEN_ERROR", Message: "Failed to generate tokens"})
+		return
+	}
+
+	h.deleteWebAuthnSession(ctx, webauthnSessionLoginPrefix, req.SessionID)
+
+	c.JSON(http.StatusOK, entities.AuthResponse{
+		User:         user.ToUserInfo(),
+		AccessToken:  tokens.AccessToken,
+		RefreshToken: tokens.RefreshToken,
+		ExpiresAt:    tokens.ExpiresAt,
+	})
+}
+
+func (h *SocialAuthHandlers) storeWebAuthnRegistrationSession(ctx context.Context, sessionID string, session *webAuthnRegistrationSession) error {
+	return h.storeWebAuthnSession(ctx, webauthnSessionRegistrationPrefix, sessionID, session, session.SessionData.Expires)
+}
+
+func (h *SocialAuthHandlers) storeWebAuthnLoginSession(ctx context.Context, sessionID string, session *webAuthnLoginSession) error {
+	return h.storeWebAuthnSession(ctx, webauthnSessionLoginPrefix, sessionID, session, session.SessionData.Expires)
+}
+
+func (h *SocialAuthHandlers) storeWebAuthnSession(ctx context.Context, prefix, sessionID string, payload interface{}, expiresAt time.Time) error {
+	if h.redisClient == nil {
+		return fmt.Errorf("redis client not configured")
+	}
+
+	ttl := time.Until(expiresAt)
+	if ttl <= 0 {
+		ttl = defaultWebAuthnSessionTTL
+	}
+
+	return h.redisClient.Set(ctx, h.webAuthnSessionKey(prefix, sessionID), payload, ttl)
+}
+
+func (h *SocialAuthHandlers) getWebAuthnRegistrationSession(ctx context.Context, sessionID string) (*webAuthnRegistrationSession, error) {
+	session := &webAuthnRegistrationSession{}
+	if err := h.redisClient.Get(ctx, h.webAuthnSessionKey(webauthnSessionRegistrationPrefix, sessionID), session); err != nil {
+		return nil, err
+	}
+	return session, nil
+}
+
+func (h *SocialAuthHandlers) getWebAuthnLoginSession(ctx context.Context, sessionID string) (*webAuthnLoginSession, error) {
+	session := &webAuthnLoginSession{}
+	if err := h.redisClient.Get(ctx, h.webAuthnSessionKey(webauthnSessionLoginPrefix, sessionID), session); err != nil {
+		return nil, err
+	}
+	return session, nil
+}
+
+func (h *SocialAuthHandlers) deleteWebAuthnSession(ctx context.Context, prefix, sessionID string) {
+	if h.redisClient == nil {
+		return
+	}
+	if err := h.redisClient.Del(ctx, h.webAuthnSessionKey(prefix, sessionID)); err != nil {
+		h.logger.Warn("Failed to delete WebAuthn session",
+			zap.Error(err),
+			zap.String("prefix", prefix))
+	}
+}
+
+func (h *SocialAuthHandlers) webAuthnSessionKey(prefix, sessionID string) string {
+	return fmt.Sprintf("%s:%s", prefix, sessionID)
 }

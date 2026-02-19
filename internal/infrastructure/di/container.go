@@ -432,6 +432,8 @@ type Container struct {
 	ConversionRepo            *repositories.ConversionRepository
 	BalanceRepo               *repositories.BalanceRepository
 	FundingEventJobRepo       *repositories.FundingEventJobRepository
+	SumsubWebhookEventRepo    *repositories.SumsubWebhookEventRepository
+	KYCSyncJobRepo            *repositories.KYCSyncJobRepository
 	LedgerRepo                *repositories.LedgerRepository
 	ReconciliationRepo        repositories.ReconciliationRepository
 
@@ -605,6 +607,8 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	conversionRepo := repositories.NewConversionRepository(sqlxDB)
 	balanceRepo := repositories.NewBalanceRepository(db, zapLog)
 	fundingEventJobRepo := repositories.NewFundingEventJobRepository(db, log)
+	sumsubWebhookEventRepo := repositories.NewSumsubWebhookEventRepository(db, zapLog)
+	kycSyncJobRepo := repositories.NewKYCSyncJobRepository(db, zapLog)
 	ledgerRepo := repositories.NewLedgerRepository(sqlxDB)
 	reconciliationRepo := repositories.NewPostgresReconciliationRepository(db)
 	onboardingJobRepo := repositories.NewOnboardingJobRepository(db, zapLog)
@@ -713,6 +717,8 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		ConversionRepo:            conversionRepo,
 		BalanceRepo:               balanceRepo,
 		FundingEventJobRepo:       fundingEventJobRepo,
+		SumsubWebhookEventRepo:    sumsubWebhookEventRepo,
+		KYCSyncJobRepo:            kycSyncJobRepo,
 		LedgerRepo:                ledgerRepo,
 		ReconciliationRepo:        reconciliationRepo,
 		OnboardingJobRepo:         onboardingJobRepo,
