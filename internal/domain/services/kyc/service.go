@@ -27,6 +27,8 @@ var (
 	ErrKYCAlreadyApproved   = errors.New("KYC already approved")
 	ErrNoBridgeCustomer     = errors.New("no Bridge customer ID found")
 	ErrSumsubNotConfigured  = errors.New("sumsub KYC provider is not configured")
+
+	sumsubExistingApplicantIDPattern = regexp.MustCompile(`(?i)already exists:\s*([a-z0-9]+)`)
 )
 
 const maxImageSize = 10 * 1024 * 1024 // 10MB
@@ -290,12 +292,30 @@ func (s *Service) StartSumsubSession(ctx context.Context, userID uuid.UUID, req 
 				zap.Error(createApplicantErr),
 				zap.String("user_id", userID.String()),
 				zap.String("applicant_id", applicantID))
+		} else if existingApplicantID := extractExistingSumsubApplicantID(createApplicantErr); existingApplicantID != "" {
+			applicantID = existingApplicantID
+			s.logger.Warn("Using existing Sumsub applicant from conflict response",
+				zap.Error(createApplicantErr),
+				zap.String("user_id", userID.String()),
+				zap.String("applicant_id", applicantID))
 		} else {
 			return nil, fmt.Errorf("failed to create sumsub applicant: %w", createApplicantErr)
 		}
 	} else {
 		applicantID = applicant.ID
 		inspectionID = applicant.InspectionID
+	}
+
+	if inspectionID == "" && applicantID != "" {
+		existingApplicant, applicantDataErr := s.sumsubAdapter.GetApplicantData(ctx, applicantID)
+		if applicantDataErr != nil {
+			s.logger.Warn("Failed to load existing Sumsub applicant after conflict fallback",
+				zap.Error(applicantDataErr),
+				zap.String("user_id", userID.String()),
+				zap.String("applicant_id", applicantID))
+		} else {
+			inspectionID = existingApplicant.InspectionID
+		}
 	}
 
 	accessToken, err := s.sumsubAdapter.CreateAccessToken(ctx, applicantID, userID.String(), levelName, 3600)
@@ -635,6 +655,18 @@ func isNilSumsubAdapter(adapter SumsubAdapter) bool {
 	default:
 		return false
 	}
+}
+
+func extractExistingSumsubApplicantID(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	match := sumsubExistingApplicantIDPattern.FindStringSubmatch(err.Error())
+	if len(match) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(match[1])
 }
 
 func (s *Service) submitToBridge(ctx context.Context, customerID string, profile *entities.UserProfile, req *entities.KYCSubmitRequest) entities.KYCProviderResult {
