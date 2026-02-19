@@ -18,6 +18,7 @@ import (
 	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
+	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/rail-service/rail_service/pkg/ratelimit"
@@ -143,6 +144,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.GetSocialAuthService(),
 		container.GetWebAuthnService(),
 		*container.UserRepo,
+		container.RedisClient,
 		container.Config,
 		container.ZapLog,
 	)
@@ -162,12 +164,28 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		*container.UserRepo,
 		container.ZapLog,
 	)
+	var sumsubClient *sumsubadapter.Client
+	if container.Config.KYC.Provider == "sumsub" && container.Config.KYC.APIKey != "" && container.Config.KYC.APISecret != "" {
+		sumsubClient = sumsubadapter.NewClient(sumsubadapter.Config{
+			BaseURL:       container.Config.KYC.BaseURL,
+			AppToken:      container.Config.KYC.APIKey,
+			SecretKey:     container.Config.KYC.APISecret,
+			WebhookSecret: container.Config.KYC.WebhookSecret,
+			LevelName:     container.Config.KYC.LevelName,
+			UserAgent:     container.Config.KYC.UserAgent,
+			Timeout:       30 * time.Second,
+		}, container.ZapLog)
+	}
 	kycUserRepoAdapter := repositories.NewKYCUserRepositoryAdapter(container.UserRepo)
 	kycService := kycservice.NewService(
 		kycUserRepoAdapter,
 		container.KYCSubmissionRepo,
 		container.BridgeAdapter,
 		alpacaadapter.NewAdapter(container.AlpacaClient, container.Logger),
+		sumsubClient,
+		container.SumsubWebhookEventRepo,
+		container.KYCSyncJobRepo,
+		container.Config.KYC.LevelName,
 		container.ZapLog,
 	)
 	kycHTTPHandlers := kychandlers.NewHandler(kycService, container.Logger)
@@ -208,6 +226,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			authRateLimited.POST("/social/url", socialAuthHandlers.GetSocialAuthURL)
 			authRateLimited.POST("/social/login", socialAuthHandlers.SocialLogin)
 			authRateLimited.POST("/webauthn/login/begin", socialAuthHandlers.BeginWebAuthnLogin)
+			authRateLimited.POST("/webauthn/login/finish", socialAuthHandlers.FinishWebAuthnLogin)
 		}
 
 		// Onboarding routes
@@ -224,6 +243,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		kyc := v1.Group("/kyc")
 		{
 			kyc.POST("/callback/:provider_ref", authHandlers.ProcessKYCCallback)
+			kyc.POST("/sumsub/webhook", kycHTTPHandlers.HandleSumsubWebhook)
 		}
 
 		// Protected routes (auth required)
@@ -245,6 +265,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// KYC status utilities (auth required but no KYC gate)
 			kycProtected := protected.Group("/kyc")
 			{
+				kycProtected.POST("/sumsub/session", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.CreateSumsubSession)
 				kycProtected.POST("/submit", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.SubmitKYC)
 				kycProtected.GET("/status", authHandlers.GetKYCStatus)
 				// Bridge KYC - optimized for sub-2-minute verification
@@ -269,6 +290,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				// WebAuthn/Passkey management
 				security.GET("/passkeys", socialAuthHandlers.GetWebAuthnCredentials)
 				security.POST("/passkeys/register", socialAuthHandlers.BeginWebAuthnRegistration)
+				security.POST("/passkeys/register/finish", socialAuthHandlers.FinishWebAuthnRegistration)
 				security.DELETE("/passkeys/:id", socialAuthHandlers.DeleteWebAuthnCredential)
 
 				// Device management

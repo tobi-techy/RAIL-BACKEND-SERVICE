@@ -13,12 +13,17 @@ import (
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/api/routes"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
+	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
+	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/database"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
+	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	deposit_allocation_recovery "github.com/rail-service/rail_service/internal/workers/deposit_allocation_recovery"
 	"github.com/rail-service/rail_service/internal/workers/funding_webhook"
 	kyc_autoinvest "github.com/rail-service/rail_service/internal/workers/kyc_autoinvest"
+	"github.com/rail-service/rail_service/internal/workers/kyc_sync"
 	portfolio_snapshot_worker "github.com/rail-service/rail_service/internal/workers/portfolio_snapshot_worker"
 	scheduled_investment_worker "github.com/rail-service/rail_service/internal/workers/scheduled_investment_worker"
 	walletprovisioning "github.com/rail-service/rail_service/internal/workers/wallet_provisioning"
@@ -41,6 +46,7 @@ type Application struct {
 	portfolioSnapshotWorker   *portfolio_snapshot_worker.Worker
 	depositAllocationWorker   *deposit_allocation_recovery.Worker
 	kycAutoInvestWorker       *kyc_autoinvest.Worker
+	kycSyncWorker             *kyc_sync.Worker
 
 	// Tracing
 	tracingShutdown func(context.Context) error
@@ -184,6 +190,56 @@ func (app *Application) initializeWorkers() error {
 		go app.kycAutoInvestWorker.Start(context.Background())
 		app.log.Info("KYC auto-invest worker started")
 	}
+
+	// KYC Sumsub sync worker
+	if err := app.initializeKYCSyncWorker(); err != nil {
+		return fmt.Errorf("failed to initialize KYC sync worker: %w", err)
+	}
+
+	return nil
+}
+
+func (app *Application) initializeKYCSyncWorker() error {
+	if app.cfg.KYC.Provider != "sumsub" {
+		return nil
+	}
+	if app.container.KYCSyncJobRepo == nil || app.container.KYCSubmissionRepo == nil {
+		return nil
+	}
+
+	var sumsubClient *sumsubadapter.Client
+	if app.cfg.KYC.APIKey != "" && app.cfg.KYC.APISecret != "" {
+		sumsubClient = sumsubadapter.NewClient(sumsubadapter.Config{
+			BaseURL:       app.cfg.KYC.BaseURL,
+			AppToken:      app.cfg.KYC.APIKey,
+			SecretKey:     app.cfg.KYC.APISecret,
+			WebhookSecret: app.cfg.KYC.WebhookSecret,
+			LevelName:     app.cfg.KYC.LevelName,
+			UserAgent:     app.cfg.KYC.UserAgent,
+			Timeout:       30 * time.Second,
+		}, app.log.Zap())
+	}
+
+	kycSvc := kycservice.NewService(
+		repositories.NewKYCUserRepositoryAdapter(app.container.UserRepo),
+		app.container.KYCSubmissionRepo,
+		app.container.BridgeAdapter,
+		alpacaadapter.NewAdapter(app.container.AlpacaClient, app.container.Logger),
+		sumsubClient,
+		app.container.SumsubWebhookEventRepo,
+		app.container.KYCSyncJobRepo,
+		app.cfg.KYC.LevelName,
+		app.log.Zap(),
+	)
+
+	app.kycSyncWorker = kyc_sync.NewWorker(
+		app.container.KYCSyncJobRepo,
+		kycSvc,
+		app.log.Zap(),
+		kyc_sync.DefaultConfig(),
+	)
+	go app.kycSyncWorker.Start(context.Background())
+	app.log.Info("KYC sync worker started")
 
 	return nil
 }
@@ -402,6 +458,12 @@ func (app *Application) stopWorkers() {
 	if app.kycAutoInvestWorker != nil {
 		app.log.Info("Stopping KYC auto-invest worker...")
 		app.kycAutoInvestWorker.Stop()
+	}
+
+	// Stop KYC sync worker
+	if app.kycSyncWorker != nil {
+		app.log.Info("Stopping KYC sync worker...")
+		app.kycSyncWorker.Stop()
 	}
 }
 
