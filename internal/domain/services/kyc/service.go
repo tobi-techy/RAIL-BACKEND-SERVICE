@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
 	"strings"
 	"time"
@@ -92,6 +93,10 @@ func NewService(
 	sumsubLevelName string,
 	logger *zap.Logger,
 ) *Service {
+	if isNilSumsubAdapter(sumsubAdapter) {
+		sumsubAdapter = nil
+	}
+
 	return &Service{
 		userRepo:               userRepo,
 		kycSubmissionRepo:      kycSubmissionRepo,
@@ -236,7 +241,7 @@ func (s *Service) SubmitKYC(ctx context.Context, req *entities.KYCSubmitRequest)
 
 // StartSumsubSession creates a Sumsub applicant and WebSDK access token.
 func (s *Service) StartSumsubSession(ctx context.Context, userID uuid.UUID, req *entities.KYCSumsubSessionRequest) (*entities.KYCSumsubSessionResponse, error) {
-	if s.sumsubAdapter == nil {
+	if isNilSumsubAdapter(s.sumsubAdapter) {
 		return nil, ErrSumsubNotConfigured
 	}
 	if err := s.validateSumsubSessionRequest(req); err != nil {
@@ -457,7 +462,7 @@ func (s *Service) ProcessSumsubWebhook(ctx context.Context, payload *entities.Su
 
 // VerifySumsubWebhookSignature validates Sumsub webhook digest headers.
 func (s *Service) VerifySumsubWebhookSignature(body []byte, digestHeader, digestAlgHeader string) error {
-	if s.sumsubAdapter == nil {
+	if isNilSumsubAdapter(s.sumsubAdapter) {
 		return ErrSumsubNotConfigured
 	}
 	return s.sumsubAdapter.VerifyWebhookSignature(body, digestHeader, digestAlgHeader)
@@ -596,7 +601,7 @@ func (s *Service) markSubmissionProcessing(ctx context.Context, submission *enti
 }
 
 func (s *Service) hydrateSubmissionFromSumsubApplicant(ctx context.Context, submission *entities.KYCSubmission) error {
-	if s.sumsubAdapter == nil || submission == nil {
+	if isNilSumsubAdapter(s.sumsubAdapter) || submission == nil {
 		return nil
 	}
 
@@ -616,6 +621,20 @@ func (s *Service) hydrateSubmissionFromSumsubApplicant(ctx context.Context, subm
 	mergeApplicantDataIntoVerification(submission.VerificationData, applicant)
 
 	return nil
+}
+
+func isNilSumsubAdapter(adapter SumsubAdapter) bool {
+	if adapter == nil {
+		return true
+	}
+
+	value := reflect.ValueOf(adapter)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func (s *Service) submitToBridge(ctx context.Context, customerID string, profile *entities.UserProfile, req *entities.KYCSubmitRequest) entities.KYCProviderResult {

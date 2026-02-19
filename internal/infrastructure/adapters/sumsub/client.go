@@ -117,6 +117,10 @@ func NewClient(cfg Config, logger *zap.Logger) *Client {
 }
 
 func (c *Client) CreateApplicant(ctx context.Context, req *CreateApplicantRequest, levelName string) (*ApplicantResponse, error) {
+	if c == nil {
+		return nil, fmt.Errorf("sumsub client is not configured")
+	}
+
 	query := url.Values{}
 	if ln := strings.TrimSpace(levelName); ln != "" {
 		query.Set("levelName", ln)
@@ -135,6 +139,10 @@ func (c *Client) CreateApplicant(ctx context.Context, req *CreateApplicantReques
 }
 
 func (c *Client) CreateAccessToken(ctx context.Context, applicantID, externalUserID, levelName string, ttlSeconds int) (*AccessTokenResponse, error) {
+	if c == nil {
+		return nil, fmt.Errorf("sumsub client is not configured")
+	}
+
 	if ttlSeconds <= 0 {
 		ttlSeconds = 3600
 	}
@@ -156,6 +164,10 @@ func (c *Client) CreateAccessToken(ctx context.Context, applicantID, externalUse
 }
 
 func (c *Client) GetApplicantData(ctx context.Context, applicantID string) (*ApplicantDataResponse, error) {
+	if c == nil {
+		return nil, fmt.Errorf("sumsub client is not configured")
+	}
+
 	applicantID = strings.TrimSpace(applicantID)
 	if applicantID == "" {
 		return nil, fmt.Errorf("sumsub applicant ID is required")
@@ -170,6 +182,10 @@ func (c *Client) GetApplicantData(ctx context.Context, applicantID string) (*App
 }
 
 func (c *Client) VerifyWebhookSignature(body []byte, digestHeader, digestAlgHeader string) error {
+	if c == nil {
+		return fmt.Errorf("sumsub client is not configured")
+	}
+
 	if c.config.WebhookSecret == "" {
 		return fmt.Errorf("sumsub webhook secret is not configured")
 	}
@@ -204,6 +220,12 @@ func (c *Client) VerifyWebhookSignature(body []byte, digestHeader, digestAlgHead
 }
 
 func (c *Client) doSignedJSONRequest(ctx context.Context, method, path string, body any, out any) error {
+	if c == nil {
+		return fmt.Errorf("sumsub client is not configured")
+	}
+	if c.httpClient == nil {
+		return fmt.Errorf("sumsub HTTP client is not configured")
+	}
 	if c.config.AppToken == "" || c.config.SecretKey == "" {
 		return fmt.Errorf("sumsub credentials are not configured")
 	}
@@ -249,10 +271,12 @@ func (c *Client) doSignedJSONRequest(ctx context.Context, method, path string, b
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		c.logger.Warn("Sumsub API returned non-success response",
-			zap.Int("status_code", resp.StatusCode),
-			zap.String("path", path),
-			zap.String("response", string(respBody)))
+		if c.logger != nil {
+			c.logger.Warn("Sumsub API returned non-success response",
+				zap.Int("status_code", resp.StatusCode),
+				zap.String("path", path),
+				zap.String("response", string(respBody)))
+		}
 		return fmt.Errorf("sumsub API error (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 
