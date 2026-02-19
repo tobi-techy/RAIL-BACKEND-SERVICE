@@ -2,6 +2,7 @@ package routes
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -164,8 +165,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		*container.UserRepo,
 		container.ZapLog,
 	)
-	var sumsubClient *sumsubadapter.Client
-	if container.Config.KYC.Provider == "sumsub" && container.Config.KYC.APIKey != "" && container.Config.KYC.APISecret != "" {
+	var sumsubClient kycservice.SumsubAdapter
+	if strings.EqualFold(strings.TrimSpace(container.Config.KYC.Provider), "sumsub") &&
+		container.Config.KYC.APIKey != "" &&
+		container.Config.KYC.APISecret != "" {
 		sumsubClient = sumsubadapter.NewClient(sumsubadapter.Config{
 			BaseURL:       container.Config.KYC.BaseURL,
 			AppToken:      container.Config.KYC.APIKey,

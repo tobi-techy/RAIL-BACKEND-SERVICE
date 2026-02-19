@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -108,8 +110,9 @@ func (app *Application) Initialize() error {
 
 // initializeTracing initializes OpenTelemetry tracing
 func (app *Application) initializeTracing() error {
+	tracingEnabled := getBoolEnvOrDefault("OTEL_TRACING_ENABLED", app.cfg.Environment != "test")
 	tracingConfig := tracing.Config{
-		Enabled:      app.cfg.Environment != "test",
+		Enabled:      tracingEnabled,
 		CollectorURL: getEnvOrDefault("OTEL_COLLECTOR_URL", "localhost:4317"),
 		Environment:  app.cfg.Environment,
 		SampleRate:   getSampleRate(app.cfg.Environment),
@@ -200,14 +203,14 @@ func (app *Application) initializeWorkers() error {
 }
 
 func (app *Application) initializeKYCSyncWorker() error {
-	if app.cfg.KYC.Provider != "sumsub" {
+	if !strings.EqualFold(strings.TrimSpace(app.cfg.KYC.Provider), "sumsub") {
 		return nil
 	}
 	if app.container.KYCSyncJobRepo == nil || app.container.KYCSubmissionRepo == nil {
 		return nil
 	}
 
-	var sumsubClient *sumsubadapter.Client
+	var sumsubClient kycservice.SumsubAdapter
 	if app.cfg.KYC.APIKey != "" && app.cfg.KYC.APISecret != "" {
 		sumsubClient = sumsubadapter.NewClient(sumsubadapter.Config{
 			BaseURL:       app.cfg.KYC.BaseURL,
@@ -480,6 +483,19 @@ func getEnvOrDefault(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+func getBoolEnvOrDefault(key string, defaultValue bool) bool {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return defaultValue
+	}
+
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return defaultValue
+	}
+	return parsed
 }
 
 // getSampleRate returns appropriate sampling rate based on environment
