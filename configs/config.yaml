@@ -94,8 +94,8 @@ jwt:
   # Generate with: openssl rand -base64 32
   # Minimum 32 characters required for HMAC-SHA256
   secret: "${JWT_SECRET:-change-this-in-production-insecure-default}"  # MUST BE OVERRIDDEN IN PRODUCTION
-  access_token_ttl: 900      # 15 minutes (short-lived for security)
-  refresh_token_ttl: 604800  # 7 days
+  access_token_ttl: 3600      # 1 hour
+  refresh_token_ttl: 2592000  # 30 days
   issuer: "rail_service"
 
 security:
@@ -121,8 +121,8 @@ security:
   bcrypt_cost: 12                    # Increased from default 10 for stronger hashing
   password_history_count: 5          # Prevent reuse of last 5 passwords
   password_expiration_days: 90       # Force password change every 90 days
-  access_token_ttl: 900              # 15 minutes (override JWT setting)
-  refresh_token_ttl: 604800          # 7 days
+  access_token_ttl: 3600             # 1 hour (override JWT setting)
+  refresh_token_ttl: 2592000         # 30 days
   enable_token_blacklist: true       # Enable token revocation via Redis
   check_password_breaches: true      # Check passwords against HaveIBeenPwned
   captcha_threshold: 3               # Require CAPTCHA after 3 failed login attempts

@@ -539,8 +539,8 @@ func setDefaults() {
 	viper.SetDefault("redis.pool_size", 10)
 
 	// JWT defaults
-	viper.SetDefault("jwt.access_token_ttl", 3600)   // 1 hour
-	viper.SetDefault("jwt.refresh_token_ttl", 86400) // 24 hours
+	viper.SetDefault("jwt.access_token_ttl", 3600)     // 1 hour
+	viper.SetDefault("jwt.refresh_token_ttl", 2592000) // 30 days
 	viper.SetDefault("jwt.issuer", "stack_service")
 
 	// Security defaults
@@ -595,8 +595,8 @@ func setDefaults() {
 	viper.SetDefault("security.bcrypt_cost", 12)                 // Increased from default 10
 	viper.SetDefault("security.password_history_count", 5)       // Track last 5 passwords
 	viper.SetDefault("security.password_expiration_days", 90)    // 90-day password expiration
-	viper.SetDefault("security.access_token_ttl", 900)           // 15 minutes (short-lived)
-	viper.SetDefault("security.refresh_token_ttl", 604800)       // 7 days
+	viper.SetDefault("security.access_token_ttl", 3600)          // 1 hour
+	viper.SetDefault("security.refresh_token_ttl", 2592000)      // 30 days
 	viper.SetDefault("security.enable_token_blacklist", true)    // Enable token revocation
 	viper.SetDefault("security.check_password_breaches", true)   // Check HaveIBeenPwned
 	viper.SetDefault("security.captcha_threshold", 3)            // CAPTCHA after 3 failed attempts
@@ -714,6 +714,40 @@ func overrideFromEnv() {
 	// JWT
 	if jwtSecret := os.Getenv("JWT_SECRET"); jwtSecret != "" {
 		viper.Set("jwt.secret", jwtSecret)
+	}
+	// Backward-compatible token TTL env vars used by existing deployments.
+	if accessTokenTTL := os.Getenv("ACCESS_TOKEN_TTL"); accessTokenTTL != "" {
+		if ttl, err := strconv.Atoi(accessTokenTTL); err == nil {
+			viper.Set("jwt.access_token_ttl", ttl)
+			viper.Set("security.access_token_ttl", ttl)
+		}
+	}
+	if refreshTokenTTL := os.Getenv("REFRESH_TOKEN_TTL"); refreshTokenTTL != "" {
+		if ttl, err := strconv.Atoi(refreshTokenTTL); err == nil {
+			viper.Set("jwt.refresh_token_ttl", ttl)
+			viper.Set("security.refresh_token_ttl", ttl)
+		}
+	}
+	// Optional explicit split overrides.
+	if jwtAccessTokenTTL := os.Getenv("JWT_ACCESS_TOKEN_TTL"); jwtAccessTokenTTL != "" {
+		if ttl, err := strconv.Atoi(jwtAccessTokenTTL); err == nil {
+			viper.Set("jwt.access_token_ttl", ttl)
+		}
+	}
+	if jwtRefreshTokenTTL := os.Getenv("JWT_REFRESH_TOKEN_TTL"); jwtRefreshTokenTTL != "" {
+		if ttl, err := strconv.Atoi(jwtRefreshTokenTTL); err == nil {
+			viper.Set("jwt.refresh_token_ttl", ttl)
+		}
+	}
+	if securityAccessTokenTTL := os.Getenv("SECURITY_ACCESS_TOKEN_TTL"); securityAccessTokenTTL != "" {
+		if ttl, err := strconv.Atoi(securityAccessTokenTTL); err == nil {
+			viper.Set("security.access_token_ttl", ttl)
+		}
+	}
+	if securityRefreshTokenTTL := os.Getenv("SECURITY_REFRESH_TOKEN_TTL"); securityRefreshTokenTTL != "" {
+		if ttl, err := strconv.Atoi(securityRefreshTokenTTL); err == nil {
+			viper.Set("security.refresh_token_ttl", ttl)
+		}
 	}
 
 	// Encryption
