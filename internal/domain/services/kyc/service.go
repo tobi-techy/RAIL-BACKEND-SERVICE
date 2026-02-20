@@ -19,23 +19,48 @@ import (
 )
 
 var (
-	ErrInvalidSSN           = errors.New("invalid SSN format")
-	ErrInvalidITIN          = errors.New("invalid ITIN format")
-	ErrUnsupportedTaxIDType = errors.New("unsupported tax_id_type for issuing_country")
-	ErrInvalidImage         = errors.New("invalid image format")
-	ErrImageTooLarge        = errors.New("image exceeds 10MB limit")
-	ErrKYCAlreadyApproved   = errors.New("KYC already approved")
-	ErrNoBridgeCustomer     = errors.New("no Bridge customer ID found")
-	ErrSumsubNotConfigured  = errors.New("sumsub KYC provider is not configured")
+	ErrInvalidSSN            = errors.New("invalid SSN format")
+	ErrInvalidITIN           = errors.New("invalid ITIN format")
+	ErrUnsupportedTaxIDType  = errors.New("unsupported tax_id_type for issuing_country")
+	ErrInvalidIssuingCountry = errors.New("issuing_country must be an ISO alpha-3 code")
+	ErrInvalidImage          = errors.New("invalid image format")
+	ErrImageTooLarge         = errors.New("image exceeds 10MB limit")
+	ErrKYCAlreadyApproved    = errors.New("KYC already approved")
+	ErrNoBridgeCustomer      = errors.New("no Bridge customer ID found")
+	ErrSumsubNotConfigured   = errors.New("sumsub KYC provider is not configured")
+	ErrMissingTaxID          = errors.New("tax_id is required")
+	ErrMissingTaxIDType      = errors.New("tax_id_type is required")
+	ErrMissingDocumentFront  = errors.New("id_document_front is required")
 
 	sumsubExistingApplicantIDPattern = regexp.MustCompile(`(?i)already exists:\s*([a-z0-9]+)`)
+	isoAlpha3Pattern                 = regexp.MustCompile(`^[A-Z]{3}$`)
+	dataURIImagePattern              = regexp.MustCompile(`^data:(image\/[a-zA-Z0-9.+-]+);base64,`)
 )
 
-const maxImageSize = 10 * 1024 * 1024 // 10MB
+const (
+	maxImageDecodedBytes = 10 * 1024 * 1024 // 10MB
+	// Base64 expands by ~4/3. Keep a hard cap to avoid unnecessary decode work.
+	maxImageEncodedBytes = 14 * 1024 * 1024
+)
 
 const (
 	defaultKYCSyncMaxAttempts = 5
 )
+
+var allowedKYCImageMIMETypes = map[string]struct{}{
+	"image/jpeg": {},
+	"image/jpg":  {},
+	"image/png":  {},
+}
+
+// IncompleteProfileError describes missing user profile fields required before KYC provider submission.
+type IncompleteProfileError struct {
+	MissingFields []string
+}
+
+func (e *IncompleteProfileError) Error() string {
+	return "missing required profile fields for KYC submission"
+}
 
 type BridgeAdapter interface {
 	UpdateCustomer(ctx context.Context, customerID string, req *bridge.UpdateCustomerRequest) (*bridge.Customer, error)
@@ -115,6 +140,12 @@ func NewService(
 // SubmitKYC processes KYC submission to both Bridge and Alpaca.
 // PII is never stored - only provider IDs are persisted.
 func (s *Service) SubmitKYC(ctx context.Context, req *entities.KYCSubmitRequest) (*entities.KYCSubmitResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("missing request")
+	}
+	normalizeKYCSubmitRequest(req)
+	defer scrubKYCSubmitRequest(req)
+
 	s.logger.Info("KYC submission started",
 		zap.String("user_id", req.UserID.String()),
 		zap.String("tax_id_type", req.TaxIDType),
@@ -144,6 +175,9 @@ func (s *Service) SubmitKYC(ctx context.Context, req *entities.KYCSubmitRequest)
 
 	if profile.KYCStatus == "approved" {
 		return nil, ErrKYCAlreadyApproved
+	}
+	if missingFields := collectMissingKYCProfileFields(profile); len(missingFields) > 0 {
+		return nil, &IncompleteProfileError{MissingFields: missingFields}
 	}
 
 	response := &entities.KYCSubmitResponse{
@@ -232,11 +266,6 @@ func (s *Service) SubmitKYC(ctx context.Context, req *entities.KYCSubmitRequest)
 	} else {
 		response.Message = "KYC submitted successfully. You will be notified when verification is complete."
 	}
-
-	// Clear PII from memory
-	req.TaxID = ""
-	req.IDDocumentFront = ""
-	req.IDDocumentBack = ""
 
 	return response, nil
 }
@@ -730,19 +759,33 @@ func (s *Service) submitToBridgeFromSumsub(ctx context.Context, customerID strin
 }
 
 func (s *Service) submitToAlpaca(ctx context.Context, user *entities.UserProfile, req *entities.KYCSubmitRequest) entities.KYCProviderResult {
+	if existingAccountID := strings.TrimSpace(stringValue(user.AlpacaAccountID)); existingAccountID != "" {
+		return entities.KYCProviderResult{
+			Success: true,
+			Status:  fmt.Sprintf("%s:%s", existingAccountID, "existing_account"),
+		}
+	}
+
+	streetAddress := []string{}
+	if street := stringValue(user.AddressStreet); street != "" {
+		streetAddress = append(streetAddress, street)
+	}
+
+	contactCountry := stringValue(user.AddressCountry)
+	if contactCountry == "" {
+		contactCountry = req.IssuingCountry
+	}
+
 	// Build Alpaca account request
 	alpacaReq := &entities.AlpacaCreateAccountRequest{
 		Contact: entities.AlpacaContact{
 			EmailAddress:  user.Email,
 			PhoneNumber:   stringValue(user.Phone),
-			StreetAddress: []string{
-				// Address should be from user profile (stored during signup)
-				// For now, we'll need to add address fields to user table
-			},
-			City:       "", // From user profile
-			State:      "", // From user profile
-			PostalCode: "", // From user profile
-			Country:    req.IssuingCountry,
+			StreetAddress: streetAddress,
+			City:          stringValue(user.AddressCity),
+			State:         stringValue(user.AddressState),
+			PostalCode:    stringValue(user.AddressPostalCode),
+			Country:       contactCountry,
 		},
 		Identity: entities.AlpacaIdentity{
 			GivenName:             stringValue(user.FirstName),
@@ -791,6 +834,18 @@ func (s *Service) submitToAlpaca(ctx context.Context, user *entities.UserProfile
 }
 
 func (s *Service) validateRequest(req *entities.KYCSubmitRequest) error {
+	if req == nil {
+		return fmt.Errorf("missing request")
+	}
+	if req.TaxID == "" {
+		return ErrMissingTaxID
+	}
+	if req.TaxIDType == "" {
+		return ErrMissingTaxIDType
+	}
+	if req.IssuingCountry == "" || !isoAlpha3Pattern.MatchString(req.IssuingCountry) {
+		return ErrInvalidIssuingCountry
+	}
 	if !isTaxIDTypeSupportedForCountry(req.IssuingCountry, req.TaxIDType) {
 		return ErrUnsupportedTaxIDType
 	}
@@ -806,22 +861,16 @@ func (s *Service) validateRequest(req *entities.KYCSubmitRequest) error {
 		}
 	}
 
-	// Validate base64 images
-	if !isValidBase64Image(req.IDDocumentFront) {
-		return ErrInvalidImage
+	if req.IDDocumentFront == "" {
+		return ErrMissingDocumentFront
 	}
-
-	if req.IDDocumentBack != "" && !isValidBase64Image(req.IDDocumentBack) {
-		return ErrInvalidImage
+	if err := validateKYCImageDataURI(req.IDDocumentFront); err != nil {
+		return err
 	}
-
-	// Check image sizes
-	if len(req.IDDocumentFront) > maxImageSize {
-		return ErrImageTooLarge
-	}
-
-	if len(req.IDDocumentBack) > maxImageSize {
-		return ErrImageTooLarge
+	if req.IDDocumentBack != "" {
+		if err := validateKYCImageDataURI(req.IDDocumentBack); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -847,6 +896,69 @@ func (s *Service) validateSumsubSessionRequest(req *entities.KYCSumsubSessionReq
 	return nil
 }
 
+func normalizeKYCSubmitRequest(req *entities.KYCSubmitRequest) {
+	if req == nil {
+		return
+	}
+	req.TaxID = strings.TrimSpace(req.TaxID)
+	req.TaxIDType = strings.ToLower(strings.TrimSpace(req.TaxIDType))
+	req.IssuingCountry = strings.ToUpper(strings.TrimSpace(req.IssuingCountry))
+	req.IDDocumentFront = strings.TrimSpace(req.IDDocumentFront)
+	req.IDDocumentBack = strings.TrimSpace(req.IDDocumentBack)
+}
+
+func scrubKYCSubmitRequest(req *entities.KYCSubmitRequest) {
+	if req == nil {
+		return
+	}
+	req.TaxID = ""
+	req.IDDocumentFront = ""
+	req.IDDocumentBack = ""
+}
+
+func collectMissingKYCProfileFields(profile *entities.UserProfile) []string {
+	if profile == nil {
+		return []string{
+			"first_name",
+			"last_name",
+			"date_of_birth",
+			"phone",
+			"address_street",
+			"address_city",
+			"address_postal_code",
+			"address_country",
+		}
+	}
+
+	missing := make([]string, 0, 8)
+	if strings.TrimSpace(stringValue(profile.FirstName)) == "" {
+		missing = append(missing, "first_name")
+	}
+	if strings.TrimSpace(stringValue(profile.LastName)) == "" {
+		missing = append(missing, "last_name")
+	}
+	if profile.DateOfBirth == nil {
+		missing = append(missing, "date_of_birth")
+	}
+	if strings.TrimSpace(stringValue(profile.Phone)) == "" {
+		missing = append(missing, "phone")
+	}
+	if strings.TrimSpace(stringValue(profile.AddressStreet)) == "" {
+		missing = append(missing, "address_street")
+	}
+	if strings.TrimSpace(stringValue(profile.AddressCity)) == "" {
+		missing = append(missing, "address_city")
+	}
+	if strings.TrimSpace(stringValue(profile.AddressPostalCode)) == "" {
+		missing = append(missing, "address_postal_code")
+	}
+	if strings.TrimSpace(stringValue(profile.AddressCountry)) == "" {
+		missing = append(missing, "address_country")
+	}
+
+	return missing
+}
+
 func isValidSSN(ssn string) bool {
 	// Remove dashes
 	ssn = strings.ReplaceAll(ssn, "-", "")
@@ -868,21 +980,42 @@ func isValidITIN(itin string) bool {
 	return matched
 }
 
-func isValidBase64Image(data string) bool {
-	// Check for data URI prefix
-	if !strings.HasPrefix(data, "data:image/") {
-		return false
+func validateKYCImageDataURI(dataURI string) error {
+	if len(dataURI) > maxImageEncodedBytes {
+		return ErrImageTooLarge
 	}
 
-	// Extract base64 part
-	parts := strings.Split(data, ",")
+	headerMatch := dataURIImagePattern.FindStringSubmatch(dataURI)
+	if len(headerMatch) != 2 {
+		return ErrInvalidImage
+	}
+	mimeType := strings.ToLower(strings.TrimSpace(headerMatch[1]))
+	if _, ok := allowedKYCImageMIMETypes[mimeType]; !ok {
+		return ErrInvalidImage
+	}
+
+	parts := strings.SplitN(dataURI, ",", 2)
 	if len(parts) != 2 {
-		return false
+		return ErrInvalidImage
 	}
 
-	// Validate base64
-	_, err := base64.StdEncoding.DecodeString(parts[1])
-	return err == nil
+	base64Payload := strings.TrimSpace(parts[1])
+	if base64Payload == "" {
+		return ErrInvalidImage
+	}
+	if base64.StdEncoding.DecodedLen(len(base64Payload)) > maxImageDecodedBytes {
+		return ErrImageTooLarge
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(base64Payload)
+	if err != nil {
+		return ErrInvalidImage
+	}
+	if len(decoded) == 0 {
+		return ErrInvalidImage
+	}
+
+	return nil
 }
 
 func mapTaxIDTypeToBridge(taxIDType string) string {

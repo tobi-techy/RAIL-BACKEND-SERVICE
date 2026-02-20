@@ -347,6 +347,12 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 	user.LastName = &req.LastName
 	user.Phone = req.Phone
 	user.DateOfBirth = req.DateOfBirth
+	user.Country = stringPtrOrNil(strings.ToUpper(strings.TrimSpace(req.Country)))
+	user.AddressStreet = stringPtrOrNil(req.Address.Street)
+	user.AddressCity = stringPtrOrNil(req.Address.City)
+	user.AddressState = stringPtrOrNil(req.Address.State)
+	user.AddressPostalCode = stringPtrOrNil(req.Address.PostalCode)
+	user.AddressCountry = stringPtrOrNil(strings.ToUpper(strings.TrimSpace(req.Address.Country)))
 	user.UpdatedAt = time.Now()
 
 	// Create Bridge customer with minimal data (no KYC yet)
@@ -1072,6 +1078,14 @@ func getStringValue(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+func stringPtrOrNil(value string) *string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
 }
 
 // countryAlpha2ToAlpha3 converts ISO 3166-1 alpha-2 to alpha-3 country codes

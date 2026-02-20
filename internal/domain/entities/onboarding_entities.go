@@ -110,6 +110,12 @@ type UserProfile struct {
 	LastName           *string          `json:"last_name" db:"last_name"`
 	DateOfBirth        *time.Time       `json:"date_of_birth" db:"date_of_birth"`
 	Phone              *string          `json:"phone" db:"phone" validate:"omitempty,e164"`
+	Country            *string          `json:"country,omitempty" db:"country"`
+	AddressStreet      *string          `json:"address_street,omitempty" db:"address_street"`
+	AddressCity        *string          `json:"address_city,omitempty" db:"address_city"`
+	AddressState       *string          `json:"address_state,omitempty" db:"address_state"`
+	AddressPostalCode  *string          `json:"address_postal_code,omitempty" db:"address_postal_code"`
+	AddressCountry     *string          `json:"address_country,omitempty" db:"address_country"`
 	PhoneVerified      bool             `json:"phone_verified" db:"phone_verified"`
 	EmailVerified      bool             `json:"email_verified" db:"email_verified"`
 	OnboardingStatus   OnboardingStatus `json:"onboarding_status" db:"onboarding_status"`

@@ -72,7 +72,7 @@ func (r *UserRepository) Create(ctx context.Context, user *entities.UserProfile)
 // GetByID retrieves a user by ID
 func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.UserProfile, error) {
 	query := `
-	        SELECT id, email, phone, first_name, last_name, date_of_birth,
+	        SELECT id, email, phone, country, address_street, address_city, address_state, address_postal_code, address_country, first_name, last_name, date_of_birth,
 	               auth_provider_id, email_verified, phone_verified,
 	               onboarding_status, kyc_status, kyc_provider_ref, kyc_submitted_at,
 	               kyc_approved_at, kyc_rejection_reason, bridge_customer_id, alpaca_account_id,
@@ -82,7 +82,7 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.U
 
 	user := &entities.UserProfile{}
 	var kycSubmittedAt, kycApprovedAt sql.NullTime
-	var kycProviderRef, kycRejectionReason, bridgeCustomerID, alpacaAccountID sql.NullString
+	var kycProviderRef, kycRejectionReason, bridgeCustomerID, alpacaAccountID, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry sql.NullString
 	var firstName, lastName sql.NullString
 	var dateOfBirth sql.NullTime
 
@@ -90,6 +90,12 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.U
 		&user.ID,
 		&user.Email,
 		&user.Phone,
+		&country,
+		&addressStreet,
+		&addressCity,
+		&addressState,
+		&addressPostalCode,
+		&addressCountry,
 		&firstName,
 		&lastName,
 		&dateOfBirth,
@@ -126,6 +132,24 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.U
 	if dateOfBirth.Valid {
 		user.DateOfBirth = &dateOfBirth.Time
 	}
+	if country.Valid {
+		user.Country = &country.String
+	}
+	if addressStreet.Valid {
+		user.AddressStreet = &addressStreet.String
+	}
+	if addressCity.Valid {
+		user.AddressCity = &addressCity.String
+	}
+	if addressState.Valid {
+		user.AddressState = &addressState.String
+	}
+	if addressPostalCode.Valid {
+		user.AddressPostalCode = &addressPostalCode.String
+	}
+	if addressCountry.Valid {
+		user.AddressCountry = &addressCountry.String
+	}
 	if kycProviderRef.Valid {
 		user.KYCProviderRef = &kycProviderRef.String
 	}
@@ -151,7 +175,7 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.U
 // GetByEmail retrieves a user by email
 func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*entities.UserProfile, error) {
 	query := `
-	        SELECT id, email, phone, first_name, last_name, date_of_birth,
+	        SELECT id, email, phone, country, address_street, address_city, address_state, address_postal_code, address_country, first_name, last_name, date_of_birth,
 	               auth_provider_id, email_verified, phone_verified,
 	               onboarding_status, kyc_status, kyc_provider_ref, kyc_submitted_at,
 	               kyc_approved_at, kyc_rejection_reason, bridge_customer_id, alpaca_account_id,
@@ -161,7 +185,7 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*entitie
 
 	user := &entities.UserProfile{}
 	var kycSubmittedAt, kycApprovedAt sql.NullTime
-	var kycProviderRef, kycRejectionReason, bridgeCustomerID, alpacaAccountID sql.NullString
+	var kycProviderRef, kycRejectionReason, bridgeCustomerID, alpacaAccountID, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry sql.NullString
 	var firstName, lastName sql.NullString
 	var dateOfBirth sql.NullTime
 
@@ -169,6 +193,12 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*entitie
 		&user.ID,
 		&user.Email,
 		&user.Phone,
+		&country,
+		&addressStreet,
+		&addressCity,
+		&addressState,
+		&addressPostalCode,
+		&addressCountry,
 		&firstName,
 		&lastName,
 		&dateOfBirth,
@@ -205,6 +235,24 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*entitie
 	if dateOfBirth.Valid {
 		user.DateOfBirth = &dateOfBirth.Time
 	}
+	if country.Valid {
+		user.Country = &country.String
+	}
+	if addressStreet.Valid {
+		user.AddressStreet = &addressStreet.String
+	}
+	if addressCity.Valid {
+		user.AddressCity = &addressCity.String
+	}
+	if addressState.Valid {
+		user.AddressState = &addressState.String
+	}
+	if addressPostalCode.Valid {
+		user.AddressPostalCode = &addressPostalCode.String
+	}
+	if addressCountry.Valid {
+		user.AddressCountry = &addressCountry.String
+	}
 	if kycProviderRef.Valid {
 		user.KYCProviderRef = &kycProviderRef.String
 	}
@@ -230,7 +278,7 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*entitie
 // GetByAuthProviderID retrieves a user by auth provider ID
 func (r *UserRepository) GetByAuthProviderID(ctx context.Context, authProviderID string) (*entities.UserProfile, error) {
 	query := `
-	        SELECT id, email, phone, first_name, last_name, date_of_birth,
+	        SELECT id, email, phone, country, address_street, address_city, address_state, address_postal_code, address_country, first_name, last_name, date_of_birth,
 	               auth_provider_id, email_verified, phone_verified,
 	               onboarding_status, kyc_status, kyc_provider_ref, kyc_submitted_at,
 	               kyc_approved_at, kyc_rejection_reason, bridge_customer_id, alpaca_account_id,
@@ -240,7 +288,7 @@ func (r *UserRepository) GetByAuthProviderID(ctx context.Context, authProviderID
 
 	user := &entities.UserProfile{}
 	var kycSubmittedAt, kycApprovedAt sql.NullTime
-	var kycProviderRef, kycRejectionReason, bridgeCustomerID, alpacaAccountID sql.NullString
+	var kycProviderRef, kycRejectionReason, bridgeCustomerID, alpacaAccountID, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry sql.NullString
 	var firstName, lastName sql.NullString
 	var dateOfBirth sql.NullTime
 
@@ -248,6 +296,12 @@ func (r *UserRepository) GetByAuthProviderID(ctx context.Context, authProviderID
 		&user.ID,
 		&user.Email,
 		&user.Phone,
+		&country,
+		&addressStreet,
+		&addressCity,
+		&addressState,
+		&addressPostalCode,
+		&addressCountry,
 		&firstName,
 		&lastName,
 		&dateOfBirth,
@@ -284,6 +338,24 @@ func (r *UserRepository) GetByAuthProviderID(ctx context.Context, authProviderID
 	if dateOfBirth.Valid {
 		user.DateOfBirth = &dateOfBirth.Time
 	}
+	if country.Valid {
+		user.Country = &country.String
+	}
+	if addressStreet.Valid {
+		user.AddressStreet = &addressStreet.String
+	}
+	if addressCity.Valid {
+		user.AddressCity = &addressCity.String
+	}
+	if addressState.Valid {
+		user.AddressState = &addressState.String
+	}
+	if addressPostalCode.Valid {
+		user.AddressPostalCode = &addressPostalCode.String
+	}
+	if addressCountry.Valid {
+		user.AddressCountry = &addressCountry.String
+	}
 	if kycProviderRef.Valid {
 		user.KYCProviderRef = &kycProviderRef.String
 	}
@@ -311,11 +383,12 @@ func (r *UserRepository) Update(ctx context.Context, user *entities.UserProfile)
 	query := `
 		UPDATE users SET 
 			email = $2, phone = $3, first_name = $4, last_name = $5, 
-			date_of_birth = $6, auth_provider_id = $7, email_verified = $8, 
-			phone_verified = $9, onboarding_status = $10, kyc_status = $11,
-			kyc_provider_ref = $12, kyc_submitted_at = $13,
-			kyc_approved_at = $14, kyc_rejection_reason = $15,
-			bridge_customer_id = $16, alpaca_account_id = $17, updated_at = $18
+			date_of_birth = $6, country = $7, address_street = $8, address_city = $9, address_state = $10, address_postal_code = $11, address_country = $12,
+			auth_provider_id = $13, email_verified = $14, 
+			phone_verified = $15, onboarding_status = $16, kyc_status = $17,
+			kyc_provider_ref = $18, kyc_submitted_at = $19,
+			kyc_approved_at = $20, kyc_rejection_reason = $21,
+			bridge_customer_id = $22, alpaca_account_id = $23, updated_at = $24
 		WHERE id = $1`
 
 	_, err := r.db.ExecContext(ctx, query,
@@ -325,6 +398,12 @@ func (r *UserRepository) Update(ctx context.Context, user *entities.UserProfile)
 		user.FirstName,
 		user.LastName,
 		user.DateOfBirth,
+		user.Country,
+		user.AddressStreet,
+		user.AddressCity,
+		user.AddressState,
+		user.AddressPostalCode,
+		user.AddressCountry,
 		user.AuthProviderID,
 		user.EmailVerified,
 		user.PhoneVerified,
@@ -677,7 +756,7 @@ func (r *UserRepository) GetUserByPhoneForLogin(ctx context.Context, phone strin
 // GetUserEntityByID retrieves a user as User entity by ID (excludes sensitive fields like password)
 func (r *UserRepository) GetUserEntityByID(ctx context.Context, id uuid.UUID) (*entities.User, error) {
 	query := `
-			SELECT id, email, phone, auth_provider_id,
+			SELECT id, email, phone, country, address_street, address_city, address_state, address_postal_code, address_country, auth_provider_id,
 			       email_verified, phone_verified, onboarding_status, kyc_status,
 			       kyc_provider_ref, kyc_submitted_at, kyc_approved_at, kyc_rejection_reason,
 			       role, is_active, last_login_at, created_at, updated_at,
@@ -687,12 +766,18 @@ func (r *UserRepository) GetUserEntityByID(ctx context.Context, id uuid.UUID) (*
 
 	user := &entities.User{}
 	var kycSubmittedAt, kycApprovedAt, lastLoginAt sql.NullTime
-	var kycRejectionReason, kycProviderRef, bridgeCustomerID, alpacaAccountID, bridgeKYCStatus, bridgeKYCLink sql.NullString
+	var kycRejectionReason, kycProviderRef, bridgeCustomerID, alpacaAccountID, bridgeKYCStatus, bridgeKYCLink, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry sql.NullString
 
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
 		&user.ID,
 		&user.Email,
 		&user.Phone,
+		&country,
+		&addressStreet,
+		&addressCity,
+		&addressState,
+		&addressPostalCode,
+		&addressCountry,
 		&user.AuthProviderID,
 		&user.EmailVerified,
 		&user.PhoneVerified,
@@ -737,6 +822,24 @@ func (r *UserRepository) GetUserEntityByID(ctx context.Context, id uuid.UUID) (*
 	if lastLoginAt.Valid {
 		user.LastLoginAt = &lastLoginAt.Time
 	}
+	if country.Valid {
+		user.Country = &country.String
+	}
+	if addressStreet.Valid {
+		user.AddressStreet = &addressStreet.String
+	}
+	if addressCity.Valid {
+		user.AddressCity = &addressCity.String
+	}
+	if addressState.Valid {
+		user.AddressState = &addressState.String
+	}
+	if addressPostalCode.Valid {
+		user.AddressPostalCode = &addressPostalCode.String
+	}
+	if addressCountry.Valid {
+		user.AddressCountry = &addressCountry.String
+	}
 	if bridgeCustomerID.Valid {
 		user.BridgeCustomerID = &bridgeCustomerID.String
 	}
@@ -761,32 +864,44 @@ func (r *UserRepository) GetProfileByUserID(ctx context.Context, userID uuid.UUI
 // UpdateUserEntity updates mutable fields from entities.User without clobbering profile columns.
 func (r *UserRepository) UpdateUserEntity(ctx context.Context, user *entities.User) error {
 	query := `
-		UPDATE users SET
-			email = $2,
-			phone = $3,
-			auth_provider_id = $4,
-			email_verified = $5,
-			phone_verified = $6,
-			onboarding_status = $7,
-			kyc_status = $8,
-			kyc_provider_ref = $9,
-			kyc_submitted_at = $10,
-			kyc_approved_at = $11,
-			kyc_rejection_reason = $12,
-			bridge_customer_id = $13,
-			alpaca_account_id = $14,
-			bridge_kyc_status = $15,
-			bridge_kyc_link = $16,
-			role = $17,
-			is_active = $18,
-			last_login_at = $19,
-			updated_at = $20
-		WHERE id = $1`
+			UPDATE users SET
+				email = $2,
+				phone = $3,
+				country = $4,
+				address_street = $5,
+				address_city = $6,
+				address_state = $7,
+				address_postal_code = $8,
+				address_country = $9,
+				auth_provider_id = $10,
+				email_verified = $11,
+				phone_verified = $12,
+				onboarding_status = $13,
+				kyc_status = $14,
+				kyc_provider_ref = $15,
+				kyc_submitted_at = $16,
+				kyc_approved_at = $17,
+				kyc_rejection_reason = $18,
+				bridge_customer_id = $19,
+				alpaca_account_id = $20,
+				bridge_kyc_status = $21,
+				bridge_kyc_link = $22,
+				role = $23,
+				is_active = $24,
+				last_login_at = $25,
+				updated_at = $26
+			WHERE id = $1`
 
 	_, err := r.db.ExecContext(ctx, query,
 		user.ID,
 		user.Email,
 		user.Phone,
+		user.Country,
+		user.AddressStreet,
+		user.AddressCity,
+		user.AddressState,
+		user.AddressPostalCode,
+		user.AddressCountry,
 		user.AuthProviderID,
 		user.EmailVerified,
 		user.PhoneVerified,
@@ -1133,7 +1248,7 @@ func (r *UserRepository) ValidatePasswordResetToken(ctx context.Context, rawToke
 // GetByPhone retrieves a user profile by phone number
 func (r *UserRepository) GetByPhone(ctx context.Context, phone string) (*entities.UserProfile, error) {
 	query := `
-	        SELECT id, email, phone, first_name, last_name, date_of_birth,
+	        SELECT id, email, phone, country, address_street, address_city, address_state, address_postal_code, address_country, first_name, last_name, date_of_birth,
 	               auth_provider_id, email_verified, phone_verified,
 	               onboarding_status, kyc_status, kyc_provider_ref,
 	               kyc_submitted_at, kyc_approved_at, kyc_rejection_reason,
@@ -1144,7 +1259,7 @@ func (r *UserRepository) GetByPhone(ctx context.Context, phone string) (*entitie
 
 	user := &entities.UserProfile{}
 	var kycApprovedAt, kycSubmittedAt sql.NullTime
-	var kycRejectionReason, kycProviderRef, bridgeCustomerID, alpacaAccountID sql.NullString
+	var kycRejectionReason, kycProviderRef, bridgeCustomerID, alpacaAccountID, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry sql.NullString
 	var firstName, lastName sql.NullString
 	var dateOfBirth sql.NullTime
 
@@ -1152,6 +1267,12 @@ func (r *UserRepository) GetByPhone(ctx context.Context, phone string) (*entitie
 		&user.ID,
 		&user.Email,
 		&user.Phone,
+		&country,
+		&addressStreet,
+		&addressCity,
+		&addressState,
+		&addressPostalCode,
+		&addressCountry,
 		&firstName,
 		&lastName,
 		&dateOfBirth,
@@ -1187,6 +1308,24 @@ func (r *UserRepository) GetByPhone(ctx context.Context, phone string) (*entitie
 	}
 	if dateOfBirth.Valid {
 		user.DateOfBirth = &dateOfBirth.Time
+	}
+	if country.Valid {
+		user.Country = &country.String
+	}
+	if addressStreet.Valid {
+		user.AddressStreet = &addressStreet.String
+	}
+	if addressCity.Valid {
+		user.AddressCity = &addressCity.String
+	}
+	if addressState.Valid {
+		user.AddressState = &addressState.String
+	}
+	if addressPostalCode.Valid {
+		user.AddressPostalCode = &addressPostalCode.String
+	}
+	if addressCountry.Valid {
+		user.AddressCountry = &addressCountry.String
 	}
 	if kycProviderRef.Valid {
 		user.KYCProviderRef = &kycProviderRef.String

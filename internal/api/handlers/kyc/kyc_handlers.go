@@ -2,8 +2,10 @@ package kyc
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -18,6 +20,8 @@ type Handler struct {
 	kycService *kyc.Service
 	logger     *logger.Logger
 }
+
+const maxKYCSubmitBodyBytes = 30 * 1024 * 1024
 
 func NewHandler(kycService *kyc.Service, log *logger.Logger) *Handler {
 	return &Handler{
@@ -48,6 +52,8 @@ func (h *Handler) SubmitKYC(c *gin.Context) {
 		return
 	}
 
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxKYCSubmitBodyBytes)
+
 	// Parse request
 	var req entities.KYCSubmitRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -55,6 +61,12 @@ func (h *Handler) SubmitKYC(c *gin.Context) {
 			zap.Error(err),
 			zap.String("user_id", userID.String()),
 		)
+		if strings.Contains(strings.ToLower(err.Error()), "request body too large") {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{
+				"error": "KYC payload too large",
+			})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Invalid request format",
 		})
@@ -81,8 +93,16 @@ func (h *Handler) SubmitKYC(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ITIN format"})
 		case kyc.ErrUnsupportedTaxIDType:
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Unsupported tax_id_type for issuing_country"})
+		case kyc.ErrInvalidIssuingCountry:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "issuing_country must be a valid ISO alpha-3 code"})
+		case kyc.ErrMissingTaxID:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "tax_id is required"})
+		case kyc.ErrMissingTaxIDType:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "tax_id_type is required"})
+		case kyc.ErrMissingDocumentFront:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "id_document_front is required"})
 		case kyc.ErrInvalidImage:
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid image format"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid image format. Use data:image/jpeg;base64,... or data:image/png;base64,..."})
 		case kyc.ErrImageTooLarge:
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Image exceeds 10MB limit"})
 		case kyc.ErrKYCAlreadyApproved:
@@ -90,6 +110,14 @@ func (h *Handler) SubmitKYC(c *gin.Context) {
 		case kyc.ErrNoBridgeCustomer:
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Complete signup first"})
 		default:
+			var incompleteProfileErr *kyc.IncompleteProfileError
+			if errors.As(err, &incompleteProfileErr) {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error":          "Complete your profile details before KYC submission",
+					"missing_fields": incompleteProfileErr.MissingFields,
+				})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to submit KYC"})
 		}
 		return
