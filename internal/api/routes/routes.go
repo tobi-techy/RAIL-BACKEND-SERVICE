@@ -2,6 +2,7 @@ package routes
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -28,6 +29,29 @@ import (
 
 type SessionValidatorAdapter struct {
 	svc *session.Service
+}
+
+type WithdrawalWalletProviderAdapter struct {
+	getWalletByUserAndChain func(context.Context, uuid.UUID, entities.WalletChain) (*entities.ManagedWallet, error)
+}
+
+func (a *WithdrawalWalletProviderAdapter) GetUserWalletByChain(ctx context.Context, userID uuid.UUID, chain string) (*entities.ManagedWallet, error) {
+	if a == nil || a.getWalletByUserAndChain == nil {
+		return nil, fmt.Errorf("wallet provider not configured")
+	}
+
+	normalized := entities.WalletChain(strings.ToUpper(strings.TrimSpace(chain)))
+	wallet, err := a.getWalletByUserAndChain(ctx, userID, normalized)
+	if err == nil {
+		return wallet, nil
+	}
+
+	// Backward-compatible fallback for environments that still store Solana wallets as SOL-DEVNET.
+	if normalized == entities.WalletChainSolana {
+		return a.getWalletByUserAndChain(ctx, userID, entities.WalletChainSOLDevnet)
+	}
+
+	return nil, err
 }
 
 func NewSessionValidatorAdapter(svc *session.Service) *SessionValidatorAdapter {
@@ -116,6 +140,13 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	if allocationSvc := container.GetAllocationService(); allocationSvc != nil {
 		walletFundingHandlers.SetAllocationBalanceProvider(allocationSvc)
 	}
+	withdrawalHandlers := handlers.NewWithdrawalHandlers(
+		container.GetWithdrawalService(),
+		&WithdrawalWalletProviderAdapter{
+			getWalletByUserAndChain: container.GetWalletService().GetWalletByUserAndChain,
+		},
+		container.Logger,
+	)
 
 	authHandlers := handlers.NewAuthHandlers(
 		container.DB,
@@ -394,10 +425,14 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				))
 			}
 			{
-				withdrawals.POST("", walletFundingHandlers.InitiateWithdrawal)
-				withdrawals.GET("", walletFundingHandlers.GetUserWithdrawals)
-				withdrawals.GET("/:withdrawalId", walletFundingHandlers.GetWithdrawal)
-				withdrawals.DELETE("/:withdrawalId", walletFundingHandlers.CancelWithdrawalRequest)
+				// Keep POST /withdrawals for backward compatibility and treat it as crypto withdrawal.
+				withdrawals.POST("", withdrawalHandlers.InitiateCryptoWithdrawal)
+				withdrawals.POST("/crypto", withdrawalHandlers.InitiateCryptoWithdrawal)
+				withdrawals.POST("/fiat", withdrawalHandlers.InitiateFiatWithdrawal)
+				withdrawals.GET("/fees", withdrawalHandlers.GetWithdrawalFees)
+				withdrawals.GET("", withdrawalHandlers.GetUserWithdrawals)
+				withdrawals.GET("/:withdrawalId", withdrawalHandlers.GetWithdrawal)
+				withdrawals.DELETE("/:withdrawalId", withdrawalHandlers.CancelWithdrawal)
 			}
 
 			// Account routes - Station (home screen) endpoint
