@@ -3,6 +3,7 @@ package withdrawal
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -112,6 +113,12 @@ type WithdrawalService struct {
 	circleClient        CircleClient
 	bridgeAdapter       BridgeAdapter
 	logger              *logger.Logger
+}
+
+type CryptoTransferResult struct {
+	TxHash     string
+	TransferID string
+	State      string
 }
 
 // NewWithdrawalService creates a new withdrawal service
@@ -235,7 +242,7 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	}
 
 	// Step 7: Execute Circle transfer
-	txHash, err := s.executeCryptoTransfer(ctx, withdrawal, req.DestinationAddress, req.DestinationChain)
+	transferResult, err := s.executeCryptoTransfer(ctx, withdrawal, req.DestinationAddress, req.DestinationChain)
 	if err != nil {
 		s.logger.Error("Failed to execute crypto transfer", "error", err)
 		// Mark withdrawal as failed
@@ -243,14 +250,59 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 		return nil, fmt.Errorf("failed to execute transfer: %w", err)
 	}
 
-	// Update tx hash
-	if txHash != "" {
-		if err := s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, txHash); err != nil {
+	// Persist provider transfer reference when available (reuses bridge_transfer_id column).
+	if transferResult.TransferID != "" {
+		if err := s.withdrawalRepo.UpdateBridgeTransfer(ctx, withdrawal.ID, transferResult.TransferID); err != nil {
+			s.logger.Error("Failed to update transfer ID", "error", err)
+		}
+	}
+
+	// Update tx hash when available.
+	if transferResult.TxHash != "" {
+		if err := s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, transferResult.TxHash); err != nil {
 			s.logger.Error("Failed to update tx hash", "error", err)
 		}
 	}
 
-	// Step 8: Update status to completed (Circle transfers are instant)
+	// Circle transfer requests can complete asynchronously.
+	// Only mark completed when Circle explicitly reports a final successful state.
+	state := strings.ToUpper(strings.TrimSpace(transferResult.State))
+	isFinalSuccess := state == "COMPLETE" || state == "COMPLETED" || state == "CONFIRMED" || state == "SUCCESS"
+
+	if !isFinalSuccess {
+		if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusProcessing); err != nil {
+			s.logger.Error("Failed to mark withdrawal processing", "error", err)
+			return nil, fmt.Errorf("failed to update withdrawal status: %w", err)
+		}
+		withdrawal.Status = entities.WithdrawalStatusProcessing
+
+		s.logger.Info("Crypto withdrawal submitted and processing",
+			"withdrawal_id", withdrawal.ID.String(),
+			"amount", req.Amount.String(),
+			"state", transferResult.State,
+			"transfer_id", transferResult.TransferID)
+
+		return &entities.InitiateWithdrawalResponse{
+			WithdrawalID: withdrawal.ID,
+			Status:       withdrawal.Status,
+			Message:      "Withdrawal submitted and is processing",
+		}, nil
+	}
+
+	// Step 8: Final success path.
+	if err := s.postWithdrawalLedgerEntries(ctx, withdrawal); err != nil {
+		s.logger.Error("Failed to post withdrawal ledger entries", "error", err, "withdrawal_id", withdrawal.ID.String())
+		if statusErr := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusProcessing); statusErr != nil {
+			s.logger.Error("Failed to keep withdrawal in processing state after ledger failure", "error", statusErr, "withdrawal_id", withdrawal.ID.String())
+		}
+		withdrawal.Status = entities.WithdrawalStatusProcessing
+		return &entities.InitiateWithdrawalResponse{
+			WithdrawalID: withdrawal.ID,
+			Status:       withdrawal.Status,
+			Message:      "Withdrawal submitted and is processing",
+		}, nil
+	}
+
 	now := time.Now()
 	if err := s.withdrawalRepo.MarkCompleted(ctx, withdrawal.ID); err != nil {
 		s.logger.Error("Failed to mark withdrawal completed", "error", err)
@@ -274,7 +326,7 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	s.logger.Info("Crypto withdrawal completed",
 		"withdrawal_id", withdrawal.ID.String(),
 		"amount", req.Amount.String(),
-		"tx_hash", txHash)
+		"tx_hash", transferResult.TxHash)
 
 	return &entities.InitiateWithdrawalResponse{
 		WithdrawalID: withdrawal.ID,
@@ -589,17 +641,55 @@ func (s *WithdrawalService) GetUserWithdrawals(ctx context.Context, userID uuid.
 
 // getSourceBalance gets the balance for the specified source account
 func (s *WithdrawalService) getSourceBalance(ctx context.Context, userID uuid.UUID, sourceAccount entities.WithdrawalSourceAccount) (decimal.Decimal, error) {
-	var accountType entities.AccountType
-	switch sourceAccount {
-	case entities.WithdrawalSourceSpendingBalance:
-		accountType = entities.AccountTypeSpendingBalance
-	case entities.WithdrawalSourceStashBalance:
-		accountType = entities.AccountTypeStashBalance
-	default:
-		return decimal.Zero, fmt.Errorf("invalid source account: %s", sourceAccount)
+	accountType, err := mapWithdrawalSourceToAccountType(sourceAccount)
+	if err != nil {
+		return decimal.Zero, err
 	}
 
 	return s.ledgerService.GetAccountBalance(ctx, userID, accountType)
+}
+
+func mapWithdrawalSourceToAccountType(sourceAccount entities.WithdrawalSourceAccount) (entities.AccountType, error) {
+	switch sourceAccount {
+	case entities.WithdrawalSourceSpendingBalance:
+		return entities.AccountTypeSpendingBalance, nil
+	case entities.WithdrawalSourceStashBalance:
+		return entities.AccountTypeStashBalance, nil
+	default:
+		return "", fmt.Errorf("invalid source account: %s", sourceAccount)
+	}
+}
+
+func (s *WithdrawalService) postWithdrawalLedgerEntries(ctx context.Context, withdrawal *entities.Withdrawal) error {
+	if s.ledgerService == nil {
+		return fmt.Errorf("ledger service not configured")
+	}
+
+	accountType, err := mapWithdrawalSourceToAccountType(withdrawal.SourceAccount)
+	if err != nil {
+		return err
+	}
+
+	metadata := map[string]interface{}{
+		"withdrawal_id":   withdrawal.ID.String(),
+		"withdrawal_type": string(withdrawal.WithdrawalType),
+		"source_account":  string(withdrawal.SourceAccount),
+	}
+	if withdrawal.DestinationAddress != nil {
+		metadata["destination_address"] = *withdrawal.DestinationAddress
+	}
+	if withdrawal.BridgeTransferID != nil {
+		metadata["provider_transfer_id"] = *withdrawal.BridgeTransferID
+	}
+
+	return s.ledgerService.CreateTransaction(
+		ctx,
+		withdrawal.UserID,
+		accountType,
+		entities.TransactionTypeWithdrawal,
+		withdrawal.Amount,
+		metadata,
+	)
 }
 
 // calculateCryptoWithdrawalFee calculates the fee for a crypto withdrawal
@@ -628,14 +718,14 @@ func (s *WithdrawalService) calculateFiatWithdrawalFee(amount decimal.Decimal, c
 }
 
 // executeCryptoTransfer executes a crypto transfer via Circle
-func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, destinationChain string) (string, error) {
+func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, destinationChain string) (*CryptoTransferResult, error) {
 	if s.circleClient == nil {
-		return "", fmt.Errorf("circle client not configured")
+		return nil, fmt.Errorf("circle client not configured")
 	}
 
 	walletID := withdrawal.CircleWalletID
 	if walletID == nil || *walletID == "" {
-		return "", fmt.Errorf("circle wallet ID not provided")
+		return nil, fmt.Errorf("circle wallet ID not provided")
 	}
 
 	// Format amount for Circle API (USDC uses 6 decimals)
@@ -657,23 +747,51 @@ func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawa
 
 	response, err := s.circleClient.TransferFunds(ctx, req)
 	if err != nil {
-		return "", fmt.Errorf("circle transfer failed: %w", err)
+		return nil, fmt.Errorf("circle transfer failed: %w", err)
 	}
 
-	// Extract transaction hash from response
-	// The response format depends on Circle's API
-	var txHash string
-	if txHashVal, ok := response["transactionHash"].(string); ok {
-		txHash = txHashVal
-	} else if txHashVal, ok := response["txHash"].(string); ok {
-		txHash = txHashVal
+	result := &CryptoTransferResult{}
+
+	// Response may be wrapped in data.transaction.
+	payload := response
+	if data, ok := response["data"].(map[string]interface{}); ok {
+		if tx, ok := data["transaction"].(map[string]interface{}); ok {
+			payload = tx
+		} else {
+			payload = data
+		}
+	}
+
+	if id, ok := payload["id"].(string); ok {
+		result.TransferID = id
+	}
+	if state, ok := payload["state"].(string); ok {
+		result.State = state
+	}
+	if txHashVal, ok := payload["transactionHash"].(string); ok {
+		result.TxHash = txHashVal
+	} else if txHashVal, ok := payload["txHash"].(string); ok {
+		result.TxHash = txHashVal
+	}
+
+	state := strings.ToUpper(strings.TrimSpace(result.State))
+	if state == "FAILED" || state == "REJECTED" || state == "CANCELLED" {
+		if reason, ok := payload["errorReason"].(string); ok && strings.TrimSpace(reason) != "" {
+			return nil, fmt.Errorf("circle transfer failed: %s", reason)
+		}
+		if code, ok := payload["errorCode"].(string); ok && strings.TrimSpace(code) != "" {
+			return nil, fmt.Errorf("circle transfer failed: %s", code)
+		}
+		return nil, fmt.Errorf("circle transfer failed in state: %s", result.State)
 	}
 
 	s.logger.Info("Crypto transfer executed",
 		"withdrawal_id", withdrawal.ID.String(),
-		"tx_hash", txHash)
+		"state", result.State,
+		"transfer_id", result.TransferID,
+		"tx_hash", result.TxHash)
 
-	return txHash, nil
+	return result, nil
 }
 
 // executeFiatTransfer executes a fiat transfer via Bridge offramp

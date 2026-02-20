@@ -303,6 +303,8 @@ func (h *WithdrawalHandlers) handleWithdrawalError(c *gin.Context, err error, us
 	case strings.Contains(strings.ToLower(errMsg), "circle validation error 400"),
 		strings.Contains(strings.ToLower(errMsg), "api parameter invalid"):
 		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Invalid withdrawal parameters")
+	case strings.Contains(errMsg, "PAYMASTER_SOL_ATA_CREATION_NOT_ALLOWED"):
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Destination Solana wallet must create USDC ATA before withdrawal")
 	case strings.Contains(strings.ToLower(errMsg), "token"),
 		strings.Contains(strings.ToLower(errMsg), "entity secret"):
 		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Withdrawal provider configuration is invalid")
