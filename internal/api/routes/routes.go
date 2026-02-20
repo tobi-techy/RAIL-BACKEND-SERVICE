@@ -140,10 +140,15 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	if allocationSvc := container.GetAllocationService(); allocationSvc != nil {
 		walletFundingHandlers.SetAllocationBalanceProvider(allocationSvc)
 	}
+	var walletLookup func(context.Context, uuid.UUID, entities.WalletChain) (*entities.ManagedWallet, error)
+	if ws := container.GetWalletService(); ws != nil {
+		walletLookup = ws.GetWalletByUserAndChain
+	}
+
 	withdrawalHandlers := handlers.NewWithdrawalHandlers(
 		container.GetWithdrawalService(),
 		&WithdrawalWalletProviderAdapter{
-			getWalletByUserAndChain: container.GetWalletService().GetWalletByUserAndChain,
+			getWalletByUserAndChain: walletLookup,
 		},
 		container.Logger,
 	)
