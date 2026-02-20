@@ -714,6 +714,12 @@ func (s *Service) GetWalletByUserAndChain(ctx context.Context, userID uuid.UUID,
 
 	wallet, err := s.walletRepo.GetByUserAndChain(ctx, userID, chain)
 	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "not found") {
+			s.logger.Debug("Wallet not found for user and chain",
+				zap.String("userID", userID.String()),
+				zap.String("chain", string(chain)))
+			return nil, fmt.Errorf("failed to get wallet: %w", err)
+		}
 		s.logger.Error("Failed to get wallet for user and chain",
 			zap.Error(err),
 			zap.String("userID", userID.String()),

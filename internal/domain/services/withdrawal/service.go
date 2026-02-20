@@ -219,6 +219,7 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 		SourceAccount:      req.SourceAccount,
 		CircleWalletID:     &req.CircleWalletID,
 		DestinationType:    entities.DestinationTypeCryptoWallet,
+		DestinationChain:   req.DestinationChain,
 		DestinationAddress: &req.DestinationAddress,
 		FeeAmount:          fee,
 		FeeCurrency:        entities.WithdrawalCurrencyUSDC,
@@ -374,20 +375,21 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 	}
 
 	withdrawal := &entities.Withdrawal{
-		ID:              uuid.New(),
-		UserID:          req.UserID,
-		WithdrawalType:  entities.WithdrawalTypeFiat,
-		Currency:        req.Currency,
-		Amount:          req.Amount,
-		SourceAccount:   req.SourceAccount,
-		DestinationType: entities.DestinationTypeBankAccount,
-		BankAccountID:   &bankAccount.ID,
-		FeeAmount:       fee,
-		FeeCurrency:     entities.WithdrawalCurrencyUSDC, // Fees deducted in USDC
-		Status:          entities.WithdrawalStatusInitiated,
-		IdempotencyKey:  &idempotencyKey,
-		CreatedAt:       time.Now(),
-		UpdatedAt:       time.Now(),
+		ID:               uuid.New(),
+		UserID:           req.UserID,
+		WithdrawalType:   entities.WithdrawalTypeFiat,
+		Currency:         req.Currency,
+		Amount:           req.Amount,
+		SourceAccount:    req.SourceAccount,
+		DestinationType:  entities.DestinationTypeBankAccount,
+		DestinationChain: "BANK",
+		BankAccountID:    &bankAccount.ID,
+		FeeAmount:        fee,
+		FeeCurrency:      entities.WithdrawalCurrencyUSDC, // Fees deducted in USDC
+		Status:           entities.WithdrawalStatusInitiated,
+		IdempotencyKey:   &idempotencyKey,
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
 	}
 
 	if err := s.withdrawalRepo.Create(ctx, withdrawal); err != nil {

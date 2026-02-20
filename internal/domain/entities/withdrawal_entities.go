@@ -70,15 +70,15 @@ var ValidDestinationTypes = map[DestinationType]bool{
 type WithdrawalStatus string
 
 const (
-	WithdrawalStatusInitiated              WithdrawalStatus = "initiated"                // Request created
-	WithdrawalStatusPending                WithdrawalStatus = "pending"                  // Sent to processor
-	WithdrawalStatusProcessing             WithdrawalStatus = "processing"              // Provider processing
-	WithdrawalStatusAwaitingConfirmation   WithdrawalStatus = "awaiting_confirmation"    // Waiting for on-chain/fiat confirmation
-	WithdrawalStatusOnChainTransfer        WithdrawalStatus = "onchain_transfer"        // On-chain transfer in progress
-	WithdrawalStatusTimeout                WithdrawalStatus = "timeout"                  // No response within SLA
-	WithdrawalStatusCompleted              WithdrawalStatus = "completed"                // Terminal: success
-	WithdrawalStatusFailed                 WithdrawalStatus = "failed"                   // Terminal: failed
-	WithdrawalStatusReversed               WithdrawalStatus = "reversed"                 // Terminal: reversed/refunded
+	WithdrawalStatusInitiated            WithdrawalStatus = "initiated"             // Request created
+	WithdrawalStatusPending              WithdrawalStatus = "pending"               // Sent to processor
+	WithdrawalStatusProcessing           WithdrawalStatus = "processing"            // Provider processing
+	WithdrawalStatusAwaitingConfirmation WithdrawalStatus = "awaiting_confirmation" // Waiting for on-chain/fiat confirmation
+	WithdrawalStatusOnChainTransfer      WithdrawalStatus = "onchain_transfer"      // On-chain transfer in progress
+	WithdrawalStatusTimeout              WithdrawalStatus = "timeout"               // No response within SLA
+	WithdrawalStatusCompleted            WithdrawalStatus = "completed"             // Terminal: success
+	WithdrawalStatusFailed               WithdrawalStatus = "failed"                // Terminal: failed
+	WithdrawalStatusReversed             WithdrawalStatus = "reversed"              // Terminal: reversed/refunded
 )
 
 // ValidWithdrawalStatuses contains all valid withdrawal statuses
@@ -102,9 +102,9 @@ var ValidWithdrawalTransitions = map[WithdrawalStatus][]WithdrawalStatus{
 	WithdrawalStatusAwaitingConfirmation: {WithdrawalStatusCompleted, WithdrawalStatusFailed, WithdrawalStatusTimeout},
 	WithdrawalStatusOnChainTransfer:      {WithdrawalStatusCompleted, WithdrawalStatusFailed, WithdrawalStatusTimeout},
 	WithdrawalStatusTimeout:              {WithdrawalStatusCompleted, WithdrawalStatusFailed, WithdrawalStatusReversed}, // Can still resolve
-	WithdrawalStatusCompleted:            {},                                                                              // Terminal
+	WithdrawalStatusCompleted:            {},                                                                            // Terminal
 	WithdrawalStatusFailed:               {WithdrawalStatusReversed},                                                    // Can be reversed
-	WithdrawalStatusReversed:             {},                                                                              // Terminal
+	WithdrawalStatusReversed:             {},                                                                            // Terminal
 }
 
 // IsValid checks if the status is valid
@@ -149,26 +149,27 @@ func (s WithdrawalStatus) ValidateTransition(newStatus WithdrawalStatus) error {
 
 // Withdrawal represents a withdrawal from Circle wallet
 type Withdrawal struct {
-	ID                 uuid.UUID             `json:"id" db:"id"`
-	UserID             uuid.UUID             `json:"user_id" db:"user_id"`
-	WithdrawalType     WithdrawalType        `json:"withdrawal_type" db:"withdrawal_type"`
-	Currency           WithdrawalCurrency    `json:"currency" db:"currency"`
-	Amount             decimal.Decimal       `json:"amount" db:"amount"`
+	ID                 uuid.UUID               `json:"id" db:"id"`
+	UserID             uuid.UUID               `json:"user_id" db:"user_id"`
+	WithdrawalType     WithdrawalType          `json:"withdrawal_type" db:"withdrawal_type"`
+	Currency           WithdrawalCurrency      `json:"currency" db:"currency"`
+	Amount             decimal.Decimal         `json:"amount" db:"amount"`
 	SourceAccount      WithdrawalSourceAccount `json:"source_account" db:"source_account"`
-	CircleWalletID     *string               `json:"circle_wallet_id,omitempty" db:"circle_wallet_id"`
-	DestinationType    DestinationType       `json:"destination_type" db:"destination_type"`
-	DestinationAddress *string                `json:"destination_address,omitempty" db:"destination_address"`
-	BankAccountID      *uuid.UUID            `json:"bank_account_id,omitempty" db:"bank_account_id"`
-	FeeAmount          decimal.Decimal       `json:"fee_amount" db:"fee_amount"`
-	FeeCurrency        WithdrawalCurrency    `json:"fee_currency" db:"fee_currency"`
-	Status             WithdrawalStatus      `json:"status" db:"status"`
-	BridgeTransferID   *string               `json:"bridge_transfer_id,omitempty" db:"bridge_transfer_id"`
-	TxHash             *string               `json:"tx_hash,omitempty" db:"tx_hash"`
-	ErrorMessage       *string               `json:"error_message,omitempty" db:"error_message"`
-	IdempotencyKey     *string               `json:"idempotency_key,omitempty" db:"idempotency_key"`
-	CreatedAt          time.Time             `json:"created_at" db:"created_at"`
-	UpdatedAt          time.Time             `json:"updated_at" db:"updated_at"`
-	CompletedAt        *time.Time            `json:"completed_at,omitempty" db:"completed_at"`
+	CircleWalletID     *string                 `json:"circle_wallet_id,omitempty" db:"circle_wallet_id"`
+	DestinationType    DestinationType         `json:"destination_type" db:"destination_type"`
+	DestinationChain   string                  `json:"destination_chain" db:"destination_chain"`
+	DestinationAddress *string                 `json:"destination_address,omitempty" db:"destination_address"`
+	BankAccountID      *uuid.UUID              `json:"bank_account_id,omitempty" db:"bank_account_id"`
+	FeeAmount          decimal.Decimal         `json:"fee_amount" db:"fee_amount"`
+	FeeCurrency        WithdrawalCurrency      `json:"fee_currency" db:"fee_currency"`
+	Status             WithdrawalStatus        `json:"status" db:"status"`
+	BridgeTransferID   *string                 `json:"bridge_transfer_id,omitempty" db:"bridge_transfer_id"`
+	TxHash             *string                 `json:"tx_hash,omitempty" db:"tx_hash"`
+	ErrorMessage       *string                 `json:"error_message,omitempty" db:"error_message"`
+	IdempotencyKey     *string                 `json:"idempotency_key,omitempty" db:"idempotency_key"`
+	CreatedAt          time.Time               `json:"created_at" db:"created_at"`
+	UpdatedAt          time.Time               `json:"updated_at" db:"updated_at"`
+	CompletedAt        *time.Time              `json:"completed_at,omitempty" db:"completed_at"`
 }
 
 // Validate validates the withdrawal entity
@@ -215,13 +216,13 @@ func (w *Withdrawal) IsFiat() bool {
 
 // InitiateCryptoWithdrawalRequest represents a crypto withdrawal request
 type InitiateCryptoWithdrawalRequest struct {
-	UserID             uuid.UUID                   `json:"user_id"`
-	Amount             decimal.Decimal             `json:"amount"`
-	DestinationAddress string                      `json:"destination_address"`
-	DestinationChain  string                       `json:"destination_chain"`
-	SourceAccount      WithdrawalSourceAccount     `json:"source_account"`
-	CircleWalletID    string                       `json:"circle_wallet_id"`
-	IdempotencyKey     string                      // Generated server-side
+	UserID             uuid.UUID               `json:"user_id"`
+	Amount             decimal.Decimal         `json:"amount"`
+	DestinationAddress string                  `json:"destination_address"`
+	DestinationChain   string                  `json:"destination_chain"`
+	SourceAccount      WithdrawalSourceAccount `json:"source_account"`
+	CircleWalletID     string                  `json:"circle_wallet_id"`
+	IdempotencyKey     string                  // Generated server-side
 }
 
 // Validate validates the crypto withdrawal request
@@ -292,8 +293,8 @@ type InitiateWithdrawalResponse struct {
 
 // WithdrawalFee represents withdrawal fee information
 type WithdrawalFee struct {
-	Amount   decimal.Decimal    `json:"amount"`
-	Currency WithdrawalCurrency `json:"currency"`
+	Amount    decimal.Decimal    `json:"amount"`
+	Currency  WithdrawalCurrency `json:"currency"`
 	Breakdown struct {
 		NetworkFee decimal.Decimal `json:"network_fee"`
 		ServiceFee decimal.Decimal `json:"service_fee"`
