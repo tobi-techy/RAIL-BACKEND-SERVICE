@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/shopspring/decimal"
@@ -28,10 +29,25 @@ type CircleManagedWalletRepository interface {
 	GetByCircleWalletID(ctx context.Context, circleWalletID string) (*entities.ManagedWallet, error)
 }
 
+// CircleWithdrawalRepository resolves and updates withdrawals based on provider transfer IDs.
+type CircleWithdrawalRepository interface {
+	GetByBridgeTransferID(ctx context.Context, transferID string) (*entities.Withdrawal, error)
+	UpdateTxHash(ctx context.Context, id uuid.UUID, txHash string) error
+	MarkCompleted(ctx context.Context, id uuid.UUID) error
+	MarkFailed(ctx context.Context, id uuid.UUID, errorMsg string) error
+}
+
+// CircleWithdrawalLedger posts ledger entries for completed withdrawals.
+type CircleWithdrawalLedger interface {
+	CreateTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, txType entities.TransactionType, amount decimal.Decimal, metadata map[string]interface{}) error
+}
+
 // CircleWebhookHandler handles Circle API webhook notifications
 type CircleWebhookHandler struct {
 	fundingService    CircleDepositProcessor
 	managedWalletRepo CircleManagedWalletRepository
+	withdrawalRepo    CircleWithdrawalRepository
+	withdrawalLedger  CircleWithdrawalLedger
 	logger            *logger.Logger
 	circleAPIKey      string // For fetching public keys
 	circleBaseURL     string
@@ -41,6 +57,8 @@ type CircleWebhookHandler struct {
 func NewCircleWebhookHandler(
 	fundingService CircleDepositProcessor,
 	managedWalletRepo CircleManagedWalletRepository,
+	withdrawalRepo CircleWithdrawalRepository,
+	withdrawalLedger CircleWithdrawalLedger,
 	logger *logger.Logger,
 	circleAPIKey string,
 	circleBaseURL string,
@@ -48,6 +66,8 @@ func NewCircleWebhookHandler(
 	return &CircleWebhookHandler{
 		fundingService:    fundingService,
 		managedWalletRepo: managedWalletRepo,
+		withdrawalRepo:    withdrawalRepo,
+		withdrawalLedger:  withdrawalLedger,
 		logger:            logger,
 		circleAPIKey:      circleAPIKey,
 		circleBaseURL:     circleBaseURL,
@@ -97,9 +117,8 @@ func (h *CircleWebhookHandler) HandleTransferNotification(c *gin.Context) {
 	// Process based on notification type.
 	// Circle can emit variants such as transfers.* and transactions.*.
 	switch {
-	case (strings.HasPrefix(strings.ToLower(webhook.NotificationType), "transfers.") ||
-		strings.HasPrefix(strings.ToLower(webhook.NotificationType), "transactions.")) &&
-		!strings.HasSuffix(strings.ToLower(webhook.NotificationType), ".failed"):
+	case strings.HasPrefix(strings.ToLower(webhook.NotificationType), "transfers.") ||
+		strings.HasPrefix(strings.ToLower(webhook.NotificationType), "transactions."):
 		if err := h.processIncomingTransfer(ctx, &webhook); err != nil {
 			h.logger.Error("Failed to process incoming transfer",
 				"transfer_id", webhook.TransferID,
@@ -109,12 +128,6 @@ func (h *CircleWebhookHandler) HandleTransferNotification(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"status": "error", "message": err.Error()})
 			return
 		}
-
-	case strings.HasSuffix(strings.ToLower(webhook.NotificationType), ".failed"):
-		h.logger.Warn("Circle transfer failed",
-			"transfer_id", webhook.TransferID,
-			"error", webhook.Transfer.ErrorCode)
-		// Handle failed transfers (e.g., notify user, reverse ledger entries)
 
 	default:
 		h.logger.Info("Unhandled Circle notification type",
@@ -132,6 +145,11 @@ func (h *CircleWebhookHandler) processIncomingTransfer(ctx context.Context, webh
 	}
 
 	transfer := webhook.Transfer
+
+	// Handle outbound transfer state transitions.
+	if strings.EqualFold(transfer.Source.Type, "wallet") {
+		return h.processOutboundTransferNotification(ctx, webhook)
+	}
 
 	// Only process inbound transfers (deposits)
 	if !strings.EqualFold(transfer.Source.Type, "blockchain") {
@@ -215,6 +233,11 @@ func (h *CircleWebhookHandler) processIncomingTransactionNotification(ctx contex
 		return fmt.Errorf("failed to parse transaction notification: %w", err)
 	}
 
+	// Route outbound notifications to withdrawal status sync.
+	if strings.EqualFold(n.TransactionType, "OUTBOUND") {
+		return h.processOutboundTransactionNotification(ctx, webhook, &n)
+	}
+
 	// Only inbound wallet deposits.
 	if !strings.EqualFold(n.TransactionType, "INBOUND") {
 		h.logger.Debug("Ignoring non-inbound transaction notification",
@@ -295,6 +318,179 @@ func (h *CircleWebhookHandler) processIncomingTransactionNotification(ctx contex
 		"tx_hash", txHash,
 		"address", address,
 		"chain", chain)
+
+	return nil
+}
+
+func (h *CircleWebhookHandler) processOutboundTransferNotification(ctx context.Context, webhook *CircleTransferWebhook) error {
+	if h.withdrawalRepo == nil {
+		return nil
+	}
+
+	transferID := strings.TrimSpace(webhook.TransferID)
+	if transferID == "" {
+		transferID = strings.TrimSpace(webhook.Transfer.ID)
+	}
+	if transferID == "" {
+		h.logger.Warn("Skipping outbound transfer webhook without transfer ID",
+			"notification_type", webhook.NotificationType)
+		return nil
+	}
+
+	withdrawal, err := h.withdrawalRepo.GetByBridgeTransferID(ctx, transferID)
+	if err != nil {
+		h.logger.Warn("Failed to resolve withdrawal for outbound transfer webhook",
+			"transfer_id", transferID,
+			"notification_type", webhook.NotificationType,
+			"error", err)
+		return nil
+	}
+	if withdrawal == nil {
+		h.logger.Warn("No withdrawal matched outbound transfer webhook",
+			"transfer_id", transferID,
+			"notification_type", webhook.NotificationType)
+		return nil
+	}
+
+	txHash := strings.TrimSpace(webhook.Transfer.TransactionHash)
+	if txHash != "" {
+		_ = h.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, txHash)
+	}
+
+	status := strings.ToUpper(strings.TrimSpace(webhook.Transfer.Status))
+	switch status {
+	case "COMPLETE", "COMPLETED", "CONFIRMED", "SUCCESS":
+		if err := h.settleCompletedWithdrawal(ctx, withdrawal); err != nil {
+			return err
+		}
+	case "FAILED", "REJECTED", "CANCELLED":
+		reason := strings.TrimSpace(webhook.Transfer.ErrorCode)
+		if reason == "" {
+			reason = "Circle outbound transfer failed"
+		}
+		_ = h.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, reason)
+	}
+
+	return nil
+}
+
+func (h *CircleWebhookHandler) processOutboundTransactionNotification(ctx context.Context, webhook *CircleTransferWebhook, n *CircleTransactionNotification) error {
+	if h.withdrawalRepo == nil {
+		return nil
+	}
+
+	transferID := strings.TrimSpace(n.ID)
+	if transferID == "" {
+		transferID = strings.TrimSpace(webhook.TransferID)
+	}
+	if transferID == "" {
+		transferID = strings.TrimSpace(webhook.Transfer.ID)
+	}
+	if transferID == "" {
+		h.logger.Warn("Skipping outbound transaction webhook without transaction ID",
+			"notification_type", webhook.NotificationType)
+		return nil
+	}
+
+	withdrawal, err := h.withdrawalRepo.GetByBridgeTransferID(ctx, transferID)
+	if err != nil {
+		h.logger.Warn("Failed to resolve withdrawal for outbound transaction webhook",
+			"transfer_id", transferID,
+			"notification_type", webhook.NotificationType,
+			"error", err)
+		return nil
+	}
+	if withdrawal == nil {
+		h.logger.Warn("No withdrawal matched outbound transaction webhook",
+			"transfer_id", transferID,
+			"notification_type", webhook.NotificationType)
+		return nil
+	}
+
+	txHash := strings.TrimSpace(n.TxHash)
+	if txHash == "" {
+		txHash = strings.TrimSpace(n.TransactionHash)
+	}
+	if txHash != "" {
+		_ = h.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, txHash)
+	}
+
+	notificationType := strings.ToLower(strings.TrimSpace(webhook.NotificationType))
+	state := strings.ToUpper(strings.TrimSpace(n.State))
+	isFailed := strings.HasSuffix(notificationType, ".failed") ||
+		state == "FAILED" || state == "REJECTED" || state == "CANCELLED"
+	isSuccess := state == "COMPLETE" || state == "COMPLETED" || state == "CONFIRMED" || state == "SUCCESS"
+
+	if isFailed {
+		code := strings.TrimSpace(n.ErrorCode)
+		reasonText := strings.TrimSpace(n.ErrorReason)
+		if code == "" {
+			code = strings.TrimSpace(webhook.Transfer.ErrorCode)
+		}
+		reason := reasonText
+		if reason == "" {
+			reason = code
+		}
+		if reason != "" && code != "" && !strings.Contains(reason, code) {
+			reason = code + ": " + reason
+		}
+		if reason == "" {
+			reason = "Circle outbound transfer failed"
+		}
+		_ = h.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, reason)
+		return nil
+	}
+
+	if isSuccess {
+		if err := h.settleCompletedWithdrawal(ctx, withdrawal); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (h *CircleWebhookHandler) settleCompletedWithdrawal(ctx context.Context, withdrawal *entities.Withdrawal) error {
+	if withdrawal == nil {
+		return nil
+	}
+
+	if h.withdrawalLedger != nil {
+		accountType := entities.AccountTypeSpendingBalance
+		switch withdrawal.SourceAccount {
+		case entities.WithdrawalSourceSpendingBalance:
+			accountType = entities.AccountTypeSpendingBalance
+		case entities.WithdrawalSourceStashBalance:
+			accountType = entities.AccountTypeStashBalance
+		}
+
+		metadata := map[string]interface{}{
+			"withdrawal_id":   withdrawal.ID.String(),
+			"withdrawal_type": string(withdrawal.WithdrawalType),
+			"source_account":  string(withdrawal.SourceAccount),
+		}
+		if withdrawal.DestinationAddress != nil {
+			metadata["destination_address"] = *withdrawal.DestinationAddress
+		}
+		if withdrawal.BridgeTransferID != nil {
+			metadata["provider_transfer_id"] = *withdrawal.BridgeTransferID
+		}
+
+		if err := h.withdrawalLedger.CreateTransaction(
+			ctx,
+			withdrawal.UserID,
+			accountType,
+			entities.TransactionTypeWithdrawal,
+			withdrawal.Amount,
+			metadata,
+		); err != nil {
+			return fmt.Errorf("failed to post withdrawal ledger transaction: %w", err)
+		}
+	}
+
+	if err := h.withdrawalRepo.MarkCompleted(ctx, withdrawal.ID); err != nil {
+		return fmt.Errorf("failed to mark withdrawal completed: %w", err)
+	}
 
 	return nil
 }
@@ -500,6 +696,8 @@ type CircleTransactionNotification struct {
 	Amounts            []string `json:"amounts"`
 	State              string   `json:"state"`
 	TransactionType    string   `json:"transactionType"`
+	ErrorCode          string   `json:"errorCode"`
+	ErrorReason        string   `json:"errorReason"`
 	TxHash             string   `json:"txHash"`
 	TransactionHash    string   `json:"transactionHash"`
 	CreateDate         string   `json:"createDate"`

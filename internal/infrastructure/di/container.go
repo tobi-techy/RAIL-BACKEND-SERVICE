@@ -149,21 +149,41 @@ func (a *WithdrawalLedgerAdapter) GetAccountBalance(ctx context.Context, userID 
 }
 
 func (a *WithdrawalLedgerAdapter) CreateTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, txType entities.TransactionType, amount decimal.Decimal, metadata map[string]interface{}) error {
-	account, err := a.ledgerService.GetOrCreateUserAccount(ctx, userID, accountType)
+	userAccount, err := a.ledgerService.GetOrCreateUserAccount(ctx, userID, accountType)
+	if err != nil {
+		return err
+	}
+
+	systemAccount, err := a.ledgerService.GetSystemAccount(ctx, entities.AccountTypeSystemBufferUSDC)
 	if err != nil {
 		return err
 	}
 
 	desc := "Withdrawal transaction"
+	idempotencyKey := fmt.Sprintf("withdrawal-ledger-%s-%d", userID.String(), time.Now().UnixNano())
+	if metadata != nil {
+		if withdrawalID, ok := metadata["withdrawal_id"].(string); ok && strings.TrimSpace(withdrawalID) != "" {
+			idempotencyKey = "withdrawal-ledger-" + withdrawalID
+		}
+	}
+
 	req := &entities.CreateTransactionRequest{
 		UserID:          &userID,
 		TransactionType: txType,
+		IdempotencyKey:  idempotencyKey,
 		Description:     &desc,
 		Metadata:        metadata,
 		Entries: []entities.CreateEntryRequest{
 			{
-				AccountID:   account.ID,
+				AccountID:   userAccount.ID,
 				EntryType:   entities.EntryTypeCredit,
+				Amount:      amount,
+				Currency:    "USDC",
+				Description: &desc,
+			},
+			{
+				AccountID:   systemAccount.ID,
+				EntryType:   entities.EntryTypeDebit,
 				Amount:      amount,
 				Currency:    "USDC",
 				Description: &desc,
@@ -1121,6 +1141,8 @@ func (c *Container) initializeDomainServices() error {
 	circleWebhookHandler := webhooks.NewCircleWebhookHandler(
 		c.FundingService,
 		c.WalletRepo,
+		c.WithdrawalRepo,
+		withdrawalLedgerAdapter,
 		c.Logger,
 		c.Config.Circle.APIKey,
 		c.Config.Circle.BaseURL,

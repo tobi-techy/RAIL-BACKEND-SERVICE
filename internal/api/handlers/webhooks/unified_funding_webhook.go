@@ -305,17 +305,14 @@ func (h *UnifiedFundingWebhookHandler) routeToCircle(c *gin.Context, body []byte
 
 	// Process based on notification type.
 	switch {
-	case (strings.HasPrefix(strings.ToLower(webhook.NotificationType), "transfers.") ||
-		strings.HasPrefix(strings.ToLower(webhook.NotificationType), "transactions.")) &&
-		!strings.HasSuffix(strings.ToLower(webhook.NotificationType), ".failed"):
+	case strings.HasPrefix(strings.ToLower(webhook.NotificationType), "transfers.") ||
+		strings.HasPrefix(strings.ToLower(webhook.NotificationType), "transactions."):
 		ctx := c.Request.Context()
 		if err := h.circleHandler.processIncomingTransfer(ctx, &webhook); err != nil {
 			h.logger.Error("Failed to process Circle transfer", zap.Error(err))
 			c.JSON(http.StatusOK, gin.H{"status": "error", "message": err.Error()})
 			return
 		}
-	case strings.HasSuffix(strings.ToLower(webhook.NotificationType), ".failed"):
-		h.logger.Warn("Circle transfer failed", zap.String("transfer_id", webhook.TransferID))
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "processed"})
