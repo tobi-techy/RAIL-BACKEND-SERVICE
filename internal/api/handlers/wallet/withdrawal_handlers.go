@@ -96,7 +96,7 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 		UserID:             userID,
 		Amount:             decimal.NewFromFloat(req.Amount),
 		DestinationAddress: req.DestinationAddress,
-		DestinationChain:   "SOL", // Default to Solana
+		DestinationChain:   string(wallet.Chain),
 		SourceAccount:      entities.WithdrawalSourceSpendingBalance, // Default to spending
 		CircleWalletID:     wallet.CircleWalletID,
 	}
@@ -300,6 +300,12 @@ func (h *WithdrawalHandlers) handleWithdrawalError(c *gin.Context, err error, us
 		common.SendBadRequest(c, common.ErrCodeInsufficientFunds, "Insufficient balance for withdrawal")
 	case strings.Contains(errMsg, "minimum"):
 		common.SendBadRequest(c, common.ErrCodeInvalidAmount, "Withdrawal amount below minimum")
+	case strings.Contains(strings.ToLower(errMsg), "circle validation error 400"),
+		strings.Contains(strings.ToLower(errMsg), "api parameter invalid"):
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Invalid withdrawal parameters")
+	case strings.Contains(strings.ToLower(errMsg), "token"),
+		strings.Contains(strings.ToLower(errMsg), "entity secret"):
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Withdrawal provider configuration is invalid")
 	case strings.Contains(errMsg, "limit exceeded"):
 		common.SendBadRequest(c, "LIMIT_EXCEEDED", errMsg)
 	case strings.Contains(errMsg, "bank account"):
