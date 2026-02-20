@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -14,10 +15,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
-	"github.com/sony/gobreaker"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	entitysecret "github.com/rail-service/rail_service/internal/domain/services/entity_secret"
+	"github.com/shopspring/decimal"
+	"github.com/sony/gobreaker"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
@@ -143,17 +144,10 @@ func NewClient(config Config, logger *zap.Logger) *Client {
 
 // CreateWalletSet creates a new developer-controlled wallet set using pre-registered Entity Secret Ciphertext
 func (c *Client) CreateWalletSet(ctx context.Context, name string, _ string) (*entities.CircleWalletSetResponse, error) {
-
-	var entitySecretCipherText string
-	var err error
-
-	entitySecretCipherText, err = c.entitySecretService.GenerateEntitySecretCiphertext(ctx)
+	entitySecretCipherText, err := c.getEntitySecretCiphertext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate entity secret ciphertext: %w", err)
 	}
-
-	// Entity secret service already returns base64-encoded ciphertext
-	c.logger.Warn("Using dynamically generated entity secret ciphertext - Circle API may reject this request")
 
 	request := entities.CircleWalletSetRequest{
 		IdempotencyKey:         uuid.NewString(),
@@ -210,8 +204,8 @@ func (c *Client) CreateWallet(ctx context.Context, req entities.CircleWalletCrea
 		req.IdempotencyKey = uuid.NewString()
 	}
 
-	// Generate a new unique entity secret ciphertext for this request
-	entitySecretCiphertext, err := c.entitySecretService.GenerateEntitySecretCiphertext(ctx)
+	// Use configured pre-registered ciphertext when available.
+	entitySecretCiphertext, err := c.getEntitySecretCiphertext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate entity secret ciphertext: %w", err)
 	}
@@ -385,7 +379,7 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, request
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "Stack-Service/1.0")
 	req.Header.Set("X-Request-ID", requestID)
-	
+
 	// Inject distributed trace context
 	injectTraceContext(ctx, req.Header)
 
@@ -454,10 +448,7 @@ func (c *Client) handleErrorResponse(statusCode int, body []byte, requestID stri
 
 	// Add field errors if present
 	if len(circleErr.Errors) > 0 {
-		if circleAPIErr, ok := apiError.(entities.CircleAPIError); ok {
-			circleAPIErr.Errors = circleErr.Errors
-			return circleAPIErr
-		}
+		return attachCircleFieldErrors(apiError, circleErr.Errors)
 	}
 
 	return apiError
@@ -470,9 +461,13 @@ func (c *Client) shouldRetry(err error) bool {
 		return false
 	}
 
-	// Check if it's a Circle API error
-	if circleErr, ok := err.(entities.CircleAPIError); ok {
-		return circleErr.IsRetryable()
+	// Prefer behavior-based retry checks for typed Circle errors.
+	type retryableError interface {
+		IsRetryable() bool
+	}
+	var retriable retryableError
+	if errors.As(err, &retriable) {
+		return retriable.IsRetryable()
 	}
 
 	// Check legacy CircleErrorResponse for backward compatibility
@@ -487,6 +482,31 @@ func (c *Client) shouldRetry(err error) bool {
 
 	// Retry on network errors
 	return true
+}
+
+func attachCircleFieldErrors(apiErr error, fieldErrors []entities.CircleFieldError) error {
+	switch e := apiErr.(type) {
+	case entities.CircleValidationError:
+		e.Errors = fieldErrors
+		return e
+	case entities.CircleAuthError:
+		e.Errors = fieldErrors
+		return e
+	case entities.CircleRateLimitError:
+		e.Errors = fieldErrors
+		return e
+	case entities.CircleConflictError:
+		e.Errors = fieldErrors
+		return e
+	case entities.CircleServerError:
+		e.Errors = fieldErrors
+		return e
+	case entities.CircleAPIError:
+		e.Errors = fieldErrors
+		return e
+	default:
+		return apiErr
+	}
 }
 
 // HealthCheck performs a health check against Circle API
@@ -614,17 +634,17 @@ func (c *Client) GetEntityPublicKey(ctx context.Context) (string, error) {
 // tokenAddress is optional - if provided, filters results to only that token
 func (c *Client) GetWalletBalances(ctx context.Context, walletID string, tokenAddress ...string) (*entities.CircleWalletBalancesResponse, error) {
 	endpoint := fmt.Sprintf("%s/%s/balances", c.config.BalancesEndpoint, walletID)
-	
+
 	// Add tokenAddress query parameter if provided
 	if len(tokenAddress) > 0 && tokenAddress[0] != "" {
 		endpoint = fmt.Sprintf("%s?tokenAddress=%s", endpoint, tokenAddress[0])
-		c.logger.Info("Getting wallet balances", 
+		c.logger.Info("Getting wallet balances",
 			zap.String("walletId", walletID),
 			zap.String("tokenAddress", tokenAddress[0]),
 			zap.String("endpoint", endpoint),
 			zap.String("fullURL", c.config.BaseURL+endpoint))
 	} else {
-		c.logger.Info("Getting wallet balances", 
+		c.logger.Info("Getting wallet balances",
 			zap.String("walletId", walletID),
 			zap.String("endpoint", endpoint),
 			zap.String("fullURL", c.config.BaseURL+endpoint))
@@ -634,8 +654,7 @@ func (c *Client) GetWalletBalances(ctx context.Context, walletID string, tokenAd
 	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
 		return &response, c.doRequestWithRetry(ctx, "GET", endpoint, nil, &response)
 	})
-     
-	
+
 	if err != nil {
 		c.logger.Error("Failed to get wallet balances",
 			zap.String("walletId", walletID),
@@ -647,15 +666,32 @@ func (c *Client) GetWalletBalances(ctx context.Context, walletID string, tokenAd
 		zap.String("walletId", walletID),
 		zap.Int("tokenCount", len(response.TokenBalances)),
 		zap.String("usdcBalance", response.GetUSDCBalance()))
-		c.logger.Info("log the response", zap.Any("response", response))
+	c.logger.Info("log the response", zap.Any("response", response))
 
 	return &response, nil
 }
 
 // TransferFunds transfers funds between accounts using developer-controlled wallets
 func (c *Client) TransferFunds(ctx context.Context, req entities.CircleTransferRequest) (map[string]interface{}, error) {
-	// Generate a new unique entity secret ciphertext for this request
-	entitySecretCiphertext, err := c.entitySecretService.GenerateEntitySecretCiphertext(ctx)
+	if req.WalletID == "" {
+		return nil, fmt.Errorf("wallet ID is required")
+	}
+	if req.TokenID == "" {
+		return nil, fmt.Errorf("token ID is required")
+	}
+
+	resolvedTokenID, err := c.resolveTransferTokenID(ctx, req.WalletID, req.TokenID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve token ID: %w", err)
+	}
+	req.TokenID = resolvedTokenID
+
+	if req.FeeLevel == "" {
+		req.FeeLevel = "MEDIUM"
+	}
+
+	// Use configured pre-registered ciphertext when available.
+	entitySecretCiphertext, err := c.getEntitySecretCiphertext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate entity secret ciphertext: %w", err)
 	}
@@ -688,6 +724,31 @@ func (c *Client) TransferFunds(ctx context.Context, req entities.CircleTransferR
 	return response, nil
 }
 
+func (c *Client) resolveTransferTokenID(ctx context.Context, walletID, tokenHint string) (string, error) {
+	if _, err := uuid.Parse(tokenHint); err == nil {
+		return tokenHint, nil
+	}
+
+	balances, err := c.GetWalletBalances(ctx, walletID)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch wallet balances for token lookup: %w", err)
+	}
+
+	for _, tb := range balances.TokenBalances {
+		if strings.EqualFold(tb.Token.ID, tokenHint) {
+			return tb.Token.ID, nil
+		}
+		if strings.EqualFold(tb.Token.Symbol, tokenHint) {
+			return tb.Token.ID, nil
+		}
+		if strings.EqualFold(tb.Token.Name, tokenHint) {
+			return tb.Token.ID, nil
+		}
+	}
+
+	return "", fmt.Errorf("token %q not present in wallet %s balances", tokenHint, walletID)
+}
+
 // GetMetrics returns circuit breaker metrics for monitoring
 func (c *Client) GetMetrics() map[string]interface{} {
 	counts := c.circuitBreaker.Counts()
@@ -707,7 +768,7 @@ func (c *Client) InitiateCCTPBurn(ctx context.Context, req *entities.CCTPBurnReq
 		req.IdempotencyKey = uuid.NewString()
 	}
 
-	entitySecretCiphertext, err := c.entitySecretService.GenerateEntitySecretCiphertext(ctx)
+	entitySecretCiphertext, err := c.getEntitySecretCiphertext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate entity secret: %w", err)
 	}
@@ -753,6 +814,13 @@ func (c *Client) InitiateCCTPBurn(ctx context.Context, req *entities.CCTPBurnReq
 		zap.String("txHash", result.TxHash))
 
 	return result, nil
+}
+
+func (c *Client) getEntitySecretCiphertext(ctx context.Context) (string, error) {
+	if configured := strings.TrimSpace(c.config.EntitySecretCiphertext); configured != "" {
+		c.logger.Info("Configured entity secret ciphertext present; using dynamic ciphertext to match wallet flow")
+	}
+	return c.entitySecretService.GenerateEntitySecretCiphertext(ctx)
 }
 
 // GetCCTPTransaction retrieves the status of a CCTP/transfer transaction
@@ -812,14 +880,13 @@ func (c *Client) GetCCTPTransaction(ctx context.Context, transactionID string) (
 	return status, nil
 }
 
-
 // injectTraceContext injects OpenTelemetry trace context into HTTP headers
 func injectTraceContext(ctx context.Context, headers http.Header) {
 	span := trace.SpanFromContext(ctx)
 	if !span.SpanContext().IsValid() {
 		return
 	}
-	
+
 	traceID := span.SpanContext().TraceID().String()
 	spanID := span.SpanContext().SpanID().String()
 	flags := "00"
