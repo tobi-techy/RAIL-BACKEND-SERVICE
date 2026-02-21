@@ -918,6 +918,13 @@ func (c *Container) initializeDomainServices() error {
 		c.Logger,
 	)
 
+	// Wire default wallet set ID for funding service wallet creation
+	if c.Config.Circle.DefaultWalletSetID != "" {
+		if ws, err := c.WalletSetRepo.GetByCircleWalletSetID(context.Background(), c.Config.Circle.DefaultWalletSetID); err == nil && ws != nil {
+			c.FundingService.SetDefaultWalletSetID(ws.ID)
+		}
+	}
+
 	// Initialize allocation service
 	allocationRepo := repositories.NewAllocationRepository(sqlxDB, c.Logger)
 	c.AllocationService = allocation.NewService(
