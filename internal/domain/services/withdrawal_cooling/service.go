@@ -100,8 +100,9 @@ func (s *Service) CheckWithdrawalCooling(ctx context.Context, userID uuid.UUID, 
 	}
 
 	// Cooling is required
-	executeAfter := time.Now().Add(cooling.CoolingPeriod)
-	timeRemaining := cooling.CoolingPeriod
+	coolingPeriod := cooling.CoolingPeriod()
+	executeAfter := time.Now().Add(coolingPeriod)
+	timeRemaining := coolingPeriod
 
 	return &CoolingCheckResult{
 		RequiresCooling: true,
