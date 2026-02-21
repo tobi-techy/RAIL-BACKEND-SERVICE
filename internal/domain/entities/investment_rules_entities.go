@@ -99,11 +99,19 @@ type DRIPConfig struct {
 
 // WithdrawalCooling configures withdrawal cooling-off period
 type WithdrawalCooling struct {
-	Enabled          bool          `json:"enabled" db:"enabled"`
-	CoolingPeriod    time.Duration `json:"cooling_period" db:"cooling_period"` // Default 24 hours
-	BypassForSmall   bool          `json:"bypass_for_small" db:"bypass_for_small"` // Skip for small amounts
-	SmallThreshold   decimal.Decimal `json:"small_threshold" db:"small_threshold"` // What counts as "small"
+	Enabled          bool            `json:"enabled" db:"enabled"`
+	CoolingPeriodSec int64           `json:"cooling_period_sec" db:"cooling_period_sec"` // Cooling period in seconds (default 86400 = 24h)
+	BypassForSmall   bool            `json:"bypass_for_small" db:"bypass_for_small"`     // Skip for small amounts
+	SmallThreshold   decimal.Decimal `json:"small_threshold" db:"small_threshold"`       // What counts as "small"
 	PendingWithdrawals []PendingWithdrawal `json:"pending_withdrawals,omitempty" db:"-"`
+}
+
+// CoolingPeriod returns the cooling period as time.Duration
+func (w *WithdrawalCooling) CoolingPeriod() time.Duration {
+	if w.CoolingPeriodSec <= 0 {
+		return 24 * time.Hour // Default 24 hours
+	}
+	return time.Duration(w.CoolingPeriodSec) * time.Second
 }
 
 // PendingWithdrawal represents a withdrawal in cooling-off period
@@ -242,10 +250,10 @@ func NewDefaultInvestmentRulesConfig(userID uuid.UUID) *InvestmentRulesConfig {
 			TotalReinvested:   decimal.Zero,
 		},
 		WithdrawalCooling: &WithdrawalCooling{
-			Enabled:        true,
-			CoolingPeriod:  24 * time.Hour, // 24-hour rule
-			BypassForSmall: true,
-			SmallThreshold: decimal.NewFromInt(50), // $50 or less bypasses cooling
+			Enabled:          true,
+			CoolingPeriodSec: 86400, // 24 hours in seconds
+			BypassForSmall:   true,
+			SmallThreshold:   decimal.NewFromInt(50), // $50 or less bypasses cooling
 		},
 		RoundUpMultiplier:      RoundUpMultiplier1x,
 		MilestoneNotifications: true,
