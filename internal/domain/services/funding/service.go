@@ -167,6 +167,11 @@ func (s *Service) SetAuditService(as AuditService) {
 	s.auditService = as
 }
 
+// SetDefaultWalletSetID sets the default wallet set ID for wallet creation
+func (s *Service) SetDefaultWalletSetID(id uuid.UUID) {
+	s.config.DefaultWalletSetID = id
+}
+
 // SetNotificationService sets the notification service (optional)
 func (s *Service) SetNotificationService(ns FundingNotificationService) {
 	s.notificationService = ns
@@ -210,14 +215,16 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 
 		// Create wallet record
 		wallet = &entities.Wallet{
-			ID:          uuid.New(),
-			UserID:      userID,
-			Chain:       chain,
-			Address:     address,
-			ProviderRef: fmt.Sprintf("circle-%s", address),
-			Status:      "active",
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
+			ID:             uuid.New(),
+			UserID:         userID,
+			Chain:          chain,
+			Address:        address,
+			CircleWalletID: fmt.Sprintf("circle-%s", address),
+			WalletSetID:    s.config.DefaultWalletSetID,
+			AccountType:    "EOA",
+			Status:         "live",
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
 		}
 
 		if err := s.walletRepo.Create(ctx, wallet); err != nil {
