@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/shopspring/decimal"
 )
 
 // LedgerBalanceView represents user balance from ledger
@@ -50,22 +50,22 @@ type FundingNotificationService interface {
 
 // Service handles funding operations - deposit addresses, confirmations, balance conversion
 type Service struct {
-	depositRepo          DepositRepository
-	walletRepo           WalletRepository
-	managedWalletRepo    ManagedWalletRepository
-	virtualAccountRepo   VirtualAccountRepository
-	circleAPI            CircleAdapter
-	bridgeVAService      *BridgeVirtualAccountService
-	alpacaAPI            AlpacaAdapter
-	ledgerIntegration    LedgerIntegration
-	limitsService        LimitsService
-	validationService    *ValidationService
-	auditService         AuditService
-	notificationService  FundingNotificationService
-	allocationService    AllocationService
-	cache                CacheClient
-	config               *FundingConfig
-	logger               *logger.Logger
+	depositRepo         DepositRepository
+	walletRepo          WalletRepository
+	managedWalletRepo   ManagedWalletRepository
+	virtualAccountRepo  VirtualAccountRepository
+	circleAPI           CircleAdapter
+	bridgeVAService     *BridgeVirtualAccountService
+	alpacaAPI           AlpacaAdapter
+	ledgerIntegration   LedgerIntegration
+	limitsService       LimitsService
+	validationService   *ValidationService
+	auditService        AuditService
+	notificationService FundingNotificationService
+	allocationService   AllocationService
+	cache               CacheClient
+	config              *FundingConfig
+	logger              *logger.Logger
 }
 
 // DepositRepository interface for deposit persistence
@@ -87,6 +87,7 @@ type WalletRepository interface {
 type ManagedWalletRepository interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.ManagedWallet, error)
 	GetByCircleWalletID(ctx context.Context, circleWalletID string) (*entities.ManagedWallet, error)
+	GetByAddress(ctx context.Context, address string) (*entities.ManagedWallet, error)
 }
 
 // CircleAdapter interface for Circle API integration
@@ -166,6 +167,11 @@ func (s *Service) SetAuditService(as AuditService) {
 	s.auditService = as
 }
 
+// SetDefaultWalletSetID sets the default wallet set ID for wallet creation
+func (s *Service) SetDefaultWalletSetID(id uuid.UUID) {
+	s.config.DefaultWalletSetID = id
+}
+
 // SetNotificationService sets the notification service (optional)
 func (s *Service) SetNotificationService(ns FundingNotificationService) {
 	s.notificationService = ns
@@ -209,14 +215,16 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 
 		// Create wallet record
 		wallet = &entities.Wallet{
-			ID:          uuid.New(),
-			UserID:      userID,
-			Chain:       chain,
-			Address:     address,
-			ProviderRef: fmt.Sprintf("circle-%s", address),
-			Status:      "active",
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
+			ID:             uuid.New(),
+			UserID:         userID,
+			Chain:          chain,
+			Address:        address,
+			CircleWalletID: fmt.Sprintf("circle-%s", address),
+			WalletSetID:    s.config.DefaultWalletSetID,
+			AccountType:    "EOA",
+			Status:         "live",
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
 		}
 
 		if err := s.walletRepo.Create(ctx, wallet); err != nil {
@@ -351,28 +359,83 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 	}
 
 	if existingDeposit != nil {
-		s.logger.Info("Deposit already processed", "tx_hash", webhook.TxHash)
+		// If a previous attempt inserted the deposit row but failed during ledger posting,
+		// replay should reconcile the ledger entry idempotently using the same deposit ID.
+		if existingDeposit.Status == "confirmed" {
+			if err := s.ledgerIntegration.RecordDeposit(
+				ctx,
+				existingDeposit.UserID,
+				existingDeposit.Amount,
+				existingDeposit.ID,
+				string(existingDeposit.Chain),
+				existingDeposit.TxHash,
+			); err != nil {
+				return fmt.Errorf("existing deposit found but failed to reconcile ledger: %w", err)
+			}
+
+			// Re-run allocation split for replay recovery. Allocation service handles idempotency.
+			if s.allocationService != nil {
+				allocationReq := &entities.IncomingFundsRequest{
+					UserID:     existingDeposit.UserID,
+					Amount:     existingDeposit.Amount,
+					EventType:  entities.AllocationEventTypeCryptoDeposit,
+					DepositID:  &existingDeposit.ID,
+					SourceTxID: &existingDeposit.TxHash,
+					Metadata: map[string]any{
+						"source":  "crypto",
+						"chain":   string(existingDeposit.Chain),
+						"token":   string(existingDeposit.Token),
+						"tx_hash": existingDeposit.TxHash,
+					},
+				}
+				if err := s.allocationService.ProcessIncomingFunds(ctx, allocationReq); err != nil {
+					s.logger.Error("Failed to reconcile allocation split for existing deposit",
+						"user_id", existingDeposit.UserID,
+						"deposit_id", existingDeposit.ID.String(),
+						"error", err)
+					// Keep webhook idempotent and non-failing for allocation issues.
+				}
+			}
+		}
+		s.logger.Info("Deposit already processed", "tx_hash", webhook.TxHash, "deposit_id", existingDeposit.ID.String())
 		return nil
 	}
 
-	// Find the wallet to get user ID
+	token := webhook.Token
+	if token == "" {
+		// Defensive fallback for webhook variants that omit token metadata.
+		s.logger.Warn("Deposit webhook missing token; defaulting to USDC",
+			"tx_hash", webhook.TxHash,
+			"chain", webhook.Chain)
+		token = entities.StablecoinUSDC
+	}
+
+	// Find the wallet to get user ID.
+	// Prefer legacy wallets table for backward compatibility, then fall back to managed_wallets.
+	var userID uuid.UUID
 	wallet, err := s.walletRepo.GetByAddress(ctx, webhook.Address)
 	if err != nil {
-		return fmt.Errorf("failed to find wallet for address %s: %w", webhook.Address, err)
+		managedWallet, managedErr := s.managedWalletRepo.GetByAddress(ctx, webhook.Address)
+		if managedErr != nil {
+			return fmt.Errorf("failed to find wallet for address %s: legacy_error=%v managed_error=%w", webhook.Address, err, managedErr)
+		}
+		userID = managedWallet.UserID
+	} else {
+		userID = wallet.UserID
 	}
 
 	// Convert stablecoin to USD buying power
-	usdAmount, err := s.circleAPI.ConvertToUSD(ctx, amount, webhook.Token)
+	usdAmount, err := s.circleAPI.ConvertToUSD(ctx, amount, token)
 	if err != nil {
 		return fmt.Errorf("failed to convert to USD: %w", err)
 	}
 
 	// Validate against user's deposit limits (if limits service is configured)
 	if s.limitsService != nil {
-		result, err := s.limitsService.ValidateDeposit(ctx, wallet.UserID, usdAmount)
+		result, err := s.limitsService.ValidateDeposit(ctx, userID, usdAmount)
 		if err != nil {
 			s.logger.Warn("Deposit limit validation failed",
-				"user_id", wallet.UserID.String(),
+				"user_id", userID.String(),
 				"amount", usdAmount.String(),
 				"error", err.Error(),
 				"limit_type", result.LimitType,
@@ -385,10 +448,10 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 	now := time.Now()
 	deposit := &entities.Deposit{
 		ID:          uuid.New(),
-		UserID:      wallet.UserID,
+		UserID:      userID,
 		Chain:       webhook.Chain,
 		TxHash:      webhook.TxHash,
-		Token:       webhook.Token,
+		Token:       token,
 		Amount:      amount,
 		Status:      "confirmed",
 		ConfirmedAt: &now,
@@ -400,7 +463,7 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 	}
 
 	// Record deposit in ledger (replaces legacy balance update)
-	if err := s.ledgerIntegration.RecordDeposit(ctx, wallet.UserID, usdAmount, deposit.ID, string(webhook.Chain), webhook.TxHash); err != nil {
+	if err := s.ledgerIntegration.RecordDeposit(ctx, userID, usdAmount, deposit.ID, string(webhook.Chain), webhook.TxHash); err != nil {
 		return fmt.Errorf("failed to record deposit in ledger: %w", err)
 	}
 
@@ -408,43 +471,43 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 	// This is the core system rule: every deposit is automatically split
 	if s.allocationService != nil {
 		allocationReq := &entities.IncomingFundsRequest{
-			UserID:     wallet.UserID,
+			UserID:     userID,
 			Amount:     usdAmount,
 			EventType:  entities.AllocationEventTypeCryptoDeposit,
 			DepositID:  &deposit.ID,
 			SourceTxID: &webhook.TxHash,
 			Metadata: map[string]any{
-				"source":   "crypto",
-				"chain":    string(webhook.Chain),
-				"token":    string(webhook.Token),
-				"tx_hash":  webhook.TxHash,
+				"source":  "crypto",
+				"chain":   string(webhook.Chain),
+				"token":   string(token),
+				"tx_hash": webhook.TxHash,
 			},
 		}
 		if err := s.allocationService.ProcessIncomingFunds(ctx, allocationReq); err != nil {
 			s.logger.Error("Failed to process allocation split",
-				"user_id", wallet.UserID,
+				"user_id", userID,
 				"amount", usdAmount,
 				"error", err)
 			// Don't fail the deposit - allocation can be retried
 			// The funds are safely in the ledger
 		} else {
 			s.logger.Info("Automatic 70/30 allocation split completed",
-				"user_id", wallet.UserID,
+				"user_id", userID,
 				"amount", usdAmount)
 		}
 	}
 
 	// Record deposit usage against limits
 	if s.limitsService != nil {
-		if err := s.limitsService.RecordDeposit(ctx, wallet.UserID, usdAmount); err != nil {
-			s.logger.Warn("Failed to record deposit usage", "error", err, "user_id", wallet.UserID.String())
+		if err := s.limitsService.RecordDeposit(ctx, userID, usdAmount); err != nil {
+			s.logger.Warn("Failed to record deposit usage", "error", err, "user_id", userID.String())
 			// Don't fail the deposit, just log the warning
 		}
 	}
 
 	// Create audit log entry for compliance
 	if s.auditService != nil {
-		if err := s.auditService.LogDeposit(ctx, wallet.UserID, deposit.ID, usdAmount.String(), string(webhook.Chain), deposit.Status); err != nil {
+		if err := s.auditService.LogDeposit(ctx, userID, deposit.ID, usdAmount.String(), string(webhook.Chain), deposit.Status); err != nil {
 			s.logger.Warn("Failed to create audit log for deposit", "error", err, "deposit_id", deposit.ID.String())
 			// Don't fail the deposit, audit logging is non-critical
 		}
@@ -452,21 +515,21 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 
 	// Send deposit confirmation notification
 	if s.notificationService != nil {
-		if err := s.notificationService.NotifyDepositConfirmed(ctx, wallet.UserID, usdAmount.String(), string(webhook.Chain), webhook.TxHash); err != nil {
-			s.logger.Warn("Failed to send deposit notification", "error", err, "user_id", wallet.UserID.String())
+		if err := s.notificationService.NotifyDepositConfirmed(ctx, userID, usdAmount.String(), string(webhook.Chain), webhook.TxHash); err != nil {
+			s.logger.Warn("Failed to send deposit notification", "error", err, "user_id", userID.String())
 		}
 		// Notify for large deposits (>= $1000)
 		largeDepositThreshold := decimal.NewFromInt(1000)
 		if usdAmount.GreaterThanOrEqual(largeDepositThreshold) {
 			// Get new balance for notification
-			if balance, err := s.ledgerIntegration.GetUserBalance(ctx, wallet.UserID); err == nil {
-				_ = s.notificationService.NotifyLargeBalanceChange(ctx, wallet.UserID, "deposit", usdAmount, balance.TotalValue)
+			if balance, err := s.ledgerIntegration.GetUserBalance(ctx, userID); err == nil {
+				_ = s.notificationService.NotifyLargeBalanceChange(ctx, userID, "deposit", usdAmount, balance.TotalValue)
 			}
 		}
 	}
 
 	s.logger.Info("Deposit processed successfully",
-		"user_id", wallet.UserID,
+		"user_id", userID,
 		"amount", webhook.Amount,
 		"usd_amount", usdAmount.String(),
 		"tx_hash", webhook.TxHash,
@@ -478,7 +541,23 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 // CreateVirtualAccount creates a virtual account linked to an Alpaca brokerage account
 // Now uses Bridge API instead of Due
 func (s *Service) CreateVirtualAccount(ctx context.Context, req *entities.CreateVirtualAccountRequest) (*entities.CreateVirtualAccountResponse, error) {
-	s.logger.Info("Creating virtual account", "user_id", req.UserID.String(), "alpaca_account_id", req.AlpacaAccountID)
+	if req == nil {
+		return nil, fmt.Errorf("request is required")
+	}
+	if s.virtualAccountRepo == nil {
+		return nil, fmt.Errorf("virtual account repository not configured")
+	}
+	if s.alpacaAPI == nil {
+		return nil, fmt.Errorf("alpaca api not configured")
+	}
+	// Bridge virtual account service must be configured
+	if s.bridgeVAService == nil {
+		return nil, fmt.Errorf("bridge virtual account service not configured")
+	}
+
+	if s.logger != nil {
+		s.logger.Info("Creating virtual account", "user_id", req.UserID.String(), "alpaca_account_id", req.AlpacaAccountID)
+	}
 
 	// Check if virtual account already exists for this user and Alpaca account
 	exists, err := s.virtualAccountRepo.ExistsByUserAndAlpacaAccount(ctx, req.UserID, req.AlpacaAccountID)
@@ -487,7 +566,9 @@ func (s *Service) CreateVirtualAccount(ctx context.Context, req *entities.Create
 	}
 
 	if exists {
-		s.logger.Info("Virtual account already exists", "user_id", req.UserID.String(), "alpaca_account_id", req.AlpacaAccountID)
+		if s.logger != nil {
+			s.logger.Info("Virtual account already exists", "user_id", req.UserID.String(), "alpaca_account_id", req.AlpacaAccountID)
+		}
 		return nil, fmt.Errorf("virtual account already exists for this Alpaca account")
 	}
 
@@ -499,11 +580,6 @@ func (s *Service) CreateVirtualAccount(ctx context.Context, req *entities.Create
 
 	if alpacaAccount.Status != entities.AlpacaAccountStatusActive {
 		return nil, fmt.Errorf("Alpaca account is not active: %s", alpacaAccount.Status)
-	}
-
-	// Bridge virtual account service must be configured
-	if s.bridgeVAService == nil {
-		return nil, fmt.Errorf("bridge virtual account service not configured")
 	}
 
 	// Get deposit instructions from Bridge (virtual account already created during onboarding)
@@ -530,10 +606,12 @@ func (s *Service) CreateVirtualAccount(ctx context.Context, req *entities.Create
 		return nil, fmt.Errorf("failed to update virtual account: %w", err)
 	}
 
-	s.logger.Info("Virtual account linked successfully",
-		"virtual_account_id", virtualAccount.ID.String(),
-		"bridge_account_id", virtualAccount.BridgeAccountID,
-		"alpaca_account_id", virtualAccount.AlpacaAccountID)
+	if s.logger != nil {
+		s.logger.Info("Virtual account linked successfully",
+			"virtual_account_id", virtualAccount.ID.String(),
+			"bridge_account_id", virtualAccount.BridgeAccountID,
+			"alpaca_account_id", virtualAccount.AlpacaAccountID)
+	}
 
 	return &entities.CreateVirtualAccountResponse{
 		VirtualAccount: virtualAccount,

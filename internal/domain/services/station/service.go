@@ -3,6 +3,7 @@ package station
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,6 +16,9 @@ import (
 type Balances struct {
 	SpendingBalance          decimal.Decimal
 	StashBalance             decimal.Decimal
+	InvestBalance            decimal.Decimal
+	FiatExposure             decimal.Decimal
+	UnallocatedUSDC          decimal.Decimal
 	TotalBalance             decimal.Decimal
 	PendingAmount            decimal.Decimal
 	PendingTransactionsCount int
@@ -140,27 +144,116 @@ func (s *Service) SetTransactionRepository(repo TransactionRepository) {
 
 // GetUserBalances retrieves the user's spend and invest balances
 func (s *Service) GetUserBalances(ctx context.Context, userID uuid.UUID) (*Balances, error) {
-	spendingBalance, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
+	mode, err := s.allocationRepo.GetMode(ctx, userID)
 	if err != nil {
-		s.logger.Warn("Failed to get spending balance, defaulting to zero",
+		s.logger.Warn("Failed to get allocation mode, falling back to legacy balance view",
 			zap.Error(err),
 			zap.String("user_id", userID.String()))
-		spendingBalance = decimal.Zero
 	}
 
-	stashBalance, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
-	if err != nil {
-		s.logger.Warn("Failed to get stash balance, defaulting to zero",
-			zap.Error(err),
-			zap.String("user_id", userID.String()))
-		stashBalance = decimal.Zero
+	// If smart allocation mode is not active, show legacy USDC balance directly
+	// and include broker cash so users never see funds "disappear" after transfers.
+	if mode == nil || !mode.Active {
+		usdcBalance, balErr := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeUSDCBalance)
+		if balErr != nil {
+			s.logger.Warn("Failed to get USDC balance, defaulting to zero",
+				zap.Error(balErr),
+				zap.String("user_id", userID.String()))
+			usdcBalance = decimal.Zero
+		}
+		fiatExposure, fiatErr := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeFiatExposure)
+		if fiatErr != nil {
+			s.logger.Warn("Failed to get fiat exposure balance, defaulting to zero",
+				zap.Error(fiatErr),
+				zap.String("user_id", userID.String()))
+			fiatExposure = decimal.Zero
+		}
+
+		totalBalance := usdcBalance.Add(fiatExposure)
+
+		return &Balances{
+			SpendingBalance: usdcBalance,
+			StashBalance:    decimal.Zero,
+			InvestBalance:   fiatExposure,
+			FiatExposure:    fiatExposure,
+			UnallocatedUSDC: decimal.Zero,
+			TotalBalance:    totalBalance,
+		}, nil
 	}
 
-	totalBalance := spendingBalance.Add(stashBalance)
+	var (
+		spendingBalance decimal.Decimal
+		stashBalance    decimal.Decimal
+		fiatExposure    decimal.Decimal
+		usdcBalance     decimal.Decimal
+	)
+
+	var wg sync.WaitGroup
+	wg.Add(4)
+
+	go func() {
+		defer wg.Done()
+		balance, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
+		if err != nil {
+			s.logger.Warn("Failed to get spending balance, defaulting to zero",
+				zap.Error(err),
+				zap.String("user_id", userID.String()))
+			spendingBalance = decimal.Zero
+			return
+		}
+		spendingBalance = balance
+	}()
+
+	go func() {
+		defer wg.Done()
+		balance, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
+		if err != nil {
+			s.logger.Warn("Failed to get stash balance, defaulting to zero",
+				zap.Error(err),
+				zap.String("user_id", userID.String()))
+			stashBalance = decimal.Zero
+			return
+		}
+		stashBalance = balance
+	}()
+
+	go func() {
+		defer wg.Done()
+		balance, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeFiatExposure)
+		if err != nil {
+			s.logger.Warn("Failed to get fiat exposure, defaulting to zero",
+				zap.Error(err),
+				zap.String("user_id", userID.String()))
+			fiatExposure = decimal.Zero
+			return
+		}
+		fiatExposure = balance
+	}()
+
+	go func() {
+		defer wg.Done()
+		balance, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeUSDCBalance)
+		if err != nil {
+			s.logger.Warn("Failed to get unallocated USDC, defaulting to zero",
+				zap.Error(err),
+				zap.String("user_id", userID.String()))
+			usdcBalance = decimal.Zero
+			return
+		}
+		usdcBalance = balance
+	}()
+
+	wg.Wait()
+
+	investBalance := stashBalance.Add(fiatExposure)
+	totalBalance := spendingBalance.Add(investBalance).Add(usdcBalance)
 
 	return &Balances{
 		SpendingBalance: spendingBalance,
 		StashBalance:    stashBalance,
+		InvestBalance:   investBalance,
+		FiatExposure:    fiatExposure,
+		UnallocatedUSDC: usdcBalance,
 		TotalBalance:    totalBalance,
 	}, nil
 }
@@ -178,22 +271,54 @@ func (s *Service) GetBalanceTrends(ctx context.Context, userID uuid.UUID, curren
 
 	trends := &BalanceTrends{}
 
-	// Day change
-	if snapshot, err := s.snapshotRepo.GetSnapshot(ctx, userID, dayAgo); err == nil && snapshot != nil {
-		trends.Spend.DayChange = calcPercentChange(snapshot.SpendBalance, currentSpend)
-		trends.Invest.DayChange = calcPercentChange(snapshot.InvestBalance, currentInvest)
+	var (
+		daySnapshot   *BalanceSnapshot
+		weekSnapshot  *BalanceSnapshot
+		monthSnapshot *BalanceSnapshot
+	)
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	go func() {
+		defer wg.Done()
+		snapshot, err := s.snapshotRepo.GetSnapshot(ctx, userID, dayAgo)
+		if err == nil {
+			daySnapshot = snapshot
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		snapshot, err := s.snapshotRepo.GetSnapshot(ctx, userID, weekAgo)
+		if err == nil {
+			weekSnapshot = snapshot
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		snapshot, err := s.snapshotRepo.GetSnapshot(ctx, userID, monthAgo)
+		if err == nil {
+			monthSnapshot = snapshot
+		}
+	}()
+
+	wg.Wait()
+
+	if daySnapshot != nil {
+		trends.Spend.DayChange = calcPercentChange(daySnapshot.SpendBalance, currentSpend)
+		trends.Invest.DayChange = calcPercentChange(daySnapshot.InvestBalance, currentInvest)
 	}
 
-	// Week change
-	if snapshot, err := s.snapshotRepo.GetSnapshot(ctx, userID, weekAgo); err == nil && snapshot != nil {
-		trends.Spend.WeekChange = calcPercentChange(snapshot.SpendBalance, currentSpend)
-		trends.Invest.WeekChange = calcPercentChange(snapshot.InvestBalance, currentInvest)
+	if weekSnapshot != nil {
+		trends.Spend.WeekChange = calcPercentChange(weekSnapshot.SpendBalance, currentSpend)
+		trends.Invest.WeekChange = calcPercentChange(weekSnapshot.InvestBalance, currentInvest)
 	}
 
-	// Month change
-	if snapshot, err := s.snapshotRepo.GetSnapshot(ctx, userID, monthAgo); err == nil && snapshot != nil {
-		trends.Spend.MonthChange = calcPercentChange(snapshot.SpendBalance, currentSpend)
-		trends.Invest.MonthChange = calcPercentChange(snapshot.InvestBalance, currentInvest)
+	if monthSnapshot != nil {
+		trends.Spend.MonthChange = calcPercentChange(monthSnapshot.SpendBalance, currentSpend)
+		trends.Invest.MonthChange = calcPercentChange(monthSnapshot.InvestBalance, currentInvest)
 	}
 
 	return trends, nil

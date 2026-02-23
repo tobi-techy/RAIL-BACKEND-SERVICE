@@ -1,22 +1,27 @@
 package middleware
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"go.uber.org/zap"
 
-	"github.com/rail-service/rail_service/pkg/interfaces"
 	"github.com/rail-service/rail_service/pkg/logger"
 )
 
+type kycEligibilityUserRepository interface {
+	GetByID(ctx context.Context, id uuid.UUID) (*entities.UserProfile, error)
+}
+
 type KYCMiddleware struct {
-	userRepo interfaces.UserRepository
+	userRepo kycEligibilityUserRepository
 	logger   *logger.Logger
 }
 
-func NewKYCMiddleware(userRepo interfaces.UserRepository, log *logger.Logger) *KYCMiddleware {
+func NewKYCMiddleware(userRepo kycEligibilityUserRepository, log *logger.Logger) *KYCMiddleware {
 	return &KYCMiddleware{
 		userRepo: userRepo,
 		logger:   log,
@@ -28,17 +33,9 @@ func (m *KYCMiddleware) RequireKYCEligibility() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx := c.Request.Context()
 
-		// Get user ID from auth context
-		userIDStr, exists := c.Get("user_id")
-		if !exists {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-			c.Abort()
-			return
-		}
-
-		userID, err := uuid.Parse(userIDStr.(string))
+		userID, err := extractUserID(c)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 			c.Abort()
 			return
 		}

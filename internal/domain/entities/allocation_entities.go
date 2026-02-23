@@ -23,14 +23,14 @@ var (
 
 // SmartAllocationMode represents the 70/30 allocation mode state for a user
 type SmartAllocationMode struct {
-	UserID         uuid.UUID       `json:"user_id" db:"user_id"`
-	Active         bool            `json:"active" db:"active"`
-	RatioSpending  decimal.Decimal `json:"ratio_spending" db:"ratio_spending"`
-	RatioStash     decimal.Decimal `json:"ratio_stash" db:"ratio_stash"`
-	PausedAt       *time.Time      `json:"paused_at,omitempty" db:"paused_at"`
-	ResumedAt      *time.Time      `json:"resumed_at,omitempty" db:"resumed_at"`
-	CreatedAt      time.Time       `json:"created_at" db:"created_at"`
-	UpdatedAt      time.Time       `json:"updated_at" db:"updated_at"`
+	UserID        uuid.UUID       `json:"user_id" db:"user_id"`
+	Active        bool            `json:"active" db:"active"`
+	RatioSpending decimal.Decimal `json:"ratio_spending" db:"ratio_spending"`
+	RatioStash    decimal.Decimal `json:"ratio_stash" db:"ratio_stash"`
+	PausedAt      *time.Time      `json:"paused_at,omitempty" db:"paused_at"`
+	ResumedAt     *time.Time      `json:"resumed_at,omitempty" db:"resumed_at"`
+	CreatedAt     time.Time       `json:"created_at" db:"created_at"`
+	UpdatedAt     time.Time       `json:"updated_at" db:"updated_at"`
 }
 
 // Validate validates the smart allocation mode
@@ -60,7 +60,7 @@ func (m *SmartAllocationMode) Validate() error {
 	one := decimal.NewFromInt(1)
 	tolerance := decimal.NewFromFloat(0.0001)
 	if sum.Sub(one).Abs().GreaterThan(tolerance) {
-		return fmt.Errorf("ratios must sum to 1.0: spending=%s, stash=%s", 
+		return fmt.Errorf("ratios must sum to 1.0: spending=%s, stash=%s",
 			m.RatioSpending.String(), m.RatioStash.String())
 	}
 
@@ -221,6 +221,9 @@ type AllocationBalances struct {
 	UserID            uuid.UUID       `json:"user_id"`
 	SpendingBalance   decimal.Decimal `json:"spending_balance"`
 	StashBalance      decimal.Decimal `json:"stash_balance"`
+	USDCBalance       decimal.Decimal `json:"usdc_balance"`
+	FiatExposure      decimal.Decimal `json:"fiat_exposure"`
+	InvestBalance     decimal.Decimal `json:"invest_balance"`
 	SpendingUsed      decimal.Decimal `json:"spending_used"`
 	SpendingRemaining decimal.Decimal `json:"spending_remaining"`
 	TotalBalance      decimal.Decimal `json:"total_balance"`
@@ -230,7 +233,12 @@ type AllocationBalances struct {
 
 // CalculateTotals calculates derived totals
 func (b *AllocationBalances) CalculateTotals() {
-	b.TotalBalance = b.SpendingBalance.Add(b.StashBalance)
+	b.InvestBalance = b.StashBalance.Add(b.FiatExposure)
+	unallocatedUSDC := b.USDCBalance
+	if !b.ModeActive {
+		unallocatedUSDC = decimal.Zero
+	}
+	b.TotalBalance = b.SpendingBalance.Add(b.InvestBalance).Add(unallocatedUSDC)
 	b.SpendingRemaining = b.SpendingBalance.Sub(b.SpendingUsed)
 	if b.SpendingRemaining.IsNegative() {
 		b.SpendingRemaining = decimal.Zero
@@ -239,12 +247,12 @@ func (b *AllocationBalances) CalculateTotals() {
 
 // IncomingFundsRequest represents a request to process incoming funds
 type IncomingFundsRequest struct {
-	UserID       uuid.UUID
-	Amount       decimal.Decimal
-	EventType    AllocationEventType
-	SourceTxID   *string
-	Metadata     map[string]any
-	DepositID    *uuid.UUID // Link to deposit record if applicable
+	UserID     uuid.UUID
+	Amount     decimal.Decimal
+	EventType  AllocationEventType
+	SourceTxID *string
+	Metadata   map[string]any
+	DepositID  *uuid.UUID // Link to deposit record if applicable
 }
 
 // Validate validates the incoming funds request

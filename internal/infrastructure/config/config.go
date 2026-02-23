@@ -271,32 +271,29 @@ type CircleConfig struct {
 	DefaultWalletSetID     string   `mapstructure:"default_wallet_set_id"`
 	DefaultWalletSetName   string   `mapstructure:"default_wallet_set_name"`
 	SupportedChains        []string `mapstructure:"supported_chains"`
+	TreasuryWalletAddress  string   `mapstructure:"treasury_wallet_address"` // Company wallet for account closure fund sweeps
 }
 
 type KYCConfig struct {
-	Provider    string `mapstructure:"provider"` // legacy config, Bridge KYC is now the only provider
-	APIKey      string `mapstructure:"api_key"`
-	APISecret   string `mapstructure:"api_secret"`
-	BaseURL     string `mapstructure:"base_url"`
-	CallbackURL string `mapstructure:"callback_url"`
-	Environment string `mapstructure:"environment"` // "development", "sandbox", "production"
-	UserAgent   string `mapstructure:"user_agent"`
-	LevelName   string `mapstructure:"level_name"`
+	Provider      string `mapstructure:"provider"` // legacy config, Bridge KYC is now the only provider
+	APIKey        string `mapstructure:"api_key"`
+	APISecret     string `mapstructure:"api_secret"`
+	WebhookSecret string `mapstructure:"webhook_secret"`
+	BaseURL       string `mapstructure:"base_url"`
+	CallbackURL   string `mapstructure:"callback_url"`
+	Environment   string `mapstructure:"environment"` // "development", "sandbox", "production"
+	UserAgent     string `mapstructure:"user_agent"`
+	LevelName     string `mapstructure:"level_name"`
 }
 
 type EmailConfig struct {
-	Provider     string `mapstructure:"provider"` // "sendgrid", "resend", "mailpit", "smtp"
-	APIKey       string `mapstructure:"api_key"`
-	FromEmail    string `mapstructure:"from_email"`
-	FromName     string `mapstructure:"from_name"`
-	BaseURL      string `mapstructure:"base_url"`    // For verification links
-	Environment  string `mapstructure:"environment"` // "development", "staging", "production"
-	ReplyTo      string `mapstructure:"reply_to"`
-	SMTPHost     string `mapstructure:"smtp_host"`
-	SMTPPort     int    `mapstructure:"smtp_port"`
-	SMTPUsername string `mapstructure:"smtp_username"`
-	SMTPPassword string `mapstructure:"smtp_password"`
-	SMTPUseTLS   bool   `mapstructure:"smtp_use_tls"`
+	Provider    string `mapstructure:"provider"` // "unosend"
+	APIKey      string `mapstructure:"api_key"`
+	FromEmail   string `mapstructure:"from_email"`
+	FromName    string `mapstructure:"from_name"`
+	BaseURL     string `mapstructure:"base_url"`    // For verification links
+	Environment string `mapstructure:"environment"` // "development", "staging", "production"
+	ReplyTo     string `mapstructure:"reply_to"`
 }
 
 type SMSConfig struct {
@@ -484,7 +481,7 @@ func Load() (*Config, error) {
 	}
 
 	if strings.TrimSpace(config.Email.Provider) == "" && isDevEnvironment(config.Environment) {
-		config.Email.Provider = "mailpit"
+		config.Email.Provider = "unosend"
 	}
 
 	// Build database URL if not provided
@@ -526,9 +523,9 @@ func setDefaults() {
 	viper.SetDefault("database.name", "stack_service")
 	viper.SetDefault("database.user", "postgres")
 	viper.SetDefault("database.ssl_mode", "disable")
-	viper.SetDefault("database.max_open_conns", 50)       // Increased for concurrent requests
-	viper.SetDefault("database.max_idle_conns", 25)       // Keep more idle connections ready
-	viper.SetDefault("database.conn_max_lifetime", 300)   // 5 minutes - recycle connections more often
+	viper.SetDefault("database.max_open_conns", 50)     // Increased for concurrent requests
+	viper.SetDefault("database.max_idle_conns", 25)     // Keep more idle connections ready
+	viper.SetDefault("database.conn_max_lifetime", 300) // 5 minutes - recycle connections more often
 	viper.SetDefault("database.query_timeout", 30)
 	viper.SetDefault("database.max_retries", 3)
 
@@ -542,8 +539,8 @@ func setDefaults() {
 	viper.SetDefault("redis.pool_size", 10)
 
 	// JWT defaults
-	viper.SetDefault("jwt.access_token_ttl", 3600)   // 1 hour
-	viper.SetDefault("jwt.refresh_token_ttl", 86400) // 24 hours
+	viper.SetDefault("jwt.access_token_ttl", 3600)     // 1 hour
+	viper.SetDefault("jwt.refresh_token_ttl", 2592000) // 30 days
 	viper.SetDefault("jwt.issuer", "stack_service")
 
 	// Security defaults
@@ -551,6 +548,9 @@ func setDefaults() {
 	viper.SetDefault("security.lockout_duration", 900) // 15 minutes
 	viper.SetDefault("security.require_mfa", false)
 	viper.SetDefault("security.password_min_length", 8)
+
+	// Payment/webhook defaults
+	viper.SetDefault("payment.webhook_secret", "")
 
 	// Circle defaults
 	viper.SetDefault("circle.environment", "sandbox")
@@ -563,7 +563,8 @@ func setDefaults() {
 	// KYC defaults
 	viper.SetDefault("kyc.provider", "")
 	viper.SetDefault("kyc.environment", "development")
-	viper.SetDefault("kyc.base_url", "https://netverify.com")
+	viper.SetDefault("kyc.webhook_secret", "")
+	viper.SetDefault("kyc.base_url", "https://api.sumsub.com")
 	viper.SetDefault("kyc.user_agent", "Stack-Service/1.0")
 	viper.SetDefault("kyc.level_name", "basic-kyc")
 
@@ -594,8 +595,8 @@ func setDefaults() {
 	viper.SetDefault("security.bcrypt_cost", 12)                 // Increased from default 10
 	viper.SetDefault("security.password_history_count", 5)       // Track last 5 passwords
 	viper.SetDefault("security.password_expiration_days", 90)    // 90-day password expiration
-	viper.SetDefault("security.access_token_ttl", 900)           // 15 minutes (short-lived)
-	viper.SetDefault("security.refresh_token_ttl", 604800)       // 7 days
+	viper.SetDefault("security.access_token_ttl", 3600)          // 1 hour
+	viper.SetDefault("security.refresh_token_ttl", 2592000)      // 30 days
 	viper.SetDefault("security.enable_token_blacklist", true)    // Enable token revocation
 	viper.SetDefault("security.check_password_breaches", true)   // Check HaveIBeenPwned
 	viper.SetDefault("security.captcha_threshold", 3)            // CAPTCHA after 3 failed attempts
@@ -714,6 +715,40 @@ func overrideFromEnv() {
 	if jwtSecret := os.Getenv("JWT_SECRET"); jwtSecret != "" {
 		viper.Set("jwt.secret", jwtSecret)
 	}
+	// Backward-compatible token TTL env vars used by existing deployments.
+	if accessTokenTTL := os.Getenv("ACCESS_TOKEN_TTL"); accessTokenTTL != "" {
+		if ttl, err := strconv.Atoi(accessTokenTTL); err == nil {
+			viper.Set("jwt.access_token_ttl", ttl)
+			viper.Set("security.access_token_ttl", ttl)
+		}
+	}
+	if refreshTokenTTL := os.Getenv("REFRESH_TOKEN_TTL"); refreshTokenTTL != "" {
+		if ttl, err := strconv.Atoi(refreshTokenTTL); err == nil {
+			viper.Set("jwt.refresh_token_ttl", ttl)
+			viper.Set("security.refresh_token_ttl", ttl)
+		}
+	}
+	// Optional explicit split overrides.
+	if jwtAccessTokenTTL := os.Getenv("JWT_ACCESS_TOKEN_TTL"); jwtAccessTokenTTL != "" {
+		if ttl, err := strconv.Atoi(jwtAccessTokenTTL); err == nil {
+			viper.Set("jwt.access_token_ttl", ttl)
+		}
+	}
+	if jwtRefreshTokenTTL := os.Getenv("JWT_REFRESH_TOKEN_TTL"); jwtRefreshTokenTTL != "" {
+		if ttl, err := strconv.Atoi(jwtRefreshTokenTTL); err == nil {
+			viper.Set("jwt.refresh_token_ttl", ttl)
+		}
+	}
+	if securityAccessTokenTTL := os.Getenv("SECURITY_ACCESS_TOKEN_TTL"); securityAccessTokenTTL != "" {
+		if ttl, err := strconv.Atoi(securityAccessTokenTTL); err == nil {
+			viper.Set("security.access_token_ttl", ttl)
+		}
+	}
+	if securityRefreshTokenTTL := os.Getenv("SECURITY_REFRESH_TOKEN_TTL"); securityRefreshTokenTTL != "" {
+		if ttl, err := strconv.Atoi(securityRefreshTokenTTL); err == nil {
+			viper.Set("security.refresh_token_ttl", ttl)
+		}
+	}
 
 	// Encryption
 	if encKey := os.Getenv("ENCRYPTION_KEY"); encKey != "" {
@@ -753,14 +788,48 @@ func overrideFromEnv() {
 	if circleEnv := os.Getenv("CIRCLE_ENVIRONMENT"); circleEnv != "" {
 		viper.Set("circle.environment", circleEnv)
 	}
-
-	// Email Service
-	if emailAPIKey := os.Getenv("EMAIL_API_KEY"); emailAPIKey != "" {
-		viper.Set("email.api_key", emailAPIKey)
+	if paymentWebhookSecret := os.Getenv("PAYMENT_WEBHOOK_SECRET"); paymentWebhookSecret != "" {
+		viper.Set("payment.webhook_secret", paymentWebhookSecret)
+	} else if circleWebhookSecret := os.Getenv("CIRCLE_WEBHOOK_SECRET"); circleWebhookSecret != "" {
+		// Backward-compatible fallback used by existing deployments.
+		viper.Set("payment.webhook_secret", circleWebhookSecret)
 	}
-	if resendAPIKey := os.Getenv("RESEND_API_KEY"); resendAPIKey != "" {
-		viper.Set("email.api_key", resendAPIKey)
-		viper.Set("email.provider", "resend")
+
+	// KYC provider (Sumsub)
+	if kycProvider := os.Getenv("KYC_PROVIDER"); kycProvider != "" {
+		viper.Set("kyc.provider", kycProvider)
+	}
+	if sumsubAppToken := os.Getenv("SUMSUB_APP_TOKEN"); sumsubAppToken != "" {
+		viper.Set("kyc.api_key", sumsubAppToken)
+	}
+	if kycAPIKey := os.Getenv("KYC_API_KEY"); kycAPIKey != "" {
+		viper.Set("kyc.api_key", kycAPIKey)
+	}
+	if sumsubSecretKey := os.Getenv("SUMSUB_SECRET_KEY"); sumsubSecretKey != "" {
+		viper.Set("kyc.api_secret", sumsubSecretKey)
+	}
+	if kycAPISecret := os.Getenv("KYC_API_SECRET"); kycAPISecret != "" {
+		viper.Set("kyc.api_secret", kycAPISecret)
+	}
+	if sumsubWebhookSecret := os.Getenv("SUMSUB_WEBHOOK_SECRET"); sumsubWebhookSecret != "" {
+		viper.Set("kyc.webhook_secret", sumsubWebhookSecret)
+	}
+	if kycWebhookSecret := os.Getenv("KYC_WEBHOOK_SECRET"); kycWebhookSecret != "" {
+		viper.Set("kyc.webhook_secret", kycWebhookSecret)
+	}
+	if sumsubBaseURL := os.Getenv("SUMSUB_BASE_URL"); sumsubBaseURL != "" {
+		viper.Set("kyc.base_url", sumsubBaseURL)
+	}
+	if sumsubLevelName := os.Getenv("SUMSUB_LEVEL_NAME"); sumsubLevelName != "" {
+		viper.Set("kyc.level_name", sumsubLevelName)
+	}
+	if sumsubEnvironment := os.Getenv("SUMSUB_ENVIRONMENT"); sumsubEnvironment != "" {
+		viper.Set("kyc.environment", sumsubEnvironment)
+	}
+
+	// Email Service (Unosend only)
+	if unosendAPIKey := os.Getenv("UNOSEND_API_KEY"); unosendAPIKey != "" {
+		viper.Set("email.api_key", unosendAPIKey)
 	}
 	if emailProvider := os.Getenv("EMAIL_PROVIDER"); emailProvider != "" {
 		viper.Set("email.provider", emailProvider)
@@ -774,29 +843,11 @@ func overrideFromEnv() {
 	if fromEmail := os.Getenv("EMAIL_FROM_EMAIL"); fromEmail != "" {
 		viper.Set("email.from_email", fromEmail)
 	}
-	if resendFrom := os.Getenv("RESEND_FROM_EMAIL"); resendFrom != "" {
-		viper.Set("email.from_email", resendFrom)
-	}
 	if fromName := os.Getenv("EMAIL_FROM_NAME"); fromName != "" {
 		viper.Set("email.from_name", fromName)
 	}
-	if resendFromName := os.Getenv("RESEND_FROM_NAME"); resendFromName != "" {
-		viper.Set("email.from_name", resendFromName)
-	}
 	if replyTo := os.Getenv("EMAIL_REPLY_TO"); replyTo != "" {
 		viper.Set("email.reply_to", replyTo)
-	}
-	if smtpHost := os.Getenv("SMTP_HOST"); smtpHost != "" {
-		viper.Set("email.smtp_host", smtpHost)
-	}
-	if smtpPort := os.Getenv("SMTP_PORT"); smtpPort != "" {
-		viper.Set("email.smtp_port", smtpPort)
-	}
-	if smtpUser := os.Getenv("SMTP_USERNAME"); smtpUser != "" {
-		viper.Set("email.smtp_username", smtpUser)
-	}
-	if smtpPass := os.Getenv("SMTP_PASSWORD"); smtpPass != "" {
-		viper.Set("email.smtp_password", smtpPass)
 	}
 
 	// AI Providers
@@ -930,10 +981,29 @@ func validate(config *Config) error {
 		return fmt.Errorf("circle supported chains configuration is required")
 	}
 
+	if strings.EqualFold(strings.TrimSpace(config.KYC.Provider), "sumsub") {
+		if strings.TrimSpace(config.KYC.APIKey) == "" {
+			return fmt.Errorf("sumsub app token is required when kyc.provider=sumsub")
+		}
+		if strings.TrimSpace(config.KYC.APISecret) == "" {
+			return fmt.Errorf("sumsub secret key is required when kyc.provider=sumsub")
+		}
+		if strings.TrimSpace(config.KYC.BaseURL) == "" {
+			return fmt.Errorf("sumsub base url is required when kyc.provider=sumsub")
+		}
+		if strings.TrimSpace(config.KYC.LevelName) == "" {
+			return fmt.Errorf("sumsub level name is required when kyc.provider=sumsub")
+		}
+	}
+
 	// Validate webhook secrets in production
 	if config.Environment == "production" {
 		if config.Bridge.WebhookSecret == "" {
 			return fmt.Errorf("bridge webhook secret is required in production")
+		}
+		if strings.EqualFold(strings.TrimSpace(config.KYC.Provider), "sumsub") &&
+			strings.TrimSpace(config.KYC.WebhookSecret) == "" {
+			return fmt.Errorf("sumsub webhook secret is required in production when kyc.provider=sumsub")
 		}
 		if config.Payment.WebhookSecret == "" {
 			return fmt.Errorf("payment webhook secret is required in production")

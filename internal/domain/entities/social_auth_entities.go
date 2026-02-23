@@ -1,6 +1,7 @@
 package entities
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -38,8 +39,8 @@ type SocialLoginRequest struct {
 	Code        string         `json:"code,omitempty"`
 	RedirectURI string         `json:"redirectUri,omitempty"`
 	// Apple Sign-In specific fields (name only sent on first sign-in)
-	Name      string `json:"name,omitempty"`
-	GivenName string `json:"givenName,omitempty"`
+	Name       string `json:"name,omitempty"`
+	GivenName  string `json:"givenName,omitempty"`
 	FamilyName string `json:"familyName,omitempty"`
 }
 
@@ -72,39 +73,42 @@ type LinkedAccountsResponse struct {
 
 // LinkedAccount represents a simplified linked account view
 type LinkedAccount struct {
-	Provider  SocialProvider `json:"provider"`
-	Email     string         `json:"email"`
-	Name      string         `json:"name,omitempty"`
-	LinkedAt  time.Time      `json:"linkedAt"`
+	Provider SocialProvider `json:"provider"`
+	Email    string         `json:"email"`
+	Name     string         `json:"name,omitempty"`
+	LinkedAt time.Time      `json:"linkedAt"`
 }
 
 // WebAuthnCredential represents a stored WebAuthn credential
 type WebAuthnCredential struct {
-	ID              uuid.UUID `json:"id" db:"id"`
-	UserID          uuid.UUID `json:"userId" db:"user_id"`
-	CredentialID    []byte    `json:"-" db:"credential_id"`
-	PublicKey       []byte    `json:"-" db:"public_key"`
-	AttestationType string    `json:"attestationType" db:"attestation_type"`
-	AAGUID          []byte    `json:"-" db:"aaguid"`
-	SignCount       uint32    `json:"signCount" db:"sign_count"`
-	Name            string    `json:"name" db:"name"`
-	CreatedAt       time.Time `json:"createdAt" db:"created_at"`
+	ID              uuid.UUID  `json:"id" db:"id"`
+	UserID          uuid.UUID  `json:"userId" db:"user_id"`
+	CredentialID    []byte     `json:"-" db:"credential_id"`
+	PublicKey       []byte     `json:"-" db:"public_key"`
+	AttestationType string     `json:"attestationType" db:"attestation_type"`
+	AAGUID          []byte     `json:"-" db:"aaguid"`
+	SignCount       uint32     `json:"signCount" db:"sign_count"`
+	Name            string     `json:"name" db:"name"`
+	CreatedAt       time.Time  `json:"createdAt" db:"created_at"`
 	LastUsedAt      *time.Time `json:"lastUsedAt,omitempty" db:"last_used_at"`
 }
 
 // WebAuthnRegisterRequest represents a WebAuthn registration request
 type WebAuthnRegisterRequest struct {
-	Name string `json:"name" validate:"required"`
+	Name string `json:"name"`
 }
 
 // WebAuthnRegisterResponse represents registration options
 type WebAuthnRegisterResponse struct {
-	Options interface{} `json:"options"`
+	Options   interface{} `json:"options"`
+	SessionID string      `json:"sessionId"`
 }
 
 // WebAuthnRegisterFinishRequest represents the finish registration request
 type WebAuthnRegisterFinishRequest struct {
-	Response interface{} `json:"response"`
+	SessionID string          `json:"sessionId" validate:"required"`
+	Response  json.RawMessage `json:"response" validate:"required"`
+	Name      string          `json:"name,omitempty"`
 }
 
 // WebAuthnLoginRequest represents a WebAuthn login request
@@ -114,12 +118,14 @@ type WebAuthnLoginRequest struct {
 
 // WebAuthnLoginResponse represents login options
 type WebAuthnLoginResponse struct {
-	Options interface{} `json:"options"`
+	Options   interface{} `json:"options"`
+	SessionID string      `json:"sessionId"`
 }
 
 // WebAuthnLoginFinishRequest represents the finish login request
 type WebAuthnLoginFinishRequest struct {
-	Response interface{} `json:"response"`
+	SessionID string          `json:"sessionId" validate:"required"`
+	Response  json.RawMessage `json:"response" validate:"required"`
 }
 
 // WebAuthnCredentialsResponse represents user's WebAuthn credentials

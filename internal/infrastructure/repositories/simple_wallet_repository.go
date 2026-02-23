@@ -30,7 +30,7 @@ func NewSimpleWalletRepository(db *sql.DB, logger *logger.Logger) *SimpleWalletR
 // GetByUserAndChain retrieves a wallet by user ID and chain from wallets table
 func (r *SimpleWalletRepository) GetByUserAndChain(ctx context.Context, userID uuid.UUID, chain entities.Chain) (*entities.Wallet, error) {
 	query := `
-		SELECT id, user_id, chain, address, provider_ref, status, created_at, updated_at
+		SELECT id, user_id, chain, address, circle_wallet_id, wallet_set_id, account_type, status, created_at, updated_at
 		FROM wallets 
 		WHERE user_id = $1 AND chain = $2`
 
@@ -41,7 +41,9 @@ func (r *SimpleWalletRepository) GetByUserAndChain(ctx context.Context, userID u
 		&wallet.UserID,
 		&wallet.Chain,
 		&wallet.Address,
-		&wallet.ProviderRef,
+		&wallet.CircleWalletID,
+		&wallet.WalletSetID,
+		&wallet.AccountType,
 		&wallet.Status,
 		&wallet.CreatedAt,
 		&wallet.UpdatedAt,
@@ -61,7 +63,7 @@ func (r *SimpleWalletRepository) GetByUserAndChain(ctx context.Context, userID u
 // GetByAddress retrieves a wallet by address from wallets table
 func (r *SimpleWalletRepository) GetByAddress(ctx context.Context, address string) (*entities.Wallet, error) {
 	query := `
-		SELECT id, user_id, chain, address, provider_ref, status, created_at, updated_at
+		SELECT id, user_id, chain, address, circle_wallet_id, wallet_set_id, account_type, status, created_at, updated_at
 		FROM wallets 
 		WHERE address = $1`
 
@@ -72,7 +74,9 @@ func (r *SimpleWalletRepository) GetByAddress(ctx context.Context, address strin
 		&wallet.UserID,
 		&wallet.Chain,
 		&wallet.Address,
-		&wallet.ProviderRef,
+		&wallet.CircleWalletID,
+		&wallet.WalletSetID,
+		&wallet.AccountType,
 		&wallet.Status,
 		&wallet.CreatedAt,
 		&wallet.UpdatedAt,
@@ -93,9 +97,9 @@ func (r *SimpleWalletRepository) GetByAddress(ctx context.Context, address strin
 func (r *SimpleWalletRepository) Create(ctx context.Context, wallet *entities.Wallet) error {
 	query := `
 		INSERT INTO wallets (
-			id, user_id, chain, address, provider_ref, status, created_at, updated_at
+			id, user_id, chain, address, circle_wallet_id, wallet_set_id, account_type, status, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
 		)`
 
 	_, err := r.db.ExecContext(ctx, query,
@@ -103,7 +107,9 @@ func (r *SimpleWalletRepository) Create(ctx context.Context, wallet *entities.Wa
 		wallet.UserID,
 		string(wallet.Chain),
 		wallet.Address,
-		wallet.ProviderRef,
+		wallet.CircleWalletID,
+		wallet.WalletSetID,
+		wallet.AccountType,
 		wallet.Status,
 		wallet.CreatedAt,
 		wallet.UpdatedAt,
@@ -124,7 +130,7 @@ func (r *SimpleWalletRepository) Create(ctx context.Context, wallet *entities.Wa
 // GetByID retrieves a wallet by ID from wallets table
 func (r *SimpleWalletRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.Wallet, error) {
 	query := `
-		SELECT id, user_id, chain, address, provider_ref, status, created_at, updated_at
+		SELECT id, user_id, chain, address, circle_wallet_id, wallet_set_id, account_type, status, created_at, updated_at
 		FROM wallets 
 		WHERE id = $1`
 
@@ -135,7 +141,9 @@ func (r *SimpleWalletRepository) GetByID(ctx context.Context, id uuid.UUID) (*en
 		&wallet.UserID,
 		&wallet.Chain,
 		&wallet.Address,
-		&wallet.ProviderRef,
+		&wallet.CircleWalletID,
+		&wallet.WalletSetID,
+		&wallet.AccountType,
 		&wallet.Status,
 		&wallet.CreatedAt,
 		&wallet.UpdatedAt,
@@ -155,7 +163,7 @@ func (r *SimpleWalletRepository) GetByID(ctx context.Context, id uuid.UUID) (*en
 // GetByUserID retrieves all wallets for a user from wallets table
 func (r *SimpleWalletRepository) GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.Wallet, error) {
 	query := `
-		SELECT id, user_id, chain, address, provider_ref, status, created_at, updated_at
+		SELECT id, user_id, chain, address, circle_wallet_id, wallet_set_id, account_type, status, created_at, updated_at
 		FROM wallets 
 		WHERE user_id = $1
 		ORDER BY created_at ASC`
@@ -175,7 +183,9 @@ func (r *SimpleWalletRepository) GetByUserID(ctx context.Context, userID uuid.UU
 			&wallet.UserID,
 			&wallet.Chain,
 			&wallet.Address,
-			&wallet.ProviderRef,
+			&wallet.CircleWalletID,
+			&wallet.WalletSetID,
+			&wallet.AccountType,
 			&wallet.Status,
 			&wallet.CreatedAt,
 			&wallet.UpdatedAt,

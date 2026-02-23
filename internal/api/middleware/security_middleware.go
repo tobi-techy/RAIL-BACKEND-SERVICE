@@ -191,7 +191,7 @@ func DeviceVerification(deviceService *security.DeviceTrackingService, logger *z
 func LoginProtection(loginService *security.LoginProtectionService, logger *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Only apply to login endpoints
-		if c.Request.URL.Path != "/api/v1/auth/login" {
+		if c.Request.URL.Path != "/api/v1/auth/login" && c.Request.URL.Path != "/api/v1/auth/passcode-login" {
 			c.Next()
 			return
 		}

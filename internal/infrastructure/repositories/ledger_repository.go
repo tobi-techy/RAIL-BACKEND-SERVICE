@@ -4,14 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/shopspring/decimal"
 )
 
 // LedgerRepository handles ledger data persistence
@@ -22,6 +23,50 @@ type LedgerRepository struct {
 // NewLedgerRepository creates a new ledger repository
 func NewLedgerRepository(db *sqlx.DB) *LedgerRepository {
 	return &LedgerRepository{db: db}
+}
+
+// txFromContext extracts a sqlx transaction from context when present.
+func txFromContext(ctx context.Context) *sqlx.Tx {
+	if ctx == nil {
+		return nil
+	}
+	tx, _ := ctx.Value("db_tx").(*sqlx.Tx)
+	return tx
+}
+
+func (r *LedgerRepository) queryRowxContext(ctx context.Context, query string, args ...interface{}) *sqlx.Row {
+	if tx := txFromContext(ctx); tx != nil {
+		return tx.QueryRowxContext(ctx, query, args...)
+	}
+	return r.db.QueryRowxContext(ctx, query, args...)
+}
+
+func (r *LedgerRepository) execContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	if tx := txFromContext(ctx); tx != nil {
+		return tx.ExecContext(ctx, query, args...)
+	}
+	return r.db.ExecContext(ctx, query, args...)
+}
+
+func (r *LedgerRepository) getContext(ctx context.Context, dest interface{}, query string, args ...interface{}) error {
+	if tx := txFromContext(ctx); tx != nil {
+		return tx.GetContext(ctx, dest, query, args...)
+	}
+	return r.db.GetContext(ctx, dest, query, args...)
+}
+
+func (r *LedgerRepository) selectContext(ctx context.Context, dest interface{}, query string, args ...interface{}) error {
+	if tx := txFromContext(ctx); tx != nil {
+		return tx.SelectContext(ctx, dest, query, args...)
+	}
+	return r.db.SelectContext(ctx, dest, query, args...)
+}
+
+func (r *LedgerRepository) queryxContext(ctx context.Context, query string, args ...interface{}) (*sqlx.Rows, error) {
+	if tx := txFromContext(ctx); tx != nil {
+		return tx.QueryxContext(ctx, query, args...)
+	}
+	return r.db.QueryxContext(ctx, query, args...)
 }
 
 // ===== Account Operations =====
@@ -42,7 +87,7 @@ func (r *LedgerRepository) CreateAccount(ctx context.Context, account *entities.
 	account.CreatedAt = now
 	account.UpdatedAt = now
 
-	err := r.db.QueryRowxContext(
+	err := r.queryRowxContext(
 		ctx,
 		query,
 		account.ID,
@@ -75,7 +120,7 @@ func (r *LedgerRepository) GetAccountByID(ctx context.Context, accountID uuid.UU
 	`
 
 	var account entities.LedgerAccount
-	err := r.db.GetContext(ctx, &account, query, accountID)
+	err := r.getContext(ctx, &account, query, accountID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("account not found: %w", err)
@@ -95,7 +140,7 @@ func (r *LedgerRepository) GetAccountByUserAndType(ctx context.Context, userID u
 	`
 
 	var account entities.LedgerAccount
-	err := r.db.GetContext(ctx, &account, query, userID, accountType)
+	err := r.getContext(ctx, &account, query, userID, accountType)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("account not found: %w", err)
@@ -115,7 +160,7 @@ func (r *LedgerRepository) GetSystemAccount(ctx context.Context, accountType ent
 	`
 
 	var account entities.LedgerAccount
-	err := r.db.GetContext(ctx, &account, query, accountType)
+	err := r.getContext(ctx, &account, query, accountType)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("system account not found: %w", err)
@@ -136,7 +181,7 @@ func (r *LedgerRepository) GetUserAccounts(ctx context.Context, userID uuid.UUID
 	`
 
 	var accounts []*entities.LedgerAccount
-	err := r.db.SelectContext(ctx, &accounts, query, userID)
+	err := r.selectContext(ctx, &accounts, query, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get user accounts: %w", err)
 	}
@@ -153,7 +198,7 @@ func (r *LedgerRepository) GetOrCreateUserAccount(ctx context.Context, userID uu
 	}
 
 	// Create new account if not found
-	if err != nil && err != sql.ErrNoRows {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("get account: %w", err)
 	}
 
@@ -166,6 +211,11 @@ func (r *LedgerRepository) GetOrCreateUserAccount(ctx context.Context, userID uu
 	}
 
 	if err := r.CreateAccount(ctx, account); err != nil {
+		// Handle concurrent create race: another request may have created it.
+		existing, getErr := r.GetAccountByUserAndType(ctx, userID, accountType)
+		if getErr == nil {
+			return existing, nil
+		}
 		return nil, fmt.Errorf("create account: %w", err)
 	}
 
@@ -181,7 +231,7 @@ func (r *LedgerRepository) UpdateAccountBalance(ctx context.Context, accountID u
 		WHERE id = $3
 	`
 
-	result, err := r.db.ExecContext(ctx, query, newBalance, time.Now(), accountID)
+	result, err := r.execContext(ctx, query, newBalance, time.Now(), accountID)
 	if err != nil {
 		return fmt.Errorf("update account balance: %w", err)
 	}
@@ -220,7 +270,7 @@ func (r *LedgerRepository) CreateTransaction(ctx context.Context, tx *entities.L
 		RETURNING created_at
 	`
 
-	err = r.db.QueryRowxContext(
+	err = r.queryRowxContext(
 		ctx,
 		query,
 		tx.ID,
@@ -259,7 +309,7 @@ func (r *LedgerRepository) GetTransactionByID(ctx context.Context, txID uuid.UUI
 	var tx entities.LedgerTransaction
 	var metadataJSON []byte
 
-	err := r.db.QueryRowxContext(ctx, query, txID).Scan(
+	err := r.queryRowxContext(ctx, query, txID).Scan(
 		&tx.ID,
 		&tx.UserID,
 		&tx.TransactionType,
@@ -301,7 +351,7 @@ func (r *LedgerRepository) GetTransactionByIdempotencyKey(ctx context.Context, k
 	var tx entities.LedgerTransaction
 	var metadataJSON []byte
 
-	err := r.db.QueryRowxContext(ctx, query, key).Scan(
+	err := r.queryRowxContext(ctx, query, key).Scan(
 		&tx.ID,
 		&tx.UserID,
 		&tx.TransactionType,
@@ -345,7 +395,7 @@ func (r *LedgerRepository) UpdateTransactionStatus(ctx context.Context, txID uui
 		WHERE id = $3
 	`
 
-	result, err := r.db.ExecContext(ctx, query, status, completedAt, txID)
+	result, err := r.execContext(ctx, query, status, completedAt, txID)
 	if err != nil {
 		return fmt.Errorf("update transaction status: %w", err)
 	}
@@ -384,7 +434,7 @@ func (r *LedgerRepository) CreateEntry(ctx context.Context, entry *entities.Ledg
 		RETURNING created_at
 	`
 
-	err = r.db.QueryRowxContext(
+	err = r.queryRowxContext(
 		ctx,
 		query,
 		entry.ID,
@@ -415,7 +465,7 @@ func (r *LedgerRepository) GetEntriesByTransactionID(ctx context.Context, txID u
 		ORDER BY created_at
 	`
 
-	rows, err := r.db.QueryxContext(ctx, query, txID)
+	rows, err := r.queryxContext(ctx, query, txID)
 	if err != nil {
 		return nil, fmt.Errorf("query entries: %w", err)
 	}
@@ -468,7 +518,7 @@ func (r *LedgerRepository) GetEntriesByAccountID(ctx context.Context, accountID 
 		LIMIT $2 OFFSET $3
 	`
 
-	rows, err := r.db.QueryxContext(ctx, query, accountID, limit, offset)
+	rows, err := r.queryxContext(ctx, query, accountID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("query entries: %w", err)
 	}
@@ -517,7 +567,7 @@ func (r *LedgerRepository) GetAccountBalance(ctx context.Context, accountID uuid
 	query := `SELECT balance FROM ledger_accounts WHERE id = $1`
 
 	var balance decimal.Decimal
-	err := r.db.QueryRowxContext(ctx, query, accountID).Scan(&balance)
+	err := r.queryRowxContext(ctx, query, accountID).Scan(&balance)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return decimal.Zero, fmt.Errorf("account not found")
@@ -536,7 +586,7 @@ func (r *LedgerRepository) GetUserBalances(ctx context.Context, userID uuid.UUID
 		WHERE user_id = $1
 	`
 
-	rows, err := r.db.QueryxContext(ctx, query, userID)
+	rows, err := r.queryxContext(ctx, query, userID)
 	if err != nil {
 		return nil, fmt.Errorf("query user balances: %w", err)
 	}
@@ -545,6 +595,8 @@ func (r *LedgerRepository) GetUserBalances(ctx context.Context, userID uuid.UUID
 	balances := &entities.UserBalances{
 		UserID:            userID,
 		USDCBalance:       decimal.Zero,
+		SpendingBalance:   decimal.Zero,
+		StashBalance:      decimal.Zero,
 		FiatExposure:      decimal.Zero,
 		PendingInvestment: decimal.Zero,
 	}
@@ -562,6 +614,10 @@ func (r *LedgerRepository) GetUserBalances(ctx context.Context, userID uuid.UUID
 		switch accountType {
 		case entities.AccountTypeUSDCBalance:
 			balances.USDCBalance = balance
+		case entities.AccountTypeSpendingBalance:
+			balances.SpendingBalance = balance
+		case entities.AccountTypeStashBalance:
+			balances.StashBalance = balance
 		case entities.AccountTypeFiatExposure:
 			balances.FiatExposure = balance
 		case entities.AccountTypePendingInvestment:
@@ -592,7 +648,7 @@ func (r *LedgerRepository) GetSystemBuffers(ctx context.Context) (*entities.Syst
 		  AND account_type IN ('system_buffer_usdc', 'system_buffer_fiat', 'broker_operational')
 	`
 
-	rows, err := r.db.QueryxContext(ctx, query)
+	rows, err := r.queryxContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query system buffers: %w", err)
 	}
@@ -649,7 +705,7 @@ func (r *LedgerRepository) GetTotalDebitsAndCredits(ctx context.Context) (totalD
 	`
 
 	var debitsStr, creditsStr string
-	err = r.db.QueryRowxContext(ctx, query).Scan(&debitsStr, &creditsStr)
+	err = r.queryRowxContext(ctx, query).Scan(&debitsStr, &creditsStr)
 	if err != nil {
 		return decimal.Zero, decimal.Zero, fmt.Errorf("get total debits and credits: %w", err)
 	}
@@ -676,7 +732,7 @@ func (r *LedgerRepository) CountOrphanedEntries(ctx context.Context) (int, error
 	`
 
 	var count int
-	err := r.db.QueryRowxContext(ctx, query).Scan(&count)
+	err := r.queryRowxContext(ctx, query).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("count orphaned entries: %w", err)
 	}
@@ -698,7 +754,7 @@ func (r *LedgerRepository) CountInvalidTransactions(ctx context.Context) (int, e
 	`
 
 	var count int
-	err := r.db.QueryRowxContext(ctx, query).Scan(&count)
+	err := r.queryRowxContext(ctx, query).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("count invalid transactions: %w", err)
 	}
@@ -717,7 +773,7 @@ func (r *LedgerRepository) GetTotalDepositEntries(ctx context.Context) (decimal.
 	`
 
 	var totalStr string
-	err := r.db.QueryRowxContext(ctx, query).Scan(&totalStr)
+	err := r.queryRowxContext(ctx, query).Scan(&totalStr)
 	if err != nil {
 		return decimal.Zero, fmt.Errorf("get total deposit entries: %w", err)
 	}
@@ -741,7 +797,7 @@ func (r *LedgerRepository) GetTotalWithdrawalEntries(ctx context.Context) (decim
 	`
 
 	var totalStr string
-	err := r.db.QueryRowxContext(ctx, query).Scan(&totalStr)
+	err := r.queryRowxContext(ctx, query).Scan(&totalStr)
 	if err != nil {
 		return decimal.Zero, fmt.Errorf("get total withdrawal entries: %w", err)
 	}

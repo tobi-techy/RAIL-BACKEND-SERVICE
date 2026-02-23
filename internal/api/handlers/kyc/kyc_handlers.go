@@ -1,12 +1,16 @@
 package kyc
 
 import (
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 
+	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/kyc"
 	"github.com/rail-service/rail_service/pkg/logger"
@@ -16,6 +20,8 @@ type Handler struct {
 	kycService *kyc.Service
 	logger     *logger.Logger
 }
+
+const maxKYCSubmitBodyBytes = 30 * 1024 * 1024
 
 func NewHandler(kycService *kyc.Service, log *logger.Logger) *Handler {
 	return &Handler{
@@ -40,18 +46,13 @@ func NewHandler(kycService *kyc.Service, log *logger.Logger) *Handler {
 func (h *Handler) SubmitKYC(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	// Get user ID from auth context
-	userIDStr, exists := c.Get("user_id")
-	if !exists {
+	userID, err := common.GetUserID(c)
+	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
 	}
 
-	userID, err := uuid.Parse(userIDStr.(string))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
-		return
-	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxKYCSubmitBodyBytes)
 
 	// Parse request
 	var req entities.KYCSubmitRequest
@@ -60,6 +61,12 @@ func (h *Handler) SubmitKYC(c *gin.Context) {
 			zap.Error(err),
 			zap.String("user_id", userID.String()),
 		)
+		if strings.Contains(strings.ToLower(err.Error()), "request body too large") {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{
+				"error": "KYC payload too large",
+			})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Invalid request format",
 		})
@@ -82,8 +89,20 @@ func (h *Handler) SubmitKYC(c *gin.Context) {
 		switch err {
 		case kyc.ErrInvalidSSN:
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid SSN format"})
+		case kyc.ErrInvalidITIN:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ITIN format"})
+		case kyc.ErrUnsupportedTaxIDType:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Unsupported tax_id_type for issuing_country"})
+		case kyc.ErrInvalidIssuingCountry:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "issuing_country must be a valid ISO alpha-3 code"})
+		case kyc.ErrMissingTaxID:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "tax_id is required"})
+		case kyc.ErrMissingTaxIDType:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "tax_id_type is required"})
+		case kyc.ErrMissingDocumentFront:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "id_document_front is required"})
 		case kyc.ErrInvalidImage:
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid image format"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid image format. Use data:image/jpeg;base64,... or data:image/png;base64,..."})
 		case kyc.ErrImageTooLarge:
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Image exceeds 10MB limit"})
 		case kyc.ErrKYCAlreadyApproved:
@@ -91,12 +110,105 @@ func (h *Handler) SubmitKYC(c *gin.Context) {
 		case kyc.ErrNoBridgeCustomer:
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Complete signup first"})
 		default:
+			var incompleteProfileErr *kyc.IncompleteProfileError
+			if errors.As(err, &incompleteProfileErr) {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error":          "Complete your profile details before KYC submission",
+					"missing_fields": incompleteProfileErr.MissingFields,
+				})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to submit KYC"})
 		}
 		return
 	}
 
 	c.JSON(http.StatusOK, response)
+}
+
+// CreateSumsubSession handles POST /api/v1/kyc/sumsub/session.
+func (h *Handler) CreateSumsubSession(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	userID, err := common.GetUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	var req entities.KYCSumsubSessionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("Invalid Sumsub session request",
+			zap.Error(err),
+			zap.String("user_id", userID.String()))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
+		return
+	}
+
+	response, err := h.kycService.StartSumsubSession(ctx, userID, &req)
+	if err != nil {
+		h.logger.Error("Failed to create Sumsub KYC session",
+			zap.Error(err),
+			zap.String("user_id", userID.String()))
+		switch err {
+		case kyc.ErrInvalidSSN:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid SSN format"})
+		case kyc.ErrInvalidITIN:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ITIN format"})
+		case kyc.ErrUnsupportedTaxIDType:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Unsupported tax_id_type for issuing_country"})
+		case kyc.ErrKYCAlreadyApproved:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "KYC already approved"})
+		case kyc.ErrNoBridgeCustomer:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Complete signup first"})
+		case kyc.ErrSumsubNotConfigured:
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "KYC provider not configured"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create verification session"})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// HandleSumsubWebhook handles POST /api/v1/kyc/sumsub/webhook.
+func (h *Handler) HandleSumsubWebhook(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	rawBody, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid webhook payload"})
+		return
+	}
+
+	digest := c.GetHeader("x-payload-digest")
+	digestAlg := c.GetHeader("x-payload-digest-alg")
+	if err := h.kycService.VerifySumsubWebhookSignature(rawBody, digest, digestAlg); err != nil {
+		h.logger.Warn("Invalid Sumsub webhook signature", zap.Error(err))
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid signature"})
+		return
+	}
+
+	var payload entities.SumsubWebhookPayload
+	if err := json.Unmarshal(rawBody, &payload); err != nil {
+		h.logger.Warn("Invalid Sumsub webhook JSON", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid webhook payload"})
+		return
+	}
+
+	enqueued, err := h.kycService.EnqueueSumsubWebhook(ctx, &payload, rawBody)
+	if err != nil {
+		h.logger.Error("Failed to enqueue Sumsub webhook", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to enqueue webhook"})
+		return
+	}
+	if !enqueued {
+		c.JSON(http.StatusOK, gin.H{"status": "duplicate_ignored"})
+		return
+	}
+
+	c.JSON(http.StatusAccepted, gin.H{"status": "accepted"})
 }
 
 // GetKYCStatus handles GET /api/v1/kyc/status
@@ -112,16 +224,9 @@ func (h *Handler) SubmitKYC(c *gin.Context) {
 func (h *Handler) GetKYCStatus(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	// Get user ID from auth context
-	userIDStr, exists := c.Get("user_id")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-
-	userID, err := uuid.Parse(userIDStr.(string))
+	userID, err := common.GetUserID(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
 	}
 

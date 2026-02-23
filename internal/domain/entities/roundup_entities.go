@@ -45,6 +45,23 @@ func (s *RoundupSettings) Validate() error {
 	if s.Multiplier.LessThan(decimal.NewFromInt(1)) || s.Multiplier.GreaterThan(decimal.NewFromInt(10)) {
 		return fmt.Errorf("multiplier must be between 1 and 10")
 	}
+	// Validate common multiplier values (1x, 2x, 5x, 10x)
+	validMultipliers := []decimal.Decimal{
+		decimal.NewFromInt(1),
+		decimal.NewFromInt(2),
+		decimal.NewFromInt(5),
+		decimal.NewFromInt(10),
+	}
+	isValid := false
+	for _, v := range validMultipliers {
+		if s.Multiplier.Equal(v) {
+			isValid = true
+			break
+		}
+	}
+	if !isValid {
+		return fmt.Errorf("multiplier must be 1, 2, 5, or 10")
+	}
 	if s.Threshold.LessThan(decimal.NewFromInt(1)) {
 		return fmt.Errorf("threshold must be at least $1")
 	}
@@ -52,6 +69,11 @@ func (s *RoundupSettings) Validate() error {
 		return fmt.Errorf("auto-invest requires a basket or symbol target")
 	}
 	return nil
+}
+
+// SetMultiplierFromRules applies multiplier from investment rules config
+func (s *RoundupSettings) SetMultiplierFromRules(multiplier RoundUpMultiplier) {
+	s.Multiplier = decimal.NewFromInt(int64(multiplier))
 }
 
 // DefaultRoundupSettings returns default settings for a new user

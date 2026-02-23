@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -12,14 +13,14 @@ import (
 )
 
 const (
-	hibpAPIURL     = "https://api.pwnedpasswords.com/range/"
-	minLength      = 8
-	maxLength      = 128
-	hibpTimeout    = 5 * time.Second
+	hibpAPIURL  = "https://api.pwnedpasswords.com/range/"
+	minLength   = 8
+	maxLength   = 128
+	hibpTimeout = 5 * time.Second
 )
 
 type PasswordPolicyService struct {
-	httpClient *http.Client
+	httpClient    *http.Client
 	checkBreaches bool
 }
 
@@ -34,7 +35,7 @@ type PasswordValidationResult struct {
 
 func NewPasswordPolicyService(checkBreaches bool) *PasswordPolicyService {
 	return &PasswordPolicyService{
-		httpClient: &http.Client{Timeout: hibpTimeout},
+		httpClient:    &http.Client{Timeout: hibpTimeout},
 		checkBreaches: checkBreaches,
 	}
 }
@@ -155,10 +156,12 @@ func (s *PasswordPolicyService) checkPasswordBreach(ctx context.Context, passwor
 		return false, 0, fmt.Errorf("HIBP API returned status %d", resp.StatusCode)
 	}
 
-	// Read response and check for our suffix
-	buf := make([]byte, 64*1024)
-	n, _ := resp.Body.Read(buf)
-	body := string(buf[:n])
+	// Read full response to avoid false negatives on large result sets.
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, 0, err
+	}
+	body := string(bodyBytes)
 
 	for _, line := range strings.Split(body, "\r\n") {
 		parts := strings.Split(line, ":")

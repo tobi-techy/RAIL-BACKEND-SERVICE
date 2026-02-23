@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"net/http"
 	"strconv"
 	"strings"
@@ -17,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
@@ -28,6 +28,11 @@ import (
 	"go.uber.org/zap"
 )
 
+// UserProfileProvider interface for fetching user profile
+type UserProfileProvider interface {
+	GetByID(ctx context.Context, id uuid.UUID) (*entities.UserProfile, error)
+}
+
 // WalletFundingHandlers consolidates wallet, funding, investing, and withdrawal handlers
 type WalletFundingHandlers struct {
 	walletService       *wallet.Service
@@ -35,6 +40,7 @@ type WalletFundingHandlers struct {
 	withdrawalService   FundingWithdrawalService
 	investingService    *investing.Service
 	allocationProvider  AllocationBalanceProvider
+	userProfileProvider UserProfileProvider
 	validator           *validator.Validate
 	webhookSecret       string
 	skipSignatureVerify bool // Only true in development when secret is not configured
@@ -66,6 +72,11 @@ func (h *WalletFundingHandlers) SetWebhookSecret(secret string, skipVerify bool)
 	h.skipSignatureVerify = skipVerify
 }
 
+// SetUserProfileProvider sets the user profile provider for withdrawal validation
+func (h *WalletFundingHandlers) SetUserProfileProvider(provider UserProfileProvider) {
+	h.userProfileProvider = provider
+}
+
 // Request/Response models
 
 type CreateWalletsRequest struct {
@@ -94,8 +105,9 @@ func GetWalletStatus(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.Han
 
 // FundingWithdrawalService interface for withdrawal operations
 type FundingWithdrawalService interface {
-	InitiateWithdrawal(ctx context.Context, req *entities.InitiateWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error)
-	GetWithdrawal(ctx context.Context, withdrawalID uuid.UUID) (*entities.Withdrawal, error)
+	InitiateCryptoWithdrawal(ctx context.Context, req *entities.InitiateCryptoWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error)
+	InitiateFiatWithdrawal(ctx context.Context, req *entities.InitiateFiatWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error)
+	GetWithdrawal(ctx context.Context, userID, withdrawalID uuid.UUID) (*entities.Withdrawal, error)
 	GetUserWithdrawals(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error)
 }
 
@@ -917,6 +929,8 @@ type UnifiedBalanceResponse struct {
 	TotalUSDC       string `json:"total_usdc"`
 	SpendingBalance string `json:"spending_balance"`
 	StashBalance    string `json:"stash_balance"`
+	InvestedBalance string `json:"invested_balance"`
+	BrokerCash      string `json:"broker_cash"`
 	AllocationMode  string `json:"allocation_mode"` // "active" or "disabled"
 	Currency        string `json:"currency"`
 	LastUpdated     string `json:"last_updated"`
@@ -963,6 +977,8 @@ func (h *WalletFundingHandlers) GetUnifiedBalances(c *gin.Context) {
 				TotalUSDC:       balances.TotalBalance.StringFixed(2),
 				SpendingBalance: balances.SpendingBalance.StringFixed(2),
 				StashBalance:    balances.StashBalance.StringFixed(2),
+				InvestedBalance: balances.InvestBalance.StringFixed(2),
+				BrokerCash:      balances.FiatExposure.StringFixed(2),
 				AllocationMode:  mode,
 				Currency:        "USD",
 				LastUpdated:     time.Now().UTC().Format(time.RFC3339),
@@ -987,6 +1003,8 @@ func (h *WalletFundingHandlers) GetUnifiedBalances(c *gin.Context) {
 		TotalUSDC:       balances.BuyingPower,
 		SpendingBalance: balances.BuyingPower,
 		StashBalance:    "0.00",
+		InvestedBalance: "0.00",
+		BrokerCash:      "0.00",
 		AllocationMode:  "disabled",
 		Currency:        balances.Currency,
 		LastUpdated:     time.Now().UTC().Format(time.RFC3339),
@@ -1534,23 +1552,24 @@ func (h *WalletFundingHandlers) BrokerageFillWebhook(c *gin.Context) {
 
 // WithdrawalService interface for withdrawal operations
 type WithdrawalService interface {
-	InitiateWithdrawal(ctx context.Context, req *entities.InitiateWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error)
-	GetWithdrawal(ctx context.Context, withdrawalID uuid.UUID) (*entities.Withdrawal, error)
+	InitiateCryptoWithdrawal(ctx context.Context, req *entities.InitiateCryptoWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error)
+	InitiateFiatWithdrawal(ctx context.Context, req *entities.InitiateFiatWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error)
+	GetWithdrawal(ctx context.Context, userID, withdrawalID uuid.UUID) (*entities.Withdrawal, error)
 	GetUserWithdrawals(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error)
 }
 
-// InitiateWithdrawal initiates a USD to USDC withdrawal
+// InitiateWithdrawal initiates a crypto withdrawal (legacy endpoint - use /api/v1/withdrawals/crypto instead)
+// @Deprecated Use POST /api/v1/withdrawals/crypto for crypto withdrawals
 func (h *WalletFundingHandlers) InitiateWithdrawal(c *gin.Context) {
-	var req entities.InitiateWithdrawalRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "INVALID_REQUEST",
-			Message: "Invalid request format",
-			Details: map[string]interface{}{"error": err.Error()},
-		})
-		return
-	}
+	// This is a legacy endpoint - redirect to new crypto withdrawal flow
+	c.JSON(http.StatusGone, entities.ErrorResponse{
+		Code:    "ENDPOINT_DEPRECATED",
+		Message: "This endpoint is deprecated. Use POST /api/v1/withdrawals/crypto for crypto withdrawals or POST /api/v1/withdrawals/fiat for fiat withdrawals",
+	})
+}
 
+// GetWithdrawal retrieves a withdrawal by ID
+func (h *WalletFundingHandlers) GetWithdrawal(c *gin.Context) {
 	userID, exists := c.Get("user_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
@@ -1569,67 +1588,6 @@ func (h *WalletFundingHandlers) InitiateWithdrawal(c *gin.Context) {
 		return
 	}
 
-	req.UserID = userUUID
-
-	if req.Amount.IsZero() || req.Amount.IsNegative() {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "INVALID_AMOUNT",
-			Message: "Amount must be positive",
-		})
-		return
-	}
-
-	if req.DestinationAddress == "" {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "INVALID_ADDRESS",
-			Message: "Destination address is required",
-		})
-		return
-	}
-
-	if req.DestinationChain == "" {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "INVALID_CHAIN",
-			Message: "Destination chain is required",
-		})
-		return
-	}
-
-	response, err := h.withdrawalService.InitiateWithdrawal(c.Request.Context(), &req)
-	if err != nil {
-		h.logger.Error("Failed to initiate withdrawal",
-			"error", err,
-			"user_id", userUUID,
-			"amount", req.Amount.String())
-
-		if strings.Contains(err.Error(), "insufficient") {
-			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-				Code:    "INSUFFICIENT_FUNDS",
-				Message: "Insufficient buying power for withdrawal",
-			})
-			return
-		}
-
-		if strings.Contains(err.Error(), "not active") {
-			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-				Code:    "ACCOUNT_INACTIVE",
-				Message: "Alpaca account is not active",
-			})
-			return
-		}
-
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-			Code:    "WITHDRAWAL_ERROR",
-			Message: "Failed to initiate withdrawal",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, response)
-}
-
-// GetWithdrawal retrieves a withdrawal by ID
-func (h *WalletFundingHandlers) GetWithdrawal(c *gin.Context) {
 	withdrawalIDStr := c.Param("withdrawalId")
 	withdrawalID, err := uuid.Parse(withdrawalIDStr)
 	if err != nil {
@@ -1640,9 +1598,9 @@ func (h *WalletFundingHandlers) GetWithdrawal(c *gin.Context) {
 		return
 	}
 
-	withdrawal, err := h.withdrawalService.GetWithdrawal(c.Request.Context(), withdrawalID)
+	withdrawal, err := h.withdrawalService.GetWithdrawal(c.Request.Context(), userUUID, withdrawalID)
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not belong") {
 			c.JSON(http.StatusNotFound, entities.ErrorResponse{
 				Code:    "WITHDRAWAL_NOT_FOUND",
 				Message: "Withdrawal not found",
@@ -1712,20 +1670,14 @@ func (h *WalletFundingHandlers) CancelWithdrawalRequest(c *gin.Context) {
 		return
 	}
 
-	// The withdrawalService on WalletFundingHandlers is FundingWithdrawalService which
-	// doesn't have CancelWithdrawal. For now, get the withdrawal and check ownership.
-	withdrawal, err := h.withdrawalService.GetWithdrawal(c.Request.Context(), withdrawalID)
+	// Get the withdrawal and check ownership
+	withdrawal, err := h.withdrawalService.GetWithdrawal(c.Request.Context(), userUUID, withdrawalID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, entities.ErrorResponse{Code: "NOT_FOUND", Message: "Withdrawal not found"})
 		return
 	}
 
-	if withdrawal.UserID != userUUID {
-		c.JSON(http.StatusNotFound, entities.ErrorResponse{Code: "NOT_FOUND", Message: "Withdrawal not found"})
-		return
-	}
-
-	if withdrawal.Status != "initiated" && withdrawal.Status != "pending" {
+	if !withdrawal.Status.IsPending() {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 			Code:    "CANCEL_NOT_ALLOWED",
 			Message: fmt.Sprintf("Cannot cancel withdrawal in %s status", withdrawal.Status),

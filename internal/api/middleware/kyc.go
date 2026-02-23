@@ -18,20 +18,11 @@ type KYCStatusService interface {
 // RequireKYC enforces that the authenticated user has completed KYC before accessing the handler
 func RequireKYC(onboardingService KYCStatusService, log *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		userIDValue, exists := c.Get("user_id")
-		if !exists {
+		userID, err := extractUserID(c)
+		if err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"code":    "UNAUTHORIZED",
 				"message": "Authentication required",
-			})
-			return
-		}
-
-		userID, ok := userIDValue.(uuid.UUID)
-		if !ok {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-				"code":    "INTERNAL_ERROR",
-				"message": "Unable to parse user identity",
 			})
 			return
 		}

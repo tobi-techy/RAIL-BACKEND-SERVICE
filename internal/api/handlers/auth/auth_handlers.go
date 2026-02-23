@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -16,6 +17,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
 	"github.com/rail-service/rail_service/internal/domain/services/onboarding"
+	"github.com/rail-service/rail_service/internal/domain/services/passcode"
 	"github.com/rail-service/rail_service/internal/domain/services/security"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	"github.com/rail-service/rail_service/internal/domain/services/twofa"
@@ -39,9 +41,23 @@ type AuthHandlers struct {
 	emailService        *adapters.EmailService
 	sessionService      SessionService
 	twoFAService        TwoFAService
+	passcodeService     *passcode.Service
 	redisClient         RedisClient
+	deletionService     AccountDeletionService
 	validator           *validator.Validate
 }
+
+// AccountDeletionService interface for account deletion
+type AccountDeletionService interface {
+	DeleteAccount(ctx context.Context, userID uuid.UUID, reason string) (fundsSwept string, txHash string, err error)
+}
+
+const (
+	authFlowTimeout            = 8 * time.Second
+	onboardingCompleteTimeout  = 30 * time.Second
+	onboardingStatusReqTimeout = 3 * time.Second
+	profileReadTimeout         = 4 * time.Second
+)
 
 // RedisClient interface for pending registration storage
 type RedisClient interface {
@@ -55,6 +71,7 @@ type SessionService interface {
 	InvalidateSession(ctx context.Context, token string) error
 	InvalidateAllUserSessions(ctx context.Context, userID uuid.UUID) error
 	CreateSession(ctx context.Context, userID uuid.UUID, accessToken, refreshToken, ipAddress, userAgent, deviceFingerprint, location string, expiresAt time.Time) (*session.Session, error)
+	RotateSessionTokensByRefreshToken(ctx context.Context, userID uuid.UUID, currentRefreshToken, newAccessToken, newRefreshToken string, newExpiresAt time.Time) (*session.Session, error)
 }
 
 // TwoFAService interface for 2FA management
@@ -76,7 +93,9 @@ func NewAuthHandlers(
 	emailService *adapters.EmailService,
 	sessionService SessionService,
 	twoFAService TwoFAService,
+	passcodeService *passcode.Service,
 	redisClient RedisClient,
+	deletionService AccountDeletionService,
 ) *AuthHandlers {
 	return &AuthHandlers{
 		db:                  db,
@@ -88,7 +107,9 @@ func NewAuthHandlers(
 		emailService:        emailService,
 		sessionService:      sessionService,
 		twoFAService:        twoFAService,
+		passcodeService:     passcodeService,
 		redisClient:         redisClient,
+		deletionService:     deletionService,
 		validator:           validator.New(),
 	}
 }
@@ -106,7 +127,8 @@ func NewAuthHandlers(
 // @Failure 500 {object} entities.ErrorResponse
 // @Router /api/v1/auth/register [post]
 func (h *AuthHandlers) Register(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), authFlowTimeout)
+	defer cancel()
 
 	var req entities.SignUpRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -140,10 +162,10 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 	existingUnverified := false
 
 	if req.Email != nil {
-		identifier = strings.TrimSpace(*req.Email)
+		identifier = normalizeAuthIdentifier("email", *req.Email)
 		identifierType = "email"
 	} else {
-		identifier = strings.TrimSpace(*req.Phone)
+		identifier = normalizeAuthIdentifier("phone", *req.Phone)
 		identifierType = "phone"
 	}
 
@@ -249,16 +271,37 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 	}
 
 	if existingUnverified {
-		h.logger.Info("Verification code sent for existing unverified user", zap.String("identifier", identifier))
+		// For existing unverified user, ensure pending registration entry exists
+		// This allows them to complete verification flow with the new code
+		pendingTTL := 10 * time.Minute
+		pending := entities.PendingRegistration{
+			CreatedAt: time.Now(),
+			ExpiresAt: time.Now().Add(pendingTTL),
+		}
+		if identifierType == "email" {
+			pending.Email = identifier
+		} else {
+			pending.Phone = identifier
+		}
+
+		pendingKey = fmt.Sprintf("pending_registration:%s:%s", identifierType, identifier)
+		if err := h.redisClient.Set(ctx, pendingKey, pending, pendingTTL); err != nil {
+			h.logger.Warn("Failed to store pending registration for unverified user", zap.Error(err))
+			// Don't fail - the verification code was already sent, allow user to proceed
+		} else {
+			h.logger.Info("Pending registration created for unverified user", zap.String("identifier", identifier))
+		}
+
+		h.logger.Info("Verification code queued for existing unverified user", zap.String("identifier", identifier))
 		c.JSON(http.StatusAccepted, entities.SignUpResponse{
-			Message:    fmt.Sprintf("Verification code sent to %s. If you did not receive it, call /api/v1/auth/resend-code.", identifier),
+			Message:    fmt.Sprintf("Verification code queued for delivery to %s. If you do not receive it soon, call /api/v1/auth/resend-code.", identifier),
 			Identifier: identifier,
 		})
 		return
 	}
 
 	c.JSON(http.StatusAccepted, entities.SignUpResponse{
-		Message:    fmt.Sprintf("Registration received for %s. Verification code sent. If you did not receive it, call /api/v1/auth/resend-code. You will set your password during onboarding.", identifier),
+		Message:    fmt.Sprintf("Registration received for %s. Verification code queued for delivery. If you do not receive it soon, call /api/v1/auth/resend-code. You will set your password during onboarding.", identifier),
 		Identifier: identifier,
 	})
 }
@@ -278,7 +321,8 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 // @Router /api/v1/auth/verify [post]
 // Verify handles unified verification for both new registrations and existing users
 func (h *AuthHandlers) Verify(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), authFlowTimeout)
+	defer cancel()
 
 	var req entities.VerifyCodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -293,9 +337,9 @@ func (h *AuthHandlers) Verify(c *gin.Context) {
 
 	var identifier, identifierType string
 	if req.Email != nil {
-		identifier, identifierType = strings.TrimSpace(*req.Email), "email"
+		identifier, identifierType = normalizeAuthIdentifier("email", *req.Email), "email"
 	} else {
-		identifier, identifierType = strings.TrimSpace(*req.Phone), "phone"
+		identifier, identifierType = normalizeAuthIdentifier("phone", *req.Phone), "phone"
 	}
 
 	isValid, err := h.verificationService.VerifyCode(ctx, identifierType, identifier, req.Code)
@@ -361,7 +405,8 @@ func (h *AuthHandlers) completeNewUserVerification(c *gin.Context, ctx context.C
 
 	if h.sessionService != nil {
 		ipAddress, userAgent, fingerprint, location := extractSessionDetails(c)
-		if _, err := h.sessionService.CreateSession(ctx, user.ID, tokens.AccessToken, tokens.RefreshToken, ipAddress, userAgent, fingerprint, location, tokens.ExpiresAt); err != nil {
+		sessionExpiresAt := h.sessionExpiryFromRefreshTTL()
+		if _, err := h.sessionService.CreateSession(ctx, user.ID, tokens.AccessToken, tokens.RefreshToken, ipAddress, userAgent, fingerprint, location, sessionExpiresAt); err != nil {
 			h.logger.Warn("Failed to create session", zap.Error(err), zap.String("user_id", user.ID.String()))
 		}
 	}
@@ -421,7 +466,8 @@ func (h *AuthHandlers) completeExistingUserVerification(c *gin.Context, ctx cont
 // @Failure 500 {object} entities.ErrorResponse
 // @Router /api/v1/auth/resend-code [post]
 func (h *AuthHandlers) ResendCode(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), authFlowTimeout)
+	defer cancel()
 
 	var req entities.ResendCodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -453,10 +499,10 @@ func (h *AuthHandlers) ResendCode(c *gin.Context) {
 	var identifierType string
 
 	if req.Email != nil {
-		identifier = strings.TrimSpace(*req.Email)
+		identifier = normalizeAuthIdentifier("email", *req.Email)
 		identifierType = "email"
 	} else if req.Phone != nil {
-		identifier = strings.TrimSpace(*req.Phone)
+		identifier = normalizeAuthIdentifier("phone", *req.Phone)
 		identifierType = "phone"
 	}
 
@@ -564,18 +610,26 @@ func (h *AuthHandlers) ResendCode(c *gin.Context) {
 	}
 
 	if userProfile != nil {
-		h.logger.Info("Verification code re-sent", zap.String("user_id", userProfile.ID.String()), zap.String("identifier", identifier))
+		h.logger.Info("Verification code re-queued", zap.String("user_id", userProfile.ID.String()), zap.String("identifier", identifier))
 	} else {
-		h.logger.Info("Verification code sent for pending registration", zap.String("identifier", identifier))
+		h.logger.Info("Verification code queued for pending registration", zap.String("identifier", identifier))
 	}
 	c.JSON(http.StatusAccepted, entities.SignUpResponse{
-		Message:    fmt.Sprintf("Verification code sent to %s.", identifier),
+		Message:    fmt.Sprintf("Verification code queued for delivery to %s.", identifier),
 		Identifier: identifier,
 	})
 }
 
 func isRedisNilError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "redis: nil")
+}
+
+func normalizeAuthIdentifier(identifierType, identifier string) string {
+	normalized := strings.TrimSpace(identifier)
+	if identifierType == "email" {
+		return strings.ToLower(normalized)
+	}
+	return normalized
 }
 
 func (h *AuthHandlers) recordLoginFailure(c *gin.Context, providedIdentifier string) {
@@ -761,7 +815,8 @@ func (h *AuthHandlers) Login(c *gin.Context) {
 
 	if h.sessionService != nil {
 		ipAddress, userAgent, fingerprint, location := extractSessionDetails(c)
-		if _, err := h.sessionService.CreateSession(ctx, user.ID, tokens.AccessToken, tokens.RefreshToken, ipAddress, userAgent, fingerprint, location, tokens.ExpiresAt); err != nil {
+		sessionExpiresAt := h.sessionExpiryFromRefreshTTL()
+		if _, err := h.sessionService.CreateSession(ctx, user.ID, tokens.AccessToken, tokens.RefreshToken, ipAddress, userAgent, fingerprint, location, sessionExpiresAt); err != nil {
 			h.logger.Warn("Failed to create session", zap.Error(err), zap.String("user_id", user.ID.String()))
 		}
 	}
@@ -809,6 +864,183 @@ func (h *AuthHandlers) Login(c *gin.Context) {
 
 	h.logger.Info("User logged in successfully", zap.String("user_id", user.ID.String()), zap.String("email", user.Email))
 	c.JSON(http.StatusOK, response)
+}
+
+type PasscodeLoginRequest struct {
+	Email        *string `json:"email"`
+	Phone        *string `json:"phone"`
+	Passcode     string  `json:"passcode" binding:"required"`
+	RefreshToken string  `json:"refresh_token" binding:"required"`
+}
+
+// PasscodeLogin handles passcode-based re-authentication without requiring an active JWT.
+// This is used by returning users who already have local user data and passcode configured.
+func (h *AuthHandlers) PasscodeLogin(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	if h.passcodeService == nil {
+		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{
+			Code:    "PASSCODE_AUTH_UNAVAILABLE",
+			Message: "Passcode authentication is currently unavailable",
+		})
+		return
+	}
+	if h.sessionService == nil {
+		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{
+			Code:    "SESSION_SERVICE_UNAVAILABLE",
+			Message: "Session service is currently unavailable",
+		})
+		return
+	}
+
+	var req PasscodeLoginRequest
+	if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
+			Code:    "INVALID_REQUEST",
+			Message: "Invalid request payload",
+			Details: map[string]interface{}{"error": err.Error()},
+		})
+		return
+	}
+
+	identifier := ""
+	identifierType := ""
+	if req.Email != nil && strings.TrimSpace(*req.Email) != "" {
+		identifier = strings.TrimSpace(*req.Email)
+		identifierType = "email"
+	} else if req.Phone != nil && strings.TrimSpace(*req.Phone) != "" {
+		identifier = strings.TrimSpace(*req.Phone)
+		identifierType = "phone"
+	}
+	if identifier == "" || strings.TrimSpace(req.Passcode) == "" || strings.TrimSpace(req.RefreshToken) == "" {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
+			Code:    "VALIDATION_ERROR",
+			Message: "Email or phone, passcode, and refresh token are required",
+		})
+		return
+	}
+
+	var (
+		userProfile *entities.UserProfile
+		err         error
+	)
+	if identifierType == "email" {
+		userProfile, err = h.userRepo.GetByEmail(ctx, identifier)
+	} else {
+		userProfile, err = h.userRepo.GetByPhone(ctx, identifier)
+	}
+	if err != nil || userProfile == nil {
+		h.recordLoginFailure(c, identifier)
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
+			Code:    "INVALID_CREDENTIALS",
+			Message: "Invalid credentials",
+		})
+		return
+	}
+
+	if !userProfile.IsActive {
+		h.recordLoginFailure(c, identifier)
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
+			Code:    "ACCOUNT_INACTIVE",
+			Message: "Account is inactive. Please contact support.",
+		})
+		return
+	}
+
+	refreshToken := strings.TrimSpace(req.RefreshToken)
+	refreshUserID, err := auth.ValidateRefreshToken(refreshToken, h.cfg.JWT.Secret)
+	if err != nil {
+		h.recordLoginFailure(c, identifier)
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
+			Code:    "INVALID_REFRESH_TOKEN",
+			Message: "Invalid refresh token",
+		})
+		return
+	}
+	if refreshUserID != userProfile.ID {
+		h.recordLoginFailure(c, identifier)
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
+			Code:    "INVALID_CREDENTIALS",
+			Message: "Invalid credentials",
+		})
+		return
+	}
+
+	passcodeSessionToken, passcodeSessionExpiresAt, err := h.passcodeService.VerifyPasscode(ctx, userProfile.ID, req.Passcode)
+	if err != nil {
+		switch {
+		case err == passcode.ErrPasscodeNotSet:
+			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
+				Code:    "PASSCODE_NOT_SET",
+				Message: "No passcode configured yet.",
+			})
+		case err == passcode.ErrPasscodeLocked:
+			status, statusErr := h.passcodeService.GetStatus(ctx, userProfile.ID)
+			details := map[string]interface{}{}
+			if statusErr == nil && status != nil && status.LockedUntil != nil {
+				details["lockedUntil"] = status.LockedUntil
+			}
+			c.JSON(http.StatusLocked, entities.ErrorResponse{
+				Code:    "PASSCODE_LOCKED",
+				Message: "Too many failed attempts. Please try again later.",
+				Details: details,
+			})
+		case err == passcode.ErrPasscodeMismatch:
+			h.recordLoginFailure(c, identifier)
+			c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
+				Code:    "INVALID_PASSCODE",
+				Message: "Passcode verification failed.",
+			})
+		default:
+			h.logger.Error("Failed to verify passcode for passcode login",
+				zap.Error(err),
+				zap.String("user_id", userProfile.ID.String()))
+			c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+				Code:    "PASSCODE_VERIFY_FAILED",
+				Message: "Failed to verify passcode",
+			})
+		}
+		return
+	}
+
+	tokens, err := auth.GenerateTokenPair(
+		userProfile.ID,
+		userProfile.Email,
+		"user",
+		h.cfg.JWT.Secret,
+		h.cfg.JWT.AccessTTL,
+		h.cfg.JWT.RefreshTTL,
+	)
+	if err != nil {
+		h.logger.Error("Failed to generate tokens for passcode login", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+			Code:    "TOKEN_GENERATION_FAILED",
+			Message: "Failed to generate authentication tokens",
+		})
+		return
+	}
+
+	sessionExpiresAt := h.sessionExpiryFromRefreshTTL()
+	if _, err := h.sessionService.RotateSessionTokensByRefreshToken(ctx, userProfile.ID, refreshToken, tokens.AccessToken, tokens.RefreshToken, sessionExpiresAt); err != nil {
+		h.recordLoginFailure(c, identifier)
+		h.logger.Warn("Failed to rotate session tokens after passcode login", zap.Error(err), zap.String("user_id", userProfile.ID.String()))
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
+			Code:    "INVALID_REFRESH_TOKEN",
+			Message: "Refresh token is invalid or expired",
+		})
+		return
+	}
+
+	h.recordLoginSuccess(c, identifier)
+
+	c.JSON(http.StatusOK, entities.PasscodeVerificationResponse{
+		Verified:                 true,
+		AccessToken:              tokens.AccessToken,
+		RefreshToken:             tokens.RefreshToken,
+		ExpiresAt:                tokens.ExpiresAt,
+		PasscodeSessionToken:     passcodeSessionToken,
+		PasscodeSessionExpiresAt: passcodeSessionExpiresAt,
+	})
 }
 
 // RefreshToken handles JWT token refresh
@@ -859,18 +1091,34 @@ func (h *AuthHandlers) RefreshToken(c *gin.Context) {
 		return
 	}
 
-	// Generate new access token with current user data
-	accessToken, expiresAt, err := auth.GenerateAccessToken(user.ID, user.Email, user.Role, h.cfg.JWT.Secret, h.cfg.JWT.AccessTTL)
+	// Generate a new token pair (rotates refresh token as well).
+	tokens, err := auth.GenerateTokenPair(
+		user.ID,
+		user.Email,
+		user.Role,
+		h.cfg.JWT.Secret,
+		h.cfg.JWT.AccessTTL,
+		h.cfg.JWT.RefreshTTL,
+	)
 	if err != nil {
-		h.logger.Error("Failed to generate access token", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "TOKEN_GENERATION_FAILED", Message: "Failed to generate access token"})
+		h.logger.Error("Failed to generate token pair", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "TOKEN_GENERATION_FAILED", Message: "Failed to generate authentication tokens"})
 		return
 	}
 
+	if h.sessionService != nil {
+		sessionExpiresAt := h.sessionExpiryFromRefreshTTL()
+		if _, err := h.sessionService.RotateSessionTokensByRefreshToken(ctx, user.ID, refreshToken, tokens.AccessToken, tokens.RefreshToken, sessionExpiresAt); err != nil {
+			h.logger.Warn("Failed to rotate session tokens on refresh", zap.Error(err), zap.String("user_id", user.ID.String()))
+			c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "INVALID_TOKEN", Message: "Invalid refresh token"})
+			return
+		}
+	}
+
 	c.JSON(http.StatusOK, auth.TokenPair{
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-		ExpiresAt:    expiresAt,
+		AccessToken:  tokens.AccessToken,
+		RefreshToken: tokens.RefreshToken,
+		ExpiresAt:    tokens.ExpiresAt,
 	})
 }
 
@@ -967,7 +1215,8 @@ func (h *AuthHandlers) ResetPassword(c *gin.Context) {
 // @Success 200 {object} entities.UserInfo
 // @Router /api/v1/users/me [get]
 func (h *AuthHandlers) GetProfile(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), profileReadTimeout)
+	defer cancel()
 	userIDVal, exists := c.Get("user_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "UNAUTHORIZED", Message: "User not authenticated"})
@@ -994,21 +1243,57 @@ func (h *AuthHandlers) GetProfile(c *gin.Context) {
 	includes := strings.Split(includeParam, ",")
 	response := gin.H{"user": user.ToUserInfo()}
 
+	if h.onboardingService == nil {
+		c.JSON(http.StatusOK, response)
+		return
+	}
+
+	var (
+		includeOnboarding bool
+		includeKYC        bool
+	)
 	for _, inc := range includes {
 		switch strings.TrimSpace(inc) {
 		case "onboarding":
-			if h.onboardingService != nil {
-				if status, err := h.onboardingService.GetOnboardingStatus(ctx, userID); err == nil {
-					response["onboarding"] = status
-				}
-			}
+			includeOnboarding = true
 		case "kyc":
-			if h.onboardingService != nil {
-				if kycStatus, err := h.onboardingService.GetKYCStatus(ctx, userID); err == nil {
-					response["kyc"] = kycStatus
-				}
-			}
+			includeKYC = true
 		}
+	}
+
+	var (
+		onboardingStatus *entities.OnboardingStatusResponse
+		kycStatus        *entities.KYCStatusResponse
+	)
+	var wg sync.WaitGroup
+
+	if includeOnboarding {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if status, err := h.onboardingService.GetOnboardingStatus(ctx, userID); err == nil {
+				onboardingStatus = status
+			}
+		}()
+	}
+
+	if includeKYC {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if status, err := h.onboardingService.GetKYCStatus(ctx, userID); err == nil {
+				kycStatus = status
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	if onboardingStatus != nil {
+		response["onboarding"] = onboardingStatus
+	}
+	if kycStatus != nil {
+		response["kyc"] = kycStatus
 	}
 
 	c.JSON(http.StatusOK, response)
@@ -1102,6 +1387,30 @@ func (h *AuthHandlers) DeleteAccount(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "INTERNAL_ERROR", Message: "Invalid user id in context"})
 		return
 	}
+
+	// Parse optional reason from request body
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	// Use deletion service if available (sweeps funds + hard delete)
+	if h.deletionService != nil {
+		fundsSwept, txHash, err := h.deletionService.DeleteAccount(ctx, userID, req.Reason)
+		if err != nil {
+			h.logger.Error("Failed to delete account", zap.Error(err), zap.String("user_id", userID.String()))
+			c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "DELETE_FAILED", Message: "Failed to delete account"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"message":       "Account deleted permanently",
+			"funds_swept":   fundsSwept,
+			"sweep_tx_hash": txHash,
+		})
+		return
+	}
+
+	// Fallback: just deactivate if deletion service not configured
 	if err := h.userRepo.DeactivateUser(ctx, userID); err != nil {
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "DELETE_FAILED", Message: "Failed to delete account"})
 		return
@@ -1385,7 +1694,8 @@ func (h *AuthHandlers) ProcessKYCCallback(c *gin.Context) {
 // @Security BearerAuth
 // @Router /api/v1/onboarding/complete [post]
 func (h *AuthHandlers) CompleteOnboarding(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), onboardingCompleteTimeout)
+	defer cancel()
 
 	userID, err := common.GetUserID(c)
 	if err != nil {
@@ -1430,10 +1740,37 @@ func (h *AuthHandlers) CompleteOnboarding(c *gin.Context) {
 		"next_steps":         response.NextSteps,
 	}
 
-	if onboardingStatus, err := h.onboardingService.GetOnboardingStatus(ctx, userID); err == nil {
+	statusCtx, statusCancel := context.WithTimeout(ctx, onboardingStatusReqTimeout)
+	defer statusCancel()
+
+	var (
+		onboardingStatus *entities.OnboardingStatusResponse
+		kycStatus        *entities.KYCStatusResponse
+	)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		if status, err := h.onboardingService.GetOnboardingStatus(statusCtx, userID); err == nil {
+			onboardingStatus = status
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		if status, err := h.onboardingService.GetKYCStatus(statusCtx, userID); err == nil {
+			kycStatus = status
+		}
+	}()
+
+	wg.Wait()
+
+	if onboardingStatus != nil {
 		fullResponse["onboarding"] = onboardingStatus
 	}
-	if kycStatus, err := h.onboardingService.GetKYCStatus(ctx, userID); err == nil {
+	if kycStatus != nil {
 		fullResponse["kyc"] = kycStatus
 	}
 
@@ -1485,6 +1822,14 @@ func extractSessionDetails(c *gin.Context) (ipAddress, userAgent, deviceFingerpr
 		location = strings.TrimSpace(c.GetHeader("CF-IPCountry"))
 	}
 	return ipAddress, userAgent, deviceFingerprint, location
+}
+
+func (h *AuthHandlers) sessionExpiryFromRefreshTTL() time.Time {
+	ttl := time.Duration(h.cfg.JWT.RefreshTTL) * time.Second
+	if ttl <= 0 {
+		ttl = time.Duration(h.cfg.JWT.AccessTTL) * time.Second
+	}
+	return time.Now().Add(ttl)
 }
 
 func (h *AuthHandlers) getUserID(c *gin.Context) (uuid.UUID, error) {
