@@ -238,6 +238,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	{
 		// Authentication routes (no auth required)
 		auth := v1.Group("/auth")
+		auth.Use(middleware.AuthCSRFProtection())
 		{
 			auth.POST("/register", authHandlers.Register)
 			auth.POST("/verify", middleware.AuthRateLimit(5), authHandlers.Verify)
