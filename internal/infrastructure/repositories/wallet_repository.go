@@ -214,6 +214,39 @@ func (r *WalletRepository) GetByCircleWalletID(ctx context.Context, circleWallet
 	return wallet, nil
 }
 
+// GetByAddress retrieves a wallet by on-chain address
+func (r *WalletRepository) GetByAddress(ctx context.Context, address string) (*entities.ManagedWallet, error) {
+	query := `
+		SELECT id, user_id, wallet_set_id, circle_wallet_id, chain,
+		       address, status, created_at, updated_at
+		FROM managed_wallets
+		WHERE LOWER(address) = LOWER($1)
+		LIMIT 1`
+
+	wallet := &entities.ManagedWallet{}
+
+	err := r.db.QueryRowContext(ctx, query, address).Scan(
+		&wallet.ID,
+		&wallet.UserID,
+		&wallet.WalletSetID,
+		&wallet.CircleWalletID,
+		&wallet.Chain,
+		&wallet.Address,
+		&wallet.Status,
+		&wallet.CreatedAt,
+		&wallet.UpdatedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("wallet not found")
+		}
+		r.logger.Error("Failed to get wallet by address", zap.Error(err), zap.String("address", address))
+		return nil, fmt.Errorf("failed to get wallet: %w", err)
+	}
+
+	return wallet, nil
+}
+
 // Update updates a managed wallet
 func (r *WalletRepository) Update(ctx context.Context, wallet *entities.ManagedWallet) error {
 	query := `

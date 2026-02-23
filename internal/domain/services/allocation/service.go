@@ -4,14 +4,16 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/autoinvest"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/shopspring/decimal"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -38,6 +40,10 @@ type AllocationRepository interface {
 // AutoInvestService defines the interface for auto-investment operations
 type AutoInvestService interface {
 	TriggerAutoInvestment(ctx context.Context, req autoinvest.TriggerRequest) error
+}
+
+type spendingTotalReader interface {
+	GetTotalSpendingAdded(ctx context.Context, userID uuid.UUID, startDate, endDate time.Time) (decimal.Decimal, error)
 }
 
 // Service handles smart allocation mode operations
@@ -215,12 +221,63 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		return fmt.Errorf("failed to get allocation mode: %w", err)
 	}
 
-	// If mode is not active, skip splitting (legacy flow handles it)
+	// Ensure deposits are always split instantly.
 	if mode == nil || !mode.Active {
-		s.logger.Debug("Allocation mode not active, skipping split",
-			"user_id", req.UserID,
-			"mode_exists", mode != nil)
-		return nil
+		isDepositEvent := req.EventType == entities.AllocationEventTypeDeposit ||
+			req.EventType == entities.AllocationEventTypeFiatDeposit ||
+			req.EventType == entities.AllocationEventTypeCryptoDeposit
+		if !isDepositEvent {
+			s.logger.Debug("Allocation mode not active, skipping non-deposit split",
+				"user_id", req.UserID,
+				"event_type", req.EventType,
+				"mode_exists", mode != nil)
+			return nil
+		}
+
+		now := time.Now()
+		if mode == nil {
+			// First deposit for this user: auto-enable default 70/30 mode.
+			ratios := entities.DefaultAllocationRatios()
+			mode = &entities.SmartAllocationMode{
+				UserID:        req.UserID,
+				Active:        true,
+				RatioSpending: ratios.SpendingRatio,
+				RatioStash:    ratios.StashRatio,
+				ResumedAt:     &now,
+				CreatedAt:     now,
+				UpdatedAt:     now,
+			}
+			if err := s.allocationRepo.CreateMode(ctx, mode); err != nil {
+				span.RecordError(err)
+				return fmt.Errorf("failed to auto-create allocation mode: %w", err)
+			}
+			if err := s.initializeAllocationAccounts(ctx, req.UserID); err != nil {
+				span.RecordError(err)
+				return fmt.Errorf("failed to initialize allocation accounts: %w", err)
+			}
+			s.logger.Info("Auto-enabled allocation mode for deposit",
+				"user_id", req.UserID,
+				"spending_ratio", mode.RatioSpending,
+				"stash_ratio", mode.RatioStash)
+		} else {
+			// Mode exists but inactive: auto-resume for deposit processing.
+			mode.Active = true
+			mode.ResumedAt = &now
+			mode.PausedAt = nil
+			mode.UpdatedAt = now
+			if err := s.allocationRepo.UpdateMode(ctx, mode); err != nil {
+				span.RecordError(err)
+				return fmt.Errorf("failed to auto-resume allocation mode: %w", err)
+			}
+			if err := s.initializeAllocationAccounts(ctx, req.UserID); err != nil {
+				span.RecordError(err)
+				return fmt.Errorf("failed to ensure allocation accounts: %w", err)
+			}
+			s.logger.Info("Auto-resumed allocation mode for deposit",
+				"user_id", req.UserID,
+				"spending_ratio", mode.RatioSpending,
+				"stash_ratio", mode.RatioStash)
+		}
 	}
 
 	s.logger.Info("Processing incoming funds with allocation split",
@@ -229,9 +286,10 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		"spending_ratio", mode.RatioSpending,
 		"stash_ratio", mode.RatioStash)
 
-	// Calculate split amounts
+	// Calculate split amounts.
+	// Compute stash as remainder to avoid precision drift and ensure exact total.
 	spendingAmount := req.Amount.Mul(mode.RatioSpending)
-	stashAmount := req.Amount.Mul(mode.RatioStash)
+	stashAmount := req.Amount.Sub(spendingAmount)
 
 	// Get allocation accounts
 	spendingAccount, err := s.ledgerService.GetOrCreateUserAccount(ctx, req.UserID, entities.AccountTypeSpendingBalance)
@@ -246,14 +304,14 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		return fmt.Errorf("failed to get stash account: %w", err)
 	}
 
-	// Get system buffer account
-	systemAccount, err := s.ledgerService.GetSystemAccount(ctx, entities.AccountTypeSystemBufferUSDC)
+	// Get user's USDC balance account (source of funds for allocation)
+	usdcAccount, err := s.ledgerService.GetOrCreateUserAccount(ctx, req.UserID, entities.AccountTypeUSDCBalance)
 	if err != nil {
 		span.RecordError(err)
-		return fmt.Errorf("failed to get system account: %w", err)
+		return fmt.Errorf("failed to get USDC account: %w", err)
 	}
 
-	// Create ledger transaction for allocation split
+	// Create idempotency and metadata for allocation transfers
 	desc := fmt.Sprintf("Allocation split: %s USDC (70/30 mode)", req.Amount.String())
 	metadata := map[string]any{
 		"event_type":      req.EventType,
@@ -269,47 +327,55 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		metadata["deposit_id"] = req.DepositID.String()
 	}
 
-	ledgerReq := &entities.CreateTransactionRequest{
-		UserID:          &req.UserID,
-		TransactionType: entities.TransactionTypeInternalTransfer,
-		ReferenceID:     req.DepositID,
-		ReferenceType:   stringPtr("allocation_split"),
-		IdempotencyKey:  fmt.Sprintf("allocation-%s-%d", req.UserID.String(), time.Now().UnixNano()),
-		Description:     &desc,
-		Metadata:        metadata,
-		Entries: []entities.CreateEntryRequest{
-			{
-				AccountID:   spendingAccount.ID,
-				EntryType:   entities.EntryTypeDebit, // Increase spending balance
-				Amount:      spendingAmount,
-				Currency:    "USDC",
-				Description: stringPtr(fmt.Sprintf("Spending allocation: %s", spendingAmount.String())),
-			},
-			{
-				AccountID:   stashAccount.ID,
-				EntryType:   entities.EntryTypeDebit, // Increase stash balance
-				Amount:      stashAmount,
-				Currency:    "USDC",
-				Description: stringPtr(fmt.Sprintf("Stash allocation: %s", stashAmount.String())),
-			},
-			{
-				AccountID:   systemAccount.ID,
-				EntryType:   entities.EntryTypeCredit, // Decrease system buffer
-				Amount:      req.Amount,
-				Currency:    "USDC",
-				Description: &desc,
-			},
-		},
+	idempotencySeed := fmt.Sprintf("allocation:%s:%d", req.UserID.String(), time.Now().UnixNano())
+	if req.DepositID != nil {
+		idempotencySeed = "allocation:deposit:" + req.DepositID.String()
+	} else if req.SourceTxID != nil {
+		idempotencySeed = "allocation:source_tx:" + *req.SourceTxID
+	}
+	allocationBaseKey := fmt.Sprintf("allocation-%s", uuid.NewSHA1(uuid.NameSpaceOID, []byte(idempotencySeed)).String())
+
+	if err := s.createAllocationTransfer(
+		ctx,
+		req,
+		spendingAccount.ID,
+		usdcAccount.ID,
+		spendingAmount,
+		"spending",
+		allocationBaseKey+"-spending",
+		fmt.Sprintf("Spending allocation: %s", spendingAmount.String()),
+		desc,
+		metadata,
+	); err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("failed to create spending allocation transfer: %w", err)
 	}
 
-	if _, err := s.ledgerService.CreateTransaction(ctx, ledgerReq); err != nil {
+	if err := s.createAllocationTransfer(
+		ctx,
+		req,
+		stashAccount.ID,
+		usdcAccount.ID,
+		stashAmount,
+		"stash",
+		allocationBaseKey+"-stash",
+		fmt.Sprintf("Stash allocation: %s", stashAmount.String()),
+		desc,
+		metadata,
+	); err != nil {
 		span.RecordError(err)
-		return fmt.Errorf("failed to create ledger transaction: %w", err)
+		return fmt.Errorf("failed to create stash allocation transfer: %w", err)
 	}
 
 	// Create allocation event for audit trail
+	eventID := uuid.New()
+	if req.DepositID != nil {
+		eventID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("allocation-event:deposit:"+req.DepositID.String()))
+	} else if req.SourceTxID != nil {
+		eventID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("allocation-event:source_tx:"+*req.SourceTxID))
+	}
 	event := &entities.AllocationEvent{
-		ID:             uuid.New(),
+		ID:             eventID,
 		UserID:         req.UserID,
 		TotalAmount:    req.Amount,
 		StashAmount:    stashAmount,
@@ -321,8 +387,16 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 	}
 
 	if err := s.allocationRepo.CreateEvent(ctx, event); err != nil {
-		// Log error but don't fail - ledger entry is already created
-		s.logger.Error("Failed to create allocation event", "error", err, "user_id", req.UserID)
+		// Duplicate events can happen on webhook replay when the ledger transaction was already created.
+		// Treat duplicate-key conflicts as benign idempotent outcomes.
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate key") {
+			s.logger.Debug("Allocation event already exists; skipping duplicate",
+				"user_id", req.UserID,
+				"event_id", event.ID.String())
+		} else {
+			// Log error but don't fail - ledger entry is already created
+			s.logger.Error("Failed to create allocation event", "error", err, "user_id", req.UserID)
+		}
 	}
 
 	s.logger.Info("Successfully processed incoming funds with allocation",
@@ -441,38 +515,79 @@ func (s *Service) GetBalances(ctx context.Context, userID uuid.UUID) (*entities.
 		return nil, fmt.Errorf("failed to get allocation mode: %w", err)
 	}
 
-	// If mode doesn't exist, return zero balances
+	// Always read USDC/fiat so totals remain accurate when funds move to broker cash.
+	usdcBalance, err := s.getOptionalAccountBalance(ctx, userID, entities.AccountTypeUSDCBalance)
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("failed to get usdc balance: %w", err)
+	}
+	fiatExposure, err := s.getOptionalAccountBalance(ctx, userID, entities.AccountTypeFiatExposure)
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("failed to get fiat exposure: %w", err)
+	}
+
+	// If mode doesn't exist, map legacy balance view:
+	// - spending reflects liquid USDC
+	// - invest reflects broker cash (fiat exposure)
 	if mode == nil {
-		return &entities.AllocationBalances{
+		balances := &entities.AllocationBalances{
 			UserID:            userID,
-			SpendingBalance:   decimal.Zero,
+			SpendingBalance:   usdcBalance,
 			StashBalance:      decimal.Zero,
+			USDCBalance:       usdcBalance,
+			FiatExposure:      fiatExposure,
 			SpendingUsed:      decimal.Zero,
 			SpendingRemaining: decimal.Zero,
-			TotalBalance:      decimal.Zero,
 			ModeActive:        false,
 			UpdatedAt:         time.Now(),
-		}, nil
+		}
+		balances.CalculateTotals()
+		return balances, nil
+	}
+	if s.ledgerService == nil {
+		return nil, fmt.Errorf("ledger service not configured")
 	}
 
-	// Get spending balance
-	spendingBalance, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
-	if err != nil {
-		span.RecordError(err)
-		return nil, fmt.Errorf("failed to get spending balance: %w", err)
-	}
+	var (
+		spendingBalance decimal.Decimal
+		stashBalance    decimal.Decimal
+		spendingUsed    decimal.Decimal
+		spendingErr     error
+		stashErr        error
+		spendingUsedErr error
+	)
 
-	// Get stash balance
-	stashBalance, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
-	if err != nil {
-		span.RecordError(err)
-		return nil, fmt.Errorf("failed to get stash balance: %w", err)
-	}
+	var wg sync.WaitGroup
+	wg.Add(3)
 
-	// Calculate spending used from transactions in current period
-	spendingUsed, err := s.calculateSpendingUsed(ctx, userID, mode)
-	if err != nil {
-		s.logger.Warn("Failed to calculate spending used, defaulting to zero", "error", err)
+	go func() {
+		defer wg.Done()
+		spendingBalance, spendingErr = s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
+	}()
+
+	go func() {
+		defer wg.Done()
+		stashBalance, stashErr = s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
+	}()
+
+	go func() {
+		defer wg.Done()
+		spendingUsed, spendingUsedErr = s.calculateSpendingUsed(ctx, userID, mode)
+	}()
+
+	wg.Wait()
+
+	if spendingErr != nil {
+		span.RecordError(spendingErr)
+		return nil, fmt.Errorf("failed to get spending balance: %w", spendingErr)
+	}
+	if stashErr != nil {
+		span.RecordError(stashErr)
+		return nil, fmt.Errorf("failed to get stash balance: %w", stashErr)
+	}
+	if spendingUsedErr != nil {
+		s.logger.Warn("Failed to calculate spending used, defaulting to zero", "error", spendingUsedErr)
 		spendingUsed = decimal.Zero
 	}
 
@@ -480,6 +595,8 @@ func (s *Service) GetBalances(ctx context.Context, userID uuid.UUID) (*entities.
 		UserID:          userID,
 		SpendingBalance: spendingBalance,
 		StashBalance:    stashBalance,
+		USDCBalance:     usdcBalance,
+		FiatExposure:    fiatExposure,
 		SpendingUsed:    spendingUsed,
 		ModeActive:      mode.Active,
 		UpdatedAt:       time.Now(),
@@ -491,10 +608,117 @@ func (s *Service) GetBalances(ctx context.Context, userID uuid.UUID) (*entities.
 	span.SetAttributes(
 		attribute.String("spending_balance", spendingBalance.String()),
 		attribute.String("stash_balance", stashBalance.String()),
+		attribute.String("fiat_exposure", fiatExposure.String()),
 		attribute.String("total_balance", balances.TotalBalance.String()),
 	)
 
 	return balances, nil
+}
+
+// GetBalancesLite retrieves current balances without historical spending calculations.
+// This is intended for latency-sensitive endpoints where only live balances are needed.
+func (s *Service) GetBalancesLite(ctx context.Context, userID uuid.UUID) (*entities.AllocationBalances, error) {
+	ctx, span := tracer.Start(ctx, "allocation.GetBalancesLite",
+		trace.WithAttributes(attribute.String("user_id", userID.String())))
+	defer span.End()
+
+	mode, err := s.allocationRepo.GetMode(ctx, userID)
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("failed to get allocation mode: %w", err)
+	}
+
+	usdcBalance, err := s.getOptionalAccountBalance(ctx, userID, entities.AccountTypeUSDCBalance)
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("failed to get usdc balance: %w", err)
+	}
+	fiatExposure, err := s.getOptionalAccountBalance(ctx, userID, entities.AccountTypeFiatExposure)
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("failed to get fiat exposure: %w", err)
+	}
+
+	if mode == nil {
+		balances := &entities.AllocationBalances{
+			UserID:            userID,
+			SpendingBalance:   usdcBalance,
+			StashBalance:      decimal.Zero,
+			USDCBalance:       usdcBalance,
+			FiatExposure:      fiatExposure,
+			SpendingUsed:      decimal.Zero,
+			SpendingRemaining: decimal.Zero,
+			ModeActive:        false,
+			UpdatedAt:         time.Now(),
+		}
+		balances.CalculateTotals()
+		return balances, nil
+	}
+	if s.ledgerService == nil {
+		return nil, fmt.Errorf("ledger service not configured")
+	}
+
+	var (
+		spendingBalance decimal.Decimal
+		stashBalance    decimal.Decimal
+		spendingErr     error
+		stashErr        error
+	)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		spendingBalance, spendingErr = s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
+	}()
+
+	go func() {
+		defer wg.Done()
+		stashBalance, stashErr = s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
+	}()
+
+	wg.Wait()
+
+	if spendingErr != nil {
+		span.RecordError(spendingErr)
+		return nil, fmt.Errorf("failed to get spending balance: %w", spendingErr)
+	}
+	if stashErr != nil {
+		span.RecordError(stashErr)
+		return nil, fmt.Errorf("failed to get stash balance: %w", stashErr)
+	}
+
+	balances := &entities.AllocationBalances{
+		UserID:          userID,
+		SpendingBalance: spendingBalance,
+		StashBalance:    stashBalance,
+		USDCBalance:     usdcBalance,
+		FiatExposure:    fiatExposure,
+		SpendingUsed:    decimal.Zero,
+		ModeActive:      mode.Active,
+		UpdatedAt:       time.Now(),
+	}
+	balances.CalculateTotals()
+
+	return balances, nil
+}
+
+func (s *Service) getOptionalAccountBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (decimal.Decimal, error) {
+	if s.ledgerService == nil {
+		return decimal.Zero, nil
+	}
+
+	balance, err := s.ledgerService.GetAccountBalance(ctx, userID, accountType)
+	if err == nil {
+		return balance, nil
+	}
+
+	if strings.Contains(err.Error(), "account not found") {
+		return decimal.Zero, nil
+	}
+
+	return decimal.Zero, err
 }
 
 // ============================================================================
@@ -542,6 +766,13 @@ func (s *Service) calculateSpendingUsed(ctx context.Context, userID uuid.UUID, m
 	// Get start of current period - default to daily reset
 	periodStart := s.getPeriodStart("daily")
 
+	if repoWithTotals, ok := s.allocationRepo.(spendingTotalReader); ok {
+		total, err := repoWithTotals.GetTotalSpendingAdded(ctx, userID, periodStart, time.Now())
+		if err == nil {
+			return total, nil
+		}
+	}
+
 	// Query spending events from allocation events table
 	events, err := s.allocationRepo.GetEventsByDateRange(ctx, userID, periodStart, time.Now())
 	if err != nil {
@@ -569,7 +800,7 @@ func (s *Service) getPeriodStart(resetPeriod string) time.Time {
 		if weekday == 0 {
 			weekday = 7 // Sunday
 		}
-		return now.AddDate(0, 0, -(weekday-1)).Truncate(24 * time.Hour)
+		return now.AddDate(0, 0, -(weekday - 1)).Truncate(24 * time.Hour)
 	case "monthly":
 		return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 	default:
@@ -590,6 +821,62 @@ func (s *Service) initializeAllocationAccounts(ctx context.Context, userID uuid.
 	_, err = s.ledgerService.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
 	if err != nil {
 		return fmt.Errorf("failed to create stash balance account: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Service) createAllocationTransfer(
+	ctx context.Context,
+	req *entities.IncomingFundsRequest,
+	targetAccountID uuid.UUID,
+	sourceAccountID uuid.UUID,
+	amount decimal.Decimal,
+	allocationType string,
+	idempotencyKey string,
+	targetDescription string,
+	rootDescription string,
+	baseMetadata map[string]any,
+) error {
+	if amount.IsZero() {
+		return nil
+	}
+
+	metadata := make(map[string]any, len(baseMetadata)+1)
+	for k, v := range baseMetadata {
+		metadata[k] = v
+	}
+	metadata["allocation_type"] = allocationType
+
+	reqTx := &entities.CreateTransactionRequest{
+		UserID:          &req.UserID,
+		TransactionType: entities.TransactionTypeInternalTransfer,
+		ReferenceID:     req.DepositID,
+		ReferenceType:   stringPtr("allocation_split"),
+		IdempotencyKey:  idempotencyKey,
+		Description:     &rootDescription,
+		Metadata:        metadata,
+		Entries: []entities.CreateEntryRequest{
+			{
+				AccountID:   targetAccountID,
+				EntryType:   entities.EntryTypeDebit,
+				Amount:      amount,
+				Currency:    "USDC",
+				Description: stringPtr(targetDescription),
+			},
+			{
+				AccountID:   sourceAccountID,
+				EntryType:   entities.EntryTypeCredit,
+				Amount:      amount,
+				Currency:    "USDC",
+				Description: &rootDescription,
+			},
+		},
+	}
+
+	_, err := s.ledgerService.CreateTransaction(ctx, reqTx)
+	if err != nil {
+		return fmt.Errorf("create allocation transfer (%s): %w", allocationType, err)
 	}
 
 	return nil

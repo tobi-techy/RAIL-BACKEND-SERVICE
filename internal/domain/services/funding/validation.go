@@ -14,13 +14,14 @@ import (
 
 // FundingConfig holds funding service configuration
 type FundingConfig struct {
-	MinDepositAmount     decimal.Decimal
-	MaxDepositsPerDay    int
+	MinDepositAmount      decimal.Decimal
+	MaxDepositsPerDay     int
 	MaxDailyDepositAmount decimal.Decimal // Daily deposit limit ($100k default)
-	DepositTimeoutHours  int
-	WebhookSecret        string
-	BalanceCacheTTL      time.Duration
-	RateLimitWindow      time.Duration
+	DepositTimeoutHours   int
+	WebhookSecret         string
+	BalanceCacheTTL       time.Duration
+	RateLimitWindow       time.Duration
+	DefaultWalletSetID    uuid.UUID
 }
 
 // DefaultFundingConfig returns default configuration

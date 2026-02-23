@@ -27,12 +27,20 @@ func (r *AuditRepository) Create(ctx context.Context, log *entities.AuditLog) er
 		metadata = []byte("{}")
 	}
 
+	var resourceID interface{}
+	if log.ResourceID != nil {
+		resourceID = log.ResourceID.String()
+	}
+
 	query := `
-		INSERT INTO audit_logs (id, user_id, action, resource, resource_id, ip_address, user_agent, metadata, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO audit_logs (
+			id, user_id, action, resource_type, resource_id, ip_address, user_agent,
+			changes, status, error_message, created_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'success', NULL, $9)
 	`
 	_, err = r.db.ExecContext(ctx, query,
-		log.ID, log.UserID, log.Action, log.Resource, log.ResourceID,
+		log.ID, log.UserID, log.Action, log.Resource, resourceID,
 		log.IPAddress, log.UserAgent, metadata, log.CreatedAt,
 	)
 	if err != nil {
@@ -42,12 +50,17 @@ func (r *AuditRepository) Create(ctx context.Context, log *entities.AuditLog) er
 }
 
 func (r *AuditRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.AuditLog, error) {
-	query := `SELECT id, user_id, action, resource, resource_id, ip_address, user_agent, metadata, created_at FROM audit_logs WHERE id = $1`
-	
+	query := `
+		SELECT id, user_id, action, resource_type, resource_id, ip_address, user_agent, changes, created_at
+		FROM audit_logs
+		WHERE id = $1
+	`
+
 	var log entities.AuditLog
 	var metadata []byte
+	var resourceID sql.NullString
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
-		&log.ID, &log.UserID, &log.Action, &log.Resource, &log.ResourceID,
+		&log.ID, &log.UserID, &log.Action, &log.Resource, &resourceID,
 		&log.IPAddress, &log.UserAgent, &metadata, &log.CreatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -56,10 +69,11 @@ func (r *AuditRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.
 	if err != nil {
 		return nil, fmt.Errorf("failed to get audit log: %w", err)
 	}
-	
+
 	if len(metadata) > 0 {
 		json.Unmarshal(metadata, &log.Metadata)
 	}
+	log.ResourceID = parseResourceID(resourceID)
 	return &log, nil
 }
 
@@ -68,7 +82,7 @@ func (r *AuditRepository) List(ctx context.Context, filter repositories.AuditLog
 	var args []interface{}
 	argIdx := 1
 
-	sb.WriteString(`SELECT id, user_id, action, resource, resource_id, ip_address, user_agent, metadata, created_at FROM audit_logs WHERE 1=1`)
+	sb.WriteString(`SELECT id, user_id, action, resource_type, resource_id, ip_address, user_agent, changes, created_at FROM audit_logs WHERE 1=1`)
 
 	if filter.UserID != nil {
 		sb.WriteString(fmt.Sprintf(" AND user_id = $%d", argIdx))
@@ -81,13 +95,13 @@ func (r *AuditRepository) List(ctx context.Context, filter repositories.AuditLog
 		argIdx++
 	}
 	if filter.Resource != nil {
-		sb.WriteString(fmt.Sprintf(" AND resource = $%d", argIdx))
+		sb.WriteString(fmt.Sprintf(" AND resource_type = $%d", argIdx))
 		args = append(args, *filter.Resource)
 		argIdx++
 	}
 	if filter.ResourceID != nil {
 		sb.WriteString(fmt.Sprintf(" AND resource_id = $%d", argIdx))
-		args = append(args, *filter.ResourceID)
+		args = append(args, filter.ResourceID.String())
 		argIdx++
 	}
 	if filter.StartDate != nil {
@@ -123,13 +137,15 @@ func (r *AuditRepository) List(ctx context.Context, filter repositories.AuditLog
 	for rows.Next() {
 		var log entities.AuditLog
 		var metadata []byte
-		if err := rows.Scan(&log.ID, &log.UserID, &log.Action, &log.Resource, &log.ResourceID,
+		var resourceID sql.NullString
+		if err := rows.Scan(&log.ID, &log.UserID, &log.Action, &log.Resource, &resourceID,
 			&log.IPAddress, &log.UserAgent, &metadata, &log.CreatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan audit log: %w", err)
 		}
 		if len(metadata) > 0 {
 			json.Unmarshal(metadata, &log.Metadata)
 		}
+		log.ResourceID = parseResourceID(resourceID)
 		logs = append(logs, &log)
 	}
 	return logs, rows.Err()
@@ -153,13 +169,13 @@ func (r *AuditRepository) Count(ctx context.Context, filter repositories.AuditLo
 		argIdx++
 	}
 	if filter.Resource != nil {
-		sb.WriteString(fmt.Sprintf(" AND resource = $%d", argIdx))
+		sb.WriteString(fmt.Sprintf(" AND resource_type = $%d", argIdx))
 		args = append(args, *filter.Resource)
 		argIdx++
 	}
 	if filter.ResourceID != nil {
 		sb.WriteString(fmt.Sprintf(" AND resource_id = $%d", argIdx))
-		args = append(args, *filter.ResourceID)
+		args = append(args, filter.ResourceID.String())
 		argIdx++
 	}
 	if filter.StartDate != nil {
@@ -178,4 +194,17 @@ func (r *AuditRepository) Count(ctx context.Context, filter repositories.AuditLo
 		return 0, fmt.Errorf("failed to count audit logs: %w", err)
 	}
 	return count, nil
+}
+
+func parseResourceID(resourceID sql.NullString) *uuid.UUID {
+	if !resourceID.Valid || strings.TrimSpace(resourceID.String) == "" {
+		return nil
+	}
+
+	parsed, err := uuid.Parse(resourceID.String)
+	if err != nil {
+		return nil
+	}
+
+	return &parsed
 }

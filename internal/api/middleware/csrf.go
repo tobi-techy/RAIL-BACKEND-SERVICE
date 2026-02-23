@@ -68,14 +68,10 @@ func (s *CSRFStore) Validate(token string) bool {
 	return true
 }
 
-<<<<<<< omotadetobiloba/sta-84-security-missing-csrf-protection-on-state-changing-auth
 // CSRFProtection validates CSRF tokens for state-changing requests.
-// For browser clients: requires X-CSRF-Token header
-// For API clients: requires X-Requested-With header (custom header requirement)
-func CSRFProtection(store *CSRFStore) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// Skip CSRF for safe methods
-=======
+// For browser clients: requires X-CSRF-Token header.
+// For API clients: requires X-Requested-With: RailApp header.
+// In development: skipped entirely for API testing convenience.
 func CSRFProtection(store *CSRFStore, isDev bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Skip CSRF in development for API testing
@@ -84,14 +80,13 @@ func CSRFProtection(store *CSRFStore, isDev bool) gin.HandlerFunc {
 			return
 		}
 
->>>>>>> main
 		if c.Request.Method == "GET" || c.Request.Method == "HEAD" || c.Request.Method == "OPTIONS" {
 			c.Next()
 			return
 		}
 
-		// API clients can bypass CSRF by sending X-Requested-With header
-		// This is secure because custom headers cannot be sent cross-origin without CORS preflight
+		// API clients can bypass CSRF by sending X-Requested-With header.
+		// This is secure because custom headers cannot be sent cross-origin without CORS preflight.
 		requestedWith := c.GetHeader("X-Requested-With")
 		if requestedWith == "XMLHttpRequest" || requestedWith == "RailApp" {
 			c.Next()
@@ -135,10 +130,8 @@ func AuthCSRFProtection() gin.HandlerFunc {
 			return
 		}
 
-		// Require custom header for all state-changing auth requests
-		// This prevents CSRF because:
-		// 1. Custom headers cannot be sent cross-origin without CORS preflight
-		// 2. CORS preflight will fail for malicious origins
+		// Require custom header for all state-changing auth requests.
+		// This prevents CSRF because custom headers cannot be sent cross-origin without CORS preflight.
 		requestedWith := c.GetHeader("X-Requested-With")
 		if requestedWith != "XMLHttpRequest" && requestedWith != "RailApp" {
 			c.JSON(http.StatusForbidden, gin.H{

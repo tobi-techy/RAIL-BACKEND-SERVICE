@@ -8,8 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/shopspring/decimal"
 )
 
 // DepositRepository implements the deposit repository interface
@@ -27,10 +27,11 @@ func (r *DepositRepository) Create(ctx context.Context, deposit *entities.Deposi
 	query := `
 		INSERT INTO deposits (
 			id, user_id, virtual_account_id, amount, status,
-			tx_hash, chain, off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
+			tx_hash, chain, token, confirmed_at,
+			off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
 			alpaca_funding_tx_id, alpaca_funded_at, created_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
 		)
 	`
 
@@ -42,6 +43,8 @@ func (r *DepositRepository) Create(ctx context.Context, deposit *entities.Deposi
 		deposit.Status,
 		deposit.TxHash,
 		deposit.Chain,
+		deposit.Token,
+		deposit.ConfirmedAt,
 		deposit.OffRampTxID,
 		deposit.OffRampInitiatedAt,
 		deposit.OffRampCompletedAt,
@@ -61,7 +64,8 @@ func (r *DepositRepository) Create(ctx context.Context, deposit *entities.Deposi
 func (r *DepositRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.Deposit, error) {
 	query := `
 		SELECT id, user_id, virtual_account_id, amount, status,
-			   tx_hash, chain, off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
+			   tx_hash, chain, token, confirmed_at,
+			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
 			   alpaca_funding_tx_id, alpaca_funded_at, created_at
 		FROM deposits
 		WHERE id = $1
@@ -83,7 +87,8 @@ func (r *DepositRepository) GetByID(ctx context.Context, id uuid.UUID) (*entitie
 func (r *DepositRepository) GetByOffRampTxID(ctx context.Context, txID string) (*entities.Deposit, error) {
 	query := `
 		SELECT id, user_id, virtual_account_id, amount, status,
-			   tx_hash, chain, off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
+			   tx_hash, chain, token, confirmed_at,
+			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
 			   alpaca_funding_tx_id, alpaca_funded_at, created_at
 		FROM deposits
 		WHERE off_ramp_tx_id = $1
@@ -110,11 +115,13 @@ func (r *DepositRepository) Update(ctx context.Context, deposit *entities.Deposi
 			status = $4,
 			tx_hash = $5,
 			chain = $6,
-			off_ramp_tx_id = $7,
-			off_ramp_initiated_at = $8,
-			off_ramp_completed_at = $9,
-			alpaca_funding_tx_id = $10,
-			alpaca_funded_at = $11
+			token = $7,
+			confirmed_at = $8,
+			off_ramp_tx_id = $9,
+			off_ramp_initiated_at = $10,
+			off_ramp_completed_at = $11,
+			alpaca_funding_tx_id = $12,
+			alpaca_funded_at = $13
 		WHERE id = $1
 	`
 
@@ -125,6 +132,8 @@ func (r *DepositRepository) Update(ctx context.Context, deposit *entities.Deposi
 		deposit.Status,
 		deposit.TxHash,
 		deposit.Chain,
+		deposit.Token,
+		deposit.ConfirmedAt,
 		deposit.OffRampTxID,
 		deposit.OffRampInitiatedAt,
 		deposit.OffRampCompletedAt,
@@ -143,7 +152,8 @@ func (r *DepositRepository) Update(ctx context.Context, deposit *entities.Deposi
 func (r *DepositRepository) ListByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.Deposit, error) {
 	query := `
 		SELECT id, user_id, virtual_account_id, amount, status,
-			   tx_hash, chain, off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
+			   tx_hash, chain, token, confirmed_at,
+			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
 			   alpaca_funding_tx_id, alpaca_funded_at, created_at
 		FROM deposits
 		WHERE user_id = $1
@@ -163,7 +173,8 @@ func (r *DepositRepository) ListByUserID(ctx context.Context, userID uuid.UUID) 
 func (r *DepositRepository) GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Deposit, error) {
 	query := `
 		SELECT id, user_id, virtual_account_id, amount, status,
-			   tx_hash, chain, off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
+			   tx_hash, chain, token, confirmed_at,
+			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
 			   alpaca_funding_tx_id, alpaca_funded_at, created_at
 		FROM deposits
 		WHERE user_id = $1
@@ -184,7 +195,8 @@ func (r *DepositRepository) GetByUserID(ctx context.Context, userID uuid.UUID, l
 func (r *DepositRepository) GetByTxHash(ctx context.Context, txHash string) (*entities.Deposit, error) {
 	query := `
 		SELECT id, user_id, virtual_account_id, amount, status,
-			   tx_hash, chain, off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
+			   tx_hash, chain, token, confirmed_at,
+			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
 			   alpaca_funding_tx_id, alpaca_funded_at, created_at
 		FROM deposits
 		WHERE tx_hash = $1

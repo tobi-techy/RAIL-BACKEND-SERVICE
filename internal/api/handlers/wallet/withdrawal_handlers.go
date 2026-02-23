@@ -1,147 +1,242 @@
 package wallet
 
 import (
-	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"context"
+	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
+	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
 // WithdrawalServiceInterface defines the interface for withdrawal operations
 type WithdrawalServiceInterface interface {
-	InitiateWithdrawal(ctx context.Context, req *entities.InitiateWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error)
-	GetWithdrawal(ctx context.Context, withdrawalID uuid.UUID) (*entities.Withdrawal, error)
+	InitiateCryptoWithdrawal(ctx context.Context, req *entities.InitiateCryptoWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error)
+	InitiateFiatWithdrawal(ctx context.Context, req *entities.InitiateFiatWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error)
+	GetWithdrawal(ctx context.Context, userID, withdrawalID uuid.UUID) (*entities.Withdrawal, error)
 	GetUserWithdrawals(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error)
-	CancelWithdrawal(ctx context.Context, withdrawalID uuid.UUID, userID uuid.UUID) error
+	CancelWithdrawal(ctx context.Context, userID, withdrawalID uuid.UUID) error
+	GetWithdrawalFee(ctx context.Context, withdrawalType entities.WithdrawalType, amount decimal.Decimal, currency entities.WithdrawalCurrency) (*entities.WithdrawalFee, error)
 }
 
-// BalanceChecker interface for balance validation (defense-in-depth)
-type BalanceChecker interface {
-	GetBuyingPower(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
+// WalletProvider interface for getting user's Circle wallet
+type WalletProvider interface {
+	GetUserWalletByChain(ctx context.Context, userID uuid.UUID, chain string) (*entities.ManagedWallet, error)
 }
 
 // WithdrawalHandlers handles withdrawal-related operations
 type WithdrawalHandlers struct {
 	withdrawalService WithdrawalServiceInterface
-	balanceChecker    BalanceChecker
+	walletProvider    WalletProvider
 	validator         *validator.Validate
 	logger            *logger.Logger
 }
 
 // NewWithdrawalHandlers creates a new WithdrawalHandlers instance
-func NewWithdrawalHandlers(withdrawalService WithdrawalServiceInterface, balanceChecker BalanceChecker, logger *logger.Logger) *WithdrawalHandlers {
+func NewWithdrawalHandlers(withdrawalService WithdrawalServiceInterface, walletProvider WalletProvider, logger *logger.Logger) *WithdrawalHandlers {
 	return &WithdrawalHandlers{
 		withdrawalService: withdrawalService,
-		balanceChecker:    balanceChecker,
+		walletProvider:    walletProvider,
 		validator:         validator.New(),
 		logger:            logger,
 	}
 }
 
-// InitiateWithdrawal handles POST /api/v1/funding/withdraw
-func (h *WithdrawalHandlers) InitiateWithdrawal(c *gin.Context) {
-	var req entities.InitiateWithdrawalRequest
+// CryptoWithdrawalRequest represents the HTTP request for crypto withdrawal
+// Only amount and destination_address required - chain defaults to Solana, wallet fetched from backend
+type CryptoWithdrawalRequest struct {
+	Amount             float64 `json:"amount" binding:"required,gt=0"`
+	DestinationAddress string  `json:"destination_address" binding:"required"`
+}
+
+// FiatWithdrawalRequest represents the HTTP request for fiat withdrawal
+// Only requires routing number - bank account created during withdrawal process
+type FiatWithdrawalRequest struct {
+	Amount        float64 `json:"amount" binding:"required,gt=0"`
+	Currency      string  `json:"currency" binding:"required,oneof=USD EUR"`
+	RoutingNumber string  `json:"routing_number" binding:"required,len=9"`
+}
+
+// WithdrawalFeeRequest represents the HTTP request for fee calculation
+type WithdrawalFeeRequest struct {
+	WithdrawalType string  `form:"type" binding:"required,oneof=crypto fiat"`
+	Amount         float64 `form:"amount" binding:"required,gt=0"`
+	Currency       string  `form:"currency" binding:"required,oneof=USDC USD EUR"`
+}
+
+// InitiateCryptoWithdrawal handles POST /api/v1/withdrawals/crypto
+func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
+	var req CryptoWithdrawalRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Invalid request format")
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Invalid request format: "+err.Error())
 		return
 	}
 
 	userID, ok := h.extractUserID(c)
 	if !ok {
-		return // Error already sent
-	}
-
-	req.UserID = userID
-
-	if err := h.validateWithdrawalRequest(&req); err != nil {
-		common.SendBadRequest(c, err.code, err.message)
 		return
 	}
 
-	// Defense-in-depth: Check balance at handler level before service call
-	if h.balanceChecker != nil {
-		buyingPower, err := h.balanceChecker.GetBuyingPower(c.Request.Context(), userID)
-		if err != nil {
-			h.logger.Error("Failed to check buying power",
-				"error", err,
-				"user_id", userID)
-			common.SendInternalError(c, "BALANCE_CHECK_ERROR", "Failed to verify balance")
-			return
-		}
-
-		if buyingPower.LessThan(req.Amount) {
-			h.logger.Warn("Withdrawal rejected - insufficient balance (handler check)",
-				"user_id", userID,
-				"requested", req.Amount.String(),
-				"available", buyingPower.String())
-			common.SendBadRequest(c, common.ErrCodeInsufficientFunds, "Insufficient buying power for withdrawal")
-			return
-		}
-	}
-
-	response, err := h.withdrawalService.InitiateWithdrawal(c.Request.Context(), &req)
+	// Get user's Solana wallet from backend (only Solana supported for now)
+	wallet, err := h.walletProvider.GetUserWalletByChain(c.Request.Context(), userID, "SOL")
 	if err != nil {
-		h.handleWithdrawalError(c, err, userID, req.Amount.String())
+		h.logger.Error("Failed to get user wallet", "error", err, "user_id", userID)
+		common.SendBadRequest(c, "NO_WALLET", "No Solana wallet found for user")
 		return
 	}
 
-	common.SendSuccess(c, response)
+	serviceReq := &entities.InitiateCryptoWithdrawalRequest{
+		UserID:             userID,
+		Amount:             decimal.NewFromFloat(req.Amount),
+		DestinationAddress: req.DestinationAddress,
+		DestinationChain:   string(wallet.Chain),
+		SourceAccount:      entities.WithdrawalSourceSpendingBalance, // Default to spending
+		CircleWalletID:     wallet.CircleWalletID,
+	}
+
+	response, err := h.withdrawalService.InitiateCryptoWithdrawal(c.Request.Context(), serviceReq)
+	if err != nil {
+		h.handleWithdrawalError(c, err, userID, req.Amount)
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
 }
 
-// GetWithdrawal handles GET /api/v1/funding/withdrawals/:withdrawalId
+// InitiateFiatWithdrawal handles POST /api/v1/withdrawals/fiat
+func (h *WithdrawalHandlers) InitiateFiatWithdrawal(c *gin.Context) {
+	var req FiatWithdrawalRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Invalid request format: "+err.Error())
+		return
+	}
+
+	userID, ok := h.extractUserID(c)
+	if !ok {
+		return
+	}
+
+	currency := entities.WithdrawalCurrencyUSD
+	if req.Currency == "EUR" {
+		currency = entities.WithdrawalCurrencyEUR
+	}
+
+	serviceReq := &entities.InitiateFiatWithdrawalRequest{
+		UserID:        userID,
+		Amount:        decimal.NewFromFloat(req.Amount),
+		Currency:      currency,
+		RoutingNumber: req.RoutingNumber,
+		SourceAccount: entities.WithdrawalSourceSpendingBalance, // Default to spending
+	}
+
+	response, err := h.withdrawalService.InitiateFiatWithdrawal(c.Request.Context(), serviceReq)
+	if err != nil {
+		h.handleWithdrawalError(c, err, userID, req.Amount)
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// GetWithdrawalFees handles GET /api/v1/withdrawals/fees
+func (h *WithdrawalHandlers) GetWithdrawalFees(c *gin.Context) {
+	var req WithdrawalFeeRequest
+	if err := c.ShouldBindQuery(&req); err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Invalid request: "+err.Error())
+		return
+	}
+
+	withdrawalType := entities.WithdrawalTypeCrypto
+	if req.WithdrawalType == "fiat" {
+		withdrawalType = entities.WithdrawalTypeFiat
+	}
+
+	currency := entities.WithdrawalCurrencyUSDC
+	switch req.Currency {
+	case "USD":
+		currency = entities.WithdrawalCurrencyUSD
+	case "EUR":
+		currency = entities.WithdrawalCurrencyEUR
+	}
+
+	fee, err := h.withdrawalService.GetWithdrawalFee(
+		c.Request.Context(),
+		withdrawalType,
+		decimal.NewFromFloat(req.Amount),
+		currency,
+	)
+	if err != nil {
+		h.logger.Error("Failed to get withdrawal fee", "error", err)
+		common.SendInternalError(c, "FEE_CALCULATION_ERROR", "Failed to calculate fee")
+		return
+	}
+
+	c.JSON(http.StatusOK, fee)
+}
+
+// GetWithdrawal handles GET /api/v1/withdrawals/:withdrawalId
 func (h *WithdrawalHandlers) GetWithdrawal(c *gin.Context) {
-	withdrawalIDStr := c.Param("withdrawalId")
-	withdrawalID, err := uuid.Parse(withdrawalIDStr)
+	userID, ok := h.extractUserID(c)
+	if !ok {
+		return
+	}
+
+	withdrawalID, err := uuid.Parse(c.Param("withdrawalId"))
 	if err != nil {
 		common.SendBadRequest(c, "INVALID_WITHDRAWAL_ID", "Invalid withdrawal ID format")
 		return
 	}
 
-	withdrawal, err := h.withdrawalService.GetWithdrawal(c.Request.Context(), withdrawalID)
+	withdrawal, err := h.withdrawalService.GetWithdrawal(c.Request.Context(), userID, withdrawalID)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			common.SendNotFound(c, common.ErrCodeWithdrawalNotFound, "Withdrawal not found")
 			return
 		}
-
-		h.logger.Error("Failed to get withdrawal",
-			"error", err,
-			"withdrawal_id", withdrawalID)
+		if strings.Contains(err.Error(), "does not belong") {
+			common.SendNotFound(c, common.ErrCodeWithdrawalNotFound, "Withdrawal not found")
+			return
+		}
+		h.logger.Error("Failed to get withdrawal", "error", err, "withdrawal_id", withdrawalID)
 		common.SendInternalError(c, "WITHDRAWAL_ERROR", "Failed to retrieve withdrawal")
 		return
 	}
 
-	common.SendSuccess(c, withdrawal)
+	c.JSON(http.StatusOK, withdrawal)
 }
 
 // GetUserWithdrawals handles GET /api/v1/withdrawals
 func (h *WithdrawalHandlers) GetUserWithdrawals(c *gin.Context) {
 	userID, ok := h.extractUserID(c)
 	if !ok {
-		return // Error already sent
+		return
 	}
 
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 
+	if limit > 100 {
+		limit = 100
+	}
+
 	withdrawals, err := h.withdrawalService.GetUserWithdrawals(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		h.logger.Error("Failed to get user withdrawals",
-			"error", err,
-			"user_id", userID)
+		h.logger.Error("Failed to get user withdrawals", "error", err, "user_id", userID)
 		common.SendInternalError(c, "WITHDRAWAL_ERROR", "Failed to retrieve withdrawals")
 		return
 	}
 
-	common.SendSuccess(c, withdrawals)
+	c.JSON(http.StatusOK, gin.H{
+		"withdrawals": withdrawals,
+		"count":       len(withdrawals),
+	})
 }
 
 // CancelWithdrawal handles DELETE /api/v1/withdrawals/:withdrawalId
@@ -157,10 +252,12 @@ func (h *WithdrawalHandlers) CancelWithdrawal(c *gin.Context) {
 		return
 	}
 
-	if err := h.withdrawalService.CancelWithdrawal(c.Request.Context(), withdrawalID, userID); err != nil {
+	if err := h.withdrawalService.CancelWithdrawal(c.Request.Context(), userID, withdrawalID); err != nil {
 		errMsg := err.Error()
 		switch {
 		case strings.Contains(errMsg, "not found"):
+			common.SendNotFound(c, common.ErrCodeWithdrawalNotFound, "Withdrawal not found")
+		case strings.Contains(errMsg, "does not belong"):
 			common.SendNotFound(c, common.ErrCodeWithdrawalNotFound, "Withdrawal not found")
 		case strings.Contains(errMsg, "cannot cancel"):
 			common.SendBadRequest(c, "CANCEL_NOT_ALLOWED", errMsg)
@@ -171,14 +268,7 @@ func (h *WithdrawalHandlers) CancelWithdrawal(c *gin.Context) {
 		return
 	}
 
-	common.SendSuccess(c, gin.H{"message": "Withdrawal cancelled"})
-}
-
-// Helper types and methods
-
-type validationError struct {
-	code    string
-	message string
+	c.JSON(http.StatusOK, gin.H{"message": "Withdrawal cancelled"})
 }
 
 func (h *WithdrawalHandlers) extractUserID(c *gin.Context) (uuid.UUID, bool) {
@@ -197,32 +287,7 @@ func (h *WithdrawalHandlers) extractUserID(c *gin.Context) (uuid.UUID, bool) {
 	return userUUID, true
 }
 
-func (h *WithdrawalHandlers) validateWithdrawalRequest(req *entities.InitiateWithdrawalRequest) *validationError {
-	if req.Amount.IsZero() || req.Amount.IsNegative() {
-		return &validationError{
-			code:    common.ErrCodeInvalidAmount,
-			message: "Amount must be positive",
-		}
-	}
-
-	if req.DestinationAddress == "" {
-		return &validationError{
-			code:    "INVALID_ADDRESS",
-			message: "Destination address is required",
-		}
-	}
-
-	if req.DestinationChain == "" {
-		return &validationError{
-			code:    common.ErrCodeInvalidChain,
-			message: "Destination chain is required",
-		}
-	}
-
-	return nil
-}
-
-func (h *WithdrawalHandlers) handleWithdrawalError(c *gin.Context, err error, userID uuid.UUID, amount string) {
+func (h *WithdrawalHandlers) handleWithdrawalError(c *gin.Context, err error, userID uuid.UUID, amount float64) {
 	h.logger.Error("Failed to initiate withdrawal",
 		"error", err,
 		"user_id", userID,
@@ -232,13 +297,25 @@ func (h *WithdrawalHandlers) handleWithdrawalError(c *gin.Context, err error, us
 
 	switch {
 	case strings.Contains(errMsg, "insufficient"):
-		common.SendBadRequest(c, common.ErrCodeInsufficientFunds, "Insufficient buying power for withdrawal")
-	case strings.Contains(errMsg, "not active"):
-		common.SendBadRequest(c, common.ErrCodeAccountInactive, "Alpaca account is not active")
+		common.SendBadRequest(c, common.ErrCodeInsufficientFunds, "Insufficient balance for withdrawal")
 	case strings.Contains(errMsg, "minimum"):
 		common.SendBadRequest(c, common.ErrCodeInvalidAmount, "Withdrawal amount below minimum")
-	case strings.Contains(errMsg, "daily limit"):
-		common.SendBadRequest(c, "DAILY_LIMIT_EXCEEDED", "Daily withdrawal limit exceeded")
+	case strings.Contains(strings.ToLower(errMsg), "circle validation error 400"),
+		strings.Contains(strings.ToLower(errMsg), "api parameter invalid"):
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Invalid withdrawal parameters")
+	case strings.Contains(errMsg, "PAYMASTER_SOL_ATA_CREATION_NOT_ALLOWED"):
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Destination Solana wallet must create USDC ATA before withdrawal")
+	case strings.Contains(strings.ToLower(errMsg), "token"),
+		strings.Contains(strings.ToLower(errMsg), "entity secret"):
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Withdrawal provider configuration is invalid")
+	case strings.Contains(errMsg, "limit exceeded"):
+		common.SendBadRequest(c, "LIMIT_EXCEEDED", errMsg)
+	case strings.Contains(errMsg, "bank account"):
+		common.SendBadRequest(c, "BANK_ACCOUNT_ERROR", errMsg)
+	case strings.Contains(errMsg, "not verified"):
+		common.SendBadRequest(c, "BANK_ACCOUNT_NOT_VERIFIED", "Bank account must be verified before withdrawal")
+	case strings.Contains(errMsg, "currency"):
+		common.SendBadRequest(c, "CURRENCY_MISMATCH", errMsg)
 	default:
 		common.SendInternalError(c, "WITHDRAWAL_ERROR", "Failed to initiate withdrawal")
 	}
@@ -263,26 +340,9 @@ func (h *AdminWithdrawalHandlers) AdminGetWithdrawals(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 
-	// Parse optional user_id filter
-	var userID *uuid.UUID
-	if userIDStr := c.Query("user_id"); userIDStr != "" {
-		parsed, err := uuid.Parse(userIDStr)
-		if err != nil {
-			common.SendBadRequest(c, common.ErrCodeInvalidUserID, "Invalid user ID format")
-			return
-		}
-		userID = &parsed
-	}
-
-	var withdrawals []*entities.Withdrawal
-	var err error
-
-	if userID != nil {
-		withdrawals, err = h.withdrawalService.GetUserWithdrawals(c.Request.Context(), *userID, limit, offset)
-	} else {
-		// For admin, we might want to add a method to get all withdrawals
-		// For now, we return an empty list without user filter
-		common.SendSuccess(c, gin.H{
+	userIDStr := c.Query("user_id")
+	if userIDStr == "" {
+		c.JSON(http.StatusOK, gin.H{
 			"items": []interface{}{},
 			"count": 0,
 			"note":  "Please provide user_id filter to view withdrawals",
@@ -290,38 +350,21 @@ func (h *AdminWithdrawalHandlers) AdminGetWithdrawals(c *gin.Context) {
 		return
 	}
 
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidUserID, "Invalid user ID format")
+		return
+	}
+
+	withdrawals, err := h.withdrawalService.GetUserWithdrawals(c.Request.Context(), userID, limit, offset)
 	if err != nil {
 		h.logger.Error("Failed to get withdrawals", zap.Error(err))
 		common.SendInternalError(c, "WITHDRAWAL_ERROR", "Failed to retrieve withdrawals")
 		return
 	}
 
-	common.SendSuccess(c, gin.H{
+	c.JSON(http.StatusOK, gin.H{
 		"items": withdrawals,
 		"count": len(withdrawals),
 	})
-}
-
-// AdminGetWithdrawal handles GET /api/v1/admin/withdrawals/:withdrawalId
-func (h *AdminWithdrawalHandlers) AdminGetWithdrawal(c *gin.Context) {
-	withdrawalIDStr := c.Param("withdrawalId")
-	withdrawalID, err := uuid.Parse(withdrawalIDStr)
-	if err != nil {
-		common.SendBadRequest(c, "INVALID_WITHDRAWAL_ID", "Invalid withdrawal ID format")
-		return
-	}
-
-	withdrawal, err := h.withdrawalService.GetWithdrawal(c.Request.Context(), withdrawalID)
-	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			common.SendNotFound(c, common.ErrCodeWithdrawalNotFound, "Withdrawal not found")
-			return
-		}
-
-		h.logger.Error("Failed to get withdrawal", zap.Error(err), zap.String("withdrawal_id", withdrawalID.String()))
-		common.SendInternalError(c, "WITHDRAWAL_ERROR", "Failed to retrieve withdrawal")
-		return
-	}
-
-	common.SendSuccess(c, withdrawal)
 }

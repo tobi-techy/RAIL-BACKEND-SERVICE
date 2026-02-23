@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -13,10 +15,17 @@ import (
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/api/routes"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
+	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
+	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/database"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
+	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
+	deposit_allocation_recovery "github.com/rail-service/rail_service/internal/workers/deposit_allocation_recovery"
 	"github.com/rail-service/rail_service/internal/workers/funding_webhook"
+	kyc_autoinvest "github.com/rail-service/rail_service/internal/workers/kyc_autoinvest"
+	"github.com/rail-service/rail_service/internal/workers/kyc_sync"
 	portfolio_snapshot_worker "github.com/rail-service/rail_service/internal/workers/portfolio_snapshot_worker"
 	scheduled_investment_worker "github.com/rail-service/rail_service/internal/workers/scheduled_investment_worker"
 	walletprovisioning "github.com/rail-service/rail_service/internal/workers/wallet_provisioning"
@@ -37,6 +46,9 @@ type Application struct {
 	webhookManager            *funding_webhook.Manager
 	scheduledInvestmentWorker *scheduled_investment_worker.Worker
 	portfolioSnapshotWorker   *portfolio_snapshot_worker.Worker
+	depositAllocationWorker   *deposit_allocation_recovery.Worker
+	kycAutoInvestWorker       *kyc_autoinvest.Worker
+	kycSyncWorker             *kyc_sync.Worker
 
 	// Tracing
 	tracingShutdown func(context.Context) error
@@ -98,8 +110,9 @@ func (app *Application) Initialize() error {
 
 // initializeTracing initializes OpenTelemetry tracing
 func (app *Application) initializeTracing() error {
+	tracingEnabled := getBoolEnvOrDefault("OTEL_TRACING_ENABLED", app.cfg.Environment != "test")
 	tracingConfig := tracing.Config{
-		Enabled:      app.cfg.Environment != "test",
+		Enabled:      tracingEnabled,
 		CollectorURL: getEnvOrDefault("OTEL_COLLECTOR_URL", "localhost:4317"),
 		Environment:  app.cfg.Environment,
 		SampleRate:   getSampleRate(app.cfg.Environment),
@@ -156,6 +169,80 @@ func (app *Application) initializeWorkers() error {
 		go app.portfolioSnapshotWorker.Start(context.Background())
 		app.log.Info("Portfolio snapshot worker started")
 	}
+
+	// Deposit allocation recovery worker
+	if app.container.DB != nil && app.container.GetAllocationService() != nil {
+		app.depositAllocationWorker = deposit_allocation_recovery.NewWorker(
+			app.container.DB,
+			app.container.GetAllocationService(),
+			app.log.Zap(),
+			deposit_allocation_recovery.DefaultConfig(),
+		)
+		go app.depositAllocationWorker.Start(context.Background())
+		app.log.Info("Deposit allocation recovery worker started")
+	}
+
+	// KYC auto-invest worker
+	if app.container.DB != nil && app.container.GetAutoInvestService() != nil {
+		app.kycAutoInvestWorker = kyc_autoinvest.NewWorker(
+			app.container.DB,
+			app.container.GetAutoInvestService(),
+			app.log.Zap(),
+			kyc_autoinvest.DefaultConfig(),
+		)
+		go app.kycAutoInvestWorker.Start(context.Background())
+		app.log.Info("KYC auto-invest worker started")
+	}
+
+	// KYC Sumsub sync worker
+	if err := app.initializeKYCSyncWorker(); err != nil {
+		return fmt.Errorf("failed to initialize KYC sync worker: %w", err)
+	}
+
+	return nil
+}
+
+func (app *Application) initializeKYCSyncWorker() error {
+	if !strings.EqualFold(strings.TrimSpace(app.cfg.KYC.Provider), "sumsub") {
+		return nil
+	}
+	if app.container.KYCSyncJobRepo == nil || app.container.KYCSubmissionRepo == nil {
+		return nil
+	}
+
+	var sumsubClient kycservice.SumsubAdapter
+	if app.cfg.KYC.APIKey != "" && app.cfg.KYC.APISecret != "" {
+		sumsubClient = sumsubadapter.NewClient(sumsubadapter.Config{
+			BaseURL:       app.cfg.KYC.BaseURL,
+			AppToken:      app.cfg.KYC.APIKey,
+			SecretKey:     app.cfg.KYC.APISecret,
+			WebhookSecret: app.cfg.KYC.WebhookSecret,
+			LevelName:     app.cfg.KYC.LevelName,
+			UserAgent:     app.cfg.KYC.UserAgent,
+			Timeout:       30 * time.Second,
+		}, app.log.Zap())
+	}
+
+	kycSvc := kycservice.NewService(
+		repositories.NewKYCUserRepositoryAdapter(app.container.UserRepo),
+		app.container.KYCSubmissionRepo,
+		app.container.BridgeAdapter,
+		alpacaadapter.NewAdapter(app.container.AlpacaClient, app.container.Logger),
+		sumsubClient,
+		app.container.SumsubWebhookEventRepo,
+		app.container.KYCSyncJobRepo,
+		app.cfg.KYC.LevelName,
+		app.log.Zap(),
+	)
+
+	app.kycSyncWorker = kyc_sync.NewWorker(
+		app.container.KYCSyncJobRepo,
+		kycSvc,
+		app.log.Zap(),
+		kyc_sync.DefaultConfig(),
+	)
+	go app.kycSyncWorker.Start(context.Background())
+	app.log.Info("KYC sync worker started")
 
 	return nil
 }
@@ -363,6 +450,24 @@ func (app *Application) stopWorkers() {
 		app.log.Info("Stopping portfolio snapshot worker...")
 		app.portfolioSnapshotWorker.Stop()
 	}
+
+	// Stop deposit allocation recovery worker
+	if app.depositAllocationWorker != nil {
+		app.log.Info("Stopping deposit allocation recovery worker...")
+		app.depositAllocationWorker.Stop()
+	}
+
+	// Stop KYC auto-invest worker
+	if app.kycAutoInvestWorker != nil {
+		app.log.Info("Stopping KYC auto-invest worker...")
+		app.kycAutoInvestWorker.Stop()
+	}
+
+	// Stop KYC sync worker
+	if app.kycSyncWorker != nil {
+		app.log.Info("Stopping KYC sync worker...")
+		app.kycSyncWorker.Stop()
+	}
 }
 
 // WaitForShutdown waits for interrupt signal
@@ -378,6 +483,19 @@ func getEnvOrDefault(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+func getBoolEnvOrDefault(key string, defaultValue bool) bool {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return defaultValue
+	}
+
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return defaultValue
+	}
+	return parsed
 }
 
 // getSampleRate returns appropriate sampling rate based on environment

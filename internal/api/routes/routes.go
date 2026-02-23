@@ -2,6 +2,8 @@ package routes
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -11,17 +13,46 @@ import (
 	ginSwagger "github.com/swaggo/gin-swagger"
 
 	"github.com/rail-service/rail_service/internal/api/handlers"
+	kychandlers "github.com/rail-service/rail_service/internal/api/handlers/kyc"
 	"github.com/rail-service/rail_service/internal/api/middleware"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
+	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
+	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
+	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
+	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/rail-service/rail_service/pkg/ratelimit"
 	"github.com/rail-service/rail_service/pkg/tracing"
 )
 
 type SessionValidatorAdapter struct {
 	svc *session.Service
+}
+
+type WithdrawalWalletProviderAdapter struct {
+	getWalletByUserAndChain func(context.Context, uuid.UUID, entities.WalletChain) (*entities.ManagedWallet, error)
+}
+
+func (a *WithdrawalWalletProviderAdapter) GetUserWalletByChain(ctx context.Context, userID uuid.UUID, chain string) (*entities.ManagedWallet, error) {
+	if a == nil || a.getWalletByUserAndChain == nil {
+		return nil, fmt.Errorf("wallet provider not configured")
+	}
+
+	normalized := entities.WalletChain(strings.ToUpper(strings.TrimSpace(chain)))
+	wallet, err := a.getWalletByUserAndChain(ctx, userID, normalized)
+	if err == nil {
+		return wallet, nil
+	}
+
+	// Backward-compatible fallback for environments that still store Solana wallets as SOL-DEVNET.
+	// Only fall back on not-found; propagate transient/permission errors unchanged.
+	if normalized == entities.WalletChainSolana && strings.Contains(err.Error(), "not found") {
+		return a.getWalletByUserAndChain(ctx, userID, entities.WalletChainSOLDevnet)
+	}
+
+	return nil, err
 }
 
 func NewSessionValidatorAdapter(svc *session.Service) *SessionValidatorAdapter {
@@ -103,10 +134,25 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	skipWebhookVerify := container.Config.Environment == "development" && container.Config.Payment.WebhookSecret == ""
 	walletFundingHandlers.SetWebhookSecret(container.Config.Payment.WebhookSecret, skipWebhookVerify)
 
+	// Wire user profile provider for withdrawal AlpacaAccountID lookup
+	walletFundingHandlers.SetUserProfileProvider(container.UserRepo)
+
 	// Wire allocation service for unified balance queries
 	if allocationSvc := container.GetAllocationService(); allocationSvc != nil {
 		walletFundingHandlers.SetAllocationBalanceProvider(allocationSvc)
 	}
+	var walletLookup func(context.Context, uuid.UUID, entities.WalletChain) (*entities.ManagedWallet, error)
+	if ws := container.GetWalletService(); ws != nil {
+		walletLookup = ws.GetWalletByUserAndChain
+	}
+
+	withdrawalHandlers := handlers.NewWithdrawalHandlers(
+		container.GetWithdrawalService(),
+		&WithdrawalWalletProviderAdapter{
+			getWalletByUserAndChain: walletLookup,
+		},
+		container.Logger,
+	)
 
 	authHandlers := handlers.NewAuthHandlers(
 		container.DB,
@@ -118,12 +164,15 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.EmailService,
 		container.GetSessionService(),
 		container.GetTwoFAService(),
+		container.GetPasscodeService(),
 		container.RedisClient,
+		container.GetAccountDeletionService(),
 	)
 	securityHandlers := handlers.NewSecurityHandlers(
 		container.GetPasscodeService(),
 		container.GetOnboardingService(),
 		container.UserRepo,
+		container.GetSessionService(),
 		container.Config,
 		container.ZapLog,
 	)
@@ -133,6 +182,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.GetSocialAuthService(),
 		container.GetWebAuthnService(),
 		*container.UserRepo,
+		container.RedisClient,
 		container.Config,
 		container.ZapLog,
 	)
@@ -152,6 +202,34 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		*container.UserRepo,
 		container.ZapLog,
 	)
+	var sumsubClient kycservice.SumsubAdapter
+	if strings.EqualFold(strings.TrimSpace(container.Config.KYC.Provider), "sumsub") &&
+		container.Config.KYC.APIKey != "" &&
+		container.Config.KYC.APISecret != "" {
+		sumsubClient = sumsubadapter.NewClient(sumsubadapter.Config{
+			BaseURL:       container.Config.KYC.BaseURL,
+			AppToken:      container.Config.KYC.APIKey,
+			SecretKey:     container.Config.KYC.APISecret,
+			WebhookSecret: container.Config.KYC.WebhookSecret,
+			LevelName:     container.Config.KYC.LevelName,
+			UserAgent:     container.Config.KYC.UserAgent,
+			Timeout:       30 * time.Second,
+		}, container.ZapLog)
+	}
+	kycUserRepoAdapter := repositories.NewKYCUserRepositoryAdapter(container.UserRepo)
+	kycService := kycservice.NewService(
+		kycUserRepoAdapter,
+		container.KYCSubmissionRepo,
+		container.BridgeAdapter,
+		alpacaadapter.NewAdapter(container.AlpacaClient, container.Logger),
+		sumsubClient,
+		container.SumsubWebhookEventRepo,
+		container.KYCSyncJobRepo,
+		container.Config.KYC.LevelName,
+		container.ZapLog,
+	)
+	kycHTTPHandlers := kychandlers.NewHandler(kycService, container.Logger)
+	kycEligibilityMiddleware := middleware.NewKYCMiddleware(container.UserRepo, container.Logger)
 
 	// Create session validator adapter
 	sessionValidator := NewSessionValidatorAdapter(container.GetSessionService())
@@ -160,17 +238,12 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	v1 := router.Group("/api/v1")
 	{
 		// Authentication routes (no auth required)
-<<<<<<< omotadetobiloba/sta-84-security-missing-csrf-protection-on-state-changing-auth
-		// CSRF protection via custom header requirement (X-Requested-With)
-		// This prevents CSRF attacks while allowing legitimate API clients
-=======
->>>>>>> main
 		auth := v1.Group("/auth")
 		auth.Use(middleware.AuthCSRFProtection())
 		{
 			auth.POST("/register", authHandlers.Register)
 			auth.POST("/verify", middleware.AuthRateLimit(5), authHandlers.Verify)
-			auth.POST("/refresh", authHandlers.RefreshToken)
+			auth.POST("/refresh", middleware.AuthRateLimit(10), authHandlers.RefreshToken)
 			auth.POST("/logout", authHandlers.Logout)
 			auth.POST("/resend-code", authHandlers.ResendCode)
 
@@ -185,6 +258,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			}
 			{
 				authRateLimited.POST("/login", authHandlers.Login)
+				authRateLimited.POST("/passcode-login", authHandlers.PasscodeLogin)
 				authRateLimited.POST("/forgot-password", authHandlers.ForgotPassword)
 				authRateLimited.POST("/reset-password", authHandlers.ResetPassword)
 			}
@@ -193,6 +267,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			authRateLimited.POST("/social/url", socialAuthHandlers.GetSocialAuthURL)
 			authRateLimited.POST("/social/login", socialAuthHandlers.SocialLogin)
 			authRateLimited.POST("/webauthn/login/begin", socialAuthHandlers.BeginWebAuthnLogin)
+			authRateLimited.POST("/webauthn/login/finish", socialAuthHandlers.FinishWebAuthnLogin)
 		}
 
 		// Onboarding routes
@@ -209,6 +284,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		kyc := v1.Group("/kyc")
 		{
 			kyc.POST("/callback/:provider_ref", authHandlers.ProcessKYCCallback)
+			if sumsubClient != nil {
+				kyc.POST("/sumsub/webhook", kycHTTPHandlers.HandleSumsubWebhook)
+			}
 		}
 
 		// Protected routes (auth required)
@@ -230,6 +308,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// KYC status utilities (auth required but no KYC gate)
 			kycProtected := protected.Group("/kyc")
 			{
+				kycProtected.POST("/sumsub/session", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.CreateSumsubSession)
+				kycProtected.POST("/submit", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.SubmitKYC)
 				kycProtected.GET("/status", authHandlers.GetKYCStatus)
 				// Bridge KYC - optimized for sub-2-minute verification
 				kycProtected.GET("/bridge/link", bridgeKYCHandlers.GetBridgeKYCLink)
@@ -253,6 +333,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				// WebAuthn/Passkey management
 				security.GET("/passkeys", socialAuthHandlers.GetWebAuthnCredentials)
 				security.POST("/passkeys/register", socialAuthHandlers.BeginWebAuthnRegistration)
+				security.POST("/passkeys/register/finish", socialAuthHandlers.FinishWebAuthnRegistration)
 				security.DELETE("/passkeys/:id", socialAuthHandlers.DeleteWebAuthnCredential)
 
 				// Device management
@@ -264,21 +345,14 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					container.ZapLog,
 				)
 				security.GET("/devices", securityEnhancedHandlers.GetDevices)
-				security.POST("/devices/:id/trust", securityEnhancedHandlers.TrustDevice)
-				security.DELETE("/devices/:id", securityEnhancedHandlers.RevokeDevice)
 
 				// IP whitelist management
 				security.GET("/ip-whitelist", securityEnhancedHandlers.GetIPWhitelist)
-				security.POST("/ip-whitelist", securityEnhancedHandlers.AddIPToWhitelist)
 				security.POST("/ip-whitelist/:id/verify", securityEnhancedHandlers.VerifyWhitelistedIP)
-				security.DELETE("/ip-whitelist/:id", securityEnhancedHandlers.RemoveIPFromWhitelist)
 
 				// Security events
 				security.GET("/events", securityEnhancedHandlers.GetSecurityEvents)
 				security.GET("/current-ip", securityEnhancedHandlers.GetCurrentIP)
-
-				// Withdrawal confirmation
-				security.POST("/withdrawals/confirm", securityEnhancedHandlers.ConfirmWithdrawal)
 
 				// MFA management
 				mfaHandlers := handlers.NewMFAHandlers(
@@ -292,6 +366,17 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				security.POST("/mfa/send-code", mfaHandlers.SendMFACode)
 				security.POST("/mfa/verify", mfaHandlers.VerifyMFACode)
 				security.GET("/geo-info", mfaHandlers.GetGeoInfo)
+
+				// Sensitive operations require a short-lived passcode session token.
+				securitySensitive := security.Group("/")
+				securitySensitive.Use(middleware.RequirePasscodeSession(container.GetPasscodeService(), true, container.ZapLog))
+				{
+					securitySensitive.POST("/devices/:id/trust", securityEnhancedHandlers.TrustDevice)
+					securitySensitive.DELETE("/devices/:id", securityEnhancedHandlers.RevokeDevice)
+					securitySensitive.POST("/ip-whitelist", securityEnhancedHandlers.AddIPToWhitelist)
+					securitySensitive.DELETE("/ip-whitelist/:id", securityEnhancedHandlers.RemoveIPFromWhitelist)
+					securitySensitive.POST("/withdrawals/confirm", securityEnhancedHandlers.ConfirmWithdrawal)
+				}
 			}
 
 			// Mobile-optimized API endpoints for better app performance
@@ -349,10 +434,14 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				))
 			}
 			{
-				withdrawals.POST("", walletFundingHandlers.InitiateWithdrawal)
-				withdrawals.GET("", walletFundingHandlers.GetUserWithdrawals)
-				withdrawals.GET("/:withdrawalId", walletFundingHandlers.GetWithdrawal)
-				withdrawals.DELETE("/:withdrawalId", walletFundingHandlers.CancelWithdrawalRequest)
+				// Keep POST /withdrawals for backward compatibility and treat it as crypto withdrawal.
+				withdrawals.POST("", withdrawalHandlers.InitiateCryptoWithdrawal)
+				withdrawals.POST("/crypto", withdrawalHandlers.InitiateCryptoWithdrawal)
+				withdrawals.POST("/fiat", withdrawalHandlers.InitiateFiatWithdrawal)
+				withdrawals.GET("/fees", withdrawalHandlers.GetWithdrawalFees)
+				withdrawals.GET("", withdrawalHandlers.GetUserWithdrawals)
+				withdrawals.GET("/:withdrawalId", withdrawalHandlers.GetWithdrawal)
+				withdrawals.DELETE("/:withdrawalId", withdrawalHandlers.CancelWithdrawal)
 			}
 
 			// Account routes - Station (home screen) endpoint
@@ -636,6 +725,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				container.Config,
 				container.Logger,
 				sessionValidator,
+				container.UserRepo,
 			)
 		}
 
@@ -676,6 +766,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			container.Config,
 			container.Logger,
 			sessionValidator,
+			container.UserRepo,
 		)
 	}
 

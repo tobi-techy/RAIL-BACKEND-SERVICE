@@ -125,8 +125,8 @@ func EnhancedAuthentication(cfg *config.Config, blacklist *auth.TokenBlacklist, 
 // LoginRateLimiting applies rate limiting and CAPTCHA requirements for login
 func LoginRateLimiting(tracker *ratelimit.LoginAttemptTracker, log *logger.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Only apply to login endpoint
-		if c.Request.URL.Path != "/api/v1/auth/login" {
+		// Only apply to login endpoints
+		if c.Request.URL.Path != "/api/v1/auth/login" && c.Request.URL.Path != "/api/v1/auth/passcode-login" {
 			c.Next()
 			return
 		}

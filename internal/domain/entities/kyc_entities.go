@@ -13,7 +13,7 @@ type KYCSubmitRequest struct {
 
 	// Tax identification (required for both Bridge and Alpaca)
 	TaxID          string `json:"tax_id" validate:"required"`
-	TaxIDType      string `json:"tax_id_type" validate:"required,oneof=ssn passport national_id"`
+	TaxIDType      string `json:"tax_id_type" validate:"required,oneof=ssn itin nino utr nin bvn tin passport national_id"`
 	IssuingCountry string `json:"issuing_country" validate:"required,len=3"` // ISO 3166-1 alpha-3
 
 	// Identity documents for Bridge KYC (base64 encoded with data URI prefix)
@@ -43,33 +43,34 @@ type KYCDisclosures struct {
 
 // KYCSubmitResponse is returned after KYC submission.
 type KYCSubmitResponse struct {
-	Status       string            `json:"status"` // "submitted", "partial_failure"
-	BridgeResult KYCProviderResult `json:"bridge_result"`
-	AlpacaResult KYCProviderResult `json:"alpaca_result"`
-	Message      string            `json:"message"`
+	Status            string            `json:"status"` // "submitted", "partial_failure"
+	ProviderReference *string           `json:"provider_reference,omitempty"`
+	BridgeResult      KYCProviderResult `json:"bridge_result"`
+	AlpacaResult      KYCProviderResult `json:"alpaca_result"`
+	Message           string            `json:"message"`
 }
 
 // KYCProviderResult represents the result from a single provider.
 type KYCProviderResult struct {
 	Success bool   `json:"success"`
-	Status  string `json:"status"`           // Provider-specific status
-	Error   string `json:"error,omitempty"`  // Error message if failed
+	Status  string `json:"status"`          // Provider-specific status
+	Error   string `json:"error,omitempty"` // Error message if failed
 }
 
 // KYCStatusResponse for checking current KYC state.
 type KYCStatusResponse struct {
-	UserID            uuid.UUID  `json:"user_id"`
-	Status            string     `json:"status"`
-	Verified          bool       `json:"verified"`
-	HasSubmitted      bool       `json:"has_submitted"`
-	RequiresKYC       bool       `json:"requires_kyc"`
-	RequiredFor       []string   `json:"required_for,omitempty"`
-	LastSubmittedAt   *time.Time `json:"last_submitted_at,omitempty"`
-	ApprovedAt        *time.Time `json:"approved_at,omitempty"`
-	RejectionReason   *string    `json:"rejection_reason,omitempty"`
-	ProviderReference *string    `json:"provider_reference,omitempty"`
-	NextSteps         []string   `json:"next_steps,omitempty"`
-	OverallStatus     string     `json:"overall_status,omitempty"` // pending, approved, rejected, not_started
+	UserID            uuid.UUID         `json:"user_id"`
+	Status            string            `json:"status"`
+	Verified          bool              `json:"verified"`
+	HasSubmitted      bool              `json:"has_submitted"`
+	RequiresKYC       bool              `json:"requires_kyc"`
+	RequiredFor       []string          `json:"required_for,omitempty"`
+	LastSubmittedAt   *time.Time        `json:"last_submitted_at,omitempty"`
+	ApprovedAt        *time.Time        `json:"approved_at,omitempty"`
+	RejectionReason   *string           `json:"rejection_reason,omitempty"`
+	ProviderReference *string           `json:"provider_reference,omitempty"`
+	NextSteps         []string          `json:"next_steps,omitempty"`
+	OverallStatus     string            `json:"overall_status,omitempty"` // pending, approved, rejected, not_started
 	Bridge            KYCProviderStatus `json:"bridge,omitempty"`
 	Alpaca            KYCProviderStatus `json:"alpaca,omitempty"`
 	Capabilities      KYCCapabilities   `json:"capabilities,omitempty"`
@@ -110,4 +111,46 @@ type KYCPersonalInfo struct {
 	Address     *Address   `json:"address,omitempty"`
 	TaxID       string     `json:"tax_id,omitempty"`
 	TaxIDType   string     `json:"tax_id_type,omitempty"`
+}
+
+// KYCSumsubSessionRequest starts a hosted Sumsub verification session.
+type KYCSumsubSessionRequest struct {
+	TaxID          string         `json:"tax_id" validate:"required"`
+	TaxIDType      string         `json:"tax_id_type" validate:"required,oneof=ssn itin nino utr nin bvn tin passport national_id"`
+	IssuingCountry string         `json:"issuing_country" validate:"required,len=3"` // ISO 3166-1 alpha-3
+	Disclosures    KYCDisclosures `json:"disclosures" validate:"required"`
+}
+
+// KYCSumsubSessionResponse returns the data needed to launch Sumsub WebSDK.
+type KYCSumsubSessionResponse struct {
+	Status      string `json:"status"`
+	ApplicantID string `json:"applicant_id"`
+	Token       string `json:"token"`
+	LevelName   string `json:"level_name"`
+}
+
+// SumsubWebhookPayload contains the relevant fields used by webhook processing.
+type SumsubWebhookPayload struct {
+	ApplicantID    string             `json:"applicantId"`
+	InspectionID   string             `json:"inspectionId"`
+	CorrelationID  string             `json:"correlationId"`
+	LevelName      string             `json:"levelName"`
+	ExternalUserID string             `json:"externalUserId"`
+	Type           string             `json:"type"`
+	ReviewStatus   string             `json:"reviewStatus"`
+	ReviewResult   SumsubReviewResult `json:"reviewResult"`
+	CreatedAtMs    string             `json:"createdAtMs"`
+}
+
+// SumsubReviewResult captures KYC decision details from Sumsub.
+type SumsubReviewResult struct {
+	ReviewAnswer string              `json:"reviewAnswer"`
+	RejectLabels []SumsubRejectLabel `json:"rejectLabels"`
+}
+
+// SumsubRejectLabel represents a specific rejection label in Sumsub.
+type SumsubRejectLabel struct {
+	Label       string `json:"label"`
+	LabelType   string `json:"labelType"`
+	Description string `json:"description"`
 }

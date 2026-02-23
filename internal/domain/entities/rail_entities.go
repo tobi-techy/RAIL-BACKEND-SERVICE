@@ -144,14 +144,16 @@ type StackUser struct {
 
 // Wallet represents a managed blockchain wallet
 type Wallet struct {
-	ID          uuid.UUID `json:"id" db:"id"`
-	UserID      uuid.UUID `json:"user_id" db:"user_id"`
-	Chain       Chain     `json:"chain" db:"chain"`
-	Address     string    `json:"address" db:"address"`
-	ProviderRef string    `json:"provider_ref" db:"provider_ref"` // Reference to wallet manager
-	Status      string    `json:"status" db:"status"`             // active, inactive
-	CreatedAt   time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
+	ID             uuid.UUID `json:"id" db:"id"`
+	UserID         uuid.UUID `json:"user_id" db:"user_id"`
+	Chain          Chain     `json:"chain" db:"chain"`
+	Address        string    `json:"address" db:"address"`
+	CircleWalletID string    `json:"circle_wallet_id" db:"circle_wallet_id"`
+	WalletSetID    uuid.UUID `json:"wallet_set_id" db:"wallet_set_id"`
+	AccountType    string    `json:"account_type" db:"account_type"`
+	Status         string    `json:"status" db:"status"`
+	CreatedAt      time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at" db:"updated_at"`
 }
 
 // Deposit represents a stablecoin deposit

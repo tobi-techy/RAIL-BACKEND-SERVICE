@@ -130,6 +130,12 @@ type User struct {
 	ID                 uuid.UUID        `json:"id" db:"id"`
 	Email              string           `json:"email" db:"email"`
 	Phone              *string          `json:"phone" db:"phone"`
+	Country            *string          `json:"country,omitempty" db:"country"`
+	AddressStreet      *string          `json:"addressStreet,omitempty" db:"address_street"`
+	AddressCity        *string          `json:"addressCity,omitempty" db:"address_city"`
+	AddressState       *string          `json:"addressState,omitempty" db:"address_state"`
+	AddressPostalCode  *string          `json:"addressPostalCode,omitempty" db:"address_postal_code"`
+	AddressCountry     *string          `json:"addressCountry,omitempty" db:"address_country"`
 	PasswordHash       string           `json:"-" db:"password_hash"`
 	AuthProviderID     *string          `json:"authProviderId" db:"auth_provider_id"`
 	EmailVerified      bool             `json:"emailVerified" db:"email_verified"`
@@ -172,6 +178,12 @@ func (u *User) ToUserProfile() *UserProfile {
 		AuthProviderID:     u.AuthProviderID,
 		Email:              u.Email,
 		Phone:              u.Phone,
+		Country:            u.Country,
+		AddressStreet:      u.AddressStreet,
+		AddressCity:        u.AddressCity,
+		AddressState:       u.AddressState,
+		AddressPostalCode:  u.AddressPostalCode,
+		AddressCountry:     u.AddressCountry,
 		EmailVerified:      u.EmailVerified,
 		PhoneVerified:      u.PhoneVerified,
 		OnboardingStatus:   u.OnboardingStatus,
