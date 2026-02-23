@@ -119,6 +119,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	router.GET("/version", coreHandlers.Version)
 	router.GET("/metrics", coreHandlers.Metrics)
 
+	// Apple App Site Association — required for passkey Associated Domains
+	router.GET("/.well-known/apple-app-site-association", func(c *gin.Context) {
+		c.File("static/.well-known/apple-app-site-association")
+	})
+
 	// Swagger documentation (development only)
 	if container.Config.Environment != "production" {
 		router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
