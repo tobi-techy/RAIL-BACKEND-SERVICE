@@ -125,7 +125,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	})
 
 	// Swagger documentation (development only)
-	if container.Config.Environment != "production" {
+	if container.Config.Environment == "development" {
 		router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 	}
 	walletFundingHandlers := handlers.NewWalletFundingHandlers(
@@ -337,8 +337,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 				// WebAuthn/Passkey management
 				security.GET("/passkeys", socialAuthHandlers.GetWebAuthnCredentials)
-				security.POST("/passkeys/register", socialAuthHandlers.BeginWebAuthnRegistration)
-				security.POST("/passkeys/register/finish", socialAuthHandlers.FinishWebAuthnRegistration)
+				security.POST("/passkeys/register", middleware.AuthRateLimit(5), socialAuthHandlers.BeginWebAuthnRegistration)
+				security.POST("/passkeys/register/finish", middleware.AuthRateLimit(5), socialAuthHandlers.FinishWebAuthnRegistration)
 				security.DELETE("/passkeys/:id", socialAuthHandlers.DeleteWebAuthnCredential)
 
 				// Device management

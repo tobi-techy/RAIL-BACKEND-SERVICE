@@ -1,4 +1,4 @@
-environment: development
+environment: production
 log_level: info
 
 server:
@@ -9,9 +9,11 @@ server:
   rate_limit_per_min: 100
   supported_versions: ["v1"]
   default_version: "v1"
+  # Railway proxy IPs — override via TRUSTED_PROXIES env var (comma-separated) if they change
+  trusted_proxies:
+    - "100.64.0.0/10"  # Railway internal network range
   allowed_origins:
-    - "http://localhost:3000"
-    - "http://localhost:8080"
+    - "https://userail.money"
 
 # Distributed Rate Limiting Configuration
 # Uses Redis-backed sliding window algorithm for multi-instance rate limiting
@@ -235,9 +237,9 @@ social_auth:
 
 webauthn:
   rp_display_name: "RAIL"
-  rp_id: "rail.app"
+  rp_id: "userail.money"
   rp_origins:
-    - "https://rail.app"
+    - "https://userail.money"
 
 ai:
   primary_provider: "openai"  # or "gemini"
