@@ -4,18 +4,19 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
+// CSRFStore manages CSRF tokens with expiration
 type CSRFStore struct {
 	tokens map[string]time.Time
 	mu     sync.RWMutex
 }
 
+// NewCSRFStore creates a new CSRF token store with automatic cleanup
 func NewCSRFStore() *CSRFStore {
 	store := &CSRFStore{
 		tokens: make(map[string]time.Time),
@@ -39,6 +40,7 @@ func (s *CSRFStore) cleanup() {
 	}
 }
 
+// Generate creates a new CSRF token with 1-hour expiration
 func (s *CSRFStore) Generate() string {
 	b := make([]byte, 32)
 	rand.Read(b)
@@ -49,6 +51,7 @@ func (s *CSRFStore) Generate() string {
 	return token
 }
 
+// Validate checks if a CSRF token is valid and not expired
 func (s *CSRFStore) Validate(token string) bool {
 	s.mu.RLock()
 	expiry, exists := s.tokens[token]
@@ -65,6 +68,10 @@ func (s *CSRFStore) Validate(token string) bool {
 	return true
 }
 
+// CSRFProtection validates CSRF tokens for state-changing requests.
+// For browser clients: requires X-CSRF-Token header.
+// For API clients: requires X-Requested-With: RailApp header.
+// In development: skipped entirely for API testing convenience.
 func CSRFProtection(store *CSRFStore, isDev bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Skip CSRF in development for API testing
@@ -78,21 +85,21 @@ func CSRFProtection(store *CSRFStore, isDev bool) gin.HandlerFunc {
 			return
 		}
 
-		// Skip CSRF for API clients (mobile apps, native clients)
-		// CSRF is primarily for browser-based attacks; API clients use token-based auth
-		contentType := c.GetHeader("Content-Type")
-		userAgent := c.GetHeader("User-Agent")
-		if (c.GetHeader("Accept") == "application/json" && contentType == "application/json") ||
-			isNativeClient(userAgent) {
+		// API clients can bypass CSRF by sending X-Requested-With header.
+		// This is secure because custom headers cannot be sent cross-origin without CORS preflight.
+		requestedWith := c.GetHeader("X-Requested-With")
+		if requestedWith == "XMLHttpRequest" || requestedWith == "RailApp" {
 			c.Next()
 			return
 		}
 
+		// For browser clients, validate CSRF token
 		token := c.GetHeader("X-CSRF-Token")
 
 		if token == "" || !store.Validate(token) {
 			c.JSON(http.StatusForbidden, gin.H{
-				"error":      "CSRF token validation failed",
+				"error":      "CSRF_VALIDATION_FAILED",
+				"message":    "CSRF token validation failed. Include X-CSRF-Token header or X-Requested-With: RailApp for API clients.",
 				"request_id": c.GetString("request_id"),
 			})
 			c.Abort()
@@ -103,29 +110,39 @@ func CSRFProtection(store *CSRFStore, isDev bool) gin.HandlerFunc {
 	}
 }
 
-// isNativeClient checks if the request is from a native mobile app
-func isNativeClient(userAgent string) bool {
-	// Check for common native mobile app user agents
-	nativePatterns := []string{
-		"RailMoney",     // Your app
-		"Dalvik",        // Android
-		"CFNetwork",     // iOS
-		"okhttp",        // OkHttp (Android)
-		"MobileIron",    // Enterprise apps
-	}
-	for _, pattern := range nativePatterns {
-		if strings.Contains(userAgent, pattern) {
-			return true
-		}
-	}
-	return false
-}
-
+// CSRFToken generates and attaches a CSRF token to every response
 func CSRFToken(store *CSRFStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := store.Generate()
 		c.Header("X-CSRF-Token", token)
 		c.Set("csrf_token", token)
+		c.Next()
+	}
+}
+
+// AuthCSRFProtection provides CSRF protection specifically for auth endpoints.
+// Uses double-submit cookie pattern combined with custom header requirement.
+func AuthCSRFProtection() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Skip CSRF for safe methods
+		if c.Request.Method == "GET" || c.Request.Method == "HEAD" || c.Request.Method == "OPTIONS" {
+			c.Next()
+			return
+		}
+
+		// Require custom header for all state-changing auth requests.
+		// This prevents CSRF because custom headers cannot be sent cross-origin without CORS preflight.
+		requestedWith := c.GetHeader("X-Requested-With")
+		if requestedWith != "XMLHttpRequest" && requestedWith != "RailApp" {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error":      "CSRF_PROTECTION",
+				"message":    "Missing required header. Include X-Requested-With: RailApp for API requests.",
+				"request_id": c.GetString("request_id"),
+			})
+			c.Abort()
+			return
+		}
+
 		c.Next()
 	}
 }

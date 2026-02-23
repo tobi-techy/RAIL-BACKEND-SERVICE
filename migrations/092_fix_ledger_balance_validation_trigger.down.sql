@@ -37,6 +37,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS validate_ledger_entries_balance ON ledger_entries;
 CREATE TRIGGER validate_ledger_entries_balance
     AFTER INSERT ON ledger_entries
     FOR EACH ROW

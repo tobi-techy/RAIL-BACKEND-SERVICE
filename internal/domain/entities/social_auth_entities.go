@@ -95,7 +95,7 @@ type WebAuthnCredential struct {
 
 // WebAuthnRegisterRequest represents a WebAuthn registration request
 type WebAuthnRegisterRequest struct {
-	Name string `json:"name" validate:"required"`
+	Name string `json:"name"`
 }
 
 // WebAuthnRegisterResponse represents registration options

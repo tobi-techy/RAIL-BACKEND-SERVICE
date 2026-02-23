@@ -195,7 +195,7 @@ func (s *Service) RotateSessionTokensByRefreshToken(
 		SELECT id, user_id, token_hash, refresh_token_hash, ip_address, user_agent,
 		       device_fingerprint, location, is_active, expires_at, created_at, last_used_at
 		FROM sessions
-		WHERE user_id = $1 AND refresh_token_hash = $2 AND is_active = true`
+		WHERE user_id = $1 AND refresh_token_hash = $2 AND is_active = true AND expires_at > NOW()`
 	err := s.db.QueryRowContext(ctx, query, userID, currentRefreshHash).Scan(
 		&session.ID, &session.UserID, &session.TokenHash, &session.RefreshTokenHash,
 		&session.IPAddress, &session.UserAgent, &session.DeviceFingerprint, &session.Location,
@@ -211,8 +211,8 @@ func (s *Service) RotateSessionTokensByRefreshToken(
 	updateQuery := `
 		UPDATE sessions
 		SET token_hash = $1, refresh_token_hash = $2, expires_at = $3, last_used_at = NOW()
-		WHERE id = $4 AND user_id = $5 AND is_active = true`
-	result, err := s.db.ExecContext(ctx, updateQuery, newAccessHash, newRefreshHash, newExpiresAt, session.ID, userID)
+		WHERE id = $4 AND user_id = $5 AND is_active = true AND refresh_token_hash = $6`
+	result, err := s.db.ExecContext(ctx, updateQuery, newAccessHash, newRefreshHash, newExpiresAt, session.ID, userID, currentRefreshHash)
 	if err != nil {
 		return nil, fmt.Errorf("failed to rotate session tokens: %w", err)
 	}

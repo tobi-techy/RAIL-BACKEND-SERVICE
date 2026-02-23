@@ -47,7 +47,8 @@ func (a *WithdrawalWalletProviderAdapter) GetUserWalletByChain(ctx context.Conte
 	}
 
 	// Backward-compatible fallback for environments that still store Solana wallets as SOL-DEVNET.
-	if normalized == entities.WalletChainSolana {
+	// Only fall back on not-found; propagate transient/permission errors unchanged.
+	if normalized == entities.WalletChainSolana && strings.Contains(err.Error(), "not found") {
 		return a.getWalletByUserAndChain(ctx, userID, entities.WalletChainSOLDevnet)
 	}
 
@@ -238,6 +239,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	{
 		// Authentication routes (no auth required)
 		auth := v1.Group("/auth")
+		auth.Use(middleware.AuthCSRFProtection())
 		{
 			auth.POST("/register", authHandlers.Register)
 			auth.POST("/verify", middleware.AuthRateLimit(5), authHandlers.Verify)
@@ -282,7 +284,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		kyc := v1.Group("/kyc")
 		{
 			kyc.POST("/callback/:provider_ref", authHandlers.ProcessKYCCallback)
-			kyc.POST("/sumsub/webhook", kycHTTPHandlers.HandleSumsubWebhook)
+			if sumsubClient != nil {
+				kyc.POST("/sumsub/webhook", kycHTTPHandlers.HandleSumsubWebhook)
+			}
 		}
 
 		// Protected routes (auth required)
