@@ -191,34 +191,66 @@ func CORS(allowedOrigins []string) gin.HandlerFunc {
 
 // RateLimiter stores rate limiters for different IPs
 type RateLimiter struct {
-	limiters map[string]*rate.Limiter
+	limiters map[string]*rateLimiterEntry
 	mu       sync.RWMutex
 	rate     int
 	burst    int
 }
 
+type rateLimiterEntry struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
+}
+
 // NewRateLimiter creates a new rate limiter
 func NewRateLimiter(requestsPerMinute int) *RateLimiter {
-	return &RateLimiter{
-		limiters: make(map[string]*rate.Limiter),
+	rl := &RateLimiter{
+		limiters: make(map[string]*rateLimiterEntry),
 		rate:     requestsPerMinute,
-		burst:    requestsPerMinute, // Allow burst equal to rate
+		burst:    requestsPerMinute,
+	}
+	go rl.cleanup()
+	return rl
+}
+
+// cleanup evicts entries not seen in the last 10 minutes to prevent unbounded growth
+func (rl *RateLimiter) cleanup() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		rl.mu.Lock()
+		cutoff := time.Now().Add(-10 * time.Minute)
+		for ip, entry := range rl.limiters {
+			if entry.lastSeen.Before(cutoff) {
+				delete(rl.limiters, ip)
+			}
+		}
+		rl.mu.Unlock()
 	}
 }
 
 // GetLimiter returns the rate limiter for a specific IP
 func (rl *RateLimiter) GetLimiter(ip string) *rate.Limiter {
 	rl.mu.RLock()
-	limiter, exists := rl.limiters[ip]
+	entry, exists := rl.limiters[ip]
 	rl.mu.RUnlock()
 
-	if !exists {
+	if exists {
 		rl.mu.Lock()
-		limiter = rate.NewLimiter(rate.Every(time.Minute/time.Duration(rl.rate)), rl.burst)
-		rl.limiters[ip] = limiter
+		entry.lastSeen = time.Now()
 		rl.mu.Unlock()
+		return entry.limiter
 	}
 
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	// Double-check after acquiring write lock
+	if entry, exists = rl.limiters[ip]; exists {
+		entry.lastSeen = time.Now()
+		return entry.limiter
+	}
+	limiter := rate.NewLimiter(rate.Every(time.Minute/time.Duration(rl.rate)), rl.burst)
+	rl.limiters[ip] = &rateLimiterEntry{limiter: limiter, lastSeen: time.Now()}
 	return limiter
 }
 

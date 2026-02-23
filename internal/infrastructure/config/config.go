@@ -705,6 +705,12 @@ func overrideFromEnv() {
 			viper.Set("server.port", p)
 		}
 	}
+	if corsOrigins := os.Getenv("CORS_ALLOWED_ORIGINS"); corsOrigins != "" {
+		viper.Set("server.allowed_origins", strings.Split(corsOrigins, ","))
+	}
+	if trustedProxies := os.Getenv("TRUSTED_PROXIES"); trustedProxies != "" {
+		viper.Set("server.trusted_proxies", strings.Split(trustedProxies, ","))
+	}
 
 	// Database
 	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
