@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"context"
+	"errors"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -100,4 +101,4 @@ func (r *WithdrawalResolver) Withdrawal(ctx context.Context, id string) (*entiti
 	return r.service.GetWithdrawal(ctx, userID, withdrawalID)
 }
 
-var ErrUnauthorized = &struct{ error }{error: nil}
+var ErrUnauthorized = errors.New("unauthorized")

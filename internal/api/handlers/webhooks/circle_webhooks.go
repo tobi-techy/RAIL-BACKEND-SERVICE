@@ -51,6 +51,7 @@ type CircleWebhookHandler struct {
 	logger            *logger.Logger
 	circleAPIKey      string // For fetching public keys
 	circleBaseURL     string
+	devMode           bool // When true, skips signature verification (development only)
 }
 
 // NewCircleWebhookHandler creates a new Circle webhook handler
@@ -71,6 +72,7 @@ func NewCircleWebhookHandler(
 		logger:            logger,
 		circleAPIKey:      circleAPIKey,
 		circleBaseURL:     circleBaseURL,
+		devMode:           circleAPIKey == "",
 	}
 }
 
@@ -497,10 +499,14 @@ func (h *CircleWebhookHandler) settleCompletedWithdrawal(ctx context.Context, wi
 
 // verifySignature verifies the Circle webhook signature using ECDSA-SHA256
 func (h *CircleWebhookHandler) verifySignature(ctx context.Context, keyID, signature string, body []byte) bool {
-	// Skip verification in dev mode if API key is not configured
+	// Fail-closed: reject if API key is not configured unless explicitly in dev mode
 	if h.circleAPIKey == "" {
-		h.logger.Warn("Circle API key not configured - skipping signature verification")
-		return true
+		if h.devMode {
+			h.logger.Warn("Circle API key not configured - skipping signature verification (dev mode)")
+			return true
+		}
+		h.logger.Error("Circle API key not configured - rejecting webhook (fail-closed)")
+		return false
 	}
 
 	// Fetch the public key from Circle API

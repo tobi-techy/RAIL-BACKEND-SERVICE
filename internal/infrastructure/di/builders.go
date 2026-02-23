@@ -286,6 +286,10 @@ type InvestingRepositories struct {
 	BasketRepo               *repositories.BasketRepository
 	CopyTradingRepo          *repositories.CopyTradingRepository
 	RoundupRepo              *repositories.RoundupRepository
+	InvestmentRulesRepo      *repositories.InvestmentRulesRepository
+	MilestoneRepo            *repositories.MilestoneRepository
+	PendingWithdrawalRepo    *repositories.PendingWithdrawalRepository
+	DividendRepo             *repositories.DividendRepository
 }
 
 // BuildRepositories builds all investing-related repositories
@@ -303,5 +307,9 @@ func (b *InvestingServicesBuilder) BuildRepositories() *InvestingRepositories {
 		BasketRepo:               repositories.NewBasketRepository(b.db, b.logger),
 		CopyTradingRepo:          repositories.NewCopyTradingRepository(b.sqlxDB),
 		RoundupRepo:              repositories.NewRoundupRepository(b.sqlxDB),
+		InvestmentRulesRepo:      repositories.NewInvestmentRulesRepository(b.sqlxDB),
+		MilestoneRepo:            repositories.NewMilestoneRepository(b.sqlxDB),
+		PendingWithdrawalRepo:    repositories.NewPendingWithdrawalRepository(b.sqlxDB),
+		DividendRepo:             repositories.NewDividendRepository(b.sqlxDB),
 	}
 }

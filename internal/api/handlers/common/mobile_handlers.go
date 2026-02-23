@@ -142,6 +142,15 @@ func (h *MobileHandlers) GetMobileHome(c *gin.Context) {
 		return
 	}
 
+	if balances == nil {
+		h.logger.Error("GetBalancesLite returned nil balances", zap.String("user_id", userID.String()))
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+			Code:    "BALANCE_ERROR",
+			Message: "Failed to retrieve balances",
+		})
+		return
+	}
+
 	kycVerified := user != nil && user.KYCStatus == "approved"
 
 	systemStatus := "active"
