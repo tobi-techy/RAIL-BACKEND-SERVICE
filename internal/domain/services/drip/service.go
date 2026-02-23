@@ -13,17 +13,17 @@ import (
 
 // DividendEvent represents a dividend payment received
 type DividendEvent struct {
-	ID            uuid.UUID       `json:"id"`
-	UserID        uuid.UUID       `json:"user_id"`
-	Symbol        string          `json:"symbol"`
-	Amount        decimal.Decimal `json:"amount"`
-	SharesHeld    decimal.Decimal `json:"shares_held"`
-	ExDate        time.Time       `json:"ex_date"`
-	PayDate       time.Time       `json:"pay_date"`
-	ReceivedAt    time.Time       `json:"received_at"`
-	Reinvested    bool            `json:"reinvested"`
-	ReinvestedAt  *time.Time      `json:"reinvested_at,omitempty"`
-	ReinvestOrder *uuid.UUID      `json:"reinvest_order_id,omitempty"`
+	ID            uuid.UUID       `json:"id"              db:"id"`
+	UserID        uuid.UUID       `json:"user_id"         db:"user_id"`
+	Symbol        string          `json:"symbol"          db:"symbol"`
+	Amount        decimal.Decimal `json:"amount"          db:"amount"`
+	SharesHeld    decimal.Decimal `json:"shares_held"     db:"shares_held"`
+	ExDate        time.Time       `json:"ex_date"         db:"ex_date"`
+	PayDate       time.Time       `json:"pay_date"        db:"pay_date"`
+	ReceivedAt    time.Time       `json:"received_at"     db:"received_at"`
+	Reinvested    bool            `json:"reinvested"      db:"reinvested"`
+	ReinvestedAt  *time.Time      `json:"reinvested_at,omitempty"    db:"reinvested_at"`
+	ReinvestOrder *uuid.UUID      `json:"reinvest_order_id,omitempty" db:"reinvest_order_id"`
 }
 
 // DividendRepository manages dividend records

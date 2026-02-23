@@ -274,9 +274,14 @@ func (r *InitiateFiatWithdrawalRequest) Validate() error {
 		if r.Amount.LessThan(minAmountEUR) {
 			return fmt.Errorf("amount must be at least %s EUR", minAmountEUR.String())
 		}
+		if len(r.RoutingNumber) < 15 || len(r.RoutingNumber) > 34 {
+			return fmt.Errorf("IBAN must be between 15 and 34 characters")
+		}
 	}
-	if len(r.RoutingNumber) != 9 {
-		return fmt.Errorf("routing number must be 9 digits")
+	if r.Currency == WithdrawalCurrencyUSD {
+		if len(r.RoutingNumber) != 9 {
+			return fmt.Errorf("routing number must be 9 digits")
+		}
 	}
 	if !ValidWithdrawalSourceAccounts[r.SourceAccount] {
 		return fmt.Errorf("invalid source account: %s", r.SourceAccount)

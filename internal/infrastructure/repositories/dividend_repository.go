@@ -46,7 +46,7 @@ func (r *DividendRepository) GetByUserID(ctx context.Context, userID uuid.UUID, 
 func (r *DividendRepository) GetPendingReinvestment(ctx context.Context) ([]*drip.DividendEvent, error) {
 	var events []*drip.DividendEvent
 	err := r.db.SelectContext(ctx, &events,
-		`SELECT * FROM dividend_events WHERE reinvested = false ORDER BY received_at`)
+		`SELECT * FROM dividend_events WHERE reinvested = false ORDER BY received_at LIMIT 500`)
 	return events, err
 }
 
