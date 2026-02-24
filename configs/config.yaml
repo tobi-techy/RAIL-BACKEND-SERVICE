@@ -240,6 +240,7 @@ webauthn:
   rp_id: "userail.money"
   rp_origins:
     - "https://userail.money"
+    - "https://api.userail.money"
 
 ai:
   primary_provider: "openai"  # or "gemini"

@@ -45,6 +45,7 @@ type PasscodeVerificationResponse struct {
 	AccessToken              string    `json:"accessToken"`
 	RefreshToken             string    `json:"refreshToken"`
 	ExpiresAt                time.Time `json:"expiresAt"`
+	SessionExpiresAt         time.Time `json:"sessionExpiresAt"`
 	PasscodeSessionToken     string    `json:"passcodeSessionToken"`     // Short-lived token for sensitive operations
 	PasscodeSessionExpiresAt time.Time `json:"passcodeSessionExpiresAt"` // Expiration for passcode session
 }
