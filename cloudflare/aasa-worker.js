@@ -4,7 +4,8 @@
 
 const AASA = JSON.stringify({
   webcredentials: {
-    apps: ["com.railmoney.rail"]
+    // Must be "<TeamID>.<BundleID>" for passkeys to work on iOS.
+    apps: ["A239A6TG6R.com.railmoney.rail"]
   }
 });
 

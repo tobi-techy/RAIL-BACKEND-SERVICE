@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"sync"
@@ -17,6 +18,8 @@ import (
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
+
+var errSpendingDependencyUnavailable = errors.New("spending dependency unavailable")
 
 // SpendingStashHandlers handles the spending stash screen endpoint
 type SpendingStashHandlers struct {
@@ -56,6 +59,9 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 	}
 
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+	if limit < 1 {
+		limit = 10
+	}
 	if limit > 50 {
 		limit = 50
 	}
@@ -68,16 +74,98 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 		roundupSummary *entities.RoundupSummary
 		cardTxns       []*entities.BridgeCardTransaction
 		userLimits     *entities.UserLimitsResponse
+
+		balancesErr       error
+		allocationModeErr error
+		cardsErr          error
+		roundupSummaryErr error
+		cardTxnsErr       error
+		userLimitsErr     error
 	)
 
-	wg.Add(6)
-	go func() { defer wg.Done(); balances, _ = h.allocationService.GetBalances(ctx, userID) }()
-	go func() { defer wg.Done(); allocationMode, _ = h.allocationService.GetMode(ctx, userID) }()
-	go func() { defer wg.Done(); cards, _ = h.cardService.GetUserCards(ctx, userID) }()
-	go func() { defer wg.Done(); roundupSummary, _ = h.roundupService.GetSummary(ctx, userID) }()
-	go func() { defer wg.Done(); cardTxns, _ = h.cardService.GetUserTransactions(ctx, userID, limit+1, 0) }()
-	go func() { defer wg.Done(); userLimits, _ = h.limitsService.GetUserLimits(ctx, userID) }()
+	wg.Add(4)
+	go func() {
+		defer wg.Done()
+		if h.allocationService == nil {
+			balancesErr = errSpendingDependencyUnavailable
+			return
+		}
+		balances, balancesErr = h.allocationService.GetBalances(ctx, userID)
+	}()
+	go func() {
+		defer wg.Done()
+		if h.allocationService == nil {
+			allocationModeErr = errSpendingDependencyUnavailable
+			return
+		}
+		allocationMode, allocationModeErr = h.allocationService.GetMode(ctx, userID)
+	}()
+	go func() {
+		defer wg.Done()
+		if h.cardService == nil {
+			cardsErr = errSpendingDependencyUnavailable
+			return
+		}
+		cards, cardsErr = h.cardService.GetUserCards(ctx, userID)
+	}()
+	go func() {
+		defer wg.Done()
+		if h.cardService == nil {
+			cardTxnsErr = errSpendingDependencyUnavailable
+			return
+		}
+		cardTxns, cardTxnsErr = h.cardService.GetUserTransactions(ctx, userID, limit+1, 0)
+	}()
+	if h.roundupService != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			roundupSummary, roundupSummaryErr = h.roundupService.GetSummary(ctx, userID)
+		}()
+	}
+	if h.limitsService != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			userLimits, userLimitsErr = h.limitsService.GetUserLimits(ctx, userID)
+		}()
+	}
 	wg.Wait()
+
+	if errors.Is(balancesErr, errSpendingDependencyUnavailable) || errors.Is(cardTxnsErr, errSpendingDependencyUnavailable) {
+		h.logger.Error("Spending stash dependencies unavailable", zap.String("user_id", userID.String()))
+		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{
+			Code:    "SERVICE_UNAVAILABLE",
+			Message: "Spending service temporarily unavailable",
+		})
+		return
+	}
+
+	if balancesErr != nil || cardTxnsErr != nil {
+		h.logger.Error("Failed to load spending stash core data",
+			zap.String("user_id", userID.String()),
+			zap.NamedError("balances_error", balancesErr),
+			zap.NamedError("transactions_error", cardTxnsErr),
+		)
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+			Code:    "SPENDING_STASH_ERROR",
+			Message: "Failed to retrieve spending stash data",
+		})
+		return
+	}
+
+	if allocationModeErr != nil {
+		h.logger.Warn("Failed to load allocation mode for spending stash", zap.String("user_id", userID.String()), zap.Error(allocationModeErr))
+	}
+	if cardsErr != nil {
+		h.logger.Warn("Failed to load cards for spending stash", zap.String("user_id", userID.String()), zap.Error(cardsErr))
+	}
+	if roundupSummaryErr != nil {
+		h.logger.Warn("Failed to load roundup summary for spending stash", zap.String("user_id", userID.String()), zap.Error(roundupSummaryErr))
+	}
+	if userLimitsErr != nil {
+		h.logger.Warn("Failed to load limits for spending stash", zap.String("user_id", userID.String()), zap.Error(userLimitsErr))
+	}
 
 	c.JSON(http.StatusOK, h.buildResponse(balances, allocationMode, cards, roundupSummary, cardTxns, userLimits, limit))
 }
@@ -110,9 +198,9 @@ func (h *SpendingStashHandlers) buildResponse(
 		PendingAuthorizations: []PendingAuthorization{},
 		RecentTransactions:    TransactionListResponse{Items: []TransactionSummary{}},
 		Limits: SpendingLimits{
-			Daily:          LimitDetail{Limit: "1000.00", Used: "0.00", Remaining: "1000.00"},
-			Monthly:        LimitDetail{Limit: "10000.00", Used: "0.00", Remaining: "10000.00"},
-			PerTransaction: "500.00",
+			Daily:          LimitDetail{Limit: "0.00", Used: "0.00", Remaining: "0.00"},
+			Monthly:        LimitDetail{Limit: "0.00", Used: "0.00", Remaining: "0.00"},
+			PerTransaction: "0.00",
 		},
 		Links: SpendingLinks{
 			Self:           "/api/v1/account/spending-stash",
@@ -192,10 +280,15 @@ func (h *SpendingStashHandlers) buildResponse(
 				})
 				pending = pending.Add(tx.Amount.Abs())
 			} else {
+				amount := tx.Amount.Abs().Neg()
+				if tx.Type == "refund" || tx.Status == "reversed" {
+					amount = tx.Amount.Abs()
+				}
+
 				resp.RecentTransactions.Items = append(resp.RecentTransactions.Items, TransactionSummary{
 					ID:          tx.ID.String(),
 					Type:        "card",
-					Amount:      tx.Amount.Neg().StringFixed(2),
+					Amount:      amount.StringFixed(2),
 					Currency:    tx.Currency,
 					Description: merchantName,
 					Merchant: &MerchantInfo{
@@ -239,7 +332,11 @@ func (h *SpendingStashHandlers) buildResponse(
 		resp.Limits = SpendingLimits{
 			Daily:          LimitDetail{Limit: userLimits.Withdrawal.Daily.Limit, Used: userLimits.Withdrawal.Daily.Used, Remaining: userLimits.Withdrawal.Daily.Remaining},
 			Monthly:        LimitDetail{Limit: userLimits.Withdrawal.Monthly.Limit, Used: userLimits.Withdrawal.Monthly.Used, Remaining: userLimits.Withdrawal.Monthly.Remaining},
-			PerTransaction: userLimits.Withdrawal.Minimum,
+			PerTransaction: userLimits.Withdrawal.Daily.Remaining,
+			DailyTransactionsRemaining: estimateDailyTransactionsRemaining(
+				userLimits.Withdrawal.Daily.Remaining,
+				userLimits.Withdrawal.Minimum,
+			),
 		}
 	}
 
@@ -329,17 +426,31 @@ func (h *SpendingStashHandlers) calculateSpendingMetrics(txns []*entities.Bridge
 
 func categoryIcon(category string) string {
 	icons := map[string]string{
-		"Food & Drink":    "🍔",
-		"Shopping":        "🛍️",
-		"Transportation":  "🚗",
-		"Entertainment":   "🎬",
-		"Travel":          "✈️",
-		"Health":          "💊",
-		"Utilities":       "💡",
-		"Groceries":       "🛒",
+		"Food & Drink":   "🍔",
+		"Shopping":       "🛍️",
+		"Transportation": "🚗",
+		"Entertainment":  "🎬",
+		"Travel":         "✈️",
+		"Health":         "💊",
+		"Utilities":      "💡",
+		"Groceries":      "🛒",
 	}
 	if icon, ok := icons[category]; ok {
 		return icon
 	}
 	return "💳"
+}
+
+func estimateDailyTransactionsRemaining(dailyRemaining, minimumTxn string) int {
+	remaining, err := decimal.NewFromString(dailyRemaining)
+	if err != nil || !remaining.IsPositive() {
+		return 0
+	}
+
+	minimum, err := decimal.NewFromString(minimumTxn)
+	if err != nil || !minimum.IsPositive() {
+		return 0
+	}
+
+	return int(remaining.Div(minimum).Floor().IntPart())
 }
