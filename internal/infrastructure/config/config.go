@@ -712,6 +712,17 @@ func overrideFromEnv() {
 		viper.Set("server.trusted_proxies", strings.Split(trustedProxies, ","))
 	}
 
+	// WebAuthn
+	if rpID := os.Getenv("WEBAUTHN_RP_ID"); rpID != "" {
+		viper.Set("webauthn.rp_id", rpID)
+	}
+	if rpOrigins := os.Getenv("WEBAUTHN_RP_ORIGINS"); rpOrigins != "" {
+		viper.Set("webauthn.rp_origins", strings.Split(rpOrigins, ","))
+	}
+	if rpDisplayName := os.Getenv("WEBAUTHN_RP_DISPLAY_NAME"); rpDisplayName != "" {
+		viper.Set("webauthn.rp_display_name", rpDisplayName)
+	}
+
 	// Database
 	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
 		viper.Set("database.url", dbURL)

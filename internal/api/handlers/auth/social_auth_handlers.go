@@ -220,11 +220,12 @@ func (h *SocialAuthHandlers) SocialLogin(c *gin.Context) {
 		zap.Bool("is_new_user", isNewUser))
 
 	c.JSON(http.StatusOK, entities.SocialLoginResponse{
-		User:         user.ToUserInfo(),
-		AccessToken:  tokens.AccessToken,
-		RefreshToken: tokens.RefreshToken,
-		ExpiresAt:    tokens.ExpiresAt,
-		IsNewUser:    isNewUser,
+		User:             user.ToUserInfo(),
+		AccessToken:      tokens.AccessToken,
+		RefreshToken:     tokens.RefreshToken,
+		ExpiresAt:        tokens.ExpiresAt,
+		SessionExpiresAt: h.sessionExpiryFromRefreshTTL(),
+		IsNewUser:        isNewUser,
 	})
 }
 
@@ -627,10 +628,11 @@ func (h *SocialAuthHandlers) FinishWebAuthnLogin(c *gin.Context) {
 	h.deleteWebAuthnSession(ctx, webauthnSessionLoginPrefix, req.SessionID)
 
 	c.JSON(http.StatusOK, entities.AuthResponse{
-		User:         user.ToUserInfo(),
-		AccessToken:  tokens.AccessToken,
-		RefreshToken: tokens.RefreshToken,
-		ExpiresAt:    tokens.ExpiresAt,
+		User:             user.ToUserInfo(),
+		AccessToken:      tokens.AccessToken,
+		RefreshToken:     tokens.RefreshToken,
+		ExpiresAt:        tokens.ExpiresAt,
+		SessionExpiresAt: h.sessionExpiryFromRefreshTTL(),
 	})
 }
 
@@ -684,4 +686,12 @@ func (h *SocialAuthHandlers) deleteWebAuthnSession(ctx context.Context, prefix, 
 
 func (h *SocialAuthHandlers) webAuthnSessionKey(prefix, sessionID string) string {
 	return fmt.Sprintf("%s:%s", prefix, sessionID)
+}
+
+func (h *SocialAuthHandlers) sessionExpiryFromRefreshTTL() time.Time {
+	ttl := time.Duration(h.cfg.JWT.RefreshTTL) * time.Second
+	if ttl <= 0 {
+		ttl = time.Duration(h.cfg.JWT.AccessTTL) * time.Second
+	}
+	return time.Now().Add(ttl)
 }
