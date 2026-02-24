@@ -633,11 +633,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				}
 			}
 
-			// Alpaca Assets - Tradable stocks and ETFs
+			// Alpaca Assets - Tradable stocks and ETFs (cached 5min — asset list rarely changes)
 			assets := protected.Group("/assets")
 			{
-				assets.GET("/", integrationHandlers.GetAssets)
-				assets.GET("/:symbol_or_id", integrationHandlers.GetAsset)
+				assets.GET("/", middleware.PublicCache(300), integrationHandlers.GetAssets)
+				assets.GET("/:symbol_or_id", middleware.PublicCache(300), integrationHandlers.GetAsset)
 			}
 
 			// Allocation routes - 70/30 Smart Allocation Mode (ON/OFF)
