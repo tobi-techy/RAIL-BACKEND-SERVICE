@@ -11,6 +11,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -878,9 +879,113 @@ func parseCCTPTransactionStatus(transactionID string, response map[string]interf
 	if !ok {
 		txData = data
 	}
+	return parseTransactionStatusFromMap(transactionID, txData)
+}
 
+func isCircleNotFoundError(err error) bool {
+	var circleErr entities.CircleAPIError
+	if errors.As(err, &circleErr) {
+		return circleErr.Code == http.StatusNotFound
+	}
+	return false
+}
+
+// FindRecentOutboundTransfer searches recent outbound transfer transactions for a wallet.
+// This is used as a recovery path when a persisted transfer ID can no longer be fetched directly.
+func (c *Client) FindRecentOutboundTransfer(
+	ctx context.Context,
+	walletID, destinationAddress string,
+	amount decimal.Decimal,
+	since time.Time,
+) (*entities.CCTPTransactionStatus, error) {
+	query := url.Values{}
+	query.Set("walletIds", walletID)
+	query.Set("txType", "OUTBOUND")
+	query.Set("operation", "TRANSFER")
+	query.Set("pageSize", "50")
+	if !since.IsZero() {
+		query.Set("from", since.UTC().Format(time.RFC3339))
+	}
+
+	endpoint := "/v1/w3s/transactions?" + query.Encode()
+
+	var response map[string]interface{}
+	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
+		return &response, c.doRequestWithRetry(ctx, "GET", endpoint, nil, &response)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list outbound transactions: %w", err)
+	}
+
+	data, ok := response["data"].(map[string]interface{})
+	if !ok {
+		data = response
+	}
+
+	rawList, ok := data["transactions"].([]interface{})
+	if !ok || len(rawList) == 0 {
+		return nil, nil
+	}
+
+	targetAddress := strings.TrimSpace(strings.ToLower(destinationAddress))
+	var best *entities.CCTPTransactionStatus
+	var bestTime time.Time
+
+	for _, item := range rawList {
+		txMap, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		txType := strings.ToUpper(strings.TrimSpace(getString(txMap, "transactionType", "txType")))
+		if txType != "" && txType != "OUTBOUND" {
+			continue
+		}
+
+		state := strings.ToUpper(strings.TrimSpace(getString(txMap, "state")))
+		if state == "FAILED" || state == "REJECTED" || state == "CANCELLED" {
+			continue
+		}
+
+		if targetAddress != "" {
+			dest := strings.TrimSpace(strings.ToLower(getString(txMap, "destinationAddress")))
+			if dest == "" {
+				if nestedDest, ok := txMap["destination"].(map[string]interface{}); ok {
+					dest = strings.TrimSpace(strings.ToLower(getString(nestedDest, "address")))
+				}
+			}
+			if dest != "" && dest != targetAddress {
+				continue
+			}
+		}
+
+		txAmount, ok := getTransactionAmount(txMap)
+		if !ok || !txAmount.Equal(amount) {
+			continue
+		}
+
+		txStatus := parseTransactionStatusFromMap("", txMap)
+		txTime := parseTransactionTimestamp(txMap)
+		if best == nil || txTime.After(bestTime) {
+			best = txStatus
+			bestTime = txTime
+		}
+	}
+
+	if best != nil {
+		c.logger.Info("Matched outbound transfer from transaction history fallback",
+			zap.String("walletId", walletID),
+			zap.String("transactionId", best.ID),
+			zap.String("status", best.Status),
+			zap.String("txHash", best.TxHash))
+	}
+
+	return best, nil
+}
+
+func parseTransactionStatusFromMap(defaultID string, txData map[string]interface{}) *entities.CCTPTransactionStatus {
 	status := &entities.CCTPTransactionStatus{
-		ID:     transactionID,
+		ID:     defaultID,
 		Status: "pending",
 	}
 
@@ -907,12 +1012,44 @@ func parseCCTPTransactionStatus(transactionID string, response map[string]interf
 	return status
 }
 
-func isCircleNotFoundError(err error) bool {
-	var circleErr entities.CircleAPIError
-	if errors.As(err, &circleErr) {
-		return circleErr.Code == http.StatusNotFound
+func parseTransactionTimestamp(txData map[string]interface{}) time.Time {
+	for _, key := range []string{"createDate", "create_date", "updateDate", "update_date"} {
+		if raw := strings.TrimSpace(getString(txData, key)); raw != "" {
+			if t, err := time.Parse(time.RFC3339, raw); err == nil {
+				return t
+			}
+		}
 	}
-	return false
+	return time.Time{}
+}
+
+func getTransactionAmount(txData map[string]interface{}) (decimal.Decimal, bool) {
+	if rawAmounts, ok := txData["amounts"].([]interface{}); ok && len(rawAmounts) > 0 {
+		if amountStr, ok := rawAmounts[0].(string); ok {
+			if d, err := decimal.NewFromString(strings.TrimSpace(amountStr)); err == nil {
+				return d, true
+			}
+		}
+	}
+	if amountObj, ok := txData["amount"].(map[string]interface{}); ok {
+		if amountStr := strings.TrimSpace(getString(amountObj, "amount", "value")); amountStr != "" {
+			if d, err := decimal.NewFromString(amountStr); err == nil {
+				return d, true
+			}
+		}
+	}
+	return decimal.Zero, false
+}
+
+func getString(m map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if v, ok := m[key]; ok {
+			if s, ok := v.(string); ok {
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 // injectTraceContext injects OpenTelemetry trace context into HTTP headers
