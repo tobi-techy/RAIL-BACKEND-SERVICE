@@ -123,6 +123,8 @@ func Logger(log *logger.Logger) gin.HandlerFunc {
 		end := time.Now()
 		latency := end.Sub(start)
 
+		c.Header("Server-Timing", fmt.Sprintf("app;dur=%.1f", float64(latency.Microseconds())/1000.0))
+
 		requestLogger.Infow("HTTP Request",
 			"status_code", c.Writer.Status(),
 			"latency", latency,

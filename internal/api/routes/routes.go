@@ -3,6 +3,7 @@ package routes
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -86,6 +87,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		// Log warning but continue - ClientIP will fall back to RemoteAddr
 		container.Logger.Warn("Failed to set trusted proxies: %v", err)
 	}
+
+	// Lightweight ping — no middleware, no DB, for uptime monitoring
+	router.GET("/ping", func(c *gin.Context) {
+		c.String(http.StatusOK, "pong")
+	})
 
 	// Global middleware - order matters for security
 	router.Use(tracing.HTTPMiddleware()) // Tracing should be early in the chain
