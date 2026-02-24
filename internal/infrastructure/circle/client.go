@@ -859,6 +859,8 @@ func (c *Client) GetCCTPTransaction(ctx context.Context, transactionID string) (
 	}
 	if txHash, ok := txData["txHash"].(string); ok {
 		status.TxHash = txHash
+	} else if txHash, ok := txData["transactionHash"].(string); ok {
+		status.TxHash = txHash
 	}
 	if state, ok := txData["state"].(string); ok {
 		status.Status = state

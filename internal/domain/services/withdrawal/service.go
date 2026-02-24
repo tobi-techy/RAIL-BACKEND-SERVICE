@@ -91,6 +91,7 @@ type WithdrawalNotificationService interface {
 type CircleClient interface {
 	TransferFunds(ctx context.Context, req entities.CircleTransferRequest) (map[string]interface{}, error)
 	GetWallet(ctx context.Context, walletID string) (map[string]interface{}, error)
+	GetCCTPTransaction(ctx context.Context, transactionID string) (*entities.CCTPTransactionStatus, error)
 }
 
 // BridgeAdapter interface for Bridge offramp operations
@@ -261,6 +262,9 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	if transferResult.TxHash != "" {
 		if err := s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, transferResult.TxHash); err != nil {
 			s.logger.Error("Failed to update tx hash", "error", err)
+		} else {
+			withdrawal.Status = entities.WithdrawalStatusOnChainTransfer
+			withdrawal.TxHash = &transferResult.TxHash
 		}
 	}
 
@@ -270,11 +274,59 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	isFinalSuccess := state == "COMPLETE" || state == "COMPLETED" || state == "CONFIRMED" || state == "SUCCESS"
 
 	if !isFinalSuccess {
-		if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusProcessing); err != nil {
-			s.logger.Error("Failed to mark withdrawal processing", "error", err)
-			return nil, fmt.Errorf("failed to update withdrawal status: %w", err)
+		// Fallback sync: poll Circle briefly so we can settle immediately when provider state
+		// transitions shortly after initiation (common with devnet/testnet transfers).
+		for attempt := 0; attempt < 3 && !withdrawal.Status.IsTerminal(); attempt++ {
+			if _, err := s.syncCryptoWithdrawalStatusFromProvider(ctx, withdrawal); err != nil {
+				s.logger.Warn("Failed to sync Circle withdrawal status during initiation",
+					"withdrawal_id", withdrawal.ID.String(),
+					"attempt", attempt+1,
+					"error", err)
+			}
+			if withdrawal.Status.IsTerminal() {
+				break
+			}
+			if attempt < 2 {
+				time.Sleep(400 * time.Millisecond)
+			}
 		}
-		withdrawal.Status = entities.WithdrawalStatusProcessing
+
+		if withdrawal.Status == entities.WithdrawalStatusCompleted {
+			// Step 9: Record against limits
+			if s.limitsService != nil {
+				if err := s.limitsService.RecordWithdrawal(ctx, req.UserID, req.Amount); err != nil {
+					s.logger.Error("Failed to record withdrawal against limits", "error", err)
+				}
+			}
+
+			// Step 10: Send notification
+			if s.notificationService != nil {
+				_ = s.notificationService.NotifyWithdrawalCompleted(ctx, req.UserID, req.Amount, req.DestinationAddress)
+			}
+
+			s.logger.Info("Crypto withdrawal completed",
+				"withdrawal_id", withdrawal.ID.String(),
+				"amount", req.Amount.String(),
+				"tx_hash", transferResult.TxHash)
+
+			return &entities.InitiateWithdrawalResponse{
+				WithdrawalID: withdrawal.ID,
+				Status:       withdrawal.Status,
+				Message:      "Withdrawal completed successfully",
+			}, nil
+		}
+
+		if withdrawal.Status == entities.WithdrawalStatusFailed {
+			return nil, fmt.Errorf("withdrawal failed during processing")
+		}
+
+		if withdrawal.Status == entities.WithdrawalStatusInitiated {
+			if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusProcessing); err != nil {
+				s.logger.Error("Failed to mark withdrawal processing", "error", err)
+				return nil, fmt.Errorf("failed to update withdrawal status: %w", err)
+			}
+			withdrawal.Status = entities.WithdrawalStatusProcessing
+		}
 
 		s.logger.Info("Crypto withdrawal submitted and processing",
 			"withdrawal_id", withdrawal.ID.String(),
@@ -290,11 +342,8 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	}
 
 	// Step 8: Final success path.
-	if err := s.postWithdrawalLedgerEntries(ctx, withdrawal); err != nil {
-		s.logger.Error("Failed to post withdrawal ledger entries", "error", err, "withdrawal_id", withdrawal.ID.String())
-		if statusErr := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusProcessing); statusErr != nil {
-			s.logger.Error("Failed to keep withdrawal in processing state after ledger failure", "error", statusErr, "withdrawal_id", withdrawal.ID.String())
-		}
+	if err := s.settleCompletedCryptoWithdrawal(ctx, withdrawal); err != nil {
+		s.logger.Error("Failed to settle completed withdrawal", "error", err, "withdrawal_id", withdrawal.ID.String())
 		withdrawal.Status = entities.WithdrawalStatusProcessing
 		return &entities.InitiateWithdrawalResponse{
 			WithdrawalID: withdrawal.ID,
@@ -302,14 +351,6 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 			Message:      "Withdrawal submitted and is processing",
 		}, nil
 	}
-
-	now := time.Now()
-	if err := s.withdrawalRepo.MarkCompleted(ctx, withdrawal.ID); err != nil {
-		s.logger.Error("Failed to mark withdrawal completed", "error", err)
-		return nil, fmt.Errorf("failed to complete withdrawal: %w", err)
-	}
-	withdrawal.Status = entities.WithdrawalStatusCompleted
-	withdrawal.CompletedAt = &now
 
 	// Step 9: Record against limits
 	if s.limitsService != nil {
@@ -624,6 +665,12 @@ func (s *WithdrawalService) GetWithdrawal(ctx context.Context, userID, withdrawa
 		return nil, fmt.Errorf("withdrawal does not belong to user")
 	}
 
+	if _, err := s.syncCryptoWithdrawalStatusFromProvider(ctx, withdrawal); err != nil {
+		s.logger.Warn("Failed to sync withdrawal status on read",
+			"withdrawal_id", withdrawal.ID.String(),
+			"error", err)
+	}
+
 	return withdrawal, nil
 }
 
@@ -636,7 +683,20 @@ func (s *WithdrawalService) GetUserWithdrawals(ctx context.Context, userID uuid.
 		limit = 100
 	}
 
-	return s.withdrawalRepo.GetByUserID(ctx, userID, limit, offset)
+	withdrawals, err := s.withdrawalRepo.GetByUserID(ctx, userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, withdrawal := range withdrawals {
+		if _, syncErr := s.syncCryptoWithdrawalStatusFromProvider(ctx, withdrawal); syncErr != nil {
+			s.logger.Warn("Failed to sync withdrawal status during list retrieval",
+				"withdrawal_id", withdrawal.ID.String(),
+				"error", syncErr)
+		}
+	}
+
+	return withdrawals, nil
 }
 
 // getSourceBalance gets the balance for the specified source account
@@ -832,4 +892,100 @@ func (s *WithdrawalService) executeFiatTransfer(ctx context.Context, withdrawal 
 		"transfer_id", transferID)
 
 	return transferID, nil
+}
+
+func (s *WithdrawalService) settleCompletedCryptoWithdrawal(ctx context.Context, withdrawal *entities.Withdrawal) error {
+	if withdrawal == nil {
+		return nil
+	}
+
+	current, err := s.withdrawalRepo.GetByID(ctx, withdrawal.ID)
+	if err != nil {
+		return fmt.Errorf("failed to fetch withdrawal for settlement: %w", err)
+	}
+	if current != nil && current.Status == entities.WithdrawalStatusCompleted {
+		withdrawal.Status = entities.WithdrawalStatusCompleted
+		withdrawal.CompletedAt = current.CompletedAt
+		withdrawal.TxHash = current.TxHash
+		return nil
+	}
+
+	if err := s.postWithdrawalLedgerEntries(ctx, withdrawal); err != nil {
+		if statusErr := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusProcessing); statusErr != nil {
+			s.logger.Error("Failed to keep withdrawal in processing state after ledger failure",
+				"error", statusErr,
+				"withdrawal_id", withdrawal.ID.String())
+		}
+		withdrawal.Status = entities.WithdrawalStatusProcessing
+		return fmt.Errorf("failed to post withdrawal ledger entries: %w", err)
+	}
+
+	now := time.Now()
+	if err := s.withdrawalRepo.MarkCompleted(ctx, withdrawal.ID); err != nil {
+		return fmt.Errorf("failed to complete withdrawal: %w", err)
+	}
+	withdrawal.Status = entities.WithdrawalStatusCompleted
+	withdrawal.CompletedAt = &now
+	withdrawal.UpdatedAt = now
+
+	return nil
+}
+
+func (s *WithdrawalService) syncCryptoWithdrawalStatusFromProvider(ctx context.Context, withdrawal *entities.Withdrawal) (entities.WithdrawalStatus, error) {
+	if withdrawal == nil || !withdrawal.IsCrypto() || withdrawal.Status.IsTerminal() {
+		if withdrawal == nil {
+			return entities.WithdrawalStatusInitiated, nil
+		}
+		return withdrawal.Status, nil
+	}
+	if s.circleClient == nil || withdrawal.BridgeTransferID == nil || strings.TrimSpace(*withdrawal.BridgeTransferID) == "" {
+		return withdrawal.Status, nil
+	}
+
+	status, err := s.circleClient.GetCCTPTransaction(ctx, strings.TrimSpace(*withdrawal.BridgeTransferID))
+	if err != nil {
+		return withdrawal.Status, err
+	}
+	if status == nil {
+		return withdrawal.Status, nil
+	}
+
+	txHash := strings.TrimSpace(status.TxHash)
+	if txHash != "" && (withdrawal.TxHash == nil || strings.TrimSpace(*withdrawal.TxHash) != txHash) {
+		if err := s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, txHash); err != nil {
+			s.logger.Warn("Failed to persist tx hash from provider status",
+				"withdrawal_id", withdrawal.ID.String(),
+				"error", err)
+		} else {
+			withdrawal.TxHash = &txHash
+			withdrawal.Status = entities.WithdrawalStatusOnChainTransfer
+		}
+	}
+
+	providerState := strings.ToUpper(strings.TrimSpace(status.Status))
+	switch providerState {
+	case "COMPLETE", "COMPLETED", "CONFIRMED", "SUCCESS":
+		s.logger.Info("Provider reported completed crypto withdrawal",
+			"withdrawal_id", withdrawal.ID.String(),
+			"provider_state", providerState,
+			"transfer_id", strings.TrimSpace(*withdrawal.BridgeTransferID))
+		if err := s.settleCompletedCryptoWithdrawal(ctx, withdrawal); err != nil {
+			return withdrawal.Status, err
+		}
+	case "FAILED", "REJECTED", "CANCELLED":
+		s.logger.Warn("Provider reported failed crypto withdrawal",
+			"withdrawal_id", withdrawal.ID.String(),
+			"provider_state", providerState,
+			"transfer_id", strings.TrimSpace(*withdrawal.BridgeTransferID))
+		reason := "circle transfer failed"
+		if providerState != "" {
+			reason = "circle transfer failed: " + strings.ToLower(providerState)
+		}
+		if err := s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, reason); err != nil {
+			return withdrawal.Status, fmt.Errorf("failed to mark withdrawal failed: %w", err)
+		}
+		withdrawal.Status = entities.WithdrawalStatusFailed
+	}
+
+	return withdrawal.Status, nil
 }
