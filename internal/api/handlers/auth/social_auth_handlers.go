@@ -389,6 +389,12 @@ func (h *SocialAuthHandlers) BeginWebAuthnRegistration(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "REGISTRATION_ERROR", Message: err.Error()})
 		return
 	}
+	h.logger.Info("WebAuthn registration begin options",
+		zap.String("user_id", userID.String()),
+		zap.String("rp_id", options.Response.RelyingParty.ID),
+		zap.String("resident_key", string(options.Response.AuthenticatorSelection.ResidentKey)),
+		zap.String("user_verification", string(options.Response.AuthenticatorSelection.UserVerification)),
+	)
 
 	sessionID, err := crypto.GenerateRandomString(32)
 	if err != nil {

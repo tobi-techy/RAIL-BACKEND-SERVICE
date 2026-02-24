@@ -74,7 +74,11 @@ func (s *Service) BeginRegistration(ctx context.Context, userID uuid.UUID, email
 	}
 
 	options, session, err := s.webauthn.BeginRegistration(user,
-		webauthn.WithResidentKeyRequirement(protocol.ResidentKeyRequirementPreferred),
+		webauthn.WithResidentKeyRequirement(protocol.ResidentKeyRequirementRequired),
+		webauthn.WithConveyancePreference(protocol.PreferNoAttestation),
+		webauthn.WithExtensions(protocol.AuthenticationExtensions{
+			"credProps": true,
+		}),
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to begin registration: %w", err)
