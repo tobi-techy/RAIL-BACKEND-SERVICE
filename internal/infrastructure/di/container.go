@@ -228,6 +228,10 @@ func (a *WithdrawalCircleAdapter) GetCCTPTransaction(ctx context.Context, transa
 	return a.client.GetCCTPTransaction(ctx, transactionID)
 }
 
+func (a *WithdrawalCircleAdapter) FindRecentOutboundTransfer(ctx context.Context, walletID, destinationAddress string, amount decimal.Decimal, since time.Time) (*entities.CCTPTransactionStatus, error) {
+	return a.client.FindRecentOutboundTransfer(ctx, walletID, destinationAddress, amount, since)
+}
+
 // WithdrawalBridgeAdapter adapts bridge.Adapter to withdrawal.BridgeAdapter interface
 type WithdrawalBridgeAdapter struct {
 	adapter *bridge.Adapter

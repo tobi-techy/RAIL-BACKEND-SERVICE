@@ -2,6 +2,7 @@ package withdrawal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -92,6 +93,7 @@ type CircleClient interface {
 	TransferFunds(ctx context.Context, req entities.CircleTransferRequest) (map[string]interface{}, error)
 	GetWallet(ctx context.Context, walletID string) (map[string]interface{}, error)
 	GetCCTPTransaction(ctx context.Context, transactionID string) (*entities.CCTPTransactionStatus, error)
+	FindRecentOutboundTransfer(ctx context.Context, walletID, destinationAddress string, amount decimal.Decimal, since time.Time) (*entities.CCTPTransactionStatus, error)
 }
 
 // BridgeAdapter interface for Bridge offramp operations
@@ -942,9 +944,59 @@ func (s *WithdrawalService) syncCryptoWithdrawalStatusFromProvider(ctx context.C
 		return withdrawal.Status, nil
 	}
 
-	status, err := s.circleClient.GetCCTPTransaction(ctx, strings.TrimSpace(*withdrawal.BridgeTransferID))
+	transferID := strings.TrimSpace(*withdrawal.BridgeTransferID)
+	status, err := s.circleClient.GetCCTPTransaction(ctx, transferID)
 	if err != nil {
-		return withdrawal.Status, err
+		if !isCircleNotFoundError(err) {
+			return withdrawal.Status, err
+		}
+
+		walletID := ""
+		if withdrawal.CircleWalletID != nil {
+			walletID = strings.TrimSpace(*withdrawal.CircleWalletID)
+		}
+		destinationAddress := ""
+		if withdrawal.DestinationAddress != nil {
+			destinationAddress = strings.TrimSpace(*withdrawal.DestinationAddress)
+		}
+
+		if walletID != "" {
+			s.logger.Warn("Circle transfer ID not found; attempting outbound transaction fallback lookup",
+				"withdrawal_id", withdrawal.ID.String(),
+				"transfer_id", transferID,
+				"wallet_id", walletID)
+
+			fallbackStatus, fallbackErr := s.circleClient.FindRecentOutboundTransfer(
+				ctx,
+				walletID,
+				destinationAddress,
+				withdrawal.Amount,
+				withdrawal.CreatedAt.Add(-2*time.Minute),
+			)
+			if fallbackErr != nil {
+				return withdrawal.Status, fallbackErr
+			}
+			if fallbackStatus != nil {
+				status = fallbackStatus
+				if strings.TrimSpace(status.ID) != "" && status.ID != transferID {
+					if updateErr := s.withdrawalRepo.UpdateBridgeTransfer(ctx, withdrawal.ID, status.ID); updateErr != nil {
+						s.logger.Warn("Failed to update withdrawal transfer ID after fallback lookup",
+							"withdrawal_id", withdrawal.ID.String(),
+							"old_transfer_id", transferID,
+							"new_transfer_id", status.ID,
+							"error", updateErr)
+					} else {
+						updatedID := strings.TrimSpace(status.ID)
+						withdrawal.BridgeTransferID = &updatedID
+					}
+				}
+			}
+		}
+
+		// Keep withdrawal as-is if transaction is no longer retrievable.
+		if status == nil {
+			return withdrawal.Status, nil
+		}
 	}
 	if status == nil {
 		return withdrawal.Status, nil
@@ -988,4 +1040,9 @@ func (s *WithdrawalService) syncCryptoWithdrawalStatusFromProvider(ctx context.C
 	}
 
 	return withdrawal.Status, nil
+}
+
+func isCircleNotFoundError(err error) bool {
+	var circleErr entities.CircleAPIError
+	return errors.As(err, &circleErr) && circleErr.Code == 404
 }
