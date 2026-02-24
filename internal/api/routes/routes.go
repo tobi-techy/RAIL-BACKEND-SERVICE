@@ -130,6 +130,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		c.Header("Content-Type", "application/json")
 		c.File("static/.well-known/apple-app-site-association")
 	})
+	router.GET("/apple-app-site-association", func(c *gin.Context) {
+		c.Header("Content-Type", "application/json")
+		c.File("static/.well-known/apple-app-site-association")
+	})
 
 	// Swagger documentation (development only)
 	if container.Config.Environment == "development" {
