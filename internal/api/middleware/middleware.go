@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -259,7 +260,10 @@ func RateLimit(requestsPerMinute int) gin.HandlerFunc {
 	limiter := NewRateLimiter(requestsPerMinute)
 
 	return func(c *gin.Context) {
-		ip := c.ClientIP()
+		ip := c.GetHeader("CF-Connecting-IP")
+		if ip == "" {
+			ip = c.ClientIP()
+		}
 		if !limiter.GetLimiter(ip).Allow() {
 			c.JSON(http.StatusTooManyRequests, gin.H{
 				"error":      "Rate limit exceeded",
@@ -391,6 +395,23 @@ func ValidateAPIKey(apikeyService APIKeyValidator) gin.HandlerFunc {
 			c.Set("user_id", *keyInfo.UserID)
 		}
 
+		c.Next()
+	}
+}
+
+// PublicCache sets Cache-Control for public, cacheable responses (market data, asset lists, tracks)
+func PublicCache(maxAge int) gin.HandlerFunc {
+	value := fmt.Sprintf("public, max-age=%d", maxAge)
+	return func(c *gin.Context) {
+		c.Header("Cache-Control", value)
+		c.Next()
+	}
+}
+
+// PrivateNoCache ensures user-specific responses are never cached at the edge
+func PrivateNoCache() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Cache-Control", "private, no-store")
 		c.Next()
 	}
 }

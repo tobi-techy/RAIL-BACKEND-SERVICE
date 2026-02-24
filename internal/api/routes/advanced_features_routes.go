@@ -34,10 +34,10 @@ func RegisterAdvancedFeaturesRoutes(
 	// Market data routes (mixed auth)
 	market := router.Group("/market")
 	{
-		// Public endpoints
-		market.GET("/quote/:symbol", marketHandlers.GetQuote)
-		market.GET("/quotes", marketHandlers.GetQuotes)
-		market.GET("/bars/:symbol", marketHandlers.GetBars)
+		// Public endpoints — cached at Cloudflare edge (30s for quotes, 60s for bars)
+		market.GET("/quote/:symbol", middleware.PublicCache(30), marketHandlers.GetQuote)
+		market.GET("/quotes", middleware.PublicCache(30), marketHandlers.GetQuotes)
+		market.GET("/bars/:symbol", middleware.PublicCache(60), marketHandlers.GetBars)
 
 		// Authenticated endpoints for alerts
 		alerts := market.Group("/alerts")
