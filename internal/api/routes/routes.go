@@ -197,6 +197,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	socialAuthHandlers := handlers.NewSocialAuthHandlers(
 		container.GetSocialAuthService(),
 		container.GetWebAuthnService(),
+		container.GetSessionService(),
 		*container.UserRepo,
 		container.RedisClient,
 		container.Config,
