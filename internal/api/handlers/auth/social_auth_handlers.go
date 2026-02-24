@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -42,6 +43,31 @@ type webAuthnLoginSession struct {
 	SessionData webauthnlib.SessionData `json:"sessionData"`
 	UserID      uuid.UUID               `json:"userId"`
 	Email       string                  `json:"email"`
+}
+
+func ensureWebAuthnResponseType(response json.RawMessage) json.RawMessage {
+	if len(response) == 0 {
+		return response
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(response, &payload); err != nil {
+		return response
+	}
+
+	if typ, ok := payload["type"]; ok {
+		if typedString, ok := typ.(string); ok && strings.TrimSpace(typedString) != "" {
+			return response
+		}
+	}
+
+	payload["type"] = "public-key"
+	normalized, err := json.Marshal(payload)
+	if err != nil {
+		return response
+	}
+
+	return normalized
 }
 
 type SocialAuthHandlers struct {
@@ -449,6 +475,11 @@ func (h *SocialAuthHandlers) BeginWebAuthnLogin(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: err.Error()})
 		return
 	}
+	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
+	if req.Email == "" {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "email is required"})
+		return
+	}
 
 	if h.webauthnService == nil {
 		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{Code: "WEBAUTHN_UNAVAILABLE", Message: "WebAuthn not configured"})
@@ -531,8 +562,10 @@ func (h *SocialAuthHandlers) FinishWebAuthnRegistration(c *gin.Context) {
 		return
 	}
 
-	parsedResponse, err := protocol.ParseCredentialCreationResponseBytes(req.Response)
+	normalizedResponse := ensureWebAuthnResponseType(req.Response)
+	parsedResponse, err := protocol.ParseCredentialCreationResponseBytes(normalizedResponse)
 	if err != nil {
+		h.logger.Warn("Failed to parse WebAuthn registration response", zap.Error(err), zap.String("user_id", userID.String()))
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_WEBAUTHN_RESPONSE", Message: "Failed to parse registration response"})
 		return
 	}
@@ -596,8 +629,10 @@ func (h *SocialAuthHandlers) FinishWebAuthnLogin(c *gin.Context) {
 		return
 	}
 
-	parsedResponse, err := protocol.ParseCredentialRequestResponseBytes(req.Response)
+	normalizedResponse := ensureWebAuthnResponseType(req.Response)
+	parsedResponse, err := protocol.ParseCredentialRequestResponseBytes(normalizedResponse)
 	if err != nil {
+		h.logger.Warn("Failed to parse WebAuthn login response", zap.Error(err))
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_WEBAUTHN_RESPONSE", Message: "Failed to parse login response"})
 		return
 	}

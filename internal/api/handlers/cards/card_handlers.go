@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"go.uber.org/zap"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
@@ -29,9 +30,9 @@ func NewCardHandlers(service *card.Service, logger *zap.Logger) *CardHandlers {
 // GetCards retrieves all cards for the authenticated user
 // GET /api/v1/cards
 func (h *CardHandlers) GetCards(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetString("user_id"))
+	userID, err := common.GetUserID(c)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "UNAUTHORIZED", "message": "Invalid user ID"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "UNAUTHORIZED", "message": "User not authenticated"})
 		return
 	}
 
@@ -65,9 +66,9 @@ func (h *CardHandlers) GetCards(c *gin.Context) {
 // CreateCard creates a new virtual card for the user
 // POST /api/v1/cards
 func (h *CardHandlers) CreateCard(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetString("user_id"))
+	userID, err := common.GetUserID(c)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "UNAUTHORIZED", "message": "Invalid user ID"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "UNAUTHORIZED", "message": "User not authenticated"})
 		return
 	}
 
@@ -108,9 +109,9 @@ func (h *CardHandlers) CreateCard(c *gin.Context) {
 // GetCard retrieves a specific card
 // GET /api/v1/cards/:id
 func (h *CardHandlers) GetCard(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetString("user_id"))
+	userID, err := common.GetUserID(c)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "UNAUTHORIZED", "message": "Invalid user ID"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "UNAUTHORIZED", "message": "User not authenticated"})
 		return
 	}
 
@@ -146,9 +147,9 @@ func (h *CardHandlers) GetCard(c *gin.Context) {
 // FreezeCard freezes a card
 // POST /api/v1/cards/:id/freeze
 func (h *CardHandlers) FreezeCard(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetString("user_id"))
+	userID, err := common.GetUserID(c)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "UNAUTHORIZED", "message": "Invalid user ID"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "UNAUTHORIZED", "message": "User not authenticated"})
 		return
 	}
 
@@ -188,9 +189,9 @@ func (h *CardHandlers) FreezeCard(c *gin.Context) {
 // UnfreezeCard unfreezes a card
 // POST /api/v1/cards/:id/unfreeze
 func (h *CardHandlers) UnfreezeCard(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetString("user_id"))
+	userID, err := common.GetUserID(c)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "UNAUTHORIZED", "message": "Invalid user ID"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "UNAUTHORIZED", "message": "User not authenticated"})
 		return
 	}
 
@@ -230,9 +231,9 @@ func (h *CardHandlers) UnfreezeCard(c *gin.Context) {
 // GetCardTransactions retrieves transactions for a specific card
 // GET /api/v1/cards/:id/transactions
 func (h *CardHandlers) GetCardTransactions(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetString("user_id"))
+	userID, err := common.GetUserID(c)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "UNAUTHORIZED", "message": "Invalid user ID"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "UNAUTHORIZED", "message": "User not authenticated"})
 		return
 	}
 
@@ -269,9 +270,9 @@ func (h *CardHandlers) GetCardTransactions(c *gin.Context) {
 // GetAllTransactions retrieves all card transactions for the user
 // GET /api/v1/cards/transactions
 func (h *CardHandlers) GetAllTransactions(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetString("user_id"))
+	userID, err := common.GetUserID(c)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "UNAUTHORIZED", "message": "Invalid user ID"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "UNAUTHORIZED", "message": "User not authenticated"})
 		return
 	}
 

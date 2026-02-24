@@ -127,6 +127,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 	// Apple App Site Association — required for passkey Associated Domains
 	router.GET("/.well-known/apple-app-site-association", func(c *gin.Context) {
+		c.Header("Content-Type", "application/json")
 		c.File("static/.well-known/apple-app-site-association")
 	})
 
