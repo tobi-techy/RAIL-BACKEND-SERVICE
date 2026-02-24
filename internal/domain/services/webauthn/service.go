@@ -1,6 +1,7 @@
 package webauthn
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/base64"
@@ -198,35 +199,22 @@ func (s *Service) FinishLogin(ctx context.Context, userID uuid.UUID, email strin
 		Credentials: credentials,
 	}
 
-	credential, err := s.webauthn.ValidateLogin(user, *session, response)
+	credential, err := s.validateLoginAcrossRPIDs(userID, user, *session, response)
+	if err != nil && isBackupFlagValidationError(err) {
+		compatCredentials, adjusted := applyBackupFlagCompatibility(credentials, response)
+		if adjusted {
+			s.logger.Warn("Retrying WebAuthn login validation with backup-flag compatibility",
+				zap.String("user_id", userID.String()))
+			compatUser := &User{
+				ID:          userID,
+				Email:       email,
+				Credentials: compatCredentials,
+			}
+			credential, err = s.validateLoginAcrossRPIDs(userID, compatUser, *session, response)
+		}
+	}
 	if err != nil {
-		validationErrors := []string{fmt.Sprintf("%s: %v", s.primaryRPID, err)}
-
-		for _, rpID := range s.supportedRPIDs {
-			if rpID == s.primaryRPID {
-				continue
-			}
-			validator, ok := s.fallbackValidators[rpID]
-			if !ok || validator == nil {
-				continue
-			}
-
-			fallbackCredential, fallbackErr := validator.ValidateLogin(user, *session, response)
-			if fallbackErr == nil {
-				s.logger.Warn("WebAuthn login validated with fallback rp_id",
-					zap.String("user_id", userID.String()),
-					zap.String("rp_id", rpID))
-				credential = fallbackCredential
-				err = nil
-				break
-			}
-
-			validationErrors = append(validationErrors, fmt.Sprintf("%s: %v", rpID, fallbackErr))
-		}
-
-		if err != nil {
-			return fmt.Errorf("failed to validate login: %s", strings.Join(validationErrors, " | "))
-		}
+		return err
 	}
 
 	// Update sign count and last used
@@ -238,6 +226,79 @@ func (s *Service) FinishLogin(ctx context.Context, userID uuid.UUID, email strin
 	}
 
 	return nil
+}
+
+func (s *Service) validateLoginAcrossRPIDs(userID uuid.UUID, user *User, session webauthn.SessionData, response *protocol.ParsedCredentialAssertionData) (*webauthn.Credential, error) {
+	credential, err := s.webauthn.ValidateLogin(user, session, response)
+	if err == nil {
+		return credential, nil
+	}
+
+	validationErrors := []string{fmt.Sprintf("%s: %v", s.primaryRPID, err)}
+	for _, rpID := range s.supportedRPIDs {
+		if rpID == s.primaryRPID {
+			continue
+		}
+		validator, ok := s.fallbackValidators[rpID]
+		if !ok || validator == nil {
+			continue
+		}
+
+		fallbackCredential, fallbackErr := validator.ValidateLogin(user, session, response)
+		if fallbackErr == nil {
+			s.logger.Warn("WebAuthn login validated with fallback rp_id",
+				zap.String("user_id", userID.String()),
+				zap.String("rp_id", rpID))
+			return fallbackCredential, nil
+		}
+
+		validationErrors = append(validationErrors, fmt.Sprintf("%s: %v", rpID, fallbackErr))
+	}
+
+	return nil, fmt.Errorf("failed to validate login: %s", strings.Join(validationErrors, " | "))
+}
+
+func isBackupFlagValidationError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	msg := err.Error()
+	return strings.Contains(msg, "Backup Eligible flag inconsistency detected during login validation") ||
+		strings.Contains(msg, "Backup State Flag is true but Backup Eligible flag is false which is invalid")
+}
+
+func applyBackupFlagCompatibility(credentials []webauthn.Credential, response *protocol.ParsedCredentialAssertionData) ([]webauthn.Credential, bool) {
+	if response == nil {
+		return credentials, false
+	}
+
+	var idx = -1
+	for i := range credentials {
+		if bytes.Equal(credentials[i].ID, response.RawID) {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return credentials, false
+	}
+
+	flags := response.Response.AuthenticatorData.Flags
+	backupEligible := flags.HasBackupEligible()
+	backupState := flags.HasBackupState()
+
+	if credentials[idx].Flags.BackupEligible == backupEligible &&
+		credentials[idx].Flags.BackupState == backupState {
+		return credentials, false
+	}
+
+	compat := make([]webauthn.Credential, len(credentials))
+	copy(compat, credentials)
+	compat[idx].Flags.BackupEligible = backupEligible
+	compat[idx].Flags.BackupState = backupState
+
+	return compat, true
 }
 
 func newWebAuthn(config Config, rpID string) (*webauthn.WebAuthn, error) {
