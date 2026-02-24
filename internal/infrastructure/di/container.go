@@ -224,6 +224,10 @@ func (a *WithdrawalCircleAdapter) GetWallet(ctx context.Context, walletID string
 	}, nil
 }
 
+func (a *WithdrawalCircleAdapter) GetCCTPTransaction(ctx context.Context, transactionID string) (*entities.CCTPTransactionStatus, error) {
+	return a.client.GetCCTPTransaction(ctx, transactionID)
+}
+
 // WithdrawalBridgeAdapter adapts bridge.Adapter to withdrawal.BridgeAdapter interface
 type WithdrawalBridgeAdapter struct {
 	adapter *bridge.Adapter
