@@ -237,7 +237,7 @@ social_auth:
 
 webauthn:
   rp_display_name: "RAIL"
-  rp_id: "userail.money"
+  rp_id: "api.userail.money"
   rp_origins:
     - "https://userail.money"
     - "https://api.userail.money"

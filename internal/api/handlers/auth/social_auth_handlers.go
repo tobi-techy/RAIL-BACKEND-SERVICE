@@ -509,6 +509,13 @@ func (h *SocialAuthHandlers) BeginWebAuthnLogin(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "LOGIN_ERROR", Message: err.Error()})
 		return
 	}
+	h.logger.Info("WebAuthn login begin session",
+		zap.String("user_id", user.ID.String()),
+		zap.String("primary_rp_id", h.webauthnService.PrimaryRPID()),
+		zap.Strings("supported_rp_ids", h.webauthnService.SupportedRPIDs()),
+		zap.Time("session_expires", sessionData.Expires),
+		zap.Int("allowed_credentials", len(sessionData.AllowedCredentialIDs)),
+		zap.String("user_verification", string(sessionData.UserVerification)))
 
 	sessionID, err := crypto.GenerateRandomString(32)
 	if err != nil {
@@ -642,9 +649,18 @@ func (h *SocialAuthHandlers) FinishWebAuthnLogin(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_WEBAUTHN_RESPONSE", Message: "Failed to parse login response"})
 		return
 	}
+	h.logger.Info("WebAuthn login finish attempt",
+		zap.String("user_id", session.UserID.String()),
+		zap.String("session_id", req.SessionID),
+		zap.Int("allowed_credentials", len(session.SessionData.AllowedCredentialIDs)),
+		zap.Int("credential_id_len", len(parsedResponse.RawID)))
 
 	if err := h.webauthnService.FinishLogin(ctx, session.UserID, session.Email, &session.SessionData, parsedResponse); err != nil {
-		h.logger.Warn("Failed to finish WebAuthn login", zap.Error(err), zap.String("user_id", session.UserID.String()))
+		h.logger.Warn("Failed to finish WebAuthn login",
+			zap.Error(err),
+			zap.String("user_id", session.UserID.String()),
+			zap.String("session_id", req.SessionID),
+			zap.Int("allowed_credentials", len(session.SessionData.AllowedCredentialIDs)))
 		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "LOGIN_FAILED", Message: "Passkey authentication failed"})
 		return
 	}

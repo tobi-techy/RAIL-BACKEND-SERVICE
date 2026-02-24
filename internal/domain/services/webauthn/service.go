@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"fmt"
+	"net/url"
+	"sort"
+	"strings"
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
@@ -21,27 +24,59 @@ type Config struct {
 }
 
 type Service struct {
-	db       *sql.DB
-	logger   *zap.Logger
-	webauthn *webauthn.WebAuthn
+	db                 *sql.DB
+	logger             *zap.Logger
+	webauthn           *webauthn.WebAuthn
+	primaryRPID        string
+	supportedRPIDs     []string
+	fallbackValidators map[string]*webauthn.WebAuthn
+}
+
+func (s *Service) PrimaryRPID() string {
+	return s.primaryRPID
+}
+
+func (s *Service) SupportedRPIDs() []string {
+	out := make([]string, len(s.supportedRPIDs))
+	copy(out, s.supportedRPIDs)
+	return out
 }
 
 func NewService(db *sql.DB, logger *zap.Logger, config Config) (*Service, error) {
-	wconfig := &webauthn.Config{
-		RPDisplayName: config.RPDisplayName,
-		RPID:          config.RPID,
-		RPOrigins:     config.RPOrigins,
+	supportedRPIDs := buildRPIDCandidates(config.RPID, config.RPOrigins)
+	if len(supportedRPIDs) == 0 {
+		return nil, fmt.Errorf("failed to create webauthn: no valid rp ids configured")
 	}
 
-	w, err := webauthn.New(wconfig)
+	primaryRPID := normalizeRPID(config.RPID)
+	if primaryRPID == "" {
+		primaryRPID = supportedRPIDs[0]
+	}
+
+	w, err := newWebAuthn(config, primaryRPID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create webauthn: %w", err)
 	}
 
+	fallbackValidators := make(map[string]*webauthn.WebAuthn)
+	for _, rpID := range supportedRPIDs {
+		if rpID == primaryRPID {
+			continue
+		}
+		fallback, fallbackErr := newWebAuthn(config, rpID)
+		if fallbackErr != nil {
+			return nil, fmt.Errorf("failed to create fallback webauthn for rp_id %q: %w", rpID, fallbackErr)
+		}
+		fallbackValidators[rpID] = fallback
+	}
+
 	return &Service{
-		db:       db,
-		logger:   logger,
-		webauthn: w,
+		db:                 db,
+		logger:             logger,
+		webauthn:           w,
+		primaryRPID:        primaryRPID,
+		supportedRPIDs:     supportedRPIDs,
+		fallbackValidators: fallbackValidators,
 	}, nil
 }
 
@@ -165,7 +200,33 @@ func (s *Service) FinishLogin(ctx context.Context, userID uuid.UUID, email strin
 
 	credential, err := s.webauthn.ValidateLogin(user, *session, response)
 	if err != nil {
-		return fmt.Errorf("failed to validate login: %w", err)
+		validationErrors := []string{fmt.Sprintf("%s: %v", s.primaryRPID, err)}
+
+		for _, rpID := range s.supportedRPIDs {
+			if rpID == s.primaryRPID {
+				continue
+			}
+			validator, ok := s.fallbackValidators[rpID]
+			if !ok || validator == nil {
+				continue
+			}
+
+			fallbackCredential, fallbackErr := validator.ValidateLogin(user, *session, response)
+			if fallbackErr == nil {
+				s.logger.Warn("WebAuthn login validated with fallback rp_id",
+					zap.String("user_id", userID.String()),
+					zap.String("rp_id", rpID))
+				credential = fallbackCredential
+				err = nil
+				break
+			}
+
+			validationErrors = append(validationErrors, fmt.Sprintf("%s: %v", rpID, fallbackErr))
+		}
+
+		if err != nil {
+			return fmt.Errorf("failed to validate login: %s", strings.Join(validationErrors, " | "))
+		}
 	}
 
 	// Update sign count and last used
@@ -177,6 +238,67 @@ func (s *Service) FinishLogin(ctx context.Context, userID uuid.UUID, email strin
 	}
 
 	return nil
+}
+
+func newWebAuthn(config Config, rpID string) (*webauthn.WebAuthn, error) {
+	wconfig := &webauthn.Config{
+		RPDisplayName: config.RPDisplayName,
+		RPID:          rpID,
+		RPOrigins:     config.RPOrigins,
+	}
+
+	return webauthn.New(wconfig)
+}
+
+func normalizeRPID(value string) string {
+	rpID := strings.TrimSpace(strings.ToLower(value))
+	return strings.TrimSuffix(rpID, ".")
+}
+
+func buildRPIDCandidates(configRPID string, origins []string) []string {
+	candidateSet := make(map[string]struct{})
+
+	if rpID := normalizeRPID(configRPID); rpID != "" {
+		candidateSet[rpID] = struct{}{}
+	}
+
+	for _, rawOrigin := range origins {
+		origin := strings.TrimSpace(rawOrigin)
+		if origin == "" {
+			continue
+		}
+
+		host := ""
+		if parsed, err := url.Parse(origin); err == nil {
+			host = parsed.Hostname()
+		}
+		if host == "" {
+			host = origin
+		}
+		if rpID := normalizeRPID(host); rpID != "" {
+			candidateSet[rpID] = struct{}{}
+		}
+	}
+
+	candidates := make([]string, 0, len(candidateSet))
+	for candidate := range candidateSet {
+		candidates = append(candidates, candidate)
+	}
+	sort.Strings(candidates)
+
+	if rpID := normalizeRPID(configRPID); rpID != "" {
+		for idx, candidate := range candidates {
+			if candidate == rpID {
+				if idx == 0 {
+					break
+				}
+				candidates[0], candidates[idx] = candidates[idx], candidates[0]
+				break
+			}
+		}
+	}
+
+	return candidates
 }
 
 // GetCredentials returns user's WebAuthn credentials
