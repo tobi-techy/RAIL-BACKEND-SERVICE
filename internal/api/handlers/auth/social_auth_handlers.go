@@ -73,6 +73,7 @@ func ensureWebAuthnResponseType(response json.RawMessage) json.RawMessage {
 type SocialAuthHandlers struct {
 	socialAuthService *socialauth.Service
 	webauthnService   *webauthnsvc.Service
+	sessionService    SessionService
 	redisClient       cache.RedisClient
 	userRepo          repositories.UserRepository
 	cfg               *config.Config
@@ -82,6 +83,7 @@ type SocialAuthHandlers struct {
 func NewSocialAuthHandlers(
 	socialAuthService *socialauth.Service,
 	webauthnService *webauthnsvc.Service,
+	sessionService SessionService,
 	userRepo repositories.UserRepository,
 	redisClient cache.RedisClient,
 	cfg *config.Config,
@@ -90,6 +92,7 @@ func NewSocialAuthHandlers(
 	return &SocialAuthHandlers{
 		socialAuthService: socialAuthService,
 		webauthnService:   webauthnService,
+		sessionService:    sessionService,
 		redisClient:       redisClient,
 		userRepo:          userRepo,
 		cfg:               cfg,
@@ -238,6 +241,13 @@ func (h *SocialAuthHandlers) SocialLogin(c *gin.Context) {
 		h.logger.Error("Failed to generate tokens", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "TOKEN_ERROR", Message: "Failed to generate tokens"})
 		return
+	}
+	if h.sessionService != nil {
+		ipAddress, userAgent, fingerprint, location := extractSessionDetails(c)
+		sessionExpiresAt := h.sessionExpiryFromRefreshTTL()
+		if _, err := h.sessionService.CreateSession(ctx, user.ID, tokens.AccessToken, tokens.RefreshToken, ipAddress, userAgent, fingerprint, location, sessionExpiresAt); err != nil {
+			h.logger.Warn("Failed to create session after social login", zap.Error(err), zap.String("user_id", user.ID.String()))
+		}
 	}
 
 	h.logger.Info("Social login successful",
@@ -680,6 +690,13 @@ func (h *SocialAuthHandlers) FinishWebAuthnLogin(c *gin.Context) {
 		h.logger.Error("Failed to generate tokens after WebAuthn login", zap.Error(err), zap.String("user_id", user.ID.String()))
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "TOKEN_ERROR", Message: "Failed to generate tokens"})
 		return
+	}
+	if h.sessionService != nil {
+		ipAddress, userAgent, fingerprint, location := extractSessionDetails(c)
+		sessionExpiresAt := h.sessionExpiryFromRefreshTTL()
+		if _, err := h.sessionService.CreateSession(ctx, user.ID, tokens.AccessToken, tokens.RefreshToken, ipAddress, userAgent, fingerprint, location, sessionExpiresAt); err != nil {
+			h.logger.Warn("Failed to create session after WebAuthn login", zap.Error(err), zap.String("user_id", user.ID.String()))
+		}
 	}
 
 	h.deleteWebAuthnSession(ctx, webauthnSessionLoginPrefix, req.SessionID)
