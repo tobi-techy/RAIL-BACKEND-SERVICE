@@ -298,8 +298,10 @@ func calculateBackoff(attempt int, retryAfter *time.Duration) time.Duration {
 func (c *Client) doRequestWithRetry(ctx context.Context, method, endpoint string, requestBody, responseBody interface{}) error {
 	var lastErr error
 	requestID := uuid.NewString()
+	attemptsMade := 0
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		attemptsMade = attempt + 1
 		if attempt > 0 {
 			// Check if the last error was a rate limit error with Retry-After
 			var retryAfter *time.Duration
@@ -352,7 +354,7 @@ func (c *Client) doRequestWithRetry(ctx context.Context, method, endpoint string
 			zap.String("endpoint", endpoint))
 	}
 
-	return fmt.Errorf("request failed after %d attempts: %w", maxRetries+1, lastErr)
+	return fmt.Errorf("request failed after %d attempts: %w", attemptsMade, lastErr)
 }
 
 // doRequest performs a single HTTP request
@@ -825,20 +827,48 @@ func (c *Client) getEntitySecretCiphertext(ctx context.Context) (string, error) 
 
 // GetCCTPTransaction retrieves the status of a CCTP/transfer transaction
 func (c *Client) GetCCTPTransaction(ctx context.Context, transactionID string) (*entities.CCTPTransactionStatus, error) {
-	endpoint := fmt.Sprintf("/v1/w3s/developer/transactions/%s", transactionID)
-
-	var response map[string]interface{}
-	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
-		return &response, c.doRequestWithRetry(ctx, "GET", endpoint, nil, &response)
-	})
-
-	if err != nil {
-		c.logger.Error("Failed to get CCTP transaction",
-			zap.String("transactionId", transactionID),
-			zap.Error(err))
-		return nil, fmt.Errorf("failed to get transaction: %w", err)
+	endpoints := []string{
+		fmt.Sprintf("/v1/w3s/transactions/%s", transactionID),
+		fmt.Sprintf("/v1/w3s/developer/transactions/%s", transactionID),
 	}
 
+	var lastErr error
+	for idx, endpoint := range endpoints {
+		var response map[string]interface{}
+		_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
+			return &response, c.doRequestWithRetry(ctx, "GET", endpoint, nil, &response)
+		})
+		if err != nil {
+			lastErr = err
+			if isCircleNotFoundError(err) && idx < len(endpoints)-1 {
+				c.logger.Warn("Circle transaction lookup endpoint returned 404, trying fallback endpoint",
+					zap.String("transactionId", transactionID),
+					zap.String("endpoint", endpoint))
+				continue
+			}
+			c.logger.Error("Failed to get CCTP transaction",
+				zap.String("transactionId", transactionID),
+				zap.String("endpoint", endpoint),
+				zap.Error(err))
+			return nil, fmt.Errorf("failed to get transaction: %w", err)
+		}
+
+		status := parseCCTPTransactionStatus(transactionID, response)
+		c.logger.Info("Retrieved CCTP transaction status",
+			zap.String("transactionId", status.ID),
+			zap.String("status", status.Status),
+			zap.String("txHash", status.TxHash),
+			zap.String("endpoint", endpoint))
+		return status, nil
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("transaction lookup failed without specific error")
+	}
+	return nil, fmt.Errorf("failed to get transaction: %w", lastErr)
+}
+
+func parseCCTPTransactionStatus(transactionID string, response map[string]interface{}) *entities.CCTPTransactionStatus {
 	// Handle nested data structure
 	data, ok := response["data"].(map[string]interface{})
 	if !ok {
@@ -874,12 +904,15 @@ func (c *Client) GetCCTPTransaction(ctx context.Context, transactionID string) (
 		}
 	}
 
-	c.logger.Info("Retrieved CCTP transaction status",
-		zap.String("transactionId", status.ID),
-		zap.String("status", status.Status),
-		zap.String("txHash", status.TxHash))
+	return status
+}
 
-	return status, nil
+func isCircleNotFoundError(err error) bool {
+	var circleErr entities.CircleAPIError
+	if errors.As(err, &circleErr) {
+		return circleErr.Code == http.StatusNotFound
+	}
+	return false
 }
 
 // injectTraceContext injects OpenTelemetry trace context into HTTP headers
