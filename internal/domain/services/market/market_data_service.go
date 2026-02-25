@@ -3,6 +3,7 @@ package market
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,11 +38,17 @@ type MarketDataService struct {
 	logger       *zap.Logger
 	cacheMu      sync.RWMutex
 	priceCache   map[string]*cachedQuote
+	newsCache    map[string]*cachedNews
 	explorer     *ExplorerService
 }
 
 type cachedQuote struct {
 	quote     *entities.MarketQuote
+	fetchedAt time.Time
+}
+
+type cachedNews struct {
+	response  *entities.MarketNewsResponse
 	fetchedAt time.Time
 }
 
@@ -57,6 +64,7 @@ func NewMarketDataService(
 		notifier:     notifier,
 		logger:       logger,
 		priceCache:   make(map[string]*cachedQuote),
+		newsCache:    make(map[string]*cachedNews),
 		explorer:     NewExplorerService(alpacaClient, logger, "configs/market_taxonomy.yaml"),
 	}
 }
@@ -146,6 +154,83 @@ func (s *MarketDataService) GetMarketFilterMetadata(ctx context.Context) (*entit
 		return nil, fmt.Errorf("market explorer unavailable")
 	}
 	return s.explorer.GetFilterMetadata(ctx)
+}
+
+// GetMarketNews returns public market news with short-lived in-memory caching.
+func (s *MarketDataService) GetMarketNews(ctx context.Context, filters entities.MarketNewsFilters) (*entities.MarketNewsResponse, error) {
+	normalized := normalizeNewsFilters(filters)
+	cacheKey := buildNewsCacheKey(normalized)
+
+	s.cacheMu.RLock()
+	if cached, ok := s.newsCache[cacheKey]; ok && time.Since(cached.fetchedAt) < 60*time.Second {
+		s.cacheMu.RUnlock()
+		return cached.response, nil
+	}
+	s.cacheMu.RUnlock()
+
+	alpacaReq := &entities.AlpacaNewsRequest{
+		Symbols:            normalized.Symbols,
+		Limit:              normalized.Limit,
+		Sort:               "DESC",
+		IncludeContent:     normalized.IncludeContent,
+		ExcludeContentless: true,
+		PageToken:          normalized.PageToken,
+	}
+
+	fetchNews := func(req *entities.AlpacaNewsRequest) (*entities.AlpacaNewsResponse, error) {
+		resp, err := s.alpacaClient.GetNews(ctx, req)
+		if err != nil {
+			return nil, fmt.Errorf("get market news: %w", err)
+		}
+		return resp, nil
+	}
+
+	alpacaResp, err := fetchNews(alpacaReq)
+	if err != nil {
+		return nil, err
+	}
+	if len(alpacaResp.News) == 0 && len(normalized.Symbols) > 0 {
+		alpacaReq.Symbols = nil
+		alpacaResp, err = fetchNews(alpacaReq)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(alpacaResp.News) == 0 && alpacaReq.ExcludeContentless {
+		alpacaReq.ExcludeContentless = false
+		alpacaResp, err = fetchNews(alpacaReq)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	items := make([]entities.MarketNewsItem, 0, len(alpacaResp.News))
+	seen := make(map[string]struct{}, len(alpacaResp.News))
+	for _, article := range alpacaResp.News {
+		item := mapMarketNewsItem(article)
+		if item.Title == "" || item.URL == "" {
+			continue
+		}
+		if _, exists := seen[item.ID]; exists {
+			continue
+		}
+		seen[item.ID] = struct{}{}
+		items = append(items, item)
+	}
+
+	response := &entities.MarketNewsResponse{
+		News:          items,
+		Count:         len(items),
+		AsOf:          time.Now().UTC(),
+		NextPageToken: alpacaResp.NextPageToken,
+		AppliedFilter: normalized,
+	}
+
+	s.cacheMu.Lock()
+	s.newsCache[cacheKey] = &cachedNews{response: response, fetchedAt: time.Now()}
+	s.cacheMu.Unlock()
+
+	return response, nil
 }
 
 // CreateAlert creates a new market alert
@@ -291,4 +376,96 @@ func (s *MarketDataService) triggerAlert(ctx context.Context, alert *entities.Ma
 		zap.String("price", currentPrice.String()))
 
 	return nil
+}
+
+func normalizeNewsFilters(filters entities.MarketNewsFilters) entities.MarketNewsFilters {
+	normalized := entities.MarketNewsFilters{
+		Limit:          filters.Limit,
+		PageToken:      strings.TrimSpace(filters.PageToken),
+		IncludeContent: filters.IncludeContent,
+	}
+
+	if normalized.Limit <= 0 {
+		normalized.Limit = 10
+	}
+	if normalized.Limit > 25 {
+		normalized.Limit = 25
+	}
+
+	if len(filters.Symbols) > 0 {
+		seen := make(map[string]struct{}, len(filters.Symbols))
+		for _, symbol := range filters.Symbols {
+			symbol = strings.ToUpper(strings.TrimSpace(symbol))
+			if symbol == "" {
+				continue
+			}
+			if _, ok := seen[symbol]; ok {
+				continue
+			}
+			seen[symbol] = struct{}{}
+			normalized.Symbols = append(normalized.Symbols, symbol)
+		}
+	}
+
+	return normalized
+}
+
+func buildNewsCacheKey(filters entities.MarketNewsFilters) string {
+	return strings.Join(filters.Symbols, ",") +
+		"|limit=" + fmt.Sprintf("%d", filters.Limit) +
+		"|token=" + filters.PageToken +
+		"|content=" + fmt.Sprintf("%t", filters.IncludeContent)
+}
+
+func mapMarketNewsItem(article entities.AlpacaNewsArticle) entities.MarketNewsItem {
+	summary := strings.TrimSpace(article.Summary)
+	contentPreview := ""
+	if summary == "" {
+		contentPreview = truncateString(strings.TrimSpace(article.Content), 280)
+		summary = contentPreview
+	} else {
+		contentPreview = truncateString(strings.TrimSpace(article.Content), 280)
+	}
+
+	var imageURL *string
+	for _, image := range article.Images {
+		url := strings.TrimSpace(image.URL)
+		if url == "" {
+			continue
+		}
+		imageURL = &url
+		if strings.EqualFold(strings.TrimSpace(image.Size), "large") {
+			break
+		}
+	}
+
+	publishedAt := article.CreatedAt
+	if publishedAt.IsZero() {
+		publishedAt = article.UpdatedAt
+	}
+	if publishedAt.IsZero() {
+		publishedAt = time.Now().UTC()
+	}
+
+	return entities.MarketNewsItem{
+		ID:             fmt.Sprintf("alpaca:%d", article.ID),
+		Source:         strings.TrimSpace(article.Source),
+		Title:          strings.TrimSpace(article.Headline),
+		Summary:        summary,
+		ContentPreview: contentPreview,
+		URL:            strings.TrimSpace(article.URL),
+		RelatedSymbols: article.Symbols,
+		PublishedAt:    publishedAt.UTC(),
+		ImageURL:       imageURL,
+	}
+}
+
+func truncateString(value string, limit int) string {
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	if limit <= 3 {
+		return value[:limit]
+	}
+	return strings.TrimSpace(value[:limit-3]) + "..."
 }
