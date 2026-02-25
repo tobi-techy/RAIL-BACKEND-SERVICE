@@ -3,8 +3,10 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -183,39 +185,55 @@ func (h *SpendingStashHandlers) buildResponse(
 
 	resp := &SpendingStashResponse{
 		Balance: BalanceInfo{
-			Available:   "0.00",
-			Pending:     "0.00",
-			Currency:    "USD",
-			LastUpdated: now,
+			SpendingBalance:          "0.00",
+			SpendingBalanceFormatted: "$0.00",
+			Available:                "0.00",
+			Pending:                  "0.00",
+			PendingFormatted:         "$0.00",
+			Currency:                 "USD",
+			LastUpdated:              now,
 		},
 		Allocation: SpendingAllocationInfo{
-			Active:        false,
-			SpendingRatio: 0.70,
-			StashRatio:    0.30,
-			TotalReceived: "0.00",
+			Active:                 false,
+			SpendingRatio:          0.70,
+			StashRatio:             0.30,
+			TotalReceived:          "0.00",
+			TotalReceivedFormatted: "$0.00",
+			SpendingAllocated:      "0.00",
+			StashAllocated:         "0.00",
+			Unallocated:            "0.00",
 		},
 		TopCategories:         []CategorySummary{},
 		PendingAuthorizations: []PendingAuthorization{},
 		RecentTransactions:    TransactionListResponse{Items: []TransactionSummary{}},
 		Limits: SpendingLimits{
-			Daily:          LimitDetail{Limit: "0.00", Used: "0.00", Remaining: "0.00"},
-			Monthly:        LimitDetail{Limit: "0.00", Used: "0.00", Remaining: "0.00"},
-			PerTransaction: "0.00",
+			Daily:              LimitDetail{Limit: "0.00", Used: "0.00", Remaining: "0.00"},
+			Monthly:            LimitDetail{Limit: "0.00", Used: "0.00", Remaining: "0.00"},
+			PerTransaction:     "0.00",
+			MinimumTransaction: "0.00",
 		},
 		Links: SpendingLinks{
 			Self:           "/api/v1/account/spending-stash",
-			Transactions:   "/api/v1/transactions?type=card",
+			Transactions:   "/api/v1/cards/transactions",
 			EditLimits:     "/api/v1/limits",
 			EditAllocation: "/api/v1/allocation",
-			FreezeCard:     "/api/v1/card/freeze",
+			FreezeCard:     "/api/v1/cards/{id}/freeze",
 		},
 	}
 
 	// Balance
 	if balances != nil {
+		resp.Balance.SpendingBalance = balances.SpendingBalance.StringFixed(2)
+		resp.Balance.SpendingBalanceFormatted = formatCurrencyFromDecimal(balances.SpendingBalance, "USD", false)
 		resp.Balance.Available = balances.SpendingRemaining.StringFixed(2)
 		resp.Balance.LastUpdated = balances.UpdatedAt
 		resp.Allocation.Active = balances.ModeActive
+		resp.Allocation.SpendingAllocated = balances.SpendingBalance.StringFixed(2)
+		resp.Allocation.StashAllocated = balances.StashBalance.StringFixed(2)
+		resp.Allocation.Unallocated = balances.USDCBalance.StringFixed(2)
+		total := balances.SpendingBalance.Add(balances.StashBalance).Add(balances.USDCBalance)
+		resp.Allocation.TotalReceived = total.StringFixed(2)
+		resp.Allocation.TotalReceivedFormatted = formatCurrencyFromDecimal(total, "USD", false)
 	}
 
 	// Allocation mode
@@ -259,42 +277,50 @@ func (h *SpendingStashHandlers) buildResponse(
 
 		var pending decimal.Decimal
 		for _, tx := range txnsToShow {
-			merchantName := ""
+			merchantName := "Card transaction"
 			category := "Other"
 			if tx.MerchantName != nil {
-				merchantName = *tx.MerchantName
+				trimmed := strings.TrimSpace(*tx.MerchantName)
+				if trimmed != "" {
+					merchantName = trimmed
+				}
 			}
 			if tx.MerchantCategory != nil {
-				category = *tx.MerchantCategory
+				category = normalizeCategory(*tx.MerchantCategory)
 			}
 
 			if tx.Status == "pending" || tx.Type == "authorization" {
+				pendingAmount := tx.Amount.Abs()
 				resp.PendingAuthorizations = append(resp.PendingAuthorizations, PendingAuthorization{
-					ID:           tx.ID.String(),
-					MerchantName: merchantName,
-					Amount:       tx.Amount.Abs().StringFixed(2),
-					Currency:     tx.Currency,
-					AuthorizedAt: tx.CreatedAt.Format(time.RFC3339),
-					ExpiresAt:    tx.CreatedAt.Add(72 * time.Hour).Format(time.RFC3339),
-					Category:     category,
+					ID:              tx.ID.String(),
+					MerchantName:    merchantName,
+					Amount:          pendingAmount.StringFixed(2),
+					AmountFormatted: formatCurrencyFromDecimal(pendingAmount, tx.Currency, false),
+					Currency:        tx.Currency,
+					AuthorizedAt:    tx.CreatedAt.Format(time.RFC3339),
+					ExpiresAt:       tx.CreatedAt.Add(72 * time.Hour).Format(time.RFC3339),
+					Category:        category,
 				})
-				pending = pending.Add(tx.Amount.Abs())
+				pending = pending.Add(pendingAmount)
 			} else {
 				amount := tx.Amount.Abs().Neg()
+				direction := "debit"
 				if tx.Type == "refund" || tx.Status == "reversed" {
 					amount = tx.Amount.Abs()
+					direction = "credit"
 				}
 
 				resp.RecentTransactions.Items = append(resp.RecentTransactions.Items, TransactionSummary{
-					ID:          tx.ID.String(),
-					Type:        "card",
-					Amount:      amount.StringFixed(2),
-					Currency:    tx.Currency,
-					Description: merchantName,
+					ID:              tx.ID.String(),
+					Type:            "card",
+					Amount:          amount.StringFixed(2),
+					AmountFormatted: formatCurrencyFromDecimal(amount, tx.Currency, true),
+					Direction:       direction,
+					Currency:        tx.Currency,
+					Description:     merchantName,
 					Merchant: &MerchantInfo{
-						Name:         merchantName,
-						Category:     category,
-						CategoryIcon: categoryIcon(category),
+						Name:     merchantName,
+						Category: category,
 					},
 					Status:            tx.Status,
 					CreatedAt:         tx.CreatedAt.Format(time.RFC3339),
@@ -303,6 +329,7 @@ func (h *SpendingStashHandlers) buildResponse(
 			}
 		}
 		resp.Balance.Pending = pending.StringFixed(2)
+		resp.Balance.PendingFormatted = formatCurrencyFromDecimal(pending, resp.Balance.Currency, false)
 		resp.RecentTransactions.HasMore = hasMore
 		if hasMore && len(txnsToShow) > 0 {
 			cursor := txnsToShow[len(txnsToShow)-1].ID.String()
@@ -329,10 +356,25 @@ func (h *SpendingStashHandlers) buildResponse(
 
 	// Limits
 	if userLimits != nil && userLimits.Withdrawal.Daily.Limit != "" {
+		dailyResetsAt := userLimits.Withdrawal.Daily.ResetsAt.Format(time.RFC3339)
+		monthlyResetsAt := userLimits.Withdrawal.Monthly.ResetsAt.Format(time.RFC3339)
 		resp.Limits = SpendingLimits{
-			Daily:          LimitDetail{Limit: userLimits.Withdrawal.Daily.Limit, Used: userLimits.Withdrawal.Daily.Used, Remaining: userLimits.Withdrawal.Daily.Remaining},
-			Monthly:        LimitDetail{Limit: userLimits.Withdrawal.Monthly.Limit, Used: userLimits.Withdrawal.Monthly.Used, Remaining: userLimits.Withdrawal.Monthly.Remaining},
-			PerTransaction: userLimits.Withdrawal.Daily.Remaining,
+			Daily: LimitDetail{
+				Limit:       userLimits.Withdrawal.Daily.Limit,
+				Used:        userLimits.Withdrawal.Daily.Used,
+				Remaining:   userLimits.Withdrawal.Daily.Remaining,
+				UsedPercent: calculateUsedPercent(userLimits.Withdrawal.Daily.Used, userLimits.Withdrawal.Daily.Limit),
+				ResetsAt:    &dailyResetsAt,
+			},
+			Monthly: LimitDetail{
+				Limit:       userLimits.Withdrawal.Monthly.Limit,
+				Used:        userLimits.Withdrawal.Monthly.Used,
+				Remaining:   userLimits.Withdrawal.Monthly.Remaining,
+				UsedPercent: calculateUsedPercent(userLimits.Withdrawal.Monthly.Used, userLimits.Withdrawal.Monthly.Limit),
+				ResetsAt:    &monthlyResetsAt,
+			},
+			PerTransaction:     userLimits.Withdrawal.Daily.Remaining,
+			MinimumTransaction: userLimits.Withdrawal.Minimum,
 			DailyTransactionsRemaining: estimateDailyTransactionsRemaining(
 				userLimits.Withdrawal.Daily.Remaining,
 				userLimits.Withdrawal.Minimum,
@@ -345,7 +387,13 @@ func (h *SpendingStashHandlers) buildResponse(
 
 func (h *SpendingStashHandlers) calculateSpendingMetrics(txns []*entities.BridgeCardTransaction) (*SpendingSummary, []CategorySummary) {
 	if len(txns) == 0 {
-		return &SpendingSummary{ThisMonthTotal: "0.00", DailyAverage: "0.00", Trend: "stable"}, []CategorySummary{}
+		return &SpendingSummary{
+			ThisMonthTotal:          "0.00",
+			ThisMonthTotalFormatted: "$0.00",
+			DailyAverage:            "0.00",
+			DailyAverageFormatted:   "$0.00",
+			Trend:                   "stable",
+		}, []CategorySummary{}
 	}
 
 	now := time.Now()
@@ -376,9 +424,10 @@ func (h *SpendingStashHandlers) calculateSpendingMetrics(txns []*entities.Bridge
 	}
 
 	summary := &SpendingSummary{
-		ThisMonthTotal:   thisMonthTotal.StringFixed(2),
-		TransactionCount: count,
-		Trend:            "stable",
+		ThisMonthTotal:          thisMonthTotal.StringFixed(2),
+		ThisMonthTotalFormatted: formatCurrencyFromDecimal(thisMonthTotal, "USD", false),
+		TransactionCount:        count,
+		Trend:                   "stable",
 	}
 
 	if daysInMonth := now.Day(); daysInMonth > 0 && !thisMonthTotal.IsZero() {
@@ -386,6 +435,8 @@ func (h *SpendingStashHandlers) calculateSpendingMetrics(txns []*entities.Bridge
 	} else {
 		summary.DailyAverage = "0.00"
 	}
+	dailyAverageDecimal, _ := decimal.NewFromString(summary.DailyAverage)
+	summary.DailyAverageFormatted = formatCurrencyFromDecimal(dailyAverageDecimal, "USD", false)
 
 	if !lastMonthTotal.IsZero() {
 		change := thisMonthTotal.Sub(lastMonthTotal).Div(lastMonthTotal).Mul(decimal.NewFromInt(100))
@@ -405,7 +456,12 @@ func (h *SpendingStashHandlers) calculateSpendingMetrics(txns []*entities.Bridge
 		if !thisMonthTotal.IsZero() {
 			pct, _ = amount.Div(thisMonthTotal).Mul(decimal.NewFromInt(100)).Float64()
 		}
-		categories = append(categories, CategorySummary{Name: name, Amount: amount.StringFixed(2), Percent: pct})
+		categories = append(categories, CategorySummary{
+			Name:            name,
+			Amount:          amount.StringFixed(2),
+			AmountFormatted: formatCurrencyFromDecimal(amount, "USD", false),
+			Percent:         pct,
+		})
 	}
 	// Sort descending by amount
 	for i := 0; i < len(categories); i++ {
@@ -424,23 +480,6 @@ func (h *SpendingStashHandlers) calculateSpendingMetrics(txns []*entities.Bridge
 	return summary, categories
 }
 
-func categoryIcon(category string) string {
-	icons := map[string]string{
-		"Food & Drink":   "🍔",
-		"Shopping":       "🛍️",
-		"Transportation": "🚗",
-		"Entertainment":  "🎬",
-		"Travel":         "✈️",
-		"Health":         "💊",
-		"Utilities":      "💡",
-		"Groceries":      "🛒",
-	}
-	if icon, ok := icons[category]; ok {
-		return icon
-	}
-	return "💳"
-}
-
 func estimateDailyTransactionsRemaining(dailyRemaining, minimumTxn string) int {
 	remaining, err := decimal.NewFromString(dailyRemaining)
 	if err != nil || !remaining.IsPositive() {
@@ -453,4 +492,52 @@ func estimateDailyTransactionsRemaining(dailyRemaining, minimumTxn string) int {
 	}
 
 	return int(remaining.Div(minimum).Floor().IntPart())
+}
+
+func calculateUsedPercent(used, limit string) float64 {
+	usedDecimal, err := decimal.NewFromString(used)
+	if err != nil || usedDecimal.IsNegative() {
+		return 0
+	}
+	limitDecimal, err := decimal.NewFromString(limit)
+	if err != nil || !limitDecimal.IsPositive() {
+		return 0
+	}
+	pct, _ := usedDecimal.Div(limitDecimal).Mul(decimal.NewFromInt(100)).Float64()
+	if pct < 0 {
+		return 0
+	}
+	if pct > 100 {
+		return 100
+	}
+	return pct
+}
+
+func formatCurrencyFromDecimal(amount decimal.Decimal, currency string, includeSign bool) string {
+	normalizedCurrency := strings.ToUpper(strings.TrimSpace(currency))
+	symbol := normalizedCurrency + " "
+	if normalizedCurrency == "" || normalizedCurrency == "USD" {
+		symbol = "$"
+	}
+
+	value := amount
+	prefix := ""
+	if includeSign {
+		if amount.IsNegative() {
+			prefix = "-"
+			value = amount.Abs()
+		} else if amount.IsPositive() {
+			prefix = "+"
+		}
+	}
+
+	return fmt.Sprintf("%s%s%s", prefix, symbol, value.StringFixed(2))
+}
+
+func normalizeCategory(category string) string {
+	cleaned := strings.TrimSpace(category)
+	if cleaned == "" {
+		return "Other"
+	}
+	return cleaned
 }

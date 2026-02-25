@@ -54,6 +54,7 @@ type Service struct {
 	walletRepo          WalletRepository
 	managedWalletRepo   ManagedWalletRepository
 	virtualAccountRepo  VirtualAccountRepository
+	alpacaAccountLookup AlpacaAccountLookup
 	circleAPI           CircleAdapter
 	bridgeVAService     *BridgeVirtualAccountService
 	alpacaAPI           AlpacaAdapter
@@ -71,6 +72,7 @@ type Service struct {
 // DepositRepository interface for deposit persistence
 type DepositRepository interface {
 	Create(ctx context.Context, deposit *entities.Deposit) error
+	GetByID(ctx context.Context, id uuid.UUID) (*entities.Deposit, error)
 	GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Deposit, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status string, confirmedAt *time.Time) error
 	GetByTxHash(ctx context.Context, txHash string) (*entities.Deposit, error)
@@ -116,6 +118,11 @@ type AlpacaAdapter interface {
 	GetInstantFundingStatus(ctx context.Context, transferID string) (*entities.AlpacaInstantFundingResponse, error)
 	GetAccountBalance(ctx context.Context, accountID string) (*entities.AlpacaAccountResponse, error)
 	CreateJournal(ctx context.Context, req *entities.AlpacaJournalRequest) (*entities.AlpacaJournalResponse, error)
+}
+
+// AlpacaAccountLookup resolves persisted account ownership.
+type AlpacaAccountLookup interface {
+	GetByAlpacaID(ctx context.Context, alpacaAccountID string) (*entities.AlpacaAccount, error)
 }
 
 // NewService creates a new funding service
@@ -180,6 +187,11 @@ func (s *Service) SetNotificationService(ns FundingNotificationService) {
 // SetBridgeVAService sets the Bridge virtual account service (optional)
 func (s *Service) SetBridgeVAService(bva *BridgeVirtualAccountService) {
 	s.bridgeVAService = bva
+}
+
+// SetAlpacaAccountLookup sets the alpaca account ownership lookup service (optional).
+func (s *Service) SetAlpacaAccountLookup(lookup AlpacaAccountLookup) {
+	s.alpacaAccountLookup = lookup
 }
 
 // SetAllocationService sets the allocation service for automatic 70/30 split (optional)
@@ -268,6 +280,32 @@ func (s *Service) GetFundingConfirmations(ctx context.Context, userID uuid.UUID,
 	}
 
 	return confirmations, nil
+}
+
+// GetFundingConfirmationByID retrieves a single funding confirmation by deposit ID.
+func (s *Service) GetFundingConfirmationByID(ctx context.Context, userID, depositID uuid.UUID) (*entities.FundingConfirmation, error) {
+	deposit, err := s.depositRepo.GetByID(ctx, depositID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get deposit: %w", err)
+	}
+	if deposit == nil || deposit.UserID != userID {
+		return nil, fmt.Errorf("deposit not found")
+	}
+
+	confirmedAt := deposit.CreatedAt
+	if deposit.ConfirmedAt != nil {
+		confirmedAt = *deposit.ConfirmedAt
+	}
+
+	return &entities.FundingConfirmation{
+		ID:          deposit.ID,
+		Chain:       deposit.Chain,
+		TxHash:      deposit.TxHash,
+		Token:       deposit.Token,
+		Amount:      deposit.Amount.String(),
+		Status:      deposit.Status,
+		ConfirmedAt: confirmedAt,
+	}, nil
 }
 
 // GetBalance returns user's current balance from ledger with caching
@@ -570,6 +608,17 @@ func (s *Service) CreateVirtualAccount(ctx context.Context, req *entities.Create
 			s.logger.Info("Virtual account already exists", "user_id", req.UserID.String(), "alpaca_account_id", req.AlpacaAccountID)
 		}
 		return nil, fmt.Errorf("virtual account already exists for this Alpaca account")
+	}
+
+	// Ensure the requested Alpaca account belongs to the authenticated user.
+	if s.alpacaAccountLookup != nil {
+		account, err := s.alpacaAccountLookup.GetByAlpacaID(ctx, req.AlpacaAccountID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to verify alpaca account ownership: %w", err)
+		}
+		if account == nil || account.UserID != req.UserID {
+			return nil, fmt.Errorf("alpaca account does not belong to authenticated user")
+		}
 	}
 
 	// Verify Alpaca account exists and is accessible

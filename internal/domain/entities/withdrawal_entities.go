@@ -2,6 +2,7 @@ package entities
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -250,12 +251,16 @@ func (r *InitiateCryptoWithdrawalRequest) Validate() error {
 
 // InitiateFiatWithdrawalRequest represents a fiat withdrawal request
 type InitiateFiatWithdrawalRequest struct {
-	UserID         uuid.UUID               `json:"user_id"`
-	Amount         decimal.Decimal         `json:"amount"`
-	Currency       WithdrawalCurrency      `json:"currency"`
-	RoutingNumber  string                  `json:"routing_number"`
-	SourceAccount  WithdrawalSourceAccount `json:"source_account"`
-	IdempotencyKey string                  // Generated server-side
+	UserID            uuid.UUID               `json:"user_id"`
+	Amount            decimal.Decimal         `json:"amount"`
+	Currency          WithdrawalCurrency      `json:"currency"`
+	AccountHolderName string                  `json:"account_holder_name"`
+	AccountNumber     string                  `json:"account_number,omitempty"` // USD only
+	RoutingNumber     string                  `json:"routing_number,omitempty"` // USD only
+	IBAN              string                  `json:"iban,omitempty"`           // EUR only
+	BIC               string                  `json:"bic,omitempty"`            // EUR optional
+	SourceAccount     WithdrawalSourceAccount `json:"source_account"`
+	IdempotencyKey    string                  // Optional client-provided idempotency key
 }
 
 // Validate validates the fiat withdrawal request
@@ -269,24 +274,67 @@ func (r *InitiateFiatWithdrawalRequest) Validate() error {
 	if !ValidWithdrawalCurrencies[r.Currency] {
 		return fmt.Errorf("invalid currency: %s", r.Currency)
 	}
+	if strings.TrimSpace(r.AccountHolderName) == "" {
+		return fmt.Errorf("account holder name is required")
+	}
 	if r.Currency == WithdrawalCurrencyEUR {
 		minAmountEUR := decimal.NewFromFloat(10.00)
 		if r.Amount.LessThan(minAmountEUR) {
 			return fmt.Errorf("amount must be at least %s EUR", minAmountEUR.String())
 		}
-		if len(r.RoutingNumber) < 15 || len(r.RoutingNumber) > 34 {
+		iban := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(r.IBAN), " ", ""))
+		if len(iban) < 15 || len(iban) > 34 {
 			return fmt.Errorf("IBAN must be between 15 and 34 characters")
+		}
+		if !isUpperAlphaNumeric(iban) {
+			return fmt.Errorf("IBAN must contain only letters and digits")
+		}
+		bic := strings.ToUpper(strings.TrimSpace(r.BIC))
+		if bic != "" {
+			if (len(bic) != 8 && len(bic) != 11) || !isUpperAlphaNumeric(bic) {
+				return fmt.Errorf("BIC must be 8 or 11 alphanumeric characters")
+			}
 		}
 	}
 	if r.Currency == WithdrawalCurrencyUSD {
-		if len(r.RoutingNumber) != 9 {
+		routing := strings.ReplaceAll(strings.TrimSpace(r.RoutingNumber), " ", "")
+		account := strings.ReplaceAll(strings.TrimSpace(r.AccountNumber), " ", "")
+		if len(routing) != 9 || !isDigitsOnly(routing) {
 			return fmt.Errorf("routing number must be 9 digits")
+		}
+		if len(account) < 4 || len(account) > 17 || !isDigitsOnly(account) {
+			return fmt.Errorf("account number must be 4-17 digits")
 		}
 	}
 	if !ValidWithdrawalSourceAccounts[r.SourceAccount] {
 		return fmt.Errorf("invalid source account: %s", r.SourceAccount)
 	}
 	return nil
+}
+
+func isDigitsOnly(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, ch := range value {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isUpperAlphaNumeric(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, ch := range value {
+		if (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // InitiateWithdrawalResponse represents the response to a withdrawal request

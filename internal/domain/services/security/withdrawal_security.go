@@ -3,6 +3,7 @@ package security
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"fmt"
@@ -15,11 +16,11 @@ import (
 )
 
 const (
-	withdrawalConfirmPrefix = "withdrawal_confirm:"
+	withdrawalConfirmPrefix  = "withdrawal_confirm:"
 	withdrawalVelocityPrefix = "withdrawal_velocity:"
-	confirmationTTL         = 15 * time.Minute
-	velocityWindow          = 24 * time.Hour
-	maxWithdrawalsPerDay    = 5
+	confirmationTTL          = 15 * time.Minute
+	velocityWindow           = 24 * time.Hour
+	maxWithdrawalsPerDay     = 5
 	largeWithdrawalThreshold = 1000.00
 )
 
@@ -139,12 +140,12 @@ func (s *WithdrawalSecurityService) CreateConfirmation(ctx context.Context, user
 	// Store in Redis for fast lookup
 	key := withdrawalConfirmPrefix + token
 	err = s.redis.HSet(ctx, key, map[string]interface{}{
-		"id":           confirmation.ID.String(),
-		"user_id":      userID.String(),
+		"id":            confirmation.ID.String(),
+		"user_id":       userID.String(),
 		"withdrawal_id": withdrawalID.String(),
-		"amount":       amount.String(),
-		"dest_address": destAddress,
-		"created_at":   confirmation.CreatedAt.Unix(),
+		"amount":        amount.String(),
+		"dest_address":  destAddress,
+		"created_at":    confirmation.CreatedAt.Unix(),
 	}).Err()
 	if err != nil {
 		return nil, fmt.Errorf("failed to store confirmation: %w", err)
@@ -204,7 +205,7 @@ func (s *WithdrawalSecurityService) VerifyConfirmation(ctx context.Context, toke
 // RecordWithdrawal records a withdrawal for velocity tracking
 func (s *WithdrawalSecurityService) RecordWithdrawal(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, destAddress string) error {
 	key := fmt.Sprintf("%s%s:%s", withdrawalVelocityPrefix, userID.String(), time.Now().Format("2006-01-02"))
-	
+
 	pipe := s.redis.Pipeline()
 	pipe.Incr(ctx, key)
 	pipe.Expire(ctx, key, 48*time.Hour)
@@ -251,8 +252,6 @@ func generateSecureToken(length int) (string, error) {
 }
 
 func hashToken(token string) string {
-	// Use same hashing as session service
-	hash := make([]byte, 32)
-	copy(hash, token)
-	return hex.EncodeToString(hash)
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }

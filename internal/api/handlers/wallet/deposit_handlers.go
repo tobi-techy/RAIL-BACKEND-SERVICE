@@ -3,6 +3,7 @@ package wallet
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -14,8 +15,9 @@ import (
 
 // CreateDepositRequest represents a unified deposit creation request
 type CreateDepositRequest struct {
-	Type  string `json:"type" binding:"required,oneof=crypto fiat"` // "crypto" or "fiat"
-	Chain string `json:"chain,omitempty"`                           // required for crypto
+	Type            string `json:"type" binding:"required,oneof=crypto fiat"` // "crypto" or "fiat"
+	Chain           string `json:"chain,omitempty"`                           // required for crypto
+	AlpacaAccountID string `json:"alpaca_account_id,omitempty"`               // required for fiat
 }
 
 // CreateDepositResponse represents the unified deposit creation response
@@ -23,9 +25,9 @@ type CreateDepositResponse struct {
 	DepositID string `json:"deposit_id,omitempty"`
 	Type      string `json:"type"`
 	Status    string `json:"status"`
-	Address   string `json:"address,omitempty"`   // for crypto
-	Chain     string `json:"chain,omitempty"`      // for crypto
-	Message   string `json:"message,omitempty"`    // instructions
+	Address   string `json:"address,omitempty"` // for crypto
+	Chain     string `json:"chain,omitempty"`   // for crypto
+	Message   string `json:"message,omitempty"` // instructions
 }
 
 // DepositDetailResponse represents a single deposit
@@ -79,18 +81,37 @@ func (h *WalletFundingHandlers) CreateDeposit(c *gin.Context) {
 		})
 
 	case "fiat":
+		if strings.TrimSpace(req.AlpacaAccountID) == "" {
+			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
+				Code:    "INVALID_REQUEST",
+				Message: "alpaca_account_id is required for fiat deposits",
+			})
+			return
+		}
 		// Create or retrieve virtual account for fiat deposits
-		resp, err := h.fundingService.CreateVirtualAccount(ctx, &entities.CreateVirtualAccountRequest{UserID: userUUID})
+		resp, err := h.fundingService.CreateVirtualAccount(ctx, &entities.CreateVirtualAccountRequest{
+			UserID:          userUUID,
+			AlpacaAccountID: strings.TrimSpace(req.AlpacaAccountID),
+		})
 		if err != nil {
+			if strings.Contains(err.Error(), "does not belong to authenticated user") {
+				c.JSON(http.StatusForbidden, entities.ErrorResponse{Code: "ALPACA_ACCOUNT_FORBIDDEN", Message: "Alpaca account does not belong to authenticated user"})
+				return
+			}
 			h.logger.Error("Failed to create fiat deposit", "error", err, "user_id", userUUID)
 			c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "DEPOSIT_ERROR", Message: "Failed to initiate fiat deposit"})
 			return
 		}
 		c.JSON(http.StatusCreated, CreateDepositResponse{
-			Type:    "fiat",
-			Status:  "pending",
-			Message: "Wire funds to your virtual account",
+			Type:      "fiat",
+			Status:    "pending",
+			Message:   "Wire funds to your virtual account",
 			DepositID: resp.VirtualAccount.ID.String(),
+		})
+	default:
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
+			Code:    "INVALID_REQUEST",
+			Message: "type must be either crypto or fiat",
 		})
 	}
 }
@@ -104,10 +125,16 @@ func (h *WalletFundingHandlers) ListDeposits(c *gin.Context) {
 	}
 
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if limit <= 0 {
+		limit = 20
+	}
 	if limit > 100 {
 		limit = 100
 	}
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if offset < 0 {
+		offset = 0
+	}
 
 	confirmations, err := h.fundingService.GetFundingConfirmations(c.Request.Context(), userUUID, limit, offset)
 	if err != nil {
@@ -118,14 +145,21 @@ func (h *WalletFundingHandlers) ListDeposits(c *gin.Context) {
 
 	deposits := make([]DepositDetailResponse, 0, len(confirmations))
 	for _, conf := range confirmations {
+		depositType := "crypto"
+		currency := "USDC"
+		chain := string(conf.Chain)
+		if chain == "" || strings.HasPrefix(strings.ToLower(conf.Status), "off_ramp") || strings.EqualFold(conf.Status, "broker_funded") {
+			depositType = "fiat"
+			currency = "USD"
+		}
 		d := DepositDetailResponse{
 			ID:        conf.ID.String(),
-			Type:      "crypto", // default; fiat deposits will have different chain markers
-			Chain:     string(conf.Chain),
+			Type:      depositType,
+			Chain:     chain,
 			TxHash:    conf.TxHash,
 			Amount:    conf.Amount,
 			Status:    conf.Status,
-			Currency:  "USDC",
+			Currency:  currency,
 			CreatedAt: conf.ConfirmedAt.Format("2006-01-02T15:04:05Z"),
 		}
 		if !conf.ConfirmedAt.IsZero() {
@@ -146,7 +180,7 @@ func (h *WalletFundingHandlers) ListDeposits(c *gin.Context) {
 
 // GetDeposit handles GET /api/v1/deposits/:id
 func (h *WalletFundingHandlers) GetDeposit(c *gin.Context) {
-	_, err := common.GetUserID(c)
+	userUUID, err := common.GetUserID(c)
 	if err != nil {
 		common.RespondUnauthorized(c, "User not authenticated")
 		return
@@ -159,8 +193,38 @@ func (h *WalletFundingHandlers) GetDeposit(c *gin.Context) {
 	}
 
 	// Use the deposit repo through the funding service's existing GetByTxHash pattern
-	// For now, we search the user's deposits and match by ID
-	// TODO: Add GetByID to deposit repo for direct lookup
-	_ = depositID
-	c.JSON(http.StatusNotImplemented, entities.ErrorResponse{Code: "NOT_IMPLEMENTED", Message: "Direct deposit lookup coming soon - use GET /deposits to list"})
+	confirmation, err := h.fundingService.GetFundingConfirmationByID(c.Request.Context(), userUUID, depositID)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "not found") {
+			c.JSON(http.StatusNotFound, entities.ErrorResponse{Code: "DEPOSIT_NOT_FOUND", Message: "Deposit not found"})
+			return
+		}
+		h.logger.Error("Failed to get deposit", "error", err, "deposit_id", depositID, "user_id", userUUID)
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "DEPOSIT_ERROR", Message: "Failed to retrieve deposit"})
+		return
+	}
+
+	depositType := "crypto"
+	currency := "USDC"
+	chain := string(confirmation.Chain)
+	if chain == "" || strings.HasPrefix(strings.ToLower(confirmation.Status), "off_ramp") || strings.EqualFold(confirmation.Status, "broker_funded") {
+		depositType = "fiat"
+		currency = "USD"
+	}
+
+	resp := DepositDetailResponse{
+		ID:        confirmation.ID.String(),
+		Type:      depositType,
+		Chain:     chain,
+		TxHash:    confirmation.TxHash,
+		Amount:    confirmation.Amount,
+		Status:    confirmation.Status,
+		Currency:  currency,
+		CreatedAt: confirmation.ConfirmedAt.Format("2006-01-02T15:04:05Z"),
+	}
+	if !confirmation.ConfirmedAt.IsZero() {
+		ts := confirmation.ConfirmedAt.Format("2006-01-02T15:04:05Z")
+		resp.ConfirmedAt = &ts
+	}
+	c.JSON(http.StatusOK, resp)
 }

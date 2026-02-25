@@ -37,10 +37,10 @@ type BridgeWebhookService interface {
 
 // BridgeWebhookHandler handles Bridge API webhook notifications
 type BridgeWebhookHandler struct {
-	service                    BridgeWebhookService
-	logger                     *zap.Logger
-	webhookSecret              string
-	skipWebhookVerification    bool // Explicit opt-out flag for development/testing only
+	service                 BridgeWebhookService
+	logger                  *zap.Logger
+	webhookSecret           string
+	skipWebhookVerification bool // Explicit opt-out flag for development/testing only
 }
 
 // NewBridgeWebhookHandler creates a new Bridge webhook handler
@@ -180,10 +180,18 @@ func (h *BridgeWebhookHandler) handleVirtualAccountActivity(c *gin.Context, payl
 		Status:           fmt.Sprintf("%v", eventType),
 	}
 
+	if h.service == nil {
+		h.logger.Error("Bridge webhook service is not configured")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service_unavailable"})
+		return
+	}
+
 	if err := h.service.ProcessFiatDeposit(c, event); err != nil {
 		h.logger.Error("Failed to process virtual account activity",
 			zap.String("virtual_account_id", event.VirtualAccountID),
 			zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "bridge_deposit_processing_failed"})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
@@ -201,6 +209,11 @@ func (h *BridgeWebhookHandler) handleTransferEvent(c *gin.Context, payload Bridg
 
 	switch state {
 	case "payment_processed", "funds_received":
+		if h.service == nil {
+			h.logger.Error("Bridge webhook service is not configured")
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service_unavailable"})
+			return
+		}
 		var amount decimal.Decimal
 		if amountStr := getStringField(payload.EventObject, "amount"); amountStr != "" {
 			amount, _ = decimal.NewFromString(amountStr)
@@ -227,6 +240,12 @@ func (h *BridgeWebhookHandler) handleCustomerEvent(c *gin.Context, payload Bridg
 		zap.String("status", status),
 		zap.String("event_type", payload.EventType))
 
+	if h.service == nil {
+		h.logger.Error("Bridge webhook service is not configured")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service_unavailable"})
+		return
+	}
+
 	if err := h.service.ProcessCustomerStatusChanged(c, customerID, status); err != nil {
 		h.logger.Error("Failed to process customer event", zap.Error(err))
 	}
@@ -236,6 +255,12 @@ func (h *BridgeWebhookHandler) handleCustomerEvent(c *gin.Context, payload Bridg
 
 // handleKYCLinkEvent processes kyc_link events
 func (h *BridgeWebhookHandler) handleKYCLinkEvent(c *gin.Context, payload BridgeWebhookPayload) {
+	if h.service == nil {
+		h.logger.Error("Bridge webhook service is not configured")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service_unavailable"})
+		return
+	}
+
 	kycStatus := getStringField(payload.EventObject, "kyc_status")
 	tosStatus := getStringField(payload.EventObject, "tos_status")
 	customerID := getStringField(payload.EventObject, "customer_id")
@@ -259,6 +284,12 @@ func (h *BridgeWebhookHandler) handleKYCLinkEvent(c *gin.Context, payload Bridge
 
 // handleCardAccountEvent processes card_account events
 func (h *BridgeWebhookHandler) handleCardAccountEvent(c *gin.Context, payload BridgeWebhookPayload) {
+	if h.service == nil {
+		h.logger.Error("Bridge webhook service is not configured")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service_unavailable"})
+		return
+	}
+
 	cardAccountID := payload.EventObjectID
 	status := payload.EventObjectStatus
 
@@ -276,6 +307,12 @@ func (h *BridgeWebhookHandler) handleCardAccountEvent(c *gin.Context, payload Br
 
 // handleCardTransactionEvent processes card_transaction events
 func (h *BridgeWebhookHandler) handleCardTransactionEvent(c *gin.Context, payload BridgeWebhookPayload) {
+	if h.service == nil {
+		h.logger.Error("Bridge webhook service is not configured")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service_unavailable"})
+		return
+	}
+
 	transactionID := payload.EventObjectID
 	status := payload.EventObjectStatus
 	cardAccountID := getStringField(payload.EventObject, "card_account_id")
@@ -315,6 +352,12 @@ func (h *BridgeWebhookHandler) handleCardTransactionEvent(c *gin.Context, payloa
 
 // handlePostedCardTransaction processes posted_card_account_transaction events
 func (h *BridgeWebhookHandler) handlePostedCardTransaction(c *gin.Context, payload BridgeWebhookPayload) {
+	if h.service == nil {
+		h.logger.Error("Bridge webhook service is not configured")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service_unavailable"})
+		return
+	}
+
 	transactionID := payload.EventObjectID
 	cardAccountID := getStringField(payload.EventObject, "card_account_id")
 
@@ -358,7 +401,7 @@ func (h *BridgeWebhookHandler) handleLegacyEventType(c *gin.Context, payload Bri
 	case "customer.status_changed", "customer.kyc.approved", "customer.kyc.rejected":
 		h.handleCustomerStatusChanged(c, payload)
 	default:
-		h.logger.Info("Unhandled Bridge event", 
+		h.logger.Info("Unhandled Bridge event",
 			zap.String("event_type", payload.EventType),
 			zap.String("event_category", payload.EventCategory))
 		c.JSON(http.StatusOK, gin.H{"status": "ignored"})
@@ -366,6 +409,12 @@ func (h *BridgeWebhookHandler) handleLegacyEventType(c *gin.Context, payload Bri
 }
 
 func (h *BridgeWebhookHandler) handleDepositReceived(c *gin.Context, payload BridgeWebhookPayload) {
+	if h.service == nil {
+		h.logger.Error("Bridge webhook service is not configured")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service_unavailable"})
+		return
+	}
+
 	// Extract deposit details from event object
 	event := &BridgeDepositEvent{
 		VirtualAccountID: payload.EventObjectID,
@@ -390,8 +439,7 @@ func (h *BridgeWebhookHandler) handleDepositReceived(c *gin.Context, payload Bri
 		h.logger.Error("Failed to process fiat deposit",
 			zap.String("virtual_account_id", event.VirtualAccountID),
 			zap.Error(err))
-		// Return 200 to prevent retries for business logic errors
-		c.JSON(http.StatusOK, gin.H{"status": "error", "message": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "bridge_deposit_processing_failed"})
 		return
 	}
 
@@ -403,6 +451,12 @@ func (h *BridgeWebhookHandler) handleDepositReceived(c *gin.Context, payload Bri
 }
 
 func (h *BridgeWebhookHandler) handleTransferCompleted(c *gin.Context, payload BridgeWebhookPayload) {
+	if h.service == nil {
+		h.logger.Error("Bridge webhook service is not configured")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service_unavailable"})
+		return
+	}
+
 	transferID := payload.EventObjectID
 
 	var amount decimal.Decimal
@@ -438,6 +492,12 @@ func (h *BridgeWebhookHandler) handleTransferFailed(c *gin.Context, payload Brid
 }
 
 func (h *BridgeWebhookHandler) handleCustomerStatusChanged(c *gin.Context, payload BridgeWebhookPayload) {
+	if h.service == nil {
+		h.logger.Error("Bridge webhook service is not configured")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service_unavailable"})
+		return
+	}
+
 	customerID := payload.EventObjectID
 	status := payload.EventObjectStatus
 
@@ -452,7 +512,7 @@ func (h *BridgeWebhookHandler) handleCustomerStatusChanged(c *gin.Context, paylo
 
 func (h *BridgeWebhookHandler) handleCardAuthorization(c *gin.Context, payload BridgeWebhookPayload) {
 	cardID := payload.EventObjectID
-	
+
 	var amount decimal.Decimal
 	if amountStr, ok := payload.EventObject["amount"].(string); ok {
 		var err error
@@ -466,7 +526,7 @@ func (h *BridgeWebhookHandler) handleCardAuthorization(c *gin.Context, payload B
 			return
 		}
 	}
-	
+
 	merchantName := ""
 	if mn, ok := payload.EventObject["merchant_name"].(string); ok {
 		merchantName = mn
@@ -496,7 +556,7 @@ func (h *BridgeWebhookHandler) handleCardTransaction(c *gin.Context, payload Bri
 	if tid, ok := payload.EventObject["transaction_id"].(string); ok {
 		transID = tid
 	}
-	
+
 	var amount decimal.Decimal
 	if amountStr, ok := payload.EventObject["amount"].(string); ok {
 		var err error
@@ -511,7 +571,7 @@ func (h *BridgeWebhookHandler) handleCardTransaction(c *gin.Context, payload Bri
 			return
 		}
 	}
-	
+
 	merchantName := ""
 	if mn, ok := payload.EventObject["merchant_name"].(string); ok {
 		merchantName = mn
@@ -541,7 +601,7 @@ func (h *BridgeWebhookHandler) handleCardTransactionDeclined(c *gin.Context, pay
 	if tid, ok := payload.EventObject["transaction_id"].(string); ok {
 		transID = tid
 	}
-	
+
 	declineReason := ""
 	if dr, ok := payload.EventObject["decline_reason"].(string); ok {
 		declineReason = dr
@@ -592,7 +652,7 @@ func (h *BridgeWebhookHandler) verifySignature(signature string, body []byte) bo
 	if strings.Contains(h.webhookSecret, "BEGIN PUBLIC KEY") {
 		return h.verifyRSASignature(signature, body)
 	}
-	
+
 	// Fallback to HMAC for backwards compatibility
 	mac := hmac.New(sha256.New, []byte(h.webhookSecret))
 	mac.Write(body)
@@ -615,9 +675,29 @@ func (h *BridgeWebhookHandler) verifyRSASignature(signatureHeader string, body [
 		}
 	}
 
+	// Enforce timestamped signatures to reduce replay risk.
+	if timestamp == "" {
+		h.logger.Warn("Bridge RSA signature missing timestamp")
+		return false
+	}
+	ts, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		h.logger.Warn("Bridge RSA signature timestamp parse failed", zap.Error(err))
+		return false
+	}
+	eventTime := time.Unix(ts, 0)
+	if time.Since(eventTime) > 5*time.Minute {
+		h.logger.Warn("Bridge webhook timestamp too old", zap.Time("event_time", eventTime))
+		return false
+	}
+	if eventTime.After(time.Now().Add(1 * time.Minute)) {
+		h.logger.Warn("Bridge webhook timestamp too far in future", zap.Time("event_time", eventTime))
+		return false
+	}
+
 	if sig == "" {
-		// Try treating entire header as signature (some formats)
-		sig = signatureHeader
+		h.logger.Warn("Bridge RSA signature missing v1 component")
+		return false
 	}
 
 	// Normalize PEM key - handle single-line format from .env
@@ -658,13 +738,8 @@ func (h *BridgeWebhookHandler) verifyRSASignature(signatureHeader string, body [
 		}
 	}
 
-	// Bridge signs: timestamp + "." + body (or just body)
-	var signedPayload []byte
-	if timestamp != "" {
-		signedPayload = []byte(timestamp + "." + string(body))
-	} else {
-		signedPayload = body
-	}
+	// Bridge signs: timestamp + "." + body.
+	signedPayload := []byte(timestamp + "." + string(body))
 
 	// Hash the payload
 	hashed := sha256.Sum256(signedPayload)
@@ -674,18 +749,6 @@ func (h *BridgeWebhookHandler) verifyRSASignature(signatureHeader string, body [
 	if err != nil {
 		h.logger.Warn("Bridge webhook signature verification failed", zap.Error(err))
 		return false
-	}
-
-	// Optional: Check timestamp to prevent replay attacks (within 5 minutes)
-	if timestamp != "" {
-		ts, err := strconv.ParseInt(timestamp, 10, 64)
-		if err == nil {
-			eventTime := time.Unix(ts, 0)
-			if time.Since(eventTime) > 5*time.Minute {
-				h.logger.Warn("Bridge webhook timestamp too old", zap.Time("event_time", eventTime))
-				return false
-			}
-		}
 	}
 
 	return true
@@ -794,7 +857,6 @@ func (s *BridgeWebhookServiceImpl) ProcessCardStatusChanged(ctx *gin.Context, ca
 	}
 	return s.cardService.SyncCardStatus(ctx, cardID, status)
 }
-
 
 // Helper functions for extracting fields from event objects
 

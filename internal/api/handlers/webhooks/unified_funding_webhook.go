@@ -198,7 +198,7 @@ func (h *UnifiedFundingWebhookHandler) verifySignature(c *gin.Context, source We
 func (h *UnifiedFundingWebhookHandler) routeToBridge(c *gin.Context, body []byte) {
 	if h.bridgeHandler == nil {
 		h.logger.Warn("Bridge handler not configured")
-		c.JSON(http.StatusOK, gin.H{"status": "skipped", "reason": "handler not configured"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "bridge_handler_not_configured"})
 		return
 	}
 
@@ -232,7 +232,7 @@ func (h *UnifiedFundingWebhookHandler) routeToBridge(c *gin.Context, body []byte
 func (h *UnifiedFundingWebhookHandler) processBridgeVirtualAccountEvent(c *gin.Context, payload *BridgeWebhookPayload) {
 	if h.bridgeHandler == nil || h.bridgeHandler.service == nil {
 		h.logger.Warn("Bridge webhook service not configured")
-		c.JSON(http.StatusOK, gin.H{"status": "skipped", "reason": "service not configured"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "bridge_service_not_configured"})
 		return
 	}
 
@@ -247,7 +247,7 @@ func (h *UnifiedFundingWebhookHandler) processBridgeVirtualAccountEvent(c *gin.C
 		}
 		if err := h.bridgeHandler.service.ProcessFiatDeposit(c, &depositEvent); err != nil {
 			h.logger.Error("Failed to process deposit", zap.Error(err))
-			c.JSON(http.StatusOK, gin.H{"status": "error", "message": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "bridge_deposit_processing_failed"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "processed"})
@@ -265,7 +265,7 @@ func (h *UnifiedFundingWebhookHandler) processBridgeTransferEvent(c *gin.Context
 func (h *UnifiedFundingWebhookHandler) processBridgeCustomerEvent(c *gin.Context, payload *BridgeWebhookPayload) {
 	if h.bridgeHandler == nil || h.bridgeHandler.service == nil {
 		h.logger.Warn("Bridge webhook service not configured")
-		c.JSON(http.StatusOK, gin.H{"status": "skipped", "reason": "service not configured"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "bridge_service_not_configured"})
 		return
 	}
 
@@ -277,7 +277,7 @@ func (h *UnifiedFundingWebhookHandler) processBridgeCustomerEvent(c *gin.Context
 			return
 		}
 		if err := h.bridgeHandler.service.ProcessCustomerStatusChanged(c, customerEvent.ID, customerEvent.Status); err != nil {
-			c.JSON(http.StatusOK, gin.H{"status": "error", "message": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "bridge_customer_processing_failed"})
 			return
 		}
 	}
@@ -288,7 +288,7 @@ func (h *UnifiedFundingWebhookHandler) processBridgeCustomerEvent(c *gin.Context
 func (h *UnifiedFundingWebhookHandler) routeToCircle(c *gin.Context, body []byte) {
 	if h.circleHandler == nil {
 		h.logger.Warn("Circle handler not configured")
-		c.JSON(http.StatusOK, gin.H{"status": "skipped", "reason": "handler not configured"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "circle_handler_not_configured"})
 		return
 	}
 
@@ -310,7 +310,7 @@ func (h *UnifiedFundingWebhookHandler) routeToCircle(c *gin.Context, body []byte
 		ctx := c.Request.Context()
 		if err := h.circleHandler.processIncomingTransfer(ctx, &webhook); err != nil {
 			h.logger.Error("Failed to process Circle transfer", zap.Error(err))
-			c.JSON(http.StatusOK, gin.H{"status": "error", "message": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "circle_transfer_processing_failed"})
 			return
 		}
 	}
@@ -322,7 +322,7 @@ func (h *UnifiedFundingWebhookHandler) routeToCircle(c *gin.Context, body []byte
 func (h *UnifiedFundingWebhookHandler) routeToAlpaca(c *gin.Context, body []byte) {
 	if h.alpacaHandler == nil {
 		h.logger.Warn("Alpaca handler not configured")
-		c.JSON(http.StatusOK, gin.H{"status": "skipped", "reason": "handler not configured"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "alpaca_handler_not_configured"})
 		return
 	}
 

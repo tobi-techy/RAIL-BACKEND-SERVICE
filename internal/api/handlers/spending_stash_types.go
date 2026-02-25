@@ -4,34 +4,41 @@ import "time"
 
 // SpendingStashResponse is the main response for the spending stash screen
 type SpendingStashResponse struct {
-	Balance               BalanceInfo              `json:"balance"`
-	Allocation            SpendingAllocationInfo   `json:"allocation"`
-	Card                  *CardSummary             `json:"card,omitempty"`
-	SpendingSummary       *SpendingSummary         `json:"spending_summary,omitempty"`
-	TopCategories         []CategorySummary        `json:"top_categories"`
-	RoundUps              *RoundUpsSummary         `json:"round_ups,omitempty"`
-	Limits                SpendingLimits           `json:"limits"`
-	PendingAuthorizations []PendingAuthorization   `json:"pending_authorizations"`
-	RecentTransactions    TransactionListResponse  `json:"recent_transactions"`
-	Links                 SpendingLinks            `json:"_links"`
+	Balance               BalanceInfo             `json:"balance"`
+	Allocation            SpendingAllocationInfo  `json:"allocation"`
+	Card                  *CardSummary            `json:"card,omitempty"`
+	SpendingSummary       *SpendingSummary        `json:"spending_summary,omitempty"`
+	TopCategories         []CategorySummary       `json:"top_categories"`
+	RoundUps              *RoundUpsSummary        `json:"round_ups,omitempty"`
+	Limits                SpendingLimits          `json:"limits"`
+	PendingAuthorizations []PendingAuthorization  `json:"pending_authorizations"`
+	RecentTransactions    TransactionListResponse `json:"recent_transactions"`
+	Links                 SpendingLinks           `json:"_links"`
 }
 
 // BalanceInfo groups balance-related fields
 type BalanceInfo struct {
-	Available   string    `json:"available"`
-	Pending     string    `json:"pending"`
-	Currency    string    `json:"currency"`
-	LastUpdated time.Time `json:"last_updated"`
+	SpendingBalance          string    `json:"spending_balance"`
+	SpendingBalanceFormatted string    `json:"spending_balance_formatted"`
+	Available                string    `json:"available"`
+	Pending                  string    `json:"pending"`
+	PendingFormatted         string    `json:"pending_formatted"`
+	Currency                 string    `json:"currency"`
+	LastUpdated              time.Time `json:"last_updated"`
 }
 
 // SpendingAllocationInfo provides allocation mode details for spending stash
 type SpendingAllocationInfo struct {
-	Active               bool    `json:"active"`
-	SpendingRatio        float64 `json:"spending_ratio"`
-	StashRatio           float64 `json:"stash_ratio"`
-	TotalReceived        string  `json:"total_received"`
-	LastAllocationAt     *string `json:"last_allocation_at,omitempty"`
-	LastAllocationAmount *string `json:"last_allocation_amount,omitempty"`
+	Active                 bool    `json:"active"`
+	SpendingRatio          float64 `json:"spending_ratio"`
+	StashRatio             float64 `json:"stash_ratio"`
+	TotalReceived          string  `json:"total_received"`
+	TotalReceivedFormatted string  `json:"total_received_formatted"`
+	SpendingAllocated      string  `json:"spending_allocated"`
+	StashAllocated         string  `json:"stash_allocated"`
+	Unallocated            string  `json:"unallocated"`
+	LastAllocationAt       *string `json:"last_allocation_at,omitempty"`
+	LastAllocationAmount   *string `json:"last_allocation_amount,omitempty"`
 }
 
 // CardSummary represents card info for the spending stash
@@ -47,18 +54,21 @@ type CardSummary struct {
 
 // SpendingSummary contains pre-computed spending analytics
 type SpendingSummary struct {
-	ThisMonthTotal      string  `json:"this_month_total"`
-	TransactionCount    int     `json:"transaction_count"`
-	DailyAverage        string  `json:"daily_average"`
-	Trend               string  `json:"trend"`
-	TrendChangePercent  float64 `json:"trend_change_percent"`
+	ThisMonthTotal          string  `json:"this_month_total"`
+	ThisMonthTotalFormatted string  `json:"this_month_total_formatted"`
+	TransactionCount        int     `json:"transaction_count"`
+	DailyAverage            string  `json:"daily_average"`
+	DailyAverageFormatted   string  `json:"daily_average_formatted"`
+	Trend                   string  `json:"trend"`
+	TrendChangePercent      float64 `json:"trend_change_percent"`
 }
 
 // CategorySummary represents a spending category
 type CategorySummary struct {
-	Name    string  `json:"name"`
-	Amount  string  `json:"amount"`
-	Percent float64 `json:"percent"`
+	Name            string  `json:"name"`
+	Amount          string  `json:"amount"`
+	AmountFormatted string  `json:"amount_formatted"`
+	Percent         float64 `json:"percent"`
 }
 
 // RoundUpsSummary represents round-ups summary
@@ -72,28 +82,32 @@ type RoundUpsSummary struct {
 
 // SpendingLimits represents spending limits
 type SpendingLimits struct {
-	Daily                       LimitDetail `json:"daily"`
-	Monthly                     LimitDetail `json:"monthly"`
-	PerTransaction              string      `json:"per_transaction"`
-	DailyTransactionsRemaining  int         `json:"daily_transactions_remaining"`
+	Daily                      LimitDetail `json:"daily"`
+	Monthly                    LimitDetail `json:"monthly"`
+	PerTransaction             string      `json:"per_transaction"`
+	MinimumTransaction         string      `json:"minimum_transaction"`
+	DailyTransactionsRemaining int         `json:"daily_transactions_remaining"`
 }
 
 // LimitDetail represents a limit with used/remaining
 type LimitDetail struct {
-	Limit     string `json:"limit"`
-	Used      string `json:"used"`
-	Remaining string `json:"remaining"`
+	Limit       string  `json:"limit"`
+	Used        string  `json:"used"`
+	Remaining   string  `json:"remaining"`
+	UsedPercent float64 `json:"used_percent"`
+	ResetsAt    *string `json:"resets_at,omitempty"`
 }
 
 // PendingAuthorization represents a card pre-authorization
 type PendingAuthorization struct {
-	ID           string `json:"id"`
-	MerchantName string `json:"merchant_name"`
-	Amount       string `json:"amount"`
-	Currency     string `json:"currency"`
-	AuthorizedAt string `json:"authorized_at"`
-	ExpiresAt    string `json:"expires_at"`
-	Category     string `json:"category,omitempty"`
+	ID              string `json:"id"`
+	MerchantName    string `json:"merchant_name"`
+	Amount          string `json:"amount"`
+	AmountFormatted string `json:"amount_formatted"`
+	Currency        string `json:"currency"`
+	AuthorizedAt    string `json:"authorized_at"`
+	ExpiresAt       string `json:"expires_at"`
+	Category        string `json:"category,omitempty"`
 }
 
 // TransactionListResponse represents paginated transactions
@@ -105,16 +119,18 @@ type TransactionListResponse struct {
 
 // TransactionSummary represents a transaction in the spending stash
 type TransactionSummary struct {
-	ID                string           `json:"id"`
-	Type              string           `json:"type"`
-	Amount            string           `json:"amount"`
-	Currency          string           `json:"currency"`
-	Description       string           `json:"description"`
-	Merchant          *MerchantInfo    `json:"merchant,omitempty"`
-	Status            string           `json:"status"`
-	CreatedAt         string           `json:"created_at"`
-	PendingSettlement bool             `json:"pending_settlement"`
-	RefundStatus      *string          `json:"refund_status"`
+	ID                string        `json:"id"`
+	Type              string        `json:"type"`
+	Amount            string        `json:"amount"`
+	AmountFormatted   string        `json:"amount_formatted"`
+	Direction         string        `json:"direction"`
+	Currency          string        `json:"currency"`
+	Description       string        `json:"description"`
+	Merchant          *MerchantInfo `json:"merchant,omitempty"`
+	Status            string        `json:"status"`
+	CreatedAt         string        `json:"created_at"`
+	PendingSettlement bool          `json:"pending_settlement"`
+	RefundStatus      *string       `json:"refund_status"`
 }
 
 // MerchantInfo contains rich merchant data
@@ -122,7 +138,7 @@ type MerchantInfo struct {
 	Name         string  `json:"name"`
 	LogoURL      *string `json:"logo_url,omitempty"`
 	Category     string  `json:"category"`
-	CategoryIcon string  `json:"category_icon"`
+	CategoryIcon *string `json:"category_icon,omitempty"`
 }
 
 // SpendingLinks contains HATEOAS links for spending stash
