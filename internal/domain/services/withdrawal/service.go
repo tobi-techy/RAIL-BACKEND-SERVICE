@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -1043,6 +1044,24 @@ func (s *WithdrawalService) syncCryptoWithdrawalStatusFromProvider(ctx context.C
 }
 
 func isCircleNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+
 	var circleErr entities.CircleAPIError
-	return errors.As(err, &circleErr) && circleErr.Code == 404
+	if errors.As(err, &circleErr) && circleErr.Code == http.StatusNotFound {
+		return true
+	}
+
+	var legacyErr entities.CircleErrorResponse
+	if errors.As(err, &legacyErr) && legacyErr.Code == http.StatusNotFound {
+		return true
+	}
+
+	// Defensive fallback for wrapped/non-typed errors.
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "http 404") ||
+		strings.Contains(msg, "error 404") ||
+		strings.Contains(msg, "status 404") ||
+		strings.Contains(msg, "\"code\":404")
 }
