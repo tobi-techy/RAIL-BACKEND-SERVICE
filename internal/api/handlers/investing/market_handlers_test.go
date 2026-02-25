@@ -111,3 +111,27 @@ func TestGetInstrumentInvalidBarsLimit(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
 	assert.Equal(t, "INVALID_REQUEST", response.Code)
 }
+
+func TestParseMarketNewsFiltersDefaults(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/v1/market/news", nil)
+
+	filters, err := parseMarketNewsFilters(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 10, filters.Limit)
+	assert.Empty(t, filters.Symbols)
+	assert.False(t, filters.IncludeContent)
+}
+
+func TestParseMarketNewsFiltersInvalidLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/v1/market/news?limit=abc", nil)
+
+	_, err := parseMarketNewsFilters(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Invalid limit parameter")
+}

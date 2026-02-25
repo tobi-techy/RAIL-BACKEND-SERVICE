@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 )
@@ -157,6 +158,7 @@ func (s *ExplorerService) Explore(ctx context.Context, filters entities.MarketEx
 
 	totalItems := int64(len(cards))
 	paginated := paginateCards(cards, normalized.Page, normalized.PageSize)
+	paginated = s.enrichPaginatedQuotes(ctx, paginated)
 	asOf := latestQuoteTime(paginated)
 
 	return &entities.MarketExploreResponse{
@@ -852,6 +854,80 @@ func mapToFacetValues(counts map[string]int) []entities.MarketFacetValue {
 		return values[i].Count > values[j].Count
 	})
 	return values
+}
+
+func (s *ExplorerService) enrichPaginatedQuotes(ctx context.Context, cards []entities.MarketInstrumentCard) []entities.MarketInstrumentCard {
+	if len(cards) == 0 {
+		return cards
+	}
+
+	updated := make([]entities.MarketInstrumentCard, len(cards))
+	copy(updated, cards)
+
+	type enrichmentResult struct {
+		index int
+		quote *entities.MarketQuote
+	}
+
+	results := make(chan enrichmentResult, len(updated))
+	sem := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+
+	for idx := range updated {
+		if hasUsefulQuote(updated[idx].Quote) {
+			continue
+		}
+
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			symbol := strings.ToUpper(strings.TrimSpace(updated[i].Symbol))
+			if symbol == "" {
+				return
+			}
+
+			quote, err := s.alpacaClient.GetStockSnapshot(ctx, symbol)
+			if err != nil || quote == nil {
+				return
+			}
+			results <- enrichmentResult{index: i, quote: quote}
+		}(idx)
+	}
+
+	wg.Wait()
+	close(results)
+
+	for result := range results {
+		updated[result.index].Quote = entities.MarketInstrumentQuote{
+			Price:         result.quote.Price,
+			Bid:           result.quote.Bid,
+			Ask:           result.quote.Ask,
+			Change:        result.quote.Change,
+			ChangePct:     result.quote.ChangePct,
+			Open:          result.quote.Open,
+			High:          result.quote.High,
+			Low:           result.quote.Low,
+			PreviousClose: result.quote.PreviousClose,
+			Volume:        result.quote.Volume,
+			Timestamp:     result.quote.Timestamp,
+		}
+		updated[result.index].MarketSession = determineMarketSession(result.quote.Timestamp)
+	}
+
+	return updated
+}
+
+func hasUsefulQuote(quote entities.MarketInstrumentQuote) bool {
+	return quote.Price.GreaterThan(decimal.Zero) ||
+		quote.PreviousClose.GreaterThan(decimal.Zero) ||
+		quote.Open.GreaterThan(decimal.Zero) ||
+		quote.High.GreaterThan(decimal.Zero) ||
+		quote.Low.GreaterThan(decimal.Zero) ||
+		quote.Bid.GreaterThan(decimal.Zero) ||
+		quote.Ask.GreaterThan(decimal.Zero)
 }
 
 func latestQuoteTime(cards []entities.MarketInstrumentCard) time.Time {

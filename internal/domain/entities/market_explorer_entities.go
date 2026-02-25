@@ -132,3 +132,33 @@ type MarketFilterMetadataResponse struct {
 	SupportedSortOrder  []string             `json:"supported_sort_order"`
 	Defaults            MarketExploreFilters `json:"defaults"`
 }
+
+// MarketNewsFilters controls market news query behavior for public endpoints.
+type MarketNewsFilters struct {
+	Symbols        []string `json:"symbols,omitempty"`
+	Limit          int      `json:"limit"`
+	PageToken      string   `json:"page_token,omitempty"`
+	IncludeContent bool     `json:"include_content,omitempty"`
+}
+
+// MarketNewsItem is a UI-ready market news story card.
+type MarketNewsItem struct {
+	ID             string    `json:"id"`
+	Source         string    `json:"source"`
+	Title          string    `json:"title"`
+	Summary        string    `json:"summary"`
+	ContentPreview string    `json:"content_preview,omitempty"`
+	URL            string    `json:"url"`
+	RelatedSymbols []string  `json:"related_symbols"`
+	PublishedAt    time.Time `json:"published_at"`
+	ImageURL       *string   `json:"image_url,omitempty"`
+}
+
+// MarketNewsResponse is the response envelope for /market/news.
+type MarketNewsResponse struct {
+	News          []MarketNewsItem  `json:"news"`
+	Count         int               `json:"count"`
+	AsOf          time.Time         `json:"as_of"`
+	NextPageToken string            `json:"next_page_token,omitempty"`
+	AppliedFilter MarketNewsFilters `json:"applied_filter"`
+}

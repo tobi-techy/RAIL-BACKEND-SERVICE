@@ -165,6 +165,25 @@ func (h *MarketHandlers) GetFilterMetadata(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+// GetNews returns public market news stories.
+// GET /api/v1/market/news
+func (h *MarketHandlers) GetNews(c *gin.Context) {
+	filters, err := parseMarketNewsFilters(c)
+	if err != nil {
+		common.RespondBadRequest(c, err.Error())
+		return
+	}
+
+	resp, svcErr := h.marketService.GetMarketNews(c.Request.Context(), filters)
+	if svcErr != nil {
+		h.logger.Error("Failed to get market news", "error", svcErr)
+		h.handleMarketDataError(c, svcErr, "Failed to get market news")
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
 // CreateAlert creates a new market alert
 // POST /api/v1/market/alerts
 func (h *MarketHandlers) CreateAlert(c *gin.Context) {
@@ -388,4 +407,33 @@ func parseOptionalDecimal(raw string) (decimal.Decimal, bool, error) {
 		return decimal.Zero, false, errors.New("Invalid numeric filter")
 	}
 	return value, true, nil
+}
+
+func parseMarketNewsFilters(c *gin.Context) (entities.MarketNewsFilters, error) {
+	filters := entities.MarketNewsFilters{}
+
+	limit, err := strconv.Atoi(strings.TrimSpace(c.DefaultQuery("limit", "10")))
+	if err != nil {
+		return filters, errors.New("Invalid limit parameter")
+	}
+	filters.Limit = limit
+
+	if symbols := strings.TrimSpace(c.Query("symbols")); symbols != "" {
+		for _, raw := range strings.Split(symbols, ",") {
+			symbol := strings.ToUpper(strings.TrimSpace(raw))
+			if symbol == "" {
+				continue
+			}
+			filters.Symbols = append(filters.Symbols, symbol)
+		}
+	}
+
+	filters.PageToken = strings.TrimSpace(c.Query("page_token"))
+	if value, ok, err := parseOptionalBool(c.Query("include_content")); err != nil {
+		return filters, err
+	} else if ok {
+		filters.IncludeContent = value
+	}
+
+	return filters, nil
 }
