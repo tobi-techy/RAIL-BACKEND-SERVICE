@@ -16,6 +16,7 @@ import (
 
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	passcodesvc "github.com/rail-service/rail_service/internal/domain/services/passcode"
 	"github.com/rail-service/rail_service/internal/domain/services/socialauth"
 	webauthnsvc "github.com/rail-service/rail_service/internal/domain/services/webauthn"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
@@ -74,6 +75,7 @@ type SocialAuthHandlers struct {
 	socialAuthService *socialauth.Service
 	webauthnService   *webauthnsvc.Service
 	sessionService    SessionService
+	passcodeService   *passcodesvc.Service
 	redisClient       cache.RedisClient
 	userRepo          repositories.UserRepository
 	cfg               *config.Config
@@ -84,6 +86,7 @@ func NewSocialAuthHandlers(
 	socialAuthService *socialauth.Service,
 	webauthnService *webauthnsvc.Service,
 	sessionService SessionService,
+	passcodeService *passcodesvc.Service,
 	userRepo repositories.UserRepository,
 	redisClient cache.RedisClient,
 	cfg *config.Config,
@@ -93,6 +96,7 @@ func NewSocialAuthHandlers(
 		socialAuthService: socialAuthService,
 		webauthnService:   webauthnService,
 		sessionService:    sessionService,
+		passcodeService:   passcodeService,
 		redisClient:       redisClient,
 		userRepo:          userRepo,
 		cfg:               cfg,
@@ -701,12 +705,29 @@ func (h *SocialAuthHandlers) FinishWebAuthnLogin(c *gin.Context) {
 
 	h.deleteWebAuthnSession(ctx, webauthnSessionLoginPrefix, req.SessionID)
 
+	var passcodeSessionToken string
+	var passcodeSessionExpiresAt *time.Time
+	if h.passcodeService != nil {
+		token, expiresAt, passcodeErr := h.passcodeService.IssueSession(ctx, user.ID)
+		if passcodeErr != nil {
+			h.logger.Warn("Failed to issue passcode session after WebAuthn login",
+				zap.Error(passcodeErr),
+				zap.String("user_id", user.ID.String()))
+		} else {
+			passcodeSessionToken = token
+			expiresCopy := expiresAt
+			passcodeSessionExpiresAt = &expiresCopy
+		}
+	}
+
 	c.JSON(http.StatusOK, entities.AuthResponse{
-		User:             user.ToUserInfo(),
-		AccessToken:      tokens.AccessToken,
-		RefreshToken:     tokens.RefreshToken,
-		ExpiresAt:        tokens.ExpiresAt,
-		SessionExpiresAt: h.sessionExpiryFromRefreshTTL(),
+		User:                     user.ToUserInfo(),
+		AccessToken:              tokens.AccessToken,
+		RefreshToken:             tokens.RefreshToken,
+		ExpiresAt:                tokens.ExpiresAt,
+		SessionExpiresAt:         h.sessionExpiryFromRefreshTTL(),
+		PasscodeSessionToken:     passcodeSessionToken,
+		PasscodeSessionExpiresAt: passcodeSessionExpiresAt,
 	})
 }
 

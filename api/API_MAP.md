@@ -137,6 +137,10 @@
 
 ### 6.3 Investment Stash
 - `GET /api/v1/account/investment-stash` - Get comprehensive investment data
+- `GET /api/v1/account/investment-stash/positions` - Get paginated Alpaca-backed holdings
+- `GET /api/v1/account/investment-stash/distribution` - Get portfolio distribution and concentration
+- `GET /api/v1/account/investment-stash/transactions` - Get trade-focused investment transactions
+- `GET /api/v1/account/investment-stash/performance` - Get investment performance history
 
 ---
 
@@ -268,6 +272,9 @@
 - `POST /api/v1/analytics/snapshot` - Take portfolio snapshot
 
 ### 16.2 Market Data
+- `GET /api/v1/market/explore` - Explore equities/ETFs with filters and facets
+- `GET /api/v1/market/instruments/:symbol` - Get instrument details (optional bars)
+- `GET /api/v1/market/filters` - Get supported market explorer filters
 - `GET /api/v1/market/quote/:symbol` - Get quote for symbol
 - `GET /api/v1/market/quotes` - Get multiple quotes
 - `GET /api/v1/market/bars/:symbol` - Get historical bars

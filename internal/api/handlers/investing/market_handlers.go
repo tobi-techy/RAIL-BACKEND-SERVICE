@@ -4,11 +4,13 @@ import (
 	"errors"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/market"
 	alpacaAdapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/pkg/logger"
@@ -89,6 +91,78 @@ func (h *MarketHandlers) GetBars(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"bars": bars})
+}
+
+// GetExplore returns a UI-ready market explorer list.
+// GET /api/v1/market/explore
+func (h *MarketHandlers) GetExplore(c *gin.Context) {
+	filters, err := parseMarketExploreFilters(c)
+	if err != nil {
+		common.RespondBadRequest(c, err.Error())
+		return
+	}
+
+	resp, err := h.marketService.ExploreMarket(c.Request.Context(), filters)
+	if err != nil {
+		h.logger.Error("Failed to explore market", "error", err)
+		h.handleMarketDataError(c, err, "Failed to explore market")
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// GetInstrument returns details for a single market instrument.
+// GET /api/v1/market/instruments/:symbol
+func (h *MarketHandlers) GetInstrument(c *gin.Context) {
+	symbol := strings.ToUpper(strings.TrimSpace(c.Param("symbol")))
+	if symbol == "" {
+		common.RespondBadRequest(c, "Symbol required")
+		return
+	}
+
+	includeBars := false
+	for _, inc := range strings.Split(strings.ToLower(c.DefaultQuery("include", "")), ",") {
+		if strings.TrimSpace(inc) == "bars" {
+			includeBars = true
+			break
+		}
+	}
+
+	timeframe := c.DefaultQuery("bars_timeframe", "1Day")
+	barsLimit, err := strconv.Atoi(c.DefaultQuery("bars_limit", "30"))
+	if err != nil {
+		common.RespondBadRequest(c, "Invalid bars_limit")
+		return
+	}
+	if barsLimit < 1 {
+		barsLimit = 30
+	}
+	if barsLimit > 365 {
+		barsLimit = 365
+	}
+
+	resp, svcErr := h.marketService.GetMarketInstrument(c.Request.Context(), symbol, includeBars, timeframe, barsLimit)
+	if svcErr != nil {
+		h.logger.Error("Failed to get instrument", "error", svcErr, "symbol", symbol)
+		h.handleMarketDataError(c, svcErr, "Failed to get instrument")
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// GetFilterMetadata returns filter metadata for market explorer UIs.
+// GET /api/v1/market/filters
+func (h *MarketHandlers) GetFilterMetadata(c *gin.Context) {
+	resp, err := h.marketService.GetMarketFilterMetadata(c.Request.Context())
+	if err != nil {
+		h.logger.Error("Failed to get market filters", "error", err)
+		h.handleMarketDataError(c, err, "Failed to get market filters")
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
 }
 
 // CreateAlert creates a new market alert
@@ -192,4 +266,126 @@ func (h *MarketHandlers) handleMarketDataError(c *gin.Context, err error, fallba
 	default:
 		common.RespondInternalError(c, fallbackMessage)
 	}
+}
+
+func parseMarketExploreFilters(c *gin.Context) (entities.MarketExploreFilters, error) {
+	var filters entities.MarketExploreFilters
+
+	filters.Query = strings.TrimSpace(c.Query("q"))
+
+	if types := strings.TrimSpace(c.Query("types")); types != "" {
+		for _, raw := range strings.Split(types, ",") {
+			t := entities.MarketInstrumentType(strings.ToLower(strings.TrimSpace(raw)))
+			switch t {
+			case entities.MarketInstrumentTypeStock, entities.MarketInstrumentTypeETF, entities.MarketInstrumentTypeBond, entities.MarketInstrumentTypeCrypto, entities.MarketInstrumentTypeOption:
+				filters.Types = append(filters.Types, t)
+			default:
+				return filters, errors.New("Invalid type filter")
+			}
+		}
+	}
+
+	if exchanges := strings.TrimSpace(c.Query("exchanges")); exchanges != "" {
+		for _, ex := range strings.Split(exchanges, ",") {
+			ex = strings.TrimSpace(ex)
+			if ex == "" {
+				continue
+			}
+			filters.Exchanges = append(filters.Exchanges, ex)
+		}
+	}
+
+	if categories := strings.TrimSpace(c.Query("categories")); categories != "" {
+		for _, category := range strings.Split(categories, ",") {
+			category = strings.TrimSpace(category)
+			if category == "" {
+				continue
+			}
+			filters.Categories = append(filters.Categories, category)
+		}
+	}
+
+	if val, ok, err := parseOptionalBool(c.Query("tradable")); err != nil {
+		return filters, err
+	} else if ok {
+		filters.Tradable = &val
+	}
+	if val, ok, err := parseOptionalBool(c.Query("fractionable")); err != nil {
+		return filters, err
+	} else if ok {
+		filters.Fractionable = &val
+	}
+	if val, ok, err := parseOptionalBool(c.Query("marginable")); err != nil {
+		return filters, err
+	} else if ok {
+		filters.Marginable = &val
+	}
+	if val, ok, err := parseOptionalBool(c.Query("shortable")); err != nil {
+		return filters, err
+	} else if ok {
+		filters.Shortable = &val
+	}
+
+	if val, ok, err := parseOptionalDecimal(c.Query("min_price")); err != nil {
+		return filters, err
+	} else if ok {
+		filters.MinPrice = &val
+	}
+	if val, ok, err := parseOptionalDecimal(c.Query("max_price")); err != nil {
+		return filters, err
+	} else if ok {
+		filters.MaxPrice = &val
+	}
+	if val, ok, err := parseOptionalDecimal(c.Query("min_change_pct")); err != nil {
+		return filters, err
+	} else if ok {
+		filters.MinChangePct = &val
+	}
+	if val, ok, err := parseOptionalDecimal(c.Query("max_change_pct")); err != nil {
+		return filters, err
+	} else if ok {
+		filters.MaxChangePct = &val
+	}
+
+	filters.SortBy = strings.ToLower(strings.TrimSpace(c.DefaultQuery("sort_by", "symbol")))
+	filters.SortOrder = strings.ToLower(strings.TrimSpace(c.DefaultQuery("sort_order", "asc")))
+
+	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if err != nil {
+		return filters, errors.New("Invalid page parameter")
+	}
+	pageSize, err := strconv.Atoi(c.DefaultQuery("page_size", "25"))
+	if err != nil {
+		return filters, errors.New("Invalid page_size parameter")
+	}
+	filters.Page = page
+	filters.PageSize = pageSize
+
+	return filters, nil
+}
+
+func parseOptionalBool(raw string) (bool, bool, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return false, false, nil
+	}
+	if strings.EqualFold(trimmed, "true") || trimmed == "1" {
+		return true, true, nil
+	}
+	if strings.EqualFold(trimmed, "false") || trimmed == "0" {
+		return false, true, nil
+	}
+	return false, false, errors.New("Invalid boolean filter")
+}
+
+func parseOptionalDecimal(raw string) (decimal.Decimal, bool, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return decimal.Zero, false, nil
+	}
+	value, err := decimal.NewFromString(trimmed)
+	if err != nil {
+		return decimal.Zero, false, errors.New("Invalid numeric filter")
+	}
+	return value, true, nil
 }

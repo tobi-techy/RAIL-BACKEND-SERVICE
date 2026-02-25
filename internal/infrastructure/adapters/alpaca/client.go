@@ -614,8 +614,107 @@ func isRetryableError(err error) bool {
 
 // Market Data API methods
 
+type stockSnapshotPayload struct {
+	LatestTrade struct {
+		Price     float64   `json:"p"`
+		Size      int64     `json:"s"`
+		Timestamp time.Time `json:"t"`
+	} `json:"latestTrade"`
+	LatestQuote struct {
+		AskPrice  float64   `json:"ap"`
+		AskSize   int64     `json:"as"`
+		BidPrice  float64   `json:"bp"`
+		BidSize   int64     `json:"bs"`
+		Timestamp time.Time `json:"t"`
+	} `json:"latestQuote"`
+	MinuteBar struct {
+		Open      float64   `json:"o"`
+		High      float64   `json:"h"`
+		Low       float64   `json:"l"`
+		Close     float64   `json:"c"`
+		Volume    int64     `json:"v"`
+		Timestamp time.Time `json:"t"`
+	} `json:"minuteBar"`
+	DailyBar struct {
+		Open      float64   `json:"o"`
+		High      float64   `json:"h"`
+		Low       float64   `json:"l"`
+		Close     float64   `json:"c"`
+		Volume    int64     `json:"v"`
+		Timestamp time.Time `json:"t"`
+	} `json:"dailyBar"`
+	PrevDailyBar struct {
+		Open      float64   `json:"o"`
+		High      float64   `json:"h"`
+		Low       float64   `json:"l"`
+		Close     float64   `json:"c"`
+		Volume    int64     `json:"v"`
+		Timestamp time.Time `json:"t"`
+	} `json:"prevDailyBar"`
+}
+
+func snapshotToMarketQuote(symbol string, snapshot stockSnapshotPayload) *entities.MarketQuote {
+	quote := &entities.MarketQuote{
+		Symbol:        symbol,
+		Price:         decimal.NewFromFloat(snapshot.LatestTrade.Price),
+		Bid:           decimal.NewFromFloat(snapshot.LatestQuote.BidPrice),
+		Ask:           decimal.NewFromFloat(snapshot.LatestQuote.AskPrice),
+		Volume:        snapshot.DailyBar.Volume,
+		Open:          decimal.NewFromFloat(snapshot.DailyBar.Open),
+		High:          decimal.NewFromFloat(snapshot.DailyBar.High),
+		Low:           decimal.NewFromFloat(snapshot.DailyBar.Low),
+		PreviousClose: decimal.NewFromFloat(snapshot.PrevDailyBar.Close),
+		Timestamp:     snapshot.LatestQuote.Timestamp,
+	}
+	if quote.Timestamp.IsZero() {
+		quote.Timestamp = snapshot.LatestTrade.Timestamp
+	}
+	if quote.Price.IsZero() {
+		quote.Price = decimal.NewFromFloat(snapshot.DailyBar.Close)
+	}
+	if !quote.PreviousClose.IsZero() {
+		quote.Change = quote.Price.Sub(quote.PreviousClose)
+		quote.ChangePct = quote.Change.Div(quote.PreviousClose).Mul(decimal.NewFromInt(100))
+	}
+	return quote
+}
+
+// GetStockSnapshot returns a full stock snapshot for a single symbol.
+func (c *Client) GetStockSnapshot(ctx context.Context, symbol string) (*entities.MarketQuote, error) {
+	endpoint := fmt.Sprintf("/v2/stocks/%s/snapshot", symbol)
+	var snapshot stockSnapshotPayload
+	if err := c.doDataRequest(ctx, "GET", endpoint, nil, &snapshot); err != nil {
+		return nil, err
+	}
+	return snapshotToMarketQuote(symbol, snapshot), nil
+}
+
+// GetStockSnapshots returns stock snapshots for multiple symbols.
+func (c *Client) GetStockSnapshots(ctx context.Context, symbols []string) (map[string]*entities.MarketQuote, error) {
+	if len(symbols) == 0 {
+		return map[string]*entities.MarketQuote{}, nil
+	}
+	endpoint := "/v2/stocks/snapshots?symbols=" + url.QueryEscape(strings.Join(symbols, ","))
+	var resp struct {
+		Snapshots map[string]stockSnapshotPayload `json:"snapshots"`
+	}
+	if err := c.doDataRequest(ctx, "GET", endpoint, nil, &resp); err != nil {
+		return nil, err
+	}
+	result := make(map[string]*entities.MarketQuote, len(resp.Snapshots))
+	for symbol, snapshot := range resp.Snapshots {
+		result[symbol] = snapshotToMarketQuote(symbol, snapshot)
+	}
+	return result, nil
+}
+
 // GetLatestQuote returns the latest quote for a symbol
 func (c *Client) GetLatestQuote(ctx context.Context, symbol string) (*entities.MarketQuote, error) {
+	snapshotQuote, snapshotErr := c.GetStockSnapshot(ctx, symbol)
+	if snapshotErr == nil && snapshotQuote != nil {
+		return snapshotQuote, nil
+	}
+
 	endpoint := fmt.Sprintf("/v2/stocks/%s/quotes/latest", symbol)
 	var resp struct {
 		Quote struct {
@@ -642,17 +741,26 @@ func (c *Client) GetLatestQuote(ctx context.Context, symbol string) (*entities.M
 	}
 	_ = c.doDataRequest(ctx, "GET", tradeEndpoint, nil, &tradeResp)
 
-	return &entities.MarketQuote{
+	quote := &entities.MarketQuote{
 		Symbol:    symbol,
 		Price:     decimal.NewFromFloat(tradeResp.Trade.Price),
 		Bid:       decimal.NewFromFloat(resp.Quote.BidPrice),
 		Ask:       decimal.NewFromFloat(resp.Quote.AskPrice),
 		Timestamp: resp.Quote.Timestamp,
-	}, nil
+	}
+	if quote.Price.IsZero() {
+		quote.Price = quote.Bid
+	}
+	return quote, nil
 }
 
 // GetLatestQuotes returns latest quotes for multiple symbols
 func (c *Client) GetLatestQuotes(ctx context.Context, symbols []string) (map[string]*entities.MarketQuote, error) {
+	snapshotQuotes, snapshotErr := c.GetStockSnapshots(ctx, symbols)
+	if snapshotErr == nil && len(snapshotQuotes) > 0 {
+		return snapshotQuotes, nil
+	}
+
 	endpoint := "/v2/stocks/quotes/latest?symbols=" + url.QueryEscape(strings.Join(symbols, ","))
 	var resp struct {
 		Quotes map[string]struct {
@@ -686,6 +794,9 @@ func (c *Client) GetLatestQuotes(ctx context.Context, symbols []string) (map[str
 		}
 		if t, ok := tradeResp.Trades[sym]; ok {
 			quote.Price = decimal.NewFromFloat(t.Price)
+		}
+		if quote.Price.IsZero() {
+			quote.Price = quote.Bid
 		}
 		result[sym] = quote
 	}
@@ -803,7 +914,7 @@ func (c *Client) doDataRequest(ctx context.Context, method, endpoint string, bod
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	
+
 	// Use separate data API credentials if available, otherwise fall back to broker credentials
 	dataKeyID := c.config.DataAPIKey
 	dataSecret := c.config.DataAPISecret

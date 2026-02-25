@@ -255,6 +255,8 @@ type AlpacaAssetResponse struct {
 	Exchange          string            `json:"exchange"`
 	Symbol            string            `json:"symbol"`
 	Name              string            `json:"name"`
+	Description       string            `json:"description,omitempty"`
+	LogoURL           *string           `json:"logo_url,omitempty"`
 	Status            AlpacaAssetStatus `json:"status"`
 	Tradable          bool              `json:"tradable"`
 	Marginable        bool              `json:"marginable"`
@@ -418,16 +420,16 @@ func (e *AlpacaErrorResponse) Error() string {
 
 // AlpacaActivityResponse represents account activity (trades, dividends, etc.)
 type AlpacaActivityResponse struct {
-	ID            string          `json:"id"`
-	AccountID     string          `json:"account_id"`
-	ActivityType  string          `json:"activity_type"` // FILL, DIV, etc.
-	Date          string          `json:"date"`
-	NetAmount     decimal.Decimal `json:"net_amount"`
-	Symbol        string          `json:"symbol,omitempty"`
-	Qty           decimal.Decimal `json:"qty,omitempty"`
-	Price         decimal.Decimal `json:"price,omitempty"`
-	Side          string          `json:"side,omitempty"`
-	Description   string          `json:"description,omitempty"`
+	ID           string          `json:"id"`
+	AccountID    string          `json:"account_id"`
+	ActivityType string          `json:"activity_type"` // FILL, DIV, etc.
+	Date         string          `json:"date"`
+	NetAmount    decimal.Decimal `json:"net_amount"`
+	Symbol       string          `json:"symbol,omitempty"`
+	Qty          decimal.Decimal `json:"qty,omitempty"`
+	Price        decimal.Decimal `json:"price,omitempty"`
+	Side         string          `json:"side,omitempty"`
+	Description  string          `json:"description,omitempty"`
 }
 
 // AlpacaPortfolioHistoryResponse represents portfolio performance over time

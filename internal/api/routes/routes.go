@@ -198,6 +198,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.GetSocialAuthService(),
 		container.GetWebAuthnService(),
 		container.GetSessionService(),
+		container.GetPasscodeService(),
 		*container.UserRepo,
 		container.RedisClient,
 		container.Config,
@@ -484,6 +485,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				investmentStashHandlers := container.GetInvestmentStashHandlers()
 				if investmentStashHandlers != nil {
 					account.GET("/investment-stash", investmentStashHandlers.GetInvestmentStash)
+					account.GET("/investment-stash/positions", investmentStashHandlers.GetInvestmentPositions)
+					account.GET("/investment-stash/distribution", investmentStashHandlers.GetInvestmentDistribution)
+					account.GET("/investment-stash/transactions", investmentStashHandlers.GetInvestmentTransactions)
+					account.GET("/investment-stash/performance", investmentStashHandlers.GetInvestmentPerformance)
 				}
 			}
 

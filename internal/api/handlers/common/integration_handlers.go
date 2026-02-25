@@ -2,13 +2,17 @@ package common
 
 import (
 	"net/http"
+	"net/url"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"go.uber.org/zap"
 )
@@ -17,18 +21,19 @@ import (
 type IntegrationHandlers struct {
 	// Alpaca
 	alpacaClient *alpaca.Client
-	
+
 	// Notification
 	notificationService *services.NotificationService
-	
+
 	logger *zap.Logger
+	logos  *assetLogoResolver
 }
 
 // NewIntegrationHandlers creates new integration handlers
 func NewIntegrationHandlers(
 	alpacaClient *alpaca.Client,
 	_ interface{}, // Deprecated: Due service removed
-	_ string,      // Deprecated: Due webhook secret removed
+	_ string, // Deprecated: Due webhook secret removed
 	notificationService *services.NotificationService,
 	logger *logger.Logger,
 ) *IntegrationHandlers {
@@ -36,6 +41,7 @@ func NewIntegrationHandlers(
 		alpacaClient:        alpacaClient,
 		notificationService: notificationService,
 		logger:              logger.Zap(),
+		logos:               newAssetLogoResolverFromEnv(logger.Zap()),
 	}
 }
 
@@ -46,6 +52,25 @@ type AssetsResponse struct {
 	TotalCount int                            `json:"total_count"`
 	Page       int                            `json:"page"`
 	PageSize   int                            `json:"page_size"`
+}
+
+const assetLogoCacheTTL = 24 * time.Hour
+
+type assetLogoResolver struct {
+	provider string
+	baseURL  string
+	token    string
+	size     int
+	format   string
+	theme    string
+
+	mu    sync.RWMutex
+	cache map[string]cachedAssetLogo
+}
+
+type cachedAssetLogo struct {
+	url       *string
+	fetchedAt time.Time
 }
 
 func (h *IntegrationHandlers) GetAssets(c *gin.Context) {
@@ -124,8 +149,9 @@ func (h *IntegrationHandlers) GetAssets(c *gin.Context) {
 		end = totalCount
 	}
 
+	pageAssets := enrichAssetMetadata(assets[start:end], h.logos)
 	c.JSON(http.StatusOK, AssetsResponse{
-		Assets:     assets[start:end],
+		Assets:     pageAssets,
 		TotalCount: totalCount,
 		Page:       page,
 		PageSize:   pageSize,
@@ -162,9 +188,144 @@ func (h *IntegrationHandlers) GetAsset(c *gin.Context) {
 		return
 	}
 
+	asset.Description = buildAssetDescription(*asset)
+	asset.LogoURL = h.logos.Resolve(asset.Symbol)
 	c.JSON(http.StatusOK, asset)
+}
+
+func enrichAssetMetadata(assets []entities.AlpacaAssetResponse, logos *assetLogoResolver) []entities.AlpacaAssetResponse {
+	enriched := make([]entities.AlpacaAssetResponse, len(assets))
+	copy(enriched, assets)
+	for i := range enriched {
+		enriched[i].Description = buildAssetDescription(enriched[i])
+		enriched[i].LogoURL = logos.Resolve(enriched[i].Symbol)
+	}
+	return enriched
+}
+
+func buildAssetDescription(asset entities.AlpacaAssetResponse) string {
+	typeLabel := "stock"
+	nameLower := strings.ToLower(asset.Name)
+	if strings.Contains(nameLower, " etf") || strings.Contains(nameLower, "exchange traded fund") || strings.Contains(nameLower, " fund") || strings.HasSuffix(nameLower, " etf") {
+		typeLabel = "ETF"
+	}
+
+	description := asset.Name + " is a " + typeLabel + " listed on " + asset.Exchange + "."
+	if asset.Tradable {
+		description += " Tradable"
+	} else {
+		description += " Not currently tradable"
+	}
+	if asset.Fractionable {
+		description += " and supports fractional investing."
+	} else {
+		description += "."
+	}
+	return description
+}
+
+func newAssetLogoResolverFromEnv(logger *zap.Logger) *assetLogoResolver {
+	provider := strings.ToLower(strings.TrimSpace(os.Getenv("MARKET_LOGO_PROVIDER")))
+	if provider == "" {
+		provider = "logo_dev"
+	}
+
+	baseURL := strings.TrimSpace(os.Getenv("MARKET_LOGO_BASE_URL"))
+	if baseURL == "" {
+		baseURL = "https://img.logo.dev"
+	}
+	baseURL = strings.TrimRight(baseURL, "/")
+
+	token := strings.TrimSpace(os.Getenv("LOGO_DEV_PUBLISHABLE_KEY"))
+	if token == "" {
+		token = strings.TrimSpace(os.Getenv("LOGO_DEV_TOKEN"))
+	}
+
+	size := 128
+	if rawSize := strings.TrimSpace(os.Getenv("LOGO_DEV_SIZE")); rawSize != "" {
+		if parsed, err := strconv.Atoi(rawSize); err == nil && parsed > 0 {
+			size = parsed
+		}
+	}
+
+	format := strings.ToLower(strings.TrimSpace(os.Getenv("LOGO_DEV_FORMAT")))
+	if format == "" {
+		format = "png"
+	}
+	theme := strings.ToLower(strings.TrimSpace(os.Getenv("LOGO_DEV_THEME")))
+	if theme == "" {
+		theme = "auto"
+	}
+
+	if token == "" && logger != nil {
+		logger.Warn("Asset logo provider token not configured; logo_url will be omitted",
+			zap.String("provider", provider))
+	}
+
+	return &assetLogoResolver{
+		provider: provider,
+		baseURL:  baseURL,
+		token:    token,
+		size:     size,
+		format:   format,
+		theme:    theme,
+		cache:    make(map[string]cachedAssetLogo),
+	}
+}
+
+func (r *assetLogoResolver) Resolve(symbol string) *string {
+	if r == nil {
+		return nil
+	}
+	normalized := strings.ToUpper(strings.TrimSpace(symbol))
+	if normalized == "" {
+		return nil
+	}
+
+	now := time.Now().UTC()
+	r.mu.RLock()
+	if cached, ok := r.cache[normalized]; ok && now.Sub(cached.fetchedAt) < assetLogoCacheTTL {
+		r.mu.RUnlock()
+		return cloneAssetLogoPtr(cached.url)
+	}
+	r.mu.RUnlock()
+
+	var resolved *string
+	switch r.provider {
+	case "logo_dev":
+		resolved = r.resolveLogoDevURL(normalized)
+	default:
+		resolved = nil
+	}
+
+	r.mu.Lock()
+	r.cache[normalized] = cachedAssetLogo{url: resolved, fetchedAt: now}
+	r.mu.Unlock()
+
+	return cloneAssetLogoPtr(resolved)
+}
+
+func (r *assetLogoResolver) resolveLogoDevURL(symbol string) *string {
+	if strings.TrimSpace(r.token) == "" {
+		return nil
+	}
+	values := url.Values{}
+	values.Set("token", r.token)
+	values.Set("size", strconv.Itoa(r.size))
+	values.Set("format", r.format)
+	values.Set("theme", r.theme)
+
+	u := r.baseURL + "/ticker/" + url.PathEscape(symbol) + "?" + values.Encode()
+	return &u
+}
+
+func cloneAssetLogoPtr(s *string) *string {
+	if s == nil {
+		return nil
+	}
+	v := *s
+	return &v
 }
 
 // Note: Due handlers have been removed. Virtual accounts are now handled by Bridge.
 // See bridge_webhook_handlers.go for Bridge webhook handling.
-

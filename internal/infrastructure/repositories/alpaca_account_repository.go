@@ -129,6 +129,65 @@ func (r *InvestmentOrderRepository) GetByUserID(ctx context.Context, userID uuid
 	return orders, err
 }
 
+// GetByUserIDFiltered retrieves orders for a user with optional side/status filters.
+func (r *InvestmentOrderRepository) GetByUserIDFiltered(
+	ctx context.Context,
+	userID uuid.UUID,
+	limit, offset int,
+	side *entities.AlpacaOrderSide,
+	status *entities.AlpacaOrderStatus,
+) ([]*entities.InvestmentOrder, error) {
+	query := `SELECT * FROM investment_orders WHERE user_id = $1`
+	args := []interface{}{userID}
+	argIndex := 2
+
+	if side != nil {
+		query += fmt.Sprintf(" AND side = $%d", argIndex)
+		args = append(args, *side)
+		argIndex++
+	}
+	if status != nil {
+		query += fmt.Sprintf(" AND status = $%d", argIndex)
+		args = append(args, *status)
+		argIndex++
+	}
+
+	query += fmt.Sprintf(" ORDER BY COALESCE(filled_at, submitted_at, created_at) DESC LIMIT $%d OFFSET $%d", argIndex, argIndex+1)
+	args = append(args, limit, offset)
+
+	var orders []*entities.InvestmentOrder
+	err := r.db.SelectContext(ctx, &orders, query, args...)
+	return orders, err
+}
+
+// CountByUserIDFiltered returns total count of orders for a user matching optional filters.
+func (r *InvestmentOrderRepository) CountByUserIDFiltered(
+	ctx context.Context,
+	userID uuid.UUID,
+	side *entities.AlpacaOrderSide,
+	status *entities.AlpacaOrderStatus,
+) (int, error) {
+	query := `SELECT COUNT(*) FROM investment_orders WHERE user_id = $1`
+	args := []interface{}{userID}
+	argIndex := 2
+
+	if side != nil {
+		query += fmt.Sprintf(" AND side = $%d", argIndex)
+		args = append(args, *side)
+		argIndex++
+	}
+	if status != nil {
+		query += fmt.Sprintf(" AND status = $%d", argIndex)
+		args = append(args, *status)
+	}
+
+	var total int
+	if err := r.db.GetContext(ctx, &total, query, args...); err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
 func (r *InvestmentOrderRepository) UpdateFromAlpaca(ctx context.Context, alpacaOrderID string, status entities.AlpacaOrderStatus, filledQty, filledAvgPrice *string, filledAt *time.Time) error {
 	query := `
 		UPDATE investment_orders SET
