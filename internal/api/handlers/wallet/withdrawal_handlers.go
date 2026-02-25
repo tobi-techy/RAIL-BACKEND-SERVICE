@@ -2,6 +2,7 @@ package wallet
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/go-playground/validator/v10"
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
+	"github.com/rail-service/rail_service/internal/api/middleware"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/shopspring/decimal"
@@ -52,23 +54,27 @@ func NewWithdrawalHandlers(withdrawalService WithdrawalServiceInterface, walletP
 // CryptoWithdrawalRequest represents the HTTP request for crypto withdrawal
 // Only amount and destination_address required - chain defaults to Solana, wallet fetched from backend
 type CryptoWithdrawalRequest struct {
-	Amount             float64 `json:"amount" binding:"required,gt=0"`
-	DestinationAddress string  `json:"destination_address" binding:"required"`
+	Amount             string `json:"amount" binding:"required"`
+	DestinationAddress string `json:"destination_address" binding:"required"`
 }
 
 // FiatWithdrawalRequest represents the HTTP request for fiat withdrawal
 // Only requires routing number - bank account created during withdrawal process
 type FiatWithdrawalRequest struct {
-	Amount        float64 `json:"amount" binding:"required,gt=0"`
-	Currency      string  `json:"currency" binding:"required,oneof=USD EUR"`
-	RoutingNumber string  `json:"routing_number" binding:"required,len=9"`
+	Amount            string `json:"amount" binding:"required"`
+	Currency          string `json:"currency" binding:"required,oneof=USD EUR"`
+	AccountHolderName string `json:"account_holder_name" binding:"required,min=2,max=255"`
+	AccountNumber     string `json:"account_number,omitempty"`
+	RoutingNumber     string `json:"routing_number,omitempty"`
+	IBAN              string `json:"iban,omitempty"`
+	BIC               string `json:"bic,omitempty"`
 }
 
 // WithdrawalFeeRequest represents the HTTP request for fee calculation
 type WithdrawalFeeRequest struct {
-	WithdrawalType string  `form:"type" binding:"required,oneof=crypto fiat"`
-	Amount         float64 `form:"amount" binding:"required,gt=0"`
-	Currency       string  `form:"currency" binding:"required,oneof=USDC USD EUR"`
+	WithdrawalType string `form:"type" binding:"required,oneof=crypto fiat"`
+	Amount         string `form:"amount" binding:"required"`
+	Currency       string `form:"currency" binding:"required,oneof=USDC USD EUR"`
 }
 
 // InitiateCryptoWithdrawal handles POST /api/v1/withdrawals/crypto
@@ -84,6 +90,21 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 		return
 	}
 
+	amount, err := parsePositiveDecimal(req.Amount)
+	if err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidAmount, err.Error())
+		return
+	}
+	if !h.validateWithdrawalAmountPolicy(c, userID, amount) {
+		return
+	}
+
+	idempotencyKey, err := getIdempotencyKey(c)
+	if err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, err.Error())
+		return
+	}
+
 	// Get user's Solana wallet from backend (only Solana supported for now)
 	wallet, err := h.walletProvider.GetUserWalletByChain(c.Request.Context(), userID, "SOL")
 	if err != nil {
@@ -94,11 +115,12 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 
 	serviceReq := &entities.InitiateCryptoWithdrawalRequest{
 		UserID:             userID,
-		Amount:             decimal.NewFromFloat(req.Amount),
+		Amount:             amount,
 		DestinationAddress: req.DestinationAddress,
 		DestinationChain:   string(wallet.Chain),
 		SourceAccount:      entities.WithdrawalSourceSpendingBalance, // Default to spending
 		CircleWalletID:     wallet.CircleWalletID,
+		IdempotencyKey:     idempotencyKey,
 	}
 
 	response, err := h.withdrawalService.InitiateCryptoWithdrawal(c.Request.Context(), serviceReq)
@@ -123,17 +145,42 @@ func (h *WithdrawalHandlers) InitiateFiatWithdrawal(c *gin.Context) {
 		return
 	}
 
+	if err := validateFiatDestination(req); err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, err.Error())
+		return
+	}
+
+	amount, err := parsePositiveDecimal(req.Amount)
+	if err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidAmount, err.Error())
+		return
+	}
+	if !h.validateWithdrawalAmountPolicy(c, userID, amount) {
+		return
+	}
+
+	idempotencyKey, err := getIdempotencyKey(c)
+	if err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, err.Error())
+		return
+	}
+
 	currency := entities.WithdrawalCurrencyUSD
 	if req.Currency == "EUR" {
 		currency = entities.WithdrawalCurrencyEUR
 	}
 
 	serviceReq := &entities.InitiateFiatWithdrawalRequest{
-		UserID:        userID,
-		Amount:        decimal.NewFromFloat(req.Amount),
-		Currency:      currency,
-		RoutingNumber: req.RoutingNumber,
-		SourceAccount: entities.WithdrawalSourceSpendingBalance, // Default to spending
+		UserID:            userID,
+		Amount:            amount,
+		Currency:          currency,
+		AccountHolderName: strings.TrimSpace(req.AccountHolderName),
+		AccountNumber:     strings.ReplaceAll(strings.TrimSpace(req.AccountNumber), " ", ""),
+		RoutingNumber:     strings.ReplaceAll(strings.TrimSpace(req.RoutingNumber), " ", ""),
+		IBAN:              normalizeIBAN(req.IBAN),
+		BIC:               strings.ToUpper(strings.TrimSpace(req.BIC)),
+		SourceAccount:     entities.WithdrawalSourceSpendingBalance, // Default to spending
+		IdempotencyKey:    idempotencyKey,
 	}
 
 	response, err := h.withdrawalService.InitiateFiatWithdrawal(c.Request.Context(), serviceReq)
@@ -158,6 +205,12 @@ func (h *WithdrawalHandlers) GetWithdrawalFees(c *gin.Context) {
 		withdrawalType = entities.WithdrawalTypeFiat
 	}
 
+	amount, err := parsePositiveDecimal(req.Amount)
+	if err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidAmount, err.Error())
+		return
+	}
+
 	currency := entities.WithdrawalCurrencyUSDC
 	switch req.Currency {
 	case "USD":
@@ -169,7 +222,7 @@ func (h *WithdrawalHandlers) GetWithdrawalFees(c *gin.Context) {
 	fee, err := h.withdrawalService.GetWithdrawalFee(
 		c.Request.Context(),
 		withdrawalType,
-		decimal.NewFromFloat(req.Amount),
+		amount,
 		currency,
 	)
 	if err != nil {
@@ -222,8 +275,14 @@ func (h *WithdrawalHandlers) GetUserWithdrawals(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 
+	if limit <= 0 {
+		limit = 20
+	}
 	if limit > 100 {
 		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
 	}
 
 	withdrawals, err := h.withdrawalService.GetUserWithdrawals(c.Request.Context(), userID, limit, offset)
@@ -287,7 +346,7 @@ func (h *WithdrawalHandlers) extractUserID(c *gin.Context) (uuid.UUID, bool) {
 	return userUUID, true
 }
 
-func (h *WithdrawalHandlers) handleWithdrawalError(c *gin.Context, err error, userID uuid.UUID, amount float64) {
+func (h *WithdrawalHandlers) handleWithdrawalError(c *gin.Context, err error, userID uuid.UUID, amount string) {
 	h.logger.Error("Failed to initiate withdrawal",
 		"error", err,
 		"user_id", userID,
@@ -319,6 +378,121 @@ func (h *WithdrawalHandlers) handleWithdrawalError(c *gin.Context, err error, us
 	default:
 		common.SendInternalError(c, "WITHDRAWAL_ERROR", "Failed to initiate withdrawal")
 	}
+}
+
+func (h *WithdrawalHandlers) validateWithdrawalAmountPolicy(c *gin.Context, userID uuid.UUID, amount decimal.Decimal) bool {
+	cfgValue, hasCfg := c.Get("withdrawal_security_config")
+	storeValue, hasStore := c.Get("withdrawal_security_store")
+	if !hasCfg || !hasStore {
+		return true
+	}
+
+	cfg, ok := cfgValue.(middleware.WithdrawalSecurityConfig)
+	if !ok {
+		h.logger.Error("Invalid withdrawal security config in request context")
+		common.SendInternalError(c, common.ErrCodeInternalError, "Failed to apply withdrawal security policy")
+		return false
+	}
+
+	store, ok := storeValue.(middleware.WithdrawalSecurityStore)
+	if !ok {
+		h.logger.Error("Invalid withdrawal security store in request context")
+		common.SendInternalError(c, common.ErrCodeInternalError, "Failed to apply withdrawal security policy")
+		return false
+	}
+
+	if err := middleware.ValidateWithdrawalAmount(c.Request.Context(), store, cfg, userID, amount); err != nil {
+		common.SendBadRequest(c, "LIMIT_EXCEEDED", err.Error())
+		return false
+	}
+
+	return true
+}
+
+func parsePositiveDecimal(raw string) (decimal.Decimal, error) {
+	normalized := strings.TrimSpace(raw)
+	amount, err := decimal.NewFromString(normalized)
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("amount must be a valid decimal string")
+	}
+	if !amount.GreaterThan(decimal.Zero) {
+		return decimal.Zero, fmt.Errorf("amount must be greater than zero")
+	}
+	return amount, nil
+}
+
+func getIdempotencyKey(c *gin.Context) (string, error) {
+	key := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	if key == "" {
+		key = strings.TrimSpace(c.GetHeader("X-Idempotency-Key"))
+	}
+	if len(key) > 255 {
+		return "", fmt.Errorf("idempotency key must be at most 255 characters")
+	}
+	return key, nil
+}
+
+func validateFiatDestination(req FiatWithdrawalRequest) error {
+	currency := strings.TrimSpace(req.Currency)
+	switch currency {
+	case "USD":
+		routing := strings.ReplaceAll(strings.TrimSpace(req.RoutingNumber), " ", "")
+		account := strings.ReplaceAll(strings.TrimSpace(req.AccountNumber), " ", "")
+		if len(routing) != 9 || !isDigits(routing) {
+			return fmt.Errorf("routing_number must be exactly 9 digits for USD withdrawals")
+		}
+		if len(account) < 4 || len(account) > 17 || !isDigits(account) {
+			return fmt.Errorf("account_number must be 4-17 digits for USD withdrawals")
+		}
+	case "EUR":
+		iban := normalizeIBAN(req.IBAN)
+		if len(iban) < 15 || len(iban) > 34 {
+			return fmt.Errorf("iban must be between 15 and 34 characters for EUR withdrawals")
+		}
+		if !isAlphaNumeric(iban) {
+			return fmt.Errorf("iban must contain only letters and digits")
+		}
+		bic := strings.ToUpper(strings.TrimSpace(req.BIC))
+		if bic != "" {
+			if (len(bic) != 8 && len(bic) != 11) || !isAlphaNumeric(bic) {
+				return fmt.Errorf("bic must be 8 or 11 alphanumeric characters")
+			}
+		}
+	default:
+		return fmt.Errorf("unsupported fiat currency: %s", currency)
+	}
+	return nil
+}
+
+func isDigits(v string) bool {
+	if v == "" {
+		return false
+	}
+	for _, ch := range v {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isAlphaNumeric(v string) bool {
+	if v == "" {
+		return false
+	}
+	for _, ch := range v {
+		if (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func normalizeIBAN(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	withoutSpaces := strings.ReplaceAll(trimmed, " ", "")
+	return strings.ToUpper(withoutSpaces)
 }
 
 // AdminWithdrawalHandlers handles admin withdrawal operations

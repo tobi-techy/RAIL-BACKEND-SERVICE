@@ -2,10 +2,13 @@ package withdrawal
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,6 +27,7 @@ const (
 	FiatWithdrawalFeeFixedUSD   = 0.50
 	FiatWithdrawalFeePercentEUR = 0.01 // 1% + €0.50 for EUR
 	FiatWithdrawalFeeFixedEUR   = 0.50
+	withdrawalLockShards        = 256
 )
 
 // LedgerService interface for ledger operations
@@ -117,6 +121,7 @@ type WithdrawalService struct {
 	circleClient        CircleClient
 	bridgeAdapter       BridgeAdapter
 	logger              *logger.Logger
+	withdrawalLocks     [withdrawalLockShards]sync.Mutex
 }
 
 type CryptoTransferResult struct {
@@ -154,6 +159,10 @@ func NewWithdrawalService(
 
 // InitiateCryptoWithdrawal initiates a crypto withdrawal (USDC to external wallet)
 func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *entities.InitiateCryptoWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error) {
+	lock := s.userWithdrawalLock(req.UserID)
+	lock.Lock()
+	defer lock.Unlock()
+
 	s.logger.Info("Initiating crypto withdrawal",
 		"user_id", req.UserID.String(),
 		"amount", req.Amount.String(),
@@ -166,9 +175,12 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
+	clientProvidedIdempotency := strings.TrimSpace(req.IdempotencyKey) != ""
+	idempotencyKey := scopedWithdrawalIdempotencyKey(req.UserID, "crypto", req.IdempotencyKey)
+
 	// Step 2: Check idempotency
-	if req.IdempotencyKey != "" {
-		existing, err := s.withdrawalRepo.GetByIdempotencyKey(ctx, req.IdempotencyKey)
+	if clientProvidedIdempotency {
+		existing, err := s.withdrawalRepo.GetByIdempotencyKey(ctx, idempotencyKey)
 		if err != nil {
 			s.logger.Error("Failed to check idempotency key", "error", err)
 			return nil, fmt.Errorf("failed to check idempotency: %w", err)
@@ -215,12 +227,12 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 		return nil, fmt.Errorf("insufficient balance for withdrawal + fee: have %s, need %s", balance.String(), totalAmount.String())
 	}
 
-	// Step 6: Create withdrawal record
-	idempotencyKey := req.IdempotencyKey
-	if idempotencyKey == "" {
-		idempotencyKey = uuid.New().String()
+	// Step 5.5: Include pending withdrawals in available-balance checks.
+	if err := s.ensurePendingCapacity(ctx, req.UserID, balance, totalAmount); err != nil {
+		return nil, err
 	}
 
+	// Step 6: Create withdrawal record
 	withdrawal := &entities.Withdrawal{
 		ID:                 uuid.New(),
 		UserID:             req.UserID,
@@ -243,6 +255,12 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	if err := s.withdrawalRepo.Create(ctx, withdrawal); err != nil {
 		s.logger.Error("Failed to create withdrawal", "error", err)
 		return nil, fmt.Errorf("failed to create withdrawal: %w", err)
+	}
+
+	// Re-check pending exposure after creating the record to protect against near-simultaneous requests.
+	if err := s.ensurePendingExposureWithinBalance(ctx, req.UserID, balance); err != nil {
+		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
+		return nil, err
 	}
 
 	// Step 7: Execute Circle transfer
@@ -381,11 +399,14 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 
 // InitiateFiatWithdrawal initiates a fiat withdrawal (USDC to fiat via Bridge)
 func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *entities.InitiateFiatWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error) {
+	lock := s.userWithdrawalLock(req.UserID)
+	lock.Lock()
+	defer lock.Unlock()
+
 	s.logger.Info("Initiating fiat withdrawal",
 		"user_id", req.UserID.String(),
 		"amount", req.Amount.String(),
 		"currency", req.Currency,
-		"routing_number", req.RoutingNumber,
 		"source_account", req.SourceAccount)
 
 	// Step 1: Validate request
@@ -393,6 +414,9 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 		s.logger.Warn("Invalid fiat withdrawal request", "error", err.Error())
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
+
+	clientProvidedIdempotency := strings.TrimSpace(req.IdempotencyKey) != ""
+	idempotencyKey := scopedWithdrawalIdempotencyKey(req.UserID, "fiat", req.IdempotencyKey)
 
 	// Step 2: Ensure user is eligible for Bridge-based fiat withdrawal.
 	if s.userRepo != nil {
@@ -409,8 +433,8 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 	}
 
 	// Step 3: Check idempotency
-	if req.IdempotencyKey != "" {
-		existing, err := s.withdrawalRepo.GetByIdempotencyKey(ctx, req.IdempotencyKey)
+	if clientProvidedIdempotency {
+		existing, err := s.withdrawalRepo.GetByIdempotencyKey(ctx, idempotencyKey)
 		if err != nil {
 			s.logger.Error("Failed to check idempotency key", "error", err)
 			return nil, fmt.Errorf("failed to check idempotency: %w", err)
@@ -457,19 +481,19 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 		return nil, fmt.Errorf("insufficient balance for withdrawal + fee: have %s, need %s", balance.String(), totalAmount.String())
 	}
 
-	// Step 7: Create or get bank account with routing number
-	bankAccount, err := s.getOrCreateBankAccount(ctx, req.UserID, req.RoutingNumber, req.Currency)
+	// Step 6.5: Include pending withdrawals in available-balance checks.
+	if err := s.ensurePendingCapacity(ctx, req.UserID, balance, totalAmount); err != nil {
+		return nil, err
+	}
+
+	// Step 7: Create or get bank account for the supplied fiat destination.
+	bankAccount, err := s.getOrCreateBankAccount(ctx, req)
 	if err != nil {
 		s.logger.Error("Failed to create bank account", "error", err)
 		return nil, fmt.Errorf("failed to setup bank account: %w", err)
 	}
 
 	// Step 8: Create withdrawal record
-	idempotencyKey := req.IdempotencyKey
-	if idempotencyKey == "" {
-		idempotencyKey = uuid.New().String()
-	}
-
 	withdrawal := &entities.Withdrawal{
 		ID:               uuid.New(),
 		UserID:           req.UserID,
@@ -491,6 +515,12 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 	if err := s.withdrawalRepo.Create(ctx, withdrawal); err != nil {
 		s.logger.Error("Failed to create withdrawal", "error", err)
 		return nil, fmt.Errorf("failed to create withdrawal: %w", err)
+	}
+
+	// Re-check pending exposure after creating the record to protect against near-simultaneous requests.
+	if err := s.ensurePendingExposureWithinBalance(ctx, req.UserID, balance); err != nil {
+		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
+		return nil, err
 	}
 
 	// Step 9: Execute Bridge offramp transfer
@@ -526,46 +556,84 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 	}, nil
 }
 
-// getOrCreateBankAccount finds existing bank account by routing number or creates new one
-func (s *WithdrawalService) getOrCreateBankAccount(ctx context.Context, userID uuid.UUID, routingNumber string, currency entities.WithdrawalCurrency) (*entities.BankAccount, error) {
-	// Check if user already has a bank account with this routing number
-	existingAccounts, err := s.bankAccountRepo.GetByUserID(ctx, userID)
+// getOrCreateBankAccount finds an existing destination account fingerprint or creates a new one.
+func (s *WithdrawalService) getOrCreateBankAccount(ctx context.Context, req *entities.InitiateFiatWithdrawalRequest) (*entities.BankAccount, error) {
+	existingAccounts, err := s.bankAccountRepo.GetByUserID(ctx, req.UserID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check existing accounts: %w", err)
 	}
 
+	accountLast4 := ""
+	if len(req.AccountNumber) >= 4 {
+		accountLast4 = req.AccountNumber[len(req.AccountNumber)-4:]
+	}
+	ibanLast4 := ""
+	if len(req.IBAN) >= 4 {
+		ibanLast4 = req.IBAN[len(req.IBAN)-4:]
+	}
+
 	for _, acc := range existingAccounts {
-		if acc.RoutingNumber != nil && *acc.RoutingNumber == routingNumber {
-			s.logger.Info("Found existing bank account", "bank_account_id", acc.ID.String())
-			return acc, nil
+		switch req.Currency {
+		case entities.WithdrawalCurrencyUSD:
+			routingMatches := acc.RoutingNumber != nil && *acc.RoutingNumber == req.RoutingNumber
+			accountMatches := acc.AccountNumberLast4 == accountLast4 && accountLast4 != ""
+			if routingMatches && accountMatches {
+				s.logger.Info("Found existing USD bank account", "bank_account_id", acc.ID.String())
+				return acc, nil
+			}
+		case entities.WithdrawalCurrencyEUR:
+			ibanMatches := acc.IBAN != nil && strings.EqualFold(strings.TrimSpace(*acc.IBAN), strings.TrimSpace(req.IBAN))
+			if ibanMatches {
+				s.logger.Info("Found existing EUR bank account", "bank_account_id", acc.ID.String())
+				return acc, nil
+			}
 		}
 	}
 
-	// Create new bank account
-	routingLast4 := routingNumber[len(routingNumber)-4:]
 	bankCurrency := entities.BankAccountCurrencyUSD
-	if currency == entities.WithdrawalCurrencyEUR {
+	if req.Currency == entities.WithdrawalCurrencyEUR {
 		bankCurrency = entities.BankAccountCurrencyEUR
 	}
 
 	bankAccount := &entities.BankAccount{
 		ID:                 uuid.New(),
-		UserID:             userID,
+		UserID:             req.UserID,
 		BankName:           "Bank", // Will be resolved by Bridge
-		AccountNumberLast4: "0000", // Placeholder - Bridge handles full account
-		RoutingNumber:      &routingNumber,
-		RoutingNumberLast4: &routingLast4,
+		AccountNumberLast4: accountLast4,
 		Currency:           bankCurrency,
 		IsVerified:         false,
 		CreatedAt:          time.Now(),
 		UpdatedAt:          time.Now(),
 	}
+	if req.Currency == entities.WithdrawalCurrencyUSD {
+		routing := req.RoutingNumber
+		routingLast4 := routing[len(routing)-4:]
+		bankAccount.RoutingNumber = &routing
+		bankAccount.RoutingNumberLast4 = &routingLast4
+	}
+	if req.Currency == entities.WithdrawalCurrencyEUR {
+		iban := strings.TrimSpace(req.IBAN)
+		if iban != "" {
+			bankAccount.IBAN = &iban
+		}
+		bankAccount.AccountNumberLast4 = ibanLast4
+	}
 
 	// Register with Bridge to get recipient ID
 	if s.bridgeAdapter != nil {
 		recipientReq := map[string]interface{}{
-			"routing_number": routingNumber,
-			"currency":       string(currency),
+			"currency":            string(req.Currency),
+			"account_holder_name": strings.TrimSpace(req.AccountHolderName),
+		}
+		switch req.Currency {
+		case entities.WithdrawalCurrencyUSD:
+			recipientReq["routing_number"] = req.RoutingNumber
+			recipientReq["account_number"] = req.AccountNumber
+		case entities.WithdrawalCurrencyEUR:
+			recipientReq["iban"] = strings.TrimSpace(req.IBAN)
+			if bic := strings.TrimSpace(req.BIC); bic != "" {
+				recipientReq["bic"] = bic
+			}
 		}
 
 		recipientID, err := s.bridgeAdapter.CreateRecipient(ctx, recipientReq)
@@ -583,7 +651,7 @@ func (s *WithdrawalService) getOrCreateBankAccount(ctx context.Context, userID u
 
 	s.logger.Info("Created new bank account",
 		"bank_account_id", bankAccount.ID.String(),
-		"routing_number_last4", routingLast4)
+		"currency", bankAccount.Currency)
 
 	return bankAccount, nil
 }
@@ -710,6 +778,37 @@ func (s *WithdrawalService) getSourceBalance(ctx context.Context, userID uuid.UU
 	}
 
 	return s.ledgerService.GetAccountBalance(ctx, userID, accountType)
+}
+
+func (s *WithdrawalService) ensurePendingCapacity(ctx context.Context, userID uuid.UUID, currentBalance, requestedTotal decimal.Decimal) error {
+	pendingTotal, err := s.withdrawalRepo.GetPendingWithdrawalsTotal(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("failed to check pending withdrawals: %w", err)
+	}
+
+	availableAfterPending := currentBalance.Sub(pendingTotal)
+	if availableAfterPending.LessThan(requestedTotal) {
+		return fmt.Errorf("insufficient available balance after pending withdrawals: available %s, need %s", availableAfterPending.String(), requestedTotal.String())
+	}
+
+	return nil
+}
+
+func (s *WithdrawalService) ensurePendingExposureWithinBalance(ctx context.Context, userID uuid.UUID, currentBalance decimal.Decimal) error {
+	pendingTotal, err := s.withdrawalRepo.GetPendingWithdrawalsTotal(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("failed to re-check pending withdrawals: %w", err)
+	}
+
+	if pendingTotal.GreaterThan(currentBalance) {
+		return fmt.Errorf("withdrawal would exceed available balance when accounting for pending withdrawals")
+	}
+
+	return nil
+}
+
+func (s *WithdrawalService) userWithdrawalLock(userID uuid.UUID) *sync.Mutex {
+	return &s.withdrawalLocks[int(userID[0])%withdrawalLockShards]
 }
 
 func mapWithdrawalSourceToAccountType(sourceAccount entities.WithdrawalSourceAccount) (entities.AccountType, error) {
@@ -1064,4 +1163,13 @@ func isCircleNotFoundError(err error) bool {
 		strings.Contains(msg, "error 404") ||
 		strings.Contains(msg, "status 404") ||
 		strings.Contains(msg, "\"code\":404")
+}
+
+func scopedWithdrawalIdempotencyKey(userID uuid.UUID, flow string, clientKey string) string {
+	normalized := strings.TrimSpace(clientKey)
+	if normalized == "" {
+		return uuid.NewString()
+	}
+	digest := sha256.Sum256([]byte("withdrawal:" + flow + ":" + userID.String() + ":" + normalized))
+	return "wdr-" + hex.EncodeToString(digest[:16])
 }

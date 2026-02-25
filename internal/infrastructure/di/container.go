@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/api/handlers"
@@ -133,6 +134,28 @@ func (a *LedgerIntegrationAdapter) GetUserBalance(ctx context.Context, userID uu
 		PendingInvestment: view.PendingInvestment,
 		TotalValue:        view.TotalValue,
 	}, nil
+}
+
+// BridgeVirtualAccountWebhookAdapter adapts domain Bridge VA service to webhook processor interface.
+type BridgeVirtualAccountWebhookAdapter struct {
+	service *funding.BridgeVirtualAccountService
+}
+
+func (a *BridgeVirtualAccountWebhookAdapter) ProcessFiatDeposit(ctx *gin.Context, event *webhooks.BridgeDepositEvent) error {
+	if a == nil || a.service == nil {
+		return fmt.Errorf("bridge virtual account service not configured")
+	}
+	if event == nil {
+		return fmt.Errorf("bridge deposit event is required")
+	}
+
+	return a.service.ProcessFiatDeposit(ctx.Request.Context(), &funding.BridgeFiatDepositEvent{
+		VirtualAccountID: event.VirtualAccountID,
+		Amount:           event.Amount,
+		Currency:         event.Currency,
+		TransactionRef:   event.TransactionRef,
+		Status:           event.Status,
+	})
 }
 
 // WithdrawalLedgerAdapter adapts ledger.Service to withdrawal.LedgerService interface
@@ -925,6 +948,9 @@ func (c *Container) initializeDomainServices() error {
 		ledgerAdapter,
 		c.Logger,
 	)
+	if c.AlpacaAccountRepo != nil {
+		c.FundingService.SetAlpacaAccountLookup(c.AlpacaAccountRepo)
+	}
 
 	// Wire default wallet set ID for funding service wallet creation
 	if c.Config.Circle.DefaultWalletSetID != "" {
@@ -940,6 +966,37 @@ func (c *Container) initializeDomainServices() error {
 		c.LedgerService,
 		c.Logger,
 	)
+
+	// Initialize Bridge virtual account service now that allocation + ledger are available.
+	if c.BridgeClient != nil {
+		c.BridgeVirtualAccountService = funding.NewBridgeVirtualAccountService(
+			c.BridgeClient,
+			virtualAccountRepo,
+			c.AllocationService,
+			ledgerAdapter,
+			c.Logger,
+		)
+		c.FundingService.SetBridgeVAService(c.BridgeVirtualAccountService)
+
+		bridgeWebhookService := webhooks.NewBridgeWebhookService(
+			&BridgeVirtualAccountWebhookAdapter{service: c.BridgeVirtualAccountService},
+			nil, // Customer status processor can be injected later.
+			nil, // Card processor can be injected later.
+			nil, // Notifications can be injected later.
+			c.ZapLog,
+		)
+
+		webhookSecret := c.Config.Bridge.WebhookSecret
+		skipWebhookVerification := c.Config.Environment == "development" && webhookSecret == ""
+		c.BridgeWebhookHandler = handlers.NewBridgeWebhookHandler(
+			bridgeWebhookService,
+			c.ZapLog,
+			webhookSecret,
+			skipWebhookVerification,
+		)
+	} else {
+		c.ZapLog.Warn("Bridge client not configured - Bridge virtual account service disabled")
+	}
 
 	// Initialize auto-invest service (OrderPlacer will be set after InvestingService is created)
 	_ = repositories.NewAutoInvestRepository(sqlxDB) // Keep for future use

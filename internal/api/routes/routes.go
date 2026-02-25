@@ -450,11 +450,14 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					middleware.DefaultWithdrawalSecurityConfig(),
 				))
 			}
+			// Enforce passcode-verified session for new withdrawal initiation requests.
+			withdrawalsSensitive := withdrawals.Group("/")
+			withdrawalsSensitive.Use(middleware.RequirePasscodeSession(container.GetPasscodeService(), true, container.ZapLog))
 			{
 				// Keep POST /withdrawals for backward compatibility and treat it as crypto withdrawal.
-				withdrawals.POST("", withdrawalHandlers.InitiateCryptoWithdrawal)
-				withdrawals.POST("/crypto", withdrawalHandlers.InitiateCryptoWithdrawal)
-				withdrawals.POST("/fiat", withdrawalHandlers.InitiateFiatWithdrawal)
+				withdrawalsSensitive.POST("", withdrawalHandlers.InitiateCryptoWithdrawal)
+				withdrawalsSensitive.POST("/crypto", withdrawalHandlers.InitiateCryptoWithdrawal)
+				withdrawalsSensitive.POST("/fiat", withdrawalHandlers.InitiateFiatWithdrawal)
 				withdrawals.GET("/fees", withdrawalHandlers.GetWithdrawalFees)
 				withdrawals.GET("", withdrawalHandlers.GetUserWithdrawals)
 				withdrawals.GET("/:withdrawalId", withdrawalHandlers.GetWithdrawal)
