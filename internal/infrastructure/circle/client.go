@@ -883,11 +883,26 @@ func parseCCTPTransactionStatus(transactionID string, response map[string]interf
 }
 
 func isCircleNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+
 	var circleErr entities.CircleAPIError
 	if errors.As(err, &circleErr) {
 		return circleErr.Code == http.StatusNotFound
 	}
-	return false
+
+	var legacyErr entities.CircleErrorResponse
+	if errors.As(err, &legacyErr) {
+		return legacyErr.Code == http.StatusNotFound
+	}
+
+	// Defensive fallback for wrapped/non-typed errors.
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "http 404") ||
+		strings.Contains(msg, "error 404") ||
+		strings.Contains(msg, "status 404") ||
+		strings.Contains(msg, "\"code\":404")
 }
 
 // FindRecentOutboundTransfer searches recent outbound transfer transactions for a wallet.
