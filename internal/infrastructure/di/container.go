@@ -2469,14 +2469,19 @@ func (c *Container) GetSpendingStashHandlers() *handlers.SpendingStashHandlers {
 
 // GetInvestmentStashHandlers returns investment stash handlers
 func (c *Container) GetInvestmentStashHandlers() *handlers.InvestmentStashHandlers {
-	if c.AllocationService == nil || c.InvestingService == nil || c.CopyTradingService == nil {
+	if c.AllocationService == nil || c.InvestmentPositionRepo == nil || c.InvestmentOrderRepo == nil || c.PortfolioAnalyticsService == nil {
 		return nil
 	}
-	return handlers.NewInvestmentStashHandlers(
+
+	h := handlers.NewInvestmentStashHandlers(
 		c.AllocationService,
-		c.InvestingService,
+		c.InvestmentPositionRepo,
+		c.InvestmentOrderRepo,
+		c.PortfolioAnalyticsService,
 		c.ZapLog,
 	)
+	h.SetAutoInvestRepository(repositories.NewAutoInvestRepository(sqlx.NewDb(c.DB, "postgres")))
+	return h
 }
 
 // GetCopyTradingRepository returns the copy trading repository

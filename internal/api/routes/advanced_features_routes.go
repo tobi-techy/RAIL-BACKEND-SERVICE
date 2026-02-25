@@ -38,6 +38,9 @@ func RegisterAdvancedFeaturesRoutes(
 		market.GET("/quote/:symbol", middleware.PublicCache(30), marketHandlers.GetQuote)
 		market.GET("/quotes", middleware.PublicCache(30), marketHandlers.GetQuotes)
 		market.GET("/bars/:symbol", middleware.PublicCache(60), marketHandlers.GetBars)
+		market.GET("/explore", middleware.PublicCache(30), marketHandlers.GetExplore)
+		market.GET("/instruments/:symbol", middleware.PublicCache(30), marketHandlers.GetInstrument)
+		market.GET("/filters", middleware.PublicCache(300), marketHandlers.GetFilterMetadata)
 
 		// Authenticated endpoints for alerts
 		alerts := market.Group("/alerts")

@@ -3,12 +3,13 @@ package market
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
-	alpacaAdapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	alpacaAdapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -34,7 +35,9 @@ type MarketDataService struct {
 	alertRepo    AlertRepository
 	notifier     NotificationService
 	logger       *zap.Logger
+	cacheMu      sync.RWMutex
 	priceCache   map[string]*cachedQuote
+	explorer     *ExplorerService
 }
 
 type cachedQuote struct {
@@ -54,13 +57,17 @@ func NewMarketDataService(
 		notifier:     notifier,
 		logger:       logger,
 		priceCache:   make(map[string]*cachedQuote),
+		explorer:     NewExplorerService(alpacaClient, logger, "configs/market_taxonomy.yaml"),
 	}
 }
 
 // GetQuote returns real-time quote for a symbol
 func (s *MarketDataService) GetQuote(ctx context.Context, symbol string) (*entities.MarketQuote, error) {
 	// Check cache (5 second TTL)
-	if cached, ok := s.priceCache[symbol]; ok && time.Since(cached.fetchedAt) < 5*time.Second {
+	s.cacheMu.RLock()
+	cached, ok := s.priceCache[symbol]
+	s.cacheMu.RUnlock()
+	if ok && time.Since(cached.fetchedAt) < 5*time.Second {
 		return cached.quote, nil
 	}
 
@@ -69,7 +76,9 @@ func (s *MarketDataService) GetQuote(ctx context.Context, symbol string) (*entit
 		return nil, fmt.Errorf("get quote: %w", err)
 	}
 
+	s.cacheMu.Lock()
 	s.priceCache[symbol] = &cachedQuote{quote: quote, fetchedAt: time.Now()}
+	s.cacheMu.Unlock()
 	return quote, nil
 }
 
@@ -80,7 +89,10 @@ func (s *MarketDataService) GetQuotes(ctx context.Context, symbols []string) (ma
 
 	// Check cache first
 	for _, sym := range symbols {
-		if cached, ok := s.priceCache[sym]; ok && time.Since(cached.fetchedAt) < 5*time.Second {
+		s.cacheMu.RLock()
+		cached, ok := s.priceCache[sym]
+		s.cacheMu.RUnlock()
+		if ok && time.Since(cached.fetchedAt) < 5*time.Second {
 			result[sym] = cached.quote
 		} else {
 			toFetch = append(toFetch, sym)
@@ -97,10 +109,12 @@ func (s *MarketDataService) GetQuotes(ctx context.Context, symbols []string) (ma
 	}
 
 	now := time.Now()
+	s.cacheMu.Lock()
 	for sym, quote := range quotes {
 		s.priceCache[sym] = &cachedQuote{quote: quote, fetchedAt: now}
 		result[sym] = quote
 	}
+	s.cacheMu.Unlock()
 
 	return result, nil
 }
@@ -108,6 +122,30 @@ func (s *MarketDataService) GetQuotes(ctx context.Context, symbols []string) (ma
 // GetBars returns historical OHLCV data
 func (s *MarketDataService) GetBars(ctx context.Context, symbol string, timeframe string, start, end time.Time) ([]*entities.MarketBar, error) {
 	return s.alpacaClient.GetBars(ctx, symbol, timeframe, start, end)
+}
+
+// ExploreMarket returns a UI-ready market explorer response.
+func (s *MarketDataService) ExploreMarket(ctx context.Context, filters entities.MarketExploreFilters) (*entities.MarketExploreResponse, error) {
+	if s.explorer == nil {
+		return nil, fmt.Errorf("market explorer unavailable")
+	}
+	return s.explorer.Explore(ctx, filters)
+}
+
+// GetMarketInstrument returns detailed information for a single instrument.
+func (s *MarketDataService) GetMarketInstrument(ctx context.Context, symbol string, includeBars bool, timeframe string, barsLimit int) (*entities.MarketInstrumentDetailsResponse, error) {
+	if s.explorer == nil {
+		return nil, fmt.Errorf("market explorer unavailable")
+	}
+	return s.explorer.GetInstrument(ctx, symbol, includeBars, timeframe, barsLimit)
+}
+
+// GetMarketFilterMetadata returns supported filter metadata for UI controls.
+func (s *MarketDataService) GetMarketFilterMetadata(ctx context.Context) (*entities.MarketFilterMetadataResponse, error) {
+	if s.explorer == nil {
+		return nil, fmt.Errorf("market explorer unavailable")
+	}
+	return s.explorer.GetFilterMetadata(ctx)
 }
 
 // CreateAlert creates a new market alert

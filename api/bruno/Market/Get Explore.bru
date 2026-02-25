@@ -1,0 +1,11 @@
+meta {
+  name: Get Explore
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/market/explore?types=stock,etf&page=1&page_size=25&sort_by=symbol&sort_order=asc
+  body: none
+  auth: none
+}
