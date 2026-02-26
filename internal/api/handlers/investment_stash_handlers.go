@@ -415,6 +415,7 @@ func (h *InvestmentStashHandlers) buildOverviewResponse(
 			TotalWithdrawals: "0.00",
 		},
 		HoldingsPreview:           []InvestmentPositionDetail{},
+		TopPerformersPreview:      []InvestmentPositionDetail{},
 		DistributionPreview:       []InvestmentDistributionItem{},
 		RecentTransactionsPreview: []InvestmentTradeTransaction{},
 		DataHealth: InvestmentDataHealth{
@@ -472,6 +473,7 @@ func (h *InvestmentStashHandlers) buildOverviewResponse(
 	} else {
 		resp.HoldingsPreview = details
 	}
+	resp.TopPerformersPreview = buildTopPerformerPreview(details, 3)
 
 	distribution := buildDistributionItems(details)
 	if len(distribution) > 3 {
@@ -800,6 +802,27 @@ func buildDistributionItems(details []InvestmentPositionDetail) []InvestmentDist
 	})
 
 	return items
+}
+
+func buildTopPerformerPreview(details []InvestmentPositionDetail, limit int) []InvestmentPositionDetail {
+	if len(details) == 0 || limit <= 0 {
+		return []InvestmentPositionDetail{}
+	}
+
+	cloned := append([]InvestmentPositionDetail(nil), details...)
+	sort.Slice(cloned, func(i, j int) bool {
+		if cloned[i].UnrealizedPnLPercent == cloned[j].UnrealizedPnLPercent {
+			iv, _ := decimal.NewFromString(cloned[i].MarketValue.Raw)
+			jv, _ := decimal.NewFromString(cloned[j].MarketValue.Raw)
+			return iv.GreaterThan(jv)
+		}
+		return cloned[i].UnrealizedPnLPercent > cloned[j].UnrealizedPnLPercent
+	})
+
+	if len(cloned) > limit {
+		return cloned[:limit]
+	}
+	return cloned
 }
 
 func calculateDistributionMetrics(items []InvestmentDistributionItem) (float64, float64, float64) {

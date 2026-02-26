@@ -914,9 +914,15 @@ func overrideFromEnv() {
 	}
 	if alpacaDataAPIKey := os.Getenv("ALPACA_DATA_API_KEY"); alpacaDataAPIKey != "" {
 		viper.Set("alpaca.data_api_key", alpacaDataAPIKey)
+	} else if alpacaDataKey := os.Getenv("ALPACA_DATA_KEY"); alpacaDataKey != "" {
+		viper.Set("alpaca.data_api_key", alpacaDataKey)
 	}
 	if alpacaDataAPISecret := os.Getenv("ALPACA_DATA_API_SECRET"); alpacaDataAPISecret != "" {
 		viper.Set("alpaca.data_api_secret", alpacaDataAPISecret)
+	} else if alpacaDataSecret := os.Getenv("ALPACA_DATA_SECRET"); alpacaDataSecret != "" {
+		viper.Set("alpaca.data_api_secret", alpacaDataSecret)
+	} else if alpacaDataAPISecretKey := os.Getenv("ALPACA_DATA_API_SECRET_KEY"); alpacaDataAPISecretKey != "" {
+		viper.Set("alpaca.data_api_secret", alpacaDataAPISecretKey)
 	}
 	if alpacaBaseURL := os.Getenv("ALPACA_BASE_URL"); alpacaBaseURL != "" {
 		viper.Set("alpaca.base_url", alpacaBaseURL)

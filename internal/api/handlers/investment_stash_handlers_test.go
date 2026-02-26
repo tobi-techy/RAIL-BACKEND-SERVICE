@@ -391,6 +391,69 @@ func TestBuildOverviewResponse_BalanceIsInvestmentOnly(t *testing.T) {
 	assert.NotEqual(t, "99999.00", resp.Balance.Total)
 }
 
+func TestBuildOverviewResponse_TopPerformersPreviewSortedByPerformance(t *testing.T) {
+	h := &InvestmentStashHandlers{logger: zap.NewNop()}
+	resp := h.buildOverviewResponse(
+		nil,
+		nil,
+		[]*entities.InvestmentPosition{
+			{
+				ID:             uuid.New(),
+				Symbol:         "AAA",
+				Qty:            decimal.NewFromInt(1),
+				AvgEntryPrice:  decimal.NewFromInt(100),
+				CurrentPrice:   decimal.NewFromInt(103),
+				LastdayPrice:   decimal.NewFromInt(101),
+				MarketValue:    decimal.NewFromInt(103),
+				CostBasis:      decimal.NewFromInt(100),
+				UnrealizedPL:   decimal.NewFromInt(3),
+				UnrealizedPLPC: decimal.RequireFromString("3"),
+				ChangeToday:    decimal.RequireFromString("0.01"),
+			},
+			{
+				ID:             uuid.New(),
+				Symbol:         "BBB",
+				Qty:            decimal.NewFromInt(1),
+				AvgEntryPrice:  decimal.NewFromInt(100),
+				CurrentPrice:   decimal.NewFromInt(112),
+				LastdayPrice:   decimal.NewFromInt(111),
+				MarketValue:    decimal.NewFromInt(112),
+				CostBasis:      decimal.NewFromInt(100),
+				UnrealizedPL:   decimal.NewFromInt(12),
+				UnrealizedPLPC: decimal.RequireFromString("12"),
+				ChangeToday:    decimal.RequireFromString("0.009"),
+			},
+			{
+				ID:             uuid.New(),
+				Symbol:         "CCC",
+				Qty:            decimal.NewFromInt(1),
+				AvgEntryPrice:  decimal.NewFromInt(100),
+				CurrentPrice:   decimal.NewFromInt(98),
+				LastdayPrice:   decimal.NewFromInt(99),
+				MarketValue:    decimal.NewFromInt(98),
+				CostBasis:      decimal.NewFromInt(100),
+				UnrealizedPL:   decimal.NewFromInt(-2),
+				UnrealizedPLPC: decimal.RequireFromString("-2"),
+				ChangeToday:    decimal.RequireFromString("-0.01"),
+			},
+		},
+		nil,
+		nil,
+		1,
+		20,
+		language.AmericanEnglish,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+
+	require.Len(t, resp.TopPerformersPreview, 3)
+	assert.Equal(t, "BBB", resp.TopPerformersPreview[0].Symbol)
+	assert.Equal(t, "AAA", resp.TopPerformersPreview[1].Symbol)
+	assert.Equal(t, "CCC", resp.TopPerformersPreview[2].Symbol)
+}
+
 func ptrDecimal(v decimal.Decimal) *decimal.Decimal {
 	return &v
 }
