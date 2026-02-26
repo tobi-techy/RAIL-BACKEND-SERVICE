@@ -523,9 +523,18 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 
 	// Authentication
 	if useDataAPI {
-		// Market Data API uses header-based auth
-		req.Header.Set("APCA-API-KEY-ID", c.config.ClientID)
-		req.Header.Set("APCA-API-SECRET-KEY", c.config.SecretKey)
+		// Market Data API uses key/secret headers and supports dedicated data credentials.
+		// Fall back to broker credentials when data credentials are not configured.
+		dataKeyID := strings.TrimSpace(c.config.DataAPIKey)
+		dataSecret := strings.TrimSpace(c.config.DataAPISecret)
+		if dataKeyID == "" {
+			dataKeyID = strings.TrimSpace(c.config.ClientID)
+		}
+		if dataSecret == "" {
+			dataSecret = strings.TrimSpace(c.config.SecretKey)
+		}
+		req.Header.Set("APCA-API-KEY-ID", dataKeyID)
+		req.Header.Set("APCA-API-SECRET-KEY", dataSecret)
 	} else {
 		// Broker API uses OAuth2 Bearer token
 		token, err := c.tokenManager.GetValidToken(ctx)
@@ -896,59 +905,112 @@ func (c *Client) GetBars(ctx context.Context, symbol, timeframe string, start, e
 
 // doDataRequest makes a request to the Market Data API
 func (c *Client) doDataRequest(ctx context.Context, method, endpoint string, body, response interface{}) error {
-	fullURL := c.config.DataBaseURL + endpoint
-
-	var reqBody io.Reader
+	var requestBody []byte
 	if body != nil {
 		jsonData, err := json.Marshal(body)
 		if err != nil {
 			return fmt.Errorf("marshal request: %w", err)
 		}
-		reqBody = bytes.NewReader(jsonData)
+		requestBody = jsonData
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, fullURL, reqBody)
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
+	baseURLs := []string{strings.TrimRight(c.config.DataBaseURL, "/")}
+	switch baseURLs[0] {
+	case "https://data.alpaca.markets":
+		baseURLs = append(baseURLs, "https://data.sandbox.alpaca.markets")
+	case "https://data.sandbox.alpaca.markets":
+		baseURLs = append(baseURLs, "https://data.alpaca.markets")
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-
-	// Use separate data API credentials if available, otherwise fall back to broker credentials
-	dataKeyID := c.config.DataAPIKey
-	dataSecret := c.config.DataAPISecret
-	if dataKeyID == "" {
-		dataKeyID = c.config.ClientID
-	}
-	if dataSecret == "" {
-		dataSecret = c.config.SecretKey
-	}
-	req.Header.Set("APCA-API-KEY-ID", dataKeyID)
-	req.Header.Set("APCA-API-SECRET-KEY", dataSecret)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("read response: %w", err)
+	type credentials struct {
+		key    string
+		secret string
+		label  string
 	}
 
-	if resp.StatusCode >= 400 {
-		return parseAlpacaError(resp.StatusCode, respBody)
+	credCandidates := make([]credentials, 0, 2)
+	dataCred := credentials{
+		key:    strings.TrimSpace(c.config.DataAPIKey),
+		secret: strings.TrimSpace(c.config.DataAPISecret),
+		label:  "data",
+	}
+	brokerCred := credentials{
+		key:    strings.TrimSpace(c.config.ClientID),
+		secret: strings.TrimSpace(c.config.SecretKey),
+		label:  "broker",
 	}
 
-	if response != nil && len(respBody) > 0 {
-		if err := json.Unmarshal(respBody, response); err != nil {
-			return fmt.Errorf("unmarshal response: %w", err)
+	if dataCred.key != "" && dataCred.secret != "" {
+		credCandidates = append(credCandidates, dataCred)
+	}
+	if brokerCred.key != "" && brokerCred.secret != "" &&
+		(brokerCred.key != dataCred.key || brokerCred.secret != dataCred.secret) {
+		credCandidates = append(credCandidates, brokerCred)
+	}
+	if len(credCandidates) == 0 {
+		return fmt.Errorf("market data credentials not configured")
+	}
+
+	var lastAuthErr error
+
+	for _, baseURL := range baseURLs {
+		for _, creds := range credCandidates {
+			fullURL := baseURL + endpoint
+
+			var reqBody io.Reader
+			if len(requestBody) > 0 {
+				reqBody = bytes.NewReader(requestBody)
+			}
+
+			req, err := http.NewRequestWithContext(ctx, method, fullURL, reqBody)
+			if err != nil {
+				return fmt.Errorf("create request: %w", err)
+			}
+
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json")
+			req.Header.Set("APCA-API-KEY-ID", creds.key)
+			req.Header.Set("APCA-API-SECRET-KEY", creds.secret)
+
+			resp, err := c.httpClient.Do(req)
+			if err != nil {
+				return fmt.Errorf("request failed: %w", err)
+			}
+
+			respBody, readErr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if readErr != nil {
+				return fmt.Errorf("read response: %w", readErr)
+			}
+
+			if resp.StatusCode >= 400 {
+				parsedErr := parseAlpacaError(resp.StatusCode, respBody)
+				if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+					lastAuthErr = parsedErr
+					c.logger.Warn("Market data auth failed, trying next credential/base URL",
+						zap.String("base_url", baseURL),
+						zap.String("credential_source", creds.label),
+						zap.Int("status_code", resp.StatusCode))
+					continue
+				}
+				return parsedErr
+			}
+
+			if response != nil && len(respBody) > 0 {
+				if err := json.Unmarshal(respBody, response); err != nil {
+					return fmt.Errorf("unmarshal response: %w", err)
+				}
+			}
+
+			return nil
 		}
 	}
 
-	return nil
+	if lastAuthErr != nil {
+		return lastAuthErr
+	}
+
+	return fmt.Errorf("market data request failed")
 }
 
 // injectTraceContext injects OpenTelemetry trace context into HTTP headers

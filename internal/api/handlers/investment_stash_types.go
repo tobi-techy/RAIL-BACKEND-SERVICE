@@ -11,6 +11,7 @@ type InvestmentStashResponse struct {
 	AutoInvest                *AutoInvestInfo                `json:"auto_invest,omitempty"`
 	Summary                   *InvestmentSummary             `json:"summary,omitempty"`
 	HoldingsPreview           []InvestmentPositionDetail     `json:"holdings_preview"`
+	TopPerformersPreview      []InvestmentPositionDetail     `json:"top_performers_preview"`
 	DistributionPreview       []InvestmentDistributionItem   `json:"distribution_preview"`
 	RecentTransactionsPreview []InvestmentTradeTransaction   `json:"recent_transactions_preview"`
 	PerformancePreview        *InvestmentPerformanceResponse `json:"performance_preview,omitempty"`

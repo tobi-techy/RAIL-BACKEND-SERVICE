@@ -14,6 +14,8 @@ import (
 	"go.uber.org/zap"
 )
 
+var defaultNewsSymbols = []string{"AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "SPY", "QQQ"}
+
 // AlertRepository interface for market alerts
 type AlertRepository interface {
 	Create(ctx context.Context, alert *entities.MarketAlert) error
@@ -177,31 +179,69 @@ func (s *MarketDataService) GetMarketNews(ctx context.Context, filters entities.
 		PageToken:          normalized.PageToken,
 	}
 
-	fetchNews := func(req *entities.AlpacaNewsRequest) (*entities.AlpacaNewsResponse, error) {
-		resp, err := s.alpacaClient.GetNews(ctx, req)
+	fetchNews := func(req entities.AlpacaNewsRequest) (*entities.AlpacaNewsResponse, error) {
+		resp, err := s.alpacaClient.GetNews(ctx, &req)
 		if err != nil {
 			return nil, fmt.Errorf("get market news: %w", err)
 		}
 		return resp, nil
 	}
 
-	alpacaResp, err := fetchNews(alpacaReq)
+	var (
+		alpacaResp *entities.AlpacaNewsResponse
+		err        error
+	)
+
+	requestCandidates := []entities.AlpacaNewsRequest{
+		*alpacaReq,
+		{
+			Symbols:            normalized.Symbols,
+			Limit:              normalized.Limit,
+			Sort:               "DESC",
+			IncludeContent:     false,
+			ExcludeContentless: true,
+			PageToken:          normalized.PageToken,
+		},
+		{
+			Symbols:            nil,
+			Limit:              normalized.Limit,
+			Sort:               "DESC",
+			IncludeContent:     false,
+			ExcludeContentless: true,
+			PageToken:          normalized.PageToken,
+		},
+		{
+			Symbols:            nil,
+			Limit:              normalized.Limit,
+			Sort:               "DESC",
+			IncludeContent:     false,
+			ExcludeContentless: false,
+			PageToken:          normalized.PageToken,
+		},
+		{
+			Symbols:            defaultNewsSymbols,
+			Limit:              normalized.Limit,
+			Sort:               "DESC",
+			IncludeContent:     false,
+			ExcludeContentless: false,
+			PageToken:          normalized.PageToken,
+		},
+	}
+
+	for _, candidate := range requestCandidates {
+		alpacaResp, err = fetchNews(candidate)
+		if err != nil {
+			continue
+		}
+		if len(alpacaResp.News) > 0 {
+			break
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
-	if len(alpacaResp.News) == 0 && len(normalized.Symbols) > 0 {
-		alpacaReq.Symbols = nil
-		alpacaResp, err = fetchNews(alpacaReq)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if len(alpacaResp.News) == 0 && alpacaReq.ExcludeContentless {
-		alpacaReq.ExcludeContentless = false
-		alpacaResp, err = fetchNews(alpacaReq)
-		if err != nil {
-			return nil, err
-		}
+	if alpacaResp == nil {
+		alpacaResp = &entities.AlpacaNewsResponse{}
 	}
 
 	items := make([]entities.MarketNewsItem, 0, len(alpacaResp.News))
