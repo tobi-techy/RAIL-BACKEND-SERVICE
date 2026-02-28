@@ -12,6 +12,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/api/handlers"
 	fundinghandlers "github.com/rail-service/rail_service/internal/api/handlers/funding"
+	p2phandlers "github.com/rail-service/rail_service/internal/api/handlers/p2p"
 	"github.com/rail-service/rail_service/internal/api/handlers/webhooks"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
@@ -2552,6 +2553,13 @@ func (c *Container) initializeBridgeServices() {
 // GetInstantFundingHandlers returns the instant funding handlers
 func (c *Container) GetInstantFundingHandlers() *fundinghandlers.InstantFundingHandlers {
 	return c.InstantFundingHandlers
+}
+
+// GetP2PHandlers returns the P2P transfer handlers
+func (c *Container) GetP2PHandlers() *p2phandlers.Handlers {
+	// P2P service not yet initialized - will be wired up when repository is created
+	// For now return nil to skip route registration
+	return nil
 }
 
 // GetWithdrawalSecurityStore returns the withdrawal security store

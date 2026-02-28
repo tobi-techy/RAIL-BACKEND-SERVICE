@@ -110,6 +110,7 @@ type UserProfile struct {
 	LastName           *string          `json:"last_name" db:"last_name"`
 	DateOfBirth        *time.Time       `json:"date_of_birth" db:"date_of_birth"`
 	Phone              *string          `json:"phone" db:"phone" validate:"omitempty,e164"`
+	RailTag            *string          `json:"rail_tag,omitempty" db:"rail_tag"`
 	Country            *string          `json:"country,omitempty" db:"country"`
 	AddressStreet      *string          `json:"address_street,omitempty" db:"address_street"`
 	AddressCity        *string          `json:"address_city,omitempty" db:"address_city"`
