@@ -681,6 +681,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		DataBaseURL:   cfg.Alpaca.DataBaseURL,
 		DataAPIKey:    cfg.Alpaca.DataAPIKey,
 		DataAPISecret: cfg.Alpaca.DataAPISecret,
+		DataFeed:      cfg.Alpaca.DataFeed,
 		Environment:   cfg.Alpaca.Environment,
 		Timeout:       time.Duration(cfg.Alpaca.Timeout) * time.Second,
 	}

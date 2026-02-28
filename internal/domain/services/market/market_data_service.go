@@ -40,12 +40,18 @@ type MarketDataService struct {
 	logger       *zap.Logger
 	cacheMu      sync.RWMutex
 	priceCache   map[string]*cachedQuote
+	barsCache    map[string]*cachedBars
 	newsCache    map[string]*cachedNews
 	explorer     *ExplorerService
 }
 
 type cachedQuote struct {
 	quote     *entities.MarketQuote
+	fetchedAt time.Time
+}
+
+type cachedBars struct {
+	bars      []*entities.MarketBar
 	fetchedAt time.Time
 }
 
@@ -66,6 +72,7 @@ func NewMarketDataService(
 		notifier:     notifier,
 		logger:       logger,
 		priceCache:   make(map[string]*cachedQuote),
+		barsCache:    make(map[string]*cachedBars),
 		newsCache:    make(map[string]*cachedNews),
 		explorer:     NewExplorerService(alpacaClient, logger, "configs/market_taxonomy.yaml"),
 	}
@@ -131,7 +138,28 @@ func (s *MarketDataService) GetQuotes(ctx context.Context, symbols []string) (ma
 
 // GetBars returns historical OHLCV data
 func (s *MarketDataService) GetBars(ctx context.Context, symbol string, timeframe string, start, end time.Time) ([]*entities.MarketBar, error) {
-	return s.alpacaClient.GetBars(ctx, symbol, timeframe, start, end)
+	cacheKey := buildBarsCacheKey(symbol, timeframe, start, end)
+
+	s.cacheMu.RLock()
+	if cached, ok := s.barsCache[cacheKey]; ok && time.Since(cached.fetchedAt) < 30*time.Second {
+		s.cacheMu.RUnlock()
+		return cached.bars, nil
+	}
+	s.cacheMu.RUnlock()
+
+	bars, err := s.alpacaClient.GetBars(ctx, symbol, timeframe, start, end)
+	if err != nil {
+		return nil, err
+	}
+
+	s.cacheMu.Lock()
+	s.barsCache[cacheKey] = &cachedBars{
+		bars:      bars,
+		fetchedAt: time.Now(),
+	}
+	s.cacheMu.Unlock()
+
+	return bars, nil
 }
 
 // ExploreMarket returns a UI-ready market explorer response.
@@ -455,6 +483,13 @@ func buildNewsCacheKey(filters entities.MarketNewsFilters) string {
 		"|limit=" + fmt.Sprintf("%d", filters.Limit) +
 		"|token=" + filters.PageToken +
 		"|content=" + fmt.Sprintf("%t", filters.IncludeContent)
+}
+
+func buildBarsCacheKey(symbol, timeframe string, start, end time.Time) string {
+	return strings.ToUpper(strings.TrimSpace(symbol)) +
+		"|timeframe=" + strings.TrimSpace(timeframe) +
+		"|start=" + start.UTC().Format(time.RFC3339) +
+		"|end=" + end.UTC().Format(time.RFC3339)
 }
 
 func mapMarketNewsItem(article entities.AlpacaNewsArticle) entities.MarketNewsItem {

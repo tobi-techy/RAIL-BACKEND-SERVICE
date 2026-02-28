@@ -346,6 +346,7 @@ type AlpacaConfig struct {
 	DataBaseURL   string `mapstructure:"data_base_url"`   // Market data API base URL
 	DataAPIKey    string `mapstructure:"data_api_key"`    // Separate key for market data
 	DataAPISecret string `mapstructure:"data_api_secret"` // Separate secret for market data
+	DataFeed      string `mapstructure:"data_feed"`       // Preferred market data feed (iex, sip, otc)
 	Environment   string `mapstructure:"environment"`     // sandbox or production
 	Timeout       int    `mapstructure:"timeout"`         // Request timeout in seconds
 	FirmAccountNo string `mapstructure:"firm_account_no"` // Firm account for instant funding
@@ -647,6 +648,7 @@ func setDefaults() {
 	viper.SetDefault("alpaca.environment", "sandbox")
 	viper.SetDefault("alpaca.base_url", "https://broker-api.sandbox.alpaca.markets")
 	viper.SetDefault("alpaca.data_base_url", "https://data.sandbox.alpaca.markets")
+	viper.SetDefault("alpaca.data_feed", "iex")
 	viper.SetDefault("alpaca.timeout", 30)
 
 	// Bridge defaults
@@ -929,6 +931,9 @@ func overrideFromEnv() {
 	}
 	if alpacaDataBaseURL := os.Getenv("ALPACA_DATA_BASE_URL"); alpacaDataBaseURL != "" {
 		viper.Set("alpaca.data_base_url", alpacaDataBaseURL)
+	}
+	if alpacaDataFeed := os.Getenv("ALPACA_DATA_FEED"); alpacaDataFeed != "" {
+		viper.Set("alpaca.data_feed", alpacaDataFeed)
 	}
 	if alpacaEnvironment := os.Getenv("ALPACA_ENVIRONMENT"); alpacaEnvironment != "" {
 		viper.Set("alpaca.environment", alpacaEnvironment)
