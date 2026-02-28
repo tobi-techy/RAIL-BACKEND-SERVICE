@@ -183,6 +183,20 @@ func (s *Service) GetUserBalances(ctx context.Context, userID uuid.UUID) (*entit
 	return balances, nil
 }
 
+// ReconcileBalance directly sets a user's account balance (for admin reconciliation)
+func (s *Service) ReconcileBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, newBalance decimal.Decimal) error {
+	s.logger.Info("Reconciling balance",
+		"user_id", userID.String(),
+		"account_type", string(accountType),
+		"new_balance", newBalance.String())
+
+	if err := s.ledgerRepo.UpdateAccountBalanceByUserAndType(ctx, userID, accountType, newBalance); err != nil {
+		return fmt.Errorf("reconcile balance: %w", err)
+	}
+
+	return nil
+}
+
 // GetSystemBuffers retrieves system buffer balances
 func (s *Service) GetSystemBuffers(ctx context.Context) (*entities.SystemBuffers, error) {
 	buffers, err := s.ledgerRepo.GetSystemBuffers(ctx)
