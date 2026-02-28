@@ -153,6 +153,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	// Wire user profile provider for withdrawal AlpacaAccountID lookup
 	walletFundingHandlers.SetUserProfileProvider(container.UserRepo)
 
+	// Wire ledger and Circle for reconciliation
+	walletFundingHandlers.SetLedgerService(container.LedgerService)
+	walletFundingHandlers.SetCircleClient(container.CircleClient)
+
 	// Wire allocation service for unified balance queries
 	if allocationSvc := container.GetAllocationService(); allocationSvc != nil {
 		walletFundingHandlers.SetAllocationBalanceProvider(allocationSvc)
@@ -698,6 +702,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			admin.POST("/wallet/create", walletFundingHandlers.CreateWalletsForUser)
 			admin.POST("/wallet/retry-provisioning", walletFundingHandlers.RetryWalletProvisioning)
 			admin.GET("/wallet/health", walletFundingHandlers.HealthCheck)
+			admin.POST("/reconcile/:user_id", walletFundingHandlers.ReconcileUserBalance)
 
 			// Security admin routes
 			adminMFAHandlers := handlers.NewMFAHandlers(
