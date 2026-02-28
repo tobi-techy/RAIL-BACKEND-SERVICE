@@ -101,7 +101,6 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 	var wg sync.WaitGroup
 	var (
 		balances       *entities.AllocationBalances
-		allocationMode *entities.SmartAllocationMode
 		cards          []*entities.BridgeCard
 		roundupSummary *entities.RoundupSummary
 		cardTxns       []*entities.BridgeCardTransaction
@@ -110,7 +109,6 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 		userLimits     *entities.UserLimitsResponse
 
 		balancesErr       error
-		allocationModeErr error
 		cardsErr          error
 		roundupSummaryErr error
 		cardTxnsErr       error
@@ -119,7 +117,7 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 		userLimitsErr     error
 	)
 
-	wg.Add(4)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		if h.allocationService == nil {
@@ -127,14 +125,6 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 			return
 		}
 		balances, balancesErr = h.allocationService.GetBalances(ctx, userID)
-	}()
-	go func() {
-		defer wg.Done()
-		if h.allocationService == nil {
-			allocationModeErr = errSpendingDependencyUnavailable
-			return
-		}
-		allocationMode, allocationModeErr = h.allocationService.GetMode(ctx, userID)
 	}()
 	go func() {
 		defer wg.Done()
@@ -209,9 +199,6 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 		return
 	}
 
-	if allocationModeErr != nil {
-		h.logger.Warn("Failed to load allocation mode for spending stash", zap.String("user_id", userID.String()), zap.Error(allocationModeErr))
-	}
 	if cardsErr != nil {
 		h.logger.Warn("Failed to load cards for spending stash", zap.String("user_id", userID.String()), zap.Error(cardsErr))
 	}
@@ -228,12 +215,11 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 		h.logger.Warn("Failed to load withdrawals for spending stash", zap.String("user_id", userID.String()), zap.Error(withdrawalsErr))
 	}
 
-	c.JSON(http.StatusOK, h.buildResponse(balances, allocationMode, cards, roundupSummary, cardTxns, p2pTransfers, withdrawals, userLimits, limit))
+	c.JSON(http.StatusOK, h.buildResponse(balances, cards, roundupSummary, cardTxns, p2pTransfers, withdrawals, userLimits, limit))
 }
 
 func (h *SpendingStashHandlers) buildResponse(
 	balances *entities.AllocationBalances,
-	allocationMode *entities.SmartAllocationMode,
 	cards []*entities.BridgeCard,
 	roundupSummary *entities.RoundupSummary,
 	cardTxns []*entities.BridgeCardTransaction,
@@ -254,16 +240,7 @@ func (h *SpendingStashHandlers) buildResponse(
 			Currency:                 "USD",
 			LastUpdated:              now,
 		},
-		Allocation: SpendingAllocationInfo{
-			Active:                 false,
-			SpendingRatio:          0.70,
-			StashRatio:             0.30,
-			TotalReceived:          "0.00",
-			TotalReceivedFormatted: "$0.00",
-			SpendingAllocated:      "0.00",
-			StashAllocated:         "0.00",
-			Unallocated:            "0.00",
-		},
+		ChartData:             []ChartDataPoint{},
 		TopCategories:         []CategorySummary{},
 		PendingAuthorizations: []PendingAuthorization{},
 		RecentTransactions:    TransactionListResponse{Items: []TransactionSummary{}},
@@ -288,26 +265,6 @@ func (h *SpendingStashHandlers) buildResponse(
 		resp.Balance.SpendingBalanceFormatted = formatCurrencyFromDecimal(balances.SpendingBalance, "USD", false)
 		resp.Balance.Available = balances.SpendingRemaining.StringFixed(2)
 		resp.Balance.LastUpdated = balances.UpdatedAt
-		resp.Allocation.Active = balances.ModeActive
-		resp.Allocation.SpendingAllocated = balances.SpendingBalance.StringFixed(2)
-		resp.Allocation.StashAllocated = balances.StashBalance.StringFixed(2)
-		resp.Allocation.Unallocated = balances.USDCBalance.StringFixed(2)
-		total := balances.SpendingBalance.Add(balances.StashBalance).Add(balances.USDCBalance)
-		resp.Allocation.TotalReceived = total.StringFixed(2)
-		resp.Allocation.TotalReceivedFormatted = formatCurrencyFromDecimal(total, "USD", false)
-	}
-
-	// Allocation mode
-	if allocationMode != nil {
-		resp.Allocation.Active = allocationMode.Active
-		spendRatio, _ := allocationMode.RatioSpending.Float64()
-		stashRatio, _ := allocationMode.RatioStash.Float64()
-		resp.Allocation.SpendingRatio = spendRatio
-		resp.Allocation.StashRatio = stashRatio
-		if allocationMode.ResumedAt != nil {
-			ts := allocationMode.ResumedAt.Format(time.RFC3339)
-			resp.Allocation.LastAllocationAt = &ts
-		}
 	}
 
 	// Card
@@ -468,8 +425,8 @@ func (h *SpendingStashHandlers) buildResponse(
 	// Sort all transactions by date (newest first)
 	h.sortTransactionsByDate(resp.RecentTransactions.Items)
 
-	// Spending summary & categories
-	resp.SpendingSummary, resp.TopCategories = h.calculateSpendingMetrics(cardTxns, p2pTransfers, withdrawals)
+	// Spending summary, categories, and chart data
+	resp.SpendingSummary, resp.TopCategories, resp.ChartData = h.calculateSpendingMetrics(cardTxns, p2pTransfers, withdrawals)
 
 	// Round-ups
 	if roundupSummary != nil && roundupSummary.Settings != nil && roundupSummary.Settings.Enabled {
@@ -528,20 +485,33 @@ func (h *SpendingStashHandlers) sortTransactionsByDate(items []TransactionSummar
 	}
 }
 
-func (h *SpendingStashHandlers) calculateSpendingMetrics(cardTxns []*entities.BridgeCardTransaction, p2pTransfers []*entities.P2PTransfer, withdrawals []*entities.Withdrawal) (*SpendingSummary, []CategorySummary) {
+func (h *SpendingStashHandlers) calculateSpendingMetrics(cardTxns []*entities.BridgeCardTransaction, p2pTransfers []*entities.P2PTransfer, withdrawals []*entities.Withdrawal) (*SpendingSummary, []CategorySummary, []ChartDataPoint) {
+	// Generate chart data for last 6 months
+	now := time.Now()
+	monthlyTotals := make(map[string]decimal.Decimal)
+	months := []string{"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
+
+	// Initialize last 6 months
+	for i := 5; i >= 0; i-- {
+		m := now.AddDate(0, -i, 0)
+		key := months[m.Month()-1]
+		monthlyTotals[key] = decimal.Zero
+	}
+
 	if len(cardTxns) == 0 && len(p2pTransfers) == 0 && len(withdrawals) == 0 {
+		chartData := h.buildChartData(now, monthlyTotals, months)
 		return &SpendingSummary{
 			ThisMonthTotal:          "0.00",
 			ThisMonthTotalFormatted: "$0.00",
 			DailyAverage:            "0.00",
 			DailyAverageFormatted:   "$0.00",
 			Trend:                   "stable",
-		}, []CategorySummary{}
+		}, []CategorySummary{}, chartData
 	}
 
-	now := time.Now()
 	thisMonthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	lastMonthStart := thisMonthStart.AddDate(0, -1, 0)
+	sixMonthsAgo := thisMonthStart.AddDate(0, -5, 0)
 
 	var thisMonthTotal, lastMonthTotal decimal.Decimal
 	categoryTotals := make(map[string]decimal.Decimal)
@@ -555,6 +525,12 @@ func (h *SpendingStashHandlers) calculateSpendingMetrics(cardTxns []*entities.Br
 		category := "Other"
 		if tx.MerchantCategory != nil {
 			category = *tx.MerchantCategory
+		}
+
+		// Chart data - last 6 months
+		if !tx.CreatedAt.Before(sixMonthsAgo) {
+			key := months[tx.CreatedAt.Month()-1]
+			monthlyTotals[key] = monthlyTotals[key].Add(amount)
 		}
 
 		if !tx.CreatedAt.Before(thisMonthStart) {
@@ -572,6 +548,13 @@ func (h *SpendingStashHandlers) calculateSpendingMetrics(cardTxns []*entities.Br
 			continue
 		}
 		amount := p2p.Amount
+
+		// Chart data
+		if !p2p.CreatedAt.Before(sixMonthsAgo) {
+			key := months[p2p.CreatedAt.Month()-1]
+			monthlyTotals[key] = monthlyTotals[key].Add(amount)
+		}
+
 		if !p2p.CreatedAt.Before(thisMonthStart) {
 			thisMonthTotal = thisMonthTotal.Add(amount)
 			categoryTotals["P2P Transfers"] = categoryTotals["P2P Transfers"].Add(amount)
@@ -587,6 +570,13 @@ func (h *SpendingStashHandlers) calculateSpendingMetrics(cardTxns []*entities.Br
 			continue
 		}
 		amount := w.Amount
+
+		// Chart data
+		if !w.CreatedAt.Before(sixMonthsAgo) {
+			key := months[w.CreatedAt.Month()-1]
+			monthlyTotals[key] = monthlyTotals[key].Add(amount)
+		}
+
 		if !w.CreatedAt.Before(thisMonthStart) {
 			thisMonthTotal = thisMonthTotal.Add(amount)
 			categoryTotals["Withdrawals"] = categoryTotals["Withdrawals"].Add(amount)
@@ -595,6 +585,9 @@ func (h *SpendingStashHandlers) calculateSpendingMetrics(cardTxns []*entities.Br
 			lastMonthTotal = lastMonthTotal.Add(amount)
 		}
 	}
+
+	// Build chart data
+	chartData := h.buildChartData(now, monthlyTotals, months)
 
 	summary := &SpendingSummary{
 		ThisMonthTotal:          thisMonthTotal.StringFixed(2),
@@ -650,7 +643,18 @@ func (h *SpendingStashHandlers) calculateSpendingMetrics(cardTxns []*entities.Br
 		categories = categories[:5]
 	}
 
-	return summary, categories
+	return summary, categories, chartData
+}
+
+func (h *SpendingStashHandlers) buildChartData(now time.Time, monthlyTotals map[string]decimal.Decimal, months []string) []ChartDataPoint {
+	chartData := make([]ChartDataPoint, 0, 6)
+	for i := 5; i >= 0; i-- {
+		m := now.AddDate(0, -i, 0)
+		label := months[m.Month()-1]
+		val, _ := monthlyTotals[label].Float64()
+		chartData = append(chartData, ChartDataPoint{Label: label, Value: val})
+	}
+	return chartData
 }
 
 func estimateDailyTransactionsRemaining(dailyRemaining, minimumTxn string) int {
