@@ -398,15 +398,16 @@ func (h *SpendingStashHandlers) buildResponse(
 				description = "Withdrawal to " + string(w.DestinationType)
 			}
 			resp.RecentTransactions.Items = append(resp.RecentTransactions.Items, TransactionSummary{
-				ID:              w.ID.String(),
-				Type:            "withdrawal",
-				Amount:          amount.StringFixed(2),
-				AmountFormatted: formatCurrencyFromDecimal(amount, string(w.Currency), true),
-				Direction:       "debit",
-				Currency:        string(w.Currency),
-				Description:     description,
-				Status:          string(w.Status),
-				CreatedAt:       w.CreatedAt.Format(time.RFC3339),
+				ID:                 w.ID.String(),
+				Type:               "withdrawal",
+				Amount:             amount.StringFixed(2),
+				AmountFormatted:    formatCurrencyFromDecimal(amount, string(w.Currency), true),
+				Direction:          "debit",
+				Currency:           string(w.Currency),
+				Description:        description,
+				DestinationAddress: w.DestinationAddress,
+				Status:             string(w.Status),
+				CreatedAt:          w.CreatedAt.Format(time.RFC3339),
 			})
 		} else if w.Status == entities.WithdrawalStatusPending {
 			resp.PendingAuthorizations = append(resp.PendingAuthorizations, PendingAuthorization{
