@@ -2489,13 +2489,24 @@ func (c *Container) GetStationHandlers() *handlers.StationHandlers {
 
 // GetSpendingStashHandlers returns spending stash handlers
 func (c *Container) GetSpendingStashHandlers() *handlers.SpendingStashHandlers {
-	return handlers.NewSpendingStashHandlers(
+	h := handlers.NewSpendingStashHandlers(
 		c.AllocationService,
 		c.CardService,
 		c.RoundupService,
 		c.LimitsService,
 		c.ZapLog,
 	)
+	// Wire up additional dependencies for unified spending view
+	if c.LedgerService != nil {
+		h.SetLedgerService(c.LedgerService)
+	}
+	if c.P2PRepo != nil {
+		h.SetP2PRepo(c.P2PRepo)
+	}
+	if c.WithdrawalRepo != nil {
+		h.SetWithdrawalRepo(c.WithdrawalRepo)
+	}
+	return h
 }
 
 // GetInvestmentStashHandlers returns investment stash handlers
