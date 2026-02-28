@@ -1457,3 +1457,15 @@ func (r *UserRepository) GetByRailTag(ctx context.Context, railTag string) (*ent
 
 	return user, nil
 }
+
+
+// SetRailTag sets a user's rail tag
+func (r *UserRepository) SetRailTag(ctx context.Context, userID uuid.UUID, railTag string) error {
+	query := `UPDATE users SET rail_tag = $2, updated_at = NOW() WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, userID, railTag)
+	if err != nil {
+		r.logger.Error("Failed to set rail tag", zap.Error(err), zap.String("user_id", userID.String()))
+		return fmt.Errorf("failed to set rail tag: %w", err)
+	}
+	return nil
+}

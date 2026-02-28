@@ -23,6 +23,11 @@ type UserLookup interface {
 	GetByRailTag(ctx context.Context, railTag string) (*entities.UserProfile, error)
 }
 
+// UserUpdater provides user update methods
+type UserUpdater interface {
+	SetRailTag(ctx context.Context, userID uuid.UUID, railTag string) error
+}
+
 // BalanceProvider provides balance operations
 type BalanceProvider interface {
 	GetSpendBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
@@ -58,6 +63,7 @@ type NotificationSender interface {
 type Service struct {
 	repo         Repository
 	userLookup   UserLookup
+	userUpdater  UserUpdater
 	balance      BalanceProvider
 	transfer     TransferExecutor
 	notification NotificationSender
@@ -83,11 +89,55 @@ func NewService(
 	}
 }
 
+// SetUserUpdater sets the user updater (for RailTag operations)
+func (s *Service) SetUserUpdater(updater UserUpdater) {
+	s.userUpdater = updater
+}
+
 var (
 	emailRegex   = regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
 	phoneRegex   = regexp.MustCompile(`^\+?[1-9]\d{6,14}$`)
 	railTagRegex = regexp.MustCompile(`^[a-z0-9]{3,30}$`)
 )
+
+// SetRailTag sets a user's RailTag
+func (s *Service) SetRailTag(ctx context.Context, userID uuid.UUID, railTag string) error {
+	railTag = strings.ToLower(strings.TrimSpace(railTag))
+
+	if !railTagRegex.MatchString(railTag) {
+		return fmt.Errorf("invalid railtag: must be 3-30 lowercase alphanumeric characters")
+	}
+
+	// Check if already taken
+	existing, err := s.userLookup.GetByRailTag(ctx, railTag)
+	if err == nil && existing != nil && existing.ID != userID {
+		return fmt.Errorf("railtag already taken")
+	}
+
+	if s.userUpdater == nil {
+		return fmt.Errorf("user updater not configured")
+	}
+
+	return s.userUpdater.SetRailTag(ctx, userID, railTag)
+}
+
+// CheckRailTagAvailable checks if a RailTag is available
+func (s *Service) CheckRailTagAvailable(ctx context.Context, railTag string) (bool, error) {
+	railTag = strings.ToLower(strings.TrimSpace(railTag))
+
+	if !railTagRegex.MatchString(railTag) {
+		return false, fmt.Errorf("invalid railtag format")
+	}
+
+	_, err := s.userLookup.GetByRailTag(ctx, railTag)
+	if err == sql.ErrNoRows {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return false, nil
+}
 
 // LookupRecipient looks up a recipient by identifier (railtag, email, or phone)
 func (s *Service) LookupRecipient(ctx context.Context, identifier string) (*entities.P2PLookupResponse, error) {
