@@ -125,18 +125,19 @@ type TransactionListResponse struct {
 
 // TransactionSummary represents a transaction in the spending stash
 type TransactionSummary struct {
-	ID                string        `json:"id"`
-	Type              string        `json:"type"`
-	Amount            string        `json:"amount"`
-	AmountFormatted   string        `json:"amount_formatted"`
-	Direction         string        `json:"direction"`
-	Currency          string        `json:"currency"`
-	Description       string        `json:"description"`
-	Merchant          *MerchantInfo `json:"merchant,omitempty"`
-	Status            string        `json:"status"`
-	CreatedAt         string        `json:"created_at"`
-	PendingSettlement bool          `json:"pending_settlement"`
-	RefundStatus      *string       `json:"refund_status"`
+	ID                 string        `json:"id"`
+	Type               string        `json:"type"`
+	Amount             string        `json:"amount"`
+	AmountFormatted    string        `json:"amount_formatted"`
+	Direction          string        `json:"direction"`
+	Currency           string        `json:"currency"`
+	Description        string        `json:"description"`
+	DestinationAddress *string       `json:"destination_address,omitempty"`
+	Merchant           *MerchantInfo `json:"merchant,omitempty"`
+	Status             string        `json:"status"`
+	CreatedAt          string        `json:"created_at"`
+	PendingSettlement  bool          `json:"pending_settlement"`
+	RefundStatus       *string       `json:"refund_status"`
 }
 
 // MerchantInfo contains rich merchant data
