@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/api/handlers"
@@ -135,6 +136,28 @@ func (a *LedgerIntegrationAdapter) GetUserBalance(ctx context.Context, userID uu
 	}, nil
 }
 
+// BridgeVirtualAccountWebhookAdapter adapts domain Bridge VA service to webhook processor interface.
+type BridgeVirtualAccountWebhookAdapter struct {
+	service *funding.BridgeVirtualAccountService
+}
+
+func (a *BridgeVirtualAccountWebhookAdapter) ProcessFiatDeposit(ctx *gin.Context, event *webhooks.BridgeDepositEvent) error {
+	if a == nil || a.service == nil {
+		return fmt.Errorf("bridge virtual account service not configured")
+	}
+	if event == nil {
+		return fmt.Errorf("bridge deposit event is required")
+	}
+
+	return a.service.ProcessFiatDeposit(ctx.Request.Context(), &funding.BridgeFiatDepositEvent{
+		VirtualAccountID: event.VirtualAccountID,
+		Amount:           event.Amount,
+		Currency:         event.Currency,
+		TransactionRef:   event.TransactionRef,
+		Status:           event.Status,
+	})
+}
+
 // WithdrawalLedgerAdapter adapts ledger.Service to withdrawal.LedgerService interface
 type WithdrawalLedgerAdapter struct {
 	ledgerService *ledger.Service
@@ -222,6 +245,14 @@ func (a *WithdrawalCircleAdapter) GetWallet(ctx context.Context, walletID string
 		"id":      wallet.Wallet.ID,
 		"address": address,
 	}, nil
+}
+
+func (a *WithdrawalCircleAdapter) GetCCTPTransaction(ctx context.Context, transactionID string) (*entities.CCTPTransactionStatus, error) {
+	return a.client.GetCCTPTransaction(ctx, transactionID)
+}
+
+func (a *WithdrawalCircleAdapter) FindRecentOutboundTransfer(ctx context.Context, walletID, destinationAddress string, amount decimal.Decimal, since time.Time) (*entities.CCTPTransactionStatus, error) {
+	return a.client.FindRecentOutboundTransfer(ctx, walletID, destinationAddress, amount, since)
 }
 
 // WithdrawalBridgeAdapter adapts bridge.Adapter to withdrawal.BridgeAdapter interface
@@ -650,6 +681,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		DataBaseURL:   cfg.Alpaca.DataBaseURL,
 		DataAPIKey:    cfg.Alpaca.DataAPIKey,
 		DataAPISecret: cfg.Alpaca.DataAPISecret,
+		DataFeed:      cfg.Alpaca.DataFeed,
 		Environment:   cfg.Alpaca.Environment,
 		Timeout:       time.Duration(cfg.Alpaca.Timeout) * time.Second,
 	}
@@ -917,6 +949,9 @@ func (c *Container) initializeDomainServices() error {
 		ledgerAdapter,
 		c.Logger,
 	)
+	if c.AlpacaAccountRepo != nil {
+		c.FundingService.SetAlpacaAccountLookup(c.AlpacaAccountRepo)
+	}
 
 	// Wire default wallet set ID for funding service wallet creation
 	if c.Config.Circle.DefaultWalletSetID != "" {
@@ -932,6 +967,37 @@ func (c *Container) initializeDomainServices() error {
 		c.LedgerService,
 		c.Logger,
 	)
+
+	// Initialize Bridge virtual account service now that allocation + ledger are available.
+	if c.BridgeClient != nil {
+		c.BridgeVirtualAccountService = funding.NewBridgeVirtualAccountService(
+			c.BridgeClient,
+			virtualAccountRepo,
+			c.AllocationService,
+			ledgerAdapter,
+			c.Logger,
+		)
+		c.FundingService.SetBridgeVAService(c.BridgeVirtualAccountService)
+
+		bridgeWebhookService := webhooks.NewBridgeWebhookService(
+			&BridgeVirtualAccountWebhookAdapter{service: c.BridgeVirtualAccountService},
+			nil, // Customer status processor can be injected later.
+			nil, // Card processor can be injected later.
+			nil, // Notifications can be injected later.
+			c.ZapLog,
+		)
+
+		webhookSecret := c.Config.Bridge.WebhookSecret
+		skipWebhookVerification := c.Config.Environment == "development" && webhookSecret == ""
+		c.BridgeWebhookHandler = handlers.NewBridgeWebhookHandler(
+			bridgeWebhookService,
+			c.ZapLog,
+			webhookSecret,
+			skipWebhookVerification,
+		)
+	} else {
+		c.ZapLog.Warn("Bridge client not configured - Bridge virtual account service disabled")
+	}
 
 	// Initialize auto-invest service (OrderPlacer will be set after InvestingService is created)
 	_ = repositories.NewAutoInvestRepository(sqlxDB) // Keep for future use
@@ -2404,14 +2470,19 @@ func (c *Container) GetSpendingStashHandlers() *handlers.SpendingStashHandlers {
 
 // GetInvestmentStashHandlers returns investment stash handlers
 func (c *Container) GetInvestmentStashHandlers() *handlers.InvestmentStashHandlers {
-	if c.AllocationService == nil || c.InvestingService == nil || c.CopyTradingService == nil {
+	if c.AllocationService == nil || c.InvestmentPositionRepo == nil || c.InvestmentOrderRepo == nil || c.PortfolioAnalyticsService == nil {
 		return nil
 	}
-	return handlers.NewInvestmentStashHandlers(
+
+	h := handlers.NewInvestmentStashHandlers(
 		c.AllocationService,
-		c.InvestingService,
+		c.InvestmentPositionRepo,
+		c.InvestmentOrderRepo,
+		c.PortfolioAnalyticsService,
 		c.ZapLog,
 	)
+	h.SetAutoInvestRepository(repositories.NewAutoInvestRepository(sqlx.NewDb(c.DB, "postgres")))
+	return h
 }
 
 // GetCopyTradingRepository returns the copy trading repository

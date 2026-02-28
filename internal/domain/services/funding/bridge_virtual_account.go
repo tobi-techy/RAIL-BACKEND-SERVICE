@@ -3,13 +3,14 @@ package funding
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/shopspring/decimal"
 )
 
 // BridgeVirtualAccountService handles Bridge virtual account operations for fiat funding
@@ -30,7 +31,7 @@ type AllocationService interface {
 type BridgeVirtualAccountRepository interface {
 	VirtualAccountRepository
 	GetByBridgeAccountID(ctx context.Context, bridgeAccountID string) (*entities.VirtualAccount, error)
-	GetDueAccountsForMigration(ctx context.Context, limit int) ([]*entities.VirtualAccount, error)
+	GetAccountsForMigration(ctx context.Context, limit int) ([]*entities.VirtualAccount, error)
 	UpdateBridgeAccountID(ctx context.Context, id uuid.UUID, bridgeAccountID string) error
 }
 
@@ -142,36 +143,45 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 		"amount", event.Amount,
 		"currency", event.Currency)
 
+	virtualAccountID := strings.TrimSpace(event.VirtualAccountID)
+	if virtualAccountID == "" {
+		return fmt.Errorf("virtual_account_id is required")
+	}
+	transactionRef := strings.TrimSpace(event.TransactionRef)
+	if transactionRef == "" {
+		return fmt.Errorf("transaction_ref is required for idempotent fiat deposit processing")
+	}
+
 	// Parse amount
-	amount, err := decimal.NewFromString(event.Amount)
+	amount, err := decimal.NewFromString(strings.TrimSpace(event.Amount))
 	if err != nil {
 		return fmt.Errorf("invalid amount %q: %w", event.Amount, err)
 	}
+	if !amount.GreaterThan(decimal.Zero) {
+		return fmt.Errorf("amount must be greater than zero")
+	}
 
-	// Get virtual account to find user
-	accounts, err := s.virtualAccountRepo.GetByUserID(ctx, uuid.Nil) // We need to find by bridge ID
+	bridgeRepo, ok := s.virtualAccountRepo.(BridgeVirtualAccountRepository)
+	if !ok {
+		return fmt.Errorf("virtual account repository does not support bridge account lookup")
+	}
+
+	// Get virtual account to find the user from Bridge account ID.
+	virtualAccount, err := bridgeRepo.GetByBridgeAccountID(ctx, virtualAccountID)
 	if err != nil {
 		return fmt.Errorf("get virtual account: %w", err)
 	}
 
-	// Find the account by Bridge ID
-	var virtualAccount *entities.VirtualAccount
-	for _, acc := range accounts {
-		if acc.BridgeAccountID != nil && *acc.BridgeAccountID == event.VirtualAccountID {
-			virtualAccount = acc
-			break
-		}
-	}
-
 	if virtualAccount == nil {
 		s.logger.Warn("Virtual account not found for Bridge deposit",
-			"bridge_account_id", event.VirtualAccountID)
-		return fmt.Errorf("virtual account not found: %s", event.VirtualAccountID)
+			"bridge_account_id", virtualAccountID)
+		return fmt.Errorf("virtual account not found: %s", virtualAccountID)
 	}
 
-	// Record deposit in ledger first (full amount goes to system buffer)
-	depositID := uuid.New()
-	if err := s.ledgerIntegration.RecordDeposit(ctx, virtualAccount.UserID, amount, depositID, "fiat", event.TransactionRef); err != nil {
+	// Derive a deterministic deposit ID from the provider transaction reference
+	// so replayed webhooks stay idempotent across ledger and allocation workflows.
+	depositID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("bridge-fiat:"+strings.ToLower(transactionRef)))
+	if err := s.ledgerIntegration.RecordDeposit(ctx, virtualAccount.UserID, amount, depositID, "fiat", transactionRef); err != nil {
 		s.logger.Error("Failed to record deposit in ledger",
 			"user_id", virtualAccount.UserID,
 			"amount", amount,
@@ -180,17 +190,18 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 	}
 
 	// Process 70/30 allocation split
+	sourceTxID := transactionRef
 	allocationReq := &entities.IncomingFundsRequest{
 		UserID:     virtualAccount.UserID,
 		Amount:     amount,
 		EventType:  entities.AllocationEventTypeFiatDeposit,
 		DepositID:  &depositID,
-		SourceTxID: &event.TransactionRef,
+		SourceTxID: &sourceTxID,
 		Metadata: map[string]any{
-			"source":             "bridge_fiat",
-			"bridge_account_id":  event.VirtualAccountID,
-			"original_currency":  event.Currency,
-			"transaction_ref":    event.TransactionRef,
+			"source":            "bridge_fiat",
+			"bridge_account_id": virtualAccountID,
+			"original_currency": event.Currency,
+			"transaction_ref":   transactionRef,
 		},
 	}
 

@@ -3,6 +3,7 @@ package routes
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -87,6 +88,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.Logger.Warn("Failed to set trusted proxies: %v", err)
 	}
 
+	// Lightweight ping — no middleware, no DB, for uptime monitoring
+	router.GET("/ping", func(c *gin.Context) {
+		c.String(http.StatusOK, "pong")
+	})
+
 	// Global middleware - order matters for security
 	router.Use(tracing.HTTPMiddleware()) // Tracing should be early in the chain
 	router.Use(middleware.RequestID())
@@ -119,8 +125,18 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	router.GET("/version", coreHandlers.Version)
 	router.GET("/metrics", coreHandlers.Metrics)
 
+	// Apple App Site Association — required for passkey Associated Domains
+	router.GET("/.well-known/apple-app-site-association", func(c *gin.Context) {
+		c.Header("Content-Type", "application/json")
+		c.File("static/.well-known/apple-app-site-association")
+	})
+	router.GET("/apple-app-site-association", func(c *gin.Context) {
+		c.Header("Content-Type", "application/json")
+		c.File("static/.well-known/apple-app-site-association")
+	})
+
 	// Swagger documentation (development only)
-	if container.Config.Environment != "production" {
+	if container.Config.Environment == "development" {
 		router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 	}
 	walletFundingHandlers := handlers.NewWalletFundingHandlers(
@@ -181,6 +197,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	socialAuthHandlers := handlers.NewSocialAuthHandlers(
 		container.GetSocialAuthService(),
 		container.GetWebAuthnService(),
+		container.GetSessionService(),
+		container.GetPasscodeService(),
 		*container.UserRepo,
 		container.RedisClient,
 		container.Config,
@@ -332,8 +350,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 				// WebAuthn/Passkey management
 				security.GET("/passkeys", socialAuthHandlers.GetWebAuthnCredentials)
-				security.POST("/passkeys/register", socialAuthHandlers.BeginWebAuthnRegistration)
-				security.POST("/passkeys/register/finish", socialAuthHandlers.FinishWebAuthnRegistration)
+				security.POST("/passkeys/register", middleware.AuthRateLimit(5), socialAuthHandlers.BeginWebAuthnRegistration)
+				security.POST("/passkeys/register/finish", middleware.AuthRateLimit(5), socialAuthHandlers.FinishWebAuthnRegistration)
 				security.DELETE("/passkeys/:id", socialAuthHandlers.DeleteWebAuthnCredential)
 
 				// Device management
@@ -433,11 +451,14 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					middleware.DefaultWithdrawalSecurityConfig(),
 				))
 			}
+			// Enforce passcode-verified session for new withdrawal initiation requests.
+			withdrawalsSensitive := withdrawals.Group("/")
+			withdrawalsSensitive.Use(middleware.RequirePasscodeSession(container.GetPasscodeService(), true, container.ZapLog))
 			{
 				// Keep POST /withdrawals for backward compatibility and treat it as crypto withdrawal.
-				withdrawals.POST("", withdrawalHandlers.InitiateCryptoWithdrawal)
-				withdrawals.POST("/crypto", withdrawalHandlers.InitiateCryptoWithdrawal)
-				withdrawals.POST("/fiat", withdrawalHandlers.InitiateFiatWithdrawal)
+				withdrawalsSensitive.POST("", withdrawalHandlers.InitiateCryptoWithdrawal)
+				withdrawalsSensitive.POST("/crypto", withdrawalHandlers.InitiateCryptoWithdrawal)
+				withdrawalsSensitive.POST("/fiat", withdrawalHandlers.InitiateFiatWithdrawal)
 				withdrawals.GET("/fees", withdrawalHandlers.GetWithdrawalFees)
 				withdrawals.GET("", withdrawalHandlers.GetUserWithdrawals)
 				withdrawals.GET("/:withdrawalId", withdrawalHandlers.GetWithdrawal)
@@ -464,6 +485,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				investmentStashHandlers := container.GetInvestmentStashHandlers()
 				if investmentStashHandlers != nil {
 					account.GET("/investment-stash", investmentStashHandlers.GetInvestmentStash)
+					account.GET("/investment-stash/positions", investmentStashHandlers.GetInvestmentPositions)
+					account.GET("/investment-stash/distribution", investmentStashHandlers.GetInvestmentDistribution)
+					account.GET("/investment-stash/transactions", investmentStashHandlers.GetInvestmentTransactions)
+					account.GET("/investment-stash/performance", investmentStashHandlers.GetInvestmentPerformance)
 				}
 			}
 
@@ -628,11 +653,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				}
 			}
 
-			// Alpaca Assets - Tradable stocks and ETFs
+			// Alpaca Assets - Tradable stocks and ETFs (cached 5min — asset list rarely changes)
 			assets := protected.Group("/assets")
 			{
-				assets.GET("/", integrationHandlers.GetAssets)
-				assets.GET("/:symbol_or_id", integrationHandlers.GetAsset)
+				assets.GET("/", middleware.PublicCache(300), integrationHandlers.GetAssets)
+				assets.GET("/:symbol_or_id", middleware.PublicCache(300), integrationHandlers.GetAsset)
 			}
 
 			// Allocation routes - 70/30 Smart Allocation Mode (ON/OFF)

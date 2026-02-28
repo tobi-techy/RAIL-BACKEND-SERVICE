@@ -180,16 +180,4 @@ func GenerateAccessToken(userID uuid.UUID, email, role, secret string, accessTTL
 	return accessTokenString, accessExp, nil
 }
 
-// ExtractUserIDFromToken extracts user ID from token without full validation
-func ExtractUserIDFromToken(tokenString string) (uuid.UUID, error) {
-	token, _, err := new(jwt.Parser).ParseUnverified(tokenString, &Claims{})
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("failed to parse token: %w", err)
-	}
 
-	if claims, ok := token.Claims.(*Claims); ok {
-		return claims.UserID, nil
-	}
-
-	return uuid.Nil, fmt.Errorf("invalid token claims")
-}

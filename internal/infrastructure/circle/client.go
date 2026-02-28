@@ -11,6 +11,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -298,8 +299,10 @@ func calculateBackoff(attempt int, retryAfter *time.Duration) time.Duration {
 func (c *Client) doRequestWithRetry(ctx context.Context, method, endpoint string, requestBody, responseBody interface{}) error {
 	var lastErr error
 	requestID := uuid.NewString()
+	attemptsMade := 0
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		attemptsMade = attempt + 1
 		if attempt > 0 {
 			// Check if the last error was a rate limit error with Retry-After
 			var retryAfter *time.Duration
@@ -352,7 +355,7 @@ func (c *Client) doRequestWithRetry(ctx context.Context, method, endpoint string
 			zap.String("endpoint", endpoint))
 	}
 
-	return fmt.Errorf("request failed after %d attempts: %w", maxRetries+1, lastErr)
+	return fmt.Errorf("request failed after %d attempts: %w", attemptsMade, lastErr)
 }
 
 // doRequest performs a single HTTP request
@@ -825,20 +828,48 @@ func (c *Client) getEntitySecretCiphertext(ctx context.Context) (string, error) 
 
 // GetCCTPTransaction retrieves the status of a CCTP/transfer transaction
 func (c *Client) GetCCTPTransaction(ctx context.Context, transactionID string) (*entities.CCTPTransactionStatus, error) {
-	endpoint := fmt.Sprintf("/v1/w3s/developer/transactions/%s", transactionID)
-
-	var response map[string]interface{}
-	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
-		return &response, c.doRequestWithRetry(ctx, "GET", endpoint, nil, &response)
-	})
-
-	if err != nil {
-		c.logger.Error("Failed to get CCTP transaction",
-			zap.String("transactionId", transactionID),
-			zap.Error(err))
-		return nil, fmt.Errorf("failed to get transaction: %w", err)
+	endpoints := []string{
+		fmt.Sprintf("/v1/w3s/transactions/%s", transactionID),
+		fmt.Sprintf("/v1/w3s/developer/transactions/%s", transactionID),
 	}
 
+	var lastErr error
+	for idx, endpoint := range endpoints {
+		var response map[string]interface{}
+		_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
+			return &response, c.doRequestWithRetry(ctx, "GET", endpoint, nil, &response)
+		})
+		if err != nil {
+			lastErr = err
+			if isCircleNotFoundError(err) && idx < len(endpoints)-1 {
+				c.logger.Warn("Circle transaction lookup endpoint returned 404, trying fallback endpoint",
+					zap.String("transactionId", transactionID),
+					zap.String("endpoint", endpoint))
+				continue
+			}
+			c.logger.Error("Failed to get CCTP transaction",
+				zap.String("transactionId", transactionID),
+				zap.String("endpoint", endpoint),
+				zap.Error(err))
+			return nil, fmt.Errorf("failed to get transaction: %w", err)
+		}
+
+		status := parseCCTPTransactionStatus(transactionID, response)
+		c.logger.Info("Retrieved CCTP transaction status",
+			zap.String("transactionId", status.ID),
+			zap.String("status", status.Status),
+			zap.String("txHash", status.TxHash),
+			zap.String("endpoint", endpoint))
+		return status, nil
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("transaction lookup failed without specific error")
+	}
+	return nil, fmt.Errorf("failed to get transaction: %w", lastErr)
+}
+
+func parseCCTPTransactionStatus(transactionID string, response map[string]interface{}) *entities.CCTPTransactionStatus {
 	// Handle nested data structure
 	data, ok := response["data"].(map[string]interface{})
 	if !ok {
@@ -848,9 +879,128 @@ func (c *Client) GetCCTPTransaction(ctx context.Context, transactionID string) (
 	if !ok {
 		txData = data
 	}
+	return parseTransactionStatusFromMap(transactionID, txData)
+}
 
+func isCircleNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var circleErr entities.CircleAPIError
+	if errors.As(err, &circleErr) {
+		return circleErr.Code == http.StatusNotFound
+	}
+
+	var legacyErr entities.CircleErrorResponse
+	if errors.As(err, &legacyErr) {
+		return legacyErr.Code == http.StatusNotFound
+	}
+
+	// Defensive fallback for wrapped/non-typed errors.
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "http 404") ||
+		strings.Contains(msg, "error 404") ||
+		strings.Contains(msg, "status 404") ||
+		strings.Contains(msg, "\"code\":404")
+}
+
+// FindRecentOutboundTransfer searches recent outbound transfer transactions for a wallet.
+// This is used as a recovery path when a persisted transfer ID can no longer be fetched directly.
+func (c *Client) FindRecentOutboundTransfer(
+	ctx context.Context,
+	walletID, destinationAddress string,
+	amount decimal.Decimal,
+	since time.Time,
+) (*entities.CCTPTransactionStatus, error) {
+	query := url.Values{}
+	query.Set("walletIds", walletID)
+	query.Set("txType", "OUTBOUND")
+	query.Set("operation", "TRANSFER")
+	query.Set("pageSize", "50")
+	if !since.IsZero() {
+		query.Set("from", since.UTC().Format(time.RFC3339))
+	}
+
+	endpoint := "/v1/w3s/transactions?" + query.Encode()
+
+	var response map[string]interface{}
+	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
+		return &response, c.doRequestWithRetry(ctx, "GET", endpoint, nil, &response)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list outbound transactions: %w", err)
+	}
+
+	data, ok := response["data"].(map[string]interface{})
+	if !ok {
+		data = response
+	}
+
+	rawList, ok := data["transactions"].([]interface{})
+	if !ok || len(rawList) == 0 {
+		return nil, nil
+	}
+
+	targetAddress := strings.TrimSpace(strings.ToLower(destinationAddress))
+	var best *entities.CCTPTransactionStatus
+	var bestTime time.Time
+
+	for _, item := range rawList {
+		txMap, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		txType := strings.ToUpper(strings.TrimSpace(getString(txMap, "transactionType", "txType")))
+		if txType != "" && txType != "OUTBOUND" {
+			continue
+		}
+
+		state := strings.ToUpper(strings.TrimSpace(getString(txMap, "state")))
+		if state == "FAILED" || state == "REJECTED" || state == "CANCELLED" {
+			continue
+		}
+
+		if targetAddress != "" {
+			dest := strings.TrimSpace(strings.ToLower(getString(txMap, "destinationAddress")))
+			if dest == "" {
+				if nestedDest, ok := txMap["destination"].(map[string]interface{}); ok {
+					dest = strings.TrimSpace(strings.ToLower(getString(nestedDest, "address")))
+				}
+			}
+			if dest != "" && dest != targetAddress {
+				continue
+			}
+		}
+
+		txAmount, ok := getTransactionAmount(txMap)
+		if !ok || !txAmount.Equal(amount) {
+			continue
+		}
+
+		txStatus := parseTransactionStatusFromMap("", txMap)
+		txTime := parseTransactionTimestamp(txMap)
+		if best == nil || txTime.After(bestTime) {
+			best = txStatus
+			bestTime = txTime
+		}
+	}
+
+	if best != nil {
+		c.logger.Info("Matched outbound transfer from transaction history fallback",
+			zap.String("walletId", walletID),
+			zap.String("transactionId", best.ID),
+			zap.String("status", best.Status),
+			zap.String("txHash", best.TxHash))
+	}
+
+	return best, nil
+}
+
+func parseTransactionStatusFromMap(defaultID string, txData map[string]interface{}) *entities.CCTPTransactionStatus {
 	status := &entities.CCTPTransactionStatus{
-		ID:     transactionID,
+		ID:     defaultID,
 		Status: "pending",
 	}
 
@@ -858,6 +1008,8 @@ func (c *Client) GetCCTPTransaction(ctx context.Context, transactionID string) (
 		status.ID = id
 	}
 	if txHash, ok := txData["txHash"].(string); ok {
+		status.TxHash = txHash
+	} else if txHash, ok := txData["transactionHash"].(string); ok {
 		status.TxHash = txHash
 	}
 	if state, ok := txData["state"].(string); ok {
@@ -872,12 +1024,47 @@ func (c *Client) GetCCTPTransaction(ctx context.Context, transactionID string) (
 		}
 	}
 
-	c.logger.Info("Retrieved CCTP transaction status",
-		zap.String("transactionId", status.ID),
-		zap.String("status", status.Status),
-		zap.String("txHash", status.TxHash))
+	return status
+}
 
-	return status, nil
+func parseTransactionTimestamp(txData map[string]interface{}) time.Time {
+	for _, key := range []string{"createDate", "create_date", "updateDate", "update_date"} {
+		if raw := strings.TrimSpace(getString(txData, key)); raw != "" {
+			if t, err := time.Parse(time.RFC3339, raw); err == nil {
+				return t
+			}
+		}
+	}
+	return time.Time{}
+}
+
+func getTransactionAmount(txData map[string]interface{}) (decimal.Decimal, bool) {
+	if rawAmounts, ok := txData["amounts"].([]interface{}); ok && len(rawAmounts) > 0 {
+		if amountStr, ok := rawAmounts[0].(string); ok {
+			if d, err := decimal.NewFromString(strings.TrimSpace(amountStr)); err == nil {
+				return d, true
+			}
+		}
+	}
+	if amountObj, ok := txData["amount"].(map[string]interface{}); ok {
+		if amountStr := strings.TrimSpace(getString(amountObj, "amount", "value")); amountStr != "" {
+			if d, err := decimal.NewFromString(amountStr); err == nil {
+				return d, true
+			}
+		}
+	}
+	return decimal.Zero, false
+}
+
+func getString(m map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if v, ok := m[key]; ok {
+			if s, ok := v.(string); ok {
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 // injectTraceContext injects OpenTelemetry trace context into HTTP headers

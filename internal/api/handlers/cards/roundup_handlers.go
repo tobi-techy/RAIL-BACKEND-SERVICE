@@ -1,15 +1,15 @@
 package cards
 
 import (
-	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
+	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/roundup"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -45,8 +45,8 @@ func (h *RoundupHandlers) GetSettings(c *gin.Context) {
 // UpdateSettingsRequest represents the request body for updating settings
 type UpdateSettingsRequest struct {
 	Enabled            *bool   `json:"enabled,omitempty"`
-	Multiplier         *string `json:"multiplier,omitempty"`  // String for precise decimal (e.g., "2.0")
-	Threshold          *string `json:"threshold,omitempty"`   // String for precise decimal (e.g., "10.00")
+	Multiplier         *string `json:"multiplier,omitempty"` // String for precise decimal (e.g., "2.0")
+	Threshold          *string `json:"threshold,omitempty"`  // String for precise decimal (e.g., "10.00")
 	AutoInvestEnabled  *bool   `json:"auto_invest_enabled,omitempty"`
 	AutoInvestBasketID *string `json:"auto_invest_basket_id,omitempty"`
 	AutoInvestSymbol   *string `json:"auto_invest_symbol,omitempty"`
@@ -160,6 +160,15 @@ func (h *RoundupHandlers) GetTransactions(c *gin.Context) {
 
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if limit < 1 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
 
 	txs, err := h.service.GetTransactions(c.Request.Context(), userID, limit, offset)
 	if err != nil {
@@ -229,6 +238,15 @@ func (h *RoundupHandlers) CalculatePreview(c *gin.Context) {
 	}
 
 	settings, err := h.service.GetSettings(c.Request.Context(), userID)
+	if err != nil {
+		h.logger.Error("Failed to get roundup settings for preview", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get roundup settings"})
+		return
+	}
+	if settings == nil {
+		settings = entities.DefaultRoundupSettings(userID)
+	}
+
 	rounded, spareChange, multiplied := entities.CalculateRoundup(amount, settings.Multiplier)
 
 	c.JSON(http.StatusOK, gin.H{

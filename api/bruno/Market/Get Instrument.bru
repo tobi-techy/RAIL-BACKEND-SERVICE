@@ -1,0 +1,11 @@
+meta {
+  name: Get Instrument
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/api/{{apiVersion}}/market/instruments/{{symbol}}?include=bars&bars_timeframe=1Day&bars_limit=30
+  body: none
+  auth: none
+}

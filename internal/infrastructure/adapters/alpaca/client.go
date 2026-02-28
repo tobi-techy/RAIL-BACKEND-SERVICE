@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -49,6 +50,7 @@ type Config struct {
 	DataBaseURL   string // Market Data API base URL
 	DataAPIKey    string // Separate key for market data
 	DataAPISecret string // Separate secret for market data
+	DataFeed      string // Preferred stock market data feed (iex, sip, otc)
 	Environment   string // sandbox or production
 	Timeout       time.Duration
 }
@@ -81,6 +83,10 @@ func NewClient(config Config, logger *zap.Logger) *Client {
 		config.DataBaseURL = "https://data.alpaca.markets"
 	}
 	config.DataBaseURL = strings.TrimRight(config.DataBaseURL, "/")
+	config.DataFeed = strings.ToLower(strings.TrimSpace(config.DataFeed))
+	if config.DataFeed == "" {
+		config.DataFeed = "iex"
+	}
 
 	httpClient := &http.Client{
 		Timeout: config.Timeout,
@@ -523,9 +529,18 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 
 	// Authentication
 	if useDataAPI {
-		// Market Data API uses header-based auth
-		req.Header.Set("APCA-API-KEY-ID", c.config.ClientID)
-		req.Header.Set("APCA-API-SECRET-KEY", c.config.SecretKey)
+		// Market Data API uses key/secret headers and supports dedicated data credentials.
+		// Fall back to broker credentials when data credentials are not configured.
+		dataKeyID := strings.TrimSpace(c.config.DataAPIKey)
+		dataSecret := strings.TrimSpace(c.config.DataAPISecret)
+		if dataKeyID == "" {
+			dataKeyID = strings.TrimSpace(c.config.ClientID)
+		}
+		if dataSecret == "" {
+			dataSecret = strings.TrimSpace(c.config.SecretKey)
+		}
+		req.Header.Set("APCA-API-KEY-ID", dataKeyID)
+		req.Header.Set("APCA-API-SECRET-KEY", dataSecret)
 	} else {
 		// Broker API uses OAuth2 Bearer token
 		token, err := c.tokenManager.GetValidToken(ctx)
@@ -614,8 +629,107 @@ func isRetryableError(err error) bool {
 
 // Market Data API methods
 
+type stockSnapshotPayload struct {
+	LatestTrade struct {
+		Price     float64   `json:"p"`
+		Size      int64     `json:"s"`
+		Timestamp time.Time `json:"t"`
+	} `json:"latestTrade"`
+	LatestQuote struct {
+		AskPrice  float64   `json:"ap"`
+		AskSize   int64     `json:"as"`
+		BidPrice  float64   `json:"bp"`
+		BidSize   int64     `json:"bs"`
+		Timestamp time.Time `json:"t"`
+	} `json:"latestQuote"`
+	MinuteBar struct {
+		Open      float64   `json:"o"`
+		High      float64   `json:"h"`
+		Low       float64   `json:"l"`
+		Close     float64   `json:"c"`
+		Volume    int64     `json:"v"`
+		Timestamp time.Time `json:"t"`
+	} `json:"minuteBar"`
+	DailyBar struct {
+		Open      float64   `json:"o"`
+		High      float64   `json:"h"`
+		Low       float64   `json:"l"`
+		Close     float64   `json:"c"`
+		Volume    int64     `json:"v"`
+		Timestamp time.Time `json:"t"`
+	} `json:"dailyBar"`
+	PrevDailyBar struct {
+		Open      float64   `json:"o"`
+		High      float64   `json:"h"`
+		Low       float64   `json:"l"`
+		Close     float64   `json:"c"`
+		Volume    int64     `json:"v"`
+		Timestamp time.Time `json:"t"`
+	} `json:"prevDailyBar"`
+}
+
+func snapshotToMarketQuote(symbol string, snapshot stockSnapshotPayload) *entities.MarketQuote {
+	quote := &entities.MarketQuote{
+		Symbol:        symbol,
+		Price:         decimal.NewFromFloat(snapshot.LatestTrade.Price),
+		Bid:           decimal.NewFromFloat(snapshot.LatestQuote.BidPrice),
+		Ask:           decimal.NewFromFloat(snapshot.LatestQuote.AskPrice),
+		Volume:        snapshot.DailyBar.Volume,
+		Open:          decimal.NewFromFloat(snapshot.DailyBar.Open),
+		High:          decimal.NewFromFloat(snapshot.DailyBar.High),
+		Low:           decimal.NewFromFloat(snapshot.DailyBar.Low),
+		PreviousClose: decimal.NewFromFloat(snapshot.PrevDailyBar.Close),
+		Timestamp:     snapshot.LatestQuote.Timestamp,
+	}
+	if quote.Timestamp.IsZero() {
+		quote.Timestamp = snapshot.LatestTrade.Timestamp
+	}
+	if quote.Price.IsZero() {
+		quote.Price = decimal.NewFromFloat(snapshot.DailyBar.Close)
+	}
+	if !quote.PreviousClose.IsZero() {
+		quote.Change = quote.Price.Sub(quote.PreviousClose)
+		quote.ChangePct = quote.Change.Div(quote.PreviousClose).Mul(decimal.NewFromInt(100))
+	}
+	return quote
+}
+
+// GetStockSnapshot returns a full stock snapshot for a single symbol.
+func (c *Client) GetStockSnapshot(ctx context.Context, symbol string) (*entities.MarketQuote, error) {
+	endpoint := fmt.Sprintf("/v2/stocks/%s/snapshot", symbol)
+	var snapshot stockSnapshotPayload
+	if err := c.doDataRequest(ctx, "GET", endpoint, nil, &snapshot); err != nil {
+		return nil, err
+	}
+	return snapshotToMarketQuote(symbol, snapshot), nil
+}
+
+// GetStockSnapshots returns stock snapshots for multiple symbols.
+func (c *Client) GetStockSnapshots(ctx context.Context, symbols []string) (map[string]*entities.MarketQuote, error) {
+	if len(symbols) == 0 {
+		return map[string]*entities.MarketQuote{}, nil
+	}
+	endpoint := "/v2/stocks/snapshots?symbols=" + url.QueryEscape(strings.Join(symbols, ","))
+	var resp struct {
+		Snapshots map[string]stockSnapshotPayload `json:"snapshots"`
+	}
+	if err := c.doDataRequest(ctx, "GET", endpoint, nil, &resp); err != nil {
+		return nil, err
+	}
+	result := make(map[string]*entities.MarketQuote, len(resp.Snapshots))
+	for symbol, snapshot := range resp.Snapshots {
+		result[symbol] = snapshotToMarketQuote(symbol, snapshot)
+	}
+	return result, nil
+}
+
 // GetLatestQuote returns the latest quote for a symbol
 func (c *Client) GetLatestQuote(ctx context.Context, symbol string) (*entities.MarketQuote, error) {
+	snapshotQuote, snapshotErr := c.GetStockSnapshot(ctx, symbol)
+	if snapshotErr == nil && snapshotQuote != nil {
+		return snapshotQuote, nil
+	}
+
 	endpoint := fmt.Sprintf("/v2/stocks/%s/quotes/latest", symbol)
 	var resp struct {
 		Quote struct {
@@ -642,17 +756,26 @@ func (c *Client) GetLatestQuote(ctx context.Context, symbol string) (*entities.M
 	}
 	_ = c.doDataRequest(ctx, "GET", tradeEndpoint, nil, &tradeResp)
 
-	return &entities.MarketQuote{
+	quote := &entities.MarketQuote{
 		Symbol:    symbol,
 		Price:     decimal.NewFromFloat(tradeResp.Trade.Price),
 		Bid:       decimal.NewFromFloat(resp.Quote.BidPrice),
 		Ask:       decimal.NewFromFloat(resp.Quote.AskPrice),
 		Timestamp: resp.Quote.Timestamp,
-	}, nil
+	}
+	if quote.Price.IsZero() {
+		quote.Price = quote.Bid
+	}
+	return quote, nil
 }
 
 // GetLatestQuotes returns latest quotes for multiple symbols
 func (c *Client) GetLatestQuotes(ctx context.Context, symbols []string) (map[string]*entities.MarketQuote, error) {
+	snapshotQuotes, snapshotErr := c.GetStockSnapshots(ctx, symbols)
+	if snapshotErr == nil && len(snapshotQuotes) > 0 {
+		return snapshotQuotes, nil
+	}
+
 	endpoint := "/v2/stocks/quotes/latest?symbols=" + url.QueryEscape(strings.Join(symbols, ","))
 	var resp struct {
 		Quotes map[string]struct {
@@ -686,6 +809,9 @@ func (c *Client) GetLatestQuotes(ctx context.Context, symbols []string) (map[str
 		}
 		if t, ok := tradeResp.Trades[sym]; ok {
 			quote.Price = decimal.NewFromFloat(t.Price)
+		}
+		if quote.Price.IsZero() {
+			quote.Price = quote.Bid
 		}
 		result[sym] = quote
 	}
@@ -749,95 +875,211 @@ func (c *Client) GetPortfolioHistory(ctx context.Context, accountID string, quer
 
 // GetBars returns historical OHLCV bars
 func (c *Client) GetBars(ctx context.Context, symbol, timeframe string, start, end time.Time) ([]*entities.MarketBar, error) {
-	endpoint := fmt.Sprintf("/v2/stocks/%s/bars?timeframe=%s&start=%s&end=%s",
-		symbol, timeframe, start.Format(time.RFC3339), end.Format(time.RFC3339))
-
-	var resp struct {
-		Bars []struct {
-			Open      float64   `json:"o"`
-			High      float64   `json:"h"`
-			Low       float64   `json:"l"`
-			Close     float64   `json:"c"`
-			Volume    int64     `json:"v"`
-			Timestamp time.Time `json:"t"`
-		} `json:"bars"`
+	normalizedSymbol := strings.ToUpper(strings.TrimSpace(symbol))
+	normalizedTimeframe := strings.TrimSpace(timeframe)
+	if normalizedTimeframe == "" {
+		normalizedTimeframe = "1Day"
 	}
 
-	if err := c.doDataRequest(ctx, "GET", endpoint, nil, &resp); err != nil {
-		return nil, err
-	}
+	queryBase := url.Values{}
+	queryBase.Set("timeframe", normalizedTimeframe)
+	queryBase.Set("start", start.Format(time.RFC3339))
+	queryBase.Set("end", end.Format(time.RFC3339))
 
-	bars := make([]*entities.MarketBar, len(resp.Bars))
-	for i, b := range resp.Bars {
-		bars[i] = &entities.MarketBar{
-			Symbol:    symbol,
-			Open:      decimal.NewFromFloat(b.Open),
-			High:      decimal.NewFromFloat(b.High),
-			Low:       decimal.NewFromFloat(b.Low),
-			Close:     decimal.NewFromFloat(b.Close),
-			Volume:    b.Volume,
-			Timestamp: b.Timestamp,
+	feedCandidates := c.marketDataFeedCandidates()
+	var lastErr error
+
+	for _, feed := range feedCandidates {
+		query := url.Values{}
+		for key, values := range queryBase {
+			query[key] = append([]string(nil), values...)
 		}
+		if feed != "" {
+			query.Set("feed", feed)
+		}
+
+		endpoint := fmt.Sprintf("/v2/stocks/%s/bars?%s", url.PathEscape(normalizedSymbol), query.Encode())
+		var resp struct {
+			Bars []struct {
+				Open      float64   `json:"o"`
+				High      float64   `json:"h"`
+				Low       float64   `json:"l"`
+				Close     float64   `json:"c"`
+				Volume    int64     `json:"v"`
+				Timestamp time.Time `json:"t"`
+			} `json:"bars"`
+		}
+
+		err := c.doDataRequest(ctx, "GET", endpoint, nil, &resp)
+		if err != nil {
+			lastErr = err
+			var clientErr *ClientError
+			if errors.As(err, &clientErr) {
+				switch clientErr.StatusCode {
+				case http.StatusUnauthorized, http.StatusForbidden, http.StatusUnprocessableEntity:
+					c.logger.Warn("Retrying stock bars with alternate feed",
+						zap.String("symbol", normalizedSymbol),
+						zap.String("failed_feed", feed),
+						zap.Int("status_code", clientErr.StatusCode))
+					continue
+				}
+			}
+			return nil, err
+		}
+
+		bars := make([]*entities.MarketBar, len(resp.Bars))
+		for i, b := range resp.Bars {
+			bars[i] = &entities.MarketBar{
+				Symbol:    normalizedSymbol,
+				Open:      decimal.NewFromFloat(b.Open),
+				High:      decimal.NewFromFloat(b.High),
+				Low:       decimal.NewFromFloat(b.Low),
+				Close:     decimal.NewFromFloat(b.Close),
+				Volume:    b.Volume,
+				Timestamp: b.Timestamp,
+			}
+		}
+		return bars, nil
 	}
 
-	return bars, nil
+	if lastErr != nil {
+		return nil, lastErr
+	}
+
+	return []*entities.MarketBar{}, nil
+}
+
+func (c *Client) marketDataFeedCandidates() []string {
+	candidates := make([]string, 0, 4)
+	seen := make(map[string]struct{}, 4)
+	add := func(feed string) {
+		normalized := strings.ToLower(strings.TrimSpace(feed))
+		if normalized == "" {
+			return
+		}
+		if _, exists := seen[normalized]; exists {
+			return
+		}
+		seen[normalized] = struct{}{}
+		candidates = append(candidates, normalized)
+	}
+
+	add(c.config.DataFeed)
+	add("iex")
+	add("sip")
+	add("otc")
+
+	return candidates
 }
 
 // doDataRequest makes a request to the Market Data API
 func (c *Client) doDataRequest(ctx context.Context, method, endpoint string, body, response interface{}) error {
-	fullURL := c.config.DataBaseURL + endpoint
-
-	var reqBody io.Reader
+	var requestBody []byte
 	if body != nil {
 		jsonData, err := json.Marshal(body)
 		if err != nil {
 			return fmt.Errorf("marshal request: %w", err)
 		}
-		reqBody = bytes.NewReader(jsonData)
+		requestBody = jsonData
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, fullURL, reqBody)
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
+	baseURLs := []string{strings.TrimRight(c.config.DataBaseURL, "/")}
+	switch baseURLs[0] {
+	case "https://data.alpaca.markets":
+		baseURLs = append(baseURLs, "https://data.sandbox.alpaca.markets")
+	case "https://data.sandbox.alpaca.markets":
+		baseURLs = append(baseURLs, "https://data.alpaca.markets")
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	
-	// Use separate data API credentials if available, otherwise fall back to broker credentials
-	dataKeyID := c.config.DataAPIKey
-	dataSecret := c.config.DataAPISecret
-	if dataKeyID == "" {
-		dataKeyID = c.config.ClientID
-	}
-	if dataSecret == "" {
-		dataSecret = c.config.SecretKey
-	}
-	req.Header.Set("APCA-API-KEY-ID", dataKeyID)
-	req.Header.Set("APCA-API-SECRET-KEY", dataSecret)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("read response: %w", err)
+	type credentials struct {
+		key    string
+		secret string
+		label  string
 	}
 
-	if resp.StatusCode >= 400 {
-		return parseAlpacaError(resp.StatusCode, respBody)
+	credCandidates := make([]credentials, 0, 2)
+	dataCred := credentials{
+		key:    strings.TrimSpace(c.config.DataAPIKey),
+		secret: strings.TrimSpace(c.config.DataAPISecret),
+		label:  "data",
+	}
+	brokerCred := credentials{
+		key:    strings.TrimSpace(c.config.ClientID),
+		secret: strings.TrimSpace(c.config.SecretKey),
+		label:  "broker",
 	}
 
-	if response != nil && len(respBody) > 0 {
-		if err := json.Unmarshal(respBody, response); err != nil {
-			return fmt.Errorf("unmarshal response: %w", err)
+	if dataCred.key != "" && dataCred.secret != "" {
+		credCandidates = append(credCandidates, dataCred)
+	}
+	if brokerCred.key != "" && brokerCred.secret != "" &&
+		(brokerCred.key != dataCred.key || brokerCred.secret != dataCred.secret) {
+		credCandidates = append(credCandidates, brokerCred)
+	}
+	if len(credCandidates) == 0 {
+		return fmt.Errorf("market data credentials not configured")
+	}
+
+	var lastAuthErr error
+
+	for _, baseURL := range baseURLs {
+		for _, creds := range credCandidates {
+			fullURL := baseURL + endpoint
+
+			var reqBody io.Reader
+			if len(requestBody) > 0 {
+				reqBody = bytes.NewReader(requestBody)
+			}
+
+			req, err := http.NewRequestWithContext(ctx, method, fullURL, reqBody)
+			if err != nil {
+				return fmt.Errorf("create request: %w", err)
+			}
+
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json")
+			req.Header.Set("APCA-API-KEY-ID", creds.key)
+			req.Header.Set("APCA-API-SECRET-KEY", creds.secret)
+
+			resp, err := c.httpClient.Do(req)
+			if err != nil {
+				return fmt.Errorf("request failed: %w", err)
+			}
+
+			respBody, readErr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if readErr != nil {
+				return fmt.Errorf("read response: %w", readErr)
+			}
+
+			if resp.StatusCode >= 400 {
+				parsedErr := parseAlpacaError(resp.StatusCode, respBody)
+				if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+					lastAuthErr = parsedErr
+					c.logger.Warn("Market data auth failed, trying next credential/base URL",
+						zap.String("base_url", baseURL),
+						zap.String("credential_source", creds.label),
+						zap.Int("status_code", resp.StatusCode))
+					continue
+				}
+				return parsedErr
+			}
+
+			if response != nil && len(respBody) > 0 {
+				if err := json.Unmarshal(respBody, response); err != nil {
+					return fmt.Errorf("unmarshal response: %w", err)
+				}
+			}
+
+			return nil
 		}
 	}
 
-	return nil
+	if lastAuthErr != nil {
+		return lastAuthErr
+	}
+
+	return fmt.Errorf("market data request failed")
 }
 
 // injectTraceContext injects OpenTelemetry trace context into HTTP headers

@@ -346,6 +346,7 @@ type AlpacaConfig struct {
 	DataBaseURL   string `mapstructure:"data_base_url"`   // Market data API base URL
 	DataAPIKey    string `mapstructure:"data_api_key"`    // Separate key for market data
 	DataAPISecret string `mapstructure:"data_api_secret"` // Separate secret for market data
+	DataFeed      string `mapstructure:"data_feed"`       // Preferred market data feed (iex, sip, otc)
 	Environment   string `mapstructure:"environment"`     // sandbox or production
 	Timeout       int    `mapstructure:"timeout"`         // Request timeout in seconds
 	FirmAccountNo string `mapstructure:"firm_account_no"` // Firm account for instant funding
@@ -647,6 +648,7 @@ func setDefaults() {
 	viper.SetDefault("alpaca.environment", "sandbox")
 	viper.SetDefault("alpaca.base_url", "https://broker-api.sandbox.alpaca.markets")
 	viper.SetDefault("alpaca.data_base_url", "https://data.sandbox.alpaca.markets")
+	viper.SetDefault("alpaca.data_feed", "iex")
 	viper.SetDefault("alpaca.timeout", 30)
 
 	// Bridge defaults
@@ -704,6 +706,23 @@ func overrideFromEnv() {
 		if p, err := strconv.Atoi(port); err == nil {
 			viper.Set("server.port", p)
 		}
+	}
+	if corsOrigins := os.Getenv("CORS_ALLOWED_ORIGINS"); corsOrigins != "" {
+		viper.Set("server.allowed_origins", strings.Split(corsOrigins, ","))
+	}
+	if trustedProxies := os.Getenv("TRUSTED_PROXIES"); trustedProxies != "" {
+		viper.Set("server.trusted_proxies", strings.Split(trustedProxies, ","))
+	}
+
+	// WebAuthn
+	if rpID := os.Getenv("WEBAUTHN_RP_ID"); rpID != "" {
+		viper.Set("webauthn.rp_id", rpID)
+	}
+	if rpOrigins := os.Getenv("WEBAUTHN_RP_ORIGINS"); rpOrigins != "" {
+		viper.Set("webauthn.rp_origins", strings.Split(rpOrigins, ","))
+	}
+	if rpDisplayName := os.Getenv("WEBAUTHN_RP_DISPLAY_NAME"); rpDisplayName != "" {
+		viper.Set("webauthn.rp_display_name", rpDisplayName)
 	}
 
 	// Database
@@ -897,15 +916,24 @@ func overrideFromEnv() {
 	}
 	if alpacaDataAPIKey := os.Getenv("ALPACA_DATA_API_KEY"); alpacaDataAPIKey != "" {
 		viper.Set("alpaca.data_api_key", alpacaDataAPIKey)
+	} else if alpacaDataKey := os.Getenv("ALPACA_DATA_KEY"); alpacaDataKey != "" {
+		viper.Set("alpaca.data_api_key", alpacaDataKey)
 	}
 	if alpacaDataAPISecret := os.Getenv("ALPACA_DATA_API_SECRET"); alpacaDataAPISecret != "" {
 		viper.Set("alpaca.data_api_secret", alpacaDataAPISecret)
+	} else if alpacaDataSecret := os.Getenv("ALPACA_DATA_SECRET"); alpacaDataSecret != "" {
+		viper.Set("alpaca.data_api_secret", alpacaDataSecret)
+	} else if alpacaDataAPISecretKey := os.Getenv("ALPACA_DATA_API_SECRET_KEY"); alpacaDataAPISecretKey != "" {
+		viper.Set("alpaca.data_api_secret", alpacaDataAPISecretKey)
 	}
 	if alpacaBaseURL := os.Getenv("ALPACA_BASE_URL"); alpacaBaseURL != "" {
 		viper.Set("alpaca.base_url", alpacaBaseURL)
 	}
 	if alpacaDataBaseURL := os.Getenv("ALPACA_DATA_BASE_URL"); alpacaDataBaseURL != "" {
 		viper.Set("alpaca.data_base_url", alpacaDataBaseURL)
+	}
+	if alpacaDataFeed := os.Getenv("ALPACA_DATA_FEED"); alpacaDataFeed != "" {
+		viper.Set("alpaca.data_feed", alpacaDataFeed)
 	}
 	if alpacaEnvironment := os.Getenv("ALPACA_ENVIRONMENT"); alpacaEnvironment != "" {
 		viper.Set("alpaca.environment", alpacaEnvironment)

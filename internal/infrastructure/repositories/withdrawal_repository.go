@@ -152,9 +152,29 @@ func (r *WithdrawalRepository) UpdateBridgeTransfer(ctx context.Context, id uuid
 
 // UpdateTxHash updates the transaction hash
 func (r *WithdrawalRepository) UpdateTxHash(ctx context.Context, id uuid.UUID, txHash string) error {
-	query := `UPDATE withdrawals SET tx_hash = $1, status = $2, updated_at = $3 WHERE id = $4`
+	query := `
+		UPDATE withdrawals
+		SET
+			tx_hash = $1,
+			status = CASE
+				WHEN status IN ($2, $3, $4) THEN status
+				ELSE $5
+			END,
+			updated_at = $6
+		WHERE id = $7
+	`
 
-	_, err := r.db.ExecContext(ctx, query, txHash, entities.WithdrawalStatusOnChainTransfer, time.Now(), id)
+	_, err := r.db.ExecContext(
+		ctx,
+		query,
+		txHash,
+		entities.WithdrawalStatusCompleted,
+		entities.WithdrawalStatusFailed,
+		entities.WithdrawalStatusReversed,
+		entities.WithdrawalStatusOnChainTransfer,
+		time.Now(),
+		id,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to update tx hash: %w", err)
 	}
@@ -177,9 +197,23 @@ func (r *WithdrawalRepository) MarkCompleted(ctx context.Context, id uuid.UUID) 
 
 // MarkFailed marks the withdrawal as failed
 func (r *WithdrawalRepository) MarkFailed(ctx context.Context, id uuid.UUID, errorMsg string) error {
-	query := `UPDATE withdrawals SET status = $1, error_message = $2, updated_at = $3 WHERE id = $4`
+	query := `
+		UPDATE withdrawals
+		SET status = $1, error_message = $2, updated_at = $3
+		WHERE id = $4
+		  AND status NOT IN ($5, $6)
+	`
 
-	_, err := r.db.ExecContext(ctx, query, entities.WithdrawalStatusFailed, errorMsg, time.Now(), id)
+	_, err := r.db.ExecContext(
+		ctx,
+		query,
+		entities.WithdrawalStatusFailed,
+		errorMsg,
+		time.Now(),
+		id,
+		entities.WithdrawalStatusCompleted,
+		entities.WithdrawalStatusReversed,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to mark withdrawal failed: %w", err)
 	}
@@ -190,7 +224,7 @@ func (r *WithdrawalRepository) MarkFailed(ctx context.Context, id uuid.UUID, err
 // GetPendingWithdrawalsTotal returns the total amount of pending withdrawals for a user
 func (r *WithdrawalRepository) GetPendingWithdrawalsTotal(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
 	query := `
-		SELECT COALESCE(SUM(amount), 0) as total
+		SELECT COALESCE(SUM(amount + COALESCE(fee_amount, 0)), 0) as total
 		FROM withdrawals
 		WHERE user_id = $1
 		  AND status NOT IN ($2, $3, $4)
