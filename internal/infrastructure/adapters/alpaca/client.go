@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -49,6 +50,7 @@ type Config struct {
 	DataBaseURL   string // Market Data API base URL
 	DataAPIKey    string // Separate key for market data
 	DataAPISecret string // Separate secret for market data
+	DataFeed      string // Preferred stock market data feed (iex, sip, otc)
 	Environment   string // sandbox or production
 	Timeout       time.Duration
 }
@@ -81,6 +83,10 @@ func NewClient(config Config, logger *zap.Logger) *Client {
 		config.DataBaseURL = "https://data.alpaca.markets"
 	}
 	config.DataBaseURL = strings.TrimRight(config.DataBaseURL, "/")
+	config.DataFeed = strings.ToLower(strings.TrimSpace(config.DataFeed))
+	if config.DataFeed == "" {
+		config.DataFeed = "iex"
+	}
 
 	httpClient := &http.Client{
 		Timeout: config.Timeout,
@@ -869,38 +875,101 @@ func (c *Client) GetPortfolioHistory(ctx context.Context, accountID string, quer
 
 // GetBars returns historical OHLCV bars
 func (c *Client) GetBars(ctx context.Context, symbol, timeframe string, start, end time.Time) ([]*entities.MarketBar, error) {
-	endpoint := fmt.Sprintf("/v2/stocks/%s/bars?timeframe=%s&start=%s&end=%s",
-		symbol, timeframe, start.Format(time.RFC3339), end.Format(time.RFC3339))
-
-	var resp struct {
-		Bars []struct {
-			Open      float64   `json:"o"`
-			High      float64   `json:"h"`
-			Low       float64   `json:"l"`
-			Close     float64   `json:"c"`
-			Volume    int64     `json:"v"`
-			Timestamp time.Time `json:"t"`
-		} `json:"bars"`
+	normalizedSymbol := strings.ToUpper(strings.TrimSpace(symbol))
+	normalizedTimeframe := strings.TrimSpace(timeframe)
+	if normalizedTimeframe == "" {
+		normalizedTimeframe = "1Day"
 	}
 
-	if err := c.doDataRequest(ctx, "GET", endpoint, nil, &resp); err != nil {
-		return nil, err
-	}
+	queryBase := url.Values{}
+	queryBase.Set("timeframe", normalizedTimeframe)
+	queryBase.Set("start", start.Format(time.RFC3339))
+	queryBase.Set("end", end.Format(time.RFC3339))
 
-	bars := make([]*entities.MarketBar, len(resp.Bars))
-	for i, b := range resp.Bars {
-		bars[i] = &entities.MarketBar{
-			Symbol:    symbol,
-			Open:      decimal.NewFromFloat(b.Open),
-			High:      decimal.NewFromFloat(b.High),
-			Low:       decimal.NewFromFloat(b.Low),
-			Close:     decimal.NewFromFloat(b.Close),
-			Volume:    b.Volume,
-			Timestamp: b.Timestamp,
+	feedCandidates := c.marketDataFeedCandidates()
+	var lastErr error
+
+	for _, feed := range feedCandidates {
+		query := url.Values{}
+		for key, values := range queryBase {
+			query[key] = append([]string(nil), values...)
 		}
+		if feed != "" {
+			query.Set("feed", feed)
+		}
+
+		endpoint := fmt.Sprintf("/v2/stocks/%s/bars?%s", url.PathEscape(normalizedSymbol), query.Encode())
+		var resp struct {
+			Bars []struct {
+				Open      float64   `json:"o"`
+				High      float64   `json:"h"`
+				Low       float64   `json:"l"`
+				Close     float64   `json:"c"`
+				Volume    int64     `json:"v"`
+				Timestamp time.Time `json:"t"`
+			} `json:"bars"`
+		}
+
+		err := c.doDataRequest(ctx, "GET", endpoint, nil, &resp)
+		if err != nil {
+			lastErr = err
+			var clientErr *ClientError
+			if errors.As(err, &clientErr) {
+				switch clientErr.StatusCode {
+				case http.StatusUnauthorized, http.StatusForbidden, http.StatusUnprocessableEntity:
+					c.logger.Warn("Retrying stock bars with alternate feed",
+						zap.String("symbol", normalizedSymbol),
+						zap.String("failed_feed", feed),
+						zap.Int("status_code", clientErr.StatusCode))
+					continue
+				}
+			}
+			return nil, err
+		}
+
+		bars := make([]*entities.MarketBar, len(resp.Bars))
+		for i, b := range resp.Bars {
+			bars[i] = &entities.MarketBar{
+				Symbol:    normalizedSymbol,
+				Open:      decimal.NewFromFloat(b.Open),
+				High:      decimal.NewFromFloat(b.High),
+				Low:       decimal.NewFromFloat(b.Low),
+				Close:     decimal.NewFromFloat(b.Close),
+				Volume:    b.Volume,
+				Timestamp: b.Timestamp,
+			}
+		}
+		return bars, nil
 	}
 
-	return bars, nil
+	if lastErr != nil {
+		return nil, lastErr
+	}
+
+	return []*entities.MarketBar{}, nil
+}
+
+func (c *Client) marketDataFeedCandidates() []string {
+	candidates := make([]string, 0, 4)
+	seen := make(map[string]struct{}, 4)
+	add := func(feed string) {
+		normalized := strings.ToLower(strings.TrimSpace(feed))
+		if normalized == "" {
+			return
+		}
+		if _, exists := seen[normalized]; exists {
+			return
+		}
+		seen[normalized] = struct{}{}
+		candidates = append(candidates, normalized)
+	}
+
+	add(c.config.DataFeed)
+	add("iex")
+	add("sip")
+	add("otc")
+
+	return candidates
 }
 
 // doDataRequest makes a request to the Market Data API
