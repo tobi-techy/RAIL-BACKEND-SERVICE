@@ -15,9 +15,9 @@ CREATE TABLE IF NOT EXISTS device_tokens (
     UNIQUE(user_id, token)
 );
 
-CREATE INDEX idx_device_tokens_user_id ON device_tokens(user_id);
-CREATE INDEX idx_device_tokens_token ON device_tokens(token);
-CREATE INDEX idx_device_tokens_active ON device_tokens(user_id, is_active) WHERE is_active = true;
+CREATE INDEX IF NOT EXISTS idx_device_tokens_user_id ON device_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_device_tokens_token ON device_tokens(token);
+CREATE INDEX IF NOT EXISTS idx_device_tokens_active ON device_tokens(user_id, is_active) WHERE is_active = true;
 
 -- In-app notifications for notification center
 CREATE TABLE IF NOT EXISTS notifications (
@@ -34,6 +34,6 @@ CREATE TABLE IF NOT EXISTS notifications (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
-CREATE INDEX idx_notifications_user_id ON notifications(user_id);
-CREATE INDEX idx_notifications_user_unread ON notifications(user_id, read, created_at DESC) WHERE read = false;
-CREATE INDEX idx_notifications_user_created ON notifications(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_unread ON notifications(user_id, read, created_at DESC) WHERE read = false;
+CREATE INDEX IF NOT EXISTS idx_notifications_user_created ON notifications(user_id, created_at DESC);
