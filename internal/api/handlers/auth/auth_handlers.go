@@ -418,6 +418,7 @@ func (h *AuthHandlers) completeNewUserVerification(c *gin.Context, ctx context.C
 		"accessToken":       tokens.AccessToken,
 		"refreshToken":      tokens.RefreshToken,
 		"expiresAt":         tokens.ExpiresAt,
+		"sessionExpiresAt":  h.sessionExpiryFromRefreshTTL(),
 		"onboarding_status": user.OnboardingStatus,
 		"next_step":         "complete_onboarding",
 	}
@@ -856,10 +857,11 @@ func (h *AuthHandlers) Login(c *gin.Context) {
 
 	// Return success response
 	response := entities.AuthResponse{
-		User:         user.ToUserInfo(),
-		AccessToken:  tokens.AccessToken,
-		RefreshToken: tokens.RefreshToken,
-		ExpiresAt:    tokens.ExpiresAt,
+		User:             user.ToUserInfo(),
+		AccessToken:      tokens.AccessToken,
+		RefreshToken:     tokens.RefreshToken,
+		ExpiresAt:        tokens.ExpiresAt,
+		SessionExpiresAt: h.sessionExpiryFromRefreshTTL(),
 	}
 
 	h.logger.Info("User logged in successfully", zap.String("user_id", user.ID.String()), zap.String("email", user.Email))
@@ -1038,6 +1040,7 @@ func (h *AuthHandlers) PasscodeLogin(c *gin.Context) {
 		AccessToken:              tokens.AccessToken,
 		RefreshToken:             tokens.RefreshToken,
 		ExpiresAt:                tokens.ExpiresAt,
+		SessionExpiresAt:         sessionExpiresAt,
 		PasscodeSessionToken:     passcodeSessionToken,
 		PasscodeSessionExpiresAt: passcodeSessionExpiresAt,
 	})
@@ -1115,10 +1118,12 @@ func (h *AuthHandlers) RefreshToken(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, auth.TokenPair{
-		AccessToken:  tokens.AccessToken,
-		RefreshToken: tokens.RefreshToken,
-		ExpiresAt:    tokens.ExpiresAt,
+	sessionExpiresAt := h.sessionExpiryFromRefreshTTL()
+	c.JSON(http.StatusOK, gin.H{
+		"access_token":      tokens.AccessToken,
+		"refresh_token":     tokens.RefreshToken,
+		"expires_at":        tokens.ExpiresAt,
+		"session_expires_at": sessionExpiresAt,
 	})
 }
 

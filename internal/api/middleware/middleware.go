@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -122,6 +123,8 @@ func Logger(log *logger.Logger) gin.HandlerFunc {
 		end := time.Now()
 		latency := end.Sub(start)
 
+		c.Header("Server-Timing", fmt.Sprintf("app;dur=%.1f", float64(latency.Microseconds())/1000.0))
+
 		requestLogger.Infow("HTTP Request",
 			"status_code", c.Writer.Status(),
 			"latency", latency,
@@ -191,34 +194,66 @@ func CORS(allowedOrigins []string) gin.HandlerFunc {
 
 // RateLimiter stores rate limiters for different IPs
 type RateLimiter struct {
-	limiters map[string]*rate.Limiter
+	limiters map[string]*rateLimiterEntry
 	mu       sync.RWMutex
 	rate     int
 	burst    int
 }
 
+type rateLimiterEntry struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
+}
+
 // NewRateLimiter creates a new rate limiter
 func NewRateLimiter(requestsPerMinute int) *RateLimiter {
-	return &RateLimiter{
-		limiters: make(map[string]*rate.Limiter),
+	rl := &RateLimiter{
+		limiters: make(map[string]*rateLimiterEntry),
 		rate:     requestsPerMinute,
-		burst:    requestsPerMinute, // Allow burst equal to rate
+		burst:    requestsPerMinute,
+	}
+	go rl.cleanup()
+	return rl
+}
+
+// cleanup evicts entries not seen in the last 10 minutes to prevent unbounded growth
+func (rl *RateLimiter) cleanup() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		rl.mu.Lock()
+		cutoff := time.Now().Add(-10 * time.Minute)
+		for ip, entry := range rl.limiters {
+			if entry.lastSeen.Before(cutoff) {
+				delete(rl.limiters, ip)
+			}
+		}
+		rl.mu.Unlock()
 	}
 }
 
 // GetLimiter returns the rate limiter for a specific IP
 func (rl *RateLimiter) GetLimiter(ip string) *rate.Limiter {
 	rl.mu.RLock()
-	limiter, exists := rl.limiters[ip]
+	entry, exists := rl.limiters[ip]
 	rl.mu.RUnlock()
 
-	if !exists {
+	if exists {
 		rl.mu.Lock()
-		limiter = rate.NewLimiter(rate.Every(time.Minute/time.Duration(rl.rate)), rl.burst)
-		rl.limiters[ip] = limiter
+		entry.lastSeen = time.Now()
 		rl.mu.Unlock()
+		return entry.limiter
 	}
 
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	// Double-check after acquiring write lock
+	if entry, exists = rl.limiters[ip]; exists {
+		entry.lastSeen = time.Now()
+		return entry.limiter
+	}
+	limiter := rate.NewLimiter(rate.Every(time.Minute/time.Duration(rl.rate)), rl.burst)
+	rl.limiters[ip] = &rateLimiterEntry{limiter: limiter, lastSeen: time.Now()}
 	return limiter
 }
 
@@ -227,7 +262,10 @@ func RateLimit(requestsPerMinute int) gin.HandlerFunc {
 	limiter := NewRateLimiter(requestsPerMinute)
 
 	return func(c *gin.Context) {
-		ip := c.ClientIP()
+		ip := c.GetHeader("CF-Connecting-IP")
+		if ip == "" {
+			ip = c.ClientIP()
+		}
 		if !limiter.GetLimiter(ip).Allow() {
 			c.JSON(http.StatusTooManyRequests, gin.H{
 				"error":      "Rate limit exceeded",
@@ -359,6 +397,23 @@ func ValidateAPIKey(apikeyService APIKeyValidator) gin.HandlerFunc {
 			c.Set("user_id", *keyInfo.UserID)
 		}
 
+		c.Next()
+	}
+}
+
+// PublicCache sets Cache-Control for public, cacheable responses (market data, asset lists, tracks)
+func PublicCache(maxAge int) gin.HandlerFunc {
+	value := fmt.Sprintf("public, max-age=%d", maxAge)
+	return func(c *gin.Context) {
+		c.Header("Cache-Control", value)
+		c.Next()
+	}
+}
+
+// PrivateNoCache ensures user-specific responses are never cached at the edge
+func PrivateNoCache() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Cache-Control", "private, no-store")
 		c.Next()
 	}
 }

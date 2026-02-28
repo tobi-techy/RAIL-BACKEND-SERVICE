@@ -221,6 +221,25 @@ func (s *Service) VerifyPasscode(ctx context.Context, userID uuid.UUID, passcode
 	return token, session.ExpiresAt, nil
 }
 
+// IssueSession creates a short-lived passcode session token for trusted auth flows
+// (e.g. passkey/WebAuthn login) where user verification has already occurred.
+func (s *Service) IssueSession(ctx context.Context, userID uuid.UUID) (string, time.Time, error) {
+	if userID == uuid.Nil {
+		return "", time.Time{}, errors.New("user id is required")
+	}
+
+	session, token, err := s.createSession(ctx, userID)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("failed to create passcode session: %w", err)
+	}
+
+	s.logger.Info("Passcode session token issued for trusted auth flow",
+		zap.String("user_id", userID.String()),
+		zap.Time("session_expires_at", session.ExpiresAt))
+
+	return token, session.ExpiresAt, nil
+}
+
 // RemovePasscode disables the passcode requirement after validating the current passcode
 func (s *Service) RemovePasscode(ctx context.Context, userID uuid.UUID, passcode string) (*entities.PasscodeStatusResponse, error) {
 	meta, err := s.userRepo.GetPasscodeMetadata(ctx, userID)

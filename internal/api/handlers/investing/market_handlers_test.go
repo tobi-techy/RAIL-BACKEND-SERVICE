@@ -69,3 +69,69 @@ func TestHandleMarketDataErrorFallsBackToInternal(t *testing.T) {
 	assert.Equal(t, "INTERNAL_ERROR", response.Code)
 	assert.Equal(t, "Failed to get quote", response.Message)
 }
+
+func TestParseMarketExploreFiltersInvalidTypes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/v1/market/explore?types=foo", nil)
+
+	_, err := parseMarketExploreFilters(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Invalid type filter")
+}
+
+func TestGetExploreInvalidPage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/v1/market/explore?page=abc", nil)
+
+	h := &MarketHandlers{}
+	h.GetExplore(ctx)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	var response entities.ErrorResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+	assert.Equal(t, "INVALID_REQUEST", response.Code)
+}
+
+func TestGetInstrumentInvalidBarsLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Params = gin.Params{{Key: "symbol", Value: "AAPL"}}
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/v1/market/instruments/AAPL?bars_limit=bad", nil)
+
+	h := &MarketHandlers{}
+	h.GetInstrument(ctx)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	var response entities.ErrorResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+	assert.Equal(t, "INVALID_REQUEST", response.Code)
+}
+
+func TestParseMarketNewsFiltersDefaults(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/v1/market/news", nil)
+
+	filters, err := parseMarketNewsFilters(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 10, filters.Limit)
+	assert.Empty(t, filters.Symbols)
+	assert.False(t, filters.IncludeContent)
+}
+
+func TestParseMarketNewsFiltersInvalidLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/v1/market/news?limit=abc", nil)
+
+	_, err := parseMarketNewsFilters(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Invalid limit parameter")
+}

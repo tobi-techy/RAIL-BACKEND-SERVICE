@@ -353,6 +353,13 @@ func (h *CircleWebhookHandler) processOutboundTransferNotification(ctx context.C
 			"notification_type", webhook.NotificationType)
 		return nil
 	}
+	if withdrawal.Status.IsTerminal() {
+		h.logger.Info("Ignoring outbound transfer webhook for terminal withdrawal",
+			"withdrawal_id", withdrawal.ID.String(),
+			"transfer_id", transferID,
+			"status", withdrawal.Status)
+		return nil
+	}
 
 	txHash := strings.TrimSpace(webhook.Transfer.TransactionHash)
 	if txHash != "" {
@@ -406,6 +413,13 @@ func (h *CircleWebhookHandler) processOutboundTransactionNotification(ctx contex
 		h.logger.Warn("No withdrawal matched outbound transaction webhook",
 			"transfer_id", transferID,
 			"notification_type", webhook.NotificationType)
+		return nil
+	}
+	if withdrawal.Status.IsTerminal() {
+		h.logger.Info("Ignoring outbound transaction webhook for terminal withdrawal",
+			"withdrawal_id", withdrawal.ID.String(),
+			"transfer_id", transferID,
+			"status", withdrawal.Status)
 		return nil
 	}
 

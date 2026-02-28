@@ -24,10 +24,13 @@ type LoginRequest struct {
 
 // AuthResponse represents the response after successful authentication
 type AuthResponse struct {
-	User         *UserInfo `json:"user"`
-	AccessToken  string    `json:"accessToken"`
-	RefreshToken string    `json:"refreshToken"`
-	ExpiresAt    time.Time `json:"expiresAt"`
+	User                     *UserInfo  `json:"user"`
+	AccessToken              string     `json:"accessToken"`
+	RefreshToken             string     `json:"refreshToken"`
+	ExpiresAt                time.Time  `json:"expiresAt"`
+	SessionExpiresAt         time.Time  `json:"sessionExpiresAt"`
+	PasscodeSessionToken     string     `json:"passcodeSessionToken,omitempty"`
+	PasscodeSessionExpiresAt *time.Time `json:"passcodeSessionExpiresAt,omitempty"`
 }
 
 // UserInfo represents basic user information returned in auth responses

@@ -1104,6 +1104,13 @@ func (h *WalletFundingHandlers) CreateVirtualAccount(c *gin.Context) {
 			})
 			return
 		}
+		if strings.Contains(err.Error(), "does not belong to authenticated user") {
+			c.JSON(http.StatusForbidden, entities.ErrorResponse{
+				Code:    "ALPACA_ACCOUNT_FORBIDDEN",
+				Message: "Alpaca account does not belong to authenticated user",
+			})
+			return
+		}
 
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
 			Code:    "VIRTUAL_ACCOUNT_ERROR",

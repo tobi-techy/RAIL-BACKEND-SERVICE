@@ -2,6 +2,8 @@ package middleware
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"strings"
@@ -9,8 +11,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	redisv8 "github.com/go-redis/redis/v8"
-	"github.com/redis/go-redis/v9"
 	"github.com/rail-service/rail_service/pkg/security"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
 
@@ -40,8 +42,8 @@ func defaultWebhookIPWhitelists() map[string][]string {
 	return map[string][]string{
 		// Circle webhook IPs (example - verify with Circle docs)
 		"circle": {
-			"52.21.0.0/16",    // AWS us-east-1
-			"54.236.0.0/16",   // AWS us-east-1
+			"52.21.0.0/16",  // AWS us-east-1
+			"54.236.0.0/16", // AWS us-east-1
 		},
 		// Bridge webhook IPs (example - verify with Bridge docs)
 		"bridge": {
@@ -58,9 +60,9 @@ func defaultWebhookIPWhitelists() map[string][]string {
 // defaultWebhookRateLimits returns default rate limits per provider
 func defaultWebhookRateLimits() map[string]security.WebhookRateLimit {
 	return map[string]security.WebhookRateLimit{
-		"circle": {MaxRequests: 1000, Window: time.Minute},
-		"bridge": {MaxRequests: 500, Window: time.Minute},
-		"alpaca": {MaxRequests: 2000, Window: time.Minute},
+		"circle":  {MaxRequests: 1000, Window: time.Minute},
+		"bridge":  {MaxRequests: 500, Window: time.Minute},
+		"alpaca":  {MaxRequests: 2000, Window: time.Minute},
 		"default": {MaxRequests: 100, Window: time.Minute},
 	}
 }
@@ -92,10 +94,18 @@ func WebhookSecurity(
 			return
 		}
 
-		// Extract provider from path (e.g., /webhooks/circle -> circle)
-		provider := extractProviderFromPath(c.Request.URL.Path)
+		// Extract provider from path/headers (funding webhooks multiplex providers).
+		provider := resolveWebhookProvider(c)
 		if provider == "" {
 			provider = "unknown"
+		}
+		if provider == "unknown" && isUnifiedFundingWebhook(c.Request.URL.Path) {
+			logger.Warn("Unable to resolve provider for unified funding webhook")
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+				"error":   "UNKNOWN_WEBHOOK_PROVIDER",
+				"message": "Unable to determine webhook provider",
+			})
+			return
 		}
 
 		// 1. IP Whitelist check
@@ -107,7 +117,7 @@ func WebhookSecurity(
 					zap.String("client_ip", clientIP),
 					zap.Error(err))
 				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-					"error": "IP_NOT_WHITELISTED",
+					"error":   "IP_NOT_WHITELISTED",
 					"message": "Request origin not authorized",
 				})
 				return
@@ -127,8 +137,8 @@ func WebhookSecurity(
 					zap.Duration("reset_in", resetIn))
 				c.Header("Retry-After", resetIn.String())
 				c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-					"error": "RATE_LIMITED",
-					"message": "Too many webhook requests",
+					"error":               "RATE_LIMITED",
+					"message":             "Too many webhook requests",
 					"retry_after_seconds": int(resetIn.Seconds()),
 				})
 				return
@@ -140,7 +150,7 @@ func WebhookSecurity(
 			body, err := io.ReadAll(c.Request.Body)
 			if err != nil {
 				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
-					"error": "INVALID_BODY",
+					"error":   "INVALID_BODY",
 					"message": "Failed to read request body",
 				})
 				return
@@ -160,7 +170,7 @@ func WebhookSecurity(
 						zap.String("provider", provider),
 						zap.Error(err))
 					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-						"error": "WEBHOOK_VALIDATION_FAILED",
+						"error":   "WEBHOOK_VALIDATION_FAILED",
 						"message": "Webhook signature or replay validation failed",
 					})
 					return
@@ -184,6 +194,36 @@ func extractProviderFromPath(path string) string {
 	return ""
 }
 
+func resolveWebhookProvider(c *gin.Context) string {
+	provider := strings.ToLower(strings.TrimSpace(extractProviderFromPath(c.Request.URL.Path)))
+	if provider != "" && provider != "funding" {
+		return provider
+	}
+
+	if source := strings.ToLower(strings.TrimSpace(c.GetHeader("X-Webhook-Source"))); source != "" {
+		switch source {
+		case "bridge", "circle", "alpaca":
+			return source
+		}
+	}
+
+	if c.GetHeader("X-Circle-Signature") != "" {
+		return "circle"
+	}
+	if c.GetHeader("X-Bridge-Signature") != "" || c.GetHeader("Bridge-Signature") != "" {
+		return "bridge"
+	}
+	if c.GetHeader("X-Alpaca-Signature") != "" || c.GetHeader("Alpaca-Signature") != "" {
+		return "alpaca"
+	}
+
+	return "unknown"
+}
+
+func isUnifiedFundingWebhook(path string) bool {
+	return strings.HasSuffix(strings.TrimSpace(path), "/webhooks/funding")
+}
+
 // extractSignature extracts webhook signature from common header locations
 func extractSignature(c *gin.Context) string {
 	// Try common signature headers
@@ -204,6 +244,21 @@ func extractSignature(c *gin.Context) string {
 	return ""
 }
 
+func buildWebhookReplayKey(provider, path, signature, eventID, nonce string, body []byte) string {
+	h := sha256.New()
+	h.Write([]byte(provider))
+	h.Write([]byte{0})
+	h.Write([]byte(path))
+	h.Write([]byte{0})
+	h.Write([]byte(signature))
+	h.Write([]byte{0})
+	h.Write([]byte(eventID))
+	h.Write([]byte{0})
+	h.Write([]byte(nonce))
+	h.Write([]byte{0})
+	h.Write(body)
+	return "webhook:replay:" + hex.EncodeToString(h.Sum(nil))
+}
 
 // WebhookSecurityWithRedisV8 creates middleware using Redis v8 client
 // This is a compatibility wrapper for codebases using go-redis/redis/v8
@@ -212,12 +267,11 @@ func WebhookSecurityWithRedisV8(
 	config WebhookSecurityConfig,
 	logger *zap.Logger,
 ) gin.HandlerFunc {
-	// For v8 compatibility, we implement a simplified version that only does
-	// IP whitelisting and basic rate limiting without the full replay protection
-	// (which requires v9 features)
-	
+	// For v8 compatibility, we provide IP whitelisting, basic rate limiting,
+	// and lightweight replay dedupe based on signed payload fingerprints.
+
 	var ipWhitelist *security.WebhookIPWhitelist
-	
+
 	if !config.SkipVerification {
 		ipWhitelist = security.NewWebhookIPWhitelist(config.IPWhitelists, logger)
 	}
@@ -228,9 +282,17 @@ func WebhookSecurityWithRedisV8(
 			return
 		}
 
-		provider := extractProviderFromPath(c.Request.URL.Path)
+		provider := resolveWebhookProvider(c)
 		if provider == "" {
 			provider = "unknown"
+		}
+		if provider == "unknown" && isUnifiedFundingWebhook(c.Request.URL.Path) {
+			logger.Warn("Unable to resolve provider for unified funding webhook")
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+				"error":   "UNKNOWN_WEBHOOK_PROVIDER",
+				"message": "Unable to determine webhook provider",
+			})
+			return
 		}
 
 		// IP Whitelist check
@@ -242,7 +304,7 @@ func WebhookSecurityWithRedisV8(
 					zap.String("client_ip", clientIP),
 					zap.Error(err))
 				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-					"error": "IP_NOT_WHITELISTED",
+					"error":   "IP_NOT_WHITELISTED",
 					"message": "Request origin not authorized",
 				})
 				return
@@ -253,7 +315,7 @@ func WebhookSecurityWithRedisV8(
 		if redisClient != nil {
 			ctx := c.Request.Context()
 			key := "webhook:rate:" + provider + ":" + time.Now().Format("2006010215")
-			
+
 			count, err := redisClient.Incr(ctx, key).Result()
 			if err == nil {
 				if count == 1 {
@@ -269,8 +331,42 @@ func WebhookSecurityWithRedisV8(
 						zap.String("provider", provider),
 						zap.Int64("count", count))
 					c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-						"error": "RATE_LIMITED",
+						"error":   "RATE_LIMITED",
 						"message": "Too many webhook requests",
+					})
+					return
+				}
+			}
+		}
+
+		// Lightweight replay protection for v8 path: dedupe signed payloads in Redis.
+		if redisClient != nil {
+			ctx := c.Request.Context()
+			signature := extractSignature(c)
+			if signature != "" {
+				body, err := io.ReadAll(c.Request.Body)
+				if err != nil {
+					c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+						"error":   "INVALID_BODY",
+						"message": "Failed to read request body",
+					})
+					return
+				}
+				// Restore body for downstream handlers.
+				c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
+
+				eventID, nonce, _ := security.ExtractWebhookMetadata(body)
+				replayKey := buildWebhookReplayKey(provider, c.Request.URL.Path, signature, eventID, nonce, body)
+				ok, err := redisClient.SetNX(ctx, replayKey, "1", 10*time.Minute).Result()
+				if err != nil {
+					logger.Error("Webhook replay check failed (v8 path); failing open", zap.Error(err))
+				} else if !ok {
+					logger.Warn("Webhook replay detected",
+						zap.String("provider", provider),
+						zap.String("path", c.Request.URL.Path))
+					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+						"error":   "WEBHOOK_REPLAY_DETECTED",
+						"message": "Duplicate webhook request rejected",
 					})
 					return
 				}

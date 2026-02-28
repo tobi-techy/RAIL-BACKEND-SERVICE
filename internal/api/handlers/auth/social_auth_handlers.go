@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	passcodesvc "github.com/rail-service/rail_service/internal/domain/services/passcode"
 	"github.com/rail-service/rail_service/internal/domain/services/socialauth"
 	webauthnsvc "github.com/rail-service/rail_service/internal/domain/services/webauthn"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
@@ -44,9 +46,36 @@ type webAuthnLoginSession struct {
 	Email       string                  `json:"email"`
 }
 
+func ensureWebAuthnResponseType(response json.RawMessage) json.RawMessage {
+	if len(response) == 0 {
+		return response
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(response, &payload); err != nil {
+		return response
+	}
+
+	if typ, ok := payload["type"]; ok {
+		if typedString, ok := typ.(string); ok && strings.TrimSpace(typedString) != "" {
+			return response
+		}
+	}
+
+	payload["type"] = "public-key"
+	normalized, err := json.Marshal(payload)
+	if err != nil {
+		return response
+	}
+
+	return normalized
+}
+
 type SocialAuthHandlers struct {
 	socialAuthService *socialauth.Service
 	webauthnService   *webauthnsvc.Service
+	sessionService    SessionService
+	passcodeService   *passcodesvc.Service
 	redisClient       cache.RedisClient
 	userRepo          repositories.UserRepository
 	cfg               *config.Config
@@ -56,6 +85,8 @@ type SocialAuthHandlers struct {
 func NewSocialAuthHandlers(
 	socialAuthService *socialauth.Service,
 	webauthnService *webauthnsvc.Service,
+	sessionService SessionService,
+	passcodeService *passcodesvc.Service,
 	userRepo repositories.UserRepository,
 	redisClient cache.RedisClient,
 	cfg *config.Config,
@@ -64,6 +95,8 @@ func NewSocialAuthHandlers(
 	return &SocialAuthHandlers{
 		socialAuthService: socialAuthService,
 		webauthnService:   webauthnService,
+		sessionService:    sessionService,
+		passcodeService:   passcodeService,
 		redisClient:       redisClient,
 		userRepo:          userRepo,
 		cfg:               cfg,
@@ -213,6 +246,13 @@ func (h *SocialAuthHandlers) SocialLogin(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "TOKEN_ERROR", Message: "Failed to generate tokens"})
 		return
 	}
+	if h.sessionService != nil {
+		ipAddress, userAgent, fingerprint, location := extractSessionDetails(c)
+		sessionExpiresAt := h.sessionExpiryFromRefreshTTL()
+		if _, err := h.sessionService.CreateSession(ctx, user.ID, tokens.AccessToken, tokens.RefreshToken, ipAddress, userAgent, fingerprint, location, sessionExpiresAt); err != nil {
+			h.logger.Warn("Failed to create session after social login", zap.Error(err), zap.String("user_id", user.ID.String()))
+		}
+	}
 
 	h.logger.Info("Social login successful",
 		zap.String("user_id", user.ID.String()),
@@ -220,11 +260,12 @@ func (h *SocialAuthHandlers) SocialLogin(c *gin.Context) {
 		zap.Bool("is_new_user", isNewUser))
 
 	c.JSON(http.StatusOK, entities.SocialLoginResponse{
-		User:         user.ToUserInfo(),
-		AccessToken:  tokens.AccessToken,
-		RefreshToken: tokens.RefreshToken,
-		ExpiresAt:    tokens.ExpiresAt,
-		IsNewUser:    isNewUser,
+		User:             user.ToUserInfo(),
+		AccessToken:      tokens.AccessToken,
+		RefreshToken:     tokens.RefreshToken,
+		ExpiresAt:        tokens.ExpiresAt,
+		SessionExpiresAt: h.sessionExpiryFromRefreshTTL(),
+		IsNewUser:        isNewUser,
 	})
 }
 
@@ -362,6 +403,12 @@ func (h *SocialAuthHandlers) BeginWebAuthnRegistration(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "REGISTRATION_ERROR", Message: err.Error()})
 		return
 	}
+	h.logger.Info("WebAuthn registration begin options",
+		zap.String("user_id", userID.String()),
+		zap.String("rp_id", options.Response.RelyingParty.ID),
+		zap.String("resident_key", string(options.Response.AuthenticatorSelection.ResidentKey)),
+		zap.String("user_verification", string(options.Response.AuthenticatorSelection.UserVerification)),
+	)
 
 	sessionID, err := crypto.GenerateRandomString(32)
 	if err != nil {
@@ -448,6 +495,11 @@ func (h *SocialAuthHandlers) BeginWebAuthnLogin(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: err.Error()})
 		return
 	}
+	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
+	if req.Email == "" {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "email is required"})
+		return
+	}
 
 	if h.webauthnService == nil {
 		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{Code: "WEBAUTHN_UNAVAILABLE", Message: "WebAuthn not configured"})
@@ -471,6 +523,13 @@ func (h *SocialAuthHandlers) BeginWebAuthnLogin(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "LOGIN_ERROR", Message: err.Error()})
 		return
 	}
+	h.logger.Info("WebAuthn login begin session",
+		zap.String("user_id", user.ID.String()),
+		zap.String("primary_rp_id", h.webauthnService.PrimaryRPID()),
+		zap.Strings("supported_rp_ids", h.webauthnService.SupportedRPIDs()),
+		zap.Time("session_expires", sessionData.Expires),
+		zap.Int("allowed_credentials", len(sessionData.AllowedCredentialIDs)),
+		zap.String("user_verification", string(sessionData.UserVerification)))
 
 	sessionID, err := crypto.GenerateRandomString(32)
 	if err != nil {
@@ -530,8 +589,10 @@ func (h *SocialAuthHandlers) FinishWebAuthnRegistration(c *gin.Context) {
 		return
 	}
 
-	parsedResponse, err := protocol.ParseCredentialCreationResponseBytes(req.Response)
+	normalizedResponse := ensureWebAuthnResponseType(req.Response)
+	parsedResponse, err := protocol.ParseCredentialCreationResponseBytes(normalizedResponse)
 	if err != nil {
+		h.logger.Warn("Failed to parse WebAuthn registration response", zap.Error(err), zap.String("user_id", userID.String()))
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_WEBAUTHN_RESPONSE", Message: "Failed to parse registration response"})
 		return
 	}
@@ -595,14 +656,25 @@ func (h *SocialAuthHandlers) FinishWebAuthnLogin(c *gin.Context) {
 		return
 	}
 
-	parsedResponse, err := protocol.ParseCredentialRequestResponseBytes(req.Response)
+	normalizedResponse := ensureWebAuthnResponseType(req.Response)
+	parsedResponse, err := protocol.ParseCredentialRequestResponseBytes(normalizedResponse)
 	if err != nil {
+		h.logger.Warn("Failed to parse WebAuthn login response", zap.Error(err))
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_WEBAUTHN_RESPONSE", Message: "Failed to parse login response"})
 		return
 	}
+	h.logger.Info("WebAuthn login finish attempt",
+		zap.String("user_id", session.UserID.String()),
+		zap.String("session_id", req.SessionID),
+		zap.Int("allowed_credentials", len(session.SessionData.AllowedCredentialIDs)),
+		zap.Int("credential_id_len", len(parsedResponse.RawID)))
 
 	if err := h.webauthnService.FinishLogin(ctx, session.UserID, session.Email, &session.SessionData, parsedResponse); err != nil {
-		h.logger.Warn("Failed to finish WebAuthn login", zap.Error(err), zap.String("user_id", session.UserID.String()))
+		h.logger.Warn("Failed to finish WebAuthn login",
+			zap.Error(err),
+			zap.String("user_id", session.UserID.String()),
+			zap.String("session_id", req.SessionID),
+			zap.Int("allowed_credentials", len(session.SessionData.AllowedCredentialIDs)))
 		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "LOGIN_FAILED", Message: "Passkey authentication failed"})
 		return
 	}
@@ -623,14 +695,39 @@ func (h *SocialAuthHandlers) FinishWebAuthnLogin(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "TOKEN_ERROR", Message: "Failed to generate tokens"})
 		return
 	}
+	if h.sessionService != nil {
+		ipAddress, userAgent, fingerprint, location := extractSessionDetails(c)
+		sessionExpiresAt := h.sessionExpiryFromRefreshTTL()
+		if _, err := h.sessionService.CreateSession(ctx, user.ID, tokens.AccessToken, tokens.RefreshToken, ipAddress, userAgent, fingerprint, location, sessionExpiresAt); err != nil {
+			h.logger.Warn("Failed to create session after WebAuthn login", zap.Error(err), zap.String("user_id", user.ID.String()))
+		}
+	}
 
 	h.deleteWebAuthnSession(ctx, webauthnSessionLoginPrefix, req.SessionID)
 
+	var passcodeSessionToken string
+	var passcodeSessionExpiresAt *time.Time
+	if h.passcodeService != nil {
+		token, expiresAt, passcodeErr := h.passcodeService.IssueSession(ctx, user.ID)
+		if passcodeErr != nil {
+			h.logger.Warn("Failed to issue passcode session after WebAuthn login",
+				zap.Error(passcodeErr),
+				zap.String("user_id", user.ID.String()))
+		} else {
+			passcodeSessionToken = token
+			expiresCopy := expiresAt
+			passcodeSessionExpiresAt = &expiresCopy
+		}
+	}
+
 	c.JSON(http.StatusOK, entities.AuthResponse{
-		User:         user.ToUserInfo(),
-		AccessToken:  tokens.AccessToken,
-		RefreshToken: tokens.RefreshToken,
-		ExpiresAt:    tokens.ExpiresAt,
+		User:                     user.ToUserInfo(),
+		AccessToken:              tokens.AccessToken,
+		RefreshToken:             tokens.RefreshToken,
+		ExpiresAt:                tokens.ExpiresAt,
+		SessionExpiresAt:         h.sessionExpiryFromRefreshTTL(),
+		PasscodeSessionToken:     passcodeSessionToken,
+		PasscodeSessionExpiresAt: passcodeSessionExpiresAt,
 	})
 }
 
@@ -684,4 +781,12 @@ func (h *SocialAuthHandlers) deleteWebAuthnSession(ctx context.Context, prefix, 
 
 func (h *SocialAuthHandlers) webAuthnSessionKey(prefix, sessionID string) string {
 	return fmt.Sprintf("%s:%s", prefix, sessionID)
+}
+
+func (h *SocialAuthHandlers) sessionExpiryFromRefreshTTL() time.Time {
+	ttl := time.Duration(h.cfg.JWT.RefreshTTL) * time.Second
+	if ttl <= 0 {
+		ttl = time.Duration(h.cfg.JWT.AccessTTL) * time.Second
+	}
+	return time.Now().Add(ttl)
 }

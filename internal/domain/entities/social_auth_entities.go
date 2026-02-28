@@ -46,11 +46,12 @@ type SocialLoginRequest struct {
 
 // SocialLoginResponse represents the response after social login
 type SocialLoginResponse struct {
-	User         *UserInfo `json:"user"`
-	AccessToken  string    `json:"accessToken"`
-	RefreshToken string    `json:"refreshToken"`
-	ExpiresAt    time.Time `json:"expiresAt"`
-	IsNewUser    bool      `json:"isNewUser"`
+	User             *UserInfo `json:"user"`
+	AccessToken      string    `json:"accessToken"`
+	RefreshToken     string    `json:"refreshToken"`
+	ExpiresAt        time.Time `json:"expiresAt"`
+	SessionExpiresAt time.Time `json:"sessionExpiresAt"`
+	IsNewUser        bool      `json:"isNewUser"`
 }
 
 // SocialAuthURLRequest represents a request for OAuth URL
