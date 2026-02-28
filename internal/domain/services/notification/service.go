@@ -37,11 +37,17 @@ type EmailSenderService interface {
 	SendGenericEmail(ctx context.Context, to, subject, body string) error
 }
 
+// NotificationPersister persists notifications to the database
+type NotificationPersister interface {
+	Create(ctx context.Context, userID uuid.UUID, notifType, title, body string, data map[string]interface{}) error
+}
+
 type NotificationService struct {
 	logger      *zap.Logger
 	queue       NotificationQueue
 	smsSender   SMSSender
 	emailSender EmailSenderService
+	persister   NotificationPersister
 }
 
 func NewNotificationService(logger *zap.Logger) *NotificationService {
@@ -61,6 +67,11 @@ func (s *NotificationService) SetSMSSender(sender SMSSender) {
 // SetEmailSender sets the email sender
 func (s *NotificationService) SetEmailSender(sender EmailSenderService) {
 	s.emailSender = sender
+}
+
+// SetPersister sets the notification persister for in-app notifications
+func (s *NotificationService) SetPersister(p NotificationPersister) {
+	s.persister = p
 }
 
 func (s *NotificationService) Send(ctx context.Context, notification *entities.Notification, prefs *entities.UserPreference) error {
@@ -127,8 +138,15 @@ func (s *NotificationService) sendInApp(ctx context.Context, notification *entit
 }
 
 func (s *NotificationService) queueNotification(ctx context.Context, userID uuid.UUID, notifType, title, body string, data map[string]interface{}) error {
+	// Always persist to in-app notification center for push notifications
+	if s.persister != nil && notifType == "push" {
+		if err := s.persister.Create(ctx, userID, notifType, title, body, data); err != nil {
+			s.logger.Warn("Failed to persist notification", zap.Error(err))
+		}
+	}
+
 	if s.queue == nil {
-		s.logger.Debug("Notification queue not configured, logging only",
+		s.logger.Debug("Notification queue not configured, persisted only",
 			zap.String("type", notifType),
 			zap.String("user_id", userID.String()))
 		return nil

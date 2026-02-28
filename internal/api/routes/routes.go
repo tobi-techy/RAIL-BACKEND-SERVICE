@@ -523,6 +523,25 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				}
 			}
 
+			// Notification routes - push tokens and in-app notifications
+			notificationHandlers := handlers.NewNotificationHandlers(
+				container.DeviceTokenRepo,
+				container.NotificationRepo,
+				container.ZapLog,
+			)
+			devices := protected.Group("/devices")
+			{
+				devices.POST("/token", notificationHandlers.RegisterDeviceToken)
+				devices.DELETE("/token", notificationHandlers.UnregisterDeviceToken)
+			}
+			notifications := protected.Group("/notifications")
+			{
+				notifications.GET("", notificationHandlers.GetNotifications)
+				notifications.GET("/unread-count", notificationHandlers.GetUnreadCount)
+				notifications.POST("/:id/read", notificationHandlers.MarkAsRead)
+				notifications.POST("/read-all", notificationHandlers.MarkAllAsRead)
+			}
+
 			// Investment routes
 			basketExecutor := container.InitializeBasketExecutor()
 			investingService := container.GetInvestingService()

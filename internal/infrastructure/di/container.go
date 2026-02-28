@@ -643,6 +643,10 @@ type Container struct {
 	P2PNotificationSender    *adapters.P2PNotificationSender
 	P2PHandlers              *p2phandlers.Handlers
 
+	// Notification Services
+	DeviceTokenRepo  *repositories.DeviceTokenRepository
+	NotificationRepo *repositories.NotificationRepository
+
 	// Unified Webhook Handler
 	UnifiedFundingWebhookHandler *webhooks.UnifiedFundingWebhookHandler
 }
@@ -782,6 +786,8 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		LedgerRepo:                ledgerRepo,
 		ReconciliationRepo:        reconciliationRepo,
 		OnboardingJobRepo:         onboardingJobRepo,
+		DeviceTokenRepo:           repositories.NewDeviceTokenRepository(db),
+		NotificationRepo:          repositories.NewNotificationRepository(db),
 
 		// External Services
 		CircleClient:  circleClient,
@@ -1048,8 +1054,9 @@ func (c *Container) initializeDomainServices() error {
 	)
 	c.BrokerageAdapter = brokerageAdapter
 
-	// Initialize notification service
+	// Initialize notification service with persister for in-app notifications
 	c.NotificationService = services.NewNotificationService(c.ZapLog)
+	c.NotificationService.SetPersister(adapters.NewNotificationPersisterAdapter(c.NotificationRepo))
 
 	c.InvestingService = investing.NewService(
 		basketRepo,
