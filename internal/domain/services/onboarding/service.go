@@ -28,6 +28,7 @@ type Service struct {
 	bridgeAdapter       BridgeAdapter
 	alpacaAdapter       AlpacaAdapter
 	allocationService   AllocationService
+	p2pService          P2PService
 	logger              *zap.Logger
 	defaultWalletChains []entities.WalletChain
 }
@@ -90,6 +91,11 @@ type AllocationService interface {
 	EnableMode(ctx context.Context, userID uuid.UUID, ratios entities.AllocationRatios) error
 }
 
+// P2PService interface for auto-claiming pending transfers
+type P2PService interface {
+	ClaimPendingForUser(ctx context.Context, userID uuid.UUID, email, phone string) (int, error)
+}
+
 // NewService creates a new onboarding service
 func NewService(
 	userRepo UserRepository,
@@ -124,6 +130,11 @@ func NewService(
 // SetAllocationService sets the allocation service (used to resolve circular dependency)
 func (s *Service) SetAllocationService(allocationService AllocationService) {
 	s.allocationService = allocationService
+}
+
+// SetP2PService sets the P2P service (used to resolve circular dependency)
+func (s *Service) SetP2PService(p2pService P2PService) {
+	s.p2pService = p2pService
 }
 
 func normalizeDefaultWalletChains(chains []entities.WalletChain, logger *zap.Logger) []entities.WalletChain {
@@ -445,6 +456,19 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 		}
 		if err := s.allocationService.EnableMode(ctx, req.UserID, defaultRatios); err != nil {
 			s.logger.Error("Failed to enable default 70/30 allocation mode", zap.Error(err), zap.String("userId", req.UserID.String()))
+		}
+	}
+
+	// Auto-claim any pending P2P transfers sent to this user's email/phone
+	if s.p2pService != nil {
+		phone := ""
+		if user.Phone != nil {
+			phone = *user.Phone
+		}
+		if claimed, err := s.p2pService.ClaimPendingForUser(ctx, req.UserID, user.Email, phone); err != nil {
+			s.logger.Warn("Failed to auto-claim P2P transfers", zap.Error(err), zap.String("userId", req.UserID.String()))
+		} else if claimed > 0 {
+			s.logger.Info("Auto-claimed P2P transfers", zap.Int("count", claimed), zap.String("userId", req.UserID.String()))
 		}
 	}
 
