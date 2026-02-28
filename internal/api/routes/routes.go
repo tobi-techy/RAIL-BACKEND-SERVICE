@@ -514,6 +514,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					p2p.GET("/recent", p2pHandlers.GetRecentRecipients)
 					p2p.DELETE("/transfers/:id", p2pHandlers.Cancel)
 					p2p.POST("/claim/:token", p2pHandlers.ClaimByToken)
+					p2p.POST("/railtag", p2pHandlers.SetRailTag)
+					p2p.POST("/railtag/check", p2pHandlers.CheckRailTag)
 				}
 			}
 

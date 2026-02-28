@@ -77,6 +77,7 @@ const (
 	TransactionTypeBufferReplenishment TransactionType = "buffer_replenishment"
 	TransactionTypeReversal            TransactionType = "reversal"
 	TransactionTypeCardPayment         TransactionType = "card_payment"
+	TransactionTypeP2PTransfer         TransactionType = "p2p_transfer"
 )
 
 // Validate checks if the transaction type is valid
@@ -84,7 +85,8 @@ func (t TransactionType) Validate() error {
 	switch t {
 	case TransactionTypeDeposit, TransactionTypeWithdrawal, TransactionTypeInvestment,
 		TransactionTypeConversion, TransactionTypeInternalTransfer,
-		TransactionTypeBufferReplenishment, TransactionTypeReversal, TransactionTypeCardPayment:
+		TransactionTypeBufferReplenishment, TransactionTypeReversal, TransactionTypeCardPayment,
+		TransactionTypeP2PTransfer:
 		return nil
 	default:
 		return fmt.Errorf("invalid transaction type: %s", t)

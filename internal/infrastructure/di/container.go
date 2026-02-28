@@ -35,6 +35,7 @@ import (
 	marketservice "github.com/rail-service/rail_service/internal/domain/services/market"
 	newsservice "github.com/rail-service/rail_service/internal/domain/services/news"
 	"github.com/rail-service/rail_service/internal/domain/services/onboarding"
+	"github.com/rail-service/rail_service/internal/domain/services/p2p"
 	"github.com/rail-service/rail_service/internal/domain/services/passcode"
 	"github.com/rail-service/rail_service/internal/domain/services/reconciliation"
 	"github.com/rail-service/rail_service/internal/domain/services/roundup"
@@ -635,6 +636,12 @@ type Container struct {
 
 	// Account Management
 	AccountDeletionService *account.DeletionService
+
+	// P2P Transfer Services
+	P2PRepo                  *repositories.P2PRepository
+	P2PService               *p2p.Service
+	P2PNotificationSender    *adapters.P2PNotificationSender
+	P2PHandlers              *p2phandlers.Handlers
 
 	// Unified Webhook Handler
 	UnifiedFundingWebhookHandler *webhooks.UnifiedFundingWebhookHandler
@@ -1247,6 +1254,28 @@ func (c *Container) initializeDomainServices() error {
 		c.Config.Circle.TreasuryWalletAddress,
 		c.Logger,
 	)
+
+	// Initialize P2P transfer services
+	c.P2PRepo = repositories.NewP2PRepository(sqlxDB, c.ZapLog)
+	c.P2PNotificationSender = adapters.NewP2PNotificationSender(
+		c.EmailService,
+		c.UserRepo,
+		c.Config.Email.BaseURL,
+		c.ZapLog,
+	)
+	c.P2PService = p2p.NewService(
+		c.P2PRepo,
+		c.UserRepo,
+		repositories.NewP2PBalanceProvider(c.LedgerService),
+		repositories.NewP2PTransferExecutor(c.LedgerService),
+		c.P2PNotificationSender,
+		c.ZapLog,
+	)
+	c.P2PService.SetUserUpdater(c.UserRepo)
+	c.P2PHandlers = p2phandlers.NewHandlers(c.P2PService, c.ZapLog)
+
+	// Wire P2P service to onboarding for auto-claim
+	c.OnboardingService.SetP2PService(c.P2PService)
 
 	return nil
 }
@@ -2557,9 +2586,7 @@ func (c *Container) GetInstantFundingHandlers() *fundinghandlers.InstantFundingH
 
 // GetP2PHandlers returns the P2P transfer handlers
 func (c *Container) GetP2PHandlers() *p2phandlers.Handlers {
-	// P2P service not yet initialized - will be wired up when repository is created
-	// For now return nil to skip route registration
-	return nil
+	return c.P2PHandlers
 }
 
 // GetWithdrawalSecurityStore returns the withdrawal security store

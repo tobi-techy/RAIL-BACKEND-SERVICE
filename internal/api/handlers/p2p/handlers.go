@@ -202,3 +202,55 @@ func (h *Handlers) getUserID(c *gin.Context) (uuid.UUID, error) {
 		return uuid.Nil, http.ErrNoCookie
 	}
 }
+
+// SetRailTagRequest represents a request to set a RailTag
+type SetRailTagRequest struct {
+	RailTag string `json:"railTag" binding:"required,min=3,max=30"`
+}
+
+// SetRailTag sets the user's RailTag
+// POST /api/v1/p2p/railtag
+func (h *Handlers) SetRailTag(c *gin.Context) {
+	userID, err := h.getUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "UNAUTHORIZED"})
+		return
+	}
+
+	var req SetRailTagRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "INVALID_REQUEST", "message": err.Error()})
+		return
+	}
+
+	if err := h.service.SetRailTag(c.Request.Context(), userID, req.RailTag); err != nil {
+		h.logger.Error("SetRailTag failed", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "SET_RAILTAG_FAILED", "message": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"railTag": req.RailTag, "message": "RailTag set successfully"})
+}
+
+// CheckRailTagRequest represents a request to check RailTag availability
+type CheckRailTagRequest struct {
+	RailTag string `json:"railTag" binding:"required,min=3,max=30"`
+}
+
+// CheckRailTag checks if a RailTag is available
+// POST /api/v1/p2p/railtag/check
+func (h *Handlers) CheckRailTag(c *gin.Context) {
+	var req CheckRailTagRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "INVALID_REQUEST", "message": err.Error()})
+		return
+	}
+
+	available, err := h.service.CheckRailTagAvailable(c.Request.Context(), req.RailTag)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "CHECK_FAILED", "message": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"railTag": req.RailTag, "available": available})
+}
