@@ -807,6 +807,9 @@ func overrideFromEnv() {
 	if circleEnv := os.Getenv("CIRCLE_ENVIRONMENT"); circleEnv != "" {
 		viper.Set("circle.environment", circleEnv)
 	}
+	if treasuryWallet := os.Getenv("CIRCLE_TREASURY_WALLET_ADDRESS"); treasuryWallet != "" {
+		viper.Set("circle.treasury_wallet_address", treasuryWallet)
+	}
 	if paymentWebhookSecret := os.Getenv("PAYMENT_WEBHOOK_SECRET"); paymentWebhookSecret != "" {
 		viper.Set("payment.webhook_secret", paymentWebhookSecret)
 	} else if circleWebhookSecret := os.Getenv("CIRCLE_WEBHOOK_SECRET"); circleWebhookSecret != "" {

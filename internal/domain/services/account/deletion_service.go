@@ -79,10 +79,10 @@ type DeleteAccountRequest struct {
 
 // DeleteAccountResponse represents the result of account deletion
 type DeleteAccountResponse struct {
-	Success       bool            `json:"success"`
-	FundsSwept    decimal.Decimal `json:"funds_swept"`
-	SweepTxHash   string          `json:"sweep_tx_hash,omitempty"`
-	DeletedAt     time.Time       `json:"deleted_at"`
+	Success     bool            `json:"success"`
+	FundsSwept  decimal.Decimal `json:"funds_swept"`
+	SweepTxHash string          `json:"sweep_tx_hash,omitempty"`
+	DeletedAt   time.Time       `json:"deleted_at"`
 }
 
 // DeleteAccount performs complete account deletion with fund sweep (simplified interface)
