@@ -27,7 +27,7 @@ type WalletRepository interface {
 
 // LedgerRepository fetches ledger accounts
 type LedgerRepository interface {
-	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.LedgerAccount, error)
+	GetAccountByUserAndType(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (*entities.LedgerAccount, error)
 }
 
 // Worker reconciles ledger balances with Circle wallet balances
@@ -125,21 +125,14 @@ func (w *Worker) reconcile(ctx context.Context) {
 		}
 
 		// Get ledger balance
-		accounts, err := w.ledgerRepo.GetByUserID(ctx, wallet.UserID)
+		account, err := w.ledgerRepo.GetAccountByUserAndType(ctx, wallet.UserID, entities.AccountTypeSpendingBalance)
 		if err != nil {
 			w.logger.Warn("Failed to get ledger", zap.String("user_id", wallet.UserID.String()), zap.Error(err))
 			failed++
 			continue
 		}
 
-		var ledgerBalance decimal.Decimal
-		for _, acc := range accounts {
-			if acc.AccountType == entities.AccountTypeSpendingBalance {
-				ledgerBalance = acc.Balance
-				break
-			}
-		}
-
+		ledgerBalance := account.Balance
 		diff := circleBalance.Sub(ledgerBalance).Abs()
 		if diff.LessThanOrEqual(w.threshold) {
 			skipped++

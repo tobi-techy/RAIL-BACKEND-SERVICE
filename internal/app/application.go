@@ -13,6 +13,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
+
 	"github.com/rail-service/rail_service/internal/api/routes"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
@@ -22,6 +24,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/database"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
+	balance_reconciliation "github.com/rail-service/rail_service/internal/workers/balance_reconciliation"
 	deposit_allocation_recovery "github.com/rail-service/rail_service/internal/workers/deposit_allocation_recovery"
 	"github.com/rail-service/rail_service/internal/workers/funding_webhook"
 	kyc_autoinvest "github.com/rail-service/rail_service/internal/workers/kyc_autoinvest"
@@ -42,13 +45,14 @@ type Application struct {
 	container *di.Container
 
 	// Workers
-	scheduler                 *walletprovisioning.Scheduler
-	webhookManager            *funding_webhook.Manager
-	scheduledInvestmentWorker *scheduled_investment_worker.Worker
-	portfolioSnapshotWorker   *portfolio_snapshot_worker.Worker
-	depositAllocationWorker   *deposit_allocation_recovery.Worker
-	kycAutoInvestWorker       *kyc_autoinvest.Worker
-	kycSyncWorker             *kyc_sync.Worker
+	scheduler                    *walletprovisioning.Scheduler
+	webhookManager               *funding_webhook.Manager
+	scheduledInvestmentWorker    *scheduled_investment_worker.Worker
+	portfolioSnapshotWorker      *portfolio_snapshot_worker.Worker
+	depositAllocationWorker      *deposit_allocation_recovery.Worker
+	kycAutoInvestWorker          *kyc_autoinvest.Worker
+	kycSyncWorker                *kyc_sync.Worker
+	balanceReconciliationWorker  *balance_reconciliation.Worker
 
 	// Tracing
 	tracingShutdown func(context.Context) error
@@ -243,6 +247,19 @@ func (app *Application) initializeKYCSyncWorker() error {
 	)
 	go app.kycSyncWorker.Start(context.Background())
 	app.log.Info("KYC sync worker started")
+
+	// Initialize balance reconciliation worker
+	app.balanceReconciliationWorker = balance_reconciliation.NewWorker(
+		app.container.CircleClient,
+		app.container.LedgerService,
+		app.container.WalletRepo,
+		app.container.LedgerRepo,
+		6*time.Hour,
+		decimal.NewFromFloat(0.01),
+		app.log.Zap(),
+	)
+	go app.balanceReconciliationWorker.Start(context.Background())
+	app.log.Info("Balance reconciliation worker started")
 
 	return nil
 }
