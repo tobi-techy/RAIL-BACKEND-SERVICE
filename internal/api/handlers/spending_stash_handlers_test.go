@@ -84,7 +84,7 @@ func TestBuildResponse_MapsLimitsAndRefunds(t *testing.T) {
 
 	userLimits := &entities.UserLimitsResponse{
 		Withdrawal: entities.LimitDetails{
-			Minimum: "10.00",
+			Minimum: "1.00",
 			Daily: entities.PeriodLimit{
 				Limit:     "1000.00",
 				Used:      "250.00",

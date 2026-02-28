@@ -27,6 +27,7 @@ type WalletRepository interface {
 // CircleClient interface for fund transfers
 type CircleClient interface {
 	TransferFunds(ctx context.Context, req entities.CircleTransferRequest) (map[string]interface{}, error)
+	GetWalletBalances(ctx context.Context, walletID string, tokenAddress ...string) (*entities.CircleWalletBalancesResponse, error)
 }
 
 // UserRepository interface for user deletion
@@ -199,11 +200,30 @@ func (s *DeletionService) sweepFundsToTreasury(ctx context.Context, userID uuid.
 		return "", fmt.Errorf("no Circle wallet found for user")
 	}
 
+	// Get actual wallet balance from Circle (not ledger balance)
+	actualBalance, err := s.getCircleWalletBalance(ctx, sourceWallet.CircleWalletID)
+	if err != nil {
+		s.logger.Warn("Failed to get Circle wallet balance, using ledger balance", "error", err)
+		actualBalance = amount
+	}
+
+	// Use the smaller of ledger balance or actual balance
+	sweepAmount := amount
+	if actualBalance.LessThan(amount) {
+		sweepAmount = actualBalance
+	}
+
+	// Skip if nothing to sweep
+	if sweepAmount.LessThanOrEqual(MinSweepThreshold) {
+		s.logger.Info("No funds to sweep", "user_id", userID.String(), "balance", sweepAmount.String())
+		return "", nil
+	}
+
 	// Execute transfer to treasury
 	req := entities.CircleTransferRequest{
 		WalletID:           sourceWallet.CircleWalletID,
 		TokenID:            "USDC",
-		Amounts:            []string{amount.StringFixed(6)},
+		Amounts:            []string{sweepAmount.StringFixed(6)},
 		DestinationAddress: s.treasuryWalletAddress,
 		IDempotencyKey:     uuid.New().String(),
 	}
@@ -222,4 +242,21 @@ func (s *DeletionService) sweepFundsToTreasury(ctx context.Context, userID uuid.
 	}
 
 	return txHash, nil
+}
+
+// getCircleWalletBalance fetches actual USDC balance from Circle wallet
+func (s *DeletionService) getCircleWalletBalance(ctx context.Context, walletID string) (decimal.Decimal, error) {
+	balances, err := s.circleClient.GetWalletBalances(ctx, walletID)
+	if err != nil {
+		return decimal.Zero, err
+	}
+
+	// Find USDC balance
+	for _, tb := range balances.TokenBalances {
+		if tb.Token.Symbol == "USDC" {
+			return decimal.NewFromString(tb.Amount)
+		}
+	}
+
+	return decimal.Zero, nil
 }
