@@ -776,6 +776,12 @@ func (c *Client) InitiateCCTPBurn(ctx context.Context, req *entities.CCTPBurnReq
 		return nil, fmt.Errorf("failed to generate entity secret: %w", err)
 	}
 
+	// Resolve the actual USDC token ID from the wallet's balances
+	tokenID, err := c.resolveTransferTokenID(ctx, req.WalletID, "USDC")
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve USDC token for wallet %s: %w", req.WalletID, err)
+	}
+
 	// Build CCTP transfer request using Circle's developer wallet transfer endpoint
 	transferReq := map[string]interface{}{
 		"idempotencyKey":         req.IdempotencyKey,
@@ -783,7 +789,7 @@ func (c *Client) InitiateCCTPBurn(ctx context.Context, req *entities.CCTPBurnReq
 		"walletId":               req.WalletID,
 		"amounts":                []string{req.Amount.String()},
 		"destinationAddress":     req.MintRecipient,
-		"tokenId":                "usdc-polygon",
+		"tokenId":                tokenID,
 	}
 
 	c.logger.Info("Initiating CCTP burn",

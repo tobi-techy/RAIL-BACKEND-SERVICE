@@ -52,10 +52,10 @@ func NewWithdrawalHandlers(withdrawalService WithdrawalServiceInterface, walletP
 }
 
 // CryptoWithdrawalRequest represents the HTTP request for crypto withdrawal
-// Only amount and destination_address required - chain defaults to Solana, wallet fetched from backend
 type CryptoWithdrawalRequest struct {
 	Amount             string `json:"amount" binding:"required"`
 	DestinationAddress string `json:"destination_address" binding:"required"`
+	DestinationChain   string `json:"destination_chain"` // optional, defaults to SOL-DEVNET
 }
 
 // FiatWithdrawalRequest represents the HTTP request for fiat withdrawal
@@ -105,11 +105,18 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 		return
 	}
 
-	// Get user's Solana wallet from backend (only Solana supported for now)
-	wallet, err := h.walletProvider.GetUserWalletByChain(c.Request.Context(), userID, "SOL")
+	// Determine destination chain (default to SOL-DEVNET for testnet)
+	destChain := req.DestinationChain
+	if destChain == "" {
+		destChain = string(entities.WalletChainSOLDevnet)
+	}
+
+	// The source is always the user's spending wallet (SOL-DEVNET for testnet).
+	// Cross-chain routing (CCTP) is handled by the withdrawal service.
+	wallet, err := h.walletProvider.GetUserWalletByChain(c.Request.Context(), userID, string(entities.WalletChainSOLDevnet))
 	if err != nil {
 		h.logger.Error("Failed to get user wallet", "error", err, "user_id", userID)
-		common.SendBadRequest(c, "NO_WALLET", "No Solana wallet found for user")
+		common.SendBadRequest(c, "NO_WALLET", "No wallet found for user")
 		return
 	}
 
@@ -117,8 +124,9 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 		UserID:             userID,
 		Amount:             amount,
 		DestinationAddress: req.DestinationAddress,
-		DestinationChain:   string(wallet.Chain),
-		SourceAccount:      entities.WithdrawalSourceSpendingBalance, // Default to spending
+		DestinationChain:   destChain,
+		SourceChain:        string(wallet.Chain),
+		SourceAccount:      entities.WithdrawalSourceSpendingBalance,
 		CircleWalletID:     wallet.CircleWalletID,
 		IdempotencyKey:     idempotencyKey,
 	}

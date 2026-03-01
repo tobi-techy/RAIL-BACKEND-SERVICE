@@ -474,7 +474,12 @@ func (h *WalletHandlers) extractUserIDFromContext(c *gin.Context) (uuid.UUID, er
 // Helper functions
 
 func getSupportedChains() []string {
-	return []string{"ETH", "ETH-SEPOLIA", "SOL", "SOL-DEVNET", "APTOS", "APTOS-TESTNET"}
+	chains := append(entities.GetMainnetChains(), entities.GetTestnetChains()...)
+	result := make([]string, len(chains))
+	for i, c := range chains {
+		result[i] = string(c)
+	}
+	return result
 }
 
 func chainStrings(chains []entities.WalletChain) []string {

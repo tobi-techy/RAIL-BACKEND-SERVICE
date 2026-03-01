@@ -41,6 +41,7 @@ type BridgeTransaction struct {
 type BridgeRequest struct {
 	UserID      uuid.UUID
 	SourceChain string
+	DestChain   string
 	Amount      decimal.Decimal
 	DestAddress string // Grid account address
 }

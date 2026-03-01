@@ -605,10 +605,14 @@ func (h *WalletFundingHandlers) InitiateWalletCreation(c *gin.Context) {
 		return
 	}
 
-	// Default to SOL-DEVNET if not specified
+	// Default to all testnet chains if not specified
 	chains := req.Chains
 	if len(chains) == 0 {
-		chains = []string{string(entities.WalletChainSOLDevnet)}
+		chains = []string{
+			string(entities.WalletChainSOLDevnet),
+			string(entities.WalletChainMATICAmoy),
+			string(entities.WalletChainAVAXFuji),
+		}
 	}
 
 	// Validate chains - ensure only testnet chains
@@ -621,7 +625,7 @@ func (h *WalletFundingHandlers) InitiateWalletCreation(c *gin.Context) {
 				Message: "Invalid blockchain network",
 				Details: map[string]interface{}{
 					"chain":            chainStr,
-					"supported_chains": []string{"SOL-DEVNET"},
+					"supported_chains": []string{"SOL-DEVNET", "MATIC-AMOY", "AVAX-FUJI"},
 				},
 			})
 			return
@@ -632,10 +636,10 @@ func (h *WalletFundingHandlers) InitiateWalletCreation(c *gin.Context) {
 			h.logger.Warn("Mainnet chain not supported for wallet creation", zap.String("chain", chainStr))
 			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 				Code:    "MAINNET_NOT_SUPPORTED",
-				Message: "Only SOL-DEVNET is supported at this time",
+				Message: "Only testnet chains are supported at this time",
 				Details: map[string]interface{}{
 					"requested_chain":  chainStr,
-					"supported_chains": []string{"SOL-DEVNET"},
+					"supported_chains": []string{"SOL-DEVNET", "MATIC-AMOY", "AVAX-FUJI"},
 				},
 			})
 			return

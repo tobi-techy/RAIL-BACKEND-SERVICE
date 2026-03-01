@@ -257,6 +257,10 @@ func (a *WithdrawalCircleAdapter) FindRecentOutboundTransfer(ctx context.Context
 	return a.client.FindRecentOutboundTransfer(ctx, walletID, destinationAddress, amount, since)
 }
 
+func (a *WithdrawalCircleAdapter) InitiateCCTPBurn(ctx context.Context, req *entities.CCTPBurnRequest) (*entities.CCTPBurnResponse, error) {
+	return a.client.InitiateCCTPBurn(ctx, req)
+}
+
 // WithdrawalBridgeAdapter adapts bridge.Adapter to withdrawal.BridgeAdapter interface
 type WithdrawalBridgeAdapter struct {
 	adapter *bridge.Adapter
@@ -828,7 +832,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		container.Config,
 	)
 
-	container.OnboardingJobService = services.NewOnboardingJobService(container.OnboardingJobRepo, container.ZapLog)
+	container.OnboardingJobService = services.NewOnboardingJobService(container.OnboardingJobRepo, container.ZapLog, convertWalletChains(cfg.Circle.SupportedChains, container.ZapLog))
 
 	return container, nil
 }
@@ -1664,16 +1668,9 @@ func ptrOf[T any](v T) *T {
 }
 
 func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChain {
-	solanaOnly := map[entities.WalletChain]struct{}{
-		entities.WalletChainSolana:    {},
-		entities.WalletChainSOLDevnet: {},
-	}
-
 	if len(raw) == 0 {
 		logger.Warn("circle.supported_chains not configured; defaulting to SOL-DEVNET")
-		return []entities.WalletChain{
-			entities.WalletChainSOLDevnet,
-		}
+		return []entities.WalletChain{entities.WalletChainSOLDevnet}
 	}
 
 	normalized := make([]entities.WalletChain, 0, len(raw))
@@ -1688,10 +1685,6 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 			logger.Warn("Ignoring unsupported wallet chain from configuration", zap.String("chain", string(chain)))
 			continue
 		}
-		if _, allowed := solanaOnly[chain]; !allowed {
-			logger.Warn("Ignoring chain due to Solana-only support", zap.String("chain", string(chain)))
-			continue
-		}
 		if _, ok := seen[chain]; ok {
 			continue
 		}
@@ -1700,10 +1693,8 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 	}
 
 	if len(normalized) == 0 {
-		logger.Warn("circle.supported_chains contained no valid Solana entries; defaulting to SOL-DEVNET")
-		return []entities.WalletChain{
-			entities.WalletChainSOLDevnet,
-		}
+		logger.Warn("circle.supported_chains contained no valid entries; defaulting to SOL-DEVNET")
+		return []entities.WalletChain{entities.WalletChainSOLDevnet}
 	}
 
 	return normalized
