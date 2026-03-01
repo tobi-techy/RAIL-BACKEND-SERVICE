@@ -361,6 +361,9 @@ func (s *Service) GetBalance(ctx context.Context, userID uuid.UUID) (*entities.B
 
 // ProcessChainDeposit processes incoming chain deposit webhook
 func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.ChainDepositWebhook) error {
+	if s.allocationService == nil {
+		s.logger.Error("allocationService is not configured — deposits will land in ledger but will NOT be split; check DI wiring")
+	}
 	s.logger.Info("Processing chain deposit", "chain", webhook.Chain, "tx_hash", webhook.TxHash, "amount", webhook.Amount)
 
 	// Parse amount directly to decimal (never use float for money)

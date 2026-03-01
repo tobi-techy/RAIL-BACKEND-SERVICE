@@ -29,7 +29,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		CheckInterval: 15 * time.Second,
 		BatchSize:     100,
-		MaxDepositAge: 30 * time.Minute,
+		MaxDepositAge: 24 * time.Hour,
 	}
 }
 
@@ -193,7 +193,7 @@ func (w *Worker) listUnallocatedDeposits(ctx context.Context, limit int) ([]depo
 				WHERE dep_lt.reference_id = d.id
 					AND dep_lt.reference_type = 'deposit'
 			)
-			AND d.created_at >= $2
+			AND d.created_at <= $2
 			AND ae.id IS NULL
 		ORDER BY d.created_at ASC
 		LIMIT $1

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -52,6 +53,8 @@ type CircleWebhookHandler struct {
 	circleAPIKey      string // For fetching public keys
 	circleBaseURL     string
 	devMode           bool // When true, skips signature verification (development only)
+	keyCache          map[string]string
+	keyCacheMu        sync.RWMutex
 }
 
 // NewCircleWebhookHandler creates a new Circle webhook handler
@@ -73,6 +76,7 @@ func NewCircleWebhookHandler(
 		circleAPIKey:      circleAPIKey,
 		circleBaseURL:     circleBaseURL,
 		devMode:           circleAPIKey == "",
+		keyCache:          make(map[string]string),
 	}
 }
 
@@ -523,8 +527,8 @@ func (h *CircleWebhookHandler) verifySignature(ctx context.Context, keyID, signa
 		return false
 	}
 
-	// Fetch the public key from Circle API
-	publicKeyBase64, err := h.fetchPublicKey(ctx, keyID)
+	// Fetch the public key from Circle API (cached by keyID)
+	publicKeyBase64, err := h.fetchPublicKeyCached(ctx, keyID)
 	if err != nil {
 		h.logger.Error("Failed to fetch Circle public key", "error", err, "key_id", keyID)
 		return false
@@ -567,6 +571,26 @@ func (h *CircleWebhookHandler) verifySignature(ctx context.Context, keyID, signa
 	}
 
 	return true
+}
+
+// fetchPublicKeyCached returns the Circle public key for keyID, using an in-memory cache.
+func (h *CircleWebhookHandler) fetchPublicKeyCached(ctx context.Context, keyID string) (string, error) {
+	h.keyCacheMu.RLock()
+	if key, ok := h.keyCache[keyID]; ok {
+		h.keyCacheMu.RUnlock()
+		return key, nil
+	}
+	h.keyCacheMu.RUnlock()
+
+	key, err := h.fetchPublicKey(ctx, keyID)
+	if err != nil {
+		return "", err
+	}
+
+	h.keyCacheMu.Lock()
+	h.keyCache[keyID] = key
+	h.keyCacheMu.Unlock()
+	return key, nil
 }
 
 // fetchPublicKey fetches the public key from Circle API
