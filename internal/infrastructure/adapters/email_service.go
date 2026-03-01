@@ -19,7 +19,7 @@ import (
 
 const (
 	unosendAPIBaseURL = "https://www.unosend.co/api/v1"
-	emailSendTimeout  = 8 * time.Second
+	emailSendTimeout  = 12 * time.Second
 )
 
 // LoginAlertDetails represents metadata associated with a login notification email

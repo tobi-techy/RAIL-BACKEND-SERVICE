@@ -21,7 +21,7 @@ const (
 	maxVerificationAttempts = 3
 	rateLimitWindow         = 1 * time.Minute
 	maxSendAttempts         = 5
-	sendOperationTimeout    = 5 * time.Second
+	sendOperationTimeout    = 15 * time.Second
 	redisOperationTimeout   = 2 * time.Second
 	sendWorkerCount         = 2
 	sendQueueSize           = 512
