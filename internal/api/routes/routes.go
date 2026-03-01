@@ -47,10 +47,20 @@ func (a *WithdrawalWalletProviderAdapter) GetUserWalletByChain(ctx context.Conte
 		return wallet, nil
 	}
 
-	// Backward-compatible fallback for environments that still store Solana wallets as SOL-DEVNET.
-	// Only fall back on not-found; propagate transient/permission errors unchanged.
-	if normalized == entities.WalletChainSolana && strings.Contains(err.Error(), "not found") {
-		return a.getWalletByUserAndChain(ctx, userID, entities.WalletChainSOLDevnet)
+	// Backward-compatible fallbacks: mainnet chain → testnet equivalent on not-found.
+	if strings.Contains(err.Error(), "not found") {
+		var fallback entities.WalletChain
+		switch normalized {
+		case entities.WalletChainSolana:
+			fallback = entities.WalletChainSOLDevnet
+		case entities.WalletChainPolygon:
+			fallback = entities.WalletChainMATICAmoy
+		case entities.WalletChainAvalanche:
+			fallback = entities.WalletChainAVAXFuji
+		}
+		if fallback != "" {
+			return a.getWalletByUserAndChain(ctx, userID, fallback)
+		}
 	}
 
 	return nil, err

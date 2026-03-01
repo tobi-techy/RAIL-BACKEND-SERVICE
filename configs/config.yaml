@@ -144,7 +144,7 @@ circle:
   entity_secret_ciphertext: ""
   default_wallet_set_id: ""
   default_wallet_set_name: "STACK-WalletSet"
-  supported_chains: ["SOL-DEVNET"]
+  supported_chains: ["SOL-DEVNET", "MATIC-AMOY", "AVAX-FUJI"]
   treasury_wallet_address: ""  # Company wallet for account closure fund sweeps
 
 kyc:
@@ -204,6 +204,8 @@ bridge:
   webhook_secret: "${BRIDGE_WEBHOOK_SECRET}"
   supported_chains:
     - "solana"
+    - "polygon"
+    - "avalanche_c_chain"
 
   transaction_limits:
   deposit:

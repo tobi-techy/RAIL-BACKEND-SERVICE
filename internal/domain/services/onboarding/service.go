@@ -274,7 +274,7 @@ func (s *Service) GetOnboardingStatus(ctx context.Context, userID uuid.UUID) (*e
 				CreatedWallets:  walletStatusResp.ReadyWallets,
 				PendingWallets:  walletStatusResp.PendingWallets,
 				FailedWallets:   walletStatusResp.FailedWallets,
-				SupportedChains: []string{"ETH", "SOL", "APTOS"},
+				SupportedChains: []string{"SOL-DEVNET", "MATIC-AMOY", "AVAX-FUJI"},
 				WalletsByChain:  make(map[string]string),
 			}
 

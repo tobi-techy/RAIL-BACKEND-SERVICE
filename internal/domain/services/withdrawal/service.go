@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/cctp"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/shopspring/decimal"
 )
@@ -99,6 +100,7 @@ type CircleClient interface {
 	GetWallet(ctx context.Context, walletID string) (map[string]interface{}, error)
 	GetCCTPTransaction(ctx context.Context, transactionID string) (*entities.CCTPTransactionStatus, error)
 	FindRecentOutboundTransfer(ctx context.Context, walletID, destinationAddress string, amount decimal.Decimal, since time.Time) (*entities.CCTPTransactionStatus, error)
+	InitiateCCTPBurn(ctx context.Context, req *entities.CCTPBurnRequest) (*entities.CCTPBurnResponse, error)
 }
 
 // BridgeAdapter interface for Bridge offramp operations
@@ -264,7 +266,7 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	}
 
 	// Step 7: Execute Circle transfer
-	transferResult, err := s.executeCryptoTransfer(ctx, withdrawal, req.DestinationAddress, req.DestinationChain)
+	transferResult, err := s.executeCryptoTransfer(ctx, withdrawal, req.DestinationAddress, req.DestinationChain, req.SourceChain)
 	if err != nil {
 		s.logger.Error("Failed to execute crypto transfer", "error", err)
 		// Mark withdrawal as failed
@@ -879,8 +881,29 @@ func (s *WithdrawalService) calculateFiatWithdrawalFee(amount decimal.Decimal, c
 	return fee
 }
 
-// executeCryptoTransfer executes a crypto transfer via Circle
-func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, destinationChain string) (*CryptoTransferResult, error) {
+// resolveWithdrawalRoute determines whether to use CCTP or direct Circle transfer.
+// EVM <-> Solana requires CCTP; everything else uses direct transfer.
+func resolveWithdrawalRoute(sourceChain, destChain string) string {
+	src := strings.ToUpper(sourceChain)
+	dst := strings.ToUpper(destChain)
+	isSolana := func(c string) bool {
+		return c == "SOL" || c == "SOL-DEVNET" || c == "SOLANA"
+	}
+	isEVM := func(c string) bool {
+		return c == "ETH" || c == "ETH-SEPOLIA" ||
+			c == "MATIC" || c == "MATIC-AMOY" ||
+			c == "AVAX" || c == "AVAX-FUJI" ||
+			c == "BASE" || c == "BASE-SEPOLIA" ||
+			c == "ARB" || c == "OP"
+	}
+	if (isSolana(src) && isEVM(dst)) || (isEVM(src) && isSolana(dst)) {
+		return "cctp"
+	}
+	return "direct"
+}
+
+// executeCryptoTransfer executes a crypto transfer via Circle, routing via CCTP when crossing EVM<->Solana.
+func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, destinationChain, sourceChain string) (*CryptoTransferResult, error) {
 	if s.circleClient == nil {
 		return nil, fmt.Errorf("circle client not configured")
 	}
@@ -893,17 +916,42 @@ func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawa
 	// Format amount for Circle API (USDC uses 6 decimals)
 	amountStr := withdrawal.Amount.StringFixed(6)
 
+	// Route via CCTP for EVM <-> Solana cross-chain transfers
+	if resolveWithdrawalRoute(sourceChain, destinationChain) == "cctp" {
+		destDomain, ok := cctp.DomainForChain(destinationChain)
+		if !ok {
+			return nil, fmt.Errorf("unsupported CCTP destination chain: %s", destinationChain)
+		}
+		burnResp, err := s.circleClient.InitiateCCTPBurn(ctx, &entities.CCTPBurnRequest{
+			WalletID:       *walletID,
+			Amount:         withdrawal.Amount,
+			DestDomain:     destDomain,
+			MintRecipient:  destinationAddress,
+			IdempotencyKey: *withdrawal.IdempotencyKey,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("cctp burn failed: %w", err)
+		}
+		s.logger.Info("CCTP burn initiated",
+			"withdrawal_id", withdrawal.ID.String(),
+			"dest_chain", destinationChain,
+			"transfer_id", burnResp.TransactionID)
+		return &CryptoTransferResult{
+			TransferID: burnResp.TransactionID,
+			TxHash:     burnResp.TxHash,
+			State:      burnResp.Status,
+		}, nil
+	}
+
 	req := entities.CircleTransferRequest{
 		WalletID:           *walletID,
-		TokenID:            "USDC", // USDC token
+		TokenID:            "USDC",
 		Amounts:            []string{amountStr},
 		DestinationAddress: destinationAddress,
 		IDempotencyKey:     *withdrawal.IdempotencyKey,
 	}
 
-	// Add destination chain if specified
 	if destinationChain != "" {
-		// Circle handles chain routing automatically for most cases
 		s.logger.Debug("Destination chain specified", "chain", destinationChain)
 	}
 

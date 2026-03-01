@@ -618,13 +618,13 @@ func (h *CircleWebhookHandler) mapCircleChainToChain(circleChain string) entitie
 	switch strings.ToUpper(strings.TrimSpace(circleChain)) {
 	case "SOL", "SOLANA", "SOL-DEVNET":
 		return entities.ChainSolana
-	case "MATIC", "POLYGON":
+	case "MATIC", "POLYGON", "MATIC-AMOY":
 		return entities.ChainMATIC
 	case "ETH", "ETHEREUM", "ETH-SEPOLIA":
 		return entities.ChainETH
-	case "AVAX", "AVALANCHE":
+	case "AVAX", "AVALANCHE", "AVAX-FUJI":
 		return entities.ChainAVAX
-	case "BASE":
+	case "BASE", "BASE-SEPOLIA":
 		return entities.ChainBASE
 	case "ARB", "ARBITRUM":
 		return entities.ChainARB
@@ -642,11 +642,11 @@ func (h *CircleWebhookHandler) mapWalletChainToChain(chain entities.WalletChain)
 	switch chain {
 	case entities.WalletChainSOLDevnet, entities.WalletChainSolana:
 		return entities.ChainSolana
-	case entities.WalletChainPolygon:
+	case entities.WalletChainPolygon, entities.WalletChainMATICAmoy:
 		return entities.ChainMATIC
 	case entities.WalletChainEthereum:
 		return entities.ChainETH
-	case entities.WalletChainAvalanche:
+	case entities.WalletChainAvalanche, entities.WalletChainAVAXFuji:
 		return entities.ChainAVAX
 	case entities.WalletChainBase:
 		return entities.ChainBASE
