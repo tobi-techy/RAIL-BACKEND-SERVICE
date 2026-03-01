@@ -41,11 +41,7 @@ func DefaultWebhookSecurityConfig() WebhookSecurityConfig {
 // defaultWebhookIPWhitelists returns known webhook source IPs
 func defaultWebhookIPWhitelists() map[string][]string {
 	return map[string][]string{
-		// Circle webhook IPs (example - verify with Circle docs)
-		"circle": {
-			"52.21.0.0/16",  // AWS us-east-1
-			"54.236.0.0/16", // AWS us-east-1
-		},
+		// Circle does not publish a fixed IP range — rely on signature verification instead.
 		// Bridge webhook IPs (example - verify with Bridge docs)
 		"bridge": {
 			"34.102.136.180/32", // Bridge production
