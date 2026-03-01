@@ -258,7 +258,12 @@ func (h *UnifiedFundingWebhookHandler) processBridgeVirtualAccountEvent(c *gin.C
 
 // processBridgeTransferEvent handles Bridge transfer events
 func (h *UnifiedFundingWebhookHandler) processBridgeTransferEvent(c *gin.Context, payload *BridgeWebhookPayload) {
-	c.JSON(http.StatusOK, gin.H{"status": "processed"})
+	if h.bridgeHandler == nil {
+		h.logger.Warn("Bridge handler not configured for transfer event")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "bridge_handler_not_configured"})
+		return
+	}
+	h.bridgeHandler.handleTransferEvent(c, *payload)
 }
 
 // processBridgeCustomerEvent handles Bridge customer events
