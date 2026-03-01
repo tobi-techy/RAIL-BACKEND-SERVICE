@@ -752,10 +752,46 @@ type CircleTransactionNotification struct {
 // ADDITIONAL WEBHOOK HANDLERS
 // ============================================================================
 
-// HandleWalletNotification handles Circle wallet notifications
+// HandleWalletNotification handles Circle wallet notifications (dev-controlled wallets)
 // POST /webhooks/circle/wallets
 func (h *CircleWebhookHandler) HandleWalletNotification(c *gin.Context) {
-	// Handle wallet creation, updates, etc.
+	ctx := c.Request.Context()
+
+	var rawBody []byte
+	if c.Request.Body != nil {
+		rawBody, _ = c.GetRawData()
+	}
+
+	keyID := c.GetHeader("X-Circle-Key-Id")
+	signature := c.GetHeader("X-Circle-Signature")
+
+	if keyID != "" && signature != "" {
+		if !h.verifySignature(ctx, keyID, signature, rawBody) {
+			h.logger.Error("Invalid Circle wallet webhook signature")
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
+			return
+		}
+	}
+
+	var webhook CircleTransferWebhook
+	if err := json.Unmarshal(rawBody, &webhook); err != nil {
+		h.logger.Error("Failed to parse Circle wallet webhook", "error", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+		return
+	}
+
+	h.logger.Info("Received Circle wallet webhook",
+		"notification_type", webhook.NotificationType)
+
+	notificationType := strings.ToLower(strings.TrimSpace(webhook.NotificationType))
+	if strings.HasPrefix(notificationType, "transactions.") || strings.HasPrefix(notificationType, "transfers.") {
+		if err := h.processIncomingTransfer(ctx, &webhook); err != nil {
+			h.logger.Error("Failed to process wallet notification", "error", err)
+			c.JSON(http.StatusOK, gin.H{"status": "error", "message": err.Error()})
+			return
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
 }
 
