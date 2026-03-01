@@ -889,13 +889,23 @@ func (h *WalletFundingHandlers) GetWalletByChain(c *gin.Context) {
 	// Get wallet for the specific chain
 	wallet, err := h.walletService.GetWalletByUserAndChain(ctx, userID, chain)
 	if err != nil {
-		h.logger.Warn("Wallet not found for chain",
+		h.logger.Warn("Wallet not found for chain — triggering provisioning",
 			zap.Error(err),
 			zap.String("user_id", userID.String()),
 			zap.String("chain", chainStr))
+
+		// Auto-provision the missing wallet (handles existing users who pre-date multi-chain support)
+		if provErr := h.walletService.CreateWalletsForUser(ctx, userID, []entities.WalletChain{chain}); provErr != nil {
+			h.logger.Error("Failed to trigger wallet provisioning for missing chain",
+				zap.Error(provErr),
+				zap.String("user_id", userID.String()),
+				zap.String("chain", chainStr))
+		}
+
 		c.JSON(http.StatusNotFound, gin.H{
-			"error":   "WALLET_NOT_FOUND",
-			"message": fmt.Sprintf("No wallet found for chain: %s", chainStr),
+			"error":        "WALLET_NOT_FOUND",
+			"message":      fmt.Sprintf("Wallet for %s is being created. Please retry in a moment.", chainStr),
+			"provisioning": true,
 		})
 		return
 	}
