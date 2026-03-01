@@ -652,7 +652,11 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 
 	status := user.KYCStatus
 	if status == "" {
-		status = string(entities.KYCStatusPending)
+		if user.KYCSubmittedAt != nil {
+			status = string(entities.KYCStatusPending)
+		} else {
+			status = "not_started"
+		}
 	}
 
 	requiredFor := append([]string(nil), kycRequiredFeatures...)
