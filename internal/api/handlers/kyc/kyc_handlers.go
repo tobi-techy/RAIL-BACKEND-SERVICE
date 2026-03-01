@@ -242,3 +242,27 @@ func (h *Handler) GetKYCStatus(c *gin.Context) {
 
 	c.JSON(http.StatusOK, status)
 }
+
+// RefreshSumsubToken handles GET /api/v1/kyc/sumsub/token.
+// Issues a fresh WebSDK access token for the user's existing applicant.
+func (h *Handler) RefreshSumsubToken(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	userID, err := common.GetUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	resp, err := h.kycService.RefreshSumsubToken(ctx, userID)
+	if err != nil {
+		h.logger.Error("Failed to refresh Sumsub token",
+			zap.Error(err),
+			zap.String("user_id", userID.String()),
+		)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to refresh verification token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}

@@ -239,8 +239,9 @@ func (app *Application) initializeKYCSyncWorker() error {
 		app.log.Zap(),
 	)
 
-	app.kycSyncWorker = kyc_sync.NewWorker(
+	app.kycSyncWorker = kyc_sync.NewWorkerWithRetry(
 		app.container.KYCSyncJobRepo,
+		kycSvc,
 		kycSvc,
 		app.log.Zap(),
 		kyc_sync.DefaultConfig(),

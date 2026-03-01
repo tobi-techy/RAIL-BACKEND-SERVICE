@@ -209,13 +209,17 @@ func (s *Service) getGoogleAuthURL(redirectURI, state string) string {
 }
 
 func (s *Service) authenticateGoogle(ctx context.Context, req *entities.SocialLoginRequest) (*SocialUserInfo, error) {
-	// Exchange code for tokens
+	// Mobile flow: verify id_token directly (no server-side code exchange needed)
+	if req.IDToken != "" {
+		return s.authenticateGoogleIDToken(ctx, req.IDToken)
+	}
+
+	// Web flow: exchange authorization code for tokens
 	tokenResp, err := s.exchangeGoogleCode(ctx, req.Code, req.RedirectURI)
 	if err != nil {
 		return nil, err
 	}
 
-	// Get user info
 	userInfo, err := s.getGoogleUserInfo(ctx, tokenResp.AccessToken)
 	if err != nil {
 		return nil, err
@@ -236,6 +240,107 @@ func (s *Service) authenticateGoogle(ctx context.Context, req *entities.SocialLo
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
 		ExpiresAt:    expiresAt,
+	}, nil
+}
+
+// authenticateGoogleIDToken verifies a Google ID token issued by the mobile SDK.
+// It fetches Google's public JWKS, verifies the signature, and extracts user info.
+func (s *Service) authenticateGoogleIDToken(ctx context.Context, idToken string) (*SocialUserInfo, error) {
+	const googleJWKSURL = "https://www.googleapis.com/oauth2/v3/certs"
+	const googleIssuer1 = "accounts.google.com"
+	const googleIssuer2 = "https://accounts.google.com"
+
+	// Fetch Google's public keys
+	req, err := http.NewRequestWithContext(ctx, "GET", googleJWKSURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build Google JWKS request: %w", err)
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch Google public keys: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var jwks struct {
+		Keys []struct {
+			Kid string `json:"kid"`
+			N   string `json:"n"`
+			E   string `json:"e"`
+			Kty string `json:"kty"`
+		} `json:"keys"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
+		return nil, fmt.Errorf("failed to decode Google JWKS: %w", err)
+	}
+
+	// Build key lookup map
+	keys := make(map[string]*rsa.PublicKey, len(jwks.Keys))
+	for _, k := range jwks.Keys {
+		if k.Kty != "RSA" {
+			continue
+		}
+		nBytes, err := base64.RawURLEncoding.DecodeString(k.N)
+		if err != nil {
+			continue
+		}
+		eBytes, err := base64.RawURLEncoding.DecodeString(k.E)
+		if err != nil {
+			continue
+		}
+		var e int
+		for _, b := range eBytes {
+			e = e<<8 + int(b)
+		}
+		keys[k.Kid] = &rsa.PublicKey{N: new(big.Int).SetBytes(nBytes), E: e}
+	}
+
+	token, err := jwt.Parse(idToken, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		kid, _ := token.Header["kid"].(string)
+		key, ok := keys[kid]
+		if !ok {
+			return nil, fmt.Errorf("unknown key id: %s", kid)
+		}
+		return key, nil
+	})
+	if err != nil || !token.Valid {
+		return nil, fmt.Errorf("invalid Google ID token: %w", err)
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return nil, fmt.Errorf("invalid Google ID token claims")
+	}
+
+	iss, _ := claims["iss"].(string)
+	if iss != googleIssuer1 && iss != googleIssuer2 {
+		return nil, fmt.Errorf("invalid Google token issuer: %s", iss)
+	}
+
+	if s.config.Google.ClientID != "" {
+		aud, _ := claims["aud"].(string)
+		if aud != s.config.Google.ClientID {
+			return nil, fmt.Errorf("Google token audience mismatch")
+		}
+	}
+
+	sub, _ := claims["sub"].(string)
+	if sub == "" {
+		return nil, fmt.Errorf("missing sub in Google ID token")
+	}
+
+	email, _ := claims["email"].(string)
+	name, _ := claims["name"].(string)
+	picture, _ := claims["picture"].(string)
+
+	return &SocialUserInfo{
+		Provider:   entities.SocialProviderGoogle,
+		ProviderID: sub,
+		Email:      email,
+		Name:       name,
+		AvatarURL:  picture,
 	}, nil
 }
 

@@ -90,6 +90,32 @@ type ApplicantIDDoc struct {
 	Number    string `json:"number,omitempty"`
 }
 
+// ImageDocDef describes the document type and side for an image.
+type ImageDocDef struct {
+	Country      string `json:"country"`
+	IDDocType    string `json:"idDocType"`
+	IDDocSubType string `json:"idDocSubType"`
+}
+
+// ImageReview holds the review outcome for an image.
+type ImageReview struct {
+	ReviewAnswer string `json:"reviewAnswer"`
+}
+
+// ImageMetadata represents a single document image entry from Sumsub.
+type ImageMetadata struct {
+	ID           string      `json:"id"`
+	Deactivated  bool        `json:"deactivated"`
+	IdDocDef     ImageDocDef `json:"idDocDef"`
+	ReviewResult ImageReview `json:"reviewResult"`
+}
+
+// ImageMetadataResponse is the response from GET /applicants/{id}/metadata/resources.
+type ImageMetadataResponse struct {
+	Items      []ImageMetadata `json:"items"`
+	TotalItems int             `json:"totalItems"`
+}
+
 func NewClient(cfg Config, logger *zap.Logger) *Client {
 	timeout := cfg.Timeout
 	if timeout <= 0 {
@@ -179,6 +205,82 @@ func (c *Client) GetApplicantData(ctx context.Context, applicantID string) (*App
 		return nil, err
 	}
 	return &resp, nil
+}
+
+// GetApplicantImageMetadata returns metadata for all uploaded images for an applicant.
+func (c *Client) GetApplicantImageMetadata(ctx context.Context, applicantID string) (*ImageMetadataResponse, error) {
+	if c == nil {
+		return nil, fmt.Errorf("sumsub client is not configured")
+	}
+	applicantID = strings.TrimSpace(applicantID)
+	if applicantID == "" {
+		return nil, fmt.Errorf("sumsub applicant ID is required")
+	}
+	path := fmt.Sprintf("/resources/applicants/%s/metadata/resources", url.PathEscape(applicantID))
+	var resp ImageMetadataResponse
+	if err := c.doSignedJSONRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// GetInspectionImage downloads raw image bytes for a specific inspection resource.
+// Returns the image bytes and the Content-Type header value.
+func (c *Client) GetInspectionImage(ctx context.Context, inspectionID, imageID string) ([]byte, string, error) {
+	if c == nil {
+		return nil, "", fmt.Errorf("sumsub client is not configured")
+	}
+	if strings.TrimSpace(inspectionID) == "" {
+		return nil, "", fmt.Errorf("sumsub inspection ID is required")
+	}
+	if strings.TrimSpace(imageID) == "" {
+		return nil, "", fmt.Errorf("sumsub image ID is required")
+	}
+
+	path := fmt.Sprintf("/resources/inspections/%s/resources/%s",
+		url.PathEscape(inspectionID),
+		url.PathEscape(imageID),
+	)
+
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+	signaturePayload := timestamp + http.MethodGet + path
+	mac := hmac.New(sha256.New, []byte(c.config.SecretKey))
+	_, _ = mac.Write([]byte(signaturePayload))
+	signature := hex.EncodeToString(mac.Sum(nil))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.config.BaseURL+path, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create sumsub image request: %w", err)
+	}
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("X-App-Token", c.config.AppToken)
+	req.Header.Set("X-App-Access-Ts", timestamp)
+	req.Header.Set("X-App-Access-Sig", signature)
+	if c.config.UserAgent != "" {
+		req.Header.Set("User-Agent", c.config.UserAgent)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("sumsub image request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, "", fmt.Errorf("sumsub image API error (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to read sumsub image response: %w", err)
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "image/jpeg"
+	}
+	return data, contentType, nil
 }
 
 func (c *Client) VerifyWebhookSignature(body []byte, digestHeader, digestAlgHeader string) error {
