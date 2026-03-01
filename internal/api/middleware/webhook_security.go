@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -100,12 +101,17 @@ func WebhookSecurity(
 			provider = "unknown"
 		}
 		if provider == "unknown" && isUnifiedFundingWebhook(c.Request.URL.Path) {
-			logger.Warn("Unable to resolve provider for unified funding webhook")
-			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
-				"error":   "UNKNOWN_WEBHOOK_PROVIDER",
-				"message": "Unable to determine webhook provider",
-			})
-			return
+			provider = detectProviderFromBody(c)
+		}
+		if provider == "unknown" || provider == "" {
+			if isUnifiedFundingWebhook(c.Request.URL.Path) {
+				logger.Warn("Unable to resolve provider for unified funding webhook")
+				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+					"error":   "UNKNOWN_WEBHOOK_PROVIDER",
+					"message": "Unable to determine webhook provider",
+				})
+				return
+			}
 		}
 
 		// 1. IP Whitelist check
@@ -224,6 +230,30 @@ func isUnifiedFundingWebhook(path string) bool {
 	return strings.HasSuffix(strings.TrimSpace(path), "/webhooks/funding")
 }
 
+// detectProviderFromBody peeks at the request body to identify the webhook provider.
+// It restores the body so downstream handlers can still read it.
+func detectProviderFromBody(c *gin.Context) string {
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return ""
+	}
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
+	var peek map[string]interface{}
+	if json.Unmarshal(body, &peek) != nil {
+		return ""
+	}
+	if _, ok := peek["notificationType"]; ok {
+		return "circle"
+	}
+	if _, ok := peek["event_category"]; ok {
+		return "bridge"
+	}
+	if _, ok := peek["event"]; ok {
+		return "alpaca"
+	}
+	return ""
+}
+
 // extractSignature extracts webhook signature from common header locations
 func extractSignature(c *gin.Context) string {
 	// Try common signature headers
@@ -287,12 +317,17 @@ func WebhookSecurityWithRedisV8(
 			provider = "unknown"
 		}
 		if provider == "unknown" && isUnifiedFundingWebhook(c.Request.URL.Path) {
-			logger.Warn("Unable to resolve provider for unified funding webhook")
-			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
-				"error":   "UNKNOWN_WEBHOOK_PROVIDER",
-				"message": "Unable to determine webhook provider",
-			})
-			return
+			provider = detectProviderFromBody(c)
+		}
+		if provider == "unknown" || provider == "" {
+			if isUnifiedFundingWebhook(c.Request.URL.Path) {
+				logger.Warn("Unable to resolve provider for unified funding webhook")
+				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+					"error":   "UNKNOWN_WEBHOOK_PROVIDER",
+					"message": "Unable to determine webhook provider",
+				})
+				return
+			}
 		}
 
 		// IP Whitelist check
