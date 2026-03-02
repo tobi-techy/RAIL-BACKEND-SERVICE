@@ -54,9 +54,18 @@ type CircleWebhookHandler struct {
 	circleBaseURL     string
 	devMode           bool // When true, skips signature verification (development only)
 	failOpen          bool // When true, fails open on errors (not recommended for production)
-	keyCache          map[string]string
-	keyCacheMu        sync.RWMutex
+
+	// Key cache with TTL support
+	keyCache   map[string]cachedKey
+	keyCacheMu sync.RWMutex
 }
+
+type cachedKey struct {
+	key       string
+	fetchedAt time.Time
+}
+
+const keyCacheTTL = 24 * time.Hour
 
 // CircleWebhookConfig holds configuration for Circle webhook handler
 type CircleWebhookConfig struct {
@@ -116,7 +125,7 @@ func NewCircleWebhookHandlerWithConfig(
 		circleBaseURL:     config.CircleBaseURL,
 		devMode:           devMode,
 		failOpen:          config.FailOpen,
-		keyCache:          make(map[string]string),
+		keyCache:          make(map[string]cachedKey),
 	}
 }
 
@@ -631,23 +640,38 @@ func (h *CircleWebhookHandler) verifySignature(ctx context.Context, keyID, signa
 	return true
 }
 
-// fetchPublicKeyCached returns the Circle public key for keyID, using an in-memory cache.
+// fetchPublicKeyCached returns the Circle public key for keyID, using an in-memory cache with TTL.
+// Uses double-checked locking to prevent race conditions.
 func (h *CircleWebhookHandler) fetchPublicKeyCached(ctx context.Context, keyID string) (string, error) {
+	// Check cache first with read lock
 	h.keyCacheMu.RLock()
-	if key, ok := h.keyCache[keyID]; ok {
-		h.keyCacheMu.RUnlock()
-		return key, nil
+	if entry, ok := h.keyCache[keyID]; ok {
+		if time.Since(entry.fetchedAt) < keyCacheTTL {
+			h.keyCacheMu.RUnlock()
+			return entry.key, nil
+		}
 	}
 	h.keyCacheMu.RUnlock()
 
+	// Acquire write lock for fetch
+	h.keyCacheMu.Lock()
+	defer h.keyCacheMu.Unlock()
+
+	// Double-check after acquiring write lock (another goroutine may have fetched it)
+	if entry, ok := h.keyCache[keyID]; ok {
+		if time.Since(entry.fetchedAt) < keyCacheTTL {
+			return entry.key, nil
+		}
+	}
+
+	// Fetch from Circle API
 	key, err := h.fetchPublicKey(ctx, keyID)
 	if err != nil {
 		return "", err
 	}
 
-	h.keyCacheMu.Lock()
-	h.keyCache[keyID] = key
-	h.keyCacheMu.Unlock()
+	// Update cache
+	h.keyCache[keyID] = cachedKey{key: key, fetchedAt: time.Now()}
 	return key, nil
 }
 

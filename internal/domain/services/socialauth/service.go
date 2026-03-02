@@ -23,10 +23,10 @@ import (
 )
 
 const (
-	appleAuthURL     = "https://appleid.apple.com/auth/authorize"
-	appleTokenURL    = "https://appleid.apple.com/auth/token"
-	appleKeysURL     = "https://appleid.apple.com/auth/keys"
-	appleIssuer      = "https://appleid.apple.com"
+	appleAuthURL      = "https://appleid.apple.com/auth/authorize"
+	appleTokenURL     = "https://appleid.apple.com/auth/token"
+	appleKeysURL      = "https://appleid.apple.com/auth/keys"
+	appleIssuer       = "https://appleid.apple.com"
 	appleKeysCacheTTL = 24 * time.Hour
 )
 
@@ -62,6 +62,12 @@ type Service struct {
 	config    Config
 	client    *http.Client
 	appleKeys *applePublicKeys
+
+	// Google JWKS cache
+	googleJWKS      map[string]*rsa.PublicKey
+	googleJWKSMu    sync.RWMutex
+	googleJWKSFetch time.Time
+	googleJWKSTTL   time.Duration
 }
 
 func NewService(db *sql.DB, logger *zap.Logger, config Config) *Service {
@@ -73,6 +79,8 @@ func NewService(db *sql.DB, logger *zap.Logger, config Config) *Service {
 		appleKeys: &applePublicKeys{
 			keys: make(map[string]*rsa.PublicKey),
 		},
+		googleJWKS:    make(map[string]*rsa.PublicKey),
+		googleJWKSTTL: 1 * time.Hour,
 	}
 }
 
@@ -247,20 +255,40 @@ func (s *Service) authenticateGoogle(ctx context.Context, req *entities.SocialLo
 	}, nil
 }
 
-// authenticateGoogleIDToken verifies a Google ID token issued by the mobile SDK.
-// It fetches Google's public JWKS, verifies the signature, and extracts user info.
-func (s *Service) authenticateGoogleIDToken(ctx context.Context, idToken string) (*SocialUserInfo, error) {
+// getGooglePublicKeys fetches Google's public keys with caching
+func (s *Service) getGooglePublicKeys(ctx context.Context) (map[string]*rsa.PublicKey, error) {
 	const googleJWKSURL = "https://www.googleapis.com/oauth2/v3/certs"
-	const googleIssuer1 = "accounts.google.com"
-	const googleIssuer2 = "https://accounts.google.com"
 
-	// Fetch Google's public keys
+	// Check cache first with read lock
+	s.googleJWKSMu.RLock()
+	if len(s.googleJWKS) > 0 && time.Since(s.googleJWKSFetch) < s.googleJWKSTTL {
+		keys := s.googleJWKS
+		s.googleJWKSMu.RUnlock()
+		return keys, nil
+	}
+	s.googleJWKSMu.RUnlock()
+
+	// Acquire write lock for fetch
+	s.googleJWKSMu.Lock()
+	defer s.googleJWKSMu.Unlock()
+
+	// Double-check after acquiring write lock
+	if len(s.googleJWKS) > 0 && time.Since(s.googleJWKSFetch) < s.googleJWKSTTL {
+		return s.googleJWKS, nil
+	}
+
+	// Fetch from Google
 	req, err := http.NewRequestWithContext(ctx, "GET", googleJWKSURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build Google JWKS request: %w", err)
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
+		// On fetch error, return cached keys if available (even if expired)
+		if len(s.googleJWKS) > 0 {
+			s.logger.Warn("Google JWKS fetch failed, using stale cache", zap.Error(err))
+			return s.googleJWKS, nil
+		}
 		return nil, fmt.Errorf("failed to fetch Google public keys: %w", err)
 	}
 	defer resp.Body.Close()
@@ -274,6 +302,11 @@ func (s *Service) authenticateGoogleIDToken(ctx context.Context, idToken string)
 		} `json:"keys"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
+		// On decode error, return cached keys if available
+		if len(s.googleJWKS) > 0 {
+			s.logger.Warn("Google JWKS decode failed, using stale cache", zap.Error(err))
+			return s.googleJWKS, nil
+		}
 		return nil, fmt.Errorf("failed to decode Google JWKS: %w", err)
 	}
 
@@ -296,6 +329,25 @@ func (s *Service) authenticateGoogleIDToken(ctx context.Context, idToken string)
 			e = e<<8 + int(b)
 		}
 		keys[k.Kid] = &rsa.PublicKey{N: new(big.Int).SetBytes(nBytes), E: e}
+	}
+
+	// Update cache
+	s.googleJWKS = keys
+	s.googleJWKSFetch = time.Now()
+
+	return keys, nil
+}
+
+// authenticateGoogleIDToken verifies a Google ID token issued by the mobile SDK.
+// It fetches Google's public JWKS, verifies the signature, and extracts user info.
+func (s *Service) authenticateGoogleIDToken(ctx context.Context, idToken string) (*SocialUserInfo, error) {
+	const googleIssuer1 = "accounts.google.com"
+	const googleIssuer2 = "https://accounts.google.com"
+
+	// Get Google public keys (with caching)
+	keys, err := s.getGooglePublicKeys(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get Google public keys: %w", err)
 	}
 
 	token, err := jwt.Parse(idToken, func(token *jwt.Token) (interface{}, error) {
@@ -323,11 +375,13 @@ func (s *Service) authenticateGoogleIDToken(ctx context.Context, idToken string)
 		return nil, fmt.Errorf("invalid Google token issuer: %s", iss)
 	}
 
-	if s.config.Google.ClientID != "" {
-		aud, _ := claims["aud"].(string)
-		if aud != s.config.Google.ClientID {
-			return nil, fmt.Errorf("Google token audience mismatch")
-		}
+	// Always validate audience - fail if ClientID is not configured
+	if s.config.Google.ClientID == "" {
+		return nil, fmt.Errorf("Google ClientID not configured - cannot validate token audience")
+	}
+	aud, _ := claims["aud"].(string)
+	if aud != s.config.Google.ClientID {
+		return nil, fmt.Errorf("Google token audience mismatch: expected %s, got %s", s.config.Google.ClientID, aud)
 	}
 
 	sub, _ := claims["sub"].(string)
@@ -441,7 +495,7 @@ func (s *Service) authenticateApple(ctx context.Context, req *entities.SocialLog
 	}
 
 	email, _ := claims["email"].(string)
-	
+
 	// Apple only sends name on first sign-in, extract from request if provided
 	name := ""
 	if req.Name != "" {
