@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -142,7 +143,7 @@ func (s *Service) CheckRailTagAvailable(ctx context.Context, railTag string) (bo
 // LookupRecipient looks up a recipient by identifier (railtag, email, or phone)
 func (s *Service) LookupRecipient(ctx context.Context, identifier string) (*entities.P2PLookupResponse, error) {
 	identifier = strings.TrimSpace(identifier)
-	
+
 	// Determine identifier type
 	identifierType, normalized := s.parseIdentifier(identifier)
 	if identifierType == "" {
@@ -230,9 +231,39 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2
 	}
 
 	_, normalized := s.parseIdentifier(req.Identifier)
+
+	// Validate note: max 500 chars, strip whitespace, reject suspicious patterns
 	var note *string
 	if req.Note != "" {
-		note = &req.Note
+		// Strip leading/trailing whitespace
+		cleanedNote := strings.TrimSpace(req.Note)
+
+		// Check maximum length
+		if len(cleanedNote) > 500 {
+			return nil, fmt.Errorf("note exceeds maximum length of 500 characters")
+		}
+
+		// Reject suspicious patterns (HTML tags, script tags, javascript:, etc.)
+		lowerNote := strings.ToLower(cleanedNote)
+		suspiciousPatterns := []string{"<script", "javascript:", "onerror=", "onclick=", "<iframe", "eval(", "expression("}
+		for _, pattern := range suspiciousPatterns {
+			if strings.Contains(lowerNote, pattern) {
+				return nil, fmt.Errorf("note contains invalid characters or patterns")
+			}
+		}
+
+		// Reject excessive special characters (more than 30% special chars)
+		specialChars := 0
+		for _, c := range cleanedNote {
+			if !unicode.IsLetter(c) && !unicode.IsDigit(c) && !unicode.IsSpace(c) {
+				specialChars++
+			}
+		}
+		if len(cleanedNote) > 0 && float64(specialChars)/float64(len(cleanedNote)) > 0.3 {
+			return nil, fmt.Errorf("note contains too many special characters")
+		}
+
+		note = &cleanedNote
 	}
 
 	transfer := entities.NewP2PTransfer(senderID, normalized, lookup.IdentifierType, amount, note)
@@ -274,12 +305,9 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2
 		now := time.Now()
 		transfer.ClaimLinkSentAt = &now
 
-		// Debit sender balance (hold in pending state until claimed/expired)
-		if err := s.transfer.TransferBetweenUsers(ctx, senderID, senderID, amount, "P2P pending: "+normalized); err != nil {
-			// Note: For proper escrow, we'd transfer to a system escrow account
-			// Current implementation: balance check happens at claim time
-			s.logger.Warn("Escrow debit skipped - will verify balance at claim", zap.Error(err))
-		}
+		// Note: Sender balance was already validated at the start of this function (lines 214-221)
+		// The actual debit happens when the recipient claims the transfer (see Claim method)
+		// Pending P2P transfers are tracked in the database without debiting the balance
 
 		// Send invite notification
 		sender, _ := s.userLookup.GetByID(ctx, senderID)
@@ -455,7 +483,7 @@ func (s *Service) parseIdentifier(identifier string) (entities.P2PIdentifierType
 			return entities.P2PIdentifierRailTag, tag
 		}
 	}
-	
+
 	// Check if it's a plain railtag (no $)
 	lower := strings.ToLower(identifier)
 	if railTagRegex.MatchString(lower) && !strings.Contains(identifier, "@") && !strings.HasPrefix(identifier, "+") {

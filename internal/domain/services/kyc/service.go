@@ -549,13 +549,16 @@ func (s *Service) processSumsubApproved(ctx context.Context, submission *entitie
 	// Fetch approved document images from Sumsub to forward to Bridge.
 	s.fetchAndAttachSumsubImages(ctx, submission.ProviderRef, payload.InspectionID, request)
 
+	// Defer scrubbing sensitive images to ensure they're always cleared even on early returns
+	defer func() {
+		request.IDDocumentFront = ""
+		request.IDDocumentBack = ""
+	}()
+
 	bridgeResult := entities.KYCProviderResult{Success: false, Status: "skipped", Error: "Bridge customer not found"}
 	if profile.BridgeCustomerID != nil && *profile.BridgeCustomerID != "" {
 		bridgeResult = s.submitToBridgeFromSumsub(ctx, *profile.BridgeCustomerID, request)
 	}
-	// Scrub images immediately after Bridge call regardless of outcome.
-	request.IDDocumentFront = ""
-	request.IDDocumentBack = ""
 
 	alpacaResult := s.submitToAlpaca(ctx, profile, request)
 

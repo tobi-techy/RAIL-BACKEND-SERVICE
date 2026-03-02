@@ -987,6 +987,41 @@ func (r *UserRepository) DeactivateUser(ctx context.Context, userID uuid.UUID) e
 	return nil
 }
 
+// AnonymizeUser clears PII fields while preserving the user UUID for financial audit trails.
+// GDPR Article 17(3) allows retaining financial records; we anonymize PII instead of deleting.
+func (r *UserRepository) AnonymizeUser(ctx context.Context, userID uuid.UUID) error {
+	query := `
+		UPDATE users SET
+			email = 'anonymized-' || id::text || '@deleted.rail.app',
+			phone = NULL,
+			password_hash = '',
+			country = NULL,
+			address_street = NULL,
+			address_city = NULL,
+			address_state = NULL,
+			address_postal_code = NULL,
+			address_country = NULL,
+			auth_provider_id = NULL,
+			bridge_customer_id = NULL,
+			bridge_kyc_link = NULL,
+			is_active = false,
+			anonymized_at = $2,
+			updated_at = $2
+		WHERE id = $1 AND anonymized_at IS NULL`
+	now := time.Now()
+	result, err := r.db.ExecContext(ctx, query, userID, now)
+	if err != nil {
+		r.logger.Error("Failed to anonymize user", zap.Error(err), zap.String("user_id", userID.String()))
+		return fmt.Errorf("failed to anonymize user: %w", err)
+	}
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return fmt.Errorf("user not found or already anonymized")
+	}
+	r.logger.Info("User anonymized", zap.String("user_id", userID.String()))
+	return nil
+}
+
 // HardDelete permanently removes a user and all related data (cascades via FK constraints)
 func (r *UserRepository) HardDelete(ctx context.Context, userID uuid.UUID) error {
 	query := `DELETE FROM users WHERE id = $1`

@@ -32,6 +32,11 @@ type Config struct {
 	LevelName     string
 	UserAgent     string
 	Timeout       time.Duration
+
+	// Enhanced KYC settings
+	EnableLiveness   bool
+	EnableAMLCheck   bool
+	WatchlistProfile string
 }
 
 type Client struct {
@@ -405,12 +410,137 @@ func resolveHashAlgorithm(raw string) (func() hash.Hash, error) {
 }
 
 func normalizeDigest(digest string) string {
-	d := strings.TrimSpace(digest)
-	if d == "" {
+	digest = strings.TrimSpace(digest)
+	if digest == "" {
 		return ""
 	}
-	if parts := strings.SplitN(d, "=", 2); len(parts) == 2 {
-		d = parts[1]
+	if parts := strings.SplitN(digest, "=", 2); len(parts) == 2 {
+		digest = parts[1]
 	}
-	return strings.ToLower(strings.TrimSpace(d))
+	return strings.ToLower(strings.TrimSpace(digest))
+}
+
+type WatchlistResponse struct {
+	ReviewResult   WatchlistReviewResult `json:"reviewResult"`
+	AccountReviews []AccountReview       `json:"accountReviews"`
+}
+
+type WatchlistReviewResult struct {
+	ReviewAnswer string `json:"reviewAnswer"`
+	RejectReason string `json:"rejectReason"`
+	SandboxMode  bool   `json:"sandboxMode"`
+	CreatedAt    string `json:"createdAt"`
+}
+
+type AccountReview struct {
+	SubType    string `json:"subType"`
+	Type       string `json:"type"`
+	Source     string `json:"source"`
+	Category   string `json:"category"`
+	Severity   string `json:"severity"`
+	Name       string `json:"name"`
+	MatchScore int    `json:"matchScore"`
+	URL        string `json:"url"`
+	Country    string `json:"country"`
+}
+
+type LivenessResponse struct {
+	ReviewAnswer string `json:"reviewAnswer"`
+	RejectReason string `json:"rejectReason"`
+	EventType    string `json:"eventType"`
+}
+
+func (c *Client) GetWatchlistReport(ctx context.Context, applicantID string) (*WatchlistResponse, error) {
+	if c == nil {
+		return nil, fmt.Errorf("sumsub client is not configured")
+	}
+
+	if !c.config.EnableAMLCheck {
+		return nil, fmt.Errorf("AML check is not enabled")
+	}
+
+	applicantID = strings.TrimSpace(applicantID)
+	if applicantID == "" {
+		return nil, fmt.Errorf("sumsub applicant ID is required")
+	}
+
+	profile := c.config.WatchlistProfile
+	if profile == "" {
+		profile = "standard"
+	}
+
+	path := fmt.Sprintf("/resources/watchlist/%s/%s", url.PathEscape(applicantID), profile)
+	var resp WatchlistResponse
+	if err := c.doSignedJSONRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) GetLivenessStatus(ctx context.Context, applicantID string) (*LivenessResponse, error) {
+	if c == nil {
+		return nil, fmt.Errorf("sumsub client is not configured")
+	}
+
+	if !c.config.EnableLiveness {
+		return nil, fmt.Errorf("liveness detection is not enabled")
+	}
+
+	applicantID = strings.TrimSpace(applicantID)
+	if applicantID == "" {
+		return nil, fmt.Errorf("sumsub applicant ID is required")
+	}
+
+	path := fmt.Sprintf("/resources/inspections/%s/liveness", url.PathEscape(applicantID))
+	var resp LivenessResponse
+	if err := c.doSignedJSONRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) TriggerReverification(ctx context.Context, applicantID string, reason string) error {
+	if c == nil {
+		return fmt.Errorf("sumsub client is not configured")
+	}
+
+	applicantID = strings.TrimSpace(applicantID)
+	if applicantID == "" {
+		return fmt.Errorf("sumsub applicant ID is required")
+	}
+
+	payload := map[string]any{
+		"reason": reason,
+	}
+
+	path := fmt.Sprintf("/resources/applicants/%s/reverification", url.PathEscape(applicantID))
+	return c.doSignedJSONRequest(ctx, http.MethodPost, path, payload, nil)
+}
+
+func (c *Client) RequiresReverification(ctx context.Context, applicantID string, lastVerifiedAt *time.Time, thresholdDays int) (bool, error) {
+	if c == nil {
+		return false, fmt.Errorf("sumsub client is not configured")
+	}
+
+	if lastVerifiedAt == nil {
+		return true, nil
+	}
+
+	daysSinceVerification := time.Since(*lastVerifiedAt).Hours() / 24
+	if int(daysSinceVerification) > thresholdDays {
+		return true, nil
+	}
+
+	if c.config.EnableAMLCheck {
+		watchlist, err := c.GetWatchlistReport(ctx, applicantID)
+		if err != nil {
+			return false, err
+		}
+		if watchlist.ReviewResult.ReviewAnswer == "GREEN" {
+			return false, nil
+		}
+		return true, nil
+	}
+
+	return false, nil
 }

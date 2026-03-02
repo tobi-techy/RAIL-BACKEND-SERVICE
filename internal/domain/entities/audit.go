@@ -33,6 +33,7 @@ const (
 	AuditActionMFADisable       AuditAction = "mfa_disable"
 	AuditActionPermissionChange AuditAction = "permission_change"
 	AuditActionAdminAction      AuditAction = "admin_action"
+	AuditActionAccountAnonymize AuditAction = "account_anonymize"
 )
 
 type AuditLog struct {

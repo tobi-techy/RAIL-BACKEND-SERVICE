@@ -2,7 +2,9 @@ package funding
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,6 +12,36 @@ import (
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/shopspring/decimal"
 )
+
+// Default timeout for external API calls
+const (
+	DefaultCircleAPITimeout = 10 * time.Second
+)
+
+// generateIdempotencyKey creates a deterministic UUID from deposit attributes
+// This ensures uniqueness across chains and prevents cross-chain replay attacks
+func generateIdempotencyKey(chain, token, amount, txHash string) string {
+	// Normalize inputs
+	normalizedChain := strings.ToLower(strings.TrimSpace(chain))
+	normalizedToken := strings.ToLower(strings.TrimSpace(token))
+	normalizedAmount := strings.ToLower(strings.TrimSpace(amount))
+	normalizedTxHash := strings.ToLower(strings.TrimSpace(txHash))
+
+	// Create deterministic input string
+	input := fmt.Sprintf("crypto-deposit:%s:%s:%s:%s", normalizedChain, normalizedToken, normalizedAmount, normalizedTxHash)
+
+	// Generate SHA256 hash
+	hash := sha256.Sum256([]byte(input))
+	hashStr := fmt.Sprintf("%x", hash[:])
+
+	// Create UUID from hash (using SHA1 as per UUID v5 spec for name-based UUIDs)
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(hashStr)).String()
+}
+
+// generateCorrelationID creates a unique correlation ID for tracing a deposit through the system
+func generateCorrelationID() string {
+	return uuid.New().String()
+}
 
 // LedgerBalanceView represents user balance from ledger
 type LedgerBalanceView struct {
@@ -22,6 +54,7 @@ type LedgerBalanceView struct {
 // LedgerIntegration interface for ledger operations
 type LedgerIntegration interface {
 	RecordDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID, chain, txHash string) error
+	CompensateDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID) error
 	GetUserBalance(ctx context.Context, userID uuid.UUID) (*LedgerBalanceView, error)
 }
 
@@ -35,6 +68,7 @@ type LimitsService interface {
 type CacheClient interface {
 	Get(ctx context.Context, key string, dest interface{}) error
 	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error
+	Delete(ctx context.Context, key string) error
 }
 
 // AuditService interface for compliance audit logging
@@ -46,6 +80,7 @@ type AuditService interface {
 type FundingNotificationService interface {
 	NotifyDepositConfirmed(ctx context.Context, userID uuid.UUID, amount, chain, txHash string) error
 	NotifyLargeBalanceChange(ctx context.Context, userID uuid.UUID, changeType string, amount decimal.Decimal, newBalance decimal.Decimal) error
+	NotifyAllocationFailed(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID, reason string) error
 }
 
 // Service handles funding operations - deposit addresses, confirmations, balance conversion
@@ -76,6 +111,8 @@ type DepositRepository interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Deposit, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status string, confirmedAt *time.Time) error
 	GetByTxHash(ctx context.Context, txHash string) (*entities.Deposit, error)
+	GetByIdempotencyKey(ctx context.Context, idempotencyKey string) (*entities.Deposit, error)
+	DeletePendingDeposit(ctx context.Context, id uuid.UUID) error
 }
 
 // WalletRepository interface for wallet operations
@@ -308,13 +345,14 @@ func (s *Service) GetFundingConfirmations(ctx context.Context, userID uuid.UUID,
 			confirmedAt = deposit.CreatedAt
 		}
 		confirmations[i] = &entities.FundingConfirmation{
-			ID:          deposit.ID,
-			Chain:       deposit.Chain,
-			TxHash:      deposit.TxHash,
-			Token:       deposit.Token,
-			Amount:      deposit.Amount.String(),
-			Status:      deposit.Status,
-			ConfirmedAt: confirmedAt,
+			ID:             deposit.ID,
+			IdempotencyKey: deposit.IdempotencyKey,
+			Chain:          deposit.Chain,
+			TxHash:         deposit.TxHash,
+			Token:          deposit.Token,
+			Amount:         deposit.Amount.String(),
+			Status:         deposit.Status,
+			ConfirmedAt:    confirmedAt,
 		}
 	}
 
@@ -337,13 +375,14 @@ func (s *Service) GetFundingConfirmationByID(ctx context.Context, userID, deposi
 	}
 
 	return &entities.FundingConfirmation{
-		ID:          deposit.ID,
-		Chain:       deposit.Chain,
-		TxHash:      deposit.TxHash,
-		Token:       deposit.Token,
-		Amount:      deposit.Amount.String(),
-		Status:      deposit.Status,
-		ConfirmedAt: confirmedAt,
+		ID:             deposit.ID,
+		IdempotencyKey: deposit.IdempotencyKey,
+		Chain:          deposit.Chain,
+		TxHash:         deposit.TxHash,
+		Token:          deposit.Token,
+		Amount:         deposit.Amount.String(),
+		Status:         deposit.Status,
+		ConfirmedAt:    confirmedAt,
 	}, nil
 }
 
@@ -400,10 +439,16 @@ func (s *Service) GetBalance(ctx context.Context, userID uuid.UUID) (*entities.B
 
 // ProcessChainDeposit processes incoming chain deposit webhook
 func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.ChainDepositWebhook) error {
+	// Generate or use provided correlation ID for distributed tracing
+	correlationID := webhook.CorrelationID
+	if correlationID == "" {
+		correlationID = generateCorrelationID()
+	}
+
 	if s.allocationService == nil {
 		s.logger.Error("allocationService is not configured — deposits will land in ledger but will NOT be split; check DI wiring")
 	}
-	s.logger.Info("Processing chain deposit", "chain", webhook.Chain, "tx_hash", webhook.TxHash, "amount", webhook.Amount)
+	s.logger.Info("Processing chain deposit", "correlation_id", correlationID, "chain", webhook.Chain, "tx_hash", webhook.TxHash, "amount", webhook.Amount)
 
 	// Parse amount directly to decimal (never use float for money)
 	amount, err := decimal.NewFromString(webhook.Amount)
@@ -421,9 +466,27 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 		return fmt.Errorf("deposit amount %s is below minimum %v USDC", amount.String(), entities.MinDepositAmountUSDC)
 	}
 
+	// Validate maximum deposit amount (anti-money laundering protection)
+	maxAmountCents := decimal.NewFromInt(entities.MaxDepositAmountMinorUnits) // This is in cents
+	maxAmountWhole := maxAmountCents.Div(decimal.NewFromInt(100))             // Convert cents to dollars
+	if amount.GreaterThan(maxAmountWhole) {
+		s.logger.Warn("Deposit exceeds maximum amount",
+			"tx_hash", webhook.TxHash,
+			"amount", amount.String(),
+			"max", maxAmountWhole.String())
+		return fmt.Errorf("deposit amount %s exceeds maximum %v USDC", amount.String(), maxAmountWhole.String())
+	}
+
+	// Add timeout context specifically for Circle API calls - don't shadow original ctx
+	circleCtx, cancel := context.WithTimeout(ctx, DefaultCircleAPITimeout)
+	defer cancel()
+
 	// Validate the deposit with Circle
-	isValid, err := s.circleAPI.ValidateDeposit(ctx, webhook.TxHash, amount)
+	isValid, err := s.circleAPI.ValidateDeposit(circleCtx, webhook.TxHash, amount)
 	if err != nil {
+		if circleCtx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("circle deposit validation timed out: %w", err)
+		}
 		return fmt.Errorf("failed to validate deposit: %w", err)
 	}
 
@@ -432,10 +495,27 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 		return fmt.Errorf("invalid deposit signature or amount")
 	}
 
-	// Check if deposit already exists (idempotency check)
-	existingDeposit, err := s.depositRepo.GetByTxHash(ctx, webhook.TxHash)
+	// Generate UUID-based idempotency key from: chain + token + amount + txHash
+	// This ensures uniqueness across chains and prevents cross-chain replay attacks
+	idempotencyKey := generateIdempotencyKey(string(webhook.Chain), string(webhook.Token), webhook.Amount, webhook.TxHash)
+
+	// Check if deposit already exists using idempotency key (primary) and txHash (fallback)
+	existingDeposit, err := s.depositRepo.GetByIdempotencyKey(ctx, idempotencyKey)
 	if err != nil && err.Error() != "deposit not found" {
 		return fmt.Errorf("failed to check existing deposit: %w", err)
+	}
+
+	// Fallback: check by txHash for backward compatibility with older deposits
+	if existingDeposit == nil {
+		existingDeposit, err = s.depositRepo.GetByTxHash(ctx, webhook.TxHash)
+		if err != nil && err.Error() != "deposit not found" {
+			return fmt.Errorf("failed to check existing deposit by tx hash: %w", err)
+		}
+		// If found by txHash, migrate to new idempotency key
+		if existingDeposit != nil && existingDeposit.IdempotencyKey == "" {
+			existingDeposit.IdempotencyKey = idempotencyKey
+			// Note: We don't update here to avoid write conflicts, just use it for reconciliation
+		}
 	}
 
 	if existingDeposit != nil {
@@ -524,27 +604,61 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 		}
 	}
 
-	// Create deposit record
+	// Generate idempotency key (must be done after we have all details)
+	idempotencyKey = generateIdempotencyKey(string(webhook.Chain), string(token), amount.String(), webhook.TxHash)
+
+	// Create deposit record FIRST with "pending" status to establish idempotency lock
+	// The unique constraint on idempotency_key prevents race conditions
 	now := time.Now()
 	deposit := &entities.Deposit{
-		ID:          uuid.New(),
-		UserID:      userID,
-		Chain:       webhook.Chain,
-		TxHash:      webhook.TxHash,
-		Token:       token,
-		Amount:      amount,
-		Status:      "confirmed",
-		ConfirmedAt: &now,
-		CreatedAt:   now,
+		ID:             uuid.New(),
+		IdempotencyKey: idempotencyKey,
+		CorrelationID:  correlationID,
+		UserID:         userID,
+		Chain:          webhook.Chain,
+		TxHash:         webhook.TxHash,
+		Token:          token,
+		Amount:         amount,
+		Status:         "pending",
+		CreatedAt:      now,
 	}
 
+	// Create deposit record first - this establishes the idempotency lock
 	if err := s.depositRepo.Create(ctx, deposit); err != nil {
-		return fmt.Errorf("failed to create deposit record: %w", err)
+		// Check for duplicate key violation - this is expected idempotent behavior
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			s.logger.Info("Deposit already processed (idempotent duplicate key)",
+				"idempotency_key", idempotencyKey)
+			return nil
+		}
+		s.logger.Error("Failed to create deposit record",
+			"user_id", userID,
+			"error", err)
+		return fmt.Errorf("failed to create deposit: %w", err)
 	}
 
-	// Record deposit in ledger (replaces legacy balance update)
+	// Record deposit in ledger after deposit record is created
 	if err := s.ledgerIntegration.RecordDeposit(ctx, userID, usdAmount, deposit.ID, string(webhook.Chain), webhook.TxHash); err != nil {
+		s.logger.Error("Failed to record deposit in ledger, deleting deposit record",
+			"user_id", userID,
+			"amount", usdAmount,
+			"error", err)
+		// Compensation: delete the deposit record since ledger failed
+		if delErr := s.depositRepo.DeletePendingDeposit(ctx, deposit.ID); delErr != nil {
+			s.logger.Error("CRITICAL: Failed to delete deposit after ledger failure",
+				"deposit_id", deposit.ID,
+				"error", delErr)
+		}
 		return fmt.Errorf("failed to record deposit in ledger: %w", err)
+	}
+
+	// Update deposit status to "confirmed" after ledger success
+	confirmedAt := now
+	if err := s.depositRepo.UpdateStatus(ctx, deposit.ID, "confirmed", &confirmedAt); err != nil {
+		s.logger.Error("Failed to update deposit status to confirmed after ledger success",
+			"deposit_id", deposit.ID,
+			"error", err)
+		return fmt.Errorf("failed to update deposit status to confirmed: %w", err)
 	}
 
 	// Process automatic 70/30 allocation split
@@ -564,12 +678,40 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 			},
 		}
 		if err := s.allocationService.ProcessIncomingFunds(ctx, allocationReq); err != nil {
-			s.logger.Error("Failed to process allocation split",
+			s.logger.Error("Failed to process allocation split - marking as pending_allocation",
 				"user_id", userID,
 				"amount", usdAmount,
 				"error", err)
-			// Don't fail the deposit - allocation can be retried
-			// The funds are safely in the ledger
+
+			// Update deposit status to pending_allocation to track incomplete allocation
+			if updateErr := s.depositRepo.UpdateStatus(ctx, deposit.ID, "pending_allocation", nil); updateErr != nil {
+				s.logger.Error("Failed to update deposit status to pending_allocation",
+					"deposit_id", deposit.ID,
+					"error", updateErr)
+			}
+
+			// Log detailed error for internal debugging (not exposed to user)
+			s.logger.Error("Allocation failure details for operations team",
+				"user_id", userID,
+				"deposit_id", deposit.ID,
+				"error_message", err.Error(),
+				"error_type", fmt.Sprintf("%T", err))
+
+			// Notify user with generic message (don't expose internal error details)
+			if s.notificationService != nil {
+				if notifyErr := s.notificationService.NotifyAllocationFailed(
+					ctx,
+					userID,
+					usdAmount,
+					deposit.ID,
+					"allocation_failed",
+				); notifyErr != nil {
+					s.logger.Error("Failed to send allocation failure notification",
+						"user_id", userID,
+						"deposit_id", deposit.ID,
+						"error", notifyErr)
+				}
+			}
 		} else {
 			s.logger.Info("Automatic 70/30 allocation split completed",
 				"user_id", userID,
@@ -605,6 +747,14 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 			if balance, err := s.ledgerIntegration.GetUserBalance(ctx, userID); err == nil {
 				_ = s.notificationService.NotifyLargeBalanceChange(ctx, userID, "deposit", usdAmount, balance.TotalValue)
 			}
+		}
+	}
+
+	// Invalidate balance cache so next balance fetch gets fresh data
+	if s.cache != nil {
+		cacheKey := BalanceCacheKey(userID)
+		if err := s.cache.Delete(ctx, cacheKey); err != nil {
+			s.logger.Warn("Failed to invalidate balance cache", "error", err, "user_id", userID.String())
 		}
 	}
 

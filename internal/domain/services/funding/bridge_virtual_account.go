@@ -2,6 +2,7 @@ package funding
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"strings"
 	"time"
@@ -15,11 +16,13 @@ import (
 
 // BridgeVirtualAccountService handles Bridge virtual account operations for fiat funding
 type BridgeVirtualAccountService struct {
-	bridgeClient       bridge.BridgeClient
-	virtualAccountRepo VirtualAccountRepository
-	allocationService  AllocationService
-	ledgerIntegration  LedgerIntegration
-	logger             *logger.Logger
+	bridgeClient        bridge.BridgeClient
+	virtualAccountRepo  VirtualAccountRepository
+	depositRepo         DepositRepository
+	allocationService   AllocationService
+	ledgerIntegration   LedgerIntegration
+	notificationService FundingNotificationService
+	logger              *logger.Logger
 }
 
 // AllocationService interface for 70/30 split processing
@@ -39,6 +42,7 @@ type BridgeVirtualAccountRepository interface {
 func NewBridgeVirtualAccountService(
 	bridgeClient bridge.BridgeClient,
 	virtualAccountRepo VirtualAccountRepository,
+	depositRepo DepositRepository,
 	allocationService AllocationService,
 	ledgerIntegration LedgerIntegration,
 	logger *logger.Logger,
@@ -46,10 +50,21 @@ func NewBridgeVirtualAccountService(
 	return &BridgeVirtualAccountService{
 		bridgeClient:       bridgeClient,
 		virtualAccountRepo: virtualAccountRepo,
+		depositRepo:        depositRepo,
 		allocationService:  allocationService,
 		ledgerIntegration:  ledgerIntegration,
 		logger:             logger,
 	}
+}
+
+// SetDepositRepository sets the deposit repository for fiat deposits
+func (s *BridgeVirtualAccountService) SetDepositRepository(depositRepo DepositRepository) {
+	s.depositRepo = depositRepo
+}
+
+// SetNotificationService sets the notification service for fiat deposit events
+func (s *BridgeVirtualAccountService) SetNotificationService(notificationService FundingNotificationService) {
+	s.notificationService = notificationService
 }
 
 // CreateVirtualAccountRequest represents a request to create a Bridge virtual account
@@ -178,15 +193,73 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 		return fmt.Errorf("virtual account not found: %s", virtualAccountID)
 	}
 
-	// Derive a deterministic deposit ID from the provider transaction reference
-	// so replayed webhooks stay idempotent across ledger and allocation workflows.
-	depositID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("bridge-fiat:"+strings.ToLower(transactionRef)))
+	// Generate UUID-based idempotency key
+	idempotencyKey := generateFiatIdempotencyKey(transactionRef, virtualAccountID, amount.String())
+
+	// Create deposit record FIRST with "pending" status to establish idempotency lock
+	// This prevents race conditions - the unique constraint on idempotency_key will reject duplicates
+	now := time.Now()
+	depositID := uuid.New()
+	virtAccountUUID := virtualAccount.ID
+
+	deposit := &entities.Deposit{
+		ID:               depositID,
+		IdempotencyKey:   idempotencyKey,
+		UserID:           virtualAccount.UserID,
+		VirtualAccountID: &virtAccountUUID,
+		Chain:            entities.ChainFiat,
+		TxHash:           transactionRef,
+		Token:            entities.StablecoinUSDC,
+		Amount:           amount,
+		Status:           "pending",
+		CreatedAt:        now,
+	}
+
+	if s.depositRepo != nil {
+		if err := s.depositRepo.Create(ctx, deposit); err != nil {
+			// Check for duplicate key violation - this is expected for idempotent requests
+			if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+				s.logger.Info("Fiat deposit already processed (idempotent duplicate key)",
+					"idempotency_key", idempotencyKey)
+				return nil
+			}
+			s.logger.Error("Failed to create fiat deposit record",
+				"user_id", virtualAccount.UserID,
+				"deposit_id", depositID,
+				"error", err)
+			return fmt.Errorf("failed to create deposit: %w", err)
+		}
+	}
+
+	// Record deposit to ledger after deposit record is created
 	if err := s.ledgerIntegration.RecordDeposit(ctx, virtualAccount.UserID, amount, depositID, "fiat", transactionRef); err != nil {
-		s.logger.Error("Failed to record deposit in ledger",
+		s.logger.Error("Failed to record deposit in ledger, deleting deposit record",
 			"user_id", virtualAccount.UserID,
 			"amount", amount,
 			"error", err)
+		// Compensation: delete the deposit record since ledger failed
+		if delErr := s.depositRepo.DeletePendingDeposit(ctx, depositID); delErr != nil {
+			s.logger.Error("CRITICAL: Failed to delete deposit after ledger failure, marking as compensation_failed",
+				"deposit_id", depositID,
+				"deletion_error", delErr)
+			// Mark as compensation_failed so it can be identified for manual reconciliation
+			if statusErr := s.depositRepo.UpdateStatus(ctx, depositID, "compensation_failed", nil); statusErr != nil {
+				s.logger.Error("CRITICAL: Failed to mark deposit as compensation_failed",
+					"deposit_id", depositID,
+					"status_error", statusErr)
+			}
+		}
 		return fmt.Errorf("record deposit: %w", err)
+	}
+
+	// Update deposit status to "confirmed" after ledger success
+	if s.depositRepo != nil {
+		confirmedAt := now
+		if err := s.depositRepo.UpdateStatus(ctx, depositID, "confirmed", &confirmedAt); err != nil {
+			s.logger.Warn("Failed to update deposit status to confirmed",
+				"deposit_id", depositID,
+				"error", err)
+		}
 	}
 
 	// Process 70/30 allocation split
@@ -206,17 +279,95 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 	}
 
 	if err := s.allocationService.ProcessIncomingFunds(ctx, allocationReq); err != nil {
-		s.logger.Error("Failed to process allocation split",
+		s.logger.Error("Failed to process allocation split - marking as pending_allocation",
 			"user_id", virtualAccount.UserID,
 			"amount", amount,
 			"error", err)
-		return fmt.Errorf("process allocation: %w", err)
+
+		// Update deposit status to pending_allocation to track incomplete allocation
+		if s.depositRepo != nil {
+			if updateErr := s.depositRepo.UpdateStatus(ctx, depositID, "pending_allocation", nil); updateErr != nil {
+				s.logger.Error("Failed to update deposit status to pending_allocation",
+					"deposit_id", depositID,
+					"error", updateErr)
+			}
+		}
+
+		// Log detailed error for internal debugging (not exposed to user)
+		s.logger.Error("Allocation failure details for operations team",
+			"user_id", virtualAccount.UserID,
+			"deposit_id", depositID,
+			"error_message", err.Error(),
+			"error_type", fmt.Sprintf("%T", err))
+
+		// Notify user with generic message (don't expose internal error details)
+		if s.notificationService != nil {
+			if notifyErr := s.notificationService.NotifyAllocationFailed(
+				ctx,
+				virtualAccount.UserID,
+				amount,
+				depositID,
+				"allocation_failed",
+			); notifyErr != nil {
+				s.logger.Error("Failed to send allocation failure notification",
+					"user_id", virtualAccount.UserID,
+					"deposit_id", depositID,
+					"error", notifyErr)
+			}
+		}
+
+		// Return error to trigger webhook retry for transient failures
+		return fmt.Errorf("allocation processing failed: %w", err)
+	}
+
+	// Send fiat deposit confirmation notification
+	if s.notificationService != nil {
+		if notifyErr := s.notificationService.NotifyDepositConfirmed(
+			ctx,
+			virtualAccount.UserID,
+			amount.String(),
+			"fiat",
+			transactionRef,
+		); notifyErr != nil {
+			s.logger.Warn("Failed to send fiat deposit notification",
+				"error", notifyErr,
+				"user_id", virtualAccount.UserID)
+		}
 	}
 
 	s.logger.Info("Bridge fiat deposit processed successfully",
 		"user_id", virtualAccount.UserID,
 		"amount", amount,
 		"deposit_id", depositID)
+
+	return nil
+}
+
+// reconcileFiatDeposit handles idempotent replay of fiat deposits
+func (s *BridgeVirtualAccountService) reconcileFiatDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID, transactionRef, virtualAccountID, currency string) error {
+	// Re-run allocation split for reconciliation
+	sourceTxID := transactionRef
+	allocationReq := &entities.IncomingFundsRequest{
+		UserID:     userID,
+		Amount:     amount,
+		EventType:  entities.AllocationEventTypeFiatDeposit,
+		DepositID:  &depositID,
+		SourceTxID: &sourceTxID,
+		Metadata: map[string]any{
+			"source":            "bridge_fiat",
+			"bridge_account_id": virtualAccountID,
+			"original_currency": currency,
+			"transaction_ref":   transactionRef,
+		},
+	}
+
+	if err := s.allocationService.ProcessIncomingFunds(ctx, allocationReq); err != nil {
+		s.logger.Error("Failed to reconcile allocation split",
+			"user_id", userID,
+			"deposit_id", depositID.String(),
+			"error", err)
+		// Don't fail - allocation service handles idempotency internally
+	}
 
 	return nil
 }
@@ -269,6 +420,14 @@ type DepositInstructions struct {
 	BeneficiaryName string `json:"beneficiary_name"`
 	Currency        string `json:"currency"`
 	Provider        string `json:"provider"`
+}
+
+// generateFiatIdempotencyKey creates a deterministic UUID for fiat deposits
+func generateFiatIdempotencyKey(transactionRef, virtualAccountID, amount string) string {
+	input := fmt.Sprintf("fiat-deposit:%s:%s:%s", strings.ToLower(transactionRef), strings.ToLower(virtualAccountID), strings.ToLower(amount))
+	hash := sha256.Sum256([]byte(input))
+	hashStr := fmt.Sprintf("%x", hash[:])
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(hashStr)).String()
 }
 
 // Helper functions
