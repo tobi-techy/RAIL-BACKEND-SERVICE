@@ -225,7 +225,7 @@ func (s *DeletionService) sweepFundsToTreasury(ctx context.Context, userID uuid.
 		TokenID:            "USDC",
 		Amounts:            []string{sweepAmount.StringFixed(6)},
 		DestinationAddress: s.treasuryWalletAddress,
-		IDempotencyKey:     uuid.New().String(),
+		IDempotencyKey:     fmt.Sprintf("account-closure-%s", userID.String()),
 	}
 
 	response, err := s.circleClient.TransferFunds(ctx, req)
@@ -254,7 +254,11 @@ func (s *DeletionService) getCircleWalletBalance(ctx context.Context, walletID s
 	// Find USDC balance
 	for _, tb := range balances.TokenBalances {
 		if tb.Token.Symbol == "USDC" {
-			return decimal.NewFromString(tb.Amount)
+			amount, err := decimal.NewFromString(tb.Amount)
+			if err != nil {
+				return decimal.Zero, fmt.Errorf("failed to parse USDC balance: %w", err)
+			}
+			return amount, nil
 		}
 	}
 

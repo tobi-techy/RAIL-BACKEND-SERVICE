@@ -5,7 +5,7 @@ CREATE TABLE p2p_transfers (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     
     -- Sender (always a Rail user)
-    sender_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    sender_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     
     -- Recipient: either existing user OR pending claim
     recipient_id UUID REFERENCES users(id) ON DELETE SET NULL,  -- NULL until claimed by new user
@@ -47,8 +47,8 @@ CREATE INDEX idx_p2p_transfers_expires_at ON p2p_transfers(expires_at) WHERE sta
 
 -- Recent recipients for quick access (like Cash App's recent list)
 CREATE TABLE p2p_recent_recipients (
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    recipient_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    recipient_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     last_sent_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     send_count INT NOT NULL DEFAULT 1,
     PRIMARY KEY (user_id, recipient_id)
