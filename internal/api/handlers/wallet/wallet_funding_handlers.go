@@ -103,9 +103,14 @@ func (h *WalletFundingHandlers) SetCircleClient(client CircleBalanceGetter) {
 func (h *WalletFundingHandlers) ReconcileUserBalance(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	// Check admin authorization
+	// Check admin authorization with explicit type assertion
 	userRole, exists := c.Get("user_role")
-	if !exists || userRole != "admin" {
+	if !exists {
+		c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
+		return
+	}
+	roleStr, ok := userRole.(string)
+	if !ok || roleStr != "admin" {
 		c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
 		return
 	}

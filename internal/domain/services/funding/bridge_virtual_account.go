@@ -196,19 +196,8 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 	// Generate UUID-based idempotency key
 	idempotencyKey := generateFiatIdempotencyKey(transactionRef, virtualAccountID, amount.String())
 
-	// Check for existing deposit using idempotency key
-	if s.depositRepo != nil {
-		existingDeposit, err := s.depositRepo.GetByIdempotencyKey(ctx, idempotencyKey)
-		if err == nil && existingDeposit != nil {
-			s.logger.Info("Fiat deposit already processed (idempotent)",
-				"idempotency_key", idempotencyKey,
-				"deposit_id", existingDeposit.ID.String())
-			// Re-run allocation for reconciliation if needed
-			return s.reconcileFiatDeposit(ctx, virtualAccount.UserID, amount, existingDeposit.ID, transactionRef, virtualAccountID, event.Currency)
-		}
-	}
-
-	// Create deposit record
+	// Create deposit record FIRST with "pending" status to establish idempotency lock
+	// This prevents race conditions - the unique constraint on idempotency_key will reject duplicates
 	now := time.Now()
 	depositID := uuid.New()
 	virtAccountUUID := virtualAccount.ID
@@ -220,28 +209,48 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 		VirtualAccountID: &virtAccountUUID,
 		Chain:            entities.ChainFiat,
 		TxHash:           transactionRef,
-		Token:            entities.StablecoinUSDC, // Fiat is converted to USDC
+		Token:            entities.StablecoinUSDC,
 		Amount:           amount,
-		Status:           "confirmed",
-		ConfirmedAt:      &now,
+		Status:           "pending",
 		CreatedAt:        now,
 	}
 
-	// Record deposit to ledger
+	if s.depositRepo != nil {
+		if err := s.depositRepo.Create(ctx, deposit); err != nil {
+			// Check for duplicate key violation - this is expected for idempotent requests
+			if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+				s.logger.Info("Fiat deposit already processed (idempotent duplicate key)",
+					"idempotency_key", idempotencyKey)
+				return nil
+			}
+			s.logger.Error("Failed to create fiat deposit record",
+				"user_id", virtualAccount.UserID,
+				"deposit_id", depositID,
+				"error", err)
+			return fmt.Errorf("failed to create deposit: %w", err)
+		}
+	}
+
+	// Record deposit to ledger after deposit record is created
 	if err := s.ledgerIntegration.RecordDeposit(ctx, virtualAccount.UserID, amount, depositID, "fiat", transactionRef); err != nil {
-		s.logger.Error("Failed to record deposit in ledger",
+		s.logger.Error("Failed to record deposit in ledger, deleting deposit record",
 			"user_id", virtualAccount.UserID,
 			"amount", amount,
 			"error", err)
+		// Compensation: delete the deposit record since ledger failed
+		if delErr := s.depositRepo.Delete(ctx, depositID); delErr != nil {
+			s.logger.Error("CRITICAL: Failed to delete deposit record after ledger failure",
+				"deposit_id", depositID,
+				"error", delErr)
+		}
 		return fmt.Errorf("record deposit: %w", err)
 	}
 
-	// Create deposit record in database (only after ledger success)
+	// Update deposit status to "confirmed" after ledger success
 	if s.depositRepo != nil {
-		if err := s.depositRepo.Create(ctx, deposit); err != nil {
-			// Log error but don't fail - ledger already has the record
-			s.logger.Error("Failed to create fiat deposit record",
-				"user_id", virtualAccount.UserID,
+		confirmedAt := now
+		if err := s.depositRepo.UpdateStatus(ctx, depositID, "confirmed", &confirmedAt); err != nil {
+			s.logger.Warn("Failed to update deposit status to confirmed",
 				"deposit_id", depositID,
 				"error", err)
 		}
@@ -261,6 +270,48 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 			"original_currency": event.Currency,
 			"transaction_ref":   transactionRef,
 		},
+	}
+
+	if err := s.allocationService.ProcessIncomingFunds(ctx, allocationReq); err != nil {
+		s.logger.Error("Failed to process allocation split - marking as pending_allocation",
+			"user_id", virtualAccount.UserID,
+			"amount", amount,
+			"error", err)
+
+		// Update deposit status to pending_allocation to track incomplete allocation
+		if s.depositRepo != nil {
+			if updateErr := s.depositRepo.UpdateStatus(ctx, depositID, "pending_allocation", nil); updateErr != nil {
+				s.logger.Error("Failed to update deposit status to pending_allocation",
+					"deposit_id", depositID,
+					"error", updateErr)
+			}
+		}
+
+		// Log detailed error for internal debugging (not exposed to user)
+		s.logger.Error("Allocation failure details for operations team",
+			"user_id", virtualAccount.UserID,
+			"deposit_id", depositID,
+			"error_message", err.Error(),
+			"error_type", fmt.Sprintf("%T", err))
+
+		// Notify user with generic message (don't expose internal error details)
+		if s.notificationService != nil {
+			if notifyErr := s.notificationService.NotifyAllocationFailed(
+				ctx,
+				virtualAccount.UserID,
+				amount,
+				depositID,
+				"allocation_failed",
+			); notifyErr != nil {
+				s.logger.Error("Failed to send allocation failure notification",
+					"user_id", virtualAccount.UserID,
+					"deposit_id", depositID,
+					"error", notifyErr)
+			}
+		}
+
+		// Return error to trigger webhook retry for transient failures
+		return fmt.Errorf("allocation processing failed: %w", err)
 	}
 
 	if err := s.allocationService.ProcessIncomingFunds(ctx, allocationReq); err != nil {

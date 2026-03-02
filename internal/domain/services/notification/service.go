@@ -211,8 +211,16 @@ func (s *NotificationService) NotifyLargeBalanceChange(ctx context.Context, user
 }
 
 func (s *NotificationService) NotifyAllocationFailed(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID, reason string) error {
+	// Log detailed error reason internally for operations team debugging
+	s.logger.Error("Allocation failed notification",
+		zap.String("user_id", userID.String()),
+		zap.String("deposit_id", depositID.String()),
+		zap.String("amount", amount.String()),
+		zap.String("failure_reason", reason))
+
+	// Show generic user-friendly message in notification body
 	title := "Investment Allocation Requires Attention"
-	body := fmt.Sprintf("Your deposit of $%s was received but the automatic 70/30 allocation split could not be completed: %s. Please contact support or try again later.", amount.String(), reason)
+	body := fmt.Sprintf("Your deposit of $%s was received but the automatic 70/30 allocation split could not be completed. Please contact support for assistance.", amount.String())
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{
 		"type":       "allocation_failed",
 		"deposit_id": depositID.String(),

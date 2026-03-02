@@ -112,6 +112,7 @@ type DepositRepository interface {
 	UpdateStatus(ctx context.Context, id uuid.UUID, status string, confirmedAt *time.Time) error
 	GetByTxHash(ctx context.Context, txHash string) (*entities.Deposit, error)
 	GetByIdempotencyKey(ctx context.Context, idempotencyKey string) (*entities.Deposit, error)
+	Delete(ctx context.Context, id uuid.UUID) error
 }
 
 // WalletRepository interface for wallet operations
@@ -476,14 +477,14 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 		return fmt.Errorf("deposit amount %s exceeds maximum %v USDC", amount.String(), maxAmountWhole.String())
 	}
 
-	// Add timeout context for external API calls
-	ctx, cancel := context.WithTimeout(ctx, DefaultCircleAPITimeout)
+	// Add timeout context specifically for Circle API calls - don't shadow original ctx
+	circleCtx, cancel := context.WithTimeout(ctx, DefaultCircleAPITimeout)
 	defer cancel()
 
 	// Validate the deposit with Circle
-	isValid, err := s.circleAPI.ValidateDeposit(ctx, webhook.TxHash, amount)
+	isValid, err := s.circleAPI.ValidateDeposit(circleCtx, webhook.TxHash, amount)
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
+		if circleCtx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("circle deposit validation timed out: %w", err)
 		}
 		return fmt.Errorf("failed to validate deposit: %w", err)
@@ -606,7 +607,8 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 	// Generate idempotency key (must be done after we have all details)
 	idempotencyKey = generateIdempotencyKey(string(webhook.Chain), string(token), amount.String(), webhook.TxHash)
 
-	// Create deposit record
+	// Create deposit record FIRST with "pending" status to establish idempotency lock
+	// The unique constraint on idempotency_key prevents race conditions
 	now := time.Now()
 	deposit := &entities.Deposit{
 		ID:             uuid.New(),
@@ -617,36 +619,45 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 		TxHash:         webhook.TxHash,
 		Token:          token,
 		Amount:         amount,
-		Status:         "confirmed",
-		ConfirmedAt:    &now,
+		Status:         "pending",
 		CreatedAt:      now,
 	}
 
-	// Record deposit in ledger FIRST (this is the critical operation - funds must be recorded)
-	// This ensures funds are recorded even if deposit creation fails later
+	// Create deposit record first - this establishes the idempotency lock
+	if err := s.depositRepo.Create(ctx, deposit); err != nil {
+		// Check for duplicate key violation - this is expected idempotent behavior
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			s.logger.Info("Deposit already processed (idempotent duplicate key)",
+				"idempotency_key", idempotencyKey)
+			return nil
+		}
+		s.logger.Error("Failed to create deposit record",
+			"user_id", userID,
+			"error", err)
+		return fmt.Errorf("failed to create deposit: %w", err)
+	}
+
+	// Record deposit in ledger after deposit record is created
 	if err := s.ledgerIntegration.RecordDeposit(ctx, userID, usdAmount, deposit.ID, string(webhook.Chain), webhook.TxHash); err != nil {
+		s.logger.Error("Failed to record deposit in ledger, deleting deposit record",
+			"user_id", userID,
+			"amount", usdAmount,
+			"error", err)
+		// Compensation: delete the deposit record since ledger failed
+		if delErr := s.depositRepo.Delete(ctx, deposit.ID); delErr != nil {
+			s.logger.Error("CRITICAL: Failed to delete deposit after ledger failure",
+				"deposit_id", deposit.ID,
+				"error", delErr)
+		}
 		return fmt.Errorf("failed to record deposit in ledger: %w", err)
 	}
 
-	// Now create deposit record in database
-	// If this fails, we need to compensate by reversing the ledger entry
-	if err := s.depositRepo.Create(ctx, deposit); err != nil {
-		// Attempt to compensate: reverse the ledger entry
-		s.logger.Error("Failed to create deposit record after ledger success, attempting compensation",
-			"user_id", userID,
+	// Update deposit status to "confirmed" after ledger success
+	confirmedAt := now
+	if err := s.depositRepo.UpdateStatus(ctx, deposit.ID, "confirmed", &confirmedAt); err != nil {
+		s.logger.Warn("Failed to update deposit status to confirmed",
 			"deposit_id", deposit.ID,
 			"error", err)
-
-		// Try to reverse the ledger entry
-		if compensateErr := s.ledgerIntegration.CompensateDeposit(ctx, userID, usdAmount, deposit.ID); compensateErr != nil {
-			s.logger.Error("CRITICAL: Failed to compensate ledger after deposit creation failure",
-				"user_id", userID,
-				"deposit_id", deposit.ID,
-				"error", compensateErr)
-			// This is a critical situation requiring manual intervention
-		}
-
-		return fmt.Errorf("failed to create deposit record: %w", err)
 	}
 
 	// Process automatic 70/30 allocation split
@@ -666,21 +677,33 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 			},
 		}
 		if err := s.allocationService.ProcessIncomingFunds(ctx, allocationReq); err != nil {
-			s.logger.Error("Failed to process allocation split",
+			s.logger.Error("Failed to process allocation split - marking as pending_allocation",
 				"user_id", userID,
 				"amount", usdAmount,
 				"error", err)
-			// Don't fail the deposit - allocation can be retried
-			// The funds are safely in the ledger
 
-			// Notify user about allocation failure so they can take action
+			// Update deposit status to pending_allocation to track incomplete allocation
+			if updateErr := s.depositRepo.UpdateStatus(ctx, deposit.ID, "pending_allocation", nil); updateErr != nil {
+				s.logger.Error("Failed to update deposit status to pending_allocation",
+					"deposit_id", deposit.ID,
+					"error", updateErr)
+			}
+
+			// Log detailed error for internal debugging (not exposed to user)
+			s.logger.Error("Allocation failure details for operations team",
+				"user_id", userID,
+				"deposit_id", deposit.ID,
+				"error_message", err.Error(),
+				"error_type", fmt.Sprintf("%T", err))
+
+			// Notify user with generic message (don't expose internal error details)
 			if s.notificationService != nil {
 				if notifyErr := s.notificationService.NotifyAllocationFailed(
 					ctx,
 					userID,
 					usdAmount,
 					deposit.ID,
-					err.Error(),
+					"allocation_failed",
 				); notifyErr != nil {
 					s.logger.Error("Failed to send allocation failure notification",
 						"user_id", userID,

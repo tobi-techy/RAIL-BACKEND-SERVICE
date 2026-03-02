@@ -488,14 +488,14 @@ func (i *LedgerIntegration) CompensateDeposit(
 		Entries: []entities.CreateEntryRequest{
 			{
 				AccountID:   userAccount.ID,
-				EntryType:   entities.EntryTypeCredit, // Decrease user balance (reverse)
+				EntryType:   entities.EntryTypeDebit, // Decrease user balance (reverse original credit)
 				Amount:      amount,
 				Currency:    "USDC",
 				Description: &description,
 			},
 			{
 				AccountID:   systemAccount.ID,
-				EntryType:   entities.EntryTypeDebit, // Increase system buffer (reverse)
+				EntryType:   entities.EntryTypeCredit, // Increase system buffer (reverse original debit)
 				Amount:      amount,
 				Currency:    "USDC",
 				Description: &description,
