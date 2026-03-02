@@ -825,7 +825,9 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	// Initialize entity secret service
 	entitySecretService, err := entitysecret.NewService(zapLog, cfg.Circle.EntitySecretCiphertext, cfg.Circle.PublicKeyPEM)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize entity secret service: %w", err)
+		zapLog.Warn("Entity secret service unavailable, dynamic ciphertext generation disabled",
+			zap.Error(err))
+		entitySecretService = nil
 	}
 
 	container := &Container{
