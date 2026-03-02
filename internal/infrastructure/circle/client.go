@@ -870,8 +870,8 @@ func (c *Client) InitiateCCTPBurn(ctx context.Context, req *entities.CCTPBurnReq
 }
 
 func (c *Client) getEntitySecretCiphertext(ctx context.Context) (string, error) {
-	if configured := strings.TrimSpace(c.config.EntitySecretCiphertext); configured != "" {
-		c.logger.Info("Configured entity secret ciphertext present; using dynamic ciphertext to match wallet flow")
+	if c.entitySecretService == nil {
+		return "", fmt.Errorf("entity secret service not initialized: check CIRCLE_PUBLIC_KEY_PEM configuration")
 	}
 	return c.entitySecretService.GenerateEntitySecretCiphertext(ctx)
 }
