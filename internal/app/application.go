@@ -45,14 +45,14 @@ type Application struct {
 	container *di.Container
 
 	// Workers
-	scheduler                    *walletprovisioning.Scheduler
-	webhookManager               *funding_webhook.Manager
-	scheduledInvestmentWorker    *scheduled_investment_worker.Worker
-	portfolioSnapshotWorker      *portfolio_snapshot_worker.Worker
-	depositAllocationWorker      *deposit_allocation_recovery.Worker
-	kycAutoInvestWorker          *kyc_autoinvest.Worker
-	kycSyncWorker                *kyc_sync.Worker
-	balanceReconciliationWorker  *balance_reconciliation.Worker
+	scheduler                   *walletprovisioning.Scheduler
+	webhookManager              *funding_webhook.Manager
+	scheduledInvestmentWorker   *scheduled_investment_worker.Worker
+	portfolioSnapshotWorker     *portfolio_snapshot_worker.Worker
+	depositAllocationWorker     *deposit_allocation_recovery.Worker
+	kycAutoInvestWorker         *kyc_autoinvest.Worker
+	kycSyncWorker               *kyc_sync.Worker
+	balanceReconciliationWorker *balance_reconciliation.Worker
 
 	// Tracing
 	tracingShutdown func(context.Context) error
@@ -485,6 +485,12 @@ func (app *Application) stopWorkers() {
 	if app.kycSyncWorker != nil {
 		app.log.Info("Stopping KYC sync worker...")
 		app.kycSyncWorker.Stop()
+	}
+
+	// Stop balance reconciliation worker
+	if app.balanceReconciliationWorker != nil {
+		app.log.Info("Stopping balance reconciliation worker...")
+		app.balanceReconciliationWorker.Stop()
 	}
 }
 
