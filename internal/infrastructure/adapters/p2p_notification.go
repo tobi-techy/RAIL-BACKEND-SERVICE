@@ -45,6 +45,14 @@ func (n *P2PNotificationSender) SendP2PInvite(ctx context.Context, identifier, i
 		return nil // Only email invites supported for now
 	}
 
+	// Validate claimToken is a valid UUID before embedding in URL
+	if _, err := uuid.Parse(claimToken); err != nil {
+		n.logger.Error("Invalid claimToken - not a valid UUID",
+			zap.String("claimToken", claimToken),
+			zap.Error(err))
+		return fmt.Errorf("invalid claim token: must be a valid UUID")
+	}
+
 	claimURL := fmt.Sprintf("%s/claim/%s", n.baseURL, claimToken)
 	amountStr := fmt.Sprintf("$%s", amount.StringFixed(2))
 
