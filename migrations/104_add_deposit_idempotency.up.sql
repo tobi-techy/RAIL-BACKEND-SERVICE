@@ -5,10 +5,18 @@
 ALTER TABLE deposits ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(255);
 ALTER TABLE deposits ADD COLUMN IF NOT EXISTS correlation_id VARCHAR(255);
 
--- Step 2: Backfill existing rows with generated idempotency keys
+-- Step 2: Backfill existing rows with generated idempotency keys using COALESCE to handle NULLs
 UPDATE deposits 
-SET idempotency_key = CONCAT(tx_hash, '-', chain, '-', user_id::text)
-WHERE idempotency_key IS NULL AND tx_hash IS NOT NULL;
+SET idempotency_key = CONCAT(
+    COALESCE(tx_hash, id::text),
+    '-',
+    COALESCE(chain, 'unknown'),
+    '-',
+    user_id::text,
+    '-',
+    COALESCE(created_at::text, 'unknown')
+)
+WHERE idempotency_key IS NULL;
 
 -- Step 3: Add NOT NULL constraint (requires all existing rows to have values)
 ALTER TABLE deposits ALTER COLUMN idempotency_key SET NOT NULL;

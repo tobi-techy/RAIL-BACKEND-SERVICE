@@ -112,7 +112,7 @@ type DepositRepository interface {
 	UpdateStatus(ctx context.Context, id uuid.UUID, status string, confirmedAt *time.Time) error
 	GetByTxHash(ctx context.Context, txHash string) (*entities.Deposit, error)
 	GetByIdempotencyKey(ctx context.Context, idempotencyKey string) (*entities.Deposit, error)
-	Delete(ctx context.Context, id uuid.UUID) error
+	DeletePendingDeposit(ctx context.Context, id uuid.UUID) error
 }
 
 // WalletRepository interface for wallet operations
@@ -644,7 +644,7 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 			"amount", usdAmount,
 			"error", err)
 		// Compensation: delete the deposit record since ledger failed
-		if delErr := s.depositRepo.Delete(ctx, deposit.ID); delErr != nil {
+		if delErr := s.depositRepo.DeletePendingDeposit(ctx, deposit.ID); delErr != nil {
 			s.logger.Error("CRITICAL: Failed to delete deposit after ledger failure",
 				"deposit_id", deposit.ID,
 				"error", delErr)
@@ -655,9 +655,10 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 	// Update deposit status to "confirmed" after ledger success
 	confirmedAt := now
 	if err := s.depositRepo.UpdateStatus(ctx, deposit.ID, "confirmed", &confirmedAt); err != nil {
-		s.logger.Warn("Failed to update deposit status to confirmed",
+		s.logger.Error("Failed to update deposit status to confirmed after ledger success",
 			"deposit_id", deposit.ID,
 			"error", err)
+		return fmt.Errorf("failed to update deposit status to confirmed: %w", err)
 	}
 
 	// Process automatic 70/30 allocation split

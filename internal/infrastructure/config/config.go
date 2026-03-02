@@ -284,6 +284,7 @@ type CircleConfig struct {
 	Environment            string   `mapstructure:"environment"` // sandbox or production
 	BaseURL                string   `mapstructure:"base_url"`
 	EntitySecretCiphertext string   `mapstructure:"entity_secret_ciphertext"` // Pre-registered ciphertext from Circle Dashboard
+	PublicKeyPEM           string   `mapstructure:"public_key_pem"`           // Circle public key for entity secret encryption
 	DefaultWalletSetID     string   `mapstructure:"default_wallet_set_id"`
 	DefaultWalletSetName   string   `mapstructure:"default_wallet_set_name"`
 	SupportedChains        []string `mapstructure:"supported_chains"`
@@ -841,6 +842,10 @@ func overrideFromEnv() {
 	// Load pre-registered entity secret ciphertext from environment
 	if circleEntitySecretCiphertext := os.Getenv("CIRCLE_ENTITY_SECRET_CIPHERTEXT"); circleEntitySecretCiphertext != "" {
 		viper.Set("circle.entity_secret_ciphertext", circleEntitySecretCiphertext)
+	}
+	// Load Circle public key PEM from environment for entity secret encryption
+	if circlePublicKeyPEM := os.Getenv("EXPO_PUBLIC_CIRCLE_PUBLIC_KEY_PEM"); circlePublicKeyPEM != "" {
+		viper.Set("circle.public_key_pem", circlePublicKeyPEM)
 	}
 	if circleWalletSetID := os.Getenv("CIRCLE_DEFAULT_WALLET_SET_ID"); circleWalletSetID != "" {
 		viper.Set("circle.default_wallet_set_id", circleWalletSetID)

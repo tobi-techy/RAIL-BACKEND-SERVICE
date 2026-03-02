@@ -238,10 +238,16 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 			"amount", amount,
 			"error", err)
 		// Compensation: delete the deposit record since ledger failed
-		if delErr := s.depositRepo.Delete(ctx, depositID); delErr != nil {
-			s.logger.Error("CRITICAL: Failed to delete deposit record after ledger failure",
+		if delErr := s.depositRepo.DeletePendingDeposit(ctx, depositID); delErr != nil {
+			s.logger.Error("CRITICAL: Failed to delete deposit after ledger failure, marking as compensation_failed",
 				"deposit_id", depositID,
-				"error", delErr)
+				"deletion_error", delErr)
+			// Mark as compensation_failed so it can be identified for manual reconciliation
+			if statusErr := s.depositRepo.UpdateStatus(ctx, depositID, "compensation_failed", nil); statusErr != nil {
+				s.logger.Error("CRITICAL: Failed to mark deposit as compensation_failed",
+					"deposit_id", depositID,
+					"status_error", statusErr)
+			}
 		}
 		return fmt.Errorf("record deposit: %w", err)
 	}
@@ -312,31 +318,6 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 
 		// Return error to trigger webhook retry for transient failures
 		return fmt.Errorf("allocation processing failed: %w", err)
-	}
-
-	if err := s.allocationService.ProcessIncomingFunds(ctx, allocationReq); err != nil {
-		s.logger.Error("Failed to process allocation split",
-			"user_id", virtualAccount.UserID,
-			"amount", amount,
-			"error", err)
-		// Don't fail the deposit - allocation can be retried
-		// The funds are safely in the ledger
-
-		// Notify user about allocation failure so they can take action
-		if s.notificationService != nil {
-			if notifyErr := s.notificationService.NotifyAllocationFailed(
-				ctx,
-				virtualAccount.UserID,
-				amount,
-				depositID,
-				err.Error(),
-			); notifyErr != nil {
-				s.logger.Error("Failed to send allocation failure notification",
-					"user_id", virtualAccount.UserID,
-					"deposit_id", depositID,
-					"error", notifyErr)
-			}
-		}
 	}
 
 	// Send fiat deposit confirmation notification

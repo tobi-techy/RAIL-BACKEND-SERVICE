@@ -33,6 +33,7 @@ type CircleClient interface {
 // UserRepository interface for user deletion
 type UserRepository interface {
 	HardDelete(ctx context.Context, userID uuid.UUID) error
+	AnonymizeUser(ctx context.Context, userID uuid.UUID) error
 }
 
 // AuditService interface for audit logging
@@ -127,19 +128,19 @@ func (s *DeletionService) deleteAccountInternal(ctx context.Context, req *Delete
 			"tx_hash", sweepTxHash)
 	}
 
-	// Step 3: Log audit before deletion
+	// Step 3: Log audit before anonymization
 	if s.auditService != nil {
-		_ = s.auditService.Log(ctx, req.UserID, entities.AuditActionAccountDelete, "user", nil,
+		_ = s.auditService.Log(ctx, req.UserID, entities.AuditActionAccountAnonymize, "user", nil,
 			map[string]interface{}{"reason": req.Reason, "funds_swept": totalBalance.String()})
 	}
 
-	// Step 4: Hard delete user (cascades to all related tables)
-	if err := s.userRepo.HardDelete(ctx, req.UserID); err != nil {
-		s.logger.Error("Failed to delete user", "error", err)
-		return nil, fmt.Errorf("failed to delete account: %w", err)
+	// Step 4: Anonymize user PII (GDPR compliance - preserve UUID for financial audit trail)
+	if err := s.userRepo.AnonymizeUser(ctx, req.UserID); err != nil {
+		s.logger.Error("Failed to anonymize user", "error", err)
+		return nil, fmt.Errorf("failed to anonymize account: %w", err)
 	}
 
-	s.logger.Info("Account deleted successfully",
+	s.logger.Info("Account anonymized successfully",
 		"user_id", req.UserID.String(),
 		"funds_swept", totalBalance.String())
 

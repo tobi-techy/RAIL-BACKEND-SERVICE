@@ -51,6 +51,7 @@ type Config struct {
 	BalancesEndpoint       string        `json:"balances_endpoint"`
 	TransferEndpoint       string        `json:"transfer_endpoint"`
 	EntitySecretCiphertext string        `json:"entity_secret_ciphertext"` // Pre-registered ciphertext from Circle Dashboard
+	PublicKeyPEM           string        `json:"public_key_pem"`           // Circle public key for entity secret encryption
 	WalletSetID            string        `json:"wallet_set_id"`            // Default wallet set ID for wallet creation
 }
 
@@ -127,7 +128,12 @@ func NewClient(config Config, logger *zap.Logger) *Client {
 	circuitBreaker := gobreaker.NewCircuitBreaker(st)
 
 	// Initialize entity secret service for dynamic ciphertext generation (fallback only)
-	entitySecretService := entitysecret.NewService(logger)
+	entitySecretService, err := entitysecret.NewService(logger, config.EntitySecretCiphertext, config.PublicKeyPEM)
+	if err != nil {
+		logger.Warn("Failed to initialize entity secret service, dynamic generation will not be available",
+			zap.Error(err))
+		entitySecretService = nil
+	}
 
 	if strings.TrimSpace(config.EntitySecretCiphertext) == "" {
 		logger.Warn("No pre-registered entity secret ciphertext configured. Dynamic generation will be used, but Circle API may reject these requests.")

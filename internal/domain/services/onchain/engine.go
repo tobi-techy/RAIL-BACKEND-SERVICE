@@ -56,7 +56,7 @@ type DepositRepository interface {
 	GetByTxHash(ctx context.Context, txHash string) (*entities.Deposit, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status string, confirmedAt *time.Time) error
 	GetPendingDeposits(ctx context.Context) ([]*entities.Deposit, error)
-	Delete(ctx context.Context, id uuid.UUID) error
+	DeletePendingDeposit(ctx context.Context, id uuid.UUID) error
 }
 
 // WithdrawalRepository handles withdrawal persistence
