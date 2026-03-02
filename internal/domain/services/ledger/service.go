@@ -184,6 +184,7 @@ func (s *Service) GetUserBalances(ctx context.Context, userID uuid.UUID) (*entit
 }
 
 // ReconcileBalance directly sets a user's account balance (for admin reconciliation)
+// Uses SELECT FOR UPDATE to prevent TOCTOU race conditions
 func (s *Service) ReconcileBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, newBalance decimal.Decimal) error {
 	// Validate accountType is valid (spending or savings)
 	if accountType != entities.AccountTypeSpendingBalance && accountType != entities.AccountTypeStashBalance {
@@ -195,21 +196,21 @@ func (s *Service) ReconcileBalance(ctx context.Context, userID uuid.UUID, accoun
 		return fmt.Errorf("reconciliation cannot set negative balance: %s", newBalance.String())
 	}
 
-	// Get current balance before update for audit trail
-	oldBalance := decimal.Zero
-	balances, err := s.GetUserBalances(ctx, userID)
-	if err == nil && balances != nil {
-		switch accountType {
-		case entities.AccountTypeSpendingBalance:
-			if !balances.SpendingBalance.IsZero() {
-				oldBalance = balances.SpendingBalance
-			}
-		case entities.AccountTypeStashBalance:
-			if !balances.StashBalance.IsZero() {
-				oldBalance = balances.StashBalance
-			}
-		}
+	// Begin transaction for atomic read-modify-write
+	txCtx, err := s.ledgerRepo.BeginTx(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
 	}
+
+	// Use SELECT FOR UPDATE to lock the row and prevent concurrent modifications
+	account, err := s.ledgerRepo.GetAccountByUserAndTypeForUpdate(txCtx, userID, accountType)
+	if err != nil {
+		s.ledgerRepo.RollbackTx(txCtx)
+		return fmt.Errorf("get account for update: %w", err)
+	}
+
+	// Get old balance for audit trail
+	oldBalance := account.Balance
 
 	// Log with Warn level since this is an admin override action
 	diff := newBalance.Sub(oldBalance)
@@ -220,8 +221,15 @@ func (s *Service) ReconcileBalance(ctx context.Context, userID uuid.UUID, accoun
 		"new_balance", newBalance.String(),
 		"difference", diff.String())
 
-	if err := s.ledgerRepo.UpdateAccountBalanceByUserAndType(ctx, userID, accountType, newBalance); err != nil {
-		return fmt.Errorf("reconcile balance: %w", err)
+	// Update balance within the transaction
+	if err := s.ledgerRepo.UpdateAccountBalance(txCtx, account.ID, newBalance); err != nil {
+		s.ledgerRepo.RollbackTx(txCtx)
+		return fmt.Errorf("update account balance: %w", err)
+	}
+
+	// Commit transaction
+	if err := s.ledgerRepo.CommitTx(txCtx); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
 	}
 
 	return nil

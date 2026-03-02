@@ -1,7 +1,8 @@
 -- Device tokens for push notifications (APNS/FCM)
+-- CASCADE allows account deletion per GDPR - device tokens are operational, not audit data
 CREATE TABLE IF NOT EXISTS device_tokens (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     token TEXT NOT NULL,
     platform VARCHAR(20) NOT NULL CHECK (platform IN ('ios', 'android', 'web')),
     endpoint_arn TEXT,
@@ -20,9 +21,10 @@ CREATE INDEX IF NOT EXISTS idx_device_tokens_token ON device_tokens(token);
 CREATE INDEX IF NOT EXISTS idx_device_tokens_active ON device_tokens(user_id, is_active) WHERE is_active = true;
 
 -- In-app notifications for notification center
+-- CASCADE allows account deletion per GDPR - notifications are transient user data
 CREATE TABLE IF NOT EXISTS notifications (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     type VARCHAR(50) NOT NULL,
     title VARCHAR(255) NOT NULL,
     body TEXT NOT NULL,
