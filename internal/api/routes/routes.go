@@ -47,10 +47,20 @@ func (a *WithdrawalWalletProviderAdapter) GetUserWalletByChain(ctx context.Conte
 		return wallet, nil
 	}
 
-	// Backward-compatible fallback for environments that still store Solana wallets as SOL-DEVNET.
-	// Only fall back on not-found; propagate transient/permission errors unchanged.
-	if normalized == entities.WalletChainSolana && strings.Contains(err.Error(), "not found") {
-		return a.getWalletByUserAndChain(ctx, userID, entities.WalletChainSOLDevnet)
+	// Backward-compatible fallbacks: mainnet chain → testnet equivalent on not-found.
+	if strings.Contains(err.Error(), "not found") {
+		var fallback entities.WalletChain
+		switch normalized {
+		case entities.WalletChainSolana:
+			fallback = entities.WalletChainSOLDevnet
+		case entities.WalletChainPolygon:
+			fallback = entities.WalletChainMATICAmoy
+		case entities.WalletChainAvalanche:
+			fallback = entities.WalletChainAVAXFuji
+		}
+		if fallback != "" {
+			return a.getWalletByUserAndChain(ctx, userID, fallback)
+		}
 	}
 
 	return nil, err
@@ -152,6 +162,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 	// Wire user profile provider for withdrawal AlpacaAccountID lookup
 	walletFundingHandlers.SetUserProfileProvider(container.UserRepo)
+
+	// Wire ledger and Circle for reconciliation
+	walletFundingHandlers.SetLedgerService(container.LedgerService)
+	walletFundingHandlers.SetCircleClient(container.CircleClient)
 
 	// Wire allocation service for unified balance queries
 	if allocationSvc := container.GetAllocationService(); allocationSvc != nil {
@@ -269,7 +283,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			authRateLimited := auth.Group("/")
 			authRateLimited.Use(middleware.AuthRateLimit(5))
 			if container.LoginAttemptTracker != nil {
-				authRateLimited.Use(middleware.LoginRateLimiting(container.LoginAttemptTracker, container.Logger))
+				authRateLimited.Use(middleware.LoginRateLimiting(container.LoginAttemptTracker, container.GetCaptchaVerifier(), container.Logger))
 			}
 			if lp := container.GetLoginProtectionService(); lp != nil {
 				authRateLimited.Use(middleware.LoginProtection(lp, container.ZapLog))
@@ -327,6 +341,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			kycProtected := protected.Group("/kyc")
 			{
 				kycProtected.POST("/sumsub/session", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.CreateSumsubSession)
+					kycProtected.GET("/sumsub/token", middleware.AuthRateLimit(10), kycHTTPHandlers.RefreshSumsubToken)
 				kycProtected.POST("/submit", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.SubmitKYC)
 				kycProtected.GET("/status", authHandlers.GetKYCStatus)
 				// Bridge KYC - optimized for sub-2-minute verification
@@ -501,6 +516,41 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					limits.POST("/validate/deposit", limitsHandler.ValidateDeposit())
 					limits.POST("/validate/withdrawal", limitsHandler.ValidateWithdrawal())
 				}
+			}
+
+			// P2P Transfer routes - Cash App style money transfers
+			p2pHandlers := container.GetP2PHandlers()
+			if p2pHandlers != nil {
+				p2p := protected.Group("/p2p")
+				{
+					p2p.POST("/lookup", p2pHandlers.Lookup)
+					p2p.POST("/send", p2pHandlers.Send)
+					p2p.GET("/transfers", p2pHandlers.GetTransfers)
+					p2p.GET("/recent", p2pHandlers.GetRecentRecipients)
+					p2p.DELETE("/transfers/:id", p2pHandlers.Cancel)
+					p2p.POST("/claim/:token", p2pHandlers.ClaimByToken)
+					p2p.POST("/railtag", p2pHandlers.SetRailTag)
+					p2p.POST("/railtag/check", p2pHandlers.CheckRailTag)
+				}
+			}
+
+			// Notification routes - push tokens and in-app notifications
+			notificationHandlers := handlers.NewNotificationHandlers(
+				container.DeviceTokenRepo,
+				container.NotificationRepo,
+				container.ZapLog,
+			)
+			devices := protected.Group("/devices")
+			{
+				devices.POST("/token", notificationHandlers.RegisterDeviceToken)
+				devices.DELETE("/token", notificationHandlers.UnregisterDeviceToken)
+			}
+			notifications := protected.Group("/notifications")
+			{
+				notifications.GET("", notificationHandlers.GetNotifications)
+				notifications.GET("/unread-count", notificationHandlers.GetUnreadCount)
+				notifications.POST("/:id/read", notificationHandlers.MarkAsRead)
+				notifications.POST("/read-all", notificationHandlers.MarkAllAsRead)
 			}
 
 			// Investment routes
@@ -682,6 +732,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			admin.POST("/wallet/create", walletFundingHandlers.CreateWalletsForUser)
 			admin.POST("/wallet/retry-provisioning", walletFundingHandlers.RetryWalletProvisioning)
 			admin.GET("/wallet/health", walletFundingHandlers.HealthCheck)
+			admin.POST("/reconcile/:user_id", walletFundingHandlers.ReconcileUserBalance)
 
 			// Security admin routes
 			adminMFAHandlers := handlers.NewMFAHandlers(

@@ -3,6 +3,7 @@ package kyc
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -100,12 +101,15 @@ type SumsubWebhookEventRepository interface {
 
 type KYCSyncJobRepository interface {
 	Enqueue(ctx context.Context, job *entities.KYCSyncJob) (bool, error)
+	EnqueueProviderRetry(ctx context.Context, userID, provider string, payload []byte) (bool, error)
 }
 
 type SumsubAdapter interface {
 	CreateApplicant(ctx context.Context, req *sumsub.CreateApplicantRequest, levelName string) (*sumsub.ApplicantResponse, error)
 	CreateAccessToken(ctx context.Context, applicantID, externalUserID, levelName string, ttlSeconds int) (*sumsub.AccessTokenResponse, error)
 	GetApplicantData(ctx context.Context, applicantID string) (*sumsub.ApplicantDataResponse, error)
+	GetApplicantImageMetadata(ctx context.Context, applicantID string) (*sumsub.ImageMetadataResponse, error)
+	GetInspectionImage(ctx context.Context, inspectionID, imageID string) ([]byte, string, error)
 	VerifyWebhookSignature(body []byte, digestHeader, digestAlgHeader string) error
 }
 
@@ -542,17 +546,38 @@ func (s *Service) processSumsubApproved(ctx context.Context, submission *entitie
 	request.UserID = submission.UserID
 	request.IPAddress = "sumsub"
 
+	// Fetch approved document images from Sumsub to forward to Bridge.
+	s.fetchAndAttachSumsubImages(ctx, submission.ProviderRef, payload.InspectionID, request)
+
+	// Defer scrubbing sensitive images to ensure they're always cleared even on early returns
+	defer func() {
+		request.IDDocumentFront = ""
+		request.IDDocumentBack = ""
+	}()
+
 	bridgeResult := entities.KYCProviderResult{Success: false, Status: "skipped", Error: "Bridge customer not found"}
 	if profile.BridgeCustomerID != nil && *profile.BridgeCustomerID != "" {
 		bridgeResult = s.submitToBridgeFromSumsub(ctx, *profile.BridgeCustomerID, request)
 	}
+
 	alpacaResult := s.submitToAlpaca(ctx, profile, request)
 
 	now := time.Now()
 	if bridgeResult.Success {
 		bridgeStatus := "active"
 		user.BridgeKYCStatus = &bridgeStatus
+	} else if profile.BridgeCustomerID != nil && *profile.BridgeCustomerID != "" {
+		// Enqueue a Bridge-specific retry job.
+		if s.kycSyncJobRepo != nil {
+			retryPayload, _ := encodeProviderRetryPayload(submission.VerificationData, submission.UserID.String())
+			if _, enqErr := s.kycSyncJobRepo.EnqueueProviderRetry(ctx, submission.UserID.String(), "bridge", retryPayload); enqErr != nil {
+				s.logger.Warn("Failed to enqueue Bridge retry job",
+					zap.Error(enqErr),
+					zap.String("user_id", submission.UserID.String()))
+			}
+		}
 	}
+
 	if alpacaResult.Success {
 		user.KYCStatus = string(entities.KYCStatusApproved)
 		user.KYCApprovedAt = &now
@@ -563,7 +588,17 @@ func (s *Service) processSumsubApproved(ctx context.Context, submission *entitie
 		}
 	} else {
 		user.KYCStatus = string(entities.KYCStatusProcessing)
+		// Enqueue an Alpaca-specific retry job.
+		if s.kycSyncJobRepo != nil {
+			retryPayload, _ := encodeProviderRetryPayload(submission.VerificationData, submission.UserID.String())
+			if _, enqErr := s.kycSyncJobRepo.EnqueueProviderRetry(ctx, submission.UserID.String(), "alpaca", retryPayload); enqErr != nil {
+				s.logger.Warn("Failed to enqueue Alpaca retry job",
+					zap.Error(enqErr),
+					zap.String("user_id", submission.UserID.String()))
+			}
+		}
 	}
+
 	if user.KYCSubmittedAt == nil {
 		user.KYCSubmittedAt = &now
 	}
@@ -600,6 +635,51 @@ func (s *Service) processSumsubApproved(ctx context.Context, submission *entitie
 	}
 
 	return nil
+}
+
+// fetchAndAttachSumsubImages fetches approved document images from Sumsub and attaches
+// them to the request as base64 data URIs. Failures are non-fatal warnings.
+func (s *Service) fetchAndAttachSumsubImages(ctx context.Context, applicantID, inspectionID string, req *entities.KYCSubmitRequest) {
+	if isNilSumsubAdapter(s.sumsubAdapter) || applicantID == "" || inspectionID == "" {
+		return
+	}
+
+	meta, err := s.sumsubAdapter.GetApplicantImageMetadata(ctx, applicantID)
+	if err != nil {
+		s.logger.Warn("Failed to fetch Sumsub image metadata", zap.Error(err), zap.String("applicant_id", applicantID))
+		return
+	}
+
+	for _, item := range meta.Items {
+		if item.Deactivated || strings.ToUpper(item.ReviewResult.ReviewAnswer) != "GREEN" {
+			continue
+		}
+		subType := strings.ToUpper(item.IdDocDef.IDDocSubType)
+		if subType != "FRONT_SIDE" && subType != "BACK_SIDE" {
+			continue
+		}
+		if subType == "FRONT_SIDE" && req.IDDocumentFront != "" {
+			continue
+		}
+		if subType == "BACK_SIDE" && req.IDDocumentBack != "" {
+			continue
+		}
+
+		imgBytes, contentType, imgErr := s.sumsubAdapter.GetInspectionImage(ctx, inspectionID, item.ID)
+		if imgErr != nil {
+			s.logger.Warn("Failed to fetch Sumsub image", zap.Error(imgErr), zap.String("image_id", item.ID))
+			continue
+		}
+
+		mimeType := strings.SplitN(contentType, ";", 2)[0]
+		dataURI := "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(imgBytes)
+
+		if subType == "FRONT_SIDE" {
+			req.IDDocumentFront = dataURI
+		} else {
+			req.IDDocumentBack = dataURI
+		}
+	}
 }
 
 func (s *Service) processSumsubRejected(ctx context.Context, submission *entities.KYCSubmission, payload *entities.SumsubWebhookPayload) error {
@@ -737,6 +817,8 @@ func (s *Service) submitToBridgeFromSumsub(ctx context.Context, customerID strin
 				Type:           mapTaxIDTypeToBridge(req.TaxIDType),
 				IssuingCountry: strings.ToLower(req.IssuingCountry),
 				Number:         req.TaxID,
+				ImageFront:     req.IDDocumentFront,
+				ImageBack:      req.IDDocumentBack,
 			},
 		},
 	}
@@ -1428,4 +1510,148 @@ func determineOverallStatus(user *entities.User) string {
 		return "pending"
 	}
 	return "not_started"
+}
+
+// encodeProviderRetryPayload serialises verification_data as JSON, injecting userID so retry handlers can locate the user.
+func encodeProviderRetryPayload(verificationData map[string]any, userID string) ([]byte, error) {
+	merged := make(map[string]any, len(verificationData)+1)
+	for k, v := range verificationData {
+		merged[k] = v
+	}
+	merged["user_id"] = userID
+	return json.Marshal(merged)
+}
+
+// RetryBridgeSync re-fetches Sumsub images and re-submits to Bridge using the job payload.
+func (s *Service) RetryBridgeSync(ctx context.Context, payload []byte) error {
+	var data map[string]any
+	if err := json.Unmarshal(payload, &data); err != nil {
+		return fmt.Errorf("invalid bridge retry payload: %w", err)
+	}
+
+	userIDStr := getMapString(data, "user_id")
+	if userIDStr == "" {
+		return fmt.Errorf("bridge retry payload missing user_id")
+	}
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		return fmt.Errorf("bridge retry payload invalid user_id: %w", err)
+	}
+
+	profile, err := s.userRepo.GetProfileByUserID(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("failed to get user profile for bridge retry: %w", err)
+	}
+	if profile.BridgeCustomerID == nil || *profile.BridgeCustomerID == "" {
+		return fmt.Errorf("no bridge customer ID for user %s", userIDStr)
+	}
+
+	req := sumsubRequestFromVerificationData(data)
+	req.UserID = userID
+	req.IPAddress = "retry"
+
+	applicantID := getMapString(data, "applicant_id")
+	inspectionID := getMapString(data, "sumsub_inspection_id")
+	if applicantID == "" {
+		if snap, ok := data["sumsub_applicant_snapshot"].(map[string]any); ok {
+			applicantID = getMapString(snap, "applicant_id")
+			inspectionID = getMapString(snap, "inspection_id")
+		}
+	}
+	s.fetchAndAttachSumsubImages(ctx, applicantID, inspectionID, req)
+
+	result := s.submitToBridgeFromSumsub(ctx, *profile.BridgeCustomerID, req)
+	req.IDDocumentFront = ""
+	req.IDDocumentBack = ""
+
+	if !result.Success {
+		return fmt.Errorf("bridge retry failed: %s", result.Error)
+	}
+
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("failed to get user for bridge retry update: %w", err)
+	}
+	bridgeStatus := "active"
+	user.BridgeKYCStatus = &bridgeStatus
+	return s.userRepo.Update(ctx, user)
+}
+
+// RetryAlpacaSync re-submits to Alpaca using the job payload.
+func (s *Service) RetryAlpacaSync(ctx context.Context, payload []byte) error {
+	var data map[string]any
+	if err := json.Unmarshal(payload, &data); err != nil {
+		return fmt.Errorf("invalid alpaca retry payload: %w", err)
+	}
+
+	userIDStr := getMapString(data, "user_id")
+	if userIDStr == "" {
+		return fmt.Errorf("alpaca retry payload missing user_id")
+	}
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		return fmt.Errorf("alpaca retry payload invalid user_id: %w", err)
+	}
+
+	profile, err := s.userRepo.GetProfileByUserID(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("failed to get user profile for alpaca retry: %w", err)
+	}
+
+	req := sumsubRequestFromVerificationData(data)
+	req.UserID = userID
+	req.IPAddress = "retry"
+
+	result := s.submitToAlpaca(ctx, profile, req)
+	if !result.Success {
+		return fmt.Errorf("alpaca retry failed: %s", result.Error)
+	}
+
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("failed to get user for alpaca retry update: %w", err)
+	}
+	now := time.Now()
+	user.KYCStatus = string(entities.KYCStatusApproved)
+	user.KYCApprovedAt = &now
+	user.KYCRejectionReason = nil
+	parts := strings.Split(result.Status, ":")
+	if len(parts) > 0 && strings.TrimSpace(parts[0]) != "" {
+		user.AlpacaAccountID = &parts[0]
+	}
+	return s.userRepo.Update(ctx, user)
+}
+
+// RefreshSumsubToken issues a new short-lived WebSDK access token for the user's
+// existing Sumsub applicant. Used when the SDK token expires mid-flow.
+func (s *Service) RefreshSumsubToken(ctx context.Context, userID uuid.UUID) (*entities.KYCSumsubSessionResponse, error) {
+	if isNilSumsubAdapter(s.sumsubAdapter) {
+		return nil, ErrSumsubNotConfigured
+	}
+
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+	if user.KYCProviderRef == nil || strings.TrimSpace(*user.KYCProviderRef) == "" {
+		return nil, fmt.Errorf("no existing sumsub applicant for user")
+	}
+	applicantID := strings.TrimSpace(*user.KYCProviderRef)
+
+	levelName := s.sumsubLevelName
+	if levelName == "" {
+		levelName = "basic-kyc"
+	}
+
+	accessToken, err := s.sumsubAdapter.CreateAccessToken(ctx, applicantID, userID.String(), levelName, 3600)
+	if err != nil {
+		return nil, fmt.Errorf("failed to refresh sumsub access token: %w", err)
+	}
+
+	return &entities.KYCSumsubSessionResponse{
+		Status:      "pending",
+		ApplicantID: applicantID,
+		Token:       accessToken.Token,
+		LevelName:   levelName,
+	}, nil
 }

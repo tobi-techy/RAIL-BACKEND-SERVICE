@@ -5,15 +5,21 @@ import "time"
 // SpendingStashResponse is the main response for the spending stash screen
 type SpendingStashResponse struct {
 	Balance               BalanceInfo             `json:"balance"`
-	Allocation            SpendingAllocationInfo  `json:"allocation"`
 	Card                  *CardSummary            `json:"card,omitempty"`
 	SpendingSummary       *SpendingSummary        `json:"spending_summary,omitempty"`
+	ChartData             []ChartDataPoint        `json:"chart_data"`
 	TopCategories         []CategorySummary       `json:"top_categories"`
 	RoundUps              *RoundUpsSummary        `json:"round_ups,omitempty"`
 	Limits                SpendingLimits          `json:"limits"`
 	PendingAuthorizations []PendingAuthorization  `json:"pending_authorizations"`
 	RecentTransactions    TransactionListResponse `json:"recent_transactions"`
 	Links                 SpendingLinks           `json:"_links"`
+}
+
+// ChartDataPoint represents a single point in the spending chart
+type ChartDataPoint struct {
+	Label string  `json:"label"`
+	Value float64 `json:"value"`
 }
 
 // BalanceInfo groups balance-related fields
@@ -119,18 +125,19 @@ type TransactionListResponse struct {
 
 // TransactionSummary represents a transaction in the spending stash
 type TransactionSummary struct {
-	ID                string        `json:"id"`
-	Type              string        `json:"type"`
-	Amount            string        `json:"amount"`
-	AmountFormatted   string        `json:"amount_formatted"`
-	Direction         string        `json:"direction"`
-	Currency          string        `json:"currency"`
-	Description       string        `json:"description"`
-	Merchant          *MerchantInfo `json:"merchant,omitempty"`
-	Status            string        `json:"status"`
-	CreatedAt         string        `json:"created_at"`
-	PendingSettlement bool          `json:"pending_settlement"`
-	RefundStatus      *string       `json:"refund_status"`
+	ID                 string        `json:"id"`
+	Type               string        `json:"type"`
+	Amount             string        `json:"amount"`
+	AmountFormatted    string        `json:"amount_formatted"`
+	Direction          string        `json:"direction"`
+	Currency           string        `json:"currency"`
+	Description        string        `json:"description"`
+	DestinationAddress *string       `json:"destination_address,omitempty"`
+	Merchant           *MerchantInfo `json:"merchant,omitempty"`
+	Status             string        `json:"status"`
+	CreatedAt          string        `json:"created_at"`
+	PendingSettlement  bool          `json:"pending_settlement"`
+	RefundStatus       *string       `json:"refund_status"`
 }
 
 // MerchantInfo contains rich merchant data

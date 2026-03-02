@@ -57,7 +57,7 @@ Base path: `/api/v1`
 {
   "options": {
     "publicKey": {
-      "rp": { "id": "rail.app", "name": "RAIL" },
+      "rp": { "id": "api.userail.money", "name": "RAIL" },
       "user": { "id": "<base64url>", "name": "user@example.com", "displayName": "user@example.com" },
       "challenge": "<base64url>",
       "pubKeyCredParams": [ ... ],
@@ -120,7 +120,7 @@ HTTP status: `201`
   "options": {
     "publicKey": {
       "challenge": "<base64url>",
-      "rpId": "rail.app",
+      "rpId": "api.userail.money",
       "allowCredentials": [ ... ],
       "userVerification": "preferred",
       "timeout": 60000
@@ -237,7 +237,7 @@ Implementation outline:
 
 Important:
 
-1. Keep RP ID aligned with backend config (`rail.app` currently).
+1. Keep RP ID aligned with backend config (`api.userail.money`).
 2. Use associated domains and passkey entitlement correctly for production domains.
 3. Encode binary outputs as base64url without padding to match WebAuthn JSON expectations.
 

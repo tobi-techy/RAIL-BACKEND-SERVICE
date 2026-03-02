@@ -223,6 +223,7 @@ type SecurityConfig struct {
 	EnableTokenBlacklist   bool   `mapstructure:"enable_token_blacklist"`   // enable token revocation
 	CheckPasswordBreaches  bool   `mapstructure:"check_password_breaches"`  // check HaveIBeenPwned
 	CaptchaThreshold       int    `mapstructure:"captcha_threshold"`        // failed attempts before CAPTCHA
+	CaptchaSecretKey       string `mapstructure:"captcha_secret_key"`       // CAPTCHA provider secret key (e.g. reCAPTCHA)
 	SecretsProvider        string `mapstructure:"secrets_provider"`         // "env", "aws_secrets_manager"
 	AWSSecretsRegion       string `mapstructure:"aws_secrets_region"`       // AWS region for Secrets Manager
 	AWSSecretsPrefix       string `mapstructure:"aws_secrets_prefix"`       // prefix for secret names
@@ -559,7 +560,7 @@ func setDefaults() {
 	viper.SetDefault("circle.base_url", "")
 	viper.SetDefault("circle.default_wallet_set_id", "")
 	viper.SetDefault("circle.default_wallet_set_name", "STACK-WalletSet")
-	viper.SetDefault("circle.supported_chains", []string{"SOL-DEVNET"})
+	viper.SetDefault("circle.supported_chains", []string{"SOL-DEVNET", "MATIC-AMOY", "AVAX-FUJI"})
 
 	// KYC defaults
 	viper.SetDefault("kyc.provider", "")
@@ -571,8 +572,8 @@ func setDefaults() {
 
 	// Email defaults
 	viper.SetDefault("email.provider", "")
-	viper.SetDefault("email.from_email", "no-reply@stackservice.com")
-	viper.SetDefault("email.from_name", "Stack Service")
+	viper.SetDefault("email.from_email", "no-reply@userail.money")
+	viper.SetDefault("email.from_name", "RAIL")
 	viper.SetDefault("email.environment", "development")
 	viper.SetDefault("email.base_url", "http://localhost:3000")
 	viper.SetDefault("email.reply_to", "")
@@ -806,6 +807,9 @@ func overrideFromEnv() {
 	}
 	if circleEnv := os.Getenv("CIRCLE_ENVIRONMENT"); circleEnv != "" {
 		viper.Set("circle.environment", circleEnv)
+	}
+	if treasuryWallet := os.Getenv("CIRCLE_TREASURY_WALLET_ADDRESS"); treasuryWallet != "" {
+		viper.Set("circle.treasury_wallet_address", treasuryWallet)
 	}
 	if paymentWebhookSecret := os.Getenv("PAYMENT_WEBHOOK_SECRET"); paymentWebhookSecret != "" {
 		viper.Set("payment.webhook_secret", paymentWebhookSecret)

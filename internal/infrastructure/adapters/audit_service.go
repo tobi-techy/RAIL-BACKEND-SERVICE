@@ -276,6 +276,10 @@ func (a *AuditService) GetUserAuditTrail(ctx context.Context, userID uuid.UUID, 
 		logs = append(logs, log)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
 	return logs, nil
 }
 
@@ -647,6 +651,10 @@ func (a *AuditService) GetAuditLogs(ctx context.Context, userID uuid.UUID, actio
 		}
 
 		logs = append(logs, log)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 
 	return logs, nil

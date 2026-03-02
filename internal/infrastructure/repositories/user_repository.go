@@ -1348,3 +1348,124 @@ func (r *UserRepository) GetByPhone(ctx context.Context, phone string) (*entitie
 
 	return user, nil
 }
+
+
+// GetByRailTag retrieves a user profile by rail tag
+func (r *UserRepository) GetByRailTag(ctx context.Context, railTag string) (*entities.UserProfile, error) {
+	query := `
+	        SELECT id, email, phone, rail_tag, country, address_street, address_city, address_state, address_postal_code, address_country, first_name, last_name, date_of_birth,
+	               auth_provider_id, email_verified, phone_verified,
+	               onboarding_status, kyc_status, kyc_provider_ref,
+	               kyc_submitted_at, kyc_approved_at, kyc_rejection_reason,
+	               bridge_customer_id, alpaca_account_id,
+	               is_active, created_at, updated_at
+	        FROM users 
+	        WHERE rail_tag = $1 AND is_active = true`
+
+	user := &entities.UserProfile{}
+	var kycApprovedAt, kycSubmittedAt sql.NullTime
+	var kycRejectionReason, kycProviderRef, bridgeCustomerID, alpacaAccountID, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry, railTagVal sql.NullString
+	var firstName, lastName sql.NullString
+	var dateOfBirth sql.NullTime
+
+	err := r.db.QueryRowContext(ctx, query, railTag).Scan(
+		&user.ID,
+		&user.Email,
+		&user.Phone,
+		&railTagVal,
+		&country,
+		&addressStreet,
+		&addressCity,
+		&addressState,
+		&addressPostalCode,
+		&addressCountry,
+		&firstName,
+		&lastName,
+		&dateOfBirth,
+		&user.AuthProviderID,
+		&user.EmailVerified,
+		&user.PhoneVerified,
+		&user.OnboardingStatus,
+		&user.KYCStatus,
+		&kycProviderRef,
+		&kycSubmittedAt,
+		&kycApprovedAt,
+		&kycRejectionReason,
+		&bridgeCustomerID,
+		&alpacaAccountID,
+		&user.IsActive,
+		&user.CreatedAt,
+		&user.UpdatedAt,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, sql.ErrNoRows
+		}
+		r.logger.Error("Failed to get user by rail tag", zap.Error(err), zap.String("rail_tag", railTag))
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+
+	if railTagVal.Valid {
+		user.RailTag = &railTagVal.String
+	}
+	if firstName.Valid {
+		user.FirstName = &firstName.String
+	}
+	if lastName.Valid {
+		user.LastName = &lastName.String
+	}
+	if dateOfBirth.Valid {
+		user.DateOfBirth = &dateOfBirth.Time
+	}
+	if country.Valid {
+		user.Country = &country.String
+	}
+	if addressStreet.Valid {
+		user.AddressStreet = &addressStreet.String
+	}
+	if addressCity.Valid {
+		user.AddressCity = &addressCity.String
+	}
+	if addressState.Valid {
+		user.AddressState = &addressState.String
+	}
+	if addressPostalCode.Valid {
+		user.AddressPostalCode = &addressPostalCode.String
+	}
+	if addressCountry.Valid {
+		user.AddressCountry = &addressCountry.String
+	}
+	if kycProviderRef.Valid {
+		user.KYCProviderRef = &kycProviderRef.String
+	}
+	if kycSubmittedAt.Valid {
+		user.KYCSubmittedAt = &kycSubmittedAt.Time
+	}
+	if kycApprovedAt.Valid {
+		user.KYCApprovedAt = &kycApprovedAt.Time
+	}
+	if kycRejectionReason.Valid {
+		user.KYCRejectionReason = &kycRejectionReason.String
+	}
+	if bridgeCustomerID.Valid {
+		user.BridgeCustomerID = &bridgeCustomerID.String
+	}
+	if alpacaAccountID.Valid {
+		user.AlpacaAccountID = &alpacaAccountID.String
+	}
+
+	return user, nil
+}
+
+
+// SetRailTag sets a user's rail tag
+func (r *UserRepository) SetRailTag(ctx context.Context, userID uuid.UUID, railTag string) error {
+	query := `UPDATE users SET rail_tag = $2, updated_at = NOW() WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, userID, railTag)
+	if err != nil {
+		r.logger.Error("Failed to set rail tag", zap.Error(err), zap.String("user_id", userID.String()))
+		return fmt.Errorf("failed to set rail tag: %w", err)
+	}
+	return nil
+}

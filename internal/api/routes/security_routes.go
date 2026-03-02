@@ -88,7 +88,7 @@ func SetupSecurityRoutesEnhanced(
 		// Apply login protection middleware to auth routes
 		authRoutes := v1.Group("/auth")
 		if loginTracker != nil {
-			authRoutes.Use(middleware.LoginRateLimiting(loginTracker, log))
+			authRoutes.Use(middleware.LoginRateLimiting(loginTracker, nil, log))
 		}
 		if loginProtectionService != nil {
 			authRoutes.Use(middleware.LoginProtection(loginProtectionService, zapLog))

@@ -248,6 +248,31 @@ func (r *LedgerRepository) UpdateAccountBalance(ctx context.Context, accountID u
 	return nil
 }
 
+// UpdateAccountBalanceByUserAndType updates balance for a specific user and account type
+func (r *LedgerRepository) UpdateAccountBalanceByUserAndType(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, newBalance decimal.Decimal) error {
+	query := `
+		UPDATE ledger_accounts
+		SET balance = $1, updated_at = $2
+		WHERE user_id = $3 AND account_type = $4
+	`
+
+	result, err := r.execContext(ctx, query, newBalance, time.Now(), userID, accountType)
+	if err != nil {
+		return fmt.Errorf("update account balance: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("account not found for user %s type %s", userID, accountType)
+	}
+
+	return nil
+}
+
 // ===== Transaction Operations =====
 
 // CreateTransaction creates a new ledger transaction

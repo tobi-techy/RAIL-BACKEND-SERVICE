@@ -151,6 +151,10 @@ func (s *IPWhitelistService) GetUserWhitelist(ctx context.Context, userID uuid.U
 		ips = append(ips, ip)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
 	return ips, nil
 }
 

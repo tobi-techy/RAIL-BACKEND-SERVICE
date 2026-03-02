@@ -65,7 +65,7 @@ func (s *Service) InitiateBridge(ctx context.Context, req *entities.BridgeReques
 		ID:          uuid.New(),
 		UserID:      req.UserID,
 		SourceChain: req.SourceChain,
-		DestChain:   "SOL",
+		DestChain:   req.DestChain,
 		Amount:      req.Amount,
 		DestAddress: req.DestAddress,
 		Status:      entities.BridgeStatusPending,

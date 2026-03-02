@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -23,8 +23,8 @@ type QueuedNotification struct {
 	Title     string                 `json:"title"`
 	Body      string                 `json:"body"`
 	Data      map[string]interface{} `json:"data,omitempty"`
-	Priority  string            `json:"priority"`
-	Recipient string            `json:"recipient,omitempty"`
+	Priority  string                 `json:"priority"`
+	Recipient string                 `json:"recipient,omitempty"`
 }
 
 // SMSSender defines SMS sending operations
@@ -37,11 +37,17 @@ type EmailSenderService interface {
 	SendGenericEmail(ctx context.Context, to, subject, body string) error
 }
 
+// NotificationPersister persists notifications to the database
+type NotificationPersister interface {
+	Create(ctx context.Context, userID uuid.UUID, notifType, title, body string, data map[string]interface{}) error
+}
+
 type NotificationService struct {
 	logger      *zap.Logger
 	queue       NotificationQueue
 	smsSender   SMSSender
 	emailSender EmailSenderService
+	persister   NotificationPersister
 }
 
 func NewNotificationService(logger *zap.Logger) *NotificationService {
@@ -61,6 +67,11 @@ func (s *NotificationService) SetSMSSender(sender SMSSender) {
 // SetEmailSender sets the email sender
 func (s *NotificationService) SetEmailSender(sender EmailSenderService) {
 	s.emailSender = sender
+}
+
+// SetPersister sets the notification persister for in-app notifications
+func (s *NotificationService) SetPersister(p NotificationPersister) {
+	s.persister = p
 }
 
 func (s *NotificationService) Send(ctx context.Context, notification *entities.Notification, prefs *entities.UserPreference) error {
@@ -127,8 +138,15 @@ func (s *NotificationService) sendInApp(ctx context.Context, notification *entit
 }
 
 func (s *NotificationService) queueNotification(ctx context.Context, userID uuid.UUID, notifType, title, body string, data map[string]interface{}) error {
+	// Always persist to in-app notification center for push notifications
+	if s.persister != nil && notifType == "push" {
+		if err := s.persister.Create(ctx, userID, notifType, title, body, data); err != nil {
+			s.logger.Warn("Failed to persist notification", zap.Error(err))
+		}
+	}
+
 	if s.queue == nil {
-		s.logger.Debug("Notification queue not configured, logging only",
+		s.logger.Debug("Notification queue not configured, persisted only",
 			zap.String("type", notifType),
 			zap.String("user_id", userID.String()))
 		return nil
@@ -190,6 +208,16 @@ func (s *NotificationService) NotifyLargeBalanceChange(ctx context.Context, user
 	title := "Large Balance Change"
 	body := fmt.Sprintf("A %s of $%s has been processed. New balance: $%s", changeType, amount.String(), newBalance.String())
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "balance_change"})
+}
+
+func (s *NotificationService) NotifyAllocationFailed(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID, reason string) error {
+	title := "Investment Allocation Requires Attention"
+	body := fmt.Sprintf("Your deposit of $%s was received but the automatic 70/30 allocation split could not be completed: %s. Please contact support or try again later.", amount.String(), reason)
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{
+		"type":       "allocation_failed",
+		"deposit_id": depositID.String(),
+		"amount":     amount.String(),
+	})
 }
 
 func (s *NotificationService) SendGenericNotification(ctx context.Context, userID uuid.UUID, title, message string) error {

@@ -5,21 +5,34 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/allocation"
 	"github.com/rail-service/rail_service/internal/domain/services/card"
+	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/internal/domain/services/limits"
 	"github.com/rail-service/rail_service/internal/domain/services/roundup"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
+
+// P2PRepository interface for spending stash
+type P2PRepository interface {
+	GetBySender(ctx context.Context, senderID uuid.UUID, limit, offset int) ([]*entities.P2PTransfer, error)
+}
+
+// WithdrawalRepository interface for spending stash
+type WithdrawalRepository interface {
+	GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error)
+}
 
 var errSpendingDependencyUnavailable = errors.New("spending dependency unavailable")
 
@@ -29,6 +42,9 @@ type SpendingStashHandlers struct {
 	cardService       *card.Service
 	roundupService    *roundup.Service
 	limitsService     *limits.Service
+	ledgerService     *ledger.Service
+	p2pRepo           P2PRepository
+	withdrawalRepo    WithdrawalRepository
 	logger            *zap.Logger
 }
 
@@ -47,6 +63,21 @@ func NewSpendingStashHandlers(
 		limitsService:     limitsService,
 		logger:            logger,
 	}
+}
+
+// SetLedgerService sets the ledger service (for unified transaction history)
+func (h *SpendingStashHandlers) SetLedgerService(ledgerService *ledger.Service) {
+	h.ledgerService = ledgerService
+}
+
+// SetP2PRepo sets the P2P repository
+func (h *SpendingStashHandlers) SetP2PRepo(repo P2PRepository) {
+	h.p2pRepo = repo
+}
+
+// SetWithdrawalRepo sets the withdrawal repository
+func (h *SpendingStashHandlers) SetWithdrawalRepo(repo WithdrawalRepository) {
+	h.withdrawalRepo = repo
 }
 
 // GetSpendingStash handles GET /api/v1/account/spending-stash
@@ -71,21 +102,23 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 	var wg sync.WaitGroup
 	var (
 		balances       *entities.AllocationBalances
-		allocationMode *entities.SmartAllocationMode
 		cards          []*entities.BridgeCard
 		roundupSummary *entities.RoundupSummary
 		cardTxns       []*entities.BridgeCardTransaction
+		p2pTransfers   []*entities.P2PTransfer
+		withdrawals    []*entities.Withdrawal
 		userLimits     *entities.UserLimitsResponse
 
 		balancesErr       error
-		allocationModeErr error
 		cardsErr          error
 		roundupSummaryErr error
 		cardTxnsErr       error
+		p2pErr            error
+		withdrawalsErr    error
 		userLimitsErr     error
 	)
 
-	wg.Add(4)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		if h.allocationService == nil {
@@ -93,14 +126,6 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 			return
 		}
 		balances, balancesErr = h.allocationService.GetBalances(ctx, userID)
-	}()
-	go func() {
-		defer wg.Done()
-		if h.allocationService == nil {
-			allocationModeErr = errSpendingDependencyUnavailable
-			return
-		}
-		allocationMode, allocationModeErr = h.allocationService.GetMode(ctx, userID)
 	}()
 	go func() {
 		defer wg.Done()
@@ -118,6 +143,25 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 		}
 		cardTxns, cardTxnsErr = h.cardService.GetUserTransactions(ctx, userID, limit+1, 0)
 	}()
+
+	// P2P transfers (sent money)
+	if h.p2pRepo != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p2pTransfers, p2pErr = h.p2pRepo.GetBySender(ctx, userID, limit, 0)
+		}()
+	}
+
+	// Fiat withdrawals
+	if h.withdrawalRepo != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			withdrawals, withdrawalsErr = h.withdrawalRepo.GetByUserID(ctx, userID, limit, 0)
+		}()
+	}
+
 	if h.roundupService != nil {
 		wg.Add(1)
 		go func() {
@@ -156,9 +200,6 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 		return
 	}
 
-	if allocationModeErr != nil {
-		h.logger.Warn("Failed to load allocation mode for spending stash", zap.String("user_id", userID.String()), zap.Error(allocationModeErr))
-	}
 	if cardsErr != nil {
 		h.logger.Warn("Failed to load cards for spending stash", zap.String("user_id", userID.String()), zap.Error(cardsErr))
 	}
@@ -168,16 +209,23 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 	if userLimitsErr != nil {
 		h.logger.Warn("Failed to load limits for spending stash", zap.String("user_id", userID.String()), zap.Error(userLimitsErr))
 	}
+	if p2pErr != nil {
+		h.logger.Warn("Failed to load P2P transfers for spending stash", zap.String("user_id", userID.String()), zap.Error(p2pErr))
+	}
+	if withdrawalsErr != nil {
+		h.logger.Warn("Failed to load withdrawals for spending stash", zap.String("user_id", userID.String()), zap.Error(withdrawalsErr))
+	}
 
-	c.JSON(http.StatusOK, h.buildResponse(balances, allocationMode, cards, roundupSummary, cardTxns, userLimits, limit))
+	c.JSON(http.StatusOK, h.buildResponse(balances, cards, roundupSummary, cardTxns, p2pTransfers, withdrawals, userLimits, limit))
 }
 
 func (h *SpendingStashHandlers) buildResponse(
 	balances *entities.AllocationBalances,
-	allocationMode *entities.SmartAllocationMode,
 	cards []*entities.BridgeCard,
 	roundupSummary *entities.RoundupSummary,
 	cardTxns []*entities.BridgeCardTransaction,
+	p2pTransfers []*entities.P2PTransfer,
+	withdrawals []*entities.Withdrawal,
 	userLimits *entities.UserLimitsResponse,
 	limit int,
 ) *SpendingStashResponse {
@@ -193,16 +241,7 @@ func (h *SpendingStashHandlers) buildResponse(
 			Currency:                 "USD",
 			LastUpdated:              now,
 		},
-		Allocation: SpendingAllocationInfo{
-			Active:                 false,
-			SpendingRatio:          0.70,
-			StashRatio:             0.30,
-			TotalReceived:          "0.00",
-			TotalReceivedFormatted: "$0.00",
-			SpendingAllocated:      "0.00",
-			StashAllocated:         "0.00",
-			Unallocated:            "0.00",
-		},
+		ChartData:             []ChartDataPoint{},
 		TopCategories:         []CategorySummary{},
 		PendingAuthorizations: []PendingAuthorization{},
 		RecentTransactions:    TransactionListResponse{Items: []TransactionSummary{}},
@@ -227,26 +266,6 @@ func (h *SpendingStashHandlers) buildResponse(
 		resp.Balance.SpendingBalanceFormatted = formatCurrencyFromDecimal(balances.SpendingBalance, "USD", false)
 		resp.Balance.Available = balances.SpendingRemaining.StringFixed(2)
 		resp.Balance.LastUpdated = balances.UpdatedAt
-		resp.Allocation.Active = balances.ModeActive
-		resp.Allocation.SpendingAllocated = balances.SpendingBalance.StringFixed(2)
-		resp.Allocation.StashAllocated = balances.StashBalance.StringFixed(2)
-		resp.Allocation.Unallocated = balances.USDCBalance.StringFixed(2)
-		total := balances.SpendingBalance.Add(balances.StashBalance).Add(balances.USDCBalance)
-		resp.Allocation.TotalReceived = total.StringFixed(2)
-		resp.Allocation.TotalReceivedFormatted = formatCurrencyFromDecimal(total, "USD", false)
-	}
-
-	// Allocation mode
-	if allocationMode != nil {
-		resp.Allocation.Active = allocationMode.Active
-		spendRatio, _ := allocationMode.RatioSpending.Float64()
-		stashRatio, _ := allocationMode.RatioStash.Float64()
-		resp.Allocation.SpendingRatio = spendRatio
-		resp.Allocation.StashRatio = stashRatio
-		if allocationMode.ResumedAt != nil {
-			ts := allocationMode.ResumedAt.Format(time.RFC3339)
-			resp.Allocation.LastAllocationAt = &ts
-		}
 	}
 
 	// Card
@@ -337,8 +356,79 @@ func (h *SpendingStashHandlers) buildResponse(
 		}
 	}
 
-	// Spending summary & categories
-	resp.SpendingSummary, resp.TopCategories = h.calculateSpendingMetrics(cardTxns)
+	// Add P2P transfers (sent money)
+	for _, p2p := range p2pTransfers {
+		if p2p.Status == entities.P2PStatusCompleted || p2p.Status == entities.P2PStatusClaimed {
+			amount := p2p.Amount.Neg()
+			description := "Sent to " + p2p.RecipientIdentifier
+			if p2p.Note != nil && *p2p.Note != "" {
+				description = *p2p.Note
+			}
+			resp.RecentTransactions.Items = append(resp.RecentTransactions.Items, TransactionSummary{
+				ID:              p2p.ID.String(),
+				Type:            "p2p",
+				Amount:          amount.StringFixed(2),
+				AmountFormatted: formatCurrencyFromDecimal(amount, p2p.Currency, true),
+				Direction:       "debit",
+				Currency:        p2p.Currency,
+				Description:     description,
+				Status:          string(p2p.Status),
+				CreatedAt:       p2p.CreatedAt.Format(time.RFC3339),
+			})
+		} else if p2p.Status == entities.P2PStatusPending {
+			// Pending P2P transfers
+			resp.PendingAuthorizations = append(resp.PendingAuthorizations, PendingAuthorization{
+				ID:              p2p.ID.String(),
+				MerchantName:    "P2P to " + p2p.RecipientIdentifier,
+				Amount:          p2p.Amount.StringFixed(2),
+				AmountFormatted: formatCurrencyFromDecimal(p2p.Amount, p2p.Currency, false),
+				Currency:        p2p.Currency,
+				AuthorizedAt:    p2p.CreatedAt.Format(time.RFC3339),
+				ExpiresAt:       p2p.ExpiresAt.Format(time.RFC3339),
+				Category:        "P2P Transfer",
+			})
+		}
+	}
+
+	// Add withdrawals
+	for _, w := range withdrawals {
+		if w.Status == entities.WithdrawalStatusCompleted || w.Status == entities.WithdrawalStatusProcessing {
+			amount := w.Amount.Neg()
+			description := "Withdrawal"
+			if w.DestinationType != "" {
+				description = "Withdrawal to " + string(w.DestinationType)
+			}
+			resp.RecentTransactions.Items = append(resp.RecentTransactions.Items, TransactionSummary{
+				ID:                 w.ID.String(),
+				Type:               "withdrawal",
+				Amount:             amount.StringFixed(2),
+				AmountFormatted:    formatCurrencyFromDecimal(amount, string(w.Currency), true),
+				Direction:          "debit",
+				Currency:           string(w.Currency),
+				Description:        description,
+				DestinationAddress: w.DestinationAddress,
+				Status:             string(w.Status),
+				CreatedAt:          w.CreatedAt.Format(time.RFC3339),
+			})
+		} else if w.Status == entities.WithdrawalStatusPending {
+			resp.PendingAuthorizations = append(resp.PendingAuthorizations, PendingAuthorization{
+				ID:              w.ID.String(),
+				MerchantName:    "Pending Withdrawal",
+				Amount:          w.Amount.StringFixed(2),
+				AmountFormatted: formatCurrencyFromDecimal(w.Amount, string(w.Currency), false),
+				Currency:        string(w.Currency),
+				AuthorizedAt:    w.CreatedAt.Format(time.RFC3339),
+				ExpiresAt:       w.CreatedAt.Add(24 * time.Hour).Format(time.RFC3339),
+				Category:        "Withdrawal",
+			})
+		}
+	}
+
+	// Sort all transactions by date (newest first)
+	h.sortTransactionsByDate(resp.RecentTransactions.Items)
+
+	// Spending summary, categories, and chart data
+	resp.SpendingSummary, resp.TopCategories, resp.ChartData = h.calculateSpendingMetrics(cardTxns, p2pTransfers, withdrawals)
 
 	// Round-ups
 	if roundupSummary != nil && roundupSummary.Settings != nil && roundupSummary.Settings.Enabled {
@@ -385,26 +475,47 @@ func (h *SpendingStashHandlers) buildResponse(
 	return resp
 }
 
-func (h *SpendingStashHandlers) calculateSpendingMetrics(txns []*entities.BridgeCardTransaction) (*SpendingSummary, []CategorySummary) {
-	if len(txns) == 0 {
+func (h *SpendingStashHandlers) sortTransactionsByDate(items []TransactionSummary) {
+	sort.Slice(items, func(i, j int) bool {
+		ti, _ := time.Parse(time.RFC3339, items[i].CreatedAt)
+		tj, _ := time.Parse(time.RFC3339, items[j].CreatedAt)
+		return tj.After(ti)
+	})
+}
+
+func (h *SpendingStashHandlers) calculateSpendingMetrics(cardTxns []*entities.BridgeCardTransaction, p2pTransfers []*entities.P2PTransfer, withdrawals []*entities.Withdrawal) (*SpendingSummary, []CategorySummary, []ChartDataPoint) {
+	// Generate chart data for last 6 months
+	now := time.Now()
+	monthlyTotals := make(map[string]decimal.Decimal)
+	months := []string{"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
+
+	// Initialize last 6 months
+	for i := 5; i >= 0; i-- {
+		m := now.AddDate(0, -i, 0)
+		key := fmt.Sprintf("%d-%02d", m.Year(), m.Month())
+		monthlyTotals[key] = decimal.Zero
+	}
+
+	if len(cardTxns) == 0 && len(p2pTransfers) == 0 && len(withdrawals) == 0 {
+		chartData := h.buildChartData(now, monthlyTotals, months)
 		return &SpendingSummary{
 			ThisMonthTotal:          "0.00",
 			ThisMonthTotalFormatted: "$0.00",
 			DailyAverage:            "0.00",
 			DailyAverageFormatted:   "$0.00",
 			Trend:                   "stable",
-		}, []CategorySummary{}
+		}, []CategorySummary{}, chartData
 	}
 
-	now := time.Now()
 	thisMonthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	lastMonthStart := thisMonthStart.AddDate(0, -1, 0)
+	sixMonthsAgo := thisMonthStart.AddDate(0, -5, 0)
 
 	var thisMonthTotal, lastMonthTotal decimal.Decimal
 	categoryTotals := make(map[string]decimal.Decimal)
 	count := 0
 
-	for _, tx := range txns {
+	for _, tx := range cardTxns {
 		if tx.Status == "pending" || tx.Type == "authorization" {
 			continue
 		}
@@ -412,6 +523,12 @@ func (h *SpendingStashHandlers) calculateSpendingMetrics(txns []*entities.Bridge
 		category := "Other"
 		if tx.MerchantCategory != nil {
 			category = *tx.MerchantCategory
+		}
+
+		// Chart data - last 6 months
+		if !tx.CreatedAt.Before(sixMonthsAgo) {
+			key := fmt.Sprintf("%d-%02d", tx.CreatedAt.Year(), tx.CreatedAt.Month())
+			monthlyTotals[key] = monthlyTotals[key].Add(amount)
 		}
 
 		if !tx.CreatedAt.Before(thisMonthStart) {
@@ -422,6 +539,53 @@ func (h *SpendingStashHandlers) calculateSpendingMetrics(txns []*entities.Bridge
 			lastMonthTotal = lastMonthTotal.Add(amount)
 		}
 	}
+
+	// Add P2P transfers to spending metrics
+	for _, p2p := range p2pTransfers {
+		if p2p.Status != entities.P2PStatusCompleted && p2p.Status != entities.P2PStatusClaimed {
+			continue
+		}
+		amount := p2p.Amount
+
+		// Chart data
+		if !p2p.CreatedAt.Before(sixMonthsAgo) {
+			key := fmt.Sprintf("%d-%02d", p2p.CreatedAt.Year(), p2p.CreatedAt.Month())
+			monthlyTotals[key] = monthlyTotals[key].Add(amount)
+		}
+
+		if !p2p.CreatedAt.Before(thisMonthStart) {
+			thisMonthTotal = thisMonthTotal.Add(amount)
+			categoryTotals["P2P Transfers"] = categoryTotals["P2P Transfers"].Add(amount)
+			count++
+		} else if !p2p.CreatedAt.Before(lastMonthStart) {
+			lastMonthTotal = lastMonthTotal.Add(amount)
+		}
+	}
+
+	// Add withdrawals to spending metrics
+	for _, w := range withdrawals {
+		if w.Status != entities.WithdrawalStatusCompleted {
+			continue
+		}
+		amount := w.Amount
+
+		// Chart data
+		if !w.CreatedAt.Before(sixMonthsAgo) {
+			key := fmt.Sprintf("%d-%02d", w.CreatedAt.Year(), w.CreatedAt.Month())
+			monthlyTotals[key] = monthlyTotals[key].Add(amount)
+		}
+
+		if !w.CreatedAt.Before(thisMonthStart) {
+			thisMonthTotal = thisMonthTotal.Add(amount)
+			categoryTotals["Withdrawals"] = categoryTotals["Withdrawals"].Add(amount)
+			count++
+		} else if !w.CreatedAt.Before(lastMonthStart) {
+			lastMonthTotal = lastMonthTotal.Add(amount)
+		}
+	}
+
+	// Build chart data
+	chartData := h.buildChartData(now, monthlyTotals, months)
 
 	summary := &SpendingSummary{
 		ThisMonthTotal:          thisMonthTotal.StringFixed(2),
@@ -477,7 +641,19 @@ func (h *SpendingStashHandlers) calculateSpendingMetrics(txns []*entities.Bridge
 		categories = categories[:5]
 	}
 
-	return summary, categories
+	return summary, categories, chartData
+}
+
+func (h *SpendingStashHandlers) buildChartData(now time.Time, monthlyTotals map[string]decimal.Decimal, months []string) []ChartDataPoint {
+	chartData := make([]ChartDataPoint, 0, 6)
+	for i := 5; i >= 0; i-- {
+		m := now.AddDate(0, -i, 0)
+		key := fmt.Sprintf("%d-%02d", m.Year(), m.Month())
+		label := months[m.Month()-1]
+		val, _ := monthlyTotals[key].Float64()
+		chartData = append(chartData, ChartDataPoint{Label: label, Value: val})
+	}
+	return chartData
 }
 
 func estimateDailyTransactionsRemaining(dailyRemaining, minimumTxn string) int {

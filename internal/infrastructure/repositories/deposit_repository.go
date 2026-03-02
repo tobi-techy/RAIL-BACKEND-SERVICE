@@ -26,17 +26,19 @@ func NewDepositRepository(db *sqlx.DB) *DepositRepository {
 func (r *DepositRepository) Create(ctx context.Context, deposit *entities.Deposit) error {
 	query := `
 		INSERT INTO deposits (
-			id, user_id, virtual_account_id, amount, status,
+			id, idempotency_key, correlation_id, user_id, virtual_account_id, amount, status,
 			tx_hash, chain, token, confirmed_at,
 			off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
 			alpaca_funding_tx_id, alpaca_funded_at, created_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
 		)
 	`
 
 	_, err := r.db.ExecContext(ctx, query,
 		deposit.ID,
+		deposit.IdempotencyKey,
+		deposit.CorrelationID,
 		deposit.UserID,
 		deposit.VirtualAccountID,
 		deposit.Amount,
@@ -63,7 +65,7 @@ func (r *DepositRepository) Create(ctx context.Context, deposit *entities.Deposi
 // GetByID retrieves a deposit by ID
 func (r *DepositRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.Deposit, error) {
 	query := `
-		SELECT id, user_id, virtual_account_id, amount, status,
+		SELECT id, idempotency_key, correlation_id, user_id, virtual_account_id, amount, status,
 			   tx_hash, chain, token, confirmed_at,
 			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
 			   alpaca_funding_tx_id, alpaca_funded_at, created_at
@@ -86,7 +88,7 @@ func (r *DepositRepository) GetByID(ctx context.Context, id uuid.UUID) (*entitie
 // GetByOffRampTxID retrieves a deposit by off-ramp transaction ID
 func (r *DepositRepository) GetByOffRampTxID(ctx context.Context, txID string) (*entities.Deposit, error) {
 	query := `
-		SELECT id, user_id, virtual_account_id, amount, status,
+		SELECT id, idempotency_key, correlation_id, user_id, virtual_account_id, amount, status,
 			   tx_hash, chain, token, confirmed_at,
 			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
 			   alpaca_funding_tx_id, alpaca_funded_at, created_at
@@ -110,23 +112,26 @@ func (r *DepositRepository) GetByOffRampTxID(ctx context.Context, txID string) (
 func (r *DepositRepository) Update(ctx context.Context, deposit *entities.Deposit) error {
 	query := `
 		UPDATE deposits
-		SET virtual_account_id = $2,
-			amount = $3,
-			status = $4,
-			tx_hash = $5,
-			chain = $6,
-			token = $7,
-			confirmed_at = $8,
-			off_ramp_tx_id = $9,
-			off_ramp_initiated_at = $10,
-			off_ramp_completed_at = $11,
-			alpaca_funding_tx_id = $12,
-			alpaca_funded_at = $13
+		SET idempotency_key = $2,
+			virtual_account_id = $3,
+			amount = $4,
+			status = $5,
+			tx_hash = $6,
+			chain = $7,
+			token = $8,
+			confirmed_at = $9,
+			off_ramp_tx_id = $10,
+			off_ramp_initiated_at = $11,
+			off_ramp_completed_at = $12,
+			alpaca_funding_tx_id = $13,
+			alpaca_funded_at = $14,
+			updated_at = NOW()
 		WHERE id = $1
 	`
 
 	_, err := r.db.ExecContext(ctx, query,
 		deposit.ID,
+		deposit.IdempotencyKey,
 		deposit.VirtualAccountID,
 		deposit.Amount,
 		deposit.Status,
@@ -151,7 +156,7 @@ func (r *DepositRepository) Update(ctx context.Context, deposit *entities.Deposi
 // ListByUserID retrieves all deposits for a user
 func (r *DepositRepository) ListByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.Deposit, error) {
 	query := `
-		SELECT id, user_id, virtual_account_id, amount, status,
+		SELECT id, idempotency_key, correlation_id, user_id, virtual_account_id, amount, status,
 			   tx_hash, chain, token, confirmed_at,
 			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
 			   alpaca_funding_tx_id, alpaca_funded_at, created_at
@@ -172,7 +177,7 @@ func (r *DepositRepository) ListByUserID(ctx context.Context, userID uuid.UUID) 
 // GetByUserID retrieves deposits for a user with pagination
 func (r *DepositRepository) GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Deposit, error) {
 	query := `
-		SELECT id, user_id, virtual_account_id, amount, status,
+		SELECT id, idempotency_key, correlation_id, user_id, virtual_account_id, amount, status,
 			   tx_hash, chain, token, confirmed_at,
 			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
 			   alpaca_funding_tx_id, alpaca_funded_at, created_at
@@ -194,7 +199,7 @@ func (r *DepositRepository) GetByUserID(ctx context.Context, userID uuid.UUID, l
 // GetByTxHash retrieves a deposit by transaction hash
 func (r *DepositRepository) GetByTxHash(ctx context.Context, txHash string) (*entities.Deposit, error) {
 	query := `
-		SELECT id, user_id, virtual_account_id, amount, status,
+		SELECT id, idempotency_key, correlation_id, user_id, virtual_account_id, amount, status,
 			   tx_hash, chain, token, confirmed_at,
 			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
 			   alpaca_funding_tx_id, alpaca_funded_at, created_at
@@ -209,6 +214,30 @@ func (r *DepositRepository) GetByTxHash(ctx context.Context, txHash string) (*en
 			return nil, fmt.Errorf("deposit not found")
 		}
 		return nil, fmt.Errorf("failed to get deposit: %w", err)
+	}
+
+	return &deposit, nil
+}
+
+// GetByIdempotencyKey retrieves a deposit by idempotency key
+// This is the primary method for checking deposit idempotency
+func (r *DepositRepository) GetByIdempotencyKey(ctx context.Context, idempotencyKey string) (*entities.Deposit, error) {
+	query := `
+		SELECT id, idempotency_key, correlation_id, user_id, virtual_account_id, amount, status,
+			   tx_hash, chain, token, confirmed_at,
+			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
+			   alpaca_funding_tx_id, alpaca_funded_at, created_at
+		FROM deposits
+		WHERE idempotency_key = $1
+	`
+
+	var deposit entities.Deposit
+	err := r.db.GetContext(ctx, &deposit, query, idempotencyKey)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("deposit not found")
+		}
+		return nil, fmt.Errorf("failed to get deposit by idempotency key: %w", err)
 	}
 
 	return &deposit, nil

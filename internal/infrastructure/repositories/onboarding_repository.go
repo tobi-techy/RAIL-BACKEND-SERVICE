@@ -120,6 +120,10 @@ func (r *OnboardingFlowRepository) GetByUserID(ctx context.Context, userID uuid.
 		flows = append(flows, flow)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
 	return flows, nil
 }
 
@@ -230,6 +234,10 @@ func (r *OnboardingFlowRepository) GetCompletedSteps(ctx context.Context, userID
 			return nil, fmt.Errorf("failed to scan step type: %w", err)
 		}
 		steps = append(steps, stepType)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 
 	return steps, nil
@@ -352,6 +360,10 @@ func (r *KYCSubmissionRepository) GetByUserID(ctx context.Context, userID uuid.U
 		}
 
 		submissions = append(submissions, submission)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 
 	return submissions, nil
@@ -693,6 +705,10 @@ func (r *WalletProvisioningJobRepository) GetRetryableJobs(ctx context.Context, 
 		}
 
 		jobs = append(jobs, job)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 
 	return jobs, nil

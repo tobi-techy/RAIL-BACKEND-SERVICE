@@ -38,6 +38,7 @@ type KYCSyncJob struct {
 	CorrelationID string           `json:"correlation_id" db:"correlation_id"`
 	EventType     string           `json:"event_type" db:"event_type"`
 	Payload       []byte           `json:"payload" db:"payload"`
+	Provider      *string          `json:"provider,omitempty" db:"provider"`
 	Status        KYCSyncJobStatus `json:"status" db:"status"`
 	AttemptCount  int              `json:"attempt_count" db:"attempt_count"`
 	MaxAttempts   int              `json:"max_attempts" db:"max_attempts"`
@@ -83,8 +84,8 @@ func (j *KYCSyncJob) Validate() error {
 	if j.DedupeKey == "" {
 		return fmt.Errorf("dedupe key is required")
 	}
-	if j.ApplicantID == "" {
-		return fmt.Errorf("applicant ID is required")
+	if j.Provider == nil && j.ApplicantID == "" {
+		return fmt.Errorf("applicant ID is required for sumsub jobs")
 	}
 	if j.EventType == "" {
 		return fmt.Errorf("event type is required")

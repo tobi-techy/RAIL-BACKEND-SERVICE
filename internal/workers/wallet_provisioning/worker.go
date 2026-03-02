@@ -83,6 +83,8 @@ func DefaultConfig() Config {
 		JitterFactor:        0.1,
 		ChainsToProvision: []entities.WalletChain{
 			entities.WalletChainSOLDevnet,
+			entities.WalletChainMATICAmoy,
+			entities.WalletChainAVAXFuji,
 		},
 		WalletSetNamePrefix: "STACK-WalletSet",
 		DefaultWalletSetID:  "",

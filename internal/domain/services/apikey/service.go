@@ -159,6 +159,10 @@ func (s *Service) ListAPIKeys(ctx context.Context, userID *uuid.UUID) ([]*APIKey
 		apiKeys = append(apiKeys, apiKey)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
 	return apiKeys, nil
 }
 

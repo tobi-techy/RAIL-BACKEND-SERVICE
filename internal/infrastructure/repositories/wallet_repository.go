@@ -143,6 +143,10 @@ func (r *WalletRepository) GetByUserID(ctx context.Context, userID uuid.UUID) ([
 		wallets = append(wallets, wallet)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
 	return wallets, nil
 }
 
@@ -483,6 +487,10 @@ func (r *WalletRepository) GetByUserIDAndAccountType(ctx context.Context, userID
 		wallets = append(wallets, wallet)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
 	return wallets, nil
 }
 
@@ -619,6 +627,10 @@ func (r *WalletRepository) GetWalletsByWalletSetID(ctx context.Context, walletSe
 		wallets = append(wallets, wallet)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
 	return wallets, nil
 }
 
@@ -635,4 +647,40 @@ func (r *WalletRepository) CountByStatus(ctx context.Context, status entities.Wa
 	}
 
 	return count, nil
+}
+
+// GetAllActiveWallets returns all wallets with active status and a Circle wallet ID
+func (r *WalletRepository) GetAllActiveWallets(ctx context.Context) ([]*entities.ManagedWallet, error) {
+	query := `
+		SELECT id, user_id, wallet_set_id, circle_wallet_id, chain, 
+		       address, account_type, status, created_at, updated_at
+		FROM managed_wallets 
+		WHERE status = 'active' AND circle_wallet_id IS NOT NULL AND circle_wallet_id != ''
+		ORDER BY created_at ASC`
+
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get active wallets: %w", err)
+	}
+	defer rows.Close()
+
+	var wallets []*entities.ManagedWallet
+	for rows.Next() {
+		wallet := &entities.ManagedWallet{}
+		if err := rows.Scan(
+			&wallet.ID, &wallet.UserID, &wallet.WalletSetID, &wallet.CircleWalletID,
+			&wallet.Chain, &wallet.Address, &wallet.AccountType, &wallet.Status,
+			&wallet.CreatedAt, &wallet.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan wallet: %w", err)
+		}
+		wallets = append(wallets, wallet)
+	}
+
+	// Check for iteration errors
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating wallet rows: %w", err)
+	}
+
+	return wallets, nil
 }

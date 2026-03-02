@@ -15,8 +15,10 @@ type WalletChain string
 
 const (
 	// Circle-supported chains (testnet)
-	WalletChainSOLDevnet WalletChain = "SOL-DEVNET"
-	
+	WalletChainSOLDevnet  WalletChain = "SOL-DEVNET"
+	WalletChainMATICAmoy  WalletChain = "MATIC-AMOY"
+	WalletChainAVAXFuji   WalletChain = "AVAX-FUJI"
+
 	// Circle-supported chains (mainnet) - all wallets via Circle
 	WalletChainEthereum  WalletChain = "ETH"
 	WalletChainPolygon   WalletChain = "MATIC"
@@ -52,7 +54,7 @@ func GetMainnetChains() []WalletChain {
 
 // GetTestnetChains returns testnet chains
 func GetTestnetChains() []WalletChain {
-	return []WalletChain{WalletChainSOLDevnet}
+	return []WalletChain{WalletChainSOLDevnet, WalletChainMATICAmoy, WalletChainAVAXFuji}
 }
 
 // IsValid checks if the chain is supported
@@ -82,7 +84,8 @@ func (c WalletChain) GetChainFamily() string {
 	switch c {
 	case WalletChainSOLDevnet, WalletChainSolana:
 		return "Solana"
-	case WalletChainEthereum, WalletChainPolygon, WalletChainAvalanche, WalletChainArbitrum, WalletChainBase, WalletChainOptimism:
+	case WalletChainEthereum, WalletChainPolygon, WalletChainAvalanche, WalletChainArbitrum, WalletChainBase, WalletChainOptimism,
+		WalletChainMATICAmoy, WalletChainAVAXFuji:
 		return "EVM"
 	case WalletChainAptos:
 		return "Aptos"
@@ -372,7 +375,7 @@ type WalletProvisioningJobResponse struct {
 
 // WalletInitiationRequest represents request to initiate wallet creation after passcode verification
 type WalletInitiationRequest struct {
-	Chains []string `json:"chains,omitempty" validate:"omitempty,dive,oneof=SOL-DEVNET APTOS-TESTNET MATIC-AMOY BASE-SEPOLIA"`
+	Chains []string `json:"chains,omitempty" validate:"omitempty,dive,oneof=SOL-DEVNET MATIC-AMOY AVAX-FUJI"`
 }
 
 // WalletInitiationResponse represents response for wallet initiation
