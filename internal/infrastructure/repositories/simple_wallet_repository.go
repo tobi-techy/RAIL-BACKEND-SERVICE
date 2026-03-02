@@ -65,7 +65,7 @@ func (r *SimpleWalletRepository) GetByAddress(ctx context.Context, address strin
 	query := `
 		SELECT id, user_id, chain, address, circle_wallet_id, wallet_set_id, account_type, status, created_at, updated_at
 		FROM wallets 
-		WHERE address = $1`
+		WHERE LOWER(address) = LOWER($1)`
 
 	wallet := &entities.Wallet{}
 
@@ -195,6 +195,10 @@ func (r *SimpleWalletRepository) GetByUserID(ctx context.Context, userID uuid.UU
 			return nil, fmt.Errorf("failed to scan wallet: %w", err)
 		}
 		wallets = append(wallets, wallet)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 
 	return wallets, nil

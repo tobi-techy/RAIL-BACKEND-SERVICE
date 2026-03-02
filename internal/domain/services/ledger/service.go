@@ -183,6 +183,50 @@ func (s *Service) GetUserBalances(ctx context.Context, userID uuid.UUID) (*entit
 	return balances, nil
 }
 
+// ReconcileBalance directly sets a user's account balance (for admin reconciliation)
+func (s *Service) ReconcileBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, newBalance decimal.Decimal) error {
+	// Validate accountType is valid (spending or savings)
+	if accountType != entities.AccountTypeSpendingBalance && accountType != entities.AccountTypeStashBalance {
+		return fmt.Errorf("invalid account type: %s (must be spending_balance or stash_balance)", accountType)
+	}
+
+	// Validate newBalance is not negative
+	if newBalance.IsNegative() {
+		return fmt.Errorf("reconciliation cannot set negative balance: %s", newBalance.String())
+	}
+
+	// Get current balance before update for audit trail
+	oldBalance := decimal.Zero
+	balances, err := s.GetUserBalances(ctx, userID)
+	if err == nil && balances != nil {
+		switch accountType {
+		case entities.AccountTypeSpendingBalance:
+			if !balances.SpendingBalance.IsZero() {
+				oldBalance = balances.SpendingBalance
+			}
+		case entities.AccountTypeStashBalance:
+			if !balances.StashBalance.IsZero() {
+				oldBalance = balances.StashBalance
+			}
+		}
+	}
+
+	// Log with Warn level since this is an admin override action
+	diff := newBalance.Sub(oldBalance)
+	s.logger.Warn("Reconciling balance (admin override)",
+		"user_id", userID.String(),
+		"account_type", string(accountType),
+		"old_balance", oldBalance.String(),
+		"new_balance", newBalance.String(),
+		"difference", diff.String())
+
+	if err := s.ledgerRepo.UpdateAccountBalanceByUserAndType(ctx, userID, accountType, newBalance); err != nil {
+		return fmt.Errorf("reconcile balance: %w", err)
+	}
+
+	return nil
+}
+
 // GetSystemBuffers retrieves system buffer balances
 func (s *Service) GetSystemBuffers(ctx context.Context) (*entities.SystemBuffers, error) {
 	buffers, err := s.ledgerRepo.GetSystemBuffers(ctx)

@@ -350,6 +350,11 @@ func (h *SecurityAdminHandlers) GetAllUsers(c *gin.Context) {
 		}
 		users = append(users, user)
 	}
+	if err := rows.Err(); err != nil {
+		h.logger.Error("row iteration error", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "INTERNAL_ERROR", "message": "Failed to retrieve users"})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"items": users,
@@ -548,6 +553,11 @@ func (h *SecurityAdminHandlers) GetAllTransactions(c *gin.Context) {
 			"token":  token,
 		}
 		transactions = append(transactions, tx)
+	}
+	if err := rows.Err(); err != nil {
+		h.logger.Error("row iteration error", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "INTERNAL_ERROR", "message": "Failed to retrieve transactions"})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -1096,6 +1106,11 @@ func (h *adminHandler) getWalletSets(c *gin.Context) {
 		}
 		walletSets = append(walletSets, walletSet)
 	}
+	if err := rows.Err(); err != nil {
+		h.log.Errorw("row iteration error", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "INTERNAL_ERROR", "message": "Failed to retrieve wallet sets"})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"items": walletSets,
@@ -1269,6 +1284,11 @@ func (h *adminHandler) getAdminWallets(c *gin.Context) {
 			return
 		}
 		wallets = append(wallets, wallet)
+	}
+	if err := rows.Err(); err != nil {
+		h.log.Errorw("row iteration error", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "INTERNAL_ERROR", "message": "Failed to retrieve wallets"})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{

@@ -12,6 +12,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/api/handlers"
 	fundinghandlers "github.com/rail-service/rail_service/internal/api/handlers/funding"
+	p2phandlers "github.com/rail-service/rail_service/internal/api/handlers/p2p"
 	"github.com/rail-service/rail_service/internal/api/handlers/webhooks"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
@@ -34,6 +35,7 @@ import (
 	marketservice "github.com/rail-service/rail_service/internal/domain/services/market"
 	newsservice "github.com/rail-service/rail_service/internal/domain/services/news"
 	"github.com/rail-service/rail_service/internal/domain/services/onboarding"
+	"github.com/rail-service/rail_service/internal/domain/services/p2p"
 	"github.com/rail-service/rail_service/internal/domain/services/passcode"
 	"github.com/rail-service/rail_service/internal/domain/services/reconciliation"
 	"github.com/rail-service/rail_service/internal/domain/services/roundup"
@@ -54,6 +56,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/rail-service/rail_service/pkg/auth"
+	"github.com/rail-service/rail_service/pkg/captcha"
 	commonmetrics "github.com/rail-service/rail_service/pkg/common/metrics"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/ratelimit"
@@ -67,9 +70,34 @@ type CircleAdapter struct {
 }
 
 func (a *CircleAdapter) GenerateDepositAddress(ctx context.Context, chain entities.Chain, userID uuid.UUID) (string, error) {
-	// Convert entities.Chain to entities.WalletChain
-	walletChain := entities.WalletChain(chain)
+	walletChain := mapChainToWalletChain(chain)
+	if walletChain == "" {
+		return "", fmt.Errorf("unsupported chain for deposit: %s", chain)
+	}
 	return a.client.GenerateDepositAddress(ctx, walletChain, userID)
+}
+
+// mapChainToWalletChain maps the domain Chain type to Circle's WalletChain.
+// For testnet environments Circle uses explicit testnet chain identifiers.
+func mapChainToWalletChain(chain entities.Chain) entities.WalletChain {
+	switch chain {
+	case entities.ChainMATIC, entities.ChainPolygon:
+		return entities.WalletChainMATICAmoy
+	case entities.ChainAVAX:
+		return entities.WalletChainAVAXFuji
+	case entities.ChainSOL, entities.ChainSolana:
+		return entities.WalletChainSOLDevnet
+	case entities.ChainETH:
+		return entities.WalletChainEthereum
+	case entities.ChainARB:
+		return entities.WalletChainArbitrum
+	case entities.ChainBASE:
+		return entities.WalletChainBase
+	case entities.ChainOP:
+		return entities.WalletChainOptimism
+	default:
+		return ""
+	}
 }
 
 func (a *CircleAdapter) ValidateDeposit(ctx context.Context, txHash string, amount decimal.Decimal) (bool, error) {
@@ -121,6 +149,10 @@ type LedgerIntegrationAdapter struct {
 
 func (a *LedgerIntegrationAdapter) RecordDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID, chain, txHash string) error {
 	return a.integration.RecordDeposit(ctx, userID, amount, depositID, chain, txHash)
+}
+
+func (a *LedgerIntegrationAdapter) CompensateDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID) error {
+	return a.integration.CompensateDeposit(ctx, userID, amount, depositID)
 }
 
 func (a *LedgerIntegrationAdapter) GetUserBalance(ctx context.Context, userID uuid.UUID) (*funding.LedgerBalanceView, error) {
@@ -255,6 +287,10 @@ func (a *WithdrawalCircleAdapter) FindRecentOutboundTransfer(ctx context.Context
 	return a.client.FindRecentOutboundTransfer(ctx, walletID, destinationAddress, amount, since)
 }
 
+func (a *WithdrawalCircleAdapter) InitiateCCTPBurn(ctx context.Context, req *entities.CCTPBurnRequest) (*entities.CCTPBurnResponse, error) {
+	return a.client.InitiateCCTPBurn(ctx, req)
+}
+
 // WithdrawalBridgeAdapter adapts bridge.Adapter to withdrawal.BridgeAdapter interface
 type WithdrawalBridgeAdapter struct {
 	adapter *bridge.Adapter
@@ -306,6 +342,23 @@ func (a *WithdrawalBridgeAdapter) GetTransferStatus(ctx context.Context, transfe
 		"id":     transfer.ID,
 		"status": string(transfer.Status),
 	}, nil
+}
+
+func (a *WithdrawalBridgeAdapter) CancelTransfer(ctx context.Context, transferID string) error {
+	// Check current status before attempting cancellation
+	transfer, err := a.adapter.Client().GetTransfer(ctx, transferID)
+	if err != nil {
+		return fmt.Errorf("failed to get transfer status before cancellation: %w", err)
+	}
+	// Bridge transfers in terminal states cannot be cancelled
+	switch transfer.Status {
+	case bridge.TransferStatusCompleted, bridge.TransferStatusFailed:
+		return fmt.Errorf("transfer %s is in terminal state %s and cannot be cancelled", transferID, transfer.Status)
+	}
+	// Bridge does not expose a cancel endpoint in the current API version.
+	// The transfer will be left to expire or fail naturally.
+	// This is a best-effort operation — callers should not treat this as a hard error.
+	return fmt.Errorf("bridge transfer cancellation not supported by API; transfer %s must expire or fail naturally", transferID)
 }
 
 func mapCurrencyToPaymentRail(currency string) bridge.PaymentRail {
@@ -427,6 +480,10 @@ func (a *FundingNotificationAdapter) NotifyDepositConfirmed(ctx context.Context,
 
 func (a *FundingNotificationAdapter) NotifyLargeBalanceChange(ctx context.Context, userID uuid.UUID, changeType string, amount decimal.Decimal, newBalance decimal.Decimal) error {
 	return a.svc.NotifyLargeBalanceChange(ctx, userID, changeType, amount, newBalance)
+}
+
+func (a *FundingNotificationAdapter) NotifyAllocationFailed(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID, reason string) error {
+	return a.svc.NotifyAllocationFailed(ctx, userID, amount, depositID, reason)
 }
 
 // WithdrawalNotificationAdapter adapts NotificationService to withdrawal.WithdrawalNotificationService
@@ -612,6 +669,7 @@ type Container struct {
 	JWTService          *auth.JWTService
 	TieredRateLimiter   *ratelimit.TieredLimiter
 	LoginAttemptTracker *ratelimit.LoginAttemptTracker
+	CaptchaVerifier     *captcha.Verifier
 
 	// Device-Bound JWT (Priority 1)
 	DeviceSessionRepo      *repositories.DeviceSessionRepository
@@ -634,6 +692,16 @@ type Container struct {
 
 	// Account Management
 	AccountDeletionService *account.DeletionService
+
+	// P2P Transfer Services
+	P2PRepo               *repositories.P2PRepository
+	P2PService            *p2p.Service
+	P2PNotificationSender *adapters.P2PNotificationSender
+	P2PHandlers           *p2phandlers.Handlers
+
+	// Notification Services
+	DeviceTokenRepo  *repositories.DeviceTokenRepository
+	NotificationRepo *repositories.NotificationRepository
 
 	// Unified Webhook Handler
 	UnifiedFundingWebhookHandler *webhooks.UnifiedFundingWebhookHandler
@@ -670,6 +738,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		Environment:            cfg.Circle.Environment,
 		BaseURL:                cfg.Circle.BaseURL,
 		EntitySecretCiphertext: cfg.Circle.EntitySecretCiphertext,
+		WalletSetID:            cfg.Circle.DefaultWalletSetID,
 	}
 	circleClient := circle.NewClient(circleConfig, zapLog)
 
@@ -774,6 +843,8 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		LedgerRepo:                ledgerRepo,
 		ReconciliationRepo:        reconciliationRepo,
 		OnboardingJobRepo:         onboardingJobRepo,
+		DeviceTokenRepo:           repositories.NewDeviceTokenRepository(db),
+		NotificationRepo:          repositories.NewNotificationRepository(db),
 
 		// External Services
 		CircleClient:  circleClient,
@@ -814,7 +885,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		container.Config,
 	)
 
-	container.OnboardingJobService = services.NewOnboardingJobService(container.OnboardingJobRepo, container.ZapLog)
+	container.OnboardingJobService = services.NewOnboardingJobService(container.OnboardingJobRepo, container.ZapLog, convertWalletChains(cfg.Circle.SupportedChains, container.ZapLog))
 
 	return container, nil
 }
@@ -973,11 +1044,18 @@ func (c *Container) initializeDomainServices() error {
 		c.BridgeVirtualAccountService = funding.NewBridgeVirtualAccountService(
 			c.BridgeClient,
 			virtualAccountRepo,
+			c.DepositRepo,
 			c.AllocationService,
 			ledgerAdapter,
 			c.Logger,
 		)
 		c.FundingService.SetBridgeVAService(c.BridgeVirtualAccountService)
+
+		// Wire notification service to Bridge VA service for allocation failure notifications
+		if c.NotificationService != nil {
+			notificationAdapter := &FundingNotificationAdapter{svc: c.NotificationService}
+			c.BridgeVirtualAccountService.SetNotificationService(notificationAdapter)
+		}
 
 		bridgeWebhookService := webhooks.NewBridgeWebhookService(
 			&BridgeVirtualAccountWebhookAdapter{service: c.BridgeVirtualAccountService},
@@ -1040,8 +1118,9 @@ func (c *Container) initializeDomainServices() error {
 	)
 	c.BrokerageAdapter = brokerageAdapter
 
-	// Initialize notification service
+	// Initialize notification service with persister for in-app notifications
 	c.NotificationService = services.NewNotificationService(c.ZapLog)
+	c.NotificationService.SetPersister(adapters.NewNotificationPersisterAdapter(c.NotificationRepo))
 
 	c.InvestingService = investing.NewService(
 		basketRepo,
@@ -1128,6 +1207,15 @@ func (c *Container) initializeDomainServices() error {
 	}
 	c.TieredRateLimiter = ratelimit.NewTieredLimiter(c.RedisClient.Client(), tieredConfig, c.ZapLog)
 	c.LoginAttemptTracker = ratelimit.NewLoginAttemptTracker(c.RedisClient.Client(), c.ZapLog)
+
+	// Initialize CAPTCHA verifier if secret key is configured
+	if captchaKey := c.Config.Security.CaptchaSecretKey; captchaKey != "" {
+		c.CaptchaVerifier = captcha.NewVerifier(captcha.Config{
+			Enabled:   true,
+			Provider:  captcha.ProviderRecaptcha,
+			SecretKey: captchaKey,
+		})
+	}
 
 	// Initialize Device-Bound JWT (Priority 1)
 	if c.Config.Security.DeviceBinding.Enabled {
@@ -1246,6 +1334,28 @@ func (c *Container) initializeDomainServices() error {
 		c.Config.Circle.TreasuryWalletAddress,
 		c.Logger,
 	)
+
+	// Initialize P2P transfer services
+	c.P2PRepo = repositories.NewP2PRepository(sqlxDB, c.ZapLog)
+	c.P2PNotificationSender = adapters.NewP2PNotificationSender(
+		c.EmailService,
+		c.UserRepo,
+		c.Config.Email.BaseURL,
+		c.ZapLog,
+	)
+	c.P2PService = p2p.NewService(
+		c.P2PRepo,
+		c.UserRepo,
+		repositories.NewP2PBalanceProvider(c.LedgerService),
+		repositories.NewP2PTransferExecutor(c.LedgerService),
+		c.P2PNotificationSender,
+		c.ZapLog,
+	)
+	c.P2PService.SetUserUpdater(c.UserRepo)
+	c.P2PHandlers = p2phandlers.NewHandlers(c.P2PService, c.ZapLog)
+
+	// Wire P2P service to onboarding for auto-claim
+	c.OnboardingService.SetP2PService(c.P2PService)
 
 	return nil
 }
@@ -1431,6 +1541,11 @@ func (c *Container) GetRateLimitConfig() *config.RateLimitConfig {
 // GetLoginAttemptTracker returns the login attempt tracker
 func (c *Container) GetLoginAttemptTracker() *ratelimit.LoginAttemptTracker {
 	return c.LoginAttemptTracker
+}
+
+// GetCaptchaVerifier returns the CAPTCHA verifier (may be nil if not configured)
+func (c *Container) GetCaptchaVerifier() *captcha.Verifier {
+	return c.CaptchaVerifier
 }
 
 // initializeReconciliationService initializes the reconciliation service and scheduler
@@ -1627,16 +1742,9 @@ func ptrOf[T any](v T) *T {
 }
 
 func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChain {
-	solanaOnly := map[entities.WalletChain]struct{}{
-		entities.WalletChainSolana:    {},
-		entities.WalletChainSOLDevnet: {},
-	}
-
 	if len(raw) == 0 {
 		logger.Warn("circle.supported_chains not configured; defaulting to SOL-DEVNET")
-		return []entities.WalletChain{
-			entities.WalletChainSOLDevnet,
-		}
+		return []entities.WalletChain{entities.WalletChainSOLDevnet}
 	}
 
 	normalized := make([]entities.WalletChain, 0, len(raw))
@@ -1651,10 +1759,6 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 			logger.Warn("Ignoring unsupported wallet chain from configuration", zap.String("chain", string(chain)))
 			continue
 		}
-		if _, allowed := solanaOnly[chain]; !allowed {
-			logger.Warn("Ignoring chain due to Solana-only support", zap.String("chain", string(chain)))
-			continue
-		}
 		if _, ok := seen[chain]; ok {
 			continue
 		}
@@ -1663,10 +1767,8 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 	}
 
 	if len(normalized) == 0 {
-		logger.Warn("circle.supported_chains contained no valid Solana entries; defaulting to SOL-DEVNET")
-		return []entities.WalletChain{
-			entities.WalletChainSOLDevnet,
-		}
+		logger.Warn("circle.supported_chains contained no valid entries; defaulting to SOL-DEVNET")
+		return []entities.WalletChain{entities.WalletChainSOLDevnet}
 	}
 
 	return normalized
@@ -2459,13 +2561,24 @@ func (c *Container) GetStationHandlers() *handlers.StationHandlers {
 
 // GetSpendingStashHandlers returns spending stash handlers
 func (c *Container) GetSpendingStashHandlers() *handlers.SpendingStashHandlers {
-	return handlers.NewSpendingStashHandlers(
+	h := handlers.NewSpendingStashHandlers(
 		c.AllocationService,
 		c.CardService,
 		c.RoundupService,
 		c.LimitsService,
 		c.ZapLog,
 	)
+	// Wire up additional dependencies for unified spending view
+	if c.LedgerService != nil {
+		h.SetLedgerService(c.LedgerService)
+	}
+	if c.P2PRepo != nil {
+		h.SetP2PRepo(c.P2PRepo)
+	}
+	if c.WithdrawalRepo != nil {
+		h.SetWithdrawalRepo(c.WithdrawalRepo)
+	}
+	return h
 }
 
 // GetInvestmentStashHandlers returns investment stash handlers
@@ -2552,6 +2665,11 @@ func (c *Container) initializeBridgeServices() {
 // GetInstantFundingHandlers returns the instant funding handlers
 func (c *Container) GetInstantFundingHandlers() *fundinghandlers.InstantFundingHandlers {
 	return c.InstantFundingHandlers
+}
+
+// GetP2PHandlers returns the P2P transfer handlers
+func (c *Container) GetP2PHandlers() *p2phandlers.Handlers {
+	return c.P2PHandlers
 }
 
 // GetWithdrawalSecurityStore returns the withdrawal security store

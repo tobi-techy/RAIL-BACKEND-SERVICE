@@ -122,21 +122,11 @@ func ValidateRefreshToken(refreshToken, secret string) (uuid.UUID, error) {
 	}
 
 	tokenType, hasTokenType := claims["token_type"]
-	if hasTokenType {
-		if tokenTypeStr, ok := tokenType.(string); !ok || tokenTypeStr != "refresh" {
-			return uuid.Nil, fmt.Errorf("invalid refresh token type")
-		}
-	} else {
-		// Backward compatibility: reject tokens that look like access tokens.
-		if _, has := claims["role"]; has {
-			return uuid.Nil, fmt.Errorf("access token cannot be used as refresh token")
-		}
-		if _, has := claims["email"]; has {
-			return uuid.Nil, fmt.Errorf("access token cannot be used as refresh token")
-		}
-		if _, has := claims["user_id"]; has {
-			return uuid.Nil, fmt.Errorf("access token cannot be used as refresh token")
-		}
+	if !hasTokenType {
+		return uuid.Nil, fmt.Errorf("invalid refresh token: missing token_type claim")
+	}
+	if tokenTypeStr, ok := tokenType.(string); !ok || tokenTypeStr != "refresh" {
+		return uuid.Nil, fmt.Errorf("invalid refresh token type")
 	}
 
 	sub, ok := claims["sub"].(string)

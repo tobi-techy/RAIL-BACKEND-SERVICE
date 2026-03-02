@@ -41,10 +41,22 @@ type WalletFundingHandlers struct {
 	investingService    *investing.Service
 	allocationProvider  AllocationBalanceProvider
 	userProfileProvider UserProfileProvider
+	ledgerService       LedgerReconciler
+	circleClient        CircleBalanceGetter
 	validator           *validator.Validate
 	webhookSecret       string
 	skipSignatureVerify bool // Only true in development when secret is not configured
 	logger              *logger.Logger
+}
+
+// LedgerReconciler interface for balance reconciliation
+type LedgerReconciler interface {
+	ReconcileBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, newBalance decimal.Decimal) error
+}
+
+// CircleBalanceGetter interface for getting Circle wallet balances
+type CircleBalanceGetter interface {
+	GetWalletBalances(ctx context.Context, walletID string, tokenAddress ...string) (*entities.CircleWalletBalancesResponse, error)
 }
 
 // NewWalletFundingHandlers creates a new instance of consolidated wallet/funding handlers
@@ -75,6 +87,91 @@ func (h *WalletFundingHandlers) SetWebhookSecret(secret string, skipVerify bool)
 // SetUserProfileProvider sets the user profile provider for withdrawal validation
 func (h *WalletFundingHandlers) SetUserProfileProvider(provider UserProfileProvider) {
 	h.userProfileProvider = provider
+}
+
+// SetLedgerService sets the ledger service for reconciliation
+func (h *WalletFundingHandlers) SetLedgerService(ledger LedgerReconciler) {
+	h.ledgerService = ledger
+}
+
+// SetCircleClient sets the Circle client for balance queries
+func (h *WalletFundingHandlers) SetCircleClient(client CircleBalanceGetter) {
+	h.circleClient = client
+}
+
+// ReconcileUserBalance syncs a user's ledger balance with their actual Circle wallet balance
+func (h *WalletFundingHandlers) ReconcileUserBalance(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	// Check admin authorization
+	userRole, exists := c.Get("user_role")
+	if !exists || userRole != "admin" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
+		return
+	}
+
+	userIDStr := c.Param("user_id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user_id"})
+		return
+	}
+
+	if h.ledgerService == nil || h.circleClient == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "reconciliation service not configured"})
+		return
+	}
+
+	// Get Circle wallet ID from request body (admin provides it)
+	var req struct {
+		CircleWalletID string `json:"circle_wallet_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "circle_wallet_id required"})
+		return
+	}
+
+	// Get actual balance from Circle
+	balances, err := h.circleClient.GetWalletBalances(ctx, req.CircleWalletID)
+	if err != nil {
+		h.logger.Error("Failed to get Circle balances", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get Circle balance"})
+		return
+	}
+
+	// Find USDC balance
+	var actualBalance decimal.Decimal
+	for _, tb := range balances.TokenBalances {
+		if tb.Token.Symbol == "USDC" {
+			var err error
+			actualBalance, err = decimal.NewFromString(tb.Amount)
+			if err != nil {
+				h.logger.Error("Invalid balance format from Circle",
+					zap.String("amount", tb.Amount),
+					zap.Error(err))
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid balance format from Circle"})
+				return
+			}
+			break
+		}
+	}
+
+	// Update ledger to match Circle
+	if err := h.ledgerService.ReconcileBalance(ctx, userID, entities.AccountTypeSpendingBalance, actualBalance); err != nil {
+		h.logger.Error("Failed to reconcile balance", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to reconcile"})
+		return
+	}
+
+	h.logger.Info("Balance reconciled",
+		zap.String("user_id", userID.String()),
+		zap.String("new_balance", actualBalance.String()))
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":     "Balance reconciled",
+		"user_id":     userID.String(),
+		"new_balance": actualBalance.String(),
+	})
 }
 
 // Request/Response models
@@ -523,10 +620,14 @@ func (h *WalletFundingHandlers) InitiateWalletCreation(c *gin.Context) {
 		return
 	}
 
-	// Default to SOL-DEVNET if not specified
+	// Default to all testnet chains if not specified
 	chains := req.Chains
 	if len(chains) == 0 {
-		chains = []string{string(entities.WalletChainSOLDevnet)}
+		chains = []string{
+			string(entities.WalletChainSOLDevnet),
+			string(entities.WalletChainMATICAmoy),
+			string(entities.WalletChainAVAXFuji),
+		}
 	}
 
 	// Validate chains - ensure only testnet chains
@@ -539,7 +640,7 @@ func (h *WalletFundingHandlers) InitiateWalletCreation(c *gin.Context) {
 				Message: "Invalid blockchain network",
 				Details: map[string]interface{}{
 					"chain":            chainStr,
-					"supported_chains": []string{"SOL-DEVNET"},
+					"supported_chains": []string{"SOL-DEVNET", "MATIC-AMOY", "AVAX-FUJI"},
 				},
 			})
 			return
@@ -550,10 +651,10 @@ func (h *WalletFundingHandlers) InitiateWalletCreation(c *gin.Context) {
 			h.logger.Warn("Mainnet chain not supported for wallet creation", zap.String("chain", chainStr))
 			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 				Code:    "MAINNET_NOT_SUPPORTED",
-				Message: "Only SOL-DEVNET is supported at this time",
+				Message: "Only testnet chains are supported at this time",
 				Details: map[string]interface{}{
 					"requested_chain":  chainStr,
-					"supported_chains": []string{"SOL-DEVNET"},
+					"supported_chains": []string{"SOL-DEVNET", "MATIC-AMOY", "AVAX-FUJI"},
 				},
 			})
 			return
@@ -803,13 +904,23 @@ func (h *WalletFundingHandlers) GetWalletByChain(c *gin.Context) {
 	// Get wallet for the specific chain
 	wallet, err := h.walletService.GetWalletByUserAndChain(ctx, userID, chain)
 	if err != nil {
-		h.logger.Warn("Wallet not found for chain",
+		h.logger.Warn("Wallet not found for chain — triggering provisioning",
 			zap.Error(err),
 			zap.String("user_id", userID.String()),
 			zap.String("chain", chainStr))
+
+		// Auto-provision the missing wallet (handles existing users who pre-date multi-chain support)
+		if provErr := h.walletService.CreateWalletsForUser(ctx, userID, []entities.WalletChain{chain}); provErr != nil {
+			h.logger.Error("Failed to trigger wallet provisioning for missing chain",
+				zap.Error(provErr),
+				zap.String("user_id", userID.String()),
+				zap.String("chain", chainStr))
+		}
+
 		c.JSON(http.StatusNotFound, gin.H{
-			"error":   "WALLET_NOT_FOUND",
-			"message": fmt.Sprintf("No wallet found for chain: %s", chainStr),
+			"error":        "WALLET_NOT_FOUND",
+			"message":      fmt.Sprintf("Wallet for %s is being created. Please retry in a moment.", chainStr),
+			"provisioning": true,
 		})
 		return
 	}

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -52,6 +53,26 @@ type CircleWebhookHandler struct {
 	circleAPIKey      string // For fetching public keys
 	circleBaseURL     string
 	devMode           bool // When true, skips signature verification (development only)
+	failOpen          bool // When true, fails open on errors (not recommended for production)
+
+	// Key cache with TTL support
+	keyCache   map[string]cachedKey
+	keyCacheMu sync.RWMutex
+}
+
+type cachedKey struct {
+	key       string
+	fetchedAt time.Time
+}
+
+const keyCacheTTL = 24 * time.Hour
+
+// CircleWebhookConfig holds configuration for Circle webhook handler
+type CircleWebhookConfig struct {
+	CircleAPIKey  string
+	CircleBaseURL string
+	DevMode       bool // Skip all verification (development only)
+	FailOpen      bool // Fail open on errors (security risk - use with caution)
 }
 
 // NewCircleWebhookHandler creates a new Circle webhook handler
@@ -64,15 +85,47 @@ func NewCircleWebhookHandler(
 	circleAPIKey string,
 	circleBaseURL string,
 ) *CircleWebhookHandler {
+	return NewCircleWebhookHandlerWithConfig(
+		fundingService,
+		managedWalletRepo,
+		withdrawalRepo,
+		withdrawalLedger,
+		logger,
+		CircleWebhookConfig{
+			CircleAPIKey:  circleAPIKey,
+			CircleBaseURL: circleBaseURL,
+			DevMode:       strings.TrimSpace(circleAPIKey) == "",
+			FailOpen:      false, // Default to secure behavior
+		},
+	)
+}
+
+// NewCircleWebhookHandlerWithConfig creates a new Circle webhook handler with custom config
+func NewCircleWebhookHandlerWithConfig(
+	fundingService CircleDepositProcessor,
+	managedWalletRepo CircleManagedWalletRepository,
+	withdrawalRepo CircleWithdrawalRepository,
+	withdrawalLedger CircleWithdrawalLedger,
+	logger *logger.Logger,
+	config CircleWebhookConfig,
+) *CircleWebhookHandler {
+	// Warn if failOpen is enabled in production-like environment
+	devMode := config.DevMode
+	if !devMode && config.FailOpen {
+		logger.Warn("CRITICAL: Circle webhook handler is configured to FAIL-OPEN - this is a security risk in production!")
+	}
+
 	return &CircleWebhookHandler{
 		fundingService:    fundingService,
 		managedWalletRepo: managedWalletRepo,
 		withdrawalRepo:    withdrawalRepo,
 		withdrawalLedger:  withdrawalLedger,
 		logger:            logger,
-		circleAPIKey:      circleAPIKey,
-		circleBaseURL:     circleBaseURL,
-		devMode:           circleAPIKey == "",
+		circleAPIKey:      config.CircleAPIKey,
+		circleBaseURL:     config.CircleBaseURL,
+		devMode:           devMode,
+		failOpen:          config.FailOpen,
+		keyCache:          make(map[string]cachedKey),
 	}
 }
 
@@ -87,27 +140,33 @@ func (h *CircleWebhookHandler) HandleTransferNotification(c *gin.Context) {
 		rawBody, _ = c.GetRawData()
 	}
 
-	// Verify webhook signature using Circle's ECDSA verification
+	// Verify webhook signature using Circle's ECDSA verification.
+	// Per Circle docs, headers X-Circle-Key-Id and X-Circle-Signature are present
+	// on every notification. In dev mode we skip verification entirely.
 	keyID := c.GetHeader("X-Circle-Key-Id")
 	signature := c.GetHeader("X-Circle-Signature")
 
-	if keyID == "" || signature == "" {
-		h.logger.Warn("Missing Circle webhook headers")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing signature headers"})
-		return
-	}
-
-	if !h.verifySignature(ctx, keyID, signature, rawBody) {
-		h.logger.Error("Invalid Circle webhook signature")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
-		return
+	if !h.devMode {
+		if keyID == "" || signature == "" {
+			h.logger.Warn("Missing Circle webhook headers")
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing signature headers"})
+			return
+		}
+		if !h.verifySignature(ctx, keyID, signature, rawBody) {
+			h.logger.Error("Invalid Circle webhook signature")
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
+			return
+		}
+	} else {
+		h.logger.Info("Skipping Circle webhook signature verification (dev mode)")
 	}
 
 	// Parse webhook payload
 	var webhook CircleTransferWebhook
 	if err := json.Unmarshal(rawBody, &webhook); err != nil {
 		h.logger.Error("Failed to parse Circle webhook", "error", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+		// Return 200 to stop Circle retries on malformed payloads we can't fix.
+		c.JSON(http.StatusOK, gin.H{"status": "error", "message": "invalid payload"})
 		return
 	}
 
@@ -125,10 +184,6 @@ func (h *CircleWebhookHandler) HandleTransferNotification(c *gin.Context) {
 			h.logger.Error("Failed to process incoming transfer",
 				"transfer_id", webhook.TransferID,
 				"error", err)
-			// Return 200 to prevent retries for processing errors
-			// Store failure for manual review
-			c.JSON(http.StatusOK, gin.H{"status": "error", "message": err.Error()})
-			return
 		}
 
 	default:
@@ -136,7 +191,8 @@ func (h *CircleWebhookHandler) HandleTransferNotification(c *gin.Context) {
 			"type", webhook.NotificationType)
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "success"})
+	// Always return 200 to prevent Circle retries (5-second timeout enforced).
+	c.JSON(http.StatusOK, gin.H{"status": "received"})
 }
 
 // processIncomingTransfer processes an incoming USDC transfer
@@ -191,7 +247,8 @@ func (h *CircleWebhookHandler) processIncomingTransfer(ctx context.Context, webh
 		chain = h.mapWalletChainToChain(managedWallet.Chain)
 	}
 	if chain == "" {
-		chain = entities.ChainSolana
+		return fmt.Errorf("unable to determine chain for deposit: circle_chain=%q, wallet_chain=%q",
+			transfer.Source.Chain, managedWallet.Chain)
 	}
 
 	blockTime := time.Now()
@@ -278,17 +335,23 @@ func (h *CircleWebhookHandler) processIncomingTransactionNotification(ctx contex
 
 	chain := h.mapCircleChainToChain(n.Blockchain)
 	if chain == "" {
-		chain = entities.ChainSolana
+		return fmt.Errorf("unable to determine chain for deposit: blockchain=%q", n.Blockchain)
 	}
 
 	// Map token ID to token symbol (default to USDC for now)
 	token := h.mapTokenIDToToken(n.TokenID)
 
 	address := strings.TrimSpace(n.DestinationAddress)
-	if address == "" && strings.TrimSpace(n.WalletID) != "" {
-		managedWallet, err := h.managedWalletRepo.GetByCircleWalletID(ctx, n.WalletID)
-		if err == nil {
-			address = managedWallet.Address
+	walletID := strings.TrimSpace(n.WalletID)
+
+	// Per Circle docs, walletId is the most reliable identifier for dev-controlled
+	// wallets. Resolve via managedWalletRepo first, then fall back to destinationAddress.
+	if walletID != "" {
+		managedWallet, err := h.managedWalletRepo.GetByCircleWalletID(ctx, walletID)
+		if err == nil && managedWallet != nil {
+			if address == "" {
+				address = managedWallet.Address
+			}
 		}
 	}
 	if address == "" {
@@ -513,20 +576,28 @@ func (h *CircleWebhookHandler) settleCompletedWithdrawal(ctx context.Context, wi
 
 // verifySignature verifies the Circle webhook signature using ECDSA-SHA256
 func (h *CircleWebhookHandler) verifySignature(ctx context.Context, keyID, signature string, body []byte) bool {
-	// Fail-closed: reject if API key is not configured unless explicitly in dev mode
-	if h.circleAPIKey == "" {
-		if h.devMode {
-			h.logger.Warn("Circle API key not configured - skipping signature verification (dev mode)")
-			return true
-		}
-		h.logger.Error("Circle API key not configured - rejecting webhook (fail-closed)")
-		return false
+	// Skip ECDSA verification in dev mode or when API key is not configured.
+	// Circle's testnet does not expose the /v2/notifications/publicKey endpoint reliably,
+	// so attempting to fetch it causes 5XX responses that trigger endless retries.
+	if h.devMode || h.circleAPIKey == "" {
+		h.logger.Warn("Skipping Circle webhook signature verification (dev/testnet mode)")
+		return true
 	}
 
-	// Fetch the public key from Circle API
-	publicKeyBase64, err := h.fetchPublicKey(ctx, keyID)
+	// Fetch the public key from Circle API (cached by keyID)
+	publicKeyBase64, err := h.fetchPublicKeyCached(ctx, keyID)
 	if err != nil {
-		h.logger.Error("Failed to fetch Circle public key", "error", err, "key_id", keyID)
+		// Handle based on failOpen configuration
+		if h.failOpen {
+			// Fail open: allow webhook but log warning
+			// WARNING: This is a security risk - only use in development/testnet
+			h.logger.Warn("Failed to fetch Circle public key — allowing webhook (fail-open enabled)",
+				"error", err, "key_id", keyID)
+			return true
+		}
+		// Fail closed (secure default): reject webhook
+		h.logger.Error("Failed to fetch Circle public key — rejecting webhook (fail-open disabled)",
+			"error", err, "key_id", keyID)
 		return false
 	}
 
@@ -569,9 +640,46 @@ func (h *CircleWebhookHandler) verifySignature(ctx context.Context, keyID, signa
 	return true
 }
 
+// fetchPublicKeyCached returns the Circle public key for keyID, using an in-memory cache with TTL.
+// Uses double-checked locking to prevent race conditions.
+func (h *CircleWebhookHandler) fetchPublicKeyCached(ctx context.Context, keyID string) (string, error) {
+	// Check cache first with read lock
+	h.keyCacheMu.RLock()
+	if entry, ok := h.keyCache[keyID]; ok {
+		if time.Since(entry.fetchedAt) < keyCacheTTL {
+			h.keyCacheMu.RUnlock()
+			return entry.key, nil
+		}
+	}
+	h.keyCacheMu.RUnlock()
+
+	// Acquire write lock for fetch
+	h.keyCacheMu.Lock()
+	defer h.keyCacheMu.Unlock()
+
+	// Double-check after acquiring write lock (another goroutine may have fetched it)
+	if entry, ok := h.keyCache[keyID]; ok {
+		if time.Since(entry.fetchedAt) < keyCacheTTL {
+			return entry.key, nil
+		}
+	}
+
+	// Fetch from Circle API
+	key, err := h.fetchPublicKey(ctx, keyID)
+	if err != nil {
+		return "", err
+	}
+
+	// Update cache
+	h.keyCache[keyID] = cachedKey{key: key, fetchedAt: time.Now()}
+	return key, nil
+}
+
 // fetchPublicKey fetches the public key from Circle API
 func (h *CircleWebhookHandler) fetchPublicKey(ctx context.Context, keyID string) (string, error) {
-	url := fmt.Sprintf("%s/v2/notifications/publicKey/%s", h.circleBaseURL, keyID)
+	// Per Circle docs, the notification signature endpoint is always at api.circle.com
+	// regardless of whether wallets are on testnet or mainnet.
+	url := fmt.Sprintf("https://api.circle.com/v2/notifications/publicKey/%s", keyID)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -618,13 +726,13 @@ func (h *CircleWebhookHandler) mapCircleChainToChain(circleChain string) entitie
 	switch strings.ToUpper(strings.TrimSpace(circleChain)) {
 	case "SOL", "SOLANA", "SOL-DEVNET":
 		return entities.ChainSolana
-	case "MATIC", "POLYGON":
+	case "MATIC", "POLYGON", "MATIC-AMOY":
 		return entities.ChainMATIC
 	case "ETH", "ETHEREUM", "ETH-SEPOLIA":
 		return entities.ChainETH
-	case "AVAX", "AVALANCHE":
+	case "AVAX", "AVALANCHE", "AVAX-FUJI":
 		return entities.ChainAVAX
-	case "BASE":
+	case "BASE", "BASE-SEPOLIA":
 		return entities.ChainBASE
 	case "ARB", "ARBITRUM":
 		return entities.ChainARB
@@ -638,15 +746,22 @@ func (h *CircleWebhookHandler) mapCircleChainToChain(circleChain string) entitie
 	}
 }
 
-func (h *CircleWebhookHandler) mapWalletChainToChain(chain entities.WalletChain) entities.Chain {
-	switch chain {
+// mapWalletChainToChain maps our internal WalletChain to Chain type
+// Uses consolidated mapping logic
+func (h *CircleWebhookHandler) mapWalletChainToChain(walletChain entities.WalletChain) entities.Chain {
+	return mapWalletChainToChainType(walletChain)
+}
+
+// mapWalletChainToChainType is a standalone function for WalletChain to Chain mapping
+func mapWalletChainToChainType(walletChain entities.WalletChain) entities.Chain {
+	switch walletChain {
 	case entities.WalletChainSOLDevnet, entities.WalletChainSolana:
 		return entities.ChainSolana
-	case entities.WalletChainPolygon:
+	case entities.WalletChainPolygon, entities.WalletChainMATICAmoy:
 		return entities.ChainMATIC
 	case entities.WalletChainEthereum:
 		return entities.ChainETH
-	case entities.WalletChainAvalanche:
+	case entities.WalletChainAvalanche, entities.WalletChainAVAXFuji:
 		return entities.ChainAVAX
 	case entities.WalletChainBase:
 		return entities.ChainBASE
@@ -728,11 +843,47 @@ type CircleTransactionNotification struct {
 // ADDITIONAL WEBHOOK HANDLERS
 // ============================================================================
 
-// HandleWalletNotification handles Circle wallet notifications
+// HandleWalletNotification handles Circle wallet notifications (dev-controlled wallets)
 // POST /webhooks/circle/wallets
 func (h *CircleWebhookHandler) HandleWalletNotification(c *gin.Context) {
-	// Handle wallet creation, updates, etc.
-	c.JSON(http.StatusOK, gin.H{"status": "success"})
+	ctx := c.Request.Context()
+
+	var rawBody []byte
+	if c.Request.Body != nil {
+		rawBody, _ = c.GetRawData()
+	}
+
+	if !h.devMode {
+		keyID := c.GetHeader("X-Circle-Key-Id")
+		signature := c.GetHeader("X-Circle-Signature")
+		if keyID != "" && signature != "" {
+			if !h.verifySignature(ctx, keyID, signature, rawBody) {
+				h.logger.Error("Invalid Circle wallet webhook signature")
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
+				return
+			}
+		}
+	}
+
+	var webhook CircleTransferWebhook
+	if err := json.Unmarshal(rawBody, &webhook); err != nil {
+		h.logger.Error("Failed to parse Circle wallet webhook", "error", err)
+		c.JSON(http.StatusOK, gin.H{"status": "error", "message": "invalid payload"})
+		return
+	}
+
+	h.logger.Info("Received Circle wallet webhook",
+		"notification_type", webhook.NotificationType)
+
+	notificationType := strings.ToLower(strings.TrimSpace(webhook.NotificationType))
+	if strings.HasPrefix(notificationType, "transactions.") || strings.HasPrefix(notificationType, "transfers.") {
+		if err := h.processIncomingTransfer(ctx, &webhook); err != nil {
+			h.logger.Error("Failed to process wallet notification", "error", err)
+		}
+	}
+
+	// Always return 200 per Circle's 5-second timeout requirement.
+	c.JSON(http.StatusOK, gin.H{"status": "received"})
 }
 
 // HandlePaymentNotification handles Circle payment notifications

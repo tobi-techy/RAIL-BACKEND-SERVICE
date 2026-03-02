@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -40,20 +41,15 @@ func DefaultWebhookSecurityConfig() WebhookSecurityConfig {
 // defaultWebhookIPWhitelists returns known webhook source IPs
 func defaultWebhookIPWhitelists() map[string][]string {
 	return map[string][]string{
-		// Circle webhook IPs (example - verify with Circle docs)
-		"circle": {
-			"52.21.0.0/16",  // AWS us-east-1
-			"54.236.0.0/16", // AWS us-east-1
-		},
+		// Circle does not publish a fixed IP range — rely on signature verification instead.
 		// Bridge webhook IPs (example - verify with Bridge docs)
 		"bridge": {
 			"34.102.136.180/32", // Bridge production
 			"35.186.224.25/32",  // Bridge production
 		},
-		// Alpaca webhook IPs (example - verify with Alpaca docs)
-		"alpaca": {
-			"52.0.0.0/8", // AWS ranges
-		},
+		// Alpaca does not publish a fixed IP range — rely on signature verification instead.
+		// Remove this entry and ensure ALPACA_WEBHOOK_SECRET is set for HMAC validation.
+		"alpaca": {},
 	}
 }
 
@@ -100,12 +96,17 @@ func WebhookSecurity(
 			provider = "unknown"
 		}
 		if provider == "unknown" && isUnifiedFundingWebhook(c.Request.URL.Path) {
-			logger.Warn("Unable to resolve provider for unified funding webhook")
-			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
-				"error":   "UNKNOWN_WEBHOOK_PROVIDER",
-				"message": "Unable to determine webhook provider",
-			})
-			return
+			provider = detectProviderFromBody(c)
+		}
+		if provider == "unknown" || provider == "" {
+			if isUnifiedFundingWebhook(c.Request.URL.Path) {
+				logger.Warn("Unable to resolve provider for unified funding webhook")
+				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+					"error":   "UNKNOWN_WEBHOOK_PROVIDER",
+					"message": "Unable to determine webhook provider",
+				})
+				return
+			}
 		}
 
 		// 1. IP Whitelist check
@@ -224,6 +225,35 @@ func isUnifiedFundingWebhook(path string) bool {
 	return strings.HasSuffix(strings.TrimSpace(path), "/webhooks/funding")
 }
 
+// detectProviderFromBody peeks at the request body to identify the webhook provider.
+// It restores the body so downstream handlers can still read it.
+func detectProviderFromBody(c *gin.Context) string {
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		// Restore body even on read error
+		c.Request.Body = io.NopCloser(bytes.NewBuffer([]byte{}))
+		return ""
+	}
+
+	// Always restore body after reading
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
+
+	var peek map[string]interface{}
+	if err := json.Unmarshal(body, &peek); err != nil {
+		return ""
+	}
+	if _, ok := peek["notificationType"]; ok {
+		return "circle"
+	}
+	if _, ok := peek["event_category"]; ok {
+		return "bridge"
+	}
+	if _, ok := peek["event"]; ok {
+		return "alpaca"
+	}
+	return ""
+}
+
 // extractSignature extracts webhook signature from common header locations
 func extractSignature(c *gin.Context) string {
 	// Try common signature headers
@@ -287,12 +317,17 @@ func WebhookSecurityWithRedisV8(
 			provider = "unknown"
 		}
 		if provider == "unknown" && isUnifiedFundingWebhook(c.Request.URL.Path) {
-			logger.Warn("Unable to resolve provider for unified funding webhook")
-			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
-				"error":   "UNKNOWN_WEBHOOK_PROVIDER",
-				"message": "Unable to determine webhook provider",
-			})
-			return
+			provider = detectProviderFromBody(c)
+		}
+		if provider == "unknown" || provider == "" {
+			if isUnifiedFundingWebhook(c.Request.URL.Path) {
+				logger.Warn("Unable to resolve provider for unified funding webhook")
+				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+					"error":   "UNKNOWN_WEBHOOK_PROVIDER",
+					"message": "Unable to determine webhook provider",
+				})
+				return
+			}
 		}
 
 		// IP Whitelist check
@@ -364,9 +399,11 @@ func WebhookSecurityWithRedisV8(
 					logger.Warn("Webhook replay detected",
 						zap.String("provider", provider),
 						zap.String("path", c.Request.URL.Path))
-					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-						"error":   "WEBHOOK_REPLAY_DETECTED",
-						"message": "Duplicate webhook request rejected",
+					// Return 200 for replays — the original was already processed.
+					// Returning non-2XX causes providers like Circle to retry indefinitely.
+					c.AbortWithStatusJSON(http.StatusOK, gin.H{
+						"status":  "already_processed",
+						"message": "Duplicate webhook request",
 					})
 					return
 				}

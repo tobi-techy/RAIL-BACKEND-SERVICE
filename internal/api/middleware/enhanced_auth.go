@@ -1,9 +1,11 @@
 package middleware
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -123,7 +125,7 @@ func EnhancedAuthentication(cfg *config.Config, blacklist *auth.TokenBlacklist, 
 }
 
 // LoginRateLimiting applies rate limiting and CAPTCHA requirements for login
-func LoginRateLimiting(tracker *ratelimit.LoginAttemptTracker, log *logger.Logger) gin.HandlerFunc {
+func LoginRateLimiting(tracker *ratelimit.LoginAttemptTracker, captchaVerifier CaptchaVerifier, log *logger.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Only apply to login endpoints
 		if c.Request.URL.Path != "/api/v1/auth/login" && c.Request.URL.Path != "/api/v1/auth/passcode-login" {
@@ -179,7 +181,7 @@ func LoginRateLimiting(tracker *ratelimit.LoginAttemptTracker, log *logger.Logge
 			return
 		}
 
-		// Check if CAPTCHA is required
+		// Enforce CAPTCHA verification in middleware — do not defer to handler
 		if result.RequireCaptcha {
 			captchaToken := c.GetHeader("X-Captcha-Token")
 			if captchaToken == "" {
@@ -192,10 +194,29 @@ func LoginRateLimiting(tracker *ratelimit.LoginAttemptTracker, log *logger.Logge
 				c.Abort()
 				return
 			}
-			// Verify CAPTCHA token - verification is done via CaptchaVerifier injected at route level
-			// For now, mark as verified if token is present (actual verification happens in handler)
-			c.Set("captcha_token", captchaToken)
-			c.Set("captcha_verified", false) // Will be verified by handler with CaptchaVerifier
+			if captchaVerifier != nil {
+				ok, err := captchaVerifier.Verify(c.Request.Context(), captchaToken, c.ClientIP())
+				if err != nil {
+					log.Errorw("CAPTCHA verification error", "error", err)
+					c.JSON(http.StatusInternalServerError, gin.H{
+						"error":      "CAPTCHA_ERROR",
+						"message":    "CAPTCHA verification failed",
+						"request_id": c.GetString("request_id"),
+					})
+					c.Abort()
+					return
+				}
+				if !ok {
+					c.JSON(http.StatusForbidden, gin.H{
+						"error":      "CAPTCHA_INVALID",
+						"message":    "CAPTCHA verification failed",
+						"request_id": c.GetString("request_id"),
+					})
+					c.Abort()
+					return
+				}
+			}
+			c.Set("captcha_verified", true)
 		}
 
 		// Store tracker in context for post-login handling
@@ -222,7 +243,7 @@ func TieredRateLimiting(limiter *ratelimit.TieredLimiter, log *logger.Logger) gi
 		if !result.Allowed {
 			c.Header("X-RateLimit-Remaining", "0")
 			c.Header("X-RateLimit-Reset", result.ResetAt.Format(time.RFC3339))
-			c.Header("Retry-After", string(rune(int(result.RetryAfter.Seconds()))))
+			c.Header("Retry-After", strconv.Itoa(int(result.RetryAfter.Seconds())))
 
 			c.JSON(http.StatusTooManyRequests, gin.H{
 				"error":       "RATE_LIMITED",
@@ -236,7 +257,7 @@ func TieredRateLimiting(limiter *ratelimit.TieredLimiter, log *logger.Logger) gi
 		}
 
 		if result.Remaining >= 0 {
-			c.Header("X-RateLimit-Remaining", string(rune(result.Remaining)))
+		c.Header("X-RateLimit-Remaining", strconv.FormatInt(result.Remaining, 10))
 		}
 
 		c.Next()
@@ -282,6 +303,11 @@ func PasswordExpirationCheck(passwordChecker PasswordExpirationChecker, log *log
 // PasswordExpirationChecker interface for password expiration checking
 type PasswordExpirationChecker interface {
 	IsPasswordExpired(ctx interface{}, userID string) (bool, error)
+}
+
+// CaptchaVerifier interface for CAPTCHA token verification
+type CaptchaVerifier interface {
+	Verify(ctx context.Context, token string, remoteIP string) (bool, error)
 }
 
 func hashToken(token string) string {

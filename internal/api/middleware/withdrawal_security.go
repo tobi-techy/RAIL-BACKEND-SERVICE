@@ -1,8 +1,11 @@
 package middleware
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -95,9 +98,35 @@ func WithdrawalSecurityMiddleware(store WithdrawalSecurityStore, cfg WithdrawalS
 			return
 		}
 
-		// Store config in context for handler to use for amount validation
-		c.Set("withdrawal_security_config", cfg)
-		c.Set("withdrawal_security_store", store)
+		// Read body to validate amount, then restore it for the handler
+		body, err := io.ReadAll(c.Request.Body)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": gin.H{"code": "INVALID_BODY", "message": "Failed to read request body"},
+			})
+			c.Abort()
+			return
+		}
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
+
+		var amountReq struct {
+			Amount string `json:"amount"`
+		}
+		if err := json.Unmarshal(body, &amountReq); err == nil && amountReq.Amount != "" {
+			amount, parseErr := decimal.NewFromString(amountReq.Amount)
+			if parseErr == nil {
+				if err := ValidateWithdrawalAmount(ctx, store, cfg, uid, amount); err != nil {
+					c.JSON(http.StatusUnprocessableEntity, gin.H{
+						"error": gin.H{
+							"code":    "DAILY_LIMIT_EXCEEDED",
+							"message": err.Error(),
+						},
+					})
+					c.Abort()
+					return
+				}
+			}
+		}
 
 		c.Next()
 	}

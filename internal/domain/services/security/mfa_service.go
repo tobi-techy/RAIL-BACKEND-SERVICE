@@ -386,6 +386,10 @@ func (s *MFAService) EnforceForHighValueAccounts(ctx context.Context) (int, erro
 		count++
 	}
 
+	if err := rows.Err(); err != nil {
+		s.logger.Error("Row iteration error in EnforceMFAForHighValueAccounts", zap.Error(err))
+	}
+
 	return count, nil
 }
 

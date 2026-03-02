@@ -19,7 +19,7 @@ import (
 
 const (
 	unosendAPIBaseURL = "https://www.unosend.co/api/v1"
-	emailSendTimeout  = 8 * time.Second
+	emailSendTimeout  = 12 * time.Second
 )
 
 // LoginAlertDetails represents metadata associated with a login notification email
@@ -393,3 +393,133 @@ If this wasn't you, please reset your password immediately and contact support.
 }
 
 // KYC Email Templates are now handled inline by SendKYCStatusEmail
+
+
+// SendP2PInviteEmail sends an invite to a non-Rail user to claim money
+func (e *EmailService) SendP2PInviteEmail(ctx context.Context, toEmail, senderName string, amount string, claimURL string) error {
+	subject := fmt.Sprintf("%s sent you money on Rail", senderName)
+
+	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
+<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:20px 16px;">
+<tr><td align="center">
+<table cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;width:100%%;max-width:480px;">
+<tr><td style="padding:32px 24px 0 24px;">
+  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;color:#1d1d1f;margin:0;letter-spacing:-0.5px;">Rail</p>
+</td></tr>
+<tr><td style="padding:24px 24px;">
+  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:22px;font-weight:600;color:#1d1d1f;margin:0 0 16px 0;letter-spacing:-0.3px;">You've got money waiting.</p>
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;color:#1d1d1f;margin:0 0 24px 0;line-height:1.5;">%s sent you <strong>%s</strong>. Download Rail to claim it.</p>
+  <table cellpadding="0" cellspacing="0" style="margin:0 0 24px 0;">
+    <tr><td style="background-color:#1d1d1f;border-radius:12px;padding:14px 28px;">
+      <a href="%s" style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;">Claim Your Money</a>
+    </td></tr>
+  </table>
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:13px;color:#86868b;margin:0;line-height:1.5;">This link expires in 14 days. After that, the money returns to the sender.</p>
+</td></tr>
+<tr><td style="padding:0 24px 32px 24px;border-top:1px solid #f5f5f7;">
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;color:#86868b;margin:20px 0 0 0;line-height:1.5;">Rail — Your money, working from the moment it arrives.</p>
+</td></tr>
+</table>
+</td></tr></table>
+</body></html>`, html.EscapeString(senderName), html.EscapeString(amount), claimURL)
+
+	textContent := fmt.Sprintf("%s sent you %s on Rail.\n\nClaim it here: %s\n\nThis link expires in 14 days.\n\n— Rail", senderName, amount, claimURL)
+
+	return e.sendEmail(ctx, toEmail, subject, htmlContent, textContent)
+}
+
+// SendP2PReceivedEmail notifies a user they received money
+func (e *EmailService) SendP2PReceivedEmail(ctx context.Context, toEmail, senderName, amount string, note *string) error {
+	subject := fmt.Sprintf("%s sent you %s", senderName, amount)
+
+	noteHTML := ""
+	noteText := ""
+	if note != nil && *note != "" {
+		noteHTML = fmt.Sprintf(`<p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:14px;color:#424245;margin:16px 0 0 0;padding:16px;background-color:#f5f5f7;border-radius:8px;line-height:1.5;">"%s"</p>`, html.EscapeString(*note))
+		noteText = fmt.Sprintf("\n\nNote: \"%s\"", *note)
+	}
+
+	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
+<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:20px 16px;">
+<tr><td align="center">
+<table cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;width:100%%;max-width:480px;">
+<tr><td style="padding:32px 24px 0 24px;">
+  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;color:#1d1d1f;margin:0;letter-spacing:-0.5px;">Rail</p>
+</td></tr>
+<tr><td style="padding:24px 24px;">
+  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:22px;font-weight:600;color:#1d1d1f;margin:0 0 16px 0;letter-spacing:-0.3px;">Money received.</p>
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;color:#1d1d1f;margin:0;line-height:1.5;">%s sent you <strong>%s</strong>. It's already in your spending balance.</p>%s
+</td></tr>
+<tr><td style="padding:0 24px 32px 24px;border-top:1px solid #f5f5f7;">
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;color:#86868b;margin:20px 0 0 0;line-height:1.5;">Rail — Your money, working from the moment it arrives.</p>
+</td></tr>
+</table>
+</td></tr></table>
+</body></html>`, html.EscapeString(senderName), html.EscapeString(amount), noteHTML)
+
+	textContent := fmt.Sprintf("%s sent you %s. It's in your spending balance.%s\n\n— Rail", senderName, amount, noteText)
+
+	return e.sendEmail(ctx, toEmail, subject, htmlContent, textContent)
+}
+
+// SendP2PClaimedEmail notifies sender that their transfer was claimed
+func (e *EmailService) SendP2PClaimedEmail(ctx context.Context, toEmail, recipientName, amount string) error {
+	subject := fmt.Sprintf("%s claimed your %s", recipientName, amount)
+
+	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
+<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:20px 16px;">
+<tr><td align="center">
+<table cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;width:100%%;max-width:480px;">
+<tr><td style="padding:32px 24px 0 24px;">
+  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;color:#1d1d1f;margin:0;letter-spacing:-0.5px;">Rail</p>
+</td></tr>
+<tr><td style="padding:24px 24px;">
+  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:22px;font-weight:600;color:#1d1d1f;margin:0 0 16px 0;letter-spacing:-0.3px;">Transfer complete.</p>
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;color:#1d1d1f;margin:0;line-height:1.5;">%s joined Rail and claimed the <strong>%s</strong> you sent.</p>
+</td></tr>
+<tr><td style="padding:0 24px 32px 24px;border-top:1px solid #f5f5f7;">
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;color:#86868b;margin:20px 0 0 0;line-height:1.5;">Rail — Your money, working from the moment it arrives.</p>
+</td></tr>
+</table>
+</td></tr></table>
+</body></html>`, html.EscapeString(recipientName), html.EscapeString(amount))
+
+	textContent := fmt.Sprintf("%s joined Rail and claimed the %s you sent.\n\n— Rail", recipientName, amount)
+
+	return e.sendEmail(ctx, toEmail, subject, htmlContent, textContent)
+}
+
+// SendP2PExpiredEmail notifies sender that their transfer expired
+func (e *EmailService) SendP2PExpiredEmail(ctx context.Context, toEmail, identifier, amount string) error {
+	subject := fmt.Sprintf("Your %s transfer expired", amount)
+
+	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
+<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:20px 16px;">
+<tr><td align="center">
+<table cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;width:100%%;max-width:480px;">
+<tr><td style="padding:32px 24px 0 24px;">
+  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;color:#1d1d1f;margin:0;letter-spacing:-0.5px;">Rail</p>
+</td></tr>
+<tr><td style="padding:24px 24px;">
+  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:22px;font-weight:600;color:#1d1d1f;margin:0 0 16px 0;letter-spacing:-0.3px;">Transfer expired.</p>
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;color:#1d1d1f;margin:0;line-height:1.5;">Your <strong>%s</strong> transfer to %s wasn't claimed within 14 days. The funds have been returned to your spending balance.</p>
+</td></tr>
+<tr><td style="padding:0 24px 32px 24px;border-top:1px solid #f5f5f7;">
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;color:#86868b;margin:20px 0 0 0;line-height:1.5;">Rail — Your money, working from the moment it arrives.</p>
+</td></tr>
+</table>
+</td></tr></table>
+</body></html>`, html.EscapeString(amount), html.EscapeString(identifier))
+
+	textContent := fmt.Sprintf("Your %s transfer to %s wasn't claimed within 14 days. The funds have been returned to your spending balance.\n\n— Rail", amount, identifier)
+
+	return e.sendEmail(ctx, toEmail, subject, htmlContent, textContent)
+}

@@ -221,6 +221,7 @@ type InitiateCryptoWithdrawalRequest struct {
 	Amount             decimal.Decimal         `json:"amount"`
 	DestinationAddress string                  `json:"destination_address"`
 	DestinationChain   string                  `json:"destination_chain"`
+	SourceChain        string                  `json:"source_chain"`
 	SourceAccount      WithdrawalSourceAccount `json:"source_account"`
 	CircleWalletID     string                  `json:"circle_wallet_id"`
 	IdempotencyKey     string                  // Generated server-side

@@ -3,6 +3,7 @@ package security
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -202,6 +203,10 @@ func (s *SecurityEventLogger) GetUserSecurityEvents(ctx context.Context, userID 
 		events = append(events, e)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
 	return events, nil
 }
 
@@ -228,6 +233,10 @@ func (s *SecurityEventLogger) GetRecentCriticalEvents(ctx context.Context, since
 			return nil, err
 		}
 		events = append(events, e)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 
 	return events, nil

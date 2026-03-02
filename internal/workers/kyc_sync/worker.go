@@ -20,6 +20,12 @@ type SumsubWebhookProcessor interface {
 	ProcessSumsubWebhook(ctx context.Context, payload *entities.SumsubWebhookPayload) error
 }
 
+// ProviderRetryProcessor handles per-provider retry jobs for Bridge and Alpaca.
+type ProviderRetryProcessor interface {
+	RetryBridgeSync(ctx context.Context, payload []byte) error
+	RetryAlpacaSync(ctx context.Context, payload []byte) error
+}
+
 // Config controls KYC sync worker behavior.
 type Config struct {
 	CheckInterval  time.Duration
@@ -38,17 +44,23 @@ func DefaultConfig() *Config {
 
 // Worker periodically processes queued Sumsub webhook jobs.
 type Worker struct {
-	jobRepo        JobRepository
-	processor      SumsubWebhookProcessor
-	logger         *zap.Logger
-	checkInterval  time.Duration
-	batchSize      int
-	baseRetryDelay time.Duration
-	stopCh         chan struct{}
+	jobRepo               JobRepository
+	processor             SumsubWebhookProcessor
+	providerRetryProc     ProviderRetryProcessor
+	logger                *zap.Logger
+	checkInterval         time.Duration
+	batchSize             int
+	baseRetryDelay        time.Duration
+	stopCh                chan struct{}
 }
 
 // NewWorker creates a new KYC sync worker.
 func NewWorker(jobRepo JobRepository, processor SumsubWebhookProcessor, logger *zap.Logger, config *Config) *Worker {
+	return NewWorkerWithRetry(jobRepo, processor, nil, logger, config)
+}
+
+// NewWorkerWithRetry creates a new KYC sync worker with per-provider retry support.
+func NewWorkerWithRetry(jobRepo JobRepository, processor SumsubWebhookProcessor, providerRetryProc ProviderRetryProcessor, logger *zap.Logger, config *Config) *Worker {
 	if config == nil {
 		config = DefaultConfig()
 	}
@@ -63,13 +75,14 @@ func NewWorker(jobRepo JobRepository, processor SumsubWebhookProcessor, logger *
 	}
 
 	return &Worker{
-		jobRepo:        jobRepo,
-		processor:      processor,
-		logger:         logger,
-		checkInterval:  config.CheckInterval,
-		batchSize:      config.BatchSize,
-		baseRetryDelay: config.BaseRetryDelay,
-		stopCh:         make(chan struct{}),
+		jobRepo:           jobRepo,
+		processor:         processor,
+		providerRetryProc: providerRetryProc,
+		logger:            logger,
+		checkInterval:     config.CheckInterval,
+		batchSize:         config.BatchSize,
+		baseRetryDelay:    config.BaseRetryDelay,
+		stopCh:            make(chan struct{}),
 	}
 }
 
@@ -141,23 +154,30 @@ func (w *Worker) processJob(ctx context.Context, job *entities.KYCSyncJob) {
 		return
 	}
 
-	var payload entities.SumsubWebhookPayload
-	if err := json.Unmarshal(job.Payload, &payload); err != nil {
-		job.MarkFailed(err, 0)
-		if updateErr := w.jobRepo.Update(ctx, job); updateErr != nil {
-			w.logger.Error("Failed to update malformed KYC sync job",
-				zap.String("job_id", job.ID.String()),
-				zap.Error(updateErr))
+	var err error
+	if job.Provider != nil {
+		switch *job.Provider {
+		case "bridge":
+			if w.providerRetryProc != nil {
+				err = w.providerRetryProc.RetryBridgeSync(ctx, job.Payload)
+			}
+		case "alpaca":
+			if w.providerRetryProc != nil {
+				err = w.providerRetryProc.RetryAlpacaSync(ctx, job.Payload)
+			}
+		default:
+			err = w.processSumsubJob(ctx, job)
 		}
-		return
+	} else {
+		err = w.processSumsubJob(ctx, job)
 	}
 
-	err := w.processor.ProcessSumsubWebhook(ctx, &payload)
 	if err != nil {
 		retryDelay := time.Duration(job.AttemptCount) * w.baseRetryDelay
 		job.MarkFailed(err, retryDelay)
 		w.logger.Warn("KYC sync job processing failed",
 			zap.String("job_id", job.ID.String()),
+			zap.String("provider", stringVal(job.Provider)),
 			zap.Int("attempt_count", job.AttemptCount),
 			zap.String("status", string(job.Status)),
 			zap.Error(err))
@@ -170,4 +190,19 @@ func (w *Worker) processJob(ctx context.Context, job *entities.KYCSyncJob) {
 			zap.String("job_id", job.ID.String()),
 			zap.Error(updateErr))
 	}
+}
+
+func (w *Worker) processSumsubJob(ctx context.Context, job *entities.KYCSyncJob) error {
+	var payload entities.SumsubWebhookPayload
+	if err := json.Unmarshal(job.Payload, &payload); err != nil {
+		return err
+	}
+	return w.processor.ProcessSumsubWebhook(ctx, &payload)
+}
+
+func stringVal(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

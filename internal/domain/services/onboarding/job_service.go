@@ -13,8 +13,9 @@ import (
 
 // OnboardingJobService handles onboarding job business logic
 type OnboardingJobService struct {
-	jobRepo OnboardingJobRepository
-	logger  *zap.Logger
+	jobRepo         OnboardingJobRepository
+	logger          *zap.Logger
+	supportedChains []entities.WalletChain
 }
 
 // OnboardingJobRepository interface for dependency injection
@@ -29,10 +30,18 @@ type OnboardingJobRepository interface {
 }
 
 // NewOnboardingJobService creates a new onboarding job service
-func NewOnboardingJobService(jobRepo OnboardingJobRepository, logger *zap.Logger) *OnboardingJobService {
+func NewOnboardingJobService(jobRepo OnboardingJobRepository, logger *zap.Logger, supportedChains []entities.WalletChain) *OnboardingJobService {
+	if len(supportedChains) == 0 {
+		supportedChains = []entities.WalletChain{
+			entities.WalletChainSOLDevnet,
+			entities.WalletChainMATICAmoy,
+			entities.WalletChainAVAXFuji,
+		}
+	}
 	return &OnboardingJobService{
-		jobRepo: jobRepo,
-		logger:  logger,
+		jobRepo:         jobRepo,
+		logger:          logger,
+		supportedChains: supportedChains,
 	}
 }
 
@@ -73,12 +82,14 @@ func (s *OnboardingJobService) CreateOnboardingJob(ctx context.Context, userID u
 	}
 
 	// Set up job payload with user information
+	walletChains := make([]string, len(s.supportedChains))
+	for i, c := range s.supportedChains {
+		walletChains[i] = string(c)
+	}
 	payload := entities.OnboardingJobPayload{
-		UserEmail: userEmail,
-		UserPhone: userPhone,
-		WalletChains: []string{
-			string(entities.WalletChainSOLDevnet),
-		},
+		UserEmail:    userEmail,
+		UserPhone:    userPhone,
+		WalletChains: walletChains,
 		Metadata: map[string]interface{}{
 			"created_by": "signup_flow",
 			"priority":   "normal",
