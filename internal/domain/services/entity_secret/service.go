@@ -31,7 +31,7 @@ func NewService(logger *zap.Logger, entitySecretCiphertext, publicKeyPEM string)
 		return nil, errors.New("entity secret ciphertext is required")
 	}
 
-	publicKey := strings.TrimSpace(publicKeyPEM)
+	publicKey := normalizePEM(strings.TrimSpace(publicKeyPEM))
 	if publicKey == "" {
 		return nil, errors.New("public key PEM is required")
 	}
@@ -134,4 +134,26 @@ func (s *Service) encryptOAEP(pubKey *rsa.PublicKey, message []byte) ([]byte, er
 		return nil, fmt.Errorf("rsa.EncryptOAEP failed: %w", err)
 	}
 	return ciphertext, nil
+}
+
+// normalizePEM reconstructs proper PEM formatting from a potentially single-line env var value.
+func normalizePEM(raw string) string {
+	raw = strings.ReplaceAll(raw, "\\n", "\n")
+	if strings.Contains(raw, "\n") {
+		return raw
+	}
+	// Strip header/footer, re-wrap base64 at 64 chars
+	s := raw
+	s = strings.ReplaceAll(s, "-----BEGIN PUBLIC KEY-----", "")
+	s = strings.ReplaceAll(s, "-----END PUBLIC KEY-----", "")
+	s = strings.ReplaceAll(s, " ", "")
+	var lines []string
+	for i := 0; i < len(s); i += 64 {
+		end := i + 64
+		if end > len(s) {
+			end = len(s)
+		}
+		lines = append(lines, s[i:end])
+	}
+	return "-----BEGIN PUBLIC KEY-----\n" + strings.Join(lines, "\n") + "\n-----END PUBLIC KEY-----"
 }
