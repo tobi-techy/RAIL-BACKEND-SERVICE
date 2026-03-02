@@ -108,6 +108,7 @@ type BridgeAdapter interface {
 	CreateRecipient(ctx context.Context, req map[string]interface{}) (string, error)
 	InitiateTransfer(ctx context.Context, req map[string]interface{}) (map[string]interface{}, error)
 	GetTransferStatus(ctx context.Context, transferID string) (map[string]interface{}, error)
+	CancelTransfer(ctx context.Context, transferID string) error
 }
 
 // WithdrawalService handles crypto and fiat withdrawal operations
@@ -708,11 +709,16 @@ func (s *WithdrawalService) CancelWithdrawal(ctx context.Context, userID, withdr
 		return fmt.Errorf("cannot cancel withdrawal in status: %s", withdrawal.Status)
 	}
 
-	// For fiat withdrawals, we may need to cancel the Bridge transfer
+	// For fiat withdrawals, attempt to cancel the Bridge transfer
 	if withdrawal.IsFiat() && withdrawal.BridgeTransferID != nil {
-		// TODO: Add Bridge cancellation logic if supported
-		s.logger.Info("Fiat withdrawal cancellation - Bridge cancellation not implemented yet",
-			"transfer_id", *withdrawal.BridgeTransferID)
+		if err := s.bridgeAdapter.CancelTransfer(ctx, *withdrawal.BridgeTransferID); err != nil {
+			s.logger.Warn("Failed to cancel Bridge transfer; proceeding with local cancellation",
+				"transfer_id", *withdrawal.BridgeTransferID,
+				"error", err)
+		} else {
+			s.logger.Info("Bridge transfer cancelled",
+				"transfer_id", *withdrawal.BridgeTransferID)
+		}
 	}
 
 	if err := s.withdrawalRepo.MarkFailed(ctx, withdrawalID, "Cancelled by user"); err != nil {

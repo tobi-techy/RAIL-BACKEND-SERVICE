@@ -368,6 +368,10 @@ func (s *GeoSecurityService) GetBlockedCountries(ctx context.Context) ([]map[str
 		}
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
 	return countries, nil
 }
 

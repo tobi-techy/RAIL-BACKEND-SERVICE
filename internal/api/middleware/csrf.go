@@ -3,6 +3,7 @@ package middleware
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -43,7 +44,9 @@ func (s *CSRFStore) cleanup() {
 // Generate creates a new CSRF token with 1-hour expiration
 func (s *CSRFStore) Generate() string {
 	b := make([]byte, 32)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("failed to generate CSRF token: %v", err))
+	}
 	token := base64.URLEncoding.EncodeToString(b)
 	s.mu.Lock()
 	s.tokens[token] = time.Now().Add(1 * time.Hour)

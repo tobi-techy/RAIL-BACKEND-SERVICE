@@ -115,6 +115,10 @@ func (r *FundingEventJobRepository) GetNextPendingJobs(ctx context.Context, limi
 		jobs = append(jobs, job)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
 	return jobs, nil
 }
 
@@ -257,6 +261,10 @@ func (r *FundingEventJobRepository) GetDLQJobs(ctx context.Context, limit int, o
 		jobs = append(jobs, job)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
 	return jobs, nil
 }
 
@@ -314,6 +322,10 @@ func (r *FundingEventJobRepository) GetPendingDepositsForReconciliation(ctx cont
 
 		c.PendingDuration = time.Duration(durationSeconds) * time.Second
 		candidates = append(candidates, &c)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 
 	return candidates, nil

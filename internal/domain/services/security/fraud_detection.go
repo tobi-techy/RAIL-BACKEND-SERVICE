@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"math"
 	"time"
 
@@ -517,6 +518,10 @@ func (s *FraudDetectionService) GetUserFraudHistory(ctx context.Context, userID 
 			json.Unmarshal(metadataJSON, &signal.Metadata)
 			signals = append(signals, signal)
 		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 
 	return signals, nil

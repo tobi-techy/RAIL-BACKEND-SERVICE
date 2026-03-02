@@ -174,6 +174,10 @@ func (s *DeviceTrackingService) GetUserDevices(ctx context.Context, userID uuid.
 		devices = append(devices, d)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
 	return devices, nil
 }
 

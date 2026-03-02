@@ -283,7 +283,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			authRateLimited := auth.Group("/")
 			authRateLimited.Use(middleware.AuthRateLimit(5))
 			if container.LoginAttemptTracker != nil {
-				authRateLimited.Use(middleware.LoginRateLimiting(container.LoginAttemptTracker, container.Logger))
+				authRateLimited.Use(middleware.LoginRateLimiting(container.LoginAttemptTracker, container.GetCaptchaVerifier(), container.Logger))
 			}
 			if lp := container.GetLoginProtectionService(); lp != nil {
 				authRateLimited.Use(middleware.LoginProtection(lp, container.ZapLog))

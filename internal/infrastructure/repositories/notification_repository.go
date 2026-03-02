@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -84,6 +85,9 @@ func (r *NotificationRepository) GetByUserID(ctx context.Context, userID uuid.UU
 			json.Unmarshal(dataJSON, &n.Data)
 		}
 		notifications = append(notifications, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 	return notifications, nil
 }

@@ -39,6 +39,9 @@ func (qo *QueryOptimizer) ExplainQuery(ctx context.Context, query string, args .
 		}
 		plan.WriteString(line + "\n")
 	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("row iteration error: %w", err)
+	}
 
 	qo.logger.Info("Query execution plan", zap.String("plan", plan.String()))
 	return nil

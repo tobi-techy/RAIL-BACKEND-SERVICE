@@ -26,7 +26,7 @@ rate_limit:
   user_limit: 200              # Requests per authenticated user per window
   user_window: 60              # User window in seconds (1 minute)
   key_prefix: "ratelimit"      # Redis key prefix for rate limiting
-  fail_open: true              # Allow requests if Redis is unavailable (false in production)
+  fail_open: false             # Deny requests if Redis is unavailable (fail-safe for auth endpoints)
   response_headers: true       # Include X-RateLimit headers in responses
 
   # Endpoint-specific rate limits (overrides user_limit for specific endpoints)
@@ -95,7 +95,7 @@ jwt:
   # CRITICAL SECURITY WARNING: This secret must be generated securely and never committed to version control
   # Generate with: openssl rand -base64 32
   # Minimum 32 characters required for HMAC-SHA256
-  secret: "${JWT_SECRET:-change-this-in-production-insecure-default}"  # MUST BE OVERRIDDEN IN PRODUCTION
+  secret: "${JWT_SECRET}"  # REQUIRED: set JWT_SECRET env var or the application will not start
   access_token_ttl: 3600      # 1 hour
   refresh_token_ttl: 2592000  # 30 days
   issuer: "rail_service"
@@ -113,7 +113,7 @@ security:
   # CRITICAL SECURITY WARNING: This key must be exactly 32 bytes for AES-256-GCM encryption
   # Generate with: openssl rand -base64 32 | head -c 32
   # NEVER commit this to version control or use default values in production
-  encryption_key: "${ENCRYPTION_KEY:-9foZ22ccMYtiFckFMoLRUdLQzm3bxKeE5eC8dlXOrHDPKGwTOxuEd0jTCTBPCveb}"  # MUST BE OVERRIDDEN IN PRODUCTION
+  encryption_key: "${ENCRYPTION_KEY}"  # REQUIRED: set ENCRYPTION_KEY env var or the application will not start
   max_login_attempts: 5
   lockout_duration: 900
   require_mfa: false

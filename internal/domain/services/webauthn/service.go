@@ -381,6 +381,10 @@ func (s *Service) GetCredentials(ctx context.Context, userID uuid.UUID) ([]entit
 		creds = append(creds, c)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
 	return creds, nil
 }
 
@@ -434,6 +438,10 @@ func (s *Service) getCredentials(ctx context.Context, userID uuid.UUID) ([]webau
 		}
 		copy(c.Authenticator.AAGUID[:], aaguid)
 		credentials = append(credentials, c)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 
 	return credentials, nil

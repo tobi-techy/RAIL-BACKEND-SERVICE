@@ -223,6 +223,7 @@ type SecurityConfig struct {
 	EnableTokenBlacklist   bool   `mapstructure:"enable_token_blacklist"`   // enable token revocation
 	CheckPasswordBreaches  bool   `mapstructure:"check_password_breaches"`  // check HaveIBeenPwned
 	CaptchaThreshold       int    `mapstructure:"captcha_threshold"`        // failed attempts before CAPTCHA
+	CaptchaSecretKey       string `mapstructure:"captcha_secret_key"`       // CAPTCHA provider secret key (e.g. reCAPTCHA)
 	SecretsProvider        string `mapstructure:"secrets_provider"`         // "env", "aws_secrets_manager"
 	AWSSecretsRegion       string `mapstructure:"aws_secrets_region"`       // AWS region for Secrets Manager
 	AWSSecretsPrefix       string `mapstructure:"aws_secrets_prefix"`       // prefix for secret names
@@ -571,8 +572,8 @@ func setDefaults() {
 
 	// Email defaults
 	viper.SetDefault("email.provider", "")
-	viper.SetDefault("email.from_email", "no-reply@stackservice.com")
-	viper.SetDefault("email.from_name", "Stack Service")
+	viper.SetDefault("email.from_email", "no-reply@userail.money")
+	viper.SetDefault("email.from_name", "RAIL")
 	viper.SetDefault("email.environment", "development")
 	viper.SetDefault("email.base_url", "http://localhost:3000")
 	viper.SetDefault("email.reply_to", "")
