@@ -1408,7 +1408,7 @@ func (h *AuthHandlers) DeleteAccount(c *gin.Context) {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{
-			"message":       "Account deleted permanently",
+			"message":       "Account anonymized per GDPR request",
 			"funds_swept":   fundsSwept,
 			"sweep_tx_hash": txHash,
 		})

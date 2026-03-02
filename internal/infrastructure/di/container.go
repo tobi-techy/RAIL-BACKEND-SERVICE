@@ -151,6 +151,10 @@ func (a *LedgerIntegrationAdapter) RecordDeposit(ctx context.Context, userID uui
 	return a.integration.RecordDeposit(ctx, userID, amount, depositID, chain, txHash)
 }
 
+func (a *LedgerIntegrationAdapter) CompensateDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID) error {
+	return a.integration.CompensateDeposit(ctx, userID, amount, depositID)
+}
+
 func (a *LedgerIntegrationAdapter) GetUserBalance(ctx context.Context, userID uuid.UUID) (*funding.LedgerBalanceView, error) {
 	view, err := a.integration.GetUserBalance(ctx, userID)
 	if err != nil {
@@ -478,6 +482,10 @@ func (a *FundingNotificationAdapter) NotifyLargeBalanceChange(ctx context.Contex
 	return a.svc.NotifyLargeBalanceChange(ctx, userID, changeType, amount, newBalance)
 }
 
+func (a *FundingNotificationAdapter) NotifyAllocationFailed(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID, reason string) error {
+	return a.svc.NotifyAllocationFailed(ctx, userID, amount, depositID, reason)
+}
+
 // WithdrawalNotificationAdapter adapts NotificationService to withdrawal.WithdrawalNotificationService
 type WithdrawalNotificationAdapter struct {
 	svc *services.NotificationService
@@ -511,6 +519,10 @@ type deletionUserRepoAdapter struct {
 
 func (a *deletionUserRepoAdapter) HardDelete(ctx context.Context, userID uuid.UUID) error {
 	return a.userRepo.HardDelete(ctx, userID)
+}
+
+func (a *deletionUserRepoAdapter) AnonymizeUser(ctx context.Context, userID uuid.UUID) error {
+	return a.userRepo.AnonymizeUser(ctx, userID)
 }
 
 // Container holds all application dependencies
@@ -686,10 +698,10 @@ type Container struct {
 	AccountDeletionService *account.DeletionService
 
 	// P2P Transfer Services
-	P2PRepo                  *repositories.P2PRepository
-	P2PService               *p2p.Service
-	P2PNotificationSender    *adapters.P2PNotificationSender
-	P2PHandlers              *p2phandlers.Handlers
+	P2PRepo               *repositories.P2PRepository
+	P2PService            *p2p.Service
+	P2PNotificationSender *adapters.P2PNotificationSender
+	P2PHandlers           *p2phandlers.Handlers
 
 	// Notification Services
 	DeviceTokenRepo  *repositories.DeviceTokenRepository
@@ -730,6 +742,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		Environment:            cfg.Circle.Environment,
 		BaseURL:                cfg.Circle.BaseURL,
 		EntitySecretCiphertext: cfg.Circle.EntitySecretCiphertext,
+		PublicKeyPEM:           cfg.Circle.PublicKeyPEM,
 		WalletSetID:            cfg.Circle.DefaultWalletSetID,
 	}
 	circleClient := circle.NewClient(circleConfig, zapLog)
@@ -810,7 +823,10 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	cacheInvalidator := cache.NewCacheInvalidator(redisClient, zapLog, cache.InvalidateImmediate)
 
 	// Initialize entity secret service
-	entitySecretService := entitysecret.NewService(zapLog)
+	entitySecretService, err := entitysecret.NewService(zapLog, cfg.Circle.EntitySecretCiphertext, cfg.Circle.PublicKeyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize entity secret service: %w", err)
+	}
 
 	container := &Container{
 		Config: cfg,
@@ -1036,11 +1052,18 @@ func (c *Container) initializeDomainServices() error {
 		c.BridgeVirtualAccountService = funding.NewBridgeVirtualAccountService(
 			c.BridgeClient,
 			virtualAccountRepo,
+			c.DepositRepo,
 			c.AllocationService,
 			ledgerAdapter,
 			c.Logger,
 		)
 		c.FundingService.SetBridgeVAService(c.BridgeVirtualAccountService)
+
+		// Wire notification service to Bridge VA service for allocation failure notifications
+		if c.NotificationService != nil {
+			notificationAdapter := &FundingNotificationAdapter{svc: c.NotificationService}
+			c.BridgeVirtualAccountService.SetNotificationService(notificationAdapter)
+		}
 
 		bridgeWebhookService := webhooks.NewBridgeWebhookService(
 			&BridgeVirtualAccountWebhookAdapter{service: c.BridgeVirtualAccountService},

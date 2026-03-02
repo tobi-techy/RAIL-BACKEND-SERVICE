@@ -1,6 +1,7 @@
 package app
 
 import (
+	"compress/gzip"
 	"context"
 	"fmt"
 	"net/http"
@@ -45,14 +46,14 @@ type Application struct {
 	container *di.Container
 
 	// Workers
-	scheduler                    *walletprovisioning.Scheduler
-	webhookManager               *funding_webhook.Manager
-	scheduledInvestmentWorker    *scheduled_investment_worker.Worker
-	portfolioSnapshotWorker      *portfolio_snapshot_worker.Worker
-	depositAllocationWorker      *deposit_allocation_recovery.Worker
-	kycAutoInvestWorker          *kyc_autoinvest.Worker
-	kycSyncWorker                *kyc_sync.Worker
-	balanceReconciliationWorker  *balance_reconciliation.Worker
+	scheduler                   *walletprovisioning.Scheduler
+	webhookManager              *funding_webhook.Manager
+	scheduledInvestmentWorker   *scheduled_investment_worker.Worker
+	portfolioSnapshotWorker     *portfolio_snapshot_worker.Worker
+	depositAllocationWorker     *deposit_allocation_recovery.Worker
+	kycAutoInvestWorker         *kyc_autoinvest.Worker
+	kycSyncWorker               *kyc_sync.Worker
+	balanceReconciliationWorker *balance_reconciliation.Worker
 
 	// Tracing
 	tracingShutdown func(context.Context) error
@@ -344,6 +345,11 @@ func (app *Application) initializeServer() error {
 	// Initialize router
 	router := routes.SetupRoutes(app.container)
 
+	// Add gzip compression if enabled
+	if app.cfg.Server.EnableGzip {
+		router.Use(GzipMiddleware())
+	}
+
 	// Setup security routes
 	routes.SetupSecurityRoutesEnhanced(
 		router,
@@ -486,6 +492,12 @@ func (app *Application) stopWorkers() {
 		app.log.Info("Stopping KYC sync worker...")
 		app.kycSyncWorker.Stop()
 	}
+
+	// Stop balance reconciliation worker
+	if app.balanceReconciliationWorker != nil {
+		app.log.Info("Stopping balance reconciliation worker...")
+		app.balanceReconciliationWorker.Stop()
+	}
 }
 
 // WaitForShutdown waits for interrupt signal
@@ -526,6 +538,41 @@ func getSampleRate(env string) float64 {
 	default:
 		return 1.0 // 100% sampling in development/test
 	}
+}
+
+// GzipMiddleware returns a gin middleware for gzip compression
+func GzipMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !strings.Contains(c.Request.Header.Get("Accept-Encoding"), "gzip") {
+			c.Next()
+			return
+		}
+
+		c.Header("Content-Encoding", "gzip")
+
+		gz := gzip.NewWriter(c.Writer)
+		defer gz.Close()
+
+		c.Writer = &gzipWriter{Writer: gz, ResponseWriter: c.Writer}
+		c.Next()
+	}
+}
+
+type gzipWriter struct {
+	gin.ResponseWriter
+	Writer *gzip.Writer
+}
+
+func (g *gzipWriter) Write(data []byte) (int, error) {
+	return g.Writer.Write(data)
+}
+
+func (g *gzipWriter) WriteString(s string) (int, error) {
+	return g.Writer.Write([]byte(s))
+}
+
+func (g *gzipWriter) Flush() {
+	g.Writer.Flush()
 }
 
 // userRepositoryAdapter adapts infrastructure UserRepository to wallet provisioning UserRepository

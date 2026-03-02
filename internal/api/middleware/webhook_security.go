@@ -230,11 +230,16 @@ func isUnifiedFundingWebhook(path string) bool {
 func detectProviderFromBody(c *gin.Context) string {
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
+		// Restore body even on read error
+		c.Request.Body = io.NopCloser(bytes.NewBuffer([]byte{}))
 		return ""
 	}
+
+	// Always restore body after reading
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
+
 	var peek map[string]interface{}
-	if json.Unmarshal(body, &peek) != nil {
+	if err := json.Unmarshal(body, &peek); err != nil {
 		return ""
 	}
 	if _, ok := peek["notificationType"]; ok {

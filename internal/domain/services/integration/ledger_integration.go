@@ -5,20 +5,20 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/shopspring/decimal"
 )
 
 // LedgerIntegration provides a facade for legacy services to integrate with ledger
 // It supports shadow mode where writes go to both ledger and legacy tables
 type LedgerIntegration struct {
-	ledgerService  *ledger.Service
-	balanceRepo    BalanceRepository
-	logger         *logger.Logger
-	shadowMode     bool // If true, dual-write to both ledger and balances table
-	strictMode     bool // If true, fail on discrepancies
+	ledgerService *ledger.Service
+	balanceRepo   BalanceRepository
+	logger        *logger.Logger
+	shadowMode    bool // If true, dual-write to both ledger and balances table
+	strictMode    bool // If true, fail on discrepancies
 }
 
 // BalanceRepository represents the legacy balance repository interface
@@ -54,11 +54,11 @@ func (i *LedgerIntegration) GetUserBalance(ctx context.Context, userID uuid.UUID
 	}
 
 	view := &UserBalanceView{
-		UserID:             userID,
-		USDCBalance:        ledgerBalances.USDCBalance,
-		FiatExposure:       ledgerBalances.FiatExposure,
-		PendingInvestment:  ledgerBalances.PendingInvestment,
-		TotalValue:         ledgerBalances.TotalValue(),
+		UserID:            userID,
+		USDCBalance:       ledgerBalances.USDCBalance,
+		FiatExposure:      ledgerBalances.FiatExposure,
+		PendingInvestment: ledgerBalances.PendingInvestment,
+		TotalValue:        ledgerBalances.TotalValue(),
 	}
 
 	// In shadow mode, compare with legacy balance
@@ -189,7 +189,7 @@ func (i *LedgerIntegration) MoveFundsToFiatExposure(
 
 	// Create ledger transaction
 	idempotencyKey := fmt.Sprintf("move-fiat-%s", referenceID.String())
-	
+
 	req := &entities.CreateTransactionRequest{
 		UserID:          &userID,
 		TransactionType: entities.TransactionTypeConversion,
@@ -331,7 +331,7 @@ func (i *LedgerIntegration) compareBalances(
 	// Compare pending deposits (usdc balance + pending)
 	legacyTotal := legacy.PendingDeposits
 	ledgerTotal := ledger.USDCBalance.Add(ledger.PendingInvestment)
-	
+
 	if !ledgerTotal.Equal(legacyTotal) {
 		discrepancies = append(discrepancies,
 			fmt.Sprintf("total_usdc: ledger=%s legacy=%s diff=%s",
@@ -441,6 +441,74 @@ func (i *LedgerIntegration) RecordDeposit(
 	}
 
 	i.logger.Info("Deposit recorded in ledger",
+		"user_id", userID,
+		"deposit_id", depositID,
+		"amount", amount)
+
+	return nil
+}
+
+// CompensateDeposit reverses a deposit in the ledger system
+// This is used when deposit record creation fails after ledger was already credited
+func (i *LedgerIntegration) CompensateDeposit(
+	ctx context.Context,
+	userID uuid.UUID,
+	amount decimal.Decimal,
+	depositID uuid.UUID,
+) error {
+	i.logger.Warn("Compensating deposit in ledger (reversing)",
+		"user_id", userID,
+		"amount", amount,
+		"deposit_id", depositID)
+
+	// Get user USDC account
+	userAccount, err := i.ledgerService.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeUSDCBalance)
+	if err != nil {
+		return fmt.Errorf("failed to get user account for compensation: %w", err)
+	}
+
+	// Get system buffer account
+	systemAccount, err := i.ledgerService.GetSystemAccount(ctx, entities.AccountTypeSystemBufferUSDC)
+	if err != nil {
+		return fmt.Errorf("failed to get system buffer account for compensation: %w", err)
+	}
+
+	// Create reverse ledger transaction
+	description := fmt.Sprintf("DEPOSIT COMPENSATION (reversing deposit %s)", depositID.String())
+	idempotencyKey := fmt.Sprintf("compensate-deposit-%s", depositID.String())
+	refType := "deposit_compensation"
+
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeWithdrawal, // Use withdrawal type for reversal
+		ReferenceID:     &depositID,
+		ReferenceType:   &refType,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &description,
+		Entries: []entities.CreateEntryRequest{
+			{
+				AccountID:   userAccount.ID,
+				EntryType:   entities.EntryTypeDebit, // Decrease user balance (reverse original credit)
+				Amount:      amount,
+				Currency:    "USDC",
+				Description: &description,
+			},
+			{
+				AccountID:   systemAccount.ID,
+				EntryType:   entities.EntryTypeCredit, // Increase system buffer (reverse original debit)
+				Amount:      amount,
+				Currency:    "USDC",
+				Description: &description,
+			},
+		},
+	}
+
+	_, err = i.ledgerService.CreateTransaction(ctx, req)
+	if err != nil {
+		return fmt.Errorf("failed to create compensation ledger transaction: %w", err)
+	}
+
+	i.logger.Info("Deposit compensation completed in ledger",
 		"user_id", userID,
 		"deposit_id", depositID,
 		"amount", amount)

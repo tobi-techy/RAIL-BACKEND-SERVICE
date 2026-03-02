@@ -53,8 +53,26 @@ type CircleWebhookHandler struct {
 	circleAPIKey      string // For fetching public keys
 	circleBaseURL     string
 	devMode           bool // When true, skips signature verification (development only)
-	keyCache          map[string]string
-	keyCacheMu        sync.RWMutex
+	failOpen          bool // When true, fails open on errors (not recommended for production)
+
+	// Key cache with TTL support
+	keyCache   map[string]cachedKey
+	keyCacheMu sync.RWMutex
+}
+
+type cachedKey struct {
+	key       string
+	fetchedAt time.Time
+}
+
+const keyCacheTTL = 24 * time.Hour
+
+// CircleWebhookConfig holds configuration for Circle webhook handler
+type CircleWebhookConfig struct {
+	CircleAPIKey  string
+	CircleBaseURL string
+	DevMode       bool // Skip all verification (development only)
+	FailOpen      bool // Fail open on errors (security risk - use with caution)
 }
 
 // NewCircleWebhookHandler creates a new Circle webhook handler
@@ -67,16 +85,47 @@ func NewCircleWebhookHandler(
 	circleAPIKey string,
 	circleBaseURL string,
 ) *CircleWebhookHandler {
+	return NewCircleWebhookHandlerWithConfig(
+		fundingService,
+		managedWalletRepo,
+		withdrawalRepo,
+		withdrawalLedger,
+		logger,
+		CircleWebhookConfig{
+			CircleAPIKey:  circleAPIKey,
+			CircleBaseURL: circleBaseURL,
+			DevMode:       strings.TrimSpace(circleAPIKey) == "",
+			FailOpen:      false, // Default to secure behavior
+		},
+	)
+}
+
+// NewCircleWebhookHandlerWithConfig creates a new Circle webhook handler with custom config
+func NewCircleWebhookHandlerWithConfig(
+	fundingService CircleDepositProcessor,
+	managedWalletRepo CircleManagedWalletRepository,
+	withdrawalRepo CircleWithdrawalRepository,
+	withdrawalLedger CircleWithdrawalLedger,
+	logger *logger.Logger,
+	config CircleWebhookConfig,
+) *CircleWebhookHandler {
+	// Warn if failOpen is enabled in production-like environment
+	devMode := config.DevMode
+	if !devMode && config.FailOpen {
+		logger.Warn("CRITICAL: Circle webhook handler is configured to FAIL-OPEN - this is a security risk in production!")
+	}
+
 	return &CircleWebhookHandler{
 		fundingService:    fundingService,
 		managedWalletRepo: managedWalletRepo,
 		withdrawalRepo:    withdrawalRepo,
 		withdrawalLedger:  withdrawalLedger,
 		logger:            logger,
-		circleAPIKey:      circleAPIKey,
-		circleBaseURL:     circleBaseURL,
-		devMode:           strings.TrimSpace(circleAPIKey) == "",
-		keyCache:          make(map[string]string),
+		circleAPIKey:      config.CircleAPIKey,
+		circleBaseURL:     config.CircleBaseURL,
+		devMode:           devMode,
+		failOpen:          config.FailOpen,
+		keyCache:          make(map[string]cachedKey),
 	}
 }
 
@@ -198,7 +247,8 @@ func (h *CircleWebhookHandler) processIncomingTransfer(ctx context.Context, webh
 		chain = h.mapWalletChainToChain(managedWallet.Chain)
 	}
 	if chain == "" {
-		chain = entities.ChainSolana
+		return fmt.Errorf("unable to determine chain for deposit: circle_chain=%q, wallet_chain=%q",
+			transfer.Source.Chain, managedWallet.Chain)
 	}
 
 	blockTime := time.Now()
@@ -285,7 +335,7 @@ func (h *CircleWebhookHandler) processIncomingTransactionNotification(ctx contex
 
 	chain := h.mapCircleChainToChain(n.Blockchain)
 	if chain == "" {
-		chain = entities.ChainSolana
+		return fmt.Errorf("unable to determine chain for deposit: blockchain=%q", n.Blockchain)
 	}
 
 	// Map token ID to token symbol (default to USDC for now)
@@ -537,10 +587,18 @@ func (h *CircleWebhookHandler) verifySignature(ctx context.Context, keyID, signa
 	// Fetch the public key from Circle API (cached by keyID)
 	publicKeyBase64, err := h.fetchPublicKeyCached(ctx, keyID)
 	if err != nil {
-		// Fail open on key-fetch errors to avoid blocking legitimate testnet webhooks.
-		// Log the error for visibility but do not reject the webhook.
-		h.logger.Warn("Failed to fetch Circle public key — allowing webhook (fail-open)", "error", err, "key_id", keyID)
-		return true
+		// Handle based on failOpen configuration
+		if h.failOpen {
+			// Fail open: allow webhook but log warning
+			// WARNING: This is a security risk - only use in development/testnet
+			h.logger.Warn("Failed to fetch Circle public key — allowing webhook (fail-open enabled)",
+				"error", err, "key_id", keyID)
+			return true
+		}
+		// Fail closed (secure default): reject webhook
+		h.logger.Error("Failed to fetch Circle public key — rejecting webhook (fail-open disabled)",
+			"error", err, "key_id", keyID)
+		return false
 	}
 
 	// Decode the base64 public key
@@ -582,23 +640,38 @@ func (h *CircleWebhookHandler) verifySignature(ctx context.Context, keyID, signa
 	return true
 }
 
-// fetchPublicKeyCached returns the Circle public key for keyID, using an in-memory cache.
+// fetchPublicKeyCached returns the Circle public key for keyID, using an in-memory cache with TTL.
+// Uses double-checked locking to prevent race conditions.
 func (h *CircleWebhookHandler) fetchPublicKeyCached(ctx context.Context, keyID string) (string, error) {
+	// Check cache first with read lock
 	h.keyCacheMu.RLock()
-	if key, ok := h.keyCache[keyID]; ok {
-		h.keyCacheMu.RUnlock()
-		return key, nil
+	if entry, ok := h.keyCache[keyID]; ok {
+		if time.Since(entry.fetchedAt) < keyCacheTTL {
+			h.keyCacheMu.RUnlock()
+			return entry.key, nil
+		}
 	}
 	h.keyCacheMu.RUnlock()
 
+	// Acquire write lock for fetch
+	h.keyCacheMu.Lock()
+	defer h.keyCacheMu.Unlock()
+
+	// Double-check after acquiring write lock (another goroutine may have fetched it)
+	if entry, ok := h.keyCache[keyID]; ok {
+		if time.Since(entry.fetchedAt) < keyCacheTTL {
+			return entry.key, nil
+		}
+	}
+
+	// Fetch from Circle API
 	key, err := h.fetchPublicKey(ctx, keyID)
 	if err != nil {
 		return "", err
 	}
 
-	h.keyCacheMu.Lock()
-	h.keyCache[keyID] = key
-	h.keyCacheMu.Unlock()
+	// Update cache
+	h.keyCache[keyID] = cachedKey{key: key, fetchedAt: time.Now()}
 	return key, nil
 }
 
@@ -673,8 +746,15 @@ func (h *CircleWebhookHandler) mapCircleChainToChain(circleChain string) entitie
 	}
 }
 
-func (h *CircleWebhookHandler) mapWalletChainToChain(chain entities.WalletChain) entities.Chain {
-	switch chain {
+// mapWalletChainToChain maps our internal WalletChain to Chain type
+// Uses consolidated mapping logic
+func (h *CircleWebhookHandler) mapWalletChainToChain(walletChain entities.WalletChain) entities.Chain {
+	return mapWalletChainToChainType(walletChain)
+}
+
+// mapWalletChainToChainType is a standalone function for WalletChain to Chain mapping
+func mapWalletChainToChainType(walletChain entities.WalletChain) entities.Chain {
+	switch walletChain {
 	case entities.WalletChainSOLDevnet, entities.WalletChainSolana:
 		return entities.ChainSolana
 	case entities.WalletChainPolygon, entities.WalletChainMATICAmoy:

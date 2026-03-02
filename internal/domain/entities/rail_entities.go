@@ -12,7 +12,7 @@ import (
 type Chain string
 
 const (
-	ChainETH       Chain = "ETH"
+	ChainETH      Chain = "ETH"
 	ChainMATIC    Chain = "MATIC"
 	ChainAVAX     Chain = "AVAX"
 	ChainSOL      Chain = "SOL"
@@ -23,6 +23,7 @@ const (
 	ChainSolana   Chain = "Solana"
 	ChainPolygon  Chain = "polygon"
 	ChainStarknet Chain = "starknet"
+	ChainFiat     Chain = "fiat"
 )
 
 // Stablecoin represents supported stablecoins
@@ -158,21 +159,23 @@ type Wallet struct {
 
 // Deposit represents a stablecoin deposit
 type Deposit struct {
-	ID                   uuid.UUID       `json:"id" db:"id"`
-	UserID               uuid.UUID       `json:"user_id" db:"user_id"`
-	Chain                Chain           `json:"chain" db:"chain"`
-	TxHash               string          `json:"tx_hash" db:"tx_hash"`
-	Token                Stablecoin      `json:"token" db:"token"`
-	Amount               decimal.Decimal `json:"amount" db:"amount"`
-	Status               string          `json:"status" db:"status"` // pending, confirmed, failed, off_ramp_initiated, off_ramp_completed, broker_funded
-	ConfirmedAt          *time.Time      `json:"confirmed_at" db:"confirmed_at"`
-	OffRampTxID          *string         `json:"off_ramp_tx_id" db:"off_ramp_tx_id"`
-	OffRampInitiatedAt   *time.Time      `json:"off_ramp_initiated_at" db:"off_ramp_initiated_at"`
-	OffRampCompletedAt   *time.Time      `json:"off_ramp_completed_at" db:"off_ramp_completed_at"`
-	AlpacaFundingTxID    *string         `json:"alpaca_funding_tx_id" db:"alpaca_funding_tx_id"`
-	AlpacaFundedAt       *time.Time      `json:"alpaca_funded_at" db:"alpaca_funded_at"`
-	VirtualAccountID     *uuid.UUID      `json:"virtual_account_id" db:"virtual_account_id"`
-	CreatedAt            time.Time       `json:"created_at" db:"created_at"`
+	ID                 uuid.UUID       `json:"id" db:"id"`
+	IdempotencyKey     string          `json:"idempotency_key" db:"idempotency_key"`
+	CorrelationID      string          `json:"correlation_id" db:"correlation_id"` // For distributed tracing
+	UserID             uuid.UUID       `json:"user_id" db:"user_id"`
+	Chain              Chain           `json:"chain" db:"chain"`
+	TxHash             string          `json:"tx_hash" db:"tx_hash"`
+	Token              Stablecoin      `json:"token" db:"token"`
+	Amount             decimal.Decimal `json:"amount" db:"amount"`
+	Status             string          `json:"status" db:"status"` // pending, confirmed, failed, off_ramp_initiated, off_ramp_completed, broker_funded
+	ConfirmedAt        *time.Time      `json:"confirmed_at" db:"confirmed_at"`
+	OffRampTxID        *string         `json:"off_ramp_tx_id" db:"off_ramp_tx_id"`
+	OffRampInitiatedAt *time.Time      `json:"off_ramp_initiated_at" db:"off_ramp_initiated_at"`
+	OffRampCompletedAt *time.Time      `json:"off_ramp_completed_at" db:"off_ramp_completed_at"`
+	AlpacaFundingTxID  *string         `json:"alpaca_funding_tx_id" db:"alpaca_funding_tx_id"`
+	AlpacaFundedAt     *time.Time      `json:"alpaca_funded_at" db:"alpaca_funded_at"`
+	VirtualAccountID   *uuid.UUID      `json:"virtual_account_id" db:"virtual_account_id"`
+	CreatedAt          time.Time       `json:"created_at" db:"created_at"`
 }
 
 // Balance represents user's buying power and pending deposits
@@ -259,13 +262,14 @@ type DepositAddressResponse struct {
 
 // FundingConfirmation represents a funding confirmation
 type FundingConfirmation struct {
-	ID          uuid.UUID  `json:"id"`
-	Chain       Chain      `json:"chain"`
-	TxHash      string     `json:"txHash"`
-	Token       Stablecoin `json:"token"`
-	Amount      string     `json:"amount"`
-	Status      string     `json:"status"`
-	ConfirmedAt time.Time  `json:"confirmedAt"`
+	ID             uuid.UUID  `json:"id"`
+	IdempotencyKey string     `json:"idempotencyKey,omitempty"`
+	Chain          Chain      `json:"chain"`
+	TxHash         string     `json:"txHash"`
+	Token          Stablecoin `json:"token"`
+	Amount         string     `json:"amount"`
+	Status         string     `json:"status"`
+	ConfirmedAt    time.Time  `json:"confirmedAt"`
 }
 
 // FundingConfirmationsPage represents paginated funding confirmations response
@@ -298,12 +302,12 @@ type Portfolio struct {
 
 // PortfolioOverview represents complete portfolio overview with balance and performance
 type PortfolioOverview struct {
-	TotalPortfolio      string  `json:"totalPortfolio"`      // Total portfolio value (positions + buying power)
-	BuyingPower         string  `json:"buyingPower"`         // Available buying power
-	PositionsValue      string  `json:"positionsValue"`      // Total value of all positions
-	PerformanceLast30d  float64 `json:"performanceLast30d"`  // Performance % over last 30 days
-	Currency            string  `json:"currency"`            // Currency (USD)
-	LastUpdated         string  `json:"lastUpdated"`         // ISO timestamp of last update
+	TotalPortfolio     string  `json:"totalPortfolio"`     // Total portfolio value (positions + buying power)
+	BuyingPower        string  `json:"buyingPower"`        // Available buying power
+	PositionsValue     string  `json:"positionsValue"`     // Total value of all positions
+	PerformanceLast30d float64 `json:"performanceLast30d"` // Performance % over last 30 days
+	Currency           string  `json:"currency"`           // Currency (USD)
+	LastUpdated        string  `json:"lastUpdated"`        // ISO timestamp of last update
 }
 
 // PositionResponse represents a position in portfolio response
@@ -318,13 +322,14 @@ type PositionResponse struct {
 
 // ChainDepositWebhook represents inbound chain deposit webhook
 type ChainDepositWebhook struct {
-	Chain     Chain      `json:"chain"`
-	Address   string     `json:"address"`
-	Token     Stablecoin `json:"token"`
-	Amount    string     `json:"amount"`
-	TxHash    string     `json:"txHash"`
-	BlockTime time.Time  `json:"blockTime"`
-	Signature string     `json:"signature"`
+	CorrelationID string     `json:"correlationId,omitempty"` // For distributed tracing
+	Chain         Chain      `json:"chain"`
+	Address       string     `json:"address"`
+	Token         Stablecoin `json:"token"`
+	Amount        string     `json:"amount"`
+	TxHash        string     `json:"txHash"`
+	BlockTime     time.Time  `json:"blockTime"`
+	Signature     string     `json:"signature"`
 }
 
 // BrokerageFillWebhook represents brokerage fill webhook

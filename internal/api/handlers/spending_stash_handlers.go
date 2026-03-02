@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -37,14 +38,14 @@ var errSpendingDependencyUnavailable = errors.New("spending dependency unavailab
 
 // SpendingStashHandlers handles the spending stash screen endpoint
 type SpendingStashHandlers struct {
-	allocationService  *allocation.Service
-	cardService        *card.Service
-	roundupService     *roundup.Service
-	limitsService      *limits.Service
-	ledgerService      *ledger.Service
-	p2pRepo            P2PRepository
-	withdrawalRepo     WithdrawalRepository
-	logger             *zap.Logger
+	allocationService *allocation.Service
+	cardService       *card.Service
+	roundupService    *roundup.Service
+	limitsService     *limits.Service
+	ledgerService     *ledger.Service
+	p2pRepo           P2PRepository
+	withdrawalRepo    WithdrawalRepository
+	logger            *zap.Logger
 }
 
 // NewSpendingStashHandlers creates new spending stash handlers
@@ -475,15 +476,11 @@ func (h *SpendingStashHandlers) buildResponse(
 }
 
 func (h *SpendingStashHandlers) sortTransactionsByDate(items []TransactionSummary) {
-	for i := 0; i < len(items); i++ {
-		for j := i + 1; j < len(items); j++ {
-			ti, _ := time.Parse(time.RFC3339, items[i].CreatedAt)
-			tj, _ := time.Parse(time.RFC3339, items[j].CreatedAt)
-			if tj.After(ti) {
-				items[i], items[j] = items[j], items[i]
-			}
-		}
-	}
+	sort.Slice(items, func(i, j int) bool {
+		ti, _ := time.Parse(time.RFC3339, items[i].CreatedAt)
+		tj, _ := time.Parse(time.RFC3339, items[j].CreatedAt)
+		return tj.After(ti)
+	})
 }
 
 func (h *SpendingStashHandlers) calculateSpendingMetrics(cardTxns []*entities.BridgeCardTransaction, p2pTransfers []*entities.P2PTransfer, withdrawals []*entities.Withdrawal) (*SpendingSummary, []CategorySummary, []ChartDataPoint) {
@@ -495,7 +492,7 @@ func (h *SpendingStashHandlers) calculateSpendingMetrics(cardTxns []*entities.Br
 	// Initialize last 6 months
 	for i := 5; i >= 0; i-- {
 		m := now.AddDate(0, -i, 0)
-		key := months[m.Month()-1]
+		key := fmt.Sprintf("%d-%02d", m.Year(), m.Month())
 		monthlyTotals[key] = decimal.Zero
 	}
 
@@ -530,7 +527,7 @@ func (h *SpendingStashHandlers) calculateSpendingMetrics(cardTxns []*entities.Br
 
 		// Chart data - last 6 months
 		if !tx.CreatedAt.Before(sixMonthsAgo) {
-			key := months[tx.CreatedAt.Month()-1]
+			key := fmt.Sprintf("%d-%02d", tx.CreatedAt.Year(), tx.CreatedAt.Month())
 			monthlyTotals[key] = monthlyTotals[key].Add(amount)
 		}
 
@@ -552,7 +549,7 @@ func (h *SpendingStashHandlers) calculateSpendingMetrics(cardTxns []*entities.Br
 
 		// Chart data
 		if !p2p.CreatedAt.Before(sixMonthsAgo) {
-			key := months[p2p.CreatedAt.Month()-1]
+			key := fmt.Sprintf("%d-%02d", p2p.CreatedAt.Year(), p2p.CreatedAt.Month())
 			monthlyTotals[key] = monthlyTotals[key].Add(amount)
 		}
 
@@ -574,7 +571,7 @@ func (h *SpendingStashHandlers) calculateSpendingMetrics(cardTxns []*entities.Br
 
 		// Chart data
 		if !w.CreatedAt.Before(sixMonthsAgo) {
-			key := months[w.CreatedAt.Month()-1]
+			key := fmt.Sprintf("%d-%02d", w.CreatedAt.Year(), w.CreatedAt.Month())
 			monthlyTotals[key] = monthlyTotals[key].Add(amount)
 		}
 
@@ -651,8 +648,9 @@ func (h *SpendingStashHandlers) buildChartData(now time.Time, monthlyTotals map[
 	chartData := make([]ChartDataPoint, 0, 6)
 	for i := 5; i >= 0; i-- {
 		m := now.AddDate(0, -i, 0)
+		key := fmt.Sprintf("%d-%02d", m.Year(), m.Month())
 		label := months[m.Month()-1]
-		val, _ := monthlyTotals[label].Float64()
+		val, _ := monthlyTotals[key].Float64()
 		chartData = append(chartData, ChartDataPoint{Label: label, Value: val})
 	}
 	return chartData

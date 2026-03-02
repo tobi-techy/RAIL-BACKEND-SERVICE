@@ -103,6 +103,18 @@ func (h *WalletFundingHandlers) SetCircleClient(client CircleBalanceGetter) {
 func (h *WalletFundingHandlers) ReconcileUserBalance(c *gin.Context) {
 	ctx := c.Request.Context()
 
+	// Check admin authorization with explicit type assertion
+	userRole, exists := c.Get("user_role")
+	if !exists {
+		c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
+		return
+	}
+	roleStr, ok := userRole.(string)
+	if !ok || roleStr != "admin" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
+		return
+	}
+
 	userIDStr := c.Param("user_id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
@@ -136,7 +148,15 @@ func (h *WalletFundingHandlers) ReconcileUserBalance(c *gin.Context) {
 	var actualBalance decimal.Decimal
 	for _, tb := range balances.TokenBalances {
 		if tb.Token.Symbol == "USDC" {
-			actualBalance, _ = decimal.NewFromString(tb.Amount)
+			var err error
+			actualBalance, err = decimal.NewFromString(tb.Amount)
+			if err != nil {
+				h.logger.Error("Invalid balance format from Circle",
+					zap.String("amount", tb.Amount),
+					zap.Error(err))
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid balance format from Circle"})
+				return
+			}
 			break
 		}
 	}

@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -23,8 +23,8 @@ type QueuedNotification struct {
 	Title     string                 `json:"title"`
 	Body      string                 `json:"body"`
 	Data      map[string]interface{} `json:"data,omitempty"`
-	Priority  string            `json:"priority"`
-	Recipient string            `json:"recipient,omitempty"`
+	Priority  string                 `json:"priority"`
+	Recipient string                 `json:"recipient,omitempty"`
 }
 
 // SMSSender defines SMS sending operations
@@ -208,6 +208,24 @@ func (s *NotificationService) NotifyLargeBalanceChange(ctx context.Context, user
 	title := "Large Balance Change"
 	body := fmt.Sprintf("A %s of $%s has been processed. New balance: $%s", changeType, amount.String(), newBalance.String())
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "balance_change"})
+}
+
+func (s *NotificationService) NotifyAllocationFailed(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID, reason string) error {
+	// Log detailed error reason internally for operations team debugging
+	s.logger.Error("Allocation failed notification",
+		zap.String("user_id", userID.String()),
+		zap.String("deposit_id", depositID.String()),
+		zap.String("amount", amount.String()),
+		zap.String("failure_reason", reason))
+
+	// Show generic user-friendly message in notification body
+	title := "Investment Allocation Requires Attention"
+	body := fmt.Sprintf("Your deposit of $%s was received but the automatic 70/30 allocation split could not be completed. Please contact support for assistance.", amount.String())
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{
+		"type":       "allocation_failed",
+		"deposit_id": depositID.String(),
+		"amount":     amount.String(),
+	})
 }
 
 func (s *NotificationService) SendGenericNotification(ctx context.Context, userID uuid.UUID, title, message string) error {

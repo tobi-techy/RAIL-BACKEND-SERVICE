@@ -649,7 +649,6 @@ func (r *WalletRepository) CountByStatus(ctx context.Context, status entities.Wa
 	return count, nil
 }
 
-
 // GetAllActiveWallets returns all wallets with active status and a Circle wallet ID
 func (r *WalletRepository) GetAllActiveWallets(ctx context.Context) ([]*entities.ManagedWallet, error) {
 	query := `
@@ -677,5 +676,11 @@ func (r *WalletRepository) GetAllActiveWallets(ctx context.Context) ([]*entities
 		}
 		wallets = append(wallets, wallet)
 	}
+
+	// Check for iteration errors
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating wallet rows: %w", err)
+	}
+
 	return wallets, nil
 }

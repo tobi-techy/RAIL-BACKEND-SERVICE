@@ -6,10 +6,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/internal/infrastructure/circle"
+	"github.com/shopspring/decimal"
 
 	"github.com/rail-service/rail_service/pkg/logger"
 )
@@ -22,32 +22,32 @@ type AllocationService interface {
 
 // Engine handles all blockchain and Circle wallet interactions
 type Engine struct {
-	ledgerService      *ledger.Service
-	allocationService  AllocationService
-	circleClient       *circle.Client
-	depositRepo        DepositRepository
-	withdrawalRepo     WithdrawalRepository
-	walletRepo         WalletRepository
-	managedWalletRepo  ManagedWalletRepository
-	logger             *logger.Logger
-	config             *EngineConfig
+	ledgerService     *ledger.Service
+	allocationService AllocationService
+	circleClient      *circle.Client
+	depositRepo       DepositRepository
+	withdrawalRepo    WithdrawalRepository
+	walletRepo        WalletRepository
+	managedWalletRepo ManagedWalletRepository
+	logger            *logger.Logger
+	config            *EngineConfig
 }
 
 // EngineConfig holds onchain engine configuration
 type EngineConfig struct {
 	// Deposit monitoring
-	DepositPollInterval     time.Duration
-	ConfirmationBlocks      map[entities.Chain]int
-	MinDepositAmount        decimal.Decimal
-	
+	DepositPollInterval time.Duration
+	ConfirmationBlocks  map[entities.Chain]int
+	MinDepositAmount    decimal.Decimal
+
 	// Withdrawal execution
 	WithdrawalGasBuffer     decimal.Decimal // Extra gas to ensure tx success
 	WithdrawalRetryAttempts int
 	WithdrawalTimeout       time.Duration
-	
+
 	// Buffer monitoring
-	BufferCheckInterval     time.Duration
-	BufferAlertThreshold    decimal.Decimal // Alert if USDC buffer below this
+	BufferCheckInterval  time.Duration
+	BufferAlertThreshold decimal.Decimal // Alert if USDC buffer below this
 }
 
 // DepositRepository handles deposit persistence
@@ -56,6 +56,7 @@ type DepositRepository interface {
 	GetByTxHash(ctx context.Context, txHash string) (*entities.Deposit, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status string, confirmedAt *time.Time) error
 	GetPendingDeposits(ctx context.Context) ([]*entities.Deposit, error)
+	DeletePendingDeposit(ctx context.Context, id uuid.UUID) error
 }
 
 // WithdrawalRepository handles withdrawal persistence
@@ -112,12 +113,12 @@ func NewEngine(
 // DefaultEngineConfig returns default configuration
 func DefaultEngineConfig() *EngineConfig {
 	return &EngineConfig{
-		DepositPollInterval:     30 * time.Second,
-		ConfirmationBlocks:      map[entities.Chain]int{
+		DepositPollInterval: 30 * time.Second,
+		ConfirmationBlocks: map[entities.Chain]int{
 			entities.ChainSolana:  32,
 			entities.ChainPolygon: 128,
 		},
-		MinDepositAmount:        decimal.NewFromFloat(1.0), // $1 minimum
+		MinDepositAmount:        decimal.NewFromFloat(1.0),   // $1 minimum
 		WithdrawalGasBuffer:     decimal.NewFromFloat(0.001), // Small buffer
 		WithdrawalRetryAttempts: 3,
 		WithdrawalTimeout:       10 * time.Minute,
@@ -150,7 +151,7 @@ func (e *Engine) ProcessDeposit(ctx context.Context, req *DepositRequest) error 
 
 	// Validate deposit amount
 	if req.Amount.LessThan(e.config.MinDepositAmount) {
-		return fmt.Errorf("deposit amount %s below minimum %s", 
+		return fmt.Errorf("deposit amount %s below minimum %s",
 			req.Amount, e.config.MinDepositAmount)
 	}
 
@@ -161,21 +162,21 @@ func (e *Engine) ProcessDeposit(ctx context.Context, req *DepositRequest) error 
 	}
 
 	if managedWallet.UserID != req.UserID {
-		return fmt.Errorf("wallet user mismatch: expected %s, got %s", 
+		return fmt.Errorf("wallet user mismatch: expected %s, got %s",
 			managedWallet.UserID, req.UserID)
 	}
 
 	// Create deposit record
 	now := time.Now()
 	deposit := &entities.Deposit{
-		ID:              uuid.New(),
-		UserID:          req.UserID,
-		Chain:           req.Chain,
-		TxHash:          req.TxHash,
-		Token:           req.Token,
-		Amount:          req.Amount,
-		Status:          "pending",
-		CreatedAt:       now,
+		ID:        uuid.New(),
+		UserID:    req.UserID,
+		Chain:     req.Chain,
+		TxHash:    req.TxHash,
+		Token:     req.Token,
+		Amount:    req.Amount,
+		Status:    "pending",
+		CreatedAt: now,
 	}
 
 	if err := e.depositRepo.Create(ctx, deposit); err != nil {
@@ -276,9 +277,9 @@ func (e *Engine) postDepositLedgerEntries(ctx context.Context, deposit *entities
 	}
 
 	// Create ledger transaction
-	desc := fmt.Sprintf("Deposit: %s USDC on %s (Tx: %s)", 
+	desc := fmt.Sprintf("Deposit: %s USDC on %s (Tx: %s)",
 		deposit.Amount.String(), deposit.Chain, deposit.TxHash)
-	
+
 	metadata := map[string]interface{}{
 		"deposit_id": deposit.ID.String(),
 		"tx_hash":    deposit.TxHash,
@@ -339,7 +340,7 @@ func (e *Engine) MonitorDeposits(ctx context.Context) error {
 		// Check Circle for wallet balance/transactions
 		// This would query Circle API for recent transactions
 		// and process any that aren't in our deposits table
-		
+
 		// Note: Actual implementation depends on Circle API capabilities
 		e.logger.Debug("Monitoring wallet for deposits",
 			"wallet_id", wallet.CircleWalletID,
@@ -397,7 +398,7 @@ func (e *Engine) ExecuteWithdrawal(ctx context.Context, withdrawalID uuid.UUID) 
 			"withdrawal_id", withdrawalID,
 			"balance", balance,
 			"requested", withdrawal.Amount)
-		
+
 		// Mark as failed
 		if err := e.withdrawalRepo.UpdateStatus(ctx, withdrawalID, entities.WithdrawalStatusFailed); err != nil {
 			e.logger.Error("Failed to update withdrawal status", "error", err)
@@ -416,7 +417,7 @@ func (e *Engine) ExecuteWithdrawal(ctx context.Context, withdrawalID uuid.UUID) 
 		e.logger.Error("Failed to execute Circle transfer",
 			"withdrawal_id", withdrawalID,
 			"error", err)
-		
+
 		// Reversal should be handled separately
 		// For now, mark as failed
 		if err := e.withdrawalRepo.UpdateStatus(ctx, withdrawalID, entities.WithdrawalStatusFailed); err != nil {
@@ -472,9 +473,9 @@ func (e *Engine) postWithdrawalLedgerEntries(ctx context.Context, withdrawal *en
 	if withdrawal.DestinationAddress != nil {
 		destAddr = *withdrawal.DestinationAddress
 	}
-	desc := fmt.Sprintf("Withdrawal: %s USDC to %s", 
+	desc := fmt.Sprintf("Withdrawal: %s USDC to %s",
 		withdrawal.Amount.String(), destAddr)
-	
+
 	metadata := map[string]interface{}{
 		"withdrawal_id":       withdrawal.ID.String(),
 		"destination_address": destAddr,
@@ -537,11 +538,11 @@ func (e *Engine) executeCircleTransfer(ctx context.Context, withdrawal *entities
 
 	// Create Circle transfer request
 	transferReq := entities.CircleTransferRequest{
-		WalletID:            *withdrawal.CircleWalletID,
-		DestinationAddress:  destAddr,
-		Amounts:             []string{withdrawal.Amount.String()},
-		TokenID:             "USDC",
-		IDempotencyKey:      withdrawal.ID.String(),
+		WalletID:           *withdrawal.CircleWalletID,
+		DestinationAddress: destAddr,
+		Amounts:            []string{withdrawal.Amount.String()},
+		TokenID:            "USDC",
+		IDempotencyKey:     withdrawal.ID.String(),
 	}
 
 	// Execute transfer via Circle API
@@ -679,13 +680,13 @@ func (e *Engine) getActualCircleBalance(ctx context.Context) (decimal.Decimal, e
 
 // DepositRequest represents a deposit to process
 type DepositRequest struct {
-	UserID          uuid.UUID
-	CircleWalletID  string
-	Chain           entities.Chain
-	TxHash          string
-	Token           entities.Stablecoin
-	Amount          decimal.Decimal
-	FromAddress     string
+	UserID         uuid.UUID
+	CircleWalletID string
+	Chain          entities.Chain
+	TxHash         string
+	Token          entities.Stablecoin
+	Amount         decimal.Decimal
+	FromAddress    string
 }
 
 // BufferStatus represents the status of the system USDC buffer
