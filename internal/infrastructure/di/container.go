@@ -521,6 +521,10 @@ func (a *deletionUserRepoAdapter) HardDelete(ctx context.Context, userID uuid.UU
 	return a.userRepo.HardDelete(ctx, userID)
 }
 
+func (a *deletionUserRepoAdapter) AnonymizeUser(ctx context.Context, userID uuid.UUID) error {
+	return a.userRepo.AnonymizeUser(ctx, userID)
+}
+
 // Container holds all application dependencies
 type Container struct {
 	Config *config.Config
@@ -738,6 +742,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		Environment:            cfg.Circle.Environment,
 		BaseURL:                cfg.Circle.BaseURL,
 		EntitySecretCiphertext: cfg.Circle.EntitySecretCiphertext,
+		PublicKeyPEM:           cfg.Circle.PublicKeyPEM,
 		WalletSetID:            cfg.Circle.DefaultWalletSetID,
 	}
 	circleClient := circle.NewClient(circleConfig, zapLog)
@@ -818,7 +823,10 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	cacheInvalidator := cache.NewCacheInvalidator(redisClient, zapLog, cache.InvalidateImmediate)
 
 	// Initialize entity secret service
-	entitySecretService := entitysecret.NewService(zapLog)
+	entitySecretService, err := entitysecret.NewService(zapLog, cfg.Circle.EntitySecretCiphertext, cfg.Circle.PublicKeyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize entity secret service: %w", err)
+	}
 
 	container := &Container{
 		Config: cfg,

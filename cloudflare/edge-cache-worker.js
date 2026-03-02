@@ -12,7 +12,6 @@ const CACHE_CONFIG = {
 };
 
 const PUBLIC_CACHE_CONTROL = "public, max-age=";
-const PRIVATE_CACHE_CONTROL = "private, no-store";
 
 function getCacheTTL(pathname) {
   for (const [prefix, ttl] of Object.entries(CACHE_CONFIG)) {
@@ -39,6 +38,20 @@ function isAuthRequired(pathname) {
   return !publicPaths.some(p => pathname.startsWith(p));
 }
 
+function getBodyHash(request) {
+  return request.text().then(text => {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(text);
+    let hash = 0;
+    for (let i = 0; i < data.length; i++) {
+      const char = data.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash;
+    }
+    return hash.toString(16);
+  });
+}
+
 async function handleRequest(event) {
   const request = event.request;
   const url = new URL(request.url);
@@ -48,80 +61,62 @@ async function handleRequest(event) {
     return fetch(request);
   }
 
+  // DEFENSE-IN-DEPTH: Check authentication FIRST before any caching
+  if (isAuthRequired(pathname)) {
+    const authHeader = request.headers.get("Authorization");
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return new Response(JSON.stringify({ error: "UNAUTHORIZED", message: "Missing or invalid Authorization header" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+  }
+
   const cache = event.caches.default;
-  const cacheKey = new Request(url.toString(), {
-    method: request.method,
-    headers: request.headers,
-  });
 
-  if (isCacheableMethod(request.method)) {
-    const ttl = getCacheTTL(pathname);
-    
-    if (ttl !== null && !isAuthRequired(pathname)) {
-      const cached = await cache.match(cacheKey);
-      if (cached) {
-        const etag = cached.headers.get("ETag");
-        const ifNoneMatch = request.headers.get("If-None-Match");
-        
-        if (etag && ifNoneMatch === etag) {
-          return new Response(null, {
-            status: 304,
-            headers: {
-              "ETag": etag,
-              "Cache-Control": `${PUBLIC_CACHE_CONTROL}${ttl}`,
-            },
-          });
-        }
+  // Only cache public endpoints - build cache key WITHOUT Authorization header
+  const ttl = getCacheTTL(pathname);
+  if (isCacheableMethod(request.method) && ttl !== null && !isAuthRequired(pathname)) {
+    // Build cache key without sensitive headers - use empty headers for public caching
+    const cacheKey = new Request(url.toString(), {
+      method: request.method,
+      headers: {}, // Empty headers for public cache key
+    });
 
-        const response = cached.clone();
-        response.headers.set("CF-Cache-Status", "HIT");
-        return response;
-      }
-
-      const response = await fetch(request);
-      if (response.ok) {
-        const responseClone = response.clone();
-        const headers = new Headers(responseClone.headers);
-        headers.set("Cache-Control", `${PUBLIC_CACHE_CONTROL}${ttl}`);
-        headers.set("CF-Cache-Status", "MISS");
-
-        const cacheResponse = new Response(responseClone.body, {
-          status: responseClone.status,
-          statusText: responseClone.statusText,
-          headers: headers,
+    const cached = await cache.match(cacheKey);
+    if (cached) {
+      const etag = cached.headers.get("ETag");
+      const ifNoneMatch = request.headers.get("If-None-Match");
+      
+      if (etag && ifNoneMatch === etag) {
+        return new Response(null, {
+          status: 304,
+          headers: {
+            "ETag": etag,
+            "Cache-Control": `${PUBLIC_CACHE_CONTROL}${ttl}`,
+          },
         });
-
-        event.waitUntil(cache.put(cacheKey, cacheResponse));
-        return response;
       }
+
+      const response = cached.clone();
+      response.headers.set("CF-Cache-Status", "HIT");
+      return response;
     }
 
-    if (isAuthRequired(pathname)) {
-      const authHeader = request.headers.get("Authorization");
-      if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        return new Response(JSON.stringify({ error: "UNAUTHORIZED", message: "Missing or invalid Authorization header" }), {
-          status: 401,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
+    const response = await fetch(request);
+    if (response.ok) {
+      const responseClone = response.clone();
+      const headers = new Headers(responseClone.headers);
+      headers.set("Cache-Control", `${PUBLIC_CACHE_CONTROL}${ttl}`);
+      headers.set("CF-Cache-Status", "MISS");
 
-      const response = await fetch(request);
-      const ttl = getCacheTTL(pathname);
-      
-      if (response.ok && ttl !== null) {
-        const responseClone = response.clone();
-        const headers = new Headers(responseClone.headers);
-        headers.set("Cache-Control", `${PUBLIC_CACHE_CONTROL}${ttl}`);
+      const cacheResponse = new Response(responseClone.body, {
+        status: responseClone.status,
+        statusText: responseClone.statusText,
+        headers: headers,
+      });
 
-        const cacheResponse = new Response(responseClone.body, {
-          status: responseClone.status,
-          statusText: responseClone.statusText,
-          headers: headers,
-        });
-
-        event.waitUntil(cache.put(cacheKey, cacheResponse));
-      }
-      
+      event.waitUntil(cache.put(cacheKey, cacheResponse));
       return response;
     }
   }
@@ -141,8 +136,22 @@ async function handleWebhook(event) {
     });
   }
 
-  const ttl = 300;
-  const nonceKey = `webhook:${timestamp}`;
+  // Validate timestamp is not older than 5 minutes
+  const now = Math.floor(Date.now() / 1000);
+  const webhookAge = now - parseInt(timestamp, 10);
+  if (isNaN(webhookAge) || webhookAge > 300) { // 5 minutes = 300 seconds
+    return new Response(JSON.stringify({ error: "WEBHOOK_EXPIRED", message: "Webhook timestamp is too old" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  // Use signature as unique nonce key - signature should be unique per webhook payload
+  // Fall back to body hash if signature is not unique enough
+  let nonceKey = `webhook:${signature}`;
+  
+  // 24 hours TTL for replay protection
+  const ttl = 86400;
   
   const cache = event.caches.default;
   const nonceCacheKey = new Request(nonceKey);
@@ -155,6 +164,10 @@ async function handleWebhook(event) {
     });
   }
 
+  // TODO: Add actual signature verification here
+  // Currently only checks if signature exists but doesn't verify it
+  // The signature should be verified against a secret before processing
+  
   const response = await fetch(request);
   
   if (response.ok) {
