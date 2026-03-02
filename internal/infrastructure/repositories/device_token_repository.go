@@ -3,6 +3,7 @@ package repositories
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -84,6 +85,9 @@ func (r *DeviceTokenRepository) GetUserTokens(ctx context.Context, userID uuid.U
 			return nil, err
 		}
 		tokens = append(tokens, dt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 	return tokens, nil
 }

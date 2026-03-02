@@ -47,10 +47,9 @@ func defaultWebhookIPWhitelists() map[string][]string {
 			"34.102.136.180/32", // Bridge production
 			"35.186.224.25/32",  // Bridge production
 		},
-		// Alpaca webhook IPs (example - verify with Alpaca docs)
-		"alpaca": {
-			"52.0.0.0/8", // AWS ranges
-		},
+		// Alpaca does not publish a fixed IP range — rely on signature verification instead.
+		// Remove this entry and ensure ALPACA_WEBHOOK_SECRET is set for HMAC validation.
+		"alpaca": {},
 	}
 }
 

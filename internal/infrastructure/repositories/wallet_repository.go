@@ -143,6 +143,10 @@ func (r *WalletRepository) GetByUserID(ctx context.Context, userID uuid.UUID) ([
 		wallets = append(wallets, wallet)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
 	return wallets, nil
 }
 
@@ -483,6 +487,10 @@ func (r *WalletRepository) GetByUserIDAndAccountType(ctx context.Context, userID
 		wallets = append(wallets, wallet)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
 	return wallets, nil
 }
 
@@ -617,6 +625,10 @@ func (r *WalletRepository) GetWalletsByWalletSetID(ctx context.Context, walletSe
 			return nil, fmt.Errorf("failed to scan wallet: %w", err)
 		}
 		wallets = append(wallets, wallet)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 
 	return wallets, nil

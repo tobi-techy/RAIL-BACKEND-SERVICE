@@ -413,5 +413,9 @@ func (s *Service) GetUserTransactions(ctx context.Context, userID uuid.UUID, lim
 		transactions = append(transactions, &tx)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
 	return transactions, nil
 }

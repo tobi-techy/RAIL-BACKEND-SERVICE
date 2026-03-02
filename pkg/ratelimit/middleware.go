@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -49,7 +50,7 @@ func Middleware(limiter Limiter, keyFunc KeyFunc, logger *zap.Logger) gin.Handle
 		// Add remaining quota to response headers
 		remaining, err := limiter.GetRemaining(c.Request.Context(), key)
 		if err == nil {
-			c.Header("X-RateLimit-Remaining", string(rune(remaining)))
+			c.Header("X-RateLimit-Remaining", strconv.FormatInt(remaining, 10))
 		}
 		
 		c.Next()

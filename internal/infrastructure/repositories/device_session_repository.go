@@ -118,6 +118,10 @@ func (r *DeviceSessionRepository) GetSessionsByUser(ctx context.Context, userID 
 		sessions = append(sessions, &session)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
 	return sessions, nil
 }
 
@@ -280,6 +284,10 @@ func (r *DeviceBindingAuditRepository) GetAuditLogsByUser(ctx context.Context, u
 		}
 
 		entries = append(entries, &entry)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 
 	return entries, nil

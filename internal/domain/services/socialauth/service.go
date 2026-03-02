@@ -147,6 +147,10 @@ func (s *Service) GetLinkedAccounts(ctx context.Context, userID uuid.UUID) ([]en
 		accounts = append(accounts, acc)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
 	return accounts, nil
 }
 

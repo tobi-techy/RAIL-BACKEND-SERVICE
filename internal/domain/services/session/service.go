@@ -261,6 +261,10 @@ func (s *Service) GetUserSessions(ctx context.Context, userID uuid.UUID) ([]*Ses
 		sessions = append(sessions, session)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
 	return sessions, nil
 }
 
