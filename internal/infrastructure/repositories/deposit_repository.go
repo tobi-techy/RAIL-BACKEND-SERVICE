@@ -293,3 +293,15 @@ func (r *DepositRepository) CountPendingByUserID(ctx context.Context, userID uui
 
 	return count, nil
 }
+
+// Delete removes a deposit by ID
+func (r *DepositRepository) Delete(ctx context.Context, id uuid.UUID) error {
+	query := `DELETE FROM deposits WHERE id = $1`
+
+	_, err := r.db.ExecContext(ctx, query, id)
+	if err != nil {
+		return fmt.Errorf("failed to delete deposit: %w", err)
+	}
+
+	return nil
+}
