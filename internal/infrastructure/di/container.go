@@ -56,6 +56,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/rail-service/rail_service/pkg/auth"
+	"github.com/rail-service/rail_service/pkg/captcha"
 	commonmetrics "github.com/rail-service/rail_service/pkg/common/metrics"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/ratelimit"
@@ -69,9 +70,34 @@ type CircleAdapter struct {
 }
 
 func (a *CircleAdapter) GenerateDepositAddress(ctx context.Context, chain entities.Chain, userID uuid.UUID) (string, error) {
-	// Convert entities.Chain to entities.WalletChain
-	walletChain := entities.WalletChain(chain)
+	walletChain := mapChainToWalletChain(chain)
+	if walletChain == "" {
+		return "", fmt.Errorf("unsupported chain for deposit: %s", chain)
+	}
 	return a.client.GenerateDepositAddress(ctx, walletChain, userID)
+}
+
+// mapChainToWalletChain maps the domain Chain type to Circle's WalletChain.
+// For testnet environments Circle uses explicit testnet chain identifiers.
+func mapChainToWalletChain(chain entities.Chain) entities.WalletChain {
+	switch chain {
+	case entities.ChainMATIC, entities.ChainPolygon:
+		return entities.WalletChainMATICAmoy
+	case entities.ChainAVAX:
+		return entities.WalletChainAVAXFuji
+	case entities.ChainSOL, entities.ChainSolana:
+		return entities.WalletChainSOLDevnet
+	case entities.ChainETH:
+		return entities.WalletChainEthereum
+	case entities.ChainARB:
+		return entities.WalletChainArbitrum
+	case entities.ChainBASE:
+		return entities.WalletChainBase
+	case entities.ChainOP:
+		return entities.WalletChainOptimism
+	default:
+		return ""
+	}
 }
 
 func (a *CircleAdapter) ValidateDeposit(ctx context.Context, txHash string, amount decimal.Decimal) (bool, error) {
@@ -312,6 +338,23 @@ func (a *WithdrawalBridgeAdapter) GetTransferStatus(ctx context.Context, transfe
 		"id":     transfer.ID,
 		"status": string(transfer.Status),
 	}, nil
+}
+
+func (a *WithdrawalBridgeAdapter) CancelTransfer(ctx context.Context, transferID string) error {
+	// Check current status before attempting cancellation
+	transfer, err := a.adapter.Client().GetTransfer(ctx, transferID)
+	if err != nil {
+		return fmt.Errorf("failed to get transfer status before cancellation: %w", err)
+	}
+	// Bridge transfers in terminal states cannot be cancelled
+	switch transfer.Status {
+	case bridge.TransferStatusCompleted, bridge.TransferStatusFailed:
+		return fmt.Errorf("transfer %s is in terminal state %s and cannot be cancelled", transferID, transfer.Status)
+	}
+	// Bridge does not expose a cancel endpoint in the current API version.
+	// The transfer will be left to expire or fail naturally.
+	// This is a best-effort operation — callers should not treat this as a hard error.
+	return fmt.Errorf("bridge transfer cancellation not supported by API; transfer %s must expire or fail naturally", transferID)
 }
 
 func mapCurrencyToPaymentRail(currency string) bridge.PaymentRail {
@@ -618,6 +661,7 @@ type Container struct {
 	JWTService          *auth.JWTService
 	TieredRateLimiter   *ratelimit.TieredLimiter
 	LoginAttemptTracker *ratelimit.LoginAttemptTracker
+	CaptchaVerifier     *captcha.Verifier
 
 	// Device-Bound JWT (Priority 1)
 	DeviceSessionRepo      *repositories.DeviceSessionRepository
@@ -686,6 +730,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		Environment:            cfg.Circle.Environment,
 		BaseURL:                cfg.Circle.BaseURL,
 		EntitySecretCiphertext: cfg.Circle.EntitySecretCiphertext,
+		WalletSetID:            cfg.Circle.DefaultWalletSetID,
 	}
 	circleClient := circle.NewClient(circleConfig, zapLog)
 
@@ -1148,6 +1193,15 @@ func (c *Container) initializeDomainServices() error {
 	c.TieredRateLimiter = ratelimit.NewTieredLimiter(c.RedisClient.Client(), tieredConfig, c.ZapLog)
 	c.LoginAttemptTracker = ratelimit.NewLoginAttemptTracker(c.RedisClient.Client(), c.ZapLog)
 
+	// Initialize CAPTCHA verifier if secret key is configured
+	if captchaKey := c.Config.Security.CaptchaSecretKey; captchaKey != "" {
+		c.CaptchaVerifier = captcha.NewVerifier(captcha.Config{
+			Enabled:   true,
+			Provider:  captcha.ProviderRecaptcha,
+			SecretKey: captchaKey,
+		})
+	}
+
 	// Initialize Device-Bound JWT (Priority 1)
 	if c.Config.Security.DeviceBinding.Enabled {
 		sqlxDB := sqlx.NewDb(c.DB, "postgres")
@@ -1472,6 +1526,11 @@ func (c *Container) GetRateLimitConfig() *config.RateLimitConfig {
 // GetLoginAttemptTracker returns the login attempt tracker
 func (c *Container) GetLoginAttemptTracker() *ratelimit.LoginAttemptTracker {
 	return c.LoginAttemptTracker
+}
+
+// GetCaptchaVerifier returns the CAPTCHA verifier (may be nil if not configured)
+func (c *Container) GetCaptchaVerifier() *captcha.Verifier {
+	return c.CaptchaVerifier
 }
 
 // initializeReconciliationService initializes the reconciliation service and scheduler

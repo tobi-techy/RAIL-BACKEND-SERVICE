@@ -51,6 +51,7 @@ type Config struct {
 	BalancesEndpoint       string        `json:"balances_endpoint"`
 	TransferEndpoint       string        `json:"transfer_endpoint"`
 	EntitySecretCiphertext string        `json:"entity_secret_ciphertext"` // Pre-registered ciphertext from Circle Dashboard
+	WalletSetID            string        `json:"wallet_set_id"`            // Default wallet set ID for wallet creation
 }
 
 // Client represents a Circle API client
@@ -539,11 +540,48 @@ func (c *Client) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
-// GenerateDepositAddress generates a deposit address for the specified chain and user
+// GenerateDepositAddress creates a dev-controlled wallet on the given chain and
+// returns its on-chain address. For testnet chains the caller should pass the
+// Circle WalletChain constant (e.g. MATIC-AMOY).
 func (c *Client) GenerateDepositAddress(ctx context.Context, chain entities.WalletChain, userID uuid.UUID) (string, error) {
-	// For MVP, we'll simulate address generation based on chain type
-	// In production, this would call Circle's actual deposit address generation API
-	return "hello", nil
+	if !chain.IsValid() {
+		return "", fmt.Errorf("unsupported chain: %s", chain)
+	}
+
+	// Determine wallet set ID from config.
+	walletSetID := c.config.WalletSetsEndpoint // fallback
+	// The caller is expected to have set a default wallet set ID on the funding
+	// service; the Circle client itself doesn't store it. We accept it via the
+	// config field DefaultWalletSetID if present.
+	if c.config.WalletSetID != "" {
+		walletSetID = c.config.WalletSetID
+	}
+
+	accountType := "EOA"
+	if chain == entities.WalletChainSOLDevnet || chain == entities.WalletChainSolana {
+		accountType = "EOA" // Solana uses EOA-equivalent
+	}
+
+	resp, err := c.CreateWallet(ctx, entities.CircleWalletCreateRequest{
+		IdempotencyKey: fmt.Sprintf("deposit-%s-%s", userID.String(), string(chain)),
+		Blockchains:    []string{string(chain)},
+		Count:          1,
+		AccountType:    accountType,
+		WalletSetID:    walletSetID,
+	})
+	if err != nil {
+		return "", fmt.Errorf("circle create wallet for deposit address: %w", err)
+	}
+
+	// Extract address from response — prefer the Addresses array, fall back to Address field.
+	if len(resp.Wallet.Addresses) > 0 {
+		return resp.Wallet.Addresses[0].Address, nil
+	}
+	if resp.Wallet.Address != "" {
+		return resp.Wallet.Address, nil
+	}
+
+	return "", fmt.Errorf("circle wallet created but no address returned (wallet_id=%s)", resp.Wallet.ID)
 }
 
 // ValidateDeposit validates a deposit transaction using Circle's validation service

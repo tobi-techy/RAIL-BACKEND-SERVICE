@@ -208,49 +208,88 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 		}
 	}
 
-	// Check if user already has a wallet for this chain
+	// Check if user already has a wallet for this chain in the legacy wallets table.
 	wallet, err := s.walletRepo.GetByUserAndChain(ctx, userID, chain)
-	if err != nil && err.Error() != "wallet not found" {
-		return nil, fmt.Errorf("failed to check existing wallet: %w", err)
+	if err == nil && wallet != nil {
+		s.logger.Info("Using existing wallet address", "user_id", userID, "chain", chain, "address", wallet.Address)
+		return &entities.DepositAddressResponse{
+			Chain:   chain,
+			Address: wallet.Address,
+		}, nil
 	}
 
-	var address string
-	if wallet != nil {
-		address = wallet.Address
-		s.logger.Info("Using existing wallet address", "user_id", userID, "chain", chain, "address", address)
-	} else {
-		// Generate new address through Circle
-		address, err = s.circleAPI.GenerateDepositAddress(ctx, chain, userID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate deposit address: %w", err)
+	// Check managed_wallets (Circle dev-controlled wallets) — these are the
+	// primary wallet type for testnet chains like MATIC-AMOY, AVAX-FUJI, SOL-DEVNET.
+	if s.managedWalletRepo != nil {
+		managedWallets, mErr := s.managedWalletRepo.GetByUserID(ctx, userID)
+		if mErr == nil {
+			for _, mw := range managedWallets {
+				if matchesManagedWalletChain(mw.Chain, chain) {
+					s.logger.Info("Using existing managed wallet address",
+						"user_id", userID, "chain", chain,
+						"managed_chain", mw.Chain, "address", mw.Address)
+					return &entities.DepositAddressResponse{
+						Chain:   chain,
+						Address: mw.Address,
+					}, nil
+				}
+			}
 		}
-
-		// Create wallet record
-		wallet = &entities.Wallet{
-			ID:             uuid.New(),
-			UserID:         userID,
-			Chain:          chain,
-			Address:        address,
-			CircleWalletID: fmt.Sprintf("circle-%s", address),
-			WalletSetID:    s.config.DefaultWalletSetID,
-			AccountType:    "EOA",
-			Status:         "live",
-			CreatedAt:      time.Now(),
-			UpdatedAt:      time.Now(),
-		}
-
-		if err := s.walletRepo.Create(ctx, wallet); err != nil {
-			return nil, fmt.Errorf("failed to create wallet record: %w", err)
-		}
-
-		s.logger.Info("Created new wallet address", "user_id", userID, "chain", chain, "address", address)
 	}
+
+	// Generate new address through Circle
+	address, err := s.circleAPI.GenerateDepositAddress(ctx, chain, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate deposit address: %w", err)
+	}
+
+	// Create wallet record in legacy wallets table for backward compatibility.
+	wallet = &entities.Wallet{
+		ID:             uuid.New(),
+		UserID:         userID,
+		Chain:          chain,
+		Address:        address,
+		CircleWalletID: fmt.Sprintf("circle-%s", address),
+		WalletSetID:    s.config.DefaultWalletSetID,
+		AccountType:    "EOA",
+		Status:         "live",
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+
+	if err := s.walletRepo.Create(ctx, wallet); err != nil {
+		s.logger.Warn("Failed to create legacy wallet record (deposit address still valid)",
+			"error", err, "user_id", userID, "chain", chain, "address", address)
+	}
+
+	s.logger.Info("Created new wallet address", "user_id", userID, "chain", chain, "address", address)
 
 	return &entities.DepositAddressResponse{
 		Chain:   chain,
 		Address: address,
-		QRCode:  nil, // Could generate QR code URL here
 	}, nil
+}
+
+// matchesManagedWalletChain checks if a managed wallet's chain matches the requested deposit chain.
+func matchesManagedWalletChain(walletChain entities.WalletChain, depositChain entities.Chain) bool {
+	switch depositChain {
+	case entities.ChainMATIC, entities.ChainPolygon:
+		return walletChain == entities.WalletChainMATICAmoy || walletChain == entities.WalletChainPolygon
+	case entities.ChainAVAX:
+		return walletChain == entities.WalletChainAVAXFuji || walletChain == entities.WalletChainAvalanche
+	case entities.ChainSOL, entities.ChainSolana:
+		return walletChain == entities.WalletChainSOLDevnet || walletChain == entities.WalletChainSolana
+	case entities.ChainETH:
+		return walletChain == entities.WalletChainEthereum
+	case entities.ChainARB:
+		return walletChain == entities.WalletChainArbitrum
+	case entities.ChainBASE:
+		return walletChain == entities.WalletChainBase
+	case entities.ChainOP:
+		return walletChain == entities.WalletChainOptimism
+	default:
+		return string(walletChain) == string(depositChain)
+	}
 }
 
 // GetFundingConfirmations retrieves recent funding confirmations for user

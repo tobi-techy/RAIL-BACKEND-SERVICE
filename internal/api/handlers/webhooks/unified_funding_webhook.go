@@ -166,6 +166,11 @@ func (h *UnifiedFundingWebhookHandler) verifySignature(c *gin.Context, source We
 		if h.circleHandler == nil {
 			return false
 		}
+		// In dev mode, skip signature verification entirely.
+		if h.circleHandler.devMode {
+			h.logger.Info("Circle webhook signature verification skipped (dev mode)")
+			return true
+		}
 		keyID := c.GetHeader("X-Circle-Key-Id")
 		signature := c.GetHeader("X-Circle-Signature")
 		if keyID == "" || signature == "" {
@@ -315,12 +320,12 @@ func (h *UnifiedFundingWebhookHandler) routeToCircle(c *gin.Context, body []byte
 		ctx := c.Request.Context()
 		if err := h.circleHandler.processIncomingTransfer(ctx, &webhook); err != nil {
 			h.logger.Error("Failed to process Circle transfer", zap.Error(err))
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "circle_transfer_processing_failed"})
-			return
+			// Return 200 to stop Circle retries — Circle enforces a 5-second timeout
+			// and will keep retrying on non-2XX responses.
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "processed"})
+	c.JSON(http.StatusOK, gin.H{"status": "received"})
 }
 
 // routeToAlpaca routes to Alpaca webhook handler
