@@ -25,6 +25,60 @@ func NewLedgerRepository(db *sqlx.DB) *LedgerRepository {
 	return &LedgerRepository{db: db}
 }
 
+// BeginTx starts a new database transaction
+func (r *LedgerRepository) BeginTx(ctx context.Context) (context.Context, error) {
+	tx, err := r.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin transaction: %w", err)
+	}
+	return context.WithValue(ctx, "db_tx", tx), nil
+}
+
+// CommitTx commits the transaction in the context
+func (r *LedgerRepository) CommitTx(ctx context.Context) error {
+	tx := txFromContext(ctx)
+	if tx == nil {
+		return fmt.Errorf("no transaction in context")
+	}
+	return tx.Commit()
+}
+
+// RollbackTx rolls back the transaction in the context
+func (r *LedgerRepository) RollbackTx(ctx context.Context) error {
+	tx := txFromContext(ctx)
+	if tx == nil {
+		return nil // No transaction to rollback
+	}
+	return tx.Rollback()
+}
+
+// GetAccountByUserAndTypeForUpdate retrieves a ledger account with row-level lock for atomic updates
+func (r *LedgerRepository) GetAccountByUserAndTypeForUpdate(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (*entities.LedgerAccount, error) {
+	query := `
+		SELECT id, user_id, account_type, balance, currency, created_at, updated_at
+		FROM ledger_accounts
+		WHERE user_id = $1 AND account_type = $2
+		FOR UPDATE
+	`
+	var account entities.LedgerAccount
+	err := r.queryRowxContext(ctx, query, userID, accountType).Scan(
+		&account.ID,
+		&account.UserID,
+		&account.AccountType,
+		&account.Balance,
+		&account.Currency,
+		&account.CreatedAt,
+		&account.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("account not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get account for update: %w", err)
+	}
+	return &account, nil
+}
+
 // txFromContext extracts a sqlx transaction from context when present.
 func txFromContext(ctx context.Context) *sqlx.Tx {
 	if ctx == nil {
