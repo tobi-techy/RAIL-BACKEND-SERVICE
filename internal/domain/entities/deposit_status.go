@@ -6,15 +6,15 @@ import "fmt"
 type DepositStatus string
 
 const (
-	DepositStatusInitiated        DepositStatus = "initiated"         // Request created internally
-	DepositStatusPending          DepositStatus = "pending"           // Sent to processor
-	DepositStatusConfirmed        DepositStatus = "confirmed"         // Processor confirmed
-	DepositStatusFailed           DepositStatus = "failed"            // Terminal: failed
-	DepositStatusExpired          DepositStatus = "expired"           // Terminal: timed out before confirmation
-	DepositStatusTimeout          DepositStatus = "timeout"           // No response within SLA (can still resolve)
+	DepositStatusInitiated        DepositStatus = "initiated" // Request created internally
+	DepositStatusPending          DepositStatus = "pending"   // Sent to processor
+	DepositStatusConfirmed        DepositStatus = "confirmed" // Processor confirmed
+	DepositStatusFailed           DepositStatus = "failed"    // Terminal: failed
+	DepositStatusExpired          DepositStatus = "expired"   // Terminal: timed out before confirmation
+	DepositStatusTimeout          DepositStatus = "timeout"   // No response within SLA (can still resolve)
 	DepositStatusOffRampInitiated DepositStatus = "off_ramp_initiated"
 	DepositStatusOffRampCompleted DepositStatus = "off_ramp_completed"
-	DepositStatusBrokerFunded     DepositStatus = "broker_funded"     // Terminal: success
+	DepositStatusBrokerFunded     DepositStatus = "broker_funded" // Terminal: success
 )
 
 // ValidDepositStatuses contains all valid deposit statuses
@@ -92,9 +92,10 @@ func (s DepositStatus) ValidateTransition(newStatus DepositStatus) error {
 // Note: For deposit/withdrawal limits based on KYC tier, see limits_entities.go
 // All monetary values in minor units (cents): 100 = $1.00
 const (
-	MinDepositAmountMinorUnits int64 = 100  // Minimum deposit: $1.00 in cents
-	DepositTimeoutHours        int   = 24   // Hours before pending deposit expires
-	MaxDepositsPerDay          int   = 1000 // Maximum deposit addresses per user per day
+	MinDepositAmountMinorUnits int64 = 100      // Minimum deposit: $1.00 in cents
+	MaxDepositAmountMinorUnits int64 = 10000000 // Maximum deposit: $100,000.00 in cents
+	DepositTimeoutHours        int   = 24       // Hours before pending deposit expires
+	MaxDepositsPerDay          int   = 1000     // Maximum deposit addresses per user per day
 )
 
 // MinDepositAmountUSDC is deprecated, use MinDepositAmountMinorUnits
