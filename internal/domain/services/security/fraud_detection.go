@@ -28,42 +28,42 @@ type FraudSignal struct {
 }
 
 type FraudCheckResult struct {
-	Score         float64
-	Signals       []FraudSignal
-	Action        FraudAction
-	RequiresMFA   bool
+	Score          float64
+	Signals        []FraudSignal
+	Action         FraudAction
+	RequiresMFA    bool
 	RequiresReview bool
-	BlockReason   string
+	BlockReason    string
 }
 
 type FraudAction string
 
 const (
-	FraudActionAllow   FraudAction = "allow"
-	FraudActionMFA     FraudAction = "require_mfa"
-	FraudActionReview  FraudAction = "manual_review"
-	FraudActionBlock   FraudAction = "block"
+	FraudActionAllow  FraudAction = "allow"
+	FraudActionMFA    FraudAction = "require_mfa"
+	FraudActionReview FraudAction = "manual_review"
+	FraudActionBlock  FraudAction = "block"
 )
 
 type TransactionContext struct {
-	UserID        uuid.UUID
-	Amount        decimal.Decimal
-	Type          string // deposit, withdrawal, trade, transfer
-	Destination   string
-	IPAddress     string
-	DeviceID      string
-	SessionID     string
+	UserID      uuid.UUID
+	Amount      decimal.Decimal
+	Type        string // deposit, withdrawal, trade, transfer
+	Destination string
+	IPAddress   string
+	DeviceID    string
+	SessionID   string
 }
 
 type UserBehaviorPattern struct {
-	UserID               uuid.UUID
-	TypicalLoginHours    []int
-	TypicalCountries     []string
-	TypicalDevices       int
-	AvgSessionDuration   int
+	UserID                uuid.UUID
+	TypicalLoginHours     []int
+	TypicalCountries      []string
+	TypicalDevices        int
+	AvgSessionDuration    int
 	AvgTransactionsPerDay float64
-	AvgTransactionAmount decimal.Decimal
-	LastAnalyzedAt       *time.Time
+	AvgTransactionAmount  decimal.Decimal
+	LastAnalyzedAt        *time.Time
 }
 
 func NewFraudDetectionService(db *sql.DB, redis *redis.Client, logger *zap.Logger) *FraudDetectionService {
@@ -525,4 +525,99 @@ func (s *FraudDetectionService) GetUserFraudHistory(ctx context.Context, userID 
 	}
 
 	return signals, nil
+}
+
+type ReverificationCondition struct {
+	RequireNewDevice                 bool
+	RequireHighValueWithdrawal       bool
+	RequireGeographicAnomaly         bool
+	RequireNewAccountLargeWithdrawal bool
+	HighValueThreshold               int64
+	NewAccountThresholdDays          int
+}
+
+var DefaultReverificationCondition = ReverificationCondition{
+	RequireNewDevice:                 true,
+	RequireHighValueWithdrawal:       true,
+	RequireGeographicAnomaly:         true,
+	RequireNewAccountLargeWithdrawal: true,
+	HighValueThreshold:               10000,
+	NewAccountThresholdDays:          7,
+}
+
+func (s *FraudDetectionService) ShouldReverifyUser(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, isNewDevice bool, currentIP, typicalIP string, createdAt time.Time) (bool, string, error) {
+	condition := DefaultReverificationCondition
+
+	if isNewDevice && amount.GreaterThan(decimal.NewFromInt(condition.HighValueThreshold)) {
+		return true, "new_device_high_value_withdrawal", nil
+	}
+
+	if currentIP != "" && typicalIP != "" && currentIP != typicalIP {
+		anomalyScore, err := s.calculateGeographicAnomalyScore(ctx, userID, currentIP)
+		if err != nil {
+			return false, "", err
+		}
+		if anomalyScore > 0.7 {
+			return true, "geographic_anomaly", nil
+		}
+	}
+
+	accountAgeDays := time.Since(createdAt).Hours() / 24
+	if accountAgeDays < float64(condition.NewAccountThresholdDays) && amount.GreaterThan(decimal.NewFromInt(condition.HighValueThreshold)) {
+		hasHighValueWithdrawalHistory, err := s.hasRecentHighValueWithdrawal(ctx, userID)
+		if err != nil {
+			return false, "", err
+		}
+		if !hasHighValueWithdrawalHistory {
+			return true, "new_account_first_large_withdrawal", nil
+		}
+	}
+
+	return false, "", nil
+}
+
+func (s *FraudDetectionService) calculateGeographicAnomalyScore(ctx context.Context, userID uuid.UUID, currentIP string) (float64, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT ip_address FROM user_sessions 
+		WHERE user_id = $1 AND created_at > NOW() - INTERVAL '30 days'
+		ORDER BY created_at DESC LIMIT 10`,
+		userID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	var knownIPs []string
+	for rows.Next() {
+		var ip string
+		if rows.Scan(&ip) == nil {
+			knownIPs = append(knownIPs, ip)
+		}
+	}
+
+	if len(knownIPs) == 0 {
+		return 1.0, nil
+	}
+
+	for _, knownIP := range knownIPs {
+		if knownIP == currentIP {
+			return 0.0, nil
+		}
+	}
+
+	return 0.8, nil
+}
+
+func (s *FraudDetectionService) hasRecentHighValueWithdrawal(ctx context.Context, userID uuid.UUID) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM withdrawals 
+		WHERE user_id = $1 
+		AND amount > $2 
+		AND created_at > NOW() - INTERVAL '30 days'`,
+		userID, 10000).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }

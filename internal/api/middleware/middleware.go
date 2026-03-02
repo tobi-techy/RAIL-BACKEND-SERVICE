@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"fmt"
 	"net/http"
@@ -85,9 +86,9 @@ func InputValidation() gin.HandlerFunc {
 		// Validate content type for POST/PUT requests
 		if c.Request.Method == "POST" || c.Request.Method == "PUT" {
 			contentType := c.GetHeader("Content-Type")
-			if contentType != "" && !strings.Contains(contentType, "application/json") && 
-			   !strings.Contains(contentType, "multipart/form-data") && 
-			   !strings.Contains(contentType, "application/x-www-form-urlencoded") {
+			if contentType != "" && !strings.Contains(contentType, "application/json") &&
+				!strings.Contains(contentType, "multipart/form-data") &&
+				!strings.Contains(contentType, "application/x-www-form-urlencoded") {
 				c.JSON(http.StatusUnsupportedMediaType, gin.H{
 					"error":      "Unsupported content type",
 					"request_id": c.GetString("request_id"),
@@ -408,6 +409,78 @@ func PublicCache(maxAge int) gin.HandlerFunc {
 		c.Header("Cache-Control", value)
 		c.Next()
 	}
+}
+
+type ResponseCache struct {
+	Data      string `json:"data"`
+	ETag      string `json:"etag"`
+	ExpiresAt int64  `json:"expires_at"`
+}
+
+func GenerateETag(data string) string {
+	hash := sha256.Sum256([]byte(data))
+	return fmt.Sprintf(`"%x"`, hash[:8])
+}
+
+func ETagMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Method != "GET" {
+			c.Next()
+			return
+		}
+
+		path := c.Request.URL.Path
+		if !isCacheableByETag(path) {
+			c.Next()
+			return
+		}
+
+		c.Next()
+
+		if c.IsAborted() || c.Writer.Status() >= 400 {
+			return
+		}
+
+		body, exists := c.Get("response_body")
+		if !exists {
+			return
+		}
+
+		bodyStr, ok := body.(string)
+		if !ok {
+			return
+		}
+
+		etag := GenerateETag(bodyStr)
+		c.Header("ETag", etag)
+
+		ifNoneMatch := c.GetHeader("If-None-Match")
+		if ifNoneMatch != "" && ifNoneMatch == etag {
+			c.AbortWithStatus(http.StatusNotModified)
+			return
+		}
+	}
+}
+
+func isCacheableByETag(path string) bool {
+	cacheablePaths := []string{
+		"/api/v1/portfolio/overview",
+		"/api/v1/portfolio",
+		"/api/v1/limits",
+		"/api/v1/kyc/status",
+		"/api/v1/balances",
+		"/api/v1/assets",
+		"/api/v1/account/station",
+		"/api/v1/account/spending-stash",
+		"/api/v1/account/investment-stash",
+	}
+
+	for _, p := range cacheablePaths {
+		if strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // PrivateNoCache ensures user-specific responses are never cached at the edge

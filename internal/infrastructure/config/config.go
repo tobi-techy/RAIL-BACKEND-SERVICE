@@ -15,6 +15,7 @@ type Config struct {
 	Environment    string               `mapstructure:"environment"`
 	LogLevel       string               `mapstructure:"log_level"`
 	Server         ServerConfig         `mapstructure:"server"`
+	Cache          CacheConfig          `mapstructure:"cache"`
 	RateLimit      RateLimitConfig      `mapstructure:"rate_limit"`
 	Database       DatabaseConfig       `mapstructure:"database"`
 	Redis          RedisConfig          `mapstructure:"redis"`
@@ -24,6 +25,7 @@ type Config struct {
 	Security       SecurityConfig       `mapstructure:"security"`
 	Circle         CircleConfig         `mapstructure:"circle"`
 	KYC            KYCConfig            `mapstructure:"kyc"`
+	Cloudflare     CloudflareConfig     `mapstructure:"cloudflare"`
 	Email          EmailConfig          `mapstructure:"email"`
 	SMS            SMSConfig            `mapstructure:"sms"`
 	Notification   NotificationConfig   `mapstructure:"notification"`
@@ -105,6 +107,19 @@ type ServerConfig struct {
 	SupportedVersions []string `mapstructure:"supported_versions"`
 	DefaultVersion    string   `mapstructure:"default_version"`
 	TrustedProxies    []string `mapstructure:"trusted_proxies"` // IPs of trusted reverse proxies for secure X-Forwarded-For handling
+	EnableGzip        bool     `mapstructure:"enable_gzip"`     // Enable gzip compression for responses
+	EnableHTTP2       bool     `mapstructure:"enable_http2"`    // Enable HTTP/2 support
+}
+
+type CacheConfig struct {
+	Enabled           bool `mapstructure:"enabled"`
+	ProfileTTL        int  `mapstructure:"profile_ttl"`         // TTL for user profile cache (seconds)
+	KYCStatusTTL      int  `mapstructure:"kyc_status_ttl"`      // TTL for KYC status cache (seconds)
+	LimitsTTL         int  `mapstructure:"limits_ttl"`          // TTL for limits cache (seconds)
+	PortfolioTTL      int  `mapstructure:"portfolio_ttl"`       // TTL for portfolio cache (seconds)
+	BalancesTTL       int  `mapstructure:"balances_ttl"`        // TTL for balances cache (seconds)
+	StationTTL        int  `mapstructure:"station_ttl"`         // TTL for station cache (seconds)
+	InvalidateOnWrite bool `mapstructure:"invalidate_on_write"` // Invalidate cache on write operations
 }
 
 type DatabaseConfig struct {
@@ -285,6 +300,22 @@ type KYCConfig struct {
 	Environment   string `mapstructure:"environment"` // "development", "sandbox", "production"
 	UserAgent     string `mapstructure:"user_agent"`
 	LevelName     string `mapstructure:"level_name"`
+
+	// Enhanced KYC settings
+	EnableLiveness      bool   `mapstructure:"enable_liveness"`       // Enable liveness detection
+	EnableAMLCheck      bool   `mapstructure:"enable_aml_check"`      // Enable AML/PEP screening
+	WatchlistProfile    string `mapstructure:"watchlist_profile"`     // "standard" or "enhanced"
+	ReversionThreshold  int    `mapstructure:"reversion_threshold"`   // Days since last verification before reverify required
+	HighValueWithdrawal int64  `mapstructure:"high_value_withdrawal"` // Amount that triggers reverification
+}
+
+type CloudflareConfig struct {
+	AccountID   string `mapstructure:"account_id"`
+	AccessKey   string `mapstructure:"access_key"`
+	SecretKey   string `mapstructure:"secret_key"`
+	R2Bucket    string `mapstructure:"r2_bucket"`
+	R2PublicURL string `mapstructure:"r2_public_url"` // Custom domain for R2
+	WorkerURL   string `mapstructure:"worker_url"`    // Cloudflare Worker URL for edge caching
 }
 
 type EmailConfig struct {
@@ -518,6 +549,18 @@ func setDefaults() {
 	viper.SetDefault("server.rate_limit_per_min", 100)
 	viper.SetDefault("server.supported_versions", []string{"v1"})
 	viper.SetDefault("server.default_version", "v1")
+	viper.SetDefault("server.enable_gzip", true)
+	viper.SetDefault("server.enable_http2", true)
+
+	// Cache defaults
+	viper.SetDefault("cache.enabled", true)
+	viper.SetDefault("cache.profile_ttl", 60)
+	viper.SetDefault("cache.kyc_status_ttl", 30)
+	viper.SetDefault("cache.limits_ttl", 300)
+	viper.SetDefault("cache.portfolio_ttl", 10)
+	viper.SetDefault("cache.balances_ttl", 30)
+	viper.SetDefault("cache.station_ttl", 30)
+	viper.SetDefault("cache.invalidate_on_write", true)
 
 	// Database defaults - tuned for performance
 	viper.SetDefault("database.host", "localhost")
@@ -569,6 +612,19 @@ func setDefaults() {
 	viper.SetDefault("kyc.base_url", "https://api.sumsub.com")
 	viper.SetDefault("kyc.user_agent", "Stack-Service/1.0")
 	viper.SetDefault("kyc.level_name", "basic-kyc")
+	viper.SetDefault("kyc.enable_liveness", true)
+	viper.SetDefault("kyc.enable_aml_check", false)
+	viper.SetDefault("kyc.watchlist_profile", "standard")
+	viper.SetDefault("kyc.reversion_threshold", 90)
+	viper.SetDefault("kyc.high_value_withdrawal", 10000)
+
+	// Cloudflare defaults
+	viper.SetDefault("cloudflare.account_id", "")
+	viper.SetDefault("cloudflare.access_key", "")
+	viper.SetDefault("cloudflare.secret_key", "")
+	viper.SetDefault("cloudflare.r2_bucket", "")
+	viper.SetDefault("cloudflare.r2_public_url", "")
+	viper.SetDefault("cloudflare.worker_url", "")
 
 	// Email defaults
 	viper.SetDefault("email.provider", "")
