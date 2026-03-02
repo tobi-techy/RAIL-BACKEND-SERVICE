@@ -394,9 +394,11 @@ func WebhookSecurityWithRedisV8(
 					logger.Warn("Webhook replay detected",
 						zap.String("provider", provider),
 						zap.String("path", c.Request.URL.Path))
-					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-						"error":   "WEBHOOK_REPLAY_DETECTED",
-						"message": "Duplicate webhook request rejected",
+					// Return 200 for replays — the original was already processed.
+					// Returning non-2XX causes providers like Circle to retry indefinitely.
+					c.AbortWithStatusJSON(http.StatusOK, gin.H{
+						"status":  "already_processed",
+						"message": "Duplicate webhook request",
 					})
 					return
 				}
