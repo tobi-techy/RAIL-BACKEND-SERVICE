@@ -823,9 +823,10 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	cacheInvalidator := cache.NewCacheInvalidator(redisClient, zapLog, cache.InvalidateImmediate)
 
 	// Initialize entity secret service
+	// Non-fatal: app can start for non-wallet operations, but wallet creation will be rejected
 	entitySecretService, err := entitysecret.NewService(zapLog, cfg.Circle.EntitySecretCiphertext, cfg.Circle.PublicKeyPEM)
 	if err != nil {
-		zapLog.Warn("Entity secret service unavailable, dynamic ciphertext generation disabled",
+		zapLog.Warn("Entity secret service unavailable — wallet creation will be disabled until configured",
 			zap.Error(err))
 		entitySecretService = nil
 	}

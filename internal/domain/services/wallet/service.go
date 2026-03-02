@@ -537,12 +537,12 @@ func (s *Service) ensureWalletSet(ctx context.Context) (*entities.WalletSet, err
 	}
 
 	// Generate entity secret ciphertext for the wallet set
-	var entitySecretCiphertext string
-	if s.entitySecretService != nil {
-		entitySecretCiphertext, err = s.entitySecretService.GenerateEntitySecretCiphertext(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate entity secret ciphertext: %w", err)
-		}
+	if s.entitySecretService == nil {
+		return nil, fmt.Errorf("entity secret service is not available: cannot create secure wallet set")
+	}
+	entitySecretCiphertext, err := s.entitySecretService.GenerateEntitySecretCiphertext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate entity secret ciphertext: %w", err)
 	}
 
 	// Create wallet set record
