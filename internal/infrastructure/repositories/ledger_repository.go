@@ -20,6 +20,10 @@ type LedgerRepository struct {
 	db *sqlx.DB
 }
 
+type contextKey string
+
+const txContextKey contextKey = "db_tx"
+
 // NewLedgerRepository creates a new ledger repository
 func NewLedgerRepository(db *sqlx.DB) *LedgerRepository {
 	return &LedgerRepository{db: db}
@@ -27,11 +31,11 @@ func NewLedgerRepository(db *sqlx.DB) *LedgerRepository {
 
 // BeginTx starts a new database transaction
 func (r *LedgerRepository) BeginTx(ctx context.Context) (context.Context, error) {
-	tx, err := r.db.BeginTxx(ctx, nil)
+	tx, err := r.db.BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable, ReadOnly: false})
 	if err != nil {
 		return nil, fmt.Errorf("begin transaction: %w", err)
 	}
-	return context.WithValue(ctx, "db_tx", tx), nil
+	return context.WithValue(ctx, txContextKey, tx), nil
 }
 
 // CommitTx commits the transaction in the context
@@ -84,7 +88,7 @@ func txFromContext(ctx context.Context) *sqlx.Tx {
 	if ctx == nil {
 		return nil
 	}
-	tx, _ := ctx.Value("db_tx").(*sqlx.Tx)
+	tx, _ := ctx.Value(txContextKey).(*sqlx.Tx)
 	return tx
 }
 

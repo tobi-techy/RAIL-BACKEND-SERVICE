@@ -201,11 +201,11 @@ func (s *Service) ReconcileBalance(ctx context.Context, userID uuid.UUID, accoun
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
+	defer s.ledgerRepo.RollbackTx(txCtx)
 
 	// Use SELECT FOR UPDATE to lock the row and prevent concurrent modifications
 	account, err := s.ledgerRepo.GetAccountByUserAndTypeForUpdate(txCtx, userID, accountType)
 	if err != nil {
-		s.ledgerRepo.RollbackTx(txCtx)
 		return fmt.Errorf("get account for update: %w", err)
 	}
 
@@ -223,7 +223,6 @@ func (s *Service) ReconcileBalance(ctx context.Context, userID uuid.UUID, accoun
 
 	// Update balance within the transaction
 	if err := s.ledgerRepo.UpdateAccountBalance(txCtx, account.ID, newBalance); err != nil {
-		s.ledgerRepo.RollbackTx(txCtx)
 		return fmt.Errorf("update account balance: %w", err)
 	}
 
