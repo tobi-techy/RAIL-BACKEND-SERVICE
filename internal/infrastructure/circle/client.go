@@ -135,14 +135,16 @@ func NewClient(config Config, logger *zap.Logger) *Client {
 	entitySecretService, err := entitysecret.NewService(logger, config.EntitySecretCiphertext, config.PublicKeyPEM)
 	if err != nil {
 		logger.Warn("Failed to initialize entity secret service, dynamic generation will not be available",
-			zap.Error(err))
+			zap.Error(err),
+			zap.String("entitySecretCiphertext_present", fmt.Sprintf("%t", config.EntitySecretCiphertext != "")),
+			zap.String("publicKeyPEM_present", fmt.Sprintf("%t", config.PublicKeyPEM != "")))
 		entitySecretService = nil
 	}
 
 	if strings.TrimSpace(config.EntitySecretCiphertext) == "" {
 		logger.Warn("No pre-registered entity secret ciphertext configured. Dynamic generation will be used, but Circle API may reject these requests.")
 	} else {
-		logger.Info("Using pre-registered entity secret ciphertext from configuration.")
+		logger.Info("Pre-registered entity secret ciphertext is configured for fallback.")
 	}
 
 	return &Client{
@@ -876,10 +878,18 @@ func (c *Client) InitiateCCTPBurn(ctx context.Context, req *entities.CCTPBurnReq
 func (c *Client) getEntitySecretCiphertext(ctx context.Context) (string, error) {
 	// Try dynamic generation first
 	if c.entitySecretService != nil {
-		return c.entitySecretService.GenerateEntitySecretCiphertext(ctx)
+		ciphertext, err := c.entitySecretService.GenerateEntitySecretCiphertext(ctx)
+		if err == nil {
+			c.logger.Debug("Using dynamically generated entity secret ciphertext",
+				zap.String("ciphertext_length", fmt.Sprintf("%d", len(ciphertext))))
+			return ciphertext, nil
+		}
+		c.logger.Warn("Dynamic ciphertext generation failed, trying fallback", zap.Error(err))
 	}
 	// Fall back to pre-registered ciphertext from config
 	if ct := strings.TrimSpace(c.config.EntitySecretCiphertext); ct != "" {
+		c.logger.Info("Using pre-registered entity secret ciphertext from configuration",
+			zap.String("ciphertext_length", fmt.Sprintf("%d", len(ct))))
 		return ct, nil
 	}
 	return "", fmt.Errorf("entity secret service not initialized and no pre-registered ciphertext configured: check CIRCLE_PUBLIC_KEY_PEM and CIRCLE_ENTITY_SECRET_CIPHERTEXT")
