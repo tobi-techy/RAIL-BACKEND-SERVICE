@@ -113,16 +113,16 @@ func (r *KYCSyncJobRepository) EnqueueProviderRetry(ctx context.Context, userID,
 	dedupeKey := fmt.Sprintf("provider:%s:user:%s", provider, userID)
 	now := time.Now()
 	job := &entities.KYCSyncJob{
-		ID:          uuid.New(),
-		DedupeKey:   dedupeKey,
-		EventType:   "provider_retry",
-		Payload:     payload,
-		Provider:    &provider,
-		Status:      entities.KYCSyncJobStatusPending,
+		ID:           uuid.New(),
+		DedupeKey:    dedupeKey,
+		EventType:    "provider_retry",
+		Payload:      payload,
+		Provider:     &provider,
+		Status:       entities.KYCSyncJobStatusPending,
 		AttemptCount: 0,
-		MaxAttempts: defaultKYCSyncMaxAttempts,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		MaxAttempts:  defaultKYCSyncMaxAttempts,
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	}
 
 	const query = `
@@ -162,11 +162,12 @@ func (r *KYCSyncJobRepository) EnqueueProviderRetry(ctx context.Context, userID,
 }
 
 const defaultKYCSyncMaxAttempts = 5
+
 func (r *KYCSyncJobRepository) GetNextPendingJobs(ctx context.Context, limit int) ([]*entities.KYCSyncJob, error) {
 	const query = `
 		SELECT
 			id, dedupe_key, applicant_id, correlation_id, event_type, payload,
-			provider, status, attempt_count, max_attempts, next_retry_at, last_error, created_at, updated_at
+			status, attempt_count, max_attempts, next_retry_at, last_error, created_at, updated_at
 		FROM kyc_sync_jobs
 		WHERE status = 'pending'
 		   OR (status = 'retry' AND next_retry_at IS NOT NULL AND next_retry_at <= NOW())
@@ -242,8 +243,6 @@ func scanKYCSyncJob(scanner interface {
 	var correlationID sql.NullString
 	var nextRetryAt sql.NullTime
 	var lastError sql.NullString
-	var provider sql.NullString
-	var status string
 
 	err := scanner.Scan(
 		&job.ID,
@@ -252,8 +251,7 @@ func scanKYCSyncJob(scanner interface {
 		&correlationID,
 		&job.EventType,
 		&job.Payload,
-		&provider,
-		&status,
+		&job.Status,
 		&job.AttemptCount,
 		&job.MaxAttempts,
 		&nextRetryAt,
@@ -275,10 +273,6 @@ func scanKYCSyncJob(scanner interface {
 		msg := lastError.String
 		job.LastError = &msg
 	}
-	if provider.Valid {
-		job.Provider = &provider.String
-	}
-	job.Status = entities.KYCSyncJobStatus(status)
 
 	return job, nil
 }
