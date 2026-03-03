@@ -824,10 +824,14 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 
 	// Initialize entity secret service
 	// Non-fatal: app can start for non-wallet operations, but wallet creation will be rejected
+	zapLog.Debug("Initializing entity secret service",
+		zap.String("entitySecretCiphertext_length", fmt.Sprintf("%d", len(cfg.Circle.EntitySecretCiphertext))),
+		zap.String("publicKeyPEM_length", fmt.Sprintf("%d", len(cfg.Circle.PublicKeyPEM))))
 	entitySecretService, err := entitysecret.NewService(zapLog, cfg.Circle.EntitySecretCiphertext, cfg.Circle.PublicKeyPEM)
 	if err != nil {
 		zapLog.Warn("Entity secret service unavailable — wallet creation will be disabled until configured",
-			zap.Error(err))
+			zap.Error(err),
+			zap.String("entitySecretCiphertext_length", fmt.Sprintf("%d", len(cfg.Circle.EntitySecretCiphertext))))
 		entitySecretService = nil
 	}
 
