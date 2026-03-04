@@ -1177,6 +1177,9 @@ func (h *WalletFundingHandlers) GetVirtualAccounts(c *gin.Context) {
 		return
 	}
 
+	if accounts == nil {
+		accounts = []*entities.VirtualAccount{}
+	}
 	c.JSON(http.StatusOK, gin.H{"virtual_accounts": accounts, "total": len(accounts)})
 }
 

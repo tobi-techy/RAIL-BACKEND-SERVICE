@@ -144,6 +144,7 @@ type VirtualAccountRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*entities.VirtualAccount, error)
 	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.VirtualAccount, error)
 	GetByAlpacaAccountID(ctx context.Context, alpacaAccountID string) (*entities.VirtualAccount, error)
+	GetActiveByUserIDAndCurrency(ctx context.Context, userID uuid.UUID, currency string) (*entities.VirtualAccount, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status entities.VirtualAccountStatus) error
 	ExistsByUserAndAlpacaAccount(ctx context.Context, userID uuid.UUID, alpacaAccountID string) (bool, error)
 }

@@ -19,18 +19,19 @@ const onboardingBridgeRequestTimeout = 10 * time.Second
 
 // Service handles onboarding operations - user creation, KYC flow, wallet provisioning
 type Service struct {
-	userRepo            UserRepository
-	onboardingFlowRepo  OnboardingFlowRepository
-	kycSubmissionRepo   KYCSubmissionRepository
-	walletService       WalletService
-	emailService        EmailService
-	auditService        AuditService
-	bridgeAdapter       BridgeAdapter
-	alpacaAdapter       AlpacaAdapter
-	allocationService   AllocationService
-	p2pService          P2PService
-	logger              *zap.Logger
-	defaultWalletChains []entities.WalletChain
+	userRepo              UserRepository
+	onboardingFlowRepo    OnboardingFlowRepository
+	kycSubmissionRepo     KYCSubmissionRepository
+	walletService         WalletService
+	emailService          EmailService
+	auditService          AuditService
+	bridgeAdapter         BridgeAdapter
+	alpacaAdapter         AlpacaAdapter
+	allocationService     AllocationService
+	p2pService            P2PService
+	virtualAccountService VirtualAccountService
+	logger                *zap.Logger
+	defaultWalletChains   []entities.WalletChain
 }
 
 // Repository interfaces
@@ -96,6 +97,11 @@ type P2PService interface {
 	ClaimPendingForUser(ctx context.Context, userID uuid.UUID, email, phone string) (int, error)
 }
 
+// VirtualAccountService interface for auto-provisioning virtual accounts on KYC approval
+type VirtualAccountService interface {
+	ProvisionVirtualAccounts(ctx context.Context, userID uuid.UUID, bridgeCustomerID string, currencies []string) error
+}
+
 // NewService creates a new onboarding service
 func NewService(
 	userRepo UserRepository,
@@ -135,6 +141,11 @@ func (s *Service) SetAllocationService(allocationService AllocationService) {
 // SetP2PService sets the P2P service (used to resolve circular dependency)
 func (s *Service) SetP2PService(p2pService P2PService) {
 	s.p2pService = p2pService
+}
+
+// SetVirtualAccountService sets the virtual account service for auto-provisioning on KYC approval
+func (s *Service) SetVirtualAccountService(virtualAccountService VirtualAccountService) {
+	s.virtualAccountService = virtualAccountService
 }
 
 func normalizeDefaultWalletChains(chains []entities.WalletChain, logger *zap.Logger) []entities.WalletChain {
@@ -600,6 +611,21 @@ func (s *Service) ProcessKYCCallback(ctx context.Context, providerRef string, st
 			"approved_at": now,
 		}); err != nil {
 			s.logger.Warn("Failed to mark KYC review step as completed", zap.Error(err))
+		}
+
+		// Auto-provision USD and EUR virtual accounts on KYC approval
+		if s.virtualAccountService != nil && user.BridgeCustomerID != nil && *user.BridgeCustomerID != "" {
+			currencies := []string{"USD", "EUR"}
+			if err := s.virtualAccountService.ProvisionVirtualAccounts(ctx, user.ID, *user.BridgeCustomerID, currencies); err != nil {
+				s.logger.Warn("Failed to auto-provision virtual accounts",
+					zap.Error(err),
+					zap.String("user_id", user.ID.String()))
+				// Don't fail KYC callback - virtual accounts can be created later
+			} else {
+				s.logger.Info("Auto-provisioned virtual accounts on KYC approval",
+					zap.String("user_id", user.ID.String()),
+					zap.Strings("currencies", currencies))
+			}
 		}
 
 	case entities.KYCStatusRejected:
