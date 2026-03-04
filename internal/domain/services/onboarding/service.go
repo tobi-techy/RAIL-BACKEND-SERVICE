@@ -654,8 +654,8 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 	status := strings.ToLower(strings.TrimSpace(user.KYCStatus))
 	if hasSubmitted && (status == string(entities.KYCStatusPending) || status == string(entities.KYCStatusProcessing)) {
 		if latest, latestErr := s.kycSubmissionRepo.GetLatestByUserID(ctx, userID); latestErr == nil &&
-			isSessionOnlySumsubSubmission(latest) {
-			// Backward-compat: session creation used to mark submitted before documents were actually sent.
+			!hasRealVerificationResult(latest) {
+			// No real verification result from any provider — treat as not started.
 			hasSubmitted = false
 			status = "not_started"
 		}
@@ -714,6 +714,36 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 	}
 
 	return response, nil
+}
+
+// hasRealVerificationResult returns true if the submission has been reviewed
+// or received a real result from a verification provider (webhook, approval, rejection).
+func hasRealVerificationResult(submission *entities.KYCSubmission) bool {
+	if submission == nil {
+		return false
+	}
+	// Terminal statuses always count as real results.
+	if submission.Status == entities.KYCStatusApproved || submission.Status == entities.KYCStatusRejected {
+		return true
+	}
+	if submission.ReviewedAt != nil {
+		return true
+	}
+	// Check for Sumsub webhook data indicating real processing.
+	if submission.VerificationData != nil {
+		webhookType := getVerificationString(submission.VerificationData, "sumsub_webhook_type")
+		reviewStatus := getVerificationString(submission.VerificationData, "sumsub_review_status")
+		if webhookType != "" || reviewStatus != "" {
+			return true
+		}
+		// Check for Bridge/Alpaca real results.
+		bridgeStatus := getVerificationString(submission.VerificationData, "bridge_status")
+		alpacaStatus := getVerificationString(submission.VerificationData, "alpaca_status")
+		if bridgeStatus == "active" || alpacaStatus == "ACTIVE" || alpacaStatus == "APPROVED" {
+			return true
+		}
+	}
+	return false
 }
 
 func isSessionOnlySumsubSubmission(submission *entities.KYCSubmission) bool {
