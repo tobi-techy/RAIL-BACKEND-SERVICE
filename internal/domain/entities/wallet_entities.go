@@ -458,6 +458,7 @@ type CircleWalletCreateRequest struct {
 	Count                  int      `json:"count,omitempty"`
 	AccountType            string   `json:"accountType"`
 	WalletSetID            string   `json:"walletSetId"`
+	RefID                  string   `json:"refId,omitempty"`
 }
 
 // CircleWalletCreateResponse represents Circle wallet creation response

@@ -620,6 +620,7 @@ func (s *Service) createEVMWallets(ctx context.Context, userID uuid.UUID, evmCha
 		Blockchains: blockchains,
 		AccountType: string(entities.AccountTypeSCA),
 		Count:       1,
+		RefID:       userID.String(),
 	}
 	job.AddCircleRequest("create_evm_wallet", circleReq, nil)
 
