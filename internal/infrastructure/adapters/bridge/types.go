@@ -14,15 +14,15 @@ const (
 type CustomerStatus string
 
 const (
-	CustomerStatusActive               CustomerStatus = "active"
+	CustomerStatusActive                CustomerStatus = "active"
 	CustomerStatusAwaitingQuestionnaire CustomerStatus = "awaiting_questionnaire"
-	CustomerStatusAwaitingUBO          CustomerStatus = "awaiting_ubo"
-	CustomerStatusIncomplete           CustomerStatus = "incomplete"
-	CustomerStatusNotStarted           CustomerStatus = "not_started"
-	CustomerStatusOffboarded           CustomerStatus = "offboarded"
-	CustomerStatusPaused               CustomerStatus = "paused"
-	CustomerStatusRejected             CustomerStatus = "rejected"
-	CustomerStatusUnderReview          CustomerStatus = "under_review"
+	CustomerStatusAwaitingUBO           CustomerStatus = "awaiting_ubo"
+	CustomerStatusIncomplete            CustomerStatus = "incomplete"
+	CustomerStatusNotStarted            CustomerStatus = "not_started"
+	CustomerStatusOffboarded            CustomerStatus = "offboarded"
+	CustomerStatusPaused                CustomerStatus = "paused"
+	CustomerStatusRejected              CustomerStatus = "rejected"
+	CustomerStatusUnderReview           CustomerStatus = "under_review"
 )
 
 // CapabilityStatus represents the status of a capability
@@ -65,30 +65,35 @@ const (
 type PaymentRail string
 
 const (
-	PaymentRailArbitrum       PaymentRail = "arbitrum"
-	PaymentRailAvalanche      PaymentRail = "avalanche_c_chain"
-	PaymentRailBase           PaymentRail = "base"
-	PaymentRailEthereum       PaymentRail = "ethereum"
-	PaymentRailOptimism       PaymentRail = "optimism"
-	PaymentRailPolygon        PaymentRail = "polygon"
-	PaymentRailSolana         PaymentRail = "solana"
-	PaymentRailStellar        PaymentRail = "stellar"
-	PaymentRailTron           PaymentRail = "tron"
+	PaymentRailArbitrum  PaymentRail = "arbitrum"
+	PaymentRailAvalanche PaymentRail = "avalanche_c_chain"
+	PaymentRailBase      PaymentRail = "base"
+	PaymentRailEthereum  PaymentRail = "ethereum"
+	PaymentRailOptimism  PaymentRail = "optimism"
+	PaymentRailPolygon   PaymentRail = "polygon"
+	PaymentRailSolana    PaymentRail = "solana"
+	PaymentRailStellar   PaymentRail = "stellar"
+	PaymentRailTron      PaymentRail = "tron"
 )
 
 // Currency represents supported currencies
 type Currency string
 
 const (
-	CurrencyUSD  Currency = "usd"
-	CurrencyEUR  Currency = "eur"
-	CurrencyMXN  Currency = "mxn"
-	CurrencyUSDB Currency = "usdb"
-	CurrencyUSDC Currency = "usdc"
-	CurrencyUSDT Currency = "usdt"
-	CurrencyDAI  Currency = "dai"
+	CurrencyUSD   Currency = "usd"
+	CurrencyEUR   Currency = "eur"
+	CurrencyMXN   Currency = "mxn"
+	CurrencyUSDB  Currency = "usdb"
+	CurrencyUSDC  Currency = "usdc"
+	CurrencyUSDT  Currency = "usdt"
+	CurrencyDAI   Currency = "dai"
 	CurrencyPYUSD Currency = "pyusd"
-	CurrencyEURC Currency = "eurc"
+	CurrencyEURC  Currency = "eurc"
+)
+
+// Card funding strategies
+const (
+	CardFundingStrategyTopUp = "top_up"
 )
 
 // Address represents a physical address
@@ -281,12 +286,42 @@ type CryptoAccount struct {
 	Address string `json:"address"`
 }
 
+const (
+	CryptoAccountTypeStandard     = "standard"
+	CryptoAccountTypeBridgeWallet = "bridge_wallet"
+)
+
 // CreateCardAccountRequest represents a request to create a card account
 type CreateCardAccountRequest struct {
-	ClientReferenceID string        `json:"client_reference_id,omitempty"`
-	Currency          Currency      `json:"currency"`
-	Chain             PaymentRail   `json:"chain"`
-	CryptoAccount     CryptoAccount `json:"crypto_account"`
+	ClientReferenceID string         `json:"client_reference_id,omitempty"`
+	Currency          Currency       `json:"currency"`
+	Chain             PaymentRail    `json:"chain"`
+	CryptoAccount     *CryptoAccount `json:"crypto_account,omitempty"`
+}
+
+// EnableCardsRequest enables Bridge cards for a developer account.
+// Sandbox must be initialized with funding strategy top_up.
+type EnableCardsRequest struct {
+	FundingStrategy string `json:"funding_strategy"`
+}
+
+const (
+	CardActionInitiatorCustomer   = "customer"
+	CardActionInitiatorDeveloper  = "developer"
+	CardFreezeReasonUserRequested = "user_requested"
+	CardFreezeReasonFraud         = "fraud"
+	CardFreezeReasonMerchantAbuse = "merchant_abuse"
+)
+
+// FreezeCardAccountRequest represents a freeze card request payload.
+type FreezeCardAccountRequest struct {
+	Initiator string `json:"initiator"`
+	Reason    string `json:"reason"`
+}
+
+// UnfreezeCardAccountRequest represents an unfreeze card request payload.
+type UnfreezeCardAccountRequest struct {
+	Initiator string `json:"initiator"`
 }
 
 // CardDetails represents card details

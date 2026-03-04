@@ -298,21 +298,12 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	isFinalSuccess := state == "COMPLETE" || state == "COMPLETED" || state == "CONFIRMED" || state == "SUCCESS"
 
 	if !isFinalSuccess {
-		// Fallback sync: poll Circle briefly so we can settle immediately when provider state
-		// transitions shortly after initiation (common with devnet/testnet transfers).
-		for attempt := 0; attempt < 3 && !withdrawal.Status.IsTerminal(); attempt++ {
-			if _, err := s.syncCryptoWithdrawalStatusFromProvider(ctx, withdrawal); err != nil {
-				s.logger.Warn("Failed to sync Circle withdrawal status during initiation",
-					"withdrawal_id", withdrawal.ID.String(),
-					"attempt", attempt+1,
-					"error", err)
-			}
-			if withdrawal.Status.IsTerminal() {
-				break
-			}
-			if attempt < 2 {
-				time.Sleep(400 * time.Millisecond)
-			}
+		// Don't block the HTTP handler polling Circle — let webhooks settle the final state.
+		// Just do a single non-blocking status check.
+		if _, err := s.syncCryptoWithdrawalStatusFromProvider(ctx, withdrawal); err != nil {
+			s.logger.Warn("Failed to sync Circle withdrawal status during initiation",
+				"withdrawal_id", withdrawal.ID.String(),
+				"error", err)
 		}
 
 		if withdrawal.Status == entities.WithdrawalStatusCompleted {

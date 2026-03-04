@@ -217,33 +217,45 @@ func (w *Worker) processJobInternal(ctx context.Context, job *entities.WalletPro
 		return fmt.Errorf("failed to ensure wallet set: %w", err)
 	}
 
-	// Process each chain with idempotency
+	// Separate EVM and non-EVM chains so EVM chains share one wallet address
+	var evmChains, otherChains []entities.WalletChain
+	for _, chainStr := range job.Chains {
+		chain := entities.WalletChain(chainStr)
+		if chain.GetChainFamily() == "EVM" {
+			evmChains = append(evmChains, chain)
+		} else {
+			otherChains = append(otherChains, chain)
+		}
+	}
+
 	var successCount int
 	var lastError error
 
-	for _, chainStr := range job.Chains {
-		chain := entities.WalletChain(chainStr)
+	// Create a single SCA wallet for all EVM chains
+	if len(evmChains) > 0 {
+		created, err := w.createEVMWallets(ctx, job, evmChains, walletSet)
+		if err != nil {
+			w.logger.Error("Failed to create EVM wallets",
+				zap.Error(err), zap.String("user_id", job.UserID.String()))
+			lastError = err
+			w.metrics.ErrorsByType[w.classifyError(err)]++
+		}
+		successCount += created
+	}
 
-		// Check if wallet already exists (idempotency)
+	// Create individual wallets for non-EVM chains
+	for _, chain := range otherChains {
 		existingWallet, err := w.walletRepo.GetByUserAndChain(ctx, job.UserID, chain)
 		if err == nil && existingWallet != nil && existingWallet.IsReady() {
-			w.logger.Info("Wallet already exists for chain (idempotent)",
-				zap.String("user_id", job.UserID.String()),
-				zap.String("chain", string(chain)),
-				zap.String("address", existingWallet.Address))
 			successCount++
 			continue
 		}
-
-		// Create wallet for chain
 		if err := w.createWalletForChain(ctx, job, chain, walletSet); err != nil {
 			w.logger.Error("Failed to create wallet for chain",
 				zap.Error(err),
 				zap.String("user_id", job.UserID.String()),
 				zap.String("chain", string(chain)))
 			lastError = err
-
-			// Track error type
 			w.metrics.ErrorsByType[w.classifyError(err)]++
 		} else {
 			successCount++
@@ -262,6 +274,79 @@ func (w *Worker) processJobInternal(ctx context.Context, job *entities.WalletPro
 	} else {
 		return fmt.Errorf("failed to create any wallets: %w", lastError)
 	}
+}
+
+// createEVMWallets creates a single SCA wallet for all EVM chains so they share one address
+func (w *Worker) createEVMWallets(ctx context.Context, job *entities.WalletProvisioningJob, evmChains []entities.WalletChain, walletSet *entities.WalletSet) (int, error) {
+	var needChains []entities.WalletChain
+	created := 0
+	for _, chain := range evmChains {
+		existing, err := w.walletRepo.GetByUserAndChain(ctx, job.UserID, chain)
+		if err == nil && existing != nil && existing.IsReady() {
+			created++
+			continue
+		}
+		needChains = append(needChains, chain)
+	}
+	if len(needChains) == 0 {
+		return created, nil
+	}
+
+	blockchains := make([]string, len(needChains))
+	for i, c := range needChains {
+		blockchains[i] = string(c)
+	}
+
+	circleReq := entities.CircleWalletCreateRequest{
+		WalletSetID: walletSet.CircleWalletSetID,
+		Blockchains: blockchains,
+		AccountType: string(entities.AccountTypeSCA),
+		Count:       1,
+	}
+	job.AddCircleRequest("create_evm_wallet", circleReq, nil)
+
+	circleResp, err := w.circleClient.CreateWallet(ctx, circleReq)
+	if err != nil {
+		job.AddCircleRequest("create_evm_wallet_error", circleReq, map[string]any{"error": err.Error()})
+		return created, fmt.Errorf("failed to create EVM wallet in Circle: %w", err)
+	}
+	job.AddCircleRequest("create_evm_wallet_success", circleReq, circleResp)
+
+	address := circleResp.Wallet.Address
+	if address == "" && len(circleResp.Wallet.Addresses) > 0 {
+		address = circleResp.Wallet.Addresses[0].Address
+	}
+	if address == "" {
+		return created, fmt.Errorf("no address in Circle EVM wallet response")
+	}
+
+	for _, chain := range needChains {
+		wallet := &entities.ManagedWallet{
+			ID:             uuid.New(),
+			UserID:         job.UserID,
+			Chain:          chain,
+			Address:        address,
+			CircleWalletID: circleResp.Wallet.ID,
+			WalletSetID:    walletSet.ID,
+			AccountType:    entities.AccountTypeSCA,
+			Status:         entities.WalletStatusLive,
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
+		}
+		if err := wallet.Validate(); err != nil {
+			return created, fmt.Errorf("wallet validation failed for %s: %w", chain, err)
+		}
+		if err := w.walletRepo.Create(ctx, wallet); err != nil {
+			return created, fmt.Errorf("failed to create wallet record for %s: %w", chain, err)
+		}
+		w.logger.Info("Created EVM wallet record",
+			zap.String("user_id", job.UserID.String()),
+			zap.String("chain", string(chain)),
+			zap.String("address", address),
+			zap.String("circleWalletID", circleResp.Wallet.ID))
+		created++
+	}
+	return created, nil
 }
 
 // createWalletForChain creates a developer-controlled wallet for a specific chain

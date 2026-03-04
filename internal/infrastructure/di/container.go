@@ -30,6 +30,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/domain/services/integration"
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
+	"github.com/rail-service/rail_service/internal/domain/services/kyc"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/internal/domain/services/limits"
 	marketservice "github.com/rail-service/rail_service/internal/domain/services/market"
@@ -188,6 +189,48 @@ func (a *BridgeVirtualAccountWebhookAdapter) ProcessFiatDeposit(ctx *gin.Context
 		TransactionRef:   event.TransactionRef,
 		Status:           event.Status,
 	})
+}
+
+// BridgeCardWebhookAdapter adapts domain card service to Bridge webhook card processor interface.
+type BridgeCardWebhookAdapter struct {
+	service *card.Service
+}
+
+func (a *BridgeCardWebhookAdapter) ProcessAuthorization(ctx *gin.Context, cardID string, amount decimal.Decimal, merchantName, merchantCategory string) error {
+	if a == nil || a.service == nil {
+		return fmt.Errorf("card service not configured")
+	}
+	return a.service.ProcessAuthorization(ctx.Request.Context(), cardID, amount, merchantName, merchantCategory)
+}
+
+func (a *BridgeCardWebhookAdapter) RecordTransaction(ctx *gin.Context, cardID, transactionID string, amount decimal.Decimal, merchantName, merchantCategory, status string) error {
+	if a == nil || a.service == nil {
+		return fmt.Errorf("card service not configured")
+	}
+
+	txType := "capture"
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "pending", "declined":
+		txType = "authorization"
+	case "reversed", "refunded":
+		txType = "reversal"
+	}
+
+	return a.service.RecordTransaction(ctx.Request.Context(), cardID, transactionID, txType, amount, merchantName, merchantCategory, status, nil)
+}
+
+func (a *BridgeCardWebhookAdapter) RecordDeclinedTransaction(ctx *gin.Context, cardID, transactionID, declineReason string) error {
+	if a == nil || a.service == nil {
+		return fmt.Errorf("card service not configured")
+	}
+	return a.service.RecordDeclinedTransaction(ctx.Request.Context(), cardID, transactionID, declineReason)
+}
+
+func (a *BridgeCardWebhookAdapter) SyncCardStatus(ctx *gin.Context, cardID, _ string) error {
+	if a == nil || a.service == nil {
+		return fmt.Errorf("card service not configured")
+	}
+	return a.service.SyncCardStatus(ctx.Request.Context(), cardID)
 }
 
 // WithdrawalLedgerAdapter adapts ledger.Service to withdrawal.LedgerService interface
@@ -395,28 +438,29 @@ func (a *BridgeOnboardingAdapter) CreateCustomer(ctx context.Context, req *entit
 		Email:     req.Email,
 	}
 
+	// Normalize 2-letter country code to 3-letter (Bridge requires ISO 3166-1 alpha-3)
+	country3 := strings.ToUpper(req.Country)
+	if len(country3) == 2 {
+		switch country3 {
+		case "US":
+			country3 = "USA"
+		case "GB":
+			country3 = "GBR"
+		case "NG":
+			country3 = "NGA"
+		case "CA":
+			country3 = "CAN"
+		}
+	}
+
 	// Add residential address if provided
 	if req.Address != nil {
-		// Convert 2-letter country code to 3-letter (Bridge requires ISO 3166-1 alpha-3)
-		country := req.Country
-		if len(country) == 2 {
-			switch country {
-			case "US":
-				country = "USA"
-			case "GB":
-				country = "GBR"
-			case "CA":
-				country = "CAN"
-				// Add more as needed
-			}
-		}
-
 		bridgeReq.ResidentialAddress = &bridge.Address{
 			StreetLine1: req.Address.Street,
 			City:        req.Address.City,
 			Subdivision: req.Address.State,
 			PostalCode:  req.Address.PostalCode,
-			Country:     country,
+			Country:     country3,
 		}
 	}
 
@@ -425,12 +469,16 @@ func (a *BridgeOnboardingAdapter) CreateCustomer(ctx context.Context, req *entit
 		bridgeReq.BirthDate = req.DateOfBirth.Format("2006-01-02")
 	}
 
-	// Add SSN if provided (required for production, optional for sandbox)
+	// Add tax ID if provided (required for production, optional for sandbox)
 	if req.SSN != "" {
+		taxIDType := kyc.GetSupportedTaxIDType(country3)
+		if taxIDType == "" {
+			taxIDType = "ssn"
+		}
 		bridgeReq.IdentifyingInformation = []bridge.IdentifyingInfo{
 			{
-				Type:           "ssn",
-				IssuingCountry: "usa",
+				Type:           taxIDType,
+				IssuingCountry: strings.ToLower(country3),
 				Number:         req.SSN,
 			},
 		}
@@ -2128,6 +2176,18 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 	)
 	// Wire ledger service to card service for transaction ledger entries
 	c.CardService.SetLedgerService(c.LedgerService)
+
+	// Rewire Bridge webhook service now that card service is available.
+	if c.BridgeWebhookHandler != nil && c.BridgeVirtualAccountService != nil {
+		bridgeWebhookService := webhooks.NewBridgeWebhookService(
+			&BridgeVirtualAccountWebhookAdapter{service: c.BridgeVirtualAccountService},
+			nil, // Customer status processor can be injected later.
+			&BridgeCardWebhookAdapter{service: c.CardService},
+			nil, // Notifications can be injected later.
+			c.ZapLog,
+		)
+		c.BridgeWebhookHandler.SetService(bridgeWebhookService)
+	}
 
 	c.ZapLog.Info("Advanced features initialized")
 	return nil

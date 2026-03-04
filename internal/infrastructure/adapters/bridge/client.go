@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -32,7 +33,7 @@ func getIdempotencyKey(ctx context.Context, method, endpoint string, body []byte
 	if key, ok := ctx.Value(idempotencyKeyCtxKey{}).(string); ok && key != "" {
 		return key
 	}
-	
+
 	// Generate deterministic key based on request content for automatic retry safety
 	// This ensures the same logical operation always gets the same key
 	h := sha256.New()
@@ -74,7 +75,11 @@ func NewClient(config Config, logger *zap.Logger) *Client {
 		config.Timeout = 60 * time.Second // Bridge sandbox can be slow
 	}
 	if config.BaseURL == "" {
-		config.BaseURL = "https://api.bridge.xyz"
+		if strings.EqualFold(strings.TrimSpace(config.Environment), "sandbox") {
+			config.BaseURL = "https://api.sandbox.bridge.xyz"
+		} else {
+			config.BaseURL = "https://api.bridge.xyz"
+		}
 	}
 	if config.MaxRetries == 0 {
 		config.MaxRetries = 3
@@ -100,7 +105,7 @@ func (c *Client) CreateCustomer(ctx context.Context, req *CreateCustomerRequest)
 	// Debug log the request
 	reqJSON, _ := json.Marshal(req)
 	c.logger.Info("Creating Bridge customer", zap.String("request", string(reqJSON)))
-	
+
 	var customer Customer
 	if err := c.doRequest(ctx, http.MethodPost, "/v0/customers", req, &customer); err != nil {
 		return nil, fmt.Errorf("create customer failed: %w", err)
@@ -250,6 +255,16 @@ func (c *Client) GetWalletBalance(ctx context.Context, customerID, walletID stri
 	return &balance, nil
 }
 
+// EnableCards enables cards for a developer account.
+func (c *Client) EnableCards(ctx context.Context, req *EnableCardsRequest) error {
+	if req == nil {
+		req = &EnableCardsRequest{
+			FundingStrategy: CardFundingStrategyTopUp,
+		}
+	}
+	return c.doRequest(ctx, http.MethodPost, "/v0/cards/enable", req, nil)
+}
+
 // CreateCardAccount creates a card account for a customer
 func (c *Client) CreateCardAccount(ctx context.Context, customerID string, req *CreateCardAccountRequest) (*CardAccount, error) {
 	var card CardAccount
@@ -270,8 +285,13 @@ func (c *Client) GetCardAccount(ctx context.Context, customerID, cardAccountID s
 
 // FreezeCardAccount freezes a card account
 func (c *Client) FreezeCardAccount(ctx context.Context, customerID, cardAccountID string) (*CardAccount, error) {
+	req := &FreezeCardAccountRequest{
+		Initiator: CardActionInitiatorCustomer,
+		Reason:    CardFreezeReasonUserRequested,
+	}
+
 	var card CardAccount
-	if err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v0/customers/%s/card_accounts/%s/freeze", url.PathEscape(customerID), url.PathEscape(cardAccountID)), nil, &card); err != nil {
+	if err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v0/customers/%s/card_accounts/%s/freeze", url.PathEscape(customerID), url.PathEscape(cardAccountID)), req, &card); err != nil {
 		return nil, fmt.Errorf("freeze card account failed: %w", err)
 	}
 	return &card, nil
@@ -279,8 +299,12 @@ func (c *Client) FreezeCardAccount(ctx context.Context, customerID, cardAccountI
 
 // UnfreezeCardAccount unfreezes a card account
 func (c *Client) UnfreezeCardAccount(ctx context.Context, customerID, cardAccountID string) (*CardAccount, error) {
+	req := &UnfreezeCardAccountRequest{
+		Initiator: CardActionInitiatorCustomer,
+	}
+
 	var card CardAccount
-	if err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v0/customers/%s/card_accounts/%s/unfreeze", url.PathEscape(customerID), url.PathEscape(cardAccountID)), nil, &card); err != nil {
+	if err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v0/customers/%s/card_accounts/%s/unfreeze", url.PathEscape(customerID), url.PathEscape(cardAccountID)), req, &card); err != nil {
 		return nil, fmt.Errorf("unfreeze card account failed: %w", err)
 	}
 	return &card, nil
@@ -360,11 +384,11 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json")
 		req.Header.Set("Api-Key", c.config.APIKey)
-		if method == http.MethodPost || method == http.MethodPut {
+		if method == http.MethodPost {
 			idempotencyKey := getIdempotencyKey(ctx, method, endpoint, reqBody)
 			req.Header.Set("Idempotency-Key", idempotencyKey)
 		}
-		
+
 		// Inject distributed trace context
 		injectTraceContext(ctx, req.Header)
 
@@ -417,14 +441,13 @@ func (c *Client) Config() Config {
 	return c.config
 }
 
-
 // injectTraceContext injects OpenTelemetry trace context into HTTP headers
 func injectTraceContext(ctx context.Context, headers http.Header) {
 	span := trace.SpanFromContext(ctx)
 	if !span.SpanContext().IsValid() {
 		return
 	}
-	
+
 	traceID := span.SpanContext().TraceID().String()
 	spanID := span.SpanContext().SpanID().String()
 	flags := "00"

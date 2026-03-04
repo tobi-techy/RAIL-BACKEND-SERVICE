@@ -650,9 +650,28 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 		return nil, fmt.Errorf("failed to get user: %w", err)
 	}
 
-	status := user.KYCStatus
-	if status == "" {
-		if user.KYCSubmittedAt != nil {
+	hasSubmitted := user.KYCSubmittedAt != nil
+	status := strings.ToLower(strings.TrimSpace(user.KYCStatus))
+	if hasSubmitted && (status == string(entities.KYCStatusPending) || status == string(entities.KYCStatusProcessing)) {
+		if latest, latestErr := s.kycSubmissionRepo.GetLatestByUserID(ctx, userID); latestErr == nil &&
+			isSessionOnlySumsubSubmission(latest) {
+			// Backward-compat: session creation used to mark submitted before documents were actually sent.
+			hasSubmitted = false
+			status = "not_started"
+		}
+	}
+	switch status {
+	case string(entities.KYCStatusApproved),
+		string(entities.KYCStatusRejected),
+		string(entities.KYCStatusExpired):
+		// Keep terminal states as-is.
+	case string(entities.KYCStatusPending), string(entities.KYCStatusProcessing):
+		// Pending/processing should only be surfaced after a real submission.
+		if !hasSubmitted {
+			status = "not_started"
+		}
+	default:
+		if hasSubmitted {
 			status = string(entities.KYCStatusPending)
 		} else {
 			status = "not_started"
@@ -664,8 +683,10 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 	nextSteps := []string{}
 
 	switch kycStatus {
+	default:
+		nextSteps = append(nextSteps, "Complete KYC verification to unlock advanced features")
 	case entities.KYCStatusPending:
-		if user.KYCSubmittedAt == nil {
+		if !hasSubmitted {
 			nextSteps = append(nextSteps, "Submit your KYC documents to unlock advanced features")
 		} else {
 			nextSteps = append(nextSteps, "Your documents are queued for review")
@@ -682,7 +703,7 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 		UserID:            user.ID,
 		Status:            status,
 		Verified:          kycStatus == entities.KYCStatusApproved,
-		HasSubmitted:      user.KYCSubmittedAt != nil,
+		HasSubmitted:      hasSubmitted,
 		RequiresKYC:       len(requiredFor) > 0,
 		RequiredFor:       requiredFor,
 		LastSubmittedAt:   user.KYCSubmittedAt,
@@ -693,6 +714,41 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 	}
 
 	return response, nil
+}
+
+func isSessionOnlySumsubSubmission(submission *entities.KYCSubmission) bool {
+	if submission == nil {
+		return false
+	}
+	if submission.SubmissionType != "sumsub_websdk" {
+		return false
+	}
+	if submission.ReviewedAt != nil {
+		return false
+	}
+	if submission.Status == entities.KYCStatusApproved || submission.Status == entities.KYCStatusRejected {
+		return false
+	}
+	if submission.VerificationData == nil {
+		return true
+	}
+
+	webhookType := getVerificationString(submission.VerificationData, "sumsub_webhook_type")
+	reviewStatus := getVerificationString(submission.VerificationData, "sumsub_review_status")
+	reviewAnswer := getVerificationString(submission.VerificationData, "sumsub_review_answer")
+
+	return webhookType == "" && reviewStatus == "" && reviewAnswer == ""
+}
+
+func getVerificationString(data map[string]any, key string) string {
+	if data == nil {
+		return ""
+	}
+	raw, ok := data[key]
+	if !ok || raw == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(raw))
 }
 
 // GetOnboardingProgress returns a detailed progress view of the user's onboarding
