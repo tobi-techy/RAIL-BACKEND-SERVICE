@@ -38,6 +38,8 @@ type UserInfo struct {
 	ID               uuid.UUID        `json:"id"`
 	Email            string           `json:"email"`
 	Phone            *string          `json:"phone,omitempty"`
+	FirstName        *string          `json:"firstName,omitempty"`
+	LastName         *string          `json:"lastName,omitempty"`
 	EmailVerified    bool             `json:"emailVerified"`
 	PhoneVerified    bool             `json:"phoneVerified"`
 	OnboardingStatus OnboardingStatus `json:"onboardingStatus"`
@@ -133,6 +135,8 @@ type User struct {
 	ID                 uuid.UUID        `json:"id" db:"id"`
 	Email              string           `json:"email" db:"email"`
 	Phone              *string          `json:"phone" db:"phone"`
+	FirstName          *string          `json:"firstName,omitempty" db:"first_name"`
+	LastName           *string          `json:"lastName,omitempty" db:"last_name"`
 	Country            *string          `json:"country,omitempty" db:"country"`
 	AddressStreet      *string          `json:"addressStreet,omitempty" db:"address_street"`
 	AddressCity        *string          `json:"addressCity,omitempty" db:"address_city"`
@@ -166,6 +170,8 @@ func (u *User) ToUserInfo() *UserInfo {
 		ID:               u.ID,
 		Email:            u.Email,
 		Phone:            u.Phone,
+		FirstName:        u.FirstName,
+		LastName:         u.LastName,
 		EmailVerified:    u.EmailVerified,
 		PhoneVerified:    u.PhoneVerified,
 		OnboardingStatus: u.OnboardingStatus,
