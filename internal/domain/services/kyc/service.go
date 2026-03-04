@@ -886,6 +886,8 @@ func (s *Service) submitToAlpaca(ctx context.Context, user *entities.UserProfile
 	if contactCountry == "" {
 		contactCountry = req.IssuingCountry
 	}
+	// Alpaca requires ISO 3166-1 alpha-3; address form may store alpha-2
+	contactCountry = toAlpha3(contactCountry)
 
 	// Build Alpaca account request
 	alpacaReq := &entities.AlpacaCreateAccountRequest{
@@ -1225,6 +1227,35 @@ func stringValue(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// toAlpha3 converts an ISO 3166-1 alpha-2 country code to alpha-3.
+// If the code is already alpha-3 or unknown it is returned as-is.
+var alpha2ToAlpha3 = map[string]string{
+	"US": "USA", "GB": "GBR", "CA": "CAN", "AU": "AUS", "DE": "DEU",
+	"FR": "FRA", "IT": "ITA", "ES": "ESP", "NL": "NLD", "SE": "SWE",
+	"NO": "NOR", "DK": "DNK", "FI": "FIN", "CH": "CHE", "AT": "AUT",
+	"BE": "BEL", "IE": "IRL", "PT": "PRT", "GR": "GRC", "PL": "POL",
+	"CZ": "CZE", "HU": "HUN", "SK": "SVK", "SI": "SVN", "HR": "HRV",
+	"RO": "ROU", "BG": "BGR", "LT": "LTU", "LV": "LVA", "EE": "EST",
+	"LU": "LUX", "MT": "MLT", "CY": "CYP", "JP": "JPN", "KR": "KOR",
+	"CN": "CHN", "IN": "IND", "SG": "SGP", "HK": "HKG", "TW": "TWN",
+	"MY": "MYS", "TH": "THA", "ID": "IDN", "PH": "PHL", "VN": "VNM",
+	"BR": "BRA", "MX": "MEX", "AR": "ARG", "CL": "CHL", "CO": "COL",
+	"PE": "PER", "UY": "URY", "ZA": "ZAF", "NG": "NGA", "KE": "KEN",
+	"EG": "EGY", "MA": "MAR", "GH": "GHA", "TZ": "TZA", "UG": "UGA",
+	"AE": "ARE", "SA": "SAU", "IL": "ISR", "TR": "TUR", "NZ": "NZL",
+}
+
+func toAlpha3(code string) string {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	if len(code) == 3 {
+		return code // already alpha-3
+	}
+	if a3, ok := alpha2ToAlpha3[code]; ok {
+		return a3
+	}
+	return code
 }
 
 func timePtr(t time.Time) *time.Time {
