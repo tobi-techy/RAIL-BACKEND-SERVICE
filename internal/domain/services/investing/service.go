@@ -245,16 +245,27 @@ func (s *Service) CreateOrder(ctx context.Context, userID uuid.UUID, req *entiti
 
 	// Submit order to brokerage asynchronously
 	go func() {
-		brokerageResp, err := s.brokerageAPI.PlaceOrder(ctx, userID, req.BasketID, req.Side, amount)
+		// Use a detached context — the HTTP request context will be cancelled
+		// once the handler returns, but the brokerage call must complete.
+		bgCtx := context.Background()
+
+		brokerageResp, err := s.brokerageAPI.PlaceOrder(bgCtx, userID, req.BasketID, req.Side, amount)
 		if err != nil {
 			s.logger.Error("Failed to submit order to brokerage", "order_id", order.ID, "error", err)
-			// Update order status to failed
-			s.orderRepo.UpdateStatus(ctx, order.ID, entities.OrderStatusFailed, nil)
+			s.orderRepo.UpdateStatus(bgCtx, order.ID, entities.OrderStatusFailed, nil)
+
+			// Refund buying power on failed buy orders
+			if req.Side == entities.OrderSideBuy {
+				if refundErr := s.balanceRepo.AddBuyingPower(bgCtx, userID, amount); refundErr != nil {
+					s.logger.Error("CRITICAL: Failed to refund buying power after brokerage failure",
+						"order_id", order.ID, "user_id", userID, "amount", amount, "error", refundErr)
+				}
+			}
 			return
 		}
 
 		// Update order with brokerage reference
-		s.orderRepo.UpdateStatus(ctx, order.ID, brokerageResp.Status, &brokerageResp.OrderRef)
+		s.orderRepo.UpdateStatus(bgCtx, order.ID, brokerageResp.Status, &brokerageResp.OrderRef)
 		s.logger.Info("Order submitted to brokerage", "order_id", order.ID, "brokerage_ref", brokerageResp.OrderRef)
 	}()
 

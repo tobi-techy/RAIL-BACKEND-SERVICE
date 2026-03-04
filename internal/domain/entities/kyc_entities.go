@@ -59,21 +59,22 @@ type KYCProviderResult struct {
 
 // KYCStatusResponse for checking current KYC state.
 type KYCStatusResponse struct {
-	UserID            uuid.UUID         `json:"user_id"`
-	Status            string            `json:"status"`
-	Verified          bool              `json:"verified"`
-	HasSubmitted      bool              `json:"has_submitted"`
-	RequiresKYC       bool              `json:"requires_kyc"`
-	RequiredFor       []string          `json:"required_for,omitempty"`
-	LastSubmittedAt   *time.Time        `json:"last_submitted_at,omitempty"`
-	ApprovedAt        *time.Time        `json:"approved_at,omitempty"`
-	RejectionReason   *string           `json:"rejection_reason,omitempty"`
-	ProviderReference *string           `json:"provider_reference,omitempty"`
-	NextSteps         []string          `json:"next_steps,omitempty"`
-	OverallStatus     string            `json:"overall_status,omitempty"` // pending, approved, rejected, not_started
-	Bridge            KYCProviderStatus `json:"bridge,omitempty"`
-	Alpaca            KYCProviderStatus `json:"alpaca,omitempty"`
-	Capabilities      KYCCapabilities   `json:"capabilities,omitempty"`
+	UserID              uuid.UUID         `json:"user_id"`
+	Status              string            `json:"status"`
+	Verified            bool              `json:"verified"`
+	HasSubmitted        bool              `json:"has_submitted"`
+	RequiresKYC         bool              `json:"requires_kyc"`
+	RequiredFor         []string          `json:"required_for,omitempty"`
+	LastSubmittedAt     *time.Time        `json:"last_submitted_at,omitempty"`
+	ApprovedAt          *time.Time        `json:"approved_at,omitempty"`
+	RejectionReason     *string           `json:"rejection_reason,omitempty"`
+	ProviderReference   *string           `json:"provider_reference,omitempty"`
+	NextSteps           []string          `json:"next_steps,omitempty"`
+	OverallStatus       string            `json:"overall_status,omitempty"` // pending, approved, rejected, not_started
+	SupportedTaxIDType  string            `json:"supported_tax_id_type,omitempty"` // Single tax ID type for user's country (e.g. ssn, nino, nin)
+	Bridge              KYCProviderStatus `json:"bridge,omitempty"`
+	Alpaca              KYCProviderStatus `json:"alpaca,omitempty"`
+	Capabilities        KYCCapabilities   `json:"capabilities,omitempty"`
 }
 
 // KYCProviderStatus represents status for a single provider.

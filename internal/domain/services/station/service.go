@@ -154,20 +154,33 @@ func (s *Service) GetUserBalances(ctx context.Context, userID uuid.UUID) (*Balan
 	// If smart allocation mode is not active, show legacy USDC balance directly
 	// and include broker cash so users never see funds "disappear" after transfers.
 	if mode == nil || !mode.Active {
-		usdcBalance, balErr := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeUSDCBalance)
-		if balErr != nil {
-			s.logger.Warn("Failed to get USDC balance, defaulting to zero",
-				zap.Error(balErr),
-				zap.String("user_id", userID.String()))
-			usdcBalance = decimal.Zero
-		}
-		fiatExposure, fiatErr := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeFiatExposure)
-		if fiatErr != nil {
-			s.logger.Warn("Failed to get fiat exposure balance, defaulting to zero",
-				zap.Error(fiatErr),
-				zap.String("user_id", userID.String()))
-			fiatExposure = decimal.Zero
-		}
+		var usdcBalance, fiatExposure decimal.Decimal
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		go func() {
+			defer wg.Done()
+			bal, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeUSDCBalance)
+			if err != nil {
+				s.logger.Warn("Failed to get USDC balance, defaulting to zero",
+					zap.Error(err), zap.String("user_id", userID.String()))
+				return
+			}
+			usdcBalance = bal
+		}()
+
+		go func() {
+			defer wg.Done()
+			bal, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeFiatExposure)
+			if err != nil {
+				s.logger.Warn("Failed to get fiat exposure balance, defaulting to zero",
+					zap.Error(err), zap.String("user_id", userID.String()))
+				return
+			}
+			fiatExposure = bal
+		}()
+
+		wg.Wait()
 
 		totalBalance := usdcBalance.Add(fiatExposure)
 

@@ -54,6 +54,11 @@ func NewBridgeWebhookHandler(service BridgeWebhookService, logger *zap.Logger, w
 	}
 }
 
+// SetService updates the webhook service wiring after container initialization.
+func (h *BridgeWebhookHandler) SetService(service BridgeWebhookService) {
+	h.service = service
+}
+
 // BridgeWebhookPayload represents the Bridge webhook payload structure
 type BridgeWebhookPayload struct {
 	APIVersion        string                 `json:"api_version"`
@@ -106,7 +111,7 @@ func (h *BridgeWebhookHandler) HandleWebhook(c *gin.Context) {
 	}
 
 	// Verify signature
-	signature := c.GetHeader("Bridge-Signature")
+	signature := getBridgeSignatureHeader(c)
 	if !h.verifySignature(signature, rawBody) {
 		h.logger.Warn("Invalid Bridge webhook signature")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
@@ -156,6 +161,10 @@ func (h *BridgeWebhookHandler) HandleWebhook(c *gin.Context) {
 	// Posted Card Transaction events
 	case "posted_card_account_transaction":
 		h.handlePostedCardTransaction(c, payload)
+
+	// Card Withdrawal events (top-up funding lifecycle)
+	case "card_withdrawal":
+		h.handleCardWithdrawalEvent(c, payload)
 
 	default:
 		// Fallback to legacy event_type routing for backwards compatibility
@@ -314,7 +323,14 @@ func (h *BridgeWebhookHandler) handleCardTransactionEvent(c *gin.Context, payloa
 	}
 
 	transactionID := payload.EventObjectID
-	status := payload.EventObjectStatus
+	rawStatus := strings.TrimSpace(payload.EventObjectStatus)
+	if rawStatus == "" {
+		rawStatus = getStringField(payload.EventObject, "status")
+	}
+	status := normalizeBridgeWebhookCardStatus(rawStatus)
+	if status == "" {
+		status = "pending"
+	}
 	cardAccountID := getStringField(payload.EventObject, "card_account_id")
 
 	var amount decimal.Decimal
@@ -333,13 +349,14 @@ func (h *BridgeWebhookHandler) handleCardTransactionEvent(c *gin.Context, payloa
 
 	switch status {
 	case "declined":
-		declineReason := getStringField(payload.EventObject, "decline_reason")
-		if err := h.service.ProcessCardTransactionDeclined(c, cardAccountID, transactionID, declineReason); err != nil {
+		if err := h.service.ProcessCardTransaction(c, cardAccountID, transactionID, amount, merchantName, merchantCategory, status); err != nil {
 			h.logger.Error("Failed to process declined transaction", zap.Error(err))
 		}
 	case "pending":
 		if err := h.service.ProcessCardAuthorization(c, cardAccountID, amount, merchantName, merchantCategory); err != nil {
 			h.logger.Error("Failed to process card authorization", zap.Error(err))
+		} else if err := h.service.ProcessCardTransaction(c, cardAccountID, transactionID, amount, merchantName, merchantCategory, "pending"); err != nil {
+			h.logger.Error("Failed to record pending authorization", zap.Error(err))
 		}
 	default:
 		if err := h.service.ProcessCardTransaction(c, cardAccountID, transactionID, amount, merchantName, merchantCategory, status); err != nil {
@@ -377,6 +394,20 @@ func (h *BridgeWebhookHandler) handlePostedCardTransaction(c *gin.Context, paylo
 	if err := h.service.ProcessCardTransaction(c, cardAccountID, transactionID, amount, merchantName, merchantCategory, "posted"); err != nil {
 		h.logger.Error("Failed to process posted card transaction", zap.Error(err))
 	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "success"})
+}
+
+// handleCardWithdrawalEvent processes card_withdrawal events.
+// These events are currently logged for observability and acknowledged.
+func (h *BridgeWebhookHandler) handleCardWithdrawalEvent(c *gin.Context, payload BridgeWebhookPayload) {
+	withdrawalID := payload.EventObjectID
+	status := payload.EventObjectStatus
+
+	h.logger.Info("Card withdrawal event",
+		zap.String("withdrawal_id", withdrawalID),
+		zap.String("status", status),
+		zap.String("event_type", payload.EventType))
 
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
 }
@@ -648,44 +679,49 @@ func (h *BridgeWebhookHandler) verifySignature(signature string, body []byte) bo
 		return false
 	}
 
+	timestamp, parsedSig := parseBridgeSignatureHeader(signature)
+	if parsedSig == "" {
+		parsedSig = strings.TrimSpace(signature)
+	}
+
 	// Bridge uses RSA-SHA256 signatures with PEM-encoded public key
 	if strings.Contains(h.webhookSecret, "BEGIN PUBLIC KEY") {
-		return h.verifyRSASignature(signature, body)
+		return h.verifyRSASignature(timestamp, parsedSig, body)
 	}
 
 	// Fallback to HMAC for backwards compatibility
 	mac := hmac.New(sha256.New, []byte(h.webhookSecret))
 	mac.Write(body)
 	expected := hex.EncodeToString(mac.Sum(nil))
+	if hmac.Equal([]byte(expected), []byte(parsedSig)) {
+		return true
+	}
 
-	return hmac.Equal([]byte(expected), []byte(signature))
-}
-
-// verifyRSASignature verifies Bridge webhook using RSA public key
-func (h *BridgeWebhookHandler) verifyRSASignature(signatureHeader string, body []byte) bool {
-	// Parse signature header: "t=<timestamp>,v1=<base64-signature>"
-	var timestamp, sig string
-	parts := strings.Split(signatureHeader, ",")
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if strings.HasPrefix(part, "t=") {
-			timestamp = strings.TrimPrefix(part, "t=")
-		} else if strings.HasPrefix(part, "v1=") {
-			sig = strings.TrimPrefix(part, "v1=")
+	// Bridge timestamped signature format: t=<timestamp>,v0=<signature>
+	if timestamp != "" {
+		mac = hmac.New(sha256.New, []byte(h.webhookSecret))
+		mac.Write([]byte(timestamp + "." + string(body)))
+		expected = hex.EncodeToString(mac.Sum(nil))
+		if hmac.Equal([]byte(expected), []byte(parsedSig)) {
+			return true
 		}
 	}
 
+	return false
+}
+
+// verifyRSASignature verifies Bridge webhook using RSA public key
+func (h *BridgeWebhookHandler) verifyRSASignature(timestamp, sig string, body []byte) bool {
 	// Enforce timestamped signatures to reduce replay risk.
 	if timestamp == "" {
 		h.logger.Warn("Bridge RSA signature missing timestamp")
 		return false
 	}
-	ts, err := strconv.ParseInt(timestamp, 10, 64)
+	eventTime, err := parseBridgeWebhookTimestamp(timestamp)
 	if err != nil {
 		h.logger.Warn("Bridge RSA signature timestamp parse failed", zap.Error(err))
 		return false
 	}
-	eventTime := time.Unix(ts, 0)
 	if time.Since(eventTime) > 5*time.Minute {
 		h.logger.Warn("Bridge webhook timestamp too old", zap.Time("event_time", eventTime))
 		return false
@@ -696,7 +732,7 @@ func (h *BridgeWebhookHandler) verifyRSASignature(signatureHeader string, body [
 	}
 
 	if sig == "" {
-		h.logger.Warn("Bridge RSA signature missing v1 component")
+		h.logger.Warn("Bridge RSA signature missing signature component")
 		return false
 	}
 
@@ -752,6 +788,49 @@ func (h *BridgeWebhookHandler) verifyRSASignature(signatureHeader string, body [
 	}
 
 	return true
+}
+
+func parseBridgeSignatureHeader(signatureHeader string) (timestamp string, signature string) {
+	trimmed := strings.TrimSpace(signatureHeader)
+	if trimmed == "" {
+		return "", ""
+	}
+
+	if !strings.Contains(trimmed, "=") {
+		return "", trimmed
+	}
+
+	parts := strings.Split(trimmed, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, "t=") {
+			timestamp = strings.TrimPrefix(part, "t=")
+			continue
+		}
+		if strings.HasPrefix(part, "v0=") {
+			signature = strings.TrimPrefix(part, "v0=")
+			continue
+		}
+		if strings.HasPrefix(part, "v1=") && signature == "" {
+			// Keep backward compatibility with legacy header formats.
+			signature = strings.TrimPrefix(part, "v1=")
+		}
+	}
+
+	return strings.TrimSpace(timestamp), strings.TrimSpace(signature)
+}
+
+func parseBridgeWebhookTimestamp(raw string) (time.Time, error) {
+	ts, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	// Bridge webhook timestamp uses milliseconds in current docs.
+	if ts > 1_000_000_000_000 {
+		return time.UnixMilli(ts), nil
+	}
+	return time.Unix(ts, 0), nil
 }
 
 // BridgeWebhookServiceImpl implements BridgeWebhookService
@@ -859,6 +938,31 @@ func (s *BridgeWebhookServiceImpl) ProcessCardStatusChanged(ctx *gin.Context, ca
 }
 
 // Helper functions for extracting fields from event objects
+
+func getBridgeSignatureHeader(c *gin.Context) string {
+	if sig := strings.TrimSpace(c.GetHeader("X-Webhook-Signature")); sig != "" {
+		return sig
+	}
+	if sig := strings.TrimSpace(c.GetHeader("X-Bridge-Signature")); sig != "" {
+		return sig
+	}
+	return strings.TrimSpace(c.GetHeader("Bridge-Signature"))
+}
+
+func normalizeBridgeWebhookCardStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "approved", "authorized", "incrementally_authorized", "authorizing":
+		return "pending"
+	case "denied", "failed", "expired", "timeout":
+		return "declined"
+	case "posted", "captured", "settled", "partially_settled", "incrementally_settled":
+		return "completed"
+	case "refunded", "refund", "partially_reversed":
+		return "reversed"
+	default:
+		return strings.ToLower(strings.TrimSpace(status))
+	}
+}
 
 // getStringField safely extracts a string field from a map
 func getStringField(obj map[string]interface{}, key string) string {
