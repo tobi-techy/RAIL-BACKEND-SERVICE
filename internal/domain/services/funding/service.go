@@ -226,6 +226,14 @@ func (s *Service) SetBridgeVAService(bva *BridgeVirtualAccountService) {
 	s.bridgeVAService = bva
 }
 
+// GetVirtualAccounts retrieves all virtual accounts for a user
+func (s *Service) GetVirtualAccounts(ctx context.Context, userID uuid.UUID) ([]*entities.VirtualAccount, error) {
+	if s.bridgeVAService == nil {
+		return nil, fmt.Errorf("virtual account service not configured")
+	}
+	return s.bridgeVAService.GetVirtualAccounts(ctx, userID)
+}
+
 // SetAlpacaAccountLookup sets the alpaca account ownership lookup service (optional).
 func (s *Service) SetAlpacaAccountLookup(lookup AlpacaAccountLookup) {
 	s.alpacaAccountLookup = lookup

@@ -1158,6 +1158,28 @@ func (h *WalletFundingHandlers) GetBalances(c *gin.Context) {
 	c.JSON(http.StatusOK, balances)
 }
 
+// GetVirtualAccounts retrieves virtual accounts for the authenticated user
+// GET /api/v1/funding/virtual-accounts
+func (h *WalletFundingHandlers) GetVirtualAccounts(c *gin.Context) {
+	userUUID, err := common.GetUserID(c)
+	if err != nil {
+		common.RespondUnauthorized(c, "User not authenticated")
+		return
+	}
+
+	accounts, err := h.fundingService.GetVirtualAccounts(c.Request.Context(), userUUID)
+	if err != nil {
+		h.logger.Error("Failed to get virtual accounts", "error", err, "user_id", userUUID)
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+			Code:    "VIRTUAL_ACCOUNT_ERROR",
+			Message: "Failed to retrieve virtual accounts",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"virtual_accounts": accounts, "total": len(accounts)})
+}
+
 // CreateVirtualAccount creates a virtual account linked to an Alpaca brokerage account
 // @Summary Create virtual account
 // @Description Create a virtual account for funding a brokerage account with stablecoins

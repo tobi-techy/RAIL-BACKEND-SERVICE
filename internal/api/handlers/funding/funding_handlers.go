@@ -157,6 +157,24 @@ func (h *FundingHandlers) CreateVirtualAccount(c *gin.Context) {
 	common.SendCreated(c, response)
 }
 
+// GetVirtualAccounts handles GET /api/v1/funding/virtual-accounts
+func (h *FundingHandlers) GetVirtualAccounts(c *gin.Context) {
+	userUUID, err := common.GetUserID(c)
+	if err != nil {
+		common.RespondUnauthorized(c, "User not authenticated")
+		return
+	}
+
+	accounts, err := h.fundingService.GetVirtualAccounts(c.Request.Context(), userUUID)
+	if err != nil {
+		h.logger.Error("Failed to get virtual accounts", "error", err, "user_id", userUUID)
+		common.SendInternalError(c, "VIRTUAL_ACCOUNT_ERROR", "Failed to retrieve virtual accounts")
+		return
+	}
+
+	common.SendSuccess(c, gin.H{"virtual_accounts": accounts, "total": len(accounts)})
+}
+
 // GetTransactionHistory handles GET /api/v1/funding/transactions
 func (h *FundingHandlers) GetTransactionHistory(c *gin.Context) {
 	userUUID, err := common.GetUserID(c)
