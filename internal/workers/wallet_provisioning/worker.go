@@ -302,6 +302,7 @@ func (w *Worker) createEVMWallets(ctx context.Context, job *entities.WalletProvi
 		Blockchains: blockchains,
 		AccountType: string(entities.AccountTypeSCA),
 		Count:       1,
+		RefID:       job.UserID.String(),
 	}
 	job.AddCircleRequest("create_evm_wallet", circleReq, nil)
 
