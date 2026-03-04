@@ -22,7 +22,13 @@ type BridgeVirtualAccountService struct {
 	allocationService   AllocationService
 	ledgerIntegration   LedgerIntegration
 	notificationService FundingNotificationService
+	walletProvider      WalletProvider
 	logger              *logger.Logger
+}
+
+// WalletProvider interface for getting user wallet addresses
+type WalletProvider interface {
+	GetWalletByUserAndChain(ctx context.Context, userID uuid.UUID, chain entities.WalletChain) (*entities.ManagedWallet, error)
 }
 
 // AllocationService interface for 70/30 split processing
@@ -67,14 +73,74 @@ func (s *BridgeVirtualAccountService) SetNotificationService(notificationService
 	s.notificationService = notificationService
 }
 
+// SetWalletProvider sets the wallet provider for getting user wallet addresses
+func (s *BridgeVirtualAccountService) SetWalletProvider(walletProvider WalletProvider) {
+	s.walletProvider = walletProvider
+}
+
+// ProvisionVirtualAccounts creates virtual accounts for multiple currencies on KYC approval
+func (s *BridgeVirtualAccountService) ProvisionVirtualAccounts(ctx context.Context, userID uuid.UUID, bridgeCustomerID string, currencies []string) error {
+	if s.walletProvider == nil {
+		return fmt.Errorf("wallet provider not configured")
+	}
+
+	// Get user's Solana wallet for USDC destination
+	wallet, err := s.walletProvider.GetWalletByUserAndChain(ctx, userID, entities.WalletChainSolana)
+	if err != nil {
+		// Try devnet fallback
+		wallet, err = s.walletProvider.GetWalletByUserAndChain(ctx, userID, entities.WalletChainSOLDevnet)
+		if err != nil {
+			return fmt.Errorf("get wallet for virtual account destination: %w", err)
+		}
+	}
+
+	var lastErr error
+	for _, currency := range currencies {
+		// Check if account already exists for this currency
+		existing, _ := s.virtualAccountRepo.GetActiveByUserIDAndCurrency(ctx, userID, currency)
+		if existing != nil {
+			s.logger.Info("Virtual account already exists",
+				"user_id", userID,
+				"currency", currency)
+			continue
+		}
+
+		req := &CreateBridgeVirtualAccountRequest{
+			UserID:           userID,
+			BridgeCustomerID: bridgeCustomerID,
+			Currency:         currency,
+			DestinationChain: bridge.PaymentRailSolana,
+			WalletAddress:    wallet.Address,
+		}
+
+		if _, err := s.CreateVirtualAccount(ctx, req); err != nil {
+			s.logger.Error("Failed to provision virtual account",
+				"user_id", userID,
+				"currency", currency,
+				"error", err)
+			lastErr = err
+			continue
+		}
+
+		s.logger.Info("Provisioned virtual account",
+			"user_id", userID,
+			"currency", currency)
+	}
+
+	return lastErr
+}
+
 // CreateVirtualAccountRequest represents a request to create a Bridge virtual account
 type CreateBridgeVirtualAccountRequest struct {
 	UserID           uuid.UUID
 	BridgeCustomerID string
-	Currency         string // "USD" or "GBP"
+	Currency         string // "USD" or "EUR"
 	DestinationChain bridge.PaymentRail
 	WalletAddress    string // Destination wallet for converted USDC
 }
+
+// DeveloperFeePercent is the fee charged on each deposit (0.5%)
+const DeveloperFeePercent = "0.5"
 
 // CreateVirtualAccount creates a new Bridge virtual account for fiat deposits
 func (s *BridgeVirtualAccountService) CreateVirtualAccount(ctx context.Context, req *CreateBridgeVirtualAccountRequest) (*entities.VirtualAccount, error) {
@@ -83,16 +149,26 @@ func (s *BridgeVirtualAccountService) CreateVirtualAccount(ctx context.Context, 
 		"currency", req.Currency,
 		"destination_chain", req.DestinationChain)
 
-	// Determine source currency
-	sourceCurrency := bridge.CurrencyUSD
-	if req.Currency == "GBP" {
-		// Bridge doesn't support GBP directly, would need FX conversion
-		// For now, default to USD
-		s.logger.Warn("GBP not directly supported, using USD", "user_id", req.UserID)
-		sourceCurrency = bridge.CurrencyUSD
+	// Validate wallet address
+	if req.WalletAddress == "" {
+		return nil, fmt.Errorf("wallet address is required")
 	}
 
-	// Create Bridge virtual account request
+	// Determine source currency - only USD and EUR supported
+	var sourceCurrency bridge.Currency
+	var actualCurrency string
+	switch req.Currency {
+	case "EUR":
+		sourceCurrency = bridge.CurrencyEUR
+		actualCurrency = "EUR"
+	case "USD":
+		sourceCurrency = bridge.CurrencyUSD
+		actualCurrency = "USD"
+	default:
+		return nil, fmt.Errorf("unsupported currency: %s (only USD and EUR supported)", req.Currency)
+	}
+
+	// Create Bridge virtual account request with 0.5% developer fee
 	bridgeReq := &bridge.CreateVirtualAccountRequest{
 		Source: bridge.VirtualAccountSource{
 			Currency: sourceCurrency,
@@ -102,6 +178,7 @@ func (s *BridgeVirtualAccountService) CreateVirtualAccount(ctx context.Context, 
 			PaymentRail: req.DestinationChain,
 			Address:     req.WalletAddress,
 		},
+		DeveloperFeePercent: DeveloperFeePercent,
 	}
 
 	// Create virtual account via Bridge API
@@ -116,20 +193,29 @@ func (s *BridgeVirtualAccountService) CreateVirtualAccount(ctx context.Context, 
 	// Convert to domain entity
 	now := time.Now()
 	virtualAccount := &entities.VirtualAccount{
-		ID:              uuid.New(),
-		UserID:          req.UserID,
-		BridgeAccountID: &bridgeVA.ID,
-		AccountNumber:   bridgeVA.SourceDepositInstructions.BankAccountNumber,
-		RoutingNumber:   bridgeVA.SourceDepositInstructions.BankRoutingNumber,
-		Status:          mapBridgeVAStatus(bridgeVA.Status),
-		Currency:        req.Currency,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		ID:               uuid.New(),
+		UserID:           req.UserID,
+		BridgeCustomerID: req.BridgeCustomerID,
+		BridgeAccountID:  &bridgeVA.ID,
+		AccountNumber:    bridgeVA.SourceDepositInstructions.BankAccountNumber,
+		RoutingNumber:    bridgeVA.SourceDepositInstructions.BankRoutingNumber,
+		BankName:         bridgeVA.SourceDepositInstructions.BankName,
+		BeneficiaryName:  bridgeVA.SourceDepositInstructions.BankBeneficiaryName,
+		Status:           mapBridgeVAStatus(bridgeVA.Status),
+		Currency:         actualCurrency,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 
-	// Handle IBAN for international accounts
+	// Handle IBAN/BIC for EUR (SEPA) accounts
 	if bridgeVA.SourceDepositInstructions.IBAN != "" {
 		virtualAccount.AccountNumber = bridgeVA.SourceDepositInstructions.IBAN
+		virtualAccount.RoutingNumber = bridgeVA.SourceDepositInstructions.BIC
+	}
+
+	// Use account_holder_name as beneficiary if bank_beneficiary_name is empty
+	if virtualAccount.BeneficiaryName == "" && bridgeVA.SourceDepositInstructions.AccountHolderName != "" {
+		virtualAccount.BeneficiaryName = bridgeVA.SourceDepositInstructions.AccountHolderName
 	}
 
 	// Store in database

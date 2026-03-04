@@ -34,17 +34,14 @@ func getIdempotencyKey(ctx context.Context, method, endpoint string, body []byte
 		return key
 	}
 
-	// Generate deterministic key based on request content for automatic retry safety
-	// This ensures the same logical operation always gets the same key
+	// Generate deterministic key based on request content for true idempotency
+	// Same request content = same key, ensuring retries don't create duplicates
 	h := sha256.New()
 	h.Write([]byte(method))
 	h.Write([]byte(endpoint))
 	if len(body) > 0 {
 		h.Write(body)
 	}
-	// Add a timestamp component (truncated to minute) to allow retrying failed operations
-	// after a reasonable time window while still protecting against immediate duplicates
-	h.Write([]byte(time.Now().UTC().Truncate(time.Minute).Format(time.RFC3339)))
 	return hex.EncodeToString(h.Sum(nil))[:32]
 }
 

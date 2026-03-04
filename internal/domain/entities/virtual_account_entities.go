@@ -18,17 +18,19 @@ const (
 
 // VirtualAccount represents a virtual account linked to an Alpaca brokerage account
 type VirtualAccount struct {
-	ID              uuid.UUID            `json:"id" db:"id"`
-	UserID          uuid.UUID            `json:"user_id" db:"user_id"`
-	BridgeCustomerID string              `json:"bridge_customer_id" db:"bridge_customer_id"`
-	AlpacaAccountID string               `json:"alpaca_account_id" db:"alpaca_account_id"`
-	BridgeAccountID *string              `json:"bridge_account_id,omitempty" db:"bridge_account_id"`
-	AccountNumber   string               `json:"account_number" db:"account_number"`
-	RoutingNumber   string               `json:"routing_number" db:"routing_number"`
-	Status          VirtualAccountStatus `json:"status" db:"status"`
-	Currency        string               `json:"currency" db:"currency"`
-	CreatedAt       time.Time            `json:"created_at" db:"created_at"`
-	UpdatedAt       time.Time            `json:"updated_at" db:"updated_at"`
+	ID               uuid.UUID            `json:"id" db:"id"`
+	UserID           uuid.UUID            `json:"user_id" db:"user_id"`
+	BridgeCustomerID string               `json:"bridge_customer_id" db:"bridge_customer_id"`
+	AlpacaAccountID  string               `json:"alpaca_account_id" db:"alpaca_account_id"`
+	BridgeAccountID  *string              `json:"bridge_account_id,omitempty" db:"bridge_account_id"`
+	AccountNumber    string               `json:"account_number" db:"account_number"`
+	RoutingNumber    string               `json:"routing_number" db:"routing_number"`
+	BankName         string               `json:"bank_name" db:"bank_name"`
+	BeneficiaryName  string               `json:"beneficiary_name" db:"beneficiary_name"`
+	Status           VirtualAccountStatus `json:"status" db:"status"`
+	Currency         string               `json:"currency" db:"currency"`
+	CreatedAt        time.Time            `json:"created_at" db:"created_at"`
+	UpdatedAt        time.Time            `json:"updated_at" db:"updated_at"`
 }
 
 // CreateVirtualAccountRequest represents a request to create a virtual account
