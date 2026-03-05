@@ -493,14 +493,10 @@ func (v *ChainValidator) ValidateTransaction(ctx context.Context, chain entities
 	v.logger.Debug("Validating transaction", "chain", chain, "tx_hash", txHash)
 
 	switch chain {
-	case entities.ChainSolana:
+	case entities.ChainSOL, entities.ChainSOLDevnet:
 		return v.validateSolanaTransaction(ctx, txHash)
-	case entities.ChainAptos:
-		return v.validateAptosTransaction(ctx, txHash)
-	case entities.ChainPolygon:
+	case entities.ChainMATIC, entities.ChainMATICAmoy:
 		return v.validateEVMTransaction(ctx, v.polygonRPC, txHash)
-	case entities.ChainStarknet:
-		return v.validateStarknetTransaction(ctx, txHash)
 	default:
 		return TransactionStatusNotFound, fmt.Errorf("unsupported chain: %s", chain)
 	}

@@ -145,10 +145,13 @@ func (s *Service) updateAccountBalanceInTx(ctx context.Context, accountID uuid.U
 		newBalance = currentBalance.Sub(amount)
 	}
 
-	// Ensure balance doesn't go negative
+	// Ensure balance doesn't go negative (skip for system accounts — they track external reserves)
 	if newBalance.IsNegative() {
-		return fmt.Errorf("insufficient balance: current=%s, adjustment=%s %s",
-			currentBalance.String(), amount.String(), entryType)
+		account, accountErr := s.ledgerRepo.GetAccountByID(ctx, accountID)
+		if accountErr != nil || !account.AccountType.IsSystemAccountType() {
+			return fmt.Errorf("insufficient balance: current=%s, adjustment=%s %s",
+				currentBalance.String(), amount.String(), entryType)
+		}
 	}
 
 	// Update balance

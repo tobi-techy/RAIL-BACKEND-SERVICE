@@ -14,22 +14,18 @@ import (
 type WalletChain string
 
 const (
-	// Circle-supported chains (testnet)
+	// Testnet chains (primary focus)
 	WalletChainSOLDevnet  WalletChain = "SOL-DEVNET"
 	WalletChainMATICAmoy  WalletChain = "MATIC-AMOY"
 	WalletChainAVAXFuji   WalletChain = "AVAX-FUJI"
+	WalletChainBASESepolia WalletChain = "BASE-SEPOLIA"
 
-	// Circle-supported chains (mainnet) - all wallets via Circle
-	WalletChainEthereum  WalletChain = "ETH"
+	// Mainnet chains
+	WalletChainSolana    WalletChain = "SOL"
 	WalletChainPolygon   WalletChain = "MATIC"
 	WalletChainAvalanche WalletChain = "AVAX"
-	WalletChainArbitrum  WalletChain = "ARB"
 	WalletChainBase      WalletChain = "BASE"
-	WalletChainOptimism  WalletChain = "OP"
-	WalletChainSolana    WalletChain = "SOL"
-	WalletChainAptos     WalletChain = "APT"
-	WalletChainNear      WalletChain = "NEAR"
-	
+
 	// USDC Token Addresses by Chain
 	USDCTokenAddressSOLDevnet = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
 )
@@ -44,17 +40,14 @@ func (c WalletChain) GetUSDCTokenAddress() string {
 	}
 }
 
-// GetMainnetChains returns Circle-supported production chains
+// GetMainnetChains returns supported production chains
 func GetMainnetChains() []WalletChain {
-	return []WalletChain{
-		WalletChainEthereum, WalletChainPolygon, WalletChainAvalanche, WalletChainArbitrum,
-		WalletChainBase, WalletChainOptimism, WalletChainSolana, WalletChainAptos,
-	}
+	return []WalletChain{WalletChainSolana, WalletChainPolygon, WalletChainAvalanche, WalletChainBase}
 }
 
-// GetTestnetChains returns testnet chains
+// GetTestnetChains returns supported testnet chains
 func GetTestnetChains() []WalletChain {
-	return []WalletChain{WalletChainSOLDevnet, WalletChainMATICAmoy, WalletChainAVAXFuji}
+	return []WalletChain{WalletChainSOLDevnet, WalletChainMATICAmoy, WalletChainAVAXFuji, WalletChainBASESepolia}
 }
 
 // IsValid checks if the chain is supported
@@ -84,13 +77,9 @@ func (c WalletChain) GetChainFamily() string {
 	switch c {
 	case WalletChainSOLDevnet, WalletChainSolana:
 		return "Solana"
-	case WalletChainEthereum, WalletChainPolygon, WalletChainAvalanche, WalletChainArbitrum, WalletChainBase, WalletChainOptimism,
-		WalletChainMATICAmoy, WalletChainAVAXFuji:
+	case WalletChainPolygon, WalletChainAvalanche, WalletChainBase,
+		WalletChainMATICAmoy, WalletChainAVAXFuji, WalletChainBASESepolia:
 		return "EVM"
-	case WalletChainAptos:
-		return "Aptos"
-	case WalletChainNear:
-		return "Near"
 	default:
 		return "Unknown"
 	}

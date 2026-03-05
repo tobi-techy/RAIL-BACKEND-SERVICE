@@ -560,18 +560,12 @@ func mapWalletChainToBridgePaymentRail(chain entities.WalletChain) bridge.Paymen
 	switch chain {
 	case entities.WalletChainSolana, entities.WalletChainSOLDevnet:
 		return bridge.PaymentRailSolana
-	case entities.WalletChainEthereum:
-		return bridge.PaymentRailEthereum
 	case entities.WalletChainPolygon, entities.WalletChainMATICAmoy:
 		return bridge.PaymentRailPolygon
 	case entities.WalletChainAvalanche, entities.WalletChainAVAXFuji:
 		return bridge.PaymentRailAvalanche
-	case entities.WalletChainArbitrum:
-		return bridge.PaymentRailArbitrum
-	case entities.WalletChainBase:
+	case entities.WalletChainBase, entities.WalletChainBASESepolia:
 		return bridge.PaymentRailBase
-	case entities.WalletChainOptimism:
-		return bridge.PaymentRailOptimism
 	default:
 		return bridge.PaymentRailSolana
 	}

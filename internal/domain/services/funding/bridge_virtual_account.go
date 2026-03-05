@@ -89,9 +89,10 @@ func (s *BridgeVirtualAccountService) ProvisionVirtualAccounts(ctx context.Conte
 	walletChainsToTry := []entities.WalletChain{
 		entities.WalletChainSolana,
 		entities.WalletChainSOLDevnet,
-		entities.WalletChainEthereum,
 		entities.WalletChainMATICAmoy,
 		entities.WalletChainPolygon,
+		entities.WalletChainAVAXFuji,
+		entities.WalletChainBASESepolia,
 	}
 
 	var wallet *entities.ManagedWallet
