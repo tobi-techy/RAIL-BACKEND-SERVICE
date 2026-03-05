@@ -332,7 +332,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				users.GET("/me", authHandlers.GetProfile)
 				users.PUT("/me", authHandlers.UpdateProfile)
 				users.POST("/me/change-password", authHandlers.ChangePassword)
-				users.DELETE("/me", authHandlers.DeleteAccount)
+				users.DELETE("/me", middleware.AuthRateLimit(3), authHandlers.DeleteAccount)
 				users.POST("/me/enable-2fa", authHandlers.Enable2FA)
 				users.POST("/me/disable-2fa", authHandlers.Disable2FA)
 			}
