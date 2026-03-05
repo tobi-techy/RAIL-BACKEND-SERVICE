@@ -125,3 +125,10 @@ func (r *DeviceTokenRepository) UpdateEndpointARN(ctx context.Context, tokenID u
 	_, err := r.db.ExecContext(ctx, query, endpointARN, tokenID)
 	return err
 }
+
+// DeactivateAllUserTokens deactivates all tokens for a user (used during account deletion)
+func (r *DeviceTokenRepository) DeactivateAllUserTokens(ctx context.Context, userID uuid.UUID) error {
+	query := `UPDATE device_tokens SET is_active = false, updated_at = NOW() WHERE user_id = $1`
+	_, err := r.db.ExecContext(ctx, query, userID)
+	return err
+}

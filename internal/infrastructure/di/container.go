@@ -455,10 +455,16 @@ func (a *BridgeOnboardingAdapter) CreateCustomer(ctx context.Context, req *entit
 
 	// Add residential address if provided
 	if req.Address != nil {
+		// Bridge expects ISO 3166-2 subdivision format (e.g., "US-NY" not just "NY")
+		subdivision := req.Address.State
+		if subdivision != "" && len(req.Country) == 2 && !strings.Contains(subdivision, "-") {
+			subdivision = strings.ToUpper(req.Country) + "-" + strings.ToUpper(subdivision)
+		}
+
 		bridgeReq.ResidentialAddress = &bridge.Address{
 			StreetLine1: req.Address.Street,
 			City:        req.Address.City,
-			Subdivision: req.Address.State,
+			Subdivision: subdivision,
 			PostalCode:  req.Address.PostalCode,
 			Country:     country3,
 		}
@@ -1418,6 +1424,12 @@ func (c *Container) initializeDomainServices() error {
 	deletionVirtualAccountRepo := repositories.NewVirtualAccountRepository(sqlxDB)
 	if c.BridgeClient != nil {
 		c.AccountDeletionService.SetBridgeClient(deletionVirtualAccountRepo, &deletionBridgeAdapter{client: c.BridgeClient})
+	}
+	if c.SessionService != nil {
+		c.AccountDeletionService.SetSessionService(c.SessionService)
+	}
+	if c.DeviceTokenRepo != nil {
+		c.AccountDeletionService.SetDeviceTokenRepo(c.DeviceTokenRepo)
 	}
 
 	// Initialize P2P transfer services

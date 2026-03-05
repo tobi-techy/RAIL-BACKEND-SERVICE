@@ -1393,11 +1393,37 @@ func (h *AuthHandlers) DeleteAccount(c *gin.Context) {
 		return
 	}
 
-	// Parse optional reason from request body
+	// Parse request body with password confirmation
 	var req struct {
-		Reason string `json:"reason"`
+		Password string `json:"password"`
+		Reason   string `json:"reason"`
 	}
-	_ = c.ShouldBindJSON(&req)
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "Invalid request body"})
+		return
+	}
+
+	// Require password confirmation for account deletion
+	if req.Password == "" {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "PASSWORD_REQUIRED", Message: "Password confirmation required to delete account"})
+		return
+	}
+
+	// Verify password
+	userProfile, err := h.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "INTERNAL_ERROR", Message: "Failed to verify user"})
+		return
+	}
+	user, err := h.userRepo.GetUserByEmailForLogin(ctx, userProfile.Email)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "INTERNAL_ERROR", Message: "Failed to verify user"})
+		return
+	}
+	if !h.userRepo.ValidatePassword(req.Password, user.PasswordHash) {
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "INVALID_PASSWORD", Message: "Incorrect password"})
+		return
+	}
 
 	// Use deletion service if available (sweeps funds + hard delete)
 	if h.deletionService != nil {

@@ -411,6 +411,48 @@ func (c *Client) ListPositions(ctx context.Context, accountID string) ([]entitie
 	return response, nil
 }
 
+// CloseAllPositions liquidates all positions for an account
+func (c *Client) CloseAllPositions(ctx context.Context, accountID string) error {
+	endpoint := fmt.Sprintf(positionsEndpoint, accountID)
+
+	c.logger.Info("Closing all Alpaca positions", zap.String("account_id", accountID))
+
+	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
+		return nil, c.doRequestWithRetry(ctx, "DELETE", endpoint, nil, nil, false)
+	})
+
+	if err != nil {
+		c.logger.Error("Failed to close all Alpaca positions",
+			zap.String("account_id", accountID),
+			zap.Error(err))
+		return fmt.Errorf("close all positions failed: %w", err)
+	}
+
+	c.logger.Info("Closed all Alpaca positions", zap.String("account_id", accountID))
+	return nil
+}
+
+// CancelAllOrders cancels all open orders for an account
+func (c *Client) CancelAllOrders(ctx context.Context, accountID string) error {
+	endpoint := fmt.Sprintf(ordersEndpoint, accountID)
+
+	c.logger.Info("Canceling all Alpaca orders", zap.String("account_id", accountID))
+
+	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
+		return nil, c.doRequestWithRetry(ctx, "DELETE", endpoint, nil, nil, false)
+	})
+
+	if err != nil {
+		c.logger.Error("Failed to cancel all Alpaca orders",
+			zap.String("account_id", accountID),
+			zap.Error(err))
+		return fmt.Errorf("cancel all orders failed: %w", err)
+	}
+
+	c.logger.Info("Canceled all Alpaca orders", zap.String("account_id", accountID))
+	return nil
+}
+
 // Market Data Methods
 
 // GetNews fetches news articles from the market data API

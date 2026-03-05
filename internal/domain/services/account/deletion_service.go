@@ -41,6 +41,11 @@ type AuditService interface {
 	Log(ctx context.Context, userID uuid.UUID, action entities.AuditAction, resourceType string, resourceID *uuid.UUID, metadata map[string]interface{}) error
 }
 
+// SessionService interface for session invalidation
+type SessionService interface {
+	InvalidateAllUserSessions(ctx context.Context, userID uuid.UUID) error
+}
+
 // AlpacaAccountRepository interface for Alpaca account lookup
 type AlpacaAccountRepository interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID) (*entities.AlpacaAccount, error)
@@ -49,6 +54,9 @@ type AlpacaAccountRepository interface {
 // AlpacaClient interface for Alpaca operations
 type AlpacaClient interface {
 	CloseAccount(ctx context.Context, accountID string) error
+	CloseAllPositions(ctx context.Context, accountID string) error
+	CancelAllOrders(ctx context.Context, accountID string) error
+	ListPositions(ctx context.Context, accountID string) ([]entities.AlpacaPositionResponse, error)
 }
 
 // VirtualAccountRepository interface for Bridge virtual accounts
@@ -61,6 +69,11 @@ type BridgeClient interface {
 	DeactivateVirtualAccount(ctx context.Context, customerID, virtualAccountID string) error
 }
 
+// DeviceTokenRepository interface for push notification cleanup
+type DeviceTokenRepository interface {
+	DeactivateAllUserTokens(ctx context.Context, userID uuid.UUID) error
+}
+
 // DeletionService handles complete account deletion with fund sweep
 type DeletionService struct {
 	ledgerService         LedgerService
@@ -68,6 +81,8 @@ type DeletionService struct {
 	circleClient          CircleClient
 	userRepo              UserRepository
 	auditService          AuditService
+	sessionService        SessionService
+	deviceTokenRepo       DeviceTokenRepository
 	alpacaAccountRepo     AlpacaAccountRepository
 	alpacaClient          AlpacaClient
 	virtualAccountRepo    VirtualAccountRepository
@@ -107,6 +122,16 @@ func (s *DeletionService) SetAlpacaClient(repo AlpacaAccountRepository, client A
 func (s *DeletionService) SetBridgeClient(repo VirtualAccountRepository, client BridgeClient) {
 	s.virtualAccountRepo = repo
 	s.bridgeClient = client
+}
+
+// SetSessionService sets the session service for invalidating user sessions
+func (s *DeletionService) SetSessionService(sessionService SessionService) {
+	s.sessionService = sessionService
+}
+
+// SetDeviceTokenRepo sets the device token repository for push notification cleanup
+func (s *DeletionService) SetDeviceTokenRepo(repo DeviceTokenRepository) {
+	s.deviceTokenRepo = repo
 }
 
 // DeleteAccountRequest represents a request to delete an account
@@ -165,7 +190,10 @@ func (s *DeletionService) deleteAccountInternal(ctx context.Context, req *Delete
 	}
 
 	// Step 3: Clean up external provider accounts
-	s.cleanupExternalProviders(ctx, req.UserID)
+	if err := s.cleanupExternalProviders(ctx, req.UserID); err != nil {
+		s.logger.Error("External provider cleanup failed", "error", err)
+		return nil, fmt.Errorf("failed to cleanup external accounts: %w", err)
+	}
 
 	// Step 4: Log audit before anonymization
 	if s.auditService != nil {
@@ -177,6 +205,23 @@ func (s *DeletionService) deleteAccountInternal(ctx context.Context, req *Delete
 	if err := s.userRepo.AnonymizeUser(ctx, req.UserID); err != nil {
 		s.logger.Error("Failed to anonymize user", "error", err)
 		return nil, fmt.Errorf("failed to anonymize account: %w", err)
+	}
+
+	// Step 6: Invalidate all active sessions (JWT tokens)
+	if s.sessionService != nil {
+		if err := s.sessionService.InvalidateAllUserSessions(ctx, req.UserID); err != nil {
+			s.logger.Warn("Failed to invalidate user sessions", "error", err)
+			// Non-critical - sessions will expire naturally
+		} else {
+			s.logger.Info("Invalidated all user sessions", "user_id", req.UserID.String())
+		}
+	}
+
+	// Step 7: Deactivate push notification tokens
+	if s.deviceTokenRepo != nil {
+		if err := s.deviceTokenRepo.DeactivateAllUserTokens(ctx, req.UserID); err != nil {
+			s.logger.Warn("Failed to deactivate device tokens", "error", err)
+		}
 	}
 
 	s.logger.Info("Account anonymized successfully",
@@ -192,14 +237,40 @@ func (s *DeletionService) deleteAccountInternal(ctx context.Context, req *Delete
 }
 
 // cleanupExternalProviders closes/deactivates accounts on external providers
-func (s *DeletionService) cleanupExternalProviders(ctx context.Context, userID uuid.UUID) {
-	// Close Alpaca account
+// Returns error if critical cleanup fails (Alpaca positions/orders)
+func (s *DeletionService) cleanupExternalProviders(ctx context.Context, userID uuid.UUID) error {
+	var criticalErrors []string
+
+	// Close Alpaca account - must liquidate positions and cancel orders first
 	if s.alpacaAccountRepo != nil && s.alpacaClient != nil {
 		if alpacaAccount, err := s.alpacaAccountRepo.GetByUserID(ctx, userID); err == nil && alpacaAccount != nil {
-			if err := s.alpacaClient.CloseAccount(ctx, alpacaAccount.AlpacaAccountID); err != nil {
-				s.logger.Warn("Failed to close Alpaca account", "user_id", userID.String(), "alpaca_id", alpacaAccount.AlpacaAccountID, "error", err)
-			} else {
-				s.logger.Info("Closed Alpaca account", "user_id", userID.String(), "alpaca_id", alpacaAccount.AlpacaAccountID)
+			alpacaID := alpacaAccount.AlpacaAccountID
+
+			// Step 1: Cancel all open orders
+			if err := s.alpacaClient.CancelAllOrders(ctx, alpacaID); err != nil {
+				s.logger.Warn("Failed to cancel Alpaca orders", "user_id", userID.String(), "alpaca_id", alpacaID, "error", err)
+				// Continue - orders may already be filled or none exist
+			}
+
+			// Step 2: Close all positions (liquidate)
+			positions, _ := s.alpacaClient.ListPositions(ctx, alpacaID)
+			if len(positions) > 0 {
+				if err := s.alpacaClient.CloseAllPositions(ctx, alpacaID); err != nil {
+					s.logger.Error("Failed to liquidate Alpaca positions", "user_id", userID.String(), "alpaca_id", alpacaID, "error", err)
+					criticalErrors = append(criticalErrors, fmt.Sprintf("alpaca positions: %v", err))
+				} else {
+					s.logger.Info("Liquidated Alpaca positions", "user_id", userID.String(), "alpaca_id", alpacaID, "count", len(positions))
+				}
+			}
+
+			// Step 3: Close the account (only if positions were liquidated)
+			if len(criticalErrors) == 0 {
+				if err := s.alpacaClient.CloseAccount(ctx, alpacaID); err != nil {
+					s.logger.Warn("Failed to close Alpaca account", "user_id", userID.String(), "alpaca_id", alpacaID, "error", err)
+					// Not critical - account may have pending settlements
+				} else {
+					s.logger.Info("Closed Alpaca account", "user_id", userID.String(), "alpaca_id", alpacaID)
+				}
 			}
 		}
 	}
@@ -220,7 +291,12 @@ func (s *DeletionService) cleanupExternalProviders(ctx context.Context, userID u
 	}
 
 	// Note: Circle wallets cannot be deleted (blockchain addresses are permanent)
-	// Funds have already been swept to treasury in step 2
+	// Funds have already been swept to treasury
+
+	if len(criticalErrors) > 0 {
+		return fmt.Errorf("external provider cleanup failed: %v", criticalErrors)
+	}
+	return nil
 }
 
 // calculateTotalBalance sums all user balances
