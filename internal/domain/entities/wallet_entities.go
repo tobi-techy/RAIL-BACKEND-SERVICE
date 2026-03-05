@@ -27,7 +27,9 @@ const (
 	WalletChainBase      WalletChain = "BASE"
 
 	// USDC Token Addresses by Chain
-	USDCTokenAddressSOLDevnet = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+	USDCTokenAddressSOLDevnet  = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+	USDCTokenAddressAVAXFuji   = "0x5425890298aed601595a70AB815c96711a31Bc65"
+	USDCTokenAddressMATICAmoy  = "0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582"
 )
 
 // GetUSDCTokenAddress returns the USDC token address for the chain
@@ -35,6 +37,10 @@ func (c WalletChain) GetUSDCTokenAddress() string {
 	switch c {
 	case WalletChainSOLDevnet:
 		return USDCTokenAddressSOLDevnet
+	case WalletChainAVAXFuji:
+		return USDCTokenAddressAVAXFuji
+	case WalletChainMATICAmoy:
+		return USDCTokenAddressMATICAmoy
 	default:
 		return ""
 	}
