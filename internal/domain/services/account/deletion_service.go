@@ -373,7 +373,7 @@ func (s *DeletionService) sweepFundsToTreasury(ctx context.Context, userID uuid.
 		TokenID:            "USDC",
 		Amounts:            []string{sweepAmount.StringFixed(6)},
 		DestinationAddress: s.treasuryWalletAddress,
-		IDempotencyKey:     fmt.Sprintf("account-closure-%s", userID.String()),
+		IDempotencyKey:     uuid.NewSHA1(uuid.NameSpaceOID, []byte("account-closure-"+userID.String())).String(),
 	}
 
 	response, err := s.circleClient.TransferFunds(ctx, req)
