@@ -1502,7 +1502,7 @@ func (c *Container) initializeDomainServices() error {
 		circleWebhookHandler,
 		alpacaWebhookHandler,
 		c.ZapLog,
-		c.Config.Environment == "development",
+		c.Config.Environment == "development" || strings.TrimSpace(c.Config.Circle.APIKey) == "",
 	)
 	if bridgeSecret := strings.TrimSpace(c.Config.Bridge.WebhookSecret); bridgeSecret != "" {
 		c.UnifiedFundingWebhookHandler.SetWebhookSecret("bridge", bridgeSecret)
