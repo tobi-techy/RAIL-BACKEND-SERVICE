@@ -42,12 +42,18 @@ type NotificationPersister interface {
 	Create(ctx context.Context, userID uuid.UUID, notifType, title, body string, data map[string]interface{}) error
 }
 
+// PushSender sends push notifications
+type PushSender interface {
+	SendToUser(ctx context.Context, userID uuid.UUID, title, body string, data map[string]interface{}) error
+}
+
 type NotificationService struct {
 	logger      *zap.Logger
 	queue       NotificationQueue
 	smsSender   SMSSender
 	emailSender EmailSenderService
 	persister   NotificationPersister
+	pushSender  PushSender
 }
 
 func NewNotificationService(logger *zap.Logger) *NotificationService {
@@ -72,6 +78,11 @@ func (s *NotificationService) SetEmailSender(sender EmailSenderService) {
 // SetPersister sets the notification persister for in-app notifications
 func (s *NotificationService) SetPersister(p NotificationPersister) {
 	s.persister = p
+}
+
+// SetPushSender sets the push notification sender (Expo Push)
+func (s *NotificationService) SetPushSender(sender PushSender) {
+	s.pushSender = sender
 }
 
 func (s *NotificationService) Send(ctx context.Context, notification *entities.Notification, prefs *entities.UserPreference) error {
@@ -138,28 +149,41 @@ func (s *NotificationService) sendInApp(ctx context.Context, notification *entit
 }
 
 func (s *NotificationService) queueNotification(ctx context.Context, userID uuid.UUID, notifType, title, body string, data map[string]interface{}) error {
-	// Always persist to in-app notification center for push notifications
-	if s.persister != nil && notifType == "push" {
+	// Always persist to in-app notification center
+	if s.persister != nil {
 		if err := s.persister.Create(ctx, userID, notifType, title, body, data); err != nil {
 			s.logger.Warn("Failed to persist notification", zap.Error(err))
 		}
 	}
 
-	if s.queue == nil {
-		s.logger.Debug("Notification queue not configured, persisted only",
-			zap.String("type", notifType),
-			zap.String("user_id", userID.String()))
+	// Send push notification via Expo Push (preferred)
+	if notifType == "push" && s.pushSender != nil {
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := s.pushSender.SendToUser(bgCtx, userID, title, body, data); err != nil {
+				s.logger.Warn("Failed to send push notification", zap.Error(err), zap.String("user_id", userID.String()))
+			}
+		}()
 		return nil
 	}
 
-	return s.queue.QueueNotification(ctx, &QueuedNotification{
-		UserID:   userID,
-		Type:     notifType,
-		Title:    title,
-		Body:     body,
-		Data:     data,
-		Priority: "normal",
-	})
+	// Fallback to queue if configured
+	if s.queue != nil {
+		return s.queue.QueueNotification(ctx, &QueuedNotification{
+			UserID:   userID,
+			Type:     notifType,
+			Title:    title,
+			Body:     body,
+			Data:     data,
+			Priority: "normal",
+		})
+	}
+
+	s.logger.Debug("No push sender or queue configured",
+		zap.String("type", notifType),
+		zap.String("user_id", userID.String()))
+	return nil
 }
 
 func (s *NotificationService) SendWeeklySummary(ctx context.Context, userID uuid.UUID, weekStart time.Time) error {
