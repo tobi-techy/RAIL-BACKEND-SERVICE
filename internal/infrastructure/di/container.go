@@ -425,6 +425,11 @@ func mapChainToPaymentRail(chain string) bridge.PaymentRail {
 	}
 }
 
+// toTitleCase converts a string to title case (e.g., "NEW YORK" -> "New York")
+func toTitleCase(s string) string {
+	return strings.Title(strings.ToLower(s))
+}
+
 // BridgeOnboardingAdapter adapts bridge.Adapter to onboarding.BridgeAdapter interface
 type BridgeOnboardingAdapter struct {
 	adapter *bridge.Adapter
@@ -470,11 +475,11 @@ func (a *BridgeOnboardingAdapter) CreateCustomer(ctx context.Context, req *entit
 
 	// Add residential address if provided
 	if req.Address != nil {
-		// For US customers, omit subdivision - Bridge infers from postal code
-		// For international, pass the state/province as-is
-		subdivision := ""
-		if country2 != "US" {
-			subdivision = req.Address.State
+		// Bridge expects properly formatted subdivision
+		// Normalize to title case (e.g., "new york" -> "New York")
+		subdivision := strings.TrimSpace(req.Address.State)
+		if subdivision != "" {
+			subdivision = toTitleCase(subdivision)
 		}
 
 		bridgeReq.ResidentialAddress = &bridge.Address{
