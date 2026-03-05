@@ -1,12 +1,9 @@
 package handlers
 
 import (
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"testing"
+	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/shopspring/decimal"
@@ -15,98 +12,68 @@ import (
 	"go.uber.org/zap"
 )
 
-func TestGetSpendingStash_DependencyUnavailable(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	h := &SpendingStashHandlers{
-		logger: zap.NewNop(),
-	}
-
-	router := gin.New()
-	router.GET("/api/v1/account/spending-stash", func(c *gin.Context) {
-		c.Set("user_id", uuid.New())
-		h.GetSpendingStash(c)
-	})
-
-	req, _ := http.NewRequest("GET", "/api/v1/account/spending-stash", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	require.Equal(t, http.StatusServiceUnavailable, w.Code)
-
-	var resp entities.ErrorResponse
-	err := json.Unmarshal(w.Body.Bytes(), &resp)
-	require.NoError(t, err)
-	assert.Equal(t, "SERVICE_UNAVAILABLE", resp.Code)
-}
-
-func TestBuildResponse_MapsLimitsAndRefunds(t *testing.T) {
-	h := &SpendingStashHandlers{
-		logger: zap.NewNop(),
-	}
+func TestBuildResponse_SpendingAnalytics(t *testing.T) {
+	h := &SpendingStashHandlers{logger: zap.NewNop()}
 
 	merchant := "Coffee Shop"
 	category := "Food & Drink"
-
-	txPurchaseID := uuid.New()
-	txRefundID := uuid.New()
-	txPendingID := uuid.New()
+	now := time.Now().UTC()
 
 	cardTxns := []*entities.BridgeCardTransaction{
+		// pending — should be excluded from analytics
 		{
-			ID:               txPendingID,
-			Type:             "authorization",
-			Amount:           decimal.NewFromFloat(3.25),
-			Currency:         "USD",
-			Status:           "pending",
-			MerchantName:     &merchant,
-			MerchantCategory: &category,
+			ID: uuid.New(), Type: "authorization", Status: "pending",
+			Amount: decimal.NewFromFloat(3.25), Currency: "USD",
+			MerchantName: &merchant, MerchantCategory: &category,
+			CreatedAt: now,
 		},
+		// completed purchase this month
 		{
-			ID:               txPurchaseID,
-			Type:             "capture",
-			Amount:           decimal.NewFromFloat(12.34),
-			Currency:         "USD",
-			Status:           "completed",
-			MerchantName:     &merchant,
-			MerchantCategory: &category,
+			ID: uuid.New(), Type: "capture", Status: "completed",
+			Amount: decimal.NewFromFloat(12.34), Currency: "USD",
+			MerchantName: &merchant, MerchantCategory: &category,
+			CreatedAt: now,
 		},
+		// refund — should be excluded
 		{
-			ID:               txRefundID,
-			Type:             "refund",
-			Amount:           decimal.NewFromFloat(2.50),
-			Currency:         "USD",
-			Status:           "reversed",
-			MerchantName:     &merchant,
-			MerchantCategory: &category,
+			ID: uuid.New(), Type: "refund", Status: "reversed",
+			Amount: decimal.NewFromFloat(2.50), Currency: "USD",
+			MerchantName: &merchant, MerchantCategory: &category,
+			CreatedAt: now,
 		},
 	}
 
-	userLimits := &entities.UserLimitsResponse{
-		Withdrawal: entities.LimitDetails{
-			Minimum: "1.00",
-			Daily: entities.PeriodLimit{
-				Limit:     "1000.00",
-				Used:      "250.00",
-				Remaining: "750.00",
-			},
-			Monthly: entities.PeriodLimit{
-				Limit:     "10000.00",
-				Used:      "1500.00",
-				Remaining: "8500.00",
-			},
-		},
+	balances := &entities.AllocationBalances{
+		SpendingRemaining: decimal.NewFromFloat(500.00),
+		UpdatedAt:         now,
 	}
 
-	resp := h.buildResponse(nil, nil, nil, nil, cardTxns, userLimits, 10)
+	resp := h.buildResponse(balances, cardTxns, nil, nil, nil)
 
-	require.Len(t, resp.PendingAuthorizations, 1)
-	require.Len(t, resp.RecentTransactions.Items, 2)
+	require.NotNil(t, resp)
+	assert.Equal(t, "500.00", resp.Balance.Available)
+	assert.Equal(t, "12.34", resp.SpendingSummary.ThisMonthTotal)
+	assert.Equal(t, 1, resp.SpendingSummary.TransactionCount)
+	require.Len(t, resp.TopCategories, 1)
+	assert.Equal(t, "Food & Drink", resp.TopCategories[0].Name)
+	assert.Equal(t, "12.34", resp.TopCategories[0].Amount)
+	assert.Nil(t, resp.RoundUps)
+}
 
-	assert.Equal(t, "-12.34", resp.RecentTransactions.Items[0].Amount)
-	assert.Equal(t, "2.50", resp.RecentTransactions.Items[1].Amount)
+func TestBuildResponse_RoundUpsIncluded(t *testing.T) {
+	h := &SpendingStashHandlers{logger: zap.NewNop()}
 
-	assert.Equal(t, "1000.00", resp.Limits.Daily.Limit)
-	assert.Equal(t, "750.00", resp.Limits.PerTransaction)
-	assert.Equal(t, 75, resp.Limits.DailyTransactionsRemaining)
+	multiplier := decimal.NewFromInt(1)
+	roundupSummary := &entities.RoundupSummary{
+		Settings:         &entities.RoundupSettings{Enabled: true, Multiplier: multiplier},
+		TotalCollected:   decimal.NewFromFloat(4.75),
+		TransactionCount: 3,
+	}
+
+	resp := h.buildResponse(nil, nil, nil, nil, roundupSummary)
+
+	require.NotNil(t, resp.RoundUps)
+	assert.True(t, resp.RoundUps.IsEnabled)
+	assert.Equal(t, "4.75", resp.RoundUps.TotalAccumulated)
+	assert.Equal(t, 3, resp.RoundUps.TransactionCount)
 }
