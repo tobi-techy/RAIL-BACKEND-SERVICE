@@ -66,7 +66,20 @@ func (h *WalletFundingHandlers) CreateDeposit(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "Chain is required for crypto deposits"})
 			return
 		}
-		resp, err := h.fundingService.CreateDepositAddress(ctx, userUUID, entities.Chain(req.Chain))
+		chain := entities.Chain(strings.ToUpper(strings.TrimSpace(req.Chain)))
+		validChains := map[entities.Chain]bool{
+			entities.ChainSOLDevnet: true,
+			entities.ChainMATICAmoy: true,
+			entities.ChainAVAXFuji:  true,
+		}
+		if !validChains[chain] {
+			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
+				Code:    "INVALID_CHAIN",
+				Message: "Unsupported chain. Supported: SOL-DEVNET, MATIC-AMOY, AVAX-FUJI",
+			})
+			return
+		}
+		resp, err := h.fundingService.CreateDepositAddress(ctx, userUUID, chain)
 		if err != nil {
 			h.logger.Error("Failed to create deposit address", "error", err, "user_id", userUUID)
 			c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "DEPOSIT_ERROR", Message: "Failed to create deposit address"})
