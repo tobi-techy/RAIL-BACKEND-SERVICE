@@ -143,10 +143,12 @@ func (r *AuthRepository) GetUserByEmailForLogin(ctx context.Context, email strin
 
 	// Handle nullable fields
 	if firstName.Valid {
-		user.FirstName = &firstName.String
+		name := firstName.String
+		user.FirstName = &name
 	}
 	if lastName.Valid {
-		user.LastName = &lastName.String
+		name := lastName.String
+		user.LastName = &name
 	}
 	if kycProviderRef.Valid {
 		user.KYCProviderRef = &kycProviderRef.String
@@ -214,10 +216,12 @@ func (r *AuthRepository) GetUserByID(ctx context.Context, id uuid.UUID) (*entiti
 
 	// Handle nullable fields
 	if firstName.Valid {
-		user.FirstName = &firstName.String
+		name := firstName.String
+		user.FirstName = &name
 	}
 	if lastName.Valid {
-		user.LastName = &lastName.String
+		name := lastName.String
+		user.LastName = &name
 	}
 	if kycProviderRef.Valid {
 		user.KYCProviderRef = &kycProviderRef.String

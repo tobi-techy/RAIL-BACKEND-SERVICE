@@ -1184,6 +1184,9 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize notification service with persister for in-app notifications
 	c.NotificationService = services.NewNotificationService(c.ZapLog)
 	c.NotificationService.SetPersister(adapters.NewNotificationPersisterAdapter(c.NotificationRepo))
+	// Wire Expo Push service for push notifications
+	expoPushService := adapters.NewExpoPushService(c.DeviceTokenRepo, c.ZapLog)
+	c.NotificationService.SetPushSender(expoPushService)
 
 	c.InvestingService = investing.NewService(
 		basketRepo,
@@ -1421,7 +1424,7 @@ func (c *Container) initializeDomainServices() error {
 	c.OnboardingService.SetP2PService(c.P2PService)
 
 	// Wire virtual account service to onboarding for auto-provisioning on KYC approval
-	if c.BridgeVirtualAccountService != nil {
+	if c.BridgeVirtualAccountService != nil && c.WalletService != nil && c.OnboardingService != nil {
 		c.BridgeVirtualAccountService.SetWalletProvider(c.WalletService)
 		c.OnboardingService.SetVirtualAccountService(c.BridgeVirtualAccountService)
 	}

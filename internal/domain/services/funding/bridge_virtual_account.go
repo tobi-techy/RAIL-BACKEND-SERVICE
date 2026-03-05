@@ -94,7 +94,10 @@ func (s *BridgeVirtualAccountService) ProvisionVirtualAccounts(ctx context.Conte
 		}
 	}
 
-	var lastErr error
+	var (
+		errs         []string
+		successCount int
+	)
 	for _, currency := range currencies {
 		// Check if account already exists for this currency
 		existing, _ := s.virtualAccountRepo.GetActiveByUserIDAndCurrency(ctx, userID, currency)
@@ -102,6 +105,7 @@ func (s *BridgeVirtualAccountService) ProvisionVirtualAccounts(ctx context.Conte
 			s.logger.Info("Virtual account already exists",
 				"user_id", userID,
 				"currency", currency)
+			successCount++
 			continue
 		}
 
@@ -118,16 +122,21 @@ func (s *BridgeVirtualAccountService) ProvisionVirtualAccounts(ctx context.Conte
 				"user_id", userID,
 				"currency", currency,
 				"error", err)
-			lastErr = err
+			errs = append(errs, fmt.Sprintf("%s: %v", currency, err))
 			continue
 		}
 
 		s.logger.Info("Provisioned virtual account",
 			"user_id", userID,
 			"currency", currency)
+		successCount++
 	}
 
-	return lastErr
+	if len(errs) > 0 {
+		return fmt.Errorf("failed to provision virtual accounts for %d of %d currencies: [%s]", len(errs), len(currencies), strings.Join(errs, "; "))
+	}
+
+	return nil
 }
 
 // CreateVirtualAccountRequest represents a request to create a Bridge virtual account
