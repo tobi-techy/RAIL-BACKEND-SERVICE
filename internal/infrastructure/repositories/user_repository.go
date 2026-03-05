@@ -378,6 +378,109 @@ func (r *UserRepository) GetByAuthProviderID(ctx context.Context, authProviderID
 	return user, nil
 }
 
+// GetByBridgeCustomerID retrieves a user by Bridge customer ID
+func (r *UserRepository) GetByBridgeCustomerID(ctx context.Context, bridgeCustomerID string) (*entities.UserProfile, error) {
+	query := `
+	        SELECT id, email, phone, country, address_street, address_city, address_state, address_postal_code, address_country, first_name, last_name, date_of_birth,
+	               auth_provider_id, email_verified, phone_verified,
+	               onboarding_status, kyc_status, kyc_provider_ref, kyc_submitted_at,
+	               kyc_approved_at, kyc_rejection_reason, bridge_customer_id, alpaca_account_id,
+	               is_active, created_at, updated_at
+	        FROM users 
+	        WHERE bridge_customer_id = $1`
+
+	user := &entities.UserProfile{}
+	var kycSubmittedAt, kycApprovedAt sql.NullTime
+	var kycProviderRef, kycRejectionReason, bridgeCustomerIDVal, alpacaAccountID, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry sql.NullString
+	var firstName, lastName sql.NullString
+	var dateOfBirth sql.NullTime
+
+	err := r.db.QueryRowContext(ctx, query, bridgeCustomerID).Scan(
+		&user.ID,
+		&user.Email,
+		&user.Phone,
+		&country,
+		&addressStreet,
+		&addressCity,
+		&addressState,
+		&addressPostalCode,
+		&addressCountry,
+		&firstName,
+		&lastName,
+		&dateOfBirth,
+		&user.AuthProviderID,
+		&user.EmailVerified,
+		&user.PhoneVerified,
+		&user.OnboardingStatus,
+		&user.KYCStatus,
+		&kycProviderRef,
+		&kycSubmittedAt,
+		&kycApprovedAt,
+		&kycRejectionReason,
+		&bridgeCustomerIDVal,
+		&alpacaAccountID,
+		&user.IsActive,
+		&user.CreatedAt,
+		&user.UpdatedAt,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		r.logger.Error("Failed to get user by Bridge customer ID", zap.Error(err), zap.String("bridge_customer_id", bridgeCustomerID))
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+
+	if firstName.Valid {
+		user.FirstName = &firstName.String
+	}
+	if lastName.Valid {
+		user.LastName = &lastName.String
+	}
+	if dateOfBirth.Valid {
+		user.DateOfBirth = &dateOfBirth.Time
+	}
+	if country.Valid {
+		user.Country = &country.String
+	}
+	if addressStreet.Valid {
+		user.AddressStreet = &addressStreet.String
+	}
+	if addressCity.Valid {
+		user.AddressCity = &addressCity.String
+	}
+	if addressState.Valid {
+		user.AddressState = &addressState.String
+	}
+	if addressPostalCode.Valid {
+		user.AddressPostalCode = &addressPostalCode.String
+	}
+	if addressCountry.Valid {
+		user.AddressCountry = &addressCountry.String
+	}
+	if kycProviderRef.Valid {
+		user.KYCProviderRef = &kycProviderRef.String
+	}
+	if kycSubmittedAt.Valid {
+		user.KYCSubmittedAt = &kycSubmittedAt.Time
+	}
+	if kycApprovedAt.Valid {
+		user.KYCApprovedAt = &kycApprovedAt.Time
+	}
+	if kycRejectionReason.Valid {
+		user.KYCRejectionReason = &kycRejectionReason.String
+	}
+	if bridgeCustomerIDVal.Valid {
+		user.BridgeCustomerID = &bridgeCustomerIDVal.String
+	}
+	if alpacaAccountID.Valid {
+		user.AlpacaAccountID = &alpacaAccountID.String
+	}
+
+	return user, nil
+}
+
 // Update updates a user
 func (r *UserRepository) Update(ctx context.Context, user *entities.UserProfile) error {
 	query := `
@@ -481,6 +584,24 @@ func (r *UserRepository) UpdateKYCProvider(ctx context.Context, userID uuid.UUID
 		zap.String("provider_ref", providerRef),
 		zap.String("status", string(status)))
 
+	return nil
+}
+
+// UpdateBridgeKYCStatus updates the Bridge KYC status for a user
+func (r *UserRepository) UpdateBridgeKYCStatus(ctx context.Context, userID uuid.UUID, status string) error {
+	query := `
+		UPDATE users SET 
+			bridge_kyc_status = $2, 
+			updated_at = $3 
+		WHERE id = $1`
+
+	_, err := r.db.ExecContext(ctx, query, userID, status, time.Now())
+	if err != nil {
+		r.logger.Error("Failed to update Bridge KYC status", zap.Error(err), zap.String("user_id", userID.String()))
+		return fmt.Errorf("failed to update bridge kyc status: %w", err)
+	}
+
+	r.logger.Debug("Bridge KYC status updated", zap.String("user_id", userID.String()), zap.String("status", status))
 	return nil
 }
 
@@ -1415,7 +1536,6 @@ func (r *UserRepository) GetByPhone(ctx context.Context, phone string) (*entitie
 	return user, nil
 }
 
-
 // GetByRailTag retrieves a user profile by rail tag
 func (r *UserRepository) GetByRailTag(ctx context.Context, railTag string) (*entities.UserProfile, error) {
 	query := `
@@ -1523,7 +1643,6 @@ func (r *UserRepository) GetByRailTag(ctx context.Context, railTag string) (*ent
 
 	return user, nil
 }
-
 
 // SetRailTag sets a user's rail tag
 func (r *UserRepository) SetRailTag(ctx context.Context, userID uuid.UUID, railTag string) error {
