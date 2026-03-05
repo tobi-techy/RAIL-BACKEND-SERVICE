@@ -383,20 +383,11 @@ func (s *Service) settleTransaction(ctx context.Context, userID uuid.UUID, amoun
 		zap.String("amount", amount.String()),
 		zap.String("transaction_id", transactionID))
 
-	// Deduct from spend balance via balance provider
-	if s.balanceProvider != nil {
-		if err := s.balanceProvider.DeductSpendBalance(ctx, userID, amount, transactionID); err != nil {
-			return fmt.Errorf("failed to deduct spend balance: %w", err)
-		}
-	}
-
-	// Create ledger entry if ledger service is available
+	// Create ledger entry - this is the single authoritative debit of spending_balance.
+	// DeductSpendBalance is intentionally NOT called here; it would double-debit.
 	if s.ledgerService != nil {
 		if err := s.createCardTransactionLedgerEntry(ctx, userID, amount, transactionID, merchantName); err != nil {
-			s.logger.Error("Failed to create ledger entry for card transaction",
-				zap.String("transaction_id", transactionID),
-				zap.Error(err))
-			// Don't fail the transaction if ledger entry fails - balance already deducted
+			return fmt.Errorf("failed to create ledger entry for card transaction: %w", err)
 		}
 	}
 

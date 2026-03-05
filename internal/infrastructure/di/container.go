@@ -732,6 +732,7 @@ type Container struct {
 	BridgeFundingAdapter        *BridgeFundingAdapter
 	BridgeVirtualAccountService *funding.BridgeVirtualAccountService
 	BridgeWebhookHandler        *handlers.BridgeWebhookHandler
+	BridgeCustomerStatusProcessor *webhooks.BridgeCustomerStatusProcessor
 
 	// Domain Services
 	OnboardingService       *onboarding.Service
@@ -1245,6 +1246,7 @@ func (c *Container) initializeDomainServices() error {
 			c.BridgeVirtualAccountService,
 			c.ZapLog,
 		)
+		c.BridgeCustomerStatusProcessor = customerStatusProcessor
 
 		bridgeWebhookService := webhooks.NewBridgeWebhookService(
 			&BridgeVirtualAccountWebhookAdapter{service: c.BridgeVirtualAccountService},
@@ -2299,7 +2301,7 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 	c.RoundupRepo = repositories.NewRoundupRepository(sqlxDB)
 	c.RoundupService = roundup.NewService(
 		c.RoundupRepo,
-		c.AllocationService,
+		c.LedgerService,
 		orderPlacer,
 		nil, // ContributionRecorder - can be added later
 		c.ZapLog,
@@ -2331,7 +2333,7 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 	if c.BridgeWebhookHandler != nil && c.BridgeVirtualAccountService != nil {
 		bridgeWebhookService := webhooks.NewBridgeWebhookService(
 			&BridgeVirtualAccountWebhookAdapter{service: c.BridgeVirtualAccountService},
-			nil, // Customer status processor can be injected later.
+			c.BridgeCustomerStatusProcessor, // preserve KYC processor — do NOT pass nil
 			&BridgeCardWebhookAdapter{service: c.CardService},
 			nil, // Notifications can be injected later.
 			c.ZapLog,

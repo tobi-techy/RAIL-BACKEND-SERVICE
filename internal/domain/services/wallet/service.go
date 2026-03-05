@@ -815,28 +815,46 @@ func (s *Service) GetProvisioningJobByUserID(ctx context.Context, userID uuid.UU
 	return job, nil
 }
 
-// GetWalletByUserAndChain retrieves a wallet for a specific user and chain
+// GetWalletByUserAndChain retrieves a wallet for a specific user and chain.
+// For EVM chains, if the exact chain row isn't found, it falls back to any other
+// EVM chain wallet for the user — all EVM chains share the same address.
 func (s *Service) GetWalletByUserAndChain(ctx context.Context, userID uuid.UUID, chain entities.WalletChain) (*entities.ManagedWallet, error) {
 	s.logger.Debug("Getting wallet for user and chain",
 		zap.String("userID", userID.String()),
 		zap.String("chain", string(chain)))
 
 	wallet, err := s.walletRepo.GetByUserAndChain(ctx, userID, chain)
-	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "not found") {
-			s.logger.Debug("Wallet not found for user and chain",
-				zap.String("userID", userID.String()),
-				zap.String("chain", string(chain)))
-			return nil, fmt.Errorf("failed to get wallet: %w", err)
+	if err == nil && wallet != nil {
+		return wallet, nil
+	}
+
+	// For EVM chains, fall back to any other EVM wallet — they share the same address.
+	if chain.GetChainFamily() == "EVM" {
+		allWallets, listErr := s.walletRepo.GetByUserID(ctx, userID)
+		if listErr == nil {
+			for _, w := range allWallets {
+				if w.GetChainFamily() == "EVM" && w.IsReady() {
+					s.logger.Debug("EVM wallet fallback: returning wallet from sibling chain",
+						zap.String("userID", userID.String()),
+						zap.String("requested_chain", string(chain)),
+						zap.String("found_chain", string(w.Chain)),
+						zap.String("address", w.Address))
+					// Return a copy with the requested chain so callers see the right chain label.
+					copy := *w
+					copy.Chain = chain
+					return &copy, nil
+				}
+			}
 		}
-		s.logger.Error("Failed to get wallet for user and chain",
-			zap.Error(err),
+	}
+
+	if err != nil {
+		s.logger.Debug("Wallet not found for user and chain",
 			zap.String("userID", userID.String()),
 			zap.String("chain", string(chain)))
 		return nil, fmt.Errorf("failed to get wallet: %w", err)
 	}
-
-	return wallet, nil
+	return nil, fmt.Errorf("wallet not found for chain %s", chain)
 }
 
 // GetMetrics returns service metrics for monitoring

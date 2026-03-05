@@ -221,6 +221,11 @@ func (w *ManagedWallet) IsReady() bool {
 	return w.Status == WalletStatusLive && w.Address != ""
 }
 
+// GetChainFamily delegates to the chain's family lookup
+func (w *ManagedWallet) GetChainFamily() string {
+	return w.Chain.GetChainFamily()
+}
+
 // CanReceive checks if wallet can receive funds
 func (w *ManagedWallet) CanReceive() bool {
 	return w.IsReady()

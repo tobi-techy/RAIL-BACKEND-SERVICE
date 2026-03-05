@@ -528,9 +528,10 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 	}
 
 	if existingDeposit != nil {
-		// If a previous attempt inserted the deposit row but failed during ledger posting,
-		// replay should reconcile the ledger entry idempotently using the same deposit ID.
-		if existingDeposit.Status == "confirmed" {
+		s.logger.Info("Deposit already processed", "tx_hash", webhook.TxHash, "deposit_id", existingDeposit.ID.String(), "status", existingDeposit.Status)
+		// Only reconcile if the deposit row exists but ledger/allocation never completed (pending state).
+		// Confirmed deposits are fully settled — re-running RecordDeposit would double-credit the ledger.
+		if existingDeposit.Status == "pending" {
 			if err := s.ledgerIntegration.RecordDeposit(
 				ctx,
 				existingDeposit.UserID,
@@ -541,8 +542,9 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 			); err != nil {
 				return fmt.Errorf("existing deposit found but failed to reconcile ledger: %w", err)
 			}
+			confirmedAt := time.Now()
+			_ = s.depositRepo.UpdateStatus(ctx, existingDeposit.ID, "confirmed", &confirmedAt)
 
-			// Re-run allocation split for replay recovery. Allocation service handles idempotency.
 			if s.allocationService != nil {
 				allocationReq := &entities.IncomingFundsRequest{
 					UserID:     existingDeposit.UserID,
@@ -558,15 +560,13 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 					},
 				}
 				if err := s.allocationService.ProcessIncomingFunds(ctx, allocationReq); err != nil {
-					s.logger.Error("Failed to reconcile allocation split for existing deposit",
+					s.logger.Error("Failed to reconcile allocation split for pending deposit",
 						"user_id", existingDeposit.UserID,
 						"deposit_id", existingDeposit.ID.String(),
 						"error", err)
-					// Keep webhook idempotent and non-failing for allocation issues.
 				}
 			}
 		}
-		s.logger.Info("Deposit already processed", "tx_hash", webhook.TxHash, "deposit_id", existingDeposit.ID.String())
 		return nil
 	}
 

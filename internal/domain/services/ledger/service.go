@@ -77,7 +77,7 @@ func (s *Service) CreateTransaction(ctx context.Context, req *entities.CreateTra
 	}
 
 	// Use transaction context for all operations
-	txCtx := context.WithValue(ctx, "db_tx", tx)
+	txCtx := repositories.WithTx(ctx, tx)
 
 	if err := s.ledgerRepo.CreateTransaction(txCtx, ledgerTx); err != nil {
 		return nil, fmt.Errorf("create transaction: %w", err)
@@ -420,7 +420,7 @@ func (s *Service) ReverseTransaction(ctx context.Context, originalTxID uuid.UUID
 	}
 	defer tx.Rollback()
 
-	txCtx := context.WithValue(ctx, "db_tx", tx)
+	txCtx := repositories.WithTx(ctx, tx)
 
 	// Mark original transaction as reversed first
 	if err := s.ledgerRepo.UpdateTransactionStatus(txCtx, originalTxID, entities.TransactionStatusReversed); err != nil {
@@ -604,4 +604,46 @@ func (s *Service) RecordCardTransaction(ctx context.Context, userID uuid.UUID, a
 
 func stringPtr(s string) *string {
 	return &s
+}
+
+// TransferSpendingToStash moves funds from spending_balance to stash_balance.
+// Used for roundup collection: the spare change is already in spending and should move to stash.
+func (s *Service) TransferSpendingToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
+	spendAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return fmt.Errorf("get spending account: %w", err)
+	}
+	stashAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		return fmt.Errorf("get stash account: %w", err)
+	}
+
+	desc := fmt.Sprintf("Roundup collection: %s", amount.String())
+	refType := "roundup_collection"
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeInternalTransfer,
+		ReferenceType:   &refType,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &desc,
+		Entries: []entities.CreateEntryRequest{
+			{
+				AccountID:   spendAccount.ID,
+				EntryType:   entities.EntryTypeCredit, // debit spending
+				Amount:      amount,
+				Currency:    "USD",
+				Description: &desc,
+			},
+			{
+				AccountID:   stashAccount.ID,
+				EntryType:   entities.EntryTypeDebit, // credit stash
+				Amount:      amount,
+				Currency:    "USD",
+				Description: &desc,
+			},
+		},
+	}
+
+	_, err = s.CreateTransaction(ctx, req)
+	return err
 }
