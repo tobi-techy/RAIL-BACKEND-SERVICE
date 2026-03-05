@@ -154,20 +154,14 @@ func (a *BridgeFundingAdapter) GetWalletBalances(ctx context.Context, walletID s
 
 func mapChainToBridgePaymentRail(chain entities.Chain) bridge.PaymentRail {
 	switch chain {
-	case entities.ChainETH:
-		return bridge.PaymentRailEthereum
-	case entities.ChainMATIC:
+	case entities.ChainMATIC, entities.ChainMATICAmoy:
 		return bridge.PaymentRailPolygon
-	case entities.ChainAVAX:
+	case entities.ChainAVAX, entities.ChainAVAXFuji:
 		return bridge.PaymentRailAvalanche
-	case entities.ChainSOL:
+	case entities.ChainSOL, entities.ChainSOLDevnet:
 		return bridge.PaymentRailSolana
-	case entities.ChainARB:
-		return bridge.PaymentRailArbitrum
-	case entities.ChainBASE:
+	case entities.ChainBASE, entities.ChainBASESepolia:
 		return bridge.PaymentRailBase
-	case entities.ChainOP:
-		return bridge.PaymentRailOptimism
 	default:
 		return ""
 	}

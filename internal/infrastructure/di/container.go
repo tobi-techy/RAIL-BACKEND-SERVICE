@@ -82,20 +82,14 @@ func (a *CircleAdapter) GenerateDepositAddress(ctx context.Context, chain entiti
 // For testnet environments Circle uses explicit testnet chain identifiers.
 func mapChainToWalletChain(chain entities.Chain) entities.WalletChain {
 	switch chain {
-	case entities.ChainMATIC, entities.ChainPolygon:
+	case entities.ChainMATIC, entities.ChainMATICAmoy:
 		return entities.WalletChainMATICAmoy
-	case entities.ChainAVAX:
+	case entities.ChainAVAX, entities.ChainAVAXFuji:
 		return entities.WalletChainAVAXFuji
-	case entities.ChainSOL, entities.ChainSolana:
+	case entities.ChainSOL, entities.ChainSOLDevnet:
 		return entities.WalletChainSOLDevnet
-	case entities.ChainETH:
-		return entities.WalletChainEthereum
-	case entities.ChainARB:
-		return entities.WalletChainArbitrum
-	case entities.ChainBASE:
-		return entities.WalletChainBase
-	case entities.ChainOP:
-		return entities.WalletChainOptimism
+	case entities.ChainBASE, entities.ChainBASESepolia:
+		return entities.WalletChainBASESepolia
 	default:
 		return ""
 	}

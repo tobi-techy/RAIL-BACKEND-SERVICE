@@ -319,20 +319,14 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 // matchesManagedWalletChain checks if a managed wallet's chain matches the requested deposit chain.
 func matchesManagedWalletChain(walletChain entities.WalletChain, depositChain entities.Chain) bool {
 	switch depositChain {
-	case entities.ChainMATIC, entities.ChainPolygon:
+	case entities.ChainMATIC, entities.ChainMATICAmoy:
 		return walletChain == entities.WalletChainMATICAmoy || walletChain == entities.WalletChainPolygon
-	case entities.ChainAVAX:
+	case entities.ChainAVAX, entities.ChainAVAXFuji:
 		return walletChain == entities.WalletChainAVAXFuji || walletChain == entities.WalletChainAvalanche
-	case entities.ChainSOL, entities.ChainSolana:
+	case entities.ChainSOL, entities.ChainSOLDevnet:
 		return walletChain == entities.WalletChainSOLDevnet || walletChain == entities.WalletChainSolana
-	case entities.ChainETH:
-		return walletChain == entities.WalletChainEthereum
-	case entities.ChainARB:
-		return walletChain == entities.WalletChainArbitrum
-	case entities.ChainBASE:
-		return walletChain == entities.WalletChainBase
-	case entities.ChainOP:
-		return walletChain == entities.WalletChainOptimism
+	case entities.ChainBASE, entities.ChainBASESepolia:
+		return walletChain == entities.WalletChainBase || walletChain == entities.WalletChainBASESepolia
 	default:
 		return string(walletChain) == string(depositChain)
 	}

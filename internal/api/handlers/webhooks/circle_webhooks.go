@@ -724,20 +724,22 @@ func truncateString(s string, maxLen int) string {
 // mapCircleChainToChain maps Circle's chain identifier to our Chain type
 func (h *CircleWebhookHandler) mapCircleChainToChain(circleChain string) entities.Chain {
 	switch strings.ToUpper(strings.TrimSpace(circleChain)) {
-	case "SOL", "SOLANA", "SOL-DEVNET":
-		return entities.ChainSolana
-	case "MATIC", "POLYGON", "MATIC-AMOY":
+	case "SOL", "SOLANA":
+		return entities.ChainSOL
+	case "SOL-DEVNET":
+		return entities.ChainSOLDevnet
+	case "MATIC", "POLYGON":
 		return entities.ChainMATIC
-	case "ETH", "ETHEREUM", "ETH-SEPOLIA":
-		return entities.ChainETH
-	case "AVAX", "AVALANCHE", "AVAX-FUJI":
+	case "MATIC-AMOY":
+		return entities.ChainMATICAmoy
+	case "AVAX", "AVALANCHE":
 		return entities.ChainAVAX
-	case "BASE", "BASE-SEPOLIA":
+	case "AVAX-FUJI":
+		return entities.ChainAVAXFuji
+	case "BASE":
 		return entities.ChainBASE
-	case "ARB", "ARBITRUM":
-		return entities.ChainARB
-	case "OP", "OPTIMISM":
-		return entities.ChainOP
+	case "BASE-SEPOLIA":
+		return entities.ChainBASESepolia
 	default:
 		if circleChain != "" {
 			h.logger.Warn("Unknown Circle chain", "chain", circleChain)
@@ -755,20 +757,22 @@ func (h *CircleWebhookHandler) mapWalletChainToChain(walletChain entities.Wallet
 // mapWalletChainToChainType is a standalone function for WalletChain to Chain mapping
 func mapWalletChainToChainType(walletChain entities.WalletChain) entities.Chain {
 	switch walletChain {
-	case entities.WalletChainSOLDevnet, entities.WalletChainSolana:
-		return entities.ChainSolana
-	case entities.WalletChainPolygon, entities.WalletChainMATICAmoy:
+	case entities.WalletChainSolana:
+		return entities.ChainSOL
+	case entities.WalletChainSOLDevnet:
+		return entities.ChainSOLDevnet
+	case entities.WalletChainPolygon:
 		return entities.ChainMATIC
-	case entities.WalletChainEthereum:
-		return entities.ChainETH
-	case entities.WalletChainAvalanche, entities.WalletChainAVAXFuji:
+	case entities.WalletChainMATICAmoy:
+		return entities.ChainMATICAmoy
+	case entities.WalletChainAvalanche:
 		return entities.ChainAVAX
+	case entities.WalletChainAVAXFuji:
+		return entities.ChainAVAXFuji
 	case entities.WalletChainBase:
 		return entities.ChainBASE
-	case entities.WalletChainArbitrum:
-		return entities.ChainARB
-	case entities.WalletChainOptimism:
-		return entities.ChainOP
+	case entities.WalletChainBASESepolia:
+		return entities.ChainBASESepolia
 	default:
 		return ""
 	}
