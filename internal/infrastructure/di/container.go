@@ -438,27 +438,42 @@ func (a *BridgeOnboardingAdapter) CreateCustomer(ctx context.Context, req *entit
 		Email:     req.Email,
 	}
 
+	// Store original 2-letter country code for subdivision prefix
+	country2 := strings.ToUpper(req.Country)
+
 	// Normalize 2-letter country code to 3-letter (Bridge requires ISO 3166-1 alpha-3)
-	country3 := strings.ToUpper(req.Country)
-	if len(country3) == 2 {
-		switch country3 {
-		case "US":
-			country3 = "USA"
-		case "GB":
-			country3 = "GBR"
-		case "NG":
-			country3 = "NGA"
-		case "CA":
-			country3 = "CAN"
-		}
+	country3 := country2
+	switch country2 {
+	case "US":
+		country3 = "USA"
+	case "GB":
+		country3 = "GBR"
+	case "NG":
+		country3 = "NGA"
+	case "CA":
+		country3 = "CAN"
+	case "AU":
+		country3 = "AUS"
+	case "DE":
+		country3 = "DEU"
+	case "MX":
+		country3 = "MEX"
+	case "BR":
+		country3 = "BRA"
+	case "IN":
+		country3 = "IND"
+	case "ZA":
+		country3 = "ZAF"
+	case "KE":
+		country3 = "KEN"
 	}
 
 	// Add residential address if provided
 	if req.Address != nil {
 		// Bridge expects ISO 3166-2 subdivision format (e.g., "US-NY" not just "NY")
-		subdivision := req.Address.State
-		if subdivision != "" && len(req.Country) == 2 && !strings.Contains(subdivision, "-") {
-			subdivision = strings.ToUpper(req.Country) + "-" + strings.ToUpper(subdivision)
+		subdivision := strings.ToUpper(req.Address.State)
+		if subdivision != "" && len(country2) == 2 && !strings.Contains(subdivision, "-") {
+			subdivision = country2 + "-" + subdivision
 		}
 
 		bridgeReq.ResidentialAddress = &bridge.Address{
