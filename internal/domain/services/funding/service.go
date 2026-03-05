@@ -681,24 +681,15 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 			},
 		}
 		if err := s.allocationService.ProcessIncomingFunds(ctx, allocationReq); err != nil {
-			s.logger.Error("Failed to process allocation split - marking as pending_allocation",
-				"user_id", userID,
-				"amount", usdAmount,
-				"error", err)
-
-			// Update deposit status to pending_allocation to track incomplete allocation
-			if updateErr := s.depositRepo.UpdateStatus(ctx, deposit.ID, "pending_allocation", nil); updateErr != nil {
-				s.logger.Error("Failed to update deposit status to pending_allocation",
-					"deposit_id", deposit.ID,
-					"error", updateErr)
-			}
-
-			// Log detailed error for internal debugging (not exposed to user)
-			s.logger.Error("Allocation failure details for operations team",
+			// Deposit is confirmed and credited to ledger. Allocation failed but the
+			// deposit recovery worker will retry any confirmed deposit without a completed
+			// allocation event. Keep status as "confirmed" — do NOT use an invalid status.
+			s.logger.Error("Allocation split failed — deposit confirmed, recovery worker will retry",
 				"user_id", userID,
 				"deposit_id", deposit.ID,
-				"error_message", err.Error(),
-				"error_type", fmt.Sprintf("%T", err))
+				"amount", usdAmount,
+				"error_type", fmt.Sprintf("%T", err),
+				"error", err)
 
 			// Notify user with generic message (don't expose internal error details)
 			if s.notificationService != nil {
