@@ -175,6 +175,28 @@ func (c *Client) GetAccount(ctx context.Context, accountID string) (*entities.Al
 	return &response, nil
 }
 
+// CloseAccount closes an Alpaca brokerage account
+// Note: All positions must be closed and funds withdrawn before calling this
+func (c *Client) CloseAccount(ctx context.Context, accountID string) error {
+	endpoint := fmt.Sprintf("%s/%s/actions/close", accountsEndpoint, accountID)
+
+	c.logger.Info("Closing Alpaca account", zap.String("account_id", accountID))
+
+	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
+		return nil, c.doRequestWithRetry(ctx, "POST", endpoint, nil, nil, false)
+	})
+
+	if err != nil {
+		c.logger.Error("Failed to close Alpaca account",
+			zap.String("account_id", accountID),
+			zap.Error(err))
+		return fmt.Errorf("close account failed: %w", err)
+	}
+
+	c.logger.Info("Closed Alpaca account successfully", zap.String("account_id", accountID))
+	return nil
+}
+
 // ListAccounts lists all accounts
 func (c *Client) ListAccounts(ctx context.Context, query map[string]string) ([]entities.AlpacaAccountResponse, error) {
 	endpoint := accountsEndpoint
