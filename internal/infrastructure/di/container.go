@@ -425,9 +425,78 @@ func mapChainToPaymentRail(chain string) bridge.PaymentRail {
 	}
 }
 
-// toTitleCase converts a string to title case (e.g., "NEW YORK" -> "New York")
-func toTitleCase(s string) string {
-	return strings.Title(strings.ToLower(s))
+// normalizeStateCode converts full state names to 2-letter codes for US addresses
+// e.g., "New York" -> "NY", "California" -> "CA"
+func normalizeStateCode(s string) string {
+	if s == "" {
+		return s
+	}
+	// If already 2 uppercase letters, return as-is
+	if len(s) == 2 && s == strings.ToUpper(s) {
+		return strings.ToUpper(s)
+	}
+	// Map full state names to codes
+	stateMap := map[string]string{
+		"alabama":              "AL",
+		"alaska":               "AK",
+		"arizona":              "AZ",
+		"arkansas":             "AR",
+		"california":           "CA",
+		"colorado":             "CO",
+		"connecticut":          "CT",
+		"delaware":             "DE",
+		"florida":              "FL",
+		"georgia":              "GA",
+		"hawaii":               "HI",
+		"idaho":                "ID",
+		"illinois":             "IL",
+		"indiana":              "IN",
+		"iowa":                 "IA",
+		"kansas":               "KS",
+		"kentucky":             "KY",
+		"louisiana":            "LA",
+		"maine":                "ME",
+		"maryland":             "MD",
+		"massachusetts":        "MA",
+		"michigan":             "MI",
+		"minnesota":            "MN",
+		"mississippi":          "MS",
+		"missouri":             "MO",
+		"montana":              "MT",
+		"nebraska":             "NE",
+		"nevada":               "NV",
+		"new hampshire":        "NH",
+		"new jersey":           "NJ",
+		"new mexico":           "NM",
+		"new york":             "NY",
+		"north carolina":       "NC",
+		"north dakota":         "ND",
+		"ohio":                 "OH",
+		"oklahoma":             "OK",
+		"oregon":               "OR",
+		"pennsylvania":         "PA",
+		"rhode island":         "RI",
+		"south carolina":       "SC",
+		"south dakota":         "SD",
+		"tennessee":            "TN",
+		"texas":                "TX",
+		"utah":                 "UT",
+		"vermont":              "VT",
+		"virginia":             "VA",
+		"washington":           "WA",
+		"west virginia":        "WV",
+		"wisconsin":            "WI",
+		"wyoming":              "WY",
+		"district of columbia": "DC",
+		"washington d.c.":      "DC",
+		"washington dc":        "DC",
+	}
+	lower := strings.ToLower(strings.TrimSpace(s))
+	if code, ok := stateMap[lower]; ok {
+		return code
+	}
+	// Return original if not found in map
+	return s
 }
 
 // BridgeOnboardingAdapter adapts bridge.Adapter to onboarding.BridgeAdapter interface
@@ -475,12 +544,8 @@ func (a *BridgeOnboardingAdapter) CreateCustomer(ctx context.Context, req *entit
 
 	// Add residential address if provided
 	if req.Address != nil {
-		// Bridge expects properly formatted subdivision
-		// Normalize to title case (e.g., "new york" -> "New York")
-		subdivision := strings.TrimSpace(req.Address.State)
-		if subdivision != "" {
-			subdivision = toTitleCase(subdivision)
-		}
+		// Bridge expects 2-letter state code for US addresses
+		subdivision := normalizeStateCode(strings.TrimSpace(req.Address.State))
 
 		bridgeReq.ResidentialAddress = &bridge.Address{
 			StreetLine1: req.Address.Street,
