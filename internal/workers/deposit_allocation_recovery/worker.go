@@ -186,7 +186,7 @@ func (w *Worker) listUnallocatedDeposits(ctx context.Context, limit int) ([]depo
 			ON ae.user_id = d.user_id
 			AND ae.source_tx_id = d.tx_hash
 			AND ae.event_type IN ('deposit', 'fiat_deposit', 'crypto_deposit')
-		WHERE d.status IN ('confirmed', 'off_ramp_initiated', 'off_ramp_completed', 'broker_funded')
+		WHERE d.status IN ('confirmed', 'pending_allocation', 'off_ramp_initiated', 'off_ramp_completed', 'broker_funded')
 			AND EXISTS (
 				SELECT 1
 				FROM ledger_transactions dep_lt

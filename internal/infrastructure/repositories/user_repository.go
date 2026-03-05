@@ -587,15 +587,51 @@ func (r *UserRepository) UpdateKYCProvider(ctx context.Context, userID uuid.UUID
 	return nil
 }
 
-// UpdateBridgeKYCStatus updates the Bridge KYC status for a user
+// UpdateBridgeKYCStatus updates the Bridge KYC status for a user.
+// When Bridge approves (status="active"), it also promotes kyc_status to "approved"
+// and onboarding_status to "kyc_approved" so the KYC middleware unlocks protected features.
 func (r *UserRepository) UpdateBridgeKYCStatus(ctx context.Context, userID uuid.UUID, status string) error {
-	query := `
-		UPDATE users SET 
-			bridge_kyc_status = $2, 
-			updated_at = $3 
-		WHERE id = $1`
+	now := time.Now()
 
-	_, err := r.db.ExecContext(ctx, query, userID, status, time.Now())
+	if status == "active" {
+		// Bridge approved — promote main KYC and onboarding status so middleware gates open.
+		query := `
+			UPDATE users SET
+				bridge_kyc_status = $2,
+				kyc_status        = 'approved',
+				kyc_approved_at   = $3,
+				onboarding_status = 'kyc_approved',
+				updated_at        = $3
+			WHERE id = $1`
+		_, err := r.db.ExecContext(ctx, query, userID, status, now)
+		if err != nil {
+			r.logger.Error("Failed to update Bridge KYC status (approved)", zap.Error(err), zap.String("user_id", userID.String()))
+			return fmt.Errorf("failed to update bridge kyc status: %w", err)
+		}
+		r.logger.Info("Bridge KYC approved — promoted kyc_status and onboarding_status", zap.String("user_id", userID.String()))
+		return nil
+	}
+
+	if status == "rejected" {
+		query := `
+			UPDATE users SET
+				bridge_kyc_status = $2,
+				kyc_status        = 'rejected',
+				onboarding_status = 'kyc_rejected',
+				updated_at        = $3
+			WHERE id = $1`
+		_, err := r.db.ExecContext(ctx, query, userID, status, now)
+		if err != nil {
+			r.logger.Error("Failed to update Bridge KYC status (rejected)", zap.Error(err), zap.String("user_id", userID.String()))
+			return fmt.Errorf("failed to update bridge kyc status: %w", err)
+		}
+		r.logger.Info("Bridge KYC rejected — updated kyc_status and onboarding_status", zap.String("user_id", userID.String()))
+		return nil
+	}
+
+	// For all other statuses (pending, incomplete, etc.) just update bridge_kyc_status.
+	query := `UPDATE users SET bridge_kyc_status = $2, updated_at = $3 WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, userID, status, now)
 	if err != nil {
 		r.logger.Error("Failed to update Bridge KYC status", zap.Error(err), zap.String("user_id", userID.String()))
 		return fmt.Errorf("failed to update bridge kyc status: %w", err)

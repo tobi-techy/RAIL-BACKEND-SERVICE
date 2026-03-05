@@ -327,7 +327,7 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		metadata["deposit_id"] = req.DepositID.String()
 	}
 
-	idempotencySeed := fmt.Sprintf("allocation:%s:%d", req.UserID.String(), time.Now().UnixNano())
+	idempotencySeed := fmt.Sprintf("allocation:%s:%s:%s", req.UserID.String(), string(req.EventType), req.Amount.String())
 	if req.DepositID != nil {
 		idempotencySeed = "allocation:deposit:" + req.DepositID.String()
 	} else if req.SourceTxID != nil {

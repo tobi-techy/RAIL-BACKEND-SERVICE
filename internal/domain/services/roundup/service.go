@@ -25,9 +25,9 @@ type Repository interface {
 	GetUsersReadyForAutoInvest(ctx context.Context) ([]uuid.UUID, error)
 }
 
-// AllocationService interface for processing round-up funds
-type AllocationService interface {
-	ProcessIncomingFunds(ctx context.Context, req *entities.IncomingFundsRequest) error
+// LedgerService moves funds between ledger accounts for roundup collection.
+type LedgerService interface {
+	TransferSpendingToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error
 }
 
 // OrderPlacer interface for placing investment orders
@@ -43,7 +43,7 @@ type ContributionRecorder interface {
 // Service handles round-up operations
 type Service struct {
 	repo                 Repository
-	allocationService    AllocationService
+	ledgerService        LedgerService
 	orderPlacer          OrderPlacer
 	contributionRecorder ContributionRecorder
 	logger               *zap.Logger
@@ -52,14 +52,14 @@ type Service struct {
 // NewService creates a new round-up service
 func NewService(
 	repo Repository,
-	allocationService AllocationService,
+	ledgerService LedgerService,
 	orderPlacer OrderPlacer,
 	contributionRecorder ContributionRecorder,
 	logger *zap.Logger,
 ) *Service {
 	return &Service{
 		repo:                 repo,
-		allocationService:    allocationService,
+		ledgerService:        ledgerService,
 		orderPlacer:          orderPlacer,
 		contributionRecorder: contributionRecorder,
 		logger:               logger,
@@ -193,15 +193,13 @@ func (s *Service) CollectPendingRoundups(ctx context.Context, userID uuid.UUID) 
 		return nil
 	}
 
-	// Process through allocation service (70/30 split if enabled)
-	if s.allocationService != nil {
-		err = s.allocationService.ProcessIncomingFunds(ctx, &entities.IncomingFundsRequest{
-			UserID:    userID,
-			Amount:    acc.PendingAmount,
-			EventType: entities.AllocationEventTypeRoundup,
-		})
-		if err != nil {
-			return fmt.Errorf("process allocation: %w", err)
+	// Transfer roundup amount from spending_balance to stash_balance.
+	// The money is already in spending (card transactions only debit the actual charge amount,
+	// not the rounded-up amount), so this is a spending→stash transfer, not a new deposit.
+	if s.ledgerService != nil {
+		idempotencyKey := fmt.Sprintf("roundup-collect:%s:%s", userID.String(), acc.LastCollectionAt.Format(time.RFC3339))
+		if err := s.ledgerService.TransferSpendingToStash(ctx, userID, acc.PendingAmount, idempotencyKey); err != nil {
+			return fmt.Errorf("transfer roundup to stash: %w", err)
 		}
 	}
 

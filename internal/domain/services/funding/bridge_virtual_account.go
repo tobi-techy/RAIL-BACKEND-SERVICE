@@ -84,14 +84,30 @@ func (s *BridgeVirtualAccountService) ProvisionVirtualAccounts(ctx context.Conte
 		return fmt.Errorf("wallet provider not configured")
 	}
 
-	// Get user's Solana wallet for USDC destination
-	wallet, err := s.walletProvider.GetWalletByUserAndChain(ctx, userID, entities.WalletChainSolana)
-	if err != nil {
-		// Try devnet fallback
-		wallet, err = s.walletProvider.GetWalletByUserAndChain(ctx, userID, entities.WalletChainSOLDevnet)
-		if err != nil {
-			return fmt.Errorf("get wallet for virtual account destination: %w", err)
+	// Try to find any available wallet for the USDC destination address.
+	// Prefer mainnet Solana, fall back to devnet, then any EVM chain.
+	walletChainsToTry := []entities.WalletChain{
+		entities.WalletChainSolana,
+		entities.WalletChainSOLDevnet,
+		entities.WalletChainEthereum,
+		entities.WalletChainMATICAmoy,
+		entities.WalletChainPolygon,
+	}
+
+	var wallet *entities.ManagedWallet
+	for _, chain := range walletChainsToTry {
+		w, err := s.walletProvider.GetWalletByUserAndChain(ctx, userID, chain)
+		if err == nil && w != nil && w.Address != "" {
+			wallet = w
+			break
 		}
+	}
+
+	if wallet == nil {
+		// Wallets are still provisioning — return an error so the caller can decide
+		// whether to retry. The webhook handler suppresses this error to avoid
+		// failing the webhook, but the error is logged for observability.
+		return fmt.Errorf("no wallet available yet for user %s — wallets may still be provisioning", userID)
 	}
 
 	var (

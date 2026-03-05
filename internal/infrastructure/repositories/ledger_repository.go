@@ -92,6 +92,12 @@ func txFromContext(ctx context.Context) *sqlx.Tx {
 	return tx
 }
 
+// WithTx embeds a sqlx.Tx into the context using the correct typed key.
+// Use this in the ledger service instead of context.WithValue with a plain string.
+func WithTx(ctx context.Context, tx *sqlx.Tx) context.Context {
+	return context.WithValue(ctx, txContextKey, tx)
+}
+
 func (r *LedgerRepository) queryRowxContext(ctx context.Context, query string, args ...interface{}) *sqlx.Row {
 	if tx := txFromContext(ctx); tx != nil {
 		return tx.QueryRowxContext(ctx, query, args...)

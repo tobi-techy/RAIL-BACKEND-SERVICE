@@ -900,8 +900,11 @@ func (s *Service) ProcessWalletCreationComplete(ctx context.Context, userID uuid
 		return fmt.Errorf("failed to get user: %w", err)
 	}
 
-	if user.OnboardingStatus != entities.OnboardingStatusWalletsPending {
-		s.logger.Warn("User is not in wallets pending status",
+	// Allow wallets_pending OR kyc_approved — KYC may have been approved while wallets
+	// were still provisioning, which sets onboarding_status to kyc_approved.
+	if user.OnboardingStatus != entities.OnboardingStatusWalletsPending &&
+		user.OnboardingStatus != entities.OnboardingStatusKYCApproved {
+		s.logger.Warn("User is not in wallets_pending or kyc_approved status, skipping",
 			zap.String("userId", userID.String()),
 			zap.String("status", string(user.OnboardingStatus)))
 		return nil
@@ -926,6 +929,22 @@ func (s *Service) ProcessWalletCreationComplete(ctx context.Context, userID uuid
 		return fmt.Errorf("failed to update onboarding status: %w", err)
 	}
 
+	// If user is already KYC approved, provision virtual accounts now that wallets exist.
+	// This handles the race where Bridge approved KYC before wallets finished provisioning.
+	if user.KYCStatus == string(entities.KYCStatusApproved) &&
+		user.BridgeCustomerID != nil && *user.BridgeCustomerID != "" &&
+		s.virtualAccountService != nil {
+		s.logger.Info("Wallets ready and KYC already approved — provisioning virtual accounts",
+			zap.String("userId", userID.String()))
+		currencies := []string{"USD", "EUR"}
+		if err := s.virtualAccountService.ProvisionVirtualAccounts(ctx, userID, *user.BridgeCustomerID, currencies); err != nil {
+			// Log but don't fail — virtual account provisioning can be retried
+			s.logger.Error("Failed to provision virtual accounts after wallet creation",
+				zap.Error(err),
+				zap.String("userId", userID.String()))
+		}
+	}
+
 	// Send welcome email
 	if err := s.emailService.SendWelcomeEmail(ctx, user.Email); err != nil {
 		s.logger.Warn("Failed to send welcome email", zap.Error(err))
@@ -933,7 +952,7 @@ func (s *Service) ProcessWalletCreationComplete(ctx context.Context, userID uuid
 
 	// Log audit event
 	if err := s.auditService.LogOnboardingEvent(ctx, userID, "onboarding_completed", "user",
-		map[string]any{"status": string(entities.OnboardingStatusWalletsPending)},
+		map[string]any{"status": string(user.OnboardingStatus)},
 		map[string]any{"status": string(entities.OnboardingStatusCompleted)}); err != nil {
 		s.logger.Warn("Failed to log audit event", zap.Error(err))
 	}
