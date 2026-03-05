@@ -470,9 +470,12 @@ func (a *BridgeOnboardingAdapter) CreateCustomer(ctx context.Context, req *entit
 
 	// Add residential address if provided
 	if req.Address != nil {
-		// Bridge expects full state/province name, not code
-		// e.g., "New York" not "NY" or "US-NY"
-		subdivision := req.Address.State
+		// For US customers, omit subdivision - Bridge infers from postal code
+		// For international, pass the state/province as-is
+		subdivision := ""
+		if country2 != "US" {
+			subdivision = req.Address.State
+		}
 
 		bridgeReq.ResidentialAddress = &bridge.Address{
 			StreetLine1: req.Address.Street,
