@@ -1239,9 +1239,16 @@ func (c *Container) initializeDomainServices() error {
 			c.BridgeVirtualAccountService.SetNotificationService(notificationAdapter)
 		}
 
+		// Create customer status processor for handling Bridge KYC webhooks
+		customerStatusProcessor := webhooks.NewBridgeCustomerStatusProcessor(
+			c.UserRepo,
+			c.BridgeVirtualAccountService,
+			c.ZapLog,
+		)
+
 		bridgeWebhookService := webhooks.NewBridgeWebhookService(
 			&BridgeVirtualAccountWebhookAdapter{service: c.BridgeVirtualAccountService},
-			nil, // Customer status processor can be injected later.
+			customerStatusProcessor,
 			nil, // Card processor can be injected later.
 			nil, // Notifications can be injected later.
 			c.ZapLog,

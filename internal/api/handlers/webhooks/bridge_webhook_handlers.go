@@ -1,6 +1,7 @@
 package webhooks
 
 import (
+	"context"
 	"crypto"
 	"crypto/hmac"
 	"crypto/rsa"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -849,7 +851,7 @@ type BridgeVirtualAccountProcessor interface {
 
 // BridgeCustomerProcessor processes customer events
 type BridgeCustomerProcessor interface {
-	UpdateCustomerStatus(ctx *gin.Context, customerID string, status string) error
+	UpdateCustomerStatus(ctx context.Context, customerID string, status string) error
 }
 
 // BridgeCardProcessor processes card events
@@ -987,5 +989,117 @@ func mapKYCStatusToCustomerStatus(kycStatus string) string {
 		return "under_review"
 	default:
 		return kycStatus
+	}
+}
+
+// BridgeCustomerStatusProcessor handles customer status change events from Bridge
+type BridgeCustomerStatusProcessor struct {
+	userRepo              UserRepositoryForCustomer
+	virtualAccountService VirtualAccountProvisioner
+	logger                *zap.Logger
+}
+
+// UserRepositoryForCustomer defines the interface for user lookups needed by customer processor
+type UserRepositoryForCustomer interface {
+	GetByBridgeCustomerID(ctx context.Context, bridgeCustomerID string) (*entities.UserProfile, error)
+	UpdateBridgeKYCStatus(ctx context.Context, userID uuid.UUID, status string) error
+}
+
+// VirtualAccountProvisioner defines the interface for provisioning virtual accounts
+type VirtualAccountProvisioner interface {
+	ProvisionVirtualAccounts(ctx context.Context, userID uuid.UUID, bridgeCustomerID string, currencies []string) error
+}
+
+// NewBridgeCustomerStatusProcessor creates a new customer status processor
+func NewBridgeCustomerStatusProcessor(
+	userRepo UserRepositoryForCustomer,
+	virtualAccountService VirtualAccountProvisioner,
+	logger *zap.Logger,
+) *BridgeCustomerStatusProcessor {
+	return &BridgeCustomerStatusProcessor{
+		userRepo:              userRepo,
+		virtualAccountService: virtualAccountService,
+		logger:                logger,
+	}
+}
+
+// UpdateCustomerStatus processes Bridge customer status changes
+// This is the implementation of BridgeCustomerProcessor interface
+func (s *BridgeCustomerStatusProcessor) UpdateCustomerStatus(ctx context.Context, customerID string, status string) error {
+	s.logger.Info("Processing Bridge customer status change",
+		zap.String("customer_id", customerID),
+		zap.String("status", status))
+
+	// Find user by Bridge customer ID
+	user, err := s.userRepo.GetByBridgeCustomerID(ctx, customerID)
+	if err != nil {
+		s.logger.Error("Failed to find user by Bridge customer ID",
+			zap.Error(err),
+			zap.String("customer_id", customerID))
+		return fmt.Errorf("failed to find user: %w", err)
+	}
+
+	if user == nil {
+		s.logger.Warn("No user found for Bridge customer ID",
+			zap.String("customer_id", customerID))
+		return fmt.Errorf("user not found for customer: %s", customerID)
+	}
+
+	s.logger.Info("Found user for customer status update",
+		zap.String("user_id", user.ID.String()),
+		zap.String("customer_id", customerID),
+		zap.String("new_status", status))
+
+	// Update bridge_kyc_status
+	bridgeKYCStatus := mapBridgeKYCStatus(status)
+
+	if err := s.userRepo.UpdateBridgeKYCStatus(ctx, user.ID, bridgeKYCStatus); err != nil {
+		s.logger.Error("Failed to update user bridge_kyc_status",
+			zap.Error(err),
+			zap.String("user_id", user.ID.String()))
+		return fmt.Errorf("failed to update user status: %w", err)
+	}
+
+	s.logger.Info("Updated bridge_kyc_status",
+		zap.String("user_id", user.ID.String()),
+		zap.String("new_status", bridgeKYCStatus))
+
+	// Trigger virtual account provisioning if status became active
+	if bridgeKYCStatus == "active" {
+		s.logger.Info("KYC approved - provisioning virtual accounts",
+			zap.String("user_id", user.ID.String()),
+			zap.String("customer_id", customerID))
+
+		if s.virtualAccountService != nil {
+			currencies := []string{"USD", "EUR"}
+			if err := s.virtualAccountService.ProvisionVirtualAccounts(ctx, user.ID, customerID, currencies); err != nil {
+				s.logger.Error("Failed to provision virtual accounts",
+					zap.Error(err),
+					zap.String("user_id", user.ID.String()))
+				// Don't fail the webhook - provisioning can be retried
+				return nil
+			}
+			s.logger.Info("Successfully provisioned virtual accounts",
+				zap.String("user_id", user.ID.String()),
+				zap.Strings("currencies", currencies))
+		}
+	}
+
+	return nil
+}
+
+// mapBridgeKYCStatus maps Bridge customer status to our internal KYC status
+func mapBridgeKYCStatus(bridgeStatus string) string {
+	switch strings.ToLower(bridgeStatus) {
+	case "active", "approved":
+		return "active"
+	case "rejected", "denied":
+		return "rejected"
+	case "pending", "processing", "under_review", "in_review":
+		return "pending"
+	case "incomplete", "not_started":
+		return "incomplete"
+	default:
+		return strings.ToLower(bridgeStatus)
 	}
 }
