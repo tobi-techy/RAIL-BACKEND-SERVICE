@@ -470,11 +470,9 @@ func (a *BridgeOnboardingAdapter) CreateCustomer(ctx context.Context, req *entit
 
 	// Add residential address if provided
 	if req.Address != nil {
-		// Bridge expects ISO 3166-2 subdivision format (e.g., "US-NY" not just "NY")
-		subdivision := strings.ToUpper(req.Address.State)
-		if subdivision != "" && len(country2) == 2 && !strings.Contains(subdivision, "-") {
-			subdivision = country2 + "-" + subdivision
-		}
+		// Bridge expects full state/province name, not code
+		// e.g., "New York" not "NY" or "US-NY"
+		subdivision := req.Address.State
 
 		bridgeReq.ResidentialAddress = &bridge.Address{
 			StreetLine1: req.Address.Street,
