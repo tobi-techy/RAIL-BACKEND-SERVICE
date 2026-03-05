@@ -563,12 +563,12 @@ func (s *Service) GetBalances(ctx context.Context, userID uuid.UUID) (*entities.
 
 	go func() {
 		defer wg.Done()
-		spendingBalance, spendingErr = s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
+		spendingBalance, spendingErr = s.getOptionalAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
 	}()
 
 	go func() {
 		defer wg.Done()
-		stashBalance, stashErr = s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
+		stashBalance, stashErr = s.getOptionalAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
 	}()
 
 	go func() {
@@ -670,12 +670,12 @@ func (s *Service) GetBalancesLite(ctx context.Context, userID uuid.UUID) (*entit
 
 	go func() {
 		defer wg.Done()
-		spendingBalance, spendingErr = s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
+		spendingBalance, spendingErr = s.getOptionalAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
 	}()
 
 	go func() {
 		defer wg.Done()
-		stashBalance, stashErr = s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
+		stashBalance, stashErr = s.getOptionalAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
 	}()
 
 	wg.Wait()
