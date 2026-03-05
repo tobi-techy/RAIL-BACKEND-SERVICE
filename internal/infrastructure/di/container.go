@@ -573,6 +573,16 @@ func (a *deletionUserRepoAdapter) AnonymizeUser(ctx context.Context, userID uuid
 	return a.userRepo.AnonymizeUser(ctx, userID)
 }
 
+// deletionBridgeAdapter adapts bridge.Client to account.BridgeClient
+type deletionBridgeAdapter struct {
+	client *bridge.Client
+}
+
+func (a *deletionBridgeAdapter) DeactivateVirtualAccount(ctx context.Context, customerID, virtualAccountID string) error {
+	_, err := a.client.DeactivateVirtualAccount(ctx, customerID, virtualAccountID)
+	return err
+}
+
 // Container holds all application dependencies
 type Container struct {
 	Config *config.Config
@@ -1400,6 +1410,15 @@ func (c *Container) initializeDomainServices() error {
 		c.Config.Circle.TreasuryWalletAddress,
 		c.Logger,
 	)
+
+	// Wire external provider cleanup for account deletion
+	if c.AlpacaAccountRepo != nil && c.AlpacaClient != nil {
+		c.AccountDeletionService.SetAlpacaClient(c.AlpacaAccountRepo, c.AlpacaClient)
+	}
+	deletionVirtualAccountRepo := repositories.NewVirtualAccountRepository(sqlxDB)
+	if c.BridgeClient != nil {
+		c.AccountDeletionService.SetBridgeClient(deletionVirtualAccountRepo, &deletionBridgeAdapter{client: c.BridgeClient})
+	}
 
 	// Initialize P2P transfer services
 	c.P2PRepo = repositories.NewP2PRepository(sqlxDB, c.ZapLog)
