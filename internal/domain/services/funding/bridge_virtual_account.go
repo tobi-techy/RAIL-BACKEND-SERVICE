@@ -74,7 +74,7 @@ func (s *BridgeVirtualAccountService) GetTOSLink(ctx context.Context, bridgeCust
 	if err != nil {
 		return "", fmt.Errorf("failed to get ToS link: %w", err)
 	}
-	return resp.TOSLink, nil
+	return resp.URL, nil
 }
 
 // SetNotificationService sets the notification service for fiat deposit events
