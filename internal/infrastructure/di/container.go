@@ -1265,7 +1265,7 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize auto-invest service (OrderPlacer will be set after InvestingService is created)
 	_ = repositories.NewAutoInvestRepository(sqlxDB) // Keep for future use
 	autoInvestConfig := autoinvest.Config{
-		MinThreshold: decimal.NewFromInt(10),
+		MinThreshold: decimal.Zero,
 	}
 	c.AutoInvestService = autoinvest.NewService(
 		c.LedgerService,
