@@ -817,23 +817,26 @@ func (s *Service) CreateVirtualAccount(ctx context.Context, req *entities.Create
 		return nil, fmt.Errorf("Alpaca account is not active: %s", alpacaAccount.Status)
 	}
 
-	// Get deposit instructions from Bridge (virtual account already created during onboarding)
-	accounts, err := s.bridgeVAService.GetVirtualAccounts(ctx, req.UserID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get virtual accounts: %w", err)
-	}
-
-	var virtualAccount *entities.VirtualAccount
-	for _, acc := range accounts {
-		if acc.Currency == "USD" && acc.Status == entities.VirtualAccountStatusActive {
-			virtualAccount = acc
-			break
+	// Get deposit instructions from Bridge — create if not yet provisioned
+	existing, _ := s.virtualAccountRepo.GetActiveByUserIDAndCurrency(ctx, req.UserID, "USD")
+	if existing == nil {
+		if s.bridgeVAService == nil {
+			return nil, fmt.Errorf("bridge virtual account service not configured")
+		}
+		// Look up Bridge customer ID from the user profile via alpaca account lookup
+		// bridgeCustomerID must be passed in via the request
+		if req.BridgeCustomerID == "" {
+			return nil, fmt.Errorf("bridge customer ID is required to provision virtual account")
+		}
+		if err := s.bridgeVAService.ProvisionVirtualAccounts(ctx, req.UserID, req.BridgeCustomerID, []string{"USD"}); err != nil {
+			return nil, fmt.Errorf("failed to provision virtual account: %w", err)
+		}
+		existing, err = s.virtualAccountRepo.GetActiveByUserIDAndCurrency(ctx, req.UserID, "USD")
+		if err != nil || existing == nil {
+			return nil, fmt.Errorf("virtual account provisioned but could not be retrieved")
 		}
 	}
-
-	if virtualAccount == nil {
-		return nil, fmt.Errorf("no active USD virtual account found for user")
-	}
+	virtualAccount := existing
 
 	// Update existing virtual account with Alpaca account ID
 	virtualAccount.AlpacaAccountID = req.AlpacaAccountID
