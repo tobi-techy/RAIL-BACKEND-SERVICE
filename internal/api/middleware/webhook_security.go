@@ -391,7 +391,7 @@ func WebhookSecurityWithRedisV8(
 
 				eventID, nonce, _ := security.ExtractWebhookMetadata(body)
 				replayKey := buildWebhookReplayKey(provider, c.Request.URL.Path, signature, eventID, nonce, body)
-				ok, err := redisClient.SetNX(ctx, replayKey, "1", 10*time.Minute).Result()
+				ok, err := redisClient.SetNX(ctx, replayKey, "1", 72*time.Hour).Result()
 				if err != nil {
 					logger.Error("Webhook replay check failed (v8 path); failing open", zap.Error(err))
 				} else if !ok {

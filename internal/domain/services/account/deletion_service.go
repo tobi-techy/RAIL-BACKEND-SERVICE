@@ -196,16 +196,16 @@ func (s *DeletionService) deleteAccountInternal(ctx context.Context, req *Delete
 		return nil, fmt.Errorf("failed to cleanup external accounts: %w", err)
 	}
 
-	// Step 4: Log audit before anonymization
+	// Step 4: Log audit before deletion
 	if s.auditService != nil {
-		_ = s.auditService.Log(ctx, req.UserID, entities.AuditActionAccountAnonymize, "user", nil,
+		_ = s.auditService.Log(ctx, req.UserID, entities.AuditActionAccountDelete, "user", nil,
 			map[string]interface{}{"reason": req.Reason, "funds_swept": totalBalance.String()})
 	}
 
-	// Step 5: Anonymize user PII (GDPR compliance - preserve UUID for financial audit trail)
-	if err := s.userRepo.AnonymizeUser(ctx, req.UserID); err != nil {
-		s.logger.Error("Failed to anonymize user", "error", err)
-		return nil, fmt.Errorf("failed to anonymize account: %w", err)
+	// Step 5: Hard delete user and all related data
+	if err := s.userRepo.HardDelete(ctx, req.UserID); err != nil {
+		s.logger.Error("Failed to delete user", "error", err)
+		return nil, fmt.Errorf("failed to delete account: %w", err)
 	}
 
 	// Step 6: Invalidate all active sessions (JWT tokens)
@@ -225,7 +225,7 @@ func (s *DeletionService) deleteAccountInternal(ctx context.Context, req *Delete
 		}
 	}
 
-	s.logger.Info("Account anonymized successfully",
+	s.logger.Info("Account permanently deleted",
 		"user_id", req.UserID.String(),
 		"funds_swept", totalBalance.String())
 

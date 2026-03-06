@@ -724,7 +724,9 @@ func (h *BridgeWebhookHandler) verifyRSASignature(timestamp, sig string, body []
 		h.logger.Warn("Bridge RSA signature timestamp parse failed", zap.Error(err))
 		return false
 	}
-	if time.Since(eventTime) > 5*time.Minute {
+	// Allow up to 72 hours for retried/delayed deliveries (Bridge retries stuck webhooks days later).
+	// Replay protection is handled by Redis deduplication in the webhook security middleware.
+	if time.Since(eventTime) > 72*time.Hour {
 		h.logger.Warn("Bridge webhook timestamp too old", zap.Time("event_time", eventTime))
 		return false
 	}
