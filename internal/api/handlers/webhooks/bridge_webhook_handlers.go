@@ -116,7 +116,7 @@ func (h *BridgeWebhookHandler) HandleWebhook(c *gin.Context) {
 	signature := getBridgeSignatureHeader(c)
 	if !h.verifySignature(signature, rawBody) {
 		h.logger.Warn("Invalid Bridge webhook signature")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid signature"})
 		return
 	}
 
@@ -767,22 +767,17 @@ func (h *BridgeWebhookHandler) verifyRSASignature(timestamp, sig string, body []
 		return false
 	}
 
-	// Decode base64 signature
-	sigBytes, err := base64.StdEncoding.DecodeString(sig)
+	// Decode base64 signature — Bridge uses strict standard base64 encoding.
+	sigBytes, err := base64.StdEncoding.Strict().DecodeString(sig)
 	if err != nil {
-		// Try URL-safe base64
-		sigBytes, err = base64.URLEncoding.DecodeString(sig)
-		if err != nil {
-			h.logger.Error("Failed to decode signature", zap.Error(err))
-			return false
-		}
+		h.logger.Error("Failed to decode signature", zap.Error(err))
+		return false
 	}
 
-	// Bridge signs: timestamp + "." + body.
+	// Bridge signs: timestamp + "." + body (double SHA256 per Bridge Go sample).
 	signedPayload := []byte(timestamp + "." + string(body))
-
-	// Hash the payload
 	hashed := sha256.Sum256(signedPayload)
+	hashed = sha256.Sum256(hashed[:])
 
 	// Verify RSA-SHA256 signature
 	err = rsa.VerifyPKCS1v15(rsaPub, crypto.SHA256, hashed[:], sigBytes)
