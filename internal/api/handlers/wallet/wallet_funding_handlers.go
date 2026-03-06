@@ -1197,66 +1197,50 @@ func (h *WalletFundingHandlers) GetVirtualAccounts(c *gin.Context) {
 // @Failure 500 {object} ErrorResponse
 // @Router /api/v1/funding/virtual-account [post]
 func (h *WalletFundingHandlers) CreateVirtualAccount(c *gin.Context) {
-	var req entities.CreateVirtualAccountRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		common.RespondBadRequest(c, "Invalid request format", map[string]interface{}{"error": err.Error()})
-		return
-	}
-
 	userUUID, err := common.GetUserID(c)
 	if err != nil {
-		h.logger.Error("Failed to get user ID", "error", err)
 		common.RespondUnauthorized(c, "User not authenticated")
 		return
 	}
 
-	// Set user ID from context
-	req.UserID = userUUID
+	ctx := c.Request.Context()
 
-	// Validate Alpaca account ID
-	if req.AlpacaAccountID == "" {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "INVALID_REQUEST",
-			Message: "Alpaca account ID is required",
-		})
+	// Look up user profile to get BridgeCustomerID and AlpacaAccountID server-side
+	if h.userProfileProvider == nil {
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "CONFIG_ERROR", Message: "User profile service not configured"})
+		return
+	}
+	profile, err := h.userProfileProvider.GetByID(ctx, userUUID)
+	if err != nil || profile == nil {
+		h.logger.Error("Failed to get user profile", "error", err, "user_id", userUUID)
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "PROFILE_ERROR", Message: "Failed to retrieve user profile"})
+		return
+	}
+	if profile.BridgeCustomerID == nil || *profile.BridgeCustomerID == "" {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "KYC_REQUIRED", Message: "Bridge KYC must be completed before creating a virtual account"})
+		return
+	}
+	if profile.AlpacaAccountID == nil || *profile.AlpacaAccountID == "" {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "ONBOARDING_INCOMPLETE", Message: "Brokerage account setup must be completed first"})
 		return
 	}
 
-	response, err := h.fundingService.CreateVirtualAccount(c.Request.Context(), &req)
+	response, err := h.fundingService.CreateVirtualAccount(ctx, &entities.CreateVirtualAccountRequest{
+		UserID:          userUUID,
+		AlpacaAccountID: *profile.AlpacaAccountID,
+	})
 	if err != nil {
-		h.logger.Error("Failed to create virtual account",
-			"error", err,
-			"user_id", userUUID,
-			"alpaca_account_id", req.AlpacaAccountID)
-
-		// Handle specific error cases
-		if strings.Contains(err.Error(), "already exists") {
-			c.JSON(http.StatusConflict, entities.ErrorResponse{
-				Code:    "VIRTUAL_ACCOUNT_EXISTS",
-				Message: "Virtual account already exists for this Alpaca account",
-			})
-			return
+		h.logger.Error("Failed to create virtual account", "error", err, "user_id", userUUID)
+		switch {
+		case strings.Contains(err.Error(), "already exists"):
+			c.JSON(http.StatusConflict, entities.ErrorResponse{Code: "VIRTUAL_ACCOUNT_EXISTS", Message: "Virtual account already exists"})
+		case strings.Contains(err.Error(), "not active"):
+			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "ALPACA_ACCOUNT_INACTIVE", Message: "Brokerage account is not yet active"})
+		case strings.Contains(err.Error(), "does not belong to authenticated user"):
+			c.JSON(http.StatusForbidden, entities.ErrorResponse{Code: "ALPACA_ACCOUNT_FORBIDDEN", Message: "Account mismatch"})
+		default:
+			c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "VIRTUAL_ACCOUNT_ERROR", Message: "Failed to create virtual account"})
 		}
-
-		if strings.Contains(err.Error(), "not active") {
-			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-				Code:    "ALPACA_ACCOUNT_INACTIVE",
-				Message: "Alpaca account is not active",
-			})
-			return
-		}
-		if strings.Contains(err.Error(), "does not belong to authenticated user") {
-			c.JSON(http.StatusForbidden, entities.ErrorResponse{
-				Code:    "ALPACA_ACCOUNT_FORBIDDEN",
-				Message: "Alpaca account does not belong to authenticated user",
-			})
-			return
-		}
-
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-			Code:    "VIRTUAL_ACCOUNT_ERROR",
-			Message: "Failed to create virtual account",
-		})
 		return
 	}
 
