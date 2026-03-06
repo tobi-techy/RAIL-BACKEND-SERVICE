@@ -330,7 +330,9 @@ func (s *Service) transferStashToFiatExposure(ctx context.Context, userID, stash
 	}
 
 	desc := fmt.Sprintf("Auto-invest transfer from stash %s", stashID)
-	idempotencyKey := fmt.Sprintf("autoinvest-transfer:%s:%s", stashID, correlationID)
+	// Hash the correlation ID so the idempotency key always fits varchar(100)
+	corrHash := fmt.Sprintf("%x", sha256.Sum256([]byte(correlationID)))[:16]
+	idempotencyKey := fmt.Sprintf("autoinvest-transfer:%s:%s", stashID, corrHash)
 
 	txReq := &entities.CreateTransactionRequest{
 		UserID:          &userID,
@@ -372,7 +374,8 @@ func (s *Service) transferFiatExposureToStash(ctx context.Context, userID, stash
 	}
 
 	desc := fmt.Sprintf("Auto-invest rollback to stash %s", stashID)
-	idempotencyKey := fmt.Sprintf("autoinvest-rollback:%s:%s", stashID, correlationID)
+	corrHash := fmt.Sprintf("%x", sha256.Sum256([]byte(correlationID)))[:16]
+	idempotencyKey := fmt.Sprintf("autoinvest-rollback:%s:%s", stashID, corrHash)
 
 	txReq := &entities.CreateTransactionRequest{
 		UserID:          &userID,
