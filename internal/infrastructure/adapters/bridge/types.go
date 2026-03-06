@@ -195,7 +195,7 @@ type KYCLinkResponse struct {
 
 // TOSLinkResponse represents a Terms of Service link response
 type TOSLinkResponse struct {
-	TOSLink   string `json:"tos_link"`
+	URL       string `json:"url"`
 	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
