@@ -26,7 +26,7 @@ rate_limit:
   user_limit: 200              # Requests per authenticated user per window
   user_window: 60              # User window in seconds (1 minute)
   key_prefix: "ratelimit"      # Redis key prefix for rate limiting
-  fail_open: false             # Deny requests if Redis is unavailable (fail-safe for auth endpoints)
+  fail_open: true              # Allow requests if Redis is unavailable (prevents outages from Redis blips)
   response_headers: true       # Include X-RateLimit headers in responses
 
   # Endpoint-specific rate limits (overrides user_limit for specific endpoints)
