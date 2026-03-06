@@ -1239,6 +1239,8 @@ func (h *WalletFundingHandlers) CreateVirtualAccount(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "ALPACA_ACCOUNT_INACTIVE", Message: "Brokerage account is not yet active"})
 		case strings.Contains(err.Error(), "does not belong to authenticated user"):
 			c.JSON(http.StatusForbidden, entities.ErrorResponse{Code: "ALPACA_ACCOUNT_FORBIDDEN", Message: "Account mismatch"})
+		case strings.Contains(err.Error(), "has_not_accepted_tos"):
+			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "has_not_accepted_tos", Message: "Please accept the Bridge Terms of Service before creating a virtual account"})
 		default:
 			c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "VIRTUAL_ACCOUNT_ERROR", Message: "Failed to create virtual account"})
 		}
