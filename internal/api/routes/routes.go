@@ -435,6 +435,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				funding.POST("/deposit/address", walletFundingHandlers.CreateDepositAddress)
 				funding.POST("/virtual-account", walletFundingHandlers.CreateVirtualAccount)
 				funding.GET("/virtual-accounts", walletFundingHandlers.GetVirtualAccounts)
+				funding.GET("/tos-link", walletFundingHandlers.GetBridgeTOSLink)
 
 				// Instant Funding - simplified API for trading
 				// POST /funding/instant - Request instant buying power

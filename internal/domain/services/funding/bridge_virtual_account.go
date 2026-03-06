@@ -68,6 +68,15 @@ func (s *BridgeVirtualAccountService) SetDepositRepository(depositRepo DepositRe
 	s.depositRepo = depositRepo
 }
 
+// GetTOSLink returns the Bridge Terms of Service acceptance link for a customer
+func (s *BridgeVirtualAccountService) GetTOSLink(ctx context.Context, bridgeCustomerID string) (string, error) {
+	resp, err := s.bridgeClient.GetTOSLink(ctx, bridgeCustomerID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get ToS link: %w", err)
+	}
+	return resp.TOSLink, nil
+}
+
 // SetNotificationService sets the notification service for fiat deposit events
 func (s *BridgeVirtualAccountService) SetNotificationService(notificationService FundingNotificationService) {
 	s.notificationService = notificationService

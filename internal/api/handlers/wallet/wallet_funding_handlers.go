@@ -1248,7 +1248,27 @@ func (h *WalletFundingHandlers) CreateVirtualAccount(c *gin.Context) {
 	c.JSON(http.StatusCreated, response)
 }
 
-// === Investing Handlers ===
+// GetBridgeTOSLink returns the Bridge Terms of Service acceptance link for the current user
+func (h *WalletFundingHandlers) GetBridgeTOSLink(c *gin.Context) {
+	userUUID, err := common.GetUserID(c)
+	if err != nil {
+		common.RespondUnauthorized(c, "User not authenticated")
+		return
+	}
+	ctx := c.Request.Context()
+	profile, err := h.userProfileProvider.GetByID(ctx, userUUID)
+	if err != nil || profile == nil || profile.BridgeCustomerID == nil || *profile.BridgeCustomerID == "" {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "KYC_REQUIRED", Message: "Bridge KYC must be completed first"})
+		return
+	}
+	link, err := h.fundingService.GetTOSLink(ctx, *profile.BridgeCustomerID)
+	if err != nil {
+		h.logger.Error("Failed to get Bridge ToS link", "error", err, "user_id", userUUID)
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "TOS_LINK_ERROR", Message: "Failed to retrieve Terms of Service link"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"tos_link": link})
+}
 
 // GetBaskets lists all available investment baskets
 // @Summary Get investment baskets

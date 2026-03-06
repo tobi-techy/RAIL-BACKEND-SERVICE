@@ -235,6 +235,14 @@ func (s *Service) GetVirtualAccounts(ctx context.Context, userID uuid.UUID) ([]*
 	return s.bridgeVAService.GetVirtualAccounts(ctx, userID)
 }
 
+// GetTOSLink returns the Bridge ToS acceptance link for a customer
+func (s *Service) GetTOSLink(ctx context.Context, bridgeCustomerID string) (string, error) {
+	if s.bridgeVAService == nil {
+		return "", fmt.Errorf("virtual account service not configured")
+	}
+	return s.bridgeVAService.GetTOSLink(ctx, bridgeCustomerID)
+}
+
 // SetAlpacaAccountLookup sets the alpaca account ownership lookup service (optional).
 func (s *Service) SetAlpacaAccountLookup(lookup AlpacaAccountLookup) {
 	s.alpacaAccountLookup = lookup
