@@ -294,7 +294,8 @@ func (s *Service) placeStrategyOrders(ctx context.Context, userID, stashID uuid.
 
 	for i, alloc := range result.Allocations {
 		// Calculate amount for this allocation: totalAmount * (weight / 100)
-		allocAmount := totalAmount.Mul(alloc.Weight).Div(hundred)
+		// Truncate to 2dp — Alpaca requires notional values to max 2 decimal places
+		allocAmount := totalAmount.Mul(alloc.Weight).Div(hundred).Truncate(2)
 
 		// Skip if allocation amount is too small
 		if allocAmount.LessThan(decimal.NewFromFloat(1.0)) {
@@ -323,6 +324,7 @@ func (s *Service) placeStrategyOrders(ctx context.Context, userID, stashID uuid.
 
 // placeSingleOrder places a single market order
 func (s *Service) placeSingleOrder(ctx context.Context, userID, stashID uuid.UUID, symbol string, amount decimal.Decimal, correlationID string) error {
+	amount = amount.Truncate(2)
 	// Generate deterministic idempotency key for order
 	idempotencyKey := s.generateIdempotencyKey(userID, stashID, amount, correlationID)
 
