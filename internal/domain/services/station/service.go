@@ -100,17 +100,23 @@ type AlpacaAccountRepository interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID) (*entities.AlpacaAccount, error)
 }
 
+// AlpacaAccountService interface for fetching a synced account (triggers live sync if stale)
+type AlpacaAccountService interface {
+	GetUserAccount(ctx context.Context, userID uuid.UUID) (*entities.AlpacaAccount, error)
+}
+
 // Service handles station/home screen data retrieval
 type Service struct {
-	ledgerService    LedgerService
-	allocationRepo   AllocationRepository
-	depositRepo      DepositRepository
-	settingsRepo     UserSettingsRepository
-	snapshotRepo     BalanceSnapshotRepository
-	notificationRepo NotificationRepository
-	transactionRepo  TransactionRepository
-	alpacaAccountRepo AlpacaAccountRepository
-	logger           *zap.Logger
+	ledgerService      LedgerService
+	allocationRepo     AllocationRepository
+	depositRepo        DepositRepository
+	settingsRepo       UserSettingsRepository
+	snapshotRepo       BalanceSnapshotRepository
+	notificationRepo   NotificationRepository
+	transactionRepo    TransactionRepository
+	alpacaAccountRepo  AlpacaAccountRepository
+	alpacaAccountSvc   AlpacaAccountService
+	logger             *zap.Logger
 }
 
 // NewService creates a new station service
@@ -151,6 +157,11 @@ func (s *Service) SetTransactionRepository(repo TransactionRepository) {
 // SetAlpacaAccountRepository sets the Alpaca account repository for portfolio value lookups
 func (s *Service) SetAlpacaAccountRepository(repo AlpacaAccountRepository) {
 	s.alpacaAccountRepo = repo
+}
+
+// SetAlpacaAccountService sets the Alpaca account service (preferred over repo — triggers live sync)
+func (s *Service) SetAlpacaAccountService(svc AlpacaAccountService) {
+	s.alpacaAccountSvc = svc
 }
 
 // GetUserBalances retrieves the user's spend and invest balances
@@ -270,7 +281,11 @@ func (s *Service) GetUserBalances(ctx context.Context, userID uuid.UUID) (*Balan
 	wg.Wait()
 
 	portfolioValue := decimal.Zero
-	if s.alpacaAccountRepo != nil {
+	if s.alpacaAccountSvc != nil {
+		if acct, err := s.alpacaAccountSvc.GetUserAccount(ctx, userID); err == nil && acct != nil {
+			portfolioValue = acct.PortfolioValue
+		}
+	} else if s.alpacaAccountRepo != nil {
 		if acct, err := s.alpacaAccountRepo.GetByUserID(ctx, userID); err == nil && acct != nil {
 			portfolioValue = acct.PortfolioValue
 		}

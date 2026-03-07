@@ -1490,6 +1490,11 @@ func (c *Container) initializeDomainServices() error {
 		c.AutoInvestService.SetAccountLookup(c.AlpacaAccountRepo)
 	}
 
+	// Wire station service with AlpacaAccountService now that it's initialized
+	if c.AlpacaAccountService != nil {
+		c.StationService.SetAlpacaAccountService(c.AlpacaAccountService)
+	}
+
 	// Initialize advanced features (analytics, market data, scheduled investments, rebalancing)
 	if err := c.initializeAdvancedFeatures(sqlxDB); err != nil {
 		c.ZapLog.Warn("Advanced features initialization failed", zap.Error(err))
