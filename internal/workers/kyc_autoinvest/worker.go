@@ -101,6 +101,12 @@ func (w *Worker) Stop() {
 }
 
 func (w *Worker) run(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			w.logger.Error("Panic in kyc_autoinvest worker run", zap.Any("panic", r))
+		}
+	}()
+
 	if w.db == nil || w.autoInvestService == nil {
 		return
 	}

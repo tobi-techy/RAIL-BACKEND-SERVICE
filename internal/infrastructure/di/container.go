@@ -1323,22 +1323,8 @@ func (c *Container) initializeDomainServices() error {
 		c.Logger,
 	)
 
-	// Wire auto-invest service with OrderPlacer now that InvestingService is available
-	autoInvestOrderPlacer := &autoInvestOrderPlacerAdapter{
-		accountService: c.AlpacaAccountService,
-		alpacaClient:   c.AlpacaClient,
-		orderRepo:      c.InvestmentOrderRepo,
-		logger:         c.ZapLog,
-	}
-	c.AutoInvestService.SetOrderPlacer(autoInvestOrderPlacer)
-
-	// Wire FundingBridge and AccountLookup so auto-invest journals cash into Alpaca before placing orders
-	if c.AlpacaFundingBridge != nil {
-		c.AutoInvestService.SetFundingBridge(c.AlpacaFundingBridge)
-	}
-	if c.AlpacaAccountRepo != nil {
-		c.AutoInvestService.SetAccountLookup(c.AlpacaAccountRepo)
-	}
+	// NOTE: AutoInvestService OrderPlacer/FundingBridge wiring is done after
+	// initializeAlpacaInvestmentServices (below) so AlpacaAccountService is non-nil.
 
 	// Initialize strategy engine and wire to auto-invest service
 	c.StrategyEngine = strategy.NewEngine(&strategyUserProfileAdapter{userRepo: c.UserRepo}, c.Logger)
@@ -1486,6 +1472,21 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize Alpaca investment infrastructure
 	if err := c.initializeAlpacaInvestmentServices(sqlxDB); err != nil {
 		c.ZapLog.Warn("Alpaca investment services initialization failed", zap.Error(err))
+	}
+
+	// Wire auto-invest service with OrderPlacer now that AlpacaAccountService is initialized
+	autoInvestOrderPlacer := &autoInvestOrderPlacerAdapter{
+		accountService: c.AlpacaAccountService,
+		alpacaClient:   c.AlpacaClient,
+		orderRepo:      c.InvestmentOrderRepo,
+		logger:         c.ZapLog,
+	}
+	c.AutoInvestService.SetOrderPlacer(autoInvestOrderPlacer)
+	if c.AlpacaFundingBridge != nil {
+		c.AutoInvestService.SetFundingBridge(c.AlpacaFundingBridge)
+	}
+	if c.AlpacaAccountRepo != nil {
+		c.AutoInvestService.SetAccountLookup(c.AlpacaAccountRepo)
 	}
 
 	// Initialize advanced features (analytics, market data, scheduled investments, rebalancing)
