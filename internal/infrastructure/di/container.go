@@ -1288,6 +1288,7 @@ func (c *Container) initializeDomainServices() error {
 		c.DepositRepo,
 		c.ZapLog,
 	)
+	c.StationService.SetAlpacaAccountRepository(c.AlpacaAccountRepo)
 
 	// Initialize investing service with repositories
 	basketRepo := repositories.NewBasketRepository(c.DB, c.ZapLog)
