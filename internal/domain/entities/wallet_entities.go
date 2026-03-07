@@ -699,6 +699,7 @@ type CircleTransferRequest struct {
 	TokenID                string   `json:"tokenId"`
 	Amounts                []string `json:"amounts"`
 	DestinationAddress     string   `json:"destinationAddress,omitempty"`
+	DestinationBlockchain  string   `json:"destinationBlockchain,omitempty"`
 	DestinationWalletID    string   `json:"destinationWalletId,omitempty"`
 	DestinationTag         string   `json:"destinationTag,omitempty"`
 	DestinationMemo        string   `json:"destinationMemo,omitempty"`

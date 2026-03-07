@@ -307,6 +307,24 @@ func (c *Client) UnfreezeCardAccount(ctx context.Context, customerID, cardAccoun
 	return &card, nil
 }
 
+// CreateExternalAccount registers a bank account as an ACH payout destination
+func (c *Client) CreateExternalAccount(ctx context.Context, customerID string, req *CreateExternalAccountRequest) (*ExternalAccount, error) {
+	var acct ExternalAccount
+	if err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v0/customers/%s/external_accounts", url.PathEscape(customerID)), req, &acct); err != nil {
+		return nil, fmt.Errorf("create external account failed: %w", err)
+	}
+	return &acct, nil
+}
+
+// GetExternalAccount retrieves an external account
+func (c *Client) GetExternalAccount(ctx context.Context, customerID, externalAccountID string) (*ExternalAccount, error) {
+	var acct ExternalAccount
+	if err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v0/customers/%s/external_accounts/%s", url.PathEscape(customerID), url.PathEscape(externalAccountID)), nil, &acct); err != nil {
+		return nil, fmt.Errorf("get external account failed: %w", err)
+	}
+	return &acct, nil
+}
+
 // CreateTransfer creates a transfer
 func (c *Client) CreateTransfer(ctx context.Context, req *CreateTransferRequest) (*Transfer, error) {
 	var transfer Transfer

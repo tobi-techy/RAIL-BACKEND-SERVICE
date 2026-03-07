@@ -179,12 +179,54 @@ func (h *Handlers) GetClaimInfo(c *gin.Context) {
 		return
 	}
 
-	// This would need a repo method to get transfer by token without claiming
-	// For now, return minimal info
+	info, err := h.service.GetClaimInfo(c.Request.Context(), token)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "NOT_FOUND", "message": err.Error()})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"valid":   true,
-		"message": "Download Rail to claim your money",
+		"amount":      info.Amount.StringFixed(2),
+		"currency":    info.Currency,
+		"sender_name": info.SenderName,
+		"note":        info.Note,
 	})
+}
+
+// ClaimToBankRequest is the HTTP request body for bank claim
+type ClaimToBankRequest struct {
+	AccountHolderName string `json:"account_holder_name" binding:"required,min=2"`
+	RoutingNumber     string `json:"routing_number"      binding:"required,len=9"`
+	AccountNumber     string `json:"account_number"      binding:"required,min=4,max=17"`
+}
+
+// ClaimToBank pays out a pending transfer to the recipient's bank (no app required)
+// POST /api/v1/p2p/claim/:token/bank
+func (h *Handlers) ClaimToBank(c *gin.Context) {
+	token := c.Param("token")
+	if token == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "INVALID_TOKEN"})
+		return
+	}
+
+	var req ClaimToBankRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "INVALID_REQUEST", "message": err.Error()})
+		return
+	}
+
+	err := h.service.ClaimToBank(c.Request.Context(), token, p2pservice.ClaimToBankRequest{
+		AccountHolderName: req.AccountHolderName,
+		RoutingNumber:     req.RoutingNumber,
+		AccountNumber:     req.AccountNumber,
+	})
+	if err != nil {
+		h.logger.Error("ClaimToBank failed", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "CLAIM_FAILED", "message": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Your money is on its way. Expect it in 1-3 business days."})
 }
 
 func (h *Handlers) getUserID(c *gin.Context) (uuid.UUID, error) {

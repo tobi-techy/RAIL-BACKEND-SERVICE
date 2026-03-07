@@ -1332,6 +1332,14 @@ func (c *Container) initializeDomainServices() error {
 	}
 	c.AutoInvestService.SetOrderPlacer(autoInvestOrderPlacer)
 
+	// Wire FundingBridge and AccountLookup so auto-invest journals cash into Alpaca before placing orders
+	if c.AlpacaFundingBridge != nil {
+		c.AutoInvestService.SetFundingBridge(c.AlpacaFundingBridge)
+	}
+	if c.AlpacaAccountRepo != nil {
+		c.AutoInvestService.SetAccountLookup(c.AlpacaAccountRepo)
+	}
+
 	// Initialize strategy engine and wire to auto-invest service
 	c.StrategyEngine = strategy.NewEngine(&strategyUserProfileAdapter{userRepo: c.UserRepo}, c.Logger)
 	c.AutoInvestService.SetStrategyEngine(c.StrategyEngine)
@@ -1555,6 +1563,10 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog,
 	)
 	c.P2PService.SetUserUpdater(c.UserRepo)
+	c.P2PService.SetWalletLookup(c.WalletRepo)
+	if c.BridgeClient != nil {
+		c.P2PService.SetBridgeOfframp(NewP2PBridgeOfframpAdapter(bridge.NewAdapter(c.BridgeClient, c.ZapLog)))
+	}
 	c.P2PHandlers = p2phandlers.NewHandlers(c.P2PService, c.ZapLog)
 
 	// Wire P2P service to onboarding for auto-claim

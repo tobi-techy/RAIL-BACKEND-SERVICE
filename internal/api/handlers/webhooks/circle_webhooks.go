@@ -32,7 +32,7 @@ type CircleManagedWalletRepository interface {
 
 // CircleWithdrawalRepository resolves and updates withdrawals based on provider transfer IDs.
 type CircleWithdrawalRepository interface {
-	GetByBridgeTransferID(ctx context.Context, transferID string) (*entities.Withdrawal, error)
+	GetByProviderTransferID(ctx context.Context, transferID string) (*entities.Withdrawal, error)
 	UpdateTxHash(ctx context.Context, id uuid.UUID, txHash string) error
 	MarkCompleted(ctx context.Context, id uuid.UUID) error
 	MarkFailed(ctx context.Context, id uuid.UUID, errorMsg string) error
@@ -402,7 +402,7 @@ func (h *CircleWebhookHandler) processOutboundTransferNotification(ctx context.C
 		return nil
 	}
 
-	withdrawal, err := h.withdrawalRepo.GetByBridgeTransferID(ctx, transferID)
+	withdrawal, err := h.withdrawalRepo.GetByProviderTransferID(ctx, transferID)
 	if err != nil {
 		h.logger.Warn("Failed to resolve withdrawal for outbound transfer webhook",
 			"transfer_id", transferID,
@@ -464,7 +464,7 @@ func (h *CircleWebhookHandler) processOutboundTransactionNotification(ctx contex
 		return nil
 	}
 
-	withdrawal, err := h.withdrawalRepo.GetByBridgeTransferID(ctx, transferID)
+	withdrawal, err := h.withdrawalRepo.GetByProviderTransferID(ctx, transferID)
 	if err != nil {
 		h.logger.Warn("Failed to resolve withdrawal for outbound transaction webhook",
 			"transfer_id", transferID,
@@ -551,8 +551,8 @@ func (h *CircleWebhookHandler) settleCompletedWithdrawal(ctx context.Context, wi
 		if withdrawal.DestinationAddress != nil {
 			metadata["destination_address"] = *withdrawal.DestinationAddress
 		}
-		if withdrawal.BridgeTransferID != nil {
-			metadata["provider_transfer_id"] = *withdrawal.BridgeTransferID
+		if withdrawal.ProviderTransferID != nil {
+			metadata["provider_transfer_id"] = *withdrawal.ProviderTransferID
 		}
 
 		if err := h.withdrawalLedger.CreateTransaction(

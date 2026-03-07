@@ -353,10 +353,11 @@ type TransferSource struct {
 
 // TransferDestination represents the destination of a transfer
 type TransferDestination struct {
-	PaymentRail PaymentRail `json:"payment_rail"`
-	Currency    Currency    `json:"currency"`
-	ToAddress   string      `json:"to_address,omitempty"`
-	WalletID    string      `json:"wallet_id,omitempty"`
+	PaymentRail       PaymentRail `json:"payment_rail"`
+	Currency          Currency    `json:"currency"`
+	ToAddress         string      `json:"to_address,omitempty"`
+	WalletID          string      `json:"wallet_id,omitempty"`
+	ExternalAccountID string      `json:"external_account_id,omitempty"`
 }
 
 // CreateTransferRequest represents a request to create a transfer
@@ -418,3 +419,46 @@ type ListWalletsResponse = PaginatedResponse[Wallet]
 
 // ListTransfersResponse represents a paginated list of transfers
 type ListTransfersResponse = PaginatedResponse[Transfer]
+
+// ExternalAccountAccountType represents the type of bank account
+type ExternalAccountAccountType string
+
+const (
+	ExternalAccountChecking ExternalAccountAccountType = "checking"
+	ExternalAccountSavings  ExternalAccountAccountType = "savings"
+)
+
+// ExternalAccountBankDetails holds ACH bank account details
+type ExternalAccountBankDetails struct {
+	AccountOwnerName string                     `json:"account_owner_name"`
+	AccountType      ExternalAccountAccountType `json:"account_type"`
+	RoutingNumber    string                     `json:"routing_number"`
+	AccountNumber    string                     `json:"account_number"`
+}
+
+// CreateExternalAccountRequest represents a request to register a bank account
+type CreateExternalAccountRequest struct {
+	Currency    Currency                   `json:"currency"`
+	BankDetails ExternalAccountBankDetails `json:"bank_details"`
+}
+
+// ExternalAccountStatus represents the status of an external account
+type ExternalAccountStatus string
+
+const (
+	ExternalAccountStatusActive   ExternalAccountStatus = "active"
+	ExternalAccountStatusInactive ExternalAccountStatus = "inactive"
+)
+
+// ExternalAccount represents a Bridge external bank account
+type ExternalAccount struct {
+	ID          string                `json:"id"`
+	CustomerID  string                `json:"customer_id"`
+	Currency    Currency              `json:"currency"`
+	Status      ExternalAccountStatus `json:"status"`
+	BankDetails ExternalAccountBankDetails `json:"bank_details"`
+	CreatedAt   time.Time             `json:"created_at"`
+}
+
+// ListExternalAccountsResponse represents a paginated list of external accounts
+type ListExternalAccountsResponse = PaginatedResponse[ExternalAccount]

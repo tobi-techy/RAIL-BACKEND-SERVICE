@@ -80,6 +80,7 @@ const (
 	WithdrawalStatusCompleted            WithdrawalStatus = "completed"             // Terminal: success
 	WithdrawalStatusFailed               WithdrawalStatus = "failed"                // Terminal: failed
 	WithdrawalStatusReversed             WithdrawalStatus = "reversed"              // Terminal: reversed/refunded
+	WithdrawalStatusCancelled            WithdrawalStatus = "cancelled"             // Terminal: cancelled by user
 )
 
 // ValidWithdrawalStatuses contains all valid withdrawal statuses
@@ -93,19 +94,21 @@ var ValidWithdrawalStatuses = map[WithdrawalStatus]bool{
 	WithdrawalStatusCompleted:            true,
 	WithdrawalStatusFailed:               true,
 	WithdrawalStatusReversed:             true,
+	WithdrawalStatusCancelled:            true,
 }
 
 // ValidWithdrawalTransitions defines allowed status transitions
 var ValidWithdrawalTransitions = map[WithdrawalStatus][]WithdrawalStatus{
-	WithdrawalStatusInitiated:            {WithdrawalStatusPending, WithdrawalStatusFailed},
-	WithdrawalStatusPending:              {WithdrawalStatusProcessing, WithdrawalStatusFailed, WithdrawalStatusTimeout},
-	WithdrawalStatusProcessing:           {WithdrawalStatusAwaitingConfirmation, WithdrawalStatusFailed, WithdrawalStatusReversed},
+	WithdrawalStatusInitiated:            {WithdrawalStatusPending, WithdrawalStatusFailed, WithdrawalStatusCancelled},
+	WithdrawalStatusPending:              {WithdrawalStatusProcessing, WithdrawalStatusFailed, WithdrawalStatusTimeout, WithdrawalStatusCancelled},
+	WithdrawalStatusProcessing:           {WithdrawalStatusAwaitingConfirmation, WithdrawalStatusFailed, WithdrawalStatusReversed, WithdrawalStatusCancelled},
 	WithdrawalStatusAwaitingConfirmation: {WithdrawalStatusCompleted, WithdrawalStatusFailed, WithdrawalStatusTimeout},
 	WithdrawalStatusOnChainTransfer:      {WithdrawalStatusCompleted, WithdrawalStatusFailed, WithdrawalStatusTimeout},
-	WithdrawalStatusTimeout:              {WithdrawalStatusCompleted, WithdrawalStatusFailed, WithdrawalStatusReversed}, // Can still resolve
-	WithdrawalStatusCompleted:            {},                                                                            // Terminal
-	WithdrawalStatusFailed:               {WithdrawalStatusReversed},                                                    // Can be reversed
-	WithdrawalStatusReversed:             {},                                                                            // Terminal
+	WithdrawalStatusTimeout:              {WithdrawalStatusCompleted, WithdrawalStatusFailed, WithdrawalStatusReversed},
+	WithdrawalStatusCompleted:            {},
+	WithdrawalStatusFailed:               {WithdrawalStatusReversed},
+	WithdrawalStatusReversed:             {},
+	WithdrawalStatusCancelled:            {},
 }
 
 // IsValid checks if the status is valid
@@ -129,7 +132,8 @@ func (s WithdrawalStatus) CanTransitionTo(newStatus WithdrawalStatus) bool {
 
 // IsTerminal returns true if this is a terminal state
 func (s WithdrawalStatus) IsTerminal() bool {
-	return s == WithdrawalStatusCompleted || s == WithdrawalStatusFailed || s == WithdrawalStatusReversed
+	return s == WithdrawalStatusCompleted || s == WithdrawalStatusFailed ||
+		s == WithdrawalStatusReversed || s == WithdrawalStatusCancelled
 }
 
 // IsPending returns true if withdrawal is still in progress
@@ -164,7 +168,7 @@ type Withdrawal struct {
 	FeeAmount          decimal.Decimal         `json:"fee_amount" db:"fee_amount"`
 	FeeCurrency        WithdrawalCurrency      `json:"fee_currency" db:"fee_currency"`
 	Status             WithdrawalStatus        `json:"status" db:"status"`
-	BridgeTransferID   *string                 `json:"bridge_transfer_id,omitempty" db:"bridge_transfer_id"`
+	ProviderTransferID *string                 `json:"provider_transfer_id,omitempty" db:"bridge_transfer_id"`
 	TxHash             *string                 `json:"tx_hash,omitempty" db:"tx_hash"`
 	ErrorMessage       *string                 `json:"error_message,omitempty" db:"error_message"`
 	IdempotencyKey     *string                 `json:"idempotency_key,omitempty" db:"idempotency_key"`

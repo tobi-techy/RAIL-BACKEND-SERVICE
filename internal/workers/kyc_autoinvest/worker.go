@@ -120,10 +120,9 @@ func (w *Worker) run(ctx context.Context) {
 	triggered := 0
 	for _, candidate := range candidates {
 		correlationID := fmt.Sprintf(
-			"kyc-approved-auto-invest:%s:%s:%s",
+			"kyc-approved-auto-invest:%s:%s",
 			candidate.UserID.String(),
 			candidate.StashAccountID.String(),
-			candidate.StashBalance.String(),
 		)
 
 		if err := w.autoInvestService.TriggerAutoInvestment(ctx, autoinvest.TriggerRequest{
