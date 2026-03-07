@@ -536,6 +536,15 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				}
 			}
 
+			// Public P2P claim routes (no auth required — for web claim page)
+			if p2pHandlers != nil {
+				publicP2P := router.Group("/api/v1/p2p")
+				{
+					publicP2P.GET("/claim/:token", p2pHandlers.GetClaimInfo)
+					publicP2P.POST("/claim/:token/bank", p2pHandlers.ClaimToBank)
+				}
+			}
+
 			// Notification routes - push tokens and in-app notifications
 			notificationHandlers := handlers.NewNotificationHandlers(
 				container.DeviceTokenRepo,

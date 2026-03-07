@@ -39,6 +39,18 @@ type OrderPlacer interface {
 	PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal) (*entities.AlpacaOrderResponse, error)
 }
 
+// FundingBridge journals cash into a user's Alpaca account before orders are placed
+type FundingBridge interface {
+	// JournalToAccount transfers amount from the firm account into the user's Alpaca account (JNLC).
+	// alpacaAccountID is the Alpaca-side account UUID (not the internal DB id).
+	JournalToAccount(ctx context.Context, alpacaAccountID string, amount decimal.Decimal) error
+}
+
+// AccountLookup resolves a user's Alpaca account ID for journaling
+type AccountLookup interface {
+	GetByUserID(ctx context.Context, userID uuid.UUID) (*entities.AlpacaAccount, error)
+}
+
 // StrategyEngine defines strategy selection operations
 type StrategyEngine interface {
 	GetStrategy(ctx context.Context, userID uuid.UUID) (*strategy.StrategyResult, error)
@@ -55,6 +67,8 @@ type Service struct {
 	orderPlacer    OrderPlacer
 	strategyEngine StrategyEngine
 	userRepo       UserRepository
+	fundingBridge  FundingBridge
+	accountLookup  AccountLookup
 	config         Config
 	logger         *logger.Logger
 }
@@ -89,6 +103,16 @@ func (s *Service) SetStrategyEngine(engine StrategyEngine) {
 // SetUserRepository sets the user repository for eligibility checks.
 func (s *Service) SetUserRepository(userRepo UserRepository) {
 	s.userRepo = userRepo
+}
+
+// SetFundingBridge sets the funding bridge for journaling cash into Alpaca before orders.
+func (s *Service) SetFundingBridge(fb FundingBridge) {
+	s.fundingBridge = fb
+}
+
+// SetAccountLookup sets the account lookup for resolving Alpaca account IDs.
+func (s *Service) SetAccountLookup(al AccountLookup) {
+	s.accountLookup = al
 }
 
 // TriggerRequest contains parameters for triggering auto-investment.
@@ -178,6 +202,27 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 	if err := s.transferStashToFiatExposure(ctx, userID, stashID, amount, correlationID); err != nil {
 		span.RecordError(err)
 		return fmt.Errorf("failed to transfer to buying power: %w", err)
+	}
+
+	// Journal cash into the user's Alpaca account so buying power is available immediately.
+	// This must happen before orders are placed — without it Alpaca rejects orders with insufficient funds.
+	if s.fundingBridge != nil && s.accountLookup != nil {
+		account, err := s.accountLookup.GetByUserID(ctx, userID)
+		if err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to resolve Alpaca account for journal: %w", err)
+		}
+		if account == nil {
+			return fmt.Errorf("user has no Alpaca account")
+		}
+		if err := s.fundingBridge.JournalToAccount(ctx, account.AlpacaAccountID, amount); err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to journal funds to Alpaca: %w", err)
+		}
+		s.logger.Info("Journaled funds to Alpaca account",
+			"user_id", userID,
+			"alpaca_account_id", account.AlpacaAccountID,
+			"amount", amount)
 	}
 
 	// Get strategy allocation

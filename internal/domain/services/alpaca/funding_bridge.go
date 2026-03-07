@@ -210,3 +210,14 @@ func (b *FundingBridge) CreateJournal(ctx context.Context, fromAccount, toAccoun
 
 	return b.fundingAdapter.CreateJournal(ctx, req)
 }
+
+// JournalToAccount journals cash from the firm account into a user's Alpaca account.
+// This satisfies the autoinvest.FundingBridge interface and must be called before placing orders.
+func (b *FundingBridge) JournalToAccount(ctx context.Context, alpacaAccountID string, amount decimal.Decimal) error {
+	if b.firmAccountNo == "" {
+		return fmt.Errorf("firm_account_no not configured — set ALPACA_FIRM_ACCOUNT_NO")
+	}
+	_, err := b.CreateJournal(ctx, b.firmAccountNo, alpacaAccountID, amount,
+		fmt.Sprintf("auto-invest funding %.2f USD", amount.InexactFloat64()))
+	return err
+}

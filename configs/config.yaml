@@ -194,6 +194,9 @@ alpaca:
   auth_method: "oauth2"  # oauth2 or legacy
   # Webhook signature verification secret (generate with: openssl rand -base64 32)
   webhook_secret: "${ALPACA_WEBHOOK_SECRET:-}"
+  # Firm/omnibus account ID used as the source for JNLC cash journals into user accounts.
+  # Find this in your Alpaca Broker dashboard under Accounts → Firm Account.
+  firm_account_no: "${ALPACA_FIRM_ACCOUNT_NO:-}"
 
 bridge:
   api_key: "${BRIDGE_API_KEY}"

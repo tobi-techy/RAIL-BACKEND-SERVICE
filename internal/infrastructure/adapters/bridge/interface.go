@@ -34,6 +34,10 @@ type BridgeClient interface {
 	FreezeCardAccount(ctx context.Context, customerID, cardAccountID string) (*CardAccount, error)
 	UnfreezeCardAccount(ctx context.Context, customerID, cardAccountID string) (*CardAccount, error)
 
+	// External Accounts (ACH payout destinations)
+	CreateExternalAccount(ctx context.Context, customerID string, req *CreateExternalAccountRequest) (*ExternalAccount, error)
+	GetExternalAccount(ctx context.Context, customerID, externalAccountID string) (*ExternalAccount, error)
+
 	// Transfers
 	CreateTransfer(ctx context.Context, req *CreateTransferRequest) (*Transfer, error)
 	GetTransfer(ctx context.Context, transferID string) (*Transfer, error)
