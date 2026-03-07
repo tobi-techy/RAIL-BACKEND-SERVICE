@@ -2823,6 +2823,9 @@ func (c *Container) GetInvestmentStashHandlers() *handlers.InvestmentStashHandle
 		c.ZapLog,
 	)
 	h.SetAutoInvestRepository(repositories.NewAutoInvestRepository(sqlx.NewDb(c.DB, "postgres")))
+	if c.StrategyEngine != nil {
+		h.SetStrategyProvider(c.StrategyEngine)
+	}
 	return h
 }
 
