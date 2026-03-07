@@ -84,7 +84,7 @@ func (s *AccountService) CreateAccountForUser(ctx context.Context, userID uuid.U
 		ID:                  uuid.New(),
 		UserID:              userID,
 		AlpacaAccountID:     alpacaResp.ID,
-		AlpacaAccountNumber: alpacaResp.AccountNumber,
+		AlpacaAccountNumber: &alpacaResp.AccountNumber,
 		Status:              alpacaResp.Status,
 		AccountType:         entities.AlpacaAccountTypeTradingCash,
 		Currency:            alpacaResp.Currency,
