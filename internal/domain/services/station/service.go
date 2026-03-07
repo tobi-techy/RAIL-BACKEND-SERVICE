@@ -95,6 +95,11 @@ type TransactionRepository interface {
 	GetRecentByUserID(ctx context.Context, userID uuid.UUID, limit int) ([]*ActivityItem, error)
 }
 
+// AlpacaAccountRepository interface for fetching broker portfolio value
+type AlpacaAccountRepository interface {
+	GetByUserID(ctx context.Context, userID uuid.UUID) (*entities.AlpacaAccount, error)
+}
+
 // Service handles station/home screen data retrieval
 type Service struct {
 	ledgerService    LedgerService
@@ -104,6 +109,7 @@ type Service struct {
 	snapshotRepo     BalanceSnapshotRepository
 	notificationRepo NotificationRepository
 	transactionRepo  TransactionRepository
+	alpacaAccountRepo AlpacaAccountRepository
 	logger           *zap.Logger
 }
 
@@ -140,6 +146,11 @@ func (s *Service) SetNotificationRepository(repo NotificationRepository) {
 // SetTransactionRepository sets the transaction repository
 func (s *Service) SetTransactionRepository(repo TransactionRepository) {
 	s.transactionRepo = repo
+}
+
+// SetAlpacaAccountRepository sets the Alpaca account repository for portfolio value lookups
+func (s *Service) SetAlpacaAccountRepository(repo AlpacaAccountRepository) {
+	s.alpacaAccountRepo = repo
 }
 
 // GetUserBalances retrieves the user's spend and invest balances
@@ -258,7 +269,14 @@ func (s *Service) GetUserBalances(ctx context.Context, userID uuid.UUID) (*Balan
 
 	wg.Wait()
 
-	investBalance := stashBalance.Add(fiatExposure)
+	portfolioValue := decimal.Zero
+	if s.alpacaAccountRepo != nil {
+		if acct, err := s.alpacaAccountRepo.GetByUserID(ctx, userID); err == nil && acct != nil {
+			portfolioValue = acct.PortfolioValue
+		}
+	}
+
+	investBalance := stashBalance.Add(fiatExposure).Add(portfolioValue)
 	totalBalance := spendingBalance.Add(investBalance).Add(usdcBalance)
 
 	return &Balances{
