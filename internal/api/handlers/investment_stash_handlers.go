@@ -80,6 +80,11 @@ type StrategyProvider interface {
 	GetStrategy(ctx context.Context, userID uuid.UUID) (*strategy.StrategyResult, error)
 }
 
+// PortfolioSyncer triggers a live sync of positions from Alpaca.
+type PortfolioSyncer interface {
+	SyncPositions(ctx context.Context, userID uuid.UUID) error
+}
+
 // InvestmentStashHandlers handles investment stash endpoints.
 type InvestmentStashHandlers struct {
 	allocationService *allocation.Service
@@ -88,6 +93,7 @@ type InvestmentStashHandlers struct {
 	analyticsService  PortfolioAnalyticsProvider
 	autoInvestRepo    AutoInvestRepository
 	strategyProvider  StrategyProvider
+	portfolioSyncer   PortfolioSyncer
 	logger            *zap.Logger
 }
 
@@ -116,6 +122,11 @@ func (h *InvestmentStashHandlers) SetAutoInvestRepository(repo AutoInvestReposit
 // SetStrategyProvider sets the strategy provider for investment rule display.
 func (h *InvestmentStashHandlers) SetStrategyProvider(p StrategyProvider) {
 	h.strategyProvider = p
+}
+
+// SetPortfolioSyncer sets the portfolio syncer for on-demand position refresh.
+func (h *InvestmentStashHandlers) SetPortfolioSyncer(s PortfolioSyncer) {
+	h.portfolioSyncer = s
 }
 
 // GetInvestmentStash handles GET /api/v1/account/investment-stash.
@@ -531,6 +542,18 @@ func (h *InvestmentStashHandlers) getPositions(ctx context.Context, userID uuid.
 	positions, err := h.positionsRepo.GetByUserID(ctx, userID)
 	if err != nil {
 		return nil, err
+	}
+
+	// If no local positions, trigger a live sync from Alpaca then re-fetch.
+	if len(positions) == 0 && h.portfolioSyncer != nil {
+		if syncErr := h.portfolioSyncer.SyncPositions(ctx, userID); syncErr != nil {
+			h.logger.Warn("Failed to sync positions from Alpaca", zap.String("user_id", userID.String()), zap.Error(syncErr))
+		} else {
+			positions, err = h.positionsRepo.GetByUserID(ctx, userID)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	sort.Slice(positions, func(i, j int) bool {

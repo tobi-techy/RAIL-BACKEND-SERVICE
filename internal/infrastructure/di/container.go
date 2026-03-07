@@ -2833,6 +2833,9 @@ func (c *Container) GetInvestmentStashHandlers() *handlers.InvestmentStashHandle
 	if c.StrategyEngine != nil {
 		h.SetStrategyProvider(c.StrategyEngine)
 	}
+	if c.AlpacaPortfolioSync != nil {
+		h.SetPortfolioSyncer(c.AlpacaPortfolioSync)
+	}
 	return h
 }
 
