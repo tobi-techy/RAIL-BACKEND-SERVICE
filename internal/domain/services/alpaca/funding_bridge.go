@@ -73,8 +73,11 @@ func (b *FundingBridge) TransferFromCircleToAlpaca(ctx context.Context, userID u
 		return fmt.Errorf("Alpaca account not active: %s", account.Status)
 	}
 
+	if account.AlpacaAccountNumber == nil {
+		return fmt.Errorf("Alpaca account number not set")
+	}
 	// Create instant funding transfer
-	resp, err := b.CreateInstantFunding(ctx, account.AlpacaAccountNumber, amount)
+	resp, err := b.CreateInstantFunding(ctx, *account.AlpacaAccountNumber, amount)
 	if err != nil {
 		return fmt.Errorf("create instant funding: %w", err)
 	}

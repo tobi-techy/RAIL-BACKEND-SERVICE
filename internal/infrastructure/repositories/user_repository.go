@@ -1114,10 +1114,10 @@ func (r *UserRepository) UpdateUserEntity(ctx context.Context, user *entities.Us
 
 // UpdateLastLogin updates the user's last login timestamp
 func (r *UserRepository) UpdateLastLogin(ctx context.Context, userID uuid.UUID) error {
-	query := `UPDATE users SET last_login_at = $2, updated_at = $2 WHERE id = $1`
+	query := `UPDATE users SET last_login_at = $2, updated_at = $3 WHERE id = $1`
 
 	now := time.Now()
-	_, err := r.db.ExecContext(ctx, query, userID, now)
+	_, err := r.db.ExecContext(ctx, query, userID, now, now)
 	if err != nil {
 		r.logger.Error("Failed to update last login", zap.Error(err), zap.String("user_id", userID.String()))
 		return fmt.Errorf("failed to update last login: %w", err)
