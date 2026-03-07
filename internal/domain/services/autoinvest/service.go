@@ -43,7 +43,8 @@ type OrderPlacer interface {
 type FundingBridge interface {
 	// JournalToAccount transfers amount from the firm account into the user's Alpaca account (JNLC).
 	// alpacaAccountID is the Alpaca-side account UUID (not the internal DB id).
-	JournalToAccount(ctx context.Context, alpacaAccountID string, amount decimal.Decimal) error
+	// correlationID is used as the idempotency key — same value on retry will not double-fund.
+	JournalToAccount(ctx context.Context, alpacaAccountID string, amount decimal.Decimal, correlationID string) error
 }
 
 // AccountLookup resolves a user's Alpaca account ID for journaling
@@ -215,7 +216,7 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 		if account == nil {
 			return fmt.Errorf("user has no Alpaca account")
 		}
-		if err := s.fundingBridge.JournalToAccount(ctx, account.AlpacaAccountID, amount); err != nil {
+		if err := s.fundingBridge.JournalToAccount(ctx, account.AlpacaAccountID, amount, correlationID); err != nil {
 			span.RecordError(err)
 			return fmt.Errorf("failed to journal funds to Alpaca: %w", err)
 		}

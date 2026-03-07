@@ -2,6 +2,7 @@ package alpaca
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"time"
 
@@ -195,6 +196,8 @@ func (b *FundingBridge) ProcessFundingSettlement(ctx context.Context, transferID
 	return b.fundingRepo.UpdateStatus(ctx, transferID, "COMPLETED", &settlementID, &now)
 }
 
+func sha256sum(s string) [32]byte { return sha256.Sum256([]byte(s)) }
+
 // CreateJournal creates a journal entry to transfer funds between accounts
 func (b *FundingBridge) CreateJournal(ctx context.Context, fromAccount, toAccount string, amount decimal.Decimal, description string) (*entities.AlpacaJournalResponse, error) {
 	req := &entities.AlpacaJournalRequest{
@@ -212,12 +215,26 @@ func (b *FundingBridge) CreateJournal(ctx context.Context, fromAccount, toAccoun
 }
 
 // JournalToAccount journals cash from the firm account into a user's Alpaca account.
-// This satisfies the autoinvest.FundingBridge interface and must be called before placing orders.
-func (b *FundingBridge) JournalToAccount(ctx context.Context, alpacaAccountID string, amount decimal.Decimal) error {
+// correlationID is hashed into a stable client_transfer_id so retries are idempotent.
+func (b *FundingBridge) JournalToAccount(ctx context.Context, alpacaAccountID string, amount decimal.Decimal, correlationID string) error {
 	if b.firmAccountNo == "" {
 		return fmt.Errorf("firm_account_no not configured — set ALPACA_FIRM_ACCOUNT_NO")
 	}
-	_, err := b.CreateJournal(ctx, b.firmAccountNo, alpacaAccountID, amount,
-		fmt.Sprintf("auto-invest funding %.2f USD", amount.InexactFloat64()))
+	// Derive a stable, length-safe idempotency key from the correlation ID
+	h := fmt.Sprintf("%x", sha256sum(correlationID))[:32]
+	clientTransferID := fmt.Sprintf("ai-jnl-%s", h)
+
+	req := &entities.AlpacaJournalRequest{
+		FromAccount:                     b.firmAccountNo,
+		ToAccount:                       alpacaAccountID,
+		EntryType:                       "JNLC",
+		Amount:                          amount,
+		Description:                     fmt.Sprintf("auto-invest funding %.2f USD", amount.InexactFloat64()),
+		ClientTransferID:                clientTransferID,
+		TransmitterName:                 "RAIL Platform",
+		TransmitterAccountNumber:        b.firmAccountNo,
+		TransmitterFinancialInstitution: "RAIL Treasury",
+	}
+	_, err := b.fundingAdapter.CreateJournal(ctx, req)
 	return err
 }
