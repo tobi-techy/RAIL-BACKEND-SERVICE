@@ -35,6 +35,7 @@ func RegisterAdvancedFeaturesRoutes(
 	market := router.Group("/market")
 	{
 		// Public endpoints — cached at Cloudflare edge (30s for quotes, 60s for bars)
+		market.GET("/status", middleware.PublicCache(60), marketHandlers.GetMarketStatus)
 		market.GET("/quote/:symbol", middleware.PublicCache(30), marketHandlers.GetQuote)
 		market.GET("/quotes", middleware.PublicCache(30), marketHandlers.GetQuotes)
 		market.GET("/bars/:symbol", middleware.PublicCache(60), marketHandlers.GetBars)
