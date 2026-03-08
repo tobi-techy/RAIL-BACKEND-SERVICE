@@ -99,7 +99,7 @@ var ValidWithdrawalStatuses = map[WithdrawalStatus]bool{
 
 // ValidWithdrawalTransitions defines allowed status transitions
 var ValidWithdrawalTransitions = map[WithdrawalStatus][]WithdrawalStatus{
-	WithdrawalStatusInitiated:            {WithdrawalStatusPending, WithdrawalStatusFailed, WithdrawalStatusCancelled},
+	WithdrawalStatusInitiated:            {WithdrawalStatusPending, WithdrawalStatusProcessing, WithdrawalStatusFailed, WithdrawalStatusCancelled},
 	WithdrawalStatusPending:              {WithdrawalStatusProcessing, WithdrawalStatusFailed, WithdrawalStatusTimeout, WithdrawalStatusCancelled},
 	WithdrawalStatusProcessing:           {WithdrawalStatusAwaitingConfirmation, WithdrawalStatusFailed, WithdrawalStatusReversed, WithdrawalStatusCancelled},
 	WithdrawalStatusAwaitingConfirmation: {WithdrawalStatusCompleted, WithdrawalStatusFailed, WithdrawalStatusTimeout},
