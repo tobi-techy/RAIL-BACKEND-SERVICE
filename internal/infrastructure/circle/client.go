@@ -836,7 +836,7 @@ func (c *Client) InitiateCCTPBurn(ctx context.Context, req *entities.CCTPBurnReq
 	// CCTP mintRecipient must be 32-byte hex: EVM addresses (20 bytes) need left-zero-padding.
 	mintRecipient := req.MintRecipient
 	if addr := strings.TrimPrefix(mintRecipient, "0x"); len(addr) == 40 {
-		mintRecipient = "0x" + fmt.Sprintf("%064s", addr)
+		mintRecipient = "0x" + strings.Repeat("0", 24) + addr
 	}
 
 	transferReq := map[string]interface{}{
