@@ -105,7 +105,7 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 		return
 	}
 
-	// Determine destination chain (default to SOL-DEVNET for testnet)
+	// Determine destination chain (default to SOL for testnet, SOL for mainnet)
 	destChain := req.DestinationChain
 	if destChain == "" {
 		destChain = string(entities.WalletChainSOLDevnet)
@@ -117,9 +117,9 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 		return
 	}
 
-	// The source is always the user's spending wallet (SOL-DEVNET for testnet).
-	// Cross-chain routing (CCTP) is handled by the withdrawal service.
-	wallet, err := h.walletProvider.GetUserWalletByChain(c.Request.Context(), userID, string(entities.WalletChainSOLDevnet))
+	// The source is always the user's spending wallet.
+	// Try SOL (mainnet) first; the adapter falls back to SOL-DEVNET automatically.
+	wallet, err := h.walletProvider.GetUserWalletByChain(c.Request.Context(), userID, string(entities.WalletChainSolana))
 	if err != nil {
 		h.logger.Error("Failed to get user wallet", "error", err, "user_id", userID)
 		common.SendBadRequest(c, "NO_WALLET", "No wallet found for user")
@@ -410,7 +410,14 @@ func (h *WithdrawalHandlers) handleWithdrawalError(c *gin.Context, err error, us
 	case strings.Contains(errMsg, "cctp burn failed"),
 		strings.Contains(errMsg, "circle transfer failed"),
 		strings.Contains(errMsg, "failed to execute transfer"):
-		common.SendInternalError(c, "TRANSFER_FAILED", "Transfer execution failed. Please try again.")
+		// Surface the inner Circle error if it's user-actionable
+		innerMsg := "Transfer execution failed. Please try again."
+		if strings.Contains(errMsg, "Invalid destination address") {
+			innerMsg = "Invalid destination address for this chain."
+		} else if strings.Contains(errMsg, "Insufficient") {
+			innerMsg = "Insufficient balance in custody wallet."
+		}
+		common.SendBadRequest(c, "TRANSFER_FAILED", innerMsg)
 	case strings.Contains(errMsg, "failed to post ledger"),
 		strings.Contains(errMsg, "failed to create withdrawal"):
 		common.SendInternalError(c, "WITHDRAWAL_ERROR", "Failed to record withdrawal. Please try again.")
