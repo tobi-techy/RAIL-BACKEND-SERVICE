@@ -125,6 +125,11 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 		common.SendBadRequest(c, "NO_WALLET", "No wallet found for user")
 		return
 	}
+	if strings.TrimSpace(wallet.CircleWalletID) == "" {
+		h.logger.Error("User wallet has no Circle wallet ID", "user_id", userID)
+		common.SendInternalError(c, "PROVIDER_NOT_CONFIGURED", "Withdrawal provider is not available for this account")
+		return
+	}
 
 	serviceReq := &entities.InitiateCryptoWithdrawalRequest{
 		UserID:             userID,
@@ -363,24 +368,37 @@ func (h *WithdrawalHandlers) extractUserID(c *gin.Context) (uuid.UUID, bool) {
 func (h *WithdrawalHandlers) handleWithdrawalError(c *gin.Context, err error, userID uuid.UUID, amount string) {
 	h.logger.Error("Failed to initiate withdrawal",
 		"error", err,
+		"error_type", fmt.Sprintf("%T", err),
 		"user_id", userID,
-		"amount", amount)
+		"amount", amount,
+		"request_id", c.GetString("request_id"))
 
 	errMsg := err.Error()
+	errLower := strings.ToLower(errMsg)
 
 	switch {
 	case strings.Contains(errMsg, "insufficient"):
 		common.SendBadRequest(c, common.ErrCodeInsufficientFunds, "Insufficient balance for withdrawal")
 	case strings.Contains(errMsg, "minimum"):
 		common.SendBadRequest(c, common.ErrCodeInvalidAmount, "Withdrawal amount below minimum")
-	case strings.Contains(strings.ToLower(errMsg), "circle validation error 400"),
-		strings.Contains(strings.ToLower(errMsg), "api parameter invalid"):
-		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Invalid withdrawal parameters")
 	case strings.Contains(errMsg, "PAYMASTER_SOL_ATA_CREATION_NOT_ALLOWED"):
 		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Destination Solana wallet must create USDC ATA before withdrawal")
-	case strings.Contains(strings.ToLower(errMsg), "token"),
-		strings.Contains(strings.ToLower(errMsg), "entity secret"):
-		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Withdrawal provider configuration is invalid")
+	case strings.Contains(errMsg, "invalid request:"):
+		// Strip the prefix only if it's at the start (not wrapped)
+		msg := errMsg
+		if idx := strings.Index(errMsg, "invalid request: "); idx >= 0 {
+			msg = errMsg[idx+len("invalid request: "):]
+		}
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, msg)
+	case strings.Contains(errLower, "circle validation error 400"),
+		strings.Contains(errLower, "api parameter invalid"):
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Invalid withdrawal parameters")
+	case strings.Contains(errMsg, "circle client not configured"),
+		strings.Contains(errMsg, "circle wallet ID not provided"),
+		strings.Contains(errMsg, "circle wallet ID is required"):
+		common.SendInternalError(c, "PROVIDER_NOT_CONFIGURED", "Withdrawal provider is not available")
+	case strings.Contains(errLower, "entity secret"):
+		common.SendInternalError(c, "PROVIDER_NOT_CONFIGURED", "Withdrawal provider configuration is invalid")
 	case strings.Contains(errMsg, "limit exceeded"):
 		common.SendBadRequest(c, "LIMIT_EXCEEDED", errMsg)
 	case strings.Contains(errMsg, "bank account"):
@@ -389,6 +407,13 @@ func (h *WithdrawalHandlers) handleWithdrawalError(c *gin.Context, err error, us
 		common.SendBadRequest(c, "BANK_ACCOUNT_NOT_VERIFIED", "Bank account must be verified before withdrawal")
 	case strings.Contains(errMsg, "currency"):
 		common.SendBadRequest(c, "CURRENCY_MISMATCH", errMsg)
+	case strings.Contains(errMsg, "cctp burn failed"),
+		strings.Contains(errMsg, "circle transfer failed"),
+		strings.Contains(errMsg, "failed to execute transfer"):
+		common.SendInternalError(c, "TRANSFER_FAILED", "Transfer execution failed. Please try again.")
+	case strings.Contains(errMsg, "failed to post ledger"),
+		strings.Contains(errMsg, "failed to create withdrawal"):
+		common.SendInternalError(c, "WITHDRAWAL_ERROR", "Failed to record withdrawal. Please try again.")
 	default:
 		common.SendInternalError(c, "WITHDRAWAL_ERROR", "Failed to initiate withdrawal")
 	}
