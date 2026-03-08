@@ -105,10 +105,17 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 		return
 	}
 
-	// Determine destination chain (default to SOL for testnet, SOL for mainnet)
+	// Determine destination chain (default to SOL-DEVNET)
 	destChain := req.DestinationChain
 	if destChain == "" {
 		destChain = string(entities.WalletChainSOLDevnet)
+	}
+
+	// Only Solana withdrawals are supported for now.
+	destUpper := strings.ToUpper(destChain)
+	if destUpper != "SOL" && destUpper != "SOL-DEVNET" && destUpper != "SOLANA" {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Only Solana withdrawals are supported. EVM chain withdrawals (Polygon, Ethereum, etc.) are coming soon.")
+		return
 	}
 
 	// Validate destination address format for the target chain
