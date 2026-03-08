@@ -832,21 +832,16 @@ func (c *Client) InitiateCCTPBurn(ctx context.Context, req *entities.CCTPBurnReq
 		return nil, fmt.Errorf("failed to resolve USDC token for wallet %s: %w", req.WalletID, err)
 	}
 
-	// Build CCTP transfer request using Circle's developer wallet transfer endpoint
-	// CCTP mintRecipient must be 32-byte hex: EVM addresses (20 bytes) need left-zero-padding.
-	mintRecipient := req.MintRecipient
-	if addr := strings.TrimPrefix(mintRecipient, "0x"); len(addr) == 40 {
-		mintRecipient = "0x" + strings.Repeat("0", 24) + addr
-	}
-
+	// Build CCTP transfer request using Circle's developer wallet transfer endpoint.
+	// Circle's W3S API takes a plain address — no 32-byte padding, no destinationDomain.
+	// CCTP routing is handled internally by Circle based on the source wallet's chain.
 	transferReq := map[string]interface{}{
 		"idempotencyKey":         req.IdempotencyKey,
 		"entitySecretCiphertext": entitySecretCiphertext,
 		"walletId":               req.WalletID,
 		"amounts":                []string{req.Amount.String()},
-		"destinationAddress":     mintRecipient,
+		"destinationAddress":     req.MintRecipient,
 		"tokenId":                tokenID,
-		"destinationDomain":      req.DestDomain,
 		"feeLevel":               "MEDIUM",
 	}
 
