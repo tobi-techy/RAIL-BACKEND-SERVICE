@@ -334,6 +334,19 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 				"error", err)
 		}
 
+		if withdrawal.Status == entities.WithdrawalStatusFailed {
+			// Reverse the ledger debit — the transfer failed on-chain.
+			if revErr := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); revErr != nil {
+				s.logger.Error("Failed to reverse ledger debit after provider failure",
+					"error", revErr, "withdrawal_id", withdrawal.ID.String())
+			}
+			failReason := "withdrawal failed during processing"
+			if withdrawal.ErrorMessage != nil && strings.TrimSpace(*withdrawal.ErrorMessage) != "" {
+				failReason = *withdrawal.ErrorMessage
+			}
+			return nil, fmt.Errorf("%s", failReason)
+		}
+
 		if withdrawal.Status == entities.WithdrawalStatusCompleted {
 			// Send notification
 			if s.notificationService != nil {
@@ -350,10 +363,6 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 				Status:       withdrawal.Status,
 				Message:      "Withdrawal completed successfully",
 			}, nil
-		}
-
-		if withdrawal.Status == entities.WithdrawalStatusFailed {
-			return nil, fmt.Errorf("withdrawal failed during processing")
 		}
 
 		if withdrawal.Status == entities.WithdrawalStatusInitiated {
@@ -1229,15 +1238,19 @@ func (s *WithdrawalService) syncCryptoWithdrawalStatusFromProvider(ctx context.C
 		s.logger.Warn("Provider reported failed crypto withdrawal",
 			"withdrawal_id", withdrawal.ID.String(),
 			"provider_state", providerState,
-			"transfer_id", strings.TrimSpace(*withdrawal.ProviderTransferID))
+			"transfer_id", strings.TrimSpace(*withdrawal.ProviderTransferID),
+			"error_reason", status.ErrorReason)
 		reason := "circle transfer failed"
-		if providerState != "" {
+		if strings.TrimSpace(status.ErrorReason) != "" {
+			reason = status.ErrorReason
+		} else if providerState != "" {
 			reason = "circle transfer failed: " + strings.ToLower(providerState)
 		}
 		if err := s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, reason); err != nil {
 			return withdrawal.Status, fmt.Errorf("failed to mark withdrawal failed: %w", err)
 		}
 		withdrawal.Status = entities.WithdrawalStatusFailed
+		withdrawal.ErrorMessage = &reason
 	}
 
 	return withdrawal.Status, nil
