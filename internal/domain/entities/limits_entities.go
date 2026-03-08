@@ -38,7 +38,7 @@ var (
 // Withdrawal Limits (USD)
 var (
 	// Minimum withdrawal - covers network fees while allowing small exits
-	MinWithdrawalAmount = decimal.NewFromFloat(10.00)
+	MinWithdrawalAmount = decimal.NewFromFloat(1.00)
 
 	// Maximum single withdrawal amount (Tier 2 daily limit as upper bound)
 	MaxWithdrawalAmount = decimal.NewFromFloat(10000.00)
