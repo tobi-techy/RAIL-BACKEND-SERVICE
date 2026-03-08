@@ -831,4 +831,5 @@ type CCTPTransactionStatus struct {
 	Status      string     `json:"status"` // pending, confirmed, failed
 	Chain       string     `json:"blockchain"`
 	ConfirmedAt *time.Time `json:"firstConfirmDate,omitempty"`
+	ErrorReason string     `json:"errorReason,omitempty"`
 }

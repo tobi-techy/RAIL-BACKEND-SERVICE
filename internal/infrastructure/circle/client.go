@@ -1092,6 +1092,9 @@ func parseTransactionStatusFromMap(defaultID string, txData map[string]interface
 			status.ConfirmedAt = &t
 		}
 	}
+	if reason, ok := txData["errorReason"].(string); ok {
+		status.ErrorReason = reason
+	}
 
 	return status
 }
