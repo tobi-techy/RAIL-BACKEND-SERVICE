@@ -833,12 +833,18 @@ func (c *Client) InitiateCCTPBurn(ctx context.Context, req *entities.CCTPBurnReq
 	}
 
 	// Build CCTP transfer request using Circle's developer wallet transfer endpoint
+	// CCTP mintRecipient must be 32-byte hex: EVM addresses (20 bytes) need left-zero-padding.
+	mintRecipient := req.MintRecipient
+	if addr := strings.TrimPrefix(mintRecipient, "0x"); len(addr) == 40 {
+		mintRecipient = "0x" + fmt.Sprintf("%064s", addr)
+	}
+
 	transferReq := map[string]interface{}{
 		"idempotencyKey":         req.IdempotencyKey,
 		"entitySecretCiphertext": entitySecretCiphertext,
 		"walletId":               req.WalletID,
 		"amounts":                []string{req.Amount.String()},
-		"destinationAddress":     req.MintRecipient,
+		"destinationAddress":     mintRecipient,
 		"tokenId":                tokenID,
 		"destinationDomain":      req.DestDomain,
 		"feeLevel":               "MEDIUM",
