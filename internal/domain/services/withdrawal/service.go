@@ -921,8 +921,8 @@ func (s *WithdrawalService) calculateFiatWithdrawalFee(amount decimal.Decimal, c
 	return fee
 }
 
-// resolveWithdrawalRoute determines whether to use CCTP or direct Circle transfer.
-// EVM <-> Solana requires CCTP; everything else uses direct transfer.
+// resolveWithdrawalRoute determines the transfer route.
+// Circle's W3S API only supports same-chain transfers; cross-chain is not supported.
 func resolveWithdrawalRoute(sourceChain, destChain string) string {
 	src := strings.ToUpper(sourceChain)
 	dst := strings.ToUpper(destChain)
@@ -937,7 +937,7 @@ func resolveWithdrawalRoute(sourceChain, destChain string) string {
 			c == "ARB" || c == "OP"
 	}
 	if (isSolana(src) && isEVM(dst)) || (isEVM(src) && isSolana(dst)) {
-		return "cctp"
+		return "unsupported"
 	}
 	return "direct"
 }
@@ -988,8 +988,15 @@ func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawa
 	// Format amount for Circle API (USDC uses 6 decimals)
 	amountStr := withdrawal.Amount.StringFixed(6)
 
+	route := resolveWithdrawalRoute(sourceChain, destinationChain)
+
+	// Cross-chain transfers (e.g. Solana → EVM) are not supported via Circle's W3S API.
+	if route == "unsupported" {
+		return nil, fmt.Errorf("invalid request: cross-chain withdrawals are not supported. Please use a %s address", sourceChain)
+	}
+
 	// Route via CCTP for EVM <-> Solana cross-chain transfers
-	if resolveWithdrawalRoute(sourceChain, destinationChain) == "cctp" {
+	if route == "cctp" {
 		destDomain, ok := cctp.DomainForChain(destinationChain)
 		if !ok {
 			return nil, fmt.Errorf("unsupported CCTP destination chain: %s", destinationChain)
