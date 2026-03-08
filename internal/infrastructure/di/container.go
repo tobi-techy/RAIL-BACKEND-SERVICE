@@ -287,6 +287,56 @@ func (a *WithdrawalLedgerAdapter) CreateTransaction(ctx context.Context, userID 
 	return err
 }
 
+func (a *WithdrawalLedgerAdapter) ReverseTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, originalTxID string, amount decimal.Decimal, metadata map[string]interface{}) error {
+	userAccount, err := a.ledgerService.GetOrCreateUserAccount(ctx, userID, accountType)
+	if err != nil {
+		return err
+	}
+
+	systemAccount, err := a.ledgerService.GetSystemAccount(ctx, entities.AccountTypeSystemBufferUSDC)
+	if err != nil {
+		return err
+	}
+
+	desc := "Withdrawal reversal"
+	revIdempotencyKey := fmt.Sprintf("withdrawal-reversal-%s-%d", originalTxID, time.Now().UnixNano())
+
+	revMetadata := map[string]interface{}{
+		"reversal_of_tx": originalTxID,
+		"reversal_type":  "failed_withdrawal",
+	}
+	for k, v := range metadata {
+		revMetadata[k] = v
+	}
+
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeReversal,
+		IdempotencyKey:  revIdempotencyKey,
+		Description:     &desc,
+		Metadata:        revMetadata,
+		Entries: []entities.CreateEntryRequest{
+			{
+				AccountID:   userAccount.ID,
+				EntryType:   entities.EntryTypeDebit,
+				Amount:      amount,
+				Currency:    "USDC",
+				Description: &desc,
+			},
+			{
+				AccountID:   systemAccount.ID,
+				EntryType:   entities.EntryTypeCredit,
+				Amount:      amount,
+				Currency:    "USDC",
+				Description: &desc,
+			},
+		},
+	}
+
+	_, err = a.ledgerService.CreateTransaction(ctx, req)
+	return err
+}
+
 // WithdrawalCircleAdapter adapts circle.Client to withdrawal.CircleClient interface
 type WithdrawalCircleAdapter struct {
 	client *circle.Client
@@ -722,10 +772,10 @@ type Container struct {
 	RedisClient   cache.RedisClient
 
 	// Bridge Domain Adapters
-	BridgeKYCAdapter            *BridgeKYCAdapter
-	BridgeFundingAdapter        *BridgeFundingAdapter
-	BridgeVirtualAccountService *funding.BridgeVirtualAccountService
-	BridgeWebhookHandler        *handlers.BridgeWebhookHandler
+	BridgeKYCAdapter              *BridgeKYCAdapter
+	BridgeFundingAdapter          *BridgeFundingAdapter
+	BridgeVirtualAccountService   *funding.BridgeVirtualAccountService
+	BridgeWebhookHandler          *handlers.BridgeWebhookHandler
 	BridgeCustomerStatusProcessor *webhooks.BridgeCustomerStatusProcessor
 
 	// Domain Services
@@ -1502,7 +1552,7 @@ func (c *Container) initializeDomainServices() error {
 
 	// Initialize unified funding webhook handler (Bridge + Circle + Alpaca).
 	// This enables /api/v1/webhooks/funding routing.
-	circleWebhookHandler := webhooks.NewCircleWebhookHandler(
+	circleWebhookHandler, err := webhooks.NewCircleWebhookHandler(
 		c.FundingService,
 		c.WalletRepo,
 		c.WithdrawalRepo,
@@ -1511,6 +1561,9 @@ func (c *Container) initializeDomainServices() error {
 		c.Config.Circle.APIKey,
 		c.Config.Circle.BaseURL,
 	)
+	if err != nil {
+		return fmt.Errorf("failed to create Circle webhook handler: %w", err)
+	}
 	alpacaWebhookHandler := c.GetAlpacaWebhookHandlers()
 	c.UnifiedFundingWebhookHandler = webhooks.NewUnifiedFundingWebhookHandler(
 		c.BridgeWebhookHandler,

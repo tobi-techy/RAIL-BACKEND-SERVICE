@@ -8,11 +8,11 @@ const (
 	IrisSandboxURL = "https://iris-api-sandbox.circle.com"
 
 	// Domain IDs
-	DomainEthereum uint32 = 0
+	DomainEthereum  uint32 = 0
 	DomainAvalanche uint32 = 1
-	DomainPolygon  uint32 = 7
-	DomainSolana   uint32 = 5
-	DomainStarknet uint32 = 25
+	DomainPolygon   uint32 = 7
+	DomainSolana    uint32 = 5
+	DomainStarknet  uint32 = 25
 
 	// Rate limiting
 	MaxRequestsPerSecond = 35
