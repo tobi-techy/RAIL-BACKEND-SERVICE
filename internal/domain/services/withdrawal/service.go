@@ -35,6 +35,7 @@ const (
 type LedgerService interface {
 	GetAccountBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (decimal.Decimal, error)
 	CreateTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, txType entities.TransactionType, amount decimal.Decimal, metadata map[string]interface{}) error
+	ReverseTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, originalTxID string, amount decimal.Decimal, metadata map[string]interface{}) error
 }
 
 // BankAccountRepository interface for bank account persistence
@@ -179,6 +180,12 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
+	// Step 1.5: Validate source and destination chains
+	if err := validateChainPair(req.SourceChain, req.DestinationChain); err != nil {
+		s.logger.Warn("Invalid chain configuration", "source_chain", req.SourceChain, "dest_chain", req.DestinationChain, "error", err)
+		return nil, fmt.Errorf("invalid chain configuration: %w", err)
+	}
+
 	clientProvidedIdempotency := strings.TrimSpace(req.IdempotencyKey) != ""
 	idempotencyKey := scopedWithdrawalIdempotencyKey(req.UserID, "crypto", req.IdempotencyKey)
 
@@ -256,7 +263,14 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	}
 
 	// Re-check pending exposure after creating the record to protect against near-simultaneous requests.
-	if err := s.ensurePendingExposureWithinBalance(ctx, req.UserID, balance); err != nil {
+	// Must re-fetch balance since the old balance is stale after creating the withdrawal record.
+	currentBalance, err := s.getSourceBalance(ctx, req.UserID, req.SourceAccount)
+	if err != nil {
+		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "failed to re-check balance")
+		return nil, fmt.Errorf("failed to re-check balance: %w", err)
+	}
+
+	if err := s.ensurePendingExposureWithinBalance(ctx, req.UserID, currentBalance); err != nil {
 		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
 		return nil, err
 	}
@@ -274,7 +288,11 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	transferResult, err := s.executeCryptoTransfer(ctx, withdrawal, req.DestinationAddress, req.DestinationChain, req.SourceChain)
 	if err != nil {
 		s.logger.Error("Failed to execute crypto transfer", "error", err)
-		// Mark withdrawal as failed — ledger reversal must be handled by ops/reconciliation.
+		// Reverse the ledger debit when transfer fails
+		if revErr := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); revErr != nil {
+			s.logger.Error("Failed to reverse ledger debit after transfer failure",
+				"error", revErr, "withdrawal_id", withdrawal.ID.String())
+		}
 		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
 		return nil, fmt.Errorf("failed to execute transfer: %w", err)
 	}
@@ -504,7 +522,14 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 	}
 
 	// Re-check pending exposure after creating the record to protect against near-simultaneous requests.
-	if err := s.ensurePendingExposureWithinBalance(ctx, req.UserID, balance); err != nil {
+	// Must re-fetch balance since the old balance is stale after creating the withdrawal record.
+	currentBalance, err := s.getSourceBalance(ctx, req.UserID, req.SourceAccount)
+	if err != nil {
+		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "failed to re-check balance")
+		return nil, fmt.Errorf("failed to re-check balance: %w", err)
+	}
+
+	if err := s.ensurePendingExposureWithinBalance(ctx, req.UserID, currentBalance); err != nil {
 		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
 		return nil, err
 	}
@@ -513,6 +538,11 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 	transferID, err := s.executeFiatTransfer(ctx, withdrawal, bankAccount)
 	if err != nil {
 		s.logger.Error("Failed to execute fiat transfer", "error", err)
+		// Reverse the ledger debit when transfer fails
+		if revErr := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); revErr != nil {
+			s.logger.Error("Failed to reverse ledger debit after transfer failure",
+				"error", revErr, "withdrawal_id", withdrawal.ID.String())
+		}
 		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
 		return nil, fmt.Errorf("failed to execute transfer: %w", err)
 	}
@@ -544,6 +574,11 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 
 // getOrCreateBankAccount finds an existing destination account fingerprint or creates a new one.
 func (s *WithdrawalService) getOrCreateBankAccount(ctx context.Context, req *entities.InitiateFiatWithdrawalRequest) (*entities.BankAccount, error) {
+	// Fail fast if bridge adapter is not configured
+	if s.bridgeAdapter == nil {
+		return nil, fmt.Errorf("bridge adapter not configured for fiat withdrawals")
+	}
+
 	existingAccounts, err := s.bankAccountRepo.GetByUserID(ctx, req.UserID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check existing accounts: %w", err)
@@ -587,7 +622,7 @@ func (s *WithdrawalService) getOrCreateBankAccount(ctx context.Context, req *ent
 	bankAccount := &entities.BankAccount{
 		ID:                 uuid.New(),
 		UserID:             req.UserID,
-		BankName:           "Bank", // Will be resolved by Bridge
+		BankName:           "Pending Verification", // Will be resolved by Bridge after recipient creation
 		AccountNumberLast4: accountLast4,
 		Currency:           bankCurrency,
 		IsVerified:         false,
@@ -596,9 +631,11 @@ func (s *WithdrawalService) getOrCreateBankAccount(ctx context.Context, req *ent
 	}
 	if req.Currency == entities.WithdrawalCurrencyUSD {
 		routing := req.RoutingNumber
-		routingLast4 := routing[len(routing)-4:]
+		if len(routing) >= 4 {
+			routingLast4 := routing[len(routing)-4:]
+			bankAccount.RoutingNumberLast4 = &routingLast4
+		}
 		bankAccount.RoutingNumber = &routing
-		bankAccount.RoutingNumberLast4 = &routingLast4
 	}
 	if req.Currency == entities.WithdrawalCurrencyEUR {
 		iban := strings.TrimSpace(req.IBAN)
@@ -825,6 +862,33 @@ func (s *WithdrawalService) postWithdrawalLedgerEntries(ctx context.Context, wit
 	)
 }
 
+func (s *WithdrawalService) reverseWithdrawalLedgerEntry(ctx context.Context, withdrawal *entities.Withdrawal) error {
+	if s.ledgerService == nil {
+		return fmt.Errorf("ledger service not configured")
+	}
+
+	accountType, err := mapWithdrawalSourceToAccountType(withdrawal.SourceAccount)
+	if err != nil {
+		return err
+	}
+
+	metadata := map[string]interface{}{
+		"withdrawal_id":   withdrawal.ID.String(),
+		"reversal_reason": "transfer_failed",
+		"original_amount": withdrawal.Amount.String(),
+		"source_account":  string(withdrawal.SourceAccount),
+	}
+
+	return s.ledgerService.ReverseTransaction(
+		ctx,
+		withdrawal.UserID,
+		accountType,
+		withdrawal.ID.String(),
+		withdrawal.Amount,
+		metadata,
+	)
+}
+
 // calculateCryptoWithdrawalFee calculates the fee for a crypto withdrawal
 func (s *WithdrawalService) calculateCryptoWithdrawalFee(amount decimal.Decimal) decimal.Decimal {
 	// Circle transfers are free for internal transfers
@@ -869,6 +933,38 @@ func resolveWithdrawalRoute(sourceChain, destChain string) string {
 		return "cctp"
 	}
 	return "direct"
+}
+
+// SupportedChains returns all supported blockchain identifiers
+var SupportedChains = map[string]bool{
+	"SOL": true, "SOL-DEVNET": true, "SOLANA": true,
+	"ETH": true, "ETH-SEPOLIA": true, "ETHEREUM": true,
+	"MATIC": true, "MATIC-AMOY": true, "POLYGON": true,
+	"AVAX": true, "AVAX-FUJI": true, "AVALANCHE": true,
+	"BASE": true, "BASE-SEPOLIA": true,
+	"ARB": true, "OP": true,
+}
+
+// validateChainPair validates that both source and destination chains are supported
+func validateChainPair(sourceChain, destChain string) error {
+	if sourceChain == "" {
+		return fmt.Errorf("source chain is required")
+	}
+	if destChain == "" {
+		return fmt.Errorf("destination chain is required")
+	}
+
+	src := strings.ToUpper(sourceChain)
+	dst := strings.ToUpper(destChain)
+
+	if !SupportedChains[src] {
+		return fmt.Errorf("unsupported source chain: %s", sourceChain)
+	}
+	if !SupportedChains[dst] {
+		return fmt.Errorf("unsupported destination chain: %s", destChain)
+	}
+
+	return nil
 }
 
 // executeCryptoTransfer executes a crypto transfer via Circle, routing via CCTP when crossing EVM<->Solana.

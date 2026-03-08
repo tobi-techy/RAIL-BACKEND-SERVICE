@@ -239,6 +239,9 @@ func (r *InitiateCryptoWithdrawalRequest) Validate() error {
 	if r.Amount.LessThan(MinWithdrawalAmount) {
 		return fmt.Errorf("amount must be at least %s", MinWithdrawalAmount.String())
 	}
+	if r.Amount.GreaterThan(MaxWithdrawalAmount) {
+		return fmt.Errorf("amount must be at most %s per transaction", MaxWithdrawalAmount.String())
+	}
 	if r.DestinationAddress == "" {
 		return fmt.Errorf("destination address is required")
 	}
@@ -275,6 +278,9 @@ func (r *InitiateFiatWithdrawalRequest) Validate() error {
 	}
 	if r.Amount.LessThan(MinWithdrawalAmount) {
 		return fmt.Errorf("amount must be at least %s", MinWithdrawalAmount.String())
+	}
+	if r.Amount.GreaterThan(MaxWithdrawalAmount) {
+		return fmt.Errorf("amount must be at most %s per transaction", MaxWithdrawalAmount.String())
 	}
 	if !ValidWithdrawalCurrencies[r.Currency] {
 		return fmt.Errorf("invalid currency: %s", r.Currency)

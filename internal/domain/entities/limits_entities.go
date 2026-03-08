@@ -40,6 +40,9 @@ var (
 	// Minimum withdrawal - covers network fees while allowing small exits
 	MinWithdrawalAmount = decimal.NewFromFloat(10.00)
 
+	// Maximum single withdrawal amount (Tier 2 daily limit as upper bound)
+	MaxWithdrawalAmount = decimal.NewFromFloat(10000.00)
+
 	// Tier 1 (Basic KYC) limits - slightly lower than deposit to encourage retention
 	Tier1DailyWithdrawalLimit   = decimal.NewFromFloat(2500.00)
 	Tier1MonthlyWithdrawalLimit = decimal.NewFromFloat(25000.00)
@@ -102,18 +105,18 @@ func GetLimitConfigForTier(tier KYCTier) TransactionLimitConfig {
 
 // UserTransactionUsage tracks a user's transaction usage within limit periods
 type UserTransactionUsage struct {
-	ID                      uuid.UUID       `json:"id" db:"id"`
-	UserID                  uuid.UUID       `json:"user_id" db:"user_id"`
-	DailyDepositUsed        decimal.Decimal `json:"daily_deposit_used" db:"daily_deposit_used"`
-	DailyDepositResetAt     time.Time       `json:"daily_deposit_reset_at" db:"daily_deposit_reset_at"`
-	MonthlyDepositUsed      decimal.Decimal `json:"monthly_deposit_used" db:"monthly_deposit_used"`
-	MonthlyDepositResetAt   time.Time       `json:"monthly_deposit_reset_at" db:"monthly_deposit_reset_at"`
-	DailyWithdrawalUsed     decimal.Decimal `json:"daily_withdrawal_used" db:"daily_withdrawal_used"`
-	DailyWithdrawalResetAt  time.Time       `json:"daily_withdrawal_reset_at" db:"daily_withdrawal_reset_at"`
-	MonthlyWithdrawalUsed   decimal.Decimal `json:"monthly_withdrawal_used" db:"monthly_withdrawal_used"`
-	MonthlyWithdrawalResetAt time.Time      `json:"monthly_withdrawal_reset_at" db:"monthly_withdrawal_reset_at"`
-	CreatedAt               time.Time       `json:"created_at" db:"created_at"`
-	UpdatedAt               time.Time       `json:"updated_at" db:"updated_at"`
+	ID                       uuid.UUID       `json:"id" db:"id"`
+	UserID                   uuid.UUID       `json:"user_id" db:"user_id"`
+	DailyDepositUsed         decimal.Decimal `json:"daily_deposit_used" db:"daily_deposit_used"`
+	DailyDepositResetAt      time.Time       `json:"daily_deposit_reset_at" db:"daily_deposit_reset_at"`
+	MonthlyDepositUsed       decimal.Decimal `json:"monthly_deposit_used" db:"monthly_deposit_used"`
+	MonthlyDepositResetAt    time.Time       `json:"monthly_deposit_reset_at" db:"monthly_deposit_reset_at"`
+	DailyWithdrawalUsed      decimal.Decimal `json:"daily_withdrawal_used" db:"daily_withdrawal_used"`
+	DailyWithdrawalResetAt   time.Time       `json:"daily_withdrawal_reset_at" db:"daily_withdrawal_reset_at"`
+	MonthlyWithdrawalUsed    decimal.Decimal `json:"monthly_withdrawal_used" db:"monthly_withdrawal_used"`
+	MonthlyWithdrawalResetAt time.Time       `json:"monthly_withdrawal_reset_at" db:"monthly_withdrawal_reset_at"`
+	CreatedAt                time.Time       `json:"created_at" db:"created_at"`
+	UpdatedAt                time.Time       `json:"updated_at" db:"updated_at"`
 }
 
 // LimitCheckResult contains the result of a limit check
@@ -129,16 +132,16 @@ type LimitCheckResult struct {
 
 // UserLimitsResponse represents the API response for user limits
 type UserLimitsResponse struct {
-	KYCTier    KYCTier         `json:"kycTier"`
-	Deposit    LimitDetails    `json:"deposit"`
-	Withdrawal LimitDetails    `json:"withdrawal"`
+	KYCTier    KYCTier      `json:"kycTier"`
+	Deposit    LimitDetails `json:"deposit"`
+	Withdrawal LimitDetails `json:"withdrawal"`
 }
 
 // LimitDetails contains detailed limit information
 type LimitDetails struct {
-	Minimum       string        `json:"minimum"`
-	Daily         PeriodLimit   `json:"daily"`
-	Monthly       PeriodLimit   `json:"monthly"`
+	Minimum string      `json:"minimum"`
+	Daily   PeriodLimit `json:"daily"`
+	Monthly PeriodLimit `json:"monthly"`
 }
 
 // PeriodLimit contains limit and usage for a period
@@ -151,10 +154,10 @@ type PeriodLimit struct {
 
 // Limit validation errors
 var (
-	ErrBelowMinimumDeposit    = errors.New("amount below minimum deposit")
-	ErrBelowMinimumWithdrawal = errors.New("amount below minimum withdrawal")
-	ErrDailyDepositExceeded   = errors.New("daily deposit limit exceeded")
-	ErrMonthlyDepositExceeded = errors.New("monthly deposit limit exceeded")
+	ErrBelowMinimumDeposit       = errors.New("amount below minimum deposit")
+	ErrBelowMinimumWithdrawal    = errors.New("amount below minimum withdrawal")
+	ErrDailyDepositExceeded      = errors.New("daily deposit limit exceeded")
+	ErrMonthlyDepositExceeded    = errors.New("monthly deposit limit exceeded")
 	ErrDailyWithdrawalExceeded   = errors.New("daily withdrawal limit exceeded")
 	ErrMonthlyWithdrawalExceeded = errors.New("monthly withdrawal limit exceeded")
 )

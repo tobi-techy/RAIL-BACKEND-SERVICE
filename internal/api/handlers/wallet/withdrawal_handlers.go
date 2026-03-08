@@ -111,6 +111,12 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 		destChain = string(entities.WalletChainSOLDevnet)
 	}
 
+	// Validate destination address format for the target chain
+	if err := validateCryptoAddress(req.DestinationAddress, destChain); err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, err.Error())
+		return
+	}
+
 	// The source is always the user's spending wallet (SOL-DEVNET for testnet).
 	// Cross-chain routing (CCTP) is handled by the withdrawal service.
 	wallet, err := h.walletProvider.GetUserWalletByChain(c.Request.Context(), userID, string(entities.WalletChainSOLDevnet))
@@ -495,6 +501,53 @@ func isAlphaNumeric(v string) bool {
 		return false
 	}
 	return true
+}
+
+func validateCryptoAddress(address, chain string) error {
+	if address == "" {
+		return fmt.Errorf("destination address is required")
+	}
+
+	chainUpper := strings.ToUpper(chain)
+	addr := strings.TrimSpace(address)
+
+	switch {
+	case strings.Contains(chainUpper, "SOL"):
+		// Solana addresses are base58 encoded, 32-44 characters
+		if len(addr) < 32 || len(addr) > 44 {
+			return fmt.Errorf("invalid Solana address: must be 32-44 characters")
+		}
+		// Basic base58 check (alphanumeric except 0, O, I, l)
+		validChars := "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+		for _, c := range addr {
+			if !strings.ContainsRune(validChars, c) {
+				return fmt.Errorf("invalid Solana address: contains invalid characters")
+			}
+		}
+	case strings.Contains(chainUpper, "ETH"), strings.Contains(chainUpper, "MATIC"),
+		strings.Contains(chainUpper, "AVAX"), strings.Contains(chainUpper, "BASE"),
+		strings.Contains(chainUpper, "ARB"), strings.Contains(chainUpper, "OP"):
+		// EVM addresses are 0x-prefixed hex, 42 characters
+		if len(addr) != 42 {
+			return fmt.Errorf("invalid EVM address: must be 42 characters (0x + 40 hex)")
+		}
+		if !strings.HasPrefix(addr, "0x") {
+			return fmt.Errorf("invalid EVM address: must start with 0x")
+		}
+		hexPart := addr[2:]
+		for _, c := range hexPart {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+				return fmt.Errorf("invalid EVM address: must be valid hex after 0x")
+			}
+		}
+	default:
+		// For unknown chains, just check basic length
+		if len(addr) < 20 || len(addr) > 64 {
+			return fmt.Errorf("invalid address: length must be between 20-64 characters")
+		}
+	}
+
+	return nil
 }
 
 func normalizeIBAN(raw string) string {

@@ -41,6 +41,7 @@ type CircleWithdrawalRepository interface {
 // CircleWithdrawalLedger posts ledger entries for completed withdrawals.
 type CircleWithdrawalLedger interface {
 	CreateTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, txType entities.TransactionType, amount decimal.Decimal, metadata map[string]interface{}) error
+	ReverseTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, originalTxID string, amount decimal.Decimal, metadata map[string]interface{}) error
 }
 
 // CircleWebhookHandler handles Circle API webhook notifications
@@ -84,7 +85,7 @@ func NewCircleWebhookHandler(
 	logger *logger.Logger,
 	circleAPIKey string,
 	circleBaseURL string,
-) *CircleWebhookHandler {
+) (*CircleWebhookHandler, error) {
 	return NewCircleWebhookHandlerWithConfig(
 		fundingService,
 		managedWalletRepo,
@@ -108,12 +109,16 @@ func NewCircleWebhookHandlerWithConfig(
 	withdrawalLedger CircleWithdrawalLedger,
 	logger *logger.Logger,
 	config CircleWebhookConfig,
-) *CircleWebhookHandler {
-	// Warn if failOpen is enabled in production-like environment
+) (*CircleWebhookHandler, error) {
+	// Fail if failOpen is enabled in production - this is a critical security risk
 	devMode := config.DevMode
 	if !devMode && config.FailOpen {
-		logger.Warn("CRITICAL: Circle webhook handler is configured to FAIL-OPEN - this is a security risk in production!")
+		return nil, fmt.Errorf("CRITICAL: Circle webhook handler cannot be configured with FailOpen=true in production - this is a severe security risk")
 	}
+
+	logger.Warn("Circle webhook handler initialized",
+		"dev_mode", devMode,
+		"fail_open", config.FailOpen)
 
 	return &CircleWebhookHandler{
 		fundingService:    fundingService,
@@ -126,7 +131,7 @@ func NewCircleWebhookHandlerWithConfig(
 		devMode:           devMode,
 		failOpen:          config.FailOpen,
 		keyCache:          make(map[string]cachedKey),
-	}
+	}, nil
 }
 
 // HandleTransferNotification handles Circle transfer notifications
@@ -516,6 +521,38 @@ func (h *CircleWebhookHandler) processOutboundTransactionNotification(ctx contex
 		if reason == "" {
 			reason = "Circle outbound transfer failed"
 		}
+
+		// Reverse the ledger debit since the transfer failed
+		if h.withdrawalLedger != nil {
+			accountType := entities.AccountTypeSpendingBalance
+			switch withdrawal.SourceAccount {
+			case entities.WithdrawalSourceSpendingBalance:
+				accountType = entities.AccountTypeSpendingBalance
+			case entities.WithdrawalSourceStashBalance:
+				accountType = entities.AccountTypeStashBalance
+			}
+
+			revMetadata := map[string]interface{}{
+				"withdrawal_id":   withdrawal.ID.String(),
+				"reversal_reason": reason,
+				"provider_ref":    withdrawal.ProviderTransferID,
+			}
+
+			if err := h.withdrawalLedger.ReverseTransaction(
+				ctx,
+				withdrawal.UserID,
+				accountType,
+				withdrawal.ID.String(),
+				withdrawal.Amount,
+				revMetadata,
+			); err != nil {
+				h.logger.Error("Failed to reverse ledger entry for failed withdrawal",
+					"withdrawal_id", withdrawal.ID.String(),
+					"error", err)
+				// Don't fail the whole request - log and continue
+			}
+		}
+
 		_ = h.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, reason)
 		return nil
 	}
@@ -534,38 +571,9 @@ func (h *CircleWebhookHandler) settleCompletedWithdrawal(ctx context.Context, wi
 		return nil
 	}
 
-	if h.withdrawalLedger != nil {
-		accountType := entities.AccountTypeSpendingBalance
-		switch withdrawal.SourceAccount {
-		case entities.WithdrawalSourceSpendingBalance:
-			accountType = entities.AccountTypeSpendingBalance
-		case entities.WithdrawalSourceStashBalance:
-			accountType = entities.AccountTypeStashBalance
-		}
-
-		metadata := map[string]interface{}{
-			"withdrawal_id":   withdrawal.ID.String(),
-			"withdrawal_type": string(withdrawal.WithdrawalType),
-			"source_account":  string(withdrawal.SourceAccount),
-		}
-		if withdrawal.DestinationAddress != nil {
-			metadata["destination_address"] = *withdrawal.DestinationAddress
-		}
-		if withdrawal.ProviderTransferID != nil {
-			metadata["provider_transfer_id"] = *withdrawal.ProviderTransferID
-		}
-
-		if err := h.withdrawalLedger.CreateTransaction(
-			ctx,
-			withdrawal.UserID,
-			accountType,
-			entities.TransactionTypeWithdrawal,
-			withdrawal.Amount,
-			metadata,
-		); err != nil {
-			return fmt.Errorf("failed to post withdrawal ledger transaction: %w", err)
-		}
-	}
+	// Ledger entry was already posted in withdrawal service before burn execution.
+	// Do NOT create another ledger entry here to avoid double debiting the user.
+	// See: service.go postWithdrawalLedgerEntries()
 
 	if err := h.withdrawalRepo.MarkCompleted(ctx, withdrawal.ID); err != nil {
 		return fmt.Errorf("failed to mark withdrawal completed: %w", err)
