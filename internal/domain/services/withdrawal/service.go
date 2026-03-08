@@ -2,8 +2,6 @@ package withdrawal
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -1298,6 +1296,8 @@ func scopedWithdrawalIdempotencyKey(userID uuid.UUID, flow string, clientKey str
 		window := time.Now().UTC().Truncate(5 * time.Minute).Unix()
 		normalized = fmt.Sprintf("auto:%d", window)
 	}
-	digest := sha256.Sum256([]byte("withdrawal:" + flow + ":" + userID.String() + ":" + normalized))
-	return "wdr-" + hex.EncodeToString(digest[:16])
+	// Use UUID v5 (deterministic) so the result is a valid UUID format
+	// as required by Circle's idempotencyKey field.
+	name := "withdrawal:" + flow + ":" + userID.String() + ":" + normalized
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(name)).String()
 }
