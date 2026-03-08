@@ -840,6 +840,8 @@ func (c *Client) InitiateCCTPBurn(ctx context.Context, req *entities.CCTPBurnReq
 		"amounts":                []string{req.Amount.String()},
 		"destinationAddress":     req.MintRecipient,
 		"tokenId":                tokenID,
+		"destinationDomain":      req.DestDomain,
+		"feeLevel":               "MEDIUM",
 	}
 
 	c.logger.Info("Initiating CCTP burn",
