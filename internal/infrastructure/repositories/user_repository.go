@@ -1210,10 +1210,21 @@ func (r *UserRepository) AnonymizeUser(ctx context.Context, userID uuid.UUID) er
 	return nil
 }
 
-// HardDelete permanently removes a user and all related data (cascades via FK constraints)
+// HardDelete permanently removes a user and all related data
 func (r *UserRepository) HardDelete(ctx context.Context, userID uuid.UUID) error {
-	query := `DELETE FROM users WHERE id = $1`
-	result, err := r.db.ExecContext(ctx, query, userID)
+	// Delete dependent records that lack ON DELETE CASCADE
+	dependents := []string{
+		`DELETE FROM withdrawals WHERE user_id = $1`,
+		`DELETE FROM investment_positions WHERE user_id = $1`,
+		`DELETE FROM investment_orders WHERE user_id = $1`,
+	}
+	for _, q := range dependents {
+		if _, err := r.db.ExecContext(ctx, q, userID); err != nil {
+			return fmt.Errorf("failed to delete user: %w", err)
+		}
+	}
+
+	result, err := r.db.ExecContext(ctx, `DELETE FROM users WHERE id = $1`, userID)
 	if err != nil {
 		r.logger.Error("Failed to hard delete user", zap.Error(err), zap.String("user_id", userID.String()))
 		return fmt.Errorf("failed to delete user: %w", err)
