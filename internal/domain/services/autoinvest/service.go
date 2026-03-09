@@ -170,25 +170,10 @@ func (s *Service) TriggerAutoInvestment(ctx context.Context, req TriggerRequest)
 	if stashBalance.GreaterThan(threshold) {
 		investableAmount = stashBalance.Sub(threshold)
 	} else {
-		// Stash is empty — check if funds are already staged in fiat_exposure from a
-		// previous (idempotent) run that transferred but didn't finish placing orders.
-		fiatExposure, err := s.ledgerService.GetAccountBalance(ctx, req.UserID, entities.AccountTypeFiatExposure)
-		if err != nil {
-			span.RecordError(err)
-			return fmt.Errorf("failed to get fiat exposure balance: %w", err)
-		}
-		if fiatExposure.LessThanOrEqual(decimal.Zero) {
-			s.logger.Debug("Skipping auto-invest, no investable balance",
-				"user_id", req.UserID,
-				"stash_balance", stashBalance,
-				"fiat_exposure", fiatExposure)
-			return nil
-		}
-		// Funds are staged — resume from the journal/order placement step.
-		s.logger.Info("Resuming auto-investment from fiat_exposure (stash already transferred)",
+		s.logger.Debug("Skipping auto-invest, no investable balance",
 			"user_id", req.UserID,
-			"fiat_exposure", fiatExposure)
-		investableAmount = fiatExposure
+			"stash_balance", stashBalance)
+		return nil
 	}
 
 	s.logger.Info("Triggering auto-investment",
