@@ -174,7 +174,7 @@ func (s *Service) GetUserBalances(ctx context.Context, userID uuid.UUID) (*Balan
 	}
 
 	// If smart allocation mode is not active, show legacy USDC balance directly
-	// and include broker cash so users never see funds "disappear" after transfers.
+	// and include broker portfolio value so the Stash card reflects real investment worth.
 	if mode == nil || !mode.Active {
 		var usdcBalance, fiatExposure decimal.Decimal
 		var wg sync.WaitGroup
@@ -204,12 +204,24 @@ func (s *Service) GetUserBalances(ctx context.Context, userID uuid.UUID) (*Balan
 
 		wg.Wait()
 
-		totalBalance := usdcBalance.Add(fiatExposure)
+		portfolioValue := decimal.Zero
+		if s.alpacaAccountSvc != nil {
+			if acct, err := s.alpacaAccountSvc.GetUserAccount(ctx, userID); err == nil && acct != nil {
+				portfolioValue = acct.PortfolioValue
+			}
+		} else if s.alpacaAccountRepo != nil {
+			if acct, err := s.alpacaAccountRepo.GetByUserID(ctx, userID); err == nil && acct != nil {
+				portfolioValue = acct.PortfolioValue
+			}
+		}
+
+		investBalance := fiatExposure.Add(portfolioValue)
+		totalBalance := usdcBalance.Add(investBalance)
 
 		return &Balances{
 			SpendingBalance: usdcBalance,
 			StashBalance:    decimal.Zero,
-			InvestBalance:   fiatExposure,
+			InvestBalance:   investBalance,
 			FiatExposure:    fiatExposure,
 			UnallocatedUSDC: decimal.Zero,
 			TotalBalance:    totalBalance,
@@ -291,7 +303,7 @@ func (s *Service) GetUserBalances(ctx context.Context, userID uuid.UUID) (*Balan
 		}
 	}
 
-	investBalance := stashBalance.Add(fiatExposure).Add(portfolioValue)
+	investBalance := portfolioValue.Add(stashBalance).Add(fiatExposure)
 	totalBalance := spendingBalance.Add(investBalance).Add(usdcBalance)
 
 	return &Balances{
