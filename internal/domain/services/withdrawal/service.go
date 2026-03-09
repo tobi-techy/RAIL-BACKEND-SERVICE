@@ -111,6 +111,11 @@ type BridgeAdapter interface {
 	CancelTransfer(ctx context.Context, transferID string) error
 }
 
+// CCTPFeeClient interface for fetching CCTP transfer fees from Circle's Iris API
+type CCTPFeeClient interface {
+	GetFees(ctx context.Context, sourceDomain, destDomain uint32) (*cctp.FeesResponse, error)
+}
+
 // WithdrawalService handles crypto and fiat withdrawal operations
 type WithdrawalService struct {
 	withdrawalRepo      WithdrawalRepository
@@ -123,6 +128,7 @@ type WithdrawalService struct {
 	notificationService WithdrawalNotificationService
 	circleClient        CircleClient
 	bridgeAdapter       BridgeAdapter
+	cctpClient          CCTPFeeClient
 	logger              *logger.Logger
 	withdrawalLocks     [withdrawalLockShards]sync.Mutex
 }
@@ -144,6 +150,7 @@ func NewWithdrawalService(
 	notificationService WithdrawalNotificationService,
 	circleClient CircleClient,
 	bridgeAdapter BridgeAdapter,
+	cctpClient CCTPFeeClient,
 	logger *logger.Logger,
 ) *WithdrawalService {
 	return &WithdrawalService{
@@ -156,6 +163,7 @@ func NewWithdrawalService(
 		notificationService: notificationService,
 		circleClient:        circleClient,
 		bridgeAdapter:       bridgeAdapter,
+		cctpClient:          cctpClient,
 		logger:              logger,
 	}
 }
@@ -228,7 +236,10 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	}
 
 	// Step 5: Calculate fee
-	fee := s.calculateCryptoWithdrawalFee(req.Amount)
+	fee, err := s.calculateCryptoWithdrawalFee(ctx, req.Amount, req.SourceChain, req.DestinationChain)
+	if err != nil {
+		return nil, fmt.Errorf("failed to calculate fee: %w", err)
+	}
 	totalAmount := req.Amount.Add(fee)
 
 	if balance.LessThan(totalAmount) {
@@ -690,7 +701,7 @@ func (s *WithdrawalService) getOrCreateBankAccount(ctx context.Context, req *ent
 }
 
 // GetWithdrawalFee returns the fee for a withdrawal
-func (s *WithdrawalService) GetWithdrawalFee(ctx context.Context, withdrawalType entities.WithdrawalType, amount decimal.Decimal, currency entities.WithdrawalCurrency) (*entities.WithdrawalFee, error) {
+func (s *WithdrawalService) GetWithdrawalFee(ctx context.Context, withdrawalType entities.WithdrawalType, amount decimal.Decimal, currency entities.WithdrawalCurrency, sourceChain, destChain string) (*entities.WithdrawalFee, error) {
 	if amount.LessThanOrEqual(decimal.Zero) {
 		return nil, fmt.Errorf("amount must be positive")
 	}
@@ -702,7 +713,10 @@ func (s *WithdrawalService) GetWithdrawalFee(ctx context.Context, withdrawalType
 
 	switch withdrawalType {
 	case entities.WithdrawalTypeCrypto:
-		fee := s.calculateCryptoWithdrawalFee(amount)
+		fee, err := s.calculateCryptoWithdrawalFee(ctx, amount, sourceChain, destChain)
+		if err != nil {
+			return nil, fmt.Errorf("failed to calculate fee: %w", err)
+		}
 		feeResponse.Amount = fee
 		feeResponse.Currency = entities.WithdrawalCurrencyUSDC
 		feeResponse.Breakdown.NetworkFee = fee
@@ -864,7 +878,7 @@ func (s *WithdrawalService) postWithdrawalLedgerEntries(ctx context.Context, wit
 		withdrawal.UserID,
 		accountType,
 		entities.TransactionTypeWithdrawal,
-		withdrawal.Amount,
+		withdrawal.Amount.Add(withdrawal.FeeAmount),
 		metadata,
 	)
 }
@@ -891,16 +905,48 @@ func (s *WithdrawalService) reverseWithdrawalLedgerEntry(ctx context.Context, wi
 		withdrawal.UserID,
 		accountType,
 		withdrawal.ID.String(),
-		withdrawal.Amount,
+		withdrawal.Amount.Add(withdrawal.FeeAmount),
 		metadata,
 	)
 }
 
-// calculateCryptoWithdrawalFee calculates the fee for a crypto withdrawal
-func (s *WithdrawalService) calculateCryptoWithdrawalFee(amount decimal.Decimal) decimal.Decimal {
-	// Circle transfers are free for internal transfers
-	// Network fees may apply for external transfers (minimal for USDC on Solana/Ethereum)
-	return decimal.Zero
+// calculateCryptoWithdrawalFee calculates the fee for a crypto withdrawal.
+// For cross-chain (CCTP) transfers, fetches the real fee from Circle's Iris API.
+// For same-chain transfers, Circle charges no fee.
+func (s *WithdrawalService) calculateCryptoWithdrawalFee(ctx context.Context, amount decimal.Decimal, sourceChain, destChain string) (decimal.Decimal, error) {
+	route := resolveWithdrawalRoute(sourceChain, destChain)
+	if route != "cctp" || s.cctpClient == nil {
+		return decimal.Zero, nil
+	}
+
+	srcDomain, srcOK := cctp.DomainForChain(sourceChain)
+	dstDomain, dstOK := cctp.DomainForChain(destChain)
+	if !srcOK || !dstOK {
+		// Unknown chain — return zero rather than blocking the fee check
+		return decimal.Zero, nil
+	}
+
+	feesResp, err := s.cctpClient.GetFees(ctx, srcDomain, dstDomain)
+	if err != nil {
+		s.logger.Warn("Failed to fetch CCTP fees; falling back to zero fee",
+			"source_chain", sourceChain,
+			"dest_chain", destChain,
+			"error", err)
+		return decimal.Zero, nil
+	}
+
+	// Use fast transfer fee when available, otherwise standard fee.
+	// minimumFee is in basis points (bps). Fee = amount * bps / 10000.
+	feeBps := feesResp.FastTransferFee.MinimumFee
+	if feeBps == 0 {
+		feeBps = feesResp.StandardFee.MinimumFee
+	}
+	if feeBps == 0 {
+		return decimal.Zero, nil
+	}
+
+	fee := amount.Mul(decimal.NewFromInt(int64(feeBps))).Div(decimal.NewFromInt(10000))
+	return fee, nil
 }
 
 // calculateFiatWithdrawalFee calculates the fee for a fiat withdrawal
@@ -922,7 +968,7 @@ func (s *WithdrawalService) calculateFiatWithdrawalFee(amount decimal.Decimal, c
 }
 
 // resolveWithdrawalRoute determines the transfer route.
-// Circle's W3S API only supports same-chain transfers; cross-chain is not supported.
+// Solana↔EVM cross-chain transfers are routed via Circle CCTP.
 func resolveWithdrawalRoute(sourceChain, destChain string) string {
 	src := strings.ToUpper(sourceChain)
 	dst := strings.ToUpper(destChain)
@@ -932,12 +978,10 @@ func resolveWithdrawalRoute(sourceChain, destChain string) string {
 	isEVM := func(c string) bool {
 		return c == "ETH" || c == "ETH-SEPOLIA" ||
 			c == "MATIC" || c == "MATIC-AMOY" ||
-			c == "AVAX" || c == "AVAX-FUJI" ||
-			c == "BASE" || c == "BASE-SEPOLIA" ||
-			c == "ARB" || c == "OP"
+			c == "AVAX" || c == "AVAX-FUJI"
 	}
 	if (isSolana(src) && isEVM(dst)) || (isEVM(src) && isSolana(dst)) {
-		return "unsupported"
+		return "cctp"
 	}
 	return "direct"
 }
@@ -989,11 +1033,6 @@ func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawa
 	amountStr := withdrawal.Amount.StringFixed(6)
 
 	route := resolveWithdrawalRoute(sourceChain, destinationChain)
-
-	// Cross-chain transfers (e.g. Solana → EVM) are not supported via Circle's W3S API.
-	if route == "unsupported" {
-		return nil, fmt.Errorf("invalid request: cross-chain withdrawals are not supported. Please use a %s address", sourceChain)
-	}
 
 	// Route via CCTP for EVM <-> Solana cross-chain transfers
 	if route == "cctp" {

@@ -51,6 +51,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/cctp"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/circle"
@@ -1502,6 +1503,11 @@ func (c *Container) initializeDomainServices() error {
 	withdrawalNotificationAdapter := &WithdrawalNotificationAdapter{svc: c.NotificationService}
 
 	// Create withdrawal service with new architecture
+	cctpIrisClient := cctp.NewClient(cctp.Config{
+		Environment: c.Config.CCTP.Environment,
+		BaseURL:     c.Config.CCTP.BaseURL,
+	}, c.ZapLog)
+
 	c.WithdrawalService = services.NewWithdrawalService(
 		c.WithdrawalRepo,
 		c.UserRepo,                    // UserRepository for Bridge KYC checks
@@ -1512,6 +1518,7 @@ func (c *Container) initializeDomainServices() error {
 		withdrawalNotificationAdapter, // WithdrawalNotificationService adapter
 		withdrawalCircleAdapter,       // CircleClient adapter
 		withdrawalBridgeAdapter,       // BridgeAdapter
+		cctpIrisClient,                // CCTPFeeClient for cross-chain fee lookup
 		c.Logger,
 	)
 
