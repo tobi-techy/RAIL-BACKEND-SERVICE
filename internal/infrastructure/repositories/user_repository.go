@@ -1212,9 +1212,12 @@ func (r *UserRepository) AnonymizeUser(ctx context.Context, userID uuid.UUID) er
 
 // HardDelete permanently removes a user and all related data
 func (r *UserRepository) HardDelete(ctx context.Context, userID uuid.UUID) error {
-	// Delete dependent records that lack ON DELETE CASCADE
+	// Delete in FK-safe order (RESTRICT constraints require explicit cleanup)
 	dependents := []string{
+		`DELETE FROM ledger_entries WHERE account_id IN (SELECT id FROM ledger_accounts WHERE user_id = $1)`,
+		`DELETE FROM ledger_accounts WHERE user_id = $1`,
 		`DELETE FROM withdrawals WHERE user_id = $1`,
+		`DELETE FROM bridge_transactions WHERE user_id = $1`,
 		`DELETE FROM investment_positions WHERE user_id = $1`,
 		`DELETE FROM investment_orders WHERE user_id = $1`,
 	}
