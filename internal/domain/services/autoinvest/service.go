@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
@@ -62,6 +63,11 @@ type UserRepository interface {
 	GetUserEntityByID(ctx context.Context, id uuid.UUID) (*entities.User, error)
 }
 
+// PositionSyncer syncs Alpaca positions back to the local DB after orders are placed.
+type PositionSyncer interface {
+	SyncPositions(ctx context.Context, userID uuid.UUID) error
+}
+
 // Service handles automatic investment from stash balance
 type Service struct {
 	ledgerService  LedgerService
@@ -70,6 +76,7 @@ type Service struct {
 	userRepo       UserRepository
 	fundingBridge  FundingBridge
 	accountLookup  AccountLookup
+	positionSyncer PositionSyncer
 	config         Config
 	logger         *logger.Logger
 }
@@ -114,6 +121,11 @@ func (s *Service) SetFundingBridge(fb FundingBridge) {
 // SetAccountLookup sets the account lookup for resolving Alpaca account IDs.
 func (s *Service) SetAccountLookup(al AccountLookup) {
 	s.accountLookup = al
+}
+
+// SetPositionSyncer sets the position syncer for post-order position refresh.
+func (s *Service) SetPositionSyncer(ps PositionSyncer) {
+	s.positionSyncer = ps
 }
 
 // TriggerRequest contains parameters for triggering auto-investment.
@@ -234,7 +246,9 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 			"user_id", userID,
 			"error", err)
 		// Fallback to single SPY order if strategy engine fails
-		return s.placeSingleOrder(ctx, userID, stashID, "SPY", amount, correlationID)
+		orderErr := s.placeSingleOrder(ctx, userID, stashID, "SPY", amount, correlationID)
+		s.syncPositionsAsync(userID)
+		return orderErr
 	}
 
 	s.logger.Info("Executing strategy-based auto-investment",
@@ -244,7 +258,27 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 		"total_amount", amount)
 
 	// Place orders for each allocation
-	return s.placeStrategyOrders(ctx, userID, stashID, amount, correlationID, strategyResult)
+	orderErr := s.placeStrategyOrders(ctx, userID, stashID, amount, correlationID, strategyResult)
+	s.syncPositionsAsync(userID)
+	return orderErr
+}
+
+// syncPositionsAsync triggers a position sync in the background after orders are placed.
+func (s *Service) syncPositionsAsync(userID uuid.UUID) {
+	if s.positionSyncer == nil {
+		return
+	}
+	go func() {
+		// Wait a few seconds for Alpaca sandbox to process the orders
+		time.Sleep(5 * time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := s.positionSyncer.SyncPositions(ctx, userID); err != nil {
+			s.logger.Warn("Post-order position sync failed", "user_id", userID, "error", err)
+		} else {
+			s.logger.Info("Post-order position sync complete", "user_id", userID)
+		}
+	}()
 }
 
 func (s *Service) isUserEligibleForAutoInvest(ctx context.Context, userID uuid.UUID) (bool, string, error) {

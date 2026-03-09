@@ -1546,6 +1546,9 @@ func (c *Container) initializeDomainServices() error {
 	if c.AlpacaAccountRepo != nil {
 		c.AutoInvestService.SetAccountLookup(c.AlpacaAccountRepo)
 	}
+	if c.AlpacaPortfolioSync != nil {
+		c.AutoInvestService.SetPositionSyncer(c.AlpacaPortfolioSync)
+	}
 
 	// Wire station service with AlpacaAccountService now that it's initialized
 	if c.AlpacaAccountService != nil {
