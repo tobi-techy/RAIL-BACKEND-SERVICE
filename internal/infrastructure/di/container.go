@@ -2530,7 +2530,7 @@ type autoInvestOrderPlacerAdapter struct {
 	logger         *zap.Logger
 }
 
-func (a *autoInvestOrderPlacerAdapter) PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal) (*entities.AlpacaOrderResponse, error) {
+func (a *autoInvestOrderPlacerAdapter) PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal, clientOrderID string) (*entities.AlpacaOrderResponse, error) {
 	// Get user's Alpaca account
 	account, err := a.accountService.GetUserAccount(ctx, userID)
 	if err != nil {
@@ -2542,11 +2542,12 @@ func (a *autoInvestOrderPlacerAdapter) PlaceMarketOrder(ctx context.Context, use
 
 	// Create market order via Alpaca
 	orderReq := &entities.AlpacaCreateOrderRequest{
-		Symbol:      symbol,
-		Notional:    &amount,
-		Side:        entities.AlpacaOrderSideBuy,
-		Type:        entities.AlpacaOrderTypeMarket,
-		TimeInForce: entities.AlpacaTimeInForceDay,
+		Symbol:        symbol,
+		Notional:      &amount,
+		Side:          entities.AlpacaOrderSideBuy,
+		Type:          entities.AlpacaOrderTypeMarket,
+		TimeInForce:   entities.AlpacaTimeInForceDay,
+		ClientOrderID: clientOrderID,
 	}
 
 	alpacaOrder, err := a.alpacaClient.CreateOrder(ctx, account.AlpacaAccountID, orderReq)
