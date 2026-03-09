@@ -36,7 +36,7 @@ type LedgerService interface {
 
 // OrderPlacer defines order placement operations
 type OrderPlacer interface {
-	PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal) (*entities.AlpacaOrderResponse, error)
+	PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal, clientOrderID string) (*entities.AlpacaOrderResponse, error)
 }
 
 // FundingBridge journals cash into a user's Alpaca account before orders are placed
@@ -326,16 +326,15 @@ func (s *Service) placeStrategyOrders(ctx context.Context, userID, stashID uuid.
 // placeSingleOrder places a single market order
 func (s *Service) placeSingleOrder(ctx context.Context, userID, stashID uuid.UUID, symbol string, amount decimal.Decimal, correlationID string) error {
 	amount = amount.Truncate(2)
-	// Generate deterministic idempotency key for order
-	idempotencyKey := s.generateIdempotencyKey(userID, stashID, amount, correlationID)
+	clientOrderID := s.generateIdempotencyKey(userID, stashID, amount, correlationID)
 
-	order, createErr := s.orderPlacer.PlaceMarketOrder(ctx, userID, symbol, amount)
+	order, createErr := s.orderPlacer.PlaceMarketOrder(ctx, userID, symbol, amount, clientOrderID)
 	if createErr != nil {
 		s.logger.Error("Failed to create order",
 			"user_id", userID,
 			"symbol", symbol,
 			"amount", amount,
-			"idempotency_key", idempotencyKey,
+			"client_order_id", clientOrderID,
 			"error", createErr)
 		return fmt.Errorf("order creation failed for %s: %w", symbol, createErr)
 	}
