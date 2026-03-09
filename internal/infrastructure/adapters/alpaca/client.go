@@ -142,6 +142,23 @@ func (c *Client) CreateAccount(ctx context.Context, req *entities.AlpacaCreateAc
 	})
 
 	if err != nil {
+		// 409 means account already exists for this email (e.g. after account closure).
+		// Look up the existing account and reuse it.
+		if strings.Contains(err.Error(), "409") {
+			c.logger.Warn("Alpaca account already exists, looking up by email",
+				zap.String("email", req.Contact.EmailAddress))
+			accounts, listErr := c.ListAccounts(ctx, map[string]string{"query": req.Contact.EmailAddress})
+			if listErr == nil {
+				for _, a := range accounts {
+					if strings.EqualFold(a.Contact.EmailAddress, req.Contact.EmailAddress) {
+						c.logger.Info("Reusing existing Alpaca account",
+							zap.String("account_id", a.ID),
+							zap.String("email", req.Contact.EmailAddress))
+						return &a, nil
+					}
+				}
+			}
+		}
 		c.logger.Error("Failed to create Alpaca account",
 			zap.String("email", req.Contact.EmailAddress),
 			zap.Error(err))
