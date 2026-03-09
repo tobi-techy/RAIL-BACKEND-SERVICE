@@ -25,7 +25,7 @@ type WithdrawalServiceInterface interface {
 	GetWithdrawal(ctx context.Context, userID, withdrawalID uuid.UUID) (*entities.Withdrawal, error)
 	GetUserWithdrawals(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error)
 	CancelWithdrawal(ctx context.Context, userID, withdrawalID uuid.UUID) error
-	GetWithdrawalFee(ctx context.Context, withdrawalType entities.WithdrawalType, amount decimal.Decimal, currency entities.WithdrawalCurrency) (*entities.WithdrawalFee, error)
+	GetWithdrawalFee(ctx context.Context, withdrawalType entities.WithdrawalType, amount decimal.Decimal, currency entities.WithdrawalCurrency, sourceChain, destChain string) (*entities.WithdrawalFee, error)
 }
 
 // WalletProvider interface for getting user's Circle wallet
@@ -75,6 +75,8 @@ type WithdrawalFeeRequest struct {
 	WithdrawalType string `form:"type" binding:"required,oneof=crypto fiat"`
 	Amount         string `form:"amount" binding:"required"`
 	Currency       string `form:"currency" binding:"required,oneof=USDC USD EUR"`
+	SourceChain    string `form:"source_chain"`
+	DestChain      string `form:"dest_chain"`
 }
 
 // InitiateCryptoWithdrawal handles POST /api/v1/withdrawals/crypto
@@ -109,13 +111,6 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 	destChain := req.DestinationChain
 	if destChain == "" {
 		destChain = string(entities.WalletChainSOLDevnet)
-	}
-
-	// Only Solana withdrawals are supported for now.
-	destUpper := strings.ToUpper(destChain)
-	if destUpper != "SOL" && destUpper != "SOL-DEVNET" && destUpper != "SOLANA" {
-		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Only Solana withdrawals are supported. EVM chain withdrawals (Polygon, Ethereum, etc.) are coming soon.")
-		return
 	}
 
 	// Validate destination address format for the target chain
@@ -250,6 +245,8 @@ func (h *WithdrawalHandlers) GetWithdrawalFees(c *gin.Context) {
 		withdrawalType,
 		amount,
 		currency,
+		req.SourceChain,
+		req.DestChain,
 	)
 	if err != nil {
 		h.logger.Error("Failed to get withdrawal fee", "error", err)
