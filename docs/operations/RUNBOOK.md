@@ -502,7 +502,7 @@ echo "=== Security Audit Log ==="
 #!/bin/bash
 # 1. Check Bridge API status
 echo "=== Bridge API Status ==="
-curl -s https://status.bridge.xyz
+curl -s https://status.circle.com
 
 # 2. Check Bridge account
 echo "=== Bridge Account ==="

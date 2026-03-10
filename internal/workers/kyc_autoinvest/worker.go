@@ -36,6 +36,7 @@ type investCandidate struct {
 	UserID         uuid.UUID
 	StashAccountID uuid.UUID
 	StashBalance   decimal.Decimal
+	StashUpdatedAt time.Time
 }
 
 // Worker periodically triggers auto-invest for KYC-approved users with stash balances.
@@ -127,17 +128,15 @@ func (w *Worker) run(ctx context.Context) {
 
 	triggered := 0
 	for _, candidate := range candidates {
-		// Deterministic correlation ID: same user + account + date + balance = same ID.
-		// candidate.StashBalance is snapshotted at query time so it's stable for this
-		// iteration. A new deposit changes the DB balance, the next worker tick reads a
-		// new candidate with the updated balance, producing a new correlation ID and
-		// triggering re-investment. The DB unique index is the concurrent-execution guard.
-		dateBucket := time.Now().UTC().Format("2006-01-02")
+		// Deterministic correlation ID: same user + account + ledger timestamp + balance = same ID.
+		// StashUpdatedAt advances only when the ledger balance changes, so the key is stable
+		// within a single balance state and rotates naturally on each new deposit.
+		// The DB unique index is the concurrent-execution guard.
 		correlationID := fmt.Sprintf(
 			"kyc-autoinvest:%s:%s:%s:%s",
 			candidate.UserID.String(),
 			candidate.StashAccountID.String(),
-			dateBucket,
+			candidate.StashUpdatedAt.UTC().Format(time.RFC3339),
 			candidate.StashBalance.StringFixed(2),
 		)
 
@@ -168,8 +167,9 @@ func (w *Worker) listCandidates(ctx context.Context, limit int) ([]investCandida
 	const query = `
 		SELECT DISTINCT ON (la.user_id)
 			la.user_id,
-			la.id      AS stash_account_id,
-			la.balance AS stash_balance
+			la.id         AS stash_account_id,
+			la.balance    AS stash_balance,
+			la.updated_at AS stash_updated_at
 		FROM ledger_accounts la
 		INNER JOIN users u ON u.id = la.user_id
 		WHERE la.account_type = 'stash_balance'
@@ -191,7 +191,7 @@ func (w *Worker) listCandidates(ctx context.Context, limit int) ([]investCandida
 	candidates := make([]investCandidate, 0, limit)
 	for rows.Next() {
 		var c investCandidate
-		if err := rows.Scan(&c.UserID, &c.StashAccountID, &c.StashBalance); err != nil {
+		if err := rows.Scan(&c.UserID, &c.StashAccountID, &c.StashBalance, &c.StashUpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan KYC auto-invest candidate: %w", err)
 		}
 		candidates = append(candidates, c)

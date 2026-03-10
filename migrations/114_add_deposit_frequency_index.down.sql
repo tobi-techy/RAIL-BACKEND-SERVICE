@@ -1,1 +1,1 @@
-DROP INDEX IF EXISTS idx_deposits_user_status_created;
+DROP INDEX IF EXISTS idx_deposits_user_status_created_v114;
