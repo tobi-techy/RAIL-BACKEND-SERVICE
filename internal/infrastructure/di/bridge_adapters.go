@@ -128,29 +128,6 @@ func (a *BridgeFundingAdapter) ValidateDeposit(ctx context.Context, txHash strin
 	return true, nil
 }
 
-// ConvertToUSD implements funding.CircleAdapter interface for Bridge
-func (a *BridgeFundingAdapter) ConvertToUSD(ctx context.Context, amount decimal.Decimal, token entities.Stablecoin) (decimal.Decimal, error) {
-	// Bridge USDC is already USD value, so return amount as-is
-	return amount, nil
-}
-
-// GetWalletBalances implements funding.CircleAdapter interface for Bridge
-func (a *BridgeFundingAdapter) GetWalletBalances(ctx context.Context, walletID string, tokenAddress ...string) (*entities.CircleWalletBalancesResponse, error) {
-	// Get wallet balance from Bridge
-	// For now, return placeholder implementation
-	return &entities.CircleWalletBalancesResponse{
-		TokenBalances: []entities.CircleTokenBalance{
-			{
-				Token: entities.CircleTokenInfo{
-					Name:   "USDC",
-					Symbol: "USDC",
-				},
-				Amount: "0.00",
-			},
-		},
-	}, nil
-}
-
 // P2PBridgeOfframpAdapter adapts bridge.Adapter to the p2p.BridgeOfframp interface.
 // Flow: CreateRecipient → creates a Bridge customer + external ACH account, returns "<customerID>:<externalAccountID>"
 //       InitiateTransfer → calls CreateTransfer with the external account as destination

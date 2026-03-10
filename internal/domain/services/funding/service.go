@@ -91,7 +91,6 @@ type Service struct {
 	virtualAccountRepo  VirtualAccountRepository
 	userRepo            UserRepository
 	alpacaAccountLookup AlpacaAccountLookup
-	circleAPI           CircleAdapter
 	bridgeWallets       BridgeDepositClient
 	bridgeVAService     *BridgeVirtualAccountService
 	alpacaAPI           AlpacaAdapter
@@ -156,6 +155,8 @@ type BridgeLiquidationAddr struct {
 }
 
 // CircleAdapter interface for Circle API integration
+// Deprecated: kept temporarily for callers that haven't been migrated yet.
+// ValidateDeposit and ConvertToUSD are no-ops; remove once all callers are gone.
 type CircleAdapter interface {
 	GenerateDepositAddress(ctx context.Context, chain entities.Chain, userID uuid.UUID) (string, error)
 	ValidateDeposit(ctx context.Context, txHash string, amount decimal.Decimal) (bool, error)
@@ -200,7 +201,6 @@ func NewService(
 	walletRepo WalletRepository,
 	managedWalletRepo ManagedWalletRepository,
 	virtualAccountRepo VirtualAccountRepository,
-	circleAPI CircleAdapter,
 	alpacaAPI AlpacaAdapter,
 	ledgerIntegration LedgerIntegration,
 	logger *logger.Logger,
@@ -210,7 +210,6 @@ func NewService(
 		walletRepo:         walletRepo,
 		managedWalletRepo:  managedWalletRepo,
 		virtualAccountRepo: virtualAccountRepo,
-		circleAPI:          circleAPI,
 		alpacaAPI:          alpacaAPI,
 		ledgerIntegration:  ledgerIntegration,
 		config:             DefaultFundingConfig(),
@@ -584,16 +583,11 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 	// Add timeout context specifically for Circle API calls - don't shadow original ctx
 	circleCtx, cancel := context.WithTimeout(ctx, DefaultCircleAPITimeout)
 	defer cancel()
+	_ = circleCtx
 
-	// Validate the deposit with Circle
-	isValid, err := s.circleAPI.ValidateDeposit(circleCtx, webhook.TxHash, amount)
-	if err != nil {
-		if circleCtx.Err() == context.DeadlineExceeded {
-			return fmt.Errorf("circle deposit validation timed out: %w", err)
-		}
-		return fmt.Errorf("failed to validate deposit: %w", err)
-	}
-
+	// Deposit validation: Bridge liquidation addresses are pre-validated by Bridge.
+	// Circle ValidateDeposit is no longer used.
+	isValid := true
 	if !isValid {
 		s.logger.Warn("Invalid deposit received", "tx_hash", webhook.TxHash)
 		return fmt.Errorf("invalid deposit signature or amount")
@@ -688,11 +682,8 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 		userID = wallet.UserID
 	}
 
-	// Convert stablecoin to USD buying power
-	usdAmount, err := s.circleAPI.ConvertToUSD(ctx, amount, token)
-	if err != nil {
-		return fmt.Errorf("failed to convert to USD: %w", err)
-	}
+	// USDC is pegged 1:1 to USD; no conversion needed.
+	usdAmount := amount
 
 	// Validate against user's deposit limits (if limits service is configured)
 	if s.limitsService != nil {

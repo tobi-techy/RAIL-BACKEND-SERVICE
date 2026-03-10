@@ -215,63 +215,6 @@ func (h *WebhookHandlers) AccountWebhook(c *gin.Context) {
 	common.SendSuccess(c, gin.H{"status": "processed"})
 }
 
-// CircleWebhook handles POST /api/v1/webhooks/circle
-func (h *WebhookHandlers) CircleWebhook(c *gin.Context) {
-	rawBody, err := c.GetRawData()
-	if err != nil {
-		common.RespondBadRequest(c, "Failed to read request body", nil)
-		return
-	}
-
-	// Circle uses different signature headers
-	signature := c.GetHeader("X-Circle-Signature")
-	if signature == "" {
-		signature = c.GetHeader("X-Webhook-Signature")
-	}
-
-	// Verify signature - fail closed if not configured
-	if h.webhookSecret == "" {
-		if h.skipSignatureVerify {
-			h.logger.Warn("Circle webhook secret not configured - SKIPPING VERIFICATION (development mode only)")
-		} else {
-			h.logger.Error("Circle webhook secret not configured - rejecting webhook for security")
-			common.SendUnauthorized(c, "Webhook signature verification not configured")
-			return
-		}
-	} else {
-		if err := verifyHMACSignature(rawBody, signature, h.webhookSecret); err != nil {
-			h.logger.Warn("Circle webhook signature verification failed", zap.Error(err))
-			common.SendUnauthorized(c, "Webhook signature verification failed")
-			return
-		}
-	}
-
-	var payload map[string]interface{}
-	if err := json.Unmarshal(rawBody, &payload); err != nil {
-		common.RespondBadRequest(c, "Invalid webhook payload", map[string]interface{}{"error": err.Error()})
-		return
-	}
-
-	h.logger.Info("Circle webhook received",
-		"payload_type", payload["type"])
-
-	// Route to appropriate handler based on notification type
-	if notificationType, ok := payload["notificationType"].(string); ok {
-		switch notificationType {
-		case "transfers":
-			h.logger.Info("Processing Circle transfer notification")
-		case "wallets":
-			h.logger.Info("Processing Circle wallet notification")
-		case "payments":
-			h.logger.Info("Processing Circle payment notification")
-		default:
-			h.logger.Debug("Unknown Circle notification type", "type", notificationType)
-		}
-	}
-
-	common.SendSuccess(c, gin.H{"status": "processed"})
-}
-
 // Helper methods
 
 func (h *WebhookHandlers) verifySignature(c *gin.Context, rawBody []byte) error {
