@@ -2,6 +2,7 @@ package walletprovisioning
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -77,6 +78,7 @@ type Worker struct {
 	auditService AuditService
 	config       Config
 	logger       *zap.Logger
+	metricsMu    sync.Mutex
 	metrics      *Metrics
 }
 
@@ -114,15 +116,20 @@ func (w *Worker) ProcessJob(ctx context.Context, jobID uuid.UUID) error {
 		w.logger.Warn("Failed to mark provisioning job completed", zap.Error(err))
 	}
 
+	w.metricsMu.Lock()
 	w.metrics.TotalJobsProcessed++
 	w.metrics.SuccessfulJobs++
 	w.metrics.LastProcessedAt = time.Now()
+	w.metricsMu.Unlock()
 	return nil
 }
 
-// GetMetrics returns current worker metrics
+// GetMetrics returns a copy of current worker metrics.
 func (w *Worker) GetMetrics() Metrics {
-	return *w.metrics
+	w.metricsMu.Lock()
+	m := *w.metrics
+	w.metricsMu.Unlock()
+	return m
 }
 
 // classifyError categorizes errors for metrics
