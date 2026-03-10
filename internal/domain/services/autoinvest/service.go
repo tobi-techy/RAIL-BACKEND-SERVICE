@@ -77,8 +77,8 @@ type AutoInvestRepository interface {
 	GetUserSettings(ctx context.Context, userID uuid.UUID) (*entities.AutoInvestSettings, error)
 	HasProcessedCorrelation(ctx context.Context, correlationID string) (bool, error)
 	CreateEvent(ctx context.Context, event *entities.AutoInvestEvent) error
-	UpdateEventStatus(ctx context.Context, eventID uuid.UUID, status entities.AutoInvestStatus, errMsg *string) error
-	UpdateEventAmount(ctx context.Context, eventID uuid.UUID, amount decimal.Decimal) error
+	UpdateEventStatus(ctx context.Context, userID, eventID uuid.UUID, status entities.AutoInvestStatus, errMsg *string) error
+	UpdateEventAmount(ctx context.Context, userID, eventID uuid.UUID, amount decimal.Decimal) error
 }
 
 // NotificationService defines user notification operations.
@@ -310,7 +310,7 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 	// Fix #8: Re-check balance right before transfer
 	currentBalance, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
 	if err != nil {
-		s.markEventFailed(ctx, eventID, "balance re-check failed")
+		s.markEventFailed(ctx, userID, eventID, "balance re-check failed")
 		return fmt.Errorf("failed to re-check stash balance: %w", err)
 	}
 	if currentBalance.LessThan(amount) {
@@ -323,20 +323,20 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 			threshold = decimal.Zero
 		}
 		if currentBalance.LessThanOrEqual(threshold) {
-			s.markEventFailed(ctx, eventID, "insufficient balance after re-check")
+			s.markEventFailed(ctx, userID, eventID, "insufficient balance after re-check")
 			return nil
 		}
 		amount = currentBalance.Sub(threshold)
 		// Update event record to reflect the adjusted amount
 		if s.repo != nil && eventID != uuid.Nil {
-			_ = s.repo.UpdateEventAmount(ctx, eventID, amount)
+			_ = s.repo.UpdateEventAmount(ctx, userID, eventID, amount)
 		}
 	}
 
 	// Step 1: Transfer from stash to fiat exposure (buying power)
 	if err := s.transferStashToFiatExposure(ctx, userID, stashID, amount, correlationID); err != nil {
 		span.RecordError(err)
-		s.markEventFailed(ctx, eventID, "ledger transfer failed")
+		s.markEventFailed(ctx, userID, eventID, "ledger transfer failed")
 		return fmt.Errorf("failed to transfer to buying power: %w", err)
 	}
 
@@ -347,19 +347,19 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 			span.RecordError(err)
 			// Fix #6: Compensate — reverse the ledger transfer
 			s.compensateLedgerTransfer(ctx, userID, stashID, amount, correlationID)
-			s.markEventFailed(ctx, eventID, "alpaca account lookup failed")
+			s.markEventFailed(ctx, userID, eventID, "alpaca account lookup failed")
 			return fmt.Errorf("failed to resolve Alpaca account for journal: %w", err)
 		}
 		if account == nil {
 			s.compensateLedgerTransfer(ctx, userID, stashID, amount, correlationID)
-			s.markEventFailed(ctx, eventID, "no alpaca account")
+			s.markEventFailed(ctx, userID, eventID, "no alpaca account")
 			return fmt.Errorf("user has no Alpaca account")
 		}
 		if err := s.fundingBridge.JournalToAccount(ctx, account.AlpacaAccountID, amount, correlationID); err != nil {
 			span.RecordError(err)
 			// Fix #6: Compensate — reverse the ledger transfer
 			s.compensateLedgerTransfer(ctx, userID, stashID, amount, correlationID)
-			s.markEventFailed(ctx, eventID, "journal to alpaca failed")
+			s.markEventFailed(ctx, userID, eventID, "journal to alpaca failed")
 			return fmt.Errorf("failed to journal funds to Alpaca: %w", err)
 		}
 		s.logger.Info("Journaled funds to Alpaca account",
@@ -377,9 +377,9 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 		orderErr := s.placeSingleOrder(ctx, userID, stashID, s.config.FallbackSymbol, amount, correlationID)
 		s.syncPositionsAsync(userID)
 		if orderErr != nil {
-			s.markEventFailed(ctx, eventID, "fallback order failed: "+orderErr.Error())
+			s.markEventFailed(ctx, userID, eventID, "fallback order failed: "+orderErr.Error())
 		} else {
-			s.markEventCompleted(ctx, eventID)
+			s.markEventCompleted(ctx, userID, eventID)
 		}
 		return orderErr
 	}
@@ -395,9 +395,9 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 	s.syncPositionsAsync(userID)
 
 	if orderErr != nil {
-		s.markEventFailed(ctx, eventID, "strategy orders failed: "+orderErr.Error())
+		s.markEventFailed(ctx, userID, eventID, "strategy orders failed: "+orderErr.Error())
 	} else {
-		s.markEventCompleted(ctx, eventID)
+		s.markEventCompleted(ctx, userID, eventID)
 	}
 	return orderErr
 }
@@ -417,19 +417,19 @@ func (s *Service) compensateLedgerTransfer(ctx context.Context, userID, stashID 
 }
 
 // markEventFailed updates the event status to failed if repo is wired.
-func (s *Service) markEventFailed(ctx context.Context, eventID uuid.UUID, reason string) {
+func (s *Service) markEventFailed(ctx context.Context, userID, eventID uuid.UUID, reason string) {
 	if s.repo == nil || eventID == uuid.Nil {
 		return
 	}
-	_ = s.repo.UpdateEventStatus(ctx, eventID, entities.AutoInvestStatusFailed, &reason)
+	_ = s.repo.UpdateEventStatus(ctx, userID, eventID, entities.AutoInvestStatusFailed, &reason)
 }
 
 // markEventCompleted updates the event status to completed if repo is wired.
-func (s *Service) markEventCompleted(ctx context.Context, eventID uuid.UUID) {
+func (s *Service) markEventCompleted(ctx context.Context, userID, eventID uuid.UUID) {
 	if s.repo == nil || eventID == uuid.Nil {
 		return
 	}
-	_ = s.repo.UpdateEventStatus(ctx, eventID, entities.AutoInvestStatusCompleted, nil)
+	_ = s.repo.UpdateEventStatus(ctx, userID, eventID, entities.AutoInvestStatusCompleted, nil)
 }
 
 // syncPositionsAsync triggers a position sync in the background after orders are placed.
