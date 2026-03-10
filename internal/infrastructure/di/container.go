@@ -51,7 +51,6 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/cctp"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/circle"
@@ -69,6 +68,45 @@ import (
 // CircleAdapter adapts circle.Client to funding.CircleAdapter interface
 type CircleAdapter struct {
 	client *circle.Client
+}
+
+// BridgeWalletBalanceAdapter adapts bridge.Adapter to services that need (customerID, walletID) -> string balance
+type BridgeWalletBalanceAdapter struct {
+	adapter *bridge.Adapter
+}
+
+func (a *BridgeWalletBalanceAdapter) GetWalletBalance(ctx context.Context, customerID, walletID string) (string, error) {
+	bal, err := a.adapter.GetWalletBalance(ctx, customerID, walletID)
+	if err != nil {
+		return "0", err
+	}
+	return bal.GetUSDCAmount(), nil
+}
+
+func (a *BridgeWalletBalanceAdapter) TransferFunds(ctx context.Context, req map[string]interface{}) (map[string]interface{}, error) {
+	// Minimal sweep implementation: extract fields and call bridge adapter
+	amount, _ := req["amount"].(string)
+	walletID, _ := req["source_wallet"].(string)
+	toAddress, _ := req["destination"].(string)
+	onBehalfOf, _ := req["on_behalf_of"].(string)
+	transfer, err := a.adapter.TransferFunds(ctx, &bridge.CreateTransferRequest{
+		OnBehalfOf: onBehalfOf,
+		Amount:     amount,
+		Source: bridge.TransferSource{
+			PaymentRail:    bridge.PaymentRail("bridge_wallet"),
+			Currency:       bridge.CurrencyUSDC,
+			BridgeWalletID: walletID,
+		},
+		Destination: bridge.TransferDestination{
+			PaymentRail: bridge.PaymentRailSolana,
+			Currency:    bridge.CurrencyUSDC,
+			ToAddress:   toAddress,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{"id": transfer.ID, "state": string(transfer.State)}, nil
 }
 
 func (a *CircleAdapter) GenerateDepositAddress(ctx context.Context, chain entities.Chain, userID uuid.UUID) (string, error) {
@@ -416,7 +454,7 @@ func (a *WithdrawalBridgeAdapter) InitiateTransfer(ctx context.Context, req map[
 
 	return map[string]interface{}{
 		"id":     transfer.ID,
-		"status": string(transfer.Status),
+		"status": string(transfer.State),
 		"amount": transfer.Amount,
 	}, nil
 }
@@ -428,24 +466,19 @@ func (a *WithdrawalBridgeAdapter) GetTransferStatus(ctx context.Context, transfe
 	}
 	return map[string]interface{}{
 		"id":     transfer.ID,
-		"status": string(transfer.Status),
+		"status": string(transfer.State),
 	}, nil
 }
 
 func (a *WithdrawalBridgeAdapter) CancelTransfer(ctx context.Context, transferID string) error {
-	// Check current status before attempting cancellation
 	transfer, err := a.adapter.Client().GetTransfer(ctx, transferID)
 	if err != nil {
 		return fmt.Errorf("failed to get transfer status before cancellation: %w", err)
 	}
-	// Bridge transfers in terminal states cannot be cancelled
-	switch transfer.Status {
-	case bridge.TransferStatusCompleted, bridge.TransferStatusFailed:
-		return fmt.Errorf("transfer %s is in terminal state %s and cannot be cancelled", transferID, transfer.Status)
+	switch transfer.State {
+	case bridge.TransferStatusPaymentProcessed, bridge.TransferStatusCanceled, bridge.TransferStatusReturned:
+		return fmt.Errorf("transfer %s is in terminal state %s and cannot be cancelled", transferID, transfer.State)
 	}
-	// Bridge does not expose a cancel endpoint in the current API version.
-	// The transfer will be left to expire or fail naturally.
-	// This is a best-effort operation — callers should not treat this as a hard error.
 	return fmt.Errorf("bridge transfer cancellation not supported by API; transfer %s must expire or fail naturally", transferID)
 }
 
@@ -762,7 +795,7 @@ type Container struct {
 	ReconciliationRepo        repositories.ReconciliationRepository
 
 	// External Services
-	CircleClient  *circle.Client
+	CircleClient  *circle.Client // retained for funding deposit address generation
 	AlpacaClient  *alpaca.Client
 	AlpacaService *alpaca.Service
 	BridgeClient  *bridge.Client
@@ -1130,12 +1163,9 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize wallet service first (no dependencies on other domain services)
 	c.WalletService = wallet.NewService(
 		c.WalletRepo,
-		c.WalletSetRepo,
 		c.WalletProvisioningJobRepo,
-		c.CircleClient,
 		c.AuditService,
-		c.EntitySecretService,
-		c.OnboardingService, // onboardingService - will be set after onboarding service is created
+		c.OnboardingService,
 		c.ZapLog,
 		walletServiceConfig,
 	)
@@ -1369,7 +1399,7 @@ func (c *Container) initializeDomainServices() error {
 		c.BalanceRepo,
 		brokerageAdapter,
 		c.WalletRepo,
-		c.CircleClient,
+		&BridgeWalletBalanceAdapter{adapter: c.BridgeAdapter},
 		c.AllocationService,
 		c.NotificationService,
 		c.Logger,
@@ -1499,26 +1529,18 @@ func (c *Container) initializeDomainServices() error {
 
 	// Create adapters for withdrawal service
 	withdrawalLedgerAdapter := &WithdrawalLedgerAdapter{ledgerService: c.LedgerService}
-	withdrawalCircleAdapter := &WithdrawalCircleAdapter{client: c.CircleClient}
 	withdrawalNotificationAdapter := &WithdrawalNotificationAdapter{svc: c.NotificationService}
-
-	// Create withdrawal service with new architecture
-	cctpIrisClient := cctp.NewClient(cctp.Config{
-		Environment: c.Config.CCTP.Environment,
-		BaseURL:     c.Config.CCTP.BaseURL,
-	}, c.ZapLog)
 
 	c.WithdrawalService = services.NewWithdrawalService(
 		c.WithdrawalRepo,
-		c.UserRepo,                    // UserRepository for Bridge KYC checks
-		withdrawalLedgerAdapter,       // LedgerService adapter
-		bankAccountRepo,               // BankAccountRepository
-		c.LimitsService,               // WithdrawalLimitsService
-		c.DomainAuditService,          // WithdrawalAuditService
-		withdrawalNotificationAdapter, // WithdrawalNotificationService adapter
-		withdrawalCircleAdapter,       // CircleClient adapter
-		withdrawalBridgeAdapter,       // BridgeAdapter
-		cctpIrisClient,                // CCTPFeeClient for cross-chain fee lookup
+		c.UserRepo,
+		withdrawalLedgerAdapter,
+		bankAccountRepo,
+		c.LimitsService,
+		c.DomainAuditService,
+		withdrawalNotificationAdapter,
+		withdrawalBridgeAdapter,       // BridgeAdapter (fiat offramp)
+		c.BridgeAdapter,               // BridgeCryptoTransferAdapter (crypto wallet transfers)
 		c.Logger,
 	)
 
@@ -1594,10 +1616,10 @@ func (c *Container) initializeDomainServices() error {
 	c.AccountDeletionService = account.NewDeletionService(
 		&deletionLedgerAdapter{ledgerService: c.LedgerService},
 		c.WalletRepo,
-		c.CircleClient,
+		&BridgeWalletBalanceAdapter{adapter: c.BridgeAdapter},
 		&deletionUserRepoAdapter{userRepo: c.UserRepo},
 		c.DomainAuditService,
-		c.Config.Circle.TreasuryWalletAddress,
+		c.Config.Bridge.TreasuryWalletAddress,
 		c.Logger,
 	)
 
@@ -1862,8 +1884,8 @@ func (c *Container) initializeReconciliationService() error {
 		c.ConversionRepo,
 		c.LedgerService,
 		&circleClientAdapter{
-			client:     c.CircleClient,
-			walletRepo: c.WalletRepo,
+			bridgeAdapter: c.BridgeAdapter,
+			walletRepo:    c.WalletRepo,
 		},
 		&alpacaClientAdapter{
 			client:  c.AlpacaClient,
@@ -1892,48 +1914,35 @@ func (c *Container) initializeReconciliationService() error {
 
 // Adapters for reconciliation service
 type circleClientAdapter struct {
-	client     *circle.Client
-	walletRepo *repositories.WalletRepository
+	bridgeAdapter *bridge.Adapter
+	walletRepo    *repositories.WalletRepository
 }
 
 func (a *circleClientAdapter) GetTotalUSDCBalance(ctx context.Context) (decimal.Decimal, error) {
-	// Query all active wallets from the database
 	filters := repositories.WalletListFilters{
 		Status: (*entities.WalletStatus)(ptrOf(entities.WalletStatusLive)),
-		Limit:  10000, // High limit to get all wallets
+		Limit:  10000,
 		Offset: 0,
 	}
-
 	wallets, _, err := a.walletRepo.ListWithFilters(ctx, filters)
 	if err != nil {
 		return decimal.Zero, fmt.Errorf("failed to list wallets: %w", err)
 	}
 
-	// Aggregate USDC balances from all wallets
-	totalBalance := decimal.Zero
+	total := decimal.Zero
 	for _, wallet := range wallets {
-		if wallet.CircleWalletID == "" {
-			continue // Skip wallets without Circle wallet ID
-		}
-
-		// Get balance for this wallet
-		balanceResp, err := a.client.GetWalletBalances(ctx, wallet.CircleWalletID)
-		if err != nil {
-			// Log error but continue with other wallets
+		if wallet.BridgeWalletID == "" {
 			continue
 		}
-
-		// Parse USDC balance
-		usdcBalanceStr := balanceResp.GetUSDCBalance()
-		if usdcBalanceStr != "0" {
-			usdcBalance, err := decimal.NewFromString(usdcBalanceStr)
-			if err == nil {
-				totalBalance = totalBalance.Add(usdcBalance)
-			}
+		wb, err := a.bridgeAdapter.GetWalletBalance(ctx, wallet.UserID.String(), wallet.BridgeWalletID)
+		if err != nil {
+			continue
+		}
+		if amt, err := decimal.NewFromString(wb.GetUSDCAmount()); err == nil {
+			total = total.Add(amt)
 		}
 	}
-
-	return totalBalance, nil
+	return total, nil
 }
 
 type alpacaClientAdapter struct {

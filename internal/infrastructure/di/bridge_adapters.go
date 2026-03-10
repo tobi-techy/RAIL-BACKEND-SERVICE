@@ -224,9 +224,9 @@ func (a *P2PBridgeOfframpAdapter) InitiateTransfer(ctx context.Context, req map[
 	transfer, err := a.client.CreateTransfer(ctx, &bridge.CreateTransferRequest{
 		Amount: amount,
 		Source: bridge.TransferSource{
-			PaymentRail: bridge.PaymentRailSolana,
-			Currency:    bridge.CurrencyUSDC,
-			WalletID:    sourceWalletID,
+			PaymentRail:    bridge.PaymentRailSolana,
+			Currency:       bridge.CurrencyUSDC,
+			BridgeWalletID: sourceWalletID,
 		},
 		Destination: bridge.TransferDestination{
 			PaymentRail:       "us_ach",
@@ -240,7 +240,7 @@ func (a *P2PBridgeOfframpAdapter) InitiateTransfer(ctx context.Context, req map[
 
 	return map[string]interface{}{
 		"id":     transfer.ID,
-		"status": string(transfer.Status),
+		"status": string(transfer.State),
 	}, nil
 }
 

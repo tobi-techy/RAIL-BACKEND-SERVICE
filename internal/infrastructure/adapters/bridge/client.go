@@ -243,10 +243,10 @@ func (c *Client) ListWallets(ctx context.Context, customerID string) (*ListWalle
 	return &resp, nil
 }
 
-// GetWalletBalance retrieves wallet balance
+// GetWalletBalance retrieves wallet balance (returns the wallet object which includes balances)
 func (c *Client) GetWalletBalance(ctx context.Context, customerID, walletID string) (*WalletBalance, error) {
 	var balance WalletBalance
-	if err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v0/customers/%s/wallets/%s/balance", url.PathEscape(customerID), url.PathEscape(walletID)), nil, &balance); err != nil {
+	if err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v0/customers/%s/wallets/%s", url.PathEscape(customerID), url.PathEscape(walletID)), nil, &balance); err != nil {
 		return nil, fmt.Errorf("get wallet balance failed: %w", err)
 	}
 	return &balance, nil

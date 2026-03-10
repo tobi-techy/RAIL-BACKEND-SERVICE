@@ -193,7 +193,7 @@ func (a *Adapter) TransferFunds(ctx context.Context, req *CreateTransferRequest)
 
 	a.logger.Info("Successfully created transfer",
 		zap.String("transfer_id", transfer.ID),
-		zap.String("status", string(transfer.Status)))
+		zap.String("state", string(transfer.State)))
 
 	return transfer, nil
 }
