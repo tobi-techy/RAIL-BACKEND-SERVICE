@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
-	"github.com/rail-service/rail_service/internal/infrastructure/circle"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/shopspring/decimal"
 
 	"github.com/rail-service/rail_service/pkg/logger"
@@ -20,11 +20,11 @@ type AllocationService interface {
 	ProcessIncomingFunds(ctx context.Context, req *entities.IncomingFundsRequest) error
 }
 
-// Engine handles all blockchain and Circle wallet interactions
+// Engine handles all blockchain and Bridge wallet interactions
 type Engine struct {
 	ledgerService     *ledger.Service
 	allocationService AllocationService
-	circleClient      *circle.Client
+	bridgeAdapter     *bridge.Adapter
 	depositRepo       DepositRepository
 	withdrawalRepo    WithdrawalRepository
 	walletRepo        WalletRepository
@@ -77,7 +77,7 @@ type WalletRepository interface {
 // ManagedWalletRepository handles managed wallet operations
 type ManagedWalletRepository interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.ManagedWallet, error)
-	GetByCircleWalletID(ctx context.Context, circleWalletID string) (*entities.ManagedWallet, error)
+	GetByBridgeWalletID(ctx context.Context, bridgeWalletID string) (*entities.ManagedWallet, error)
 	GetAll(ctx context.Context) ([]*entities.ManagedWallet, error)
 }
 
@@ -85,7 +85,7 @@ type ManagedWalletRepository interface {
 func NewEngine(
 	ledgerService *ledger.Service,
 	allocationService AllocationService,
-	circleClient *circle.Client,
+	bridgeAdapter *bridge.Adapter,
 	depositRepo DepositRepository,
 	withdrawalRepo WithdrawalRepository,
 	walletRepo WalletRepository,
@@ -100,7 +100,7 @@ func NewEngine(
 	return &Engine{
 		ledgerService:     ledgerService,
 		allocationService: allocationService,
-		circleClient:      circleClient,
+		bridgeAdapter:     bridgeAdapter,
 		depositRepo:       depositRepo,
 		withdrawalRepo:    withdrawalRepo,
 		walletRepo:        walletRepo,
@@ -158,7 +158,7 @@ func (e *Engine) ProcessDeposit(ctx context.Context, req *DepositRequest) error 
 	}
 
 	// Get user's managed wallet to verify ownership
-	managedWallet, err := e.managedWalletRepo.GetByCircleWalletID(ctx, req.CircleWalletID)
+	managedWallet, err := e.managedWalletRepo.GetByBridgeWalletID(ctx, req.BridgeWalletID)
 	if err != nil {
 		return fmt.Errorf("failed to get managed wallet: %w", err)
 	}
@@ -329,23 +329,16 @@ func (e *Engine) postDepositLedgerEntries(ctx context.Context, deposit *entities
 	return nil
 }
 
-// MonitorDeposits polls Circle for new deposits
-// This is a fallback in case webhooks fail
+// MonitorDeposits polls Bridge for new deposits (fallback if webhooks fail)
 func (e *Engine) MonitorDeposits(ctx context.Context) error {
-	// Get all managed wallets
 	wallets, err := e.managedWalletRepo.GetAll(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get managed wallets: %w", err)
 	}
 
 	for _, wallet := range wallets {
-		// Check Circle for wallet balance/transactions
-		// This would query Circle API for recent transactions
-		// and process any that aren't in our deposits table
-
-		// Note: Actual implementation depends on Circle API capabilities
 		e.logger.Debug("Monitoring wallet for deposits",
-			"wallet_id", wallet.CircleWalletID,
+			"wallet_id", wallet.BridgeWalletID,
 			"user_id", wallet.UserID)
 	}
 
@@ -413,10 +406,10 @@ func (e *Engine) ExecuteWithdrawal(ctx context.Context, withdrawalID uuid.UUID) 
 		return fmt.Errorf("failed to post ledger entries: %w", err)
 	}
 
-	// Execute on-chain transfer via Circle
-	txHash, err := e.executeCircleTransfer(ctx, withdrawal)
+	// Execute on-chain transfer via Bridge
+	txHash, err := e.executeBridgeTransfer(ctx, withdrawal)
 	if err != nil {
-		e.logger.Error("Failed to execute Circle transfer",
+		e.logger.Error("Failed to execute Bridge transfer",
 			"withdrawal_id", withdrawalID,
 			"error", err)
 
@@ -523,11 +516,10 @@ func (e *Engine) postWithdrawalLedgerEntries(ctx context.Context, withdrawal *en
 	return nil
 }
 
-// executeCircleTransfer executes the actual on-chain transfer via Circle
-func (e *Engine) executeCircleTransfer(ctx context.Context, withdrawal *entities.Withdrawal) (string, error) {
-	// For crypto withdrawals, use the Circle wallet ID from the withdrawal
-	if withdrawal.CircleWalletID == nil || *withdrawal.CircleWalletID == "" {
-		return "", fmt.Errorf("circle wallet ID not set on withdrawal")
+// executeBridgeTransfer executes the actual on-chain transfer via Bridge
+func (e *Engine) executeBridgeTransfer(ctx context.Context, withdrawal *entities.Withdrawal) (string, error) {
+	if withdrawal.BridgeWalletID == nil || *withdrawal.BridgeWalletID == "" {
+		return "", fmt.Errorf("bridge wallet ID not set on withdrawal")
 	}
 
 	destAddr := ""
@@ -538,37 +530,50 @@ func (e *Engine) executeCircleTransfer(ctx context.Context, withdrawal *entities
 		return "", fmt.Errorf("destination address not set on withdrawal")
 	}
 
-	// Create Circle transfer request
-	transferReq := entities.CircleTransferRequest{
-		WalletID:           *withdrawal.CircleWalletID,
-		DestinationAddress: destAddr,
-		Amounts:            []string{withdrawal.Amount.String()},
-		TokenID:            "USDC",
-		IDempotencyKey:     withdrawal.ID.String(),
-	}
-
-	// Execute transfer via Circle API
-	response, err := e.circleClient.TransferFunds(ctx, transferReq)
+	transfer, err := e.bridgeAdapter.TransferFunds(ctx, &bridge.CreateTransferRequest{
+		OnBehalfOf: withdrawal.UserID.String(),
+		Amount:     withdrawal.Amount.String(),
+		Source: bridge.TransferSource{
+			PaymentRail:    bridge.PaymentRail("bridge_wallet"),
+			Currency:       bridge.CurrencyUSDC,
+			BridgeWalletID: *withdrawal.BridgeWalletID,
+		},
+		Destination: bridge.TransferDestination{
+			PaymentRail: mapChainToPaymentRail(withdrawal.DestinationChain),
+			Currency:    bridge.CurrencyUSDC,
+			ToAddress:   destAddr,
+		},
+	})
 	if err != nil {
-		return "", fmt.Errorf("circle transfer failed: %w", err)
+		return "", fmt.Errorf("bridge transfer failed: %w", err)
 	}
 
-	// Extract transfer ID from response
-	transferID := ""
-	if id, ok := response["id"].(string); ok {
-		transferID = id
-	} else if data, ok := response["data"].(map[string]interface{}); ok {
-		if id, ok := data["id"].(string); ok {
-			transferID = id
-		}
-	}
-
-	e.logger.Info("Circle transfer initiated",
+	e.logger.Info("Bridge transfer initiated",
 		"withdrawal_id", withdrawal.ID,
-		"transfer_id", transferID,
-		"wallet_id", *withdrawal.CircleWalletID)
+		"transfer_id", transfer.ID,
+		"wallet_id", *withdrawal.BridgeWalletID)
 
-	return transferID, nil
+	return transfer.ID, nil
+}
+
+// mapChainToPaymentRail maps a withdrawal destination chain to a Bridge PaymentRail
+func mapChainToPaymentRail(chain string) bridge.PaymentRail {
+	switch chain {
+	case "solana", "SOL", "SOL-DEVNET":
+		return bridge.PaymentRailSolana
+	case "polygon", "MATIC", "MATIC-AMOY":
+		return bridge.PaymentRailPolygon
+	case "base", "BASE", "BASE-SEPOLIA":
+		return bridge.PaymentRailBase
+	case "avalanche", "AVAX", "AVAX-FUJI":
+		return bridge.PaymentRailAvalanche
+	case "ethereum", "ETH":
+		return bridge.PaymentRailEthereum
+	case "arbitrum":
+		return bridge.PaymentRailArbitrum
+	default:
+		return bridge.PaymentRailBase
+	}
 }
 
 // ProcessPendingWithdrawals processes all pending withdrawals
@@ -602,11 +607,10 @@ func (e *Engine) CheckSystemBufferLevel(ctx context.Context) (*BufferStatus, err
 		return nil, fmt.Errorf("failed to get system buffer account: %w", err)
 	}
 
-	// Get actual Circle wallet balance
-	// This would query all Circle wallets and sum balances
-	actualBalance, err := e.getActualCircleBalance(ctx)
+	// Get actual Bridge wallet balance
+	actualBalance, err := e.getActualBridgeBalance(ctx)
 	if err != nil {
-		e.logger.Error("Failed to get actual Circle balance", "error", err)
+		e.logger.Error("Failed to get actual Bridge balance", "error", err)
 		// Use ledger balance as fallback
 		actualBalance = systemAccount.Balance
 	}
@@ -638,9 +642,8 @@ func (e *Engine) CheckSystemBufferLevel(ctx context.Context) (*BufferStatus, err
 	return status, nil
 }
 
-// getActualCircleBalance queries Circle for actual wallet balances
-func (e *Engine) getActualCircleBalance(ctx context.Context) (decimal.Decimal, error) {
-	// Get all managed wallets
+// getActualBridgeBalance queries Bridge for actual wallet balances
+func (e *Engine) getActualBridgeBalance(ctx context.Context) (decimal.Decimal, error) {
 	wallets, err := e.managedWalletRepo.GetAll(ctx)
 	if err != nil {
 		return decimal.Zero, fmt.Errorf("failed to get wallets: %w", err)
@@ -649,28 +652,23 @@ func (e *Engine) getActualCircleBalance(ctx context.Context) (decimal.Decimal, e
 	total := decimal.Zero
 
 	for _, wallet := range wallets {
-		// Query Circle for wallet balance
-		balanceResp, err := e.circleClient.GetWalletBalances(ctx, wallet.CircleWalletID)
+		if wallet.BridgeWalletID == "" {
+			continue
+		}
+		// BridgeCustomerID is stored on the user profile; we use wallet.UserID as a proxy key
+		balance, err := e.bridgeAdapter.GetWalletBalance(ctx, wallet.UserID.String(), wallet.BridgeWalletID)
 		if err != nil {
-			e.logger.Error("Failed to get wallet balance from Circle",
-				"wallet_id", wallet.CircleWalletID,
+			e.logger.Error("Failed to get wallet balance from Bridge",
+				"wallet_id", wallet.BridgeWalletID,
 				"error", err)
 			continue
 		}
 
-		// Sum USDC balances across all tokens/chains
-		for _, token := range balanceResp.TokenBalances {
-			if token.Token.Symbol == "USDC" {
-				amount, err := decimal.NewFromString(token.Amount)
-				if err != nil {
-					e.logger.Error("Failed to parse balance amount",
-						"amount", token.Amount,
-						"error", err)
-					continue
-				}
-				total = total.Add(amount)
-			}
+		amount, err := decimal.NewFromString(balance.GetUSDCAmount())
+		if err != nil {
+			continue
 		}
+		total = total.Add(amount)
 	}
 
 	return total, nil
@@ -683,7 +681,7 @@ func (e *Engine) getActualCircleBalance(ctx context.Context) (decimal.Decimal, e
 // DepositRequest represents a deposit to process
 type DepositRequest struct {
 	UserID         uuid.UUID
-	CircleWalletID string
+	BridgeWalletID string
 	Chain          entities.Chain
 	TxHash         string
 	Token          entities.Stablecoin

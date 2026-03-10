@@ -175,8 +175,8 @@ func TestLimitsService_ValidateWithdrawal_BelowMinimum(t *testing.T) {
 	
 	svc := limits.NewService(userRepo, usageRepo, log)
 	
-	// Test withdrawal below minimum ($10)
-	result, err := svc.ValidateWithdrawal(context.Background(), userID, decimal.NewFromFloat(5.00))
+	// Test withdrawal below minimum ($1)
+	result, err := svc.ValidateWithdrawal(context.Background(), userID, decimal.NewFromFloat(0.50))
 	
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, entities.ErrBelowMinimumWithdrawal)
@@ -204,7 +204,7 @@ func TestLimitsService_GetUserLimits(t *testing.T) {
 	assert.Equal(t, "1", limits.Deposit.Minimum)
 	assert.Equal(t, "5000", limits.Deposit.Daily.Limit)
 	assert.Equal(t, "25000", limits.Deposit.Monthly.Limit)
-	assert.Equal(t, "10", limits.Withdrawal.Minimum)
+	assert.Equal(t, "1", limits.Withdrawal.Minimum)
 	assert.Equal(t, "2500", limits.Withdrawal.Daily.Limit)
 }
 

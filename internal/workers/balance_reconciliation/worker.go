@@ -10,9 +10,9 @@ import (
 	"go.uber.org/zap"
 )
 
-// CircleClient fetches wallet balances from Circle
-type CircleClient interface {
-	GetWalletBalances(ctx context.Context, walletID string, tokenAddress ...string) (*entities.CircleWalletBalancesResponse, error)
+// WalletBalanceClient fetches wallet balances from Bridge
+type WalletBalanceClient interface {
+	GetWalletBalance(ctx context.Context, customerID, walletID string) (string, error)
 }
 
 // LedgerService reconciles ledger balances
@@ -30,21 +30,21 @@ type LedgerRepository interface {
 	GetAccountByUserAndType(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (*entities.LedgerAccount, error)
 }
 
-// Worker reconciles ledger balances with Circle wallet balances
+// Worker reconciles ledger balances with Bridge wallet balances
 type Worker struct {
-	circleClient   CircleClient
-	ledgerService  LedgerService
-	walletRepo     WalletRepository
-	ledgerRepo     LedgerRepository
-	checkInterval  time.Duration
-	threshold      decimal.Decimal // Only reconcile if diff exceeds this
-	logger         *zap.Logger
-	stopCh         chan struct{}
+	walletClient  WalletBalanceClient
+	ledgerService LedgerService
+	walletRepo    WalletRepository
+	ledgerRepo    LedgerRepository
+	checkInterval time.Duration
+	threshold     decimal.Decimal
+	logger        *zap.Logger
+	stopCh        chan struct{}
 }
 
 // NewWorker creates a new balance reconciliation worker
 func NewWorker(
-	circleClient CircleClient,
+	walletClient WalletBalanceClient,
 	ledgerService LedgerService,
 	walletRepo WalletRepository,
 	ledgerRepo LedgerRepository,
@@ -56,10 +56,10 @@ func NewWorker(
 		checkInterval = 6 * time.Hour
 	}
 	if threshold.IsZero() {
-		threshold = decimal.NewFromFloat(0.01) // 1 cent threshold
+		threshold = decimal.NewFromFloat(0.01)
 	}
 	return &Worker{
-		circleClient:  circleClient,
+		walletClient:  walletClient,
 		ledgerService: ledgerService,
 		walletRepo:    walletRepo,
 		ledgerRepo:    ledgerRepo,
@@ -104,25 +104,20 @@ func (w *Worker) reconcile(ctx context.Context) {
 
 	var reconciled, skipped, failed int
 	for _, wallet := range wallets {
-		if wallet.CircleWalletID == "" {
+		if wallet.BridgeWalletID == "" {
 			continue
 		}
 
-		// Get Circle balance
-		balances, err := w.circleClient.GetWalletBalances(ctx, wallet.CircleWalletID)
+		// Get Bridge balance — customerID is stored as BridgeCustomerID on the user profile;
+		// use UserID string as a fallback key since we don't have it here.
+		amountStr, err := w.walletClient.GetWalletBalance(ctx, wallet.UserID.String(), wallet.BridgeWalletID)
 		if err != nil {
-			w.logger.Warn("Failed to get Circle balance", zap.String("wallet_id", wallet.CircleWalletID), zap.Error(err))
+			w.logger.Warn("Failed to get Bridge balance", zap.String("wallet_id", wallet.BridgeWalletID), zap.Error(err))
 			failed++
 			continue
 		}
 
-		var circleBalance decimal.Decimal
-		for _, tb := range balances.TokenBalances {
-			if tb.Token.Symbol == "USDC" {
-				circleBalance, _ = decimal.NewFromString(tb.Amount)
-				break
-			}
-		}
+		bridgeBalance, _ := decimal.NewFromString(amountStr)
 
 		// Get ledger balance
 		account, err := w.ledgerRepo.GetAccountByUserAndType(ctx, wallet.UserID, entities.AccountTypeSpendingBalance)
@@ -133,18 +128,17 @@ func (w *Worker) reconcile(ctx context.Context) {
 		}
 
 		ledgerBalance := account.Balance
-		diff := circleBalance.Sub(ledgerBalance).Abs()
+		diff := bridgeBalance.Sub(ledgerBalance).Abs()
 		if diff.LessThanOrEqual(w.threshold) {
 			skipped++
 			continue
 		}
 
-		// Reconcile
-		if err := w.ledgerService.ReconcileBalance(ctx, wallet.UserID, entities.AccountTypeSpendingBalance, circleBalance); err != nil {
+		if err := w.ledgerService.ReconcileBalance(ctx, wallet.UserID, entities.AccountTypeSpendingBalance, bridgeBalance); err != nil {
 			w.logger.Error("Failed to reconcile",
 				zap.String("user_id", wallet.UserID.String()),
 				zap.String("ledger", ledgerBalance.String()),
-				zap.String("circle", circleBalance.String()),
+				zap.String("bridge", bridgeBalance.String()),
 				zap.Error(err))
 			failed++
 			continue
@@ -153,7 +147,7 @@ func (w *Worker) reconcile(ctx context.Context) {
 		w.logger.Info("Reconciled balance",
 			zap.String("user_id", wallet.UserID.String()),
 			zap.String("old", ledgerBalance.String()),
-			zap.String("new", circleBalance.String()),
+			zap.String("new", bridgeBalance.String()),
 			zap.String("diff", diff.String()))
 		reconciled++
 	}

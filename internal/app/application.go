@@ -20,6 +20,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
 	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
+	bridgeadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/database"
@@ -252,7 +253,7 @@ func (app *Application) initializeKYCSyncWorker() error {
 
 	// Initialize balance reconciliation worker
 	app.balanceReconciliationWorker = balance_reconciliation.NewWorker(
-		app.container.CircleClient,
+		&bridgeWalletBalanceAdapter{adapter: app.container.BridgeAdapter},
 		app.container.LedgerService,
 		app.container.WalletRepo,
 		app.container.LedgerRepo,
@@ -266,23 +267,15 @@ func (app *Application) initializeKYCSyncWorker() error {
 	return nil
 }
 
-// initializeWalletProvisioning initializes wallet provisioning workers
+// initializeWalletProvisioning initializes wallet provisioning workers.
+// Wallet creation is now handled by Bridge during onboarding; the worker is a no-op.
 func (app *Application) initializeWalletProvisioning() error {
 	workerConfig := walletprovisioning.DefaultConfig()
-	workerConfig.WalletSetNamePrefix = app.cfg.Circle.DefaultWalletSetName
 	workerConfig.ChainsToProvision = app.container.WalletService.SupportedChains()
-	workerConfig.DefaultWalletSetID = app.cfg.Circle.DefaultWalletSetID
-
-	// Create user repository adapter
-	userRepoAdapter := &userRepositoryAdapter{repo: app.container.UserRepo}
 
 	worker := walletprovisioning.NewWorker(
-		app.container.WalletRepo,
-		app.container.WalletSetRepo,
 		app.container.WalletProvisioningJobRepo,
-		app.container.CircleClient,
 		app.container.AuditService,
-		userRepoAdapter,
 		workerConfig,
 		app.log.Zap(),
 	)
@@ -604,4 +597,17 @@ func (a *userRepositoryAdapter) GetByID(ctx context.Context, id uuid.UUID) (*ent
 		CreatedAt:          profile.CreatedAt,
 		UpdatedAt:          profile.UpdatedAt,
 	}, nil
+}
+
+// bridgeWalletBalanceAdapter adapts *bridge.Adapter to balance_reconciliation.WalletBalanceClient
+type bridgeWalletBalanceAdapter struct {
+	adapter *bridgeadapter.Adapter
+}
+
+func (a *bridgeWalletBalanceAdapter) GetWalletBalance(ctx context.Context, customerID, walletID string) (string, error) {
+	bal, err := a.adapter.GetWalletBalance(ctx, customerID, walletID)
+	if err != nil {
+		return "0", err
+	}
+	return bal.GetUSDCAmount(), nil
 }

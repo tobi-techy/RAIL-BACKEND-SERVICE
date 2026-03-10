@@ -140,7 +140,7 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 		DestinationChain:   destChain,
 		SourceChain:        string(wallet.Chain),
 		SourceAccount:      entities.WithdrawalSourceSpendingBalance,
-		CircleWalletID:     wallet.CircleWalletID,
+		BridgeWalletID:     wallet.BridgeWalletID,
 		IdempotencyKey:     idempotencyKey,
 	}
 

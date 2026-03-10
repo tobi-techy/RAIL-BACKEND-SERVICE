@@ -274,10 +274,30 @@ type Wallet struct {
 	CreatedAt  time.Time   `json:"created_at"`
 }
 
-// WalletBalance represents a wallet balance
+// WalletBalanceEntry represents a single balance entry within a wallet
+type WalletBalanceEntry struct {
+	Balance         string      `json:"balance"`
+	Currency        Currency    `json:"currency"`
+	Chain           PaymentRail `json:"chain"`
+	ContractAddress string      `json:"contract_address,omitempty"`
+}
+
+// WalletBalance represents the balance response for a Bridge wallet
 type WalletBalance struct {
-	Currency Currency `json:"currency"`
-	Amount   string   `json:"amount"`
+	ID       string               `json:"id"`
+	Chain    PaymentRail          `json:"chain"`
+	Address  string               `json:"address"`
+	Balances []WalletBalanceEntry `json:"balances"`
+}
+
+// GetUSDCAmount returns the USDC balance string, or "0" if not found
+func (wb *WalletBalance) GetUSDCAmount() string {
+	for _, b := range wb.Balances {
+		if b.Currency == CurrencyUSDC || b.Currency == CurrencyUSDB {
+			return b.Balance
+		}
+	}
+	return "0"
 }
 
 // CryptoAccount represents a crypto account for cards
@@ -345,24 +365,25 @@ type CardAccount struct {
 
 // TransferSource represents the source of a transfer
 type TransferSource struct {
-	PaymentRail PaymentRail `json:"payment_rail"`
-	Currency    Currency    `json:"currency"`
-	FromAddress string      `json:"from_address,omitempty"`
-	WalletID    string      `json:"wallet_id,omitempty"`
+	PaymentRail    PaymentRail `json:"payment_rail"`
+	Currency       Currency    `json:"currency"`
+	BridgeWalletID string      `json:"bridge_wallet_id,omitempty"`
+	FromAddress    string      `json:"from_address,omitempty"`
 }
 
 // TransferDestination represents the destination of a transfer
 type TransferDestination struct {
 	PaymentRail       PaymentRail `json:"payment_rail"`
 	Currency          Currency    `json:"currency"`
+	BridgeWalletID    string      `json:"bridge_wallet_id,omitempty"`
 	ToAddress         string      `json:"to_address,omitempty"`
-	WalletID          string      `json:"wallet_id,omitempty"`
 	ExternalAccountID string      `json:"external_account_id,omitempty"`
 }
 
 // CreateTransferRequest represents a request to create a transfer
 type CreateTransferRequest struct {
-	Amount      string              `json:"amount"`
+	OnBehalfOf  string              `json:"on_behalf_of"`
+	Amount      string              `json:"amount,omitempty"`
 	Source      TransferSource      `json:"source"`
 	Destination TransferDestination `json:"destination"`
 }
@@ -371,16 +392,21 @@ type CreateTransferRequest struct {
 type TransferStatus string
 
 const (
-	TransferStatusPending   TransferStatus = "pending"
-	TransferStatusCompleted TransferStatus = "completed"
-	TransferStatusFailed    TransferStatus = "failed"
+	TransferStatusAwaitingFunds    TransferStatus = "awaiting_funds"
+	TransferStatusInReview         TransferStatus = "in_review"
+	TransferStatusFundsReceived    TransferStatus = "funds_received"
+	TransferStatusPaymentSubmitted TransferStatus = "payment_submitted"
+	TransferStatusPaymentProcessed TransferStatus = "payment_processed"
+	TransferStatusCanceled         TransferStatus = "canceled"
+	TransferStatusUndeliverable    TransferStatus = "undeliverable"
+	TransferStatusReturned         TransferStatus = "returned"
 )
 
 // Transfer represents a Bridge transfer
 type Transfer struct {
 	ID          string              `json:"id"`
-	CustomerID  string              `json:"customer_id"`
-	Status      TransferStatus      `json:"status"`
+	State       TransferStatus      `json:"state"`
+	OnBehalfOf  string              `json:"on_behalf_of"`
 	Amount      string              `json:"amount"`
 	Source      TransferSource      `json:"source"`
 	Destination TransferDestination `json:"destination"`

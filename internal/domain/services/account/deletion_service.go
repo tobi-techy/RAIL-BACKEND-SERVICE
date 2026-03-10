@@ -24,10 +24,10 @@ type WalletRepository interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.ManagedWallet, error)
 }
 
-// CircleClient interface for fund transfers
-type CircleClient interface {
-	TransferFunds(ctx context.Context, req entities.CircleTransferRequest) (map[string]interface{}, error)
-	GetWalletBalances(ctx context.Context, walletID string, tokenAddress ...string) (*entities.CircleWalletBalancesResponse, error)
+// BridgeWalletClient interface for Bridge wallet transfers
+type BridgeWalletClient interface {
+	TransferFunds(ctx context.Context, req map[string]interface{}) (map[string]interface{}, error)
+	GetWalletBalance(ctx context.Context, customerID, walletID string) (string, error)
 }
 
 // UserRepository interface for user deletion
@@ -78,7 +78,7 @@ type DeviceTokenRepository interface {
 type DeletionService struct {
 	ledgerService         LedgerService
 	walletRepo            WalletRepository
-	circleClient          CircleClient
+	bridgeWalletClient    BridgeWalletClient
 	userRepo              UserRepository
 	auditService          AuditService
 	sessionService        SessionService
@@ -95,7 +95,7 @@ type DeletionService struct {
 func NewDeletionService(
 	ledgerService LedgerService,
 	walletRepo WalletRepository,
-	circleClient CircleClient,
+	bridgeWalletClient BridgeWalletClient,
 	userRepo UserRepository,
 	auditService AuditService,
 	treasuryWalletAddress string,
@@ -104,7 +104,7 @@ func NewDeletionService(
 	return &DeletionService{
 		ledgerService:         ledgerService,
 		walletRepo:            walletRepo,
-		circleClient:          circleClient,
+		bridgeWalletClient:    bridgeWalletClient,
 		userRepo:              userRepo,
 		auditService:          auditService,
 		treasuryWalletAddress: treasuryWalletAddress,
@@ -308,108 +308,79 @@ func (s *DeletionService) calculateTotalBalance(balances *entities.UserBalances)
 	return balances.TotalValue()
 }
 
-// sweepFundsToTreasury transfers all user funds to company treasury wallet
+// sweepFundsToTreasury transfers all user funds to company treasury wallet via Bridge
 func (s *DeletionService) sweepFundsToTreasury(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (string, error) {
 	if s.treasuryWalletAddress == "" {
 		return "", fmt.Errorf("treasury wallet address not configured")
 	}
-
-	if s.circleClient == nil {
-		return "", fmt.Errorf("circle client not configured")
+	if s.bridgeWalletClient == nil {
+		return "", fmt.Errorf("bridge wallet client not configured")
 	}
 
-	// Get user's Circle wallet
 	wallets, err := s.walletRepo.GetByUserID(ctx, userID)
 	if err != nil {
 		return "", fmt.Errorf("failed to get user wallets: %w", err)
 	}
-
 	if len(wallets) == 0 {
 		return "", fmt.Errorf("no wallets found for user")
 	}
 
-	// Find the primary wallet (SOL chain preferred)
+	// Find primary wallet (prefer SOL, fallback to first with BridgeWalletID)
 	var sourceWallet *entities.ManagedWallet
 	for _, w := range wallets {
-		if w.Chain == "SOL" && w.CircleWalletID != "" {
+		if w.Chain == "SOL" && w.BridgeWalletID != "" {
 			sourceWallet = w
 			break
 		}
 	}
 	if sourceWallet == nil {
 		for _, w := range wallets {
-			if w.CircleWalletID != "" {
+			if w.BridgeWalletID != "" {
 				sourceWallet = w
 				break
 			}
 		}
 	}
-
 	if sourceWallet == nil {
-		return "", fmt.Errorf("no Circle wallet found for user")
+		return "", fmt.Errorf("no Bridge wallet found for user")
 	}
 
-	// Get actual wallet balance from Circle (not ledger balance)
-	actualBalance, err := s.getCircleWalletBalance(ctx, sourceWallet.CircleWalletID)
+	// Get actual on-chain balance
+	actualBalance, err := s.getBridgeWalletBalance(ctx, userID.String(), sourceWallet.BridgeWalletID)
 	if err != nil {
-		s.logger.Warn("Failed to get Circle wallet balance, using ledger balance", "error", err)
+		s.logger.Warn("Failed to get Bridge wallet balance, using ledger balance", "error", err)
 		actualBalance = amount
 	}
 
-	// Use the smaller of ledger balance or actual balance
 	sweepAmount := amount
 	if actualBalance.LessThan(amount) {
 		sweepAmount = actualBalance
 	}
-
-	// Skip if nothing to sweep
 	if sweepAmount.LessThanOrEqual(MinSweepThreshold) {
 		s.logger.Info("No funds to sweep", "user_id", userID.String(), "balance", sweepAmount.String())
 		return "", nil
 	}
 
-	// Execute transfer to treasury
-	req := entities.CircleTransferRequest{
-		WalletID:           sourceWallet.CircleWalletID,
-		TokenID:            "USDC",
-		Amounts:            []string{sweepAmount.StringFixed(6)},
-		DestinationAddress: s.treasuryWalletAddress,
-		IDempotencyKey:     uuid.NewSHA1(uuid.NameSpaceOID, []byte("account-closure-"+userID.String())).String(),
-	}
-
-	response, err := s.circleClient.TransferFunds(ctx, req)
+	resp, err := s.bridgeWalletClient.TransferFunds(ctx, map[string]interface{}{
+		"on_behalf_of":    userID.String(),
+		"amount":          sweepAmount.StringFixed(2),
+		"source_wallet":   sourceWallet.BridgeWalletID,
+		"destination":     s.treasuryWalletAddress,
+		"idempotency_key": uuid.NewSHA1(uuid.NameSpaceOID, []byte("account-closure-"+userID.String())).String(),
+	})
 	if err != nil {
-		return "", fmt.Errorf("circle transfer failed: %w", err)
+		return "", fmt.Errorf("bridge transfer failed: %w", err)
 	}
 
-	// Extract tx hash
-	var txHash string
-	if h, ok := response["transactionHash"].(string); ok {
-		txHash = h
-	} else if h, ok := response["txHash"].(string); ok {
-		txHash = h
-	}
-
+	txHash, _ := resp["id"].(string)
 	return txHash, nil
 }
 
-// getCircleWalletBalance fetches actual USDC balance from Circle wallet
-func (s *DeletionService) getCircleWalletBalance(ctx context.Context, walletID string) (decimal.Decimal, error) {
-	balances, err := s.circleClient.GetWalletBalances(ctx, walletID)
+// getBridgeWalletBalance fetches actual USDC balance from Bridge wallet
+func (s *DeletionService) getBridgeWalletBalance(ctx context.Context, customerID, walletID string) (decimal.Decimal, error) {
+	amountStr, err := s.bridgeWalletClient.GetWalletBalance(ctx, customerID, walletID)
 	if err != nil {
 		return decimal.Zero, err
 	}
-
-	// Find USDC balance
-	for _, tb := range balances.TokenBalances {
-		if tb.Token.Symbol == "USDC" {
-			amount, err := decimal.NewFromString(tb.Amount)
-			if err != nil {
-				return decimal.Zero, fmt.Errorf("failed to parse USDC balance: %w", err)
-			}
-			return amount, nil
-		}
-	}
-
-	return decimal.Zero, nil
+	return decimal.NewFromString(amountStr)
 }
