@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"time"
 
@@ -241,13 +242,7 @@ func collapseToTopN(allocs []Allocation, n int) []Allocation {
 	}
 	sorted := make([]Allocation, len(allocs))
 	copy(sorted, allocs)
-	for i := 0; i < len(sorted)-1; i++ {
-		for j := i + 1; j < len(sorted); j++ {
-			if sorted[j].Weight.GreaterThan(sorted[i].Weight) {
-				sorted[i], sorted[j] = sorted[j], sorted[i]
-			}
-		}
-	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Weight.GreaterThan(sorted[j].Weight) })
 	top := sorted[:n]
 	total := decimal.Zero
 	for _, a := range top {

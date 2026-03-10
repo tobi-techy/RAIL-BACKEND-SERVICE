@@ -33,7 +33,7 @@ type AutoInvestEvent struct {
 	BasketID      uuid.UUID        `json:"basket_id" db:"basket_id"`
 	Amount        decimal.Decimal  `json:"amount" db:"amount"`
 	OrderID       *uuid.UUID       `json:"order_id,omitempty" db:"order_id"`
-	CorrelationID string           `json:"correlation_id" db:"correlation_id"`
+	CorrelationID string           `json:"correlation_id" db:"correlation_id" validate:"required,min=1"`
 	Status        AutoInvestStatus `json:"status" db:"status"`
 	Error         *string          `json:"error,omitempty" db:"error"`
 	CreatedAt     time.Time        `json:"created_at" db:"created_at"`

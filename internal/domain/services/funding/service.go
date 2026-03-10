@@ -564,14 +564,6 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 		return fmt.Errorf("deposit amount %s exceeds maximum %v USDC", amount.String(), maxAmountWhole.String())
 	}
 
-	// Deposit validation: Bridge liquidation addresses are pre-validated by Bridge.
-	// Additional validation is handled by Bridge webhook signature checks.
-	isValid := true
-	if !isValid {
-		s.logger.Warn("Invalid deposit received", "tx_hash", webhook.TxHash)
-		return fmt.Errorf("invalid deposit signature or amount")
-	}
-
 	// Generate UUID-based idempotency key from: chain + token + amount + txHash
 	// This ensures uniqueness across chains and prevents cross-chain replay attacks
 	idempotencyKey := generateIdempotencyKey(string(webhook.Chain), string(webhook.Token), webhook.Amount, webhook.TxHash)

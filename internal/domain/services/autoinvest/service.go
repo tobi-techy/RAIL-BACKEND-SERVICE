@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/strategy"
 	"github.com/rail-service/rail_service/pkg/logger"
@@ -293,8 +295,9 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 			CreatedAt:     time.Now(),
 		}
 		if err := s.repo.CreateEvent(ctx, event); err != nil {
-			// Unique constraint on correlation_id means duplicate — safe to skip
-			if strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+			// Unique constraint violation on correlation_id — already processed, safe to skip
+			var pqErr *pq.Error
+			if errors.As(err, &pqErr) && pqErr.Code == "23505" {
 				s.logger.Info("Duplicate auto-invest event, skipping",
 					"user_id", userID, "correlation_id", correlationID)
 				return nil
