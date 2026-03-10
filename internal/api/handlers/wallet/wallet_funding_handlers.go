@@ -42,7 +42,6 @@ type WalletFundingHandlers struct {
 	allocationProvider  AllocationBalanceProvider
 	userProfileProvider UserProfileProvider
 	ledgerService       LedgerReconciler
-	circleClient        CircleBalanceGetter
 	validator           *validator.Validate
 	webhookSecret       string
 	skipSignatureVerify bool // Only true in development when secret is not configured
@@ -52,11 +51,6 @@ type WalletFundingHandlers struct {
 // LedgerReconciler interface for balance reconciliation
 type LedgerReconciler interface {
 	ReconcileBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, newBalance decimal.Decimal) error
-}
-
-// CircleBalanceGetter interface for getting Circle wallet balances
-type CircleBalanceGetter interface {
-	GetWalletBalances(ctx context.Context, walletID string, tokenAddress ...string) (*entities.CircleWalletBalancesResponse, error)
 }
 
 // NewWalletFundingHandlers creates a new instance of consolidated wallet/funding handlers
@@ -94,89 +88,10 @@ func (h *WalletFundingHandlers) SetLedgerService(ledger LedgerReconciler) {
 	h.ledgerService = ledger
 }
 
-// SetCircleClient sets the Circle client for balance queries
-func (h *WalletFundingHandlers) SetCircleClient(client CircleBalanceGetter) {
-	h.circleClient = client
-}
-
-// ReconcileUserBalance syncs a user's ledger balance with their actual Circle wallet balance
+// ReconcileUserBalance is a no-op placeholder — Bridge wallet reconciliation removed.
+// Balance reconciliation now happens via Bridge webhook events.
 func (h *WalletFundingHandlers) ReconcileUserBalance(c *gin.Context) {
-	ctx := c.Request.Context()
-
-	// Check admin authorization with explicit type assertion
-	userRole, exists := c.Get("user_role")
-	if !exists {
-		c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
-		return
-	}
-	roleStr, ok := userRole.(string)
-	if !ok || roleStr != "admin" {
-		c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
-		return
-	}
-
-	userIDStr := c.Param("user_id")
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user_id"})
-		return
-	}
-
-	if h.ledgerService == nil || h.circleClient == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "reconciliation service not configured"})
-		return
-	}
-
-	// Get Circle wallet ID from request body (admin provides it)
-	var req struct {
-		CircleWalletID string `json:"circle_wallet_id" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "circle_wallet_id required"})
-		return
-	}
-
-	// Get actual balance from Circle
-	balances, err := h.circleClient.GetWalletBalances(ctx, req.CircleWalletID)
-	if err != nil {
-		h.logger.Error("Failed to get Circle balances", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get Circle balance"})
-		return
-	}
-
-	// Find USDC balance
-	var actualBalance decimal.Decimal
-	for _, tb := range balances.TokenBalances {
-		if tb.Token.Symbol == "USDC" {
-			var err error
-			actualBalance, err = decimal.NewFromString(tb.Amount)
-			if err != nil {
-				h.logger.Error("Invalid balance format from Circle",
-					zap.String("amount", tb.Amount),
-					zap.Error(err))
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid balance format from Circle"})
-				return
-			}
-			break
-		}
-	}
-
-	// Update ledger to match Circle
-	if err := h.ledgerService.ReconcileBalance(ctx, userID, entities.AccountTypeSpendingBalance, actualBalance); err != nil {
-		h.logger.Error("Failed to reconcile balance", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to reconcile"})
-		return
-	}
-
-	h.logger.Info("Balance reconciled",
-		zap.String("user_id", userID.String()),
-		zap.String("new_balance", actualBalance.String()))
-
-	c.JSON(http.StatusOK, gin.H{
-		"message":     "Balance reconciled",
-		"user_id":     userID.String(),
-		"new_balance": actualBalance.String(),
-	})
+	c.JSON(http.StatusGone, gin.H{"error": "bridge_reconciliation_removed"})
 }
 
 // Request/Response models
@@ -528,7 +443,7 @@ func (h *WalletFundingHandlers) RetryWalletProvisioning(c *gin.Context) {
 
 // HealthCheck handles GET /wallet/health (Admin only)
 // @Summary Wallet service health check
-// @Description Returns health status of wallet service and Circle integration
+// @Description Returns health status of wallet service and Bridge integration
 // @Tags wallet
 // @Produce json
 // @Success 200 {object} map[string]interface{} "Health status"

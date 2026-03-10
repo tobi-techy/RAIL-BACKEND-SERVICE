@@ -152,7 +152,7 @@ func (s WithdrawalStatus) ValidateTransition(newStatus WithdrawalStatus) error {
 	return nil
 }
 
-// Withdrawal represents a withdrawal from Circle wallet
+// Withdrawal represents a withdrawal request
 type Withdrawal struct {
 	ID                 uuid.UUID               `json:"id" db:"id"`
 	UserID             uuid.UUID               `json:"user_id" db:"user_id"`
@@ -160,13 +160,15 @@ type Withdrawal struct {
 	Currency           WithdrawalCurrency      `json:"currency" db:"currency"`
 	Amount             decimal.Decimal         `json:"amount" db:"amount"`
 	SourceAccount      WithdrawalSourceAccount `json:"source_account" db:"source_account"`
-	CircleWalletID     *string                 `json:"circle_wallet_id,omitempty" db:"circle_wallet_id"`
+	BridgeWalletID     *string                 `json:"bridge_wallet_id,omitempty" db:"bridge_wallet_id"`
 	DestinationType    DestinationType         `json:"destination_type" db:"destination_type"`
 	DestinationChain   string                  `json:"destination_chain" db:"destination_chain"`
 	DestinationAddress *string                 `json:"destination_address,omitempty" db:"destination_address"`
 	BankAccountID      *uuid.UUID              `json:"bank_account_id,omitempty" db:"bank_account_id"`
 	FeeAmount          decimal.Decimal         `json:"fee_amount" db:"fee_amount"`
 	FeeCurrency        WithdrawalCurrency      `json:"fee_currency" db:"fee_currency"`
+	Category           *string                 `json:"category,omitempty" db:"category"`
+	Narration          *string                 `json:"narration,omitempty" db:"narration"`
 	Status             WithdrawalStatus        `json:"status" db:"status"`
 	ProviderTransferID *string                 `json:"provider_transfer_id,omitempty" db:"bridge_transfer_id"`
 	TxHash             *string                 `json:"tx_hash,omitempty" db:"tx_hash"`
@@ -227,7 +229,9 @@ type InitiateCryptoWithdrawalRequest struct {
 	DestinationChain   string                  `json:"destination_chain"`
 	SourceChain        string                  `json:"source_chain"`
 	SourceAccount      WithdrawalSourceAccount `json:"source_account"`
-	CircleWalletID     string                  `json:"circle_wallet_id"`
+	BridgeWalletID     string                  `json:"bridge_wallet_id"`
+	Category           string                  `json:"category,omitempty"`
+	Narration          string                  `json:"narration,omitempty"`
 	IdempotencyKey     string                  // Generated server-side
 }
 
@@ -251,8 +255,8 @@ func (r *InitiateCryptoWithdrawalRequest) Validate() error {
 	if !ValidWithdrawalSourceAccounts[r.SourceAccount] {
 		return fmt.Errorf("invalid source account: %s", r.SourceAccount)
 	}
-	if r.CircleWalletID == "" {
-		return fmt.Errorf("circle wallet ID is required")
+	if r.BridgeWalletID == "" {
+		return fmt.Errorf("bridge wallet ID is required")
 	}
 	return nil
 }
@@ -268,6 +272,8 @@ type InitiateFiatWithdrawalRequest struct {
 	IBAN              string                  `json:"iban,omitempty"`           // EUR only
 	BIC               string                  `json:"bic,omitempty"`            // EUR optional
 	SourceAccount     WithdrawalSourceAccount `json:"source_account"`
+	Category          string                  `json:"category,omitempty"`
+	Narration         string                  `json:"narration,omitempty"`
 	IdempotencyKey    string                  // Optional client-provided idempotency key
 }
 

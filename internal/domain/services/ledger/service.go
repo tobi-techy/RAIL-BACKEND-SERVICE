@@ -128,8 +128,8 @@ func (s *Service) CreateTransaction(ctx context.Context, req *entities.CreateTra
 
 // updateAccountBalanceInTx updates an account balance within a database transaction
 func (s *Service) updateAccountBalanceInTx(ctx context.Context, accountID uuid.UUID, entryType entities.EntryType, amount decimal.Decimal) error {
-	// Get current balance
-	currentBalance, err := s.ledgerRepo.GetAccountBalance(ctx, accountID)
+	// Acquire row-level lock and get current balance atomically
+	currentBalance, err := s.ledgerRepo.GetAccountBalanceForUpdate(ctx, accountID)
 	if err != nil {
 		return fmt.Errorf("get account balance: %w", err)
 	}

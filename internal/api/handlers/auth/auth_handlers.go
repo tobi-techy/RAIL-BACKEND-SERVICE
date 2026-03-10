@@ -1,8 +1,13 @@
 package auth
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strings"
@@ -45,6 +50,7 @@ type AuthHandlers struct {
 	redisClient         RedisClient
 	deletionService     AccountDeletionService
 	validator           *validator.Validate
+	kycWebhookSecret    string // Secret for verifying KYC provider callbacks
 }
 
 // AccountDeletionService interface for account deletion
@@ -53,7 +59,7 @@ type AccountDeletionService interface {
 }
 
 const (
-	authFlowTimeout            = 8 * time.Second
+	authFlowTimeout            = 30 * time.Second
 	onboardingCompleteTimeout  = 30 * time.Second
 	onboardingStatusReqTimeout = 3 * time.Second
 	profileReadTimeout         = 4 * time.Second
@@ -96,6 +102,7 @@ func NewAuthHandlers(
 	passcodeService *passcode.Service,
 	redisClient RedisClient,
 	deletionService AccountDeletionService,
+	kycWebhookSecret string,
 ) *AuthHandlers {
 	return &AuthHandlers{
 		db:                  db,
@@ -111,6 +118,7 @@ func NewAuthHandlers(
 		redisClient:         redisClient,
 		deletionService:     deletionService,
 		validator:           validator.New(),
+		kycWebhookSecret:    kycWebhookSecret,
 	}
 }
 
@@ -1120,9 +1128,9 @@ func (h *AuthHandlers) RefreshToken(c *gin.Context) {
 
 	sessionExpiresAt := h.sessionExpiryFromRefreshTTL()
 	c.JSON(http.StatusOK, gin.H{
-		"access_token":      tokens.AccessToken,
-		"refresh_token":     tokens.RefreshToken,
-		"expires_at":        tokens.ExpiresAt,
+		"access_token":       tokens.AccessToken,
+		"refresh_token":      tokens.RefreshToken,
+		"expires_at":         tokens.ExpiresAt,
 		"session_expires_at": sessionExpiresAt,
 	})
 }
@@ -1604,6 +1612,26 @@ func (h *AuthHandlers) ProcessKYCCallback(c *gin.Context) {
 		return
 	}
 
+	// SECURITY: Verify webhook signature if secret is configured
+	if h.kycWebhookSecret != "" {
+		if !h.verifyKYCCallbackSignature(c) {
+			h.logger.Warn("Invalid KYC callback signature", zap.String("provider_ref", providerRef))
+			c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
+				Code:    "INVALID_SIGNATURE",
+				Message: "Invalid webhook signature",
+			})
+			return
+		}
+	} else if h.cfg != nil && h.cfg.Environment == "production" {
+		// Block in production if no secret configured
+		h.logger.Error("SECURITY: KYC webhook secret not configured in production")
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+			Code:    "CONFIGURATION_ERROR",
+			Message: "Webhook verification not configured",
+		})
+		return
+	}
+
 	h.logger.Info("Processing KYC callback",
 		zap.String("provider_ref", providerRef),
 		zap.String("request_id", common.GetRequestID(c)))
@@ -1903,4 +1931,44 @@ func containsSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// verifyKYCCallbackSignature verifies the HMAC-SHA256 signature of a KYC callback request
+func (h *AuthHandlers) verifyKYCCallbackSignature(c *gin.Context) bool {
+	// Get signature from header (common formats: X-Signature, X-Webhook-Signature, Signature)
+	signature := c.GetHeader("X-Signature")
+	if signature == "" {
+		signature = c.GetHeader("X-Webhook-Signature")
+	}
+	if signature == "" {
+		signature = c.GetHeader("Signature")
+	}
+	if signature == "" {
+		h.logger.Warn("KYC callback missing signature header")
+		return false
+	}
+
+	// Read the raw body for verification
+	rawBody, err := c.GetRawData()
+	if err != nil {
+		h.logger.Warn("Failed to read request body for signature verification", zap.Error(err))
+		return false
+	}
+
+	// Recreate the body so downstream handlers can still read it
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(rawBody))
+
+	// Compute HMAC-SHA256 of the body
+	mac := hmac.New(sha256.New, []byte(h.kycWebhookSecret))
+	mac.Write(rawBody)
+	expectedSignature := hex.EncodeToString(mac.Sum(nil))
+
+	// Use constant-time comparison to prevent timing attacks
+	if !hmac.Equal([]byte(expectedSignature), []byte(signature)) {
+		h.logger.Warn("KYC callback signature mismatch",
+			zap.String("provider_ref", c.Param("provider_ref")))
+		return false
+	}
+
+	return true
 }

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
@@ -28,7 +29,7 @@ type WithdrawalServiceInterface interface {
 	GetWithdrawalFee(ctx context.Context, withdrawalType entities.WithdrawalType, amount decimal.Decimal, currency entities.WithdrawalCurrency, sourceChain, destChain string) (*entities.WithdrawalFee, error)
 }
 
-// WalletProvider interface for getting user's Circle wallet
+// WalletProvider interface for getting user's Bridge-managed wallet
 type WalletProvider interface {
 	GetUserWalletByChain(ctx context.Context, userID uuid.UUID, chain string) (*entities.ManagedWallet, error)
 }
@@ -56,6 +57,8 @@ type CryptoWithdrawalRequest struct {
 	Amount             string `json:"amount" binding:"required"`
 	DestinationAddress string `json:"destination_address" binding:"required"`
 	DestinationChain   string `json:"destination_chain"` // optional, defaults to SOL-DEVNET
+	Category           string `json:"category,omitempty"`
+	Narration          string `json:"narration,omitempty"`
 }
 
 // FiatWithdrawalRequest represents the HTTP request for fiat withdrawal
@@ -68,6 +71,8 @@ type FiatWithdrawalRequest struct {
 	RoutingNumber     string `json:"routing_number,omitempty"`
 	IBAN              string `json:"iban,omitempty"`
 	BIC               string `json:"bic,omitempty"`
+	Category          string `json:"category,omitempty"`
+	Narration         string `json:"narration,omitempty"`
 }
 
 // WithdrawalFeeRequest represents the HTTP request for fee calculation
@@ -78,6 +83,11 @@ type WithdrawalFeeRequest struct {
 	SourceChain    string `form:"source_chain"`
 	DestChain      string `form:"dest_chain"`
 }
+
+const (
+	maxWithdrawalCategoryLength  = 64
+	maxWithdrawalNarrationLength = 280
+)
 
 // InitiateCryptoWithdrawal handles POST /api/v1/withdrawals/crypto
 func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
@@ -98,6 +108,17 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 		return
 	}
 	if !h.validateWithdrawalAmountPolicy(c, userID, amount) {
+		return
+	}
+
+	category, err := normalizeCategory(req.Category)
+	if err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, err.Error())
+		return
+	}
+	narration, err := normalizeNarration(req.Narration)
+	if err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, err.Error())
 		return
 	}
 
@@ -127,8 +148,8 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 		common.SendBadRequest(c, "NO_WALLET", "No wallet found for user")
 		return
 	}
-	if strings.TrimSpace(wallet.CircleWalletID) == "" {
-		h.logger.Error("User wallet has no Circle wallet ID", "user_id", userID)
+	if strings.TrimSpace(wallet.BridgeWalletID) == "" {
+		h.logger.Error("User wallet has no Bridge wallet ID", "user_id", userID)
 		common.SendInternalError(c, "PROVIDER_NOT_CONFIGURED", "Withdrawal provider is not available for this account")
 		return
 	}
@@ -140,7 +161,9 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 		DestinationChain:   destChain,
 		SourceChain:        string(wallet.Chain),
 		SourceAccount:      entities.WithdrawalSourceSpendingBalance,
-		CircleWalletID:     wallet.CircleWalletID,
+		BridgeWalletID:     wallet.BridgeWalletID,
+		Category:           category,
+		Narration:          narration,
 		IdempotencyKey:     idempotencyKey,
 	}
 
@@ -180,6 +203,17 @@ func (h *WithdrawalHandlers) InitiateFiatWithdrawal(c *gin.Context) {
 		return
 	}
 
+	category, err := normalizeCategory(req.Category)
+	if err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, err.Error())
+		return
+	}
+	narration, err := normalizeNarration(req.Narration)
+	if err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, err.Error())
+		return
+	}
+
 	idempotencyKey, err := getIdempotencyKey(c)
 	if err != nil {
 		common.SendBadRequest(c, common.ErrCodeInvalidRequest, err.Error())
@@ -201,6 +235,8 @@ func (h *WithdrawalHandlers) InitiateFiatWithdrawal(c *gin.Context) {
 		IBAN:              normalizeIBAN(req.IBAN),
 		BIC:               strings.ToUpper(strings.TrimSpace(req.BIC)),
 		SourceAccount:     entities.WithdrawalSourceSpendingBalance, // Default to spending
+		Category:          category,
+		Narration:         narration,
 		IdempotencyKey:    idempotencyKey,
 	}
 
@@ -394,12 +430,12 @@ func (h *WithdrawalHandlers) handleWithdrawalError(c *gin.Context, err error, us
 			msg = errMsg[idx+len("invalid request: "):]
 		}
 		common.SendBadRequest(c, common.ErrCodeInvalidRequest, msg)
-	case strings.Contains(errLower, "circle validation error 400"),
+	case strings.Contains(errLower, "bridge validation error"),
 		strings.Contains(errLower, "api parameter invalid"):
 		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Invalid withdrawal parameters")
-	case strings.Contains(errMsg, "circle client not configured"),
-		strings.Contains(errMsg, "circle wallet ID not provided"),
-		strings.Contains(errMsg, "circle wallet ID is required"):
+	case strings.Contains(errMsg, "bridge client not configured"),
+		strings.Contains(errMsg, "bridge wallet ID not provided"),
+		strings.Contains(errMsg, "bridge wallet ID is required"):
 		common.SendInternalError(c, "PROVIDER_NOT_CONFIGURED", "Withdrawal provider is not available")
 	case strings.Contains(errLower, "entity secret"):
 		common.SendInternalError(c, "PROVIDER_NOT_CONFIGURED", "Withdrawal provider configuration is invalid")
@@ -412,9 +448,9 @@ func (h *WithdrawalHandlers) handleWithdrawalError(c *gin.Context, err error, us
 	case strings.Contains(errMsg, "currency"):
 		common.SendBadRequest(c, "CURRENCY_MISMATCH", errMsg)
 	case strings.Contains(errMsg, "cctp burn failed"),
-		strings.Contains(errMsg, "circle transfer failed"),
+		strings.Contains(errMsg, "bridge transfer failed"),
 		strings.Contains(errMsg, "failed to execute transfer"):
-		// Surface the inner Circle error if it's user-actionable
+		// Surface the inner Bridge error if it's user-actionable
 		innerMsg := "Transfer execution failed. Please try again."
 		if strings.Contains(errMsg, "Invalid destination address") {
 			innerMsg = "Invalid destination address for this chain."
@@ -483,6 +519,21 @@ func getIdempotencyKey(c *gin.Context) (string, error) {
 }
 
 func validateFiatDestination(req FiatWithdrawalRequest) error {
+	// Validate account holder name
+	accountHolderName := strings.TrimSpace(req.AccountHolderName)
+	if len(accountHolderName) < 2 {
+		return fmt.Errorf("account_holder_name must be at least 2 characters")
+	}
+	if len(accountHolderName) > 255 {
+		return fmt.Errorf("account_holder_name must not exceed 255 characters")
+	}
+	// Check for suspicious characters in name (only allow letters, spaces, hyphens, apostrophes, periods)
+	for _, ch := range accountHolderName {
+		if !unicode.IsLetter(ch) && ch != ' ' && ch != '-' && ch != '\'' && ch != '.' {
+			return fmt.Errorf("account_holder_name contains invalid characters")
+		}
+	}
+
 	currency := strings.TrimSpace(req.Currency)
 	switch currency {
 	case "USD":
@@ -512,6 +563,28 @@ func validateFiatDestination(req FiatWithdrawalRequest) error {
 		return fmt.Errorf("unsupported fiat currency: %s", currency)
 	}
 	return nil
+}
+
+func normalizeCategory(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", nil
+	}
+	if len(trimmed) > maxWithdrawalCategoryLength {
+		return "", fmt.Errorf("category must be at most %d characters", maxWithdrawalCategoryLength)
+	}
+	return trimmed, nil
+}
+
+func normalizeNarration(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", nil
+	}
+	if len(trimmed) > maxWithdrawalNarrationLength {
+		return "", fmt.Errorf("narration must be at most %d characters", maxWithdrawalNarrationLength)
+	}
+	return trimmed, nil
 }
 
 func isDigits(v string) bool {

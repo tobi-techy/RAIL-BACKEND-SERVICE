@@ -340,7 +340,7 @@ aws elasticache describe-cache-clusters \
 | Database connection pool exhausted | Scale up RDS or optimize queries |
 | Memory pressure | Restart pods, increase memory limits |
 | Rate limiting | Adjust rate limits or scale horizontally |
-| Upstream dependency | Check Circle/Alpaca/Bridge APIs |
+| Upstream dependency | Check Bridge/Alpaca APIs |
 
 #### 2. Database Issues
 
@@ -440,7 +440,7 @@ open https://console.aws.amazon.com/xray/home?region=us-east-1
 | CPU throttling | Scale up ECS tasks |
 | Database slow queries | Add indexes, optimize queries |
 | Network latency | Check VPC flow logs |
-| External API slow | Contact Circle/Alpaca support |
+| External API slow | Contact Bridge/Alpaca support |
 
 ---
 
@@ -500,14 +500,14 @@ echo "=== Security Audit Log ==="
 
 ```bash
 #!/bin/bash
-# 1. Check Circle API status
-echo "=== Circle API Status ==="
+# 1. Check Bridge API status
+echo "=== Bridge API Status ==="
 curl -s https://status.circle.com
 
-# 2. Check Circle account
-echo "=== Circle Account ==="
-# Verify Circle API keys are valid
-# Check Circle dashboard for alerts
+# 2. Check Bridge account
+echo "=== Bridge Account ==="
+# Verify Bridge API keys are valid
+# Check Bridge dashboard for alerts
 
 # 3. Check transaction logs
 echo "=== Recent Transactions ==="
@@ -530,17 +530,12 @@ curl -v https://api.rail-service.com/webhooks/chain-deposit -X POST \
   -H "Content-Type: application/json" \
   -d '{"test": true}'
 
-# 2. Check Circle webhooks
-echo "=== Circle Webhooks ==="
-# Verify webhook URL is correct
-# Check Circle dashboard for failures
-
-# 3. Check Bridge webhooks
+# 2. Check Bridge webhooks
 echo "=== Bridge Webhooks ==="
 # Verify webhook URL is correct
 # Check Bridge dashboard for failures
 
-# 4. Check Alpaca webhooks
+# 3. Check Alpaca webhooks
 echo "=== Alpaca Webhooks ==="
 # Verify webhook URL is correct
 # Check Alpaca dashboard for failures

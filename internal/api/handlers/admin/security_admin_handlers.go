@@ -917,7 +917,7 @@ func max(a, b int) int {
 
 // CreateWalletSet handles POST /api/v1/admin/wallet-sets
 // @Summary Create wallet set
-// @Description Creates a new Circle wallet set for managing user wallets
+// @Description Creates a legacy Circle wallet set for managing user wallets
 // @Tags admin
 // @Accept json
 // @Produce json
@@ -974,7 +974,7 @@ func GetWalletSetByID(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.Ha
 // @Param offset query int false "Number of items to skip" default(0)
 // @Param user_id query string false "Filter by user ID"
 // @Param chain query string false "Filter by blockchain chain"
-// @Param account_type query string false "Filter by account type" Enums(EOA,SCA)
+// @Param account_type query string false "Filter by account type" Enums(EOA,SCA,bridge_wallet,liquidation_address)
 // @Param status query string false "Filter by wallet status" Enums(creating,live,failed)
 // @Success 200 {object} entities.AdminWalletsListResponse
 // @Failure 500 {object} entities.ErrorResponse
@@ -1210,10 +1210,10 @@ func (h *adminHandler) getAdminWallets(c *gin.Context) {
 	}
 
 	if accountTypeParam := strings.TrimSpace(c.Query("account_type")); accountTypeParam != "" {
-		if accountTypeParam != "EOA" && accountTypeParam != "SCA" {
+		if accountTypeParam != "EOA" && accountTypeParam != "SCA" && accountTypeParam != "bridge_wallet" && accountTypeParam != "liquidation_address" {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error":   "INVALID_ACCOUNT_TYPE",
-				"message": "Account type must be EOA or SCA",
+				"message": "Account type must be EOA, SCA, bridge_wallet, or liquidation_address",
 			})
 			return
 		}
@@ -1237,7 +1237,8 @@ func (h *adminHandler) getAdminWallets(c *gin.Context) {
 
 	queryBuilder := strings.Builder{}
 	queryBuilder.WriteString(`
-		SELECT id, user_id, wallet_set_id, circle_wallet_id, chain, address, account_type, status, created_at, updated_at
+		SELECT id, user_id, wallet_set_id, circle_wallet_id, COALESCE(bridge_wallet_id, '') AS bridge_wallet_id,
+		       chain, address, account_type, status, created_at, updated_at
 		FROM managed_wallets`)
 
 	if len(conditions) > 0 {
@@ -1269,6 +1270,7 @@ func (h *adminHandler) getAdminWallets(c *gin.Context) {
 			&wallet.UserID,
 			&wallet.WalletSetID,
 			&wallet.CircleWalletID,
+			&wallet.BridgeWalletID,
 			&wallet.Chain,
 			&wallet.Address,
 			&wallet.AccountType,

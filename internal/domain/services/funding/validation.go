@@ -6,22 +6,24 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
+	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/webhook"
+	"github.com/shopspring/decimal"
 )
 
 // FundingConfig holds funding service configuration
 type FundingConfig struct {
 	MinDepositAmount      decimal.Decimal
 	MaxDepositsPerDay     int
-	MaxDailyDepositAmount decimal.Decimal // Daily deposit limit ($100k default)
+	MaxDailyDepositAmount decimal.Decimal
 	DepositTimeoutHours   int
 	WebhookSecret         string
 	BalanceCacheTTL       time.Duration
 	RateLimitWindow       time.Duration
 	DefaultWalletSetID    uuid.UUID
+	PlatformSolanaAddress string // custody destination for liquidation addresses (sandbox: destination_address)
 }
 
 // DefaultFundingConfig returns default configuration
@@ -44,19 +46,20 @@ type DepositSecurityStore interface {
 
 // ValidationService handles funding validation logic
 type ValidationService struct {
-	cache               cache.RedisClient
-	webhookValidator    *webhook.WebhookValidator
+	cache                cache.RedisClient
+	webhookValidator     *webhook.WebhookValidator
 	depositSecurityStore DepositSecurityStore
-	config              *FundingConfig
+	config               *FundingConfig
+	logger               *logger.Logger
 }
 
 // NewValidationService creates a new validation service
-func NewValidationService(redisClient cache.RedisClient, config *FundingConfig) *ValidationService {
+func NewValidationService(redisClient cache.RedisClient, config *FundingConfig, logger *logger.Logger) *ValidationService {
 	var webhookValidator *webhook.WebhookValidator
 	if config.WebhookSecret != "" {
 		webhookValidator = webhook.NewWebhookValidator(webhook.WebhookSecurityConfig{
 			Secret:           config.WebhookSecret,
-			MaxTimestampAge:  300, // 5 minutes
+			MaxTimestampAge:  120, // 2 minutes - reduced from 5 min for better security against replay attacks
 			RequireSignature: true,
 			MaxPayloadSize:   1024 * 1024,
 		})
@@ -66,6 +69,7 @@ func NewValidationService(redisClient cache.RedisClient, config *FundingConfig) 
 		cache:            redisClient,
 		webhookValidator: webhookValidator,
 		config:           config,
+		logger:           logger,
 	}
 }
 
@@ -86,7 +90,7 @@ func (v *ValidationService) ValidateWebhookSignature(payload []byte, signature s
 // ValidateDepositAmount validates minimum deposit amount
 func (v *ValidationService) ValidateDepositAmount(amount decimal.Decimal) error {
 	if amount.LessThan(v.config.MinDepositAmount) {
-		return fmt.Errorf("deposit amount %s is below minimum %s USDC", 
+		return fmt.Errorf("deposit amount %s is below minimum %s USDC",
 			amount.String(), v.config.MinDepositAmount.String())
 	}
 	return nil
@@ -95,13 +99,17 @@ func (v *ValidationService) ValidateDepositAmount(amount decimal.Decimal) error 
 // ValidateDailyDepositLimit checks if deposit would exceed daily limit ($100k/day)
 func (v *ValidationService) ValidateDailyDepositLimit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error {
 	if v.depositSecurityStore == nil {
-		return nil // No store configured, skip validation
+		// Security: Fail closed - block deposits if we can't verify limits
+		return fmt.Errorf("deposit limit system unavailable")
 	}
 
 	todayTotal, err := v.depositSecurityStore.GetTodayDepositTotal(ctx, userID)
 	if err != nil {
-		// On error, allow the request but log
-		return nil
+		// Security: Fail closed - block deposits if we can't check limits
+		v.logger.Error("Failed to check daily deposit limit - blocking deposit for security",
+			"error", err,
+			"user_id", userID.String())
+		return fmt.Errorf("unable to verify deposit limits - please try again later")
 	}
 
 	newTotal := todayTotal.Add(amount)
@@ -124,7 +132,7 @@ func (v *ValidationService) CheckDepositRateLimit(ctx context.Context, userID uu
 	}
 
 	key := fmt.Sprintf("deposit_rate:%s", userID.String())
-	
+
 	count, err := v.cache.Incr(ctx, key)
 	if err != nil {
 		// On error, allow the request but log

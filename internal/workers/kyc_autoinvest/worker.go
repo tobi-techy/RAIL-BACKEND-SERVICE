@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -35,6 +36,7 @@ type investCandidate struct {
 	UserID         uuid.UUID
 	StashAccountID uuid.UUID
 	StashBalance   decimal.Decimal
+	StashUpdatedAt time.Time
 }
 
 // Worker periodically triggers auto-invest for KYC-approved users with stash balances.
@@ -45,6 +47,7 @@ type Worker struct {
 	checkInterval     time.Duration
 	batchSize         int
 	stopCh            chan struct{}
+	stopOnce          sync.Once
 }
 
 // NewWorker creates a new KYC auto-invest worker.
@@ -95,9 +98,9 @@ func (w *Worker) Start(ctx context.Context) {
 	}
 }
 
-// Stop signals the worker to stop.
+// Stop signals the worker to stop. Safe to call multiple times.
 func (w *Worker) Stop() {
-	close(w.stopCh)
+	w.stopOnce.Do(func() { close(w.stopCh) })
 }
 
 func (w *Worker) run(ctx context.Context) {
@@ -125,10 +128,16 @@ func (w *Worker) run(ctx context.Context) {
 
 	triggered := 0
 	for _, candidate := range candidates {
+		// Deterministic correlation ID: same user + account + ledger timestamp + balance = same ID.
+		// StashUpdatedAt advances only when the ledger balance changes, so the key is stable
+		// within a single balance state and rotates naturally on each new deposit.
+		// The DB unique index is the concurrent-execution guard.
 		correlationID := fmt.Sprintf(
-			"kyc-approved-auto-invest:%s:%s",
+			"kyc-autoinvest:%s:%s:%s:%s",
 			candidate.UserID.String(),
 			candidate.StashAccountID.String(),
+			candidate.StashUpdatedAt.UTC().Format(time.RFC3339),
+			candidate.StashBalance.StringFixed(2),
 		)
 
 		if err := w.autoInvestService.TriggerAutoInvestment(ctx, autoinvest.TriggerRequest{
@@ -158,14 +167,13 @@ func (w *Worker) listCandidates(ctx context.Context, limit int) ([]investCandida
 	const query = `
 		SELECT DISTINCT ON (la.user_id)
 			la.user_id,
-			stash.id   AS stash_account_id,
-			stash.balance AS stash_balance
+			la.id         AS stash_account_id,
+			la.balance    AS stash_balance,
+			la.updated_at AS stash_updated_at
 		FROM ledger_accounts la
 		INNER JOIN users u ON u.id = la.user_id
-		INNER JOIN ledger_accounts stash
-			ON stash.user_id = la.user_id AND stash.account_type = 'stash_balance'
-		WHERE la.account_type IN ('stash_balance', 'fiat_exposure')
-			AND la.balance > 0
+		WHERE la.account_type = 'stash_balance'
+			AND la.balance >= 1.00
 			AND u.kyc_status = 'approved'
 			AND u.bridge_kyc_status = 'active'
 			AND u.is_active = true
@@ -183,7 +191,7 @@ func (w *Worker) listCandidates(ctx context.Context, limit int) ([]investCandida
 	candidates := make([]investCandidate, 0, limit)
 	for rows.Next() {
 		var c investCandidate
-		if err := rows.Scan(&c.UserID, &c.StashAccountID, &c.StashBalance); err != nil {
+		if err := rows.Scan(&c.UserID, &c.StashAccountID, &c.StashBalance, &c.StashUpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan KYC auto-invest candidate: %w", err)
 		}
 		candidates = append(candidates, c)

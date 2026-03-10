@@ -3,7 +3,6 @@ package wallet
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -11,14 +10,11 @@ import (
 	"go.uber.org/zap"
 )
 
-// Service handles wallet operations - wallet set management, multi-chain wallet creation
+// Service handles wallet operations
 type Service struct {
 	walletRepo          WalletRepository
-	walletSetRepo       WalletSetRepository
 	provisioningJobRepo WalletProvisioningJobRepository
-	circleClient        CircleClient
 	auditService        AuditService
-	entitySecretService EntitySecretService
 	onboardingService   OnboardingService
 	logger              *zap.Logger
 	config              Config
@@ -42,17 +38,9 @@ type WalletRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*entities.ManagedWallet, error)
 	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.ManagedWallet, error)
 	GetByUserAndChain(ctx context.Context, userID uuid.UUID, chain entities.WalletChain) (*entities.ManagedWallet, error)
-	GetByCircleWalletID(ctx context.Context, circleWalletID string) (*entities.ManagedWallet, error)
+	GetByBridgeWalletID(ctx context.Context, bridgeWalletID string) (*entities.ManagedWallet, error)
 	Update(ctx context.Context, wallet *entities.ManagedWallet) error
 	UpdateStatus(ctx context.Context, id uuid.UUID, status entities.WalletStatus) error
-}
-
-type WalletSetRepository interface {
-	Create(ctx context.Context, walletSet *entities.WalletSet) error
-	GetByID(ctx context.Context, id uuid.UUID) (*entities.WalletSet, error)
-	GetByCircleWalletSetID(ctx context.Context, circleWalletSetID string) (*entities.WalletSet, error)
-	GetActive(ctx context.Context) (*entities.WalletSet, error)
-	Update(ctx context.Context, walletSet *entities.WalletSet) error
 }
 
 type WalletProvisioningJobRepository interface {
@@ -63,22 +51,8 @@ type WalletProvisioningJobRepository interface {
 	Update(ctx context.Context, job *entities.WalletProvisioningJob) error
 }
 
-// External service interfaces
-type CircleClient interface {
-	CreateWalletSet(ctx context.Context, name string, entitySecretCiphertext string) (*entities.CircleWalletSetResponse, error)
-	GetWalletSet(ctx context.Context, walletSetID string) (*entities.CircleWalletSetResponse, error)
-	CreateWallet(ctx context.Context, req entities.CircleWalletCreateRequest) (*entities.CircleWalletCreateResponse, error)
-	GetWallet(ctx context.Context, walletID string) (*entities.CircleWalletCreateResponse, error)
-	HealthCheck(ctx context.Context) error
-	GetMetrics() map[string]interface{}
-}
-
 type AuditService interface {
 	LogWalletEvent(ctx context.Context, userID uuid.UUID, action, entity string, before, after interface{}) error
-}
-
-type EntitySecretService interface {
-	GenerateEntitySecretCiphertext(ctx context.Context) (string, error)
 }
 
 type OnboardingService interface {
@@ -88,31 +62,20 @@ type OnboardingService interface {
 // NewService creates a new wallet service
 func NewService(
 	walletRepo WalletRepository,
-	walletSetRepo WalletSetRepository,
 	provisioningJobRepo WalletProvisioningJobRepository,
-	circleClient CircleClient,
 	auditService AuditService,
-	entitySecretService EntitySecretService,
 	onboardingService OnboardingService,
 	logger *zap.Logger,
 	cfg Config,
 ) *Service {
-	cfg.DefaultWalletSetID = strings.TrimSpace(cfg.DefaultWalletSetID)
 	if cfg.WalletSetNamePrefix == "" {
 		cfg.WalletSetNamePrefix = defaultWalletSetNamePrefix
 	}
-
 	cfg.SupportedChains = normalizeSupportedChains(cfg.SupportedChains, logger)
-
-	// Entity secret is now generated dynamically, no configuration needed
-
 	return &Service{
 		walletRepo:          walletRepo,
-		walletSetRepo:       walletSetRepo,
 		provisioningJobRepo: provisioningJobRepo,
-		circleClient:        circleClient,
 		auditService:        auditService,
-		entitySecretService: entitySecretService,
 		onboardingService:   onboardingService,
 		logger:              logger,
 		config:              cfg,
@@ -221,121 +184,16 @@ func (s *Service) processWalletProvisioningAsync(jobID, userID uuid.UUID) {
 	}
 }
 
-// ProcessWalletProvisioningJob processes a wallet provisioning job
+// ProcessWalletProvisioningJob is a no-op — wallets are created by Bridge during onboarding.
 func (s *Service) ProcessWalletProvisioningJob(ctx context.Context, jobID uuid.UUID) error {
-	s.logger.Info("Processing wallet provisioning job", zap.String("jobID", jobID.String()))
+	s.logger.Info("Wallet provisioning job skipped (Bridge handles wallet creation)", zap.String("jobID", jobID.String()))
 
-	// Get the job
 	job, err := s.provisioningJobRepo.GetByID(ctx, jobID)
 	if err != nil {
 		return fmt.Errorf("failed to get provisioning job: %w", err)
 	}
-
-	if job.Status != entities.ProvisioningStatusQueued && job.Status != entities.ProvisioningStatusRetry {
-		s.logger.Info("Job is not in queued/retry status",
-			zap.String("jobID", jobID.String()),
-			zap.String("status", string(job.Status)))
-		return nil
-	}
-
-	// Mark job as started
-	job.MarkStarted()
-	if err := s.provisioningJobRepo.Update(ctx, job); err != nil {
-		return fmt.Errorf("failed to update job status: %w", err)
-	}
-
-	// Get or create wallet set
-	walletSet, err := s.ensureWalletSet(ctx)
-	if err != nil {
-		job.MarkFailed(fmt.Sprintf("Failed to ensure wallet set: %v", err), 5*time.Minute)
-		s.provisioningJobRepo.Update(ctx, job)
-		return fmt.Errorf("failed to ensure wallet set: %w", err)
-	}
-
-	// Separate EVM and non-EVM chains so EVM chains share one wallet address
-	var evmChains, otherChains []entities.WalletChain
-	for _, chainStr := range job.Chains {
-		chain := entities.WalletChain(chainStr)
-		if chain.GetChainFamily() == "EVM" {
-			evmChains = append(evmChains, chain)
-		} else {
-			otherChains = append(otherChains, chain)
-		}
-	}
-
-	var lastErr error
-	successCount := 0
-
-	// Create a single SCA wallet for all EVM chains, then store one record per chain
-	if len(evmChains) > 0 {
-		created, err := s.createEVMWallets(ctx, job.UserID, evmChains, walletSet, job)
-		if err != nil {
-			s.logger.Error("Failed to create EVM wallets",
-				zap.Error(err), zap.String("userID", job.UserID.String()))
-			lastErr = err
-		}
-		successCount += created
-	}
-
-	// Create individual wallets for non-EVM chains (SOL, APT, etc.)
-	for _, chain := range otherChains {
-		if err := s.createWalletForChain(ctx, job.UserID, chain, walletSet, job); err != nil {
-			s.logger.Error("Failed to create wallet for chain",
-				zap.Error(err),
-				zap.String("userID", job.UserID.String()),
-				zap.String("chain", string(chain)))
-			lastErr = err
-		} else {
-			successCount++
-		}
-	}
-
-	// Update job status based on results
-	if successCount == len(job.Chains) {
-		// All wallets created successfully
-		job.MarkCompleted()
-		s.logger.Info("All wallets created successfully",
-			zap.String("jobID", jobID.String()),
-			zap.String("userID", job.UserID.String()),
-			zap.Int("walletCount", successCount))
-
-		// Trigger onboarding completion callback
-		if s.onboardingService != nil {
-			if err := s.onboardingService.ProcessWalletCreationComplete(ctx, job.UserID); err != nil {
-				s.logger.Warn("Failed to process wallet creation complete in onboarding service",
-					zap.Error(err),
-					zap.String("userID", job.UserID.String()))
-			} else {
-				s.logger.Info("Wallet provisioning completed and onboarding status updated",
-					zap.String("userID", job.UserID.String()))
-			}
-		}
-
-	} else if successCount > 0 {
-		// Partial success - mark as failed but note partial success
-		job.MarkFailed(fmt.Sprintf("Partial success: %d/%d wallets created. Last error: %v",
-			successCount, len(job.Chains), lastErr), 10*time.Minute)
-	} else {
-		// Complete failure
-		job.MarkFailed(fmt.Sprintf("Failed to create any wallets: %v", lastErr), 10*time.Minute)
-	}
-
-	if err := s.provisioningJobRepo.Update(ctx, job); err != nil {
-		s.logger.Error("Failed to update job final status", zap.Error(err))
-	}
-
-	// Log audit event
-	if err := s.auditService.LogWalletEvent(ctx, job.UserID, "wallet_provisioning_processed", "provisioning_job",
-		nil, map[string]any{
-			"job_id":        job.ID,
-			"status":        string(job.Status),
-			"success_count": successCount,
-			"total_chains":  len(job.Chains),
-		}); err != nil {
-		s.logger.Warn("Failed to log audit event", zap.Error(err))
-	}
-
-	return lastErr
+	job.MarkCompleted()
+	return s.provisioningJobRepo.Update(ctx, job)
 }
 
 // GetWalletAddresses returns wallet addresses for a user, optionally filtered by chain
@@ -489,312 +347,25 @@ func (s *Service) RetryFailedWalletProvisioning(ctx context.Context, limit int) 
 	return nil
 }
 
-// Helper methods
-
+// ensureWalletSet is no longer used — wallet creation is handled by Bridge in onboarding_processor.
 func (s *Service) ensureWalletSet(ctx context.Context) (*entities.WalletSet, error) {
-	// First, try to use configured default wallet set ID
-	if s.config.DefaultWalletSetID != "" {
-		if walletSet, err := s.walletSetRepo.GetByCircleWalletSetID(ctx, s.config.DefaultWalletSetID); err == nil && walletSet != nil {
-			s.logger.Debug("Using configured default wallet set",
-				zap.String("walletSetID", walletSet.ID.String()),
-				zap.String("circleWalletSetID", walletSet.CircleWalletSetID))
-			return walletSet, nil
-		}
-
-		s.logger.Info("Configured Circle wallet set not found locally, attempting to hydrate",
-			zap.String("circleWalletSetID", s.config.DefaultWalletSetID))
-
-		circleSet, err := s.circleClient.GetWalletSet(ctx, s.config.DefaultWalletSetID)
-		if err == nil && circleSet != nil {
-			walletSet := &entities.WalletSet{
-				ID:                uuid.New(),
-				Name:              circleSet.WalletSet.Name,
-				CircleWalletSetID: circleSet.WalletSet.ID,
-				Status:            entities.WalletSetStatusActive,
-				CreatedAt:         time.Now(),
-				UpdatedAt:         time.Now(),
-			}
-
-			if createErr := s.walletSetRepo.Create(ctx, walletSet); createErr != nil {
-				s.logger.Warn("Failed to persist hydrated wallet set, attempting to reuse existing record",
-					zap.Error(createErr),
-					zap.String("circleWalletSetID", walletSet.CircleWalletSetID))
-
-				existing, fetchErr := s.walletSetRepo.GetByCircleWalletSetID(ctx, walletSet.CircleWalletSetID)
-				if fetchErr == nil && existing != nil {
-					return existing, nil
-				}
-
-				return nil, fmt.Errorf("failed to persist configured wallet set: %w", createErr)
-			}
-
-			return walletSet, nil
-		}
-
-		if err != nil {
-			s.logger.Warn("Failed to load configured Circle wallet set from API",
-				zap.String("circleWalletSetID", s.config.DefaultWalletSetID),
-				zap.Error(err))
-		}
-	}
-
-	// Try to get existing active wallet set
-	walletSet, err := s.walletSetRepo.GetActive(ctx)
-	if err == nil && walletSet != nil {
-		s.logger.Debug("Using existing active wallet set",
-			zap.String("walletSetID", walletSet.ID.String()),
-			zap.String("circleWalletSetID", walletSet.CircleWalletSetID))
-		return walletSet, nil
-	}
-
-	s.logger.Info("Creating new developer-controlled wallet set")
-
-	// Create new wallet set in Circle using pre-registered Entity Secret Ciphertext
-	setName := fmt.Sprintf("%s-%s", s.config.WalletSetNamePrefix, time.Now().Format("20060102"))
-	circleResp, err := s.circleClient.CreateWalletSet(ctx, setName, "")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Circle wallet set: %w", err)
-	}
-
-	// Generate entity secret ciphertext for the wallet set
-	if s.entitySecretService == nil {
-		return nil, fmt.Errorf("entity secret service is not available: cannot create secure wallet set")
-	}
-	entitySecretCiphertext, err := s.entitySecretService.GenerateEntitySecretCiphertext(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate entity secret ciphertext: %w", err)
-	}
-
-	// Create wallet set record
-	walletSet = &entities.WalletSet{
-		ID:                     uuid.New(),
-		Name:                   setName,
-		CircleWalletSetID:      circleResp.WalletSet.ID,
-		EntitySecretCiphertext: entitySecretCiphertext,
-		Status:                 entities.WalletSetStatusActive,
-		CreatedAt:              time.Now(),
-		UpdatedAt:              time.Now(),
-	}
-
-	if err := s.walletSetRepo.Create(ctx, walletSet); err != nil {
-		return nil, fmt.Errorf("failed to create wallet set record: %w", err)
-	}
-
-	s.logger.Info("Created new developer-controlled wallet set",
-		zap.String("walletSetID", walletSet.ID.String()),
-		zap.String("circleWalletSetID", walletSet.CircleWalletSetID))
-
-	return walletSet, nil
+	return nil, fmt.Errorf("wallet sets are no longer used; wallets are created via Bridge")
 }
 
+// createEVMWallets is no longer used — wallet creation is handled by Bridge in onboarding_processor.
 func (s *Service) createEVMWallets(ctx context.Context, userID uuid.UUID, evmChains []entities.WalletChain,
 	walletSet *entities.WalletSet, job *entities.WalletProvisioningJob) (int, error) {
-
-	// Check which EVM chains already have wallets
-	var needChains []entities.WalletChain
-	created := 0
-	for _, chain := range evmChains {
-		existing, err := s.walletRepo.GetByUserAndChain(ctx, userID, chain)
-		if err == nil && existing != nil {
-			s.logger.Info("Wallet already exists for chain",
-				zap.String("userID", userID.String()),
-				zap.String("chain", string(chain)),
-				zap.String("address", existing.Address))
-			created++
-			continue
-		}
-		needChains = append(needChains, chain)
-	}
-	if len(needChains) == 0 {
-		return created, nil
-	}
-
-	// Build blockchain list for a single SCA wallet covering all needed EVM chains
-	blockchains := make([]string, len(needChains))
-	for i, c := range needChains {
-		blockchains[i] = string(c)
-	}
-
-	circleReq := entities.CircleWalletCreateRequest{
-		WalletSetID: walletSet.CircleWalletSetID,
-		Blockchains: blockchains,
-		AccountType: string(entities.AccountTypeSCA),
-		Count:       1,
-		RefID:       userID.String(),
-	}
-	job.AddCircleRequest("create_evm_wallet", circleReq, nil)
-
-	circleResp, err := s.circleClient.CreateWallet(ctx, circleReq)
-	if err != nil {
-		job.AddCircleRequest("create_evm_wallet_error", circleReq, map[string]any{"error": err.Error()})
-		return created, fmt.Errorf("failed to create EVM wallet in Circle: %w", err)
-	}
-	job.AddCircleRequest("create_evm_wallet_success", circleReq, circleResp)
-
-	// Resolve the shared address from the response
-	address := circleResp.Wallet.Address
-	if address == "" && len(circleResp.Wallet.Addresses) > 0 {
-		address = circleResp.Wallet.Addresses[0].Address
-	}
-	if address == "" {
-		return created, fmt.Errorf("no address in Circle EVM wallet response")
-	}
-
-	// Store one wallet record per EVM chain, all sharing the same address and Circle wallet ID
-	for _, chain := range needChains {
-		wallet := &entities.ManagedWallet{
-			ID:             uuid.New(),
-			UserID:         userID,
-			Chain:          chain,
-			Address:        address,
-			CircleWalletID: circleResp.Wallet.ID,
-			WalletSetID:    walletSet.ID,
-			AccountType:    entities.AccountTypeSCA,
-			Status:         entities.WalletStatusLive,
-			CreatedAt:      time.Now(),
-			UpdatedAt:      time.Now(),
-		}
-		if err := wallet.Validate(); err != nil {
-			return created, fmt.Errorf("wallet validation failed for %s: %w", chain, err)
-		}
-		if err := s.walletRepo.Create(ctx, wallet); err != nil {
-			return created, fmt.Errorf("failed to create wallet record for %s: %w", chain, err)
-		}
-		if err := s.auditService.LogWalletEvent(ctx, userID, "developer_wallet_created", "wallet", nil, wallet); err != nil {
-			s.logger.Warn("Failed to log audit event", zap.Error(err))
-		}
-		s.logger.Info("Created EVM wallet record",
-			zap.String("userID", userID.String()),
-			zap.String("chain", string(chain)),
-			zap.String("address", address),
-			zap.String("circleWalletID", circleResp.Wallet.ID))
-		created++
-	}
-	return created, nil
+	return 0, fmt.Errorf("EVM wallet creation via Circle is no longer supported; use Bridge onboarding")
 }
 
+// createWalletForChain is no longer used — wallet creation is handled by Bridge in onboarding_processor.
 func (s *Service) createWalletForChain(ctx context.Context, userID uuid.UUID, chain entities.WalletChain,
 	walletSet *entities.WalletSet, job *entities.WalletProvisioningJob) error {
-
-	s.logger.Info("Creating developer-controlled wallet for chain",
-		zap.String("userID", userID.String()),
-		zap.String("chain", string(chain)))
-
-	// Check if wallet already exists for this chain
-	existingWallet, err := s.walletRepo.GetByUserAndChain(ctx, userID, chain)
-	if err == nil && existingWallet != nil {
-		s.logger.Info("Wallet already exists for chain",
-			zap.String("userID", userID.String()),
-			zap.String("chain", string(chain)),
-			zap.String("address", existingWallet.Address))
-		return nil
-	}
-
-	// Determine account type based on chain following developer-controlled-wallet pattern
-	accountType := entities.AccountTypeEOA
-	if chain.GetChainFamily() == "EVM" {
-		// Use SCA for EVM chains to achieve unified addresses across all EVM chains
-		// This ensures the same address works on ETH, MATIC, AVAX, BASE, etc.
-		accountType = entities.AccountTypeSCA
-	}
-	// Solana and Aptos chains use EOA
-
-	// Create Circle wallet request using pre-registered Entity Secret Ciphertext
-	circleReq := entities.CircleWalletCreateRequest{
-		WalletSetID: walletSet.CircleWalletSetID,
-		Blockchains: []string{string(chain)},
-		AccountType: string(accountType),
-		Count:       1, // Create single wallet per chain
-		// EntitySecretCiphertext is automatically added by Circle client from config
-	}
-
-	// Add request to job log
-	job.AddCircleRequest("create_wallet", circleReq, nil)
-
-	// Create wallet in Circle using developer-controlled pattern
-	circleResp, err := s.circleClient.CreateWallet(ctx, circleReq)
-	if err != nil {
-		// Add error response to job log
-		job.AddCircleRequest("create_wallet_error", circleReq, map[string]any{"error": err.Error()})
-		return fmt.Errorf("failed to create wallet in Circle: %w", err)
-	}
-
-	// Add successful response to job log
-	job.AddCircleRequest("create_wallet_success", circleReq, circleResp)
-
-	// Find the address for the requested chain
-	var address string
-
-	// Handle both single address and addresses array responses
-	if circleResp.Wallet.Address != "" {
-		// Single address response (direct format)
-		address = circleResp.Wallet.Address
-	} else if len(circleResp.Wallet.Addresses) > 0 {
-		// Addresses array response
-		for _, addr := range circleResp.Wallet.Addresses {
-			if addr.Blockchain == string(chain) {
-				address = addr.Address
-				break
-			}
-		}
-	}
-
-	if address == "" {
-		return fmt.Errorf("no address found for chain %s in Circle response", string(chain))
-	}
-
-	// Create wallet record with Circle wallet ID for transaction operations
-	wallet := &entities.ManagedWallet{
-		ID:             uuid.New(),
-		UserID:         userID,
-		Chain:          chain,
-		Address:        address,
-		CircleWalletID: circleResp.Wallet.ID, // Store Circle wallet ID for transactions
-		WalletSetID:    walletSet.ID,
-		AccountType:    accountType,
-		Status:         entities.WalletStatusLive, // Circle API returns live wallets
-		CreatedAt:      time.Now(),
-		UpdatedAt:      time.Now(),
-	}
-
-	if err := wallet.Validate(); err != nil {
-		return fmt.Errorf("wallet validation failed: %w", err)
-	}
-
-	if err := s.walletRepo.Create(ctx, wallet); err != nil {
-		return fmt.Errorf("failed to create wallet record: %w", err)
-	}
-
-	// Log audit event
-	if err := s.auditService.LogWalletEvent(ctx, userID, "developer_wallet_created", "wallet", nil, wallet); err != nil {
-		s.logger.Warn("Failed to log audit event", zap.Error(err))
-	}
-
-	s.logger.Info("Created developer-controlled wallet successfully",
-		zap.String("userID", userID.String()),
-		zap.String("chain", string(chain)),
-		zap.String("address", address),
-		zap.String("circleWalletID", circleResp.Wallet.ID))
-
-	return nil
+	return fmt.Errorf("wallet creation via Circle is no longer supported; use Bridge onboarding")
 }
 
 // HealthCheck performs health checks on the wallet service
 func (s *Service) HealthCheck(ctx context.Context) error {
-	s.logger.Debug("Performing wallet service health check")
-
-	// Check Circle client health
-	if err := s.circleClient.HealthCheck(ctx); err != nil {
-		return fmt.Errorf("circle client health check failed: %w", err)
-	}
-
-	// Check if we can access the wallet set
-	_, err := s.walletSetRepo.GetActive(ctx)
-	if err != nil {
-		s.logger.Warn("No active wallet set found", zap.Error(err))
-		// This is not necessarily a failure for health check
-	}
-
 	s.logger.Info("Wallet service health check passed")
 	return nil
 }
@@ -859,13 +430,10 @@ func (s *Service) GetWalletByUserAndChain(ctx context.Context, userID uuid.UUID,
 
 // GetMetrics returns service metrics for monitoring
 func (s *Service) GetMetrics() map[string]interface{} {
-	metrics := s.circleClient.GetMetrics()
-
-	// Add service-specific metrics
-	metrics["service"] = "wallet"
-	metrics["timestamp"] = time.Now()
-
-	return metrics
+	return map[string]interface{}{
+		"service":   "wallet",
+		"timestamp": time.Now(),
+	}
 }
 
 // SupportedChains returns the configured wallet chains

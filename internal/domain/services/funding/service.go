@@ -13,11 +13,6 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// Default timeout for external API calls
-const (
-	DefaultCircleAPITimeout = 10 * time.Second
-)
-
 // generateIdempotencyKey creates a deterministic UUID from deposit attributes
 // This ensures uniqueness across chains and prevents cross-chain replay attacks
 func generateIdempotencyKey(chain, token, amount, txHash string) string {
@@ -89,8 +84,9 @@ type Service struct {
 	walletRepo          WalletRepository
 	managedWalletRepo   ManagedWalletRepository
 	virtualAccountRepo  VirtualAccountRepository
+	userRepo            UserRepository
 	alpacaAccountLookup AlpacaAccountLookup
-	circleAPI           CircleAdapter
+	bridgeWallets       BridgeDepositClient
 	bridgeVAService     *BridgeVirtualAccountService
 	alpacaAPI           AlpacaAdapter
 	ledgerIntegration   LedgerIntegration
@@ -125,16 +121,31 @@ type WalletRepository interface {
 // ManagedWalletRepository interface for managed wallet operations
 type ManagedWalletRepository interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.ManagedWallet, error)
-	GetByCircleWalletID(ctx context.Context, circleWalletID string) (*entities.ManagedWallet, error)
 	GetByAddress(ctx context.Context, address string) (*entities.ManagedWallet, error)
+	Create(ctx context.Context, wallet *entities.ManagedWallet) error
 }
 
-// CircleAdapter interface for Circle API integration
-type CircleAdapter interface {
-	GenerateDepositAddress(ctx context.Context, chain entities.Chain, userID uuid.UUID) (string, error)
-	ValidateDeposit(ctx context.Context, txHash string, amount decimal.Decimal) (bool, error)
-	ConvertToUSD(ctx context.Context, amount decimal.Decimal, token entities.Stablecoin) (decimal.Decimal, error)
-	GetWalletBalances(ctx context.Context, walletID string, tokenAddress ...string) (*entities.CircleWalletBalancesResponse, error)
+// BridgeDepositClient handles Bridge wallet and liquidation address creation
+type BridgeDepositClient interface {
+	IsSandbox() bool
+	ListWallets(ctx context.Context, customerID string) ([]BridgeWalletInfo, error)
+	CreateWallet(ctx context.Context, customerID string, chain string) (id string, address string, err error)
+	ListLiquidationAddresses(ctx context.Context, customerID string) ([]BridgeLiquidationAddr, error)
+	CreateLiquidationAddress(ctx context.Context, customerID string, chain string, bridgeWalletID string, destinationAddress string) (id string, address string, err error)
+}
+
+// BridgeWalletInfo is a minimal wallet summary from Bridge
+type BridgeWalletInfo struct {
+	ID    string
+	Chain string
+}
+
+// BridgeLiquidationAddr is a minimal liquidation address summary from Bridge
+type BridgeLiquidationAddr struct {
+	ID             string
+	Chain          string
+	Address        string
+	BridgeWalletID string
 }
 
 // VirtualAccountRepository interface for virtual account persistence
@@ -158,6 +169,11 @@ type AlpacaAdapter interface {
 	CreateJournal(ctx context.Context, req *entities.AlpacaJournalRequest) (*entities.AlpacaJournalResponse, error)
 }
 
+// UserRepository for looking up Bridge customer ID
+type UserRepository interface {
+	GetByID(ctx context.Context, id uuid.UUID) (*entities.UserProfile, error)
+}
+
 // AlpacaAccountLookup resolves persisted account ownership.
 type AlpacaAccountLookup interface {
 	GetByAlpacaID(ctx context.Context, alpacaAccountID string) (*entities.AlpacaAccount, error)
@@ -169,7 +185,6 @@ func NewService(
 	walletRepo WalletRepository,
 	managedWalletRepo ManagedWalletRepository,
 	virtualAccountRepo VirtualAccountRepository,
-	circleAPI CircleAdapter,
 	alpacaAPI AlpacaAdapter,
 	ledgerIntegration LedgerIntegration,
 	logger *logger.Logger,
@@ -179,13 +194,18 @@ func NewService(
 		walletRepo:         walletRepo,
 		managedWalletRepo:  managedWalletRepo,
 		virtualAccountRepo: virtualAccountRepo,
-		circleAPI:          circleAPI,
 		alpacaAPI:          alpacaAPI,
 		ledgerIntegration:  ledgerIntegration,
 		config:             DefaultFundingConfig(),
 		logger:             logger,
 	}
 }
+
+// SetBridgeDepositClient sets the Bridge deposit client (replaces Circle for deposit addresses)
+func (s *Service) SetBridgeDepositClient(b BridgeDepositClient) { s.bridgeWallets = b }
+
+// SetUserRepo sets the user repository for Bridge customer ID lookup
+func (s *Service) SetUserRepo(r UserRepository) { s.userRepo = r }
 
 // SetValidationService sets the validation service (optional)
 func (s *Service) SetValidationService(vs *ValidationService) {
@@ -272,7 +292,7 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 		}, nil
 	}
 
-	// Check managed_wallets (Circle dev-controlled wallets) — these are the
+	// Check managed_wallets (custody wallets + liquidation addresses) — these are the
 	// primary wallet type for testnet chains like MATIC-AMOY, AVAX-FUJI, SOL-DEVNET.
 	if s.managedWalletRepo != nil {
 		managedWallets, mErr := s.managedWalletRepo.GetByUserID(ctx, userID)
@@ -291,36 +311,92 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 		}
 	}
 
-	// Generate new address through Circle
-	address, err := s.circleAPI.GenerateDepositAddress(ctx, chain, userID)
+	// Create deposit address via Bridge (Bridge Wallet + Liquidation Address)
+	if s.bridgeWallets == nil || s.userRepo == nil {
+		return nil, fmt.Errorf("Bridge deposit client not configured")
+	}
+
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil || user.BridgeCustomerID == nil || *user.BridgeCustomerID == "" {
+		return nil, fmt.Errorf("user has no Bridge customer ID — complete onboarding first")
+	}
+	customerID := *user.BridgeCustomerID
+	walletChain := entities.WalletChain(chain)
+	bridgeRail := walletChain.ToBridgePaymentRail()
+
+	// Step 1: ensure custody wallet exists (skip in sandbox — Bridge Wallets not available)
+	custodyChain := "solana"
+	var bridgeWalletID string
+	var destinationAddress string // used in sandbox instead of bridge_wallet_id
+
+	if s.bridgeWallets.IsSandbox() {
+		// Sandbox: Bridge Wallet API unavailable — use platform destination address
+		destinationAddress = s.config.PlatformSolanaAddress
+		if destinationAddress == "" {
+			destinationAddress = "9kV3ZMehKVyxfHKCcaDLye3P9HHw2MP4jtQa2gKBUmCs" // fallback test address
+		}
+	} else {
+		wallets, err := s.bridgeWallets.ListWallets(ctx, customerID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list Bridge wallets: %w", err)
+		}
+		for _, w := range wallets {
+			if w.Chain == custodyChain {
+				bridgeWalletID = w.ID
+				break
+			}
+		}
+		if bridgeWalletID == "" {
+			id, _, err := s.bridgeWallets.CreateWallet(ctx, customerID, custodyChain)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create Bridge custody wallet: %w", err)
+			}
+			bridgeWalletID = id
+		}
+	}
+
+	// Step 2: ensure liquidation address exists for the requested chain
+	las, err := s.bridgeWallets.ListLiquidationAddresses(ctx, customerID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate deposit address: %w", err)
+		return nil, fmt.Errorf("failed to list liquidation addresses: %w", err)
 	}
-
-	// Create wallet record in legacy wallets table for backward compatibility.
-	wallet = &entities.Wallet{
-		ID:             uuid.New(),
-		UserID:         userID,
-		Chain:          chain,
-		Address:        address,
-		CircleWalletID: fmt.Sprintf("circle-%s", address),
-		WalletSetID:    s.config.DefaultWalletSetID,
-		AccountType:    "EOA",
-		Status:         "live",
-		CreatedAt:      time.Now(),
-		UpdatedAt:      time.Now(),
+	var laAddress string
+	var laID string
+	for _, la := range las {
+		if la.Chain == bridgeRail && la.BridgeWalletID == bridgeWalletID {
+			laAddress = la.Address
+			laID = la.ID
+			break
+		}
 	}
-
-	if err := s.walletRepo.Create(ctx, wallet); err != nil {
-		s.logger.Warn("Failed to create legacy wallet record (deposit address still valid)",
-			"error", err, "user_id", userID, "chain", chain, "address", address)
+	if laAddress == "" {
+		laID, laAddress, err = s.bridgeWallets.CreateLiquidationAddress(ctx, customerID, bridgeRail, bridgeWalletID, destinationAddress)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create liquidation address: %w", err)
+		}
+		// Persist
+		mw := &entities.ManagedWallet{
+			ID:             uuid.New(),
+			UserID:         userID,
+			Chain:          walletChain,
+			Address:        laAddress,
+			BridgeWalletID: laID,
+			AccountType:    entities.AccountTypeLiquidationAddr,
+			Status:         "live",
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
+		}
+		if err := s.managedWalletRepo.Create(ctx, mw); err != nil {
+			s.logger.Warn("Failed to persist liquidation address", "error", err)
+		}
 	}
+	_ = laID
 
-	s.logger.Info("Created new wallet address", "user_id", userID, "chain", chain, "address", address)
+	s.logger.Info("Deposit address ready", "user_id", userID, "chain", chain, "address", laAddress)
 
 	return &entities.DepositAddressResponse{
 		Chain:   chain,
-		Address: address,
+		Address: laAddress,
 	}, nil
 }
 
@@ -488,24 +564,6 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 		return fmt.Errorf("deposit amount %s exceeds maximum %v USDC", amount.String(), maxAmountWhole.String())
 	}
 
-	// Add timeout context specifically for Circle API calls - don't shadow original ctx
-	circleCtx, cancel := context.WithTimeout(ctx, DefaultCircleAPITimeout)
-	defer cancel()
-
-	// Validate the deposit with Circle
-	isValid, err := s.circleAPI.ValidateDeposit(circleCtx, webhook.TxHash, amount)
-	if err != nil {
-		if circleCtx.Err() == context.DeadlineExceeded {
-			return fmt.Errorf("circle deposit validation timed out: %w", err)
-		}
-		return fmt.Errorf("failed to validate deposit: %w", err)
-	}
-
-	if !isValid {
-		s.logger.Warn("Invalid deposit received", "tx_hash", webhook.TxHash)
-		return fmt.Errorf("invalid deposit signature or amount")
-	}
-
 	// Generate UUID-based idempotency key from: chain + token + amount + txHash
 	// This ensures uniqueness across chains and prevents cross-chain replay attacks
 	idempotencyKey := generateIdempotencyKey(string(webhook.Chain), string(webhook.Token), webhook.Amount, webhook.TxHash)
@@ -595,11 +653,8 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 		userID = wallet.UserID
 	}
 
-	// Convert stablecoin to USD buying power
-	usdAmount, err := s.circleAPI.ConvertToUSD(ctx, amount, token)
-	if err != nil {
-		return fmt.Errorf("failed to convert to USD: %w", err)
-	}
+	// USDC is pegged 1:1 to USD; no conversion needed.
+	usdAmount := amount
 
 	// Validate against user's deposit limits (if limits service is configured)
 	if s.limitsService != nil {

@@ -279,6 +279,7 @@ type AdaptiveRateLimitConfig struct {
 	EnableRiskScoring bool `mapstructure:"enable_risk_scoring"`
 }
 
+// CircleConfig is legacy configuration for Circle (deprecated; Bridge is primary).
 type CircleConfig struct {
 	APIKey                 string   `mapstructure:"api_key"`
 	Environment            string   `mapstructure:"environment"` // sandbox or production
@@ -356,13 +357,14 @@ type VerificationConfig struct {
 
 // BridgeConfig contains Bridge API configuration for wallets, virtual accounts, KYC, and cards
 type BridgeConfig struct {
-	APIKey          string   `mapstructure:"api_key"`
-	BaseURL         string   `mapstructure:"base_url"`
-	Environment     string   `mapstructure:"environment"`
-	Timeout         int      `mapstructure:"timeout"`
-	MaxRetries      int      `mapstructure:"max_retries"`
-	SupportedChains []string `mapstructure:"supported_chains"`
-	WebhookSecret   string   `mapstructure:"webhook_secret"`
+	APIKey                string   `mapstructure:"api_key"`
+	BaseURL               string   `mapstructure:"base_url"`
+	Environment           string   `mapstructure:"environment"`
+	Timeout               int      `mapstructure:"timeout"`
+	MaxRetries            int      `mapstructure:"max_retries"`
+	SupportedChains       []string `mapstructure:"supported_chains"`
+	WebhookSecret         string   `mapstructure:"webhook_secret"`
+	TreasuryWalletAddress string   `mapstructure:"treasury_wallet_address"`
 }
 
 // WorkerConfig contains background worker configuration
@@ -832,7 +834,7 @@ func overrideFromEnv() {
 		viper.Set("security.encryption_key", encKey)
 	}
 
-	// Circle API
+	// Legacy Circle API
 	if circleKey := os.Getenv("CIRCLE_API_KEY"); circleKey != "" {
 		viper.Set("circle.api_key", circleKey)
 	}
@@ -843,7 +845,7 @@ func overrideFromEnv() {
 	if circleEntitySecretCiphertext := os.Getenv("CIRCLE_ENTITY_SECRET_CIPHERTEXT"); circleEntitySecretCiphertext != "" {
 		viper.Set("circle.entity_secret_ciphertext", circleEntitySecretCiphertext)
 	}
-	// Load Circle public key PEM from environment for entity secret encryption
+	// Load legacy Circle public key PEM from environment for entity secret encryption
 	if circlePublicKeyPEM := os.Getenv("EXPO_PUBLIC_CIRCLE_PUBLIC_KEY_PEM"); circlePublicKeyPEM != "" {
 		viper.Set("circle.public_key_pem", circlePublicKeyPEM)
 	}
@@ -1070,8 +1072,8 @@ func validate(config *Config) error {
 
 	// Entity secret is now generated dynamically, no validation needed
 
-	if len(config.Circle.SupportedChains) == 0 {
-		return fmt.Errorf("circle supported chains configuration is required")
+	if len(config.Bridge.SupportedChains) == 0 {
+		return fmt.Errorf("bridge supported chains configuration is required")
 	}
 
 	if strings.EqualFold(strings.TrimSpace(config.KYC.Provider), "sumsub") {

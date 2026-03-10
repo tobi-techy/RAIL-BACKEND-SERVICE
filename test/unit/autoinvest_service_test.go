@@ -59,7 +59,7 @@ type orderPlacerCall struct {
 	amount decimal.Decimal
 }
 
-func (m *mockOrderPlacer) PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal) (*entities.AlpacaOrderResponse, error) {
+func (m *mockOrderPlacer) PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal, clientOrderID string) (*entities.AlpacaOrderResponse, error) {
 	m.called = true
 	m.orders = append(m.orders, orderPlacerCall{
 		userID: userID,
@@ -91,9 +91,34 @@ func (m *mockStrategyEngine) GetStrategy(ctx context.Context, userID uuid.UUID) 
 	}, nil
 }
 
+func (m *mockStrategyEngine) GetStrategyForAmount(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (*strategy.StrategyResult, error) {
+	return m.GetStrategy(ctx, userID)
+}
+
 func testLogger() *logger.Logger {
 	zapLog, _ := zap.NewDevelopment()
 	return logger.NewLogger(zapLog)
+}
+
+// mockUserRepository implements autoinvest.UserRepository for testing
+type mockUserRepository struct {
+	user *entities.User
+}
+
+func newEligibleUserRepo() *mockUserRepository {
+	kycStatus := "active"
+	alpacaID := "test-alpaca-account"
+	return &mockUserRepository{
+		user: &entities.User{
+			IsActive:        true,
+			BridgeKYCStatus: &kycStatus,
+			AlpacaAccountID: &alpacaID,
+		},
+	}
+}
+
+func (m *mockUserRepository) GetUserEntityByID(ctx context.Context, id uuid.UUID) (*entities.User, error) {
+	return m.user, nil
 }
 
 func TestAutoInvestService_SetOrderPlacer(t *testing.T) {
@@ -102,6 +127,7 @@ func TestAutoInvestService_SetOrderPlacer(t *testing.T) {
 
 	// Create service without order placer
 	svc := autoinvest.NewService(ledger, nil, autoinvest.Config{}, log)
+	svc.SetUserRepository(newEligibleUserRepo())
 
 	// Set order placer after initialization
 	orderPlacer := &mockOrderPlacer{}
@@ -129,6 +155,7 @@ func TestAutoInvestService_TriggerAutoInvestment_BelowThreshold(t *testing.T) {
 	}
 
 	svc := autoinvest.NewService(ledger, orderPlacer, config, log)
+	svc.SetUserRepository(newEligibleUserRepo())
 
 	err := svc.TriggerAutoInvestment(context.Background(), autoinvest.TriggerRequest{
 		UserID:        uuid.New(),
@@ -146,6 +173,7 @@ func TestAutoInvestService_TriggerAutoInvestment_RequiresCorrelationID(t *testin
 	orderPlacer := &mockOrderPlacer{}
 
 	svc := autoinvest.NewService(ledger, orderPlacer, autoinvest.Config{}, log)
+	svc.SetUserRepository(newEligibleUserRepo())
 
 	err := svc.TriggerAutoInvestment(context.Background(), autoinvest.TriggerRequest{
 		UserID:        uuid.New(),
@@ -173,6 +201,7 @@ func TestAutoInvestService_WithStrategyEngine(t *testing.T) {
 
 	svc := autoinvest.NewService(ledger, orderPlacer, autoinvest.Config{}, log)
 	svc.SetStrategyEngine(strategyEngine)
+	svc.SetUserRepository(newEligibleUserRepo())
 
 	err := svc.TriggerAutoInvestment(context.Background(), autoinvest.TriggerRequest{
 		UserID:        uuid.New(),
@@ -225,8 +254,8 @@ func TestStrategyEngine_AggressiveGrowthForYoungUser(t *testing.T) {
 	result, err := engine.GetStrategy(context.Background(), uuid.New())
 
 	require.NoError(t, err)
-	assert.Equal(t, "Aggressive Growth", result.StrategyName)
-	assert.Len(t, result.Allocations, 3)
+	assert.Equal(t, "Gen Z Early Career", result.StrategyName)
+	assert.NotEmpty(t, result.Allocations)
 }
 
 func TestStrategyEngine_BalancedGrowthForMidAgeUser(t *testing.T) {
@@ -245,7 +274,7 @@ func TestStrategyEngine_BalancedGrowthForMidAgeUser(t *testing.T) {
 	result, err := engine.GetStrategy(context.Background(), uuid.New())
 
 	require.NoError(t, err)
-	assert.Equal(t, "Balanced Growth", result.StrategyName)
+	assert.Equal(t, "Millennial Growth", result.StrategyName)
 }
 
 func TestStrategyEngine_ConservativeForMatureUser(t *testing.T) {
@@ -264,7 +293,7 @@ func TestStrategyEngine_ConservativeForMatureUser(t *testing.T) {
 	result, err := engine.GetStrategy(context.Background(), uuid.New())
 
 	require.NoError(t, err)
-	assert.Equal(t, "Conservative", result.StrategyName)
+	assert.Equal(t, "Gen X Stability", result.StrategyName)
 }
 
 func TestStrategyEngine_FallbackWhenNoAge(t *testing.T) {

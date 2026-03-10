@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# Deprecated: Circle webhooks are no longer used. Use Bridge webhook testing instead.
+echo "Deprecated: Circle webhooks are no longer used. Use Bridge webhook testing instead."
+exit 1
+
 # Test Circle webhook with your actual Solana deposit
 # Transaction: 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU
 # Wallet: Bes4jEMuVKqj4m3MhQtXsZSqfKFMThYetkUjFjEyTPRZ

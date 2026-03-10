@@ -15,7 +15,6 @@ import (
 // POST /webhooks/funding
 type UnifiedFundingWebhookHandler struct {
 	bridgeHandler             *BridgeWebhookHandler
-	circleHandler             *CircleWebhookHandler
 	alpacaHandler             *AlpacaWebhookHandlers
 	logger                    *zap.Logger
 	allowInsecureVerification bool
@@ -24,14 +23,13 @@ type UnifiedFundingWebhookHandler struct {
 // NewUnifiedFundingWebhookHandler creates a unified webhook handler
 func NewUnifiedFundingWebhookHandler(
 	bridgeHandler *BridgeWebhookHandler,
-	circleHandler *CircleWebhookHandler,
+	_ interface{}, // legacy circleHandler removed
 	alpacaHandler *AlpacaWebhookHandlers,
 	logger *zap.Logger,
 	allowInsecureVerification bool,
 ) *UnifiedFundingWebhookHandler {
 	return &UnifiedFundingWebhookHandler{
 		bridgeHandler:             bridgeHandler,
-		circleHandler:             circleHandler,
 		alpacaHandler:             alpacaHandler,
 		logger:                    logger,
 		allowInsecureVerification: allowInsecureVerification,
@@ -57,7 +55,6 @@ type WebhookSource string
 
 const (
 	WebhookSourceBridge WebhookSource = "bridge"
-	WebhookSourceCircle WebhookSource = "circle"
 	WebhookSourceAlpaca WebhookSource = "alpaca"
 )
 
@@ -95,8 +92,6 @@ func (h *UnifiedFundingWebhookHandler) HandleFundingWebhook(c *gin.Context) {
 	switch source {
 	case WebhookSourceBridge:
 		h.routeToBridge(c, rawBody)
-	case WebhookSourceCircle:
-		h.routeToCircle(c, rawBody)
 	case WebhookSourceAlpaca:
 		h.routeToAlpaca(c, rawBody)
 	default:
@@ -112,8 +107,6 @@ func (h *UnifiedFundingWebhookHandler) detectSource(c *gin.Context, body []byte)
 		switch strings.ToLower(sourceHeader) {
 		case "bridge":
 			return WebhookSourceBridge
-		case "circle":
-			return WebhookSourceCircle
 		case "alpaca":
 			return WebhookSourceAlpaca
 		}
@@ -122,9 +115,6 @@ func (h *UnifiedFundingWebhookHandler) detectSource(c *gin.Context, body []byte)
 	// Check provider-specific headers
 	if c.GetHeader("X-Bridge-Signature") != "" || c.GetHeader("Bridge-Signature") != "" {
 		return WebhookSourceBridge
-	}
-	if c.GetHeader("X-Circle-Signature") != "" {
-		return WebhookSourceCircle
 	}
 	if c.GetHeader("X-Alpaca-Signature") != "" || c.GetHeader("Alpaca-Signature") != "" {
 		return WebhookSourceAlpaca
@@ -136,10 +126,6 @@ func (h *UnifiedFundingWebhookHandler) detectSource(c *gin.Context, body []byte)
 		// Bridge webhooks have event_category
 		if _, ok := payload["event_category"]; ok {
 			return WebhookSourceBridge
-		}
-		// Circle webhooks have notificationType
-		if _, ok := payload["notificationType"]; ok {
-			return WebhookSourceCircle
 		}
 		// Alpaca webhooks have event field
 		if _, ok := payload["event"]; ok {
@@ -165,29 +151,6 @@ func (h *UnifiedFundingWebhookHandler) verifySignature(c *gin.Context, source We
 			signature = c.GetHeader("Bridge-Signature")
 		}
 		return h.bridgeHandler.verifySignature(signature, body)
-	case WebhookSourceCircle:
-		if h.circleHandler == nil {
-			return false
-		}
-		// In dev mode, skip signature verification entirely.
-		if h.circleHandler.devMode {
-			h.logger.Info("Circle webhook signature verification skipped (dev mode)")
-			return true
-		}
-		keyID := c.GetHeader("X-Circle-Key-Id")
-		signature := c.GetHeader("X-Circle-Signature")
-		if keyID == "" || signature == "" {
-			return false
-		}
-		if strings.TrimSpace(h.circleHandler.circleAPIKey) == "" {
-			if h.allowInsecureVerification {
-				h.logger.Warn("Circle API key not configured - allowing unified webhook verification bypass in development mode")
-				return true
-			}
-			h.logger.Error("Circle API key not configured - rejecting unified webhook for security")
-			return false
-		}
-		return h.circleHandler.verifySignature(c.Request.Context(), keyID, signature, body)
 	case WebhookSourceAlpaca:
 		if h.alpacaHandler == nil {
 			return false
@@ -310,40 +273,6 @@ func (h *UnifiedFundingWebhookHandler) processBridgeCustomerEvent(c *gin.Context
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "processed"})
-}
-
-// routeToCircle routes to Circle webhook handler
-func (h *UnifiedFundingWebhookHandler) routeToCircle(c *gin.Context, body []byte) {
-	if h.circleHandler == nil {
-		h.logger.Warn("Circle handler not configured")
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "circle_handler_not_configured"})
-		return
-	}
-
-	var webhook CircleTransferWebhook
-	if err := json.Unmarshal(body, &webhook); err != nil {
-		h.logger.Error("Failed to parse Circle payload", zap.Error(err))
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
-		return
-	}
-
-	h.logger.Info("Processing Circle webhook",
-		zap.String("notification_type", webhook.NotificationType),
-		zap.String("transfer_id", webhook.TransferID))
-
-	// Process based on notification type.
-	switch {
-	case strings.HasPrefix(strings.ToLower(webhook.NotificationType), "transfers.") ||
-		strings.HasPrefix(strings.ToLower(webhook.NotificationType), "transactions."):
-		ctx := c.Request.Context()
-		if err := h.circleHandler.processIncomingTransfer(ctx, &webhook); err != nil {
-			h.logger.Error("Failed to process Circle transfer", zap.Error(err))
-			// Return 200 to stop Circle retries — Circle enforces a 5-second timeout
-			// and will keep retrying on non-2XX responses.
-		}
-	}
-
-	c.JSON(http.StatusOK, gin.H{"status": "received"})
 }
 
 // routeToAlpaca routes to Alpaca webhook handler

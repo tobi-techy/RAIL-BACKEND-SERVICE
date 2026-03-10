@@ -185,12 +185,23 @@ func (s *WithdrawalSecurityService) VerifyConfirmation(ctx context.Context, toke
 	amount, _ := decimal.NewFromString(data["amount"])
 	confirmationID, _ := uuid.Parse(data["id"])
 
-	// Delete the token (one-time use)
-	s.redis.Del(ctx, key)
-
-	// Update DB record
 	tokenHash := hashToken(token)
-	s.db.ExecContext(ctx, "UPDATE withdrawal_confirmations SET confirmed = true, confirmed_at = NOW() WHERE token_hash = $1", tokenHash)
+
+	// Update DB first — if this fails the token remains in Redis and the user can retry
+	result, err := s.db.ExecContext(ctx, "UPDATE withdrawal_confirmations SET confirmed = true, confirmed_at = NOW() WHERE token_hash = $1 AND confirmed = false", tokenHash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to confirm withdrawal in database: %w", err)
+	}
+	if rows, _ := result.RowsAffected(); rows == 0 {
+		return nil, fmt.Errorf("withdrawal confirmation not found or already confirmed")
+	}
+
+	// Delete Redis token only after DB is committed — worst case: token lingers until TTL expiry
+	if deleted, err := s.redis.Del(ctx, key).Result(); err != nil {
+		s.logger.Error("Failed to delete confirmation token from Redis", zap.Error(err))
+	} else if deleted == 0 {
+		s.logger.Warn("Confirmation token already absent from Redis", zap.String("key", key))
+	}
 
 	return &WithdrawalConfirmation{
 		ID:              confirmationID,

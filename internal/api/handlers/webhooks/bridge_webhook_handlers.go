@@ -28,7 +28,7 @@ import (
 // BridgeWebhookService defines operations for processing Bridge events
 type BridgeWebhookService interface {
 	ProcessFiatDeposit(ctx *gin.Context, event *BridgeDepositEvent) error
-	ProcessTransferCompleted(ctx *gin.Context, transferID string, amount decimal.Decimal) error
+	ProcessTransferCompleted(ctx *gin.Context, transferID string, customerID string, amount decimal.Decimal) error
 	ProcessCustomerStatusChanged(ctx *gin.Context, customerID string, status string) error
 	// Card transaction methods
 	ProcessCardAuthorization(ctx *gin.Context, cardID string, amount decimal.Decimal, merchantName, merchantCategory string) error
@@ -42,17 +42,33 @@ type BridgeWebhookHandler struct {
 	service                 BridgeWebhookService
 	logger                  *zap.Logger
 	webhookSecret           string
-	skipWebhookVerification bool // Explicit opt-out flag for development/testing only
+	skipWebhookVerification bool   // Should ONLY be true in development with explicit config
+	environment             string // Track environment to enforce verification in production
 }
 
 // NewBridgeWebhookHandler creates a new Bridge webhook handler
-// skipWebhookVerification should only be true in development/testing environments
-func NewBridgeWebhookHandler(service BridgeWebhookService, logger *zap.Logger, webhookSecret string, skipWebhookVerification bool) *BridgeWebhookHandler {
+// skipWebhookVerification should ONLY be true in development/testing environments with explicit config
+// IMPORTANT: In production, verification can NEVER be skipped regardless of this flag
+func NewBridgeWebhookHandler(service BridgeWebhookService, logger *zap.Logger, webhookSecret string, skipWebhookVerification bool, environment string) *BridgeWebhookHandler {
+	// Security fix: Never allow skipping verification in production
+	if strings.EqualFold(environment, "production") && skipWebhookVerification {
+		logger.Error("SECURITY VIOLATION: Attempted to skip webhook verification in production - forcing verification ON")
+		skipWebhookVerification = false
+	}
+
+	// Log warning if verification is being skipped
+	if skipWebhookVerification {
+		logger.Warn("⚠️  INSECURE MODE: Webhook signature verification is DISABLED",
+			zap.String("environment", environment),
+			zap.String("warning", "This should only be used in local development"))
+	}
+
 	return &BridgeWebhookHandler{
 		service:                 service,
 		logger:                  logger,
 		webhookSecret:           webhookSecret,
 		skipWebhookVerification: skipWebhookVerification,
+		environment:             environment,
 	}
 }
 
@@ -229,7 +245,8 @@ func (h *BridgeWebhookHandler) handleTransferEvent(c *gin.Context, payload Bridg
 		if amountStr := getStringField(payload.EventObject, "amount"); amountStr != "" {
 			amount, _ = decimal.NewFromString(amountStr)
 		}
-		if err := h.service.ProcessTransferCompleted(c, transferID, amount); err != nil {
+		customerID := getStringField(payload.EventObject, "customer_id")
+		if err := h.service.ProcessTransferCompleted(c, transferID, customerID, amount); err != nil {
 			h.logger.Error("Failed to process transfer completed", zap.Error(err))
 		}
 	case "failed", "returned":
@@ -506,7 +523,8 @@ func (h *BridgeWebhookHandler) handleTransferCompleted(c *gin.Context, payload B
 		}
 	}
 
-	if err := h.service.ProcessTransferCompleted(c, transferID, amount); err != nil {
+	customerID := getStringField(payload.EventObject, "customer_id")
+	if err := h.service.ProcessTransferCompleted(c, transferID, customerID, amount); err != nil {
 		h.logger.Error("Failed to process transfer completed",
 			zap.String("transfer_id", transferID),
 			zap.Error(err))
@@ -674,7 +692,7 @@ func (h *BridgeWebhookHandler) handleCardStatusChanged(c *gin.Context, payload B
 func (h *BridgeWebhookHandler) verifySignature(signature string, body []byte) bool {
 	if h.webhookSecret == "" {
 		if h.skipWebhookVerification {
-			h.logger.Warn("Bridge webhook public key not configured - SKIPPING VERIFICATION (development mode)")
+			h.logger.Warn("⚠️  INSECURE: Bridge webhook verification disabled - no secret configured")
 			return true
 		}
 		h.logger.Error("Bridge webhook public key not configured - rejecting webhook for security")
@@ -838,12 +856,14 @@ type BridgeWebhookServiceImpl struct {
 	customerService       BridgeCustomerProcessor
 	cardService           BridgeCardProcessor
 	notifier              BridgeWebhookNotifier
+	userRepo              UserRepositoryForCustomer
 	logger                *zap.Logger
 }
 
 // BridgeVirtualAccountProcessor processes virtual account events
 type BridgeVirtualAccountProcessor interface {
 	ProcessFiatDeposit(ctx *gin.Context, event *BridgeDepositEvent) error
+	ProcessCryptoDeposit(ctx context.Context, userID uuid.UUID, transferID string, amount decimal.Decimal) error
 }
 
 // BridgeCustomerProcessor processes customer events
@@ -871,6 +891,7 @@ func NewBridgeWebhookService(
 	customerService BridgeCustomerProcessor,
 	cardService BridgeCardProcessor,
 	notifier BridgeWebhookNotifier,
+	userRepo UserRepositoryForCustomer,
 	logger *zap.Logger,
 ) *BridgeWebhookServiceImpl {
 	return &BridgeWebhookServiceImpl{
@@ -878,6 +899,7 @@ func NewBridgeWebhookService(
 		customerService:       customerService,
 		cardService:           cardService,
 		notifier:              notifier,
+		userRepo:              userRepo,
 		logger:                logger,
 	}
 }
@@ -886,9 +908,30 @@ func (s *BridgeWebhookServiceImpl) ProcessFiatDeposit(ctx *gin.Context, event *B
 	return s.virtualAccountService.ProcessFiatDeposit(ctx, event)
 }
 
-func (s *BridgeWebhookServiceImpl) ProcessTransferCompleted(ctx *gin.Context, transferID string, amount decimal.Decimal) error {
-	s.logger.Info("Transfer completed", zap.String("transfer_id", transferID), zap.String("amount", amount.String()))
-	return nil
+func (s *BridgeWebhookServiceImpl) ProcessTransferCompleted(ctx *gin.Context, transferID string, customerID string, amount decimal.Decimal) error {
+	s.logger.Info("Transfer completed", zap.String("transfer_id", transferID), zap.String("customer_id", customerID), zap.String("amount", amount.String()))
+	if s.virtualAccountService == nil {
+		s.logger.Warn("Virtual account service not configured, skipping crypto deposit", zap.String("transfer_id", transferID))
+		return nil
+	}
+	if customerID == "" {
+		s.logger.Error("Empty customer_id in transfer webhook", zap.String("transfer_id", transferID))
+		return fmt.Errorf("empty customer_id for transfer %s", transferID)
+	}
+	if !amount.GreaterThan(decimal.Zero) {
+		s.logger.Error("Invalid amount in transfer webhook", zap.String("transfer_id", transferID), zap.String("amount", amount.String()))
+		return fmt.Errorf("invalid amount %s for transfer %s", amount.String(), transferID)
+	}
+	user, err := s.userRepo.GetByBridgeCustomerID(ctx, customerID)
+	if err != nil {
+		s.logger.Error("Failed to look up user for Bridge customer", zap.String("customer_id", customerID), zap.Error(err))
+		return fmt.Errorf("look up user for customer %s: %w", customerID, err)
+	}
+	if user == nil {
+		s.logger.Warn("No user found for Bridge customer ID", zap.String("customer_id", customerID))
+		return nil
+	}
+	return s.virtualAccountService.ProcessCryptoDeposit(ctx, user.ID, transferID, amount)
 }
 
 func (s *BridgeWebhookServiceImpl) ProcessCustomerStatusChanged(ctx *gin.Context, customerID string, status string) error {
