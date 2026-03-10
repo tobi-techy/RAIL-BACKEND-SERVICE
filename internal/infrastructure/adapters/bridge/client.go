@@ -352,6 +352,24 @@ func (c *Client) ListTransfers(ctx context.Context, customerID string) (*ListTra
 	return &resp, nil
 }
 
+// CreateLiquidationAddress creates a liquidation address for a customer
+func (c *Client) CreateLiquidationAddress(ctx context.Context, customerID string, req *CreateLiquidationAddressRequest) (*LiquidationAddress, error) {
+	var la LiquidationAddress
+	if err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v0/customers/%s/liquidation_addresses", url.PathEscape(customerID)), req, &la); err != nil {
+		return nil, fmt.Errorf("create liquidation address failed: %w", err)
+	}
+	return &la, nil
+}
+
+// ListLiquidationAddresses lists liquidation addresses for a customer
+func (c *Client) ListLiquidationAddresses(ctx context.Context, customerID string) (*ListLiquidationAddressesResponse, error) {
+	var resp ListLiquidationAddressesResponse
+	if err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v0/customers/%s/liquidation_addresses", url.PathEscape(customerID)), nil, &resp); err != nil {
+		return nil, fmt.Errorf("list liquidation addresses failed: %w", err)
+	}
+	return &resp, nil
+}
+
 // Ping tests connectivity to the Bridge API
 func (c *Client) Ping(ctx context.Context) error {
 	// Use list customers with limit 1 as a health check
