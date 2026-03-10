@@ -61,11 +61,10 @@ type (
 	EnhancedSecurityHandlers = admin.EnhancedSecurityHandlers  // 2FA and session handlers
 
 	// Webhooks
-	WebhookHandlers        = webhooks.WebhookHandlers
-	BridgeWebhookHandler   = webhooks.BridgeWebhookHandler
-	CircleWebhookHandler   = webhooks.CircleWebhookHandler
-	AlpacaWebhookHandlers  = webhooks.AlpacaWebhookHandlers
-	BridgeKYCHandlers      = webhooks.BridgeKYCHandlers
+	WebhookHandlers       = webhooks.WebhookHandlers
+	BridgeWebhookHandler  = webhooks.BridgeWebhookHandler
+	AlpacaWebhookHandlers = webhooks.AlpacaWebhookHandlers
+	BridgeKYCHandlers     = webhooks.BridgeKYCHandlers
 
 	// Security
 	SecurityEnhancedHandlers = security.SecurityEnhancedHandlers
@@ -142,11 +141,10 @@ var (
 
 // Webhooks constructors
 var (
-	NewWebhookHandlers        = webhooks.NewWebhookHandlers
-	NewBridgeWebhookHandler   = webhooks.NewBridgeWebhookHandler
-	NewCircleWebhookHandler   = webhooks.NewCircleWebhookHandler
-	NewAlpacaWebhookHandlers  = webhooks.NewAlpacaWebhookHandlers
-	NewBridgeKYCHandlers      = webhooks.NewBridgeKYCHandlers
+	NewWebhookHandlers       = webhooks.NewWebhookHandlers
+	NewBridgeWebhookHandler  = webhooks.NewBridgeWebhookHandler
+	NewAlpacaWebhookHandlers = webhooks.NewAlpacaWebhookHandlers
+	NewBridgeKYCHandlers     = webhooks.NewBridgeKYCHandlers
 )
 
 // Security constructors (device/IP/withdrawal security features)

@@ -5,80 +5,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
-	"github.com/rail-service/rail_service/internal/infrastructure/circle"
 	"github.com/rail-service/rail_service/pkg/circuitbreaker"
 	"go.uber.org/zap"
 )
-
-// CircleClient wraps Circle client with circuit breaker
-type CircleClient struct {
-	client *circle.Client
-	cb     *circuitbreaker.CircuitBreaker
-	logger *zap.Logger
-}
-
-// NewCircleClient creates a new Circle client with circuit breaker
-func NewCircleClient(client *circle.Client, logger *zap.Logger) *CircleClient {
-	cb := circuitbreaker.New(circuitbreaker.Config{
-		MaxRequests:      10,
-		Interval:         time.Minute,
-		Timeout:          time.Second * 30,
-		FailureThreshold: 5,
-		SuccessThreshold: 3,
-		OnStateChange: func(from, to circuitbreaker.State) {
-			logger.Info("Circle circuit breaker state changed",
-				zap.String("from", from.String()),
-				zap.String("to", to.String()),
-			)
-		},
-	})
-
-	return &CircleClient{
-		client: client,
-		cb:     cb,
-		logger: logger,
-	}
-}
-
-// GenerateDepositAddress with circuit breaker protection
-func (c *CircleClient) GenerateDepositAddress(ctx context.Context, chain entities.WalletChain, userID uuid.UUID) (interface{}, error) {
-	var result interface{}
-	var err error
-
-	cbErr := c.cb.Call(func() error {
-		result, err = c.client.GenerateDepositAddress(ctx, chain, userID)
-		return err
-	})
-
-	if cbErr != nil {
-		c.logger.Error("Circuit breaker prevented Circle API call", zap.Error(cbErr))
-		return nil, fmt.Errorf("circuit breaker open: %w", cbErr)
-	}
-
-	return result, err
-}
-
-// GetWalletBalances with circuit breaker protection
-func (c *CircleClient) GetWalletBalances(ctx context.Context, walletID string, tokenAddress ...string) (interface{}, error) {
-	var result interface{}
-	var err error
-
-	cbErr := c.cb.Call(func() error {
-		result, err = c.client.GetWalletBalances(ctx, walletID, tokenAddress...)
-		return err
-	})
-
-	if cbErr != nil {
-		c.logger.Error("Circuit breaker prevented Circle API call", zap.Error(cbErr))
-		return nil, fmt.Errorf("circuit breaker open: %w", cbErr)
-	}
-
-	return result, err
-}
 
 // AlpacaClient wraps Alpaca client with circuit breaker
 type AlpacaClient struct {

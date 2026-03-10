@@ -107,3 +107,4 @@ postman_collection_auto_generated.json
 
 # Air (hot reload)
 tmp/
+dump.rdb
