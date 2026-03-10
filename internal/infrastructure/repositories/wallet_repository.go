@@ -715,15 +715,21 @@ func (r *WalletRepository) CountByStatus(ctx context.Context, status entities.Wa
 	return count, nil
 }
 
-// GetAllActiveWallets returns all wallets with active status and a custody wallet ID
+// GetAllActiveWallets returns all wallets with active status and a custody wallet ID.
+// Uses UNION ALL so each branch can use its own index rather than a full-table OR scan.
 func (r *WalletRepository) GetAllActiveWallets(ctx context.Context) ([]*entities.ManagedWallet, error) {
 	query := `
-		SELECT id, user_id, wallet_set_id, circle_wallet_id, COALESCE(bridge_wallet_id, '') AS bridge_wallet_id, chain, 
+		SELECT id, user_id, wallet_set_id, circle_wallet_id, COALESCE(bridge_wallet_id, '') AS bridge_wallet_id, chain,
 		       address, account_type, status, created_at, updated_at
-		FROM managed_wallets 
+		FROM managed_wallets
+		WHERE status = 'active' AND bridge_wallet_id IS NOT NULL AND bridge_wallet_id != ''
+		UNION ALL
+		SELECT id, user_id, wallet_set_id, circle_wallet_id, COALESCE(bridge_wallet_id, '') AS bridge_wallet_id, chain,
+		       address, account_type, status, created_at, updated_at
+		FROM managed_wallets
 		WHERE status = 'active'
-		  AND ((bridge_wallet_id IS NOT NULL AND bridge_wallet_id != '')
-		       OR (circle_wallet_id IS NOT NULL AND circle_wallet_id != ''))
+		  AND (bridge_wallet_id IS NULL OR bridge_wallet_id = '')
+		  AND circle_wallet_id IS NOT NULL AND circle_wallet_id != ''
 		ORDER BY created_at ASC`
 
 	rows, err := r.db.QueryContext(ctx, query)

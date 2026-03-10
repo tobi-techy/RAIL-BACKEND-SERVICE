@@ -1191,15 +1191,23 @@ func scopedWithdrawalIdempotencyKey(userID uuid.UUID, flow string, clientKey str
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(name)).String()
 }
 
-// VerifyBankAccount marks a bank account as verified after successful withdrawal
-// This should be called when a fiat withdrawal completes successfully
-func (s *WithdrawalService) VerifyBankAccount(ctx context.Context, bankAccountID uuid.UUID) error {
+// VerifyBankAccount marks a bank account as verified after successful withdrawal.
+// userID must match the account owner to prevent IDOR.
+func (s *WithdrawalService) VerifyBankAccount(ctx context.Context, userID, bankAccountID uuid.UUID) error {
 	bankAccount, err := s.bankAccountRepo.GetByID(ctx, bankAccountID)
 	if err != nil {
 		return fmt.Errorf("failed to get bank account: %w", err)
 	}
 	if bankAccount == nil {
 		return fmt.Errorf("bank account not found")
+	}
+
+	if bankAccount.UserID != userID {
+		s.logger.Error("VerifyBankAccount: ownership mismatch",
+			"requesting_user_id", userID.String(),
+			"account_owner_id", bankAccount.UserID.String(),
+			"bank_account_id", bankAccountID.String())
+		return fmt.Errorf("unauthorized: bank account does not belong to user")
 	}
 
 	if bankAccount.IsVerified {
@@ -1214,6 +1222,7 @@ func (s *WithdrawalService) VerifyBankAccount(ctx context.Context, bankAccountID
 	}
 
 	s.logger.Info("Bank account verified after successful withdrawal",
+		"user_id", userID.String(),
 		"bank_account_id", bankAccountID.String())
 	return nil
 }

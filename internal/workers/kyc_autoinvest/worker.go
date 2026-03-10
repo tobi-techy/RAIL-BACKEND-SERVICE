@@ -127,16 +127,14 @@ func (w *Worker) run(ctx context.Context) {
 
 	triggered := 0
 	for _, candidate := range candidates {
-		// Bucket by UTC date + balance snapshot so a new deposit on the same day
-		// produces a distinct correlation ID and gets invested immediately.
-		dateBucket := time.Now().UTC().Format("2006-01-02")
-		balanceBucket := candidate.StashBalance.StringFixed(2)
+		// Nanosecond-precision timestamp ensures uniqueness across concurrent workers
+		// while still allowing same-day re-investment after new deposits arrive.
+		timestampBucket := time.Now().UTC().Format("2006-01-02T15:04:05.000000000")
 		correlationID := fmt.Sprintf(
-			"kyc-autoinvest:%s:%s:%s:%s",
+			"kyc-autoinvest:%s:%s:%s",
 			candidate.UserID.String(),
 			candidate.StashAccountID.String(),
-			dateBucket,
-			balanceBucket,
+			timestampBucket,
 		)
 
 		if err := w.autoInvestService.TriggerAutoInvestment(ctx, autoinvest.TriggerRequest{
