@@ -42,11 +42,9 @@ func DefaultWebhookSecurityConfig() WebhookSecurityConfig {
 func defaultWebhookIPWhitelists() map[string][]string {
 	return map[string][]string{
 		// Circle does not publish a fixed IP range — rely on signature verification instead.
-		// Bridge webhook IPs (example - verify with Bridge docs)
-		"bridge": {
-			"34.102.136.180/32", // Bridge production
-			"35.186.224.25/32",  // Bridge production
-		},
+		// Bridge webhook IP ranges are not guaranteed stable across environments.
+		// Rely on provider signature verification and replay protection.
+		"bridge": {},
 		// Alpaca does not publish a fixed IP range — rely on signature verification instead.
 		// Remove this entry and ensure ALPACA_WEBHOOK_SECRET is set for HMAC validation.
 		"alpaca": {},
@@ -264,6 +262,7 @@ func extractSignature(c *gin.Context) string {
 		"Stripe-Signature",
 		"X-Circle-Signature",
 		"X-Bridge-Signature",
+		"Bridge-Signature",
 		"X-Alpaca-Signature",
 	}
 	for _, h := range headers {
@@ -392,7 +391,7 @@ func WebhookSecurityWithRedisV8(
 
 				eventID, nonce, _ := security.ExtractWebhookMetadata(body)
 				replayKey := buildWebhookReplayKey(provider, c.Request.URL.Path, signature, eventID, nonce, body)
-				ok, err := redisClient.SetNX(ctx, replayKey, "1", 10*time.Minute).Result()
+				ok, err := redisClient.SetNX(ctx, replayKey, "1", 72*time.Hour).Result()
 				if err != nil {
 					logger.Error("Webhook replay check failed (v8 path); failing open", zap.Error(err))
 				} else if !ok {

@@ -67,12 +67,12 @@ type PortfolioRepository interface {
 // Portfolio represents user portfolio information
 // All monetary values are in minor units (cents): 1050 = $10.50
 type Portfolio struct {
-	UserID        uuid.UUID           `json:"user_id"`
-	TotalValue    int64               `json:"total_value"`    // Minor units (cents)
-	CashBalance   int64               `json:"cash_balance"`   // Minor units (cents)
-	Holdings      []*Holding          `json:"holdings"`
-	Performance   *PerformanceMetrics `json:"performance"`
-	LastUpdated   time.Time           `json:"last_updated"`
+	UserID      uuid.UUID           `json:"user_id"`
+	TotalValue  int64               `json:"total_value"`  // Minor units (cents)
+	CashBalance int64               `json:"cash_balance"` // Minor units (cents)
+	Holdings    []*Holding          `json:"holdings"`
+	Performance *PerformanceMetrics `json:"performance"`
+	LastUpdated time.Time           `json:"last_updated"`
 }
 
 // Holding represents a user's position in an asset
@@ -94,7 +94,7 @@ const QuantityScale int64 = 1000000
 type Transaction struct {
 	ID        uuid.UUID `json:"id"`
 	UserID    uuid.UUID `json:"user_id"`
-	Type      string    `json:"type"`   // buy, sell, dividend, etc.
+	Type      string    `json:"type"` // buy, sell, dividend, etc.
 	Symbol    string    `json:"symbol"`
 	Quantity  int64     `json:"quantity"` // Micro-units (1000000 = 1.0 share)
 	Price     int64     `json:"price"`    // Minor units (cents)
@@ -105,13 +105,13 @@ type Transaction struct {
 // PerformanceMetrics represents portfolio performance data
 // Return values are in basis points (100 = 1.00%)
 type PerformanceMetrics struct {
-	TotalReturn       int64     `json:"total_return"`        // Basis points (100 = 1%)
-	DayReturn         int64     `json:"day_return"`          // Basis points
-	WeekReturn        int64     `json:"week_return"`         // Basis points
-	MonthReturn       int64     `json:"month_return"`        // Basis points
-	YearReturn        int64     `json:"year_return"`         // Basis points
-	VolatilityPercent int64     `json:"volatility_percent"`  // Basis points
-	SharpeRatio       int64     `json:"sharpe_ratio"`        // Scaled by 100 (150 = 1.50)
+	TotalReturn       int64     `json:"total_return"`       // Basis points (100 = 1%)
+	DayReturn         int64     `json:"day_return"`         // Basis points
+	WeekReturn        int64     `json:"week_return"`        // Basis points
+	MonthReturn       int64     `json:"month_return"`       // Basis points
+	YearReturn        int64     `json:"year_return"`        // Basis points
+	VolatilityPercent int64     `json:"volatility_percent"` // Basis points
+	SharpeRatio       int64     `json:"sharpe_ratio"`       // Scaled by 100 (150 = 1.50)
 	LastCalculated    time.Time `json:"last_calculated"`
 }
 
@@ -120,7 +120,10 @@ type DepositRepository interface {
 	Create(ctx context.Context, deposit *entities.Deposit) error
 	GetByID(ctx context.Context, id uuid.UUID) (*entities.Deposit, error)
 	GetByOffRampTxID(ctx context.Context, txID string) (*entities.Deposit, error)
+	GetByIdempotencyKey(ctx context.Context, idempotencyKey string) (*entities.Deposit, error)
 	Update(ctx context.Context, deposit *entities.Deposit) error
+	UpdateStatus(ctx context.Context, id uuid.UUID, status string, confirmedAt *time.Time) error
+	Delete(ctx context.Context, id uuid.UUID) error
 	ListByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.Deposit, error)
 }
 

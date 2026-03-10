@@ -34,6 +34,11 @@ type BalanceProvider interface {
 	GetSpendBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
 }
 
+// WalletLookup provides wallet lookup for finding Bridge wallet IDs
+type WalletLookup interface {
+	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.ManagedWallet, error)
+}
+
 // TransferExecutor executes the actual balance transfer
 type TransferExecutor interface {
 	TransferBetweenUsers(ctx context.Context, fromUserID, toUserID uuid.UUID, amount decimal.Decimal, description string) error
@@ -60,15 +65,30 @@ type NotificationSender interface {
 	SendP2PExpired(ctx context.Context, senderID uuid.UUID, identifier string, amount decimal.Decimal) error
 }
 
+// BridgeOfframp sends USDC to a recipient's bank account via Bridge
+type BridgeOfframp interface {
+	CreateRecipient(ctx context.Context, req map[string]interface{}) (string, error)
+	InitiateTransfer(ctx context.Context, req map[string]interface{}) (map[string]interface{}, error)
+}
+
+// ClaimToBankRequest holds the recipient's bank details for a no-app claim
+type ClaimToBankRequest struct {
+	AccountHolderName string
+	RoutingNumber     string
+	AccountNumber     string
+}
+
 // Service handles P2P transfer operations
 type Service struct {
-	repo         Repository
-	userLookup   UserLookup
-	userUpdater  UserUpdater
-	balance      BalanceProvider
-	transfer     TransferExecutor
-	notification NotificationSender
-	logger       *zap.Logger
+	repo           Repository
+	userLookup     UserLookup
+	userUpdater    UserUpdater
+	balance        BalanceProvider
+	walletLookup   WalletLookup
+	transfer       TransferExecutor
+	notification   NotificationSender
+	bridgeOfframp  BridgeOfframp
+	logger         *zap.Logger
 }
 
 // NewService creates a new P2P service
@@ -90,9 +110,19 @@ func NewService(
 	}
 }
 
+// SetBridgeOfframp wires the Bridge offramp adapter (optional — enables bank claim flow)
+func (s *Service) SetBridgeOfframp(b BridgeOfframp) {
+	s.bridgeOfframp = b
+}
+
 // SetUserUpdater sets the user updater (for RailTag operations)
 func (s *Service) SetUserUpdater(updater UserUpdater) {
 	s.userUpdater = updater
+}
+
+// SetWalletLookup sets the wallet lookup (required for bank claim flow)
+func (s *Service) SetWalletLookup(w WalletLookup) {
+	s.walletLookup = w
 }
 
 var (
@@ -334,6 +364,143 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2
 	}, nil
 }
 
+// ClaimInfo is returned to the claim web page before the recipient submits bank details
+type ClaimInfo struct {
+	Amount     decimal.Decimal
+	Currency   string
+	SenderName string
+	Note       *string
+}
+
+// GetClaimInfo returns public info about a pending transfer for the claim page
+func (s *Service) GetClaimInfo(ctx context.Context, token string) (*ClaimInfo, error) {
+	transfer, err := s.repo.GetByClaimToken(ctx, token)
+	if err != nil {
+		return nil, fmt.Errorf("transfer not found")
+	}
+	if !transfer.IsPending() {
+		return nil, fmt.Errorf("transfer is not claimable (status: %s)", transfer.Status)
+	}
+	if transfer.IsExpired() {
+		return nil, fmt.Errorf("transfer has expired")
+	}
+
+	sender, _ := s.userLookup.GetByID(ctx, transfer.SenderID)
+	senderName := "Someone"
+	if sender != nil && sender.FirstName != nil {
+		senderName = *sender.FirstName
+	}
+	return &ClaimInfo{
+		Amount:     transfer.Amount,
+		Currency:   transfer.Currency,
+		SenderName: senderName,
+		Note:       transfer.Note,
+	}, nil
+}
+
+// ClaimToBank pays out a pending transfer directly to the recipient's bank via Bridge.
+// No Rail account is required — the recipient just provides their bank details.
+func (s *Service) ClaimToBank(ctx context.Context, token string, req ClaimToBankRequest) error {
+	if s.bridgeOfframp == nil {
+		return fmt.Errorf("bank claim not available")
+	}
+
+	transfer, err := s.repo.GetByClaimToken(ctx, token)
+	if err != nil {
+		return fmt.Errorf("transfer not found")
+	}
+	if !transfer.IsPending() {
+		return fmt.Errorf("transfer is not claimable (status: %s)", transfer.Status)
+	}
+	if transfer.IsExpired() {
+		return fmt.Errorf("transfer has expired")
+	}
+
+	// Validate sender still has sufficient balance
+	balance, err := s.balance.GetSpendBalance(ctx, transfer.SenderID)
+	if err != nil {
+		return fmt.Errorf("failed to verify sender balance: %w", err)
+	}
+	if balance.LessThan(transfer.Amount) {
+		return fmt.Errorf("sender has insufficient balance")
+	}
+
+	// Resolve sender's Bridge wallet ID
+	sourceWalletID, err := s.senderBridgeWalletID(ctx, transfer.SenderID)
+	if err != nil {
+		return fmt.Errorf("could not resolve sender wallet: %w", err)
+	}
+
+	// Register the recipient's bank account with Bridge
+	recipientID, err := s.bridgeOfframp.CreateRecipient(ctx, map[string]interface{}{
+		"account_holder_name": strings.TrimSpace(req.AccountHolderName),
+		"routing_number":      strings.ReplaceAll(strings.TrimSpace(req.RoutingNumber), " ", ""),
+		"account_number":      strings.ReplaceAll(strings.TrimSpace(req.AccountNumber), " ", ""),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to register bank account: %w", err)
+	}
+
+	// Initiate the ACH payout via Bridge (USDC → USD ACH)
+	_, err = s.bridgeOfframp.InitiateTransfer(ctx, map[string]interface{}{
+		"amount":           transfer.Amount.StringFixed(2),
+		"recipient_id":     recipientID,
+		"source_wallet_id": sourceWalletID,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initiate bank transfer: %w", err)
+	}
+
+	// Debit the sender's ledger balance
+	desc := "P2P bank claim"
+	if transfer.Note != nil {
+		desc = fmt.Sprintf("P2P bank claim: %s", *transfer.Note)
+	}
+	if err := s.transfer.TransferBetweenUsers(ctx, transfer.SenderID, transfer.SenderID, transfer.Amount, desc); err != nil {
+		s.logger.Error("Failed to debit sender after bank claim initiation",
+			zap.String("transfer_id", transfer.ID.String()),
+			zap.Error(err))
+		// Don't fail — Bridge transfer is already in flight; ops reconciliation will catch discrepancies.
+	}
+
+	// Mark transfer claimed
+	now := time.Now()
+	transfer.Status = entities.P2PStatusClaimed
+	transfer.CompletedAt = &now
+	if err := s.repo.Update(ctx, transfer); err != nil {
+		s.logger.Error("Failed to mark P2P transfer claimed after bank claim",
+			zap.String("transfer_id", transfer.ID.String()),
+			zap.Error(err))
+	}
+
+	_ = s.notification.SendP2PClaimed(ctx, transfer.SenderID, req.AccountHolderName, transfer.Amount)
+
+	return nil
+}
+
+// senderBridgeWalletID returns the Bridge wallet ID for the sender's Solana spend wallet.
+func (s *Service) senderBridgeWalletID(ctx context.Context, senderID uuid.UUID) (string, error) {
+	if s.walletLookup == nil {
+		return "", fmt.Errorf("wallet lookup not configured")
+	}
+	wallets, err := s.walletLookup.GetByUserID(ctx, senderID)
+	if err != nil {
+		return "", err
+	}
+	// Prefer Solana wallet (primary payout rail for Bridge)
+	for _, w := range wallets {
+		if string(w.Chain) == "SOL" && w.BridgeWalletID != "" {
+			return w.BridgeWalletID, nil
+		}
+	}
+	for _, w := range wallets {
+		if w.BridgeWalletID != "" {
+			return w.BridgeWalletID, nil
+		}
+	}
+	return "", fmt.Errorf("no Bridge wallet found for user")
+}
+
 // ClaimByToken claims a pending transfer using the claim token
 func (s *Service) ClaimByToken(ctx context.Context, token string, claimerID uuid.UUID) (*entities.P2PTransfer, error) {
 	transfer, err := s.repo.GetByClaimToken(ctx, token)
@@ -509,3 +676,4 @@ func (s *Service) parseIdentifier(identifier string) (entities.P2PIdentifierType
 
 	return "", ""
 }
+

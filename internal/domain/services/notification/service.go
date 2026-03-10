@@ -42,12 +42,18 @@ type NotificationPersister interface {
 	Create(ctx context.Context, userID uuid.UUID, notifType, title, body string, data map[string]interface{}) error
 }
 
+// PushSender sends push notifications
+type PushSender interface {
+	SendToUser(ctx context.Context, userID uuid.UUID, title, body string, data map[string]interface{}) error
+}
+
 type NotificationService struct {
 	logger      *zap.Logger
 	queue       NotificationQueue
 	smsSender   SMSSender
 	emailSender EmailSenderService
 	persister   NotificationPersister
+	pushSender  PushSender
 }
 
 func NewNotificationService(logger *zap.Logger) *NotificationService {
@@ -72,6 +78,11 @@ func (s *NotificationService) SetEmailSender(sender EmailSenderService) {
 // SetPersister sets the notification persister for in-app notifications
 func (s *NotificationService) SetPersister(p NotificationPersister) {
 	s.persister = p
+}
+
+// SetPushSender sets the push notification sender (Expo Push)
+func (s *NotificationService) SetPushSender(sender PushSender) {
+	s.pushSender = sender
 }
 
 func (s *NotificationService) Send(ctx context.Context, notification *entities.Notification, prefs *entities.UserPreference) error {
@@ -138,28 +149,41 @@ func (s *NotificationService) sendInApp(ctx context.Context, notification *entit
 }
 
 func (s *NotificationService) queueNotification(ctx context.Context, userID uuid.UUID, notifType, title, body string, data map[string]interface{}) error {
-	// Always persist to in-app notification center for push notifications
-	if s.persister != nil && notifType == "push" {
+	// Always persist to in-app notification center
+	if s.persister != nil {
 		if err := s.persister.Create(ctx, userID, notifType, title, body, data); err != nil {
 			s.logger.Warn("Failed to persist notification", zap.Error(err))
 		}
 	}
 
-	if s.queue == nil {
-		s.logger.Debug("Notification queue not configured, persisted only",
-			zap.String("type", notifType),
-			zap.String("user_id", userID.String()))
+	// Send push notification via Expo Push (preferred)
+	if notifType == "push" && s.pushSender != nil {
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := s.pushSender.SendToUser(bgCtx, userID, title, body, data); err != nil {
+				s.logger.Warn("Failed to send push notification", zap.Error(err), zap.String("user_id", userID.String()))
+			}
+		}()
 		return nil
 	}
 
-	return s.queue.QueueNotification(ctx, &QueuedNotification{
-		UserID:   userID,
-		Type:     notifType,
-		Title:    title,
-		Body:     body,
-		Data:     data,
-		Priority: "normal",
-	})
+	// Fallback to queue if configured
+	if s.queue != nil {
+		return s.queue.QueueNotification(ctx, &QueuedNotification{
+			UserID:   userID,
+			Type:     notifType,
+			Title:    title,
+			Body:     body,
+			Data:     data,
+			Priority: "normal",
+		})
+	}
+
+	s.logger.Debug("No push sender or queue configured",
+		zap.String("type", notifType),
+		zap.String("user_id", userID.String()))
+	return nil
 }
 
 func (s *NotificationService) SendWeeklySummary(ctx context.Context, userID uuid.UUID, weekStart time.Time) error {
@@ -211,8 +235,16 @@ func (s *NotificationService) NotifyLargeBalanceChange(ctx context.Context, user
 }
 
 func (s *NotificationService) NotifyAllocationFailed(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID, reason string) error {
+	// Log detailed error reason internally for operations team debugging
+	s.logger.Error("Allocation failed notification",
+		zap.String("user_id", userID.String()),
+		zap.String("deposit_id", depositID.String()),
+		zap.String("amount", amount.String()),
+		zap.String("failure_reason", reason))
+
+	// Show generic user-friendly message in notification body
 	title := "Investment Allocation Requires Attention"
-	body := fmt.Sprintf("Your deposit of $%s was received but the automatic 70/30 allocation split could not be completed: %s. Please contact support or try again later.", amount.String(), reason)
+	body := fmt.Sprintf("Your deposit of $%s was received but the automatic 70/30 allocation split could not be completed. Please contact support for assistance.", amount.String())
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{
 		"type":       "allocation_failed",
 		"deposit_id": depositID.String(),

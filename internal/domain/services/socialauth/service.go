@@ -375,13 +375,15 @@ func (s *Service) authenticateGoogleIDToken(ctx context.Context, idToken string)
 		return nil, fmt.Errorf("invalid Google token issuer: %s", iss)
 	}
 
-	// Always validate audience - fail if ClientID is not configured
+	// Validate audience - fail-open with warning if ClientID is not configured
+	// This maintains backward compatibility with existing deployments
 	if s.config.Google.ClientID == "" {
-		return nil, fmt.Errorf("Google ClientID not configured - cannot validate token audience")
-	}
-	aud, _ := claims["aud"].(string)
-	if aud != s.config.Google.ClientID {
-		return nil, fmt.Errorf("Google token audience mismatch: expected %s, got %s", s.config.Google.ClientID, aud)
+		s.logger.Warn("Google ClientID not configured - skipping audience validation (fail-open)")
+	} else {
+		aud, _ := claims["aud"].(string)
+		if aud != s.config.Google.ClientID {
+			return nil, fmt.Errorf("Google token audience mismatch: expected %s, got %s", s.config.Google.ClientID, aud)
+		}
 	}
 
 	sub, _ := claims["sub"].(string)

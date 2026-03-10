@@ -385,6 +385,7 @@ type AlpacaJournalRequest struct {
 	EntryType                       string          `json:"entry_type"` // JNLC (cash), JNLS (securities)
 	Amount                          decimal.Decimal `json:"amount"`
 	Description                     string          `json:"description,omitempty"`
+	ClientTransferID                string          `json:"client_transfer_id,omitempty"` // idempotency key
 	TransmitterName                 string          `json:"transmitter_name,omitempty"`
 	TransmitterAccountNumber        string          `json:"transmitter_account_number,omitempty"`
 	TransmitterAddress              string          `json:"transmitter_address,omitempty"`

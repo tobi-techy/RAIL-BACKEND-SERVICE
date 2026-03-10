@@ -358,22 +358,16 @@ func mapBridgeCustomerStatusToOnboardingStatus(status CustomerStatus) entities.O
 
 func mapBridgePaymentRailToWalletChain(rail PaymentRail) entities.WalletChain {
 	switch rail {
-	case PaymentRailEthereum:
-		return entities.WalletChainEthereum
 	case PaymentRailPolygon:
 		return entities.WalletChainPolygon
-	case PaymentRailArbitrum:
-		return entities.WalletChainArbitrum
 	case PaymentRailBase:
 		return entities.WalletChainBase
-	case PaymentRailOptimism:
-		return entities.WalletChainOptimism
 	case PaymentRailAvalanche:
 		return entities.WalletChainAvalanche
 	case PaymentRailSolana:
 		return entities.WalletChainSolana
 	default:
-		return entities.WalletChainEthereum // Default to Ethereum
+		return entities.WalletChainPolygon // Default to Polygon
 	}
 }
 

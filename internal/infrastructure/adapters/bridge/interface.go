@@ -28,10 +28,15 @@ type BridgeClient interface {
 	GetWalletBalance(ctx context.Context, customerID, walletID string) (*WalletBalance, error)
 
 	// Cards
+	EnableCards(ctx context.Context, req *EnableCardsRequest) error
 	CreateCardAccount(ctx context.Context, customerID string, req *CreateCardAccountRequest) (*CardAccount, error)
 	GetCardAccount(ctx context.Context, customerID, cardAccountID string) (*CardAccount, error)
 	FreezeCardAccount(ctx context.Context, customerID, cardAccountID string) (*CardAccount, error)
 	UnfreezeCardAccount(ctx context.Context, customerID, cardAccountID string) (*CardAccount, error)
+
+	// External Accounts (ACH payout destinations)
+	CreateExternalAccount(ctx context.Context, customerID string, req *CreateExternalAccountRequest) (*ExternalAccount, error)
+	GetExternalAccount(ctx context.Context, customerID, externalAccountID string) (*ExternalAccount, error)
 
 	// Transfers
 	CreateTransfer(ctx context.Context, req *CreateTransferRequest) (*Transfer, error)
@@ -40,6 +45,7 @@ type BridgeClient interface {
 
 	// Health
 	Ping(ctx context.Context) error
+	Config() Config
 }
 
 // Ensure Client implements BridgeClient interface

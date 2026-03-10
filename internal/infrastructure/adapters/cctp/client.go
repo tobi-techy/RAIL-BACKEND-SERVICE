@@ -85,14 +85,25 @@ func (c *Client) GetAttestation(ctx context.Context, txHash string) (*Attestatio
 	return &resp, nil
 }
 
-// GetFees retrieves current fees for a transfer between domains
+// GetFees retrieves current fees for a transfer between domains.
+// Endpoint: GET /v2/burn/USDC/fees/{sourceDomainId}/{destDomainId}
+// Response is an array: finalityThreshold=1000 → Fast Transfer, 2000 → Standard Transfer.
 func (c *Client) GetFees(ctx context.Context, sourceDomain, destDomain uint32) (*FeesResponse, error) {
-	endpoint := fmt.Sprintf("/v2/burn/USDC/fees?sourceDomain=%d&destinationDomain=%d", sourceDomain, destDomain)
-	var resp FeesResponse
-	if err := c.doRequest(ctx, endpoint, &resp); err != nil {
+	endpoint := fmt.Sprintf("/v2/burn/USDC/fees/%d/%d", sourceDomain, destDomain)
+	var entries []FeeEntry
+	if err := c.doRequest(ctx, endpoint, &entries); err != nil {
 		return nil, fmt.Errorf("get fees failed: %w", err)
 	}
-	return &resp, nil
+	resp := &FeesResponse{}
+	for _, e := range entries {
+		switch e.FinalityThreshold {
+		case 1000:
+			resp.FastTransferFee = Fee{MinimumFee: e.MinimumFee}
+		case 2000:
+			resp.StandardFee = Fee{MinimumFee: e.MinimumFee}
+		}
+	}
+	return resp, nil
 }
 
 // GetPublicKeys retrieves attestation public keys for verification

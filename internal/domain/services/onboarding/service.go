@@ -19,18 +19,19 @@ const onboardingBridgeRequestTimeout = 10 * time.Second
 
 // Service handles onboarding operations - user creation, KYC flow, wallet provisioning
 type Service struct {
-	userRepo            UserRepository
-	onboardingFlowRepo  OnboardingFlowRepository
-	kycSubmissionRepo   KYCSubmissionRepository
-	walletService       WalletService
-	emailService        EmailService
-	auditService        AuditService
-	bridgeAdapter       BridgeAdapter
-	alpacaAdapter       AlpacaAdapter
-	allocationService   AllocationService
-	p2pService          P2PService
-	logger              *zap.Logger
-	defaultWalletChains []entities.WalletChain
+	userRepo              UserRepository
+	onboardingFlowRepo    OnboardingFlowRepository
+	kycSubmissionRepo     KYCSubmissionRepository
+	walletService         WalletService
+	emailService          EmailService
+	auditService          AuditService
+	bridgeAdapter         BridgeAdapter
+	alpacaAdapter         AlpacaAdapter
+	allocationService     AllocationService
+	p2pService            P2PService
+	virtualAccountService VirtualAccountService
+	logger                *zap.Logger
+	defaultWalletChains   []entities.WalletChain
 }
 
 // Repository interfaces
@@ -96,6 +97,11 @@ type P2PService interface {
 	ClaimPendingForUser(ctx context.Context, userID uuid.UUID, email, phone string) (int, error)
 }
 
+// VirtualAccountService interface for auto-provisioning virtual accounts on KYC approval
+type VirtualAccountService interface {
+	ProvisionVirtualAccounts(ctx context.Context, userID uuid.UUID, bridgeCustomerID string, currencies []string) error
+}
+
 // NewService creates a new onboarding service
 func NewService(
 	userRepo UserRepository,
@@ -135,6 +141,11 @@ func (s *Service) SetAllocationService(allocationService AllocationService) {
 // SetP2PService sets the P2P service (used to resolve circular dependency)
 func (s *Service) SetP2PService(p2pService P2PService) {
 	s.p2pService = p2pService
+}
+
+// SetVirtualAccountService sets the virtual account service for auto-provisioning on KYC approval
+func (s *Service) SetVirtualAccountService(virtualAccountService VirtualAccountService) {
+	s.virtualAccountService = virtualAccountService
 }
 
 func normalizeDefaultWalletChains(chains []entities.WalletChain, logger *zap.Logger) []entities.WalletChain {
@@ -602,6 +613,21 @@ func (s *Service) ProcessKYCCallback(ctx context.Context, providerRef string, st
 			s.logger.Warn("Failed to mark KYC review step as completed", zap.Error(err))
 		}
 
+		// Auto-provision USD and EUR virtual accounts on KYC approval
+		if s.virtualAccountService != nil && user.BridgeCustomerID != nil && *user.BridgeCustomerID != "" {
+			currencies := []string{"USD", "EUR"}
+			if err := s.virtualAccountService.ProvisionVirtualAccounts(ctx, user.ID, *user.BridgeCustomerID, currencies); err != nil {
+				s.logger.Warn("Failed to auto-provision virtual accounts",
+					zap.Error(err),
+					zap.String("user_id", user.ID.String()))
+				// Don't fail KYC callback - virtual accounts can be created later
+			} else {
+				s.logger.Info("Auto-provisioned virtual accounts on KYC approval",
+					zap.String("user_id", user.ID.String()),
+					zap.Strings("currencies", currencies))
+			}
+		}
+
 	case entities.KYCStatusRejected:
 		if len(rejectionReasons) > 0 {
 			reason := fmt.Sprintf("KYC rejected: %v", rejectionReasons)
@@ -650,9 +676,28 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 		return nil, fmt.Errorf("failed to get user: %w", err)
 	}
 
-	status := user.KYCStatus
-	if status == "" {
-		if user.KYCSubmittedAt != nil {
+	hasSubmitted := user.KYCSubmittedAt != nil
+	status := strings.ToLower(strings.TrimSpace(user.KYCStatus))
+	if hasSubmitted && (status == string(entities.KYCStatusPending) || status == string(entities.KYCStatusProcessing)) {
+		if latest, latestErr := s.kycSubmissionRepo.GetLatestByUserID(ctx, userID); latestErr == nil &&
+			!hasRealVerificationResult(latest) {
+			// No real verification result from any provider — treat as not started.
+			hasSubmitted = false
+			status = "not_started"
+		}
+	}
+	switch status {
+	case string(entities.KYCStatusApproved),
+		string(entities.KYCStatusRejected),
+		string(entities.KYCStatusExpired):
+		// Keep terminal states as-is.
+	case string(entities.KYCStatusPending), string(entities.KYCStatusProcessing):
+		// Pending/processing should only be surfaced after a real submission.
+		if !hasSubmitted {
+			status = "not_started"
+		}
+	default:
+		if hasSubmitted {
 			status = string(entities.KYCStatusPending)
 		} else {
 			status = "not_started"
@@ -664,8 +709,10 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 	nextSteps := []string{}
 
 	switch kycStatus {
+	default:
+		nextSteps = append(nextSteps, "Complete KYC verification to unlock advanced features")
 	case entities.KYCStatusPending:
-		if user.KYCSubmittedAt == nil {
+		if !hasSubmitted {
 			nextSteps = append(nextSteps, "Submit your KYC documents to unlock advanced features")
 		} else {
 			nextSteps = append(nextSteps, "Your documents are queued for review")
@@ -682,7 +729,7 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 		UserID:            user.ID,
 		Status:            status,
 		Verified:          kycStatus == entities.KYCStatusApproved,
-		HasSubmitted:      user.KYCSubmittedAt != nil,
+		HasSubmitted:      hasSubmitted,
 		RequiresKYC:       len(requiredFor) > 0,
 		RequiredFor:       requiredFor,
 		LastSubmittedAt:   user.KYCSubmittedAt,
@@ -693,6 +740,71 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 	}
 
 	return response, nil
+}
+
+// hasRealVerificationResult returns true if the submission has been reviewed
+// or received a real result from a verification provider (webhook, approval, rejection).
+func hasRealVerificationResult(submission *entities.KYCSubmission) bool {
+	if submission == nil {
+		return false
+	}
+	// Terminal statuses always count as real results.
+	if submission.Status == entities.KYCStatusApproved || submission.Status == entities.KYCStatusRejected {
+		return true
+	}
+	if submission.ReviewedAt != nil {
+		return true
+	}
+	// Check for Sumsub webhook data indicating real processing.
+	if submission.VerificationData != nil {
+		webhookType := getVerificationString(submission.VerificationData, "sumsub_webhook_type")
+		reviewStatus := getVerificationString(submission.VerificationData, "sumsub_review_status")
+		if webhookType != "" || reviewStatus != "" {
+			return true
+		}
+		// Check for Bridge/Alpaca real results.
+		bridgeStatus := getVerificationString(submission.VerificationData, "bridge_status")
+		alpacaStatus := getVerificationString(submission.VerificationData, "alpaca_status")
+		if bridgeStatus == "active" || alpacaStatus == "ACTIVE" || alpacaStatus == "APPROVED" {
+			return true
+		}
+	}
+	return false
+}
+
+func isSessionOnlySumsubSubmission(submission *entities.KYCSubmission) bool {
+	if submission == nil {
+		return false
+	}
+	if submission.SubmissionType != "sumsub_websdk" {
+		return false
+	}
+	if submission.ReviewedAt != nil {
+		return false
+	}
+	if submission.Status == entities.KYCStatusApproved || submission.Status == entities.KYCStatusRejected {
+		return false
+	}
+	if submission.VerificationData == nil {
+		return true
+	}
+
+	webhookType := getVerificationString(submission.VerificationData, "sumsub_webhook_type")
+	reviewStatus := getVerificationString(submission.VerificationData, "sumsub_review_status")
+	reviewAnswer := getVerificationString(submission.VerificationData, "sumsub_review_answer")
+
+	return webhookType == "" && reviewStatus == "" && reviewAnswer == ""
+}
+
+func getVerificationString(data map[string]any, key string) string {
+	if data == nil {
+		return ""
+	}
+	raw, ok := data[key]
+	if !ok || raw == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(raw))
 }
 
 // GetOnboardingProgress returns a detailed progress view of the user's onboarding
@@ -788,8 +900,11 @@ func (s *Service) ProcessWalletCreationComplete(ctx context.Context, userID uuid
 		return fmt.Errorf("failed to get user: %w", err)
 	}
 
-	if user.OnboardingStatus != entities.OnboardingStatusWalletsPending {
-		s.logger.Warn("User is not in wallets pending status",
+	// Allow wallets_pending OR kyc_approved — KYC may have been approved while wallets
+	// were still provisioning, which sets onboarding_status to kyc_approved.
+	if user.OnboardingStatus != entities.OnboardingStatusWalletsPending &&
+		user.OnboardingStatus != entities.OnboardingStatusKYCApproved {
+		s.logger.Warn("User is not in wallets_pending or kyc_approved status, skipping",
 			zap.String("userId", userID.String()),
 			zap.String("status", string(user.OnboardingStatus)))
 		return nil
@@ -814,6 +929,22 @@ func (s *Service) ProcessWalletCreationComplete(ctx context.Context, userID uuid
 		return fmt.Errorf("failed to update onboarding status: %w", err)
 	}
 
+	// If user is already KYC approved, provision virtual accounts now that wallets exist.
+	// This handles the race where Bridge approved KYC before wallets finished provisioning.
+	if user.KYCStatus == string(entities.KYCStatusApproved) &&
+		user.BridgeCustomerID != nil && *user.BridgeCustomerID != "" &&
+		s.virtualAccountService != nil {
+		s.logger.Info("Wallets ready and KYC already approved — provisioning virtual accounts",
+			zap.String("userId", userID.String()))
+		currencies := []string{"USD", "EUR"}
+		if err := s.virtualAccountService.ProvisionVirtualAccounts(ctx, userID, *user.BridgeCustomerID, currencies); err != nil {
+			// Log but don't fail — virtual account provisioning can be retried
+			s.logger.Error("Failed to provision virtual accounts after wallet creation",
+				zap.Error(err),
+				zap.String("userId", userID.String()))
+		}
+	}
+
 	// Send welcome email
 	if err := s.emailService.SendWelcomeEmail(ctx, user.Email); err != nil {
 		s.logger.Warn("Failed to send welcome email", zap.Error(err))
@@ -821,7 +952,7 @@ func (s *Service) ProcessWalletCreationComplete(ctx context.Context, userID uuid
 
 	// Log audit event
 	if err := s.auditService.LogOnboardingEvent(ctx, userID, "onboarding_completed", "user",
-		map[string]any{"status": string(entities.OnboardingStatusWalletsPending)},
+		map[string]any{"status": string(user.OnboardingStatus)},
 		map[string]any{"status": string(entities.OnboardingStatusCompleted)}); err != nil {
 		s.logger.Warn("Failed to log audit event", zap.Error(err))
 	}

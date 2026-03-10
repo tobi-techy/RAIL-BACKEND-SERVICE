@@ -80,16 +80,13 @@ func TestGetFees(t *testing.T) {
 	logger := zap.NewNop()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/v2/burn/USDC/fees", r.URL.Path)
-		assert.Equal(t, "7", r.URL.Query().Get("sourceDomain"))
-		assert.Equal(t, "5", r.URL.Query().Get("destinationDomain"))
+		assert.Equal(t, "/v2/burn/USDC/fees/7/5", r.URL.Path)
 
-		resp := FeesResponse{
-			SourceDomain:      DomainPolygon,
-			DestinationDomain: DomainSolana,
-			StandardFee:       Fee{MinimumFee: 0},
+		entries := []FeeEntry{
+			{FinalityThreshold: 1000, MinimumFee: 1},  // Fast Transfer: 1 bps
+			{FinalityThreshold: 2000, MinimumFee: 0},  // Standard Transfer: free
 		}
-		json.NewEncoder(w).Encode(resp)
+		json.NewEncoder(w).Encode(entries)
 	}))
 	defer server.Close()
 
@@ -97,8 +94,8 @@ func TestGetFees(t *testing.T) {
 	resp, err := client.GetFees(context.Background(), DomainPolygon, DomainSolana)
 
 	require.NoError(t, err)
-	assert.Equal(t, DomainPolygon, resp.SourceDomain)
-	assert.Equal(t, DomainSolana, resp.DestinationDomain)
+	assert.Equal(t, uint64(1), resp.FastTransferFee.MinimumFee)
+	assert.Equal(t, uint64(0), resp.StandardFee.MinimumFee)
 }
 
 func TestGetPublicKeys(t *testing.T) {

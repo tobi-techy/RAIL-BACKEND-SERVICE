@@ -437,3 +437,59 @@ func parseMarketNewsFilters(c *gin.Context) (entities.MarketNewsFilters, error) 
 
 	return filters, nil
 }
+
+// GetMarketStatus returns whether the US stock market is currently open.
+// GET /api/v1/market/status
+// No auth required — safe to call unauthenticated.
+func (h *MarketHandlers) GetMarketStatus(c *gin.Context) {
+	now := time.Now().UTC()
+
+	// NYSE hours: Mon–Fri 09:30–16:00 ET (UTC-5 standard, UTC-4 daylight)
+	// Use America/New_York for correct DST handling.
+	loc, _ := time.LoadLocation("America/New_York")
+	et := now.In(loc)
+
+	weekday := et.Weekday()
+	isWeekday := weekday >= time.Monday && weekday <= time.Friday
+
+	open := time.Date(et.Year(), et.Month(), et.Day(), 9, 30, 0, 0, loc)
+	close := time.Date(et.Year(), et.Month(), et.Day(), 16, 0, 0, 0, loc)
+
+	isOpen := isWeekday && et.After(open) && et.Before(close)
+
+	// Calculate next open time
+	nextOpen := nextMarketOpen(et, loc)
+
+	c.JSON(http.StatusOK, gin.H{
+		"is_open":        isOpen,
+		"next_open":      nextOpen.UTC().Format(time.RFC3339),
+		"next_open_et":   nextOpen.In(loc).Format("Mon Jan 2, 3:04 PM MST"),
+		"current_time":   now.Format(time.RFC3339),
+		"timezone":       "America/New_York",
+	})
+}
+
+func nextMarketOpen(et time.Time, loc *time.Location) time.Time {
+	// Start from tomorrow if market is closed for today or already past close
+	candidate := time.Date(et.Year(), et.Month(), et.Day(), 9, 30, 0, 0, loc)
+	open := candidate
+	close := time.Date(et.Year(), et.Month(), et.Day(), 16, 0, 0, 0, loc)
+
+	isWeekday := et.Weekday() >= time.Monday && et.Weekday() <= time.Friday
+	if isWeekday && et.Before(open) {
+		return open // market opens later today
+	}
+	if isWeekday && et.After(open) && et.Before(close) {
+		return open // market is open now — return today's open (caller checks is_open)
+	}
+
+	// Advance to next weekday
+	next := et.AddDate(0, 0, 1)
+	for {
+		if next.Weekday() >= time.Monday && next.Weekday() <= time.Friday {
+			break
+		}
+		next = next.AddDate(0, 0, 1)
+	}
+	return time.Date(next.Year(), next.Month(), next.Day(), 9, 30, 0, 0, loc)
+}

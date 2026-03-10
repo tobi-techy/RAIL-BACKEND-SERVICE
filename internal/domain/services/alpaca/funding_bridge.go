@@ -2,6 +2,7 @@ package alpaca
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"time"
 
@@ -72,8 +73,11 @@ func (b *FundingBridge) TransferFromCircleToAlpaca(ctx context.Context, userID u
 		return fmt.Errorf("Alpaca account not active: %s", account.Status)
 	}
 
+	if account.AlpacaAccountNumber == nil {
+		return fmt.Errorf("Alpaca account number not set")
+	}
 	// Create instant funding transfer
-	resp, err := b.CreateInstantFunding(ctx, account.AlpacaAccountNumber, amount)
+	resp, err := b.CreateInstantFunding(ctx, *account.AlpacaAccountNumber, amount)
 	if err != nil {
 		return fmt.Errorf("create instant funding: %w", err)
 	}
@@ -195,6 +199,8 @@ func (b *FundingBridge) ProcessFundingSettlement(ctx context.Context, transferID
 	return b.fundingRepo.UpdateStatus(ctx, transferID, "COMPLETED", &settlementID, &now)
 }
 
+func sha256sum(s string) [32]byte { return sha256.Sum256([]byte(s)) }
+
 // CreateJournal creates a journal entry to transfer funds between accounts
 func (b *FundingBridge) CreateJournal(ctx context.Context, fromAccount, toAccount string, amount decimal.Decimal, description string) (*entities.AlpacaJournalResponse, error) {
 	req := &entities.AlpacaJournalRequest{
@@ -209,4 +215,29 @@ func (b *FundingBridge) CreateJournal(ctx context.Context, fromAccount, toAccoun
 	}
 
 	return b.fundingAdapter.CreateJournal(ctx, req)
+}
+
+// JournalToAccount journals cash from the firm account into a user's Alpaca account.
+// correlationID is hashed into a stable client_transfer_id so retries are idempotent.
+func (b *FundingBridge) JournalToAccount(ctx context.Context, alpacaAccountID string, amount decimal.Decimal, correlationID string) error {
+	if b.firmAccountNo == "" {
+		return fmt.Errorf("firm_account_no not configured — set ALPACA_FIRM_ACCOUNT_NO")
+	}
+	// Derive a stable, length-safe idempotency key from the correlation ID
+	h := fmt.Sprintf("%x", sha256sum(correlationID))[:32]
+	clientTransferID := fmt.Sprintf("ai-jnl-%s", h)
+
+	req := &entities.AlpacaJournalRequest{
+		FromAccount:                     b.firmAccountNo,
+		ToAccount:                       alpacaAccountID,
+		EntryType:                       "JNLC",
+		Amount:                          amount,
+		Description:                     fmt.Sprintf("auto-invest funding %.2f USD", amount.InexactFloat64()),
+		ClientTransferID:                clientTransferID,
+		TransmitterName:                 "RAIL Platform",
+		TransmitterAccountNumber:        b.firmAccountNo,
+		TransmitterFinancialInstitution: "RAIL Treasury",
+	}
+	_, err := b.fundingAdapter.CreateJournal(ctx, req)
+	return err
 }

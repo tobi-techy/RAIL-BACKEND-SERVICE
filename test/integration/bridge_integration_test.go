@@ -16,7 +16,7 @@ func setupIntegrationClient(t *testing.T) *bridge.Client {
 	apiKey := getEnvOrSkip(t, "BRIDGE_API_KEY")
 	baseURL := getEnvOrSkip(t, "BRIDGE_BASE_URL")
 	if baseURL == "" {
-		baseURL = "https://api.bridge.xyz"
+		baseURL = "https://api.sandbox.bridge.xyz"
 	}
 
 	config := bridge.Config{

@@ -11,59 +11,75 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"strings"
 
 	"go.uber.org/zap"
 )
 
 // Service handles entity secret encryption for Circle API requests
 type Service struct {
-	logger *zap.Logger
+	logger       *zap.Logger
+	entitySecret []byte
+	publicKeyPEM string
 }
 
 // NewService creates a new EntitySecretService
-func NewService(logger *zap.Logger) *Service {
-	return &Service{
-		logger: logger,
+func NewService(logger *zap.Logger, entitySecretCiphertext, publicKeyPEM string) (*Service, error) {
+	// Validate required configuration
+	entitySecretHex := strings.TrimSpace(entitySecretCiphertext)
+	if entitySecretHex == "" {
+		return nil, errors.New("entity secret ciphertext is required")
 	}
+
+	publicKey := normalizePEM(strings.TrimSpace(publicKeyPEM))
+	if publicKey == "" {
+		return nil, errors.New("public key PEM is required")
+	}
+
+	// Decode the entity secret (32-byte hex string)
+	entitySecret, err := hex.DecodeString(entitySecretHex)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode entity secret: %w", err)
+	}
+
+	// Validate entity secret length (must be exactly 32 bytes for Circle API)
+	if len(entitySecret) != 32 {
+		return nil, fmt.Errorf("invalid entity secret length: expected 32 bytes, got %d bytes", len(entitySecret))
+	}
+
+	// Validate public key PEM format
+	block, _ := pem.Decode([]byte(publicKey))
+	if block == nil {
+		return nil, errors.New("failed to parse public key PEM: invalid PEM block")
+	}
+
+	if block.Type != "PUBLIC KEY" {
+		return nil, fmt.Errorf("invalid PEM block type: expected PUBLIC KEY, got %s", block.Type)
+	}
+
+	// Validate that the public key can be parsed
+	_, err = x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse public key: %w", err)
+	}
+
+	return &Service{
+		logger:       logger,
+		entitySecret: entitySecret,
+		publicKeyPEM: publicKey,
+	}, nil
 }
 
-const (
-	publicKeyPEM = `-----BEGIN PUBLIC KEY-----
-MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAxQsczKCXuMCgyGYff2tZ
-xR+ZUW8MBvgwmbFkGTmyoenSC6X/5o5BPPkPZTIZs/oC8ouOdAKijOYsUP3+qdc+
-mzjx2lIHnQN1TtNQ2Vm93Hk+G6vEFHDsYsb0nchk+7V5Pbki3ynOnfsV6LRbaFCf
-cgTGxHSSmKbnItW3qAiVluPPoPBx4WbQNyeS5TREv0R1NC1U311rxLGbxl+bjb73
-fFzlvSkGe2UyPs8tJnAYhqpvFOQv1SdXDvGbfwM5lBfqjCGMlkHkYYwsgLYl4R/R
-x01ncZvYjgYwXAungJMRpD9aUBSt8f4pDDlUxoXq294y7hCSi6aNGoDPqDyAaqoN
-2rSYbswGZmCz5ivJLHZNFP9qCwoKeL1l9+VlDrKs+nhRmrhCoXG0OOUdTbpkU4Ff
-oUjh4SKR8YPq7TfSGyBe9q5VAF7bEici1FkH9I7+wf41YSq47dU3UOryjbF34fXZ
-dQJ9xBEk1thTDUK8ZmIY8SQwqolSQIAKxsxOf2XoNdk3PiaXJHDTtfEiTtZFybKR
-rWFG4h0GeRPLCy52KAe+nfJmpODKeGmrGgvlA0IVeHDpqv7WNsG/o3G4JBL3odWs
-6qKoMrDhL1W/32EMPObdtUPTtAyTO3HxfXWsUavJ5KLHApoiwDx9Vn7aW5ytBvAV
-6aAk60U2+xWaJJqFlWAx6a8CAwEAAQ==
------END PUBLIC KEY-----`
-	hexEncodedEntitySecret = "dcd90b5d7bfd4f17222283d14ac0e2ce0d814df1d4f030a37065868113437fdc"
-)
-
-// GenerateEntitySecretCiphertext generates entity secret ciphertext using the static entity secret
+// GenerateEntitySecretCiphertext generates entity secret ciphertext using the configured entity secret
 func (s *Service) GenerateEntitySecretCiphertext(ctx context.Context) (string, error) {
-	// Decode the static hex-encoded 32-byte secret
-	entitySecret, err := hex.DecodeString(hexEncodedEntitySecret)
-	if err != nil {
-		return "", fmt.Errorf("failed to decode entity secret: %w", err)
-	}
-	if len(entitySecret) != 32 {
-		return "", fmt.Errorf("invalid entity secret length; must be 32 bytes")
-	}
-
-	// Parse the static public key
-	pubKey, err := s.parseRSAPublicKeyFromPEM([]byte(publicKeyPEM))
+	// Parse the public key from configuration
+	pubKey, err := s.parseRSAPublicKeyFromPEM([]byte(s.publicKeyPEM))
 	if err != nil {
 		return "", fmt.Errorf("failed to parse public key: %w", err)
 	}
 
 	// Encrypt the entity secret
-	cipher, err := s.encryptOAEP(pubKey, entitySecret)
+	cipher, err := s.encryptOAEP(pubKey, s.entitySecret)
 	if err != nil {
 		return "", fmt.Errorf("failed to encrypt entity secret: %w", err)
 	}
@@ -71,11 +87,26 @@ func (s *Service) GenerateEntitySecretCiphertext(ctx context.Context) (string, e
 	// Return base64 encoded ciphertext
 	ciphertext := base64.StdEncoding.EncodeToString(cipher)
 
-	s.logger.Debug("Generated entity secret ciphertext using static secret",
-		zap.String("entity_secret_hex", hexEncodedEntitySecret),
-		zap.String("ciphertext_length", fmt.Sprintf("%d", len(ciphertext))))
+	// SECURITY: Never log the entity secret itself
+	s.logger.Debug("Generated entity secret ciphertext",
+		zap.String("ciphertext_length", fmt.Sprintf("%d", len(ciphertext))),
+		zap.String("public_key_fingerprint", s.getPublicKeyFingerprint(pubKey)))
 
 	return ciphertext, nil
+}
+
+// getPublicKeyFingerprint generates a fingerprint of the public key for logging purposes
+// This is safe to log and can be used to verify the correct key is being used
+func (s *Service) getPublicKeyFingerprint(pubKey *rsa.PublicKey) string {
+	// Generate a simple fingerprint based on the modulus
+	// This is a non-cryptographic hash for identification only
+	modulusBytes := pubKey.N.Bytes()
+	if len(modulusBytes) < 8 {
+		return "invalid_key"
+	}
+	// Use first and last 4 bytes as fingerprint
+	fingerprint := hex.EncodeToString(modulusBytes[:4]) + "..." + hex.EncodeToString(modulusBytes[len(modulusBytes)-4:])
+	return fingerprint
 }
 
 // parseRSAPublicKeyFromPEM parses an RSA public key from PEM format.
@@ -103,4 +134,26 @@ func (s *Service) encryptOAEP(pubKey *rsa.PublicKey, message []byte) ([]byte, er
 		return nil, fmt.Errorf("rsa.EncryptOAEP failed: %w", err)
 	}
 	return ciphertext, nil
+}
+
+// normalizePEM reconstructs proper PEM formatting from a potentially single-line env var value.
+func normalizePEM(raw string) string {
+	raw = strings.ReplaceAll(raw, "\\n", "\n")
+	if strings.Contains(raw, "\n") {
+		return raw
+	}
+	// Strip header/footer, re-wrap base64 at 64 chars
+	s := raw
+	s = strings.ReplaceAll(s, "-----BEGIN PUBLIC KEY-----", "")
+	s = strings.ReplaceAll(s, "-----END PUBLIC KEY-----", "")
+	s = strings.ReplaceAll(s, " ", "")
+	var lines []string
+	for i := 0; i < len(s); i += 64 {
+		end := i + 64
+		if end > len(s) {
+			end = len(s)
+		}
+		lines = append(lines, s[i:end])
+	}
+	return "-----BEGIN PUBLIC KEY-----\n" + strings.Join(lines, "\n") + "\n-----END PUBLIC KEY-----"
 }

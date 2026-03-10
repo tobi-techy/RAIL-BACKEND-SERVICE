@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
@@ -36,7 +37,20 @@ type LedgerService interface {
 
 // OrderPlacer defines order placement operations
 type OrderPlacer interface {
-	PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal) (*entities.AlpacaOrderResponse, error)
+	PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal, clientOrderID string) (*entities.AlpacaOrderResponse, error)
+}
+
+// FundingBridge journals cash into a user's Alpaca account before orders are placed
+type FundingBridge interface {
+	// JournalToAccount transfers amount from the firm account into the user's Alpaca account (JNLC).
+	// alpacaAccountID is the Alpaca-side account UUID (not the internal DB id).
+	// correlationID is used as the idempotency key — same value on retry will not double-fund.
+	JournalToAccount(ctx context.Context, alpacaAccountID string, amount decimal.Decimal, correlationID string) error
+}
+
+// AccountLookup resolves a user's Alpaca account ID for journaling
+type AccountLookup interface {
+	GetByUserID(ctx context.Context, userID uuid.UUID) (*entities.AlpacaAccount, error)
 }
 
 // StrategyEngine defines strategy selection operations
@@ -49,12 +63,20 @@ type UserRepository interface {
 	GetUserEntityByID(ctx context.Context, id uuid.UUID) (*entities.User, error)
 }
 
+// PositionSyncer syncs Alpaca positions back to the local DB after orders are placed.
+type PositionSyncer interface {
+	SyncPositions(ctx context.Context, userID uuid.UUID) error
+}
+
 // Service handles automatic investment from stash balance
 type Service struct {
 	ledgerService  LedgerService
 	orderPlacer    OrderPlacer
 	strategyEngine StrategyEngine
 	userRepo       UserRepository
+	fundingBridge  FundingBridge
+	accountLookup  AccountLookup
+	positionSyncer PositionSyncer
 	config         Config
 	logger         *logger.Logger
 }
@@ -89,6 +111,21 @@ func (s *Service) SetStrategyEngine(engine StrategyEngine) {
 // SetUserRepository sets the user repository for eligibility checks.
 func (s *Service) SetUserRepository(userRepo UserRepository) {
 	s.userRepo = userRepo
+}
+
+// SetFundingBridge sets the funding bridge for journaling cash into Alpaca before orders.
+func (s *Service) SetFundingBridge(fb FundingBridge) {
+	s.fundingBridge = fb
+}
+
+// SetAccountLookup sets the account lookup for resolving Alpaca account IDs.
+func (s *Service) SetAccountLookup(al AccountLookup) {
+	s.accountLookup = al
+}
+
+// SetPositionSyncer sets the position syncer for post-order position refresh.
+func (s *Service) SetPositionSyncer(ps PositionSyncer) {
+	s.positionSyncer = ps
 }
 
 // TriggerRequest contains parameters for triggering auto-investment.
@@ -140,15 +177,16 @@ func (s *Service) TriggerAutoInvestment(ctx context.Context, req TriggerRequest)
 		threshold = decimal.Zero
 	}
 
-	if stashBalance.LessThanOrEqual(threshold) {
-		s.logger.Debug("Stash balance below threshold, skipping auto-invest",
+	var investableAmount decimal.Decimal
+
+	if stashBalance.GreaterThan(threshold) {
+		investableAmount = stashBalance.Sub(threshold)
+	} else {
+		s.logger.Debug("Skipping auto-invest, no investable balance",
 			"user_id", req.UserID,
-			"balance", stashBalance,
-			"threshold", threshold)
+			"stash_balance", stashBalance)
 		return nil
 	}
-
-	investableAmount := stashBalance.Sub(threshold)
 
 	s.logger.Info("Triggering auto-investment",
 		"user_id", req.UserID,
@@ -180,6 +218,27 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 		return fmt.Errorf("failed to transfer to buying power: %w", err)
 	}
 
+	// Journal cash into the user's Alpaca account so buying power is available immediately.
+	// This must happen before orders are placed — without it Alpaca rejects orders with insufficient funds.
+	if s.fundingBridge != nil && s.accountLookup != nil {
+		account, err := s.accountLookup.GetByUserID(ctx, userID)
+		if err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to resolve Alpaca account for journal: %w", err)
+		}
+		if account == nil {
+			return fmt.Errorf("user has no Alpaca account")
+		}
+		if err := s.fundingBridge.JournalToAccount(ctx, account.AlpacaAccountID, amount, correlationID); err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to journal funds to Alpaca: %w", err)
+		}
+		s.logger.Info("Journaled funds to Alpaca account",
+			"user_id", userID,
+			"alpaca_account_id", account.AlpacaAccountID,
+			"amount", amount)
+	}
+
 	// Get strategy allocation
 	strategyResult, err := s.getStrategyAllocation(ctx, userID)
 	if err != nil {
@@ -187,7 +246,9 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 			"user_id", userID,
 			"error", err)
 		// Fallback to single SPY order if strategy engine fails
-		return s.placeSingleOrder(ctx, userID, stashID, "SPY", amount, correlationID)
+		orderErr := s.placeSingleOrder(ctx, userID, stashID, "SPY", amount, correlationID)
+		s.syncPositionsAsync(userID)
+		return orderErr
 	}
 
 	s.logger.Info("Executing strategy-based auto-investment",
@@ -197,7 +258,27 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 		"total_amount", amount)
 
 	// Place orders for each allocation
-	return s.placeStrategyOrders(ctx, userID, stashID, amount, correlationID, strategyResult)
+	orderErr := s.placeStrategyOrders(ctx, userID, stashID, amount, correlationID, strategyResult)
+	s.syncPositionsAsync(userID)
+	return orderErr
+}
+
+// syncPositionsAsync triggers a position sync in the background after orders are placed.
+func (s *Service) syncPositionsAsync(userID uuid.UUID) {
+	if s.positionSyncer == nil {
+		return
+	}
+	go func() {
+		// Wait a few seconds for Alpaca sandbox to process the orders
+		time.Sleep(5 * time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := s.positionSyncer.SyncPositions(ctx, userID); err != nil {
+			s.logger.Warn("Post-order position sync failed", "user_id", userID, "error", err)
+		} else {
+			s.logger.Info("Post-order position sync complete", "user_id", userID)
+		}
+	}()
 }
 
 func (s *Service) isUserEligibleForAutoInvest(ctx context.Context, userID uuid.UUID) (bool, string, error) {
@@ -248,7 +329,8 @@ func (s *Service) placeStrategyOrders(ctx context.Context, userID, stashID uuid.
 
 	for i, alloc := range result.Allocations {
 		// Calculate amount for this allocation: totalAmount * (weight / 100)
-		allocAmount := totalAmount.Mul(alloc.Weight).Div(hundred)
+		// Truncate to 2dp — Alpaca requires notional values to max 2 decimal places
+		allocAmount := totalAmount.Mul(alloc.Weight).Div(hundred).Truncate(2)
 
 		// Skip if allocation amount is too small
 		if allocAmount.LessThan(decimal.NewFromFloat(1.0)) {
@@ -277,16 +359,16 @@ func (s *Service) placeStrategyOrders(ctx context.Context, userID, stashID uuid.
 
 // placeSingleOrder places a single market order
 func (s *Service) placeSingleOrder(ctx context.Context, userID, stashID uuid.UUID, symbol string, amount decimal.Decimal, correlationID string) error {
-	// Generate deterministic idempotency key for order
-	idempotencyKey := s.generateIdempotencyKey(userID, stashID, amount, correlationID)
+	amount = amount.Truncate(2)
+	clientOrderID := s.generateIdempotencyKey(userID, stashID, amount, correlationID)
 
-	order, createErr := s.orderPlacer.PlaceMarketOrder(ctx, userID, symbol, amount)
+	order, createErr := s.orderPlacer.PlaceMarketOrder(ctx, userID, symbol, amount, clientOrderID)
 	if createErr != nil {
 		s.logger.Error("Failed to create order",
 			"user_id", userID,
 			"symbol", symbol,
 			"amount", amount,
-			"idempotency_key", idempotencyKey,
+			"client_order_id", clientOrderID,
 			"error", createErr)
 		return fmt.Errorf("order creation failed for %s: %w", symbol, createErr)
 	}
@@ -330,7 +412,9 @@ func (s *Service) transferStashToFiatExposure(ctx context.Context, userID, stash
 	}
 
 	desc := fmt.Sprintf("Auto-invest transfer from stash %s", stashID)
-	idempotencyKey := fmt.Sprintf("autoinvest-transfer:%s:%s", stashID, correlationID)
+	// Hash the correlation ID so the idempotency key always fits varchar(100)
+	corrHash := fmt.Sprintf("%x", sha256.Sum256([]byte(correlationID)))[:16]
+	idempotencyKey := fmt.Sprintf("autoinvest-transfer:%s:%s", stashID, corrHash)
 
 	txReq := &entities.CreateTransactionRequest{
 		UserID:          &userID,
@@ -372,7 +456,8 @@ func (s *Service) transferFiatExposureToStash(ctx context.Context, userID, stash
 	}
 
 	desc := fmt.Sprintf("Auto-invest rollback to stash %s", stashID)
-	idempotencyKey := fmt.Sprintf("autoinvest-rollback:%s:%s", stashID, correlationID)
+	corrHash := fmt.Sprintf("%x", sha256.Sum256([]byte(correlationID)))[:16]
+	idempotencyKey := fmt.Sprintf("autoinvest-rollback:%s:%s", stashID, corrHash)
 
 	txReq := &entities.CreateTransactionRequest{
 		UserID:          &userID,

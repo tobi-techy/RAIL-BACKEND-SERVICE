@@ -98,7 +98,7 @@ func (r *AuthRepository) CreateUser(ctx context.Context, req *entities.RegisterR
 // GetUserByEmailForLogin retrieves a user by email for login purposes (includes password hash)
 func (r *AuthRepository) GetUserByEmailForLogin(ctx context.Context, email string) (*entities.User, error) {
 	query := `
-		SELECT id, email, phone, password_hash, auth_provider_id,
+		SELECT id, email, phone, first_name, last_name, password_hash, auth_provider_id,
 		       email_verified, phone_verified, onboarding_status, kyc_status,
 		       kyc_provider_ref, kyc_submitted_at, kyc_approved_at, kyc_rejection_reason,
 		       role, is_active, last_login_at, created_at, updated_at
@@ -108,11 +108,14 @@ func (r *AuthRepository) GetUserByEmailForLogin(ctx context.Context, email strin
 	user := &entities.User{}
 	var kycSubmittedAt, kycApprovedAt, lastLoginAt sql.NullTime
 	var kycRejectionReason, kycProviderRef sql.NullString
+	var firstName, lastName sql.NullString
 
 	err := r.db.QueryRowContext(ctx, query, email).Scan(
 		&user.ID,
 		&user.Email,
 		&user.Phone,
+		&firstName,
+		&lastName,
 		&user.PasswordHash,
 		&user.AuthProviderID,
 		&user.EmailVerified,
@@ -139,6 +142,14 @@ func (r *AuthRepository) GetUserByEmailForLogin(ctx context.Context, email strin
 	}
 
 	// Handle nullable fields
+	if firstName.Valid {
+		name := firstName.String
+		user.FirstName = &name
+	}
+	if lastName.Valid {
+		name := lastName.String
+		user.LastName = &name
+	}
 	if kycProviderRef.Valid {
 		user.KYCProviderRef = &kycProviderRef.String
 	}
@@ -161,7 +172,7 @@ func (r *AuthRepository) GetUserByEmailForLogin(ctx context.Context, email strin
 // GetUserByID retrieves a user by ID (excludes sensitive fields like password)
 func (r *AuthRepository) GetUserByID(ctx context.Context, id uuid.UUID) (*entities.User, error) {
 	query := `
-		SELECT id, email, phone, auth_provider_id,
+		SELECT id, email, phone, first_name, last_name, auth_provider_id,
 		       email_verified, phone_verified, onboarding_status, kyc_status,
 		       kyc_provider_ref, kyc_submitted_at, kyc_approved_at, kyc_rejection_reason,
 		       role, is_active, last_login_at, created_at, updated_at
@@ -171,11 +182,14 @@ func (r *AuthRepository) GetUserByID(ctx context.Context, id uuid.UUID) (*entiti
 	user := &entities.User{}
 	var kycSubmittedAt, kycApprovedAt, lastLoginAt sql.NullTime
 	var kycRejectionReason, kycProviderRef sql.NullString
+	var firstName, lastName sql.NullString
 
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
 		&user.ID,
 		&user.Email,
 		&user.Phone,
+		&firstName,
+		&lastName,
 		&user.AuthProviderID,
 		&user.EmailVerified,
 		&user.PhoneVerified,
@@ -201,6 +215,14 @@ func (r *AuthRepository) GetUserByID(ctx context.Context, id uuid.UUID) (*entiti
 	}
 
 	// Handle nullable fields
+	if firstName.Valid {
+		name := firstName.String
+		user.FirstName = &name
+	}
+	if lastName.Valid {
+		name := lastName.String
+		user.LastName = &name
+	}
 	if kycProviderRef.Valid {
 		user.KYCProviderRef = &kycProviderRef.String
 	}

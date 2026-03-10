@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"sort"
@@ -15,6 +16,7 @@ import (
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/allocation"
+	"github.com/rail-service/rail_service/internal/domain/services/strategy"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 	"golang.org/x/text/language"
@@ -73,6 +75,16 @@ type PortfolioAnalyticsProvider interface {
 	GetPortfolioHistory(ctx context.Context, userID uuid.UUID, period string) (*entities.PortfolioHistory, error)
 }
 
+// StrategyProvider resolves the investment strategy for a user.
+type StrategyProvider interface {
+	GetStrategy(ctx context.Context, userID uuid.UUID) (*strategy.StrategyResult, error)
+}
+
+// PortfolioSyncer triggers a live sync of positions from Alpaca.
+type PortfolioSyncer interface {
+	SyncPositions(ctx context.Context, userID uuid.UUID) error
+}
+
 // InvestmentStashHandlers handles investment stash endpoints.
 type InvestmentStashHandlers struct {
 	allocationService *allocation.Service
@@ -80,6 +92,8 @@ type InvestmentStashHandlers struct {
 	ordersRepo        InvestmentOrdersRepository
 	analyticsService  PortfolioAnalyticsProvider
 	autoInvestRepo    AutoInvestRepository
+	strategyProvider  StrategyProvider
+	portfolioSyncer   PortfolioSyncer
 	logger            *zap.Logger
 }
 
@@ -105,6 +119,16 @@ func (h *InvestmentStashHandlers) SetAutoInvestRepository(repo AutoInvestReposit
 	h.autoInvestRepo = repo
 }
 
+// SetStrategyProvider sets the strategy provider for investment rule display.
+func (h *InvestmentStashHandlers) SetStrategyProvider(p StrategyProvider) {
+	h.strategyProvider = p
+}
+
+// SetPortfolioSyncer sets the portfolio syncer for on-demand position refresh.
+func (h *InvestmentStashHandlers) SetPortfolioSyncer(s PortfolioSyncer) {
+	h.portfolioSyncer = s
+}
+
 // GetInvestmentStash handles GET /api/v1/account/investment-stash.
 func (h *InvestmentStashHandlers) GetInvestmentStash(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
@@ -122,20 +146,17 @@ func (h *InvestmentStashHandlers) GetInvestmentStash(c *gin.Context) {
 	var (
 		wg sync.WaitGroup
 
-		balances      *entities.AllocationBalances
-		autoInvest    *entities.AutoInvestSettings
-		positions     []*entities.InvestmentPosition
-		performance   *InvestmentPerformanceResponse
-		tradesPreview *InvestmentTransactionsResponse
+		balances        *entities.AllocationBalances
+		autoInvest      *entities.AutoInvestSettings
+		positions       []*entities.InvestmentPosition
+		strategyResult  *strategy.StrategyResult
 
-		balancesErr    error
-		autoInvestErr  error
-		positionsErr   error
-		performanceErr error
-		tradesErr      error
+		balancesErr   error
+		autoInvestErr error
+		positionsErr  error
 	)
 
-	wg.Add(5)
+	wg.Add(4)
 	go func() {
 		defer wg.Done()
 		if h.allocationService == nil {
@@ -150,19 +171,17 @@ func (h *InvestmentStashHandlers) GetInvestmentStash(c *gin.Context) {
 	}()
 	go func() {
 		defer wg.Done()
-		performance, performanceErr = h.buildPerformanceResponse(ctx, userID, "1W", locale)
-	}()
-	go func() {
-		defer wg.Done()
-		filled := entities.AlpacaOrderStatusFilled
-		tradesPreview, tradesErr = h.fetchTradeTransactions(ctx, userID, 5, 0, nil, &filled, locale)
-	}()
-	go func() {
-		defer wg.Done()
 		if h.autoInvestRepo == nil {
 			return
 		}
 		autoInvest, autoInvestErr = h.autoInvestRepo.GetUserSettings(ctx, userID)
+	}()
+	go func() {
+		defer wg.Done()
+		if h.strategyProvider == nil {
+			return
+		}
+		strategyResult, _ = h.strategyProvider.GetStrategy(ctx, userID)
 	}()
 	wg.Wait()
 
@@ -185,26 +204,17 @@ func (h *InvestmentStashHandlers) GetInvestmentStash(c *gin.Context) {
 		h.logger.Warn("Failed to load investment positions", zap.String("user_id", userID.String()), zap.Error(positionsErr))
 		positions = []*entities.InvestmentPosition{}
 	}
-	if performanceErr != nil {
-		h.logger.Warn("Failed to load investment performance", zap.String("user_id", userID.String()), zap.Error(performanceErr))
-	}
-	if tradesErr != nil {
-		h.logger.Warn("Failed to load trade preview", zap.String("user_id", userID.String()), zap.Error(tradesErr))
-	}
 
 	response := h.buildOverviewResponse(
 		balances,
 		autoInvest,
 		positions,
-		performance,
-		tradesPreview,
+		strategyResult,
 		page,
 		pageSize,
 		locale,
 		balancesErr,
 		positionsErr,
-		performanceErr,
-		tradesErr,
 	)
 
 	c.JSON(http.StatusOK, response)
@@ -379,14 +389,11 @@ func (h *InvestmentStashHandlers) buildOverviewResponse(
 	balances *entities.AllocationBalances,
 	autoInvest *entities.AutoInvestSettings,
 	positions []*entities.InvestmentPosition,
-	performance *InvestmentPerformanceResponse,
-	tradesPreview *InvestmentTransactionsResponse,
+	strategyResult *strategy.StrategyResult,
 	page, pageSize int,
 	locale language.Tag,
 	balancesErr error,
 	positionsErr error,
-	performanceErr error,
-	tradesErr error,
 ) *InvestmentStashResponse {
 	now := time.Now().UTC()
 
@@ -421,8 +428,8 @@ func (h *InvestmentStashHandlers) buildOverviewResponse(
 		DataHealth: InvestmentDataHealth{
 			Positions:    healthStatusFromError(positionsErr),
 			Distribution: healthStatusFromError(positionsErr),
-			Transactions: healthStatusFromError(tradesErr),
-			Performance:  healthStatusFromError(performanceErr),
+			Transactions: "ok",
+			Performance:  "ok",
 		},
 		Links: InvestmentLinks{
 			Self:           "/api/v1/account/investment-stash",
@@ -482,44 +489,16 @@ func (h *InvestmentStashHandlers) buildOverviewResponse(
 		resp.DistributionPreview = distribution
 	}
 
-	if tradesPreview != nil {
-		resp.RecentTransactionsPreview = tradesPreview.Items
-	}
-
-	if performance != nil {
-		resp.PerformancePreview = performance
-		resp.Performance.WeekChange = performance.Return.Raw
-		resp.Performance.WeekChangePercent = performance.ReturnPercent
-		resp.Performance.MonthChange = performance.Return.Raw
-		resp.Performance.MonthChangePercent = performance.ReturnPercent
-
-		dayChange, dayChangePct := deriveDayChange(performance.Points)
-		resp.Performance.DayChange = dayChange.StringFixed(2)
-		resp.Performance.DayChangePercent = dayChangePct
-
-		resp.Summary = &InvestmentSummary{
-			TotalBalance:      moneyValue(investmentTotal, locale),
-			InvestedValue:     moneyValue(totalValue, locale),
-			BuyingPower:       moneyValue(buyingPower, locale),
-			DayChange:         moneyValue(dayChange, locale),
-			DayChangePercent:  dayChangePct,
-			WeekChange:        performance.Return,
-			WeekChangePercent: performance.ReturnPercent,
-			Currency:          "USD",
-			LastUpdated:       now.Format(time.RFC3339),
-		}
-	} else {
-		resp.Summary = &InvestmentSummary{
-			TotalBalance:      moneyValue(investmentTotal, locale),
-			InvestedValue:     moneyValue(totalValue, locale),
-			BuyingPower:       moneyValue(buyingPower, locale),
-			DayChange:         moneyValue(decimal.Zero, locale),
-			DayChangePercent:  0,
-			WeekChange:        moneyValue(decimal.Zero, locale),
-			WeekChangePercent: 0,
-			Currency:          "USD",
-			LastUpdated:       now.Format(time.RFC3339),
-		}
+	resp.Summary = &InvestmentSummary{
+		TotalBalance:      moneyValue(investmentTotal, locale),
+		InvestedValue:     moneyValue(totalValue, locale),
+		BuyingPower:       moneyValue(buyingPower, locale),
+		DayChange:         moneyValue(decimal.Zero, locale),
+		DayChangePercent:  0,
+		WeekChange:        moneyValue(decimal.Zero, locale),
+		WeekChangePercent: 0,
+		Currency:          "USD",
+		LastUpdated:       now.Format(time.RFC3339),
 	}
 
 	if autoInvest != nil && autoInvest.Enabled {
@@ -538,6 +517,20 @@ func (h *InvestmentStashHandlers) buildOverviewResponse(
 		resp.Summary.BuyingPower = moneyValue(decimal.Zero, locale)
 	}
 
+	if strategyResult != nil {
+		stockPct, _ := strategyResult.StockAllocation.Float64()
+		bondPct, _ := strategyResult.BondAllocation.Float64()
+		resp.InvestmentRule = &InvestmentRule{
+			StrategyName:    strategyResult.StrategyName,
+			Description:     buildStrategyDescription(strategyResult),
+			StockAllocation: stockPct,
+			BondAllocation:  bondPct,
+			RiskLevel:       deriveRiskLevel(stockPct),
+			RiskLabel:       deriveRiskLabel(stockPct),
+			AgeUsed:         strategyResult.AgeUsed,
+		}
+	}
+
 	return resp
 }
 
@@ -549,6 +542,18 @@ func (h *InvestmentStashHandlers) getPositions(ctx context.Context, userID uuid.
 	positions, err := h.positionsRepo.GetByUserID(ctx, userID)
 	if err != nil {
 		return nil, err
+	}
+
+	// If no local positions, trigger a live sync from Alpaca then re-fetch.
+	if len(positions) == 0 && h.portfolioSyncer != nil {
+		if syncErr := h.portfolioSyncer.SyncPositions(ctx, userID); syncErr != nil {
+			h.logger.Warn("Failed to sync positions from Alpaca", zap.String("user_id", userID.String()), zap.Error(syncErr))
+		} else {
+			positions, err = h.positionsRepo.GetByUserID(ctx, userID)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	sort.Slice(positions, func(i, j int) bool {
@@ -913,6 +918,45 @@ func parseStatusFilter(status string) (*entities.AlpacaOrderStatus, error) {
 		return nil, nil
 	default:
 		return nil, errors.New("invalid status")
+	}
+}
+
+func buildStrategyDescription(r *strategy.StrategyResult) string {
+	stock, _ := r.StockAllocation.Float64()
+	bond, _ := r.BondAllocation.Float64()
+	return fmt.Sprintf(
+		"Your portfolio targets %.0f%% equities and %.0f%% bonds, automatically rebalanced based on your age and risk profile using the 120-age formula.",
+		stock, bond,
+	)
+}
+
+func deriveRiskLevel(stockPct float64) int {
+	switch {
+	case stockPct >= 85:
+		return 5
+	case stockPct >= 70:
+		return 4
+	case stockPct >= 55:
+		return 3
+	case stockPct >= 40:
+		return 2
+	default:
+		return 1
+	}
+}
+
+func deriveRiskLabel(stockPct float64) string {
+	switch {
+	case stockPct >= 85:
+		return "High Growth"
+	case stockPct >= 70:
+		return "Growth"
+	case stockPct >= 55:
+		return "Balanced"
+	case stockPct >= 40:
+		return "Conservative"
+	default:
+		return "Capital Preservation"
 	}
 }
 

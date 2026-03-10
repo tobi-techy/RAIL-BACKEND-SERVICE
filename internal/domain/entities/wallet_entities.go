@@ -14,24 +14,22 @@ import (
 type WalletChain string
 
 const (
-	// Circle-supported chains (testnet)
+	// Testnet chains (primary focus)
 	WalletChainSOLDevnet  WalletChain = "SOL-DEVNET"
 	WalletChainMATICAmoy  WalletChain = "MATIC-AMOY"
 	WalletChainAVAXFuji   WalletChain = "AVAX-FUJI"
+	WalletChainBASESepolia WalletChain = "BASE-SEPOLIA"
 
-	// Circle-supported chains (mainnet) - all wallets via Circle
-	WalletChainEthereum  WalletChain = "ETH"
+	// Mainnet chains
+	WalletChainSolana    WalletChain = "SOL"
 	WalletChainPolygon   WalletChain = "MATIC"
 	WalletChainAvalanche WalletChain = "AVAX"
-	WalletChainArbitrum  WalletChain = "ARB"
 	WalletChainBase      WalletChain = "BASE"
-	WalletChainOptimism  WalletChain = "OP"
-	WalletChainSolana    WalletChain = "SOL"
-	WalletChainAptos     WalletChain = "APT"
-	WalletChainNear      WalletChain = "NEAR"
-	
+
 	// USDC Token Addresses by Chain
-	USDCTokenAddressSOLDevnet = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+	USDCTokenAddressSOLDevnet  = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+	USDCTokenAddressAVAXFuji   = "0x5425890298aed601595a70AB815c96711a31Bc65"
+	USDCTokenAddressMATICAmoy  = "0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582"
 )
 
 // GetUSDCTokenAddress returns the USDC token address for the chain
@@ -39,22 +37,23 @@ func (c WalletChain) GetUSDCTokenAddress() string {
 	switch c {
 	case WalletChainSOLDevnet:
 		return USDCTokenAddressSOLDevnet
+	case WalletChainAVAXFuji:
+		return USDCTokenAddressAVAXFuji
+	case WalletChainMATICAmoy:
+		return USDCTokenAddressMATICAmoy
 	default:
 		return ""
 	}
 }
 
-// GetMainnetChains returns Circle-supported production chains
+// GetMainnetChains returns supported production chains
 func GetMainnetChains() []WalletChain {
-	return []WalletChain{
-		WalletChainEthereum, WalletChainPolygon, WalletChainAvalanche, WalletChainArbitrum,
-		WalletChainBase, WalletChainOptimism, WalletChainSolana, WalletChainAptos,
-	}
+	return []WalletChain{WalletChainSolana, WalletChainPolygon, WalletChainAvalanche, WalletChainBase}
 }
 
-// GetTestnetChains returns testnet chains
+// GetTestnetChains returns supported testnet chains
 func GetTestnetChains() []WalletChain {
-	return []WalletChain{WalletChainSOLDevnet, WalletChainMATICAmoy, WalletChainAVAXFuji}
+	return []WalletChain{WalletChainSOLDevnet, WalletChainMATICAmoy, WalletChainAVAXFuji, WalletChainBASESepolia}
 }
 
 // IsValid checks if the chain is supported
@@ -84,13 +83,9 @@ func (c WalletChain) GetChainFamily() string {
 	switch c {
 	case WalletChainSOLDevnet, WalletChainSolana:
 		return "Solana"
-	case WalletChainEthereum, WalletChainPolygon, WalletChainAvalanche, WalletChainArbitrum, WalletChainBase, WalletChainOptimism,
-		WalletChainMATICAmoy, WalletChainAVAXFuji:
+	case WalletChainPolygon, WalletChainAvalanche, WalletChainBase,
+		WalletChainMATICAmoy, WalletChainAVAXFuji, WalletChainBASESepolia:
 		return "EVM"
-	case WalletChainAptos:
-		return "Aptos"
-	case WalletChainNear:
-		return "Near"
 	default:
 		return "Unknown"
 	}
@@ -219,6 +214,11 @@ func (w *ManagedWallet) Validate() error {
 // IsReady checks if wallet is ready for use
 func (w *ManagedWallet) IsReady() bool {
 	return w.Status == WalletStatusLive && w.Address != ""
+}
+
+// GetChainFamily delegates to the chain's family lookup
+func (w *ManagedWallet) GetChainFamily() string {
+	return w.Chain.GetChainFamily()
 }
 
 // CanReceive checks if wallet can receive funds
@@ -458,6 +458,7 @@ type CircleWalletCreateRequest struct {
 	Count                  int      `json:"count,omitempty"`
 	AccountType            string   `json:"accountType"`
 	WalletSetID            string   `json:"walletSetId"`
+	RefID                  string   `json:"refId,omitempty"`
 }
 
 // CircleWalletCreateResponse represents Circle wallet creation response
@@ -698,6 +699,7 @@ type CircleTransferRequest struct {
 	TokenID                string   `json:"tokenId"`
 	Amounts                []string `json:"amounts"`
 	DestinationAddress     string   `json:"destinationAddress,omitempty"`
+	DestinationBlockchain  string   `json:"destinationBlockchain,omitempty"`
 	DestinationWalletID    string   `json:"destinationWalletId,omitempty"`
 	DestinationTag         string   `json:"destinationTag,omitempty"`
 	DestinationMemo        string   `json:"destinationMemo,omitempty"`
@@ -829,4 +831,5 @@ type CCTPTransactionStatus struct {
 	Status      string     `json:"status"` // pending, confirmed, failed
 	Chain       string     `json:"blockchain"`
 	ConfirmedAt *time.Time `json:"firstConfirmDate,omitempty"`
+	ErrorReason string     `json:"errorReason,omitempty"`
 }

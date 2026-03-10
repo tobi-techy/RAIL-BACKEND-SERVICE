@@ -30,6 +30,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/domain/services/integration"
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
+	"github.com/rail-service/rail_service/internal/domain/services/kyc"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/internal/domain/services/limits"
 	marketservice "github.com/rail-service/rail_service/internal/domain/services/market"
@@ -50,6 +51,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/cctp"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/circle"
@@ -81,20 +83,14 @@ func (a *CircleAdapter) GenerateDepositAddress(ctx context.Context, chain entiti
 // For testnet environments Circle uses explicit testnet chain identifiers.
 func mapChainToWalletChain(chain entities.Chain) entities.WalletChain {
 	switch chain {
-	case entities.ChainMATIC, entities.ChainPolygon:
+	case entities.ChainMATIC, entities.ChainMATICAmoy:
 		return entities.WalletChainMATICAmoy
-	case entities.ChainAVAX:
+	case entities.ChainAVAX, entities.ChainAVAXFuji:
 		return entities.WalletChainAVAXFuji
-	case entities.ChainSOL, entities.ChainSolana:
+	case entities.ChainSOL, entities.ChainSOLDevnet:
 		return entities.WalletChainSOLDevnet
-	case entities.ChainETH:
-		return entities.WalletChainEthereum
-	case entities.ChainARB:
-		return entities.WalletChainArbitrum
-	case entities.ChainBASE:
-		return entities.WalletChainBase
-	case entities.ChainOP:
-		return entities.WalletChainOptimism
+	case entities.ChainBASE, entities.ChainBASESepolia:
+		return entities.WalletChainBASESepolia
 	default:
 		return ""
 	}
@@ -190,6 +186,48 @@ func (a *BridgeVirtualAccountWebhookAdapter) ProcessFiatDeposit(ctx *gin.Context
 	})
 }
 
+// BridgeCardWebhookAdapter adapts domain card service to Bridge webhook card processor interface.
+type BridgeCardWebhookAdapter struct {
+	service *card.Service
+}
+
+func (a *BridgeCardWebhookAdapter) ProcessAuthorization(ctx *gin.Context, cardID string, amount decimal.Decimal, merchantName, merchantCategory string) error {
+	if a == nil || a.service == nil {
+		return fmt.Errorf("card service not configured")
+	}
+	return a.service.ProcessAuthorization(ctx.Request.Context(), cardID, amount, merchantName, merchantCategory)
+}
+
+func (a *BridgeCardWebhookAdapter) RecordTransaction(ctx *gin.Context, cardID, transactionID string, amount decimal.Decimal, merchantName, merchantCategory, status string) error {
+	if a == nil || a.service == nil {
+		return fmt.Errorf("card service not configured")
+	}
+
+	txType := "capture"
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "pending", "declined":
+		txType = "authorization"
+	case "reversed", "refunded":
+		txType = "reversal"
+	}
+
+	return a.service.RecordTransaction(ctx.Request.Context(), cardID, transactionID, txType, amount, merchantName, merchantCategory, status, nil)
+}
+
+func (a *BridgeCardWebhookAdapter) RecordDeclinedTransaction(ctx *gin.Context, cardID, transactionID, declineReason string) error {
+	if a == nil || a.service == nil {
+		return fmt.Errorf("card service not configured")
+	}
+	return a.service.RecordDeclinedTransaction(ctx.Request.Context(), cardID, transactionID, declineReason)
+}
+
+func (a *BridgeCardWebhookAdapter) SyncCardStatus(ctx *gin.Context, cardID, _ string) error {
+	if a == nil || a.service == nil {
+		return fmt.Errorf("card service not configured")
+	}
+	return a.service.SyncCardStatus(ctx.Request.Context(), cardID)
+}
+
 // WithdrawalLedgerAdapter adapts ledger.Service to withdrawal.LedgerService interface
 type WithdrawalLedgerAdapter struct {
 	ledgerService *ledger.Service
@@ -239,6 +277,56 @@ func (a *WithdrawalLedgerAdapter) CreateTransaction(ctx context.Context, userID 
 			{
 				AccountID:   systemAccount.ID,
 				EntryType:   entities.EntryTypeDebit,
+				Amount:      amount,
+				Currency:    "USDC",
+				Description: &desc,
+			},
+		},
+	}
+
+	_, err = a.ledgerService.CreateTransaction(ctx, req)
+	return err
+}
+
+func (a *WithdrawalLedgerAdapter) ReverseTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, originalTxID string, amount decimal.Decimal, metadata map[string]interface{}) error {
+	userAccount, err := a.ledgerService.GetOrCreateUserAccount(ctx, userID, accountType)
+	if err != nil {
+		return err
+	}
+
+	systemAccount, err := a.ledgerService.GetSystemAccount(ctx, entities.AccountTypeSystemBufferUSDC)
+	if err != nil {
+		return err
+	}
+
+	desc := "Withdrawal reversal"
+	revIdempotencyKey := fmt.Sprintf("withdrawal-reversal-%s-%d", originalTxID, time.Now().UnixNano())
+
+	revMetadata := map[string]interface{}{
+		"reversal_of_tx": originalTxID,
+		"reversal_type":  "failed_withdrawal",
+	}
+	for k, v := range metadata {
+		revMetadata[k] = v
+	}
+
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeReversal,
+		IdempotencyKey:  revIdempotencyKey,
+		Description:     &desc,
+		Metadata:        revMetadata,
+		Entries: []entities.CreateEntryRequest{
+			{
+				AccountID:   userAccount.ID,
+				EntryType:   entities.EntryTypeDebit,
+				Amount:      amount,
+				Currency:    "USDC",
+				Description: &desc,
+			},
+			{
+				AccountID:   systemAccount.ID,
+				EntryType:   entities.EntryTypeCredit,
 				Amount:      amount,
 				Currency:    "USDC",
 				Description: &desc,
@@ -382,6 +470,90 @@ func mapChainToPaymentRail(chain string) bridge.PaymentRail {
 	}
 }
 
+// stateCodeToName converts 2-letter US state codes to full names
+// e.g., "NY" -> "New York", "CA" -> "California"
+func stateCodeToName(code string) string {
+	if code == "" {
+		return code
+	}
+	// If looks like a full name already (contains space or lowercase), return as-is
+	if strings.Contains(code, " ") || strings.Contains(code, "-") {
+		return toTitleCaseStr(code)
+	}
+	// If already 2 uppercase letters, convert to name
+	if len(code) == 2 && code == strings.ToUpper(code) {
+		stateMap := map[string]string{
+			"AL": "Alabama",
+			"AK": "Alaska",
+			"AZ": "Arizona",
+			"AR": "Arkansas",
+			"CA": "California",
+			"CO": "Colorado",
+			"CT": "Connecticut",
+			"DE": "Delaware",
+			"FL": "Florida",
+			"GA": "Georgia",
+			"HI": "Hawaii",
+			"ID": "Idaho",
+			"IL": "Illinois",
+			"IN": "Indiana",
+			"IA": "Iowa",
+			"KS": "Kansas",
+			"KY": "Kentucky",
+			"LA": "Louisiana",
+			"ME": "Maine",
+			"MD": "Maryland",
+			"MA": "Massachusetts",
+			"MI": "Michigan",
+			"MN": "Minnesota",
+			"MS": "Mississippi",
+			"MO": "Missouri",
+			"MT": "Montana",
+			"NE": "Nebraska",
+			"NV": "Nevada",
+			"NH": "New Hampshire",
+			"NJ": "New Jersey",
+			"NM": "New Mexico",
+			"NY": "New York",
+			"NC": "North Carolina",
+			"ND": "North Dakota",
+			"OH": "Ohio",
+			"OK": "Oklahoma",
+			"OR": "Oregon",
+			"PA": "Pennsylvania",
+			"RI": "Rhode Island",
+			"SC": "South Carolina",
+			"SD": "South Dakota",
+			"TN": "Tennessee",
+			"TX": "Texas",
+			"UT": "Utah",
+			"VT": "Vermont",
+			"VA": "Virginia",
+			"WA": "Washington",
+			"WV": "West Virginia",
+			"WI": "Wisconsin",
+			"WY": "Wyoming",
+			"DC": "District of Columbia",
+		}
+		if name, ok := stateMap[strings.ToUpper(code)]; ok {
+			return name
+		}
+	}
+	// Return original if not found
+	return code
+}
+
+// toTitleCaseStr converts a string to title case
+func toTitleCaseStr(s string) string {
+	words := strings.Fields(strings.ToLower(s))
+	for i, word := range words {
+		if len(word) > 0 {
+			words[i] = strings.ToUpper(word[:1]) + word[1:]
+		}
+	}
+	return strings.Join(words, " ")
+}
+
 // BridgeOnboardingAdapter adapts bridge.Adapter to onboarding.BridgeAdapter interface
 type BridgeOnboardingAdapter struct {
 	adapter *bridge.Adapter
@@ -395,28 +567,54 @@ func (a *BridgeOnboardingAdapter) CreateCustomer(ctx context.Context, req *entit
 		Email:     req.Email,
 	}
 
+	// Store original 2-letter country code for subdivision prefix
+	country2 := strings.ToUpper(req.Country)
+
+	// Normalize 2-letter country code to 3-letter (Bridge requires ISO 3166-1 alpha-3)
+	country3 := country2
+	switch country2 {
+	case "US":
+		country3 = "USA"
+	case "GB":
+		country3 = "GBR"
+	case "NG":
+		country3 = "NGA"
+	case "CA":
+		country3 = "CAN"
+	case "AU":
+		country3 = "AUS"
+	case "DE":
+		country3 = "DEU"
+	case "MX":
+		country3 = "MEX"
+	case "BR":
+		country3 = "BRA"
+	case "IN":
+		country3 = "IND"
+	case "ZA":
+		country3 = "ZAF"
+	case "KE":
+		country3 = "KEN"
+	}
+
 	// Add residential address if provided
 	if req.Address != nil {
-		// Convert 2-letter country code to 3-letter (Bridge requires ISO 3166-1 alpha-3)
-		country := req.Country
-		if len(country) == 2 {
-			switch country {
-			case "US":
-				country = "USA"
-			case "GB":
-				country = "GBR"
-			case "CA":
-				country = "CAN"
-				// Add more as needed
-			}
+		// Bridge API expects different formats based on country:
+		// - US: full state name (e.g., "New York")
+		// - Other countries: ISO 3166-2 code without prefix (e.g., "B" for Argentina)
+		subdivision := strings.TrimSpace(req.Address.State)
+		if country2 := strings.ToUpper(req.Country); country2 == "US" {
+			// For US, convert to title case (e.g., "NY" -> "New York")
+			subdivision = stateCodeToName(subdivision)
 		}
+		// For non-US, pass as-is (frontend should send ISO 3166-2 code)
 
 		bridgeReq.ResidentialAddress = &bridge.Address{
 			StreetLine1: req.Address.Street,
 			City:        req.Address.City,
-			Subdivision: req.Address.State,
+			Subdivision: subdivision,
 			PostalCode:  req.Address.PostalCode,
-			Country:     country,
+			Country:     country3,
 		}
 	}
 
@@ -425,12 +623,16 @@ func (a *BridgeOnboardingAdapter) CreateCustomer(ctx context.Context, req *entit
 		bridgeReq.BirthDate = req.DateOfBirth.Format("2006-01-02")
 	}
 
-	// Add SSN if provided (required for production, optional for sandbox)
+	// Add tax ID if provided (required for production, optional for sandbox)
 	if req.SSN != "" {
+		taxIDType := kyc.GetSupportedTaxIDType(country3)
+		if taxIDType == "" {
+			taxIDType = "ssn"
+		}
 		bridgeReq.IdentifyingInformation = []bridge.IdentifyingInfo{
 			{
-				Type:           "ssn",
-				IssuingCountry: "usa",
+				Type:           taxIDType,
+				IssuingCountry: strings.ToLower(country3),
 				Number:         req.SSN,
 			},
 		}
@@ -521,6 +723,20 @@ func (a *deletionUserRepoAdapter) HardDelete(ctx context.Context, userID uuid.UU
 	return a.userRepo.HardDelete(ctx, userID)
 }
 
+func (a *deletionUserRepoAdapter) AnonymizeUser(ctx context.Context, userID uuid.UUID) error {
+	return a.userRepo.AnonymizeUser(ctx, userID)
+}
+
+// deletionBridgeAdapter adapts bridge.Client to account.BridgeClient
+type deletionBridgeAdapter struct {
+	client *bridge.Client
+}
+
+func (a *deletionBridgeAdapter) DeactivateVirtualAccount(ctx context.Context, customerID, virtualAccountID string) error {
+	_, err := a.client.DeactivateVirtualAccount(ctx, customerID, virtualAccountID)
+	return err
+}
+
 // Container holds all application dependencies
 type Container struct {
 	Config *config.Config
@@ -557,10 +773,11 @@ type Container struct {
 	RedisClient   cache.RedisClient
 
 	// Bridge Domain Adapters
-	BridgeKYCAdapter            *BridgeKYCAdapter
-	BridgeFundingAdapter        *BridgeFundingAdapter
-	BridgeVirtualAccountService *funding.BridgeVirtualAccountService
-	BridgeWebhookHandler        *handlers.BridgeWebhookHandler
+	BridgeKYCAdapter              *BridgeKYCAdapter
+	BridgeFundingAdapter          *BridgeFundingAdapter
+	BridgeVirtualAccountService   *funding.BridgeVirtualAccountService
+	BridgeWebhookHandler          *handlers.BridgeWebhookHandler
+	BridgeCustomerStatusProcessor *webhooks.BridgeCustomerStatusProcessor
 
 	// Domain Services
 	OnboardingService       *onboarding.Service
@@ -738,6 +955,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		Environment:            cfg.Circle.Environment,
 		BaseURL:                cfg.Circle.BaseURL,
 		EntitySecretCiphertext: cfg.Circle.EntitySecretCiphertext,
+		PublicKeyPEM:           cfg.Circle.PublicKeyPEM,
 		WalletSetID:            cfg.Circle.DefaultWalletSetID,
 	}
 	circleClient := circle.NewClient(circleConfig, zapLog)
@@ -818,7 +1036,17 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	cacheInvalidator := cache.NewCacheInvalidator(redisClient, zapLog, cache.InvalidateImmediate)
 
 	// Initialize entity secret service
-	entitySecretService := entitysecret.NewService(zapLog)
+	// Non-fatal: app can start for non-wallet operations, but wallet creation will be rejected
+	zapLog.Debug("Initializing entity secret service",
+		zap.String("entitySecretCiphertext_length", fmt.Sprintf("%d", len(cfg.Circle.EntitySecretCiphertext))),
+		zap.String("publicKeyPEM_length", fmt.Sprintf("%d", len(cfg.Circle.PublicKeyPEM))))
+	entitySecretService, err := entitysecret.NewService(zapLog, cfg.Circle.EntitySecretCiphertext, cfg.Circle.PublicKeyPEM)
+	if err != nil {
+		zapLog.Warn("Entity secret service unavailable — wallet creation will be disabled until configured",
+			zap.Error(err),
+			zap.String("entitySecretCiphertext_length", fmt.Sprintf("%d", len(cfg.Circle.EntitySecretCiphertext))))
+		entitySecretService = nil
+	}
 
 	container := &Container{
 		Config: cfg,
@@ -1057,9 +1285,17 @@ func (c *Container) initializeDomainServices() error {
 			c.BridgeVirtualAccountService.SetNotificationService(notificationAdapter)
 		}
 
+		// Create customer status processor for handling Bridge KYC webhooks
+		customerStatusProcessor := webhooks.NewBridgeCustomerStatusProcessor(
+			c.UserRepo,
+			c.BridgeVirtualAccountService,
+			c.ZapLog,
+		)
+		c.BridgeCustomerStatusProcessor = customerStatusProcessor
+
 		bridgeWebhookService := webhooks.NewBridgeWebhookService(
 			&BridgeVirtualAccountWebhookAdapter{service: c.BridgeVirtualAccountService},
-			nil, // Customer status processor can be injected later.
+			customerStatusProcessor,
 			nil, // Card processor can be injected later.
 			nil, // Notifications can be injected later.
 			c.ZapLog,
@@ -1080,7 +1316,7 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize auto-invest service (OrderPlacer will be set after InvestingService is created)
 	_ = repositories.NewAutoInvestRepository(sqlxDB) // Keep for future use
 	autoInvestConfig := autoinvest.Config{
-		MinThreshold: decimal.NewFromInt(10),
+		MinThreshold: decimal.Zero,
 	}
 	c.AutoInvestService = autoinvest.NewService(
 		c.LedgerService,
@@ -1103,6 +1339,7 @@ func (c *Container) initializeDomainServices() error {
 		c.DepositRepo,
 		c.ZapLog,
 	)
+	c.StationService.SetAlpacaAccountRepository(c.AlpacaAccountRepo)
 
 	// Initialize investing service with repositories
 	basketRepo := repositories.NewBasketRepository(c.DB, c.ZapLog)
@@ -1121,6 +1358,9 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize notification service with persister for in-app notifications
 	c.NotificationService = services.NewNotificationService(c.ZapLog)
 	c.NotificationService.SetPersister(adapters.NewNotificationPersisterAdapter(c.NotificationRepo))
+	// Wire Expo Push service for push notifications
+	expoPushService := adapters.NewExpoPushService(c.DeviceTokenRepo, c.ZapLog)
+	c.NotificationService.SetPushSender(expoPushService)
 
 	c.InvestingService = investing.NewService(
 		basketRepo,
@@ -1135,14 +1375,8 @@ func (c *Container) initializeDomainServices() error {
 		c.Logger,
 	)
 
-	// Wire auto-invest service with OrderPlacer now that InvestingService is available
-	autoInvestOrderPlacer := &autoInvestOrderPlacerAdapter{
-		accountService: c.AlpacaAccountService,
-		alpacaClient:   c.AlpacaClient,
-		orderRepo:      c.InvestmentOrderRepo,
-		logger:         c.ZapLog,
-	}
-	c.AutoInvestService.SetOrderPlacer(autoInvestOrderPlacer)
+	// NOTE: AutoInvestService OrderPlacer/FundingBridge wiring is done after
+	// initializeAlpacaInvestmentServices (below) so AlpacaAccountService is non-nil.
 
 	// Initialize strategy engine and wire to auto-invest service
 	c.StrategyEngine = strategy.NewEngine(&strategyUserProfileAdapter{userRepo: c.UserRepo}, c.Logger)
@@ -1269,6 +1503,11 @@ func (c *Container) initializeDomainServices() error {
 	withdrawalNotificationAdapter := &WithdrawalNotificationAdapter{svc: c.NotificationService}
 
 	// Create withdrawal service with new architecture
+	cctpIrisClient := cctp.NewClient(cctp.Config{
+		Environment: c.Config.CCTP.Environment,
+		BaseURL:     c.Config.CCTP.BaseURL,
+	}, c.ZapLog)
+
 	c.WithdrawalService = services.NewWithdrawalService(
 		c.WithdrawalRepo,
 		c.UserRepo,                    // UserRepository for Bridge KYC checks
@@ -1279,6 +1518,7 @@ func (c *Container) initializeDomainServices() error {
 		withdrawalNotificationAdapter, // WithdrawalNotificationService adapter
 		withdrawalCircleAdapter,       // CircleClient adapter
 		withdrawalBridgeAdapter,       // BridgeAdapter
+		cctpIrisClient,                // CCTPFeeClient for cross-chain fee lookup
 		c.Logger,
 	)
 
@@ -1292,6 +1532,29 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog.Warn("Alpaca investment services initialization failed", zap.Error(err))
 	}
 
+	// Wire auto-invest service with OrderPlacer now that AlpacaAccountService is initialized
+	autoInvestOrderPlacer := &autoInvestOrderPlacerAdapter{
+		accountService: c.AlpacaAccountService,
+		alpacaClient:   c.AlpacaClient,
+		orderRepo:      c.InvestmentOrderRepo,
+		logger:         c.ZapLog,
+	}
+	c.AutoInvestService.SetOrderPlacer(autoInvestOrderPlacer)
+	if c.AlpacaFundingBridge != nil {
+		c.AutoInvestService.SetFundingBridge(c.AlpacaFundingBridge)
+	}
+	if c.AlpacaAccountRepo != nil {
+		c.AutoInvestService.SetAccountLookup(c.AlpacaAccountRepo)
+	}
+	if c.AlpacaPortfolioSync != nil {
+		c.AutoInvestService.SetPositionSyncer(c.AlpacaPortfolioSync)
+	}
+
+	// Wire station service with AlpacaAccountService now that it's initialized
+	if c.AlpacaAccountService != nil {
+		c.StationService.SetAlpacaAccountService(c.AlpacaAccountService)
+	}
+
 	// Initialize advanced features (analytics, market data, scheduled investments, rebalancing)
 	if err := c.initializeAdvancedFeatures(sqlxDB); err != nil {
 		c.ZapLog.Warn("Advanced features initialization failed", zap.Error(err))
@@ -1299,7 +1562,7 @@ func (c *Container) initializeDomainServices() error {
 
 	// Initialize unified funding webhook handler (Bridge + Circle + Alpaca).
 	// This enables /api/v1/webhooks/funding routing.
-	circleWebhookHandler := webhooks.NewCircleWebhookHandler(
+	circleWebhookHandler, err := webhooks.NewCircleWebhookHandler(
 		c.FundingService,
 		c.WalletRepo,
 		c.WithdrawalRepo,
@@ -1308,13 +1571,16 @@ func (c *Container) initializeDomainServices() error {
 		c.Config.Circle.APIKey,
 		c.Config.Circle.BaseURL,
 	)
+	if err != nil {
+		return fmt.Errorf("failed to create Circle webhook handler: %w", err)
+	}
 	alpacaWebhookHandler := c.GetAlpacaWebhookHandlers()
 	c.UnifiedFundingWebhookHandler = webhooks.NewUnifiedFundingWebhookHandler(
 		c.BridgeWebhookHandler,
 		circleWebhookHandler,
 		alpacaWebhookHandler,
 		c.ZapLog,
-		c.Config.Environment == "development",
+		c.Config.Environment == "development" || strings.TrimSpace(c.Config.Circle.APIKey) == "",
 	)
 	if bridgeSecret := strings.TrimSpace(c.Config.Bridge.WebhookSecret); bridgeSecret != "" {
 		c.UnifiedFundingWebhookHandler.SetWebhookSecret("bridge", bridgeSecret)
@@ -1335,6 +1601,21 @@ func (c *Container) initializeDomainServices() error {
 		c.Logger,
 	)
 
+	// Wire external provider cleanup for account deletion
+	if c.AlpacaAccountRepo != nil && c.AlpacaClient != nil {
+		c.AccountDeletionService.SetAlpacaClient(c.AlpacaAccountRepo, c.AlpacaClient)
+	}
+	deletionVirtualAccountRepo := repositories.NewVirtualAccountRepository(sqlxDB)
+	if c.BridgeClient != nil {
+		c.AccountDeletionService.SetBridgeClient(deletionVirtualAccountRepo, &deletionBridgeAdapter{client: c.BridgeClient})
+	}
+	if c.SessionService != nil {
+		c.AccountDeletionService.SetSessionService(c.SessionService)
+	}
+	if c.DeviceTokenRepo != nil {
+		c.AccountDeletionService.SetDeviceTokenRepo(c.DeviceTokenRepo)
+	}
+
 	// Initialize P2P transfer services
 	c.P2PRepo = repositories.NewP2PRepository(sqlxDB, c.ZapLog)
 	c.P2PNotificationSender = adapters.NewP2PNotificationSender(
@@ -1352,10 +1633,20 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog,
 	)
 	c.P2PService.SetUserUpdater(c.UserRepo)
+	c.P2PService.SetWalletLookup(c.WalletRepo)
+	if c.BridgeClient != nil {
+		c.P2PService.SetBridgeOfframp(NewP2PBridgeOfframpAdapter(bridge.NewAdapter(c.BridgeClient, c.ZapLog)))
+	}
 	c.P2PHandlers = p2phandlers.NewHandlers(c.P2PService, c.ZapLog)
 
 	// Wire P2P service to onboarding for auto-claim
 	c.OnboardingService.SetP2PService(c.P2PService)
+
+	// Wire virtual account service to onboarding for auto-provisioning on KYC approval
+	if c.BridgeVirtualAccountService != nil && c.WalletService != nil && c.OnboardingService != nil {
+		c.BridgeVirtualAccountService.SetWalletProvider(c.WalletService)
+		c.OnboardingService.SetVirtualAccountService(c.BridgeVirtualAccountService)
+	}
 
 	return nil
 }
@@ -2086,7 +2377,7 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 	c.RoundupRepo = repositories.NewRoundupRepository(sqlxDB)
 	c.RoundupService = roundup.NewService(
 		c.RoundupRepo,
-		c.AllocationService,
+		c.LedgerService,
 		orderPlacer,
 		nil, // ContributionRecorder - can be added later
 		c.ZapLog,
@@ -2113,6 +2404,18 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 	)
 	// Wire ledger service to card service for transaction ledger entries
 	c.CardService.SetLedgerService(c.LedgerService)
+
+	// Rewire Bridge webhook service now that card service is available.
+	if c.BridgeWebhookHandler != nil && c.BridgeVirtualAccountService != nil {
+		bridgeWebhookService := webhooks.NewBridgeWebhookService(
+			&BridgeVirtualAccountWebhookAdapter{service: c.BridgeVirtualAccountService},
+			c.BridgeCustomerStatusProcessor, // preserve KYC processor — do NOT pass nil
+			&BridgeCardWebhookAdapter{service: c.CardService},
+			nil, // Notifications can be injected later.
+			c.ZapLog,
+		)
+		c.BridgeWebhookHandler.SetService(bridgeWebhookService)
+	}
 
 	c.ZapLog.Info("Advanced features initialized")
 	return nil
@@ -2230,7 +2533,7 @@ type autoInvestOrderPlacerAdapter struct {
 	logger         *zap.Logger
 }
 
-func (a *autoInvestOrderPlacerAdapter) PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal) (*entities.AlpacaOrderResponse, error) {
+func (a *autoInvestOrderPlacerAdapter) PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal, clientOrderID string) (*entities.AlpacaOrderResponse, error) {
 	// Get user's Alpaca account
 	account, err := a.accountService.GetUserAccount(ctx, userID)
 	if err != nil {
@@ -2242,11 +2545,12 @@ func (a *autoInvestOrderPlacerAdapter) PlaceMarketOrder(ctx context.Context, use
 
 	// Create market order via Alpaca
 	orderReq := &entities.AlpacaCreateOrderRequest{
-		Symbol:      symbol,
-		Notional:    &amount,
-		Side:        entities.AlpacaOrderSideBuy,
-		Type:        entities.AlpacaOrderTypeMarket,
-		TimeInForce: entities.AlpacaTimeInForceDay,
+		Symbol:        symbol,
+		Notional:      &amount,
+		Side:          entities.AlpacaOrderSideBuy,
+		Type:          entities.AlpacaOrderTypeMarket,
+		TimeInForce:   entities.AlpacaTimeInForceDay,
+		ClientOrderID: clientOrderID,
 	}
 
 	alpacaOrder, err := a.alpacaClient.CreateOrder(ctx, account.AlpacaAccountID, orderReq)
@@ -2565,13 +2869,8 @@ func (c *Container) GetSpendingStashHandlers() *handlers.SpendingStashHandlers {
 		c.AllocationService,
 		c.CardService,
 		c.RoundupService,
-		c.LimitsService,
 		c.ZapLog,
 	)
-	// Wire up additional dependencies for unified spending view
-	if c.LedgerService != nil {
-		h.SetLedgerService(c.LedgerService)
-	}
 	if c.P2PRepo != nil {
 		h.SetP2PRepo(c.P2PRepo)
 	}
@@ -2595,6 +2894,12 @@ func (c *Container) GetInvestmentStashHandlers() *handlers.InvestmentStashHandle
 		c.ZapLog,
 	)
 	h.SetAutoInvestRepository(repositories.NewAutoInvestRepository(sqlx.NewDb(c.DB, "postgres")))
+	if c.StrategyEngine != nil {
+		h.SetStrategyProvider(c.StrategyEngine)
+	}
+	if c.AlpacaPortfolioSync != nil {
+		h.SetPortfolioSyncer(c.AlpacaPortfolioSync)
+	}
 	return h
 }
 

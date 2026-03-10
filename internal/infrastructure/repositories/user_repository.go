@@ -378,6 +378,109 @@ func (r *UserRepository) GetByAuthProviderID(ctx context.Context, authProviderID
 	return user, nil
 }
 
+// GetByBridgeCustomerID retrieves a user by Bridge customer ID
+func (r *UserRepository) GetByBridgeCustomerID(ctx context.Context, bridgeCustomerID string) (*entities.UserProfile, error) {
+	query := `
+	        SELECT id, email, phone, country, address_street, address_city, address_state, address_postal_code, address_country, first_name, last_name, date_of_birth,
+	               auth_provider_id, email_verified, phone_verified,
+	               onboarding_status, kyc_status, kyc_provider_ref, kyc_submitted_at,
+	               kyc_approved_at, kyc_rejection_reason, bridge_customer_id, alpaca_account_id,
+	               is_active, created_at, updated_at
+	        FROM users 
+	        WHERE bridge_customer_id = $1`
+
+	user := &entities.UserProfile{}
+	var kycSubmittedAt, kycApprovedAt sql.NullTime
+	var kycProviderRef, kycRejectionReason, bridgeCustomerIDVal, alpacaAccountID, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry sql.NullString
+	var firstName, lastName sql.NullString
+	var dateOfBirth sql.NullTime
+
+	err := r.db.QueryRowContext(ctx, query, bridgeCustomerID).Scan(
+		&user.ID,
+		&user.Email,
+		&user.Phone,
+		&country,
+		&addressStreet,
+		&addressCity,
+		&addressState,
+		&addressPostalCode,
+		&addressCountry,
+		&firstName,
+		&lastName,
+		&dateOfBirth,
+		&user.AuthProviderID,
+		&user.EmailVerified,
+		&user.PhoneVerified,
+		&user.OnboardingStatus,
+		&user.KYCStatus,
+		&kycProviderRef,
+		&kycSubmittedAt,
+		&kycApprovedAt,
+		&kycRejectionReason,
+		&bridgeCustomerIDVal,
+		&alpacaAccountID,
+		&user.IsActive,
+		&user.CreatedAt,
+		&user.UpdatedAt,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		r.logger.Error("Failed to get user by Bridge customer ID", zap.Error(err), zap.String("bridge_customer_id", bridgeCustomerID))
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+
+	if firstName.Valid {
+		user.FirstName = &firstName.String
+	}
+	if lastName.Valid {
+		user.LastName = &lastName.String
+	}
+	if dateOfBirth.Valid {
+		user.DateOfBirth = &dateOfBirth.Time
+	}
+	if country.Valid {
+		user.Country = &country.String
+	}
+	if addressStreet.Valid {
+		user.AddressStreet = &addressStreet.String
+	}
+	if addressCity.Valid {
+		user.AddressCity = &addressCity.String
+	}
+	if addressState.Valid {
+		user.AddressState = &addressState.String
+	}
+	if addressPostalCode.Valid {
+		user.AddressPostalCode = &addressPostalCode.String
+	}
+	if addressCountry.Valid {
+		user.AddressCountry = &addressCountry.String
+	}
+	if kycProviderRef.Valid {
+		user.KYCProviderRef = &kycProviderRef.String
+	}
+	if kycSubmittedAt.Valid {
+		user.KYCSubmittedAt = &kycSubmittedAt.Time
+	}
+	if kycApprovedAt.Valid {
+		user.KYCApprovedAt = &kycApprovedAt.Time
+	}
+	if kycRejectionReason.Valid {
+		user.KYCRejectionReason = &kycRejectionReason.String
+	}
+	if bridgeCustomerIDVal.Valid {
+		user.BridgeCustomerID = &bridgeCustomerIDVal.String
+	}
+	if alpacaAccountID.Valid {
+		user.AlpacaAccountID = &alpacaAccountID.String
+	}
+
+	return user, nil
+}
+
 // Update updates a user
 func (r *UserRepository) Update(ctx context.Context, user *entities.UserProfile) error {
 	query := `
@@ -481,6 +584,60 @@ func (r *UserRepository) UpdateKYCProvider(ctx context.Context, userID uuid.UUID
 		zap.String("provider_ref", providerRef),
 		zap.String("status", string(status)))
 
+	return nil
+}
+
+// UpdateBridgeKYCStatus updates the Bridge KYC status for a user.
+// When Bridge approves (status="active"), it also promotes kyc_status to "approved"
+// and onboarding_status to "kyc_approved" so the KYC middleware unlocks protected features.
+func (r *UserRepository) UpdateBridgeKYCStatus(ctx context.Context, userID uuid.UUID, status string) error {
+	now := time.Now()
+
+	if status == "active" {
+		// Bridge approved — promote main KYC and onboarding status so middleware gates open.
+		query := `
+			UPDATE users SET
+				bridge_kyc_status = $2,
+				kyc_status        = 'approved',
+				kyc_approved_at   = $3,
+				onboarding_status = 'kyc_approved',
+				updated_at        = $3
+			WHERE id = $1`
+		_, err := r.db.ExecContext(ctx, query, userID, status, now)
+		if err != nil {
+			r.logger.Error("Failed to update Bridge KYC status (approved)", zap.Error(err), zap.String("user_id", userID.String()))
+			return fmt.Errorf("failed to update bridge kyc status: %w", err)
+		}
+		r.logger.Info("Bridge KYC approved — promoted kyc_status and onboarding_status", zap.String("user_id", userID.String()))
+		return nil
+	}
+
+	if status == "rejected" {
+		query := `
+			UPDATE users SET
+				bridge_kyc_status = $2,
+				kyc_status        = 'rejected',
+				onboarding_status = 'kyc_rejected',
+				updated_at        = $3
+			WHERE id = $1`
+		_, err := r.db.ExecContext(ctx, query, userID, status, now)
+		if err != nil {
+			r.logger.Error("Failed to update Bridge KYC status (rejected)", zap.Error(err), zap.String("user_id", userID.String()))
+			return fmt.Errorf("failed to update bridge kyc status: %w", err)
+		}
+		r.logger.Info("Bridge KYC rejected — updated kyc_status and onboarding_status", zap.String("user_id", userID.String()))
+		return nil
+	}
+
+	// For all other statuses (pending, incomplete, etc.) just update bridge_kyc_status.
+	query := `UPDATE users SET bridge_kyc_status = $2, updated_at = $3 WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, userID, status, now)
+	if err != nil {
+		r.logger.Error("Failed to update Bridge KYC status", zap.Error(err), zap.String("user_id", userID.String()))
+		return fmt.Errorf("failed to update bridge kyc status: %w", err)
+	}
+
+	r.logger.Debug("Bridge KYC status updated", zap.String("user_id", userID.String()), zap.String("status", status))
 	return nil
 }
 
@@ -615,7 +772,7 @@ func (r *UserRepository) CreateUserWithHash(ctx context.Context, email string, p
 // GetUserByEmailForLogin retrieves a user by email for login purposes (includes password hash)
 func (r *UserRepository) GetUserByEmailForLogin(ctx context.Context, email string) (*entities.User, error) {
 	query := `
-		SELECT id, email, phone, password_hash, auth_provider_id,
+		SELECT id, email, phone, first_name, last_name, password_hash, auth_provider_id,
 		       email_verified, phone_verified, onboarding_status, kyc_status,
 		       kyc_provider_ref, kyc_submitted_at, kyc_approved_at, kyc_rejection_reason,
 		       role, is_active, last_login_at, created_at, updated_at
@@ -625,11 +782,14 @@ func (r *UserRepository) GetUserByEmailForLogin(ctx context.Context, email strin
 	user := &entities.User{}
 	var kycSubmittedAt, kycApprovedAt, lastLoginAt sql.NullTime
 	var kycRejectionReason, kycProviderRef sql.NullString
+	var firstName, lastName sql.NullString
 
 	err := r.db.QueryRowContext(ctx, query, email).Scan(
 		&user.ID,
 		&user.Email,
 		&user.Phone,
+		&firstName,
+		&lastName,
 		&user.PasswordHash,
 		&user.AuthProviderID,
 		&user.EmailVerified,
@@ -656,6 +816,12 @@ func (r *UserRepository) GetUserByEmailForLogin(ctx context.Context, email strin
 	}
 
 	// Handle nullable fields
+	if firstName.Valid {
+		user.FirstName = &firstName.String
+	}
+	if lastName.Valid {
+		user.LastName = &lastName.String
+	}
 	if kycProviderRef.Valid {
 		user.KYCProviderRef = &kycProviderRef.String
 	}
@@ -693,7 +859,7 @@ func (r *UserRepository) PhoneExists(ctx context.Context, phone string) (bool, e
 // GetUserByPhoneForLogin retrieves a user by phone for login purposes (includes password hash)
 func (r *UserRepository) GetUserByPhoneForLogin(ctx context.Context, phone string) (*entities.User, error) {
 	query := `
-		SELECT id, email, phone, password_hash, auth_provider_id,
+		SELECT id, email, phone, first_name, last_name, password_hash, auth_provider_id,
 		       email_verified, phone_verified, onboarding_status, kyc_status,
 		       kyc_provider_ref, kyc_submitted_at, kyc_approved_at, kyc_rejection_reason,
 		       role, is_active, last_login_at, created_at, updated_at
@@ -703,11 +869,14 @@ func (r *UserRepository) GetUserByPhoneForLogin(ctx context.Context, phone strin
 	user := &entities.User{}
 	var kycSubmittedAt, kycApprovedAt, lastLoginAt sql.NullTime
 	var kycRejectionReason, kycProviderRef sql.NullString
+	var firstName, lastName sql.NullString
 
 	err := r.db.QueryRowContext(ctx, query, phone).Scan(
 		&user.ID,
 		&user.Email,
 		&user.Phone,
+		&firstName,
+		&lastName,
 		&user.PasswordHash,
 		&user.AuthProviderID,
 		&user.EmailVerified,
@@ -734,6 +903,12 @@ func (r *UserRepository) GetUserByPhoneForLogin(ctx context.Context, phone strin
 	}
 
 	// Handle nullable fields
+	if firstName.Valid {
+		user.FirstName = &firstName.String
+	}
+	if lastName.Valid {
+		user.LastName = &lastName.String
+	}
 	if kycProviderRef.Valid {
 		user.KYCProviderRef = &kycProviderRef.String
 	}
@@ -756,7 +931,7 @@ func (r *UserRepository) GetUserByPhoneForLogin(ctx context.Context, phone strin
 // GetUserEntityByID retrieves a user as User entity by ID (excludes sensitive fields like password)
 func (r *UserRepository) GetUserEntityByID(ctx context.Context, id uuid.UUID) (*entities.User, error) {
 	query := `
-			SELECT id, email, phone, country, address_street, address_city, address_state, address_postal_code, address_country, auth_provider_id,
+			SELECT id, email, phone, first_name, last_name, country, address_street, address_city, address_state, address_postal_code, address_country, auth_provider_id,
 			       email_verified, phone_verified, onboarding_status, kyc_status,
 			       kyc_provider_ref, kyc_submitted_at, kyc_approved_at, kyc_rejection_reason,
 			       role, is_active, last_login_at, created_at, updated_at,
@@ -767,11 +942,14 @@ func (r *UserRepository) GetUserEntityByID(ctx context.Context, id uuid.UUID) (*
 	user := &entities.User{}
 	var kycSubmittedAt, kycApprovedAt, lastLoginAt sql.NullTime
 	var kycRejectionReason, kycProviderRef, bridgeCustomerID, alpacaAccountID, bridgeKYCStatus, bridgeKYCLink, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry sql.NullString
+	var firstName, lastName sql.NullString
 
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
 		&user.ID,
 		&user.Email,
 		&user.Phone,
+		&firstName,
+		&lastName,
 		&country,
 		&addressStreet,
 		&addressCity,
@@ -807,6 +985,12 @@ func (r *UserRepository) GetUserEntityByID(ctx context.Context, id uuid.UUID) (*
 	}
 
 	// Handle nullable fields
+	if firstName.Valid {
+		user.FirstName = &firstName.String
+	}
+	if lastName.Valid {
+		user.LastName = &lastName.String
+	}
 	if kycProviderRef.Valid {
 		user.KYCProviderRef = &kycProviderRef.String
 	}
@@ -930,10 +1114,10 @@ func (r *UserRepository) UpdateUserEntity(ctx context.Context, user *entities.Us
 
 // UpdateLastLogin updates the user's last login timestamp
 func (r *UserRepository) UpdateLastLogin(ctx context.Context, userID uuid.UUID) error {
-	query := `UPDATE users SET last_login_at = $2, updated_at = $2 WHERE id = $1`
+	query := `UPDATE users SET last_login_at = $2, updated_at = $3 WHERE id = $1`
 
 	now := time.Now()
-	_, err := r.db.ExecContext(ctx, query, userID, now)
+	_, err := r.db.ExecContext(ctx, query, userID, now, now)
 	if err != nil {
 		r.logger.Error("Failed to update last login", zap.Error(err), zap.String("user_id", userID.String()))
 		return fmt.Errorf("failed to update last login: %w", err)
@@ -987,10 +1171,63 @@ func (r *UserRepository) DeactivateUser(ctx context.Context, userID uuid.UUID) e
 	return nil
 }
 
-// HardDelete permanently removes a user and all related data (cascades via FK constraints)
+// AnonymizeUser clears PII fields while preserving the user UUID for financial audit trails.
+// GDPR Article 17(3) allows retaining financial records; we anonymize PII instead of deleting.
+func (r *UserRepository) AnonymizeUser(ctx context.Context, userID uuid.UUID) error {
+	query := `
+		UPDATE users SET
+			email = 'anonymized-' || id::text || '@deleted.rail.app',
+			phone = NULL,
+			password_hash = '',
+			first_name = NULL,
+			last_name = NULL,
+			country = NULL,
+			address_street = NULL,
+			address_city = NULL,
+			address_state = NULL,
+			address_postal_code = NULL,
+			address_country = NULL,
+			auth_provider_id = NULL,
+			kyc_provider_ref = NULL,
+			bridge_customer_id = NULL,
+			bridge_kyc_link = NULL,
+			alpaca_account_id = NULL,
+			is_active = false,
+			anonymized_at = $2,
+			updated_at = $2
+		WHERE id = $1 AND anonymized_at IS NULL`
+	now := time.Now()
+	result, err := r.db.ExecContext(ctx, query, userID, now)
+	if err != nil {
+		r.logger.Error("Failed to anonymize user", zap.Error(err), zap.String("user_id", userID.String()))
+		return fmt.Errorf("failed to anonymize user: %w", err)
+	}
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return fmt.Errorf("user not found or already anonymized")
+	}
+	r.logger.Info("User anonymized", zap.String("user_id", userID.String()))
+	return nil
+}
+
+// HardDelete permanently removes a user and all related data
 func (r *UserRepository) HardDelete(ctx context.Context, userID uuid.UUID) error {
-	query := `DELETE FROM users WHERE id = $1`
-	result, err := r.db.ExecContext(ctx, query, userID)
+	// Delete in FK-safe order (RESTRICT constraints require explicit cleanup)
+	dependents := []string{
+		`DELETE FROM ledger_entries WHERE account_id IN (SELECT id FROM ledger_accounts WHERE user_id = $1)`,
+		`DELETE FROM ledger_accounts WHERE user_id = $1`,
+		`DELETE FROM withdrawals WHERE user_id = $1`,
+		`DELETE FROM bridge_transactions WHERE user_id = $1`,
+		`DELETE FROM investment_positions WHERE user_id = $1`,
+		`DELETE FROM investment_orders WHERE user_id = $1`,
+	}
+	for _, q := range dependents {
+		if _, err := r.db.ExecContext(ctx, q, userID); err != nil {
+			return fmt.Errorf("failed to delete user: %w", err)
+		}
+	}
+
+	result, err := r.db.ExecContext(ctx, `DELETE FROM users WHERE id = $1`, userID)
 	if err != nil {
 		r.logger.Error("Failed to hard delete user", zap.Error(err), zap.String("user_id", userID.String()))
 		return fmt.Errorf("failed to delete user: %w", err)
@@ -1349,7 +1586,6 @@ func (r *UserRepository) GetByPhone(ctx context.Context, phone string) (*entitie
 	return user, nil
 }
 
-
 // GetByRailTag retrieves a user profile by rail tag
 func (r *UserRepository) GetByRailTag(ctx context.Context, railTag string) (*entities.UserProfile, error) {
 	query := `
@@ -1457,7 +1693,6 @@ func (r *UserRepository) GetByRailTag(ctx context.Context, railTag string) (*ent
 
 	return user, nil
 }
-
 
 // SetRailTag sets a user's rail tag
 func (r *UserRepository) SetRailTag(ctx context.Context, userID uuid.UUID, railTag string) error {

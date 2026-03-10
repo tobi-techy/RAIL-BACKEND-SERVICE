@@ -89,10 +89,10 @@ func (r *CardRepository) GetByUserID(ctx context.Context, userID uuid.UUID) ([]*
 	return cards, nil
 }
 
-// GetActiveVirtualCard retrieves the user's active virtual card
+// GetActiveVirtualCard retrieves the user's active or frozen virtual card
 func (r *CardRepository) GetActiveVirtualCard(ctx context.Context, userID uuid.UUID) (*entities.BridgeCard, error) {
 	var card entities.BridgeCard
-	query := `SELECT * FROM cards WHERE user_id = $1 AND type = 'virtual' AND status = 'active' LIMIT 1`
+	query := `SELECT * FROM cards WHERE user_id = $1 AND type = 'virtual' AND status IN ('active', 'frozen') ORDER BY created_at DESC LIMIT 1`
 	err := r.db.GetContext(ctx, &card, query, userID)
 	if err == sql.ErrNoRows {
 		return nil, nil

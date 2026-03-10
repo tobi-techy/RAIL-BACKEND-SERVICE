@@ -33,6 +33,11 @@ func (a *Adapter) GetAccount(ctx context.Context, accountID string) (*entities.A
 	return a.client.GetAccount(ctx, accountID)
 }
 
+// CloseAccount closes an Alpaca brokerage account
+func (a *Adapter) CloseAccount(ctx context.Context, accountID string) error {
+	return a.client.CloseAccount(ctx, accountID)
+}
+
 // InitiateInstantFunding creates an instant funding transfer
 func (a *Adapter) InitiateInstantFunding(ctx context.Context, req *entities.AlpacaInstantFundingRequest) (*entities.AlpacaInstantFundingResponse, error) {
 	fundingAdapter := NewFundingAdapter(a.client, a.logger.Desugar())

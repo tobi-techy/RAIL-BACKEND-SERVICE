@@ -332,7 +332,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				users.GET("/me", authHandlers.GetProfile)
 				users.PUT("/me", authHandlers.UpdateProfile)
 				users.POST("/me/change-password", authHandlers.ChangePassword)
-				users.DELETE("/me", authHandlers.DeleteAccount)
+				users.DELETE("/me", middleware.AuthRateLimit(3), authHandlers.DeleteAccount)
 				users.POST("/me/enable-2fa", authHandlers.Enable2FA)
 				users.POST("/me/disable-2fa", authHandlers.Disable2FA)
 			}
@@ -434,6 +434,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			{
 				funding.POST("/deposit/address", walletFundingHandlers.CreateDepositAddress)
 				funding.POST("/virtual-account", walletFundingHandlers.CreateVirtualAccount)
+				funding.GET("/virtual-accounts", walletFundingHandlers.GetVirtualAccounts)
+				funding.GET("/tos-link", walletFundingHandlers.GetBridgeTOSLink)
 
 				// Instant Funding - simplified API for trading
 				// POST /funding/instant - Request instant buying power
@@ -531,6 +533,15 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					p2p.POST("/claim/:token", p2pHandlers.ClaimByToken)
 					p2p.POST("/railtag", p2pHandlers.SetRailTag)
 					p2p.POST("/railtag/check", p2pHandlers.CheckRailTag)
+				}
+			}
+
+			// Public P2P claim routes (no auth required — for web claim page)
+			if p2pHandlers != nil {
+				publicP2P := router.Group("/api/v1/p2p")
+				{
+					publicP2P.GET("/claim/:token", p2pHandlers.GetClaimInfo)
+					publicP2P.POST("/claim/:token/bank", p2pHandlers.ClaimToBank)
 				}
 			}
 

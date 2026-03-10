@@ -142,6 +142,23 @@ func (c *Client) CreateAccount(ctx context.Context, req *entities.AlpacaCreateAc
 	})
 
 	if err != nil {
+		// 409 means account already exists for this email (e.g. after account closure).
+		// Look up the existing account and reuse it.
+		if strings.Contains(err.Error(), "409") {
+			c.logger.Warn("Alpaca account already exists, looking up by email",
+				zap.String("email", req.Contact.EmailAddress))
+			accounts, listErr := c.ListAccounts(ctx, map[string]string{"query": req.Contact.EmailAddress})
+			if listErr == nil {
+				for _, a := range accounts {
+					if strings.EqualFold(a.Contact.EmailAddress, req.Contact.EmailAddress) {
+						c.logger.Info("Reusing existing Alpaca account",
+							zap.String("account_id", a.ID),
+							zap.String("email", req.Contact.EmailAddress))
+						return &a, nil
+					}
+				}
+			}
+		}
 		c.logger.Error("Failed to create Alpaca account",
 			zap.String("email", req.Contact.EmailAddress),
 			zap.Error(err))
@@ -173,6 +190,28 @@ func (c *Client) GetAccount(ctx context.Context, accountID string) (*entities.Al
 	}
 
 	return &response, nil
+}
+
+// CloseAccount closes an Alpaca brokerage account
+// Note: All positions must be closed and funds withdrawn before calling this
+func (c *Client) CloseAccount(ctx context.Context, accountID string) error {
+	endpoint := fmt.Sprintf("%s/%s/actions/close", accountsEndpoint, accountID)
+
+	c.logger.Info("Closing Alpaca account", zap.String("account_id", accountID))
+
+	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
+		return nil, c.doRequestWithRetry(ctx, "POST", endpoint, nil, nil, false)
+	})
+
+	if err != nil {
+		c.logger.Error("Failed to close Alpaca account",
+			zap.String("account_id", accountID),
+			zap.Error(err))
+		return fmt.Errorf("close account failed: %w", err)
+	}
+
+	c.logger.Info("Closed Alpaca account successfully", zap.String("account_id", accountID))
+	return nil
 }
 
 // ListAccounts lists all accounts
@@ -387,6 +426,48 @@ func (c *Client) ListPositions(ctx context.Context, accountID string) ([]entitie
 	}
 
 	return response, nil
+}
+
+// CloseAllPositions liquidates all positions for an account
+func (c *Client) CloseAllPositions(ctx context.Context, accountID string) error {
+	endpoint := fmt.Sprintf(positionsEndpoint, accountID)
+
+	c.logger.Info("Closing all Alpaca positions", zap.String("account_id", accountID))
+
+	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
+		return nil, c.doRequestWithRetry(ctx, "DELETE", endpoint, nil, nil, false)
+	})
+
+	if err != nil {
+		c.logger.Error("Failed to close all Alpaca positions",
+			zap.String("account_id", accountID),
+			zap.Error(err))
+		return fmt.Errorf("close all positions failed: %w", err)
+	}
+
+	c.logger.Info("Closed all Alpaca positions", zap.String("account_id", accountID))
+	return nil
+}
+
+// CancelAllOrders cancels all open orders for an account
+func (c *Client) CancelAllOrders(ctx context.Context, accountID string) error {
+	endpoint := fmt.Sprintf(ordersEndpoint, accountID)
+
+	c.logger.Info("Canceling all Alpaca orders", zap.String("account_id", accountID))
+
+	_, err := c.circuitBreaker.Execute(func() (interface{}, error) {
+		return nil, c.doRequestWithRetry(ctx, "DELETE", endpoint, nil, nil, false)
+	})
+
+	if err != nil {
+		c.logger.Error("Failed to cancel all Alpaca orders",
+			zap.String("account_id", accountID),
+			zap.Error(err))
+		return fmt.Errorf("cancel all orders failed: %w", err)
+	}
+
+	c.logger.Info("Canceled all Alpaca orders", zap.String("account_id", accountID))
+	return nil
 }
 
 // Market Data Methods
