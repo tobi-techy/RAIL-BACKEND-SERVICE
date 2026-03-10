@@ -109,7 +109,7 @@ func NewBridgeFundingAdapter(adapter *bridge.Adapter) *BridgeFundingAdapter {
 	}
 }
 
-// GenerateDepositAddress implements funding.CircleAdapter interface for Bridge
+// GenerateDepositAddress implements deposit address creation using Bridge
 func (a *BridgeFundingAdapter) GenerateDepositAddress(ctx context.Context, chain entities.Chain, userID uuid.UUID) (string, error) {
 	paymentRail := mapChainToBridgePaymentRail(chain)
 	if paymentRail == "" {
@@ -121,34 +121,11 @@ func (a *BridgeFundingAdapter) GenerateDepositAddress(ctx context.Context, chain
 	return "0xbridge_placeholder_address", nil
 }
 
-// ValidateDeposit implements funding.CircleAdapter interface for Bridge
+// ValidateDeposit implements deposit validation using Bridge
 func (a *BridgeFundingAdapter) ValidateDeposit(ctx context.Context, txHash string, amount decimal.Decimal) (bool, error) {
 	// Bridge transaction validation - placeholder implementation
 	// In production, this would verify transaction on Bridge API
 	return true, nil
-}
-
-// ConvertToUSD implements funding.CircleAdapter interface for Bridge
-func (a *BridgeFundingAdapter) ConvertToUSD(ctx context.Context, amount decimal.Decimal, token entities.Stablecoin) (decimal.Decimal, error) {
-	// Bridge USDC is already USD value, so return amount as-is
-	return amount, nil
-}
-
-// GetWalletBalances implements funding.CircleAdapter interface for Bridge
-func (a *BridgeFundingAdapter) GetWalletBalances(ctx context.Context, walletID string, tokenAddress ...string) (*entities.CircleWalletBalancesResponse, error) {
-	// Get wallet balance from Bridge
-	// For now, return placeholder implementation
-	return &entities.CircleWalletBalancesResponse{
-		TokenBalances: []entities.CircleTokenBalance{
-			{
-				Token: entities.CircleTokenInfo{
-					Name:   "USDC",
-					Symbol: "USDC",
-				},
-				Amount: "0.00",
-			},
-		},
-	}, nil
 }
 
 // P2PBridgeOfframpAdapter adapts bridge.Adapter to the p2p.BridgeOfframp interface.

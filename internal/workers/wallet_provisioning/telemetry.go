@@ -219,17 +219,6 @@ func (tw *TelemetryWorker) TraceWalletCreation(ctx context.Context, userID uuid.
 	)
 }
 
-// TraceCircleAPICall creates a span for Circle API calls
-func (tw *TelemetryWorker) TraceCircleAPICall(ctx context.Context, operation string) (context.Context, trace.Span) {
-	return tw.tracer.Start(ctx, "CircleAPI:"+operation,
-		trace.WithAttributes(
-			attribute.String("api.provider", "circle"),
-			attribute.String("api.operation", operation),
-		),
-		trace.WithSpanKind(trace.SpanKindClient),
-	)
-}
-
 // TelemetryScheduler wraps the scheduler with OpenTelemetry instrumentation
 type TelemetryScheduler struct {
 	scheduler             *Scheduler

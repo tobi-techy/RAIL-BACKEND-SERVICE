@@ -289,7 +289,7 @@ Services should:
 ### With Reconciliation Service
 
 Reconciliation checks:
-- Buffer ledger balances match actual provider/Circle balances
+- Buffer ledger balances match actual provider/Bridge balances
 - All completed conversion jobs have corresponding ledger entries
 - No orphaned or stuck jobs
 

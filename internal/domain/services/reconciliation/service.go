@@ -32,7 +32,6 @@ type Service struct {
 
 	// External services
 	ledgerService  LedgerService
-	circleClient   CircleClient
 	alpacaClient   AlpacaClient
 
 	// Observability
@@ -61,7 +60,8 @@ type LedgerService interface {
 	GetTotalUserFiatExposure(ctx context.Context) (decimal.Decimal, error)
 }
 
-// CircleClient interface for Circle API operations
+// CircleClient interface kept for compatibility — no longer used.
+// Deprecated: remove once all callers are updated.
 type CircleClient interface {
 	GetTotalUSDCBalance(ctx context.Context) (decimal.Decimal, error)
 }
@@ -89,7 +89,7 @@ func NewService(
 	withdrawalRepo *repositories.WithdrawalRepository,
 	conversionRepo *repositories.ConversionRepository,
 	ledgerService LedgerService,
-	circleClient CircleClient,
+	_ CircleClient, // deprecated, kept for signature compatibility
 	alpacaClient AlpacaClient,
 	logger *logger.Logger,
 	metricsService MetricsService,
@@ -102,7 +102,6 @@ func NewService(
 		withdrawalRepo:     withdrawalRepo,
 		conversionRepo:     conversionRepo,
 		ledgerService:      ledgerService,
-		circleClient:       circleClient,
 		alpacaClient:       alpacaClient,
 		logger:             logger,
 		metricsService:     metricsService,
@@ -202,7 +201,6 @@ func (s *Service) RunReconciliation(ctx context.Context, runType string) (*entit
 func (s *Service) runAllChecks(ctx context.Context, reportID uuid.UUID) []*entities.ReconciliationCheckResult {
 	checks := []func(context.Context, uuid.UUID) (*entities.ReconciliationCheckResult, error){
 		s.CheckLedgerConsistency,
-		s.CheckCircleBalance,
 		s.CheckAlpacaBalance,
 		s.CheckDeposits,
 		s.CheckConversionJobs,
@@ -277,8 +275,6 @@ func (s *Service) determineCorrectionAction(exception *entities.ReconciliationEx
 	switch exception.CheckType {
 	case entities.ReconciliationCheckLedgerConsistency:
 		return "Logged ledger inconsistency for manual review"
-	case entities.ReconciliationCheckCircleBalance:
-		return "Logged Circle balance discrepancy for investigation"
 	case entities.ReconciliationCheckAlpacaBalance:
 		return "Logged Alpaca balance discrepancy for investigation"
 	default:

@@ -24,12 +24,13 @@ func NewWithdrawalRepository(db *sqlx.DB) *WithdrawalRepository {
 
 // Create creates a new withdrawal record
 func (r *WithdrawalRepository) Create(ctx context.Context, withdrawal *entities.Withdrawal) error {
+	// Note: withdrawals.circle_wallet_id stores the provider wallet ID (Bridge for current flows).
 	query := `
 		INSERT INTO withdrawals (
 			id, user_id, withdrawal_type, currency, amount, source_account,
 			circle_wallet_id, destination_type, destination_chain, destination_address, bank_account_id,
-			fee_amount, fee_currency, status, idempotency_key, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+			fee_amount, fee_currency, category, narration, status, idempotency_key, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
 	`
 
 	_, err := r.db.ExecContext(ctx, query,
@@ -46,6 +47,8 @@ func (r *WithdrawalRepository) Create(ctx context.Context, withdrawal *entities.
 		withdrawal.BankAccountID,
 		withdrawal.FeeAmount,
 		withdrawal.FeeCurrency,
+		withdrawal.Category,
+		withdrawal.Narration,
 		withdrawal.Status,
 		withdrawal.IdempotencyKey,
 		withdrawal.CreatedAt,
@@ -62,8 +65,8 @@ func (r *WithdrawalRepository) Create(ctx context.Context, withdrawal *entities.
 func (r *WithdrawalRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.Withdrawal, error) {
 	query := `
 		SELECT id, user_id, withdrawal_type, currency, amount, source_account,
-			circle_wallet_id, destination_type, destination_chain, destination_address, bank_account_id,
-			fee_amount, fee_currency, status, bridge_transfer_id, tx_hash, error_message,
+			circle_wallet_id AS bridge_wallet_id, destination_type, destination_chain, destination_address, bank_account_id,
+			fee_amount, fee_currency, category, narration, status, bridge_transfer_id, tx_hash, error_message,
 			idempotency_key, created_at, updated_at, completed_at
 		FROM withdrawals
 		WHERE id = $1
@@ -85,8 +88,8 @@ func (r *WithdrawalRepository) GetByID(ctx context.Context, id uuid.UUID) (*enti
 func (r *WithdrawalRepository) GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error) {
 	query := `
 		SELECT id, user_id, withdrawal_type, currency, amount, source_account,
-			circle_wallet_id, destination_type, destination_chain, destination_address, bank_account_id,
-			fee_amount, fee_currency, status, bridge_transfer_id, tx_hash, error_message,
+			circle_wallet_id AS bridge_wallet_id, destination_type, destination_chain, destination_address, bank_account_id,
+			fee_amount, fee_currency, category, narration, status, bridge_transfer_id, tx_hash, error_message,
 			idempotency_key, created_at, updated_at, completed_at
 		FROM withdrawals
 		WHERE user_id = $1
@@ -107,8 +110,8 @@ func (r *WithdrawalRepository) GetByUserID(ctx context.Context, userID uuid.UUID
 func (r *WithdrawalRepository) GetByIdempotencyKey(ctx context.Context, key string) (*entities.Withdrawal, error) {
 	query := `
 		SELECT id, user_id, withdrawal_type, currency, amount, source_account,
-			circle_wallet_id, destination_type, destination_chain, destination_address, bank_account_id,
-			fee_amount, fee_currency, status, bridge_transfer_id, tx_hash, error_message,
+			circle_wallet_id AS bridge_wallet_id, destination_type, destination_chain, destination_address, bank_account_id,
+			fee_amount, fee_currency, category, narration, status, bridge_transfer_id, tx_hash, error_message,
 			idempotency_key, created_at, updated_at, completed_at
 		FROM withdrawals
 		WHERE idempotency_key = $1
@@ -277,8 +280,8 @@ func (r *WithdrawalRepository) GetStuckWithdrawals(ctx context.Context, slaThres
 	cutoff := time.Now().Add(-slaThreshold)
 	query := `
 		SELECT id, user_id, withdrawal_type, currency, amount, source_account,
-			circle_wallet_id, destination_type, destination_chain, destination_address, bank_account_id,
-			fee_amount, fee_currency, status, bridge_transfer_id, tx_hash, error_message,
+			circle_wallet_id AS bridge_wallet_id, destination_type, destination_chain, destination_address, bank_account_id,
+			fee_amount, fee_currency, category, narration, status, bridge_transfer_id, tx_hash, error_message,
 			idempotency_key, created_at, updated_at, completed_at
 		FROM withdrawals
 		WHERE status NOT IN ($1, $2, $3, $4)
@@ -339,8 +342,8 @@ func (r *WithdrawalRepository) MarkCancelled(ctx context.Context, id uuid.UUID) 
 func (r *WithdrawalRepository) GetByProviderTransferID(ctx context.Context, transferID string) (*entities.Withdrawal, error) {
 	query := `
 		SELECT id, user_id, withdrawal_type, currency, amount, source_account,
-			circle_wallet_id, destination_type, destination_chain, destination_address, bank_account_id,
-			fee_amount, fee_currency, status, bridge_transfer_id, tx_hash, error_message,
+			circle_wallet_id AS bridge_wallet_id, destination_type, destination_chain, destination_address, bank_account_id,
+			fee_amount, fee_currency, category, narration, status, bridge_transfer_id, tx_hash, error_message,
 			idempotency_key, created_at, updated_at, completed_at
 		FROM withdrawals
 		WHERE bridge_transfer_id = $1

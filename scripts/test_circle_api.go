@@ -1,3 +1,4 @@
+// Deprecated: Circle API tests are legacy. Use Bridge integration tests instead.
 package main
 
 import (

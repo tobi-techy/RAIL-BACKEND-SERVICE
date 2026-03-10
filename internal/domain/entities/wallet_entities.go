@@ -10,7 +10,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// WalletChain represents supported blockchain networks for Circle integration
+// WalletChain represents supported blockchain networks for custody integration
 type WalletChain string
 
 const (
@@ -144,7 +144,7 @@ const (
 	WalletSetStatusInactive WalletSetStatus = "inactive"
 )
 
-// WalletSet represents a Circle wallet set
+// WalletSet represents a legacy Circle wallet set (deprecated; Bridge is primary).
 type WalletSet struct {
 	ID                     uuid.UUID       `json:"id" db:"id"`
 	Name                   string          `json:"name" db:"name" validate:"required"`
@@ -178,7 +178,7 @@ func (ws *WalletSet) Validate() error {
 	return nil
 }
 
-// ManagedWallet represents a Circle-managed wallet
+// ManagedWallet represents a custody-managed wallet
 type ManagedWallet struct {
 	ID             uuid.UUID         `json:"id" db:"id"`
 	UserID         uuid.UUID         `json:"user_id" db:"user_id"`
@@ -404,7 +404,7 @@ type WalletProvisioningResponse struct {
 	Job     WalletProvisioningJobResponse `json:"job"`
 }
 
-// === Circle API Models ===
+// === Legacy Circle API Models (deprecated) ===
 
 // CircleWalletSetRequest represents Circle wallet set creation request
 type CircleWalletSetRequest struct {

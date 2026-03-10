@@ -41,7 +41,6 @@ func DefaultWebhookSecurityConfig() WebhookSecurityConfig {
 // defaultWebhookIPWhitelists returns known webhook source IPs
 func defaultWebhookIPWhitelists() map[string][]string {
 	return map[string][]string{
-		// Circle does not publish a fixed IP range — rely on signature verification instead.
 		// Bridge webhook IP ranges are not guaranteed stable across environments.
 		// Rely on provider signature verification and replay protection.
 		"bridge": {},
@@ -54,7 +53,6 @@ func defaultWebhookIPWhitelists() map[string][]string {
 // defaultWebhookRateLimits returns default rate limits per provider
 func defaultWebhookRateLimits() map[string]security.WebhookRateLimit {
 	return map[string]security.WebhookRateLimit{
-		"circle":  {MaxRequests: 1000, Window: time.Minute},
 		"bridge":  {MaxRequests: 500, Window: time.Minute},
 		"alpaca":  {MaxRequests: 2000, Window: time.Minute},
 		"default": {MaxRequests: 100, Window: time.Minute},
@@ -183,7 +181,7 @@ func WebhookSecurity(
 
 // extractProviderFromPath extracts the provider name from webhook path
 func extractProviderFromPath(path string) string {
-	// Expected paths: /api/v1/webhooks/circle, /webhooks/bridge, etc.
+	// Expected paths: /api/v1/webhooks/bridge, /webhooks/funding, etc.
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	for i, part := range parts {
 		if part == "webhooks" && i+1 < len(parts) {
@@ -201,14 +199,11 @@ func resolveWebhookProvider(c *gin.Context) string {
 
 	if source := strings.ToLower(strings.TrimSpace(c.GetHeader("X-Webhook-Source"))); source != "" {
 		switch source {
-		case "bridge", "circle", "alpaca":
+		case "bridge", "alpaca":
 			return source
 		}
 	}
 
-	if c.GetHeader("X-Circle-Signature") != "" {
-		return "circle"
-	}
 	if c.GetHeader("X-Bridge-Signature") != "" || c.GetHeader("Bridge-Signature") != "" {
 		return "bridge"
 	}
@@ -240,9 +235,6 @@ func detectProviderFromBody(c *gin.Context) string {
 	if err := json.Unmarshal(body, &peek); err != nil {
 		return ""
 	}
-	if _, ok := peek["notificationType"]; ok {
-		return "circle"
-	}
 	if _, ok := peek["event_category"]; ok {
 		return "bridge"
 	}
@@ -260,7 +252,6 @@ func extractSignature(c *gin.Context) string {
 		"X-Hub-Signature-256",
 		"X-Webhook-Signature",
 		"Stripe-Signature",
-		"X-Circle-Signature",
 		"X-Bridge-Signature",
 		"Bridge-Signature",
 		"X-Alpaca-Signature",
@@ -399,7 +390,7 @@ func WebhookSecurityWithRedisV8(
 						zap.String("provider", provider),
 						zap.String("path", c.Request.URL.Path))
 					// Return 200 for replays — the original was already processed.
-					// Returning non-2XX causes providers like Circle to retry indefinitely.
+					// Returning non-2XX causes providers like Bridge to retry indefinitely.
 					c.AbortWithStatusJSON(http.StatusOK, gin.H{
 						"status":  "already_processed",
 						"message": "Duplicate webhook request",

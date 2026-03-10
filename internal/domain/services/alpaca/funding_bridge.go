@@ -27,7 +27,7 @@ type BalanceRepository interface {
 	Get(ctx context.Context, userID uuid.UUID) (*entities.Balance, error)
 }
 
-// FundingBridge handles Circle to Alpaca funding transfers
+// FundingBridge handles Bridge custody to Alpaca funding transfers
 type FundingBridge struct {
 	alpacaClient    *alpacaAdapter.Client
 	fundingAdapter  *alpacaAdapter.FundingAdapter
@@ -57,9 +57,9 @@ func NewFundingBridge(
 	}
 }
 
-// TransferFromCircleToAlpaca initiates a transfer from Circle wallet to Alpaca buying power
+// TransferFromBridgeToAlpaca initiates a transfer from Bridge custody to Alpaca buying power
 // This uses Alpaca's Instant Funding to provide immediate buying power
-func (b *FundingBridge) TransferFromCircleToAlpaca(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error {
+func (b *FundingBridge) TransferFromBridgeToAlpaca(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error {
 	// Get user's Alpaca account
 	account, err := b.accountRepo.GetByUserID(ctx, userID)
 	if err != nil {

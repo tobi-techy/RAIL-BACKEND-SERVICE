@@ -91,9 +91,34 @@ func (m *mockStrategyEngine) GetStrategy(ctx context.Context, userID uuid.UUID) 
 	}, nil
 }
 
+func (m *mockStrategyEngine) GetStrategyForAmount(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (*strategy.StrategyResult, error) {
+	return m.GetStrategy(ctx, userID)
+}
+
 func testLogger() *logger.Logger {
 	zapLog, _ := zap.NewDevelopment()
 	return logger.NewLogger(zapLog)
+}
+
+// mockUserRepository implements autoinvest.UserRepository for testing
+type mockUserRepository struct {
+	user *entities.User
+}
+
+func newEligibleUserRepo() *mockUserRepository {
+	kycStatus := "active"
+	alpacaID := "test-alpaca-account"
+	return &mockUserRepository{
+		user: &entities.User{
+			IsActive:        true,
+			BridgeKYCStatus: &kycStatus,
+			AlpacaAccountID: &alpacaID,
+		},
+	}
+}
+
+func (m *mockUserRepository) GetUserEntityByID(ctx context.Context, id uuid.UUID) (*entities.User, error) {
+	return m.user, nil
 }
 
 func TestAutoInvestService_SetOrderPlacer(t *testing.T) {
@@ -102,6 +127,7 @@ func TestAutoInvestService_SetOrderPlacer(t *testing.T) {
 
 	// Create service without order placer
 	svc := autoinvest.NewService(ledger, nil, autoinvest.Config{}, log)
+	svc.SetUserRepository(newEligibleUserRepo())
 
 	// Set order placer after initialization
 	orderPlacer := &mockOrderPlacer{}
@@ -129,6 +155,7 @@ func TestAutoInvestService_TriggerAutoInvestment_BelowThreshold(t *testing.T) {
 	}
 
 	svc := autoinvest.NewService(ledger, orderPlacer, config, log)
+	svc.SetUserRepository(newEligibleUserRepo())
 
 	err := svc.TriggerAutoInvestment(context.Background(), autoinvest.TriggerRequest{
 		UserID:        uuid.New(),
@@ -146,6 +173,7 @@ func TestAutoInvestService_TriggerAutoInvestment_RequiresCorrelationID(t *testin
 	orderPlacer := &mockOrderPlacer{}
 
 	svc := autoinvest.NewService(ledger, orderPlacer, autoinvest.Config{}, log)
+	svc.SetUserRepository(newEligibleUserRepo())
 
 	err := svc.TriggerAutoInvestment(context.Background(), autoinvest.TriggerRequest{
 		UserID:        uuid.New(),
@@ -173,6 +201,7 @@ func TestAutoInvestService_WithStrategyEngine(t *testing.T) {
 
 	svc := autoinvest.NewService(ledger, orderPlacer, autoinvest.Config{}, log)
 	svc.SetStrategyEngine(strategyEngine)
+	svc.SetUserRepository(newEligibleUserRepo())
 
 	err := svc.TriggerAutoInvestment(context.Background(), autoinvest.TriggerRequest{
 		UserID:        uuid.New(),

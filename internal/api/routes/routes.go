@@ -163,9 +163,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	// Wire user profile provider for withdrawal AlpacaAccountID lookup
 	walletFundingHandlers.SetUserProfileProvider(container.UserRepo)
 
-	// Wire ledger and Circle for reconciliation
+	// Wire ledger service for reconciliation
 	walletFundingHandlers.SetLedgerService(container.LedgerService)
-	walletFundingHandlers.SetCircleClient(container.CircleClient)
 
 	// Wire allocation service for unified balance queries
 	if allocationSvc := container.GetAllocationService(); allocationSvc != nil {
@@ -197,6 +196,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.GetPasscodeService(),
 		container.RedisClient,
 		container.GetAccountDeletionService(),
+		container.Config.KYC.WebhookSecret,
 	)
 	securityHandlers := handlers.NewSecurityHandlers(
 		container.GetPasscodeService(),
@@ -792,7 +792,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			webhooks.POST("/brokerage-fill", walletFundingHandlers.BrokerageFillWebhook)
 
 			// Unified funding webhook - routes based on source header/payload
-			// POST /webhooks/funding - handles Bridge, Circle, and Alpaca webhooks
+			// POST /webhooks/funding - handles Bridge and Alpaca webhooks
 			if unifiedWebhookHandler := container.GetUnifiedFundingWebhookHandler(); unifiedWebhookHandler != nil {
 				webhooks.POST("/funding", unifiedWebhookHandler.HandleFundingWebhook)
 			}

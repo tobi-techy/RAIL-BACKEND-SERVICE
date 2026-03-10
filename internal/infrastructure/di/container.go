@@ -26,7 +26,6 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/autoinvest"
 	"github.com/rail-service/rail_service/internal/domain/services/card"
 	"github.com/rail-service/rail_service/internal/domain/services/copytrading"
-	entitysecret "github.com/rail-service/rail_service/internal/domain/services/entity_secret"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/domain/services/integration"
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
@@ -53,7 +52,6 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
-	"github.com/rail-service/rail_service/internal/infrastructure/circle"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/rail-service/rail_service/pkg/auth"
@@ -64,11 +62,6 @@ import (
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
-
-// CircleAdapter adapts circle.Client to funding.CircleAdapter interface
-type CircleAdapter struct {
-	client *circle.Client
-}
 
 // BridgeWalletBalanceAdapter adapts bridge.Adapter to services that need (customerID, walletID) -> string balance
 type BridgeWalletBalanceAdapter struct {
@@ -107,47 +100,6 @@ func (a *BridgeWalletBalanceAdapter) TransferFunds(ctx context.Context, req map[
 		return nil, err
 	}
 	return map[string]interface{}{"id": transfer.ID, "state": string(transfer.State)}, nil
-}
-
-func (a *CircleAdapter) GenerateDepositAddress(ctx context.Context, chain entities.Chain, userID uuid.UUID) (string, error) {
-	walletChain := mapChainToWalletChain(chain)
-	if walletChain == "" {
-		return "", fmt.Errorf("unsupported chain for deposit: %s", chain)
-	}
-	return a.client.GenerateDepositAddress(ctx, walletChain, userID)
-}
-
-// mapChainToWalletChain maps the domain Chain type to Circle's WalletChain.
-// For testnet environments Circle uses explicit testnet chain identifiers.
-func mapChainToWalletChain(chain entities.Chain) entities.WalletChain {
-	switch chain {
-	case entities.ChainMATIC, entities.ChainMATICAmoy:
-		return entities.WalletChainMATICAmoy
-	case entities.ChainAVAX, entities.ChainAVAXFuji:
-		return entities.WalletChainAVAXFuji
-	case entities.ChainSOL, entities.ChainSOLDevnet:
-		return entities.WalletChainSOLDevnet
-	case entities.ChainBASE, entities.ChainBASESepolia:
-		return entities.WalletChainBASESepolia
-	default:
-		return ""
-	}
-}
-
-func (a *CircleAdapter) ValidateDeposit(ctx context.Context, txHash string, amount decimal.Decimal) (bool, error) {
-	// This method doesn't exist in circle.Client, so we'll need to implement it
-	// For now, return a placeholder implementation
-	return true, nil
-}
-
-func (a *CircleAdapter) ConvertToUSD(ctx context.Context, amount decimal.Decimal, token entities.Stablecoin) (decimal.Decimal, error) {
-	// This method doesn't exist in circle.Client, so we'll need to implement it
-	// For now, return the same amount as placeholder
-	return amount, nil
-}
-
-func (a *CircleAdapter) GetWalletBalances(ctx context.Context, walletID string, tokenAddress ...string) (*entities.CircleWalletBalancesResponse, error) {
-	return a.client.GetWalletBalances(ctx, walletID, tokenAddress...)
 }
 
 // BridgeDepositAdapter adapts bridge.Client to funding.BridgeDepositClient interface
@@ -446,47 +398,6 @@ func (a *WithdrawalLedgerAdapter) ReverseTransaction(ctx context.Context, userID
 
 	_, err = a.ledgerService.CreateTransaction(ctx, req)
 	return err
-}
-
-// WithdrawalCircleAdapter adapts circle.Client to withdrawal.CircleClient interface
-type WithdrawalCircleAdapter struct {
-	client *circle.Client
-}
-
-func (a *WithdrawalCircleAdapter) TransferFunds(ctx context.Context, req entities.CircleTransferRequest) (map[string]interface{}, error) {
-	resp, err := a.client.TransferFunds(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	return resp, nil
-}
-
-func (a *WithdrawalCircleAdapter) GetWallet(ctx context.Context, walletID string) (map[string]interface{}, error) {
-	wallet, err := a.client.GetWallet(ctx, walletID)
-	if err != nil {
-		return nil, err
-	}
-	// Extract address from wallet data
-	address := wallet.Wallet.Address
-	if address == "" && len(wallet.Wallet.Addresses) > 0 {
-		address = wallet.Wallet.Addresses[0].Address
-	}
-	return map[string]interface{}{
-		"id":      wallet.Wallet.ID,
-		"address": address,
-	}, nil
-}
-
-func (a *WithdrawalCircleAdapter) GetCCTPTransaction(ctx context.Context, transactionID string) (*entities.CCTPTransactionStatus, error) {
-	return a.client.GetCCTPTransaction(ctx, transactionID)
-}
-
-func (a *WithdrawalCircleAdapter) FindRecentOutboundTransfer(ctx context.Context, walletID, destinationAddress string, amount decimal.Decimal, since time.Time) (*entities.CCTPTransactionStatus, error) {
-	return a.client.FindRecentOutboundTransfer(ctx, walletID, destinationAddress, amount, since)
-}
-
-func (a *WithdrawalCircleAdapter) InitiateCCTPBurn(ctx context.Context, req *entities.CCTPBurnRequest) (*entities.CCTPBurnResponse, error) {
-	return a.client.InitiateCCTPBurn(ctx, req)
 }
 
 // WithdrawalBridgeAdapter adapts bridge.Adapter to withdrawal.BridgeAdapter interface
@@ -864,7 +775,6 @@ type Container struct {
 	ReconciliationRepo        repositories.ReconciliationRepository
 
 	// External Services
-	CircleClient  *circle.Client // retained for funding deposit address generation
 	AlpacaClient  *alpaca.Client
 	AlpacaService *alpaca.Service
 	BridgeClient  *bridge.Client
@@ -876,7 +786,6 @@ type Container struct {
 
 	// Bridge Domain Adapters
 	BridgeKYCAdapter              *BridgeKYCAdapter
-	BridgeFundingAdapter          *BridgeFundingAdapter
 	BridgeVirtualAccountService   *funding.BridgeVirtualAccountService
 	BridgeWebhookHandler          *handlers.BridgeWebhookHandler
 	BridgeCustomerStatusProcessor *webhooks.BridgeCustomerStatusProcessor
@@ -893,7 +802,6 @@ type Container struct {
 	FundingService          *funding.Service
 	InvestingService        *investing.Service
 	BalanceService          *services.BalanceService
-	EntitySecretService     *entitysecret.Service
 	LedgerService           *ledger.Service
 	ReconciliationService   *reconciliation.Service
 	ReconciliationScheduler *reconciliation.Scheduler
@@ -1052,16 +960,6 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	onboardingJobRepo := repositories.NewOnboardingJobRepository(db, zapLog)
 
 	// Initialize external services
-	circleConfig := circle.Config{
-		APIKey:                 cfg.Circle.APIKey,
-		Environment:            cfg.Circle.Environment,
-		BaseURL:                cfg.Circle.BaseURL,
-		EntitySecretCiphertext: cfg.Circle.EntitySecretCiphertext,
-		PublicKeyPEM:           cfg.Circle.PublicKeyPEM,
-		WalletSetID:            cfg.Circle.DefaultWalletSetID,
-	}
-	circleClient := circle.NewClient(circleConfig, zapLog)
-
 	// Initialize Alpaca service
 	alpacaConfig := alpaca.Config{
 		ClientID:      cfg.Alpaca.ClientID,
@@ -1137,19 +1035,6 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	// Initialize cache invalidator
 	cacheInvalidator := cache.NewCacheInvalidator(redisClient, zapLog, cache.InvalidateImmediate)
 
-	// Initialize entity secret service
-	// Non-fatal: app can start for non-wallet operations, but wallet creation will be rejected
-	zapLog.Debug("Initializing entity secret service",
-		zap.String("entitySecretCiphertext_length", fmt.Sprintf("%d", len(cfg.Circle.EntitySecretCiphertext))),
-		zap.String("publicKeyPEM_length", fmt.Sprintf("%d", len(cfg.Circle.PublicKeyPEM))))
-	entitySecretService, err := entitysecret.NewService(zapLog, cfg.Circle.EntitySecretCiphertext, cfg.Circle.PublicKeyPEM)
-	if err != nil {
-		zapLog.Warn("Entity secret service unavailable — wallet creation will be disabled until configured",
-			zap.Error(err),
-			zap.String("entitySecretCiphertext_length", fmt.Sprintf("%d", len(cfg.Circle.EntitySecretCiphertext))))
-		entitySecretService = nil
-	}
-
 	container := &Container{
 		Config: cfg,
 		DB:     db,
@@ -1177,7 +1062,6 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		NotificationRepo:          repositories.NewNotificationRepository(db),
 
 		// External Services
-		CircleClient:  circleClient,
 		AlpacaClient:  alpacaClient,
 		AlpacaService: alpacaService,
 		BridgeClient:  bridgeClient,
@@ -1188,11 +1072,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		RedisClient:   redisClient,
 
 		// Bridge Domain Adapters
-		BridgeKYCAdapter:     NewBridgeKYCAdapter(bridgeAdapter, userRepo),
-		BridgeFundingAdapter: NewBridgeFundingAdapter(bridgeAdapter),
-
-		// Entity Secret Service
-		EntitySecretService: entitySecretService,
+		BridgeKYCAdapter: NewBridgeKYCAdapter(bridgeAdapter, userRepo),
 
 		// Cache & Queue
 		CacheInvalidator: cacheInvalidator,
@@ -1215,14 +1095,14 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		container.Config,
 	)
 
-	container.OnboardingJobService = services.NewOnboardingJobService(container.OnboardingJobRepo, container.ZapLog, convertWalletChains(cfg.Circle.SupportedChains, container.ZapLog))
+	container.OnboardingJobService = services.NewOnboardingJobService(container.OnboardingJobRepo, container.ZapLog, convertWalletChains(cfg.Bridge.SupportedChains, container.ZapLog))
 
 	return container, nil
 }
 
 // initializeDomainServices initializes all domain services with their dependencies
 func (c *Container) initializeDomainServices() error {
-	defaultWalletChains := convertWalletChains(c.Config.Circle.SupportedChains, c.ZapLog)
+	defaultWalletChains := convertWalletChains(c.Config.Bridge.SupportedChains, c.ZapLog)
 	walletServiceConfig := wallet.Config{
 		WalletSetNamePrefix: c.Config.Circle.DefaultWalletSetName,
 		SupportedChains:     defaultWalletChains,
@@ -1334,15 +1214,13 @@ func (c *Container) initializeDomainServices() error {
 	alpacaBalanceAdapter := &AlpacaFundingAdapter{adapter: alpacaFundingAdapter, client: c.AlpacaClient}
 	c.BalanceService = services.NewBalanceService(c.BalanceRepo, alpacaBalanceAdapter, c.Logger)
 
-	// Initialize funding service with ledger integration (Bridge replaces Due)
-	circleAdapter := &CircleAdapter{client: c.CircleClient}
+	// Initialize funding service with ledger integration (Bridge replaces Circle)
 	ledgerAdapter := &LedgerIntegrationAdapter{integration: ledgerIntegration}
 	c.FundingService = funding.NewService(
 		c.DepositRepo,
 		simpleWalletRepo,
 		c.WalletRepo,
 		virtualAccountRepo,
-		circleAdapter,
 		&AlpacaFundingAdapter{adapter: alpacaFundingAdapter, client: c.AlpacaClient},
 		ledgerAdapter,
 		c.Logger,
@@ -1404,19 +1282,22 @@ func (c *Container) initializeDomainServices() error {
 		)
 
 		webhookSecret := c.Config.Bridge.WebhookSecret
+		// Security fix: Only skip verification if explicitly configured for development AND no secret is set
+		// This ensures production ALWAYS requires verification
 		skipWebhookVerification := c.Config.Environment == "development" && webhookSecret == ""
 		c.BridgeWebhookHandler = handlers.NewBridgeWebhookHandler(
 			bridgeWebhookService,
 			c.ZapLog,
 			webhookSecret,
 			skipWebhookVerification,
+			c.Config.Environment,
 		)
 	} else {
 		c.ZapLog.Warn("Bridge client not configured - Bridge virtual account service disabled")
 	}
 
 	// Initialize auto-invest service (OrderPlacer will be set after InvestingService is created)
-	_ = repositories.NewAutoInvestRepository(sqlxDB) // Keep for future use
+	autoInvestRepo := repositories.NewAutoInvestRepository(sqlxDB)
 	autoInvestConfig := autoinvest.Config{
 		MinThreshold: decimal.Zero,
 	}
@@ -1427,6 +1308,7 @@ func (c *Container) initializeDomainServices() error {
 		c.Logger,
 	)
 	c.AutoInvestService.SetUserRepository(c.UserRepo)
+	c.AutoInvestService.SetAutoInvestRepository(autoInvestRepo)
 
 	// Wire auto-invest service to allocation service for automatic triggering
 	c.AllocationService.SetAutoInvestService(c.AutoInvestService)
@@ -1464,6 +1346,10 @@ func (c *Container) initializeDomainServices() error {
 	expoPushService := adapters.NewExpoPushService(c.DeviceTokenRepo, c.ZapLog)
 	c.NotificationService.SetPushSender(expoPushService)
 
+	// Wire notification service into auto-invest and allocation for failure alerts
+	c.AutoInvestService.SetNotificationService(c.NotificationService)
+	c.AllocationService.SetNotificationService(c.NotificationService)
+
 	c.InvestingService = investing.NewService(
 		basketRepo,
 		orderRepo,
@@ -1482,6 +1368,8 @@ func (c *Container) initializeDomainServices() error {
 
 	// Initialize strategy engine and wire to auto-invest service
 	c.StrategyEngine = strategy.NewEngine(&strategyUserProfileAdapter{userRepo: c.UserRepo}, c.Logger)
+	c.StrategyEngine.SetRulesProvider(repositories.NewInvestmentRulesRepository(sqlxDB))
+	c.StrategyEngine.SetFrequencyProvider(repositories.NewDepositRepository(sqlxDB))
 	c.AutoInvestService.SetStrategyEngine(c.StrategyEngine)
 
 	// Initialize reconciliation service
@@ -1611,8 +1499,8 @@ func (c *Container) initializeDomainServices() error {
 		c.LimitsService,
 		c.DomainAuditService,
 		withdrawalNotificationAdapter,
-		withdrawalBridgeAdapter,       // BridgeAdapter (fiat offramp)
-		c.BridgeAdapter,               // BridgeCryptoTransferAdapter (crypto wallet transfers)
+		withdrawalBridgeAdapter, // BridgeAdapter (fiat offramp)
+		c.BridgeAdapter,         // BridgeCryptoTransferAdapter (crypto wallet transfers)
 		c.Logger,
 	)
 
@@ -1654,32 +1542,18 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog.Warn("Advanced features initialization failed", zap.Error(err))
 	}
 
-	// Initialize unified funding webhook handler (Bridge + Circle + Alpaca).
-	// This enables /api/v1/webhooks/funding routing.
-	circleWebhookHandler, err := webhooks.NewCircleWebhookHandler(
-		c.FundingService,
-		c.WalletRepo,
-		c.WithdrawalRepo,
-		withdrawalLedgerAdapter,
-		c.Logger,
-		c.Config.Circle.APIKey,
-		c.Config.Circle.BaseURL,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to create Circle webhook handler: %w", err)
-	}
+	// Initialize unified funding webhook handler (Bridge + Alpaca).
 	alpacaWebhookHandler := c.GetAlpacaWebhookHandlers()
 	c.UnifiedFundingWebhookHandler = webhooks.NewUnifiedFundingWebhookHandler(
 		c.BridgeWebhookHandler,
-		circleWebhookHandler,
+		nil, // circleHandler removed
 		alpacaWebhookHandler,
 		c.ZapLog,
-		c.Config.Environment == "development" || strings.TrimSpace(c.Config.Circle.APIKey) == "",
+		c.Config.Environment == "development",
 	)
 	if bridgeSecret := strings.TrimSpace(c.Config.Bridge.WebhookSecret); bridgeSecret != "" {
 		c.UnifiedFundingWebhookHandler.SetWebhookSecret("bridge", bridgeSecret)
 	}
-	// Circle uses ECDSA verification, no webhook secret needed in unified handler
 	if alpacaSecret := strings.TrimSpace(c.Config.Alpaca.WebhookSecret); alpacaSecret != "" {
 		c.UnifiedFundingWebhookHandler.SetWebhookSecret("alpaca", alpacaSecret)
 	}
@@ -1955,7 +1829,7 @@ func (c *Container) initializeReconciliationService() error {
 		c.WithdrawalRepo,
 		c.ConversionRepo,
 		c.LedgerService,
-		&circleClientAdapter{
+		&bridgeBalanceAdapter{
 			bridgeAdapter: c.BridgeAdapter,
 			walletRepo:    c.WalletRepo,
 		},
@@ -1985,12 +1859,12 @@ func (c *Container) initializeReconciliationService() error {
 }
 
 // Adapters for reconciliation service
-type circleClientAdapter struct {
+type bridgeBalanceAdapter struct {
 	bridgeAdapter *bridge.Adapter
 	walletRepo    *repositories.WalletRepository
 }
 
-func (a *circleClientAdapter) GetTotalUSDCBalance(ctx context.Context) (decimal.Decimal, error) {
+func (a *bridgeBalanceAdapter) GetTotalUSDCBalance(ctx context.Context) (decimal.Decimal, error) {
 	filters := repositories.WalletListFilters{
 		Status: (*entities.WalletStatus)(ptrOf(entities.WalletStatusLive)),
 		Limit:  10000,
@@ -2115,7 +1989,7 @@ func ptrOf[T any](v T) *T {
 
 func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChain {
 	if len(raw) == 0 {
-		logger.Warn("circle.supported_chains not configured; defaulting to SOL-DEVNET")
+		logger.Warn("bridge.supported_chains not configured; defaulting to SOL-DEVNET")
 		return []entities.WalletChain{entities.WalletChainSOLDevnet}
 	}
 
@@ -2123,10 +1997,37 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 	seen := make(map[entities.WalletChain]struct{})
 
 	for _, entry := range raw {
-		chain := entities.WalletChain(strings.TrimSpace(strings.ToUpper(entry)))
-		if chain == "" {
+		if strings.TrimSpace(entry) == "" {
 			continue
 		}
+
+		upper := strings.ToUpper(strings.TrimSpace(entry))
+		chain := entities.WalletChain(upper)
+		if !chain.IsValid() {
+			normalizedKey := strings.NewReplacer("-", "_", " ", "_").Replace(upper)
+			switch normalizedKey {
+			case "SOLANA", "SOL":
+				chain = entities.WalletChainSolana
+			case "SOL_DEVNET":
+				chain = entities.WalletChainSOLDevnet
+			case "POLYGON", "MATIC":
+				chain = entities.WalletChainPolygon
+			case "MATIC_AMOY":
+				chain = entities.WalletChainMATICAmoy
+			case "AVALANCHE", "AVAX", "AVALANCHE_C_CHAIN":
+				chain = entities.WalletChainAvalanche
+			case "AVAX_FUJI":
+				chain = entities.WalletChainAVAXFuji
+			case "BASE":
+				chain = entities.WalletChainBase
+			case "BASE_SEPOLIA":
+				chain = entities.WalletChainBASESepolia
+			default:
+				logger.Warn("Ignoring unsupported wallet chain from configuration", zap.String("chain", upper))
+				continue
+			}
+		}
+
 		if !chain.IsValid() {
 			logger.Warn("Ignoring unsupported wallet chain from configuration", zap.String("chain", string(chain)))
 			continue
@@ -2139,7 +2040,7 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 	}
 
 	if len(normalized) == 0 {
-		logger.Warn("circle.supported_chains contained no valid entries; defaulting to SOL-DEVNET")
+		logger.Warn("bridge.supported_chains contained no valid entries; defaulting to SOL-DEVNET")
 		return []entities.WalletChain{entities.WalletChainSOLDevnet}
 	}
 
@@ -3044,6 +2945,7 @@ func (c *Container) initializeBridgeServices() {
 		c.ZapLog,
 		webhookSecret,
 		skipWebhookVerification,
+		c.Config.Environment,
 	)
 
 	c.ZapLog.Info("Bridge webhook handler initialized")

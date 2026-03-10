@@ -134,7 +134,7 @@ func DefaultEngineConfig() *EngineConfig {
 // ============================================================================
 
 // ProcessDeposit handles a new deposit detected on-chain
-// This is called when Circle webhook notifies us of an incoming transfer
+// This is called when Bridge webhook notifies us of an incoming transfer
 func (e *Engine) ProcessDeposit(ctx context.Context, req *DepositRequest) error {
 	e.logger.Info("Processing deposit",
 		"tx_hash", req.TxHash,
@@ -633,7 +633,7 @@ func (e *Engine) CheckSystemBufferLevel(ctx context.Context) (*BufferStatus, err
 
 	// Alert if significant discrepancy
 	if status.Discrepancy.Abs().GreaterThan(decimal.NewFromFloat(100.0)) {
-		e.logger.Warn("ALERT: Ledger-Circle balance discrepancy detected",
+		e.logger.Warn("ALERT: Ledger-Bridge balance discrepancy detected",
 			"ledger_balance", systemAccount.Balance,
 			"actual_balance", actualBalance,
 			"discrepancy", status.Discrepancy)
