@@ -597,7 +597,6 @@ func (s *BridgeVirtualAccountService) ProcessCryptoDeposit(ctx context.Context, 
 		confirmedAt := now
 		if err := s.depositRepo.UpdateStatus(ctx, depositID, "confirmed", &confirmedAt); err != nil {
 			s.logger.Error("Failed to update deposit status to confirmed", "deposit_id", depositID, "error", err)
-			return fmt.Errorf("update deposit status confirmed: %w", err)
 		}
 	}
 
