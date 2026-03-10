@@ -551,6 +551,72 @@ func generateFiatIdempotencyKey(transactionRef, virtualAccountID, amount string)
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(hashStr)).String()
 }
 
+// ProcessCryptoDeposit processes an incoming crypto deposit from a Bridge liquidation address
+// and triggers the 70/30 allocation split.
+func (s *BridgeVirtualAccountService) ProcessCryptoDeposit(ctx context.Context, userID uuid.UUID, transferID string, amount decimal.Decimal) error {
+	if !amount.GreaterThan(decimal.Zero) {
+		return fmt.Errorf("amount must be greater than zero")
+	}
+
+	idempotencyKey := generateFiatIdempotencyKey(transferID, userID.String(), amount.String())
+
+	now := time.Now()
+	depositID := uuid.New()
+	deposit := &entities.Deposit{
+		ID:             depositID,
+		IdempotencyKey: idempotencyKey,
+		UserID:         userID,
+		Chain:          entities.ChainSOLDevnet,
+		TxHash:         transferID,
+		Token:          entities.StablecoinUSDC,
+		Amount:         amount,
+		Status:         "pending",
+		CreatedAt:      now,
+	}
+
+	if s.depositRepo != nil {
+		if err := s.depositRepo.Create(ctx, deposit); err != nil {
+			if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+				s.logger.Info("Crypto deposit already processed (idempotent)", "transfer_id", transferID)
+				return nil
+			}
+			return fmt.Errorf("create deposit: %w", err)
+		}
+	}
+
+	if err := s.ledgerIntegration.RecordDeposit(ctx, userID, amount, depositID, "crypto", transferID); err != nil {
+		if s.depositRepo != nil {
+			_ = s.depositRepo.DeletePendingDeposit(ctx, depositID)
+		}
+		return fmt.Errorf("record deposit: %w", err)
+	}
+
+	if s.depositRepo != nil {
+		confirmedAt := now
+		_ = s.depositRepo.UpdateStatus(ctx, depositID, "confirmed", &confirmedAt)
+	}
+
+	sourceTxID := transferID
+	if err := s.allocationService.ProcessIncomingFunds(ctx, &entities.IncomingFundsRequest{
+		UserID:     userID,
+		Amount:     amount,
+		EventType:  entities.AllocationEventTypeCryptoDeposit,
+		DepositID:  &depositID,
+		SourceTxID: &sourceTxID,
+		Metadata: map[string]any{
+			"source":      "bridge_liquidation_address",
+			"transfer_id": transferID,
+		},
+	}); err != nil {
+		if s.depositRepo != nil {
+			_ = s.depositRepo.UpdateStatus(ctx, depositID, "pending_allocation", nil)
+		}
+		return fmt.Errorf("process allocation: %w", err)
+	}
+
+	return nil
+}
+
 // Helper functions
 
 func mapBridgeVAStatus(status bridge.VirtualAccountStatus) entities.VirtualAccountStatus {
