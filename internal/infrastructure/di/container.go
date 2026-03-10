@@ -1832,6 +1832,7 @@ func (c *Container) initializeReconciliationService() error {
 		&bridgeBalanceAdapter{
 			bridgeAdapter: c.BridgeAdapter,
 			walletRepo:    c.WalletRepo,
+			userRepo:      c.UserRepo,
 		},
 		&alpacaClientAdapter{
 			client:  c.AlpacaClient,
@@ -1862,6 +1863,7 @@ func (c *Container) initializeReconciliationService() error {
 type bridgeBalanceAdapter struct {
 	bridgeAdapter *bridge.Adapter
 	walletRepo    *repositories.WalletRepository
+	userRepo      *repositories.UserRepository
 }
 
 func (a *bridgeBalanceAdapter) GetTotalUSDCBalance(ctx context.Context) (decimal.Decimal, error) {
@@ -1880,7 +1882,11 @@ func (a *bridgeBalanceAdapter) GetTotalUSDCBalance(ctx context.Context) (decimal
 		if wallet.BridgeWalletID == "" {
 			continue
 		}
-		wb, err := a.bridgeAdapter.GetWalletBalance(ctx, wallet.UserID.String(), wallet.BridgeWalletID)
+		user, err := a.userRepo.GetByID(ctx, wallet.UserID)
+		if err != nil || user == nil || user.BridgeCustomerID == nil || *user.BridgeCustomerID == "" {
+			continue
+		}
+		wb, err := a.bridgeAdapter.GetWalletBalance(ctx, *user.BridgeCustomerID, wallet.BridgeWalletID)
 		if err != nil {
 			continue
 		}
@@ -1989,8 +1995,8 @@ func ptrOf[T any](v T) *T {
 
 func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChain {
 	if len(raw) == 0 {
-		logger.Warn("bridge.supported_chains not configured; defaulting to SOL-DEVNET")
-		return []entities.WalletChain{entities.WalletChainSOLDevnet}
+		logger.Fatal("bridge.supported_chains not configured - refusing to start with default testnet chain")
+		return nil // unreachable; Fatal calls os.Exit
 	}
 
 	normalized := make([]entities.WalletChain, 0, len(raw))
@@ -2040,8 +2046,8 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 	}
 
 	if len(normalized) == 0 {
-		logger.Warn("bridge.supported_chains contained no valid entries; defaulting to SOL-DEVNET")
-		return []entities.WalletChain{entities.WalletChainSOLDevnet}
+		logger.Fatal("bridge.supported_chains contained no valid entries - refusing to start with default testnet chain")
+		return nil // unreachable; Fatal calls os.Exit
 	}
 
 	return normalized

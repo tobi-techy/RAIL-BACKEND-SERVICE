@@ -670,6 +670,10 @@ func (r *LedgerRepository) GetAccountBalance(ctx context.Context, accountID uuid
 // GetAccountBalanceForUpdate retrieves the balance with a row-level lock (SELECT FOR UPDATE).
 // Must be called within a database transaction to prevent concurrent balance modifications.
 func (r *LedgerRepository) GetAccountBalanceForUpdate(ctx context.Context, accountID uuid.UUID) (decimal.Decimal, error) {
+	if txFromContext(ctx) == nil {
+		return decimal.Zero, fmt.Errorf("GetAccountBalanceForUpdate must be called within a transaction")
+	}
+
 	query := `SELECT balance FROM ledger_accounts WHERE id = $1 FOR UPDATE`
 
 	var balance decimal.Decimal
