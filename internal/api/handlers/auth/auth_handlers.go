@@ -53,7 +53,7 @@ type AccountDeletionService interface {
 }
 
 const (
-	authFlowTimeout            = 8 * time.Second
+	authFlowTimeout            = 30 * time.Second
 	onboardingCompleteTimeout  = 30 * time.Second
 	onboardingStatusReqTimeout = 3 * time.Second
 	profileReadTimeout         = 4 * time.Second

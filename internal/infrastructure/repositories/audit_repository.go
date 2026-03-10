@@ -35,7 +35,7 @@ func (r *AuditRepository) Create(ctx context.Context, log *entities.AuditLog) er
 	query := `
 		INSERT INTO audit_logs (
 			id, user_id, action, resource_type, resource_id, ip_address, user_agent,
-			changes, status, error_message, created_at
+			changes, status, error_message, at
 		)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'success', NULL, $9)
 	`
@@ -51,7 +51,7 @@ func (r *AuditRepository) Create(ctx context.Context, log *entities.AuditLog) er
 
 func (r *AuditRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.AuditLog, error) {
 	query := `
-		SELECT id, user_id, action, resource_type, resource_id, ip_address, user_agent, changes, created_at
+		SELECT id, user_id, action, resource_type, resource_id, ip_address, user_agent, changes, at AS created_at
 		FROM audit_logs
 		WHERE id = $1
 	`
@@ -82,7 +82,7 @@ func (r *AuditRepository) List(ctx context.Context, filter repositories.AuditLog
 	var args []interface{}
 	argIdx := 1
 
-	sb.WriteString(`SELECT id, user_id, action, resource_type, resource_id, ip_address, user_agent, changes, created_at FROM audit_logs WHERE 1=1`)
+	sb.WriteString(`SELECT id, user_id, action, resource_type, resource_id, ip_address, user_agent, changes, at AS created_at FROM audit_logs WHERE 1=1`)
 
 	if filter.UserID != nil {
 		sb.WriteString(fmt.Sprintf(" AND user_id = $%d", argIdx))
@@ -105,17 +105,17 @@ func (r *AuditRepository) List(ctx context.Context, filter repositories.AuditLog
 		argIdx++
 	}
 	if filter.StartDate != nil {
-		sb.WriteString(fmt.Sprintf(" AND created_at >= $%d", argIdx))
+		sb.WriteString(fmt.Sprintf(" AND at >= $%d", argIdx))
 		args = append(args, *filter.StartDate)
 		argIdx++
 	}
 	if filter.EndDate != nil {
-		sb.WriteString(fmt.Sprintf(" AND created_at <= $%d", argIdx))
+		sb.WriteString(fmt.Sprintf(" AND at <= $%d", argIdx))
 		args = append(args, *filter.EndDate)
 		argIdx++
 	}
 
-	sb.WriteString(" ORDER BY created_at DESC")
+	sb.WriteString(" ORDER BY at DESC")
 
 	if filter.Limit > 0 {
 		sb.WriteString(fmt.Sprintf(" LIMIT $%d", argIdx))
@@ -179,12 +179,12 @@ func (r *AuditRepository) Count(ctx context.Context, filter repositories.AuditLo
 		argIdx++
 	}
 	if filter.StartDate != nil {
-		sb.WriteString(fmt.Sprintf(" AND created_at >= $%d", argIdx))
+		sb.WriteString(fmt.Sprintf(" AND at >= $%d", argIdx))
 		args = append(args, *filter.StartDate)
 		argIdx++
 	}
 	if filter.EndDate != nil {
-		sb.WriteString(fmt.Sprintf(" AND created_at <= $%d", argIdx))
+		sb.WriteString(fmt.Sprintf(" AND at <= $%d", argIdx))
 		args = append(args, *filter.EndDate)
 	}
 

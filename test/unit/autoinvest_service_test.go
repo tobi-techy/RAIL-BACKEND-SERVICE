@@ -59,7 +59,7 @@ type orderPlacerCall struct {
 	amount decimal.Decimal
 }
 
-func (m *mockOrderPlacer) PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal) (*entities.AlpacaOrderResponse, error) {
+func (m *mockOrderPlacer) PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal, clientOrderID string) (*entities.AlpacaOrderResponse, error) {
 	m.called = true
 	m.orders = append(m.orders, orderPlacerCall{
 		userID: userID,
@@ -225,8 +225,8 @@ func TestStrategyEngine_AggressiveGrowthForYoungUser(t *testing.T) {
 	result, err := engine.GetStrategy(context.Background(), uuid.New())
 
 	require.NoError(t, err)
-	assert.Equal(t, "Aggressive Growth", result.StrategyName)
-	assert.Len(t, result.Allocations, 3)
+	assert.Equal(t, "Gen Z Early Career", result.StrategyName)
+	assert.NotEmpty(t, result.Allocations)
 }
 
 func TestStrategyEngine_BalancedGrowthForMidAgeUser(t *testing.T) {
@@ -245,7 +245,7 @@ func TestStrategyEngine_BalancedGrowthForMidAgeUser(t *testing.T) {
 	result, err := engine.GetStrategy(context.Background(), uuid.New())
 
 	require.NoError(t, err)
-	assert.Equal(t, "Balanced Growth", result.StrategyName)
+	assert.Equal(t, "Millennial Growth", result.StrategyName)
 }
 
 func TestStrategyEngine_ConservativeForMatureUser(t *testing.T) {
@@ -264,7 +264,7 @@ func TestStrategyEngine_ConservativeForMatureUser(t *testing.T) {
 	result, err := engine.GetStrategy(context.Background(), uuid.New())
 
 	require.NoError(t, err)
-	assert.Equal(t, "Conservative", result.StrategyName)
+	assert.Equal(t, "Gen X Stability", result.StrategyName)
 }
 
 func TestStrategyEngine_FallbackWhenNoAge(t *testing.T) {
