@@ -28,7 +28,7 @@ import (
 // BridgeWebhookService defines operations for processing Bridge events
 type BridgeWebhookService interface {
 	ProcessFiatDeposit(ctx *gin.Context, event *BridgeDepositEvent) error
-	ProcessTransferCompleted(ctx *gin.Context, transferID string, amount decimal.Decimal) error
+	ProcessTransferCompleted(ctx *gin.Context, transferID string, customerID string, amount decimal.Decimal) error
 	ProcessCustomerStatusChanged(ctx *gin.Context, customerID string, status string) error
 	// Card transaction methods
 	ProcessCardAuthorization(ctx *gin.Context, cardID string, amount decimal.Decimal, merchantName, merchantCategory string) error
@@ -229,7 +229,8 @@ func (h *BridgeWebhookHandler) handleTransferEvent(c *gin.Context, payload Bridg
 		if amountStr := getStringField(payload.EventObject, "amount"); amountStr != "" {
 			amount, _ = decimal.NewFromString(amountStr)
 		}
-		if err := h.service.ProcessTransferCompleted(c, transferID, amount); err != nil {
+		customerID := getStringField(payload.EventObject, "customer_id")
+		if err := h.service.ProcessTransferCompleted(c, transferID, customerID, amount); err != nil {
 			h.logger.Error("Failed to process transfer completed", zap.Error(err))
 		}
 	case "failed", "returned":
@@ -506,7 +507,8 @@ func (h *BridgeWebhookHandler) handleTransferCompleted(c *gin.Context, payload B
 		}
 	}
 
-	if err := h.service.ProcessTransferCompleted(c, transferID, amount); err != nil {
+	customerID := getStringField(payload.EventObject, "customer_id")
+	if err := h.service.ProcessTransferCompleted(c, transferID, customerID, amount); err != nil {
 		h.logger.Error("Failed to process transfer completed",
 			zap.String("transfer_id", transferID),
 			zap.Error(err))
@@ -838,12 +840,14 @@ type BridgeWebhookServiceImpl struct {
 	customerService       BridgeCustomerProcessor
 	cardService           BridgeCardProcessor
 	notifier              BridgeWebhookNotifier
+	userRepo              UserRepositoryForCustomer
 	logger                *zap.Logger
 }
 
 // BridgeVirtualAccountProcessor processes virtual account events
 type BridgeVirtualAccountProcessor interface {
 	ProcessFiatDeposit(ctx *gin.Context, event *BridgeDepositEvent) error
+	ProcessCryptoDeposit(ctx context.Context, userID uuid.UUID, transferID string, amount decimal.Decimal) error
 }
 
 // BridgeCustomerProcessor processes customer events
@@ -871,6 +875,7 @@ func NewBridgeWebhookService(
 	customerService BridgeCustomerProcessor,
 	cardService BridgeCardProcessor,
 	notifier BridgeWebhookNotifier,
+	userRepo UserRepositoryForCustomer,
 	logger *zap.Logger,
 ) *BridgeWebhookServiceImpl {
 	return &BridgeWebhookServiceImpl{
@@ -878,6 +883,7 @@ func NewBridgeWebhookService(
 		customerService:       customerService,
 		cardService:           cardService,
 		notifier:              notifier,
+		userRepo:              userRepo,
 		logger:                logger,
 	}
 }
@@ -886,9 +892,17 @@ func (s *BridgeWebhookServiceImpl) ProcessFiatDeposit(ctx *gin.Context, event *B
 	return s.virtualAccountService.ProcessFiatDeposit(ctx, event)
 }
 
-func (s *BridgeWebhookServiceImpl) ProcessTransferCompleted(ctx *gin.Context, transferID string, amount decimal.Decimal) error {
-	s.logger.Info("Transfer completed", zap.String("transfer_id", transferID), zap.String("amount", amount.String()))
-	return nil
+func (s *BridgeWebhookServiceImpl) ProcessTransferCompleted(ctx *gin.Context, transferID string, customerID string, amount decimal.Decimal) error {
+	s.logger.Info("Transfer completed", zap.String("transfer_id", transferID), zap.String("customer_id", customerID), zap.String("amount", amount.String()))
+	if s.virtualAccountService == nil || customerID == "" || !amount.GreaterThan(decimal.Zero) {
+		return nil
+	}
+	user, err := s.userRepo.GetByBridgeCustomerID(ctx, customerID)
+	if err != nil || user == nil {
+		s.logger.Error("User not found for Bridge customer", zap.String("customer_id", customerID), zap.Error(err))
+		return nil
+	}
+	return s.virtualAccountService.ProcessCryptoDeposit(ctx, user.ID, transferID, amount)
 }
 
 func (s *BridgeWebhookServiceImpl) ProcessCustomerStatusChanged(ctx *gin.Context, customerID string, status string) error {

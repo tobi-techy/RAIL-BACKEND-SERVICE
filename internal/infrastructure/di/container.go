@@ -289,6 +289,13 @@ func (a *BridgeVirtualAccountWebhookAdapter) ProcessFiatDeposit(ctx *gin.Context
 	})
 }
 
+func (a *BridgeVirtualAccountWebhookAdapter) ProcessCryptoDeposit(ctx context.Context, userID uuid.UUID, transferID string, amount decimal.Decimal) error {
+	if a == nil || a.service == nil {
+		return fmt.Errorf("bridge virtual account service not configured")
+	}
+	return a.service.ProcessCryptoDeposit(ctx, userID, transferID, amount)
+}
+
 // BridgeCardWebhookAdapter adapts domain card service to Bridge webhook card processor interface.
 type BridgeCardWebhookAdapter struct {
 	service *card.Service
@@ -1392,6 +1399,7 @@ func (c *Container) initializeDomainServices() error {
 			customerStatusProcessor,
 			nil, // Card processor can be injected later.
 			nil, // Notifications can be injected later.
+			c.UserRepo,
 			c.ZapLog,
 		)
 
@@ -2485,6 +2493,7 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 			c.BridgeCustomerStatusProcessor, // preserve KYC processor — do NOT pass nil
 			&BridgeCardWebhookAdapter{service: c.CardService},
 			nil, // Notifications can be injected later.
+			c.UserRepo,
 			c.ZapLog,
 		)
 		c.BridgeWebhookHandler.SetService(bridgeWebhookService)
