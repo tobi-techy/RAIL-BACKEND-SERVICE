@@ -1,6 +1,16 @@
--- Handle any events with NULL basket_id or order_id before adding NOT NULL constraints
--- Delete orphaned events that have no basket or order (these are incomplete/failed events)
-DELETE FROM auto_invest_events WHERE basket_id IS NULL OR order_id IS NULL;
+-- Safety check: refuse rollback if any events have NULL basket_id or order_id.
+-- These are financial records; investigate and resolve before rolling back.
+DO $$
+DECLARE
+    null_basket_count INTEGER;
+    null_order_count  INTEGER;
+BEGIN
+    SELECT COUNT(*) INTO null_basket_count FROM auto_invest_events WHERE basket_id IS NULL;
+    SELECT COUNT(*) INTO null_order_count  FROM auto_invest_events WHERE order_id  IS NULL;
+    IF null_basket_count > 0 OR null_order_count > 0 THEN
+        RAISE EXCEPTION 'Cannot rollback: % event(s) have NULL basket_id and % event(s) have NULL order_id. Complete or delete these correlation-based events before rolling back.', null_basket_count, null_order_count;
+    END IF;
+END $$;
 
 ALTER TABLE auto_invest_events
     ALTER COLUMN basket_id SET NOT NULL,
@@ -8,9 +18,16 @@ ALTER TABLE auto_invest_events
     ADD CONSTRAINT auto_invest_events_basket_id_fkey FOREIGN KEY (basket_id) REFERENCES baskets(id),
     ADD CONSTRAINT auto_invest_events_order_id_fkey  FOREIGN KEY (order_id)  REFERENCES orders(id);
 
--- Handle any settings with NULL basket_id before adding NOT NULL constraint
--- Delete settings that have no basket (these are incomplete/invalid settings)
-DELETE FROM auto_invest_settings WHERE basket_id IS NULL;
+-- Safety check: refuse rollback if any settings have NULL basket_id.
+DO $$
+DECLARE
+    null_count INTEGER;
+BEGIN
+    SELECT COUNT(*) INTO null_count FROM auto_invest_settings WHERE basket_id IS NULL;
+    IF null_count > 0 THEN
+        RAISE EXCEPTION 'Cannot rollback: % auto_invest_settings record(s) have NULL basket_id. Fix or delete these settings before rolling back.', null_count;
+    END IF;
+END $$;
 
 ALTER TABLE auto_invest_settings
     ALTER COLUMN basket_id SET NOT NULL,

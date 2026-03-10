@@ -128,8 +128,10 @@ func (w *Worker) run(ctx context.Context) {
 	triggered := 0
 	for _, candidate := range candidates {
 		// Deterministic correlation ID: same user + account + date + balance = same ID.
-		// Idempotency on retry is guaranteed; the DB unique index prevents duplicates.
-		// A new deposit changes the balance, producing a new ID and triggering re-investment.
+		// candidate.StashBalance is snapshotted at query time so it's stable for this
+		// iteration. A new deposit changes the DB balance, the next worker tick reads a
+		// new candidate with the updated balance, producing a new correlation ID and
+		// triggering re-investment. The DB unique index is the concurrent-execution guard.
 		dateBucket := time.Now().UTC().Format("2006-01-02")
 		correlationID := fmt.Sprintf(
 			"kyc-autoinvest:%s:%s:%s:%s",
