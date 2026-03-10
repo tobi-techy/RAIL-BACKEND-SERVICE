@@ -690,12 +690,6 @@ func (h *BridgeWebhookHandler) handleCardStatusChanged(c *gin.Context, payload B
 }
 
 func (h *BridgeWebhookHandler) verifySignature(signature string, body []byte) bool {
-	// Security: In production, always require signature verification
-	if h.environment == "production" && h.webhookSecret == "" {
-		h.logger.Error("SECURITY: Bridge webhook public key not configured in production - REJECTING webhook")
-		return false
-	}
-
 	if h.webhookSecret == "" {
 		if h.skipWebhookVerification {
 			h.logger.Warn("⚠️  INSECURE: Bridge webhook verification disabled - no secret configured")
