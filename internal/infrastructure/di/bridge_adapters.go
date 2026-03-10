@@ -109,7 +109,7 @@ func NewBridgeFundingAdapter(adapter *bridge.Adapter) *BridgeFundingAdapter {
 	}
 }
 
-// GenerateDepositAddress implements funding.CircleAdapter interface for Bridge
+// GenerateDepositAddress implements deposit address creation using Bridge
 func (a *BridgeFundingAdapter) GenerateDepositAddress(ctx context.Context, chain entities.Chain, userID uuid.UUID) (string, error) {
 	paymentRail := mapChainToBridgePaymentRail(chain)
 	if paymentRail == "" {
@@ -121,7 +121,7 @@ func (a *BridgeFundingAdapter) GenerateDepositAddress(ctx context.Context, chain
 	return "0xbridge_placeholder_address", nil
 }
 
-// ValidateDeposit implements funding.CircleAdapter interface for Bridge
+// ValidateDeposit implements deposit validation using Bridge
 func (a *BridgeFundingAdapter) ValidateDeposit(ctx context.Context, txHash string, amount decimal.Decimal) (bool, error) {
 	// Bridge transaction validation - placeholder implementation
 	// In production, this would verify transaction on Bridge API

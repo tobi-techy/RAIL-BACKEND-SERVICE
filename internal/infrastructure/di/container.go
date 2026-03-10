@@ -1072,7 +1072,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		RedisClient:   redisClient,
 
 		// Bridge Domain Adapters
-		BridgeKYCAdapter:     NewBridgeKYCAdapter(bridgeAdapter, userRepo),
+		BridgeKYCAdapter: NewBridgeKYCAdapter(bridgeAdapter, userRepo),
 
 		// Cache & Queue
 		CacheInvalidator: cacheInvalidator,
@@ -1095,14 +1095,14 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		container.Config,
 	)
 
-	container.OnboardingJobService = services.NewOnboardingJobService(container.OnboardingJobRepo, container.ZapLog, convertWalletChains(cfg.Circle.SupportedChains, container.ZapLog))
+	container.OnboardingJobService = services.NewOnboardingJobService(container.OnboardingJobRepo, container.ZapLog, convertWalletChains(cfg.Bridge.SupportedChains, container.ZapLog))
 
 	return container, nil
 }
 
 // initializeDomainServices initializes all domain services with their dependencies
 func (c *Container) initializeDomainServices() error {
-	defaultWalletChains := convertWalletChains(c.Config.Circle.SupportedChains, c.ZapLog)
+	defaultWalletChains := convertWalletChains(c.Config.Bridge.SupportedChains, c.ZapLog)
 	walletServiceConfig := wallet.Config{
 		WalletSetNamePrefix: c.Config.Circle.DefaultWalletSetName,
 		SupportedChains:     defaultWalletChains,
@@ -1282,19 +1282,22 @@ func (c *Container) initializeDomainServices() error {
 		)
 
 		webhookSecret := c.Config.Bridge.WebhookSecret
+		// Security fix: Only skip verification if explicitly configured for development AND no secret is set
+		// This ensures production ALWAYS requires verification
 		skipWebhookVerification := c.Config.Environment == "development" && webhookSecret == ""
 		c.BridgeWebhookHandler = handlers.NewBridgeWebhookHandler(
 			bridgeWebhookService,
 			c.ZapLog,
 			webhookSecret,
 			skipWebhookVerification,
+			c.Config.Environment,
 		)
 	} else {
 		c.ZapLog.Warn("Bridge client not configured - Bridge virtual account service disabled")
 	}
 
 	// Initialize auto-invest service (OrderPlacer will be set after InvestingService is created)
-	_ = repositories.NewAutoInvestRepository(sqlxDB) // Keep for future use
+	autoInvestRepo := repositories.NewAutoInvestRepository(sqlxDB)
 	autoInvestConfig := autoinvest.Config{
 		MinThreshold: decimal.Zero,
 	}
@@ -1305,6 +1308,7 @@ func (c *Container) initializeDomainServices() error {
 		c.Logger,
 	)
 	c.AutoInvestService.SetUserRepository(c.UserRepo)
+	c.AutoInvestService.SetAutoInvestRepository(autoInvestRepo)
 
 	// Wire auto-invest service to allocation service for automatic triggering
 	c.AllocationService.SetAutoInvestService(c.AutoInvestService)
@@ -1342,6 +1346,10 @@ func (c *Container) initializeDomainServices() error {
 	expoPushService := adapters.NewExpoPushService(c.DeviceTokenRepo, c.ZapLog)
 	c.NotificationService.SetPushSender(expoPushService)
 
+	// Wire notification service into auto-invest and allocation for failure alerts
+	c.AutoInvestService.SetNotificationService(c.NotificationService)
+	c.AllocationService.SetNotificationService(c.NotificationService)
+
 	c.InvestingService = investing.NewService(
 		basketRepo,
 		orderRepo,
@@ -1360,6 +1368,8 @@ func (c *Container) initializeDomainServices() error {
 
 	// Initialize strategy engine and wire to auto-invest service
 	c.StrategyEngine = strategy.NewEngine(&strategyUserProfileAdapter{userRepo: c.UserRepo}, c.Logger)
+	c.StrategyEngine.SetRulesProvider(repositories.NewInvestmentRulesRepository(sqlxDB))
+	c.StrategyEngine.SetFrequencyProvider(repositories.NewDepositRepository(sqlxDB))
 	c.AutoInvestService.SetStrategyEngine(c.StrategyEngine)
 
 	// Initialize reconciliation service
@@ -1489,8 +1499,8 @@ func (c *Container) initializeDomainServices() error {
 		c.LimitsService,
 		c.DomainAuditService,
 		withdrawalNotificationAdapter,
-		withdrawalBridgeAdapter,       // BridgeAdapter (fiat offramp)
-		c.BridgeAdapter,               // BridgeCryptoTransferAdapter (crypto wallet transfers)
+		withdrawalBridgeAdapter, // BridgeAdapter (fiat offramp)
+		c.BridgeAdapter,         // BridgeCryptoTransferAdapter (crypto wallet transfers)
 		c.Logger,
 	)
 
@@ -1979,7 +1989,7 @@ func ptrOf[T any](v T) *T {
 
 func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChain {
 	if len(raw) == 0 {
-		logger.Warn("circle.supported_chains not configured; defaulting to SOL-DEVNET")
+		logger.Warn("bridge.supported_chains not configured; defaulting to SOL-DEVNET")
 		return []entities.WalletChain{entities.WalletChainSOLDevnet}
 	}
 
@@ -1987,10 +1997,37 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 	seen := make(map[entities.WalletChain]struct{})
 
 	for _, entry := range raw {
-		chain := entities.WalletChain(strings.TrimSpace(strings.ToUpper(entry)))
-		if chain == "" {
+		if strings.TrimSpace(entry) == "" {
 			continue
 		}
+
+		upper := strings.ToUpper(strings.TrimSpace(entry))
+		chain := entities.WalletChain(upper)
+		if !chain.IsValid() {
+			normalizedKey := strings.NewReplacer("-", "_", " ", "_").Replace(upper)
+			switch normalizedKey {
+			case "SOLANA", "SOL":
+				chain = entities.WalletChainSolana
+			case "SOL_DEVNET":
+				chain = entities.WalletChainSOLDevnet
+			case "POLYGON", "MATIC":
+				chain = entities.WalletChainPolygon
+			case "MATIC_AMOY":
+				chain = entities.WalletChainMATICAmoy
+			case "AVALANCHE", "AVAX", "AVALANCHE_C_CHAIN":
+				chain = entities.WalletChainAvalanche
+			case "AVAX_FUJI":
+				chain = entities.WalletChainAVAXFuji
+			case "BASE":
+				chain = entities.WalletChainBase
+			case "BASE_SEPOLIA":
+				chain = entities.WalletChainBASESepolia
+			default:
+				logger.Warn("Ignoring unsupported wallet chain from configuration", zap.String("chain", upper))
+				continue
+			}
+		}
+
 		if !chain.IsValid() {
 			logger.Warn("Ignoring unsupported wallet chain from configuration", zap.String("chain", string(chain)))
 			continue
@@ -2003,7 +2040,7 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 	}
 
 	if len(normalized) == 0 {
-		logger.Warn("circle.supported_chains contained no valid entries; defaulting to SOL-DEVNET")
+		logger.Warn("bridge.supported_chains contained no valid entries; defaulting to SOL-DEVNET")
 		return []entities.WalletChain{entities.WalletChainSOLDevnet}
 	}
 
@@ -2908,6 +2945,7 @@ func (c *Container) initializeBridgeServices() {
 		c.ZapLog,
 		webhookSecret,
 		skipWebhookVerification,
+		c.Config.Environment,
 	)
 
 	c.ZapLog.Info("Bridge webhook handler initialized")

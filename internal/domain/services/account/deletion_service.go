@@ -291,7 +291,7 @@ func (s *DeletionService) cleanupExternalProviders(ctx context.Context, userID u
 		}
 	}
 
-	// Note: Circle wallets cannot be deleted (blockchain addresses are permanent)
+	// Note: Bridge custody wallets cannot be deleted (blockchain addresses are permanent)
 	// Funds have already been swept to treasury
 
 	if len(criticalErrors) > 0 {

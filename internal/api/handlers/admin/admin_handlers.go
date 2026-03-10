@@ -1193,7 +1193,8 @@ func (h *AdminWalletHandlers) listWallets(ctx context.Context, filters *walletFi
 
 	queryBuilder := strings.Builder{}
 	queryBuilder.WriteString(`
-		SELECT id, user_id, wallet_set_id, circle_wallet_id, chain, address, account_type, status, created_at, updated_at
+		SELECT id, user_id, wallet_set_id, circle_wallet_id, COALESCE(bridge_wallet_id, '') AS bridge_wallet_id,
+		       chain, address, account_type, status, created_at, updated_at
 		FROM managed_wallets`)
 
 	if len(conditions) > 0 {
@@ -1220,6 +1221,7 @@ func (h *AdminWalletHandlers) listWallets(ctx context.Context, filters *walletFi
 			&wallet.UserID,
 			&wallet.WalletSetID,
 			&wallet.CircleWalletID,
+			&wallet.BridgeWalletID,
 			&wallet.Chain,
 			&wallet.Address,
 			&wallet.AccountType,

@@ -196,6 +196,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.GetPasscodeService(),
 		container.RedisClient,
 		container.GetAccountDeletionService(),
+		container.Config.KYC.WebhookSecret,
 	)
 	securityHandlers := handlers.NewSecurityHandlers(
 		container.GetPasscodeService(),
@@ -791,7 +792,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			webhooks.POST("/brokerage-fill", walletFundingHandlers.BrokerageFillWebhook)
 
 			// Unified funding webhook - routes based on source header/payload
-			// POST /webhooks/funding - handles Bridge, Circle, and Alpaca webhooks
+			// POST /webhooks/funding - handles Bridge and Alpaca webhooks
 			if unifiedWebhookHandler := container.GetUnifiedFundingWebhookHandler(); unifiedWebhookHandler != nil {
 				webhooks.POST("/funding", unifiedWebhookHandler.HandleFundingWebhook)
 			}

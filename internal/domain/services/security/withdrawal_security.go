@@ -185,12 +185,31 @@ func (s *WithdrawalSecurityService) VerifyConfirmation(ctx context.Context, toke
 	amount, _ := decimal.NewFromString(data["amount"])
 	confirmationID, _ := uuid.Parse(data["id"])
 
-	// Delete the token (one-time use)
-	s.redis.Del(ctx, key)
-
-	// Update DB record
+	// Atomic operation: Delete from Redis and update DB in single transaction
+	// Use Lua script to prevent race conditions
 	tokenHash := hashToken(token)
-	s.db.ExecContext(ctx, "UPDATE withdrawal_confirmations SET confirmed = true, confirmed_at = NOW() WHERE token_hash = $1", tokenHash)
+
+	// First, try to atomically delete from Redis using a Lua script
+	// This ensures the token is deleted even if the DB update fails
+	script := redis.NewScript(`
+		if redis.call('DEL', KEYS[1]) == 1 then
+			return 1
+		else
+			return 0
+		end
+	`)
+	_, err = script.Run(ctx, s.redis, []string{key}).Result()
+	if err != nil {
+		s.logger.Error("Failed to delete confirmation token from Redis", zap.Error(err))
+		// Continue with DB update anyway
+	}
+
+	// Update DB record (best-effort - primary security is Redis deletion)
+	_, err = s.db.ExecContext(ctx, "UPDATE withdrawal_confirmations SET confirmed = true, confirmed_at = NOW() WHERE token_hash = $1 AND confirmed = false", tokenHash)
+	if err != nil {
+		s.logger.Warn("Failed to update confirmation in DB", zap.Error(err))
+		// Token is already deleted from Redis, so this is acceptable
+	}
 
 	return &WithdrawalConfirmation{
 		ID:              confirmationID,

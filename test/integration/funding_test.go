@@ -176,7 +176,7 @@ func TestChainDepositWebhookIntegration(t *testing.T) {
 		httpReq := httptest.NewRequest("POST", "/api/v1/webhooks/chain-deposit", bytes.NewReader(reqBody))
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("X-Signature", "sha256="+calculateTestSignature(reqBody))
-		httpReq.Header.Set("User-Agent", "Circle-Webhook/1.0")
+		httpReq.Header.Set("User-Agent", "Bridge-Webhook/1.0")
 
 		router.ServeHTTP(w, httpReq)
 
@@ -201,7 +201,7 @@ func TestChainDepositWebhookIntegration(t *testing.T) {
 		httpReq := httptest.NewRequest("POST", "/api/v1/webhooks/chain-deposit", bytes.NewReader(reqBody))
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("X-Signature", "sha256="+calculateTestSignature(reqBody))
-		httpReq.Header.Set("User-Agent", "Circle-Webhook/1.0")
+		httpReq.Header.Set("User-Agent", "Bridge-Webhook/1.0")
 
 		router.ServeHTTP(w, httpReq)
 
@@ -228,7 +228,7 @@ func TestChainDepositWebhookIntegration(t *testing.T) {
 		w := httptest.NewRecorder()
 		httpReq := httptest.NewRequest("POST", "/api/v1/webhooks/chain-deposit", bytes.NewReader(reqBody))
 		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("User-Agent", "Circle-Webhook/1.0")
+		httpReq.Header.Set("User-Agent", "Bridge-Webhook/1.0")
 
 		router.ServeHTTP(w, httpReq)
 
@@ -256,7 +256,7 @@ func TestChainDepositWebhookIntegration(t *testing.T) {
 		httpReq1 := httptest.NewRequest("POST", "/api/v1/webhooks/chain-deposit", bytes.NewReader(reqBody))
 		httpReq1.Header.Set("Content-Type", "application/json")
 		httpReq1.Header.Set("X-Signature", "sha256="+calculateTestSignature(reqBody))
-		httpReq1.Header.Set("User-Agent", "Circle-Webhook/1.0")
+		httpReq1.Header.Set("User-Agent", "Bridge-Webhook/1.0")
 
 		router.ServeHTTP(w1, httpReq1)
 
@@ -265,7 +265,7 @@ func TestChainDepositWebhookIntegration(t *testing.T) {
 		httpReq2 := httptest.NewRequest("POST", "/api/v1/webhooks/chain-deposit", bytes.NewReader(reqBody))
 		httpReq2.Header.Set("Content-Type", "application/json")
 		httpReq2.Header.Set("X-Signature", "sha256="+calculateTestSignature(reqBody))
-		httpReq2.Header.Set("User-Agent", "Circle-Webhook/1.0")
+		httpReq2.Header.Set("User-Agent", "Bridge-Webhook/1.0")
 
 		router.ServeHTTP(w2, httpReq2)
 

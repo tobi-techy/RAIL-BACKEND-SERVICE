@@ -41,7 +41,6 @@ func DefaultWebhookSecurityConfig() WebhookSecurityConfig {
 // defaultWebhookIPWhitelists returns known webhook source IPs
 func defaultWebhookIPWhitelists() map[string][]string {
 	return map[string][]string{
-		// Circle does not publish a fixed IP range — rely on signature verification instead.
 		// Bridge webhook IP ranges are not guaranteed stable across environments.
 		// Rely on provider signature verification and replay protection.
 		"bridge": {},
@@ -182,7 +181,7 @@ func WebhookSecurity(
 
 // extractProviderFromPath extracts the provider name from webhook path
 func extractProviderFromPath(path string) string {
-	// Expected paths: /api/v1/webhooks/circle, /webhooks/bridge, etc.
+	// Expected paths: /api/v1/webhooks/bridge, /webhooks/funding, etc.
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	for i, part := range parts {
 		if part == "webhooks" && i+1 < len(parts) {
@@ -391,7 +390,7 @@ func WebhookSecurityWithRedisV8(
 						zap.String("provider", provider),
 						zap.String("path", c.Request.URL.Path))
 					// Return 200 for replays — the original was already processed.
-					// Returning non-2XX causes providers like Circle to retry indefinitely.
+					// Returning non-2XX causes providers like Bridge to retry indefinitely.
 					c.AbortWithStatusJSON(http.StatusOK, gin.H{
 						"status":  "already_processed",
 						"message": "Duplicate webhook request",

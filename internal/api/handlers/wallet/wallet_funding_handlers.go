@@ -88,10 +88,10 @@ func (h *WalletFundingHandlers) SetLedgerService(ledger LedgerReconciler) {
 	h.ledgerService = ledger
 }
 
-// ReconcileUserBalance is a no-op placeholder — Circle wallet reconciliation removed.
+// ReconcileUserBalance is a no-op placeholder — Bridge wallet reconciliation removed.
 // Balance reconciliation now happens via Bridge webhook events.
 func (h *WalletFundingHandlers) ReconcileUserBalance(c *gin.Context) {
-	c.JSON(http.StatusGone, gin.H{"error": "circle_reconciliation_removed"})
+	c.JSON(http.StatusGone, gin.H{"error": "bridge_reconciliation_removed"})
 }
 
 // Request/Response models
@@ -443,7 +443,7 @@ func (h *WalletFundingHandlers) RetryWalletProvisioning(c *gin.Context) {
 
 // HealthCheck handles GET /wallet/health (Admin only)
 // @Summary Wallet service health check
-// @Description Returns health status of wallet service and Circle integration
+// @Description Returns health status of wallet service and Bridge integration
 // @Tags wallet
 // @Produce json
 // @Success 200 {object} map[string]interface{} "Health status"

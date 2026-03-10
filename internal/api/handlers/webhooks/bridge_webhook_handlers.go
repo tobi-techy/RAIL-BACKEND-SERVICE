@@ -42,17 +42,33 @@ type BridgeWebhookHandler struct {
 	service                 BridgeWebhookService
 	logger                  *zap.Logger
 	webhookSecret           string
-	skipWebhookVerification bool // Explicit opt-out flag for development/testing only
+	skipWebhookVerification bool   // Should ONLY be true in development with explicit config
+	environment             string // Track environment to enforce verification in production
 }
 
 // NewBridgeWebhookHandler creates a new Bridge webhook handler
-// skipWebhookVerification should only be true in development/testing environments
-func NewBridgeWebhookHandler(service BridgeWebhookService, logger *zap.Logger, webhookSecret string, skipWebhookVerification bool) *BridgeWebhookHandler {
+// skipWebhookVerification should ONLY be true in development/testing environments with explicit config
+// IMPORTANT: In production, verification can NEVER be skipped regardless of this flag
+func NewBridgeWebhookHandler(service BridgeWebhookService, logger *zap.Logger, webhookSecret string, skipWebhookVerification bool, environment string) *BridgeWebhookHandler {
+	// Security fix: Never allow skipping verification in production
+	if environment == "production" && skipWebhookVerification {
+		logger.Error("SECURITY VIOLATION: Attempted to skip webhook verification in production - forcing verification ON")
+		skipWebhookVerification = false
+	}
+
+	// Log warning if verification is being skipped
+	if skipWebhookVerification {
+		logger.Warn("⚠️  INSECURE MODE: Webhook signature verification is DISABLED",
+			zap.String("environment", environment),
+			zap.String("warning", "This should only be used in local development"))
+	}
+
 	return &BridgeWebhookHandler{
 		service:                 service,
 		logger:                  logger,
 		webhookSecret:           webhookSecret,
 		skipWebhookVerification: skipWebhookVerification,
+		environment:             environment,
 	}
 }
 
@@ -674,9 +690,15 @@ func (h *BridgeWebhookHandler) handleCardStatusChanged(c *gin.Context, payload B
 }
 
 func (h *BridgeWebhookHandler) verifySignature(signature string, body []byte) bool {
+	// Security: In production, always require signature verification
+	if h.environment == "production" && h.webhookSecret == "" {
+		h.logger.Error("SECURITY: Bridge webhook public key not configured in production - REJECTING webhook")
+		return false
+	}
+
 	if h.webhookSecret == "" {
 		if h.skipWebhookVerification {
-			h.logger.Warn("Bridge webhook public key not configured - SKIPPING VERIFICATION (development mode)")
+			h.logger.Warn("⚠️  INSECURE: Bridge webhook verification disabled - no secret configured")
 			return true
 		}
 		h.logger.Error("Bridge webhook public key not configured - rejecting webhook for security")
