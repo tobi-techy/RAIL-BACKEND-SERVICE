@@ -586,14 +586,19 @@ func (s *BridgeVirtualAccountService) ProcessCryptoDeposit(ctx context.Context, 
 
 	if err := s.ledgerIntegration.RecordDeposit(ctx, userID, amount, depositID, "crypto", transferID); err != nil {
 		if s.depositRepo != nil {
-			_ = s.depositRepo.DeletePendingDeposit(ctx, depositID)
+			if delErr := s.depositRepo.DeletePendingDeposit(ctx, depositID); delErr != nil {
+				s.logger.Error("Failed to delete pending deposit after ledger failure", "deposit_id", depositID, "error", delErr)
+			}
 		}
 		return fmt.Errorf("record deposit: %w", err)
 	}
 
 	if s.depositRepo != nil {
 		confirmedAt := now
-		_ = s.depositRepo.UpdateStatus(ctx, depositID, "confirmed", &confirmedAt)
+		if err := s.depositRepo.UpdateStatus(ctx, depositID, "confirmed", &confirmedAt); err != nil {
+			s.logger.Error("Failed to update deposit status to confirmed", "deposit_id", depositID, "error", err)
+			return fmt.Errorf("update deposit status confirmed: %w", err)
+		}
 	}
 
 	sourceTxID := transferID
@@ -609,7 +614,9 @@ func (s *BridgeVirtualAccountService) ProcessCryptoDeposit(ctx context.Context, 
 		},
 	}); err != nil {
 		if s.depositRepo != nil {
-			_ = s.depositRepo.UpdateStatus(ctx, depositID, "pending_allocation", nil)
+			if statusErr := s.depositRepo.UpdateStatus(ctx, depositID, "pending_allocation", nil); statusErr != nil {
+				s.logger.Error("Failed to update deposit status to pending_allocation", "deposit_id", depositID, "error", statusErr)
+			}
 		}
 		return fmt.Errorf("process allocation: %w", err)
 	}

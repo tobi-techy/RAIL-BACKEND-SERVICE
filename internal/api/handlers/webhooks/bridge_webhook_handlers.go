@@ -894,12 +894,25 @@ func (s *BridgeWebhookServiceImpl) ProcessFiatDeposit(ctx *gin.Context, event *B
 
 func (s *BridgeWebhookServiceImpl) ProcessTransferCompleted(ctx *gin.Context, transferID string, customerID string, amount decimal.Decimal) error {
 	s.logger.Info("Transfer completed", zap.String("transfer_id", transferID), zap.String("customer_id", customerID), zap.String("amount", amount.String()))
-	if s.virtualAccountService == nil || customerID == "" || !amount.GreaterThan(decimal.Zero) {
+	if s.virtualAccountService == nil {
+		s.logger.Warn("Virtual account service not configured, skipping crypto deposit", zap.String("transfer_id", transferID))
 		return nil
 	}
+	if customerID == "" {
+		s.logger.Error("Empty customer_id in transfer webhook", zap.String("transfer_id", transferID))
+		return fmt.Errorf("empty customer_id for transfer %s", transferID)
+	}
+	if !amount.GreaterThan(decimal.Zero) {
+		s.logger.Error("Invalid amount in transfer webhook", zap.String("transfer_id", transferID), zap.String("amount", amount.String()))
+		return fmt.Errorf("invalid amount %s for transfer %s", amount.String(), transferID)
+	}
 	user, err := s.userRepo.GetByBridgeCustomerID(ctx, customerID)
-	if err != nil || user == nil {
-		s.logger.Error("User not found for Bridge customer", zap.String("customer_id", customerID), zap.Error(err))
+	if err != nil {
+		s.logger.Error("Failed to look up user for Bridge customer", zap.String("customer_id", customerID), zap.Error(err))
+		return fmt.Errorf("look up user for customer %s: %w", customerID, err)
+	}
+	if user == nil {
+		s.logger.Warn("No user found for Bridge customer ID", zap.String("customer_id", customerID))
 		return nil
 	}
 	return s.virtualAccountService.ProcessCryptoDeposit(ctx, user.ID, transferID, amount)
