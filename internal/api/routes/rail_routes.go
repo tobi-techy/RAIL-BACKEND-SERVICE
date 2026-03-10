@@ -102,7 +102,7 @@ func SetupStackRoutes(db *sql.DB, cfg *config.Config, log *logger.Logger, zapLog
 		// === WEBHOOK ENDPOINTS (No auth - validated via signature) ===
 		webhooks := v1.Group("/webhooks")
 		{
-			// Chain deposit webhook (from Circle, blockchain nodes, etc.)
+			// Chain deposit webhook (from Bridge, blockchain nodes, etc.)
 			webhooks.POST("/chain-deposit", walletFundingHandlers.ChainDepositWebhook)
 
 			// Brokerage fill webhook (from brokerage partner)

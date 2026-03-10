@@ -13,11 +13,6 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// Default timeout for external API calls
-const (
-	DefaultCircleAPITimeout = 10 * time.Second
-)
-
 // generateIdempotencyKey creates a deterministic UUID from deposit attributes
 // This ensures uniqueness across chains and prevents cross-chain replay attacks
 func generateIdempotencyKey(chain, token, amount, txHash string) string {
@@ -91,7 +86,6 @@ type Service struct {
 	virtualAccountRepo  VirtualAccountRepository
 	userRepo            UserRepository
 	alpacaAccountLookup AlpacaAccountLookup
-	circleAPI           CircleAdapter
 	bridgeWallets       BridgeDepositClient
 	bridgeVAService     *BridgeVirtualAccountService
 	alpacaAPI           AlpacaAdapter
@@ -127,7 +121,6 @@ type WalletRepository interface {
 // ManagedWalletRepository interface for managed wallet operations
 type ManagedWalletRepository interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.ManagedWallet, error)
-	GetByCircleWalletID(ctx context.Context, circleWalletID string) (*entities.ManagedWallet, error)
 	GetByAddress(ctx context.Context, address string) (*entities.ManagedWallet, error)
 	Create(ctx context.Context, wallet *entities.ManagedWallet) error
 }
@@ -153,14 +146,6 @@ type BridgeLiquidationAddr struct {
 	Chain          string
 	Address        string
 	BridgeWalletID string
-}
-
-// CircleAdapter interface for Circle API integration
-type CircleAdapter interface {
-	GenerateDepositAddress(ctx context.Context, chain entities.Chain, userID uuid.UUID) (string, error)
-	ValidateDeposit(ctx context.Context, txHash string, amount decimal.Decimal) (bool, error)
-	ConvertToUSD(ctx context.Context, amount decimal.Decimal, token entities.Stablecoin) (decimal.Decimal, error)
-	GetWalletBalances(ctx context.Context, walletID string, tokenAddress ...string) (*entities.CircleWalletBalancesResponse, error)
 }
 
 // VirtualAccountRepository interface for virtual account persistence
@@ -200,7 +185,6 @@ func NewService(
 	walletRepo WalletRepository,
 	managedWalletRepo ManagedWalletRepository,
 	virtualAccountRepo VirtualAccountRepository,
-	circleAPI CircleAdapter,
 	alpacaAPI AlpacaAdapter,
 	ledgerIntegration LedgerIntegration,
 	logger *logger.Logger,
@@ -210,7 +194,6 @@ func NewService(
 		walletRepo:         walletRepo,
 		managedWalletRepo:  managedWalletRepo,
 		virtualAccountRepo: virtualAccountRepo,
-		circleAPI:          circleAPI,
 		alpacaAPI:          alpacaAPI,
 		ledgerIntegration:  ledgerIntegration,
 		config:             DefaultFundingConfig(),
@@ -309,7 +292,7 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 		}, nil
 	}
 
-	// Check managed_wallets (Circle dev-controlled wallets) — these are the
+	// Check managed_wallets (custody wallets + liquidation addresses) — these are the
 	// primary wallet type for testnet chains like MATIC-AMOY, AVAX-FUJI, SOL-DEVNET.
 	if s.managedWalletRepo != nil {
 		managedWallets, mErr := s.managedWalletRepo.GetByUserID(ctx, userID)
@@ -581,24 +564,6 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 		return fmt.Errorf("deposit amount %s exceeds maximum %v USDC", amount.String(), maxAmountWhole.String())
 	}
 
-	// Add timeout context specifically for Circle API calls - don't shadow original ctx
-	circleCtx, cancel := context.WithTimeout(ctx, DefaultCircleAPITimeout)
-	defer cancel()
-
-	// Validate the deposit with Circle
-	isValid, err := s.circleAPI.ValidateDeposit(circleCtx, webhook.TxHash, amount)
-	if err != nil {
-		if circleCtx.Err() == context.DeadlineExceeded {
-			return fmt.Errorf("circle deposit validation timed out: %w", err)
-		}
-		return fmt.Errorf("failed to validate deposit: %w", err)
-	}
-
-	if !isValid {
-		s.logger.Warn("Invalid deposit received", "tx_hash", webhook.TxHash)
-		return fmt.Errorf("invalid deposit signature or amount")
-	}
-
 	// Generate UUID-based idempotency key from: chain + token + amount + txHash
 	// This ensures uniqueness across chains and prevents cross-chain replay attacks
 	idempotencyKey := generateIdempotencyKey(string(webhook.Chain), string(webhook.Token), webhook.Amount, webhook.TxHash)
@@ -688,11 +653,8 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 		userID = wallet.UserID
 	}
 
-	// Convert stablecoin to USD buying power
-	usdAmount, err := s.circleAPI.ConvertToUSD(ctx, amount, token)
-	if err != nil {
-		return fmt.Errorf("failed to convert to USD: %w", err)
-	}
+	// USDC is pegged 1:1 to USD; no conversion needed.
+	usdAmount := amount
 
 	// Validate against user's deposit limits (if limits service is configured)
 	if s.limitsService != nil {

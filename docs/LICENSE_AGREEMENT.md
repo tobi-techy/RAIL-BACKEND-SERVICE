@@ -11,13 +11,13 @@ By accessing or using the RAIL application, you acknowledge that you have read, 
 
 2. SERVICES OVERVIEW
 RAIL provides a mobile platform that connects users with third-party financial service providers for:
-- Cryptocurrency wallet management (powered by Circle)
+- Cryptocurrency wallet management (powered by Bridge)
 - Fiat funding and withdrawals (powered by Bridge)
 - Investment and brokerage services (powered by Alpaca)
 
 3. THIRD-PARTY SERVICE PROVIDERS
 You acknowledge and agree that:
-- All funds, crypto assets, and financial holdings are held by our third-party partners: Circle, Bridge, and Alpaca
+- All funds, crypto assets, and financial holdings are held by our third-party partners: Bridge and Alpaca
 - RAIL does not hold, custody, or directly control user funds
 - Third-party providers' terms of service apply to their respective services
 - RAIL acts as an intermediary platform connecting users with these providers

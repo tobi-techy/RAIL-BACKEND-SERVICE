@@ -276,6 +276,15 @@ func (r *DepositRepository) GetTotalCompletedDeposits(ctx context.Context) (deci
 	return total, nil
 }
 
+// CountConfirmedByUserIDSince counts confirmed deposits for a user since a given time (for frequency signal)
+func (r *DepositRepository) CountConfirmedByUserIDSince(ctx context.Context, userID uuid.UUID, since time.Time) (int, error) {
+	var count int
+	err := r.db.GetContext(ctx, &count,
+		`SELECT COUNT(*) FROM deposits WHERE user_id = $1 AND status = 'broker_funded' AND created_at >= $2`,
+		userID, since)
+	return count, err
+}
+
 // CountPendingByUserID counts pending deposits for a user (for Station status)
 func (r *DepositRepository) CountPendingByUserID(ctx context.Context, userID uuid.UUID) (int, error) {
 	query := `

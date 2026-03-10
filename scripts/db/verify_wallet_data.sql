@@ -1,4 +1,4 @@
--- Verify wallet sets have Circle wallet set IDs
+-- Verify wallet sets have legacy Circle wallet set IDs (if applicable)
 SELECT 
     id,
     name,
@@ -9,12 +9,13 @@ FROM wallet_sets
 ORDER BY created_at DESC
 LIMIT 5;
 
--- Verify managed wallets have both circle_wallet_id and wallet_set_id
+-- Verify managed wallets have bridge_wallet_id and wallet_set_id (legacy circle_wallet_id shown for reference)
 SELECT 
     id,
     user_id,
     wallet_set_id,
     circle_wallet_id,
+    bridge_wallet_id,
     chain,
     address,
     account_type,
@@ -24,7 +25,14 @@ FROM managed_wallets
 ORDER BY created_at DESC
 LIMIT 10;
 
--- Check for any wallets missing circle_wallet_id or wallet_set_id
+-- Check for any wallets missing bridge_wallet_id (for Bridge-managed wallets)
+SELECT 
+    COUNT(*) as missing_bridge_wallet_id_count
+FROM managed_wallets
+WHERE (bridge_wallet_id IS NULL OR bridge_wallet_id = '')
+  AND account_type IN ('bridge_wallet', 'liquidation_address');
+
+-- Legacy: check for any wallets missing circle_wallet_id
 SELECT 
     COUNT(*) as missing_circle_wallet_id_count
 FROM managed_wallets

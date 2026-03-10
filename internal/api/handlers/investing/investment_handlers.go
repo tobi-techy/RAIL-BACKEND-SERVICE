@@ -94,7 +94,7 @@ func (h *InvestmentHandlers) CreateBrokerageAccount(c *gin.Context) {
 	})
 }
 
-// FundBrokerageAccount transfers funds from Circle wallet to Alpaca buying power
+// FundBrokerageAccount transfers funds from Bridge custody to Alpaca buying power
 // POST /api/v1/investment/fund
 func (h *InvestmentHandlers) FundBrokerageAccount(c *gin.Context) {
 	userID, err := common.GetUserID(c)
@@ -117,7 +117,7 @@ func (h *InvestmentHandlers) FundBrokerageAccount(c *gin.Context) {
 		return
 	}
 
-	if err := h.fundingBridge.TransferFromCircleToAlpaca(c.Request.Context(), userID, amount); err != nil {
+	if err := h.fundingBridge.TransferFromBridgeToAlpaca(c.Request.Context(), userID, amount); err != nil {
 		h.logger.Error("Failed to fund brokerage account", "error", err, "user_id", userID.String())
 		common.RespondError(c, http.StatusBadRequest, "FUNDING_FAILED", err.Error(), nil)
 		return

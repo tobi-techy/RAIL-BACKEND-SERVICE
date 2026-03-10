@@ -70,7 +70,7 @@ const (
 	CodeDocumentRequired   = "ERR_5403"
 
 	// External service errors (6000-6999)
-	// Circle errors (6000-6099)
+	// Legacy Circle errors (6000-6099)
 	CodeCircleAPIError     = "ERR_6000"
 	CodeCircleTimeout      = "ERR_6001"
 	CodeCircleRateLimit    = "ERR_6002"

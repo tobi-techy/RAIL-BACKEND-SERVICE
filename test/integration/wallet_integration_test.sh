@@ -1,20 +1,21 @@
 #!/bin/bash
 
 ################################################################################
-# Developer-Controlled Wallet Integration Test Script
-# Tests the complete developer-controlled wallet creation flow: signup -> passcode verification -> wallet initiation
+# Legacy Circle Wallet Integration Test Script (deprecated; Bridge is primary)
+# Tests the legacy developer-controlled wallet creation flow: signup -> passcode verification -> wallet initiation
 # 
 # Prerequisites:
 #   - Stack Service running on local machine or accessible via API_BASE_URL
 #   - Circle API credentials configured (CIRCLE_API_KEY)
 #   - Pre-registered Entity Secret Ciphertext in Circle Dashboard (CIRCLE_ENTITY_SECRET_CIPHERTEXT)
+#   - For Bridge onboarding, use Bridge integration tests instead
 #
 # Usage:
 #   ./wallet_integration_test.sh
 #
 # Environment Variables:
 #   API_BASE_URL              Base URL for the Stack Service (default: http://localhost:8080)
-#   CIRCLE_API_KEY            Circle API Key for wallet operations
+#   CIRCLE_API_KEY            Circle API Key for legacy wallet operations
 #   CIRCLE_ENTITY_SECRET_CIPHERTEXT  Pre-registered Entity Secret Ciphertext from Circle Dashboard
 #   VERBOSE                   Set to 1 for detailed output
 ################################################################################

@@ -71,8 +71,8 @@ func (r *AutoInvestRepository) SaveUserSettings(ctx context.Context, settings *e
 // CreateEvent records an auto-invest event
 func (r *AutoInvestRepository) CreateEvent(ctx context.Context, event *entities.AutoInvestEvent) error {
 	query := `
-		INSERT INTO auto_invest_events (id, user_id, basket_id, amount, order_id, status, error, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO auto_invest_events (id, user_id, basket_id, amount, order_id, correlation_id, status, error, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`
 
 	_, err := r.db.ExecContext(ctx, query,
@@ -81,6 +81,7 @@ func (r *AutoInvestRepository) CreateEvent(ctx context.Context, event *entities.
 		event.BasketID,
 		event.Amount,
 		event.OrderID,
+		event.CorrelationID,
 		event.Status,
 		event.Error,
 		event.CreatedAt,
@@ -89,6 +90,45 @@ func (r *AutoInvestRepository) CreateEvent(ctx context.Context, event *entities.
 		return fmt.Errorf("failed to create auto-invest event: %w", err)
 	}
 
+	return nil
+}
+
+// HasProcessedCorrelation checks if a correlation ID already exists (any status).
+// Status filter removed — checking only completed/pending created a race window.
+func (r *AutoInvestRepository) HasProcessedCorrelation(ctx context.Context, correlationID string) (bool, error) {
+	var exists bool
+	err := r.db.GetContext(ctx, &exists, `SELECT EXISTS(SELECT 1 FROM auto_invest_events WHERE correlation_id = $1)`, correlationID)
+	if err != nil {
+		return false, fmt.Errorf("failed to check correlation ID: %w", err)
+	}
+	return exists, nil
+}
+
+// UpdateEventAmount updates the amount of a pending auto-invest event owned by userID.
+func (r *AutoInvestRepository) UpdateEventAmount(ctx context.Context, userID, eventID uuid.UUID, amount decimal.Decimal) error {
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE auto_invest_events SET amount = $1 WHERE id = $2 AND user_id = $3 AND status = 'pending'`,
+		amount, eventID, userID)
+	if err != nil {
+		return fmt.Errorf("failed to update auto-invest event amount: %w", err)
+	}
+	if rows, _ := result.RowsAffected(); rows == 0 {
+		return fmt.Errorf("auto-invest event not found, not pending, or wrong user")
+	}
+	return nil
+}
+
+// UpdateEventStatus updates the status of an auto-invest event owned by userID.
+func (r *AutoInvestRepository) UpdateEventStatus(ctx context.Context, userID, eventID uuid.UUID, status entities.AutoInvestStatus, errMsg *string) error {
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE auto_invest_events SET status = $1, error = $2 WHERE id = $3 AND user_id = $4`,
+		status, errMsg, eventID, userID)
+	if err != nil {
+		return fmt.Errorf("failed to update auto-invest event status: %w", err)
+	}
+	if rows, _ := result.RowsAffected(); rows == 0 {
+		return fmt.Errorf("auto-invest event not found or wrong user")
+	}
 	return nil
 }
 

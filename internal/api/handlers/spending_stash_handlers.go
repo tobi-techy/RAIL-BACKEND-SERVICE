@@ -233,9 +233,15 @@ func computeSpendingAnalytics(
 			k := monthKey{w.CreatedAt.Year(), w.CreatedAt.Month()}
 			wdByMonth[k] = wdByMonth[k].Add(amount)
 		}
-		cat := "Crypto Withdrawal"
-		if w.WithdrawalType == entities.WithdrawalTypeFiat {
-			cat = "Fiat Withdrawal"
+		cat := ""
+		if w.Category != nil {
+			cat = strings.TrimSpace(*w.Category)
+		}
+		if cat == "" {
+			cat = "Crypto Withdrawal"
+			if w.WithdrawalType == entities.WithdrawalTypeFiat {
+				cat = "Fiat Withdrawal"
+			}
 		}
 		if !w.CreatedAt.Before(thisMonthStart) {
 			thisMonth = thisMonth.Add(amount)

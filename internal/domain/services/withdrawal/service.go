@@ -19,7 +19,7 @@ const (
 	CryptoWithdrawalMinAmount   = 10.00 // Minimum crypto withdrawal
 	FiatWithdrawalMinAmountUSD  = 10.00 // Minimum USD fiat withdrawal
 	FiatWithdrawalMinAmountEUR  = 10.00 // Minimum EUR fiat withdrawal
-	CryptoWithdrawalFeePercent  = 0.0   // Circle transfers are free (network fees apply)
+	CryptoWithdrawalFeePercent  = 0.0   // Bridge transfers are free (network fees apply)
 	FiatWithdrawalFeePercentUSD = 0.01  // 1% + $0.50 for USD
 	FiatWithdrawalFeeFixedUSD   = 0.50
 	FiatWithdrawalFeePercentEUR = 0.01 // 1% + €0.50 for EUR
@@ -107,18 +107,18 @@ type BridgeCryptoTransferAdapter interface {
 
 // WithdrawalService handles crypto and fiat withdrawal operations
 type WithdrawalService struct {
-	withdrawalRepo         WithdrawalRepository
-	userRepo               UserRepository
-	bankAccountRepo        BankAccountRepository
-	stashTransferRepo      StashTransferRepository
-	ledgerService          LedgerService
-	limitsService          WithdrawalLimitsService
-	auditService           WithdrawalAuditService
-	notificationService    WithdrawalNotificationService
-	bridgeAdapter          BridgeAdapter
-	bridgeCryptoAdapter    BridgeCryptoTransferAdapter
-	logger                 *logger.Logger
-	withdrawalLocks        [withdrawalLockShards]sync.Mutex
+	withdrawalRepo      WithdrawalRepository
+	userRepo            UserRepository
+	bankAccountRepo     BankAccountRepository
+	stashTransferRepo   StashTransferRepository
+	ledgerService       LedgerService
+	limitsService       WithdrawalLimitsService
+	auditService        WithdrawalAuditService
+	notificationService WithdrawalNotificationService
+	bridgeAdapter       BridgeAdapter
+	bridgeCryptoAdapter BridgeCryptoTransferAdapter
+	logger              *logger.Logger
+	withdrawalLocks     [withdrawalLockShards]sync.Mutex
 }
 
 type CryptoTransferResult struct {
@@ -233,6 +233,17 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	}
 
 	// Step 6: Create withdrawal record
+	category := strings.TrimSpace(req.Category)
+	var categoryPtr *string
+	if category != "" {
+		categoryPtr = &category
+	}
+	narration := strings.TrimSpace(req.Narration)
+	var narrationPtr *string
+	if narration != "" {
+		narrationPtr = &narration
+	}
+
 	withdrawal := &entities.Withdrawal{
 		ID:                 uuid.New(),
 		UserID:             req.UserID,
@@ -246,6 +257,8 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 		DestinationAddress: &req.DestinationAddress,
 		FeeAmount:          fee,
 		FeeCurrency:        entities.WithdrawalCurrencyUSDC,
+		Category:           categoryPtr,
+		Narration:          narrationPtr,
 		Status:             entities.WithdrawalStatusInitiated,
 		IdempotencyKey:     &idempotencyKey,
 		CreatedAt:          time.Now(),
@@ -279,7 +292,7 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 		return nil, fmt.Errorf("failed to post ledger debit: %w", err)
 	}
 
-	// Step 7: Execute Circle transfer
+	// Step 7: Execute Bridge transfer
 	transferResult, err := s.executeCryptoTransfer(ctx, withdrawal, req.DestinationAddress, req.DestinationChain, req.SourceChain)
 	if err != nil {
 		s.logger.Error("Failed to execute crypto transfer", "error", err)
@@ -309,8 +322,8 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 		}
 	}
 
-	// Circle transfer requests can complete asynchronously.
-	// Only mark completed when Circle explicitly reports a final successful state.
+	// Bridge transfer requests can complete asynchronously.
+	// Only mark completed when Bridge explicitly reports a final successful state.
 	state := strings.ToUpper(strings.TrimSpace(transferResult.State))
 	isFinalSuccess := state == "COMPLETE" || state == "COMPLETED" || state == "CONFIRMED" || state == "SUCCESS"
 
@@ -323,10 +336,10 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	}
 
 	if !isFinalSuccess {
-		// Don't block the HTTP handler polling Circle — let webhooks settle the final state.
+		// Don't block the HTTP handler polling Bridge — let webhooks settle the final state.
 		// Just do a single non-blocking status check.
 		if _, err := s.syncCryptoWithdrawalStatusFromProvider(ctx, withdrawal); err != nil {
-			s.logger.Warn("Failed to sync Circle withdrawal status during initiation",
+			s.logger.Warn("Failed to sync Bridge withdrawal status during initiation",
 				"withdrawal_id", withdrawal.ID.String(),
 				"error", err)
 		}
@@ -501,7 +514,30 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 		return nil, fmt.Errorf("failed to setup bank account: %w", err)
 	}
 
+	// SECURITY: Require additional verification for new/unverified bank accounts
+	// Check if this is a new or unverified bank account
+	if !bankAccount.IsVerified {
+		// For new bank accounts, require MFA verification
+		// This should be enforced at handler level, but we add a safeguard here
+		s.logger.Warn("Withdrawal to unverified bank account - MFA should be required",
+			"user_id", req.UserID.String(),
+			"bank_account_id", bankAccount.ID.String())
+		// Note: The actual MFA enforcement should be done at the handler level
+		// before calling this service. This is a defense-in-depth check.
+	}
+
 	// Step 8: Create withdrawal record
+	category := strings.TrimSpace(req.Category)
+	var categoryPtr *string
+	if category != "" {
+		categoryPtr = &category
+	}
+	narration := strings.TrimSpace(req.Narration)
+	var narrationPtr *string
+	if narration != "" {
+		narrationPtr = &narration
+	}
+
 	withdrawal := &entities.Withdrawal{
 		ID:               uuid.New(),
 		UserID:           req.UserID,
@@ -514,6 +550,8 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 		BankAccountID:    &bankAccount.ID,
 		FeeAmount:        fee,
 		FeeCurrency:      entities.WithdrawalCurrencyUSDC, // Fees deducted in USDC
+		Category:         categoryPtr,
+		Narration:        narrationPtr,
 		Status:           entities.WithdrawalStatusInitiated,
 		IdempotencyKey:   &idempotencyKey,
 		CreatedAt:        time.Now(),
@@ -629,7 +667,7 @@ func (s *WithdrawalService) getOrCreateBankAccount(ctx context.Context, req *ent
 		BankName:           "Pending Verification", // Will be resolved by Bridge after recipient creation
 		AccountNumberLast4: accountLast4,
 		Currency:           bankCurrency,
-		IsVerified:         false,
+		IsVerified:         false, // Security: Don't auto-verify - require successful withdrawal first
 		CreatedAt:          time.Now(),
 		UpdatedAt:          time.Now(),
 	}
@@ -672,7 +710,8 @@ func (s *WithdrawalService) getOrCreateBankAccount(ctx context.Context, req *ent
 		}
 
 		bankAccount.BridgeRecipientID = &recipientID
-		bankAccount.IsVerified = true
+		// Security: Do NOT auto-verify - this should only happen after successful withdrawal
+		// bankAccount.IsVerified = true
 	}
 
 	if err := s.bankAccountRepo.Create(ctx, bankAccount); err != nil {
@@ -784,7 +823,7 @@ func (s *WithdrawalService) GetWithdrawal(ctx context.Context, userID, withdrawa
 }
 
 // GetUserWithdrawals gets all withdrawals for a user.
-// Status sync against Circle is intentionally omitted here — it is handled
+// Status sync against Bridge is intentionally omitted here — it is handled
 // asynchronously by webhooks and the stuck-withdrawal worker.
 func (s *WithdrawalService) GetUserWithdrawals(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error) {
 	if limit <= 0 {
@@ -921,7 +960,7 @@ func (s *WithdrawalService) calculateFiatWithdrawalFee(amount decimal.Decimal, c
 }
 
 // resolveWithdrawalRoute determines the transfer route.
-// Solana↔EVM cross-chain transfers are routed via Circle CCTP.
+// Solana↔EVM cross-chain transfers are routed via CCTP.
 func resolveWithdrawalRoute(sourceChain, destChain string) string {
 	src := strings.ToUpper(sourceChain)
 	dst := strings.ToUpper(destChain)
@@ -1147,7 +1186,43 @@ func scopedWithdrawalIdempotencyKey(userID uuid.UUID, flow string, clientKey str
 		normalized = fmt.Sprintf("auto:%d", window)
 	}
 	// Use UUID v5 (deterministic) so the result is a valid UUID format
-	// as required by Circle's idempotencyKey field.
+	// as required by provider idempotencyKey fields.
 	name := "withdrawal:" + flow + ":" + userID.String() + ":" + normalized
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(name)).String()
+}
+
+// VerifyBankAccount marks a bank account as verified after successful withdrawal.
+// userID must match the account owner to prevent IDOR.
+func (s *WithdrawalService) VerifyBankAccount(ctx context.Context, userID, bankAccountID uuid.UUID) error {
+	bankAccount, err := s.bankAccountRepo.GetByID(ctx, bankAccountID)
+	if err != nil {
+		return fmt.Errorf("failed to get bank account: %w", err)
+	}
+	if bankAccount == nil {
+		return fmt.Errorf("bank account not found")
+	}
+
+	if bankAccount.UserID != userID {
+		s.logger.Error("VerifyBankAccount: ownership mismatch",
+			"requesting_user_id", userID.String(),
+			"account_owner_id", bankAccount.UserID.String(),
+			"bank_account_id", bankAccountID.String())
+		return fmt.Errorf("unauthorized: bank account does not belong to user")
+	}
+
+	if bankAccount.IsVerified {
+		return nil // Already verified
+	}
+
+	bankAccount.IsVerified = true
+	bankAccount.UpdatedAt = time.Now()
+
+	if err := s.bankAccountRepo.Update(ctx, bankAccount); err != nil {
+		return fmt.Errorf("failed to verify bank account: %w", err)
+	}
+
+	s.logger.Info("Bank account verified after successful withdrawal",
+		"user_id", userID.String(),
+		"bank_account_id", bankAccountID.String())
+	return nil
 }

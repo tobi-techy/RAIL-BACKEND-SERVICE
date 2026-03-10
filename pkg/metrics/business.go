@@ -41,6 +41,7 @@ type BusinessMetrics struct {
 	// External API metrics
 	AlpacaAPILatency  *prometheus.HistogramVec
 	AlpacaAPIErrors   *prometheus.CounterVec
+	// Legacy Circle metrics (deprecated; Bridge is primary)
 	CircleAPILatency  *prometheus.HistogramVec
 	CircleAPIErrors   *prometheus.CounterVec
 	

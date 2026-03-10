@@ -31,6 +31,7 @@ go.work
 .env.local
 .env.*.local
 *.env
+.env.temp
 !.env.example
 # CRITICAL: Never commit environment files with actual secrets
 
@@ -107,3 +108,4 @@ postman_collection_auto_generated.json
 
 # Air (hot reload)
 tmp/
+dump.rdb

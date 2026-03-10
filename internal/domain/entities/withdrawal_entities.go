@@ -167,6 +167,8 @@ type Withdrawal struct {
 	BankAccountID      *uuid.UUID              `json:"bank_account_id,omitempty" db:"bank_account_id"`
 	FeeAmount          decimal.Decimal         `json:"fee_amount" db:"fee_amount"`
 	FeeCurrency        WithdrawalCurrency      `json:"fee_currency" db:"fee_currency"`
+	Category           *string                 `json:"category,omitempty" db:"category"`
+	Narration          *string                 `json:"narration,omitempty" db:"narration"`
 	Status             WithdrawalStatus        `json:"status" db:"status"`
 	ProviderTransferID *string                 `json:"provider_transfer_id,omitempty" db:"bridge_transfer_id"`
 	TxHash             *string                 `json:"tx_hash,omitempty" db:"tx_hash"`
@@ -228,6 +230,8 @@ type InitiateCryptoWithdrawalRequest struct {
 	SourceChain        string                  `json:"source_chain"`
 	SourceAccount      WithdrawalSourceAccount `json:"source_account"`
 	BridgeWalletID     string                  `json:"bridge_wallet_id"`
+	Category           string                  `json:"category,omitempty"`
+	Narration          string                  `json:"narration,omitempty"`
 	IdempotencyKey     string                  // Generated server-side
 }
 
@@ -268,6 +272,8 @@ type InitiateFiatWithdrawalRequest struct {
 	IBAN              string                  `json:"iban,omitempty"`           // EUR only
 	BIC               string                  `json:"bic,omitempty"`            // EUR optional
 	SourceAccount     WithdrawalSourceAccount `json:"source_account"`
+	Category          string                  `json:"category,omitempty"`
+	Narration         string                  `json:"narration,omitempty"`
 	IdempotencyKey    string                  // Optional client-provided idempotency key
 }
 

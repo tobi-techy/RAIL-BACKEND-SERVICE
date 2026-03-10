@@ -111,7 +111,7 @@ Bank Account --> Bridge Network Virtual Account --> Rail
 #### 2. Crypto On-Ramp (Stablecoins)
 
 ```
-External Wallet --> Circle Deposit Address --> Rail
+External Wallet --> Bridge Deposit Address --> Rail
                       (USDC on any chain)
 ```
 
@@ -304,7 +304,7 @@ Rail communicates direction, not detail.
 |  +---------------------------------------------------------------+|
 |  |                 DATA & INFRASTRUCTURE LAYER                   ||
 |  |  +----------+  +-------+  +--------+  +--------+              ||
-|  |  |PostgreSQL|  | Redis |  | Circle |  | Alpaca |              ||
+|  |  |PostgreSQL|  | Redis |  | Bridge |  | Alpaca |              ||
 |  |  | (Ledger) |  |(Cache)|  |(Wallet)|  |(Broker)|              ||
 |  |  +----------+  +-------+  +--------+  +--------+              ||
 |  +---------------------------------------------------------------+|
@@ -315,11 +315,11 @@ Rail communicates direction, not detail.
 
 | Service | Responsibility | External Dependencies |
 |---------|---------------|----------------------|
-| **Onboarding** | Registration, KYC orchestration, wallet provisioning | KYC Provider, Circle |
-| **Funding** | Virtual accounts (USD/GBP), multi-chain USDC deposits, 70/30 split execution | Circle, Bridge Network, Blockchain RPCs |
+| **Onboarding** | Registration, KYC orchestration, wallet provisioning | Bridge |
+| **Funding** | Virtual accounts (USD/GBP), multi-chain USDC deposits, 70/30 split execution | Bridge Network, Blockchain RPCs |
 | **Spending** | Card transactions, round-ups, balance management, ledger operations | Card Issuer |
 | **Investing** | Auto-allocation, trade execution, portfolio management | Alpaca |
-| **Wallet** | Multi-chain wallet management, address generation, custody | Circle |
+| **Wallet** | Multi-chain wallet management, address generation, custody | Bridge |
 | **Conductor** | Copy trading, track management, follower trade mirroring | Alpaca |
 
 ### Project Structure
@@ -343,7 +343,6 @@ rail_service/
 │   ├── infrastructure/
 │   │   ├── adapters/               # External service integrations
 │   │   ├── cache/                  # Redis caching layer
-│   │   ├── circle/                 # Circle API client
 │   │   ├── config/                 # Configuration management
 │   │   ├── database/               # PostgreSQL connection
 │   │   ├── di/                     # Dependency injection
@@ -391,7 +390,7 @@ rail_service/
 
 | Service | Provider | Purpose |
 |---------|----------|---------|
-| Wallet Infrastructure | Circle | Multi-chain wallets, USDC custody |
+| Wallet Infrastructure | Bridge | Multi-chain wallets, USDC custody |
 | Brokerage | Alpaca | Stock/ETF trading |
 | Virtual Accounts | Bridge Network | USD/GBP bank accounts |
 | Email | SendGrid | Transactional emails |
@@ -457,7 +456,7 @@ docker-compose --profile admin --profile monitoring up -d
 export DATABASE_URL="postgres://postgres:postgres@localhost:5432/rail?sslmode=disable"
 export JWT_SECRET="your-256-bit-secret-key"
 export ENCRYPTION_KEY="your-32-byte-encryption-key"
-export CIRCLE_API_KEY="your-circle-api-key"
+export BRIDGE_API_KEY="your-bridge-api-key"
 ```
 
 **Optional:**
@@ -551,7 +550,7 @@ Authorization: Bearer <access_token>
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/v1/webhooks/circle` | Circle deposit notifications |
+| POST | `/api/v1/webhooks/funding` | Unified funding notifications (Bridge + Alpaca) |
 | POST | `/api/v1/webhooks/bridge` | Bridge Network notifications |
 | POST | `/api/v1/webhooks/alpaca` | Alpaca trade notifications |
 
