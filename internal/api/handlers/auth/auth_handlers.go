@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
@@ -1953,8 +1955,8 @@ func (h *AuthHandlers) verifyKYCCallbackSignature(c *gin.Context) bool {
 		return false
 	}
 
-	// Recreate the body for Gin to process after verification
-	c.Request.Body = nil
+	// Recreate the body so downstream handlers can still read it
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(rawBody))
 
 	// Compute HMAC-SHA256 of the body
 	mac := hmac.New(sha256.New, []byte(h.kycWebhookSecret))
@@ -1964,8 +1966,7 @@ func (h *AuthHandlers) verifyKYCCallbackSignature(c *gin.Context) bool {
 	// Use constant-time comparison to prevent timing attacks
 	if !hmac.Equal([]byte(expectedSignature), []byte(signature)) {
 		h.logger.Warn("KYC callback signature mismatch",
-			zap.String("expected_prefix", expectedSignature[:8]),
-			zap.String("got_prefix", signature[:8]))
+			zap.String("provider_ref", c.Param("provider_ref")))
 		return false
 	}
 

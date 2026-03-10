@@ -1,0 +1,3 @@
+ALTER TABLE withdrawals
+DROP COLUMN IF EXISTS category,
+DROP COLUMN IF EXISTS narration;
