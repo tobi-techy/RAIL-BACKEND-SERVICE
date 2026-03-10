@@ -1,7 +1,13 @@
--- Data migration: coerce any new account types back to EOA before restoring the constraint
-UPDATE managed_wallets SET account_type = 'EOA' WHERE account_type NOT IN ('EOA', 'SCA');
+-- Safety check: refuse rollback if any wallets with new account types exist.
+-- Manual steps required: 1) Backup wallet data, 2) Migrate wallets to appropriate
+-- legacy types, 3) Verify business logic compatibility, 4) Re-run rollback.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM managed_wallets WHERE account_type IN ('bridge_wallet', 'liquidation_address')) THEN
+        RAISE EXCEPTION 'Cannot rollback: wallets with new account types exist. Manual migration required: 1) Backup wallet data, 2) Migrate wallets to appropriate legacy types, 3) Verify business logic compatibility, 4) Re-run rollback.';
+    END IF;
+END $$;
 
--- Now safe to drop and recreate the constraint
 ALTER TABLE managed_wallets
     DROP CONSTRAINT IF EXISTS chk_wallet_account_type;
 ALTER TABLE managed_wallets

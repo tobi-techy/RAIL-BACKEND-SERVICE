@@ -1,7 +1,11 @@
--- Add correlation_id with DEFAULT so existing and concurrent rows get a value automatically,
--- eliminating the backfill-then-NOT NULL race window.
+-- Add correlation_id. Existing rows are backfilled from their id (deterministic, no race).
+-- The application always provides correlation_id before inserting new events.
 ALTER TABLE auto_invest_events
-    ADD COLUMN IF NOT EXISTS correlation_id VARCHAR(255) DEFAULT gen_random_uuid()::text NOT NULL;
+    ADD COLUMN IF NOT EXISTS correlation_id VARCHAR(255);
+
+UPDATE auto_invest_events SET correlation_id = id::text WHERE correlation_id IS NULL;
+
+ALTER TABLE auto_invest_events ALTER COLUMN correlation_id SET NOT NULL;
 
 -- Make order_id nullable (orders may not exist yet when event is created)
 ALTER TABLE auto_invest_events ALTER COLUMN order_id DROP NOT NULL;
