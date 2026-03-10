@@ -64,7 +64,7 @@ Risk from system vulnerabilities, attacks, or failures.
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|-----------|
-| API credential compromise | Low | Critical | Secrets in env vars; immediate rotation on compromise |
+| API credential compromise | Low | Critical | Secrets stored in environment variables (never committed to version control); immediate rotation on compromise; pre-commit hooks enforce secret detection |
 | Webhook spoofing | Low | High | Cryptographic signature verification on all webhooks |
 | SQL injection | Very Low | Critical | Parameterised queries (sqlx); no raw SQL string interpolation |
 | Brute force / credential stuffing | Medium | High | Rate limiting; account lockout; 2FA |

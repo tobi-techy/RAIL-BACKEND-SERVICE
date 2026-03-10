@@ -69,7 +69,7 @@ Critical and Confidential data must be encrypted at rest and in transit at all t
 
 ### 5.3 API Security
 - All authenticated endpoints require valid JWT Bearer token
-- CSRF protection enforced via `X-Requested-With` header validation
+- CSRF protection enforced via cryptographic CSRF tokens with SameSite cookie attributes (synchronizer token pattern)
 - Rate limiting applied per IP and per user on all endpoints
 - Webhook endpoints validate cryptographic signatures before processing
 
@@ -89,7 +89,7 @@ Critical and Confidential data must be encrypted at rest and in transit at all t
 - Outbound connections to third-party APIs (Bridge, Alpaca) use allowlisted endpoints only
 
 ### 6.3 Secrets Management
-- No secrets committed to source control (enforced via pre-commit hooks and `.gitignore`)
+- No secrets committed to source control (enforced via pre-commit hooks and `.gitignore`; `.env*` files explicitly excluded)
 - Environment-specific secrets stored in environment variables
 - API keys rotated immediately upon suspected compromise
 

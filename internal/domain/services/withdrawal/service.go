@@ -233,6 +233,17 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	}
 
 	// Step 6: Create withdrawal record
+	category := strings.TrimSpace(req.Category)
+	var categoryPtr *string
+	if category != "" {
+		categoryPtr = &category
+	}
+	narration := strings.TrimSpace(req.Narration)
+	var narrationPtr *string
+	if narration != "" {
+		narrationPtr = &narration
+	}
+
 	withdrawal := &entities.Withdrawal{
 		ID:                 uuid.New(),
 		UserID:             req.UserID,
@@ -246,6 +257,8 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 		DestinationAddress: &req.DestinationAddress,
 		FeeAmount:          fee,
 		FeeCurrency:        entities.WithdrawalCurrencyUSDC,
+		Category:           categoryPtr,
+		Narration:          narrationPtr,
 		Status:             entities.WithdrawalStatusInitiated,
 		IdempotencyKey:     &idempotencyKey,
 		CreatedAt:          time.Now(),
@@ -514,6 +527,17 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 	}
 
 	// Step 8: Create withdrawal record
+	category := strings.TrimSpace(req.Category)
+	var categoryPtr *string
+	if category != "" {
+		categoryPtr = &category
+	}
+	narration := strings.TrimSpace(req.Narration)
+	var narrationPtr *string
+	if narration != "" {
+		narrationPtr = &narration
+	}
+
 	withdrawal := &entities.Withdrawal{
 		ID:               uuid.New(),
 		UserID:           req.UserID,
@@ -526,6 +550,8 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 		BankAccountID:    &bankAccount.ID,
 		FeeAmount:        fee,
 		FeeCurrency:      entities.WithdrawalCurrencyUSDC, // Fees deducted in USDC
+		Category:         categoryPtr,
+		Narration:        narrationPtr,
 		Status:           entities.WithdrawalStatusInitiated,
 		IdempotencyKey:   &idempotencyKey,
 		CreatedAt:        time.Now(),

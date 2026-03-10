@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
@@ -56,6 +57,8 @@ type CryptoWithdrawalRequest struct {
 	Amount             string `json:"amount" binding:"required"`
 	DestinationAddress string `json:"destination_address" binding:"required"`
 	DestinationChain   string `json:"destination_chain"` // optional, defaults to SOL-DEVNET
+	Category           string `json:"category,omitempty"`
+	Narration          string `json:"narration,omitempty"`
 }
 
 // FiatWithdrawalRequest represents the HTTP request for fiat withdrawal
@@ -68,6 +71,8 @@ type FiatWithdrawalRequest struct {
 	RoutingNumber     string `json:"routing_number,omitempty"`
 	IBAN              string `json:"iban,omitempty"`
 	BIC               string `json:"bic,omitempty"`
+	Category          string `json:"category,omitempty"`
+	Narration         string `json:"narration,omitempty"`
 }
 
 // WithdrawalFeeRequest represents the HTTP request for fee calculation
@@ -78,6 +83,11 @@ type WithdrawalFeeRequest struct {
 	SourceChain    string `form:"source_chain"`
 	DestChain      string `form:"dest_chain"`
 }
+
+const (
+	maxWithdrawalCategoryLength  = 64
+	maxWithdrawalNarrationLength = 280
+)
 
 // InitiateCryptoWithdrawal handles POST /api/v1/withdrawals/crypto
 func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
@@ -98,6 +108,17 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 		return
 	}
 	if !h.validateWithdrawalAmountPolicy(c, userID, amount) {
+		return
+	}
+
+	category, err := normalizeCategory(req.Category)
+	if err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, err.Error())
+		return
+	}
+	narration, err := normalizeNarration(req.Narration)
+	if err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, err.Error())
 		return
 	}
 
@@ -141,6 +162,8 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 		SourceChain:        string(wallet.Chain),
 		SourceAccount:      entities.WithdrawalSourceSpendingBalance,
 		BridgeWalletID:     wallet.BridgeWalletID,
+		Category:           category,
+		Narration:          narration,
 		IdempotencyKey:     idempotencyKey,
 	}
 
@@ -180,6 +203,17 @@ func (h *WithdrawalHandlers) InitiateFiatWithdrawal(c *gin.Context) {
 		return
 	}
 
+	category, err := normalizeCategory(req.Category)
+	if err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, err.Error())
+		return
+	}
+	narration, err := normalizeNarration(req.Narration)
+	if err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, err.Error())
+		return
+	}
+
 	idempotencyKey, err := getIdempotencyKey(c)
 	if err != nil {
 		common.SendBadRequest(c, common.ErrCodeInvalidRequest, err.Error())
@@ -201,6 +235,8 @@ func (h *WithdrawalHandlers) InitiateFiatWithdrawal(c *gin.Context) {
 		IBAN:              normalizeIBAN(req.IBAN),
 		BIC:               strings.ToUpper(strings.TrimSpace(req.BIC)),
 		SourceAccount:     entities.WithdrawalSourceSpendingBalance, // Default to spending
+		Category:          category,
+		Narration:         narration,
 		IdempotencyKey:    idempotencyKey,
 	}
 
@@ -493,7 +529,7 @@ func validateFiatDestination(req FiatWithdrawalRequest) error {
 	}
 	// Check for suspicious characters in name (only allow letters, spaces, hyphens, apostrophes, periods)
 	for _, ch := range accountHolderName {
-		if !((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == ' ' || ch == '-' || ch == '\'' || ch == '.') {
+		if !unicode.IsLetter(ch) && ch != ' ' && ch != '-' && ch != '\'' && ch != '.' {
 			return fmt.Errorf("account_holder_name contains invalid characters")
 		}
 	}
@@ -527,6 +563,28 @@ func validateFiatDestination(req FiatWithdrawalRequest) error {
 		return fmt.Errorf("unsupported fiat currency: %s", currency)
 	}
 	return nil
+}
+
+func normalizeCategory(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", nil
+	}
+	if len(trimmed) > maxWithdrawalCategoryLength {
+		return "", fmt.Errorf("category must be at most %d characters", maxWithdrawalCategoryLength)
+	}
+	return trimmed, nil
+}
+
+func normalizeNarration(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", nil
+	}
+	if len(trimmed) > maxWithdrawalNarrationLength {
+		return "", fmt.Errorf("narration must be at most %d characters", maxWithdrawalNarrationLength)
+	}
+	return trimmed, nil
 }
 
 func isDigits(v string) bool {
