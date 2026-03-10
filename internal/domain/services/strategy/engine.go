@@ -249,6 +249,18 @@ func collapseToTopN(allocs []Allocation, n int) []Allocation {
 		total = total.Add(a.Weight)
 	}
 	if total.IsZero() {
+		// All weights are zero — distribute equally so portfolio sums to 100%
+		n := len(top)
+		hundred := decimal.NewFromInt(100)
+		equalWeight := hundred.Div(decimal.NewFromInt(int64(n))).Truncate(2)
+		for i := range top {
+			top[i].Weight = equalWeight
+		}
+		// Add truncation remainder to first allocation
+		assigned := equalWeight.Mul(decimal.NewFromInt(int64(n)))
+		if rem := hundred.Sub(assigned); !rem.IsZero() {
+			top[0].Weight = top[0].Weight.Add(rem)
+		}
 		return top
 	}
 	hundred := decimal.NewFromInt(100)

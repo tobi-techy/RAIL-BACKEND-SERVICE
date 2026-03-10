@@ -51,7 +51,7 @@ type BridgeWebhookHandler struct {
 // IMPORTANT: In production, verification can NEVER be skipped regardless of this flag
 func NewBridgeWebhookHandler(service BridgeWebhookService, logger *zap.Logger, webhookSecret string, skipWebhookVerification bool, environment string) *BridgeWebhookHandler {
 	// Security fix: Never allow skipping verification in production
-	if environment == "production" && skipWebhookVerification {
+	if strings.EqualFold(environment, "production") && skipWebhookVerification {
 		logger.Error("SECURITY VIOLATION: Attempted to skip webhook verification in production - forcing verification ON")
 		skipWebhookVerification = false
 	}
