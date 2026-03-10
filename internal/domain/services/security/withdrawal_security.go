@@ -185,8 +185,6 @@ func (s *WithdrawalSecurityService) VerifyConfirmation(ctx context.Context, toke
 	amount, _ := decimal.NewFromString(data["amount"])
 	confirmationID, _ := uuid.Parse(data["id"])
 
-	// Atomic operation: Delete from Redis and update DB in single transaction
-	// Use Lua script to prevent race conditions
 	tokenHash := hashToken(token)
 
 	// Update DB first — if this fails the token remains in Redis and the user can retry
