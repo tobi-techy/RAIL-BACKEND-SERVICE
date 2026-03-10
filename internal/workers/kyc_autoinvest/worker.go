@@ -127,14 +127,16 @@ func (w *Worker) run(ctx context.Context) {
 
 	triggered := 0
 	for _, candidate := range candidates {
-		// Nanosecond-precision timestamp ensures uniqueness across concurrent workers
-		// while still allowing same-day re-investment after new deposits arrive.
-		timestampBucket := time.Now().UTC().Format("2006-01-02T15:04:05.000000000")
+		// Deterministic correlation ID: same user + account + date + balance = same ID.
+		// Idempotency on retry is guaranteed; the DB unique index prevents duplicates.
+		// A new deposit changes the balance, producing a new ID and triggering re-investment.
+		dateBucket := time.Now().UTC().Format("2006-01-02")
 		correlationID := fmt.Sprintf(
-			"kyc-autoinvest:%s:%s:%s",
+			"kyc-autoinvest:%s:%s:%s:%s",
 			candidate.UserID.String(),
 			candidate.StashAccountID.String(),
-			timestampBucket,
+			dateBucket,
+			candidate.StashBalance.StringFixed(2),
 		)
 
 		if err := w.autoInvestService.TriggerAutoInvestment(ctx, autoinvest.TriggerRequest{
