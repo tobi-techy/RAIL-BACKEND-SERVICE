@@ -26,7 +26,7 @@ rate_limit:
   user_limit: 200              # Requests per authenticated user per window
   user_window: 60              # User window in seconds (1 minute)
   key_prefix: "ratelimit"      # Redis key prefix for rate limiting
-  fail_open: false             # Deny requests if Redis is unavailable (fail-safe for auth endpoints)
+  fail_open: true              # Allow requests if Redis is unavailable (prevents outages from Redis blips)
   response_headers: true       # Include X-RateLimit headers in responses
 
   # Endpoint-specific rate limits (overrides user_limit for specific endpoints)
@@ -194,6 +194,9 @@ alpaca:
   auth_method: "oauth2"  # oauth2 or legacy
   # Webhook signature verification secret (generate with: openssl rand -base64 32)
   webhook_secret: "${ALPACA_WEBHOOK_SECRET:-}"
+  # Firm/omnibus account ID used as the source for JNLC cash journals into user accounts.
+  # Find this in your Alpaca Broker dashboard under Accounts → Firm Account.
+  firm_account_no: "${ALPACA_FIRM_ACCOUNT_NO:-}"
 
 bridge:
   api_key: "${BRIDGE_API_KEY}"
@@ -232,7 +235,7 @@ social_auth:
     client_secret: ""
     redirect_uri: ""
   apple:
-    client_id: ""        # Bundle ID or Services ID
+    client_id: "com.railmoney.rail"        # Bundle ID or Services ID
     team_id: ""          # Apple Developer Team ID
     key_id: ""           # Key ID from Apple Developer Portal
     private_key: ""      # P8 private key content (base64 encoded)

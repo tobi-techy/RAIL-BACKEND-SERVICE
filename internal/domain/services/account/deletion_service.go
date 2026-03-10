@@ -33,11 +33,45 @@ type CircleClient interface {
 // UserRepository interface for user deletion
 type UserRepository interface {
 	HardDelete(ctx context.Context, userID uuid.UUID) error
+	AnonymizeUser(ctx context.Context, userID uuid.UUID) error
 }
 
 // AuditService interface for audit logging
 type AuditService interface {
 	Log(ctx context.Context, userID uuid.UUID, action entities.AuditAction, resourceType string, resourceID *uuid.UUID, metadata map[string]interface{}) error
+}
+
+// SessionService interface for session invalidation
+type SessionService interface {
+	InvalidateAllUserSessions(ctx context.Context, userID uuid.UUID) error
+}
+
+// AlpacaAccountRepository interface for Alpaca account lookup
+type AlpacaAccountRepository interface {
+	GetByUserID(ctx context.Context, userID uuid.UUID) (*entities.AlpacaAccount, error)
+}
+
+// AlpacaClient interface for Alpaca operations
+type AlpacaClient interface {
+	CloseAccount(ctx context.Context, accountID string) error
+	CloseAllPositions(ctx context.Context, accountID string) error
+	CancelAllOrders(ctx context.Context, accountID string) error
+	ListPositions(ctx context.Context, accountID string) ([]entities.AlpacaPositionResponse, error)
+}
+
+// VirtualAccountRepository interface for Bridge virtual accounts
+type VirtualAccountRepository interface {
+	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.VirtualAccount, error)
+}
+
+// BridgeClient interface for Bridge operations
+type BridgeClient interface {
+	DeactivateVirtualAccount(ctx context.Context, customerID, virtualAccountID string) error
+}
+
+// DeviceTokenRepository interface for push notification cleanup
+type DeviceTokenRepository interface {
+	DeactivateAllUserTokens(ctx context.Context, userID uuid.UUID) error
 }
 
 // DeletionService handles complete account deletion with fund sweep
@@ -47,6 +81,12 @@ type DeletionService struct {
 	circleClient          CircleClient
 	userRepo              UserRepository
 	auditService          AuditService
+	sessionService        SessionService
+	deviceTokenRepo       DeviceTokenRepository
+	alpacaAccountRepo     AlpacaAccountRepository
+	alpacaClient          AlpacaClient
+	virtualAccountRepo    VirtualAccountRepository
+	bridgeClient          BridgeClient
 	treasuryWalletAddress string
 	logger                *logger.Logger
 }
@@ -70,6 +110,28 @@ func NewDeletionService(
 		treasuryWalletAddress: treasuryWalletAddress,
 		logger:                logger,
 	}
+}
+
+// SetAlpacaClient sets the Alpaca client for account closure
+func (s *DeletionService) SetAlpacaClient(repo AlpacaAccountRepository, client AlpacaClient) {
+	s.alpacaAccountRepo = repo
+	s.alpacaClient = client
+}
+
+// SetBridgeClient sets the Bridge client for virtual account deactivation
+func (s *DeletionService) SetBridgeClient(repo VirtualAccountRepository, client BridgeClient) {
+	s.virtualAccountRepo = repo
+	s.bridgeClient = client
+}
+
+// SetSessionService sets the session service for invalidating user sessions
+func (s *DeletionService) SetSessionService(sessionService SessionService) {
+	s.sessionService = sessionService
+}
+
+// SetDeviceTokenRepo sets the device token repository for push notification cleanup
+func (s *DeletionService) SetDeviceTokenRepo(repo DeviceTokenRepository) {
+	s.deviceTokenRepo = repo
 }
 
 // DeleteAccountRequest represents a request to delete an account
@@ -118,28 +180,52 @@ func (s *DeletionService) deleteAccountInternal(ctx context.Context, req *Delete
 	if totalBalance.GreaterThan(MinSweepThreshold) {
 		sweepTxHash, err = s.sweepFundsToTreasury(ctx, req.UserID, totalBalance)
 		if err != nil {
-			s.logger.Error("Failed to sweep funds", "error", err, "amount", totalBalance.String())
-			return nil, fmt.Errorf("failed to sweep funds to treasury: %w", err)
+			// Log but don't block deletion — sweep failure is operational, not a data integrity issue
+			s.logger.Error("Failed to sweep funds, proceeding with deletion", "error", err, "amount", totalBalance.String())
+		} else {
+			s.logger.Info("Funds swept to treasury",
+				"user_id", req.UserID.String(),
+				"amount", totalBalance.String(),
+				"tx_hash", sweepTxHash)
 		}
-		s.logger.Info("Funds swept to treasury",
-			"user_id", req.UserID.String(),
-			"amount", totalBalance.String(),
-			"tx_hash", sweepTxHash)
 	}
 
-	// Step 3: Log audit before deletion
+	// Step 3: Clean up external provider accounts
+	if err := s.cleanupExternalProviders(ctx, req.UserID); err != nil {
+		s.logger.Error("External provider cleanup failed", "error", err)
+		return nil, fmt.Errorf("failed to cleanup external accounts: %w", err)
+	}
+
+	// Step 4: Log audit before deletion
 	if s.auditService != nil {
 		_ = s.auditService.Log(ctx, req.UserID, entities.AuditActionAccountDelete, "user", nil,
 			map[string]interface{}{"reason": req.Reason, "funds_swept": totalBalance.String()})
 	}
 
-	// Step 4: Hard delete user (cascades to all related tables)
+	// Step 5: Hard delete user and all related data
 	if err := s.userRepo.HardDelete(ctx, req.UserID); err != nil {
 		s.logger.Error("Failed to delete user", "error", err)
 		return nil, fmt.Errorf("failed to delete account: %w", err)
 	}
 
-	s.logger.Info("Account deleted successfully",
+	// Step 6: Invalidate all active sessions (JWT tokens)
+	if s.sessionService != nil {
+		if err := s.sessionService.InvalidateAllUserSessions(ctx, req.UserID); err != nil {
+			s.logger.Warn("Failed to invalidate user sessions", "error", err)
+			// Non-critical - sessions will expire naturally
+		} else {
+			s.logger.Info("Invalidated all user sessions", "user_id", req.UserID.String())
+		}
+	}
+
+	// Step 7: Deactivate push notification tokens
+	if s.deviceTokenRepo != nil {
+		if err := s.deviceTokenRepo.DeactivateAllUserTokens(ctx, req.UserID); err != nil {
+			s.logger.Warn("Failed to deactivate device tokens", "error", err)
+		}
+	}
+
+	s.logger.Info("Account permanently deleted",
 		"user_id", req.UserID.String(),
 		"funds_swept", totalBalance.String())
 
@@ -149,6 +235,69 @@ func (s *DeletionService) deleteAccountInternal(ctx context.Context, req *Delete
 		SweepTxHash: sweepTxHash,
 		DeletedAt:   time.Now(),
 	}, nil
+}
+
+// cleanupExternalProviders closes/deactivates accounts on external providers
+// Returns error if critical cleanup fails (Alpaca positions/orders)
+func (s *DeletionService) cleanupExternalProviders(ctx context.Context, userID uuid.UUID) error {
+	var criticalErrors []string
+
+	// Close Alpaca account - must liquidate positions and cancel orders first
+	if s.alpacaAccountRepo != nil && s.alpacaClient != nil {
+		if alpacaAccount, err := s.alpacaAccountRepo.GetByUserID(ctx, userID); err == nil && alpacaAccount != nil {
+			alpacaID := alpacaAccount.AlpacaAccountID
+
+			// Step 1: Cancel all open orders
+			if err := s.alpacaClient.CancelAllOrders(ctx, alpacaID); err != nil {
+				s.logger.Warn("Failed to cancel Alpaca orders", "user_id", userID.String(), "alpaca_id", alpacaID, "error", err)
+				// Continue - orders may already be filled or none exist
+			}
+
+			// Step 2: Close all positions (liquidate)
+			positions, _ := s.alpacaClient.ListPositions(ctx, alpacaID)
+			if len(positions) > 0 {
+				if err := s.alpacaClient.CloseAllPositions(ctx, alpacaID); err != nil {
+					s.logger.Error("Failed to liquidate Alpaca positions", "user_id", userID.String(), "alpaca_id", alpacaID, "error", err)
+					criticalErrors = append(criticalErrors, fmt.Sprintf("alpaca positions: %v", err))
+				} else {
+					s.logger.Info("Liquidated Alpaca positions", "user_id", userID.String(), "alpaca_id", alpacaID, "count", len(positions))
+				}
+			}
+
+			// Step 3: Close the account (only if positions were liquidated)
+			if len(criticalErrors) == 0 {
+				if err := s.alpacaClient.CloseAccount(ctx, alpacaID); err != nil {
+					s.logger.Warn("Failed to close Alpaca account", "user_id", userID.String(), "alpaca_id", alpacaID, "error", err)
+					// Not critical - account may have pending settlements
+				} else {
+					s.logger.Info("Closed Alpaca account", "user_id", userID.String(), "alpaca_id", alpacaID)
+				}
+			}
+		}
+	}
+
+	// Deactivate Bridge virtual accounts
+	if s.virtualAccountRepo != nil && s.bridgeClient != nil {
+		if virtualAccounts, err := s.virtualAccountRepo.GetByUserID(ctx, userID); err == nil {
+			for _, va := range virtualAccounts {
+				if va.BridgeCustomerID != "" && va.BridgeAccountID != nil && *va.BridgeAccountID != "" {
+					if err := s.bridgeClient.DeactivateVirtualAccount(ctx, va.BridgeCustomerID, *va.BridgeAccountID); err != nil {
+						s.logger.Warn("Failed to deactivate Bridge virtual account", "user_id", userID.String(), "bridge_account_id", *va.BridgeAccountID, "error", err)
+					} else {
+						s.logger.Info("Deactivated Bridge virtual account", "user_id", userID.String(), "bridge_account_id", *va.BridgeAccountID)
+					}
+				}
+			}
+		}
+	}
+
+	// Note: Circle wallets cannot be deleted (blockchain addresses are permanent)
+	// Funds have already been swept to treasury
+
+	if len(criticalErrors) > 0 {
+		return fmt.Errorf("external provider cleanup failed: %v", criticalErrors)
+	}
+	return nil
 }
 
 // calculateTotalBalance sums all user balances
@@ -225,7 +374,7 @@ func (s *DeletionService) sweepFundsToTreasury(ctx context.Context, userID uuid.
 		TokenID:            "USDC",
 		Amounts:            []string{sweepAmount.StringFixed(6)},
 		DestinationAddress: s.treasuryWalletAddress,
-		IDempotencyKey:     fmt.Sprintf("account-closure-%s", userID.String()),
+		IDempotencyKey:     uuid.NewSHA1(uuid.NameSpaceOID, []byte("account-closure-"+userID.String())).String(),
 	}
 
 	response, err := s.circleClient.TransferFunds(ctx, req)

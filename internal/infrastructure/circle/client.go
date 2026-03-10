@@ -51,6 +51,7 @@ type Config struct {
 	BalancesEndpoint       string        `json:"balances_endpoint"`
 	TransferEndpoint       string        `json:"transfer_endpoint"`
 	EntitySecretCiphertext string        `json:"entity_secret_ciphertext"` // Pre-registered ciphertext from Circle Dashboard
+	PublicKeyPEM           string        `json:"public_key_pem"`           // Circle public key for entity secret encryption
 	WalletSetID            string        `json:"wallet_set_id"`            // Default wallet set ID for wallet creation
 }
 
@@ -70,11 +71,12 @@ func NewClient(config Config, logger *zap.Logger) *Client {
 	}
 
 	if config.BaseURL == "" {
-		if config.Environment == "mainnet" {
-			config.BaseURL = ProductionBaseURL
+		// Use environment to determine base URL
+		env := strings.ToLower(strings.TrimSpace(config.Environment))
+		if env == "sandbox" {
+			config.BaseURL = SandboxBaseURL
 		} else {
-			// Default to production URL for both testnet and mainnet
-			// Circle Wallet API uses the same base URL for both environments
+			// Default to production for "production", "mainnet", or any other value
 			config.BaseURL = ProductionBaseURL
 		}
 	}
@@ -127,12 +129,22 @@ func NewClient(config Config, logger *zap.Logger) *Client {
 	circuitBreaker := gobreaker.NewCircuitBreaker(st)
 
 	// Initialize entity secret service for dynamic ciphertext generation (fallback only)
-	entitySecretService := entitysecret.NewService(logger)
+	logger.Debug("Initializing Circle client entity secret service",
+		zap.String("entitySecretCiphertext_length", fmt.Sprintf("%d", len(config.EntitySecretCiphertext))),
+		zap.String("publicKeyPEM_length", fmt.Sprintf("%d", len(config.PublicKeyPEM))))
+	entitySecretService, err := entitysecret.NewService(logger, config.EntitySecretCiphertext, config.PublicKeyPEM)
+	if err != nil {
+		logger.Warn("Failed to initialize entity secret service, dynamic generation will not be available",
+			zap.Error(err),
+			zap.String("entitySecretCiphertext_present", fmt.Sprintf("%t", config.EntitySecretCiphertext != "")),
+			zap.String("publicKeyPEM_present", fmt.Sprintf("%t", config.PublicKeyPEM != "")))
+		entitySecretService = nil
+	}
 
 	if strings.TrimSpace(config.EntitySecretCiphertext) == "" {
 		logger.Warn("No pre-registered entity secret ciphertext configured. Dynamic generation will be used, but Circle API may reject these requests.")
 	} else {
-		logger.Info("Using pre-registered entity secret ciphertext from configuration.")
+		logger.Info("Pre-registered entity secret ciphertext is configured for fallback.")
 	}
 
 	return &Client{
@@ -820,7 +832,9 @@ func (c *Client) InitiateCCTPBurn(ctx context.Context, req *entities.CCTPBurnReq
 		return nil, fmt.Errorf("failed to resolve USDC token for wallet %s: %w", req.WalletID, err)
 	}
 
-	// Build CCTP transfer request using Circle's developer wallet transfer endpoint
+	// Build CCTP transfer request using Circle's developer wallet transfer endpoint.
+	// Circle's W3S API takes a plain address — no 32-byte padding, no destinationDomain.
+	// CCTP routing is handled internally by Circle based on the source wallet's chain.
 	transferReq := map[string]interface{}{
 		"idempotencyKey":         req.IdempotencyKey,
 		"entitySecretCiphertext": entitySecretCiphertext,
@@ -828,6 +842,7 @@ func (c *Client) InitiateCCTPBurn(ctx context.Context, req *entities.CCTPBurnReq
 		"amounts":                []string{req.Amount.String()},
 		"destinationAddress":     req.MintRecipient,
 		"tokenId":                tokenID,
+		"feeLevel":               "MEDIUM",
 	}
 
 	c.logger.Info("Initiating CCTP burn",
@@ -864,10 +879,23 @@ func (c *Client) InitiateCCTPBurn(ctx context.Context, req *entities.CCTPBurnReq
 }
 
 func (c *Client) getEntitySecretCiphertext(ctx context.Context) (string, error) {
-	if configured := strings.TrimSpace(c.config.EntitySecretCiphertext); configured != "" {
-		c.logger.Info("Configured entity secret ciphertext present; using dynamic ciphertext to match wallet flow")
+	// Try dynamic generation first
+	if c.entitySecretService != nil {
+		ciphertext, err := c.entitySecretService.GenerateEntitySecretCiphertext(ctx)
+		if err == nil {
+			c.logger.Debug("Using dynamically generated entity secret ciphertext",
+				zap.String("ciphertext_length", fmt.Sprintf("%d", len(ciphertext))))
+			return ciphertext, nil
+		}
+		c.logger.Warn("Dynamic ciphertext generation failed, trying fallback", zap.Error(err))
 	}
-	return c.entitySecretService.GenerateEntitySecretCiphertext(ctx)
+	// Fall back to pre-registered ciphertext from config
+	if ct := strings.TrimSpace(c.config.EntitySecretCiphertext); ct != "" {
+		c.logger.Info("Using pre-registered entity secret ciphertext from configuration",
+			zap.String("ciphertext_length", fmt.Sprintf("%d", len(ct))))
+		return ct, nil
+	}
+	return "", fmt.Errorf("entity secret service not initialized and no pre-registered ciphertext configured: check CIRCLE_PUBLIC_KEY_PEM and CIRCLE_ENTITY_SECRET_CIPHERTEXT")
 }
 
 // GetCCTPTransaction retrieves the status of a CCTP/transfer transaction
@@ -1066,6 +1094,9 @@ func parseTransactionStatusFromMap(defaultID string, txData map[string]interface
 		if t, err := time.Parse(time.RFC3339, confirmDate); err == nil {
 			status.ConfirmedAt = &t
 		}
+	}
+	if reason, ok := txData["errorReason"].(string); ok {
+		status.ErrorReason = reason
 	}
 
 	return status

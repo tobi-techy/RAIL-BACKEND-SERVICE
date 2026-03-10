@@ -12,18 +12,17 @@ import (
 type Chain string
 
 const (
-	ChainETH      Chain = "ETH"
-	ChainMATIC    Chain = "MATIC"
-	ChainAVAX     Chain = "AVAX"
-	ChainSOL      Chain = "SOL"
-	ChainARB      Chain = "ARB"
-	ChainBASE     Chain = "BASE"
-	ChainOP       Chain = "OP"
-	ChainAptos    Chain = "Aptos"
-	ChainSolana   Chain = "Solana"
-	ChainPolygon  Chain = "polygon"
-	ChainStarknet Chain = "starknet"
-	ChainFiat     Chain = "fiat"
+	// Supported chains
+	ChainSOL         Chain = "SOL"
+	ChainSOLDevnet   Chain = "SOL-DEVNET"
+	ChainMATIC       Chain = "MATIC"
+	ChainMATICAmoy   Chain = "MATIC-AMOY"
+	ChainAVAX        Chain = "AVAX"
+	ChainAVAXFuji    Chain = "AVAX-FUJI"
+	ChainBASE        Chain = "BASE"
+	ChainBASESepolia Chain = "BASE-SEPOLIA"
+
+	ChainFiat Chain = "fiat"
 )
 
 // Stablecoin represents supported stablecoins

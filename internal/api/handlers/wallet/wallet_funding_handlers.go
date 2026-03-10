@@ -103,9 +103,14 @@ func (h *WalletFundingHandlers) SetCircleClient(client CircleBalanceGetter) {
 func (h *WalletFundingHandlers) ReconcileUserBalance(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	// Check admin authorization
+	// Check admin authorization with explicit type assertion
 	userRole, exists := c.Get("user_role")
-	if !exists || userRole != "admin" {
+	if !exists {
+		c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
+		return
+	}
+	roleStr, ok := userRole.(string)
+	if !ok || roleStr != "admin" {
 		c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
 		return
 	}
@@ -1153,6 +1158,31 @@ func (h *WalletFundingHandlers) GetBalances(c *gin.Context) {
 	c.JSON(http.StatusOK, balances)
 }
 
+// GetVirtualAccounts retrieves virtual accounts for the authenticated user
+// GET /api/v1/funding/virtual-accounts
+func (h *WalletFundingHandlers) GetVirtualAccounts(c *gin.Context) {
+	userUUID, err := common.GetUserID(c)
+	if err != nil {
+		common.RespondUnauthorized(c, "User not authenticated")
+		return
+	}
+
+	accounts, err := h.fundingService.GetVirtualAccounts(c.Request.Context(), userUUID)
+	if err != nil {
+		h.logger.Error("Failed to get virtual accounts", "error", err, "user_id", userUUID)
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+			Code:    "VIRTUAL_ACCOUNT_ERROR",
+			Message: "Failed to retrieve virtual accounts",
+		})
+		return
+	}
+
+	if accounts == nil {
+		accounts = []*entities.VirtualAccount{}
+	}
+	c.JSON(http.StatusOK, gin.H{"virtual_accounts": accounts, "total": len(accounts)})
+}
+
 // CreateVirtualAccount creates a virtual account linked to an Alpaca brokerage account
 // @Summary Create virtual account
 // @Description Create a virtual account for funding a brokerage account with stablecoins
@@ -1167,73 +1197,80 @@ func (h *WalletFundingHandlers) GetBalances(c *gin.Context) {
 // @Failure 500 {object} ErrorResponse
 // @Router /api/v1/funding/virtual-account [post]
 func (h *WalletFundingHandlers) CreateVirtualAccount(c *gin.Context) {
-	var req entities.CreateVirtualAccountRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		common.RespondBadRequest(c, "Invalid request format", map[string]interface{}{"error": err.Error()})
-		return
-	}
-
 	userUUID, err := common.GetUserID(c)
 	if err != nil {
-		h.logger.Error("Failed to get user ID", "error", err)
 		common.RespondUnauthorized(c, "User not authenticated")
 		return
 	}
 
-	// Set user ID from context
-	req.UserID = userUUID
+	ctx := c.Request.Context()
 
-	// Validate Alpaca account ID
-	if req.AlpacaAccountID == "" {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-			Code:    "INVALID_REQUEST",
-			Message: "Alpaca account ID is required",
-		})
+	// Look up user profile to get BridgeCustomerID and AlpacaAccountID server-side
+	if h.userProfileProvider == nil {
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "CONFIG_ERROR", Message: "User profile service not configured"})
+		return
+	}
+	profile, err := h.userProfileProvider.GetByID(ctx, userUUID)
+	if err != nil || profile == nil {
+		h.logger.Error("Failed to get user profile", "error", err, "user_id", userUUID)
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "PROFILE_ERROR", Message: "Failed to retrieve user profile"})
+		return
+	}
+	if profile.BridgeCustomerID == nil || *profile.BridgeCustomerID == "" {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "KYC_REQUIRED", Message: "Bridge KYC must be completed before creating a virtual account"})
+		return
+	}
+	if profile.AlpacaAccountID == nil || *profile.AlpacaAccountID == "" {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "ONBOARDING_INCOMPLETE", Message: "Brokerage account setup must be completed first"})
 		return
 	}
 
-	response, err := h.fundingService.CreateVirtualAccount(c.Request.Context(), &req)
+	response, err := h.fundingService.CreateVirtualAccount(ctx, &entities.CreateVirtualAccountRequest{
+		UserID:           userUUID,
+		AlpacaAccountID:  *profile.AlpacaAccountID,
+		BridgeCustomerID: *profile.BridgeCustomerID,
+	})
 	if err != nil {
-		h.logger.Error("Failed to create virtual account",
-			"error", err,
-			"user_id", userUUID,
-			"alpaca_account_id", req.AlpacaAccountID)
-
-		// Handle specific error cases
-		if strings.Contains(err.Error(), "already exists") {
-			c.JSON(http.StatusConflict, entities.ErrorResponse{
-				Code:    "VIRTUAL_ACCOUNT_EXISTS",
-				Message: "Virtual account already exists for this Alpaca account",
-			})
-			return
+		h.logger.Error("Failed to create virtual account", "error", err, "user_id", userUUID)
+		switch {
+		case strings.Contains(err.Error(), "already exists"):
+			c.JSON(http.StatusConflict, entities.ErrorResponse{Code: "VIRTUAL_ACCOUNT_EXISTS", Message: "Virtual account already exists"})
+		case strings.Contains(err.Error(), "not active"):
+			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "ALPACA_ACCOUNT_INACTIVE", Message: "Brokerage account is not yet active"})
+		case strings.Contains(err.Error(), "does not belong to authenticated user"):
+			c.JSON(http.StatusForbidden, entities.ErrorResponse{Code: "ALPACA_ACCOUNT_FORBIDDEN", Message: "Account mismatch"})
+		case strings.Contains(err.Error(), "has_not_accepted_tos"):
+			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "has_not_accepted_tos", Message: "Please accept the Bridge Terms of Service before creating a virtual account"})
+		default:
+			c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "VIRTUAL_ACCOUNT_ERROR", Message: "Failed to create virtual account"})
 		}
-
-		if strings.Contains(err.Error(), "not active") {
-			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-				Code:    "ALPACA_ACCOUNT_INACTIVE",
-				Message: "Alpaca account is not active",
-			})
-			return
-		}
-		if strings.Contains(err.Error(), "does not belong to authenticated user") {
-			c.JSON(http.StatusForbidden, entities.ErrorResponse{
-				Code:    "ALPACA_ACCOUNT_FORBIDDEN",
-				Message: "Alpaca account does not belong to authenticated user",
-			})
-			return
-		}
-
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-			Code:    "VIRTUAL_ACCOUNT_ERROR",
-			Message: "Failed to create virtual account",
-		})
 		return
 	}
 
 	c.JSON(http.StatusCreated, response)
 }
 
-// === Investing Handlers ===
+// GetBridgeTOSLink returns the Bridge Terms of Service acceptance link for the current user
+func (h *WalletFundingHandlers) GetBridgeTOSLink(c *gin.Context) {
+	userUUID, err := common.GetUserID(c)
+	if err != nil {
+		common.RespondUnauthorized(c, "User not authenticated")
+		return
+	}
+	ctx := c.Request.Context()
+	profile, err := h.userProfileProvider.GetByID(ctx, userUUID)
+	if err != nil || profile == nil || profile.BridgeCustomerID == nil || *profile.BridgeCustomerID == "" {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "KYC_REQUIRED", Message: "Bridge KYC must be completed first"})
+		return
+	}
+	link, err := h.fundingService.GetTOSLink(ctx, *profile.BridgeCustomerID)
+	if err != nil {
+		h.logger.Error("Failed to get Bridge ToS link", "error", err, "user_id", userUUID)
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "TOS_LINK_ERROR", Message: "Failed to retrieve Terms of Service link"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"tos_link": link})
+}
 
 // GetBaskets lists all available investment baskets
 // @Summary Get investment baskets

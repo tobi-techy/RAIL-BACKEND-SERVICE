@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"go.uber.org/zap"
 )
 
@@ -48,6 +49,14 @@ func (s *BrokerageOnboardingService) CreateBrokerageAccount(ctx context.Context,
 		phoneNumber = *user.Phone
 	}
 
+	// Derive Alpaca tax ID type from verification data or country
+	alpacaTaxIDType := "NOT_SPECIFIED"
+	if rawType := getString("tax_id_type"); rawType != "" {
+		alpacaTaxIDType = kycservice.MapTaxIDTypeToAlpaca(rawType)
+	} else if country := getString("country"); country != "" {
+		alpacaTaxIDType = kycservice.AlpacaTaxIDTypeForCountry(country)
+	}
+
 	// Map STACK KYC data to Alpaca format
 	req := &entities.AlpacaCreateAccountRequest{
 		Contact: entities.AlpacaContact{
@@ -64,7 +73,7 @@ func (s *BrokerageOnboardingService) CreateBrokerageAccount(ctx context.Context,
 			FamilyName:            getString("family_name"),
 			DateOfBirth:           getString("date_of_birth"),
 			TaxID:                 getString("tax_id"),
-			TaxIDType:             "USA_SSN",
+			TaxIDType:             alpacaTaxIDType,
 			CountryOfCitizenship:  getString("country"),
 			CountryOfBirth:        getString("country"),
 			CountryOfTaxResidence: getString("country"),

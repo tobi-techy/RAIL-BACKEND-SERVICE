@@ -1,6 +1,7 @@
 package webhooks
 
 import (
+	"context"
 	"crypto"
 	"crypto/hmac"
 	"crypto/rsa"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -52,6 +54,11 @@ func NewBridgeWebhookHandler(service BridgeWebhookService, logger *zap.Logger, w
 		webhookSecret:           webhookSecret,
 		skipWebhookVerification: skipWebhookVerification,
 	}
+}
+
+// SetService updates the webhook service wiring after container initialization.
+func (h *BridgeWebhookHandler) SetService(service BridgeWebhookService) {
+	h.service = service
 }
 
 // BridgeWebhookPayload represents the Bridge webhook payload structure
@@ -106,10 +113,10 @@ func (h *BridgeWebhookHandler) HandleWebhook(c *gin.Context) {
 	}
 
 	// Verify signature
-	signature := c.GetHeader("Bridge-Signature")
+	signature := getBridgeSignatureHeader(c)
 	if !h.verifySignature(signature, rawBody) {
 		h.logger.Warn("Invalid Bridge webhook signature")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid signature"})
 		return
 	}
 
@@ -156,6 +163,10 @@ func (h *BridgeWebhookHandler) HandleWebhook(c *gin.Context) {
 	// Posted Card Transaction events
 	case "posted_card_account_transaction":
 		h.handlePostedCardTransaction(c, payload)
+
+	// Card Withdrawal events (top-up funding lifecycle)
+	case "card_withdrawal":
+		h.handleCardWithdrawalEvent(c, payload)
 
 	default:
 		// Fallback to legacy event_type routing for backwards compatibility
@@ -314,7 +325,14 @@ func (h *BridgeWebhookHandler) handleCardTransactionEvent(c *gin.Context, payloa
 	}
 
 	transactionID := payload.EventObjectID
-	status := payload.EventObjectStatus
+	rawStatus := strings.TrimSpace(payload.EventObjectStatus)
+	if rawStatus == "" {
+		rawStatus = getStringField(payload.EventObject, "status")
+	}
+	status := normalizeBridgeWebhookCardStatus(rawStatus)
+	if status == "" {
+		status = "pending"
+	}
 	cardAccountID := getStringField(payload.EventObject, "card_account_id")
 
 	var amount decimal.Decimal
@@ -333,13 +351,14 @@ func (h *BridgeWebhookHandler) handleCardTransactionEvent(c *gin.Context, payloa
 
 	switch status {
 	case "declined":
-		declineReason := getStringField(payload.EventObject, "decline_reason")
-		if err := h.service.ProcessCardTransactionDeclined(c, cardAccountID, transactionID, declineReason); err != nil {
+		if err := h.service.ProcessCardTransaction(c, cardAccountID, transactionID, amount, merchantName, merchantCategory, status); err != nil {
 			h.logger.Error("Failed to process declined transaction", zap.Error(err))
 		}
 	case "pending":
 		if err := h.service.ProcessCardAuthorization(c, cardAccountID, amount, merchantName, merchantCategory); err != nil {
 			h.logger.Error("Failed to process card authorization", zap.Error(err))
+		} else if err := h.service.ProcessCardTransaction(c, cardAccountID, transactionID, amount, merchantName, merchantCategory, "pending"); err != nil {
+			h.logger.Error("Failed to record pending authorization", zap.Error(err))
 		}
 	default:
 		if err := h.service.ProcessCardTransaction(c, cardAccountID, transactionID, amount, merchantName, merchantCategory, status); err != nil {
@@ -377,6 +396,20 @@ func (h *BridgeWebhookHandler) handlePostedCardTransaction(c *gin.Context, paylo
 	if err := h.service.ProcessCardTransaction(c, cardAccountID, transactionID, amount, merchantName, merchantCategory, "posted"); err != nil {
 		h.logger.Error("Failed to process posted card transaction", zap.Error(err))
 	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "success"})
+}
+
+// handleCardWithdrawalEvent processes card_withdrawal events.
+// These events are currently logged for observability and acknowledged.
+func (h *BridgeWebhookHandler) handleCardWithdrawalEvent(c *gin.Context, payload BridgeWebhookPayload) {
+	withdrawalID := payload.EventObjectID
+	status := payload.EventObjectStatus
+
+	h.logger.Info("Card withdrawal event",
+		zap.String("withdrawal_id", withdrawalID),
+		zap.String("status", status),
+		zap.String("event_type", payload.EventType))
 
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
 }
@@ -648,45 +681,52 @@ func (h *BridgeWebhookHandler) verifySignature(signature string, body []byte) bo
 		return false
 	}
 
+	timestamp, parsedSig := parseBridgeSignatureHeader(signature)
+	if parsedSig == "" {
+		parsedSig = strings.TrimSpace(signature)
+	}
+
 	// Bridge uses RSA-SHA256 signatures with PEM-encoded public key
 	if strings.Contains(h.webhookSecret, "BEGIN PUBLIC KEY") {
-		return h.verifyRSASignature(signature, body)
+		return h.verifyRSASignature(timestamp, parsedSig, body)
 	}
 
 	// Fallback to HMAC for backwards compatibility
 	mac := hmac.New(sha256.New, []byte(h.webhookSecret))
 	mac.Write(body)
 	expected := hex.EncodeToString(mac.Sum(nil))
+	if hmac.Equal([]byte(expected), []byte(parsedSig)) {
+		return true
+	}
 
-	return hmac.Equal([]byte(expected), []byte(signature))
-}
-
-// verifyRSASignature verifies Bridge webhook using RSA public key
-func (h *BridgeWebhookHandler) verifyRSASignature(signatureHeader string, body []byte) bool {
-	// Parse signature header: "t=<timestamp>,v1=<base64-signature>"
-	var timestamp, sig string
-	parts := strings.Split(signatureHeader, ",")
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if strings.HasPrefix(part, "t=") {
-			timestamp = strings.TrimPrefix(part, "t=")
-		} else if strings.HasPrefix(part, "v1=") {
-			sig = strings.TrimPrefix(part, "v1=")
+	// Bridge timestamped signature format: t=<timestamp>,v0=<signature>
+	if timestamp != "" {
+		mac = hmac.New(sha256.New, []byte(h.webhookSecret))
+		mac.Write([]byte(timestamp + "." + string(body)))
+		expected = hex.EncodeToString(mac.Sum(nil))
+		if hmac.Equal([]byte(expected), []byte(parsedSig)) {
+			return true
 		}
 	}
 
+	return false
+}
+
+// verifyRSASignature verifies Bridge webhook using RSA public key
+func (h *BridgeWebhookHandler) verifyRSASignature(timestamp, sig string, body []byte) bool {
 	// Enforce timestamped signatures to reduce replay risk.
 	if timestamp == "" {
 		h.logger.Warn("Bridge RSA signature missing timestamp")
 		return false
 	}
-	ts, err := strconv.ParseInt(timestamp, 10, 64)
+	eventTime, err := parseBridgeWebhookTimestamp(timestamp)
 	if err != nil {
 		h.logger.Warn("Bridge RSA signature timestamp parse failed", zap.Error(err))
 		return false
 	}
-	eventTime := time.Unix(ts, 0)
-	if time.Since(eventTime) > 5*time.Minute {
+	// Allow up to 72 hours for retried/delayed deliveries (Bridge retries stuck webhooks days later).
+	// Replay protection is handled by Redis deduplication in the webhook security middleware.
+	if time.Since(eventTime) > 72*time.Hour {
 		h.logger.Warn("Bridge webhook timestamp too old", zap.Time("event_time", eventTime))
 		return false
 	}
@@ -696,7 +736,7 @@ func (h *BridgeWebhookHandler) verifyRSASignature(signatureHeader string, body [
 	}
 
 	if sig == "" {
-		h.logger.Warn("Bridge RSA signature missing v1 component")
+		h.logger.Warn("Bridge RSA signature missing signature component")
 		return false
 	}
 
@@ -727,22 +767,17 @@ func (h *BridgeWebhookHandler) verifyRSASignature(signatureHeader string, body [
 		return false
 	}
 
-	// Decode base64 signature
-	sigBytes, err := base64.StdEncoding.DecodeString(sig)
+	// Decode base64 signature — Bridge uses strict standard base64 encoding.
+	sigBytes, err := base64.StdEncoding.Strict().DecodeString(sig)
 	if err != nil {
-		// Try URL-safe base64
-		sigBytes, err = base64.URLEncoding.DecodeString(sig)
-		if err != nil {
-			h.logger.Error("Failed to decode signature", zap.Error(err))
-			return false
-		}
+		h.logger.Error("Failed to decode signature", zap.Error(err))
+		return false
 	}
 
-	// Bridge signs: timestamp + "." + body.
+	// Bridge signs: timestamp + "." + body (double SHA256 per Bridge Go sample).
 	signedPayload := []byte(timestamp + "." + string(body))
-
-	// Hash the payload
 	hashed := sha256.Sum256(signedPayload)
+	hashed = sha256.Sum256(hashed[:])
 
 	// Verify RSA-SHA256 signature
 	err = rsa.VerifyPKCS1v15(rsaPub, crypto.SHA256, hashed[:], sigBytes)
@@ -752,6 +787,49 @@ func (h *BridgeWebhookHandler) verifyRSASignature(signatureHeader string, body [
 	}
 
 	return true
+}
+
+func parseBridgeSignatureHeader(signatureHeader string) (timestamp string, signature string) {
+	trimmed := strings.TrimSpace(signatureHeader)
+	if trimmed == "" {
+		return "", ""
+	}
+
+	if !strings.Contains(trimmed, "=") {
+		return "", trimmed
+	}
+
+	parts := strings.Split(trimmed, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, "t=") {
+			timestamp = strings.TrimPrefix(part, "t=")
+			continue
+		}
+		if strings.HasPrefix(part, "v0=") {
+			signature = strings.TrimPrefix(part, "v0=")
+			continue
+		}
+		if strings.HasPrefix(part, "v1=") && signature == "" {
+			// Keep backward compatibility with legacy header formats.
+			signature = strings.TrimPrefix(part, "v1=")
+		}
+	}
+
+	return strings.TrimSpace(timestamp), strings.TrimSpace(signature)
+}
+
+func parseBridgeWebhookTimestamp(raw string) (time.Time, error) {
+	ts, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	// Bridge webhook timestamp uses milliseconds in current docs.
+	if ts > 1_000_000_000_000 {
+		return time.UnixMilli(ts), nil
+	}
+	return time.Unix(ts, 0), nil
 }
 
 // BridgeWebhookServiceImpl implements BridgeWebhookService
@@ -770,7 +848,7 @@ type BridgeVirtualAccountProcessor interface {
 
 // BridgeCustomerProcessor processes customer events
 type BridgeCustomerProcessor interface {
-	UpdateCustomerStatus(ctx *gin.Context, customerID string, status string) error
+	UpdateCustomerStatus(ctx context.Context, customerID string, status string) error
 }
 
 // BridgeCardProcessor processes card events
@@ -860,6 +938,31 @@ func (s *BridgeWebhookServiceImpl) ProcessCardStatusChanged(ctx *gin.Context, ca
 
 // Helper functions for extracting fields from event objects
 
+func getBridgeSignatureHeader(c *gin.Context) string {
+	if sig := strings.TrimSpace(c.GetHeader("X-Webhook-Signature")); sig != "" {
+		return sig
+	}
+	if sig := strings.TrimSpace(c.GetHeader("X-Bridge-Signature")); sig != "" {
+		return sig
+	}
+	return strings.TrimSpace(c.GetHeader("Bridge-Signature"))
+}
+
+func normalizeBridgeWebhookCardStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "approved", "authorized", "incrementally_authorized", "authorizing":
+		return "pending"
+	case "denied", "failed", "expired", "timeout":
+		return "declined"
+	case "posted", "captured", "settled", "partially_settled", "incrementally_settled":
+		return "completed"
+	case "refunded", "refund", "partially_reversed":
+		return "reversed"
+	default:
+		return strings.ToLower(strings.TrimSpace(status))
+	}
+}
+
 // getStringField safely extracts a string field from a map
 func getStringField(obj map[string]interface{}, key string) string {
 	if val, ok := obj[key]; ok {
@@ -883,5 +986,117 @@ func mapKYCStatusToCustomerStatus(kycStatus string) string {
 		return "under_review"
 	default:
 		return kycStatus
+	}
+}
+
+// BridgeCustomerStatusProcessor handles customer status change events from Bridge
+type BridgeCustomerStatusProcessor struct {
+	userRepo              UserRepositoryForCustomer
+	virtualAccountService VirtualAccountProvisioner
+	logger                *zap.Logger
+}
+
+// UserRepositoryForCustomer defines the interface for user lookups needed by customer processor
+type UserRepositoryForCustomer interface {
+	GetByBridgeCustomerID(ctx context.Context, bridgeCustomerID string) (*entities.UserProfile, error)
+	UpdateBridgeKYCStatus(ctx context.Context, userID uuid.UUID, status string) error
+}
+
+// VirtualAccountProvisioner defines the interface for provisioning virtual accounts
+type VirtualAccountProvisioner interface {
+	ProvisionVirtualAccounts(ctx context.Context, userID uuid.UUID, bridgeCustomerID string, currencies []string) error
+}
+
+// NewBridgeCustomerStatusProcessor creates a new customer status processor
+func NewBridgeCustomerStatusProcessor(
+	userRepo UserRepositoryForCustomer,
+	virtualAccountService VirtualAccountProvisioner,
+	logger *zap.Logger,
+) *BridgeCustomerStatusProcessor {
+	return &BridgeCustomerStatusProcessor{
+		userRepo:              userRepo,
+		virtualAccountService: virtualAccountService,
+		logger:                logger,
+	}
+}
+
+// UpdateCustomerStatus processes Bridge customer status changes
+// This is the implementation of BridgeCustomerProcessor interface
+func (s *BridgeCustomerStatusProcessor) UpdateCustomerStatus(ctx context.Context, customerID string, status string) error {
+	s.logger.Info("Processing Bridge customer status change",
+		zap.String("customer_id", customerID),
+		zap.String("status", status))
+
+	// Find user by Bridge customer ID
+	user, err := s.userRepo.GetByBridgeCustomerID(ctx, customerID)
+	if err != nil {
+		s.logger.Error("Failed to find user by Bridge customer ID",
+			zap.Error(err),
+			zap.String("customer_id", customerID))
+		return fmt.Errorf("failed to find user: %w", err)
+	}
+
+	if user == nil {
+		s.logger.Warn("No user found for Bridge customer ID",
+			zap.String("customer_id", customerID))
+		return fmt.Errorf("user not found for customer: %s", customerID)
+	}
+
+	s.logger.Info("Found user for customer status update",
+		zap.String("user_id", user.ID.String()),
+		zap.String("customer_id", customerID),
+		zap.String("new_status", status))
+
+	// Update bridge_kyc_status
+	bridgeKYCStatus := mapBridgeKYCStatus(status)
+
+	if err := s.userRepo.UpdateBridgeKYCStatus(ctx, user.ID, bridgeKYCStatus); err != nil {
+		s.logger.Error("Failed to update user bridge_kyc_status",
+			zap.Error(err),
+			zap.String("user_id", user.ID.String()))
+		return fmt.Errorf("failed to update user status: %w", err)
+	}
+
+	s.logger.Info("Updated bridge_kyc_status",
+		zap.String("user_id", user.ID.String()),
+		zap.String("new_status", bridgeKYCStatus))
+
+	// Trigger virtual account provisioning if status became active
+	if bridgeKYCStatus == "active" {
+		s.logger.Info("KYC approved - provisioning virtual accounts",
+			zap.String("user_id", user.ID.String()),
+			zap.String("customer_id", customerID))
+
+		if s.virtualAccountService != nil {
+			currencies := []string{"USD", "EUR"}
+			if err := s.virtualAccountService.ProvisionVirtualAccounts(ctx, user.ID, customerID, currencies); err != nil {
+				s.logger.Error("Failed to provision virtual accounts",
+					zap.Error(err),
+					zap.String("user_id", user.ID.String()))
+				// Don't fail the webhook - provisioning can be retried
+				return nil
+			}
+			s.logger.Info("Successfully provisioned virtual accounts",
+				zap.String("user_id", user.ID.String()),
+				zap.Strings("currencies", currencies))
+		}
+	}
+
+	return nil
+}
+
+// mapBridgeKYCStatus maps Bridge customer status to our internal KYC status
+func mapBridgeKYCStatus(bridgeStatus string) string {
+	switch strings.ToLower(bridgeStatus) {
+	case "active", "approved":
+		return "active"
+	case "rejected", "denied":
+		return "rejected"
+	case "pending", "processing", "under_review", "in_review":
+		return "pending"
+	case "incomplete", "not_started":
+		return "incomplete"
+	default:
+		return strings.ToLower(bridgeStatus)
 	}
 }

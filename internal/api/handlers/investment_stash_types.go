@@ -10,6 +10,7 @@ type InvestmentStashResponse struct {
 	Stats                     InvestmentStats                `json:"stats"`
 	AutoInvest                *AutoInvestInfo                `json:"auto_invest,omitempty"`
 	Summary                   *InvestmentSummary             `json:"summary,omitempty"`
+	InvestmentRule            *InvestmentRule                `json:"investment_rule,omitempty"`
 	HoldingsPreview           []InvestmentPositionDetail     `json:"holdings_preview"`
 	TopPerformersPreview      []InvestmentPositionDetail     `json:"top_performers_preview"`
 	DistributionPreview       []InvestmentDistributionItem   `json:"distribution_preview"`
@@ -205,7 +206,17 @@ type InvestmentPerformanceResponse struct {
 	GeneratedAt   string                       `json:"generated_at"`
 }
 
-// InvestmentLinks contains HATEOAS links for investment stash
+// InvestmentRule describes the auto-invest strategy and risk profile for the account
+type InvestmentRule struct {
+	StrategyName    string  `json:"strategy_name"`
+	Description     string  `json:"description"`
+	StockAllocation float64 `json:"stock_allocation"`
+	BondAllocation  float64 `json:"bond_allocation"`
+	RiskLevel       int     `json:"risk_level"`   // 1–5
+	RiskLabel       string  `json:"risk_label"`   // e.g. "High Growth"
+	AgeUsed         *int    `json:"age_used,omitempty"`
+}
+
 type InvestmentLinks struct {
 	Self           string `json:"self"`
 	Positions      string `json:"positions"`

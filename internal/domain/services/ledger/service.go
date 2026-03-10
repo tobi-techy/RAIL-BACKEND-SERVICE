@@ -77,7 +77,7 @@ func (s *Service) CreateTransaction(ctx context.Context, req *entities.CreateTra
 	}
 
 	// Use transaction context for all operations
-	txCtx := context.WithValue(ctx, "db_tx", tx)
+	txCtx := repositories.WithTx(ctx, tx)
 
 	if err := s.ledgerRepo.CreateTransaction(txCtx, ledgerTx); err != nil {
 		return nil, fmt.Errorf("create transaction: %w", err)
@@ -145,10 +145,13 @@ func (s *Service) updateAccountBalanceInTx(ctx context.Context, accountID uuid.U
 		newBalance = currentBalance.Sub(amount)
 	}
 
-	// Ensure balance doesn't go negative
+	// Ensure balance doesn't go negative (skip for system accounts — they track external reserves)
 	if newBalance.IsNegative() {
-		return fmt.Errorf("insufficient balance: current=%s, adjustment=%s %s",
-			currentBalance.String(), amount.String(), entryType)
+		account, accountErr := s.ledgerRepo.GetAccountByID(ctx, accountID)
+		if accountErr != nil || !account.AccountType.IsSystemAccountType() {
+			return fmt.Errorf("insufficient balance: current=%s, adjustment=%s %s",
+				currentBalance.String(), amount.String(), entryType)
+		}
 	}
 
 	// Update balance
@@ -184,6 +187,7 @@ func (s *Service) GetUserBalances(ctx context.Context, userID uuid.UUID) (*entit
 }
 
 // ReconcileBalance directly sets a user's account balance (for admin reconciliation)
+// Uses SELECT FOR UPDATE to prevent TOCTOU race conditions
 func (s *Service) ReconcileBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, newBalance decimal.Decimal) error {
 	// Validate accountType is valid (spending or savings)
 	if accountType != entities.AccountTypeSpendingBalance && accountType != entities.AccountTypeStashBalance {
@@ -195,21 +199,21 @@ func (s *Service) ReconcileBalance(ctx context.Context, userID uuid.UUID, accoun
 		return fmt.Errorf("reconciliation cannot set negative balance: %s", newBalance.String())
 	}
 
-	// Get current balance before update for audit trail
-	oldBalance := decimal.Zero
-	balances, err := s.GetUserBalances(ctx, userID)
-	if err == nil && balances != nil {
-		switch accountType {
-		case entities.AccountTypeSpendingBalance:
-			if !balances.SpendingBalance.IsZero() {
-				oldBalance = balances.SpendingBalance
-			}
-		case entities.AccountTypeStashBalance:
-			if !balances.StashBalance.IsZero() {
-				oldBalance = balances.StashBalance
-			}
-		}
+	// Begin transaction for atomic read-modify-write
+	txCtx, err := s.ledgerRepo.BeginTx(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
 	}
+	defer s.ledgerRepo.RollbackTx(txCtx)
+
+	// Use SELECT FOR UPDATE to lock the row and prevent concurrent modifications
+	account, err := s.ledgerRepo.GetAccountByUserAndTypeForUpdate(txCtx, userID, accountType)
+	if err != nil {
+		return fmt.Errorf("get account for update: %w", err)
+	}
+
+	// Get old balance for audit trail
+	oldBalance := account.Balance
 
 	// Log with Warn level since this is an admin override action
 	diff := newBalance.Sub(oldBalance)
@@ -220,8 +224,14 @@ func (s *Service) ReconcileBalance(ctx context.Context, userID uuid.UUID, accoun
 		"new_balance", newBalance.String(),
 		"difference", diff.String())
 
-	if err := s.ledgerRepo.UpdateAccountBalanceByUserAndType(ctx, userID, accountType, newBalance); err != nil {
-		return fmt.Errorf("reconcile balance: %w", err)
+	// Update balance within the transaction
+	if err := s.ledgerRepo.UpdateAccountBalance(txCtx, account.ID, newBalance); err != nil {
+		return fmt.Errorf("update account balance: %w", err)
+	}
+
+	// Commit transaction
+	if err := s.ledgerRepo.CommitTx(txCtx); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
 	}
 
 	return nil
@@ -413,7 +423,7 @@ func (s *Service) ReverseTransaction(ctx context.Context, originalTxID uuid.UUID
 	}
 	defer tx.Rollback()
 
-	txCtx := context.WithValue(ctx, "db_tx", tx)
+	txCtx := repositories.WithTx(ctx, tx)
 
 	// Mark original transaction as reversed first
 	if err := s.ledgerRepo.UpdateTransactionStatus(txCtx, originalTxID, entities.TransactionStatusReversed); err != nil {
@@ -597,4 +607,46 @@ func (s *Service) RecordCardTransaction(ctx context.Context, userID uuid.UUID, a
 
 func stringPtr(s string) *string {
 	return &s
+}
+
+// TransferSpendingToStash moves funds from spending_balance to stash_balance.
+// Used for roundup collection: the spare change is already in spending and should move to stash.
+func (s *Service) TransferSpendingToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
+	spendAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return fmt.Errorf("get spending account: %w", err)
+	}
+	stashAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		return fmt.Errorf("get stash account: %w", err)
+	}
+
+	desc := fmt.Sprintf("Roundup collection: %s", amount.String())
+	refType := "roundup_collection"
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeInternalTransfer,
+		ReferenceType:   &refType,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &desc,
+		Entries: []entities.CreateEntryRequest{
+			{
+				AccountID:   spendAccount.ID,
+				EntryType:   entities.EntryTypeCredit, // debit spending
+				Amount:      amount,
+				Currency:    "USD",
+				Description: &desc,
+			},
+			{
+				AccountID:   stashAccount.ID,
+				EntryType:   entities.EntryTypeDebit, // credit stash
+				Amount:      amount,
+				Currency:    "USD",
+				Description: &desc,
+			},
+		},
+	}
+
+	_, err = s.CreateTransaction(ctx, req)
+	return err
 }

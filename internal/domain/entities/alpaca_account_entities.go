@@ -12,7 +12,7 @@ type AlpacaAccount struct {
 	ID                  uuid.UUID           `json:"id" db:"id"`
 	UserID              uuid.UUID           `json:"user_id" db:"user_id"`
 	AlpacaAccountID     string              `json:"alpaca_account_id" db:"alpaca_account_id"`
-	AlpacaAccountNumber string              `json:"alpaca_account_number" db:"alpaca_account_number"`
+	AlpacaAccountNumber *string             `json:"alpaca_account_number" db:"alpaca_account_number"`
 	Status              AlpacaAccountStatus `json:"status" db:"status"`
 	AccountType         AlpacaAccountType   `json:"account_type" db:"account_type"`
 	Currency            string              `json:"currency" db:"currency"`

@@ -293,3 +293,35 @@ func (r *DepositRepository) CountPendingByUserID(ctx context.Context, userID uui
 
 	return count, nil
 }
+
+// DeletePendingDeposit removes a pending deposit by ID (only deposits with "pending" status can be deleted)
+// This maintains audit trail compliance - only pending deposits can be removed
+func (r *DepositRepository) DeletePendingDeposit(ctx context.Context, id uuid.UUID) error {
+	// First get the deposit to log full details for audit and validate status
+	var deposit entities.Deposit
+	err := r.db.GetContext(ctx, &deposit, `
+		SELECT id, user_id, amount, tx_hash, status, created_at 
+		FROM deposits WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("deposit not found: %w", err)
+	}
+
+	// Only allow deletion of pending deposits
+	if deposit.Status != "pending" {
+		return fmt.Errorf("cannot delete deposit with status '%s' - only pending deposits can be deleted", deposit.Status)
+	}
+
+	query := `DELETE FROM deposits WHERE id = $1 AND status = 'pending'`
+
+	result, err := r.db.ExecContext(ctx, query, id)
+	if err != nil {
+		return fmt.Errorf("failed to delete pending deposit: %w", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return fmt.Errorf("deposit not found or not in pending status")
+	}
+
+	return nil
+}

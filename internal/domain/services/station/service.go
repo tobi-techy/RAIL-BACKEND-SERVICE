@@ -95,16 +95,28 @@ type TransactionRepository interface {
 	GetRecentByUserID(ctx context.Context, userID uuid.UUID, limit int) ([]*ActivityItem, error)
 }
 
+// AlpacaAccountRepository interface for fetching broker portfolio value
+type AlpacaAccountRepository interface {
+	GetByUserID(ctx context.Context, userID uuid.UUID) (*entities.AlpacaAccount, error)
+}
+
+// AlpacaAccountService interface for fetching a synced account (triggers live sync if stale)
+type AlpacaAccountService interface {
+	GetUserAccount(ctx context.Context, userID uuid.UUID) (*entities.AlpacaAccount, error)
+}
+
 // Service handles station/home screen data retrieval
 type Service struct {
-	ledgerService    LedgerService
-	allocationRepo   AllocationRepository
-	depositRepo      DepositRepository
-	settingsRepo     UserSettingsRepository
-	snapshotRepo     BalanceSnapshotRepository
-	notificationRepo NotificationRepository
-	transactionRepo  TransactionRepository
-	logger           *zap.Logger
+	ledgerService      LedgerService
+	allocationRepo     AllocationRepository
+	depositRepo        DepositRepository
+	settingsRepo       UserSettingsRepository
+	snapshotRepo       BalanceSnapshotRepository
+	notificationRepo   NotificationRepository
+	transactionRepo    TransactionRepository
+	alpacaAccountRepo  AlpacaAccountRepository
+	alpacaAccountSvc   AlpacaAccountService
+	logger             *zap.Logger
 }
 
 // NewService creates a new station service
@@ -142,6 +154,16 @@ func (s *Service) SetTransactionRepository(repo TransactionRepository) {
 	s.transactionRepo = repo
 }
 
+// SetAlpacaAccountRepository sets the Alpaca account repository for portfolio value lookups
+func (s *Service) SetAlpacaAccountRepository(repo AlpacaAccountRepository) {
+	s.alpacaAccountRepo = repo
+}
+
+// SetAlpacaAccountService sets the Alpaca account service (preferred over repo — triggers live sync)
+func (s *Service) SetAlpacaAccountService(svc AlpacaAccountService) {
+	s.alpacaAccountSvc = svc
+}
+
 // GetUserBalances retrieves the user's spend and invest balances
 func (s *Service) GetUserBalances(ctx context.Context, userID uuid.UUID) (*Balances, error) {
 	mode, err := s.allocationRepo.GetMode(ctx, userID)
@@ -152,29 +174,54 @@ func (s *Service) GetUserBalances(ctx context.Context, userID uuid.UUID) (*Balan
 	}
 
 	// If smart allocation mode is not active, show legacy USDC balance directly
-	// and include broker cash so users never see funds "disappear" after transfers.
+	// and include broker portfolio value so the Stash card reflects real investment worth.
 	if mode == nil || !mode.Active {
-		usdcBalance, balErr := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeUSDCBalance)
-		if balErr != nil {
-			s.logger.Warn("Failed to get USDC balance, defaulting to zero",
-				zap.Error(balErr),
-				zap.String("user_id", userID.String()))
-			usdcBalance = decimal.Zero
-		}
-		fiatExposure, fiatErr := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeFiatExposure)
-		if fiatErr != nil {
-			s.logger.Warn("Failed to get fiat exposure balance, defaulting to zero",
-				zap.Error(fiatErr),
-				zap.String("user_id", userID.String()))
-			fiatExposure = decimal.Zero
+		var usdcBalance, fiatExposure decimal.Decimal
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		go func() {
+			defer wg.Done()
+			bal, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeUSDCBalance)
+			if err != nil {
+				s.logger.Warn("Failed to get USDC balance, defaulting to zero",
+					zap.Error(err), zap.String("user_id", userID.String()))
+				return
+			}
+			usdcBalance = bal
+		}()
+
+		go func() {
+			defer wg.Done()
+			bal, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeFiatExposure)
+			if err != nil {
+				s.logger.Warn("Failed to get fiat exposure balance, defaulting to zero",
+					zap.Error(err), zap.String("user_id", userID.String()))
+				return
+			}
+			fiatExposure = bal
+		}()
+
+		wg.Wait()
+
+		portfolioValue := decimal.Zero
+		if s.alpacaAccountSvc != nil {
+			if acct, err := s.alpacaAccountSvc.GetUserAccount(ctx, userID); err == nil && acct != nil {
+				portfolioValue = acct.PortfolioValue
+			}
+		} else if s.alpacaAccountRepo != nil {
+			if acct, err := s.alpacaAccountRepo.GetByUserID(ctx, userID); err == nil && acct != nil {
+				portfolioValue = acct.PortfolioValue
+			}
 		}
 
-		totalBalance := usdcBalance.Add(fiatExposure)
+		investBalance := fiatExposure.Add(portfolioValue)
+		totalBalance := usdcBalance.Add(investBalance)
 
 		return &Balances{
 			SpendingBalance: usdcBalance,
 			StashBalance:    decimal.Zero,
-			InvestBalance:   fiatExposure,
+			InvestBalance:   investBalance,
 			FiatExposure:    fiatExposure,
 			UnallocatedUSDC: decimal.Zero,
 			TotalBalance:    totalBalance,
@@ -245,7 +292,18 @@ func (s *Service) GetUserBalances(ctx context.Context, userID uuid.UUID) (*Balan
 
 	wg.Wait()
 
-	investBalance := stashBalance.Add(fiatExposure)
+	portfolioValue := decimal.Zero
+	if s.alpacaAccountSvc != nil {
+		if acct, err := s.alpacaAccountSvc.GetUserAccount(ctx, userID); err == nil && acct != nil {
+			portfolioValue = acct.PortfolioValue
+		}
+	} else if s.alpacaAccountRepo != nil {
+		if acct, err := s.alpacaAccountRepo.GetByUserID(ctx, userID); err == nil && acct != nil {
+			portfolioValue = acct.PortfolioValue
+		}
+	}
+
+	investBalance := portfolioValue.Add(stashBalance).Add(fiatExposure)
 	totalBalance := spendingBalance.Add(investBalance).Add(usdcBalance)
 
 	return &Balances{

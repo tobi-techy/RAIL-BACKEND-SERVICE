@@ -126,15 +126,24 @@ func (r *WithdrawalRepository) GetByIdempotencyKey(ctx context.Context, key stri
 	return &withdrawal, nil
 }
 
-// UpdateStatus updates the withdrawal status
+// UpdateStatus updates the withdrawal status, enforcing valid transitions.
 func (r *WithdrawalRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status entities.WithdrawalStatus) error {
-	query := `UPDATE withdrawals SET status = $1, updated_at = $2 WHERE id = $3`
+	// Fetch current status to validate the transition.
+	var current entities.WithdrawalStatus
+	if err := r.db.QueryRowContext(ctx, `SELECT status FROM withdrawals WHERE id = $1`, id).Scan(&current); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("withdrawal not found: %s", id)
+		}
+		return fmt.Errorf("failed to fetch withdrawal status: %w", err)
+	}
+	if err := current.ValidateTransition(status); err != nil {
+		return err
+	}
 
-	_, err := r.db.ExecContext(ctx, query, status, time.Now(), id)
+	_, err := r.db.ExecContext(ctx, `UPDATE withdrawals SET status = $1, updated_at = $2 WHERE id = $3`, status, time.Now(), id)
 	if err != nil {
 		return fmt.Errorf("failed to update withdrawal status: %w", err)
 	}
-
 	return nil
 }
 
@@ -182,42 +191,42 @@ func (r *WithdrawalRepository) UpdateTxHash(ctx context.Context, id uuid.UUID, t
 	return nil
 }
 
-// MarkCompleted marks the withdrawal as completed
+// MarkCompleted marks the withdrawal as completed, only from valid predecessor states.
 func (r *WithdrawalRepository) MarkCompleted(ctx context.Context, id uuid.UUID) error {
 	now := time.Now()
-	query := `UPDATE withdrawals SET status = $1, completed_at = $2, updated_at = $3 WHERE id = $4`
-
-	_, err := r.db.ExecContext(ctx, query, entities.WithdrawalStatusCompleted, now, now, id)
+	// Only transition from non-terminal, non-cancelled states.
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE withdrawals SET status = $1, completed_at = $2, updated_at = $3
+		 WHERE id = $4 AND status NOT IN ($5, $6, $7, $8)`,
+		entities.WithdrawalStatusCompleted, now, now, id,
+		entities.WithdrawalStatusCompleted,
+		entities.WithdrawalStatusFailed,
+		entities.WithdrawalStatusReversed,
+		entities.WithdrawalStatusCancelled,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to mark withdrawal completed: %w", err)
 	}
-
+	if n, _ := result.RowsAffected(); n == 0 {
+		return fmt.Errorf("withdrawal %s is already in a terminal state", id)
+	}
 	return nil
 }
 
-// MarkFailed marks the withdrawal as failed
+// MarkFailed marks the withdrawal as failed, skipping already-terminal states.
 func (r *WithdrawalRepository) MarkFailed(ctx context.Context, id uuid.UUID, errorMsg string) error {
-	query := `
-		UPDATE withdrawals
-		SET status = $1, error_message = $2, updated_at = $3
-		WHERE id = $4
-		  AND status NOT IN ($5, $6)
-	`
-
-	_, err := r.db.ExecContext(
-		ctx,
-		query,
-		entities.WithdrawalStatusFailed,
-		errorMsg,
-		time.Now(),
-		id,
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE withdrawals SET status = $1, error_message = $2, updated_at = $3
+		 WHERE id = $4 AND status NOT IN ($5, $6, $7, $8)`,
+		entities.WithdrawalStatusFailed, errorMsg, time.Now(), id,
 		entities.WithdrawalStatusCompleted,
 		entities.WithdrawalStatusReversed,
+		entities.WithdrawalStatusCancelled,
+		entities.WithdrawalStatusFailed,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to mark withdrawal failed: %w", err)
 	}
-
 	return nil
 }
 
@@ -227,7 +236,7 @@ func (r *WithdrawalRepository) GetPendingWithdrawalsTotal(ctx context.Context, u
 		SELECT COALESCE(SUM(amount + COALESCE(fee_amount, 0)), 0) as total
 		FROM withdrawals
 		WHERE user_id = $1
-		  AND status NOT IN ($2, $3, $4)
+		  AND status NOT IN ($2, $3, $4, $5)
 	`
 
 	var total decimal.Decimal
@@ -235,6 +244,7 @@ func (r *WithdrawalRepository) GetPendingWithdrawalsTotal(ctx context.Context, u
 		entities.WithdrawalStatusCompleted,
 		entities.WithdrawalStatusFailed,
 		entities.WithdrawalStatusReversed,
+		entities.WithdrawalStatusCancelled,
 	).Scan(&total)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -271,8 +281,8 @@ func (r *WithdrawalRepository) GetStuckWithdrawals(ctx context.Context, slaThres
 			fee_amount, fee_currency, status, bridge_transfer_id, tx_hash, error_message,
 			idempotency_key, created_at, updated_at, completed_at
 		FROM withdrawals
-		WHERE status NOT IN ($1, $2, $3)
-		  AND updated_at < $4
+		WHERE status NOT IN ($1, $2, $3, $4)
+		  AND updated_at < $5
 		ORDER BY updated_at ASC
 		LIMIT 100
 	`
@@ -282,6 +292,7 @@ func (r *WithdrawalRepository) GetStuckWithdrawals(ctx context.Context, slaThres
 		entities.WithdrawalStatusCompleted,
 		entities.WithdrawalStatusFailed,
 		entities.WithdrawalStatusReversed,
+		entities.WithdrawalStatusCancelled,
 		cutoff,
 	)
 	if err != nil {
@@ -303,8 +314,29 @@ func (r *WithdrawalRepository) MarkTimeout(ctx context.Context, id uuid.UUID) er
 	return nil
 }
 
-// GetByBridgeTransferID retrieves a withdrawal by Bridge transfer ID
-func (r *WithdrawalRepository) GetByBridgeTransferID(ctx context.Context, transferID string) (*entities.Withdrawal, error) {
+// MarkCancelled marks the withdrawal as cancelled by the user
+func (r *WithdrawalRepository) MarkCancelled(ctx context.Context, id uuid.UUID) error {
+	query := `
+		UPDATE withdrawals
+		SET status = $1, updated_at = $2
+		WHERE id = $3
+		  AND status NOT IN ($4, $5, $6, $7)
+	`
+	_, err := r.db.ExecContext(ctx, query,
+		entities.WithdrawalStatusCancelled, time.Now(), id,
+		entities.WithdrawalStatusCompleted,
+		entities.WithdrawalStatusFailed,
+		entities.WithdrawalStatusReversed,
+		entities.WithdrawalStatusCancelled,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to mark withdrawal cancelled: %w", err)
+	}
+	return nil
+}
+
+// GetByProviderTransferID retrieves a withdrawal by provider transfer ID
+func (r *WithdrawalRepository) GetByProviderTransferID(ctx context.Context, transferID string) (*entities.Withdrawal, error) {
 	query := `
 		SELECT id, user_id, withdrawal_type, currency, amount, source_account,
 			circle_wallet_id, destination_type, destination_chain, destination_address, bank_account_id,
@@ -320,7 +352,7 @@ func (r *WithdrawalRepository) GetByBridgeTransferID(ctx context.Context, transf
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to get withdrawal by bridge transfer ID: %w", err)
+		return nil, fmt.Errorf("failed to get withdrawal by provider transfer ID: %w", err)
 	}
 
 	return &withdrawal, nil

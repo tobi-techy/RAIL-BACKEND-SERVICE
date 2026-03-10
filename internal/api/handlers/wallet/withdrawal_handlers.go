@@ -25,7 +25,7 @@ type WithdrawalServiceInterface interface {
 	GetWithdrawal(ctx context.Context, userID, withdrawalID uuid.UUID) (*entities.Withdrawal, error)
 	GetUserWithdrawals(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error)
 	CancelWithdrawal(ctx context.Context, userID, withdrawalID uuid.UUID) error
-	GetWithdrawalFee(ctx context.Context, withdrawalType entities.WithdrawalType, amount decimal.Decimal, currency entities.WithdrawalCurrency) (*entities.WithdrawalFee, error)
+	GetWithdrawalFee(ctx context.Context, withdrawalType entities.WithdrawalType, amount decimal.Decimal, currency entities.WithdrawalCurrency, sourceChain, destChain string) (*entities.WithdrawalFee, error)
 }
 
 // WalletProvider interface for getting user's Circle wallet
@@ -75,6 +75,8 @@ type WithdrawalFeeRequest struct {
 	WithdrawalType string `form:"type" binding:"required,oneof=crypto fiat"`
 	Amount         string `form:"amount" binding:"required"`
 	Currency       string `form:"currency" binding:"required,oneof=USDC USD EUR"`
+	SourceChain    string `form:"source_chain"`
+	DestChain      string `form:"dest_chain"`
 }
 
 // InitiateCryptoWithdrawal handles POST /api/v1/withdrawals/crypto
@@ -105,18 +107,29 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 		return
 	}
 
-	// Determine destination chain (default to SOL-DEVNET for testnet)
+	// Determine destination chain (default to SOL-DEVNET)
 	destChain := req.DestinationChain
 	if destChain == "" {
 		destChain = string(entities.WalletChainSOLDevnet)
 	}
 
-	// The source is always the user's spending wallet (SOL-DEVNET for testnet).
-	// Cross-chain routing (CCTP) is handled by the withdrawal service.
-	wallet, err := h.walletProvider.GetUserWalletByChain(c.Request.Context(), userID, string(entities.WalletChainSOLDevnet))
+	// Validate destination address format for the target chain
+	if err := validateCryptoAddress(req.DestinationAddress, destChain); err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, err.Error())
+		return
+	}
+
+	// The source is always the user's spending wallet.
+	// Try SOL (mainnet) first; the adapter falls back to SOL-DEVNET automatically.
+	wallet, err := h.walletProvider.GetUserWalletByChain(c.Request.Context(), userID, string(entities.WalletChainSolana))
 	if err != nil {
 		h.logger.Error("Failed to get user wallet", "error", err, "user_id", userID)
 		common.SendBadRequest(c, "NO_WALLET", "No wallet found for user")
+		return
+	}
+	if strings.TrimSpace(wallet.CircleWalletID) == "" {
+		h.logger.Error("User wallet has no Circle wallet ID", "user_id", userID)
+		common.SendInternalError(c, "PROVIDER_NOT_CONFIGURED", "Withdrawal provider is not available for this account")
 		return
 	}
 
@@ -232,6 +245,8 @@ func (h *WithdrawalHandlers) GetWithdrawalFees(c *gin.Context) {
 		withdrawalType,
 		amount,
 		currency,
+		req.SourceChain,
+		req.DestChain,
 	)
 	if err != nil {
 		h.logger.Error("Failed to get withdrawal fee", "error", err)
@@ -357,24 +372,37 @@ func (h *WithdrawalHandlers) extractUserID(c *gin.Context) (uuid.UUID, bool) {
 func (h *WithdrawalHandlers) handleWithdrawalError(c *gin.Context, err error, userID uuid.UUID, amount string) {
 	h.logger.Error("Failed to initiate withdrawal",
 		"error", err,
+		"error_type", fmt.Sprintf("%T", err),
 		"user_id", userID,
-		"amount", amount)
+		"amount", amount,
+		"request_id", c.GetString("request_id"))
 
 	errMsg := err.Error()
+	errLower := strings.ToLower(errMsg)
 
 	switch {
 	case strings.Contains(errMsg, "insufficient"):
 		common.SendBadRequest(c, common.ErrCodeInsufficientFunds, "Insufficient balance for withdrawal")
 	case strings.Contains(errMsg, "minimum"):
 		common.SendBadRequest(c, common.ErrCodeInvalidAmount, "Withdrawal amount below minimum")
-	case strings.Contains(strings.ToLower(errMsg), "circle validation error 400"),
-		strings.Contains(strings.ToLower(errMsg), "api parameter invalid"):
-		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Invalid withdrawal parameters")
 	case strings.Contains(errMsg, "PAYMASTER_SOL_ATA_CREATION_NOT_ALLOWED"):
 		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Destination Solana wallet must create USDC ATA before withdrawal")
-	case strings.Contains(strings.ToLower(errMsg), "token"),
-		strings.Contains(strings.ToLower(errMsg), "entity secret"):
-		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Withdrawal provider configuration is invalid")
+	case strings.Contains(errMsg, "invalid request:"):
+		// Strip the prefix only if it's at the start (not wrapped)
+		msg := errMsg
+		if idx := strings.Index(errMsg, "invalid request: "); idx >= 0 {
+			msg = errMsg[idx+len("invalid request: "):]
+		}
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, msg)
+	case strings.Contains(errLower, "circle validation error 400"),
+		strings.Contains(errLower, "api parameter invalid"):
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Invalid withdrawal parameters")
+	case strings.Contains(errMsg, "circle client not configured"),
+		strings.Contains(errMsg, "circle wallet ID not provided"),
+		strings.Contains(errMsg, "circle wallet ID is required"):
+		common.SendInternalError(c, "PROVIDER_NOT_CONFIGURED", "Withdrawal provider is not available")
+	case strings.Contains(errLower, "entity secret"):
+		common.SendInternalError(c, "PROVIDER_NOT_CONFIGURED", "Withdrawal provider configuration is invalid")
 	case strings.Contains(errMsg, "limit exceeded"):
 		common.SendBadRequest(c, "LIMIT_EXCEEDED", errMsg)
 	case strings.Contains(errMsg, "bank account"):
@@ -383,6 +411,20 @@ func (h *WithdrawalHandlers) handleWithdrawalError(c *gin.Context, err error, us
 		common.SendBadRequest(c, "BANK_ACCOUNT_NOT_VERIFIED", "Bank account must be verified before withdrawal")
 	case strings.Contains(errMsg, "currency"):
 		common.SendBadRequest(c, "CURRENCY_MISMATCH", errMsg)
+	case strings.Contains(errMsg, "cctp burn failed"),
+		strings.Contains(errMsg, "circle transfer failed"),
+		strings.Contains(errMsg, "failed to execute transfer"):
+		// Surface the inner Circle error if it's user-actionable
+		innerMsg := "Transfer execution failed. Please try again."
+		if strings.Contains(errMsg, "Invalid destination address") {
+			innerMsg = "Invalid destination address for this chain."
+		} else if strings.Contains(errMsg, "Insufficient") {
+			innerMsg = "Insufficient balance in custody wallet."
+		}
+		common.SendBadRequest(c, "TRANSFER_FAILED", innerMsg)
+	case strings.Contains(errMsg, "failed to post ledger"),
+		strings.Contains(errMsg, "failed to create withdrawal"):
+		common.SendInternalError(c, "WITHDRAWAL_ERROR", "Failed to record withdrawal. Please try again.")
 	default:
 		common.SendInternalError(c, "WITHDRAWAL_ERROR", "Failed to initiate withdrawal")
 	}
@@ -495,6 +537,53 @@ func isAlphaNumeric(v string) bool {
 		return false
 	}
 	return true
+}
+
+func validateCryptoAddress(address, chain string) error {
+	if address == "" {
+		return fmt.Errorf("destination address is required")
+	}
+
+	chainUpper := strings.ToUpper(chain)
+	addr := strings.TrimSpace(address)
+
+	switch {
+	case strings.Contains(chainUpper, "SOL"):
+		// Solana addresses are base58 encoded, 32-44 characters
+		if len(addr) < 32 || len(addr) > 44 {
+			return fmt.Errorf("invalid Solana address: must be 32-44 characters")
+		}
+		// Basic base58 check (alphanumeric except 0, O, I, l)
+		validChars := "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+		for _, c := range addr {
+			if !strings.ContainsRune(validChars, c) {
+				return fmt.Errorf("invalid Solana address: contains invalid characters")
+			}
+		}
+	case strings.Contains(chainUpper, "ETH"), strings.Contains(chainUpper, "MATIC"),
+		strings.Contains(chainUpper, "AVAX"), strings.Contains(chainUpper, "BASE"),
+		strings.Contains(chainUpper, "ARB"), strings.Contains(chainUpper, "OP"):
+		// EVM addresses are 0x-prefixed hex, 42 characters
+		if len(addr) != 42 {
+			return fmt.Errorf("invalid EVM address: must be 42 characters (0x + 40 hex)")
+		}
+		if !strings.HasPrefix(addr, "0x") {
+			return fmt.Errorf("invalid EVM address: must start with 0x")
+		}
+		hexPart := addr[2:]
+		for _, c := range hexPart {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+				return fmt.Errorf("invalid EVM address: must be valid hex after 0x")
+			}
+		}
+	default:
+		// For unknown chains, just check basic length
+		if len(addr) < 20 || len(addr) > 64 {
+			return fmt.Errorf("invalid address: length must be between 20-64 characters")
+		}
+	}
+
+	return nil
 }
 
 func normalizeIBAN(raw string) string {

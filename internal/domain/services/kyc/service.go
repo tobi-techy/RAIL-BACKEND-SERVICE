@@ -404,8 +404,8 @@ func (s *Service) StartSumsubSession(ctx context.Context, userID uuid.UUID, req 
 		}
 	}
 
-	user.KYCStatus = string(entities.KYCStatusPending)
-	user.KYCSubmittedAt = &now
+	// Do not mark the user as submitted at session creation time.
+	// A user may close the SDK before uploading/submitting documents.
 	user.KYCProviderRef = &applicantID
 	if err := s.userRepo.Update(ctx, user); err != nil {
 		s.logger.Warn("Failed to update user after Sumsub session creation",
@@ -602,6 +602,13 @@ func (s *Service) processSumsubApproved(ctx context.Context, submission *entitie
 	if user.KYCSubmittedAt == nil {
 		user.KYCSubmittedAt = &now
 	}
+
+	// Advance onboarding status when KYC is approved so the frontend routing guard
+	// lets the user through to the dashboard.
+	if user.KYCStatus == string(entities.KYCStatusApproved) {
+		user.OnboardingStatus = entities.OnboardingStatusCompleted
+	}
+
 	if err := s.userRepo.Update(ctx, user); err != nil {
 		return fmt.Errorf("failed to update user after sumsub approval: %w", err)
 	}
@@ -693,6 +700,7 @@ func (s *Service) processSumsubRejected(ctx context.Context, submission *entitie
 	user.KYCStatus = string(entities.KYCStatusRejected)
 	user.KYCApprovedAt = nil
 	user.KYCSubmittedAt = &now
+	user.OnboardingStatus = entities.OnboardingStatusKYCRejected
 	if len(rejectionReasons) > 0 {
 		reason := strings.Join(rejectionReasons, "; ")
 		user.KYCRejectionReason = &reason
@@ -717,7 +725,8 @@ func (s *Service) processSumsubRejected(ctx context.Context, submission *entitie
 
 func (s *Service) markSubmissionProcessing(ctx context.Context, submission *entities.KYCSubmission, payload *entities.SumsubWebhookPayload) error {
 	submission.Status = entities.KYCStatusProcessing
-	submission.UpdatedAt = time.Now()
+	now := time.Now()
+	submission.UpdatedAt = now
 	if submission.VerificationData == nil {
 		submission.VerificationData = map[string]any{}
 	}
@@ -726,7 +735,27 @@ func (s *Service) markSubmissionProcessing(ctx context.Context, submission *enti
 	if payload.ReviewResult.ReviewAnswer != "" {
 		submission.VerificationData["sumsub_review_answer"] = payload.ReviewResult.ReviewAnswer
 	}
-	return s.kycSubmissionRepo.Update(ctx, submission)
+	if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {
+		return err
+	}
+
+	// Mark user as in-review only after webhook-driven processing starts.
+	user, err := s.userRepo.GetByID(ctx, submission.UserID)
+	if err != nil {
+		return fmt.Errorf("failed to get user for processing state: %w", err)
+	}
+	if user.KYCSubmittedAt == nil {
+		user.KYCSubmittedAt = &now
+	}
+	if user.KYCStatus != string(entities.KYCStatusApproved) &&
+		user.KYCStatus != string(entities.KYCStatusRejected) {
+		user.KYCStatus = string(entities.KYCStatusProcessing)
+	}
+	if err := s.userRepo.Update(ctx, user); err != nil {
+		return fmt.Errorf("failed to update user processing state: %w", err)
+	}
+
+	return nil
 }
 
 func (s *Service) hydrateSubmissionFromSumsubApplicant(ctx context.Context, submission *entities.KYCSubmission) error {
@@ -857,6 +886,8 @@ func (s *Service) submitToAlpaca(ctx context.Context, user *entities.UserProfile
 	if contactCountry == "" {
 		contactCountry = req.IssuingCountry
 	}
+	// Alpaca requires ISO 3166-1 alpha-3; address form may store alpha-2
+	contactCountry = toAlpha3(contactCountry)
 
 	// Build Alpaca account request
 	alpacaReq := &entities.AlpacaCreateAccountRequest{
@@ -874,7 +905,7 @@ func (s *Service) submitToAlpaca(ctx context.Context, user *entities.UserProfile
 			FamilyName:            stringValue(user.LastName),
 			DateOfBirth:           formatDate(user.DateOfBirth),
 			TaxID:                 req.TaxID,
-			TaxIDType:             mapTaxIDTypeToAlpaca(req.TaxIDType),
+			TaxIDType:             MapTaxIDTypeToAlpaca(req.TaxIDType),
 			CountryOfTaxResidence: req.IssuingCountry,
 		},
 		Disclosures: entities.AlpacaDisclosures{
@@ -885,12 +916,12 @@ func (s *Service) submitToAlpaca(ctx context.Context, user *entities.UserProfile
 		},
 		Agreements: []entities.AlpacaAgreement{
 			{
-				Agreement: "account",
+				Agreement: "account_agreement",
 				SignedAt:  time.Now().Format(time.RFC3339),
 				IPAddress: req.IPAddress,
 			},
 			{
-				Agreement: "customer",
+				Agreement: "customer_agreement",
 				SignedAt:  time.Now().Format(time.RFC3339),
 				IPAddress: req.IPAddress,
 			},
@@ -1125,7 +1156,8 @@ func mapTaxIDTypeToBridge(taxIDType string) string {
 	}
 }
 
-func mapTaxIDTypeToAlpaca(taxIDType string) string {
+// MapTaxIDTypeToAlpaca converts a Rail tax ID type to Alpaca's format.
+func MapTaxIDTypeToAlpaca(taxIDType string) string {
 	switch strings.ToLower(strings.TrimSpace(taxIDType)) {
 	case "ssn":
 		return "USA_SSN"
@@ -1146,43 +1178,40 @@ func mapTaxIDTypeToAlpaca(taxIDType string) string {
 	}
 }
 
-func isTaxIDTypeSupportedForCountry(issuingCountry, taxIDType string) bool {
-	country := strings.ToUpper(strings.TrimSpace(issuingCountry))
-	idType := strings.ToLower(strings.TrimSpace(taxIDType))
-	if country == "" || idType == "" {
-		return false
+// AlpacaTaxIDTypeForCountry returns the Alpaca tax ID type for a country code.
+func AlpacaTaxIDTypeForCountry(country string) string {
+	if t := GetSupportedTaxIDType(country); t != "" {
+		return MapTaxIDTypeToAlpaca(t)
 	}
+	return "NOT_SPECIFIED"
+}
 
-	switch country {
-	case "USA":
-		switch idType {
-		case "ssn", "itin":
-			return true
-		default:
-			return false
-		}
-	case "GBR":
-		switch idType {
-		case "nino", "utr", "passport", "national_id":
-			return true
-		default:
-			return false
-		}
-	case "NGA":
-		switch idType {
-		case "nin", "bvn", "tin", "passport", "national_id":
-			return true
-		default:
-			return false
-		}
-	default:
-		// Keep compatibility for unsupported countries while v1 targets USA/GBR/NGA.
-		switch idType {
+func isTaxIDTypeSupportedForCountry(issuingCountry, taxIDType string) bool {
+	supported := GetSupportedTaxIDType(issuingCountry)
+	if supported == "" {
+		// Unknown country — accept any valid type
+		switch strings.ToLower(strings.TrimSpace(taxIDType)) {
 		case "ssn", "itin", "nino", "utr", "nin", "bvn", "tin", "passport", "national_id":
 			return true
 		default:
 			return false
 		}
+	}
+	return strings.ToLower(strings.TrimSpace(taxIDType)) == supported
+}
+
+// GetSupportedTaxIDType returns the single accepted tax ID type for a country.
+// Returns empty string for unknown countries.
+func GetSupportedTaxIDType(issuingCountry string) string {
+	switch strings.ToUpper(strings.TrimSpace(issuingCountry)) {
+	case "USA":
+		return "ssn"
+	case "GBR":
+		return "nino"
+	case "NGA":
+		return "nin"
+	default:
+		return ""
 	}
 }
 
@@ -1198,6 +1227,35 @@ func stringValue(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// toAlpha3 converts an ISO 3166-1 alpha-2 country code to alpha-3.
+// If the code is already alpha-3 or unknown it is returned as-is.
+var alpha2ToAlpha3 = map[string]string{
+	"US": "USA", "GB": "GBR", "CA": "CAN", "AU": "AUS", "DE": "DEU",
+	"FR": "FRA", "IT": "ITA", "ES": "ESP", "NL": "NLD", "SE": "SWE",
+	"NO": "NOR", "DK": "DNK", "FI": "FIN", "CH": "CHE", "AT": "AUT",
+	"BE": "BEL", "IE": "IRL", "PT": "PRT", "GR": "GRC", "PL": "POL",
+	"CZ": "CZE", "HU": "HUN", "SK": "SVK", "SI": "SVN", "HR": "HRV",
+	"RO": "ROU", "BG": "BGR", "LT": "LTU", "LV": "LVA", "EE": "EST",
+	"LU": "LUX", "MT": "MLT", "CY": "CYP", "JP": "JPN", "KR": "KOR",
+	"CN": "CHN", "IN": "IND", "SG": "SGP", "HK": "HKG", "TW": "TWN",
+	"MY": "MYS", "TH": "THA", "ID": "IDN", "PH": "PHL", "VN": "VNM",
+	"BR": "BRA", "MX": "MEX", "AR": "ARG", "CL": "CHL", "CO": "COL",
+	"PE": "PER", "UY": "URY", "ZA": "ZAF", "NG": "NGA", "KE": "KEN",
+	"EG": "EGY", "MA": "MAR", "GH": "GHA", "TZ": "TZA", "UG": "UGA",
+	"AE": "ARE", "SA": "SAU", "IL": "ISR", "TR": "TUR", "NZ": "NZL",
+}
+
+func toAlpha3(code string) string {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	if len(code) == 3 {
+		return code // already alpha-3
+	}
+	if a3, ok := alpha2ToAlpha3[code]; ok {
+		return a3
+	}
+	return code
 }
 
 func timePtr(t time.Time) *time.Time {
@@ -1305,7 +1363,7 @@ func mergeApplicantDataIntoVerification(data map[string]any, applicant *sumsub.A
 		data["tax_id"] = strings.TrimSpace(taxID)
 	}
 	if getMapString(data, "tax_id_type") == "" {
-		if inferred := inferTaxIDTypeFromCountry(country); inferred != "" {
+		if inferred := GetSupportedTaxIDType(country); inferred != "" {
 			data["tax_id_type"] = inferred
 		}
 	}
@@ -1354,19 +1412,6 @@ func inferTaxIDTypeFromDoc(docType string) string {
 		return "passport"
 	case "NATIONAL_ID", "ID_CARD":
 		return "national_id"
-	default:
-		return ""
-	}
-}
-
-func inferTaxIDTypeFromCountry(country string) string {
-	switch strings.ToUpper(strings.TrimSpace(country)) {
-	case "USA":
-		return "ssn"
-	case "GBR":
-		return "nino"
-	case "NGA":
-		return "nin"
 	default:
 		return ""
 	}
@@ -1476,8 +1521,18 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 		return nil, fmt.Errorf("failed to get user: %w", err)
 	}
 
+	overall := determineOverallStatus(user)
+
 	response := &entities.KYCStatusResponse{
-		OverallStatus: determineOverallStatus(user),
+		UserID:        userID,
+		Status:        overall,
+		OverallStatus: overall,
+		Verified:      overall == "approved",
+		HasSubmitted:  user.KYCSubmittedAt != nil,
+		RequiresKYC:   overall != "approved",
+		LastSubmittedAt: user.KYCSubmittedAt,
+		ApprovedAt:     user.KYCApprovedAt,
+		RejectionReason: user.KYCRejectionReason,
 		Bridge: entities.KYCProviderStatus{
 			Status:      stringValue(user.BridgeKYCStatus),
 			SubmittedAt: user.KYCSubmittedAt,
@@ -1494,6 +1549,11 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 			CanUseCard:       user.BridgeKYCStatus != nil && *user.BridgeKYCStatus == "active",
 			CanInvest:        user.KYCStatus == "approved" && user.AlpacaAccountID != nil,
 		},
+	}
+
+	// Populate supported tax ID type from user's profile country
+	if profile, err := s.userRepo.GetProfileByUserID(ctx, userID); err == nil && profile != nil && profile.Country != nil {
+		response.SupportedTaxIDType = GetSupportedTaxIDType(*profile.Country)
 	}
 
 	return response, nil

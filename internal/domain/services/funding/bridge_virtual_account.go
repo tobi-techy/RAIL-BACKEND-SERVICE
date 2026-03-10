@@ -22,7 +22,13 @@ type BridgeVirtualAccountService struct {
 	allocationService   AllocationService
 	ledgerIntegration   LedgerIntegration
 	notificationService FundingNotificationService
+	walletProvider      WalletProvider
 	logger              *logger.Logger
+}
+
+// WalletProvider interface for getting user wallet addresses
+type WalletProvider interface {
+	GetWalletByUserAndChain(ctx context.Context, userID uuid.UUID, chain entities.WalletChain) (*entities.ManagedWallet, error)
 }
 
 // AllocationService interface for 70/30 split processing
@@ -62,19 +68,114 @@ func (s *BridgeVirtualAccountService) SetDepositRepository(depositRepo DepositRe
 	s.depositRepo = depositRepo
 }
 
+// GetTOSLink returns the Bridge Terms of Service acceptance link for a customer
+func (s *BridgeVirtualAccountService) GetTOSLink(ctx context.Context, bridgeCustomerID string) (string, error) {
+	resp, err := s.bridgeClient.GetTOSLink(ctx, bridgeCustomerID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get ToS link: %w", err)
+	}
+	return resp.URL, nil
+}
+
 // SetNotificationService sets the notification service for fiat deposit events
 func (s *BridgeVirtualAccountService) SetNotificationService(notificationService FundingNotificationService) {
 	s.notificationService = notificationService
+}
+
+// SetWalletProvider sets the wallet provider for getting user wallet addresses
+func (s *BridgeVirtualAccountService) SetWalletProvider(walletProvider WalletProvider) {
+	s.walletProvider = walletProvider
+}
+
+// ProvisionVirtualAccounts creates virtual accounts for multiple currencies on KYC approval
+func (s *BridgeVirtualAccountService) ProvisionVirtualAccounts(ctx context.Context, userID uuid.UUID, bridgeCustomerID string, currencies []string) error {
+	if s.walletProvider == nil {
+		return fmt.Errorf("wallet provider not configured")
+	}
+
+	// Try to find any available wallet for the USDC destination address.
+	// Prefer mainnet Solana, fall back to devnet, then any EVM chain.
+	walletChainsToTry := []entities.WalletChain{
+		entities.WalletChainSolana,
+		entities.WalletChainSOLDevnet,
+		entities.WalletChainMATICAmoy,
+		entities.WalletChainPolygon,
+		entities.WalletChainAVAXFuji,
+		entities.WalletChainBASESepolia,
+	}
+
+	var wallet *entities.ManagedWallet
+	for _, chain := range walletChainsToTry {
+		w, err := s.walletProvider.GetWalletByUserAndChain(ctx, userID, chain)
+		if err == nil && w != nil && w.Address != "" {
+			wallet = w
+			break
+		}
+	}
+
+	if wallet == nil {
+		// Wallets are still provisioning — return an error so the caller can decide
+		// whether to retry. The webhook handler suppresses this error to avoid
+		// failing the webhook, but the error is logged for observability.
+		return fmt.Errorf("no wallet available yet for user %s — wallets may still be provisioning", userID)
+	}
+
+	var (
+		errs         []string
+		successCount int
+	)
+	for _, currency := range currencies {
+		// Check if account already exists for this currency
+		existing, _ := s.virtualAccountRepo.GetActiveByUserIDAndCurrency(ctx, userID, currency)
+		if existing != nil {
+			s.logger.Info("Virtual account already exists",
+				"user_id", userID,
+				"currency", currency)
+			successCount++
+			continue
+		}
+
+		req := &CreateBridgeVirtualAccountRequest{
+			UserID:           userID,
+			BridgeCustomerID: bridgeCustomerID,
+			Currency:         currency,
+			DestinationChain: bridge.PaymentRailSolana,
+			WalletAddress:    wallet.Address,
+		}
+
+		if _, err := s.CreateVirtualAccount(ctx, req); err != nil {
+			s.logger.Error("Failed to provision virtual account",
+				"user_id", userID,
+				"currency", currency,
+				"error", err)
+			errs = append(errs, fmt.Sprintf("%s: %v", currency, err))
+			continue
+		}
+
+		s.logger.Info("Provisioned virtual account",
+			"user_id", userID,
+			"currency", currency)
+		successCount++
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("failed to provision virtual accounts for %d of %d currencies: [%s]", len(errs), len(currencies), strings.Join(errs, "; "))
+	}
+
+	return nil
 }
 
 // CreateVirtualAccountRequest represents a request to create a Bridge virtual account
 type CreateBridgeVirtualAccountRequest struct {
 	UserID           uuid.UUID
 	BridgeCustomerID string
-	Currency         string // "USD" or "GBP"
+	Currency         string // "USD" or "EUR"
 	DestinationChain bridge.PaymentRail
 	WalletAddress    string // Destination wallet for converted USDC
 }
+
+// DeveloperFeePercent is the fee charged on each deposit (0.5%)
+const DeveloperFeePercent = "0.5"
 
 // CreateVirtualAccount creates a new Bridge virtual account for fiat deposits
 func (s *BridgeVirtualAccountService) CreateVirtualAccount(ctx context.Context, req *CreateBridgeVirtualAccountRequest) (*entities.VirtualAccount, error) {
@@ -83,16 +184,26 @@ func (s *BridgeVirtualAccountService) CreateVirtualAccount(ctx context.Context, 
 		"currency", req.Currency,
 		"destination_chain", req.DestinationChain)
 
-	// Determine source currency
-	sourceCurrency := bridge.CurrencyUSD
-	if req.Currency == "GBP" {
-		// Bridge doesn't support GBP directly, would need FX conversion
-		// For now, default to USD
-		s.logger.Warn("GBP not directly supported, using USD", "user_id", req.UserID)
-		sourceCurrency = bridge.CurrencyUSD
+	// Validate wallet address
+	if req.WalletAddress == "" {
+		return nil, fmt.Errorf("wallet address is required")
 	}
 
-	// Create Bridge virtual account request
+	// Determine source currency - only USD and EUR supported
+	var sourceCurrency bridge.Currency
+	var actualCurrency string
+	switch req.Currency {
+	case "EUR":
+		sourceCurrency = bridge.CurrencyEUR
+		actualCurrency = "EUR"
+	case "USD":
+		sourceCurrency = bridge.CurrencyUSD
+		actualCurrency = "USD"
+	default:
+		return nil, fmt.Errorf("unsupported currency: %s (only USD and EUR supported)", req.Currency)
+	}
+
+	// Create Bridge virtual account request with 0.5% developer fee
 	bridgeReq := &bridge.CreateVirtualAccountRequest{
 		Source: bridge.VirtualAccountSource{
 			Currency: sourceCurrency,
@@ -102,6 +213,7 @@ func (s *BridgeVirtualAccountService) CreateVirtualAccount(ctx context.Context, 
 			PaymentRail: req.DestinationChain,
 			Address:     req.WalletAddress,
 		},
+		DeveloperFeePercent: DeveloperFeePercent,
 	}
 
 	// Create virtual account via Bridge API
@@ -116,20 +228,29 @@ func (s *BridgeVirtualAccountService) CreateVirtualAccount(ctx context.Context, 
 	// Convert to domain entity
 	now := time.Now()
 	virtualAccount := &entities.VirtualAccount{
-		ID:              uuid.New(),
-		UserID:          req.UserID,
-		BridgeAccountID: &bridgeVA.ID,
-		AccountNumber:   bridgeVA.SourceDepositInstructions.BankAccountNumber,
-		RoutingNumber:   bridgeVA.SourceDepositInstructions.BankRoutingNumber,
-		Status:          mapBridgeVAStatus(bridgeVA.Status),
-		Currency:        req.Currency,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		ID:               uuid.New(),
+		UserID:           req.UserID,
+		BridgeCustomerID: req.BridgeCustomerID,
+		BridgeAccountID:  &bridgeVA.ID,
+		AccountNumber:    bridgeVA.SourceDepositInstructions.BankAccountNumber,
+		RoutingNumber:    bridgeVA.SourceDepositInstructions.BankRoutingNumber,
+		BankName:         bridgeVA.SourceDepositInstructions.BankName,
+		BeneficiaryName:  bridgeVA.SourceDepositInstructions.BankBeneficiaryName,
+		Status:           mapBridgeVAStatus(bridgeVA.Status),
+		Currency:         actualCurrency,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 
-	// Handle IBAN for international accounts
+	// Handle IBAN/BIC for EUR (SEPA) accounts
 	if bridgeVA.SourceDepositInstructions.IBAN != "" {
 		virtualAccount.AccountNumber = bridgeVA.SourceDepositInstructions.IBAN
+		virtualAccount.RoutingNumber = bridgeVA.SourceDepositInstructions.BIC
+	}
+
+	// Use account_holder_name as beneficiary if bank_beneficiary_name is empty
+	if virtualAccount.BeneficiaryName == "" && bridgeVA.SourceDepositInstructions.AccountHolderName != "" {
+		virtualAccount.BeneficiaryName = bridgeVA.SourceDepositInstructions.AccountHolderName
 	}
 
 	// Store in database
@@ -196,19 +317,8 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 	// Generate UUID-based idempotency key
 	idempotencyKey := generateFiatIdempotencyKey(transactionRef, virtualAccountID, amount.String())
 
-	// Check for existing deposit using idempotency key
-	if s.depositRepo != nil {
-		existingDeposit, err := s.depositRepo.GetByIdempotencyKey(ctx, idempotencyKey)
-		if err == nil && existingDeposit != nil {
-			s.logger.Info("Fiat deposit already processed (idempotent)",
-				"idempotency_key", idempotencyKey,
-				"deposit_id", existingDeposit.ID.String())
-			// Re-run allocation for reconciliation if needed
-			return s.reconcileFiatDeposit(ctx, virtualAccount.UserID, amount, existingDeposit.ID, transactionRef, virtualAccountID, event.Currency)
-		}
-	}
-
-	// Create deposit record
+	// Create deposit record FIRST with "pending" status to establish idempotency lock
+	// This prevents race conditions - the unique constraint on idempotency_key will reject duplicates
 	now := time.Now()
 	depositID := uuid.New()
 	virtAccountUUID := virtualAccount.ID
@@ -220,28 +330,54 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 		VirtualAccountID: &virtAccountUUID,
 		Chain:            entities.ChainFiat,
 		TxHash:           transactionRef,
-		Token:            entities.StablecoinUSDC, // Fiat is converted to USDC
+		Token:            entities.StablecoinUSDC,
 		Amount:           amount,
-		Status:           "confirmed",
-		ConfirmedAt:      &now,
+		Status:           "pending",
 		CreatedAt:        now,
 	}
 
-	// Record deposit to ledger
+	if s.depositRepo != nil {
+		if err := s.depositRepo.Create(ctx, deposit); err != nil {
+			// Check for duplicate key violation - this is expected for idempotent requests
+			if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+				s.logger.Info("Fiat deposit already processed (idempotent duplicate key)",
+					"idempotency_key", idempotencyKey)
+				return nil
+			}
+			s.logger.Error("Failed to create fiat deposit record",
+				"user_id", virtualAccount.UserID,
+				"deposit_id", depositID,
+				"error", err)
+			return fmt.Errorf("failed to create deposit: %w", err)
+		}
+	}
+
+	// Record deposit to ledger after deposit record is created
 	if err := s.ledgerIntegration.RecordDeposit(ctx, virtualAccount.UserID, amount, depositID, "fiat", transactionRef); err != nil {
-		s.logger.Error("Failed to record deposit in ledger",
+		s.logger.Error("Failed to record deposit in ledger, deleting deposit record",
 			"user_id", virtualAccount.UserID,
 			"amount", amount,
 			"error", err)
+		// Compensation: delete the deposit record since ledger failed
+		if delErr := s.depositRepo.DeletePendingDeposit(ctx, depositID); delErr != nil {
+			s.logger.Error("CRITICAL: Failed to delete deposit after ledger failure, marking as compensation_failed",
+				"deposit_id", depositID,
+				"deletion_error", delErr)
+			// Mark as compensation_failed so it can be identified for manual reconciliation
+			if statusErr := s.depositRepo.UpdateStatus(ctx, depositID, "compensation_failed", nil); statusErr != nil {
+				s.logger.Error("CRITICAL: Failed to mark deposit as compensation_failed",
+					"deposit_id", depositID,
+					"status_error", statusErr)
+			}
+		}
 		return fmt.Errorf("record deposit: %w", err)
 	}
 
-	// Create deposit record in database (only after ledger success)
+	// Update deposit status to "confirmed" after ledger success
 	if s.depositRepo != nil {
-		if err := s.depositRepo.Create(ctx, deposit); err != nil {
-			// Log error but don't fail - ledger already has the record
-			s.logger.Error("Failed to create fiat deposit record",
-				"user_id", virtualAccount.UserID,
+		confirmedAt := now
+		if err := s.depositRepo.UpdateStatus(ctx, depositID, "confirmed", &confirmedAt); err != nil {
+			s.logger.Warn("Failed to update deposit status to confirmed",
 				"deposit_id", depositID,
 				"error", err)
 		}
@@ -264,21 +400,35 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 	}
 
 	if err := s.allocationService.ProcessIncomingFunds(ctx, allocationReq); err != nil {
-		s.logger.Error("Failed to process allocation split",
+		s.logger.Error("Failed to process allocation split - marking as pending_allocation",
 			"user_id", virtualAccount.UserID,
 			"amount", amount,
 			"error", err)
-		// Don't fail the deposit - allocation can be retried
-		// The funds are safely in the ledger
 
-		// Notify user about allocation failure so they can take action
+		// Update deposit status to pending_allocation to track incomplete allocation
+		if s.depositRepo != nil {
+			if updateErr := s.depositRepo.UpdateStatus(ctx, depositID, "pending_allocation", nil); updateErr != nil {
+				s.logger.Error("Failed to update deposit status to pending_allocation",
+					"deposit_id", depositID,
+					"error", updateErr)
+			}
+		}
+
+		// Log detailed error for internal debugging (not exposed to user)
+		s.logger.Error("Allocation failure details for operations team",
+			"user_id", virtualAccount.UserID,
+			"deposit_id", depositID,
+			"error_message", err.Error(),
+			"error_type", fmt.Sprintf("%T", err))
+
+		// Notify user with generic message (don't expose internal error details)
 		if s.notificationService != nil {
 			if notifyErr := s.notificationService.NotifyAllocationFailed(
 				ctx,
 				virtualAccount.UserID,
 				amount,
 				depositID,
-				err.Error(),
+				"allocation_failed",
 			); notifyErr != nil {
 				s.logger.Error("Failed to send allocation failure notification",
 					"user_id", virtualAccount.UserID,
@@ -286,6 +436,9 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 					"error", notifyErr)
 			}
 		}
+
+		// Return error to trigger webhook retry for transient failures
+		return fmt.Errorf("allocation processing failed: %w", err)
 	}
 
 	// Send fiat deposit confirmation notification

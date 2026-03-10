@@ -112,6 +112,7 @@ type DepositRepository interface {
 	UpdateStatus(ctx context.Context, id uuid.UUID, status string, confirmedAt *time.Time) error
 	GetByTxHash(ctx context.Context, txHash string) (*entities.Deposit, error)
 	GetByIdempotencyKey(ctx context.Context, idempotencyKey string) (*entities.Deposit, error)
+	DeletePendingDeposit(ctx context.Context, id uuid.UUID) error
 }
 
 // WalletRepository interface for wallet operations
@@ -143,6 +144,7 @@ type VirtualAccountRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*entities.VirtualAccount, error)
 	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.VirtualAccount, error)
 	GetByAlpacaAccountID(ctx context.Context, alpacaAccountID string) (*entities.VirtualAccount, error)
+	GetActiveByUserIDAndCurrency(ctx context.Context, userID uuid.UUID, currency string) (*entities.VirtualAccount, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status entities.VirtualAccountStatus) error
 	ExistsByUserAndAlpacaAccount(ctx context.Context, userID uuid.UUID, alpacaAccountID string) (bool, error)
 }
@@ -223,6 +225,22 @@ func (s *Service) SetNotificationService(ns FundingNotificationService) {
 // SetBridgeVAService sets the Bridge virtual account service (optional)
 func (s *Service) SetBridgeVAService(bva *BridgeVirtualAccountService) {
 	s.bridgeVAService = bva
+}
+
+// GetVirtualAccounts retrieves all virtual accounts for a user
+func (s *Service) GetVirtualAccounts(ctx context.Context, userID uuid.UUID) ([]*entities.VirtualAccount, error) {
+	if s.bridgeVAService == nil {
+		return nil, fmt.Errorf("virtual account service not configured")
+	}
+	return s.bridgeVAService.GetVirtualAccounts(ctx, userID)
+}
+
+// GetTOSLink returns the Bridge ToS acceptance link for a customer
+func (s *Service) GetTOSLink(ctx context.Context, bridgeCustomerID string) (string, error) {
+	if s.bridgeVAService == nil {
+		return "", fmt.Errorf("virtual account service not configured")
+	}
+	return s.bridgeVAService.GetTOSLink(ctx, bridgeCustomerID)
 }
 
 // SetAlpacaAccountLookup sets the alpaca account ownership lookup service (optional).
@@ -309,20 +327,14 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 // matchesManagedWalletChain checks if a managed wallet's chain matches the requested deposit chain.
 func matchesManagedWalletChain(walletChain entities.WalletChain, depositChain entities.Chain) bool {
 	switch depositChain {
-	case entities.ChainMATIC, entities.ChainPolygon:
+	case entities.ChainMATIC, entities.ChainMATICAmoy:
 		return walletChain == entities.WalletChainMATICAmoy || walletChain == entities.WalletChainPolygon
-	case entities.ChainAVAX:
+	case entities.ChainAVAX, entities.ChainAVAXFuji:
 		return walletChain == entities.WalletChainAVAXFuji || walletChain == entities.WalletChainAvalanche
-	case entities.ChainSOL, entities.ChainSolana:
+	case entities.ChainSOL, entities.ChainSOLDevnet:
 		return walletChain == entities.WalletChainSOLDevnet || walletChain == entities.WalletChainSolana
-	case entities.ChainETH:
-		return walletChain == entities.WalletChainEthereum
-	case entities.ChainARB:
-		return walletChain == entities.WalletChainArbitrum
-	case entities.ChainBASE:
-		return walletChain == entities.WalletChainBase
-	case entities.ChainOP:
-		return walletChain == entities.WalletChainOptimism
+	case entities.ChainBASE, entities.ChainBASESepolia:
+		return walletChain == entities.WalletChainBase || walletChain == entities.WalletChainBASESepolia
 	default:
 		return string(walletChain) == string(depositChain)
 	}
@@ -476,14 +488,14 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 		return fmt.Errorf("deposit amount %s exceeds maximum %v USDC", amount.String(), maxAmountWhole.String())
 	}
 
-	// Add timeout context for external API calls
-	ctx, cancel := context.WithTimeout(ctx, DefaultCircleAPITimeout)
+	// Add timeout context specifically for Circle API calls - don't shadow original ctx
+	circleCtx, cancel := context.WithTimeout(ctx, DefaultCircleAPITimeout)
 	defer cancel()
 
 	// Validate the deposit with Circle
-	isValid, err := s.circleAPI.ValidateDeposit(ctx, webhook.TxHash, amount)
+	isValid, err := s.circleAPI.ValidateDeposit(circleCtx, webhook.TxHash, amount)
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
+		if circleCtx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("circle deposit validation timed out: %w", err)
 		}
 		return fmt.Errorf("failed to validate deposit: %w", err)
@@ -518,9 +530,10 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 	}
 
 	if existingDeposit != nil {
-		// If a previous attempt inserted the deposit row but failed during ledger posting,
-		// replay should reconcile the ledger entry idempotently using the same deposit ID.
-		if existingDeposit.Status == "confirmed" {
+		s.logger.Info("Deposit already processed", "tx_hash", webhook.TxHash, "deposit_id", existingDeposit.ID.String(), "status", existingDeposit.Status)
+		// Only reconcile if the deposit row exists but ledger/allocation never completed (pending state).
+		// Confirmed deposits are fully settled — re-running RecordDeposit would double-credit the ledger.
+		if existingDeposit.Status == "pending" {
 			if err := s.ledgerIntegration.RecordDeposit(
 				ctx,
 				existingDeposit.UserID,
@@ -531,8 +544,9 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 			); err != nil {
 				return fmt.Errorf("existing deposit found but failed to reconcile ledger: %w", err)
 			}
+			confirmedAt := time.Now()
+			_ = s.depositRepo.UpdateStatus(ctx, existingDeposit.ID, "confirmed", &confirmedAt)
 
-			// Re-run allocation split for replay recovery. Allocation service handles idempotency.
 			if s.allocationService != nil {
 				allocationReq := &entities.IncomingFundsRequest{
 					UserID:     existingDeposit.UserID,
@@ -548,15 +562,13 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 					},
 				}
 				if err := s.allocationService.ProcessIncomingFunds(ctx, allocationReq); err != nil {
-					s.logger.Error("Failed to reconcile allocation split for existing deposit",
+					s.logger.Error("Failed to reconcile allocation split for pending deposit",
 						"user_id", existingDeposit.UserID,
 						"deposit_id", existingDeposit.ID.String(),
 						"error", err)
-					// Keep webhook idempotent and non-failing for allocation issues.
 				}
 			}
 		}
-		s.logger.Info("Deposit already processed", "tx_hash", webhook.TxHash, "deposit_id", existingDeposit.ID.String())
 		return nil
 	}
 
@@ -606,7 +618,8 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 	// Generate idempotency key (must be done after we have all details)
 	idempotencyKey = generateIdempotencyKey(string(webhook.Chain), string(token), amount.String(), webhook.TxHash)
 
-	// Create deposit record
+	// Create deposit record FIRST with "pending" status to establish idempotency lock
+	// The unique constraint on idempotency_key prevents race conditions
 	now := time.Now()
 	deposit := &entities.Deposit{
 		ID:             uuid.New(),
@@ -617,36 +630,46 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 		TxHash:         webhook.TxHash,
 		Token:          token,
 		Amount:         amount,
-		Status:         "confirmed",
-		ConfirmedAt:    &now,
+		Status:         "pending",
 		CreatedAt:      now,
 	}
 
-	// Record deposit in ledger FIRST (this is the critical operation - funds must be recorded)
-	// This ensures funds are recorded even if deposit creation fails later
+	// Create deposit record first - this establishes the idempotency lock
+	if err := s.depositRepo.Create(ctx, deposit); err != nil {
+		// Check for duplicate key violation - this is expected idempotent behavior
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			s.logger.Info("Deposit already processed (idempotent duplicate key)",
+				"idempotency_key", idempotencyKey)
+			return nil
+		}
+		s.logger.Error("Failed to create deposit record",
+			"user_id", userID,
+			"error", err)
+		return fmt.Errorf("failed to create deposit: %w", err)
+	}
+
+	// Record deposit in ledger after deposit record is created
 	if err := s.ledgerIntegration.RecordDeposit(ctx, userID, usdAmount, deposit.ID, string(webhook.Chain), webhook.TxHash); err != nil {
+		s.logger.Error("Failed to record deposit in ledger, deleting deposit record",
+			"user_id", userID,
+			"amount", usdAmount,
+			"error", err)
+		// Compensation: delete the deposit record since ledger failed
+		if delErr := s.depositRepo.DeletePendingDeposit(ctx, deposit.ID); delErr != nil {
+			s.logger.Error("CRITICAL: Failed to delete deposit after ledger failure",
+				"deposit_id", deposit.ID,
+				"error", delErr)
+		}
 		return fmt.Errorf("failed to record deposit in ledger: %w", err)
 	}
 
-	// Now create deposit record in database
-	// If this fails, we need to compensate by reversing the ledger entry
-	if err := s.depositRepo.Create(ctx, deposit); err != nil {
-		// Attempt to compensate: reverse the ledger entry
-		s.logger.Error("Failed to create deposit record after ledger success, attempting compensation",
-			"user_id", userID,
+	// Update deposit status to "confirmed" after ledger success
+	confirmedAt := now
+	if err := s.depositRepo.UpdateStatus(ctx, deposit.ID, "confirmed", &confirmedAt); err != nil {
+		s.logger.Error("Failed to update deposit status to confirmed after ledger success",
 			"deposit_id", deposit.ID,
 			"error", err)
-
-		// Try to reverse the ledger entry
-		if compensateErr := s.ledgerIntegration.CompensateDeposit(ctx, userID, usdAmount, deposit.ID); compensateErr != nil {
-			s.logger.Error("CRITICAL: Failed to compensate ledger after deposit creation failure",
-				"user_id", userID,
-				"deposit_id", deposit.ID,
-				"error", compensateErr)
-			// This is a critical situation requiring manual intervention
-		}
-
-		return fmt.Errorf("failed to create deposit record: %w", err)
+		return fmt.Errorf("failed to update deposit status to confirmed: %w", err)
 	}
 
 	// Process automatic 70/30 allocation split
@@ -666,21 +689,24 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 			},
 		}
 		if err := s.allocationService.ProcessIncomingFunds(ctx, allocationReq); err != nil {
-			s.logger.Error("Failed to process allocation split",
+			// Deposit is confirmed and credited to ledger. Allocation failed but the
+			// deposit recovery worker will retry any confirmed deposit without a completed
+			// allocation event. Keep status as "confirmed" — do NOT use an invalid status.
+			s.logger.Error("Allocation split failed — deposit confirmed, recovery worker will retry",
 				"user_id", userID,
+				"deposit_id", deposit.ID,
 				"amount", usdAmount,
+				"error_type", fmt.Sprintf("%T", err),
 				"error", err)
-			// Don't fail the deposit - allocation can be retried
-			// The funds are safely in the ledger
 
-			// Notify user about allocation failure so they can take action
+			// Notify user with generic message (don't expose internal error details)
 			if s.notificationService != nil {
 				if notifyErr := s.notificationService.NotifyAllocationFailed(
 					ctx,
 					userID,
 					usdAmount,
 					deposit.ID,
-					err.Error(),
+					"allocation_failed",
 				); notifyErr != nil {
 					s.logger.Error("Failed to send allocation failure notification",
 						"user_id", userID,
@@ -799,23 +825,26 @@ func (s *Service) CreateVirtualAccount(ctx context.Context, req *entities.Create
 		return nil, fmt.Errorf("Alpaca account is not active: %s", alpacaAccount.Status)
 	}
 
-	// Get deposit instructions from Bridge (virtual account already created during onboarding)
-	accounts, err := s.bridgeVAService.GetVirtualAccounts(ctx, req.UserID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get virtual accounts: %w", err)
-	}
-
-	var virtualAccount *entities.VirtualAccount
-	for _, acc := range accounts {
-		if acc.Currency == "USD" && acc.Status == entities.VirtualAccountStatusActive {
-			virtualAccount = acc
-			break
+	// Get deposit instructions from Bridge — create if not yet provisioned
+	existing, _ := s.virtualAccountRepo.GetActiveByUserIDAndCurrency(ctx, req.UserID, "USD")
+	if existing == nil {
+		if s.bridgeVAService == nil {
+			return nil, fmt.Errorf("bridge virtual account service not configured")
+		}
+		// Look up Bridge customer ID from the user profile via alpaca account lookup
+		// bridgeCustomerID must be passed in via the request
+		if req.BridgeCustomerID == "" {
+			return nil, fmt.Errorf("bridge customer ID is required to provision virtual account")
+		}
+		if err := s.bridgeVAService.ProvisionVirtualAccounts(ctx, req.UserID, req.BridgeCustomerID, []string{"USD"}); err != nil {
+			return nil, fmt.Errorf("failed to provision virtual account: %w", err)
+		}
+		existing, err = s.virtualAccountRepo.GetActiveByUserIDAndCurrency(ctx, req.UserID, "USD")
+		if err != nil || existing == nil {
+			return nil, fmt.Errorf("virtual account provisioned but could not be retrieved")
 		}
 	}
-
-	if virtualAccount == nil {
-		return nil, fmt.Errorf("no active USD virtual account found for user")
-	}
+	virtualAccount := existing
 
 	// Update existing virtual account with Alpaca account ID
 	virtualAccount.AlpacaAccountID = req.AlpacaAccountID

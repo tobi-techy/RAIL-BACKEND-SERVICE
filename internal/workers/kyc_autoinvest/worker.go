@@ -101,6 +101,12 @@ func (w *Worker) Stop() {
 }
 
 func (w *Worker) run(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			w.logger.Error("Panic in kyc_autoinvest worker run", zap.Any("panic", r))
+		}
+	}()
+
 	if w.db == nil || w.autoInvestService == nil {
 		return
 	}
@@ -120,10 +126,9 @@ func (w *Worker) run(ctx context.Context) {
 	triggered := 0
 	for _, candidate := range candidates {
 		correlationID := fmt.Sprintf(
-			"kyc-approved-auto-invest:%s:%s:%s",
+			"kyc-approved-auto-invest:%s:%s",
 			candidate.UserID.String(),
 			candidate.StashAccountID.String(),
-			candidate.StashBalance.String(),
 		)
 
 		if err := w.autoInvestService.TriggerAutoInvestment(ctx, autoinvest.TriggerRequest{
@@ -151,19 +156,21 @@ func (w *Worker) run(ctx context.Context) {
 
 func (w *Worker) listCandidates(ctx context.Context, limit int) ([]investCandidate, error) {
 	const query = `
-		SELECT
+		SELECT DISTINCT ON (la.user_id)
 			la.user_id,
-			la.id,
-			la.balance
+			stash.id   AS stash_account_id,
+			stash.balance AS stash_balance
 		FROM ledger_accounts la
 		INNER JOIN users u ON u.id = la.user_id
-		WHERE la.account_type = 'stash_balance'
+		INNER JOIN ledger_accounts stash
+			ON stash.user_id = la.user_id AND stash.account_type = 'stash_balance'
+		WHERE la.account_type IN ('stash_balance', 'fiat_exposure')
 			AND la.balance > 0
 			AND u.kyc_status = 'approved'
 			AND u.bridge_kyc_status = 'active'
 			AND u.is_active = true
 			AND u.alpaca_account_id IS NOT NULL
-		ORDER BY la.updated_at ASC
+		ORDER BY la.user_id, la.updated_at ASC
 		LIMIT $1
 	`
 

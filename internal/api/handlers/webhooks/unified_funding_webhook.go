@@ -157,7 +157,10 @@ func (h *UnifiedFundingWebhookHandler) verifySignature(c *gin.Context, source We
 		if h.bridgeHandler == nil {
 			return false
 		}
-		signature := c.GetHeader("X-Bridge-Signature")
+		signature := c.GetHeader("X-Webhook-Signature")
+		if signature == "" {
+			signature = c.GetHeader("X-Bridge-Signature")
+		}
 		if signature == "" {
 			signature = c.GetHeader("Bridge-Signature")
 		}
@@ -221,12 +224,22 @@ func (h *UnifiedFundingWebhookHandler) routeToBridge(c *gin.Context, body []byte
 
 	// Route based on event category
 	switch payload.EventCategory {
-	case "virtual_account":
+	case "virtual_account", "virtual_account.activity":
 		h.processBridgeVirtualAccountEvent(c, &payload)
 	case "transfer":
 		h.processBridgeTransferEvent(c, &payload)
 	case "customer":
 		h.processBridgeCustomerEvent(c, &payload)
+	case "kyc_link":
+		h.bridgeHandler.handleKYCLinkEvent(c, payload)
+	case "card_account":
+		h.bridgeHandler.handleCardAccountEvent(c, payload)
+	case "card_transaction":
+		h.bridgeHandler.handleCardTransactionEvent(c, payload)
+	case "posted_card_account_transaction":
+		h.bridgeHandler.handlePostedCardTransaction(c, payload)
+	case "card_withdrawal":
+		h.bridgeHandler.handleCardWithdrawalEvent(c, payload)
 	default:
 		h.logger.Info("Unhandled Bridge event category", zap.String("category", payload.EventCategory))
 		c.JSON(http.StatusOK, gin.H{"status": "ignored"})
@@ -241,8 +254,13 @@ func (h *UnifiedFundingWebhookHandler) processBridgeVirtualAccountEvent(c *gin.C
 		return
 	}
 
+	if payload.EventCategory == "virtual_account.activity" {
+		h.bridgeHandler.handleVirtualAccountActivity(c, *payload)
+		return
+	}
+
 	switch payload.EventType {
-	case "deposit.received", "deposit.completed":
+	case "deposit.received", "deposit.completed", "virtual_account.deposit.received", "virtual_account.deposit.completed":
 		eventData, _ := json.Marshal(payload.EventObject)
 		var depositEvent BridgeDepositEvent
 		if err := json.Unmarshal(eventData, &depositEvent); err != nil {

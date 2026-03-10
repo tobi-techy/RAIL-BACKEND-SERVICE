@@ -78,14 +78,6 @@ func SetupSecurityRoutesEnhanced(
 	// API v1 routes
 	v1 := router.Group("/api/v1")
 	{
-		// Apply tiered rate limiting if available
-		if tieredLimiter != nil {
-			v1.Use(middleware.TieredRateLimiting(tieredLimiter, log))
-		} else {
-			v1.Use(middleware.RateLimit(100))
-		}
-
-		// Apply login protection middleware to auth routes
 		authRoutes := v1.Group("/auth")
 		if loginTracker != nil {
 			authRoutes.Use(middleware.LoginRateLimiting(loginTracker, nil, log))

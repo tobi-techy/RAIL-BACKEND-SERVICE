@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -72,6 +74,8 @@ type Service struct {
 	ledgerService   LedgerService
 	logger          *zap.Logger
 	defaultChain    string
+	enableCardsOnce sync.Once
+	enableCardsErr  error
 }
 
 // NewService creates a new card service
@@ -90,7 +94,7 @@ func NewService(
 		walletProvider:  walletProvider,
 		balanceProvider: balanceProvider,
 		logger:          logger,
-		defaultChain:    "ethereum", // Default chain for card funding
+		defaultChain:    string(entities.WalletChainSolana), // Keep card funding chain aligned with Bridge card rail
 	}
 }
 
@@ -128,17 +132,23 @@ func (s *Service) CreateVirtualCard(ctx context.Context, userID uuid.UUID) (*ent
 		return nil, ErrWalletNotFound
 	}
 
+	// Bridge sandbox requires cards to be enabled with funding strategy "top_up" before provisioning.
+	if err := s.ensureSandboxCardsEnabled(ctx); err != nil {
+		return nil, err
+	}
+
 	// Create card account on Bridge
+	cardRail := mapWalletChainToBridgePaymentRail(wallet.Chain)
 	bridgeReq := &bridge.CreateCardAccountRequest{
 		Currency: bridge.CurrencyUSDC,
-		Chain:    bridge.PaymentRailSolana,
-		CryptoAccount: bridge.CryptoAccount{
-			Type:    "wallet",
+		Chain:    cardRail,
+		CryptoAccount: &bridge.CryptoAccount{
+			Type:    bridge.CryptoAccountTypeStandard,
 			Address: wallet.Address,
 		},
 	}
 
-	bridgeCard, err := s.bridgeAdapter.CreateCardAccountForCustomer(ctx, *profile.BridgeCustomerID, bridgeReq)
+	bridgeCard, err := s.createCardAccountWithSandboxFallback(ctx, *profile.BridgeCustomerID, bridgeReq)
 	if err != nil {
 		s.logger.Error("Failed to create Bridge card account", zap.Error(err))
 		return nil, fmt.Errorf("failed to create card on Bridge: %w", err)
@@ -306,6 +316,12 @@ func (s *Service) ProcessCardAuthorization(ctx context.Context, bridgeCardID str
 
 // RecordTransaction records a card transaction from webhook
 func (s *Service) RecordTransaction(ctx context.Context, bridgeCardID, bridgeTransID, txType string, amount decimal.Decimal, merchantName, merchantCategory, status string, declineReason *string) error {
+	normalizedStatus, err := normalizeCardTransactionStatus(status)
+	if err != nil {
+		return err
+	}
+	normalizedType := normalizeCardTransactionType(txType, normalizedStatus)
+
 	card, err := s.repo.GetByBridgeCardID(ctx, bridgeCardID)
 	if err != nil || card == nil {
 		return ErrCardNotFound
@@ -315,9 +331,9 @@ func (s *Service) RecordTransaction(ctx context.Context, bridgeCardID, bridgeTra
 	existing, _ := s.repo.GetTransactionByBridgeID(ctx, bridgeTransID)
 	if existing != nil {
 		// Update status if changed
-		if existing.Status != status {
+		if existing.Status != normalizedStatus {
 			// If transitioning to completed, deduct from spend balance
-			if status == "completed" && existing.Status != "completed" {
+			if normalizedStatus == "completed" && existing.Status != "completed" {
 				if err := s.settleTransaction(ctx, card.UserID, amount, bridgeTransID, merchantName); err != nil {
 					s.logger.Error("Failed to settle card transaction",
 						zap.String("transaction_id", bridgeTransID),
@@ -325,7 +341,7 @@ func (s *Service) RecordTransaction(ctx context.Context, bridgeCardID, bridgeTra
 					return err
 				}
 			}
-			return s.repo.UpdateTransactionStatus(ctx, existing.ID, status, declineReason)
+			return s.repo.UpdateTransactionStatus(ctx, existing.ID, normalizedStatus, declineReason)
 		}
 		return nil
 	}
@@ -334,12 +350,12 @@ func (s *Service) RecordTransaction(ctx context.Context, bridgeCardID, bridgeTra
 		CardID:           card.ID,
 		UserID:           card.UserID,
 		BridgeTransID:    bridgeTransID,
-		Type:             txType,
+		Type:             normalizedType,
 		Amount:           amount,
 		Currency:         card.Currency,
 		MerchantName:     nilIfEmpty(merchantName),
 		MerchantCategory: nilIfEmpty(merchantCategory),
-		Status:           status,
+		Status:           normalizedStatus,
 		DeclineReason:    declineReason,
 	}
 
@@ -348,7 +364,7 @@ func (s *Service) RecordTransaction(ctx context.Context, bridgeCardID, bridgeTra
 	}
 
 	// If transaction is already completed (captured), deduct from spend balance
-	if status == "completed" {
+	if normalizedStatus == "completed" {
 		if err := s.settleTransaction(ctx, card.UserID, amount, bridgeTransID, merchantName); err != nil {
 			s.logger.Error("Failed to settle card transaction",
 				zap.String("transaction_id", bridgeTransID),
@@ -367,20 +383,11 @@ func (s *Service) settleTransaction(ctx context.Context, userID uuid.UUID, amoun
 		zap.String("amount", amount.String()),
 		zap.String("transaction_id", transactionID))
 
-	// Deduct from spend balance via balance provider
-	if s.balanceProvider != nil {
-		if err := s.balanceProvider.DeductSpendBalance(ctx, userID, amount, transactionID); err != nil {
-			return fmt.Errorf("failed to deduct spend balance: %w", err)
-		}
-	}
-
-	// Create ledger entry if ledger service is available
+	// Create ledger entry - this is the single authoritative debit of spending_balance.
+	// DeductSpendBalance is intentionally NOT called here; it would double-debit.
 	if s.ledgerService != nil {
 		if err := s.createCardTransactionLedgerEntry(ctx, userID, amount, transactionID, merchantName); err != nil {
-			s.logger.Error("Failed to create ledger entry for card transaction",
-				zap.String("transaction_id", transactionID),
-				zap.Error(err))
-			// Don't fail the transaction if ledger entry fails - balance already deducted
+			return fmt.Errorf("failed to create ledger entry for card transaction: %w", err)
 		}
 	}
 
@@ -460,6 +467,80 @@ func (s *Service) SyncCardStatus(ctx context.Context, bridgeCardID string) error
 	return nil
 }
 
+func (s *Service) ensureSandboxCardsEnabled(ctx context.Context) error {
+	if s.bridgeAdapter == nil || s.bridgeAdapter.Client() == nil {
+		return fmt.Errorf("bridge adapter not configured")
+	}
+
+	client := s.bridgeAdapter.Client()
+	if !s.isSandboxBridgeClient() {
+		return nil
+	}
+
+	s.enableCardsOnce.Do(func() {
+		err := client.EnableCards(ctx, &bridge.EnableCardsRequest{
+			FundingStrategy: bridge.CardFundingStrategyTopUp,
+		})
+		if err == nil || isCardsAlreadyEnabledError(err) {
+			return
+		}
+		s.enableCardsErr = fmt.Errorf("failed to enable Bridge sandbox cards: %w", err)
+	})
+
+	return s.enableCardsErr
+}
+
+func (s *Service) createCardAccountWithSandboxFallback(ctx context.Context, customerID string, req *bridge.CreateCardAccountRequest) (*bridge.CardAccount, error) {
+	card, err := s.bridgeAdapter.CreateCardAccountForCustomer(ctx, customerID, req)
+	if err == nil {
+		return card, nil
+	}
+
+	if !s.isSandboxBridgeClient() || !shouldRetryCardAccountWithoutCrypto(err) {
+		return nil, err
+	}
+
+	fallback := *req
+	fallback.CryptoAccount = nil
+	return s.bridgeAdapter.CreateCardAccountForCustomer(ctx, customerID, &fallback)
+}
+
+func isCardsAlreadyEnabledError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var bridgeErr *bridge.ErrorResponse
+	if errors.As(err, &bridgeErr) {
+		msg := strings.ToLower(strings.TrimSpace(bridgeErr.Message))
+		if bridgeErr.StatusCode == 409 || strings.Contains(msg, "already") {
+			return true
+		}
+	}
+
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "already") && strings.Contains(msg, "enable")
+}
+
+func (s *Service) isSandboxBridgeClient() bool {
+	if s.bridgeAdapter == nil || s.bridgeAdapter.Client() == nil {
+		return false
+	}
+	cfg := s.bridgeAdapter.Client().Config()
+	return strings.EqualFold(strings.TrimSpace(cfg.Environment), "sandbox") ||
+		strings.Contains(strings.ToLower(strings.TrimSpace(cfg.BaseURL)), "sandbox.bridge.xyz")
+}
+
+func shouldRetryCardAccountWithoutCrypto(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "crypto_account") ||
+		strings.Contains(msg, "funding_strategy") ||
+		strings.Contains(msg, "top_up")
+}
+
 // Helper functions
 
 func mapBridgeCardStatus(status bridge.CardAccountStatus) entities.CardStatus {
@@ -472,6 +553,62 @@ func mapBridgeCardStatus(status bridge.CardAccountStatus) entities.CardStatus {
 		return entities.CardStatusCancelled
 	default:
 		return entities.CardStatusPending
+	}
+}
+
+func mapWalletChainToBridgePaymentRail(chain entities.WalletChain) bridge.PaymentRail {
+	switch chain {
+	case entities.WalletChainSolana, entities.WalletChainSOLDevnet:
+		return bridge.PaymentRailSolana
+	case entities.WalletChainPolygon, entities.WalletChainMATICAmoy:
+		return bridge.PaymentRailPolygon
+	case entities.WalletChainAvalanche, entities.WalletChainAVAXFuji:
+		return bridge.PaymentRailAvalanche
+	case entities.WalletChainBase, entities.WalletChainBASESepolia:
+		return bridge.PaymentRailBase
+	default:
+		return bridge.PaymentRailSolana
+	}
+}
+
+func normalizeCardTransactionType(txType, normalizedStatus string) string {
+	switch strings.ToLower(strings.TrimSpace(txType)) {
+	case "authorization", "capture", "refund", "reversal":
+		return strings.ToLower(strings.TrimSpace(txType))
+	case "purchase", "payment", "settled", "posted", "completed", "captured", "partially_settled", "incrementally_settled":
+		return "capture"
+	case "refunded", "partially_reversed":
+		return "refund"
+	case "approved", "authorized", "incrementally_authorized":
+		return "authorization"
+	case "denied", "declined", "expired", "failed":
+		return "authorization"
+	}
+
+	switch normalizedStatus {
+	case "pending", "declined":
+		return "authorization"
+	case "reversed":
+		return "reversal"
+	default:
+		return "capture"
+	}
+}
+
+func normalizeCardTransactionStatus(status string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "pending", "completed", "declined", "reversed":
+		return strings.ToLower(strings.TrimSpace(status)), nil
+	case "posted", "captured", "settled", "partially_settled", "incrementally_settled":
+		return "completed", nil
+	case "authorized", "authorization", "authorizing", "approved", "incrementally_authorized":
+		return "pending", nil
+	case "failed", "denied", "expired", "timeout":
+		return "declined", nil
+	case "refunded", "refund", "partially_reversed":
+		return "reversed", nil
+	default:
+		return "", fmt.Errorf("unsupported card transaction status: %s", status)
 	}
 }
 
