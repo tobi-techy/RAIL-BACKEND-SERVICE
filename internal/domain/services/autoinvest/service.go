@@ -333,7 +333,11 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 		}
 	}
 
-	// Step 1: Transfer from stash to fiat exposure (buying power)
+	// Step 1: Transfer from stash to fiat exposure (buying power).
+	// ATOMICITY: transferStashToFiatExposure calls ledgerService.CreateTransaction which
+	// uses SELECT FOR UPDATE inside a DB transaction, making the balance check and debit
+	// atomic. The re-check above narrows the TOCTOU window but the ledger transaction is
+	// the authoritative guard against overdrafts.
 	if err := s.transferStashToFiatExposure(ctx, userID, stashID, amount, correlationID); err != nil {
 		span.RecordError(err)
 		s.markEventFailed(ctx, userID, eventID, "ledger transfer failed")
@@ -632,7 +636,7 @@ func (s *Service) transferStashToFiatExposure(ctx context.Context, userID, stash
 				AccountID:   fiatAccount.ID,
 				EntryType:   entities.EntryTypeDebit,
 				Amount:      amount,
-				Currency:    "USDC",
+				Currency:    "USD", // fiat_exposure = USD buying power in Alpaca, not USDC
 				Description: &desc,
 			},
 		},
@@ -668,7 +672,7 @@ func (s *Service) transferFiatExposureToStash(ctx context.Context, userID, stash
 				AccountID:   fiatAccount.ID,
 				EntryType:   entities.EntryTypeCredit,
 				Amount:      amount,
-				Currency:    "USDC",
+				Currency:    "USD", // fiat_exposure = USD buying power in Alpaca, not USDC
 				Description: &desc,
 			},
 			{
