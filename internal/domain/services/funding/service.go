@@ -13,11 +13,6 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// Default timeout for external API calls
-const (
-	DefaultCircleAPITimeout = 10 * time.Second
-)
-
 // generateIdempotencyKey creates a deterministic UUID from deposit attributes
 // This ensures uniqueness across chains and prevents cross-chain replay attacks
 func generateIdempotencyKey(chain, token, amount, txHash string) string {
@@ -126,7 +121,6 @@ type WalletRepository interface {
 // ManagedWalletRepository interface for managed wallet operations
 type ManagedWalletRepository interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.ManagedWallet, error)
-	GetByCircleWalletID(ctx context.Context, circleWalletID string) (*entities.ManagedWallet, error)
 	GetByAddress(ctx context.Context, address string) (*entities.ManagedWallet, error)
 	Create(ctx context.Context, wallet *entities.ManagedWallet) error
 }
@@ -152,16 +146,6 @@ type BridgeLiquidationAddr struct {
 	Chain          string
 	Address        string
 	BridgeWalletID string
-}
-
-// CircleAdapter interface for Circle API integration
-// Deprecated: kept temporarily for callers that haven't been migrated yet.
-// ValidateDeposit and ConvertToUSD are no-ops; remove once all callers are gone.
-type CircleAdapter interface {
-	GenerateDepositAddress(ctx context.Context, chain entities.Chain, userID uuid.UUID) (string, error)
-	ValidateDeposit(ctx context.Context, txHash string, amount decimal.Decimal) (bool, error)
-	ConvertToUSD(ctx context.Context, amount decimal.Decimal, token entities.Stablecoin) (decimal.Decimal, error)
-	GetWalletBalances(ctx context.Context, walletID string, tokenAddress ...string) (*entities.CircleWalletBalancesResponse, error)
 }
 
 // VirtualAccountRepository interface for virtual account persistence
@@ -308,7 +292,7 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 		}, nil
 	}
 
-	// Check managed_wallets (Circle dev-controlled wallets) — these are the
+	// Check managed_wallets (custody wallets + liquidation addresses) — these are the
 	// primary wallet type for testnet chains like MATIC-AMOY, AVAX-FUJI, SOL-DEVNET.
 	if s.managedWalletRepo != nil {
 		managedWallets, mErr := s.managedWalletRepo.GetByUserID(ctx, userID)
@@ -580,13 +564,8 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 		return fmt.Errorf("deposit amount %s exceeds maximum %v USDC", amount.String(), maxAmountWhole.String())
 	}
 
-	// Add timeout context specifically for Circle API calls - don't shadow original ctx
-	circleCtx, cancel := context.WithTimeout(ctx, DefaultCircleAPITimeout)
-	defer cancel()
-	_ = circleCtx
-
 	// Deposit validation: Bridge liquidation addresses are pre-validated by Bridge.
-	// Circle ValidateDeposit is no longer used.
+	// Additional validation is handled by Bridge webhook signature checks.
 	isValid := true
 	if !isValid {
 		s.logger.Warn("Invalid deposit received", "tx_hash", webhook.TxHash)

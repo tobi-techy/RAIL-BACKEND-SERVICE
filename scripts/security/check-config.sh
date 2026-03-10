@@ -147,7 +147,6 @@ echo "----------------------------------------"
 if [ "$ORIGINAL_ENVIRONMENT" = "production" ]; then
     MISSING_KEYS=()
 
-    [ -z "$CIRCLE_API_KEY" ] && MISSING_KEYS+=("CIRCLE_API_KEY")
     [ -z "$ALPACA_API_KEY" ] && MISSING_KEYS+=("ALPACA_API_KEY")
     [ -z "$ALPACA_API_SECRET" ] && MISSING_KEYS+=("ALPACA_API_SECRET")
     [ -z "$BRIDGE_API_KEY" ] && MISSING_KEYS+=("BRIDGE_API_KEY")

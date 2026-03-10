@@ -172,7 +172,7 @@ run_unit_tests() {
     local unit_test_paths=(
         "./internal/domain/services/funding/..."
         "./internal/domain/entities/..."
-        "./internal/infrastructure/adapters/circle/..."
+        "./internal/infrastructure/adapters/bridge/..."
         "./pkg/retry/..."
         "./pkg/webhook/..."
     )

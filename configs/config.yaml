@@ -137,6 +137,7 @@ workers:
   count: 10
   job_timeout: 300
 
+# Legacy Circle configuration (deprecated; Bridge is primary)
 circle:
   api_key: ""
   environment: "sandbox"

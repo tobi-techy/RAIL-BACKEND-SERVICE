@@ -41,7 +41,7 @@ Rail is an automated wealth system that eliminates financial decision-making for
 │  ┌─────────────────────────────────────────────────────────────────────────┐│
 │  │                        DATA & INFRASTRUCTURE LAYER                      ││
 │  │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐        ││
-│  │  │ PostgreSQL │  │   Redis    │  │   Circle   │  │   Alpaca   │        ││
+│  │  │ PostgreSQL │  │   Redis    │  │   Bridge   │  │   Alpaca   │        ││
 │  │  │  (Ledger)  │  │  (Cache)   │  │  (Wallet)  │  │ (Brokerage)│        ││
 │  │  └────────────┘  └────────────┘  └────────────┘  └────────────┘        ││
 │  └─────────────────────────────────────────────────────────────────────────┘│
@@ -188,11 +188,11 @@ Rail is an automated wealth system that eliminates financial decision-making for
 
 | Service | Responsibility | External Dependencies |
 |---------|---------------|----------------------|
-| **Onboarding** | User registration, KYC, wallet provisioning | KYC Provider, Circle |
-| **Funding** | Virtual accounts (USD/GBP), multi-chain USDC deposits, 70/30 split | Circle, Due Network, Blockchain RPCs |
+| **Onboarding** | User registration, KYC, wallet provisioning | Bridge |
+| **Funding** | Virtual accounts (USD/GBP), multi-chain USDC deposits, 70/30 split | Bridge, Due Network, Blockchain RPCs |
 | **Spending** | Card transactions, round-ups, balance management | Card Issuer |
 | **Investing** | Auto-allocation, trade execution, portfolio | Alpaca |
-| **Wallet** | Multi-chain wallet management, custody | Circle |
+| **Wallet** | Multi-chain wallet management, custody | Bridge |
 | **Conductor** | Copy trading, track management, trade mirroring | Alpaca |
 
 ---
@@ -222,7 +222,7 @@ Rail is an automated wealth system that eliminates financial decision-making for
 │         │ Bank Transfer     │ ETH/Polygon/BSC/Solana   │                     │
 │         ▼                   ▼                          │                     │
 │  ┌──────────────┐    ┌──────────────┐                  │                     │
-│  │ Due Network  │    │   Circle     │                  │                     │
+│  │ Due Network  │    │   Bridge     │                  │                     │
 │  │   Webhook    │    │   Webhook    │                  │                     │
 │  └──────┬───────┘    └──────┬───────┘                  │                     │
 │         │                   │                          │                     │
@@ -695,7 +695,7 @@ Rail is an automated wealth system that eliminates financial decision-making for
 │                         ONBOARDING SEQUENCE                                  │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  iOS App          API Gateway       Onboarding       KYC Provider    Circle  │
+│  iOS App          API Gateway       Onboarding       KYC Provider    Bridge  │
 │    │                  │               Service            │             │     │
 │    │  1. Apple Sign-In│                 │                │             │     │
 │    │─────────────────▶│                 │                │             │     │
@@ -925,7 +925,7 @@ Rail is an automated wealth system that eliminates financial decision-making for
 | Cache | Redis 7 | Sessions, rate limiting |
 | Auth | JWT | Token-based auth |
 | Encryption | AES-256-GCM | Data at rest |
-| Wallet | Circle | Custody, stablecoins |
+| Wallet | Bridge | Custody, stablecoins |
 | Brokerage | Alpaca | Trade execution |
 | Monitoring | Prometheus/Grafana | Metrics |
 | Logging | Zap | Structured logs |

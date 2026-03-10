@@ -57,7 +57,7 @@ This document outlines the MVP epics for Rail — an automated wealth system whe
 | 2.2 | Multi-Chain USDC Deposits | P0 | USDC deposits from Ethereum, Polygon, BSC, Solana |
 | 2.3 | Deposit Confirmation | P0 | Instant or near-instant confirmation |
 | 2.4 | Automatic Split Engine | P0 | 70/30 split on every deposit |
-| 2.5 | Deposit Webhooks | P0 | Real-time deposit detection from Due Network and Circle |
+| 2.5 | Deposit Webhooks | P0 | Real-time deposit detection from Due Network and Bridge |
 
 ### User Stories
 

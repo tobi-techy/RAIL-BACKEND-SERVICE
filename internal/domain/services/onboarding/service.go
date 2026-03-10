@@ -590,6 +590,16 @@ func (s *Service) ProcessKYCCallback(ctx context.Context, providerRef string, st
 		return fmt.Errorf("failed to get user: %w", err)
 	}
 
+	// Audit log the KYC status change
+	previousStatus := user.KYCStatus
+	s.logger.Info("KYC_STATUS_CHANGE",
+		zap.String("user_id", user.ID.String()),
+		zap.String("email", user.Email),
+		zap.String("previous_status", previousStatus),
+		zap.String("new_status", string(status)),
+		zap.Strings("rejection_reasons", rejectionReasons),
+		zap.Time("timestamp", time.Now()))
+
 	// Update submission
 	submission.MarkReviewed(status, rejectionReasons)
 	if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {

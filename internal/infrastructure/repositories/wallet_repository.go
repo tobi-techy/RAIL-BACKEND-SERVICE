@@ -41,12 +41,23 @@ func NewWalletRepository(db *sql.DB, logger *zap.Logger) *WalletRepository {
 
 // Create creates a new managed wallet
 func (r *WalletRepository) Create(ctx context.Context, wallet *entities.ManagedWallet) error {
+	accountType := wallet.AccountType
+	if accountType == "" {
+		accountType = entities.AccountTypeEOA
+	}
+	provider := "circle"
+	if strings.TrimSpace(wallet.BridgeWalletID) != "" ||
+		accountType == entities.AccountTypeBridgeWallet ||
+		accountType == entities.AccountTypeLiquidationAddr {
+		provider = "bridge"
+	}
+
 	query := `
 		INSERT INTO managed_wallets (
-			id, user_id, wallet_set_id, circle_wallet_id, chain, 
-			address, status, created_at, updated_at
+			id, user_id, wallet_set_id, circle_wallet_id, bridge_wallet_id, chain, 
+			address, account_type, status, created_at, updated_at, provider
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
 		)`
 
 	_, err := r.db.ExecContext(ctx, query,
@@ -54,11 +65,14 @@ func (r *WalletRepository) Create(ctx context.Context, wallet *entities.ManagedW
 		wallet.UserID,
 		wallet.WalletSetID,
 		wallet.CircleWalletID,
+		wallet.BridgeWalletID,
 		string(wallet.Chain),
 		wallet.Address,
+		string(accountType),
 		string(wallet.Status),
 		wallet.CreatedAt,
 		wallet.UpdatedAt,
+		provider,
 	)
 
 	if err != nil {
@@ -76,8 +90,8 @@ func (r *WalletRepository) Create(ctx context.Context, wallet *entities.ManagedW
 // GetByID retrieves a wallet by ID
 func (r *WalletRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.ManagedWallet, error) {
 	query := `
-		SELECT id, user_id, wallet_set_id, circle_wallet_id, chain, 
-		       address, status, created_at, updated_at
+		SELECT id, user_id, wallet_set_id, circle_wallet_id, COALESCE(bridge_wallet_id, '') AS bridge_wallet_id, chain, 
+		       address, account_type, status, created_at, updated_at
 		FROM managed_wallets 
 		WHERE id = $1`
 
@@ -88,8 +102,10 @@ func (r *WalletRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities
 		&wallet.UserID,
 		&wallet.WalletSetID,
 		&wallet.CircleWalletID,
+		&wallet.BridgeWalletID,
 		&wallet.Chain,
 		&wallet.Address,
+		&wallet.AccountType,
 		&wallet.Status,
 		&wallet.CreatedAt,
 		&wallet.UpdatedAt,
@@ -109,8 +125,8 @@ func (r *WalletRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities
 // GetByUserID retrieves all wallets for a user
 func (r *WalletRepository) GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.ManagedWallet, error) {
 	query := `
-		SELECT id, user_id, wallet_set_id, circle_wallet_id, chain, 
-		       address, status, created_at, updated_at
+		SELECT id, user_id, wallet_set_id, circle_wallet_id, COALESCE(bridge_wallet_id, '') AS bridge_wallet_id, chain, 
+		       address, account_type, status, created_at, updated_at
 		FROM managed_wallets 
 		WHERE user_id = $1
 		ORDER BY created_at ASC`
@@ -130,8 +146,10 @@ func (r *WalletRepository) GetByUserID(ctx context.Context, userID uuid.UUID) ([
 			&wallet.UserID,
 			&wallet.WalletSetID,
 			&wallet.CircleWalletID,
+			&wallet.BridgeWalletID,
 			&wallet.Chain,
 			&wallet.Address,
+			&wallet.AccountType,
 			&wallet.Status,
 			&wallet.CreatedAt,
 			&wallet.UpdatedAt,
@@ -153,8 +171,8 @@ func (r *WalletRepository) GetByUserID(ctx context.Context, userID uuid.UUID) ([
 // GetByUserAndChain retrieves a wallet by user ID and chain
 func (r *WalletRepository) GetByUserAndChain(ctx context.Context, userID uuid.UUID, chain entities.WalletChain) (*entities.ManagedWallet, error) {
 	query := `
-		SELECT id, user_id, wallet_set_id, circle_wallet_id, chain, 
-		       address, status, created_at, updated_at
+		SELECT id, user_id, wallet_set_id, circle_wallet_id, COALESCE(bridge_wallet_id, '') AS bridge_wallet_id, chain, 
+		       address, account_type, status, created_at, updated_at
 		FROM managed_wallets 
 		WHERE user_id = $1 AND chain = $2`
 
@@ -165,8 +183,10 @@ func (r *WalletRepository) GetByUserAndChain(ctx context.Context, userID uuid.UU
 		&wallet.UserID,
 		&wallet.WalletSetID,
 		&wallet.CircleWalletID,
+		&wallet.BridgeWalletID,
 		&wallet.Chain,
 		&wallet.Address,
+		&wallet.AccountType,
 		&wallet.Status,
 		&wallet.CreatedAt,
 		&wallet.UpdatedAt,
@@ -187,8 +207,8 @@ func (r *WalletRepository) GetByUserAndChain(ctx context.Context, userID uuid.UU
 // GetByCircleWalletID retrieves a wallet by Circle wallet ID
 func (r *WalletRepository) GetByCircleWalletID(ctx context.Context, circleWalletID string) (*entities.ManagedWallet, error) {
 	query := `
-		SELECT id, user_id, wallet_set_id, circle_wallet_id, chain, 
-		       address, status, created_at, updated_at
+		SELECT id, user_id, wallet_set_id, circle_wallet_id, COALESCE(bridge_wallet_id, '') AS bridge_wallet_id, chain, 
+		       address, account_type, status, created_at, updated_at
 		FROM managed_wallets 
 		WHERE circle_wallet_id = $1`
 
@@ -199,8 +219,10 @@ func (r *WalletRepository) GetByCircleWalletID(ctx context.Context, circleWallet
 		&wallet.UserID,
 		&wallet.WalletSetID,
 		&wallet.CircleWalletID,
+		&wallet.BridgeWalletID,
 		&wallet.Chain,
 		&wallet.Address,
+		&wallet.AccountType,
 		&wallet.Status,
 		&wallet.CreatedAt,
 		&wallet.UpdatedAt,
@@ -221,7 +243,8 @@ func (r *WalletRepository) GetByCircleWalletID(ctx context.Context, circleWallet
 // GetByBridgeWalletID retrieves a wallet by Bridge wallet ID
 func (r *WalletRepository) GetByBridgeWalletID(ctx context.Context, bridgeWalletID string) (*entities.ManagedWallet, error) {
 	query := `
-		SELECT id, user_id, chain, address, bridge_wallet_id, status, created_at, updated_at
+		SELECT id, user_id, wallet_set_id, circle_wallet_id, COALESCE(bridge_wallet_id, '') AS bridge_wallet_id, chain,
+		       address, account_type, status, created_at, updated_at
 		FROM managed_wallets 
 		WHERE bridge_wallet_id = $1`
 
@@ -229,9 +252,12 @@ func (r *WalletRepository) GetByBridgeWalletID(ctx context.Context, bridgeWallet
 	err := r.db.QueryRowContext(ctx, query, bridgeWalletID).Scan(
 		&wallet.ID,
 		&wallet.UserID,
+		&wallet.WalletSetID,
+		&wallet.CircleWalletID,
+		&wallet.BridgeWalletID,
 		&wallet.Chain,
 		&wallet.Address,
-		&wallet.BridgeWalletID,
+		&wallet.AccountType,
 		&wallet.Status,
 		&wallet.CreatedAt,
 		&wallet.UpdatedAt,
@@ -248,8 +274,8 @@ func (r *WalletRepository) GetByBridgeWalletID(ctx context.Context, bridgeWallet
 // GetByAddress retrieves a wallet by on-chain address
 func (r *WalletRepository) GetByAddress(ctx context.Context, address string) (*entities.ManagedWallet, error) {
 	query := `
-		SELECT id, user_id, wallet_set_id, circle_wallet_id, chain,
-		       address, status, created_at, updated_at
+		SELECT id, user_id, wallet_set_id, circle_wallet_id, COALESCE(bridge_wallet_id, '') AS bridge_wallet_id, chain,
+		       address, account_type, status, created_at, updated_at
 		FROM managed_wallets
 		WHERE LOWER(address) = LOWER($1)
 		LIMIT 1`
@@ -261,8 +287,10 @@ func (r *WalletRepository) GetByAddress(ctx context.Context, address string) (*e
 		&wallet.UserID,
 		&wallet.WalletSetID,
 		&wallet.CircleWalletID,
+		&wallet.BridgeWalletID,
 		&wallet.Chain,
 		&wallet.Address,
+		&wallet.AccountType,
 		&wallet.Status,
 		&wallet.CreatedAt,
 		&wallet.UpdatedAt,
@@ -280,18 +308,25 @@ func (r *WalletRepository) GetByAddress(ctx context.Context, address string) (*e
 
 // Update updates a managed wallet
 func (r *WalletRepository) Update(ctx context.Context, wallet *entities.ManagedWallet) error {
+	accountType := wallet.AccountType
+	if accountType == "" {
+		accountType = entities.AccountTypeEOA
+	}
+
 	query := `
 		UPDATE managed_wallets SET 
-			wallet_set_id = $2, circle_wallet_id = $3, chain = $4, 
-			address = $5, status = $6, updated_at = $7
+			wallet_set_id = $2, circle_wallet_id = $3, bridge_wallet_id = $4, chain = $5, 
+			address = $6, account_type = $7, status = $8, updated_at = $9
 		WHERE id = $1`
 
 	_, err := r.db.ExecContext(ctx, query,
 		wallet.ID,
 		wallet.WalletSetID,
 		wallet.CircleWalletID,
+		wallet.BridgeWalletID,
 		string(wallet.Chain),
 		wallet.Address,
+		string(accountType),
 		string(wallet.Status),
 		time.Now(),
 	)
@@ -478,7 +513,8 @@ func (r *WalletSetRepository) Update(ctx context.Context, walletSet *entities.Wa
 // GetByUserIDAndAccountType retrieves wallets by user ID and account type
 func (r *WalletRepository) GetByUserIDAndAccountType(ctx context.Context, userID uuid.UUID, accountType entities.WalletAccountType) ([]*entities.ManagedWallet, error) {
 	query := `
-		SELECT id, user_id, wallet_set_id, circle_wallet_id, chain, address, account_type, status, created_at, updated_at
+		SELECT id, user_id, wallet_set_id, circle_wallet_id, COALESCE(bridge_wallet_id, '') AS bridge_wallet_id,
+		       chain, address, account_type, status, created_at, updated_at
 		FROM managed_wallets 
 		WHERE user_id = $1 AND account_type = $2
 		ORDER BY created_at ASC`
@@ -500,6 +536,7 @@ func (r *WalletRepository) GetByUserIDAndAccountType(ctx context.Context, userID
 			&wallet.UserID,
 			&wallet.WalletSetID,
 			&wallet.CircleWalletID,
+			&wallet.BridgeWalletID,
 			&wallet.Chain,
 			&wallet.Address,
 			&wallet.AccountType,
@@ -575,7 +612,7 @@ func (r *WalletRepository) ListWithFilters(ctx context.Context, filters WalletLi
 
 	// Data query with pagination
 	query := fmt.Sprintf(`
-		SELECT id, user_id, wallet_set_id, circle_wallet_id, chain, address, account_type, status, created_at, updated_at
+		SELECT id, user_id, wallet_set_id, circle_wallet_id, COALESCE(bridge_wallet_id, '') AS bridge_wallet_id, chain, address, account_type, status, created_at, updated_at
 		FROM managed_wallets 
 		%s
 		ORDER BY created_at DESC
@@ -599,6 +636,7 @@ func (r *WalletRepository) ListWithFilters(ctx context.Context, filters WalletLi
 			&wallet.UserID,
 			&wallet.WalletSetID,
 			&wallet.CircleWalletID,
+			&wallet.BridgeWalletID,
 			&wallet.Chain,
 			&wallet.Address,
 			&wallet.AccountType,
@@ -619,7 +657,7 @@ func (r *WalletRepository) ListWithFilters(ctx context.Context, filters WalletLi
 // GetWalletsByWalletSetID retrieves all wallets in a wallet set
 func (r *WalletRepository) GetWalletsByWalletSetID(ctx context.Context, walletSetID uuid.UUID) ([]*entities.ManagedWallet, error) {
 	query := `
-		SELECT id, user_id, wallet_set_id, circle_wallet_id, chain, address, account_type, status, created_at, updated_at
+		SELECT id, user_id, wallet_set_id, circle_wallet_id, COALESCE(bridge_wallet_id, '') AS bridge_wallet_id, chain, address, account_type, status, created_at, updated_at
 		FROM managed_wallets 
 		WHERE wallet_set_id = $1
 		ORDER BY created_at ASC`
@@ -640,6 +678,7 @@ func (r *WalletRepository) GetWalletsByWalletSetID(ctx context.Context, walletSe
 			&wallet.UserID,
 			&wallet.WalletSetID,
 			&wallet.CircleWalletID,
+			&wallet.BridgeWalletID,
 			&wallet.Chain,
 			&wallet.Address,
 			&wallet.AccountType,
@@ -676,13 +715,15 @@ func (r *WalletRepository) CountByStatus(ctx context.Context, status entities.Wa
 	return count, nil
 }
 
-// GetAllActiveWallets returns all wallets with active status and a Circle wallet ID
+// GetAllActiveWallets returns all wallets with active status and a custody wallet ID
 func (r *WalletRepository) GetAllActiveWallets(ctx context.Context) ([]*entities.ManagedWallet, error) {
 	query := `
-		SELECT id, user_id, wallet_set_id, circle_wallet_id, chain, 
+		SELECT id, user_id, wallet_set_id, circle_wallet_id, COALESCE(bridge_wallet_id, '') AS bridge_wallet_id, chain, 
 		       address, account_type, status, created_at, updated_at
 		FROM managed_wallets 
-		WHERE status = 'active' AND circle_wallet_id IS NOT NULL AND circle_wallet_id != ''
+		WHERE status = 'active'
+		  AND ((bridge_wallet_id IS NOT NULL AND bridge_wallet_id != '')
+		       OR (circle_wallet_id IS NOT NULL AND circle_wallet_id != ''))
 		ORDER BY created_at ASC`
 
 	rows, err := r.db.QueryContext(ctx, query)
@@ -696,6 +737,7 @@ func (r *WalletRepository) GetAllActiveWallets(ctx context.Context) ([]*entities
 		wallet := &entities.ManagedWallet{}
 		if err := rows.Scan(
 			&wallet.ID, &wallet.UserID, &wallet.WalletSetID, &wallet.CircleWalletID,
+			&wallet.BridgeWalletID,
 			&wallet.Chain, &wallet.Address, &wallet.AccountType, &wallet.Status,
 			&wallet.CreatedAt, &wallet.UpdatedAt,
 		); err != nil {

@@ -248,7 +248,7 @@ EOF
     local error=$(echo "$response" | jq -r '.error // empty')
     
     if [ "$error" = "CREATE_FAILED" ]; then
-        log_warning "Wallet set creation failed - this might be due to Circle API limitations"
+        log_warning "Wallet set creation failed - this might be due to legacy Circle configuration"
         log_info "Attempting to use existing wallet set instead..."
         use_existing_wallet_set
     else
@@ -282,7 +282,7 @@ use_existing_wallet_set() {
         fi
     else
         log_error "No wallet sets available and cannot create new one"
-        log_info "This might be due to Circle API configuration issues"
+        log_info "This might be due to legacy Circle configuration issues"
         exit 1
     fi
 }
@@ -317,12 +317,12 @@ EOF
     
     if [ "$error" = "Internal server error" ]; then
         log_warning "Wallet provisioning failed due to internal server error"
-        log_info "This is likely due to Circle API configuration issues"
-        log_info "Check Circle API credentials and network connectivity"
+        log_info "This is likely due to legacy Circle configuration issues"
+        log_info "Check legacy Circle API credentials and network connectivity"
         log_info "Response: $response"
         
         # Continue with other tests instead of exiting
-        log_info "Skipping wallet provisioning tests due to Circle API issues"
+        log_info "Skipping wallet provisioning tests due to legacy Circle issues"
         return 1
     elif [ -n "$message" ]; then
         log_success "Wallet provisioning started: $message"

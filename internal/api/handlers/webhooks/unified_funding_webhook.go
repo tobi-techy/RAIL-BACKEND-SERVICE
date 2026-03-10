@@ -23,7 +23,7 @@ type UnifiedFundingWebhookHandler struct {
 // NewUnifiedFundingWebhookHandler creates a unified webhook handler
 func NewUnifiedFundingWebhookHandler(
 	bridgeHandler *BridgeWebhookHandler,
-	_ interface{}, // circleHandler removed
+	_ interface{}, // legacy circleHandler removed
 	alpacaHandler *AlpacaWebhookHandlers,
 	logger *zap.Logger,
 	allowInsecureVerification bool,

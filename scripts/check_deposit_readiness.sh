@@ -32,7 +32,7 @@ echo "✓ Step 2: Testing webhook funding endpoint..."
 FUNDING_RESPONSE=$(curl -s -X POST \
   https://rail-backend-service-production.up.railway.app/api/v1/webhooks/funding \
   -H "Content-Type: application/json" \
-  -H "X-Webhook-Source: circle" \
+  -H "X-Webhook-Source: bridge" \
   -d '{"notificationType":"ping"}')
 
 echo "  Response: $FUNDING_RESPONSE"
@@ -45,14 +45,14 @@ else
 fi
 echo ""
 
-# Check 3: Circle webhook secret
-echo "✓ Step 3: Checking Circle webhook secret..."
-if [ -n "$CIRCLE_WEBHOOK_SECRET" ]; then
-  echo "  ✅ CIRCLE_WEBHOOK_SECRET is set locally"
+# Check 3: Bridge webhook secret
+echo "✓ Step 3: Checking Bridge webhook secret..."
+if [ -n "$BRIDGE_WEBHOOK_SECRET" ]; then
+  echo "  ✅ BRIDGE_WEBHOOK_SECRET is set locally"
   echo "  ⚠️  Make sure this is also set in Railway environment variables"
 else
-  echo "  ❌ CIRCLE_WEBHOOK_SECRET is not set"
-  echo "  Run: export CIRCLE_WEBHOOK_SECRET='your-secret-from-circle-dashboard'"
+  echo "  ❌ BRIDGE_WEBHOOK_SECRET is not set"
+  echo "  Run: export BRIDGE_WEBHOOK_SECRET='your-secret-from-bridge-dashboard'"
 fi
 echo ""
 
@@ -60,14 +60,14 @@ echo ""
 echo "✓ Step 4: Manual webhook test"
 echo "  To manually trigger the webhook for your deposit, you need to:"
 echo ""
-echo "  Option A: Use Circle Dashboard"
-echo "    1. Go to Circle Dashboard → Webhooks"
+echo "  Option A: Use Bridge Dashboard"
+echo "    1. Go to Bridge Dashboard → Webhooks"
 echo "    2. Find your webhook subscription"
 echo "    3. Look for 'Test' or 'Replay' button"
 echo "    4. Send a test event or replay the transaction"
 echo ""
-echo "  Option B: Wait for Circle to send webhook"
-echo "    Circle should automatically send a webhook for your deposit."
+echo "  Option B: Wait for Bridge to send webhook"
+echo "    Bridge should automatically send a webhook for your deposit."
 echo "    Check your Railway logs for incoming webhooks:"
 echo "    railway logs --tail 100"
 echo ""
@@ -90,14 +90,14 @@ echo ""
 
 # Summary
 echo "📋 Summary:"
-echo "  1. ✅ Circle webhook configured"
+echo "  1. ✅ Bridge webhook configured"
 echo "  2. ✅ Backend endpoint is reachable"
-echo "  3. ⚠️  Verify CIRCLE_WEBHOOK_SECRET in Railway"
+echo "  3. ⚠️  Verify BRIDGE_WEBHOOK_SECRET in Railway"
 echo "  4. ⚠️  Verify wallet exists in staging database"
 echo "  5. ⚠️  Check Railway logs for webhook delivery"
 echo ""
 echo "Next steps:"
-echo "  1. Check Railway environment variables for CIRCLE_WEBHOOK_SECRET"
+echo "  1. Check Railway environment variables for BRIDGE_WEBHOOK_SECRET"
 echo "  2. Check Railway logs: railway logs --tail 100"
 echo "  3. Verify wallet exists in database"
 echo "  4. If wallet doesn't exist, complete onboarding first"

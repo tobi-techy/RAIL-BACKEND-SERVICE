@@ -46,12 +46,18 @@ type spendingTotalReader interface {
 	GetTotalSpendingAdded(ctx context.Context, userID uuid.UUID, startDate, endDate time.Time) (decimal.Decimal, error)
 }
 
+// AllocationNotificationService defines notification operations for allocation failures.
+type AllocationNotificationService interface {
+	SendGenericNotification(ctx context.Context, userID uuid.UUID, title, message string) error
+}
+
 // Service handles smart allocation mode operations
 type Service struct {
-	allocationRepo    AllocationRepository
-	ledgerService     *ledger.Service
-	autoInvestService AutoInvestService
-	logger            *logger.Logger
+	allocationRepo      AllocationRepository
+	ledgerService       *ledger.Service
+	autoInvestService   AutoInvestService
+	notificationService AllocationNotificationService
+	logger              *logger.Logger
 }
 
 // NewService creates a new allocation service
@@ -70,6 +76,26 @@ func NewService(
 // SetAutoInvestService sets the auto-invest service (to avoid circular dependency)
 func (s *Service) SetAutoInvestService(autoInvestService AutoInvestService) {
 	s.autoInvestService = autoInvestService
+}
+
+// SetNotificationService sets the notification service for user alerts on auto-invest failure.
+func (s *Service) SetNotificationService(ns AllocationNotificationService) {
+	s.notificationService = ns
+}
+
+// notifyAutoInvestFailure sends a user-facing notification when auto-invest fails silently in a goroutine.
+func (s *Service) notifyAutoInvestFailure(userID uuid.UUID, reason string) {
+	if s.notificationService == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	title := "Auto-Investment Update"
+	msg := "Your automatic investment could not be completed. Your funds remain safe in your stash. Please try again or contact support."
+	if err := s.notificationService.SendGenericNotification(ctx, userID, title, msg); err != nil {
+		s.logger.Error("Failed to send auto-invest failure notification",
+			"user_id", userID, "error", err)
+	}
 }
 
 // ============================================================================
@@ -425,6 +451,7 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 						"user_id", userID,
 						"panic", r,
 						"stack", string(debug.Stack()))
+					s.notifyAutoInvestFailure(userID, fmt.Sprintf("internal error: %v", r))
 				}
 			}()
 
@@ -440,6 +467,8 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 				s.logger.Error("Failed to trigger auto-investment",
 					"user_id", userID,
 					"error", err)
+				// Fix #7: Notify user on failure
+				s.notifyAutoInvestFailure(userID, err.Error())
 			}
 		}()
 	}
