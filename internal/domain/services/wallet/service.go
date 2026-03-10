@@ -184,121 +184,16 @@ func (s *Service) processWalletProvisioningAsync(jobID, userID uuid.UUID) {
 	}
 }
 
-// ProcessWalletProvisioningJob processes a wallet provisioning job
+// ProcessWalletProvisioningJob is a no-op — wallets are created by Bridge during onboarding.
 func (s *Service) ProcessWalletProvisioningJob(ctx context.Context, jobID uuid.UUID) error {
-	s.logger.Info("Processing wallet provisioning job", zap.String("jobID", jobID.String()))
+	s.logger.Info("Wallet provisioning job skipped (Bridge handles wallet creation)", zap.String("jobID", jobID.String()))
 
-	// Get the job
 	job, err := s.provisioningJobRepo.GetByID(ctx, jobID)
 	if err != nil {
 		return fmt.Errorf("failed to get provisioning job: %w", err)
 	}
-
-	if job.Status != entities.ProvisioningStatusQueued && job.Status != entities.ProvisioningStatusRetry {
-		s.logger.Info("Job is not in queued/retry status",
-			zap.String("jobID", jobID.String()),
-			zap.String("status", string(job.Status)))
-		return nil
-	}
-
-	// Mark job as started
-	job.MarkStarted()
-	if err := s.provisioningJobRepo.Update(ctx, job); err != nil {
-		return fmt.Errorf("failed to update job status: %w", err)
-	}
-
-	// Get or create wallet set
-	walletSet, err := s.ensureWalletSet(ctx)
-	if err != nil {
-		job.MarkFailed(fmt.Sprintf("Failed to ensure wallet set: %v", err), 5*time.Minute)
-		s.provisioningJobRepo.Update(ctx, job)
-		return fmt.Errorf("failed to ensure wallet set: %w", err)
-	}
-
-	// Separate EVM and non-EVM chains so EVM chains share one wallet address
-	var evmChains, otherChains []entities.WalletChain
-	for _, chainStr := range job.Chains {
-		chain := entities.WalletChain(chainStr)
-		if chain.GetChainFamily() == "EVM" {
-			evmChains = append(evmChains, chain)
-		} else {
-			otherChains = append(otherChains, chain)
-		}
-	}
-
-	var lastErr error
-	successCount := 0
-
-	// Create a single SCA wallet for all EVM chains, then store one record per chain
-	if len(evmChains) > 0 {
-		created, err := s.createEVMWallets(ctx, job.UserID, evmChains, walletSet, job)
-		if err != nil {
-			s.logger.Error("Failed to create EVM wallets",
-				zap.Error(err), zap.String("userID", job.UserID.String()))
-			lastErr = err
-		}
-		successCount += created
-	}
-
-	// Create individual wallets for non-EVM chains (SOL, APT, etc.)
-	for _, chain := range otherChains {
-		if err := s.createWalletForChain(ctx, job.UserID, chain, walletSet, job); err != nil {
-			s.logger.Error("Failed to create wallet for chain",
-				zap.Error(err),
-				zap.String("userID", job.UserID.String()),
-				zap.String("chain", string(chain)))
-			lastErr = err
-		} else {
-			successCount++
-		}
-	}
-
-	// Update job status based on results
-	if successCount == len(job.Chains) {
-		// All wallets created successfully
-		job.MarkCompleted()
-		s.logger.Info("All wallets created successfully",
-			zap.String("jobID", jobID.String()),
-			zap.String("userID", job.UserID.String()),
-			zap.Int("walletCount", successCount))
-
-		// Trigger onboarding completion callback
-		if s.onboardingService != nil {
-			if err := s.onboardingService.ProcessWalletCreationComplete(ctx, job.UserID); err != nil {
-				s.logger.Warn("Failed to process wallet creation complete in onboarding service",
-					zap.Error(err),
-					zap.String("userID", job.UserID.String()))
-			} else {
-				s.logger.Info("Wallet provisioning completed and onboarding status updated",
-					zap.String("userID", job.UserID.String()))
-			}
-		}
-
-	} else if successCount > 0 {
-		// Partial success - mark as failed but note partial success
-		job.MarkFailed(fmt.Sprintf("Partial success: %d/%d wallets created. Last error: %v",
-			successCount, len(job.Chains), lastErr), 10*time.Minute)
-	} else {
-		// Complete failure
-		job.MarkFailed(fmt.Sprintf("Failed to create any wallets: %v", lastErr), 10*time.Minute)
-	}
-
-	if err := s.provisioningJobRepo.Update(ctx, job); err != nil {
-		s.logger.Error("Failed to update job final status", zap.Error(err))
-	}
-
-	// Log audit event
-	if err := s.auditService.LogWalletEvent(ctx, job.UserID, "wallet_provisioning_processed", "provisioning_job",
-		nil, map[string]any{
-			"job_id":        job.ID,
-			"status":        string(job.Status),
-			"success_count": successCount,
-			"total_chains":  len(job.Chains),
-		}); err != nil {
-		s.logger.Warn("Failed to log audit event", zap.Error(err))
-	}
-
-	return lastErr
+	job.MarkCompleted()
+	return s.provisioningJobRepo.Update(ctx, job)
 }
 
 // GetWalletAddresses returns wallet addresses for a user, optionally filtered by chain

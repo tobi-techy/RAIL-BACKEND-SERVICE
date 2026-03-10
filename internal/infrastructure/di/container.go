@@ -150,6 +150,71 @@ func (a *CircleAdapter) GetWalletBalances(ctx context.Context, walletID string, 
 	return a.client.GetWalletBalances(ctx, walletID, tokenAddress...)
 }
 
+// BridgeDepositAdapter adapts bridge.Client to funding.BridgeDepositClient interface
+type BridgeDepositAdapter struct {
+	client *bridge.Client
+}
+
+func (a *BridgeDepositAdapter) ListWallets(ctx context.Context, customerID string) ([]funding.BridgeWalletInfo, error) {
+	resp, err := a.client.ListWallets(ctx, customerID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]funding.BridgeWalletInfo, len(resp.Data))
+	for i, w := range resp.Data {
+		out[i] = funding.BridgeWalletInfo{ID: w.ID, Chain: string(w.Chain)}
+	}
+	return out, nil
+}
+
+func (a *BridgeDepositAdapter) CreateWallet(ctx context.Context, customerID string, chain string) (string, string, error) {
+	w, err := a.client.CreateWallet(ctx, customerID, &bridge.CreateWalletRequest{Chain: bridge.PaymentRail(chain)})
+	if err != nil {
+		return "", "", err
+	}
+	return w.ID, w.Address, nil
+}
+
+func (a *BridgeDepositAdapter) ListLiquidationAddresses(ctx context.Context, customerID string) ([]funding.BridgeLiquidationAddr, error) {
+	resp, err := a.client.ListLiquidationAddresses(ctx, customerID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]funding.BridgeLiquidationAddr, len(resp.Data))
+	for i, la := range resp.Data {
+		out[i] = funding.BridgeLiquidationAddr{
+			ID:             la.ID,
+			Chain:          string(la.Chain),
+			Address:        la.Address,
+			BridgeWalletID: la.BridgeWalletID,
+		}
+	}
+	return out, nil
+}
+
+func (a *BridgeDepositAdapter) IsSandbox() bool {
+	return strings.EqualFold(strings.TrimSpace(a.client.Config().Environment), "sandbox")
+}
+
+func (a *BridgeDepositAdapter) CreateLiquidationAddress(ctx context.Context, customerID string, chain string, bridgeWalletID string, destinationAddress string) (string, string, error) {
+	req := &bridge.CreateLiquidationAddressRequest{
+		Chain:                  bridge.PaymentRail(chain),
+		Currency:               bridge.CurrencyUSDC,
+		DestinationPaymentRail: bridge.PaymentRail(chain),
+		DestinationCurrency:    bridge.CurrencyUSDC,
+	}
+	if bridgeWalletID != "" {
+		req.BridgeWalletID = bridgeWalletID
+	} else {
+		req.DestinationAddress = destinationAddress
+	}
+	la, err := a.client.CreateLiquidationAddress(ctx, customerID, req)
+	if err != nil {
+		return "", "", err
+	}
+	return la.ID, la.Address, nil
+}
+
 // AlpacaFundingAdapter adapts alpaca.FundingAdapter to funding.AlpacaAdapter interface
 type AlpacaFundingAdapter struct {
 	adapter *alpaca.FundingAdapter
@@ -632,15 +697,12 @@ func (a *BridgeOnboardingAdapter) CreateCustomer(ctx context.Context, req *entit
 
 	// Add residential address if provided
 	if req.Address != nil {
-		// Bridge API expects different formats based on country:
-		// - US: full state name (e.g., "New York")
-		// - Other countries: ISO 3166-2 code without prefix (e.g., "B" for Argentina)
+		// Bridge API expects full state name for US (e.g., "NY" -> "New York")
+		// For non-US countries, pass the code as-is
 		subdivision := strings.TrimSpace(req.Address.State)
-		if country2 := strings.ToUpper(req.Country); country2 == "US" {
-			// For US, convert to title case (e.g., "NY" -> "New York")
+		if country2 == "US" {
 			subdivision = stateCodeToName(subdivision)
 		}
-		// For non-US, pass as-is (frontend should send ISO 3166-2 code)
 
 		bridgeReq.ResidentialAddress = &bridge.Address{
 			StreetLine1: req.Address.Street,
@@ -1281,6 +1343,8 @@ func (c *Container) initializeDomainServices() error {
 	if c.AlpacaAccountRepo != nil {
 		c.FundingService.SetAlpacaAccountLookup(c.AlpacaAccountRepo)
 	}
+	c.FundingService.SetBridgeDepositClient(&BridgeDepositAdapter{client: c.BridgeClient})
+	c.FundingService.SetUserRepo(c.UserRepo)
 
 	// Wire default wallet set ID for funding service wallet creation
 	if c.Config.Circle.DefaultWalletSetID != "" {

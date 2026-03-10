@@ -488,3 +488,29 @@ type ExternalAccount struct {
 
 // ListExternalAccountsResponse represents a paginated list of external accounts
 type ListExternalAccountsResponse = PaginatedResponse[ExternalAccount]
+
+// CreateLiquidationAddressRequest represents a request to create a liquidation address
+type CreateLiquidationAddressRequest struct {
+	Chain                  PaymentRail `json:"chain"`
+	Currency               Currency    `json:"currency"`
+	BridgeWalletID         string      `json:"bridge_wallet_id,omitempty"`
+	DestinationPaymentRail PaymentRail `json:"destination_payment_rail"`
+	DestinationCurrency    Currency    `json:"destination_currency"`
+	DestinationAddress     string      `json:"destination_address,omitempty"`
+}
+
+// LiquidationAddress represents a Bridge liquidation address
+type LiquidationAddress struct {
+	ID             string      `json:"id"`
+	CustomerID     string      `json:"customer_id"`
+	Chain          PaymentRail `json:"chain"`
+	Currency       Currency    `json:"currency"`
+	Address        string      `json:"address"`
+	BridgeWalletID string      `json:"bridge_wallet_id"`
+	State          string      `json:"state"`
+	CreatedAt      time.Time   `json:"created_at"`
+	UpdatedAt      time.Time   `json:"updated_at"`
+}
+
+// ListLiquidationAddressesResponse represents a paginated list of liquidation addresses
+type ListLiquidationAddressesResponse = PaginatedResponse[LiquidationAddress]
