@@ -39,7 +39,7 @@ func (r *WithdrawalRepository) Create(ctx context.Context, withdrawal *entities.
 		withdrawal.Currency,
 		withdrawal.Amount,
 		withdrawal.SourceAccount,
-		withdrawal.CircleWalletID,
+		withdrawal.BridgeWalletID,
 		withdrawal.DestinationType,
 		withdrawal.DestinationChain,
 		withdrawal.DestinationAddress,

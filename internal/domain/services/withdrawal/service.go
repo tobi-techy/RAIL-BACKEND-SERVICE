@@ -2,16 +2,14 @@ package withdrawal
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/cctp"
+	bridgepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/shopspring/decimal"
 )
@@ -94,15 +92,6 @@ type WithdrawalNotificationService interface {
 	NotifyLargeBalanceChange(ctx context.Context, userID uuid.UUID, changeType string, amount decimal.Decimal, newBalance decimal.Decimal) error
 }
 
-// CircleClient interface for Circle wallet operations
-type CircleClient interface {
-	TransferFunds(ctx context.Context, req entities.CircleTransferRequest) (map[string]interface{}, error)
-	GetWallet(ctx context.Context, walletID string) (map[string]interface{}, error)
-	GetCCTPTransaction(ctx context.Context, transactionID string) (*entities.CCTPTransactionStatus, error)
-	FindRecentOutboundTransfer(ctx context.Context, walletID, destinationAddress string, amount decimal.Decimal, since time.Time) (*entities.CCTPTransactionStatus, error)
-	InitiateCCTPBurn(ctx context.Context, req *entities.CCTPBurnRequest) (*entities.CCTPBurnResponse, error)
-}
-
 // BridgeAdapter interface for Bridge offramp operations
 type BridgeAdapter interface {
 	CreateRecipient(ctx context.Context, req map[string]interface{}) (string, error)
@@ -111,26 +100,25 @@ type BridgeAdapter interface {
 	CancelTransfer(ctx context.Context, transferID string) error
 }
 
-// CCTPFeeClient interface for fetching CCTP transfer fees from Circle's Iris API
-type CCTPFeeClient interface {
-	GetFees(ctx context.Context, sourceDomain, destDomain uint32) (*cctp.FeesResponse, error)
+// BridgeCryptoTransferAdapter interface for Bridge crypto wallet transfers
+type BridgeCryptoTransferAdapter interface {
+	TransferFunds(ctx context.Context, req *bridgepkg.CreateTransferRequest) (*bridgepkg.Transfer, error)
 }
 
 // WithdrawalService handles crypto and fiat withdrawal operations
 type WithdrawalService struct {
-	withdrawalRepo      WithdrawalRepository
-	userRepo            UserRepository
-	bankAccountRepo     BankAccountRepository
-	stashTransferRepo   StashTransferRepository
-	ledgerService       LedgerService
-	limitsService       WithdrawalLimitsService
-	auditService        WithdrawalAuditService
-	notificationService WithdrawalNotificationService
-	circleClient        CircleClient
-	bridgeAdapter       BridgeAdapter
-	cctpClient          CCTPFeeClient
-	logger              *logger.Logger
-	withdrawalLocks     [withdrawalLockShards]sync.Mutex
+	withdrawalRepo         WithdrawalRepository
+	userRepo               UserRepository
+	bankAccountRepo        BankAccountRepository
+	stashTransferRepo      StashTransferRepository
+	ledgerService          LedgerService
+	limitsService          WithdrawalLimitsService
+	auditService           WithdrawalAuditService
+	notificationService    WithdrawalNotificationService
+	bridgeAdapter          BridgeAdapter
+	bridgeCryptoAdapter    BridgeCryptoTransferAdapter
+	logger                 *logger.Logger
+	withdrawalLocks        [withdrawalLockShards]sync.Mutex
 }
 
 type CryptoTransferResult struct {
@@ -148,9 +136,8 @@ func NewWithdrawalService(
 	limitsService WithdrawalLimitsService,
 	auditService WithdrawalAuditService,
 	notificationService WithdrawalNotificationService,
-	circleClient CircleClient,
 	bridgeAdapter BridgeAdapter,
-	cctpClient CCTPFeeClient,
+	bridgeCryptoAdapter BridgeCryptoTransferAdapter,
 	logger *logger.Logger,
 ) *WithdrawalService {
 	return &WithdrawalService{
@@ -161,9 +148,8 @@ func NewWithdrawalService(
 		limitsService:       limitsService,
 		auditService:        auditService,
 		notificationService: notificationService,
-		circleClient:        circleClient,
 		bridgeAdapter:       bridgeAdapter,
-		cctpClient:          cctpClient,
+		bridgeCryptoAdapter: bridgeCryptoAdapter,
 		logger:              logger,
 	}
 }
@@ -254,7 +240,7 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 		Currency:           entities.WithdrawalCurrencyUSDC,
 		Amount:             req.Amount,
 		SourceAccount:      req.SourceAccount,
-		CircleWalletID:     &req.CircleWalletID,
+		BridgeWalletID:     &req.BridgeWalletID,
 		DestinationType:    entities.DestinationTypeCryptoWallet,
 		DestinationChain:   req.DestinationChain,
 		DestinationAddress: &req.DestinationAddress,
@@ -911,42 +897,9 @@ func (s *WithdrawalService) reverseWithdrawalLedgerEntry(ctx context.Context, wi
 }
 
 // calculateCryptoWithdrawalFee calculates the fee for a crypto withdrawal.
-// For cross-chain (CCTP) transfers, fetches the real fee from Circle's Iris API.
-// For same-chain transfers, Circle charges no fee.
+// Bridge handles cross-chain routing internally — no fee charged at this layer.
 func (s *WithdrawalService) calculateCryptoWithdrawalFee(ctx context.Context, amount decimal.Decimal, sourceChain, destChain string) (decimal.Decimal, error) {
-	route := resolveWithdrawalRoute(sourceChain, destChain)
-	if route != "cctp" || s.cctpClient == nil {
-		return decimal.Zero, nil
-	}
-
-	srcDomain, srcOK := cctp.DomainForChain(sourceChain)
-	dstDomain, dstOK := cctp.DomainForChain(destChain)
-	if !srcOK || !dstOK {
-		// Unknown chain — return zero rather than blocking the fee check
-		return decimal.Zero, nil
-	}
-
-	feesResp, err := s.cctpClient.GetFees(ctx, srcDomain, dstDomain)
-	if err != nil {
-		s.logger.Warn("Failed to fetch CCTP fees; falling back to zero fee",
-			"source_chain", sourceChain,
-			"dest_chain", destChain,
-			"error", err)
-		return decimal.Zero, nil
-	}
-
-	// Use fast transfer fee when available, otherwise standard fee.
-	// minimumFee is in basis points (bps). Fee = amount * bps / 10000.
-	feeBps := feesResp.FastTransferFee.MinimumFee
-	if feeBps == 0 {
-		feeBps = feesResp.StandardFee.MinimumFee
-	}
-	if feeBps == 0 {
-		return decimal.Zero, nil
-	}
-
-	fee := amount.Mul(decimal.NewFromInt(int64(feeBps))).Div(decimal.NewFromInt(10000))
-	return fee, nil
+	return decimal.Zero, nil
 }
 
 // calculateFiatWithdrawalFee calculates the fee for a fiat withdrawal
@@ -1018,105 +971,63 @@ func validateChainPair(sourceChain, destChain string) error {
 	return nil
 }
 
-// executeCryptoTransfer executes a crypto transfer via Circle, routing via CCTP when crossing EVM<->Solana.
+// executeCryptoTransfer executes a crypto transfer via Bridge custodial wallets.
 func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, destinationChain, sourceChain string) (*CryptoTransferResult, error) {
-	if s.circleClient == nil {
-		return nil, fmt.Errorf("circle client not configured")
+	if s.bridgeCryptoAdapter == nil {
+		return nil, fmt.Errorf("bridge crypto adapter not configured")
 	}
 
-	walletID := withdrawal.CircleWalletID
+	walletID := withdrawal.BridgeWalletID
 	if walletID == nil || *walletID == "" {
-		return nil, fmt.Errorf("circle wallet ID not provided")
+		return nil, fmt.Errorf("bridge wallet ID not provided")
 	}
 
-	// Format amount for Circle API (USDC uses 6 decimals)
-	amountStr := withdrawal.Amount.StringFixed(6)
-
-	route := resolveWithdrawalRoute(sourceChain, destinationChain)
-
-	// Route via CCTP for EVM <-> Solana cross-chain transfers
-	if route == "cctp" {
-		destDomain, ok := cctp.DomainForChain(destinationChain)
-		if !ok {
-			return nil, fmt.Errorf("unsupported CCTP destination chain: %s", destinationChain)
-		}
-		burnResp, err := s.circleClient.InitiateCCTPBurn(ctx, &entities.CCTPBurnRequest{
-			WalletID:       *walletID,
-			Amount:         withdrawal.Amount,
-			DestDomain:     destDomain,
-			MintRecipient:  destinationAddress,
-			IdempotencyKey: *withdrawal.IdempotencyKey,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("cctp burn failed: %w", err)
-		}
-		s.logger.Info("CCTP burn initiated",
-			"withdrawal_id", withdrawal.ID.String(),
-			"dest_chain", destinationChain,
-			"transfer_id", burnResp.TransactionID)
-		return &CryptoTransferResult{
-			TransferID: burnResp.TransactionID,
-			TxHash:     burnResp.TxHash,
-			State:      burnResp.Status,
-		}, nil
-	}
-
-	req := entities.CircleTransferRequest{
-		WalletID:              *walletID,
-		TokenID:               "USDC",
-		Amounts:               []string{amountStr},
-		DestinationAddress:    destinationAddress,
-		DestinationBlockchain: circleBlockchainForChain(destinationChain),
-		IDempotencyKey:        *withdrawal.IdempotencyKey,
-	}
-
-	response, err := s.circleClient.TransferFunds(ctx, req)
+	transfer, err := s.bridgeCryptoAdapter.TransferFunds(ctx, &bridgepkg.CreateTransferRequest{
+		OnBehalfOf: withdrawal.UserID.String(),
+		Amount:     withdrawal.Amount.StringFixed(2),
+		Source: bridgepkg.TransferSource{
+			PaymentRail:    bridgepkg.PaymentRail("bridge_wallet"),
+			Currency:       bridgepkg.CurrencyUSDC,
+			BridgeWalletID: *walletID,
+		},
+		Destination: bridgepkg.TransferDestination{
+			PaymentRail: mapDestChainToPaymentRail(destinationChain),
+			Currency:    bridgepkg.CurrencyUSDC,
+			ToAddress:   destinationAddress,
+		},
+	})
 	if err != nil {
-		return nil, fmt.Errorf("circle transfer failed: %w", err)
+		return nil, fmt.Errorf("bridge transfer failed: %w", err)
 	}
 
-	result := &CryptoTransferResult{}
-
-	// Response may be wrapped in data.transaction.
-	payload := response
-	if data, ok := response["data"].(map[string]interface{}); ok {
-		if tx, ok := data["transaction"].(map[string]interface{}); ok {
-			payload = tx
-		} else {
-			payload = data
-		}
-	}
-
-	if id, ok := payload["id"].(string); ok {
-		result.TransferID = id
-	}
-	if state, ok := payload["state"].(string); ok {
-		result.State = state
-	}
-	if txHashVal, ok := payload["transactionHash"].(string); ok {
-		result.TxHash = txHashVal
-	} else if txHashVal, ok := payload["txHash"].(string); ok {
-		result.TxHash = txHashVal
-	}
-
-	state := strings.ToUpper(strings.TrimSpace(result.State))
-	if state == "FAILED" || state == "REJECTED" || state == "CANCELLED" {
-		if reason, ok := payload["errorReason"].(string); ok && strings.TrimSpace(reason) != "" {
-			return nil, fmt.Errorf("circle transfer failed: %s", reason)
-		}
-		if code, ok := payload["errorCode"].(string); ok && strings.TrimSpace(code) != "" {
-			return nil, fmt.Errorf("circle transfer failed: %s", code)
-		}
-		return nil, fmt.Errorf("circle transfer failed in state: %s", result.State)
-	}
-
-	s.logger.Info("Crypto transfer executed",
+	s.logger.Info("Bridge crypto transfer initiated",
 		"withdrawal_id", withdrawal.ID.String(),
-		"state", result.State,
-		"transfer_id", result.TransferID,
-		"tx_hash", result.TxHash)
+		"transfer_id", transfer.ID,
+		"state", transfer.State)
 
-	return result, nil
+	return &CryptoTransferResult{
+		TransferID: transfer.ID,
+		State:      string(transfer.State),
+	}, nil
+}
+
+func mapDestChainToPaymentRail(chain string) bridgepkg.PaymentRail {
+	switch strings.ToLower(chain) {
+	case "solana", "sol", "sol-devnet":
+		return bridgepkg.PaymentRailSolana
+	case "polygon", "matic", "matic-amoy":
+		return bridgepkg.PaymentRailPolygon
+	case "base", "base-sepolia":
+		return bridgepkg.PaymentRailBase
+	case "avalanche", "avax", "avax-fuji":
+		return bridgepkg.PaymentRailAvalanche
+	case "ethereum", "eth":
+		return bridgepkg.PaymentRailEthereum
+	case "arbitrum":
+		return bridgepkg.PaymentRailArbitrum
+	default:
+		return bridgepkg.PaymentRailBase
+	}
 }
 
 // executeFiatTransfer executes a fiat transfer via Bridge offramp
@@ -1196,102 +1107,27 @@ func (s *WithdrawalService) syncCryptoWithdrawalStatusFromProvider(ctx context.C
 		}
 		return withdrawal.Status, nil
 	}
-	if s.circleClient == nil || withdrawal.ProviderTransferID == nil || strings.TrimSpace(*withdrawal.ProviderTransferID) == "" {
+	if withdrawal.ProviderTransferID == nil || strings.TrimSpace(*withdrawal.ProviderTransferID) == "" {
 		return withdrawal.Status, nil
 	}
 
 	transferID := strings.TrimSpace(*withdrawal.ProviderTransferID)
-	status, err := s.circleClient.GetCCTPTransaction(ctx, transferID)
+	transfer, err := s.bridgeAdapter.GetTransferStatus(ctx, transferID)
 	if err != nil {
-		if !isCircleNotFoundError(err) {
-			return withdrawal.Status, err
-		}
-
-		walletID := ""
-		if withdrawal.CircleWalletID != nil {
-			walletID = strings.TrimSpace(*withdrawal.CircleWalletID)
-		}
-		destinationAddress := ""
-		if withdrawal.DestinationAddress != nil {
-			destinationAddress = strings.TrimSpace(*withdrawal.DestinationAddress)
-		}
-
-		if walletID != "" {
-			s.logger.Warn("Circle transfer ID not found; attempting outbound transaction fallback lookup",
-				"withdrawal_id", withdrawal.ID.String(),
-				"transfer_id", transferID,
-				"wallet_id", walletID)
-
-			fallbackStatus, fallbackErr := s.circleClient.FindRecentOutboundTransfer(
-				ctx,
-				walletID,
-				destinationAddress,
-				withdrawal.Amount,
-				withdrawal.CreatedAt.Add(-2*time.Minute),
-			)
-			if fallbackErr != nil {
-				return withdrawal.Status, fallbackErr
-			}
-			if fallbackStatus != nil {
-				status = fallbackStatus
-				if strings.TrimSpace(status.ID) != "" && status.ID != transferID {
-					if updateErr := s.withdrawalRepo.UpdateBridgeTransfer(ctx, withdrawal.ID, status.ID); updateErr != nil {
-						s.logger.Warn("Failed to update withdrawal transfer ID after fallback lookup",
-							"withdrawal_id", withdrawal.ID.String(),
-							"old_transfer_id", transferID,
-							"new_transfer_id", status.ID,
-							"error", updateErr)
-					} else {
-						updatedID := strings.TrimSpace(status.ID)
-						withdrawal.ProviderTransferID = &updatedID
-					}
-				}
-			}
-		}
-
-		// Keep withdrawal as-is if transaction is no longer retrievable.
-		if status == nil {
-			return withdrawal.Status, nil
-		}
+		return withdrawal.Status, err
 	}
-	if status == nil {
+	if transfer == nil {
 		return withdrawal.Status, nil
 	}
 
-	txHash := strings.TrimSpace(status.TxHash)
-	if txHash != "" && (withdrawal.TxHash == nil || strings.TrimSpace(*withdrawal.TxHash) != txHash) {
-		if err := s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, txHash); err != nil {
-			s.logger.Warn("Failed to persist tx hash from provider status",
-				"withdrawal_id", withdrawal.ID.String(),
-				"error", err)
-		} else {
-			withdrawal.TxHash = &txHash
-			withdrawal.Status = entities.WithdrawalStatusOnChainTransfer
-		}
-	}
-
-	providerState := strings.ToUpper(strings.TrimSpace(status.Status))
-	switch providerState {
-	case "COMPLETE", "COMPLETED", "CONFIRMED", "SUCCESS":
-		s.logger.Info("Provider reported completed crypto withdrawal",
-			"withdrawal_id", withdrawal.ID.String(),
-			"provider_state", providerState,
-			"transfer_id", strings.TrimSpace(*withdrawal.ProviderTransferID))
+	state := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", transfer["status"])))
+	switch state {
+	case "PAYMENT_PROCESSED", "COMPLETED", "SUCCESS":
 		if err := s.settleCompletedCryptoWithdrawal(ctx, withdrawal); err != nil {
 			return withdrawal.Status, err
 		}
-	case "FAILED", "REJECTED", "CANCELLED":
-		s.logger.Warn("Provider reported failed crypto withdrawal",
-			"withdrawal_id", withdrawal.ID.String(),
-			"provider_state", providerState,
-			"transfer_id", strings.TrimSpace(*withdrawal.ProviderTransferID),
-			"error_reason", status.ErrorReason)
-		reason := "circle transfer failed"
-		if strings.TrimSpace(status.ErrorReason) != "" {
-			reason = status.ErrorReason
-		} else if providerState != "" {
-			reason = "circle transfer failed: " + strings.ToLower(providerState)
-		}
+	case "CANCELED", "UNDELIVERABLE", "RETURNED", "FAILED":
+		reason := "bridge transfer " + strings.ToLower(state)
 		if err := s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, reason); err != nil {
 			return withdrawal.Status, fmt.Errorf("failed to mark withdrawal failed: %w", err)
 		}
@@ -1300,51 +1136,6 @@ func (s *WithdrawalService) syncCryptoWithdrawalStatusFromProvider(ctx context.C
 	}
 
 	return withdrawal.Status, nil
-}
-
-func isCircleNotFoundError(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	var circleErr entities.CircleAPIError
-	if errors.As(err, &circleErr) && circleErr.Code == http.StatusNotFound {
-		return true
-	}
-
-	var legacyErr entities.CircleErrorResponse
-	if errors.As(err, &legacyErr) && legacyErr.Code == http.StatusNotFound {
-		return true
-	}
-
-	// Defensive fallback for wrapped/non-typed errors.
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "http 404") ||
-		strings.Contains(msg, "error 404") ||
-		strings.Contains(msg, "status 404") ||
-		strings.Contains(msg, "\"code\":404")
-}
-
-// circleBlockchainForChain maps internal chain identifiers to Circle's blockchain name strings.
-func circleBlockchainForChain(chain string) string {
-	switch strings.ToUpper(chain) {
-	case "ETH", "ETH-SEPOLIA", "ETHEREUM":
-		return "ETH"
-	case "MATIC", "MATIC-AMOY", "POLYGON":
-		return "MATIC"
-	case "AVAX", "AVAX-FUJI", "AVALANCHE":
-		return "AVAX"
-	case "SOL", "SOL-DEVNET", "SOLANA":
-		return "SOL"
-	case "BASE", "BASE-SEPOLIA":
-		return "BASE"
-	case "ARB":
-		return "ARB"
-	case "OP":
-		return "OP"
-	default:
-		return ""
-	}
 }
 
 func scopedWithdrawalIdempotencyKey(userID uuid.UUID, flow string, clientKey string) string {

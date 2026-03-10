@@ -33,12 +33,6 @@ func TestGetInvestmentStash_Success(t *testing.T) {
 				Currency:          "USD",
 				LastUpdated:       time.Now(),
 			},
-			Allocation: handlers.InvestmentAllocationInfo{
-				Active:         true,
-				SpendingRatio:  0.70,
-				StashRatio:     0.30,
-				TotalAllocated: "1050.00",
-			},
 			Performance: handlers.PerformanceInfo{
 				TotalGain:        "50.00",
 				TotalGainPercent: 5.0,
@@ -86,8 +80,6 @@ func TestGetInvestmentStash_Success(t *testing.T) {
 
 	assert.Equal(t, "1350.00", response.Balance.Total)
 	assert.Equal(t, "300.00", response.Balance.Stash)
-	assert.True(t, response.Allocation.Active)
-	assert.Equal(t, 0.30, response.Allocation.StashRatio)
 	assert.Len(t, response.Positions.Items, 1)
 	assert.Equal(t, "1050.00", response.Positions.Items[0].MarketValue)
 	assert.Equal(t, 1, response.Stats.PositionCount)

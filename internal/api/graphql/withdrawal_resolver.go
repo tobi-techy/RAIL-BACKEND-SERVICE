@@ -28,7 +28,7 @@ type InitiateCryptoWithdrawalInput struct {
 	DestinationAddress string
 	DestinationChain   string
 	SourceAccount      string
-	CircleWalletID     string
+	BridgeWalletID     string
 }
 
 type InitiateFiatWithdrawalInput struct {
@@ -55,7 +55,7 @@ func (r *WithdrawalResolver) InitiateCryptoWithdrawal(ctx context.Context, input
 		DestinationAddress: input.DestinationAddress,
 		DestinationChain:   input.DestinationChain,
 		SourceAccount:      sourceAccount,
-		CircleWalletID:     input.CircleWalletID,
+		BridgeWalletID:     input.BridgeWalletID,
 	}
 
 	return r.service.InitiateCryptoWithdrawal(ctx, req)

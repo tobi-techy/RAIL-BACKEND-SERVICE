@@ -16,12 +16,25 @@ type WalletBalanceProvider interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.ManagedWallet, error)
 }
 
-// CircleClient interface for fetching wallet balances from Circle
-type CircleClient interface {
-	GetWalletBalances(ctx context.Context, walletID string, tokenAddress ...string) (*entities.CircleWalletBalancesResponse, error)
+// WalletBalanceClient fetches wallet balances from Bridge
+type WalletBalanceClient interface {
+	GetWalletBalance(ctx context.Context, customerID, walletID string) (string, error)
 }
 
-// AllocationService interface for spending enforcement
+// Service handles investing operations - baskets, orders, portfolio management
+type Service struct {
+	basketRepo          BasketRepository
+	orderRepo           OrderRepository
+	positionRepo        PositionRepository
+	balanceRepo         BalanceRepository
+	brokerageAPI        BrokerageAdapter
+	walletRepo          WalletBalanceProvider
+	walletBalanceClient WalletBalanceClient
+	allocationService   AllocationService
+	allocationNotifier  AllocationNotificationManager
+	logger              *logger.Logger
+}
+
 type AllocationService interface {
 	CanSpend(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (bool, error)
 	GetMode(ctx context.Context, userID uuid.UUID) (*entities.SmartAllocationMode, error)
@@ -31,20 +44,6 @@ type AllocationService interface {
 // AllocationNotificationManager interface for sending allocation notifications
 type AllocationNotificationManager interface {
 	NotifyTransactionDeclined(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, transactionType string) error
-}
-
-// Service handles investing operations - baskets, orders, portfolio management
-type Service struct {
-	basketRepo         BasketRepository
-	orderRepo          OrderRepository
-	positionRepo       PositionRepository
-	balanceRepo        BalanceRepository
-	brokerageAPI       BrokerageAdapter
-	walletRepo         WalletBalanceProvider
-	circleClient       CircleClient
-	allocationService  AllocationService
-	allocationNotifier AllocationNotificationManager
-	logger             *logger.Logger
 }
 
 // BasketRepository interface for basket operations
@@ -104,22 +103,22 @@ func NewService(
 	balanceRepo BalanceRepository,
 	brokerageAPI BrokerageAdapter,
 	walletRepo WalletBalanceProvider,
-	circleClient CircleClient,
+	walletBalanceClient WalletBalanceClient,
 	allocationService AllocationService,
 	allocationNotifier AllocationNotificationManager,
 	logger *logger.Logger,
 ) *Service {
 	return &Service{
-		basketRepo:         basketRepo,
-		orderRepo:          orderRepo,
-		positionRepo:       positionRepo,
-		balanceRepo:        balanceRepo,
-		brokerageAPI:       brokerageAPI,
-		walletRepo:         walletRepo,
-		circleClient:       circleClient,
-		allocationService:  allocationService,
-		allocationNotifier: allocationNotifier,
-		logger:             logger,
+		basketRepo:          basketRepo,
+		orderRepo:           orderRepo,
+		positionRepo:        positionRepo,
+		balanceRepo:         balanceRepo,
+		brokerageAPI:        brokerageAPI,
+		walletRepo:          walletRepo,
+		walletBalanceClient: walletBalanceClient,
+		allocationService:   allocationService,
+		allocationNotifier:  allocationNotifier,
+		logger:              logger,
 	}
 }
 
@@ -342,63 +341,22 @@ func (s *Service) GetPortfolioOverview(ctx context.Context, userID uuid.UUID) (*
 		positionsValue = positionsValue.Add(position.MarketValue)
 	}
 
-	// Fetch real-time Circle wallet balances
+	// Fetch real-time Bridge wallet balances
 	var totalUSDCBalance decimal.Decimal
-	if s.walletRepo != nil && s.circleClient != nil {
+	if s.walletRepo != nil && s.walletBalanceClient != nil {
 		wallets, err := s.walletRepo.GetByUserID(ctx, userID)
-		if err == nil && len(wallets) > 0 {
+		if err == nil {
 			for _, wallet := range wallets {
-				// Get USDC token address for this wallet's chain
-				usdcTokenAddress := wallet.Chain.GetUSDCTokenAddress()
-				if usdcTokenAddress == "" {
-					s.logger.Warn("No USDC token address configured for chain",
-						"wallet_id", wallet.CircleWalletID,
-						"chain", wallet.Chain)
+				if wallet.BridgeWalletID == "" {
 					continue
 				}
-				
-				// Fetch balance from Circle API for each wallet, filtering by USDC token address
-				balancesResp, err := s.circleClient.GetWalletBalances(ctx, wallet.CircleWalletID, usdcTokenAddress)
+				amountStr, err := s.walletBalanceClient.GetWalletBalance(ctx, wallet.UserID.String(), wallet.BridgeWalletID)
 				if err != nil {
-					s.logger.Warn("Failed to fetch Circle balance with token filter",
-						"wallet_id", wallet.CircleWalletID,
-						"chain", wallet.Chain,
-
-						"token_address", usdcTokenAddress,
-						"error", err)
+					s.logger.Warn("Failed to fetch Bridge balance", "wallet_id", wallet.BridgeWalletID, "error", err)
+					continue
 				}
-
-					// Console.log equivalent in Go (using Info level)
-	s.logger.Info("GetPortfolioOverview result balance",
-		"balance", balancesResp,
-	)
-				
-				// Log all token balances for debugging
-				if len(balancesResp.TokenBalances) == 0 {
-					s.logger.Debug("No token balances found for wallet",
-						"wallet_id", wallet.CircleWalletID,
-						"chain", wallet.Chain)
-				} else {
-					for _, tb := range balancesResp.TokenBalances {
-						s.logger.Debug("Found token balance",
-							"wallet_id", wallet.CircleWalletID,
-							"token_symbol", tb.Token.Symbol,
-							"token_address", tb.Token.TokenAddress,
-							"amount", tb.Amount)
-					}
-				}
-				
-				// Extract USDC balance
-				usdcBalanceStr := balancesResp.GetUSDCBalance()
-				if usdcBalance, err := decimal.NewFromString(usdcBalanceStr); err == nil {
-					if usdcBalance.GreaterThan(decimal.Zero) {
-						totalUSDCBalance = totalUSDCBalance.Add(usdcBalance)
-						s.logger.Debug("Fetched Circle wallet balance",
-							"wallet_id", wallet.CircleWalletID,
-							"chain", wallet.Chain,
-							"token_address", usdcTokenAddress,
-							"usdc_balance", usdcBalanceStr)
-					}
+				if bal, err := decimal.NewFromString(amountStr); err == nil {
+					totalUSDCBalance = totalUSDCBalance.Add(bal)
 				}
 			}
 		}
@@ -416,8 +374,7 @@ func (s *Service) GetPortfolioOverview(ctx context.Context, userID uuid.UUID) (*
 		}
 	}
 	
-	// Add Circle USDC balance to database buying power
-	// (USDC is 1:1 with USD buying power)
+	// Add Bridge USDC balance to database buying power (USDC is 1:1 with USD)
 	buyingPower := balance.BuyingPower.Add(totalUSDCBalance)
 
 	// Calculate total portfolio (positions + buying power)

@@ -243,10 +243,10 @@ func (c *Client) ListWallets(ctx context.Context, customerID string) (*ListWalle
 	return &resp, nil
 }
 
-// GetWalletBalance retrieves wallet balance
+// GetWalletBalance retrieves wallet balance (returns the wallet object which includes balances)
 func (c *Client) GetWalletBalance(ctx context.Context, customerID, walletID string) (*WalletBalance, error) {
 	var balance WalletBalance
-	if err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v0/customers/%s/wallets/%s/balance", url.PathEscape(customerID), url.PathEscape(walletID)), nil, &balance); err != nil {
+	if err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v0/customers/%s/wallets/%s", url.PathEscape(customerID), url.PathEscape(walletID)), nil, &balance); err != nil {
 		return nil, fmt.Errorf("get wallet balance failed: %w", err)
 	}
 	return &balance, nil
@@ -348,6 +348,24 @@ func (c *Client) ListTransfers(ctx context.Context, customerID string) (*ListTra
 	var resp ListTransfersResponse
 	if err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v0/customers/%s/transfers", url.PathEscape(customerID)), nil, &resp); err != nil {
 		return nil, fmt.Errorf("list transfers failed: %w", err)
+	}
+	return &resp, nil
+}
+
+// CreateLiquidationAddress creates a liquidation address for a customer
+func (c *Client) CreateLiquidationAddress(ctx context.Context, customerID string, req *CreateLiquidationAddressRequest) (*LiquidationAddress, error) {
+	var la LiquidationAddress
+	if err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v0/customers/%s/liquidation_addresses", url.PathEscape(customerID)), req, &la); err != nil {
+		return nil, fmt.Errorf("create liquidation address failed: %w", err)
+	}
+	return &la, nil
+}
+
+// ListLiquidationAddresses lists liquidation addresses for a customer
+func (c *Client) ListLiquidationAddresses(ctx context.Context, customerID string) (*ListLiquidationAddressesResponse, error) {
+	var resp ListLiquidationAddressesResponse
+	if err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v0/customers/%s/liquidation_addresses", url.PathEscape(customerID)), nil, &resp); err != nil {
+		return nil, fmt.Errorf("list liquidation addresses failed: %w", err)
 	}
 	return &resp, nil
 }

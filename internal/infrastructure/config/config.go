@@ -356,13 +356,14 @@ type VerificationConfig struct {
 
 // BridgeConfig contains Bridge API configuration for wallets, virtual accounts, KYC, and cards
 type BridgeConfig struct {
-	APIKey          string   `mapstructure:"api_key"`
-	BaseURL         string   `mapstructure:"base_url"`
-	Environment     string   `mapstructure:"environment"`
-	Timeout         int      `mapstructure:"timeout"`
-	MaxRetries      int      `mapstructure:"max_retries"`
-	SupportedChains []string `mapstructure:"supported_chains"`
-	WebhookSecret   string   `mapstructure:"webhook_secret"`
+	APIKey                string   `mapstructure:"api_key"`
+	BaseURL               string   `mapstructure:"base_url"`
+	Environment           string   `mapstructure:"environment"`
+	Timeout               int      `mapstructure:"timeout"`
+	MaxRetries            int      `mapstructure:"max_retries"`
+	SupportedChains       []string `mapstructure:"supported_chains"`
+	WebhookSecret         string   `mapstructure:"webhook_secret"`
+	TreasuryWalletAddress string   `mapstructure:"treasury_wallet_address"`
 }
 
 // WorkerConfig contains background worker configuration

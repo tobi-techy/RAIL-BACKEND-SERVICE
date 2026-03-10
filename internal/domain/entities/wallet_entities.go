@@ -91,17 +91,35 @@ func (c WalletChain) GetChainFamily() string {
 	}
 }
 
+// ToBridgePaymentRail maps a WalletChain to the Bridge API payment rail string
+func (c WalletChain) ToBridgePaymentRail() string {
+	switch c {
+	case WalletChainSOLDevnet, WalletChainSolana:
+		return "solana"
+	case WalletChainMATICAmoy, WalletChainPolygon:
+		return "polygon"
+	case WalletChainAVAXFuji, WalletChainAvalanche:
+		return "avalanche_c_chain"
+	case WalletChainBASESepolia, WalletChainBase:
+		return "base"
+	default:
+		return "solana"
+	}
+}
+
 // WalletAccountType represents the type of wallet account
 type WalletAccountType string
 
 const (
-	AccountTypeEOA WalletAccountType = "EOA" // Externally Owned Account
-	AccountTypeSCA WalletAccountType = "SCA" // Smart Contract Account
+	AccountTypeEOA             WalletAccountType = "EOA"                // Externally Owned Account
+	AccountTypeSCA             WalletAccountType = "SCA"                // Smart Contract Account
+	AccountTypeBridgeWallet    WalletAccountType = "bridge_wallet"      // Bridge custodial wallet
+	AccountTypeLiquidationAddr WalletAccountType = "liquidation_address" // Bridge liquidation address
 )
 
 // IsValid checks if account type is valid
 func (t WalletAccountType) IsValid() bool {
-	return t == AccountTypeEOA || t == AccountTypeSCA
+	return t == AccountTypeEOA || t == AccountTypeSCA || t == AccountTypeBridgeWallet || t == AccountTypeLiquidationAddr
 }
 
 // WalletStatus represents the status of a wallet
@@ -183,23 +201,12 @@ func (w *ManagedWallet) Validate() error {
 	if w.UserID == uuid.Nil {
 		return fmt.Errorf("user ID is required")
 	}
-
 	if !w.Chain.IsValid() {
 		return fmt.Errorf("invalid chain: %s", w.Chain)
 	}
-
 	if w.Address == "" {
 		return fmt.Errorf("wallet address is required")
 	}
-
-	if w.CircleWalletID == "" {
-		return fmt.Errorf("circle wallet ID is required")
-	}
-
-	if w.WalletSetID == uuid.Nil {
-		return fmt.Errorf("wallet set ID is required")
-	}
-
 	if !w.AccountType.IsValid() {
 		return fmt.Errorf("invalid account type: %s", w.AccountType)
 	}

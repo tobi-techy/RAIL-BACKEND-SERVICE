@@ -218,6 +218,33 @@ func (r *WalletRepository) GetByCircleWalletID(ctx context.Context, circleWallet
 	return wallet, nil
 }
 
+// GetByBridgeWalletID retrieves a wallet by Bridge wallet ID
+func (r *WalletRepository) GetByBridgeWalletID(ctx context.Context, bridgeWalletID string) (*entities.ManagedWallet, error) {
+	query := `
+		SELECT id, user_id, chain, address, bridge_wallet_id, status, created_at, updated_at
+		FROM managed_wallets 
+		WHERE bridge_wallet_id = $1`
+
+	wallet := &entities.ManagedWallet{}
+	err := r.db.QueryRowContext(ctx, query, bridgeWalletID).Scan(
+		&wallet.ID,
+		&wallet.UserID,
+		&wallet.Chain,
+		&wallet.Address,
+		&wallet.BridgeWalletID,
+		&wallet.Status,
+		&wallet.CreatedAt,
+		&wallet.UpdatedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("wallet not found")
+		}
+		return nil, fmt.Errorf("failed to get wallet by bridge_wallet_id: %w", err)
+	}
+	return wallet, nil
+}
+
 // GetByAddress retrieves a wallet by on-chain address
 func (r *WalletRepository) GetByAddress(ctx context.Context, address string) (*entities.ManagedWallet, error) {
 	query := `

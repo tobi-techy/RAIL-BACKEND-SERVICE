@@ -16,12 +16,13 @@ import (
 type FundingConfig struct {
 	MinDepositAmount      decimal.Decimal
 	MaxDepositsPerDay     int
-	MaxDailyDepositAmount decimal.Decimal // Daily deposit limit ($100k default)
+	MaxDailyDepositAmount decimal.Decimal
 	DepositTimeoutHours   int
 	WebhookSecret         string
 	BalanceCacheTTL       time.Duration
 	RateLimitWindow       time.Duration
 	DefaultWalletSetID    uuid.UUID
+	PlatformSolanaAddress string // custody destination for liquidation addresses (sandbox: destination_address)
 }
 
 // DefaultFundingConfig returns default configuration
