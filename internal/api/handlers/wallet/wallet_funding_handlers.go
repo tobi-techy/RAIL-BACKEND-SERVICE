@@ -808,20 +808,28 @@ func (h *WalletFundingHandlers) GetWalletByChain(c *gin.Context) {
 			zap.String("user_id", userID.String()),
 			zap.String("chain", chainStr))
 
-		// Auto-provision the missing wallet (handles existing users who pre-date multi-chain support)
 		if provErr := h.walletService.CreateWalletsForUser(ctx, userID, []entities.WalletChain{chain}); provErr != nil {
-			h.logger.Error("Failed to trigger wallet provisioning for missing chain",
+			h.logger.Error("Failed to provision wallet for chain",
 				zap.Error(provErr),
 				zap.String("user_id", userID.String()),
 				zap.String("chain", chainStr))
+			c.JSON(http.StatusNotFound, gin.H{
+				"error":   "WALLET_NOT_FOUND",
+				"message": fmt.Sprintf("No wallet found for chain: %s", chainStr),
+			})
+			return
 		}
 
-		c.JSON(http.StatusNotFound, gin.H{
-			"error":        "WALLET_NOT_FOUND",
-			"message":      fmt.Sprintf("Wallet for %s is being created. Please retry in a moment.", chainStr),
-			"provisioning": true,
-		})
-		return
+		// Retry fetch after provisioning
+		wallet, err = h.walletService.GetWalletByUserAndChain(ctx, userID, chain)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error":        "WALLET_NOT_FOUND",
+				"message":      fmt.Sprintf("Wallet for %s is being created. Please retry in a moment.", chainStr),
+				"provisioning": true,
+			})
+			return
+		}
 	}
 
 	response := entities.WalletAddressResponse{
