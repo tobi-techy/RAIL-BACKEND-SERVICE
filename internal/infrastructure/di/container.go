@@ -1272,10 +1272,13 @@ func (c *Container) initializeDomainServices() error {
 			&BridgeVirtualAccountWebhookAdapter{service: c.BridgeVirtualAccountService},
 			customerStatusProcessor,
 			nil, // Card processor can be injected later.
-			nil, // Notifications can be injected later.
+			&bridgeWebhookNotifierAdapter{svc: c.NotificationService},
 			c.UserRepo,
 			c.ZapLog,
 		)
+
+		// Wire notifier into customer status processor so KYC events fire push notifications
+		customerStatusProcessor.SetNotifier(&bridgeWebhookNotifierAdapter{svc: c.NotificationService})
 
 		webhookSecret := c.Config.Bridge.WebhookSecret
 		// Security fix: Only skip verification if explicitly configured for development AND no secret is set
@@ -2395,7 +2398,7 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 			&BridgeVirtualAccountWebhookAdapter{service: c.BridgeVirtualAccountService},
 			c.BridgeCustomerStatusProcessor, // preserve KYC processor — do NOT pass nil
 			&BridgeCardWebhookAdapter{service: c.CardService},
-			nil, // Notifications can be injected later.
+			&bridgeWebhookNotifierAdapter{svc: c.NotificationService},
 			c.UserRepo,
 			c.ZapLog,
 		)
@@ -2415,8 +2418,32 @@ func (a *marketNotificationAdapter) SendPushNotification(ctx context.Context, us
 	if a.svc == nil {
 		return nil
 	}
-	// Use existing notification service method
 	return a.svc.SendGenericNotification(ctx, userID, title, message)
+}
+
+// bridgeWebhookNotifierAdapter adapts NotificationService to BridgeWebhookNotifier
+type bridgeWebhookNotifierAdapter struct {
+	svc *services.NotificationService
+}
+
+func (a *bridgeWebhookNotifierAdapter) NotifyDepositReceived(ctx *gin.Context, userID uuid.UUID, amount, currency string) error {
+	if a.svc == nil {
+		return nil
+	}
+	return a.svc.NotifyDepositConfirmed(ctx.Request.Context(), userID, amount+" "+currency, "", "")
+}
+
+func (a *bridgeWebhookNotifierAdapter) NotifyKYCStatusChanged(ctx *gin.Context, userID uuid.UUID, status string) error {
+	if a.svc == nil {
+		return nil
+	}
+	switch status {
+	case "active":
+		return a.svc.NotifyKYCApproved(ctx.Request.Context(), userID)
+	case "rejected":
+		return a.svc.NotifyKYCRejected(ctx.Request.Context(), userID)
+	}
+	return nil
 }
 
 // copyTradingBalanceAdapter adapts LedgerService for copy trading balance operations

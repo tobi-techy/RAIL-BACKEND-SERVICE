@@ -591,6 +591,17 @@ func (s *Service) placeSingleOrder(ctx context.Context, userID, stashID uuid.UUI
 		"amount", amount,
 		"status", order.Status)
 
+	if s.notificationService != nil {
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = s.notificationService.SendGenericNotification(bgCtx, userID,
+				"Investment placed",
+				fmt.Sprintf("$%s has been automatically invested on your behalf.", amount.StringFixed(2)),
+			)
+		}()
+	}
+
 	return nil
 }
 

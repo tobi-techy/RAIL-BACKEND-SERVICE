@@ -211,45 +211,67 @@ func (s *NotificationService) NotifyTransactionDeclined(ctx context.Context, use
 }
 
 func (s *NotificationService) NotifyDepositConfirmed(ctx context.Context, userID uuid.UUID, amount, chain, txHash string) error {
-	title := "Deposit Confirmed"
-	body := fmt.Sprintf("Your deposit of %s on %s has been confirmed.", amount, chain)
-	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "deposit_confirmed", "tx_hash": txHash})
+	title := "Deposit confirmed"
+	body := fmt.Sprintf("Your deposit of %s has arrived and your money is being put to work.", amount)
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "deposit_confirmed", "tx_hash": txHash, "chain": chain})
 }
 
 func (s *NotificationService) NotifyWithdrawalCompleted(ctx context.Context, userID uuid.UUID, amount, destinationAddress string) error {
-	title := "Withdrawal Complete"
-	body := fmt.Sprintf("Your withdrawal of $%s has been sent to %s...%s", amount, destinationAddress[:6], destinationAddress[len(destinationAddress)-4:])
+	title := "Withdrawal sent"
+	body := fmt.Sprintf("Your withdrawal of $%s is on its way.", amount)
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "withdrawal_completed"})
 }
 
 func (s *NotificationService) NotifyWithdrawalFailed(ctx context.Context, userID uuid.UUID, amount, reason string) error {
-	title := "Withdrawal Failed"
-	body := fmt.Sprintf("Your withdrawal of $%s failed: %s", amount, reason)
+	title := "Withdrawal failed"
+	body := fmt.Sprintf("Your withdrawal of $%s could not be processed. Please try again.", amount)
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "withdrawal_failed"})
 }
 
 func (s *NotificationService) NotifyLargeBalanceChange(ctx context.Context, userID uuid.UUID, changeType string, amount decimal.Decimal, newBalance decimal.Decimal) error {
-	title := "Large Balance Change"
-	body := fmt.Sprintf("A %s of $%s has been processed. New balance: $%s", changeType, amount.String(), newBalance.String())
+	title := "Balance updated"
+	body := fmt.Sprintf("A %s of $%s has been processed.", changeType, amount.String())
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "balance_change"})
 }
 
 func (s *NotificationService) NotifyAllocationFailed(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID, reason string) error {
-	// Log detailed error reason internally for operations team debugging
 	s.logger.Error("Allocation failed notification",
 		zap.String("user_id", userID.String()),
 		zap.String("deposit_id", depositID.String()),
 		zap.String("amount", amount.String()),
 		zap.String("failure_reason", reason))
 
-	// Show generic user-friendly message in notification body
-	title := "Investment Allocation Requires Attention"
-	body := fmt.Sprintf("Your deposit of $%s was received but the automatic 70/30 allocation split could not be completed. Please contact support for assistance.", amount.String())
+	title := "Action needed"
+	body := fmt.Sprintf("Your deposit of $%s arrived but the automatic split could not complete. Contact support.", amount.String())
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{
 		"type":       "allocation_failed",
 		"deposit_id": depositID.String(),
 		"amount":     amount.String(),
 	})
+}
+
+func (s *NotificationService) NotifyKYCApproved(ctx context.Context, userID uuid.UUID) error {
+	title := "Identity verified"
+	body := "Your identity has been verified. You can now deposit and start investing."
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "kyc_approved"})
+}
+
+func (s *NotificationService) NotifyKYCRejected(ctx context.Context, userID uuid.UUID) error {
+	title := "Verification unsuccessful"
+	body := "We could not verify your identity. Please check your documents and try again."
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "kyc_rejected"})
+}
+
+func (s *NotificationService) NotifyAllocationComplete(ctx context.Context, userID uuid.UUID, spendAmount, investAmount string) error {
+	title := "Money deployed"
+	body := fmt.Sprintf("$%s to spending, $%s to investing. Your money is working.", spendAmount, investAmount)
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "allocation_complete"})
+}
+
+func (s *NotificationService) NotifyInvestmentComplete(ctx context.Context, userID uuid.UUID, amount string) error {
+	title := "Investment placed"
+	body := fmt.Sprintf("$%s has been automatically invested on your behalf.", amount)
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "investment_complete"})
 }
 
 func (s *NotificationService) SendGenericNotification(ctx context.Context, userID uuid.UUID, title, message string) error {
@@ -275,23 +297,23 @@ func getMilestoneMessage(milestoneType entities.MilestoneType, amount decimal.De
 	case entities.MilestoneTypeBalance:
 		switch {
 		case amount.Equal(decimal.NewFromInt(100)):
-			return "🎉 First $100!", "You've hit your first $100 invested! This is just the beginning."
+			return "First $100 invested", "You've hit your first $100 invested. This is just the beginning."
 		case amount.Equal(decimal.NewFromInt(500)):
-			return "🚀 $500 Milestone!", "Half a thousand dollars working for you. Keep it up!"
+			return "$500 milestone", "Half a thousand dollars working for you. Keep it up."
 		case amount.Equal(decimal.NewFromInt(1000)):
-			return "💰 $1,000 Club!", "Welcome to the four-figure club! Your money is growing."
+			return "$1,000 invested", "Welcome to the four-figure club. Your money is growing."
 		case amount.Equal(decimal.NewFromInt(5000)):
-			return "⭐ $5,000 Achieved!", "Five thousand dollars invested. You're building real wealth."
+			return "$5,000 invested", "Five thousand dollars invested. You're building real wealth."
 		case amount.Equal(decimal.NewFromInt(10000)):
-			return "🏆 $10,000 Milestone!", "Five figures! You're in the top tier of young investors."
+			return "$10,000 milestone", "Five figures. You're in the top tier of young investors."
 		default:
-			return fmt.Sprintf("🎯 $%s Milestone!", amountStr), fmt.Sprintf("You've reached $%s invested. Amazing progress!", amountStr)
+			return fmt.Sprintf("$%s milestone", amountStr), fmt.Sprintf("You've reached $%s invested.", amountStr)
 		}
 	case entities.MilestoneTypeContribution:
-		return fmt.Sprintf("💪 $%s Contributed!", amountStr), fmt.Sprintf("You've contributed $%s total. Consistency wins!", amountStr)
+		return fmt.Sprintf("$%s contributed", amountStr), fmt.Sprintf("You've contributed $%s total. Consistency wins.", amountStr)
 	case entities.MilestoneTypeGain:
-		return fmt.Sprintf("📈 $%s in Gains!", amountStr), fmt.Sprintf("Your investments have earned $%s. Your money is working!", amountStr)
+		return fmt.Sprintf("$%s in gains", amountStr), fmt.Sprintf("Your investments have earned $%s. Your money is working.", amountStr)
 	default:
-		return "🎉 Milestone Achieved!", fmt.Sprintf("You've reached a $%s milestone!", amountStr)
+		return "Milestone reached", fmt.Sprintf("You've reached a $%s milestone.", amountStr)
 	}
 }

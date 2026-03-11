@@ -431,6 +431,19 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		"spending", spendingAmount,
 		"stash", stashAmount)
 
+	// Notify user that the split completed
+	if s.notificationService != nil {
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = s.notificationService.SendGenericNotification(bgCtx, req.UserID,
+				"Money deployed",
+				fmt.Sprintf("$%s to spending, $%s to investing. Your money is working.",
+					spendingAmount.StringFixed(2), stashAmount.StringFixed(2)),
+			)
+		}()
+	}
+
 	// Trigger auto-investment asynchronously if service is configured
 	// Use detached context to avoid cancellation when parent returns
 	if s.autoInvestService != nil && stashAccount != nil {

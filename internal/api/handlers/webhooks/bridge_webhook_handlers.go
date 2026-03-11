@@ -1150,6 +1150,7 @@ func mapKYCStatusToCustomerStatus(kycStatus string) string {
 type BridgeCustomerStatusProcessor struct {
 	userRepo              UserRepositoryForCustomer
 	virtualAccountService VirtualAccountProvisioner
+	notifier              BridgeWebhookNotifier
 	logger                *zap.Logger
 }
 
@@ -1175,6 +1176,11 @@ func NewBridgeCustomerStatusProcessor(
 		virtualAccountService: virtualAccountService,
 		logger:                logger,
 	}
+}
+
+// SetNotifier wires the push notifier after construction
+func (s *BridgeCustomerStatusProcessor) SetNotifier(n BridgeWebhookNotifier) {
+	s.notifier = n
 }
 
 // UpdateCustomerStatus processes Bridge customer status changes
@@ -1217,6 +1223,15 @@ func (s *BridgeCustomerStatusProcessor) UpdateCustomerStatus(ctx context.Context
 	s.logger.Info("Updated bridge_kyc_status",
 		zap.String("user_id", user.ID.String()),
 		zap.String("new_status", bridgeKYCStatus))
+
+	// Send push notification for KYC outcome
+	if s.notifier != nil {
+		if ginCtx, ok := ctx.(*gin.Context); ok {
+			if notifyErr := s.notifier.NotifyKYCStatusChanged(ginCtx, user.ID, bridgeKYCStatus); notifyErr != nil {
+				s.logger.Warn("Failed to send KYC notification", zap.Error(notifyErr))
+			}
+		}
+	}
 
 	// Trigger virtual account provisioning if status became active
 	if bridgeKYCStatus == "active" {
