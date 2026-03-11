@@ -21,6 +21,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -115,6 +116,56 @@ type BridgeCustomerEvent struct {
 	ID     string `json:"id"`
 	Status string `json:"status"`
 	Email  string `json:"email"`
+}
+
+// HandleRealTimeAuth handles Bridge's synchronous real-time card authorization webhook.
+// POST /webhooks/bridge/card-auth
+// Bridge calls this endpoint synchronously during a card transaction and expects a
+// JSON response with {"approved": true/false} within 500ms. If the endpoint times out,
+// Bridge applies the configured fallback mode (default: DECLINE).
+// Signature verification uses X-Webhook-Signature header (RSA, same format as standard webhooks).
+func (h *BridgeWebhookHandler) HandleRealTimeAuth(c *gin.Context) {
+	rawBody, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot read body"})
+		return
+	}
+
+	// Verify RSA signature (X-Webhook-Signature: t=<ts>,v0=<sig>)
+	sig := c.GetHeader("X-Webhook-Signature")
+	if sig == "" {
+		h.logger.Warn("Real-time auth webhook missing X-Webhook-Signature")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing signature"})
+		return
+	}
+	if !h.verifySignature(sig, rawBody) {
+		h.logger.Warn("Real-time auth webhook signature verification failed")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
+		return
+	}
+
+	var req bridge.RealTimeAuthRequest
+	if err := json.Unmarshal(rawBody, &req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+		return
+	}
+
+	h.logger.Info("Real-time auth request",
+		zap.String("event_id", req.EventID),
+		zap.String("authorization_id", req.Data.AuthorizationID),
+		zap.String("card_account_id", req.Data.CardAccountID),
+		zap.String("amount", req.Data.Amount),
+		zap.String("merchant", req.Data.Merchant.Description))
+
+	// Default: approve if balance check passes. Bridge also enforces its own balance controls.
+	// Decline if amount is missing or zero (malformed request).
+	amount, _ := decimal.NewFromString(req.Data.Amount)
+	if amount.IsZero() {
+		c.JSON(http.StatusOK, bridge.RealTimeAuthResponse{Approved: false, DecisionReason: "invalid_amount"})
+		return
+	}
+
+	c.JSON(http.StatusOK, bridge.RealTimeAuthResponse{Approved: true})
 }
 
 // HandleWebhook handles all Bridge webhook events

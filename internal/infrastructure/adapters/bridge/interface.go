@@ -31,8 +31,11 @@ type BridgeClient interface {
 	EnableCards(ctx context.Context, req *EnableCardsRequest) error
 	CreateCardAccount(ctx context.Context, customerID string, req *CreateCardAccountRequest) (*CardAccount, error)
 	GetCardAccount(ctx context.Context, customerID, cardAccountID string) (*CardAccount, error)
-	FreezeCardAccount(ctx context.Context, customerID, cardAccountID string) (*CardAccount, error)
-	UnfreezeCardAccount(ctx context.Context, customerID, cardAccountID string) (*CardAccount, error)
+	FreezeCardAccount(ctx context.Context, customerID, cardAccountID, initiator, reason string) (*CardAccount, error)
+	UnfreezeCardAccount(ctx context.Context, customerID, cardAccountID, initiator string) (*CardAccount, error)
+	CreateCardPINUpdateURL(ctx context.Context, customerID, cardAccountID string) (*CardPINUpdateURLResponse, error)
+	CreateCardEphemeralKey(ctx context.Context, customerID, cardAccountID, clientNonce string) (*EphemeralKeyResponse, error)
+	GetCardStatement(ctx context.Context, customerID, cardAccountID, period string) ([]byte, error)
 
 	// External Accounts (ACH payout destinations)
 	CreateExternalAccount(ctx context.Context, customerID string, req *CreateExternalAccountRequest) (*ExternalAccount, error)

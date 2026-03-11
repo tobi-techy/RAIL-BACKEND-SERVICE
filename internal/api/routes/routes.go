@@ -800,6 +800,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// Bridge webhooks for fiat deposits and transfers
 			if bridgeWebhookHandler := container.GetBridgeWebhookHandler(); bridgeWebhookHandler != nil {
 				webhooks.POST("/bridge", bridgeWebhookHandler.HandleWebhook)
+				// Synchronous real-time card authorization webhook (Bridge calls this during transactions)
+				webhooks.POST("/bridge/card-auth", bridgeWebhookHandler.HandleRealTimeAuth)
 			}
 		}
 

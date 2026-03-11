@@ -336,6 +336,7 @@ const (
 	CardActionInitiatorCustomer   = "customer"
 	CardActionInitiatorDeveloper  = "developer"
 	CardFreezeReasonUserRequested = "user_requested"
+	CardFreezeReasonLostOrStolen  = "lost_or_stolen"
 	CardFreezeReasonFraud         = "fraud"
 	CardFreezeReasonMerchantAbuse = "merchant_abuse"
 )
@@ -358,16 +359,129 @@ type CardDetails struct {
 	BIN    string `json:"bin"`
 }
 
+// CardBalanceEntry represents a single balance entry (hold or available)
+type CardBalanceEntry struct {
+	Amount   string `json:"amount"`
+	Currency string `json:"currency"`
+}
+
+// CardBalances represents the hold and available balances on a card account
+type CardBalances struct {
+	Hold      CardBalanceEntry `json:"hold"`
+	Available CardBalanceEntry `json:"available"`
+}
+
+// CardFundingInstructions represents the on-chain address to fund a card account
+type CardFundingInstructions struct {
+	Chain    string `json:"chain"`
+	Address  string `json:"address"`
+	Currency string `json:"currency"`
+}
+
+// CardFreezeEntry represents a single freeze record on a card account
+type CardFreezeEntry struct {
+	Initiator    string     `json:"initiator"`
+	Reason       string     `json:"reason"`
+	ReasonDetail string     `json:"reason_detail,omitempty"`
+	StartingAt   *time.Time `json:"starting_at,omitempty"`
+	EndingAt     *time.Time `json:"ending_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+}
+
 // CardAccount represents a Bridge card account
 type CardAccount struct {
-	ID           string            `json:"id"`
-	CustomerID   string            `json:"customer_id"`
-	Status       CardAccountStatus `json:"status"`
-	CardImageURL string            `json:"card_image_url,omitempty"`
-	CardDetails  CardDetails       `json:"card_details"`
-	Currency     Currency          `json:"currency"`
-	Chain        PaymentRail       `json:"chain"`
-	CreatedAt    time.Time         `json:"created_at"`
+	ID                  string                  `json:"id"`
+	CustomerID          string                  `json:"customer_id"`
+	Status              CardAccountStatus       `json:"status"`
+	CardImageURL        string                  `json:"card_image_url,omitempty"`
+	CardDetails         CardDetails             `json:"card_details"`
+	Currency            Currency                `json:"currency"`
+	Chain               PaymentRail             `json:"chain"`
+	Balances            CardBalances            `json:"balances"`
+	FundingInstructions CardFundingInstructions `json:"funding_instructions"`
+	Freezes             []CardFreezeEntry       `json:"freezes"`
+	CreatedAt           time.Time               `json:"created_at"`
+}
+
+// EphemeralKeyRequest is the request body for creating a card ephemeral key
+type EphemeralKeyRequest struct {
+	ClientNonce string `json:"client_nonce"`
+}
+
+// EphemeralKeyResponse is the response from creating a card ephemeral key
+type EphemeralKeyResponse struct {
+	EphemeralKey string `json:"ephemeral_key"`
+}
+
+// CardPINUpdateURLResponse is the response from creating a card PIN update URL
+type CardPINUpdateURLResponse struct {
+	URL string `json:"url"`
+}
+
+// RealTimeAuthMerchant represents merchant data in a real-time auth request
+type RealTimeAuthMerchant struct {
+	Description  string `json:"description"`
+	PostalCode   string `json:"postal_code"`
+	State        string `json:"state"`
+	Country      string `json:"country"`
+	Category     string `json:"category"`
+	CategoryCode string `json:"category_code"`
+}
+
+// RealTimeAuthLocalDetails represents local transaction details in a real-time auth request
+type RealTimeAuthLocalDetails struct {
+	Amount       string `json:"amount"`
+	Currency     string `json:"currency"`
+	ExchangeRate string `json:"exchange_rate"`
+}
+
+// RealTimeAuthVerification represents verification data in a real-time auth request
+type RealTimeAuthVerification struct {
+	CVVCheck                string `json:"cvv_check"`
+	AddressCheck            string `json:"address_check"`
+	AddressPostalCodeCheck  string `json:"address_postal_code_check"`
+	PINCheck                string `json:"pin_check"`
+	ThreeDSecureCheck       string `json:"three_d_secure_check"`
+}
+
+// RealTimeAuthData is the data object inside a real-time auth webhook
+type RealTimeAuthData struct {
+	AuthorizationID         string                   `json:"authorization_id"`
+	AuthType                string                   `json:"auth_type"` // "auth" or "incremental_auth"
+	PartialSupported        bool                     `json:"partial_supported"`
+	Network                 string                   `json:"network"`
+	International           bool                     `json:"international"`
+	OriginalAuthorizationID *string                  `json:"original_authorization_id"`
+	TransactionID           string                   `json:"transaction_id"`
+	Account                 struct{ Last4 string `json:"last_4"` } `json:"account"`
+	Currency                string                   `json:"currency"`
+	Amount                  string                   `json:"amount"`
+	BillingAmount           string                   `json:"billing_amount"`
+	CashbackAmount          string                   `json:"cashback_amount"`
+	LocalTransactionDetails RealTimeAuthLocalDetails `json:"local_transaction_details"`
+	Merchant                RealTimeAuthMerchant     `json:"merchant"`
+	EntryMethod             string                   `json:"entry_method"`
+	CardPresent             bool                     `json:"card_present"`
+	Recurring               bool                     `json:"recurring"`
+	VerificationData        RealTimeAuthVerification `json:"verification_data"`
+	Wallet                  *string                  `json:"wallet"`
+	CardAccountID           string                   `json:"card_account_id"`
+	CustomerID              string                   `json:"customer_id"`
+	CreatedAt               time.Time                `json:"created_at"`
+}
+
+// RealTimeAuthRequest is the full payload Bridge sends to your real-time auth webhook
+type RealTimeAuthRequest struct {
+	EventID    string           `json:"event_id"`
+	APIVersion string           `json:"api_version"`
+	Timestamp  time.Time        `json:"timestamp"`
+	Data       RealTimeAuthData `json:"data"`
+}
+
+// RealTimeAuthResponse is what your endpoint must return to Bridge (within 500ms)
+type RealTimeAuthResponse struct {
+	Approved       bool   `json:"approved"`
+	DecisionReason string `json:"decision_reason,omitempty"`
 }
 
 // TransferSource represents the source of a transfer.

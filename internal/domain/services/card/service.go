@@ -213,7 +213,7 @@ func (s *Service) FreezeCard(ctx context.Context, userID, cardID uuid.UUID) (*en
 	}
 
 	// Freeze on Bridge
-	_, err = s.bridgeAdapter.Client().FreezeCardAccount(ctx, card.BridgeCustomerID, card.BridgeCardID)
+	_, err = s.bridgeAdapter.Client().FreezeCardAccount(ctx, card.BridgeCustomerID, card.BridgeCardID, bridge.CardActionInitiatorCustomer, bridge.CardFreezeReasonUserRequested)
 	if err != nil {
 		s.logger.Error("Failed to freeze card on Bridge", zap.Error(err))
 		return nil, fmt.Errorf("failed to freeze card: %w", err)
@@ -244,7 +244,7 @@ func (s *Service) UnfreezeCard(ctx context.Context, userID, cardID uuid.UUID) (*
 	}
 
 	// Unfreeze on Bridge
-	_, err = s.bridgeAdapter.Client().UnfreezeCardAccount(ctx, card.BridgeCustomerID, card.BridgeCardID)
+	_, err = s.bridgeAdapter.Client().UnfreezeCardAccount(ctx, card.BridgeCustomerID, card.BridgeCardID, bridge.CardActionInitiatorCustomer)
 	if err != nil {
 		s.logger.Error("Failed to unfreeze card on Bridge", zap.Error(err))
 		return nil, fmt.Errorf("failed to unfreeze card: %w", err)
