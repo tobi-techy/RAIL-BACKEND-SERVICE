@@ -145,7 +145,7 @@ circle:
   entity_secret_ciphertext: ""
   default_wallet_set_id: ""
   default_wallet_set_name: "STACK-WalletSet"
-  supported_chains: ["SOL-DEVNET", "MATIC-AMOY", "AVAX-FUJI"]
+  supported_chains: ["SOL-DEVNET", "MATIC-AMOY"]
   treasury_wallet_address: ""  # Company wallet for account closure fund sweeps
 
 kyc:
