@@ -298,7 +298,7 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 		managedWallets, mErr := s.managedWalletRepo.GetByUserID(ctx, userID)
 		if mErr == nil {
 			for _, mw := range managedWallets {
-				if matchesManagedWalletChain(mw.Chain, chain) {
+				if matchesManagedWalletChain(mw.Chain, chain) && !strings.HasPrefix(mw.Address, "0xdeadbeef") {
 					s.logger.Info("Using existing managed wallet address",
 						"user_id", userID, "chain", chain,
 						"managed_chain", mw.Chain, "address", mw.Address)
