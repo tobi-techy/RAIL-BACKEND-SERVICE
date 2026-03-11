@@ -303,3 +303,41 @@ func derefBridgeTransactions(txs []*entities.BridgeCardTransaction) []entities.B
 	}
 	return result
 }
+
+// GetCardEphemeralKey generates a one-time ephemeral key for PCI-compliant card detail reveal.
+// POST /api/v1/cards/:id/ephemeral-key
+func (h *CardHandlers) GetCardEphemeralKey(c *gin.Context) {
+	userID, err := common.GetUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "UNAUTHORIZED", "message": "User not authenticated"})
+		return
+	}
+
+	cardID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "INVALID_ID", "message": "Invalid card ID"})
+		return
+	}
+
+	var req struct {
+		ClientNonce string `json:"client_nonce" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "INVALID_REQUEST", "message": "client_nonce is required"})
+		return
+	}
+
+	ephemeralKey, err := h.service.GetCardEphemeralKey(c.Request.Context(), userID, cardID, req.ClientNonce)
+	if err != nil {
+		switch err {
+		case card.ErrCardNotFound:
+			c.JSON(http.StatusNotFound, gin.H{"error": "NOT_FOUND", "message": "Card not found"})
+		default:
+			h.logger.Error("Failed to get card ephemeral key", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "INTERNAL_ERROR", "message": "Failed to generate ephemeral key"})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"ephemeral_key": ephemeralKey})
+}

@@ -47,5 +47,8 @@ func RegisterCardRoutes(
 
 		// Get card transactions
 		cards.GET("/:id/transactions", cardHandlers.GetCardTransactions)
+
+		// Generate ephemeral key for PCI-compliant card detail reveal
+		cards.POST("/:id/ephemeral-key", cardHandlers.GetCardEphemeralKey)
 	}
 }
