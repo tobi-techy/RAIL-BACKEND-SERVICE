@@ -140,7 +140,7 @@ type UpdateCustomerRequest struct {
 	IdentifyingInformation    []IdentifyingInfo `json:"identifying_information,omitempty"`
 	SourceOfFunds             string            `json:"source_of_funds,omitempty"`
 	EmploymentStatus          string            `json:"employment_status,omitempty"`
-	ExpectedMonthlyPaymentsUSD string           `json:"expected_monthly_payments_usd,omitempty"`
+	ExpectedMonthlyPaymentsUSD string           `json:"expected_monthly_payments,omitempty"`
 	AccountPurpose            string            `json:"account_purpose,omitempty"`
 }
 
