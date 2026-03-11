@@ -132,11 +132,16 @@ type CreateCustomerRequest struct {
 	SignedAgreementID      string            `json:"signed_agreement_id,omitempty"`
 	Endorsements           []string          `json:"endorsements,omitempty"`
 	IdentifyingInformation []IdentifyingInfo `json:"identifying_information,omitempty"`
+	SourceOfFunds          string            `json:"source_of_funds,omitempty"`
 }
 
 // UpdateCustomerRequest represents a request to update a customer with KYC data
 type UpdateCustomerRequest struct {
-	IdentifyingInformation []IdentifyingInfo `json:"identifying_information,omitempty"`
+	IdentifyingInformation    []IdentifyingInfo `json:"identifying_information,omitempty"`
+	SourceOfFunds             string            `json:"source_of_funds,omitempty"`
+	EmploymentStatus          string            `json:"employment_status,omitempty"`
+	ExpectedMonthlyPaymentsUSD string           `json:"expected_monthly_payments_usd,omitempty"`
+	AccountPurpose            string            `json:"account_purpose,omitempty"`
 }
 
 // Capabilities represents customer capabilities

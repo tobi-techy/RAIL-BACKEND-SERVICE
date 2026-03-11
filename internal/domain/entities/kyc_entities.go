@@ -20,6 +20,12 @@ type KYCSubmitRequest struct {
 	IDDocumentFront string `json:"id_document_front" validate:"required"`
 	IDDocumentBack  string `json:"id_document_back,omitempty"`
 
+	// Source of funds questionnaire (required by Bridge)
+	SourceOfFunds              string `json:"source_of_funds,omitempty"`
+	EmploymentStatus           string `json:"employment_status,omitempty"`
+	ExpectedMonthlyPaymentsUSD string `json:"expected_monthly_payments_usd,omitempty"`
+	AccountPurpose             string `json:"account_purpose,omitempty"`
+
 	// Alpaca regulatory disclosures
 	Disclosures KYCDisclosures `json:"disclosures" validate:"required"`
 
@@ -116,10 +122,14 @@ type KYCPersonalInfo struct {
 
 // KYCSumsubSessionRequest starts a hosted Sumsub verification session.
 type KYCSumsubSessionRequest struct {
-	TaxID          string         `json:"tax_id" validate:"required"`
-	TaxIDType      string         `json:"tax_id_type" validate:"required,oneof=ssn itin nino utr nin bvn tin passport national_id"`
-	IssuingCountry string         `json:"issuing_country" validate:"required,len=3"` // ISO 3166-1 alpha-3
-	Disclosures    KYCDisclosures `json:"disclosures" validate:"required"`
+	TaxID                      string         `json:"tax_id" validate:"required"`
+	TaxIDType                  string         `json:"tax_id_type" validate:"required,oneof=ssn itin nino utr nin bvn tin passport national_id"`
+	IssuingCountry             string         `json:"issuing_country" validate:"required,len=3"` // ISO 3166-1 alpha-3
+	Disclosures                KYCDisclosures `json:"disclosures" validate:"required"`
+	SourceOfFunds              string         `json:"source_of_funds,omitempty"`
+	EmploymentStatus           string         `json:"employment_status,omitempty"`
+	ExpectedMonthlyPaymentsUSD string         `json:"expected_monthly_payments_usd,omitempty"`
+	AccountPurpose             string         `json:"account_purpose,omitempty"`
 }
 
 // KYCSumsubSessionResponse returns the data needed to launch Sumsub WebSDK.

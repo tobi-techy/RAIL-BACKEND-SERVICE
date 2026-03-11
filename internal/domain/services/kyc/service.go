@@ -298,6 +298,22 @@ func (s *Service) StartSumsubSession(ctx context.Context, userID uuid.UUID, req 
 		return nil, ErrKYCAlreadyApproved
 	}
 
+	// Submit source of funds to Bridge immediately (required before KYC approval)
+	if req.SourceOfFunds != "" {
+		bridgeUpdateReq := &bridge.UpdateCustomerRequest{
+			SourceOfFunds:              req.SourceOfFunds,
+			EmploymentStatus:           req.EmploymentStatus,
+			ExpectedMonthlyPaymentsUSD: req.ExpectedMonthlyPaymentsUSD,
+			AccountPurpose:             req.AccountPurpose,
+		}
+		if _, bridgeErr := s.bridgeAdapter.UpdateCustomer(ctx, *profile.BridgeCustomerID, bridgeUpdateReq); bridgeErr != nil {
+			s.logger.Warn("Failed to submit source of funds to Bridge",
+				zap.Error(bridgeErr),
+				zap.String("user_id", userID.String()))
+			// Non-fatal — continue with Sumsub session
+		}
+	}
+
 	levelName := s.sumsubLevelName
 	if levelName == "" {
 		levelName = "basic-kyc"
@@ -819,6 +835,10 @@ func (s *Service) submitToBridge(ctx context.Context, customerID string, profile
 				ImageBack:      req.IDDocumentBack,
 			},
 		},
+		SourceOfFunds:              req.SourceOfFunds,
+		EmploymentStatus:           req.EmploymentStatus,
+		ExpectedMonthlyPaymentsUSD: req.ExpectedMonthlyPaymentsUSD,
+		AccountPurpose:             req.AccountPurpose,
 	}
 
 	customer, err := s.bridgeAdapter.UpdateCustomer(ctx, customerID, updateReq)
@@ -850,6 +870,10 @@ func (s *Service) submitToBridgeFromSumsub(ctx context.Context, customerID strin
 				ImageBack:      req.IDDocumentBack,
 			},
 		},
+		SourceOfFunds:              req.SourceOfFunds,
+		EmploymentStatus:           req.EmploymentStatus,
+		ExpectedMonthlyPaymentsUSD: req.ExpectedMonthlyPaymentsUSD,
+		AccountPurpose:             req.AccountPurpose,
 	}
 
 	customer, err := s.bridgeAdapter.UpdateCustomer(ctx, customerID, updateReq)
