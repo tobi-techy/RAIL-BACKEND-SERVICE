@@ -340,7 +340,7 @@ type EnableCardsRequest struct {
 const (
 	CardActionInitiatorCustomer   = "customer"
 	CardActionInitiatorDeveloper  = "developer"
-	CardFreezeReasonUserRequested = "user_requested"
+	CardFreezeReasonPlannedInactivity = "planned_inactivity"
 	CardFreezeReasonLostOrStolen  = "lost_or_stolen"
 	CardFreezeReasonFraud         = "fraud"
 	CardFreezeReasonMerchantAbuse = "merchant_abuse"

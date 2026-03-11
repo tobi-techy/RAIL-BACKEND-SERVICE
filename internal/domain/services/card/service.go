@@ -218,7 +218,7 @@ func (s *Service) FreezeCard(ctx context.Context, userID, cardID uuid.UUID) (*en
 
 	// Freeze on Bridge — use a fresh idempotency key so repeated calls aren't deduplicated
 	freezeCtx := bridge.WithIdempotencyKey(ctx, bridge.GenerateIdempotencyKey())
-	_, err = s.bridgeAdapter.Client().FreezeCardAccount(freezeCtx, card.BridgeCustomerID, card.BridgeCardID, bridge.CardActionInitiatorCustomer, bridge.CardFreezeReasonUserRequested)
+	_, err = s.bridgeAdapter.Client().FreezeCardAccount(freezeCtx, card.BridgeCustomerID, card.BridgeCardID, bridge.CardActionInitiatorCustomer, bridge.CardFreezeReasonPlannedInactivity)
 	if err != nil {
 		s.logger.Error("Failed to freeze card on Bridge", zap.Error(err))
 		return nil, fmt.Errorf("failed to freeze card: %w", err)
