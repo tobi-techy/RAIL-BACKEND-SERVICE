@@ -352,6 +352,15 @@ func (c *Client) ListTransfers(ctx context.Context, customerID string) (*ListTra
 	return &resp, nil
 }
 
+// ListTransfersByTemplateID fetches all transfer instances created from a static template
+func (c *Client) ListTransfersByTemplateID(ctx context.Context, templateID string) (*ListTransfersResponse, error) {
+	var resp ListTransfersResponse
+	if err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v0/transfers?template_id=%s", url.QueryEscape(templateID)), nil, &resp); err != nil {
+		return nil, fmt.Errorf("list transfers by template failed: %w", err)
+	}
+	return &resp, nil
+}
+
 // CreateLiquidationAddress creates a liquidation address for a customer
 func (c *Client) CreateLiquidationAddress(ctx context.Context, customerID string, req *CreateLiquidationAddressRequest) (*LiquidationAddress, error) {
 	var la LiquidationAddress

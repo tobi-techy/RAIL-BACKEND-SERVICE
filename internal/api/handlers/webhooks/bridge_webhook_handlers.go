@@ -308,12 +308,12 @@ func (h *BridgeWebhookHandler) handleTransferEvent(c *gin.Context, payload Bridg
 		if err := h.service.ProcessTransferCompleted(c, transferID, customerID, amount); err != nil {
 			h.logger.Error("Failed to process transfer completed", zap.Error(err))
 		}
-	case "funds_received", "payment_submitted":
+	case "funds_received", "payment_submitted", "awaiting_funds", "in_review":
 		h.logger.Info("Transfer intermediate state — awaiting payment_processed",
 			zap.String("transfer_id", transferID),
 			zap.String("state", state))
-	case "failed", "returned", "undeliverable", "error", "canceled":
-		h.logger.Warn("Transfer failed/returned",
+	case "returned", "undeliverable", "refunded", "missing_return_policy", "error", "canceled":
+		h.logger.Warn("Transfer terminal failure state",
 			zap.String("transfer_id", transferID),
 			zap.String("state", state))
 	}

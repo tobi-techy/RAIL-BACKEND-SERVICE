@@ -370,55 +370,118 @@ type CardAccount struct {
 	CreatedAt    time.Time         `json:"created_at"`
 }
 
-// TransferSource represents the source of a transfer
+// TransferSource represents the source of a transfer.
+// Bridge populates additional fields after funds arrive (source-updates doc).
 type TransferSource struct {
-	PaymentRail    PaymentRail `json:"payment_rail"`
-	Currency       Currency    `json:"currency"`
-	BridgeWalletID string      `json:"bridge_wallet_id,omitempty"`
-	FromAddress    string      `json:"from_address,omitempty"`
+	PaymentRail         PaymentRail `json:"payment_rail"`
+	Currency            Currency    `json:"currency"`
+	BridgeWalletID      string      `json:"bridge_wallet_id,omitempty"`
+	FromAddress         string      `json:"from_address,omitempty"`
+	ExternalAccountID   string      `json:"external_account_id,omitempty"`
+	// Populated by Bridge after funds arrive (wire/ACH/SEPA)
+	BankBeneficiaryName string      `json:"bank_beneficiary_name,omitempty"`
+	BankRoutingNumber   string      `json:"bank_routing_number,omitempty"`
+	BankName            string      `json:"bank_name,omitempty"`
+	IMAD                string      `json:"imad,omitempty"`
+	Description         string      `json:"description,omitempty"` // ACH
+	BIC                 string      `json:"bic,omitempty"`         // SEPA
+	UETR                string      `json:"uetr,omitempty"`        // SEPA
+	SenderName          string      `json:"sender_name,omitempty"` // SEPA
 }
 
-// TransferDestination represents the destination of a transfer
+// TransferDestination represents the destination of a transfer.
+// Bridge populates IMAD/TraceNumber after payment is processed (destination-updates doc).
 type TransferDestination struct {
 	PaymentRail       PaymentRail `json:"payment_rail"`
 	Currency          Currency    `json:"currency"`
 	BridgeWalletID    string      `json:"bridge_wallet_id,omitempty"`
 	ToAddress         string      `json:"to_address,omitempty"`
 	ExternalAccountID string      `json:"external_account_id,omitempty"`
+	// Populated by Bridge after payment processed
+	IMAD        string `json:"imad,omitempty"`         // wire
+	TraceNumber string `json:"trace_number,omitempty"` // ACH
+}
+
+// TransferFeatures represents optional transfer features
+type TransferFeatures struct {
+	StaticTemplate    bool `json:"static_template,omitempty"`
+	FlexibleAmount    bool `json:"flexible_amount,omitempty"`
+	AllowAnyFromAddress bool `json:"allow_any_from_address,omitempty"`
+}
+
+// TransferReceipt represents the receipt of a completed transfer
+type TransferReceipt struct {
+	InitialAmount     string `json:"initial_amount"`
+	DeveloperFee      string `json:"developer_fee"`
+	ExchangeFee       string `json:"exchange_fee"`
+	SubtotalAmount    string `json:"subtotal_amount,omitempty"`
+	GasFee            string `json:"gas_fee,omitempty"`
+	FinalAmount       string `json:"final_amount"`
+	DestinationTxHash string `json:"destination_tx_hash,omitempty"`
+	URL               string `json:"url,omitempty"`
+}
+
+// TransferSourceDepositInstructions represents deposit instructions for a transfer
+type TransferSourceDepositInstructions struct {
+	PaymentRail       string `json:"payment_rail,omitempty"`
+	Currency          string `json:"currency,omitempty"`
+	Amount            string `json:"amount,omitempty"`
+	DepositMessage    string `json:"deposit_message,omitempty"`
+	BankAccountNumber string `json:"bank_account_number,omitempty"`
+	BankRoutingNumber string `json:"bank_routing_number,omitempty"`
+	FromAddress       string `json:"from_address,omitempty"`
+	ToAddress         string `json:"to_address,omitempty"`
+	BlockchainMemo    string `json:"blockchain_memo,omitempty"` // Stellar, Tron
+	IBAN              string `json:"iban,omitempty"`
+	BIC               string `json:"bic,omitempty"`
+	AccountHolderName string `json:"account_holder_name,omitempty"`
+	BankName          string `json:"bank_name,omitempty"`
+	BankAddress       string `json:"bank_address,omitempty"`
 }
 
 // CreateTransferRequest represents a request to create a transfer
 type CreateTransferRequest struct {
-	OnBehalfOf  string              `json:"on_behalf_of"`
-	Amount      string              `json:"amount,omitempty"`
-	Source      TransferSource      `json:"source"`
-	Destination TransferDestination `json:"destination"`
+	OnBehalfOf         string              `json:"on_behalf_of"`
+	Amount             string              `json:"amount,omitempty"`
+	Source             TransferSource      `json:"source"`
+	Destination        TransferDestination `json:"destination"`
+	DeveloperFee       string              `json:"developer_fee,omitempty"`
+	DeveloperFeePercent string             `json:"developer_fee_percent,omitempty"`
+	Features           *TransferFeatures   `json:"features,omitempty"`
 }
 
 // TransferStatus represents the status of a transfer
 type TransferStatus string
 
 const (
-	TransferStatusAwaitingFunds    TransferStatus = "awaiting_funds"
-	TransferStatusInReview         TransferStatus = "in_review"
-	TransferStatusFundsReceived    TransferStatus = "funds_received"
-	TransferStatusPaymentSubmitted TransferStatus = "payment_submitted"
-	TransferStatusPaymentProcessed TransferStatus = "payment_processed"
-	TransferStatusCanceled         TransferStatus = "canceled"
-	TransferStatusUndeliverable    TransferStatus = "undeliverable"
-	TransferStatusReturned         TransferStatus = "returned"
+	TransferStatusAwaitingFunds       TransferStatus = "awaiting_funds"
+	TransferStatusInReview            TransferStatus = "in_review"
+	TransferStatusFundsReceived       TransferStatus = "funds_received"
+	TransferStatusPaymentSubmitted    TransferStatus = "payment_submitted"
+	TransferStatusPaymentProcessed    TransferStatus = "payment_processed"
+	TransferStatusUndeliverable       TransferStatus = "undeliverable"
+	TransferStatusReturned            TransferStatus = "returned"
+	TransferStatusMissingReturnPolicy TransferStatus = "missing_return_policy"
+	TransferStatusRefunded            TransferStatus = "refunded"
+	TransferStatusCanceled            TransferStatus = "canceled"
+	TransferStatusError               TransferStatus = "error"
 )
 
 // Transfer represents a Bridge transfer
 type Transfer struct {
-	ID          string              `json:"id"`
-	State       TransferStatus      `json:"state"`
-	OnBehalfOf  string              `json:"on_behalf_of"`
-	Amount      string              `json:"amount"`
-	Source      TransferSource      `json:"source"`
-	Destination TransferDestination `json:"destination"`
-	CreatedAt   time.Time           `json:"created_at"`
-	UpdatedAt   time.Time           `json:"updated_at"`
+	ID                       string                            `json:"id"`
+	State                    TransferStatus                    `json:"state"`
+	OnBehalfOf               string                            `json:"on_behalf_of"`
+	Amount                   string                            `json:"amount,omitempty"` // absent for flexible_amount until funds arrive
+	DeveloperFee             string                            `json:"developer_fee,omitempty"`
+	DeveloperFeePercent      string                            `json:"developer_fee_percent,omitempty"`
+	Source                   TransferSource                    `json:"source"`
+	Destination              TransferDestination               `json:"destination"`
+	SourceDepositInstructions *TransferSourceDepositInstructions `json:"source_deposit_instructions,omitempty"`
+	Receipt                  *TransferReceipt                  `json:"receipt,omitempty"`
+	Features                 *TransferFeatures                 `json:"features,omitempty"`
+	CreatedAt                time.Time                         `json:"created_at"`
+	UpdatedAt                time.Time                         `json:"updated_at"`
 }
 
 // WebhookEvent represents a Bridge webhook event

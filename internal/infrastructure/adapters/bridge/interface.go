@@ -42,6 +42,7 @@ type BridgeClient interface {
 	CreateTransfer(ctx context.Context, req *CreateTransferRequest) (*Transfer, error)
 	GetTransfer(ctx context.Context, transferID string) (*Transfer, error)
 	ListTransfers(ctx context.Context, customerID string) (*ListTransfersResponse, error)
+	ListTransfersByTemplateID(ctx context.Context, templateID string) (*ListTransfersResponse, error)
 
 	// Liquidation Addresses
 	CreateLiquidationAddress(ctx context.Context, customerID string, req *CreateLiquidationAddressRequest) (*LiquidationAddress, error)
