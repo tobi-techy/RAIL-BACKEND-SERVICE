@@ -82,7 +82,9 @@ type Currency string
 const (
 	CurrencyUSD   Currency = "usd"
 	CurrencyEUR   Currency = "eur"
+	CurrencyGBP   Currency = "gbp"
 	CurrencyMXN   Currency = "mxn"
+	CurrencyBRL   Currency = "brl"
 	CurrencyUSDB  Currency = "usdb"
 	CurrencyUSDC  Currency = "usdc"
 	CurrencyUSDT  Currency = "usdt"
@@ -234,6 +236,11 @@ type SourceDepositInstructions struct {
 	IBAN                   string   `json:"iban,omitempty"`
 	BIC                    string   `json:"bic,omitempty"`
 	CLABE                  string   `json:"clabe,omitempty"`
+	// GBP (Faster Payments)
+	SortCode      string `json:"sort_code,omitempty"`
+	AccountNumber string `json:"account_number,omitempty"`
+	// BRL (PIX)
+	BRCode string `json:"br_code,omitempty"`
 }
 
 // VirtualAccount represents a Bridge virtual account

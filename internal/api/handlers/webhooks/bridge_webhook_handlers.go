@@ -192,10 +192,22 @@ func (h *BridgeWebhookHandler) HandleWebhook(c *gin.Context) {
 
 // handleVirtualAccountActivity processes virtual_account.activity events (fiat deposits)
 func (h *BridgeWebhookHandler) handleVirtualAccountActivity(c *gin.Context, payload BridgeWebhookPayload) {
-	eventType := payload.EventObject["type"]
+	eventType := fmt.Sprintf("%v", payload.EventObject["type"])
 	h.logger.Info("Virtual account activity",
-		zap.String("activity_type", fmt.Sprintf("%v", eventType)),
+		zap.String("activity_type", eventType),
 		zap.String("event_type", payload.EventType))
+
+	// Only process payment_processed — the final, on-chain-confirmed state.
+	// All other event types (funds_received, payment_submitted, funds_scheduled,
+	// in_review, refunded, microdeposit, account_update, deactivation, reactivation)
+	// are informational and must not trigger deposit processing.
+	if eventType != "payment_processed" {
+		h.logger.Info("Skipping non-final virtual account activity event",
+			zap.String("activity_type", eventType),
+			zap.String("virtual_account_id", getStringField(payload.EventObject, "virtual_account_id")))
+		c.JSON(http.StatusOK, gin.H{"status": "acknowledged"})
+		return
+	}
 
 	// Extract deposit details
 	event := &BridgeDepositEvent{
@@ -204,7 +216,7 @@ func (h *BridgeWebhookHandler) handleVirtualAccountActivity(c *gin.Context, payl
 		Amount:           getStringField(payload.EventObject, "amount"),
 		Currency:         getStringField(payload.EventObject, "currency"),
 		TransactionRef:   getStringField(payload.EventObject, "deposit_id"),
-		Status:           fmt.Sprintf("%v", eventType),
+		Status:           eventType,
 	}
 
 	if h.service == nil {

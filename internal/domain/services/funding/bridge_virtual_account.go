@@ -189,18 +189,27 @@ func (s *BridgeVirtualAccountService) CreateVirtualAccount(ctx context.Context, 
 		return nil, fmt.Errorf("wallet address is required")
 	}
 
-	// Determine source currency - only USD and EUR supported
+	// Determine source currency
 	var sourceCurrency bridge.Currency
 	var actualCurrency string
-	switch req.Currency {
+	switch strings.ToUpper(req.Currency) {
 	case "EUR":
 		sourceCurrency = bridge.CurrencyEUR
 		actualCurrency = "EUR"
 	case "USD":
 		sourceCurrency = bridge.CurrencyUSD
 		actualCurrency = "USD"
+	case "GBP":
+		sourceCurrency = bridge.CurrencyGBP
+		actualCurrency = "GBP"
+	case "MXN":
+		sourceCurrency = bridge.CurrencyMXN
+		actualCurrency = "MXN"
+	case "BRL":
+		sourceCurrency = bridge.CurrencyBRL
+		actualCurrency = "BRL"
 	default:
-		return nil, fmt.Errorf("unsupported currency: %s (only USD and EUR supported)", req.Currency)
+		return nil, fmt.Errorf("unsupported currency: %s (supported: USD, EUR, GBP, MXN, BRL)", req.Currency)
 	}
 
 	// Create Bridge virtual account request with 0.5% developer fee
@@ -246,6 +255,22 @@ func (s *BridgeVirtualAccountService) CreateVirtualAccount(ctx context.Context, 
 	if bridgeVA.SourceDepositInstructions.IBAN != "" {
 		virtualAccount.AccountNumber = bridgeVA.SourceDepositInstructions.IBAN
 		virtualAccount.RoutingNumber = bridgeVA.SourceDepositInstructions.BIC
+	}
+
+	// Handle GBP (Faster Payments): sort_code -> RoutingNumber, account_number -> AccountNumber
+	if bridgeVA.SourceDepositInstructions.SortCode != "" {
+		virtualAccount.AccountNumber = bridgeVA.SourceDepositInstructions.AccountNumber
+		virtualAccount.RoutingNumber = bridgeVA.SourceDepositInstructions.SortCode
+	}
+
+	// Handle MXN (SPEI): clabe -> AccountNumber
+	if bridgeVA.SourceDepositInstructions.CLABE != "" {
+		virtualAccount.AccountNumber = bridgeVA.SourceDepositInstructions.CLABE
+	}
+
+	// Handle BRL (PIX): br_code -> AccountNumber
+	if bridgeVA.SourceDepositInstructions.BRCode != "" {
+		virtualAccount.AccountNumber = bridgeVA.SourceDepositInstructions.BRCode
 	}
 
 	// Use account_holder_name as beneficiary if bank_beneficiary_name is empty
@@ -511,8 +536,8 @@ func (s *BridgeVirtualAccountService) GetDepositInstructions(ctx context.Context
 			return &DepositInstructions{
 				AccountNumber:   acc.AccountNumber,
 				RoutingNumber:   acc.RoutingNumber,
-				BankName:        "Bridge Partner Bank",
-				BeneficiaryName: "RAIL User Account",
+				BankName:        acc.BankName,
+				BeneficiaryName: acc.BeneficiaryName,
 				Currency:        acc.Currency,
 				Provider:        "bridge",
 			}, nil
