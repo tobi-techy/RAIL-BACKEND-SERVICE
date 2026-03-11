@@ -872,6 +872,10 @@ func (h *WalletFundingHandlers) CreateDepositAddress(c *gin.Context) {
 	response, err := h.fundingService.CreateDepositAddress(c.Request.Context(), userUUID, req.Chain)
 	if err != nil {
 		h.logger.Error("Failed to create deposit address", "error", err, "user_id", userUUID, "chain", req.Chain)
+		if strings.Contains(err.Error(), "has_not_accepted_tos") {
+			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "has_not_accepted_tos", Message: "Please accept the Terms of Service before creating a deposit address"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
 			Code:    "DEPOSIT_ADDRESS_ERROR",
 			Message: "Failed to create deposit address",
