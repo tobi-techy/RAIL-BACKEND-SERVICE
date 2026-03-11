@@ -113,6 +113,15 @@ func (r *CardRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status 
 	return nil
 }
 
+func (r *CardRepository) UpdateDailyLimit(ctx context.Context, id uuid.UUID, limitCents *int) error {
+	query := `UPDATE cards SET daily_limit_cents = $1, updated_at = $2 WHERE id = $3`
+	_, err := r.db.ExecContext(ctx, query, limitCents, time.Now().UTC(), id)
+	if err != nil {
+		return fmt.Errorf("failed to update card daily limit: %w", err)
+	}
+	return nil
+}
+
 // CreateTransaction creates a new card transaction
 func (r *CardRepository) CreateTransaction(ctx context.Context, tx *entities.BridgeCardTransaction) error {
 	query := `

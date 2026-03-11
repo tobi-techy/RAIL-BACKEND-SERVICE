@@ -50,5 +50,8 @@ func RegisterCardRoutes(
 
 		// Generate ephemeral key for PCI-compliant card detail reveal
 		cards.POST("/:id/ephemeral-key", cardHandlers.GetCardEphemeralKey)
+
+		// Set daily spending limit
+		cards.PUT("/:id/limit", cardHandlers.SetDailyLimit)
 	}
 }

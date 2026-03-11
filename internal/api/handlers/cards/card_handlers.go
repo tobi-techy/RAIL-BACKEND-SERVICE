@@ -341,3 +341,40 @@ func (h *CardHandlers) GetCardEphemeralKey(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"ephemeral_key": ephemeralKey})
 }
+
+// SetDailyLimit sets the daily spending limit for a card.
+// PUT /api/v1/cards/:id/limit
+func (h *CardHandlers) SetDailyLimit(c *gin.Context) {
+	userID, err := common.GetUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "UNAUTHORIZED", "message": "User not authenticated"})
+		return
+	}
+
+	cardID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "INVALID_ID", "message": "Invalid card ID"})
+		return
+	}
+
+	var req struct {
+		LimitCents *int `json:"limit_cents"` // nil = remove limit
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "INVALID_REQUEST", "message": err.Error()})
+		return
+	}
+
+	cardData, err := h.service.SetDailyLimit(c.Request.Context(), userID, cardID, req.LimitCents)
+	if err != nil {
+		if err == card.ErrCardNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "NOT_FOUND", "message": "Card not found"})
+			return
+		}
+		h.logger.Error("Failed to set daily limit", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "INTERNAL_ERROR", "message": "Failed to set daily limit"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"daily_limit_cents": cardData.DailyLimitCents})
+}
