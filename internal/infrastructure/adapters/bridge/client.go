@@ -370,6 +370,16 @@ func (c *Client) ListLiquidationAddresses(ctx context.Context, customerID string
 	return &resp, nil
 }
 
+// GetDrains retrieves the drain history for a liquidation address
+func (c *Client) GetDrains(ctx context.Context, customerID, liquidationAddressID string) (*ListDrainsResponse, error) {
+	var resp ListDrainsResponse
+	path := fmt.Sprintf("/v0/customers/%s/liquidation_addresses/%s/drains", url.PathEscape(customerID), url.PathEscape(liquidationAddressID))
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, fmt.Errorf("get drains failed: %w", err)
+	}
+	return &resp, nil
+}
+
 // Ping tests connectivity to the Bridge API
 func (c *Client) Ping(ctx context.Context) error {
 	// Use list customers with limit 1 as a health check

@@ -152,6 +152,10 @@ func (h *BridgeWebhookHandler) HandleWebhook(c *gin.Context) {
 
 	// Route by event category (new Bridge format) or event type (legacy)
 	switch payload.EventCategory {
+	// Liquidation Address Drain events (crypto deposits via liquidation addresses)
+	case "liquidation_address.drain":
+		h.handleLiquidationAddressDrain(c, payload)
+
 	// Virtual Account Activity - fiat deposits
 	case "virtual_account.activity":
 		h.handleVirtualAccountActivity(c, payload)
@@ -188,6 +192,49 @@ func (h *BridgeWebhookHandler) HandleWebhook(c *gin.Context) {
 		// Fallback to legacy event_type routing for backwards compatibility
 		h.handleLegacyEventType(c, payload)
 	}
+}
+
+// handleLiquidationAddressDrain processes liquidation_address.drain events.
+// Only payment_processed is the final state where funds have reached the destination.
+func (h *BridgeWebhookHandler) handleLiquidationAddressDrain(c *gin.Context, payload BridgeWebhookPayload) {
+	state := getStringField(payload.EventObject, "state")
+	drainID := getStringField(payload.EventObject, "id")
+	customerID := getStringField(payload.EventObject, "customer_id")
+
+	h.logger.Info("Liquidation address drain event",
+		zap.String("drain_id", drainID),
+		zap.String("state", state),
+		zap.String("customer_id", customerID))
+
+	if state != "payment_processed" {
+		h.logger.Info("Skipping non-final drain state",
+			zap.String("drain_id", drainID),
+			zap.String("state", state))
+		c.JSON(http.StatusOK, gin.H{"status": "acknowledged"})
+		return
+	}
+
+	if h.service == nil {
+		h.logger.Error("Bridge webhook service is not configured")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service_unavailable"})
+		return
+	}
+
+	var amount decimal.Decimal
+	if amountStr := getStringField(payload.EventObject, "amount"); amountStr != "" {
+		amount, _ = decimal.NewFromString(amountStr)
+	}
+
+	if err := h.service.ProcessTransferCompleted(c, drainID, customerID, amount); err != nil {
+		h.logger.Error("Failed to process liquidation address drain",
+			zap.String("drain_id", drainID),
+			zap.String("customer_id", customerID),
+			zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "drain_processing_failed"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "success"})
 }
 
 // handleVirtualAccountActivity processes virtual_account.activity events (fiat deposits)

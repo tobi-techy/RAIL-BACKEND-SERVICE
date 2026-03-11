@@ -526,3 +526,44 @@ type LiquidationAddress struct {
 
 // ListLiquidationAddressesResponse represents a paginated list of liquidation addresses
 type ListLiquidationAddressesResponse = PaginatedResponse[LiquidationAddress]
+
+// DrainDestination represents the destination of a liquidation address drain
+type DrainDestination struct {
+	PaymentRail     PaymentRail `json:"payment_rail"`
+	Currency        Currency    `json:"currency"`
+	ToAddress       string      `json:"to_address,omitempty"`
+	ExternalAccountID string    `json:"external_account_id,omitempty"`
+	IMAD            string      `json:"imad,omitempty"`
+	TraceNumber     string      `json:"trace_number,omitempty"`
+}
+
+// DrainReceipt represents the receipt of a drain
+type DrainReceipt struct {
+	InitialAmount     string `json:"initial_amount"`
+	DeveloperFee      string `json:"developer_fee"`
+	SubtotalAmount    string `json:"subtotal_amount"`
+	ExchangeRate      string `json:"exchange_rate,omitempty"`
+	ConvertedAmount   string `json:"converted_amount,omitempty"`
+	OutgoingAmount    string `json:"outgoing_amount,omitempty"`
+	DestinationCurrency string `json:"destination_currency,omitempty"`
+	URL               string `json:"url,omitempty"`
+}
+
+// Drain represents a single drain record from a liquidation address
+type Drain struct {
+	ID                   string           `json:"id"`
+	Amount               string           `json:"amount"`
+	Currency             Currency         `json:"currency"`
+	State                string           `json:"state"`
+	CustomerID           string           `json:"customer_id"`
+	LiquidationAddressID string           `json:"liquidation_address_id"`
+	DepositTxHash        string           `json:"deposit_tx_hash,omitempty"`
+	DestinationTxHash    string           `json:"destination_tx_hash,omitempty"`
+	Destination          DrainDestination `json:"destination"`
+	Receipt              *DrainReceipt    `json:"receipt,omitempty"`
+	CreatedAt            time.Time        `json:"created_at"`
+	UpdatedAt            time.Time        `json:"updated_at"`
+}
+
+// ListDrainsResponse represents a paginated list of drains
+type ListDrainsResponse = PaginatedResponse[Drain]

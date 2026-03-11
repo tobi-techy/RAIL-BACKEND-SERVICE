@@ -43,6 +43,11 @@ type BridgeClient interface {
 	GetTransfer(ctx context.Context, transferID string) (*Transfer, error)
 	ListTransfers(ctx context.Context, customerID string) (*ListTransfersResponse, error)
 
+	// Liquidation Addresses
+	CreateLiquidationAddress(ctx context.Context, customerID string, req *CreateLiquidationAddressRequest) (*LiquidationAddress, error)
+	ListLiquidationAddresses(ctx context.Context, customerID string) (*ListLiquidationAddressesResponse, error)
+	GetDrains(ctx context.Context, customerID, liquidationAddressID string) (*ListDrainsResponse, error)
+
 	// Health
 	Ping(ctx context.Context) error
 	Config() Config
