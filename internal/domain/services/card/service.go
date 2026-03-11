@@ -126,8 +126,11 @@ func (s *Service) CreateVirtualCard(ctx context.Context, userID uuid.UUID) (*ent
 		return nil, ErrCustomerNotFound
 	}
 
-	// Get user's wallet for card funding
+	// Get user's wallet for card funding — try mainnet Solana first, fall back to devnet
 	wallet, err := s.walletProvider.GetUserWalletByChain(ctx, userID, s.defaultChain)
+	if err != nil || wallet == nil {
+		wallet, err = s.walletProvider.GetUserWalletByChain(ctx, userID, string(entities.WalletChainSOLDevnet))
+	}
 	if err != nil || wallet == nil {
 		return nil, ErrWalletNotFound
 	}
