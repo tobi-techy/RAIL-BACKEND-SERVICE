@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -21,7 +20,6 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
 	"github.com/rail-service/rail_service/internal/domain/services/wallet"
-	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/retry"
 	"github.com/shopspring/decimal"
@@ -99,25 +97,6 @@ func (h *WalletFundingHandlers) ReconcileUserBalance(c *gin.Context) {
 type CreateWalletsRequest struct {
 	UserID string   `json:"user_id" validate:"required,uuid"`
 	Chains []string `json:"chains" validate:"required,min=1"`
-}
-
-// Legacy handler factories for compatibility
-func GetWalletAddresses(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.JSON(http.StatusNotImplemented, gin.H{
-			"error":   "Not implemented yet",
-			"message": "Use WalletHandlers.GetWalletAddresses instead",
-		})
-	}
-}
-
-func GetWalletStatus(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.JSON(http.StatusNotImplemented, gin.H{
-			"error":   "Not implemented yet",
-			"message": "Use WalletHandlers.GetWalletStatus instead",
-		})
-	}
 }
 
 // FundingWithdrawalService interface for withdrawal operations
