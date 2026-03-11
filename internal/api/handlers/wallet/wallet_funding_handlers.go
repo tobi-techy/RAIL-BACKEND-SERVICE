@@ -1127,14 +1127,15 @@ func (h *WalletFundingHandlers) CreateVirtualAccount(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "KYC_REQUIRED", Message: "Bridge KYC must be completed before creating a virtual account"})
 		return
 	}
-	if profile.AlpacaAccountID == nil || *profile.AlpacaAccountID == "" {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "ONBOARDING_INCOMPLETE", Message: "Brokerage account setup must be completed first"})
-		return
+
+	alpacaAccountID := ""
+	if profile.AlpacaAccountID != nil {
+		alpacaAccountID = *profile.AlpacaAccountID
 	}
 
 	response, err := h.fundingService.CreateVirtualAccount(ctx, &entities.CreateVirtualAccountRequest{
 		UserID:           userUUID,
-		AlpacaAccountID:  *profile.AlpacaAccountID,
+		AlpacaAccountID:  alpacaAccountID,
 		BridgeCustomerID: *profile.BridgeCustomerID,
 	})
 	if err != nil {
