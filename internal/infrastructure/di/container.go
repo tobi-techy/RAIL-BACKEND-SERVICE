@@ -495,57 +495,19 @@ func stateCodeToName(code string) string {
 	// If already 2 uppercase letters, convert to name
 	if len(code) == 2 && code == strings.ToUpper(code) {
 		stateMap := map[string]string{
-			"AL": "Alabama",
-			"AK": "Alaska",
-			"AZ": "Arizona",
-			"AR": "Arkansas",
-			"CA": "California",
-			"CO": "Colorado",
-			"CT": "Connecticut",
-			"DE": "Delaware",
-			"FL": "Florida",
-			"GA": "Georgia",
-			"HI": "Hawaii",
-			"ID": "Idaho",
-			"IL": "Illinois",
-			"IN": "Indiana",
-			"IA": "Iowa",
-			"KS": "Kansas",
-			"KY": "Kentucky",
-			"LA": "Louisiana",
-			"ME": "Maine",
-			"MD": "Maryland",
-			"MA": "Massachusetts",
-			"MI": "Michigan",
-			"MN": "Minnesota",
-			"MS": "Mississippi",
-			"MO": "Missouri",
-			"MT": "Montana",
-			"NE": "Nebraska",
-			"NV": "Nevada",
-			"NH": "New Hampshire",
-			"NJ": "New Jersey",
-			"NM": "New Mexico",
-			"NY": "New York",
-			"NC": "North Carolina",
-			"ND": "North Dakota",
-			"OH": "Ohio",
-			"OK": "Oklahoma",
-			"OR": "Oregon",
-			"PA": "Pennsylvania",
-			"RI": "Rhode Island",
-			"SC": "South Carolina",
-			"SD": "South Dakota",
-			"TN": "Tennessee",
-			"TX": "Texas",
-			"UT": "Utah",
-			"VT": "Vermont",
-			"VA": "Virginia",
-			"WA": "Washington",
-			"WV": "West Virginia",
-			"WI": "Wisconsin",
-			"WY": "Wyoming",
-			"DC": "District of Columbia",
+			"AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas",
+			"CA": "California", "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware",
+			"FL": "Florida", "GA": "Georgia", "HI": "Hawaii", "ID": "Idaho",
+			"IL": "Illinois", "IN": "Indiana", "IA": "Iowa", "KS": "Kansas",
+			"KY": "Kentucky", "LA": "Louisiana", "ME": "Maine", "MD": "Maryland",
+			"MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota", "MS": "Mississippi",
+			"MO": "Missouri", "MT": "Montana", "NE": "Nebraska", "NV": "Nevada",
+			"NH": "New Hampshire", "NJ": "New Jersey", "NM": "New Mexico", "NY": "New York",
+			"NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma",
+			"OR": "Oregon", "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina",
+			"SD": "South Dakota", "TN": "Tennessee", "TX": "Texas", "UT": "Utah",
+			"VT": "Vermont", "VA": "Virginia", "WA": "Washington", "WV": "West Virginia",
+			"WI": "Wisconsin", "WY": "Wyoming", "DC": "District of Columbia",
 		}
 		if name, ok := stateMap[strings.ToUpper(code)]; ok {
 			return name
@@ -553,6 +515,38 @@ func stateCodeToName(code string) string {
 	}
 	// Return original if not found
 	return code
+}
+
+// normalizeUSStateToCode converts a US state name or code to its 2-letter ISO code.
+// e.g., "Kansas" -> "KS", "KS" -> "KS", "New York" -> "NY"
+func normalizeUSStateToCode(state string) string {
+	if state == "" {
+		return state
+	}
+	upper := strings.ToUpper(strings.TrimSpace(state))
+	// Already a 2-letter code
+	if len(upper) == 2 {
+		return upper
+	}
+	nameToCode := map[string]string{
+		"ALABAMA": "AL", "ALASKA": "AK", "ARIZONA": "AZ", "ARKANSAS": "AR",
+		"CALIFORNIA": "CA", "COLORADO": "CO", "CONNECTICUT": "CT", "DELAWARE": "DE",
+		"FLORIDA": "FL", "GEORGIA": "GA", "HAWAII": "HI", "IDAHO": "ID",
+		"ILLINOIS": "IL", "INDIANA": "IN", "IOWA": "IA", "KANSAS": "KS",
+		"KENTUCKY": "KY", "LOUISIANA": "LA", "MAINE": "ME", "MARYLAND": "MD",
+		"MASSACHUSETTS": "MA", "MICHIGAN": "MI", "MINNESOTA": "MN", "MISSISSIPPI": "MS",
+		"MISSOURI": "MO", "MONTANA": "MT", "NEBRASKA": "NE", "NEVADA": "NV",
+		"NEW HAMPSHIRE": "NH", "NEW JERSEY": "NJ", "NEW MEXICO": "NM", "NEW YORK": "NY",
+		"NORTH CAROLINA": "NC", "NORTH DAKOTA": "ND", "OHIO": "OH", "OKLAHOMA": "OK",
+		"OREGON": "OR", "PENNSYLVANIA": "PA", "RHODE ISLAND": "RI", "SOUTH CAROLINA": "SC",
+		"SOUTH DAKOTA": "SD", "TENNESSEE": "TN", "TEXAS": "TX", "UTAH": "UT",
+		"VERMONT": "VT", "VIRGINIA": "VA", "WASHINGTON": "WA", "WEST VIRGINIA": "WV",
+		"WISCONSIN": "WI", "WYOMING": "WY", "DISTRICT OF COLUMBIA": "DC",
+	}
+	if code, ok := nameToCode[upper]; ok {
+		return code
+	}
+	return upper
 }
 
 // toTitleCaseStr converts a string to title case
@@ -612,7 +606,7 @@ func (a *BridgeOnboardingAdapter) CreateCustomer(ctx context.Context, req *entit
 	// Add residential address if provided
 	if req.Address != nil {
 		// Bridge API expects ISO 3166-2 subdivision code without country prefix (e.g., "KS" not "Kansas")
-		subdivision := strings.ToUpper(strings.TrimSpace(req.Address.State))
+		subdivision := normalizeUSStateToCode(req.Address.State)
 
 		bridgeReq.ResidentialAddress = &bridge.Address{
 			StreetLine1: req.Address.Street,
