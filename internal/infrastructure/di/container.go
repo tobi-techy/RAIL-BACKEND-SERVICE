@@ -135,10 +135,10 @@ func (a *BridgeDepositAdapter) ListLiquidationAddresses(ctx context.Context, cus
 	out := make([]funding.BridgeLiquidationAddr, len(resp.Data))
 	for i, la := range resp.Data {
 		out[i] = funding.BridgeLiquidationAddr{
-			ID:             la.ID,
-			Chain:          string(la.Chain),
-			Address:        la.Address,
-			BridgeWalletID: la.BridgeWalletID,
+			ID:       la.ID,
+			Chain:    string(la.Chain),
+			Currency: string(la.Currency),
+			Address:  la.Address,
 		}
 	}
 	return out, nil
@@ -148,17 +148,13 @@ func (a *BridgeDepositAdapter) IsSandbox() bool {
 	return strings.EqualFold(strings.TrimSpace(a.client.Config().Environment), "sandbox")
 }
 
-func (a *BridgeDepositAdapter) CreateLiquidationAddress(ctx context.Context, customerID string, chain string, bridgeWalletID string, destinationAddress string) (string, string, error) {
+func (a *BridgeDepositAdapter) CreateLiquidationAddress(ctx context.Context, customerID string, sourceChain string, destinationChain string, destinationAddress string) (string, string, error) {
 	req := &bridge.CreateLiquidationAddressRequest{
-		Chain:                  bridge.PaymentRail(chain),
+		Chain:                  bridge.PaymentRail(sourceChain),
 		Currency:               bridge.CurrencyUSDC,
-		DestinationPaymentRail: bridge.PaymentRail(chain),
+		DestinationPaymentRail: bridge.PaymentRail(destinationChain),
 		DestinationCurrency:    bridge.CurrencyUSDC,
-	}
-	if bridgeWalletID != "" {
-		req.BridgeWalletID = bridgeWalletID
-	} else {
-		req.DestinationAddress = destinationAddress
+		DestinationAddress:     destinationAddress,
 	}
 	la, err := a.client.CreateLiquidationAddress(ctx, customerID, req)
 	if err != nil {

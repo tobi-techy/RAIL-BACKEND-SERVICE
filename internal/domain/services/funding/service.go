@@ -131,7 +131,7 @@ type BridgeDepositClient interface {
 	ListWallets(ctx context.Context, customerID string) ([]BridgeWalletInfo, error)
 	CreateWallet(ctx context.Context, customerID string, chain string) (id string, address string, err error)
 	ListLiquidationAddresses(ctx context.Context, customerID string) ([]BridgeLiquidationAddr, error)
-	CreateLiquidationAddress(ctx context.Context, customerID string, chain string, bridgeWalletID string, destinationAddress string) (id string, address string, err error)
+	CreateLiquidationAddress(ctx context.Context, customerID string, sourceChain string, destinationChain string, destinationAddress string) (id string, address string, err error)
 }
 
 // BridgeWalletInfo is a minimal wallet summary from Bridge
@@ -142,10 +142,10 @@ type BridgeWalletInfo struct {
 
 // BridgeLiquidationAddr is a minimal liquidation address summary from Bridge
 type BridgeLiquidationAddr struct {
-	ID             string
-	Chain          string
-	Address        string
-	BridgeWalletID string
+	ID       string
+	Chain    string
+	Currency string
+	Address  string
 }
 
 // VirtualAccountRepository interface for virtual account persistence
@@ -363,14 +363,14 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 	var laAddress string
 	var laID string
 	for _, la := range las {
-		if la.Chain == bridgeRail && la.BridgeWalletID == bridgeWalletID {
+		if la.Chain == bridgeRail && la.Currency == "usdc" {
 			laAddress = la.Address
 			laID = la.ID
 			break
 		}
 	}
 	if laAddress == "" {
-		laID, laAddress, err = s.bridgeWallets.CreateLiquidationAddress(ctx, customerID, bridgeRail, bridgeWalletID, destinationAddress)
+		laID, laAddress, err = s.bridgeWallets.CreateLiquidationAddress(ctx, customerID, bridgeRail, bridgeRail, destinationAddress)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create liquidation address: %w", err)
 		}

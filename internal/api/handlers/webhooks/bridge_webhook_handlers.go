@@ -247,7 +247,7 @@ func (h *BridgeWebhookHandler) handleTransferEvent(c *gin.Context, payload Bridg
 		zap.String("event_type", payload.EventType))
 
 	switch state {
-	case "payment_processed", "funds_received":
+	case "payment_processed":
 		if h.service == nil {
 			h.logger.Error("Bridge webhook service is not configured")
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service_unavailable"})
@@ -261,7 +261,11 @@ func (h *BridgeWebhookHandler) handleTransferEvent(c *gin.Context, payload Bridg
 		if err := h.service.ProcessTransferCompleted(c, transferID, customerID, amount); err != nil {
 			h.logger.Error("Failed to process transfer completed", zap.Error(err))
 		}
-	case "failed", "returned":
+	case "funds_received", "payment_submitted":
+		h.logger.Info("Transfer intermediate state — awaiting payment_processed",
+			zap.String("transfer_id", transferID),
+			zap.String("state", state))
+	case "failed", "returned", "undeliverable", "error", "canceled":
 		h.logger.Warn("Transfer failed/returned",
 			zap.String("transfer_id", transferID),
 			zap.String("state", state))
