@@ -330,10 +330,15 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 	var destinationAddress string // used in sandbox instead of bridge_wallet_id
 
 	if s.bridgeWallets.IsSandbox() {
-		// Sandbox: Bridge Wallet API unavailable — use platform destination address
-		destinationAddress = s.config.PlatformSolanaAddress
-		if destinationAddress == "" {
-			destinationAddress = "9kV3ZMehKVyxfHKCcaDLye3P9HHw2MP4jtQa2gKBUmCs" // fallback test address
+		// Sandbox: Bridge Wallet API unavailable — use chain-appropriate destination address
+		isEVM := bridgeRail == "polygon" || bridgeRail == "avalanche_c_chain" || bridgeRail == "ethereum" || bridgeRail == "base"
+		if isEVM {
+			destinationAddress = "0x3e1837fcc9796e6b9f32435af594970aba2d57ea" // test EVM address
+		} else {
+			destinationAddress = s.config.PlatformSolanaAddress
+			if destinationAddress == "" {
+				destinationAddress = "9kV3ZMehKVyxfHKCcaDLye3P9HHw2MP4jtQa2gKBUmCs" // fallback test address
+			}
 		}
 	} else {
 		wallets, err := s.bridgeWallets.ListWallets(ctx, customerID)
@@ -363,7 +368,7 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 	var laAddress string
 	var laID string
 	for _, la := range las {
-		if la.Chain == bridgeRail && la.Currency == "usdc" {
+		if la.Chain == bridgeRail && la.Currency == "usdc" && !strings.HasPrefix(la.Address, "0xdeadbeef") {
 			laAddress = la.Address
 			laID = la.ID
 			break
