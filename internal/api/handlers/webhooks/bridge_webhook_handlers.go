@@ -1120,11 +1120,16 @@ func normalizeBridgeWebhookCardStatus(status string) string {
 	}
 }
 
-// getStringField safely extracts a string field from a map
+// getStringField safely extracts a string field from a map, also handling numeric values
 func getStringField(obj map[string]interface{}, key string) string {
 	if val, ok := obj[key]; ok {
-		if str, ok := val.(string); ok {
-			return str
+		switch v := val.(type) {
+		case string:
+			return v
+		case float64:
+			return decimal.NewFromFloat(v).String()
+		case json.Number:
+			return v.String()
 		}
 	}
 	return ""
