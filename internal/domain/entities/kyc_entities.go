@@ -25,6 +25,9 @@ type KYCSubmitRequest struct {
 	EmploymentStatus           string `json:"employment_status,omitempty"`
 	ExpectedMonthlyPaymentsUSD string `json:"expected_monthly_payments_usd,omitempty"`
 	AccountPurpose             string `json:"account_purpose,omitempty"`
+	AccountPurposeOther        string `json:"account_purpose_other,omitempty"`
+	MostRecentOccupation       string `json:"most_recent_occupation,omitempty"`
+	ActingAsIntermediary       *bool  `json:"acting_as_intermediary,omitempty"`
 
 	// Alpaca regulatory disclosures
 	Disclosures KYCDisclosures `json:"disclosures" validate:"required"`
@@ -130,6 +133,9 @@ type KYCSumsubSessionRequest struct {
 	EmploymentStatus           string         `json:"employment_status,omitempty"`
 	ExpectedMonthlyPaymentsUSD string         `json:"expected_monthly_payments_usd,omitempty"`
 	AccountPurpose             string         `json:"account_purpose,omitempty"`
+	AccountPurposeOther        string         `json:"account_purpose_other,omitempty"`
+	MostRecentOccupation       string         `json:"most_recent_occupation,omitempty"`
+	ActingAsIntermediary       *bool          `json:"acting_as_intermediary,omitempty"`
 }
 
 // KYCSumsubSessionResponse returns the data needed to launch Sumsub WebSDK.

@@ -305,6 +305,9 @@ func (s *Service) StartSumsubSession(ctx context.Context, userID uuid.UUID, req 
 			EmploymentStatus:           req.EmploymentStatus,
 			ExpectedMonthlyPaymentsUSD: req.ExpectedMonthlyPaymentsUSD,
 			AccountPurpose:             req.AccountPurpose,
+			AccountPurposeOther:        req.AccountPurposeOther,
+			MostRecentOccupation:       req.MostRecentOccupation,
+			ActingAsIntermediary:       req.ActingAsIntermediary,
 		}
 		if _, bridgeErr := s.bridgeAdapter.UpdateCustomer(ctx, *profile.BridgeCustomerID, bridgeUpdateReq); bridgeErr != nil {
 			s.logger.Warn("Failed to submit source of funds to Bridge",
