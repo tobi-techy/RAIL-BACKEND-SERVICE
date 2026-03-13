@@ -2014,9 +2014,9 @@ func (h *ComplianceHandler) RequestDataExport(c *gin.Context) {
 	})
 
 	// Return placeholder response - actual implementation would generate export
-	c.JSON(http.StatusAccepted, gin.H{
-		"message": "Data export request submitted. You will receive an email when ready.",
-		"status":  "pending",
+	c.JSON(http.StatusNotImplemented, gin.H{
+		"error":   "NOT_IMPLEMENTED",
+		"message": "Data export is not yet implemented",
 	})
 }
 
@@ -2031,8 +2031,8 @@ func (h *ComplianceHandler) RequestDataDeletion(c *gin.Context) {
 	})
 
 	// Return placeholder response - actual implementation would process deletion
-	c.JSON(http.StatusAccepted, gin.H{
-		"message": "Data deletion request submitted. This will be processed within 30 days.",
-		"status":  "pending",
+	c.JSON(http.StatusNotImplemented, gin.H{
+		"error":   "NOT_IMPLEMENTED",
+		"message": "Data deletion is not yet implemented",
 	})
 }

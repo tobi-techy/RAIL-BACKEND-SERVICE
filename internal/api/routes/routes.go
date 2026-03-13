@@ -273,7 +273,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		auth := v1.Group("/auth")
 		auth.Use(middleware.AuthCSRFProtection())
 		{
-			auth.POST("/register", authHandlers.Register)
+			auth.POST("/register", middleware.AuthRateLimit(5), authHandlers.Register)
 			auth.POST("/verify", middleware.AuthRateLimit(5), authHandlers.Verify)
 			auth.POST("/refresh", middleware.AuthRateLimit(10), authHandlers.RefreshToken)
 			auth.POST("/logout", authHandlers.Logout)

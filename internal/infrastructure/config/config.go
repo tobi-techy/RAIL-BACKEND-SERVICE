@@ -318,6 +318,7 @@ type CloudflareConfig struct {
 	R2Bucket    string `mapstructure:"r2_bucket"`
 	R2PublicURL string `mapstructure:"r2_public_url"` // Custom domain for R2
 	WorkerURL   string `mapstructure:"worker_url"`    // Cloudflare Worker URL for edge caching
+	Proxied     bool   `mapstructure:"proxied"`       // True when all traffic is routed through Cloudflare
 }
 
 type EmailConfig struct {

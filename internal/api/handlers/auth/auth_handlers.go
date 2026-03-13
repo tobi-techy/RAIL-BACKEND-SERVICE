@@ -777,6 +777,8 @@ func (h *AuthHandlers) Login(c *gin.Context) {
 	if err != nil {
 		h.logger.Warn("Login attempt failed - user not found", zap.String("identifier", identifier), zap.Error(err))
 		h.recordLoginFailure(c, identifier)
+		// Dummy comparison to prevent timing-based user enumeration
+		crypto.ValidatePassword(req.Password, "$2a$12$dummy.hash.to.equalize.timing.xxxxxxxxxxxxxxxxxxxxxxxxx")
 		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
 			Code:    "INVALID_CREDENTIALS",
 			Message: "Invalid email or password",

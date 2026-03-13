@@ -53,6 +53,8 @@ func RequestID() gin.HandlerFunc {
 		requestID := c.GetHeader("X-Request-ID")
 		if requestID == "" {
 			requestID = uuid.New().String()
+		} else if _, err := uuid.Parse(requestID); err != nil {
+			requestID = uuid.New().String()
 		}
 		c.Set("request_id", requestID)
 		c.Header("X-Request-ID", requestID)
@@ -259,13 +261,16 @@ func (rl *RateLimiter) GetLimiter(ip string) *rate.Limiter {
 }
 
 // RateLimit applies rate limiting per IP
-func RateLimit(requestsPerMinute int) gin.HandlerFunc {
+func RateLimit(requestsPerMinute int, isBehindCloudflare ...bool) gin.HandlerFunc {
 	limiter := NewRateLimiter(requestsPerMinute)
+	cfProxy := len(isBehindCloudflare) > 0 && isBehindCloudflare[0]
 
 	return func(c *gin.Context) {
-		ip := c.GetHeader("CF-Connecting-IP")
-		if ip == "" {
-			ip = c.ClientIP()
+		ip := c.ClientIP()
+		if cfProxy {
+			if cfIP := c.GetHeader("CF-Connecting-IP"); cfIP != "" {
+				ip = cfIP
+			}
 		}
 		if !limiter.GetLimiter(ip).Allow() {
 			c.JSON(http.StatusTooManyRequests, gin.H{

@@ -118,7 +118,7 @@ func (a *BridgeFundingAdapter) GenerateDepositAddress(ctx context.Context, chain
 
 	// For Bridge, wallets are created with customers
 	// In production, this would retrieve existing wallet or create new one
-	return "0xbridge_placeholder_address", nil
+	return "", fmt.Errorf("GetWalletAddress not implemented")
 }
 
 // ValidateDeposit implements deposit validation using Bridge
