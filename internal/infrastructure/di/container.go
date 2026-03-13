@@ -1581,6 +1581,9 @@ func (c *Container) initializeDomainServices() error {
 		c.Config.Email.BaseURL,
 		c.ZapLog,
 	)
+	if c.NotificationService != nil {
+		c.P2PNotificationSender.SetPushService(c.NotificationService)
+	}
 	c.P2PService = p2p.NewService(
 		c.P2PRepo,
 		c.UserRepo,

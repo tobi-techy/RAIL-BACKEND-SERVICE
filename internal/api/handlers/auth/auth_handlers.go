@@ -391,11 +391,13 @@ func (h *AuthHandlers) completeNewUserVerification(c *gin.Context, ctx context.C
 	}
 	user.OnboardingStatus = entities.OnboardingStatusStarted
 
-	_ = h.userRepo.Update(ctx, &entities.UserProfile{
+	if err := h.userRepo.Update(ctx, &entities.UserProfile{
 		ID: user.ID, Email: user.Email, Phone: user.Phone,
 		EmailVerified: user.EmailVerified, PhoneVerified: user.PhoneVerified,
 		OnboardingStatus: user.OnboardingStatus, KYCStatus: user.KYCStatus,
-	})
+	}); err != nil {
+		h.logger.Error("Failed to update user after verification", zap.String("user_id", user.ID.String()), zap.Error(err))
+	}
 	_ = h.redisClient.Del(ctx, pendingKey)
 
 	// Auto-start onboarding flow

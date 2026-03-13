@@ -181,7 +181,11 @@ func (h *InvestmentStashHandlers) GetInvestmentStash(c *gin.Context) {
 		if h.strategyProvider == nil {
 			return
 		}
-		strategyResult, _ = h.strategyProvider.GetStrategy(ctx, userID)
+		var err error
+		strategyResult, err = h.strategyProvider.GetStrategy(ctx, userID)
+		if err != nil {
+			h.logger.Warn("Failed to load strategy for investment stash", zap.String("user_id", userID.String()), zap.Error(err))
+		}
 	}()
 	wg.Wait()
 

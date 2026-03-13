@@ -17,8 +17,18 @@ type P2PNotificationSender struct {
 	userRepo     interface {
 		GetByID(ctx context.Context, id uuid.UUID) (*entities.UserProfile, error)
 	}
+	pushService interface {
+		NotifyP2PClaimed(ctx context.Context, senderID uuid.UUID, recipientName, amount string) error
+	}
 	baseURL string
 	logger  *zap.Logger
+}
+
+// SetPushService sets the push notification service for P2P notifications
+func (n *P2PNotificationSender) SetPushService(svc interface {
+	NotifyP2PClaimed(ctx context.Context, senderID uuid.UUID, recipientName, amount string) error
+}) {
+	n.pushService = svc
 }
 
 // NewP2PNotificationSender creates a new P2P notification sender
@@ -80,6 +90,11 @@ func (n *P2PNotificationSender) SendP2PClaimed(ctx context.Context, senderID uui
 	}
 
 	amountStr := fmt.Sprintf("$%s", amount.StringFixed(2))
+	if n.pushService != nil {
+		if pushErr := n.pushService.NotifyP2PClaimed(ctx, senderID, recipientName, amountStr); pushErr != nil {
+			n.logger.Warn("Failed to send P2P claimed push notification", zap.Error(pushErr))
+		}
+	}
 	return n.emailService.SendP2PClaimedEmail(ctx, sender.Email, recipientName, amountStr)
 }
 

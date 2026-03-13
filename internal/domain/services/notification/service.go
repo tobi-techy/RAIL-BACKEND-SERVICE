@@ -280,6 +280,11 @@ func (s *NotificationService) NotifyCardTransaction(ctx context.Context, userID 
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "card_transaction"})
 }
 
+func (s *NotificationService) NotifyP2PClaimed(ctx context.Context, senderID uuid.UUID, recipientName, amount string) error {
+	body := fmt.Sprintf("%s claimed your %s transfer", recipientName, amount)
+	return s.queueNotification(ctx, senderID, "push", "Transfer claimed", body, map[string]interface{}{"type": "p2p_claimed"})
+}
+
 func (s *NotificationService) SendGenericNotification(ctx context.Context, userID uuid.UUID, title, message string) error {
 	return s.queueNotification(ctx, userID, "push", title, message, nil)
 }

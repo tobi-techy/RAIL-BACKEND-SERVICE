@@ -98,21 +98,33 @@ func (h *SpendingStashHandlers) GetSpendingStash(c *gin.Context) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			p2pTransfers, _ = h.p2pRepo.GetBySender(ctx, userID, 500, 0)
+			var err error
+			p2pTransfers, err = h.p2pRepo.GetBySender(ctx, userID, 500, 0)
+			if err != nil {
+				h.logger.Warn("Failed to load p2p transfers for spending stash", zap.String("user_id", userID.String()), zap.Error(err))
+			}
 		}()
 	}
 	if h.withdrawalRepo != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			withdrawals, _ = h.withdrawalRepo.GetByUserID(ctx, userID, 500, 0)
+			var err error
+			withdrawals, err = h.withdrawalRepo.GetByUserID(ctx, userID, 500, 0)
+			if err != nil {
+				h.logger.Warn("Failed to load withdrawals for spending stash", zap.String("user_id", userID.String()), zap.Error(err))
+			}
 		}()
 	}
 	if h.roundupService != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			roundupSummary, _ = h.roundupService.GetSummary(ctx, userID)
+			var err error
+			roundupSummary, err = h.roundupService.GetSummary(ctx, userID)
+			if err != nil {
+				h.logger.Warn("Failed to load roundup summary for spending stash", zap.String("user_id", userID.String()), zap.Error(err))
+			}
 		}()
 	}
 	wg.Wait()
