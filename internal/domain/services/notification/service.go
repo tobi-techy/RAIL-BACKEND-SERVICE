@@ -144,7 +144,10 @@ func (s *NotificationService) sendSMS(ctx context.Context, notification *entitie
 }
 
 func (s *NotificationService) sendInApp(ctx context.Context, notification *entities.Notification) error {
-	s.logger.Info("Sending in-app notification", zap.String("user_id", notification.UserID.String()))
+	if s.persister != nil {
+		return s.persister.Create(ctx, notification.UserID, string(notification.Type), notification.Title, notification.Message, notification.Data)
+	}
+	s.logger.Info("Sending in-app notification (no persister)", zap.String("user_id", notification.UserID.String()))
 	return nil
 }
 
