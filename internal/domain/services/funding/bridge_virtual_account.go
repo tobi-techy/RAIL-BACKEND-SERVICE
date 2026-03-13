@@ -142,6 +142,9 @@ func (s *BridgeVirtualAccountService) ProvisionVirtualAccounts(ctx context.Conte
 			DestinationChain: bridge.PaymentRailSolana,
 			WalletAddress:    wallet.Address,
 		}
+		if strings.ToUpper(currency) == "EUR" {
+			req.DestinationChain = bridge.PaymentRail("sepa")
+		}
 
 		if _, err := s.CreateVirtualAccount(ctx, req); err != nil {
 			s.logger.Error("Failed to provision virtual account",
