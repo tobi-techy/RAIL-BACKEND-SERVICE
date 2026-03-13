@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -65,18 +66,24 @@ type LedgerService interface {
 	CreateTransaction(ctx context.Context, req *entities.CreateTransactionRequest) (*entities.LedgerTransaction, error)
 }
 
+// CardNotificationService sends card-related push notifications
+type CardNotificationService interface {
+	NotifyCardTransaction(ctx context.Context, userID uuid.UUID, amount, merchant string) error
+}
+
 // Service handles card business logic
 type Service struct {
-	repo            CardRepository
-	bridgeAdapter   *bridge.Adapter
-	userProvider    UserProfileProvider
-	walletProvider  WalletProvider
-	balanceProvider BalanceProvider
-	ledgerService   LedgerService
-	logger          *zap.Logger
-	defaultChain    string
-	enableCardsOnce sync.Once
-	enableCardsErr  error
+	repo                CardRepository
+	bridgeAdapter       *bridge.Adapter
+	userProvider        UserProfileProvider
+	walletProvider      WalletProvider
+	balanceProvider     BalanceProvider
+	ledgerService       LedgerService
+	notificationService CardNotificationService
+	logger              *zap.Logger
+	defaultChain        string
+	enableCardsOnce     sync.Once
+	enableCardsErr      error
 }
 
 // NewService creates a new card service
@@ -103,6 +110,10 @@ func NewService(
 // This is used to break circular dependencies in the DI container.
 func (s *Service) SetLedgerService(ledgerService LedgerService) {
 	s.ledgerService = ledgerService
+}
+
+func (s *Service) SetNotificationService(ns CardNotificationService) {
+	s.notificationService = ns
 }
 
 // CreateVirtualCard creates a virtual card for a user on first funding
@@ -376,6 +387,17 @@ func (s *Service) RecordTransaction(ctx context.Context, bridgeCardID, bridgeTra
 				zap.String("transaction_id", bridgeTransID),
 				zap.Error(err))
 			return err
+		}
+		if s.notificationService != nil {
+			go func() {
+				bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				merchant := merchantName
+				if merchant == "" {
+					merchant = "merchant"
+				}
+				_ = s.notificationService.NotifyCardTransaction(bgCtx, card.UserID, amount.StringFixed(2), merchant)
+			}()
 		}
 	}
 

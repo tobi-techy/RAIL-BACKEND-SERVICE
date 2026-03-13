@@ -84,6 +84,7 @@ type AutoInvestRepository interface {
 // NotificationService defines user notification operations.
 type NotificationService interface {
 	SendGenericNotification(ctx context.Context, userID uuid.UUID, title, message string) error
+	NotifyInvestmentComplete(ctx context.Context, userID uuid.UUID, amount string) error
 }
 
 // Service handles automatic investment from stash balance
@@ -595,10 +596,7 @@ func (s *Service) placeSingleOrder(ctx context.Context, userID, stashID uuid.UUI
 		go func() {
 			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_ = s.notificationService.SendGenericNotification(bgCtx, userID,
-				"Investment placed",
-				fmt.Sprintf("$%s has been automatically invested on your behalf.", amount.StringFixed(2)),
-			)
+			_ = s.notificationService.NotifyInvestmentComplete(bgCtx, userID, amount.StringFixed(2))
 		}()
 	}
 

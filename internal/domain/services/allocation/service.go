@@ -49,6 +49,7 @@ type spendingTotalReader interface {
 // AllocationNotificationService defines notification operations for allocation failures.
 type AllocationNotificationService interface {
 	SendGenericNotification(ctx context.Context, userID uuid.UUID, title, message string) error
+	NotifyAllocationComplete(ctx context.Context, userID uuid.UUID, spendAmount, investAmount string) error
 }
 
 // Service handles smart allocation mode operations
@@ -436,10 +437,8 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		go func() {
 			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_ = s.notificationService.SendGenericNotification(bgCtx, req.UserID,
-				"Money deployed",
-				fmt.Sprintf("$%s to spending, $%s to investing. Your money is working.",
-					spendingAmount.StringFixed(2), stashAmount.StringFixed(2)),
+			_ = s.notificationService.NotifyAllocationComplete(bgCtx, req.UserID,
+				spendingAmount.StringFixed(2), stashAmount.StringFixed(2),
 			)
 		}()
 	}

@@ -274,6 +274,12 @@ func (s *NotificationService) NotifyInvestmentComplete(ctx context.Context, user
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "investment_complete"})
 }
 
+func (s *NotificationService) NotifyCardTransaction(ctx context.Context, userID uuid.UUID, amount, merchant string) error {
+	title := "Card transaction"
+	body := fmt.Sprintf("$%s spent at %s", amount, merchant)
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "card_transaction"})
+}
+
 func (s *NotificationService) SendGenericNotification(ctx context.Context, userID uuid.UUID, title, message string) error {
 	return s.queueNotification(ctx, userID, "push", title, message, nil)
 }

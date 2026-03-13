@@ -2381,6 +2381,9 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 	)
 	// Wire ledger service to card service for transaction ledger entries
 	c.CardService.SetLedgerService(c.LedgerService)
+	if c.NotificationService != nil {
+		c.CardService.SetNotificationService(c.NotificationService)
+	}
 
 	// Rewire Bridge webhook service now that card service is available.
 	if c.BridgeWebhookHandler != nil && c.BridgeVirtualAccountService != nil {
