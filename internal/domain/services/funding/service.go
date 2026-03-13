@@ -845,8 +845,13 @@ func (s *Service) CreateVirtualAccount(ctx context.Context, req *entities.Create
 		return nil, fmt.Errorf("bridge customer ID is required")
 	}
 
-	// Return existing account if already provisioned
-	existing, _ := s.virtualAccountRepo.GetActiveByUserIDAndCurrency(ctx, req.UserID, "USD")
+	currency := strings.ToUpper(strings.TrimSpace(req.Currency))
+	if currency == "" {
+		currency = "USD"
+	}
+
+	// Return existing account if already provisioned for this currency
+	existing, _ := s.virtualAccountRepo.GetActiveByUserIDAndCurrency(ctx, req.UserID, currency)
 	if existing != nil {
 		return &entities.CreateVirtualAccountResponse{
 			VirtualAccount: existing,
@@ -854,11 +859,11 @@ func (s *Service) CreateVirtualAccount(ctx context.Context, req *entities.Create
 		}, nil
 	}
 
-	if err := s.bridgeVAService.ProvisionVirtualAccounts(ctx, req.UserID, req.BridgeCustomerID, []string{"USD"}); err != nil {
+	if err := s.bridgeVAService.ProvisionVirtualAccounts(ctx, req.UserID, req.BridgeCustomerID, []string{currency}); err != nil {
 		return nil, fmt.Errorf("failed to provision virtual account: %w", err)
 	}
 
-	va, err := s.virtualAccountRepo.GetActiveByUserIDAndCurrency(ctx, req.UserID, "USD")
+	va, err := s.virtualAccountRepo.GetActiveByUserIDAndCurrency(ctx, req.UserID, currency)
 	if err != nil || va == nil {
 		return nil, fmt.Errorf("virtual account provisioned but could not be retrieved")
 	}

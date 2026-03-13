@@ -1133,10 +1133,16 @@ func (h *WalletFundingHandlers) CreateVirtualAccount(c *gin.Context) {
 		alpacaAccountID = *profile.AlpacaAccountID
 	}
 
+	var body struct {
+		Currency string `json:"currency"`
+	}
+	_ = c.ShouldBindJSON(&body)
+
 	response, err := h.fundingService.CreateVirtualAccount(ctx, &entities.CreateVirtualAccountRequest{
 		UserID:           userUUID,
 		AlpacaAccountID:  alpacaAccountID,
 		BridgeCustomerID: *profile.BridgeCustomerID,
+		Currency:         body.Currency,
 	})
 	if err != nil {
 		h.logger.Error("Failed to create virtual account", "error", err, "user_id", userUUID)
