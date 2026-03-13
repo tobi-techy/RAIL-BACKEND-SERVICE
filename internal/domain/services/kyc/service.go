@@ -583,7 +583,7 @@ func (s *Service) processSumsubApproved(ctx context.Context, submission *entitie
 
 	now := time.Now()
 	if bridgeResult.Success {
-		bridgeStatus := "active"
+		bridgeStatus := "pending" // Bridge activates asynchronously via webhook
 		user.BridgeKYCStatus = &bridgeStatus
 	} else if profile.BridgeCustomerID != nil && *profile.BridgeCustomerID != "" {
 		// Enqueue a Bridge-specific retry job.
@@ -1659,7 +1659,7 @@ func (s *Service) RetryBridgeSync(ctx context.Context, payload []byte) error {
 	if err != nil {
 		return fmt.Errorf("failed to get user for bridge retry update: %w", err)
 	}
-	bridgeStatus := "active"
+	bridgeStatus := "pending" // Bridge activates asynchronously via webhook
 	user.BridgeKYCStatus = &bridgeStatus
 	return s.userRepo.Update(ctx, user)
 }
