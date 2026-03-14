@@ -19,7 +19,7 @@ import (
 
 const (
 	unosendAPIBaseURL = "https://www.unosend.co/api/v1"
-	emailSendTimeout  = 12 * time.Second
+	emailSendTimeout  = 30 * time.Second
 )
 
 // LoginAlertDetails represents metadata associated with a login notification email
@@ -72,11 +72,11 @@ func NewEmailService(logger *zap.Logger, config EmailServiceConfig) (*EmailServi
 		Timeout: emailSendTimeout,
 		Transport: &http.Transport{
 			DialContext: (&net.Dialer{
-				Timeout:   3 * time.Second,
+				Timeout:   10 * time.Second,
 				KeepAlive: 30 * time.Second,
 			}).DialContext,
-			TLSHandshakeTimeout:   3 * time.Second,
-			ResponseHeaderTimeout: 5 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 10 * time.Second,
 		},
 	}
 
