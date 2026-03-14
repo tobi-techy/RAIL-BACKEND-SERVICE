@@ -316,7 +316,7 @@ resource "aws_cloudwatch_log_group" "app" {
 
 resource "aws_ecs_task_definition" "app" {
   family                   = "rail-${var.env}"
-  network_mode             = "bridge"
+  network_mode             = "host"
   requires_compatibilities = ["EC2"]
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
   task_role_arn            = aws_iam_role.ecs_task.arn
@@ -338,8 +338,8 @@ resource "aws_ecs_task_definition" "app" {
       { name = "PORT",           value = "8080" },
       { name = "REDIS_HOST",     value = aws_elasticache_cluster.redis.cache_nodes[0].address },
       { name = "REDIS_PORT",     value = "6379" },
+      { name = "OTEL_SDK_DISABLED", value = "true" },
       { name = "EMAIL_PROVIDER",   value = "unosend" },
-      { name = "UNOSEND_API_KEY",  value = "" }, # overridden by secret below
     ]
 
     # Secrets pulled from SSM Parameter Store at container start
@@ -363,7 +363,6 @@ resource "aws_ecs_task_definition" "app" {
       { name = "BRIDGE_API_KEY",        valueFrom = "/rail/${var.env}/BRIDGE_API_KEY" },
       { name = "BRIDGE_BASE_URL",       valueFrom = "/rail/${var.env}/BRIDGE_BASE_URL" },
       { name = "BRIDGE_WEBHOOK_SECRET", valueFrom = "/rail/${var.env}/BRIDGE_WEBHOOK_SECRET" },
-      { name = "UNOSEND_API_KEY",       valueFrom = "/rail/${var.env}/UNOSEND_API_KEY" },
       { name = "OPENAI_API_KEY",        valueFrom = "/rail/${var.env}/OPENAI_API_KEY" },
       { name = "GEMINI_API_KEY",        valueFrom = "/rail/${var.env}/GEMINI_API_KEY" },
       { name = "NEWS_API_KEY",          valueFrom = "/rail/${var.env}/NEWS_API_KEY" },
@@ -376,14 +375,6 @@ resource "aws_ecs_task_definition" "app" {
         "awslogs-region"        = var.aws_region
         "awslogs-stream-prefix" = "ecs"
       }
-    }
-
-    healthCheck = {
-      command     = ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
-      interval    = 30
-      timeout     = 10
-      retries     = 3
-      startPeriod = 30
     }
   }])
 
@@ -446,6 +437,7 @@ resource "aws_ecs_service" "app" {
     container_port   = 8080
   }
 
+  health_check_grace_period_seconds  = 120
   deployment_minimum_healthy_percent = 0
   deployment_maximum_percent         = 100
 
