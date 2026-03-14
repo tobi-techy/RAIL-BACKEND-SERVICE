@@ -245,11 +245,12 @@ resource "aws_iam_instance_profile" "ec2" {
 }
 
 resource "aws_instance" "app" {
-  ami                    = data.aws_ami.ecs_optimized.id
-  instance_type          = "t2.micro"
-  subnet_id              = module.vpc.public_subnets[0]
-  vpc_security_group_ids = [aws_security_group.ec2.id, aws_security_group.app.id]
-  iam_instance_profile   = aws_iam_instance_profile.ec2.name
+  ami                         = data.aws_ami.ecs_optimized.id
+  instance_type               = "t3.micro"
+  subnet_id                   = module.vpc.public_subnets[0]
+  vpc_security_group_ids      = [aws_security_group.app.id]
+  iam_instance_profile        = aws_iam_instance_profile.ec2.name
+  associate_public_ip_address = true
 
   user_data = base64encode("#!/bin/bash\necho ECS_CLUSTER=rail-${var.env} >> /etc/ecs/ecs.config\n")
 
@@ -324,6 +325,7 @@ resource "aws_ecs_task_definition" "app" {
     name      = "rail-backend"
     image     = "${aws_ecr_repository.app.repository_url}:latest"
     essential = true
+    memory    = 450
 
     portMappings = [{
       containerPort = 8080
@@ -336,11 +338,13 @@ resource "aws_ecs_task_definition" "app" {
       { name = "PORT",           value = "8080" },
       { name = "REDIS_HOST",     value = aws_elasticache_cluster.redis.cache_nodes[0].address },
       { name = "REDIS_PORT",     value = "6379" },
-      { name = "EMAIL_PROVIDER", value = "unosend" },
+      { name = "EMAIL_PROVIDER",   value = "unosend" },
+      { name = "UNOSEND_API_KEY",  value = "" }, # overridden by secret below
     ]
 
     # Secrets pulled from SSM Parameter Store at container start
     secrets = [
+      { name = "UNOSEND_API_KEY",       valueFrom = "/rail/${var.env}/UNOSEND_API_KEY" },
       { name = "JWT_SECRET",            valueFrom = "/rail/${var.env}/JWT_SECRET" },
       { name = "ENCRYPTION_KEY",        valueFrom = "/rail/${var.env}/ENCRYPTION_KEY" },
       { name = "DATABASE_URL",          valueFrom = "/rail/${var.env}/DATABASE_URL" },
@@ -359,6 +363,7 @@ resource "aws_ecs_task_definition" "app" {
       { name = "BRIDGE_API_KEY",        valueFrom = "/rail/${var.env}/BRIDGE_API_KEY" },
       { name = "BRIDGE_BASE_URL",       valueFrom = "/rail/${var.env}/BRIDGE_BASE_URL" },
       { name = "BRIDGE_WEBHOOK_SECRET", valueFrom = "/rail/${var.env}/BRIDGE_WEBHOOK_SECRET" },
+      { name = "UNOSEND_API_KEY",       valueFrom = "/rail/${var.env}/UNOSEND_API_KEY" },
       { name = "OPENAI_API_KEY",        valueFrom = "/rail/${var.env}/OPENAI_API_KEY" },
       { name = "GEMINI_API_KEY",        valueFrom = "/rail/${var.env}/GEMINI_API_KEY" },
       { name = "NEWS_API_KEY",          valueFrom = "/rail/${var.env}/NEWS_API_KEY" },
@@ -398,7 +403,7 @@ resource "aws_lb" "main" {
 }
 
 resource "aws_lb_target_group" "app" {
-  name        = "rail-${var.env}"
+  name        = "rail-${var.env}-ec2"
   port        = 8080
   protocol    = "HTTP"
   vpc_id      = module.vpc.vpc_id
