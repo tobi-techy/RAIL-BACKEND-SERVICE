@@ -2551,6 +2551,20 @@ func (a *autoInvestOrderPlacerAdapter) PlaceMarketOrder(ctx context.Context, use
 		return nil, fmt.Errorf("user has no Alpaca account")
 	}
 
+	// Guard: account must be tradeable
+	if account.AccountBlocked {
+		return nil, fmt.Errorf("alpaca account is blocked for user %s", userID)
+	}
+	if account.TradingBlocked {
+		return nil, fmt.Errorf("trading is blocked on alpaca account for user %s", userID)
+	}
+
+	// Guard: only place orders during market hours (Mon–Fri 09:30–16:00 ET)
+	// DAY orders are rejected by Alpaca outside these hours; queue for next open instead.
+	if !isMarketOpen() {
+		return nil, fmt.Errorf("market is closed: order for %s queued for next market open", symbol)
+	}
+
 	// Create market order via Alpaca
 	orderReq := &entities.AlpacaCreateOrderRequest{
 		Symbol:        symbol,
@@ -2590,6 +2604,23 @@ func (a *autoInvestOrderPlacerAdapter) PlaceMarketOrder(ctx context.Context, use
 	}
 
 	return alpacaOrder, nil
+}
+
+// isMarketOpen returns true when the US equity market is currently open (Mon–Fri 09:30–16:00 ET).
+func isMarketOpen() bool {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		// If timezone data is unavailable, fail open so orders aren't silently dropped.
+		return true
+	}
+	et := time.Now().In(loc)
+	wd := et.Weekday()
+	if wd == time.Saturday || wd == time.Sunday {
+		return false
+	}
+	open := time.Date(et.Year(), et.Month(), et.Day(), 9, 30, 0, 0, loc)
+	close := time.Date(et.Year(), et.Month(), et.Day(), 16, 0, 0, 0, loc)
+	return et.After(open) && et.Before(close)
 }
 
 // strategyUserProfileAdapter adapts UserRepository for strategy engine

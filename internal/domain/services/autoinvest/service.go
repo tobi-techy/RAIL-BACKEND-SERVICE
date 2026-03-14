@@ -20,6 +20,11 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// ErrMarketClosed is returned by PlaceMarketOrder when the market is not open.
+// The autoinvest service treats this as a deferral, not a failure — funds stay
+// in fiat_exposure and the kyc_autoinvest worker will retry at next market open.
+var ErrMarketClosed = errors.New("market is closed")
+
 var tracer = otel.Tracer("autoinvest-service")
 
 // Config holds configuration for auto-investment
@@ -380,6 +385,11 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 			"user_id", userID,
 			"error", err)
 		orderErr := s.placeSingleOrder(ctx, userID, stashID, s.config.FallbackSymbol, amount, correlationID)
+		if errors.Is(orderErr, ErrMarketClosed) {
+			// Leave funds in fiat_exposure; worker will retry at next market open.
+			s.logger.Info("Fallback order deferred — market closed", "user_id", userID)
+			return nil
+		}
 		s.syncPositionsAsync(userID)
 		if orderErr != nil {
 			s.markEventFailed(ctx, userID, eventID, "fallback order failed: "+orderErr.Error())
@@ -397,6 +407,11 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 
 	// Step 4: Place orders for each allocation
 	orderErr := s.placeStrategyOrders(ctx, userID, stashID, amount, correlationID, strategyResult)
+	if errors.Is(orderErr, ErrMarketClosed) {
+		// Leave funds in fiat_exposure; worker will retry at next market open.
+		s.logger.Info("Strategy orders deferred — market closed, funds held in fiat_exposure", "user_id", userID)
+		return nil
+	}
 	s.syncPositionsAsync(userID)
 
 	if orderErr != nil {
@@ -523,6 +538,12 @@ func (s *Service) placeStrategyOrders(ctx context.Context, userID, stashID uuid.
 		orderCorrelationID := fmt.Sprintf("%s:%d:%s", correlationID, i, alloc.Symbol)
 
 		if err := s.placeSingleOrder(ctx, userID, stashID, alloc.Symbol, allocAmount, orderCorrelationID); err != nil {
+			// Market closed is a deferral — funds stay in fiat_exposure for retry.
+			if errors.Is(err, ErrMarketClosed) {
+				s.logger.Info("Strategy orders deferred — market is closed",
+					"user_id", userID)
+				return ErrMarketClosed
+			}
 			s.logger.Error("Failed to place order for allocation",
 				"user_id", userID,
 				"symbol", alloc.Symbol,
@@ -562,6 +583,16 @@ func (s *Service) placeSingleOrder(ctx context.Context, userID, stashID uuid.UUI
 
 	order, createErr := s.orderPlacer.PlaceMarketOrder(ctx, userID, symbol, amount, clientOrderID)
 	if createErr != nil {
+		// Market closed is a deferral, not a failure. Funds remain in fiat_exposure
+		// and the kyc_autoinvest worker will retry when the market reopens.
+		if errors.Is(createErr, ErrMarketClosed) || strings.Contains(createErr.Error(), "market is closed") {
+			s.logger.Info("Order deferred — market is closed",
+				"user_id", userID,
+				"symbol", symbol,
+				"amount", amount,
+			)
+			return ErrMarketClosed
+		}
 		s.logger.Error("Failed to create order",
 			"user_id", userID,
 			"symbol", symbol,

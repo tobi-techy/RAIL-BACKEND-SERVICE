@@ -2,9 +2,10 @@ package investing
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 
-	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/domain/entities"
@@ -44,9 +45,14 @@ func (s *BasketExecutor) ExecuteBasket(
 
 	orders := make([]*entities.AlpacaOrderResponse, 0, len(allocations))
 
-	for _, allocation := range allocations {
+	for i, allocation := range allocations {
 		// Calculate dollar amount for this allocation
 		allocationAmount := totalAmount.Mul(allocation.Percentage).Div(decimal.NewFromInt(100))
+
+		// Deterministic client order ID — stable across retries for the same basket execution
+		idInput := fmt.Sprintf("basket:%s:%d:%s:%s", alpacaAccountID, i, allocation.Symbol, totalAmount.StringFixed(2))
+		h := sha256.Sum256([]byte(idInput))
+		clientOrderID := hex.EncodeToString(h[:])[:36]
 
 		order, err := s.alpacaService.CreateOrder(ctx, alpacaAccountID, &entities.AlpacaCreateOrderRequest{
 			Symbol:        allocation.Symbol,
@@ -55,7 +61,7 @@ func (s *BasketExecutor) ExecuteBasket(
 			Type:          entities.AlpacaOrderTypeMarket,
 			TimeInForce:   entities.AlpacaTimeInForceDay,
 			ExtendedHours: false,
-			ClientOrderID: uuid.New().String(),
+			ClientOrderID: clientOrderID,
 		})
 
 		if err != nil {
