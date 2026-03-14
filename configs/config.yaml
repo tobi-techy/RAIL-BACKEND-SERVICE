@@ -161,7 +161,7 @@ kyc:
 email:
   provider: "mailpit"
   api_key: ""
-  from_email: "no-reply@rail.app"
+  from_email: "noreply@userail.money"
   from_name: "RAIL Service"
   base_url: "http://localhost:3000"
   environment: "development"

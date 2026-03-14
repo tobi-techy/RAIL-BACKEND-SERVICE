@@ -345,6 +345,8 @@ resource "aws_ecs_task_definition" "app" {
     # Secrets pulled from SSM Parameter Store at container start
     secrets = [
       { name = "UNOSEND_API_KEY",       valueFrom = "/rail/${var.env}/UNOSEND_API_KEY" },
+      { name = "EMAIL_FROM_EMAIL",      valueFrom = "/rail/${var.env}/EMAIL_FROM_EMAIL" },
+      { name = "EMAIL_FROM_NAME",       valueFrom = "/rail/${var.env}/EMAIL_FROM_NAME" },
       { name = "JWT_SECRET",            valueFrom = "/rail/${var.env}/JWT_SECRET" },
       { name = "ENCRYPTION_KEY",        valueFrom = "/rail/${var.env}/ENCRYPTION_KEY" },
       { name = "DATABASE_URL",          valueFrom = "/rail/${var.env}/DATABASE_URL" },
