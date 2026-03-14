@@ -8,7 +8,7 @@ terraform {
   }
   # Store state in S3 — create the bucket manually once before first apply
   backend "s3" {
-    bucket = "rail-terraform-state"
+    bucket = "rail-terraform-state-605894285151"
     key    = "staging/terraform.tfstate"
     region = "us-east-1"
   }
@@ -135,7 +135,7 @@ resource "aws_db_instance" "postgres" {
   db_subnet_group_name   = aws_db_subnet_group.main.name
   vpc_security_group_ids = [aws_security_group.rds.id]
 
-  backup_retention_period = 7
+  backup_retention_period = 0  # free tier restriction: max 0
   skip_final_snapshot     = false
   final_snapshot_identifier = "rail-${var.env}-final"
   deletion_protection     = true
@@ -291,19 +291,30 @@ resource "aws_ecs_task_definition" "app" {
       { name = "ENVIRONMENT", value = var.env },
       { name = "GIN_MODE",    value = "release" },
       { name = "PORT",        value = "8080" },
-      { name = "DATABASE_URL", value = "postgres://rail:${var.db_password}@${aws_db_instance.postgres.address}:5432/rail?sslmode=require" },
       { name = "REDIS_HOST",  value = aws_elasticache_cluster.redis.cache_nodes[0].address },
       { name = "REDIS_PORT",  value = "6379" },
     ]
 
     # Secrets pulled from SSM Parameter Store at container start
     secrets = [
-      { name = "JWT_SECRET",       valueFrom = "/rail/${var.env}/jwt_secret" },
-      { name = "ENCRYPTION_KEY",   valueFrom = "/rail/${var.env}/encryption_key" },
-      { name = "BRIDGE_API_KEY",   valueFrom = "/rail/${var.env}/bridge_api_key" },
-      { name = "ALPACA_API_KEY",   valueFrom = "/rail/${var.env}/alpaca_api_key" },
-      { name = "ALPACA_API_SECRET",valueFrom = "/rail/${var.env}/alpaca_api_secret" },
-      { name = "SENDGRID_API_KEY", valueFrom = "/rail/${var.env}/sendgrid_api_key" },
+      { name = "JWT_SECRET",            valueFrom = "/rail/${var.env}/jwt_secret" },
+      { name = "ENCRYPTION_KEY",        valueFrom = "/rail/${var.env}/encryption_key" },
+      { name = "DATABASE_URL",          valueFrom = "/rail/${var.env}/database_url" },
+      { name = "ALPACA_API_KEY",        valueFrom = "/rail/${var.env}/alpaca_api_key" },
+      { name = "ALPACA_API_SECRET",     valueFrom = "/rail/${var.env}/alpaca_api_secret" },
+      { name = "ALPACA_BASE_URL",       valueFrom = "/rail/${var.env}/alpaca_base_url" },
+      { name = "ALPACA_DATA_BASE_URL",  valueFrom = "/rail/${var.env}/alpaca_data_base_url" },
+      { name = "ALPACA_WEBHOOK_SECRET", valueFrom = "/rail/${var.env}/alpaca_webhook_secret" },
+      { name = "BRIDGE_API_KEY",        valueFrom = "/rail/${var.env}/bridge_api_key" },
+      { name = "BRIDGE_BASE_URL",       valueFrom = "/rail/${var.env}/bridge_base_url" },
+      { name = "BRIDGE_ENVIRONMENT",    valueFrom = "/rail/${var.env}/bridge_environment" },
+      { name = "UNOSEND_API_KEY",       valueFrom = "/rail/${var.env}/unosend_api_key" },
+      { name = "EMAIL_FROM_EMAIL",      valueFrom = "/rail/${var.env}/email_from_email" },
+      { name = "EMAIL_FROM_NAME",       valueFrom = "/rail/${var.env}/email_from_name" },
+      { name = "SUMSUB_APP_TOKEN",      valueFrom = "/rail/${var.env}/sumsub_app_token" },
+      { name = "SUMSUB_SECRET_KEY",     valueFrom = "/rail/${var.env}/sumsub_secret_key" },
+      { name = "LOGO_DEV_PUBLISHABLE_KEY", valueFrom = "/rail/${var.env}/logo_dev_publishable_key" },
+      { name = "SENTRY_DSN",            valueFrom = "/rail/${var.env}/sentry_dsn" },
     ]
 
     logConfiguration = {
