@@ -161,7 +161,7 @@ func (h *WalletFundingHandlers) ListDeposits(c *gin.Context) {
 		depositType := "crypto"
 		currency := "USDC"
 		chain := string(conf.Chain)
-		if chain == "" || strings.HasPrefix(strings.ToLower(conf.Status), "off_ramp") || strings.EqualFold(conf.Status, "broker_funded") {
+		if chain == "" || strings.EqualFold(chain, "fiat") || strings.HasPrefix(strings.ToLower(conf.Status), "off_ramp") || strings.EqualFold(conf.Status, "broker_funded") {
 			depositType = "fiat"
 			currency = "USD"
 		}

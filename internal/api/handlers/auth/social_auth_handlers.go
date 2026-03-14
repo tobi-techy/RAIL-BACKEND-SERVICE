@@ -120,6 +120,10 @@ func (h *SocialAuthHandlers) GetSocialAuthURL(c *gin.Context) {
 	// Generate state for CSRF protection
 	state, _ := crypto.GenerateRandomString(32)
 
+	if h.redisClient != nil {
+		h.redisClient.Set(c.Request.Context(), "oauth:state:"+state, "1", 10*time.Minute)
+	}
+
 	url, err := h.socialAuthService.GetAuthURL(req.Provider, req.RedirectURI, state)
 	if err != nil {
 		h.logger.Error("Failed to generate auth URL", zap.Error(err))
@@ -143,6 +147,17 @@ func (h *SocialAuthHandlers) SocialLogin(c *gin.Context) {
 	if h.socialAuthService == nil {
 		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{Code: "SOCIAL_AUTH_UNAVAILABLE", Message: "Social authentication not configured"})
 		return
+	}
+
+	// Validate OAuth state to prevent CSRF
+	if req.State != "" && h.redisClient != nil {
+		stateKey := "oauth:state:" + req.State
+		exists, _ := h.redisClient.Exists(ctx, stateKey)
+		if !exists {
+			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_STATE", Message: "Invalid or expired OAuth state"})
+			return
+		}
+		h.redisClient.Del(ctx, stateKey)
 	}
 
 	// Authenticate with provider

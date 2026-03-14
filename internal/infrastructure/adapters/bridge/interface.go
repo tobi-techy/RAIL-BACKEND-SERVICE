@@ -31,8 +31,11 @@ type BridgeClient interface {
 	EnableCards(ctx context.Context, req *EnableCardsRequest) error
 	CreateCardAccount(ctx context.Context, customerID string, req *CreateCardAccountRequest) (*CardAccount, error)
 	GetCardAccount(ctx context.Context, customerID, cardAccountID string) (*CardAccount, error)
-	FreezeCardAccount(ctx context.Context, customerID, cardAccountID string) (*CardAccount, error)
-	UnfreezeCardAccount(ctx context.Context, customerID, cardAccountID string) (*CardAccount, error)
+	FreezeCardAccount(ctx context.Context, customerID, cardAccountID, initiator, reason string) (*CardAccount, error)
+	UnfreezeCardAccount(ctx context.Context, customerID, cardAccountID, initiator string) (*CardAccount, error)
+	CreateCardPINUpdateURL(ctx context.Context, customerID, cardAccountID string) (*CardPINUpdateURLResponse, error)
+	CreateCardEphemeralKey(ctx context.Context, customerID, cardAccountID, clientNonce string) (*EphemeralKeyResponse, error)
+	GetCardStatement(ctx context.Context, customerID, cardAccountID, period string) ([]byte, error)
 
 	// External Accounts (ACH payout destinations)
 	CreateExternalAccount(ctx context.Context, customerID string, req *CreateExternalAccountRequest) (*ExternalAccount, error)
@@ -42,6 +45,12 @@ type BridgeClient interface {
 	CreateTransfer(ctx context.Context, req *CreateTransferRequest) (*Transfer, error)
 	GetTransfer(ctx context.Context, transferID string) (*Transfer, error)
 	ListTransfers(ctx context.Context, customerID string) (*ListTransfersResponse, error)
+	ListTransfersByTemplateID(ctx context.Context, templateID string) (*ListTransfersResponse, error)
+
+	// Liquidation Addresses
+	CreateLiquidationAddress(ctx context.Context, customerID string, req *CreateLiquidationAddressRequest) (*LiquidationAddress, error)
+	ListLiquidationAddresses(ctx context.Context, customerID string) (*ListLiquidationAddressesResponse, error)
+	GetDrains(ctx context.Context, customerID, liquidationAddressID string) (*ListDrainsResponse, error)
 
 	// Health
 	Ping(ctx context.Context) error

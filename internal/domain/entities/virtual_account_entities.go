@@ -38,6 +38,7 @@ type CreateVirtualAccountRequest struct {
 	UserID           uuid.UUID `json:"user_id"`
 	AlpacaAccountID  string    `json:"alpaca_account_id"`
 	BridgeCustomerID string    `json:"bridge_customer_id"`
+	Currency         string    `json:"currency"` // USD, EUR, GBP — defaults to USD
 }
 
 // CreateVirtualAccountResponse represents the response from creating a virtual account

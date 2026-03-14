@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -33,6 +34,7 @@ type CardRepository interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.BridgeCard, error)
 	GetActiveVirtualCard(ctx context.Context, userID uuid.UUID) (*entities.BridgeCard, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status entities.CardStatus) error
+	UpdateDailyLimit(ctx context.Context, id uuid.UUID, limitCents *int) error
 	CreateTransaction(ctx context.Context, tx *entities.BridgeCardTransaction) error
 	GetTransactionByBridgeID(ctx context.Context, bridgeTransID string) (*entities.BridgeCardTransaction, error)
 	GetTransactionsByCardID(ctx context.Context, cardID uuid.UUID, limit, offset int) ([]*entities.BridgeCardTransaction, error)
@@ -64,18 +66,24 @@ type LedgerService interface {
 	CreateTransaction(ctx context.Context, req *entities.CreateTransactionRequest) (*entities.LedgerTransaction, error)
 }
 
+// CardNotificationService sends card-related push notifications
+type CardNotificationService interface {
+	NotifyCardTransaction(ctx context.Context, userID uuid.UUID, amount, merchant string) error
+}
+
 // Service handles card business logic
 type Service struct {
-	repo            CardRepository
-	bridgeAdapter   *bridge.Adapter
-	userProvider    UserProfileProvider
-	walletProvider  WalletProvider
-	balanceProvider BalanceProvider
-	ledgerService   LedgerService
-	logger          *zap.Logger
-	defaultChain    string
-	enableCardsOnce sync.Once
-	enableCardsErr  error
+	repo                CardRepository
+	bridgeAdapter       *bridge.Adapter
+	userProvider        UserProfileProvider
+	walletProvider      WalletProvider
+	balanceProvider     BalanceProvider
+	ledgerService       LedgerService
+	notificationService CardNotificationService
+	logger              *zap.Logger
+	defaultChain        string
+	enableCardsOnce     sync.Once
+	enableCardsErr      error
 }
 
 // NewService creates a new card service
@@ -104,6 +112,10 @@ func (s *Service) SetLedgerService(ledgerService LedgerService) {
 	s.ledgerService = ledgerService
 }
 
+func (s *Service) SetNotificationService(ns CardNotificationService) {
+	s.notificationService = ns
+}
+
 // CreateVirtualCard creates a virtual card for a user on first funding
 func (s *Service) CreateVirtualCard(ctx context.Context, userID uuid.UUID) (*entities.BridgeCard, error) {
 	s.logger.Info("Creating virtual card", zap.String("user_id", userID.String()))
@@ -126,8 +138,11 @@ func (s *Service) CreateVirtualCard(ctx context.Context, userID uuid.UUID) (*ent
 		return nil, ErrCustomerNotFound
 	}
 
-	// Get user's wallet for card funding
+	// Get user's wallet for card funding — try mainnet Solana first, fall back to devnet
 	wallet, err := s.walletProvider.GetUserWalletByChain(ctx, userID, s.defaultChain)
+	if err != nil || wallet == nil {
+		wallet, err = s.walletProvider.GetUserWalletByChain(ctx, userID, string(entities.WalletChainSOLDevnet))
+	}
 	if err != nil || wallet == nil {
 		return nil, ErrWalletNotFound
 	}
@@ -212,8 +227,9 @@ func (s *Service) FreezeCard(ctx context.Context, userID, cardID uuid.UUID) (*en
 		return card, nil // Already frozen
 	}
 
-	// Freeze on Bridge
-	_, err = s.bridgeAdapter.Client().FreezeCardAccount(ctx, card.BridgeCustomerID, card.BridgeCardID)
+	// Freeze on Bridge — use a fresh idempotency key so repeated calls aren't deduplicated
+	freezeCtx := bridge.WithIdempotencyKey(ctx, bridge.GenerateIdempotencyKey())
+	_, err = s.bridgeAdapter.Client().FreezeCardAccount(freezeCtx, card.BridgeCustomerID, card.BridgeCardID, bridge.CardActionInitiatorCustomer, bridge.CardFreezeReasonPlannedInactivity)
 	if err != nil {
 		s.logger.Error("Failed to freeze card on Bridge", zap.Error(err))
 		return nil, fmt.Errorf("failed to freeze card: %w", err)
@@ -243,8 +259,9 @@ func (s *Service) UnfreezeCard(ctx context.Context, userID, cardID uuid.UUID) (*
 		return card, nil // Already active
 	}
 
-	// Unfreeze on Bridge
-	_, err = s.bridgeAdapter.Client().UnfreezeCardAccount(ctx, card.BridgeCustomerID, card.BridgeCardID)
+	// Unfreeze on Bridge — fresh idempotency key
+	unfreezeCtx := bridge.WithIdempotencyKey(ctx, bridge.GenerateIdempotencyKey())
+	_, err = s.bridgeAdapter.Client().UnfreezeCardAccount(unfreezeCtx, card.BridgeCustomerID, card.BridgeCardID, bridge.CardActionInitiatorCustomer)
 	if err != nil {
 		s.logger.Error("Failed to unfreeze card on Bridge", zap.Error(err))
 		return nil, fmt.Errorf("failed to unfreeze card: %w", err)
@@ -370,6 +387,17 @@ func (s *Service) RecordTransaction(ctx context.Context, bridgeCardID, bridgeTra
 				zap.String("transaction_id", bridgeTransID),
 				zap.Error(err))
 			return err
+		}
+		if s.notificationService != nil {
+			go func() {
+				bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				merchant := merchantName
+				if merchant == "" {
+					merchant = "merchant"
+				}
+				_ = s.notificationService.NotifyCardTransaction(bgCtx, card.UserID, amount.StringFixed(2), merchant)
+			}()
 		}
 	}
 
@@ -617,4 +645,30 @@ func nilIfEmpty(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// GetCardEphemeralKey generates a one-time ephemeral key for PCI-compliant card detail reveal.
+func (s *Service) GetCardEphemeralKey(ctx context.Context, userID, cardID uuid.UUID, clientNonce string) (string, error) {
+	card, err := s.GetCard(ctx, userID, cardID)
+	if err != nil {
+		return "", err
+	}
+	resp, err := s.bridgeAdapter.Client().CreateCardEphemeralKey(ctx, card.BridgeCustomerID, card.BridgeCardID, clientNonce)
+	if err != nil {
+		return "", fmt.Errorf("get card ephemeral key: %w", err)
+	}
+	return resp.EphemeralKey, nil
+}
+
+// SetDailyLimit sets the daily spending limit for a card (stored locally, enforced at auth time).
+func (s *Service) SetDailyLimit(ctx context.Context, userID, cardID uuid.UUID, limitCents *int) (*entities.BridgeCard, error) {
+	card, err := s.GetCard(ctx, userID, cardID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.repo.UpdateDailyLimit(ctx, cardID, limitCents); err != nil {
+		return nil, err
+	}
+	card.DailyLimitCents = limitCents
+	return card, nil
 }

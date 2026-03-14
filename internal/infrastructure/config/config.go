@@ -318,6 +318,7 @@ type CloudflareConfig struct {
 	R2Bucket    string `mapstructure:"r2_bucket"`
 	R2PublicURL string `mapstructure:"r2_public_url"` // Custom domain for R2
 	WorkerURL   string `mapstructure:"worker_url"`    // Cloudflare Worker URL for edge caching
+	Proxied     bool   `mapstructure:"proxied"`       // True when all traffic is routed through Cloudflare
 }
 
 type EmailConfig struct {
@@ -606,7 +607,7 @@ func setDefaults() {
 	viper.SetDefault("circle.base_url", "")
 	viper.SetDefault("circle.default_wallet_set_id", "")
 	viper.SetDefault("circle.default_wallet_set_name", "STACK-WalletSet")
-	viper.SetDefault("circle.supported_chains", []string{"SOL-DEVNET", "MATIC-AMOY", "AVAX-FUJI"})
+	viper.SetDefault("circle.supported_chains", []string{"SOL-DEVNET", "MATIC-AMOY"})
 
 	// KYC defaults
 	viper.SetDefault("kyc.provider", "")

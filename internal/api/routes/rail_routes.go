@@ -25,7 +25,7 @@ func SetupStackRoutes(db *sql.DB, cfg *config.Config, log *logger.Logger, zapLog
 	router.Use(middleware.Logger(log))
 	router.Use(middleware.Recovery(log))
 	router.Use(middleware.CORS(cfg.Server.AllowedOrigins))
-	router.Use(middleware.RateLimit(cfg.Server.RateLimitPerMin))
+	router.Use(middleware.RateLimit(cfg.Server.RateLimitPerMin, cfg.Cloudflare.Proxied))
 	router.Use(middleware.SecurityHeaders())
 
 	// CSRF protection

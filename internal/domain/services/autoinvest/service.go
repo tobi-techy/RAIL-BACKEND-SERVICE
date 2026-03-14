@@ -20,6 +20,11 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// ErrMarketClosed is returned by PlaceMarketOrder when the market is not open.
+// The autoinvest service treats this as a deferral, not a failure — funds stay
+// in fiat_exposure and the kyc_autoinvest worker will retry at next market open.
+var ErrMarketClosed = errors.New("market is closed")
+
 var tracer = otel.Tracer("autoinvest-service")
 
 // Config holds configuration for auto-investment
@@ -76,6 +81,7 @@ type PositionSyncer interface {
 type AutoInvestRepository interface {
 	GetUserSettings(ctx context.Context, userID uuid.UUID) (*entities.AutoInvestSettings, error)
 	HasProcessedCorrelation(ctx context.Context, correlationID string) (bool, error)
+	GetEventByCorrelation(ctx context.Context, correlationID string) (*entities.AutoInvestEvent, error)
 	CreateEvent(ctx context.Context, event *entities.AutoInvestEvent) error
 	UpdateEventStatus(ctx context.Context, userID, eventID uuid.UUID, status entities.AutoInvestStatus, errMsg *string) error
 	UpdateEventAmount(ctx context.Context, userID, eventID uuid.UUID, amount decimal.Decimal) error
@@ -84,6 +90,7 @@ type AutoInvestRepository interface {
 // NotificationService defines user notification operations.
 type NotificationService interface {
 	SendGenericNotification(ctx context.Context, userID uuid.UUID, title, message string) error
+	NotifyInvestmentComplete(ctx context.Context, userID uuid.UUID, amount string) error
 }
 
 // Service handles automatic investment from stash balance
@@ -239,9 +246,19 @@ func (s *Service) TriggerAutoInvestment(ctx context.Context, req TriggerRequest)
 		return fmt.Errorf("failed to get stash balance: %w", err)
 	}
 
+	// Also pick up any funds already in fiat_exposure from a previous market-closed deferral.
+	fiatExposureBalance, err := s.ledgerService.GetAccountBalance(ctx, req.UserID, entities.AccountTypeFiatExposure)
+	if err != nil {
+		s.logger.Warn("Failed to read fiat_exposure balance, proceeding with stash only", "user_id", req.UserID, "error", err)
+		fiatExposureBalance = decimal.Zero
+	}
+
 	var investableAmount decimal.Decimal
 	if stashBalance.GreaterThan(threshold) {
 		investableAmount = stashBalance.Sub(threshold)
+	} else if fiatExposureBalance.GreaterThanOrEqual(decimal.NewFromFloat(1.0)) {
+		// Stash is below threshold but there are deferred funds in fiat_exposure — invest those.
+		investableAmount = fiatExposureBalance
 	} else {
 		s.logger.Debug("Skipping auto-invest, no investable balance",
 			"user_id", req.UserID,
@@ -295,42 +312,72 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 			CreatedAt:     time.Now(),
 		}
 		if err := s.repo.CreateEvent(ctx, event); err != nil {
-			// Unique constraint violation on correlation_id — already processed, safe to skip
+			// Unique constraint on correlation_id — event already exists.
 			var pqErr *pq.Error
 			if errors.As(err, &pqErr) && pqErr.Code == "23505" {
-				s.logger.Info("Duplicate auto-invest event, skipping",
-					"user_id", userID, "correlation_id", correlationID)
-				return nil
+				// Fetch the existing event to determine whether to retry or skip.
+				existing, fetchErr := s.repo.GetEventByCorrelation(ctx, correlationID)
+				if fetchErr != nil || existing == nil {
+					return fmt.Errorf("duplicate auto-invest event and failed to fetch existing: %w", err)
+				}
+				if existing.Status == entities.AutoInvestStatusCompleted {
+					s.logger.Info("Duplicate auto-invest event already completed, skipping",
+						"user_id", userID, "correlation_id", correlationID)
+					return nil
+				}
+				// Pending = previously deferred (e.g. market was closed). Reuse the event ID and continue.
+				s.logger.Info("Resuming deferred auto-invest event",
+					"user_id", userID, "correlation_id", correlationID, "event_id", existing.ID)
+				eventID = existing.ID
+			} else {
+				span.RecordError(err)
+				return fmt.Errorf("failed to record auto-invest event: %w", err)
 			}
-			span.RecordError(err)
-			return fmt.Errorf("failed to record auto-invest event: %w", err)
 		}
 	}
 
-	// Fix #8: Re-check balance right before transfer
-	currentBalance, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
+	// Fix #8: Re-check balance right before transfer.
+	// Funds may already be in fiat_exposure from a prior market-closed deferral — in that
+	// case skip the stash→fiat_exposure transfer and go straight to order placement.
+	currentStash, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
 	if err != nil {
 		s.markEventFailed(ctx, userID, eventID, "balance re-check failed")
 		return fmt.Errorf("failed to re-check stash balance: %w", err)
 	}
-	if currentBalance.LessThan(amount) {
-		s.logger.Warn("Balance changed since initial check, adjusting",
-			"user_id", userID,
-			"expected", amount,
-			"actual", currentBalance)
-		threshold := s.config.MinThreshold
-		if threshold.IsNegative() {
-			threshold = decimal.Zero
+	currentFiatExposure, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeFiatExposure)
+	if err != nil {
+		currentFiatExposure = decimal.Zero
+	}
+
+	alreadyInFiatExposure := currentFiatExposure.GreaterThanOrEqual(amount)
+
+	if !alreadyInFiatExposure {
+		// Normal path: funds are still in stash — adjust amount if balance changed.
+		currentBalance := currentStash
+		if currentBalance.LessThan(amount) {
+			s.logger.Warn("Balance changed since initial check, adjusting",
+				"user_id", userID,
+				"expected", amount,
+				"actual", currentBalance)
+			threshold := s.config.MinThreshold
+			if threshold.IsNegative() {
+				threshold = decimal.Zero
+			}
+			if currentBalance.LessThanOrEqual(threshold) {
+				s.markEventFailed(ctx, userID, eventID, "insufficient balance after re-check")
+				return nil
+			}
+			amount = currentBalance.Sub(threshold)
+			if s.repo != nil && eventID != uuid.Nil {
+				_ = s.repo.UpdateEventAmount(ctx, userID, eventID, amount)
+			}
 		}
-		if currentBalance.LessThanOrEqual(threshold) {
-			s.markEventFailed(ctx, userID, eventID, "insufficient balance after re-check")
-			return nil
-		}
-		amount = currentBalance.Sub(threshold)
-		// Update event record to reflect the adjusted amount
-		if s.repo != nil && eventID != uuid.Nil {
-			_ = s.repo.UpdateEventAmount(ctx, userID, eventID, amount)
-		}
+	} else {
+		// Retry path: funds already moved to fiat_exposure in a prior deferred attempt.
+		// Use the fiat_exposure balance as the authoritative amount.
+		amount = currentFiatExposure
+		s.logger.Info("Resuming deferred investment from fiat_exposure",
+			"user_id", userID, "amount", amount)
 	}
 
 	// Step 1: Transfer from stash to fiat exposure (buying power).
@@ -338,10 +385,13 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 	// uses SELECT FOR UPDATE inside a DB transaction, making the balance check and debit
 	// atomic. The re-check above narrows the TOCTOU window but the ledger transaction is
 	// the authoritative guard against overdrafts.
-	if err := s.transferStashToFiatExposure(ctx, userID, stashID, amount, correlationID); err != nil {
-		span.RecordError(err)
-		s.markEventFailed(ctx, userID, eventID, "ledger transfer failed")
-		return fmt.Errorf("failed to transfer to buying power: %w", err)
+	// Skip if funds are already in fiat_exposure (retry after market-closed deferral).
+	if !alreadyInFiatExposure {
+		if err := s.transferStashToFiatExposure(ctx, userID, stashID, amount, correlationID); err != nil {
+			span.RecordError(err)
+			s.markEventFailed(ctx, userID, eventID, "ledger transfer failed")
+			return fmt.Errorf("failed to transfer to buying power: %w", err)
+		}
 	}
 
 	// Step 2: Journal cash into the user's Alpaca account
@@ -379,6 +429,11 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 			"user_id", userID,
 			"error", err)
 		orderErr := s.placeSingleOrder(ctx, userID, stashID, s.config.FallbackSymbol, amount, correlationID)
+		if errors.Is(orderErr, ErrMarketClosed) {
+			// Leave funds in fiat_exposure; worker will retry at next market open.
+			s.logger.Info("Fallback order deferred — market closed", "user_id", userID)
+			return nil
+		}
 		s.syncPositionsAsync(userID)
 		if orderErr != nil {
 			s.markEventFailed(ctx, userID, eventID, "fallback order failed: "+orderErr.Error())
@@ -396,6 +451,11 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 
 	// Step 4: Place orders for each allocation
 	orderErr := s.placeStrategyOrders(ctx, userID, stashID, amount, correlationID, strategyResult)
+	if errors.Is(orderErr, ErrMarketClosed) {
+		// Leave funds in fiat_exposure; worker will retry at next market open.
+		s.logger.Info("Strategy orders deferred — market closed, funds held in fiat_exposure", "user_id", userID)
+		return nil
+	}
 	s.syncPositionsAsync(userID)
 
 	if orderErr != nil {
@@ -522,6 +582,12 @@ func (s *Service) placeStrategyOrders(ctx context.Context, userID, stashID uuid.
 		orderCorrelationID := fmt.Sprintf("%s:%d:%s", correlationID, i, alloc.Symbol)
 
 		if err := s.placeSingleOrder(ctx, userID, stashID, alloc.Symbol, allocAmount, orderCorrelationID); err != nil {
+			// Market closed is a deferral — funds stay in fiat_exposure for retry.
+			if errors.Is(err, ErrMarketClosed) {
+				s.logger.Info("Strategy orders deferred — market is closed",
+					"user_id", userID)
+				return ErrMarketClosed
+			}
 			s.logger.Error("Failed to place order for allocation",
 				"user_id", userID,
 				"symbol", alloc.Symbol,
@@ -561,6 +627,16 @@ func (s *Service) placeSingleOrder(ctx context.Context, userID, stashID uuid.UUI
 
 	order, createErr := s.orderPlacer.PlaceMarketOrder(ctx, userID, symbol, amount, clientOrderID)
 	if createErr != nil {
+		// Market closed is a deferral, not a failure. Funds remain in fiat_exposure
+		// and the kyc_autoinvest worker will retry when the market reopens.
+		if errors.Is(createErr, ErrMarketClosed) || strings.Contains(createErr.Error(), "market is closed") {
+			s.logger.Info("Order deferred — market is closed",
+				"user_id", userID,
+				"symbol", symbol,
+				"amount", amount,
+			)
+			return ErrMarketClosed
+		}
 		s.logger.Error("Failed to create order",
 			"user_id", userID,
 			"symbol", symbol,
@@ -590,6 +666,14 @@ func (s *Service) placeSingleOrder(ctx context.Context, userID, stashID uuid.UUI
 		"symbol", symbol,
 		"amount", amount,
 		"status", order.Status)
+
+	if s.notificationService != nil {
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = s.notificationService.NotifyInvestmentComplete(bgCtx, userID, amount.StringFixed(2))
+		}()
+	}
 
 	return nil
 }

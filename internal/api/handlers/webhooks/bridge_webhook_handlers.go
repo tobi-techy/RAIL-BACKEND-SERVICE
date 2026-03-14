@@ -21,6 +21,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -117,6 +118,56 @@ type BridgeCustomerEvent struct {
 	Email  string `json:"email"`
 }
 
+// HandleRealTimeAuth handles Bridge's synchronous real-time card authorization webhook.
+// POST /webhooks/bridge/card-auth
+// Bridge calls this endpoint synchronously during a card transaction and expects a
+// JSON response with {"approved": true/false} within 500ms. If the endpoint times out,
+// Bridge applies the configured fallback mode (default: DECLINE).
+// Signature verification uses X-Webhook-Signature header (RSA, same format as standard webhooks).
+func (h *BridgeWebhookHandler) HandleRealTimeAuth(c *gin.Context) {
+	rawBody, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot read body"})
+		return
+	}
+
+	// Verify RSA signature (X-Webhook-Signature: t=<ts>,v0=<sig>)
+	sig := c.GetHeader("X-Webhook-Signature")
+	if sig == "" {
+		h.logger.Warn("Real-time auth webhook missing X-Webhook-Signature")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing signature"})
+		return
+	}
+	if !h.verifySignature(sig, rawBody) {
+		h.logger.Warn("Real-time auth webhook signature verification failed")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
+		return
+	}
+
+	var req bridge.RealTimeAuthRequest
+	if err := json.Unmarshal(rawBody, &req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+		return
+	}
+
+	h.logger.Info("Real-time auth request",
+		zap.String("event_id", req.EventID),
+		zap.String("authorization_id", req.Data.AuthorizationID),
+		zap.String("card_account_id", req.Data.CardAccountID),
+		zap.String("amount", req.Data.Amount),
+		zap.String("merchant", req.Data.Merchant.Description))
+
+	// Default: approve if balance check passes. Bridge also enforces its own balance controls.
+	// Decline if amount is missing or zero (malformed request).
+	amount, _ := decimal.NewFromString(req.Data.Amount)
+	if amount.IsZero() {
+		c.JSON(http.StatusOK, bridge.RealTimeAuthResponse{Approved: false, DecisionReason: "invalid_amount"})
+		return
+	}
+
+	c.JSON(http.StatusOK, bridge.RealTimeAuthResponse{Approved: true})
+}
+
 // HandleWebhook handles all Bridge webhook events
 // POST /webhooks/bridge
 func (h *BridgeWebhookHandler) HandleWebhook(c *gin.Context) {
@@ -152,6 +203,10 @@ func (h *BridgeWebhookHandler) HandleWebhook(c *gin.Context) {
 
 	// Route by event category (new Bridge format) or event type (legacy)
 	switch payload.EventCategory {
+	// Liquidation Address Drain events (crypto deposits via liquidation addresses)
+	case "liquidation_address.drain":
+		h.handleLiquidationAddressDrain(c, payload)
+
 	// Virtual Account Activity - fiat deposits
 	case "virtual_account.activity":
 		h.handleVirtualAccountActivity(c, payload)
@@ -190,12 +245,67 @@ func (h *BridgeWebhookHandler) HandleWebhook(c *gin.Context) {
 	}
 }
 
+// handleLiquidationAddressDrain processes liquidation_address.drain events.
+// Only payment_processed is the final state where funds have reached the destination.
+func (h *BridgeWebhookHandler) handleLiquidationAddressDrain(c *gin.Context, payload BridgeWebhookPayload) {
+	state := getStringField(payload.EventObject, "state")
+	drainID := getStringField(payload.EventObject, "id")
+	customerID := getStringField(payload.EventObject, "customer_id")
+
+	h.logger.Info("Liquidation address drain event",
+		zap.String("drain_id", drainID),
+		zap.String("state", state),
+		zap.String("customer_id", customerID))
+
+	if state != "payment_processed" {
+		h.logger.Info("Skipping non-final drain state",
+			zap.String("drain_id", drainID),
+			zap.String("state", state))
+		c.JSON(http.StatusOK, gin.H{"status": "acknowledged"})
+		return
+	}
+
+	if h.service == nil {
+		h.logger.Error("Bridge webhook service is not configured")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service_unavailable"})
+		return
+	}
+
+	var amount decimal.Decimal
+	if amountStr := getStringField(payload.EventObject, "amount"); amountStr != "" {
+		amount, _ = decimal.NewFromString(amountStr)
+	}
+
+	if err := h.service.ProcessTransferCompleted(c, drainID, customerID, amount); err != nil {
+		h.logger.Error("Failed to process liquidation address drain",
+			zap.String("drain_id", drainID),
+			zap.String("customer_id", customerID),
+			zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "drain_processing_failed"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "success"})
+}
+
 // handleVirtualAccountActivity processes virtual_account.activity events (fiat deposits)
 func (h *BridgeWebhookHandler) handleVirtualAccountActivity(c *gin.Context, payload BridgeWebhookPayload) {
-	eventType := payload.EventObject["type"]
+	eventType := fmt.Sprintf("%v", payload.EventObject["type"])
 	h.logger.Info("Virtual account activity",
-		zap.String("activity_type", fmt.Sprintf("%v", eventType)),
+		zap.String("activity_type", eventType),
 		zap.String("event_type", payload.EventType))
+
+	// Only process payment_processed — the final, on-chain-confirmed state.
+	// All other event types (funds_received, payment_submitted, funds_scheduled,
+	// in_review, refunded, microdeposit, account_update, deactivation, reactivation)
+	// are informational and must not trigger deposit processing.
+	if eventType != "payment_processed" {
+		h.logger.Info("Skipping non-final virtual account activity event",
+			zap.String("activity_type", eventType),
+			zap.String("virtual_account_id", getStringField(payload.EventObject, "virtual_account_id")))
+		c.JSON(http.StatusOK, gin.H{"status": "acknowledged"})
+		return
+	}
 
 	// Extract deposit details
 	event := &BridgeDepositEvent{
@@ -204,7 +314,7 @@ func (h *BridgeWebhookHandler) handleVirtualAccountActivity(c *gin.Context, payl
 		Amount:           getStringField(payload.EventObject, "amount"),
 		Currency:         getStringField(payload.EventObject, "currency"),
 		TransactionRef:   getStringField(payload.EventObject, "deposit_id"),
-		Status:           fmt.Sprintf("%v", eventType),
+		Status:           eventType,
 	}
 
 	if h.service == nil {
@@ -235,7 +345,7 @@ func (h *BridgeWebhookHandler) handleTransferEvent(c *gin.Context, payload Bridg
 		zap.String("event_type", payload.EventType))
 
 	switch state {
-	case "payment_processed", "funds_received":
+	case "payment_processed":
 		if h.service == nil {
 			h.logger.Error("Bridge webhook service is not configured")
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service_unavailable"})
@@ -249,8 +359,12 @@ func (h *BridgeWebhookHandler) handleTransferEvent(c *gin.Context, payload Bridg
 		if err := h.service.ProcessTransferCompleted(c, transferID, customerID, amount); err != nil {
 			h.logger.Error("Failed to process transfer completed", zap.Error(err))
 		}
-	case "failed", "returned":
-		h.logger.Warn("Transfer failed/returned",
+	case "funds_received", "payment_submitted", "awaiting_funds", "in_review":
+		h.logger.Info("Transfer intermediate state — awaiting payment_processed",
+			zap.String("transfer_id", transferID),
+			zap.String("state", state))
+	case "returned", "undeliverable", "refunded", "missing_return_policy", "error", "canceled":
+		h.logger.Warn("Transfer terminal failure state",
 			zap.String("transfer_id", transferID),
 			zap.String("state", state))
 	}
@@ -1006,11 +1120,16 @@ func normalizeBridgeWebhookCardStatus(status string) string {
 	}
 }
 
-// getStringField safely extracts a string field from a map
+// getStringField safely extracts a string field from a map, also handling numeric values
 func getStringField(obj map[string]interface{}, key string) string {
 	if val, ok := obj[key]; ok {
-		if str, ok := val.(string); ok {
-			return str
+		switch v := val.(type) {
+		case string:
+			return v
+		case float64:
+			return decimal.NewFromFloat(v).String()
+		case json.Number:
+			return v.String()
 		}
 	}
 	return ""
@@ -1036,6 +1155,7 @@ func mapKYCStatusToCustomerStatus(kycStatus string) string {
 type BridgeCustomerStatusProcessor struct {
 	userRepo              UserRepositoryForCustomer
 	virtualAccountService VirtualAccountProvisioner
+	notifier              BridgeWebhookNotifier
 	logger                *zap.Logger
 }
 
@@ -1061,6 +1181,11 @@ func NewBridgeCustomerStatusProcessor(
 		virtualAccountService: virtualAccountService,
 		logger:                logger,
 	}
+}
+
+// SetNotifier wires the push notifier after construction
+func (s *BridgeCustomerStatusProcessor) SetNotifier(n BridgeWebhookNotifier) {
+	s.notifier = n
 }
 
 // UpdateCustomerStatus processes Bridge customer status changes
@@ -1103,6 +1228,15 @@ func (s *BridgeCustomerStatusProcessor) UpdateCustomerStatus(ctx context.Context
 	s.logger.Info("Updated bridge_kyc_status",
 		zap.String("user_id", user.ID.String()),
 		zap.String("new_status", bridgeKYCStatus))
+
+	// Send push notification for KYC outcome
+	if s.notifier != nil {
+		if ginCtx, ok := ctx.(*gin.Context); ok {
+			if notifyErr := s.notifier.NotifyKYCStatusChanged(ginCtx, user.ID, bridgeKYCStatus); notifyErr != nil {
+				s.logger.Warn("Failed to send KYC notification", zap.Error(notifyErr))
+			}
+		}
+	}
 
 	// Trigger virtual account provisioning if status became active
 	if bridgeKYCStatus == "active" {

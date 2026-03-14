@@ -280,13 +280,9 @@ func (c *Client) GetCardAccount(ctx context.Context, customerID, cardAccountID s
 	return &card, nil
 }
 
-// FreezeCardAccount freezes a card account
-func (c *Client) FreezeCardAccount(ctx context.Context, customerID, cardAccountID string) (*CardAccount, error) {
-	req := &FreezeCardAccountRequest{
-		Initiator: CardActionInitiatorCustomer,
-		Reason:    CardFreezeReasonUserRequested,
-	}
-
+// FreezeCardAccount freezes a card account with the given initiator and reason
+func (c *Client) FreezeCardAccount(ctx context.Context, customerID, cardAccountID, initiator, reason string) (*CardAccount, error) {
+	req := &FreezeCardAccountRequest{Initiator: initiator, Reason: reason}
 	var card CardAccount
 	if err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v0/customers/%s/card_accounts/%s/freeze", url.PathEscape(customerID), url.PathEscape(cardAccountID)), req, &card); err != nil {
 		return nil, fmt.Errorf("freeze card account failed: %w", err)
@@ -294,17 +290,43 @@ func (c *Client) FreezeCardAccount(ctx context.Context, customerID, cardAccountI
 	return &card, nil
 }
 
-// UnfreezeCardAccount unfreezes a card account
-func (c *Client) UnfreezeCardAccount(ctx context.Context, customerID, cardAccountID string) (*CardAccount, error) {
-	req := &UnfreezeCardAccountRequest{
-		Initiator: CardActionInitiatorCustomer,
-	}
-
+// UnfreezeCardAccount unfreezes a card account with the given initiator
+func (c *Client) UnfreezeCardAccount(ctx context.Context, customerID, cardAccountID, initiator string) (*CardAccount, error) {
+	req := &UnfreezeCardAccountRequest{Initiator: initiator}
 	var card CardAccount
 	if err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v0/customers/%s/card_accounts/%s/unfreeze", url.PathEscape(customerID), url.PathEscape(cardAccountID)), req, &card); err != nil {
 		return nil, fmt.Errorf("unfreeze card account failed: %w", err)
 	}
 	return &card, nil
+}
+
+// CreateCardPINUpdateURL returns a signed URL for the customer to update their card PIN
+func (c *Client) CreateCardPINUpdateURL(ctx context.Context, customerID, cardAccountID string) (*CardPINUpdateURLResponse, error) {
+	var resp CardPINUpdateURLResponse
+	if err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v0/customers/%s/card_accounts/%s/pin", url.PathEscape(customerID), url.PathEscape(cardAccountID)), nil, &resp); err != nil {
+		return nil, fmt.Errorf("create card PIN update URL failed: %w", err)
+	}
+	return &resp, nil
+}
+
+// CreateCardEphemeralKey creates a one-time ephemeral key for revealing card details to the frontend
+func (c *Client) CreateCardEphemeralKey(ctx context.Context, customerID, cardAccountID, clientNonce string) (*EphemeralKeyResponse, error) {
+	req := &EphemeralKeyRequest{ClientNonce: clientNonce}
+	var resp EphemeralKeyResponse
+	if err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v0/customers/%s/card_accounts/%s/ephemeral_keys", url.PathEscape(customerID), url.PathEscape(cardAccountID)), req, &resp); err != nil {
+		return nil, fmt.Errorf("create card ephemeral key failed: %w", err)
+	}
+	return &resp, nil
+}
+
+// GetCardStatement downloads a card statement PDF for the given period (e.g. "2025-01")
+func (c *Client) GetCardStatement(ctx context.Context, customerID, cardAccountID, period string) ([]byte, error) {
+	path := fmt.Sprintf("/v0/customers/%s/card_accounts/%s/statements/%s.pdf", url.PathEscape(customerID), url.PathEscape(cardAccountID), url.PathEscape(period))
+	var raw []byte
+	if err := c.doRequest(ctx, http.MethodPost, path, nil, &raw); err != nil {
+		return nil, fmt.Errorf("get card statement failed: %w", err)
+	}
+	return raw, nil
 }
 
 // CreateExternalAccount registers a bank account as an ACH payout destination
@@ -352,6 +374,15 @@ func (c *Client) ListTransfers(ctx context.Context, customerID string) (*ListTra
 	return &resp, nil
 }
 
+// ListTransfersByTemplateID fetches all transfer instances created from a static template
+func (c *Client) ListTransfersByTemplateID(ctx context.Context, templateID string) (*ListTransfersResponse, error) {
+	var resp ListTransfersResponse
+	if err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v0/transfers?template_id=%s", url.QueryEscape(templateID)), nil, &resp); err != nil {
+		return nil, fmt.Errorf("list transfers by template failed: %w", err)
+	}
+	return &resp, nil
+}
+
 // CreateLiquidationAddress creates a liquidation address for a customer
 func (c *Client) CreateLiquidationAddress(ctx context.Context, customerID string, req *CreateLiquidationAddressRequest) (*LiquidationAddress, error) {
 	var la LiquidationAddress
@@ -366,6 +397,16 @@ func (c *Client) ListLiquidationAddresses(ctx context.Context, customerID string
 	var resp ListLiquidationAddressesResponse
 	if err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v0/customers/%s/liquidation_addresses", url.PathEscape(customerID)), nil, &resp); err != nil {
 		return nil, fmt.Errorf("list liquidation addresses failed: %w", err)
+	}
+	return &resp, nil
+}
+
+// GetDrains retrieves the drain history for a liquidation address
+func (c *Client) GetDrains(ctx context.Context, customerID, liquidationAddressID string) (*ListDrainsResponse, error) {
+	var resp ListDrainsResponse
+	path := fmt.Sprintf("/v0/customers/%s/liquidation_addresses/%s/drains", url.PathEscape(customerID), url.PathEscape(liquidationAddressID))
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, fmt.Errorf("get drains failed: %w", err)
 	}
 	return &resp, nil
 }

@@ -273,7 +273,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		auth := v1.Group("/auth")
 		auth.Use(middleware.AuthCSRFProtection())
 		{
-			auth.POST("/register", authHandlers.Register)
+			auth.POST("/register", middleware.AuthRateLimit(5), authHandlers.Register)
 			auth.POST("/verify", middleware.AuthRateLimit(5), authHandlers.Verify)
 			auth.POST("/refresh", middleware.AuthRateLimit(10), authHandlers.RefreshToken)
 			auth.POST("/logout", authHandlers.Logout)
@@ -800,6 +800,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// Bridge webhooks for fiat deposits and transfers
 			if bridgeWebhookHandler := container.GetBridgeWebhookHandler(); bridgeWebhookHandler != nil {
 				webhooks.POST("/bridge", bridgeWebhookHandler.HandleWebhook)
+				// Synchronous real-time card authorization webhook (Bridge calls this during transactions)
+				webhooks.POST("/bridge/card-auth", bridgeWebhookHandler.HandleRealTimeAuth)
 			}
 		}
 

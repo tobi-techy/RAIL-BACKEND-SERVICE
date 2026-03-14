@@ -135,10 +135,10 @@ func (a *BridgeDepositAdapter) ListLiquidationAddresses(ctx context.Context, cus
 	out := make([]funding.BridgeLiquidationAddr, len(resp.Data))
 	for i, la := range resp.Data {
 		out[i] = funding.BridgeLiquidationAddr{
-			ID:             la.ID,
-			Chain:          string(la.Chain),
-			Address:        la.Address,
-			BridgeWalletID: la.BridgeWalletID,
+			ID:       la.ID,
+			Chain:    string(la.Chain),
+			Currency: string(la.Currency),
+			Address:  la.Address,
 		}
 	}
 	return out, nil
@@ -148,17 +148,13 @@ func (a *BridgeDepositAdapter) IsSandbox() bool {
 	return strings.EqualFold(strings.TrimSpace(a.client.Config().Environment), "sandbox")
 }
 
-func (a *BridgeDepositAdapter) CreateLiquidationAddress(ctx context.Context, customerID string, chain string, bridgeWalletID string, destinationAddress string) (string, string, error) {
+func (a *BridgeDepositAdapter) CreateLiquidationAddress(ctx context.Context, customerID string, sourceChain string, destinationChain string, destinationAddress string) (string, string, error) {
 	req := &bridge.CreateLiquidationAddressRequest{
-		Chain:                  bridge.PaymentRail(chain),
+		Chain:                  bridge.PaymentRail(sourceChain),
 		Currency:               bridge.CurrencyUSDC,
-		DestinationPaymentRail: bridge.PaymentRail(chain),
+		DestinationPaymentRail: bridge.PaymentRail(destinationChain),
 		DestinationCurrency:    bridge.CurrencyUSDC,
-	}
-	if bridgeWalletID != "" {
-		req.BridgeWalletID = bridgeWalletID
-	} else {
-		req.DestinationAddress = destinationAddress
+		DestinationAddress:     destinationAddress,
 	}
 	la, err := a.client.CreateLiquidationAddress(ctx, customerID, req)
 	if err != nil {
@@ -499,57 +495,19 @@ func stateCodeToName(code string) string {
 	// If already 2 uppercase letters, convert to name
 	if len(code) == 2 && code == strings.ToUpper(code) {
 		stateMap := map[string]string{
-			"AL": "Alabama",
-			"AK": "Alaska",
-			"AZ": "Arizona",
-			"AR": "Arkansas",
-			"CA": "California",
-			"CO": "Colorado",
-			"CT": "Connecticut",
-			"DE": "Delaware",
-			"FL": "Florida",
-			"GA": "Georgia",
-			"HI": "Hawaii",
-			"ID": "Idaho",
-			"IL": "Illinois",
-			"IN": "Indiana",
-			"IA": "Iowa",
-			"KS": "Kansas",
-			"KY": "Kentucky",
-			"LA": "Louisiana",
-			"ME": "Maine",
-			"MD": "Maryland",
-			"MA": "Massachusetts",
-			"MI": "Michigan",
-			"MN": "Minnesota",
-			"MS": "Mississippi",
-			"MO": "Missouri",
-			"MT": "Montana",
-			"NE": "Nebraska",
-			"NV": "Nevada",
-			"NH": "New Hampshire",
-			"NJ": "New Jersey",
-			"NM": "New Mexico",
-			"NY": "New York",
-			"NC": "North Carolina",
-			"ND": "North Dakota",
-			"OH": "Ohio",
-			"OK": "Oklahoma",
-			"OR": "Oregon",
-			"PA": "Pennsylvania",
-			"RI": "Rhode Island",
-			"SC": "South Carolina",
-			"SD": "South Dakota",
-			"TN": "Tennessee",
-			"TX": "Texas",
-			"UT": "Utah",
-			"VT": "Vermont",
-			"VA": "Virginia",
-			"WA": "Washington",
-			"WV": "West Virginia",
-			"WI": "Wisconsin",
-			"WY": "Wyoming",
-			"DC": "District of Columbia",
+			"AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas",
+			"CA": "California", "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware",
+			"FL": "Florida", "GA": "Georgia", "HI": "Hawaii", "ID": "Idaho",
+			"IL": "Illinois", "IN": "Indiana", "IA": "Iowa", "KS": "Kansas",
+			"KY": "Kentucky", "LA": "Louisiana", "ME": "Maine", "MD": "Maryland",
+			"MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota", "MS": "Mississippi",
+			"MO": "Missouri", "MT": "Montana", "NE": "Nebraska", "NV": "Nevada",
+			"NH": "New Hampshire", "NJ": "New Jersey", "NM": "New Mexico", "NY": "New York",
+			"NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma",
+			"OR": "Oregon", "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina",
+			"SD": "South Dakota", "TN": "Tennessee", "TX": "Texas", "UT": "Utah",
+			"VT": "Vermont", "VA": "Virginia", "WA": "Washington", "WV": "West Virginia",
+			"WI": "Wisconsin", "WY": "Wyoming", "DC": "District of Columbia",
 		}
 		if name, ok := stateMap[strings.ToUpper(code)]; ok {
 			return name
@@ -557,6 +515,38 @@ func stateCodeToName(code string) string {
 	}
 	// Return original if not found
 	return code
+}
+
+// normalizeUSStateToCode converts a US state name or code to its 2-letter ISO code.
+// e.g., "Kansas" -> "KS", "KS" -> "KS", "New York" -> "NY"
+func normalizeUSStateToCode(state string) string {
+	if state == "" {
+		return state
+	}
+	upper := strings.ToUpper(strings.TrimSpace(state))
+	// Already a 2-letter code
+	if len(upper) == 2 {
+		return upper
+	}
+	nameToCode := map[string]string{
+		"ALABAMA": "AL", "ALASKA": "AK", "ARIZONA": "AZ", "ARKANSAS": "AR",
+		"CALIFORNIA": "CA", "COLORADO": "CO", "CONNECTICUT": "CT", "DELAWARE": "DE",
+		"FLORIDA": "FL", "GEORGIA": "GA", "HAWAII": "HI", "IDAHO": "ID",
+		"ILLINOIS": "IL", "INDIANA": "IN", "IOWA": "IA", "KANSAS": "KS",
+		"KENTUCKY": "KY", "LOUISIANA": "LA", "MAINE": "ME", "MARYLAND": "MD",
+		"MASSACHUSETTS": "MA", "MICHIGAN": "MI", "MINNESOTA": "MN", "MISSISSIPPI": "MS",
+		"MISSOURI": "MO", "MONTANA": "MT", "NEBRASKA": "NE", "NEVADA": "NV",
+		"NEW HAMPSHIRE": "NH", "NEW JERSEY": "NJ", "NEW MEXICO": "NM", "NEW YORK": "NY",
+		"NORTH CAROLINA": "NC", "NORTH DAKOTA": "ND", "OHIO": "OH", "OKLAHOMA": "OK",
+		"OREGON": "OR", "PENNSYLVANIA": "PA", "RHODE ISLAND": "RI", "SOUTH CAROLINA": "SC",
+		"SOUTH DAKOTA": "SD", "TENNESSEE": "TN", "TEXAS": "TX", "UTAH": "UT",
+		"VERMONT": "VT", "VIRGINIA": "VA", "WASHINGTON": "WA", "WEST VIRGINIA": "WV",
+		"WISCONSIN": "WI", "WYOMING": "WY", "DISTRICT OF COLUMBIA": "DC",
+	}
+	if code, ok := nameToCode[upper]; ok {
+		return code
+	}
+	return upper
 }
 
 // toTitleCaseStr converts a string to title case
@@ -615,12 +605,8 @@ func (a *BridgeOnboardingAdapter) CreateCustomer(ctx context.Context, req *entit
 
 	// Add residential address if provided
 	if req.Address != nil {
-		// Bridge API expects full state name for US (e.g., "NY" -> "New York")
-		// For non-US countries, pass the code as-is
-		subdivision := strings.TrimSpace(req.Address.State)
-		if country2 == "US" {
-			subdivision = stateCodeToName(subdivision)
-		}
+		// Bridge API expects ISO 3166-2 subdivision code without country prefix (e.g., "KS" not "Kansas")
+		subdivision := normalizeUSStateToCode(req.Address.State)
 
 		bridgeReq.ResidentialAddress = &bridge.Address{
 			StreetLine1: req.Address.Street,
@@ -838,6 +824,7 @@ type Container struct {
 	PortfolioSnapshotRepo   *repositories.PortfolioSnapshotRepository
 	ScheduledInvestmentRepo *repositories.ScheduledInvestmentRepository
 	RebalancingConfigRepo   *repositories.RebalancingConfigRepository
+	InvestmentRulesRepo     *repositories.InvestmentRulesRepository
 	MarketAlertRepo         *repositories.MarketAlertRepository
 
 	// Alpaca Investment Services
@@ -1276,10 +1263,13 @@ func (c *Container) initializeDomainServices() error {
 			&BridgeVirtualAccountWebhookAdapter{service: c.BridgeVirtualAccountService},
 			customerStatusProcessor,
 			nil, // Card processor can be injected later.
-			nil, // Notifications can be injected later.
+			&bridgeWebhookNotifierAdapter{svc: c.NotificationService},
 			c.UserRepo,
 			c.ZapLog,
 		)
+
+		// Wire notifier into customer status processor so KYC events fire push notifications
+		customerStatusProcessor.SetNotifier(&bridgeWebhookNotifierAdapter{svc: c.NotificationService})
 
 		webhookSecret := c.Config.Bridge.WebhookSecret
 		// Security fix: Only skip verification if explicitly configured for development AND no secret is set
@@ -1369,6 +1359,7 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize strategy engine and wire to auto-invest service
 	c.StrategyEngine = strategy.NewEngine(&strategyUserProfileAdapter{userRepo: c.UserRepo}, c.Logger)
 	c.StrategyEngine.SetRulesProvider(repositories.NewInvestmentRulesRepository(sqlxDB))
+	c.InvestmentRulesRepo = repositories.NewInvestmentRulesRepository(sqlxDB)
 	c.StrategyEngine.SetFrequencyProvider(repositories.NewDepositRepository(sqlxDB))
 	c.AutoInvestService.SetStrategyEngine(c.StrategyEngine)
 
@@ -1592,6 +1583,9 @@ func (c *Container) initializeDomainServices() error {
 		c.Config.Email.BaseURL,
 		c.ZapLog,
 	)
+	if c.NotificationService != nil {
+		c.P2PNotificationSender.SetPushService(c.NotificationService)
+	}
 	c.P2PService = p2p.NewService(
 		c.P2PRepo,
 		c.UserRepo,
@@ -2392,6 +2386,9 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 	)
 	// Wire ledger service to card service for transaction ledger entries
 	c.CardService.SetLedgerService(c.LedgerService)
+	if c.NotificationService != nil {
+		c.CardService.SetNotificationService(c.NotificationService)
+	}
 
 	// Rewire Bridge webhook service now that card service is available.
 	if c.BridgeWebhookHandler != nil && c.BridgeVirtualAccountService != nil {
@@ -2399,7 +2396,7 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 			&BridgeVirtualAccountWebhookAdapter{service: c.BridgeVirtualAccountService},
 			c.BridgeCustomerStatusProcessor, // preserve KYC processor — do NOT pass nil
 			&BridgeCardWebhookAdapter{service: c.CardService},
-			nil, // Notifications can be injected later.
+			&bridgeWebhookNotifierAdapter{svc: c.NotificationService},
 			c.UserRepo,
 			c.ZapLog,
 		)
@@ -2419,8 +2416,32 @@ func (a *marketNotificationAdapter) SendPushNotification(ctx context.Context, us
 	if a.svc == nil {
 		return nil
 	}
-	// Use existing notification service method
 	return a.svc.SendGenericNotification(ctx, userID, title, message)
+}
+
+// bridgeWebhookNotifierAdapter adapts NotificationService to BridgeWebhookNotifier
+type bridgeWebhookNotifierAdapter struct {
+	svc *services.NotificationService
+}
+
+func (a *bridgeWebhookNotifierAdapter) NotifyDepositReceived(ctx *gin.Context, userID uuid.UUID, amount, currency string) error {
+	if a.svc == nil {
+		return nil
+	}
+	return a.svc.NotifyDepositConfirmed(ctx.Request.Context(), userID, amount+" "+currency, "", "")
+}
+
+func (a *bridgeWebhookNotifierAdapter) NotifyKYCStatusChanged(ctx *gin.Context, userID uuid.UUID, status string) error {
+	if a.svc == nil {
+		return nil
+	}
+	switch status {
+	case "active":
+		return a.svc.NotifyKYCApproved(ctx.Request.Context(), userID)
+	case "rejected":
+		return a.svc.NotifyKYCRejected(ctx.Request.Context(), userID)
+	}
+	return nil
 }
 
 // copyTradingBalanceAdapter adapts LedgerService for copy trading balance operations
@@ -2532,6 +2553,20 @@ func (a *autoInvestOrderPlacerAdapter) PlaceMarketOrder(ctx context.Context, use
 		return nil, fmt.Errorf("user has no Alpaca account")
 	}
 
+	// Guard: account must be tradeable
+	if account.AccountBlocked {
+		return nil, fmt.Errorf("alpaca account is blocked for user %s", userID)
+	}
+	if account.TradingBlocked {
+		return nil, fmt.Errorf("trading is blocked on alpaca account for user %s", userID)
+	}
+
+	// Guard: only place orders during market hours (Mon–Fri 09:30–16:00 ET)
+	// DAY orders are rejected by Alpaca outside these hours; queue for next open instead.
+	if !isMarketOpen() {
+		return nil, fmt.Errorf("market is closed: order for %s queued for next market open", symbol)
+	}
+
 	// Create market order via Alpaca
 	orderReq := &entities.AlpacaCreateOrderRequest{
 		Symbol:        symbol,
@@ -2571,6 +2606,23 @@ func (a *autoInvestOrderPlacerAdapter) PlaceMarketOrder(ctx context.Context, use
 	}
 
 	return alpacaOrder, nil
+}
+
+// isMarketOpen returns true when the US equity market is currently open (Mon–Fri 09:30–16:00 ET).
+func isMarketOpen() bool {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		// If timezone data is unavailable, fail open so orders aren't silently dropped.
+		return true
+	}
+	et := time.Now().In(loc)
+	wd := et.Weekday()
+	if wd == time.Saturday || wd == time.Sunday {
+		return false
+	}
+	open := time.Date(et.Year(), et.Month(), et.Day(), 9, 30, 0, 0, loc)
+	close := time.Date(et.Year(), et.Month(), et.Day(), 16, 0, 0, 0, loc)
+	return et.After(open) && et.Before(close)
 }
 
 // strategyUserProfileAdapter adapts UserRepository for strategy engine
@@ -3029,4 +3081,64 @@ type InstantFundingAlpacaAdapterImpl struct {
 
 func (a *InstantFundingAlpacaAdapterImpl) CreateJournal(ctx context.Context, req *entities.AlpacaJournalRequest) (*entities.AlpacaJournalResponse, error) {
 	return a.service.CreateJournal(ctx, req)
+}
+
+// GetInvestmentRulesRepo returns the investment rules repository.
+func (c *Container) GetInvestmentRulesRepo() *repositories.InvestmentRulesRepository {
+	return c.InvestmentRulesRepo
+}
+
+// rebalancingStrategyAdapter implements rebalancing_worker.StrategyProvider.
+// It returns the target allocations from the user's first active RebalancingConfig.
+type rebalancingStrategyAdapter struct {
+	configRepo *repositories.RebalancingConfigRepository
+}
+
+func (a *rebalancingStrategyAdapter) GetTargetAllocations(ctx context.Context, userID uuid.UUID) (map[string]decimal.Decimal, error) {
+	configs, err := a.configRepo.GetByUserID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	for _, cfg := range configs {
+		if cfg.Status == entities.ScheduleStatusActive && len(cfg.TargetAllocations) > 0 {
+			return cfg.TargetAllocations, nil
+		}
+	}
+	return nil, fmt.Errorf("no active rebalancing config for user %s", userID)
+}
+
+// rebalancingOrderAdapter adapts orderPlacerAdapter to rebalancing_worker.OrderPlacer.
+type rebalancingOrderAdapter struct {
+	inner *orderPlacerAdapter
+}
+
+func (a *rebalancingOrderAdapter) PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal) (*entities.AlpacaOrderResponse, error) {
+	order, err := a.inner.PlaceMarketOrder(ctx, userID, symbol, amount)
+	if err != nil {
+		return nil, err
+	}
+	if order.AlpacaOrderID == nil {
+		return nil, fmt.Errorf("order placed but no Alpaca order ID returned")
+	}
+	return &entities.AlpacaOrderResponse{ID: *order.AlpacaOrderID}, nil
+}
+
+// GetRebalancingWorkerDeps returns the dependencies needed to start the rebalancing worker.
+func (c *Container) GetRebalancingWorkerDeps() (
+	rulesRepo *repositories.InvestmentRulesRepository,
+	positionRepo *repositories.InvestmentPositionRepository,
+	strategyProvider *rebalancingStrategyAdapter,
+	orderPlacer *rebalancingOrderAdapter,
+) {
+	rulesRepo = c.InvestmentRulesRepo
+	positionRepo = c.InvestmentPositionRepo
+	strategyProvider = &rebalancingStrategyAdapter{configRepo: c.RebalancingConfigRepo}
+	orderPlacer = &rebalancingOrderAdapter{inner: &orderPlacerAdapter{
+		investingService: c.InvestingService,
+		accountService:   c.AlpacaAccountService,
+		alpacaClient:     c.AlpacaClient,
+		orderRepo:        c.InvestmentOrderRepo,
+		logger:           c.ZapLog,
+	}}
+	return
 }

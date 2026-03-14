@@ -123,6 +123,7 @@ func (nm *NotificationManager) notifySpendingWarning(
 			remainingBalance.StringFixed(2),
 		),
 		Data: map[string]interface{}{
+			"type":              "spending_warning",
 			"threshold":         "warning",
 			"percentage":        percentage.String(),
 			"remaining_balance": remainingBalance.String(),
@@ -176,6 +177,7 @@ func (nm *NotificationManager) notifySpendingCritical(
 			remainingBalance.StringFixed(2),
 		),
 		Data: map[string]interface{}{
+			"type":              "spending_critical",
 			"threshold":         "critical",
 			"percentage":        percentage.String(),
 			"remaining_balance": remainingBalance.String(),
@@ -221,6 +223,7 @@ func (nm *NotificationManager) notifySpendingDepleted(
 		Title:    "Spending Limit Reached",
 		Message: "You've reached your 70% spending limit. Your 30% savings remain protected.",
 		Data: map[string]interface{}{
+			"type":              "spending_depleted",
 			"threshold":         "depleted",
 			"percentage":        "100",
 			"remaining_balance": remainingBalance.String(),

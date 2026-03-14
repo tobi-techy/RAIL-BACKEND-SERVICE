@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -21,7 +20,6 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
 	"github.com/rail-service/rail_service/internal/domain/services/wallet"
-	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/retry"
 	"github.com/shopspring/decimal"
@@ -99,25 +97,6 @@ func (h *WalletFundingHandlers) ReconcileUserBalance(c *gin.Context) {
 type CreateWalletsRequest struct {
 	UserID string   `json:"user_id" validate:"required,uuid"`
 	Chains []string `json:"chains" validate:"required,min=1"`
-}
-
-// Legacy handler factories for compatibility
-func GetWalletAddresses(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.JSON(http.StatusNotImplemented, gin.H{
-			"error":   "Not implemented yet",
-			"message": "Use WalletHandlers.GetWalletAddresses instead",
-		})
-	}
-}
-
-func GetWalletStatus(db *sql.DB, cfg *config.Config, log *logger.Logger) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.JSON(http.StatusNotImplemented, gin.H{
-			"error":   "Not implemented yet",
-			"message": "Use WalletHandlers.GetWalletStatus instead",
-		})
-	}
 }
 
 // FundingWithdrawalService interface for withdrawal operations
@@ -829,20 +808,28 @@ func (h *WalletFundingHandlers) GetWalletByChain(c *gin.Context) {
 			zap.String("user_id", userID.String()),
 			zap.String("chain", chainStr))
 
-		// Auto-provision the missing wallet (handles existing users who pre-date multi-chain support)
 		if provErr := h.walletService.CreateWalletsForUser(ctx, userID, []entities.WalletChain{chain}); provErr != nil {
-			h.logger.Error("Failed to trigger wallet provisioning for missing chain",
+			h.logger.Error("Failed to provision wallet for chain",
 				zap.Error(provErr),
 				zap.String("user_id", userID.String()),
 				zap.String("chain", chainStr))
+			c.JSON(http.StatusNotFound, gin.H{
+				"error":   "WALLET_NOT_FOUND",
+				"message": fmt.Sprintf("No wallet found for chain: %s", chainStr),
+			})
+			return
 		}
 
-		c.JSON(http.StatusNotFound, gin.H{
-			"error":        "WALLET_NOT_FOUND",
-			"message":      fmt.Sprintf("Wallet for %s is being created. Please retry in a moment.", chainStr),
-			"provisioning": true,
-		})
-		return
+		// Retry fetch after provisioning
+		wallet, err = h.walletService.GetWalletByUserAndChain(ctx, userID, chain)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error":        "WALLET_NOT_FOUND",
+				"message":      fmt.Sprintf("Wallet for %s is being created. Please retry in a moment.", chainStr),
+				"provisioning": true,
+			})
+			return
+		}
 	}
 
 	response := entities.WalletAddressResponse{
@@ -885,10 +872,15 @@ func (h *WalletFundingHandlers) CreateDepositAddress(c *gin.Context) {
 	response, err := h.fundingService.CreateDepositAddress(c.Request.Context(), userUUID, req.Chain)
 	if err != nil {
 		h.logger.Error("Failed to create deposit address", "error", err, "user_id", userUUID, "chain", req.Chain)
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-			Code:    "DEPOSIT_ADDRESS_ERROR",
-			Message: "Failed to create deposit address",
-		})
+		errStr := err.Error()
+		switch {
+		case strings.Contains(errStr, "has_not_accepted_tos"):
+			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "has_not_accepted_tos", Message: "Please accept the Terms of Service before creating a deposit address"})
+		case strings.Contains(errStr, "requires_active_kyc_status"):
+			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "kyc_required", Message: "Identity verification must be completed before receiving crypto"})
+		default:
+			c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "DEPOSIT_ADDRESS_ERROR", Message: "Failed to create deposit address"})
+		}
 		return
 	}
 
@@ -1135,15 +1127,22 @@ func (h *WalletFundingHandlers) CreateVirtualAccount(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "KYC_REQUIRED", Message: "Bridge KYC must be completed before creating a virtual account"})
 		return
 	}
-	if profile.AlpacaAccountID == nil || *profile.AlpacaAccountID == "" {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "ONBOARDING_INCOMPLETE", Message: "Brokerage account setup must be completed first"})
-		return
+
+	alpacaAccountID := ""
+	if profile.AlpacaAccountID != nil {
+		alpacaAccountID = *profile.AlpacaAccountID
 	}
+
+	var body struct {
+		Currency string `json:"currency"`
+	}
+	_ = c.ShouldBindJSON(&body)
 
 	response, err := h.fundingService.CreateVirtualAccount(ctx, &entities.CreateVirtualAccountRequest{
 		UserID:           userUUID,
-		AlpacaAccountID:  *profile.AlpacaAccountID,
+		AlpacaAccountID:  alpacaAccountID,
 		BridgeCustomerID: *profile.BridgeCustomerID,
+		Currency:         body.Currency,
 	})
 	if err != nil {
 		h.logger.Error("Failed to create virtual account", "error", err, "user_id", userUUID)

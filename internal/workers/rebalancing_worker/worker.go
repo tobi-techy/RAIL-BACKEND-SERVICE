@@ -99,6 +99,9 @@ func (w *Worker) Stop() {
 }
 
 func (w *Worker) processRebalancing(ctx context.Context) {
+	if !isMarketOpen() {
+		return
+	}
 	configs, err := w.rulesRepo.GetAllWithRebalancingEnabled(ctx)
 	if err != nil {
 		w.logger.Error("Failed to get rebalancing configs", zap.Error(err))
@@ -272,4 +275,20 @@ func (w *Worker) calculateDrift(positions []*entities.InvestmentPosition, target
 	}
 
 	return trades, needsRebalance
+}
+
+// isMarketOpen returns true when the US equity market is currently open (Mon–Fri 09:30–16:00 ET).
+func isMarketOpen() bool {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return true
+	}
+	et := time.Now().In(loc)
+	wd := et.Weekday()
+	if wd == time.Saturday || wd == time.Sunday {
+		return false
+	}
+	open := time.Date(et.Year(), et.Month(), et.Day(), 9, 30, 0, 0, loc)
+	close := time.Date(et.Year(), et.Month(), et.Day(), 16, 0, 0, 0, loc)
+	return et.After(open) && et.Before(close)
 }

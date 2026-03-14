@@ -159,6 +159,16 @@ func WebhookSecurity(
 			eventID, nonce, timestamp := security.ExtractWebhookMetadata(body)
 			signature := extractSignature(c)
 
+			// If a secret is configured for this provider, signature is mandatory
+			if _, hasSecret := config.Secrets[provider]; hasSecret && signature == "" {
+				logger.Warn("Webhook missing required signature", zap.String("provider", provider))
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+					"error":   "WEBHOOK_SIGNATURE_REQUIRED",
+					"message": "Webhook signature is required",
+				})
+				return
+			}
+
 			if signature != "" {
 				ctx := c.Request.Context()
 				_, err := replayProtection.ValidateWebhook(ctx, body, signature, provider, eventID, nonce, timestamp)

@@ -104,6 +104,7 @@ type BridgeCard struct {
 	Currency         string     `json:"currency" db:"currency"`
 	Chain            string     `json:"chain" db:"chain"`
 	WalletAddress    string     `json:"wallet_address" db:"wallet_address"`
+	DailyLimitCents  *int       `json:"daily_limit_cents,omitempty" db:"daily_limit_cents"`
 	CreatedAt        time.Time  `json:"created_at" db:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at" db:"updated_at"`
 }

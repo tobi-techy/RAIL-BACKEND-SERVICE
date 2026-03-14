@@ -131,7 +131,7 @@ type BridgeDepositClient interface {
 	ListWallets(ctx context.Context, customerID string) ([]BridgeWalletInfo, error)
 	CreateWallet(ctx context.Context, customerID string, chain string) (id string, address string, err error)
 	ListLiquidationAddresses(ctx context.Context, customerID string) ([]BridgeLiquidationAddr, error)
-	CreateLiquidationAddress(ctx context.Context, customerID string, chain string, bridgeWalletID string, destinationAddress string) (id string, address string, err error)
+	CreateLiquidationAddress(ctx context.Context, customerID string, sourceChain string, destinationChain string, destinationAddress string) (id string, address string, err error)
 }
 
 // BridgeWalletInfo is a minimal wallet summary from Bridge
@@ -142,10 +142,10 @@ type BridgeWalletInfo struct {
 
 // BridgeLiquidationAddr is a minimal liquidation address summary from Bridge
 type BridgeLiquidationAddr struct {
-	ID             string
-	Chain          string
-	Address        string
-	BridgeWalletID string
+	ID       string
+	Chain    string
+	Currency string
+	Address  string
 }
 
 // VirtualAccountRepository interface for virtual account persistence
@@ -298,7 +298,7 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 		managedWallets, mErr := s.managedWalletRepo.GetByUserID(ctx, userID)
 		if mErr == nil {
 			for _, mw := range managedWallets {
-				if matchesManagedWalletChain(mw.Chain, chain) {
+				if matchesManagedWalletChain(mw.Chain, chain) && !strings.HasPrefix(mw.Address, "0xdeadbeef") {
 					s.logger.Info("Using existing managed wallet address",
 						"user_id", userID, "chain", chain,
 						"managed_chain", mw.Chain, "address", mw.Address)
@@ -330,10 +330,15 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 	var destinationAddress string // used in sandbox instead of bridge_wallet_id
 
 	if s.bridgeWallets.IsSandbox() {
-		// Sandbox: Bridge Wallet API unavailable — use platform destination address
-		destinationAddress = s.config.PlatformSolanaAddress
-		if destinationAddress == "" {
-			destinationAddress = "9kV3ZMehKVyxfHKCcaDLye3P9HHw2MP4jtQa2gKBUmCs" // fallback test address
+		// Sandbox: Bridge Wallet API unavailable — use chain-appropriate destination address
+		isEVM := bridgeRail == "polygon" || bridgeRail == "avalanche_c_chain" || bridgeRail == "ethereum" || bridgeRail == "base"
+		if isEVM {
+			destinationAddress = "0x3e1837fcc9796e6b9f32435af594970aba2d57ea" // test EVM address
+		} else {
+			destinationAddress = s.config.PlatformSolanaAddress
+			if destinationAddress == "" {
+				destinationAddress = "9kV3ZMehKVyxfHKCcaDLye3P9HHw2MP4jtQa2gKBUmCs" // fallback test address
+			}
 		}
 	} else {
 		wallets, err := s.bridgeWallets.ListWallets(ctx, customerID)
@@ -363,14 +368,14 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 	var laAddress string
 	var laID string
 	for _, la := range las {
-		if la.Chain == bridgeRail && la.BridgeWalletID == bridgeWalletID {
+		if la.Chain == bridgeRail && la.Currency == "usdc" && !strings.HasPrefix(la.Address, "0xdeadbeef") {
 			laAddress = la.Address
 			laID = la.ID
 			break
 		}
 	}
 	if laAddress == "" {
-		laID, laAddress, err = s.bridgeWallets.CreateLiquidationAddress(ctx, customerID, bridgeRail, bridgeWalletID, destinationAddress)
+		laID, laAddress, err = s.bridgeWallets.CreateLiquidationAddress(ctx, customerID, bridgeRail, bridgeRail, destinationAddress)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create liquidation address: %w", err)
 		}
@@ -825,8 +830,7 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 	return nil
 }
 
-// CreateVirtualAccount creates a virtual account linked to an Alpaca brokerage account
-// Now uses Bridge API instead of Due
+// CreateVirtualAccount provisions a Bridge virtual account for the user.
 func (s *Service) CreateVirtualAccount(ctx context.Context, req *entities.CreateVirtualAccountRequest) (*entities.CreateVirtualAccountResponse, error) {
 	if req == nil {
 		return nil, fmt.Errorf("request is required")
@@ -834,88 +838,38 @@ func (s *Service) CreateVirtualAccount(ctx context.Context, req *entities.Create
 	if s.virtualAccountRepo == nil {
 		return nil, fmt.Errorf("virtual account repository not configured")
 	}
-	if s.alpacaAPI == nil {
-		return nil, fmt.Errorf("alpaca api not configured")
-	}
-	// Bridge virtual account service must be configured
 	if s.bridgeVAService == nil {
 		return nil, fmt.Errorf("bridge virtual account service not configured")
 	}
-
-	if s.logger != nil {
-		s.logger.Info("Creating virtual account", "user_id", req.UserID.String(), "alpaca_account_id", req.AlpacaAccountID)
+	if req.BridgeCustomerID == "" {
+		return nil, fmt.Errorf("bridge customer ID is required")
 	}
 
-	// Check if virtual account already exists for this user and Alpaca account
-	exists, err := s.virtualAccountRepo.ExistsByUserAndAlpacaAccount(ctx, req.UserID, req.AlpacaAccountID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check existing virtual account: %w", err)
+	currency := strings.ToUpper(strings.TrimSpace(req.Currency))
+	if currency == "" {
+		currency = "USD"
 	}
 
-	if exists {
-		if s.logger != nil {
-			s.logger.Info("Virtual account already exists", "user_id", req.UserID.String(), "alpaca_account_id", req.AlpacaAccountID)
-		}
-		return nil, fmt.Errorf("virtual account already exists for this Alpaca account")
+	// Return existing account if already provisioned for this currency
+	existing, _ := s.virtualAccountRepo.GetActiveByUserIDAndCurrency(ctx, req.UserID, currency)
+	if existing != nil {
+		return &entities.CreateVirtualAccountResponse{
+			VirtualAccount: existing,
+			Message:        "Virtual account already exists",
+		}, nil
 	}
 
-	// Ensure the requested Alpaca account belongs to the authenticated user.
-	if s.alpacaAccountLookup != nil {
-		account, err := s.alpacaAccountLookup.GetByAlpacaID(ctx, req.AlpacaAccountID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to verify alpaca account ownership: %w", err)
-		}
-		if account == nil || account.UserID != req.UserID {
-			return nil, fmt.Errorf("alpaca account does not belong to authenticated user")
-		}
+	if err := s.bridgeVAService.ProvisionVirtualAccounts(ctx, req.UserID, req.BridgeCustomerID, []string{currency}); err != nil {
+		return nil, fmt.Errorf("failed to provision virtual account: %w", err)
 	}
 
-	// Verify Alpaca account exists and is accessible
-	alpacaAccount, err := s.alpacaAPI.GetAccount(ctx, req.AlpacaAccountID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to verify Alpaca account: %w", err)
-	}
-
-	if alpacaAccount.Status != entities.AlpacaAccountStatusActive {
-		return nil, fmt.Errorf("Alpaca account is not active: %s", alpacaAccount.Status)
-	}
-
-	// Get deposit instructions from Bridge — create if not yet provisioned
-	existing, _ := s.virtualAccountRepo.GetActiveByUserIDAndCurrency(ctx, req.UserID, "USD")
-	if existing == nil {
-		if s.bridgeVAService == nil {
-			return nil, fmt.Errorf("bridge virtual account service not configured")
-		}
-		// Look up Bridge customer ID from the user profile via alpaca account lookup
-		// bridgeCustomerID must be passed in via the request
-		if req.BridgeCustomerID == "" {
-			return nil, fmt.Errorf("bridge customer ID is required to provision virtual account")
-		}
-		if err := s.bridgeVAService.ProvisionVirtualAccounts(ctx, req.UserID, req.BridgeCustomerID, []string{"USD"}); err != nil {
-			return nil, fmt.Errorf("failed to provision virtual account: %w", err)
-		}
-		existing, err = s.virtualAccountRepo.GetActiveByUserIDAndCurrency(ctx, req.UserID, "USD")
-		if err != nil || existing == nil {
-			return nil, fmt.Errorf("virtual account provisioned but could not be retrieved")
-		}
-	}
-	virtualAccount := existing
-
-	// Update existing virtual account with Alpaca account ID
-	virtualAccount.AlpacaAccountID = req.AlpacaAccountID
-	if err := s.virtualAccountRepo.Update(ctx, virtualAccount); err != nil {
-		return nil, fmt.Errorf("failed to update virtual account: %w", err)
-	}
-
-	if s.logger != nil {
-		s.logger.Info("Virtual account linked successfully",
-			"virtual_account_id", virtualAccount.ID.String(),
-			"bridge_account_id", virtualAccount.BridgeAccountID,
-			"alpaca_account_id", virtualAccount.AlpacaAccountID)
+	va, err := s.virtualAccountRepo.GetActiveByUserIDAndCurrency(ctx, req.UserID, currency)
+	if err != nil || va == nil {
+		return nil, fmt.Errorf("virtual account provisioned but could not be retrieved")
 	}
 
 	return &entities.CreateVirtualAccountResponse{
-		VirtualAccount: virtualAccount,
+		VirtualAccount: va,
 		Message:        "Virtual account created successfully",
 	}, nil
 }

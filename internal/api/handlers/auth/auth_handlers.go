@@ -391,11 +391,13 @@ func (h *AuthHandlers) completeNewUserVerification(c *gin.Context, ctx context.C
 	}
 	user.OnboardingStatus = entities.OnboardingStatusStarted
 
-	_ = h.userRepo.Update(ctx, &entities.UserProfile{
+	if err := h.userRepo.Update(ctx, &entities.UserProfile{
 		ID: user.ID, Email: user.Email, Phone: user.Phone,
 		EmailVerified: user.EmailVerified, PhoneVerified: user.PhoneVerified,
 		OnboardingStatus: user.OnboardingStatus, KYCStatus: user.KYCStatus,
-	})
+	}); err != nil {
+		h.logger.Error("Failed to update user after verification", zap.String("user_id", user.ID.String()), zap.Error(err))
+	}
 	_ = h.redisClient.Del(ctx, pendingKey)
 
 	// Auto-start onboarding flow
@@ -775,6 +777,8 @@ func (h *AuthHandlers) Login(c *gin.Context) {
 	if err != nil {
 		h.logger.Warn("Login attempt failed - user not found", zap.String("identifier", identifier), zap.Error(err))
 		h.recordLoginFailure(c, identifier)
+		// Dummy comparison to prevent timing-based user enumeration
+		crypto.ValidatePassword(req.Password, "$2a$12$dummy.hash.to.equalize.timing.xxxxxxxxxxxxxxxxxxxxxxxxx")
 		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
 			Code:    "INVALID_CREDENTIALS",
 			Message: "Invalid email or password",

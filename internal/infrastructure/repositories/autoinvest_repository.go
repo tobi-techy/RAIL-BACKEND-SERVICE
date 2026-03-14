@@ -3,6 +3,7 @@ package repositories
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -93,11 +94,25 @@ func (r *AutoInvestRepository) CreateEvent(ctx context.Context, event *entities.
 	return nil
 }
 
-// HasProcessedCorrelation checks if a correlation ID already exists (any status).
-// Status filter removed — checking only completed/pending created a race window.
+// GetEventByCorrelation returns the event for a given correlation ID, or nil if not found.
+func (r *AutoInvestRepository) GetEventByCorrelation(ctx context.Context, correlationID string) (*entities.AutoInvestEvent, error) {
+	var event entities.AutoInvestEvent
+	err := r.db.GetContext(ctx, &event, `SELECT id, user_id, basket_id, amount, order_id, correlation_id, status, error, created_at FROM auto_invest_events WHERE correlation_id = $1 LIMIT 1`, correlationID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get auto-invest event: %w", err)
+	}
+	return &event, nil
+}
+
+// HasProcessedCorrelation checks if a correlation ID has already completed successfully.
+// Pending events are NOT considered processed — they may be deferred (e.g. market closed)
+// and must be retried.
 func (r *AutoInvestRepository) HasProcessedCorrelation(ctx context.Context, correlationID string) (bool, error) {
 	var exists bool
-	err := r.db.GetContext(ctx, &exists, `SELECT EXISTS(SELECT 1 FROM auto_invest_events WHERE correlation_id = $1)`, correlationID)
+	err := r.db.GetContext(ctx, &exists, `SELECT EXISTS(SELECT 1 FROM auto_invest_events WHERE correlation_id = $1 AND status = 'completed')`, correlationID)
 	if err != nil {
 		return false, fmt.Errorf("failed to check correlation ID: %w", err)
 	}
