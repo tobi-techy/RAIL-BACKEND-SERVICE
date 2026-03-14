@@ -109,3 +109,9 @@ postman_collection_auto_generated.json
 # Air (hot reload)
 tmp/
 dump.rdb
+
+# Terraform
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.backup
+infra/terraform/.terraform.lock.hcl
