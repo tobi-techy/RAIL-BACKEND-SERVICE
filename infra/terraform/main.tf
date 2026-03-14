@@ -205,10 +205,55 @@ resource "aws_ecs_cluster" "main" {
 
   setting {
     name  = "containerInsights"
-    value = "disabled"  # cost: Container Insights adds CloudWatch cost
+    value = "disabled"
   }
 
   tags = local.tags
+}
+
+# ── EC2 Instance (t2.micro — free tier) ──────────────────────────────────────
+
+data "aws_ami" "ecs_optimized" {
+  most_recent = true
+  owners      = ["amazon"]
+  filter {
+    name   = "name"
+    values = ["al2023-ami-ecs-hvm-*-x86_64"]
+  }
+}
+
+resource "aws_iam_role" "ec2_instance" {
+  name = "rail-${var.env}-ec2-instance"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "ec2.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ec2_ecs" {
+  role       = aws_iam_role.ec2_instance.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
+}
+
+resource "aws_iam_instance_profile" "ec2" {
+  name = "rail-${var.env}-ec2"
+  role = aws_iam_role.ec2_instance.name
+}
+
+resource "aws_instance" "app" {
+  ami                    = data.aws_ami.ecs_optimized.id
+  instance_type          = "t2.micro"
+  subnet_id              = module.vpc.public_subnets[0]
+  vpc_security_group_ids = [aws_security_group.ec2.id, aws_security_group.app.id]
+  iam_instance_profile   = aws_iam_instance_profile.ec2.name
+
+  user_data = base64encode("#!/bin/bash\necho ECS_CLUSTER=rail-${var.env} >> /etc/ecs/ecs.config\n")
+
+  tags = merge(local.tags, { Name = "rail-${var.env}" })
 }
 
 # ── IAM ───────────────────────────────────────────────────────────────────────
@@ -270,10 +315,8 @@ resource "aws_cloudwatch_log_group" "app" {
 
 resource "aws_ecs_task_definition" "app" {
   family                   = "rail-${var.env}"
-  network_mode             = "awsvpc"
-  requires_compatibilities = ["FARGATE"]
-  cpu                      = "256"   # 0.25 vCPU — cost optimized
-  memory                   = "512"   # 512MB — fits all workers comfortably
+  network_mode             = "bridge"
+  requires_compatibilities = ["EC2"]
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
   task_role_arn            = aws_iam_role.ecs_task.arn
 
@@ -288,11 +331,12 @@ resource "aws_ecs_task_definition" "app" {
     }]
 
     environment = [
-      { name = "ENVIRONMENT", value = var.env },
-      { name = "GIN_MODE",    value = "release" },
-      { name = "PORT",        value = "8080" },
-      { name = "REDIS_HOST",  value = aws_elasticache_cluster.redis.cache_nodes[0].address },
-      { name = "REDIS_PORT",  value = "6379" },
+      { name = "ENVIRONMENT",    value = var.env },
+      { name = "GIN_MODE",       value = "release" },
+      { name = "PORT",           value = "8080" },
+      { name = "REDIS_HOST",     value = aws_elasticache_cluster.redis.cache_nodes[0].address },
+      { name = "REDIS_PORT",     value = "6379" },
+      { name = "EMAIL_PROVIDER", value = "unosend" },
     ]
 
     # Secrets pulled from SSM Parameter Store at container start
@@ -358,7 +402,7 @@ resource "aws_lb_target_group" "app" {
   port        = 8080
   protocol    = "HTTP"
   vpc_id      = module.vpc.vpc_id
-  target_type = "ip"
+  target_type = "instance"
 
   health_check {
     path                = "/health"
@@ -388,14 +432,8 @@ resource "aws_ecs_service" "app" {
   name            = "rail-${var.env}"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.app.arn
-  desired_count   = 1  # cost: single task on free tier
-  launch_type     = "FARGATE"
-
-  network_configuration {
-    subnets          = module.vpc.private_subnets
-    security_groups  = [aws_security_group.app.id]
-    assign_public_ip = false
-  }
+  desired_count   = 1
+  launch_type     = "EC2"
 
   load_balancer {
     target_group_arn = aws_lb_target_group.app.arn
@@ -403,15 +441,14 @@ resource "aws_ecs_service" "app" {
     container_port   = 8080
   }
 
-  deployment_minimum_healthy_percent = 50
-  deployment_maximum_percent         = 200
+  deployment_minimum_healthy_percent = 0
+  deployment_maximum_percent         = 100
 
-  # Cost: no auto-scaling configured — add later when needed
   lifecycle {
     ignore_changes = [desired_count]
   }
 
-  depends_on = [aws_lb_listener.http]
+  depends_on = [aws_lb_listener.http, aws_instance.app]
   tags       = local.tags
 }
 
