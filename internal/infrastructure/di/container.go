@@ -824,6 +824,7 @@ type Container struct {
 	PortfolioSnapshotRepo   *repositories.PortfolioSnapshotRepository
 	ScheduledInvestmentRepo *repositories.ScheduledInvestmentRepository
 	RebalancingConfigRepo   *repositories.RebalancingConfigRepository
+	InvestmentRulesRepo     *repositories.InvestmentRulesRepository
 	MarketAlertRepo         *repositories.MarketAlertRepository
 
 	// Alpaca Investment Services
@@ -1358,6 +1359,7 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize strategy engine and wire to auto-invest service
 	c.StrategyEngine = strategy.NewEngine(&strategyUserProfileAdapter{userRepo: c.UserRepo}, c.Logger)
 	c.StrategyEngine.SetRulesProvider(repositories.NewInvestmentRulesRepository(sqlxDB))
+	c.InvestmentRulesRepo = repositories.NewInvestmentRulesRepository(sqlxDB)
 	c.StrategyEngine.SetFrequencyProvider(repositories.NewDepositRepository(sqlxDB))
 	c.AutoInvestService.SetStrategyEngine(c.StrategyEngine)
 
@@ -3079,4 +3081,64 @@ type InstantFundingAlpacaAdapterImpl struct {
 
 func (a *InstantFundingAlpacaAdapterImpl) CreateJournal(ctx context.Context, req *entities.AlpacaJournalRequest) (*entities.AlpacaJournalResponse, error) {
 	return a.service.CreateJournal(ctx, req)
+}
+
+// GetInvestmentRulesRepo returns the investment rules repository.
+func (c *Container) GetInvestmentRulesRepo() *repositories.InvestmentRulesRepository {
+	return c.InvestmentRulesRepo
+}
+
+// rebalancingStrategyAdapter implements rebalancing_worker.StrategyProvider.
+// It returns the target allocations from the user's first active RebalancingConfig.
+type rebalancingStrategyAdapter struct {
+	configRepo *repositories.RebalancingConfigRepository
+}
+
+func (a *rebalancingStrategyAdapter) GetTargetAllocations(ctx context.Context, userID uuid.UUID) (map[string]decimal.Decimal, error) {
+	configs, err := a.configRepo.GetByUserID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	for _, cfg := range configs {
+		if cfg.Status == entities.ScheduleStatusActive && len(cfg.TargetAllocations) > 0 {
+			return cfg.TargetAllocations, nil
+		}
+	}
+	return nil, fmt.Errorf("no active rebalancing config for user %s", userID)
+}
+
+// rebalancingOrderAdapter adapts orderPlacerAdapter to rebalancing_worker.OrderPlacer.
+type rebalancingOrderAdapter struct {
+	inner *orderPlacerAdapter
+}
+
+func (a *rebalancingOrderAdapter) PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal) (*entities.AlpacaOrderResponse, error) {
+	order, err := a.inner.PlaceMarketOrder(ctx, userID, symbol, amount)
+	if err != nil {
+		return nil, err
+	}
+	if order.AlpacaOrderID == nil {
+		return nil, fmt.Errorf("order placed but no Alpaca order ID returned")
+	}
+	return &entities.AlpacaOrderResponse{ID: *order.AlpacaOrderID}, nil
+}
+
+// GetRebalancingWorkerDeps returns the dependencies needed to start the rebalancing worker.
+func (c *Container) GetRebalancingWorkerDeps() (
+	rulesRepo *repositories.InvestmentRulesRepository,
+	positionRepo *repositories.InvestmentPositionRepository,
+	strategyProvider *rebalancingStrategyAdapter,
+	orderPlacer *rebalancingOrderAdapter,
+) {
+	rulesRepo = c.InvestmentRulesRepo
+	positionRepo = c.InvestmentPositionRepo
+	strategyProvider = &rebalancingStrategyAdapter{configRepo: c.RebalancingConfigRepo}
+	orderPlacer = &rebalancingOrderAdapter{inner: &orderPlacerAdapter{
+		investingService: c.InvestingService,
+		accountService:   c.AlpacaAccountService,
+		alpacaClient:     c.AlpacaClient,
+		orderRepo:        c.InvestmentOrderRepo,
+		logger:           c.ZapLog,
+	}}
+	return
 }

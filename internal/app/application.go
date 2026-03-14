@@ -26,6 +26,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/database"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
+	rebalancing_worker "github.com/rail-service/rail_service/internal/workers/rebalancing_worker"
 	balance_reconciliation "github.com/rail-service/rail_service/internal/workers/balance_reconciliation"
 	deposit_allocation_recovery "github.com/rail-service/rail_service/internal/workers/deposit_allocation_recovery"
 	"github.com/rail-service/rail_service/internal/workers/funding_webhook"
@@ -53,6 +54,7 @@ type Application struct {
 	portfolioSnapshotWorker     *portfolio_snapshot_worker.Worker
 	depositAllocationWorker     *deposit_allocation_recovery.Worker
 	kycAutoInvestWorker         *kyc_autoinvest.Worker
+	rebalancingWorker           *rebalancing_worker.Worker
 	kycSyncWorker               *kyc_sync.Worker
 	balanceReconciliationWorker *balance_reconciliation.Worker
 
@@ -198,6 +200,21 @@ func (app *Application) initializeWorkers() error {
 		)
 		go app.kycAutoInvestWorker.Start(context.Background())
 		app.log.Info("KYC auto-invest worker started")
+	}
+
+	// Rebalancing worker
+	rulesRepo, positionRepo, strategyProvider, orderPlacer := app.container.GetRebalancingWorkerDeps()
+	if rulesRepo != nil && positionRepo != nil {
+		app.rebalancingWorker = rebalancing_worker.NewWorker(
+			rulesRepo,
+			positionRepo,
+			strategyProvider,
+			orderPlacer,
+			nil, // notifier — optional
+			app.log.Zap(),
+		)
+		go app.rebalancingWorker.Start(context.Background())
+		app.log.Info("Rebalancing worker started")
 	}
 
 	// KYC Sumsub sync worker
