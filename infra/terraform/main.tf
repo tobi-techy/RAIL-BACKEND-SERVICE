@@ -9,7 +9,7 @@ terraform {
   # Store state in S3 — create the bucket manually once before first apply
   backend "s3" {
     bucket = "rail-terraform-state-605894285151"
-    key    = "staging/terraform.tfstate"
+    key    = "terraform.tfstate"
     region = "us-east-1"
   }
 }
@@ -24,7 +24,7 @@ module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
   version = "~> 5.0"
 
-  name = "rail-${var.env}"
+  name = "rail-${local.env}"
   cidr = "10.0.0.0/16"
 
   azs             = ["${var.aws_region}a", "${var.aws_region}b"]
@@ -42,7 +42,7 @@ module "vpc" {
 # ── Security Groups ───────────────────────────────────────────────────────────
 
 resource "aws_security_group" "alb" {
-  name   = "rail-${var.env}-alb"
+  name   = "rail-${local.env}-alb"
   vpc_id = module.vpc.vpc_id
 
   ingress {
@@ -67,7 +67,7 @@ resource "aws_security_group" "alb" {
 }
 
 resource "aws_security_group" "app" {
-  name   = "rail-${var.env}-app"
+  name   = "rail-${local.env}-app"
   vpc_id = module.vpc.vpc_id
 
   ingress {
@@ -86,7 +86,7 @@ resource "aws_security_group" "app" {
 }
 
 resource "aws_security_group" "rds" {
-  name   = "rail-${var.env}-rds"
+  name   = "rail-${local.env}-rds"
   vpc_id = module.vpc.vpc_id
 
   ingress {
@@ -99,7 +99,7 @@ resource "aws_security_group" "rds" {
 }
 
 resource "aws_security_group" "redis" {
-  name   = "rail-${var.env}-redis"
+  name   = "rail-${local.env}-redis"
   vpc_id = module.vpc.vpc_id
 
   ingress {
@@ -115,13 +115,13 @@ resource "aws_security_group" "redis" {
 # db.t3.micro = free tier eligible (750h/month for 12 months)
 
 resource "aws_db_subnet_group" "main" {
-  name       = "rail-${var.env}"
+  name       = "rail-${local.env}"
   subnet_ids = module.vpc.private_subnets
   tags       = local.tags
 }
 
 resource "aws_db_instance" "postgres" {
-  identifier        = "rail-${var.env}"
+  identifier        = "rail-${local.env}"
   engine            = "postgres"
   engine_version    = "15"
   instance_class    = "db.t3.micro"  # free tier
@@ -137,7 +137,7 @@ resource "aws_db_instance" "postgres" {
 
   backup_retention_period = 0  # free tier restriction: max 0
   skip_final_snapshot     = false
-  final_snapshot_identifier = "rail-${var.env}-final"
+  final_snapshot_identifier = "rail-${local.env}-final"
   deletion_protection     = true
 
   # Cost: no multi-AZ, no read replica for free tier
@@ -150,12 +150,12 @@ resource "aws_db_instance" "postgres" {
 # cache.t3.micro = free tier eligible (750h/month for 12 months)
 
 resource "aws_elasticache_subnet_group" "main" {
-  name       = "rail-${var.env}"
+  name       = "rail-${local.env}"
   subnet_ids = module.vpc.private_subnets
 }
 
 resource "aws_elasticache_cluster" "redis" {
-  cluster_id           = "rail-${var.env}"
+  cluster_id           = "rail-${local.env}"
   engine               = "redis"
   node_type            = "cache.t3.micro"  # free tier
   num_cache_nodes      = 1
@@ -201,7 +201,7 @@ resource "aws_ecr_lifecycle_policy" "app" {
 # ── ECS Cluster ───────────────────────────────────────────────────────────────
 
 resource "aws_ecs_cluster" "main" {
-  name = "rail-${var.env}"
+  name = "rail-${local.env}"
 
   setting {
     name  = "containerInsights"
@@ -223,7 +223,7 @@ data "aws_ami" "ecs_optimized" {
 }
 
 resource "aws_iam_role" "ec2_instance" {
-  name = "rail-${var.env}-ec2-instance"
+  name = "rail-${local.env}-ec2-instance"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -240,7 +240,7 @@ resource "aws_iam_role_policy_attachment" "ec2_ecs" {
 }
 
 resource "aws_iam_instance_profile" "ec2" {
-  name = "rail-${var.env}-ec2"
+  name = "rail-${local.env}-ec2"
   role = aws_iam_role.ec2_instance.name
 }
 
@@ -252,15 +252,15 @@ resource "aws_instance" "app" {
   iam_instance_profile        = aws_iam_instance_profile.ec2.name
   associate_public_ip_address = true
 
-  user_data = base64encode("#!/bin/bash\necho ECS_CLUSTER=rail-${var.env} >> /etc/ecs/ecs.config\n")
+  user_data = base64encode("#!/bin/bash\necho ECS_CLUSTER=rail-${local.env} >> /etc/ecs/ecs.config\n")
 
-  tags = merge(local.tags, { Name = "rail-${var.env}" })
+  tags = merge(local.tags, { Name = "rail-${local.env}" })
 }
 
 # ── IAM ───────────────────────────────────────────────────────────────────────
 
 resource "aws_iam_role" "ecs_task_execution" {
-  name = "rail-${var.env}-ecs-execution"
+  name = "rail-${local.env}-ecs-execution"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -286,13 +286,13 @@ resource "aws_iam_role_policy" "ecs_ssm" {
     Statement = [{
       Effect   = "Allow"
       Action   = ["ssm:GetParameters", "ssm:GetParameter"]
-      Resource = "arn:aws:ssm:${var.aws_region}:*:parameter/rail/${var.env}/*"
+      Resource = "arn:aws:ssm:${var.aws_region}:*:parameter/rail/${local.env}/*"
     }]
   })
 }
 
 resource "aws_iam_role" "ecs_task" {
-  name = "rail-${var.env}-ecs-task"
+  name = "rail-${local.env}-ecs-task"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -307,7 +307,7 @@ resource "aws_iam_role" "ecs_task" {
 # ── CloudWatch Log Group ──────────────────────────────────────────────────────
 
 resource "aws_cloudwatch_log_group" "app" {
-  name              = "/ecs/rail-${var.env}"
+  name              = "/ecs/rail-${local.env}"
   retention_in_days = 7  # cost: short retention keeps CloudWatch costs low
   tags              = local.tags
 }
@@ -315,7 +315,7 @@ resource "aws_cloudwatch_log_group" "app" {
 # ── ECS Task Definition ───────────────────────────────────────────────────────
 
 resource "aws_ecs_task_definition" "app" {
-  family                   = "rail-${var.env}"
+  family                   = "rail-${local.env}"
   network_mode             = "host"
   requires_compatibilities = ["EC2"]
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
@@ -333,7 +333,7 @@ resource "aws_ecs_task_definition" "app" {
     }]
 
     environment = [
-      { name = "ENVIRONMENT",    value = var.env },
+      { name = "ENVIRONMENT",    value = local.env },
       { name = "GIN_MODE",       value = "release" },
       { name = "PORT",           value = "8080" },
       { name = "REDIS_HOST",     value = aws_elasticache_cluster.redis.cache_nodes[0].address },
@@ -344,30 +344,30 @@ resource "aws_ecs_task_definition" "app" {
 
     # Secrets pulled from SSM Parameter Store at container start
     secrets = [
-      { name = "UNOSEND_API_KEY",       valueFrom = "/rail/${var.env}/UNOSEND_API_KEY" },
-      { name = "EMAIL_FROM_EMAIL",      valueFrom = "/rail/${var.env}/EMAIL_FROM_EMAIL" },
-      { name = "EMAIL_FROM_NAME",       valueFrom = "/rail/${var.env}/EMAIL_FROM_NAME" },
-      { name = "JWT_SECRET",            valueFrom = "/rail/${var.env}/JWT_SECRET" },
-      { name = "ENCRYPTION_KEY",        valueFrom = "/rail/${var.env}/ENCRYPTION_KEY" },
-      { name = "DATABASE_URL",          valueFrom = "/rail/${var.env}/DATABASE_URL" },
-      { name = "DATABASE_HOST",         valueFrom = "/rail/${var.env}/DATABASE_HOST" },
-      { name = "DATABASE_USER",         valueFrom = "/rail/${var.env}/DATABASE_USER" },
-      { name = "DATABASE_PASSWORD",     valueFrom = "/rail/${var.env}/DATABASE_PASSWORD" },
-      { name = "DATABASE_NAME",         valueFrom = "/rail/${var.env}/DATABASE_NAME" },
-      { name = "DATABASE_SSL_MODE",     valueFrom = "/rail/${var.env}/DATABASE_SSL_MODE" },
-      { name = "ALPACA_API_KEY",        valueFrom = "/rail/${var.env}/ALPACA_API_KEY" },
-      { name = "ALPACA_API_SECRET",     valueFrom = "/rail/${var.env}/ALPACA_API_SECRET" },
-      { name = "ALPACA_BASE_URL",       valueFrom = "/rail/${var.env}/ALPACA_BASE_URL" },
-      { name = "ALPACA_DATA_BASE_URL",  valueFrom = "/rail/${var.env}/ALPACA_DATA_BASE_URL" },
-      { name = "ALPACA_ENVIRONMENT",    valueFrom = "/rail/${var.env}/ALPACA_ENVIRONMENT" },
-      { name = "ALPACA_WEBHOOK_SECRET", valueFrom = "/rail/${var.env}/ALPACA_WEBHOOK_SECRET" },
-      { name = "ALPACA_FIRM_ACCOUNT_NO",valueFrom = "/rail/${var.env}/ALPACA_FIRM_ACCOUNT_NO" },
-      { name = "BRIDGE_API_KEY",        valueFrom = "/rail/${var.env}/BRIDGE_API_KEY" },
-      { name = "BRIDGE_BASE_URL",       valueFrom = "/rail/${var.env}/BRIDGE_BASE_URL" },
-      { name = "BRIDGE_WEBHOOK_SECRET", valueFrom = "/rail/${var.env}/BRIDGE_WEBHOOK_SECRET" },
-      { name = "OPENAI_API_KEY",        valueFrom = "/rail/${var.env}/OPENAI_API_KEY" },
-      { name = "GEMINI_API_KEY",        valueFrom = "/rail/${var.env}/GEMINI_API_KEY" },
-      { name = "NEWS_API_KEY",          valueFrom = "/rail/${var.env}/NEWS_API_KEY" },
+      { name = "UNOSEND_API_KEY",       valueFrom = "/rail/${local.env}/UNOSEND_API_KEY" },
+      { name = "EMAIL_FROM_EMAIL",      valueFrom = "/rail/${local.env}/EMAIL_FROM_EMAIL" },
+      { name = "EMAIL_FROM_NAME",       valueFrom = "/rail/${local.env}/EMAIL_FROM_NAME" },
+      { name = "JWT_SECRET",            valueFrom = "/rail/${local.env}/JWT_SECRET" },
+      { name = "ENCRYPTION_KEY",        valueFrom = "/rail/${local.env}/ENCRYPTION_KEY" },
+      { name = "DATABASE_URL",          valueFrom = "/rail/${local.env}/DATABASE_URL" },
+      { name = "DATABASE_HOST",         valueFrom = "/rail/${local.env}/DATABASE_HOST" },
+      { name = "DATABASE_USER",         valueFrom = "/rail/${local.env}/DATABASE_USER" },
+      { name = "DATABASE_PASSWORD",     valueFrom = "/rail/${local.env}/DATABASE_PASSWORD" },
+      { name = "DATABASE_NAME",         valueFrom = "/rail/${local.env}/DATABASE_NAME" },
+      { name = "DATABASE_SSL_MODE",     valueFrom = "/rail/${local.env}/DATABASE_SSL_MODE" },
+      { name = "ALPACA_API_KEY",        valueFrom = "/rail/${local.env}/ALPACA_API_KEY" },
+      { name = "ALPACA_API_SECRET",     valueFrom = "/rail/${local.env}/ALPACA_API_SECRET" },
+      { name = "ALPACA_BASE_URL",       valueFrom = "/rail/${local.env}/ALPACA_BASE_URL" },
+      { name = "ALPACA_DATA_BASE_URL",  valueFrom = "/rail/${local.env}/ALPACA_DATA_BASE_URL" },
+      { name = "ALPACA_ENVIRONMENT",    valueFrom = "/rail/${local.env}/ALPACA_ENVIRONMENT" },
+      { name = "ALPACA_WEBHOOK_SECRET", valueFrom = "/rail/${local.env}/ALPACA_WEBHOOK_SECRET" },
+      { name = "ALPACA_FIRM_ACCOUNT_NO",valueFrom = "/rail/${local.env}/ALPACA_FIRM_ACCOUNT_NO" },
+      { name = "BRIDGE_API_KEY",        valueFrom = "/rail/${local.env}/BRIDGE_API_KEY" },
+      { name = "BRIDGE_BASE_URL",       valueFrom = "/rail/${local.env}/BRIDGE_BASE_URL" },
+      { name = "BRIDGE_WEBHOOK_SECRET", valueFrom = "/rail/${local.env}/BRIDGE_WEBHOOK_SECRET" },
+      { name = "OPENAI_API_KEY",        valueFrom = "/rail/${local.env}/OPENAI_API_KEY" },
+      { name = "GEMINI_API_KEY",        valueFrom = "/rail/${local.env}/GEMINI_API_KEY" },
+      { name = "NEWS_API_KEY",          valueFrom = "/rail/${local.env}/NEWS_API_KEY" },
     ]
 
     logConfiguration = {
@@ -386,7 +386,7 @@ resource "aws_ecs_task_definition" "app" {
 # ── ALB ───────────────────────────────────────────────────────────────────────
 
 resource "aws_lb" "main" {
-  name               = "rail-${var.env}"
+  name               = "rail-${local.env}"
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
@@ -396,7 +396,7 @@ resource "aws_lb" "main" {
 }
 
 resource "aws_lb_target_group" "app" {
-  name        = "rail-${var.env}-ec2"
+  name        = "rail-${local.env}-ec2"
   port        = 8080
   protocol    = "HTTP"
   vpc_id      = module.vpc.vpc_id
@@ -410,6 +410,16 @@ resource "aws_lb_target_group" "app" {
   }
 
   tags = local.tags
+}
+
+resource "aws_acm_certificate" "api" {
+  domain_name       = local.domain
+  validation_method = "DNS"
+  tags              = local.tags
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "aws_lb_listener" "http" {
@@ -432,7 +442,7 @@ resource "aws_lb_listener" "https" {
   port              = 443
   protocol          = "HTTPS"
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  certificate_arn   = "arn:aws:acm:us-east-1:605894285151:certificate/4c0b3d80-ffc8-4846-a45e-0922bca0d192"
+  certificate_arn   = aws_acm_certificate.api.arn
 
   default_action {
     type             = "forward"
@@ -443,7 +453,7 @@ resource "aws_lb_listener" "https" {
 # ── ECS Service ───────────────────────────────────────────────────────────────
 
 resource "aws_ecs_service" "app" {
-  name            = "rail-${var.env}"
+  name            = "rail-${local.env}"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.app.arn
   desired_count   = 1
@@ -470,9 +480,11 @@ resource "aws_ecs_service" "app" {
 # ── Locals ────────────────────────────────────────────────────────────────────
 
 locals {
+  env    = var.env != null ? var.env : terraform.workspace
+  domain = var.domain != null ? var.domain : (local.env == "prod" ? "api.userail.money" : "api-${local.env}.userail.money")
   tags = {
     Project     = "rail"
-    Environment = var.env
+    Environment = local.env
     ManagedBy   = "terraform"
   }
 }

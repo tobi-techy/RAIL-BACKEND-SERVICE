@@ -3,10 +3,15 @@ variable "aws_region" {
 }
 
 variable "env" {
-  default = "staging"
+  default = null # defaults to terraform.workspace
 }
 
 variable "db_password" {
   description = "RDS master password — set via TF_VAR_db_password env var, never hardcode"
   sensitive   = true
+}
+
+variable "domain" {
+  description = "API domain for this environment. Defaults to env-based convention."
+  default     = null
 }
