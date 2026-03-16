@@ -66,7 +66,7 @@ database:
   password: "${DATABASE_PASSWORD}"
   ssl_mode: "${DATABASE_SSL_MODE}"  # PRODUCTION: Use 'require' or 'verify-full'
   max_open_conns: 25
-  max_idle_conns: 5
+  max_idle_conns: 10
   conn_max_lifetime: 300
   query_timeout: 30
   max_retries: 3

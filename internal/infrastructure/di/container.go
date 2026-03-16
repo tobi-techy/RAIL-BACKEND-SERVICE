@@ -2901,6 +2901,10 @@ func (c *Container) GetStationHandlers() *handlers.StationHandlers {
 	if c.StationService == nil {
 		return nil
 	}
+	if c.RedisClient != nil {
+		cached := station.NewCachedService(c.StationService, c.RedisClient)
+		return handlers.NewStationHandlers(cached, c.ZapLog)
+	}
 	return handlers.NewStationHandlers(c.StationService, c.ZapLog)
 }
 
