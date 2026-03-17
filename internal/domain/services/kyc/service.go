@@ -241,7 +241,7 @@ func (s *Service) SubmitKYC(ctx context.Context, req *entities.KYCSubmitRequest)
 		user.KYCStatus = "pending"
 		user.KYCSubmittedAt = timePtr(submittedAt)
 
-		if alpacaResult.Success {
+		if alpacaResult.Success && alpacaResult.Status != "skipped" {
 			// Extract account ID from alpaca response status (format: "account_id:status")
 			parts := strings.Split(alpacaResult.Status, ":")
 			if len(parts) > 0 {
