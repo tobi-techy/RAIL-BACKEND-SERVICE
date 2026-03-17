@@ -12,7 +12,7 @@ services:
       - DATABASE_URL=postgres://postgres:postgres@db:5432/rail_service_dev?sslmode=disable
       - REDIS_HOST=redis
       - REDIS_PASSWORD=
-      - JWT_SECRET=OHaBIojXokB99wJXpJXlNAiaZgm3yNpuBv/pwasCDi0=
+      - JWT_SECRET=${JWT_SECRET:-dev-only-change-me-in-production-32b}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:-development-encryption-key-32-byte!}
     depends_on:
       db:
