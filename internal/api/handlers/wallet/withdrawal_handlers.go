@@ -225,6 +225,18 @@ func (h *WithdrawalHandlers) InitiateFiatWithdrawal(c *gin.Context) {
 		currency = entities.WithdrawalCurrencyEUR
 	}
 
+	wallet, err := h.walletProvider.GetUserWalletByChain(c.Request.Context(), userID, string(entities.WalletChainSolana))
+	if err != nil {
+		h.logger.Error("Failed to get user wallet for fiat withdrawal", "error", err, "user_id", userID)
+		common.SendBadRequest(c, "NO_WALLET", "No wallet found for user")
+		return
+	}
+	if strings.TrimSpace(wallet.BridgeWalletID) == "" {
+		h.logger.Error("User wallet has no Bridge wallet ID", "user_id", userID)
+		common.SendInternalError(c, "PROVIDER_NOT_CONFIGURED", "Withdrawal provider is not available for this account")
+		return
+	}
+
 	serviceReq := &entities.InitiateFiatWithdrawalRequest{
 		UserID:            userID,
 		Amount:            amount,
@@ -235,6 +247,7 @@ func (h *WithdrawalHandlers) InitiateFiatWithdrawal(c *gin.Context) {
 		IBAN:              normalizeIBAN(req.IBAN),
 		BIC:               strings.ToUpper(strings.TrimSpace(req.BIC)),
 		SourceAccount:     entities.WithdrawalSourceSpendingBalance, // Default to spending
+		BridgeWalletID:    wallet.BridgeWalletID,
 		Category:          category,
 		Narration:         narration,
 		IdempotencyKey:    idempotencyKey,

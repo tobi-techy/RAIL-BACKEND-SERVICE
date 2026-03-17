@@ -7,9 +7,9 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	"github.com/shopspring/decimal"
 )
 
 // ErrBridgeCustomerNotFound indicates the user has no Bridge customer ID
@@ -129,8 +129,9 @@ func (a *BridgeFundingAdapter) ValidateDeposit(ctx context.Context, txHash strin
 }
 
 // P2PBridgeOfframpAdapter adapts bridge.Adapter to the p2p.BridgeOfframp interface.
-// Flow: CreateRecipient → creates a Bridge customer + external ACH account, returns "<customerID>:<externalAccountID>"
-//       InitiateTransfer → calls CreateTransfer with the external account as destination
+// Flow: CreateRecipient → registers an external ACH account under the sender's Bridge customer,
+//
+//	InitiateTransfer → calls CreateTransfer with the external account as destination.
 type P2PBridgeOfframpAdapter struct {
 	client bridge.BridgeClient
 }
@@ -140,36 +141,20 @@ func NewP2PBridgeOfframpAdapter(adapter *bridge.Adapter) *P2PBridgeOfframpAdapte
 	return &P2PBridgeOfframpAdapter{client: adapter.Client()}
 }
 
-// CreateRecipient creates a Bridge customer and registers their bank account as an external account.
-// req must contain: account_holder_name, routing_number, account_number, email (optional).
+// CreateRecipient registers a bank account as an external account under the provided Bridge customer.
+// req must contain: customer_id, account_holder_name, routing_number, account_number.
 // Returns "<customerID>:<externalAccountID>" as the recipient reference.
 func (a *P2PBridgeOfframpAdapter) CreateRecipient(ctx context.Context, req map[string]interface{}) (string, error) {
+	customerID, _ := req["customer_id"].(string)
 	holderName, _ := req["account_holder_name"].(string)
 	routing, _ := req["routing_number"].(string)
 	account, _ := req["account_number"].(string)
-	email, _ := req["email"].(string)
 
-	if holderName == "" || routing == "" || account == "" {
-		return "", fmt.Errorf("account_holder_name, routing_number and account_number are required")
-	}
-	if email == "" {
-		email = fmt.Sprintf("p2p+%s@rail.app", account[max(0, len(account)-4):])
+	if customerID == "" || holderName == "" || routing == "" || account == "" {
+		return "", fmt.Errorf("customer_id, account_holder_name, routing_number and account_number are required")
 	}
 
-	// Split holder name into first/last (best-effort)
-	firstName, lastName := splitName(holderName)
-
-	customer, err := a.client.CreateCustomer(ctx, &bridge.CreateCustomerRequest{
-		Type:      bridge.CustomerTypeIndividual,
-		FirstName: firstName,
-		LastName:  lastName,
-		Email:     email,
-	})
-	if err != nil {
-		return "", fmt.Errorf("bridge create customer: %w", err)
-	}
-
-	extAcct, err := a.client.CreateExternalAccount(ctx, customer.ID, &bridge.CreateExternalAccountRequest{
+	extAcct, err := a.client.CreateExternalAccount(ctx, customerID, &bridge.CreateExternalAccountRequest{
 		Currency: bridge.CurrencyUSD,
 		BankDetails: bridge.ExternalAccountBankDetails{
 			AccountOwnerName: holderName,
@@ -182,7 +167,7 @@ func (a *P2PBridgeOfframpAdapter) CreateRecipient(ctx context.Context, req map[s
 		return "", fmt.Errorf("bridge create external account: %w", err)
 	}
 
-	return customer.ID + ":" + extAcct.ID, nil
+	return customerID + ":" + extAcct.ID, nil
 }
 
 // InitiateTransfer sends USDC → USD ACH via Bridge.
@@ -199,9 +184,10 @@ func (a *P2PBridgeOfframpAdapter) InitiateTransfer(ctx context.Context, req map[
 	externalAccountID := parts[1]
 
 	transfer, err := a.client.CreateTransfer(ctx, &bridge.CreateTransferRequest{
-		Amount: amount,
+		OnBehalfOf: fmt.Sprintf("%v", req["on_behalf_of"]),
+		Amount:     amount,
 		Source: bridge.TransferSource{
-			PaymentRail:    bridge.PaymentRailSolana,
+			PaymentRail:    bridge.PaymentRail("bridge_wallet"),
 			Currency:       bridge.CurrencyUSDC,
 			BridgeWalletID: sourceWalletID,
 		},
@@ -219,21 +205,6 @@ func (a *P2PBridgeOfframpAdapter) InitiateTransfer(ctx context.Context, req map[
 		"id":     transfer.ID,
 		"status": string(transfer.State),
 	}, nil
-}
-
-func splitName(full string) (first, last string) {
-	i := strings.LastIndex(full, " ")
-	if i < 0 {
-		return full, ""
-	}
-	return full[:i], full[i+1:]
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // Helper functions

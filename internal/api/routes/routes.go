@@ -342,9 +342,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			kycProtected := protected.Group("/kyc")
 			{
 				kycProtected.POST("/sumsub/session", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.CreateSumsubSession)
-					kycProtected.GET("/sumsub/token", middleware.AuthRateLimit(10), kycHTTPHandlers.RefreshSumsubToken)
+				kycProtected.GET("/sumsub/token", middleware.AuthRateLimit(10), kycHTTPHandlers.RefreshSumsubToken)
 				kycProtected.POST("/submit", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.SubmitKYC)
-				kycProtected.GET("/status", authHandlers.GetKYCStatus)
+				kycProtected.GET("/status", kycHTTPHandlers.GetKYCStatus)
 				// Bridge KYC - optimized for sub-2-minute verification
 				kycProtected.GET("/bridge/link", bridgeKYCHandlers.GetBridgeKYCLink)
 				kycProtected.GET("/bridge/status", bridgeKYCHandlers.GetBridgeKYCStatus)

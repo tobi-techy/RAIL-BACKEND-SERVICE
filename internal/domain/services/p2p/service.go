@@ -41,7 +41,9 @@ type WalletLookup interface {
 
 // TransferExecutor executes the actual balance transfer
 type TransferExecutor interface {
-	TransferBetweenUsers(ctx context.Context, fromUserID, toUserID uuid.UUID, amount decimal.Decimal, description string) error
+	TransferBetweenUsers(ctx context.Context, fromUserID, toUserID uuid.UUID, amount decimal.Decimal, description, idempotencyKey string) error
+	ReserveFunds(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, description, idempotencyKey string) error
+	CreditUserFromSystem(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, description, idempotencyKey string) error
 }
 
 // Repository handles P2P transfer persistence
@@ -52,6 +54,9 @@ type Repository interface {
 	GetBySender(ctx context.Context, senderID uuid.UUID, limit, offset int) ([]*entities.P2PTransfer, error)
 	GetPendingByIdentifier(ctx context.Context, email, phone string) ([]*entities.P2PTransfer, error)
 	GetExpired(ctx context.Context) ([]*entities.P2PTransfer, error)
+	AcquirePendingByID(ctx context.Context, id uuid.UUID) (*entities.P2PTransfer, error)
+	AcquirePendingByClaimToken(ctx context.Context, token string) (*entities.P2PTransfer, error)
+	ReleaseProcessing(ctx context.Context, id uuid.UUID) error
 	Update(ctx context.Context, transfer *entities.P2PTransfer) error
 	UpsertRecentRecipient(ctx context.Context, userID, recipientID uuid.UUID) error
 	GetRecentRecipients(ctx context.Context, userID uuid.UUID, limit int) ([]*entities.P2PRecentRecipientWithUser, error)
@@ -80,15 +85,15 @@ type ClaimToBankRequest struct {
 
 // Service handles P2P transfer operations
 type Service struct {
-	repo           Repository
-	userLookup     UserLookup
-	userUpdater    UserUpdater
-	balance        BalanceProvider
-	walletLookup   WalletLookup
-	transfer       TransferExecutor
-	notification   NotificationSender
-	bridgeOfframp  BridgeOfframp
-	logger         *zap.Logger
+	repo          Repository
+	userLookup    UserLookup
+	userUpdater   UserUpdater
+	balance       BalanceProvider
+	walletLookup  WalletLookup
+	transfer      TransferExecutor
+	notification  NotificationSender
+	bridgeOfframp BridgeOfframp
+	logger        *zap.Logger
 }
 
 // NewService creates a new P2P service
@@ -297,8 +302,14 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2
 	}
 
 	transfer := entities.NewP2PTransfer(senderID, normalized, lookup.IdentifierType, amount, note)
+	var afterCreate func()
+	var rollbackOnCreateFailure func()
 
 	if lookup.Found && lookup.User != nil {
+		if lookup.User.ID == senderID {
+			return nil, fmt.Errorf("cannot send money to yourself")
+		}
+
 		// Instant transfer to existing user
 		transfer.RecipientID = &lookup.User.ID
 		transfer.Status = entities.P2PStatusCompleted
@@ -310,23 +321,31 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2
 		if note != nil {
 			desc = fmt.Sprintf("P2P: %s", *note)
 		}
-		if err := s.transfer.TransferBetweenUsers(ctx, senderID, lookup.User.ID, amount, desc); err != nil {
+		if err := s.transfer.TransferBetweenUsers(ctx, senderID, lookup.User.ID, amount, desc, "p2p-send-"+transfer.ID.String()); err != nil {
 			return nil, fmt.Errorf("transfer failed: %w", err)
 		}
 
-		// Update recent recipients
-		_ = s.repo.UpsertRecentRecipient(ctx, senderID, lookup.User.ID)
-
-		// Notify recipient
 		sender, _ := s.userLookup.GetByID(ctx, senderID)
 		senderName := "Someone"
 		if sender != nil && sender.FirstName != nil {
 			senderName = *sender.FirstName
 		}
-		_ = s.notification.SendP2PReceived(ctx, lookup.User.ID, senderName, amount, note)
+		recipientID := lookup.User.ID
+		afterCreate = func() {
+			_ = s.repo.UpsertRecentRecipient(ctx, senderID, recipientID)
+			_ = s.notification.SendP2PReceived(ctx, recipientID, senderName, amount, note)
+		}
+		rollbackOnCreateFailure = func() {
+			rollbackDesc := "P2P transfer rollback"
+			if err := s.transfer.TransferBetweenUsers(ctx, recipientID, senderID, amount, rollbackDesc, "p2p-send-rollback-"+transfer.ID.String()); err != nil {
+				s.logger.Error("Failed to roll back P2P transfer after persistence error",
+					zap.String("transfer_id", transfer.ID.String()),
+					zap.Error(err))
+			}
+		}
 
 	} else {
-		// Pending transfer - generate claim token
+		// Pending transfer - generate claim token before reserving funds so failures do not strand balances.
 		token, err := entities.GenerateClaimToken()
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate claim token: %w", err)
@@ -335,9 +354,21 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2
 		now := time.Now()
 		transfer.ClaimLinkSentAt = &now
 
-		// Note: Sender balance was already validated at the start of this function (lines 214-221)
-		// The actual debit happens when the recipient claims the transfer (see Claim method)
-		// Pending P2P transfers are tracked in the database without debiting the balance
+		desc := "P2P pending transfer"
+		if note != nil {
+			desc = fmt.Sprintf("P2P pending: %s", *note)
+		}
+		if err := s.transfer.ReserveFunds(ctx, senderID, amount, desc, "p2p-reserve-"+transfer.ID.String()); err != nil {
+			return nil, fmt.Errorf("failed to reserve funds: %w", err)
+		}
+		rollbackOnCreateFailure = func() {
+			rollbackDesc := "P2P pending rollback"
+			if err := s.transfer.CreditUserFromSystem(ctx, senderID, amount, rollbackDesc, "p2p-reserve-rollback-"+transfer.ID.String()); err != nil {
+				s.logger.Error("Failed to release reserved P2P funds after persistence error",
+					zap.String("transfer_id", transfer.ID.String()),
+					zap.Error(err))
+			}
+		}
 
 		// Send invite notification
 		sender, _ := s.userLookup.GetByID(ctx, senderID)
@@ -345,12 +376,20 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2
 		if sender != nil && sender.FirstName != nil {
 			senderName = *sender.FirstName
 		}
-		_ = s.notification.SendP2PInvite(ctx, normalized, string(lookup.IdentifierType), senderName, amount, token)
+		afterCreate = func() {
+			_ = s.notification.SendP2PInvite(ctx, normalized, string(lookup.IdentifierType), senderName, amount, token)
+		}
 	}
 
 	// Save transfer
 	if err := s.repo.Create(ctx, transfer); err != nil {
+		if rollbackOnCreateFailure != nil {
+			rollbackOnCreateFailure()
+		}
 		return nil, fmt.Errorf("failed to save transfer: %w", err)
+	}
+	if afterCreate != nil {
+		afterCreate()
 	}
 
 	message := "Sent!"
@@ -405,24 +444,21 @@ func (s *Service) ClaimToBank(ctx context.Context, token string, req ClaimToBank
 		return fmt.Errorf("bank claim not available")
 	}
 
-	transfer, err := s.repo.GetByClaimToken(ctx, token)
+	transfer, err := s.repo.AcquirePendingByClaimToken(ctx, token)
 	if err != nil {
 		return fmt.Errorf("transfer not found")
 	}
-	if !transfer.IsPending() {
-		return fmt.Errorf("transfer is not claimable (status: %s)", transfer.Status)
-	}
+	defer func() {
+		if transfer != nil && transfer.Status == entities.P2PStatusProcessing {
+			if releaseErr := s.repo.ReleaseProcessing(ctx, transfer.ID); releaseErr != nil {
+				s.logger.Error("Failed to release P2P bank claim lock",
+					zap.String("transfer_id", transfer.ID.String()),
+					zap.Error(releaseErr))
+			}
+		}
+	}()
 	if transfer.IsExpired() {
 		return fmt.Errorf("transfer has expired")
-	}
-
-	// Validate sender still has sufficient balance
-	balance, err := s.balance.GetSpendBalance(ctx, transfer.SenderID)
-	if err != nil {
-		return fmt.Errorf("failed to verify sender balance: %w", err)
-	}
-	if balance.LessThan(transfer.Amount) {
-		return fmt.Errorf("sender has insufficient balance")
 	}
 
 	// Resolve sender's Bridge wallet ID
@@ -431,8 +467,17 @@ func (s *Service) ClaimToBank(ctx context.Context, token string, req ClaimToBank
 		return fmt.Errorf("could not resolve sender wallet: %w", err)
 	}
 
+	senderProfile, err := s.userLookup.GetByID(ctx, transfer.SenderID)
+	if err != nil {
+		return fmt.Errorf("failed to load sender profile: %w", err)
+	}
+	if senderProfile == nil || senderProfile.BridgeCustomerID == nil || strings.TrimSpace(*senderProfile.BridgeCustomerID) == "" {
+		return fmt.Errorf("sender bridge customer profile is not configured")
+	}
+
 	// Register the recipient's bank account with Bridge
 	recipientID, err := s.bridgeOfframp.CreateRecipient(ctx, map[string]interface{}{
+		"customer_id":         strings.TrimSpace(*senderProfile.BridgeCustomerID),
 		"account_holder_name": strings.TrimSpace(req.AccountHolderName),
 		"routing_number":      strings.ReplaceAll(strings.TrimSpace(req.RoutingNumber), " ", ""),
 		"account_number":      strings.ReplaceAll(strings.TrimSpace(req.AccountNumber), " ", ""),
@@ -442,38 +487,34 @@ func (s *Service) ClaimToBank(ctx context.Context, token string, req ClaimToBank
 	}
 
 	// Initiate the ACH payout via Bridge (USDC → USD ACH)
-	_, err = s.bridgeOfframp.InitiateTransfer(ctx, map[string]interface{}{
+	initiateResult, err := s.bridgeOfframp.InitiateTransfer(ctx, map[string]interface{}{
 		"amount":           transfer.Amount.StringFixed(2),
 		"recipient_id":     recipientID,
 		"source_wallet_id": sourceWalletID,
+		"on_behalf_of":     transfer.SenderID.String(),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initiate bank transfer: %w", err)
 	}
 
-	// Debit the sender's ledger balance
-	desc := "P2P bank claim"
-	if transfer.Note != nil {
-		desc = fmt.Sprintf("P2P bank claim: %s", *transfer.Note)
-	}
-	if err := s.transfer.TransferBetweenUsers(ctx, transfer.SenderID, transfer.SenderID, transfer.Amount, desc); err != nil {
-		s.logger.Error("Failed to debit sender after bank claim initiation",
-			zap.String("transfer_id", transfer.ID.String()),
-			zap.Error(err))
-		// Don't fail — Bridge transfer is already in flight; ops reconciliation will catch discrepancies.
-	}
-
 	// Mark transfer claimed
+	senderID := transfer.SenderID
+	amount := transfer.Amount
+	if providerTransferID := strings.TrimSpace(fmt.Sprintf("%v", initiateResult["id"])); providerTransferID != "" && providerTransferID != "<nil>" {
+		transfer.ProviderTransferID = &providerTransferID
+	}
+	if providerStatus := strings.TrimSpace(fmt.Sprintf("%v", initiateResult["status"])); providerStatus != "" && providerStatus != "<nil>" {
+		transfer.ProviderStatus = &providerStatus
+	}
 	now := time.Now()
 	transfer.Status = entities.P2PStatusClaimed
 	transfer.CompletedAt = &now
 	if err := s.repo.Update(ctx, transfer); err != nil {
-		s.logger.Error("Failed to mark P2P transfer claimed after bank claim",
-			zap.String("transfer_id", transfer.ID.String()),
-			zap.Error(err))
+		return fmt.Errorf("failed to update transfer: %w", err)
 	}
+	transfer = nil
 
-	_ = s.notification.SendP2PClaimed(ctx, transfer.SenderID, req.AccountHolderName, transfer.Amount)
+	_ = s.notification.SendP2PClaimed(ctx, senderID, req.AccountHolderName, amount)
 
 	return nil
 }
@@ -503,20 +544,37 @@ func (s *Service) senderBridgeWalletID(ctx context.Context, senderID uuid.UUID) 
 
 // ClaimByToken claims a pending transfer using the claim token
 func (s *Service) ClaimByToken(ctx context.Context, token string, claimerID uuid.UUID) (*entities.P2PTransfer, error) {
-	transfer, err := s.repo.GetByClaimToken(ctx, token)
+	transfer, err := s.repo.AcquirePendingByClaimToken(ctx, token)
 	if err != nil {
 		return nil, fmt.Errorf("transfer not found")
 	}
-
-	if !transfer.IsPending() {
-		return nil, fmt.Errorf("transfer is not claimable (status: %s)", transfer.Status)
-	}
-
+	defer func() {
+		if transfer != nil && transfer.Status == entities.P2PStatusProcessing {
+			if releaseErr := s.repo.ReleaseProcessing(ctx, transfer.ID); releaseErr != nil {
+				s.logger.Error("Failed to release P2P claim lock",
+					zap.String("transfer_id", transfer.ID.String()),
+					zap.Error(releaseErr))
+			}
+		}
+	}()
 	if transfer.IsExpired() {
 		return nil, fmt.Errorf("transfer has expired")
 	}
 
-	return s.completeClaim(ctx, transfer, claimerID)
+	claimer, err := s.userLookup.GetByID(ctx, claimerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load claimer profile: %w", err)
+	}
+	if !s.transferMatchesUser(transfer, claimer) {
+		return nil, fmt.Errorf("you are not eligible to claim this transfer")
+	}
+
+	claimed, err := s.completeClaim(ctx, transfer, claimerID)
+	if err != nil {
+		return nil, err
+	}
+	transfer = nil
+	return claimed, nil
 }
 
 // ClaimPendingForUser claims all pending transfers for a user (called after signup)
@@ -528,7 +586,19 @@ func (s *Service) ClaimPendingForUser(ctx context.Context, userID uuid.UUID, ema
 
 	claimed := 0
 	for _, transfer := range transfers {
-		if _, err := s.completeClaim(ctx, transfer, userID); err != nil {
+		lockedTransfer, err := s.repo.AcquirePendingByID(ctx, transfer.ID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				continue
+			}
+			s.logger.Error("Failed to acquire pending transfer",
+				zap.String("transfer_id", transfer.ID.String()),
+				zap.Error(err))
+			continue
+		}
+
+		if _, err := s.completeClaim(ctx, lockedTransfer, userID); err != nil {
+			_ = s.repo.ReleaseProcessing(ctx, lockedTransfer.ID)
 			s.logger.Error("Failed to claim transfer",
 				zap.String("transfer_id", transfer.ID.String()),
 				zap.Error(err))
@@ -541,12 +611,12 @@ func (s *Service) ClaimPendingForUser(ctx context.Context, userID uuid.UUID, ema
 }
 
 func (s *Service) completeClaim(ctx context.Context, transfer *entities.P2PTransfer, claimerID uuid.UUID) (*entities.P2PTransfer, error) {
-	// Execute balance transfer from escrow to claimer
+	// Release reserved funds from system buffer to claimer.
 	desc := "P2P claim"
 	if transfer.Note != nil {
 		desc = fmt.Sprintf("P2P claim: %s", *transfer.Note)
 	}
-	if err := s.transfer.TransferBetweenUsers(ctx, transfer.SenderID, claimerID, transfer.Amount, desc); err != nil {
+	if err := s.transfer.CreditUserFromSystem(ctx, claimerID, transfer.Amount, desc, "p2p-claim-"+transfer.ID.String()); err != nil {
 		return nil, fmt.Errorf("claim transfer failed: %w", err)
 	}
 
@@ -576,27 +646,44 @@ func (s *Service) completeClaim(ctx context.Context, transfer *entities.P2PTrans
 
 // Cancel cancels a pending transfer
 func (s *Service) Cancel(ctx context.Context, transferID, senderID uuid.UUID) error {
-	transfer, err := s.repo.GetByID(ctx, transferID)
+	transfer, err := s.repo.AcquirePendingByID(ctx, transferID)
 	if err != nil {
 		return fmt.Errorf("transfer not found")
+	}
+	defer func() {
+		if transfer != nil && transfer.Status == entities.P2PStatusProcessing {
+			if releaseErr := s.repo.ReleaseProcessing(ctx, transfer.ID); releaseErr != nil {
+				s.logger.Error("Failed to release P2P cancel lock",
+					zap.String("transfer_id", transfer.ID.String()),
+					zap.Error(releaseErr))
+			}
+		}
+	}()
+	if transfer.IsExpired() {
+		return fmt.Errorf("transfer has expired")
 	}
 
 	if transfer.SenderID != senderID {
 		return fmt.Errorf("not authorized to cancel this transfer")
 	}
 
-	if !transfer.CanCancel() {
-		return fmt.Errorf("transfer cannot be cancelled (status: %s)", transfer.Status)
+	desc := "P2P cancellation refund"
+	if transfer.Note != nil {
+		desc = fmt.Sprintf("P2P cancellation refund: %s", *transfer.Note)
 	}
-
-	// Note: If escrow was implemented, refund would happen here
-	// Current implementation relies on balance check at send time
+	if err := s.transfer.CreditUserFromSystem(ctx, transfer.SenderID, transfer.Amount, desc, "p2p-cancel-"+transfer.ID.String()); err != nil {
+		return fmt.Errorf("failed to refund reserved funds: %w", err)
+	}
 
 	now := time.Now()
 	transfer.Status = entities.P2PStatusCancelled
 	transfer.CancelledAt = &now
 
-	return s.repo.Update(ctx, transfer)
+	if err := s.repo.Update(ctx, transfer); err != nil {
+		return err
+	}
+	transfer = nil
+	return nil
 }
 
 // GetTransfers returns transfers for a user
@@ -621,18 +708,40 @@ func (s *Service) ProcessExpiredTransfers(ctx context.Context) (int, error) {
 
 	processed := 0
 	for _, transfer := range transfers {
-		// Note: If escrow was implemented, refund would happen here
-
-		transfer.Status = entities.P2PStatusExpired
-		if err := s.repo.Update(ctx, transfer); err != nil {
-			s.logger.Error("Failed to mark transfer expired",
+		lockedTransfer, err := s.repo.AcquirePendingByID(ctx, transfer.ID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				continue
+			}
+			s.logger.Error("Failed to acquire expired transfer",
 				zap.String("transfer_id", transfer.ID.String()),
 				zap.Error(err))
 			continue
 		}
 
+		desc := "P2P expiry refund"
+		if lockedTransfer.Note != nil {
+			desc = fmt.Sprintf("P2P expiry refund: %s", *lockedTransfer.Note)
+		}
+		if err := s.transfer.CreditUserFromSystem(ctx, lockedTransfer.SenderID, lockedTransfer.Amount, desc, "p2p-expire-"+lockedTransfer.ID.String()); err != nil {
+			_ = s.repo.ReleaseProcessing(ctx, lockedTransfer.ID)
+			s.logger.Error("Failed to refund expired transfer",
+				zap.String("transfer_id", lockedTransfer.ID.String()),
+				zap.Error(err))
+			continue
+		}
+
+		lockedTransfer.Status = entities.P2PStatusExpired
+		if err := s.repo.Update(ctx, lockedTransfer); err != nil {
+			s.logger.Error("Failed to mark transfer expired",
+				zap.String("transfer_id", lockedTransfer.ID.String()),
+				zap.Error(err))
+			_ = s.repo.ReleaseProcessing(ctx, lockedTransfer.ID)
+			continue
+		}
+
 		// Notify sender
-		_ = s.notification.SendP2PExpired(ctx, transfer.SenderID, transfer.RecipientIdentifier, transfer.Amount)
+		_ = s.notification.SendP2PExpired(ctx, lockedTransfer.SenderID, lockedTransfer.RecipientIdentifier, lockedTransfer.Amount)
 		processed++
 	}
 
@@ -677,3 +786,21 @@ func (s *Service) parseIdentifier(identifier string) (entities.P2PIdentifierType
 	return "", ""
 }
 
+func (s *Service) transferMatchesUser(transfer *entities.P2PTransfer, user *entities.UserProfile) bool {
+	if transfer == nil || user == nil {
+		return false
+	}
+
+	switch transfer.IdentifierType {
+	case entities.P2PIdentifierEmail:
+		return strings.EqualFold(strings.TrimSpace(user.Email), strings.TrimSpace(transfer.RecipientIdentifier))
+	case entities.P2PIdentifierPhone:
+		if user.Phone == nil {
+			return false
+		}
+		_, normalizedPhone := s.parseIdentifier(*user.Phone)
+		return normalizedPhone != "" && normalizedPhone == transfer.RecipientIdentifier
+	default:
+		return false
+	}
+}

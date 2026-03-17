@@ -600,14 +600,11 @@ func (s *Service) processSumsubApproved(ctx context.Context, submission *entitie
 		}
 	}
 
-	// With Alpaca skipped, approve KYC based on Bridge + Sumsub success
-	if bridgeResult.Success {
-		user.KYCStatus = string(entities.KYCStatusApproved)
-		user.KYCApprovedAt = &now
-		user.KYCRejectionReason = nil
-	} else {
-		user.KYCStatus = string(entities.KYCStatusProcessing)
-	}
+	// Sumsub approval is sufficient — approve KYC regardless of Bridge result.
+	// Bridge activates asynchronously and will update bridge_kyc_status via webhook.
+	user.KYCStatus = string(entities.KYCStatusApproved)
+	user.KYCApprovedAt = &now
+	user.KYCRejectionReason = nil
 
 	_ = alpacaResult // used in verification data below
 
@@ -1542,16 +1539,17 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 	}
 
 	overall := determineOverallStatus(user)
+	hasSubmitted := overall != "not_started"
 
 	response := &entities.KYCStatusResponse{
-		UserID:        userID,
-		Status:        overall,
-		OverallStatus: overall,
-		Verified:      overall == "approved",
-		HasSubmitted:  user.KYCSubmittedAt != nil,
-		RequiresKYC:   overall != "approved",
+		UserID:          userID,
+		Status:          overall,
+		OverallStatus:   overall,
+		Verified:        overall == "approved",
+		HasSubmitted:    hasSubmitted,
+		RequiresKYC:     overall != "approved",
 		LastSubmittedAt: user.KYCSubmittedAt,
-		ApprovedAt:     user.KYCApprovedAt,
+		ApprovedAt:      user.KYCApprovedAt,
 		RejectionReason: user.KYCRejectionReason,
 		Bridge: entities.KYCProviderStatus{
 			Status:      stringValue(user.BridgeKYCStatus),
@@ -1578,13 +1576,28 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 }
 
 func determineOverallStatus(user *entities.User) string {
-	if user.KYCStatus == "approved" && user.BridgeKYCStatus != nil && *user.BridgeKYCStatus == "active" {
+	if user == nil {
+		return "not_started"
+	}
+
+	kycStatus := strings.ToLower(strings.TrimSpace(user.KYCStatus))
+	bridgeStatus := strings.ToLower(strings.TrimSpace(stringValue(user.BridgeKYCStatus)))
+
+	// Primary approval: Sumsub approval or an active Bridge customer both unlock the account.
+	if kycStatus == "approved" || bridgeStatus == "active" {
 		return "approved"
 	}
-	if user.KYCStatus == "rejected" || (user.BridgeKYCStatus != nil && *user.BridgeKYCStatus == "rejected") {
+	if kycStatus == "rejected" || kycStatus == "expired" || bridgeStatus == "rejected" {
 		return "rejected"
 	}
 	if user.KYCSubmittedAt != nil {
+		return "pending"
+	}
+	if kycStatus == "processing" {
+		return "pending"
+	}
+	switch bridgeStatus {
+	case "pending", "processing", "under_review", "in_review":
 		return "pending"
 	}
 	return "not_started"

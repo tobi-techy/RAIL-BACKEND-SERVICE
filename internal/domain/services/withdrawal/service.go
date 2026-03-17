@@ -60,6 +60,7 @@ type WithdrawalRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*entities.Withdrawal, error)
 	GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error)
 	GetByIdempotencyKey(ctx context.Context, key string) (*entities.Withdrawal, error)
+	GetByProviderTransferID(ctx context.Context, transferID string) (*entities.Withdrawal, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status entities.WithdrawalStatus) error
 	UpdateBridgeTransfer(ctx context.Context, id uuid.UUID, transferID string) error
 	UpdateTxHash(ctx context.Context, id uuid.UUID, txHash string) error
@@ -447,6 +448,7 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 	idempotencyKey := scopedWithdrawalIdempotencyKey(req.UserID, "fiat", req.IdempotencyKey)
 
 	// Step 2: Ensure user is eligible for Bridge-based fiat withdrawal.
+	var bridgeCustomerID string
 	if s.userRepo != nil {
 		user, err := s.userRepo.GetUserEntityByID(ctx, req.UserID)
 		if err != nil {
@@ -458,6 +460,13 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 		if !bridgeActive && !legacyApproved {
 			return nil, fmt.Errorf("bridge kyc verification required for fiat withdrawals")
 		}
+
+		if user.BridgeCustomerID != nil {
+			bridgeCustomerID = strings.TrimSpace(*user.BridgeCustomerID)
+		}
+	}
+	if bridgeCustomerID == "" {
+		return nil, fmt.Errorf("bridge customer profile is required for fiat withdrawals")
 	}
 
 	// Step 3: Check idempotency (always — auto-key covers retry deduplication)
@@ -508,7 +517,7 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 	}
 
 	// Step 7: Create or get bank account for the supplied fiat destination.
-	bankAccount, err := s.getOrCreateBankAccount(ctx, req)
+	bankAccount, err := s.getOrCreateBankAccount(ctx, req, bridgeCustomerID)
 	if err != nil {
 		s.logger.Error("Failed to create bank account", "error", err)
 		return nil, fmt.Errorf("failed to setup bank account: %w", err)
@@ -545,6 +554,7 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 		Currency:         req.Currency,
 		Amount:           req.Amount,
 		SourceAccount:    req.SourceAccount,
+		BridgeWalletID:   &req.BridgeWalletID,
 		DestinationType:  entities.DestinationTypeBankAccount,
 		DestinationChain: "BANK",
 		BankAccountID:    &bankAccount.ID,
@@ -576,6 +586,12 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 		return nil, err
 	}
 
+	if err := s.postWithdrawalLedgerEntries(ctx, withdrawal); err != nil {
+		s.logger.Error("Failed to post pre-transfer ledger debit", "error", err, "withdrawal_id", withdrawal.ID.String())
+		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "ledger debit failed: "+err.Error())
+		return nil, fmt.Errorf("failed to post ledger debit: %w", err)
+	}
+
 	// Step 9: Execute Bridge offramp transfer
 	transferID, err := s.executeFiatTransfer(ctx, withdrawal, bankAccount)
 	if err != nil {
@@ -592,6 +608,8 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 	// Update bridge transfer ID
 	if err := s.withdrawalRepo.UpdateBridgeTransfer(ctx, withdrawal.ID, transferID); err != nil {
 		s.logger.Error("Failed to update bridge transfer ID", "error", err)
+	} else {
+		withdrawal.ProviderTransferID = &transferID
 	}
 
 	// Update status to processing
@@ -601,6 +619,12 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 	}
 
 	withdrawal.Status = entities.WithdrawalStatusProcessing
+
+	if s.limitsService != nil {
+		if err := s.limitsService.RecordWithdrawal(ctx, req.UserID, req.Amount); err != nil {
+			s.logger.Error("Failed to record fiat withdrawal against limits", "error", err)
+		}
+	}
 
 	s.logger.Info("Fiat withdrawal initiated",
 		"withdrawal_id", withdrawal.ID.String(),
@@ -615,7 +639,7 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 }
 
 // getOrCreateBankAccount finds an existing destination account fingerprint or creates a new one.
-func (s *WithdrawalService) getOrCreateBankAccount(ctx context.Context, req *entities.InitiateFiatWithdrawalRequest) (*entities.BankAccount, error) {
+func (s *WithdrawalService) getOrCreateBankAccount(ctx context.Context, req *entities.InitiateFiatWithdrawalRequest, bridgeCustomerID string) (*entities.BankAccount, error) {
 	// Fail fast if bridge adapter is not configured
 	if s.bridgeAdapter == nil {
 		return nil, fmt.Errorf("bridge adapter not configured for fiat withdrawals")
@@ -690,6 +714,7 @@ func (s *WithdrawalService) getOrCreateBankAccount(ctx context.Context, req *ent
 	// Register with Bridge to get recipient ID
 	if s.bridgeAdapter != nil {
 		recipientReq := map[string]interface{}{
+			"customer_id":         bridgeCustomerID,
 			"currency":            string(req.Currency),
 			"account_holder_name": strings.TrimSpace(req.AccountHolderName),
 		}
@@ -778,16 +803,16 @@ func (s *WithdrawalService) CancelWithdrawal(ctx context.Context, userID, withdr
 		return fmt.Errorf("cannot cancel withdrawal in status: %s", withdrawal.Status)
 	}
 
-	// For fiat withdrawals, attempt to cancel the Bridge transfer
-	if withdrawal.IsFiat() && withdrawal.ProviderTransferID != nil {
+	if withdrawal.ProviderTransferID != nil && strings.TrimSpace(*withdrawal.ProviderTransferID) != "" {
 		if err := s.bridgeAdapter.CancelTransfer(ctx, *withdrawal.ProviderTransferID); err != nil {
-			s.logger.Warn("Failed to cancel Bridge transfer; proceeding with local cancellation",
-				"transfer_id", *withdrawal.ProviderTransferID,
-				"error", err)
-		} else {
-			s.logger.Info("Bridge transfer cancelled",
-				"transfer_id", *withdrawal.ProviderTransferID)
+			return fmt.Errorf("provider cancellation failed: %w", err)
 		}
+		s.logger.Info("Bridge transfer cancelled",
+			"transfer_id", *withdrawal.ProviderTransferID)
+	}
+
+	if err := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); err != nil {
+		return fmt.Errorf("failed to reverse withdrawal ledger entry: %w", err)
 	}
 
 	if err := s.withdrawalRepo.MarkCancelled(ctx, withdrawalID); err != nil {
@@ -813,7 +838,7 @@ func (s *WithdrawalService) GetWithdrawal(ctx context.Context, userID, withdrawa
 		return nil, fmt.Errorf("withdrawal does not belong to user")
 	}
 
-	if _, err := s.syncCryptoWithdrawalStatusFromProvider(ctx, withdrawal); err != nil {
+	if _, err := s.syncWithdrawalStatusFromProvider(ctx, withdrawal); err != nil {
 		s.logger.Warn("Failed to sync withdrawal status on read",
 			"withdrawal_id", withdrawal.ID.String(),
 			"error", err)
@@ -1084,10 +1109,17 @@ func (s *WithdrawalService) executeFiatTransfer(ctx context.Context, withdrawal 
 
 	// Create transfer request
 	req := map[string]interface{}{
-		"source":          "USDC",
-		"amount":          amountStr,
-		"currency":        string(withdrawal.Currency),
-		"recipient_id":    *bankAccount.BridgeRecipientID,
+		"source":       "USDC",
+		"amount":       amountStr,
+		"currency":     string(withdrawal.Currency),
+		"recipient_id": *bankAccount.BridgeRecipientID,
+		"source_wallet_id": func() string {
+			if withdrawal.BridgeWalletID == nil {
+				return ""
+			}
+			return *withdrawal.BridgeWalletID
+		}(),
+		"on_behalf_of":    withdrawal.UserID.String(),
 		"idempotency_key": *withdrawal.IdempotencyKey,
 	}
 
@@ -1139,8 +1171,110 @@ func (s *WithdrawalService) settleCompletedCryptoWithdrawal(ctx context.Context,
 	return nil
 }
 
-func (s *WithdrawalService) syncCryptoWithdrawalStatusFromProvider(ctx context.Context, withdrawal *entities.Withdrawal) (entities.WithdrawalStatus, error) {
-	if withdrawal == nil || !withdrawal.IsCrypto() || withdrawal.Status.IsTerminal() {
+func (s *WithdrawalService) settleCompletedFiatWithdrawal(ctx context.Context, withdrawal *entities.Withdrawal) error {
+	if withdrawal == nil {
+		return nil
+	}
+
+	current, err := s.withdrawalRepo.GetByID(ctx, withdrawal.ID)
+	if err != nil {
+		return fmt.Errorf("failed to fetch withdrawal for settlement: %w", err)
+	}
+	if current != nil && current.Status == entities.WithdrawalStatusCompleted {
+		withdrawal.Status = entities.WithdrawalStatusCompleted
+		withdrawal.CompletedAt = current.CompletedAt
+		return nil
+	}
+
+	now := time.Now()
+	if err := s.withdrawalRepo.MarkCompleted(ctx, withdrawal.ID); err != nil {
+		return fmt.Errorf("failed to complete withdrawal: %w", err)
+	}
+	withdrawal.Status = entities.WithdrawalStatusCompleted
+	withdrawal.CompletedAt = &now
+	withdrawal.UpdatedAt = now
+
+	if withdrawal.BankAccountID != nil {
+		if err := s.VerifyBankAccount(ctx, withdrawal.UserID, *withdrawal.BankAccountID); err != nil {
+			s.logger.Warn("Failed to verify bank account after successful fiat withdrawal",
+				"withdrawal_id", withdrawal.ID.String(),
+				"bank_account_id", withdrawal.BankAccountID.String(),
+				"error", err)
+		}
+	}
+
+	if s.notificationService != nil {
+		destination := "bank account"
+		if withdrawal.BankAccountID != nil {
+			if bankAccount, err := s.bankAccountRepo.GetByID(ctx, *withdrawal.BankAccountID); err == nil && bankAccount != nil {
+				switch {
+				case bankAccount.AccountNumberLast4 != "":
+					destination = "bank account ending in " + bankAccount.AccountNumberLast4
+				case bankAccount.IBAN != nil && len(strings.TrimSpace(*bankAccount.IBAN)) >= 4:
+					iban := strings.TrimSpace(*bankAccount.IBAN)
+					destination = "IBAN ending in " + iban[len(iban)-4:]
+				}
+			}
+		}
+		_ = s.notificationService.NotifyWithdrawalCompleted(ctx, withdrawal.UserID, withdrawal.Amount, destination)
+	}
+
+	return nil
+}
+
+func (s *WithdrawalService) failWithdrawal(ctx context.Context, withdrawal *entities.Withdrawal, reason string) error {
+	if withdrawal == nil {
+		return nil
+	}
+	if withdrawal.Status.IsTerminal() {
+		return nil
+	}
+
+	if err := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); err != nil {
+		return fmt.Errorf("failed to reverse withdrawal ledger entry: %w", err)
+	}
+	if err := s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, reason); err != nil {
+		return fmt.Errorf("failed to mark withdrawal failed: %w", err)
+	}
+
+	withdrawal.Status = entities.WithdrawalStatusFailed
+	withdrawal.ErrorMessage = &reason
+	if s.notificationService != nil {
+		_ = s.notificationService.NotifyWithdrawalFailed(ctx, withdrawal.UserID, withdrawal.Amount, reason)
+	}
+
+	return nil
+}
+
+func (s *WithdrawalService) CompleteWithdrawalByTransferID(ctx context.Context, transferID string) error {
+	withdrawal, err := s.withdrawalRepo.GetByProviderTransferID(ctx, strings.TrimSpace(transferID))
+	if err != nil {
+		return fmt.Errorf("failed to fetch withdrawal by transfer id: %w", err)
+	}
+	if withdrawal == nil {
+		return nil
+	}
+
+	if withdrawal.IsFiat() {
+		return s.settleCompletedFiatWithdrawal(ctx, withdrawal)
+	}
+	return s.settleCompletedCryptoWithdrawal(ctx, withdrawal)
+}
+
+func (s *WithdrawalService) FailWithdrawalByTransferID(ctx context.Context, transferID, reason string) error {
+	withdrawal, err := s.withdrawalRepo.GetByProviderTransferID(ctx, strings.TrimSpace(transferID))
+	if err != nil {
+		return fmt.Errorf("failed to fetch withdrawal by transfer id: %w", err)
+	}
+	if withdrawal == nil {
+		return nil
+	}
+
+	return s.failWithdrawal(ctx, withdrawal, reason)
+}
+
+func (s *WithdrawalService) syncWithdrawalStatusFromProvider(ctx context.Context, withdrawal *entities.Withdrawal) (entities.WithdrawalStatus, error) {
+	if withdrawal == nil || withdrawal.Status.IsTerminal() {
 		if withdrawal == nil {
 			return entities.WithdrawalStatusInitiated, nil
 		}
@@ -1162,19 +1296,27 @@ func (s *WithdrawalService) syncCryptoWithdrawalStatusFromProvider(ctx context.C
 	state := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", transfer["status"])))
 	switch state {
 	case "PAYMENT_PROCESSED", "COMPLETED", "SUCCESS":
-		if err := s.settleCompletedCryptoWithdrawal(ctx, withdrawal); err != nil {
+		if withdrawal.IsFiat() {
+			if err := s.settleCompletedFiatWithdrawal(ctx, withdrawal); err != nil {
+				return withdrawal.Status, err
+			}
+		} else {
+			if err := s.settleCompletedCryptoWithdrawal(ctx, withdrawal); err != nil {
+				return withdrawal.Status, err
+			}
+		}
+	case "CANCELED", "UNDELIVERABLE", "RETURNED", "FAILED", "REFUNDED", "ERROR":
+		reason := "bridge transfer " + strings.ToLower(state)
+		if err := s.failWithdrawal(ctx, withdrawal, reason); err != nil {
 			return withdrawal.Status, err
 		}
-	case "CANCELED", "UNDELIVERABLE", "RETURNED", "FAILED":
-		reason := "bridge transfer " + strings.ToLower(state)
-		if err := s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, reason); err != nil {
-			return withdrawal.Status, fmt.Errorf("failed to mark withdrawal failed: %w", err)
-		}
-		withdrawal.Status = entities.WithdrawalStatusFailed
-		withdrawal.ErrorMessage = &reason
 	}
 
 	return withdrawal.Status, nil
+}
+
+func (s *WithdrawalService) syncCryptoWithdrawalStatusFromProvider(ctx context.Context, withdrawal *entities.Withdrawal) (entities.WithdrawalStatus, error) {
+	return s.syncWithdrawalStatusFromProvider(ctx, withdrawal)
 }
 
 func scopedWithdrawalIdempotencyKey(userID uuid.UUID, flow string, clientKey string) string {
