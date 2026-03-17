@@ -736,6 +736,10 @@ func (a *deletionBridgeAdapter) DeactivateVirtualAccount(ctx context.Context, cu
 	return err
 }
 
+func (a *deletionBridgeAdapter) DeleteCustomer(ctx context.Context, customerID string) error {
+	return a.client.DeleteCustomer(ctx, customerID)
+}
+
 // Container holds all application dependencies
 type Container struct {
 	Config *config.Config

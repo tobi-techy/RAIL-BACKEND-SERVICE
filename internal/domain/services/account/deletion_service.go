@@ -67,6 +67,7 @@ type VirtualAccountRepository interface {
 // BridgeClient interface for Bridge operations
 type BridgeClient interface {
 	DeactivateVirtualAccount(ctx context.Context, customerID, virtualAccountID string) error
+	DeleteCustomer(ctx context.Context, customerID string) error
 }
 
 // DeviceTokenRepository interface for push notification cleanup
@@ -278,8 +279,12 @@ func (s *DeletionService) cleanupExternalProviders(ctx context.Context, userID u
 
 	// Deactivate Bridge virtual accounts
 	if s.virtualAccountRepo != nil && s.bridgeClient != nil {
+		var bridgeCustomerID string
 		if virtualAccounts, err := s.virtualAccountRepo.GetByUserID(ctx, userID); err == nil {
 			for _, va := range virtualAccounts {
+				if va.BridgeCustomerID != "" {
+					bridgeCustomerID = va.BridgeCustomerID
+				}
 				if va.BridgeCustomerID != "" && va.BridgeAccountID != nil && *va.BridgeAccountID != "" {
 					if err := s.bridgeClient.DeactivateVirtualAccount(ctx, va.BridgeCustomerID, *va.BridgeAccountID); err != nil {
 						s.logger.Warn("Failed to deactivate Bridge virtual account", "user_id", userID.String(), "bridge_account_id", *va.BridgeAccountID, "error", err)
@@ -287,6 +292,15 @@ func (s *DeletionService) cleanupExternalProviders(ctx context.Context, userID u
 						s.logger.Info("Deactivated Bridge virtual account", "user_id", userID.String(), "bridge_account_id", *va.BridgeAccountID)
 					}
 				}
+			}
+		}
+
+		// Delete Bridge customer record (removes all PII from Bridge)
+		if bridgeCustomerID != "" {
+			if err := s.bridgeClient.DeleteCustomer(ctx, bridgeCustomerID); err != nil {
+				s.logger.Warn("Failed to delete Bridge customer", "user_id", userID.String(), "bridge_customer_id", bridgeCustomerID, "error", err)
+			} else {
+				s.logger.Info("Deleted Bridge customer", "user_id", userID.String(), "bridge_customer_id", bridgeCustomerID)
 			}
 		}
 	}

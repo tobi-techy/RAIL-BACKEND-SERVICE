@@ -119,6 +119,14 @@ func (c *Client) GetCustomer(ctx context.Context, customerID string) (*Customer,
 	return &customer, nil
 }
 
+// DeleteCustomer permanently deletes a customer and their data from Bridge
+func (c *Client) DeleteCustomer(ctx context.Context, customerID string) error {
+	if err := c.doRequest(ctx, http.MethodDelete, fmt.Sprintf("/v0/customers/%s", url.PathEscape(customerID)), nil, nil); err != nil {
+		return fmt.Errorf("delete customer failed: %w", err)
+	}
+	return nil
+}
+
 // UpdateCustomer updates a customer
 func (c *Client) UpdateCustomer(ctx context.Context, customerID string, req *UpdateCustomerRequest) (*Customer, error) {
 	var customer Customer

@@ -49,6 +49,7 @@ type AuthHandlers struct {
 	passcodeService     *passcode.Service
 	redisClient         RedisClient
 	deletionService     AccountDeletionService
+	appleTokenRevoker   AppleTokenRevoker
 	validator           *validator.Validate
 	kycWebhookSecret    string // Secret for verifying KYC provider callbacks
 }
@@ -56,6 +57,11 @@ type AuthHandlers struct {
 // AccountDeletionService interface for account deletion
 type AccountDeletionService interface {
 	DeleteAccount(ctx context.Context, userID uuid.UUID, reason string) (fundsSwept string, txHash string, err error)
+}
+
+// AppleTokenRevoker revokes Apple Sign In tokens during account deletion
+type AppleTokenRevoker interface {
+	RevokeAppleToken(ctx context.Context, authCode string) error
 }
 
 const (
@@ -103,6 +109,7 @@ func NewAuthHandlers(
 	redisClient RedisClient,
 	deletionService AccountDeletionService,
 	kycWebhookSecret string,
+	appleTokenRevoker AppleTokenRevoker,
 ) *AuthHandlers {
 	return &AuthHandlers{
 		db:                  db,
@@ -117,6 +124,7 @@ func NewAuthHandlers(
 		passcodeService:     passcodeService,
 		redisClient:         redisClient,
 		deletionService:     deletionService,
+		appleTokenRevoker:   appleTokenRevoker,
 		validator:           validator.New(),
 		kycWebhookSecret:    kycWebhookSecret,
 	}
@@ -1407,8 +1415,9 @@ func (h *AuthHandlers) DeleteAccount(c *gin.Context) {
 
 	// Parse request body with password confirmation
 	var req struct {
-		Password string `json:"password"`
-		Reason   string `json:"reason"`
+		Password      string `json:"password"`
+		Reason        string `json:"reason"`
+		AppleAuthCode string `json:"apple_auth_code"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "Invalid request body"})
@@ -1435,6 +1444,14 @@ func (h *AuthHandlers) DeleteAccount(c *gin.Context) {
 	if !h.userRepo.ValidatePassword(req.Password, user.PasswordHash) {
 		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "INVALID_PASSWORD", Message: "Incorrect password"})
 		return
+	}
+
+	// Revoke Apple Sign In token if auth code provided
+	if req.AppleAuthCode != "" && h.appleTokenRevoker != nil {
+		if err := h.appleTokenRevoker.RevokeAppleToken(ctx, req.AppleAuthCode); err != nil {
+			h.logger.Warn("Failed to revoke Apple token", zap.Error(err), zap.String("user_id", userID.String()))
+			// Non-blocking — continue with deletion even if revocation fails
+		}
 	}
 
 	// Use deletion service if available (sweeps funds + hard delete)

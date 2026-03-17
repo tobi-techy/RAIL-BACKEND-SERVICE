@@ -197,6 +197,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.RedisClient,
 		container.GetAccountDeletionService(),
 		container.Config.KYC.WebhookSecret,
+		container.GetSocialAuthService(),
 	)
 	securityHandlers := handlers.NewSecurityHandlers(
 		container.GetPasscodeService(),
