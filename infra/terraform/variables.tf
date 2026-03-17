@@ -1,5 +1,6 @@
 variable "aws_region" {
-  default = "eu-west-1"
+  description = "AWS region for infrastructure. Override via tfvars per environment — do NOT change this default."
+  default     = "us-east-1"
 }
 
 variable "env" {

@@ -152,7 +152,7 @@ kyc:
   provider: ""
   api_key: ""
   api_secret: ""
-  base_url: "https://netverify.com"
+  base_url: "https://api.sumsub.com"
   callback_url: ""
   environment: "development"
   user_agent: "Stack-Service/1.0"
@@ -160,6 +160,8 @@ kyc:
 
 email:
   provider: "unosend"
+  # API key is injected via UNOSEND_API_KEY env var (SSM in staging/production).
+  # Leaving empty here is safe — overrideFromEnv() in config.go handles it.
   api_key: ""
   from_email: "noreply@userail.money"
   from_name: "RAIL Service"
