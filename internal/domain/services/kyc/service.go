@@ -192,8 +192,11 @@ func (s *Service) SubmitKYC(ctx context.Context, req *entities.KYCSubmitRequest)
 	bridgeResult := s.submitToBridge(ctx, *profile.BridgeCustomerID, profile, req)
 	response.BridgeResult = bridgeResult
 
-	// Submit to Alpaca (create new account)
-	alpacaResult := s.submitToAlpaca(ctx, profile, req)
+	// Alpaca KYC disabled for v1 launch — only Bridge is required
+	alpacaResult := entities.KYCProviderResult{
+		Success: true,
+		Status:  "skipped",
+	}
 	response.AlpacaResult = alpacaResult
 
 	// Update user status
@@ -294,7 +297,7 @@ func (s *Service) StartSumsubSession(ctx context.Context, userID uuid.UUID, req 
 	if profile.BridgeCustomerID == nil || *profile.BridgeCustomerID == "" {
 		return nil, ErrNoBridgeCustomer
 	}
-	if profile.KYCStatus == "approved" && profile.AlpacaAccountID != nil {
+	if profile.KYCStatus == "approved" {
 		return nil, ErrKYCAlreadyApproved
 	}
 
@@ -579,7 +582,7 @@ func (s *Service) processSumsubApproved(ctx context.Context, submission *entitie
 		bridgeResult = s.submitToBridgeFromSumsub(ctx, *profile.BridgeCustomerID, request)
 	}
 
-	alpacaResult := s.submitToAlpaca(ctx, profile, request)
+	alpacaResult := entities.KYCProviderResult{Success: true, Status: "skipped"} // Alpaca disabled for v1
 
 	now := time.Now()
 	if bridgeResult.Success {
@@ -597,26 +600,16 @@ func (s *Service) processSumsubApproved(ctx context.Context, submission *entitie
 		}
 	}
 
-	if alpacaResult.Success {
+	// With Alpaca skipped, approve KYC based on Bridge + Sumsub success
+	if bridgeResult.Success {
 		user.KYCStatus = string(entities.KYCStatusApproved)
 		user.KYCApprovedAt = &now
 		user.KYCRejectionReason = nil
-		parts := strings.Split(alpacaResult.Status, ":")
-		if len(parts) > 0 && strings.TrimSpace(parts[0]) != "" {
-			user.AlpacaAccountID = &parts[0]
-		}
 	} else {
 		user.KYCStatus = string(entities.KYCStatusProcessing)
-		// Enqueue an Alpaca-specific retry job.
-		if s.kycSyncJobRepo != nil {
-			retryPayload, _ := encodeProviderRetryPayload(submission.VerificationData, submission.UserID.String())
-			if _, enqErr := s.kycSyncJobRepo.EnqueueProviderRetry(ctx, submission.UserID.String(), "alpaca", retryPayload); enqErr != nil {
-				s.logger.Warn("Failed to enqueue Alpaca retry job",
-					zap.Error(enqErr),
-					zap.String("user_id", submission.UserID.String()))
-			}
-		}
 	}
+
+	_ = alpacaResult // used in verification data below
 
 	if user.KYCSubmittedAt == nil {
 		user.KYCSubmittedAt = &now
@@ -1566,15 +1559,13 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 			ApprovedAt:  user.KYCApprovedAt,
 		},
 		Alpaca: entities.KYCProviderStatus{
-			Status:      user.KYCStatus,
-			SubmittedAt: user.KYCSubmittedAt,
-			ApprovedAt:  user.KYCApprovedAt,
+			Status: "skipped", // Alpaca disabled for v1
 		},
 		Capabilities: entities.KYCCapabilities{
 			CanDepositCrypto: true, // Always true after signup
 			CanDepositFiat:   user.BridgeKYCStatus != nil && *user.BridgeKYCStatus == "active",
 			CanUseCard:       user.BridgeKYCStatus != nil && *user.BridgeKYCStatus == "active",
-			CanInvest:        user.KYCStatus == "approved" && user.AlpacaAccountID != nil,
+			CanInvest:        false, // Alpaca disabled for v1
 		},
 	}
 
