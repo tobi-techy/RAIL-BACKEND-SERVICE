@@ -159,7 +159,7 @@ kyc:
   level_name: "basic-kyc"
 
 email:
-  provider: "mailpit"
+  provider: "unosend"
   api_key: ""
   from_email: "noreply@userail.money"
   from_name: "RAIL Service"
