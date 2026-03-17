@@ -128,8 +128,9 @@ func (h *FundingHandlers) CreateVirtualAccount(c *gin.Context) {
 
 	req.UserID = userUUID
 
-	if req.AlpacaAccountID == "" {
-		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Alpaca account ID is required")
+	// BridgeCustomerID is required for virtual account creation
+	if req.BridgeCustomerID == "" {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Bridge customer ID is required")
 		return
 	}
 
@@ -137,8 +138,7 @@ func (h *FundingHandlers) CreateVirtualAccount(c *gin.Context) {
 	if err != nil {
 		h.logger.Error("Failed to create virtual account",
 			"error", err,
-			"user_id", userUUID,
-			"alpaca_account_id", req.AlpacaAccountID)
+			"user_id", userUUID)
 
 		if errMsg := err.Error(); strings.Contains(errMsg, "already exists") {
 			common.SendConflict(c, "VIRTUAL_ACCOUNT_EXISTS", "Virtual account already exists for this Alpaca account")
