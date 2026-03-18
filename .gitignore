@@ -110,6 +110,11 @@ postman_collection_auto_generated.json
 tmp/
 dump.rdb
 
+# Infra secrets scripts (only .example templates are committed)
+infra/store-secrets*.sh
+infra/copy-staging-to-prod.sh
+!infra/store-secrets.sh.example
+
 # Terraform
 infra/terraform/.terraform/
 infra/terraform/*.tfstate

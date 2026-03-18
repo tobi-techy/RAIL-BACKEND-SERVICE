@@ -75,7 +75,7 @@ type BridgeWalletProvisioningAdapter struct {
 
 func (a *BridgeWalletProvisioningAdapter) CreateWalletForCustomer(ctx context.Context, customerID string, chain string) (*entities.ManagedWallet, error) {
 	w, err := a.client.CreateWallet(ctx, customerID, &bridge.CreateWalletRequest{
-		Chain:    bridge.PaymentRail(chain),
+		Chain:    bridge.PaymentRail(entities.WalletChain(chain).ToBridgePaymentRail()),
 		Currency: bridge.CurrencyUSDC,
 	})
 	if err != nil {
