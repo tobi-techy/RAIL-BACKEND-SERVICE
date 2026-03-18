@@ -13,6 +13,7 @@ import (
 // BridgeWalletLister fetches wallets from Bridge for a given customer.
 type BridgeWalletLister interface {
 	CreateWalletForCustomer(ctx context.Context, customerID string, chain string) (*entities.ManagedWallet, error)
+	ListWallets(ctx context.Context, customerID string) ([]*entities.ManagedWallet, error)
 }
 
 // UserProfileProvider retrieves user profile data needed during provisioning.
@@ -494,6 +495,21 @@ func (s *Service) GetWalletByUserAndChain(ctx context.Context, userID uuid.UUID,
 		return nil, fmt.Errorf("failed to get wallet: %w", err)
 	}
 	return nil, fmt.Errorf("wallet not found for chain %s", chain)
+}
+
+// CreateWalletForCustomer delegates wallet creation to Bridge.
+func (s *Service) CreateWalletForCustomer(ctx context.Context, customerID string, chain string) (*entities.ManagedWallet, error) {
+	return s.bridgeWallets.CreateWalletForCustomer(ctx, customerID, chain)
+}
+
+// SaveWallet persists a managed wallet to the database.
+func (s *Service) SaveWallet(ctx context.Context, wallet *entities.ManagedWallet) error {
+	return s.walletRepo.Create(ctx, wallet)
+}
+
+// ListBridgeWallets fetches wallets from Bridge for a given customer.
+func (s *Service) ListBridgeWallets(ctx context.Context, customerID string) ([]*entities.ManagedWallet, error) {
+	return s.bridgeWallets.ListWallets(ctx, customerID)
 }
 
 // GetMetrics returns service metrics for monitoring

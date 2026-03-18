@@ -84,6 +84,18 @@ func (a *BridgeWalletProvisioningAdapter) CreateWalletForCustomer(ctx context.Co
 	return w.ToDomainManagedWallet(uuid.New(), uuid.Nil), nil
 }
 
+func (a *BridgeWalletProvisioningAdapter) ListWallets(ctx context.Context, customerID string) ([]*entities.ManagedWallet, error) {
+	resp, err := a.client.ListWallets(ctx, customerID)
+	if err != nil {
+		return nil, err
+	}
+	wallets := make([]*entities.ManagedWallet, 0, len(resp.Data))
+	for _, w := range resp.Data {
+		wallets = append(wallets, w.ToDomainManagedWallet(uuid.New(), uuid.Nil))
+	}
+	return wallets, nil
+}
+
 // UserProfileProviderAdapter adapts the user repository to wallet.UserProfileProvider
 type UserProfileProviderAdapter struct {
 	repo interface {
