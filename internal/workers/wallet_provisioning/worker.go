@@ -71,10 +71,15 @@ func DefaultConfig() Config {
 	}
 }
 
-// Worker handles wallet provisioning jobs.
-// Wallet creation is now handled by Bridge during onboarding; this worker is a no-op.
+// WalletProvisioner creates wallets via the domain wallet service.
+type WalletProvisioner interface {
+	ProcessWalletProvisioningJob(ctx context.Context, jobID uuid.UUID) error
+}
+
+// Worker handles wallet provisioning jobs by delegating to the wallet service.
 type Worker struct {
 	jobRepo      ProvisioningJobRepository
+	provisioner  WalletProvisioner
 	auditService AuditService
 	config       Config
 	logger       *zap.Logger
@@ -88,9 +93,11 @@ func NewWorker(
 	auditService AuditService,
 	config Config,
 	logger *zap.Logger,
+	provisioner WalletProvisioner,
 ) *Worker {
 	return &Worker{
 		jobRepo:      jobRepo,
+		provisioner:  provisioner,
 		auditService: auditService,
 		config:       config,
 		logger:       logger,
@@ -100,28 +107,22 @@ func NewWorker(
 	}
 }
 
-// ProcessJob marks the job as completed immediately.
-// Wallet creation is handled by Bridge during onboarding; no Circle provisioning needed.
+// ProcessJob delegates wallet creation to the domain wallet service.
 func (w *Worker) ProcessJob(ctx context.Context, jobID uuid.UUID) error {
-	w.logger.Info("Wallet provisioning job received (no-op: wallets created via Bridge onboarding)",
-		zap.String("job_id", jobID.String()))
+	w.logger.Info("Wallet provisioning job received", zap.String("job_id", jobID.String()))
 
-	job, err := w.jobRepo.GetByID(ctx, jobID)
-	if err != nil {
-		return nil // Job not found — nothing to do
-	}
-
-	job.MarkCompleted()
-	if err := w.jobRepo.Update(ctx, job); err != nil {
-		w.logger.Warn("Failed to mark provisioning job completed", zap.Error(err))
-	}
+	err := w.provisioner.ProcessWalletProvisioningJob(ctx, jobID)
 
 	w.metricsMu.Lock()
 	w.metrics.TotalJobsProcessed++
-	w.metrics.SuccessfulJobs++
+	if err == nil {
+		w.metrics.SuccessfulJobs++
+	} else {
+		w.metrics.FailedJobs++
+	}
 	w.metrics.LastProcessedAt = time.Now()
 	w.metricsMu.Unlock()
-	return nil
+	return err
 }
 
 // GetMetrics returns a copy of current worker metrics.

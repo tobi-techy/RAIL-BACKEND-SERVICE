@@ -295,6 +295,7 @@ func (app *Application) initializeWalletProvisioning() error {
 		app.container.AuditService,
 		workerConfig,
 		app.log.Zap(),
+		app.container.WalletService,
 	)
 
 	schedulerConfig := walletprovisioning.DefaultSchedulerConfig()
