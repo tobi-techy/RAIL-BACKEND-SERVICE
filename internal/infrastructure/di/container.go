@@ -73,19 +73,15 @@ type BridgeWalletProvisioningAdapter struct {
 	client *bridge.Client
 }
 
-func (a *BridgeWalletProvisioningAdapter) ListCustomerWallets(ctx context.Context, customerID string) ([]*entities.ManagedWallet, error) {
-	resp, err := a.client.ListWallets(ctx, customerID)
+func (a *BridgeWalletProvisioningAdapter) CreateWalletForCustomer(ctx context.Context, customerID string, chain string) (*entities.ManagedWallet, error) {
+	w, err := a.client.CreateWallet(ctx, customerID, &bridge.CreateWalletRequest{
+		Chain:    bridge.PaymentRail(chain),
+		Currency: bridge.CurrencyUSDC,
+	})
 	if err != nil {
 		return nil, err
 	}
-	out := make([]*entities.ManagedWallet, 0, len(resp.Data))
-	for _, w := range resp.Data {
-		mw := w.ToDomainManagedWallet(uuid.New(), uuid.Nil)
-		if mw != nil {
-			out = append(out, mw)
-		}
-	}
-	return out, nil
+	return w.ToDomainManagedWallet(uuid.New(), uuid.Nil), nil
 }
 
 // UserProfileProviderAdapter adapts the user repository to wallet.UserProfileProvider
