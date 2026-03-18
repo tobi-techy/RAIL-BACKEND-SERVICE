@@ -290,14 +290,15 @@ func (w *Wallet) ToDomainManagedWallet(domainWalletID uuid.UUID, userID uuid.UUI
 	status := mapBridgeWalletStatusToWalletStatus(w.Status)
 
 	return &entities.ManagedWallet{
-		ID:          domainWalletID,
-		UserID:      userID,
-		Chain:       chain,
-		Address:     w.Address,
-		AccountType: entities.AccountTypeEOA,
-		Status:      status,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		ID:             domainWalletID,
+		UserID:         userID,
+		Chain:          chain,
+		Address:        w.Address,
+		BridgeWalletID: w.ID,
+		AccountType:    entities.AccountTypeEOA,
+		Status:         status,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
 	}
 }
 

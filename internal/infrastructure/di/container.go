@@ -68,6 +68,44 @@ type BridgeWalletBalanceAdapter struct {
 	adapter *bridge.Adapter
 }
 
+// BridgeWalletProvisioningAdapter adapts bridge.Client to wallet.BridgeWalletLister
+type BridgeWalletProvisioningAdapter struct {
+	client *bridge.Client
+}
+
+func (a *BridgeWalletProvisioningAdapter) ListCustomerWallets(ctx context.Context, customerID string) ([]*entities.ManagedWallet, error) {
+	resp, err := a.client.ListWallets(ctx, customerID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*entities.ManagedWallet, 0, len(resp.Data))
+	for _, w := range resp.Data {
+		mw := w.ToDomainManagedWallet(uuid.New(), uuid.Nil)
+		if mw != nil {
+			out = append(out, mw)
+		}
+	}
+	return out, nil
+}
+
+// UserProfileProviderAdapter adapts the user repository to wallet.UserProfileProvider
+type UserProfileProviderAdapter struct {
+	repo interface {
+		GetByID(ctx context.Context, id uuid.UUID) (*entities.UserProfile, error)
+	}
+}
+
+func (a *UserProfileProviderAdapter) GetBridgeCustomerID(ctx context.Context, userID uuid.UUID) (string, error) {
+	profile, err := a.repo.GetByID(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	if profile.BridgeCustomerID == nil || *profile.BridgeCustomerID == "" {
+		return "", fmt.Errorf("no bridge customer ID for user %s", userID)
+	}
+	return *profile.BridgeCustomerID, nil
+}
+
 func (a *BridgeWalletBalanceAdapter) GetWalletBalance(ctx context.Context, customerID, walletID string) (string, error) {
 	bal, err := a.adapter.GetWalletBalance(ctx, customerID, walletID)
 	if err != nil {
@@ -1183,6 +1221,8 @@ func (c *Container) initializeDomainServices() error {
 		c.WalletProvisioningJobRepo,
 		c.AuditService,
 		c.OnboardingService,
+		&BridgeWalletProvisioningAdapter{client: c.BridgeClient},
+		&UserProfileProviderAdapter{repo: c.UserRepo},
 		c.ZapLog,
 		walletServiceConfig,
 	)

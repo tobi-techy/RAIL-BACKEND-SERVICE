@@ -10,12 +10,24 @@ import (
 	"go.uber.org/zap"
 )
 
+// BridgeWalletLister fetches wallets from Bridge for a given customer.
+type BridgeWalletLister interface {
+	ListCustomerWallets(ctx context.Context, customerID string) ([]*entities.ManagedWallet, error)
+}
+
+// UserProfileProvider retrieves user profile data needed during provisioning.
+type UserProfileProvider interface {
+	GetBridgeCustomerID(ctx context.Context, userID uuid.UUID) (string, error)
+}
+
 // Service handles wallet operations
 type Service struct {
 	walletRepo          WalletRepository
 	provisioningJobRepo WalletProvisioningJobRepository
 	auditService        AuditService
 	onboardingService   OnboardingService
+	bridgeWallets       BridgeWalletLister
+	userProfiles        UserProfileProvider
 	logger              *zap.Logger
 	config              Config
 }
@@ -65,6 +77,8 @@ func NewService(
 	provisioningJobRepo WalletProvisioningJobRepository,
 	auditService AuditService,
 	onboardingService OnboardingService,
+	bridgeWallets BridgeWalletLister,
+	userProfiles UserProfileProvider,
 	logger *zap.Logger,
 	cfg Config,
 ) *Service {
@@ -77,6 +91,8 @@ func NewService(
 		provisioningJobRepo: provisioningJobRepo,
 		auditService:        auditService,
 		onboardingService:   onboardingService,
+		bridgeWallets:       bridgeWallets,
+		userProfiles:        userProfiles,
 		logger:              logger,
 		config:              cfg,
 	}
@@ -184,16 +200,67 @@ func (s *Service) processWalletProvisioningAsync(jobID, userID uuid.UUID) {
 	}
 }
 
-// ProcessWalletProvisioningJob is a no-op — wallets are created by Bridge during onboarding.
+// ProcessWalletProvisioningJob fetches wallets from Bridge and saves them locally.
 func (s *Service) ProcessWalletProvisioningJob(ctx context.Context, jobID uuid.UUID) error {
-	s.logger.Info("Wallet provisioning job skipped (Bridge handles wallet creation)", zap.String("jobID", jobID.String()))
-
 	job, err := s.provisioningJobRepo.GetByID(ctx, jobID)
 	if err != nil {
 		return fmt.Errorf("failed to get provisioning job: %w", err)
 	}
+
+	job.MarkStarted()
+	_ = s.provisioningJobRepo.Update(ctx, job)
+
+	customerID, err := s.userProfiles.GetBridgeCustomerID(ctx, job.UserID)
+	if err != nil || customerID == "" {
+		msg := "bridge customer ID not found"
+		job.MarkFailed(msg, 30*time.Second)
+		_ = s.provisioningJobRepo.Update(ctx, job)
+		return fmt.Errorf("%s for user %s", msg, job.UserID)
+	}
+
+	wallets, err := s.bridgeWallets.ListCustomerWallets(ctx, customerID)
+	if err != nil {
+		msg := fmt.Sprintf("failed to list Bridge wallets: %v", err)
+		job.MarkFailed(msg, 30*time.Second)
+		_ = s.provisioningJobRepo.Update(ctx, job)
+		return fmt.Errorf(msg)
+	}
+
+	if len(wallets) == 0 {
+		msg := "no wallets returned from Bridge"
+		job.MarkFailed(msg, 30*time.Second)
+		_ = s.provisioningJobRepo.Update(ctx, job)
+		return fmt.Errorf("%s for customer %s", msg, customerID)
+	}
+
+	saved := 0
+	for _, w := range wallets {
+		w.UserID = job.UserID
+		existing, _ := s.walletRepo.GetByUserAndChain(ctx, job.UserID, w.Chain)
+		if existing != nil {
+			saved++
+			continue
+		}
+		if err := s.walletRepo.Create(ctx, w); err != nil {
+			s.logger.Error("Failed to save wallet", zap.Error(err), zap.String("chain", string(w.Chain)))
+			continue
+		}
+		saved++
+		s.logger.Info("Wallet saved from Bridge",
+			zap.String("userID", job.UserID.String()),
+			zap.String("chain", string(w.Chain)),
+			zap.String("address", w.Address))
+	}
+
 	job.MarkCompleted()
-	return s.provisioningJobRepo.Update(ctx, job)
+	_ = s.provisioningJobRepo.Update(ctx, job)
+
+	s.logger.Info("Wallet provisioning completed",
+		zap.String("userID", job.UserID.String()),
+		zap.Int("saved", saved),
+		zap.Int("total", len(wallets)))
+
+	return nil
 }
 
 // GetWalletAddresses returns wallet addresses for a user, optionally filtered by chain
