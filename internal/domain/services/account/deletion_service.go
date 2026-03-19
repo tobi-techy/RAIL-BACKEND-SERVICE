@@ -330,10 +330,12 @@ func (s *DeletionService) cleanupExternalProviders(ctx context.Context, userID u
 	if s.diditClient != nil && s.kycUserLookup != nil {
 		user, err := s.kycUserLookup.GetUserEntityByID(ctx, userID)
 		if err != nil {
-			s.logger.Warn("Failed to look up user for Didit cleanup", "user_id", userID.String(), "error", err)
+			s.logger.Error("Failed to look up user for Didit cleanup", "user_id", userID.String(), "error", err)
+			criticalErrors = append(criticalErrors, fmt.Sprintf("didit user lookup: %v", err))
 		} else if user != nil && user.KYCProviderRef != nil && *user.KYCProviderRef != "" {
 			if err := s.diditClient.DeleteSession(ctx, *user.KYCProviderRef); err != nil {
-				s.logger.Warn("Failed to delete Didit session", "user_id", userID.String(), "session_id", *user.KYCProviderRef, "error", err)
+				s.logger.Error("Failed to delete Didit session", "user_id", userID.String(), "session_id", *user.KYCProviderRef, "error", err)
+				criticalErrors = append(criticalErrors, fmt.Sprintf("didit session delete: %v", err))
 			} else {
 				s.logger.Info("Deleted Didit KYC session", "user_id", userID.String(), "session_id", *user.KYCProviderRef)
 			}

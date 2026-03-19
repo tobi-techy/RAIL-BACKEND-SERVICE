@@ -1566,21 +1566,25 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 				payload := &entities.DiditWebhookPayload{SessionID: decision.SessionID, Status: decision.Status}
 				if procErr := s.ProcessDiditWebhook(ctx, payload); procErr != nil {
 					s.logger.Warn("Didit poll: failed to process approved status", zap.Error(procErr))
-				} else if freshUser, reloadErr := s.userRepo.GetByID(ctx, userID); reloadErr != nil {
-					s.logger.Warn("Didit poll: failed to reload user after approval", zap.Error(reloadErr))
 				} else {
-					user = freshUser
-					overall = determineOverallStatus(user)
+					overall = "approved"
+					if freshUser, reloadErr := s.userRepo.GetByID(ctx, userID); reloadErr != nil {
+						s.logger.Error("Didit poll: failed to reload user after approval", zap.Error(reloadErr))
+					} else {
+						user = freshUser
+					}
 				}
 			case entities.DiditStatusDeclined:
 				payload := &entities.DiditWebhookPayload{SessionID: decision.SessionID, Status: decision.Status}
 				if procErr := s.ProcessDiditWebhook(ctx, payload); procErr != nil {
 					s.logger.Warn("Didit poll: failed to process declined status", zap.Error(procErr))
-				} else if freshUser, reloadErr := s.userRepo.GetByID(ctx, userID); reloadErr != nil {
-					s.logger.Warn("Didit poll: failed to reload user after decline", zap.Error(reloadErr))
 				} else {
-					user = freshUser
-					overall = determineOverallStatus(user)
+					overall = "rejected"
+					if freshUser, reloadErr := s.userRepo.GetByID(ctx, userID); reloadErr != nil {
+						s.logger.Error("Didit poll: failed to reload user after decline", zap.Error(reloadErr))
+					} else {
+						user = freshUser
+					}
 				}
 			}
 		}
