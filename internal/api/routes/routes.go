@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -135,6 +136,24 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	router.GET("/live", coreHandlers.Live)
 	router.GET("/version", coreHandlers.Version)
 	router.GET("/metrics", coreHandlers.Metrics)
+
+	// TEMPORARY: one-time DB wipe endpoint — remove after use
+	if os.Getenv("ENABLE_DB_WIPE") == "true" {
+		router.POST("/admin/wipe-db", func(c *gin.Context) {
+			token := c.GetHeader("X-Wipe-Token")
+			if token != os.Getenv("DB_WIPE_TOKEN") || token == "" {
+				c.JSON(401, gin.H{"error": "unauthorized"})
+				return
+			}
+			_, err := container.DB.ExecContext(c.Request.Context(),
+				"DROP SCHEMA public CASCADE; CREATE SCHEMA public AUTHORIZATION rail; GRANT ALL ON SCHEMA public TO rail; GRANT ALL ON SCHEMA public TO public;")
+			if err != nil {
+				c.JSON(500, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(200, gin.H{"status": "wiped"})
+		})
+	}
 
 	// Apple App Site Association — required for passkey Associated Domains
 	router.GET("/.well-known/apple-app-site-association", func(c *gin.Context) {
