@@ -19,11 +19,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// USDBStashService sweeps the stash portion into a Bridge USDB custody wallet.
-type USDBStashService interface {
-	SweepToUSDB(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error
-}
-
 var tracer = otel.Tracer("allocation-service")
 
 // AllocationRepository defines the interface for allocation persistence
@@ -62,7 +57,6 @@ type Service struct {
 	allocationRepo      AllocationRepository
 	ledgerService       *ledger.Service
 	autoInvestService   AutoInvestService
-	usdbStashService    USDBStashService
 	notificationService AllocationNotificationService
 	logger              *logger.Logger
 }
@@ -83,11 +77,6 @@ func NewService(
 // SetAutoInvestService sets the auto-invest service (to avoid circular dependency)
 func (s *Service) SetAutoInvestService(autoInvestService AutoInvestService) {
 	s.autoInvestService = autoInvestService
-}
-
-// SetUSDBStashService sets the USDB stash service for sweeping the grow portion.
-func (s *Service) SetUSDBStashService(svc USDBStashService) {
-	s.usdbStashService = svc
 }
 
 // SetNotificationService sets the notification service for user alerts on auto-invest failure.
@@ -456,7 +445,7 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 
 	// Trigger auto-investment asynchronously if service is configured
 	// Use detached context to avoid cancellation when parent returns
-	if (s.autoInvestService != nil || s.usdbStashService != nil) && stashAccount != nil {
+	if s.autoInvestService != nil && stashAccount != nil {
 		// Generate correlation ID from deposit for idempotency
 		correlationID := event.ID.String()
 		if req.DepositID != nil {
@@ -481,18 +470,6 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 			// Use detached context with timeout instead of request context
 			bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-
-			// Sweep stash into USDB custody wallet for yield (replaces Alpaca for grow side)
-			if s.usdbStashService != nil {
-				if err := s.usdbStashService.SweepToUSDB(bgCtx, userID, stashAmount, correlationID); err != nil {
-					s.logger.Error("Failed to sweep stash to USDB",
-						"user_id", userID,
-						"amount", stashAmount,
-						"error", err)
-					s.notifyAutoInvestFailure(userID, err.Error())
-				}
-				return
-			}
 
 			if err := s.autoInvestService.TriggerAutoInvestment(bgCtx, autoinvest.TriggerRequest{
 				UserID:        userID,

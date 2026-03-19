@@ -364,7 +364,6 @@ resource "aws_ecs_task_definition" "app" {
       { name = "ALPACA_FIRM_ACCOUNT_NO",valueFrom = "/rail/${local.env}/ALPACA_FIRM_ACCOUNT_NO" },
       { name = "BRIDGE_API_KEY",        valueFrom = "/rail/${local.env}/BRIDGE_API_KEY" },
       { name = "BRIDGE_BASE_URL",       valueFrom = "/rail/${local.env}/BRIDGE_BASE_URL" },
-      { name = "BRIDGE_ENVIRONMENT",    valueFrom = "/rail/${local.env}/BRIDGE_ENVIRONMENT" },
       { name = "BRIDGE_WEBHOOK_SECRET", valueFrom = "/rail/${local.env}/BRIDGE_WEBHOOK_SECRET" },
       { name = "OPENAI_API_KEY",        valueFrom = "/rail/${local.env}/OPENAI_API_KEY" },
       { name = "GEMINI_API_KEY",        valueFrom = "/rail/${local.env}/GEMINI_API_KEY" },

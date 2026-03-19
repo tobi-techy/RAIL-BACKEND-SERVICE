@@ -190,9 +190,9 @@ verification:
 alpaca:
   client_id: "${ALPACA_API_KEY}"
   secret_key: "${ALPACA_API_SECRET}"
-  base_url: "${ALPACA_BASE_URL}"
-  data_base_url: "${ALPACA_DATA_BASE_URL}"
-  environment: "${ALPACA_ENVIRONMENT}"
+  base_url: "${ALPACA_BASE_URL:-https://broker-api.sandbox.alpaca.markets}"
+  data_base_url: "${ALPACA_DATA_BASE_URL:-https://data.sandbox.alpaca.markets}"
+  environment: "${ALPACA_ENVIRONMENT:-sandbox}"
   timeout: 30
   auth_method: "oauth2"  # oauth2 or legacy
   # Webhook signature verification secret (generate with: openssl rand -base64 32)
@@ -203,8 +203,8 @@ alpaca:
 
 bridge:
   api_key: "${BRIDGE_API_KEY}"
-  base_url: "${BRIDGE_BASE_URL}"
-  environment: "${BRIDGE_ENVIRONMENT}"
+  base_url: "${BRIDGE_BASE_URL:-https://api.sandbox.bridge.xyz}"
+  environment: "sandbox"
   timeout: 30
   max_retries: 3
   webhook_secret: "${BRIDGE_WEBHOOK_SECRET}"

@@ -45,7 +45,6 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/station"
 	"github.com/rail-service/rail_service/internal/domain/services/strategy"
 	"github.com/rail-service/rail_service/internal/domain/services/twofa"
-	"github.com/rail-service/rail_service/internal/domain/services/usdstash"
 	"github.com/rail-service/rail_service/internal/domain/services/wallet"
 	"github.com/rail-service/rail_service/internal/domain/services/webauthn"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
@@ -1434,14 +1433,6 @@ func (c *Container) initializeDomainServices() error {
 
 	// Wire auto-invest service to allocation service for automatic triggering
 	c.AllocationService.SetAutoInvestService(c.AutoInvestService)
-
-	// Wire USDB stash service — sweeps the 30% grow portion into a Bridge USDB custody wallet
-	usdbStashSvc := usdstash.NewService(
-		&USDBBridgeClient{client: c.BridgeClient},
-		&UserProfileProviderAdapter{repo: c.UserRepo},
-		c.ZapLog,
-	)
-	c.AllocationService.SetUSDBStashService(usdbStashSvc)
 
 	// Inject allocation service into onboarding service (for auto-enabling 70/30 mode)
 	c.OnboardingService.SetAllocationService(c.AllocationService)
