@@ -1554,20 +1554,6 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 
 	overall := determineOverallStatus(user)
 
-	// Debug: log state entering Didit poll fallback
-	providerRef := ""
-	if user.KYCProviderRef != nil {
-		providerRef = *user.KYCProviderRef
-	}
-	s.logger.Info("GetKYCStatus poll check",
-		zap.String("user_id", userID.String()),
-		zap.String("overall", overall),
-		zap.Bool("didit_adapter_nil", s.diditAdapter == nil),
-		zap.String("kyc_provider_ref", providerRef),
-		zap.String("kyc_status", user.KYCStatus),
-		zap.Stringp("bridge_kyc_status", user.BridgeKYCStatus),
-	)
-
 	// If still pending and user has a Didit session, poll Didit directly as webhook fallback.
 	if overall == "pending" && s.diditAdapter != nil && user.KYCProviderRef != nil && *user.KYCProviderRef != "" {
 		decision, err := s.diditAdapter.GetSessionDecision(ctx, *user.KYCProviderRef)
