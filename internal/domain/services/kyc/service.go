@@ -16,6 +16,7 @@ import (
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
 )
 
@@ -29,6 +30,7 @@ var (
 	ErrKYCAlreadyApproved    = errors.New("KYC already approved")
 	ErrNoBridgeCustomer      = errors.New("no Bridge customer ID found")
 	ErrSumsubNotConfigured   = errors.New("sumsub KYC provider is not configured")
+	ErrDiditNotConfigured    = errors.New("didit KYC provider is not configured")
 	ErrMissingTaxID          = errors.New("tax_id is required")
 	ErrMissingTaxIDType      = errors.New("tax_id_type is required")
 	ErrMissingDocumentFront  = errors.New("id_document_front is required")
@@ -77,6 +79,7 @@ type Service struct {
 	bridgeAdapter          BridgeAdapter
 	alpacaAdapter          AlpacaAdapter
 	sumsubAdapter          SumsubAdapter
+	diditAdapter           DiditAdapter
 	sumsubWebhookEventRepo SumsubWebhookEventRepository
 	kycSyncJobRepo         KYCSyncJobRepository
 	sumsubLevelName        string
@@ -113,6 +116,12 @@ type SumsubAdapter interface {
 	VerifyWebhookSignature(body []byte, digestHeader, digestAlgHeader string) error
 }
 
+type DiditAdapter interface {
+	CreateSession(ctx context.Context, vendorData string) (*didit.SessionResponse, error)
+	GetSessionDecision(ctx context.Context, sessionID string) (*didit.SessionDecision, error)
+	VerifyWebhookSignature(body []byte, signatureHeader, timestampHeader string) error
+}
+
 func NewService(
 	userRepo UserRepository,
 	kycSubmissionRepo KYCSubmissionRepository,
@@ -123,12 +132,13 @@ func NewService(
 	kycSyncJobRepo KYCSyncJobRepository,
 	sumsubLevelName string,
 	logger *zap.Logger,
+	diditAdapter ...DiditAdapter,
 ) *Service {
 	if isNilSumsubAdapter(sumsubAdapter) {
 		sumsubAdapter = nil
 	}
 
-	return &Service{
+	svc := &Service{
 		userRepo:               userRepo,
 		kycSubmissionRepo:      kycSubmissionRepo,
 		bridgeAdapter:          bridgeAdapter,
@@ -139,6 +149,10 @@ func NewService(
 		sumsubLevelName:        strings.TrimSpace(sumsubLevelName),
 		logger:                 logger,
 	}
+	if len(diditAdapter) > 0 && diditAdapter[0] != nil {
+		svc.diditAdapter = diditAdapter[0]
+	}
+	return svc
 }
 
 // SubmitKYC processes KYC submission to both Bridge and Alpaca.
@@ -1745,4 +1759,417 @@ func (s *Service) RefreshSumsubToken(ctx context.Context, userID uuid.UUID) (*en
 		Token:       accessToken.Token,
 		LevelName:   levelName,
 	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Didit KYC provider methods
+// ---------------------------------------------------------------------------
+
+// StartDiditSession creates a Didit verification session and persists the submission.
+func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *entities.KYCDigitSessionRequest) (*entities.KYCDigitSessionResponse, error) {
+	if s.diditAdapter == nil {
+		return nil, ErrDiditNotConfigured
+	}
+	if req == nil {
+		return nil, fmt.Errorf("missing request")
+	}
+	if !isTaxIDTypeSupportedForCountry(req.IssuingCountry, req.TaxIDType) {
+		return nil, ErrUnsupportedTaxIDType
+	}
+
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+	profile, err := s.userRepo.GetProfileByUserID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user profile: %w", err)
+	}
+	if profile.BridgeCustomerID == nil || *profile.BridgeCustomerID == "" {
+		return nil, ErrNoBridgeCustomer
+	}
+	if profile.KYCStatus == "approved" {
+		return nil, ErrKYCAlreadyApproved
+	}
+
+	// Submit source of funds to Bridge (non-fatal).
+	if req.SourceOfFunds != "" {
+		bridgeUpdateReq := &bridge.UpdateCustomerRequest{
+			SourceOfFunds:              req.SourceOfFunds,
+			EmploymentStatus:           req.EmploymentStatus,
+			ExpectedMonthlyPaymentsUSD: req.ExpectedMonthlyPaymentsUSD,
+			AccountPurpose:             req.AccountPurpose,
+			AccountPurposeOther:        req.AccountPurposeOther,
+			MostRecentOccupation:       req.MostRecentOccupation,
+			ActingAsIntermediary:       req.ActingAsIntermediary,
+		}
+		if _, bridgeErr := s.bridgeAdapter.UpdateCustomer(ctx, *profile.BridgeCustomerID, bridgeUpdateReq); bridgeErr != nil {
+			s.logger.Warn("Failed to submit source of funds to Bridge",
+				zap.Error(bridgeErr), zap.String("user_id", userID.String()))
+		}
+	}
+
+	sess, err := s.diditAdapter.CreateSession(ctx, userID.String())
+	if err != nil {
+		return nil, fmt.Errorf("failed to create didit session: %w", err)
+	}
+
+	now := time.Now()
+	expiresAt := now.Add(30 * 24 * time.Hour)
+	verificationData := map[string]any{
+		"didit_session_id": sess.SessionID,
+		"tax_id":           req.TaxID,
+		"tax_id_type":      req.TaxIDType,
+		"issuing_country":  req.IssuingCountry,
+		"disclosures": map[string]any{
+			"is_control_person":               req.Disclosures.IsControlPerson,
+			"is_affiliated_exchange_or_finra": req.Disclosures.IsAffiliatedExchangeOrFINRA,
+			"is_politically_exposed":          req.Disclosures.IsPoliticallyExposed,
+			"immediate_family_exposed":        req.Disclosures.ImmediateFamilyExposed,
+		},
+	}
+
+	existingSubmission, existingErr := s.kycSubmissionRepo.GetByProviderRef(ctx, sess.SessionID)
+	if existingErr != nil && !isSubmissionNotFoundErr(existingErr) {
+		return nil, fmt.Errorf("failed to load existing didit submission: %w", existingErr)
+	}
+	if existingErr != nil {
+		submission := &entities.KYCSubmission{
+			ID:               uuid.New(),
+			UserID:           userID,
+			Provider:         "didit",
+			ProviderRef:      sess.SessionID,
+			SubmissionType:   "didit_sdk",
+			Status:           entities.KYCStatusProcessing,
+			VerificationData: verificationData,
+			SubmittedAt:      now,
+			ExpiresAt:        &expiresAt,
+			CreatedAt:        now,
+			UpdatedAt:        now,
+		}
+		if err := s.kycSubmissionRepo.Create(ctx, submission); err != nil {
+			return nil, fmt.Errorf("failed to persist didit submission: %w", err)
+		}
+	} else {
+		existingSubmission.Status = entities.KYCStatusProcessing
+		existingSubmission.VerificationData = verificationData
+		existingSubmission.SubmittedAt = now
+		existingSubmission.ExpiresAt = &expiresAt
+		existingSubmission.UpdatedAt = now
+		if err := s.kycSubmissionRepo.Update(ctx, existingSubmission); err != nil {
+			return nil, fmt.Errorf("failed to update existing didit submission: %w", err)
+		}
+	}
+
+	providerRef := sess.SessionID
+	user.KYCProviderRef = &providerRef
+	if err := s.userRepo.Update(ctx, user); err != nil {
+		s.logger.Warn("Failed to update user after Didit session creation",
+			zap.Error(err), zap.String("user_id", userID.String()))
+	}
+
+	return &entities.KYCDigitSessionResponse{
+		Status:       "pending",
+		SessionID:    sess.SessionID,
+		SessionToken: sess.SessionToken,
+		URL:          sess.URL,
+	}, nil
+}
+
+// VerifyDiditWebhookSignature validates Didit webhook X-Signature-V2 + X-Timestamp.
+func (s *Service) VerifyDiditWebhookSignature(body []byte, signatureHeader, timestampHeader string) error {
+	if s.diditAdapter == nil {
+		return ErrDiditNotConfigured
+	}
+	return s.diditAdapter.VerifyWebhookSignature(body, signatureHeader, timestampHeader)
+}
+
+// EnqueueDiditWebhook deduplicates and queues a Didit webhook for async processing.
+func (s *Service) EnqueueDiditWebhook(ctx context.Context, payload *entities.DiditWebhookPayload, rawPayload []byte) (bool, error) {
+	if payload == nil {
+		return false, fmt.Errorf("missing didit payload")
+	}
+	if strings.TrimSpace(payload.SessionID) == "" {
+		return false, fmt.Errorf("missing didit session_id")
+	}
+	if s.kycSyncJobRepo == nil {
+		return false, fmt.Errorf("kyc sync job repository is not configured")
+	}
+
+	dedupeKey := fmt.Sprintf("didit:%s:%s:%s", strings.TrimSpace(payload.WebhookType), strings.TrimSpace(payload.Status), strings.TrimSpace(payload.SessionID))
+	now := time.Now()
+
+	job := &entities.KYCSyncJob{
+		ID:            uuid.New(),
+		DedupeKey:     dedupeKey,
+		ApplicantID:   strings.TrimSpace(payload.SessionID),
+		CorrelationID: strings.TrimSpace(payload.VendorData),
+		EventType:     strings.TrimSpace(payload.WebhookType),
+		Payload:       append([]byte(nil), rawPayload...),
+		Status:        entities.KYCSyncJobStatusPending,
+		AttemptCount:  0,
+		MaxAttempts:   defaultKYCSyncMaxAttempts,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := job.Validate(); err != nil {
+		return false, err
+	}
+
+	queued, err := s.kycSyncJobRepo.Enqueue(ctx, job)
+	if err != nil {
+		return false, err
+	}
+	return queued, nil
+}
+
+// ProcessDiditWebhook applies Didit verification outcomes and syncs providers.
+func (s *Service) ProcessDiditWebhook(ctx context.Context, payload *entities.DiditWebhookPayload) error {
+	if payload == nil {
+		return fmt.Errorf("missing didit payload")
+	}
+	sessionID := strings.TrimSpace(payload.SessionID)
+	if sessionID == "" {
+		return fmt.Errorf("missing didit session_id")
+	}
+
+	submission, err := s.kycSubmissionRepo.GetByProviderRef(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to load KYC submission for session %s: %w", sessionID, err)
+	}
+
+	switch payload.Status {
+	case entities.DiditStatusApproved:
+		return s.processDiditApproved(ctx, submission, payload)
+	case entities.DiditStatusDeclined:
+		return s.processDiditRejected(ctx, submission, payload)
+	case entities.DiditStatusInReview, entities.DiditStatusInProgress, entities.DiditStatusResubmitted:
+		return s.markDiditProcessing(ctx, submission, payload)
+	case entities.DiditStatusExpired, entities.DiditStatusAbandoned, entities.DiditStatusKYCExpired:
+		return s.markDiditExpired(ctx, submission, payload)
+	default:
+		return s.markDiditProcessing(ctx, submission, payload)
+	}
+}
+
+func (s *Service) processDiditApproved(ctx context.Context, submission *entities.KYCSubmission, payload *entities.DiditWebhookPayload) error {
+	if submission.Status == entities.KYCStatusApproved {
+		return nil
+	}
+
+	// Hydrate from Didit decision API.
+	s.hydrateSubmissionFromDidit(ctx, submission)
+
+	user, err := s.userRepo.GetByID(ctx, submission.UserID)
+	if err != nil {
+		return fmt.Errorf("failed to get user: %w", err)
+	}
+	profile, err := s.userRepo.GetProfileByUserID(ctx, submission.UserID)
+	if err != nil {
+		return fmt.Errorf("failed to get user profile: %w", err)
+	}
+
+	// Bridge sync — Didit hosts document images, so we submit KYC data without images.
+	bridgeResult := entities.KYCProviderResult{Success: false, Status: "skipped", Error: "Bridge customer not found"}
+	if profile.BridgeCustomerID != nil && *profile.BridgeCustomerID != "" {
+		bridgeResult = s.submitToBridgeFromDidit(ctx, *profile.BridgeCustomerID, submission)
+	}
+
+	now := time.Now()
+	if bridgeResult.Success {
+		bridgeStatus := "pending"
+		user.BridgeKYCStatus = &bridgeStatus
+	} else if profile.BridgeCustomerID != nil && *profile.BridgeCustomerID != "" {
+		if s.kycSyncJobRepo != nil {
+			retryPayload, _ := encodeProviderRetryPayload(submission.VerificationData, submission.UserID.String())
+			if _, enqErr := s.kycSyncJobRepo.EnqueueProviderRetry(ctx, submission.UserID.String(), "bridge", retryPayload); enqErr != nil {
+				s.logger.Warn("Failed to enqueue Bridge retry job",
+					zap.Error(enqErr), zap.String("user_id", submission.UserID.String()))
+			}
+		}
+	}
+
+	user.KYCStatus = string(entities.KYCStatusApproved)
+	user.KYCApprovedAt = &now
+	user.KYCRejectionReason = nil
+	if user.KYCSubmittedAt == nil {
+		user.KYCSubmittedAt = &now
+	}
+	user.OnboardingStatus = entities.OnboardingStatusCompleted
+
+	if err := s.userRepo.Update(ctx, user); err != nil {
+		return fmt.Errorf("failed to update user after didit approval: %w", err)
+	}
+
+	submission.UpdatedAt = now
+	if submission.VerificationData == nil {
+		submission.VerificationData = map[string]any{}
+	}
+	submission.VerificationData["didit_webhook_type"] = payload.WebhookType
+	submission.VerificationData["didit_status"] = payload.Status
+	submission.VerificationData["bridge_sync"] = map[string]any{
+		"success": bridgeResult.Success,
+		"status":  bridgeResult.Status,
+		"error":   bridgeResult.Error,
+	}
+
+	if bridgeResult.Success {
+		submission.MarkReviewed(entities.KYCStatusApproved, nil)
+	} else {
+		submission.Status = entities.KYCStatusProcessing
+	}
+
+	if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {
+		return fmt.Errorf("failed to update didit submission: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) processDiditRejected(ctx context.Context, submission *entities.KYCSubmission, payload *entities.DiditWebhookPayload) error {
+	user, err := s.userRepo.GetByID(ctx, submission.UserID)
+	if err != nil {
+		return fmt.Errorf("failed to get user: %w", err)
+	}
+
+	now := time.Now()
+	user.KYCStatus = string(entities.KYCStatusRejected)
+	user.KYCApprovedAt = nil
+	user.KYCSubmittedAt = &now
+	user.OnboardingStatus = entities.OnboardingStatusKYCRejected
+	reason := "Verification declined by Didit"
+	user.KYCRejectionReason = &reason
+
+	if err := s.userRepo.Update(ctx, user); err != nil {
+		return fmt.Errorf("failed to update user after didit rejection: %w", err)
+	}
+
+	submission.MarkReviewed(entities.KYCStatusRejected, []string{reason})
+	if submission.VerificationData == nil {
+		submission.VerificationData = map[string]any{}
+	}
+	submission.VerificationData["didit_webhook_type"] = payload.WebhookType
+	submission.VerificationData["didit_status"] = payload.Status
+	if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {
+		return fmt.Errorf("failed to update rejected didit submission: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) markDiditProcessing(ctx context.Context, submission *entities.KYCSubmission, payload *entities.DiditWebhookPayload) error {
+	now := time.Now()
+	submission.Status = entities.KYCStatusProcessing
+	submission.UpdatedAt = now
+	if submission.VerificationData == nil {
+		submission.VerificationData = map[string]any{}
+	}
+	submission.VerificationData["didit_webhook_type"] = payload.WebhookType
+	submission.VerificationData["didit_status"] = payload.Status
+	if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {
+		return err
+	}
+
+	user, err := s.userRepo.GetByID(ctx, submission.UserID)
+	if err != nil {
+		return fmt.Errorf("failed to get user for processing state: %w", err)
+	}
+	if user.KYCSubmittedAt == nil {
+		user.KYCSubmittedAt = &now
+	}
+	if user.KYCStatus != string(entities.KYCStatusApproved) &&
+		user.KYCStatus != string(entities.KYCStatusRejected) {
+		user.KYCStatus = string(entities.KYCStatusProcessing)
+	}
+	if err := s.userRepo.Update(ctx, user); err != nil {
+		return fmt.Errorf("failed to update user processing state: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) markDiditExpired(ctx context.Context, submission *entities.KYCSubmission, payload *entities.DiditWebhookPayload) error {
+	now := time.Now()
+	submission.Status = entities.KYCStatusExpired
+	submission.UpdatedAt = now
+	if submission.VerificationData == nil {
+		submission.VerificationData = map[string]any{}
+	}
+	submission.VerificationData["didit_webhook_type"] = payload.WebhookType
+	submission.VerificationData["didit_status"] = payload.Status
+	if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {
+		return err
+	}
+
+	// Reset user KYC status so they can retry.
+	user, err := s.userRepo.GetByID(ctx, submission.UserID)
+	if err != nil {
+		return fmt.Errorf("failed to get user for expired state: %w", err)
+	}
+	if user.KYCStatus != string(entities.KYCStatusApproved) {
+		user.KYCStatus = string(entities.KYCStatusExpired)
+		user.KYCProviderRef = nil
+		if err := s.userRepo.Update(ctx, user); err != nil {
+			return fmt.Errorf("failed to update user expired state: %w", err)
+		}
+	}
+	return nil
+}
+
+// hydrateSubmissionFromDidit fetches the session decision and merges ID data into verification data.
+func (s *Service) hydrateSubmissionFromDidit(ctx context.Context, submission *entities.KYCSubmission) {
+	if s.diditAdapter == nil || submission.ProviderRef == "" {
+		return
+	}
+	decision, err := s.diditAdapter.GetSessionDecision(ctx, submission.ProviderRef)
+	if err != nil {
+		s.logger.Warn("Failed to fetch Didit session decision",
+			zap.Error(err), zap.String("session_id", submission.ProviderRef))
+		return
+	}
+	if submission.VerificationData == nil {
+		submission.VerificationData = map[string]any{}
+	}
+	if len(decision.IDVerifications) > 0 {
+		v := decision.IDVerifications[0]
+		submission.VerificationData["didit_first_name"] = v.FirstName
+		submission.VerificationData["didit_last_name"] = v.LastName
+		submission.VerificationData["didit_dob"] = v.DateOfBirth
+		submission.VerificationData["didit_doc_type"] = v.DocumentType
+		submission.VerificationData["didit_issuing_state"] = v.IssuingState
+		if v.DocumentNumber != "" {
+			submission.VerificationData["didit_doc_number_tail"] = tail(v.DocumentNumber, 4)
+		}
+	}
+}
+
+// submitToBridgeFromDidit forwards KYC data to Bridge after Didit approval (no images).
+func (s *Service) submitToBridgeFromDidit(ctx context.Context, bridgeCustomerID string, submission *entities.KYCSubmission) entities.KYCProviderResult {
+	data := submission.VerificationData
+	if data == nil {
+		return entities.KYCProviderResult{Success: false, Status: "failed", Error: "no verification data"}
+	}
+
+	taxID, _ := data["tax_id"].(string)
+	taxIDType, _ := data["tax_id_type"].(string)
+	country, _ := data["issuing_country"].(string)
+
+	if taxID == "" {
+		return entities.KYCProviderResult{Success: false, Status: "failed", Error: "missing tax_id"}
+	}
+
+	req := &bridge.UpdateCustomerRequest{
+		IdentifyingInformation: []bridge.IdentifyingInfo{
+			{
+				Type:           mapTaxIDTypeToBridge(taxIDType),
+				IssuingCountry: strings.ToLower(country),
+				Number:         taxID,
+			},
+		},
+	}
+
+	customer, err := s.bridgeAdapter.UpdateCustomer(ctx, bridgeCustomerID, req)
+	if err != nil {
+		s.logger.Warn("Failed to sync Didit KYC to Bridge",
+			zap.Error(err), zap.String("bridge_customer_id", bridgeCustomerID))
+		return entities.KYCProviderResult{Success: false, Status: "failed", Error: err.Error()}
+	}
+	return entities.KYCProviderResult{Success: true, Status: string(customer.Status)}
 }

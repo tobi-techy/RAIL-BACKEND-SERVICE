@@ -22,6 +22,7 @@ import (
 	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	bridgeadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
+	diditadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/database"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
@@ -226,15 +227,13 @@ func (app *Application) initializeWorkers() error {
 }
 
 func (app *Application) initializeKYCSyncWorker() error {
-	if !strings.EqualFold(strings.TrimSpace(app.cfg.KYC.Provider), "sumsub") {
-		return nil
-	}
 	if app.container.KYCSyncJobRepo == nil || app.container.KYCSubmissionRepo == nil {
 		return nil
 	}
 
 	var sumsubClient kycservice.SumsubAdapter
-	if app.cfg.KYC.APIKey != "" && app.cfg.KYC.APISecret != "" {
+	if strings.EqualFold(strings.TrimSpace(app.cfg.KYC.Provider), "sumsub") &&
+		app.cfg.KYC.APIKey != "" && app.cfg.KYC.APISecret != "" {
 		sumsubClient = sumsubadapter.NewClient(sumsubadapter.Config{
 			BaseURL:       app.cfg.KYC.BaseURL,
 			AppToken:      app.cfg.KYC.APIKey,
@@ -243,6 +242,15 @@ func (app *Application) initializeKYCSyncWorker() error {
 			LevelName:     app.cfg.KYC.LevelName,
 			UserAgent:     app.cfg.KYC.UserAgent,
 			Timeout:       30 * time.Second,
+		}, app.log.Zap())
+	}
+
+	var diditClient kycservice.DiditAdapter
+	if app.cfg.KYC.DiditAPIKey != "" && app.cfg.KYC.DiditWorkflowID != "" {
+		diditClient = diditadapter.NewClient(diditadapter.Config{
+			APIKey:        app.cfg.KYC.DiditAPIKey,
+			WebhookSecret: app.cfg.KYC.DiditWebhookSecret,
+			WorkflowID:    app.cfg.KYC.DiditWorkflowID,
 		}, app.log.Zap())
 	}
 
@@ -256,6 +264,7 @@ func (app *Application) initializeKYCSyncWorker() error {
 		app.container.KYCSyncJobRepo,
 		app.cfg.KYC.LevelName,
 		app.log.Zap(),
+		diditClient,
 	)
 
 	app.kycSyncWorker = kyc_sync.NewWorkerWithRetry(
@@ -264,6 +273,7 @@ func (app *Application) initializeKYCSyncWorker() error {
 		kycSvc,
 		app.log.Zap(),
 		kyc_sync.DefaultConfig(),
+		kycSvc,
 	)
 	go app.kycSyncWorker.Start(context.Background())
 	app.log.Info("KYC sync worker started")

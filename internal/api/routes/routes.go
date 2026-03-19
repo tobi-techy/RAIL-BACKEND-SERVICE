@@ -21,6 +21,7 @@ import (
 	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
+	diditadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
@@ -249,6 +250,15 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			Timeout:       30 * time.Second,
 		}, container.ZapLog)
 	}
+
+	var diditClient *diditadapter.Client
+	if container.Config.KYC.DiditAPIKey != "" && container.Config.KYC.DiditWorkflowID != "" {
+		diditClient = diditadapter.NewClient(diditadapter.Config{
+			APIKey:        container.Config.KYC.DiditAPIKey,
+			WebhookSecret: container.Config.KYC.DiditWebhookSecret,
+			WorkflowID:    container.Config.KYC.DiditWorkflowID,
+		}, container.ZapLog)
+	}
 	kycUserRepoAdapter := repositories.NewKYCUserRepositoryAdapter(container.UserRepo)
 	kycService := kycservice.NewService(
 		kycUserRepoAdapter,
@@ -260,6 +270,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.KYCSyncJobRepo,
 		container.Config.KYC.LevelName,
 		container.ZapLog,
+		diditClient,
 	)
 	kycHTTPHandlers := kychandlers.NewHandler(kycService, container.Logger)
 	kycEligibilityMiddleware := middleware.NewKYCMiddleware(container.UserRepo, container.Logger)
@@ -320,6 +331,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			if sumsubClient != nil {
 				kyc.POST("/sumsub/webhook", kycHTTPHandlers.HandleSumsubWebhook)
 			}
+			if diditClient != nil {
+				kyc.POST("/didit/webhook", kycHTTPHandlers.HandleDiditWebhook)
+			}
 		}
 
 		// Protected routes (auth required)
@@ -343,6 +357,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			{
 				kycProtected.POST("/sumsub/session", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.CreateSumsubSession)
 				kycProtected.GET("/sumsub/token", middleware.AuthRateLimit(10), kycHTTPHandlers.RefreshSumsubToken)
+				kycProtected.POST("/didit/session", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.CreateDiditSession)
 				kycProtected.POST("/submit", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.SubmitKYC)
 				kycProtected.GET("/status", kycHTTPHandlers.GetKYCStatus)
 				// Bridge KYC - optimized for sub-2-minute verification

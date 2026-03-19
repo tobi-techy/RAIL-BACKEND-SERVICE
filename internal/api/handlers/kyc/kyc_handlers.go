@@ -266,3 +266,80 @@ func (h *Handler) RefreshSumsubToken(c *gin.Context) {
 
 	c.JSON(http.StatusOK, resp)
 }
+
+// CreateDiditSession handles POST /api/v1/kyc/didit/session.
+func (h *Handler) CreateDiditSession(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	userID, err := common.GetUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	var req entities.KYCDigitSessionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
+		return
+	}
+
+	response, err := h.kycService.StartDiditSession(ctx, userID, &req)
+	if err != nil {
+		h.logger.Error("Failed to create Didit KYC session",
+			zap.Error(err), zap.String("user_id", userID.String()))
+		switch {
+		case errors.Is(err, kyc.ErrUnsupportedTaxIDType):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Unsupported tax_id_type for issuing_country"})
+		case errors.Is(err, kyc.ErrKYCAlreadyApproved):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "KYC already approved"})
+		case errors.Is(err, kyc.ErrNoBridgeCustomer):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Complete signup first"})
+		case errors.Is(err, kyc.ErrDiditNotConfigured):
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "KYC provider not configured"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create verification session"})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// HandleDiditWebhook handles POST /api/v1/kyc/didit/webhook.
+func (h *Handler) HandleDiditWebhook(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	rawBody, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid webhook payload"})
+		return
+	}
+
+	sig := c.GetHeader("X-Signature-V2")
+	ts := c.GetHeader("X-Timestamp")
+	if err := h.kycService.VerifyDiditWebhookSignature(rawBody, sig, ts); err != nil {
+		h.logger.Warn("Invalid Didit webhook signature", zap.Error(err))
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid signature"})
+		return
+	}
+
+	var payload entities.DiditWebhookPayload
+	if err := json.Unmarshal(rawBody, &payload); err != nil {
+		h.logger.Warn("Invalid Didit webhook JSON", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid webhook payload"})
+		return
+	}
+
+	enqueued, err := h.kycService.EnqueueDiditWebhook(ctx, &payload, rawBody)
+	if err != nil {
+		h.logger.Error("Failed to enqueue Didit webhook", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to enqueue webhook"})
+		return
+	}
+	if !enqueued {
+		c.JSON(http.StatusOK, gin.H{"status": "duplicate_ignored"})
+		return
+	}
+
+	c.JSON(http.StatusAccepted, gin.H{"status": "accepted"})
+}

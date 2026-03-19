@@ -3,6 +3,7 @@ package kyc_sync
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
@@ -18,6 +19,11 @@ type JobRepository interface {
 // SumsubWebhookProcessor defines KYC processing logic executed per queued webhook.
 type SumsubWebhookProcessor interface {
 	ProcessSumsubWebhook(ctx context.Context, payload *entities.SumsubWebhookPayload) error
+}
+
+// DiditWebhookProcessor defines Didit KYC processing logic.
+type DiditWebhookProcessor interface {
+	ProcessDiditWebhook(ctx context.Context, payload *entities.DiditWebhookPayload) error
 }
 
 // ProviderRetryProcessor handles per-provider retry jobs for Bridge and Alpaca.
@@ -46,6 +52,7 @@ func DefaultConfig() *Config {
 type Worker struct {
 	jobRepo               JobRepository
 	processor             SumsubWebhookProcessor
+	diditProcessor        DiditWebhookProcessor
 	providerRetryProc     ProviderRetryProcessor
 	logger                *zap.Logger
 	checkInterval         time.Duration
@@ -60,7 +67,7 @@ func NewWorker(jobRepo JobRepository, processor SumsubWebhookProcessor, logger *
 }
 
 // NewWorkerWithRetry creates a new KYC sync worker with per-provider retry support.
-func NewWorkerWithRetry(jobRepo JobRepository, processor SumsubWebhookProcessor, providerRetryProc ProviderRetryProcessor, logger *zap.Logger, config *Config) *Worker {
+func NewWorkerWithRetry(jobRepo JobRepository, processor SumsubWebhookProcessor, providerRetryProc ProviderRetryProcessor, logger *zap.Logger, config *Config, diditProcessor ...DiditWebhookProcessor) *Worker {
 	if config == nil {
 		config = DefaultConfig()
 	}
@@ -74,7 +81,7 @@ func NewWorkerWithRetry(jobRepo JobRepository, processor SumsubWebhookProcessor,
 		config.BaseRetryDelay = DefaultConfig().BaseRetryDelay
 	}
 
-	return &Worker{
+	w := &Worker{
 		jobRepo:           jobRepo,
 		processor:         processor,
 		providerRetryProc: providerRetryProc,
@@ -84,6 +91,10 @@ func NewWorkerWithRetry(jobRepo JobRepository, processor SumsubWebhookProcessor,
 		baseRetryDelay:    config.BaseRetryDelay,
 		stopCh:            make(chan struct{}),
 	}
+	if len(diditProcessor) > 0 && diditProcessor[0] != nil {
+		w.diditProcessor = diditProcessor[0]
+	}
+	return w
 }
 
 // Start begins periodic polling and processing.
@@ -166,10 +177,10 @@ func (w *Worker) processJob(ctx context.Context, job *entities.KYCSyncJob) {
 				err = w.providerRetryProc.RetryAlpacaSync(ctx, job.Payload)
 			}
 		default:
-			err = w.processSumsubJob(ctx, job)
+			err = w.dispatchWebhookJob(ctx, job)
 		}
 	} else {
-		err = w.processSumsubJob(ctx, job)
+		err = w.dispatchWebhookJob(ctx, job)
 	}
 
 	if err != nil {
@@ -198,6 +209,21 @@ func (w *Worker) processSumsubJob(ctx context.Context, job *entities.KYCSyncJob)
 		return err
 	}
 	return w.processor.ProcessSumsubWebhook(ctx, &payload)
+}
+
+func (w *Worker) processDiditJob(ctx context.Context, job *entities.KYCSyncJob) error {
+	var payload entities.DiditWebhookPayload
+	if err := json.Unmarshal(job.Payload, &payload); err != nil {
+		return err
+	}
+	return w.diditProcessor.ProcessDiditWebhook(ctx, &payload)
+}
+
+func (w *Worker) dispatchWebhookJob(ctx context.Context, job *entities.KYCSyncJob) error {
+	if strings.HasPrefix(job.DedupeKey, "didit:") && w.diditProcessor != nil {
+		return w.processDiditJob(ctx, job)
+	}
+	return w.processSumsubJob(ctx, job)
 }
 
 func stringVal(s *string) string {
