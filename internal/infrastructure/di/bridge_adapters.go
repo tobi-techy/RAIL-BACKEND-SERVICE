@@ -223,3 +223,60 @@ func mapChainToBridgePaymentRail(chain entities.Chain) bridge.PaymentRail {
 		return ""
 	}
 }
+
+// USDBBridgeClient implements usdstash.BridgeClient using the Bridge API.
+type USDBBridgeClient struct {
+	client *bridge.Client
+}
+
+func (a *USDBBridgeClient) GetOrCreateUSDBWallet(ctx context.Context, customerID string) (string, error) {
+	resp, err := a.client.ListWallets(ctx, customerID)
+	if err != nil {
+		return "", err
+	}
+	for _, w := range resp.Data {
+		if w.Currency == bridge.CurrencyUSDB {
+			return w.ID, nil
+		}
+	}
+	// No USDB wallet yet — create one on Solana (primary chain)
+	w, err := a.client.CreateWallet(ctx, customerID, &bridge.CreateWalletRequest{
+		Chain:    bridge.PaymentRailSolana,
+		Currency: bridge.CurrencyUSDB,
+	})
+	if err != nil {
+		return "", err
+	}
+	return w.ID, nil
+}
+
+func (a *USDBBridgeClient) GetUSDCWalletID(ctx context.Context, customerID string) (string, error) {
+	resp, err := a.client.ListWallets(ctx, customerID)
+	if err != nil {
+		return "", err
+	}
+	for _, w := range resp.Data {
+		if w.Currency == bridge.CurrencyUSDC {
+			return w.ID, nil
+		}
+	}
+	return "", fmt.Errorf("no USDC custody wallet found for customer %s", customerID)
+}
+
+func (a *USDBBridgeClient) TransferBetweenWallets(ctx context.Context, customerID, sourceWalletID, destWalletID string, amount decimal.Decimal, _ string) error {
+	_, err := a.client.CreateTransfer(ctx, &bridge.CreateTransferRequest{
+		OnBehalfOf: customerID,
+		Amount:     amount.StringFixed(6),
+		Source: bridge.TransferSource{
+			PaymentRail:    "bridge_wallet",
+			Currency:       bridge.CurrencyUSDC,
+			BridgeWalletID: sourceWalletID,
+		},
+		Destination: bridge.TransferDestination{
+			PaymentRail:    "bridge_wallet",
+			Currency:       bridge.CurrencyUSDB,
+			BridgeWalletID: destWalletID,
+		},
+	})
+	return err
+}
