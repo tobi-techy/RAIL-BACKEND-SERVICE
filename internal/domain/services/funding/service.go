@@ -349,6 +349,7 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 		for _, w := range wallets {
 			if w.Chain == custodyChain {
 				bridgeWalletID = w.ID
+				destinationAddress = w.Address
 				break
 			}
 		}
@@ -360,15 +361,8 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 			bridgeWalletID = id
 			destinationAddress = addr
 		}
-		// If we found an existing wallet but don't have its address, fetch it
-		if destinationAddress == "" && bridgeWalletID != "" {
-			// Re-list to get the address for the existing wallet
-			for _, w := range wallets {
-				if w.ID == bridgeWalletID {
-					destinationAddress = w.Address
-					break
-				}
-			}
+		if destinationAddress == "" {
+			return nil, fmt.Errorf("missing destination address for bridge wallet %s", bridgeWalletID)
 		}
 	}
 
