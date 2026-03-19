@@ -1556,22 +1556,31 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 
 	// If still pending and user has a Didit session, poll Didit directly as webhook fallback.
 	if overall == "pending" && s.diditAdapter != nil && user.KYCProviderRef != nil && *user.KYCProviderRef != "" {
-		if decision, err := s.diditAdapter.GetSessionDecision(ctx, *user.KYCProviderRef); err == nil && decision != nil {
+		decision, err := s.diditAdapter.GetSessionDecision(ctx, *user.KYCProviderRef)
+		if err != nil {
+			s.logger.Warn("Didit poll: failed to get session decision",
+				zap.Error(err), zap.String("session_id", *user.KYCProviderRef))
+		} else if decision != nil {
 			switch decision.Status {
 			case entities.DiditStatusApproved:
-				// Process approval inline — same as webhook path.
 				payload := &entities.DiditWebhookPayload{SessionID: decision.SessionID, Status: decision.Status}
 				if procErr := s.ProcessDiditWebhook(ctx, payload); procErr != nil {
 					s.logger.Warn("Didit poll: failed to process approved status", zap.Error(procErr))
+				} else if freshUser, reloadErr := s.userRepo.GetByID(ctx, userID); reloadErr != nil {
+					s.logger.Warn("Didit poll: failed to reload user after approval", zap.Error(reloadErr))
 				} else {
-					overall = "approved"
+					user = freshUser
+					overall = determineOverallStatus(user)
 				}
 			case entities.DiditStatusDeclined:
 				payload := &entities.DiditWebhookPayload{SessionID: decision.SessionID, Status: decision.Status}
 				if procErr := s.ProcessDiditWebhook(ctx, payload); procErr != nil {
 					s.logger.Warn("Didit poll: failed to process declined status", zap.Error(procErr))
+				} else if freshUser, reloadErr := s.userRepo.GetByID(ctx, userID); reloadErr != nil {
+					s.logger.Warn("Didit poll: failed to reload user after decline", zap.Error(reloadErr))
 				} else {
-					overall = "rejected"
+					user = freshUser
+					overall = determineOverallStatus(user)
 				}
 			}
 		}

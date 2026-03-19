@@ -328,7 +328,10 @@ func (s *DeletionService) cleanupExternalProviders(ctx context.Context, userID u
 
 	// Delete Didit KYC session data (GDPR compliance)
 	if s.diditClient != nil && s.kycUserLookup != nil {
-		if user, err := s.kycUserLookup.GetUserEntityByID(ctx, userID); err == nil && user != nil && user.KYCProviderRef != nil && *user.KYCProviderRef != "" {
+		user, err := s.kycUserLookup.GetUserEntityByID(ctx, userID)
+		if err != nil {
+			s.logger.Warn("Failed to look up user for Didit cleanup", "user_id", userID.String(), "error", err)
+		} else if user != nil && user.KYCProviderRef != nil && *user.KYCProviderRef != "" {
 			if err := s.diditClient.DeleteSession(ctx, *user.KYCProviderRef); err != nil {
 				s.logger.Warn("Failed to delete Didit session", "user_id", userID.String(), "session_id", *user.KYCProviderRef, "error", err)
 			} else {

@@ -1725,6 +1725,9 @@ func (c *Container) initializeDomainServices() error {
 
 	// Wire Didit session deletion for account closure (GDPR)
 	if diditAPIKey := c.Config.KYC.DiditAPIKey; diditAPIKey != "" {
+		if c.UserRepo == nil {
+			return fmt.Errorf("UserRepo must be initialized before setting up Didit client")
+		}
 		diditClient := didit.NewClient(didit.Config{
 			APIKey: diditAPIKey,
 		}, c.ZapLog)
