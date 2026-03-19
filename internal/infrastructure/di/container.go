@@ -161,7 +161,7 @@ func (a *BridgeDepositAdapter) ListWallets(ctx context.Context, customerID strin
 	}
 	out := make([]funding.BridgeWalletInfo, len(resp.Data))
 	for i, w := range resp.Data {
-		out[i] = funding.BridgeWalletInfo{ID: w.ID, Chain: string(w.Chain)}
+		out[i] = funding.BridgeWalletInfo{ID: w.ID, Chain: string(w.Chain), Address: w.Address}
 	}
 	return out, nil
 }
