@@ -353,6 +353,9 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 				break
 			}
 		}
+		if destinationAddress == "" && bridgeWalletID != "" {
+			return nil, fmt.Errorf("missing destination address for bridge wallet %s", bridgeWalletID)
+		}
 		if bridgeWalletID == "" {
 			id, addr, err := s.bridgeWallets.CreateWallet(ctx, customerID, custodyChain)
 			if err != nil {
@@ -360,9 +363,6 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 			}
 			bridgeWalletID = id
 			destinationAddress = addr
-		}
-		if destinationAddress == "" {
-			return nil, fmt.Errorf("missing destination address for bridge wallet %s", bridgeWalletID)
 		}
 	}
 
