@@ -1553,6 +1553,29 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 	}
 
 	overall := determineOverallStatus(user)
+
+	// If still pending and user has a Didit session, poll Didit directly as webhook fallback.
+	if overall == "pending" && s.diditAdapter != nil && user.KYCProviderRef != nil && *user.KYCProviderRef != "" {
+		if decision, err := s.diditAdapter.GetSessionDecision(ctx, *user.KYCProviderRef); err == nil && decision != nil {
+			switch decision.Status {
+			case entities.DiditStatusApproved:
+				// Process approval inline — same as webhook path.
+				payload := &entities.DiditWebhookPayload{SessionID: decision.SessionID, Status: decision.Status}
+				if procErr := s.ProcessDiditWebhook(ctx, payload); procErr != nil {
+					s.logger.Warn("Didit poll: failed to process approved status", zap.Error(procErr))
+				} else {
+					overall = "approved"
+				}
+			case entities.DiditStatusDeclined:
+				payload := &entities.DiditWebhookPayload{SessionID: decision.SessionID, Status: decision.Status}
+				if procErr := s.ProcessDiditWebhook(ctx, payload); procErr != nil {
+					s.logger.Warn("Didit poll: failed to process declined status", zap.Error(procErr))
+				} else {
+					overall = "rejected"
+				}
+			}
+		}
+	}
 	hasSubmitted := overall != "not_started"
 
 	response := &entities.KYCStatusResponse{
