@@ -335,6 +335,8 @@ func setupTestRouter(container *di.Container) *gin.Engine {
 		container.GetPasscodeService(),
 		container.RedisClient,
 		container.GetAccountDeletionService(),
+		"",
+		nil,
 	)
 
 	auth := router.Group("/api/v1/auth")

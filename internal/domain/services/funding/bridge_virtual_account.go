@@ -29,6 +29,9 @@ type BridgeVirtualAccountService struct {
 // WalletProvider interface for getting user wallet addresses
 type WalletProvider interface {
 	GetWalletByUserAndChain(ctx context.Context, userID uuid.UUID, chain entities.WalletChain) (*entities.ManagedWallet, error)
+	CreateWalletForCustomer(ctx context.Context, customerID string, chain string) (*entities.ManagedWallet, error)
+	SaveWallet(ctx context.Context, wallet *entities.ManagedWallet) error
+	ListBridgeWallets(ctx context.Context, customerID string) ([]*entities.ManagedWallet, error)
 }
 
 // AllocationService interface for 70/30 split processing
@@ -114,10 +117,38 @@ func (s *BridgeVirtualAccountService) ProvisionVirtualAccounts(ctx context.Conte
 	}
 
 	if wallet == nil {
-		// Wallets are still provisioning — return an error so the caller can decide
-		// whether to retry. The webhook handler suppresses this error to avoid
-		// failing the webhook, but the error is logged for observability.
-		return fmt.Errorf("no wallet available yet for user %s — wallets may still be provisioning", userID)
+		// No wallet in DB — check if one already exists on Bridge.
+		bridgeWallets, err := s.walletProvider.ListBridgeWallets(ctx, bridgeCustomerID)
+		if err == nil {
+			for _, bw := range bridgeWallets {
+				if bw.Address != "" {
+					s.logger.Info("Found existing Bridge wallet, syncing to DB",
+						"user_id", userID, "bridge_wallet_id", bw.BridgeWalletID, "chain", string(bw.Chain), "address", bw.Address)
+					bw.UserID = userID
+					if saveErr := s.walletProvider.SaveWallet(ctx, bw); saveErr != nil {
+						s.logger.Error("Failed to save synced Bridge wallet", "error", saveErr)
+						continue
+					}
+					wallet = bw
+					break
+				}
+			}
+		}
+	}
+
+	if wallet == nil {
+		// No wallet on Bridge either — create one now.
+		s.logger.Info("No wallet found on Bridge, creating new wallet",
+			"user_id", userID, "bridge_customer_id", bridgeCustomerID)
+		mw, err := s.walletProvider.CreateWalletForCustomer(ctx, bridgeCustomerID, string(entities.WalletChainSolana))
+		if err != nil {
+			return fmt.Errorf("auto-provision wallet failed for user %s: %w", userID, err)
+		}
+		mw.UserID = userID
+		if err := s.walletProvider.SaveWallet(ctx, mw); err != nil {
+			return fmt.Errorf("failed to save auto-provisioned wallet for user %s: %w", userID, err)
+		}
+		wallet = mw
 	}
 
 	var (

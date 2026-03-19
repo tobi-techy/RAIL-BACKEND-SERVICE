@@ -2,10 +2,13 @@ package socialauth
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/rsa"
+	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"math/big"
@@ -683,4 +686,83 @@ func (s *Service) fetchApplePublicKeys(ctx context.Context) error {
 
 	s.logger.Info("Fetched Apple public keys", zap.Int("count", len(s.appleKeys.keys)))
 	return nil
+}
+
+// RevokeAppleToken exchanges an authorization code for a refresh token and revokes it with Apple.
+func (s *Service) RevokeAppleToken(ctx context.Context, authCode string) error {
+	if s.config.Apple.PrivateKey == "" || s.config.Apple.KeyID == "" {
+		return fmt.Errorf("apple OAuth not configured")
+	}
+
+	clientSecret, err := s.generateAppleClientSecret()
+	if err != nil {
+		return fmt.Errorf("failed to generate client secret: %w", err)
+	}
+
+	// Exchange auth code for refresh token
+	tokenResp, err := http.PostForm("https://appleid.apple.com/auth/token", url.Values{
+		"client_id":     {s.config.Apple.ClientID},
+		"client_secret": {clientSecret},
+		"code":          {authCode},
+		"grant_type":    {"authorization_code"},
+	})
+	if err != nil {
+		return fmt.Errorf("apple token exchange failed: %w", err)
+	}
+	defer tokenResp.Body.Close()
+
+	var tokenData struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.NewDecoder(tokenResp.Body).Decode(&tokenData); err != nil || tokenData.RefreshToken == "" {
+		return fmt.Errorf("failed to get refresh token from Apple")
+	}
+
+	// Revoke the refresh token
+	revokeResp, err := http.PostForm("https://appleid.apple.com/auth/revoke", url.Values{
+		"client_id":       {s.config.Apple.ClientID},
+		"client_secret":   {clientSecret},
+		"token":           {tokenData.RefreshToken},
+		"token_type_hint": {"refresh_token"},
+	})
+	if err != nil {
+		return fmt.Errorf("apple token revocation failed: %w", err)
+	}
+	defer revokeResp.Body.Close()
+
+	if revokeResp.StatusCode != http.StatusOK {
+		return fmt.Errorf("apple revocation returned status %d", revokeResp.StatusCode)
+	}
+
+	s.logger.Info("Apple token revoked successfully")
+	return nil
+}
+
+func (s *Service) generateAppleClientSecret() (string, error) {
+	block, _ := pem.Decode([]byte(s.config.Apple.PrivateKey))
+	if block == nil {
+		return "", fmt.Errorf("failed to decode Apple private key PEM")
+	}
+
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse Apple private key: %w", err)
+	}
+
+	ecKey, ok := key.(*ecdsa.PrivateKey)
+	if !ok {
+		return "", fmt.Errorf("Apple private key is not ECDSA")
+	}
+
+	now := time.Now()
+	token := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
+		"iss": s.config.Apple.TeamID,
+		"iat": now.Unix(),
+		"exp": now.Add(5 * time.Minute).Unix(),
+		"aud": "https://appleid.apple.com",
+		"sub": s.config.Apple.ClientID,
+	})
+	token.Header["kid"] = s.config.Apple.KeyID
+
+	return token.SignedString(ecKey)
 }

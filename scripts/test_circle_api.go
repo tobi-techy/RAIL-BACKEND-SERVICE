@@ -24,12 +24,8 @@ func main() {
 	entitySecret := os.Getenv("CIRCLE_ENTITY_SECRET_CIPHERTEXT")
 	publicKeyPEM := os.Getenv("EXPO_PUBLIC_CIRCLE_PUBLIC_KEY_PEM")
 
-	// Use defaults from .env if not set
-	if apiKey == "" {
-		apiKey = "TEST_API_KEY:41d6b3aa0927dd63b69f372ed8702045:3af3046ec65e569e97b705e40d2c9b9e"
-	}
-	if entitySecret == "" {
-		entitySecret = "dcd90b5d7bfd4f17222283d14ac0e2ce0d814df1d4f030a37065868113437fdc"
+	if apiKey == "" || entitySecret == "" {
+		logger.Fatal("CIRCLE_API_KEY and CIRCLE_ENTITY_SECRET_CIPHERTEXT env vars are required")
 	}
 	if publicKeyPEM == "" {
 		publicKeyPEM = `-----BEGIN PUBLIC KEY-----

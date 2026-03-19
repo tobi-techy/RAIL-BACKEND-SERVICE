@@ -103,6 +103,8 @@ func setupAuthTokenTestRouter(t *testing.T) (*gin.Engine, cache.RedisClient, fun
 		container.GetPasscodeService(),
 		container.RedisClient,
 		container.GetAccountDeletionService(),
+		"",
+		nil,
 	)
 	securityHandlers := handlers.NewSecurityHandlers(
 		container.GetPasscodeService(),

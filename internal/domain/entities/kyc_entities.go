@@ -146,6 +146,51 @@ type KYCSumsubSessionResponse struct {
 	LevelName   string `json:"level_name"`
 }
 
+// KYCDigitSessionRequest starts a hosted Didit verification session.
+type KYCDigitSessionRequest struct {
+	TaxID                      string         `json:"tax_id" validate:"required"`
+	TaxIDType                  string         `json:"tax_id_type" validate:"required,oneof=ssn itin nino utr nin bvn tin passport national_id"`
+	IssuingCountry             string         `json:"issuing_country" validate:"required,len=3"`
+	Disclosures                KYCDisclosures `json:"disclosures" validate:"required"`
+	SourceOfFunds              string         `json:"source_of_funds,omitempty"`
+	EmploymentStatus           string         `json:"employment_status,omitempty"`
+	ExpectedMonthlyPaymentsUSD string         `json:"expected_monthly_payments_usd,omitempty"`
+	AccountPurpose             string         `json:"account_purpose,omitempty"`
+	AccountPurposeOther        string         `json:"account_purpose_other,omitempty"`
+	MostRecentOccupation       string         `json:"most_recent_occupation,omitempty"`
+	ActingAsIntermediary       *bool          `json:"acting_as_intermediary,omitempty"`
+}
+
+// KYCDigitSessionResponse returns the data needed to launch Didit SDK.
+type KYCDigitSessionResponse struct {
+	Status       string `json:"status"`
+	SessionID    string `json:"session_id"`
+	SessionToken string `json:"session_token"`
+	URL          string `json:"url,omitempty"`
+}
+
+// DiditWebhookPayload contains the relevant fields from a Didit webhook.
+type DiditWebhookPayload struct {
+	SessionID   string `json:"session_id"`
+	Status      string `json:"status"`
+	WebhookType string `json:"webhook_type"`
+	VendorData  string `json:"vendor_data"`
+	WorkflowID  string `json:"workflow_id"`
+}
+
+// Didit verification statuses (case-sensitive, with spaces).
+const (
+	DiditStatusNotStarted = "Not Started"
+	DiditStatusInProgress = "In Progress"
+	DiditStatusApproved   = "Approved"
+	DiditStatusDeclined   = "Declined"
+	DiditStatusInReview   = "In Review"
+	DiditStatusResubmitted = "Resubmitted"
+	DiditStatusExpired    = "Expired"
+	DiditStatusAbandoned  = "Abandoned"
+	DiditStatusKYCExpired = "Kyc Expired"
+)
+
 // SumsubWebhookPayload contains the relevant fields used by webhook processing.
 type SumsubWebhookPayload struct {
 	ApplicantID    string             `json:"applicantId"`

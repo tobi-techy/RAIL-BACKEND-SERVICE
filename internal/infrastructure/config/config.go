@@ -293,7 +293,7 @@ type CircleConfig struct {
 }
 
 type KYCConfig struct {
-	Provider      string `mapstructure:"provider"` // legacy config, Bridge KYC is now the only provider
+	Provider      string `mapstructure:"provider"` // "didit" or legacy "sumsub"
 	APIKey        string `mapstructure:"api_key"`
 	APISecret     string `mapstructure:"api_secret"`
 	WebhookSecret string `mapstructure:"webhook_secret"`
@@ -302,6 +302,12 @@ type KYCConfig struct {
 	Environment   string `mapstructure:"environment"` // "development", "sandbox", "production"
 	UserAgent     string `mapstructure:"user_agent"`
 	LevelName     string `mapstructure:"level_name"`
+	WorkflowID    string `mapstructure:"workflow_id"` // Didit workflow ID
+
+	// Didit-specific keys (isolated from Sumsub to avoid env var collisions)
+	DiditAPIKey        string `mapstructure:"didit_api_key"`
+	DiditWebhookSecret string `mapstructure:"didit_webhook_secret"`
+	DiditWorkflowID    string `mapstructure:"didit_workflow_id"`
 
 	// Enhanced KYC settings
 	EnableLiveness      bool   `mapstructure:"enable_liveness"`       // Enable liveness detection
@@ -882,10 +888,23 @@ func overrideFromEnv() {
 		viper.Set("payment.webhook_secret", circleWebhookSecret)
 	}
 
-	// KYC provider (Sumsub)
+	// KYC provider (Didit)
 	if kycProvider := os.Getenv("KYC_PROVIDER"); kycProvider != "" {
 		viper.Set("kyc.provider", kycProvider)
 	}
+	if diditAPIKey := os.Getenv("DIDIT_API_KEY"); diditAPIKey != "" {
+		viper.Set("kyc.api_key", diditAPIKey)
+		viper.Set("kyc.didit_api_key", diditAPIKey)
+	}
+	if diditWebhookSecret := os.Getenv("DIDIT_WEBHOOK_SECRET"); diditWebhookSecret != "" {
+		viper.Set("kyc.webhook_secret", diditWebhookSecret)
+		viper.Set("kyc.didit_webhook_secret", diditWebhookSecret)
+	}
+	if diditWorkflowID := os.Getenv("DIDIT_WORKFLOW_ID"); diditWorkflowID != "" {
+		viper.Set("kyc.workflow_id", diditWorkflowID)
+		viper.Set("kyc.didit_workflow_id", diditWorkflowID)
+	}
+	// Legacy Sumsub env vars (backward compat)
 	if sumsubAppToken := os.Getenv("SUMSUB_APP_TOKEN"); sumsubAppToken != "" {
 		viper.Set("kyc.api_key", sumsubAppToken)
 	}

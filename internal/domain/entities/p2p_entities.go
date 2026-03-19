@@ -22,11 +22,12 @@ const (
 type P2PTransferStatus string
 
 const (
-	P2PStatusPending   P2PTransferStatus = "pending"   // Awaiting claim (non-user)
-	P2PStatusCompleted P2PTransferStatus = "completed" // Instant transfer to existing user
-	P2PStatusClaimed   P2PTransferStatus = "claimed"   // New user signed up and claimed
-	P2PStatusExpired   P2PTransferStatus = "expired"   // 14 days passed, refunded
-	P2PStatusCancelled P2PTransferStatus = "cancelled" // Sender cancelled
+	P2PStatusPending    P2PTransferStatus = "pending"    // Awaiting claim (non-user)
+	P2PStatusProcessing P2PTransferStatus = "processing" // Claim/cancel/expiry reconciliation in progress
+	P2PStatusCompleted  P2PTransferStatus = "completed"  // Instant transfer to existing user
+	P2PStatusClaimed    P2PTransferStatus = "claimed"    // New user signed up and claimed
+	P2PStatusExpired    P2PTransferStatus = "expired"    // 14 days passed, refunded
+	P2PStatusCancelled  P2PTransferStatus = "cancelled"  // Sender cancelled
 )
 
 // P2PTransferExpiryDays is the number of days before unclaimed transfers expire
@@ -46,6 +47,8 @@ type P2PTransfer struct {
 	ClaimToken          *string           `json:"-" db:"claim_token"`
 	ClaimLinkSentAt     *time.Time        `json:"claimLinkSentAt,omitempty" db:"claim_link_sent_at"`
 	ReminderSentAt      *time.Time        `json:"reminderSentAt,omitempty" db:"reminder_sent_at"`
+	ProviderTransferID  *string           `json:"providerTransferId,omitempty" db:"provider_transfer_id"`
+	ProviderStatus      *string           `json:"providerStatus,omitempty" db:"provider_status"`
 	CompletedAt         *time.Time        `json:"completedAt,omitempty" db:"completed_at"`
 	CancelledAt         *time.Time        `json:"cancelledAt,omitempty" db:"cancelled_at"`
 	ExpiresAt           time.Time         `json:"expiresAt" db:"expires_at"`
@@ -72,8 +75,8 @@ type P2PSendRequest struct {
 type P2PLookupResponse struct {
 	Found          bool              `json:"found"`
 	IdentifierType P2PIdentifierType `json:"identifierType"`
-	User           *P2PUserInfo      `json:"user,omitempty"`   // If found
-	CanSend        bool              `json:"canSend"`          // True if valid identifier
+	User           *P2PUserInfo      `json:"user,omitempty"`    // If found
+	CanSend        bool              `json:"canSend"`           // True if valid identifier
 	Message        string            `json:"message,omitempty"` // "Will be invited to Rail"
 }
 

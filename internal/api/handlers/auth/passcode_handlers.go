@@ -116,9 +116,9 @@ func (h *PasscodeHandlers) VerifyPasscode(c *gin.Context) {
 	}
 
 	common.SendSuccess(c, gin.H{
-		"valid":      true,
-		"token":      token,
-		"expires_at": expiresAt,
+		"verified":                  true,
+		"passcodeSessionToken":      token,
+		"passcodeSessionExpiresAt":  expiresAt,
 	})
 }
 

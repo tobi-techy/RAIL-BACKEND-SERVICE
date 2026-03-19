@@ -67,11 +67,22 @@ type VirtualAccountRepository interface {
 // BridgeClient interface for Bridge operations
 type BridgeClient interface {
 	DeactivateVirtualAccount(ctx context.Context, customerID, virtualAccountID string) error
+	DeleteCustomer(ctx context.Context, customerID string) error
 }
 
 // DeviceTokenRepository interface for push notification cleanup
 type DeviceTokenRepository interface {
 	DeactivateAllUserTokens(ctx context.Context, userID uuid.UUID) error
+}
+
+// DiditSessionDeleter interface for deleting Didit KYC sessions (GDPR)
+type DiditSessionDeleter interface {
+	DeleteSession(ctx context.Context, sessionID string) error
+}
+
+// KYCUserLookup interface for looking up user KYC provider ref before deletion
+type KYCUserLookup interface {
+	GetUserEntityByID(ctx context.Context, id uuid.UUID) (*entities.User, error)
 }
 
 // DeletionService handles complete account deletion with fund sweep
@@ -83,6 +94,8 @@ type DeletionService struct {
 	auditService          AuditService
 	sessionService        SessionService
 	deviceTokenRepo       DeviceTokenRepository
+	diditClient           DiditSessionDeleter
+	kycUserLookup         KYCUserLookup
 	alpacaAccountRepo     AlpacaAccountRepository
 	alpacaClient          AlpacaClient
 	virtualAccountRepo    VirtualAccountRepository
@@ -132,6 +145,12 @@ func (s *DeletionService) SetSessionService(sessionService SessionService) {
 // SetDeviceTokenRepo sets the device token repository for push notification cleanup
 func (s *DeletionService) SetDeviceTokenRepo(repo DeviceTokenRepository) {
 	s.deviceTokenRepo = repo
+}
+
+// SetDiditClient sets the Didit client for KYC session deletion on account closure
+func (s *DeletionService) SetDiditClient(client DiditSessionDeleter, userLookup KYCUserLookup) {
+	s.diditClient = client
+	s.kycUserLookup = userLookup
 }
 
 // DeleteAccountRequest represents a request to delete an account
@@ -278,8 +297,12 @@ func (s *DeletionService) cleanupExternalProviders(ctx context.Context, userID u
 
 	// Deactivate Bridge virtual accounts
 	if s.virtualAccountRepo != nil && s.bridgeClient != nil {
+		var bridgeCustomerID string
 		if virtualAccounts, err := s.virtualAccountRepo.GetByUserID(ctx, userID); err == nil {
 			for _, va := range virtualAccounts {
+				if va.BridgeCustomerID != "" {
+					bridgeCustomerID = va.BridgeCustomerID
+				}
 				if va.BridgeCustomerID != "" && va.BridgeAccountID != nil && *va.BridgeAccountID != "" {
 					if err := s.bridgeClient.DeactivateVirtualAccount(ctx, va.BridgeCustomerID, *va.BridgeAccountID); err != nil {
 						s.logger.Warn("Failed to deactivate Bridge virtual account", "user_id", userID.String(), "bridge_account_id", *va.BridgeAccountID, "error", err)
@@ -289,10 +312,35 @@ func (s *DeletionService) cleanupExternalProviders(ctx context.Context, userID u
 				}
 			}
 		}
+
+		// Delete Bridge customer record (removes all PII from Bridge)
+		if bridgeCustomerID != "" {
+			if err := s.bridgeClient.DeleteCustomer(ctx, bridgeCustomerID); err != nil {
+				s.logger.Warn("Failed to delete Bridge customer", "user_id", userID.String(), "bridge_customer_id", bridgeCustomerID, "error", err)
+			} else {
+				s.logger.Info("Deleted Bridge customer", "user_id", userID.String(), "bridge_customer_id", bridgeCustomerID)
+			}
+		}
 	}
 
 	// Note: Bridge custody wallets cannot be deleted (blockchain addresses are permanent)
 	// Funds have already been swept to treasury
+
+	// Delete Didit KYC session data (GDPR compliance)
+	if s.diditClient != nil && s.kycUserLookup != nil {
+		user, err := s.kycUserLookup.GetUserEntityByID(ctx, userID)
+		if err != nil {
+			s.logger.Error("Failed to look up user for Didit cleanup", "user_id", userID.String(), "error", err)
+			criticalErrors = append(criticalErrors, fmt.Sprintf("didit user lookup: %v", err))
+		} else if user != nil && user.KYCProviderRef != nil && *user.KYCProviderRef != "" {
+			if err := s.diditClient.DeleteSession(ctx, *user.KYCProviderRef); err != nil {
+				s.logger.Error("Failed to delete Didit session", "user_id", userID.String(), "session_id", *user.KYCProviderRef, "error", err)
+				criticalErrors = append(criticalErrors, fmt.Sprintf("didit session delete: %v", err))
+			} else {
+				s.logger.Info("Deleted Didit KYC session", "user_id", userID.String(), "session_id", *user.KYCProviderRef)
+			}
+		}
+	}
 
 	if len(criticalErrors) > 0 {
 		return fmt.Errorf("external provider cleanup failed: %v", criticalErrors)

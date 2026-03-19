@@ -74,6 +74,10 @@ func (m *mockCardRepository) UpdateStatus(ctx context.Context, id uuid.UUID, sta
 	return nil
 }
 
+func (m *mockCardRepository) UpdateDailyLimit(ctx context.Context, id uuid.UUID, limitCents *int) error {
+	return nil
+}
+
 func (m *mockCardRepository) CreateTransaction(ctx context.Context, tx *entities.BridgeCardTransaction) error {
 	tx.ID = uuid.New()
 	m.transactions[tx.BridgeTransID] = tx
@@ -127,10 +131,10 @@ func (m *mockCardRepository) CountByUserID(ctx context.Context, userID uuid.UUID
 
 // mockCardBalanceProvider implements card.BalanceProvider for testing
 type mockCardBalanceProvider struct {
-	balance       decimal.Decimal
-	deductCalled  bool
-	deductAmount  decimal.Decimal
-	deductRef     string
+	balance      decimal.Decimal
+	deductCalled bool
+	deductAmount decimal.Decimal
+	deductRef    string
 }
 
 func (m *mockCardBalanceProvider) GetSpendBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
@@ -205,7 +209,7 @@ func TestCardService_ProcessCardAuthorization_InsufficientFunds(t *testing.T) {
 		"retail",
 	)
 
-	require.Error(t, err)
+	require.NoError(t, err)
 	assert.False(t, approved, "Authorization should be declined")
 	assert.Equal(t, "insufficient_funds", reason)
 }
@@ -237,7 +241,7 @@ func TestCardService_ProcessCardAuthorization_CardFrozen(t *testing.T) {
 		"retail",
 	)
 
-	require.Error(t, err)
+	require.NoError(t, err)
 	assert.False(t, approved, "Authorization should be declined")
 	assert.Equal(t, "card_frozen", reason)
 }

@@ -10,12 +10,25 @@ import (
 	"go.uber.org/zap"
 )
 
+// BridgeWalletLister fetches wallets from Bridge for a given customer.
+type BridgeWalletLister interface {
+	CreateWalletForCustomer(ctx context.Context, customerID string, chain string) (*entities.ManagedWallet, error)
+	ListWallets(ctx context.Context, customerID string) ([]*entities.ManagedWallet, error)
+}
+
+// UserProfileProvider retrieves user profile data needed during provisioning.
+type UserProfileProvider interface {
+	GetBridgeCustomerID(ctx context.Context, userID uuid.UUID) (string, error)
+}
+
 // Service handles wallet operations
 type Service struct {
 	walletRepo          WalletRepository
 	provisioningJobRepo WalletProvisioningJobRepository
 	auditService        AuditService
 	onboardingService   OnboardingService
+	bridgeWallets       BridgeWalletLister
+	userProfiles        UserProfileProvider
 	logger              *zap.Logger
 	config              Config
 }
@@ -65,6 +78,8 @@ func NewService(
 	provisioningJobRepo WalletProvisioningJobRepository,
 	auditService AuditService,
 	onboardingService OnboardingService,
+	bridgeWallets BridgeWalletLister,
+	userProfiles UserProfileProvider,
 	logger *zap.Logger,
 	cfg Config,
 ) *Service {
@@ -77,6 +92,8 @@ func NewService(
 		provisioningJobRepo: provisioningJobRepo,
 		auditService:        auditService,
 		onboardingService:   onboardingService,
+		bridgeWallets:       bridgeWallets,
+		userProfiles:        userProfiles,
 		logger:              logger,
 		config:              cfg,
 	}
@@ -184,16 +201,68 @@ func (s *Service) processWalletProvisioningAsync(jobID, userID uuid.UUID) {
 	}
 }
 
-// ProcessWalletProvisioningJob is a no-op — wallets are created by Bridge during onboarding.
+// ProcessWalletProvisioningJob creates wallets on Bridge and saves them locally.
 func (s *Service) ProcessWalletProvisioningJob(ctx context.Context, jobID uuid.UUID) error {
-	s.logger.Info("Wallet provisioning job skipped (Bridge handles wallet creation)", zap.String("jobID", jobID.String()))
-
 	job, err := s.provisioningJobRepo.GetByID(ctx, jobID)
 	if err != nil {
 		return fmt.Errorf("failed to get provisioning job: %w", err)
 	}
+
+	job.MarkStarted()
+	_ = s.provisioningJobRepo.Update(ctx, job)
+
+	customerID, err := s.userProfiles.GetBridgeCustomerID(ctx, job.UserID)
+	if err != nil || customerID == "" {
+		msg := "bridge customer ID not found"
+		job.MarkFailed(msg, 30*time.Second)
+		_ = s.provisioningJobRepo.Update(ctx, job)
+		return fmt.Errorf("%s for user %s", msg, job.UserID)
+	}
+
+	saved := 0
+	for _, chain := range job.Chains {
+		existing, _ := s.walletRepo.GetByUserAndChain(ctx, job.UserID, entities.WalletChain(chain))
+		if existing != nil {
+			saved++
+			continue
+		}
+
+		mw, err := s.bridgeWallets.CreateWalletForCustomer(ctx, customerID, chain)
+		if err != nil {
+			s.logger.Error("Failed to create wallet on Bridge",
+				zap.Error(err), zap.String("chain", chain), zap.String("customerID", customerID))
+			continue
+		}
+
+		mw.UserID = job.UserID
+		if err := s.walletRepo.Create(ctx, mw); err != nil {
+			s.logger.Error("Failed to save wallet", zap.Error(err), zap.String("chain", chain))
+			continue
+		}
+		saved++
+		s.logger.Info("Wallet created and saved",
+			zap.String("userID", job.UserID.String()),
+			zap.String("chain", chain),
+			zap.String("address", mw.Address),
+			zap.String("bridgeWalletID", mw.BridgeWalletID))
+	}
+
+	if saved == 0 {
+		msg := "failed to create any wallets"
+		job.MarkFailed(msg, 30*time.Second)
+		_ = s.provisioningJobRepo.Update(ctx, job)
+		return fmt.Errorf(msg)
+	}
+
 	job.MarkCompleted()
-	return s.provisioningJobRepo.Update(ctx, job)
+	_ = s.provisioningJobRepo.Update(ctx, job)
+
+	s.logger.Info("Wallet provisioning completed",
+		zap.String("userID", job.UserID.String()),
+		zap.Int("saved", saved),
+		zap.Int("total", len(job.Chains)))
+
+	return nil
 }
 
 // GetWalletAddresses returns wallet addresses for a user, optionally filtered by chain
@@ -426,6 +495,21 @@ func (s *Service) GetWalletByUserAndChain(ctx context.Context, userID uuid.UUID,
 		return nil, fmt.Errorf("failed to get wallet: %w", err)
 	}
 	return nil, fmt.Errorf("wallet not found for chain %s", chain)
+}
+
+// CreateWalletForCustomer delegates wallet creation to Bridge.
+func (s *Service) CreateWalletForCustomer(ctx context.Context, customerID string, chain string) (*entities.ManagedWallet, error) {
+	return s.bridgeWallets.CreateWalletForCustomer(ctx, customerID, chain)
+}
+
+// SaveWallet persists a managed wallet to the database.
+func (s *Service) SaveWallet(ctx context.Context, wallet *entities.ManagedWallet) error {
+	return s.walletRepo.Create(ctx, wallet)
+}
+
+// ListBridgeWallets fetches wallets from Bridge for a given customer.
+func (s *Service) ListBridgeWallets(ctx context.Context, customerID string) ([]*entities.ManagedWallet, error) {
+	return s.bridgeWallets.ListWallets(ctx, customerID)
 }
 
 // GetMetrics returns service metrics for monitoring

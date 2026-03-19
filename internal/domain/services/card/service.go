@@ -301,16 +301,19 @@ func (s *Service) ProcessCardAuthorization(ctx context.Context, bridgeCardID str
 
 	// Get card
 	card, err := s.repo.GetByBridgeCardID(ctx, bridgeCardID)
-	if err != nil || card == nil {
-		return false, "card_not_found", ErrCardNotFound
+	if err != nil {
+		return false, "card_lookup_failed", fmt.Errorf("lookup card: %w", err)
+	}
+	if card == nil {
+		return false, "card_not_found", nil
 	}
 
 	// Check card status
 	if card.Status == entities.CardStatusFrozen {
-		return false, "card_frozen", ErrCardFrozen
+		return false, "card_frozen", nil
 	}
 	if card.Status == entities.CardStatusCancelled {
-		return false, "card_cancelled", ErrCardCancelled
+		return false, "card_cancelled", nil
 	}
 
 	// Check spend balance
@@ -321,7 +324,7 @@ func (s *Service) ProcessCardAuthorization(ctx context.Context, bridgeCardID str
 	}
 
 	if balance.LessThan(amount) {
-		return false, "insufficient_funds", ErrInsufficientFunds
+		return false, "insufficient_funds", nil
 	}
 
 	s.logger.Info("Card authorization approved",

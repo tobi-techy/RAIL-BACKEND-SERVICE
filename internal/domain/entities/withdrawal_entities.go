@@ -272,6 +272,7 @@ type InitiateFiatWithdrawalRequest struct {
 	IBAN              string                  `json:"iban,omitempty"`           // EUR only
 	BIC               string                  `json:"bic,omitempty"`            // EUR optional
 	SourceAccount     WithdrawalSourceAccount `json:"source_account"`
+	BridgeWalletID    string                  `json:"bridge_wallet_id"`
 	Category          string                  `json:"category,omitempty"`
 	Narration         string                  `json:"narration,omitempty"`
 	IdempotencyKey    string                  // Optional client-provided idempotency key
@@ -325,6 +326,9 @@ func (r *InitiateFiatWithdrawalRequest) Validate() error {
 	}
 	if !ValidWithdrawalSourceAccounts[r.SourceAccount] {
 		return fmt.Errorf("invalid source account: %s", r.SourceAccount)
+	}
+	if strings.TrimSpace(r.BridgeWalletID) == "" {
+		return fmt.Errorf("bridge wallet ID is required")
 	}
 	return nil
 }

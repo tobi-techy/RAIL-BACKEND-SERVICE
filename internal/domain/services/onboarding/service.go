@@ -687,6 +687,17 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 
 	hasSubmitted := user.KYCSubmittedAt != nil
 	status := strings.ToLower(strings.TrimSpace(user.KYCStatus))
+
+	// Heal users stuck in "processing" whose Sumsub submission was actually approved.
+	if status == string(entities.KYCStatusProcessing) {
+		if latest, latestErr := s.kycSubmissionRepo.GetLatestByUserID(ctx, userID); latestErr == nil &&
+			latest != nil && latest.Status == entities.KYCStatusApproved {
+			now := time.Now()
+			_ = s.userRepo.UpdateKYCStatus(ctx, userID, string(entities.KYCStatusApproved), &now, nil)
+			status = string(entities.KYCStatusApproved)
+		}
+	}
+
 	if hasSubmitted && (status == string(entities.KYCStatusPending) || status == string(entities.KYCStatusProcessing)) {
 		if latest, latestErr := s.kycSubmissionRepo.GetLatestByUserID(ctx, userID); latestErr == nil &&
 			!hasRealVerificationResult(latest) {

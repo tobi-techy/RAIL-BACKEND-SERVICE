@@ -50,6 +50,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
@@ -66,6 +67,52 @@ import (
 // BridgeWalletBalanceAdapter adapts bridge.Adapter to services that need (customerID, walletID) -> string balance
 type BridgeWalletBalanceAdapter struct {
 	adapter *bridge.Adapter
+}
+
+// BridgeWalletProvisioningAdapter adapts bridge.Client to wallet.BridgeWalletLister
+type BridgeWalletProvisioningAdapter struct {
+	client *bridge.Client
+}
+
+func (a *BridgeWalletProvisioningAdapter) CreateWalletForCustomer(ctx context.Context, customerID string, chain string) (*entities.ManagedWallet, error) {
+	w, err := a.client.CreateWallet(ctx, customerID, &bridge.CreateWalletRequest{
+		Chain:    bridge.PaymentRail(entities.WalletChain(chain).ToBridgePaymentRail()),
+		Currency: bridge.CurrencyUSDC,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return w.ToDomainManagedWallet(uuid.New(), uuid.Nil), nil
+}
+
+func (a *BridgeWalletProvisioningAdapter) ListWallets(ctx context.Context, customerID string) ([]*entities.ManagedWallet, error) {
+	resp, err := a.client.ListWallets(ctx, customerID)
+	if err != nil {
+		return nil, err
+	}
+	wallets := make([]*entities.ManagedWallet, 0, len(resp.Data))
+	for _, w := range resp.Data {
+		wallets = append(wallets, w.ToDomainManagedWallet(uuid.New(), uuid.Nil))
+	}
+	return wallets, nil
+}
+
+// UserProfileProviderAdapter adapts the user repository to wallet.UserProfileProvider
+type UserProfileProviderAdapter struct {
+	repo interface {
+		GetByID(ctx context.Context, id uuid.UUID) (*entities.UserProfile, error)
+	}
+}
+
+func (a *UserProfileProviderAdapter) GetBridgeCustomerID(ctx context.Context, userID uuid.UUID) (string, error) {
+	profile, err := a.repo.GetByID(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	if profile.BridgeCustomerID == nil || *profile.BridgeCustomerID == "" {
+		return "", fmt.Errorf("no bridge customer ID for user %s", userID)
+	}
+	return *profile.BridgeCustomerID, nil
 }
 
 func (a *BridgeWalletBalanceAdapter) GetWalletBalance(ctx context.Context, customerID, walletID string) (string, error) {
@@ -249,6 +296,13 @@ type BridgeCardWebhookAdapter struct {
 	service *card.Service
 }
 
+func (a *BridgeCardWebhookAdapter) Authorize(ctx *gin.Context, cardID string, amount decimal.Decimal, merchantName, merchantCategory string) (bool, string, error) {
+	if a == nil || a.service == nil {
+		return false, "service_unavailable", fmt.Errorf("card service not configured")
+	}
+	return a.service.ProcessCardAuthorization(ctx.Request.Context(), cardID, amount, merchantName, merchantCategory)
+}
+
 func (a *BridgeCardWebhookAdapter) ProcessAuthorization(ctx *gin.Context, cardID string, amount decimal.Decimal, merchantName, merchantCategory string) error {
 	if a == nil || a.service == nil {
 		return fmt.Errorf("card service not configured")
@@ -359,6 +413,15 @@ func (a *WithdrawalLedgerAdapter) ReverseTransaction(ctx context.Context, userID
 
 	desc := "Withdrawal reversal"
 	revIdempotencyKey := fmt.Sprintf("withdrawal-reversal-%s-%d", originalTxID, time.Now().UnixNano())
+	if metadata != nil {
+		if withdrawalID, ok := metadata["withdrawal_id"].(string); ok && strings.TrimSpace(withdrawalID) != "" {
+			revIdempotencyKey = "withdrawal-reversal-" + withdrawalID
+		} else if strings.TrimSpace(originalTxID) != "" {
+			revIdempotencyKey = "withdrawal-reversal-" + strings.TrimSpace(originalTxID)
+		}
+	} else if strings.TrimSpace(originalTxID) != "" {
+		revIdempotencyKey = "withdrawal-reversal-" + strings.TrimSpace(originalTxID)
+	}
 
 	revMetadata := map[string]interface{}{
 		"reversal_of_tx": originalTxID,
@@ -402,27 +465,72 @@ type WithdrawalBridgeAdapter struct {
 }
 
 func (a *WithdrawalBridgeAdapter) CreateRecipient(ctx context.Context, req map[string]interface{}) (string, error) {
-	// Create Bridge recipient for fiat withdrawal
-	// This would call the Bridge API to create a recipient
-	return "", fmt.Errorf("not implemented - use Bridge API directly")
+	customerID, _ := req["customer_id"].(string)
+	accountHolderName, _ := req["account_holder_name"].(string)
+	currency := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", req["currency"])))
+
+	if strings.TrimSpace(customerID) == "" {
+		return "", fmt.Errorf("customer_id is required")
+	}
+
+	switch currency {
+	case "USD":
+		routingNumber, _ := req["routing_number"].(string)
+		accountNumber, _ := req["account_number"].(string)
+		extAcct, err := a.adapter.Client().CreateExternalAccount(ctx, customerID, &bridge.CreateExternalAccountRequest{
+			Currency: bridge.CurrencyUSD,
+			BankDetails: bridge.ExternalAccountBankDetails{
+				AccountOwnerName: strings.TrimSpace(accountHolderName),
+				AccountType:      bridge.ExternalAccountChecking,
+				RoutingNumber:    strings.TrimSpace(routingNumber),
+				AccountNumber:    strings.TrimSpace(accountNumber),
+			},
+		})
+		if err != nil {
+			return "", fmt.Errorf("bridge create external account: %w", err)
+		}
+		return customerID + ":" + extAcct.ID, nil
+	case "EUR":
+		return "", fmt.Errorf("EUR bank recipients are not yet supported by the Bridge adapter")
+	default:
+		return "", fmt.Errorf("unsupported fiat currency: %s", currency)
+	}
 }
 
 func (a *WithdrawalBridgeAdapter) InitiateTransfer(ctx context.Context, req map[string]interface{}) (map[string]interface{}, error) {
-	// Initiate Bridge transfer for fiat withdrawal
 	amount, _ := req["amount"].(string)
 	currency, _ := req["currency"].(string)
 	recipientID, _ := req["recipient_id"].(string)
+	sourceWalletID, _ := req["source_wallet_id"].(string)
+	onBehalfOf, _ := req["on_behalf_of"].(string)
+
+	parts := strings.SplitN(recipientID, ":", 2)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid recipient_id format, expected <customerID>:<externalAccountID>")
+	}
+	externalAccountID := parts[1]
+
+	bridgeCurrency, err := mapFiatCurrencyToBridgeCurrency(currency)
+	if err != nil {
+		return nil, err
+	}
+	destinationRail, err := mapFiatCurrencyToPaymentRail(currency)
+	if err != nil {
+		return nil, err
+	}
 
 	transferReq := &bridge.CreateTransferRequest{
-		Amount: amount,
+		OnBehalfOf: onBehalfOf,
+		Amount:     amount,
 		Source: bridge.TransferSource{
-			PaymentRail: bridge.PaymentRailSolana,
-			Currency:    bridge.CurrencyUSDC,
+			PaymentRail:    bridge.PaymentRail("bridge_wallet"),
+			Currency:       bridge.CurrencyUSDC,
+			BridgeWalletID: sourceWalletID,
 		},
 		Destination: bridge.TransferDestination{
-			PaymentRail: mapCurrencyToPaymentRail(currency),
-			Currency:    bridge.Currency(currency),
-			ToAddress:   recipientID,
+			PaymentRail:       destinationRail,
+			Currency:          bridgeCurrency,
+			ExternalAccountID: externalAccountID,
 		},
 	}
 
@@ -461,10 +569,26 @@ func (a *WithdrawalBridgeAdapter) CancelTransfer(ctx context.Context, transferID
 	return fmt.Errorf("bridge transfer cancellation not supported by API; transfer %s must expire or fail naturally", transferID)
 }
 
-func mapCurrencyToPaymentRail(currency string) bridge.PaymentRail {
-	// For fiat withdrawals via Bridge, we use Solana as the source chain
-	// Bridge handles the conversion to fiat internally
-	return bridge.PaymentRailSolana
+func mapFiatCurrencyToPaymentRail(currency string) (bridge.PaymentRail, error) {
+	switch strings.ToUpper(strings.TrimSpace(currency)) {
+	case "USD":
+		return bridge.PaymentRail("us_ach"), nil
+	case "EUR":
+		return bridge.PaymentRail("sepa"), nil
+	default:
+		return "", fmt.Errorf("unsupported fiat payment rail for currency %s", currency)
+	}
+}
+
+func mapFiatCurrencyToBridgeCurrency(currency string) (bridge.Currency, error) {
+	switch strings.ToUpper(strings.TrimSpace(currency)) {
+	case "USD":
+		return bridge.CurrencyUSD, nil
+	case "EUR":
+		return bridge.CurrencyEUR, nil
+	default:
+		return "", fmt.Errorf("unsupported fiat currency %s", currency)
+	}
 }
 
 func mapChainToPaymentRail(chain string) bridge.PaymentRail {
@@ -734,6 +858,10 @@ type deletionBridgeAdapter struct {
 func (a *deletionBridgeAdapter) DeactivateVirtualAccount(ctx context.Context, customerID, virtualAccountID string) error {
 	_, err := a.client.DeactivateVirtualAccount(ctx, customerID, virtualAccountID)
 	return err
+}
+
+func (a *deletionBridgeAdapter) DeleteCustomer(ctx context.Context, customerID string) error {
+	return a.client.DeleteCustomer(ctx, customerID)
 }
 
 // Container holds all application dependencies
@@ -1102,6 +1230,8 @@ func (c *Container) initializeDomainServices() error {
 		c.WalletProvisioningJobRepo,
 		c.AuditService,
 		c.OnboardingService,
+		&BridgeWalletProvisioningAdapter{client: c.BridgeClient},
+		&UserProfileProviderAdapter{repo: c.UserRepo},
 		c.ZapLog,
 		walletServiceConfig,
 	)
@@ -1263,6 +1393,7 @@ func (c *Container) initializeDomainServices() error {
 			&BridgeVirtualAccountWebhookAdapter{service: c.BridgeVirtualAccountService},
 			customerStatusProcessor,
 			nil, // Card processor can be injected later.
+			nil, // Withdrawal processor can be injected later.
 			&bridgeWebhookNotifierAdapter{svc: c.NotificationService},
 			c.UserRepo,
 			c.ZapLog,
@@ -1495,6 +1626,23 @@ func (c *Container) initializeDomainServices() error {
 		c.Logger,
 	)
 
+	if c.BridgeWebhookHandler != nil && c.BridgeVirtualAccountService != nil {
+		var cardProcessor webhooks.BridgeCardProcessor
+		if c.CardService != nil {
+			cardProcessor = &BridgeCardWebhookAdapter{service: c.CardService}
+		}
+		bridgeWebhookService := webhooks.NewBridgeWebhookService(
+			&BridgeVirtualAccountWebhookAdapter{service: c.BridgeVirtualAccountService},
+			c.BridgeCustomerStatusProcessor,
+			cardProcessor,
+			c.WithdrawalService,
+			&bridgeWebhookNotifierAdapter{svc: c.NotificationService},
+			c.UserRepo,
+			c.ZapLog,
+		)
+		c.BridgeWebhookHandler.SetService(bridgeWebhookService)
+	}
+
 	// Initialize AI Financial Manager services
 	if err := c.initializeAIServices(sqlxDB, positionRepo, allocationRepo, basketRepo); err != nil {
 		c.ZapLog.Warn("AI services initialization failed, AI features disabled", zap.Error(err))
@@ -1573,6 +1721,17 @@ func (c *Container) initializeDomainServices() error {
 	}
 	if c.DeviceTokenRepo != nil {
 		c.AccountDeletionService.SetDeviceTokenRepo(c.DeviceTokenRepo)
+	}
+
+	// Wire Didit session deletion for account closure (GDPR)
+	if diditAPIKey := c.Config.KYC.DiditAPIKey; diditAPIKey != "" {
+		if c.UserRepo == nil {
+			return fmt.Errorf("UserRepo must be initialized before setting up Didit client")
+		}
+		diditClient := didit.NewClient(didit.Config{
+			APIKey: diditAPIKey,
+		}, c.ZapLog)
+		c.AccountDeletionService.SetDiditClient(diditClient, c.UserRepo)
 	}
 
 	// Initialize P2P transfer services
@@ -2396,6 +2555,7 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 			&BridgeVirtualAccountWebhookAdapter{service: c.BridgeVirtualAccountService},
 			c.BridgeCustomerStatusProcessor, // preserve KYC processor — do NOT pass nil
 			&BridgeCardWebhookAdapter{service: c.CardService},
+			c.WithdrawalService,
 			&bridgeWebhookNotifierAdapter{svc: c.NotificationService},
 			c.UserRepo,
 			c.ZapLog,

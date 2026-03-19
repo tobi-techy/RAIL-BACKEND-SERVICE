@@ -20,18 +20,27 @@ import (
 // mockLedgerService implements autoinvest.LedgerService for testing
 type mockLedgerService struct {
 	balance  decimal.Decimal
+	balances map[entities.AccountType]decimal.Decimal
 	accounts map[entities.AccountType]*entities.LedgerAccount
 }
 
 func newMockLedgerService(balance decimal.Decimal) *mockLedgerService {
 	return &mockLedgerService{
 		balance:  balance,
+		balances: make(map[entities.AccountType]decimal.Decimal),
 		accounts: make(map[entities.AccountType]*entities.LedgerAccount),
 	}
 }
 
 func (m *mockLedgerService) GetAccountBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (decimal.Decimal, error) {
+	if balance, ok := m.balances[accountType]; ok {
+		return balance, nil
+	}
 	return m.balance, nil
+}
+
+func (m *mockLedgerService) SetAccountBalance(accountType entities.AccountType, balance decimal.Decimal) {
+	m.balances[accountType] = balance
 }
 
 func (m *mockLedgerService) CreateTransaction(ctx context.Context, req *entities.CreateTransactionRequest) (*entities.LedgerTransaction, error) {
@@ -148,6 +157,7 @@ func TestAutoInvestService_SetOrderPlacer(t *testing.T) {
 func TestAutoInvestService_TriggerAutoInvestment_BelowThreshold(t *testing.T) {
 	log := testLogger()
 	ledger := newMockLedgerService(decimal.NewFromFloat(5)) // Below default threshold
+	ledger.SetAccountBalance(entities.AccountTypeFiatExposure, decimal.Zero)
 
 	orderPlacer := &mockOrderPlacer{}
 	config := autoinvest.Config{

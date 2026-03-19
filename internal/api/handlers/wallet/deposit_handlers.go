@@ -101,10 +101,25 @@ func (h *WalletFundingHandlers) CreateDeposit(c *gin.Context) {
 			})
 			return
 		}
+		if h.userProfileProvider == nil {
+			c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "CONFIG_ERROR", Message: "User profile service not configured"})
+			return
+		}
+		profile, err := h.userProfileProvider.GetByID(ctx, userUUID)
+		if err != nil || profile == nil {
+			h.logger.Error("Failed to get user profile", "error", err, "user_id", userUUID)
+			c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "PROFILE_ERROR", Message: "Failed to retrieve user profile"})
+			return
+		}
+		if profile.BridgeCustomerID == nil || strings.TrimSpace(*profile.BridgeCustomerID) == "" {
+			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "KYC_REQUIRED", Message: "Bridge KYC must be completed before creating a virtual account"})
+			return
+		}
 		// Create or retrieve virtual account for fiat deposits
 		resp, err := h.fundingService.CreateVirtualAccount(ctx, &entities.CreateVirtualAccountRequest{
-			UserID:          userUUID,
-			AlpacaAccountID: strings.TrimSpace(req.AlpacaAccountID),
+			UserID:           userUUID,
+			AlpacaAccountID:  strings.TrimSpace(req.AlpacaAccountID),
+			BridgeCustomerID: strings.TrimSpace(*profile.BridgeCustomerID),
 		})
 		if err != nil {
 			if strings.Contains(err.Error(), "does not belong to authenticated user") {

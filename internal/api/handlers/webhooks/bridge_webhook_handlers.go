@@ -29,9 +29,12 @@ import (
 // BridgeWebhookService defines operations for processing Bridge events
 type BridgeWebhookService interface {
 	ProcessFiatDeposit(ctx *gin.Context, event *BridgeDepositEvent) error
-	ProcessTransferCompleted(ctx *gin.Context, transferID string, customerID string, amount decimal.Decimal) error
+	ProcessCryptoDeposit(ctx *gin.Context, transferID string, customerID string, amount decimal.Decimal) error
+	ProcessTransferCompleted(ctx *gin.Context, transferID string) error
+	ProcessTransferFailed(ctx *gin.Context, transferID string, status string) error
 	ProcessCustomerStatusChanged(ctx *gin.Context, customerID string, status string) error
 	// Card transaction methods
+	AuthorizeCardAuthorization(ctx *gin.Context, cardID string, amount decimal.Decimal, merchantName, merchantCategory string) (bool, string, error)
 	ProcessCardAuthorization(ctx *gin.Context, cardID string, amount decimal.Decimal, merchantName, merchantCategory string) error
 	ProcessCardTransaction(ctx *gin.Context, cardID, transID string, amount decimal.Decimal, merchantName, merchantCategory, status string) error
 	ProcessCardTransactionDeclined(ctx *gin.Context, cardID, transID, declineReason string) error
@@ -157,15 +160,38 @@ func (h *BridgeWebhookHandler) HandleRealTimeAuth(c *gin.Context) {
 		zap.String("amount", req.Data.Amount),
 		zap.String("merchant", req.Data.Merchant.Description))
 
-	// Default: approve if balance check passes. Bridge also enforces its own balance controls.
-	// Decline if amount is missing or zero (malformed request).
-	amount, _ := decimal.NewFromString(req.Data.Amount)
-	if amount.IsZero() {
+	amount, err := decimal.NewFromString(req.Data.Amount)
+	if err != nil || !amount.GreaterThan(decimal.Zero) {
 		c.JSON(http.StatusOK, bridge.RealTimeAuthResponse{Approved: false, DecisionReason: "invalid_amount"})
 		return
 	}
 
-	c.JSON(http.StatusOK, bridge.RealTimeAuthResponse{Approved: true})
+	if h.service == nil {
+		h.logger.Error("Real-time auth requested while webhook service is not configured")
+		c.JSON(http.StatusOK, bridge.RealTimeAuthResponse{Approved: false, DecisionReason: "service_unavailable"})
+		return
+	}
+
+	approved, reason, err := h.service.AuthorizeCardAuthorization(
+		c,
+		req.Data.CardAccountID,
+		amount,
+		req.Data.Merchant.Description,
+		req.Data.Merchant.Category,
+	)
+	if err != nil {
+		h.logger.Error("Real-time auth decision failed",
+			zap.String("card_account_id", req.Data.CardAccountID),
+			zap.String("authorization_id", req.Data.AuthorizationID),
+			zap.Error(err))
+		if strings.TrimSpace(reason) == "" {
+			reason = "authorization_error"
+		}
+		c.JSON(http.StatusOK, bridge.RealTimeAuthResponse{Approved: false, DecisionReason: reason})
+		return
+	}
+
+	c.JSON(http.StatusOK, bridge.RealTimeAuthResponse{Approved: approved, DecisionReason: reason})
 }
 
 // HandleWebhook handles all Bridge webhook events
@@ -276,7 +302,7 @@ func (h *BridgeWebhookHandler) handleLiquidationAddressDrain(c *gin.Context, pay
 		amount, _ = decimal.NewFromString(amountStr)
 	}
 
-	if err := h.service.ProcessTransferCompleted(c, drainID, customerID, amount); err != nil {
+	if err := h.service.ProcessCryptoDeposit(c, drainID, customerID, amount); err != nil {
 		h.logger.Error("Failed to process liquidation address drain",
 			zap.String("drain_id", drainID),
 			zap.String("customer_id", customerID),
@@ -351,12 +377,7 @@ func (h *BridgeWebhookHandler) handleTransferEvent(c *gin.Context, payload Bridg
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service_unavailable"})
 			return
 		}
-		var amount decimal.Decimal
-		if amountStr := getStringField(payload.EventObject, "amount"); amountStr != "" {
-			amount, _ = decimal.NewFromString(amountStr)
-		}
-		customerID := getStringField(payload.EventObject, "customer_id")
-		if err := h.service.ProcessTransferCompleted(c, transferID, customerID, amount); err != nil {
+		if err := h.service.ProcessTransferCompleted(c, transferID); err != nil {
 			h.logger.Error("Failed to process transfer completed", zap.Error(err))
 		}
 	case "funds_received", "payment_submitted", "awaiting_funds", "in_review":
@@ -367,6 +388,11 @@ func (h *BridgeWebhookHandler) handleTransferEvent(c *gin.Context, payload Bridg
 		h.logger.Warn("Transfer terminal failure state",
 			zap.String("transfer_id", transferID),
 			zap.String("state", state))
+		if h.service != nil {
+			if err := h.service.ProcessTransferFailed(c, transferID, state); err != nil {
+				h.logger.Error("Failed to process transfer failure", zap.Error(err))
+			}
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
@@ -623,22 +649,7 @@ func (h *BridgeWebhookHandler) handleTransferCompleted(c *gin.Context, payload B
 
 	transferID := payload.EventObjectID
 
-	var amount decimal.Decimal
-	if amountStr, ok := payload.EventObject["amount"].(string); ok {
-		var err error
-		amount, err = decimal.NewFromString(amountStr)
-		if err != nil {
-			h.logger.Error("Failed to parse transfer amount",
-				zap.String("transfer_id", transferID),
-				zap.String("raw_amount", amountStr),
-				zap.Error(err))
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid amount format"})
-			return
-		}
-	}
-
-	customerID := getStringField(payload.EventObject, "customer_id")
-	if err := h.service.ProcessTransferCompleted(c, transferID, customerID, amount); err != nil {
+	if err := h.service.ProcessTransferCompleted(c, transferID); err != nil {
 		h.logger.Error("Failed to process transfer completed",
 			zap.String("transfer_id", transferID),
 			zap.Error(err))
@@ -652,7 +663,14 @@ func (h *BridgeWebhookHandler) handleTransferFailed(c *gin.Context, payload Brid
 		zap.String("transfer_id", payload.EventObjectID),
 		zap.String("status", payload.EventObjectStatus))
 
-	// Log for monitoring, but acknowledge receipt
+	if h.service != nil {
+		if err := h.service.ProcessTransferFailed(c, payload.EventObjectID, payload.EventObjectStatus); err != nil {
+			h.logger.Error("Failed to process transfer failure",
+				zap.String("transfer_id", payload.EventObjectID),
+				zap.Error(err))
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{"status": "acknowledged"})
 }
 
@@ -969,6 +987,7 @@ type BridgeWebhookServiceImpl struct {
 	virtualAccountService BridgeVirtualAccountProcessor
 	customerService       BridgeCustomerProcessor
 	cardService           BridgeCardProcessor
+	withdrawalService     BridgeWithdrawalProcessor
 	notifier              BridgeWebhookNotifier
 	userRepo              UserRepositoryForCustomer
 	logger                *zap.Logger
@@ -987,10 +1006,16 @@ type BridgeCustomerProcessor interface {
 
 // BridgeCardProcessor processes card events
 type BridgeCardProcessor interface {
+	Authorize(ctx *gin.Context, cardID string, amount decimal.Decimal, merchantName, merchantCategory string) (bool, string, error)
 	ProcessAuthorization(ctx *gin.Context, cardID string, amount decimal.Decimal, merchantName, merchantCategory string) error
 	RecordTransaction(ctx *gin.Context, cardID, transactionID string, amount decimal.Decimal, merchantName, merchantCategory, status string) error
 	RecordDeclinedTransaction(ctx *gin.Context, cardID, transactionID, declineReason string) error
 	SyncCardStatus(ctx *gin.Context, cardID, status string) error
+}
+
+type BridgeWithdrawalProcessor interface {
+	CompleteWithdrawalByTransferID(ctx context.Context, transferID string) error
+	FailWithdrawalByTransferID(ctx context.Context, transferID, reason string) error
 }
 
 // BridgeWebhookNotifier sends notifications for Bridge events
@@ -1004,6 +1029,7 @@ func NewBridgeWebhookService(
 	virtualAccountService BridgeVirtualAccountProcessor,
 	customerService BridgeCustomerProcessor,
 	cardService BridgeCardProcessor,
+	withdrawalService BridgeWithdrawalProcessor,
 	notifier BridgeWebhookNotifier,
 	userRepo UserRepositoryForCustomer,
 	logger *zap.Logger,
@@ -1012,6 +1038,7 @@ func NewBridgeWebhookService(
 		virtualAccountService: virtualAccountService,
 		customerService:       customerService,
 		cardService:           cardService,
+		withdrawalService:     withdrawalService,
 		notifier:              notifier,
 		userRepo:              userRepo,
 		logger:                logger,
@@ -1022,8 +1049,8 @@ func (s *BridgeWebhookServiceImpl) ProcessFiatDeposit(ctx *gin.Context, event *B
 	return s.virtualAccountService.ProcessFiatDeposit(ctx, event)
 }
 
-func (s *BridgeWebhookServiceImpl) ProcessTransferCompleted(ctx *gin.Context, transferID string, customerID string, amount decimal.Decimal) error {
-	s.logger.Info("Transfer completed", zap.String("transfer_id", transferID), zap.String("customer_id", customerID), zap.String("amount", amount.String()))
+func (s *BridgeWebhookServiceImpl) ProcessCryptoDeposit(ctx *gin.Context, transferID string, customerID string, amount decimal.Decimal) error {
+	s.logger.Info("Crypto deposit transfer completed", zap.String("transfer_id", transferID), zap.String("customer_id", customerID), zap.String("amount", amount.String()))
 	if s.virtualAccountService == nil {
 		s.logger.Warn("Virtual account service not configured, skipping crypto deposit", zap.String("transfer_id", transferID))
 		return nil
@@ -1048,6 +1075,26 @@ func (s *BridgeWebhookServiceImpl) ProcessTransferCompleted(ctx *gin.Context, tr
 	return s.virtualAccountService.ProcessCryptoDeposit(ctx, user.ID, transferID, amount)
 }
 
+func (s *BridgeWebhookServiceImpl) ProcessTransferCompleted(ctx *gin.Context, transferID string) error {
+	s.logger.Info("Provider transfer completed", zap.String("transfer_id", transferID))
+	if s.withdrawalService == nil {
+		s.logger.Warn("Withdrawal service not configured, skipping transfer settlement", zap.String("transfer_id", transferID))
+		return nil
+	}
+	return s.withdrawalService.CompleteWithdrawalByTransferID(ctx, transferID)
+}
+
+func (s *BridgeWebhookServiceImpl) ProcessTransferFailed(ctx *gin.Context, transferID string, status string) error {
+	s.logger.Warn("Provider transfer failed",
+		zap.String("transfer_id", transferID),
+		zap.String("status", status))
+	if s.withdrawalService == nil {
+		s.logger.Warn("Withdrawal service not configured, skipping transfer failure handling", zap.String("transfer_id", transferID))
+		return nil
+	}
+	return s.withdrawalService.FailWithdrawalByTransferID(ctx, transferID, "bridge transfer "+strings.ToLower(strings.TrimSpace(status)))
+}
+
 func (s *BridgeWebhookServiceImpl) ProcessCustomerStatusChanged(ctx *gin.Context, customerID string, status string) error {
 	if s.customerService != nil {
 		return s.customerService.UpdateCustomerStatus(ctx, customerID, status)
@@ -1056,6 +1103,15 @@ func (s *BridgeWebhookServiceImpl) ProcessCustomerStatusChanged(ctx *gin.Context
 }
 
 // Card processing methods - wired to CardService
+
+func (s *BridgeWebhookServiceImpl) AuthorizeCardAuthorization(ctx *gin.Context, cardID string, amount decimal.Decimal, merchantName, merchantCategory string) (bool, string, error) {
+	if s.cardService == nil {
+		s.logger.Warn("Card service not configured, declining authorization",
+			zap.String("card_id", cardID))
+		return false, "service_unavailable", nil
+	}
+	return s.cardService.Authorize(ctx, cardID, amount, merchantName, merchantCategory)
+}
 
 func (s *BridgeWebhookServiceImpl) ProcessCardAuthorization(ctx *gin.Context, cardID string, amount decimal.Decimal, merchantName, merchantCategory string) error {
 	if s.cardService == nil {
