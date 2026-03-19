@@ -275,3 +275,29 @@ func sortedJSON(v interface{}) string {
 		return string(data)
 	}
 }
+
+// DeleteSession permanently deletes a verification session and all associated data (GDPR).
+func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
+	url := fmt.Sprintf("%s/v3/session/%s/delete/", baseURL, sessionID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("x-api-key", c.config.APIKey)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("delete session request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		c.logger.Warn("Didit session not found for deletion", zap.String("session_id", sessionID))
+		return nil // Already gone
+	}
+	body, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("delete session failed (%d): %s", resp.StatusCode, string(body))
+}

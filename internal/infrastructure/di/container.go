@@ -50,6 +50,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
@@ -1720,6 +1721,14 @@ func (c *Container) initializeDomainServices() error {
 	}
 	if c.DeviceTokenRepo != nil {
 		c.AccountDeletionService.SetDeviceTokenRepo(c.DeviceTokenRepo)
+	}
+
+	// Wire Didit session deletion for account closure (GDPR)
+	if diditAPIKey := c.Config.KYC.DiditAPIKey; diditAPIKey != "" {
+		diditClient := didit.NewClient(didit.Config{
+			APIKey: diditAPIKey,
+		}, c.ZapLog)
+		c.AccountDeletionService.SetDiditClient(diditClient, c.UserRepo)
 	}
 
 	// Initialize P2P transfer services

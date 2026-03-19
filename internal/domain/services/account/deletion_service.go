@@ -75,6 +75,16 @@ type DeviceTokenRepository interface {
 	DeactivateAllUserTokens(ctx context.Context, userID uuid.UUID) error
 }
 
+// DiditSessionDeleter interface for deleting Didit KYC sessions (GDPR)
+type DiditSessionDeleter interface {
+	DeleteSession(ctx context.Context, sessionID string) error
+}
+
+// KYCUserLookup interface for looking up user KYC provider ref before deletion
+type KYCUserLookup interface {
+	GetUserEntityByID(ctx context.Context, id uuid.UUID) (*entities.User, error)
+}
+
 // DeletionService handles complete account deletion with fund sweep
 type DeletionService struct {
 	ledgerService         LedgerService
@@ -84,6 +94,8 @@ type DeletionService struct {
 	auditService          AuditService
 	sessionService        SessionService
 	deviceTokenRepo       DeviceTokenRepository
+	diditClient           DiditSessionDeleter
+	kycUserLookup         KYCUserLookup
 	alpacaAccountRepo     AlpacaAccountRepository
 	alpacaClient          AlpacaClient
 	virtualAccountRepo    VirtualAccountRepository
@@ -133,6 +145,12 @@ func (s *DeletionService) SetSessionService(sessionService SessionService) {
 // SetDeviceTokenRepo sets the device token repository for push notification cleanup
 func (s *DeletionService) SetDeviceTokenRepo(repo DeviceTokenRepository) {
 	s.deviceTokenRepo = repo
+}
+
+// SetDiditClient sets the Didit client for KYC session deletion on account closure
+func (s *DeletionService) SetDiditClient(client DiditSessionDeleter, userLookup KYCUserLookup) {
+	s.diditClient = client
+	s.kycUserLookup = userLookup
 }
 
 // DeleteAccountRequest represents a request to delete an account
@@ -307,6 +325,17 @@ func (s *DeletionService) cleanupExternalProviders(ctx context.Context, userID u
 
 	// Note: Bridge custody wallets cannot be deleted (blockchain addresses are permanent)
 	// Funds have already been swept to treasury
+
+	// Delete Didit KYC session data (GDPR compliance)
+	if s.diditClient != nil && s.kycUserLookup != nil {
+		if user, err := s.kycUserLookup.GetUserEntityByID(ctx, userID); err == nil && user != nil && user.KYCProviderRef != nil && *user.KYCProviderRef != "" {
+			if err := s.diditClient.DeleteSession(ctx, *user.KYCProviderRef); err != nil {
+				s.logger.Warn("Failed to delete Didit session", "user_id", userID.String(), "session_id", *user.KYCProviderRef, "error", err)
+			} else {
+				s.logger.Info("Deleted Didit KYC session", "user_id", userID.String(), "session_id", *user.KYCProviderRef)
+			}
+		}
+	}
 
 	if len(criticalErrors) > 0 {
 		return fmt.Errorf("external provider cleanup failed: %v", criticalErrors)
