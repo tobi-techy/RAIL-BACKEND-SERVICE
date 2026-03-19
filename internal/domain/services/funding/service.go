@@ -136,8 +136,9 @@ type BridgeDepositClient interface {
 
 // BridgeWalletInfo is a minimal wallet summary from Bridge
 type BridgeWalletInfo struct {
-	ID    string
-	Chain string
+	ID      string
+	Chain   string
+	Address string
 }
 
 // BridgeLiquidationAddr is a minimal liquidation address summary from Bridge
@@ -348,15 +349,20 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 		for _, w := range wallets {
 			if w.Chain == custodyChain {
 				bridgeWalletID = w.ID
+				destinationAddress = w.Address
 				break
 			}
 		}
+		if destinationAddress == "" && bridgeWalletID != "" {
+			return nil, fmt.Errorf("missing destination address for bridge wallet %s", bridgeWalletID)
+		}
 		if bridgeWalletID == "" {
-			id, _, err := s.bridgeWallets.CreateWallet(ctx, customerID, custodyChain)
+			id, addr, err := s.bridgeWallets.CreateWallet(ctx, customerID, custodyChain)
 			if err != nil {
 				return nil, fmt.Errorf("failed to create Bridge custody wallet: %w", err)
 			}
 			bridgeWalletID = id
+			destinationAddress = addr
 		}
 	}
 

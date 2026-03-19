@@ -107,7 +107,7 @@ func (s *Service) SetOnboardingService(onboardingService OnboardingService) {
 func normalizeSupportedChains(chains []entities.WalletChain, logger *zap.Logger) []entities.WalletChain {
 	if len(chains) == 0 {
 		return []entities.WalletChain{
-			entities.WalletChainSOLDevnet,
+			entities.WalletChainSolana,
 		}
 	}
 
@@ -128,7 +128,7 @@ func normalizeSupportedChains(chains []entities.WalletChain, logger *zap.Logger)
 
 	if len(normalized) == 0 {
 		return []entities.WalletChain{
-			entities.WalletChainSOLDevnet,
+			entities.WalletChainSolana,
 		}
 	}
 

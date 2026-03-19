@@ -30,11 +30,25 @@ const (
 	USDCTokenAddressSOLDevnet  = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
 	USDCTokenAddressAVAXFuji   = "0x5425890298aed601595a70AB815c96711a31Bc65"
 	USDCTokenAddressMATICAmoy  = "0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582"
+
+	// Mainnet USDC Token Addresses
+	USDCTokenAddressSOL  = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+	USDCTokenAddressMATIC = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+	USDCTokenAddressAVAX  = "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E"
+	USDCTokenAddressBASE  = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 )
 
 // GetUSDCTokenAddress returns the USDC token address for the chain
 func (c WalletChain) GetUSDCTokenAddress() string {
 	switch c {
+	case WalletChainSolana:
+		return USDCTokenAddressSOL
+	case WalletChainPolygon:
+		return USDCTokenAddressMATIC
+	case WalletChainAvalanche:
+		return USDCTokenAddressAVAX
+	case WalletChainBase:
+		return USDCTokenAddressBASE
 	case WalletChainSOLDevnet:
 		return USDCTokenAddressSOLDevnet
 	case WalletChainAVAXFuji:
@@ -382,7 +396,7 @@ type WalletProvisioningJobResponse struct {
 
 // WalletInitiationRequest represents request to initiate wallet creation after passcode verification
 type WalletInitiationRequest struct {
-	Chains []string `json:"chains,omitempty" validate:"omitempty,dive,oneof=SOL-DEVNET MATIC-AMOY AVAX-FUJI"`
+	Chains []string `json:"chains,omitempty" validate:"omitempty,dive,oneof=SOL SOL-DEVNET MATIC MATIC-AMOY AVAX AVAX-FUJI BASE BASE-SEPOLIA"`
 }
 
 // WalletInitiationResponse represents response for wallet initiation
