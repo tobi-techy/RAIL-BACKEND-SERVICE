@@ -19,6 +19,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
+	"github.com/rail-service/rail_service/pkg/crypto"
 )
 
 var (
@@ -90,6 +91,7 @@ type Service struct {
 	sumsubWebhookEventRepo SumsubWebhookEventRepository
 	kycSyncJobRepo         KYCSyncJobRepository
 	sumsubLevelName        string
+	encryptionKey          string
 	notifier               KYCNotifier
 	logger                 *zap.Logger
 	resyncMu               sync.Mutex
@@ -147,6 +149,7 @@ func NewService(
 	sumsubWebhookEventRepo SumsubWebhookEventRepository,
 	kycSyncJobRepo KYCSyncJobRepository,
 	sumsubLevelName string,
+	encryptionKey string,
 	logger *zap.Logger,
 	diditAdapter ...DiditAdapter,
 ) *Service {
@@ -163,6 +166,7 @@ func NewService(
 		sumsubWebhookEventRepo: sumsubWebhookEventRepo,
 		kycSyncJobRepo:         kycSyncJobRepo,
 		sumsubLevelName:        strings.TrimSpace(sumsubLevelName),
+		encryptionKey:          encryptionKey,
 		logger:                 logger,
 		resyncInFlight:         make(map[string]bool),
 	}
@@ -1905,6 +1909,13 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 			"immediate_family_exposed":        req.Disclosures.ImmediateFamilyExposed,
 		},
 	}
+	if s.encryptionKey != "" && req.TaxID != "" {
+		if enc, encErr := crypto.Encrypt(req.TaxID, s.encryptionKey); encErr == nil {
+			verificationData["tax_id_enc"] = enc
+		} else {
+			s.logger.Warn("Failed to encrypt tax_id for storage", zap.Error(encErr))
+		}
+	}
 
 	existingSubmission, existingErr := s.kycSubmissionRepo.GetByProviderRef(ctx, sess.SessionID)
 	if existingErr != nil && !isSubmissionNotFoundErr(existingErr) {
@@ -2291,6 +2302,15 @@ func (s *Service) submitToBridgeFromDidit(ctx context.Context, bridgeCustomerID 
 	taxIDType, _ := data["tax_id_type"].(string)
 	country, _ := data["issuing_country"].(string)
 
+	// Prefer encrypted tax ID; fall back to plaintext for backward compat.
+	if encTaxID, ok := data["tax_id_enc"].(string); ok && encTaxID != "" && s.encryptionKey != "" {
+		if dec, err := crypto.Decrypt(encTaxID, s.encryptionKey); err == nil {
+			taxID = dec
+		} else {
+			s.logger.Warn("Failed to decrypt tax_id_enc", zap.Error(err))
+		}
+	}
+
 	if taxID == "" {
 		return entities.KYCProviderResult{Success: false, Status: "failed", Error: "missing tax_id"}
 	}
@@ -2335,8 +2355,9 @@ func (s *Service) submitToBridgeFromDidit(ctx context.Context, bridgeCustomerID 
 			zap.Error(err), zap.String("bridge_customer_id", bridgeCustomerID))
 		return entities.KYCProviderResult{Success: false, Status: "failed", Error: err.Error()}
 	}
-	// Clear full document number after successful sync — keep only the tail for audit.
+	// Clear sensitive fields after successful sync.
 	delete(submission.VerificationData, "didit_doc_number")
+	delete(submission.VerificationData, "tax_id_enc")
 	return entities.KYCProviderResult{Success: true, Status: string(customer.Status)}
 }
 
