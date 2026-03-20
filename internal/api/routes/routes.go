@@ -269,6 +269,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.SumsubWebhookEventRepo,
 		container.KYCSyncJobRepo,
 		container.Config.KYC.LevelName,
+		container.Config.Security.EncryptionKey,
 		container.ZapLog,
 		diditClient,
 	)

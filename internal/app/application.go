@@ -263,6 +263,7 @@ func (app *Application) initializeKYCSyncWorker() error {
 		app.container.SumsubWebhookEventRepo,
 		app.container.KYCSyncJobRepo,
 		app.cfg.KYC.LevelName,
+		app.cfg.Security.EncryptionKey,
 		app.log.Zap(),
 		diditClient,
 	)
