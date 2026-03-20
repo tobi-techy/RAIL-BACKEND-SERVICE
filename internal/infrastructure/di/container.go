@@ -1456,9 +1456,6 @@ func (c *Container) initializeDomainServices() error {
 	c.AutoInvestService.SetUserRepository(c.UserRepo)
 	c.AutoInvestService.SetAutoInvestRepository(autoInvestRepo)
 
-	// Wire auto-invest service to allocation service for automatic triggering
-	c.AllocationService.SetAutoInvestService(c.AutoInvestService)
-
 	// Wire yield snapshotter so stash balance changes are recorded for TWB calculation
 	c.AllocationService.SetYieldSnapshotter(c.YieldService)
 
