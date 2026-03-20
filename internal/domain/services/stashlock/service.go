@@ -176,6 +176,7 @@ func (s *Service) NotifyWindowsOpened(ctx context.Context) (int, error) {
 		// Mark as notified so this cycle is excluded from future runs.
 		if err := s.repo.UpdateStatus(ctx, c.ID, entities.StashCycleStatusWindowNotified); err != nil {
 			s.logger.Warn("Failed to mark cycle window_notified", zap.String("cycle_id", c.ID.String()), zap.Error(err))
+			continue
 		}
 		count++
 	}
