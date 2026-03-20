@@ -253,6 +253,8 @@ func shortenFloats(v interface{}) interface{} {
 }
 
 // sortedJSON produces compact JSON with sorted keys (no unicode escaping).
+// sortedJSON produces compact JSON with sorted keys and unescaped Unicode.
+// Didit X-Signature-V2 signs JSON with ensure_ascii=False (unicode preserved).
 func sortedJSON(v interface{}) string {
 	switch val := v.(type) {
 	case map[string]interface{}:
@@ -267,6 +269,7 @@ func sortedJSON(v interface{}) string {
 			if i > 0 {
 				b.WriteByte(',')
 			}
+			// Keys are always ASCII in practice; use Marshal for safety.
 			kb, _ := json.Marshal(k)
 			b.Write(kb)
 			b.WriteByte(':')
@@ -284,6 +287,32 @@ func sortedJSON(v interface{}) string {
 			b.WriteString(sortedJSON(item))
 		}
 		b.WriteByte(']')
+		return b.String()
+	case string:
+		// Use unescaped unicode — equivalent to Python's ensure_ascii=False.
+		var b strings.Builder
+		b.WriteByte('"')
+		for _, r := range val {
+			switch r {
+			case '"':
+				b.WriteString(`\"`)
+			case '\\':
+				b.WriteString(`\\`)
+			case '\n':
+				b.WriteString(`\n`)
+			case '\r':
+				b.WriteString(`\r`)
+			case '\t':
+				b.WriteString(`\t`)
+			default:
+				if r < 0x20 {
+					fmt.Fprintf(&b, `\u%04x`, r)
+				} else {
+					b.WriteRune(r) // preserve unicode as-is
+				}
+			}
+		}
+		b.WriteByte('"')
 		return b.String()
 	default:
 		data, _ := json.Marshal(val)
