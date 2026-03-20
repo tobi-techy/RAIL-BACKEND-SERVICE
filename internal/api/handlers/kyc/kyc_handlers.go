@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
@@ -342,4 +343,30 @@ func (h *Handler) HandleDiditWebhook(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusAccepted, gin.H{"status": "accepted"})
+}
+
+// ResyncBridge re-triggers Bridge KYC sync for a user with missing tax ID.
+// POST /admin/kyc/resync-bridge  {"user_id":"...","tax_id":"...","tax_id_type":"...","issuing_country":"..."}
+func (h *Handler) ResyncBridge(c *gin.Context) {
+	var req struct {
+		UserID         string `json:"user_id" binding:"required"`
+		TaxID          string `json:"tax_id" binding:"required"`
+		TaxIDType      string `json:"tax_id_type" binding:"required"`
+		IssuingCountry string `json:"issuing_country" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	userID, err := uuid.Parse(req.UserID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user_id"})
+		return
+	}
+	if err := h.kycService.ResyncBridge(c.Request.Context(), userID, req.TaxID, req.TaxIDType, req.IssuingCountry); err != nil {
+		h.logger.Error("ResyncBridge failed", "user_id", req.UserID, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
