@@ -2228,7 +2228,8 @@ func (s *Service) hydrateSubmissionFromDidit(ctx context.Context, submission *en
 		// Use as fallback tax_id if not already set from session creation.
 		if v.PersonalNumber != "" {
 			submission.VerificationData["didit_personal_number"] = v.PersonalNumber
-			if submission.VerificationData["tax_id"] == "" {
+			existing, ok := submission.VerificationData["tax_id"].(string)
+			if !ok || existing == "" {
 				submission.VerificationData["tax_id"] = v.PersonalNumber
 			}
 		}
@@ -2297,6 +2298,8 @@ func (s *Service) submitToBridgeFromDidit(ctx context.Context, bridgeCustomerID 
 			zap.Error(err), zap.String("bridge_customer_id", bridgeCustomerID))
 		return entities.KYCProviderResult{Success: false, Status: "failed", Error: err.Error()}
 	}
+	// Clear full document number after successful sync — keep only the tail for audit.
+	delete(submission.VerificationData, "didit_doc_number")
 	return entities.KYCProviderResult{Success: true, Status: string(customer.Status)}
 }
 
