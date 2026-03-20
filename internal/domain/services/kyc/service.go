@@ -1200,6 +1200,22 @@ func mapTaxIDTypeToBridge(taxIDType string) string {
 	}
 }
 
+// mapDocTypeToBridge maps a Didit document_type string to a Bridge identifying_info type.
+func mapDocTypeToBridge(docType string) string {
+	switch strings.ToLower(strings.TrimSpace(docType)) {
+	case "passport":
+		return "passport"
+	case "driver license", "driver's license", "driving license":
+		return "drivers_license"
+	case "identity card", "national id", "id card":
+		return "national_id"
+	case "residence permit":
+		return "residence_permit"
+	default:
+		return "government_id"
+	}
+}
+
 // MapTaxIDTypeToAlpaca converts a Rail tax ID type to Alpaca's format.
 func MapTaxIDTypeToAlpaca(taxIDType string) string {
 	switch strings.ToLower(strings.TrimSpace(taxIDType)) {
@@ -2195,8 +2211,29 @@ func (s *Service) hydrateSubmissionFromDidit(ctx context.Context, submission *en
 		submission.VerificationData["didit_dob"] = v.DateOfBirth
 		submission.VerificationData["didit_doc_type"] = v.DocumentType
 		submission.VerificationData["didit_issuing_state"] = v.IssuingState
+		submission.VerificationData["didit_nationality"] = v.Nationality
+		submission.VerificationData["didit_gender"] = v.Gender
+		submission.VerificationData["didit_expiration_date"] = v.ExpirationDate
+		submission.VerificationData["didit_front_image"] = v.FrontImage
+		submission.VerificationData["didit_back_image"] = v.BackImage
 		if v.DocumentNumber != "" {
 			submission.VerificationData["didit_doc_number_tail"] = tail(v.DocumentNumber, 4)
+			submission.VerificationData["didit_doc_number"] = v.DocumentNumber
+		}
+		// personal_number is the national ID / tax number printed on the document.
+		// Use as fallback tax_id if not already set from session creation.
+		if v.PersonalNumber != "" {
+			submission.VerificationData["didit_personal_number"] = v.PersonalNumber
+			if submission.VerificationData["tax_id"] == "" {
+				submission.VerificationData["tax_id"] = v.PersonalNumber
+			}
+		}
+		if v.ParsedAddress != nil {
+			submission.VerificationData["didit_address_street"] = v.ParsedAddress.Street1
+			submission.VerificationData["didit_address_city"] = v.ParsedAddress.City
+			submission.VerificationData["didit_address_region"] = v.ParsedAddress.Region
+			submission.VerificationData["didit_address_country"] = v.ParsedAddress.Country
+			submission.VerificationData["didit_address_postal_code"] = v.ParsedAddress.PostalCode
 		}
 	}
 }
@@ -2216,14 +2253,38 @@ func (s *Service) submitToBridgeFromDidit(ctx context.Context, bridgeCustomerID 
 		return entities.KYCProviderResult{Success: false, Status: "failed", Error: "missing tax_id"}
 	}
 
-	req := &bridge.UpdateCustomerRequest{
-		IdentifyingInformation: []bridge.IdentifyingInfo{
-			{
-				Type:           mapTaxIDTypeToBridge(taxIDType),
-				IssuingCountry: strings.ToLower(country),
-				Number:         taxID,
-			},
+	issuingCountry := strings.ToLower(country)
+
+	// Primary: tax ID (SSN, NIN, etc.)
+	identifyingInfo := []bridge.IdentifyingInfo{
+		{
+			Type:           mapTaxIDTypeToBridge(taxIDType),
+			IssuingCountry: issuingCountry,
+			Number:         taxID,
 		},
+	}
+
+	// Secondary: government-issued document with images if available from Didit.
+	docNumber, _ := data["didit_doc_number"].(string)
+	docType, _ := data["didit_doc_type"].(string)
+	expiration, _ := data["didit_expiration_date"].(string)
+	frontImage, _ := data["didit_front_image"].(string)
+	backImage, _ := data["didit_back_image"].(string)
+
+	if docNumber != "" || frontImage != "" {
+		docEntry := bridge.IdentifyingInfo{
+			Type:           mapDocTypeToBridge(docType),
+			IssuingCountry: issuingCountry,
+			Number:         docNumber,
+			Expiration:     expiration,
+			ImageFront:     frontImage,
+			ImageBack:      backImage,
+		}
+		identifyingInfo = append(identifyingInfo, docEntry)
+	}
+
+	req := &bridge.UpdateCustomerRequest{
+		IdentifyingInformation: identifyingInfo,
 	}
 
 	customer, err := s.bridgeAdapter.UpdateCustomer(ctx, bridgeCustomerID, req)
