@@ -5,6 +5,6 @@ ALTER TABLE stash_lock_cycles
         CHECK (status IN ('locked', 'window_open', 'window_notified', 'withdrawn', 'relocked'));
 
 -- Partial index for GetUnlockedPending: status='locked' AND lock_end < now.
-CREATE INDEX idx_stash_lock_cycles_status_lock_end
+CREATE INDEX IF NOT EXISTS idx_stash_lock_cycles_status_lock_end
     ON stash_lock_cycles(status, lock_end)
     WHERE status = 'locked';
