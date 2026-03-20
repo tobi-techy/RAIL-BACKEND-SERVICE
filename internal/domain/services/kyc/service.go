@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -91,6 +92,8 @@ type Service struct {
 	sumsubLevelName        string
 	notifier               KYCNotifier
 	logger                 *zap.Logger
+	resyncMu               sync.Mutex
+	resyncInFlight         map[string]bool
 }
 
 // SetNotifier wires the push notification sender for KYC outcomes.
@@ -161,6 +164,7 @@ func NewService(
 		kycSyncJobRepo:         kycSyncJobRepo,
 		sumsubLevelName:        strings.TrimSpace(sumsubLevelName),
 		logger:                 logger,
+		resyncInFlight:         make(map[string]bool),
 	}
 	if len(diditAdapter) > 0 && diditAdapter[0] != nil {
 		svc.diditAdapter = diditAdapter[0]
@@ -2299,6 +2303,35 @@ func (s *Service) submitToBridgeFromDidit(ctx context.Context, bridgeCustomerID 
 // ResyncBridge re-runs the Bridge KYC sync for a user's latest Didit submission.
 // Used by admins to fix users whose Bridge customer is Incomplete due to missing tax_id.
 func (s *Service) ResyncBridge(ctx context.Context, userID uuid.UUID, taxID, taxIDType, issuingCountry string) error {
+	// Validate inputs.
+	taxID = strings.TrimSpace(taxID)
+	taxIDType = strings.TrimSpace(taxIDType)
+	issuingCountry = strings.TrimSpace(issuingCountry)
+	if len(taxID) < 5 || len(taxID) > 50 {
+		return fmt.Errorf("tax_id must be between 5 and 50 characters")
+	}
+	if taxIDType == "" {
+		return fmt.Errorf("tax_id_type is required")
+	}
+	if len(issuingCountry) != 3 {
+		return fmt.Errorf("issuing_country must be a 3-letter ISO country code")
+	}
+
+	// Per-user lock to prevent concurrent resyncs for the same user.
+	s.resyncMu.Lock()
+	key := userID.String()
+	if s.resyncInFlight[key] {
+		s.resyncMu.Unlock()
+		return fmt.Errorf("resync already in progress for this user")
+	}
+	s.resyncInFlight[key] = true
+	s.resyncMu.Unlock()
+	defer func() {
+		s.resyncMu.Lock()
+		delete(s.resyncInFlight, key)
+		s.resyncMu.Unlock()
+	}()
+
 	profile, err := s.userRepo.GetProfileByUserID(ctx, userID)
 	if err != nil {
 		return fmt.Errorf("user not found: %w", err)

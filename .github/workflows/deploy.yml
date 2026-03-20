@@ -70,3 +70,25 @@ jobs:
           service: rail-${{ steps.env.outputs.env }}
           cluster: rail-${{ steps.env.outputs.env }}
           wait-for-service-stability: false
+
+      - name: Verify deployment health
+        env:
+          ENV: ${{ steps.env.outputs.env }}
+        run: |
+          echo "Waiting for ECS service to stabilize..."
+          aws ecs wait services-stable \
+            --cluster rail-$ENV \
+            --services rail-$ENV \
+            --region ${{ env.AWS_REGION }}
+          RUNNING=$(aws ecs describe-services \
+            --cluster rail-$ENV \
+            --services rail-$ENV \
+            --region ${{ env.AWS_REGION }} \
+            --query 'services[0].runningCount' --output text)
+          DESIRED=$(aws ecs describe-services \
+            --cluster rail-$ENV \
+            --services rail-$ENV \
+            --region ${{ env.AWS_REGION }} \
+            --query 'services[0].desiredCount' --output text)
+          echo "Running: $RUNNING / Desired: $DESIRED"
+          [ "$RUNNING" = "$DESIRED" ] || (echo "Deployment unhealthy" && exit 1)
