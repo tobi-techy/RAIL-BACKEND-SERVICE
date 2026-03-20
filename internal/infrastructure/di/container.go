@@ -43,6 +43,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	"github.com/rail-service/rail_service/internal/domain/services/socialauth"
 	"github.com/rail-service/rail_service/internal/domain/services/station"
+	"github.com/rail-service/rail_service/internal/domain/services/stashlock"
 	"github.com/rail-service/rail_service/internal/domain/services/strategy"
 	"github.com/rail-service/rail_service/internal/domain/services/twofa"
 	"github.com/rail-service/rail_service/internal/domain/services/wallet"
@@ -932,6 +933,7 @@ type Container struct {
 	LimitsService           *limits.Service
 	DomainAuditService      *audit.Service
 	WithdrawalService       *services.WithdrawalService
+	StashLockService        *stashlock.Service
 
 	// AI Financial Manager Services
 	AIProviderManager     *ai.ProviderManager
@@ -1444,6 +1446,11 @@ func (c *Container) initializeDomainServices() error {
 	// Wire yield snapshotter so stash balance changes are recorded for TWB calculation
 	c.AllocationService.SetYieldSnapshotter(c.YieldService)
 
+	// Wire stash lock recorder so deposits start a 90-day lock cycle
+	if c.StashLockService != nil {
+		c.AllocationService.SetStashLockRecorder(c.StashLockService)
+	}
+
 	// Inject allocation service into onboarding service (for auto-enabling 70/30 mode)
 	c.OnboardingService.SetAllocationService(c.AllocationService)
 
@@ -1635,6 +1642,12 @@ func (c *Container) initializeDomainServices() error {
 		c.BridgeAdapter,         // BridgeCryptoTransferAdapter (crypto wallet transfers)
 		c.Logger,
 	)
+
+	// Wire stash lock enforcement
+	stashLockRepo := repositories.NewStashLockRepository(sqlx.NewDb(c.DB, "postgres"))
+	stashLockSvc := stashlock.NewService(stashLockRepo, c.ZapLog)
+	c.WithdrawalService.SetStashLockChecker(stashLockSvc)
+	c.StashLockService = stashLockSvc
 
 	if c.BridgeWebhookHandler != nil && c.BridgeVirtualAccountService != nil {
 		var cardProcessor webhooks.BridgeCardProcessor
