@@ -527,7 +527,7 @@ func Load() (*Config, error) {
 	}
 
 	if strings.TrimSpace(config.Email.Provider) == "" && isDevEnvironment(config.Environment) {
-		config.Email.Provider = "ses"
+		config.Email.Provider = "unosend"
 	}
 
 	// Build database URL if not provided

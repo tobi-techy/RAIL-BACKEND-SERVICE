@@ -303,10 +303,12 @@ func (s *DeletionService) cleanupExternalProviders(ctx context.Context, userID u
 
 	// Delete Bridge customer record (removes all PII from Bridge)
 	// Source customer ID from user record first, fall back to virtual accounts
-	if s.bridgeClient != nil && s.kycUserLookup != nil {
+	if s.bridgeClient != nil {
 		var bridgeCustomerID string
-		if user, err := s.kycUserLookup.GetUserEntityByID(ctx, userID); err == nil && user != nil && user.BridgeCustomerID != nil {
-			bridgeCustomerID = *user.BridgeCustomerID
+		if s.kycUserLookup != nil {
+			if user, err := s.kycUserLookup.GetUserEntityByID(ctx, userID); err == nil && user != nil && user.BridgeCustomerID != nil {
+				bridgeCustomerID = *user.BridgeCustomerID
+			}
 		}
 		// Fall back to virtual accounts if not on user record
 		if bridgeCustomerID == "" && s.virtualAccountRepo != nil {
