@@ -4,12 +4,13 @@
 CREATE TABLE stash_lock_cycles (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         UUID NOT NULL REFERENCES users(id),
-    deposit_id      UUID NOT NULL,                        -- references the originating deposit
+    deposit_id      UUID NOT NULL UNIQUE REFERENCES deposits(id) ON DELETE CASCADE,
     amount          NUMERIC(20,6) NOT NULL,
     lock_start      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     lock_end        TIMESTAMPTZ NOT NULL,                 -- lock_start + 90 days
     window_end      TIMESTAMPTZ NOT NULL,                 -- lock_end + 7 days
-    status          TEXT NOT NULL DEFAULT 'locked',       -- locked | window_open | withdrawn | relocked
+    status          TEXT NOT NULL DEFAULT 'locked'
+                        CHECK (status IN ('locked', 'window_open', 'withdrawn', 'relocked')),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

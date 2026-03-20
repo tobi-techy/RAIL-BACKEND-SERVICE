@@ -99,36 +99,45 @@ func (s *Service) MarkWithdrawn(ctx context.Context, userID uuid.UUID) error {
 // RelockExpiredWindows finds cycles whose 7-day window has passed without withdrawal
 // and starts a new 90-day lock. Run this as a daily cron job.
 func (s *Service) RelockExpiredWindows(ctx context.Context) (int, error) {
+	const batchSize = 500
 	now := time.Now()
-	expired, err := s.repo.GetExpiredWindows(ctx, now, 500)
-	if err != nil {
-		return 0, err
+	total := 0
+	for {
+		expired, err := s.repo.GetExpiredWindows(ctx, now, batchSize)
+		if err != nil {
+			return total, err
+		}
+		if len(expired) == 0 {
+			break
+		}
+		for _, c := range expired {
+			lockEnd := now.Add(entities.StashLockDuration)
+			newCycle := &entities.StashLockCycle{
+				ID:        uuid.New(),
+				UserID:    c.UserID,
+				DepositID: c.DepositID,
+				Amount:    c.Amount,
+				LockStart: now,
+				LockEnd:   lockEnd,
+				WindowEnd: lockEnd.Add(entities.StashWindowDuration),
+				Status:    entities.StashCycleStatusLocked,
+			}
+			// Create new cycle first — if this fails, old cycle stays window_open (safe).
+			if err := s.repo.Create(ctx, newCycle); err != nil {
+				s.logger.Error("Failed to create relock cycle", zap.String("user_id", c.UserID.String()), zap.Error(err))
+				continue
+			}
+			// Only mark old cycle relocked after new one is persisted.
+			if err := s.repo.UpdateStatus(ctx, c.ID, entities.StashCycleStatusRelocked); err != nil {
+				s.logger.Error("Failed to mark cycle relocked", zap.String("cycle_id", c.ID.String()), zap.Error(err))
+				continue
+			}
+			total++
+		}
+		if len(expired) < batchSize {
+			break
+		}
 	}
-	count := 0
-	for _, c := range expired {
-		// Mark old cycle as relocked
-		if err := s.repo.UpdateStatus(ctx, c.ID, entities.StashCycleStatusRelocked); err != nil {
-			s.logger.Error("Failed to relock cycle", zap.String("cycle_id", c.ID.String()), zap.Error(err))
-			continue
-		}
-		// Create new 90-day lock cycle
-		lockEnd := now.Add(entities.StashLockDuration)
-		newCycle := &entities.StashLockCycle{
-			ID:        uuid.New(),
-			UserID:    c.UserID,
-			DepositID: c.DepositID,
-			Amount:    c.Amount,
-			LockStart: now,
-			LockEnd:   lockEnd,
-			WindowEnd: lockEnd.Add(entities.StashWindowDuration),
-			Status:    entities.StashCycleStatusLocked,
-		}
-		if err := s.repo.Create(ctx, newCycle); err != nil {
-			s.logger.Error("Failed to create relock cycle", zap.String("user_id", c.UserID.String()), zap.Error(err))
-			continue
-		}
-		count++
-	}
-	s.logger.Info("Relocked expired stash windows", zap.Int("count", count))
-	return count, nil
+	s.logger.Info("Relocked expired stash windows", zap.Int("count", total))
+	return total, nil
 }

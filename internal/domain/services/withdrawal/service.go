@@ -125,6 +125,7 @@ type WithdrawalService struct {
 	bridgeAdapter       BridgeAdapter
 	bridgeCryptoAdapter BridgeCryptoTransferAdapter
 	stashLock           StashLockChecker
+	stashLockMu         sync.RWMutex
 	logger              *logger.Logger
 	withdrawalLocks     [withdrawalLockShards]sync.Mutex
 }
@@ -163,7 +164,10 @@ func NewWithdrawalService(
 }
 
 // SetStashLockChecker wires the stash lock enforcement.
+// Must be called during initialization before the service handles any requests.
 func (s *WithdrawalService) SetStashLockChecker(c StashLockChecker) {
+	s.stashLockMu.Lock()
+	defer s.stashLockMu.Unlock()
 	s.stashLock = c
 }
 
@@ -211,15 +215,22 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	_ = clientProvidedIdempotency // retained for potential future logging
 
 	// Stash lock enforcement: stash withdrawals only allowed during the 7-day window.
-	if req.SourceAccount == entities.WithdrawalSourceStashBalance && s.stashLock != nil {
-		canWithdraw, windowEnd, err := s.stashLock.CanWithdraw(ctx, req.UserID)
+	s.stashLockMu.RLock()
+	sl := s.stashLock
+	s.stashLockMu.RUnlock()
+	if req.SourceAccount == entities.WithdrawalSourceStashBalance && sl != nil {
+		canWithdraw, windowEnd, err := sl.CanWithdraw(ctx, req.UserID)
 		if err != nil {
 			return nil, fmt.Errorf("stash lock check failed: %w", err)
 		}
 		if !canWithdraw {
 			return nil, fmt.Errorf("stash funds are locked: no active withdrawal window (funds lock for 90 days, then a 7-day window opens)")
 		}
-		s.logger.Info("Stash withdrawal window active", "user_id", req.UserID, "window_end", windowEnd)
+		// Mark the window consumed immediately — the per-user lock above prevents concurrent double-withdrawals.
+		if err := sl.MarkWithdrawn(ctx, req.UserID); err != nil {
+			return nil, fmt.Errorf("failed to mark stash window consumed: %w", err)
+		}
+		s.logger.Info("Stash withdrawal window consumed", "user_id", req.UserID, "window_end", windowEnd)
 	}
 
 	// Step 3: Validate against withdrawal limits

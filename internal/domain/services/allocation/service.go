@@ -424,7 +424,10 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 
 	// Record stash lock cycle for the deposited amount.
 	if s.stashLockRecorder != nil && req.DepositID != nil {
-		_ = s.stashLockRecorder.RecordDeposit(ctx, req.UserID, *req.DepositID, stashAmount)
+		if err := s.stashLockRecorder.RecordDeposit(ctx, req.UserID, *req.DepositID, stashAmount); err != nil {
+			s.logger.Error("Failed to record stash lock cycle", "user_id", req.UserID, "deposit_id", *req.DepositID, "error", err)
+			return fmt.Errorf("failed to record stash lock cycle: %w", err)
+		}
 	}
 
 	// Create allocation event for audit trail

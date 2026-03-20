@@ -32,7 +32,7 @@ type StashLockCycle struct {
 	UpdatedAt time.Time       `db:"updated_at"`
 }
 
-// IsWithdrawable returns true if the cycle is in the open window.
+// IsWithdrawable returns true if the lock period has ended and the cycle is in the open window.
 func (c *StashLockCycle) IsWithdrawable(now time.Time) bool {
-	return c.Status == StashCycleStatusWindowOpen && now.Before(c.WindowEnd)
+	return c.Status == StashCycleStatusWindowOpen && now.After(c.LockEnd) && now.Before(c.WindowEnd)
 }

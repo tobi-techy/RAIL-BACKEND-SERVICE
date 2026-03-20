@@ -21,7 +21,8 @@ func (r *StashLockRepository) Create(ctx context.Context, c *entities.StashLockC
 	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO stash_lock_cycles
 		 (id, user_id, deposit_id, amount, lock_start, lock_end, window_end, status)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		 ON CONFLICT (deposit_id) DO NOTHING`,
 		c.ID, c.UserID, c.DepositID, c.Amount, c.LockStart, c.LockEnd, c.WindowEnd, c.Status)
 	return err
 }

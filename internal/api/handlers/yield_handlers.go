@@ -41,7 +41,12 @@ func (h *YieldHandlers) GetDailyYieldEstimate(c *gin.Context) {
 		return
 	}
 
-	apy, _ := decimal.NewFromString(defaultYieldAPY)
+	apy, err := decimal.NewFromString(defaultYieldAPY)
+	if err != nil {
+		h.logger.Error("Failed to parse APY constant", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to calculate yield estimate"})
+		return
+	}
 	daily := h.yieldSvc.EstimateDailyYield(balances.StashBalance, apy)
 
 	c.JSON(http.StatusOK, gin.H{
