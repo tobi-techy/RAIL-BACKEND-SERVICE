@@ -67,6 +67,8 @@ func (r *StashLockRepository) GetExpiredWindows(ctx context.Context, now time.Ti
 }
 
 // GetUnlockedPending returns locked cycles whose lock_end has passed (window now open) up to limit.
+// Excludes cycles already in window_notified status to prevent duplicate notifications.
+// Requires index: idx_stash_lock_cycles_status_lock_end (see migration 125).
 func (r *StashLockRepository) GetUnlockedPending(ctx context.Context, now time.Time, limit int) ([]*entities.StashLockCycle, error) {
 	var rows []*entities.StashLockCycle
 	err := r.db.SelectContext(ctx, &rows,

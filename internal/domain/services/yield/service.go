@@ -172,12 +172,6 @@ func (s *Service) RunDistribution(ctx context.Context, periodStart, periodEnd, f
 			continue
 		}
 
-		if s.notifier != nil {
-			if err := s.notifier.NotifyYieldCredited(ctx, ut.userID, reward); err != nil {
-				s.logger.Warn("Failed to send yield credited notification", zap.String("user_id", ut.userID.String()), zap.Error(err))
-			}
-		}
-
 		// Only record distribution row after successful credit.
 		now := time.Now()
 		row := &entities.YieldDistributionUser{
@@ -192,6 +186,11 @@ func (s *Service) RunDistribution(ctx context.Context, periodStart, periodEnd, f
 		if err := s.repo.UpsertDistributionUser(ctx, row); err != nil {
 			s.logger.Error("Failed to upsert distribution user", zap.String("user_id", ut.userID.String()), zap.Error(err))
 			// Credit already happened — log but don't reverse; retry will be idempotent via ledger key.
+		} else if s.notifier != nil {
+			// Notify only after DB record is persisted.
+			if err := s.notifier.NotifyYieldCredited(ctx, ut.userID, reward); err != nil {
+				s.logger.Warn("Failed to send yield credited notification", zap.String("user_id", ut.userID.String()), zap.Error(err))
+			}
 		}
 
 		totalDistributed = totalDistributed.Add(reward)
