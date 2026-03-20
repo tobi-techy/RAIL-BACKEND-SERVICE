@@ -47,6 +47,7 @@ jobs:
         run: |
           docker buildx create --use --driver docker-container
           docker buildx build \
+            --platform linux/amd64 \
             --cache-from type=registry,ref=$REGISTRY/$ECR_REPOSITORY:$ENV-cache \
             --cache-to   type=registry,ref=$REGISTRY/$ECR_REPOSITORY:$ENV-cache,mode=max \
             --tag $REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
@@ -75,20 +76,18 @@ jobs:
         env:
           ENV: ${{ steps.env.outputs.env }}
         run: |
-          echo "Waiting for ECS service to stabilize..."
-          aws ecs wait services-stable \
-            --cluster rail-$ENV \
-            --services rail-$ENV \
-            --region ${{ env.AWS_REGION }}
-          RUNNING=$(aws ecs describe-services \
-            --cluster rail-$ENV \
-            --services rail-$ENV \
-            --region ${{ env.AWS_REGION }} \
-            --query 'services[0].runningCount' --output text)
-          DESIRED=$(aws ecs describe-services \
-            --cluster rail-$ENV \
-            --services rail-$ENV \
-            --region ${{ env.AWS_REGION }} \
-            --query 'services[0].desiredCount' --output text)
-          echo "Running: $RUNNING / Desired: $DESIRED"
-          [ "$RUNNING" -eq "$DESIRED" ] && [ "$RUNNING" -gt 0 ] || (echo "Deployment unhealthy: Running=$RUNNING, Desired=$DESIRED" && exit 1)
+          echo "Polling ECS until running == desired (max 5 min)..."
+          for i in $(seq 1 30); do
+            RUNNING=$(aws ecs describe-services \
+              --cluster rail-$ENV --services rail-$ENV \
+              --region ${{ env.AWS_REGION }} \
+              --query 'services[0].runningCount' --output text)
+            DESIRED=$(aws ecs describe-services \
+              --cluster rail-$ENV --services rail-$ENV \
+              --region ${{ env.AWS_REGION }} \
+              --query 'services[0].desiredCount' --output text)
+            echo "[$i/30] Running: $RUNNING / Desired: $DESIRED"
+            [ "$RUNNING" -eq "$DESIRED" ] && [ "$RUNNING" -gt 0 ] && echo "Deployment healthy." && exit 0
+            sleep 10
+          done
+          echo "Deployment unhealthy after 5 min: Running=$RUNNING, Desired=$DESIRED" && exit 1

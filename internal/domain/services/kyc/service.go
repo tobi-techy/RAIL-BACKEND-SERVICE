@@ -1861,21 +1861,27 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 		return nil, ErrKYCAlreadyApproved
 	}
 
-	// Submit source of funds to Bridge (non-fatal).
-	if req.SourceOfFunds != "" {
-		bridgeUpdateReq := &bridge.UpdateCustomerRequest{
-			SourceOfFunds:              req.SourceOfFunds,
-			EmploymentStatus:           req.EmploymentStatus,
-			ExpectedMonthlyPaymentsUSD: req.ExpectedMonthlyPaymentsUSD,
-			AccountPurpose:             req.AccountPurpose,
-			AccountPurposeOther:        req.AccountPurposeOther,
-			MostRecentOccupation:       req.MostRecentOccupation,
-			ActingAsIntermediary:       req.ActingAsIntermediary,
-		}
-		if _, bridgeErr := s.bridgeAdapter.UpdateCustomer(ctx, *profile.BridgeCustomerID, bridgeUpdateReq); bridgeErr != nil {
-			s.logger.Warn("Failed to submit source of funds to Bridge",
-				zap.Error(bridgeErr), zap.String("user_id", userID.String()))
-		}
+	// Submit tax ID + source of funds to Bridge upfront (non-fatal).
+	// Tax ID is never stored in our DB — sent directly to Bridge here.
+	bridgeUpdateReq := &bridge.UpdateCustomerRequest{
+		SourceOfFunds:              req.SourceOfFunds,
+		EmploymentStatus:           req.EmploymentStatus,
+		ExpectedMonthlyPaymentsUSD: req.ExpectedMonthlyPaymentsUSD,
+		AccountPurpose:             req.AccountPurpose,
+		AccountPurposeOther:        req.AccountPurposeOther,
+		MostRecentOccupation:       req.MostRecentOccupation,
+		ActingAsIntermediary:       req.ActingAsIntermediary,
+		IdentifyingInformation: []bridge.IdentifyingInfo{
+			{
+				Type:           mapTaxIDTypeToBridge(req.TaxIDType),
+				IssuingCountry: req.IssuingCountry,
+				Number:         req.TaxID,
+			},
+		},
+	}
+	if _, bridgeErr := s.bridgeAdapter.UpdateCustomer(ctx, *profile.BridgeCustomerID, bridgeUpdateReq); bridgeErr != nil {
+		s.logger.Warn("Failed to submit tax ID to Bridge at session start",
+			zap.Error(bridgeErr), zap.String("user_id", userID.String()))
 	}
 
 	sess, err := s.diditAdapter.CreateSession(ctx, userID.String())
@@ -1887,7 +1893,6 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 	expiresAt := now.Add(30 * 24 * time.Hour)
 	verificationData := map[string]any{
 		"didit_session_id": sess.SessionID,
-		"tax_id":           req.TaxID,
 		"tax_id_type":      req.TaxIDType,
 		"issuing_country":  req.IssuingCountry,
 		"disclosures": map[string]any{
@@ -2026,8 +2031,8 @@ func (s *Service) processDiditApproved(ctx context.Context, submission *entities
 		return nil
 	}
 
-	// Hydrate from Didit decision API.
-	s.hydrateSubmissionFromDidit(ctx, submission)
+	// Hydrate from inline webhook decision or Didit API fallback.
+	s.hydrateSubmissionFromDidit(ctx, submission, payload)
 
 	user, err := s.userRepo.GetByID(ctx, submission.UserID)
 	if err != nil {
@@ -2058,13 +2063,21 @@ func (s *Service) processDiditApproved(ctx context.Context, submission *entities
 		}
 	}
 
-	user.KYCStatus = string(entities.KYCStatusApproved)
-	user.KYCApprovedAt = &now
 	user.KYCRejectionReason = nil
 	if user.KYCSubmittedAt == nil {
 		user.KYCSubmittedAt = &now
 	}
-	user.OnboardingStatus = entities.OnboardingStatusCompleted
+
+	// KYC is only fully approved when Bridge also accepts the customer.
+	// If Bridge sync failed, stay in processing — retry job will re-attempt.
+	if bridgeResult.Success {
+		user.KYCStatus = string(entities.KYCStatusApproved)
+		user.KYCApprovedAt = &now
+		user.OnboardingStatus = entities.OnboardingStatusCompleted
+	} else {
+		user.KYCStatus = string(entities.KYCStatusProcessing)
+		user.OnboardingStatus = entities.OnboardingStatusKYCPending
+	}
 
 	if err := s.userRepo.Update(ctx, user); err != nil {
 		return fmt.Errorf("failed to update user after didit approval: %w", err)
@@ -2092,7 +2105,7 @@ func (s *Service) processDiditApproved(ctx context.Context, submission *entities
 		return fmt.Errorf("failed to update didit submission: %w", err)
 	}
 
-	if s.notifier != nil {
+	if s.notifier != nil && bridgeResult.Success {
 		if err := s.notifier.NotifyKYCApproved(ctx, submission.UserID); err != nil {
 			s.logger.Warn("Failed to send KYC approved notification", zap.String("user_id", submission.UserID.String()), zap.Error(err))
 		}
@@ -2195,51 +2208,72 @@ func (s *Service) markDiditExpired(ctx context.Context, submission *entities.KYC
 }
 
 // hydrateSubmissionFromDidit fetches the session decision and merges ID data into verification data.
-func (s *Service) hydrateSubmissionFromDidit(ctx context.Context, submission *entities.KYCSubmission) {
-	if s.diditAdapter == nil || submission.ProviderRef == "" {
-		return
-	}
-	decision, err := s.diditAdapter.GetSessionDecision(ctx, submission.ProviderRef)
-	if err != nil {
-		s.logger.Warn("Failed to fetch Didit session decision",
-			zap.Error(err), zap.String("session_id", submission.ProviderRef))
-		return
-	}
+func (s *Service) hydrateSubmissionFromDidit(ctx context.Context, submission *entities.KYCSubmission, payload *entities.DiditWebhookPayload) {
 	if submission.VerificationData == nil {
 		submission.VerificationData = map[string]any{}
 	}
-	if len(decision.IDVerifications) > 0 {
-		v := decision.IDVerifications[0]
-		submission.VerificationData["didit_first_name"] = v.FirstName
-		submission.VerificationData["didit_last_name"] = v.LastName
-		submission.VerificationData["didit_dob"] = v.DateOfBirth
-		submission.VerificationData["didit_doc_type"] = v.DocumentType
-		submission.VerificationData["didit_issuing_state"] = v.IssuingState
-		submission.VerificationData["didit_nationality"] = v.Nationality
-		submission.VerificationData["didit_gender"] = v.Gender
-		submission.VerificationData["didit_expiration_date"] = v.ExpirationDate
-		submission.VerificationData["didit_front_image"] = v.FrontImage
-		submission.VerificationData["didit_back_image"] = v.BackImage
-		if v.DocumentNumber != "" {
-			submission.VerificationData["didit_doc_number_tail"] = tail(v.DocumentNumber, 4)
-			submission.VerificationData["didit_doc_number"] = v.DocumentNumber
+
+	// Use inline decision from webhook payload if available — avoids extra API call.
+	var idVerifications []entities.DiditIDVerification
+	if payload != nil && payload.Decision != nil && len(payload.Decision.IDVerifications) > 0 {
+		idVerifications = payload.Decision.IDVerifications
+	} else if s.diditAdapter != nil && submission.ProviderRef != "" {
+		decision, err := s.diditAdapter.GetSessionDecision(ctx, submission.ProviderRef)
+		if err != nil {
+			s.logger.Warn("Failed to fetch Didit session decision",
+				zap.Error(err), zap.String("session_id", submission.ProviderRef))
+			return
 		}
-		// personal_number is the national ID / tax number printed on the document.
-		// Use as fallback tax_id if not already set from session creation.
-		if v.PersonalNumber != "" {
-			submission.VerificationData["didit_personal_number"] = v.PersonalNumber
-			existing, ok := submission.VerificationData["tax_id"].(string)
-			if !ok || existing == "" {
-				submission.VerificationData["tax_id"] = v.PersonalNumber
-			}
+		// Map adapter type to entity type.
+		for _, v := range decision.IDVerifications {
+			idVerifications = append(idVerifications, entities.DiditIDVerification{
+				FirstName:      v.FirstName,
+				LastName:       v.LastName,
+				DateOfBirth:    v.DateOfBirth,
+				DocumentType:   v.DocumentType,
+				DocumentNumber: v.DocumentNumber,
+				PersonalNumber: v.PersonalNumber,
+				IssuingState:   v.IssuingState,
+				Nationality:    v.Nationality,
+				Gender:         v.Gender,
+				ExpirationDate: v.ExpirationDate,
+				FrontImage:     v.FrontImage,
+				BackImage:      v.BackImage,
+			})
 		}
-		if v.ParsedAddress != nil {
-			submission.VerificationData["didit_address_street"] = v.ParsedAddress.Street1
-			submission.VerificationData["didit_address_city"] = v.ParsedAddress.City
-			submission.VerificationData["didit_address_region"] = v.ParsedAddress.Region
-			submission.VerificationData["didit_address_country"] = v.ParsedAddress.Country
-			submission.VerificationData["didit_address_postal_code"] = v.ParsedAddress.PostalCode
+	}
+
+	if len(idVerifications) == 0 {
+		return
+	}
+	v := idVerifications[0]
+	submission.VerificationData["didit_first_name"] = v.FirstName
+	submission.VerificationData["didit_last_name"] = v.LastName
+	submission.VerificationData["didit_dob"] = v.DateOfBirth
+	submission.VerificationData["didit_doc_type"] = v.DocumentType
+	submission.VerificationData["didit_issuing_state"] = v.IssuingState
+	submission.VerificationData["didit_nationality"] = v.Nationality
+	submission.VerificationData["didit_gender"] = v.Gender
+	submission.VerificationData["didit_expiration_date"] = v.ExpirationDate
+	submission.VerificationData["didit_front_image"] = v.FrontImage
+	submission.VerificationData["didit_back_image"] = v.BackImage
+	if v.DocumentNumber != "" {
+		submission.VerificationData["didit_doc_number_tail"] = tail(v.DocumentNumber, 4)
+		submission.VerificationData["didit_doc_number"] = v.DocumentNumber
+	}
+	if v.PersonalNumber != "" {
+		submission.VerificationData["didit_personal_number"] = v.PersonalNumber
+		existing, ok := submission.VerificationData["tax_id"].(string)
+		if !ok || existing == "" {
+			submission.VerificationData["tax_id"] = v.PersonalNumber
 		}
+	}
+	if v.ParsedAddress != nil {
+		submission.VerificationData["didit_address_street"] = v.ParsedAddress.Street1
+		submission.VerificationData["didit_address_city"] = v.ParsedAddress.City
+		submission.VerificationData["didit_address_region"] = v.ParsedAddress.Region
+		submission.VerificationData["didit_address_country"] = v.ParsedAddress.Country
+		submission.VerificationData["didit_address_postal_code"] = v.ParsedAddress.PostalCode
 	}
 }
 
@@ -2305,20 +2339,11 @@ func (s *Service) submitToBridgeFromDidit(ctx context.Context, bridgeCustomerID 
 
 // ResyncBridge re-runs the Bridge KYC sync for a user's latest Didit submission.
 // Used by admins to fix users whose Bridge customer is Incomplete due to missing tax_id.
+// tax_id, tax_id_type, issuing_country are optional — falls back to stored verification_data.
 func (s *Service) ResyncBridge(ctx context.Context, userID uuid.UUID, taxID, taxIDType, issuingCountry string) error {
-	// Validate inputs.
 	taxID = strings.TrimSpace(taxID)
 	taxIDType = strings.TrimSpace(taxIDType)
 	issuingCountry = strings.TrimSpace(issuingCountry)
-	if len(taxID) < 5 || len(taxID) > 50 {
-		return fmt.Errorf("tax_id must be between 5 and 50 characters")
-	}
-	if taxIDType == "" {
-		return fmt.Errorf("tax_id_type is required")
-	}
-	if len(issuingCountry) != 3 {
-		return fmt.Errorf("issuing_country must be a 3-letter ISO country code")
-	}
 
 	// Per-user lock to prevent concurrent resyncs for the same user.
 	s.resyncMu.Lock()

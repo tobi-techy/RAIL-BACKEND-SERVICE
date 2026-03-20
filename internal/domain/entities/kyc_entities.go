@@ -176,6 +176,38 @@ type DiditWebhookPayload struct {
 	WebhookType string `json:"webhook_type"`
 	VendorData  string `json:"vendor_data"`
 	WorkflowID  string `json:"workflow_id"`
+	Decision    *DiditWebhookDecision `json:"decision,omitempty"`
+}
+
+// DiditWebhookDecision is the inline decision object in a Didit v3 webhook payload.
+type DiditWebhookDecision struct {
+	IDVerifications []DiditIDVerification `json:"id_verifications"`
+}
+
+// DiditIDVerification holds the document data from a Didit id_verifications entry.
+type DiditIDVerification struct {
+	FirstName      string `json:"first_name"`
+	LastName       string `json:"last_name"`
+	DateOfBirth    string `json:"date_of_birth"`
+	DocumentType   string `json:"document_type"`
+	DocumentNumber string `json:"document_number"`
+	PersonalNumber string `json:"personal_number"`
+	IssuingState   string `json:"issuing_state"`
+	Nationality    string `json:"nationality"`
+	Gender         string `json:"gender"`
+	ExpirationDate string `json:"expiration_date"`
+	FrontImage     string `json:"front_image"`
+	BackImage      string `json:"back_image"`
+	ParsedAddress  *DiditParsedAddress `json:"parsed_address,omitempty"`
+}
+
+// DiditParsedAddress holds the parsed address from a Didit id_verification entry.
+type DiditParsedAddress struct {
+	Street1    string `json:"street_1"`
+	City       string `json:"city"`
+	Region     string `json:"region"`
+	Country    string `json:"country"`
+	PostalCode string `json:"postal_code"`
 }
 
 // Didit verification statuses (case-sensitive, with spaces).
