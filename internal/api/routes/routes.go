@@ -273,6 +273,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		diditClient,
 	)
 	kycHTTPHandlers := kychandlers.NewHandler(kycService, container.Logger)
+	if container.NotificationService != nil {
+		kycService.SetNotifier(container.NotificationService)
+	}
 	kycEligibilityMiddleware := middleware.NewKYCMiddleware(container.UserRepo, container.Logger)
 
 	// Create session validator adapter
