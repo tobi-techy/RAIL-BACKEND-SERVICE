@@ -12,12 +12,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/ses"
+	"github.com/aws/aws-sdk-go-v2/service/ses/types"
 	"go.uber.org/zap"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
 )
 
 const (
+	resendAPIBaseURL  = "https://api.resend.com"
 	unosendAPIBaseURL = "https://www.unosend.co/api/v1"
 	emailSendTimeout  = 30 * time.Second
 )
@@ -47,6 +52,7 @@ type EmailService struct {
 	logger     *zap.Logger
 	config     EmailServiceConfig
 	httpClient *http.Client
+	sesClient  *ses.Client
 }
 
 // NewEmailService creates a new email service
@@ -56,19 +62,30 @@ func NewEmailService(logger *zap.Logger, config EmailServiceConfig) (*EmailServi
 		return nil, fmt.Errorf("email provider is required")
 	}
 
-	if provider != "unosend" {
-		return nil, fmt.Errorf("unsupported email provider: %s (only unosend is supported)", provider)
+	if provider != "resend" && provider != "unosend" && provider != "ses" {
+		return nil, fmt.Errorf("unsupported email provider: %s (supported: ses, resend, unosend)", provider)
 	}
 
 	if strings.TrimSpace(config.FromEmail) == "" {
 		return nil, fmt.Errorf("email from address is required")
 	}
 
-	if strings.TrimSpace(config.APIKey) == "" {
-		return nil, fmt.Errorf("unosend api key is required")
+	svc := &EmailService{logger: logger, config: config}
+
+	if provider == "ses" {
+		awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion("us-east-1"))
+		if err != nil {
+			return nil, fmt.Errorf("ses: load aws config: %w", err)
+		}
+		svc.sesClient = ses.NewFromConfig(awsCfg)
+		return svc, nil
 	}
 
-	httpClient := &http.Client{
+	if strings.TrimSpace(config.APIKey) == "" {
+		return nil, fmt.Errorf("email api key is required")
+	}
+
+	svc.httpClient = &http.Client{
 		Timeout: emailSendTimeout,
 		Transport: &http.Transport{
 			DialContext: (&net.Dialer{
@@ -79,21 +96,101 @@ func NewEmailService(logger *zap.Logger, config EmailServiceConfig) (*EmailServi
 			ResponseHeaderTimeout: 10 * time.Second,
 		},
 	}
-
-	return &EmailService{
-		logger:     logger,
-		config:     config,
-		httpClient: httpClient,
-	}, nil
+	return svc, nil
 }
 
-// sendEmail is a helper method to send emails via Unosend
+// sendEmail routes to the configured provider
 func (e *EmailService) sendEmail(ctx context.Context, to, subject, htmlContent, textContent string) error {
-	// Add timeout to context
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, emailSendTimeout)
 	defer cancel()
 
-	return e.sendViaUnosend(ctxWithTimeout, to, subject, htmlContent, textContent)
+	switch strings.ToLower(e.config.Provider) {
+	case "ses":
+		return e.sendViaSES(ctxWithTimeout, to, subject, htmlContent, textContent)
+	case "resend":
+		return e.sendViaResend(ctxWithTimeout, to, subject, htmlContent, textContent)
+	default:
+		return e.sendViaUnosend(ctxWithTimeout, to, subject, htmlContent, textContent)
+	}
+}
+
+func (e *EmailService) sendViaSES(ctx context.Context, to, subject, htmlContent, textContent string) error {
+	from := strings.TrimSpace(e.config.FromEmail)
+	if e.config.FromName != "" {
+		from = fmt.Sprintf("%s <%s>", e.config.FromName, from)
+	}
+
+	input := &ses.SendEmailInput{
+		Source: aws.String(from),
+		Destination: &types.Destination{
+			ToAddresses: []string{to},
+		},
+		Message: &types.Message{
+			Subject: &types.Content{Data: aws.String(subject), Charset: aws.String("UTF-8")},
+			Body: &types.Body{
+				Html: &types.Content{Data: aws.String(htmlContent), Charset: aws.String("UTF-8")},
+			},
+		},
+	}
+	if textContent != "" {
+		input.Message.Body.Text = &types.Content{Data: aws.String(textContent), Charset: aws.String("UTF-8")}
+	}
+	if e.config.ReplyTo != "" {
+		input.ReplyToAddresses = []string{e.config.ReplyTo}
+	}
+
+	_, err := e.sesClient.SendEmail(ctx, input)
+	if err != nil {
+		e.logger.Error("SES send failed", zap.String("to", to), zap.String("subject", subject), zap.Error(err))
+		return fmt.Errorf("ses: send failed: %w", err)
+	}
+
+	e.logger.Info("Email sent", zap.String("provider", "ses"), zap.String("to", to), zap.String("subject", subject))
+	return nil
+}
+
+func (e *EmailService) sendViaResend(ctx context.Context, to, subject, htmlContent, textContent string) error {
+	from := strings.TrimSpace(e.config.FromEmail)
+	if e.config.FromName != "" {
+		from = fmt.Sprintf("%s <%s>", e.config.FromName, from)
+	}
+
+	payload := map[string]any{
+		"from":    from,
+		"to":      []string{to},
+		"subject": subject,
+		"html":    htmlContent,
+	}
+	if textContent != "" {
+		payload["text"] = textContent
+	}
+	if e.config.ReplyTo != "" {
+		payload["reply_to"] = e.config.ReplyTo
+	}
+
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, resendAPIBaseURL+"/emails", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("resend: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+e.config.APIKey)
+
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("resend: send failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode >= 400 {
+		e.logger.Error("Resend returned error",
+			zap.String("to", to), zap.Int("status", resp.StatusCode), zap.String("body", string(respBody)))
+		return fmt.Errorf("resend: status %d", resp.StatusCode)
+	}
+
+	e.logger.Info("Email sent", zap.String("provider", "resend"), zap.String("to", to), zap.String("subject", subject))
+	return nil
 }
 
 func (e *EmailService) sendViaUnosend(ctx context.Context, to, subject, htmlContent, textContent string) error {
