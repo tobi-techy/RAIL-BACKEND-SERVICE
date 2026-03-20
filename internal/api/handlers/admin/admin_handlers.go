@@ -1236,3 +1236,38 @@ func (h *AdminWalletHandlers) listWallets(ctx context.Context, filters *walletFi
 
 	return wallets, rows.Err()
 }
+
+// PromoteUser promotes an existing user to admin/super_admin role.
+// POST /api/v1/admin/promote  {"email":"...","role":"super_admin","bootstrap_token":"..."}
+func (h *AdminHandlers) PromoteUser(c *gin.Context) {
+	var req struct {
+		Email          string `json:"email" binding:"required,email"`
+		Role           string `json:"role" binding:"required"`
+		BootstrapToken string `json:"bootstrap_token"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Role != "admin" && req.Role != "super_admin" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "role must be admin or super_admin"})
+		return
+	}
+	configured := h.cfg.Security.AdminBootstrapToken
+	if configured == "" || !constantTimeCompare(req.BootstrapToken, configured) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "invalid bootstrap token"})
+		return
+	}
+	res, err := h.db.ExecContext(c.Request.Context(),
+		`UPDATE users SET role = $1, updated_at = NOW() WHERE email = $2`, req.Role, strings.ToLower(strings.TrimSpace(req.Email)))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "promoted", "email": req.Email, "role": req.Role})
+}
