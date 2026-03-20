@@ -73,6 +73,12 @@ type AlpacaAdapter interface {
 	CreateAccount(ctx context.Context, req *entities.AlpacaCreateAccountRequest) (*entities.AlpacaAccountResponse, error)
 }
 
+// KYCNotifier sends push notifications on KYC outcome.
+type KYCNotifier interface {
+	NotifyKYCApproved(ctx context.Context, userID uuid.UUID) error
+	NotifyKYCRejected(ctx context.Context, userID uuid.UUID) error
+}
+
 type Service struct {
 	userRepo               UserRepository
 	kycSubmissionRepo      KYCSubmissionRepository
@@ -83,7 +89,13 @@ type Service struct {
 	sumsubWebhookEventRepo SumsubWebhookEventRepository
 	kycSyncJobRepo         KYCSyncJobRepository
 	sumsubLevelName        string
+	notifier               KYCNotifier
 	logger                 *zap.Logger
+}
+
+// SetNotifier wires the push notification sender for KYC outcomes.
+func (s *Service) SetNotifier(n KYCNotifier) {
+	s.notifier = n
 }
 
 type UserRepository interface {
@@ -2058,6 +2070,12 @@ func (s *Service) processDiditApproved(ctx context.Context, submission *entities
 	if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {
 		return fmt.Errorf("failed to update didit submission: %w", err)
 	}
+
+	if s.notifier != nil {
+		if err := s.notifier.NotifyKYCApproved(ctx, submission.UserID); err != nil {
+			s.logger.Warn("Failed to send KYC approved notification", zap.String("user_id", submission.UserID.String()), zap.Error(err))
+		}
+	}
 	return nil
 }
 
@@ -2087,6 +2105,12 @@ func (s *Service) processDiditRejected(ctx context.Context, submission *entities
 	submission.VerificationData["didit_status"] = payload.Status
 	if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {
 		return fmt.Errorf("failed to update rejected didit submission: %w", err)
+	}
+
+	if s.notifier != nil {
+		if err := s.notifier.NotifyKYCRejected(ctx, submission.UserID); err != nil {
+			s.logger.Warn("Failed to send KYC rejected notification", zap.String("user_id", submission.UserID.String()), zap.Error(err))
+		}
 	}
 	return nil
 }

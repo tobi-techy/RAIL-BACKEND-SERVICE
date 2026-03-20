@@ -283,6 +283,18 @@ func (s *NotificationService) NotifyCardTransaction(ctx context.Context, userID 
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "card_transaction"})
 }
 
+func (s *NotificationService) NotifyYieldCredited(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error {
+	title := "Yield credited"
+	body := fmt.Sprintf("$%s in yield has been added to your stash.", amount.StringFixed(2))
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "yield_credited", "amount": amount.String()})
+}
+
+func (s *NotificationService) NotifyStashWindowOpen(ctx context.Context, userID uuid.UUID, windowEnd time.Time) error {
+	title := "Withdrawal window open"
+	body := fmt.Sprintf("Your stash is unlocked. You have until %s to withdraw.", windowEnd.Format("Jan 2"))
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "stash_window_open", "window_end": windowEnd.Format(time.RFC3339)})
+}
+
 func (s *NotificationService) NotifyP2PClaimed(ctx context.Context, senderID uuid.UUID, recipientName, amount string) error {
 	body := fmt.Sprintf("%s claimed your %s transfer", recipientName, amount)
 	return s.queueNotification(ctx, senderID, "push", "Transfer claimed", body, map[string]interface{}{"type": "p2p_claimed"})

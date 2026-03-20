@@ -1328,6 +1328,9 @@ func (c *Container) initializeDomainServices() error {
 
 	// Initialize yield service
 	c.YieldService = yieldsvc.NewService(c.yieldRepo, &bridgeRewardsAdapter{client: c.BridgeClient}, c.LedgerService, c.ZapLog)
+	if c.NotificationService != nil {
+		c.YieldService.SetNotifier(c.NotificationService)
+	}
 
 	// Stash reconciliation: daily check that ledger stash total == Bridge USDB wallet balance.
 	if c.Config.Bridge.RailCustomerID != "" && c.Config.Bridge.RailUSDBWalletID != "" {
@@ -1659,6 +1662,9 @@ func (c *Container) initializeDomainServices() error {
 	// Wire stash lock enforcement
 	stashLockRepo := repositories.NewStashLockRepository(sqlx.NewDb(c.DB, "postgres"))
 	stashLockSvc := stashlock.NewService(stashLockRepo, c.ZapLog)
+	if c.NotificationService != nil {
+		stashLockSvc.SetNotifier(c.NotificationService)
+	}
 	c.WithdrawalService.SetStashLockChecker(stashLockSvc)
 	c.StashLockService = stashLockSvc
 

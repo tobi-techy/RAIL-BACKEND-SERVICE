@@ -40,16 +40,27 @@ type LedgerCreditor interface {
 	CreditStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, description string) error
 }
 
+// YieldNotifier sends push notifications after yield is credited.
+type YieldNotifier interface {
+	NotifyYieldCredited(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error
+}
+
 // Service handles yield distribution.
 type Service struct {
-	repo    Repository
-	bridge  BridgeRewards
-	ledger  LedgerCreditor
-	logger  *zap.Logger
+	repo     Repository
+	bridge   BridgeRewards
+	ledger   LedgerCreditor
+	notifier YieldNotifier
+	logger   *zap.Logger
 }
 
 func NewService(repo Repository, bridge BridgeRewards, ledger LedgerCreditor, logger *zap.Logger) *Service {
 	return &Service{repo: repo, bridge: bridge, ledger: ledger, logger: logger}
+}
+
+// SetNotifier wires push notifications for yield credited events.
+func (s *Service) SetNotifier(n YieldNotifier) {
+	s.notifier = n
 }
 
 // RecordSnapshot writes a stash balance snapshot. Call this whenever stash balance changes.
@@ -175,6 +186,11 @@ func (s *Service) RunDistribution(ctx context.Context, periodStart, periodEnd, f
 		if err := s.repo.UpsertDistributionUser(ctx, row); err != nil {
 			s.logger.Error("Failed to upsert distribution user", zap.String("user_id", ut.userID.String()), zap.Error(err))
 			// Credit already happened — log but don't reverse; retry will be idempotent via ledger key.
+		} else if s.notifier != nil {
+			// Notify only after DB record is persisted.
+			if err := s.notifier.NotifyYieldCredited(ctx, ut.userID, reward); err != nil {
+				s.logger.Warn("Failed to send yield credited notification", zap.String("user_id", ut.userID.String()), zap.Error(err))
+			}
 		}
 
 		totalDistributed = totalDistributed.Add(reward)

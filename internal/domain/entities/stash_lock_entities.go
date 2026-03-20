@@ -13,10 +13,11 @@ const (
 )
 
 const (
-	StashCycleStatusLocked     = "locked"
-	StashCycleStatusWindowOpen = "window_open"
-	StashCycleStatusWithdrawn  = "withdrawn"
-	StashCycleStatusRelocked   = "relocked"
+	StashCycleStatusLocked         = "locked"
+	StashCycleStatusWindowOpen     = "window_open"
+	StashCycleStatusWindowNotified = "window_notified"
+	StashCycleStatusWithdrawn      = "withdrawn"
+	StashCycleStatusRelocked       = "relocked"
 )
 
 type StashLockCycle struct {
@@ -34,5 +35,6 @@ type StashLockCycle struct {
 
 // IsWithdrawable returns true if the lock period has ended and the cycle is in the open window.
 func (c *StashLockCycle) IsWithdrawable(now time.Time) bool {
-	return c.Status == StashCycleStatusWindowOpen && now.After(c.LockEnd) && now.Before(c.WindowEnd)
+	open := c.Status == StashCycleStatusWindowOpen || c.Status == StashCycleStatusWindowNotified
+	return open && now.After(c.LockEnd) && now.Before(c.WindowEnd)
 }

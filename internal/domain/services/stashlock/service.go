@@ -17,18 +17,30 @@ type Repository interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.StashLockCycle, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status string) error
 	GetExpiredWindows(ctx context.Context, now time.Time, limit int) ([]*entities.StashLockCycle, error)
+	GetUnlockedPending(ctx context.Context, now time.Time, limit int) ([]*entities.StashLockCycle, error)
 	// RelockCycle atomically marks oldID as relocked and inserts newCycle in one transaction.
 	RelockCycle(ctx context.Context, oldID uuid.UUID, newCycle *entities.StashLockCycle) error
 }
 
+// Notifier sends push notifications for stash lock events.
+type Notifier interface {
+	NotifyStashWindowOpen(ctx context.Context, userID uuid.UUID, windowEnd time.Time) error
+}
+
 // Service manages the 90-day lock / 7-day window cycle for stash funds.
 type Service struct {
-	repo   Repository
-	logger *zap.Logger
+	repo     Repository
+	notifier Notifier
+	logger   *zap.Logger
 }
 
 func NewService(repo Repository, logger *zap.Logger) *Service {
 	return &Service{repo: repo, logger: logger}
+}
+
+// SetNotifier wires push notifications for window-open events.
+func (s *Service) SetNotifier(n Notifier) {
+	s.notifier = n
 }
 
 // RecordDeposit creates a new lock cycle when stash funds are deposited.
@@ -142,4 +154,32 @@ func (s *Service) RelockExpiredWindows(ctx context.Context) (int, error) {
 	}
 	s.logger.Info("Relocked expired stash windows", zap.Int("count", total))
 	return total, nil
+}
+
+// NotifyWindowsOpened notifies users whose lock period just ended (status=locked, lock_end < now).
+// Call this from a daily cron. Non-fatal: logs errors and continues.
+func (s *Service) NotifyWindowsOpened(ctx context.Context) (int, error) {
+	if s.notifier == nil {
+		return 0, nil
+	}
+	now := time.Now()
+	cycles, err := s.repo.GetUnlockedPending(ctx, now, 500)
+	if err != nil {
+		return 0, fmt.Errorf("GetUnlockedPending: %w", err)
+	}
+	count := 0
+	for _, c := range cycles {
+		if err := s.notifier.NotifyStashWindowOpen(ctx, c.UserID, c.WindowEnd); err != nil {
+			s.logger.Warn("Failed to notify stash window open", zap.String("user_id", c.UserID.String()), zap.Error(err))
+			continue
+		}
+		// Mark as notified so this cycle is excluded from future runs.
+		if err := s.repo.UpdateStatus(ctx, c.ID, entities.StashCycleStatusWindowNotified); err != nil {
+			s.logger.Warn("Failed to mark cycle window_notified", zap.String("cycle_id", c.ID.String()), zap.Error(err))
+			continue
+		}
+		count++
+	}
+	s.logger.Info("Notified stash window open", zap.Int("count", count))
+	return count, nil
 }
