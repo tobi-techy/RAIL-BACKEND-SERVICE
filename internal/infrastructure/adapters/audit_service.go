@@ -196,7 +196,7 @@ func (a *AuditService) insertAuditLog(ctx context.Context, log AuditLog) error {
 		INSERT INTO audit_logs (
 			id, user_id, actor, action, resource_type, resource_id, changes, 
 			status, error_message, ip_address, user_agent, amount, currency, 
-			signature, created_at
+			signature, at
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`
 
 	_, err = a.db.ExecContext(ctx, query,
@@ -240,10 +240,10 @@ func (a *AuditService) GetUserAuditTrail(ctx context.Context, userID uuid.UUID, 
 	query := `
 		SELECT id, user_id, actor, action, resource_type, resource_id, changes,
 			   status, error_message, ip_address, user_agent, amount, currency,
-			   signature, created_at
+			   signature, at AS created_at
 		FROM audit_logs 
 		WHERE user_id = $1 
-		ORDER BY created_at DESC 
+		ORDER BY at DESC 
 		LIMIT $2 OFFSET $3`
 
 	rows, err := a.db.QueryContext(ctx, query, userID, limit, offset)
