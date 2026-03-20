@@ -49,6 +49,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/wallet"
 	"github.com/rail-service/rail_service/internal/domain/services/webauthn"
 	yieldsvc "github.com/rail-service/rail_service/internal/domain/services/yield"
+	recon    "github.com/rail-service/rail_service/internal/workers/reconciliation"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
@@ -923,6 +924,7 @@ type Container struct {
 	yieldRepo               *repositories.YieldRepository
 	ReconciliationService   *reconciliation.Service
 	ReconciliationScheduler *reconciliation.Scheduler
+	StashReconciliation     *recon.Worker
 	AllocationService       *allocation.Service
 	AutoInvestService       *autoinvest.Service
 	StrategyEngine          *strategy.Engine
@@ -1326,6 +1328,17 @@ func (c *Container) initializeDomainServices() error {
 
 	// Initialize yield service
 	c.YieldService = yieldsvc.NewService(c.yieldRepo, &bridgeRewardsAdapter{client: c.BridgeClient}, c.LedgerService, c.ZapLog)
+
+	// Stash reconciliation: daily check that ledger stash total == Bridge USDB wallet balance.
+	if c.Config.Bridge.RailCustomerID != "" && c.Config.Bridge.RailUSDBWalletID != "" {
+		c.StashReconciliation = recon.NewWorker(
+			c.LedgerRepo,
+			&reconciliationBridgeAdapter{client: c.BridgeClient},
+			c.Config.Bridge.RailCustomerID,
+			c.Config.Bridge.RailUSDBWalletID,
+			c.ZapLog,
+		)
+	}
 
 	// Initialize ledger integration (bridges legacy and new ledger system)
 	ledgerIntegration := integration.NewLedgerIntegration(

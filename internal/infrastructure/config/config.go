@@ -372,6 +372,9 @@ type BridgeConfig struct {
 	SupportedChains       []string `mapstructure:"supported_chains"`
 	WebhookSecret         string   `mapstructure:"webhook_secret"`
 	TreasuryWalletAddress string   `mapstructure:"treasury_wallet_address"`
+	// Rail's own Bridge custody account — used for reconciliation.
+	RailCustomerID    string `mapstructure:"rail_customer_id"`
+	RailUSDBWalletID  string `mapstructure:"rail_usdb_wallet_id"`
 }
 
 // WorkerConfig contains background worker configuration

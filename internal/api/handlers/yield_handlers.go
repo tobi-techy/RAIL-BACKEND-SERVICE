@@ -11,9 +11,8 @@ import (
 	"go.uber.org/zap"
 )
 
-// defaultYieldAPY is the estimated annual yield rate for USDB (4.5%).
-// Update this when Bridge publishes a new rate.
-const defaultYieldAPY = "0.045"
+// internalAPY is used only for the daily estimate calculation — never exposed in the API response.
+const internalAPY = "0.045"
 
 type YieldHandlers struct {
 	yieldSvc      *yield.Service
@@ -26,6 +25,8 @@ func NewYieldHandlers(yieldSvc *yield.Service, allocationSvc *allocation.Service
 }
 
 // GetDailyYieldEstimate returns the estimated daily yield for the authenticated user.
+// APY is intentionally omitted from the response — the actual rate is determined by Bridge
+// and varies; showing a hardcoded number would be misleading.
 // GET /v1/yield/estimate
 func (h *YieldHandlers) GetDailyYieldEstimate(c *gin.Context) {
 	userID, err := common.GetUserIDFromContext(c)
@@ -41,9 +42,9 @@ func (h *YieldHandlers) GetDailyYieldEstimate(c *gin.Context) {
 		return
 	}
 
-	apy, err := decimal.NewFromString(defaultYieldAPY)
+	apy, err := decimal.NewFromString(internalAPY)
 	if err != nil {
-		h.logger.Error("Failed to parse APY constant", zap.Error(err))
+		h.logger.Error("Failed to parse internal APY constant", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to calculate yield estimate"})
 		return
 	}
@@ -52,6 +53,5 @@ func (h *YieldHandlers) GetDailyYieldEstimate(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"stash_balance":  balances.StashBalance.StringFixed(6),
 		"daily_estimate": daily.StringFixed(6),
-		"apy":            defaultYieldAPY,
 	})
 }

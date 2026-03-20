@@ -243,3 +243,19 @@ func (a *bridgeRewardsAdapter) GetRewardsSummary(ctx context.Context, currency s
 	}
 	return &yieldsvc.RewardSummary{Rewards: s.Rewards}, nil
 }
+
+// reconciliationBridgeAdapter adapts bridge.Client to reconciliation.BridgeWallet.
+type reconciliationBridgeAdapter struct {
+	client *bridge.Client
+}
+
+func (a *reconciliationBridgeAdapter) GetWalletBalance(ctx context.Context, customerID, walletID string) (decimal.Decimal, error) {
+	wb, err := a.client.GetWalletBalance(ctx, customerID, walletID)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	if wb == nil {
+		return decimal.Zero, fmt.Errorf("reconciliationBridgeAdapter: nil wallet balance response")
+	}
+	return decimal.NewFromString(wb.GetUSDCAmount())
+}
