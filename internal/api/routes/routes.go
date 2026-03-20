@@ -446,7 +446,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 			// Funding routes (legacy - kept for backward compat, prefer /deposits)
 			funding := protected.Group("/funding")
-			funding.Use(middleware.TimeoutMiddleware(30 * time.Second))
+			funding.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
 			{
 				funding.POST("/deposit/address", walletFundingHandlers.CreateDepositAddress)
 				funding.POST("/virtual-account", walletFundingHandlers.CreateVirtualAccount)
@@ -467,7 +467,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 			// Unified Deposit routes
 			deposits := protected.Group("/deposits")
-			deposits.Use(middleware.TimeoutMiddleware(30 * time.Second))
+			deposits.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
 			{
 				deposits.POST("", walletFundingHandlers.CreateDeposit)
 				deposits.GET("", walletFundingHandlers.ListDeposits)
@@ -476,7 +476,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 			// Unified Withdrawal routes with security middleware
 			withdrawals := protected.Group("/withdrawals")
-			withdrawals.Use(middleware.TimeoutMiddleware(30 * time.Second))
+			withdrawals.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
 			// Apply withdrawal security: rate limits (3/day) and daily max ($10k new, $100k established)
 			if withdrawalSecurityStore := container.GetWithdrawalSecurityStore(); withdrawalSecurityStore != nil {
 				withdrawals.Use(middleware.WithdrawalSecurityMiddleware(
@@ -522,6 +522,12 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					account.GET("/investment-stash/distribution", investmentStashHandlers.GetInvestmentDistribution)
 					account.GET("/investment-stash/transactions", investmentStashHandlers.GetInvestmentTransactions)
 					account.GET("/investment-stash/performance", investmentStashHandlers.GetInvestmentPerformance)
+				}
+
+				// Yield estimate endpoint
+				if container.YieldService != nil {
+					yieldHandlers := handlers.NewYieldHandlers(container.YieldService, container.AllocationService, container.ZapLog)
+					account.GET("/yield/estimate", yieldHandlers.GetDailyYieldEstimate)
 				}
 			}
 

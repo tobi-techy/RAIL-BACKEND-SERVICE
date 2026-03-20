@@ -43,10 +43,13 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	"github.com/rail-service/rail_service/internal/domain/services/socialauth"
 	"github.com/rail-service/rail_service/internal/domain/services/station"
+	"github.com/rail-service/rail_service/internal/domain/services/stashlock"
 	"github.com/rail-service/rail_service/internal/domain/services/strategy"
 	"github.com/rail-service/rail_service/internal/domain/services/twofa"
 	"github.com/rail-service/rail_service/internal/domain/services/wallet"
 	"github.com/rail-service/rail_service/internal/domain/services/webauthn"
+	yieldsvc "github.com/rail-service/rail_service/internal/domain/services/yield"
+	recon    "github.com/rail-service/rail_service/internal/workers/reconciliation"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
@@ -917,8 +920,11 @@ type Container struct {
 	InvestingService        *investing.Service
 	BalanceService          *services.BalanceService
 	LedgerService           *ledger.Service
+	YieldService            *yieldsvc.Service
+	yieldRepo               *repositories.YieldRepository
 	ReconciliationService   *reconciliation.Service
 	ReconciliationScheduler *reconciliation.Scheduler
+	StashReconciliation     *recon.Worker
 	AllocationService       *allocation.Service
 	AutoInvestService       *autoinvest.Service
 	StrategyEngine          *strategy.Engine
@@ -929,6 +935,7 @@ type Container struct {
 	LimitsService           *limits.Service
 	DomainAuditService      *audit.Service
 	WithdrawalService       *services.WithdrawalService
+	StashLockService        *stashlock.Service
 
 	// AI Financial Manager Services
 	AIProviderManager     *ai.ProviderManager
@@ -1173,6 +1180,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		LedgerRepo:                ledgerRepo,
 		ReconciliationRepo:        reconciliationRepo,
 		OnboardingJobRepo:         onboardingJobRepo,
+		yieldRepo:                 repositories.NewYieldRepository(sqlxDB),
 		DeviceTokenRepo:           repositories.NewDeviceTokenRepository(db),
 		NotificationRepo:          repositories.NewNotificationRepository(db),
 
@@ -1318,6 +1326,20 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize ledger service
 	c.LedgerService = ledger.NewService(c.LedgerRepo, sqlxDB, c.Logger)
 
+	// Initialize yield service
+	c.YieldService = yieldsvc.NewService(c.yieldRepo, &bridgeRewardsAdapter{client: c.BridgeClient}, c.LedgerService, c.ZapLog)
+
+	// Stash reconciliation: daily check that ledger stash total == Bridge USDB wallet balance.
+	if c.Config.Bridge.RailCustomerID != "" && c.Config.Bridge.RailUSDBWalletID != "" {
+		c.StashReconciliation = recon.NewWorker(
+			c.LedgerRepo,
+			&reconciliationBridgeAdapter{client: c.BridgeClient},
+			c.Config.Bridge.RailCustomerID,
+			c.Config.Bridge.RailUSDBWalletID,
+			c.ZapLog,
+		)
+	}
+
 	// Initialize ledger integration (bridges legacy and new ledger system)
 	ledgerIntegration := integration.NewLedgerIntegration(
 		c.LedgerService,
@@ -1433,6 +1455,14 @@ func (c *Container) initializeDomainServices() error {
 
 	// Wire auto-invest service to allocation service for automatic triggering
 	c.AllocationService.SetAutoInvestService(c.AutoInvestService)
+
+	// Wire yield snapshotter so stash balance changes are recorded for TWB calculation
+	c.AllocationService.SetYieldSnapshotter(c.YieldService)
+
+	// Wire stash lock recorder so deposits start a 90-day lock cycle
+	if c.StashLockService != nil {
+		c.AllocationService.SetStashLockRecorder(c.StashLockService)
+	}
 
 	// Inject allocation service into onboarding service (for auto-enabling 70/30 mode)
 	c.OnboardingService.SetAllocationService(c.AllocationService)
@@ -1625,6 +1655,12 @@ func (c *Container) initializeDomainServices() error {
 		c.BridgeAdapter,         // BridgeCryptoTransferAdapter (crypto wallet transfers)
 		c.Logger,
 	)
+
+	// Wire stash lock enforcement
+	stashLockRepo := repositories.NewStashLockRepository(sqlx.NewDb(c.DB, "postgres"))
+	stashLockSvc := stashlock.NewService(stashLockRepo, c.ZapLog)
+	c.WithdrawalService.SetStashLockChecker(stashLockSvc)
+	c.StashLockService = stashLockSvc
 
 	if c.BridgeWebhookHandler != nil && c.BridgeVirtualAccountService != nil {
 		var cardProcessor webhooks.BridgeCardProcessor

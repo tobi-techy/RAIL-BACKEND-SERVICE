@@ -919,3 +919,12 @@ func (r *LedgerRepository) GetTotalWithdrawalEntries(ctx context.Context) (decim
 
 	return total, nil
 }
+
+// GetTotalStashBalance returns the sum of all users' stash_balance ledger accounts.
+func (r *LedgerRepository) GetTotalStashBalance(ctx context.Context) (decimal.Decimal, error) {
+	var total decimal.Decimal
+	err := r.db.QueryRowxContext(ctx,
+		`SELECT COALESCE(SUM(balance), 0) FROM ledger_accounts WHERE account_type = 'stash_balance'`,
+	).Scan(&total)
+	return total, err
+}
