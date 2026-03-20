@@ -75,6 +75,11 @@ type DeviceTokenRepository interface {
 	DeactivateAllUserTokens(ctx context.Context, userID uuid.UUID) error
 }
 
+// KYCSubmissionRepository interface for fetching all KYC submissions for deletion
+type KYCSubmissionRepository interface {
+	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.KYCSubmission, error)
+}
+
 // DiditSessionDeleter interface for deleting Didit KYC sessions (GDPR)
 type DiditSessionDeleter interface {
 	DeleteSession(ctx context.Context, sessionID string) error
@@ -96,6 +101,7 @@ type DeletionService struct {
 	deviceTokenRepo       DeviceTokenRepository
 	diditClient           DiditSessionDeleter
 	kycUserLookup         KYCUserLookup
+	kycSubmissionRepo     KYCSubmissionRepository
 	alpacaAccountRepo     AlpacaAccountRepository
 	alpacaClient          AlpacaClient
 	virtualAccountRepo    VirtualAccountRepository
@@ -148,9 +154,10 @@ func (s *DeletionService) SetDeviceTokenRepo(repo DeviceTokenRepository) {
 }
 
 // SetDiditClient sets the Didit client for KYC session deletion on account closure
-func (s *DeletionService) SetDiditClient(client DiditSessionDeleter, userLookup KYCUserLookup) {
+func (s *DeletionService) SetDiditClient(client DiditSessionDeleter, userLookup KYCUserLookup, kycSubmissionRepo KYCSubmissionRepository) {
 	s.diditClient = client
 	s.kycUserLookup = userLookup
+	s.kycSubmissionRepo = kycSubmissionRepo
 }
 
 // DeleteAccountRequest represents a request to delete an account
@@ -326,18 +333,22 @@ func (s *DeletionService) cleanupExternalProviders(ctx context.Context, userID u
 	// Note: Bridge custody wallets cannot be deleted (blockchain addresses are permanent)
 	// Funds have already been swept to treasury
 
-	// Delete Didit KYC session data (GDPR compliance)
-	if s.diditClient != nil && s.kycUserLookup != nil {
-		user, err := s.kycUserLookup.GetUserEntityByID(ctx, userID)
+	// Delete all Didit KYC sessions for this user (GDPR compliance)
+	if s.diditClient != nil && s.kycSubmissionRepo != nil {
+		submissions, err := s.kycSubmissionRepo.GetByUserID(ctx, userID)
 		if err != nil {
-			s.logger.Error("Failed to look up user for Didit cleanup", "user_id", userID.String(), "error", err)
-			criticalErrors = append(criticalErrors, fmt.Sprintf("didit user lookup: %v", err))
-		} else if user != nil && user.KYCProviderRef != nil && *user.KYCProviderRef != "" {
-			if err := s.diditClient.DeleteSession(ctx, *user.KYCProviderRef); err != nil {
-				s.logger.Error("Failed to delete Didit session", "user_id", userID.String(), "session_id", *user.KYCProviderRef, "error", err)
-				criticalErrors = append(criticalErrors, fmt.Sprintf("didit session delete: %v", err))
-			} else {
-				s.logger.Info("Deleted Didit KYC session", "user_id", userID.String(), "session_id", *user.KYCProviderRef)
+			s.logger.Error("Failed to load KYC submissions for Didit cleanup", "user_id", userID.String(), "error", err)
+			criticalErrors = append(criticalErrors, fmt.Sprintf("didit submissions lookup: %v", err))
+		} else {
+			for _, sub := range submissions {
+				if sub.Provider != "didit" || sub.ProviderRef == "" {
+					continue
+				}
+				if err := s.diditClient.DeleteSession(ctx, sub.ProviderRef); err != nil {
+					s.logger.Warn("Failed to delete Didit session", "user_id", userID.String(), "session_id", sub.ProviderRef, "error", err)
+				} else {
+					s.logger.Info("Deleted Didit KYC session", "user_id", userID.String(), "session_id", sub.ProviderRef)
+				}
 			}
 		}
 	}

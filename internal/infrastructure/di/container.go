@@ -1770,7 +1770,7 @@ func (c *Container) initializeDomainServices() error {
 		diditClient := didit.NewClient(didit.Config{
 			APIKey: diditAPIKey,
 		}, c.ZapLog)
-		c.AccountDeletionService.SetDiditClient(diditClient, c.UserRepo)
+		c.AccountDeletionService.SetDiditClient(diditClient, c.UserRepo, c.KYCSubmissionRepo)
 	}
 
 	// Initialize P2P transfer services
