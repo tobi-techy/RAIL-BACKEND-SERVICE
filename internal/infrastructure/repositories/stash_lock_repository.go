@@ -66,6 +66,18 @@ func (r *StashLockRepository) GetExpiredWindows(ctx context.Context, now time.Ti
 	return rows, err
 }
 
+// GetUnlockedPending returns locked cycles whose lock_end has passed (window now open) up to limit.
+func (r *StashLockRepository) GetUnlockedPending(ctx context.Context, now time.Time, limit int) ([]*entities.StashLockCycle, error) {
+	var rows []*entities.StashLockCycle
+	err := r.db.SelectContext(ctx, &rows,
+		`SELECT id, user_id, deposit_id, amount, lock_start, lock_end, window_end, status, created_at, updated_at
+		 FROM stash_lock_cycles
+		 WHERE status = 'locked' AND lock_end < $1
+		 LIMIT $2`,
+		now, limit)
+	return rows, err
+}
+
 // RelockCycle atomically marks oldID as relocked and inserts newCycle in a single transaction.
 func (r *StashLockRepository) RelockCycle(ctx context.Context, oldID uuid.UUID, newCycle *entities.StashLockCycle) error {
 	tx, err := r.db.BeginTxx(ctx, nil)
