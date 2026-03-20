@@ -91,4 +91,4 @@ jobs:
             --region ${{ env.AWS_REGION }} \
             --query 'services[0].desiredCount' --output text)
           echo "Running: $RUNNING / Desired: $DESIRED"
-          [ "$RUNNING" = "$DESIRED" ] || (echo "Deployment unhealthy" && exit 1)
+          [ "$RUNNING" -eq "$DESIRED" ] && [ "$RUNNING" -gt 0 ] || (echo "Deployment unhealthy: Running=$RUNNING, Desired=$DESIRED" && exit 1)
