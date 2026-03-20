@@ -770,6 +770,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			admin.GET("/wallet/health", walletFundingHandlers.HealthCheck)
 			admin.POST("/reconcile/:user_id", walletFundingHandlers.ReconcileUserBalance)
 
+			// KYC admin routes
+			admin.POST("/kyc/resync-bridge", kycHTTPHandlers.ResyncBridge)
+
 			// Security admin routes
 			adminMFAHandlers := handlers.NewMFAHandlers(
 				container.GetMFAService(),

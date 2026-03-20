@@ -74,12 +74,27 @@ type IDVerification struct {
 	Status         string `json:"status"`
 	DocumentType   string `json:"document_type"`
 	DocumentNumber string `json:"document_number"`
+	PersonalNumber string `json:"personal_number"` // national ID / tax number on document
 	FirstName      string `json:"first_name"`
 	LastName       string `json:"last_name"`
 	DateOfBirth    string `json:"date_of_birth"`
+	ExpirationDate string `json:"expiration_date"`
+	DateOfIssue    string `json:"date_of_issue"`
 	IssuingState   string `json:"issuing_state"`
 	Nationality    string `json:"nationality"`
 	Gender         string `json:"gender"`
+	Address        string `json:"address"`
+	ParsedAddress  *struct {
+		Street1    string `json:"street_1"`
+		Street2    string `json:"street_2"`
+		City       string `json:"city"`
+		Region     string `json:"region"`
+		Country    string `json:"country"`
+		PostalCode string `json:"postal_code"`
+	} `json:"parsed_address"`
+	FrontImage    string `json:"front_image"`
+	BackImage     string `json:"back_image"`
+	PortraitImage string `json:"portrait_image"`
 }
 
 // --- Webhook types ---

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -91,6 +92,8 @@ type Service struct {
 	sumsubLevelName        string
 	notifier               KYCNotifier
 	logger                 *zap.Logger
+	resyncMu               sync.Mutex
+	resyncInFlight         map[string]bool
 }
 
 // SetNotifier wires the push notification sender for KYC outcomes.
@@ -107,6 +110,7 @@ type UserRepository interface {
 type KYCSubmissionRepository interface {
 	Create(ctx context.Context, submission *entities.KYCSubmission) error
 	GetByProviderRef(ctx context.Context, providerRef string) (*entities.KYCSubmission, error)
+	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.KYCSubmission, error)
 	Update(ctx context.Context, submission *entities.KYCSubmission) error
 }
 
@@ -160,6 +164,7 @@ func NewService(
 		kycSyncJobRepo:         kycSyncJobRepo,
 		sumsubLevelName:        strings.TrimSpace(sumsubLevelName),
 		logger:                 logger,
+		resyncInFlight:         make(map[string]bool),
 	}
 	if len(diditAdapter) > 0 && diditAdapter[0] != nil {
 		svc.diditAdapter = diditAdapter[0]
@@ -1199,6 +1204,22 @@ func mapTaxIDTypeToBridge(taxIDType string) string {
 	}
 }
 
+// mapDocTypeToBridge maps a Didit document_type string to a Bridge identifying_info type.
+func mapDocTypeToBridge(docType string) string {
+	switch strings.ToLower(strings.TrimSpace(docType)) {
+	case "passport":
+		return "passport"
+	case "driver license", "driver's license", "driving license":
+		return "drivers_license"
+	case "identity card", "national id", "id card":
+		return "national_id"
+	case "residence permit":
+		return "residence_permit"
+	default:
+		return "government_id"
+	}
+}
+
 // MapTaxIDTypeToAlpaca converts a Rail tax ID type to Alpaca's format.
 func MapTaxIDTypeToAlpaca(taxIDType string) string {
 	switch strings.ToLower(strings.TrimSpace(taxIDType)) {
@@ -2194,8 +2215,30 @@ func (s *Service) hydrateSubmissionFromDidit(ctx context.Context, submission *en
 		submission.VerificationData["didit_dob"] = v.DateOfBirth
 		submission.VerificationData["didit_doc_type"] = v.DocumentType
 		submission.VerificationData["didit_issuing_state"] = v.IssuingState
+		submission.VerificationData["didit_nationality"] = v.Nationality
+		submission.VerificationData["didit_gender"] = v.Gender
+		submission.VerificationData["didit_expiration_date"] = v.ExpirationDate
+		submission.VerificationData["didit_front_image"] = v.FrontImage
+		submission.VerificationData["didit_back_image"] = v.BackImage
 		if v.DocumentNumber != "" {
 			submission.VerificationData["didit_doc_number_tail"] = tail(v.DocumentNumber, 4)
+			submission.VerificationData["didit_doc_number"] = v.DocumentNumber
+		}
+		// personal_number is the national ID / tax number printed on the document.
+		// Use as fallback tax_id if not already set from session creation.
+		if v.PersonalNumber != "" {
+			submission.VerificationData["didit_personal_number"] = v.PersonalNumber
+			existing, ok := submission.VerificationData["tax_id"].(string)
+			if !ok || existing == "" {
+				submission.VerificationData["tax_id"] = v.PersonalNumber
+			}
+		}
+		if v.ParsedAddress != nil {
+			submission.VerificationData["didit_address_street"] = v.ParsedAddress.Street1
+			submission.VerificationData["didit_address_city"] = v.ParsedAddress.City
+			submission.VerificationData["didit_address_region"] = v.ParsedAddress.Region
+			submission.VerificationData["didit_address_country"] = v.ParsedAddress.Country
+			submission.VerificationData["didit_address_postal_code"] = v.ParsedAddress.PostalCode
 		}
 	}
 }
@@ -2215,14 +2258,38 @@ func (s *Service) submitToBridgeFromDidit(ctx context.Context, bridgeCustomerID 
 		return entities.KYCProviderResult{Success: false, Status: "failed", Error: "missing tax_id"}
 	}
 
-	req := &bridge.UpdateCustomerRequest{
-		IdentifyingInformation: []bridge.IdentifyingInfo{
-			{
-				Type:           mapTaxIDTypeToBridge(taxIDType),
-				IssuingCountry: strings.ToLower(country),
-				Number:         taxID,
-			},
+	issuingCountry := strings.ToLower(country)
+
+	// Primary: tax ID (SSN, NIN, etc.)
+	identifyingInfo := []bridge.IdentifyingInfo{
+		{
+			Type:           mapTaxIDTypeToBridge(taxIDType),
+			IssuingCountry: issuingCountry,
+			Number:         taxID,
 		},
+	}
+
+	// Secondary: government-issued document with images if available from Didit.
+	docNumber, _ := data["didit_doc_number"].(string)
+	docType, _ := data["didit_doc_type"].(string)
+	expiration, _ := data["didit_expiration_date"].(string)
+	frontImage, _ := data["didit_front_image"].(string)
+	backImage, _ := data["didit_back_image"].(string)
+
+	if docNumber != "" || frontImage != "" {
+		docEntry := bridge.IdentifyingInfo{
+			Type:           mapDocTypeToBridge(docType),
+			IssuingCountry: issuingCountry,
+			Number:         docNumber,
+			Expiration:     expiration,
+			ImageFront:     frontImage,
+			ImageBack:      backImage,
+		}
+		identifyingInfo = append(identifyingInfo, docEntry)
+	}
+
+	req := &bridge.UpdateCustomerRequest{
+		IdentifyingInformation: identifyingInfo,
 	}
 
 	customer, err := s.bridgeAdapter.UpdateCustomer(ctx, bridgeCustomerID, req)
@@ -2231,5 +2298,91 @@ func (s *Service) submitToBridgeFromDidit(ctx context.Context, bridgeCustomerID 
 			zap.Error(err), zap.String("bridge_customer_id", bridgeCustomerID))
 		return entities.KYCProviderResult{Success: false, Status: "failed", Error: err.Error()}
 	}
+	// Clear full document number after successful sync — keep only the tail for audit.
+	delete(submission.VerificationData, "didit_doc_number")
 	return entities.KYCProviderResult{Success: true, Status: string(customer.Status)}
+}
+
+// ResyncBridge re-runs the Bridge KYC sync for a user's latest Didit submission.
+// Used by admins to fix users whose Bridge customer is Incomplete due to missing tax_id.
+func (s *Service) ResyncBridge(ctx context.Context, userID uuid.UUID, taxID, taxIDType, issuingCountry string) error {
+	// Validate inputs.
+	taxID = strings.TrimSpace(taxID)
+	taxIDType = strings.TrimSpace(taxIDType)
+	issuingCountry = strings.TrimSpace(issuingCountry)
+	if len(taxID) < 5 || len(taxID) > 50 {
+		return fmt.Errorf("tax_id must be between 5 and 50 characters")
+	}
+	if taxIDType == "" {
+		return fmt.Errorf("tax_id_type is required")
+	}
+	if len(issuingCountry) != 3 {
+		return fmt.Errorf("issuing_country must be a 3-letter ISO country code")
+	}
+
+	// Per-user lock to prevent concurrent resyncs for the same user.
+	s.resyncMu.Lock()
+	key := userID.String()
+	if s.resyncInFlight[key] {
+		s.resyncMu.Unlock()
+		return fmt.Errorf("resync already in progress for this user")
+	}
+	s.resyncInFlight[key] = true
+	s.resyncMu.Unlock()
+	defer func() {
+		s.resyncMu.Lock()
+		delete(s.resyncInFlight, key)
+		s.resyncMu.Unlock()
+	}()
+
+	profile, err := s.userRepo.GetProfileByUserID(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("user not found: %w", err)
+	}
+	if profile.BridgeCustomerID == nil || *profile.BridgeCustomerID == "" {
+		return fmt.Errorf("user has no Bridge customer ID")
+	}
+
+	submissions, err := s.kycSubmissionRepo.GetByUserID(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("failed to load submissions: %w", err)
+	}
+
+	// Find latest Didit submission.
+	var latest *entities.KYCSubmission
+	for _, sub := range submissions {
+		if sub.Provider != "didit" {
+			continue
+		}
+		if latest == nil || sub.CreatedAt.After(latest.CreatedAt) {
+			latest = sub
+		}
+	}
+	if latest == nil {
+		return fmt.Errorf("no didit submission found for user")
+	}
+
+	// Inject provided tax data into verification_data.
+	if latest.VerificationData == nil {
+		latest.VerificationData = map[string]any{}
+	}
+	latest.VerificationData["tax_id"] = taxID
+	latest.VerificationData["tax_id_type"] = taxIDType
+	latest.VerificationData["issuing_country"] = issuingCountry
+
+	result := s.submitToBridgeFromDidit(ctx, *profile.BridgeCustomerID, latest)
+	if !result.Success {
+		return fmt.Errorf("bridge sync failed: %s", result.Error)
+	}
+
+	// Persist updated verification_data.
+	latest.VerificationData["bridge_sync"] = map[string]any{
+		"success": true,
+		"status":  result.Status,
+		"error":   "",
+	}
+	if err := s.kycSubmissionRepo.Update(ctx, latest); err != nil {
+		s.logger.Warn("Failed to persist resync result", zap.String("user_id", userID.String()), zap.Error(err))
+	}
+	return nil
 }
