@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	yieldsvc "github.com/rail-service/rail_service/internal/domain/services/yield"
 	"github.com/shopspring/decimal"
 )
 
@@ -222,4 +223,17 @@ func mapChainToBridgePaymentRail(chain entities.Chain) bridge.PaymentRail {
 	default:
 		return ""
 	}
+}
+
+// bridgeRewardsAdapter adapts bridge.Client to yieldsvc.BridgeRewards.
+type bridgeRewardsAdapter struct {
+	client *bridge.Client
+}
+
+func (a *bridgeRewardsAdapter) GetRewardsSummary(ctx context.Context, currency string) (*yieldsvc.RewardSummary, error) {
+	s, err := a.client.GetRewardsSummary(ctx, currency)
+	if err != nil {
+		return nil, err
+	}
+	return &yieldsvc.RewardSummary{Rewards: s.Rewards}, nil
 }

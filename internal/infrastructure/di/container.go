@@ -47,6 +47,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/twofa"
 	"github.com/rail-service/rail_service/internal/domain/services/wallet"
 	"github.com/rail-service/rail_service/internal/domain/services/webauthn"
+	yieldsvc "github.com/rail-service/rail_service/internal/domain/services/yield"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
@@ -917,6 +918,8 @@ type Container struct {
 	InvestingService        *investing.Service
 	BalanceService          *services.BalanceService
 	LedgerService           *ledger.Service
+	YieldService            *yieldsvc.Service
+	yieldRepo               *repositories.YieldRepository
 	ReconciliationService   *reconciliation.Service
 	ReconciliationScheduler *reconciliation.Scheduler
 	AllocationService       *allocation.Service
@@ -1173,6 +1176,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		LedgerRepo:                ledgerRepo,
 		ReconciliationRepo:        reconciliationRepo,
 		OnboardingJobRepo:         onboardingJobRepo,
+		yieldRepo:                 repositories.NewYieldRepository(sqlxDB),
 		DeviceTokenRepo:           repositories.NewDeviceTokenRepository(db),
 		NotificationRepo:          repositories.NewNotificationRepository(db),
 
@@ -1318,6 +1322,9 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize ledger service
 	c.LedgerService = ledger.NewService(c.LedgerRepo, sqlxDB, c.Logger)
 
+	// Initialize yield service
+	c.YieldService = yieldsvc.NewService(c.yieldRepo, &bridgeRewardsAdapter{client: c.BridgeClient}, c.LedgerService, c.ZapLog)
+
 	// Initialize ledger integration (bridges legacy and new ledger system)
 	ledgerIntegration := integration.NewLedgerIntegration(
 		c.LedgerService,
@@ -1433,6 +1440,9 @@ func (c *Container) initializeDomainServices() error {
 
 	// Wire auto-invest service to allocation service for automatic triggering
 	c.AllocationService.SetAutoInvestService(c.AutoInvestService)
+
+	// Wire yield snapshotter so stash balance changes are recorded for TWB calculation
+	c.AllocationService.SetYieldSnapshotter(c.YieldService)
 
 	// Inject allocation service into onboarding service (for auto-enabling 70/30 mode)
 	c.OnboardingService.SetAllocationService(c.AllocationService)

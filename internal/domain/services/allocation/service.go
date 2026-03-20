@@ -42,6 +42,11 @@ type AutoInvestService interface {
 	TriggerAutoInvestment(ctx context.Context, req autoinvest.TriggerRequest) error
 }
 
+// YieldSnapshotter records a stash balance snapshot for yield TWB calculation.
+type YieldSnapshotter interface {
+	RecordSnapshot(ctx context.Context, userID uuid.UUID, balance decimal.Decimal) error
+}
+
 type spendingTotalReader interface {
 	GetTotalSpendingAdded(ctx context.Context, userID uuid.UUID, startDate, endDate time.Time) (decimal.Decimal, error)
 }
@@ -57,6 +62,7 @@ type Service struct {
 	allocationRepo      AllocationRepository
 	ledgerService       *ledger.Service
 	autoInvestService   AutoInvestService
+	yieldSnapshotter    YieldSnapshotter
 	notificationService AllocationNotificationService
 	logger              *logger.Logger
 }
@@ -77,6 +83,11 @@ func NewService(
 // SetAutoInvestService sets the auto-invest service (to avoid circular dependency)
 func (s *Service) SetAutoInvestService(autoInvestService AutoInvestService) {
 	s.autoInvestService = autoInvestService
+}
+
+// SetYieldSnapshotter sets the yield snapshot recorder.
+func (s *Service) SetYieldSnapshotter(ys YieldSnapshotter) {
+	s.yieldSnapshotter = ys
 }
 
 // SetNotificationService sets the notification service for user alerts on auto-invest failure.
@@ -392,6 +403,12 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 	); err != nil {
 		span.RecordError(err)
 		return fmt.Errorf("failed to create stash allocation transfer: %w", err)
+	}
+
+	// Record yield snapshot after stash balance changes.
+	if s.yieldSnapshotter != nil {
+		newStashBalance, _ := s.ledgerService.GetAccountBalance(ctx, req.UserID, entities.AccountTypeStashBalance)
+		_ = s.yieldSnapshotter.RecordSnapshot(ctx, req.UserID, newStashBalance)
 	}
 
 	// Create allocation event for audit trail

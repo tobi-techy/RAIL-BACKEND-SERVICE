@@ -538,3 +538,21 @@ func injectTraceContext(ctx context.Context, headers http.Header) {
 	}
 	headers.Set("traceparent", "00-"+traceID+"-"+spanID+"-"+flags)
 }
+
+// RewardSummary represents the Bridge rewards summary response.
+type RewardSummary struct {
+	DeveloperID string `json:"developer_id"`
+	Currency    string `json:"currency"`
+	Balance     string `json:"balance"`
+	Rewards     string `json:"rewards"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
+// GetRewardsSummary returns the accrued (unpaid) rewards for a given stablecoin currency.
+func (c *Client) GetRewardsSummary(ctx context.Context, currency string) (*RewardSummary, error) {
+	var summary RewardSummary
+	if err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v0/rewards/%s", url.PathEscape(currency)), nil, &summary); err != nil {
+		return nil, fmt.Errorf("get rewards summary failed: %w", err)
+	}
+	return &summary, nil
+}

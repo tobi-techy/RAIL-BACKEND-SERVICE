@@ -523,6 +523,12 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					account.GET("/investment-stash/transactions", investmentStashHandlers.GetInvestmentTransactions)
 					account.GET("/investment-stash/performance", investmentStashHandlers.GetInvestmentPerformance)
 				}
+
+				// Yield estimate endpoint
+				if container.YieldService != nil {
+					yieldHandlers := handlers.NewYieldHandlers(container.YieldService, container.AllocationService, container.ZapLog)
+					account.GET("/yield/estimate", yieldHandlers.GetDailyYieldEstimate)
+				}
 			}
 
 			// Limits routes - deposit/withdrawal limits based on KYC tier
