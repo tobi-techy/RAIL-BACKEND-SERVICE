@@ -79,7 +79,15 @@ jobs:
           aws ecs wait services-stable \
             --cluster rail-$ENV \
             --services rail-$ENV \
-            --region ${{ env.AWS_REGION }}
+            --region ${{ env.AWS_REGION }} \
+            --cli-read-timeout 900 \
+            --cli-connect-timeout 60 || \
+          aws ecs wait services-stable \
+            --cluster rail-$ENV \
+            --services rail-$ENV \
+            --region ${{ env.AWS_REGION }} \
+            --cli-read-timeout 900 \
+            --cli-connect-timeout 60
           RUNNING=$(aws ecs describe-services \
             --cluster rail-$ENV \
             --services rail-$ENV \

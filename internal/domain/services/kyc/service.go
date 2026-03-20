@@ -1861,21 +1861,27 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 		return nil, ErrKYCAlreadyApproved
 	}
 
-	// Submit source of funds to Bridge (non-fatal).
-	if req.SourceOfFunds != "" {
-		bridgeUpdateReq := &bridge.UpdateCustomerRequest{
-			SourceOfFunds:              req.SourceOfFunds,
-			EmploymentStatus:           req.EmploymentStatus,
-			ExpectedMonthlyPaymentsUSD: req.ExpectedMonthlyPaymentsUSD,
-			AccountPurpose:             req.AccountPurpose,
-			AccountPurposeOther:        req.AccountPurposeOther,
-			MostRecentOccupation:       req.MostRecentOccupation,
-			ActingAsIntermediary:       req.ActingAsIntermediary,
-		}
-		if _, bridgeErr := s.bridgeAdapter.UpdateCustomer(ctx, *profile.BridgeCustomerID, bridgeUpdateReq); bridgeErr != nil {
-			s.logger.Warn("Failed to submit source of funds to Bridge",
-				zap.Error(bridgeErr), zap.String("user_id", userID.String()))
-		}
+	// Submit tax ID + source of funds to Bridge upfront (non-fatal).
+	// Tax ID is never stored in our DB — sent directly to Bridge here.
+	bridgeUpdateReq := &bridge.UpdateCustomerRequest{
+		SourceOfFunds:              req.SourceOfFunds,
+		EmploymentStatus:           req.EmploymentStatus,
+		ExpectedMonthlyPaymentsUSD: req.ExpectedMonthlyPaymentsUSD,
+		AccountPurpose:             req.AccountPurpose,
+		AccountPurposeOther:        req.AccountPurposeOther,
+		MostRecentOccupation:       req.MostRecentOccupation,
+		ActingAsIntermediary:       req.ActingAsIntermediary,
+		IdentifyingInformation: []bridge.IdentifyingInfo{
+			{
+				Type:           mapTaxIDTypeToBridge(req.TaxIDType),
+				IssuingCountry: req.IssuingCountry,
+				Number:         req.TaxID,
+			},
+		},
+	}
+	if _, bridgeErr := s.bridgeAdapter.UpdateCustomer(ctx, *profile.BridgeCustomerID, bridgeUpdateReq); bridgeErr != nil {
+		s.logger.Warn("Failed to submit tax ID to Bridge at session start",
+			zap.Error(bridgeErr), zap.String("user_id", userID.String()))
 	}
 
 	sess, err := s.diditAdapter.CreateSession(ctx, userID.String())
@@ -1887,7 +1893,6 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 	expiresAt := now.Add(30 * 24 * time.Hour)
 	verificationData := map[string]any{
 		"didit_session_id": sess.SessionID,
-		"tax_id":           req.TaxID,
 		"tax_id_type":      req.TaxIDType,
 		"issuing_country":  req.IssuingCountry,
 		"disclosures": map[string]any{
@@ -2058,13 +2063,21 @@ func (s *Service) processDiditApproved(ctx context.Context, submission *entities
 		}
 	}
 
-	user.KYCStatus = string(entities.KYCStatusApproved)
-	user.KYCApprovedAt = &now
 	user.KYCRejectionReason = nil
 	if user.KYCSubmittedAt == nil {
 		user.KYCSubmittedAt = &now
 	}
-	user.OnboardingStatus = entities.OnboardingStatusCompleted
+
+	// KYC is only fully approved when Bridge also accepts the customer.
+	// If Bridge sync failed, stay in processing — retry job will re-attempt.
+	if bridgeResult.Success {
+		user.KYCStatus = string(entities.KYCStatusApproved)
+		user.KYCApprovedAt = &now
+		user.OnboardingStatus = entities.OnboardingStatusCompleted
+	} else {
+		user.KYCStatus = string(entities.KYCStatusProcessing)
+		user.OnboardingStatus = entities.OnboardingStatusKYCPending
+	}
 
 	if err := s.userRepo.Update(ctx, user); err != nil {
 		return fmt.Errorf("failed to update user after didit approval: %w", err)
@@ -2092,7 +2105,7 @@ func (s *Service) processDiditApproved(ctx context.Context, submission *entities
 		return fmt.Errorf("failed to update didit submission: %w", err)
 	}
 
-	if s.notifier != nil {
+	if s.notifier != nil && bridgeResult.Success {
 		if err := s.notifier.NotifyKYCApproved(ctx, submission.UserID); err != nil {
 			s.logger.Warn("Failed to send KYC approved notification", zap.String("user_id", submission.UserID.String()), zap.Error(err))
 		}
