@@ -45,11 +45,14 @@ jobs:
           IMAGE_TAG: ${{ github.sha }}
           ENV: ${{ steps.env.outputs.env }}
         run: |
-          docker build -t $REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker tag  $REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
-                      $REGISTRY/$ECR_REPOSITORY:$ENV-latest
-          docker push $REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $REGISTRY/$ECR_REPOSITORY:$ENV-latest
+          docker buildx create --use --driver docker-container
+          docker buildx build \
+            --cache-from type=registry,ref=$REGISTRY/$ECR_REPOSITORY:$ENV-cache \
+            --cache-to   type=registry,ref=$REGISTRY/$ECR_REPOSITORY:$ENV-cache,mode=max \
+            --tag $REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            --tag $REGISTRY/$ECR_REPOSITORY:$ENV-latest \
+            --push \
+            .
           echo "image=$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
       - name: Update ECS task definition with new image
@@ -66,4 +69,4 @@ jobs:
           task-definition: ${{ steps.task-def.outputs.task-definition }}
           service: rail-${{ steps.env.outputs.env }}
           cluster: rail-${{ steps.env.outputs.env }}
-          wait-for-service-stability: true
+          wait-for-service-stability: false

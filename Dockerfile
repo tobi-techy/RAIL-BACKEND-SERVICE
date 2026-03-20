@@ -26,7 +26,6 @@ USER builduser
 # Build the application with optimizations
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -ldflags='-w -s -extldflags "-static"' \
-    -a -installsuffix cgo \
     -o main ./cmd/main.go
 
 # Final stage - minimal runtime image
