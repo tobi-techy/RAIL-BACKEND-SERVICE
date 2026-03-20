@@ -231,9 +231,15 @@ type bridgeRewardsAdapter struct {
 }
 
 func (a *bridgeRewardsAdapter) GetRewardsSummary(ctx context.Context, currency string) (*yieldsvc.RewardSummary, error) {
+	if strings.TrimSpace(currency) == "" {
+		return nil, fmt.Errorf("bridgeRewardsAdapter: currency parameter cannot be empty")
+	}
 	s, err := a.client.GetRewardsSummary(ctx, currency)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("bridgeRewardsAdapter: failed to get rewards summary for currency %s: %w", currency, err)
+	}
+	if s == nil {
+		return nil, fmt.Errorf("bridgeRewardsAdapter: received nil response from bridge client")
 	}
 	return &yieldsvc.RewardSummary{Rewards: s.Rewards}, nil
 }

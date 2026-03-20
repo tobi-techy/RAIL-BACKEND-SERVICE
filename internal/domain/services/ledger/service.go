@@ -654,6 +654,9 @@ func (s *Service) TransferSpendingToStash(ctx context.Context, userID uuid.UUID,
 // CreditStash credits a user's stash_balance from the system USDC buffer.
 // Used for yield distribution payouts.
 func (s *Service) CreditStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, description string) error {
+	if amount.IsZero() || amount.IsNegative() {
+		return fmt.Errorf("invalid credit amount: %s (must be positive)", amount.String())
+	}
 	stashAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
 	if err != nil {
 		return fmt.Errorf("get stash account: %w", err)
@@ -664,7 +667,8 @@ func (s *Service) CreditStash(ctx context.Context, userID uuid.UUID, amount deci
 	}
 
 	refType := "yield_distribution"
-	idempotencyKey := fmt.Sprintf("yield-credit-%s-%s", userID, amount.String())
+	// Include userID + description (which contains distributionID) for per-distribution uniqueness.
+	idempotencyKey := fmt.Sprintf("yield-credit-%s-%s", userID, description)
 	req := &entities.CreateTransactionRequest{
 		UserID:          &userID,
 		TransactionType: entities.TransactionTypeDeposit,

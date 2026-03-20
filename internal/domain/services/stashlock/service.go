@@ -17,6 +17,8 @@ type Repository interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.StashLockCycle, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status string) error
 	GetExpiredWindows(ctx context.Context, now time.Time, limit int) ([]*entities.StashLockCycle, error)
+	// RelockCycle atomically marks oldID as relocked and inserts newCycle in one transaction.
+	RelockCycle(ctx context.Context, oldID uuid.UUID, newCycle *entities.StashLockCycle) error
 }
 
 // Service manages the 90-day lock / 7-day window cycle for stash funds.
@@ -99,10 +101,13 @@ func (s *Service) MarkWithdrawn(ctx context.Context, userID uuid.UUID) error {
 // RelockExpiredWindows finds cycles whose 7-day window has passed without withdrawal
 // and starts a new 90-day lock. Run this as a daily cron job.
 func (s *Service) RelockExpiredWindows(ctx context.Context) (int, error) {
-	const batchSize = 500
+	const (
+		batchSize     = 500
+		maxIterations = 100 // safety cap: 50 000 cycles max per run
+	)
 	now := time.Now()
 	total := 0
-	for {
+	for i := 0; i < maxIterations; i++ {
 		expired, err := s.repo.GetExpiredWindows(ctx, now, batchSize)
 		if err != nil {
 			return total, err
@@ -122,14 +127,11 @@ func (s *Service) RelockExpiredWindows(ctx context.Context) (int, error) {
 				WindowEnd: lockEnd.Add(entities.StashWindowDuration),
 				Status:    entities.StashCycleStatusLocked,
 			}
-			// Create new cycle first — if this fails, old cycle stays window_open (safe).
-			if err := s.repo.Create(ctx, newCycle); err != nil {
-				s.logger.Error("Failed to create relock cycle", zap.String("user_id", c.UserID.String()), zap.Error(err))
-				continue
-			}
-			// Only mark old cycle relocked after new one is persisted.
-			if err := s.repo.UpdateStatus(ctx, c.ID, entities.StashCycleStatusRelocked); err != nil {
-				s.logger.Error("Failed to mark cycle relocked", zap.String("cycle_id", c.ID.String()), zap.Error(err))
+			if err := s.repo.RelockCycle(ctx, c.ID, newCycle); err != nil {
+				s.logger.Error("Failed to relock cycle atomically",
+					zap.String("cycle_id", c.ID.String()),
+					zap.String("user_id", c.UserID.String()),
+					zap.Error(err))
 				continue
 			}
 			total++

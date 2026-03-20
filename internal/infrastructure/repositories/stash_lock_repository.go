@@ -2,6 +2,8 @@ package repositories
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,13 +20,22 @@ func NewStashLockRepository(db *sqlx.DB) *StashLockRepository {
 }
 
 func (r *StashLockRepository) Create(ctx context.Context, c *entities.StashLockCycle) error {
-	_, err := r.db.ExecContext(ctx,
+	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO stash_lock_cycles
 		 (id, user_id, deposit_id, amount, lock_start, lock_end, window_end, status)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-		 ON CONFLICT (deposit_id) DO NOTHING`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
 		c.ID, c.UserID, c.DepositID, c.Amount, c.LockStart, c.LockEnd, c.WindowEnd, c.Status)
-	return err
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return fmt.Errorf("stash lock cycle already exists for deposit_id %s", c.DepositID)
+		}
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("stash lock cycle insert had no effect for deposit_id %s", c.DepositID)
+	}
+	return nil
 }
 
 func (r *StashLockRepository) GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.StashLockCycle, error) {
@@ -53,4 +64,38 @@ func (r *StashLockRepository) GetExpiredWindows(ctx context.Context, now time.Ti
 		 LIMIT $2`,
 		now, limit)
 	return rows, err
+}
+
+// RelockCycle atomically marks oldID as relocked and inserts newCycle in a single transaction.
+func (r *StashLockRepository) RelockCycle(ctx context.Context, oldID uuid.UUID, newCycle *entities.StashLockCycle) error {
+	tx, err := r.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("stashlock: begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE stash_lock_cycles SET status=$1, updated_at=NOW() WHERE id=$2`,
+		entities.StashCycleStatusRelocked, oldID,
+	); err != nil {
+		return fmt.Errorf("stashlock: mark relocked: %w", err)
+	}
+
+	res, err := tx.ExecContext(ctx,
+		`INSERT INTO stash_lock_cycles
+		 (id, user_id, deposit_id, amount, lock_start, lock_end, window_end, status)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		newCycle.ID, newCycle.UserID, newCycle.DepositID, newCycle.Amount,
+		newCycle.LockStart, newCycle.LockEnd, newCycle.WindowEnd, newCycle.Status)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return fmt.Errorf("stash lock cycle already exists for deposit_id %s", newCycle.DepositID)
+		}
+		return fmt.Errorf("stashlock: insert new cycle: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("stashlock: new cycle insert had no effect for deposit_id %s", newCycle.DepositID)
+	}
+
+	return tx.Commit()
 }

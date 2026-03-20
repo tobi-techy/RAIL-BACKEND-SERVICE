@@ -102,13 +102,19 @@ func (s *Service) RunDistribution(ctx context.Context, periodStart, periodEnd, f
 		}
 	}
 
-	// Get all users with any stash activity up to freezeTime.
-	userIDs, err := s.repo.GetAllUsersWithSnapshotsInWindow(ctx, periodStart, freezeTime)
+	// Clamp upper bound: never include snapshots beyond periodEnd.
+	upper := freezeTime
+	if periodEnd.Before(freezeTime) {
+		upper = periodEnd
+	}
+
+	// Get all users with any stash activity within the window.
+	userIDs, err := s.repo.GetAllUsersWithSnapshotsInWindow(ctx, periodStart, upper)
 	if err != nil {
 		return fmt.Errorf("yield: list users: %w", err)
 	}
 
-	// Compute TWB for each user.
+	// Compute TWB for each user using the clamped upper bound.
 	type userTWB struct {
 		userID uuid.UUID
 		twb    decimal.Decimal
@@ -117,7 +123,7 @@ func (s *Service) RunDistribution(ctx context.Context, periodStart, periodEnd, f
 	totalTWB := decimal.Zero
 
 	for _, uid := range userIDs {
-		twb, err := s.computeTWB(ctx, uid, periodStart, freezeTime)
+		twb, err := s.computeTWB(ctx, uid, periodStart, upper)
 		if err != nil {
 			s.logger.Error("Failed to compute TWB for user", zap.String("user_id", uid.String()), zap.Error(err))
 			continue
@@ -130,22 +136,32 @@ func (s *Service) RunDistribution(ctx context.Context, periodStart, periodEnd, f
 	}
 
 	if totalTWB.IsZero() {
+		dist.Remainder = totalReward
 		dist.Status = "completed"
-		_ = s.repo.UpdateDistribution(ctx, dist)
+		if err := s.repo.UpdateDistribution(ctx, dist); err != nil {
+			return fmt.Errorf("yield: update distribution (no eligible users): %w", err)
+		}
 		return nil
 	}
 
-	// Distribute proportionally.
+	// Distribute proportionally: credit ledger first, then record.
 	totalDistributed := decimal.Zero
+	desc := fmt.Sprintf("Yield distribution %s", dist.ID)
 	for _, ut := range twbs {
 		sharePct := ut.twb.Div(totalTWB)
-		reward := totalReward.Mul(sharePct).Truncate(6) // truncate to avoid over-distribution
+		reward := totalReward.Mul(sharePct).Truncate(6)
 
 		if reward.LessThan(minCreditAmount) {
-			// Dust — skip, rolls into remainder
 			continue
 		}
 
+		// Credit ledger first — source of truth.
+		if err := s.ledger.CreditStash(ctx, ut.userID, reward, desc); err != nil {
+			s.logger.Error("Failed to credit stash for yield", zap.String("user_id", ut.userID.String()), zap.Error(err))
+			continue
+		}
+
+		// Only record distribution row after successful credit.
 		now := time.Now()
 		row := &entities.YieldDistributionUser{
 			ID:             uuid.NewSHA1(uuid.NameSpaceOID, []byte(dist.ID.String()+":"+ut.userID.String())),
@@ -158,12 +174,7 @@ func (s *Service) RunDistribution(ctx context.Context, periodStart, periodEnd, f
 		}
 		if err := s.repo.UpsertDistributionUser(ctx, row); err != nil {
 			s.logger.Error("Failed to upsert distribution user", zap.String("user_id", ut.userID.String()), zap.Error(err))
-			continue
-		}
-
-		if err := s.ledger.CreditStash(ctx, ut.userID, reward, fmt.Sprintf("Yield distribution %s", dist.ID)); err != nil {
-			s.logger.Error("Failed to credit stash for yield", zap.String("user_id", ut.userID.String()), zap.Error(err))
-			continue
+			// Credit already happened — log but don't reverse; retry will be idempotent via ledger key.
 		}
 
 		totalDistributed = totalDistributed.Add(reward)

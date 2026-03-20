@@ -418,8 +418,12 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 
 	// Record yield snapshot after stash balance changes.
 	if s.yieldSnapshotter != nil {
-		newStashBalance, _ := s.ledgerService.GetAccountBalance(ctx, req.UserID, entities.AccountTypeStashBalance)
-		_ = s.yieldSnapshotter.RecordSnapshot(ctx, req.UserID, newStashBalance)
+		newStashBalance, err := s.ledgerService.GetAccountBalance(ctx, req.UserID, entities.AccountTypeStashBalance)
+		if err != nil {
+			s.logger.Error("Failed to get stash balance for yield snapshot", "user_id", req.UserID, "error", err)
+		} else if err := s.yieldSnapshotter.RecordSnapshot(ctx, req.UserID, newStashBalance); err != nil {
+			s.logger.Error("Failed to record yield snapshot", "user_id", req.UserID, "error", err)
+		}
 	}
 
 	// Record stash lock cycle for the deposited amount.

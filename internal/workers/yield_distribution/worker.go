@@ -50,5 +50,20 @@ func (w *Worker) Run(ctx context.Context, periodStart, periodEnd time.Time) erro
 		zap.String("total_reward", totalReward.String()),
 	)
 
-	return w.yieldSvc.RunDistribution(ctx, periodStart, periodEnd, freezeTime, totalReward)
+	if err := w.yieldSvc.RunDistribution(ctx, periodStart, periodEnd, freezeTime, totalReward); err != nil {
+		w.logger.Error("Yield distribution failed",
+			zap.String("period_start", periodStart.Format(time.DateOnly)),
+			zap.String("period_end", periodEnd.Format(time.DateOnly)),
+			zap.String("total_reward", totalReward.String()),
+			zap.Error(err),
+		)
+		return fmt.Errorf("yield worker: distribution failed: %w", err)
+	}
+
+	w.logger.Info("Yield distribution completed successfully",
+		zap.String("period_start", periodStart.Format(time.DateOnly)),
+		zap.String("period_end", periodEnd.Format(time.DateOnly)),
+		zap.String("total_reward", totalReward.String()),
+	)
+	return nil
 }

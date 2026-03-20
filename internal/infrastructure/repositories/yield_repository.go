@@ -59,8 +59,8 @@ func (r *YieldRepository) GetLastSnapshotBefore(ctx context.Context, userID uuid
 func (r *YieldRepository) GetAllUsersWithSnapshotsInWindow(ctx context.Context, from, to time.Time) ([]uuid.UUID, error) {
 	var ids []uuid.UUID
 	err := r.db.SelectContext(ctx, &ids,
-		`SELECT DISTINCT user_id FROM yield_balance_snapshots WHERE recorded_at <= $1`,
-		to)
+		`SELECT DISTINCT user_id FROM yield_balance_snapshots WHERE recorded_at >= $1 AND recorded_at <= $2`,
+		from, to)
 	return ids, err
 }
 
