@@ -208,6 +208,8 @@ bridge:
   timeout: 30
   max_retries: 3
   webhook_secret: "${BRIDGE_WEBHOOK_SECRET}"
+  rail_customer_id: "${BRIDGE_RAIL_CUSTOMER_ID}"
+  rail_usdb_wallet_id: "${BRIDGE_RAIL_USDB_WALLET_ID}"
   supported_chains:
     - "solana"
     - "polygon"

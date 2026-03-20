@@ -42,6 +42,16 @@ type AutoInvestService interface {
 	TriggerAutoInvestment(ctx context.Context, req autoinvest.TriggerRequest) error
 }
 
+// YieldSnapshotter records a stash balance snapshot for yield TWB calculation.
+type YieldSnapshotter interface {
+	RecordSnapshot(ctx context.Context, userID uuid.UUID, balance decimal.Decimal) error
+}
+
+// StashLockRecorder records a new stash lock cycle when stash funds are deposited.
+type StashLockRecorder interface {
+	RecordDeposit(ctx context.Context, userID, depositID uuid.UUID, amount decimal.Decimal) error
+}
+
 type spendingTotalReader interface {
 	GetTotalSpendingAdded(ctx context.Context, userID uuid.UUID, startDate, endDate time.Time) (decimal.Decimal, error)
 }
@@ -57,6 +67,8 @@ type Service struct {
 	allocationRepo      AllocationRepository
 	ledgerService       *ledger.Service
 	autoInvestService   AutoInvestService
+	yieldSnapshotter    YieldSnapshotter
+	stashLockRecorder   StashLockRecorder
 	notificationService AllocationNotificationService
 	logger              *logger.Logger
 }
@@ -77,6 +89,16 @@ func NewService(
 // SetAutoInvestService sets the auto-invest service (to avoid circular dependency)
 func (s *Service) SetAutoInvestService(autoInvestService AutoInvestService) {
 	s.autoInvestService = autoInvestService
+}
+
+// SetYieldSnapshotter sets the yield snapshot recorder.
+func (s *Service) SetYieldSnapshotter(ys YieldSnapshotter) {
+	s.yieldSnapshotter = ys
+}
+
+// SetStashLockRecorder sets the stash lock recorder.
+func (s *Service) SetStashLockRecorder(r StashLockRecorder) {
+	s.stashLockRecorder = r
 }
 
 // SetNotificationService sets the notification service for user alerts on auto-invest failure.
@@ -392,6 +414,24 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 	); err != nil {
 		span.RecordError(err)
 		return fmt.Errorf("failed to create stash allocation transfer: %w", err)
+	}
+
+	// Record yield snapshot after stash balance changes.
+	if s.yieldSnapshotter != nil {
+		newStashBalance, err := s.ledgerService.GetAccountBalance(ctx, req.UserID, entities.AccountTypeStashBalance)
+		if err != nil {
+			s.logger.Error("Failed to get stash balance for yield snapshot", "user_id", req.UserID, "error", err)
+		} else if err := s.yieldSnapshotter.RecordSnapshot(ctx, req.UserID, newStashBalance); err != nil {
+			s.logger.Error("Failed to record yield snapshot", "user_id", req.UserID, "error", err)
+		}
+	}
+
+	// Record stash lock cycle for the deposited amount.
+	if s.stashLockRecorder != nil && req.DepositID != nil {
+		if err := s.stashLockRecorder.RecordDeposit(ctx, req.UserID, *req.DepositID, stashAmount); err != nil {
+			s.logger.Error("Failed to record stash lock cycle", "user_id", req.UserID, "deposit_id", *req.DepositID, "error", err)
+			return fmt.Errorf("failed to record stash lock cycle: %w", err)
+		}
 	}
 
 	// Create allocation event for audit trail

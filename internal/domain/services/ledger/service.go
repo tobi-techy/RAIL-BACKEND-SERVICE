@@ -650,3 +650,36 @@ func (s *Service) TransferSpendingToStash(ctx context.Context, userID uuid.UUID,
 	_, err = s.CreateTransaction(ctx, req)
 	return err
 }
+
+// CreditStash credits a user's stash_balance from the system USDC buffer.
+// Used for yield distribution payouts.
+func (s *Service) CreditStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, description string) error {
+	if amount.IsZero() || amount.IsNegative() {
+		return fmt.Errorf("invalid credit amount: %s (must be positive)", amount.String())
+	}
+	stashAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		return fmt.Errorf("get stash account: %w", err)
+	}
+	systemAccount, err := s.GetSystemAccount(ctx, entities.AccountTypeSystemBufferUSDC)
+	if err != nil {
+		return fmt.Errorf("get system buffer account: %w", err)
+	}
+
+	refType := "yield_distribution"
+	// Include userID + description (which contains distributionID) for per-distribution uniqueness.
+	idempotencyKey := fmt.Sprintf("yield-credit-%s-%s", userID, description)
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeDeposit,
+		ReferenceType:   &refType,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &description,
+		Entries: []entities.CreateEntryRequest{
+			{AccountID: stashAccount.ID, EntryType: entities.EntryTypeDebit, Amount: amount, Currency: "USDB", Description: &description},
+			{AccountID: systemAccount.ID, EntryType: entities.EntryTypeCredit, Amount: amount, Currency: "USDB", Description: &description},
+		},
+	}
+	_, err = s.CreateTransaction(ctx, req)
+	return err
+}
