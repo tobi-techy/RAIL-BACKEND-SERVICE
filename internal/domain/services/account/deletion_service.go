@@ -216,10 +216,9 @@ func (s *DeletionService) deleteAccountInternal(ctx context.Context, req *Delete
 		}
 	}
 
-	// Step 3: Clean up external provider accounts
+	// Step 3: Clean up external provider accounts (best-effort — never blocks deletion)
 	if err := s.cleanupExternalProviders(ctx, req.UserID); err != nil {
-		s.logger.Error("External provider cleanup failed", "error", err)
-		return nil, fmt.Errorf("failed to cleanup external accounts: %w", err)
+		s.logger.Error("External provider cleanup had errors, proceeding with deletion", "error", err)
 	}
 
 	// Step 4: Log audit before deletion
@@ -302,14 +301,41 @@ func (s *DeletionService) cleanupExternalProviders(ctx context.Context, userID u
 		}
 	}
 
+	// Delete Bridge customer record (removes all PII from Bridge)
+	// Source customer ID from user record first, fall back to virtual accounts
+	if s.bridgeClient != nil {
+		var bridgeCustomerID string
+		if s.kycUserLookup != nil {
+			if user, err := s.kycUserLookup.GetUserEntityByID(ctx, userID); err == nil && user != nil && user.BridgeCustomerID != nil {
+				bridgeCustomerID = *user.BridgeCustomerID
+			}
+		}
+		// Fall back to virtual accounts if not on user record
+		if bridgeCustomerID == "" && s.virtualAccountRepo != nil {
+			if vas, err := s.virtualAccountRepo.GetByUserID(ctx, userID); err == nil {
+				for _, va := range vas {
+					if va.BridgeCustomerID != "" {
+						bridgeCustomerID = va.BridgeCustomerID
+						break
+					}
+				}
+			}
+		}
+		if bridgeCustomerID != "" {
+			if err := s.bridgeClient.DeleteCustomer(ctx, bridgeCustomerID); err != nil {
+				s.logger.Warn("Failed to delete Bridge customer", "user_id", userID.String(), "bridge_customer_id", bridgeCustomerID, "error", err)
+			} else {
+				s.logger.Info("Deleted Bridge customer", "user_id", userID.String(), "bridge_customer_id", bridgeCustomerID)
+			}
+		} else {
+			s.logger.Warn("No Bridge customer ID found, skipping Bridge customer deletion", "user_id", userID.String())
+		}
+	}
+
 	// Deactivate Bridge virtual accounts
 	if s.virtualAccountRepo != nil && s.bridgeClient != nil {
-		var bridgeCustomerID string
 		if virtualAccounts, err := s.virtualAccountRepo.GetByUserID(ctx, userID); err == nil {
 			for _, va := range virtualAccounts {
-				if va.BridgeCustomerID != "" {
-					bridgeCustomerID = va.BridgeCustomerID
-				}
 				if va.BridgeCustomerID != "" && va.BridgeAccountID != nil && *va.BridgeAccountID != "" {
 					if err := s.bridgeClient.DeactivateVirtualAccount(ctx, va.BridgeCustomerID, *va.BridgeAccountID); err != nil {
 						s.logger.Warn("Failed to deactivate Bridge virtual account", "user_id", userID.String(), "bridge_account_id", *va.BridgeAccountID, "error", err)
@@ -317,15 +343,6 @@ func (s *DeletionService) cleanupExternalProviders(ctx context.Context, userID u
 						s.logger.Info("Deactivated Bridge virtual account", "user_id", userID.String(), "bridge_account_id", *va.BridgeAccountID)
 					}
 				}
-			}
-		}
-
-		// Delete Bridge customer record (removes all PII from Bridge)
-		if bridgeCustomerID != "" {
-			if err := s.bridgeClient.DeleteCustomer(ctx, bridgeCustomerID); err != nil {
-				s.logger.Warn("Failed to delete Bridge customer", "user_id", userID.String(), "bridge_customer_id", bridgeCustomerID, "error", err)
-			} else {
-				s.logger.Info("Deleted Bridge customer", "user_id", userID.String(), "bridge_customer_id", bridgeCustomerID)
 			}
 		}
 	}

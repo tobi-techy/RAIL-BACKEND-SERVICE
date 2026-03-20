@@ -328,7 +328,7 @@ type CloudflareConfig struct {
 }
 
 type EmailConfig struct {
-	Provider    string `mapstructure:"provider"` // "unosend"
+	Provider    string `mapstructure:"provider"` // "ses", "resend", "unosend"
 	APIKey      string `mapstructure:"api_key"`
 	FromEmail   string `mapstructure:"from_email"`
 	FromName    string `mapstructure:"from_name"`
