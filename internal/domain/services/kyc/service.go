@@ -1597,11 +1597,14 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 			switch decision.Status {
 			case entities.DiditStatusApproved:
 				payload := &entities.DiditWebhookPayload{SessionID: decision.SessionID, Status: decision.Status}
-				if procErr := s.ProcessDiditWebhook(ctx, payload); procErr != nil {
+				// Use detached context — request ctx may cancel before async work completes
+				bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				if procErr := s.ProcessDiditWebhook(bgCtx, payload); procErr != nil {
 					s.logger.Warn("Didit poll: failed to process approved status", zap.Error(procErr))
 				} else {
 					overall = "approved"
-					if freshUser, reloadErr := s.userRepo.GetByID(ctx, userID); reloadErr != nil {
+					if freshUser, reloadErr := s.userRepo.GetByID(bgCtx, userID); reloadErr != nil {
 						s.logger.Error("Didit poll: failed to reload user after approval", zap.Error(reloadErr))
 					} else {
 						user = freshUser
