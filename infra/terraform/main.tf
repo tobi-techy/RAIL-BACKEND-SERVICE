@@ -400,11 +400,12 @@ resource "aws_lb" "main" {
 }
 
 resource "aws_lb_target_group" "app" {
-  name        = "rail-${local.env}-ec2"
-  port        = 8080
-  protocol    = "HTTP"
-  vpc_id      = module.vpc.vpc_id
-  target_type = "instance"
+  name                 = "rail-${local.env}-ec2"
+  port                 = 8080
+  protocol             = "HTTP"
+  vpc_id               = module.vpc.vpc_id
+  target_type          = "instance"
+  deregistration_delay = 30
 
   health_check {
     path                = "/health"
@@ -471,8 +472,8 @@ resource "aws_ecs_service" "app" {
   }
 
   health_check_grace_period_seconds  = 120
-  deployment_minimum_healthy_percent = 0
-  deployment_maximum_percent         = 100
+  deployment_minimum_healthy_percent = 100
+  deployment_maximum_percent         = 200
 
   lifecycle {
     ignore_changes = [desired_count]
