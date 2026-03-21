@@ -1712,7 +1712,7 @@ func determineOverallStatus(user *entities.User) string {
 	if user.KYCSubmittedAt != nil {
 		return "pending"
 	}
-	if kycStatus == "processing" || kycStatus == "pending" {
+	if kycStatus == "processing" {
 		return "pending"
 	}
 	switch bridgeStatus {
