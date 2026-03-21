@@ -936,7 +936,10 @@ func overrideFromEnv() {
 		viper.Set("kyc.environment", sumsubEnvironment)
 	}
 
-	// Email Service (Unosend only)
+	// Email Service
+	if resendAPIKey := os.Getenv("RESEND_API_KEY"); resendAPIKey != "" {
+		viper.Set("email.api_key", resendAPIKey)
+	}
 	if unosendAPIKey := os.Getenv("UNOSEND_API_KEY"); unosendAPIKey != "" {
 		viper.Set("email.api_key", unosendAPIKey)
 	}

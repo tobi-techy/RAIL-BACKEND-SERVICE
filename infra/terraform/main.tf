@@ -339,14 +339,15 @@ resource "aws_ecs_task_definition" "app" {
       { name = "REDIS_HOST",     value = aws_elasticache_cluster.redis.cache_nodes[0].address },
       { name = "REDIS_PORT",     value = "6379" },
       { name = "OTEL_SDK_DISABLED", value = "true" },
-      { name = "EMAIL_PROVIDER",   value = "unosend" },
+      { name = "EMAIL_PROVIDER",   valueFrom = "/rail/${local.env}/EMAIL_PROVIDER" },
     ]
 
     # Secrets pulled from SSM Parameter Store at container start
     secrets = [
-      { name = "UNOSEND_API_KEY",       valueFrom = "/rail/${local.env}/UNOSEND_API_KEY" },
+      { name = "RESEND_API_KEY",        valueFrom = "/rail/${local.env}/RESEND_API_KEY" },
       { name = "EMAIL_FROM_EMAIL",      valueFrom = "/rail/${local.env}/EMAIL_FROM_EMAIL" },
       { name = "EMAIL_FROM_NAME",       valueFrom = "/rail/${local.env}/EMAIL_FROM_NAME" },
+      { name = "EMAIL_REPLY_TO",        valueFrom = "/rail/${local.env}/EMAIL_REPLY_TO" },
       { name = "JWT_SECRET",            valueFrom = "/rail/${local.env}/JWT_SECRET" },
       { name = "ENCRYPTION_KEY",        valueFrom = "/rail/${local.env}/ENCRYPTION_KEY" },
       { name = "DATABASE_URL",          valueFrom = "/rail/${local.env}/DATABASE_URL" },
