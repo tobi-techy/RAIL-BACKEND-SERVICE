@@ -2033,7 +2033,7 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 				zap.String("message", serverErr.Message),
 				zap.Int("attempt", attempt+1),
 				zap.Int("max_retries", maxRetries))
-		} else if serverErr == nil {
+		} else if !errors.As(lastBridgeErr, &serverErr) {
 			// Not a bridge.ErrorResponse - network or other non-HTTP error
 			s.logger.Warn("Bridge API call failed (non-HTTP/network error), will retry",
 				zap.String("user_id", userID.String()),
