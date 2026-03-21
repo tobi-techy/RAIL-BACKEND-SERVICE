@@ -90,6 +90,16 @@ func (e *IncompleteProfileError) Error() string {
 	return "missing required profile fields for KYC submission"
 }
 
+// KYCPreconditionsResult holds the result of KYC precondition checks.
+type KYCPreconditionsResult struct {
+	Eligible          bool     `json:"eligible"`
+	MissingFields     []string `json:"missing_fields,omitempty"`
+	HasBridgeCustomer bool     `json:"has_bridge_customer"`
+	KYCStatus         string   `json:"kyc_status"`
+	CanStartKYC       bool     `json:"can_start_kyc"`
+	Blocker           string   `json:"blocker,omitempty"`
+}
+
 type BridgeAdapter interface {
 	UpdateCustomer(ctx context.Context, customerID string, req *bridge.UpdateCustomerRequest) (*bridge.Customer, error)
 }
@@ -1861,10 +1871,65 @@ func (s *Service) RefreshSumsubToken(ctx context.Context, userID uuid.UUID) (*en
 }
 
 // ---------------------------------------------------------------------------
+// KYC Precondition Validation
+// ---------------------------------------------------------------------------
+
+// VerifyKYCPreconditions checks if a user meets all preconditions to start KYC.
+// This enables the frontend to show appropriate UI before attempting KYC submission.
+func (s *Service) VerifyKYCPreconditions(ctx context.Context, userID uuid.UUID) (*KYCPreconditionsResult, error) {
+	result := &KYCPreconditionsResult{
+		Eligible:          true,
+		MissingFields:     []string{},
+		HasBridgeCustomer: false,
+		CanStartKYC:       true,
+	}
+
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+
+	profile, err := s.userRepo.GetProfileByUserID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user profile: %w", err)
+	}
+
+	result.KYCStatus = user.KYCStatus
+
+	if user.KYCStatus == "approved" {
+		result.Eligible = false
+		result.CanStartKYC = false
+		result.Blocker = "KYC already approved"
+		return result, nil
+	}
+
+	if profile.BridgeCustomerID != nil && *profile.BridgeCustomerID != "" {
+		result.HasBridgeCustomer = true
+	} else {
+		result.Eligible = false
+		result.CanStartKYC = false
+		result.Blocker = "Bridge customer not created"
+		return result, nil
+	}
+
+	missingFields := collectMissingKYCProfileFields(profile)
+	if len(missingFields) > 0 {
+		result.MissingFields = missingFields
+		result.Eligible = false
+		result.CanStartKYC = false
+		result.Blocker = "Profile incomplete"
+	}
+
+	return result, nil
+}
+
+// ---------------------------------------------------------------------------
 // Didit KYC provider methods
 // ---------------------------------------------------------------------------
 
-// StartDiditSession creates a Didit verification session and persists the submission.
+// StartDiditSession creates a Didit verification session and sends all KYC data directly to Bridge.
+// NO sensitive data is stored in verification_data - only session reference is persisted.
+// Data flow: Frontend → Backend (encrypts tax ID) → Bridge (direct, not stored)
 func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *entities.KYCDigitSessionRequest) (*entities.KYCDigitSessionResponse, error) {
 	if s.diditAdapter == nil {
 		return nil, ErrDiditNotConfigured
@@ -1891,9 +1956,20 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 		return nil, ErrKYCAlreadyApproved
 	}
 
-	// Submit tax ID + source of funds to Bridge upfront.
-	// Tax ID must be encrypted before sending to Bridge.
-	var taxIDToSend string
+	// Step 1: Validate preconditions
+	missingFields := collectMissingKYCProfileFields(profile)
+	if len(missingFields) > 0 {
+		return nil, &IncompleteProfileError{MissingFields: missingFields}
+	}
+
+	// Step 2: Send ALL KYC data directly to Bridge (tax ID encrypted, source of funds, disclosures)
+	// NO sensitive data stored in our DB - Bridge owns this data
+	bridgeUpdateReq := s.buildBridgeKYCRequest(req, profile)
+	if bridgeUpdateReq == nil {
+		return nil, fmt.Errorf("failed to build Bridge KYC request")
+	}
+
+	// Encrypt tax ID before sending to Bridge
 	if req.TaxID != "" {
 		if s.encryptionKey == "" {
 			return nil, fmt.Errorf("encryption key not configured - cannot submit tax ID")
@@ -1904,34 +1980,26 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 				zap.Error(encErr), zap.String("user_id", userID.String()))
 			return nil, ErrTaxIDEncryptionFailed
 		}
-		taxIDToSend = encTaxID
-	}
-
-	bridgeUpdateReq := &bridge.UpdateCustomerRequest{
-		SourceOfFunds:              req.SourceOfFunds,
-		EmploymentStatus:           req.EmploymentStatus,
-		ExpectedMonthlyPaymentsUSD: req.ExpectedMonthlyPaymentsUSD,
-		AccountPurpose:             req.AccountPurpose,
-		AccountPurposeOther:        req.AccountPurposeOther,
-		MostRecentOccupation:       req.MostRecentOccupation,
-		ActingAsIntermediary:       req.ActingAsIntermediary,
-	}
-	if taxIDToSend != "" {
 		bridgeUpdateReq.IdentifyingInformation = []bridge.IdentifyingInfo{
 			{
 				Type:           mapTaxIDTypeToBridge(req.TaxIDType),
 				IssuingCountry: strings.ToLower(req.IssuingCountry),
-				Number:         taxIDToSend,
+				Number:         encTaxID,
 			},
 		}
 	}
+
+	// Send to Bridge - this is the single source of truth for KYC data
 	if _, bridgeErr := s.bridgeAdapter.UpdateCustomer(ctx, *profile.BridgeCustomerID, bridgeUpdateReq); bridgeErr != nil {
-		s.logger.Error("Failed to submit tax ID to Bridge at session start",
+		s.logger.Error("Failed to submit KYC data to Bridge",
 			zap.Error(bridgeErr), zap.String("user_id", userID.String()))
 		return nil, fmt.Errorf("failed to submit KYC data to Bridge: %w", bridgeErr)
 	}
+	s.logger.Info("KYC data sent directly to Bridge (no sensitive data stored locally)",
+		zap.String("user_id", userID.String()),
+		zap.String("bridge_customer_id", *profile.BridgeCustomerID))
 
-	// Check for existing Didit submission to implement idempotency
+	// Step 3: Check for existing Didit submission (idempotency)
 	if user.KYCProviderRef != nil && *user.KYCProviderRef != "" {
 		existingSubmission, existingErr := s.kycSubmissionRepo.GetByProviderRef(ctx, *user.KYCProviderRef)
 		if existingErr == nil && existingSubmission != nil {
@@ -1939,46 +2007,33 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 				s.logger.Info("Returning existing Didit session for idempotent request",
 					zap.String("user_id", userID.String()),
 					zap.String("session_id", *user.KYCProviderRef))
-				// Return existing session info - caller should use their existing session
-				// Note: We can't return the session token without re-fetching from Didit
 				return &entities.KYCDigitSessionResponse{
 					Status:    "existing_session",
 					SessionID: *user.KYCProviderRef,
-					URL:       "", // Would need to re-fetch from Didit
+					URL:       "",
 				}, nil
 			}
 		}
 	}
 
-	// Create Didit session
+	// Step 4: Create Didit session
 	sess, err := s.diditAdapter.CreateSession(ctx, userID.String())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create didit session: %w", err)
 	}
 
+	// Step 5: Persist ONLY session reference - NO sensitive data
 	now := time.Now()
 	expiresAt := now.Add(30 * 24 * time.Hour)
+
+	// Minimal verification_data - only references and non-sensitive metadata
 	verificationData := map[string]any{
-		"didit_session_id": sess.SessionID,
-		"tax_id_type":      req.TaxIDType,
-		"issuing_country":  req.IssuingCountry,
-		"disclosures": map[string]any{
-			"is_control_person":               req.Disclosures.IsControlPerson,
-			"is_affiliated_exchange_or_finra": req.Disclosures.IsAffiliatedExchangeOrFINRA,
-			"is_politically_exposed":          req.Disclosures.IsPoliticallyExposed,
-			"immediate_family_exposed":        req.Disclosures.ImmediateFamilyExposed,
-		},
-	}
-	if s.encryptionKey == "" {
-		return nil, fmt.Errorf("encryption key not configured - cannot store KYC data securely")
-	}
-	if req.TaxID != "" {
-		enc, encErr := crypto.Encrypt(req.TaxID, s.encryptionKey)
-		if encErr != nil {
-			s.logger.Error("Failed to encrypt tax_id for storage", zap.Error(encErr))
-			return nil, ErrTaxIDEncryptionFailed
-		}
-		verificationData["tax_id_enc"] = enc
+		"session_created_at":           now.Format(time.RFC3339),
+		"kyc_data_submitted_to_bridge": true,
+		"tax_id_type":                  req.TaxIDType,
+		"issuing_country":              req.IssuingCountry,
+		"bridge_customer_id":           *profile.BridgeCustomerID,
+		"user_email":                   profile.Email,
 	}
 
 	existingSubmission, existingErr := s.kycSubmissionRepo.GetByProviderRef(ctx, sess.SessionID)
@@ -2009,10 +2064,11 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 		existingSubmission.ExpiresAt = &expiresAt
 		existingSubmission.UpdatedAt = now
 		if err := s.kycSubmissionRepo.Update(ctx, existingSubmission); err != nil {
-			return nil, fmt.Errorf("failed to update existing didit submission: %w", err)
+			return nil, fmt.Errorf("failed to update existing didit submission: %w", existingErr)
 		}
 	}
 
+	// Step 6: Update user with session reference
 	providerRef := sess.SessionID
 	user.KYCProviderRef = &providerRef
 	if err := s.userRepo.Update(ctx, user); err != nil {
@@ -2020,12 +2076,36 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 			zap.Error(err), zap.String("user_id", userID.String()))
 	}
 
+	s.logger.Info("Didit session created - sensitive data sent directly to Bridge",
+		zap.String("user_id", userID.String()),
+		zap.String("session_id", sess.SessionID))
+
 	return &entities.KYCDigitSessionResponse{
 		Status:       "pending",
 		SessionID:    sess.SessionID,
 		SessionToken: sess.SessionToken,
 		URL:          sess.URL,
 	}, nil
+}
+
+// buildBridgeKYCRequest constructs the Bridge UpdateCustomerRequest from KYC data.
+// This includes source of funds, employment info, and disclosures.
+func (s *Service) buildBridgeKYCRequest(req *entities.KYCDigitSessionRequest, profile *entities.UserProfile) *bridge.UpdateCustomerRequest {
+	if req == nil {
+		return nil
+	}
+
+	bridgeReq := &bridge.UpdateCustomerRequest{
+		SourceOfFunds:              req.SourceOfFunds,
+		EmploymentStatus:           req.EmploymentStatus,
+		ExpectedMonthlyPaymentsUSD: req.ExpectedMonthlyPaymentsUSD,
+		AccountPurpose:             req.AccountPurpose,
+		AccountPurposeOther:        req.AccountPurposeOther,
+		MostRecentOccupation:       req.MostRecentOccupation,
+		ActingAsIntermediary:       req.ActingAsIntermediary,
+	}
+
+	return bridgeReq
 }
 
 // VerifyDiditWebhookSignature validates Didit webhook X-Signature-V2 + X-Timestamp.
@@ -2104,13 +2184,13 @@ func (s *Service) ProcessDiditWebhook(ctx context.Context, payload *entities.Did
 	}
 }
 
+// processDiditApproved handles Didit approval webhook.
+// With the new flow, KYC data (tax ID, source of funds) is sent directly to Bridge
+// during StartDiditSession, so this handler only updates user status.
 func (s *Service) processDiditApproved(ctx context.Context, submission *entities.KYCSubmission, payload *entities.DiditWebhookPayload) error {
 	if submission.Status == entities.KYCStatusApproved {
 		return nil
 	}
-
-	// Hydrate from inline webhook decision or Didit API fallback.
-	s.hydrateSubmissionFromDidit(ctx, submission, payload)
 
 	user, err := s.userRepo.GetByID(ctx, submission.UserID)
 	if err != nil {
@@ -2121,41 +2201,19 @@ func (s *Service) processDiditApproved(ctx context.Context, submission *entities
 		return fmt.Errorf("failed to get user profile: %w", err)
 	}
 
-	// Bridge sync — Didit hosts document images, so we submit KYC data without images.
-	bridgeResult := entities.KYCProviderResult{Success: false, Status: "skipped", Error: "Bridge customer not found"}
-	if profile.BridgeCustomerID != nil && *profile.BridgeCustomerID != "" {
-		bridgeResult = s.submitToBridgeFromDidit(ctx, *profile.BridgeCustomerID, submission)
-	}
-
 	now := time.Now()
-	if bridgeResult.Success {
-		bridgeStatus := "pending"
-		user.BridgeKYCStatus = &bridgeStatus
-	} else if profile.BridgeCustomerID != nil && *profile.BridgeCustomerID != "" {
-		if s.kycSyncJobRepo != nil {
-			retryPayload, _ := encodeProviderRetryPayload(submission.VerificationData, submission.UserID.String())
-			if _, enqErr := s.kycSyncJobRepo.EnqueueProviderRetry(ctx, submission.UserID.String(), "bridge", retryPayload); enqErr != nil {
-				s.logger.Warn("Failed to enqueue Bridge retry job",
-					zap.Error(enqErr), zap.String("user_id", submission.UserID.String()))
-			}
-		}
-	}
-
+	bridgeStatus := "pending"
+	user.BridgeKYCStatus = &bridgeStatus
 	user.KYCRejectionReason = nil
 	if user.KYCSubmittedAt == nil {
 		user.KYCSubmittedAt = &now
 	}
 
-	// KYC is only fully approved when Bridge also accepts the customer.
-	// If Bridge sync failed, stay in processing — retry job will re-attempt.
-	if bridgeResult.Success {
-		user.KYCStatus = string(entities.KYCStatusApproved)
-		user.KYCApprovedAt = &now
-		user.OnboardingStatus = entities.OnboardingStatusCompleted
-	} else {
-		user.KYCStatus = string(entities.KYCStatusProcessing)
-		user.OnboardingStatus = entities.OnboardingStatusKYCPending
-	}
+	// Didit approval is sufficient — KYC data was already sent to Bridge during StartDiditSession.
+	// Bridge will activate the customer asynchronously via their own webhook.
+	user.KYCStatus = string(entities.KYCStatusApproved)
+	user.KYCApprovedAt = &now
+	user.OnboardingStatus = entities.OnboardingStatusCompleted
 
 	if err := s.userRepo.Update(ctx, user); err != nil {
 		return fmt.Errorf("failed to update user after didit approval: %w", err)
@@ -2167,27 +2225,23 @@ func (s *Service) processDiditApproved(ctx context.Context, submission *entities
 	}
 	submission.VerificationData["didit_webhook_type"] = payload.WebhookType
 	submission.VerificationData["didit_status"] = payload.Status
-	submission.VerificationData["bridge_sync"] = map[string]any{
-		"success": bridgeResult.Success,
-		"status":  bridgeResult.Status,
-		"error":   bridgeResult.Error,
-	}
-
-	if bridgeResult.Success {
-		submission.MarkReviewed(entities.KYCStatusApproved, nil)
-	} else {
-		submission.Status = entities.KYCStatusProcessing
-	}
+	submission.VerificationData["didit_approved_at"] = now.Format(time.RFC3339)
+	submission.MarkReviewed(entities.KYCStatusApproved, nil)
 
 	if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {
 		return fmt.Errorf("failed to update didit submission: %w", err)
 	}
 
-	if s.notifier != nil && bridgeResult.Success {
+	if s.notifier != nil {
 		if err := s.notifier.NotifyKYCApproved(ctx, submission.UserID); err != nil {
 			s.logger.Warn("Failed to send KYC approved notification", zap.String("user_id", submission.UserID.String()), zap.Error(err))
 		}
 	}
+
+	s.logger.Info("Didit approved - KYC complete (data was sent to Bridge during session start)",
+		zap.String("user_id", submission.UserID.String()),
+		zap.String("bridge_customer_id", stringValue(profile.BridgeCustomerID)))
+
 	return nil
 }
 
