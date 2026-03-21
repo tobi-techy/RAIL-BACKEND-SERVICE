@@ -2006,8 +2006,15 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 			break
 		}
 
-		// Only retry on potentially transient errors (5xx, network issues)
-		// Don't retry on client errors (4xx) as they won't succeed on retry
+		// Check for context cancellation/deadline exceeded - stop retrying immediately
+		if errors.Is(lastBridgeErr, context.Canceled) || errors.Is(lastBridgeErr, context.DeadlineExceeded) {
+			s.logger.Warn("Bridge API call cancelled or deadline exceeded, stopping retries",
+				zap.String("user_id", userID.String()),
+				zap.Error(lastBridgeErr))
+			break
+		}
+
+		// Check for client errors (4xx) - don't retry, these won't succeed on retry
 		var bridgeErr *bridge.ErrorResponse
 		if errors.As(lastBridgeErr, &bridgeErr) && bridgeErr.StatusCode >= 400 && bridgeErr.StatusCode < 500 {
 			s.logger.Error("Bridge API rejected KYC submission (non-retryable error)",
@@ -2015,6 +2022,23 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 				zap.Int("status_code", bridgeErr.StatusCode),
 				zap.String("message", bridgeErr.Message))
 			break
+		}
+
+		// Log 5xx server errors as warnings - these will be retried
+		if bridgeErr != nil && bridgeErr.StatusCode >= 500 {
+			s.logger.Warn("Bridge API server error, will retry",
+				zap.String("user_id", userID.String()),
+				zap.Int("status_code", bridgeErr.StatusCode),
+				zap.String("message", bridgeErr.Message),
+				zap.Int("attempt", attempt+1),
+				zap.Int("max_retries", maxRetries))
+		} else if bridgeErr == nil {
+			// Network or other non-HTTP error - log as warning
+			s.logger.Warn("Bridge API call failed (non-HTTP error), will retry",
+				zap.String("user_id", userID.String()),
+				zap.Error(lastBridgeErr),
+				zap.Int("attempt", attempt+1),
+				zap.Int("max_retries", maxRetries))
 		}
 	}
 
