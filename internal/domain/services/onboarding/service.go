@@ -92,6 +92,7 @@ type AuditService interface {
 type BridgeAdapter interface {
 	CreateCustomer(ctx context.Context, req *entities.CreateAccountRequest) (*entities.CreateAccountResponse, error)
 	GetCustomerByEmail(ctx context.Context, email string) (*entities.CreateAccountResponse, error)
+	DeleteCustomer(ctx context.Context, customerID string) error
 }
 
 type AlpacaAdapter interface {
@@ -403,6 +404,7 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 			// NOTE: No SSN/tax_id here - that's collected in KYC flow
 		}
 
+		createdBridgeCustomer := false
 		bridgeCtx, bridgeCancel := withTimeout(ctx, onboardingBridgeRequestTimeout)
 		bridgeResp, err := s.bridgeAdapter.CreateCustomer(bridgeCtx, bridgeReq)
 		bridgeCancel()
@@ -424,22 +426,42 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 				}
 				s.logger.Info("Found existing Bridge customer by email", zap.String("bridge_customer_id", existingCustomer.AccountID))
 				user.BridgeCustomerID = &existingCustomer.AccountID
+				// createdBridgeCustomer remains false - don't delete pre-existing customer
 			} else {
 				s.logger.Error("Failed to create Bridge customer", zap.Error(err))
 				return nil, fmt.Errorf("failed to create Bridge customer: %w", err)
 			}
 		} else {
 			user.BridgeCustomerID = &bridgeResp.AccountID
+			createdBridgeCustomer = true
 		}
 
 		user.UpdatedAt = time.Now()
 		if err := s.userRepo.Update(ctx, user); err != nil {
-			// If DB update fails after creating Bridge customer, try to rollback Bridge customer
-			s.logger.Error("Failed to persist Bridge customer in DB, attempting cleanup",
+			// If DB update fails after creating Bridge customer, rollback only if we created a new one
+			s.logger.Error("Failed to persist Bridge customer in DB",
 				zap.String("bridge_customer_id", *user.BridgeCustomerID),
 				zap.Error(err))
-			// Note: In production, you might want to implement a cleanup mechanism here
-			// to delete the Bridge customer if the DB update fails
+
+			// Only rollback if we created a new Bridge customer in this request
+			if createdBridgeCustomer {
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cleanupCancel()
+
+				if deleteErr := s.bridgeAdapter.DeleteCustomer(cleanupCtx, *user.BridgeCustomerID); deleteErr != nil {
+					s.logger.Error("Failed to rollback orphaned Bridge customer",
+						zap.String("bridge_customer_id", *user.BridgeCustomerID),
+						zap.Error(deleteErr))
+					// Return original DB error - the Bridge customer will need manual cleanup
+				} else {
+					s.logger.Info("Successfully rolled back orphaned Bridge customer after DB failure",
+						zap.String("bridge_customer_id", *user.BridgeCustomerID))
+				}
+			} else {
+				s.logger.Warn("Skipping Bridge customer cleanup - customer was pre-existing",
+					zap.String("bridge_customer_id", *user.BridgeCustomerID))
+			}
+
 			return nil, fmt.Errorf("failed to persist Bridge customer information: %w", err)
 		}
 	}

@@ -213,6 +213,15 @@ func (w *Worker) processJob(ctx context.Context, job *entities.KYCSyncJob) {
 				zap.String("last_error", stringVal(job.LastError)),
 				zap.Time("created_at", job.CreatedAt),
 				zap.Duration("total_time", time.Since(job.CreatedAt)))
+
+			// Invoke DLQ alert handler for escalation
+			if w.dlqAlertHandler != nil {
+				if alertErr := w.dlqAlertHandler.HandleDLQAlert(ctx, []*entities.KYCSyncJob{job}); alertErr != nil {
+					w.logger.Error("Failed to send DLQ alert",
+						zap.String("job_id", job.ID.String()),
+						zap.Error(alertErr))
+				}
+			}
 		}
 	} else {
 		job.MarkCompleted()
