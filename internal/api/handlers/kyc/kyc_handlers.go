@@ -378,3 +378,26 @@ func (h *Handler) ResyncBridge(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
+
+// RepairBridgeGovID fetches the Didit session decision and pushes the gov ID to Bridge.
+// POST /admin/kyc/repair-bridge-govid  {"user_id":"..."}
+func (h *Handler) RepairBridgeGovID(c *gin.Context) {
+	var req struct {
+		UserID string `json:"user_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	userID, err := uuid.Parse(req.UserID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user_id"})
+		return
+	}
+	if err := h.kycService.RepairBridgeGovID(c.Request.Context(), userID); err != nil {
+		h.logger.Error("RepairBridgeGovID failed", "user_id", req.UserID, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}

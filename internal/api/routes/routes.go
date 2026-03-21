@@ -774,6 +774,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 			// KYC admin routes
 			admin.POST("/kyc/resync-bridge", kycHTTPHandlers.ResyncBridge)
+			admin.POST("/kyc/repair-bridge-govid", kycHTTPHandlers.RepairBridgeGovID)
 
 			// Security admin routes
 			adminMFAHandlers := handlers.NewMFAHandlers(
