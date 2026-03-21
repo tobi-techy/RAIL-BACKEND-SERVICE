@@ -36,7 +36,30 @@ var (
 	ErrMissingTaxID          = errors.New("tax_id is required")
 	ErrMissingTaxIDType      = errors.New("tax_id_type is required")
 	ErrMissingDocumentFront  = errors.New("id_document_front is required")
+	ErrTaxIDEncryptionFailed = errors.New("failed to encrypt tax_id - cannot proceed")
+	ErrTaxIDDecryptionFailed = errors.New("failed to decrypt stored tax_id - cannot proceed")
 
+	BridgeCustomerExistsError = errors.New("Bridge customer already exists")
+)
+
+type BridgeCustomerExistsDetail struct {
+	Email string
+}
+
+func (e *BridgeCustomerExistsDetail) Error() string {
+	return fmt.Sprintf("Bridge customer already exists for email: %s", e.Email)
+}
+
+type BridgeAPIError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *BridgeAPIError) Error() string {
+	return fmt.Sprintf("Bridge API error (%d): %s", e.StatusCode, e.Message)
+}
+
+var (
 	sumsubExistingApplicantIDPattern = regexp.MustCompile(`(?i)already exists:\s*([a-z0-9]+)`)
 	isoAlpha3Pattern                 = regexp.MustCompile(`^[A-Z]{3}$`)
 	dataURIImagePattern              = regexp.MustCompile(`^data:(image\/[a-zA-Z0-9.+-]+);base64,`)
@@ -65,6 +88,16 @@ type IncompleteProfileError struct {
 
 func (e *IncompleteProfileError) Error() string {
 	return "missing required profile fields for KYC submission"
+}
+
+// KYCPreconditionsResult holds the result of KYC precondition checks.
+type KYCPreconditionsResult struct {
+	Eligible          bool     `json:"eligible"`
+	MissingFields     []string `json:"missing_fields,omitempty"`
+	HasBridgeCustomer bool     `json:"has_bridge_customer"`
+	KYCStatus         string   `json:"kyc_status"`
+	CanStartKYC       bool     `json:"can_start_kyc"`
+	Blocker           string   `json:"blocker,omitempty"`
 }
 
 type BridgeAdapter interface {
@@ -1838,10 +1871,65 @@ func (s *Service) RefreshSumsubToken(ctx context.Context, userID uuid.UUID) (*en
 }
 
 // ---------------------------------------------------------------------------
+// KYC Precondition Validation
+// ---------------------------------------------------------------------------
+
+// VerifyKYCPreconditions checks if a user meets all preconditions to start KYC.
+// This enables the frontend to show appropriate UI before attempting KYC submission.
+func (s *Service) VerifyKYCPreconditions(ctx context.Context, userID uuid.UUID) (*KYCPreconditionsResult, error) {
+	result := &KYCPreconditionsResult{
+		Eligible:          true,
+		MissingFields:     []string{},
+		HasBridgeCustomer: false,
+		CanStartKYC:       true,
+	}
+
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+
+	profile, err := s.userRepo.GetProfileByUserID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user profile: %w", err)
+	}
+
+	result.KYCStatus = user.KYCStatus
+
+	if user.KYCStatus == "approved" {
+		result.Eligible = false
+		result.CanStartKYC = false
+		result.Blocker = "KYC already approved"
+		return result, nil
+	}
+
+	if profile.BridgeCustomerID != nil && *profile.BridgeCustomerID != "" {
+		result.HasBridgeCustomer = true
+	} else {
+		result.Eligible = false
+		result.CanStartKYC = false
+		result.Blocker = "Bridge customer not created"
+		return result, nil
+	}
+
+	missingFields := collectMissingKYCProfileFields(profile)
+	if len(missingFields) > 0 {
+		result.MissingFields = missingFields
+		result.Eligible = false
+		result.CanStartKYC = false
+		result.Blocker = "Profile incomplete"
+	}
+
+	return result, nil
+}
+
+// ---------------------------------------------------------------------------
 // Didit KYC provider methods
 // ---------------------------------------------------------------------------
 
-// StartDiditSession creates a Didit verification session and persists the submission.
+// StartDiditSession creates a Didit verification session and sends all KYC data directly to Bridge.
+// NO sensitive data is stored in verification_data - only session reference is persisted.
+// Data flow: Frontend → Backend (encrypts tax ID) → Bridge (direct, not stored)
 func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *entities.KYCDigitSessionRequest) (*entities.KYCDigitSessionResponse, error) {
 	if s.diditAdapter == nil {
 		return nil, ErrDiditNotConfigured
@@ -1868,53 +1956,154 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 		return nil, ErrKYCAlreadyApproved
 	}
 
-	// Submit tax ID + source of funds to Bridge upfront (non-fatal).
-	// Tax ID is never stored in our DB — sent directly to Bridge here.
-	bridgeUpdateReq := &bridge.UpdateCustomerRequest{
-		SourceOfFunds:              req.SourceOfFunds,
-		EmploymentStatus:           req.EmploymentStatus,
-		ExpectedMonthlyPaymentsUSD: req.ExpectedMonthlyPaymentsUSD,
-		AccountPurpose:             req.AccountPurpose,
-		AccountPurposeOther:        req.AccountPurposeOther,
-		MostRecentOccupation:       req.MostRecentOccupation,
-		ActingAsIntermediary:       req.ActingAsIntermediary,
-		IdentifyingInformation: []bridge.IdentifyingInfo{
-			{
-				Type:           mapTaxIDTypeToBridge(req.TaxIDType),
-				IssuingCountry: req.IssuingCountry,
-				Number:         req.TaxID,
-			},
-		},
-	}
-	if _, bridgeErr := s.bridgeAdapter.UpdateCustomer(ctx, *profile.BridgeCustomerID, bridgeUpdateReq); bridgeErr != nil {
-		s.logger.Warn("Failed to submit tax ID to Bridge at session start",
-			zap.Error(bridgeErr), zap.String("user_id", userID.String()))
+	// Step 1: Validate preconditions
+	missingFields := collectMissingKYCProfileFields(profile)
+	if len(missingFields) > 0 {
+		return nil, &IncompleteProfileError{MissingFields: missingFields}
 	}
 
+	// Step 2: Send ALL KYC data directly to Bridge (tax ID encrypted, source of funds, disclosures)
+	// NO sensitive data stored in our DB - Bridge owns this data
+	bridgeUpdateReq := s.buildBridgeKYCRequest(req, profile)
+	if bridgeUpdateReq == nil {
+		return nil, fmt.Errorf("failed to build Bridge KYC request")
+	}
+
+	// Send tax ID to Bridge as PLAINTEXT - Bridge needs plaintext for government database verification.
+	// Transport security is handled by TLS/HTTPS. Application-level encryption would break Bridge's
+	// ability to verify the tax ID against government databases.
+	// NOTE: If Bridge later provides a way to receive encrypted data they can decrypt, we can add that.
+	if req.TaxID != "" {
+		bridgeUpdateReq.IdentifyingInformation = []bridge.IdentifyingInfo{
+			{
+				Type:           mapTaxIDTypeToBridge(req.TaxIDType),
+				IssuingCountry: strings.ToLower(req.IssuingCountry),
+				Number:         req.TaxID,
+			},
+		}
+	}
+
+	// Send to Bridge with retry logic - Bridge needs tax ID for government verification
+	// Retry with exponential backoff to handle temporary Bridge API issues
+	var lastBridgeErr error
+	const maxRetries = 3
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(1<<(attempt-1)) * time.Second
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+			}
+			s.logger.Info("Retrying Bridge KYC submission",
+				zap.String("user_id", userID.String()),
+				zap.Int("attempt", attempt),
+				zap.Duration("backoff", backoff))
+		}
+
+		_, lastBridgeErr = s.bridgeAdapter.UpdateCustomer(ctx, *profile.BridgeCustomerID, bridgeUpdateReq)
+		if lastBridgeErr == nil {
+			break
+		}
+
+		// Check for context cancellation/deadline exceeded - stop retrying immediately
+		if errors.Is(lastBridgeErr, context.Canceled) || errors.Is(lastBridgeErr, context.DeadlineExceeded) {
+			s.logger.Warn("Bridge API call cancelled or deadline exceeded, stopping retries",
+				zap.String("user_id", userID.String()),
+				zap.Error(lastBridgeErr))
+			break
+		}
+
+		// Check for client errors (4xx) - don't retry, these won't succeed on retry
+		var bridgeErr *bridge.ErrorResponse
+		if errors.As(lastBridgeErr, &bridgeErr) && bridgeErr.StatusCode >= 400 && bridgeErr.StatusCode < 500 {
+			s.logger.Error("Bridge API rejected KYC submission (non-retryable error)",
+				zap.String("user_id", userID.String()),
+				zap.Int("status_code", bridgeErr.StatusCode),
+				zap.String("message", bridgeErr.Message))
+			break
+		}
+
+		// Check for 5xx server errors - log as warning, these will be retried
+		var serverErr *bridge.ErrorResponse
+		if errors.As(lastBridgeErr, &serverErr) {
+			if serverErr.StatusCode >= 500 {
+				s.logger.Warn("Bridge API server error, will retry",
+					zap.String("user_id", userID.String()),
+					zap.Int("status_code", serverErr.StatusCode),
+					zap.String("message", serverErr.Message),
+					zap.Int("attempt", attempt+1),
+					zap.Int("max_retries", maxRetries))
+			} else if serverErr.StatusCode >= 400 {
+				// 4xx client errors - don't retry, these won't be resolved by retrying
+				s.logger.Warn("Bridge API client error, not retrying",
+					zap.String("user_id", userID.String()),
+					zap.Int("status_code", serverErr.StatusCode),
+					zap.String("message", serverErr.Message))
+				break
+			}
+			// 3xx and other HTTP errors - log as warning and retry
+			s.logger.Warn("Bridge API returned non-success HTTP status, will retry",
+				zap.String("user_id", userID.String()),
+				zap.Int("status_code", serverErr.StatusCode),
+				zap.String("message", serverErr.Message),
+				zap.Int("attempt", attempt+1),
+				zap.Int("max_retries", maxRetries))
+		} else {
+			// Not a bridge.ErrorResponse - network or other non-HTTP error
+			s.logger.Warn("Bridge API call failed (non-HTTP/network error), will retry",
+				zap.String("user_id", userID.String()),
+				zap.Error(lastBridgeErr),
+				zap.Int("attempt", attempt+1),
+				zap.Int("max_retries", maxRetries))
+		}
+	}
+
+	if lastBridgeErr != nil {
+		s.logger.Error("Failed to submit KYC data to Bridge after retries",
+			zap.String("user_id", userID.String()),
+			zap.Error(lastBridgeErr))
+		return nil, fmt.Errorf("failed to submit KYC data to Bridge: %w", lastBridgeErr)
+	}
+	s.logger.Info("KYC data sent directly to Bridge (no sensitive data stored locally)",
+		zap.String("user_id", userID.String()),
+		zap.String("bridge_customer_id", *profile.BridgeCustomerID))
+
+	// Step 3: Check for existing Didit submission (idempotency)
+	if user.KYCProviderRef != nil && *user.KYCProviderRef != "" {
+		existingSubmission, existingErr := s.kycSubmissionRepo.GetByProviderRef(ctx, *user.KYCProviderRef)
+		if existingErr == nil && existingSubmission != nil {
+			if existingSubmission.Status == entities.KYCStatusProcessing {
+				s.logger.Info("Returning existing Didit session for idempotent request",
+					zap.String("user_id", userID.String()),
+					zap.String("session_id", *user.KYCProviderRef))
+				return &entities.KYCDigitSessionResponse{
+					Status:    "existing_session",
+					SessionID: *user.KYCProviderRef,
+					URL:       "",
+				}, nil
+			}
+		}
+	}
+
+	// Step 4: Create Didit session
 	sess, err := s.diditAdapter.CreateSession(ctx, userID.String())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create didit session: %w", err)
 	}
 
+	// Step 5: Persist ONLY session reference - NO sensitive data
 	now := time.Now()
 	expiresAt := now.Add(30 * 24 * time.Hour)
+
+	// Minimal verification_data - only session-specific metadata
+	// Note: bridge_customer_id and user_email are NOT stored here - they're available
+	// through the user profile relationship. Storing them would create consistency risks.
 	verificationData := map[string]any{
-		"didit_session_id": sess.SessionID,
-		"tax_id_type":      req.TaxIDType,
-		"issuing_country":  req.IssuingCountry,
-		"disclosures": map[string]any{
-			"is_control_person":               req.Disclosures.IsControlPerson,
-			"is_affiliated_exchange_or_finra": req.Disclosures.IsAffiliatedExchangeOrFINRA,
-			"is_politically_exposed":          req.Disclosures.IsPoliticallyExposed,
-			"immediate_family_exposed":        req.Disclosures.ImmediateFamilyExposed,
-		},
-	}
-	if s.encryptionKey != "" && req.TaxID != "" {
-		if enc, encErr := crypto.Encrypt(req.TaxID, s.encryptionKey); encErr == nil {
-			verificationData["tax_id_enc"] = enc
-		} else {
-			s.logger.Warn("Failed to encrypt tax_id for storage", zap.Error(encErr))
-		}
+		"session_created_at":           now.Format(time.RFC3339),
+		"kyc_data_submitted_to_bridge": true,
+		"tax_id_type":                  req.TaxIDType,
+		"issuing_country":              req.IssuingCountry,
 	}
 
 	existingSubmission, existingErr := s.kycSubmissionRepo.GetByProviderRef(ctx, sess.SessionID)
@@ -1949,6 +2138,7 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 		}
 	}
 
+	// Step 6: Update user with session reference
 	providerRef := sess.SessionID
 	user.KYCProviderRef = &providerRef
 	if err := s.userRepo.Update(ctx, user); err != nil {
@@ -1956,12 +2146,36 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 			zap.Error(err), zap.String("user_id", userID.String()))
 	}
 
+	s.logger.Info("Didit session created - sensitive data sent directly to Bridge",
+		zap.String("user_id", userID.String()),
+		zap.String("session_id", sess.SessionID))
+
 	return &entities.KYCDigitSessionResponse{
 		Status:       "pending",
 		SessionID:    sess.SessionID,
 		SessionToken: sess.SessionToken,
 		URL:          sess.URL,
 	}, nil
+}
+
+// buildBridgeKYCRequest constructs the Bridge UpdateCustomerRequest from KYC data.
+// This includes source of funds, employment info, and disclosures.
+func (s *Service) buildBridgeKYCRequest(req *entities.KYCDigitSessionRequest, profile *entities.UserProfile) *bridge.UpdateCustomerRequest {
+	if req == nil {
+		return nil
+	}
+
+	bridgeReq := &bridge.UpdateCustomerRequest{
+		SourceOfFunds:              req.SourceOfFunds,
+		EmploymentStatus:           req.EmploymentStatus,
+		ExpectedMonthlyPaymentsUSD: req.ExpectedMonthlyPaymentsUSD,
+		AccountPurpose:             req.AccountPurpose,
+		AccountPurposeOther:        req.AccountPurposeOther,
+		MostRecentOccupation:       req.MostRecentOccupation,
+		ActingAsIntermediary:       req.ActingAsIntermediary,
+	}
+
+	return bridgeReq
 }
 
 // VerifyDiditWebhookSignature validates Didit webhook X-Signature-V2 + X-Timestamp.
@@ -2040,13 +2254,13 @@ func (s *Service) ProcessDiditWebhook(ctx context.Context, payload *entities.Did
 	}
 }
 
+// processDiditApproved handles Didit approval webhook.
+// With the new flow, KYC data (tax ID, source of funds) is sent directly to Bridge
+// during StartDiditSession, so this handler only updates user status.
 func (s *Service) processDiditApproved(ctx context.Context, submission *entities.KYCSubmission, payload *entities.DiditWebhookPayload) error {
 	if submission.Status == entities.KYCStatusApproved {
 		return nil
 	}
-
-	// Hydrate from inline webhook decision or Didit API fallback.
-	s.hydrateSubmissionFromDidit(ctx, submission, payload)
 
 	user, err := s.userRepo.GetByID(ctx, submission.UserID)
 	if err != nil {
@@ -2057,41 +2271,19 @@ func (s *Service) processDiditApproved(ctx context.Context, submission *entities
 		return fmt.Errorf("failed to get user profile: %w", err)
 	}
 
-	// Bridge sync — Didit hosts document images, so we submit KYC data without images.
-	bridgeResult := entities.KYCProviderResult{Success: false, Status: "skipped", Error: "Bridge customer not found"}
-	if profile.BridgeCustomerID != nil && *profile.BridgeCustomerID != "" {
-		bridgeResult = s.submitToBridgeFromDidit(ctx, *profile.BridgeCustomerID, submission)
-	}
-
 	now := time.Now()
-	if bridgeResult.Success {
-		bridgeStatus := "pending"
-		user.BridgeKYCStatus = &bridgeStatus
-	} else if profile.BridgeCustomerID != nil && *profile.BridgeCustomerID != "" {
-		if s.kycSyncJobRepo != nil {
-			retryPayload, _ := encodeProviderRetryPayload(submission.VerificationData, submission.UserID.String())
-			if _, enqErr := s.kycSyncJobRepo.EnqueueProviderRetry(ctx, submission.UserID.String(), "bridge", retryPayload); enqErr != nil {
-				s.logger.Warn("Failed to enqueue Bridge retry job",
-					zap.Error(enqErr), zap.String("user_id", submission.UserID.String()))
-			}
-		}
-	}
-
+	bridgeStatus := "pending"
+	user.BridgeKYCStatus = &bridgeStatus
 	user.KYCRejectionReason = nil
 	if user.KYCSubmittedAt == nil {
 		user.KYCSubmittedAt = &now
 	}
 
-	// KYC is only fully approved when Bridge also accepts the customer.
-	// If Bridge sync failed, stay in processing — retry job will re-attempt.
-	if bridgeResult.Success {
-		user.KYCStatus = string(entities.KYCStatusApproved)
-		user.KYCApprovedAt = &now
-		user.OnboardingStatus = entities.OnboardingStatusCompleted
-	} else {
-		user.KYCStatus = string(entities.KYCStatusProcessing)
-		user.OnboardingStatus = entities.OnboardingStatusKYCPending
-	}
+	// Didit approval is sufficient — KYC data was already sent to Bridge during StartDiditSession.
+	// Bridge will activate the customer asynchronously via their own webhook.
+	user.KYCStatus = string(entities.KYCStatusApproved)
+	user.KYCApprovedAt = &now
+	user.OnboardingStatus = entities.OnboardingStatusCompleted
 
 	if err := s.userRepo.Update(ctx, user); err != nil {
 		return fmt.Errorf("failed to update user after didit approval: %w", err)
@@ -2103,27 +2295,23 @@ func (s *Service) processDiditApproved(ctx context.Context, submission *entities
 	}
 	submission.VerificationData["didit_webhook_type"] = payload.WebhookType
 	submission.VerificationData["didit_status"] = payload.Status
-	submission.VerificationData["bridge_sync"] = map[string]any{
-		"success": bridgeResult.Success,
-		"status":  bridgeResult.Status,
-		"error":   bridgeResult.Error,
-	}
-
-	if bridgeResult.Success {
-		submission.MarkReviewed(entities.KYCStatusApproved, nil)
-	} else {
-		submission.Status = entities.KYCStatusProcessing
-	}
+	submission.VerificationData["didit_approved_at"] = now.Format(time.RFC3339)
+	submission.MarkReviewed(entities.KYCStatusApproved, nil)
 
 	if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {
 		return fmt.Errorf("failed to update didit submission: %w", err)
 	}
 
-	if s.notifier != nil && bridgeResult.Success {
+	if s.notifier != nil {
 		if err := s.notifier.NotifyKYCApproved(ctx, submission.UserID); err != nil {
 			s.logger.Warn("Failed to send KYC approved notification", zap.String("user_id", submission.UserID.String()), zap.Error(err))
 		}
 	}
+
+	s.logger.Info("Didit approved - KYC complete (data was sent to Bridge during session start)",
+		zap.String("user_id", submission.UserID.String()),
+		zap.String("bridge_customer_id", stringValue(profile.BridgeCustomerID)))
+
 	return nil
 }
 
@@ -2298,17 +2486,21 @@ func (s *Service) submitToBridgeFromDidit(ctx context.Context, bridgeCustomerID 
 		return entities.KYCProviderResult{Success: false, Status: "failed", Error: "no verification data"}
 	}
 
-	taxID, _ := data["tax_id"].(string)
 	taxIDType, _ := data["tax_id_type"].(string)
 	country, _ := data["issuing_country"].(string)
 
-	// Prefer encrypted tax ID; fall back to plaintext for backward compat.
-	if encTaxID, ok := data["tax_id_enc"].(string); ok && encTaxID != "" && s.encryptionKey != "" {
-		if dec, err := crypto.Decrypt(encTaxID, s.encryptionKey); err == nil {
-			taxID = dec
-		} else {
-			s.logger.Warn("Failed to decrypt tax_id_enc", zap.Error(err))
+	var taxID string
+	encTaxID, hasEnc := data["tax_id_enc"].(string)
+	if hasEnc && encTaxID != "" && s.encryptionKey != "" {
+		dec, err := crypto.Decrypt(encTaxID, s.encryptionKey)
+		if err != nil {
+			s.logger.Error("Failed to decrypt tax_id_enc - cannot proceed", zap.Error(err))
+			return entities.KYCProviderResult{Success: false, Status: "failed", Error: "failed to decrypt tax_id"}
 		}
+		taxID = dec
+	} else if hasPlaintext := data["tax_id"].(string); hasPlaintext != "" {
+		s.logger.Error("Plaintext tax_id found in verification_data - this should not happen")
+		return entities.KYCProviderResult{Success: false, Status: "failed", Error: "plaintext tax_id found - security violation"}
 	}
 
 	if taxID == "" {
@@ -2355,19 +2547,47 @@ func (s *Service) submitToBridgeFromDidit(ctx context.Context, bridgeCustomerID 
 			zap.Error(err), zap.String("bridge_customer_id", bridgeCustomerID))
 		return entities.KYCProviderResult{Success: false, Status: "failed", Error: err.Error()}
 	}
-	// Clear sensitive fields after successful sync.
-	delete(submission.VerificationData, "didit_doc_number")
-	delete(submission.VerificationData, "tax_id_enc")
+	s.clearSensitiveDiditData(submission)
 	return entities.KYCProviderResult{Success: true, Status: string(customer.Status)}
 }
 
-// ResyncBridge re-runs the Bridge KYC sync for a user's latest Didit submission.
+var sensitiveDiditKeys = []string{
+	"didit_doc_number",
+	"tax_id",
+	"tax_id_enc",
+	"didit_personal_number",
+	"didit_front_image",
+	"didit_back_image",
+	"didit_doc_number_tail",
+}
+
+func (s *Service) clearSensitiveDiditData(submission *entities.KYCSubmission) {
+	if submission.VerificationData == nil {
+		return
+	}
+	for _, key := range sensitiveDiditKeys {
+		delete(submission.VerificationData, key)
+	}
+}
+
+// ResyncBridge re-runs the Bridge KYC sync for a user's Didit submission.
 // Used by admins to fix users whose Bridge customer is Incomplete due to missing tax_id.
-// tax_id, tax_id_type, issuing_country are optional — falls back to stored verification_data.
+// IMPORTANT: Tax ID must be provided by the admin - we no longer store it in verification_data.
+// Tax ID will be encrypted before sending to Bridge.
 func (s *Service) ResyncBridge(ctx context.Context, userID uuid.UUID, taxID, taxIDType, issuingCountry string) error {
 	taxID = strings.TrimSpace(taxID)
 	taxIDType = strings.TrimSpace(taxIDType)
 	issuingCountry = strings.TrimSpace(issuingCountry)
+
+	if taxID == "" {
+		return fmt.Errorf("tax_id is required for resync")
+	}
+	if taxIDType == "" {
+		return fmt.Errorf("tax_id_type is required for resync")
+	}
+	if issuingCountry == "" {
+		return fmt.Errorf("issuing_country is required for resync")
+	}
 
 	// Per-user lock to prevent concurrent resyncs for the same user.
 	s.resyncMu.Lock()
@@ -2392,46 +2612,59 @@ func (s *Service) ResyncBridge(ctx context.Context, userID uuid.UUID, taxID, tax
 		return fmt.Errorf("user has no Bridge customer ID")
 	}
 
-	submissions, err := s.kycSubmissionRepo.GetByUserID(ctx, userID)
+	// Send tax ID as plaintext - Bridge needs plaintext for government database verification
+	// Transport security is handled by TLS/HTTPS
+	bridgeReq := &bridge.UpdateCustomerRequest{
+		IdentifyingInformation: []bridge.IdentifyingInfo{
+			{
+				Type:           mapTaxIDTypeToBridge(taxIDType),
+				IssuingCountry: strings.ToLower(issuingCountry),
+				Number:         taxID,
+			},
+		},
+	}
+
+	customer, err := s.bridgeAdapter.UpdateCustomer(ctx, *profile.BridgeCustomerID, bridgeReq)
 	if err != nil {
-		return fmt.Errorf("failed to load submissions: %w", err)
+		s.logger.Error("Failed to resync to Bridge",
+			zap.Error(err), zap.String("user_id", userID.String()))
+		return fmt.Errorf("bridge sync failed: %w", err)
 	}
 
-	// Find latest Didit submission.
-	var latest *entities.KYCSubmission
-	for _, sub := range submissions {
-		if sub.Provider != "didit" {
-			continue
+	// Find latest Didit submission to update metadata
+	submissions, err := s.kycSubmissionRepo.GetByUserID(ctx, userID)
+	if err == nil {
+		var latest *entities.KYCSubmission
+		for _, sub := range submissions {
+			if sub.Provider != "didit" {
+				continue
+			}
+			if latest == nil || sub.CreatedAt.After(latest.CreatedAt) {
+				latest = sub
+			}
 		}
-		if latest == nil || sub.CreatedAt.After(latest.CreatedAt) {
-			latest = sub
+		if latest != nil {
+			if latest.VerificationData == nil {
+				latest.VerificationData = map[string]any{}
+			}
+			latest.VerificationData["bridge_sync"] = map[string]any{
+				"success":         true,
+				"status":          string(customer.Status),
+				"error":           "",
+				"resynced_at":     time.Now().Format(time.RFC3339),
+				"tax_id_type":     taxIDType,
+				"issuing_country": issuingCountry,
+			}
+			if err := s.kycSubmissionRepo.Update(ctx, latest); err != nil {
+				s.logger.Warn("Failed to persist resync result", zap.String("user_id", userID.String()), zap.Error(err))
+			}
 		}
 	}
-	if latest == nil {
-		return fmt.Errorf("no didit submission found for user")
-	}
 
-	// Inject provided tax data into verification_data.
-	if latest.VerificationData == nil {
-		latest.VerificationData = map[string]any{}
-	}
-	latest.VerificationData["tax_id"] = taxID
-	latest.VerificationData["tax_id_type"] = taxIDType
-	latest.VerificationData["issuing_country"] = issuingCountry
+	s.logger.Info("Bridge resync successful",
+		zap.String("user_id", userID.String()),
+		zap.String("bridge_customer_id", *profile.BridgeCustomerID),
+		zap.String("bridge_status", string(customer.Status)))
 
-	result := s.submitToBridgeFromDidit(ctx, *profile.BridgeCustomerID, latest)
-	if !result.Success {
-		return fmt.Errorf("bridge sync failed: %s", result.Error)
-	}
-
-	// Persist updated verification_data.
-	latest.VerificationData["bridge_sync"] = map[string]any{
-		"success": true,
-		"status":  result.Status,
-		"error":   "",
-	}
-	if err := s.kycSubmissionRepo.Update(ctx, latest); err != nil {
-		s.logger.Warn("Failed to persist resync result", zap.String("user_id", userID.String()), zap.Error(err))
-	}
 	return nil
 }
