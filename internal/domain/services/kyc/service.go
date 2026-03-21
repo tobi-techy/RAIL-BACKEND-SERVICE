@@ -2101,7 +2101,8 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 	if user.KYCProviderRef != nil && *user.KYCProviderRef != "" {
 		existingSubmission, existingErr := s.kycSubmissionRepo.GetByProviderRef(ctx, *user.KYCProviderRef)
 		if existingErr == nil && existingSubmission != nil {
-			if existingSubmission.Status == entities.KYCStatusProcessing {
+			if existingSubmission.Status == entities.KYCStatusProcessing ||
+				existingSubmission.Status == entities.KYCStatusApproved {
 				s.logger.Info("Returning existing Didit session for idempotent request",
 					zap.String("user_id", userID.String()),
 					zap.String("session_id", *user.KYCProviderRef))
