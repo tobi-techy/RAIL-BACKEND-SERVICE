@@ -1120,7 +1120,6 @@ func collectMissingKYCProfileFields(profile *entities.UserProfile) []string {
 			"first_name",
 			"last_name",
 			"date_of_birth",
-			"phone",
 			"address_street",
 			"address_city",
 			"address_postal_code",
@@ -1128,7 +1127,7 @@ func collectMissingKYCProfileFields(profile *entities.UserProfile) []string {
 		}
 	}
 
-	missing := make([]string, 0, 8)
+	missing := make([]string, 0, 7)
 	if strings.TrimSpace(stringValue(profile.FirstName)) == "" {
 		missing = append(missing, "first_name")
 	}
@@ -1137,9 +1136,6 @@ func collectMissingKYCProfileFields(profile *entities.UserProfile) []string {
 	}
 	if profile.DateOfBirth == nil {
 		missing = append(missing, "date_of_birth")
-	}
-	if strings.TrimSpace(stringValue(profile.Phone)) == "" {
-		missing = append(missing, "phone")
 	}
 	if strings.TrimSpace(stringValue(profile.AddressStreet)) == "" {
 		missing = append(missing, "address_street")
