@@ -2500,13 +2500,21 @@ func (s *Service) clearSensitiveDiditData(submission *entities.KYCSubmission) {
 	}
 }
 
-// ResyncBridge re-runs the Bridge KYC sync for a user's latest Didit submission.
+// ResyncBridge re-runs the Bridge KYC sync for a user's Didit submission.
 // Used by admins to fix users whose Bridge customer is Incomplete due to missing tax_id.
-// tax_id, tax_id_type, issuing_country are optional — falls back to stored verification_data.
+// IMPORTANT: Tax ID must be provided by the admin - we no longer store it in verification_data.
+// Tax ID will be encrypted before sending to Bridge.
 func (s *Service) ResyncBridge(ctx context.Context, userID uuid.UUID, taxID, taxIDType, issuingCountry string) error {
 	taxID = strings.TrimSpace(taxID)
 	taxIDType = strings.TrimSpace(taxIDType)
 	issuingCountry = strings.TrimSpace(issuingCountry)
+
+	if taxID == "" {
+		return fmt.Errorf("tax_id is required for resync")
+	}
+	if taxIDType == "" {
+		return fmt.Errorf("tax_id_type is required for resync")
+	}
 
 	// Per-user lock to prevent concurrent resyncs for the same user.
 	s.resyncMu.Lock()
@@ -2531,46 +2539,69 @@ func (s *Service) ResyncBridge(ctx context.Context, userID uuid.UUID, taxID, tax
 		return fmt.Errorf("user has no Bridge customer ID")
 	}
 
-	submissions, err := s.kycSubmissionRepo.GetByUserID(ctx, userID)
+	// Encrypt tax ID before sending to Bridge
+	if s.encryptionKey == "" {
+		return fmt.Errorf("encryption key not configured - cannot resync")
+	}
+	encTaxID, err := crypto.Encrypt(taxID, s.encryptionKey)
 	if err != nil {
-		return fmt.Errorf("failed to load submissions: %w", err)
+		s.logger.Error("Failed to encrypt tax_id for resync",
+			zap.Error(err), zap.String("user_id", userID.String()))
+		return fmt.Errorf("failed to encrypt tax_id: %w", err)
 	}
 
-	// Find latest Didit submission.
-	var latest *entities.KYCSubmission
-	for _, sub := range submissions {
-		if sub.Provider != "didit" {
-			continue
+	// Build Bridge request with encrypted tax ID
+	bridgeReq := &bridge.UpdateCustomerRequest{
+		IdentifyingInformation: []bridge.IdentifyingInfo{
+			{
+				Type:           mapTaxIDTypeToBridge(taxIDType),
+				IssuingCountry: strings.ToLower(issuingCountry),
+				Number:         encTaxID,
+			},
+		},
+	}
+
+	customer, err := s.bridgeAdapter.UpdateCustomer(ctx, *profile.BridgeCustomerID, bridgeReq)
+	if err != nil {
+		s.logger.Error("Failed to resync to Bridge",
+			zap.Error(err), zap.String("user_id", userID.String()))
+		return fmt.Errorf("bridge sync failed: %w", err)
+	}
+
+	// Find latest Didit submission to update metadata
+	submissions, err := s.kycSubmissionRepo.GetByUserID(ctx, userID)
+	if err == nil {
+		var latest *entities.KYCSubmission
+		for _, sub := range submissions {
+			if sub.Provider != "didit" {
+				continue
+			}
+			if latest == nil || sub.CreatedAt.After(latest.CreatedAt) {
+				latest = sub
+			}
 		}
-		if latest == nil || sub.CreatedAt.After(latest.CreatedAt) {
-			latest = sub
+		if latest != nil {
+			if latest.VerificationData == nil {
+				latest.VerificationData = map[string]any{}
+			}
+			latest.VerificationData["bridge_sync"] = map[string]any{
+				"success":         true,
+				"status":          string(customer.Status),
+				"error":           "",
+				"resynced_at":     time.Now().Format(time.RFC3339),
+				"tax_id_type":     taxIDType,
+				"issuing_country": issuingCountry,
+			}
+			if err := s.kycSubmissionRepo.Update(ctx, latest); err != nil {
+				s.logger.Warn("Failed to persist resync result", zap.String("user_id", userID.String()), zap.Error(err))
+			}
 		}
 	}
-	if latest == nil {
-		return fmt.Errorf("no didit submission found for user")
-	}
 
-	// Inject provided tax data into verification_data.
-	if latest.VerificationData == nil {
-		latest.VerificationData = map[string]any{}
-	}
-	latest.VerificationData["tax_id"] = taxID
-	latest.VerificationData["tax_id_type"] = taxIDType
-	latest.VerificationData["issuing_country"] = issuingCountry
+	s.logger.Info("Bridge resync successful",
+		zap.String("user_id", userID.String()),
+		zap.String("bridge_customer_id", *profile.BridgeCustomerID),
+		zap.String("bridge_status", string(customer.Status)))
 
-	result := s.submitToBridgeFromDidit(ctx, *profile.BridgeCustomerID, latest)
-	if !result.Success {
-		return fmt.Errorf("bridge sync failed: %s", result.Error)
-	}
-
-	// Persist updated verification_data.
-	latest.VerificationData["bridge_sync"] = map[string]any{
-		"success": true,
-		"status":  result.Status,
-		"error":   "",
-	}
-	if err := s.kycSubmissionRepo.Update(ctx, latest); err != nil {
-		s.logger.Warn("Failed to persist resync result", zap.String("user_id", userID.String()), zap.Error(err))
-	}
 	return nil
 }
