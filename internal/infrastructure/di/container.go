@@ -42,14 +42,13 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/security"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	"github.com/rail-service/rail_service/internal/domain/services/socialauth"
-	"github.com/rail-service/rail_service/internal/domain/services/station"
 	"github.com/rail-service/rail_service/internal/domain/services/stashlock"
+	"github.com/rail-service/rail_service/internal/domain/services/station"
 	"github.com/rail-service/rail_service/internal/domain/services/strategy"
 	"github.com/rail-service/rail_service/internal/domain/services/twofa"
 	"github.com/rail-service/rail_service/internal/domain/services/wallet"
 	"github.com/rail-service/rail_service/internal/domain/services/webauthn"
 	yieldsvc "github.com/rail-service/rail_service/internal/domain/services/yield"
-	recon    "github.com/rail-service/rail_service/internal/workers/reconciliation"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
@@ -58,6 +57,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
+	recon "github.com/rail-service/rail_service/internal/workers/reconciliation"
 	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/captcha"
 	commonmetrics "github.com/rail-service/rail_service/pkg/common/metrics"
@@ -795,6 +795,10 @@ func (a *BridgeOnboardingAdapter) GetCustomerByEmail(ctx context.Context, email 
 		AccountID: cust.ID,
 		Status:    string(cust.Status),
 	}, nil
+}
+
+func (a *BridgeOnboardingAdapter) DeleteCustomer(ctx context.Context, customerID string) error {
+	return a.adapter.Client().DeleteCustomer(ctx, customerID)
 }
 
 // FundingNotificationAdapter adapts NotificationService to funding.FundingNotificationService

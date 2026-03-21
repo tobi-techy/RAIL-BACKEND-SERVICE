@@ -1969,31 +1969,60 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 		return nil, fmt.Errorf("failed to build Bridge KYC request")
 	}
 
-	// Encrypt tax ID before sending to Bridge
+	// Send tax ID to Bridge as PLAINTEXT - Bridge needs plaintext for government database verification.
+	// Transport security is handled by TLS/HTTPS. Application-level encryption would break Bridge's
+	// ability to verify the tax ID against government databases.
+	// NOTE: If Bridge later provides a way to receive encrypted data they can decrypt, we can add that.
 	if req.TaxID != "" {
-		if s.encryptionKey == "" {
-			return nil, fmt.Errorf("encryption key not configured - cannot submit tax ID")
-		}
-		encTaxID, encErr := crypto.Encrypt(req.TaxID, s.encryptionKey)
-		if encErr != nil {
-			s.logger.Error("Failed to encrypt tax ID for Bridge submission",
-				zap.Error(encErr), zap.String("user_id", userID.String()))
-			return nil, ErrTaxIDEncryptionFailed
-		}
 		bridgeUpdateReq.IdentifyingInformation = []bridge.IdentifyingInfo{
 			{
 				Type:           mapTaxIDTypeToBridge(req.TaxIDType),
 				IssuingCountry: strings.ToLower(req.IssuingCountry),
-				Number:         encTaxID,
+				Number:         req.TaxID,
 			},
 		}
 	}
 
-	// Send to Bridge - this is the single source of truth for KYC data
-	if _, bridgeErr := s.bridgeAdapter.UpdateCustomer(ctx, *profile.BridgeCustomerID, bridgeUpdateReq); bridgeErr != nil {
-		s.logger.Error("Failed to submit KYC data to Bridge",
-			zap.Error(bridgeErr), zap.String("user_id", userID.String()))
-		return nil, fmt.Errorf("failed to submit KYC data to Bridge: %w", bridgeErr)
+	// Send to Bridge with retry logic - Bridge needs tax ID for government verification
+	// Retry with exponential backoff to handle temporary Bridge API issues
+	var lastBridgeErr error
+	const maxRetries = 3
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(1<<(attempt-1)) * time.Second
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+			}
+			s.logger.Info("Retrying Bridge KYC submission",
+				zap.String("user_id", userID.String()),
+				zap.Int("attempt", attempt),
+				zap.Duration("backoff", backoff))
+		}
+
+		_, lastBridgeErr = s.bridgeAdapter.UpdateCustomer(ctx, *profile.BridgeCustomerID, bridgeUpdateReq)
+		if lastBridgeErr == nil {
+			break
+		}
+
+		// Only retry on potentially transient errors (5xx, network issues)
+		// Don't retry on client errors (4xx) as they won't succeed on retry
+		var bridgeErr *bridge.ErrorResponse
+		if errors.As(lastBridgeErr, &bridgeErr) && bridgeErr.StatusCode >= 400 && bridgeErr.StatusCode < 500 {
+			s.logger.Error("Bridge API rejected KYC submission (non-retryable error)",
+				zap.String("user_id", userID.String()),
+				zap.Int("status_code", bridgeErr.StatusCode),
+				zap.String("message", bridgeErr.Message))
+			break
+		}
+	}
+
+	if lastBridgeErr != nil {
+		s.logger.Error("Failed to submit KYC data to Bridge after retries",
+			zap.String("user_id", userID.String()),
+			zap.Error(lastBridgeErr))
+		return nil, fmt.Errorf("failed to submit KYC data to Bridge: %w", lastBridgeErr)
 	}
 	s.logger.Info("KYC data sent directly to Bridge (no sensitive data stored locally)",
 		zap.String("user_id", userID.String()),
@@ -2026,14 +2055,14 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 	now := time.Now()
 	expiresAt := now.Add(30 * 24 * time.Hour)
 
-	// Minimal verification_data - only references and non-sensitive metadata
+	// Minimal verification_data - only session-specific metadata
+	// Note: bridge_customer_id and user_email are NOT stored here - they're available
+	// through the user profile relationship. Storing them would create consistency risks.
 	verificationData := map[string]any{
 		"session_created_at":           now.Format(time.RFC3339),
 		"kyc_data_submitted_to_bridge": true,
 		"tax_id_type":                  req.TaxIDType,
 		"issuing_country":              req.IssuingCountry,
-		"bridge_customer_id":           *profile.BridgeCustomerID,
-		"user_email":                   profile.Email,
 	}
 
 	existingSubmission, existingErr := s.kycSubmissionRepo.GetByProviderRef(ctx, sess.SessionID)
@@ -2064,7 +2093,7 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 		existingSubmission.ExpiresAt = &expiresAt
 		existingSubmission.UpdatedAt = now
 		if err := s.kycSubmissionRepo.Update(ctx, existingSubmission); err != nil {
-			return nil, fmt.Errorf("failed to update existing didit submission: %w", existingErr)
+			return nil, fmt.Errorf("failed to update existing didit submission: %w", err)
 		}
 	}
 
@@ -2515,6 +2544,9 @@ func (s *Service) ResyncBridge(ctx context.Context, userID uuid.UUID, taxID, tax
 	if taxIDType == "" {
 		return fmt.Errorf("tax_id_type is required for resync")
 	}
+	if issuingCountry == "" {
+		return fmt.Errorf("issuing_country is required for resync")
+	}
 
 	// Per-user lock to prevent concurrent resyncs for the same user.
 	s.resyncMu.Lock()
@@ -2539,24 +2571,14 @@ func (s *Service) ResyncBridge(ctx context.Context, userID uuid.UUID, taxID, tax
 		return fmt.Errorf("user has no Bridge customer ID")
 	}
 
-	// Encrypt tax ID before sending to Bridge
-	if s.encryptionKey == "" {
-		return fmt.Errorf("encryption key not configured - cannot resync")
-	}
-	encTaxID, err := crypto.Encrypt(taxID, s.encryptionKey)
-	if err != nil {
-		s.logger.Error("Failed to encrypt tax_id for resync",
-			zap.Error(err), zap.String("user_id", userID.String()))
-		return fmt.Errorf("failed to encrypt tax_id: %w", err)
-	}
-
-	// Build Bridge request with encrypted tax ID
+	// Send tax ID as plaintext - Bridge needs plaintext for government database verification
+	// Transport security is handled by TLS/HTTPS
 	bridgeReq := &bridge.UpdateCustomerRequest{
 		IdentifyingInformation: []bridge.IdentifyingInfo{
 			{
 				Type:           mapTaxIDTypeToBridge(taxIDType),
 				IssuingCountry: strings.ToLower(issuingCountry),
-				Number:         encTaxID,
+				Number:         taxID,
 			},
 		},
 	}
