@@ -244,6 +244,12 @@ func (s *Service) CreateOrder(ctx context.Context, userID uuid.UUID, req *entiti
 
 	// Submit order to brokerage asynchronously
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				s.logger.Error("CRITICAL: panic in brokerage order goroutine",
+					"order_id", order.ID, "user_id", userID, "panic", r)
+			}
+		}()
 		// Use a detached context — the HTTP request context will be cancelled
 		// once the handler returns, but the brokerage call must complete.
 		bgCtx := context.Background()

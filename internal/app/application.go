@@ -29,6 +29,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	rebalancing_worker "github.com/rail-service/rail_service/internal/workers/rebalancing_worker"
 	balance_reconciliation "github.com/rail-service/rail_service/internal/workers/balance_reconciliation"
+	bridge_govid_repair "github.com/rail-service/rail_service/internal/workers/bridge_govid_repair"
 	deposit_allocation_recovery "github.com/rail-service/rail_service/internal/workers/deposit_allocation_recovery"
 	"github.com/rail-service/rail_service/internal/workers/funding_webhook"
 	kyc_autoinvest "github.com/rail-service/rail_service/internal/workers/kyc_autoinvest"
@@ -58,6 +59,8 @@ type Application struct {
 	rebalancingWorker           *rebalancing_worker.Worker
 	kycSyncWorker               *kyc_sync.Worker
 	balanceReconciliationWorker *balance_reconciliation.Worker
+	bridgeGovIDRepairWorker     *bridge_govid_repair.Worker
+	bridgeGovIDRepairCancel     context.CancelFunc
 
 	// Tracing
 	tracingShutdown func(context.Context) error
@@ -292,6 +295,18 @@ func (app *Application) initializeKYCSyncWorker() error {
 	go app.balanceReconciliationWorker.Start(context.Background())
 	app.log.Info("Balance reconciliation worker started")
 
+	app.bridgeGovIDRepairWorker = bridge_govid_repair.NewWorker(
+		app.container.UserRepo,
+		kycSvc,
+		app.log.Zap(),
+	)
+	if diditClient != nil {
+		repairCtx, repairCancel := context.WithCancel(context.Background())
+		app.bridgeGovIDRepairCancel = repairCancel
+		go app.bridgeGovIDRepairWorker.Start(repairCtx)
+		app.log.Info("Bridge gov ID repair worker started")
+	}
+
 	return nil
 }
 
@@ -519,6 +534,13 @@ func (app *Application) stopWorkers() {
 	if app.balanceReconciliationWorker != nil {
 		app.log.Info("Stopping balance reconciliation worker...")
 		app.balanceReconciliationWorker.Stop()
+	}
+
+	// Stop bridge gov ID repair worker
+	if app.bridgeGovIDRepairCancel != nil {
+		app.log.Info("Stopping bridge gov ID repair worker...")
+		app.bridgeGovIDRepairCancel()
+		app.bridgeGovIDRepairCancel = nil
 	}
 }
 

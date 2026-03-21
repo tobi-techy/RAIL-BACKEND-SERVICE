@@ -198,6 +198,9 @@ type DiditIDVerification struct {
 	ExpirationDate string `json:"expiration_date"`
 	FrontImage     string `json:"front_image"`
 	BackImage      string `json:"back_image"`
+	FullFrontImage string `json:"full_front_image"`
+	FullBackImage  string `json:"full_back_image"`
+	PortraitImage  string `json:"portrait_image"`
 	ParsedAddress  *DiditParsedAddress `json:"parsed_address,omitempty"`
 }
 

@@ -1704,3 +1704,34 @@ func (r *UserRepository) SetRailTag(ctx context.Context, userID uuid.UUID, railT
 	}
 	return nil
 }
+
+// FindApprovedNotActiveBridge returns user IDs where Didit KYC is approved but Bridge is not yet active.
+// Used by the bridge gov ID repair worker to backfill missing gov ID submissions.
+func (r *UserRepository) FindApprovedNotActiveBridge(ctx context.Context, limit int) ([]uuid.UUID, error) {
+	query := `
+		SELECT u.id FROM users u
+		WHERE u.kyc_status = 'approved'
+		  AND (u.bridge_kyc_status IS NULL OR u.bridge_kyc_status NOT IN ('active', 'rejected'))
+		  AND u.kyc_provider_ref IS NOT NULL
+		  AND u.bridge_customer_id IS NOT NULL
+		  AND EXISTS (
+		      SELECT 1 FROM kyc_submissions ks
+		      WHERE ks.user_id = u.id AND ks.provider = 'didit'
+		  )
+		ORDER BY u.kyc_approved_at ASC
+		LIMIT $1`
+	rows, err := r.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("FindApprovedNotActiveBridge: %w", err)
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}

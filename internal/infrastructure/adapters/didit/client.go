@@ -94,6 +94,8 @@ type IDVerification struct {
 	} `json:"parsed_address"`
 	FrontImage    string `json:"front_image"`
 	BackImage     string `json:"back_image"`
+	FullFrontImage string `json:"full_front_image"`
+	FullBackImage  string `json:"full_back_image"`
 	PortraitImage string `json:"portrait_image"`
 }
 
