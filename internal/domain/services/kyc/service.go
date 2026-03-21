@@ -1747,7 +1747,11 @@ func determineOverallStatus(user *entities.User) string {
 	bridgeStatus := strings.ToLower(strings.TrimSpace(stringValue(user.BridgeKYCStatus)))
 
 	// Primary approval: Sumsub approval or an active Bridge customer both unlock the account.
-	if kycStatus == "approved" || bridgeStatus == "active" {
+	// But if Bridge explicitly rejected, the user is not fully approved.
+	if bridgeStatus == "active" {
+		return "approved"
+	}
+	if kycStatus == "approved" && bridgeStatus != "rejected" {
 		return "approved"
 	}
 	if kycStatus == "rejected" || kycStatus == "expired" || bridgeStatus == "rejected" {
@@ -1992,7 +1996,7 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 	if profile.BridgeCustomerID == nil || *profile.BridgeCustomerID == "" {
 		return nil, ErrNoBridgeCustomer
 	}
-	if profile.KYCStatus == "approved" {
+	if profile.KYCStatus == "approved" && (user.BridgeKYCStatus == nil || *user.BridgeKYCStatus != "rejected") {
 		return nil, ErrKYCAlreadyApproved
 	}
 
@@ -2098,10 +2102,13 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 		zap.String("bridge_customer_id", stringValue(profile.BridgeCustomerID)))
 
 	// Step 3: Check for existing Didit submission (idempotency)
-	if user.KYCProviderRef != nil && *user.KYCProviderRef != "" {
+	// Allow new session if Bridge rejected (user needs to resubmit docs)
+	bridgeRejected := user.BridgeKYCStatus != nil && *user.BridgeKYCStatus == "rejected"
+	if user.KYCProviderRef != nil && *user.KYCProviderRef != "" && !bridgeRejected {
 		existingSubmission, existingErr := s.kycSubmissionRepo.GetByProviderRef(ctx, *user.KYCProviderRef)
 		if existingErr == nil && existingSubmission != nil {
-			if existingSubmission.Status == entities.KYCStatusProcessing {
+			if existingSubmission.Status == entities.KYCStatusProcessing ||
+				existingSubmission.Status == entities.KYCStatusApproved {
 				s.logger.Info("Returning existing Didit session for idempotent request",
 					zap.String("user_id", userID.String()),
 					zap.String("session_id", *user.KYCProviderRef))

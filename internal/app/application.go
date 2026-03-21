@@ -122,10 +122,11 @@ func (app *Application) Initialize() error {
 
 // initializeTracing initializes OpenTelemetry tracing
 func (app *Application) initializeTracing() error {
-	tracingEnabled := getBoolEnvOrDefault("OTEL_TRACING_ENABLED", app.cfg.Environment != "test")
+	collectorURL := getEnvOrDefault("OTEL_COLLECTOR_URL", "")
+	tracingEnabled := getBoolEnvOrDefault("OTEL_TRACING_ENABLED", collectorURL != "" && app.cfg.Environment != "test")
 	tracingConfig := tracing.Config{
 		Enabled:      tracingEnabled,
-		CollectorURL: getEnvOrDefault("OTEL_COLLECTOR_URL", "localhost:4317"),
+		CollectorURL: collectorURL,
 		Environment:  app.cfg.Environment,
 		SampleRate:   getSampleRate(app.cfg.Environment),
 	}
