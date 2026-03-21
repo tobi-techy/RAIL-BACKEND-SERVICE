@@ -2578,7 +2578,10 @@ func (s *Service) submitToBridgeFromDidit(ctx context.Context, bridgeCustomerID 
 		if err != nil {
 			s.logger.Warn("Failed to fetch front image for Bridge", zap.Error(err))
 		}
-		backDataURI, _ := fetchImageAsDataURI(backImageURL)
+		backDataURI, err := fetchImageAsDataURI(backImageURL)
+		if err != nil {
+			s.logger.Warn("Failed to fetch back image for Bridge", zap.Error(err))
+		}
 
 		docEntry := bridge.IdentifyingInfo{
 			Type:           mapDocTypeToBridge(docType),
@@ -2764,12 +2767,13 @@ func (s *Service) RepairBridgeGovID(ctx context.Context, userID uuid.UUID) error
 	}
 	var submission *entities.KYCSubmission
 	for _, sub := range submissions {
-		if sub.Provider == "didit" && (submission == nil || sub.CreatedAt.After(submission.CreatedAt)) {
+		if sub.Provider == "didit" && sub.Status == entities.KYCStatusApproved &&
+			(submission == nil || sub.CreatedAt.After(submission.CreatedAt)) {
 			submission = sub
 		}
 	}
 	if submission == nil {
-		return fmt.Errorf("no Didit submission found for user")
+		return fmt.Errorf("no approved Didit submission found for user")
 	}
 
 	// Hydrate document data from Didit session decision.
