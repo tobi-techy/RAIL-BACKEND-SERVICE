@@ -14,6 +14,12 @@ import (
 type JobRepository interface {
 	GetNextPendingJobs(ctx context.Context, limit int) ([]*entities.KYCSyncJob, error)
 	Update(ctx context.Context, job *entities.KYCSyncJob) error
+	GetDLQJobs(ctx context.Context, limit int) ([]*entities.KYCSyncJob, error)
+}
+
+// DLQAlertHandler is called when jobs are moved to DLQ for escalation.
+type DLQAlertHandler interface {
+	HandleDLQAlert(ctx context.Context, jobs []*entities.KYCSyncJob) error
 }
 
 // SumsubWebhookProcessor defines KYC processing logic executed per queued webhook.
@@ -50,15 +56,16 @@ func DefaultConfig() *Config {
 
 // Worker periodically processes queued Sumsub webhook jobs.
 type Worker struct {
-	jobRepo               JobRepository
-	processor             SumsubWebhookProcessor
-	diditProcessor        DiditWebhookProcessor
-	providerRetryProc     ProviderRetryProcessor
-	logger                *zap.Logger
-	checkInterval         time.Duration
-	batchSize             int
-	baseRetryDelay        time.Duration
-	stopCh                chan struct{}
+	jobRepo           JobRepository
+	processor         SumsubWebhookProcessor
+	diditProcessor    DiditWebhookProcessor
+	providerRetryProc ProviderRetryProcessor
+	dlqAlertHandler   DLQAlertHandler
+	logger            *zap.Logger
+	checkInterval     time.Duration
+	batchSize         int
+	baseRetryDelay    time.Duration
+	stopCh            chan struct{}
 }
 
 // NewWorker creates a new KYC sync worker.
@@ -68,6 +75,10 @@ func NewWorker(jobRepo JobRepository, processor SumsubWebhookProcessor, logger *
 
 // NewWorkerWithRetry creates a new KYC sync worker with per-provider retry support.
 func NewWorkerWithRetry(jobRepo JobRepository, processor SumsubWebhookProcessor, providerRetryProc ProviderRetryProcessor, logger *zap.Logger, config *Config, diditProcessor ...DiditWebhookProcessor) *Worker {
+	return newWorkerWithDLQAlert(jobRepo, processor, providerRetryProc, logger, config, nil, diditProcessor...)
+}
+
+func newWorkerWithDLQAlert(jobRepo JobRepository, processor SumsubWebhookProcessor, providerRetryProc ProviderRetryProcessor, logger *zap.Logger, config *Config, dlqHandler DLQAlertHandler, diditProcessor ...DiditWebhookProcessor) *Worker {
 	if config == nil {
 		config = DefaultConfig()
 	}
@@ -85,6 +96,7 @@ func NewWorkerWithRetry(jobRepo JobRepository, processor SumsubWebhookProcessor,
 		jobRepo:           jobRepo,
 		processor:         processor,
 		providerRetryProc: providerRetryProc,
+		dlqAlertHandler:   dlqHandler,
 		logger:            logger,
 		checkInterval:     config.CheckInterval,
 		batchSize:         config.BatchSize,
@@ -192,6 +204,16 @@ func (w *Worker) processJob(ctx context.Context, job *entities.KYCSyncJob) {
 			zap.Int("attempt_count", job.AttemptCount),
 			zap.String("status", string(job.Status)),
 			zap.Error(err))
+		if job.Status == entities.KYCSyncJobStatusDLQ {
+			w.logger.Error("KYC sync job moved to DLQ - ESCALATION REQUIRED",
+				zap.String("job_id", job.ID.String()),
+				zap.String("provider", stringVal(job.Provider)),
+				zap.String("dedupe_key", job.DedupeKey),
+				zap.Int("attempt_count", job.AttemptCount),
+				zap.String("last_error", stringVal(job.LastError)),
+				zap.Time("created_at", job.CreatedAt),
+				zap.Duration("total_time", time.Since(job.CreatedAt)))
+		}
 	} else {
 		job.MarkCompleted()
 	}

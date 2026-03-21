@@ -3,6 +3,7 @@ package bridge
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // ErrorResponse represents a Bridge API error response
@@ -45,4 +46,42 @@ func (e *ErrorResponse) IsUnauthorized() bool {
 // IsRateLimited returns true if the error is a 429 rate limit error
 func (e *ErrorResponse) IsRateLimited() bool {
 	return e.StatusCode == 429
+}
+
+// IsConflict returns true if the error is a 409 conflict error (e.g., customer already exists)
+func (e *ErrorResponse) IsConflict() bool {
+	return e.StatusCode == 409
+}
+
+// IsCustomerAlreadyExists returns true if the error indicates a customer already exists
+func (e *ErrorResponse) IsCustomerAlreadyExists() bool {
+	if !e.IsConflict() {
+		return false
+	}
+	msg := strings.ToLower(e.Message)
+	code := strings.ToLower(e.Code)
+	return strings.Contains(msg, "already exists") ||
+		strings.Contains(code, "already_exists") ||
+		strings.Contains(code, "duplicate") ||
+		strings.Contains(msg, "duplicate")
+}
+
+// GetErrorType returns a standardized error type string for the error
+func (e *ErrorResponse) GetErrorType() string {
+	switch {
+	case e.IsNotFound():
+		return "not_found"
+	case e.IsUnauthorized():
+		return "unauthorized"
+	case e.IsRateLimited():
+		return "rate_limited"
+	case e.IsCustomerAlreadyExists():
+		return "already_exists"
+	case e.StatusCode >= 500:
+		return "server_error"
+	case e.StatusCode >= 400:
+		return "client_error"
+	default:
+		return "unknown"
+	}
 }

@@ -36,7 +36,30 @@ var (
 	ErrMissingTaxID          = errors.New("tax_id is required")
 	ErrMissingTaxIDType      = errors.New("tax_id_type is required")
 	ErrMissingDocumentFront  = errors.New("id_document_front is required")
+	ErrTaxIDEncryptionFailed = errors.New("failed to encrypt tax_id - cannot proceed")
+	ErrTaxIDDecryptionFailed = errors.New("failed to decrypt stored tax_id - cannot proceed")
 
+	BridgeCustomerExistsError = errors.New("Bridge customer already exists")
+)
+
+type BridgeCustomerExistsDetail struct {
+	Email string
+}
+
+func (e *BridgeCustomerExistsDetail) Error() string {
+	return fmt.Sprintf("Bridge customer already exists for email: %s", e.Email)
+}
+
+type BridgeAPIError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *BridgeAPIError) Error() string {
+	return fmt.Sprintf("Bridge API error (%d): %s", e.StatusCode, e.Message)
+}
+
+var (
 	sumsubExistingApplicantIDPattern = regexp.MustCompile(`(?i)already exists:\s*([a-z0-9]+)`)
 	isoAlpha3Pattern                 = regexp.MustCompile(`^[A-Z]{3}$`)
 	dataURIImagePattern              = regexp.MustCompile(`^data:(image\/[a-zA-Z0-9.+-]+);base64,`)
@@ -1868,8 +1891,22 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 		return nil, ErrKYCAlreadyApproved
 	}
 
-	// Submit tax ID + source of funds to Bridge upfront (non-fatal).
-	// Tax ID is never stored in our DB — sent directly to Bridge here.
+	// Submit tax ID + source of funds to Bridge upfront.
+	// Tax ID must be encrypted before sending to Bridge.
+	var taxIDToSend string
+	if req.TaxID != "" {
+		if s.encryptionKey == "" {
+			return nil, fmt.Errorf("encryption key not configured - cannot submit tax ID")
+		}
+		encTaxID, encErr := crypto.Encrypt(req.TaxID, s.encryptionKey)
+		if encErr != nil {
+			s.logger.Error("Failed to encrypt tax ID for Bridge submission",
+				zap.Error(encErr), zap.String("user_id", userID.String()))
+			return nil, ErrTaxIDEncryptionFailed
+		}
+		taxIDToSend = encTaxID
+	}
+
 	bridgeUpdateReq := &bridge.UpdateCustomerRequest{
 		SourceOfFunds:              req.SourceOfFunds,
 		EmploymentStatus:           req.EmploymentStatus,
@@ -1878,19 +1915,42 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 		AccountPurposeOther:        req.AccountPurposeOther,
 		MostRecentOccupation:       req.MostRecentOccupation,
 		ActingAsIntermediary:       req.ActingAsIntermediary,
-		IdentifyingInformation: []bridge.IdentifyingInfo{
+	}
+	if taxIDToSend != "" {
+		bridgeUpdateReq.IdentifyingInformation = []bridge.IdentifyingInfo{
 			{
 				Type:           mapTaxIDTypeToBridge(req.TaxIDType),
-				IssuingCountry: req.IssuingCountry,
-				Number:         req.TaxID,
+				IssuingCountry: strings.ToLower(req.IssuingCountry),
+				Number:         taxIDToSend,
 			},
-		},
+		}
 	}
 	if _, bridgeErr := s.bridgeAdapter.UpdateCustomer(ctx, *profile.BridgeCustomerID, bridgeUpdateReq); bridgeErr != nil {
-		s.logger.Warn("Failed to submit tax ID to Bridge at session start",
+		s.logger.Error("Failed to submit tax ID to Bridge at session start",
 			zap.Error(bridgeErr), zap.String("user_id", userID.String()))
+		return nil, fmt.Errorf("failed to submit KYC data to Bridge: %w", bridgeErr)
 	}
 
+	// Check for existing Didit submission to implement idempotency
+	if user.KYCProviderRef != nil && *user.KYCProviderRef != "" {
+		existingSubmission, existingErr := s.kycSubmissionRepo.GetByProviderRef(ctx, *user.KYCProviderRef)
+		if existingErr == nil && existingSubmission != nil {
+			if existingSubmission.Status == entities.KYCStatusProcessing {
+				s.logger.Info("Returning existing Didit session for idempotent request",
+					zap.String("user_id", userID.String()),
+					zap.String("session_id", *user.KYCProviderRef))
+				// Return existing session info - caller should use their existing session
+				// Note: We can't return the session token without re-fetching from Didit
+				return &entities.KYCDigitSessionResponse{
+					Status:    "existing_session",
+					SessionID: *user.KYCProviderRef,
+					URL:       "", // Would need to re-fetch from Didit
+				}, nil
+			}
+		}
+	}
+
+	// Create Didit session
 	sess, err := s.diditAdapter.CreateSession(ctx, userID.String())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create didit session: %w", err)
@@ -1909,12 +1969,16 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 			"immediate_family_exposed":        req.Disclosures.ImmediateFamilyExposed,
 		},
 	}
-	if s.encryptionKey != "" && req.TaxID != "" {
-		if enc, encErr := crypto.Encrypt(req.TaxID, s.encryptionKey); encErr == nil {
-			verificationData["tax_id_enc"] = enc
-		} else {
-			s.logger.Warn("Failed to encrypt tax_id for storage", zap.Error(encErr))
+	if s.encryptionKey == "" {
+		return nil, fmt.Errorf("encryption key not configured - cannot store KYC data securely")
+	}
+	if req.TaxID != "" {
+		enc, encErr := crypto.Encrypt(req.TaxID, s.encryptionKey)
+		if encErr != nil {
+			s.logger.Error("Failed to encrypt tax_id for storage", zap.Error(encErr))
+			return nil, ErrTaxIDEncryptionFailed
 		}
+		verificationData["tax_id_enc"] = enc
 	}
 
 	existingSubmission, existingErr := s.kycSubmissionRepo.GetByProviderRef(ctx, sess.SessionID)
@@ -2298,17 +2362,21 @@ func (s *Service) submitToBridgeFromDidit(ctx context.Context, bridgeCustomerID 
 		return entities.KYCProviderResult{Success: false, Status: "failed", Error: "no verification data"}
 	}
 
-	taxID, _ := data["tax_id"].(string)
 	taxIDType, _ := data["tax_id_type"].(string)
 	country, _ := data["issuing_country"].(string)
 
-	// Prefer encrypted tax ID; fall back to plaintext for backward compat.
-	if encTaxID, ok := data["tax_id_enc"].(string); ok && encTaxID != "" && s.encryptionKey != "" {
-		if dec, err := crypto.Decrypt(encTaxID, s.encryptionKey); err == nil {
-			taxID = dec
-		} else {
-			s.logger.Warn("Failed to decrypt tax_id_enc", zap.Error(err))
+	var taxID string
+	encTaxID, hasEnc := data["tax_id_enc"].(string)
+	if hasEnc && encTaxID != "" && s.encryptionKey != "" {
+		dec, err := crypto.Decrypt(encTaxID, s.encryptionKey)
+		if err != nil {
+			s.logger.Error("Failed to decrypt tax_id_enc - cannot proceed", zap.Error(err))
+			return entities.KYCProviderResult{Success: false, Status: "failed", Error: "failed to decrypt tax_id"}
 		}
+		taxID = dec
+	} else if hasPlaintext := data["tax_id"].(string); hasPlaintext != "" {
+		s.logger.Error("Plaintext tax_id found in verification_data - this should not happen")
+		return entities.KYCProviderResult{Success: false, Status: "failed", Error: "plaintext tax_id found - security violation"}
 	}
 
 	if taxID == "" {
@@ -2355,10 +2423,27 @@ func (s *Service) submitToBridgeFromDidit(ctx context.Context, bridgeCustomerID 
 			zap.Error(err), zap.String("bridge_customer_id", bridgeCustomerID))
 		return entities.KYCProviderResult{Success: false, Status: "failed", Error: err.Error()}
 	}
-	// Clear sensitive fields after successful sync.
-	delete(submission.VerificationData, "didit_doc_number")
-	delete(submission.VerificationData, "tax_id_enc")
+	s.clearSensitiveDiditData(submission)
 	return entities.KYCProviderResult{Success: true, Status: string(customer.Status)}
+}
+
+var sensitiveDiditKeys = []string{
+	"didit_doc_number",
+	"tax_id",
+	"tax_id_enc",
+	"didit_personal_number",
+	"didit_front_image",
+	"didit_back_image",
+	"didit_doc_number_tail",
+}
+
+func (s *Service) clearSensitiveDiditData(submission *entities.KYCSubmission) {
+	if submission.VerificationData == nil {
+		return
+	}
+	for _, key := range sensitiveDiditKeys {
+		delete(submission.VerificationData, key)
+	}
 }
 
 // ResyncBridge re-runs the Bridge KYC sync for a user's latest Didit submission.

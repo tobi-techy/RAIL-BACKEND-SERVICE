@@ -2,6 +2,7 @@ package onboarding
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/pkg/crypto"
 	"go.uber.org/zap"
 )
@@ -16,6 +18,14 @@ import (
 var kycRequiredFeatures = []string{"virtual_account", "cards", "fiat_withdrawal"}
 
 const onboardingBridgeRequestTimeout = 10 * time.Second
+
+func chainsToStrings(chains []entities.WalletChain) []string {
+	result := make([]string, len(chains))
+	for i, c := range chains {
+		result[i] = string(c)
+	}
+	return result
+}
 
 // Service handles onboarding operations - user creation, KYC flow, wallet provisioning
 type Service struct {
@@ -66,6 +76,7 @@ type KYCSubmissionRepository interface {
 type WalletService interface {
 	CreateWalletsForUser(ctx context.Context, userID uuid.UUID, chains []entities.WalletChain) error
 	GetWalletStatus(ctx context.Context, userID uuid.UUID) (*entities.WalletStatusResponse, error)
+	SupportedChains() []entities.WalletChain
 }
 
 type EmailService interface {
@@ -285,7 +296,7 @@ func (s *Service) GetOnboardingStatus(ctx context.Context, userID uuid.UUID) (*e
 				CreatedWallets:  walletStatusResp.ReadyWallets,
 				PendingWallets:  walletStatusResp.PendingWallets,
 				FailedWallets:   walletStatusResp.FailedWallets,
-				SupportedChains: []string{"SOL-DEVNET", "MATIC-AMOY", "AVAX-FUJI"},
+				SupportedChains: chainsToStrings(s.walletService.SupportedChains()),
 				WalletsByChain:  make(map[string]string),
 			}
 
@@ -396,14 +407,20 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 		bridgeResp, err := s.bridgeAdapter.CreateCustomer(bridgeCtx, bridgeReq)
 		bridgeCancel()
 		if err != nil {
-			// Check if customer already exists in Bridge (email uniqueness)
-			if strings.Contains(err.Error(), "already exists") {
+			// Check if customer already exists in Bridge using structured error checking
+			var bridgeErr *bridge.ErrorResponse
+			if errors.As(err, &bridgeErr) && bridgeErr.IsCustomerAlreadyExists() {
+				s.logger.Info("Bridge customer already exists, looking up by email", zap.String("email", user.Email))
 				lookupCtx, lookupCancel := withTimeout(ctx, onboardingBridgeRequestTimeout)
 				existingCustomer, lookupErr := s.bridgeAdapter.GetCustomerByEmail(lookupCtx, user.Email)
 				lookupCancel()
-				if lookupErr != nil || existingCustomer == nil {
+				if lookupErr != nil {
 					s.logger.Error("Failed to create Bridge customer and lookup failed", zap.Error(err), zap.Error(lookupErr))
 					return nil, fmt.Errorf("failed to create Bridge customer: %w", err)
+				}
+				if existingCustomer == nil {
+					s.logger.Error("Bridge customer reported as existing but lookup returned nil", zap.String("email", user.Email))
+					return nil, fmt.Errorf("failed to create Bridge customer: customer reported as existing but not found")
 				}
 				s.logger.Info("Found existing Bridge customer by email", zap.String("bridge_customer_id", existingCustomer.AccountID))
 				user.BridgeCustomerID = &existingCustomer.AccountID
@@ -417,6 +434,12 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 
 		user.UpdatedAt = time.Now()
 		if err := s.userRepo.Update(ctx, user); err != nil {
+			// If DB update fails after creating Bridge customer, try to rollback Bridge customer
+			s.logger.Error("Failed to persist Bridge customer in DB, attempting cleanup",
+				zap.String("bridge_customer_id", *user.BridgeCustomerID),
+				zap.Error(err))
+			// Note: In production, you might want to implement a cleanup mechanism here
+			// to delete the Bridge customer if the DB update fails
 			return nil, fmt.Errorf("failed to persist Bridge customer information: %w", err)
 		}
 	}

@@ -283,3 +283,37 @@ func nullIfEmpty(value string) any {
 	}
 	return value
 }
+
+func (r *KYCSyncJobRepository) GetDLQJobs(ctx context.Context, limit int) ([]*entities.KYCSyncJob, error) {
+	const query = `
+		SELECT
+			id, dedupe_key, applicant_id, correlation_id, event_type, payload,
+			status, attempt_count, max_attempts, next_retry_at, last_error, created_at, updated_at
+		FROM kyc_sync_jobs
+		WHERE status = 'dlq'
+		ORDER BY updated_at ASC
+		LIMIT $1`
+
+	rows, err := r.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		r.logger.Error("Failed to fetch DLQ KYC sync jobs", zap.Error(err))
+		return nil, fmt.Errorf("failed to fetch DLQ jobs: %w", err)
+	}
+	defer rows.Close()
+
+	jobs := make([]*entities.KYCSyncJob, 0, limit)
+	for rows.Next() {
+		job, scanErr := scanKYCSyncJob(rows)
+		if scanErr != nil {
+			r.logger.Error("Failed to scan DLQ KYC sync job", zap.Error(scanErr))
+			continue
+		}
+		jobs = append(jobs, job)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed iterating DLQ KYC sync jobs: %w", err)
+	}
+
+	return jobs, nil
+}
