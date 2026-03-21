@@ -2067,7 +2067,7 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 	}
 	s.logger.Info("KYC data sent directly to Bridge (no sensitive data stored locally)",
 		zap.String("user_id", userID.String()),
-		zap.String("bridge_customer_id", *profile.BridgeCustomerID))
+		zap.String("bridge_customer_id", stringValue(profile.BridgeCustomerID)))
 
 	// Step 3: Check for existing Didit submission (idempotency)
 	if user.KYCProviderRef != nil && *user.KYCProviderRef != "" {
@@ -2663,7 +2663,7 @@ func (s *Service) ResyncBridge(ctx context.Context, userID uuid.UUID, taxID, tax
 
 	s.logger.Info("Bridge resync successful",
 		zap.String("user_id", userID.String()),
-		zap.String("bridge_customer_id", *profile.BridgeCustomerID),
+		zap.String("bridge_customer_id", stringValue(profile.BridgeCustomerID)),
 		zap.String("bridge_status", string(customer.Status)))
 
 	return nil
