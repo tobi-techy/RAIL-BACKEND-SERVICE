@@ -2017,39 +2017,23 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 		// Check for client errors (4xx) - don't retry, these won't succeed on retry
 		var bridgeErr *bridge.ErrorResponse
 		if errors.As(lastBridgeErr, &bridgeErr) && bridgeErr.StatusCode >= 400 && bridgeErr.StatusCode < 500 {
-			s.logger.Error("Bridge API rejected KYC submission (non-retryable error)",
+			s.logger.Error("Bridge API rejected KYC submission (non-retryable 4xx error)",
 				zap.String("user_id", userID.String()),
 				zap.Int("status_code", bridgeErr.StatusCode),
 				zap.String("message", bridgeErr.Message))
 			break
 		}
 
-		// Check for 5xx server errors - log as warning, these will be retried
+		// Check for 5xx server errors - these are transient and will be retried
 		var serverErr *bridge.ErrorResponse
-		if errors.As(lastBridgeErr, &serverErr) {
-			if serverErr.StatusCode >= 500 {
-				s.logger.Warn("Bridge API server error, will retry",
-					zap.String("user_id", userID.String()),
-					zap.Int("status_code", serverErr.StatusCode),
-					zap.String("message", serverErr.Message),
-					zap.Int("attempt", attempt+1),
-					zap.Int("max_retries", maxRetries))
-			} else if serverErr.StatusCode >= 400 {
-				// 4xx client errors - don't retry, these won't be resolved by retrying
-				s.logger.Warn("Bridge API client error, not retrying",
-					zap.String("user_id", userID.String()),
-					zap.Int("status_code", serverErr.StatusCode),
-					zap.String("message", serverErr.Message))
-				break
-			}
-			// 3xx and other HTTP errors - log as warning and retry
-			s.logger.Warn("Bridge API returned non-success HTTP status, will retry",
+		if errors.As(lastBridgeErr, &serverErr) && serverErr.StatusCode >= 500 {
+			s.logger.Warn("Bridge API server error, will retry",
 				zap.String("user_id", userID.String()),
 				zap.Int("status_code", serverErr.StatusCode),
 				zap.String("message", serverErr.Message),
 				zap.Int("attempt", attempt+1),
 				zap.Int("max_retries", maxRetries))
-		} else {
+		} else if serverErr == nil {
 			// Not a bridge.ErrorResponse - network or other non-HTTP error
 			s.logger.Warn("Bridge API call failed (non-HTTP/network error), will retry",
 				zap.String("user_id", userID.String()),
