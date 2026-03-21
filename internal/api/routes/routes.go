@@ -260,19 +260,35 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		}, container.ZapLog)
 	}
 	kycUserRepoAdapter := repositories.NewKYCUserRepositoryAdapter(container.UserRepo)
-	kycService := kycservice.NewService(
-		kycUserRepoAdapter,
-		container.KYCSubmissionRepo,
-		container.BridgeAdapter,
-		alpacaadapter.NewAdapter(container.AlpacaClient, container.Logger),
-		sumsubClient,
-		container.SumsubWebhookEventRepo,
-		container.KYCSyncJobRepo,
-		container.Config.KYC.LevelName,
-		container.Config.Security.EncryptionKey,
-		container.ZapLog,
-		diditClient,
-	)
+	var kycService *kycservice.Service
+	if diditClient != nil {
+		kycService = kycservice.NewService(
+			kycUserRepoAdapter,
+			container.KYCSubmissionRepo,
+			container.BridgeAdapter,
+			alpacaadapter.NewAdapter(container.AlpacaClient, container.Logger),
+			sumsubClient,
+			container.SumsubWebhookEventRepo,
+			container.KYCSyncJobRepo,
+			container.Config.KYC.LevelName,
+			container.Config.Security.EncryptionKey,
+			container.ZapLog,
+			diditClient,
+		)
+	} else {
+		kycService = kycservice.NewService(
+			kycUserRepoAdapter,
+			container.KYCSubmissionRepo,
+			container.BridgeAdapter,
+			alpacaadapter.NewAdapter(container.AlpacaClient, container.Logger),
+			sumsubClient,
+			container.SumsubWebhookEventRepo,
+			container.KYCSyncJobRepo,
+			container.Config.KYC.LevelName,
+			container.Config.Security.EncryptionKey,
+			container.ZapLog,
+		)
+	}
 	kycHTTPHandlers := kychandlers.NewHandler(kycService, container.Logger)
 	if container.NotificationService != nil {
 		kycService.SetNotifier(container.NotificationService)
