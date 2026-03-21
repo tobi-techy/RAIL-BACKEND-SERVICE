@@ -1547,6 +1547,9 @@ func fetchImageAsDataURI(imageURL string) (string, error) {
 		return "", err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("fetchImageAsDataURI: unexpected status %d for %q", resp.StatusCode, imageURL)
+	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20)) // 10 MB max
 	if err != nil {
 		return "", err
@@ -2321,11 +2324,9 @@ func (s *Service) processDiditApproved(ctx context.Context, submission *entities
 	s.hydrateSubmissionFromDidit(ctx, submission, payload)
 
 	submission.MarkReviewed(entities.KYCStatusApproved, nil)
-	if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {
-		return fmt.Errorf("failed to update didit submission: %w", err)
-	}
 
 	// Push gov ID + verified_govid_at to Bridge to satisfy their "Upload government ID" task.
+	// submitToBridgeFromDidit scrubs PII from submission.VerificationData after sending.
 	if profile.BridgeCustomerID != nil && *profile.BridgeCustomerID != "" {
 		if result := s.submitToBridgeFromDidit(ctx, *profile.BridgeCustomerID, submission); !result.Success {
 			s.logger.Warn("Failed to push gov ID to Bridge after Didit approval",
@@ -2336,6 +2337,11 @@ func (s *Service) processDiditApproved(ctx context.Context, submission *entities
 				zap.String("user_id", submission.UserID.String()),
 				zap.String("bridge_customer_id", *profile.BridgeCustomerID))
 		}
+	}
+
+	// Persist after Bridge sync so scrubbed state (no PII) is what gets saved.
+	if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {
+		return fmt.Errorf("failed to update didit submission: %w", err)
 	}
 
 	if s.notifier != nil {
@@ -2614,6 +2620,9 @@ var sensitiveDiditKeys = []string{
 	"didit_personal_number",
 	"didit_front_image",
 	"didit_back_image",
+	"didit_full_front_image",
+	"didit_full_back_image",
+	"didit_portrait_image",
 	"didit_doc_number_tail",
 }
 

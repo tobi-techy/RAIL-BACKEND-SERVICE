@@ -55,10 +55,32 @@ func (w *Worker) run(ctx context.Context) {
 		w.logger.Error("bridge_govid_repair: failed to query users", zap.Error(err))
 		return
 	}
-	for _, id := range ids {
+	if len(ids) == 0 {
+		return
+	}
+	w.logger.Info("bridge_govid_repair: starting batch", zap.Int("count", len(ids)))
+	processed := 0
+	for i, id := range ids {
+		if ctx.Err() != nil {
+			w.logger.Info("bridge_govid_repair: context cancelled, stopping mid-batch",
+				zap.Int("processed", processed), zap.Int("total", len(ids)))
+			return
+		}
 		if err := w.kycSvc.RepairBridgeGovID(ctx, id); err != nil {
 			w.logger.Warn("bridge_govid_repair: repair failed",
 				zap.String("user_id", id.String()), zap.Error(err))
 		}
+		processed++
+		// Rate-limit between operations, but not after the last one.
+		if i < len(ids)-1 {
+			select {
+			case <-ctx.Done():
+				w.logger.Info("bridge_govid_repair: context cancelled during delay",
+					zap.Int("processed", processed), zap.Int("total", len(ids)))
+				return
+			case <-time.After(500 * time.Millisecond):
+			}
+		}
 	}
+	w.logger.Info("bridge_govid_repair: batch complete", zap.Int("processed", processed))
 }

@@ -1709,12 +1709,16 @@ func (r *UserRepository) SetRailTag(ctx context.Context, userID uuid.UUID, railT
 // Used by the bridge gov ID repair worker to backfill missing gov ID submissions.
 func (r *UserRepository) FindApprovedNotActiveBridge(ctx context.Context, limit int) ([]uuid.UUID, error) {
 	query := `
-		SELECT id FROM users
-		WHERE kyc_status = 'approved'
-		  AND (bridge_kyc_status IS NULL OR bridge_kyc_status NOT IN ('active', 'rejected'))
-		  AND kyc_provider_ref IS NOT NULL
-		  AND bridge_customer_id IS NOT NULL
-		ORDER BY kyc_approved_at ASC
+		SELECT u.id FROM users u
+		WHERE u.kyc_status = 'approved'
+		  AND (u.bridge_kyc_status IS NULL OR u.bridge_kyc_status NOT IN ('active', 'rejected'))
+		  AND u.kyc_provider_ref IS NOT NULL
+		  AND u.bridge_customer_id IS NOT NULL
+		  AND EXISTS (
+		      SELECT 1 FROM kyc_submissions ks
+		      WHERE ks.user_id = u.id AND ks.provider = 'didit'
+		  )
+		ORDER BY u.kyc_approved_at ASC
 		LIMIT $1`
 	rows, err := r.db.QueryContext(ctx, query, limit)
 	if err != nil {

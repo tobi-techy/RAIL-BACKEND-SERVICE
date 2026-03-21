@@ -60,6 +60,7 @@ type Application struct {
 	kycSyncWorker               *kyc_sync.Worker
 	balanceReconciliationWorker *balance_reconciliation.Worker
 	bridgeGovIDRepairWorker     *bridge_govid_repair.Worker
+	bridgeGovIDRepairCancel     context.CancelFunc
 
 	// Tracing
 	tracingShutdown func(context.Context) error
@@ -299,8 +300,12 @@ func (app *Application) initializeKYCSyncWorker() error {
 		kycSvc,
 		app.log.Zap(),
 	)
-	go app.bridgeGovIDRepairWorker.Start(context.Background())
-	app.log.Info("Bridge gov ID repair worker started")
+	if diditClient != nil {
+		repairCtx, repairCancel := context.WithCancel(context.Background())
+		app.bridgeGovIDRepairCancel = repairCancel
+		go app.bridgeGovIDRepairWorker.Start(repairCtx)
+		app.log.Info("Bridge gov ID repair worker started")
+	}
 
 	return nil
 }
@@ -529,6 +534,13 @@ func (app *Application) stopWorkers() {
 	if app.balanceReconciliationWorker != nil {
 		app.log.Info("Stopping balance reconciliation worker...")
 		app.balanceReconciliationWorker.Stop()
+	}
+
+	// Stop bridge gov ID repair worker
+	if app.bridgeGovIDRepairCancel != nil {
+		app.log.Info("Stopping bridge gov ID repair worker...")
+		app.bridgeGovIDRepairCancel()
+		app.bridgeGovIDRepairCancel = nil
 	}
 }
 
