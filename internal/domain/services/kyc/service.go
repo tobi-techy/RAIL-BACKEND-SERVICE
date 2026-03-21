@@ -2024,16 +2024,17 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 			break
 		}
 
-		// Log 5xx server errors as warnings - these will be retried
-		if bridgeErr != nil && bridgeErr.StatusCode >= 500 {
+		// Check for 5xx server errors - log as warning, these will be retried
+		var serverErr *bridge.ErrorResponse
+		if errors.As(lastBridgeErr, &serverErr) && serverErr.StatusCode >= 500 {
 			s.logger.Warn("Bridge API server error, will retry",
 				zap.String("user_id", userID.String()),
-				zap.Int("status_code", bridgeErr.StatusCode),
-				zap.String("message", bridgeErr.Message),
+				zap.Int("status_code", serverErr.StatusCode),
+				zap.String("message", serverErr.Message),
 				zap.Int("attempt", attempt+1),
 				zap.Int("max_retries", maxRetries))
-		} else if bridgeErr == nil {
-			// Network or other non-HTTP error - log as warning
+		} else if serverErr == nil {
+			// Not a bridge.ErrorResponse (or status < 500) - network or other non-HTTP error
 			s.logger.Warn("Bridge API call failed (non-HTTP error), will retry",
 				zap.String("user_id", userID.String()),
 				zap.Error(lastBridgeErr),
