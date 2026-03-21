@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"reflect"
 	"regexp"
 	"strings"
@@ -1529,16 +1530,24 @@ func tail(value string, n int) string {
 
 // fetchImageAsDataURI downloads an image URL and returns a base64 data URI.
 // Bridge requires data URIs, not raw URLs.
-func fetchImageAsDataURI(url string) (string, error) {
-	if url == "" {
+// Only Didit's verification.didit.me domain is allowed (SSRF prevention).
+func fetchImageAsDataURI(imageURL string) (string, error) {
+	if imageURL == "" {
 		return "", nil
 	}
-	resp, err := http.Get(url) //nolint:noctx
+	// SSRF guard: only allow Didit's image host.
+	parsed, err := url.Parse(imageURL)
+	if err != nil || !strings.HasSuffix(parsed.Hostname(), "didit.me") {
+		return "", fmt.Errorf("fetchImageAsDataURI: untrusted host %q", parsed.Hostname())
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(imageURL)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20)) // 10 MB max
 	if err != nil {
 		return "", err
 	}
@@ -1546,7 +1555,6 @@ func fetchImageAsDataURI(url string) (string, error) {
 	if ct == "" {
 		ct = "image/jpeg"
 	}
-	// Normalise to Bridge-accepted MIME types.
 	switch {
 	case strings.Contains(ct, "png"):
 		ct = "image/png"
