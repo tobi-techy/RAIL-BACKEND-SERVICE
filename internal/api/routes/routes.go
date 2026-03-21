@@ -14,7 +14,6 @@ import (
 	ginSwagger "github.com/swaggo/gin-swagger"
 
 	"github.com/rail-service/rail_service/internal/api/handlers"
-	adminhandlers "github.com/rail-service/rail_service/internal/api/handlers/admin"
 	kychandlers "github.com/rail-service/rail_service/internal/api/handlers/kyc"
 	"github.com/rail-service/rail_service/internal/api/middleware"
 	"github.com/rail-service/rail_service/internal/domain/entities"
@@ -758,9 +757,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		}
 
 		// Admin bootstrap route (enforces super admin token after initial creation)
-		adminHandlers := adminhandlers.NewAdminHandlers(container.DB, container.Config, container.ZapLog)
-		v1.POST("/admin/users", adminHandlers.CreateAdmin)
-		v1.POST("/admin/promote", adminHandlers.PromoteUser)
+		// v1.POST("/admin/users", adminHandlers.CreateAdmin)
+		// v1.POST("/admin/promote", adminHandlers.PromoteUser)
 
 		// Admin routes (admin auth required)
 		admin := v1.Group("/admin")
