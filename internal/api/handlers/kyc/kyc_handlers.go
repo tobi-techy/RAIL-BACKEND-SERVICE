@@ -297,6 +297,13 @@ func (h *Handler) CreateDiditSession(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Complete signup first"})
 		case errors.Is(err, kyc.ErrDiditNotConfigured):
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "KYC provider not configured"})
+		case errors.Is(err, &kyc.IncompleteProfileError{}):
+			var profileErr *kyc.IncompleteProfileError
+			errors.As(err, &profileErr)
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":          "Profile incomplete - complete all fields before starting KYC",
+				"missing_fields": profileErr.MissingFields,
+			})
 		default:
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create verification session"})
 		}
