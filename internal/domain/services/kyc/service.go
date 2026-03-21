@@ -1959,6 +1959,19 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 	// Step 1: Validate preconditions
 	missingFields := collectMissingKYCProfileFields(profile)
 	if len(missingFields) > 0 {
+		s.logger.Warn("Profile incomplete for KYC",
+			zap.String("user_id", userID.String()),
+			zap.Strings("missing_fields", missingFields),
+			zap.Any("profile", map[string]any{
+				"first_name":      stringValue(profile.FirstName),
+				"last_name":       stringValue(profile.LastName),
+				"date_of_birth":   profile.DateOfBirth,
+				"phone":           stringValue(profile.Phone),
+				"address_street":  stringValue(profile.AddressStreet),
+				"address_city":    stringValue(profile.AddressCity),
+				"address_postal":  stringValue(profile.AddressPostalCode),
+				"address_country": stringValue(profile.AddressCountry),
+			}))
 		return nil, &IncompleteProfileError{MissingFields: missingFields}
 	}
 
