@@ -1500,6 +1500,11 @@ func (c *Container) initializeDomainServices() error {
 	// Wire Expo Push service for push notifications
 	expoPushService := adapters.NewExpoPushService(c.DeviceTokenRepo, c.ZapLog)
 	c.NotificationService.SetPushSender(expoPushService)
+	// Wire email notifications for important events
+	if c.EmailService != nil {
+		c.NotificationService.SetEmailSender(adapters.NewEmailSenderAdapter(c.EmailService))
+	}
+	c.NotificationService.SetUserEmailLookup(adapters.NewUserEmailLookup(c.DB))
 
 	// Wire notification service into auto-invest and allocation for failure alerts
 	c.AutoInvestService.SetNotificationService(c.NotificationService)

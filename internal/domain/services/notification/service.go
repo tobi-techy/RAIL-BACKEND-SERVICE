@@ -47,13 +47,31 @@ type PushSender interface {
 	SendToUser(ctx context.Context, userID uuid.UUID, title, body string, data map[string]interface{}) error
 }
 
+// UserEmailLookup resolves a user's email address from their ID
+type UserEmailLookup interface {
+	GetEmailByUserID(ctx context.Context, userID uuid.UUID) (string, error)
+}
+
+// emailWorthy notification types that should also trigger an email
+var emailWorthyTypes = map[string]bool{
+	"deposit_confirmed":  true,
+	"allocation_complete": true,
+	"allocation_failed":  true,
+	"withdrawal_completed": true,
+	"withdrawal_failed":  true,
+	"yield_credited":     true,
+	"offramp_success":    true,
+	"offramp_failure":    true,
+}
+
 type NotificationService struct {
-	logger      *zap.Logger
-	queue       NotificationQueue
-	smsSender   SMSSender
-	emailSender EmailSenderService
-	persister   NotificationPersister
-	pushSender  PushSender
+	logger          *zap.Logger
+	queue           NotificationQueue
+	smsSender       SMSSender
+	emailSender     EmailSenderService
+	persister       NotificationPersister
+	pushSender      PushSender
+	userEmailLookup UserEmailLookup
 }
 
 func NewNotificationService(logger *zap.Logger) *NotificationService {
@@ -83,6 +101,11 @@ func (s *NotificationService) SetPersister(p NotificationPersister) {
 // SetPushSender sets the push notification sender (Expo Push)
 func (s *NotificationService) SetPushSender(sender PushSender) {
 	s.pushSender = sender
+}
+
+// SetUserEmailLookup sets the user email resolver for email notifications
+func (s *NotificationService) SetUserEmailLookup(lookup UserEmailLookup) {
+	s.userEmailLookup = lookup
 }
 
 func (s *NotificationService) Send(ctx context.Context, notification *entities.Notification, prefs *entities.UserPreference) error {
@@ -168,10 +191,29 @@ func (s *NotificationService) queueNotification(ctx context.Context, userID uuid
 				s.logger.Warn("Failed to send push notification", zap.Error(err), zap.String("user_id", userID.String()))
 			}
 		}()
-		return nil
 	}
 
-	// Fallback to queue if configured
+	// Send email for important event types
+	eventType, _ := data["type"].(string)
+	if s.emailSender != nil && s.userEmailLookup != nil && emailWorthyTypes[eventType] {
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			email, err := s.userEmailLookup.GetEmailByUserID(bgCtx, userID)
+			if err != nil || email == "" {
+				s.logger.Debug("No email for user, skipping email notification", zap.String("user_id", userID.String()))
+				return
+			}
+			if err := s.emailSender.SendGenericEmail(bgCtx, email, title, body); err != nil {
+				s.logger.Warn("Failed to send email notification", zap.Error(err), zap.String("user_id", userID.String()))
+			}
+		}()
+	}
+
+	// Fallback to queue if push sender not available
+	if notifType == "push" && s.pushSender != nil {
+		return nil
+	}
 	if s.queue != nil {
 		return s.queue.QueueNotification(ctx, &QueuedNotification{
 			UserID:   userID,
