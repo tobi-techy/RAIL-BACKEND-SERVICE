@@ -723,7 +723,7 @@ func setDefaults() {
 
 	// Bridge defaults
 	viper.SetDefault("bridge.environment", "production")
-	viper.SetDefault("bridge.base_url", "https://api.sandbox.bridge.xyz")
+	viper.SetDefault("bridge.base_url", "https://api.bridge.xyz")
 	viper.SetDefault("bridge.timeout", 30)
 	viper.SetDefault("bridge.max_retries", 3)
 	viper.SetDefault("bridge.supported_chains", []string{"ETH", "MATIC", "AVAX", "SOL"})
