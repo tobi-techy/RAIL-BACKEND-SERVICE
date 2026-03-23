@@ -1209,10 +1209,9 @@ func mapKYCStatusToCustomerStatus(kycStatus string) string {
 
 // BridgeCustomerStatusProcessor handles customer status change events from Bridge
 type BridgeCustomerStatusProcessor struct {
-	userRepo              UserRepositoryForCustomer
-	virtualAccountService VirtualAccountProvisioner
-	notifier              BridgeWebhookNotifier
-	logger                *zap.Logger
+	userRepo UserRepositoryForCustomer
+	notifier BridgeWebhookNotifier
+	logger   *zap.Logger
 }
 
 // UserRepositoryForCustomer defines the interface for user lookups needed by customer processor
@@ -1221,21 +1220,14 @@ type UserRepositoryForCustomer interface {
 	UpdateBridgeKYCStatus(ctx context.Context, userID uuid.UUID, status string) error
 }
 
-// VirtualAccountProvisioner defines the interface for provisioning virtual accounts
-type VirtualAccountProvisioner interface {
-	ProvisionVirtualAccounts(ctx context.Context, userID uuid.UUID, bridgeCustomerID string, currencies []string) error
-}
-
 // NewBridgeCustomerStatusProcessor creates a new customer status processor
 func NewBridgeCustomerStatusProcessor(
 	userRepo UserRepositoryForCustomer,
-	virtualAccountService VirtualAccountProvisioner,
 	logger *zap.Logger,
 ) *BridgeCustomerStatusProcessor {
 	return &BridgeCustomerStatusProcessor{
-		userRepo:              userRepo,
-		virtualAccountService: virtualAccountService,
-		logger:                logger,
+		userRepo: userRepo,
+		logger:   logger,
 	}
 }
 
@@ -1294,26 +1286,8 @@ func (s *BridgeCustomerStatusProcessor) UpdateCustomerStatus(ctx context.Context
 		}
 	}
 
-	// Trigger virtual account provisioning if status became active
-	if bridgeKYCStatus == "active" {
-		s.logger.Info("KYC approved - provisioning virtual accounts",
-			zap.String("user_id", user.ID.String()),
-			zap.String("customer_id", customerID))
-
-		if s.virtualAccountService != nil {
-			currencies := []string{"USD", "EUR"}
-			if err := s.virtualAccountService.ProvisionVirtualAccounts(ctx, user.ID, customerID, currencies); err != nil {
-				s.logger.Error("Failed to provision virtual accounts",
-					zap.Error(err),
-					zap.String("user_id", user.ID.String()))
-				// Don't fail the webhook - provisioning can be retried
-				return nil
-			}
-			s.logger.Info("Successfully provisioned virtual accounts",
-				zap.String("user_id", user.ID.String()),
-				zap.Strings("currencies", currencies))
-		}
-	}
+	// Virtual accounts are now created on-demand via POST /api/v1/funding/virtual-account,
+	// not auto-provisioned on KYC approval.
 
 	return nil
 }

@@ -1413,7 +1413,6 @@ func (c *Container) initializeDomainServices() error {
 		// Create customer status processor for handling Bridge KYC webhooks
 		customerStatusProcessor := webhooks.NewBridgeCustomerStatusProcessor(
 			c.UserRepo,
-			c.BridgeVirtualAccountService,
 			c.ZapLog,
 		)
 		c.BridgeCustomerStatusProcessor = customerStatusProcessor
@@ -1806,10 +1805,9 @@ func (c *Container) initializeDomainServices() error {
 	// Wire P2P service to onboarding for auto-claim
 	c.OnboardingService.SetP2PService(c.P2PService)
 
-	// Wire virtual account service to onboarding for auto-provisioning on KYC approval
-	if c.BridgeVirtualAccountService != nil && c.WalletService != nil && c.OnboardingService != nil {
+	// Wire wallet provider to virtual account service for on-demand provisioning
+	if c.BridgeVirtualAccountService != nil && c.WalletService != nil {
 		c.BridgeVirtualAccountService.SetWalletProvider(c.WalletService)
-		c.OnboardingService.SetVirtualAccountService(c.BridgeVirtualAccountService)
 	}
 
 	return nil

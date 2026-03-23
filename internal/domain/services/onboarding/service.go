@@ -32,16 +32,15 @@ type Service struct {
 	userRepo              UserRepository
 	onboardingFlowRepo    OnboardingFlowRepository
 	kycSubmissionRepo     KYCSubmissionRepository
-	walletService         WalletService
-	emailService          EmailService
-	auditService          AuditService
-	bridgeAdapter         BridgeAdapter
-	alpacaAdapter         AlpacaAdapter
-	allocationService     AllocationService
-	p2pService            P2PService
-	virtualAccountService VirtualAccountService
-	logger                *zap.Logger
-	defaultWalletChains   []entities.WalletChain
+	walletService       WalletService
+	emailService        EmailService
+	auditService        AuditService
+	bridgeAdapter       BridgeAdapter
+	alpacaAdapter       AlpacaAdapter
+	allocationService   AllocationService
+	p2pService          P2PService
+	logger              *zap.Logger
+	defaultWalletChains []entities.WalletChain
 }
 
 // Repository interfaces
@@ -109,11 +108,6 @@ type P2PService interface {
 	ClaimPendingForUser(ctx context.Context, userID uuid.UUID, email, phone string) (int, error)
 }
 
-// VirtualAccountService interface for auto-provisioning virtual accounts on KYC approval
-type VirtualAccountService interface {
-	ProvisionVirtualAccounts(ctx context.Context, userID uuid.UUID, bridgeCustomerID string, currencies []string) error
-}
-
 // NewService creates a new onboarding service
 func NewService(
 	userRepo UserRepository,
@@ -153,11 +147,6 @@ func (s *Service) SetAllocationService(allocationService AllocationService) {
 // SetP2PService sets the P2P service (used to resolve circular dependency)
 func (s *Service) SetP2PService(p2pService P2PService) {
 	s.p2pService = p2pService
-}
-
-// SetVirtualAccountService sets the virtual account service for auto-provisioning on KYC approval
-func (s *Service) SetVirtualAccountService(virtualAccountService VirtualAccountService) {
-	s.virtualAccountService = virtualAccountService
 }
 
 func normalizeDefaultWalletChains(chains []entities.WalletChain, logger *zap.Logger) []entities.WalletChain {
@@ -667,20 +656,8 @@ func (s *Service) ProcessKYCCallback(ctx context.Context, providerRef string, st
 			s.logger.Warn("Failed to mark KYC review step as completed", zap.Error(err))
 		}
 
-		// Auto-provision USD and EUR virtual accounts on KYC approval
-		if s.virtualAccountService != nil && user.BridgeCustomerID != nil && *user.BridgeCustomerID != "" {
-			currencies := []string{"USD", "EUR"}
-			if err := s.virtualAccountService.ProvisionVirtualAccounts(ctx, user.ID, *user.BridgeCustomerID, currencies); err != nil {
-				s.logger.Warn("Failed to auto-provision virtual accounts",
-					zap.Error(err),
-					zap.String("user_id", user.ID.String()))
-				// Don't fail KYC callback - virtual accounts can be created later
-			} else {
-				s.logger.Info("Auto-provisioned virtual accounts on KYC approval",
-					zap.String("user_id", user.ID.String()),
-					zap.Strings("currencies", currencies))
-			}
-		}
+		// Virtual accounts are now created on-demand when the user requests one
+		// via POST /api/v1/funding/virtual-account, not auto-provisioned here.
 
 	case entities.KYCStatusRejected:
 		if len(rejectionReasons) > 0 {
@@ -994,21 +971,7 @@ func (s *Service) ProcessWalletCreationComplete(ctx context.Context, userID uuid
 		return fmt.Errorf("failed to update onboarding status: %w", err)
 	}
 
-	// If user is already KYC approved, provision virtual accounts now that wallets exist.
-	// This handles the race where Bridge approved KYC before wallets finished provisioning.
-	if user.KYCStatus == string(entities.KYCStatusApproved) &&
-		user.BridgeCustomerID != nil && *user.BridgeCustomerID != "" &&
-		s.virtualAccountService != nil {
-		s.logger.Info("Wallets ready and KYC already approved — provisioning virtual accounts",
-			zap.String("userId", userID.String()))
-		currencies := []string{"USD", "EUR"}
-		if err := s.virtualAccountService.ProvisionVirtualAccounts(ctx, userID, *user.BridgeCustomerID, currencies); err != nil {
-			// Log but don't fail — virtual account provisioning can be retried
-			s.logger.Error("Failed to provision virtual accounts after wallet creation",
-				zap.Error(err),
-				zap.String("userId", userID.String()))
-		}
-	}
+	// Virtual accounts are now created on-demand via POST /api/v1/funding/virtual-account.
 
 	// Send welcome email
 	if err := s.emailService.SendWelcomeEmail(ctx, user.Email); err != nil {

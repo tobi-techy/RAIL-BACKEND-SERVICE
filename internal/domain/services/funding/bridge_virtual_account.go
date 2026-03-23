@@ -142,11 +142,31 @@ func (s *BridgeVirtualAccountService) ProvisionVirtualAccounts(ctx context.Conte
 			"user_id", userID, "bridge_customer_id", bridgeCustomerID)
 		mw, err := s.walletProvider.CreateWalletForCustomer(ctx, bridgeCustomerID, string(entities.WalletChainSolana))
 		if err != nil {
-			return fmt.Errorf("auto-provision wallet failed for user %s: %w", userID, err)
-		}
-		mw.UserID = userID
-		if err := s.walletProvider.SaveWallet(ctx, mw); err != nil {
-			return fmt.Errorf("failed to save auto-provisioned wallet for user %s: %w", userID, err)
+			// Creation may fail with a stale idempotency key (>24h) if the wallet
+			// was already created on Bridge but never saved locally. Retry listing
+			// as a recovery before giving up.
+			s.logger.Warn("Wallet creation failed, retrying Bridge list as recovery",
+				"error", err, "user_id", userID)
+			retryWallets, listErr := s.walletProvider.ListBridgeWallets(ctx, bridgeCustomerID)
+			if listErr == nil {
+				for _, rw := range retryWallets {
+					if rw.Address != "" {
+						rw.UserID = userID
+						if saveErr := s.walletProvider.SaveWallet(ctx, rw); saveErr == nil {
+							mw = rw
+							break
+						}
+					}
+				}
+			}
+			if mw == nil {
+				return fmt.Errorf("auto-provision wallet failed for user %s: %w", userID, err)
+			}
+		} else {
+			mw.UserID = userID
+			if err := s.walletProvider.SaveWallet(ctx, mw); err != nil {
+				return fmt.Errorf("failed to save auto-provisioned wallet for user %s: %w", userID, err)
+			}
 		}
 		wallet = mw
 	}

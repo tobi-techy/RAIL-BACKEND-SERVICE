@@ -229,9 +229,15 @@ func (s *Service) ProcessWalletProvisioningJob(ctx context.Context, jobID uuid.U
 
 		mw, err := s.bridgeWallets.CreateWalletForCustomer(ctx, customerID, chain)
 		if err != nil {
-			s.logger.Error("Failed to create wallet on Bridge",
+			s.logger.Warn("Failed to create wallet on Bridge, checking if already exists remotely",
 				zap.Error(err), zap.String("chain", chain), zap.String("customerID", customerID))
-			continue
+
+			// Wallet may already exist on Bridge (e.g. stale idempotency key after >24h).
+			// Recover by listing remote wallets and importing the match.
+			mw = s.recoverWalletFromBridge(ctx, customerID, chain)
+			if mw == nil {
+				continue
+			}
 		}
 
 		mw.UserID = job.UserID
@@ -262,6 +268,32 @@ func (s *Service) ProcessWalletProvisioningJob(ctx context.Context, jobID uuid.U
 		zap.Int("saved", saved),
 		zap.Int("total", len(job.Chains)))
 
+	return nil
+}
+
+// recoverWalletFromBridge attempts to find an existing wallet on Bridge when
+// creation fails (e.g. stale idempotency key after >24h). Returns nil if no
+// matching wallet is found.
+func (s *Service) recoverWalletFromBridge(ctx context.Context, customerID, chain string) *entities.ManagedWallet {
+	remoteWallets, err := s.bridgeWallets.ListWallets(ctx, customerID)
+	if err != nil {
+		s.logger.Error("Failed to list Bridge wallets for recovery",
+			zap.Error(err), zap.String("customerID", customerID))
+		return nil
+	}
+
+	for _, rw := range remoteWallets {
+		if string(rw.Chain) == chain {
+			s.logger.Info("Recovered existing wallet from Bridge",
+				zap.String("chain", chain),
+				zap.String("bridgeWalletID", rw.BridgeWalletID),
+				zap.String("address", rw.Address))
+			return rw
+		}
+	}
+
+	s.logger.Warn("No matching wallet found on Bridge for recovery",
+		zap.String("chain", chain), zap.String("customerID", customerID))
 	return nil
 }
 
