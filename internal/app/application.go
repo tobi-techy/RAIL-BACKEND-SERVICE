@@ -438,6 +438,9 @@ func (app *Application) Start() error {
 	// One-time backfill: populate missing virtual account details from Bridge
 	go app.backfillVirtualAccountDetails()
 
+	// Drop legacy constraints on virtual_accounts that block multi-currency VAs
+	go app.dropLegacyVirtualAccountConstraints()
+
 	return nil
 }
 
@@ -493,6 +496,23 @@ func (app *Application) backfillVirtualAccountDetails() {
 	if updated > 0 {
 		app.log.Info("backfill VA: completed", "updated", updated)
 	}
+}
+
+// dropLegacyVirtualAccountConstraints removes old unique constraints that prevent multi-currency virtual accounts.
+func (app *Application) dropLegacyVirtualAccountConstraints() {
+	stmts := []string{
+		`ALTER TABLE virtual_accounts DROP CONSTRAINT IF EXISTS virtual_accounts_due_account_id_key`,
+		`ALTER TABLE virtual_accounts DROP CONSTRAINT IF EXISTS virtual_accounts_user_id_alpaca_account_id_key`,
+		`ALTER TABLE virtual_accounts DROP CONSTRAINT IF EXISTS virtual_accounts_account_number_key`,
+		`ALTER TABLE virtual_accounts ALTER COLUMN alpaca_account_id DROP NOT NULL`,
+		`ALTER TABLE virtual_accounts ALTER COLUMN account_number DROP NOT NULL`,
+	}
+	for _, stmt := range stmts {
+		if _, err := app.container.DB.Exec(stmt); err != nil {
+			app.log.Warn("Failed to drop legacy VA constraint (may already be gone)", "error", err)
+		}
+	}
+	app.log.Info("Legacy virtual_accounts constraints dropped")
 }
 
 func (app *Application) startMetricsCollection() {
