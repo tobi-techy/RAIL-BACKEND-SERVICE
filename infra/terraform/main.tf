@@ -71,8 +71,8 @@ resource "aws_security_group" "app" {
   vpc_id = module.vpc.vpc_id
 
   ingress {
-    from_port       = 8080
-    to_port         = 8080
+    from_port       = 32768
+    to_port         = 65535
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]
   }
@@ -316,7 +316,7 @@ resource "aws_cloudwatch_log_group" "app" {
 
 resource "aws_ecs_task_definition" "app" {
   family                   = "rail-${local.env}"
-  network_mode             = "host"
+  network_mode             = "bridge"
   requires_compatibilities = ["EC2"]
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
   task_role_arn            = aws_iam_role.ecs_task.arn
@@ -329,6 +329,7 @@ resource "aws_ecs_task_definition" "app" {
 
     portMappings = [{
       containerPort = 8080
+      hostPort      = 0
       protocol      = "tcp"
     }]
 
