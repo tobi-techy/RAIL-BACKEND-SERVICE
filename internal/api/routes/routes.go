@@ -149,10 +149,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			c.JSON(400, gin.H{"error": "email or id query param required"})
 			return
 		}
-		q := "SELECT id, email, first_name, last_name, phone_number, kyc_status, bridge_kyc_status, is_active, alpaca_account_id, bridge_customer_id, created_at, updated_at FROM users WHERE email = $1"
+		q := "SELECT id, email, first_name, last_name, kyc_status, bridge_kyc_status, is_active, alpaca_account_id, bridge_customer_id, created_at, updated_at FROM users WHERE email = $1"
 		param := email
 		if email == "" {
-			q = "SELECT id, email, first_name, last_name, phone_number, kyc_status, bridge_kyc_status, is_active, alpaca_account_id, bridge_customer_id, created_at, updated_at FROM users WHERE id = $1"
+			q = "SELECT id, email, first_name, last_name, kyc_status, bridge_kyc_status, is_active, alpaca_account_id, bridge_customer_id, created_at, updated_at FROM users WHERE id = $1"
 			param = uid
 		}
 		rows, err := container.DB.QueryContext(c.Request.Context(), q, param)
@@ -833,10 +833,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					c.JSON(400, gin.H{"error": "email or id required"})
 					return
 				}
-				q := "SELECT id, email, first_name, last_name, phone_number, kyc_status, bridge_kyc_status, is_active, alpaca_account_id, bridge_customer_id, created_at, updated_at FROM users WHERE email = $1"
+				q := "SELECT id, email, first_name, last_name, kyc_status, bridge_kyc_status, is_active, alpaca_account_id, bridge_customer_id, created_at, updated_at FROM users WHERE email = $1"
 				param := email
 				if email == "" {
-					q = "SELECT id, email, first_name, last_name, phone_number, kyc_status, bridge_kyc_status, is_active, alpaca_account_id, bridge_customer_id, created_at, updated_at FROM users WHERE id = $1"
+					q = "SELECT id, email, first_name, last_name, kyc_status, bridge_kyc_status, is_active, alpaca_account_id, bridge_customer_id, created_at, updated_at FROM users WHERE id = $1"
 					param = uid
 				}
 				rows, err := container.DB.QueryContext(c.Request.Context(), q, param)
