@@ -782,6 +782,44 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		admin.Use(middleware.AdminAuth(container.DB, container.Logger))
 		admin.Use(middleware.CSRFProtection(csrfStore, container.Config.Environment == "development"))
 		{
+			// User lookup
+			admin.GET("/users/lookup", func(c *gin.Context) {
+				email := c.Query("email")
+				uid := c.Query("id")
+				if email == "" && uid == "" {
+					c.JSON(400, gin.H{"error": "email or id required"})
+					return
+				}
+				q := "SELECT id, email, first_name, last_name, phone_number, kyc_status, bridge_kyc_status, is_active, alpaca_account_id, bridge_customer_id, created_at, updated_at FROM users WHERE email = $1"
+				param := email
+				if email == "" {
+					q = "SELECT id, email, first_name, last_name, phone_number, kyc_status, bridge_kyc_status, is_active, alpaca_account_id, bridge_customer_id, created_at, updated_at FROM users WHERE id = $1"
+					param = uid
+				}
+				rows, err := container.DB.QueryContext(c.Request.Context(), q, param)
+				if err != nil {
+					c.JSON(500, gin.H{"error": err.Error()})
+					return
+				}
+				defer rows.Close()
+				cols, _ := rows.Columns()
+				if !rows.Next() {
+					c.JSON(404, gin.H{"error": "user not found"})
+					return
+				}
+				vals := make([]interface{}, len(cols))
+				ptrs := make([]interface{}, len(cols))
+				for i := range vals {
+					ptrs[i] = &vals[i]
+				}
+				rows.Scan(ptrs...)
+				result := make(map[string]interface{}, len(cols))
+				for i, col := range cols {
+					result[col] = vals[i]
+				}
+				c.JSON(200, gin.H{"user": result})
+			})
+
 			// Wallet admin routes
 			admin.POST("/wallet/create", walletFundingHandlers.CreateWalletsForUser)
 			admin.POST("/wallet/retry-provisioning", walletFundingHandlers.RetryWalletProvisioning)
