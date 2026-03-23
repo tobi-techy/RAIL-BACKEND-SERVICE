@@ -413,6 +413,16 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		metadata,
 	); err != nil {
 		span.RecordError(err)
+		// Compensate: reverse the spending transfer that already committed
+		s.logger.Error("Stash transfer failed after spending transfer succeeded, compensating",
+			"user_id", req.UserID, "spending_amount", spendingAmount, "error", err)
+		compKey := allocationBaseKey + "-spending-reversal"
+		compDesc := fmt.Sprintf("Reversal of spending allocation: %s (stash transfer failed)", spendingAmount.String())
+		if compErr := s.createAllocationTransfer(ctx, req, usdcAccount.ID, spendingAccount.ID, spendingAmount,
+			"spending_reversal", compKey, compDesc, compDesc, map[string]any{"compensation": true}); compErr != nil {
+			s.logger.Error("CRITICAL: Failed to compensate spending transfer — funds partially split",
+				"user_id", req.UserID, "spending_amount", spendingAmount, "error", compErr)
+		}
 		return fmt.Errorf("failed to create stash allocation transfer: %w", err)
 	}
 
@@ -429,8 +439,7 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 	// Record stash lock cycle for the deposited amount.
 	if s.stashLockRecorder != nil && req.DepositID != nil {
 		if err := s.stashLockRecorder.RecordDeposit(ctx, req.UserID, *req.DepositID, stashAmount); err != nil {
-			s.logger.Error("Failed to record stash lock cycle", "user_id", req.UserID, "deposit_id", *req.DepositID, "error", err)
-			return fmt.Errorf("failed to record stash lock cycle: %w", err)
+			s.logger.Error("Failed to record stash lock cycle (non-fatal, ledger transfers already committed)", "user_id", req.UserID, "deposit_id", *req.DepositID, "error", err)
 		}
 	}
 

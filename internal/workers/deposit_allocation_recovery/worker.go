@@ -166,7 +166,8 @@ func (w *Worker) reconcile(ctx context.Context) {
 }
 
 func (w *Worker) listUnallocatedDeposits(ctx context.Context, limit int) ([]depositCandidate, error) {
-	cutoff := time.Now().Add(-w.maxDepositAge)
+	maxAge := time.Now().Add(-w.maxDepositAge)
+	minAge := time.Now().Add(-1 * time.Minute) // avoid racing with normal flow
 
 	const query = `
 		SELECT
@@ -186,20 +187,21 @@ func (w *Worker) listUnallocatedDeposits(ctx context.Context, limit int) ([]depo
 			ON ae.user_id = d.user_id
 			AND ae.source_tx_id = d.tx_hash
 			AND ae.event_type IN ('deposit', 'fiat_deposit', 'crypto_deposit')
-		WHERE d.status IN ('confirmed', 'pending_allocation', 'off_ramp_initiated', 'off_ramp_completed', 'broker_funded')
+		WHERE d.status IN ('confirmed', 'pending_allocation')
 			AND EXISTS (
 				SELECT 1
 				FROM ledger_transactions dep_lt
 				WHERE dep_lt.reference_id = d.id
 					AND dep_lt.reference_type = 'deposit'
 			)
-			AND d.created_at <= $2
+			AND d.created_at >= $2
+			AND d.created_at <= $3
 			AND ae.id IS NULL
 		ORDER BY d.created_at ASC
 		LIMIT $1
 	`
 
-	rows, err := w.db.QueryContext(ctx, query, limit, cutoff)
+	rows, err := w.db.QueryContext(ctx, query, limit, maxAge, minAge)
 	if err != nil {
 		return nil, fmt.Errorf("query unallocated deposits: %w", err)
 	}

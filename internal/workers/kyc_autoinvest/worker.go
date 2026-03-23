@@ -196,7 +196,15 @@ func (w *Worker) listCandidates(ctx context.Context, limit int) ([]investCandida
 		FROM ledger_accounts la
 		INNER JOIN users u ON u.id = la.user_id
 		WHERE la.account_type = 'stash_balance'
-			AND la.balance >= 1.00
+			AND (
+				la.balance >= 1.00
+				OR EXISTS (
+					SELECT 1 FROM ledger_accounts fe
+					WHERE fe.user_id = la.user_id
+						AND fe.account_type = 'fiat_exposure'
+						AND fe.balance >= 1.00
+				)
+			)
 			AND u.kyc_status = 'approved'
 			AND u.bridge_kyc_status = 'active'
 			AND u.is_active = true
