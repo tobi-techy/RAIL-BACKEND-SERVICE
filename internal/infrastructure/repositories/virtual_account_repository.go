@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 )
 
@@ -25,10 +26,11 @@ func (r *VirtualAccountRepository) Create(ctx context.Context, account *entities
 	query := `
 		INSERT INTO virtual_accounts (
 			id, user_id, bridge_customer_id, alpaca_account_id, bridge_account_id,
-			account_number, routing_number, bank_name, beneficiary_name, status, currency,
-			created_at, updated_at
+			account_number, routing_number, bank_name, beneficiary_name,
+			bank_address, beneficiary_address, payment_rails,
+			status, currency, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
 		)
 	`
 
@@ -42,6 +44,9 @@ func (r *VirtualAccountRepository) Create(ctx context.Context, account *entities
 		account.RoutingNumber,
 		account.BankName,
 		account.BeneficiaryName,
+		account.BankAddress,
+		account.BeneficiaryAddr,
+		pq.Array(account.PaymentRails),
 		account.Status,
 		account.Currency,
 		account.CreatedAt,
@@ -60,7 +65,7 @@ func (r *VirtualAccountRepository) GetByID(ctx context.Context, id uuid.UUID) (*
 	query := `
 		SELECT id, user_id, bridge_customer_id, alpaca_account_id, bridge_account_id,
 			   account_number, routing_number, COALESCE(bank_name, '') as bank_name, 
-			   COALESCE(beneficiary_name, '') as beneficiary_name, status, currency,
+			   COALESCE(beneficiary_name, '') as beneficiary_name, COALESCE(bank_address, '') as bank_address, COALESCE(beneficiary_address, '') as beneficiary_address, COALESCE(payment_rails, '{}') as payment_rails, status, currency,
 			   created_at, updated_at
 		FROM virtual_accounts
 		WHERE id = $1
@@ -83,7 +88,7 @@ func (r *VirtualAccountRepository) GetByBridgeCustomerID(ctx context.Context, du
 	query := `
 		SELECT id, user_id, bridge_customer_id, alpaca_account_id, bridge_account_id,
 			   account_number, routing_number, COALESCE(bank_name, '') as bank_name,
-			   COALESCE(beneficiary_name, '') as beneficiary_name, status, currency,
+			   COALESCE(beneficiary_name, '') as beneficiary_name, COALESCE(bank_address, '') as bank_address, COALESCE(beneficiary_address, '') as beneficiary_address, COALESCE(payment_rails, '{}') as payment_rails, status, currency,
 			   created_at, updated_at
 		FROM virtual_accounts
 		WHERE bridge_customer_id = $1
@@ -106,7 +111,7 @@ func (r *VirtualAccountRepository) GetByUserID(ctx context.Context, userID uuid.
 	query := `
 		SELECT id, user_id, bridge_customer_id, alpaca_account_id, bridge_account_id,
 			   account_number, routing_number, COALESCE(bank_name, '') as bank_name,
-			   COALESCE(beneficiary_name, '') as beneficiary_name, status, currency,
+			   COALESCE(beneficiary_name, '') as beneficiary_name, COALESCE(bank_address, '') as bank_address, COALESCE(beneficiary_address, '') as beneficiary_address, COALESCE(payment_rails, '{}') as payment_rails, status, currency,
 			   created_at, updated_at
 		FROM virtual_accounts
 		WHERE user_id = $1
@@ -161,7 +166,7 @@ func (r *VirtualAccountRepository) GetByAlpacaAccountID(ctx context.Context, alp
 	query := `
 		SELECT id, user_id, bridge_customer_id, alpaca_account_id, bridge_account_id,
 			   account_number, routing_number, COALESCE(bank_name, '') as bank_name,
-			   COALESCE(beneficiary_name, '') as beneficiary_name, status, currency,
+			   COALESCE(beneficiary_name, '') as beneficiary_name, COALESCE(bank_address, '') as bank_address, COALESCE(beneficiary_address, '') as beneficiary_address, COALESCE(payment_rails, '{}') as payment_rails, status, currency,
 			   created_at, updated_at
 		FROM virtual_accounts
 		WHERE alpaca_account_id = $1
@@ -218,7 +223,7 @@ func (r *VirtualAccountRepository) GetByBridgeAccountID(ctx context.Context, bri
 	query := `
 		SELECT id, user_id, bridge_customer_id, alpaca_account_id, bridge_account_id,
 			   account_number, routing_number, COALESCE(bank_name, '') as bank_name,
-			   COALESCE(beneficiary_name, '') as beneficiary_name, status, currency,
+			   COALESCE(beneficiary_name, '') as beneficiary_name, COALESCE(bank_address, '') as bank_address, COALESCE(beneficiary_address, '') as beneficiary_address, COALESCE(payment_rails, '{}') as payment_rails, status, currency,
 			   created_at, updated_at
 		FROM virtual_accounts
 		WHERE bridge_account_id = $1
@@ -241,7 +246,7 @@ func (r *VirtualAccountRepository) GetAccountsForMigration(ctx context.Context, 
 	query := `
 		SELECT id, user_id, bridge_customer_id, alpaca_account_id, bridge_account_id,
 			   account_number, routing_number, COALESCE(bank_name, '') as bank_name,
-			   COALESCE(beneficiary_name, '') as beneficiary_name, status, currency,
+			   COALESCE(beneficiary_name, '') as beneficiary_name, COALESCE(bank_address, '') as bank_address, COALESCE(beneficiary_address, '') as beneficiary_address, COALESCE(payment_rails, '{}') as payment_rails, status, currency,
 			   created_at, updated_at
 		FROM virtual_accounts
 		WHERE bridge_customer_id IS NOT NULL 
@@ -282,7 +287,7 @@ func (r *VirtualAccountRepository) GetActiveByUserIDAndCurrency(ctx context.Cont
 	query := `
 		SELECT id, user_id, bridge_customer_id, alpaca_account_id, bridge_account_id,
 			   account_number, routing_number, COALESCE(bank_name, '') as bank_name,
-			   COALESCE(beneficiary_name, '') as beneficiary_name, status, currency,
+			   COALESCE(beneficiary_name, '') as beneficiary_name, COALESCE(bank_address, '') as bank_address, COALESCE(beneficiary_address, '') as beneficiary_address, COALESCE(payment_rails, '{}') as payment_rails, status, currency,
 			   created_at, updated_at
 		FROM virtual_accounts
 		WHERE user_id = $1 AND currency = $2 AND status = 'active'

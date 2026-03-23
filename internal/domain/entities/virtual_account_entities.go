@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 // VirtualAccountStatus represents the status of a virtual account
@@ -27,6 +28,9 @@ type VirtualAccount struct {
 	RoutingNumber    string               `json:"routing_number" db:"routing_number"`
 	BankName         string               `json:"bank_name" db:"bank_name"`
 	BeneficiaryName  string               `json:"beneficiary_name" db:"beneficiary_name"`
+	BankAddress      string               `json:"bank_address" db:"bank_address"`
+	BeneficiaryAddr  string               `json:"beneficiary_address" db:"beneficiary_address"`
+	PaymentRails     pq.StringArray       `json:"payment_rails" db:"payment_rails"`
 	Status           VirtualAccountStatus `json:"status" db:"status"`
 	Currency         string               `json:"currency" db:"currency"`
 	CreatedAt        time.Time            `json:"created_at" db:"created_at"`

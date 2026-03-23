@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/pkg/logger"
@@ -299,6 +300,9 @@ func (s *BridgeVirtualAccountService) CreateVirtualAccount(ctx context.Context, 
 		RoutingNumber:    bridgeVA.SourceDepositInstructions.BankRoutingNumber,
 		BankName:         bridgeVA.SourceDepositInstructions.BankName,
 		BeneficiaryName:  bridgeVA.SourceDepositInstructions.BankBeneficiaryName,
+		BankAddress:      bridgeVA.SourceDepositInstructions.BankAddress,
+		BeneficiaryAddr:  bridgeVA.SourceDepositInstructions.BankBeneficiaryAddress,
+		PaymentRails:     pq.StringArray(bridgeVA.SourceDepositInstructions.PaymentRails),
 		Status:           mapBridgeVAStatus(bridgeVA.Status),
 		Currency:         actualCurrency,
 		CreatedAt:        now,
