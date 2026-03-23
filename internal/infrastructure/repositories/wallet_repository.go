@@ -60,11 +60,20 @@ func (r *WalletRepository) Create(ctx context.Context, wallet *entities.ManagedW
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
 		)`
 
+	var walletSetID interface{}
+	if wallet.WalletSetID != uuid.Nil {
+		walletSetID = wallet.WalletSetID
+	}
+	var circleWalletID interface{}
+	if wallet.CircleWalletID != "" {
+		circleWalletID = wallet.CircleWalletID
+	}
+
 	_, err := r.db.ExecContext(ctx, query,
 		wallet.ID,
 		wallet.UserID,
-		wallet.WalletSetID,
-		wallet.CircleWalletID,
+		walletSetID,
+		circleWalletID,
 		wallet.BridgeWalletID,
 		string(wallet.Chain),
 		wallet.Address,

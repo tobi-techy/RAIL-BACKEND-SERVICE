@@ -295,7 +295,7 @@ func (w *Wallet) ToDomainManagedWallet(domainWalletID uuid.UUID, userID uuid.UUI
 		Chain:          chain,
 		Address:        w.Address,
 		BridgeWalletID: w.ID,
-		AccountType:    entities.AccountTypeEOA,
+		AccountType:    entities.AccountTypeBridgeWallet,
 		Status:         status,
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
