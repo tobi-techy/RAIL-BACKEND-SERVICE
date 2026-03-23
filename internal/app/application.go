@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 	"github.com/shopspring/decimal"
 
 	"github.com/rail-service/rail_service/internal/api/routes"
@@ -434,10 +435,66 @@ func (app *Application) Start() error {
 	// Start metrics collection
 	go app.startMetricsCollection()
 
+	// One-time backfill: populate missing virtual account details from Bridge
+	go app.backfillVirtualAccountDetails()
+
 	return nil
 }
 
 // startMetricsCollection starts background metrics collection
+// backfillVirtualAccountDetails fetches missing bank details from Bridge for existing virtual accounts.
+// Safe to run on every boot — only touches rows with empty bank_address.
+func (app *Application) backfillVirtualAccountDetails() {
+	ctx := context.Background()
+	if app.container.BridgeClient == nil {
+		return
+	}
+
+	rows, err := app.container.DB.QueryContext(ctx, `
+		SELECT id, bridge_customer_id, bridge_account_id
+		FROM virtual_accounts
+		WHERE bridge_account_id IS NOT NULL
+		  AND (bank_address = '' OR bank_address IS NULL)
+	`)
+	if err != nil {
+		app.log.Error("backfill VA: query failed", "error", err)
+		return
+	}
+	defer rows.Close()
+
+	var updated int
+	for rows.Next() {
+		var id, customerID, bridgeAccountID string
+		if err := rows.Scan(&id, &customerID, &bridgeAccountID); err != nil {
+			continue
+		}
+		va, err := app.container.BridgeClient.GetVirtualAccount(ctx, customerID, bridgeAccountID)
+		if err != nil {
+			app.log.Warn("backfill VA: bridge fetch failed", "id", id, "error", err)
+			continue
+		}
+		sdi := va.SourceDepositInstructions
+		_, err = app.container.DB.ExecContext(ctx, `
+			UPDATE virtual_accounts
+			SET bank_address = $1, beneficiary_address = $2, payment_rails = $3,
+			    bank_name = COALESCE(NULLIF(bank_name, ''), $4),
+			    beneficiary_name = COALESCE(NULLIF(beneficiary_name, ''), $5),
+			    account_number = COALESCE(NULLIF(account_number, ''), $6),
+			    routing_number = COALESCE(NULLIF(routing_number, ''), $7)
+			WHERE id = $8
+		`, sdi.BankAddress, sdi.BankBeneficiaryAddress, pq.Array(sdi.PaymentRails),
+			sdi.BankName, sdi.BankBeneficiaryName, sdi.BankAccountNumber, sdi.BankRoutingNumber, id)
+		if err != nil {
+			app.log.Warn("backfill VA: update failed", "id", id, "error", err)
+			continue
+		}
+		updated++
+	}
+	if updated > 0 {
+		app.log.Info("backfill VA: completed", "updated", updated)
+	}
+}
+
 func (app *Application) startMetricsCollection() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
