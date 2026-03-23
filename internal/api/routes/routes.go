@@ -136,6 +136,49 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	router.GET("/version", coreHandlers.Version)
 	router.GET("/metrics", coreHandlers.Metrics)
 
+	// Internal ops endpoint — protected by JWT_SECRET as bearer token
+	router.GET("/internal/users/lookup", func(c *gin.Context) {
+		token := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
+		if token == "" || token != container.Config.JWT.Secret {
+			c.JSON(401, gin.H{"error": "unauthorized"})
+			return
+		}
+		email := c.Query("email")
+		uid := c.Query("id")
+		if email == "" && uid == "" {
+			c.JSON(400, gin.H{"error": "email or id query param required"})
+			return
+		}
+		q := "SELECT id, email, first_name, last_name, phone_number, kyc_status, bridge_kyc_status, is_active, alpaca_account_id, bridge_customer_id, created_at, updated_at FROM users WHERE email = $1"
+		param := email
+		if email == "" {
+			q = "SELECT id, email, first_name, last_name, phone_number, kyc_status, bridge_kyc_status, is_active, alpaca_account_id, bridge_customer_id, created_at, updated_at FROM users WHERE id = $1"
+			param = uid
+		}
+		rows, err := container.DB.QueryContext(c.Request.Context(), q, param)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		defer rows.Close()
+		cols, _ := rows.Columns()
+		if !rows.Next() {
+			c.JSON(404, gin.H{"error": "user not found"})
+			return
+		}
+		vals := make([]interface{}, len(cols))
+		ptrs := make([]interface{}, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		rows.Scan(ptrs...)
+		result := make(map[string]interface{}, len(cols))
+		for i, col := range cols {
+			result[col] = vals[i]
+		}
+		c.JSON(200, gin.H{"user": result})
+	})
+
 	// Apple App Site Association — required for passkey Associated Domains
 	router.GET("/.well-known/apple-app-site-association", func(c *gin.Context) {
 		c.Header("Content-Type", "application/json")
