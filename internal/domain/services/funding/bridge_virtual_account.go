@@ -280,10 +280,18 @@ func (s *BridgeVirtualAccountService) CreateVirtualAccount(ctx context.Context, 
 	// Create virtual account via Bridge API
 	bridgeVA, err := s.bridgeClient.CreateVirtualAccount(ctx, req.BridgeCustomerID, bridgeReq)
 	if err != nil {
-		s.logger.Error("Failed to create Bridge virtual account",
+		// If creation failed, check if VA already exists on Bridge for this currency
+		s.logger.Warn("Bridge create VA failed, checking for existing",
 			"user_id", req.UserID,
+			"currency", req.Currency,
 			"error", err)
-		return nil, fmt.Errorf("create bridge virtual account: %w", err)
+		bridgeVA, err = s.findExistingBridgeVA(ctx, req.BridgeCustomerID, sourceCurrency)
+		if err != nil {
+			s.logger.Error("Failed to create or find Bridge virtual account",
+				"user_id", req.UserID,
+				"error", err)
+			return nil, fmt.Errorf("create bridge virtual account: %w", err)
+		}
 	}
 
 	// Convert to domain entity
@@ -335,6 +343,17 @@ func (s *BridgeVirtualAccountService) CreateVirtualAccount(ctx context.Context, 
 
 	// Store in database
 	if err := s.virtualAccountRepo.Create(ctx, virtualAccount); err != nil {
+		// If duplicate (VA already in our DB from a previous partial attempt), return existing
+		if strings.Contains(err.Error(), "duplicate key") {
+			existing, fetchErr := s.virtualAccountRepo.GetActiveByUserIDAndCurrency(ctx, req.UserID, actualCurrency)
+			if fetchErr == nil && existing != nil {
+				s.logger.Info("Virtual account already exists in DB, returning existing",
+					"user_id", req.UserID,
+					"currency", actualCurrency,
+					"virtual_account_id", existing.ID)
+				return existing, nil
+			}
+		}
 		s.logger.Error("Failed to store virtual account",
 			"user_id", req.UserID,
 			"bridge_account_id", bridgeVA.ID,
@@ -704,6 +723,23 @@ func (s *BridgeVirtualAccountService) ProcessCryptoDeposit(ctx context.Context, 
 }
 
 // Helper functions
+
+// findExistingBridgeVA lists a customer's virtual accounts on Bridge and returns one matching the currency
+func (s *BridgeVirtualAccountService) findExistingBridgeVA(ctx context.Context, bridgeCustomerID string, currency bridge.Currency) (*bridge.VirtualAccount, error) {
+	resp, err := s.bridgeClient.ListVirtualAccounts(ctx, bridgeCustomerID)
+	if err != nil {
+		return nil, fmt.Errorf("list bridge virtual accounts: %w", err)
+	}
+	for i := range resp.Data {
+		if resp.Data[i].SourceDepositInstructions.Currency == currency {
+			s.logger.Info("Found existing Bridge VA for currency",
+				"bridge_account_id", resp.Data[i].ID,
+				"currency", currency)
+			return &resp.Data[i], nil
+		}
+	}
+	return nil, fmt.Errorf("no existing bridge virtual account found for currency %s", currency)
+}
 
 func mapBridgeVAStatus(status bridge.VirtualAccountStatus) entities.VirtualAccountStatus {
 	switch status {
