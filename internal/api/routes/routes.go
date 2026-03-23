@@ -179,6 +179,41 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		c.JSON(200, gin.H{"user": result})
 	})
 
+	// Internal delete user — cascades through related tables
+	router.DELETE("/internal/users/:id", func(c *gin.Context) {
+		token := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
+		if token == "" || token != container.Config.JWT.Secret {
+			c.JSON(401, gin.H{"error": "unauthorized"})
+			return
+		}
+		uid := c.Param("id")
+		tables := []string{
+			"sessions", "notifications", "deposits", "ledger_entries", "ledger_transactions",
+			"ledger_accounts", "allocation_events", "smart_allocation_modes",
+			"virtual_accounts", "wallets", "cards", "user_settings",
+			"auto_invest_events", "auto_invest_settings", "stash_lock_cycles",
+			"yield_snapshots", "yield_distributions",
+		}
+		deleted := map[string]int64{}
+		for _, t := range tables {
+			res, err := container.DB.ExecContext(c.Request.Context(), "DELETE FROM "+t+" WHERE user_id = $1", uid)
+			if err != nil {
+				continue // table may not exist or no user_id column
+			}
+			n, _ := res.RowsAffected()
+			if n > 0 {
+				deleted[t] = n
+			}
+		}
+		res, err := container.DB.ExecContext(c.Request.Context(), "DELETE FROM users WHERE id = $1", uid)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error(), "deleted_related": deleted})
+			return
+		}
+		n, _ := res.RowsAffected()
+		c.JSON(200, gin.H{"deleted": n > 0, "user_id": uid, "related_rows_deleted": deleted})
+	})
+
 	// Apple App Site Association — required for passkey Associated Domains
 	router.GET("/.well-known/apple-app-site-association", func(c *gin.Context) {
 		c.Header("Content-Type", "application/json")
