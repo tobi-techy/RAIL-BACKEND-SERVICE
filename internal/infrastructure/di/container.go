@@ -185,10 +185,11 @@ func (a *BridgeDepositAdapter) ListLiquidationAddresses(ctx context.Context, cus
 	out := make([]funding.BridgeLiquidationAddr, len(resp.Data))
 	for i, la := range resp.Data {
 		out[i] = funding.BridgeLiquidationAddr{
-			ID:       la.ID,
-			Chain:    string(la.Chain),
-			Currency: string(la.Currency),
-			Address:  la.Address,
+			ID:                 la.ID,
+			Chain:              string(la.Chain),
+			Currency:           string(la.Currency),
+			Address:            la.Address,
+			DestinationAddress: la.DestinationAddress,
 		}
 	}
 	return out, nil

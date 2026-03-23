@@ -143,10 +143,11 @@ type BridgeWalletInfo struct {
 
 // BridgeLiquidationAddr is a minimal liquidation address summary from Bridge
 type BridgeLiquidationAddr struct {
-	ID       string
-	Chain    string
-	Currency string
-	Address  string
+	ID                 string
+	Chain              string
+	Currency           string
+	Address            string
+	DestinationAddress string
 }
 
 // VirtualAccountRepository interface for virtual account persistence
@@ -374,7 +375,7 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 	var laAddress string
 	var laID string
 	for _, la := range las {
-		if la.Chain == bridgeRail && la.Currency == "usdc" && !strings.HasPrefix(la.Address, "0xdeadbeef") {
+		if la.Chain == bridgeRail && la.Currency == "usdc" && !strings.HasPrefix(la.Address, "0xdeadbeef") && la.DestinationAddress == destinationAddress {
 			laAddress = la.Address
 			laID = la.ID
 			break
