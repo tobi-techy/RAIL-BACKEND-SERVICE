@@ -1317,7 +1317,7 @@ func (s *WithdrawalService) MarkWithdrawalUnderReview(ctx context.Context, trans
 	}
 	if withdrawal == nil {
 		s.logger.Warn("Withdrawal not found for transfer ID", zap.String("transfer_id", transferID))
-		return nil
+		return fmt.Errorf("withdrawal not found for transfer_id: %s", transferID)
 	}
 	if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusProcessing); err != nil {
 		return fmt.Errorf("failed to update withdrawal status: %w", err)
@@ -1335,7 +1335,7 @@ func (s *WithdrawalService) UpdateWithdrawalStatus(ctx context.Context, transfer
 	}
 	if withdrawal == nil {
 		s.logger.Warn("Withdrawal not found for transfer ID", zap.String("transfer_id", transferID))
-		return nil
+		return fmt.Errorf("withdrawal not found for transfer_id: %s", transferID)
 	}
 	var newStatus entities.WithdrawalStatus
 	switch status {
@@ -1359,7 +1359,7 @@ func (s *WithdrawalService) MarkWithdrawalRefundFailed(ctx context.Context, tran
 	}
 	if withdrawal == nil {
 		s.logger.Warn("Withdrawal not found for transfer ID", zap.String("transfer_id", transferID))
-		return nil
+		return fmt.Errorf("withdrawal not found for transfer_id: %s", transferID)
 	}
 	if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusFailed); err != nil {
 		return fmt.Errorf("failed to update withdrawal status: %w", err)
@@ -1375,7 +1375,7 @@ func (s *WithdrawalService) MarkWithdrawalRefunded(ctx context.Context, transfer
 	}
 	if withdrawal == nil {
 		s.logger.Warn("Withdrawal not found for transfer ID", zap.String("transfer_id", transferID))
-		return nil
+		return fmt.Errorf("withdrawal not found for transfer_id: %s", transferID)
 	}
 	if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusReversed); err != nil {
 		return fmt.Errorf("failed to update withdrawal status: %w", err)

@@ -3,6 +3,7 @@ package p2p
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -424,7 +425,17 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2
 	// Save transfer - handle duplicate key error for atomic idempotency
 	if err := s.repo.Create(ctx, transfer); err != nil {
 		// Check for duplicate key error (race condition - another request created the transfer)
+		isDuplicateKey := false
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique") {
+			isDuplicateKey = true
+		}
+		// Also check for PostgreSQL specific error code 23505 (unique_violation)
+		var pgErr interface{ Error() string }
+		if errors.As(err, &pgErr) && (strings.Contains(pgErr.Error(), "23505") || strings.Contains(pgErr.Error(), "unique constraint")) {
+			isDuplicateKey = true
+		}
+
+		if isDuplicateKey {
 			existing, fetchErr := s.repo.GetByIdempotencyKey(ctx, idempotencyKey)
 			if fetchErr == nil && existing != nil {
 				s.logger.Info("Concurrent request created transfer - returning existing",
@@ -434,6 +445,11 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2
 					Transfer: existing,
 					Message:  "Transfer already processed",
 				}, nil
+			}
+			if fetchErr != nil {
+				s.logger.Error("Failed to fetch existing transfer after duplicate key error",
+					zap.String("idempotency_key", idempotencyKey),
+					zap.Error(fetchErr))
 			}
 		}
 		if rollbackOnCreateFailure != nil {

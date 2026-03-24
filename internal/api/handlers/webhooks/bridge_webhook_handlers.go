@@ -1174,8 +1174,8 @@ func (s *BridgeWebhookServiceImpl) ProcessTransferUnderReview(ctx *gin.Context, 
 	s.logger.Warn("Transfer under compliance review",
 		zap.String("transfer_id", transferID))
 	if s.withdrawalService == nil {
-		s.logger.Error("Withdrawal service not configured", zap.String("transfer_id", transferID))
-		return fmt.Errorf("withdrawal service not configured")
+		s.logger.Error("Withdrawal service not configured for ProcessTransferUnderReview", zap.String("transfer_id", transferID))
+		return fmt.Errorf("withdrawal service not configured for ProcessTransferUnderReview")
 	}
 	return s.withdrawalService.MarkWithdrawalUnderReview(ctx, transferID)
 }
@@ -1184,8 +1184,8 @@ func (s *BridgeWebhookServiceImpl) ProcessTransferRefundInFlight(ctx *gin.Contex
 	s.logger.Info("Refund in flight for transfer",
 		zap.String("transfer_id", transferID))
 	if s.withdrawalService == nil {
-		s.logger.Error("Withdrawal service not configured", zap.String("transfer_id", transferID))
-		return fmt.Errorf("withdrawal service not configured")
+		s.logger.Error("Withdrawal service not configured for ProcessTransferRefundInFlight", zap.String("transfer_id", transferID))
+		return fmt.Errorf("withdrawal service not configured for ProcessTransferRefundInFlight")
 	}
 	return s.withdrawalService.UpdateWithdrawalStatus(ctx, transferID, "refund_in_flight")
 }
@@ -1194,8 +1194,8 @@ func (s *BridgeWebhookServiceImpl) ProcessTransferRefundFailed(ctx *gin.Context,
 	s.logger.Error("Refund failed for transfer - requires manual intervention",
 		zap.String("transfer_id", transferID))
 	if s.withdrawalService == nil {
-		s.logger.Error("Withdrawal service not configured", zap.String("transfer_id", transferID))
-		return fmt.Errorf("withdrawal service not configured")
+		s.logger.Error("Withdrawal service not configured for ProcessTransferRefundFailed", zap.String("transfer_id", transferID))
+		return fmt.Errorf("withdrawal service not configured for ProcessTransferRefundFailed")
 	}
 	return s.withdrawalService.MarkWithdrawalRefundFailed(ctx, transferID)
 }
@@ -1204,8 +1204,8 @@ func (s *BridgeWebhookServiceImpl) ProcessTransferRefunded(ctx *gin.Context, tra
 	s.logger.Info("Transfer has been refunded",
 		zap.String("transfer_id", transferID))
 	if s.withdrawalService == nil {
-		s.logger.Error("Withdrawal service not configured", zap.String("transfer_id", transferID))
-		return fmt.Errorf("withdrawal service not configured")
+		s.logger.Error("Withdrawal service not configured for ProcessTransferRefunded", zap.String("transfer_id", transferID))
+		return fmt.Errorf("withdrawal service not configured for ProcessTransferRefunded")
 	}
 	return s.withdrawalService.MarkWithdrawalRefunded(ctx, transferID)
 }
