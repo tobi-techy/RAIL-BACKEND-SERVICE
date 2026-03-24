@@ -354,15 +354,17 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 		return nil, fmt.Errorf("email must be verified before completing onboarding")
 	}
 
-	// Hash and set password
-	passwordHash, err := crypto.HashPassword(req.Password)
-	if err != nil {
-		s.logger.Error("Failed to hash password", zap.Error(err))
-		return nil, fmt.Errorf("failed to hash password: %w", err)
-	}
+	// Hash and set password (skip for passkey users)
+	if req.Password != "" {
+		passwordHash, err := crypto.HashPassword(req.Password)
+		if err != nil {
+			s.logger.Error("Failed to hash password", zap.Error(err))
+			return nil, fmt.Errorf("failed to hash password: %w", err)
+		}
 
-	if err := s.userRepo.UpdatePassword(ctx, req.UserID, passwordHash); err != nil {
-		return nil, fmt.Errorf("failed to set password: %w", err)
+		if err := s.userRepo.UpdatePassword(ctx, req.UserID, passwordHash); err != nil {
+			return nil, fmt.Errorf("failed to set password: %w", err)
+		}
 	}
 
 	// Update user with personal information

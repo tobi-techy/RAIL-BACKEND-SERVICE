@@ -370,7 +370,7 @@ type Address struct {
 type OnboardingCompleteRequest struct {
 	UserID            uuid.UUID  `json:"-" validate:"-"` // Set from auth context
 	Email             *string    `json:"email,omitempty" validate:"omitempty,email"`
-	Password          string     `json:"password" validate:"required,min=12"` // Password set during onboarding
+	Password          string     `json:"password,omitempty" validate:"omitempty,min=12"` // Optional for passkey users
 	FirstName         string     `json:"firstName" validate:"required"`
 	LastName          string     `json:"lastName" validate:"required"`
 	DateOfBirth       *time.Time `json:"dateOfBirth" validate:"required"`
