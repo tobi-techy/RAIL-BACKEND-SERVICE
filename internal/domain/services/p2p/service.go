@@ -11,6 +11,7 @@ import (
 	"unicode"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 
@@ -426,12 +427,8 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2
 	if err := s.repo.Create(ctx, transfer); err != nil {
 		// Check for duplicate key error (race condition - another request created the transfer)
 		isDuplicateKey := false
-		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique") {
-			isDuplicateKey = true
-		}
-		// Also check for PostgreSQL specific error code 23505 (unique_violation)
-		var pgErr interface{ Error() string }
-		if errors.As(err, &pgErr) && (strings.Contains(pgErr.Error(), "23505") || strings.Contains(pgErr.Error(), "unique constraint")) {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
 			isDuplicateKey = true
 		}
 
