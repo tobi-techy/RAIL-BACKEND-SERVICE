@@ -257,7 +257,7 @@ func (s *Service) ProcessWalletProvisioningJob(ctx context.Context, jobID uuid.U
 		msg := "failed to create any wallets"
 		job.MarkFailed(msg, 30*time.Second)
 		_ = s.provisioningJobRepo.Update(ctx, job)
-		return fmt.Errorf(msg)
+		return fmt.Errorf("%s", msg)
 	}
 
 	job.MarkCompleted()

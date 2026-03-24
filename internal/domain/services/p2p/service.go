@@ -210,7 +210,7 @@ func (s *Service) LookupRecipient(ctx context.Context, identifier string) (*enti
 		user, err = s.userLookup.GetByPhone(ctx, normalized)
 	}
 
-	if err != nil && err != sql.ErrNoRows {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		s.logger.Error("Failed to lookup user", zap.Error(err), zap.String("identifier", identifier))
 		return nil, fmt.Errorf("lookup failed: %w", err)
 	}
@@ -250,7 +250,7 @@ func (s *Service) LookupRecipient(ctx context.Context, identifier string) (*enti
 // Send initiates a P2P transfer
 func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2PSendRequest) (*entities.P2PTransferResponse, error) {
 	// Generate idempotency key based on sender and recipient (not amount)
-	idempotencyKey := entities.GenerateP2PIdempotencyKey(senderID, req.Identifier)
+	idempotencyKey := entities.GenerateP2PIdempotencyKey(senderID, req.Identifier, time.Now())
 
 	// Check for existing transfer with same idempotency key (idempotent request)
 	existing, err := s.repo.GetByIdempotencyKey(ctx, idempotencyKey)
@@ -263,7 +263,7 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2
 			Message:  "Transfer already processed",
 		}, nil
 	}
-	if err != nil && err != sql.ErrNoRows {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("failed to check idempotency: %w", err)
 	}
 

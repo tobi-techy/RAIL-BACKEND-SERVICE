@@ -477,9 +477,11 @@ func (h *BridgeWebhookHandler) handleTransferEvent(c *gin.Context, payload Bridg
 			h.logger.Error("Failed to process error transfer", zap.Error(err))
 		}
 	default:
-		h.logger.Info("Unhandled transfer state",
+		h.logger.Warn("Unhandled transfer state - returning error to trigger retry",
 			zap.String("transfer_id", transferID),
 			zap.String("state", state))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "unhandled_transfer_state"})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "success"})

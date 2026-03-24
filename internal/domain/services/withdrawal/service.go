@@ -1344,6 +1344,9 @@ func (s *WithdrawalService) UpdateWithdrawalStatus(ctx context.Context, transfer
 	default:
 		newStatus = entities.WithdrawalStatus(status)
 	}
+	if !entities.ValidWithdrawalStatuses[newStatus] {
+		return fmt.Errorf("invalid withdrawal status: %s", status)
+	}
 	if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, newStatus); err != nil {
 		return fmt.Errorf("failed to update withdrawal status: %w", err)
 	}
