@@ -250,7 +250,7 @@ func (s *Service) LookupRecipient(ctx context.Context, identifier string) (*enti
 // Send initiates a P2P transfer
 func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2PSendRequest) (*entities.P2PTransferResponse, error) {
 	// Generate idempotency key based on sender and recipient (not amount)
-	idempotencyKey := entities.GenerateP2PIdempotencyKey(senderID, req.Identifier, time.Now())
+	idempotencyKey := entities.GenerateP2PIdempotencyKey(senderID, req.Identifier)
 
 	// Check for existing transfer with same idempotency key (idempotent request)
 	existing, err := s.repo.GetByIdempotencyKey(ctx, idempotencyKey)

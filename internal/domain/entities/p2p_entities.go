@@ -121,8 +121,8 @@ func GenerateClaimToken() (string, error) {
 // GenerateP2PIdempotencyKey generates a cryptographically secure idempotency key
 // based on sender ID and recipient identifier only (not amount), with a time-based
 // 5-minute window to allow legitimate repeated transfers while preventing rapid-fire duplicates
-func GenerateP2PIdempotencyKey(senderID uuid.UUID, identifier string, timestamp time.Time) string {
-	window := timestamp.Truncate(5 * time.Minute).Unix()
+func GenerateP2PIdempotencyKey(senderID uuid.UUID, identifier string) string {
+	window := time.Now().Truncate(5 * time.Minute).Unix()
 	seed := fmt.Sprintf("p2p:%s:%s:%d", senderID.String(), identifier, window)
 	hash := sha256.Sum256([]byte(seed))
 	return hex.EncodeToString(hash[:])
