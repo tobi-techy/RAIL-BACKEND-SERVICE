@@ -225,7 +225,15 @@ func (h *SocialAuthHandlers) SocialLogin(c *gin.Context) {
 
 			// Mark email as verified (social providers verify email)
 			newUser.EmailVerified = true
-			newUser.OnboardingStatus = entities.OnboardingStatusWalletsPending
+			// Keep onboarding_status as 'started' so user goes through
+			// profile completion → CompleteOnboarding → Bridge/wallet provisioning.
+			// Persist name from social provider if available (Apple only sends on first sign-in).
+			if givenName := strings.TrimSpace(req.GivenName); givenName != "" {
+				newUser.FirstName = &givenName
+			}
+			if familyName := strings.TrimSpace(req.FamilyName); familyName != "" {
+				newUser.LastName = &familyName
+			}
 			if err := h.userRepo.Update(ctx, newUser.ToUserProfile()); err != nil {
 				h.logger.Error("Failed to update social user profile after creation", zap.Error(err), zap.String("user_id", newUser.ID.String()))
 				c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "USER_UPDATE_FAILED", Message: "Failed to finalize account setup"})
