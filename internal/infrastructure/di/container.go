@@ -2,7 +2,9 @@ package di
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -523,8 +525,11 @@ func (a *WithdrawalBridgeAdapter) InitiateTransfer(ctx context.Context, req map[
 		return nil, err
 	}
 
+	refIDHash := sha256.Sum256([]byte(fmt.Sprintf("%s-%s-%s-%s-%s", onBehalfOf, amount, currency, externalAccountID, sourceWalletID)))
+	deterministicRefID := hex.EncodeToString(refIDHash[:16])
+
 	transferReq := &bridge.CreateTransferRequest{
-		ClientReferenceID: fmt.Sprintf("withdrawal-%s", uuid.New().String()),
+		ClientReferenceID: fmt.Sprintf("withdrawal-%s", deterministicRefID),
 		OnBehalfOf:        onBehalfOf,
 		Amount:            amount,
 		Source: bridge.TransferSource{
