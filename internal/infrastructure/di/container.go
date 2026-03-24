@@ -524,7 +524,7 @@ func (a *WithdrawalBridgeAdapter) InitiateTransfer(ctx context.Context, req map[
 	}
 
 	transferReq := &bridge.CreateTransferRequest{
-		ClientReferenceID: fmt.Sprintf("withdrawal-%s-%s", onBehalfOf, uuid.New().String()[:8]),
+		ClientReferenceID: fmt.Sprintf("withdrawal-%s-%s", onBehalfOf, uuid.New().String()),
 		OnBehalfOf:        onBehalfOf,
 		Amount:            amount,
 		Source: bridge.TransferSource{

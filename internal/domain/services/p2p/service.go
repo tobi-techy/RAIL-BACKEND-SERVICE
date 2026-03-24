@@ -421,8 +421,21 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2
 		}
 	}
 
-	// Save transfer
+	// Save transfer - handle duplicate key error for atomic idempotency
 	if err := s.repo.Create(ctx, transfer); err != nil {
+		// Check for duplicate key error (race condition - another request created the transfer)
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique") {
+			existing, fetchErr := s.repo.GetByIdempotencyKey(ctx, idempotencyKey)
+			if fetchErr == nil && existing != nil {
+				s.logger.Info("Concurrent request created transfer - returning existing",
+					zap.String("idempotency_key", idempotencyKey),
+					zap.String("transfer_id", existing.ID.String()))
+				return &entities.P2PTransferResponse{
+					Transfer: existing,
+					Message:  "Transfer already processed",
+				}, nil
+			}
+		}
 		if rollbackOnCreateFailure != nil {
 			rollbackOnCreateFailure()
 		}

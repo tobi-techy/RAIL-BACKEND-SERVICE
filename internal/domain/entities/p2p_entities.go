@@ -2,6 +2,7 @@ package entities
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"time"
@@ -120,7 +121,8 @@ func GenerateClaimToken() (string, error) {
 // GenerateP2PIdempotencyKey generates a deterministic idempotency key for P2P transfers
 func GenerateP2PIdempotencyKey(senderID uuid.UUID, identifier, amount string) string {
 	seed := fmt.Sprintf("p2p:%s:%s:%s", senderID.String(), identifier, amount)
-	return fmt.Sprintf("p2p-%s", hex.EncodeToString([]byte(seed))[:32])
+	hash := sha256.Sum256([]byte(seed))
+	return fmt.Sprintf("p2p-%s", hex.EncodeToString(hash[:])[:32])
 }
 
 // NewP2PTransfer creates a new P2P transfer with defaults
