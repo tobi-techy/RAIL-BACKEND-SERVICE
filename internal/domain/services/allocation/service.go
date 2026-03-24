@@ -420,8 +420,11 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		compDesc := fmt.Sprintf("Reversal of spending allocation: %s (stash transfer failed)", spendingAmount.String())
 		if compErr := s.createAllocationTransfer(ctx, req, usdcAccount.ID, spendingAccount.ID, spendingAmount,
 			"spending_reversal", compKey, compDesc, compDesc, map[string]any{"compensation": true}); compErr != nil {
-			s.logger.Error("CRITICAL: Failed to compensate spending transfer — funds partially split",
-				"user_id", req.UserID, "spending_amount", spendingAmount, "error", compErr)
+			// CRITICAL: Compensation failed - this is a serious issue requiring manual intervention
+			s.logger.Error("CRITICAL: Failed to compensate spending transfer — funds partially split - MANUAL INTERVENTION REQUIRED",
+				"user_id", req.UserID, "spending_amount", spendingAmount, "original_error", err, "compensation_error", compErr)
+			// Return both errors so this can be tracked and resolved
+			return fmt.Errorf("CRITICAL: failed to create stash allocation transfer: %w; COMPENSATION ALSO FAILED: %v - requires manual reconciliation", err, compErr)
 		}
 		return fmt.Errorf("failed to create stash allocation transfer: %w", err)
 	}

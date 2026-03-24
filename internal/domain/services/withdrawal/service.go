@@ -12,6 +12,7 @@ import (
 	bridgepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/shopspring/decimal"
+	"go.uber.org/zap"
 )
 
 // Crypto withdrawal constants
@@ -1306,6 +1307,80 @@ func (s *WithdrawalService) FailWithdrawalByTransferID(ctx context.Context, tran
 	}
 
 	return s.failWithdrawal(ctx, withdrawal, reason)
+}
+
+func (s *WithdrawalService) MarkWithdrawalUnderReview(ctx context.Context, transferID string) error {
+	s.logger.Info("Marking withdrawal as under review", zap.String("transfer_id", transferID))
+	withdrawal, err := s.withdrawalRepo.GetByProviderTransferID(ctx, strings.TrimSpace(transferID))
+	if err != nil {
+		return fmt.Errorf("failed to fetch withdrawal: %w", err)
+	}
+	if withdrawal == nil {
+		s.logger.Warn("Withdrawal not found for transfer ID", zap.String("transfer_id", transferID))
+		return fmt.Errorf("withdrawal not found for transfer_id: %s", transferID)
+	}
+	if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusProcessing); err != nil {
+		return fmt.Errorf("failed to update withdrawal status: %w", err)
+	}
+	return nil
+}
+
+func (s *WithdrawalService) UpdateWithdrawalStatus(ctx context.Context, transferID, status string) error {
+	s.logger.Info("Updating withdrawal status",
+		zap.String("transfer_id", transferID),
+		zap.String("status", status))
+	withdrawal, err := s.withdrawalRepo.GetByProviderTransferID(ctx, strings.TrimSpace(transferID))
+	if err != nil {
+		return fmt.Errorf("failed to fetch withdrawal: %w", err)
+	}
+	if withdrawal == nil {
+		s.logger.Warn("Withdrawal not found for transfer ID", zap.String("transfer_id", transferID))
+		return fmt.Errorf("withdrawal not found for transfer_id: %s", transferID)
+	}
+	var newStatus entities.WithdrawalStatus
+	switch status {
+	case "refund_in_flight":
+		newStatus = entities.WithdrawalStatusProcessing
+	default:
+		newStatus = entities.WithdrawalStatus(status)
+	}
+	if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, newStatus); err != nil {
+		return fmt.Errorf("failed to update withdrawal status: %w", err)
+	}
+	return nil
+}
+
+func (s *WithdrawalService) MarkWithdrawalRefundFailed(ctx context.Context, transferID string) error {
+	s.logger.Error("Marking withdrawal refund as failed - manual intervention required",
+		zap.String("transfer_id", transferID))
+	withdrawal, err := s.withdrawalRepo.GetByProviderTransferID(ctx, strings.TrimSpace(transferID))
+	if err != nil {
+		return fmt.Errorf("failed to fetch withdrawal: %w", err)
+	}
+	if withdrawal == nil {
+		s.logger.Warn("Withdrawal not found for transfer ID", zap.String("transfer_id", transferID))
+		return fmt.Errorf("withdrawal not found for transfer_id: %s", transferID)
+	}
+	if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusFailed); err != nil {
+		return fmt.Errorf("failed to update withdrawal status: %w", err)
+	}
+	return nil
+}
+
+func (s *WithdrawalService) MarkWithdrawalRefunded(ctx context.Context, transferID string) error {
+	s.logger.Info("Marking withdrawal as refunded", zap.String("transfer_id", transferID))
+	withdrawal, err := s.withdrawalRepo.GetByProviderTransferID(ctx, strings.TrimSpace(transferID))
+	if err != nil {
+		return fmt.Errorf("failed to fetch withdrawal: %w", err)
+	}
+	if withdrawal == nil {
+		s.logger.Warn("Withdrawal not found for transfer ID", zap.String("transfer_id", transferID))
+		return fmt.Errorf("withdrawal not found for transfer_id: %s", transferID)
+	}
+	if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusReversed); err != nil {
+		return fmt.Errorf("failed to update withdrawal status: %w", err)
+	}
+	return nil
 }
 
 func (s *WithdrawalService) syncWithdrawalStatusFromProvider(ctx context.Context, withdrawal *entities.Withdrawal) (entities.WithdrawalStatus, error) {

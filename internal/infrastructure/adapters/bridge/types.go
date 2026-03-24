@@ -343,12 +343,12 @@ type EnableCardsRequest struct {
 }
 
 const (
-	CardActionInitiatorCustomer   = "customer"
-	CardActionInitiatorDeveloper  = "developer"
+	CardActionInitiatorCustomer       = "customer"
+	CardActionInitiatorDeveloper      = "developer"
 	CardFreezeReasonPlannedInactivity = "planned_inactivity"
-	CardFreezeReasonLostOrStolen  = "lost_or_stolen"
-	CardFreezeReasonFraud         = "fraud"
-	CardFreezeReasonMerchantAbuse = "merchant_abuse"
+	CardFreezeReasonLostOrStolen      = "lost_or_stolen"
+	CardFreezeReasonFraud             = "fraud"
+	CardFreezeReasonMerchantAbuse     = "merchant_abuse"
 )
 
 // FreezeCardAccountRequest represents a freeze card request payload.
@@ -447,23 +447,25 @@ type RealTimeAuthLocalDetails struct {
 
 // RealTimeAuthVerification represents verification data in a real-time auth request
 type RealTimeAuthVerification struct {
-	CVVCheck                string `json:"cvv_check"`
-	AddressCheck            string `json:"address_check"`
-	AddressPostalCodeCheck  string `json:"address_postal_code_check"`
-	PINCheck                string `json:"pin_check"`
-	ThreeDSecureCheck       string `json:"three_d_secure_check"`
+	CVVCheck               string `json:"cvv_check"`
+	AddressCheck           string `json:"address_check"`
+	AddressPostalCodeCheck string `json:"address_postal_code_check"`
+	PINCheck               string `json:"pin_check"`
+	ThreeDSecureCheck      string `json:"three_d_secure_check"`
 }
 
 // RealTimeAuthData is the data object inside a real-time auth webhook
 type RealTimeAuthData struct {
-	AuthorizationID         string                   `json:"authorization_id"`
-	AuthType                string                   `json:"auth_type"` // "auth" or "incremental_auth"
-	PartialSupported        bool                     `json:"partial_supported"`
-	Network                 string                   `json:"network"`
-	International           bool                     `json:"international"`
-	OriginalAuthorizationID *string                  `json:"original_authorization_id"`
-	TransactionID           string                   `json:"transaction_id"`
-	Account                 struct{ Last4 string `json:"last_4"` } `json:"account"`
+	AuthorizationID         string  `json:"authorization_id"`
+	AuthType                string  `json:"auth_type"` // "auth" or "incremental_auth"
+	PartialSupported        bool    `json:"partial_supported"`
+	Network                 string  `json:"network"`
+	International           bool    `json:"international"`
+	OriginalAuthorizationID *string `json:"original_authorization_id"`
+	TransactionID           string  `json:"transaction_id"`
+	Account                 struct {
+		Last4 string `json:"last_4"`
+	} `json:"account"`
 	Currency                string                   `json:"currency"`
 	Amount                  string                   `json:"amount"`
 	BillingAmount           string                   `json:"billing_amount"`
@@ -497,20 +499,20 @@ type RealTimeAuthResponse struct {
 // TransferSource represents the source of a transfer.
 // Bridge populates additional fields after funds arrive (source-updates doc).
 type TransferSource struct {
-	PaymentRail         PaymentRail `json:"payment_rail"`
-	Currency            Currency    `json:"currency"`
-	BridgeWalletID      string      `json:"bridge_wallet_id,omitempty"`
-	FromAddress         string      `json:"from_address,omitempty"`
-	ExternalAccountID   string      `json:"external_account_id,omitempty"`
+	PaymentRail       PaymentRail `json:"payment_rail"`
+	Currency          Currency    `json:"currency"`
+	BridgeWalletID    string      `json:"bridge_wallet_id,omitempty"`
+	FromAddress       string      `json:"from_address,omitempty"`
+	ExternalAccountID string      `json:"external_account_id,omitempty"`
 	// Populated by Bridge after funds arrive (wire/ACH/SEPA)
-	BankBeneficiaryName string      `json:"bank_beneficiary_name,omitempty"`
-	BankRoutingNumber   string      `json:"bank_routing_number,omitempty"`
-	BankName            string      `json:"bank_name,omitempty"`
-	IMAD                string      `json:"imad,omitempty"`
-	Description         string      `json:"description,omitempty"` // ACH
-	BIC                 string      `json:"bic,omitempty"`         // SEPA
-	UETR                string      `json:"uetr,omitempty"`        // SEPA
-	SenderName          string      `json:"sender_name,omitempty"` // SEPA
+	BankBeneficiaryName string `json:"bank_beneficiary_name,omitempty"`
+	BankRoutingNumber   string `json:"bank_routing_number,omitempty"`
+	BankName            string `json:"bank_name,omitempty"`
+	IMAD                string `json:"imad,omitempty"`
+	Description         string `json:"description,omitempty"` // ACH
+	BIC                 string `json:"bic,omitempty"`         // SEPA
+	UETR                string `json:"uetr,omitempty"`        // SEPA
+	SenderName          string `json:"sender_name,omitempty"` // SEPA
 }
 
 // TransferDestination represents the destination of a transfer.
@@ -528,8 +530,8 @@ type TransferDestination struct {
 
 // TransferFeatures represents optional transfer features
 type TransferFeatures struct {
-	StaticTemplate    bool `json:"static_template,omitempty"`
-	FlexibleAmount    bool `json:"flexible_amount,omitempty"`
+	StaticTemplate      bool `json:"static_template,omitempty"`
+	FlexibleAmount      bool `json:"flexible_amount,omitempty"`
 	AllowAnyFromAddress bool `json:"allow_any_from_address,omitempty"`
 }
 
@@ -565,13 +567,14 @@ type TransferSourceDepositInstructions struct {
 
 // CreateTransferRequest represents a request to create a transfer
 type CreateTransferRequest struct {
-	OnBehalfOf         string              `json:"on_behalf_of"`
-	Amount             string              `json:"amount,omitempty"`
-	Source             TransferSource      `json:"source"`
-	Destination        TransferDestination `json:"destination"`
-	DeveloperFee       string              `json:"developer_fee,omitempty"`
-	DeveloperFeePercent string             `json:"developer_fee_percent,omitempty"`
-	Features           *TransferFeatures   `json:"features,omitempty"`
+	ClientReferenceID   string              `json:"client_reference_id,omitempty"`
+	OnBehalfOf          string              `json:"on_behalf_of"`
+	Amount              string              `json:"amount,omitempty"`
+	Source              TransferSource      `json:"source"`
+	Destination         TransferDestination `json:"destination"`
+	DeveloperFee        string              `json:"developer_fee,omitempty"`
+	DeveloperFeePercent string              `json:"developer_fee_percent,omitempty"`
+	Features            *TransferFeatures   `json:"features,omitempty"`
 }
 
 // TransferStatus represents the status of a transfer
@@ -593,19 +596,19 @@ const (
 
 // Transfer represents a Bridge transfer
 type Transfer struct {
-	ID                       string                            `json:"id"`
-	State                    TransferStatus                    `json:"state"`
-	OnBehalfOf               string                            `json:"on_behalf_of"`
-	Amount                   string                            `json:"amount,omitempty"` // absent for flexible_amount until funds arrive
-	DeveloperFee             string                            `json:"developer_fee,omitempty"`
-	DeveloperFeePercent      string                            `json:"developer_fee_percent,omitempty"`
-	Source                   TransferSource                    `json:"source"`
-	Destination              TransferDestination               `json:"destination"`
+	ID                        string                             `json:"id"`
+	State                     TransferStatus                     `json:"state"`
+	OnBehalfOf                string                             `json:"on_behalf_of"`
+	Amount                    string                             `json:"amount,omitempty"` // absent for flexible_amount until funds arrive
+	DeveloperFee              string                             `json:"developer_fee,omitempty"`
+	DeveloperFeePercent       string                             `json:"developer_fee_percent,omitempty"`
+	Source                    TransferSource                     `json:"source"`
+	Destination               TransferDestination                `json:"destination"`
 	SourceDepositInstructions *TransferSourceDepositInstructions `json:"source_deposit_instructions,omitempty"`
-	Receipt                  *TransferReceipt                  `json:"receipt,omitempty"`
-	Features                 *TransferFeatures                 `json:"features,omitempty"`
-	CreatedAt                time.Time                         `json:"created_at"`
-	UpdatedAt                time.Time                         `json:"updated_at"`
+	Receipt                   *TransferReceipt                   `json:"receipt,omitempty"`
+	Features                  *TransferFeatures                  `json:"features,omitempty"`
+	CreatedAt                 time.Time                          `json:"created_at"`
+	UpdatedAt                 time.Time                          `json:"updated_at"`
 }
 
 // WebhookEvent represents a Bridge webhook event
@@ -672,12 +675,12 @@ const (
 
 // ExternalAccount represents a Bridge external bank account
 type ExternalAccount struct {
-	ID          string                `json:"id"`
-	CustomerID  string                `json:"customer_id"`
-	Currency    Currency              `json:"currency"`
-	Status      ExternalAccountStatus `json:"status"`
+	ID          string                     `json:"id"`
+	CustomerID  string                     `json:"customer_id"`
+	Currency    Currency                   `json:"currency"`
+	Status      ExternalAccountStatus      `json:"status"`
 	BankDetails ExternalAccountBankDetails `json:"bank_details"`
-	CreatedAt   time.Time             `json:"created_at"`
+	CreatedAt   time.Time                  `json:"created_at"`
 }
 
 // ListExternalAccountsResponse represents a paginated list of external accounts
@@ -685,14 +688,14 @@ type ListExternalAccountsResponse = PaginatedResponse[ExternalAccount]
 
 // CreateLiquidationAddressRequest represents a request to create a liquidation address
 type CreateLiquidationAddressRequest struct {
-	Chain                    PaymentRail `json:"chain"`
-	Currency                 Currency    `json:"currency"`
-	DestinationPaymentRail   PaymentRail `json:"destination_payment_rail"`
-	DestinationCurrency      Currency    `json:"destination_currency"`
-	DestinationAddress       string      `json:"destination_address,omitempty"`
-	ExternalAccountID        string      `json:"external_account_id,omitempty"`
-	DestinationWireMessage   string      `json:"destination_wire_message,omitempty"`
-	CustomDeveloperFeePercent string     `json:"custom_developer_fee_percent,omitempty"`
+	Chain                     PaymentRail `json:"chain"`
+	Currency                  Currency    `json:"currency"`
+	DestinationPaymentRail    PaymentRail `json:"destination_payment_rail"`
+	DestinationCurrency       Currency    `json:"destination_currency"`
+	DestinationAddress        string      `json:"destination_address,omitempty"`
+	ExternalAccountID         string      `json:"external_account_id,omitempty"`
+	DestinationWireMessage    string      `json:"destination_wire_message,omitempty"`
+	CustomDeveloperFeePercent string      `json:"custom_developer_fee_percent,omitempty"`
 }
 
 // LiquidationAddress represents a Bridge liquidation address
@@ -716,24 +719,24 @@ type ListLiquidationAddressesResponse = PaginatedResponse[LiquidationAddress]
 
 // DrainDestination represents the destination of a liquidation address drain
 type DrainDestination struct {
-	PaymentRail     PaymentRail `json:"payment_rail"`
-	Currency        Currency    `json:"currency"`
-	ToAddress       string      `json:"to_address,omitempty"`
-	ExternalAccountID string    `json:"external_account_id,omitempty"`
-	IMAD            string      `json:"imad,omitempty"`
-	TraceNumber     string      `json:"trace_number,omitempty"`
+	PaymentRail       PaymentRail `json:"payment_rail"`
+	Currency          Currency    `json:"currency"`
+	ToAddress         string      `json:"to_address,omitempty"`
+	ExternalAccountID string      `json:"external_account_id,omitempty"`
+	IMAD              string      `json:"imad,omitempty"`
+	TraceNumber       string      `json:"trace_number,omitempty"`
 }
 
 // DrainReceipt represents the receipt of a drain
 type DrainReceipt struct {
-	InitialAmount     string `json:"initial_amount"`
-	DeveloperFee      string `json:"developer_fee"`
-	SubtotalAmount    string `json:"subtotal_amount"`
-	ExchangeRate      string `json:"exchange_rate,omitempty"`
-	ConvertedAmount   string `json:"converted_amount,omitempty"`
-	OutgoingAmount    string `json:"outgoing_amount,omitempty"`
+	InitialAmount       string `json:"initial_amount"`
+	DeveloperFee        string `json:"developer_fee"`
+	SubtotalAmount      string `json:"subtotal_amount"`
+	ExchangeRate        string `json:"exchange_rate,omitempty"`
+	ConvertedAmount     string `json:"converted_amount,omitempty"`
+	OutgoingAmount      string `json:"outgoing_amount,omitempty"`
 	DestinationCurrency string `json:"destination_currency,omitempty"`
-	URL               string `json:"url,omitempty"`
+	URL                 string `json:"url,omitempty"`
 }
 
 // Drain represents a single drain record from a liquidation address

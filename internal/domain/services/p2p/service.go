@@ -3,6 +3,7 @@ package p2p
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"unicode"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 
@@ -52,6 +54,7 @@ type Repository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*entities.P2PTransfer, error)
 	GetByClaimToken(ctx context.Context, token string) (*entities.P2PTransfer, error)
 	GetBySender(ctx context.Context, senderID uuid.UUID, limit, offset int) ([]*entities.P2PTransfer, error)
+	GetByIdempotencyKey(ctx context.Context, idempotencyKey string) (*entities.P2PTransfer, error)
 	GetPendingByIdentifier(ctx context.Context, email, phone string) ([]*entities.P2PTransfer, error)
 	GetExpired(ctx context.Context) ([]*entities.P2PTransfer, error)
 	AcquirePendingByID(ctx context.Context, id uuid.UUID) (*entities.P2PTransfer, error)
@@ -129,6 +132,11 @@ func (s *Service) SetUserUpdater(updater UserUpdater) {
 func (s *Service) SetWalletLookup(w WalletLookup) {
 	s.walletLookup = w
 }
+
+const (
+	P2PMinTransferAmount = 1.00
+	P2PMaxTransferAmount = 10000.00
+)
 
 var (
 	emailRegex   = regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
@@ -241,10 +249,43 @@ func (s *Service) LookupRecipient(ctx context.Context, identifier string) (*enti
 
 // Send initiates a P2P transfer
 func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2PSendRequest) (*entities.P2PTransferResponse, error) {
+	// Generate or use provided idempotency key
+	idempotencyKey := req.IdempotencyKey
+	if idempotencyKey == "" {
+		idempotencyKey = entities.GenerateP2PIdempotencyKey(senderID, req.Identifier, req.Amount)
+	}
+
+	// Check for existing transfer with same idempotency key (idempotent request)
+	existing, err := s.repo.GetByIdempotencyKey(ctx, idempotencyKey)
+	if err == nil && existing != nil {
+		s.logger.Info("Idempotent request - returning existing transfer",
+			zap.String("idempotency_key", idempotencyKey),
+			zap.String("transfer_id", existing.ID.String()))
+		return &entities.P2PTransferResponse{
+			Transfer: existing,
+			Message:  "Transfer already processed",
+		}, nil
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return nil, fmt.Errorf("failed to check idempotency: %w", err)
+	}
+
 	// Parse amount
 	amount, err := decimal.NewFromString(req.Amount)
 	if err != nil || amount.LessThanOrEqual(decimal.Zero) {
 		return nil, fmt.Errorf("invalid amount")
+	}
+
+	// Validate minimum transfer amount
+	minAmount := decimal.NewFromFloat(P2PMinTransferAmount)
+	if amount.LessThan(minAmount) {
+		return nil, fmt.Errorf("amount below minimum transfer limit of $%.2f", P2PMinTransferAmount)
+	}
+
+	// Validate maximum transfer amount
+	maxAmount := decimal.NewFromFloat(P2PMaxTransferAmount)
+	if amount.GreaterThan(maxAmount) {
+		return nil, fmt.Errorf("amount exceeds maximum transfer limit of $%.2f", P2PMaxTransferAmount)
 	}
 
 	// Check sender balance
@@ -302,6 +343,7 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2
 	}
 
 	transfer := entities.NewP2PTransfer(senderID, normalized, lookup.IdentifierType, amount, note)
+	transfer.IdempotencyKey = &idempotencyKey
 	var afterCreate func()
 	var rollbackOnCreateFailure func()
 
@@ -381,8 +423,32 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2
 		}
 	}
 
-	// Save transfer
+	// Save transfer - handle duplicate key error for atomic idempotency
 	if err := s.repo.Create(ctx, transfer); err != nil {
+		// Check for duplicate key error (race condition - another request created the transfer)
+		isDuplicateKey := false
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+			isDuplicateKey = true
+		}
+
+		if isDuplicateKey {
+			existing, fetchErr := s.repo.GetByIdempotencyKey(ctx, idempotencyKey)
+			if fetchErr == nil && existing != nil {
+				s.logger.Info("Concurrent request created transfer - returning existing",
+					zap.String("idempotency_key", idempotencyKey),
+					zap.String("transfer_id", existing.ID.String()))
+				return &entities.P2PTransferResponse{
+					Transfer: existing,
+					Message:  "Transfer already processed",
+				}, nil
+			}
+			if fetchErr != nil {
+				s.logger.Error("Failed to fetch existing transfer after duplicate key error",
+					zap.String("idempotency_key", idempotencyKey),
+					zap.Error(fetchErr))
+			}
+		}
 		if rollbackOnCreateFailure != nil {
 			rollbackOnCreateFailure()
 		}
