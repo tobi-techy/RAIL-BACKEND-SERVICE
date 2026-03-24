@@ -32,6 +32,10 @@ type BridgeWebhookService interface {
 	ProcessCryptoDeposit(ctx *gin.Context, transferID string, customerID string, amount decimal.Decimal) error
 	ProcessTransferCompleted(ctx *gin.Context, transferID string) error
 	ProcessTransferFailed(ctx *gin.Context, transferID string, status string) error
+	ProcessTransferUnderReview(ctx *gin.Context, transferID string) error
+	ProcessTransferRefundInFlight(ctx *gin.Context, transferID string) error
+	ProcessTransferRefundFailed(ctx *gin.Context, transferID string) error
+	ProcessTransferRefunded(ctx *gin.Context, transferID string) error
 	ProcessCustomerStatusChanged(ctx *gin.Context, customerID string, status string) error
 	// Card transaction methods
 	AuthorizeCardAuthorization(ctx *gin.Context, cardID string, amount decimal.Decimal, merchantName, merchantCategory string) (bool, string, error)
@@ -370,29 +374,96 @@ func (h *BridgeWebhookHandler) handleTransferEvent(c *gin.Context, payload Bridg
 		zap.String("state", state),
 		zap.String("event_type", payload.EventType))
 
+	if h.service == nil {
+		h.logger.Error("Bridge webhook service is not configured")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service_unavailable"})
+		return
+	}
+
 	switch state {
 	case "payment_processed":
-		if h.service == nil {
-			h.logger.Error("Bridge webhook service is not configured")
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service_unavailable"})
-			return
-		}
+		// Success state - complete the withdrawal
 		if err := h.service.ProcessTransferCompleted(c, transferID); err != nil {
 			h.logger.Error("Failed to process transfer completed", zap.Error(err))
 		}
-	case "funds_received", "payment_submitted", "awaiting_funds", "in_review":
-		h.logger.Info("Transfer intermediate state — awaiting payment_processed",
+	case "funds_received", "payment_submitted":
+		// Intermediate states - just log and wait for final state
+		h.logger.Info("Transfer in progress",
 			zap.String("transfer_id", transferID),
 			zap.String("state", state))
-	case "returned", "undeliverable", "refunded", "missing_return_policy", "error", "canceled":
-		h.logger.Warn("Transfer terminal failure state",
+	case "awaiting_funds":
+		// Transfer waiting for funds - this is normal for offramp
+		h.logger.Info("Transfer awaiting funds",
 			zap.String("transfer_id", transferID),
 			zap.String("state", state))
-		if h.service != nil {
-			if err := h.service.ProcessTransferFailed(c, transferID, state); err != nil {
-				h.logger.Error("Failed to process transfer failure", zap.Error(err))
-			}
+	case "in_review":
+		// Transfer under compliance review - needs attention
+		h.logger.Warn("Transfer under compliance review - requires attention",
+			zap.String("transfer_id", transferID),
+			zap.String("state", state))
+		if err := h.service.ProcessTransferUnderReview(c, transferID); err != nil {
+			h.logger.Error("Failed to process transfer under review", zap.Error(err))
 		}
+	case "undeliverable":
+		// Transfer cannot be delivered - needs refund
+		h.logger.Warn("Transfer undeliverable - initiating refund",
+			zap.String("transfer_id", transferID),
+			zap.String("state", state))
+		if err := h.service.ProcessTransferFailed(c, transferID, state); err != nil {
+			h.logger.Error("Failed to process undeliverable transfer", zap.Error(err))
+		}
+	case "returned":
+		// Transfer was returned - reverse the funds
+		h.logger.Warn("Transfer returned - reversing funds",
+			zap.String("transfer_id", transferID),
+			zap.String("state", state))
+		if err := h.service.ProcessTransferFailed(c, transferID, state); err != nil {
+			h.logger.Error("Failed to process returned transfer", zap.Error(err))
+		}
+	case "refund_in_flight":
+		// Refund in progress
+		h.logger.Info("Refund in progress",
+			zap.String("transfer_id", transferID),
+			zap.String("state", state))
+		if err := h.service.ProcessTransferRefundInFlight(c, transferID); err != nil {
+			h.logger.Error("Failed to process refund in flight", zap.Error(err))
+		}
+	case "refund_failed":
+		// Critical - refund failed, manual intervention required
+		h.logger.Error("CRITICAL: Refund failed - manual intervention required",
+			zap.String("transfer_id", transferID),
+			zap.String("state", state))
+		if err := h.service.ProcessTransferRefundFailed(c, transferID); err != nil {
+			h.logger.Error("Failed to process refund failure", zap.Error(err))
+		}
+	case "refunded":
+		// Transfer successfully refunded
+		h.logger.Info("Transfer refunded",
+			zap.String("transfer_id", transferID),
+			zap.String("state", state))
+		if err := h.service.ProcessTransferRefunded(c, transferID); err != nil {
+			h.logger.Error("Failed to process refunded transfer", zap.Error(err))
+		}
+	case "canceled":
+		// Transfer was canceled
+		h.logger.Info("Transfer canceled",
+			zap.String("transfer_id", transferID),
+			zap.String("state", state))
+		if err := h.service.ProcessTransferFailed(c, transferID, state); err != nil {
+			h.logger.Error("Failed to process canceled transfer", zap.Error(err))
+		}
+	case "error":
+		// Generic error state
+		h.logger.Error("Transfer error state",
+			zap.String("transfer_id", transferID),
+			zap.String("state", state))
+		if err := h.service.ProcessTransferFailed(c, transferID, state); err != nil {
+			h.logger.Error("Failed to process error transfer", zap.Error(err))
+		}
+	default:
+		h.logger.Info("Unhandled transfer state",
+			zap.String("transfer_id", transferID),
+			zap.String("state", state))
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
@@ -1016,6 +1087,10 @@ type BridgeCardProcessor interface {
 type BridgeWithdrawalProcessor interface {
 	CompleteWithdrawalByTransferID(ctx context.Context, transferID string) error
 	FailWithdrawalByTransferID(ctx context.Context, transferID, reason string) error
+	MarkWithdrawalUnderReview(ctx context.Context, transferID string) error
+	UpdateWithdrawalStatus(ctx context.Context, transferID, status string) error
+	MarkWithdrawalRefundFailed(ctx context.Context, transferID string) error
+	MarkWithdrawalRefunded(ctx context.Context, transferID string) error
 }
 
 // BridgeWebhookNotifier sends notifications for Bridge events
@@ -1093,6 +1168,46 @@ func (s *BridgeWebhookServiceImpl) ProcessTransferFailed(ctx *gin.Context, trans
 		return nil
 	}
 	return s.withdrawalService.FailWithdrawalByTransferID(ctx, transferID, "bridge transfer "+strings.ToLower(strings.TrimSpace(status)))
+}
+
+func (s *BridgeWebhookServiceImpl) ProcessTransferUnderReview(ctx *gin.Context, transferID string) error {
+	s.logger.Warn("Transfer under compliance review",
+		zap.String("transfer_id", transferID))
+	if s.withdrawalService == nil {
+		s.logger.Warn("Withdrawal service not configured", zap.String("transfer_id", transferID))
+		return nil
+	}
+	return s.withdrawalService.MarkWithdrawalUnderReview(ctx, transferID)
+}
+
+func (s *BridgeWebhookServiceImpl) ProcessTransferRefundInFlight(ctx *gin.Context, transferID string) error {
+	s.logger.Info("Refund in flight for transfer",
+		zap.String("transfer_id", transferID))
+	if s.withdrawalService == nil {
+		s.logger.Warn("Withdrawal service not configured", zap.String("transfer_id", transferID))
+		return nil
+	}
+	return s.withdrawalService.UpdateWithdrawalStatus(ctx, transferID, "refund_in_flight")
+}
+
+func (s *BridgeWebhookServiceImpl) ProcessTransferRefundFailed(ctx *gin.Context, transferID string) error {
+	s.logger.Error("Refund failed for transfer - requires manual intervention",
+		zap.String("transfer_id", transferID))
+	if s.withdrawalService == nil {
+		s.logger.Warn("Withdrawal service not configured", zap.String("transfer_id", transferID))
+		return nil
+	}
+	return s.withdrawalService.MarkWithdrawalRefundFailed(ctx, transferID)
+}
+
+func (s *BridgeWebhookServiceImpl) ProcessTransferRefunded(ctx *gin.Context, transferID string) error {
+	s.logger.Info("Transfer has been refunded",
+		zap.String("transfer_id", transferID))
+	if s.withdrawalService == nil {
+		s.logger.Warn("Withdrawal service not configured", zap.String("transfer_id", transferID))
+		return nil
+	}
+	return s.withdrawalService.MarkWithdrawalRefunded(ctx, transferID)
 }
 
 func (s *BridgeWebhookServiceImpl) ProcessCustomerStatusChanged(ctx *gin.Context, customerID string, status string) error {

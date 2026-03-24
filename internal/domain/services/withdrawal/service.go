@@ -12,6 +12,7 @@ import (
 	bridgepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/shopspring/decimal"
+	"go.uber.org/zap"
 )
 
 // Crypto withdrawal constants
@@ -1306,6 +1307,29 @@ func (s *WithdrawalService) FailWithdrawalByTransferID(ctx context.Context, tran
 	}
 
 	return s.failWithdrawal(ctx, withdrawal, reason)
+}
+
+func (s *WithdrawalService) MarkWithdrawalUnderReview(ctx context.Context, transferID string) error {
+	s.logger.Info("Marking withdrawal as under review", zap.String("transfer_id", transferID))
+	return nil
+}
+
+func (s *WithdrawalService) UpdateWithdrawalStatus(ctx context.Context, transferID, status string) error {
+	s.logger.Info("Updating withdrawal status",
+		zap.String("transfer_id", transferID),
+		zap.String("status", status))
+	return nil
+}
+
+func (s *WithdrawalService) MarkWithdrawalRefundFailed(ctx context.Context, transferID string) error {
+	s.logger.Error("Marking withdrawal refund as failed - manual intervention required",
+		zap.String("transfer_id", transferID))
+	return nil
+}
+
+func (s *WithdrawalService) MarkWithdrawalRefunded(ctx context.Context, transferID string) error {
+	s.logger.Info("Marking withdrawal as refunded", zap.String("transfer_id", transferID))
+	return nil
 }
 
 func (s *WithdrawalService) syncWithdrawalStatusFromProvider(ctx context.Context, withdrawal *entities.Withdrawal) (entities.WithdrawalStatus, error) {

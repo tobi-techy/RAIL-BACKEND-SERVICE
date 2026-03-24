@@ -128,6 +128,9 @@ func (m *mockP2PRepo) GetByID(ctx context.Context, id uuid.UUID) (*entities.P2PT
 func (m *mockP2PRepo) GetByClaimToken(ctx context.Context, token string) (*entities.P2PTransfer, error) {
 	return m.transfer, nil
 }
+func (m *mockP2PRepo) GetByIdempotencyKey(ctx context.Context, idempotencyKey string) (*entities.P2PTransfer, error) {
+	return nil, sql.ErrNoRows
+}
 func (m *mockP2PRepo) GetBySender(ctx context.Context, senderID uuid.UUID, limit, offset int) ([]*entities.P2PTransfer, error) {
 	return nil, nil
 }

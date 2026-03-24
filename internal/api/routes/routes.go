@@ -641,15 +641,17 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			}
 
 			// P2P Transfer routes - Cash App style money transfers
+			// Rate limited: 20 send/lookup per minute, 10 cancel per minute
 			p2pHandlers := container.GetP2PHandlers()
 			if p2pHandlers != nil {
 				p2p := protected.Group("/p2p")
+				p2p.Use(middleware.AuthRateLimit(20))
 				{
 					p2p.POST("/lookup", p2pHandlers.Lookup)
 					p2p.POST("/send", p2pHandlers.Send)
 					p2p.GET("/transfers", p2pHandlers.GetTransfers)
 					p2p.GET("/recent", p2pHandlers.GetRecentRecipients)
-					p2p.DELETE("/transfers/:id", p2pHandlers.Cancel)
+					p2p.DELETE("/transfers/:id", middleware.AuthRateLimit(10), p2pHandlers.Cancel)
 					p2p.POST("/claim/:token", p2pHandlers.ClaimByToken)
 					p2p.POST("/railtag", p2pHandlers.SetRailTag)
 					p2p.POST("/railtag/check", p2pHandlers.CheckRailTag)
@@ -657,8 +659,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			}
 
 			// Public P2P claim routes (no auth required — for web claim page)
+			// Rate limited: 10 per minute by IP to prevent enumeration attacks
 			if p2pHandlers != nil {
 				publicP2P := router.Group("/api/v1/p2p")
+				publicP2P.Use(middleware.AuthRateLimit(10))
 				{
 					publicP2P.GET("/claim/:token", p2pHandlers.GetClaimInfo)
 					publicP2P.POST("/claim/:token/bank", p2pHandlers.ClaimToBank)

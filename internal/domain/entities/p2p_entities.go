@@ -3,6 +3,7 @@ package entities
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -54,6 +55,7 @@ type P2PTransfer struct {
 	ExpiresAt           time.Time         `json:"expiresAt" db:"expires_at"`
 	CreatedAt           time.Time         `json:"createdAt" db:"created_at"`
 	UpdatedAt           time.Time         `json:"updatedAt" db:"updated_at"`
+	IdempotencyKey      *string           `json:"idempotencyKey,omitempty" db:"idempotency_key"`
 }
 
 // P2PRecentRecipient represents a recent transfer recipient for quick access
@@ -66,9 +68,10 @@ type P2PRecentRecipient struct {
 
 // P2PSendRequest represents a request to send money
 type P2PSendRequest struct {
-	Identifier string `json:"identifier" validate:"required"` // RailTag, email, or phone
-	Amount     string `json:"amount" validate:"required"`
-	Note       string `json:"note,omitempty" validate:"max=255"`
+	Identifier     string `json:"identifier" validate:"required"`    // RailTag, email, or phone
+	Amount         string `json:"amount" validate:"required"`        // Amount to send
+	Note           string `json:"note,omitempty" validate:"max=255"` // Optional note
+	IdempotencyKey string `json:"idempotencyKey,omitempty"`          // Client-provided idempotency key
 }
 
 // P2PLookupResponse represents the result of looking up a recipient
@@ -112,6 +115,12 @@ func GenerateClaimToken() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(bytes), nil
+}
+
+// GenerateP2PIdempotencyKey generates a deterministic idempotency key for P2P transfers
+func GenerateP2PIdempotencyKey(senderID uuid.UUID, identifier, amount string) string {
+	seed := fmt.Sprintf("p2p:%s:%s:%s", senderID.String(), identifier, amount)
+	return fmt.Sprintf("p2p-%s", hex.EncodeToString([]byte(seed))[:32])
 }
 
 // NewP2PTransfer creates a new P2P transfer with defaults
