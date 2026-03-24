@@ -174,7 +174,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		rows.Scan(ptrs...)
 		result := make(map[string]interface{}, len(cols))
 		for i, col := range cols {
-			result[col] = vals[i]
+			if b, ok := vals[i].([]byte); ok {
+				result[col] = string(b)
+			} else {
+				result[col] = vals[i]
+			}
 		}
 		c.JSON(200, gin.H{"user": result})
 	})
