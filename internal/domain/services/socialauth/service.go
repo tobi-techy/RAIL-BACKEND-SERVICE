@@ -502,9 +502,11 @@ func (s *Service) authenticateApple(ctx context.Context, req *entities.SocialLog
 	email, _ := claims["email"].(string)
 
 	// Apple only sends name on first sign-in, extract from request if provided
-	name := ""
-	if req.Name != "" {
-		name = req.Name
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		given := strings.TrimSpace(req.GivenName)
+		family := strings.TrimSpace(req.FamilyName)
+		name = strings.TrimSpace(given + " " + family)
 	}
 
 	s.logger.Info("Apple Sign In successful",
