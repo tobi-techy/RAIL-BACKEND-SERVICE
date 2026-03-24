@@ -385,6 +385,8 @@ func (h *BridgeWebhookHandler) handleTransferEvent(c *gin.Context, payload Bridg
 		// Success state - complete the withdrawal
 		if err := h.service.ProcessTransferCompleted(c, transferID); err != nil {
 			h.logger.Error("Failed to process transfer completed", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "processing_failed"})
+			return
 		}
 	case "funds_received", "payment_submitted":
 		// Intermediate states - just log and wait for final state
@@ -403,6 +405,8 @@ func (h *BridgeWebhookHandler) handleTransferEvent(c *gin.Context, payload Bridg
 			zap.String("state", state))
 		if err := h.service.ProcessTransferUnderReview(c, transferID); err != nil {
 			h.logger.Error("Failed to process transfer under review", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "processing_failed"})
+			return
 		}
 	case "undeliverable":
 		// Transfer cannot be delivered - needs refund
@@ -411,6 +415,8 @@ func (h *BridgeWebhookHandler) handleTransferEvent(c *gin.Context, payload Bridg
 			zap.String("state", state))
 		if err := h.service.ProcessTransferFailed(c, transferID, state); err != nil {
 			h.logger.Error("Failed to process undeliverable transfer", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "processing_failed"})
+			return
 		}
 	case "returned":
 		// Transfer was returned - reverse the funds
@@ -419,6 +425,8 @@ func (h *BridgeWebhookHandler) handleTransferEvent(c *gin.Context, payload Bridg
 			zap.String("state", state))
 		if err := h.service.ProcessTransferFailed(c, transferID, state); err != nil {
 			h.logger.Error("Failed to process returned transfer", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "processing_failed"})
+			return
 		}
 	case "refund_in_flight":
 		// Refund in progress
@@ -427,6 +435,8 @@ func (h *BridgeWebhookHandler) handleTransferEvent(c *gin.Context, payload Bridg
 			zap.String("state", state))
 		if err := h.service.ProcessTransferRefundInFlight(c, transferID); err != nil {
 			h.logger.Error("Failed to process refund in flight", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "processing_failed"})
+			return
 		}
 	case "refund_failed":
 		// Critical - refund failed, manual intervention required
@@ -435,6 +445,8 @@ func (h *BridgeWebhookHandler) handleTransferEvent(c *gin.Context, payload Bridg
 			zap.String("state", state))
 		if err := h.service.ProcessTransferRefundFailed(c, transferID); err != nil {
 			h.logger.Error("Failed to process refund failure", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "processing_failed"})
+			return
 		}
 	case "refunded":
 		// Transfer successfully refunded
@@ -443,6 +455,8 @@ func (h *BridgeWebhookHandler) handleTransferEvent(c *gin.Context, payload Bridg
 			zap.String("state", state))
 		if err := h.service.ProcessTransferRefunded(c, transferID); err != nil {
 			h.logger.Error("Failed to process refunded transfer", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "processing_failed"})
+			return
 		}
 	case "canceled":
 		// Transfer was canceled
@@ -451,6 +465,8 @@ func (h *BridgeWebhookHandler) handleTransferEvent(c *gin.Context, payload Bridg
 			zap.String("state", state))
 		if err := h.service.ProcessTransferFailed(c, transferID, state); err != nil {
 			h.logger.Error("Failed to process canceled transfer", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "processing_failed"})
+			return
 		}
 	case "error":
 		// Generic error state

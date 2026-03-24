@@ -118,12 +118,14 @@ func GenerateClaimToken() (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
-// GenerateP2PIdempotencyKey generates a deterministic idempotency key for P2P transfers
-func GenerateP2PIdempotencyKey(senderID uuid.UUID, identifier, amount string) string {
-	seed := fmt.Sprintf("p2p:%s:%s:%s", senderID.String(), identifier, amount)
+// GenerateP2PIdempotencyKey generates a cryptographically secure idempotency key
+// based on sender ID and recipient identifier only (not amount), with a time-based
+// 5-minute window to allow legitimate repeated transfers while preventing rapid-fire duplicates
+func GenerateP2PIdempotencyKey(senderID uuid.UUID, identifier string) string {
+	window := time.Now().Truncate(5 * time.Minute).Unix()
+	seed := fmt.Sprintf("p2p:%s:%s:%d", senderID.String(), identifier, window)
 	hash := sha256.Sum256([]byte(seed))
-return fmt.Sprintf("p2p-%s", hex.EncodeToString(hash[:]))
-
+	return hex.EncodeToString(hash[:])
 }
 
 // NewP2PTransfer creates a new P2P transfer with defaults
