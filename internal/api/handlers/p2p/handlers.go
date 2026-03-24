@@ -2,6 +2,7 @@ package p2p
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -64,15 +65,20 @@ func (h *Handlers) Send(c *gin.Context) {
 	result, err := h.service.Send(c.Request.Context(), userID, &req)
 	if err != nil {
 		h.logger.Error("Send failed", zap.Error(err), zap.String("user_id", userID.String()))
-		
+
 		// Map common errors to appropriate responses
+		// Note: Don't expose internal error details to clients
 		switch err.Error() {
 		case "invalid amount":
 			c.JSON(http.StatusBadRequest, gin.H{"error": "INVALID_AMOUNT", "message": "Invalid amount"})
 		case "insufficient balance":
 			c.JSON(http.StatusBadRequest, gin.H{"error": "INSUFFICIENT_BALANCE", "message": "Insufficient balance"})
+		case "amount below minimum transfer limit":
+			c.JSON(http.StatusBadRequest, gin.H{"error": "AMOUNT_TOO_LOW", "message": "Amount below minimum transfer limit"})
+		case "amount exceeds maximum transfer limit":
+			c.JSON(http.StatusBadRequest, gin.H{"error": "AMOUNT_TOO_HIGH", "message": "Amount exceeds maximum transfer limit"})
 		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "SEND_FAILED", "message": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "SEND_FAILED", "message": "An error occurred while processing your request"})
 		}
 		return
 	}
@@ -81,7 +87,7 @@ func (h *Handlers) Send(c *gin.Context) {
 }
 
 // GetTransfers returns user's P2P transfers
-// GET /api/v1/p2p/transfers
+// GET /api/v1/p2p/transfers?limit=20&offset=0
 func (h *Handlers) GetTransfers(c *gin.Context) {
 	userID, err := h.getUserID(c)
 	if err != nil {
@@ -92,6 +98,17 @@ func (h *Handlers) GetTransfers(c *gin.Context) {
 	limit := 20
 	offset := 0
 
+	if limitStr := c.Query("limit"); limitStr != "" {
+		if parsed, err := strconv.ParseUint(limitStr, 10, 64); err == nil && parsed > 0 && parsed <= 100 {
+			limit = int(parsed)
+		}
+	}
+	if offsetStr := c.Query("offset"); offsetStr != "" {
+		if parsed, err := strconv.ParseUint(offsetStr, 10, 64); err == nil && parsed >= 0 {
+			offset = int(parsed)
+		}
+	}
+
 	transfers, err := h.service.GetTransfers(c.Request.Context(), userID, limit, offset)
 	if err != nil {
 		h.logger.Error("GetTransfers failed", zap.Error(err))
@@ -99,7 +116,7 @@ func (h *Handlers) GetTransfers(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"transfers": transfers})
+	c.JSON(http.StatusOK, gin.H{"transfers": transfers, "limit": limit, "offset": offset})
 }
 
 // GetRecentRecipients returns recent recipients for quick access
@@ -234,7 +251,7 @@ func (h *Handlers) getUserID(c *gin.Context) (uuid.UUID, error) {
 	if !exists {
 		return uuid.Nil, http.ErrNoCookie
 	}
-	
+
 	switch v := userIDStr.(type) {
 	case uuid.UUID:
 		return v, nil

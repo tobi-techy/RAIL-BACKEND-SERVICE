@@ -32,14 +32,14 @@ func (r *P2PRepository) Create(ctx context.Context, transfer *entities.P2PTransf
 		INSERT INTO p2p_transfers (
 			id, sender_id, recipient_id, recipient_identifier, identifier_type,
 			amount, currency, note, status, claim_token, provider_transfer_id, provider_status,
-			expires_at, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`
+			expires_at, created_at, updated_at, idempotency_key
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`
 
 	_, err := r.db.ExecContext(ctx, query,
 		transfer.ID, transfer.SenderID, transfer.RecipientID, transfer.RecipientIdentifier,
 		transfer.IdentifierType, transfer.Amount, transfer.Currency, transfer.Note,
 		transfer.Status, transfer.ClaimToken, transfer.ProviderTransferID, transfer.ProviderStatus,
-		transfer.ExpiresAt, transfer.CreatedAt, transfer.UpdatedAt)
+		transfer.ExpiresAt, transfer.CreatedAt, transfer.UpdatedAt, transfer.IdempotencyKey)
 	if err != nil {
 		r.logger.Error("Failed to create P2P transfer", zap.Error(err))
 		return fmt.Errorf("failed to create transfer: %w", err)
@@ -81,6 +81,25 @@ func (r *P2PRepository) GetByClaimToken(ctx context.Context, token string) (*ent
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get transfer by token: %w", err)
+	}
+	return &t, nil
+}
+
+// GetByIdempotencyKey retrieves a transfer by idempotency key
+func (r *P2PRepository) GetByIdempotencyKey(ctx context.Context, idempotencyKey string) (*entities.P2PTransfer, error) {
+	var t entities.P2PTransfer
+	query := `SELECT id, sender_id, recipient_id, recipient_identifier, identifier_type,
+		amount, currency, note, status, claim_token, claim_link_sent_at, reminder_sent_at,
+		provider_transfer_id, provider_status,
+		completed_at, cancelled_at, expires_at, created_at, updated_at, idempotency_key
+		FROM p2p_transfers WHERE idempotency_key = $1`
+
+	err := r.db.GetContext(ctx, &t, query, idempotencyKey)
+	if err == sql.ErrNoRows {
+		return nil, sql.ErrNoRows
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get transfer by idempotency key: %w", err)
 	}
 	return &t, nil
 }
