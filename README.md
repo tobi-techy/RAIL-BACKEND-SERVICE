@@ -523,69 +523,6 @@ All protected endpoints require a JWT bearer token:
 Authorization: Bearer <access_token>
 ```
 
-### Endpoints
-
-**Public:**
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/v1/auth/register` | Create account |
-| POST | `/v1/auth/login` | Authenticate |
-| POST | `/v1/auth/social/login` | Apple / Google sign-in |
-| POST | `/v1/auth/refresh` | Refresh token |
-| POST | `/v1/auth/logout` | End session |
-
-**Onboarding (authenticated):**
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/v1/onboarding/start` | Begin onboarding |
-| GET | `/v1/onboarding/status` | Check progress |
-| POST | `/v1/onboarding/complete` | Complete profile |
-| POST | `/v1/onboarding/kyc/submit` | Submit KYC |
-
-**Account (KYC required):**
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/v1/account` | Account summary |
-| GET | `/v1/account/balances` | Spend + stash balances |
-| GET | `/v1/account/station` | Home screen data |
-
-**Funding:**
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/v1/funding/virtual-accounts` | List virtual accounts |
-| POST | `/v1/funding/deposit/address` | Generate crypto deposit address |
-| GET | `/v1/funding/deposits` | Deposit history |
-
-**Spending:**
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/v1/spending/transactions` | Transaction history |
-| POST | `/v1/spending/roundups/toggle` | Enable/disable round-ups |
-| GET | `/v1/cards` | List cards |
-| POST | `/v1/cards/virtual` | Create virtual card |
-| POST | `/v1/cards/{id}/freeze` | Freeze card |
-
-**Investing:**
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/v1/investing/balance` | Invest balance |
-| GET | `/v1/investing/status` | Allocation status |
-| GET | `/v1/conductors` | List Conductor tracks |
-| POST | `/v1/conductors/{id}/follow` | Follow a track |
-
-**Webhooks:**
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/v1/webhooks/bridge` | Bridge deposit + card events |
-| POST | `/v1/webhooks/alpaca` | Trade execution events |
-
 ### Response Format
 
 ```json
