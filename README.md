@@ -1,12 +1,14 @@
 # Rail
 
 <p align="center">
-  <strong>An automated wealth system where money begins working the moment it arrives.</strong>
+  <strong>A rules-based capital engine — money splits itself the moment it arrives.</strong>
 </p>
 
 <p align="center">
+  <a href="#overview">Overview</a> •
   <a href="#the-problem">Problem</a> •
   <a href="#how-rail-works">How It Works</a> •
+  <a href="#market-position">Market Position</a> •
   <a href="#architecture">Architecture</a> •
   <a href="#getting-started">Getting Started</a> •
   <a href="#api-reference">API</a>
@@ -16,56 +18,89 @@
 
 ## Overview
 
-Rail is a rules-based capital engine designed for Gen Z users who want financial progress without the cognitive burden of traditional investing. When money enters Rail, it doesn't wait—it immediately goes to work through an automatic 70/30 split between spending and investing.
+Rail is a rules-based capital engine for people who want financial progress without the overhead of managing it. When money enters Rail — via bank transfer, mobile money, or stablecoin deposit — it immediately splits 70% to spending and 30% to investing. No configuration. No decisions. The system runs automatically.
 
-**Core Principle**: Money should start working the moment it arrives.
+**Core Principle**: Depositing funds equals consent to the system. Money starts working the moment it arrives.
 
-### Key Differentiators
+Rail is live in production with real users, real deposits, and real yield.
 
-| Traditional Finance | Rail |
-|---------------------|------|
-| User chooses assets | System allocates automatically |
-| Multiple apps for spending/investing | Single unified platform |
-| Requires financial literacy | Requires only trust |
-| Decision paralysis | Instant deployment |
-| Manual rebalancing | Automated management |
+### How Rail Compares
+
+| | Traditional Finance | Crypto Neobanks | Rail |
+|---|---|---|---|
+| Asset selection | User-driven | User-driven | System-defined |
+| Yield | Opt-in | Opt-in | Automatic |
+| Setup required | High | Medium | None |
+| Financial literacy needed | High | Medium | None |
+| Spending + investing | Separate apps | Separate flows | Single unified product |
+| Fiat deposit rails | Bank-dependent | USD-only | NGN, GBP, USD, EUR |
+| Rebalancing | Manual | Manual | Automated |
 
 ---
 
 ## The Problem
 
-Modern investing demands too much from users:
+Most people don't invest — not because they lack access, but because the process demands too much from them:
 
-- **Choice Overload**: Choose assets they don't understand
-- **Risk Assessment**: Assess risk they can't quantify
-- **Market Timing**: Time markets they don't trust
-- **Decision Regret**: Live with decisions they constantly second-guess
+- **Decision overload** — which asset, which platform, how much, when
+- **Fragmented tools** — one app to spend, another to save, another to invest
+- **Cognitive cost** — every financial decision requires attention and confidence most people don't have
+- **Currency risk** — in markets with structural currency weakness, holding local currency erodes savings passively
+- **DeFi complexity** — seed phrases, gas fees, and protocol risk are real barriers for non-technical users
 
-Modern finance is fragmented across bank accounts, investing apps, and tracking tools. Each demands attention, decisions, and financial literacy. The result isn't empowerment—it's cognitive overload.
+The result: most people leave money idle in bank accounts earning nothing, or spend everything because there's no automatic mechanism pushing capital toward growth.
 
-**Access was solved years ago. Direction was not.**
+**Access to financial products was solved years ago. Direction was not.**
 
-Rail exists to eliminate responsibility without eliminating upside.
+Rail removes the decision entirely. The system allocates automatically. Users don't choose — they trust.
 
-### Target User: The Indecisive Optimist (18-26)
+### Target User
 
-**Jobs-To-Be-Done:**
-- Spend money without friction
-- Avoid financial decision-making
-- Make progress toward wealth passively
+Rail is built for the 18-30 year old who earns in any currency, wants their money to work, and doesn't want to think about how. This includes:
 
-**Design Constraint:** User attention is limited. Any screen requiring explanation is a failure.
+- Young professionals in emerging markets hedging against local currency devaluation
+- Diaspora users sending money home or managing cross-border finances
+- Crypto-adjacent users who want yield without DeFi complexity
+- Anyone who would invest if the process were invisible
+
+**Design constraint**: Any screen that requires explanation is a failure.
+
+---
+
+## Market Position
+
+Rail operates at the intersection of two converging trends:
+
+**1. Stablecoin-powered consumer finance**
+The playbook is established: accept deposits, hold in stablecoins, earn yield, enable spending. What's missing is a product that executes this automatically, without asking users to configure anything. Rail does this with a non-negotiable allocation rule — the 70/30 split is not a feature, it's the product.
+
+**2. Global demand for USD-denominated savings**
+In markets with structural currency weakness — Nigeria, Argentina, Turkey, and others — there is organic, growing demand for USD-denominated savings instruments. Stablecoins are the most accessible form of this. Rail routes the investing portion into USDB (Bridge's yield-bearing stablecoin), giving users passive USD exposure from the moment they deposit.
+
+**The gap Rail fills**:
+Every competing product is opt-in. Users must choose to save, choose to invest, choose a strategy. Rail is opt-out-impossible by design. The split happens automatically. No competitor — among live products, hackathon winners, or accelerator-backed startups — has claimed this combination of rule-enforced allocation, multi-currency fiat rails, and automated yield.
+
+**Competitive landscape** (as of March 2026):
+
+| Product | Category | Gap vs Rail |
+|---------|----------|-------------|
+| FlexVest, MintYield, DeFi Koala | Stablecoin savings | Opt-in yield, no spending layer, no fiat rails |
+| NectarFi, Fizen | Crypto super-apps | User-configured, DeFi-native UX, no automation |
+| LocalPay, Tsara, FossaPay | Africa payments | Payments only, no wealth automation |
+| Robinhood, Acorns | Consumer investing | USD-only, no stablecoin yield, no Africa rails |
+| **Rail** | Automated wealth engine | 70/30 split + multi-currency fiat + USDB yield + debit card |
 
 ---
 
 ## How Rail Works
 
-### The Rail Split (Non-Negotiable Core Rule)
+### The Rail Split
 
 Every deposit is automatically divided the moment it clears:
 
 ```
                     DEPOSIT ARRIVES
+                    (NGN / GBP / USD / USDC)
                           |
                           v
                     SPLIT ENGINE
@@ -75,52 +110,55 @@ Every deposit is automatically divided the moment it clears:
             |                           |
             v                           v
       +----------+              +----------+
-      | 70% SPEND|              |30% INVEST|
+      | 70% SPEND|              |30% STASH |
       +----------+              +----------+
-      | - Liquid |              | - Auto   |
-      | - Card   |              | - AI     |
-      | - Real   |              | - Rules  |
+      | USDC     |              | USDB     |
+      | Liquid   |              | Yield    |
+      | Card     |              | Auto     |
       +----------+              +----------+
 ```
 
-| Property | Description |
-|----------|-------------|
-| **System-defined** | Users cannot modify the ratio |
-| **Always on** | No opt-out in MVP |
-| **Instant** | Split happens within seconds |
-| **Transparent** | Disclosed before first deposit |
-
-**Depositing funds equals consent to system behavior.**
+| Property | Value |
+|----------|-------|
+| Ratio | 70/30, system-defined |
+| User control | None — ratio is fixed |
+| Timing | Within seconds of deposit clearing |
+| Spend currency | USDC |
+| Stash currency | USDB (earns Bridge treasury yield automatically) |
+| Disclosure | Shown before first deposit |
 
 ### Funding Methods
 
-Rail supports two funding channels, both triggering identical split behavior:
-
 #### 1. Virtual Accounts (Fiat)
 
+Users receive dedicated virtual account details per currency. Deposits arrive via standard bank transfer and trigger the split automatically.
+
 ```
-Bank Account --> Bridge Network Virtual Account --> Rail
-                        (USD or GBP)
+User's Bank → Virtual Account (NGN / GBP / USD) → Rail Split Engine
 ```
 
-- Dedicated USD or GBP virtual account per user
-- Standard bank transfer (ACH/Wire/Faster Payments)
-- Webhook notification on deposit arrival
-- Automatic conversion and split
+| Currency | Rail | Settlement |
+|----------|------|------------|
+| NGN | Bank Transfer | Instant |
+| GBP | Faster Payments | Instant |
+| USD | ACH / Wire | T+0 to T+1 |
+| EUR | SEPA | T+0 to T+1 |
 
 #### 2. Crypto On-Ramp (Stablecoins)
 
+Users can deposit USDC directly from any supported chain. The deposit is credited and split identically to fiat deposits.
+
 ```
-External Wallet --> Bridge Deposit Address --> Rail
-                      (USDC on any chain)
+External Wallet → Bridge Deposit Address → Rail Split Engine
 ```
 
-| Chain | Token | Confirmation Time |
-|-------|-------|-------------------|
-| Ethereum | USDC | ~12 confirmations |
-| Polygon | USDC | ~128 confirmations |
-| BSC | USDC | ~15 confirmations |
-| Solana | USDC | ~32 confirmations |
+| Chain | Token | Confirmation |
+|-------|-------|--------------|
+| Solana | USDC | ~32 slots |
+| Ethereum | USDC | ~12 blocks |
+| Base | USDC | ~2 blocks |
+| Polygon | USDC | ~128 blocks |
+| Arbitrum | USDC | ~1 block |
 
 ---
 
@@ -128,160 +166,118 @@ External Wallet --> Bridge Deposit Address --> Rail
 
 ### 1. Spend Layer
 
-The primary financial surface, designed to fully replace a traditional checking account.
+The 70% spend wallet functions as a full checking account replacement.
 
-**Capabilities:**
-- Real-time spendable balance with ledger-backed accuracy
-- Virtual debit card (physical card post-MVP)
-- Instant access to funds
-- Transaction history
+- Real-time spendable balance backed by a double-entry ledger
+- Virtual debit card (Visa, powered by Bridge)
+- Instant access — no lockups, no withdrawal delays
+- Full transaction history
+- Round-up automation: card purchases round up to the nearest dollar, with the difference routed to the stash
 
-**Round-Up Automation:**
+### 2. Stash (Yield Layer)
 
-```
-Card Transaction: $4.50
-Round-up Amount:  $5.00 - $4.50 = $0.50
-                          |
-                          v
-                   Invest Engine
-                (Queued for allocation)
-```
+The 30% stash wallet holds USDB — Bridge's yield-bearing stablecoin backed by US Treasuries.
 
-- Simple ON/OFF toggle
-- No configuration granularity
-- Spare change automatically routes to investing
+- Yield accrues automatically, no staking or claiming required
+- ~3-4% APY from Bridge treasury rewards
+- Balance grows passively while the user does nothing
+- Withdrawable at any time — no lockup
 
-### 2. Invest Engine
+### 3. Invest Engine
 
-Capital deploys automatically with zero user interaction.
-
-**How Allocation Works:**
+The invest engine deploys stash capital into diversified portfolios via Alpaca brokerage.
 
 ```
-30% Deposit Arrives
+Stash Balance
+      |
+      v
+Strategy Selector
+(age, region, deposit size, frequency)
+      |
+      v
+Asset Allocation
+(ETFs, equities, stablecoins — weighted by strategy)
+      |
+      v
+Alpaca Brokerage
+(trade execution)
+```
+
+- No asset visibility to users — positions are abstracted
+- No trade confirmations required
+- No strategy choices presented
+- Global fallback strategy applied by default
+- Round-up amounts queue and deploy when threshold is met
+
+### 4. Conductors (Expert-Led Tracks)
+
+Conductors are verified investors who publish portfolio tracks. Users follow a Conductor and their capital automatically mirrors the Conductor's allocation moves.
+
+```
+Conductor updates track
         |
         v
-+-------------------+
-| Strategy Selector |
-| - Age             |
-| - Region          |
-| - Deposit size    |
-| - Deposit freq    |
-+--------+----------+
-         |
-         v
-+-------------------+
-| Asset Allocation  |
-| - ETFs: 60%       |
-| - Tech: 25%       |
-| - Stable: 15%     |
-+--------+----------+
-         |
-         v
-+-------------------+
-| Alpaca Brokerage  |
-| (Trade Execution) |
-+-------------------+
+   Copy Engine
+        |
+   +---------+---------+
+   |         |         |
+Follower A  Follower B  Follower C
+   |         |         |
+   +---------+---------+
+        |
+   Alpaca Brokerage
 ```
-
-**UX Rules:**
-- No asset visibility to users
-- No trade confirmations
-- No strategy choices presented
-- Global fallback strategy as default
-
-### 3. Conductors (Expert-Led Tracks)
-
-For users who want guided growth without self-directed decisions.
-
-**The Metaphor:**
-- **Conductor**: A verified professional investor who leads the journey
-- **Track**: A curated portfolio path (e.g., "Tech Growth", "Dividend Income")
-- **Followers**: Users whose capital automatically mirrors the Conductor's moves
-
-**How Copy Trading Works:**
-
-```
-       CONDUCTOR UPDATES TRACK
-    (Adds AAPL, removes TSLA, reweights)
-                  |
-                  v
-           +------------+
-           | Copy Engine|
-           +------------+
-                  |
-     +------------+------------+
-     |            |            |
-     v            v            v
-+----------+ +----------+ +----------+
-|Follower A| |Follower B| |Follower C|
-|  $1,000  | |  $5,000  | |   $500   |
-+----------+ +----------+ +----------+
-     |            |            |
-     +------------+------------+
-                  |
-                  v
-        +------------------+
-        | Alpaca Brokerage |
-        +------------------+
-
-Target: Trades mirrored within 5 minutes
-```
-
-**Track Characteristics:**
 
 | Attribute | Description |
 |-----------|-------------|
-| Name | Strategy identifier (e.g., "Tech Growth") |
+| Track | Named strategy (e.g., "Tech Growth", "Dividend Income") |
 | Assets | Curated list with target weights |
-| Risk Level | Low / Medium / High indicator |
+| Risk level | Low / Medium / High |
 | Performance | Historical returns visible to followers |
-| Follower Count | Social proof metric |
+| Mirror latency | Target < 5 minutes |
 
-### 4. The Station (Home Screen)
+### 5. The Station (Home Screen)
 
-Answers one question only: *"Is my money working?"*
+The Station answers one question: *Is my money working?*
 
 ```
 +---------------------------------------+
 |            THE STATION                |
 +---------------------------------------+
-|                                       |
 |         Total Balance                 |
 |           $2,450.00                   |
 |                                       |
 |  +-----------+    +-----------+       |
-|  |   SPEND   |    |  INVEST   |       |
+|  |   SPEND   |    |  STASH    |       |
 |  | $1,715.00 |    |  $735.00  |       |
 |  |   (70%)   |    |   (30%)   |       |
 |  +-----------+    +-----------+       |
 |                                       |
-|         Status: * ACTIVE              |
-|                                       |
+|         Status: ● ACTIVE              |
 +---------------------------------------+
 ```
 
-**System States:**
+**System states:**
 
-| State | Meaning | Duration |
-|-------|---------|----------|
-| `ALLOCATING` | Money being deployed | < 60 seconds |
-| `ACTIVE` | System operating normally | Default |
-| `PAUSED` | User or compliance initiated | Rare |
+| State | Meaning |
+|-------|---------|
+| `ALLOCATING` | Deposit received, split in progress |
+| `ACTIVE` | System running normally |
+| `PAUSED` | User or compliance hold |
 
-**Explicitly Excluded:**
+**Intentionally excluded from the UI:**
 - Individual asset positions
-- Charts or timelines
+- Charts or performance timelines
 - Trade history
-- Performance percentages
+- Percentage returns
 
-Rail communicates direction, not detail.
+Rail shows direction, not detail.
 
 ---
 
 ## Architecture
 
-### High-Level System Architecture
+### System Overview
 
 ```
 +------------------------------------------------------------------+
@@ -293,20 +289,20 @@ Rail communicates direction, not detail.
 |  | (Client) |    | (Gin/Go)   |    | Services  |                  |
 |  +----------+    +------------+    +-----+-----+                  |
 |                                          |                        |
-|                  +-----------+-----------+-----------+            |
-|                  |           |           |           |            |
-|                  v           v           v           v            |
-|            +--------+  +--------+  +--------+  +--------+         |
-|            | Spend  |  | Invest |  |  Card  |  | Wallet |         |
-|            | Engine |  | Engine |  | Service|  | Service|         |
-|            +--------+  +--------+  +--------+  +--------+         |
+|         +-----------+-----------+-----------+-----------+         |
+|         |           |           |           |           |         |
+|         v           v           v           v           v         |
+|    +--------+  +--------+  +--------+  +--------+  +--------+    |
+|    | Spend  |  | Invest |  |  Card  |  | Wallet |  |Conductor|   |
+|    | Engine |  | Engine |  | Service|  | Service|  | Engine  |   |
+|    +--------+  +--------+  +--------+  +--------+  +--------+    |
 |                                                                   |
 |  +---------------------------------------------------------------+|
 |  |                 DATA & INFRASTRUCTURE LAYER                   ||
-|  |  +----------+  +-------+  +--------+  +--------+              ||
-|  |  |PostgreSQL|  | Redis |  | Bridge |  | Alpaca |              ||
-|  |  | (Ledger) |  |(Cache)|  |(Wallet)|  |(Broker)|              ||
-|  |  +----------+  +-------+  +--------+  +--------+              ||
+|  |  +----------+  +-------+  +--------+  +--------+  +------+   ||
+|  |  |PostgreSQL|  | Redis |  | Bridge |  | Alpaca |  | Due  |   ||
+|  |  | (Ledger) |  |(Cache)|  |(Wallet)|  |(Broker)|  |(NGN) |   ||
+|  |  +----------+  +-------+  +--------+  +--------+  +------+   ||
 |  +---------------------------------------------------------------+|
 +------------------------------------------------------------------+
 ```
@@ -316,20 +312,34 @@ Rail communicates direction, not detail.
 | Service | Responsibility | External Dependencies |
 |---------|---------------|----------------------|
 | **Onboarding** | Registration, KYC orchestration, wallet provisioning | Bridge |
-| **Funding** | Virtual accounts (USD/GBP), multi-chain USDC deposits, 70/30 split execution | Bridge Network, Blockchain RPCs |
-| **Spending** | Card transactions, round-ups, balance management, ledger operations | Card Issuer |
+| **Funding** | Virtual accounts, multi-chain USDC deposits, 70/30 split execution | Bridge, Due, Blockchain RPCs |
+| **Spending** | Card transactions, round-ups, balance management, ledger | Bridge Cards |
 | **Investing** | Auto-allocation, trade execution, portfolio management | Alpaca |
 | **Wallet** | Multi-chain wallet management, address generation, custody | Bridge |
 | **Conductor** | Copy trading, track management, follower trade mirroring | Alpaca |
+| **Yield** | USDB yield distribution, stash balance reconciliation | Bridge |
+
+### Workers
+
+Background workers handle async operations that cannot block the request path:
+
+| Worker | Purpose |
+|--------|---------|
+| `allocation` | Executes 70/30 split after deposit confirmation |
+| `autoinvest` | Deploys stash capital to Alpaca strategies |
+| `yield_distribution` | Distributes USDB yield to stash balances |
+| `reconciliation` | Reconciles Bridge wallet balances against ledger |
+| `conductor_copy` | Mirrors Conductor trades to follower accounts |
+| `recovery` | Retries failed allocations and stuck deposits |
 
 ### Project Structure
 
 ```
 rail_service/
-├── cmd/                            # Application entry points
-│   └── main.go                     # Server initialization
+├── cmd/
+│   └── main.go                     # Server entry point
 │
-├── internal/                       # Private application code
+├── internal/
 │   ├── api/
 │   │   ├── handlers/               # HTTP request handlers
 │   │   ├── middleware/             # Auth, logging, rate limiting
@@ -339,26 +349,28 @@ rail_service/
 │   │   ├── entities/               # Core business entities
 │   │   ├── repositories/           # Repository interfaces
 │   │   └── services/               # Business logic
+│   │       ├── allocation/         # 70/30 split engine
+│   │       ├── autoinvest/         # Invest engine
+│   │       ├── funding/            # Deposit handling
+│   │       ├── onboarding/         # KYC + wallet provisioning
+│   │       ├── spending/           # Card + ledger
+│   │       └── yield_distribution/ # USDB yield
 │   │
 │   ├── infrastructure/
-│   │   ├── adapters/               # External service integrations
-│   │   ├── cache/                  # Redis caching layer
-│   │   ├── config/                 # Configuration management
-│   │   ├── database/               # PostgreSQL connection
+│   │   ├── adapters/
+│   │   │   ├── bridge/             # Bridge API client
+│   │   │   └── alpaca/             # Alpaca API client
+│   │   ├── cache/                  # Redis
+│   │   ├── config/                 # Configuration
+│   │   ├── database/               # PostgreSQL
 │   │   ├── di/                     # Dependency injection
-│   │   └── repositories/           # Repository implementations
-│   │
-│   ├── adapters/
-│   │   ├── alpaca/                 # Brokerage integration
-│   │   └── bridge/                 # Virtual accounts
+│   │   └── repositories/           # DB implementations
 │   │
 │   └── workers/                    # Background job processors
 │
-├── pkg/                            # Public reusable libraries
 ├── migrations/                     # Database migrations
-├── configs/                        # Configuration files
-├── scripts/                        # Build and maintenance
-├── docs/                           # Documentation
+├── configs/                        # Config files
+├── scripts/                        # Build and maintenance scripts
 └── test/                           # Test suites
 ```
 
@@ -366,42 +378,47 @@ rail_service/
 
 ## Technology Stack
 
-### Core Technologies
+### Core
 
 | Layer | Technology | Version | Purpose |
 |-------|------------|---------|---------|
-| **Language** | Go | 1.24 | Backend services |
-| **Framework** | Gin | 1.11 | HTTP routing & middleware |
-| **Database** | PostgreSQL | 15 | Primary data store, ledger |
-| **Cache** | Redis | 7 | Sessions, rate limiting, job queue |
-| **ORM/SQL** | sqlx | 1.4 | SQL extensions for Go |
-| **Migrations** | golang-migrate | 4.19 | Database schema management |
+| Language | Go | 1.24 | Backend services |
+| Framework | Gin | 1.11 | HTTP routing & middleware |
+| Database | PostgreSQL | 15 | Primary data store, double-entry ledger |
+| Cache | Redis | 7 | Sessions, rate limiting, job queue |
+| SQL | sqlx | 1.4 | SQL extensions for Go |
+| Migrations | golang-migrate | 4.19 | Schema management |
 
-### Authentication & Security
+### Auth & Security
 
 | Technology | Purpose |
 |------------|---------|
 | JWT (v5) | Token-based authentication |
 | bcrypt | Password hashing |
-| AES-256-GCM | Data encryption at rest |
+| AES-256-GCM | PII encryption at rest |
 | TLS 1.3 | Transport encryption |
+| Apple Sign-In / Google OAuth | Social authentication |
 
 ### External Services
 
 | Service | Provider | Purpose |
 |---------|----------|---------|
-| Wallet Infrastructure | Bridge | Multi-chain wallets, USDC custody |
-| Brokerage | Alpaca | Stock/ETF trading |
-| Virtual Accounts | Bridge Network | USD/GBP bank accounts |
-| Email | SendGrid | Transactional emails |
+| Custodial wallets | Bridge | USDC/USDB custody, multi-chain |
+| Virtual accounts | Bridge | USD, GBP fiat deposit rails |
+| NGN virtual accounts | Due Network | NGN bank transfer rails |
+| USDB yield | Bridge | Treasury-backed stablecoin yield |
+| Debit card | Bridge Cards | Visa card issuance and spending |
+| Brokerage | Alpaca | Stock/ETF trade execution |
+| KYC | Bridge KYC | Identity verification |
+| Email | SendGrid | Transactional notifications |
 
 ### Observability
 
 | Tool | Purpose |
 |------|---------|
-| Zap | Structured logging |
+| Zap | Structured JSON logging |
 | Prometheus | Metrics collection |
-| Grafana | Metrics visualization |
+| Grafana | Metrics dashboards |
 | OpenTelemetry | Distributed tracing |
 
 ---
@@ -418,30 +435,23 @@ rail_service/
 ### Quick Start
 
 ```bash
-# Clone repository
 git clone https://github.com/your-org/rail_service.git
 cd rail_service
-
-# Copy configuration
 cp configs/config.yaml.example configs/config.yaml
-
-# Start infrastructure
 docker-compose up -d
-
-# Run the application
 go run cmd/main.go
 ```
 
 ### Docker Compose Profiles
 
 ```bash
-# Basic services (PostgreSQL, Redis, App)
+# Basic (PostgreSQL, Redis, App)
 docker-compose up -d
 
-# With admin tools (pgAdmin, RedisInsight)
+# With admin tools
 docker-compose --profile admin up -d
 
-# With monitoring (Prometheus, Grafana)
+# With monitoring
 docker-compose --profile monitoring up -d
 
 # Full stack
@@ -453,32 +463,35 @@ docker-compose --profile admin --profile monitoring up -d
 **Required:**
 
 ```bash
-export DATABASE_URL="postgres://postgres:postgres@localhost:5432/rail?sslmode=disable"
-export JWT_SECRET="your-256-bit-secret-key"
-export ENCRYPTION_KEY="your-32-byte-encryption-key"
-export BRIDGE_API_KEY="your-bridge-api-key"
+DATABASE_URL="postgres://postgres:postgres@localhost:5432/rail?sslmode=disable"
+JWT_SECRET="your-256-bit-secret-key"
+ENCRYPTION_KEY="your-32-byte-encryption-key"
+BRIDGE_API_KEY="your-bridge-api-key"
+ALPACA_API_KEY="your-alpaca-api-key"
+ALPACA_SECRET_KEY="your-alpaca-secret-key"
 ```
 
 **Optional:**
 
 ```bash
-export LOG_LEVEL="info"              # debug, info, warn, error
-export ENVIRONMENT="development"     # development, staging, production
-export PORT="8080"                   # Server port
-export REDIS_URL="localhost:6379"    # Redis connection
-export SENDGRID_API_KEY="..."        # Email service
+LOG_LEVEL="info"              # debug, info, warn, error
+ENVIRONMENT="development"     # development, staging, production
+PORT="8080"
+REDIS_URL="localhost:6379"
+SENDGRID_API_KEY="..."
+DUE_API_KEY="..."             # NGN virtual accounts
 ```
 
 ### Database Management
 
 ```bash
-# Run migrations (automatic on startup)
-go run cmd/main.go migrate
+# Migrations run automatically on startup
+go run cmd/main.go
 
-# Wipe database (development only)
-./scripts/db_wipe.sh
+# Manual migration
+make migrate-up
 
-# Reset with fresh migrations
+# Reset (development only)
 ./scripts/db_reset.sh
 
 # Reset with seed data
@@ -488,13 +501,13 @@ go run cmd/main.go migrate
 ### Building
 
 ```bash
-# Development build
+# Development
 go build -o rail_service cmd/main.go
 
-# Production build (optimized)
+# Production
 CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o rail_service cmd/main.go
 
-# Docker build
+# Docker
 docker build -t rail_service:latest .
 ```
 
@@ -504,301 +517,215 @@ docker build -t rail_service:latest .
 
 ### Authentication
 
-All protected endpoints require JWT token:
+All protected endpoints require a JWT bearer token:
 
 ```
 Authorization: Bearer <access_token>
 ```
 
-### Endpoint Categories
+### Endpoints
 
-**Public Endpoints:**
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/auth/register` | Create new account |
-| POST | `/api/v1/auth/login` | Authenticate user |
-| POST | `/api/v1/auth/refresh` | Refresh access token |
-| POST | `/api/v1/auth/logout` | End session |
-
-**Authenticated Endpoints:**
+**Public:**
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/v1/onboarding/start` | Begin onboarding flow |
-| GET | `/api/v1/onboarding/status` | Check onboarding progress |
-| POST | `/api/v1/onboarding/kyc/submit` | Submit KYC documents |
+| POST | `/v1/auth/register` | Create account |
+| POST | `/v1/auth/login` | Authenticate |
+| POST | `/v1/auth/social/login` | Apple / Google sign-in |
+| POST | `/v1/auth/refresh` | Refresh token |
+| POST | `/v1/auth/logout` | End session |
 
-**Authenticated + KYC Required:**
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/v1/account` | Get account summary |
-| GET | `/api/v1/account/balances` | Get spend/invest balances |
-| GET | `/api/v1/account/station` | Home screen data |
-| POST | `/api/v1/funding/deposit/address` | Generate deposit address |
-| GET | `/api/v1/funding/deposits` | List deposit history |
-| GET | `/api/v1/spending/transactions` | Transaction history |
-| POST | `/api/v1/spending/roundups/toggle` | Enable/disable round-ups |
-| GET | `/api/v1/cards` | List user's cards |
-| POST | `/api/v1/cards/virtual` | Create virtual card |
-| POST | `/api/v1/cards/{id}/freeze` | Freeze a card |
-| GET | `/api/v1/investing/balance` | Invest balance |
-| GET | `/api/v1/investing/status` | Allocation status |
-
-**Webhook Endpoints:**
+**Onboarding (authenticated):**
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/v1/webhooks/funding` | Unified funding notifications (Bridge + Alpaca) |
-| POST | `/api/v1/webhooks/bridge` | Bridge Network notifications |
-| POST | `/api/v1/webhooks/alpaca` | Alpaca trade notifications |
+| POST | `/v1/onboarding/start` | Begin onboarding |
+| GET | `/v1/onboarding/status` | Check progress |
+| POST | `/v1/onboarding/complete` | Complete profile |
+| POST | `/v1/onboarding/kyc/submit` | Submit KYC |
+
+**Account (KYC required):**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/v1/account` | Account summary |
+| GET | `/v1/account/balances` | Spend + stash balances |
+| GET | `/v1/account/station` | Home screen data |
+
+**Funding:**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/v1/funding/virtual-accounts` | List virtual accounts |
+| POST | `/v1/funding/deposit/address` | Generate crypto deposit address |
+| GET | `/v1/funding/deposits` | Deposit history |
+
+**Spending:**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/v1/spending/transactions` | Transaction history |
+| POST | `/v1/spending/roundups/toggle` | Enable/disable round-ups |
+| GET | `/v1/cards` | List cards |
+| POST | `/v1/cards/virtual` | Create virtual card |
+| POST | `/v1/cards/{id}/freeze` | Freeze card |
+
+**Investing:**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/v1/investing/balance` | Invest balance |
+| GET | `/v1/investing/status` | Allocation status |
+| GET | `/v1/conductors` | List Conductor tracks |
+| POST | `/v1/conductors/{id}/follow` | Follow a track |
+
+**Webhooks:**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/v1/webhooks/bridge` | Bridge deposit + card events |
+| POST | `/v1/webhooks/alpaca` | Trade execution events |
 
 ### Response Format
 
-**Success Response:**
-
 ```json
 {
-  "data": { },
+  "data": {},
   "meta": {
     "request_id": "uuid",
-    "timestamp": "2025-01-01T00:00:00Z"
+    "timestamp": "2026-01-01T00:00:00Z"
   }
 }
 ```
-
-**Error Response:**
 
 ```json
 {
   "error": {
     "code": "VALIDATION_ERROR",
     "message": "Human readable message",
-    "details": { }
+    "details": {}
   },
   "meta": {
     "request_id": "uuid",
-    "timestamp": "2025-01-01T00:00:00Z"
+    "timestamp": "2026-01-01T00:00:00Z"
   }
 }
 ```
 
-### API Documentation
-
-Interactive documentation available at `/swagger/index.html` when running locally.
+Interactive docs at `/swagger/index.html` when running locally.
 
 ---
 
 ## Testing
 
-### Running Tests
-
 ```bash
 # All tests
 go test ./...
 
-# Unit tests only
-go test ./test/unit/...
-
-# Integration tests only
-go test ./test/integration/...
+# With race detection
+go test -race ./...
 
 # Specific package
 go test -v ./internal/domain/services/funding/...
 
-# With race detection
-go test -race ./...
-```
-
-### Coverage
-
-```bash
-# Generate coverage report
+# Coverage
 go test -coverprofile=coverage.out ./...
-
-# View in browser
 go tool cover -html=coverage.out
-
-# Coverage summary
-go tool cover -func=coverage.out
 ```
 
 ---
 
-## Monitoring & Observability
+## Monitoring
 
 ### Health Checks
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /health` | Application health |
+| `GET /health` | Application health + DB check |
 | `GET /health/ready` | Readiness probe |
 | `GET /health/live` | Liveness probe |
 
-### Metrics
-
-Prometheus metrics available at `GET /metrics`:
+### Key Metrics
 
 | Metric | Type | Description |
 |--------|------|-------------|
 | `rail_http_requests_total` | Counter | Total HTTP requests |
 | `rail_http_request_duration_seconds` | Histogram | Request latency |
-| `rail_deposit_split_duration_seconds` | Histogram | Deposit to Split latency |
+| `rail_deposit_split_duration_seconds` | Histogram | Deposit-to-split latency |
 | `rail_trade_execution_total` | Counter | Trade executions |
-| `rail_active_users` | Gauge | Currently active users |
-
-### Logging
-
-Structured JSON logs with correlation IDs:
-
-```json
-{
-  "level": "info",
-  "ts": "2025-01-01T00:00:00.000Z",
-  "caller": "funding/service.go:42",
-  "msg": "deposit processed",
-  "request_id": "uuid",
-  "user_id": "uuid",
-  "amount": "100.00",
-  "chain": "ethereum",
-  "duration_ms": 45
-}
-```
-
----
-
-## Non-Functional Requirements
+| `rail_active_users` | Gauge | Active users |
 
 ### Performance Targets
 
-| Metric | Target | Measurement |
-|--------|--------|-------------|
-| Deposit to Split latency | < 60 seconds | P95 |
-| API response time | < 200ms | P95 |
-| Trade execution | < 5 seconds | P95 |
-| iOS app launch | < 2 seconds | Cold start |
-
-### Reliability Targets
-
 | Metric | Target |
 |--------|--------|
+| Deposit to split | < 60s P95 |
+| API response time | < 200ms P95 |
+| Trade execution | < 5s P95 |
 | Uptime | 99.9% |
 | Ledger accuracy | 99.99% |
-| Crash-free sessions | 99.5% |
-
-### Scalability
-
-| Component | Scaling Strategy |
-|-----------|------------------|
-| API Servers | Horizontal (ECS/EKS) |
-| Workers | Horizontal with queue partitioning |
-| Database | Vertical + Read replicas |
-| Cache | Redis Cluster |
 
 ---
 
-## Compliance & Constraints
+## Compliance
 
-### Regulatory Requirements
-
-- KYC/AML verification required before funding
-- No investment advice language in UI/communications
-- No return promises or guarantees
-- Clear disclosure of 70/30 split before first deposit
+- KYC/AML verification required before any funding
+- No investment advice language in UI or communications
+- No return guarantees or projections
+- 70/30 split disclosed before first deposit
 - Full audit trail for all financial transactions
-
-### Data Handling
-
-- PII encrypted at rest (AES-256-GCM)
-- PII masked in logs
-- Data retention policies enforced
-- GDPR-compliant data export/deletion
-
----
-
-## Success Metrics
-
-### Primary KPIs
-
-| Metric | Description |
-|--------|-------------|
-| First-session funding rate | % of users who fund within first session |
-| Auto-invest rate | % of deposits that complete auto-investment |
-| 7-day retention | % of users keeping automation enabled |
-
-### Secondary KPIs
-
-| Metric | Description |
-|--------|-------------|
-| DAU/MAU | Daily/Monthly active user ratio |
-| Repeat deposit rate | % of users making 2+ deposits |
-| Average deposit size | Mean deposit amount |
-| Round-up adoption | % of users with round-ups enabled |
+- PII encrypted at rest (AES-256-GCM), masked in logs
+- GDPR-compliant data export and deletion
 
 ---
 
 ## Philosophy
 
-Rail is built on a single belief:
+Rail is built on one belief:
 
 > Money should start working the moment it arrives.
 
-### What Rail Is
+**What Rail is:**
+- A rules-based capital engine
+- A product that replaces financial decision-making
+- Infrastructure for passive wealth accumulation
 
-- An automated capital engine
-- A rules-based wealth system
-- A product that replaces decision-making
-
-### What Rail Is Not
-
+**What Rail is not:**
 - A brokerage
 - A trading app
 - A robo-advisor
 - A crypto exchange
 
-Those products require participation. **Rail requires trust.**
+Those products require participation. Rail requires trust.
 
-If users feel the need to manage, optimize, or control, the product has failed its mission.
+If a user feels the need to manage, optimize, or control their allocation, the product has failed its mission.
 
 ---
 
 ## Contributing
 
 1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit changes (`git commit -m 'Add amazing feature'`)
-4. Push to branch (`git push origin feature/amazing-feature`)
+2. Create a feature branch: `git checkout -b feature/your-feature`
+3. Commit: `git commit -m 'feat: description'`
+4. Push: `git push origin feature/your-feature`
 5. Open a Pull Request
 
-### Code Standards
-
-- Run `go fmt ./...` before committing
-- Run `go vet ./...` for static analysis
-- Ensure tests pass: `go test ./...`
+**Code standards:**
+- `go fmt ./...` before committing
+- `go vet ./...` for static analysis
+- `go test ./...` must pass
 - Follow [Development Guidelines](/.kiro/rules/memory-bank/guidelines.md)
 
 ---
 
 ## License
 
-MIT License - see [LICENSE](LICENSE)
-
----
-
-## Documentation
-
-| Document | Description |
-|----------|-------------|
-| [Product Brief](/docs/Rail-Brief.md) | Product philosophy and vision |
-| [PRD](/docs/prd.md) | Product requirements |
-| [System Design](/docs/architecture/system-design.md) | Technical architecture |
-| [Development Guidelines](/.kiro/rules/memory-bank/guidelines.md) | Coding standards |
+MIT License — see [LICENSE](LICENSE)
 
 ---
 
 ## Support
 
-- **Issues**: GitHub Issues
-- **API Docs**: `/swagger/index.html`
-- **Metrics**: `/metrics`
+- Issues: GitHub Issues
+- API Docs: `/swagger/index.html`
+- Metrics: `/metrics`
