@@ -25,12 +25,12 @@ type Repository interface {
 	GetDistributionByPeriod(ctx context.Context, start, end time.Time) (*entities.YieldDistribution, error)
 }
 
-// BridgeRewards fetches the accrued reward amount from Bridge.
-type BridgeRewards interface {
+// RewardsProvider fetches the accrued reward amount from the yield provider.
+type RewardsProvider interface {
 	GetRewardsSummary(ctx context.Context, currency string) (*RewardSummary, error)
 }
 
-// RewardSummary is a local copy to avoid importing the bridge adapter package.
+// RewardSummary holds the distributable reward amount from the yield provider.
 type RewardSummary struct {
 	Rewards string
 }
@@ -48,14 +48,14 @@ type YieldNotifier interface {
 // Service handles yield distribution.
 type Service struct {
 	repo     Repository
-	bridge   BridgeRewards
+	rewards  RewardsProvider
 	ledger   LedgerCreditor
 	notifier YieldNotifier
 	logger   *zap.Logger
 }
 
-func NewService(repo Repository, bridge BridgeRewards, ledger LedgerCreditor, logger *zap.Logger) *Service {
-	return &Service{repo: repo, bridge: bridge, ledger: ledger, logger: logger}
+func NewService(repo Repository, rewards RewardsProvider, ledger LedgerCreditor, logger *zap.Logger) *Service {
+	return &Service{repo: repo, rewards: rewards, ledger: ledger, logger: logger}
 }
 
 // SetNotifier wires push notifications for yield credited events.
@@ -78,7 +78,7 @@ func (s *Service) EstimateDailyYield(stashBalance, apy decimal.Decimal) decimal.
 }
 
 // RunDistribution executes the monthly yield distribution for a given period.
-// totalReward must be the actual amount already received from Bridge — never estimated.
+// totalReward must be the actual amount already received from the yield provider — never estimated.
 // freezeTime should be time.Now() at job start; snapshots after this are ignored.
 func (s *Service) RunDistribution(ctx context.Context, periodStart, periodEnd, freezeTime time.Time, totalReward decimal.Decimal) error {
 	if totalReward.LessThanOrEqual(decimal.Zero) {

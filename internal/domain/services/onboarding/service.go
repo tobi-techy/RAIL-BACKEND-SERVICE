@@ -29,9 +29,9 @@ func chainsToStrings(chains []entities.WalletChain) []string {
 
 // Service handles onboarding operations - user creation, KYC flow, wallet provisioning
 type Service struct {
-	userRepo              UserRepository
-	onboardingFlowRepo    OnboardingFlowRepository
-	kycSubmissionRepo     KYCSubmissionRepository
+	userRepo            UserRepository
+	onboardingFlowRepo  OnboardingFlowRepository
+	kycSubmissionRepo   KYCSubmissionRepository
 	walletService       WalletService
 	emailService        EmailService
 	auditService        AuditService
@@ -459,66 +459,6 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 
 	// NOTE: Alpaca account creation removed - now handled in KYC flow via POST /kyc/submit
 
-	// Mark passcode creation step as completed and trigger wallet creation
-	stepData := map[string]any{
-		"completed_at": time.Now(),
-	}
-	if req.EmploymentStatus != nil {
-		if trimmed := strings.TrimSpace(*req.EmploymentStatus); trimmed != "" {
-			stepData["employment_status"] = trimmed
-		}
-	}
-	if req.YearlyIncome != nil {
-		stepData["yearly_income"] = *req.YearlyIncome
-	}
-	if req.UserExperience != nil {
-		if trimmed := strings.TrimSpace(*req.UserExperience); trimmed != "" {
-			stepData["user_experience"] = trimmed
-		}
-	}
-	if len(req.InvestmentGoals) > 0 {
-		stepData["investment_goals"] = req.InvestmentGoals
-	}
-
-	if err := s.markStepCompleted(ctx, req.UserID, entities.StepPasscodeCreation, stepData); err != nil {
-		s.logger.Warn("Failed to mark passcode creation step as completed", zap.Error(err))
-	}
-
-	// Transition to wallet provisioning
-	if err := s.userRepo.UpdateOnboardingStatus(ctx, req.UserID, entities.OnboardingStatusWalletsPending); err != nil {
-		return nil, fmt.Errorf("failed to update onboarding status: %w", err)
-	}
-
-	// Trigger wallet provisioning
-	if err := s.walletService.CreateWalletsForUser(ctx, req.UserID, s.defaultWalletChains); err != nil {
-		s.logger.Error("Failed to trigger wallet provisioning", zap.Error(err), zap.String("userId", req.UserID.String()))
-		return nil, fmt.Errorf("failed to create wallets: %w", err)
-	}
-
-	// Auto-enable 70/30 allocation mode (Rail MVP default - non-negotiable)
-	if s.allocationService != nil {
-		defaultRatios := entities.AllocationRatios{
-			SpendingRatio: entities.DefaultSpendingRatio,
-			StashRatio:    entities.DefaultStashRatio,
-		}
-		if err := s.allocationService.EnableMode(ctx, req.UserID, defaultRatios); err != nil {
-			s.logger.Error("Failed to enable default 70/30 allocation mode", zap.Error(err), zap.String("userId", req.UserID.String()))
-		}
-	}
-
-	// Auto-claim any pending P2P transfers sent to this user's email/phone
-	if s.p2pService != nil {
-		phone := ""
-		if user.Phone != nil {
-			phone = *user.Phone
-		}
-		if claimed, err := s.p2pService.ClaimPendingForUser(ctx, req.UserID, user.Email, phone); err != nil {
-			s.logger.Warn("Failed to auto-claim P2P transfers", zap.Error(err), zap.String("userId", req.UserID.String()))
-		} else if claimed > 0 {
-			s.logger.Info("Auto-claimed P2P transfers", zap.Int("count", claimed), zap.String("userId", req.UserID.String()))
-		}
-	}
-
 	// Get final IDs from user (may have been set in this request or previously)
 
 	bridgeCustomerID := ""
@@ -529,8 +469,8 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 	// Log audit event
 	if err := s.auditService.LogOnboardingEvent(ctx, req.UserID, "signup_completed", "user", nil, map[string]any{
 		"bridge_customer_id": bridgeCustomerID,
-		"password_set":       true,
-		"wallets_queued":     true,
+		"password_set":       req.Password != "",
+		"wallets_queued":     false,
 	}); err != nil {
 		s.logger.Warn("Failed to log audit event", zap.Error(err))
 	}
@@ -538,7 +478,7 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 	s.logger.Info("Onboarding completed successfully",
 		zap.String("user_id", req.UserID.String()),
 		zap.String("bridge_customer_id", bridgeCustomerID),
-		zap.Bool("wallets_queued", true))
+		zap.Bool("wallets_queued", false))
 
 	return &entities.OnboardingCompleteResponse{
 		UserID:           req.UserID,

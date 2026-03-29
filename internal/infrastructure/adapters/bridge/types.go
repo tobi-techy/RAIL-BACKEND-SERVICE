@@ -85,7 +85,6 @@ const (
 	CurrencyGBP   Currency = "gbp"
 	CurrencyMXN   Currency = "mxn"
 	CurrencyBRL   Currency = "brl"
-	CurrencyUSDB  Currency = "usdb"
 	CurrencyUSDC  Currency = "usdc"
 	CurrencyUSDT  Currency = "usdt"
 	CurrencyDAI   Currency = "dai"
@@ -310,7 +309,7 @@ type WalletBalance struct {
 // GetUSDCAmount returns the USDC balance string, or "0" if not found
 func (wb *WalletBalance) GetUSDCAmount() string {
 	for _, b := range wb.Balances {
-		if b.Currency == CurrencyUSDC || b.Currency == CurrencyUSDB {
+		if b.Currency == CurrencyUSDC {
 			return b.Balance
 		}
 	}

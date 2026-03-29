@@ -676,8 +676,8 @@ func (s *Service) CreditStash(ctx context.Context, userID uuid.UUID, amount deci
 		IdempotencyKey:  idempotencyKey,
 		Description:     &description,
 		Entries: []entities.CreateEntryRequest{
-			{AccountID: stashAccount.ID, EntryType: entities.EntryTypeDebit, Amount: amount, Currency: "USDB", Description: &description},
-			{AccountID: systemAccount.ID, EntryType: entities.EntryTypeCredit, Amount: amount, Currency: "USDB", Description: &description},
+			{AccountID: stashAccount.ID, EntryType: entities.EntryTypeDebit, Amount: amount, Currency: "USDC", Description: &description},
+			{AccountID: systemAccount.ID, EntryType: entities.EntryTypeCredit, Amount: amount, Currency: "USDC", Description: &description},
 		},
 	}
 	_, err = s.CreateTransaction(ctx, req)
