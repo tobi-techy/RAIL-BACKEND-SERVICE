@@ -3,12 +3,14 @@ package auth
 import (
 	"bytes"
 	"context"
-	"io"
 	"crypto/hmac"
+	crand "crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"io"
+	"math/big"
 	"net/http"
 	"strings"
 	"sync"
@@ -34,6 +36,19 @@ import (
 	"github.com/rail-service/rail_service/pkg/ratelimit"
 	"go.uber.org/zap"
 )
+
+// generateOTP generates a cryptographically secure numeric OTP of the given length
+func generateOTP(length int) (string, error) {
+	otp := make([]byte, length)
+	for i := range otp {
+		n, err := crand.Int(crand.Reader, big.NewInt(10))
+		if err != nil {
+			return "", err
+		}
+		otp[i] = '0' + byte(n.Int64())
+	}
+	return string(otp), nil
+}
 
 // AuthHandlers consolidates authentication, signup, and onboarding handlers
 type AuthHandlers struct {
@@ -1168,7 +1183,7 @@ func (h *AuthHandlers) Logout(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Logged out"})
 }
 
-// ForgotPassword handles password reset requests
+// ForgotPassword handles password reset requests — sends a 6-digit OTP
 func (h *AuthHandlers) ForgotPassword(c *gin.Context) {
 	var req entities.ForgotPasswordRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -1178,28 +1193,81 @@ func (h *AuthHandlers) ForgotPassword(c *gin.Context) {
 	ctx := c.Request.Context()
 	user, err := h.userRepo.GetByEmail(ctx, req.Email)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "If an account exists, password reset instructions will be sent"})
+		c.JSON(http.StatusOK, gin.H{"message": "If an account exists, a reset code will be sent"})
 		return
 	}
-	// Generate selector-verifier token for secure, fast validation
-	svToken, err := crypto.GenerateSelectorVerifierToken()
+
+	// Generate 6-digit OTP
+	otp, err := generateOTP(6)
 	if err != nil {
-		h.logger.Error("Failed to generate password reset token", zap.Error(err))
-		c.JSON(http.StatusOK, gin.H{"message": "If an account exists, password reset instructions will be sent"})
+		h.logger.Error("Failed to generate OTP", zap.Error(err))
+		c.JSON(http.StatusOK, gin.H{"message": "If an account exists, a reset code will be sent"})
 		return
 	}
-	expiresAt := time.Now().Add(1 * time.Hour)
-	if err := h.userRepo.CreatePasswordResetToken(ctx, user.ID, svToken.Selector, svToken.VerifierHash, expiresAt); err != nil {
-		h.logger.Error("Failed to store password reset token", zap.Error(err))
-		c.JSON(http.StatusOK, gin.H{"message": "If an account exists, password reset instructions will be sent"})
+
+	// Hash OTP for storage, use email as selector for lookup
+	otpHash, err := crypto.HashPassword(otp)
+	if err != nil {
+		h.logger.Error("Failed to hash OTP", zap.Error(err))
+		c.JSON(http.StatusOK, gin.H{"message": "If an account exists, a reset code will be sent"})
 		return
 	}
+
+	expiresAt := time.Now().Add(10 * time.Minute)
+	if err := h.userRepo.CreatePasswordResetToken(ctx, user.ID, req.Email, otpHash, expiresAt); err != nil {
+		h.logger.Error("Failed to store password reset OTP", zap.Error(err))
+		c.JSON(http.StatusOK, gin.H{"message": "If an account exists, a reset code will be sent"})
+		return
+	}
+
 	if h.emailService != nil {
-		if err := h.emailService.SendVerificationEmail(ctx, user.Email, svToken.FullToken); err != nil {
+		if err := h.emailService.SendPasswordResetEmail(ctx, user.Email, otp); err != nil {
 			h.logger.Error("Failed to send password reset email", zap.Error(err))
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "If an account exists, password reset instructions will be sent"})
+	c.JSON(http.StatusOK, gin.H{"message": "If an account exists, a reset code will be sent"})
+}
+
+// VerifyResetCode validates the 6-digit OTP and returns a short-lived reset token
+func (h *AuthHandlers) VerifyResetCode(c *gin.Context) {
+	var req entities.VerifyResetCodeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.RespondBadRequest(c, "Invalid request payload", nil)
+		return
+	}
+	ctx := c.Request.Context()
+
+	// Look up unexpired token by email (selector)
+	userID, err := h.userRepo.ValidatePasswordResetOTP(ctx, req.Email, req.Code)
+	if err != nil {
+		h.logger.Warn("Invalid reset code", zap.String("email", req.Email), zap.Error(err))
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_CODE", Message: "Invalid or expired code"})
+		return
+	}
+
+	// Generate a short-lived reset token (5 min) so the client can call reset-password
+	resetToken, err := crypto.GenerateSecureToken()
+	if err != nil {
+		h.logger.Error("Failed to generate reset token", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "TOKEN_FAILED", Message: "Failed to generate reset token"})
+		return
+	}
+
+	tokenHash, err := crypto.HashPassword(resetToken)
+	if err != nil {
+		h.logger.Error("Failed to hash reset token", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "TOKEN_FAILED", Message: "Failed to generate reset token"})
+		return
+	}
+
+	expiresAt := time.Now().Add(5 * time.Minute)
+	if err := h.userRepo.CreatePasswordResetToken(ctx, userID, "reset:"+resetToken[:16], tokenHash, expiresAt); err != nil {
+		h.logger.Error("Failed to store reset token", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "TOKEN_FAILED", Message: "Failed to generate reset token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"reset_token": resetToken})
 }
 
 // ResetPassword handles password reset
@@ -1210,8 +1278,10 @@ func (h *AuthHandlers) ResetPassword(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	// Pass raw token to repository - bcrypt comparison happens there
-	userID, err := h.userRepo.ValidatePasswordResetToken(ctx, req.Token)
+
+	// Validate the reset token issued by VerifyResetCode
+	selector := "reset:" + req.Token[:16]
+	userID, err := h.userRepo.ValidatePasswordResetOTP(ctx, selector, req.Token)
 	if err != nil {
 		h.logger.Warn("Invalid password reset token", zap.Error(err))
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_TOKEN", Message: "Invalid or expired reset token"})
@@ -1347,19 +1417,63 @@ func (h *AuthHandlers) UpdateProfile(c *gin.Context) {
 		return
 	}
 	if payload.Phone != nil {
-		user.Phone = payload.Phone
+		user.Phone = normalizeOptionalStringPtr(payload.Phone)
 	}
 	if payload.FirstName != nil {
-		user.FirstName = payload.FirstName
+		user.FirstName = normalizeOptionalStringPtr(payload.FirstName)
 	}
 	if payload.LastName != nil {
-		user.LastName = payload.LastName
+		user.LastName = normalizeOptionalStringPtr(payload.LastName)
 	}
+	if payload.DateOfBirth != nil {
+		user.DateOfBirth = payload.DateOfBirth
+	}
+	if payload.Country != nil {
+		normalizedCountry := strings.ToUpper(strings.TrimSpace(*payload.Country))
+		user.Country = normalizeOptionalStringPtr(&normalizedCountry)
+	}
+	if payload.AddressStreet != nil {
+		user.AddressStreet = normalizeOptionalStringPtr(payload.AddressStreet)
+	}
+	if payload.AddressCity != nil {
+		user.AddressCity = normalizeOptionalStringPtr(payload.AddressCity)
+	}
+	if payload.AddressState != nil {
+		user.AddressState = normalizeOptionalStringPtr(payload.AddressState)
+	}
+	if payload.AddressPostalCode != nil {
+		user.AddressPostalCode = normalizeOptionalStringPtr(payload.AddressPostalCode)
+	}
+	if payload.AddressCountry != nil {
+		normalizedAddressCountry := strings.ToUpper(strings.TrimSpace(*payload.AddressCountry))
+		user.AddressCountry = normalizeOptionalStringPtr(&normalizedAddressCountry)
+	}
+	user.UpdatedAt = time.Now()
 	if err := h.userRepo.Update(ctx, user); err != nil {
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "UPDATE_FAILED", Message: "Failed to update profile"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "Profile updated"})
+
+	updatedUser, err := h.userRepo.GetUserEntityByID(ctx, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "UPDATE_FAILED", Message: "Failed to load updated profile"})
+		return
+	}
+
+	c.JSON(http.StatusOK, updatedUser.ToUserInfo())
+}
+
+func normalizeOptionalStringPtr(value *string) *string {
+	if value == nil {
+		return nil
+	}
+
+	trimmed := strings.TrimSpace(*value)
+	if trimmed == "" {
+		return nil
+	}
+
+	return &trimmed
 }
 
 func (h *AuthHandlers) ChangePassword(c *gin.Context) {

@@ -406,6 +406,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				authRateLimited.POST("/login", authHandlers.Login)
 				authRateLimited.POST("/passcode-login", authHandlers.PasscodeLogin)
 				authRateLimited.POST("/forgot-password", authHandlers.ForgotPassword)
+				authRateLimited.POST("/verify-reset-code", authHandlers.VerifyResetCode)
 				authRateLimited.POST("/reset-password", authHandlers.ResetPassword)
 			}
 

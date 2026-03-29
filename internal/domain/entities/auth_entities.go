@@ -35,16 +35,23 @@ type AuthResponse struct {
 
 // UserInfo represents basic user information returned in auth responses
 type UserInfo struct {
-	ID               uuid.UUID        `json:"id"`
-	Email            string           `json:"email"`
-	Phone            *string          `json:"phone,omitempty"`
-	FirstName        *string          `json:"firstName,omitempty"`
-	LastName         *string          `json:"lastName,omitempty"`
-	EmailVerified    bool             `json:"emailVerified"`
-	PhoneVerified    bool             `json:"phoneVerified"`
-	OnboardingStatus OnboardingStatus `json:"onboardingStatus"`
-	KYCStatus        string           `json:"kycStatus"`
-	CreatedAt        time.Time        `json:"createdAt"`
+	ID                uuid.UUID        `json:"id"`
+	Email             string           `json:"email"`
+	Phone             *string          `json:"phone,omitempty"`
+	FirstName         *string          `json:"firstName,omitempty"`
+	LastName          *string          `json:"lastName,omitempty"`
+	DateOfBirth       *time.Time       `json:"dateOfBirth,omitempty"`
+	Country           *string          `json:"country,omitempty"`
+	AddressStreet     *string          `json:"addressStreet,omitempty"`
+	AddressCity       *string          `json:"addressCity,omitempty"`
+	AddressState      *string          `json:"addressState,omitempty"`
+	AddressPostalCode *string          `json:"addressPostalCode,omitempty"`
+	AddressCountry    *string          `json:"addressCountry,omitempty"`
+	EmailVerified     bool             `json:"emailVerified"`
+	PhoneVerified     bool             `json:"phoneVerified"`
+	OnboardingStatus  OnboardingStatus `json:"onboardingStatus"`
+	KYCStatus         string           `json:"kycStatus"`
+	CreatedAt         time.Time        `json:"createdAt"`
 }
 
 // RefreshTokenRequest represents a token refresh request
@@ -68,6 +75,12 @@ type ForgotPasswordRequest struct {
 type ResetPasswordRequest struct {
 	Token    string `json:"token" validate:"required"`
 	Password string `json:"password" validate:"required,min=8"`
+}
+
+// VerifyResetCodeRequest represents a verify reset code request
+type VerifyResetCodeRequest struct {
+	Email string `json:"email" validate:"required,email"`
+	Code  string `json:"code" validate:"required,len=6"`
 }
 
 // VerifyEmailRequest represents an email verification request
@@ -137,6 +150,7 @@ type User struct {
 	Phone              *string          `json:"phone" db:"phone"`
 	FirstName          *string          `json:"firstName,omitempty" db:"first_name"`
 	LastName           *string          `json:"lastName,omitempty" db:"last_name"`
+	DateOfBirth        *time.Time       `json:"dateOfBirth,omitempty" db:"date_of_birth"`
 	Country            *string          `json:"country,omitempty" db:"country"`
 	AddressStreet      *string          `json:"addressStreet,omitempty" db:"address_street"`
 	AddressCity        *string          `json:"addressCity,omitempty" db:"address_city"`
@@ -167,16 +181,23 @@ type User struct {
 // ToUserInfo converts User to UserInfo for public responses
 func (u *User) ToUserInfo() *UserInfo {
 	return &UserInfo{
-		ID:               u.ID,
-		Email:            u.Email,
-		Phone:            u.Phone,
-		FirstName:        u.FirstName,
-		LastName:         u.LastName,
-		EmailVerified:    u.EmailVerified,
-		PhoneVerified:    u.PhoneVerified,
-		OnboardingStatus: u.OnboardingStatus,
-		KYCStatus:        u.KYCStatus,
-		CreatedAt:        u.CreatedAt,
+		ID:                u.ID,
+		Email:             u.Email,
+		Phone:             u.Phone,
+		FirstName:         u.FirstName,
+		LastName:          u.LastName,
+		DateOfBirth:       u.DateOfBirth,
+		Country:           u.Country,
+		AddressStreet:     u.AddressStreet,
+		AddressCity:       u.AddressCity,
+		AddressState:      u.AddressState,
+		AddressPostalCode: u.AddressPostalCode,
+		AddressCountry:    u.AddressCountry,
+		EmailVerified:     u.EmailVerified,
+		PhoneVerified:     u.PhoneVerified,
+		OnboardingStatus:  u.OnboardingStatus,
+		KYCStatus:         u.KYCStatus,
+		CreatedAt:         u.CreatedAt,
 	}
 }
 
@@ -187,6 +208,7 @@ func (u *User) ToUserProfile() *UserProfile {
 		AuthProviderID:     u.AuthProviderID,
 		Email:              u.Email,
 		Phone:              u.Phone,
+		DateOfBirth:        u.DateOfBirth,
 		Country:            u.Country,
 		AddressStreet:      u.AddressStreet,
 		AddressCity:        u.AddressCity,

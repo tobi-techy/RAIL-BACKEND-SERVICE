@@ -1482,6 +1482,45 @@ func (r *UserRepository) ValidatePasswordResetToken(ctx context.Context, rawToke
 	return userID, nil
 }
 
+// ValidatePasswordResetOTP validates a 6-digit OTP by email (selector) and marks as used
+func (r *UserRepository) ValidatePasswordResetOTP(ctx context.Context, email, code string) (uuid.UUID, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	query := `
+		SELECT id, user_id, token_hash 
+		FROM password_reset_tokens 
+		WHERE selector = $1 AND expires_at > NOW() AND used_at IS NULL
+		ORDER BY created_at DESC LIMIT 1
+		FOR UPDATE`
+
+	var tokenID, userID uuid.UUID
+	var storedHash string
+	err = tx.QueryRowContext(ctx, query, email).Scan(&tokenID, &userID, &storedHash)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return uuid.Nil, fmt.Errorf("invalid or expired code")
+		}
+		return uuid.Nil, fmt.Errorf("failed to query reset token: %w", err)
+	}
+
+	if bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(code)) != nil {
+		return uuid.Nil, fmt.Errorf("invalid or expired code")
+	}
+
+	if _, err := tx.ExecContext(ctx, `UPDATE password_reset_tokens SET used_at = NOW() WHERE id = $1`, tokenID); err != nil {
+		return uuid.Nil, fmt.Errorf("failed to mark token as used: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return uuid.Nil, fmt.Errorf("failed to commit: %w", err)
+	}
+	return userID, nil
+}
+
 // GetByPhone retrieves a user profile by phone number
 func (r *UserRepository) GetByPhone(ctx context.Context, phone string) (*entities.UserProfile, error) {
 	query := `
