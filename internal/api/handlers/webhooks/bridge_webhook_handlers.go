@@ -45,9 +45,15 @@ type BridgeWebhookService interface {
 	ProcessCardStatusChanged(ctx *gin.Context, cardID, status string) error
 }
 
+// WalletWebhookService defines operations for processing wallet-related webhook events
+type WalletWebhookService interface {
+	SyncWalletStatus(ctx context.Context, bridgeWalletID string, status string) error
+}
+
 // BridgeWebhookHandler handles Bridge API webhook notifications
 type BridgeWebhookHandler struct {
 	service                 BridgeWebhookService
+	walletService           WalletWebhookService
 	logger                  *zap.Logger
 	webhookSecret           string
 	skipWebhookVerification bool   // Should ONLY be true in development with explicit config
@@ -57,7 +63,7 @@ type BridgeWebhookHandler struct {
 // NewBridgeWebhookHandler creates a new Bridge webhook handler
 // skipWebhookVerification should ONLY be true in development/testing environments with explicit config
 // IMPORTANT: In production, verification can NEVER be skipped regardless of this flag
-func NewBridgeWebhookHandler(service BridgeWebhookService, logger *zap.Logger, webhookSecret string, skipWebhookVerification bool, environment string) *BridgeWebhookHandler {
+func NewBridgeWebhookHandler(service BridgeWebhookService, walletService WalletWebhookService, logger *zap.Logger, webhookSecret string, skipWebhookVerification bool, environment string) *BridgeWebhookHandler {
 	// Security fix: Never allow skipping verification in production
 	if strings.EqualFold(environment, "production") && skipWebhookVerification {
 		logger.Error("SECURITY VIOLATION: Attempted to skip webhook verification in production - forcing verification ON")
@@ -73,6 +79,7 @@ func NewBridgeWebhookHandler(service BridgeWebhookService, logger *zap.Logger, w
 
 	return &BridgeWebhookHandler{
 		service:                 service,
+		walletService:           walletService,
 		logger:                  logger,
 		webhookSecret:           webhookSecret,
 		skipWebhookVerification: skipWebhookVerification,
@@ -268,6 +275,10 @@ func (h *BridgeWebhookHandler) HandleWebhook(c *gin.Context) {
 	// Card Withdrawal events (top-up funding lifecycle)
 	case "card_withdrawal":
 		h.handleCardWithdrawalEvent(c, payload)
+
+	// Wallet lifecycle events
+	case "wallet":
+		h.handleWalletEvent(c, payload)
 
 	default:
 		// Fallback to legacy event_type routing for backwards compatibility
@@ -640,6 +651,37 @@ func (h *BridgeWebhookHandler) handleCardWithdrawalEvent(c *gin.Context, payload
 		zap.String("event_type", payload.EventType))
 
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
+}
+
+func (h *BridgeWebhookHandler) handleWalletEvent(c *gin.Context, payload BridgeWebhookPayload) {
+	walletID := payload.EventObjectID
+	status := payload.EventObjectStatus
+	walletAddress := getStringField(payload.EventObject, "address")
+	chain := getStringField(payload.EventObject, "chain")
+
+	h.logger.Info("Wallet event received",
+		zap.String("wallet_id", walletID),
+		zap.String("status", status),
+		zap.String("address", walletAddress),
+		zap.String("chain", chain),
+		zap.String("event_type", payload.EventType))
+
+	if h.walletService == nil {
+		h.logger.Warn("Wallet service not configured for webhook handling - logging event only")
+		c.JSON(http.StatusOK, gin.H{"status": "acknowledged", "message": "wallet service not configured"})
+		return
+	}
+
+	if err := h.walletService.SyncWalletStatus(c.Request.Context(), walletID, status); err != nil {
+		h.logger.Error("Failed to sync wallet status",
+			zap.String("wallet_id", walletID),
+			zap.String("status", status),
+			zap.Error(err))
+		c.JSON(http.StatusOK, gin.H{"status": "acknowledged", "synced": false})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "acknowledged", "synced": true})
 }
 
 // handleLegacyEventType handles old-style event types for backwards compatibility

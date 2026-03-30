@@ -211,14 +211,18 @@ func (a *P2PBridgeOfframpAdapter) InitiateTransfer(ctx context.Context, req map[
 
 func mapChainToBridgePaymentRail(chain entities.Chain) bridge.PaymentRail {
 	switch chain {
-	case entities.ChainMATIC, entities.ChainMATICAmoy:
+	case entities.ChainMATIC:
 		return bridge.PaymentRailPolygon
-	case entities.ChainCELO, entities.ChainCELOAlfajores:
+	case entities.ChainCELO:
 		return bridge.PaymentRailCelo
-	case entities.ChainSOL, entities.ChainSOLDevnet:
+	case entities.ChainSOL:
 		return bridge.PaymentRailSolana
-	case entities.ChainTRON, entities.ChainTRONShasta:
+	case entities.ChainTRON:
 		return bridge.PaymentRailTron
+	case entities.ChainBase:
+		return bridge.PaymentRailBase
+	case entities.ChainAvalanche:
+		return bridge.PaymentRailAvalanche
 	default:
 		return ""
 	}

@@ -115,10 +115,8 @@ func DefaultEngineConfig() *EngineConfig {
 	return &EngineConfig{
 		DepositPollInterval: 30 * time.Second,
 		ConfirmationBlocks: map[entities.Chain]int{
-			entities.ChainSOLDevnet: 32,
-			entities.ChainSOL:      32,
-			entities.ChainMATICAmoy: 128,
-			entities.ChainMATIC:    128,
+			entities.ChainSOL:   32,
+			entities.ChainMATIC: 128,
 		},
 		MinDepositAmount:        decimal.NewFromFloat(1.0),   // $1 minimum
 		WithdrawalGasBuffer:     decimal.NewFromFloat(0.001), // Small buffer

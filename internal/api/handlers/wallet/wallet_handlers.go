@@ -1,8 +1,8 @@
 package wallet
 
 import (
-	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"fmt"
+	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"net/http"
 	"strconv"
 
@@ -429,6 +429,8 @@ func (h *WalletHandlers) validateInitiationChains(chainStrs []string) ([]entitie
 			string(entities.WalletChainPolygon),
 			string(entities.WalletChainCelo),
 			string(entities.WalletChainTron),
+			string(entities.WalletChainBase),
+			string(entities.WalletChainAvalanche),
 		}
 	}
 
@@ -474,7 +476,7 @@ func (h *WalletHandlers) extractUserIDFromContext(c *gin.Context) (uuid.UUID, er
 // Helper functions
 
 func getSupportedChains() []string {
-	chains := append(entities.GetMainnetChains(), entities.GetTestnetChains()...)
+	chains := entities.GetMainnetChains()
 	result := make([]string, len(chains))
 	for i, c := range chains {
 		result[i] = string(c)

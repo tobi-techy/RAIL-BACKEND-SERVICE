@@ -14,26 +14,20 @@ import (
 type WalletChain string
 
 const (
-	// Testnet chains (primary focus)
-	WalletChainSOLDevnet     WalletChain = "SOL-DEVNET"
-	WalletChainMATICAmoy     WalletChain = "MATIC-AMOY"
-	WalletChainCELOAlfajores WalletChain = "CELO-ALFAJORES"
-	WalletChainTRONShasta    WalletChain = "TRON-SHASTA"
-
 	// Mainnet chains
-	WalletChainSolana  WalletChain = "SOL"
-	WalletChainPolygon WalletChain = "MATIC"
-	WalletChainCelo    WalletChain = "CELO"
-	WalletChainTron    WalletChain = "TRON"
-
-	// USDC Token Addresses by Chain
-	USDCTokenAddressSOLDevnet  = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-	USDCTokenAddressMATICAmoy  = "0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582"
+	WalletChainSolana    WalletChain = "SOL"
+	WalletChainPolygon   WalletChain = "MATIC"
+	WalletChainCelo      WalletChain = "CELO"
+	WalletChainTron      WalletChain = "TRON"
+	WalletChainBase      WalletChain = "BASE"
+	WalletChainAvalanche WalletChain = "AVAX"
 
 	// Mainnet USDC Token Addresses
-	USDCTokenAddressSOL  = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-	USDCTokenAddressMATIC = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
-	USDCTokenAddressCELO  = "0xcebA9300f2b948710d2653dD7B07f33A8B32118C"
+	USDCTokenAddressSOL       = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+	USDCTokenAddressMATIC     = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+	USDCTokenAddressCELO      = "0xcebA9300f2b948710d2653dD7B07f33A8B32118C"
+	USDCTokenAddressBase      = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+	USDCTokenAddressAvalanche = "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E"
 
 	// USDT Token Address (Tron uses USDT, not USDC)
 	USDTTokenAddressTRON = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
@@ -48,10 +42,10 @@ func (c WalletChain) GetUSDCTokenAddress() string {
 		return USDCTokenAddressMATIC
 	case WalletChainCelo:
 		return USDCTokenAddressCELO
-	case WalletChainSOLDevnet:
-		return USDCTokenAddressSOLDevnet
-	case WalletChainMATICAmoy:
-		return USDCTokenAddressMATICAmoy
+	case WalletChainBase:
+		return USDCTokenAddressBase
+	case WalletChainAvalanche:
+		return USDCTokenAddressAvalanche
 	default:
 		return ""
 	}
@@ -59,18 +53,12 @@ func (c WalletChain) GetUSDCTokenAddress() string {
 
 // GetMainnetChains returns supported production chains
 func GetMainnetChains() []WalletChain {
-	return []WalletChain{WalletChainSolana, WalletChainPolygon, WalletChainCelo, WalletChainTron}
-}
-
-// GetTestnetChains returns supported testnet chains
-func GetTestnetChains() []WalletChain {
-	return []WalletChain{WalletChainSOLDevnet, WalletChainMATICAmoy, WalletChainCELOAlfajores, WalletChainTRONShasta}
+	return []WalletChain{WalletChainSolana, WalletChainPolygon, WalletChainCelo, WalletChainTron, WalletChainBase, WalletChainAvalanche}
 }
 
 // IsValid checks if the chain is supported
 func (c WalletChain) IsValid() bool {
-	validChains := append(GetMainnetChains(), GetTestnetChains()...)
-	for _, chain := range validChains {
+	for _, chain := range GetMainnetChains() {
 		if chain == c {
 			return true
 		}
@@ -80,24 +68,17 @@ func (c WalletChain) IsValid() bool {
 
 // IsTestnet checks if the chain is a testnet
 func (c WalletChain) IsTestnet() bool {
-	testnets := GetTestnetChains()
-	for _, testnet := range testnets {
-		if testnet == c {
-			return true
-		}
-	}
 	return false
 }
 
 // GetChainFamily returns the chain family
 func (c WalletChain) GetChainFamily() string {
 	switch c {
-	case WalletChainSOLDevnet, WalletChainSolana:
+	case WalletChainSolana:
 		return "Solana"
-	case WalletChainPolygon, WalletChainCelo,
-		WalletChainMATICAmoy, WalletChainCELOAlfajores:
+	case WalletChainPolygon, WalletChainCelo, WalletChainBase, WalletChainAvalanche:
 		return "EVM"
-	case WalletChainTron, WalletChainTRONShasta:
+	case WalletChainTron:
 		return "Tron"
 	default:
 		return "Unknown"
@@ -108,34 +89,41 @@ func (c WalletChain) GetChainFamily() string {
 // Used for transfers, liquidation addresses, and orchestration.
 func (c WalletChain) ToBridgePaymentRail() string {
 	switch c {
-	case WalletChainSOLDevnet, WalletChainSolana:
+	case WalletChainSolana:
 		return "solana"
-	case WalletChainMATICAmoy, WalletChainPolygon:
+	case WalletChainPolygon:
 		return "polygon"
-	case WalletChainCELOAlfajores, WalletChainCelo:
+	case WalletChainCelo:
 		return "celo"
-	case WalletChainTRONShasta, WalletChainTron:
+	case WalletChainTron:
 		return "tron"
+	case WalletChainBase:
+		return "base"
+	case WalletChainAvalanche:
+		return "avalanche_c_chain"
 	default:
-		return "solana"
+		return ""
 	}
 }
 
 // ToBridgeWalletChain maps a WalletChain to the chain string accepted by
 // Bridge's Custodial Wallets API. Bridge wallets only support: ethereum,
-// solana, tron, base. EVM chains (Polygon, Celo) map to "ethereum" because
-// they share the same deposit address.
+// solana, tron, base, avalanche. EVM chains (Polygon, Celo, Base, Avalanche)
+// map to "ethereum" because they share the same deposit address.
 func (c WalletChain) ToBridgeWalletChain() string {
 	switch c {
-	case WalletChainSOLDevnet, WalletChainSolana:
+	case WalletChainSolana:
 		return "solana"
-	case WalletChainTRONShasta, WalletChainTron:
+	case WalletChainTron:
 		return "tron"
-	case WalletChainMATICAmoy, WalletChainPolygon,
-		WalletChainCELOAlfajores, WalletChainCelo:
+	case WalletChainBase:
+		return "base"
+	case WalletChainAvalanche:
+		return "avalanche_c_chain"
+	case WalletChainPolygon, WalletChainCelo:
 		return "ethereum"
 	default:
-		return "solana"
+		return ""
 	}
 }
 
@@ -143,9 +131,9 @@ func (c WalletChain) ToBridgeWalletChain() string {
 type WalletAccountType string
 
 const (
-	AccountTypeEOA             WalletAccountType = "EOA"                // Externally Owned Account
-	AccountTypeSCA             WalletAccountType = "SCA"                // Smart Contract Account
-	AccountTypeBridgeWallet    WalletAccountType = "bridge_wallet"      // Bridge custodial wallet
+	AccountTypeEOA             WalletAccountType = "EOA"                 // Externally Owned Account
+	AccountTypeSCA             WalletAccountType = "SCA"                 // Smart Contract Account
+	AccountTypeBridgeWallet    WalletAccountType = "bridge_wallet"       // Bridge custodial wallet
 	AccountTypeLiquidationAddr WalletAccountType = "liquidation_address" // Bridge liquidation address
 )
 
@@ -414,7 +402,7 @@ type WalletProvisioningJobResponse struct {
 
 // WalletInitiationRequest represents request to initiate wallet creation after passcode verification
 type WalletInitiationRequest struct {
-	Chains []string `json:"chains,omitempty" validate:"omitempty,dive,oneof=SOL SOL-DEVNET MATIC MATIC-AMOY CELO CELO-ALFAJORES TRON TRON-SHASTA"`
+	Chains []string `json:"chains,omitempty" validate:"omitempty,dive,oneof=SOL MATIC CELO TRON BASE AVAX"`
 }
 
 // WalletInitiationResponse represents response for wallet initiation
@@ -427,7 +415,7 @@ type WalletInitiationResponse struct {
 
 // WalletProvisioningRequest represents request to provision wallets
 type WalletProvisioningRequest struct {
-	Chains []string `json:"chains,omitempty" validate:"omitempty,dive,oneof=ETH ETH-SEPOLIA MATIC MATIC-AMOY SOL SOL-DEVNET APTOS APTOS-TESTNET CELO CELO-ALFAJORES TRON TRON-SHASTA"`
+	Chains []string `json:"chains,omitempty" validate:"omitempty,dive,oneof=SOL MATIC CELO TRON BASE AVAX"`
 }
 
 // WalletProvisioningResponse represents response for wallet provisioning

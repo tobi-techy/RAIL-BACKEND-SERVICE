@@ -81,11 +81,18 @@ type BridgeWalletProvisioningAdapter struct {
 
 func (a *BridgeWalletProvisioningAdapter) CreateWalletForCustomer(ctx context.Context, customerID string, chain string) (*entities.ManagedWallet, error) {
 	bridgeChain := entities.WalletChain(chain).ToBridgeWalletChain()
+	if bridgeChain == "" {
+		return nil, fmt.Errorf("unsupported chain: %s", chain)
+	}
 	currency := bridge.CurrencyUSDC
 	if bridgeChain == "tron" {
 		currency = bridge.CurrencyUSDT
 	}
-	w, err := a.client.CreateWallet(ctx, customerID, &bridge.CreateWalletRequest{
+
+	idempotencyKey := fmt.Sprintf("wallet-%s-%s-%s", customerID, chain, bridgeChain)
+	ctxWithKey := bridge.WithIdempotencyKey(ctx, idempotencyKey)
+
+	w, err := a.client.CreateWallet(ctxWithKey, customerID, &bridge.CreateWalletRequest{
 		Chain:    bridge.PaymentRail(bridgeChain),
 		Currency: currency,
 	})
@@ -177,11 +184,15 @@ func (a *BridgeDepositAdapter) ListWallets(ctx context.Context, customerID strin
 }
 
 func (a *BridgeDepositAdapter) CreateWallet(ctx context.Context, customerID string, chain string) (string, string, error) {
+	bridgeChain := entities.WalletChain(chain).ToBridgeWalletChain()
+	if bridgeChain == "" {
+		return "", "", fmt.Errorf("unsupported chain: %s", chain)
+	}
 	currency := bridge.CurrencyUSDC
-	if chain == "tron" {
+	if bridgeChain == "tron" {
 		currency = bridge.CurrencyUSDT
 	}
-	w, err := a.client.CreateWallet(ctx, customerID, &bridge.CreateWalletRequest{Chain: bridge.PaymentRail(chain), Currency: currency})
+	w, err := a.client.CreateWallet(ctx, customerID, &bridge.CreateWalletRequest{Chain: bridge.PaymentRail(bridgeChain), Currency: currency})
 	if err != nil {
 		return "", "", err
 	}
@@ -211,10 +222,18 @@ func (a *BridgeDepositAdapter) IsSandbox() bool {
 }
 
 func (a *BridgeDepositAdapter) CreateLiquidationAddress(ctx context.Context, customerID string, sourceChain string, destinationChain string, destinationAddress string) (string, string, error) {
+	sourceRail := entities.WalletChain(sourceChain).ToBridgePaymentRail()
+	destRail := entities.WalletChain(destinationChain).ToBridgePaymentRail()
+	if sourceRail == "" {
+		return "", "", fmt.Errorf("unsupported source chain: %s", sourceChain)
+	}
+	if destRail == "" {
+		return "", "", fmt.Errorf("unsupported destination chain: %s", destinationChain)
+	}
 	req := &bridge.CreateLiquidationAddressRequest{
-		Chain:                  bridge.PaymentRail(sourceChain),
+		Chain:                  bridge.PaymentRail(sourceRail),
 		Currency:               bridge.CurrencyUSDC,
-		DestinationPaymentRail: bridge.PaymentRail(destinationChain),
+		DestinationPaymentRail: bridge.PaymentRail(destRail),
 		DestinationCurrency:    bridge.CurrencyUSDC,
 		DestinationAddress:     destinationAddress,
 	}
@@ -1486,8 +1505,10 @@ func (c *Container) initializeDomainServices() error {
 		// Security fix: Only skip verification if explicitly configured for development AND no secret is set
 		// This ensures production ALWAYS requires verification
 		skipWebhookVerification := c.Config.Environment == "development" && webhookSecret == ""
+		walletWebhookAdapter := &walletWebhookAdapter{walletService: c.WalletService}
 		c.BridgeWebhookHandler = handlers.NewBridgeWebhookHandler(
 			bridgeWebhookService,
+			walletWebhookAdapter,
 			c.ZapLog,
 			webhookSecret,
 			skipWebhookVerification,
@@ -2265,20 +2286,16 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 			switch normalizedKey {
 			case "SOLANA", "SOL":
 				chain = entities.WalletChainSolana
-			case "SOL_DEVNET":
-				chain = entities.WalletChainSOLDevnet
 			case "POLYGON", "MATIC":
 				chain = entities.WalletChainPolygon
-			case "MATIC_AMOY":
-				chain = entities.WalletChainMATICAmoy
 			case "CELO":
 				chain = entities.WalletChainCelo
-			case "CELO_ALFAJORES":
-				chain = entities.WalletChainCELOAlfajores
 			case "TRON":
 				chain = entities.WalletChainTron
-			case "TRON_SHASTA":
-				chain = entities.WalletChainTRONShasta
+			case "BASE":
+				chain = entities.WalletChainBase
+			case "AVALANCHE", "AVAX":
+				chain = entities.WalletChainAvalanche
 			default:
 				logger.Warn("Ignoring unsupported wallet chain from configuration", zap.String("chain", upper))
 				continue
@@ -2675,6 +2692,18 @@ func (a *marketNotificationAdapter) SendPushNotification(ctx context.Context, us
 		return nil
 	}
 	return a.svc.SendGenericNotification(ctx, userID, title, message)
+}
+
+// walletWebhookAdapter adapts wallet.Service to WalletWebhookService interface
+type walletWebhookAdapter struct {
+	walletService *wallet.Service
+}
+
+func (a *walletWebhookAdapter) SyncWalletStatus(ctx context.Context, bridgeWalletID string, status string) error {
+	if a.walletService == nil {
+		return fmt.Errorf("wallet service not available")
+	}
+	return a.walletService.SyncWalletStatus(ctx, bridgeWalletID, status)
 }
 
 // bridgeWebhookNotifierAdapter adapts NotificationService to BridgeWebhookNotifier
@@ -3262,6 +3291,7 @@ func (c *Container) initializeBridgeServices() {
 	// Full service will be wired after domain services are initialized
 	c.BridgeWebhookHandler = handlers.NewBridgeWebhookHandler(
 		nil, // Service will be set later
+		&walletWebhookAdapter{walletService: c.WalletService},
 		c.ZapLog,
 		webhookSecret,
 		skipWebhookVerification,

@@ -167,24 +167,37 @@ func CORS(allowedOrigins []string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		origin := c.Request.Header.Get("Origin")
 
-		// Check if origin is allowed
+		isWildcard := false
 		allowed := false
 		for _, allowedOrigin := range allowedOrigins {
-			if allowedOrigin == "*" || allowedOrigin == origin {
+			if allowedOrigin == "*" {
+				isWildcard = true
+				allowed = true
+				break
+			}
+			if allowedOrigin == origin {
 				allowed = true
 				break
 			}
 		}
 
 		if allowed {
-			c.Header("Access-Control-Allow-Origin", origin)
+			if isWildcard {
+				c.Header("Access-Control-Allow-Origin", "*")
+			} else {
+				c.Header("Vary", "Origin")
+				c.Header("Access-Control-Allow-Origin", origin)
+			}
 		}
 
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization, X-Request-ID, X-CSRF-Token, X-Requested-With")
 		c.Header("Access-Control-Expose-Headers", "X-Request-ID, X-CSRF-Token")
-		c.Header("Access-Control-Allow-Credentials", "true")
 		c.Header("Access-Control-Max-Age", "3600")
+
+		if !isWildcard {
+			c.Header("Access-Control-Allow-Credentials", "true")
+		}
 
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(http.StatusOK)

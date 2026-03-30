@@ -281,12 +281,14 @@ func (r *WalletRepository) GetByBridgeWalletID(ctx context.Context, bridgeWallet
 }
 
 // GetByAddress retrieves a wallet by on-chain address
+// For EVM chains, addresses are case-sensitive (checksummed). For Solana,
+// addresses use base58 encoding which is also case-sensitive.
 func (r *WalletRepository) GetByAddress(ctx context.Context, address string) (*entities.ManagedWallet, error) {
 	query := `
 		SELECT id, user_id, COALESCE(wallet_set_id, '00000000-0000-0000-0000-000000000000') AS wallet_set_id, COALESCE(circle_wallet_id, '') AS circle_wallet_id, COALESCE(bridge_wallet_id, '') AS bridge_wallet_id, chain,
 		       address, account_type, status, created_at, updated_at
 		FROM managed_wallets
-		WHERE LOWER(address) = LOWER($1)
+		WHERE address = $1
 		LIMIT 1`
 
 	wallet := &entities.ManagedWallet{}

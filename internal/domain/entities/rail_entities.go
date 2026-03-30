@@ -12,15 +12,13 @@ import (
 type Chain string
 
 const (
-	// Supported chains
-	ChainSOL           Chain = "SOL"
-	ChainSOLDevnet     Chain = "SOL-DEVNET"
-	ChainMATIC         Chain = "MATIC"
-	ChainMATICAmoy     Chain = "MATIC-AMOY"
-	ChainCELO          Chain = "CELO"
-	ChainCELOAlfajores Chain = "CELO-ALFAJORES"
-	ChainTRON          Chain = "TRON"
-	ChainTRONShasta    Chain = "TRON-SHASTA"
+	// Supported chains (mainnet only)
+	ChainSOL       Chain = "SOL"
+	ChainMATIC     Chain = "MATIC"
+	ChainCELO      Chain = "CELO"
+	ChainTRON      Chain = "TRON"
+	ChainBase      Chain = "BASE"
+	ChainAvalanche Chain = "AVAX"
 
 	ChainFiat Chain = "fiat"
 )

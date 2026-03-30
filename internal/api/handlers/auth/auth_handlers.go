@@ -222,8 +222,8 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 		if existingUser != nil {
 			if existingUser.EmailVerified {
 				c.JSON(http.StatusConflict, entities.ErrorResponse{
-					Code:    "USER_EXISTS",
-					Message: "User already exists with this email",
+					Code:    "REGISTRATION_FAILED",
+					Message: "Registration failed. Please try again.",
 				})
 				return
 			}
@@ -243,8 +243,8 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 		if existingUser != nil {
 			if existingUser.PhoneVerified {
 				c.JSON(http.StatusConflict, entities.ErrorResponse{
-					Code:    "USER_EXISTS",
-					Message: "User already exists with this phone",
+					Code:    "REGISTRATION_FAILED",
+					Message: "Registration failed. Please try again.",
 				})
 				return
 			}
@@ -375,7 +375,7 @@ func (h *AuthHandlers) Verify(c *gin.Context) {
 
 	isValid, err := h.verificationService.VerifyCode(ctx, identifierType, identifier, req.Code)
 	if err != nil || !isValid {
-		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "INVALID_CODE", Message: "Invalid or expired verification code"})
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "VERIFICATION_FAILED", Message: "Verification failed. Please try again."})
 		return
 	}
 

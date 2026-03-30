@@ -217,9 +217,9 @@ func (r *Reconciler) runReconciliation(ctx context.Context) {
 	threshold := r.config.Threshold
 	if threshold > 24*365*10*time.Hour { // Cap at 10 years to prevent overflow
 		r.logger.Warn("Threshold too large, capping at 10 years", "original", threshold)
-		threshold = 24*365*10*time.Hour
+		threshold = 24 * 365 * 10 * time.Hour
 	}
-	
+
 	candidates, err := r.jobRepo.GetPendingDepositsForReconciliation(ctx, threshold, r.config.BatchSize)
 	if err != nil {
 		r.logger.Error("Failed to get reconciliation candidates", "error", err)
@@ -493,9 +493,9 @@ func (v *ChainValidator) ValidateTransaction(ctx context.Context, chain entities
 	v.logger.Debug("Validating transaction", "chain", chain, "tx_hash", txHash)
 
 	switch chain {
-	case entities.ChainSOL, entities.ChainSOLDevnet:
+	case entities.ChainSOL:
 		return v.validateSolanaTransaction(ctx, txHash)
-	case entities.ChainMATIC, entities.ChainMATICAmoy:
+	case entities.ChainMATIC:
 		return v.validateEVMTransaction(ctx, v.polygonRPC, txHash)
 	default:
 		return TransactionStatusNotFound, fmt.Errorf("unsupported chain: %s", chain)

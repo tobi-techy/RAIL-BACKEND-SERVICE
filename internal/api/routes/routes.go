@@ -48,24 +48,6 @@ func (a *WithdrawalWalletProviderAdapter) GetUserWalletByChain(ctx context.Conte
 		return wallet, nil
 	}
 
-	// Backward-compatible fallbacks: testnet chain → mainnet equivalent on not-found.
-	if strings.Contains(err.Error(), "not found") {
-		var fallback entities.WalletChain
-		switch normalized {
-		case entities.WalletChainSOLDevnet:
-			fallback = entities.WalletChainSolana
-		case entities.WalletChainMATICAmoy:
-			fallback = entities.WalletChainPolygon
-		case entities.WalletChainCELOAlfajores:
-			fallback = entities.WalletChainCelo
-		case entities.WalletChainTRONShasta:
-			fallback = entities.WalletChainTron
-		}
-		if fallback != "" {
-			return a.getWalletByUserAndChain(ctx, userID, fallback)
-		}
-	}
-
 	return nil, err
 }
 
@@ -159,7 +141,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		}
 		rows, err := container.DB.QueryContext(c.Request.Context(), q, param)
 		if err != nil {
-			c.JSON(500, gin.H{"error": err.Error()})
+			c.JSON(500, gin.H{"error": "Database query failed", "request_id": c.GetString("request_id")})
 			return
 		}
 		defer rows.Close()
@@ -213,7 +195,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		}
 		res, err := container.DB.ExecContext(c.Request.Context(), "DELETE FROM users WHERE id = $1", uid)
 		if err != nil {
-			c.JSON(500, gin.H{"error": err.Error(), "deleted_related": deleted})
+			c.JSON(500, gin.H{"error": "Failed to delete user", "request_id": c.GetString("request_id"), "deleted_related": deleted})
 			return
 		}
 		n, _ := res.RowsAffected()

@@ -151,9 +151,9 @@ func (s *Service) SetP2PService(p2pService P2PService) {
 
 func normalizeDefaultWalletChains(chains []entities.WalletChain, logger *zap.Logger) []entities.WalletChain {
 	if len(chains) == 0 {
-		logger.Warn("No default wallet chains configured; falling back to SOL-DEVNET")
+		logger.Warn("No default wallet chains configured; falling back to SOL")
 		return []entities.WalletChain{
-			entities.WalletChainSOLDevnet,
+			entities.WalletChainSolana,
 		}
 	}
 
@@ -173,9 +173,9 @@ func normalizeDefaultWalletChains(chains []entities.WalletChain, logger *zap.Log
 	}
 
 	if len(normalized) == 0 {
-		logger.Warn("Configured wallet chains invalid; falling back to SOL-DEVNET")
+		logger.Warn("Configured wallet chains invalid; falling back to SOL")
 		return []entities.WalletChain{
-			entities.WalletChainSOLDevnet,
+			entities.WalletChainSolana,
 		}
 	}
 

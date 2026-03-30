@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -439,23 +440,23 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 		}
 	}
 
-	// Use a detached context with the client's timeout to prevent request context
-	// cancellation from aborting external API calls. This ensures Bridge operations
-	// complete even if the HTTP client disconnects.
-	reqCtx, cancel := context.WithTimeout(context.Background(), c.config.Timeout)
+	// Use incoming context as parent, with client timeout as ceiling.
+	// This ensures proper cancellation propagation while preventing unbounded waits.
+	reqCtx, cancel := context.WithTimeout(ctx, c.config.Timeout)
 	defer cancel()
 
 	var lastErr error
 	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
 		if attempt > 0 {
-			// Exponential backoff: 1s, 2s, 4s...
-			backoff := time.Duration(1<<(attempt-1)) * time.Second
+			baseBackoff := time.Duration(1<<(attempt-1)) * time.Second
+			jitter := time.Duration(rand.Float64() * 0.5 * float64(baseBackoff))
+			backoff := baseBackoff/2 + jitter
 			select {
 			case <-reqCtx.Done():
 				return reqCtx.Err()
 			case <-time.After(backoff):
 			}
-			c.logger.Debug("Retrying Bridge API request", zap.Int("attempt", attempt), zap.String("method", method), zap.String("url", fullURL))
+			c.logger.Debug("Retrying Bridge API request", zap.Int("attempt", attempt), zap.String("method", method), zap.String("url", fullURL), zap.Duration("backoff", backoff))
 		}
 
 		req, err := http.NewRequestWithContext(reqCtx, method, fullURL, bytes.NewReader(reqBody))

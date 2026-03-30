@@ -63,10 +63,12 @@ func DefaultConfig() Config {
 		MaxBackoffDuration:  30 * time.Minute,
 		JitterFactor:        0.1,
 		ChainsToProvision: []entities.WalletChain{
-			entities.WalletChainSOLDevnet,
-			entities.WalletChainMATICAmoy,
-			entities.WalletChainCELOAlfajores,
-			entities.WalletChainTRONShasta,
+			entities.WalletChainSolana,
+			entities.WalletChainPolygon,
+			entities.WalletChainCelo,
+			entities.WalletChainTron,
+			entities.WalletChainBase,
+			entities.WalletChainAvalanche,
 		},
 		WalletSetNamePrefix: "STACK-WalletSet",
 	}

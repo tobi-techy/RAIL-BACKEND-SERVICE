@@ -141,7 +141,7 @@ func (s *Service) CreateVirtualCard(ctx context.Context, userID uuid.UUID) (*ent
 	// Get user's wallet for card funding — try mainnet Solana first, fall back to devnet
 	wallet, err := s.walletProvider.GetUserWalletByChain(ctx, userID, s.defaultChain)
 	if err != nil || wallet == nil {
-		wallet, err = s.walletProvider.GetUserWalletByChain(ctx, userID, string(entities.WalletChainSOLDevnet))
+		return nil, ErrWalletNotFound
 	}
 	if err != nil || wallet == nil {
 		return nil, ErrWalletNotFound
@@ -589,14 +589,18 @@ func mapBridgeCardStatus(status bridge.CardAccountStatus) entities.CardStatus {
 
 func mapWalletChainToBridgePaymentRail(chain entities.WalletChain) bridge.PaymentRail {
 	switch chain {
-	case entities.WalletChainSolana, entities.WalletChainSOLDevnet:
+	case entities.WalletChainSolana:
 		return bridge.PaymentRailSolana
-	case entities.WalletChainPolygon, entities.WalletChainMATICAmoy:
+	case entities.WalletChainPolygon:
 		return bridge.PaymentRailPolygon
-	case entities.WalletChainCelo, entities.WalletChainCELOAlfajores:
+	case entities.WalletChainCelo:
 		return bridge.PaymentRailCelo
-	case entities.WalletChainTron, entities.WalletChainTRONShasta:
+	case entities.WalletChainTron:
 		return bridge.PaymentRailTron
+	case entities.WalletChainBase:
+		return bridge.PaymentRailBase
+	case entities.WalletChainAvalanche:
+		return bridge.PaymentRailAvalanche
 	default:
 		return bridge.PaymentRailSolana
 	}

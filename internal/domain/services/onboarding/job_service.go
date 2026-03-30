@@ -33,10 +33,12 @@ type OnboardingJobRepository interface {
 func NewOnboardingJobService(jobRepo OnboardingJobRepository, logger *zap.Logger, supportedChains []entities.WalletChain) *OnboardingJobService {
 	if len(supportedChains) == 0 {
 		supportedChains = []entities.WalletChain{
-			entities.WalletChainSOLDevnet,
-			entities.WalletChainMATICAmoy,
-			entities.WalletChainCELOAlfajores,
-			entities.WalletChainTRONShasta,
+			entities.WalletChainSolana,
+			entities.WalletChainPolygon,
+			entities.WalletChainCelo,
+			entities.WalletChainTron,
+			entities.WalletChainBase,
+			entities.WalletChainAvalanche,
 		}
 	}
 	return &OnboardingJobService{

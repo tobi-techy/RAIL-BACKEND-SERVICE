@@ -1,9 +1,28 @@
 package database
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 )
+
+const DefaultQueryTimeout = 30 * time.Second
+
+// WithQueryTimeout returns a context with the specified timeout.
+// This ensures queries don't run longer than the configured threshold.
+func WithQueryTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		timeout = DefaultQueryTimeout
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+// WithDefaultQueryTimeout returns a context with the default query timeout (30s).
+// Use this for database operations that should have a bounded execution time.
+func WithDefaultQueryTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	return WithQueryTimeout(ctx, DefaultQueryTimeout)
+}
 
 func BuildWhereClause(conditions map[string]interface{}) (string, []interface{}) {
 	if len(conditions) == 0 {

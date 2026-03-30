@@ -374,19 +374,19 @@ type BridgeConfig struct {
 	WebhookSecret         string   `mapstructure:"webhook_secret"`
 	TreasuryWalletAddress string   `mapstructure:"treasury_wallet_address"`
 	// Rail's own Bridge custody account — used for reconciliation.
-	RailCustomerID    string `mapstructure:"rail_customer_id"`
+	RailCustomerID string `mapstructure:"rail_customer_id"`
 }
 
 // LuloConfig contains Lulo yield API configuration for pool-level treasury management.
 type LuloConfig struct {
 	APIKey         string `mapstructure:"api_key"`
-	BaseURL        string `mapstructure:"base_url"`          // Lulo API (default: https://api.lulo.fi)
-	SolanaRPC      string `mapstructure:"solana_rpc"`        // Solana RPC endpoint
-	OwnerWallet    string `mapstructure:"owner_wallet"`      // Rail's Solana wallet pubkey (base58)
-	PrivateKey     string `mapstructure:"private_key"`       // Rail's Solana wallet private key (base58, 64 bytes)
-	PoolType       string `mapstructure:"pool_type"`         // "regular" or "protected" (default: protected)
-	MinSweepAmount string `mapstructure:"min_sweep_amount"`  // Minimum USDC to sweep (e.g. "100")
-	SweepInterval  int    `mapstructure:"sweep_interval"`    // Sweep interval in minutes
+	BaseURL        string `mapstructure:"base_url"`         // Lulo API (default: https://api.lulo.fi)
+	SolanaRPC      string `mapstructure:"solana_rpc"`       // Solana RPC endpoint
+	OwnerWallet    string `mapstructure:"owner_wallet"`     // Rail's Solana wallet pubkey (base58)
+	PrivateKey     string `mapstructure:"private_key"`      // Rail's Solana wallet private key (base58, 64 bytes)
+	PoolType       string `mapstructure:"pool_type"`        // "regular" or "protected" (default: protected)
+	MinSweepAmount string `mapstructure:"min_sweep_amount"` // Minimum USDC to sweep (e.g. "100")
+	SweepInterval  int    `mapstructure:"sweep_interval"`   // Sweep interval in minutes
 	// Bridge custody wallet used to fund the Solana wallet with USDC before Lulo deposits.
 	BridgeSourceWalletID string `mapstructure:"bridge_source_wallet_id"`
 }
@@ -740,7 +740,7 @@ func setDefaults() {
 	viper.SetDefault("bridge.base_url", "https://api.bridge.xyz")
 	viper.SetDefault("bridge.timeout", 30)
 	viper.SetDefault("bridge.max_retries", 3)
-	viper.SetDefault("bridge.supported_chains", []string{"ETH", "MATIC", "AVAX", "SOL"})
+	viper.SetDefault("bridge.supported_chains", []string{"SOL", "MATIC", "CELO", "TRON", "BASE", "AVAX"})
 
 	// Worker defaults
 	viper.SetDefault("workers.count", 10)

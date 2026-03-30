@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -528,6 +529,131 @@ func NewWalletProvisioningJobRepository(db *sql.DB, logger *zap.Logger) *WalletP
 		db:     db,
 		logger: logger,
 	}
+}
+
+func (r *WalletProvisioningJobRepository) GetOrCreateForUser(ctx context.Context, userID uuid.UUID, chains []string) (*entities.WalletProvisioningJob, bool, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		}
+	}()
+
+	existingJob, err := r.getByUserIDTx(ctx, tx, userID)
+	if err != nil && !strings.Contains(err.Error(), "not found") {
+		return nil, false, fmt.Errorf("failed to check existing job: %w", err)
+	}
+
+	if existingJob != nil && (existingJob.Status == entities.ProvisioningStatusQueued ||
+		existingJob.Status == entities.ProvisioningStatusInProgress) {
+		if commitErr := tx.Commit(); commitErr != nil {
+			return nil, false, fmt.Errorf("failed to commit transaction: %w", commitErr)
+		}
+		return existingJob, false, nil
+	}
+
+	job := &entities.WalletProvisioningJob{
+		ID:           uuid.New(),
+		UserID:       userID,
+		Chains:       chains,
+		Status:       entities.ProvisioningStatusQueued,
+		AttemptCount: 0,
+		MaxAttempts:  3,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+
+	chainsArray := pq.StringArray(job.Chains)
+	if chainsArray == nil {
+		chainsArray = pq.StringArray{}
+	}
+
+	query := `
+		INSERT INTO wallet_provisioning_jobs (
+			id, user_id, chains, status, attempt_count, max_attempts,
+			error_message, next_retry_at, created_at, updated_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+		)`
+
+	_, err = tx.ExecContext(ctx, query,
+		job.ID,
+		job.UserID,
+		chainsArray,
+		string(job.Status),
+		job.AttemptCount,
+		job.MaxAttempts,
+		job.ErrorMessage,
+		job.NextRetryAt,
+		job.CreatedAt,
+		job.UpdatedAt,
+	)
+	if err != nil {
+		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
+			if commitErr := tx.Commit(); commitErr != nil {
+				return nil, false, fmt.Errorf("failed to commit after duplicate key: %w", commitErr)
+			}
+			existingJob, fetchErr := r.GetByUserID(ctx, userID)
+			if fetchErr != nil {
+				return nil, false, fmt.Errorf("failed to fetch existing job after duplicate key: %w", fetchErr)
+			}
+			return existingJob, false, nil
+		}
+		return nil, false, fmt.Errorf("failed to create wallet provisioning job: %w", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return nil, false, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return job, true, nil
+}
+
+func (r *WalletProvisioningJobRepository) getByUserIDTx(ctx context.Context, tx *sql.Tx, userID uuid.UUID) (*entities.WalletProvisioningJob, error) {
+	query := `
+		SELECT id, user_id, chains, status, attempt_count, max_attempts,
+		       error_message, next_retry_at, created_at, updated_at
+		FROM wallet_provisioning_jobs 
+		WHERE user_id = $1
+		ORDER BY created_at DESC
+		LIMIT 1
+		FOR UPDATE`
+
+	job := &entities.WalletProvisioningJob{}
+	var chains pq.StringArray
+	var nextRetryAt sql.NullTime
+
+	err := tx.QueryRowContext(ctx, query, userID).Scan(
+		&job.ID,
+		&job.UserID,
+		&chains,
+		&job.Status,
+		&job.AttemptCount,
+		&job.MaxAttempts,
+		&job.ErrorMessage,
+		&nextRetryAt,
+		&job.CreatedAt,
+		&job.UpdatedAt,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("wallet provisioning job not found")
+		}
+		r.logger.Error("Failed to get wallet provisioning job by user ID", zap.Error(err), zap.String("user_id", userID.String()))
+		return nil, fmt.Errorf("failed to get wallet provisioning job: %w", err)
+	}
+
+	job.Chains = append([]string(nil), chains...)
+
+	if nextRetryAt.Valid {
+		job.NextRetryAt = &nextRetryAt.Time
+	}
+
+	return job, nil
 }
 
 // Create creates a new wallet provisioning job
