@@ -36,7 +36,6 @@ func NewOnboardingJobService(jobRepo OnboardingJobRepository, logger *zap.Logger
 			entities.WalletChainSolana,
 			entities.WalletChainPolygon,
 			entities.WalletChainCelo,
-			entities.WalletChainTron,
 			entities.WalletChainBase,
 			entities.WalletChainAvalanche,
 		}

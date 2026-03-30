@@ -217,8 +217,6 @@ func mapChainToBridgePaymentRail(chain entities.Chain) bridge.PaymentRail {
 		return bridge.PaymentRailCelo
 	case entities.ChainSOL:
 		return bridge.PaymentRailSolana
-	case entities.ChainTRON:
-		return bridge.PaymentRailTron
 	case entities.ChainBase:
 		return bridge.PaymentRailBase
 	case entities.ChainAvalanche:

@@ -595,8 +595,6 @@ func mapWalletChainToBridgePaymentRail(chain entities.WalletChain) bridge.Paymen
 		return bridge.PaymentRailPolygon
 	case entities.WalletChainCelo:
 		return bridge.PaymentRailCelo
-	case entities.WalletChainTron:
-		return bridge.PaymentRailTron
 	case entities.WalletChainBase:
 		return bridge.PaymentRailBase
 	case entities.WalletChainAvalanche:

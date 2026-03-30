@@ -84,17 +84,13 @@ func (a *BridgeWalletProvisioningAdapter) CreateWalletForCustomer(ctx context.Co
 	if bridgeChain == "" {
 		return nil, fmt.Errorf("unsupported chain: %s", chain)
 	}
-	currency := bridge.CurrencyUSDC
-	if bridgeChain == "tron" {
-		currency = bridge.CurrencyUSDT
-	}
 
 	idempotencyKey := fmt.Sprintf("wallet-%s-%s-%s", customerID, chain, bridgeChain)
 	ctxWithKey := bridge.WithIdempotencyKey(ctx, idempotencyKey)
 
 	w, err := a.client.CreateWallet(ctxWithKey, customerID, &bridge.CreateWalletRequest{
 		Chain:    bridge.PaymentRail(bridgeChain),
-		Currency: currency,
+		Currency: bridge.CurrencyUSDC,
 	})
 	if err != nil {
 		return nil, err
@@ -189,9 +185,6 @@ func (a *BridgeDepositAdapter) CreateWallet(ctx context.Context, customerID stri
 		return "", "", fmt.Errorf("unsupported chain: %s", chain)
 	}
 	currency := bridge.CurrencyUSDC
-	if bridgeChain == "tron" {
-		currency = bridge.CurrencyUSDT
-	}
 	w, err := a.client.CreateWallet(ctx, customerID, &bridge.CreateWalletRequest{Chain: bridge.PaymentRail(bridgeChain), Currency: currency})
 	if err != nil {
 		return "", "", err
@@ -2290,8 +2283,6 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 				chain = entities.WalletChainPolygon
 			case "CELO":
 				chain = entities.WalletChainCelo
-			case "TRON":
-				chain = entities.WalletChainTron
 			case "BASE":
 				chain = entities.WalletChainBase
 			case "AVALANCHE", "AVAX":

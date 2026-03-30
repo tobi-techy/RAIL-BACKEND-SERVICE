@@ -105,7 +105,6 @@ func (s *BridgeVirtualAccountService) ProvisionVirtualAccounts(ctx context.Conte
 		entities.WalletChainBase,
 		entities.WalletChainAvalanche,
 		entities.WalletChainCelo,
-		entities.WalletChainTron,
 	}
 
 	var wallet *entities.ManagedWallet

@@ -363,8 +363,10 @@ func mapBridgePaymentRailToWalletChain(rail PaymentRail) entities.WalletChain {
 		return entities.WalletChainPolygon
 	case PaymentRailCelo:
 		return entities.WalletChainCelo
-	case PaymentRailTron:
-		return entities.WalletChainTron
+	case PaymentRailBase:
+		return entities.WalletChainBase
+	case PaymentRailAvalanche:
+		return entities.WalletChainAvalanche
 	case PaymentRailSolana:
 		return entities.WalletChainSolana
 	default:

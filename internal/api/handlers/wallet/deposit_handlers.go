@@ -68,15 +68,16 @@ func (h *WalletFundingHandlers) CreateDeposit(c *gin.Context) {
 		}
 		chain := entities.Chain(strings.ToUpper(strings.TrimSpace(req.Chain)))
 		validChains := map[entities.Chain]bool{
-			entities.ChainSOL:   true,
-			entities.ChainMATIC: true,
-			entities.ChainCELO:  true,
-			entities.ChainTRON:  true,
+			entities.ChainSOL:       true,
+			entities.ChainMATIC:     true,
+			entities.ChainCELO:      true,
+			entities.ChainBase:      true,
+			entities.ChainAvalanche: true,
 		}
 		if !validChains[chain] {
 			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 				Code:    "INVALID_CHAIN",
-				Message: "Unsupported chain. Supported: SOL, MATIC, CELO, TRON",
+				Message: "Unsupported chain. Supported: SOL, MATIC, CELO, BASE, AVAX",
 			})
 			return
 		}

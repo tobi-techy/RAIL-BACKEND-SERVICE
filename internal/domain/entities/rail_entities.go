@@ -16,7 +16,6 @@ const (
 	ChainSOL       Chain = "SOL"
 	ChainMATIC     Chain = "MATIC"
 	ChainCELO      Chain = "CELO"
-	ChainTRON      Chain = "TRON"
 	ChainBase      Chain = "BASE"
 	ChainAvalanche Chain = "AVAX"
 

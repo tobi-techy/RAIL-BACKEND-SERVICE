@@ -18,7 +18,6 @@ const (
 	WalletChainSolana    WalletChain = "SOL"
 	WalletChainPolygon   WalletChain = "MATIC"
 	WalletChainCelo      WalletChain = "CELO"
-	WalletChainTron      WalletChain = "TRON"
 	WalletChainBase      WalletChain = "BASE"
 	WalletChainAvalanche WalletChain = "AVAX"
 
@@ -28,9 +27,6 @@ const (
 	USDCTokenAddressCELO      = "0xcebA9300f2b948710d2653dD7B07f33A8B32118C"
 	USDCTokenAddressBase      = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 	USDCTokenAddressAvalanche = "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E"
-
-	// USDT Token Address (Tron uses USDT, not USDC)
-	USDTTokenAddressTRON = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
 )
 
 // GetUSDCTokenAddress returns the USDC token address for the chain
@@ -53,7 +49,7 @@ func (c WalletChain) GetUSDCTokenAddress() string {
 
 // GetMainnetChains returns supported production chains
 func GetMainnetChains() []WalletChain {
-	return []WalletChain{WalletChainSolana, WalletChainPolygon, WalletChainCelo, WalletChainTron, WalletChainBase, WalletChainAvalanche}
+	return []WalletChain{WalletChainSolana, WalletChainPolygon, WalletChainCelo, WalletChainBase, WalletChainAvalanche}
 }
 
 // IsValid checks if the chain is supported
@@ -78,8 +74,6 @@ func (c WalletChain) GetChainFamily() string {
 		return "Solana"
 	case WalletChainPolygon, WalletChainCelo, WalletChainBase, WalletChainAvalanche:
 		return "EVM"
-	case WalletChainTron:
-		return "Tron"
 	default:
 		return "Unknown"
 	}
@@ -95,8 +89,6 @@ func (c WalletChain) ToBridgePaymentRail() string {
 		return "polygon"
 	case WalletChainCelo:
 		return "celo"
-	case WalletChainTron:
-		return "tron"
 	case WalletChainBase:
 		return "base"
 	case WalletChainAvalanche:
@@ -108,19 +100,15 @@ func (c WalletChain) ToBridgePaymentRail() string {
 
 // ToBridgeWalletChain maps a WalletChain to the chain string accepted by
 // Bridge's Custodial Wallets API. Bridge wallets only support: ethereum,
-// solana, tron, base, avalanche. EVM chains (Polygon, Celo, Base, Avalanche)
-// map to "ethereum" because they share the same deposit address.
+// solana, base. EVM chains without direct Bridge wallet support (Polygon,
+// Celo, Avalanche) map to "ethereum" because they share the same deposit address.
 func (c WalletChain) ToBridgeWalletChain() string {
 	switch c {
 	case WalletChainSolana:
 		return "solana"
-	case WalletChainTron:
-		return "tron"
 	case WalletChainBase:
 		return "base"
-	case WalletChainAvalanche:
-		return "avalanche_c_chain"
-	case WalletChainPolygon, WalletChainCelo:
+	case WalletChainPolygon, WalletChainCelo, WalletChainAvalanche:
 		return "ethereum"
 	default:
 		return ""
@@ -402,7 +390,7 @@ type WalletProvisioningJobResponse struct {
 
 // WalletInitiationRequest represents request to initiate wallet creation after passcode verification
 type WalletInitiationRequest struct {
-	Chains []string `json:"chains,omitempty" validate:"omitempty,dive,oneof=SOL MATIC CELO TRON BASE AVAX"`
+	Chains []string `json:"chains,omitempty" validate:"omitempty,dive,oneof=SOL MATIC CELO BASE AVAX"`
 }
 
 // WalletInitiationResponse represents response for wallet initiation
@@ -415,7 +403,7 @@ type WalletInitiationResponse struct {
 
 // WalletProvisioningRequest represents request to provision wallets
 type WalletProvisioningRequest struct {
-	Chains []string `json:"chains,omitempty" validate:"omitempty,dive,oneof=SOL MATIC CELO TRON BASE AVAX"`
+	Chains []string `json:"chains,omitempty" validate:"omitempty,dive,oneof=SOL MATIC CELO BASE AVAX"`
 }
 
 // WalletProvisioningResponse represents response for wallet provisioning

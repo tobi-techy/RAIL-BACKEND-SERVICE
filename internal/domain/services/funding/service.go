@@ -388,8 +388,10 @@ func matchesManagedWalletChain(walletChain entities.WalletChain, depositChain en
 		entities.WalletChainAvalanche: true,
 	}
 	evmDeposits := map[entities.Chain]bool{
-		entities.ChainMATIC: true,
-		entities.ChainCELO:  true,
+		entities.ChainMATIC:     true,
+		entities.ChainCELO:      true,
+		entities.ChainBase:      true,
+		entities.ChainAvalanche: true,
 	}
 	// EVM chains share the same Bridge wallet address
 	if evmWallets[walletChain] && evmDeposits[depositChain] {
@@ -399,12 +401,6 @@ func matchesManagedWalletChain(walletChain entities.WalletChain, depositChain en
 	switch depositChain {
 	case entities.ChainSOL:
 		return walletChain == entities.WalletChainSolana
-	case entities.ChainTRON:
-		return walletChain == entities.WalletChainTron
-	case entities.ChainBase:
-		return walletChain == entities.WalletChainBase
-	case entities.ChainAvalanche:
-		return walletChain == entities.WalletChainAvalanche
 	default:
 		return string(walletChain) == string(depositChain)
 	}

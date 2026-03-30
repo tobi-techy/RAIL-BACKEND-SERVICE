@@ -173,7 +173,7 @@ func (h *WalletFundingHandlers) GetWalletAddresses(c *gin.Context) {
 				Message: "Invalid blockchain network",
 				Details: map[string]interface{}{
 					"chain":            chainQuery,
-					"supported_chains": []string{"SOL", "MATIC", "CELO", "TRON"},
+					"supported_chains": []string{"SOL", "MATIC", "CELO", "BASE", "AVAX"},
 				},
 			})
 			return
@@ -335,7 +335,7 @@ func (h *WalletFundingHandlers) CreateWalletsForUser(c *gin.Context) {
 				Message: "Invalid blockchain network",
 				Details: map[string]interface{}{
 					"chain":            chainStr,
-					"supported_chains": []string{"SOL", "MATIC", "CELO", "TRON"},
+					"supported_chains": []string{"SOL", "MATIC", "CELO", "BASE", "AVAX"},
 				},
 			})
 			return
@@ -526,7 +526,8 @@ func (h *WalletFundingHandlers) InitiateWalletCreation(c *gin.Context) {
 			string(entities.WalletChainSolana),
 			string(entities.WalletChainPolygon),
 			string(entities.WalletChainCelo),
-			string(entities.WalletChainTron),
+			string(entities.WalletChainBase),
+			string(entities.WalletChainAvalanche),
 		}
 	}
 
@@ -540,7 +541,7 @@ func (h *WalletFundingHandlers) InitiateWalletCreation(c *gin.Context) {
 				Message: "Invalid blockchain network",
 				Details: map[string]interface{}{
 					"chain":            chainStr,
-					"supported_chains": []string{"SOL", "MATIC", "CELO", "TRON"},
+					"supported_chains": []string{"SOL", "MATIC", "CELO", "BASE", "AVAX"},
 				},
 			})
 			return

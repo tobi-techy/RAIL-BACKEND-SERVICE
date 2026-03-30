@@ -111,7 +111,6 @@ func normalizeSupportedChains(chains []entities.WalletChain, logger *zap.Logger)
 			entities.WalletChainSolana,
 			entities.WalletChainPolygon,
 			entities.WalletChainCelo,
-			entities.WalletChainTron,
 			entities.WalletChainBase,
 			entities.WalletChainAvalanche,
 		}
@@ -137,7 +136,6 @@ func normalizeSupportedChains(chains []entities.WalletChain, logger *zap.Logger)
 			entities.WalletChainSolana,
 			entities.WalletChainPolygon,
 			entities.WalletChainCelo,
-			entities.WalletChainTron,
 		}
 	}
 

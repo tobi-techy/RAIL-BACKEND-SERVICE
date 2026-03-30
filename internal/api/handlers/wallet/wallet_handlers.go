@@ -428,7 +428,6 @@ func (h *WalletHandlers) validateInitiationChains(chainStrs []string) ([]entitie
 			string(entities.WalletChainSolana),
 			string(entities.WalletChainPolygon),
 			string(entities.WalletChainCelo),
-			string(entities.WalletChainTron),
 			string(entities.WalletChainBase),
 			string(entities.WalletChainAvalanche),
 		}
