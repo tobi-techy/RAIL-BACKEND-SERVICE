@@ -56,7 +56,7 @@ func NewWithdrawalHandlers(withdrawalService WithdrawalServiceInterface, walletP
 type CryptoWithdrawalRequest struct {
 	Amount             string `json:"amount" binding:"required"`
 	DestinationAddress string `json:"destination_address" binding:"required"`
-	DestinationChain   string `json:"destination_chain"` // optional, defaults to SOL-DEVNET
+	DestinationChain   string `json:"destination_chain"` // optional, defaults to SOL
 	Category           string `json:"category,omitempty"`
 	Narration          string `json:"narration,omitempty"`
 }
@@ -128,10 +128,10 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 		return
 	}
 
-	// Determine destination chain (default to SOL-DEVNET)
+	// Determine destination chain (default to SOL)
 	destChain := req.DestinationChain
 	if destChain == "" {
-		destChain = string(entities.WalletChainSOLDevnet)
+		destChain = string(entities.WalletChainSolana)
 	}
 
 	// Validate destination address format for the target chain
@@ -141,7 +141,7 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 	}
 
 	// The source is always the user's spending wallet.
-	// Try SOL (mainnet) first; the adapter falls back to SOL-DEVNET automatically.
+	// Get user's Solana spending wallet.
 	wallet, err := h.walletProvider.GetUserWalletByChain(c.Request.Context(), userID, string(entities.WalletChainSolana))
 	if err != nil {
 		h.logger.Error("Failed to get user wallet", "error", err, "user_id", userID)

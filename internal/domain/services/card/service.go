@@ -593,10 +593,10 @@ func mapWalletChainToBridgePaymentRail(chain entities.WalletChain) bridge.Paymen
 		return bridge.PaymentRailSolana
 	case entities.WalletChainPolygon, entities.WalletChainMATICAmoy:
 		return bridge.PaymentRailPolygon
-	case entities.WalletChainAvalanche, entities.WalletChainAVAXFuji:
-		return bridge.PaymentRailAvalanche
-	case entities.WalletChainBase, entities.WalletChainBASESepolia:
-		return bridge.PaymentRailBase
+	case entities.WalletChainCelo, entities.WalletChainCELOAlfajores:
+		return bridge.PaymentRailCelo
+	case entities.WalletChainTron, entities.WalletChainTRONShasta:
+		return bridge.PaymentRailTron
 	default:
 		return bridge.PaymentRailSolana
 	}

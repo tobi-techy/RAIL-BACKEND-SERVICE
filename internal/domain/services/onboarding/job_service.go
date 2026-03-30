@@ -35,7 +35,8 @@ func NewOnboardingJobService(jobRepo OnboardingJobRepository, logger *zap.Logger
 		supportedChains = []entities.WalletChain{
 			entities.WalletChainSOLDevnet,
 			entities.WalletChainMATICAmoy,
-			entities.WalletChainAVAXFuji,
+			entities.WalletChainCELOAlfajores,
+			entities.WalletChainTRONShasta,
 		}
 	}
 	return &OnboardingJobService{

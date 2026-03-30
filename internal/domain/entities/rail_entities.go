@@ -13,14 +13,14 @@ type Chain string
 
 const (
 	// Supported chains
-	ChainSOL         Chain = "SOL"
-	ChainSOLDevnet   Chain = "SOL-DEVNET"
-	ChainMATIC       Chain = "MATIC"
-	ChainMATICAmoy   Chain = "MATIC-AMOY"
-	ChainAVAX        Chain = "AVAX"
-	ChainAVAXFuji    Chain = "AVAX-FUJI"
-	ChainBASE        Chain = "BASE"
-	ChainBASESepolia Chain = "BASE-SEPOLIA"
+	ChainSOL           Chain = "SOL"
+	ChainSOLDevnet     Chain = "SOL-DEVNET"
+	ChainMATIC         Chain = "MATIC"
+	ChainMATICAmoy     Chain = "MATIC-AMOY"
+	ChainCELO          Chain = "CELO"
+	ChainCELOAlfajores Chain = "CELO-ALFAJORES"
+	ChainTRON          Chain = "TRON"
+	ChainTRONShasta    Chain = "TRON-SHASTA"
 
 	ChainFiat Chain = "fiat"
 )
@@ -30,6 +30,7 @@ type Stablecoin string
 
 const (
 	StablecoinUSDC Stablecoin = "USDC"
+	StablecoinUSDT Stablecoin = "USDT"
 )
 
 // OrderSide represents buy/sell direction

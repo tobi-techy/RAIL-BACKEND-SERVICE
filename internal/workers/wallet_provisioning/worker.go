@@ -65,7 +65,8 @@ func DefaultConfig() Config {
 		ChainsToProvision: []entities.WalletChain{
 			entities.WalletChainSOLDevnet,
 			entities.WalletChainMATICAmoy,
-			entities.WalletChainAVAXFuji,
+			entities.WalletChainCELOAlfajores,
+			entities.WalletChainTRONShasta,
 		},
 		WalletSetNamePrefix: "STACK-WalletSet",
 	}

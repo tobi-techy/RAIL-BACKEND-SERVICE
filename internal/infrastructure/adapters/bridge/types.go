@@ -68,6 +68,7 @@ const (
 	PaymentRailArbitrum  PaymentRail = "arbitrum"
 	PaymentRailAvalanche PaymentRail = "avalanche_c_chain"
 	PaymentRailBase      PaymentRail = "base"
+	PaymentRailCelo      PaymentRail = "celo"
 	PaymentRailEthereum  PaymentRail = "ethereum"
 	PaymentRailOptimism  PaymentRail = "optimism"
 	PaymentRailPolygon   PaymentRail = "polygon"

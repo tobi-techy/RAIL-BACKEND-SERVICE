@@ -213,12 +213,12 @@ func mapChainToBridgePaymentRail(chain entities.Chain) bridge.PaymentRail {
 	switch chain {
 	case entities.ChainMATIC, entities.ChainMATICAmoy:
 		return bridge.PaymentRailPolygon
-	case entities.ChainAVAX, entities.ChainAVAXFuji:
-		return bridge.PaymentRailAvalanche
+	case entities.ChainCELO, entities.ChainCELOAlfajores:
+		return bridge.PaymentRailCelo
 	case entities.ChainSOL, entities.ChainSOLDevnet:
 		return bridge.PaymentRailSolana
-	case entities.ChainBASE, entities.ChainBASESepolia:
-		return bridge.PaymentRailBase
+	case entities.ChainTRON, entities.ChainTRONShasta:
+		return bridge.PaymentRailTron
 	default:
 		return ""
 	}

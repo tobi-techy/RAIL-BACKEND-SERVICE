@@ -383,12 +383,12 @@ func matchesManagedWalletChain(walletChain entities.WalletChain, depositChain en
 	switch depositChain {
 	case entities.ChainMATIC, entities.ChainMATICAmoy:
 		return walletChain == entities.WalletChainMATICAmoy || walletChain == entities.WalletChainPolygon
-	case entities.ChainAVAX, entities.ChainAVAXFuji:
-		return walletChain == entities.WalletChainAVAXFuji || walletChain == entities.WalletChainAvalanche
+	case entities.ChainCELO, entities.ChainCELOAlfajores:
+		return walletChain == entities.WalletChainCELOAlfajores || walletChain == entities.WalletChainCelo
 	case entities.ChainSOL, entities.ChainSOLDevnet:
 		return walletChain == entities.WalletChainSOLDevnet || walletChain == entities.WalletChainSolana
-	case entities.ChainBASE, entities.ChainBASESepolia:
-		return walletChain == entities.WalletChainBase || walletChain == entities.WalletChainBASESepolia
+	case entities.ChainTRON, entities.ChainTRONShasta:
+		return walletChain == entities.WalletChainTRONShasta || walletChain == entities.WalletChainTron
 	default:
 		return string(walletChain) == string(depositChain)
 	}

@@ -108,6 +108,9 @@ func normalizeSupportedChains(chains []entities.WalletChain, logger *zap.Logger)
 	if len(chains) == 0 {
 		return []entities.WalletChain{
 			entities.WalletChainSolana,
+			entities.WalletChainPolygon,
+			entities.WalletChainCelo,
+			entities.WalletChainTron,
 		}
 	}
 
@@ -129,6 +132,9 @@ func normalizeSupportedChains(chains []entities.WalletChain, logger *zap.Logger)
 	if len(normalized) == 0 {
 		return []entities.WalletChain{
 			entities.WalletChainSolana,
+			entities.WalletChainPolygon,
+			entities.WalletChainCelo,
+			entities.WalletChainTron,
 		}
 	}
 

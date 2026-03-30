@@ -48,16 +48,18 @@ func (a *WithdrawalWalletProviderAdapter) GetUserWalletByChain(ctx context.Conte
 		return wallet, nil
 	}
 
-	// Backward-compatible fallbacks: mainnet chain → testnet equivalent on not-found.
+	// Backward-compatible fallbacks: testnet chain → mainnet equivalent on not-found.
 	if strings.Contains(err.Error(), "not found") {
 		var fallback entities.WalletChain
 		switch normalized {
-		case entities.WalletChainSolana:
-			fallback = entities.WalletChainSOLDevnet
-		case entities.WalletChainPolygon:
-			fallback = entities.WalletChainMATICAmoy
-		case entities.WalletChainAvalanche:
-			fallback = entities.WalletChainAVAXFuji
+		case entities.WalletChainSOLDevnet:
+			fallback = entities.WalletChainSolana
+		case entities.WalletChainMATICAmoy:
+			fallback = entities.WalletChainPolygon
+		case entities.WalletChainCELOAlfajores:
+			fallback = entities.WalletChainCelo
+		case entities.WalletChainTRONShasta:
+			fallback = entities.WalletChainTron
 		}
 		if fallback != "" {
 			return a.getWalletByUserAndChain(ctx, userID, fallback)

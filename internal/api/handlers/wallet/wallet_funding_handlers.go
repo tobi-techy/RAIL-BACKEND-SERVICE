@@ -173,7 +173,7 @@ func (h *WalletFundingHandlers) GetWalletAddresses(c *gin.Context) {
 				Message: "Invalid blockchain network",
 				Details: map[string]interface{}{
 					"chain":            chainQuery,
-					"supported_chains": []string{"ETH", "ETH-SEPOLIA", "SOL", "SOL-DEVNET", "APTOS", "APTOS-TESTNET"},
+					"supported_chains": []string{"SOL", "MATIC", "CELO", "TRON"},
 				},
 			})
 			return
@@ -335,7 +335,7 @@ func (h *WalletFundingHandlers) CreateWalletsForUser(c *gin.Context) {
 				Message: "Invalid blockchain network",
 				Details: map[string]interface{}{
 					"chain":            chainStr,
-					"supported_chains": []string{"ETH", "ETH-SEPOLIA", "SOL", "SOL-DEVNET", "APTOS", "APTOS-TESTNET"},
+					"supported_chains": []string{"SOL", "MATIC", "CELO", "TRON"},
 				},
 			})
 			return
@@ -460,7 +460,7 @@ func (h *WalletFundingHandlers) HealthCheck(c *gin.Context) {
 
 // InitiateWalletCreation handles POST /api/v1/wallets/initiate
 // @Summary Initiate developer-controlled wallet creation after passcode verification
-// @Description Creates developer-controlled wallets using pre-registered Entity Secret Ciphertext across specified testnet chains after passcode verification
+// @Description Creates developer-controlled wallets across specified chains after passcode verification
 // @Tags wallet
 // @Accept json
 // @Produce json
@@ -519,17 +519,18 @@ func (h *WalletFundingHandlers) InitiateWalletCreation(c *gin.Context) {
 		return
 	}
 
-	// Default to all testnet chains if not specified
+	// Default to all mainnet chains
 	chains := req.Chains
 	if len(chains) == 0 {
 		chains = []string{
-			string(entities.WalletChainSOLDevnet),
-			string(entities.WalletChainMATICAmoy),
-			string(entities.WalletChainAVAXFuji),
+			string(entities.WalletChainSolana),
+			string(entities.WalletChainPolygon),
+			string(entities.WalletChainCelo),
+			string(entities.WalletChainTron),
 		}
 	}
 
-	// Validate chains - ensure only testnet chains
+	// Validate chains
 	for _, chainStr := range chains {
 		chain := entities.WalletChain(chainStr)
 		if !chain.IsValid() {
@@ -539,21 +540,7 @@ func (h *WalletFundingHandlers) InitiateWalletCreation(c *gin.Context) {
 				Message: "Invalid blockchain network",
 				Details: map[string]interface{}{
 					"chain":            chainStr,
-					"supported_chains": []string{"SOL-DEVNET", "MATIC-AMOY", "AVAX-FUJI"},
-				},
-			})
-			return
-		}
-
-		// Ensure only testnet chains
-		if !chain.IsTestnet() {
-			h.logger.Warn("Mainnet chain not supported for wallet creation", zap.String("chain", chainStr))
-			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-				Code:    "MAINNET_NOT_SUPPORTED",
-				Message: "Only testnet chains are supported at this time",
-				Details: map[string]interface{}{
-					"requested_chain":  chainStr,
-					"supported_chains": []string{"SOL-DEVNET", "MATIC-AMOY", "AVAX-FUJI"},
+					"supported_chains": []string{"SOL", "MATIC", "CELO", "TRON"},
 				},
 			})
 			return
@@ -744,7 +731,7 @@ func (h *WalletFundingHandlers) ProvisionWallets(c *gin.Context) {
 // @Description Returns the wallet address for the authenticated user on the specified chain
 // @Tags wallet
 // @Produce json
-// @Param chain path string true "Blockchain network" Enums(ETH,ETH-SEPOLIA,MATIC,MATIC-AMOY,SOL,SOL-DEVNET,APTOS,APTOS-TESTNET,AVAX,BASE,BASE-SEPOLIA)
+// @Param chain path string true "Blockchain network" Enums(SOL,MATIC,CELO,TRON)
 // @Success 200 {object} entities.WalletAddressResponse
 // @Failure 400 {object} entities.ErrorResponse
 // @Failure 404 {object} entities.ErrorResponse "Wallet not found for chain"

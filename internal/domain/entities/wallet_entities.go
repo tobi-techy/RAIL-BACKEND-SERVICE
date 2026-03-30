@@ -15,27 +15,28 @@ type WalletChain string
 
 const (
 	// Testnet chains (primary focus)
-	WalletChainSOLDevnet  WalletChain = "SOL-DEVNET"
-	WalletChainMATICAmoy  WalletChain = "MATIC-AMOY"
-	WalletChainAVAXFuji   WalletChain = "AVAX-FUJI"
-	WalletChainBASESepolia WalletChain = "BASE-SEPOLIA"
+	WalletChainSOLDevnet     WalletChain = "SOL-DEVNET"
+	WalletChainMATICAmoy     WalletChain = "MATIC-AMOY"
+	WalletChainCELOAlfajores WalletChain = "CELO-ALFAJORES"
+	WalletChainTRONShasta    WalletChain = "TRON-SHASTA"
 
 	// Mainnet chains
-	WalletChainSolana    WalletChain = "SOL"
-	WalletChainPolygon   WalletChain = "MATIC"
-	WalletChainAvalanche WalletChain = "AVAX"
-	WalletChainBase      WalletChain = "BASE"
+	WalletChainSolana  WalletChain = "SOL"
+	WalletChainPolygon WalletChain = "MATIC"
+	WalletChainCelo    WalletChain = "CELO"
+	WalletChainTron    WalletChain = "TRON"
 
 	// USDC Token Addresses by Chain
 	USDCTokenAddressSOLDevnet  = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-	USDCTokenAddressAVAXFuji   = "0x5425890298aed601595a70AB815c96711a31Bc65"
 	USDCTokenAddressMATICAmoy  = "0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582"
 
 	// Mainnet USDC Token Addresses
 	USDCTokenAddressSOL  = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 	USDCTokenAddressMATIC = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
-	USDCTokenAddressAVAX  = "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E"
-	USDCTokenAddressBASE  = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+	USDCTokenAddressCELO  = "0xcebA9300f2b948710d2653dD7B07f33A8B32118C"
+
+	// USDT Token Address (Tron uses USDT, not USDC)
+	USDTTokenAddressTRON = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
 )
 
 // GetUSDCTokenAddress returns the USDC token address for the chain
@@ -45,14 +46,10 @@ func (c WalletChain) GetUSDCTokenAddress() string {
 		return USDCTokenAddressSOL
 	case WalletChainPolygon:
 		return USDCTokenAddressMATIC
-	case WalletChainAvalanche:
-		return USDCTokenAddressAVAX
-	case WalletChainBase:
-		return USDCTokenAddressBASE
+	case WalletChainCelo:
+		return USDCTokenAddressCELO
 	case WalletChainSOLDevnet:
 		return USDCTokenAddressSOLDevnet
-	case WalletChainAVAXFuji:
-		return USDCTokenAddressAVAXFuji
 	case WalletChainMATICAmoy:
 		return USDCTokenAddressMATICAmoy
 	default:
@@ -62,12 +59,12 @@ func (c WalletChain) GetUSDCTokenAddress() string {
 
 // GetMainnetChains returns supported production chains
 func GetMainnetChains() []WalletChain {
-	return []WalletChain{WalletChainSolana, WalletChainPolygon, WalletChainAvalanche, WalletChainBase}
+	return []WalletChain{WalletChainSolana, WalletChainPolygon, WalletChainCelo, WalletChainTron}
 }
 
 // GetTestnetChains returns supported testnet chains
 func GetTestnetChains() []WalletChain {
-	return []WalletChain{WalletChainSOLDevnet, WalletChainMATICAmoy, WalletChainAVAXFuji, WalletChainBASESepolia}
+	return []WalletChain{WalletChainSOLDevnet, WalletChainMATICAmoy, WalletChainCELOAlfajores, WalletChainTRONShasta}
 }
 
 // IsValid checks if the chain is supported
@@ -97,9 +94,11 @@ func (c WalletChain) GetChainFamily() string {
 	switch c {
 	case WalletChainSOLDevnet, WalletChainSolana:
 		return "Solana"
-	case WalletChainPolygon, WalletChainAvalanche, WalletChainBase,
-		WalletChainMATICAmoy, WalletChainAVAXFuji, WalletChainBASESepolia:
+	case WalletChainPolygon, WalletChainCelo,
+		WalletChainMATICAmoy, WalletChainCELOAlfajores:
 		return "EVM"
+	case WalletChainTron, WalletChainTRONShasta:
+		return "Tron"
 	default:
 		return "Unknown"
 	}
@@ -112,10 +111,10 @@ func (c WalletChain) ToBridgePaymentRail() string {
 		return "solana"
 	case WalletChainMATICAmoy, WalletChainPolygon:
 		return "polygon"
-	case WalletChainAVAXFuji, WalletChainAvalanche:
-		return "avalanche_c_chain"
-	case WalletChainBASESepolia, WalletChainBase:
-		return "base"
+	case WalletChainCELOAlfajores, WalletChainCelo:
+		return "celo"
+	case WalletChainTRONShasta, WalletChainTron:
+		return "tron"
 	default:
 		return "solana"
 	}
@@ -396,7 +395,7 @@ type WalletProvisioningJobResponse struct {
 
 // WalletInitiationRequest represents request to initiate wallet creation after passcode verification
 type WalletInitiationRequest struct {
-	Chains []string `json:"chains,omitempty" validate:"omitempty,dive,oneof=SOL SOL-DEVNET MATIC MATIC-AMOY AVAX AVAX-FUJI BASE BASE-SEPOLIA"`
+	Chains []string `json:"chains,omitempty" validate:"omitempty,dive,oneof=SOL SOL-DEVNET MATIC MATIC-AMOY CELO CELO-ALFAJORES TRON TRON-SHASTA"`
 }
 
 // WalletInitiationResponse represents response for wallet initiation
@@ -409,7 +408,7 @@ type WalletInitiationResponse struct {
 
 // WalletProvisioningRequest represents request to provision wallets
 type WalletProvisioningRequest struct {
-	Chains []string `json:"chains,omitempty" validate:"omitempty,dive,oneof=ETH ETH-SEPOLIA MATIC MATIC-AMOY SOL SOL-DEVNET APTOS APTOS-TESTNET AVAX BASE BASE-SEPOLIA"`
+	Chains []string `json:"chains,omitempty" validate:"omitempty,dive,oneof=ETH ETH-SEPOLIA MATIC MATIC-AMOY SOL SOL-DEVNET APTOS APTOS-TESTNET CELO CELO-ALFAJORES TRON TRON-SHASTA"`
 }
 
 // WalletProvisioningResponse represents response for wallet provisioning

@@ -2262,14 +2262,14 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 				chain = entities.WalletChainPolygon
 			case "MATIC_AMOY":
 				chain = entities.WalletChainMATICAmoy
-			case "AVALANCHE", "AVAX", "AVALANCHE_C_CHAIN":
-				chain = entities.WalletChainAvalanche
-			case "AVAX_FUJI":
-				chain = entities.WalletChainAVAXFuji
-			case "BASE":
-				chain = entities.WalletChainBase
-			case "BASE_SEPOLIA":
-				chain = entities.WalletChainBASESepolia
+			case "CELO":
+				chain = entities.WalletChainCelo
+			case "CELO_ALFAJORES":
+				chain = entities.WalletChainCELOAlfajores
+			case "TRON":
+				chain = entities.WalletChainTron
+			case "TRON_SHASTA":
+				chain = entities.WalletChainTRONShasta
 			default:
 				logger.Warn("Ignoring unsupported wallet chain from configuration", zap.String("chain", upper))
 				continue

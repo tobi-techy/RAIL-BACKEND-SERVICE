@@ -5,8 +5,8 @@ import (
 	"fmt"
 
 	"github.com/jmoiron/sqlx"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/lulo"
 	yieldsvc "github.com/rail-service/rail_service/internal/domain/services/yield"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/lulo"
 	"github.com/shopspring/decimal"
 )
 
