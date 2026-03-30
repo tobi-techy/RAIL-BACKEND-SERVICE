@@ -288,9 +288,9 @@ func (s *Service) recoverWalletFromBridge(ctx context.Context, customerID, chain
 		return nil
 	}
 
-	targetRail := entities.WalletChain(chain).ToBridgePaymentRail()
+	targetRail := entities.WalletChain(chain).ToBridgeWalletChain()
 	for _, rw := range remoteWallets {
-		rwRail := rw.Chain.ToBridgePaymentRail()
+		rwRail := rw.Chain.ToBridgeWalletChain()
 		if rwRail == targetRail {
 			s.logger.Info("Recovered existing wallet from Bridge",
 				zap.String("chain", chain),

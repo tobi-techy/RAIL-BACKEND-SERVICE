@@ -294,8 +294,7 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 		}, nil
 	}
 
-	// Check managed_wallets (custody wallets + liquidation addresses) — these are the
-	// primary wallet type for testnet chains like MATIC-AMOY, AVAX-FUJI, SOL-DEVNET.
+	// Check managed_wallets (custody wallets + liquidation addresses).
 	if s.managedWalletRepo != nil {
 		managedWallets, mErr := s.managedWalletRepo.GetByUserID(ctx, userID)
 		if mErr == nil {
@@ -324,9 +323,10 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 	}
 	customerID := *user.BridgeCustomerID
 	walletChain := entities.WalletChain(chain)
-	bridgeChain := walletChain.ToBridgePaymentRail()
+	bridgeChain := walletChain.ToBridgeWalletChain()
 
-	// Find existing custody wallet for this chain
+	// Find existing custody wallet for this chain.
+	// EVM chains (Polygon, Celo) map to "ethereum" on Bridge, so they share a wallet.
 	wallets, err := s.bridgeWallets.ListWallets(ctx, customerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list Bridge wallets: %w", err)
@@ -379,12 +379,26 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 }
 
 // matchesManagedWalletChain checks if a managed wallet's chain matches the requested deposit chain.
+// EVM chains (Polygon, Celo) share the same Ethereum address on Bridge, so they cross-match.
 func matchesManagedWalletChain(walletChain entities.WalletChain, depositChain entities.Chain) bool {
+	evmWallets := map[entities.WalletChain]bool{
+		entities.WalletChainPolygon:       true,
+		entities.WalletChainMATICAmoy:     true,
+		entities.WalletChainCelo:          true,
+		entities.WalletChainCELOAlfajores: true,
+	}
+	evmDeposits := map[entities.Chain]bool{
+		entities.ChainMATIC:         true,
+		entities.ChainMATICAmoy:     true,
+		entities.ChainCELO:          true,
+		entities.ChainCELOAlfajores: true,
+	}
+	// EVM chains share the same Bridge wallet address
+	if evmWallets[walletChain] && evmDeposits[depositChain] {
+		return true
+	}
+
 	switch depositChain {
-	case entities.ChainMATIC, entities.ChainMATICAmoy:
-		return walletChain == entities.WalletChainMATICAmoy || walletChain == entities.WalletChainPolygon
-	case entities.ChainCELO, entities.ChainCELOAlfajores:
-		return walletChain == entities.WalletChainCELOAlfajores || walletChain == entities.WalletChainCelo
 	case entities.ChainSOL, entities.ChainSOLDevnet:
 		return walletChain == entities.WalletChainSOLDevnet || walletChain == entities.WalletChainSolana
 	case entities.ChainTRON, entities.ChainTRONShasta:

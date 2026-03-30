@@ -80,9 +80,14 @@ type BridgeWalletProvisioningAdapter struct {
 }
 
 func (a *BridgeWalletProvisioningAdapter) CreateWalletForCustomer(ctx context.Context, customerID string, chain string) (*entities.ManagedWallet, error) {
+	bridgeChain := entities.WalletChain(chain).ToBridgeWalletChain()
+	currency := bridge.CurrencyUSDC
+	if bridgeChain == "tron" {
+		currency = bridge.CurrencyUSDT
+	}
 	w, err := a.client.CreateWallet(ctx, customerID, &bridge.CreateWalletRequest{
-		Chain:    bridge.PaymentRail(entities.WalletChain(chain).ToBridgePaymentRail()),
-		Currency: bridge.CurrencyUSDC,
+		Chain:    bridge.PaymentRail(bridgeChain),
+		Currency: currency,
 	})
 	if err != nil {
 		return nil, err
@@ -172,7 +177,11 @@ func (a *BridgeDepositAdapter) ListWallets(ctx context.Context, customerID strin
 }
 
 func (a *BridgeDepositAdapter) CreateWallet(ctx context.Context, customerID string, chain string) (string, string, error) {
-	w, err := a.client.CreateWallet(ctx, customerID, &bridge.CreateWalletRequest{Chain: bridge.PaymentRail(chain)})
+	currency := bridge.CurrencyUSDC
+	if chain == "tron" {
+		currency = bridge.CurrencyUSDT
+	}
+	w, err := a.client.CreateWallet(ctx, customerID, &bridge.CreateWalletRequest{Chain: bridge.PaymentRail(chain), Currency: currency})
 	if err != nil {
 		return "", "", err
 	}

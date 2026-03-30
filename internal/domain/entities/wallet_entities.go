@@ -105,6 +105,7 @@ func (c WalletChain) GetChainFamily() string {
 }
 
 // ToBridgePaymentRail maps a WalletChain to the Bridge API payment rail string
+// Used for transfers, liquidation addresses, and orchestration.
 func (c WalletChain) ToBridgePaymentRail() string {
 	switch c {
 	case WalletChainSOLDevnet, WalletChainSolana:
@@ -115,6 +116,24 @@ func (c WalletChain) ToBridgePaymentRail() string {
 		return "celo"
 	case WalletChainTRONShasta, WalletChainTron:
 		return "tron"
+	default:
+		return "solana"
+	}
+}
+
+// ToBridgeWalletChain maps a WalletChain to the chain string accepted by
+// Bridge's Custodial Wallets API. Bridge wallets only support: ethereum,
+// solana, tron, base. EVM chains (Polygon, Celo) map to "ethereum" because
+// they share the same deposit address.
+func (c WalletChain) ToBridgeWalletChain() string {
+	switch c {
+	case WalletChainSOLDevnet, WalletChainSolana:
+		return "solana"
+	case WalletChainTRONShasta, WalletChainTron:
+		return "tron"
+	case WalletChainMATICAmoy, WalletChainPolygon,
+		WalletChainCELOAlfajores, WalletChainCelo:
+		return "ethereum"
 	default:
 		return "solana"
 	}
