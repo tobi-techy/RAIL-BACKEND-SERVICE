@@ -180,12 +180,7 @@ func (a *BridgeDepositAdapter) ListWallets(ctx context.Context, customerID strin
 }
 
 func (a *BridgeDepositAdapter) CreateWallet(ctx context.Context, customerID string, chain string) (string, string, error) {
-	bridgeChain := entities.WalletChain(chain).ToBridgeWalletChain()
-	if bridgeChain == "" {
-		return "", "", fmt.Errorf("unsupported chain: %s", chain)
-	}
-	currency := bridge.CurrencyUSDC
-	w, err := a.client.CreateWallet(ctx, customerID, &bridge.CreateWalletRequest{Chain: bridge.PaymentRail(bridgeChain), Currency: currency})
+	w, err := a.client.CreateWallet(ctx, customerID, &bridge.CreateWalletRequest{Chain: bridge.PaymentRail(chain), Currency: bridge.CurrencyUSDC})
 	if err != nil {
 		return "", "", err
 	}
