@@ -57,13 +57,14 @@ func (e *ErrorResponse) IsConflict() bool {
 func (e *ErrorResponse) IsCustomerAlreadyExists() bool {
 	msg := strings.ToLower(e.Message)
 	code := strings.ToLower(e.Code)
-	if e.IsConflict() || (e.StatusCode == 400 && strings.Contains(msg, "already exists")) {
-		return strings.Contains(msg, "already exists") ||
-			strings.Contains(code, "already_exists") ||
-			strings.Contains(code, "duplicate") ||
-			strings.Contains(msg, "duplicate")
+	errStr := strings.ToLower(e.Error())
+	if e.IsConflict() ||
+		strings.Contains(msg, "already exists") ||
+		strings.Contains(errStr, "already exists") {
+		return true
 	}
-	return false
+	return strings.Contains(code, "already_exists") ||
+		strings.Contains(code, "duplicate")
 }
 
 // GetErrorType returns a standardized error type string for the error
