@@ -52,6 +52,7 @@ type UserRepository interface {
 	Update(ctx context.Context, user *entities.UserProfile) error
 	UpdateOnboardingStatus(ctx context.Context, userID uuid.UUID, status entities.OnboardingStatus) error
 	UpdateKYCStatus(ctx context.Context, userID uuid.UUID, status string, approvedAt *time.Time, rejectionReason *string) error
+	UpdateBridgeKYCStatus(ctx context.Context, userID uuid.UUID, status string) error
 	UpdatePassword(ctx context.Context, userID uuid.UUID, hash string) error
 }
 
@@ -267,11 +268,12 @@ func (s *Service) GetOnboardingStatus(ctx context.Context, userID uuid.UUID) (*e
 	completedSteps, err := s.onboardingFlowRepo.GetCompletedSteps(ctx, userID)
 
 	// Poll Bridge if KYC is still pending and user has a Bridge customer
-	if user.KYCStatus == "pending" && user.BridgeCustomerID != nil && *user.BridgeCustomerID != "" {
+	if (user.KYCStatus == "pending" || user.OnboardingStatus != entities.OnboardingStatusCompleted) && user.BridgeCustomerID != nil && *user.BridgeCustomerID != "" {
 		if bridgeCust, err := s.bridgeAdapter.GetCustomerByEmail(ctx, user.Email); err == nil && bridgeCust != nil && bridgeCust.Status == "active" {
 			now := time.Now()
 			_ = s.userRepo.UpdateKYCStatus(ctx, userID, "approved", &now, nil)
 			_ = s.userRepo.UpdateOnboardingStatus(ctx, userID, entities.OnboardingStatusCompleted)
+			_ = s.userRepo.UpdateBridgeKYCStatus(ctx, userID, "active")
 			user.KYCStatus = "approved"
 			user.KYCApprovedAt = &now
 			user.OnboardingStatus = entities.OnboardingStatusCompleted
