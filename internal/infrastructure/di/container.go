@@ -1351,59 +1351,64 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize ledger service
 	c.LedgerService = ledger.NewService(c.LedgerRepo, sqlxDB, c.Logger)
 
-	// Initialize yield service (Lulo-backed)
-	luloClient, err := lulo.NewClient(
-		c.Config.Lulo.BaseURL,
-		c.Config.Lulo.APIKey,
-		c.Config.Lulo.SolanaRPC,
-		c.Config.Lulo.OwnerWallet,
-		c.Config.Lulo.PrivateKey,
-		c.ZapLog,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to create lulo client: %w", err)
-	}
-	rewardsAdapter := &luloRewardsAdapter{client: luloClient, db: sqlxDB}
-
-	minSweep, _ := decimal.NewFromString(c.Config.Lulo.MinSweepAmount)
-	if minSweep.IsZero() {
-		minSweep = decimal.NewFromInt(100)
-	}
-	interval := time.Duration(c.Config.Lulo.SweepInterval) * time.Minute
-	if interval == 0 {
-		interval = 10 * time.Minute
-	}
-	sweepWorker := treasury_sweep.NewWorker(
-		luloClient,
-		c.BridgeClient,
-		c.LedgerRepo,
-		sqlxDB,
-		c.Config.Bridge.RailCustomerID,
-		c.Config.Lulo.BridgeSourceWalletID,
-		c.Config.Lulo.OwnerWallet,
-		c.Config.Lulo.PoolType,
-		minSweep,
-		interval,
-		c.ZapLog,
-	)
-	sweepWorker.Start()
-	c.TreasurySweepWorker = sweepWorker
-
-	c.YieldService = yieldsvc.NewService(c.yieldRepo, rewardsAdapter, c.LedgerService, c.ZapLog)
-	if c.NotificationService != nil {
-		c.YieldService.SetNotifier(c.NotificationService)
-	}
-
-	// Stash reconciliation: daily check that ledger stash total matches Lulo deposited value.
-	if c.Config.Lulo.OwnerWallet != "" {
-		reconAdapter := &luloReconciliationAdapter{client: luloClient}
-		c.StashReconciliation = recon.NewWorker(
-			c.LedgerRepo,
-			reconAdapter,
+	// Initialize yield service (Lulo-backed) — skip if private key not configured
+	if c.Config.Lulo.PrivateKey != "" {
+		luloClient, err := lulo.NewClient(
+			c.Config.Lulo.BaseURL,
+			c.Config.Lulo.APIKey,
+			c.Config.Lulo.SolanaRPC,
 			c.Config.Lulo.OwnerWallet,
-			c.Config.Lulo.OwnerWallet,
+			c.Config.Lulo.PrivateKey,
 			c.ZapLog,
 		)
+		if err != nil {
+			return fmt.Errorf("failed to create lulo client: %w", err)
+		}
+		rewardsAdapter := &luloRewardsAdapter{client: luloClient, db: sqlxDB}
+
+		minSweep, _ := decimal.NewFromString(c.Config.Lulo.MinSweepAmount)
+		if minSweep.IsZero() {
+			minSweep = decimal.NewFromInt(100)
+		}
+		interval := time.Duration(c.Config.Lulo.SweepInterval) * time.Minute
+		if interval == 0 {
+			interval = 10 * time.Minute
+		}
+		sweepWorker := treasury_sweep.NewWorker(
+			luloClient,
+			c.BridgeClient,
+			c.LedgerRepo,
+			sqlxDB,
+			c.Config.Bridge.RailCustomerID,
+			c.Config.Lulo.BridgeSourceWalletID,
+			c.Config.Lulo.OwnerWallet,
+			c.Config.Lulo.PoolType,
+			minSweep,
+			interval,
+			c.ZapLog,
+		)
+		sweepWorker.Start()
+		c.TreasurySweepWorker = sweepWorker
+
+		c.YieldService = yieldsvc.NewService(c.yieldRepo, rewardsAdapter, c.LedgerService, c.ZapLog)
+		if c.NotificationService != nil {
+			c.YieldService.SetNotifier(c.NotificationService)
+		}
+
+		// Stash reconciliation: daily check that ledger stash total matches Lulo deposited value.
+		if c.Config.Lulo.OwnerWallet != "" {
+			reconAdapter := &luloReconciliationAdapter{client: luloClient}
+			c.StashReconciliation = recon.NewWorker(
+				c.LedgerRepo,
+				reconAdapter,
+				c.Config.Lulo.OwnerWallet,
+				c.Config.Lulo.OwnerWallet,
+				c.ZapLog,
+			)
+		}
+	} else {
+		c.ZapLog.Warn("Lulo private key not configured; yield/sweep/reconciliation disabled")
+		c.YieldService = yieldsvc.NewService(c.yieldRepo, nil, c.LedgerService, c.ZapLog)
 	}
 
 	// Initialize ledger integration (bridges legacy and new ledger system)
