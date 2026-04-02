@@ -213,7 +213,7 @@ bridge:
   supported_chains:
     - "solana"
     - "polygon"
-    - "avalanche_c_chain"
+    - "AVAX"
 
   transaction_limits:
   deposit:

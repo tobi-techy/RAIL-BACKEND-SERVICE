@@ -8,7 +8,7 @@ terraform {
   }
   # Store state in S3 — create the bucket manually once before first apply
   backend "s3" {
-    bucket = "rail-terraform-state-605894285151"
+    bucket = "rail-terraform-state-885160773772"
     key    = "terraform.tfstate"
     region = "us-east-1"
   }
@@ -371,6 +371,11 @@ resource "aws_ecs_task_definition" "app" {
       { name = "BRIDGE_BASE_URL",       valueFrom = "/rail/${local.env}/BRIDGE_BASE_URL" },
       { name = "BRIDGE_ENVIRONMENT",    valueFrom = "/rail/${local.env}/BRIDGE_ENVIRONMENT" },
       { name = "BRIDGE_WEBHOOK_SECRET", valueFrom = "/rail/${local.env}/BRIDGE_WEBHOOK_SECRET" },
+      { name = "LULO_API_KEY",          valueFrom = "/rail/${local.env}/LULO_API_KEY" },
+      { name = "LULO_SOLANA_RPC",       valueFrom = "/rail/${local.env}/LULO_SOLANA_RPC" },
+      { name = "LULO_OWNER_WALLET",     valueFrom = "/rail/${local.env}/LULO_OWNER_WALLET" },
+      { name = "LULO_PRIVATE_KEY",      valueFrom = "/rail/${local.env}/LULO_PRIVATE_KEY" },
+      { name = "LULO_BRIDGE_SOURCE_WALLET_ID", valueFrom = "/rail/${local.env}/LULO_BRIDGE_SOURCE_WALLET_ID" },
       { name = "OPENAI_API_KEY",        valueFrom = "/rail/${local.env}/OPENAI_API_KEY" },
       { name = "GEMINI_API_KEY",        valueFrom = "/rail/${local.env}/GEMINI_API_KEY" },
       { name = "NEWS_API_KEY",          valueFrom = "/rail/${local.env}/NEWS_API_KEY" },

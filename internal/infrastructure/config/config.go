@@ -1086,6 +1086,23 @@ func overrideFromEnv() {
 		viper.Set("bridge.webhook_secret", bridgeWebhookSecret)
 	}
 
+	// Lulo yield
+	if v := os.Getenv("LULO_API_KEY"); v != "" {
+		viper.Set("lulo.api_key", v)
+	}
+	if v := os.Getenv("LULO_SOLANA_RPC"); v != "" {
+		viper.Set("lulo.solana_rpc", v)
+	}
+	if v := os.Getenv("LULO_OWNER_WALLET"); v != "" {
+		viper.Set("lulo.owner_wallet", v)
+	}
+	if v := os.Getenv("LULO_PRIVATE_KEY"); v != "" {
+		viper.Set("lulo.private_key", v)
+	}
+	if v := os.Getenv("LULO_BRIDGE_SOURCE_WALLET_ID"); v != "" {
+		viper.Set("lulo.bridge_source_wallet_id", v)
+	}
+
 	// Admin security settings
 	if adminBootstrapToken := os.Getenv("ADMIN_BOOTSTRAP_TOKEN"); adminBootstrapToken != "" {
 		viper.Set("security.admin_bootstrap_token", adminBootstrapToken)
