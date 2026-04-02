@@ -265,6 +265,19 @@ func (s *Service) GetOnboardingStatus(ctx context.Context, userID uuid.UUID) (*e
 
 	// Get completed steps
 	completedSteps, err := s.onboardingFlowRepo.GetCompletedSteps(ctx, userID)
+
+	// Poll Bridge if KYC is still pending and user has a Bridge customer
+	if user.KYCStatus == "pending" && user.BridgeCustomerID != nil && *user.BridgeCustomerID != "" {
+		if bridgeCust, err := s.bridgeAdapter.GetCustomerByEmail(ctx, user.Email); err == nil && bridgeCust != nil && bridgeCust.Status == "active" {
+			now := time.Now()
+			_ = s.userRepo.UpdateKYCStatus(ctx, userID, "approved", &now, nil)
+			_ = s.userRepo.UpdateOnboardingStatus(ctx, userID, entities.OnboardingStatusCompleted)
+			user.KYCStatus = "approved"
+			user.KYCApprovedAt = &now
+			user.OnboardingStatus = entities.OnboardingStatusCompleted
+			s.logger.Info("Bridge poll: updated KYC to approved", zap.String("user_id", userID.String()))
+		}
+	}
 	if err != nil {
 		s.logger.Warn("Failed to get completed steps", zap.Error(err), zap.String("userId", userID.String()))
 		completedSteps = []entities.OnboardingStepType{}
