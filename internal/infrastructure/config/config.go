@@ -1086,6 +1086,17 @@ func overrideFromEnv() {
 		viper.Set("bridge.webhook_secret", bridgeWebhookSecret)
 	}
 
+	// Apple Sign-In
+	if v := os.Getenv("APPLE_TEAM_ID"); v != "" {
+		viper.Set("social_auth.apple.team_id", v)
+	}
+	if v := os.Getenv("APPLE_KEY_ID"); v != "" {
+		viper.Set("social_auth.apple.key_id", v)
+	}
+	if v := os.Getenv("APPLE_PRIVATE_KEY"); v != "" {
+		viper.Set("social_auth.apple.private_key", v)
+	}
+
 	// Lulo yield
 	if v := os.Getenv("LULO_API_KEY"); v != "" {
 		viper.Set("lulo.api_key", v)
