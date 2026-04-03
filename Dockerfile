@@ -50,6 +50,9 @@ COPY --from=builder /app/configs /configs
 # Copy migrations
 COPY --from=builder /app/migrations /migrations
 
+# Copy static files (AASA for passkeys)
+COPY --from=builder /app/static /static
+
 # Use non-root user
 USER builduser
 
