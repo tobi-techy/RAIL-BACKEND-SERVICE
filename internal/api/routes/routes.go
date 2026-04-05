@@ -475,6 +475,15 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					funding.POST("/instant", instantFundingHandlers.RequestInstantFunding)
 					funding.GET("/instant/status", instantFundingHandlers.GetInstantFundingStatus)
 				}
+
+				// ChainRails - cross-chain deposit from any supported chain
+				if container.ChainRailsHandlers != nil {
+					chainrails := funding.Group("/chainrails")
+					chainrails.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
+					chainrails.POST("/session", 
+						middleware.AuthRateLimit(10), // 10 requests per minute per user
+						container.ChainRailsHandlers.CreateSession)
+				}
 			}
 
 			// Unified Balance route
@@ -851,6 +860,13 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				webhooks.POST("/bridge", bridgeWebhookHandler.HandleWebhook)
 				// Synchronous real-time card authorization webhook (Bridge calls this during transactions)
 				webhooks.POST("/bridge/card-auth", bridgeWebhookHandler.HandleRealTimeAuth)
+			}
+
+			// ChainRails webhooks for cross-chain deposits
+			if container.ChainRailsHandlers != nil {
+				chainrailsWebhooks := webhooks.Group("/chainrails")
+				chainrailsWebhooks.Use(middleware.RateLimit(100)) // 100 req/min per IP
+				chainrailsWebhooks.POST("", container.ChainRailsHandlers.HandleWebhook)
 			}
 		}
 

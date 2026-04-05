@@ -35,6 +35,7 @@ type Config struct {
 	Lulo           LuloConfig           `mapstructure:"lulo"`
 	Grid           GridConfig           `mapstructure:"grid"`
 	CCTP           CCTPConfig           `mapstructure:"cctp"`
+	ChainRails     ChainRailsConfig     `mapstructure:"chainrails"`
 	Workers        WorkerConfig         `mapstructure:"workers"`
 	Reconciliation ReconciliationConfig `mapstructure:"reconciliation"`
 	SocialAuth     SocialAuthConfig     `mapstructure:"social_auth"`
@@ -392,6 +393,15 @@ type LuloConfig struct {
 	SweepInterval  int    `mapstructure:"sweep_interval"`   // Sweep interval in minutes
 	// Bridge custody wallet used to fund the Solana wallet with USDC before Lulo deposits.
 	BridgeSourceWalletID string `mapstructure:"bridge_source_wallet_id"`
+}
+
+// ChainRailsConfig contains ChainRails cross-chain deposit configuration.
+type ChainRailsConfig struct {
+	APIKey           string `mapstructure:"api_key"`
+	WebhookSecret    string `mapstructure:"webhook_secret"`
+	BaseURL          string `mapstructure:"base_url"`          // default: https://api.chainrails.io/api/v1
+	DestinationChain string `mapstructure:"destination_chain"` // e.g. "BASE_MAINNET"
+	SettlementToken  string `mapstructure:"settlement_token"`  // e.g. "USDC"
 }
 
 // WorkerConfig contains background worker configuration
@@ -1087,6 +1097,23 @@ func overrideFromEnv() {
 	}
 	if bridgeWebhookSecret := os.Getenv("BRIDGE_WEBHOOK_SECRET"); bridgeWebhookSecret != "" {
 		viper.Set("bridge.webhook_secret", bridgeWebhookSecret)
+	}
+
+	// ChainRails API
+	if chainrailsAPIKey := os.Getenv("CHAINRAILS_API_KEY"); chainrailsAPIKey != "" {
+		viper.Set("chainrails.api_key", chainrailsAPIKey)
+	}
+	if chainrailsWebhookSecret := os.Getenv("CHAINRAILS_WEBHOOK_SECRET"); chainrailsWebhookSecret != "" {
+		viper.Set("chainrails.webhook_secret", chainrailsWebhookSecret)
+	}
+	if chainrailsBaseURL := os.Getenv("CHAINRAILS_BASE_URL"); chainrailsBaseURL != "" {
+		viper.Set("chainrails.base_url", chainrailsBaseURL)
+	}
+	if chainrailsDestinationChain := os.Getenv("CHAINRAILS_DESTINATION_CHAIN"); chainrailsDestinationChain != "" {
+		viper.Set("chainrails.destination_chain", chainrailsDestinationChain)
+	}
+	if chainrailsSettlementToken := os.Getenv("CHAINRAILS_SETTLEMENT_TOKEN"); chainrailsSettlementToken != "" {
+		viper.Set("chainrails.settlement_token", chainrailsSettlementToken)
 	}
 
 	// Apple Sign-In
