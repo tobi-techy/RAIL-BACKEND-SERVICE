@@ -3361,8 +3361,8 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 
 	// --- ChainRails (cross-chain deposit funnel) ---
 	c.ZapLog.Info("ChainRails config debug", 
-		zap.String("api_key", c.Config.ChainRails.APIKey),
-		zap.String("webhook_secret", c.Config.ChainRails.WebhookSecret),
+		zap.Bool("api_key_present", c.Config.ChainRails.APIKey != ""),
+		zap.Bool("webhook_secret_present", c.Config.ChainRails.WebhookSecret != ""),
 		zap.String("destination_chain", c.Config.ChainRails.DestinationChain),
 		zap.String("settlement_token", c.Config.ChainRails.SettlementToken))
 	
