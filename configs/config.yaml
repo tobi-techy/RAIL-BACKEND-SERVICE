@@ -3,9 +3,9 @@ log_level: info
 
 # ChainRails cross-chain deposit integration
 chainrails:
-  api_key: "cr_live_a63a565407301c61a1e7dfb247e07981f879d7d132c75c1358b9929b002f85c7"
-  webhook_secret: "cccc325ff055847d53302d4c72bc5943ee83e31bbe6dc40158c184dea66a0391"
-  base_url: "https://api.chainrails.com"
+  api_key: "${CHAINRAILS_API_KEY}"
+  webhook_secret: "${CHAINRAILS_WEBHOOK_SECRET}"
+  base_url: "${CHAINRAILS_BASE_URL:-https://api.chainrails.io/api/v1}"
   destination_chain: "BASE_MAINNET"
   settlement_token: "USDC"
 

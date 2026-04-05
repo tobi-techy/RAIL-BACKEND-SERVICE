@@ -2,7 +2,7 @@
   "containerDefinitions": [
     {
       "name": "rail-backend",
-      "image": "885160773772.dkr.ecr.us-east-1.amazonaws.com/rail-backend:5033a1a4dfbf098c86d0106f68c9b97a7a5de076-amd64",
+      "image": "885160773772.dkr.ecr.us-east-1.amazonaws.com/rail-backend:d2a3c1fc4ce0284c31a031c955428f3064cb2a0e",
       "cpu": 0,
       "memory": 450,
       "portMappings": [
