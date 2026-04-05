@@ -26,6 +26,7 @@ import (
 	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/crypto"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/rail-service/rail_service/pkg/security"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -142,7 +143,7 @@ func (h *SecurityAdminHandlers) CreateAdmin(c *gin.Context) {
 
 	exists, err := h.emailExistsHelper(ctx, req.Email)
 	if err != nil {
-		h.logger.Error("failed to check email existence", zap.Error(err), zap.String("email", req.Email))
+		h.logger.Error("failed to check email existence", zap.Error(err), zap.String("email", security.MaskString(req.Email)))
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":   "INTERNAL_ERROR",
 			"message": "Failed to process request",

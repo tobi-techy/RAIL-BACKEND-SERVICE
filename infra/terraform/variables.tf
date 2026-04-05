@@ -16,3 +16,8 @@ variable "domain" {
   description = "API domain for this environment. Defaults to env-based convention."
   default     = null
 }
+
+variable "project_name" {
+  description = "Project name used for resource naming"
+  default     = "rail"
+}

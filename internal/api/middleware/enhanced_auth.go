@@ -145,7 +145,7 @@ func LoginRateLimiting(tracker *ratelimit.LoginAttemptTracker, captchaVerifier C
 
 		identifier := ""
 		if req.Email != nil && strings.TrimSpace(*req.Email) != "" {
-			identifier = strings.TrimSpace(*req.Email)
+			identifier = strings.ToLower(strings.TrimSpace(*req.Email))
 		} else if req.Phone != nil && strings.TrimSpace(*req.Phone) != "" {
 			identifier = strings.TrimSpace(*req.Phone)
 		}

@@ -295,11 +295,8 @@ func (s *Service) ReserveForInvestment(ctx context.Context, userID uuid.UUID, am
 		return fmt.Errorf("get pending account: %w", err)
 	}
 
-	// Check sufficient balance
-	if usdcAccount.Balance.LessThan(amount) {
-		return fmt.Errorf("insufficient USDC balance: have %s, need %s",
-			usdcAccount.Balance.String(), amount.String())
-	}
+	// Balance check removed: CreateTransaction uses SELECT FOR UPDATE internally,
+	// which atomically checks and prevents overdraft. Pre-flight check was a TOCTOU race.
 
 	// Create reservation transaction
 	idempotencyKey := fmt.Sprintf("reserve-%s-%s-%d", userID.String(), amount.String(), time.Now().UnixNano())
@@ -353,11 +350,8 @@ func (s *Service) ReleaseReservation(ctx context.Context, userID uuid.UUID, amou
 		return fmt.Errorf("get pending account: %w", err)
 	}
 
-	// Check sufficient pending balance
-	if pendingAccount.Balance.LessThan(amount) {
-		return fmt.Errorf("insufficient pending balance: have %s, need %s",
-			pendingAccount.Balance.String(), amount.String())
-	}
+	// Balance check removed: CreateTransaction uses SELECT FOR UPDATE internally,
+	// which atomically checks and prevents overdraft. Pre-flight check was a TOCTOU race.
 
 	// Create release transaction
 	idempotencyKey := fmt.Sprintf("release-%s-%s-%d", userID.String(), amount.String(), time.Now().UnixNano())
@@ -551,11 +545,8 @@ func (s *Service) RecordCardTransaction(ctx context.Context, userID uuid.UUID, a
 		return fmt.Errorf("get spend account: %w", err)
 	}
 
-	// Check sufficient balance
-	if spendAccount.Balance.LessThan(amount) {
-		return fmt.Errorf("insufficient spend balance: have %s, need %s",
-			spendAccount.Balance.String(), amount.String())
-	}
+	// Balance check removed: CreateTransaction uses SELECT FOR UPDATE internally,
+	// which atomically checks and prevents overdraft. Pre-flight check was a TOCTOU race.
 
 	// Get system card settlement account (or create one)
 	settlementAccount, err := s.GetSystemAccount(ctx, entities.AccountTypeSystemBufferFiat)

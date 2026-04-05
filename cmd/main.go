@@ -7,17 +7,17 @@ import (
 	"github.com/rail-service/rail_service/internal/app"
 )
 
-// @title Stack Service API
+// @title Rail Service API
 // @version 1.0
-// @description GenZ Web3 Multi-Chain Investment Platform API
-// @termsOfService http://swagger.io/terms/
+// @description Rules-based capital engine — money splits itself the moment it arrives.
+// @termsOfService https://www.getrail.app/terms
 
 // @contact.name API Support
-// @contact.url http://www.stackservice.com/support
-// @contact.email support@stackservice.com
+// @contact.url https://www.getrail.app/support
+// @contact.email support@getrail.app
 
-// @license.name Apache 2.0
-// @license.url http://www.apache.org/licenses/LICENSE-2.0.html
+// @license.name MIT
+// @license.url https://opensource.org/licenses/MIT
 
 // @host localhost:8080
 // @BasePath /api/v1

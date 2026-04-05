@@ -182,6 +182,9 @@ func (c *Client) VerifyWebhookSignature(body []byte, signatureHeader, timestampH
 // --- internal helpers ---
 
 func (c *Client) doRequest(ctx context.Context, method, path string, body any, out any) error {
+	reqCtx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+
 	var payload io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -191,7 +194,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any, o
 		payload = bytes.NewReader(data)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, payload)
+	req, err := http.NewRequestWithContext(reqCtx, method, baseURL+path, payload)
 	if err != nil {
 		return fmt.Errorf("failed to create didit request: %w", err)
 	}
@@ -324,8 +327,11 @@ func sortedJSON(v interface{}) string {
 
 // DeleteSession permanently deletes a verification session and all associated data (GDPR).
 func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
+	reqCtx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+
 	url := fmt.Sprintf("%s/v3/session/%s/delete/", baseURL, sessionID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodDelete, url, nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}

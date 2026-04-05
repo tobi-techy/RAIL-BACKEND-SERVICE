@@ -130,7 +130,7 @@ jobs:
       - name: Run Gosec
         uses: securego/gosec@master
         with:
-          args: '-no-fail -fmt json -out=results.json ./...'
+          args: '-severity high -fmt json -out=results.json ./...'
 
       - name: Upload security scan results
         if: always()

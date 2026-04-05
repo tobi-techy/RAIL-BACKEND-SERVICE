@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -23,14 +24,28 @@ type AlpacaWebhookHandlers struct {
 	logger         *logger.Logger
 	webhookSecret  string // For signature verification
 	skipVerify     bool   // Allow skipping in development only
+	environment    string // Track environment to enforce verification in production
 }
 
-func NewAlpacaWebhookHandlers(eventProcessor *alpacaService.EventProcessor, logger *logger.Logger, webhookSecret string, skipVerify bool) *AlpacaWebhookHandlers {
+func NewAlpacaWebhookHandlers(eventProcessor *alpacaService.EventProcessor, logger *logger.Logger, webhookSecret string, skipVerify bool, environment string) *AlpacaWebhookHandlers {
+	// Security fix: Never allow skipping verification in production or staging
+	if (strings.EqualFold(environment, "production") || strings.EqualFold(environment, "staging")) && skipVerify {
+		logger.Error("SECURITY VIOLATION: Attempted to skip Alpaca webhook verification in production/staging - forcing verification ON")
+		skipVerify = false
+	}
+
+	if skipVerify {
+		logger.Warn("⚠️  INSECURE MODE: Alpaca webhook signature verification is DISABLED",
+			"environment", environment,
+			"warning", "This should only be used in local development")
+	}
+
 	return &AlpacaWebhookHandlers{
 		eventProcessor: eventProcessor,
 		logger:         logger,
 		webhookSecret:  webhookSecret,
 		skipVerify:     skipVerify,
+		environment:    environment,
 	}
 }
 
@@ -186,7 +201,7 @@ func (h *AlpacaWebhookHandlers) HandleTransferUpdate(c *gin.Context) {
 		h.logger.Error("Failed to store event", "error", err)
 	}
 
-	h.logger.Info("Transfer webhook received", "body", string(body))
+	h.logger.Info("Transfer webhook received")
 	c.JSON(http.StatusOK, gin.H{"status": "received"})
 }
 
@@ -214,7 +229,7 @@ func (h *AlpacaWebhookHandlers) HandleNonTradeActivity(c *gin.Context) {
 		h.logger.Error("Failed to store event", "error", err)
 	}
 
-	h.logger.Info("NTA webhook received", "body", string(body))
+	h.logger.Info("NTA webhook received")
 	c.JSON(http.StatusOK, gin.H{"status": "received"})
 }
 

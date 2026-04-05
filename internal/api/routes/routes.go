@@ -14,6 +14,7 @@ import (
 	ginSwagger "github.com/swaggo/gin-swagger"
 
 	"github.com/rail-service/rail_service/internal/api/handlers"
+	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	kychandlers "github.com/rail-service/rail_service/internal/api/handlers/kyc"
 	"github.com/rail-service/rail_service/internal/api/middleware"
 	"github.com/rail-service/rail_service/internal/domain/entities"
@@ -120,87 +121,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	router.GET("/version", coreHandlers.Version)
 	router.GET("/metrics", coreHandlers.Metrics)
 
-	// Internal ops endpoint — protected by JWT_SECRET as bearer token
-	router.GET("/internal/users/lookup", func(c *gin.Context) {
-		token := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
-		if token == "" || token != container.Config.JWT.Secret {
-			c.JSON(401, gin.H{"error": "unauthorized"})
-			return
-		}
-		email := c.Query("email")
-		uid := c.Query("id")
-		if email == "" && uid == "" {
-			c.JSON(400, gin.H{"error": "email or id query param required"})
-			return
-		}
-		q := "SELECT id, email, first_name, last_name, kyc_status, bridge_kyc_status, is_active, alpaca_account_id, bridge_customer_id, created_at, updated_at FROM users WHERE email = $1"
-		param := email
-		if email == "" {
-			q = "SELECT id, email, first_name, last_name, kyc_status, bridge_kyc_status, is_active, alpaca_account_id, bridge_customer_id, created_at, updated_at FROM users WHERE id = $1"
-			param = uid
-		}
-		rows, err := container.DB.QueryContext(c.Request.Context(), q, param)
-		if err != nil {
-			c.JSON(500, gin.H{"error": "Database query failed", "request_id": c.GetString("request_id")})
-			return
-		}
-		defer rows.Close()
-		cols, _ := rows.Columns()
-		if !rows.Next() {
-			c.JSON(404, gin.H{"error": "user not found"})
-			return
-		}
-		vals := make([]interface{}, len(cols))
-		ptrs := make([]interface{}, len(cols))
-		for i := range vals {
-			ptrs[i] = &vals[i]
-		}
-		rows.Scan(ptrs...)
-		result := make(map[string]interface{}, len(cols))
-		for i, col := range cols {
-			if b, ok := vals[i].([]byte); ok {
-				result[col] = string(b)
-			} else {
-				result[col] = vals[i]
-			}
-		}
-		c.JSON(200, gin.H{"user": result})
-	})
-
-	// Internal delete user — cascades through related tables
-	router.DELETE("/internal/users/:id", func(c *gin.Context) {
-		token := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
-		if token == "" || token != container.Config.JWT.Secret {
-			c.JSON(401, gin.H{"error": "unauthorized"})
-			return
-		}
-		uid := c.Param("id")
-		tables := []string{
-			"sessions", "notifications", "deposits", "ledger_entries", "ledger_transactions",
-			"ledger_accounts", "allocation_events", "smart_allocation_modes",
-			"virtual_accounts", "wallets", "cards", "user_settings",
-			"auto_invest_events", "auto_invest_settings", "stash_lock_cycles",
-			"yield_snapshots", "yield_distributions",
-		}
-		deleted := map[string]int64{}
-		for _, t := range tables {
-			res, err := container.DB.ExecContext(c.Request.Context(), "DELETE FROM "+t+" WHERE user_id = $1", uid)
-			if err != nil {
-				continue // table may not exist or no user_id column
-			}
-			n, _ := res.RowsAffected()
-			if n > 0 {
-				deleted[t] = n
-			}
-		}
-		res, err := container.DB.ExecContext(c.Request.Context(), "DELETE FROM users WHERE id = $1", uid)
-		if err != nil {
-			c.JSON(500, gin.H{"error": "Failed to delete user", "request_id": c.GetString("request_id"), "deleted_related": deleted})
-			return
-		}
-		n, _ := res.RowsAffected()
-		c.JSON(200, gin.H{"deleted": n > 0, "user_id": uid, "related_rows_deleted": deleted})
-	})
+	// Internal ops endpoints — protected by dedicated INTERNAL_API_KEY (not JWT secret)
+	internalHandlers := handlers.NewInternalHandlers(container.DB, container.Config.Security.InternalAPIKey)
+	router.GET("/internal/users/lookup", internalHandlers.LookupUser)
+	router.DELETE("/internal/users/:id", internalHandlers.DeleteUser)
 
 	// Apple App Site Association — required for passkey Associated Domains
 	router.GET("/.well-known/apple-app-site-association", func(c *gin.Context) {
@@ -412,6 +336,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		}
 
 		// KYC provider webhooks (no auth required for external callbacks)
+		// NOTE: Signature verification is handled inside each handler:
+		// - ProcessKYCCallback: verifies via h.verifyKYCCallbackSignature() when secret is configured
+		// - HandleSumsubWebhook: verifies via kycService.VerifySumsubWebhookSignature()
+		// - HandleDiditWebhook: verifies via kycService.VerifyDiditWebhookSignature()
 		kyc := v1.Group("/kyc")
 		{
 			kyc.POST("/callback/:provider_ref", authHandlers.ProcessKYCCallback)
@@ -426,7 +354,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		// Protected routes (auth required)
 		protected := v1.Group("/")
 		protected.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator))
-		protected.Use(middleware.CSRFProtection(csrfStore, container.Config.Environment == "development"))
+		protected.Use(middleware.CSRFProtection(csrfStore))
 		{
 			// User management
 			users := protected.Group("/users")
@@ -689,7 +617,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						ctx := c.Request.Context()
 						basketList, err := investingService.ListBaskets(ctx)
 						if err != nil {
-							c.JSON(500, gin.H{"error": "INTERNAL_ERROR", "message": "Failed to get baskets"})
+							common.SendInternalError(c, common.ErrCodeInternalError, "Failed to get baskets")
 							return
 						}
 						c.JSON(200, gin.H{"baskets": basketList})
@@ -699,16 +627,16 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						ctx := c.Request.Context()
 						basketID, err := uuid.Parse(c.Param("id"))
 						if err != nil {
-							c.JSON(400, gin.H{"error": "INVALID_ID", "message": "Invalid basket ID"})
+							common.SendBadRequest(c, common.ErrCodeInvalidID, "Invalid basket ID")
 							return
 						}
 						basket, err := investingService.GetBasket(ctx, basketID)
 						if err != nil {
-							c.JSON(500, gin.H{"error": "INTERNAL_ERROR", "message": "Failed to get basket"})
+							common.SendInternalError(c, common.ErrCodeInternalError, "Failed to get basket")
 							return
 						}
 						if basket == nil {
-							c.JSON(404, gin.H{"error": "NOT_FOUND", "message": "Basket not found"})
+							common.SendNotFound(c, common.ErrCodeBasketNotFound, "Basket not found")
 							return
 						}
 						c.JSON(200, basket)
@@ -719,19 +647,19 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						userID, _ := uuid.Parse(c.GetString("user_id"))
 						basketID, err := uuid.Parse(c.Param("id"))
 						if err != nil {
-							c.JSON(400, gin.H{"error": "INVALID_ID", "message": "Invalid basket ID"})
+							common.SendBadRequest(c, common.ErrCodeInvalidID, "Invalid basket ID")
 							return
 						}
 						var req struct {
 							Amount string `json:"amount" binding:"required"`
 						}
 						if err := c.ShouldBindJSON(&req); err != nil {
-							c.JSON(400, gin.H{"error": "INVALID_REQUEST", "message": err.Error()})
+							common.SendBadRequest(c, common.ErrCodeInvalidRequest, err.Error())
 							return
 						}
 						amount, err := decimal.NewFromString(req.Amount)
 						if err != nil {
-							c.JSON(400, gin.H{"error": "INVALID_AMOUNT", "message": "Invalid amount format"})
+							common.SendBadRequest(c, common.ErrCodeInvalidAmount, "Invalid amount format")
 							return
 						}
 						// Create order request
@@ -742,7 +670,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						}
 						order, err := investingService.CreateOrder(ctx, userID, orderReq)
 						if err != nil {
-							c.JSON(500, gin.H{"error": "INVESTMENT_FAILED", "message": err.Error()})
+							common.SendInternalError(c, common.ErrCodeOperationFailed, err.Error())
 							return
 						}
 						c.JSON(201, gin.H{"order": order})
@@ -851,45 +779,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		admin := v1.Group("/admin")
 		admin.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator))
 		admin.Use(middleware.AdminAuth(container.DB, container.Logger))
-		admin.Use(middleware.CSRFProtection(csrfStore, container.Config.Environment == "development"))
+		admin.Use(middleware.CSRFProtection(csrfStore))
 		{
 			// User lookup
-			admin.GET("/users/lookup", func(c *gin.Context) {
-				email := c.Query("email")
-				uid := c.Query("id")
-				if email == "" && uid == "" {
-					c.JSON(400, gin.H{"error": "email or id required"})
-					return
-				}
-				q := "SELECT id, email, first_name, last_name, kyc_status, bridge_kyc_status, is_active, alpaca_account_id, bridge_customer_id, created_at, updated_at FROM users WHERE email = $1"
-				param := email
-				if email == "" {
-					q = "SELECT id, email, first_name, last_name, kyc_status, bridge_kyc_status, is_active, alpaca_account_id, bridge_customer_id, created_at, updated_at FROM users WHERE id = $1"
-					param = uid
-				}
-				rows, err := container.DB.QueryContext(c.Request.Context(), q, param)
-				if err != nil {
-					c.JSON(500, gin.H{"error": err.Error()})
-					return
-				}
-				defer rows.Close()
-				cols, _ := rows.Columns()
-				if !rows.Next() {
-					c.JSON(404, gin.H{"error": "user not found"})
-					return
-				}
-				vals := make([]interface{}, len(cols))
-				ptrs := make([]interface{}, len(cols))
-				for i := range vals {
-					ptrs[i] = &vals[i]
-				}
-				rows.Scan(ptrs...)
-				result := make(map[string]interface{}, len(cols))
-				for i, col := range cols {
-					result[col] = vals[i]
-				}
-				c.JSON(200, gin.H{"user": result})
-			})
+			admin.GET("/users/lookup", handlers.AdminLookupUser(container.DB))
 
 			// Wallet admin routes
 			admin.POST("/wallet/create", walletFundingHandlers.CreateWalletsForUser)
@@ -929,7 +822,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		// Webhooks (external systems) - OpenAPI spec compliant
 		// Apply webhook security middleware (rate limiting, IP whitelisting, replay protection)
 		webhookConfig := middleware.DefaultWebhookSecurityConfig()
-		webhookConfig.SkipVerification = container.Config.Environment == "development"
+		webhookConfig.Environment = container.Config.Environment
 		webhookConfig.Secrets = map[string]string{
 			"bridge": container.Config.Bridge.WebhookSecret,
 			"alpaca": container.Config.Alpaca.WebhookSecret,

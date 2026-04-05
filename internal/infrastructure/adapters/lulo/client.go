@@ -284,6 +284,10 @@ func (c *Client) postJSON(ctx context.Context, url string, body any, out any) er
 }
 
 func (c *Client) doHTTP(req *http.Request, out any) error {
+	reqCtx, cancel := context.WithTimeout(req.Context(), 30*time.Second)
+	defer cancel()
+	req = req.WithContext(reqCtx)
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("http: %w", err)

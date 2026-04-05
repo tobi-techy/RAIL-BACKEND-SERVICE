@@ -33,6 +33,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/crypto"
+	pkgsecurity "github.com/rail-service/rail_service/pkg/security"
 	"github.com/rail-service/rail_service/pkg/ratelimit"
 	"go.uber.org/zap"
 )
@@ -771,7 +772,7 @@ func (h *AuthHandlers) Login(c *gin.Context) {
 	identifier := ""
 	identifierType := ""
 	if req.Email != nil && strings.TrimSpace(*req.Email) != "" {
-		identifier = strings.TrimSpace(*req.Email)
+		identifier = strings.ToLower(strings.TrimSpace(*req.Email))
 		identifierType = "email"
 	} else if req.Phone != nil && strings.TrimSpace(*req.Phone) != "" {
 		identifier = strings.TrimSpace(*req.Phone)
@@ -899,7 +900,7 @@ func (h *AuthHandlers) Login(c *gin.Context) {
 		SessionExpiresAt: h.sessionExpiryFromRefreshTTL(),
 	}
 
-	h.logger.Info("User logged in successfully", zap.String("user_id", user.ID.String()), zap.String("email", user.Email))
+	h.logger.Info("User logged in successfully", zap.String("user_id", user.ID.String()), zap.String("email", pkgsecurity.MaskString(user.Email)))
 	c.JSON(http.StatusOK, response)
 }
 
@@ -943,7 +944,7 @@ func (h *AuthHandlers) PasscodeLogin(c *gin.Context) {
 	identifier := ""
 	identifierType := ""
 	if req.Email != nil && strings.TrimSpace(*req.Email) != "" {
-		identifier = strings.TrimSpace(*req.Email)
+		identifier = strings.ToLower(strings.TrimSpace(*req.Email))
 		identifierType = "email"
 	} else if req.Phone != nil && strings.TrimSpace(*req.Phone) != "" {
 		identifier = strings.TrimSpace(*req.Phone)
@@ -1129,6 +1130,13 @@ func (h *AuthHandlers) RefreshToken(c *gin.Context) {
 		return
 	}
 
+	// Blacklist the consumed refresh token to prevent replay attacks
+	if h.sessionService != nil {
+		if err := h.sessionService.InvalidateSession(ctx, refreshToken); err != nil {
+			h.logger.Warn("Failed to blacklist consumed refresh token", zap.Error(err), zap.String("user_id", userID.String()))
+		}
+	}
+
 	// Generate a new token pair (rotates refresh token as well).
 	tokens, err := auth.GenerateTokenPair(
 		user.ID,
@@ -1240,7 +1248,7 @@ func (h *AuthHandlers) VerifyResetCode(c *gin.Context) {
 	// Look up unexpired token by email (selector)
 	userID, err := h.userRepo.ValidatePasswordResetOTP(ctx, req.Email, req.Code)
 	if err != nil {
-		h.logger.Warn("Invalid reset code", zap.String("email", req.Email), zap.Error(err))
+		h.logger.Warn("Invalid reset code", zap.String("email", pkgsecurity.MaskString(req.Email)), zap.Error(err))
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_CODE", Message: "Invalid or expired code"})
 		return
 	}
@@ -1287,6 +1295,10 @@ func (h *AuthHandlers) ResetPassword(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_TOKEN", Message: "Invalid or expired reset token"})
 		return
 	}
+	if err := crypto.ValidatePasswordStrength(req.Password); err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "WEAK_PASSWORD", Message: err.Error()})
+		return
+	}
 	newHash, err := crypto.HashPassword(req.Password)
 	if err != nil {
 		h.logger.Error("Failed to hash new password", zap.Error(err))
@@ -1297,6 +1309,11 @@ func (h *AuthHandlers) ResetPassword(c *gin.Context) {
 		h.logger.Error("Failed to update password", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "UPDATE_FAILED", Message: "Failed to update password"})
 		return
+	}
+	if h.sessionService != nil {
+		if err := h.sessionService.InvalidateAllUserSessions(ctx, userID); err != nil {
+			h.logger.Warn("Failed to invalidate sessions after password reset", zap.Error(err), zap.String("user_id", userID.String()))
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Password has been reset"})
 }
@@ -1502,6 +1519,10 @@ func (h *AuthHandlers) ChangePassword(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "INVALID_CREDENTIALS", Message: "Current password is incorrect"})
 		return
 	}
+	if err := crypto.ValidatePasswordStrength(req.NewPassword); err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "WEAK_PASSWORD", Message: err.Error()})
+		return
+	}
 	newHash, err := crypto.HashPassword(req.NewPassword)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "HASH_FAILED", Message: "Failed to hash new password"})
@@ -1510,6 +1531,11 @@ func (h *AuthHandlers) ChangePassword(c *gin.Context) {
 	if err := h.userRepo.UpdatePassword(ctx, userID, newHash); err != nil {
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "UPDATE_FAILED", Message: "Failed to update password"})
 		return
+	}
+	if h.sessionService != nil {
+		if err := h.sessionService.InvalidateAllUserSessions(ctx, userID); err != nil {
+			h.logger.Warn("Failed to invalidate sessions after password change", zap.Error(err), zap.String("user_id", userID.String()))
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Password changed"})
 }

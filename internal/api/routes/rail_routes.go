@@ -63,7 +63,7 @@ func SetupStackRoutes(db *sql.DB, cfg *config.Config, log *logger.Logger, zapLog
 		// === FUNDING ENDPOINTS ===
 		funding := v1.Group("/funding")
 		funding.Use(middleware.Authentication(cfg, log, sessionValidator))
-		funding.Use(middleware.CSRFProtection(csrfStore, cfg.Environment == "development"))
+		funding.Use(middleware.CSRFProtection(csrfStore))
 		{
 			funding.POST("/deposit/address", walletFundingHandlers.CreateDepositAddress)
 			funding.GET("/confirmations", walletFundingHandlers.GetFundingConfirmations)
@@ -86,7 +86,7 @@ func SetupStackRoutes(db *sql.DB, cfg *config.Config, log *logger.Logger, zapLog
 
 		orders := v1.Group("/orders")
 		orders.Use(middleware.Authentication(cfg, log, sessionValidator))
-		orders.Use(middleware.CSRFProtection(csrfStore, cfg.Environment == "development"))
+		orders.Use(middleware.CSRFProtection(csrfStore))
 		{
 			orders.POST("", walletFundingHandlers.CreateOrder)
 			orders.GET("", walletFundingHandlers.GetOrders)

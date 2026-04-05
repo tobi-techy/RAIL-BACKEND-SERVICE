@@ -380,23 +380,17 @@ func (e *Engine) ExecuteWithdrawal(ctx context.Context, withdrawalID uuid.UUID) 
 		return fmt.Errorf("withdrawal not pending: status=%s", withdrawal.Status)
 	}
 
-	// Verify user has sufficient ledger balance
+	// Balance pre-check removed: CreateTransaction uses SELECT FOR UPDATE internally,
+	// which atomically checks and prevents overdraft. A pre-flight check here was a
+	// TOCTOU race — balance could change between the check and the ledger debit.
+	// The advisory log below helps with debugging but does not block the withdrawal.
 	balance, err := e.ledgerService.GetAccountBalance(ctx, withdrawal.UserID, entities.AccountTypeUSDCBalance)
 	if err != nil {
-		return fmt.Errorf("failed to get user balance: %w", err)
-	}
-
-	if balance.LessThan(withdrawal.Amount) {
-		e.logger.Error("Insufficient balance for withdrawal",
-			"withdrawal_id", withdrawalID,
-			"balance", balance,
-			"requested", withdrawal.Amount)
-
-		// Mark as failed
-		if err := e.withdrawalRepo.UpdateStatus(ctx, withdrawalID, entities.WithdrawalStatusFailed); err != nil {
-			e.logger.Error("Failed to update withdrawal status", "error", err)
-		}
-		return fmt.Errorf("insufficient balance: have %s, need %s", balance, withdrawal.Amount)
+		e.logger.Warn("Advisory balance check failed, proceeding to atomic ledger debit",
+			"withdrawal_id", withdrawalID, "error", err)
+	} else if balance.LessThan(withdrawal.Amount) {
+		e.logger.Warn("Advisory: balance may be insufficient, atomic ledger debit will be authoritative",
+			"withdrawal_id", withdrawalID, "balance", balance, "requested", withdrawal.Amount)
 	}
 
 	// Post ledger entries first (debit user balance, credit system buffer)

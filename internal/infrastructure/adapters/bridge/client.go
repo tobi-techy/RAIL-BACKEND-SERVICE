@@ -100,9 +100,8 @@ func NewClient(config Config, logger *zap.Logger) *Client {
 
 // CreateCustomer creates a new customer
 func (c *Client) CreateCustomer(ctx context.Context, req *CreateCustomerRequest) (*Customer, error) {
-	// Debug log the request
-	reqJSON, _ := json.Marshal(req)
-	c.logger.Info("Creating Bridge customer", zap.String("request", string(reqJSON)))
+	// Debug log the request (body redacted for PII safety)
+	c.logger.Info("Creating Bridge customer")
 
 	var customer Customer
 	if err := c.doRequest(ctx, http.MethodPost, "/v0/customers", req, &customer); err != nil {
@@ -490,7 +489,7 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 			continue
 		}
 
-		c.logger.Debug("Received Bridge API response", zap.Int("status_code", resp.StatusCode), zap.Int("body_size", len(respBody)), zap.String("body", string(respBody)))
+		c.logger.Debug("Received Bridge API response", zap.Int("status_code", resp.StatusCode), zap.Int("body_size", len(respBody)))
 
 		// Retry on 5xx errors
 		if resp.StatusCode >= 500 {

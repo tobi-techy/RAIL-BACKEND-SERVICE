@@ -1727,6 +1727,7 @@ func (c *Container) initializeDomainServices() error {
 		withdrawalNotificationAdapter,
 		withdrawalBridgeAdapter, // BridgeAdapter (fiat offramp)
 		c.BridgeAdapter,         // BridgeCryptoTransferAdapter (crypto wallet transfers)
+		sqlx.NewDb(c.DB, "postgres"),
 		c.Logger,
 	)
 
@@ -3100,7 +3101,7 @@ func (c *Container) GetAlpacaWebhookHandlers() *handlers.AlpacaWebhookHandlers {
 	}
 	// Determine if webhook verification should be skipped (only in development)
 	skipWebhookVerification := c.Config.Environment == "development" && webhookSecret == ""
-	return handlers.NewAlpacaWebhookHandlers(c.AlpacaEventProcessor, c.Logger, webhookSecret, skipWebhookVerification)
+	return handlers.NewAlpacaWebhookHandlers(c.AlpacaEventProcessor, c.Logger, webhookSecret, skipWebhookVerification, c.Config.Environment)
 }
 
 // GetAnalyticsHandlers returns analytics handlers

@@ -298,3 +298,15 @@ chat:
   session_timeout: "24h"
   enable_safety_filter: true
   rate_limit_per_hour: 50
+
+# Lulo Yield Configuration
+lulo:
+  api_key: ""
+  base_url: "https://api.lulo.fi"
+  solana_rpc: "https://api.mainnet-beta.solana.com"
+  owner_wallet: ""
+  private_key: ""
+  pool_type: "protected"
+  min_sweep_amount: "10"
+  sweep_interval: 30
+  bridge_source_wallet_id: ""

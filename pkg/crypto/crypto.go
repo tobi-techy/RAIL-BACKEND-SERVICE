@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"unicode"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -27,6 +28,38 @@ func HashPassword(password string) (string, error) {
 func ValidatePassword(password, hash string) bool {
 	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 	return err == nil
+}
+
+// ValidatePasswordStrength checks that a password meets minimum policy requirements:
+// at least 8 characters, one uppercase, one lowercase, and one digit.
+func ValidatePasswordStrength(password string) error {
+	if len(password) > 72 {
+		return fmt.Errorf("password must not exceed 72 characters")
+	}
+	if len(password) < 8 {
+		return fmt.Errorf("password must be at least 8 characters")
+	}
+	var hasUpper, hasLower, hasDigit bool
+	for _, c := range password {
+		switch {
+		case unicode.IsUpper(c):
+			hasUpper = true
+		case unicode.IsLower(c):
+			hasLower = true
+		case unicode.IsDigit(c):
+			hasDigit = true
+		}
+	}
+	if !hasUpper {
+		return fmt.Errorf("password must contain at least one uppercase letter")
+	}
+	if !hasLower {
+		return fmt.Errorf("password must contain at least one lowercase letter")
+	}
+	if !hasDigit {
+		return fmt.Errorf("password must contain at least one digit")
+	}
+	return nil
 }
 
 // Encrypt encrypts data using AES-GCM

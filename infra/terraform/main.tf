@@ -8,9 +8,11 @@ terraform {
   }
   # Store state in S3 — create the bucket manually once before first apply
   backend "s3" {
-    bucket = "rail-terraform-state-885160773772"
-    key    = "terraform.tfstate"
-    region = "us-east-1"
+    bucket         = "rail-terraform-state-885160773772"
+    key            = "terraform.tfstate"
+    region         = "us-east-1"
+    encrypt        = true
+    dynamodb_table = "rail-terraform-lock"
   }
 }
 
@@ -31,8 +33,8 @@ module "vpc" {
   public_subnets  = ["10.0.1.0/24", "10.0.2.0/24"]
   private_subnets = ["10.0.11.0/24", "10.0.12.0/24"]
 
-  enable_nat_gateway   = false
-  single_nat_gateway   = false
+  enable_nat_gateway   = true
+  single_nat_gateway   = true
   enable_dns_hostnames = true
   enable_dns_support   = true
 
@@ -135,10 +137,11 @@ resource "aws_db_instance" "postgres" {
   db_subnet_group_name   = aws_db_subnet_group.main.name
   vpc_security_group_ids = [aws_security_group.rds.id]
 
-  backup_retention_period = 0  # free tier restriction: max 0
+  backup_retention_period = 7
   skip_final_snapshot     = false
   final_snapshot_identifier = "rail-${local.env}-final"
   deletion_protection     = true
+  storage_encrypted       = true
 
   # Cost: no multi-AZ, no read replica for free tier
   multi_az = false
@@ -154,16 +157,20 @@ resource "aws_elasticache_subnet_group" "main" {
   subnet_ids = module.vpc.private_subnets
 }
 
-resource "aws_elasticache_cluster" "redis" {
-  cluster_id           = "rail-${local.env}"
+resource "aws_elasticache_replication_group" "redis" {
+  replication_group_id = "rail-${local.env}"
+  description          = "Rail ${local.env} Redis"
   engine               = "redis"
-  node_type            = "cache.t3.micro"  # free tier
-  num_cache_nodes      = 1
+  node_type            = "cache.t3.micro"
+  num_cache_clusters   = 1
   parameter_group_name = "default.redis7"
   engine_version       = "7.0"
   port                 = 6379
   subnet_group_name    = aws_elasticache_subnet_group.main.name
   security_group_ids   = [aws_security_group.redis.id]
+
+  transit_encryption_enabled = true
+  at_rest_encryption_enabled = true
 
   tags = local.tags
 }
@@ -172,7 +179,7 @@ resource "aws_elasticache_cluster" "redis" {
 
 resource "aws_ecr_repository" "app" {
   name                 = "rail-backend"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
 
   image_scanning_configuration {
     scan_on_push = true
@@ -247,10 +254,10 @@ resource "aws_iam_instance_profile" "ec2" {
 resource "aws_instance" "app" {
   ami                         = data.aws_ami.ecs_optimized.id
   instance_type               = "t3.micro"
-  subnet_id                   = module.vpc.public_subnets[0]
+  subnet_id                   = module.vpc.private_subnets[0]
   vpc_security_group_ids      = [aws_security_group.app.id]
   iam_instance_profile        = aws_iam_instance_profile.ec2.name
-  associate_public_ip_address = true
+  associate_public_ip_address = false
 
   user_data = base64encode("#!/bin/bash\necho ECS_CLUSTER=rail-${local.env} >> /etc/ecs/ecs.config\n")
 
@@ -337,7 +344,7 @@ resource "aws_ecs_task_definition" "app" {
       { name = "ENVIRONMENT",    value = local.env },
       { name = "GIN_MODE",       value = "release" },
       { name = "PORT",           value = "8080" },
-      { name = "REDIS_HOST",     value = aws_elasticache_cluster.redis.cache_nodes[0].address },
+      { name = "REDIS_HOST",     value = aws_elasticache_replication_group.redis.primary_endpoint_address },
       { name = "REDIS_PORT",     value = "6379" },
       { name = "OTEL_SDK_DISABLED", value = "true" },
     ]
@@ -491,6 +498,181 @@ resource "aws_ecs_service" "app" {
 
   depends_on = [aws_lb_listener.http, aws_instance.app]
   tags       = local.tags
+}
+
+# ── DynamoDB Terraform Lock ────────────────────────────────────────────────────
+
+resource "aws_dynamodb_table" "terraform_lock" {
+  name         = "rail-terraform-lock"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "LockID"
+  attribute {
+    name = "LockID"
+    type = "S"
+  }
+  tags = local.tags
+}
+
+# ── WAF ───────────────────────────────────────────────────────────────────────
+
+resource "aws_wafv2_web_acl" "main" {
+  name  = "${var.project_name}-waf"
+  scope = "REGIONAL"
+  default_action { allow {} }
+  rule {
+    name     = "aws-managed-common"
+    priority = 1
+    override_action { none {} }
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesCommonRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+    visibility_config {
+      sampled_requests_enabled   = true
+      cloudwatch_metrics_enabled = true
+      metric_name                = "awsCommonRules"
+    }
+  }
+  rule {
+    name     = "rate-limit"
+    priority = 2
+    action { block {} }
+    statement {
+      rate_based_statement {
+        limit              = 2000
+        aggregate_key_type = "IP"
+      }
+    }
+    visibility_config {
+      sampled_requests_enabled   = true
+      cloudwatch_metrics_enabled = true
+      metric_name                = "rateLimitRule"
+    }
+  }
+  visibility_config {
+    sampled_requests_enabled   = true
+    cloudwatch_metrics_enabled = true
+    metric_name                = "railWaf"
+  }
+  tags = local.tags
+}
+
+resource "aws_wafv2_web_acl_association" "alb" {
+  resource_arn = aws_lb.main.arn
+  web_acl_arn  = aws_wafv2_web_acl.main.arn
+}
+
+# ── VPC Flow Logs ─────────────────────────────────────────────────────────────
+
+resource "aws_cloudwatch_log_group" "flow_log" {
+  name              = "/vpc/${var.project_name}-flow-logs"
+  retention_in_days = 30
+  tags              = local.tags
+}
+
+resource "aws_flow_log" "vpc" {
+  vpc_id                   = module.vpc.vpc_id
+  traffic_type             = "ALL"
+  log_destination_type     = "cloud-watch-logs"
+  log_destination          = aws_cloudwatch_log_group.flow_log.arn
+  iam_role_arn             = aws_iam_role.flow_log.arn
+  max_aggregation_interval = 60
+  tags                     = local.tags
+}
+
+resource "aws_iam_role" "flow_log" {
+  name = "${var.project_name}-flow-log-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "vpc-flow-logs.amazonaws.com" }
+    }]
+  })
+  tags = local.tags
+}
+
+resource "aws_iam_role_policy" "flow_log" {
+  name = "flow-log-policy"
+  role = aws_iam_role.flow_log.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents", "logs:DescribeLogGroups", "logs:DescribeLogStreams"]
+      Effect   = "Allow"
+      Resource = "*"
+    }]
+  })
+}
+
+# ── CloudTrail ────────────────────────────────────────────────────────────────
+
+resource "aws_cloudtrail" "main" {
+  name                          = "${var.project_name}-trail"
+  s3_bucket_name                = aws_s3_bucket.cloudtrail.id
+  include_global_service_events = true
+  is_multi_region_trail         = false
+  enable_log_file_validation    = true
+  tags                          = local.tags
+}
+
+resource "aws_s3_bucket" "cloudtrail" {
+  bucket        = "${var.project_name}-cloudtrail-${data.aws_caller_identity.current.account_id}"
+  force_destroy = true
+  tags          = local.tags
+}
+
+resource "aws_s3_bucket_policy" "cloudtrail" {
+  bucket = aws_s3_bucket.cloudtrail.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "AWSCloudTrailAclCheck"
+        Effect    = "Allow"
+        Principal = { Service = "cloudtrail.amazonaws.com" }
+        Action    = "s3:GetBucketAcl"
+        Resource  = aws_s3_bucket.cloudtrail.arn
+      },
+      {
+        Sid       = "AWSCloudTrailWrite"
+        Effect    = "Allow"
+        Principal = { Service = "cloudtrail.amazonaws.com" }
+        Action    = "s3:PutObject"
+        Resource  = "${aws_s3_bucket.cloudtrail.arn}/AWSLogs/${data.aws_caller_identity.current.account_id}/*"
+        Condition = { StringEquals = { "s3:x-amz-acl" = "bucket-owner-full-control" } }
+      }
+    ]
+  })
+}
+
+data "aws_caller_identity" "current" {}
+
+# ── Budget Alerts ─────────────────────────────────────────────────────────────
+
+resource "aws_budgets_budget" "monthly" {
+  name         = "${var.project_name}-monthly"
+  budget_type  = "COST"
+  limit_amount = "50"
+  limit_unit   = "USD"
+  time_unit    = "MONTHLY"
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 80
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "ACTUAL"
+    subscriber_email_addresses = ["alerts@getrail.app"]
+  }
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 100
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "ACTUAL"
+    subscriber_email_addresses = ["alerts@getrail.app"]
+  }
 }
 
 # ── Locals ────────────────────────────────────────────────────────────────────

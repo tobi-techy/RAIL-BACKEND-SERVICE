@@ -1,1 +1,1 @@
--- Placeholder migration (version skipped during renumbering)
+-- Placeholder migration (version 018 skipped during renumbering). No-op rollback.

@@ -219,6 +219,17 @@ func (s *Service) ProcessWalletProvisioningJob(ctx context.Context, jobID uuid.U
 		return fmt.Errorf("%s for user %s", msg, job.UserID)
 	}
 
+	// Fetch existing Bridge wallets once to avoid duplicates.
+	remoteWallets, _ := s.bridgeWallets.ListWallets(ctx, customerID)
+	remoteBridgeChains := make(map[string]*entities.ManagedWallet)
+	for _, rw := range remoteWallets {
+		remoteBridgeChains[string(rw.Chain.ToBridgeWalletChain())] = rw
+	}
+
+	// Track which Bridge chains we've already created/imported in this run
+	// to avoid creating duplicate ethereum/solana/base wallets.
+	createdBridgeChains := make(map[string]string) // bridgeChain -> address
+
 	saved := 0
 	for _, chain := range job.Chains {
 		existing, _ := s.walletRepo.GetByUserAndChain(ctx, job.UserID, entities.WalletChain(chain))
@@ -227,13 +238,45 @@ func (s *Service) ProcessWalletProvisioningJob(ctx context.Context, jobID uuid.U
 			continue
 		}
 
+		bridgeChain := entities.WalletChain(chain).ToBridgeWalletChain()
+
+		// If we already created/imported a wallet for this Bridge chain in this run,
+		// reuse the same address (e.g. MATIC, CELO, AVAX all share "ethereum").
+		if addr, ok := createdBridgeChains[bridgeChain]; ok {
+			mw := &entities.ManagedWallet{
+				ID:      uuid.New(),
+				UserID:  job.UserID,
+				Chain:   entities.WalletChain(chain),
+				Address: addr,
+				Status:  entities.WalletStatusLive,
+			}
+			if err := s.walletRepo.Create(ctx, mw); err != nil {
+				s.logger.Error("Failed to save alias wallet", zap.Error(err), zap.String("chain", chain))
+				continue
+			}
+			saved++
+			continue
+		}
+
+		// Check if Bridge already has a wallet for this chain — avoid creating duplicates.
+		if rw, ok := remoteBridgeChains[bridgeChain]; ok {
+			rw.UserID = job.UserID
+			rw.Chain = entities.WalletChain(chain)
+			if err := s.walletRepo.Create(ctx, rw); err != nil {
+				s.logger.Error("Failed to save recovered wallet", zap.Error(err), zap.String("chain", chain))
+				continue
+			}
+			createdBridgeChains[bridgeChain] = rw.Address
+			saved++
+			s.logger.Info("Imported existing Bridge wallet",
+				zap.String("chain", chain), zap.String("address", rw.Address))
+			continue
+		}
+
 		mw, err := s.bridgeWallets.CreateWalletForCustomer(ctx, customerID, chain)
 		if err != nil {
-			s.logger.Warn("Failed to create wallet on Bridge, checking if already exists remotely",
-				zap.Error(err), zap.String("chain", chain), zap.String("customerID", customerID))
-
-			// Wallet may already exist on Bridge (e.g. stale idempotency key after >24h).
-			// Recover by listing remote wallets and importing the match.
+			s.logger.Warn("Failed to create wallet on Bridge",
+				zap.Error(err), zap.String("chain", chain))
 			mw = s.recoverWalletFromBridge(ctx, customerID, chain)
 			if mw == nil {
 				continue
@@ -245,6 +288,7 @@ func (s *Service) ProcessWalletProvisioningJob(ctx context.Context, jobID uuid.U
 			s.logger.Error("Failed to save wallet", zap.Error(err), zap.String("chain", chain))
 			continue
 		}
+		createdBridgeChains[bridgeChain] = mw.Address
 		saved++
 		s.logger.Info("Wallet created and saved",
 			zap.String("userID", job.UserID.String()),

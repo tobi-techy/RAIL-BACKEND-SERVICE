@@ -1,1 +1,3 @@
--- Placeholder migration (version skipped during renumbering)
+-- Placeholder migration (version 018 skipped during renumbering).
+-- Kept to preserve sequential migration numbering required by golang-migrate.
+-- No schema changes.

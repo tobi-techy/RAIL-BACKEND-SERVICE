@@ -3,10 +3,25 @@ package ratelimit
 import (
 	"net/http"
 	"strconv"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+	"golang.org/x/time/rate"
 )
+
+// fallbackLimiters provides in-memory rate limiting when Redis is unavailable.
+var fallbackLimiters sync.Map
+
+// getFallbackLimiter returns a per-key in-memory rate limiter (10 req/s, burst 20).
+func getFallbackLimiter(key string) *rate.Limiter {
+	if v, ok := fallbackLimiters.Load(key); ok {
+		return v.(*rate.Limiter)
+	}
+	l := rate.NewLimiter(10, 20)
+	actual, _ := fallbackLimiters.LoadOrStore(key, l)
+	return actual.(*rate.Limiter)
+}
 
 // KeyFunc extracts the rate limit key from the request
 type KeyFunc func(*gin.Context) string
@@ -34,11 +49,20 @@ func Middleware(opts MiddlewareOptions) gin.HandlerFunc {
 		allowed, err := opts.Limiter.Allow(c.Request.Context(), key)
 		if err != nil {
 			if opts.Logger != nil {
-				opts.Logger.Error("Rate limit check failed",
+				opts.Logger.Error("Rate limit check failed, falling back to in-memory limiter",
 					zap.Error(err),
 					zap.String("key", key))
 			}
 			if opts.FailOpen {
+				// Fall back to in-memory rate limiter instead of allowing unconditionally
+				if !getFallbackLimiter(key).Allow() {
+					c.JSON(http.StatusTooManyRequests, gin.H{
+						"error":   "rate_limit_exceeded",
+						"message": "Too many requests, please try again later",
+					})
+					c.Abort()
+					return
+				}
 				c.Next()
 				return
 			}

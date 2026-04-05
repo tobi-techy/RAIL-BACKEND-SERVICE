@@ -252,6 +252,9 @@ type SecurityConfig struct {
 	// Device binding settings
 	DeviceBinding DeviceBindingConfig `mapstructure:"device_binding"`
 
+	// Internal API key for service-to-service auth
+	InternalAPIKey string `mapstructure:"internal_api_key"`
+
 	// Webhook replay protection
 	WebhookReplay WebhookReplayConfig `mapstructure:"webhook_replay"`
 
