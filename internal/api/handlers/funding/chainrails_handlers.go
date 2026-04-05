@@ -62,13 +62,17 @@ func NewChainRailsHandlers(
 	}
 }
 
-// --- POST /v1/funding/chainrails/session ---
+// --- POST /v1/funding/chainrails/intent ---
 
-type createSessionReq struct {
-	Amount string `json:"amount" binding:"required"`
+type createIntentReq struct {
+	Amount        string `json:"amount" binding:"required"`
+	SourceChain   string `json:"source_chain" binding:"required"`
+	TokenIn       string `json:"token_in" binding:"required"`
+	Sender        string `json:"sender,omitempty"`
+	RefundAddress string `json:"refund_address,omitempty"`
 }
 
-func (h *ChainRailsHandlers) CreateSession(c *gin.Context) {
+func (h *ChainRailsHandlers) CreateIntent(c *gin.Context) {
 	start := time.Now()
 	defer func() {
 		chainrailsSessionDuration.Observe(time.Since(start).Seconds())
@@ -81,7 +85,7 @@ func (h *ChainRailsHandlers) CreateSession(c *gin.Context) {
 		return
 	}
 
-	var req createSessionReq
+	var req createIntentReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		chainrailsSessionsTotal.WithLabelValues("bad_request").Inc()
 		common.RespondBadRequest(c, "Invalid request", nil)
@@ -106,22 +110,40 @@ func (h *ChainRailsHandlers) CreateSession(c *gin.Context) {
 		return
 	}
 
-	session, err := h.crClient.CreateSession(c.Request.Context(), &chainrails.CreateSessionRequest{
-		Amount:    req.Amount,
-		Recipient: depositAddr.Address,
+	// Convert amount to smallest unit (USDC has 6 decimals)
+	amountInSmallestUnit := amt.Mul(decimal.NewFromInt(1000000)).String()
+
+	intent, err := h.crClient.CreateIntent(c.Request.Context(), &chainrails.CreateIntentRequest{
+		Sender:           req.Sender,
+		Amount:           amountInSmallestUnit,
+		AmountSymbol:     "USDC",
+		TokenIn:          req.TokenIn,
+		SourceChain:      req.SourceChain,
+		DestinationChain: "BASE_MAINNET",
+		Recipient:        depositAddr.Address,
+		RefundAddress:    req.RefundAddress,
+		Metadata: map[string]interface{}{
+			"user_id": userID,
+			"source":  "rail_app",
+		},
 	})
 	if err != nil {
-		chainrailsSessionsTotal.WithLabelValues("session_error").Inc()
-		h.logger.Error("ChainRails session creation failed", "user_id", userID, "error", err)
-		common.SendInternalError(c, "SESSION_ERROR", "Failed to create payment session")
+		chainrailsSessionsTotal.WithLabelValues("intent_error").Inc()
+		h.logger.Error("ChainRails intent creation failed", "user_id", userID, "error", err)
+		common.SendInternalError(c, "INTENT_ERROR", "Failed to create payment intent")
 		return
 	}
 
 	chainrailsSessionsTotal.WithLabelValues("success").Inc()
 	c.JSON(http.StatusOK, gin.H{
 		"data": gin.H{
-			"session_token": session.SessionToken,
-			"expires_at":    session.ExpiresAt,
+			"intent_id":      intent.ID,
+			"intent_address": intent.IntentAddress,
+			"amount":         intent.InitialAmount,
+			"fees":           intent.FeesInUSD,
+			"total_amount":   intent.TotalAmountInUSD,
+			"expires_at":     intent.ExpiresAt,
+			"status":         intent.IntentStatus,
 		},
 	})
 }

@@ -480,9 +480,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				if container.ChainRailsHandlers != nil {
 					chainrails := funding.Group("/chainrails")
 					chainrails.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
-					chainrails.POST("/session", 
+					chainrails.POST("/intent", 
 						middleware.AuthRateLimit(10), // 10 requests per minute per user
-						container.ChainRailsHandlers.CreateSession)
+						container.ChainRailsHandlers.CreateIntent)
 				}
 			}
 

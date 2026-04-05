@@ -61,6 +61,59 @@ func NewClient(cfg Config, logger *zap.Logger) *Client {
 	}
 }
 
+// --- Intent creation (direct API integration) ---
+
+type CreateIntentRequest struct {
+	Sender           string                 `json:"sender"`
+	Amount           string                 `json:"amount"`
+	AmountSymbol     string                 `json:"amountSymbol"`
+	TokenIn          string                 `json:"tokenIn"`
+	SourceChain      string                 `json:"source_chain"`
+	DestinationChain string                 `json:"destination_chain"`
+	Recipient        string                 `json:"recipient"`
+	RefundAddress    string                 `json:"refund_address"`
+	Metadata         map[string]interface{} `json:"metadata,omitempty"`
+}
+
+type CreateIntentResponse struct {
+	ID                      int    `json:"id"`
+	ClientID                string `json:"client_id"`
+	Sender                  string `json:"sender"`
+	InitialAmount           string `json:"initialAmount"`
+	FeesInUSD               string `json:"fees_in_usd"`
+	AppFeeInUSD             string `json:"app_fee_in_usd"`
+	TotalAmountInUSD        string `json:"total_amount_in_usd"`
+	TotalAmountInAssetToken string `json:"total_amount_in_asset_token"`
+	FeesInAssetToken        string `json:"fees_in_asset_token"`
+	AppFeeInAssetToken      string `json:"app_fee_in_asset_token"`
+	AssetTokenSymbol        string `json:"asset_token_symbol"`
+	AssetTokenDecimals      int    `json:"asset_token_decimals"`
+	Slippage                string `json:"slippage"`
+	TokenIn                 string `json:"tokenIn"`
+	TokenOut                string `json:"tokenOut"`
+	IntentAddress           string `json:"intent_address"`
+	DestinationIntentAddress string `json:"destination_intent_address"`
+	SourceChain             string `json:"source_chain"`
+	DestinationChain        string `json:"destination_chain"`
+	Recipient               string `json:"recipient"`
+	RefundAddress           string `json:"refund_address"`
+	Relayer                 string `json:"relayer"`
+	Coordinator             string `json:"coordinator"`
+	Bridger                 string `json:"bridger"`
+	BridgeExtraData         string `json:"bridgeExtraData"`
+	IntentNonce             int64  `json:"intent_nonce"`
+	IntentStatus            string `json:"intent_status"`
+	TxHash                  string `json:"tx_hash"`
+	NeedsRelay              bool   `json:"needs_relay"`
+	RelayerClaimed          bool   `json:"relayer_claimed"`
+	PaymasterUsed           bool   `json:"paymaster_used"`
+	Mode                    string `json:"mode"`
+	ExpiresAt               string `json:"expires_at"`
+	Metadata                map[string]interface{} `json:"metadata"`
+	CreatedAt               string `json:"created_at"`
+	UpdatedAt               string `json:"updated_at"`
+}
+
 // --- Session creation (server-side, keeps API key private) ---
 
 type CreateSessionRequest struct {
@@ -75,18 +128,11 @@ type CreateSessionResponse struct {
 	ExpiresAt    string `json:"expires_at,omitempty"`
 }
 
-// CreateSession generates a payment session token for the frontend PaymentModal.
-func (c *Client) CreateSession(ctx context.Context, req *CreateSessionRequest) (*CreateSessionResponse, error) {
-	if req.DestinationChain == "" {
-		req.DestinationChain = c.config.DestinationChain
-	}
-	if req.Token == "" {
-		req.Token = c.config.SettlementToken
-	}
-
+// CreateIntent creates a cross-chain transfer intent with ChainRails
+func (c *Client) CreateIntent(ctx context.Context, req *CreateIntentRequest) (*CreateIntentResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("marshal session request: %w", err)
+		return nil, fmt.Errorf("marshal intent request: %w", err)
 	}
 
 	const maxResponseSize = 10 * 1024 * 1024 // 10MB
@@ -101,7 +147,7 @@ func (c *Client) CreateSession(ctx context.Context, req *CreateSessionRequest) (
 			}
 		}
 
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.config.BaseURL+"/auth/session", bytes.NewReader(body))
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.config.BaseURL+"/intents", bytes.NewReader(body))
 		if err != nil {
 			return nil, fmt.Errorf("create http request: %w", err)
 		}
@@ -110,8 +156,8 @@ func (c *Client) CreateSession(ctx context.Context, req *CreateSessionRequest) (
 
 		resp, err := c.httpClient.Do(httpReq)
 		if err != nil {
-			lastErr = fmt.Errorf("chainrails session request failed: %w", err)
-			c.logger.Warn("ChainRails session attempt failed", 
+			lastErr = fmt.Errorf("chainrails intent request failed: %w", err)
+			c.logger.Warn("ChainRails intent attempt failed", 
 				zap.Int("attempt", attempt+1), 
 				zap.Error(err))
 			continue
@@ -120,7 +166,7 @@ func (c *Client) CreateSession(ctx context.Context, req *CreateSessionRequest) (
 		// Read response body with size limit
 		limitedReader := io.LimitReader(resp.Body, maxResponseSize)
 		respBody, err := io.ReadAll(limitedReader)
-		resp.Body.Close() // Close immediately, not deferred
+		resp.Body.Close()
 		
 		if err != nil {
 			lastErr = fmt.Errorf("read response body: %w", err)
@@ -130,7 +176,6 @@ func (c *Client) CreateSession(ctx context.Context, req *CreateSessionRequest) (
 			continue
 		}
 
-		// Check if response was truncated due to size limit
 		if len(respBody) == maxResponseSize {
 			lastErr = fmt.Errorf("response too large (>%d bytes)", maxResponseSize)
 			c.logger.Warn("ChainRails response too large",
@@ -141,29 +186,29 @@ func (c *Client) CreateSession(ctx context.Context, req *CreateSessionRequest) (
 
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
 			lastErr = fmt.Errorf("chainrails returned %d: %s", resp.StatusCode, string(respBody))
-			c.logger.Warn("ChainRails session retryable error",
+			c.logger.Warn("ChainRails intent retryable error",
 				zap.Int("status", resp.StatusCode),
 				zap.Int("attempt", attempt+1),
 			)
 			continue
 		}
 
-		if resp.StatusCode != http.StatusOK {
-			c.logger.Error("chainrails session creation failed",
+		if resp.StatusCode != http.StatusCreated {
+			c.logger.Error("chainrails intent creation failed",
 				zap.Int("status", resp.StatusCode),
 				zap.String("body", string(respBody)),
 			)
 			return nil, fmt.Errorf("chainrails returned %d: %s", resp.StatusCode, string(respBody))
 		}
 
-		var session CreateSessionResponse
-		if err := json.Unmarshal(respBody, &session); err != nil {
-			return nil, fmt.Errorf("unmarshal session response: %w", err)
+		var intent CreateIntentResponse
+		if err := json.Unmarshal(respBody, &intent); err != nil {
+			return nil, fmt.Errorf("unmarshal intent response: %w", err)
 		}
-		return &session, nil
+		return &intent, nil
 	}
 
-	return nil, fmt.Errorf("chainrails session failed after %d attempts: %w", c.config.MaxRetries+1, lastErr)
+	return nil, fmt.Errorf("chainrails intent failed after %d attempts: %w", c.config.MaxRetries+1, lastErr)
 }
 
 // --- Intent status (optional polling fallback) ---
