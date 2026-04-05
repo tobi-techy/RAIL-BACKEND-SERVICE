@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -3365,6 +3366,11 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 		zap.Bool("webhook_secret_present", c.Config.ChainRails.WebhookSecret != ""),
 		zap.String("destination_chain", c.Config.ChainRails.DestinationChain),
 		zap.String("settlement_token", c.Config.ChainRails.SettlementToken))
+	
+	// Debug: Check environment variables
+	c.ZapLog.Info("Environment variables debug",
+		zap.String("CHAINRAILS_API_KEY_env", os.Getenv("CHAINRAILS_API_KEY")),
+		zap.String("CHAINRAILS_WEBHOOK_SECRET_env", os.Getenv("CHAINRAILS_WEBHOOK_SECRET")))
 	
 	if c.Config.ChainRails.APIKey != "" {
 		crClient := chainrails.NewClient(chainrails.Config{

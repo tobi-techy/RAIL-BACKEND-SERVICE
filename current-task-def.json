@@ -1,9 +1,9 @@
 {
-    "taskDefinitionArn": "arn:aws:ecs:us-east-1:885160773772:task-definition/rail-prod:16",
+    "taskDefinitionArn": "arn:aws:ecs:us-east-1:885160773772:task-definition/rail-prod:17",
     "containerDefinitions": [
         {
             "name": "rail-backend",
-            "image": "885160773772.dkr.ecr.us-east-1.amazonaws.com/rail-backend:d2a3c1fc4ce0284c31a031c955428f3064cb2a0e",
+            "image": "885160773772.dkr.ecr.us-east-1.amazonaws.com/rail-backend:e454daa3bc2a45b5040758f5b8692a90b8a52174-amd64",
             "cpu": 0,
             "memory": 450,
             "portMappings": [
@@ -219,7 +219,7 @@
     "taskRoleArn": "arn:aws:iam::885160773772:role/rail-prod-ecs-task",
     "executionRoleArn": "arn:aws:iam::885160773772:role/rail-prod-ecs-execution",
     "networkMode": "bridge",
-    "revision": 16,
+    "revision": 17,
     "volumes": [],
     "status": "ACTIVE",
     "requiresAttributes": [
@@ -253,6 +253,6 @@
     "requiresCompatibilities": [
         "EC2"
     ],
-    "registeredAt": "2026-04-05T20:23:56.105000+01:00",
+    "registeredAt": "2026-04-05T20:46:13.194000+01:00",
     "registeredBy": "arn:aws:iam::885160773772:root"
 }
