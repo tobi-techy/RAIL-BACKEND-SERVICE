@@ -194,7 +194,7 @@ func (c *Client) CreateSession(ctx context.Context, req *CreateSessionRequest) (
 			continue
 		}
 
-		if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 			c.logger.Error("chainrails session creation failed",
 				zap.Int("status", resp.StatusCode),
 				zap.String("body", string(respBody)),
