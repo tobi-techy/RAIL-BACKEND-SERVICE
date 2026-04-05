@@ -38,7 +38,18 @@ type WebhookIntent struct {
 // VerifyWebhookSignature validates the HMAC-SHA256 signature from ChainRails.
 // Signature = HMAC-SHA256(secret, timestamp + "." + body)
 func VerifyWebhookSignature(body []byte, signature, timestamp, secret string) error {
-	// Validate timestamp freshness
+	// Compute expected signature first to prevent timing oracle attacks
+	signed := timestamp + "." + string(body)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(signed))
+	expected := hex.EncodeToString(mac.Sum(nil))
+
+	// Verify signature before timestamp validation
+	if !hmac.Equal([]byte(expected), []byte(signature)) {
+		return fmt.Errorf("signature mismatch")
+	}
+
+	// Only validate timestamp freshness after signature is confirmed
 	ts, err := strconv.ParseInt(timestamp, 10, 64)
 	if err != nil {
 		return fmt.Errorf("invalid timestamp: %w", err)
@@ -48,14 +59,5 @@ func VerifyWebhookSignature(body []byte, signature, timestamp, secret string) er
 		return fmt.Errorf("webhook timestamp too old: %v", age)
 	}
 
-	// Compute expected signature
-	signed := timestamp + "." + string(body)
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(signed))
-	expected := hex.EncodeToString(mac.Sum(nil))
-
-	if !hmac.Equal([]byte(expected), []byte(signature)) {
-		return fmt.Errorf("signature mismatch")
-	}
 	return nil
 }

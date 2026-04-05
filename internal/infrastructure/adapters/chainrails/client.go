@@ -89,7 +89,9 @@ func (c *Client) CreateSession(ctx context.Context, req *CreateSessionRequest) (
 		return nil, fmt.Errorf("marshal session request: %w", err)
 	}
 
+	const maxResponseSize = 10 * 1024 * 1024 // 10MB
 	var lastErr error
+	
 	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
 		if attempt > 0 {
 			select {
@@ -114,9 +116,28 @@ func (c *Client) CreateSession(ctx context.Context, req *CreateSessionRequest) (
 				zap.Error(err))
 			continue
 		}
-		defer resp.Body.Close()
 
-		respBody, _ := io.ReadAll(resp.Body)
+		// Read response body with size limit
+		limitedReader := io.LimitReader(resp.Body, maxResponseSize)
+		respBody, err := io.ReadAll(limitedReader)
+		resp.Body.Close() // Close immediately, not deferred
+		
+		if err != nil {
+			lastErr = fmt.Errorf("read response body: %w", err)
+			c.logger.Warn("ChainRails response read failed",
+				zap.Int("attempt", attempt+1),
+				zap.Error(err))
+			continue
+		}
+
+		// Check if response was truncated due to size limit
+		if len(respBody) == maxResponseSize {
+			lastErr = fmt.Errorf("response too large (>%d bytes)", maxResponseSize)
+			c.logger.Warn("ChainRails response too large",
+				zap.Int("attempt", attempt+1),
+				zap.Int("max_size", maxResponseSize))
+			continue
+		}
 
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
 			lastErr = fmt.Errorf("chainrails returned %d: %s", resp.StatusCode, string(respBody))
@@ -172,15 +193,22 @@ func (c *Client) GetIntentStatus(ctx context.Context, intentAddress string) (*In
 	if err != nil {
 		return nil, fmt.Errorf("chainrails get intent failed: %w", err)
 	}
-	defer resp.Body.Close()
+
+	const maxResponseSize = 1024 * 1024 // 1MB for error responses
+	limitedReader := io.LimitReader(resp.Body, maxResponseSize)
+	respBody, err := io.ReadAll(limitedReader)
+	resp.Body.Close()
+	
+	if err != nil {
+		return nil, fmt.Errorf("read response body: %w", err)
+	}
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("chainrails returned %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("chainrails returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var status IntentStatus
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+	if err := json.Unmarshal(respBody, &status); err != nil {
 		return nil, fmt.Errorf("decode intent status: %w", err)
 	}
 	return &status, nil

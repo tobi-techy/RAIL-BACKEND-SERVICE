@@ -136,12 +136,28 @@ func (h *ChainRailsHandlers) HandleWebhook(c *gin.Context) {
 		return
 	}
 
+	// Check payload size limit (1MB)
+	const maxPayloadSize = 1024 * 1024 // 1MB
+	if len(rawBody) > maxPayloadSize {
+		chainrailsWebhooksTotal.WithLabelValues("unknown", "payload_too_large").Inc()
+		h.logger.Warn("ChainRails webhook payload too large", 
+			"size", len(rawBody), 
+			"max_size", maxPayloadSize,
+			"client_ip", c.ClientIP(),
+			"user_agent", c.GetHeader("User-Agent"))
+		common.RespondBadRequest(c, "Payload too large", nil)
+		return
+	}
+
 	sig := c.GetHeader("X-Chainrails-Signature")
 	ts := c.GetHeader("X-Chainrails-Timestamp")
 
 	if err := chainrails.VerifyWebhookSignature(rawBody, sig, ts, h.webhookSecret); err != nil {
 		chainrailsWebhooksTotal.WithLabelValues("unknown", "unauthorized").Inc()
-		h.logger.Warn("ChainRails webhook signature invalid", "error", err)
+		h.logger.Warn("ChainRails webhook signature invalid", 
+			"error", err,
+			"client_ip", c.ClientIP(),
+			"user_agent", c.GetHeader("User-Agent"))
 		common.SendUnauthorized(c, "Invalid webhook signature")
 		return
 	}
@@ -158,8 +174,8 @@ func (h *ChainRailsHandlers) HandleWebhook(c *gin.Context) {
 		chainrailsWebhooksTotal.WithLabelValues("intent.completed", "received").Inc()
 		h.handleIntentCompleted(c, &event)
 	default:
-		// Acknowledge but ignore other events
-		chainrailsWebhooksTotal.WithLabelValues(event.Type, "ignored").Inc()
+		// Acknowledge but ignore other events - use static label to prevent unbounded cardinality
+		chainrailsWebhooksTotal.WithLabelValues("other", "ignored").Inc()
 		h.logger.Info("ChainRails webhook ignored", "type", event.Type, "id", event.ID)
 		c.JSON(http.StatusOK, gin.H{"received": true})
 	}
@@ -167,6 +183,27 @@ func (h *ChainRailsHandlers) HandleWebhook(c *gin.Context) {
 
 func (h *ChainRailsHandlers) handleIntentCompleted(c *gin.Context, event *chainrails.WebhookEvent) {
 	data := event.Data
+
+	// Parse block time from event data or fall back to event creation time
+	var blockTime time.Time
+	if data.Metadata != nil {
+		if completedAt, exists := data.Metadata["completed_at"]; exists {
+			if parsed, err := time.Parse(time.RFC3339, completedAt); err == nil {
+				blockTime = parsed
+			}
+		}
+	}
+	// Fall back to event creation time if no block timestamp available
+	if blockTime.IsZero() {
+		if parsed, err := time.Parse(time.RFC3339, event.CreatedAt); err == nil {
+			blockTime = parsed
+		} else {
+			// Last resort: use current time but log the limitation
+			blockTime = time.Now()
+			h.logger.Warn("Using server time for block timestamp - no timestamp in ChainRails event",
+				"event_id", event.ID)
+		}
+	}
 
 	// Map ChainRails intent to a standard chain deposit webhook
 	// so it flows through the existing deposit → allocation pipeline.
@@ -177,7 +214,7 @@ func (h *ChainRailsHandlers) handleIntentCompleted(c *gin.Context, event *chainr
 		Token:         mapToken(data.TokenOut),
 		Amount:        data.Amount,
 		TxHash:        data.TxHash,
-		BlockTime:     time.Now(),
+		BlockTime:     blockTime,
 	}
 
 	if err := h.fundingService.ProcessChainDeposit(c.Request.Context(), deposit); err != nil {
