@@ -1121,8 +1121,6 @@ func overrideFromEnv() {
 	if chainrailsSettlementToken := os.Getenv("CHAINRAILS_SETTLEMENT_TOKEN"); chainrailsSettlementToken != "" {
 		viper.Set("chainrails.settlement_token", chainrailsSettlementToken)
 	}
-		viper.Set("chainrails.settlement_token", chainrailsSettlementToken)
-	}
 
 	// Apple Sign-In
 	if v := os.Getenv("APPLE_TEAM_ID"); v != "" {
