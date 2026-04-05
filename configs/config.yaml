@@ -5,7 +5,7 @@ log_level: info
 chainrails:
   api_key: "${CHAINRAILS_API_KEY}"
   webhook_secret: "${CHAINRAILS_WEBHOOK_SECRET}"
-  base_url: "https://api.chainrails.io"
+  base_url: "${CHAINRAILS_BASE_URL:-https://api.chainrails.io/api/v1}"
   destination_chain: "BASE_MAINNET"
   settlement_token: "USDC"
 
