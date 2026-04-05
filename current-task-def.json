@@ -1,9 +1,9 @@
 {
-    "taskDefinitionArn": "arn:aws:ecs:us-east-1:885160773772:task-definition/rail-prod:6",
+    "taskDefinitionArn": "arn:aws:ecs:us-east-1:885160773772:task-definition/rail-prod:9",
     "containerDefinitions": [
         {
             "name": "rail-backend",
-            "image": "885160773772.dkr.ecr.us-east-1.amazonaws.com/rail-backend:2d83c86b7629f14d84d98dab322faba755032680",
+            "image": "885160773772.dkr.ecr.us-east-1.amazonaws.com/rail-backend:ad783672ba2773be623870ac27520732119c0285",
             "cpu": 0,
             "memory": 450,
             "portMappings": [
@@ -38,6 +38,22 @@
                 {
                     "name": "ENVIRONMENT",
                     "value": "prod"
+                },
+                {
+                    "name": "CHAINRAILS_DESTINATION_CHAIN",
+                    "value": "BASE_MAINNET"
+                },
+                {
+                    "name": "CHAINRAILS_API_KEY",
+                    "value": "cr_live_a63a565407301c61a1e7dfb247e07981f879d7d132c75c1358b9929b002f85c7"
+                },
+                {
+                    "name": "CHAINRAILS_WEBHOOK_SECRET",
+                    "value": "42722a99784b7e09a52b7dd7469723b349b4c8544e2c6475b589c9650a707e93"
+                },
+                {
+                    "name": "CHAINRAILS_SETTLEMENT_TOKEN",
+                    "value": "USDC"
                 }
             ],
             "mountPoints": [],
@@ -211,7 +227,7 @@
     "taskRoleArn": "arn:aws:iam::885160773772:role/rail-prod-ecs-task",
     "executionRoleArn": "arn:aws:iam::885160773772:role/rail-prod-ecs-execution",
     "networkMode": "bridge",
-    "revision": 6,
+    "revision": 9,
     "volumes": [],
     "status": "ACTIVE",
     "requiresAttributes": [
@@ -245,6 +261,6 @@
     "requiresCompatibilities": [
         "EC2"
     ],
-    "registeredAt": "2026-04-05T15:33:19.727000+01:00",
-    "registeredBy": "arn:aws:sts::885160773772:assumed-role/github-actions-deploy/GitHubActions"
+    "registeredAt": "2026-04-05T18:04:09.117000+01:00",
+    "registeredBy": "arn:aws:iam::885160773772:root"
 }
