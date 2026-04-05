@@ -3360,6 +3360,12 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 	c.ZapLog.Info("Instant funding services initialized")
 
 	// --- ChainRails (cross-chain deposit funnel) ---
+	c.ZapLog.Info("ChainRails config debug", 
+		zap.String("api_key", c.Config.ChainRails.APIKey),
+		zap.String("webhook_secret", c.Config.ChainRails.WebhookSecret),
+		zap.String("destination_chain", c.Config.ChainRails.DestinationChain),
+		zap.String("settlement_token", c.Config.ChainRails.SettlementToken))
+	
 	if c.Config.ChainRails.APIKey != "" {
 		crClient := chainrails.NewClient(chainrails.Config{
 			APIKey:           c.Config.ChainRails.APIKey,
@@ -3372,6 +3378,8 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 			crClient, c.FundingService, c.Config.ChainRails.WebhookSecret, c.Logger,
 		)
 		c.ZapLog.Info("ChainRails deposit funnel initialized")
+	} else {
+		c.ZapLog.Warn("ChainRails API key is empty, skipping initialization")
 	}
 }
 

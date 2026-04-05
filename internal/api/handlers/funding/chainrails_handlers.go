@@ -107,8 +107,10 @@ func (h *ChainRailsHandlers) CreateSession(c *gin.Context) {
 	}
 
 	session, err := h.crClient.CreateSession(c.Request.Context(), &chainrails.CreateSessionRequest{
-		Amount:    req.Amount,
-		Recipient: depositAddr.Address,
+		Recipient:        depositAddr.Address,
+		TokenOut:         "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // USDC on Base
+		DestinationChain: "BASE_MAINNET",
+		Amount:           req.Amount,
 	})
 	if err != nil {
 		chainrailsSessionsTotal.WithLabelValues("session_error").Inc()
