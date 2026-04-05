@@ -125,7 +125,8 @@ type CreateSessionRequest struct {
 
 type CreateSessionResponse struct {
 	SessionToken string `json:"sessionToken"`
-	ExpiresAt    string `json:"expiresAt,omitempty"`
+	SessionId    string `json:"sessionId"`
+	ExpiresAt    string `json:"expiresAt"`
 }
 
 // CreateSession generates a payment session for the frontend PaymentModal.
