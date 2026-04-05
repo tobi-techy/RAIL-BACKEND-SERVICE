@@ -1100,6 +1100,12 @@ func overrideFromEnv() {
 	}
 
 	// ChainRails API
+	viper.BindEnv("chainrails.api_key", "CHAINRAILS_API_KEY")
+	viper.BindEnv("chainrails.webhook_secret", "CHAINRAILS_WEBHOOK_SECRET")
+	viper.BindEnv("chainrails.base_url", "CHAINRAILS_BASE_URL")
+	viper.BindEnv("chainrails.destination_chain", "CHAINRAILS_DESTINATION_CHAIN")
+	viper.BindEnv("chainrails.settlement_token", "CHAINRAILS_SETTLEMENT_TOKEN")
+	
 	if chainrailsAPIKey := os.Getenv("CHAINRAILS_API_KEY"); chainrailsAPIKey != "" {
 		viper.Set("chainrails.api_key", chainrailsAPIKey)
 	}
@@ -1113,6 +1119,8 @@ func overrideFromEnv() {
 		viper.Set("chainrails.destination_chain", chainrailsDestinationChain)
 	}
 	if chainrailsSettlementToken := os.Getenv("CHAINRAILS_SETTLEMENT_TOKEN"); chainrailsSettlementToken != "" {
+		viper.Set("chainrails.settlement_token", chainrailsSettlementToken)
+	}
 		viper.Set("chainrails.settlement_token", chainrailsSettlementToken)
 	}
 
