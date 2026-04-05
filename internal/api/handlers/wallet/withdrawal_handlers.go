@@ -65,7 +65,7 @@ type CryptoWithdrawalRequest struct {
 // Only requires routing number - bank account created during withdrawal process
 type FiatWithdrawalRequest struct {
 	Amount            string `json:"amount" binding:"required"`
-	Currency          string `json:"currency" binding:"required,oneof=USD EUR"`
+	Currency          string `json:"currency" binding:"required,oneof=USD EUR NGN"`
 	AccountHolderName string `json:"account_holder_name" binding:"required,min=2,max=255"`
 	AccountNumber     string `json:"account_number,omitempty"`
 	RoutingNumber     string `json:"routing_number,omitempty"`
@@ -79,7 +79,7 @@ type FiatWithdrawalRequest struct {
 type WithdrawalFeeRequest struct {
 	WithdrawalType string `form:"type" binding:"required,oneof=crypto fiat"`
 	Amount         string `form:"amount" binding:"required"`
-	Currency       string `form:"currency" binding:"required,oneof=USDC USD EUR"`
+	Currency       string `form:"currency" binding:"required,oneof=USDC USD EUR NGN"`
 	SourceChain    string `form:"source_chain"`
 	DestChain      string `form:"dest_chain"`
 }
@@ -105,6 +105,10 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 	amount, err := parsePositiveDecimal(req.Amount)
 	if err != nil {
 		common.SendBadRequest(c, common.ErrCodeInvalidAmount, err.Error())
+		return
+	}
+	if amount.LessThan(decimal.NewFromInt(1)) {
+		common.SendBadRequest(c, common.ErrCodeInvalidAmount, "Minimum withdrawal amount is $1.00")
 		return
 	}
 	if !h.validateWithdrawalAmountPolicy(c, userID, amount) {
@@ -199,6 +203,10 @@ func (h *WithdrawalHandlers) InitiateFiatWithdrawal(c *gin.Context) {
 		common.SendBadRequest(c, common.ErrCodeInvalidAmount, err.Error())
 		return
 	}
+	if amount.LessThan(decimal.NewFromInt(1)) {
+		common.SendBadRequest(c, common.ErrCodeInvalidAmount, "Minimum withdrawal amount is $1.00")
+		return
+	}
 	if !h.validateWithdrawalAmountPolicy(c, userID, amount) {
 		return
 	}
@@ -287,6 +295,8 @@ func (h *WithdrawalHandlers) GetWithdrawalFees(c *gin.Context) {
 		currency = entities.WithdrawalCurrencyUSD
 	case "EUR":
 		currency = entities.WithdrawalCurrencyEUR
+	case "NGN":
+		currency = entities.WithdrawalCurrencyNGN
 	}
 
 	fee, err := h.withdrawalService.GetWithdrawalFee(

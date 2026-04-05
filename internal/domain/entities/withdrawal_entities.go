@@ -30,6 +30,7 @@ const (
 	WithdrawalCurrencyUSDC WithdrawalCurrency = "USDC"
 	WithdrawalCurrencyUSD  WithdrawalCurrency = "USD"
 	WithdrawalCurrencyEUR  WithdrawalCurrency = "EUR"
+	WithdrawalCurrencyNGN  WithdrawalCurrency = "NGN"
 )
 
 // ValidWithdrawalCurrencies contains all valid withdrawal currencies
@@ -37,6 +38,7 @@ var ValidWithdrawalCurrencies = map[WithdrawalCurrency]bool{
 	WithdrawalCurrencyUSDC: true,
 	WithdrawalCurrencyUSD:  true,
 	WithdrawalCurrencyEUR:  true,
+	WithdrawalCurrencyNGN:  true,
 }
 
 // WithdrawalSourceAccount represents the source account for withdrawal

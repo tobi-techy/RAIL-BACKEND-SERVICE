@@ -2,12 +2,15 @@ package withdrawal
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
+	"hash/fnv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	bridgepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/pkg/logger"
@@ -20,11 +23,11 @@ const (
 	CryptoWithdrawalMinAmount   = 10.00 // Minimum crypto withdrawal
 	FiatWithdrawalMinAmountUSD  = 10.00 // Minimum USD fiat withdrawal
 	FiatWithdrawalMinAmountEUR  = 10.00 // Minimum EUR fiat withdrawal
-	CryptoWithdrawalFeePercent  = 0.0   // Bridge transfers are free (network fees apply)
-	FiatWithdrawalFeePercentUSD = 0.01  // 1% + $0.50 for USD
-	FiatWithdrawalFeeFixedUSD   = 0.50
-	FiatWithdrawalFeePercentEUR = 0.01 // 1% + €0.50 for EUR
-	FiatWithdrawalFeeFixedEUR   = 0.50
+	CryptoWithdrawalFeePercent  = 0.0  // Bridge transfers are gasless
+	FlatWithdrawalFee           = 0.50 // $0.50 flat fee on every withdrawal (crypto + fiat)
+	FiatWithdrawalFeePercentUSD = 0.0  // No percentage fee — flat only
+	FiatWithdrawalFeePercentEUR = 0.0
+	MinWithdrawalAmount         = 1.00 // Minimum $1 withdrawal to avoid disproportionate fees
 	withdrawalLockShards        = 256
 )
 
@@ -127,6 +130,7 @@ type WithdrawalService struct {
 	bridgeCryptoAdapter BridgeCryptoTransferAdapter
 	stashLock           StashLockChecker
 	stashLockMu         sync.RWMutex
+	db                  *sqlx.DB
 	logger              *logger.Logger
 	withdrawalLocks     [withdrawalLockShards]sync.Mutex
 }
@@ -148,6 +152,7 @@ func NewWithdrawalService(
 	notificationService WithdrawalNotificationService,
 	bridgeAdapter BridgeAdapter,
 	bridgeCryptoAdapter BridgeCryptoTransferAdapter,
+	db *sqlx.DB,
 	logger *logger.Logger,
 ) *WithdrawalService {
 	return &WithdrawalService{
@@ -160,6 +165,7 @@ func NewWithdrawalService(
 		notificationService: notificationService,
 		bridgeAdapter:       bridgeAdapter,
 		bridgeCryptoAdapter: bridgeCryptoAdapter,
+		db:                  db,
 		logger:              logger,
 	}
 }
@@ -172,8 +178,54 @@ func (s *WithdrawalService) SetStashLockChecker(c StashLockChecker) {
 	s.stashLock = c
 }
 
+// advisoryLockKey derives a stable int64 from a user UUID for pg_advisory_lock.
+func advisoryLockKey(userID uuid.UUID) int64 {
+	h := fnv.New64a()
+	b := [16]byte(userID)
+	h.Write(b[:])
+	return int64(binary.BigEndian.Uint64(h.Sum(nil)[:8]))
+}
+
+// acquireAdvisoryLock acquires a PostgreSQL session-level advisory lock for the user.
+// Returns an unlock function that MUST be called (typically via defer).
+func (s *WithdrawalService) acquireAdvisoryLock(ctx context.Context, userID uuid.UUID) (func(), error) {
+	if s.db == nil {
+		return func() {}, nil
+	}
+	key := advisoryLockKey(userID)
+
+	// Try to acquire with timeout
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var acquired bool
+		err := s.db.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&acquired)
+		if err != nil {
+			return nil, fmt.Errorf("advisory lock query failed: %w", err)
+		}
+		if acquired {
+			unlock := func() {
+				if _, err := s.db.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", key); err != nil {
+					s.logger.Error("failed to release advisory lock", zap.Int64("key", key), zap.Error(err))
+				}
+			}
+			return unlock, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("timeout acquiring withdrawal lock for user %s", userID)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // InitiateCryptoWithdrawal initiates a crypto withdrawal (USDC to external wallet)
 func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *entities.InitiateCryptoWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error) {
+	// Acquire distributed advisory lock before in-memory lock
+	unlock, err := s.acquireAdvisoryLock(ctx, req.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire distributed lock: %w", err)
+	}
+	defer unlock()
+
 	lock := s.userWithdrawalLock(req.UserID)
 	lock.Lock()
 	defer lock.Unlock()
@@ -463,6 +515,13 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 
 // InitiateFiatWithdrawal initiates a fiat withdrawal (USDC to fiat via Bridge)
 func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *entities.InitiateFiatWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error) {
+	// Acquire distributed advisory lock before in-memory lock
+	unlock, err := s.acquireAdvisoryLock(ctx, req.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire distributed lock: %w", err)
+	}
+	defer unlock()
+
 	lock := s.userWithdrawalLock(req.UserID)
 	lock.Lock()
 	defer lock.Unlock()
@@ -792,6 +851,10 @@ func (s *WithdrawalService) GetWithdrawalFee(ctx context.Context, withdrawalType
 		return nil, fmt.Errorf("amount must be positive")
 	}
 
+	if amount.LessThan(decimal.NewFromFloat(MinWithdrawalAmount)) {
+		return nil, fmt.Errorf("minimum withdrawal amount is $%.2f", MinWithdrawalAmount)
+	}
+
 	feeResponse := &entities.WithdrawalFee{
 		Amount:   amount,
 		Currency: currency,
@@ -996,28 +1059,15 @@ func (s *WithdrawalService) reverseWithdrawalLedgerEntry(ctx context.Context, wi
 	)
 }
 
-// calculateCryptoWithdrawalFee calculates the fee for a crypto withdrawal.
-// Bridge handles cross-chain routing internally — no fee charged at this layer.
+// calculateCryptoWithdrawalFee returns the flat $0.50 service fee.
+// Bridge handles cross-chain routing internally — no network fee charged.
 func (s *WithdrawalService) calculateCryptoWithdrawalFee(ctx context.Context, amount decimal.Decimal, sourceChain, destChain string) (decimal.Decimal, error) {
-	return decimal.Zero, nil
+	return decimal.NewFromFloat(FlatWithdrawalFee), nil
 }
 
-// calculateFiatWithdrawalFee calculates the fee for a fiat withdrawal
+// calculateFiatWithdrawalFee returns the flat $0.50 service fee for all fiat withdrawals.
 func (s *WithdrawalService) calculateFiatWithdrawalFee(amount decimal.Decimal, currency entities.WithdrawalCurrency) decimal.Decimal {
-	var fee decimal.Decimal
-	switch currency {
-	case entities.WithdrawalCurrencyUSD:
-		percentFee := amount.Mul(decimal.NewFromFloat(FiatWithdrawalFeePercentUSD))
-		fixedFee := decimal.NewFromFloat(FiatWithdrawalFeeFixedUSD)
-		fee = percentFee.Add(fixedFee)
-	case entities.WithdrawalCurrencyEUR:
-		percentFee := amount.Mul(decimal.NewFromFloat(FiatWithdrawalFeePercentEUR))
-		fixedFee := decimal.NewFromFloat(FiatWithdrawalFeeFixedEUR)
-		fee = percentFee.Add(fixedFee)
-	default:
-		fee = decimal.Zero
-	}
-	return fee
+	return decimal.NewFromFloat(FlatWithdrawalFee)
 }
 
 // resolveWithdrawalRoute determines the transfer route.
