@@ -1099,6 +1099,23 @@ func overrideFromEnv() {
 		viper.Set("bridge.webhook_secret", bridgeWebhookSecret)
 	}
 
+	// ChainRails API
+	if chainrailsAPIKey := os.Getenv("CHAINRAILS_API_KEY"); chainrailsAPIKey != "" {
+		viper.Set("chainrails.api_key", chainrailsAPIKey)
+	}
+	if chainrailsWebhookSecret := os.Getenv("CHAINRAILS_WEBHOOK_SECRET"); chainrailsWebhookSecret != "" {
+		viper.Set("chainrails.webhook_secret", chainrailsWebhookSecret)
+	}
+	if chainrailsBaseURL := os.Getenv("CHAINRAILS_BASE_URL"); chainrailsBaseURL != "" {
+		viper.Set("chainrails.base_url", chainrailsBaseURL)
+	}
+	if chainrailsDestinationChain := os.Getenv("CHAINRAILS_DESTINATION_CHAIN"); chainrailsDestinationChain != "" {
+		viper.Set("chainrails.destination_chain", chainrailsDestinationChain)
+	}
+	if chainrailsSettlementToken := os.Getenv("CHAINRAILS_SETTLEMENT_TOKEN"); chainrailsSettlementToken != "" {
+		viper.Set("chainrails.settlement_token", chainrailsSettlementToken)
+	}
+
 	// Apple Sign-In
 	if v := os.Getenv("APPLE_TEAM_ID"); v != "" {
 		viper.Set("social_auth.apple.team_id", v)

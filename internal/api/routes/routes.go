@@ -478,7 +478,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 				// ChainRails - cross-chain deposit from any supported chain
 				if container.ChainRailsHandlers != nil {
-					funding.POST("/chainrails/session", container.ChainRailsHandlers.CreateSession)
+					funding.POST("/chainrails/session", 
+						middleware.AuthRateLimit(10), // 10 requests per minute per user
+						container.ChainRailsHandlers.CreateSession)
 				}
 			}
 

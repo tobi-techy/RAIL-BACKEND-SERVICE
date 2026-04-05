@@ -1,6 +1,13 @@
 environment: production
 log_level: info
 
+# ChainRails cross-chain deposit integration
+chainrails:
+  api_key: "cr_live_f8b0c48e102573e392adb2e57786bc090e6fd00153edc77b263978793ba1f2c1"
+  webhook_secret: "cccc325ff055847d53302d4c72bc5943ee83e31bbe6dc40158c184dea66a0391"
+  destination_chain: "BASE_MAINNET"
+  settlement_token: "USDC"
+
 server:
   port: 8081
   host: 0.0.0.0

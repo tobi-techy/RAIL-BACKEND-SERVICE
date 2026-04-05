@@ -13,8 +13,10 @@ import (
 )
 
 const (
-	defaultBaseURL = "https://api.chainrails.io/api/v1"
-	defaultTimeout = 15 * time.Second
+	defaultBaseURL    = "https://api.chainrails.io/api/v1"
+	defaultTimeout    = 15 * time.Second
+	defaultMaxRetries = 3
+	defaultRetryDelay = 1 * time.Second
 )
 
 type Config struct {
@@ -22,6 +24,8 @@ type Config struct {
 	WebhookSecret  string
 	BaseURL        string
 	Timeout        time.Duration
+	MaxRetries     int
+	RetryDelay     time.Duration
 	// DestinationChain is the chain where Rail's Bridge wallet lives (e.g. "BASE_MAINNET").
 	DestinationChain string
 	// SettlementToken is the token Rail accepts (e.g. "USDC").
@@ -40,6 +44,12 @@ func NewClient(cfg Config, logger *zap.Logger) *Client {
 	}
 	if cfg.Timeout == 0 {
 		cfg.Timeout = defaultTimeout
+	}
+	if cfg.MaxRetries == 0 {
+		cfg.MaxRetries = defaultMaxRetries
+	}
+	if cfg.RetryDelay == 0 {
+		cfg.RetryDelay = defaultRetryDelay
 	}
 	if cfg.SettlementToken == "" {
 		cfg.SettlementToken = "USDC"
@@ -79,34 +89,60 @@ func (c *Client) CreateSession(ctx context.Context, req *CreateSessionRequest) (
 		return nil, fmt.Errorf("marshal session request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.config.BaseURL+"/auth/session", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("create http request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+	var lastErr error
+	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(c.config.RetryDelay * time.Duration(attempt)):
+			}
+		}
 
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("chainrails session request failed: %w", err)
-	}
-	defer resp.Body.Close()
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.config.BaseURL+"/auth/session", bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("create http request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+c.config.APIKey)
 
-	respBody, _ := io.ReadAll(resp.Body)
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			lastErr = fmt.Errorf("chainrails session request failed: %w", err)
+			c.logger.Warn("ChainRails session attempt failed", 
+				zap.Int("attempt", attempt+1), 
+				zap.Error(err))
+			continue
+		}
+		defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		c.logger.Error("chainrails session creation failed",
-			zap.Int("status", resp.StatusCode),
-			zap.String("body", string(respBody)),
-		)
-		return nil, fmt.Errorf("chainrails returned %d: %s", resp.StatusCode, string(respBody))
+		respBody, _ := io.ReadAll(resp.Body)
+
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			lastErr = fmt.Errorf("chainrails returned %d: %s", resp.StatusCode, string(respBody))
+			c.logger.Warn("ChainRails session retryable error",
+				zap.Int("status", resp.StatusCode),
+				zap.Int("attempt", attempt+1),
+			)
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			c.logger.Error("chainrails session creation failed",
+				zap.Int("status", resp.StatusCode),
+				zap.String("body", string(respBody)),
+			)
+			return nil, fmt.Errorf("chainrails returned %d: %s", resp.StatusCode, string(respBody))
+		}
+
+		var session CreateSessionResponse
+		if err := json.Unmarshal(respBody, &session); err != nil {
+			return nil, fmt.Errorf("unmarshal session response: %w", err)
+		}
+		return &session, nil
 	}
 
-	var session CreateSessionResponse
-	if err := json.Unmarshal(respBody, &session); err != nil {
-		return nil, fmt.Errorf("unmarshal session response: %w", err)
-	}
-	return &session, nil
+	return nil, fmt.Errorf("chainrails session failed after %d attempts: %w", c.config.MaxRetries+1, lastErr)
 }
 
 // --- Intent status (optional polling fallback) ---
