@@ -52,6 +52,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/lulo"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
@@ -1059,6 +1060,7 @@ type Container struct {
 	UserAccountRepo        *repositories.UserAccountRepository
 	InstantFundingService  *funding.InstantFundingService
 	InstantFundingHandlers *fundinghandlers.InstantFundingHandlers
+	ChainRailsHandlers     *fundinghandlers.ChainRailsHandlers
 
 	// Security Stores
 	WithdrawalSecurityStore *repositories.WithdrawalSecurityStore
@@ -3356,6 +3358,21 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 	}
 
 	c.ZapLog.Info("Instant funding services initialized")
+
+	// --- ChainRails (cross-chain deposit funnel) ---
+	if c.Config.ChainRails.APIKey != "" {
+		crClient := chainrails.NewClient(chainrails.Config{
+			APIKey:           c.Config.ChainRails.APIKey,
+			WebhookSecret:    c.Config.ChainRails.WebhookSecret,
+			BaseURL:          c.Config.ChainRails.BaseURL,
+			DestinationChain: c.Config.ChainRails.DestinationChain,
+			SettlementToken:  c.Config.ChainRails.SettlementToken,
+		}, c.ZapLog)
+		c.ChainRailsHandlers = fundinghandlers.NewChainRailsHandlers(
+			crClient, c.FundingService, c.Config.ChainRails.WebhookSecret, c.Logger,
+		)
+		c.ZapLog.Info("ChainRails deposit funnel initialized")
+	}
 }
 
 // InstantFundingAlpacaAdapterImpl adapts alpaca.Service to funding.InstantFundingAlpacaAdapter

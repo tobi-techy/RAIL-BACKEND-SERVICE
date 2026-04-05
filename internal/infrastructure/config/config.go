@@ -35,6 +35,7 @@ type Config struct {
 	Lulo           LuloConfig           `mapstructure:"lulo"`
 	Grid           GridConfig           `mapstructure:"grid"`
 	CCTP           CCTPConfig           `mapstructure:"cctp"`
+	ChainRails     ChainRailsConfig     `mapstructure:"chainrails"`
 	Workers        WorkerConfig         `mapstructure:"workers"`
 	Reconciliation ReconciliationConfig `mapstructure:"reconciliation"`
 	SocialAuth     SocialAuthConfig     `mapstructure:"social_auth"`
@@ -392,6 +393,15 @@ type LuloConfig struct {
 	SweepInterval  int    `mapstructure:"sweep_interval"`   // Sweep interval in minutes
 	// Bridge custody wallet used to fund the Solana wallet with USDC before Lulo deposits.
 	BridgeSourceWalletID string `mapstructure:"bridge_source_wallet_id"`
+}
+
+// ChainRailsConfig contains ChainRails cross-chain deposit configuration.
+type ChainRailsConfig struct {
+	APIKey           string `mapstructure:"api_key"`
+	WebhookSecret    string `mapstructure:"webhook_secret"`
+	BaseURL          string `mapstructure:"base_url"`          // default: https://api.chainrails.io/api/v1
+	DestinationChain string `mapstructure:"destination_chain"` // e.g. "BASE_MAINNET"
+	SettlementToken  string `mapstructure:"settlement_token"`  // e.g. "USDC"
 }
 
 // WorkerConfig contains background worker configuration

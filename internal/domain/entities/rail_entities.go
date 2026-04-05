@@ -14,10 +14,15 @@ type Chain string
 const (
 	// Supported chains (mainnet only)
 	ChainSOL       Chain = "SOL"
+	ChainETH       Chain = "ETH"
 	ChainMATIC     Chain = "MATIC"
 	ChainCELO      Chain = "CELO"
 	ChainBase      Chain = "BASE"
 	ChainAvalanche Chain = "AVAX"
+	ChainArbitrum  Chain = "ARB"
+	ChainOptimism  Chain = "OP"
+	ChainStarknet  Chain = "STRK"
+	ChainBNB       Chain = "BNB"
 
 	ChainFiat Chain = "fiat"
 )
