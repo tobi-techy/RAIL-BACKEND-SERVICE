@@ -117,15 +117,98 @@ type CreateIntentResponse struct {
 // --- Session creation (server-side, keeps API key private) ---
 
 type CreateSessionRequest struct {
-	Amount           string `json:"amount"`
 	Recipient        string `json:"recipient"`
+	TokenOut         string `json:"tokenOut"`
 	DestinationChain string `json:"destinationChain"`
-	Token            string `json:"token"`
+	Amount           string `json:"amount"`
 }
 
 type CreateSessionResponse struct {
-	SessionToken string `json:"session_token"`
-	ExpiresAt    string `json:"expires_at,omitempty"`
+	SessionToken string `json:"sessionToken"`
+	ExpiresAt    string `json:"expiresAt,omitempty"`
+}
+
+// CreateSession generates a payment session for the frontend PaymentModal.
+func (c *Client) CreateSession(ctx context.Context, req *CreateSessionRequest) (*CreateSessionResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal session request: %w", err)
+	}
+
+	const maxResponseSize = 10 * 1024 * 1024 // 10MB
+	var lastErr error
+	
+	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(c.config.RetryDelay * time.Duration(attempt)):
+			}
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.config.BaseURL+"/modal/sessions", bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("create http request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			lastErr = fmt.Errorf("chainrails session request failed: %w", err)
+			c.logger.Warn("ChainRails session attempt failed", 
+				zap.Int("attempt", attempt+1), 
+				zap.Error(err))
+			continue
+		}
+
+		// Read response body with size limit
+		limitedReader := io.LimitReader(resp.Body, maxResponseSize)
+		respBody, err := io.ReadAll(limitedReader)
+		resp.Body.Close()
+		
+		if err != nil {
+			lastErr = fmt.Errorf("read response body: %w", err)
+			c.logger.Warn("ChainRails response read failed",
+				zap.Int("attempt", attempt+1),
+				zap.Error(err))
+			continue
+		}
+
+		if len(respBody) == maxResponseSize {
+			lastErr = fmt.Errorf("response too large (>%d bytes)", maxResponseSize)
+			c.logger.Warn("ChainRails response too large",
+				zap.Int("attempt", attempt+1),
+				zap.Int("max_size", maxResponseSize))
+			continue
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			lastErr = fmt.Errorf("chainrails returned %d: %s", resp.StatusCode, string(respBody))
+			c.logger.Warn("ChainRails session retryable error",
+				zap.Int("status", resp.StatusCode),
+				zap.Int("attempt", attempt+1),
+			)
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			c.logger.Error("chainrails session creation failed",
+				zap.Int("status", resp.StatusCode),
+				zap.String("body", string(respBody)),
+			)
+			return nil, fmt.Errorf("chainrails returned %d: %s", resp.StatusCode, string(respBody))
+		}
+
+		var session CreateSessionResponse
+		if err := json.Unmarshal(respBody, &session); err != nil {
+			return nil, fmt.Errorf("unmarshal session response: %w", err)
+		}
+		return &session, nil
+	}
+
+	return nil, fmt.Errorf("chainrails session failed after %d attempts: %w", c.config.MaxRetries+1, lastErr)
 }
 
 // CreateIntent creates a cross-chain transfer intent with ChainRails
