@@ -129,8 +129,8 @@ type CreateSessionResponse struct {
 	ExpiresAt    string `json:"expiresAt"`
 }
 
-// CreateSession generates a payment session for the frontend PaymentModal.
-func (c *Client) CreateSession(ctx context.Context, req *CreateSessionRequest) (*CreateSessionResponse, error) {
+// CreateSessionRaw returns the raw ChainRails session response bytes.
+func (c *Client) CreateSessionRaw(ctx context.Context, req *CreateSessionRequest) (json.RawMessage, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal session request: %w", err)
@@ -206,7 +206,7 @@ func (c *Client) CreateSession(ctx context.Context, req *CreateSessionRequest) (
 		if err := json.Unmarshal(respBody, &session); err != nil {
 			return nil, fmt.Errorf("unmarshal session response: %w", err)
 		}
-		return &session, nil
+		return respBody, nil
 	}
 
 	return nil, fmt.Errorf("chainrails session failed after %d attempts: %w", c.config.MaxRetries+1, lastErr)

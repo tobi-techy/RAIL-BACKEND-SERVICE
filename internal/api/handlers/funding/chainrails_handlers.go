@@ -106,7 +106,7 @@ func (h *ChainRailsHandlers) CreateSession(c *gin.Context) {
 		return
 	}
 
-	session, err := h.crClient.CreateSession(c.Request.Context(), &chainrails.CreateSessionRequest{
+	session, err := h.crClient.CreateSessionRaw(c.Request.Context(), &chainrails.CreateSessionRequest{
 		Recipient:        depositAddr.Address,
 		TokenOut:         "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // USDC on Base
 		DestinationChain: "BASE_MAINNET",
@@ -120,14 +120,7 @@ func (h *ChainRailsHandlers) CreateSession(c *gin.Context) {
 	}
 
 	chainrailsSessionsTotal.WithLabelValues("success").Inc()
-	c.JSON(http.StatusOK, gin.H{
-		"data": gin.H{
-			"sessionToken": session.SessionToken,
-			"sessionId":    session.SessionId,
-			"expiresAt":    session.ExpiresAt,
-			"amount":       req.Amount,
-		},
-	})
+	c.Data(http.StatusOK, "application/json", session)
 }
 
 // --- POST /v1/webhooks/chainrails ---
