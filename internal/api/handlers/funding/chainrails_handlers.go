@@ -122,8 +122,10 @@ func (h *ChainRailsHandlers) CreateSession(c *gin.Context) {
 	chainrailsSessionsTotal.WithLabelValues("success").Inc()
 	c.JSON(http.StatusOK, gin.H{
 		"data": gin.H{
-			"session_token": session.SessionToken,
-			"expires_at":    session.ExpiresAt,
+			"sessionToken": session.SessionToken,
+			"sessionId":    session.SessionId,
+			"expiresAt":    session.ExpiresAt,
+			"amount":       req.Amount,
 		},
 	})
 }
