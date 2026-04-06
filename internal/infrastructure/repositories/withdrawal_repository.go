@@ -360,3 +360,27 @@ func (r *WithdrawalRepository) GetByProviderTransferID(ctx context.Context, tran
 
 	return &withdrawal, nil
 }
+
+// GetByProviderTransferIDPrefix retrieves a withdrawal whose bridge_transfer_id starts with the given prefix.
+func (r *WithdrawalRepository) GetByProviderTransferIDPrefix(ctx context.Context, prefix string) (*entities.Withdrawal, error) {
+	query := `
+		SELECT id, user_id, withdrawal_type, currency, amount, source_account,
+			circle_wallet_id AS bridge_wallet_id, destination_type, destination_chain, destination_address, bank_account_id,
+			fee_amount, fee_currency, category, narration, status, bridge_transfer_id, tx_hash, error_message,
+			idempotency_key, created_at, updated_at, completed_at
+		FROM withdrawals
+		WHERE bridge_transfer_id LIKE $1
+		LIMIT 1
+	`
+
+	var withdrawal entities.Withdrawal
+	err := r.db.GetContext(ctx, &withdrawal, query, prefix+"%")
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("no withdrawal found with transfer ID prefix: %s", prefix)
+		}
+		return nil, fmt.Errorf("failed to get withdrawal by provider transfer ID prefix: %w", err)
+	}
+
+	return &withdrawal, nil
+}

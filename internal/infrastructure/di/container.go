@@ -1874,6 +1874,7 @@ func (c *Container) initializeDomainServices() error {
 	)
 	c.P2PService.SetUserUpdater(c.UserRepo)
 	c.P2PService.SetWalletLookup(c.WalletRepo)
+	c.P2PService.SetTapIntentStore(c.RedisClient)
 	if c.BridgeClient != nil {
 		c.P2PService.SetBridgeOfframp(NewP2PBridgeOfframpAdapter(bridge.NewAdapter(c.BridgeClient, c.ZapLog)))
 	}
@@ -3380,6 +3381,11 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 		c.ChainRailsHandlers = fundinghandlers.NewChainRailsHandlers(
 			crClient, c.FundingService, c.Config.ChainRails.WebhookSecret, c.Logger,
 		)
+		// Wire ChainRails into withdrawal service for cross-chain withdrawals
+		if c.WithdrawalService != nil {
+			c.WithdrawalService.SetChainRailsAdapter(crClient)
+			c.ChainRailsHandlers.SetWithdrawalService(c.WithdrawalService)
+		}
 		c.ZapLog.Info("ChainRails deposit funnel initialized")
 	} else {
 		c.ZapLog.Warn("ChainRails API key is empty, skipping initialization")

@@ -13,6 +13,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	bridgepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	chainrailspkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
@@ -65,6 +66,7 @@ type WithdrawalRepository interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error)
 	GetByIdempotencyKey(ctx context.Context, key string) (*entities.Withdrawal, error)
 	GetByProviderTransferID(ctx context.Context, transferID string) (*entities.Withdrawal, error)
+	GetByProviderTransferIDPrefix(ctx context.Context, prefix string) (*entities.Withdrawal, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status entities.WithdrawalStatus) error
 	UpdateBridgeTransfer(ctx context.Context, id uuid.UUID, transferID string) error
 	UpdateTxHash(ctx context.Context, id uuid.UUID, txHash string) error
@@ -116,6 +118,11 @@ type StashLockChecker interface {
 	MarkWithdrawn(ctx context.Context, userID uuid.UUID) error
 }
 
+// ChainRailsTransferAdapter creates cross-chain intents via ChainRails.
+type ChainRailsTransferAdapter interface {
+	CreateIntent(ctx context.Context, req *chainrailspkg.CreateIntentRequest) (*chainrailspkg.CreateIntentResponse, error)
+}
+
 // WithdrawalService handles crypto and fiat withdrawal operations
 type WithdrawalService struct {
 	withdrawalRepo      WithdrawalRepository
@@ -128,7 +135,8 @@ type WithdrawalService struct {
 	notificationService WithdrawalNotificationService
 	bridgeAdapter       BridgeAdapter
 	bridgeCryptoAdapter BridgeCryptoTransferAdapter
-	stashLock           StashLockChecker
+	chainRailsAdapter  ChainRailsTransferAdapter
+	stashLock          StashLockChecker
 	stashLockMu         sync.RWMutex
 	db                  *sqlx.DB
 	logger              *logger.Logger
@@ -176,6 +184,11 @@ func (s *WithdrawalService) SetStashLockChecker(c StashLockChecker) {
 	s.stashLockMu.Lock()
 	defer s.stashLockMu.Unlock()
 	s.stashLock = c
+}
+
+// SetChainRailsAdapter wires the ChainRails cross-chain transfer adapter.
+func (s *WithdrawalService) SetChainRailsAdapter(a ChainRailsTransferAdapter) {
+	s.chainRailsAdapter = a
 }
 
 // advisoryLockKey derives a stable int64 from a user UUID for pg_advisory_lock.
@@ -1097,6 +1110,26 @@ var SupportedChains = map[string]bool{
 	"AVAX": true, "AVAX-FUJI": true, "AVALANCHE": true,
 	"BASE": true, "BASE-SEPOLIA": true,
 	"ARB": true, "OP": true,
+	// ChainRails-routed chains (not natively supported by Bridge)
+	"STARKNET": true, "BSC": true, "BNB": true,
+	"MONAD": true, "HYPEREVM": true, "LISK": true,
+}
+
+// chainRailsChains are destination chains routed through ChainRails
+// because Bridge does not support them as payment rails.
+var chainRailsChains = map[string]string{
+	"STARKNET": "STARKNET_MAINNET",
+	"BSC":      "BSC_MAINNET",
+	"BNB":      "BSC_MAINNET",
+	"MONAD":    "MONAD_MAINNET",
+	"HYPEREVM": "HYPEREVM_MAINNET",
+	"LISK":     "LISK_MAINNET",
+}
+
+// isChainRailsChain returns the ChainRails chain ID if the destination
+// must be routed through ChainRails, or empty string for Bridge-native chains.
+func isChainRailsChain(destChain string) string {
+	return chainRailsChains[strings.ToUpper(destChain)]
 }
 
 // validateChainPair validates that both source and destination chains are supported
@@ -1121,8 +1154,14 @@ func validateChainPair(sourceChain, destChain string) error {
 	return nil
 }
 
-// executeCryptoTransfer executes a crypto transfer via Bridge custodial wallets.
+// executeCryptoTransfer executes a crypto transfer via Bridge custodial wallets
+// or ChainRails for chains not natively supported by Bridge.
 func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, destinationChain, sourceChain string) (*CryptoTransferResult, error) {
+	// Route through ChainRails for unsupported Bridge chains
+	if crChain := isChainRailsChain(destinationChain); crChain != "" {
+		return s.executeChainRailsTransfer(ctx, withdrawal, destinationAddress, crChain)
+	}
+
 	if s.bridgeCryptoAdapter == nil {
 		return nil, fmt.Errorf("bridge crypto adapter not configured")
 	}
@@ -1161,6 +1200,165 @@ func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawa
 	}, nil
 }
 
+// USDC contract address on Base mainnet.
+const usdcBaseMainnet = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+
+// executeChainRailsTransfer creates a ChainRails intent and funds it via Bridge.
+// Flow: Create intent → get intent_address → Bridge transfer USDC to intent_address → ChainRails bridges cross-chain.
+func (s *WithdrawalService) executeChainRailsTransfer(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, crDestChain string) (*CryptoTransferResult, error) {
+	if s.chainRailsAdapter == nil {
+		return nil, fmt.Errorf("chainrails adapter not configured")
+	}
+	if s.bridgeCryptoAdapter == nil {
+		return nil, fmt.Errorf("bridge crypto adapter not configured")
+	}
+
+	walletID := withdrawal.BridgeWalletID
+	if walletID == nil || *walletID == "" {
+		return nil, fmt.Errorf("bridge wallet ID not provided")
+	}
+
+	// Amount in smallest unit (USDC has 6 decimals)
+	amountMicro := withdrawal.Amount.Shift(6).IntPart()
+
+	// Step 1: Create ChainRails intent
+	intent, err := s.chainRailsAdapter.CreateIntent(ctx, &chainrailspkg.CreateIntentRequest{
+		Amount:           fmt.Sprintf("%d", amountMicro),
+		AmountSymbol:     "USDC",
+		TokenIn:          usdcBaseMainnet,
+		SourceChain:      "BASE_MAINNET",
+		DestinationChain: crDestChain,
+		Recipient:        destinationAddress,
+		RefundAddress:    "", // Defaults to on-chain sender (user's Bridge custody wallet on Base)
+		Metadata: map[string]interface{}{
+			"withdrawal_id": withdrawal.ID.String(),
+			"user_id":       withdrawal.UserID.String(),
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("chainrails intent creation failed: %w", err)
+	}
+
+	s.logger.Info("ChainRails intent created",
+		"withdrawal_id", withdrawal.ID.String(),
+		"intent_id", intent.ID,
+		"intent_address", intent.IntentAddress,
+		"dest_chain", crDestChain,
+		"fees_usd", intent.FeesInUSD)
+
+	// Step 2: Fund the intent by transferring USDC from user's Bridge wallet to the intent address on Base
+	transfer, err := s.bridgeCryptoAdapter.TransferFunds(ctx, &bridgepkg.CreateTransferRequest{
+		OnBehalfOf: withdrawal.UserID.String(),
+		Amount:     withdrawal.Amount.StringFixed(2),
+		Source: bridgepkg.TransferSource{
+			PaymentRail:    bridgepkg.PaymentRail("bridge_wallet"),
+			Currency:       bridgepkg.CurrencyUSDC,
+			BridgeWalletID: *walletID,
+		},
+		Destination: bridgepkg.TransferDestination{
+			PaymentRail: bridgepkg.PaymentRailBase,
+			Currency:    bridgepkg.CurrencyUSDC,
+			ToAddress:   intent.IntentAddress,
+		},
+	})
+	if err != nil {
+		// Intent was created but funding failed. ChainRails will auto-expire the unfunded intent.
+		s.logger.Error("Bridge transfer to ChainRails intent failed — intent will expire unfunded",
+			"withdrawal_id", withdrawal.ID.String(),
+			"intent_id", intent.ID,
+			"intent_address", intent.IntentAddress,
+			"error", err)
+		return nil, fmt.Errorf("bridge transfer to chainrails intent failed: %w", err)
+	}
+
+	s.logger.Info("Bridge transfer to ChainRails intent initiated",
+		"withdrawal_id", withdrawal.ID.String(),
+		"bridge_transfer_id", transfer.ID,
+		"intent_address", intent.IntentAddress)
+
+	// Store the ChainRails intent ID as the provider reference for webhook reconciliation
+	return &CryptoTransferResult{
+		TransferID: fmt.Sprintf("cr:%d:%s", intent.ID, transfer.ID),
+		State:      intent.IntentStatus,
+	}, nil
+}
+
+// CompleteChainRailsWithdrawal marks a ChainRails-routed withdrawal as completed.
+// Called by the webhook handler when intent.completed fires for a withdrawal intent.
+func (s *WithdrawalService) CompleteChainRailsWithdrawal(ctx context.Context, intentID int, txHash string) error {
+	// Find withdrawal by provider transfer ID prefix "cr:{intentID}:"
+	prefix := fmt.Sprintf("cr:%d:", intentID)
+	withdrawal, err := s.withdrawalRepo.GetByProviderTransferIDPrefix(ctx, prefix)
+	if err != nil {
+		return fmt.Errorf("withdrawal not found for intent %d: %w", intentID, err)
+	}
+	if withdrawal.Status == entities.WithdrawalStatusCompleted {
+		return fmt.Errorf("already processed")
+	}
+
+	if txHash != "" {
+		if err := s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, txHash); err != nil {
+			s.logger.Error("Failed to update tx hash", "withdrawal_id", withdrawal.ID, "error", err)
+		}
+	}
+
+	if err := s.withdrawalRepo.MarkCompleted(ctx, withdrawal.ID); err != nil {
+		return fmt.Errorf("failed to mark withdrawal completed: %w", err)
+	}
+
+	s.logger.Info("ChainRails withdrawal completed",
+		"withdrawal_id", withdrawal.ID.String(),
+		"intent_id", intentID,
+		"tx_hash", txHash)
+	return nil
+}
+
+// RefundChainRailsWithdrawal reverses a failed ChainRails withdrawal.
+// Called by the webhook handler when intent.refunded fires.
+func (s *WithdrawalService) RefundChainRailsWithdrawal(ctx context.Context, intentID int) error {
+	prefix := fmt.Sprintf("cr:%d:", intentID)
+	withdrawal, err := s.withdrawalRepo.GetByProviderTransferIDPrefix(ctx, prefix)
+	if err != nil {
+		return fmt.Errorf("withdrawal not found for intent %d: %w", intentID, err)
+	}
+
+	// Acquire user lock to prevent double-reversal from webhook retries
+	lock := s.userWithdrawalLock(withdrawal.UserID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// Re-read status under lock to prevent TOCTOU race
+	withdrawal, err = s.withdrawalRepo.GetByID(ctx, withdrawal.ID)
+	if err != nil {
+		return fmt.Errorf("failed to re-read withdrawal: %w", err)
+	}
+
+	if withdrawal.Status == entities.WithdrawalStatusCompleted {
+		s.logger.Warn("Ignoring refund for already completed withdrawal", "withdrawal_id", withdrawal.ID)
+		return nil
+	}
+	if withdrawal.Status == entities.WithdrawalStatusFailed || withdrawal.Status == entities.WithdrawalStatusCancelled {
+		s.logger.Warn("Ignoring refund for already failed/cancelled withdrawal", "withdrawal_id", withdrawal.ID)
+		return nil
+	}
+
+	// Reverse the ledger debit to restore the user's balance
+	if err := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); err != nil {
+		s.logger.Error("Failed to reverse ledger for ChainRails refund",
+			"withdrawal_id", withdrawal.ID, "error", err)
+		return fmt.Errorf("failed to reverse ledger: %w", err)
+	}
+
+	if err := s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, fmt.Sprintf("chainrails intent %d refunded", intentID)); err != nil {
+		return fmt.Errorf("failed to mark withdrawal failed: %w", err)
+	}
+
+	s.logger.Info("ChainRails withdrawal refunded and reversed",
+		"withdrawal_id", withdrawal.ID.String(),
+		"intent_id", intentID)
+	return nil
+}
+
 func mapDestChainToPaymentRail(chain string) bridgepkg.PaymentRail {
 	switch strings.ToLower(chain) {
 	case "solana", "sol", "sol-devnet":
@@ -1173,8 +1371,10 @@ func mapDestChainToPaymentRail(chain string) bridgepkg.PaymentRail {
 		return bridgepkg.PaymentRailAvalanche
 	case "ethereum", "eth":
 		return bridgepkg.PaymentRailEthereum
-	case "arbitrum":
+	case "arbitrum", "arb":
 		return bridgepkg.PaymentRailArbitrum
+	case "optimism", "op":
+		return bridgepkg.PaymentRailOptimism
 	default:
 		return bridgepkg.PaymentRailBase
 	}

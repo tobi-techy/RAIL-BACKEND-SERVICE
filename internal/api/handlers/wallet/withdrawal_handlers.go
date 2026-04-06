@@ -658,7 +658,10 @@ func validateCryptoAddress(address, chain string) error {
 		}
 	case strings.Contains(chainUpper, "ETH"), strings.Contains(chainUpper, "MATIC"),
 		strings.Contains(chainUpper, "AVAX"), strings.Contains(chainUpper, "BASE"),
-		strings.Contains(chainUpper, "ARB"), strings.Contains(chainUpper, "OP"):
+		strings.Contains(chainUpper, "ARB"), strings.Contains(chainUpper, "OP"),
+		strings.Contains(chainUpper, "BSC"), strings.Contains(chainUpper, "BNB"),
+		strings.Contains(chainUpper, "MONAD"), strings.Contains(chainUpper, "HYPEREVM"),
+		strings.Contains(chainUpper, "LISK"):
 		// EVM addresses are 0x-prefixed hex, 42 characters
 		if len(addr) != 42 {
 			return fmt.Errorf("invalid EVM address: must be 42 characters (0x + 40 hex)")
@@ -670,6 +673,20 @@ func validateCryptoAddress(address, chain string) error {
 		for _, c := range hexPart {
 			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
 				return fmt.Errorf("invalid EVM address: must be valid hex after 0x")
+			}
+		}
+	case strings.Contains(chainUpper, "STARK"):
+		// Starknet addresses are 0x-prefixed hex, up to 66 characters (0x + 64 hex)
+		if len(addr) < 42 || len(addr) > 66 {
+			return fmt.Errorf("invalid Starknet address: must be 42-66 characters")
+		}
+		if !strings.HasPrefix(addr, "0x") {
+			return fmt.Errorf("invalid Starknet address: must start with 0x")
+		}
+		hexPart := addr[2:]
+		for _, c := range hexPart {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+				return fmt.Errorf("invalid Starknet address: must be valid hex after 0x")
 			}
 		}
 	default:

@@ -1,6 +1,7 @@
 package funding
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -42,10 +43,17 @@ var (
 
 // ChainRailsHandlers handles ChainRails deposit flow.
 type ChainRailsHandlers struct {
-	crClient       *chainrails.Client
-	fundingService *funding.Service
-	webhookSecret  string
-	logger         *logger.Logger
+	crClient          *chainrails.Client
+	fundingService    *funding.Service
+	withdrawalService ChainRailsWithdrawalService
+	webhookSecret     string
+	logger            *logger.Logger
+}
+
+// ChainRailsWithdrawalService is the subset of withdrawal service needed for webhook handling.
+type ChainRailsWithdrawalService interface {
+	CompleteChainRailsWithdrawal(ctx context.Context, intentID int, txHash string) error
+	RefundChainRailsWithdrawal(ctx context.Context, intentID int) error
 }
 
 func NewChainRailsHandlers(
@@ -60,6 +68,11 @@ func NewChainRailsHandlers(
 		webhookSecret:  webhookSecret,
 		logger:         logger,
 	}
+}
+
+// SetWithdrawalService wires the withdrawal service for webhook handling.
+func (h *ChainRailsHandlers) SetWithdrawalService(ws ChainRailsWithdrawalService) {
+	h.withdrawalService = ws
 }
 
 // --- POST /v1/funding/chainrails/session ---
@@ -169,9 +182,30 @@ func (h *ChainRailsHandlers) HandleWebhook(c *gin.Context) {
 	switch event.Type {
 	case "intent.completed":
 		chainrailsWebhooksTotal.WithLabelValues("intent.completed", "received").Inc()
+		// Check metadata to distinguish deposit vs withdrawal intents
+		if event.Data.Metadata != nil {
+			if _, isWithdrawal := event.Data.Metadata["withdrawal_id"]; isWithdrawal {
+				h.handleWithdrawalIntentCompleted(c, &event)
+				return
+			}
+		}
 		h.handleIntentCompleted(c, &event)
+	case "intent.refunded":
+		chainrailsWebhooksTotal.WithLabelValues("intent.refunded", "received").Inc()
+		if event.Data.Metadata != nil {
+			if _, isWithdrawal := event.Data.Metadata["withdrawal_id"]; isWithdrawal {
+				h.handleWithdrawalIntentRefunded(c, &event)
+				return
+			}
+		}
+		h.logger.Info("ChainRails deposit refund received", "event_id", event.ID)
+		c.JSON(http.StatusOK, gin.H{"received": true})
+	case "intent.funded", "intent.initiated":
+		chainrailsWebhooksTotal.WithLabelValues(event.Type, "acknowledged").Inc()
+		h.logger.Info("ChainRails intent progress", "type", event.Type, "event_id", event.ID,
+			"intent_address", event.Data.IntentAddress)
+		c.JSON(http.StatusOK, gin.H{"received": true})
 	default:
-		// Acknowledge but ignore other events - use static label to prevent unbounded cardinality
 		chainrailsWebhooksTotal.WithLabelValues("other", "ignored").Inc()
 		h.logger.Info("ChainRails webhook ignored", "type", event.Type, "id", event.ID)
 		c.JSON(http.StatusOK, gin.H{"received": true})
@@ -250,6 +284,63 @@ func isAlreadyProcessed(err error) bool {
 	return strings.Contains(msg, "already processed") || strings.Contains(msg, "deposit already exists")
 }
 
+func (h *ChainRailsHandlers) handleWithdrawalIntentCompleted(c *gin.Context, event *chainrails.WebhookEvent) {
+	if h.withdrawalService == nil {
+		h.logger.Error("Withdrawal service not configured for ChainRails webhook")
+		c.JSON(http.StatusOK, gin.H{"received": true})
+		return
+	}
+
+	if err := h.withdrawalService.CompleteChainRailsWithdrawal(c.Request.Context(), event.Data.IntentID, event.Data.TxHash); err != nil {
+		if isAlreadyProcessed(err) {
+			chainrailsWebhooksTotal.WithLabelValues("intent.completed", "already_processed").Inc()
+			c.JSON(http.StatusOK, gin.H{"received": true, "status": "already_processed"})
+			return
+		}
+		if strings.Contains(err.Error(), "not found") {
+			chainrailsWebhooksTotal.WithLabelValues("intent.completed", "not_found").Inc()
+			h.logger.Warn("ChainRails withdrawal not found — acknowledging to prevent retries",
+				"event_id", event.ID, "intent_id", event.Data.IntentID, "error", err)
+			c.JSON(http.StatusOK, gin.H{"received": true, "status": "not_found"})
+			return
+		}
+		h.logger.Error("Failed to complete ChainRails withdrawal",
+			"event_id", event.ID, "intent_id", event.Data.IntentID, "error", err)
+		chainrailsWebhooksTotal.WithLabelValues("intent.completed", "processing_error").Inc()
+		common.SendInternalError(c, "PROCESSING_ERROR", "Failed to process withdrawal completion")
+		return
+	}
+
+	chainrailsWebhooksTotal.WithLabelValues("intent.completed", "withdrawal_success").Inc()
+	c.JSON(http.StatusOK, gin.H{"received": true})
+}
+
+func (h *ChainRailsHandlers) handleWithdrawalIntentRefunded(c *gin.Context, event *chainrails.WebhookEvent) {
+	if h.withdrawalService == nil {
+		h.logger.Error("Withdrawal service not configured for ChainRails webhook")
+		c.JSON(http.StatusOK, gin.H{"received": true})
+		return
+	}
+
+	if err := h.withdrawalService.RefundChainRailsWithdrawal(c.Request.Context(), event.Data.IntentID); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			chainrailsWebhooksTotal.WithLabelValues("intent.refunded", "not_found").Inc()
+			h.logger.Warn("ChainRails withdrawal not found for refund — acknowledging",
+				"event_id", event.ID, "intent_id", event.Data.IntentID)
+			c.JSON(http.StatusOK, gin.H{"received": true, "status": "not_found"})
+			return
+		}
+		h.logger.Error("Failed to refund ChainRails withdrawal",
+			"event_id", event.ID, "intent_id", event.Data.IntentID, "error", err)
+		chainrailsWebhooksTotal.WithLabelValues("intent.refunded", "processing_error").Inc()
+		common.SendInternalError(c, "PROCESSING_ERROR", "Failed to process withdrawal refund")
+		return
+	}
+
+	chainrailsWebhooksTotal.WithLabelValues("intent.refunded", "withdrawal_refunded").Inc()
+	c.JSON(http.StatusOK, gin.H{"received": true})
+}
+
 // mapToken converts a token contract address or symbol to Rail's Stablecoin type.
 func mapToken(tokenOut string) entities.Stablecoin {
 	lower := strings.ToLower(tokenOut)
@@ -276,7 +367,7 @@ func mapChainRailsChain(cr string) entities.Chain {
 		return entities.ChainAvalanche
 	case "STARKNET_MAINNET", "STARKNET_TESTNET":
 		return entities.ChainStarknet
-	case "BNB_MAINNET":
+	case "BNB_MAINNET", "BSC_MAINNET":
 		return entities.ChainBNB
 	default:
 		return entities.ChainBase
