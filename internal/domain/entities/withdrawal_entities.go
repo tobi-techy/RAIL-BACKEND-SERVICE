@@ -232,6 +232,7 @@ type InitiateCryptoWithdrawalRequest struct {
 	SourceChain        string                  `json:"source_chain"`
 	SourceAccount      WithdrawalSourceAccount `json:"source_account"`
 	BridgeWalletID     string                  `json:"bridge_wallet_id"`
+	SourceWalletAddress string                 `json:"source_wallet_address"` // On-chain address for refunds
 	Category           string                  `json:"category,omitempty"`
 	Narration          string                  `json:"narration,omitempty"`
 	IdempotencyKey     string                  // Generated server-side

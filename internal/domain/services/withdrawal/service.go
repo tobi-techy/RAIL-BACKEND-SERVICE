@@ -395,7 +395,7 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	}
 
 	// Step 7: Execute Bridge transfer
-	transferResult, err := s.executeCryptoTransfer(ctx, withdrawal, req.DestinationAddress, req.DestinationChain, req.SourceChain)
+	transferResult, err := s.executeCryptoTransfer(ctx, withdrawal, req.DestinationAddress, req.DestinationChain, req.SourceChain, req.SourceWalletAddress)
 	if err != nil {
 		s.logger.Error("Failed to execute crypto transfer", "error", err)
 		// Reverse the ledger debit when transfer fails
@@ -1156,10 +1156,10 @@ func validateChainPair(sourceChain, destChain string) error {
 
 // executeCryptoTransfer executes a crypto transfer via Bridge custodial wallets
 // or ChainRails for chains not natively supported by Bridge.
-func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, destinationChain, sourceChain string) (*CryptoTransferResult, error) {
+func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, destinationChain, sourceChain, sourceWalletAddress string) (*CryptoTransferResult, error) {
 	// Route through ChainRails for unsupported Bridge chains
 	if crChain := isChainRailsChain(destinationChain); crChain != "" {
-		return s.executeChainRailsTransfer(ctx, withdrawal, destinationAddress, crChain)
+		return s.executeChainRailsTransfer(ctx, withdrawal, destinationAddress, crChain, sourceWalletAddress)
 	}
 
 	if s.bridgeCryptoAdapter == nil {
@@ -1205,7 +1205,7 @@ const usdcBaseMainnet = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 
 // executeChainRailsTransfer creates a ChainRails intent and funds it via Bridge.
 // Flow: Create intent → get intent_address → Bridge transfer USDC to intent_address → ChainRails bridges cross-chain.
-func (s *WithdrawalService) executeChainRailsTransfer(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, crDestChain string) (*CryptoTransferResult, error) {
+func (s *WithdrawalService) executeChainRailsTransfer(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, crDestChain, sourceWalletAddress string) (*CryptoTransferResult, error) {
 	if s.chainRailsAdapter == nil {
 		return nil, fmt.Errorf("chainrails adapter not configured")
 	}
@@ -1229,7 +1229,8 @@ func (s *WithdrawalService) executeChainRailsTransfer(ctx context.Context, withd
 		SourceChain:      "BASE_MAINNET",
 		DestinationChain: crDestChain,
 		Recipient:        destinationAddress,
-		RefundAddress:    "", // Defaults to on-chain sender (user's Bridge custody wallet on Base)
+		Sender:           sourceWalletAddress,
+		RefundAddress:    sourceWalletAddress, // Refund to user's Bridge custody wallet on Base
 		Metadata: map[string]interface{}{
 			"withdrawal_id": withdrawal.ID.String(),
 			"user_id":       withdrawal.UserID.String(),
