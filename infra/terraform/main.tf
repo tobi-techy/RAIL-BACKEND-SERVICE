@@ -389,6 +389,11 @@ resource "aws_ecs_task_definition" "app" {
       { name = "OPENAI_API_KEY",        valueFrom = "/rail/${local.env}/OPENAI_API_KEY" },
       { name = "GEMINI_API_KEY",        valueFrom = "/rail/${local.env}/GEMINI_API_KEY" },
       { name = "NEWS_API_KEY",          valueFrom = "/rail/${local.env}/NEWS_API_KEY" },
+      { name = "PAJ_API_KEY",           valueFrom = "/rail/${local.env}/PAJ_API_KEY" },
+      { name = "PAJ_BASE_URL",          valueFrom = "/rail/${local.env}/PAJ_BASE_URL" },
+      { name = "PAJ_CHAIN",             valueFrom = "/rail/${local.env}/PAJ_CHAIN" },
+      { name = "PAJ_WALLET_ADDRESS",    valueFrom = "/rail/${local.env}/PAJ_WALLET_ADDRESS" },
+      { name = "PAJ_TOKEN_MINT",        valueFrom = "/rail/${local.env}/PAJ_TOKEN_MINT" },
     ]
 
     logConfiguration = {

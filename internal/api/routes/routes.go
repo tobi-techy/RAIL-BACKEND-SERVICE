@@ -490,6 +490,22 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						middleware.AuthRateLimit(10), // 10 requests per minute per user
 						container.ChainRailsHandlers.CreateSession)
 				}
+
+				// Paj Cash - NGN on/off ramp
+				if container.PajHandlers != nil {
+					paj := funding.Group("/paj")
+					paj.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
+					paj.POST("/initiate", middleware.AuthRateLimit(5), container.PajHandlers.Initiate)
+					paj.POST("/verify", middleware.AuthRateLimit(10), container.PajHandlers.Verify)
+					paj.GET("/rates", container.PajHandlers.GetRates)
+					paj.GET("/banks", container.PajHandlers.GetBanks)
+					paj.POST("/banks/resolve", container.PajHandlers.ResolveBankAccount)
+					paj.POST("/banks/add", container.PajHandlers.AddBankAccount)
+					paj.GET("/banks/saved", container.PajHandlers.GetBankAccounts)
+					paj.POST("/onramp", middleware.AuthRateLimit(10), container.PajHandlers.CreateOnramp)
+					paj.POST("/offramp", middleware.AuthRateLimit(10), container.PajHandlers.CreateOfframp)
+					paj.GET("/orders/:id/status", container.PajHandlers.GetOrderStatus)
+				}
 			}
 
 			// Unified Balance route
@@ -893,6 +909,13 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				chainrailsWebhooks := webhooks.Group("/chainrails")
 				chainrailsWebhooks.Use(middleware.RateLimit(100)) // 100 req/min per IP
 				chainrailsWebhooks.POST("", container.ChainRailsHandlers.HandleWebhook)
+			}
+
+			// Paj Cash webhooks (per-order, no signature verification — verified by polling)
+			if container.PajHandlers != nil {
+				pajWebhooks := webhooks.Group("/paj")
+				pajWebhooks.Use(middleware.RateLimit(100))
+				pajWebhooks.POST("", container.PajHandlers.HandleWebhook)
 			}
 		}
 

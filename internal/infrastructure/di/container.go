@@ -27,6 +27,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/card"
 	"github.com/rail-service/rail_service/internal/domain/services/copytrading"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
+	"github.com/rail-service/rail_service/internal/domain/services/pajfunding"
 	"github.com/rail-service/rail_service/internal/domain/services/integration"
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
 	"github.com/rail-service/rail_service/internal/domain/services/kyc"
@@ -53,6 +54,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
+	pajadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/paj"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/reflect"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
@@ -1064,6 +1066,7 @@ type Container struct {
 	InstantFundingService  *funding.InstantFundingService
 	InstantFundingHandlers *fundinghandlers.InstantFundingHandlers
 	ChainRailsHandlers     *fundinghandlers.ChainRailsHandlers
+	PajHandlers            *fundinghandlers.PajHandlers
 
 	// Security Stores
 	WithdrawalSecurityStore *repositories.WithdrawalSecurityStore
@@ -3423,6 +3426,23 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 		c.ZapLog.Info("ChainRails deposit funnel initialized")
 	} else {
 		c.ZapLog.Warn("ChainRails API key is empty, skipping initialization")
+	}
+
+	// --- Paj Cash (NGN on/off ramp) ---
+	if c.Config.Paj.APIKey != "" {
+		pajClient := pajadapter.NewClient(pajadapter.Config{
+			APIKey:        c.Config.Paj.APIKey,
+			BaseURL:       c.Config.Paj.BaseURL,
+			WebhookURL:    c.Config.Paj.WebhookURL,
+			WalletAddress: c.Config.Paj.WalletAddress,
+			TokenMint:     c.Config.Paj.TokenMint,
+			Chain:         c.Config.Paj.Chain,
+		}, c.ZapLog)
+		pajService := pajfunding.NewService(sqlxDB, pajClient, &WithdrawalLedgerAdapter{ledgerService: c.LedgerService}, c.Config.Security.EncryptionKey, c.ZapLog)
+		c.PajHandlers = fundinghandlers.NewPajHandlers(pajService, c.ZapLog)
+		c.ZapLog.Info("Paj Cash NGN ramp initialized")
+	} else {
+		c.ZapLog.Warn("Paj API key is empty, skipping initialization")
 	}
 }
 
