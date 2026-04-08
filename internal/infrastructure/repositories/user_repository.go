@@ -1774,3 +1774,65 @@ func (r *UserRepository) FindApprovedNotActiveBridge(ctx context.Context, limit 
 	}
 	return ids, rows.Err()
 }
+
+// NotificationUser holds minimal user data needed for sending notifications.
+type NotificationUser struct {
+	ID uuid.UUID
+}
+
+// GetUnverifiedUsersForNotification returns IDs of users whose KYC is not approved,
+// who have at least one registered device token, and who signed up more than 1 hour ago.
+func (r *UserRepository) GetUnverifiedUsersForNotification(ctx context.Context) ([]NotificationUser, error) {
+	query := `
+		SELECT DISTINCT u.id
+		FROM users u
+		JOIN device_tokens dt ON dt.user_id = u.id
+		WHERE u.kyc_status NOT IN ('approved')
+		  AND u.is_active = true
+		  AND u.anonymized_at IS NULL
+		  AND u.created_at < NOW() - INTERVAL '1 hour'
+		  AND dt.is_active = true
+	`
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("GetUnverifiedUsersForNotification: %w", err)
+	}
+	defer rows.Close()
+
+	var users []NotificationUser
+	for rows.Next() {
+		var u NotificationUser
+		if err := rows.Scan(&u.ID); err != nil {
+			return nil, fmt.Errorf("GetUnverifiedUsersForNotification scan: %w", err)
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
+// GetAllActiveUsers returns IDs of all non-anonymized users with a registered device token.
+func (r *UserRepository) GetAllActiveUsers(ctx context.Context) ([]NotificationUser, error) {
+	query := `
+		SELECT DISTINCT u.id
+		FROM users u
+		JOIN device_tokens dt ON dt.user_id = u.id
+		WHERE u.is_active = true
+		  AND u.anonymized_at IS NULL
+		  AND dt.is_active = true
+	`
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("GetAllActiveUsers: %w", err)
+	}
+	defer rows.Close()
+
+	var users []NotificationUser
+	for rows.Next() {
+		var u NotificationUser
+		if err := rows.Scan(&u.ID); err != nil {
+			return nil, fmt.Errorf("GetAllActiveUsers scan: %w", err)
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
