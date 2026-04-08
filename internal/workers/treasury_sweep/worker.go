@@ -3,13 +3,14 @@ package treasury_sweep
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/lulo"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/reflect"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -19,54 +20,57 @@ type LedgerReader interface {
 	GetTotalStashBalance(ctx context.Context) (decimal.Decimal, error)
 }
 
-// Worker periodically sweeps aggregate stash USDC into the Lulo yield pool.
+// DistributedYieldReader returns the total yield ever distributed to users.
+// The sweep compares ledger principal (stash - distributed) against the Reflect position.
+type DistributedYieldReader interface {
+	GetTotalDistributedYield(ctx context.Context) (decimal.Decimal, error)
+}
+
+// Worker periodically sweeps aggregate stash USDC into the Reflect yield pool.
 //
 // Two-phase flow:
 //  1. Transfer USDC from Bridge custody wallet → Rail's Solana wallet (via Bridge API)
-//  2. Deposit USDC from Solana wallet → Lulo pool (via Lulo tx on Solana)
+//  2. Mint USDC+ from Solana wallet → Reflect (via Reflect tx on Solana)
 type Worker struct {
-	lulo               *lulo.Client
+	reflect            *reflect.Client
 	bridgeClient       *bridge.Client
 	ledger             LedgerReader
+	distributedYield   DistributedYieldReader
 	db                 *sqlx.DB
-	bridgeCustomerID   string // Rail's Bridge customer ID
-	bridgeSourceWallet string // Bridge wallet ID holding USDC to fund Solana wallet
-	solanaWallet       string // Rail's Solana wallet address (destination for Bridge transfer)
-	poolType           string
+	bridgeCustomerID   string
+	bridgeSourceWallet string
+	solanaWallet       string
 	minSweepAmount     decimal.Decimal
 	interval           time.Duration
 	logger             *zap.Logger
 	stopCh             chan struct{}
+	stopOnce           sync.Once
 	sweeping           int32
 }
 
 // NewWorker creates a treasury sweep worker.
 func NewWorker(
-	luloClient *lulo.Client,
+	reflectClient *reflect.Client,
 	bridgeClient *bridge.Client,
 	ledger LedgerReader,
+	distributedYield DistributedYieldReader,
 	db *sqlx.DB,
 	bridgeCustomerID string,
 	bridgeSourceWallet string,
 	solanaWallet string,
-	poolType string,
 	minSweepAmount decimal.Decimal,
 	interval time.Duration,
 	logger *zap.Logger,
 ) *Worker {
-	if poolType != "regular" && poolType != "protected" {
-		poolType = "protected"
-		logger.Warn("Invalid pool type, defaulting to protected", zap.String("pool_type", poolType))
-	}
 	return &Worker{
-		lulo:               luloClient,
+		reflect:            reflectClient,
 		bridgeClient:       bridgeClient,
 		ledger:             ledger,
+		distributedYield:   distributedYield,
 		db:                 db,
 		bridgeCustomerID:   bridgeCustomerID,
 		bridgeSourceWallet: bridgeSourceWallet,
 		solanaWallet:       solanaWallet,
-		poolType:           poolType,
 		minSweepAmount:     minSweepAmount,
 		interval:           interval,
 		logger:             logger,
@@ -81,11 +85,7 @@ func (w *Worker) Start() {
 		for {
 			select {
 			case <-ticker.C:
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-				if err := w.sweep(ctx); err != nil {
-					w.logger.Error("Treasury sweep failed", zap.Error(err))
-				}
-				cancel()
+				w.runSweep()
 			case <-w.stopCh:
 				ticker.Stop()
 				return
@@ -94,9 +94,17 @@ func (w *Worker) Start() {
 	}()
 }
 
-// Stop signals the worker to shut down.
+func (w *Worker) runSweep() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	if err := w.sweep(ctx); err != nil {
+		w.logger.Error("Treasury sweep failed", zap.Error(err))
+	}
+}
+
+// Stop signals the worker to shut down. Safe to call multiple times.
 func (w *Worker) Stop() {
-	close(w.stopCh)
+	w.stopOnce.Do(func() { close(w.stopCh) })
 }
 
 func (w *Worker) sweep(ctx context.Context) error {
@@ -111,17 +119,40 @@ func (w *Worker) sweep(ctx context.Context) error {
 		return fmt.Errorf("get ledger stash total: %w", err)
 	}
 
-	account, err := w.lulo.GetAccount(ctx)
+	totalDistributed, err := w.distributedYield.GetTotalDistributedYield(ctx)
 	if err != nil {
-		return fmt.Errorf("get lulo account: %w", err)
+		return fmt.Errorf("get total distributed yield: %w", err)
+	}
+	// Ledger stash includes yield credited to users; Reflect holds only principal.
+	// Compare principal-only to avoid perpetual deposit loop after yield distribution.
+	ledgerPrincipal := ledgerTotal.Sub(totalDistributed)
+
+	var depositedUSDC decimal.Decimal
+	if err := w.db.GetContext(ctx, &depositedUSDC,
+		`SELECT value FROM yield_state WHERE key = 'reflect_deposited_usdc'`); err != nil {
+		return fmt.Errorf("get reflect deposited usdc: %w", err)
 	}
 
-	diff := ledgerTotal.Sub(account.DepositedValue)
+	// Compare ledger principal against raw deposited USDC (not rate-multiplied).
+	// Invariant: ledgerPrincipal == depositedUSDC
+	// Rate appreciation is unrealised yield — not a sweep trigger.
+	// We only sweep when users deposit/withdraw, changing the principal.
+	diff := ledgerPrincipal.Sub(depositedUSDC)
+
+	// Still need rate for the withdraw path (to compute token amount to burn).
+	var rate decimal.Decimal
+	if diff.IsNegative() && diff.Abs().GreaterThanOrEqual(w.minSweepAmount) {
+		rate, err = w.reflect.GetExchangeRate(ctx)
+		if err != nil {
+			return fmt.Errorf("get reflect exchange rate: %w", err)
+		}
+	}
 
 	w.logger.Info("Treasury sweep check",
 		zap.String("ledger_total", ledgerTotal.StringFixed(6)),
-		zap.String("lulo_deposited", account.DepositedValue.StringFixed(6)),
-		zap.String("lulo_total_value", account.TotalValue.StringFixed(6)),
+		zap.String("total_distributed", totalDistributed.StringFixed(6)),
+		zap.String("ledger_principal", ledgerPrincipal.StringFixed(6)),
+		zap.String("reflect_deposited_usdc", depositedUSDC.StringFixed(6)),
 		zap.String("diff", diff.StringFixed(6)),
 	)
 
@@ -132,53 +163,48 @@ func (w *Worker) sweep(ctx context.Context) error {
 	if diff.IsPositive() {
 		return w.deposit(ctx, diff)
 	}
-	return w.withdraw(ctx, diff.Abs())
+	return w.withdraw(ctx, diff.Abs(), rate)
 }
 
-// deposit executes the two-phase flow: Bridge→Solana, then Solana→Lulo.
+// deposit executes the two-phase flow: Bridge→Solana, then Solana→Reflect mint.
 func (w *Worker) deposit(ctx context.Context, amount decimal.Decimal) error {
-	// Phase 1: Transfer USDC from Bridge custody to Rail's Solana wallet.
 	bridgeTxID, err := w.fundSolanaWallet(ctx, amount)
 	if err != nil {
 		return fmt.Errorf("fund solana wallet: %w", err)
 	}
-
-	// Wait for Bridge transfer to settle (Solana transfers are typically <30s).
 	if err := w.waitForBridgeTransfer(ctx, bridgeTxID); err != nil {
 		return fmt.Errorf("bridge transfer did not settle: %w", err)
 	}
 
-	// Phase 2: Deposit from Solana wallet into Lulo.
-	txHash, err := w.lulo.Deposit(ctx, amount, w.poolType)
+	txHash, err := w.reflect.Mint(ctx, amount)
 	if err != nil {
-		return fmt.Errorf("lulo deposit: %w", err)
+		return fmt.Errorf("reflect mint: %w", err)
 	}
 
-	w.logger.Info("Treasury sweep deposit completed",
-		zap.String("amount", amount.StringFixed(6)),
-		zap.String("bridge_transfer", bridgeTxID),
-		zap.String("lulo_tx", txHash),
-	)
-	return w.recordOperation(ctx, "deposit", amount, txHash)
+	// Atomically record the operation and update deposited USDC in one transaction.
+	return w.recordOperationAndUpdateDeposit(ctx, "deposit", amount, txHash)
 }
 
-func (w *Worker) withdraw(ctx context.Context, amount decimal.Decimal) error {
-	txHash, err := w.lulo.Withdraw(ctx, amount, w.poolType)
+func (w *Worker) withdraw(ctx context.Context, usdcAmount decimal.Decimal, rate decimal.Decimal) error {
+	if rate.IsZero() {
+		return fmt.Errorf("exchange rate is zero, cannot compute burn amount")
+	}
+	// Convert USDC amount to USDC+ tokens: tokens = usdc / rate
+	tokenAmount := usdcAmount.Div(rate).Truncate(6)
+
+	txHash, err := w.reflect.Burn(ctx, tokenAmount)
 	if err != nil {
-		return fmt.Errorf("lulo withdraw: %w", err)
+		return fmt.Errorf("reflect burn: %w", err)
 	}
 
-	w.logger.Info("Treasury sweep withdrawal completed",
-		zap.String("amount", amount.StringFixed(6)),
-		zap.String("lulo_tx", txHash),
-	)
-	return w.recordOperation(ctx, "withdrawal", amount, txHash)
+	// Record the USDC equivalent withdrawn so reflect_deposited_usdc stays in USDC terms.
+	return w.recordOperationAndUpdateDeposit(ctx, "withdrawal", usdcAmount, txHash)
 }
 
 // fundSolanaWallet creates a Bridge transfer from the custody wallet to the Solana wallet.
 func (w *Worker) fundSolanaWallet(ctx context.Context, amount decimal.Decimal) (string, error) {
 	req := &bridge.CreateTransferRequest{
-		ClientReferenceID: fmt.Sprintf("lulo-sweep-%s", uuid.New().String()[:8]),
+		ClientReferenceID: fmt.Sprintf("reflect-sweep-%s", uuid.New().String()[:8]),
 		OnBehalfOf:        w.bridgeCustomerID,
 		Amount:            amount.Truncate(6).String(),
 		Source: bridge.TransferSource{
@@ -238,13 +264,42 @@ func (w *Worker) waitForBridgeTransfer(ctx context.Context, transferID string) e
 	}
 }
 
-func (w *Worker) recordOperation(ctx context.Context, opType string, amount decimal.Decimal, txHash string) error {
-	_, err := w.db.ExecContext(ctx,
+// recordOperationAndUpdateDeposit atomically records the treasury operation and
+// updates the reflect_deposited_usdc balance in a single DB transaction.
+// This prevents the tracked balance from drifting if the process crashes between
+// the Solana tx confirming and the DB write.
+func (w *Worker) recordOperationAndUpdateDeposit(ctx context.Context, opType string, amount decimal.Decimal, txHash string) error {
+	tx, err := w.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO treasury_positions (id, operation, amount, tx_hash) VALUES ($1, $2, $3, $4)`,
 		uuid.New(), opType, amount, txHash,
-	)
-	if err != nil {
-		w.logger.Error("Failed to record treasury operation (non-fatal)", zap.Error(err))
+	); err != nil {
+		return fmt.Errorf("insert treasury position: %w", err)
 	}
+
+	var updateSQL string
+	if opType == "deposit" {
+		updateSQL = `UPDATE yield_state SET value = value::numeric + $1, updated_at = NOW() WHERE key = 'reflect_deposited_usdc'`
+	} else {
+		updateSQL = `UPDATE yield_state SET value = GREATEST(0, value::numeric - $1), updated_at = NOW() WHERE key = 'reflect_deposited_usdc'`
+	}
+	if _, err := tx.ExecContext(ctx, updateSQL, amount); err != nil {
+		return fmt.Errorf("update reflect_deposited_usdc: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+
+	w.logger.Info("Treasury sweep completed",
+		zap.String("operation", opType),
+		zap.String("amount", amount.StringFixed(6)),
+		zap.String("reflect_tx", txHash),
+	)
 	return nil
 }
