@@ -25,11 +25,6 @@ type Repository interface {
 	GetDistributionByPeriod(ctx context.Context, start, end time.Time) (*entities.YieldDistribution, error)
 }
 
-// RewardsProvider fetches the accrued reward amount from the yield provider.
-type RewardsProvider interface {
-	GetRewardsSummary(ctx context.Context, currency string) (*RewardSummary, error)
-}
-
 // RewardSummary holds the distributable reward amount from the yield provider.
 type RewardSummary struct {
 	Rewards string
@@ -48,14 +43,13 @@ type YieldNotifier interface {
 // Service handles yield distribution.
 type Service struct {
 	repo     Repository
-	rewards  RewardsProvider
 	ledger   LedgerCreditor
 	notifier YieldNotifier
 	logger   *zap.Logger
 }
 
-func NewService(repo Repository, rewards RewardsProvider, ledger LedgerCreditor, logger *zap.Logger) *Service {
-	return &Service{repo: repo, rewards: rewards, ledger: ledger, logger: logger}
+func NewService(repo Repository, ledger LedgerCreditor, logger *zap.Logger) *Service {
+	return &Service{repo: repo, ledger: ledger, logger: logger}
 }
 
 // SetNotifier wires push notifications for yield credited events.

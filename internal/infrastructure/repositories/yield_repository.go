@@ -108,3 +108,12 @@ func (r *YieldRepository) GetDistributionByPeriod(ctx context.Context, start, en
 	}
 	return &d, err
 }
+
+// GetTotalDistributedYield returns the sum of all total_distributed across completed distributions.
+func (r *YieldRepository) GetTotalDistributedYield(ctx context.Context) (decimal.Decimal, error) {
+	var total decimal.Decimal
+	err := r.db.QueryRowxContext(ctx,
+		`SELECT COALESCE(SUM(total_distributed), 0) FROM yield_distributions WHERE status = 'completed'`,
+	).Scan(&total)
+	return total, err
+}

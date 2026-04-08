@@ -7,28 +7,49 @@ import (
 
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/domain/services/yield"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/lulo"
-	"github.com/rail-service/rail_service/internal/infrastructure/di"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
 // RewardsProvider fetches the accrued reward summary from the yield provider.
+// rate is the already-fetched current exchange rate — passed in to avoid a duplicate API call.
 type RewardsProvider interface {
-	GetRewardsSummary(ctx context.Context, currency string) (*yield.RewardSummary, error)
+	GetRewardsSummary(ctx context.Context, currency string, currentRate decimal.Decimal) (*yield.RewardSummary, error)
 }
+
+// ExchangeRateFetcher returns the current yield provider exchange rate.
+type ExchangeRateFetcher func(ctx context.Context) (decimal.Decimal, error)
+
+// ExchangeRateAdvancer persists the new exchange rate high-water mark and adds
+// the distributed yield to reflect_deposited_usdc so reconciliation stays accurate.
+type ExchangeRateAdvancer func(ctx context.Context, db *sqlx.DB, rate decimal.Decimal, distributedYield decimal.Decimal) error
 
 // Worker runs the monthly yield distribution.
 type Worker struct {
-	yieldSvc   *yield.Service
-	rewards    RewardsProvider
-	luloClient *lulo.Client
-	db         *sqlx.DB
-	logger     *zap.Logger
+	yieldSvc       *yield.Service
+	rewards        RewardsProvider
+	getRate        ExchangeRateFetcher
+	advanceRate    ExchangeRateAdvancer
+	db             *sqlx.DB
+	logger         *zap.Logger
 }
 
-func NewWorker(yieldSvc *yield.Service, rewards RewardsProvider, luloClient *lulo.Client, db *sqlx.DB, logger *zap.Logger) *Worker {
-	return &Worker{yieldSvc: yieldSvc, rewards: rewards, luloClient: luloClient, db: db, logger: logger}
+func NewWorker(
+	yieldSvc *yield.Service,
+	rewards RewardsProvider,
+	getRate ExchangeRateFetcher,
+	advanceRate ExchangeRateAdvancer,
+	db *sqlx.DB,
+	logger *zap.Logger,
+) *Worker {
+	return &Worker{
+		yieldSvc:    yieldSvc,
+		rewards:     rewards,
+		getRate:     getRate,
+		advanceRate: advanceRate,
+		db:          db,
+		logger:      logger,
+	}
 }
 
 // Run executes the distribution for the given period.
@@ -36,14 +57,12 @@ func NewWorker(yieldSvc *yield.Service, rewards RewardsProvider, luloClient *lul
 func (w *Worker) Run(ctx context.Context, periodStart, periodEnd time.Time) error {
 	freezeTime := time.Now()
 
-	// Snapshot the current cumulative interest BEFORE reading the delta.
-	// This is the value we'll persist as the high-water mark after success.
-	currentInterest, err := di.GetCurrentLuloInterest(ctx, w.luloClient)
+	currentRate, err := w.getRate(ctx)
 	if err != nil {
-		return fmt.Errorf("yield worker: get current lulo interest: %w", err)
+		return fmt.Errorf("yield worker: get current exchange rate: %w", err)
 	}
 
-	summary, err := w.rewards.GetRewardsSummary(ctx, "usdc")
+	summary, err := w.rewards.GetRewardsSummary(ctx, "usdc", currentRate)
 	if err != nil {
 		return fmt.Errorf("yield worker: get rewards: %w", err)
 	}
@@ -71,10 +90,10 @@ func (w *Worker) Run(ctx context.Context, periodStart, periodEnd time.Time) erro
 		return fmt.Errorf("yield worker: distribution failed: %w", err)
 	}
 
-	// Advance the high-water mark ONLY after successful distribution.
-	if err := di.AdvanceYieldMark(ctx, w.db, currentInterest); err != nil {
-		w.logger.Error("Failed to advance yield high-water mark (distribution succeeded, mark stale — next run will re-distribute this delta)",
-			zap.String("current_interest", currentInterest.String()),
+	// Advance the exchange rate high-water mark ONLY after successful distribution.
+	if err := w.advanceRate(ctx, w.db, currentRate, totalReward); err != nil {
+		w.logger.Error("Failed to advance exchange rate mark (distribution succeeded, mark stale — next run will re-distribute this delta)",
+			zap.String("current_rate", currentRate.String()),
 			zap.Error(err),
 		)
 		// Don't return error — distribution succeeded, users got their yield.
