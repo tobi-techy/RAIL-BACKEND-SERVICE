@@ -3438,7 +3438,7 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 			TokenMint:     c.Config.Paj.TokenMint,
 			Chain:         c.Config.Paj.Chain,
 		}, c.ZapLog)
-		pajService := pajfunding.NewService(sqlxDB, pajClient, &WithdrawalLedgerAdapter{ledgerService: c.LedgerService}, c.Config.Security.EncryptionKey, c.ZapLog)
+		pajService := pajfunding.NewService(sqlxDB, pajClient, &WithdrawalLedgerAdapter{ledgerService: c.LedgerService}, c.RedisClient, c.Config.Security.EncryptionKey, c.ZapLog)
 		c.PajHandlers = fundinghandlers.NewPajHandlers(pajService, c.ZapLog)
 		c.ZapLog.Info("Paj Cash NGN ramp initialized")
 	} else {

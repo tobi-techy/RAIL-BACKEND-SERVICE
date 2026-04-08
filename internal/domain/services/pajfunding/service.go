@@ -10,6 +10,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/paj"
+	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/pkg/crypto"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
@@ -27,12 +28,13 @@ type Service struct {
 	db            *sqlx.DB
 	pajClient     *paj.Client
 	ledger        LedgerService
+	redis         cache.RedisClient
 	encryptionKey string
 	logger        *zap.Logger
 }
 
-func NewService(db *sqlx.DB, pajClient *paj.Client, ledger LedgerService, encryptionKey string, logger *zap.Logger) *Service {
-	return &Service{db: db, pajClient: pajClient, ledger: ledger, encryptionKey: encryptionKey, logger: logger}
+func NewService(db *sqlx.DB, pajClient *paj.Client, ledger LedgerService, redis cache.RedisClient, encryptionKey string, logger *zap.Logger) *Service {
+	return &Service{db: db, pajClient: pajClient, ledger: ledger, redis: redis, encryptionKey: encryptionKey, logger: logger}
 }
 
 // --- Session management ---
@@ -101,8 +103,38 @@ func (s *Service) getSessionToken(ctx context.Context, userID uuid.UUID) (string
 
 // --- Rates ---
 
+const pajRatesCacheKey = "paj:rates"
+const pajRatesCacheTTL = 5 * time.Minute
+
 func (s *Service) GetRates(ctx context.Context) (*paj.RateResponse, error) {
-	return s.pajClient.GetRates(ctx)
+	// Try cache first.
+	if s.redis != nil {
+		var cached paj.RateResponse
+		if err := s.redis.Get(ctx, pajRatesCacheKey, &cached); err == nil {
+			return &cached, nil
+		}
+	}
+
+	rates, err := s.pajClient.GetRates(ctx)
+	if err != nil {
+		// On upstream failure, try returning stale cache.
+		if s.redis != nil {
+			var stale paj.RateResponse
+			if cacheErr := s.redis.Get(ctx, pajRatesCacheKey, &stale); cacheErr == nil {
+				s.logger.Warn("paj rates upstream failed, serving stale cache", zap.Error(err))
+				return &stale, nil
+			}
+		}
+		return nil, err
+	}
+
+	// Cache the fresh response.
+	if s.redis != nil {
+		if cacheErr := s.redis.Set(ctx, pajRatesCacheKey, rates, pajRatesCacheTTL); cacheErr != nil {
+			s.logger.Warn("failed to cache paj rates", zap.Error(cacheErr))
+		}
+	}
+	return rates, nil
 }
 
 // --- Banks ---

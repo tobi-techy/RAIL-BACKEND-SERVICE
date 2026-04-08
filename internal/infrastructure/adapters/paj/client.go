@@ -142,7 +142,7 @@ type Rate struct {
 
 func (c *Client) GetRates(ctx context.Context) (*RateResponse, error) {
 	var resp RateResponse
-	if err := c.get(ctx, "/pub/rates", nil, &resp); err != nil {
+	if err := c.get(ctx, "/pub/rate", nil, &resp); err != nil {
 		return nil, fmt.Errorf("paj get rates: %w", err)
 	}
 	return &resp, nil
