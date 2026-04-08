@@ -36,6 +36,7 @@ type Config struct {
 	Grid           GridConfig           `mapstructure:"grid"`
 	CCTP           CCTPConfig           `mapstructure:"cctp"`
 	ChainRails     ChainRailsConfig     `mapstructure:"chainrails"`
+	Paj            PajConfig            `mapstructure:"paj"`
 	Workers        WorkerConfig         `mapstructure:"workers"`
 	Reconciliation ReconciliationConfig `mapstructure:"reconciliation"`
 	SocialAuth     SocialAuthConfig     `mapstructure:"social_auth"`
@@ -401,6 +402,16 @@ type ChainRailsConfig struct {
 	BaseURL          string `mapstructure:"base_url"`          // default: https://api.chainrails.io/api/v1
 	DestinationChain string `mapstructure:"destination_chain"` // e.g. "BASE_MAINNET"
 	SettlementToken  string `mapstructure:"settlement_token"`  // e.g. "USDC"
+}
+
+// PajConfig contains Paj Cash NGN on/off ramp configuration.
+type PajConfig struct {
+	APIKey        string `mapstructure:"api_key"`
+	BaseURL       string `mapstructure:"base_url"`       // default: https://api.paj.cash
+	WebhookURL    string `mapstructure:"webhook_url"`    // Rail's webhook endpoint URL (Paj posts per-order)
+	WalletAddress string `mapstructure:"wallet_address"` // Rail's USDC custody wallet (onramp recipient)
+	TokenMint     string `mapstructure:"token_mint"`     // USDC mint address on Solana
+	Chain         string `mapstructure:"chain"`           // default: SOLANA
 }
 
 // WorkerConfig contains background worker configuration
@@ -1131,6 +1142,27 @@ func overrideFromEnv() {
 	}
 	if chainrailsSettlementToken := os.Getenv("CHAINRAILS_SETTLEMENT_TOKEN"); chainrailsSettlementToken != "" {
 		viper.Set("chainrails.settlement_token", chainrailsSettlementToken)
+	}
+
+	// Paj Cash NGN ramp
+	viper.BindEnv("paj.api_key", "PAJ_API_KEY")
+	viper.BindEnv("paj.base_url", "PAJ_BASE_URL")
+	viper.BindEnv("paj.webhook_url", "PAJ_WEBHOOK_URL")
+	viper.BindEnv("paj.wallet_address", "PAJ_WALLET_ADDRESS")
+	viper.BindEnv("paj.token_mint", "PAJ_TOKEN_MINT")
+	viper.BindEnv("paj.chain", "PAJ_CHAIN")
+
+	for _, kv := range [][2]string{
+		{"paj.api_key", "PAJ_API_KEY"},
+		{"paj.base_url", "PAJ_BASE_URL"},
+		{"paj.webhook_url", "PAJ_WEBHOOK_URL"},
+		{"paj.wallet_address", "PAJ_WALLET_ADDRESS"},
+		{"paj.token_mint", "PAJ_TOKEN_MINT"},
+		{"paj.chain", "PAJ_CHAIN"},
+	} {
+		if v := os.Getenv(kv[1]); v != "" {
+			viper.Set(kv[0], v)
+		}
 	}
 
 	// Apple Sign-In
