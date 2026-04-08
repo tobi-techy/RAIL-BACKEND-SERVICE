@@ -32,7 +32,7 @@ type Config struct {
 	Verification   VerificationConfig   `mapstructure:"verification"`
 	Alpaca         AlpacaConfig         `mapstructure:"alpaca"`
 	Bridge         BridgeConfig         `mapstructure:"bridge"`
-	Lulo           LuloConfig           `mapstructure:"lulo"`
+	Reflect        ReflectConfig        `mapstructure:"reflect"`
 	Grid           GridConfig           `mapstructure:"grid"`
 	CCTP           CCTPConfig           `mapstructure:"cctp"`
 	ChainRails     ChainRailsConfig     `mapstructure:"chainrails"`
@@ -381,18 +381,17 @@ type BridgeConfig struct {
 	RailCustomerID string `mapstructure:"rail_customer_id"`
 }
 
-// LuloConfig contains Lulo yield API configuration for pool-level treasury management.
-type LuloConfig struct {
-	APIKey         string `mapstructure:"api_key"`
-	BaseURL        string `mapstructure:"base_url"`         // Lulo API (default: https://api.lulo.fi)
-	SolanaRPC      string `mapstructure:"solana_rpc"`       // Solana RPC endpoint
-	OwnerWallet    string `mapstructure:"owner_wallet"`     // Rail's Solana wallet pubkey (base58)
-	PrivateKey     string `mapstructure:"private_key"`      // Rail's Solana wallet private key (base58, 64 bytes)
-	PoolType       string `mapstructure:"pool_type"`        // "regular" or "protected" (default: protected)
-	MinSweepAmount string `mapstructure:"min_sweep_amount"` // Minimum USDC to sweep (e.g. "100")
-	SweepInterval  int    `mapstructure:"sweep_interval"`   // Sweep interval in minutes
-	// Bridge custody wallet used to fund the Solana wallet with USDC before Lulo deposits.
-	BridgeSourceWalletID string `mapstructure:"bridge_source_wallet_id"`
+// ReflectConfig contains Reflect Money API configuration for yield-bearing stablecoin treasury management.
+type ReflectConfig struct {
+	APIKey               string `mapstructure:"api_key"`
+	BaseURL              string `mapstructure:"base_url"`                // default: https://prod.api.reflect.money
+	SolanaRPC            string `mapstructure:"solana_rpc"`              // Solana RPC endpoint
+	OwnerWallet          string `mapstructure:"owner_wallet"`            // Rail's Solana wallet pubkey (base58)
+	PrivateKey           string `mapstructure:"private_key"`             // Rail's Solana wallet private key (base58, 64 bytes)
+	StablecoinIndex      int    `mapstructure:"stablecoin_index"`        // 0 = USDC+, 2 = LST Delta-Neutral
+	MinSweepAmount       string `mapstructure:"min_sweep_amount"`        // Minimum USDC to sweep (e.g. "100")
+	SweepInterval        int    `mapstructure:"sweep_interval"`          // Sweep interval in minutes
+	BridgeSourceWalletID string `mapstructure:"bridge_source_wallet_id"` // Bridge custody wallet funding the Solana wallet
 }
 
 // ChainRailsConfig contains ChainRails cross-chain deposit configuration.
@@ -752,6 +751,18 @@ func setDefaults() {
 	viper.SetDefault("bridge.environment", "production")
 	viper.SetDefault("bridge.base_url", "https://api.bridge.xyz")
 	viper.SetDefault("bridge.timeout", 30)
+
+	// Reflect defaults
+	viper.SetDefault("reflect.base_url", "https://prod.api.reflect.money")
+	viper.SetDefault("reflect.stablecoin_index", 0) // 0 = USDC+
+	viper.SetDefault("reflect.min_sweep_amount", "100")
+	viper.SetDefault("reflect.sweep_interval", 10) // minutes
+
+	// Reflect defaults
+	viper.SetDefault("reflect.base_url", "https://prod.api.reflect.money")
+	viper.SetDefault("reflect.stablecoin_index", 0)  // 0 = USDC+
+	viper.SetDefault("reflect.min_sweep_amount", "100")
+	viper.SetDefault("reflect.sweep_interval", 10) // minutes
 	viper.SetDefault("bridge.max_retries", 3)
 	viper.SetDefault("bridge.supported_chains", []string{"SOL", "MATIC", "CELO", "TRON", "BASE", "AVAX"})
 
@@ -1133,21 +1144,24 @@ func overrideFromEnv() {
 		viper.Set("social_auth.apple.private_key", v)
 	}
 
-	// Lulo yield
-	if v := os.Getenv("LULO_API_KEY"); v != "" {
-		viper.Set("lulo.api_key", v)
+	// Reflect Money yield
+	if v := os.Getenv("REFLECT_API_KEY"); v != "" {
+		viper.Set("reflect.api_key", v)
 	}
-	if v := os.Getenv("LULO_SOLANA_RPC"); v != "" {
-		viper.Set("lulo.solana_rpc", v)
+	if v := os.Getenv("REFLECT_BASE_URL"); v != "" {
+		viper.Set("reflect.base_url", v)
 	}
-	if v := os.Getenv("LULO_OWNER_WALLET"); v != "" {
-		viper.Set("lulo.owner_wallet", v)
+	if v := os.Getenv("REFLECT_SOLANA_RPC"); v != "" {
+		viper.Set("reflect.solana_rpc", v)
 	}
-	if v := os.Getenv("LULO_PRIVATE_KEY"); v != "" {
-		viper.Set("lulo.private_key", v)
+	if v := os.Getenv("REFLECT_OWNER_WALLET"); v != "" {
+		viper.Set("reflect.owner_wallet", v)
 	}
-	if v := os.Getenv("LULO_BRIDGE_SOURCE_WALLET_ID"); v != "" {
-		viper.Set("lulo.bridge_source_wallet_id", v)
+	if v := os.Getenv("REFLECT_PRIVATE_KEY"); v != "" {
+		viper.Set("reflect.private_key", v)
+	}
+	if v := os.Getenv("REFLECT_BRIDGE_SOURCE_WALLET_ID"); v != "" {
+		viper.Set("reflect.bridge_source_wallet_id", v)
 	}
 
 	// Admin security settings

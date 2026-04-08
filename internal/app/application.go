@@ -37,6 +37,7 @@ import (
 	"github.com/rail-service/rail_service/internal/workers/kyc_sync"
 	portfolio_snapshot_worker "github.com/rail-service/rail_service/internal/workers/portfolio_snapshot_worker"
 	scheduled_investment_worker "github.com/rail-service/rail_service/internal/workers/scheduled_investment_worker"
+	scheduled_notifications "github.com/rail-service/rail_service/internal/workers/scheduled_notifications"
 	walletprovisioning "github.com/rail-service/rail_service/internal/workers/wallet_provisioning"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/metrics"
@@ -62,6 +63,7 @@ type Application struct {
 	balanceReconciliationWorker *balance_reconciliation.Worker
 	bridgeGovIDRepairWorker     *bridge_govid_repair.Worker
 	bridgeGovIDRepairCancel     context.CancelFunc
+	scheduledNotificationsWorker *scheduled_notifications.Worker
 
 	// Tracing
 	tracingShutdown func(context.Context) error
@@ -226,6 +228,17 @@ func (app *Application) initializeWorkers() error {
 	// KYC Sumsub sync worker
 	if err := app.initializeKYCSyncWorker(); err != nil {
 		return fmt.Errorf("failed to initialize KYC sync worker: %w", err)
+	}
+
+	// Scheduled push notifications (KYC reminders + daily engagement)
+	if app.container.ExpoPushService != nil && app.container.UserRepo != nil {
+		app.scheduledNotificationsWorker = scheduled_notifications.NewWorker(
+			app.container.UserRepo,
+			app.container.ExpoPushService,
+			app.log.Zap(),
+		)
+		go app.scheduledNotificationsWorker.Start(context.Background())
+		app.log.Info("Scheduled notifications worker started")
 	}
 
 	return nil

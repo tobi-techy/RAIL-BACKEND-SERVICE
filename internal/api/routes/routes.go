@@ -331,7 +331,13 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			authenticatedOnboarding := onboarding.Group("/")
 			authenticatedOnboarding.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator))
 			{
-				authenticatedOnboarding.POST("/complete", authHandlers.CompleteOnboarding)
+				// Fraud detection: correlate device fingerprint across accounts at onboarding completion.
+				// Catches fraud rings using purchased KYC identities from the same device.
+				if fraudSvc := container.GetOnboardingFraudService(); fraudSvc != nil {
+					authenticatedOnboarding.POST("/complete", middleware.OnboardingFraudMiddleware(fraudSvc, container.ZapLog), authHandlers.CompleteOnboarding)
+				} else {
+					authenticatedOnboarding.POST("/complete", authHandlers.CompleteOnboarding)
+				}
 			}
 		}
 
@@ -492,6 +498,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// Unified Deposit routes
 			deposits := protected.Group("/deposits")
 			deposits.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
+			// Fraud detection on deposit creation: catches suspicious first deposits from fraud ring accounts.
+			if fraudSvc := container.GetOnboardingFraudService(); fraudSvc != nil {
+				deposits.Use(middleware.DepositFraudMiddleware(fraudSvc, container.ZapLog))
+			}
 			{
 				deposits.POST("", walletFundingHandlers.CreateDeposit)
 				deposits.GET("", walletFundingHandlers.ListDeposits)
@@ -581,6 +591,12 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					p2p.POST("/claim/:token", p2pHandlers.ClaimByToken)
 					p2p.POST("/railtag", p2pHandlers.SetRailTag)
 					p2p.POST("/railtag/check", p2pHandlers.CheckRailTag)
+
+					// Tap-to-pay secure handshake
+					p2p.POST("/tap/intent", p2pHandlers.TapIntent)
+					tapSensitive := p2p.Group("/tap")
+					tapSensitive.Use(middleware.RequirePasscodeSession(container.GetPasscodeService(), true, container.ZapLog))
+					tapSensitive.POST("/confirm", p2pHandlers.TapConfirm)
 				}
 			}
 
@@ -798,6 +814,16 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			admin.POST("/wallet/retry-provisioning", walletFundingHandlers.RetryWalletProvisioning)
 			admin.GET("/wallet/health", walletFundingHandlers.HealthCheck)
 			admin.POST("/reconcile/:user_id", walletFundingHandlers.ReconcileUserBalance)
+
+			// Yield distribution — manually trigger for a period (format: YYYY-MM-DD)
+			if container.YieldDistributionWorker != nil {
+				admin.POST("/yield/distribute", handlers.TriggerYieldDistribution(container.YieldDistributionWorker, container.ZapLog))
+			}
+
+			// Stash reconciliation — manually trigger a check of ledger vs Reflect balance
+			if container.StashReconciliation != nil {
+				admin.POST("/stash/reconcile", handlers.TriggerStashReconciliation(container.StashReconciliation, container.ZapLog))
+			}
 
 			// KYC admin routes
 			admin.POST("/kyc/resync-bridge", kycHTTPHandlers.ResyncBridge)

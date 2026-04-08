@@ -54,13 +54,14 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/lulo"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/reflect"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	recon "github.com/rail-service/rail_service/internal/workers/reconciliation"
 	treasury_sweep "github.com/rail-service/rail_service/internal/workers/treasury_sweep"
+	yield_distribution "github.com/rail-service/rail_service/internal/workers/yield_distribution"
 	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/captcha"
 	commonmetrics "github.com/rail-service/rail_service/pkg/common/metrics"
@@ -951,6 +952,7 @@ type Container struct {
 	ReconciliationScheduler *reconciliation.Scheduler
 	StashReconciliation     *recon.Worker
 	TreasurySweepWorker     *treasury_sweep.Worker
+	YieldDistributionWorker *yield_distribution.Worker
 	AllocationService       *allocation.Service
 	AutoInvestService       *autoinvest.Service
 	StrategyEngine          *strategy.Engine
@@ -1035,9 +1037,10 @@ type Container struct {
 
 	// Enhanced Security Services (MFA, Geo, Fraud, Incident Response)
 	MFAService              *security.MFAService
-	GeoSecurityService      *security.GeoSecurityService
-	FraudDetectionService   *security.FraudDetectionService
-	IncidentResponseService *security.IncidentResponseService
+	GeoSecurityService        *security.GeoSecurityService
+	FraudDetectionService     *security.FraudDetectionService
+	IncidentResponseService   *security.IncidentResponseService
+	OnboardingFraudService    *security.OnboardingFraudService
 
 	// Token and Rate Limiting
 	TokenBlacklist      *auth.TokenBlacklist
@@ -1078,6 +1081,7 @@ type Container struct {
 	// Notification Services
 	DeviceTokenRepo  *repositories.DeviceTokenRepository
 	NotificationRepo *repositories.NotificationRepository
+	ExpoPushService  *adapters.ExpoPushService
 
 	// Unified Webhook Handler
 	UnifiedFundingWebhookHandler *webhooks.UnifiedFundingWebhookHandler
@@ -1353,64 +1357,81 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize ledger service
 	c.LedgerService = ledger.NewService(c.LedgerRepo, sqlxDB, c.Logger)
 
-	// Initialize yield service (Lulo-backed) — skip if private key not configured
-	if c.Config.Lulo.PrivateKey != "" {
-		luloClient, err := lulo.NewClient(
-			c.Config.Lulo.BaseURL,
-			c.Config.Lulo.APIKey,
-			c.Config.Lulo.SolanaRPC,
-			c.Config.Lulo.OwnerWallet,
-			c.Config.Lulo.PrivateKey,
+	// Initialize yield service (Reflect-backed) — skip if private key not configured
+	if c.Config.Reflect.PrivateKey != "" {
+		reflectClient, err := reflect.NewClient(
+			c.Config.Reflect.BaseURL,
+			c.Config.Reflect.APIKey,
+			c.Config.Reflect.SolanaRPC,
+			c.Config.Reflect.OwnerWallet,
+			c.Config.Reflect.PrivateKey,
+			c.Config.Reflect.StablecoinIndex,
 			c.ZapLog,
 		)
 		if err != nil {
-			return fmt.Errorf("failed to create lulo client: %w", err)
+			return fmt.Errorf("failed to create reflect client: %w", err)
 		}
-		rewardsAdapter := &luloRewardsAdapter{client: luloClient, db: sqlxDB}
+		rewardsAdapter := &reflectRewardsAdapter{client: reflectClient, db: sqlxDB}
 
-		minSweep, _ := decimal.NewFromString(c.Config.Lulo.MinSweepAmount)
+		minSweep, _ := decimal.NewFromString(c.Config.Reflect.MinSweepAmount)
 		if minSweep.IsZero() {
 			minSweep = decimal.NewFromInt(100)
 		}
-		interval := time.Duration(c.Config.Lulo.SweepInterval) * time.Minute
+		interval := time.Duration(c.Config.Reflect.SweepInterval) * time.Minute
 		if interval == 0 {
 			interval = 10 * time.Minute
 		}
 		sweepWorker := treasury_sweep.NewWorker(
-			luloClient,
+			reflectClient,
 			c.BridgeClient,
 			c.LedgerRepo,
+			c.yieldRepo,
 			sqlxDB,
 			c.Config.Bridge.RailCustomerID,
-			c.Config.Lulo.BridgeSourceWalletID,
-			c.Config.Lulo.OwnerWallet,
-			c.Config.Lulo.PoolType,
+			c.Config.Reflect.BridgeSourceWalletID,
+			c.Config.Reflect.OwnerWallet,
 			minSweep,
 			interval,
 			c.ZapLog,
 		)
-		sweepWorker.Start()
+		if c.BridgeClient == nil {
+			c.ZapLog.Warn("Bridge client not configured; treasury sweep disabled")
+		} else {
+			sweepWorker.Start()
+		}
 		c.TreasurySweepWorker = sweepWorker
 
-		c.YieldService = yieldsvc.NewService(c.yieldRepo, rewardsAdapter, c.LedgerService, c.ZapLog)
-		if c.NotificationService != nil {
-			c.YieldService.SetNotifier(c.NotificationService)
-		}
+		c.YieldService = yieldsvc.NewService(c.yieldRepo, c.LedgerService, c.ZapLog)
 
-		// Stash reconciliation: daily check that ledger stash total matches Lulo deposited value.
-		if c.Config.Lulo.OwnerWallet != "" {
-			reconAdapter := &luloReconciliationAdapter{client: luloClient}
+		// Stash reconciliation: daily check that ledger stash total matches Reflect deposited value.
+		if c.Config.Reflect.OwnerWallet != "" {
+			reconAdapter := &reflectReconciliationAdapter{db: sqlxDB}
 			c.StashReconciliation = recon.NewWorker(
 				c.LedgerRepo,
 				reconAdapter,
-				c.Config.Lulo.OwnerWallet,
-				c.Config.Lulo.OwnerWallet,
+				c.yieldRepo,
+				c.Config.Reflect.OwnerWallet,
+				c.Config.Reflect.OwnerWallet,
 				c.ZapLog,
 			)
 		}
+
+		// Yield distribution worker — wired with injected rate functions to avoid di→worker circular dep.
+		c.YieldDistributionWorker = yield_distribution.NewWorker(
+			c.YieldService,
+			rewardsAdapter,
+			func(ctx context.Context) (decimal.Decimal, error) {
+				return reflectClient.GetExchangeRate(ctx)
+			},
+			func(ctx context.Context, db *sqlx.DB, rate decimal.Decimal, distributedYield decimal.Decimal) error {
+				return AdvanceExchangeRateMark(ctx, db, rate, distributedYield)
+			},
+			sqlxDB,
+			c.ZapLog,
+		)
 	} else {
-		c.ZapLog.Warn("Lulo private key not configured; yield/sweep/reconciliation disabled")
-		c.YieldService = yieldsvc.NewService(c.yieldRepo, nil, c.LedgerService, c.ZapLog)
+		c.ZapLog.Warn("Reflect private key not configured; yield/sweep/reconciliation disabled")
+		c.YieldService = yieldsvc.NewService(c.yieldRepo, c.LedgerService, c.ZapLog)
 	}
 
 	// Initialize ledger integration (bridges legacy and new ledger system)
@@ -1566,6 +1587,7 @@ func (c *Container) initializeDomainServices() error {
 	c.NotificationService.SetPersister(adapters.NewNotificationPersisterAdapter(c.NotificationRepo))
 	// Wire Expo Push service for push notifications
 	expoPushService := adapters.NewExpoPushService(c.DeviceTokenRepo, c.ZapLog)
+	c.ExpoPushService = expoPushService
 	c.NotificationService.SetPushSender(expoPushService)
 	// Wire email notifications for important events
 	if c.EmailService != nil {
@@ -1576,6 +1598,9 @@ func (c *Container) initializeDomainServices() error {
 	// Wire notification service into auto-invest and allocation for failure alerts
 	c.AutoInvestService.SetNotificationService(c.NotificationService)
 	c.AllocationService.SetNotificationService(c.NotificationService)
+	if c.YieldService != nil {
+		c.YieldService.SetNotifier(c.NotificationService)
+	}
 
 	c.InvestingService = investing.NewService(
 		basketRepo,
@@ -1627,6 +1652,10 @@ func (c *Container) initializeDomainServices() error {
 	c.GeoSecurityService = security.NewGeoSecurityService(c.DB, c.RedisClient.Client(), c.ZapLog, "")                   // IP API key can be configured
 	c.FraudDetectionService = security.NewFraudDetectionService(c.DB, c.RedisClient.Client(), c.ZapLog)
 	c.IncidentResponseService = security.NewIncidentResponseService(c.DB, c.RedisClient.Client(), c.ZapLog, nil, c.SecurityEventLogger)
+
+	// Initialize onboarding fraud detection (cross-account device/IP correlation)
+	onboardingFraudRepo := repositories.NewOnboardingFraudRepository(sqlxDB)
+	c.OnboardingFraudService = security.NewOnboardingFraudService(onboardingFraudRepo, c.ZapLog)
 
 	// Initialize token blacklist and JWT service
 	if c.Config.Security.EnableTokenBlacklist {
@@ -2042,6 +2071,11 @@ func (c *Container) GetFraudDetectionService() *security.FraudDetectionService {
 // GetIncidentResponseService returns the incident response service
 func (c *Container) GetIncidentResponseService() *security.IncidentResponseService {
 	return c.IncidentResponseService
+}
+
+// GetOnboardingFraudService returns the onboarding fraud detection service
+func (c *Container) GetOnboardingFraudService() *security.OnboardingFraudService {
+	return c.OnboardingFraudService
 }
 
 // GetTokenBlacklist returns the token blacklist service
