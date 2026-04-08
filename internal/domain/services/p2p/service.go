@@ -88,15 +88,16 @@ type ClaimToBankRequest struct {
 
 // Service handles P2P transfer operations
 type Service struct {
-	repo          Repository
-	userLookup    UserLookup
-	userUpdater   UserUpdater
-	balance       BalanceProvider
-	walletLookup  WalletLookup
-	transfer      TransferExecutor
-	notification  NotificationSender
-	bridgeOfframp BridgeOfframp
-	logger        *zap.Logger
+	repo           Repository
+	userLookup     UserLookup
+	userUpdater    UserUpdater
+	balance        BalanceProvider
+	walletLookup   WalletLookup
+	transfer       TransferExecutor
+	notification   NotificationSender
+	bridgeOfframp  BridgeOfframp
+	tapIntentStore TapIntentStore
+	logger         *zap.Logger
 }
 
 // NewService creates a new P2P service
@@ -273,19 +274,19 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2
 	// Parse amount
 	amount, err := decimal.NewFromString(req.Amount)
 	if err != nil || amount.LessThanOrEqual(decimal.Zero) {
-		return nil, fmt.Errorf("invalid amount")
+		return nil, entities.ErrP2PInvalidAmount
 	}
 
 	// Validate minimum transfer amount
 	minAmount := decimal.NewFromFloat(P2PMinTransferAmount)
 	if amount.LessThan(minAmount) {
-		return nil, fmt.Errorf("amount below minimum transfer limit of $%.2f", P2PMinTransferAmount)
+		return nil, entities.ErrP2PAmountTooLow
 	}
 
 	// Validate maximum transfer amount
 	maxAmount := decimal.NewFromFloat(P2PMaxTransferAmount)
 	if amount.GreaterThan(maxAmount) {
-		return nil, fmt.Errorf("amount exceeds maximum transfer limit of $%.2f", P2PMaxTransferAmount)
+		return nil, entities.ErrP2PAmountTooHigh
 	}
 
 	// Check sender balance
@@ -294,7 +295,7 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2
 		return nil, fmt.Errorf("failed to get balance: %w", err)
 	}
 	if balance.LessThan(amount) {
-		return nil, fmt.Errorf("insufficient balance")
+		return nil, entities.ErrP2PInsufficientFunds
 	}
 
 	// Lookup recipient

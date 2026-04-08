@@ -1,6 +1,7 @@
 package p2p
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -65,17 +66,14 @@ func (h *Handlers) Send(c *gin.Context) {
 	result, err := h.service.Send(c.Request.Context(), userID, &req)
 	if err != nil {
 		h.logger.Error("Send failed", zap.Error(err), zap.String("user_id", userID.String()))
-
-		// Map common errors to appropriate responses
-		// Note: Don't expose internal error details to clients
-		switch err.Error() {
-		case "invalid amount":
+		switch {
+		case errors.Is(err, entities.ErrP2PInvalidAmount):
 			c.JSON(http.StatusBadRequest, gin.H{"error": "INVALID_AMOUNT", "message": "Invalid amount"})
-		case "insufficient balance":
+		case errors.Is(err, entities.ErrP2PInsufficientFunds):
 			c.JSON(http.StatusBadRequest, gin.H{"error": "INSUFFICIENT_BALANCE", "message": "Insufficient balance"})
-		case "amount below minimum transfer limit":
+		case errors.Is(err, entities.ErrP2PAmountTooLow):
 			c.JSON(http.StatusBadRequest, gin.H{"error": "AMOUNT_TOO_LOW", "message": "Amount below minimum transfer limit"})
-		case "amount exceeds maximum transfer limit":
+		case errors.Is(err, entities.ErrP2PAmountTooHigh):
 			c.JSON(http.StatusBadRequest, gin.H{"error": "AMOUNT_TOO_HIGH", "message": "Amount exceeds maximum transfer limit"})
 		default:
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "SEND_FAILED", "message": "An error occurred while processing your request"})

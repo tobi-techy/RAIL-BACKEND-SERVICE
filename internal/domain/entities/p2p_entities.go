@@ -4,11 +4,20 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+)
+
+// Typed P2P domain errors — matched by handler via errors.Is.
+var (
+	ErrP2PInvalidAmount     = errors.New("invalid amount")
+	ErrP2PInsufficientFunds = errors.New("insufficient balance")
+	ErrP2PAmountTooLow      = errors.New("amount below minimum transfer limit")
+	ErrP2PAmountTooHigh     = errors.New("amount exceeds maximum transfer limit")
 )
 
 // P2PIdentifierType represents how the recipient was identified
@@ -118,12 +127,14 @@ func GenerateClaimToken() (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
-// GenerateP2PIdempotencyKey generates a deterministic idempotency key for P2P transfers
+// GenerateP2PIdempotencyKey generates a deterministic idempotency key scoped to a
+// 5-minute window. Repeated sends of the same amount to the same recipient within
+// the same window are deduplicated; a new window produces a new key.
 func GenerateP2PIdempotencyKey(senderID uuid.UUID, identifier, amount string) string {
-	seed := fmt.Sprintf("p2p:%s:%s:%s", senderID.String(), identifier, amount)
+	window := time.Now().UTC().Truncate(5 * time.Minute).Unix()
+	seed := fmt.Sprintf("p2p:%s:%s:%s:%d", senderID.String(), identifier, amount, window)
 	hash := sha256.Sum256([]byte(seed))
-return fmt.Sprintf("p2p-%s", hex.EncodeToString(hash[:]))
-
+	return fmt.Sprintf("p2p-%s", hex.EncodeToString(hash[:]))
 }
 
 // NewP2PTransfer creates a new P2P transfer with defaults
