@@ -2,7 +2,7 @@
   "containerDefinitions": [
     {
       "name": "rail-backend",
-      "image": "885160773772.dkr.ecr.us-east-1.amazonaws.com/rail-backend:e454daa3bc2a45b5040758f5b8692a90b8a52174-amd64",
+      "image": "885160773772.dkr.ecr.us-east-1.amazonaws.com/rail-backend:chainrails-test",
       "cpu": 0,
       "memory": 450,
       "portMappings": [
@@ -201,6 +201,18 @@
         {
           "name": "CHAINRAILS_WEBHOOK_SECRET",
           "valueFrom": "/rail/prod/CHAINRAILS_WEBHOOK_SECRET"
+        },
+        {
+          "name": "CHAINRAILS_BASE_URL",
+          "valueFrom": "/rail/prod/CHAINRAILS_BASE_URL"
+        },
+        {
+          "name": "CHAINRAILS_DESTINATION_CHAIN",
+          "valueFrom": "/rail/prod/CHAINRAILS_DESTINATION_CHAIN"
+        },
+        {
+          "name": "CHAINRAILS_SETTLEMENT_TOKEN",
+          "valueFrom": "/rail/prod/CHAINRAILS_SETTLEMENT_TOKEN"
         }
       ],
       "logConfiguration": {
@@ -219,7 +231,5 @@
   "executionRoleArn": "arn:aws:iam::885160773772:role/rail-prod-ecs-execution",
   "networkMode": "bridge",
   "volumes": [],
-  "requiresCompatibilities": [
-    "EC2"
-  ]
+  "requiresCompatibilities": ["EC2"]
 }

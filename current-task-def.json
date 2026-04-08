@@ -152,23 +152,23 @@
                     "valueFrom": "/rail/prod/BRIDGE_WEBHOOK_SECRET"
                 },
                 {
-                    "name": "LULO_API_KEY",
+                    "name": "REFLECT_API_KEY",
                     "valueFrom": "/rail/prod/LULO_API_KEY"
                 },
                 {
-                    "name": "LULO_SOLANA_RPC",
+                    "name": "REFLECT_SOLANA_RPC",
                     "valueFrom": "/rail/prod/LULO_SOLANA_RPC"
                 },
                 {
-                    "name": "LULO_OWNER_WALLET",
+                    "name": "REFLECT_OWNER_WALLET",
                     "valueFrom": "/rail/prod/LULO_OWNER_WALLET"
                 },
                 {
-                    "name": "LULO_PRIVATE_KEY",
+                    "name": "REFLECT_PRIVATE_KEY",
                     "valueFrom": "/rail/prod/LULO_PRIVATE_KEY"
                 },
                 {
-                    "name": "LULO_BRIDGE_SOURCE_WALLET_ID",
+                    "name": "REFLECT_BRIDGE_SOURCE_WALLET_ID",
                     "valueFrom": "/rail/prod/LULO_BRIDGE_SOURCE_WALLET_ID"
                 },
                 {
