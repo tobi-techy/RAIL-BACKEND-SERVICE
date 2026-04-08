@@ -1,3 +1,6 @@
+// Deprecated: This SQS-based notification worker is not currently wired in the DI container.
+// Push notifications are delivered directly via ExpoPushService in the notification domain service.
+// This worker is retained for potential future use if async SQS-based delivery is needed.
 package notification_worker
 
 import (

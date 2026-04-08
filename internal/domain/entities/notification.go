@@ -37,7 +37,7 @@ type Notification struct {
 	Channel   NotificationChannel  `json:"channel" db:"channel"`
 	Priority  NotificationPriority `json:"priority" db:"priority"`
 	Title     string               `json:"title" db:"title"`
-	Message   string               `json:"message" db:"message"`
+	Body      string               `json:"body" db:"body"`
 	Data      map[string]interface{} `json:"data,omitempty" db:"data"`
 	Read      bool                 `json:"read" db:"read"`
 	SentAt    *time.Time           `json:"sent_at,omitempty" db:"sent_at"`

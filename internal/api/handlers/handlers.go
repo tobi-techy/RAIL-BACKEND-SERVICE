@@ -77,7 +77,10 @@ type (
 	IntegrationHandlers        = common.IntegrationHandlers
 	MobileHandlers             = common.MobileHandlers
 	NewsHandlers               = common.NewsHandlers
-	NotificationWorkerHandlers = common.NotificationWorkerHandlers
+	// NotificationWorkerHandlers is deprecated — use WorkerAdminHandlers for worker admin
+	// and NotificationHandlers for notification CRUD.
+	NotificationWorkerHandlers = common.WorkerAdminHandlers
+	WorkerAdminHandlers        = common.WorkerAdminHandlers
 )
 
 // Re-export constructors from subpackages
@@ -161,7 +164,8 @@ var (
 	NewIntegrationHandlers        = common.NewIntegrationHandlers
 	NewMobileHandlers             = common.NewMobileHandlers
 	NewNewsHandlers               = common.NewNewsHandlers
-	NewNotificationWorkerHandlers = common.NewNotificationWorkerHandlers
+	NewNotificationWorkerHandlers = common.NewWorkerAdminHandlers
+	NewWorkerAdminHandlers        = common.NewWorkerAdminHandlers
 )
 
 // Re-export common utilities

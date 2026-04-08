@@ -3,6 +3,7 @@ package notification
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,27 +11,6 @@ import (
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
-
-// NotificationQueue defines async notification queueing
-type NotificationQueue interface {
-	QueueNotification(ctx context.Context, msg *QueuedNotification) error
-}
-
-// QueuedNotification represents a notification to be queued
-type QueuedNotification struct {
-	UserID    uuid.UUID              `json:"user_id"`
-	Type      string                 `json:"type"`
-	Title     string                 `json:"title"`
-	Body      string                 `json:"body"`
-	Data      map[string]interface{} `json:"data,omitempty"`
-	Priority  string                 `json:"priority"`
-	Recipient string                 `json:"recipient,omitempty"`
-}
-
-// SMSSender defines SMS sending operations
-type SMSSender interface {
-	SendSMS(ctx context.Context, phone, message string) error
-}
 
 // EmailSenderService defines email sending operations
 type EmailSenderService interface {
@@ -54,60 +34,108 @@ type UserEmailLookup interface {
 
 // emailWorthy notification types that should also trigger an email
 var emailWorthyTypes = map[string]bool{
-	"deposit_confirmed":  true,
-	"allocation_complete": true,
-	"allocation_failed":  true,
+	"deposit_confirmed":    true,
+	"allocation_complete":  true,
+	"allocation_failed":    true,
 	"withdrawal_completed": true,
-	"withdrawal_failed":  true,
-	"yield_credited":     true,
-	"offramp_success":    true,
-	"offramp_failure":    true,
+	"withdrawal_failed":    true,
+	"yield_credited":       true,
+	"offramp_success":      true,
+	"offramp_failure":      true,
 }
 
+// Metrics tracks notification delivery counts.
+type Metrics struct {
+	mu          sync.Mutex
+	Sent        map[string]int64 // keyed by "channel:type"
+	Failed      map[string]int64
+	Persisted   int64
+	PersistFail int64
+}
+
+func newMetrics() *Metrics {
+	return &Metrics{Sent: make(map[string]int64), Failed: make(map[string]int64)}
+}
+
+func (m *Metrics) incSent(channel, notifType string) {
+	m.mu.Lock()
+	m.Sent[channel+":"+notifType]++
+	m.mu.Unlock()
+}
+
+func (m *Metrics) incFailed(channel, notifType string) {
+	m.mu.Lock()
+	m.Failed[channel+":"+notifType]++
+	m.mu.Unlock()
+}
+
+// Snapshot returns a copy of current metrics.
+func (m *Metrics) Snapshot() (sent, failed map[string]int64, persisted, persistFail int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sent = make(map[string]int64, len(m.Sent))
+	for k, v := range m.Sent {
+		sent[k] = v
+	}
+	failed = make(map[string]int64, len(m.Failed))
+	for k, v := range m.Failed {
+		failed[k] = v
+	}
+	return sent, failed, m.Persisted, m.PersistFail
+}
+
+// NotificationService orchestrates notification delivery via push, email, and in-app persistence.
+//
+// Required dependencies (must be set before use):
+//   - Persister: in-app notification storage (SetPersister)
+//   - PushSender: Expo push delivery (SetPushSender)
+//
+// Optional dependencies:
+//   - EmailSender + UserEmailLookup: email delivery for important events (SetEmailSender, SetUserEmailLookup)
 type NotificationService struct {
 	logger          *zap.Logger
-	queue           NotificationQueue
-	smsSender       SMSSender
 	emailSender     EmailSenderService
 	persister       NotificationPersister
 	pushSender      PushSender
 	userEmailLookup UserEmailLookup
+	metrics         *Metrics
+
+	// wg tracks in-flight background sends for graceful shutdown.
+	wg sync.WaitGroup
 }
 
 func NewNotificationService(logger *zap.Logger) *NotificationService {
-	return &NotificationService{logger: logger}
-}
-
-// SetQueue sets the notification queue (SNS/SQS)
-func (s *NotificationService) SetQueue(q NotificationQueue) {
-	s.queue = q
-}
-
-// SetSMSSender sets the SMS sender
-func (s *NotificationService) SetSMSSender(sender SMSSender) {
-	s.smsSender = sender
+	return &NotificationService{logger: logger, metrics: newMetrics()}
 }
 
 // SetEmailSender sets the email sender
-func (s *NotificationService) SetEmailSender(sender EmailSenderService) {
-	s.emailSender = sender
-}
+func (s *NotificationService) SetEmailSender(sender EmailSenderService) { s.emailSender = sender }
 
 // SetPersister sets the notification persister for in-app notifications
-func (s *NotificationService) SetPersister(p NotificationPersister) {
-	s.persister = p
-}
+func (s *NotificationService) SetPersister(p NotificationPersister) { s.persister = p }
 
 // SetPushSender sets the push notification sender (Expo Push)
-func (s *NotificationService) SetPushSender(sender PushSender) {
-	s.pushSender = sender
-}
+func (s *NotificationService) SetPushSender(sender PushSender) { s.pushSender = sender }
 
 // SetUserEmailLookup sets the user email resolver for email notifications
-func (s *NotificationService) SetUserEmailLookup(lookup UserEmailLookup) {
-	s.userEmailLookup = lookup
+func (s *NotificationService) SetUserEmailLookup(lookup UserEmailLookup) { s.userEmailLookup = lookup }
+
+// GetMetrics returns the internal metrics tracker.
+func (s *NotificationService) GetMetrics() *Metrics { return s.metrics }
+
+// Shutdown waits for in-flight background sends to complete (with timeout).
+func (s *NotificationService) Shutdown(timeout time.Duration) {
+	done := make(chan struct{})
+	go func() { s.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		s.logger.Warn("notification service shutdown timed out, some sends may be lost")
+	}
 }
 
+// Send dispatches a notification respecting user preferences.
+// If prefs is nil, the notification is always sent (preferences not loaded).
 func (s *NotificationService) Send(ctx context.Context, notification *entities.Notification, prefs *entities.UserPreference) error {
 	if !s.shouldSend(notification, prefs) {
 		s.logger.Debug("Notification skipped due to user preferences", zap.String("type", string(notification.Type)))
@@ -132,7 +160,10 @@ func (s *NotificationService) shouldSend(notification *entities.Notification, pr
 	if notification.Priority == entities.PriorityCritical {
 		return true
 	}
-
+	// If preferences are not loaded, default to sending.
+	if prefs == nil {
+		return true
+	}
 	switch notification.Channel {
 	case entities.ChannelEmail:
 		return prefs.EmailNotifications
@@ -146,57 +177,76 @@ func (s *NotificationService) shouldSend(notification *entities.Notification, pr
 }
 
 func (s *NotificationService) sendEmail(ctx context.Context, notification *entities.Notification) error {
-	if s.emailSender != nil {
-		return s.emailSender.SendGenericEmail(ctx, "", notification.Title, notification.Message)
+	if s.emailSender == nil || s.userEmailLookup == nil {
+		s.logger.Debug("Email sender or lookup not configured, skipping email", zap.String("user_id", notification.UserID.String()))
+		return nil
 	}
-	return s.queueNotification(ctx, notification.UserID, "email", notification.Title, notification.Message, nil)
+	email, err := s.userEmailLookup.GetEmailByUserID(ctx, notification.UserID)
+	if err != nil || email == "" {
+		s.logger.Debug("No email for user, skipping", zap.String("user_id", notification.UserID.String()))
+		return nil
+	}
+	return s.emailSender.SendGenericEmail(ctx, email, notification.Title, notification.Body)
 }
 
 func (s *NotificationService) sendPush(ctx context.Context, notification *entities.Notification) error {
-	return s.queueNotification(ctx, notification.UserID, "push", notification.Title, notification.Message, notification.Data)
+	return s.queueNotification(ctx, notification.UserID, "push", notification.Title, notification.Body, notification.Data)
 }
 
 func (s *NotificationService) sendSMS(ctx context.Context, notification *entities.Notification) error {
-	if s.smsSender != nil {
-		// Direct SMS for critical notifications
-		if notification.Priority == entities.PriorityCritical {
-			return s.smsSender.SendSMS(ctx, "", notification.Message)
-		}
-	}
-	return s.queueNotification(ctx, notification.UserID, "sms", "", notification.Message, nil)
+	// SMS channel is not currently wired; persist as in-app instead.
+	s.logger.Debug("SMS channel not supported, falling back to in-app", zap.String("user_id", notification.UserID.String()))
+	return s.sendInApp(ctx, notification)
 }
 
 func (s *NotificationService) sendInApp(ctx context.Context, notification *entities.Notification) error {
 	if s.persister != nil {
-		return s.persister.Create(ctx, notification.UserID, string(notification.Type), notification.Title, notification.Message, notification.Data)
+		return s.persister.Create(ctx, notification.UserID, string(notification.Type), notification.Title, notification.Body, notification.Data)
 	}
-	s.logger.Info("Sending in-app notification (no persister)", zap.String("user_id", notification.UserID.String()))
+	s.logger.Info("No persister configured, in-app notification dropped", zap.String("user_id", notification.UserID.String()))
 	return nil
 }
 
+// queueNotification is the core delivery path for convenience methods.
+// It persists in-app, sends push via Expo, and emails for important event types.
 func (s *NotificationService) queueNotification(ctx context.Context, userID uuid.UUID, notifType, title, body string, data map[string]interface{}) error {
-	// Always persist to in-app notification center
+	// 1. Always persist to in-app notification center
 	if s.persister != nil {
 		if err := s.persister.Create(ctx, userID, notifType, title, body, data); err != nil {
 			s.logger.Warn("Failed to persist notification", zap.Error(err))
+			s.metrics.mu.Lock()
+			s.metrics.PersistFail++
+			s.metrics.mu.Unlock()
+		} else {
+			s.metrics.mu.Lock()
+			s.metrics.Persisted++
+			s.metrics.mu.Unlock()
 		}
 	}
 
-	// Send push notification via Expo Push (preferred)
+	// 2. Send push notification via Expo
 	if notifType == "push" && s.pushSender != nil {
+		s.wg.Add(1)
 		go func() {
+			defer s.wg.Done()
 			bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			if err := s.pushSender.SendToUser(bgCtx, userID, title, body, data); err != nil {
-				s.logger.Warn("Failed to send push notification", zap.Error(err), zap.String("user_id", userID.String()))
+				s.logger.Error("Failed to send push notification",
+					zap.Error(err), zap.String("user_id", userID.String()))
+				s.metrics.incFailed("push", notifType)
+			} else {
+				s.metrics.incSent("push", notifType)
 			}
 		}()
 	}
 
-	// Send email for important event types
+	// 3. Send email for important event types
 	eventType, _ := data["type"].(string)
 	if s.emailSender != nil && s.userEmailLookup != nil && emailWorthyTypes[eventType] {
+		s.wg.Add(1)
 		go func() {
+			defer s.wg.Done()
 			bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			email, err := s.userEmailLookup.GetEmailByUserID(bgCtx, userID)
@@ -205,31 +255,19 @@ func (s *NotificationService) queueNotification(ctx context.Context, userID uuid
 				return
 			}
 			if err := s.emailSender.SendGenericEmail(bgCtx, email, title, body); err != nil {
-				s.logger.Warn("Failed to send email notification", zap.Error(err), zap.String("user_id", userID.String()))
+				s.logger.Error("Failed to send email notification",
+					zap.Error(err), zap.String("user_id", userID.String()))
+				s.metrics.incFailed("email", eventType)
+			} else {
+				s.metrics.incSent("email", eventType)
 			}
 		}()
 	}
 
-	// Fallback to queue if push sender not available
-	if notifType == "push" && s.pushSender != nil {
-		return nil
-	}
-	if s.queue != nil {
-		return s.queue.QueueNotification(ctx, &QueuedNotification{
-			UserID:   userID,
-			Type:     notifType,
-			Title:    title,
-			Body:     body,
-			Data:     data,
-			Priority: "normal",
-		})
-	}
-
-	s.logger.Debug("No push sender or queue configured",
-		zap.String("type", notifType),
-		zap.String("user_id", userID.String()))
 	return nil
 }
+
+// --- Convenience notification methods ---
 
 func (s *NotificationService) SendWeeklySummary(ctx context.Context, userID uuid.UUID, weekStart time.Time) error {
 	title := "Your Weekly Investment Summary"

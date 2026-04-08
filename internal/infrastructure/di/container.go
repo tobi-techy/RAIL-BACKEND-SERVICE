@@ -1571,7 +1571,7 @@ func (c *Container) initializeDomainServices() error {
 	if c.EmailService != nil {
 		c.NotificationService.SetEmailSender(adapters.NewEmailSenderAdapter(c.EmailService))
 	}
-	c.NotificationService.SetUserEmailLookup(adapters.NewUserEmailLookup(c.DB))
+	c.NotificationService.SetUserEmailLookup(adapters.NewUserEmailLookup(c.UserRepo))
 
 	// Wire notification service into auto-invest and allocation for failure alerts
 	c.AutoInvestService.SetNotificationService(c.NotificationService)
