@@ -1,0 +1,42 @@
+{
+  "family": "rail-prod",
+  "taskRoleArn": "arn:aws:iam::885160773772:role/rail-prod-ecs-task",
+  "executionRoleArn": "arn:aws:iam::885160773772:role/rail-prod-ecs-execution",
+  "networkMode": "bridge",
+  "containerDefinitions": [
+    "__EXISTING_RAIL_BACKEND_CONTAINER__",
+    {
+      "name": "grafana-alloy",
+      "image": "grafana/alloy:v1.5.1",
+      "cpu": 64,
+      "memory": 128,
+      "essential": false,
+      "command": ["run", "--config.file=/etc/alloy/config.alloy", "--stability.level=generally-available"],
+      "environment": [
+        {
+          "name": "GRAFANA_REMOTE_WRITE_URL",
+          "value": "__REPLACE_WITH_GRAFANA_CLOUD_PROMETHEUS_URL__"
+        },
+        {
+          "name": "GRAFANA_REMOTE_WRITE_USER",
+          "value": "__REPLACE_WITH_GRAFANA_CLOUD_USER_ID__"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "GRAFANA_REMOTE_WRITE_PASSWORD",
+          "valueFrom": "arn:aws:ssm:us-east-1:885160773772:parameter/rail/prod/GRAFANA_API_TOKEN"
+        }
+      ],
+      "links": ["rail-backend"],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/rail-prod",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "alloy"
+        }
+      }
+    }
+  ]
+}
