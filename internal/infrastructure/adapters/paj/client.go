@@ -75,7 +75,7 @@ type DeviceSignature struct {
 
 type VerifyResponse struct {
 	Recipient string `json:"recipient"`
-	IsActive  string `json:"isActive"`
+	IsActive  bool   `json:"isActive"`
 	ExpiresAt string `json:"expiresAt"`
 	Token     string `json:"token"`
 }
