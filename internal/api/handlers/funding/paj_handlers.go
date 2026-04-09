@@ -58,6 +58,10 @@ func (h *PajHandlers) Verify(c *gin.Context) {
 	if userEmail == "" {
 		userEmail = c.GetString("email")
 	}
+	if userEmail == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "MISSING_EMAIL", "message": "User email required"})
+		return
+	}
 
 	var req struct {
 		OTP string `json:"otp" binding:"required"`
