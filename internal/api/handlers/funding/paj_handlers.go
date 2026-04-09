@@ -277,31 +277,32 @@ func (h *PajHandlers) GetOrderStatus(c *gin.Context) {
 }
 
 // handleSessionError returns PAJ_VERIFICATION_REQUIRED if the session is missing/expired.
+// Uses {"code", "message"} format so the frontend transformError extracts err.code correctly.
 func (h *PajHandlers) handleSessionError(c *gin.Context, err error) {
 	errMsg := err.Error()
 	if strings.Contains(errMsg, "no paj session") || strings.Contains(errMsg, "paj session expired") {
 		c.JSON(http.StatusForbidden, gin.H{
-			"error":   "PAJ_VERIFICATION_REQUIRED",
+			"code":    "PAJ_VERIFICATION_REQUIRED",
 			"message": "Please verify your identity to enable NGN transactions",
 		})
 		return
 	}
 	if strings.Contains(errMsg, "insufficient balance") {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "INSUFFICIENT_BALANCE",
+			"code":    "INSUFFICIENT_BALANCE",
 			"message": "Insufficient balance for this withdrawal",
 		})
 		return
 	}
 	if strings.Contains(errMsg, "order not found") {
 		c.JSON(http.StatusNotFound, gin.H{
-			"error":   "ORDER_NOT_FOUND",
+			"code":    "ORDER_NOT_FOUND",
 			"message": "Order not found",
 		})
 		return
 	}
 	h.logger.Error("paj operation failed", zap.Error(err))
-	c.JSON(http.StatusBadGateway, gin.H{"error": "PAJ_ERROR", "message": "NGN service temporarily unavailable"})
+	c.JSON(http.StatusBadGateway, gin.H{"code": "PAJ_ERROR", "message": "NGN service temporarily unavailable"})
 }
 
 func maskEmail(email string) string {

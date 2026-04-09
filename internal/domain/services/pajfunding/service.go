@@ -58,8 +58,12 @@ func (s *Service) Initiate(ctx context.Context, userID uuid.UUID, email string) 
 
 // Verify confirms the OTP and caches the session token.
 func (s *Service) Verify(ctx context.Context, userID uuid.UUID, email, otp, deviceUUID string) error {
+	// Paj API expects a valid UUID for device.uuid, but our device_id is a
+	// SHA-256 fingerprint hash. Derive a deterministic UUID v5 from it.
+	pajDeviceUUID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(deviceUUID)).String()
+
 	resp, err := s.pajClient.Verify(ctx, email, otp, paj.DeviceSignature{
-		UUID: deviceUUID, Device: "Rail", OS: "iOS",
+		UUID: pajDeviceUUID, Device: "Rail", OS: "iOS",
 	})
 	if err != nil {
 		return fmt.Errorf("paj verify: %w", err)
