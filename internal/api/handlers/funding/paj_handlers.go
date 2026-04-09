@@ -19,6 +19,33 @@ type PajHandlers struct {
 	logger  *zap.Logger
 }
 
+// requireUserID extracts and validates the authenticated user ID.
+func requireUserID(c *gin.Context) (uuid.UUID, bool) {
+	val, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "AUTH_REQUIRED", "message": "Valid authentication required"})
+		return uuid.Nil, false
+	}
+	switch v := val.(type) {
+	case uuid.UUID:
+		if v == uuid.Nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "AUTH_REQUIRED", "message": "Valid authentication required"})
+			return uuid.Nil, false
+		}
+		return v, true
+	case string:
+		parsed, err := uuid.Parse(v)
+		if err != nil || parsed == uuid.Nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "AUTH_REQUIRED", "message": "Valid authentication required"})
+			return uuid.Nil, false
+		}
+		return parsed, true
+	default:
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "AUTH_REQUIRED", "message": "Valid authentication required"})
+		return uuid.Nil, false
+	}
+}
+
 func NewPajHandlers(service *pajfunding.Service, logger *zap.Logger) *PajHandlers {
 	return &PajHandlers{service: service, logger: logger}
 }
@@ -26,7 +53,10 @@ func NewPajHandlers(service *pajfunding.Service, logger *zap.Logger) *PajHandler
 // Initiate triggers a Paj OTP to the user's email.
 // POST /v1/funding/paj/initiate
 func (h *PajHandlers) Initiate(c *gin.Context) {
-	userID, _ := uuid.Parse(c.GetString("user_id"))
+	userID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
 	userEmail := c.GetString("user_email")
 	if userEmail == "" {
 		userEmail = c.GetString("email") // fallback: device-bound auth middleware uses "email"
@@ -53,7 +83,10 @@ func (h *PajHandlers) Initiate(c *gin.Context) {
 // Verify confirms the OTP and caches the Paj session.
 // POST /v1/funding/paj/verify
 func (h *PajHandlers) Verify(c *gin.Context) {
-	userID, _ := uuid.Parse(c.GetString("user_id"))
+	userID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
 	userEmail := c.GetString("user_email")
 	if userEmail == "" {
 		userEmail = c.GetString("email")
@@ -99,7 +132,10 @@ func (h *PajHandlers) GetRates(c *gin.Context) {
 // GetBanks returns the list of Nigerian banks.
 // GET /v1/funding/paj/banks
 func (h *PajHandlers) GetBanks(c *gin.Context) {
-	userID, _ := uuid.Parse(c.GetString("user_id"))
+	userID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
 	banks, err := h.service.GetBanks(c.Request.Context(), userID)
 	if err != nil {
 		h.handleSessionError(c, err)
@@ -111,7 +147,10 @@ func (h *PajHandlers) GetBanks(c *gin.Context) {
 // ResolveBankAccount verifies a bank account name.
 // POST /v1/funding/paj/banks/resolve
 func (h *PajHandlers) ResolveBankAccount(c *gin.Context) {
-	userID, _ := uuid.Parse(c.GetString("user_id"))
+	userID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
 	var req struct {
 		BankID        string `json:"bankId" binding:"required"`
 		AccountNumber string `json:"accountNumber" binding:"required"`
@@ -132,7 +171,10 @@ func (h *PajHandlers) ResolveBankAccount(c *gin.Context) {
 // AddBankAccount saves a bank account for future withdrawals.
 // POST /v1/funding/paj/banks/add
 func (h *PajHandlers) AddBankAccount(c *gin.Context) {
-	userID, _ := uuid.Parse(c.GetString("user_id"))
+	userID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
 	var req struct {
 		BankID        string `json:"bankId" binding:"required"`
 		AccountNumber string `json:"accountNumber" binding:"required"`
@@ -153,7 +195,10 @@ func (h *PajHandlers) AddBankAccount(c *gin.Context) {
 // GetBankAccounts returns the user's saved bank accounts.
 // GET /v1/funding/paj/banks/saved
 func (h *PajHandlers) GetBankAccounts(c *gin.Context) {
-	userID, _ := uuid.Parse(c.GetString("user_id"))
+	userID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
 	accounts, err := h.service.GetBankAccounts(c.Request.Context(), userID)
 	if err != nil {
 		h.handleSessionError(c, err)
@@ -165,7 +210,10 @@ func (h *PajHandlers) GetBankAccounts(c *gin.Context) {
 // CreateOnramp creates an NGN → USDC deposit order.
 // POST /v1/funding/paj/onramp
 func (h *PajHandlers) CreateOnramp(c *gin.Context) {
-	userID, _ := uuid.Parse(c.GetString("user_id"))
+	userID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
 	var req struct {
 		Amount   float64 `json:"amount" binding:"required,gt=0"`
 		Currency string  `json:"currency"`
@@ -199,7 +247,10 @@ func (h *PajHandlers) CreateOnramp(c *gin.Context) {
 // CreateOfframp creates a USDC → NGN withdrawal order.
 // POST /v1/funding/paj/offramp
 func (h *PajHandlers) CreateOfframp(c *gin.Context) {
-	userID, _ := uuid.Parse(c.GetString("user_id"))
+	userID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
 	var req struct {
 		BankID        string  `json:"bankId" binding:"required"`
 		AccountNumber string  `json:"accountNumber" binding:"required"`
@@ -263,7 +314,10 @@ func (h *PajHandlers) HandleWebhook(c *gin.Context) {
 // GetOrderStatus polls Paj for current order status.
 // GET /v1/funding/paj/orders/:id/status
 func (h *PajHandlers) GetOrderStatus(c *gin.Context) {
-	userID, _ := uuid.Parse(c.GetString("user_id"))
+	userID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
 	orderID := c.Param("id")
 	if orderID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "INVALID_REQUEST", "message": "order ID required"})
