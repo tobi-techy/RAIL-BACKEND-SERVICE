@@ -27,7 +27,10 @@ func NewPajHandlers(service *pajfunding.Service, logger *zap.Logger) *PajHandler
 // POST /v1/funding/paj/initiate
 func (h *PajHandlers) Initiate(c *gin.Context) {
 	userID, _ := uuid.Parse(c.GetString("user_id"))
-	userEmail := c.GetString("email")
+	userEmail := c.GetString("user_email")
+	if userEmail == "" {
+		userEmail = c.GetString("email") // fallback: device-bound auth middleware uses "email"
+	}
 	if userEmail == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "MISSING_EMAIL", "message": "User email required"})
 		return
@@ -51,7 +54,10 @@ func (h *PajHandlers) Initiate(c *gin.Context) {
 // POST /v1/funding/paj/verify
 func (h *PajHandlers) Verify(c *gin.Context) {
 	userID, _ := uuid.Parse(c.GetString("user_id"))
-	userEmail := c.GetString("email")
+	userEmail := c.GetString("user_email")
+	if userEmail == "" {
+		userEmail = c.GetString("email")
+	}
 
 	var req struct {
 		OTP string `json:"otp" binding:"required"`
