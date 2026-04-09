@@ -13,7 +13,7 @@ type KYCSubmitRequest struct {
 
 	// Tax identification (required for both Bridge and Alpaca)
 	TaxID          string `json:"tax_id" validate:"required"`
-	TaxIDType      string `json:"tax_id_type" validate:"required,oneof=ssn itin nino utr nin bvn tin passport national_id"`
+	TaxIDType      string `json:"tax_id_type" validate:"required,oneof=ssn itin nino utr nin bvn tin passport national_id sin tfn steuer_id pan ghana_tin kra_pin sa_id cpf rfc nric emirates_id bsn codice_fiscale nif pesel personnummer"`
 	IssuingCountry string `json:"issuing_country" validate:"required,len=3"` // ISO 3166-1 alpha-3
 
 	// Identity documents for Bridge KYC (base64 encoded with data URI prefix)
@@ -126,7 +126,7 @@ type KYCPersonalInfo struct {
 // KYCSumsubSessionRequest starts a hosted Sumsub verification session.
 type KYCSumsubSessionRequest struct {
 	TaxID                      string         `json:"tax_id" validate:"required"`
-	TaxIDType                  string         `json:"tax_id_type" validate:"required,oneof=ssn itin nino utr nin bvn tin passport national_id"`
+	TaxIDType                  string         `json:"tax_id_type" validate:"required,oneof=ssn itin nino utr nin bvn tin passport national_id sin tfn steuer_id pan ghana_tin kra_pin sa_id cpf rfc nric emirates_id bsn codice_fiscale nif pesel personnummer"`
 	IssuingCountry             string         `json:"issuing_country" validate:"required,len=3"` // ISO 3166-1 alpha-3
 	Disclosures                KYCDisclosures `json:"disclosures" validate:"required"`
 	SourceOfFunds              string         `json:"source_of_funds,omitempty"`
@@ -149,7 +149,7 @@ type KYCSumsubSessionResponse struct {
 // KYCDigitSessionRequest starts a hosted Didit verification session.
 type KYCDigitSessionRequest struct {
 	TaxID                      string         `json:"tax_id" validate:"required"`
-	TaxIDType                  string         `json:"tax_id_type" validate:"required,oneof=ssn itin nino utr nin bvn tin passport national_id"`
+	TaxIDType                  string         `json:"tax_id_type" validate:"required,oneof=ssn itin nino utr nin bvn tin passport national_id sin tfn steuer_id pan ghana_tin kra_pin sa_id cpf rfc nric emirates_id bsn codice_fiscale nif pesel personnummer"`
 	IssuingCountry             string         `json:"issuing_country" validate:"required,len=3"`
 	Disclosures                KYCDisclosures `json:"disclosures" validate:"required"`
 	SourceOfFunds              string         `json:"source_of_funds,omitempty"`

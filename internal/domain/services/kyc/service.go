@@ -1291,7 +1291,9 @@ func isTaxIDTypeSupportedForCountry(issuingCountry, taxIDType string) bool {
 	if supported == "" {
 		// Unknown country — accept any valid type
 		switch strings.ToLower(strings.TrimSpace(taxIDType)) {
-		case "ssn", "itin", "nino", "utr", "nin", "bvn", "tin", "passport", "national_id":
+		case "ssn", "itin", "nino", "utr", "nin", "bvn", "tin", "passport", "national_id",
+			"sin", "tfn", "steuer_id", "pan", "ghana_tin", "kra_pin", "sa_id",
+			"cpf", "rfc", "nric", "emirates_id", "bsn", "codice_fiscale", "nif", "pesel", "personnummer":
 			return true
 		default:
 			return false
@@ -1310,6 +1312,40 @@ func GetSupportedTaxIDType(issuingCountry string) string {
 		return "nino"
 	case "NGA":
 		return "nin"
+	case "CAN":
+		return "sin"
+	case "AUS":
+		return "tfn"
+	case "DEU":
+		return "steuer_id"
+	case "FRA":
+		return "tin"
+	case "IND":
+		return "pan"
+	case "GHA":
+		return "ghana_tin"
+	case "KEN":
+		return "kra_pin"
+	case "ZAF":
+		return "sa_id"
+	case "BRA":
+		return "cpf"
+	case "MEX":
+		return "rfc"
+	case "SGP":
+		return "nric"
+	case "ARE":
+		return "emirates_id"
+	case "NLD":
+		return "bsn"
+	case "ITA":
+		return "codice_fiscale"
+	case "ESP":
+		return "nif"
+	case "POL":
+		return "pesel"
+	case "SWE":
+		return "personnummer"
 	default:
 		return ""
 	}

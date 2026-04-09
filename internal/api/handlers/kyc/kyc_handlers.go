@@ -280,6 +280,7 @@ func (h *Handler) CreateDiditSession(c *gin.Context) {
 
 	var req entities.KYCDigitSessionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("Invalid Didit session request", zap.Error(err), zap.String("user_id", userID.String()))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
 		return
 	}
