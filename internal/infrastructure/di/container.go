@@ -3438,12 +3438,43 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 			TokenMint:     c.Config.Paj.TokenMint,
 			Chain:         c.Config.Paj.Chain,
 		}, c.ZapLog)
-		pajService := pajfunding.NewService(sqlxDB, pajClient, &WithdrawalLedgerAdapter{ledgerService: c.LedgerService}, c.RedisClient, c.Config.Security.EncryptionKey, c.ZapLog)
+		pajService := pajfunding.NewService(sqlxDB, pajClient, &WithdrawalLedgerAdapter{ledgerService: c.LedgerService}, c.AllocationService, &PajDepositLedgerAdapter{ledgerService: c.LedgerService}, c.RedisClient, c.Config.Security.EncryptionKey, c.ZapLog)
 		c.PajHandlers = fundinghandlers.NewPajHandlers(pajService, c.ZapLog)
 		c.ZapLog.Info("Paj Cash NGN ramp initialized")
 	} else {
 		c.ZapLog.Warn("Paj API key is empty, skipping initialization")
 	}
+}
+
+// PajDepositLedgerAdapter credits USDC balance for PAJ onramp deposits using the
+// correct double-entry direction (Debit = increase user balance).
+type PajDepositLedgerAdapter struct {
+	ledgerService *ledger.Service
+}
+
+func (a *PajDepositLedgerAdapter) CreditUSDCBalance(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string, metadata map[string]interface{}) error {
+	userAccount, err := a.ledgerService.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeUSDCBalance)
+	if err != nil {
+		return fmt.Errorf("get user USDC account: %w", err)
+	}
+	systemAccount, err := a.ledgerService.GetSystemAccount(ctx, entities.AccountTypeSystemBufferUSDC)
+	if err != nil {
+		return fmt.Errorf("get system buffer account: %w", err)
+	}
+	desc := "PAJ onramp USDC deposit"
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeDeposit,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &desc,
+		Metadata:        metadata,
+		Entries: []entities.CreateEntryRequest{
+			{AccountID: userAccount.ID, EntryType: entities.EntryTypeDebit, Amount: amount, Currency: "USDC", Description: &desc},
+			{AccountID: systemAccount.ID, EntryType: entities.EntryTypeCredit, Amount: amount, Currency: "USDC", Description: &desc},
+		},
+	}
+	_, err = a.ledgerService.CreateTransaction(ctx, req)
+	return err
 }
 
 // InstantFundingAlpacaAdapterImpl adapts alpaca.Service to funding.InstantFundingAlpacaAdapter

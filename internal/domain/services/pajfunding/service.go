@@ -23,18 +23,30 @@ type LedgerService interface {
 	ReverseTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, originalTxID string, amount decimal.Decimal, metadata map[string]interface{}) error
 }
 
-// Service handles Paj Cash NGN on/off ramp operations.
-type Service struct {
-	db            *sqlx.DB
-	pajClient     *paj.Client
-	ledger        LedgerService
-	redis         cache.RedisClient
-	encryptionKey string
-	logger        *zap.Logger
+// AllocationService handles the 70/30 deposit split.
+type AllocationService interface {
+	ProcessIncomingFunds(ctx context.Context, req *entities.IncomingFundsRequest) error
 }
 
-func NewService(db *sqlx.DB, pajClient *paj.Client, ledger LedgerService, redis cache.RedisClient, encryptionKey string, logger *zap.Logger) *Service {
-	return &Service{db: db, pajClient: pajClient, ledger: ledger, redis: redis, encryptionKey: encryptionKey, logger: logger}
+// DepositLedgerService credits USDC balance for incoming deposits (Debit = increase).
+type DepositLedgerService interface {
+	CreditUSDCBalance(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string, metadata map[string]interface{}) error
+}
+
+// Service handles Paj Cash NGN on/off ramp operations.
+type Service struct {
+	db                *sqlx.DB
+	pajClient         *paj.Client
+	ledger            LedgerService
+	allocationService AllocationService
+	depositLedger     DepositLedgerService
+	redis             cache.RedisClient
+	encryptionKey     string
+	logger            *zap.Logger
+}
+
+func NewService(db *sqlx.DB, pajClient *paj.Client, ledger LedgerService, allocationService AllocationService, depositLedger DepositLedgerService, redis cache.RedisClient, encryptionKey string, logger *zap.Logger) *Service {
+	return &Service{db: db, pajClient: pajClient, ledger: ledger, allocationService: allocationService, depositLedger: depositLedger, redis: redis, encryptionKey: encryptionKey, logger: logger}
 }
 
 // --- Session management ---
@@ -261,10 +273,10 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 	}
 
 	_, dbErr := s.db.ExecContext(ctx, `
-		INSERT INTO paj_orders (user_id, paj_order_id, order_type, status, fiat_amount, token_amount, currency, rate, fee, bank_id, bank_account_number, paj_deposit_address)
-		VALUES ($1, $2, 'offramp', 'pending', $3, $4, $5, $6, $7, $8, $9, $10)`,
+		INSERT INTO paj_orders (user_id, paj_order_id, order_type, status, fiat_amount, token_amount, currency, rate, fee, bank_id, bank_account_number, paj_deposit_address, hold_amount)
+		VALUES ($1, $2, 'offramp', 'pending', $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		userID, order.ID, order.FiatAmount, order.Amount, currency, order.Rate, order.Fee,
-		bankID, accountNumber, order.Address)
+		bankID, accountNumber, order.Address, estimatedUSDC)
 	if dbErr != nil {
 		s.logger.Error("failed to persist paj offramp order", zap.Error(dbErr), zap.String("paj_order_id", order.ID))
 	}
@@ -327,6 +339,9 @@ func (s *Service) HandleWebhook(ctx context.Context, payload *paj.WebhookPayload
 	// Credit user's spend balance when onramp completes (USDC arrived in custody).
 	s.creditOnrampIfCompleted(ctx, orderUserID, payload.ID, newStatus, tx)
 
+	// Reverse the ledger hold when an offramp fails.
+	s.reverseOfframpIfFailed(ctx, orderUserID, payload.ID, orderType, newStatus)
+
 	s.logger.Info("paj order status updated",
 		zap.String("paj_order_id", payload.ID),
 		zap.String("type", orderType),
@@ -339,8 +354,9 @@ func (s *Service) HandleWebhook(ctx context.Context, payload *paj.WebhookPayload
 func (s *Service) PollOrderStatus(ctx context.Context, userID uuid.UUID, pajOrderID string) (*paj.PajTransaction, error) {
 	// Verify ownership before polling.
 	var ownerID uuid.UUID
+	var orderType string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT user_id FROM paj_orders WHERE paj_order_id = $1`, pajOrderID).Scan(&ownerID)
+		`SELECT user_id, order_type FROM paj_orders WHERE paj_order_id = $1`, pajOrderID).Scan(&ownerID, &orderType)
 	if err != nil {
 		return nil, fmt.Errorf("order not found")
 	}
@@ -368,14 +384,18 @@ func (s *Service) PollOrderStatus(ctx context.Context, userID uuid.UUID, pajOrde
 	// Credit ledger if onramp just completed (same logic as webhook path).
 	s.creditOnrampIfCompleted(ctx, userID, pajOrderID, newStatus, tx)
 
+	// Reverse the ledger hold if offramp failed (same logic as webhook path).
+	s.reverseOfframpIfFailed(ctx, userID, pajOrderID, orderType, newStatus)
+
 	return tx, nil
 }
 
-// creditOnrampIfCompleted credits the user's spend balance when an onramp order completes.
+// creditOnrampIfCompleted credits the user's USDC balance and triggers the 70/30
+// allocation split when an onramp order completes.
 // Called from both HandleWebhook and PollOrderStatus to ensure credit happens
 // regardless of which path detects the completion first.
 func (s *Service) creditOnrampIfCompleted(ctx context.Context, userID uuid.UUID, pajOrderID, newStatus string, tx *paj.PajTransaction) {
-	if newStatus != "completed" || s.ledger == nil || tx.USDCAmount <= 0 {
+	if newStatus != "completed" || tx.USDCAmount <= 0 {
 		return
 	}
 
@@ -391,17 +411,79 @@ func (s *Service) creditOnrampIfCompleted(ctx context.Context, userID uuid.UUID,
 	}
 
 	creditAmount := decimal.NewFromFloat(tx.USDCAmount)
-	err = s.ledger.CreateTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
-		entities.TransactionTypeDeposit, creditAmount, map[string]interface{}{
+	idempotencyKey := "paj-onramp-" + pajOrderID
+
+	// Step 1: Credit USDC balance (Debit entry = increase for asset accounts).
+	if s.depositLedger != nil {
+		err = s.depositLedger.CreditUSDCBalance(ctx, userID, creditAmount, idempotencyKey, map[string]interface{}{
 			"provider": "paj", "type": "onramp_credit", "paj_order_id": pajOrderID,
 			"fiat_amount": tx.FiatAmount, "currency": tx.Currency,
 		})
+		if err != nil {
+			s.logger.Error("CRITICAL: failed to credit USDC balance after onramp completion",
+				zap.Error(err), zap.String("user_id", userID.String()),
+				zap.String("paj_order_id", pajOrderID), zap.Float64("amount", tx.USDCAmount))
+			// Roll back the claim so a retry can pick it up.
+			s.db.ExecContext(ctx, `UPDATE paj_orders SET deposit_id = NULL WHERE id = $1`, claimedID)
+			return
+		}
+	}
+
+	// Step 2: Trigger 70/30 allocation split (same as Bridge virtual account flow).
+	if s.allocationService != nil {
+		sourceTxID := "paj-onramp:" + pajOrderID
+		depositID := claimedID
+		allocationReq := &entities.IncomingFundsRequest{
+			UserID:     userID,
+			Amount:     creditAmount,
+			EventType:  entities.AllocationEventTypeFiatDeposit,
+			DepositID:  &depositID,
+			SourceTxID: &sourceTxID,
+			Metadata: map[string]any{
+				"source":       "paj_onramp",
+				"paj_order_id": pajOrderID,
+				"fiat_amount":  tx.FiatAmount,
+				"currency":     tx.Currency,
+			},
+		}
+		if err := s.allocationService.ProcessIncomingFunds(ctx, allocationReq); err != nil {
+			s.logger.Error("Failed to process allocation split for PAJ onramp — will retry on next webhook/poll",
+				zap.Error(err), zap.String("user_id", userID.String()),
+				zap.String("paj_order_id", pajOrderID), zap.String("amount", creditAmount.String()))
+			// Reset claim so next webhook/poll retries the allocation.
+			// USDC credit is idempotent (same key), so re-entry is safe.
+			s.db.ExecContext(ctx, `UPDATE paj_orders SET deposit_id = NULL WHERE id = $1`, claimedID)
+		}
+	}
+}
+
+// reverseOfframpIfFailed reverses the spending balance hold when an offramp order fails.
+// Uses the same idempotency pattern as creditOnrampIfCompleted.
+func (s *Service) reverseOfframpIfFailed(ctx context.Context, userID uuid.UUID, pajOrderID, orderType, newStatus string) {
+	if newStatus != "failed" || orderType != "offramp" || s.ledger == nil {
+		return
+	}
+
+	// Idempotency: atomically claim this order for reversal.
+	var holdAmount decimal.Decimal
+	err := s.db.QueryRowContext(ctx,
+		`UPDATE paj_orders SET deposit_id = gen_random_uuid()
+		 WHERE paj_order_id = $1 AND order_type = 'offramp' AND deposit_id IS NULL
+		 RETURNING COALESCE(hold_amount, token_amount)`, pajOrderID).Scan(&holdAmount)
+	if err != nil || holdAmount.IsZero() || holdAmount.IsNegative() {
+		return // Already reversed or no amount to reverse.
+	}
+
+	err = s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
+		"paj-offramp-"+pajOrderID, holdAmount, map[string]interface{}{
+			"provider": "paj", "type": "offramp_failure_reversal", "paj_order_id": pajOrderID,
+		})
 	if err != nil {
-		s.logger.Error("CRITICAL: failed to credit user balance after onramp completion",
+		s.logger.Error("CRITICAL: failed to reverse offramp hold after failure",
 			zap.Error(err), zap.String("user_id", userID.String()),
-			zap.String("paj_order_id", pajOrderID), zap.Float64("amount", tx.USDCAmount))
-		// Roll back the claim so a retry can pick it up.
-		s.db.ExecContext(ctx, `UPDATE paj_orders SET deposit_id = NULL WHERE id = $1`, claimedID)
+			zap.String("paj_order_id", pajOrderID), zap.String("amount", holdAmount.String()))
+		// Reset claim so next webhook/poll retries the reversal.
+		s.db.ExecContext(ctx, `UPDATE paj_orders SET deposit_id = NULL WHERE paj_order_id = $1`, pajOrderID)
 	}
 }
 
