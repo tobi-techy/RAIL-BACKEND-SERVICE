@@ -534,11 +534,43 @@ func (app *Application) startMetricsCollection() {
 	defer ticker.Stop()
 
 	for range ticker.C {
+		ctx := context.Background()
+
 		// Update database connection metrics
 		stats := app.container.DB.Stats()
 		metrics.DatabaseConnectionsGauge.WithLabelValues("open").Set(float64(stats.OpenConnections))
 		metrics.DatabaseConnectionsGauge.WithLabelValues("idle").Set(float64(stats.Idle))
 		metrics.DatabaseConnectionsGauge.WithLabelValues("in_use").Set(float64(stats.InUse))
+
+		// Update business gauges from DB
+		if metrics.Business != nil {
+			var count int
+			if err := app.container.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM users").Scan(&count); err == nil {
+				metrics.Business.UsersRegistered.Add(0) // ensure metric exists
+				metrics.ActiveUsersGauge.Set(float64(count))
+				metrics.Business.ActiveUsers.Set(float64(count))
+			}
+
+			var totalBalance float64
+			if err := app.container.DB.QueryRowContext(ctx, "SELECT COALESCE(SUM(balance),0) FROM ledger_accounts WHERE account_type IN ('spending_balance','stash_balance')").Scan(&totalBalance); err == nil {
+				metrics.Business.TotalBalance.Set(totalBalance)
+			}
+
+			var stashBal float64
+			if err := app.container.DB.QueryRowContext(ctx, "SELECT COALESCE(SUM(balance),0) FROM ledger_accounts WHERE account_type = 'stash_balance'").Scan(&stashBal); err == nil {
+				metrics.Business.StashBalanceTotal.Set(stashBal)
+			}
+
+			var spendBal float64
+			if err := app.container.DB.QueryRowContext(ctx, "SELECT COALESCE(SUM(balance),0) FROM ledger_accounts WHERE account_type = 'spending_balance'").Scan(&spendBal); err == nil {
+				metrics.Business.SpendBalanceTotal.Set(spendBal)
+			}
+
+			var avgBal float64
+			if err := app.container.DB.QueryRowContext(ctx, "SELECT COALESCE(AVG(balance),0) FROM ledger_accounts WHERE account_type IN ('spending_balance','stash_balance') AND balance > 0").Scan(&avgBal); err == nil {
+				metrics.Business.AverageBalance.Set(avgBal)
+			}
+		}
 	}
 }
 
