@@ -15,6 +15,7 @@ import (
 	bridgepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	chainrailspkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/rail-service/rail_service/pkg/metrics"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -1455,6 +1456,11 @@ func (s *WithdrawalService) settleCompletedCryptoWithdrawal(ctx context.Context,
 	withdrawal.CompletedAt = &now
 	withdrawal.UpdatedAt = now
 
+	if metrics.Business != nil {
+		metrics.Business.WithdrawalsCompleted.WithLabelValues("crypto").Inc()
+		metrics.Business.WithdrawalAmount.WithLabelValues("crypto").Observe(withdrawal.Amount.InexactFloat64())
+	}
+
 	return nil
 }
 
@@ -1480,6 +1486,11 @@ func (s *WithdrawalService) settleCompletedFiatWithdrawal(ctx context.Context, w
 	withdrawal.Status = entities.WithdrawalStatusCompleted
 	withdrawal.CompletedAt = &now
 	withdrawal.UpdatedAt = now
+
+	if metrics.Business != nil {
+		metrics.Business.WithdrawalsCompleted.WithLabelValues("fiat").Inc()
+		metrics.Business.WithdrawalAmount.WithLabelValues("fiat").Observe(withdrawal.Amount.InexactFloat64())
+	}
 
 	if withdrawal.BankAccountID != nil {
 		if err := s.VerifyBankAccount(ctx, withdrawal.UserID, *withdrawal.BankAccountID); err != nil {

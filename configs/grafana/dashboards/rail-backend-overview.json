@@ -1,0 +1,498 @@
+{
+  "dashboard": {
+    "title": "RAIL Backend - Application Overview",
+    "uid": "rail-backend-overview",
+    "tags": [
+      "rail",
+      "backend",
+      "infrastructure"
+    ],
+    "timezone": "browser",
+    "schemaVersion": 39,
+    "version": 2,
+    "refresh": "30s",
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "templating": {
+      "list": [
+        {
+          "name": "job",
+          "type": "constant",
+          "query": "rail-backend",
+          "current": {
+            "text": "rail-backend",
+            "value": "rail-backend"
+          },
+          "hide": 2
+        }
+      ]
+    },
+    "panels": [
+      {
+        "id": 1,
+        "title": "Request Rate (QPS)",
+        "type": "timeseries",
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 0,
+          "y": 0
+        },
+        "targets": [
+          {
+            "expr": "sum(rate(stack_http_requests_total[1m]))",
+            "legendFormat": "Total QPS",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            }
+          },
+          {
+            "expr": "sum(rate(stack_http_requests_total[1m])) by (method)",
+            "legendFormat": "{{method}}",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            }
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "reqps"
+          }
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "grafanacloud-prom"
+        }
+      },
+      {
+        "id": 2,
+        "title": "Error Rate (5xx)",
+        "type": "timeseries",
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 8,
+          "y": 0
+        },
+        "targets": [
+          {
+            "expr": "sum(rate(stack_http_requests_total{status_code=~\"5..\"}[1m]))",
+            "legendFormat": "5xx/s",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            }
+          },
+          {
+            "expr": "sum(rate(stack_http_requests_total{status_code=~\"5..\"}[5m])) / sum(rate(stack_http_requests_total[5m])) * 100",
+            "legendFormat": "Error %",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            }
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "reqps",
+            "color": {
+              "mode": "fixed",
+              "fixedColor": "red"
+            }
+          }
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "grafanacloud-prom"
+        }
+      },
+      {
+        "id": 3,
+        "title": "Response Time (p50 / p95 / p99)",
+        "type": "timeseries",
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 16,
+          "y": 0
+        },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.50, sum(rate(stack_http_request_duration_seconds_bucket[5m])) by (le))",
+            "legendFormat": "p50",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            }
+          },
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(stack_http_request_duration_seconds_bucket[5m])) by (le))",
+            "legendFormat": "p95",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            }
+          },
+          {
+            "expr": "histogram_quantile(0.99, sum(rate(stack_http_request_duration_seconds_bucket[5m])) by (le))",
+            "legendFormat": "p99",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            }
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s"
+          }
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "grafanacloud-prom"
+        }
+      },
+      {
+        "id": 4,
+        "title": "Go Routines",
+        "type": "stat",
+        "gridPos": {
+          "h": 4,
+          "w": 4,
+          "x": 0,
+          "y": 8
+        },
+        "targets": [
+          {
+            "expr": "go_goroutines",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            }
+          }
+        ],
+        "datasource": {
+          "type": "prometheus",
+          "uid": "grafanacloud-prom"
+        }
+      },
+      {
+        "id": 5,
+        "title": "DB Connections (open)",
+        "type": "stat",
+        "gridPos": {
+          "h": 4,
+          "w": 4,
+          "x": 4,
+          "y": 8
+        },
+        "targets": [
+          {
+            "expr": "sum(stack_database_connections)",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            }
+          }
+        ],
+        "datasource": {
+          "type": "prometheus",
+          "uid": "grafanacloud-prom"
+        }
+      },
+      {
+        "id": 6,
+        "title": "Circuit Breakers Open",
+        "type": "stat",
+        "gridPos": {
+          "h": 4,
+          "w": 4,
+          "x": 8,
+          "y": 8
+        },
+        "targets": [
+          {
+            "expr": "sum(stack_circuit_breaker_state == 1)",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            }
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "steps": [
+                {
+                  "color": "green",
+                  "value": 0
+                },
+                {
+                  "color": "red",
+                  "value": 1
+                }
+              ]
+            }
+          }
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "grafanacloud-prom"
+        }
+      },
+      {
+        "id": 7,
+        "title": "Rate Limit Hits/min",
+        "type": "stat",
+        "gridPos": {
+          "h": 4,
+          "w": 4,
+          "x": 12,
+          "y": 8
+        },
+        "targets": [
+          {
+            "expr": "sum(rate(stack_rate_limit_hits_total[1m])) * 60",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            }
+          }
+        ],
+        "datasource": {
+          "type": "prometheus",
+          "uid": "grafanacloud-prom"
+        }
+      },
+      {
+        "id": 8,
+        "title": "Auth Failures/min",
+        "type": "stat",
+        "gridPos": {
+          "h": 4,
+          "w": 4,
+          "x": 16,
+          "y": 8
+        },
+        "targets": [
+          {
+            "expr": "sum(rate(stack_authentication_attempts_total{result=\"failed\"}[1m])) * 60",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            }
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "steps": [
+                {
+                  "color": "green",
+                  "value": 0
+                },
+                {
+                  "color": "yellow",
+                  "value": 5
+                },
+                {
+                  "color": "red",
+                  "value": 20
+                }
+              ]
+            }
+          }
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "grafanacloud-prom"
+        }
+      },
+      {
+        "id": 9,
+        "title": "Memory Usage",
+        "type": "timeseries",
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 12
+        },
+        "targets": [
+          {
+            "expr": "process_resident_memory_bytes",
+            "legendFormat": "RSS",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            }
+          },
+          {
+            "expr": "go_memstats_alloc_bytes",
+            "legendFormat": "Heap Alloc",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            }
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "bytes"
+          }
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "grafanacloud-prom"
+        }
+      },
+      {
+        "id": 10,
+        "title": "CPU Usage",
+        "type": "timeseries",
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 12
+        },
+        "targets": [
+          {
+            "expr": "rate(process_cpu_seconds_total[5m]) * 100",
+            "legendFormat": "CPU %",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            }
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0
+          }
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "grafanacloud-prom"
+        }
+      },
+      {
+        "id": 11,
+        "title": "DB Query Latency (p95)",
+        "type": "timeseries",
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 20
+        },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(stack_database_query_duration_seconds_bucket[5m])) by (le, table))",
+            "legendFormat": "{{table}}",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            }
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s"
+          }
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "grafanacloud-prom"
+        }
+      },
+      {
+        "id": 12,
+        "title": "External API Latency (p95)",
+        "type": "timeseries",
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 20
+        },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(stack_external_api_call_duration_seconds_bucket[5m])) by (le, service))",
+            "legendFormat": "{{service}}",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            }
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s"
+          }
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "grafanacloud-prom"
+        }
+      },
+      {
+        "id": 13,
+        "title": "Top Endpoints by Request Rate",
+        "type": "table",
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 28
+        },
+        "targets": [
+          {
+            "expr": "topk(10, sum by (endpoint) (rate(stack_http_requests_total[5m])))",
+            "format": "table",
+            "instant": true,
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            }
+          }
+        ],
+        "datasource": {
+          "type": "prometheus",
+          "uid": "grafanacloud-prom"
+        }
+      },
+      {
+        "id": 14,
+        "title": "Top Endpoints by Error Rate",
+        "type": "table",
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 28
+        },
+        "targets": [
+          {
+            "expr": "topk(10, sum by (endpoint, status_code) (rate(stack_http_requests_total{status_code=~\"[45]..\"}[5m])))",
+            "format": "table",
+            "instant": true,
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            }
+          }
+        ],
+        "datasource": {
+          "type": "prometheus",
+          "uid": "grafanacloud-prom"
+        }
+      }
+    ]
+  }
+}

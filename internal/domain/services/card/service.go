@@ -14,6 +14,7 @@ import (
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	"github.com/rail-service/rail_service/pkg/metrics"
 )
 
 var (
@@ -310,9 +311,15 @@ func (s *Service) ProcessCardAuthorization(ctx context.Context, bridgeCardID str
 
 	// Check card status
 	if card.Status == entities.CardStatusFrozen {
+		if metrics.Business != nil {
+			metrics.Business.CardTransactionsTotal.WithLabelValues("declined").Inc()
+		}
 		return false, "card_frozen", nil
 	}
 	if card.Status == entities.CardStatusCancelled {
+		if metrics.Business != nil {
+			metrics.Business.CardTransactionsTotal.WithLabelValues("declined").Inc()
+		}
 		return false, "card_cancelled", nil
 	}
 
@@ -324,12 +331,20 @@ func (s *Service) ProcessCardAuthorization(ctx context.Context, bridgeCardID str
 	}
 
 	if balance.LessThan(amount) {
+		if metrics.Business != nil {
+			metrics.Business.CardTransactionsTotal.WithLabelValues("declined").Inc()
+		}
 		return false, "insufficient_funds", nil
 	}
 
 	s.logger.Info("Card authorization approved",
 		zap.String("card_id", card.ID.String()),
 		zap.String("amount", amount.String()))
+
+	if metrics.Business != nil {
+		metrics.Business.CardTransactionsTotal.WithLabelValues("approved").Inc()
+		metrics.Business.CardSpendAmount.Observe(amount.InexactFloat64())
+	}
 
 	return true, "", nil
 }

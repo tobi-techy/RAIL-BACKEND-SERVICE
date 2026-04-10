@@ -12,6 +12,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/pkg/crypto"
+	"github.com/rail-service/rail_service/pkg/metrics"
 	"go.uber.org/zap"
 )
 
@@ -224,6 +225,10 @@ func (s *Service) StartOnboarding(ctx context.Context, req *entities.OnboardingS
 		return nil, fmt.Errorf("failed to create user: %w", err)
 	}
 
+	if metrics.Business != nil {
+		metrics.Business.UsersRegistered.Inc()
+	}
+
 	// Create initial onboarding flow steps
 	if err := s.createInitialOnboardingSteps(ctx, user.ID); err != nil {
 		s.logger.Error("Failed to create onboarding steps", zap.Error(err), zap.String("userId", user.ID.String()))
@@ -353,6 +358,58 @@ func (s *Service) CompleteEmailVerification(ctx context.Context, userID uuid.UUI
 	}
 
 	return nil
+}
+
+// BasicCompleteOnboarding handles the slim signup — saves name + password, transitions to basic_complete
+func (s *Service) BasicCompleteOnboarding(ctx context.Context, req *entities.BasicCompleteRequest) (*entities.BasicCompleteResponse, error) {
+	s.logger.Info("Basic complete onboarding", zap.String("user_id", req.UserID.String()))
+
+	user, err := s.userRepo.GetByID(ctx, req.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+
+	if !user.EmailVerified {
+		return nil, fmt.Errorf("email must be verified before completing onboarding")
+	}
+
+	if user.OnboardingStatus != entities.OnboardingStatusStarted {
+		return nil, fmt.Errorf("basic-complete is only allowed from 'started' status, current: %s", user.OnboardingStatus)
+	}
+
+	// Hash and set password
+	passwordHash, err := crypto.HashPassword(req.Password)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash password: %w", err)
+	}
+	if err := s.userRepo.UpdatePassword(ctx, req.UserID, passwordHash); err != nil {
+		return nil, fmt.Errorf("failed to set password: %w", err)
+	}
+
+	// Update name
+	user.FirstName = &req.FirstName
+	user.LastName = &req.LastName
+	user.UpdatedAt = time.Now()
+	if err := s.userRepo.Update(ctx, user); err != nil {
+		return nil, fmt.Errorf("failed to update user profile: %w", err)
+	}
+
+	// Transition to basic_complete
+	if err := s.userRepo.UpdateOnboardingStatus(ctx, req.UserID, entities.OnboardingStatusBasicComplete); err != nil {
+		return nil, fmt.Errorf("failed to update onboarding status: %w", err)
+	}
+
+	if err := s.auditService.LogOnboardingEvent(ctx, req.UserID, "basic_signup_completed", "user", nil, map[string]any{
+		"password_set": true,
+	}); err != nil {
+		s.logger.Warn("Failed to log audit event", zap.Error(err))
+	}
+
+	return &entities.BasicCompleteResponse{
+		UserID:           req.UserID,
+		OnboardingStatus: string(entities.OnboardingStatusBasicComplete),
+		Message:          "Basic signup completed. Complete your profile to unlock all features.",
+	}, nil
 }
 
 // CompleteOnboarding handles the completion of onboarding with personal info, password, and Bridge customer creation

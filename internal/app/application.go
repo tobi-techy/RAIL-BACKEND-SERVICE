@@ -446,6 +446,7 @@ func (app *Application) Start() error {
 	}()
 
 	// Start metrics collection
+	metrics.InitBusinessMetrics()
 	go app.startMetricsCollection()
 
 	// One-time backfill: populate missing virtual account details from Bridge

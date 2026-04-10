@@ -1553,36 +1553,13 @@ func (h *AuthHandlers) DeleteAccount(c *gin.Context) {
 		return
 	}
 
-	// Parse request body with password confirmation
+	// Parse request body
 	var req struct {
-		Password      string `json:"password"`
 		Reason        string `json:"reason"`
 		AppleAuthCode string `json:"apple_auth_code"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "Invalid request body"})
-		return
-	}
-
-	// Require password confirmation for account deletion
-	if req.Password == "" {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "PASSWORD_REQUIRED", Message: "Password confirmation required to delete account"})
-		return
-	}
-
-	// Verify password
-	userProfile, err := h.userRepo.GetByID(ctx, userID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "INTERNAL_ERROR", Message: "Failed to verify user"})
-		return
-	}
-	user, err := h.userRepo.GetUserByEmailForLogin(ctx, userProfile.Email)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "INTERNAL_ERROR", Message: "Failed to verify user"})
-		return
-	}
-	if !h.userRepo.ValidatePassword(req.Password, user.PasswordHash) {
-		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "INVALID_PASSWORD", Message: "Incorrect password"})
 		return
 	}
 
@@ -1902,6 +1879,43 @@ func (h *AuthHandlers) ProcessKYCCallback(c *gin.Context) {
 }
 
 // CompleteOnboarding handles POST /onboarding/complete
+// BasicCompleteOnboarding handles POST /onboarding/basic-complete
+func (h *AuthHandlers) BasicCompleteOnboarding(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+
+	userID, err := common.GetUserID(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_USER_ID", Message: "Invalid or missing user ID"})
+		return
+	}
+
+	var req entities.BasicCompleteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "Invalid request payload"})
+		return
+	}
+	req.UserID = userID
+
+	if err := h.validator.Struct(req); err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "VALIDATION_ERROR", Message: "Request validation failed"})
+		return
+	}
+
+	response, err := h.onboardingService.BasicCompleteOnboarding(ctx, &req)
+	if err != nil {
+		h.logger.Error("Failed to basic-complete onboarding", zap.Error(err), zap.String("user_id", userID.String()))
+		if strings.Contains(err.Error(), "only allowed from") {
+			c.JSON(http.StatusConflict, entities.ErrorResponse{Code: "INVALID_STATUS", Message: err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "ONBOARDING_FAILED", Message: "Failed to complete basic signup"})
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
 // @Summary Complete onboarding with personal info and account creation
 // @Description Completes onboarding by creating Due and Alpaca accounts with user's personal information
 // @Tags onboarding

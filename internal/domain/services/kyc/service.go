@@ -23,6 +23,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
 	"github.com/rail-service/rail_service/pkg/crypto"
+	"github.com/rail-service/rail_service/pkg/metrics"
 )
 
 var (
@@ -693,6 +694,10 @@ func (s *Service) processSumsubApproved(ctx context.Context, submission *entitie
 		return fmt.Errorf("failed to update user after sumsub approval: %w", err)
 	}
 
+	if metrics.Business != nil {
+		metrics.Business.UsersKYCApproved.Inc()
+	}
+
 	submission.UpdatedAt = now
 	if submission.VerificationData == nil {
 		submission.VerificationData = map[string]any{}
@@ -787,6 +792,10 @@ func (s *Service) processSumsubRejected(ctx context.Context, submission *entitie
 	}
 	if err := s.userRepo.Update(ctx, user); err != nil {
 		return fmt.Errorf("failed to update user after sumsub rejection: %w", err)
+	}
+
+	if metrics.Business != nil {
+		metrics.Business.UsersKYCRejected.Inc()
 	}
 
 	submission.MarkReviewed(entities.KYCStatusRejected, rejectionReasons)

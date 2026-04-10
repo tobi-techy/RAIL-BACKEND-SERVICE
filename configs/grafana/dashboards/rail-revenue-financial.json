@@ -1,0 +1,426 @@
+{
+  "dashboard": {
+    "uid": "rail-revenue-financial",
+    "title": "RAIL - Revenue & Financial",
+    "tags": ["rail", "business", "revenue"],
+    "schemaVersion": 39,
+    "refresh": "1m",
+    "time": { "from": "now-7d", "to": "now" },
+    "timezone": "browser",
+    "editable": true,
+    "fiscalYearStartMonth": 0,
+    "graphTooltip": 1,
+    "panels": [
+      {
+        "id": 1,
+        "title": "Total AUM",
+        "description": "Total assets under management",
+        "type": "stat",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 5, "w": 4, "x": 0, "y": 0 },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "color": { "mode": "fixed", "fixedColor": "purple" },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "purple", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "stack_total_balance_usd",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Deposits (24h)",
+        "description": "Deposit volume last 24h",
+        "type": "stat",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 5, "w": 4, "x": 4, "y": 0 },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "color": { "mode": "fixed", "fixedColor": "green" },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(increase(stack_deposit_amount_usd_sum[24h]))",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Withdrawals (24h)",
+        "description": "Withdrawal volume last 24h",
+        "type": "stat",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 5, "w": 4, "x": 8, "y": 0 },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "color": { "mode": "fixed", "fixedColor": "orange" },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "orange", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(increase(stack_withdrawal_amount_usd_sum[24h]))",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Net Flow",
+        "description": "Net deposits minus withdrawals",
+        "type": "stat",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 5, "w": 4, "x": 12, "y": 0 },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "color": { "mode": "thresholds" },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "color": "red", "value": null },
+                { "color": "green", "value": 0 }
+              ]
+            }
+          },
+          "overrides": []
+        },
+        "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "stack_net_flow_usd",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Revenue (24h)",
+        "description": "Total revenue last 24h",
+        "type": "stat",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 5, "w": 4, "x": 16, "y": 0 },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "color": { "mode": "fixed", "fixedColor": "super-light-green" },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "super-light-green", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(increase(stack_revenue_total_usd[24h]))",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Card Spend (24h)",
+        "description": "Card transaction volume last 24h",
+        "type": "stat",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 5, "w": 4, "x": 20, "y": 0 },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "color": { "mode": "fixed", "fixedColor": "blue" },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(increase(stack_card_spend_amount_usd_sum[24h]))",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 7,
+        "title": "Deposit Volume by Rail",
+        "description": "Hourly deposit volume broken down by funding rail (fiat, crypto chain)",
+        "type": "timeseries",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 9, "w": 12, "x": 0, "y": 5 },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "custom": { "fillOpacity": 40, "stacking": { "mode": "normal" }, "lineWidth": 1, "spanNulls": false }
+          },
+          "overrides": []
+        },
+        "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum", "lastNotNull"] } },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(rate(stack_deposit_amount_usd_sum[1h])) by (chain) * 3600",
+            "legendFormat": "{{chain}}",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 8,
+        "title": "Withdrawal Volume by Rail",
+        "description": "Hourly withdrawal volume by rail",
+        "type": "timeseries",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 9, "w": 12, "x": 12, "y": 5 },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "custom": { "fillOpacity": 40, "stacking": { "mode": "normal" }, "lineWidth": 1, "spanNulls": false }
+          },
+          "overrides": []
+        },
+        "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum", "lastNotNull"] } },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(rate(stack_withdrawal_amount_usd_sum[1h])) by (chain) * 3600",
+            "legendFormat": "{{chain}}",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 9,
+        "title": "Revenue Breakdown",
+        "description": "Revenue by source: yield spread, card interchange, FX markup",
+        "type": "timeseries",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 9, "w": 12, "x": 0, "y": 14 },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "custom": { "fillOpacity": 60, "stacking": { "mode": "normal" }, "lineWidth": 1, "spanNulls": false }
+          },
+          "overrides": []
+        },
+        "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum", "lastNotNull"] } },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(rate(stack_revenue_total_usd[1h])) by (source) * 3600",
+            "legendFormat": "{{source}}",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 10,
+        "title": "Yield Distribution",
+        "description": "Yield distribution events and amounts",
+        "type": "timeseries",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 9, "w": 12, "x": 12, "y": 14 },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "custom": { "fillOpacity": 10, "lineWidth": 2, "spanNulls": false }
+          },
+          "overrides": [
+            {
+              "matcher": { "id": "byName", "options": "Events/hr" },
+              "properties": [
+                { "id": "custom.axisPlacement", "value": "right" },
+                { "id": "unit", "value": "short" },
+                { "id": "custom.fillOpacity", "value": 0 },
+                { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } }
+              ]
+            }
+          ]
+        },
+        "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "rate(stack_yield_distributed_total[1h]) * 3600",
+            "legendFormat": "Events/hr",
+            "refId": "A"
+          },
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(rate(stack_yield_distribution_amount_usd_sum[1h])) * 3600",
+            "legendFormat": "Amount/hr",
+            "refId": "B"
+          }
+        ]
+      },
+      {
+        "id": 11,
+        "title": "Card Activity",
+        "description": "Card authorization rate by status (approved/declined)",
+        "type": "timeseries",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 9, "w": 12, "x": 0, "y": 23 },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "custom": { "drawStyle": "bars", "fillOpacity": 80, "lineWidth": 0, "stacking": { "mode": "normal" }, "spanNulls": false }
+          },
+          "overrides": [
+            {
+              "matcher": { "id": "byName", "options": "approved" },
+              "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }]
+            },
+            {
+              "matcher": { "id": "byName", "options": "declined" },
+              "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+            }
+          ]
+        },
+        "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum", "lastNotNull"] } },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(rate(stack_card_transactions_total[1h])) by (status) * 3600",
+            "legendFormat": "{{status}}",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 12,
+        "title": "Card Spend & Round-ups",
+        "description": "Card spending volume and round-up frequency",
+        "type": "timeseries",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 9, "w": 12, "x": 12, "y": 23 },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "custom": { "fillOpacity": 10, "lineWidth": 2, "spanNulls": false }
+          },
+          "overrides": [
+            {
+              "matcher": { "id": "byName", "options": "Round-ups/hr" },
+              "properties": [
+                { "id": "custom.axisPlacement", "value": "right" },
+                { "id": "unit", "value": "short" },
+                { "id": "custom.fillOpacity", "value": 0 },
+                { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } }
+              ]
+            }
+          ]
+        },
+        "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(rate(stack_card_spend_amount_usd_sum[1h])) * 3600",
+            "legendFormat": "Spend/hr (USD)",
+            "refId": "A"
+          },
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "rate(stack_roundup_total[1h]) * 3600",
+            "legendFormat": "Round-ups/hr",
+            "refId": "B"
+          }
+        ]
+      },
+      {
+        "id": 13,
+        "title": "Deposit Count by Rail",
+        "description": "Deposit distribution by funding rail (last 24h)",
+        "type": "piechart",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 9, "w": 12, "x": 0, "y": 32 },
+        "fieldConfig": {
+          "defaults": {
+            "color": { "mode": "palette-classic" }
+          },
+          "overrides": []
+        },
+        "options": {
+          "pieType": "donut",
+          "reduceOptions": { "calcs": ["lastNotNull"] },
+          "legend": { "displayMode": "table", "placement": "right", "values": ["value", "percent"] },
+          "tooltip": { "mode": "single" }
+        },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(increase(stack_deposits_completed_total[24h])) by (chain)",
+            "legendFormat": "{{chain}}",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 14,
+        "title": "Deposit Size Distribution",
+        "description": "Deposit size percentiles — median and p95",
+        "type": "timeseries",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 9, "w": 12, "x": 12, "y": 32 },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "custom": { "fillOpacity": 10, "lineWidth": 2, "spanNulls": false }
+          },
+          "overrides": [
+            {
+              "matcher": { "id": "byName", "options": "p95" },
+              "properties": [
+                { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } },
+                { "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }
+              ]
+            },
+            {
+              "matcher": { "id": "byName", "options": "Median" },
+              "properties": [
+                { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }
+              ]
+            }
+          ]
+        },
+        "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] } },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "histogram_quantile(0.50, sum(rate(stack_deposit_amount_usd_bucket[1h])) by (le))",
+            "legendFormat": "Median",
+            "refId": "A"
+          },
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "histogram_quantile(0.95, sum(rate(stack_deposit_amount_usd_bucket[1h])) by (le))",
+            "legendFormat": "p95",
+            "refId": "B"
+          }
+        ]
+      }
+    ],
+    "templating": { "list": [] },
+    "annotations": { "list": [] },
+    "links": []
+  }
+}

@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/pkg/metrics"
 	"go.uber.org/zap"
 )
 
@@ -154,6 +155,11 @@ func (s *Service) ProcessTransaction(ctx context.Context, req *ProcessTransactio
 
 	if err := s.repo.CreateTransaction(ctx, tx); err != nil {
 		return nil, fmt.Errorf("create transaction: %w", err)
+	}
+
+	if metrics.Business != nil {
+		metrics.Business.RoundUpTotal.Inc()
+		metrics.Business.RoundUpAmount.Observe(multiplied.InexactFloat64())
 	}
 
 	// Update accumulator

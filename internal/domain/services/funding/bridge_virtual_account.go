@@ -12,6 +12,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/rail-service/rail_service/pkg/metrics"
 	"github.com/shopspring/decimal"
 )
 
@@ -479,6 +480,11 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 				"deposit_id", depositID,
 				"error", err)
 		}
+	}
+
+	if metrics.Business != nil {
+		metrics.Business.DepositsCompleted.WithLabelValues("fiat").Inc()
+		metrics.Business.DepositAmount.WithLabelValues("fiat").Observe(amount.InexactFloat64())
 	}
 
 	// Process 70/30 allocation split

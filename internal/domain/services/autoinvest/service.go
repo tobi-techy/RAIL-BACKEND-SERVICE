@@ -14,6 +14,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/strategy"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/rail-service/rail_service/pkg/metrics"
 	"github.com/shopspring/decimal"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -467,8 +468,15 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 
 	if orderErr != nil {
 		s.markEventFailed(ctx, userID, eventID, "strategy orders failed: "+orderErr.Error())
+		if metrics.Business != nil {
+			metrics.Business.AutoInvestExecutedTotal.WithLabelValues("failed").Inc()
+		}
 	} else {
 		s.markEventCompleted(ctx, userID, eventID)
+		if metrics.Business != nil {
+			metrics.Business.AutoInvestExecutedTotal.WithLabelValues("success").Inc()
+			metrics.Business.AutoInvestAmount.Observe(amount.InexactFloat64())
+		}
 	}
 	return orderErr
 }

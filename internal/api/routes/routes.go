@@ -331,6 +331,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			authenticatedOnboarding := onboarding.Group("/")
 			authenticatedOnboarding.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator))
 			{
+				authenticatedOnboarding.POST("/basic-complete", authHandlers.BasicCompleteOnboarding)
 				// Fraud detection: correlate device fingerprint across accounts at onboarding completion.
 				// Catches fraud rings using purchased KYC identities from the same device.
 				if fraudSvc := container.GetOnboardingFraudService(); fraudSvc != nil {

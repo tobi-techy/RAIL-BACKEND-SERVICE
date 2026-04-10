@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/pkg/metrics"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -197,6 +198,11 @@ func (s *Service) RunDistribution(ctx context.Context, periodStart, periodEnd, f
 
 	if err := s.repo.UpdateDistribution(ctx, dist); err != nil {
 		return fmt.Errorf("yield: update distribution: %w", err)
+	}
+
+	if metrics.Business != nil {
+		metrics.Business.YieldDistributed.Inc()
+		metrics.Business.YieldDistributionAmt.Observe(totalDistributed.InexactFloat64())
 	}
 
 	s.logger.Info("Yield distribution completed",

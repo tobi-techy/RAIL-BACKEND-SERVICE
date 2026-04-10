@@ -1,0 +1,523 @@
+{
+  "dashboard": {
+    "uid": "rail-executive-overview",
+    "title": "RAIL - Executive Overview",
+    "tags": ["rail", "business", "executive"],
+    "schemaVersion": 39,
+    "refresh": "1m",
+    "time": { "from": "now-24h", "to": "now" },
+    "timezone": "browser",
+    "editable": true,
+    "fiscalYearStartMonth": 0,
+    "graphTooltip": 1,
+    "style": "dark",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Total Users",
+        "description": "All-time registered users",
+        "type": "stat",
+        "gridPos": { "h": 5, "w": 4, "x": 0, "y": 0 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "color": { "fixedColor": "green", "mode": "fixed" },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": {
+          "colorMode": "background",
+          "graphMode": "area",
+          "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+          "textMode": "auto",
+          "justifyMode": "auto",
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "stack_users_registered_total",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Active Users",
+        "description": "Currently active users",
+        "type": "stat",
+        "gridPos": { "h": 5, "w": 4, "x": 4, "y": 0 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "color": { "fixedColor": "blue", "mode": "fixed" },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": {
+          "colorMode": "background",
+          "graphMode": "area",
+          "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+          "textMode": "auto",
+          "justifyMode": "auto",
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "stack_active_users",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Total AUM",
+        "description": "Assets under management",
+        "type": "stat",
+        "gridPos": { "h": 5, "w": 4, "x": 8, "y": 0 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "color": { "fixedColor": "purple", "mode": "fixed" },
+            "unit": "currencyUSD",
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "purple", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": {
+          "colorMode": "background",
+          "graphMode": "area",
+          "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+          "textMode": "auto",
+          "justifyMode": "auto",
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "stack_total_balance_usd",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Deposits (24h)",
+        "description": "Deposits in last 24 hours",
+        "type": "stat",
+        "gridPos": { "h": 5, "w": 4, "x": 12, "y": 0 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "color": { "fixedColor": "green", "mode": "fixed" },
+            "decimals": 0,
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": {
+          "colorMode": "background",
+          "graphMode": "area",
+          "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+          "textMode": "auto",
+          "justifyMode": "auto",
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(increase(stack_deposits_completed_total[24h]))",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Revenue (24h)",
+        "description": "Revenue earned in last 24h",
+        "type": "stat",
+        "gridPos": { "h": 5, "w": 4, "x": 16, "y": 0 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "color": { "fixedColor": "orange", "mode": "fixed" },
+            "unit": "currencyUSD",
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "orange", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": {
+          "colorMode": "background",
+          "graphMode": "area",
+          "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+          "textMode": "auto",
+          "justifyMode": "auto",
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(increase(stack_revenue_total_usd[24h]))",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Churn Rate (30d)",
+        "description": "30-day churn rate",
+        "type": "stat",
+        "gridPos": { "h": 5, "w": 4, "x": 20, "y": 0 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "color": { "mode": "thresholds" },
+            "unit": "percent",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "color": "green", "value": null },
+                { "color": "yellow", "value": 5 },
+                { "color": "red", "value": 10 }
+              ]
+            }
+          },
+          "overrides": []
+        },
+        "options": {
+          "colorMode": "background",
+          "graphMode": "area",
+          "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+          "textMode": "auto",
+          "justifyMode": "auto",
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "increase(stack_users_churned_total[30d]) / (stack_active_users > 0 or vector(1)) * 100",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 7,
+        "title": "User Growth",
+        "description": "New user registrations and KYC approvals over time",
+        "type": "timeseries",
+        "gridPos": { "h": 9, "w": 12, "x": 0, "y": 5 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "drawStyle": "bars",
+              "fillOpacity": 80,
+              "lineWidth": 1,
+              "pointSize": 5,
+              "showPoints": "never",
+              "spanNulls": false,
+              "stacking": { "group": "A", "mode": "none" },
+              "axisBorderShow": false,
+              "barAlignment": 0,
+              "gradientMode": "none",
+              "thresholdsStyle": { "mode": "off" }
+            },
+            "color": { "mode": "palette-classic" },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          },
+          "overrides": [
+            {
+              "matcher": { "id": "byName", "options": "Registrations" },
+              "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+            },
+            {
+              "matcher": { "id": "byName", "options": "KYC Approved" },
+              "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }]
+            }
+          ]
+        },
+        "options": {
+          "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+          "tooltip": { "mode": "multi", "sort": "desc" }
+        },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "increase(stack_users_registered_total[$__interval])",
+            "legendFormat": "Registrations",
+            "refId": "A"
+          },
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "increase(stack_users_kyc_approved_total[$__interval])",
+            "legendFormat": "KYC Approved",
+            "refId": "B"
+          }
+        ]
+      },
+      {
+        "id": 8,
+        "title": "Deposit & Withdrawal Volume",
+        "description": "Hourly deposit/withdrawal volume and net flow",
+        "type": "timeseries",
+        "gridPos": { "h": 9, "w": 12, "x": 12, "y": 5 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "fillOpacity": 25,
+              "gradientMode": "scheme",
+              "lineWidth": 2,
+              "pointSize": 5,
+              "showPoints": "never",
+              "spanNulls": false,
+              "stacking": { "group": "A", "mode": "none" },
+              "axisBorderShow": false,
+              "thresholdsStyle": { "mode": "off" }
+            },
+            "color": { "mode": "palette-classic" },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+          "tooltip": { "mode": "multi", "sort": "desc" }
+        },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(rate(stack_deposit_amount_usd_sum[1h]))*3600",
+            "legendFormat": "Deposits/hr",
+            "refId": "A"
+          },
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(rate(stack_withdrawal_amount_usd_sum[1h]))*3600",
+            "legendFormat": "Withdrawals/hr",
+            "refId": "B"
+          },
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "stack_net_flow_usd",
+            "legendFormat": "Net Flow",
+            "refId": "C"
+          }
+        ]
+      },
+      {
+        "id": 9,
+        "title": "Revenue by Source",
+        "description": "Revenue breakdown by source (yield spread, card interchange, FX markup)",
+        "type": "timeseries",
+        "gridPos": { "h": 9, "w": 12, "x": 0, "y": 14 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "fillOpacity": 60,
+              "gradientMode": "scheme",
+              "lineWidth": 1,
+              "pointSize": 5,
+              "showPoints": "never",
+              "spanNulls": false,
+              "stacking": { "group": "A", "mode": "normal" },
+              "axisBorderShow": false,
+              "thresholdsStyle": { "mode": "off" }
+            },
+            "color": { "mode": "palette-classic" },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+          "tooltip": { "mode": "multi", "sort": "desc" }
+        },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(rate(stack_revenue_total_usd[1h])) by (source) * 3600",
+            "legendFormat": "{{source}}",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 10,
+        "title": "Stash vs Spend Balances",
+        "description": "Total platform balances split between stash and spend",
+        "type": "timeseries",
+        "gridPos": { "h": 9, "w": 12, "x": 12, "y": 14 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "fillOpacity": 25,
+              "gradientMode": "scheme",
+              "lineWidth": 2,
+              "pointSize": 5,
+              "showPoints": "never",
+              "spanNulls": false,
+              "stacking": { "group": "A", "mode": "none" },
+              "axisBorderShow": false,
+              "thresholdsStyle": { "mode": "off" }
+            },
+            "color": { "mode": "palette-classic" },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          },
+          "overrides": [
+            {
+              "matcher": { "id": "byName", "options": "Stash (USDB)" },
+              "properties": [{ "id": "color", "value": { "fixedColor": "purple", "mode": "fixed" } }]
+            },
+            {
+              "matcher": { "id": "byName", "options": "Spend (USDC)" },
+              "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }]
+            }
+          ]
+        },
+        "options": {
+          "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+          "tooltip": { "mode": "multi", "sort": "desc" }
+        },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "stack_stash_balance_total_usd",
+            "legendFormat": "Stash (USDB)",
+            "refId": "A"
+          },
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "stack_spend_balance_total_usd",
+            "legendFormat": "Spend (USDC)",
+            "refId": "B"
+          }
+        ]
+      },
+      {
+        "id": 11,
+        "title": "Allocation Engine",
+        "description": "70/30 split execution rate",
+        "type": "timeseries",
+        "gridPos": { "h": 9, "w": 12, "x": 0, "y": 23 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "fillOpacity": 15,
+              "gradientMode": "scheme",
+              "lineWidth": 2,
+              "pointSize": 5,
+              "showPoints": "never",
+              "spanNulls": false,
+              "stacking": { "group": "A", "mode": "none" },
+              "axisBorderShow": false,
+              "thresholdsStyle": { "mode": "off" }
+            },
+            "color": { "mode": "palette-classic" },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          },
+          "overrides": [
+            {
+              "matcher": { "id": "byName", "options": "Success/min" },
+              "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+            },
+            {
+              "matcher": { "id": "byName", "options": "Failed/min" },
+              "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+            }
+          ]
+        },
+        "options": {
+          "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+          "tooltip": { "mode": "multi", "sort": "desc" }
+        },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "rate(stack_allocation_executed_total{status=\"success\"}[5m])*60",
+            "legendFormat": "Success/min",
+            "refId": "A"
+          },
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "rate(stack_allocation_executed_total{status=\"failed\"}[5m])*60",
+            "legendFormat": "Failed/min",
+            "refId": "B"
+          }
+        ]
+      },
+      {
+        "id": 12,
+        "title": "Card Spend & Round-ups",
+        "description": "Card spending volume and round-up frequency",
+        "type": "timeseries",
+        "gridPos": { "h": 9, "w": 12, "x": 12, "y": 23 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "fillOpacity": 15,
+              "gradientMode": "scheme",
+              "lineWidth": 2,
+              "pointSize": 5,
+              "showPoints": "never",
+              "spanNulls": false,
+              "stacking": { "group": "A", "mode": "none" },
+              "axisBorderShow": false,
+              "thresholdsStyle": { "mode": "off" }
+            },
+            "color": { "mode": "palette-classic" },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          },
+          "overrides": [
+            {
+              "matcher": { "id": "byName", "options": "Round-ups/hr" },
+              "properties": [
+                { "id": "custom.axisPlacement", "value": "right" },
+                { "id": "unit", "value": "short" }
+              ]
+            }
+          ]
+        },
+        "options": {
+          "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+          "tooltip": { "mode": "multi", "sort": "desc" }
+        },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(rate(stack_card_spend_amount_usd_sum[1h]))*3600",
+            "legendFormat": "Card Spend/hr",
+            "refId": "A"
+          },
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "rate(stack_roundup_total[1h])*3600",
+            "legendFormat": "Round-ups/hr",
+            "refId": "B"
+          }
+        ]
+      }
+    ]
+  }
+}

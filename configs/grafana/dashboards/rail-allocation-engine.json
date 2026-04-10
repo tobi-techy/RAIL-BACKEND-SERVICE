@@ -1,0 +1,415 @@
+{
+  "dashboard": {
+    "uid": "rail-allocation-engine",
+    "title": "RAIL - Allocation Engine",
+    "tags": ["rail", "business", "allocation"],
+    "schemaVersion": 39,
+    "refresh": "30s",
+    "time": { "from": "now-6h", "to": "now" },
+    "timezone": "browser",
+    "editable": true,
+    "fiscalYearStartMonth": 0,
+    "graphTooltip": 1,
+    "panels": [
+      {
+        "id": 1,
+        "type": "stat",
+        "title": "Allocations/min",
+        "description": "Current allocation throughput",
+        "gridPos": { "h": 5, "w": 4, "x": 0, "y": 0 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "color": { "mode": "fixed", "fixedColor": "blue" },
+            "decimals": 1,
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto" },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(rate(stack_allocation_executed_total[5m]))*60",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "type": "stat",
+        "title": "Success Rate",
+        "description": "Allocation success rate",
+        "gridPos": { "h": 5, "w": 4, "x": 4, "y": 0 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "decimals": 1,
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 95 }, { "color": "green", "value": 99 }] }
+          },
+          "overrides": []
+        },
+        "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto" },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(rate(stack_allocation_executed_total{status=\"success\"}[5m])) / sum(rate(stack_allocation_executed_total[5m])) * 100",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "type": "stat",
+        "title": "Avg Split Time",
+        "description": "Average time to execute a 70/30 split",
+        "gridPos": { "h": 5, "w": 4, "x": 8, "y": 0 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "decimals": 2,
+            "color": { "mode": "fixed", "fixedColor": "light-blue" },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "light-blue", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto" },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "rate(stack_allocation_duration_seconds_sum[5m]) / rate(stack_allocation_duration_seconds_count[5m])",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "type": "stat",
+        "title": "Stash Balance",
+        "description": "Total USDB in stash across all users",
+        "gridPos": { "h": 5, "w": 4, "x": 12, "y": 0 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "color": { "mode": "fixed", "fixedColor": "purple" },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "purple", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto" },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "stack_stash_balance_total_usd",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "type": "stat",
+        "title": "Spend Balance",
+        "description": "Total USDC in spend across all users",
+        "gridPos": { "h": 5, "w": 4, "x": 16, "y": 0 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "color": { "mode": "fixed", "fixedColor": "blue" },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto" },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "stack_spend_balance_total_usd",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "type": "stat",
+        "title": "Auto-Invest/hr",
+        "description": "Auto-invest executions per hour",
+        "gridPos": { "h": 5, "w": 4, "x": 20, "y": 0 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "decimals": 0,
+            "color": { "mode": "fixed", "fixedColor": "green" },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto" },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(rate(stack_autoinvest_executed_total[1h]))*3600",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 7,
+        "type": "timeseries",
+        "title": "Allocation Throughput",
+        "description": "70/30 split execution rate over time",
+        "gridPos": { "h": 9, "w": 12, "x": 0, "y": 5 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "custom": { "fillOpacity": 20, "lineWidth": 2, "pointSize": 5, "spanNulls": false },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          },
+          "overrides": [
+            { "matcher": { "id": "byName", "options": "Success/min" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
+            { "matcher": { "id": "byName", "options": "Failed/min" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }
+          ]
+        },
+        "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "rate(stack_allocation_executed_total{status=\"success\"}[5m])*60",
+            "legendFormat": "Success/min",
+            "refId": "A"
+          },
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "rate(stack_allocation_executed_total{status=\"failed\"}[5m])*60",
+            "legendFormat": "Failed/min",
+            "refId": "B"
+          }
+        ]
+      },
+      {
+        "id": 8,
+        "type": "timeseries",
+        "title": "Allocation Duration",
+        "description": "Split execution latency percentiles",
+        "gridPos": { "h": 9, "w": 12, "x": 12, "y": 5 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "custom": { "fillOpacity": 10, "lineWidth": 2, "pointSize": 5, "spanNulls": false },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          },
+          "overrides": [
+            { "matcher": { "id": "byName", "options": "p50" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
+            { "matcher": { "id": "byName", "options": "p95" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "yellow" } }] },
+            { "matcher": { "id": "byName", "options": "p99" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }
+          ]
+        },
+        "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "histogram_quantile(0.50, sum(rate(stack_allocation_duration_seconds_bucket[5m])) by (le))",
+            "legendFormat": "p50",
+            "refId": "A"
+          },
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "histogram_quantile(0.95, sum(rate(stack_allocation_duration_seconds_bucket[5m])) by (le))",
+            "legendFormat": "p95",
+            "refId": "B"
+          },
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "histogram_quantile(0.99, sum(rate(stack_allocation_duration_seconds_bucket[5m])) by (le))",
+            "legendFormat": "p99",
+            "refId": "C"
+          }
+        ]
+      },
+      {
+        "id": 9,
+        "type": "timeseries",
+        "title": "Spend vs Stash Flow",
+        "description": "USD flowing into spend vs stash per 5-min window",
+        "gridPos": { "h": 9, "w": 12, "x": 0, "y": 14 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "custom": { "fillOpacity": 40, "lineWidth": 2, "pointSize": 5, "spanNulls": false, "stacking": { "mode": "normal" } },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+          },
+          "overrides": [
+            { "matcher": { "id": "byName", "options": "To Spend (70%)" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }] },
+            { "matcher": { "id": "byName", "options": "To Stash (30%)" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "purple" } }] }
+          ]
+        },
+        "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(rate(stack_allocation_spend_amount_usd_sum[5m]))*300",
+            "legendFormat": "To Spend (70%)",
+            "refId": "A"
+          },
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(rate(stack_allocation_stash_amount_usd_sum[5m]))*300",
+            "legendFormat": "To Stash (30%)",
+            "refId": "B"
+          }
+        ]
+      },
+      {
+        "id": 10,
+        "type": "timeseries",
+        "title": "Platform Balances",
+        "description": "Total platform balances over time",
+        "gridPos": { "h": 9, "w": 12, "x": 12, "y": 14 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "custom": { "fillOpacity": 30, "lineWidth": 2, "pointSize": 5, "spanNulls": false },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "purple", "value": null }] }
+          },
+          "overrides": [
+            { "matcher": { "id": "byName", "options": "Stash (USDB)" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "purple" } }] },
+            { "matcher": { "id": "byName", "options": "Spend (USDC)" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }] }
+          ]
+        },
+        "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "stack_stash_balance_total_usd",
+            "legendFormat": "Stash (USDB)",
+            "refId": "A"
+          },
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "stack_spend_balance_total_usd",
+            "legendFormat": "Spend (USDC)",
+            "refId": "B"
+          }
+        ]
+      },
+      {
+        "id": 11,
+        "type": "timeseries",
+        "title": "Auto-Invest Execution",
+        "description": "Auto-invest execution rate",
+        "gridPos": { "h": 9, "w": 12, "x": 0, "y": 23 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "custom": { "fillOpacity": 20, "lineWidth": 2, "pointSize": 5, "spanNulls": false },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          },
+          "overrides": [
+            { "matcher": { "id": "byName", "options": "Success/min" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
+            { "matcher": { "id": "byName", "options": "Failed/min" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }
+          ]
+        },
+        "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(rate(stack_autoinvest_executed_total{status=\"success\"}[5m]))*60",
+            "legendFormat": "Success/min",
+            "refId": "A"
+          },
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(rate(stack_autoinvest_executed_total{status=\"failed\"}[5m]))*60",
+            "legendFormat": "Failed/min",
+            "refId": "B"
+          }
+        ]
+      },
+      {
+        "id": 12,
+        "type": "timeseries",
+        "title": "Auto-Invest Volume",
+        "description": "Hourly auto-invest deployment volume",
+        "gridPos": { "h": 9, "w": 12, "x": 12, "y": 23 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "custom": { "fillOpacity": 40, "lineWidth": 2, "pointSize": 5, "spanNulls": false },
+            "color": { "mode": "fixed", "fixedColor": "green" },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(rate(stack_autoinvest_amount_usd_sum[1h]))*3600",
+            "legendFormat": "Invested/hr",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 13,
+        "type": "timeseries",
+        "title": "Bridge API Latency",
+        "description": "Bridge API response time (p95) by endpoint",
+        "gridPos": { "h": 9, "w": 12, "x": 0, "y": 32 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "custom": { "fillOpacity": 10, "lineWidth": 2, "pointSize": 5, "spanNulls": false },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "histogram_quantile(0.95, sum(rate(stack_bridge_api_latency_seconds_bucket[5m])) by (le, endpoint))",
+            "legendFormat": "{{endpoint}} p95",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 14,
+        "type": "timeseries",
+        "title": "Bridge API Errors",
+        "description": "Bridge API error rate by endpoint",
+        "gridPos": { "h": 9, "w": 12, "x": 12, "y": 32 },
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "fieldConfig": {
+          "defaults": {
+            "custom": { "fillOpacity": 20, "lineWidth": 2, "pointSize": 5, "spanNulls": false },
+            "color": { "mode": "fixed", "fixedColor": "red" },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "sum(rate(stack_bridge_api_errors_total[5m])) by (endpoint)",
+            "legendFormat": "{{endpoint}}",
+            "refId": "A"
+          }
+        ]
+      }
+    ],
+    "templating": { "list": [] },
+    "annotations": { "list": [] },
+    "links": []
+  }
+}

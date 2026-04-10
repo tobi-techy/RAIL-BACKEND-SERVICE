@@ -1,0 +1,2 @@
+-- Cannot remove enum values in PostgreSQL; this is a no-op
+-- Users with basic_complete status would need manual migration before rollback

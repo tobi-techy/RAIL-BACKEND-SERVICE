@@ -13,6 +13,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/autoinvest"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/rail-service/rail_service/pkg/metrics"
 	"github.com/shopspring/decimal"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -399,6 +400,9 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		metadata,
 	); err != nil {
 		span.RecordError(err)
+		if metrics.Business != nil {
+			metrics.Business.AllocationExecutedTotal.WithLabelValues("failed").Inc()
+		}
 		return fmt.Errorf("failed to create allocation transfer: %w", err)
 	}
 
@@ -456,6 +460,12 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		"total", req.Amount,
 		"spending", spendingAmount,
 		"stash", stashAmount)
+
+	if metrics.Business != nil {
+		metrics.Business.AllocationExecutedTotal.WithLabelValues("success").Inc()
+		metrics.Business.AllocationSpendAmount.Observe(spendingAmount.InexactFloat64())
+		metrics.Business.AllocationStashAmount.Observe(stashAmount.InexactFloat64())
+	}
 
 	// Notify user that the split completed
 	if s.notificationService != nil {
