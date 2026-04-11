@@ -222,6 +222,10 @@
         {
           "name": "PAJ_CHAIN",
           "valueFrom": "/rail/prod/PAJ_CHAIN"
+        },
+        {
+          "name": "SECURITY_INTERNAL_API_KEY",
+          "valueFrom": "/rail/prod/INTERNAL_API_KEY"
         }
       ],
       "logConfiguration": {
