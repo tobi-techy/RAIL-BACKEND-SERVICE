@@ -1127,6 +1127,8 @@ func overrideFromEnv() {
 	viper.BindEnv("chainrails.base_url", "CHAINRAILS_BASE_URL")
 	viper.BindEnv("chainrails.destination_chain", "CHAINRAILS_DESTINATION_CHAIN")
 	viper.BindEnv("chainrails.settlement_token", "CHAINRAILS_SETTLEMENT_TOKEN")
+
+	viper.BindEnv("security.internal_api_key", "SECURITY_INTERNAL_API_KEY")
 	
 	if chainrailsAPIKey := os.Getenv("CHAINRAILS_API_KEY"); chainrailsAPIKey != "" {
 		viper.Set("chainrails.api_key", chainrailsAPIKey)
