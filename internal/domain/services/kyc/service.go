@@ -1570,10 +1570,16 @@ func fetchImageAsDataURI(imageURL string) (string, error) {
 	if imageURL == "" {
 		return "", nil
 	}
-	// SSRF guard: only allow Didit's image host.
+	// SSRF guard: only allow Didit's image hosts.
 	parsed, err := url.Parse(imageURL)
-	if err != nil || !strings.HasSuffix(parsed.Hostname(), "didit.me") {
-		return "", fmt.Errorf("fetchImageAsDataURI: untrusted host %q", parsed.Hostname())
+	if err != nil {
+		return "", fmt.Errorf("fetchImageAsDataURI: invalid URL %q", imageURL)
+	}
+	host := parsed.Hostname()
+	trusted := strings.HasSuffix(host, "didit.me") ||
+		strings.HasPrefix(host, "service-didit-") && strings.HasSuffix(host, ".s3.amazonaws.com")
+	if !trusted {
+		return "", fmt.Errorf("fetchImageAsDataURI: untrusted host %q", host)
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
