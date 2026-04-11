@@ -148,9 +148,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				c.JSON(400, gin.H{"error": err.Error()})
 				return
 			}
-			chain := req.Chain
+			chain := strings.ToUpper(req.Chain)
 			if chain == "" {
-				chain = "base"
+				chain = "BASE"
 			}
 			deposit := &entities.ChainDepositWebhook{
 				Chain:     entities.Chain(chain),
