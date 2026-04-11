@@ -455,6 +455,11 @@ func (app *Application) Start() error {
 	// Drop legacy constraints on virtual_accounts that block multi-currency VAs
 	go app.dropLegacyVirtualAccountConstraints()
 
+	// Hotfix: ensure basic_complete is in onboarding_status CHECK constraints.
+	// Migration 140 was a no-op (ALTER TYPE on a TEXT column) and 142 may not
+	// run if schema_migrations is dirty. This is idempotent — safe on every boot.
+	go app.fixOnboardingStatusConstraint()
+
 	return nil
 }
 
@@ -527,6 +532,22 @@ func (app *Application) dropLegacyVirtualAccountConstraints() {
 		}
 	}
 	app.log.Info("Legacy virtual_accounts constraints dropped")
+}
+
+// fixOnboardingStatusConstraint ensures basic_complete is allowed in the onboarding_status CHECK constraints.
+func (app *Application) fixOnboardingStatusConstraint() {
+	stmts := []string{
+		`ALTER TABLE users DROP CONSTRAINT IF EXISTS chk_onboarding_status`,
+		`ALTER TABLE users ADD CONSTRAINT chk_onboarding_status CHECK (onboarding_status IN ('started', 'basic_complete', 'kyc_pending', 'kyc_approved', 'kyc_rejected', 'wallets_pending', 'completed'))`,
+		`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_onboarding_status_check`,
+		`ALTER TABLE users ADD CONSTRAINT users_onboarding_status_check CHECK (onboarding_status IN ('started', 'basic_complete', 'kyc_pending', 'kyc_approved', 'kyc_rejected', 'wallets_pending', 'completed'))`,
+	}
+	for _, stmt := range stmts {
+		if _, err := app.container.DB.Exec(stmt); err != nil {
+			app.log.Warn("fixOnboardingStatusConstraint failed", "error", err, "stmt", stmt)
+		}
+	}
+	app.log.Info("Onboarding status constraint fixed")
 }
 
 func (app *Application) startMetricsCollection() {

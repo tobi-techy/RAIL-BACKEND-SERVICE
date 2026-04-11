@@ -55,6 +55,7 @@ func NewWithdrawalHandlers(withdrawalService WithdrawalServiceInterface, walletP
 // CryptoWithdrawalRequest represents the HTTP request for crypto withdrawal
 type CryptoWithdrawalRequest struct {
 	Amount             string `json:"amount" binding:"required"`
+	Currency           string `json:"currency,omitempty"`                       // USDC, USDT, EURC, PYUSD, USDG (defaults to USDC)
 	DestinationAddress string `json:"destination_address" binding:"required"`
 	DestinationChain   string `json:"destination_chain"` // optional, defaults to SOL
 	Category           string `json:"category,omitempty"`
@@ -79,7 +80,7 @@ type FiatWithdrawalRequest struct {
 type WithdrawalFeeRequest struct {
 	WithdrawalType string `form:"type" binding:"required,oneof=crypto fiat"`
 	Amount         string `form:"amount" binding:"required"`
-	Currency       string `form:"currency" binding:"required,oneof=USDC USD EUR NGN"`
+	Currency       string `form:"currency" binding:"required,oneof=USDC USDT EURC PYUSD USDG USD EUR NGN"`
 	SourceChain    string `form:"source_chain"`
 	DestChain      string `form:"dest_chain"`
 }
@@ -158,9 +159,20 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 		return
 	}
 
+	// Parse withdrawal currency (default to USDC)
+	withdrawalCurrency := entities.WithdrawalCurrencyUSDC
+	if req.Currency != "" {
+		withdrawalCurrency = entities.WithdrawalCurrency(strings.ToUpper(strings.TrimSpace(req.Currency)))
+		if !withdrawalCurrency.IsStablecoinCurrency() {
+			common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Unsupported crypto withdrawal currency. Supported: USDC, USDT, EURC, PYUSD, USDG")
+			return
+		}
+	}
+
 	serviceReq := &entities.InitiateCryptoWithdrawalRequest{
 		UserID:             userID,
 		Amount:             amount,
+		Currency:           withdrawalCurrency,
 		DestinationAddress: req.DestinationAddress,
 		DestinationChain:   destChain,
 		SourceChain:        string(wallet.Chain),

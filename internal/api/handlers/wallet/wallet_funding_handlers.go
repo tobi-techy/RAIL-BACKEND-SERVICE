@@ -857,7 +857,7 @@ func (h *WalletFundingHandlers) CreateDepositAddress(c *gin.Context) {
 		return
 	}
 
-	response, err := h.fundingService.CreateDepositAddress(c.Request.Context(), userUUID, req.Chain)
+	response, err := h.fundingService.CreateDepositAddress(c.Request.Context(), userUUID, req.Chain, req.Currency)
 	if err != nil {
 		h.logger.Error("Failed to create deposit address", "error", err, "user_id", userUUID, "chain", req.Chain)
 		errStr := err.Error()

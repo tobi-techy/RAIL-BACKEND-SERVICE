@@ -2,10 +2,12 @@ package investing
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	conversationsvc "github.com/rail-service/rail_service/internal/domain/services/conversation"
 	"go.uber.org/zap"
@@ -54,7 +56,10 @@ func (h *ConversationHandlers) ListConversations(c *gin.Context) {
 		return
 	}
 
-	convs, err := h.convService.ListConversations(c.Request.Context(), userID, 20, 0)
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+
+	convs, err := h.convService.ListConversations(c.Request.Context(), userID, limit, offset)
 	if err != nil {
 		h.logger.Error("list conversations failed", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list conversations"})
@@ -62,6 +67,28 @@ func (h *ConversationHandlers) ListConversations(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"data": convs})
+}
+
+// getConversationForUser loads a conversation and verifies ownership.
+// Returns the conversation or writes an error response and returns nil.
+func (h *ConversationHandlers) getConversationForUser(c *gin.Context, userID uuid.UUID) *entities.AIConversation {
+	convID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid conversation id"})
+		return nil
+	}
+
+	conv, err := h.convService.GetConversation(c.Request.Context(), convID)
+	if err != nil {
+		h.logger.Error("get conversation failed", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return nil
+	}
+	if conv == nil || conv.UserID != userID {
+		c.JSON(http.StatusNotFound, gin.H{"error": "conversation not found"})
+		return nil
+	}
+	return conv
 }
 
 // GetConversation handles GET /api/v1/ai/conversations/:id
@@ -72,24 +99,15 @@ func (h *ConversationHandlers) GetConversation(c *gin.Context) {
 		return
 	}
 
-	convID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid conversation id"})
+	conv := h.getConversationForUser(c, userID)
+	if conv == nil {
 		return
 	}
 
-	conv, err := h.convService.GetConversation(c.Request.Context(), convID)
-	if err != nil {
-		h.logger.Error("get conversation failed", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get conversation"})
-		return
-	}
-	if conv == nil || conv.UserID != userID {
-		c.JSON(http.StatusNotFound, gin.H{"error": "conversation not found"})
-		return
-	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 
-	msgs, err := h.convService.GetMessages(c.Request.Context(), convID, 50, 0)
+	msgs, err := h.convService.GetMessages(c.Request.Context(), conv.ID, limit, offset)
 	if err != nil {
 		h.logger.Error("get messages failed", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get messages"})
@@ -107,19 +125,12 @@ func (h *ConversationHandlers) DeleteConversation(c *gin.Context) {
 		return
 	}
 
-	convID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid conversation id"})
+	conv := h.getConversationForUser(c, userID)
+	if conv == nil {
 		return
 	}
 
-	conv, err := h.convService.GetConversation(c.Request.Context(), convID)
-	if err != nil || conv == nil || conv.UserID != userID {
-		c.JSON(http.StatusNotFound, gin.H{"error": "conversation not found"})
-		return
-	}
-
-	if err := h.convService.DeleteConversation(c.Request.Context(), userID, convID); err != nil {
+	if err := h.convService.DeleteConversation(c.Request.Context(), userID, conv.ID); err != nil {
 		h.logger.Error("delete conversation failed", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete conversation"})
 		return
@@ -136,9 +147,8 @@ func (h *ConversationHandlers) ChatInConversation(c *gin.Context) {
 		return
 	}
 
-	convID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid conversation id"})
+	conv := h.getConversationForUser(c, userID)
+	if conv == nil {
 		return
 	}
 
@@ -150,9 +160,8 @@ func (h *ConversationHandlers) ChatInConversation(c *gin.Context) {
 		return
 	}
 
-	conv, err := h.convService.GetConversation(c.Request.Context(), convID)
-	if err != nil || conv == nil || conv.UserID != userID {
-		c.JSON(http.StatusNotFound, gin.H{"error": "conversation not found"})
+	if len(req.Message) > entities.MaxChatMessageLength {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "message too long", "max_length": entities.MaxChatMessageLength})
 		return
 	}
 
@@ -164,9 +173,11 @@ func (h *ConversationHandlers) ChatInConversation(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"content":     resp.Content,
-		"tool_calls":  resp.ToolCalls,
-		"tokens_used": resp.TokensUsed,
-		"provider":    resp.Provider,
+		"data": gin.H{
+			"content":     resp.Content,
+			"tool_calls":  resp.ToolCalls,
+			"tokens_used": resp.TokensUsed,
+			"provider":    resp.Provider,
+		},
 	})
 }

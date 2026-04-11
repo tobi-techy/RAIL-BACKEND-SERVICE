@@ -33,7 +33,24 @@ type Stablecoin string
 const (
 	StablecoinUSDC Stablecoin = "USDC"
 	StablecoinUSDT Stablecoin = "USDT"
+	StablecoinEURC Stablecoin = "EURC"
+	StablecoinPYUSD Stablecoin = "PYUSD"
+	StablecoinUSDG Stablecoin = "USDG"
 )
+
+// ValidStablecoins contains all supported stablecoins
+var ValidStablecoins = map[Stablecoin]bool{
+	StablecoinUSDC:  true,
+	StablecoinUSDT:  true,
+	StablecoinEURC:  true,
+	StablecoinPYUSD: true,
+	StablecoinUSDG:  true,
+}
+
+// IsValid checks if the stablecoin is supported
+func (s Stablecoin) IsValid() bool {
+	return ValidStablecoins[s]
+}
 
 // OrderSide represents buy/sell direction
 type OrderSide string
@@ -252,14 +269,16 @@ type AISummary struct {
 
 // DepositAddressRequest represents request for deposit address
 type DepositAddressRequest struct {
-	Chain Chain `json:"chain" validate:"required"`
+	Chain    Chain      `json:"chain" validate:"required"`
+	Currency Stablecoin `json:"currency,omitempty"` // defaults to USDC
 }
 
 // DepositAddressResponse represents deposit address response
 type DepositAddressResponse struct {
-	Chain   Chain   `json:"chain"`
-	Address string  `json:"address"`
-	QRCode  *string `json:"qrCode,omitempty"` // Optional QR image URL
+	Chain    Chain      `json:"chain"`
+	Address  string     `json:"address"`
+	Currency Stablecoin `json:"currency"`
+	QRCode   *string    `json:"qrCode,omitempty"` // Optional QR image URL
 }
 
 // FundingConfirmation represents a funding confirmation

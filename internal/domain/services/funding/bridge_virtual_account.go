@@ -102,10 +102,13 @@ func (s *BridgeVirtualAccountService) ProvisionVirtualAccounts(ctx context.Conte
 	// Prefer mainnet Solana, fall back to devnet, then any EVM chain.
 	walletChainsToTry := []entities.WalletChain{
 		entities.WalletChainSolana,
+		entities.WalletChainEthereum,
 		entities.WalletChainPolygon,
 		entities.WalletChainBase,
 		entities.WalletChainAvalanche,
 		entities.WalletChainCelo,
+		entities.WalletChainArbitrum,
+		entities.WalletChainOptimism,
 	}
 
 	var wallet *entities.ManagedWallet

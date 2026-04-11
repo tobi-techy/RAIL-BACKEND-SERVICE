@@ -34,6 +34,8 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/kyc"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/internal/domain/services/limits"
+	usagesvc "github.com/rail-service/rail_service/internal/domain/services/usage"
+	knowledgesvc "github.com/rail-service/rail_service/internal/domain/services/knowledge"
 	marketservice "github.com/rail-service/rail_service/internal/domain/services/market"
 	newsservice "github.com/rail-service/rail_service/internal/domain/services/news"
 	"github.com/rail-service/rail_service/internal/domain/services/onboarding"
@@ -55,6 +57,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/embeddings"
 	pajadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/paj"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/reflect"
@@ -179,13 +182,17 @@ func (a *BridgeDepositAdapter) ListWallets(ctx context.Context, customerID strin
 	}
 	out := make([]funding.BridgeWalletInfo, len(resp.Data))
 	for i, w := range resp.Data {
-		out[i] = funding.BridgeWalletInfo{ID: w.ID, Chain: string(w.Chain), Address: w.Address}
+		out[i] = funding.BridgeWalletInfo{ID: w.ID, Chain: string(w.Chain), Currency: string(w.Currency), Address: w.Address}
 	}
 	return out, nil
 }
 
-func (a *BridgeDepositAdapter) CreateWallet(ctx context.Context, customerID string, chain string) (string, string, error) {
-	w, err := a.client.CreateWallet(ctx, customerID, &bridge.CreateWalletRequest{Chain: bridge.PaymentRail(chain), Currency: bridge.CurrencyUSDC})
+func (a *BridgeDepositAdapter) CreateWallet(ctx context.Context, customerID string, chain string, currency string) (string, string, error) {
+	cur := bridge.CurrencyUSDC
+	if currency != "" {
+		cur = bridge.StablecoinToBridgeCurrency(currency)
+	}
+	w, err := a.client.CreateWallet(ctx, customerID, &bridge.CreateWalletRequest{Chain: bridge.PaymentRail(chain), Currency: cur})
 	if err != nil {
 		return "", "", err
 	}
@@ -977,6 +984,11 @@ type Container struct {
 	ActivityDataProvider  *aiservice.ActivityDataProviderImpl
 	ConversationRepo      *repositories.ConversationRepository
 	ConversationService   *conversationsvc.Service
+	UsageRepo             *repositories.AIUsageRepository
+	UsageService          *usagesvc.Service
+	EmbeddingsClient      *embeddings.Client
+	KnowledgeRepo         *repositories.KnowledgeRepository
+	KnowledgeService      *knowledgesvc.Service
 
 	// Additional Repositories
 	OnboardingJobRepo *repositories.OnboardingJobRepository
@@ -2326,6 +2338,8 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 			switch normalizedKey {
 			case "SOLANA", "SOL":
 				chain = entities.WalletChainSolana
+			case "ETHEREUM", "ETH":
+				chain = entities.WalletChainEthereum
 			case "POLYGON", "MATIC":
 				chain = entities.WalletChainPolygon
 			case "CELO":
@@ -2334,6 +2348,10 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 				chain = entities.WalletChainBase
 			case "AVALANCHE", "AVAX":
 				chain = entities.WalletChainAvalanche
+			case "ARBITRUM", "ARB":
+				chain = entities.WalletChainArbitrum
+			case "OPTIMISM", "OP":
+				chain = entities.WalletChainOptimism
 			default:
 				logger.Warn("Ignoring unsupported wallet chain from configuration", zap.String("chain", upper))
 				continue
@@ -2462,6 +2480,19 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	c.ConversationService = conversationsvc.NewService(c.ConversationRepo, primary, c.ZapLog)
 	c.AIOrchestrator.SetConversations(c.ConversationService)
 
+	// Initialize usage tracking
+	c.UsageRepo = repositories.NewAIUsageRepository(c.DB, c.ZapLog)
+	c.UsageService = usagesvc.NewService(c.UsageRepo, c.ZapLog)
+	c.AIOrchestrator.SetUsageTracker(c.UsageService)
+
+	// Initialize knowledge base (RAG)
+	if c.Config.AI.OpenAI.APIKey != "" {
+		c.EmbeddingsClient = embeddings.NewClient(c.Config.AI.OpenAI.APIKey, c.ZapLog)
+		c.KnowledgeRepo = repositories.NewKnowledgeRepository(c.DB, c.ZapLog)
+		c.KnowledgeService = knowledgesvc.NewService(c.KnowledgeRepo, c.EmbeddingsClient, c.RedisClient, c.ZapLog)
+		c.AIOrchestrator.SetKnowledge(c.KnowledgeService)
+	}
+
 	c.ZapLog.Info("AI Financial Manager services initialized",
 		zap.String("primary_provider", primary.Name()),
 		zap.Int("fallback_count", len(fallbacks)),
@@ -2541,6 +2572,16 @@ func (c *Container) GetAIRecommender() *aiservice.Recommender {
 // GetConversationService returns the conversation service
 func (c *Container) GetConversationService() *conversationsvc.Service {
 	return c.ConversationService
+}
+
+// GetUsageService returns the usage service
+func (c *Container) GetUsageService() *usagesvc.Service {
+	return c.UsageService
+}
+
+// GetKnowledgeService returns the knowledge service
+func (c *Container) GetKnowledgeService() *knowledgesvc.Service {
+	return c.KnowledgeService
 }
 
 // GetNewsService returns the news service

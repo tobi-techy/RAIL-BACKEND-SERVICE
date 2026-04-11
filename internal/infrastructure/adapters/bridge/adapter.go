@@ -53,9 +53,13 @@ func (a *Adapter) CreateCustomerWithWallet(ctx context.Context, req *CreateCusto
 	}
 
 	// Create wallet for the customer
+	currency := req.Currency
+	if currency == "" {
+		currency = CurrencyUSDC
+	}
 	walletReq := &CreateWalletRequest{
 		Chain:      req.Chain,
-		Currency:   CurrencyUSDC,
+		Currency:   currency,
 		WalletType: WalletTypeUser,
 	}
 
@@ -359,6 +363,8 @@ func mapBridgeCustomerStatusToOnboardingStatus(status CustomerStatus) entities.O
 
 func mapBridgePaymentRailToWalletChain(rail PaymentRail) entities.WalletChain {
 	switch rail {
+	case PaymentRailEthereum:
+		return entities.WalletChainEthereum
 	case PaymentRailPolygon:
 		return entities.WalletChainPolygon
 	case PaymentRailCelo:
@@ -367,10 +373,14 @@ func mapBridgePaymentRailToWalletChain(rail PaymentRail) entities.WalletChain {
 		return entities.WalletChainBase
 	case PaymentRailAvalanche:
 		return entities.WalletChainAvalanche
+	case PaymentRailArbitrum:
+		return entities.WalletChainArbitrum
+	case PaymentRailOptimism:
+		return entities.WalletChainOptimism
 	case PaymentRailSolana:
 		return entities.WalletChainSolana
 	default:
-		return entities.WalletChainPolygon // Default to Polygon
+		return entities.WalletChainEthereum
 	}
 }
 
@@ -406,6 +416,7 @@ type CreateCustomerWithWalletRequest struct {
 	Email     string        `json:"email"`
 	Phone     string        `json:"phone"`
 	Chain     PaymentRail   `json:"chain"`
+	Currency  Currency      `json:"currency,omitempty"` // defaults to USDC if empty
 }
 
 type CreateCustomerWithWalletResponse struct {

@@ -804,6 +804,12 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						convGroup.POST("/:id/chat", convHandlers.ChatInConversation)
 					}
 				}
+
+				// Usage tracking endpoint
+				if container.GetUsageService() != nil {
+					usageHandlers := handlers.NewUsageHandlers(container.GetUsageService(), container.ZapLog)
+					aiGroup.GET("/usage", usageHandlers.GetUsage)
+				}
 			}
 
 			// News endpoints (AI Financial Manager)
@@ -868,6 +874,12 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// KYC admin routes
 			admin.POST("/kyc/resync-bridge", kycHTTPHandlers.ResyncBridge)
 			admin.POST("/kyc/repair-bridge-govid", kycHTTPHandlers.RepairBridgeGovID)
+
+			// Knowledge base admin routes
+			if container.GetKnowledgeService() != nil {
+				knowledgeHandlers := handlers.NewKnowledgeHandlers(container.GetKnowledgeService(), container.ZapLog)
+				admin.POST("/knowledge/ingest", knowledgeHandlers.Ingest)
+			}
 
 			// Security admin routes
 			adminMFAHandlers := handlers.NewMFAHandlers(

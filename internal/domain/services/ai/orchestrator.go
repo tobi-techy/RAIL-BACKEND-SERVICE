@@ -82,6 +82,12 @@ type ConversationPersister interface {
 	RecordExchange(ctx context.Context, convID uuid.UUID, userMsg, assistantMsg string, tokens int, cost decimal.Decimal, model string) error
 }
 
+// UsageTracker records AI usage for cost tracking and ceiling enforcement.
+type UsageTracker interface {
+	TrackInteraction(ctx context.Context, userID uuid.UUID, model string, tokens int) error
+	IsOverCostCeiling(ctx context.Context, userID uuid.UUID) (bool, error)
+}
+
 // Orchestrator handles AI interactions with tool calling
 type Orchestrator struct {
 	aiProvider        ai.AIProvider
@@ -89,6 +95,8 @@ type Orchestrator struct {
 	activityProvider  ActivityDataProvider
 	newsProvider      NewsDataProvider
 	conversations     ConversationPersister
+	usage             UsageTracker
+	knowledge         KnowledgeSearcher
 	logger            *zap.Logger
 }
 
@@ -123,7 +131,7 @@ Behavior Rules:
 
 // GetTools returns available tools for the AI
 func (o *Orchestrator) GetTools() []ai.Tool {
-	return []ai.Tool{
+	tools := []ai.Tool{
 		{
 			Name:        ToolGetPortfolioStats,
 			Description: "Get current portfolio statistics including total value and returns",
@@ -171,6 +179,10 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 			Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
 		},
 	}
+	if o.knowledge != nil {
+		tools = append(tools, KnowledgeTool())
+	}
+	return tools
 }
 
 // Chat handles a chat message with tool calling
@@ -293,6 +305,9 @@ func (o *Orchestrator) executeTool(ctx context.Context, userID uuid.UUID, tc ai.
 			"current_streak": streak.CurrentStreak,
 			"longest_streak": streak.LongestStreak,
 		}, nil
+
+	case ToolSearchKnowledge:
+		return o.executeKnowledgeSearch(ctx, tc.Arguments)
 
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", tc.Name)

@@ -91,12 +91,31 @@ const (
 	CurrencyDAI   Currency = "dai"
 	CurrencyPYUSD Currency = "pyusd"
 	CurrencyEURC  Currency = "eurc"
+	CurrencyUSDG  Currency = "usdg"
 )
 
 // Card funding strategies
 const (
 	CardFundingStrategyTopUp = "top_up"
 )
+
+// StablecoinToBridgeCurrency maps a domain Stablecoin to a Bridge Currency.
+func StablecoinToBridgeCurrency(token string) Currency {
+	switch token {
+	case "USDC":
+		return CurrencyUSDC
+	case "USDT":
+		return CurrencyUSDT
+	case "EURC":
+		return CurrencyEURC
+	case "PYUSD":
+		return CurrencyPYUSD
+	case "USDG":
+		return CurrencyUSDG
+	default:
+		return CurrencyUSDC
+	}
+}
 
 // Address represents a physical address
 type Address struct {

@@ -351,7 +351,7 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 		ID:                 uuid.New(),
 		UserID:             req.UserID,
 		WithdrawalType:     entities.WithdrawalTypeCrypto,
-		Currency:           entities.WithdrawalCurrencyUSDC,
+		Currency:           req.Currency,
 		Amount:             req.Amount,
 		SourceAccount:      req.SourceAccount,
 		BridgeWalletID:     &req.BridgeWalletID,
@@ -359,7 +359,7 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 		DestinationChain:   req.DestinationChain,
 		DestinationAddress: &req.DestinationAddress,
 		FeeAmount:          fee,
-		FeeCurrency:        entities.WithdrawalCurrencyUSDC,
+		FeeCurrency:        req.Currency,
 		Category:           categoryPtr,
 		Narration:          narrationPtr,
 		Status:             entities.WithdrawalStatusInitiated,
@@ -1177,12 +1177,12 @@ func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawa
 		Amount:     withdrawal.Amount.StringFixed(2),
 		Source: bridgepkg.TransferSource{
 			PaymentRail:    bridgepkg.PaymentRail("bridge_wallet"),
-			Currency:       bridgepkg.CurrencyUSDC,
+			Currency:       bridgepkg.StablecoinToBridgeCurrency(string(withdrawal.Currency)),
 			BridgeWalletID: *walletID,
 		},
 		Destination: bridgepkg.TransferDestination{
 			PaymentRail: mapDestChainToPaymentRail(destinationChain),
-			Currency:    bridgepkg.CurrencyUSDC,
+			Currency:    bridgepkg.StablecoinToBridgeCurrency(string(withdrawal.Currency)),
 			ToAddress:   destinationAddress,
 		},
 	})
@@ -1212,6 +1212,11 @@ func (s *WithdrawalService) executeChainRailsTransfer(ctx context.Context, withd
 	}
 	if s.bridgeCryptoAdapter == nil {
 		return nil, fmt.Errorf("bridge crypto adapter not configured")
+	}
+
+	// ChainRails only supports USDC bridging — reject other currencies explicitly.
+	if withdrawal.Currency != entities.WithdrawalCurrencyUSDC {
+		return nil, fmt.Errorf("ChainRails cross-chain transfers only support USDC, got %s", withdrawal.Currency)
 	}
 
 	walletID := withdrawal.BridgeWalletID

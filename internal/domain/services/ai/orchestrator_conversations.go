@@ -15,9 +15,14 @@ func (o *Orchestrator) SetConversations(c ConversationPersister) {
 	o.conversations = c
 }
 
+// SetUsageTracker sets the usage tracking layer (optional).
+func (o *Orchestrator) SetUsageTracker(u UsageTracker) {
+	o.usage = u
+}
+
 // ChatWithConversation handles a chat message using a persisted conversation
 // for context. It loads summary + recent messages, calls the LLM, and persists
-// the exchange.
+// the exchange. Tracks usage for cost monitoring.
 func (o *Orchestrator) ChatWithConversation(ctx context.Context, userID uuid.UUID, conv *entities.AIConversation, message string) (*ChatResponse, error) {
 	if o.conversations == nil {
 		return o.Chat(ctx, userID, message, nil)
@@ -34,8 +39,7 @@ func (o *Orchestrator) ChatWithConversation(ctx context.Context, userID uuid.UUI
 		return nil, err
 	}
 
-	// Rough cost estimate — will be replaced by proper model-aware pricing in Task 2
-	cost := decimal.NewFromFloat(float64(resp.TokensUsed) * 0.00001)
+	cost := entities.EstimateCost(resp.Provider, resp.TokensUsed)
 
 	go func() {
 		persistCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -51,7 +55,35 @@ func (o *Orchestrator) ChatWithConversation(ctx context.Context, userID uuid.UUI
 				zap.String("conversation_id", conv.ID.String()),
 			)
 		}
+
+		if o.usage != nil {
+			if trackErr := o.usage.TrackInteraction(persistCtx, userID, resp.Provider, resp.TokensUsed); trackErr != nil {
+				o.logger.Error("failed to track usage", zap.Error(trackErr))
+			}
+		}
 	}()
 
 	return resp, nil
+}
+
+// IsUserOverCostCeiling checks if a user has exceeded their monthly cost ceiling.
+// Returns false if no usage tracker is configured.
+func (o *Orchestrator) IsUserOverCostCeiling(ctx context.Context, userID uuid.UUID) bool {
+	if o.usage == nil {
+		return false
+	}
+	over, err := o.usage.IsOverCostCeiling(ctx, userID)
+	if err != nil {
+		o.logger.Warn("failed to check cost ceiling", zap.Error(err))
+		return false
+	}
+	return over
+}
+
+// CostCeilingResponse is returned when a user is over the cost ceiling.
+// The handler can use this to inform the client about degraded mode.
+type CostCeilingResponse struct {
+	OverCeiling bool            `json:"over_ceiling"`
+	CurrentCost decimal.Decimal `json:"current_cost_usd"`
+	Ceiling     decimal.Decimal `json:"ceiling_usd"`
 }

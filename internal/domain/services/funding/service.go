@@ -129,16 +129,17 @@ type ManagedWalletRepository interface {
 type BridgeDepositClient interface {
 	IsSandbox() bool
 	ListWallets(ctx context.Context, customerID string) ([]BridgeWalletInfo, error)
-	CreateWallet(ctx context.Context, customerID string, chain string) (id string, address string, err error)
+	CreateWallet(ctx context.Context, customerID string, chain string, currency string) (id string, address string, err error)
 	ListLiquidationAddresses(ctx context.Context, customerID string) ([]BridgeLiquidationAddr, error)
 	CreateLiquidationAddress(ctx context.Context, customerID string, sourceChain string, destinationChain string, destinationAddress string) (id string, address string, err error)
 }
 
 // BridgeWalletInfo is a minimal wallet summary from Bridge
 type BridgeWalletInfo struct {
-	ID      string
-	Chain   string
-	Address string
+	ID       string
+	Chain    string
+	Currency string
+	Address  string
 }
 
 // BridgeLiquidationAddr is a minimal liquidation address summary from Bridge
@@ -275,8 +276,16 @@ func (s *Service) SetAllocationService(as AllocationService) {
 	s.allocationService = as
 }
 
-// CreateDepositAddress generates or retrieves deposit address for a chain
-func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, chain entities.Chain) (*entities.DepositAddressResponse, error) {
+// CreateDepositAddress generates or retrieves deposit address for a chain and currency
+func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, chain entities.Chain, currency entities.Stablecoin) (*entities.DepositAddressResponse, error) {
+	// Default to USDC if no currency specified
+	if currency == "" {
+		currency = entities.StablecoinUSDC
+	}
+	if !currency.IsValid() {
+		return nil, fmt.Errorf("unsupported currency: %s", currency)
+	}
+
 	// Check rate limit for new address creation
 	if s.validationService != nil {
 		if err := s.validationService.CheckDepositRateLimit(ctx, userID); err != nil {
@@ -285,27 +294,34 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 	}
 
 	// Check if user already has a wallet for this chain in the legacy wallets table.
-	wallet, err := s.walletRepo.GetByUserAndChain(ctx, userID, chain)
-	if err == nil && wallet != nil {
-		s.logger.Info("Using existing wallet address", "user_id", userID, "chain", chain, "address", wallet.Address)
-		return &entities.DepositAddressResponse{
-			Chain:   chain,
-			Address: wallet.Address,
-		}, nil
+	// Legacy wallets are USDC-only, so only match for USDC.
+	if currency == entities.StablecoinUSDC {
+		wallet, err := s.walletRepo.GetByUserAndChain(ctx, userID, chain)
+		if err == nil && wallet != nil {
+			s.logger.Info("Using existing wallet address", "user_id", userID, "chain", chain, "address", wallet.Address)
+			return &entities.DepositAddressResponse{
+				Chain:    chain,
+				Address:  wallet.Address,
+				Currency: currency,
+			}, nil
+		}
 	}
 
 	// Check managed_wallets (custody wallets + liquidation addresses).
-	if s.managedWalletRepo != nil {
+	// managed_wallets has no currency column — all existing rows are USDC wallets.
+	// Only use this shortcut for USDC to avoid returning a USDC wallet for a USDT request.
+	if currency == entities.StablecoinUSDC && s.managedWalletRepo != nil {
 		managedWallets, mErr := s.managedWalletRepo.GetByUserID(ctx, userID)
 		if mErr == nil {
 			for _, mw := range managedWallets {
 				if mw.AccountType == entities.AccountTypeBridgeWallet && matchesManagedWalletChain(mw.Chain, chain) {
 					s.logger.Info("Using existing managed wallet address",
-						"user_id", userID, "chain", chain,
+						"user_id", userID, "chain", chain, "currency", currency,
 						"managed_chain", mw.Chain, "address", mw.Address)
 					return &entities.DepositAddressResponse{
-						Chain:   chain,
-						Address: mw.Address,
+						Chain:    chain,
+						Address:  mw.Address,
+						Currency: currency,
 					}, nil
 				}
 			}
@@ -325,25 +341,25 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 	walletChain := entities.WalletChain(chain)
 	bridgeChain := walletChain.ToBridgeWalletChain()
 
-	// Find existing custody wallet for this chain.
-	// EVM chains (Polygon, Celo) map to "ethereum" on Bridge, so they share a wallet.
+	// Find existing custody wallet for this chain and currency.
 	wallets, err := s.bridgeWallets.ListWallets(ctx, customerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list Bridge wallets: %w", err)
 	}
+	bridgeCurrency := strings.ToLower(string(currency))
 	var walletAddress string
 	var walletID string
 	for _, w := range wallets {
-		if w.Chain == bridgeChain {
+		if w.Chain == bridgeChain && w.Currency == bridgeCurrency {
 			walletID = w.ID
 			walletAddress = w.Address
 			break
 		}
 	}
 
-	// Create custody wallet if none exists for this chain
+	// Create custody wallet if none exists for this chain + currency
 	if walletAddress == "" {
-		id, addr, err := s.bridgeWallets.CreateWallet(ctx, customerID, bridgeChain)
+		id, addr, err := s.bridgeWallets.CreateWallet(ctx, customerID, bridgeChain, string(currency))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create Bridge custody wallet: %w", err)
 		}
@@ -370,11 +386,12 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 		}
 	}
 
-	s.logger.Info("Deposit address ready", "user_id", userID, "chain", chain, "address", walletAddress)
+	s.logger.Info("Deposit address ready", "user_id", userID, "chain", chain, "currency", currency, "address", walletAddress)
 
 	return &entities.DepositAddressResponse{
-		Chain:   chain,
-		Address: walletAddress,
+		Chain:    chain,
+		Address:  walletAddress,
+		Currency: currency,
 	}, nil
 }
 
@@ -382,16 +399,22 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 // EVM chains (Polygon, Celo, Base, Avalanche) share the same Ethereum address on Bridge, so they cross-match.
 func matchesManagedWalletChain(walletChain entities.WalletChain, depositChain entities.Chain) bool {
 	evmWallets := map[entities.WalletChain]bool{
+		entities.WalletChainEthereum:  true,
 		entities.WalletChainPolygon:   true,
 		entities.WalletChainCelo:      true,
 		entities.WalletChainBase:      true,
 		entities.WalletChainAvalanche: true,
+		entities.WalletChainArbitrum:  true,
+		entities.WalletChainOptimism:  true,
 	}
 	evmDeposits := map[entities.Chain]bool{
+		entities.ChainETH:       true,
 		entities.ChainMATIC:     true,
 		entities.ChainCELO:      true,
 		entities.ChainBase:      true,
 		entities.ChainAvalanche: true,
+		entities.ChainArbitrum:  true,
+		entities.ChainOptimism:  true,
 	}
 	// EVM chains share the same Bridge wallet address
 	if evmWallets[walletChain] && evmDeposits[depositChain] {

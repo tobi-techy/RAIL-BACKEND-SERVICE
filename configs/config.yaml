@@ -220,8 +220,11 @@ bridge:
   rail_usdb_wallet_id: "${BRIDGE_RAIL_USDB_WALLET_ID}"
   supported_chains:
     - "solana"
+    - "ethereum"
     - "polygon"
     - "AVAX"
+    - "arbitrum"
+    - "optimism"
 
   transaction_limits:
   deposit:

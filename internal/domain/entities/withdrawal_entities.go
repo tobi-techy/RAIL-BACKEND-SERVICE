@@ -27,18 +27,26 @@ var ValidWithdrawalTypes = map[WithdrawalType]bool{
 type WithdrawalCurrency string
 
 const (
-	WithdrawalCurrencyUSDC WithdrawalCurrency = "USDC"
-	WithdrawalCurrencyUSD  WithdrawalCurrency = "USD"
-	WithdrawalCurrencyEUR  WithdrawalCurrency = "EUR"
-	WithdrawalCurrencyNGN  WithdrawalCurrency = "NGN"
+	WithdrawalCurrencyUSDC  WithdrawalCurrency = "USDC"
+	WithdrawalCurrencyUSDT  WithdrawalCurrency = "USDT"
+	WithdrawalCurrencyEURC  WithdrawalCurrency = "EURC"
+	WithdrawalCurrencyPYUSD WithdrawalCurrency = "PYUSD"
+	WithdrawalCurrencyUSDG  WithdrawalCurrency = "USDG"
+	WithdrawalCurrencyUSD   WithdrawalCurrency = "USD"
+	WithdrawalCurrencyEUR   WithdrawalCurrency = "EUR"
+	WithdrawalCurrencyNGN   WithdrawalCurrency = "NGN"
 )
 
 // ValidWithdrawalCurrencies contains all valid withdrawal currencies
 var ValidWithdrawalCurrencies = map[WithdrawalCurrency]bool{
-	WithdrawalCurrencyUSDC: true,
-	WithdrawalCurrencyUSD:  true,
-	WithdrawalCurrencyEUR:  true,
-	WithdrawalCurrencyNGN:  true,
+	WithdrawalCurrencyUSDC:  true,
+	WithdrawalCurrencyUSDT:  true,
+	WithdrawalCurrencyEURC:  true,
+	WithdrawalCurrencyPYUSD: true,
+	WithdrawalCurrencyUSDG:  true,
+	WithdrawalCurrencyUSD:   true,
+	WithdrawalCurrencyEUR:   true,
+	WithdrawalCurrencyNGN:   true,
 }
 
 // WithdrawalSourceAccount represents the source account for withdrawal
@@ -227,6 +235,7 @@ func (w *Withdrawal) IsFiat() bool {
 type InitiateCryptoWithdrawalRequest struct {
 	UserID             uuid.UUID               `json:"user_id"`
 	Amount             decimal.Decimal         `json:"amount"`
+	Currency           WithdrawalCurrency      `json:"currency"`            // USDC, USDT, EURC, PYUSD, USDG
 	DestinationAddress string                  `json:"destination_address"`
 	DestinationChain   string                  `json:"destination_chain"`
 	SourceChain        string                  `json:"source_chain"`
@@ -260,6 +269,9 @@ func (r *InitiateCryptoWithdrawalRequest) Validate() error {
 	}
 	if r.BridgeWalletID == "" {
 		return fmt.Errorf("bridge wallet ID is required")
+	}
+	if r.Currency == "" || !r.Currency.IsStablecoinCurrency() {
+		return fmt.Errorf("invalid crypto withdrawal currency: %s", r.Currency)
 	}
 	return nil
 }
@@ -376,4 +388,47 @@ type WithdrawalFee struct {
 		NetworkFee decimal.Decimal `json:"network_fee"`
 		ServiceFee decimal.Decimal `json:"service_fee"`
 	} `json:"breakdown"`
+}
+
+// StablecoinToWithdrawalCurrency maps a Stablecoin to its WithdrawalCurrency equivalent.
+func StablecoinToWithdrawalCurrency(s Stablecoin) WithdrawalCurrency {
+	switch s {
+	case StablecoinUSDC:
+		return WithdrawalCurrencyUSDC
+	case StablecoinUSDT:
+		return WithdrawalCurrencyUSDT
+	case StablecoinEURC:
+		return WithdrawalCurrencyEURC
+	case StablecoinPYUSD:
+		return WithdrawalCurrencyPYUSD
+	case StablecoinUSDG:
+		return WithdrawalCurrencyUSDG
+	default:
+		return WithdrawalCurrencyUSDC
+	}
+}
+
+// WithdrawalCurrencyToStablecoin maps a WithdrawalCurrency to its Stablecoin equivalent.
+// Returns empty string for fiat currencies.
+func WithdrawalCurrencyToStablecoin(c WithdrawalCurrency) Stablecoin {
+	switch c {
+	case WithdrawalCurrencyUSDC:
+		return StablecoinUSDC
+	case WithdrawalCurrencyUSDT:
+		return StablecoinUSDT
+	case WithdrawalCurrencyEURC:
+		return StablecoinEURC
+	case WithdrawalCurrencyPYUSD:
+		return StablecoinPYUSD
+	case WithdrawalCurrencyUSDG:
+		return StablecoinUSDG
+	default:
+		return ""
+	}
+}
+
+// IsStablecoinCurrency returns true if the withdrawal currency is a stablecoin (not fiat).
+func (c WithdrawalCurrency) IsStablecoinCurrency() bool {
+	return c == WithdrawalCurrencyUSDC || c == WithdrawalCurrencyUSDT ||
+		c == WithdrawalCurrencyEURC || c == WithdrawalCurrencyPYUSD || c == WithdrawalCurrencyUSDG
 }

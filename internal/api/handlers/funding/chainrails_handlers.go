@@ -111,7 +111,7 @@ func (h *ChainRailsHandlers) CreateSession(c *gin.Context) {
 
 	// Look up user's Bridge custody wallet address as the ChainRails recipient.
 	// ChainRails will bridge funds to this address on the destination chain.
-	depositAddr, err := h.fundingService.CreateDepositAddress(c.Request.Context(), userID, entities.ChainBase)
+	depositAddr, err := h.fundingService.CreateDepositAddress(c.Request.Context(), userID, entities.ChainBase, entities.StablecoinUSDC)
 	if err != nil {
 		chainrailsSessionsTotal.WithLabelValues("wallet_error").Inc()
 		h.logger.Error("Failed to get user deposit address", "user_id", userID, "error", err)
@@ -344,10 +344,18 @@ func (h *ChainRailsHandlers) handleWithdrawalIntentRefunded(c *gin.Context, even
 // mapToken converts a token contract address or symbol to Rail's Stablecoin type.
 func mapToken(tokenOut string) entities.Stablecoin {
 	lower := strings.ToLower(tokenOut)
-	if strings.Contains(lower, "usdt") {
+	switch {
+	case strings.Contains(lower, "usdt"):
 		return entities.StablecoinUSDT
+	case strings.Contains(lower, "eurc"):
+		return entities.StablecoinEURC
+	case strings.Contains(lower, "pyusd"):
+		return entities.StablecoinPYUSD
+	case strings.Contains(lower, "usdg"):
+		return entities.StablecoinUSDG
+	default:
+		return entities.StablecoinUSDC // default — Rail settles in USDC
 	}
-	return entities.StablecoinUSDC // default — Rail settles in USDC
 }
 
 // mapChainRailsChain converts ChainRails chain names to Rail's Chain type.
