@@ -165,10 +165,28 @@ func (h *ConversationHandlers) ChatInConversation(c *gin.Context) {
 		return
 	}
 
+	// Cost ceiling check
+	if h.orchestrator.IsUserOverCostCeiling(c.Request.Context(), userID) {
+		c.JSON(http.StatusOK, gin.H{
+			"data": gin.H{
+				"content":      "You've been chatting a lot this month! Your AI assistant will be back at full power next month 💡",
+				"over_ceiling": true,
+				"tokens_used":  0,
+			},
+		})
+		return
+	}
+
 	resp, err := h.orchestrator.ChatWithConversation(c.Request.Context(), userID, conv, req.Message)
 	if err != nil {
 		h.logger.Error("chat failed", zap.Error(err), zap.String("user_id", userID.String()))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "chat failed"})
+		c.JSON(http.StatusOK, gin.H{
+			"data": gin.H{
+				"content":     "I'm having a moment — try again in a few seconds 🔄",
+				"tokens_used": 0,
+				"fallback":    true,
+			},
+		})
 		return
 	}
 

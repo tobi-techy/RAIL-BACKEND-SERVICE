@@ -36,6 +36,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/limits"
 	usagesvc "github.com/rail-service/rail_service/internal/domain/services/usage"
 	knowledgesvc "github.com/rail-service/rail_service/internal/domain/services/knowledge"
+	spendingsvc "github.com/rail-service/rail_service/internal/domain/services/spending"
 	marketservice "github.com/rail-service/rail_service/internal/domain/services/market"
 	newsservice "github.com/rail-service/rail_service/internal/domain/services/news"
 	"github.com/rail-service/rail_service/internal/domain/services/onboarding"
@@ -2491,6 +2492,12 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		c.KnowledgeRepo = repositories.NewKnowledgeRepository(c.DB, c.ZapLog)
 		c.KnowledgeService = knowledgesvc.NewService(c.KnowledgeRepo, c.EmbeddingsClient, c.RedisClient, c.ZapLog)
 		c.AIOrchestrator.SetKnowledge(c.KnowledgeService)
+	}
+
+	// Initialize spending analysis
+	if c.CardRepo != nil {
+		spendingSvc := spendingsvc.NewService(c.CardRepo)
+		c.AIOrchestrator.SetSpending(spendingSvc)
 	}
 
 	c.ZapLog.Info("AI Financial Manager services initialized",

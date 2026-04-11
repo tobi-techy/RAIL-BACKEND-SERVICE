@@ -41,10 +41,29 @@ func (h *AIChatHandlers) Chat(c *gin.Context) {
 		return
 	}
 
+	if len(req.Message) > 2000 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "message too long", "max_length": 2000})
+		return
+	}
+
+	// Cost ceiling check — degrade gracefully instead of blocking
+	if h.orchestrator.IsUserOverCostCeiling(c.Request.Context(), userID) {
+		c.JSON(http.StatusOK, gin.H{
+			"content":       "You've been chatting a lot this month! Your AI assistant will be back at full power next month. In the meantime, check your Station for balances and the spending tab for insights 💡",
+			"over_ceiling":  true,
+			"tokens_used":   0,
+		})
+		return
+	}
+
 	resp, err := h.orchestrator.Chat(c.Request.Context(), userID, req.Message, req.History)
 	if err != nil {
 		h.logger.Error("Chat failed", "error", err, "user_id", userID.String())
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "chat failed"})
+		c.JSON(http.StatusOK, gin.H{
+			"content":     "I'm having a moment — try again in a few seconds 🔄",
+			"tokens_used": 0,
+			"fallback":    true,
+		})
 		return
 	}
 
@@ -119,9 +138,10 @@ func (h *AIChatHandlers) GetSuggestedQuestions(c *gin.Context) {
 	suggestions := []string{
 		"How did my portfolio do this week?",
 		"What's my best performing stock?",
-		"Show me my investment streak",
-		"What news affects my holdings?",
+		"Where does my money go this month?",
+		"Show me my spending breakdown",
 		"How diversified is my portfolio?",
+		"What news affects my holdings?",
 	}
 
 	c.JSON(http.StatusOK, gin.H{"suggestions": suggestions})

@@ -844,9 +844,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				aiChatHandlers := handlers.NewAIChatHandlers(container.GetAIOrchestrator(), container.Logger)
 				aiGroup := protected.Group("/ai")
 				{
-					aiGroup.POST("/chat", aiChatHandlers.Chat)
-					aiGroup.GET("/wrapped", aiChatHandlers.GetWrapped)
-					aiGroup.GET("/quick-insight", aiChatHandlers.QuickInsight)
+					aiGroup.POST("/chat", middleware.AuthRateLimit(20), aiChatHandlers.Chat)
+					aiGroup.GET("/wrapped", middleware.AuthRateLimit(10), aiChatHandlers.GetWrapped)
+					aiGroup.GET("/quick-insight", middleware.AuthRateLimit(20), aiChatHandlers.QuickInsight)
 					aiGroup.GET("/suggestions", aiChatHandlers.GetSuggestedQuestions)
 				}
 
@@ -859,7 +859,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						convGroup.GET("", convHandlers.ListConversations)
 						convGroup.GET("/:id", convHandlers.GetConversation)
 						convGroup.DELETE("/:id", convHandlers.DeleteConversation)
-						convGroup.POST("/:id/chat", convHandlers.ChatInConversation)
+						convGroup.POST("/:id/chat", middleware.AuthRateLimit(20), convHandlers.ChatInConversation)
 					}
 				}
 
