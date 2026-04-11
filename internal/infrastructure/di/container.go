@@ -2500,6 +2500,11 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		c.AIOrchestrator.SetSpending(spendingSvc)
 	}
 
+	// Initialize balance history (stash growth chart)
+	if c.yieldRepo != nil {
+		c.AIOrchestrator.SetBalanceHistory(c.yieldRepo)
+	}
+
 	c.ZapLog.Info("AI Financial Manager services initialized",
 		zap.String("primary_provider", primary.Name()),
 		zap.Int("fallback_count", len(fallbacks)),

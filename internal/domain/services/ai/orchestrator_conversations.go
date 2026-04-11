@@ -77,6 +77,9 @@ func (o *Orchestrator) IsUserOverCostCeiling(ctx context.Context, userID uuid.UU
 		o.logger.Warn("failed to check cost ceiling", zap.Error(err))
 		return false
 	}
+	if over {
+		observeCostCeilingHit()
+	}
 	return over
 }
 
