@@ -97,6 +97,7 @@ type Orchestrator struct {
 	conversations     ConversationPersister
 	usage             UsageTracker
 	knowledge         KnowledgeSearcher
+	spending          SpendingAnalyzer
 	logger            *zap.Logger
 }
 
@@ -182,13 +183,18 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 	if o.knowledge != nil {
 		tools = append(tools, KnowledgeTool())
 	}
+	if o.spending != nil {
+		tools = append(tools, SpendingTools()...)
+	}
 	return tools
 }
 
 // Chat handles a chat message with tool calling
 func (o *Orchestrator) Chat(ctx context.Context, userID uuid.UUID, message string, history []ai.Message) (*ChatResponse, error) {
-	// Build messages with history
-	messages := append(history, ai.Message{Role: "user", Content: message})
+	// Build messages with history (copy to avoid mutating caller's slice)
+	messages := make([]ai.Message, len(history), len(history)+4)
+	copy(messages, history)
+	messages = append(messages, ai.Message{Role: "user", Content: message})
 
 	// Initial request
 	req := &ai.ChatRequest{
@@ -308,6 +314,12 @@ func (o *Orchestrator) executeTool(ctx context.Context, userID uuid.UUID, tc ai.
 
 	case ToolSearchKnowledge:
 		return o.executeKnowledgeSearch(ctx, tc.Arguments)
+
+	case ToolGetSpendingSummary:
+		return o.executeSpendingSummary(ctx, userID, tc.Arguments)
+
+	case ToolGetSpendingChart:
+		return o.executeSpendingChart(ctx, userID, tc.Arguments)
 
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", tc.Name)
