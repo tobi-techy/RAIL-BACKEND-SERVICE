@@ -202,7 +202,7 @@ func (u *UserProfile) CanCreateWallets() bool {
 	switch u.OnboardingStatus {
 	case OnboardingStatusWalletsPending, OnboardingStatusCompleted:
 		return true
-	case OnboardingStatusStarted, OnboardingStatusKYCPending, OnboardingStatusKYCApproved, OnboardingStatusKYCRejected:
+	case OnboardingStatusStarted, OnboardingStatusBasicComplete, OnboardingStatusKYCPending, OnboardingStatusKYCApproved, OnboardingStatusKYCRejected:
 		return true
 	default:
 		return false

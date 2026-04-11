@@ -521,6 +521,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// Unified Deposit routes
 			deposits := protected.Group("/deposits")
 			deposits.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
+			deposits.Use(middleware.RequireBridgeCapability(container.UserRepo, container.ZapLog))
 			// Fraud detection on deposit creation: catches suspicious first deposits from fraud ring accounts.
 			if fraudSvc := container.GetOnboardingFraudService(); fraudSvc != nil {
 				deposits.Use(middleware.DepositFraudMiddleware(fraudSvc, container.ZapLog))
@@ -606,6 +607,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			if p2pHandlers != nil {
 				p2p := protected.Group("/p2p")
 				p2p.Use(middleware.AuthRateLimit(20))
+				p2p.Use(middleware.RequireBridgeCapability(container.UserRepo, container.ZapLog))
 				{
 					p2p.POST("/lookup", p2pHandlers.Lookup)
 					p2p.POST("/send", p2pHandlers.Send)
@@ -826,6 +828,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 			// Allocation routes - 70/30 Smart Allocation Mode (ON/OFF)
 			allocation := protected.Group("/allocation")
+			allocation.Use(middleware.RequireBridgeCapability(container.UserRepo, container.ZapLog))
 			{
 				allocation.POST("/enable", allocationHandlers.EnableAllocationMode)
 				allocation.POST("/disable", allocationHandlers.DisableAllocationMode)
