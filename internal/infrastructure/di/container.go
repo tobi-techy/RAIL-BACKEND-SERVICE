@@ -318,11 +318,11 @@ func (a *BridgeVirtualAccountWebhookAdapter) ProcessFiatDeposit(ctx *gin.Context
 	})
 }
 
-func (a *BridgeVirtualAccountWebhookAdapter) ProcessCryptoDeposit(ctx context.Context, userID uuid.UUID, transferID string, amount decimal.Decimal) error {
+func (a *BridgeVirtualAccountWebhookAdapter) ProcessCryptoDeposit(ctx context.Context, userID uuid.UUID, transferID string, amount decimal.Decimal, chain string) error {
 	if a == nil || a.service == nil {
 		return fmt.Errorf("bridge virtual account service not configured")
 	}
-	return a.service.ProcessCryptoDeposit(ctx, userID, transferID, amount)
+	return a.service.ProcessCryptoDeposit(ctx, userID, transferID, amount, chain)
 }
 
 // BridgeCardWebhookAdapter adapts domain card service to Bridge webhook card processor interface.

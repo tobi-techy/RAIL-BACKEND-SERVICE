@@ -356,7 +356,7 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 		SourceAccount:      req.SourceAccount,
 		BridgeWalletID:     &req.BridgeWalletID,
 		DestinationType:    entities.DestinationTypeCryptoWallet,
-		DestinationChain:   req.DestinationChain,
+		DestinationChain:   strings.ToUpper(req.DestinationChain),
 		DestinationAddress: &req.DestinationAddress,
 		FeeAmount:          fee,
 		FeeCurrency:        req.Currency,

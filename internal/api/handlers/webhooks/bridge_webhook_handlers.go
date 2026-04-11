@@ -29,7 +29,7 @@ import (
 // BridgeWebhookService defines operations for processing Bridge events
 type BridgeWebhookService interface {
 	ProcessFiatDeposit(ctx *gin.Context, event *BridgeDepositEvent) error
-	ProcessCryptoDeposit(ctx *gin.Context, transferID string, customerID string, amount decimal.Decimal) error
+	ProcessCryptoDeposit(ctx *gin.Context, transferID string, customerID string, amount decimal.Decimal, chain string) error
 	ProcessTransferCompleted(ctx *gin.Context, transferID string) error
 	ProcessTransferFailed(ctx *gin.Context, transferID string, status string) error
 	ProcessTransferUnderReview(ctx *gin.Context, transferID string) error
@@ -317,7 +317,9 @@ func (h *BridgeWebhookHandler) handleLiquidationAddressDrain(c *gin.Context, pay
 		amount, _ = decimal.NewFromString(amountStr)
 	}
 
-	if err := h.service.ProcessCryptoDeposit(c, drainID, customerID, amount); err != nil {
+	chain := getStringField(payload.EventObject, "chain")
+
+	if err := h.service.ProcessCryptoDeposit(c, drainID, customerID, amount, chain); err != nil {
 		h.logger.Error("Failed to process liquidation address drain",
 			zap.String("drain_id", drainID),
 			zap.String("customer_id", customerID),
@@ -1109,7 +1111,7 @@ type BridgeWebhookServiceImpl struct {
 // BridgeVirtualAccountProcessor processes virtual account events
 type BridgeVirtualAccountProcessor interface {
 	ProcessFiatDeposit(ctx *gin.Context, event *BridgeDepositEvent) error
-	ProcessCryptoDeposit(ctx context.Context, userID uuid.UUID, transferID string, amount decimal.Decimal) error
+	ProcessCryptoDeposit(ctx context.Context, userID uuid.UUID, transferID string, amount decimal.Decimal, chain string) error
 }
 
 // BridgeCustomerProcessor processes customer events
@@ -1166,7 +1168,7 @@ func (s *BridgeWebhookServiceImpl) ProcessFiatDeposit(ctx *gin.Context, event *B
 	return s.virtualAccountService.ProcessFiatDeposit(ctx, event)
 }
 
-func (s *BridgeWebhookServiceImpl) ProcessCryptoDeposit(ctx *gin.Context, transferID string, customerID string, amount decimal.Decimal) error {
+func (s *BridgeWebhookServiceImpl) ProcessCryptoDeposit(ctx *gin.Context, transferID string, customerID string, amount decimal.Decimal, chain string) error {
 	s.logger.Info("Crypto deposit transfer completed", zap.String("transfer_id", transferID), zap.String("customer_id", customerID), zap.String("amount", amount.String()))
 	if s.virtualAccountService == nil {
 		s.logger.Warn("Virtual account service not configured, skipping crypto deposit", zap.String("transfer_id", transferID))
@@ -1189,7 +1191,7 @@ func (s *BridgeWebhookServiceImpl) ProcessCryptoDeposit(ctx *gin.Context, transf
 		s.logger.Warn("No user found for Bridge customer ID", zap.String("customer_id", customerID))
 		return nil
 	}
-	return s.virtualAccountService.ProcessCryptoDeposit(ctx, user.ID, transferID, amount)
+	return s.virtualAccountService.ProcessCryptoDeposit(ctx, user.ID, transferID, amount, chain)
 }
 
 func (s *BridgeWebhookServiceImpl) ProcessTransferCompleted(ctx *gin.Context, transferID string) error {

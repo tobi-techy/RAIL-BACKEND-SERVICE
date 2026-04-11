@@ -651,6 +651,30 @@ type DepositInstructions struct {
 }
 
 // generateFiatIdempotencyKey creates a deterministic UUID for fiat deposits
+// mapBridgeChain converts a Bridge chain string to the Rail Chain constant.
+func mapBridgeChain(chain string) entities.Chain {
+	switch strings.ToLower(chain) {
+	case "solana":
+		return entities.ChainSOL
+	case "ethereum":
+		return entities.ChainETH
+	case "polygon":
+		return entities.ChainMATIC
+	case "base":
+		return entities.ChainBase
+	case "avalanche":
+		return entities.ChainAvalanche
+	case "arbitrum":
+		return entities.ChainArbitrum
+	case "optimism":
+		return entities.ChainOptimism
+	case "celo":
+		return entities.ChainCELO
+	default:
+		return entities.ChainSOL
+	}
+}
+
 func generateFiatIdempotencyKey(transactionRef, virtualAccountID, amount string) string {
 	input := fmt.Sprintf("fiat-deposit:%s:%s:%s", strings.ToLower(transactionRef), strings.ToLower(virtualAccountID), strings.ToLower(amount))
 	hash := sha256.Sum256([]byte(input))
@@ -660,7 +684,7 @@ func generateFiatIdempotencyKey(transactionRef, virtualAccountID, amount string)
 
 // ProcessCryptoDeposit processes an incoming crypto deposit from a Bridge liquidation address
 // and triggers the 70/30 allocation split.
-func (s *BridgeVirtualAccountService) ProcessCryptoDeposit(ctx context.Context, userID uuid.UUID, transferID string, amount decimal.Decimal) error {
+func (s *BridgeVirtualAccountService) ProcessCryptoDeposit(ctx context.Context, userID uuid.UUID, transferID string, amount decimal.Decimal, chain string) error {
 	if !amount.GreaterThan(decimal.Zero) {
 		return fmt.Errorf("amount must be greater than zero")
 	}
@@ -673,7 +697,7 @@ func (s *BridgeVirtualAccountService) ProcessCryptoDeposit(ctx context.Context, 
 		ID:             depositID,
 		IdempotencyKey: idempotencyKey,
 		UserID:         userID,
-		Chain:          entities.ChainSOL,
+		Chain:          mapBridgeChain(chain),
 		TxHash:         transferID,
 		Token:          entities.StablecoinUSDC,
 		Amount:         amount,
