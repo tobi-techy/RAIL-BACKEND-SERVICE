@@ -182,7 +182,7 @@ func (u *UserProfile) CanStartKYC() bool {
 	}
 
 	switch u.OnboardingStatus {
-	case OnboardingStatusStarted, OnboardingStatusKYCRejected, OnboardingStatusWalletsPending, OnboardingStatusCompleted:
+	case OnboardingStatusStarted, OnboardingStatusBasicComplete, OnboardingStatusKYCRejected, OnboardingStatusWalletsPending, OnboardingStatusCompleted:
 		return true
 	case OnboardingStatusKYCPending:
 		// Allow initial submission when we're in the pending state but nothing was sent yet

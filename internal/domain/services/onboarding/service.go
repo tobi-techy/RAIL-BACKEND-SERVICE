@@ -52,7 +52,7 @@ type UserRepository interface {
 	GetByAuthProviderID(ctx context.Context, authProviderID string) (*entities.UserProfile, error)
 	Update(ctx context.Context, user *entities.UserProfile) error
 	UpdateOnboardingStatus(ctx context.Context, userID uuid.UUID, status entities.OnboardingStatus) error
-	UpdateKYCStatus(ctx context.Context, userID uuid.UUID, status string, approvedAt *time.Time, rejectionReason *string) error
+	UpdateKYCStatus(ctx context.Context, userID uuid.UUID, status entities.KYCStatus, approvedAt *time.Time, rejectionReason *string) error
 	UpdateBridgeKYCStatus(ctx context.Context, userID uuid.UUID, status string) error
 	UpdatePassword(ctx context.Context, userID uuid.UUID, hash string) error
 }
@@ -277,7 +277,7 @@ func (s *Service) GetOnboardingStatus(ctx context.Context, userID uuid.UUID) (*e
 		if bridgeCust, err := s.bridgeAdapter.GetCustomerByEmail(ctx, user.Email); err == nil && bridgeCust != nil && bridgeCust.Status == "active" {
 			if user.KYCStatus != "approved" || user.OnboardingStatus != entities.OnboardingStatusCompleted {
 				now := time.Now()
-				_ = s.userRepo.UpdateKYCStatus(ctx, userID, "approved", &now, nil)
+				_ = s.userRepo.UpdateKYCStatus(ctx, userID, entities.KYCStatusApproved, &now, nil)
 				_ = s.userRepo.UpdateOnboardingStatus(ctx, userID, entities.OnboardingStatusCompleted)
 				user.KYCStatus = "approved"
 				user.KYCApprovedAt = &now
@@ -692,7 +692,7 @@ func (s *Service) ProcessKYCCallback(ctx context.Context, providerRef string, st
 	}
 
 	// Update user status
-	if err := s.userRepo.UpdateKYCStatus(ctx, user.ID, string(status), kycApprovedAt, kycRejectionReason); err != nil {
+	if err := s.userRepo.UpdateKYCStatus(ctx, user.ID, status, kycApprovedAt, kycRejectionReason); err != nil {
 		return fmt.Errorf("failed to update user KYC status: %w", err)
 	}
 
@@ -730,7 +730,7 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 		if latest, latestErr := s.kycSubmissionRepo.GetLatestByUserID(ctx, userID); latestErr == nil &&
 			latest != nil && latest.Status == entities.KYCStatusApproved {
 			now := time.Now()
-			_ = s.userRepo.UpdateKYCStatus(ctx, userID, string(entities.KYCStatusApproved), &now, nil)
+			_ = s.userRepo.UpdateKYCStatus(ctx, userID, entities.KYCStatusApproved, &now, nil)
 			status = string(entities.KYCStatusApproved)
 		}
 	}

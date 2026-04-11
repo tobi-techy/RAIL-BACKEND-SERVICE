@@ -470,42 +470,48 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			funding := protected.Group("/funding")
 			funding.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
 			{
-				funding.POST("/deposit/address", walletFundingHandlers.CreateDepositAddress)
-				funding.POST("/virtual-account", walletFundingHandlers.CreateVirtualAccount)
-				funding.GET("/virtual-accounts", walletFundingHandlers.GetVirtualAccounts)
+				// Pre-KYC: TOS link needed during onboarding, read-only Paj lookups
 				funding.GET("/tos-link", walletFundingHandlers.GetBridgeTOSLink)
-
-				// Instant Funding - simplified API for trading
-				// POST /funding/instant - Request instant buying power
-				// GET /funding/instant/status - Check instant funding state
-				if instantFundingHandlers := container.GetInstantFundingHandlers(); instantFundingHandlers != nil {
-					funding.POST("/instant", instantFundingHandlers.RequestInstantFunding)
-					funding.GET("/instant/status", instantFundingHandlers.GetInstantFundingStatus)
-				}
-
-				// ChainRails - cross-chain deposit from any supported chain
-				if container.ChainRailsHandlers != nil {
-					chainrails := funding.Group("/chainrails")
-					chainrails.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
-					chainrails.POST("/session", 
-						middleware.AuthRateLimit(10), // 10 requests per minute per user
-						container.ChainRailsHandlers.CreateSession)
-				}
-
-				// Paj Cash - NGN on/off ramp
 				if container.PajHandlers != nil {
 					paj := funding.Group("/paj")
 					paj.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
-					paj.POST("/initiate", middleware.AuthRateLimit(5), container.PajHandlers.Initiate)
-					paj.POST("/verify", middleware.AuthRateLimit(10), container.PajHandlers.Verify)
 					paj.GET("/rates", container.PajHandlers.GetRates)
 					paj.GET("/banks", container.PajHandlers.GetBanks)
-					paj.POST("/banks/resolve", container.PajHandlers.ResolveBankAccount)
-					paj.POST("/banks/add", container.PajHandlers.AddBankAccount)
-					paj.GET("/banks/saved", container.PajHandlers.GetBankAccounts)
-					paj.POST("/onramp", middleware.AuthRateLimit(10), container.PajHandlers.CreateOnramp)
-					paj.POST("/offramp", middleware.AuthRateLimit(10), container.PajHandlers.CreateOfframp)
 					paj.GET("/orders/:id/status", container.PajHandlers.GetOrderStatus)
+				}
+
+				// KYC-gated funding operations
+				fundingGated := funding.Group("/")
+				fundingGated.Use(middleware.RequireBridgeCapability(container.UserRepo, container.ZapLog))
+				{
+					fundingGated.POST("/deposit/address", walletFundingHandlers.CreateDepositAddress)
+					fundingGated.POST("/virtual-account", walletFundingHandlers.CreateVirtualAccount)
+					fundingGated.GET("/virtual-accounts", walletFundingHandlers.GetVirtualAccounts)
+
+					if instantFundingHandlers := container.GetInstantFundingHandlers(); instantFundingHandlers != nil {
+						fundingGated.POST("/instant", instantFundingHandlers.RequestInstantFunding)
+						fundingGated.GET("/instant/status", instantFundingHandlers.GetInstantFundingStatus)
+					}
+
+					if container.ChainRailsHandlers != nil {
+						chainrails := fundingGated.Group("/chainrails")
+						chainrails.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
+						chainrails.POST("/session",
+							middleware.AuthRateLimit(10),
+							container.ChainRailsHandlers.CreateSession)
+					}
+
+					if container.PajHandlers != nil {
+						pajGated := fundingGated.Group("/paj")
+						pajGated.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
+						pajGated.POST("/initiate", middleware.AuthRateLimit(5), container.PajHandlers.Initiate)
+						pajGated.POST("/verify", middleware.AuthRateLimit(10), container.PajHandlers.Verify)
+						pajGated.POST("/banks/resolve", container.PajHandlers.ResolveBankAccount)
+						pajGated.POST("/banks/add", container.PajHandlers.AddBankAccount)
+						pajGated.GET("/banks/saved", container.PajHandlers.GetBankAccounts)
+						pajGated.POST("/onramp", middleware.AuthRateLimit(10), container.PajHandlers.CreateOnramp)
+						pajGated.POST("/offramp", middleware.AuthRateLimit(10), container.PajHandlers.CreateOfframp)
+					}
 				}
 			}
 
@@ -528,6 +534,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// Unified Withdrawal routes with security middleware
 			withdrawals := protected.Group("/withdrawals")
 			withdrawals.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
+			withdrawals.Use(middleware.RequireBridgeCapability(container.UserRepo, container.ZapLog))
 			// Apply withdrawal security: rate limits (3/day) and daily max ($10k new, $100k established)
 			if withdrawalSecurityStore := container.GetWithdrawalSecurityStore(); withdrawalSecurityStore != nil {
 				withdrawals.Use(middleware.WithdrawalSecurityMiddleware(
@@ -781,6 +788,19 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					aiGroup.GET("/wrapped", aiChatHandlers.GetWrapped)
 					aiGroup.GET("/quick-insight", aiChatHandlers.QuickInsight)
 					aiGroup.GET("/suggestions", aiChatHandlers.GetSuggestedQuestions)
+				}
+
+				// Conversation endpoints
+				if container.GetConversationService() != nil {
+					convHandlers := handlers.NewConversationHandlers(container.GetAIOrchestrator(), container.GetConversationService(), container.ZapLog)
+					convGroup := protected.Group("/ai/conversations")
+					{
+						convGroup.POST("", convHandlers.CreateConversation)
+						convGroup.GET("", convHandlers.ListConversations)
+						convGroup.GET("/:id", convHandlers.GetConversation)
+						convGroup.DELETE("/:id", convHandlers.DeleteConversation)
+						convGroup.POST("/:id/chat", convHandlers.ChatInConversation)
+					}
 				}
 			}
 

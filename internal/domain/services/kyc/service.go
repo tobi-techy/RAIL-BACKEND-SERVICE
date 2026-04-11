@@ -22,7 +22,6 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
-	"github.com/rail-service/rail_service/pkg/crypto"
 	"github.com/rail-service/rail_service/pkg/metrics"
 )
 
@@ -2350,6 +2349,56 @@ func (s *Service) processDiditApproved(ctx context.Context, submission *entities
 	}
 
 	now := time.Now()
+	submission.UpdatedAt = now
+	if submission.VerificationData == nil {
+		submission.VerificationData = map[string]any{}
+	}
+	submission.VerificationData["didit_webhook_type"] = payload.WebhookType
+	submission.VerificationData["didit_status"] = payload.Status
+	submission.VerificationData["didit_approved_at"] = now.Format(time.RFC3339)
+
+	// Hydrate document data from Didit (uses inline webhook decision or fetches via API).
+	s.hydrateSubmissionFromDidit(ctx, submission, payload)
+
+	// Push gov ID to Bridge BEFORE marking approved, so retries can re-enter this method.
+	bridgeSuccess := false
+	if profile.BridgeCustomerID != nil && *profile.BridgeCustomerID != "" {
+		if result := s.submitToBridgeFromDidit(ctx, *profile.BridgeCustomerID, submission); !result.Success {
+			s.logger.Warn("Failed to push gov ID to Bridge after Didit approval",
+				zap.String("user_id", submission.UserID.String()),
+				zap.String("error", result.Error))
+			// Enqueue retry job so the sync worker retries automatically.
+			if s.kycSyncJobRepo != nil {
+				retryPayload, _ := json.Marshal(submission.VerificationData)
+				if _, enqErr := s.kycSyncJobRepo.EnqueueProviderRetry(ctx, submission.UserID.String(), "bridge_didit", retryPayload); enqErr != nil {
+					s.logger.Warn("Failed to enqueue Bridge retry job for Didit",
+						zap.Error(enqErr),
+						zap.String("user_id", submission.UserID.String()))
+				}
+			}
+		} else {
+			bridgeSuccess = true
+			s.logger.Info("Gov ID pushed to Bridge after Didit approval",
+				zap.String("user_id", submission.UserID.String()),
+				zap.String("bridge_customer_id", *profile.BridgeCustomerID))
+		}
+	}
+
+	// Only mark submission approved after Bridge push attempt.
+	// If Bridge failed, keep as processing so webhook re-delivery or retry worker can re-enter.
+	if bridgeSuccess {
+		submission.MarkReviewed(entities.KYCStatusApproved, nil)
+	} else {
+		submission.Status = entities.KYCStatusProcessing
+	}
+
+	// Persist submission — PII is only scrubbed on Bridge success.
+	if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {
+		return fmt.Errorf("failed to update didit submission: %w", err)
+	}
+
+	// Approve the user regardless of Bridge result — Didit approval is sufficient.
+	// Bridge activates asynchronously via webhook.
 	bridgeStatus := "pending"
 	user.BridgeKYCStatus = &bridgeStatus
 	user.KYCRejectionReason = nil
@@ -2362,38 +2411,6 @@ func (s *Service) processDiditApproved(ctx context.Context, submission *entities
 
 	if err := s.userRepo.Update(ctx, user); err != nil {
 		return fmt.Errorf("failed to update user after didit approval: %w", err)
-	}
-
-	submission.UpdatedAt = now
-	if submission.VerificationData == nil {
-		submission.VerificationData = map[string]any{}
-	}
-	submission.VerificationData["didit_webhook_type"] = payload.WebhookType
-	submission.VerificationData["didit_status"] = payload.Status
-	submission.VerificationData["didit_approved_at"] = now.Format(time.RFC3339)
-
-	// Hydrate document data from Didit (uses inline webhook decision or fetches via API).
-	s.hydrateSubmissionFromDidit(ctx, submission, payload)
-
-	submission.MarkReviewed(entities.KYCStatusApproved, nil)
-
-	// Push gov ID + verified_govid_at to Bridge to satisfy their "Upload government ID" task.
-	// submitToBridgeFromDidit scrubs PII from submission.VerificationData after sending.
-	if profile.BridgeCustomerID != nil && *profile.BridgeCustomerID != "" {
-		if result := s.submitToBridgeFromDidit(ctx, *profile.BridgeCustomerID, submission); !result.Success {
-			s.logger.Warn("Failed to push gov ID to Bridge after Didit approval",
-				zap.String("user_id", submission.UserID.String()),
-				zap.String("error", result.Error))
-		} else {
-			s.logger.Info("Gov ID pushed to Bridge after Didit approval",
-				zap.String("user_id", submission.UserID.String()),
-				zap.String("bridge_customer_id", *profile.BridgeCustomerID))
-		}
-	}
-
-	// Persist after Bridge sync so scrubbed state (no PII) is what gets saved.
-	if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {
-		return fmt.Errorf("failed to update didit submission: %w", err)
 	}
 
 	if s.notifier != nil {
@@ -2579,79 +2596,50 @@ func (s *Service) hydrateSubmissionFromDidit(ctx context.Context, submission *en
 	}
 }
 
-// submitToBridgeFromDidit forwards KYC data to Bridge after Didit approval (no images).
+// submitToBridgeFromDidit forwards the gov ID document to Bridge after Didit approval.
+// Tax ID (SSN/NIN) was already sent to Bridge in StartDiditSession — only the
+// government-issued document (images + document number + verified timestamps) is sent here.
 func (s *Service) submitToBridgeFromDidit(ctx context.Context, bridgeCustomerID string, submission *entities.KYCSubmission) entities.KYCProviderResult {
 	data := submission.VerificationData
 	if data == nil {
 		return entities.KYCProviderResult{Success: false, Status: "failed", Error: "no verification data"}
 	}
 
-	taxIDType, _ := data["tax_id_type"].(string)
 	country, _ := data["issuing_country"].(string)
-
-	var taxID string
-	encTaxID, hasEnc := data["tax_id_enc"].(string)
-	if hasEnc && encTaxID != "" && s.encryptionKey != "" {
-		dec, err := crypto.Decrypt(encTaxID, s.encryptionKey)
-		if err != nil {
-			s.logger.Error("Failed to decrypt tax_id_enc - cannot proceed", zap.Error(err))
-			return entities.KYCProviderResult{Success: false, Status: "failed", Error: "failed to decrypt tax_id"}
-		}
-		taxID = dec
-	} else if hasPlaintext := data["tax_id"].(string); hasPlaintext != "" {
-		s.logger.Error("Plaintext tax_id found in verification_data - this should not happen")
-		return entities.KYCProviderResult{Success: false, Status: "failed", Error: "plaintext tax_id found - security violation"}
-	}
-
-	if taxID == "" {
-		return entities.KYCProviderResult{Success: false, Status: "failed", Error: "missing tax_id"}
-	}
-
 	issuingCountry := strings.ToLower(country)
 
-	// Primary: tax ID (SSN, NIN, etc.)
-	identifyingInfo := []bridge.IdentifyingInfo{
-		{
-			Type:           mapTaxIDTypeToBridge(taxIDType),
-			IssuingCountry: issuingCountry,
-			Number:         taxID,
-		},
-	}
-
-	// Secondary: government-issued document with images if available from Didit.
 	docNumber, _ := data["didit_doc_number"].(string)
 	docType, _ := data["didit_doc_type"].(string)
 	expiration, _ := data["didit_expiration_date"].(string)
 	frontImageURL, _ := data["didit_front_image"].(string)
 	backImageURL, _ := data["didit_back_image"].(string)
 
-	if docNumber != "" || frontImageURL != "" {
-		frontDataURI, err := fetchImageAsDataURI(frontImageURL)
-		if err != nil {
-			s.logger.Warn("Failed to fetch front image for Bridge", zap.Error(err))
-		}
-		backDataURI, err := fetchImageAsDataURI(backImageURL)
-		if err != nil {
-			s.logger.Warn("Failed to fetch back image for Bridge", zap.Error(err))
-		}
+	if docNumber == "" && frontImageURL == "" {
+		return entities.KYCProviderResult{Success: false, Status: "failed", Error: "no gov ID document data from Didit"}
+	}
 
-		docEntry := bridge.IdentifyingInfo{
-			Type:           mapDocTypeToBridge(docType),
-			IssuingCountry: issuingCountry,
-			Number:         docNumber,
-			Expiration:     expiration,
-			ImageFront:     frontDataURI,
-			ImageBack:      backDataURI,
-		}
-		identifyingInfo = append(identifyingInfo, docEntry)
+	frontDataURI, err := fetchImageAsDataURI(frontImageURL)
+	if err != nil {
+		s.logger.Warn("Failed to fetch front image for Bridge", zap.Error(err))
+	}
+	backDataURI, err := fetchImageAsDataURI(backImageURL)
+	if err != nil {
+		s.logger.Warn("Failed to fetch back image for Bridge", zap.Error(err))
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	req := &bridge.UpdateCustomerRequest{
-		IdentifyingInformation: identifyingInfo,
-	}
-	if docNumber != "" || frontImageURL != "" {
-		req.VerifiedGovidAt = now
+		IdentifyingInformation: []bridge.IdentifyingInfo{
+			{
+				Type:           mapDocTypeToBridge(docType),
+				IssuingCountry: issuingCountry,
+				Number:         docNumber,
+				Expiration:     expiration,
+				ImageFront:     frontDataURI,
+				ImageBack:      backDataURI,
+			},
+		},
+		VerifiedGovidAt: now,
 	}
 	portraitImage, _ := data["didit_portrait_image"].(string)
 	if portraitImage != "" {

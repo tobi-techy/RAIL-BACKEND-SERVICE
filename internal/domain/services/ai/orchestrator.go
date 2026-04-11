@@ -76,12 +76,19 @@ type ContributionSummary struct {
 	Total     decimal.Decimal `json:"total"`
 }
 
+// ConversationPersister is the subset of conversation.Service the orchestrator needs.
+type ConversationPersister interface {
+	BuildContext(ctx context.Context, conv *entities.AIConversation) ([]ai.Message, error)
+	RecordExchange(ctx context.Context, convID uuid.UUID, userMsg, assistantMsg string, tokens int, cost decimal.Decimal, model string) error
+}
+
 // Orchestrator handles AI interactions with tool calling
 type Orchestrator struct {
 	aiProvider        ai.AIProvider
 	portfolioProvider PortfolioDataProvider
 	activityProvider  ActivityDataProvider
 	newsProvider      NewsDataProvider
+	conversations     ConversationPersister
 	logger            *zap.Logger
 }
 

@@ -44,6 +44,7 @@ type (
 	MarketHandlers            = investing.MarketHandlers
 	AIChatHandlers            = investing.AIChatHandlers
 	AICfoHandler              = investing.AICfoHandler
+	ConversationHandlers      = investing.ConversationHandlers
 
 	// Trading
 	CopyTradingHandlers         = trading.CopyTradingHandlers
@@ -119,6 +120,7 @@ var (
 	NewMarketHandlers            = investing.NewMarketHandlers
 	NewAIChatHandlers            = investing.NewAIChatHandlers
 	NewAICfoHandler              = investing.NewAICfoHandler
+	NewConversationHandlers      = investing.NewConversationHandlers
 )
 
 // Trading constructors

@@ -25,6 +25,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/audit"
 	"github.com/rail-service/rail_service/internal/domain/services/autoinvest"
 	"github.com/rail-service/rail_service/internal/domain/services/card"
+	conversationsvc "github.com/rail-service/rail_service/internal/domain/services/conversation"
 	"github.com/rail-service/rail_service/internal/domain/services/copytrading"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/domain/services/pajfunding"
@@ -974,6 +975,8 @@ type Container struct {
 	NewsService           *newsservice.Service
 	PortfolioDataProvider *aiservice.PortfolioDataProviderImpl
 	ActivityDataProvider  *aiservice.ActivityDataProviderImpl
+	ConversationRepo      *repositories.ConversationRepository
+	ConversationService   *conversationsvc.Service
 
 	// Additional Repositories
 	OnboardingJobRepo *repositories.OnboardingJobRepository
@@ -2454,6 +2457,11 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		c.ZapLog,
 	)
 
+	// Initialize conversation persistence
+	c.ConversationRepo = repositories.NewConversationRepository(c.DB, c.ZapLog)
+	c.ConversationService = conversationsvc.NewService(c.ConversationRepo, primary, c.ZapLog)
+	c.AIOrchestrator.SetConversations(c.ConversationService)
+
 	c.ZapLog.Info("AI Financial Manager services initialized",
 		zap.String("primary_provider", primary.Name()),
 		zap.Int("fallback_count", len(fallbacks)),
@@ -2528,6 +2536,11 @@ func (c *Container) GetAIOrchestrator() *aiservice.Orchestrator {
 // GetAIRecommender returns the AI recommender
 func (c *Container) GetAIRecommender() *aiservice.Recommender {
 	return c.AIRecommender
+}
+
+// GetConversationService returns the conversation service
+func (c *Container) GetConversationService() *conversationsvc.Service {
+	return c.ConversationService
 }
 
 // GetNewsService returns the news service

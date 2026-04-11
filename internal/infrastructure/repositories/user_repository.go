@@ -532,6 +532,10 @@ func (r *UserRepository) Update(ctx context.Context, user *entities.UserProfile)
 
 // UpdateOnboardingStatus updates the onboarding status
 func (r *UserRepository) UpdateOnboardingStatus(ctx context.Context, userID uuid.UUID, status entities.OnboardingStatus) error {
+	if !status.IsValid() {
+		return fmt.Errorf("invalid onboarding status: %s", status)
+	}
+
 	query := `UPDATE users SET onboarding_status = $2, updated_at = $3 WHERE id = $1`
 
 	_, err := r.db.ExecContext(ctx, query, userID, string(status), time.Now())
@@ -545,7 +549,11 @@ func (r *UserRepository) UpdateOnboardingStatus(ctx context.Context, userID uuid
 }
 
 // UpdateKYCStatus updates the KYC status and related fields
-func (r *UserRepository) UpdateKYCStatus(ctx context.Context, userID uuid.UUID, status string, approvedAt *time.Time, rejectionReason *string) error {
+func (r *UserRepository) UpdateKYCStatus(ctx context.Context, userID uuid.UUID, status entities.KYCStatus, approvedAt *time.Time, rejectionReason *string) error {
+	if !status.IsValid() {
+		return fmt.Errorf("invalid KYC status: %s", status)
+	}
+
 	query := `
 		UPDATE users SET 
 			kyc_status = $2, 
@@ -554,13 +562,13 @@ func (r *UserRepository) UpdateKYCStatus(ctx context.Context, userID uuid.UUID, 
 			updated_at = $5 
 		WHERE id = $1`
 
-	_, err := r.db.ExecContext(ctx, query, userID, status, approvedAt, rejectionReason, time.Now())
+	_, err := r.db.ExecContext(ctx, query, userID, string(status), approvedAt, rejectionReason, time.Now())
 	if err != nil {
 		r.logger.Error("Failed to update KYC status", zap.Error(err), zap.String("user_id", userID.String()))
 		return fmt.Errorf("failed to update KYC status: %w", err)
 	}
 
-	r.logger.Debug("KYC status updated", zap.String("user_id", userID.String()), zap.String("status", status))
+	r.logger.Debug("KYC status updated", zap.String("user_id", userID.String()), zap.String("status", string(status)))
 	return nil
 }
 
