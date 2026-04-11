@@ -7,8 +7,21 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"go.uber.org/zap"
+)
+
+var (
+	knowledgeCacheHits = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "rail_ai_knowledge_cache_hits_total",
+		Help: "Knowledge base cache hits",
+	})
+	knowledgeCacheMisses = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "rail_ai_knowledge_cache_misses_total",
+		Help: "Knowledge base cache misses",
+	})
 )
 
 // EmbeddingProvider generates vector embeddings from text.
@@ -102,8 +115,10 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]entiti
 	if s.cache != nil {
 		if err := s.cache.Get(ctx, cacheKey, &cached); err == nil && len(cached.Results) > 0 {
 			s.logger.Debug("knowledge cache hit", zap.String("query", query))
+			knowledgeCacheHits.Inc()
 			return cached.Results, nil
 		}
+		knowledgeCacheMisses.Inc()
 	}
 
 	// Embed the query

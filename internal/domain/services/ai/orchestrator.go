@@ -98,6 +98,7 @@ type Orchestrator struct {
 	usage             UsageTracker
 	knowledge         KnowledgeSearcher
 	spending          SpendingAnalyzer
+	balanceHistory    BalanceHistoryProvider
 	logger            *zap.Logger
 }
 
@@ -119,16 +120,32 @@ func NewOrchestrator(
 }
 
 // SystemPrompt for the AI Financial Manager
-const SystemPrompt = `You are the RAIL Financial Manager - a friendly, Gen Z-native AI assistant.
+const SystemPrompt = `You are the RAIL Financial Manager — a warm, knowledgeable AI assistant built for young people building wealth.
+
+Your users are mostly 18-30 year olds in Nigeria and across Africa, plus diaspora users in the UK, US, and Europe. Many earn in naira, pounds, or dollars. Many have irregular income. All of them want their money to work without overthinking it.
+
+Context you must know:
+- Rail splits every deposit 70% to Spend (USDC) and 30% to Stash (USDB, earning ~3-4% yield from US Treasuries)
+- The 70/30 split is automatic and fixed — users don't choose it. This is the product.
+- Stash is denominated in USD. For users in Nigeria, this means passive protection against naira devaluation.
+- Spend wallet is liquid, card-ready. Stash is withdrawable anytime, no lock-up.
+- Round-ups from card purchases go to Stash automatically.
 
 Behavior Rules:
-- Speak in short, punchy Spotify-Wrapped style
-- Use emojis sparingly (1-2 per message max)
-- Never invent numbers - only use data from tools
-- NEVER give financial advice (no "you should buy/sell")
-- Instead say "you might consider" or "some investors..."
-- Keep responses under 200 words unless detailed analysis requested
-- Be encouraging but realistic about performance`
+- Be conversational, clear, and encouraging. Not robotic, not overly casual.
+- Use simple language. Avoid jargon. If you must use a financial term, explain it briefly.
+- Use emojis sparingly (1-2 per message max).
+- Never invent numbers — only use data from tools.
+- NEVER give specific financial advice (no "you should buy X" or "sell Y").
+- Instead say "you might consider" or "many people in your situation..."
+- Keep responses under 200 words unless the user asks for detail.
+- Be encouraging but honest about performance.
+- When discussing saving, emphasize consistency over amount — 5,000 naira weekly beats 0.
+- When discussing currency, acknowledge that holding USD-denominated savings protects purchasing power in markets with structural currency weakness.
+- If the user asks about scams or "guaranteed returns," be direct: if it sounds too good to be true, it is.
+- Use the knowledge base tool when users ask general financial questions about budgeting, saving, investing, or money management.
+- Use spending tools when users ask where their money goes.
+- Use balance history when users ask about their savings growth.`
 
 // GetTools returns available tools for the AI
 func (o *Orchestrator) GetTools() []ai.Tool {
@@ -186,11 +203,16 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 	if o.spending != nil {
 		tools = append(tools, SpendingTools()...)
 	}
+	if o.balanceHistory != nil {
+		tools = append(tools, BalanceHistoryTool())
+	}
 	return tools
 }
 
 // Chat handles a chat message with tool calling
 func (o *Orchestrator) Chat(ctx context.Context, userID uuid.UUID, message string, history []ai.Message) (*ChatResponse, error) {
+	start := time.Now()
+
 	// Build messages with history (copy to avoid mutating caller's slice)
 	messages := make([]ai.Message, len(history), len(history)+4)
 	copy(messages, history)
@@ -207,6 +229,7 @@ func (o *Orchestrator) Chat(ctx context.Context, userID uuid.UUID, message strin
 	// Get response with tools
 	resp, err := o.aiProvider.ChatCompletionWithTools(ctx, req, o.GetTools())
 	if err != nil {
+		observeChat("unknown", time.Since(start), 0, err)
 		return nil, fmt.Errorf("AI completion failed: %w", err)
 	}
 
@@ -215,6 +238,7 @@ func (o *Orchestrator) Chat(ctx context.Context, userID uuid.UUID, message strin
 	if len(resp.ToolCalls) > 0 {
 		for _, tc := range resp.ToolCalls {
 			result, err := o.executeTool(ctx, userID, tc)
+			observeToolCall(tc.Name, err)
 			if err != nil {
 				o.logger.Warn("Tool execution failed", zap.String("tool", tc.Name), zap.Error(err))
 				result = map[string]interface{}{"error": err.Error()}
@@ -236,6 +260,8 @@ func (o *Orchestrator) Chat(ctx context.Context, userID uuid.UUID, message strin
 
 	// Apply safety filter
 	content := o.applySafetyFilter(resp.Content)
+
+	observeChat(resp.Provider, time.Since(start), resp.TokensUsed, nil)
 
 	return &ChatResponse{
 		Content:     content,
@@ -320,6 +346,9 @@ func (o *Orchestrator) executeTool(ctx context.Context, userID uuid.UUID, tc ai.
 
 	case ToolGetSpendingChart:
 		return o.executeSpendingChart(ctx, userID, tc.Arguments)
+
+	case ToolGetBalanceHistory:
+		return o.executeBalanceHistory(ctx, userID, tc.Arguments)
 
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", tc.Name)
