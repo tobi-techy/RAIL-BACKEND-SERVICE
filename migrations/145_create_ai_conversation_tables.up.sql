@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS ai_conversations (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_ai_conversations_user_updated ON ai_conversations(user_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_conversations_user_updated ON ai_conversations(user_id, updated_at DESC);
 
 -- AI Messages: individual messages within conversations
 CREATE TABLE IF NOT EXISTS ai_messages (
@@ -28,4 +28,4 @@ CREATE TABLE IF NOT EXISTS ai_messages (
 
 -- DESC index supports GetRecentMessages (ORDER BY created_at DESC LIMIT N)
 -- and also serves ASC scans for GetMessages
-CREATE INDEX idx_ai_messages_conversation_created ON ai_messages(conversation_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_messages_conversation_created ON ai_messages(conversation_id, created_at DESC);
