@@ -1,0 +1,107 @@
+RAIL PHILOSOPHY: WHY AUTOMATION BEATS DISCIPLINE
+
+THE CORE BELIEF
+
+Rail is built on one principle: money should start working the moment it arrives. Not tomorrow. Not after you decide. Not after you research. Immediately.
+
+Most financial products ask you to participate. Open this account. Pick this fund. Set this percentage. Review this allocation. Rail asks nothing. You deposit money. The system handles the rest.
+
+WHY PEOPLE DON'T INVEST
+
+It's not access. Access to financial products was solved years ago. Anyone with a phone can open a brokerage account. The problem is direction.
+
+Most people don't invest because:
+- Decision overload: which asset, which platform, how much, when
+- Fragmented tools: one app to spend, another to save, another to invest
+- Cognitive cost: every financial decision requires attention and confidence most people don't have
+- Procrastination: "I'll start next month" becomes "I'll start next year" becomes never
+- Fear of mistakes: choosing wrong feels worse than not choosing at all
+
+The result: money sits idle in bank accounts earning nothing, or gets spent entirely because there's no automatic mechanism pushing capital toward growth.
+
+THE 70/30 SPLIT
+
+Every deposit into Rail is automatically divided: 70% goes to your Spend wallet (USDC, liquid, card-ready), 30% goes to your Stash (USDB, earning yield automatically).
+
+Why 70/30 specifically:
+- 70% preserves spending power. You can still pay rent, buy food, live your life. Rail doesn't lock your money away.
+- 30% is meaningful but not painful. It's enough to build wealth over time, but not so much that it disrupts daily life.
+- The ratio is fixed. You don't choose it. This is intentional. The moment you give users a slider, most will set it to 95/5 or 100/0. The discipline disappears.
+- No configuration means no decision fatigue. You don't wonder if you picked the right percentage. There is no right percentage to pick. There's just the system.
+
+The 70/30 split is not a feature. It is the product.
+
+WHY USERS DON'T CHOOSE
+
+Rail deliberately removes choice from the investment process. This is not a limitation — it is the design.
+
+When you give people choices about money:
+- They overthink and delay
+- They chase trends and buy high
+- They panic and sell low
+- They check prices obsessively
+- They compare themselves to others
+- They feel guilty about "wrong" decisions
+
+Rail eliminates all of this. There are no assets to pick. No charts to read. No timing to worry about. No portfolio to rebalance. The system handles allocation, yield, and rebalancing automatically.
+
+If a user feels the need to manage, optimize, or control their allocation, the product has failed its mission.
+
+AUTOMATION VS DISCIPLINE
+
+Discipline fails. This is not an opinion — it's decades of behavioral research.
+
+People who rely on discipline to save money:
+- Save inconsistently (good months and bad months)
+- Stop saving when stressed, busy, or emotional
+- Treat saving as optional ("I'll save what's left")
+- Need willpower, which is a finite resource that depletes throughout the day
+
+People who use automation:
+- Save consistently regardless of mood, stress, or life events
+- Don't need to make decisions each month
+- Build wealth without thinking about it
+- Can't easily undo the system in a moment of weakness
+
+Rail is automation taken to its logical conclusion. You don't set up auto-transfers. You don't configure recurring investments. The split happens at the infrastructure level, before you even see the money. By the time you check your balance, 30% is already working.
+
+THE STASH: YIELD WITHOUT EFFORT
+
+The 30% that goes to Stash is held in USDB — Bridge's yield-bearing stablecoin backed by US Treasuries. It earns approximately 3-4% APY automatically.
+
+You don't stake it. You don't claim rewards. You don't pick a pool. You don't approve transactions. The yield accrues passively while you do nothing.
+
+For users in countries with currency devaluation (Nigeria, Argentina, Turkey), this is especially powerful. Your 30% is denominated in USD, earning yield, while your local currency loses purchasing power. Rail provides passive USD exposure from the moment you deposit.
+
+THE STATION: DIRECTION, NOT DETAIL
+
+Rail's home screen — The Station — shows exactly three things: total balance, spend balance, and stash balance. That's it.
+
+Intentionally excluded:
+- Individual asset positions
+- Charts or performance timelines
+- Trade history
+- Percentage returns
+- Market prices
+
+Rail shows direction, not detail. Is your money working? Yes. That's all you need to know.
+
+WHO RAIL IS FOR
+
+Rail is built for the 18-30 year old who earns in any currency, wants their money to work, and doesn't want to think about how. This includes:
+- Young professionals in emerging markets hedging against local currency devaluation
+- Diaspora users sending money home or managing cross-border finances
+- Crypto-adjacent users who want yield without DeFi complexity
+- Anyone who would invest if the process were invisible
+
+WHAT RAIL IS NOT
+
+Rail is not a brokerage. Not a trading app. Not a robo-advisor. Not a crypto exchange. Those products require participation. Rail requires trust.
+
+DEPOSIT EQUALS CONSENT
+
+When you deposit money into Rail, you consent to the system. The split happens automatically. There is no opt-out for individual deposits. This is disclosed before your first deposit.
+
+This design is intentional. If every deposit required confirmation ("Split this deposit 70/30?"), users would eventually say no. The automation would break. The wealth-building would stop.
+
+Depositing is the only decision Rail asks you to make. Everything after that is handled.

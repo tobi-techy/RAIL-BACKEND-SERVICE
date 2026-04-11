@@ -1,0 +1,153 @@
+INVESTING BASICS AND UNDERSTANDING RISK
+
+WHAT IS INVESTING
+
+Investing is putting money into something with the expectation that it will grow in value over time. Unlike saving (which preserves money), investing aims to multiply money.
+
+Common investment types:
+- Stocks (equities): Ownership shares in companies. Value goes up when the company does well, down when it doesn't.
+- Bonds: Loans to governments or companies. They pay regular interest and return your principal at maturity. Lower risk than stocks, lower returns.
+- ETFs (Exchange-Traded Funds): Baskets of stocks or bonds bundled together. One ETF can hold hundreds of companies, giving you instant diversification.
+- Stablecoins with yield: Dollar-pegged digital currencies that earn interest. USDB (used by Rail) earns yield from US Treasury bonds. Lower risk, steady returns.
+- Real estate: Property that can generate rental income and appreciate in value. Requires large capital and is illiquid.
+
+WHY INVESTING MATTERS
+
+Inflation erodes the value of money over time. If inflation is 5% and your money earns 0%, you lose 5% of purchasing power every year. Investing is how you stay ahead of inflation.
+
+The power of compound returns:
+- 100,000 naira invested at 4% annual yield:
+  - After 1 year: 104,000
+  - After 5 years: 121,665
+  - After 10 years: 148,024
+  - After 20 years: 219,112
+- The same 100,000 kept as cash at 20% annual inflation:
+  - After 10 years: worth only 10,737 in today's purchasing power
+  - After 20 years: worth only 1,153
+
+The gap between investing and not investing widens dramatically over time. This is why starting early matters more than starting big.
+
+LONG-TERM THINKING: THE ONLY EDGE ORDINARY PEOPLE HAVE
+
+Professional traders have better information, faster technology, and more experience than you. You cannot beat them at short-term trading.
+
+But you have one advantage they don't: time. You can invest and wait 10, 20, 30 years. Most professional funds are measured quarterly. They can't afford to be patient. You can.
+
+Historical facts about long-term investing:
+- The US stock market has never lost money over any 20-year period in its history
+- The average annual return of the S&P 500 over the last 100 years is approximately 10%
+- Most of those returns came from a small number of very good days. Missing just the 10 best days in a decade cuts your returns in half.
+- This means: stay invested. Don't try to time the market. Time in the market beats timing the market.
+
+DOLLAR-COST AVERAGING: THE SIMPLEST STRATEGY
+
+Dollar-cost averaging means investing a fixed amount at regular intervals, regardless of price.
+
+How it works:
+- You invest 50,000 naira every month
+- When prices are high, your money buys fewer shares
+- When prices are low, your money buys more shares
+- Over time, your average cost per share is lower than the average price
+
+Why it works:
+- Removes the need to predict market direction
+- Reduces the impact of volatility
+- Builds a consistent investing habit
+- Eliminates the paralysis of "is now a good time to invest?"
+
+Rail implements dollar-cost averaging automatically. Every deposit triggers a 30% allocation to Stash. If you deposit regularly, you're dollar-cost averaging without thinking about it.
+
+DIVERSIFICATION: DON'T PUT ALL YOUR EGGS IN ONE BASKET
+
+Diversification means spreading your money across different types of investments so that a loss in one area doesn't destroy your entire portfolio.
+
+Why it matters:
+- Individual stocks can lose 50-100% of their value (companies go bankrupt)
+- Entire sectors can crash (tech in 2000, banks in 2008)
+- Even countries can have economic crises
+- But it's extremely rare for everything to crash simultaneously
+
+How to diversify:
+- Across asset types: stocks, bonds, stablecoins, real estate
+- Across geographies: don't invest only in your home country
+- Across sectors: technology, healthcare, finance, consumer goods
+- Across time: invest regularly, not all at once
+
+ETFs are the easiest way to diversify. A single S&P 500 ETF gives you exposure to 500 of the largest US companies across all sectors.
+
+Rail's invest engine handles diversification automatically. Users don't pick individual assets — the system allocates across a diversified portfolio based on strategy.
+
+RISK TOLERANCE: KNOW YOURSELF
+
+Risk tolerance is how much loss you can handle without panicking and selling. It depends on:
+- Your age: younger people can take more risk because they have more time to recover from losses
+- Your income stability: stable income allows more risk than irregular income
+- Your financial obligations: supporting a family requires more caution than being single
+- Your personality: some people lose sleep over a 5% drop, others don't notice a 20% drop
+
+Simple risk categories:
+- Conservative: Mostly bonds and stablecoins. Lower returns, lower volatility. Good for people near retirement or with low risk tolerance.
+- Moderate: Mix of stocks and bonds. Balanced returns and risk. Good for most people.
+- Aggressive: Mostly stocks. Higher potential returns, higher volatility. Good for young people with stable income and long time horizons.
+
+If you don't know your risk tolerance, start conservative. You can always increase risk later. It's much harder to recover from panic-selling during a downturn.
+
+WHAT VOLATILITY ACTUALLY MEANS
+
+Volatility is how much an investment's price moves up and down. High volatility means big swings. Low volatility means steady prices.
+
+Key understanding:
+- Volatility is not the same as risk. A stock that drops 20% and recovers in 6 months was volatile but not risky if you held through it.
+- Volatility only becomes risk when you sell during a dip. If you hold, the dip is temporary. If you sell, the loss is permanent.
+- Short-term volatility is normal. The stock market drops 10%+ at least once per year on average. It drops 20%+ roughly every 3-4 years. It has always recovered.
+
+How to handle volatility:
+- Don't check your portfolio daily. Checking more often leads to more anxiety and worse decisions.
+- Remember your time horizon. If you don't need the money for 10 years, a 20% drop today is irrelevant.
+- Stay invested. The worst thing you can do during a market drop is sell. The second worst thing is stop investing.
+
+Rail helps with volatility by not showing individual asset positions or daily price changes. You see your Stash balance growing over time. The short-term noise is hidden by design.
+
+COMPOUND INTEREST: THE EIGHTH WONDER OF THE WORLD
+
+Compound interest is earning returns on your returns. It's the most powerful force in wealth building.
+
+Simple interest: You earn interest only on your original deposit.
+Compound interest: You earn interest on your deposit plus all previously earned interest.
+
+Example with 1,000,000 naira at 4% annual yield:
+- Year 1: 1,040,000 (earned 40,000)
+- Year 5: 1,216,653 (earned 216,653 total)
+- Year 10: 1,480,244 (earned 480,244 total)
+- Year 20: 2,191,123 (earned 1,191,123 total — more than your original deposit)
+- Year 30: 3,243,398 (earned 2,243,398 — more than double your original)
+
+The key insight: compound interest accelerates over time. The first 10 years are slow. The next 10 are faster. The 10 after that are explosive. This is why starting early is the single most important financial decision you can make.
+
+A 22-year-old who invests 50,000 naira per month for 10 years and then stops will have more money at 60 than a 32-year-old who invests 50,000 per month for 28 years straight. The 10-year head start is that powerful.
+
+COMMON INVESTING MISTAKES
+
+1. Trying to time the market: "I'll invest when prices drop." You won't. You'll wait, prices will rise, and you'll invest at a higher price. Or prices will drop and you'll be too scared to invest.
+
+2. Chasing past performance: "This stock went up 200% last year, I should buy it." Past performance does not predict future results. By the time you hear about a winning investment, the gains are already priced in.
+
+3. Panic selling: Markets drop. It's normal. Selling during a drop locks in your losses. Historically, every major market crash has been followed by a recovery.
+
+4. Over-concentrating: Putting all your money in one stock, one sector, or one country. If that bet goes wrong, you lose everything.
+
+5. Ignoring fees: A 2% annual management fee sounds small but compounds against you. Over 30 years, it can consume 40% of your returns. Prefer low-fee index funds and ETFs.
+
+6. Investing money you need soon: Don't invest your rent money or emergency fund. Only invest money you won't need for at least 3-5 years.
+
+7. Following social media tips: If someone on Twitter or TikTok is telling you to buy a specific stock, they probably already own it and want the price to go up so they can sell. This is called pump and dump.
+
+INVESTING IS NOT GAMBLING
+
+Gambling: You bet money on an outcome determined by chance. The odds are against you. The house always wins over time.
+
+Investing: You allocate money to productive assets that generate value. Companies earn revenue, pay dividends, and grow. Bonds pay interest. Real estate generates rent. Over time, the odds are in your favor.
+
+The difference is time horizon and diversification. A single stock pick held for a week is closer to gambling. A diversified portfolio held for 20 years is investing.
+
+Rail is designed to be investing, not gambling. No individual stock picks. No timing. No speculation. Just systematic allocation into diversified, yield-bearing assets.

@@ -126,6 +126,22 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	router.GET("/internal/users/lookup", internalHandlers.LookupUser)
 	router.DELETE("/internal/users/:id", internalHandlers.DeleteUser)
 
+	// Internal knowledge ingestion — no JWT, uses INTERNAL_API_KEY
+	if container.GetKnowledgeService() != nil {
+		knowledgeHandlers := handlers.NewKnowledgeHandlers(container.GetKnowledgeService(), container.ZapLog)
+		router.POST("/internal/knowledge/ingest", func(c *gin.Context) {
+			key := c.GetHeader("Authorization")
+			if len(key) > 7 && key[:7] == "Bearer " {
+				key = key[7:]
+			}
+			if container.Config.Security.InternalAPIKey == "" || key != container.Config.Security.InternalAPIKey {
+				c.JSON(401, gin.H{"error": "unauthorized"})
+				return
+			}
+			knowledgeHandlers.Ingest(c)
+		})
+	}
+
 	// Manual deposit credit — internal API key auth, no user JWT needed
 	if container.FundingService != nil {
 		router.POST("/internal/deposit/credit", func(c *gin.Context) {
