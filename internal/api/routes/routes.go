@@ -126,6 +126,48 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	router.GET("/internal/users/lookup", internalHandlers.LookupUser)
 	router.DELETE("/internal/users/:id", internalHandlers.DeleteUser)
 
+	// Manual deposit credit — internal API key auth, no user JWT needed
+	if container.FundingService != nil {
+		router.POST("/internal/deposit/credit", func(c *gin.Context) {
+			// Auth check using internal API key
+			key := c.GetHeader("Authorization")
+			if len(key) > 7 && key[:7] == "Bearer " {
+				key = key[7:]
+			}
+			if container.Config.Security.InternalAPIKey == "" || key != container.Config.Security.InternalAPIKey {
+				c.JSON(401, gin.H{"error": "unauthorized"})
+				return
+			}
+			var req struct {
+				Address string `json:"address" binding:"required"`
+				Amount  string `json:"amount" binding:"required"`
+				TxHash  string `json:"tx_hash" binding:"required"`
+				Chain   string `json:"chain"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(400, gin.H{"error": err.Error()})
+				return
+			}
+			chain := req.Chain
+			if chain == "" {
+				chain = "base"
+			}
+			deposit := &entities.ChainDepositWebhook{
+				Chain:     entities.Chain(chain),
+				Address:   req.Address,
+				Token:     entities.StablecoinUSDC,
+				Amount:    req.Amount,
+				TxHash:    req.TxHash,
+				BlockTime: time.Now(),
+			}
+			if err := container.FundingService.ProcessChainDeposit(c.Request.Context(), deposit); err != nil {
+				c.JSON(500, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(200, gin.H{"status": "credited"})
+		})
+	}
+
 	// Apple App Site Association — required for passkey Associated Domains
 	router.GET("/.well-known/apple-app-site-association", func(c *gin.Context) {
 		c.Header("Content-Type", "application/json")
@@ -874,39 +916,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// KYC admin routes
 			admin.POST("/kyc/resync-bridge", kycHTTPHandlers.ResyncBridge)
 			admin.POST("/kyc/repair-bridge-govid", kycHTTPHandlers.RepairBridgeGovID)
-
-			// Manual deposit credit — for deposits that landed on-chain but webhook was missed
-			if container.FundingService != nil {
-				admin.POST("/deposit/credit", func(c *gin.Context) {
-					var req struct {
-						Address string `json:"address" binding:"required"`
-						Amount  string `json:"amount" binding:"required"`
-						TxHash  string `json:"tx_hash" binding:"required"`
-						Chain   string `json:"chain"`
-					}
-					if err := c.ShouldBindJSON(&req); err != nil {
-						c.JSON(400, gin.H{"error": err.Error()})
-						return
-					}
-					chain := req.Chain
-					if chain == "" {
-						chain = "base"
-					}
-					deposit := &entities.ChainDepositWebhook{
-						Chain:   entities.Chain(chain),
-						Address: req.Address,
-						Token:   entities.StablecoinUSDC,
-						Amount:  req.Amount,
-						TxHash:  req.TxHash,
-						BlockTime: time.Now(),
-					}
-					if err := container.FundingService.ProcessChainDeposit(c.Request.Context(), deposit); err != nil {
-						c.JSON(500, gin.H{"error": err.Error()})
-						return
-					}
-					c.JSON(200, gin.H{"status": "credited"})
-				})
-			}
 
 			// Knowledge base admin routes
 			if container.GetKnowledgeService() != nil {
