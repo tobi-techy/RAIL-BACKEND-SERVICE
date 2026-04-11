@@ -1757,7 +1757,7 @@ func (r *UserRepository) SetRailTag(ctx context.Context, userID uuid.UUID, railT
 func (r *UserRepository) FindApprovedNotActiveBridge(ctx context.Context, limit int) ([]uuid.UUID, error) {
 	query := `
 		SELECT u.id FROM users u
-		WHERE u.kyc_status = 'approved'
+		WHERE u.kyc_status IN ('approved', 'processing')
 		  AND (u.bridge_kyc_status IS NULL OR u.bridge_kyc_status NOT IN ('active', 'rejected'))
 		  AND u.kyc_provider_ref IS NOT NULL
 		  AND u.bridge_customer_id IS NOT NULL

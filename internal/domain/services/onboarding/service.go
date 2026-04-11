@@ -660,19 +660,17 @@ func (s *Service) ProcessKYCCallback(ctx context.Context, providerRef string, st
 
 	switch status {
 	case entities.KYCStatusApproved:
-		now := time.Now()
-		kycApprovedAt = &now
+		// Identity provider approved — set processing, not approved.
+		// Bridge webhook will promote to approved when Bridge goes active.
+		status = entities.KYCStatusProcessing
 
 		// Mark KYC review step as completed
 		if err := s.markStepCompleted(ctx, user.ID, entities.StepKYCReview, map[string]any{
-			"status":      string(status),
-			"approved_at": now,
+			"status":      "identity_approved",
+			"approved_at": time.Now(),
 		}); err != nil {
 			s.logger.Warn("Failed to mark KYC review step as completed", zap.Error(err))
 		}
-
-		// Virtual accounts are now created on-demand when the user requests one
-		// via POST /api/v1/funding/virtual-account, not auto-provisioned here.
 
 	case entities.KYCStatusRejected:
 		if len(rejectionReasons) > 0 {

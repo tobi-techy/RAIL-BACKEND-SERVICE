@@ -1375,6 +1375,8 @@ type BridgeCustomerStatusProcessor struct {
 type UserRepositoryForCustomer interface {
 	GetByBridgeCustomerID(ctx context.Context, bridgeCustomerID string) (*entities.UserProfile, error)
 	UpdateBridgeKYCStatus(ctx context.Context, userID uuid.UUID, status string) error
+	UpdateKYCStatus(ctx context.Context, userID uuid.UUID, status entities.KYCStatus, approvedAt *time.Time, rejectionReason *string) error
+	UpdateOnboardingStatus(ctx context.Context, userID uuid.UUID, status entities.OnboardingStatus) error
 }
 
 // NewBridgeCustomerStatusProcessor creates a new customer status processor
@@ -1433,6 +1435,22 @@ func (s *BridgeCustomerStatusProcessor) UpdateCustomerStatus(ctx context.Context
 	s.logger.Info("Updated bridge_kyc_status",
 		zap.String("user_id", user.ID.String()),
 		zap.String("new_status", bridgeKYCStatus))
+
+	// When Bridge goes active, promote kyc_status to approved and complete onboarding.
+	// Bridge is the authoritative source for KYC approval.
+	if bridgeKYCStatus == "active" {
+		now := time.Now()
+		if err := s.userRepo.UpdateKYCStatus(ctx, user.ID, entities.KYCStatusApproved, &now, nil); err != nil {
+			s.logger.Error("Failed to promote kyc_status to approved on Bridge active",
+				zap.Error(err), zap.String("user_id", user.ID.String()))
+		}
+		if err := s.userRepo.UpdateOnboardingStatus(ctx, user.ID, entities.OnboardingStatusCompleted); err != nil {
+			s.logger.Error("Failed to complete onboarding on Bridge active",
+				zap.Error(err), zap.String("user_id", user.ID.String()))
+		}
+		s.logger.Info("KYC approved — Bridge active",
+			zap.String("user_id", user.ID.String()))
+	}
 
 	// Send push notification for KYC outcome
 	if s.notifier != nil {
