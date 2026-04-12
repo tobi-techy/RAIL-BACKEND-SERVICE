@@ -733,9 +733,14 @@ func setDefaults() {
 	viper.SetDefault("ai.openai.model", "gpt-4o-mini")
 	viper.SetDefault("ai.openai.max_tokens", 500)
 	viper.SetDefault("ai.openai.temperature", 0.7)
-	viper.SetDefault("ai.gemini.model", "gemini-1.5-flash")
+	viper.SetDefault("ai.gemini.model", "gemini-2.0-flash")
 	viper.SetDefault("ai.gemini.max_tokens", 500)
 	viper.SetDefault("ai.gemini.temperature", 0.7)
+
+	// Explicit env bindings for AI keys (task def uses short names)
+	viper.BindEnv("ai.openai.api_key", "OPENAI_API_KEY")
+	viper.BindEnv("ai.gemini.api_key", "GEMINI_API_KEY")
+	viper.BindEnv("ai.primary", "AI_PRIMARY")
 
 	// Compute defaults
 	viper.SetDefault("zerog.compute.broker_endpoint", "")
