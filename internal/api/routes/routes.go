@@ -845,6 +845,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				aiGroup := protected.Group("/ai")
 				{
 					aiGroup.POST("/chat", middleware.AuthRateLimit(20), aiChatHandlers.Chat)
+					aiGroup.POST("/chat/stream", middleware.AuthRateLimit(20), aiChatHandlers.ChatStream)
 					aiGroup.GET("/wrapped", middleware.AuthRateLimit(10), aiChatHandlers.GetWrapped)
 					aiGroup.GET("/quick-insight", middleware.AuthRateLimit(20), aiChatHandlers.QuickInsight)
 					aiGroup.GET("/suggestions", aiChatHandlers.GetSuggestedQuestions)
