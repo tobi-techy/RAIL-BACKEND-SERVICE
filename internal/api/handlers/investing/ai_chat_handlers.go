@@ -1,10 +1,12 @@
 package investing
 
 import (
-	"github.com/rail-service/rail_service/internal/api/handlers/common"
+	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/pkg/logger"
@@ -25,6 +27,53 @@ func NewAIChatHandlers(orchestrator *aiservice.Orchestrator, logger *logger.Logg
 type ChatRequest struct {
 	Message string       `json:"message" binding:"required"`
 	History []ai.Message `json:"history,omitempty"`
+}
+
+// ChatStream handles POST /api/v1/ai/chat/stream (SSE)
+func (h *AIChatHandlers) ChatStream(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	var req ChatRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+
+	if len(req.Message) > 2000 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "message too long", "max_length": 2000})
+		return
+	}
+
+	if h.orchestrator.IsUserOverCostCeiling(c.Request.Context(), userID) {
+		c.JSON(http.StatusOK, gin.H{
+			"content":      "You've been chatting a lot this month! Your AI assistant will be back at full power next month 💡",
+			"over_ceiling": true,
+		})
+		return
+	}
+
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+
+	err = h.orchestrator.ChatStream(c.Request.Context(), userID, req.Message, req.History, func(event aiservice.StreamEvent) {
+		data, _ := json.Marshal(event)
+		fmt.Fprintf(c.Writer, "data: %s\n\n", data)
+		c.Writer.Flush()
+	})
+
+	if err != nil {
+		h.logger.Error("Stream chat failed", "error", err, "user_id", userID.String())
+		errEvent, _ := json.Marshal(aiservice.StreamEvent{Type: "error", Content: "Something went wrong — try again 🔄"})
+		fmt.Fprintf(c.Writer, "data: %s\n\n", errEvent)
+		c.Writer.Flush()
+	}
 }
 
 // Chat handles POST /api/v1/ai/chat
@@ -69,6 +118,7 @@ func (h *AIChatHandlers) Chat(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"content":     resp.Content,
+		"cards":       resp.Cards,
 		"tool_calls":  resp.ToolCalls,
 		"tokens_used": resp.TokensUsed,
 		"provider":    resp.Provider,
@@ -129,21 +179,13 @@ func (h *AIChatHandlers) QuickInsight(c *gin.Context) {
 
 // GetSuggestedQuestions handles GET /api/v1/ai/suggestions
 func (h *AIChatHandlers) GetSuggestedQuestions(c *gin.Context) {
-	_, err := common.GetUserIDFromContext(c)
+	userID, err := common.GetUserIDFromContext(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
 
-	suggestions := []string{
-		"How did my portfolio do this week?",
-		"What's my best performing stock?",
-		"Where does my money go this month?",
-		"Show me my spending breakdown",
-		"How diversified is my portfolio?",
-		"What news affects my holdings?",
-	}
-
+	suggestions := h.orchestrator.GetPersonalizedSuggestions(c.Request.Context(), userID)
 	c.JSON(http.StatusOK, gin.H{"suggestions": suggestions})
 }
 

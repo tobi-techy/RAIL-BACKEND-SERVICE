@@ -193,6 +193,7 @@ func (h *ConversationHandlers) ChatInConversation(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"data": gin.H{
 			"content":     resp.Content,
+			"cards":       resp.Cards,
 			"tool_calls":  resp.ToolCalls,
 			"tokens_used": resp.TokensUsed,
 			"provider":    resp.Provider,

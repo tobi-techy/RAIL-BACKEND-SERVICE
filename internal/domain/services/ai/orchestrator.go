@@ -233,9 +233,10 @@ func (o *Orchestrator) Chat(ctx context.Context, userID uuid.UUID, message strin
 		return nil, fmt.Errorf("AI completion failed: %w", err)
 	}
 
-	// Process tool calls if any
+	// Process tool calls — up to 3 rounds of tool calling
 	toolResults := make([]ToolResult, 0)
-	if len(resp.ToolCalls) > 0 {
+	allToolResults := make([]ToolResult, 0)
+	for round := 0; round < 3 && len(resp.ToolCalls) > 0; round++ {
 		for _, tc := range resp.ToolCalls {
 			result, err := o.executeTool(ctx, userID, tc)
 			observeToolCall(tc.Name, err)
@@ -244,28 +245,37 @@ func (o *Orchestrator) Chat(ctx context.Context, userID uuid.UUID, message strin
 				result = map[string]interface{}{"error": err.Error()}
 			}
 			toolResults = append(toolResults, ToolResult{Name: tc.Name, Result: result})
+			allToolResults = append(allToolResults, ToolResult{Name: tc.Name, Result: result})
 		}
 
-		// Make follow-up request with tool results
 		toolResultsJSON, _ := json.Marshal(toolResults)
-		messages = append(messages, ai.Message{Role: "assistant", Content: resp.Content})
+		assistantContent := resp.Content
+		if assistantContent == "" {
+			assistantContent = "Calling tools..."
+		}
+		messages = append(messages, ai.Message{Role: "assistant", Content: assistantContent})
 		messages = append(messages, ai.Message{Role: "user", Content: fmt.Sprintf("Tool results: %s", string(toolResultsJSON))})
 
 		req.Messages = messages
-		resp, err = o.aiProvider.ChatCompletion(ctx, req)
+		resp, err = o.aiProvider.ChatCompletionWithTools(ctx, req, o.GetTools())
 		if err != nil {
 			return nil, fmt.Errorf("follow-up completion failed: %w", err)
 		}
+		toolResults = toolResults[:0]
 	}
 
 	// Apply safety filter
 	content := o.applySafetyFilter(resp.Content)
 
+	// Build visual cards from tool results
+	cards := buildCardsFromToolResults(allToolResults)
+
 	observeChat(resp.Provider, time.Since(start), resp.TokensUsed, nil)
 
 	return &ChatResponse{
 		Content:     content,
-		ToolCalls:   toolResults,
+		Cards:       cards,
+		ToolCalls:   allToolResults,
 		TokensUsed:  resp.TokensUsed,
 		Provider:    resp.Provider,
 	}, nil
@@ -287,7 +297,7 @@ func (o *Orchestrator) executeTool(ctx context.Context, userID uuid.UUID, tc ai.
 
 	case ToolGetTopMovers:
 		limit := 5
-		if l, ok := tc.Arguments["limit"].(float64); ok {
+		if l, ok := tc.Arguments["limit"].(float64); ok && l > 0 && l <= 20 {
 			limit = int(l)
 		}
 		movers, err := o.portfolioProvider.GetTopMovers(ctx, userID, limit)
@@ -305,8 +315,20 @@ func (o *Orchestrator) executeTool(ctx context.Context, userID uuid.UUID, tc ai.
 
 	case ToolGetContributions:
 		now := time.Now()
+		contribType := "all"
+		if t, ok := tc.Arguments["type"].(string); ok && t != "" {
+			contribType = t
+		}
 		startDate := now.AddDate(0, 0, -7)
-		summary, err := o.activityProvider.GetContributions(ctx, userID, "all", startDate, now)
+		if p, ok := tc.Arguments["period"].(string); ok {
+			switch p {
+			case "1m":
+				startDate = now.AddDate(0, -1, 0)
+			case "3m":
+				startDate = now.AddDate(0, -3, 0)
+			}
+		}
+		summary, err := o.activityProvider.GetContributions(ctx, userID, contribType, startDate, now)
 		if err != nil {
 			return nil, err
 		}
@@ -355,23 +377,21 @@ func (o *Orchestrator) executeTool(ctx context.Context, userID uuid.UUID, tc ai.
 	}
 }
 
+// Pre-compiled safety filter patterns.
+var safetyPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)you should (buy|sell|invest)`),
+	regexp.MustCompile(`(?i)i recommend (buying|selling)`),
+	regexp.MustCompile(`(?i)definitely (buy|sell)`),
+}
+
 // applySafetyFilter removes financial advice from responses
 func (o *Orchestrator) applySafetyFilter(content string) string {
-	// Patterns that indicate financial advice
-	advicePatterns := []string{
-		`(?i)you should (buy|sell|invest)`,
-		`(?i)i recommend (buying|selling)`,
-		`(?i)definitely (buy|sell)`,
-	}
-
-	for _, pattern := range advicePatterns {
-		re := regexp.MustCompile(pattern)
+	for _, re := range safetyPatterns {
 		if re.MatchString(content) {
-			o.logger.Warn("Safety filter triggered", zap.String("pattern", pattern))
+			o.logger.Warn("Safety filter triggered", zap.String("pattern", re.String()))
 			content = re.ReplaceAllString(content, "some investors might consider")
 		}
 	}
-
 	return content
 }
 
@@ -453,10 +473,11 @@ func getSign(d decimal.Decimal) string {
 
 // ChatResponse represents the response from a chat interaction
 type ChatResponse struct {
-	Content    string       `json:"content"`
-	ToolCalls  []ToolResult `json:"tool_calls,omitempty"`
-	TokensUsed int          `json:"tokens_used"`
-	Provider   string       `json:"provider"`
+	Content    string                `json:"content"`
+	Cards      []entities.InsightCard `json:"cards,omitempty"`
+	ToolCalls  []ToolResult          `json:"tool_calls,omitempty"`
+	TokensUsed int                   `json:"tokens_used"`
+	Provider   string                `json:"provider"`
 }
 
 // ToolResult represents the result of a tool execution

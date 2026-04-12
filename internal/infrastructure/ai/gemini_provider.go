@@ -172,6 +172,7 @@ func (p *GeminiProvider) ChatCompletionWithTools(ctx context.Context, req *ChatR
 // buildGeminiRequest converts our ChatRequest to Gemini's format
 func (p *GeminiProvider) buildGeminiRequest(req *ChatRequest, tools []Tool) map[string]interface{} {
 	contents := make([]map[string]interface{}, 0, len(req.Messages))
+	var systemParts []string
 
 	// Gemini uses "user" and "model" roles (not "assistant")
 	for _, msg := range req.Messages {
@@ -180,7 +181,8 @@ func (p *GeminiProvider) buildGeminiRequest(req *ChatRequest, tools []Tool) map[
 			role = "model"
 		}
 		if role == "system" {
-			// Gemini doesn't have system role, prepend to first user message
+			// Gemini doesn't have system role, collect for prepending
+			systemParts = append(systemParts, msg.Content)
 			continue
 		}
 
@@ -192,10 +194,17 @@ func (p *GeminiProvider) buildGeminiRequest(req *ChatRequest, tools []Tool) map[
 		})
 	}
 
-	// Prepend system prompt to first user message if present
-	if req.SystemPrompt != "" && len(contents) > 0 {
+	// Prepend system prompt + any system messages to first user message
+	prefix := req.SystemPrompt
+	for _, sp := range systemParts {
+		if prefix != "" {
+			prefix += "\n\n"
+		}
+		prefix += sp
+	}
+	if prefix != "" && len(contents) > 0 {
 		if firstMsg, ok := contents[0]["parts"].([]map[string]string); ok && len(firstMsg) > 0 {
-			firstMsg[0]["text"] = req.SystemPrompt + "\n\n" + firstMsg[0]["text"]
+			firstMsg[0]["text"] = prefix + "\n\n" + firstMsg[0]["text"]
 		}
 	}
 
@@ -273,9 +282,13 @@ func (p *GeminiProvider) convertResponse(resp *geminiResponse, duration time.Dur
 	// Parse tool calls if present (function calls in Gemini)
 	for _, part := range candidate.Content.Parts {
 		if funcCall, ok := part["functionCall"].(map[string]interface{}); ok {
+			name, _ := funcCall["name"].(string)
+			if name == "" {
+				continue
+			}
 			toolCall := ToolCall{
 				ID:   fmt.Sprintf("call_%d", len(chatResp.ToolCalls)),
-				Name: funcCall["name"].(string),
+				Name: name,
 			}
 
 			if args, ok := funcCall["args"].(map[string]interface{}); ok {

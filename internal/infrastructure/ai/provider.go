@@ -92,3 +92,16 @@ const (
 	ErrorCodeTimeout         = "timeout"
 	ErrorCodeUnavailable     = "unavailable"
 )
+
+// StreamChunk represents a single chunk in a streaming response.
+type StreamChunk struct {
+	Content    string     `json:"content,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	Done       bool       `json:"done"`
+	TokensUsed int        `json:"tokens_used,omitempty"`
+}
+
+// StreamProvider is an optional interface for providers that support streaming.
+type StreamProvider interface {
+	ChatCompletionStream(ctx context.Context, req *ChatRequest, tools []Tool, ch chan<- StreamChunk) error
+}
