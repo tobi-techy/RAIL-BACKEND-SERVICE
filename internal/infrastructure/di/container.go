@@ -2519,6 +2519,16 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		c.AIOrchestrator.SetBalanceHistory(c.yieldRepo)
 	}
 
+	// Initialize pattern analysis
+	if c.CardRepo != nil {
+		c.AIOrchestrator.SetPatterns(c.CardRepo)
+	}
+
+	// Initialize comparative context (uses ledger for balances)
+	if c.LedgerService != nil {
+		c.AIOrchestrator.SetAggregateStats(c.LedgerService)
+	}
+
 	c.ZapLog.Info("AI Financial Manager services initialized",
 		zap.String("primary_provider", primary.Name()),
 		zap.Int("fallback_count", len(fallbacks)),

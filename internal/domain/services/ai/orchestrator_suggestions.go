@@ -30,14 +30,25 @@ func (o *Orchestrator) GetPersonalizedSuggestions(ctx context.Context, userID uu
 		}
 	}
 
+	// New: pattern-aware suggestions
+	if o.patterns != nil {
+		suggestions = append(suggestions, "What are my spending patterns?")
+	}
+
+	// New: simulator suggestion
+	suggestions = append(suggestions, "What if I save $50 every week for a year?")
+
+	// New: comparative
+	if o.aggregateStats != nil {
+		suggestions = append(suggestions, "How am I doing financially?")
+	}
+
 	if o.balanceHistory != nil {
 		suggestions = append(suggestions, "Show me how my savings have grown")
 	}
+
 	if o.knowledge != nil {
 		suggestions = append(suggestions, "What's the best way to start investing?")
-	}
-	if o.spending != nil {
-		suggestions = append(suggestions, "What are my top spending categories?")
 	}
 
 	if len(suggestions) > 6 {
