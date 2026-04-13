@@ -66,10 +66,22 @@ func (w *Worker) Start(ctx context.Context) {
 		case t := <-ticker.C:
 			hour := t.UTC().Hour()
 			weekday := t.UTC().Weekday()
+			day := t.UTC().Day()
+			lastDay := time.Date(t.Year(), t.Month()+1, 0, 0, 0, 0, 0, time.UTC).Day()
 
-			// Daily insights at 9am UTC
+			// Morning greeting at 7am UTC (8am WAT)
+			if hour == 7 {
+				w.runMorningGreeting(ctx)
+			}
+
+			// Daily insights at 9am UTC (10am WAT)
 			if hour == 9 {
 				w.runDailyInsights(ctx)
+			}
+
+			// Month-end recap on last day of month at 6pm UTC
+			if day == lastDay && hour == 18 {
+				w.runMonthRecap(ctx)
 			}
 
 			// Weekly digest on Mondays at 8am UTC
@@ -208,4 +220,74 @@ func (w *Worker) runWeeklyDigest(ctx context.Context) {
 	}
 
 	w.logger.Info("Weekly digest complete", zap.Int("users", len(users)))
+}
+
+// runMorningGreeting sends a brief morning balance update.
+func (w *Worker) runMorningGreeting(ctx context.Context) {
+	users, err := w.userRepo.GetAllActiveUsers(ctx)
+	if err != nil {
+		return
+	}
+
+	for _, u := range users {
+		if ctx.Err() != nil {
+			return
+		}
+		spend, err := w.balances.GetAccountBalance(ctx, u.ID, entities.AccountTypeSpendingBalance)
+		if err != nil || spend.IsZero() {
+			continue
+		}
+		stash, _ := w.balances.GetAccountBalance(ctx, u.ID, entities.AccountTypeStashBalance)
+
+		body := fmt.Sprintf("You have $%s to spend today. Stash: $%s and growing 📈", spend.StringFixed(2), stash.StringFixed(2))
+
+		_ = w.pushSender.SendToUser(ctx, u.ID,
+			"Good morning ☀️",
+			body,
+			map[string]interface{}{"type": "morning_greeting", "action": "open_home"},
+		)
+	}
+}
+
+// runMonthRecap sends a month-end financial summary.
+func (w *Worker) runMonthRecap(ctx context.Context) {
+	w.logger.Info("Running month-end recap")
+
+	users, err := w.userRepo.GetAllActiveUsers(ctx)
+	if err != nil {
+		w.logger.Error("month recap: failed to get users", zap.Error(err))
+		return
+	}
+
+	now := time.Now().UTC()
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+
+	for _, u := range users {
+		if ctx.Err() != nil {
+			return
+		}
+		spent, txCount, err := w.spendingRepo.GetSpendingTotal(ctx, u.ID, monthStart, now)
+		if err != nil {
+			continue
+		}
+
+		stash, _ := w.balances.GetAccountBalance(ctx, u.ID, entities.AccountTypeStashBalance)
+		spend, _ := w.balances.GetAccountBalance(ctx, u.ID, entities.AccountTypeSpendingBalance)
+		total := spend.Add(stash)
+
+		if total.IsZero() && spent.IsZero() {
+			continue
+		}
+
+		body := fmt.Sprintf("This month: $%s spent across %d transactions. Your stash is at $%s. Total balance: $%s. Ask Ada for your full breakdown 💬",
+			spent.StringFixed(2), txCount, stash.StringFixed(2), total.StringFixed(2))
+
+		_ = w.pushSender.SendToUser(ctx, u.ID,
+			"Your Month in Review 📊",
+			body,
+			map[string]interface{}{"type": "month_recap", "action": "open_chat"},
+		)
+	}
+
+	w.logger.Info("Month recap complete")
 }

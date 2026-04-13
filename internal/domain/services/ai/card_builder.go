@@ -26,6 +26,12 @@ func buildCardsFromToolResults(results []ToolResult) []entities.InsightCard {
 			cards = append(cards, buildBalanceChartCard(tr.Result))
 		case ToolGetAllocations:
 			cards = append(cards, buildAllocationCard(tr.Result))
+		case ToolGetSpendingPatterns:
+			cards = append(cards, buildPatternCards(tr.Result)...)
+		case ToolSimulateSavings:
+			cards = append(cards, buildSimulationCard(tr.Result))
+		case ToolGetComparativeContext:
+			cards = append(cards, buildComparativeCard(tr.Result))
 		}
 	}
 	return cards
@@ -198,5 +204,130 @@ func buildAllocationCard(data map[string]interface{}) entities.InsightCard {
 		Type:  "breakdown",
 		Title: "Portfolio Allocation",
 		Data:  items,
+	}
+}
+
+func buildPatternCards(data map[string]interface{}) []entities.InsightCard {
+	var cards []entities.InsightCard
+
+	peakDay := str(data, "peak_spending_day")
+	weekTrend := str(data, "week_over_week_trend")
+	weekChangePct := str(data, "week_change_pct")
+
+	trendSentiment := "neutral"
+	trendIcon := "→"
+	if weekTrend == "increasing" {
+		trendSentiment = "negative"
+		trendIcon = "↑"
+	} else if weekTrend == "decreasing" {
+		trendSentiment = "positive"
+		trendIcon = "↓"
+	}
+
+	cards = append(cards, entities.InsightCard{
+		Type:      "stat_grid",
+		Title:     "Spending Patterns",
+		Sentiment: trendSentiment,
+		Data: []entities.StatItem{
+			{Label: "Peak Day", Value: peakDay, Icon: "📅"},
+			{Label: "Week Trend", Value: trendIcon + " " + weekChangePct + "%", Sentiment: trendSentiment},
+			{Label: "Weekend", Value: "$" + str(data, "weekend_total")},
+			{Label: "Weekday", Value: "$" + str(data, "weekday_total")},
+		},
+	})
+
+	// Day of week chart
+	days := toMapSlice(data["day_of_week_breakdown"])
+	if len(days) > 0 {
+		points := make([]entities.ChartPoint, len(days))
+		peakIdx := 0
+		peakVal := decimal.Zero
+		for i, d := range days {
+			val, _ := decimal.NewFromString(str(d, "total"))
+			label := str(d, "day")
+			if len(label) > 3 {
+				label = label[:3]
+			}
+			points[i] = entities.ChartPoint{Label: label, Value: val}
+			if val.GreaterThan(peakVal) {
+				peakVal = val
+				peakIdx = i
+			}
+		}
+		cards = append(cards, entities.InsightCard{
+			Type:  "chart",
+			Title: "Spending by Day",
+			Data: entities.ChartData{
+				ChartType: "bar",
+				Points:    points,
+				YLabel:    "$",
+				Annotations: []entities.ChartAnnotation{
+					{Label: "Peak", Value: peakVal, Index: peakIdx, Type: "peak"},
+				},
+			},
+		})
+	}
+
+	return cards
+}
+
+func buildSimulationCard(data map[string]interface{}) entities.InsightCard {
+	sim, _ := data["simulation"].(map[string]interface{})
+	points := toMapSlice(data["monthly_projections"])
+
+	chartPoints := make([]entities.ChartPoint, len(points))
+	for i, p := range points {
+		val, _ := decimal.NewFromString(str(p, "stash_balance"))
+		chartPoints[i] = entities.ChartPoint{
+			Label: fmt.Sprintf("M%d", num(p, "month")),
+			Value: val,
+		}
+	}
+
+	milestones, _ := data["milestones"].(map[string]int)
+	annotations := make([]entities.ChartAnnotation, 0)
+	for label, month := range milestones {
+		for i, p := range points {
+			if num(p, "month") == month {
+				val, _ := decimal.NewFromString(str(p, "stash_balance"))
+				annotations = append(annotations, entities.ChartAnnotation{
+					Label: label, Value: val, Index: i, Type: "milestone",
+				})
+				break
+			}
+		}
+	}
+
+	return entities.InsightCard{
+		Type:      "chart",
+		Title:     "Savings Projection",
+		Subtitle:  "Stash: $" + str(sim, "final_stash_balance") + " (incl. $" + str(sim, "total_yield_earned") + " yield)",
+		Sentiment: "positive",
+		Data: entities.ChartData{
+			ChartType:   "line",
+			Points:      chartPoints,
+			YLabel:      "$",
+			Annotations: annotations,
+		},
+	}
+}
+
+func buildComparativeCard(data map[string]interface{}) entities.InsightCard {
+	stashLevel := str(data, "stash_level")
+	sentiment := "neutral"
+	if stashLevel == "strong" || stashLevel == "impressive" {
+		sentiment = "positive"
+	}
+
+	return entities.InsightCard{
+		Type:      "stat_grid",
+		Title:     "Your Financial Snapshot",
+		Sentiment: sentiment,
+		Data: []entities.StatItem{
+			{Label: "Spend Balance", Value: "$" + str(data, "spend_balance"), Icon: "💳"},
+			{Label: "Stash Balance", Value: "$" + str(data, "stash_balance"), Icon: "🏦"},
+			{Label: "Savings Rate", Value: str(data, "savings_rate"), Sentiment: sentiment},
+			{Label: "Streak", Value: fmt.Sprintf("%d days", num(data, "streak_days")), Icon: "🔥"},
+		},
 	}
 }

@@ -3,23 +3,11 @@ package entities
 import "github.com/shopspring/decimal"
 
 // InsightCard is a structured visual block the iOS app renders as a rich card.
-// The backend returns these alongside text responses so the app can show
-// charts, stat grids, progress bars, and breakdowns — not just plain text.
-//
-// Card types and their Data fields:
-//
-//   "stat_grid"     → Stats []StatItem
-//   "chart"         → ChartData
-//   "breakdown"     → BreakdownItems []BreakdownItem
-//   "progress"      → ProgressData
-//   "highlight"     → (uses Title + Subtitle only)
-//   "alert"         → (uses Title + Subtitle + Sentiment)
-
 type InsightCard struct {
-	Type      string      `json:"type"`                 // stat_grid, chart, breakdown, progress, highlight, alert
+	Type      string      `json:"type"`
 	Title     string      `json:"title"`
 	Subtitle  string      `json:"subtitle,omitempty"`
-	Sentiment string      `json:"sentiment,omitempty"`  // positive, negative, neutral
+	Sentiment string      `json:"sentiment,omitempty"`
 	Data      interface{} `json:"data,omitempty"`
 }
 
@@ -27,34 +15,61 @@ type InsightCard struct {
 type StatItem struct {
 	Label     string `json:"label"`
 	Value     string `json:"value"`
-	Change    string `json:"change,omitempty"`     // "+12.5%" or "-3.2%"
-	Sentiment string `json:"sentiment,omitempty"`  // positive, negative, neutral
+	Change    string `json:"change,omitempty"`
+	Sentiment string `json:"sentiment,omitempty"`
+	Icon      string `json:"icon,omitempty"`
 }
 
 // ChartData powers a line/bar chart card.
 type ChartData struct {
-	ChartType string       `json:"chart_type"` // line, bar
-	Points    []ChartPoint `json:"points"`
-	YLabel    string       `json:"y_label,omitempty"`
+	ChartType   string           `json:"chart_type"`
+	Points      []ChartPoint     `json:"points"`
+	YLabel      string           `json:"y_label,omitempty"`
+	Annotations []ChartAnnotation `json:"annotations,omitempty"`
 }
 
 // ChartPoint is a single data point.
 type ChartPoint struct {
-	Label string          `json:"label"` // date or category
+	Label string          `json:"label"`
 	Value decimal.Decimal `json:"value"`
 }
 
-// BreakdownItem is a row in a breakdown card (spending categories, allocations).
+// ChartAnnotation marks a notable point on a chart.
+type ChartAnnotation struct {
+	Label string          `json:"label"`
+	Value decimal.Decimal `json:"value"`
+	Index int             `json:"index"`
+	Type  string          `json:"type"` // "peak", "milestone", "highlight"
+}
+
+// BreakdownItem is a row in a breakdown card.
 type BreakdownItem struct {
 	Label   string          `json:"label"`
 	Amount  decimal.Decimal `json:"amount"`
 	Percent decimal.Decimal `json:"percent"`
-	Color   string          `json:"color,omitempty"` // hex color for iOS
+	Color   string          `json:"color,omitempty"`
+	Icon    string          `json:"icon,omitempty"`
 }
 
 // ProgressData powers a progress/gauge card.
 type ProgressData struct {
 	Current decimal.Decimal `json:"current"`
 	Target  decimal.Decimal `json:"target"`
-	Unit    string          `json:"unit,omitempty"` // "$", "days", etc.
+	Unit    string          `json:"unit,omitempty"`
+	Label   string          `json:"label,omitempty"`
+}
+
+// ProjectionData powers a savings projection card.
+type ProjectionData struct {
+	Points     []ChartPoint      `json:"points"`
+	Milestones map[string]int    `json:"milestones,omitempty"`
+	FinalValue string            `json:"final_value"`
+	YieldTotal string            `json:"yield_total"`
+}
+
+// ShareableCard wraps an InsightCard with sharing metadata.
+type ShareableCard struct {
+	Card      InsightCard `json:"card"`
+	ShareText string      `json:"share_text"`
+	Hashtag   string      `json:"hashtag,omitempty"`
 }
