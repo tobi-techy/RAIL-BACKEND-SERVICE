@@ -2507,9 +2507,10 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		c.AIOrchestrator.SetKnowledge(c.KnowledgeService)
 	}
 
-	// Initialize spending analysis
-	if c.CardRepo != nil {
-		spendingSvc := spendingsvc.NewService(c.CardRepo)
+	// Initialize spending analysis (all outflows: card, withdrawal, p2p)
+	{
+		ledgerSpendingRepo := repositories.NewLedgerSpendingRepository(sqlxDB)
+		spendingSvc := spendingsvc.NewService(ledgerSpendingRepo)
 		c.AIOrchestrator.SetSpending(spendingSvc)
 	}
 
