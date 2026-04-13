@@ -373,7 +373,7 @@ type BasicCompleteRequest struct {
 	UserID    uuid.UUID `json:"-" validate:"-"`
 	FirstName string    `json:"firstName" validate:"required"`
 	LastName  string    `json:"lastName" validate:"required"`
-	Password  string    `json:"password" validate:"required,min=12"`
+	Password  string    `json:"password" validate:"required,min=8"`
 }
 
 // BasicCompleteResponse represents the response after basic signup completion
@@ -387,7 +387,7 @@ type BasicCompleteResponse struct {
 type OnboardingCompleteRequest struct {
 	UserID            uuid.UUID  `json:"-" validate:"-"` // Set from auth context
 	Email             *string    `json:"email,omitempty" validate:"omitempty,email"`
-	Password          string     `json:"password,omitempty" validate:"omitempty,min=12"` // Optional for passkey users
+	Password          string     `json:"password,omitempty" validate:"omitempty,min=8"` // Optional for passkey users
 	FirstName         string     `json:"firstName" validate:"required"`
 	LastName          string     `json:"lastName" validate:"required"`
 	DateOfBirth       *time.Time `json:"dateOfBirth" validate:"required"`
