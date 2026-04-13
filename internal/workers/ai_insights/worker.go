@@ -121,7 +121,7 @@ func (w *Worker) checkSpendingAlert(ctx context.Context, userID uuid.UUID) {
 	if ratio.GreaterThan(decimal.NewFromFloat(1.5)) {
 		pctIncrease := ratio.Sub(decimal.NewFromInt(1)).Mul(decimal.NewFromInt(100)).StringFixed(0)
 		_ = w.pushSender.SendToUser(ctx, userID,
-			"Spending Alert 💸",
+			"Spending Alert",
 			"You've spent "+pctIncrease+"% more this week than last week. Tap to see where your money went.",
 			map[string]interface{}{"type": "spending_alert", "action": "open_chat"},
 		)
@@ -146,7 +146,7 @@ func (w *Worker) checkSavingsGrowth(ctx context.Context, userID uuid.UUID) {
 	for _, m := range milestones {
 		if balance.GreaterThanOrEqual(m) && balance.Sub(m).LessThan(decimal.NewFromInt(10)) {
 			_ = w.pushSender.SendToUser(ctx, userID,
-				"Savings Milestone! 🎉",
+				"Savings Milestone!",
 				"Your stash just crossed $"+m.String()+". Your money is working for you.",
 				map[string]interface{}{"type": "savings_milestone", "amount": m.String()},
 			)
@@ -201,7 +201,7 @@ func (w *Worker) runWeeklyDigest(ctx context.Context) {
 		body += "Stash: $" + stash.StringFixed(2) + ". Total: $" + total.StringFixed(2) + "."
 
 		_ = w.pushSender.SendToUser(ctx, u.ID,
-			"Your Weekly Money Recap 📊",
+			"Your Weekly Money Recap",
 			body,
 			map[string]interface{}{"type": "weekly_digest", "action": "open_chat"},
 		)

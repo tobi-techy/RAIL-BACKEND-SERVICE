@@ -1844,3 +1844,34 @@ func (r *UserRepository) GetAllActiveUsers(ctx context.Context) ([]NotificationU
 	}
 	return users, rows.Err()
 }
+
+// GetUsersWithNoDeposits returns IDs of active, KYC-approved users who have a device token
+// but have never made a deposit, and signed up more than 24 hours ago.
+func (r *UserRepository) GetUsersWithNoDeposits(ctx context.Context) ([]NotificationUser, error) {
+	query := `
+		SELECT DISTINCT u.id
+		FROM users u
+		JOIN device_tokens dt ON dt.user_id = u.id
+		LEFT JOIN deposits d ON d.user_id = u.id
+		WHERE u.is_active = true
+		  AND u.anonymized_at IS NULL
+		  AND u.created_at < NOW() - INTERVAL '24 hours'
+		  AND dt.is_active = true
+		  AND d.id IS NULL
+	`
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("GetUsersWithNoDeposits: %w", err)
+	}
+	defer rows.Close()
+
+	var users []NotificationUser
+	for rows.Next() {
+		var u NotificationUser
+		if err := rows.Scan(&u.ID); err != nil {
+			return nil, fmt.Errorf("GetUsersWithNoDeposits scan: %w", err)
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}

@@ -285,6 +285,9 @@ func (app *Application) initializeKYCSyncWorker() error {
 		app.log.Zap(),
 		diditClient,
 	)
+	if app.container.NotificationService != nil {
+		kycSvc.SetNotifier(app.container.NotificationService)
+	}
 
 	app.kycSyncWorker = kyc_sync.NewWorkerWithRetry(
 		app.container.KYCSyncJobRepo,

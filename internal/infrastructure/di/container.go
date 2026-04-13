@@ -1510,7 +1510,7 @@ func (c *Container) initializeDomainServices() error {
 		)
 		c.FundingService.SetBridgeVAService(c.BridgeVirtualAccountService)
 
-		// Wire notification service to Bridge VA service for allocation failure notifications
+		// Wire notification service to Bridge VA service
 		if c.NotificationService != nil {
 			notificationAdapter := &FundingNotificationAdapter{svc: c.NotificationService}
 			c.BridgeVirtualAccountService.SetNotificationService(notificationAdapter)
