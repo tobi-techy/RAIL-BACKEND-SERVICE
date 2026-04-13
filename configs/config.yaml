@@ -265,22 +265,21 @@ webauthn:
     - "https://api.userail.money"
 
 ai:
-  primary_provider: "openai"  # or "gemini"
-  fallback_provider: "gemini"
+  primary: "gemini"
   openai:
     api_key: "${OPENAI_API_KEY}"
-    model: "gpt-3.5-turbo"  # Free tier model
+    model: "gpt-3.5-turbo"
     max_tokens: 1000
     temperature: 0.7
-    timeout: 30s
-    rate_limit_rpm: 3  # Requests per minute (free tier limit)
+    timeout_seconds: 10
+    rate_limit_rpm: 3
   gemini:
     api_key: "${GEMINI_API_KEY}"
-    model: "gemini-1.5-flash"  # Free tier model
+    model: "gemini-1.5-flash"
     max_tokens: 1000
     temperature: 0.7
-    timeout: 30s
-    rate_limit_rpm: 15  # Requests per minute (free tier limit)
+    timeout_seconds: 10
+    rate_limit_rpm: 30
   prompts:
     wrapped_template: "prompts/wrapped.txt"
     chat_template: "prompts/chat.txt"

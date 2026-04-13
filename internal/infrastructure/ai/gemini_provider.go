@@ -33,9 +33,14 @@ type GeminiProvider struct {
 
 // NewGeminiProvider creates a new Gemini provider
 func NewGeminiProvider(config *ProviderConfig, logger *zap.Logger) *GeminiProvider {
-	// Create rate limiter based on RPM config
-	rps := float64(config.RateLimitRPM) / 60.0
-	limiter := rate.NewLimiter(rate.Limit(rps), 1)
+	// Create rate limiter based on RPM config; 0 means no local limit
+	var limiter *rate.Limiter
+	if config.RateLimitRPM > 0 {
+		rps := float64(config.RateLimitRPM) / 60.0
+		limiter = rate.NewLimiter(rate.Limit(rps), max(config.RateLimitRPM/10, 1))
+	} else {
+		limiter = rate.NewLimiter(rate.Inf, 1)
+	}
 
 	return &GeminiProvider{
 		config: config,

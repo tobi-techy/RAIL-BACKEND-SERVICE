@@ -2385,16 +2385,25 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		return fmt.Errorf("no AI provider configured")
 	}
 
+	// Helper to resolve timeout from config with a sensible default
+	resolveTimeout := func(seconds int) time.Duration {
+		if seconds > 0 {
+			return time.Duration(seconds) * time.Second
+		}
+		return 10 * time.Second
+	}
+
 	// Initialize AI providers
 	var providers []ai.AIProvider
 
 	if c.Config.AI.OpenAI.APIKey != "" {
 		openaiConfig := &ai.ProviderConfig{
-			APIKey:      c.Config.AI.OpenAI.APIKey,
-			Model:       c.Config.AI.OpenAI.Model,
-			MaxTokens:   c.Config.AI.OpenAI.MaxTokens,
-			Temperature: c.Config.AI.OpenAI.Temperature,
-			Timeout:     30 * time.Second,
+			APIKey:       c.Config.AI.OpenAI.APIKey,
+			Model:        c.Config.AI.OpenAI.Model,
+			MaxTokens:    c.Config.AI.OpenAI.MaxTokens,
+			Temperature:  c.Config.AI.OpenAI.Temperature,
+			Timeout:      resolveTimeout(c.Config.AI.OpenAI.TimeoutSeconds),
+			RateLimitRPM: c.Config.AI.OpenAI.RateLimitRPM,
 		}
 		openaiProvider := ai.NewOpenAIProvider(openaiConfig, c.ZapLog)
 		providers = append(providers, openaiProvider)
@@ -2402,11 +2411,12 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 
 	if c.Config.AI.Gemini.APIKey != "" {
 		geminiConfig := &ai.ProviderConfig{
-			APIKey:      c.Config.AI.Gemini.APIKey,
-			Model:       c.Config.AI.Gemini.Model,
-			MaxTokens:   c.Config.AI.Gemini.MaxTokens,
-			Temperature: c.Config.AI.Gemini.Temperature,
-			Timeout:     30 * time.Second,
+			APIKey:       c.Config.AI.Gemini.APIKey,
+			Model:        c.Config.AI.Gemini.Model,
+			MaxTokens:    c.Config.AI.Gemini.MaxTokens,
+			Temperature:  c.Config.AI.Gemini.Temperature,
+			Timeout:      resolveTimeout(c.Config.AI.Gemini.TimeoutSeconds),
+			RateLimitRPM: c.Config.AI.Gemini.RateLimitRPM,
 		}
 		geminiProvider := ai.NewGeminiProvider(geminiConfig, c.ZapLog)
 		providers = append(providers, geminiProvider)
@@ -2430,7 +2440,10 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		}
 	}
 
-	c.AIProviderManager = ai.NewProviderManager(primary, fallbacks, nil, c.ZapLog)
+	c.AIProviderManager = ai.NewProviderManager(primary, fallbacks, &ai.ProviderManagerConfig{
+		RetryAttempts: 1,
+		RetryDelay:    500 * time.Millisecond,
+	}, c.ZapLog)
 
 	// Initialize repositories for AI services
 	userNewsRepo := repositories.NewUserNewsRepository(c.DB, c.ZapLog)

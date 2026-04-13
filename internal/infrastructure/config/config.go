@@ -86,18 +86,22 @@ type EndpointLimitConfig struct {
 
 // OpenAIConfig contains OpenAI API configuration
 type OpenAIConfig struct {
-	APIKey      string  `mapstructure:"api_key"`
-	Model       string  `mapstructure:"model"`
-	MaxTokens   int     `mapstructure:"max_tokens"`
-	Temperature float64 `mapstructure:"temperature"`
+	APIKey         string  `mapstructure:"api_key"`
+	Model          string  `mapstructure:"model"`
+	MaxTokens      int     `mapstructure:"max_tokens"`
+	Temperature    float64 `mapstructure:"temperature"`
+	TimeoutSeconds int     `mapstructure:"timeout_seconds"`
+	RateLimitRPM   int     `mapstructure:"rate_limit_rpm"`
 }
 
 // GeminiConfig contains Google Gemini API configuration
 type GeminiConfig struct {
-	APIKey      string  `mapstructure:"api_key"`
-	Model       string  `mapstructure:"model"`
-	MaxTokens   int     `mapstructure:"max_tokens"`
-	Temperature float64 `mapstructure:"temperature"`
+	APIKey         string  `mapstructure:"api_key"`
+	Model          string  `mapstructure:"model"`
+	MaxTokens      int     `mapstructure:"max_tokens"`
+	Temperature    float64 `mapstructure:"temperature"`
+	TimeoutSeconds int     `mapstructure:"timeout_seconds"`
+	RateLimitRPM   int     `mapstructure:"rate_limit_rpm"`
 }
 
 type ServerConfig struct {
