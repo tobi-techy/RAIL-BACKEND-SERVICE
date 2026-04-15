@@ -1911,6 +1911,7 @@ func (c *Container) initializeDomainServices() error {
 		complianceRepo := repositories.NewComplianceRepository(sqlxDB, c.ZapLog)
 		c.ComplianceService = compliancesvc.NewService(diditClient, complianceRepo, c.ZapLog)
 		c.ComplianceService.SetUserLookup(c.UserRepo)
+		c.ComplianceService.SetUserFreezer(&complianceUserFreezer{userRepo: c.UserRepo, logger: c.ZapLog})
 		c.FundingService.SetComplianceScreener(c.ComplianceService)
 		c.WithdrawalService.SetComplianceScreener(c.ComplianceService)
 		if c.BridgeVirtualAccountService != nil {
