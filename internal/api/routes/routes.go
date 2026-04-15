@@ -614,15 +614,20 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// Unified Deposit routes
 			deposits := protected.Group("/deposits")
 			deposits.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
-			deposits.Use(middleware.RequireBridgeCapability(container.UserRepo, container.ZapLog))
-			// Fraud detection on deposit creation: catches suspicious first deposits from fraud ring accounts.
-			if fraudSvc := container.GetOnboardingFraudService(); fraudSvc != nil {
-				deposits.Use(middleware.DepositFraudMiddleware(fraudSvc, container.ZapLog))
-			}
 			{
-				deposits.POST("", walletFundingHandlers.CreateDeposit)
+				// Read-only: no KYC gate — all authenticated users can view their deposits
 				deposits.GET("", walletFundingHandlers.ListDeposits)
 				deposits.GET("/:id", walletFundingHandlers.GetDeposit)
+			}
+			// Write operations require Bridge KYC
+			depositsGated := deposits.Group("/")
+			depositsGated.Use(middleware.RequireBridgeCapability(container.UserRepo, container.ZapLog))
+			// Fraud detection on deposit creation: catches suspicious first deposits from fraud ring accounts.
+			if fraudSvc := container.GetOnboardingFraudService(); fraudSvc != nil {
+				depositsGated.Use(middleware.DepositFraudMiddleware(fraudSvc, container.ZapLog))
+			}
+			{
+				depositsGated.POST("", walletFundingHandlers.CreateDeposit)
 			}
 
 			// Unified Withdrawal routes with security middleware
