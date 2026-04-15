@@ -42,12 +42,22 @@ func NewService(userRepo UserRepository, usageRepo UsageRepository, logger *logg
 
 // ValidateDeposit checks if a deposit amount is within user's limits
 func (s *Service) ValidateDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (*entities.LimitCheckResult, error) {
+	return s.ValidateDepositWithCurrency(ctx, userID, amount, "USD")
+}
+
+// ValidateDepositWithCurrency checks deposit limits for a specific currency
+func (s *Service) ValidateDepositWithCurrency(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currency string) (*entities.LimitCheckResult, error) {
 	tier, err := s.getUserTier(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user tier: %w", err)
 	}
 
-	config := entities.GetLimitConfigForTier(tier)
+	// Block unverified users entirely
+	if tier == entities.KYCTierUnverified {
+		return &entities.LimitCheckResult{Allowed: false, Reason: "identity verification required"}, entities.ErrUnverifiedUser
+	}
+
+	config := entities.GetLimitConfigForTierAndCurrency(tier, currency)
 
 	// Check minimum
 	if amount.LessThan(config.MinDeposit) {
@@ -127,12 +137,22 @@ func (s *Service) ValidateDeposit(ctx context.Context, userID uuid.UUID, amount 
 
 // ValidateWithdrawal checks if a withdrawal amount is within user's limits
 func (s *Service) ValidateWithdrawal(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (*entities.LimitCheckResult, error) {
+	return s.ValidateWithdrawalWithCurrency(ctx, userID, amount, "USD")
+}
+
+// ValidateWithdrawalWithCurrency checks withdrawal limits for a specific currency
+func (s *Service) ValidateWithdrawalWithCurrency(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currency string) (*entities.LimitCheckResult, error) {
 	tier, err := s.getUserTier(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user tier: %w", err)
 	}
 
-	config := entities.GetLimitConfigForTier(tier)
+	// Block unverified users entirely
+	if tier == entities.KYCTierUnverified {
+		return &entities.LimitCheckResult{Allowed: false, Reason: "identity verification required"}, entities.ErrUnverifiedUser
+	}
+
+	config := entities.GetLimitConfigForTierAndCurrency(tier, currency)
 
 	// Check minimum
 	if amount.LessThan(config.MinWithdrawal) {
@@ -219,14 +239,19 @@ func (s *Service) RecordWithdrawal(ctx context.Context, userID uuid.UUID, amount
 	return s.usageRepo.IncrementWithdrawalUsage(ctx, userID, amount)
 }
 
-// GetUserLimits returns the user's current limits and usage
+// GetUserLimits returns the user's current limits and usage for a currency
 func (s *Service) GetUserLimits(ctx context.Context, userID uuid.UUID) (*entities.UserLimitsResponse, error) {
+	return s.GetUserLimitsForCurrency(ctx, userID, "USD")
+}
+
+// GetUserLimitsForCurrency returns currency-specific limits and usage
+func (s *Service) GetUserLimitsForCurrency(ctx context.Context, userID uuid.UUID, currency string) (*entities.UserLimitsResponse, error) {
 	tier, err := s.getUserTier(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user tier: %w", err)
 	}
 
-	config := entities.GetLimitConfigForTier(tier)
+	config := entities.GetLimitConfigForTierAndCurrency(tier, currency)
 
 	if err := s.usageRepo.ResetExpiredPeriods(ctx, userID); err != nil {
 		s.logger.Warn("Failed to reset expired periods", "error", err, "user_id", userID.String())
@@ -243,7 +268,8 @@ func (s *Service) GetUserLimits(ctx context.Context, userID uuid.UUID) (*entitie
 	monthlyWithdrawalRemaining := config.MonthlyWithdrawalLimit.Sub(usage.MonthlyWithdrawalUsed)
 
 	return &entities.UserLimitsResponse{
-		KYCTier: tier,
+		KYCTier:  tier,
+		Currency: currency,
 		Deposit: entities.LimitDetails{
 			Minimum: config.MinDeposit.String(),
 			Daily: entities.PeriodLimit{

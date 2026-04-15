@@ -213,6 +213,11 @@ func (s *Service) CreateOnrampOrder(ctx context.Context, userID uuid.UUID, fiatA
 		return nil, err
 	}
 
+	// Enforce NGN minimum deposit
+	if fiatAmount < 100 {
+		return nil, fmt.Errorf("minimum deposit is ₦100")
+	}
+
 	order, err := s.pajClient.CreateOnrampOrder(ctx, token, fiatAmount, currency)
 	if err != nil {
 		return nil, err
@@ -234,6 +239,11 @@ func (s *Service) CreateOnrampOrder(ctx context.Context, userID uuid.UUID, fiatA
 // --- Offramp (USDC → NGN) ---
 
 func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bankID, accountNumber string, fiatAmount float64, currency string) (*paj.OfframpOrder, error) {
+	// Enforce NGN minimum withdrawal
+	if fiatAmount < 100 {
+		return nil, fmt.Errorf("minimum withdrawal is ₦100")
+	}
+
 	token, err := s.getSessionToken(ctx, userID)
 	if err != nil {
 		return nil, err

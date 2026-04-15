@@ -12,93 +12,115 @@ import (
 type KYCTier string
 
 const (
-	KYCTierUnverified KYCTier = "unverified" // No KYC completed
+	KYCTierUnverified KYCTier = "unverified" // No KYC — deposits/withdrawals blocked
 	KYCTierBasic      KYCTier = "basic"      // Basic identity verification (Tier 1)
 	KYCTierAdvanced   KYCTier = "advanced"   // Advanced verification with proof of address/funds (Tier 2)
 )
 
-// Deposit Limits (USD)
+// ── USD Limits ───────────────────────────────────────────────────
+
 var (
-	// Minimum deposit - extremely low to enable micro-investing and round-ups
 	MinDepositAmount = decimal.NewFromFloat(1.00)
-
-	// Tier 1 (Basic KYC) limits
-	Tier1DailyDepositLimit   = decimal.NewFromFloat(5000.00)
-	Tier1MonthlyDepositLimit = decimal.NewFromFloat(25000.00)
-
-	// Tier 2 (Advanced KYC) limits
-	Tier2DailyDepositLimit   = decimal.NewFromFloat(50000.00)
-	Tier2MonthlyDepositLimit = decimal.NewFromFloat(250000.00)
-
-	// Unverified limits (very restrictive)
-	UnverifiedDailyDepositLimit   = decimal.NewFromFloat(100.00)
-	UnverifiedMonthlyDepositLimit = decimal.NewFromFloat(500.00)
-)
-
-// Withdrawal Limits (USD)
-var (
-	// Minimum withdrawal - covers network fees while allowing small exits
 	MinWithdrawalAmount = decimal.NewFromFloat(1.00)
-
-	// Maximum single withdrawal amount (Tier 2 daily limit as upper bound)
 	MaxWithdrawalAmount = decimal.NewFromFloat(10000.00)
 
-	// Tier 1 (Basic KYC) limits - slightly lower than deposit to encourage retention
+	// Tier 1 (Basic KYC) — USD
+	Tier1DailyDepositLimit   = decimal.NewFromFloat(5000.00)
+	Tier1MonthlyDepositLimit = decimal.NewFromFloat(25000.00)
 	Tier1DailyWithdrawalLimit   = decimal.NewFromFloat(2500.00)
 	Tier1MonthlyWithdrawalLimit = decimal.NewFromFloat(25000.00)
 
-	// Tier 2 (Advanced KYC) limits
+	// Tier 2 (Advanced KYC) — USD
+	Tier2DailyDepositLimit   = decimal.NewFromFloat(50000.00)
+	Tier2MonthlyDepositLimit = decimal.NewFromFloat(250000.00)
 	Tier2DailyWithdrawalLimit   = decimal.NewFromFloat(10000.00)
 	Tier2MonthlyWithdrawalLimit = decimal.NewFromFloat(150000.00)
-
-	// Unverified limits
-	UnverifiedDailyWithdrawalLimit   = decimal.NewFromFloat(50.00)
-	UnverifiedMonthlyWithdrawalLimit = decimal.NewFromFloat(200.00)
 )
 
-// TransactionLimitConfig holds limits for a specific KYC tier
+// ── NGN Limits ───────────────────────────────────────────────────
+
+var (
+	MinDepositAmountNGN = decimal.NewFromFloat(100.00) // ₦100
+	MinWithdrawalAmountNGN = decimal.NewFromFloat(100.00)
+
+	// Tier 1 (BVN verified) — NGN
+	Tier1DailyDepositLimitNGN   = decimal.NewFromFloat(2000000.00)  // ₦2M
+	Tier1MonthlyDepositLimitNGN = decimal.NewFromFloat(10000000.00) // ₦10M
+	Tier1DailyWithdrawalLimitNGN   = decimal.NewFromFloat(1000000.00)  // ₦1M
+	Tier1MonthlyWithdrawalLimitNGN = decimal.NewFromFloat(5000000.00)  // ₦5M
+
+	// Tier 2 (Full KYC) — NGN
+	Tier2DailyDepositLimitNGN   = decimal.NewFromFloat(10000000.00) // ₦10M
+	Tier2MonthlyDepositLimitNGN = decimal.NewFromFloat(50000000.00) // ₦50M
+	Tier2DailyWithdrawalLimitNGN   = decimal.NewFromFloat(5000000.00)  // ₦5M
+	Tier2MonthlyWithdrawalLimitNGN = decimal.NewFromFloat(25000000.00) // ₦25M
+)
+
+// TransactionLimitConfig holds limits for a specific KYC tier and currency
 type TransactionLimitConfig struct {
 	Tier                   KYCTier
+	Currency               string
 	MinDeposit             decimal.Decimal
 	DailyDepositLimit      decimal.Decimal
 	MonthlyDepositLimit    decimal.Decimal
 	MinWithdrawal          decimal.Decimal
+	MaxWithdrawal          decimal.Decimal
 	DailyWithdrawalLimit   decimal.Decimal
 	MonthlyWithdrawalLimit decimal.Decimal
 }
 
-// GetLimitConfigForTier returns the limit configuration for a KYC tier
+// GetLimitConfigForTier returns the limit configuration for a KYC tier.
+// Unverified users get zero limits — deposits/withdrawals are blocked at the handler level.
 func GetLimitConfigForTier(tier KYCTier) TransactionLimitConfig {
+	return GetLimitConfigForTierAndCurrency(tier, "USD")
+}
+
+// GetLimitConfigForTierAndCurrency returns currency-specific limits.
+func GetLimitConfigForTierAndCurrency(tier KYCTier, currency string) TransactionLimitConfig {
+	if tier == KYCTierUnverified {
+		return TransactionLimitConfig{
+			Tier:     KYCTierUnverified,
+			Currency: currency,
+			// All zeros — unverified users cannot transact
+		}
+	}
+
+	if currency == "NGN" {
+		return getNGNLimits(tier)
+	}
+	return getUSDLimits(tier)
+}
+
+func getUSDLimits(tier KYCTier) TransactionLimitConfig {
 	switch tier {
 	case KYCTierAdvanced:
 		return TransactionLimitConfig{
-			Tier:                   KYCTierAdvanced,
-			MinDeposit:             MinDepositAmount,
-			DailyDepositLimit:      Tier2DailyDepositLimit,
-			MonthlyDepositLimit:    Tier2MonthlyDepositLimit,
-			MinWithdrawal:          MinWithdrawalAmount,
-			DailyWithdrawalLimit:   Tier2DailyWithdrawalLimit,
-			MonthlyWithdrawalLimit: Tier2MonthlyWithdrawalLimit,
+			Tier: KYCTierAdvanced, Currency: "USD",
+			MinDeposit: MinDepositAmount, DailyDepositLimit: Tier2DailyDepositLimit, MonthlyDepositLimit: Tier2MonthlyDepositLimit,
+			MinWithdrawal: MinWithdrawalAmount, MaxWithdrawal: MaxWithdrawalAmount, DailyWithdrawalLimit: Tier2DailyWithdrawalLimit, MonthlyWithdrawalLimit: Tier2MonthlyWithdrawalLimit,
 		}
-	case KYCTierBasic:
+	default: // Basic
 		return TransactionLimitConfig{
-			Tier:                   KYCTierBasic,
-			MinDeposit:             MinDepositAmount,
-			DailyDepositLimit:      Tier1DailyDepositLimit,
-			MonthlyDepositLimit:    Tier1MonthlyDepositLimit,
-			MinWithdrawal:          MinWithdrawalAmount,
-			DailyWithdrawalLimit:   Tier1DailyWithdrawalLimit,
-			MonthlyWithdrawalLimit: Tier1MonthlyWithdrawalLimit,
+			Tier: KYCTierBasic, Currency: "USD",
+			MinDeposit: MinDepositAmount, DailyDepositLimit: Tier1DailyDepositLimit, MonthlyDepositLimit: Tier1MonthlyDepositLimit,
+			MinWithdrawal: MinWithdrawalAmount, MaxWithdrawal: MaxWithdrawalAmount, DailyWithdrawalLimit: Tier1DailyWithdrawalLimit, MonthlyWithdrawalLimit: Tier1MonthlyWithdrawalLimit,
 		}
-	default: // Unverified
+	}
+}
+
+func getNGNLimits(tier KYCTier) TransactionLimitConfig {
+	switch tier {
+	case KYCTierAdvanced:
 		return TransactionLimitConfig{
-			Tier:                   KYCTierUnverified,
-			MinDeposit:             MinDepositAmount,
-			DailyDepositLimit:      UnverifiedDailyDepositLimit,
-			MonthlyDepositLimit:    UnverifiedMonthlyDepositLimit,
-			MinWithdrawal:          MinWithdrawalAmount,
-			DailyWithdrawalLimit:   UnverifiedDailyWithdrawalLimit,
-			MonthlyWithdrawalLimit: UnverifiedMonthlyWithdrawalLimit,
+			Tier: KYCTierAdvanced, Currency: "NGN",
+			MinDeposit: MinDepositAmountNGN, DailyDepositLimit: Tier2DailyDepositLimitNGN, MonthlyDepositLimit: Tier2MonthlyDepositLimitNGN,
+			MinWithdrawal: MinWithdrawalAmountNGN, MaxWithdrawal: Tier2DailyWithdrawalLimitNGN, DailyWithdrawalLimit: Tier2DailyWithdrawalLimitNGN, MonthlyWithdrawalLimit: Tier2MonthlyWithdrawalLimitNGN,
+		}
+	default: // Basic
+		return TransactionLimitConfig{
+			Tier: KYCTierBasic, Currency: "NGN",
+			MinDeposit: MinDepositAmountNGN, DailyDepositLimit: Tier1DailyDepositLimitNGN, MonthlyDepositLimit: Tier1MonthlyDepositLimitNGN,
+			MinWithdrawal: MinWithdrawalAmountNGN, MaxWithdrawal: Tier1DailyWithdrawalLimitNGN, DailyWithdrawalLimit: Tier1DailyWithdrawalLimitNGN, MonthlyWithdrawalLimit: Tier1MonthlyWithdrawalLimitNGN,
 		}
 	}
 }
@@ -133,6 +155,7 @@ type LimitCheckResult struct {
 // UserLimitsResponse represents the API response for user limits
 type UserLimitsResponse struct {
 	KYCTier    KYCTier      `json:"kycTier"`
+	Currency   string       `json:"currency"`
 	Deposit    LimitDetails `json:"deposit"`
 	Withdrawal LimitDetails `json:"withdrawal"`
 }
@@ -154,6 +177,7 @@ type PeriodLimit struct {
 
 // Limit validation errors
 var (
+	ErrUnverifiedUser            = errors.New("identity verification required before transacting")
 	ErrBelowMinimumDeposit       = errors.New("amount below minimum deposit")
 	ErrBelowMinimumWithdrawal    = errors.New("amount below minimum withdrawal")
 	ErrDailyDepositExceeded      = errors.New("daily deposit limit exceeded")
