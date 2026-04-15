@@ -33,6 +33,16 @@ type DepositLedgerService interface {
 	CreditUSDCBalance(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string, metadata map[string]interface{}) error
 }
 
+// DepositRepository persists deposit records for transaction history.
+type DepositRepository interface {
+	Create(ctx context.Context, deposit *entities.Deposit) error
+}
+
+// NotificationService sends user-facing push/in-app notifications.
+type NotificationService interface {
+	NotifyDepositConfirmed(ctx context.Context, userID uuid.UUID, amount, chain, txHash string) error
+}
+
 // Service handles Paj Cash NGN on/off ramp operations.
 type Service struct {
 	db                *sqlx.DB
@@ -40,6 +50,8 @@ type Service struct {
 	ledger            LedgerService
 	allocationService AllocationService
 	depositLedger     DepositLedgerService
+	depositRepo       DepositRepository
+	notifier          NotificationService
 	redis             cache.RedisClient
 	encryptionKey     string
 	logger            *zap.Logger
@@ -48,6 +60,12 @@ type Service struct {
 func NewService(db *sqlx.DB, pajClient *paj.Client, ledger LedgerService, allocationService AllocationService, depositLedger DepositLedgerService, redis cache.RedisClient, encryptionKey string, logger *zap.Logger) *Service {
 	return &Service{db: db, pajClient: pajClient, ledger: ledger, allocationService: allocationService, depositLedger: depositLedger, redis: redis, encryptionKey: encryptionKey, logger: logger}
 }
+
+// SetDepositRepository sets the deposit repository for persisting deposit records.
+func (s *Service) SetDepositRepository(repo DepositRepository) { s.depositRepo = repo }
+
+// SetNotificationService sets the notification service for deposit alerts.
+func (s *Service) SetNotificationService(ns NotificationService) { s.notifier = ns }
 
 // --- Session management ---
 
@@ -453,6 +471,35 @@ func (s *Service) creditOnrampIfCompleted(ctx context.Context, userID uuid.UUID,
 			// Reset claim so next webhook/poll retries the allocation.
 			// USDC credit is idempotent (same key), so re-entry is safe.
 			s.db.ExecContext(ctx, `UPDATE paj_orders SET deposit_id = NULL WHERE id = $1`, claimedID)
+		}
+	}
+
+	// Step 3: Persist deposit record so it appears in transaction history.
+	if s.depositRepo != nil {
+		now := time.Now()
+		deposit := &entities.Deposit{
+			ID:             claimedID,
+			IdempotencyKey: idempotencyKey,
+			CorrelationID:  "paj-onramp:" + pajOrderID,
+			UserID:         userID,
+			Chain:          entities.ChainSOL,
+			TxHash:         tx.Signature,
+			Token:          entities.StablecoinUSDC,
+			Amount:         creditAmount,
+			Status:         "confirmed",
+			ConfirmedAt:    &now,
+			CreatedAt:      now,
+		}
+		if err := s.depositRepo.Create(ctx, deposit); err != nil {
+			s.logger.Warn("Failed to persist PAJ deposit record (non-fatal, ledger already credited)",
+				zap.Error(err), zap.String("paj_order_id", pajOrderID))
+		}
+	}
+
+	// Step 4: Notify user that deposit arrived.
+	if s.notifier != nil {
+		if err := s.notifier.NotifyDepositConfirmed(ctx, userID, creditAmount.StringFixed(2), "NGN", pajOrderID); err != nil {
+			s.logger.Warn("Failed to send PAJ deposit notification", zap.Error(err))
 		}
 	}
 }

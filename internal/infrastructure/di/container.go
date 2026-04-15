@@ -2555,6 +2555,22 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		c.AIOrchestrator.SetActionAuditor(auditRepo)
 	}
 
+	// Use Redis for pending actions (survives restarts, works across instances)
+	if c.RedisClient != nil {
+		c.AIOrchestrator.SetPendingActions(aiservice.NewRedisPendingActions(c.RedisClient, c.ZapLog))
+	}
+
+	// Wire read-only data tools
+	if c.CardRepo != nil {
+		c.AIOrchestrator.SetCardTransactions(c.CardRepo)
+	}
+	if c.DepositRepo != nil {
+		c.AIOrchestrator.SetDepositHistory(c.DepositRepo)
+	}
+	if c.yieldRepo != nil {
+		c.AIOrchestrator.SetYieldProvider(c.yieldRepo)
+	}
+
 	c.ZapLog.Info("AI Financial Manager services initialized",
 		zap.String("primary_provider", primary.Name()),
 		zap.Int("fallback_count", len(fallbacks)),
@@ -3555,6 +3571,10 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 			Chain:         c.Config.Paj.Chain,
 		}, c.ZapLog)
 		pajService := pajfunding.NewService(sqlxDB, pajClient, &WithdrawalLedgerAdapter{ledgerService: c.LedgerService}, c.AllocationService, &PajDepositLedgerAdapter{ledgerService: c.LedgerService}, c.RedisClient, c.Config.Security.EncryptionKey, c.ZapLog)
+		pajService.SetDepositRepository(c.DepositRepo)
+		if c.NotificationService != nil {
+			pajService.SetNotificationService(c.NotificationService)
+		}
 		c.PajHandlers = fundinghandlers.NewPajHandlers(pajService, c.ZapLog)
 		c.ZapLog.Info("Paj Cash NGN ramp initialized")
 	} else {
