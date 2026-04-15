@@ -3575,6 +3575,9 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 		if c.NotificationService != nil {
 			pajService.SetNotificationService(c.NotificationService)
 		}
+		if c.WalletService != nil {
+			pajService.SetWalletProvider(c.WalletService)
+		}
 		c.PajHandlers = fundinghandlers.NewPajHandlers(pajService, c.ZapLog)
 		c.ZapLog.Info("Paj Cash NGN ramp initialized")
 	} else {

@@ -43,6 +43,11 @@ type NotificationService interface {
 	NotifyDepositConfirmed(ctx context.Context, userID uuid.UUID, amount, chain, txHash string) error
 }
 
+// WalletProvider looks up a user's Bridge wallet address by chain.
+type WalletProvider interface {
+	GetWalletByUserAndChain(ctx context.Context, userID uuid.UUID, chain entities.WalletChain) (*entities.ManagedWallet, error)
+}
+
 // Service handles Paj Cash NGN on/off ramp operations.
 type Service struct {
 	db                *sqlx.DB
@@ -52,6 +57,7 @@ type Service struct {
 	depositLedger     DepositLedgerService
 	depositRepo       DepositRepository
 	notifier          NotificationService
+	walletProvider    WalletProvider
 	redis             cache.RedisClient
 	encryptionKey     string
 	logger            *zap.Logger
@@ -66,6 +72,9 @@ func (s *Service) SetDepositRepository(repo DepositRepository) { s.depositRepo =
 
 // SetNotificationService sets the notification service for deposit alerts.
 func (s *Service) SetNotificationService(ns NotificationService) { s.notifier = ns }
+
+// SetWalletProvider sets the wallet provider for looking up user Bridge wallet addresses.
+func (s *Service) SetWalletProvider(wp WalletProvider) { s.walletProvider = wp }
 
 // --- Session management ---
 
@@ -218,17 +227,29 @@ func (s *Service) CreateOnrampOrder(ctx context.Context, userID uuid.UUID, fiatA
 		return nil, fmt.Errorf("minimum deposit is ₦100")
 	}
 
-	order, err := s.pajClient.CreateOnrampOrder(ctx, token, fiatAmount, currency)
+	// Look up user's Bridge Solana wallet so USDC goes directly to them.
+	var recipient string
+	if s.walletProvider != nil {
+		wallet, err := s.walletProvider.GetWalletByUserAndChain(ctx, userID, entities.WalletChainSolana)
+		if err == nil && wallet != nil && wallet.Address != "" {
+			recipient = wallet.Address
+		} else {
+			s.logger.Warn("could not resolve user Solana wallet, falling back to company wallet",
+				zap.String("user_id", userID.String()), zap.Error(err))
+		}
+	}
+
+	order, err := s.pajClient.CreateOnrampOrder(ctx, token, fiatAmount, currency, recipient)
 	if err != nil {
 		return nil, err
 	}
 
 	// Persist order for webhook reconciliation.
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO paj_orders (user_id, paj_order_id, order_type, status, fiat_amount, token_amount, currency, fee, pay_account_number, pay_account_name, pay_bank)
-		VALUES ($1, $2, 'onramp', 'pending', $3, $4, $5, $6, $7, $8, $9)`,
+		INSERT INTO paj_orders (user_id, paj_order_id, order_type, status, fiat_amount, token_amount, currency, fee, pay_account_number, pay_account_name, pay_bank, used_user_wallet)
+		VALUES ($1, $2, 'onramp', 'pending', $3, $4, $5, $6, $7, $8, $9, $10)`,
 		userID, order.ID, order.FiatAmount, order.Amount, currency, order.Fee,
-		order.AccountNumber, order.AccountName, order.Bank)
+		order.AccountNumber, order.AccountName, order.Bank, recipient != "")
 	if err != nil {
 		s.logger.Error("failed to persist paj onramp order", zap.Error(err), zap.String("paj_order_id", order.ID))
 	}
@@ -436,6 +457,26 @@ func (s *Service) creditOnrampIfCompleted(ctx context.Context, userID uuid.UUID,
 		 RETURNING id`, pajOrderID).Scan(&claimedID)
 	if err != nil {
 		return // Already credited or not an onramp — no-op.
+	}
+
+	// When PAJ sends USDC to the user's Bridge wallet, Bridge detects the
+	// on-chain deposit and processes it via the normal webhook flow
+	// (ProcessCryptoDeposit → allocation split → notification).
+	// We only need to credit here as a fallback when the company wallet was used.
+	var recipientIsUserWallet bool
+	s.db.QueryRowContext(ctx,
+		`SELECT pay_account_name FROM paj_orders WHERE id = $1`, claimedID).Scan(&recipientIsUserWallet)
+	// Check if the order's recipient was a user wallet (stored during CreateOnrampOrder).
+	var usedUserWallet bool
+	s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(used_user_wallet, false) FROM paj_orders WHERE id = $1`, claimedID).Scan(&usedUserWallet)
+	if usedUserWallet {
+		// Bridge webhook handles crediting. Just notify the user.
+		if s.notifier != nil {
+			creditAmount := decimal.NewFromFloat(tx.USDCAmount)
+			s.notifier.NotifyDepositConfirmed(ctx, userID, creditAmount.StringFixed(2), "NGN", pajOrderID)
+		}
+		return
 	}
 
 	creditAmount := decimal.NewFromFloat(tx.USDCAmount)

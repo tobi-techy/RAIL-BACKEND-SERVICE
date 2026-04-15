@@ -231,11 +231,14 @@ type OnrampOrder struct {
 	Fee           float64 `json:"fee"`
 }
 
-func (c *Client) CreateOnrampOrder(ctx context.Context, sessionToken string, fiatAmount float64, currency string) (*OnrampOrder, error) {
+func (c *Client) CreateOnrampOrder(ctx context.Context, sessionToken string, fiatAmount float64, currency, recipient string) (*OnrampOrder, error) {
+	if recipient == "" {
+		recipient = c.cfg.WalletAddress
+	}
 	req := CreateOnrampOrderRequest{
 		FiatAmount: fiatAmount,
 		Currency:   currency,
-		Recipient:  c.cfg.WalletAddress,
+		Recipient:  recipient,
 		Mint:       c.cfg.TokenMint,
 		Chain:      c.cfg.Chain,
 		WebhookURL: c.cfg.WebhookURL,
