@@ -1910,6 +1910,7 @@ func (c *Container) initializeDomainServices() error {
 		// Wire compliance screening (transaction monitoring + AML)
 		complianceRepo := repositories.NewComplianceRepository(sqlxDB, c.ZapLog)
 		c.ComplianceService = compliancesvc.NewService(diditClient, complianceRepo, c.ZapLog)
+		c.ComplianceService.SetUserLookup(c.UserRepo)
 		c.FundingService.SetComplianceScreener(c.ComplianceService)
 		c.WithdrawalService.SetComplianceScreener(c.ComplianceService)
 		c.ZapLog.Info("Compliance screening enabled (Didit transaction monitoring)")
