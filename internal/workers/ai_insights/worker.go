@@ -69,10 +69,8 @@ func (w *Worker) Start(ctx context.Context) {
 			day := t.UTC().Day()
 			lastDay := time.Date(t.Year(), t.Month()+1, 0, 0, 0, 0, 0, time.UTC).Day()
 
-			// Morning greeting at 7am UTC (8am WAT)
-			if hour == 7 {
-				w.runMorningGreeting(ctx)
-			}
+			// Morning greeting — runs every hour, sends only to users in their local 7am window
+			w.runMorningGreeting(ctx)
 
 			// Daily insights at 9am UTC (10am WAT)
 			if hour == 9 {
@@ -223,15 +221,21 @@ func (w *Worker) runWeeklyDigest(ctx context.Context) {
 }
 
 // runMorningGreeting sends a brief morning balance update.
+// Only sends to users whose local time is between 7-8am.
 func (w *Worker) runMorningGreeting(ctx context.Context) {
 	users, err := w.userRepo.GetAllActiveUsers(ctx)
 	if err != nil {
 		return
 	}
 
+	nowUTC := time.Now().UTC()
 	for _, u := range users {
 		if ctx.Err() != nil {
 			return
+		}
+		// Check if it's morning (7-8am) in the user's local timezone
+		if !isLocalMorning(u.Country, nowUTC) {
+			continue
 		}
 		spend, err := w.balances.GetAccountBalance(ctx, u.ID, entities.AccountTypeSpendingBalance)
 		if err != nil || spend.IsZero() {
@@ -247,6 +251,34 @@ func (w *Worker) runMorningGreeting(ctx context.Context) {
 			map[string]interface{}{"type": "morning_greeting", "action": "open_home"},
 		)
 	}
+}
+
+// countryTimezones maps ISO 3166-1 alpha-2 country codes to primary IANA timezone.
+var countryTimezones = map[string]string{
+	"NG": "Africa/Lagos",     // WAT (UTC+1)
+	"GH": "Africa/Accra",     // GMT (UTC+0)
+	"KE": "Africa/Nairobi",   // EAT (UTC+3)
+	"ZA": "Africa/Johannesburg", // SAST (UTC+2)
+	"GB": "Europe/London",    // GMT/BST
+	"US": "America/New_York", // EST/EDT (default for US)
+	"CA": "America/Toronto",  // EST/EDT
+	"DE": "Europe/Berlin",    // CET/CEST
+	"FR": "Europe/Paris",     // CET/CEST
+}
+
+// isLocalMorning returns true if the current UTC time falls in the 7-8am window
+// for the user's country. Defaults to true for unknown countries (sends at UTC 7am).
+func isLocalMorning(country string, nowUTC time.Time) bool {
+	tzName, ok := countryTimezones[country]
+	if !ok {
+		return nowUTC.Hour() == 7 // fallback: UTC 7am
+	}
+	loc, err := time.LoadLocation(tzName)
+	if err != nil {
+		return nowUTC.Hour() == 7
+	}
+	localHour := nowUTC.In(loc).Hour()
+	return localHour == 7
 }
 
 // runMonthRecap sends a month-end financial summary.

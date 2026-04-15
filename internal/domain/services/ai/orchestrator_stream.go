@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"go.uber.org/zap"
 )
@@ -21,18 +23,51 @@ type StreamEvent struct {
 // ChatStream streams a chat response via SSE. Tool calls are executed
 // non-streaming (up to 3 rounds), then the final answer is streamed.
 func (o *Orchestrator) ChatStream(ctx context.Context, userID uuid.UUID, message string, history []infraai.Message, emit func(StreamEvent)) error {
+	return o.chatStreamInternal(ctx, userID, uuid.Nil, message, history, emit)
+}
+
+// ChatStreamInConversation streams a chat response within a persisted conversation.
+func (o *Orchestrator) ChatStreamInConversation(ctx context.Context, userID uuid.UUID, conv *entities.AIConversation, message string, emit func(StreamEvent)) error {
+	var history []infraai.Message
+	if o.conversations != nil {
+		var err error
+		history, err = o.conversations.BuildContext(ctx, conv)
+		if err != nil {
+			o.logger.Warn("failed to build conversation context for stream", zap.Error(err))
+		}
+	}
+
+	err := o.chatStreamInternal(ctx, userID, conv.ID, message, history, emit)
+
+	// Persist exchange in background (best-effort, mirrors ChatWithConversation)
+	if o.conversations != nil {
+		go func() {
+			pCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			// We don't have the full response content in streaming, so record a placeholder
+			_ = o.conversations.RecordExchange(pCtx, conv.ID, message, "[streamed response]", 0, decimal.Zero, "")
+		}()
+	}
+
+	return err
+}
+
+func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uuid.UUID, message string, history []infraai.Message, emit func(StreamEvent)) error {
 	start := time.Now()
 
 	streamer, ok := o.aiProvider.(infraai.StreamProvider)
 	if !ok {
 		// Fallback: non-streaming
-		resp, err := o.Chat(ctx, userID, message, history)
+		resp, err := o.ChatInContext(ctx, userID, convID, message, history)
 		if err != nil {
 			return err
 		}
 		emit(StreamEvent{Type: "token", Content: resp.Content})
 		if len(resp.Cards) > 0 {
 			emit(StreamEvent{Type: "cards", Data: resp.Cards})
+		}
+		if resp.PendingAction != nil {
+			emit(StreamEvent{Type: "pending_action", Data: resp.PendingAction})
 		}
 		emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": resp.TokensUsed, "provider": resp.Provider}})
 		return nil
@@ -60,6 +95,26 @@ func (o *Orchestrator) ChatStream(ctx context.Context, userID uuid.UUID, message
 	for round := 0; round < 3 && len(resp.ToolCalls) > 0; round++ {
 		roundResults := make([]ToolResult, 0, len(resp.ToolCalls))
 		for _, tc := range resp.ToolCalls {
+			// Handle action tools (require confirmation)
+			if isActionTool(tc.Name) && convID != uuid.Nil && o.fundsTransferer != nil {
+				result, execErr := o.executeActionTool(ctx, userID, convID, tc)
+				observeToolCall(tc.Name, execErr)
+				if execErr != nil {
+					result = map[string]interface{}{"error": execErr.Error()}
+				}
+				if actionRequired, _ := result["action_required"].(bool); actionRequired {
+					pendingRaw, _ := result["pending_action"].(*entities.PendingAction)
+					emit(StreamEvent{Type: "pending_action", Data: pendingRaw})
+					emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": resp.TokensUsed, "provider": resp.Provider}})
+					observeChat(resp.Provider, time.Since(start), resp.TokensUsed, nil)
+					return nil
+				}
+				roundResults = append(roundResults, ToolResult{Name: tc.Name, Result: result})
+				allToolResults = append(allToolResults, ToolResult{Name: tc.Name, Result: result})
+				emit(StreamEvent{Type: "tool_result", Data: map[string]interface{}{"tool": tc.Name}})
+				continue
+			}
+
 			result, execErr := o.executeTool(ctx, userID, tc)
 			observeToolCall(tc.Name, execErr)
 			if execErr != nil {
@@ -77,7 +132,7 @@ func (o *Orchestrator) ChatStream(ctx context.Context, userID uuid.UUID, message
 			assistantContent = "Calling tools..."
 		}
 		messages = append(messages, infraai.Message{Role: "assistant", Content: assistantContent})
-		messages = append(messages, infraai.Message{Role: "user", Content: fmt.Sprintf("Tool results: %s", string(toolResultsJSON))})
+		messages = append(messages, infraai.Message{Role: "tool", Content: string(toolResultsJSON)})
 		req.Messages = messages
 
 		resp, err = o.aiProvider.ChatCompletionWithTools(ctx, req, o.GetTools())
@@ -92,7 +147,7 @@ func (o *Orchestrator) ChatStream(ctx context.Context, userID uuid.UUID, message
 		emit(StreamEvent{Type: "cards", Data: cards})
 	}
 
-	// If no more tool calls, emit the final answer
+	// If no more tool calls, stream the final answer
 	if len(resp.ToolCalls) == 0 {
 		if resp.Content != "" {
 			content := o.applySafetyFilter(resp.Content)

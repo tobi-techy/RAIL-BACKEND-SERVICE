@@ -1785,14 +1785,15 @@ func (r *UserRepository) FindApprovedNotActiveBridge(ctx context.Context, limit 
 
 // NotificationUser holds minimal user data needed for sending notifications.
 type NotificationUser struct {
-	ID uuid.UUID
+	ID      uuid.UUID
+	Country string // ISO 3166-1 alpha-2 (e.g. "NG", "GB", "US"), empty if unknown
 }
 
 // GetUnverifiedUsersForNotification returns IDs of users whose KYC is not approved,
 // who have at least one registered device token, and who signed up more than 1 hour ago.
 func (r *UserRepository) GetUnverifiedUsersForNotification(ctx context.Context) ([]NotificationUser, error) {
 	query := `
-		SELECT DISTINCT u.id
+		SELECT DISTINCT u.id, COALESCE(u.country, '') AS country
 		FROM users u
 		JOIN device_tokens dt ON dt.user_id = u.id
 		WHERE u.kyc_status NOT IN ('approved')
@@ -1810,7 +1811,7 @@ func (r *UserRepository) GetUnverifiedUsersForNotification(ctx context.Context) 
 	var users []NotificationUser
 	for rows.Next() {
 		var u NotificationUser
-		if err := rows.Scan(&u.ID); err != nil {
+		if err := rows.Scan(&u.ID, &u.Country); err != nil {
 			return nil, fmt.Errorf("GetUnverifiedUsersForNotification scan: %w", err)
 		}
 		users = append(users, u)
@@ -1821,7 +1822,7 @@ func (r *UserRepository) GetUnverifiedUsersForNotification(ctx context.Context) 
 // GetAllActiveUsers returns IDs of all non-anonymized users with a registered device token.
 func (r *UserRepository) GetAllActiveUsers(ctx context.Context) ([]NotificationUser, error) {
 	query := `
-		SELECT DISTINCT u.id
+		SELECT DISTINCT u.id, COALESCE(u.country, '') AS country
 		FROM users u
 		JOIN device_tokens dt ON dt.user_id = u.id
 		WHERE u.is_active = true
@@ -1837,7 +1838,7 @@ func (r *UserRepository) GetAllActiveUsers(ctx context.Context) ([]NotificationU
 	var users []NotificationUser
 	for rows.Next() {
 		var u NotificationUser
-		if err := rows.Scan(&u.ID); err != nil {
+		if err := rows.Scan(&u.ID, &u.Country); err != nil {
 			return nil, fmt.Errorf("GetAllActiveUsers scan: %w", err)
 		}
 		users = append(users, u)
