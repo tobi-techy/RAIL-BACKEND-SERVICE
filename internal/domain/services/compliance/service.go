@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -122,6 +123,16 @@ func (s *Service) ScreenTransaction(ctx context.Context, userID uuid.UUID, refer
 		zap.String("amount", amount.StringFixed(2)),
 		zap.Int("tier", int(tier)),
 		zap.String("ref", referenceID))
+
+	// Resolve user full name for Didit sanctions matching
+	if userFullName == "" && s.users != nil {
+		if profile, err := s.users.GetByID(ctx, userID); err == nil && profile != nil {
+			fn, ln := "", ""
+			if profile.FirstName != nil { fn = *profile.FirstName }
+			if profile.LastName != nil { ln = *profile.LastName }
+			userFullName = strings.TrimSpace(fn + " " + ln)
+		}
+	}
 
 	switch tier {
 	case TierMedium:
@@ -261,6 +272,7 @@ func (s *Service) ScreenUserAML(ctx context.Context, userID uuid.UUID, fullName,
 	}
 	if err := s.repo.CreateScreening(ctx, screening); err != nil {
 		s.logger.Error("Failed to persist AML screening", zap.Error(err))
+		return "", fmt.Errorf("persist AML screening: %w", err)
 	}
 
 	if resp.AML.Status != "Approved" {
@@ -308,6 +320,23 @@ func (s *Service) HandleTransactionWebhook(ctx context.Context, payload *didit.T
 
 	if err := s.repo.UpdateScreeningStatus(ctx, payload.UUID, payload.Status, payload.Severity, payload.Score); err != nil {
 		return fmt.Errorf("update screening status: %w", err)
+	}
+
+	// Create alert for non-approved status transitions
+	if payload.Status == "DECLINED" || payload.Status == "IN_REVIEW" {
+		alert := &entities.ComplianceAlert{
+			ID:          uuid.New(),
+			UserID:      existing.UserID,
+			ScreeningID: existing.ID,
+			AlertType:   "webhook_status_change",
+			Severity:    payload.Severity,
+			Description: fmt.Sprintf("Transaction %s status changed to %s (score: %d)", payload.UUID, payload.Status, payload.Score),
+			Status:      "open",
+			CreatedAt:   time.Now(),
+		}
+		if err := s.repo.CreateAlert(ctx, alert); err != nil {
+			s.logger.Error("Failed to create webhook alert", zap.Error(err))
+		}
 	}
 
 	if payload.Status == "DECLINED" && s.freeze != nil {

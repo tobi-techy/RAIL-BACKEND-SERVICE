@@ -2413,6 +2413,17 @@ func (s *Service) processDiditApproved(ctx context.Context, submission *entities
 				}
 				return nil // Stop processing — do not push to Bridge
 			}
+			// Hold KYC if AML screening is under review (PEP/partial match)
+			if amlStatus == "In Review" {
+				s.logger.Warn("AML screening in review, holding KYC approval pending manual review",
+					zap.String("user_id", submission.UserID.String()))
+				submission.VerificationData["aml_hold"] = true
+				submission.Status = entities.KYCStatusProcessing
+				if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {
+					return fmt.Errorf("failed to update submission for AML hold: %w", err)
+				}
+				return nil // Hold — do not push to Bridge until AML review completes
+			}
 		}
 	}
 

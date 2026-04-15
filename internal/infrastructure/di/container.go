@@ -1913,6 +1913,9 @@ func (c *Container) initializeDomainServices() error {
 		c.ComplianceService.SetUserLookup(c.UserRepo)
 		c.FundingService.SetComplianceScreener(c.ComplianceService)
 		c.WithdrawalService.SetComplianceScreener(c.ComplianceService)
+		if c.BridgeVirtualAccountService != nil {
+			c.BridgeVirtualAccountService.SetComplianceScreener(c.ComplianceService)
+		}
 		c.ZapLog.Info("Compliance screening enabled (Didit transaction monitoring)")
 	}
 
