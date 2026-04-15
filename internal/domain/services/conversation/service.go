@@ -7,10 +7,29 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
+)
+
+var (
+	summarizationTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "rail_ai_summarization_total",
+			Help: "Total conversation summarizations by status",
+		},
+		[]string{"status"},
+	)
+	titleGenerationTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "rail_ai_title_generation_total",
+			Help: "Total title generations by status",
+		},
+		[]string{"status"},
+	)
 )
 
 // Repository defines the persistence operations the service needs.
@@ -20,6 +39,7 @@ type Repository interface {
 	ListByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.AIConversation, error)
 	DeleteConversation(ctx context.Context, id uuid.UUID) error
 	UpdateSummary(ctx context.Context, id uuid.UUID, summary string) error
+	UpdateTitle(ctx context.Context, id uuid.UUID, title string) error
 	IncrementStats(ctx context.Context, id uuid.UUID, tokens int, cost decimal.Decimal) error
 	CreateMessage(ctx context.Context, msg *entities.AIMessage) error
 	GetMessages(ctx context.Context, conversationID uuid.UUID, limit, offset int) ([]*entities.AIMessage, error)
@@ -161,7 +181,42 @@ func (s *Service) RecordExchange(ctx context.Context, convID uuid.UUID, userMsg,
 		go s.summarize(convID)
 	}
 
+	// Auto-generate title after first exchange (count == 2 means first user+assistant pair)
+	if count == 2 {
+		go s.generateTitle(convID, userMsg)
+	}
+
 	return nil
+}
+
+// generateTitle creates a short title from the first user message.
+func (s *Service) generateTitle(convID uuid.UUID, firstMessage string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	resp, err := s.summarizer.ChatCompletion(ctx, &ai.ChatRequest{
+		SystemPrompt: "Generate a short conversation title (max 6 words) for this user message. Return ONLY the title, no quotes or punctuation.",
+		Messages:     []ai.Message{{Role: "user", Content: firstMessage}},
+		MaxTokens:    20,
+		Temperature:  0.3,
+	})
+	if err != nil {
+		titleGenerationTotal.WithLabelValues("error").Inc()
+		s.logger.Warn("title generation failed", zap.Error(err))
+		return
+	}
+
+	title := strings.TrimSpace(resp.Content)
+	if title == "" || len(title) > 100 {
+		return
+	}
+
+	if err := s.repo.UpdateTitle(ctx, convID, title); err != nil {
+		titleGenerationTotal.WithLabelValues("error").Inc()
+		s.logger.Warn("failed to save generated title", zap.Error(err))
+		return
+	}
+	titleGenerationTotal.WithLabelValues("success").Inc()
 }
 
 // summarize compresses conversation history into a compact summary.
@@ -185,22 +240,36 @@ func (s *Service) summarize(convID uuid.UUID) {
 		sb.WriteString("\n")
 	}
 
-	resp, err := s.summarizer.ChatCompletion(ctx, &ai.ChatRequest{
+	sumReq := &ai.ChatRequest{
 		SystemPrompt: "Summarize this conversation in under 200 words. Preserve key facts, user preferences, financial context, and any advice given. Be concise.",
 		Messages:     []ai.Message{{Role: "user", Content: sb.String()}},
 		MaxTokens:    300,
 		Temperature:  0.3,
-	})
+	}
+
+	// Retry up to 2 times on failure
+	var resp *ai.ChatResponse
+	for attempt := 0; attempt < 2; attempt++ {
+		resp, err = s.summarizer.ChatCompletion(ctx, sumReq)
+		if err == nil {
+			break
+		}
+		s.logger.Warn("summarization attempt failed", zap.Int("attempt", attempt+1), zap.Error(err))
+		time.Sleep(time.Duration(attempt+1) * time.Second)
+	}
 	if err != nil {
-		s.logger.Error("summarization: LLM call failed", zap.Error(err))
+		summarizationTotal.WithLabelValues("error").Inc()
+		s.logger.Error("summarization: all attempts failed", zap.Error(err))
 		return
 	}
 
 	if err := s.repo.UpdateSummary(ctx, convID, resp.Content); err != nil {
+		summarizationTotal.WithLabelValues("error").Inc()
 		s.logger.Error("summarization: failed to save summary", zap.Error(err))
 		return
 	}
 
+	summarizationTotal.WithLabelValues("success").Inc()
 	s.logger.Info("conversation summarized",
 		zap.String("conversation_id", convID.String()),
 		zap.Int("tokens_used", resp.TokensUsed),

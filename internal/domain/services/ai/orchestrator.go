@@ -103,7 +103,10 @@ type Orchestrator struct {
 	aggregateStats    AggregateStatsProvider
 	fundsTransferer   FundsTransferer
 	actionAuditor     ActionAuditor
-	pending           *pendingActions
+	cardTransactions  CardTransactionProvider
+	depositHistory    DepositHistoryProvider
+	yieldProvider     YieldProvider
+	pending           PendingActionStore
 	logger            *zap.Logger
 }
 
@@ -120,7 +123,7 @@ func NewOrchestrator(
 		portfolioProvider: portfolioProvider,
 		activityProvider:  activityProvider,
 		newsProvider:      newsProvider,
-		pending:           newPendingActions(),
+		pending:           newInMemoryPendingActions(),
 		logger:            logger,
 	}
 }
@@ -243,6 +246,8 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 	if o.fundsTransferer != nil {
 		tools = append(tools, ActionTools()...)
 	}
+	// Read-only data tools
+	tools = append(tools, ReadOnlyTools(o.cardTransactions != nil, o.depositHistory != nil, o.yieldProvider != nil)...)
 	return tools
 }
 
@@ -324,7 +329,7 @@ func (o *Orchestrator) ChatInContext(ctx context.Context, userID, convID uuid.UU
 			assistantContent = "Calling tools..."
 		}
 		messages = append(messages, ai.Message{Role: "assistant", Content: assistantContent})
-		messages = append(messages, ai.Message{Role: "user", Content: fmt.Sprintf("Tool results: %s", string(toolResultsJSON))})
+		messages = append(messages, ai.Message{Role: "tool", Content: string(toolResultsJSON)})
 
 		req.Messages = messages
 		resp, err = o.aiProvider.ChatCompletionWithTools(ctx, req, o.GetTools())
@@ -451,6 +456,15 @@ func (o *Orchestrator) executeTool(ctx context.Context, userID uuid.UUID, tc ai.
 	case ToolGetComparativeContext:
 		return o.executeComparativeContext(ctx, userID)
 
+	case ToolGetCardTransactions:
+		return o.executeCardTransactions(ctx, userID, tc.Arguments)
+
+	case ToolGetDepositHistory:
+		return o.executeDepositHistory(ctx, userID, tc.Arguments)
+
+	case ToolGetYieldEarned:
+		return o.executeYieldEarned(ctx, userID, tc.Arguments)
+
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", tc.Name)
 	}
@@ -458,17 +472,28 @@ func (o *Orchestrator) executeTool(ctx context.Context, userID uuid.UUID, tc ai.
 
 // Pre-compiled safety filter patterns.
 var safetyPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)you should (buy|sell|invest)`),
-	regexp.MustCompile(`(?i)i recommend (buying|selling)`),
-	regexp.MustCompile(`(?i)definitely (buy|sell)`),
+	regexp.MustCompile(`(?i)you should (buy|sell|invest|purchase|trade|short)`),
+	regexp.MustCompile(`(?i)i recommend (buying|selling|investing|purchasing|trading|shorting)`),
+	regexp.MustCompile(`(?i)definitely (buy|sell|invest|purchase|trade|short)`),
+	regexp.MustCompile(`(?i)i('d| would) (suggest|advise|urge) (you )?(to )?(buy|sell|invest|purchase)`),
+	regexp.MustCompile(`(?i)it would be wise to (buy|sell|invest|purchase)`),
+	regexp.MustCompile(`(?i)you (need|must|have) to (buy|sell|invest|purchase)`),
+	regexp.MustCompile(`(?i)consider (buying|selling|investing in|purchasing)`),
+	regexp.MustCompile(`(?i)guaranteed returns?`),
+	regexp.MustCompile(`(?i)risk[- ]free (investment|return|profit)`),
+	regexp.MustCompile(`(?i)can('t| not) lose (money|if you)`),
+	regexp.MustCompile(`(?i)put (all |most of )?your money (in|into)`),
+	regexp.MustCompile(`(?i)go all[- ]in on`),
 }
+
+const safetyReplacement = "some investors might consider"
 
 // applySafetyFilter removes financial advice from responses
 func (o *Orchestrator) applySafetyFilter(content string) string {
 	for _, re := range safetyPatterns {
 		if re.MatchString(content) {
 			o.logger.Warn("Safety filter triggered", zap.String("pattern", re.String()))
-			content = re.ReplaceAllString(content, "some investors might consider")
+			content = re.ReplaceAllString(content, safetyReplacement)
 		}
 	}
 	return content

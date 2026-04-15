@@ -190,6 +190,10 @@ func (p *GeminiProvider) buildGeminiRequest(req *ChatRequest, tools []Tool) map[
 			systemParts = append(systemParts, msg.Content)
 			continue
 		}
+		if role == "tool" {
+			// Gemini doesn't have tool role; send as user with prefix
+			role = "user"
+		}
 
 		contents = append(contents, map[string]interface{}{
 			"role": role,

@@ -36,24 +36,31 @@ type ActionAuditor interface {
 	RecordAction(ctx context.Context, entry *entities.ActionAuditEntry) error
 }
 
-// pendingActions is an in-memory store for actions awaiting confirmation.
-// Keyed by conversationID string so each conversation has at most one pending action.
-type pendingActions struct {
+// PendingActionStore persists pending actions (Redis-backed for multi-instance safety).
+type PendingActionStore interface {
+	Set(ctx context.Context, convID uuid.UUID, action *entities.PendingAction) error
+	Get(ctx context.Context, convID uuid.UUID) *entities.PendingAction
+	Delete(ctx context.Context, convID uuid.UUID)
+}
+
+// inMemoryPendingActions is the fallback when no Redis is available.
+type inMemoryPendingActions struct {
 	mu    sync.Mutex
 	store map[string]*entities.PendingAction
 }
 
-func newPendingActions() *pendingActions {
-	return &pendingActions{store: make(map[string]*entities.PendingAction)}
+func newInMemoryPendingActions() PendingActionStore {
+	return &inMemoryPendingActions{store: make(map[string]*entities.PendingAction)}
 }
 
-func (p *pendingActions) Set(convID uuid.UUID, action *entities.PendingAction) {
+func (p *inMemoryPendingActions) Set(_ context.Context, convID uuid.UUID, action *entities.PendingAction) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.store[convID.String()] = action
+	return nil
 }
 
-func (p *pendingActions) Get(convID uuid.UUID) *entities.PendingAction {
+func (p *inMemoryPendingActions) Get(_ context.Context, convID uuid.UUID) *entities.PendingAction {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	a, ok := p.store[convID.String()]
@@ -64,7 +71,7 @@ func (p *pendingActions) Get(convID uuid.UUID) *entities.PendingAction {
 	return a
 }
 
-func (p *pendingActions) Delete(convID uuid.UUID) {
+func (p *inMemoryPendingActions) Delete(_ context.Context, convID uuid.UUID) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	delete(p.store, convID.String())
@@ -73,6 +80,11 @@ func (p *pendingActions) Delete(convID uuid.UUID) {
 // SetFundsTransferer wires the funds transfer dependency.
 func (o *Orchestrator) SetFundsTransferer(f FundsTransferer) {
 	o.fundsTransferer = f
+}
+
+// SetPendingActions replaces the default in-memory store with a custom implementation (e.g. Redis).
+func (o *Orchestrator) SetPendingActions(p PendingActionStore) {
+	o.pending = p
 }
 
 // SetActionAuditor wires the action audit dependency.
@@ -178,7 +190,7 @@ func (o *Orchestrator) createTransferAction(ctx context.Context, userID, convID 
 		CreatedAt:      time.Now(),
 	}
 
-	o.pending.Set(convID, action)
+	o.pending.Set(ctx, convID, action)
 
 	return map[string]interface{}{
 		"action_required": true,
@@ -217,7 +229,7 @@ func (o *Orchestrator) createSavingsGoalAction(ctx context.Context, userID, conv
 		CreatedAt:      time.Now(),
 	}
 
-	o.pending.Set(convID, action)
+	o.pending.Set(ctx, convID, action)
 
 	return map[string]interface{}{
 		"action_required": true,
@@ -227,7 +239,7 @@ func (o *Orchestrator) createSavingsGoalAction(ctx context.Context, userID, conv
 
 // ConfirmAction executes a pending action after user confirmation.
 func (o *Orchestrator) ConfirmAction(ctx context.Context, userID, convID uuid.UUID) (*entities.PendingAction, error) {
-	action := o.pending.Get(convID)
+	action := o.pending.Get(ctx, convID)
 	if action == nil {
 		// Check if it was expired (Get auto-deletes expired)
 		return nil, fmt.Errorf("no pending action or action expired")
@@ -248,7 +260,7 @@ func (o *Orchestrator) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 		execErr = fmt.Errorf("unknown action: %s", action.Action)
 	}
 
-	o.pending.Delete(convID)
+	o.pending.Delete(ctx, convID)
 
 	status := "executed"
 	errMsg := ""
@@ -266,14 +278,14 @@ func (o *Orchestrator) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 
 // CancelAction discards a pending action.
 func (o *Orchestrator) CancelAction(ctx context.Context, userID, convID uuid.UUID) error {
-	action := o.pending.Get(convID)
+	action := o.pending.Get(ctx, convID)
 	if action == nil {
 		return nil // Already gone or expired — safe to ignore
 	}
 	if action.UserID != userID {
 		return fmt.Errorf("action does not belong to user")
 	}
-	o.pending.Delete(convID)
+	o.pending.Delete(ctx, convID)
 	o.auditAction(ctx, userID, convID, action, "cancelled", "")
 	return nil
 }

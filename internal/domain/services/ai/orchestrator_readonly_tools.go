@@ -1,0 +1,179 @@
+package ai
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"github.com/shopspring/decimal"
+)
+
+// Tool names for read-only data tools.
+const (
+	ToolGetCardTransactions = "get_card_transactions"
+	ToolGetDepositHistory   = "get_deposit_history"
+	ToolGetYieldEarned      = "get_yield_earned"
+)
+
+// CardTransactionProvider returns recent card transactions.
+type CardTransactionProvider interface {
+	GetTransactionsByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.BridgeCardTransaction, error)
+}
+
+// DepositHistoryProvider returns recent deposits.
+type DepositHistoryProvider interface {
+	GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Deposit, error)
+}
+
+// YieldProvider returns yield data.
+type YieldProvider interface {
+	GetSnapshotsInWindow(ctx context.Context, userID uuid.UUID, from, to time.Time) ([]*entities.YieldBalanceSnapshot, error)
+}
+
+// SetCardTransactions sets the card transaction provider.
+func (o *Orchestrator) SetCardTransactions(p CardTransactionProvider) {
+	o.cardTransactions = p
+}
+
+// SetDepositHistory sets the deposit history provider.
+func (o *Orchestrator) SetDepositHistory(p DepositHistoryProvider) {
+	o.depositHistory = p
+}
+
+// SetYieldProvider sets the yield provider.
+func (o *Orchestrator) SetYieldProvider(p YieldProvider) {
+	o.yieldProvider = p
+}
+
+// ReadOnlyTools returns tool definitions for read-only data access.
+func ReadOnlyTools(hasCards, hasDeposits, hasYield bool) []infraai.Tool {
+	var tools []infraai.Tool
+	if hasCards {
+		tools = append(tools, infraai.Tool{
+			Name:        ToolGetCardTransactions,
+			Description: "Get recent card transactions. Use when user asks about card spending, recent purchases, or what they bought.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"limit": map[string]interface{}{"type": "integer", "description": "Number of transactions (max 10)", "default": 5},
+				},
+			},
+		})
+	}
+	if hasDeposits {
+		tools = append(tools, infraai.Tool{
+			Name:        ToolGetDepositHistory,
+			Description: "Get recent deposit history. Use when user asks about their deposits, funding history, or money coming in.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"limit": map[string]interface{}{"type": "integer", "description": "Number of deposits (max 10)", "default": 5},
+				},
+			},
+		})
+	}
+	if hasYield {
+		tools = append(tools, infraai.Tool{
+			Name:        ToolGetYieldEarned,
+			Description: "Get yield earned on stash (USDB). Use when user asks about interest, yield, earnings on savings, or how much their stash has earned.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"period": map[string]interface{}{"type": "string", "enum": []string{"last_7_days", "last_30_days", "last_90_days"}},
+				},
+			},
+		})
+	}
+	return tools
+}
+
+func (o *Orchestrator) executeCardTransactions(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+	if o.cardTransactions == nil {
+		return map[string]interface{}{"error": "card transactions not available"}, nil
+	}
+	limit := 5
+	if l, ok := args["limit"].(float64); ok && l > 0 && l <= 10 {
+		limit = int(l)
+	}
+	txns, err := o.cardTransactions.GetTransactionsByUserID(ctx, userID, limit, 0)
+	if err != nil {
+		return nil, fmt.Errorf("card transactions: %w", err)
+	}
+	items := make([]map[string]interface{}, len(txns))
+	for i, t := range txns {
+		merchant := "Unknown"
+		if t.MerchantName != nil {
+			merchant = *t.MerchantName
+		}
+		items[i] = map[string]interface{}{
+			"amount":   t.Amount.String(),
+			"merchant": merchant,
+			"date":     t.CreatedAt.Format("Jan 2, 2006"),
+			"status":   t.Status,
+		}
+	}
+	return map[string]interface{}{"transactions": items, "count": len(items)}, nil
+}
+
+func (o *Orchestrator) executeDepositHistory(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+	if o.depositHistory == nil {
+		return map[string]interface{}{"error": "deposit history not available"}, nil
+	}
+	limit := 5
+	if l, ok := args["limit"].(float64); ok && l > 0 && l <= 10 {
+		limit = int(l)
+	}
+	deposits, err := o.depositHistory.GetByUserID(ctx, userID, limit, 0)
+	if err != nil {
+		return nil, fmt.Errorf("deposit history: %w", err)
+	}
+	items := make([]map[string]interface{}, len(deposits))
+	for i, d := range deposits {
+		items[i] = map[string]interface{}{
+			"amount": d.Amount.String(),
+			"token":  string(d.Token),
+			"chain":  string(d.Chain),
+			"status": d.Status,
+			"date":   d.CreatedAt.Format("Jan 2, 2006"),
+		}
+	}
+	return map[string]interface{}{"deposits": items, "count": len(items)}, nil
+}
+
+func (o *Orchestrator) executeYieldEarned(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+	if o.yieldProvider == nil {
+		return map[string]interface{}{"error": "yield data not available"}, nil
+	}
+	now := time.Now().UTC()
+	var from time.Time
+	switch args["period"] {
+	case "last_90_days":
+		from = now.AddDate(0, 0, -90)
+	case "last_30_days":
+		from = now.AddDate(0, 0, -30)
+	default:
+		from = now.AddDate(0, 0, -7)
+	}
+	snapshots, err := o.yieldProvider.GetSnapshotsInWindow(ctx, userID, from, now)
+	if err != nil {
+		return nil, fmt.Errorf("yield data: %w", err)
+	}
+	if len(snapshots) < 2 {
+		return map[string]interface{}{"yield_earned": "0.00", "message": "Not enough data yet"}, nil
+	}
+	first := snapshots[0].Balance
+	last := snapshots[len(snapshots)-1].Balance
+	earned := last.Sub(first)
+	if earned.LessThan(decimal.Zero) {
+		earned = decimal.Zero
+	}
+	return map[string]interface{}{
+		"yield_earned":    earned.StringFixed(2),
+		"start_balance":   first.StringFixed(2),
+		"current_balance": last.StringFixed(2),
+		"period_days":     int(now.Sub(from).Hours() / 24),
+	}, nil
+}

@@ -32,7 +32,7 @@ type ChatRequest struct {
 
 // Message represents a single message in a conversation
 type Message struct {
-	Role    string `json:"role"`    // "user", "assistant", "system"
+	Role    string `json:"role"`    // "user", "assistant", "system", "tool"
 	Content string `json:"content"`
 }
 

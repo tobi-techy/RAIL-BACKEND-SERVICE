@@ -40,6 +40,10 @@ func KnowledgeTool() infraai.Tool {
 	}
 }
 
+// MinKnowledgeSimilarity is the cosine similarity threshold below which
+// knowledge results are discarded as irrelevant.
+const MinKnowledgeSimilarity = 0.70
+
 // executeKnowledgeSearch handles the search_knowledge_base tool call.
 func (o *Orchestrator) executeKnowledgeSearch(ctx context.Context, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.knowledge == nil {
@@ -56,15 +60,23 @@ func (o *Orchestrator) executeKnowledgeSearch(ctx context.Context, args map[stri
 		return nil, fmt.Errorf("knowledge search: %w", err)
 	}
 
-	if len(results) == 0 {
+	// Filter out low-relevance results
+	filtered := results[:0]
+	for _, r := range results {
+		if r.Similarity >= MinKnowledgeSimilarity {
+			filtered = append(filtered, r)
+		}
+	}
+
+	if len(filtered) == 0 {
 		return map[string]interface{}{"found": false, "message": "No relevant information found"}, nil
 	}
 
 	// Build context from top results
 	var sb strings.Builder
-	for i, r := range results {
+	for i, r := range filtered {
 		fmt.Fprintf(&sb, "[Source: %s] %s", r.SourceDoc, r.ChunkText)
-		if i < len(results)-1 {
+		if i < len(filtered)-1 {
 			sb.WriteString("\n\n")
 		}
 	}
@@ -72,6 +84,6 @@ func (o *Orchestrator) executeKnowledgeSearch(ctx context.Context, args map[stri
 	return map[string]interface{}{
 		"found":   true,
 		"context": sb.String(),
-		"sources": len(results),
+		"sources": len(filtered),
 	}, nil
 }

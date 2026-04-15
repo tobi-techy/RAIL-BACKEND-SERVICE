@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -182,6 +183,30 @@ func (al *AuthRateLimiter) Limit() gin.HandlerFunc {
 				"message":     "Too many requests. Please try again later.",
 				"retry_after": 60,
 				"request_id":  c.GetString("request_id"),
+			})
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+// PerUserRateLimit creates middleware that rate limits by authenticated user ID.
+// Falls through if no user_id is in context (unauthenticated requests).
+func PerUserRateLimit(requestsPerMinute int) gin.HandlerFunc {
+	limiter := NewAuthRateLimiterWithTTL(requestsPerMinute, defaultCleanupTTL)
+	return func(c *gin.Context) {
+		userID, exists := c.Get("user_id")
+		if !exists {
+			c.Next()
+			return
+		}
+		key := fmt.Sprintf("%v", userID)
+		if !limiter.getLimiter(key).Allow() {
+			c.JSON(http.StatusTooManyRequests, gin.H{
+				"error":       "RATE_LIMIT_EXCEEDED",
+				"message":     "Too many requests. Please try again later.",
+				"retry_after": 60,
 			})
 			c.Abort()
 			return

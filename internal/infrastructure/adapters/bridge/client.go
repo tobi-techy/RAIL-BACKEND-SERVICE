@@ -70,7 +70,7 @@ type Client struct {
 // NewClient creates a new Bridge API client
 func NewClient(config Config, logger *zap.Logger) *Client {
 	if config.Timeout == 0 {
-		config.Timeout = 60 * time.Second // Bridge sandbox can be slow
+		config.Timeout = 30 * time.Second // Production-appropriate timeout
 	}
 	if config.BaseURL == "" {
 		if strings.EqualFold(strings.TrimSpace(config.Environment), "sandbox") {

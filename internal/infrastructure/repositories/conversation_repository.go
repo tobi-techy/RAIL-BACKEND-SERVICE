@@ -130,6 +130,18 @@ func (r *ConversationRepository) UpdateSummary(ctx context.Context, id uuid.UUID
 	return nil
 }
 
+// UpdateTitle sets the conversation title.
+func (r *ConversationRepository) UpdateTitle(ctx context.Context, id uuid.UUID, title string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE ai_conversations SET title = $1, updated_at = $2 WHERE id = $3`,
+		title, time.Now(), id,
+	)
+	if err != nil {
+		return fmt.Errorf("update title: %w", err)
+	}
+	return nil
+}
+
 // IncrementStats atomically increments counters after an exchange (user + assistant = 2 messages).
 func (r *ConversationRepository) IncrementStats(ctx context.Context, id uuid.UUID, tokens int, cost decimal.Decimal) error {
 	_, err := r.db.ExecContext(ctx, `
