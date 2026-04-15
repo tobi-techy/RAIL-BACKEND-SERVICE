@@ -138,6 +138,7 @@ type WithdrawalService struct {
 	bridgeCryptoAdapter BridgeCryptoTransferAdapter
 	chainRailsAdapter  ChainRailsTransferAdapter
 	stashLock          StashLockChecker
+	complianceScreener ComplianceScreener
 	stashLockMu         sync.RWMutex
 	db                  *sqlx.DB
 	logger              *logger.Logger
@@ -192,6 +193,16 @@ func (s *WithdrawalService) SetChainRailsAdapter(a ChainRailsTransferAdapter) {
 	s.chainRailsAdapter = a
 }
 
+// ComplianceScreener screens transactions for AML/sanctions compliance.
+type ComplianceScreener interface {
+	ScreenTransaction(ctx context.Context, userID uuid.UUID, referenceID, direction string, amount decimal.Decimal, currency, userFullName string) (string, error)
+}
+
+// SetComplianceScreener sets the compliance screening service (optional).
+func (s *WithdrawalService) SetComplianceScreener(cs ComplianceScreener) {
+	s.complianceScreener = cs
+}
+
 // advisoryLockKey derives a stable int64 from a user UUID for pg_advisory_lock.
 func advisoryLockKey(userID uuid.UUID) int64 {
 	h := fnv.New64a()
@@ -227,7 +238,7 @@ func (s *WithdrawalService) acquireAdvisoryLock(ctx context.Context, userID uuid
 		if time.Now().After(deadline) {
 			return nil, fmt.Errorf("timeout acquiring withdrawal lock for user %s", userID)
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond)
 	}
 }
 
@@ -260,6 +271,12 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	if err := validateChainPair(req.SourceChain, req.DestinationChain); err != nil {
 		s.logger.Warn("Invalid chain configuration", "source_chain", req.SourceChain, "dest_chain", req.DestinationChain, "error", err)
 		return nil, fmt.Errorf("invalid chain configuration: %w", err)
+	}
+
+	// Step 1.6: Validate currency is supported on destination chain
+	if err := validateCurrencyChain(string(req.Currency), req.DestinationChain); err != nil {
+		s.logger.Warn("Currency not supported on chain", "currency", req.Currency, "dest_chain", req.DestinationChain, "error", err)
+		return nil, fmt.Errorf("unsupported route: %w", err)
 	}
 
 	clientProvidedIdempotency := strings.TrimSpace(req.IdempotencyKey) != ""
@@ -310,6 +327,21 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 					result.LimitType, result.RemainingCapacity.String(), result.ResetsAt)
 			}
 			return nil, fmt.Errorf("withdrawal limit exceeded: %w", err)
+		}
+	}
+
+	// Step 3.5: Compliance screening — submit to Didit for AML/sanctions monitoring
+	if s.complianceScreener != nil {
+		screenStatus, screenErr := s.complianceScreener.ScreenTransaction(ctx, req.UserID, idempotencyKey, "outbound", req.Amount, string(req.Currency), "")
+		if screenErr != nil {
+			s.logger.Error("Compliance screening unavailable, blocking withdrawal for review",
+				"user_id", req.UserID.String(), "error", screenErr)
+			return nil, fmt.Errorf("withdrawal held: compliance screening unavailable")
+		}
+		if screenStatus != "APPROVED" {
+			s.logger.Warn("Withdrawal not approved by compliance screening",
+				"user_id", req.UserID.String(), "amount", req.Amount.String(), "status", screenStatus)
+			return nil, fmt.Errorf("withdrawal held: compliance status %s", screenStatus)
 		}
 	}
 
@@ -439,14 +471,6 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	}
 
 	if !isFinalSuccess {
-		// Don't block the HTTP handler polling Bridge — let webhooks settle the final state.
-		// Just do a single non-blocking status check.
-		if _, err := s.syncCryptoWithdrawalStatusFromProvider(ctx, withdrawal); err != nil {
-			s.logger.Warn("Failed to sync Bridge withdrawal status during initiation",
-				"withdrawal_id", withdrawal.ID.String(),
-				"error", err)
-		}
-
 		if withdrawal.Status == entities.WithdrawalStatusFailed {
 			// Reverse the ledger debit — the transfer failed on-chain.
 			if revErr := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); revErr != nil {
@@ -951,10 +975,13 @@ func (s *WithdrawalService) GetWithdrawal(ctx context.Context, userID, withdrawa
 		return nil, fmt.Errorf("withdrawal does not belong to user")
 	}
 
-	if _, err := s.syncWithdrawalStatusFromProvider(ctx, withdrawal); err != nil {
-		s.logger.Warn("Failed to sync withdrawal status on read",
-			"withdrawal_id", withdrawal.ID.String(),
-			"error", err)
+	isTerminal := withdrawal.Status == entities.WithdrawalStatusCompleted || withdrawal.Status == entities.WithdrawalStatusFailed || withdrawal.Status == entities.WithdrawalStatusCancelled || withdrawal.Status == entities.WithdrawalStatusReversed
+	if !isTerminal && time.Since(withdrawal.UpdatedAt) > 30*time.Second {
+		if _, err := s.syncWithdrawalStatusFromProvider(ctx, withdrawal); err != nil {
+			s.logger.Warn("Failed to sync withdrawal status on read",
+				"withdrawal_id", withdrawal.ID.String(),
+				"error", err)
+		}
 	}
 
 	return withdrawal, nil
@@ -1131,6 +1158,30 @@ var chainRailsChains = map[string]string{
 // must be routed through ChainRails, or empty string for Bridge-native chains.
 func isChainRailsChain(destChain string) string {
 	return chainRailsChains[strings.ToUpper(destChain)]
+}
+
+// withdrawalChainsForCurrency maps each stablecoin to the chains that support it.
+// Source: Bridge route table + ChainRails token availability docs.
+var withdrawalChainsForCurrency = map[string]map[string]bool{
+	"USDC":  {"SOL": true, "ETH": true, "BASE": true, "ARB": true, "OP": true, "MATIC": true, "AVAX": true, "HYPEREVM": true, "BSC": true, "STARKNET": true, "MONAD": true, "LISK": true},
+	"USDT":  {"SOL": true, "ETH": true, "BSC": true, "STARKNET": true},
+	"EURC":  {"SOL": true, "ETH": true, "BASE": true},
+	"PYUSD": {"SOL": true, "ETH": true},
+	"USDG":  {"SOL": true},
+}
+
+// validateCurrencyChain checks that the given currency is supported on the destination chain.
+func validateCurrencyChain(currency, destChain string) error {
+	cur := strings.ToUpper(currency)
+	dst := strings.ToUpper(destChain)
+	chains, ok := withdrawalChainsForCurrency[cur]
+	if !ok {
+		return nil // fiat currencies (USD/EUR/NGN) don't have chain restrictions
+	}
+	if !chains[dst] {
+		return fmt.Errorf("%s is not supported on %s", cur, dst)
+	}
+	return nil
 }
 
 // validateChainPair validates that both source and destination chains are supported

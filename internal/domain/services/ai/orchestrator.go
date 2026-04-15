@@ -101,6 +101,9 @@ type Orchestrator struct {
 	balanceHistory    BalanceHistoryProvider
 	patterns          PatternAnalyzer
 	aggregateStats    AggregateStatsProvider
+	fundsTransferer   FundsTransferer
+	actionAuditor     ActionAuditor
+	pending           *pendingActions
 	logger            *zap.Logger
 }
 
@@ -117,6 +120,7 @@ func NewOrchestrator(
 		portfolioProvider: portfolioProvider,
 		activityProvider:  activityProvider,
 		newsProvider:      newsProvider,
+		pending:           newPendingActions(),
 		logger:            logger,
 	}
 }
@@ -235,11 +239,20 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 	}
 	// Simulator is always available (pure computation)
 	tools = append(tools, SimulateSavingsTool())
+	// Action tools (require funds transferer)
+	if o.fundsTransferer != nil {
+		tools = append(tools, ActionTools()...)
+	}
 	return tools
 }
 
 // Chat handles a chat message with tool calling
 func (o *Orchestrator) Chat(ctx context.Context, userID uuid.UUID, message string, history []ai.Message) (*ChatResponse, error) {
+	return o.ChatInContext(ctx, userID, uuid.Nil, message, history)
+}
+
+// ChatInContext handles a chat message with an optional conversation ID for action support.
+func (o *Orchestrator) ChatInContext(ctx context.Context, userID, convID uuid.UUID, message string, history []ai.Message) (*ChatResponse, error) {
 	start := time.Now()
 
 	// Build messages with history (copy to avoid mutating caller's slice)
@@ -267,6 +280,34 @@ func (o *Orchestrator) Chat(ctx context.Context, userID uuid.UUID, message strin
 	allToolResults := make([]ToolResult, 0)
 	for round := 0; round < 3 && len(resp.ToolCalls) > 0; round++ {
 		for _, tc := range resp.ToolCalls {
+			// Intercept action tools — create pending action instead of executing
+			if isActionTool(tc.Name) && convID != uuid.Nil && o.fundsTransferer != nil {
+				result, err := o.executeActionTool(ctx, userID, convID, tc)
+				observeToolCall(tc.Name, err)
+				if err != nil {
+					result = map[string]interface{}{"error": err.Error()}
+				}
+				// If action requires confirmation, return immediately
+				if actionRequired, _ := result["action_required"].(bool); actionRequired {
+					pendingRaw, _ := result["pending_action"].(*entities.PendingAction)
+					content := resp.Content
+					if content == "" {
+						content = pendingRaw.Description
+					}
+					observeChat(resp.Provider, time.Since(start), resp.TokensUsed, nil)
+					return &ChatResponse{
+						Content:       content,
+						ToolCalls:     append(allToolResults, ToolResult{Name: tc.Name, Result: result}),
+						TokensUsed:    resp.TokensUsed,
+						Provider:      resp.Provider,
+						PendingAction: pendingRaw,
+					}, nil
+				}
+				toolResults = append(toolResults, ToolResult{Name: tc.Name, Result: result})
+				allToolResults = append(allToolResults, ToolResult{Name: tc.Name, Result: result})
+				continue
+			}
+
 			result, err := o.executeTool(ctx, userID, tc)
 			observeToolCall(tc.Name, err)
 			if err != nil {
@@ -511,11 +552,12 @@ func getSign(d decimal.Decimal) string {
 
 // ChatResponse represents the response from a chat interaction
 type ChatResponse struct {
-	Content    string                `json:"content"`
-	Cards      []entities.InsightCard `json:"cards,omitempty"`
-	ToolCalls  []ToolResult          `json:"tool_calls,omitempty"`
-	TokensUsed int                   `json:"tokens_used"`
-	Provider   string                `json:"provider"`
+	Content       string                  `json:"content"`
+	Cards         []entities.InsightCard  `json:"cards,omitempty"`
+	ToolCalls     []ToolResult            `json:"tool_calls,omitempty"`
+	TokensUsed    int                     `json:"tokens_used"`
+	Provider      string                  `json:"provider"`
+	PendingAction *entities.PendingAction `json:"pending_action,omitempty"`
 }
 
 // ToolResult represents the result of a tool execution

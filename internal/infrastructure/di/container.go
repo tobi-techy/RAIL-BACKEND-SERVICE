@@ -18,6 +18,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services"
 	"github.com/rail-service/rail_service/internal/domain/services/account"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
+	compliancesvc "github.com/rail-service/rail_service/internal/domain/services/compliance"
 	"github.com/rail-service/rail_service/internal/domain/services/allocation"
 	alpacaservice "github.com/rail-service/rail_service/internal/domain/services/alpaca"
 	analyticsservice "github.com/rail-service/rail_service/internal/domain/services/analytics"
@@ -979,6 +980,8 @@ type Container struct {
 	// AI Financial Manager Services
 	AIProviderManager     *ai.ProviderManager
 	AIOrchestrator        *aiservice.Orchestrator
+	DiditClient           *didit.Client
+	ComplianceService     *compliancesvc.Service
 	AIRecommender         *aiservice.Recommender
 	NewsService           *newsservice.Service
 	PortfolioDataProvider *aiservice.PortfolioDataProviderImpl
@@ -1790,6 +1793,8 @@ func (c *Container) initializeDomainServices() error {
 	c.WithdrawalService.SetStashLockChecker(stashLockSvc)
 	c.StashLockService = stashLockSvc
 
+	// Initialize compliance screening (Didit transaction monitoring + AML) — wired below after DiditClient creation
+
 	if c.BridgeWebhookHandler != nil && c.BridgeVirtualAccountService != nil {
 		var cardProcessor webhooks.BridgeCardProcessor
 		if c.CardService != nil {
@@ -1896,9 +1901,23 @@ func (c *Container) initializeDomainServices() error {
 			return fmt.Errorf("UserRepo must be initialized before setting up Didit client")
 		}
 		diditClient := didit.NewClient(didit.Config{
-			APIKey: diditAPIKey,
+			APIKey:        diditAPIKey,
+			WebhookSecret: c.Config.KYC.DiditWebhookSecret,
 		}, c.ZapLog)
+		c.DiditClient = diditClient
 		c.AccountDeletionService.SetDiditClient(diditClient, c.UserRepo, c.KYCSubmissionRepo)
+
+		// Wire compliance screening (transaction monitoring + AML)
+		complianceRepo := repositories.NewComplianceRepository(sqlxDB, c.ZapLog)
+		c.ComplianceService = compliancesvc.NewService(diditClient, complianceRepo, c.ZapLog)
+		c.ComplianceService.SetUserLookup(c.UserRepo)
+		c.ComplianceService.SetUserFreezer(&complianceUserFreezer{userRepo: c.UserRepo, logger: c.ZapLog})
+		c.FundingService.SetComplianceScreener(c.ComplianceService)
+		c.WithdrawalService.SetComplianceScreener(c.ComplianceService)
+		if c.BridgeVirtualAccountService != nil {
+			c.BridgeVirtualAccountService.SetComplianceScreener(c.ComplianceService)
+		}
+		c.ZapLog.Info("Compliance screening enabled (Didit transaction monitoring)")
 	}
 
 	// Initialize P2P transfer services
@@ -2527,6 +2546,13 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	// Initialize comparative context (uses ledger for balances)
 	if c.LedgerService != nil {
 		c.AIOrchestrator.SetAggregateStats(c.LedgerService)
+	}
+
+	// Initialize action tools (funds transfer + audit)
+	if c.LedgerService != nil {
+		c.AIOrchestrator.SetFundsTransferer(&fundsTransfererAdapter{ledger: c.LedgerService})
+		auditRepo := repositories.NewActionAuditRepository(sqlxDB, c.ZapLog)
+		c.AIOrchestrator.SetActionAuditor(auditRepo)
 	}
 
 	c.ZapLog.Info("AI Financial Manager services initialized",

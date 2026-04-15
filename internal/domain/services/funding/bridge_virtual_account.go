@@ -22,6 +22,7 @@ type BridgeVirtualAccountService struct {
 	virtualAccountRepo  VirtualAccountRepository
 	depositRepo         DepositRepository
 	allocationService   AllocationService
+	complianceScreener  ComplianceScreener
 	ledgerIntegration   LedgerIntegration
 	notificationService FundingNotificationService
 	walletProvider      WalletProvider
@@ -90,6 +91,11 @@ func (s *BridgeVirtualAccountService) SetNotificationService(notificationService
 // SetWalletProvider sets the wallet provider for getting user wallet addresses
 func (s *BridgeVirtualAccountService) SetWalletProvider(walletProvider WalletProvider) {
 	s.walletProvider = walletProvider
+}
+
+// SetComplianceScreener sets the compliance screening service (optional).
+func (s *BridgeVirtualAccountService) SetComplianceScreener(cs ComplianceScreener) {
+	s.complianceScreener = cs
 }
 
 // ProvisionVirtualAccounts creates virtual accounts for multiple currencies on KYC approval
@@ -425,6 +431,21 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 	depositID := uuid.New()
 	virtAccountUUID := virtualAccount.ID
 
+	// Compliance screening — submit to Didit for AML/sanctions monitoring
+	if s.complianceScreener != nil {
+		screenStatus, screenErr := s.complianceScreener.ScreenTransaction(ctx, virtualAccount.UserID, transactionRef, "inbound", amount, event.Currency, "")
+		if screenErr != nil {
+			s.logger.Error("Compliance screening unavailable, blocking fiat deposit",
+				"user_id", virtualAccount.UserID.String(), "ref", transactionRef, "error", screenErr)
+			return fmt.Errorf("deposit held: compliance screening unavailable")
+		}
+		if screenStatus != "APPROVED" {
+			s.logger.Warn("Fiat deposit not approved by compliance",
+				"user_id", virtualAccount.UserID.String(), "ref", transactionRef, "status", screenStatus)
+			return fmt.Errorf("deposit held: compliance status %s", screenStatus)
+		}
+	}
+
 	deposit := &entities.Deposit{
 		ID:               depositID,
 		IdempotencyKey:   idempotencyKey,
@@ -693,6 +714,22 @@ func (s *BridgeVirtualAccountService) ProcessCryptoDeposit(ctx context.Context, 
 
 	now := time.Now()
 	depositID := uuid.New()
+
+	// Compliance screening
+	if s.complianceScreener != nil {
+		screenStatus, screenErr := s.complianceScreener.ScreenTransaction(ctx, userID, transferID, "inbound", amount, "USDC", "")
+		if screenErr != nil {
+			s.logger.Error("Compliance screening unavailable, blocking crypto deposit",
+				"user_id", userID.String(), "transfer_id", transferID, "error", screenErr)
+			return fmt.Errorf("deposit held: compliance screening unavailable")
+		}
+		if screenStatus != "APPROVED" {
+			s.logger.Warn("Crypto deposit not approved by compliance",
+				"user_id", userID.String(), "transfer_id", transferID, "status", screenStatus)
+			return fmt.Errorf("deposit held: compliance status %s", screenStatus)
+		}
+	}
+
 	deposit := &entities.Deposit{
 		ID:             depositID,
 		IdempotencyKey: idempotencyKey,

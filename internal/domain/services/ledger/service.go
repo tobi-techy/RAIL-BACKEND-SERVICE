@@ -603,6 +603,9 @@ func stringPtr(s string) *string {
 // TransferSpendingToStash moves funds from spending_balance to stash_balance.
 // Used for roundup collection: the spare change is already in spending and should move to stash.
 func (s *Service) TransferSpendingToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
+	if amount.IsZero() || amount.IsNegative() {
+		return fmt.Errorf("invalid transfer amount: %s", amount.String())
+	}
 	spendAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
 	if err != nil {
 		return fmt.Errorf("get spending account: %w", err)
@@ -639,6 +642,51 @@ func (s *Service) TransferSpendingToStash(ctx context.Context, userID uuid.UUID,
 	}
 
 	_, err = s.CreateTransaction(ctx, req)
+	return err
+}
+
+// TransferStashToSpending moves funds from stash to spending.
+func (s *Service) TransferStashToSpending(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
+	if amount.IsZero() || amount.IsNegative() {
+		return fmt.Errorf("invalid transfer amount: %s", amount.String())
+	}
+
+	spendAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return fmt.Errorf("get spending account: %w", err)
+	}
+	stashAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		return fmt.Errorf("get stash account: %w", err)
+	}
+
+	desc := fmt.Sprintf("Transfer stash to spending: %s", amount.String())
+	refType := "ada_transfer"
+	txReq := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeInternalTransfer,
+		ReferenceType:   &refType,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &desc,
+		Entries: []entities.CreateEntryRequest{
+			{
+				AccountID:   stashAccount.ID,
+				EntryType:   entities.EntryTypeCredit, // debit stash
+				Amount:      amount,
+				Currency:    "USD",
+				Description: &desc,
+			},
+			{
+				AccountID:   spendAccount.ID,
+				EntryType:   entities.EntryTypeDebit, // credit spending
+				Amount:      amount,
+				Currency:    "USD",
+				Description: &desc,
+			},
+		},
+	}
+
+	_, err = s.CreateTransaction(ctx, txReq)
 	return err
 }
 
