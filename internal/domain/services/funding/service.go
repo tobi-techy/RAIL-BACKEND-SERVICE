@@ -705,10 +705,10 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 				"user_id", userID.String(), "tx_hash", webhook.TxHash, "error", screenErr)
 			return fmt.Errorf("deposit held: compliance screening unavailable")
 		}
-		if screenStatus == "DECLINED" {
-			s.logger.Warn("Deposit DECLINED by compliance screening",
-				"user_id", userID.String(), "tx_hash", webhook.TxHash)
-			return fmt.Errorf("deposit declined by compliance screening")
+		if screenStatus != "APPROVED" {
+			s.logger.Warn("Deposit not approved by compliance screening",
+				"user_id", userID.String(), "tx_hash", webhook.TxHash, "status", screenStatus)
+			return fmt.Errorf("deposit held: compliance status %s", screenStatus)
 		}
 	}
 

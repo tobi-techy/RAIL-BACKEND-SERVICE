@@ -441,6 +441,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						}
 						if err := container.ComplianceService.HandleTransactionWebhook(c.Request.Context(), &payload); err != nil {
 							container.ZapLog.Error("Failed to handle transaction webhook", zap.Error(err))
+							c.JSON(http.StatusInternalServerError, gin.H{"error": "processing failed"})
+							return
 						}
 						c.JSON(http.StatusOK, gin.H{"status": "ok"})
 					})

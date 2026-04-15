@@ -2,7 +2,9 @@ package compliance
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,16 +18,14 @@ import (
 type RiskTier int
 
 const (
-	TierLow    RiskTier = 1 // Async — approve immediately, screen in background
-	TierMedium RiskTier = 2 // Sync with short timeout — fallback to approve if Didit slow
+	TierMedium RiskTier = 2 // Sync with short timeout — fallback to approve on timeout only
 	TierHigh   RiskTier = 3 // Sync strict — block and wait, fail closed
 )
 
 // Thresholds
 var (
-	lowTierMaxAmount    = decimal.NewFromInt(500)
-	mediumTierMaxAmount = decimal.NewFromInt(5000)
-	matureAccountAge    = 90 * 24 * time.Hour // 3 months
+	highTierThreshold = decimal.NewFromInt(5000)
+	matureAccountAge  = 90 * 24 * time.Hour // 3 months
 )
 
 // DiditComplianceClient is the subset of the Didit client used for compliance.
@@ -60,54 +60,59 @@ type Service struct {
 	users  UserLookup
 	freeze UserFreezer
 	logger *zap.Logger
+	wg     sync.WaitGroup
 }
 
 func NewService(didit DiditComplianceClient, repo ComplianceRepo, logger *zap.Logger) *Service {
 	return &Service{didit: didit, repo: repo, logger: logger}
 }
 
-func (s *Service) SetUserLookup(u UserLookup)   { s.users = u }
-func (s *Service) SetUserFreezer(f UserFreezer)  { s.freeze = f }
+func (s *Service) SetUserLookup(u UserLookup)  { s.users = u }
+func (s *Service) SetUserFreezer(f UserFreezer) { s.freeze = f }
 
-// classifyRisk determines the screening tier based on amount, account age, and direction.
-func (s *Service) classifyRisk(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, direction string) RiskTier {
-	// Withdrawals are always at least medium risk
-	if direction == "outbound" && amount.GreaterThan(lowTierMaxAmount) {
-		if amount.GreaterThan(mediumTierMaxAmount) {
-			return TierHigh
-		}
-		return TierMedium
+// Shutdown drains in-flight async screenings.
+func (s *Service) Shutdown(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() { s.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
+}
 
-	// Large amounts are always high risk
-	if amount.GreaterThan(mediumTierMaxAmount) {
+// classifyRisk determines the screening tier.
+// All outbound transactions are at least TierHigh.
+// Inbound: >$5000 or new account (<3 months) = TierHigh, else TierMedium.
+func (s *Service) classifyRisk(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, direction string) RiskTier {
+	// All outbound (withdrawals) are high risk
+	if direction == "outbound" {
 		return TierHigh
 	}
 
-	// Check account age for tier determination
+	// Large inbound amounts are high risk
+	if amount.GreaterThan(highTierThreshold) {
+		return TierHigh
+	}
+
+	// Check account age — mature accounts get medium tier
 	if s.users != nil {
 		profile, err := s.users.GetByID(ctx, userID)
 		if err == nil && time.Since(profile.CreatedAt) >= matureAccountAge {
-			// Mature account + small amount = low risk
-			if amount.LessThanOrEqual(lowTierMaxAmount) {
-				return TierLow
-			}
 			return TierMedium
 		}
 	}
 
-	// New accounts or unknown = at least medium
-	if amount.LessThanOrEqual(lowTierMaxAmount) {
-		return TierMedium
-	}
+	// New accounts or lookup failure = high risk
 	return TierHigh
 }
 
 // ScreenTransaction submits a deposit or withdrawal to Didit for monitoring.
-// Behavior depends on the risk tier:
-//   - TierLow:    approve immediately, screen async in background
-//   - TierMedium: screen sync with 5s timeout, approve on timeout
-//   - TierHigh:   screen sync, block on failure (fail closed)
+//   - TierMedium: sync with 5s timeout, approve ONLY on context.DeadlineExceeded
+//   - TierHigh:   sync strict, fail closed on any error
+//
+// Returns "APPROVED" or an error. Callers must reject anything that isn't "APPROVED".
 func (s *Service) ScreenTransaction(ctx context.Context, userID uuid.UUID, referenceID, direction string, amount decimal.Decimal, currency, userFullName string) (string, error) {
 	tier := s.classifyRisk(ctx, userID, amount, direction)
 
@@ -119,38 +124,33 @@ func (s *Service) ScreenTransaction(ctx context.Context, userID uuid.UUID, refer
 		zap.String("ref", referenceID))
 
 	switch tier {
-	case TierLow:
-		// Fire and forget — approve immediately, screen in background
-		go func() {
-			bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			s.screenAndRecord(bgCtx, userID, referenceID, direction, amount, currency, userFullName)
-		}()
-		return "APPROVED", nil
-
 	case TierMedium:
-		// Sync with short timeout — approve if Didit is slow
+		// Sync with short timeout — approve ONLY on timeout, not on other errors
 		screenCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 		status, err := s.screenAndRecord(screenCtx, userID, referenceID, direction, amount, currency, userFullName)
 		if err != nil {
-			s.logger.Warn("Medium-tier screening timed out or failed, approving with async follow-up",
-				zap.Error(err), zap.String("user_id", userID.String()))
-			// Fire async retry so it still gets screened
-			go func() {
-				bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				s.screenAndRecord(bgCtx, userID, referenceID, direction, amount, currency, userFullName)
-			}()
-			return "APPROVED", nil
+			if errors.Is(err, context.DeadlineExceeded) {
+				s.logger.Warn("Medium-tier screening timed out, approving with async follow-up",
+					zap.String("user_id", userID.String()), zap.String("ref", referenceID))
+				s.wg.Add(1)
+				go func() {
+					defer s.wg.Done()
+					bgCtx, bgCancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer bgCancel()
+					s.screenAndRecord(bgCtx, userID, referenceID, direction, amount, currency, userFullName)
+				}()
+				return "APPROVED", nil
+			}
+			// Hard failure — fail closed
+			return "IN_REVIEW", fmt.Errorf("compliance screening failed: %w", err)
 		}
 		return status, nil
 
 	default: // TierHigh
-		// Strict — block and wait, fail closed
 		status, err := s.screenAndRecord(ctx, userID, referenceID, direction, amount, currency, userFullName)
 		if err != nil {
-			return "IN_REVIEW", err
+			return "IN_REVIEW", fmt.Errorf("compliance screening failed: %w", err)
 		}
 		return status, nil
 	}
@@ -179,8 +179,6 @@ func (s *Service) screenAndRecord(ctx context.Context, userID uuid.UUID, referen
 
 	resp, err := s.didit.CreateTransaction(ctx, req)
 	if err != nil {
-		s.logger.Error("Didit transaction screening failed",
-			zap.Error(err), zap.String("user_id", userID.String()), zap.String("ref", referenceID))
 		return "", err
 	}
 
@@ -201,6 +199,7 @@ func (s *Service) screenAndRecord(ctx context.Context, userID uuid.UUID, referen
 	}
 	if err := s.repo.CreateScreening(ctx, screening); err != nil {
 		s.logger.Error("Failed to persist screening", zap.Error(err))
+		return "", fmt.Errorf("persist screening: %w", err)
 	}
 
 	if resp.Status != "APPROVED" {
@@ -242,7 +241,6 @@ func (s *Service) ScreenUserAML(ctx context.Context, userID uuid.UUID, fullName,
 
 	resp, err := s.didit.ScreenAML(ctx, req)
 	if err != nil {
-		s.logger.Error("Didit AML screening failed", zap.Error(err), zap.String("user_id", userID.String()))
 		return "", err
 	}
 
@@ -299,24 +297,26 @@ func (s *Service) HandleTransactionWebhook(ctx context.Context, payload *didit.T
 		return fmt.Errorf("nil payload")
 	}
 
+	// Idempotency: skip if already at this status
+	existing, err := s.repo.GetScreeningByDiditUUID(ctx, payload.UUID)
+	if err != nil {
+		return fmt.Errorf("load screening: %w", err)
+	}
+	if existing.Status == payload.Status {
+		return nil // Already processed
+	}
+
 	if err := s.repo.UpdateScreeningStatus(ctx, payload.UUID, payload.Status, payload.Severity, payload.Score); err != nil {
-		s.logger.Error("Failed to update screening from webhook", zap.Error(err), zap.String("uuid", payload.UUID))
 		return fmt.Errorf("update screening status: %w", err)
 	}
 
 	if payload.Status == "DECLINED" && s.freeze != nil {
-		screening, err := s.repo.GetScreeningByDiditUUID(ctx, payload.UUID)
-		if err != nil {
-			s.logger.Error("Failed to load screening for freeze", zap.Error(err))
-			return err
-		}
 		reason := fmt.Sprintf("Transaction declined by compliance screening (score: %d, severity: %s)", payload.Score, payload.Severity)
-		if err := s.freeze.FreezeUser(ctx, screening.UserID, reason); err != nil {
-			s.logger.Error("Failed to freeze user", zap.Error(err), zap.String("user_id", screening.UserID.String()))
-			return err
+		if err := s.freeze.FreezeUser(ctx, existing.UserID, reason); err != nil {
+			return fmt.Errorf("freeze user: %w", err)
 		}
 		s.logger.Warn("User frozen due to declined transaction",
-			zap.String("user_id", screening.UserID.String()),
+			zap.String("user_id", existing.UserID.String()),
 			zap.String("didit_uuid", payload.UUID))
 	}
 

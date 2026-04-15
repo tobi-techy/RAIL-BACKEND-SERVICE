@@ -338,10 +338,10 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 				"user_id", req.UserID.String(), "error", screenErr)
 			return nil, fmt.Errorf("withdrawal held: compliance screening unavailable")
 		}
-		if screenStatus == "DECLINED" {
-			s.logger.Warn("Withdrawal DECLINED by compliance screening",
-				"user_id", req.UserID.String(), "amount", req.Amount.String())
-			return nil, fmt.Errorf("withdrawal declined by compliance screening")
+		if screenStatus != "APPROVED" {
+			s.logger.Warn("Withdrawal not approved by compliance screening",
+				"user_id", req.UserID.String(), "amount", req.Amount.String(), "status", screenStatus)
+			return nil, fmt.Errorf("withdrawal held: compliance status %s", screenStatus)
 		}
 	}
 
