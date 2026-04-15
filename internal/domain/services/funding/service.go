@@ -95,6 +95,7 @@ type Service struct {
 	auditService        AuditService
 	notificationService FundingNotificationService
 	allocationService   AllocationService
+	complianceScreener  ComplianceScreener
 	cache               CacheClient
 	config              *FundingConfig
 	logger              *logger.Logger
@@ -274,6 +275,16 @@ func (s *Service) SetAlpacaAccountLookup(lookup AlpacaAccountLookup) {
 // SetAllocationService sets the allocation service for automatic 70/30 split (optional)
 func (s *Service) SetAllocationService(as AllocationService) {
 	s.allocationService = as
+}
+
+// ComplianceScreener screens transactions for AML/sanctions compliance.
+type ComplianceScreener interface {
+	ScreenTransaction(ctx context.Context, userID uuid.UUID, referenceID, direction string, amount decimal.Decimal, currency, userFullName string) (string, error)
+}
+
+// SetComplianceScreener sets the compliance screening service (optional).
+func (s *Service) SetComplianceScreener(cs ComplianceScreener) {
+	s.complianceScreener = cs
 }
 
 // CreateDepositAddress generates or retrieves deposit address for a chain and currency
@@ -685,6 +696,21 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 
 	// Generate idempotency key (must be done after we have all details)
 	idempotencyKey = generateIdempotencyKey(string(webhook.Chain), string(token), amount.String(), webhook.TxHash)
+
+	// Compliance screening — submit to Didit for AML/sanctions monitoring
+	if s.complianceScreener != nil {
+		screenStatus, screenErr := s.complianceScreener.ScreenTransaction(ctx, userID, webhook.TxHash, "inbound", amount, string(token), "")
+		if screenErr != nil {
+			s.logger.Error("Compliance screening unavailable, blocking deposit for review",
+				"user_id", userID.String(), "tx_hash", webhook.TxHash, "error", screenErr)
+			return fmt.Errorf("deposit held: compliance screening unavailable")
+		}
+		if screenStatus == "DECLINED" {
+			s.logger.Warn("Deposit DECLINED by compliance screening",
+				"user_id", userID.String(), "tx_hash", webhook.TxHash)
+			return fmt.Errorf("deposit declined by compliance screening")
+		}
+	}
 
 	// Create deposit record FIRST with "pending" status to establish idempotency lock
 	// The unique constraint on idempotency_key prevents race conditions

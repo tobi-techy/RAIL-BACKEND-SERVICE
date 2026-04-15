@@ -129,6 +129,7 @@ type Service struct {
 	sumsubLevelName        string
 	encryptionKey          string
 	notifier               KYCNotifier
+	amlScreener            AMLScreener
 	logger                 *zap.Logger
 	resyncMu               sync.Mutex
 	resyncInFlight         map[string]bool
@@ -137,6 +138,16 @@ type Service struct {
 // SetNotifier wires the push notification sender for KYC outcomes.
 func (s *Service) SetNotifier(n KYCNotifier) {
 	s.notifier = n
+}
+
+// AMLScreener runs standalone AML screening on users.
+type AMLScreener interface {
+	ScreenUserAML(ctx context.Context, userID uuid.UUID, fullName, dob, nationality, docNumber string) (string, error)
+}
+
+// SetAMLScreener wires the AML screening service (optional).
+func (s *Service) SetAMLScreener(a AMLScreener) {
+	s.amlScreener = a
 }
 
 type UserRepository interface {
@@ -2372,6 +2383,38 @@ func (s *Service) processDiditApproved(ctx context.Context, submission *entities
 
 	// Hydrate document data from Didit (uses inline webhook decision or fetches via API).
 	s.hydrateSubmissionFromDidit(ctx, submission, payload)
+
+	// Run AML screening on the approved user (sanctions, PEP, adverse media).
+	if s.amlScreener != nil {
+		fullName := getMapString(submission.VerificationData, "didit_first_name") + " " + getMapString(submission.VerificationData, "didit_last_name")
+		dob := getMapString(submission.VerificationData, "didit_dob")
+		nationality := getMapString(submission.VerificationData, "didit_nationality")
+		docNumber := getMapString(submission.VerificationData, "didit_doc_number")
+		amlStatus, amlErr := s.amlScreener.ScreenUserAML(ctx, submission.UserID, strings.TrimSpace(fullName), dob, nationality, docNumber)
+		if amlErr != nil {
+			s.logger.Warn("AML screening failed at KYC approval, proceeding",
+				zap.Error(amlErr), zap.String("user_id", submission.UserID.String()))
+		} else {
+			submission.VerificationData["aml_status"] = amlStatus
+			s.logger.Info("AML screening completed at KYC approval",
+				zap.String("user_id", submission.UserID.String()), zap.String("aml_status", amlStatus))
+			// Block KYC approval if AML screening returns Declined (sanctions match)
+			if amlStatus == "Declined" {
+				reason := "AML screening declined — potential sanctions or watchlist match"
+				user.KYCStatus = string(entities.KYCStatusRejected)
+				user.KYCRejectionReason = &reason
+				user.OnboardingStatus = entities.OnboardingStatusKYCRejected
+				if err := s.userRepo.Update(ctx, user); err != nil {
+					return fmt.Errorf("failed to update user after AML decline: %w", err)
+				}
+				submission.MarkReviewed(entities.KYCStatusRejected, []string{reason})
+				if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {
+					return fmt.Errorf("failed to update submission after AML decline: %w", err)
+				}
+				return nil // Stop processing — do not push to Bridge
+			}
+		}
+	}
 
 	// Push gov ID to Bridge BEFORE marking approved, so retries can re-enter this method.
 	bridgeSuccess := false

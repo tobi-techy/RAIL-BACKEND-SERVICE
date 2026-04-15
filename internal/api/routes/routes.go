@@ -2,7 +2,9 @@ package routes
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/shopspring/decimal"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
+	"go.uber.org/zap"
 
 	"github.com/rail-service/rail_service/internal/api/handlers"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
@@ -341,6 +344,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	if container.NotificationService != nil {
 		kycService.SetNotifier(container.NotificationService)
 	}
+	if container.ComplianceService != nil {
+		kycService.SetAMLScreener(container.ComplianceService)
+	}
 	kycEligibilityMiddleware := middleware.NewKYCMiddleware(container.UserRepo, container.Logger)
 
 	// Create session validator adapter
@@ -413,6 +419,32 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			}
 			if diditClient != nil {
 				kyc.POST("/didit/webhook", kycHTTPHandlers.HandleDiditWebhook)
+				// Didit transaction monitoring webhook
+				if container.ComplianceService != nil {
+					kyc.POST("/didit/transaction-webhook", func(c *gin.Context) {
+						body, err := io.ReadAll(c.Request.Body)
+						if err != nil {
+							c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
+							return
+						}
+						sig := c.GetHeader("X-Signature-V2")
+						ts := c.GetHeader("X-Timestamp")
+						if err := diditClient.VerifyWebhookSignature(body, sig, ts); err != nil {
+							container.ZapLog.Warn("Invalid Didit transaction webhook signature", zap.Error(err))
+							c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
+							return
+						}
+						var payload diditadapter.TransactionWebhookPayload
+						if err := json.Unmarshal(body, &payload); err != nil {
+							c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+							return
+						}
+						if err := container.ComplianceService.HandleTransactionWebhook(c.Request.Context(), &payload); err != nil {
+							container.ZapLog.Error("Failed to handle transaction webhook", zap.Error(err))
+						}
+						c.JSON(http.StatusOK, gin.H{"status": "ok"})
+					})
+				}
 			}
 		}
 
