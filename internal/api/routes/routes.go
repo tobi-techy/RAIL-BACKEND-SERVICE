@@ -861,6 +861,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						convGroup.GET("/:id", convHandlers.GetConversation)
 						convGroup.DELETE("/:id", convHandlers.DeleteConversation)
 						convGroup.POST("/:id/chat", middleware.AuthRateLimit(20), convHandlers.ChatInConversation)
+						convGroup.POST("/:id/confirm", convHandlers.ConfirmAction)
+						convGroup.POST("/:id/cancel", convHandlers.CancelAction)
 					}
 				}
 

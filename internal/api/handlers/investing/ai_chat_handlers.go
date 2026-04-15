@@ -117,11 +117,12 @@ func (h *AIChatHandlers) Chat(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"content":     resp.Content,
-		"cards":       resp.Cards,
-		"tool_calls":  resp.ToolCalls,
-		"tokens_used": resp.TokensUsed,
-		"provider":    resp.Provider,
+		"content":        resp.Content,
+		"cards":          resp.Cards,
+		"tool_calls":     resp.ToolCalls,
+		"tokens_used":    resp.TokensUsed,
+		"provider":       resp.Provider,
+		"pending_action": resp.PendingAction,
 	})
 }
 

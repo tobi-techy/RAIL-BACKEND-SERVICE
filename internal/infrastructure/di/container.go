@@ -2529,6 +2529,13 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		c.AIOrchestrator.SetAggregateStats(c.LedgerService)
 	}
 
+	// Initialize action tools (funds transfer + audit)
+	if c.LedgerService != nil {
+		c.AIOrchestrator.SetFundsTransferer(&fundsTransfererAdapter{ledger: c.LedgerService})
+		auditRepo := repositories.NewActionAuditRepository(sqlxDB, c.ZapLog)
+		c.AIOrchestrator.SetActionAuditor(auditRepo)
+	}
+
 	c.ZapLog.Info("AI Financial Manager services initialized",
 		zap.String("primary_provider", primary.Name()),
 		zap.Int("fallback_count", len(fallbacks)),

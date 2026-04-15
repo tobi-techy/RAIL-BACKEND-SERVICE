@@ -192,11 +192,63 @@ func (h *ConversationHandlers) ChatInConversation(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"data": gin.H{
-			"content":     resp.Content,
-			"cards":       resp.Cards,
-			"tool_calls":  resp.ToolCalls,
-			"tokens_used": resp.TokensUsed,
-			"provider":    resp.Provider,
+			"content":        resp.Content,
+			"cards":          resp.Cards,
+			"tool_calls":     resp.ToolCalls,
+			"tokens_used":    resp.TokensUsed,
+			"provider":       resp.Provider,
+			"pending_action": resp.PendingAction,
 		},
 	})
+}
+
+// ConfirmAction handles POST /api/v1/ai/conversations/:id/confirm
+func (h *ConversationHandlers) ConfirmAction(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	conv := h.getConversationForUser(c, userID)
+	if conv == nil {
+		return
+	}
+
+	action, err := h.orchestrator.ConfirmAction(c.Request.Context(), userID, conv.ID)
+	if err != nil {
+		h.logger.Error("confirm action failed", zap.Error(err), zap.String("user_id", userID.String()))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data": gin.H{
+			"status":      "executed",
+			"action":      action.Action,
+			"description": action.Description,
+		},
+	})
+}
+
+// CancelAction handles POST /api/v1/ai/conversations/:id/cancel
+func (h *ConversationHandlers) CancelAction(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	conv := h.getConversationForUser(c, userID)
+	if conv == nil {
+		return
+	}
+
+	if err := h.orchestrator.CancelAction(c.Request.Context(), userID, conv.ID); err != nil {
+		h.logger.Error("cancel action failed", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"status": "cancelled"}})
 }

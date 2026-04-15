@@ -25,7 +25,7 @@ func (o *Orchestrator) SetUsageTracker(u UsageTracker) {
 // the exchange. Tracks usage for cost monitoring.
 func (o *Orchestrator) ChatWithConversation(ctx context.Context, userID uuid.UUID, conv *entities.AIConversation, message string) (*ChatResponse, error) {
 	if o.conversations == nil {
-		return o.Chat(ctx, userID, message, nil)
+		return o.ChatInContext(ctx, userID, uuid.Nil, message, nil)
 	}
 
 	history, err := o.conversations.BuildContext(ctx, conv)
@@ -34,7 +34,7 @@ func (o *Orchestrator) ChatWithConversation(ctx context.Context, userID uuid.UUI
 		history = nil
 	}
 
-	resp, err := o.Chat(ctx, userID, message, history)
+	resp, err := o.ChatInContext(ctx, userID, conv.ID, message, history)
 	if err != nil {
 		return nil, err
 	}
