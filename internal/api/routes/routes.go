@@ -562,6 +562,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			funding := protected.Group("/funding")
 			funding.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
 			{
+				funding.GET("/transactions", walletFundingHandlers.GetTransactionHistory)
 				// Pre-KYC: TOS link needed during onboarding, read-only Paj lookups
 				funding.GET("/tos-link", walletFundingHandlers.GetBridgeTOSLink)
 				if container.PajHandlers != nil {
@@ -878,8 +879,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				aiChatHandlers := handlers.NewAIChatHandlers(container.GetAIOrchestrator(), container.Logger)
 				aiGroup := protected.Group("/ai")
 				{
-					aiGroup.POST("/chat", middleware.AuthRateLimit(20), aiChatHandlers.Chat)
-					aiGroup.POST("/chat/stream", middleware.AuthRateLimit(20), aiChatHandlers.ChatStream)
+					aiGroup.POST("/chat", middleware.AuthRateLimit(20), middleware.PerUserRateLimit(20), aiChatHandlers.Chat)
+					aiGroup.POST("/chat/stream", middleware.AuthRateLimit(20), middleware.PerUserRateLimit(20), aiChatHandlers.ChatStream)
 					aiGroup.GET("/wrapped", middleware.AuthRateLimit(10), aiChatHandlers.GetWrapped)
 					aiGroup.GET("/quick-insight", middleware.AuthRateLimit(20), aiChatHandlers.QuickInsight)
 					aiGroup.GET("/suggestions", aiChatHandlers.GetSuggestedQuestions)
@@ -894,7 +895,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						convGroup.GET("", convHandlers.ListConversations)
 						convGroup.GET("/:id", convHandlers.GetConversation)
 						convGroup.DELETE("/:id", convHandlers.DeleteConversation)
-						convGroup.POST("/:id/chat", middleware.AuthRateLimit(20), convHandlers.ChatInConversation)
+						convGroup.POST("/:id/chat", middleware.AuthRateLimit(20), middleware.PerUserRateLimit(20), convHandlers.ChatInConversation)
 						convGroup.POST("/:id/confirm", convHandlers.ConfirmAction)
 						convGroup.POST("/:id/cancel", convHandlers.CancelAction)
 					}
