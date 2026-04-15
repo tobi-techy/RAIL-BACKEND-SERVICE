@@ -40,8 +40,8 @@ var (
 // ── NGN Limits ───────────────────────────────────────────────────
 
 var (
-	MinDepositAmountNGN = decimal.NewFromFloat(500.00) // ₦500
-	MinWithdrawalAmountNGN = decimal.NewFromFloat(500.00)
+	MinDepositAmountNGN = decimal.NewFromFloat(100.00) // ₦100
+	MinWithdrawalAmountNGN = decimal.NewFromFloat(100.00)
 
 	// Tier 1 (BVN verified) — NGN
 	Tier1DailyDepositLimitNGN   = decimal.NewFromFloat(2000000.00)  // ₦2M
