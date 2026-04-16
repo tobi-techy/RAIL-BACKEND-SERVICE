@@ -132,6 +132,8 @@ func (o *Orchestrator) executeActionTool(ctx context.Context, userID, convID uui
 		return o.createTransferAction(ctx, userID, convID, tc.Arguments)
 	case ToolSetSavingsGoal:
 		return o.createSavingsGoalAction(ctx, userID, convID, tc.Arguments)
+	case ToolSendReport:
+		return o.executeSendReport(ctx, userID, convID, tc.Arguments)
 	default:
 		return nil, fmt.Errorf("unknown action tool: %s", tc.Name)
 	}
@@ -253,9 +255,11 @@ func (o *Orchestrator) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 	case ToolTransferFunds:
 		execErr = o.executeTransfer(ctx, userID, action)
 	case ToolSetSavingsGoal:
-		o.logger.Info("Savings goal set via Ada",
+		o.logger.Info("Savings goal set via Miriam",
 			zap.String("user_id", userID.String()),
 			zap.Any("params", action.Params))
+	case ToolSendReport:
+		execErr = o.executeSendReportAction(ctx, userID, action)
 	default:
 		execErr = fmt.Errorf("unknown action: %s", action.Action)
 	}
@@ -340,5 +344,5 @@ func (o *Orchestrator) auditAction(ctx context.Context, userID, convID uuid.UUID
 
 // isActionTool returns true if the tool name is an action tool.
 func isActionTool(name string) bool {
-	return name == ToolTransferFunds || name == ToolSetSavingsGoal
+	return name == ToolTransferFunds || name == ToolSetSavingsGoal || name == ToolSendReport
 }

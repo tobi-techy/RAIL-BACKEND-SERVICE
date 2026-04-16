@@ -106,6 +106,8 @@ type Orchestrator struct {
 	cardTransactions  CardTransactionProvider
 	depositHistory    DepositHistoryProvider
 	yieldProvider     YieldProvider
+	userProfile       UserProfileProvider
+	reportEmail       ReportEmailSender
 	pending           PendingActionStore
 	logger            *zap.Logger
 }
@@ -129,10 +131,10 @@ func NewOrchestrator(
 }
 
 // SystemPrompt for the AI Financial Manager
-const SystemPrompt = `You are Ada — Rail's financial companion. You're warm, sharp, and genuinely invested in helping young people build wealth. You speak like a smart friend who happens to know a lot about money, not like a bank or a textbook.
+const SystemPrompt = `You are Miriam — Rail's financial companion. You're warm, sharp, and genuinely invested in helping young people build wealth. You speak like a smart friend who happens to know a lot about money, not like a bank or a textbook.
 
 YOUR PERSONALITY:
-- Name: Ada. Users can call you Ada.
+- Name: Miriam. Users can call you Miriam.
 - Tone: Warm, clear, occasionally witty. Never robotic, never condescending.
 - You celebrate small wins genuinely. ₦5,000 saved is worth celebrating.
 - You're honest about bad news but always constructive.
@@ -172,6 +174,11 @@ TOOL USAGE:
 - Use get_spending_patterns to identify behavioral patterns in spending.
 - Use simulate_savings to answer "what if" questions about future savings.
 - Use get_comparative_context to show how the user compares to peers.
+- Use get_tax_summary when users ask about taxes, tax reporting, or year-end summaries. Be country-aware.
+- Use get_tax_calendar when users ask about tax deadlines or filing dates.
+- Use send_report when users want to email themselves a financial report. Always confirm first.
+- Use get_savings_goals when users ask about their savings progress or goals.
+- When discussing taxes, NEVER say "you owe X" or "claim this deduction." Say "this may be taxable" or "consult a tax professional."
 - When multiple tools are relevant, use them together for richer answers.
 - Always turn tool data into narrative — never dump raw numbers.`
 
@@ -248,6 +255,8 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 	}
 	// Read-only data tools
 	tools = append(tools, ReadOnlyTools(o.cardTransactions != nil, o.depositHistory != nil, o.yieldProvider != nil)...)
+	// Tax, email, and goals tools
+	tools = append(tools, TaxAndReportTools(o.userProfile != nil, o.reportEmail != nil)...)
 	return tools
 }
 
@@ -354,6 +363,11 @@ func (o *Orchestrator) ChatInContext(ctx context.Context, userID, convID uuid.UU
 		TokensUsed:  resp.TokensUsed,
 		Provider:    resp.Provider,
 	}, nil
+}
+
+// ExecuteToolPublic exposes tool execution for the voice handler.
+func (o *Orchestrator) ExecuteToolPublic(ctx context.Context, userID uuid.UUID, tc ai.ToolCall) (map[string]interface{}, error) {
+	return o.executeTool(ctx, userID, tc)
 }
 
 // executeTool executes a tool call and returns the result
@@ -464,6 +478,15 @@ func (o *Orchestrator) executeTool(ctx context.Context, userID uuid.UUID, tc ai.
 
 	case ToolGetYieldEarned:
 		return o.executeYieldEarned(ctx, userID, tc.Arguments)
+
+	case ToolGetTaxSummary:
+		return o.executeTaxSummary(ctx, userID, tc.Arguments)
+
+	case ToolGetTaxCalendar:
+		return o.executeTaxCalendar(ctx, userID)
+
+	case ToolGetSavingsGoals:
+		return o.executeGetSavingsGoals(ctx, userID)
 
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", tc.Name)

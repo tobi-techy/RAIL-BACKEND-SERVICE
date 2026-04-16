@@ -274,6 +274,11 @@ func (e *EmailService) sendViaUnosend(ctx context.Context, to, subject, htmlCont
 	return nil
 }
 
+// SendReportEmail sends an HTML report email.
+func (e *EmailService) SendReportEmail(ctx context.Context, to, subject, htmlBody string) error {
+	return e.sendEmail(ctx, to, subject, htmlBody, "")
+}
+
 // SendVerificationEmail sends a verification code email
 func (e *EmailService) SendVerificationEmail(ctx context.Context, email, code string) error {
 	e.logger.Info("Sending verification email",

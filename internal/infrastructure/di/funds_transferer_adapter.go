@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
+	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/shopspring/decimal"
 )
 
@@ -17,12 +18,12 @@ type fundsTransfererAdapter struct {
 }
 
 func (a *fundsTransfererAdapter) TransferSpendToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error {
-	key := fmt.Sprintf("ada-spend-to-stash-%s-%d", userID, time.Now().UnixMilli())
+	key := fmt.Sprintf("miriam-spend-to-stash-%s-%d", userID, time.Now().UnixMilli())
 	return a.ledger.TransferSpendingToStash(ctx, userID, amount, key)
 }
 
 func (a *fundsTransfererAdapter) TransferStashToSpend(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error {
-	key := fmt.Sprintf("ada-stash-to-spend-%s-%d", userID, time.Now().UnixMilli())
+	key := fmt.Sprintf("miriam-stash-to-spend-%s-%d", userID, time.Now().UnixMilli())
 	return a.ledger.TransferStashToSpending(ctx, userID, amount, key)
 }
 
@@ -40,4 +41,28 @@ func (a *fundsTransfererAdapter) GetStashBalance(ctx context.Context, userID uui
 		return decimal.Zero, err
 	}
 	return acct.Balance, nil
+}
+
+// userProfileAdapter adapts UserRepository to the UserProfileProvider interface.
+type userProfileAdapter struct {
+	userRepo *repositories.UserRepository
+}
+
+func (a *userProfileAdapter) GetCountry(ctx context.Context, userID uuid.UUID) (string, error) {
+	user, err := a.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	if user.Country != nil {
+		return *user.Country, nil
+	}
+	return "", nil
+}
+
+func (a *userProfileAdapter) GetEmail(ctx context.Context, userID uuid.UUID) (string, error) {
+	user, err := a.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	return user.Email, nil
 }

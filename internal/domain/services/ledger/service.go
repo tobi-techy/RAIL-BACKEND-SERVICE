@@ -661,7 +661,7 @@ func (s *Service) TransferStashToSpending(ctx context.Context, userID uuid.UUID,
 	}
 
 	desc := fmt.Sprintf("Transfer stash to spending: %s", amount.String())
-	refType := "ada_transfer"
+	refType := "miriam_transfer"
 	txReq := &entities.CreateTransactionRequest{
 		UserID:          &userID,
 		TransactionType: entities.TransactionTypeInternalTransfer,

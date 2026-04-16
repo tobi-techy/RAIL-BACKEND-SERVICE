@@ -311,7 +311,7 @@ func (w *Worker) runMonthRecap(ctx context.Context) {
 			continue
 		}
 
-		body := fmt.Sprintf("This month: $%s spent across %d transactions. Your stash is at $%s. Total balance: $%s. Ask Ada for your full breakdown 💬",
+		body := fmt.Sprintf("This month: $%s spent across %d transactions. Your stash is at $%s. Total balance: $%s. Ask Miriam for your full breakdown 💬",
 			spent.StringFixed(2), txCount, stash.StringFixed(2), total.StringFixed(2))
 
 		_ = w.pushSender.SendToUser(ctx, u.ID,

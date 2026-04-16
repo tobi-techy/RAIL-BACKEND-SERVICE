@@ -1,0 +1,198 @@
+SOURCE: HMRC GOV.UK - Check if you need to pay tax when you sell cryptoassets
+URL: https://www.gov.uk/guidance/check-if-you-need-to-pay-tax-when-you-sell-cryptoassets
+LAST UPDATED: April 2025
+
+Check if you need to pay tax when you sell cryptoassets - GOV.UK
+GOV.UK
+Services and information
+Benefits
+Births, death, marriages and care
+Business and self-employed
+Childcare and parenting
+Citizenship and living in the UK
+Crime, justice and the law
+Disabled people
+Driving and transport
+Education and learning
+Employing people
+Environment and countryside
+Housing and local services
+Money and tax
+Passports, travel and living abroad
+Visas and immigration
+Working, jobs and pensions
+Government activity
+Departments
+Departments, agencies and public bodies
+News stories, speeches, letters and notices
+Guidance and regulation
+Detailed guidance, regulations and rules
+Research and statistics
+Reports, analysis and official statistics
+Policy papers and consultations
+Consultations and strategy
+Transparency
+Data, Freedom of Information releases and corporate reports
+Search GOV.UK
+Search GOV.UK
+Search
+Search GOV.UK
+Search
+Money
+Dealing with HMRC
+Paying HMRC
+Capital Gains Tax
+Guidance
+Check if you need to pay tax when you sell cryptoassets
+Find out if you need to pay Capital Gains Tax on gains you make when you sell, exchange or give away cryptoasset tokens (like bitcoin, XRP or ether).
+From:
+HM Revenue & Customs
+Published
+19 December 2018
+Last updated
+29 May 2025
+See all updates
+Get emails about this page
+Contents
+When you need to pay
+Working out your gain
+Records you must keep
+If you need to report and pay
+More information
+Print this page
+When you need to pay
+You may need to pay Capital Gains Tax if you make a gain when you ‘dispose’ of cryptoasset tokens (also known as cryptocurrency) by:
+selling them
+exchanging them for a different type of cryptoasset
+using them to pay for goods or services
+giving them to another person (unless it’s a gift to your spouse, civil partner or charity )
+You need to work out your total gains from disposing of certain assets , including cryptoassets. If your total gain for the tax year (6 April to 5 April) is above the Capital Gains Tax tax-free allowance , then you must:
+report the gain to HMRC
+pay Capital Gains Tax
+You may also need to pay other taxes if you receive cryptoassets .
+Working out your gain
+You need to work out your gain for each transaction you make. The way you work out your gain is different if you sell tokens within 30 days of buying them.
+Your gain is normally the difference between what you paid for an asset and what you sold it for. However, there are some situations when you need to use the market value to work out your gain. For example, if you have cryptoassets that have been transferred between ‘connected persons’ .
+You can:
+deduct allowable costs
+use capital losses on other assets to reduce your gain , but you’ll need to report them to us first
+If you’ve paid Income Tax on any part of your cryptoasset token value, then you will not pay Capital Gains Tax on that amount. You’ll only pay it on any gain you make after receiving them. For example, if you dispose of tokens you received as earnings from your employment.
+Pooling the cost of your tokens
+You must group each type of token you own into ‘pools’ and work out the pooled cost for each type — this is known as ‘pooling’ the costs.
+Each time you:
+buy or receive tokens, add the amount you paid for them to the appropriate pool
+dispose of tokens, deduct an equivalent proportion of the pooled costs and other allowable costs
+Example
+You buy 100 token XY for £2 each. The total cost is £200.
+You later buy 300 token XY for £1 each. The total cost is £300.
+In total, you have 400 token XY costing £500 — the average cost of each token is £1.25.
+If you sell 200 token XY, the cost of the tokens for your tax calculations is £250 (£1.25 multiplied by 200). Deduct this from what you sold the tokens for to work out your gain.
+Do not pool the cost of your tokens if you buy them:
+on the same day that you sell tokens of the same type
+within 30 days of selling tokens of the same type
+In these cases, the rules for working out the costs are the same as working out the cost of shares. Read Shares and Capital Gains Tax (Self Assessment helpsheet HS284) .
+What counts as an allowable cost
+Allowable costs are the expenses that can be deducted from your gain to reduce your overall tax liability. These include the cost of:
+transaction fees
+advertising for a buyer or seller
+drawing up a contract for the transaction
+making a valuation so you can work out your gain for that transaction
+a proportion of the pooled costs of your tokens
+There are costs you cannot deduct. For example, costs:
+you’ve already deducted against profits for Income Tax
+of mining activities (like equipment or electricity)
+Records you must keep
+You must keep records as we’ll ask to see them if we carry out a compliance check.
+For each pool of tokens, you must keep separate records for each transaction, including the:
+type of tokens
+date you disposed of them
+number of tokens you’ve disposed of
+number of tokens you have left
+value of the tokens in pound sterling
+bank statements
+pooled costs before and after you disposed of them
+You may also want to keep other records such as wallet addresses.
+Some cryptoasset exchanges provide reports of your transactions. These can be essential for working out how much tax you owe, but:
+they’re not tax calculations
+they will not keep track of your pooled costs
+You must keep your own records of your transactions.
+If you need to report and pay
+Read guidance on how to report and pay your Capital Gains Tax by either:
+completing a Self Assessment tax return at the end of the tax year
+using the Capital Gains Tax real time service
+If you’re reporting your gain on a Self Assessment return, you should complete it in pound sterling, in the cryptoasset section — available on returns for the tax year 2024 to 2025 onwards.
+You can use  HMRC’s Cryptoasset Disclosure Service , if you need to disclose unpaid tax for earlier tax years.
+More information
+Watch a video about how cryptoassets are taxed for individuals .
+You can read further guidance on how cryptoassets are taxed .
+Updates to this page
+Published 19 December 2018
+Last updated 29 May 2025
+‐ hide all updates"
+data-module="ga4-event-tracker"
+data-ga4-expandable> + show all updates
+29 May 2025
+Information added that Self-Assessment returns now include a cryptoasset section which is available on returns for the tax year 2024 to 2025 onwards.
+13 January 2025
+Information about working out if you need to pay Capital Gains Tax by using the market value of your asset to work out your gain has been updated. Information about the records a cryptoasset exchange may keep and what you can do with them, and a link to HMRC's Cryptoasset Disclosure Service has been added.
+19 December 2018
+First published.
+Get emails about this page
+Print this page
+Contents
+Related content
+Cryptoassets Manual
+Detailed guidance
+Check if you need to pay tax when you receive cryptoassets
+Information you need to give to UK cryptoasset service providers
+Tell HMRC about unpaid tax on cryptoassets
+Collection
+Cryptoassets
+Explore the topic
+Capital Gains Tax
+Paying HMRC
+Maybe
+Yes this page is useful
+No this page is not useful
+Thank you for your feedback
+Don’t include personal or financial information like your National Insurance number or credit card details.
+This field is for robots only. Please leave blank
+What were you doing?
+What went wrong?
+Cancel
+Please fill in this survey (opens in a new tab) .
+Cancel
+Services and information
+Benefits
+Births, death, marriages and care
+Business and self-employed
+Childcare and parenting
+Citizenship and living in the UK
+Crime, justice and the law
+Disabled people
+Driving and transport
+Education and learning
+Employing people
+Environment and countryside
+Housing and local services
+Money and tax
+Passports, travel and living abroad
+Visas and immigration
+Working, jobs and pensions
+Government activity
+Departments
+Guidance and regulation
+Research and statistics
+Policy papers and consultations
+Transparency
+How government works
+Get involved
+Support links
+Privacy
+Accessibility statement
+Contact
+Terms and conditions
+Rhestr o Wasanaethau Cymraeg
+Government Digital Service
+All content is available under the Open Government Licence v3.0 , except where otherwise stated
+© Crown copyright

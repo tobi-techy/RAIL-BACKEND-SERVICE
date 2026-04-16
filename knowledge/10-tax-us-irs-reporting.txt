@@ -1,0 +1,254 @@
+SOURCE: IRS.gov - Taxpayers need to report crypto, other digital asset transactions
+URL: https://www.irs.gov/newsroom/taxpayers-need-to-report-crypto-other-digital-asset-transactions-on-their-tax-return
+DATE: April 2024 (FS-2024-12)
+
+Taxpayers need to report crypto, other digital asset transactions on their tax return | Internal Revenue Service
+An official website of the United States government
+Here's how you know
+Here's how you know
+Official websites use .gov
+A .gov website belongs to an official government organization in the United States.
+Secure .gov websites use HTTPS
+A lock
+or https:// means you've safely connected to the .gov website. Share sensitive information only on official, secure websites.
+English
+Español 中文 (简体) 中文 (繁體) 한국어 Русский Tiếng Việt Kreyòl ayisyen
+Information Menu
+Tax Pros
+Sign in
+Individual
+Business
+Tax Pro
+Access your tax information with an IRS account.
+Refunds
+Payments
+Tax records
+Create account
+Search
+Sign in
+Individual
+Business
+Tax Pro
+Access your tax information with an IRS account.
+Refunds
+Payments
+Tax records
+Create account
+Search
+Include Historical Content
+- Any - No
+Include Historical Content
+- Any - No
+Search
+Main navigation
+Overview
+INFORMATION FOR…
+Individuals
+Business and self-employed
+Charities and nonprofits
+International filers
+Retirement
+Governments and tax-exempt bonds
+Indian Tribal Governments
+FILING FOR INDIVIDUALS
+How to file
+When to file
+Where to file
+Update your information
+POPULAR
+Tax record (transcript)
+Apply for an Employer ID Number (EIN)
+Amend return
+Identity Protection PIN (IP PIN)
+Overview
+PAY BY
+Bank Account (Direct Pay)
+Payment Plan (Installment Agreement)
+Electronic Federal Tax Payment System (EFTPS)
+POPULAR
+Your Online Account
+Tax Withholding Estimator
+Estimated Taxes
+Penalties
+Refunds
+Overview
+About refunds
+Direct deposit
+Reduced refunds
+Where’s my amended return?
+Credits & Deductions
+Overview
+INFORMATION FOR...
+Individuals
+For you and your family
+Businesses & Self-Employed
+Standard mileage and other information
+POPULAR
+Earned Income Credit (EITC)
+Child Tax Credit
+Clean Energy and Vehicle Credits
+Standard Deduction
+Retirement Plans
+Forms
+Overview
+POPULAR FORMS & INSTRUCTIONS
+Form 1040
+Individual Income Tax Return
+Form 1040 Instructions
+Instructions for Form 1040
+Form W-9
+Request for Taxpayer Identification Number (TIN) and Certification
+Form 4506-T
+Request for Transcript of Tax Return
+Form W-4
+Employee's Withholding Certificate
+Form 941
+Employer's Quarterly Federal Tax Return
+Form W-2
+Wage and Tax Statement
+Form 9465
+Installment Agreement Request
+POPULAR FOR TAX PROS
+Form 1040-X
+Amended Individual Income Tax Return
+Form 2848
+Power of Attorney
+Form W-7
+Apply for an ITIN
+Circular 230
+Regulations Governing Practice before the IRS
+Report Fraud
+Overview
+Tax fraud and scams
+Identity theft
+Fake IRS email or message
+Tax return preparer
+Search
+Include Historical Content
+- Any - No
+Include Historical Content
+- Any - No
+Search
+Information Menu
+Tax Pros
+Sign in
+Individual
+Business
+Tax Pro
+Access your tax information with an IRS account.
+Refunds
+Payments
+Tax records
+Create account
+Overview INFORMATION FOR… Individuals Business and self-employed Charities and nonprofits International filers Retirement Governments and tax-exempt bonds Indian Tribal Governments FILING FOR INDIVIDUALS How to file When to file Where to file Update your information POPULAR Tax record (transcript) Apply for an Employer ID Number (EIN) Amend return Identity Protection PIN (IP PIN)
+Overview PAY BY Bank Account (Direct Pay) Payment Plan (Installment Agreement) Electronic Federal Tax Payment System (EFTPS) POPULAR Your Online Account Tax Withholding Estimator Estimated Taxes Penalties
+Refunds
+Overview About refunds Direct deposit Reduced refunds Where’s my amended return?
+Credits & Deductions
+Overview INFORMATION FOR... Individuals Businesses & Self-Employed POPULAR Earned Income Credit (EITC) Child Tax Credit Clean Energy and Vehicle Credits Standard Deduction Retirement Plans
+Forms
+Overview POPULAR FORMS & INSTRUCTIONS Form 1040 Form 1040 Instructions Form W-9 Form 4506-T Form W-4 Form 941 Form W-2 Form 9465 POPULAR FOR TAX PROS Form 1040-X Form 2848 Form W-7 Circular 230
+Report Fraud
+Overview Tax fraud and scams Identity theft Fake IRS email or message Tax return preparer
+Main navigation
+Refunds
+Credits & Deductions
+Forms & Instructions
+Info Menu Mobile
+Charities & Nonprofits
+Tax Pros
+Home News Fact sheets Taxpayers need to report crypto, other digital asset transactions on their tax return
+Taxpayers need to report crypto, other digital asset transactions on their tax return
+English Español 中文 (简体)
+More In News
+Topics in the news
+News releases
+Multimedia center
+Tax relief in disaster situations
+One Big Beautiful Bill Act
+Inflation Reduction Act
+Tax Cuts and Jobs Act
+Taxpayer First Act
+Tax scams and consumer alerts
+The tax gap
+Fact sheets
+Fact sheets for frequently asked questions
+IRS Tax Tips
+e-News subscriptions
+IRS guidance
+Media contacts
+IRS statements and announcements
+Anyone who sold crypto, received it as payment or had other digital asset transactions needs to accurately report it on their tax return
+FS-2024-12, April 2024
+The Internal Revenue Service reminds taxpayers they must answer the digital asset question and report all digital asset related income when they file their 2023 federal income tax return. Taxpayers should also keep these reporting guidelines in mind for 2024.
+The question appears at the top of forms 1040, Individual Income Tax Return ; 1040-SR, U.S. Tax Return for Seniors ; and 1040-NR, U.S. Nonresident Alien Income Tax Return , and was revised this year to update wording. The question was also added to these additional forms: Forms 1041, U.S. Income Tax Return for Estates and Trusts PDF ; 1065, U.S. Return of Partnership Income ; 1120, U.S. Corporation Income Tax Return ; and 1120-S, U.S. Income Tax Return for an S Corporation .
+With appropriate variations tailored for corporate, partnership or estate and trust taxpayers, the digital asset question is:
+At any time during 2023, did you:
+(a) receive (as a reward, award or payment for property or services); or
+(b) sell, exchange or otherwise dispose of a digital asset (or a financial interest in a digital asset)?
+What is a digital asset?
+A digital asset is a digital representation of value that is recorded on a cryptographically secured, distributed ledger or any similar technology. Common digital assets include:
+Convertible virtual currency and cryptocurrency.
+Stablecoins.
+Non-fungible tokens (NFTs).
+Digital assets are treated as property for tax purposes, and general property tax principles apply to any of these transactions.
+Everyone must answer the question correctly
+Everyone who files Forms 1040, 1040-SR, 1040-NR, 1041, 1065, 1120 and 1120S must check one box answering either "Yes" or "No" to the digital asset question. The question must be answered by all taxpayers, not just by those who engaged in a transaction involving a digital asset in 2023.
+When to check "Yes"
+Normally, a taxpayer must check the "Yes" box if they:
+Received digital assets as payment for property or services provided;
+Received digital assets resulting from a reward or award;
+Received new digital assets resulting from mining, staking and similar activities;
+Received digital assets resulting from a hard fork (a branching of a cryptocurrency's blockchain that splits a single cryptocurrency into two);
+Disposed of digital assets in exchange for property or services;
+Disposed of a digital asset in exchange or trade for another digital asset;
+Sold a digital asset; or
+Otherwise disposed of any other financial interest in a digital asset.
+Report digital asset income
+In addition to checking the "Yes" box, taxpayers must report all income related to their digital asset transactions. For example, an investor who held a digital asset as a capital asset and sold, exchanged or transferred it during 2023 must use Form 8949, Sales and other Dispositions of Capital Assets , to figure their capital gain or loss on the transaction and then report it on Schedule D (Form 1040), Capital Gains and Losses . A taxpayer who disposed of any digital asset by gift may be required to file Form 709, United States Gift (and Generation-Skipping Transfer) Tax Return .
+If an employee was paid with digital assets, they must report the value of assets received as wages. Similarly, if they worked as an independent contractor and were paid with a digital asset, they must report that income on Schedule C (Form 1040), Profit or Loss from Business (Sole Proprietorship) . Schedule C is also used by anyone who sold, exchanged or transferred a digital asset to customers in connection with a trade or business.
+Keep in mind that most income is subject to taxation . Failing to accurately report income may result in accrued interest and penalties . This includes various sources of income such as interest earnings , unemployment benefits and income derived from the service industry , gig economy and digital assets . For further details, consult Publication 525, Taxable and Nontaxable Income .
+When to check "No"
+Normally, a taxpayer who just owned digital assets during 2023 can check the "No" box as long as they did not engage in any transactions involving a digital asset during the year. They can also check the "No" box if their activities were limited to one or more of the following:
+Holding digital assets in a wallet or account;
+Transferring digital assets from one wallet or account they own or control to another wallet or account they own or control; or
+Purchasing digital assets using U.S. or other real currency, including through electronic platforms.
+For a set of frequently asked questions (FAQs) and other details, visit the Digital assets page on IRS.gov.
+News items may not be updated after their release. Please verify the date before relying on the language.
+Share Facebook Twitter Linkedin Print
+Our Agency
+About IRS
+Careers
+Operations and Budget
+Tax Statistics
+Find a Local Office
+Know Your Rights
+Taxpayer Bill of Rights
+Taxpayer Advocate Service
+Independent Office of Appeals
+Civil Rights
+No FEAR Act Data
+Reliance on Guidance
+Resolve an Issue
+IRS Notices and Letters
+Identity Theft
+Tax scams
+Tax Fraud
+Criminal Investigation
+Whistleblower Office
+Languages
+Español
+中文 (简体)
+中文 (繁體)
+Pусский
+Tiếng Việt
+Kreyòl ayisyen
+English
+Related Sites
+U.S. Treasury
+Treasury Inspector General for Tax Administration
+USA.gov
+USAspending.gov
+Vote.gov
+Privacy Policy
+Accessibility

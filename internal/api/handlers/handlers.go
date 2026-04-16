@@ -122,6 +122,7 @@ var (
 	NewMarketHandlers            = investing.NewMarketHandlers
 	NewAIChatHandlers            = investing.NewAIChatHandlers
 	NewAICfoHandler              = investing.NewAICfoHandler
+	NewVoiceHandler              = investing.NewVoiceHandler
 	NewConversationHandlers      = investing.NewConversationHandlers
 	NewUsageHandlers             = investing.NewUsageHandlers
 	NewKnowledgeHandlers         = investing.NewKnowledgeHandlers
