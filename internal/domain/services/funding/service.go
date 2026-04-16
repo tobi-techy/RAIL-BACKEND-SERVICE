@@ -71,6 +71,12 @@ type AuditService interface {
 	LogDeposit(ctx context.Context, userID uuid.UUID, depositID uuid.UUID, amount string, chain string, status string) error
 }
 
+// FundingGameplayHooks interface for triggering gameplay events from deposits
+type FundingGameplayHooks interface {
+	OnDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID)
+	OnFirstDeposit(ctx context.Context, userID uuid.UUID, depositID uuid.UUID)
+}
+
 // FundingNotificationService interface for sending funding-related notifications
 type FundingNotificationService interface {
 	NotifyDepositConfirmed(ctx context.Context, userID uuid.UUID, amount, chain, txHash string) error
@@ -98,6 +104,7 @@ type Service struct {
 	complianceScreener  ComplianceScreener
 	cache               CacheClient
 	config              *FundingConfig
+	gameplayHooks       FundingGameplayHooks
 	logger              *logger.Logger
 }
 
@@ -244,6 +251,11 @@ func (s *Service) SetDefaultWalletSetID(id uuid.UUID) {
 // SetNotificationService sets the notification service (optional)
 func (s *Service) SetNotificationService(ns FundingNotificationService) {
 	s.notificationService = ns
+}
+
+// SetGameplayHooks sets the gameplay hooks (optional)
+func (s *Service) SetGameplayHooks(gh FundingGameplayHooks) {
+	s.gameplayHooks = gh
 }
 
 // SetBridgeVAService sets the Bridge virtual account service (optional)
@@ -852,6 +864,11 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 		if err := s.cache.Delete(ctx, cacheKey); err != nil {
 			s.logger.Warn("Failed to invalidate balance cache", "error", err, "user_id", userID.String())
 		}
+	}
+
+	// Trigger gameplay events (XP, streaks, challenges)
+	if s.gameplayHooks != nil {
+		s.gameplayHooks.OnDeposit(ctx, userID, usdAmount, deposit.ID)
 	}
 
 	s.logger.Info("Deposit processed successfully",

@@ -41,12 +41,18 @@ type ContributionRecorder interface {
 	RecordContribution(ctx context.Context, userID uuid.UUID, contributionType entities.ContributionType, amount decimal.Decimal, source string) error
 }
 
+// RoundupGameplayHooks interface for triggering gameplay events from roundups
+type RoundupGameplayHooks interface {
+	OnRoundup(ctx context.Context, userID uuid.UUID, txID uuid.UUID)
+}
+
 // Service handles round-up operations
 type Service struct {
 	repo                 Repository
 	ledgerService        LedgerService
 	orderPlacer          OrderPlacer
 	contributionRecorder ContributionRecorder
+	gameplayHooks        RoundupGameplayHooks
 	logger               *zap.Logger
 }
 
@@ -185,7 +191,17 @@ func (s *Service) ProcessTransaction(ctx context.Context, req *ProcessTransactio
 		go s.triggerAutoInvest(context.Background(), req.UserID)
 	}
 
+	// Trigger gameplay events
+	if s.gameplayHooks != nil {
+		s.gameplayHooks.OnRoundup(ctx, req.UserID, tx.ID)
+	}
+
 	return tx, nil
+}
+
+// SetGameplayHooks sets the gameplay hooks (optional)
+func (s *Service) SetGameplayHooks(gh RoundupGameplayHooks) {
+	s.gameplayHooks = gh
 }
 
 // CollectPendingRoundups collects pending round-ups and moves to allocation

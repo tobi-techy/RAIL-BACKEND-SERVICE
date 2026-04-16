@@ -976,6 +976,7 @@ type Container struct {
 	GameplayChallengeService *gameplay.ChallengeService
 	GameplayAchievementService *gameplay.AchievementService
 	GameplayRepo            *repositories.GameplayRepository
+	GameplayHooks           *gameplay.Hooks
 	SubscriptionService     *subscriptionsvc.Service
 	NotificationService     *services.NotificationService
 	SocialAuthService       *socialauth.Service
@@ -1607,6 +1608,21 @@ func (c *Container) initializeDomainServices() error {
 	c.GameplayAchievementService = gameplay.NewAchievementService(c.GameplayRepo, c.GameplayStreakService, nil, c.ZapLog)
 	c.SubscriptionService = subscriptionsvc.NewService(c.GameplayRepo, c.LedgerService, nil, c.ZapLog)
 	c.GameplayChallengeService.SetSubscriptionChecker(c.SubscriptionService)
+	c.GameplayHooks = gameplay.NewHooks(c.GameplayXPService, c.GameplayStreakService, c.GameplayChallengeService, c.ZapLog)
+
+	// Wire gameplay hooks into existing services
+	if c.FundingService != nil {
+		c.FundingService.SetGameplayHooks(c.GameplayHooks)
+	}
+	if c.RoundupService != nil {
+		c.RoundupService.SetGameplayHooks(c.GameplayHooks)
+	}
+	if c.OnboardingService != nil {
+		c.OnboardingService.SetGameplayHooks(c.GameplayHooks)
+	}
+
+	// Wire user stats provider for achievement evaluation
+	c.GameplayAchievementService.SetUserStatsProvider(repositories.NewUserStatsRepository(sqlxDB))
 
 	// Initialize investing service with repositories
 	basketRepo := repositories.NewBasketRepository(c.DB, c.ZapLog)

@@ -40,6 +40,7 @@ type Service struct {
 	alpacaAdapter       AlpacaAdapter
 	allocationService   AllocationService
 	p2pService          P2PService
+	gameplayHooks       OnboardingGameplayHooks
 	logger              *zap.Logger
 	defaultWalletChains []entities.WalletChain
 }
@@ -110,6 +111,11 @@ type P2PService interface {
 	ClaimPendingForUser(ctx context.Context, userID uuid.UUID, email, phone string) (int, error)
 }
 
+// OnboardingGameplayHooks interface for triggering gameplay events
+type OnboardingGameplayHooks interface {
+	OnOnboardingComplete(ctx context.Context, userID uuid.UUID)
+}
+
 // NewService creates a new onboarding service
 func NewService(
 	userRepo UserRepository,
@@ -149,6 +155,11 @@ func (s *Service) SetAllocationService(allocationService AllocationService) {
 // SetP2PService sets the P2P service (used to resolve circular dependency)
 func (s *Service) SetP2PService(p2pService P2PService) {
 	s.p2pService = p2pService
+}
+
+// SetGameplayHooks sets the gameplay hooks (optional)
+func (s *Service) SetGameplayHooks(gh OnboardingGameplayHooks) {
+	s.gameplayHooks = gh
 }
 
 func normalizeDefaultWalletChains(chains []entities.WalletChain, logger *zap.Logger) []entities.WalletChain {
@@ -552,6 +563,11 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 		zap.String("user_id", req.UserID.String()),
 		zap.String("bridge_customer_id", bridgeCustomerID),
 		zap.Bool("wallets_queued", false))
+
+	// Trigger gameplay: assign onboarding challenges
+	if s.gameplayHooks != nil {
+		s.gameplayHooks.OnOnboardingComplete(ctx, req.UserID)
+	}
 
 	return &entities.OnboardingCompleteResponse{
 		UserID:           req.UserID,
