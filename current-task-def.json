@@ -226,6 +226,18 @@
         {
           "name": "SECURITY_INTERNAL_API_KEY",
           "valueFrom": "/rail/prod/INTERNAL_API_KEY"
+        },
+        {
+          "name": "SNS_PUSH_REGION",
+          "valueFrom": "/rail/prod/SNS_PUSH_REGION"
+        },
+        {
+          "name": "SNS_PUSH_IOS_PLATFORM_ARN",
+          "valueFrom": "/rail/prod/SNS_PUSH_IOS_PLATFORM_ARN"
+        },
+        {
+          "name": "SNS_PUSH_ANDROID_PLATFORM_ARN",
+          "valueFrom": "/rail/prod/SNS_PUSH_ANDROID_PLATFORM_ARN"
         }
       ],
       "logConfiguration": {

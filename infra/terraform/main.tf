@@ -394,6 +394,10 @@ resource "aws_ecs_task_definition" "app" {
       { name = "PAJ_CHAIN",             valueFrom = "/rail/${local.env}/PAJ_CHAIN" },
       { name = "PAJ_WALLET_ADDRESS",    valueFrom = "/rail/${local.env}/PAJ_WALLET_ADDRESS" },
       { name = "PAJ_TOKEN_MINT",        valueFrom = "/rail/${local.env}/PAJ_TOKEN_MINT" },
+      # SNS Push Notifications
+      { name = "SNS_PUSH_REGION",              valueFrom = "/rail/${local.env}/SNS_PUSH_REGION" },
+      { name = "SNS_PUSH_IOS_PLATFORM_ARN",    valueFrom = "/rail/${local.env}/SNS_PUSH_IOS_PLATFORM_ARN" },
+      { name = "SNS_PUSH_ANDROID_PLATFORM_ARN", valueFrom = "/rail/${local.env}/SNS_PUSH_ANDROID_PLATFORM_ARN" },
     ]
 
     logConfiguration = {

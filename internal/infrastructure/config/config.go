@@ -42,6 +42,14 @@ type Config struct {
 	SocialAuth     SocialAuthConfig     `mapstructure:"social_auth"`
 	WebAuthn       WebAuthnConfig       `mapstructure:"webauthn"`
 	AI             AIConfig             `mapstructure:"ai"`
+	SNSPush        SNSPushConfig        `mapstructure:"sns_push"`
+}
+
+// SNSPushConfig contains AWS SNS push notification configuration
+type SNSPushConfig struct {
+	Region             string `mapstructure:"region"`              // AWS region (defaults to app region)
+	IOSPlatformARN     string `mapstructure:"ios_platform_arn"`    // SNS Platform Application ARN for APNs
+	AndroidPlatformARN string `mapstructure:"android_platform_arn"` // SNS Platform Application ARN for FCM
 }
 
 // GridConfig contains Grid API configuration
@@ -92,6 +100,7 @@ type OpenAIConfig struct {
 	Temperature    float64 `mapstructure:"temperature"`
 	TimeoutSeconds int     `mapstructure:"timeout_seconds"`
 	RateLimitRPM   int     `mapstructure:"rate_limit_rpm"`
+	RealtimeModel  string  `mapstructure:"realtime_model"`
 }
 
 // GeminiConfig contains Google Gemini API configuration
@@ -735,6 +744,7 @@ func setDefaults() {
 	// AI Provider defaults
 	viper.SetDefault("ai.primary", "openai")
 	viper.SetDefault("ai.openai.model", "gpt-4o-mini")
+	viper.SetDefault("ai.openai.realtime_model", "gpt-4o-realtime-preview")
 	viper.SetDefault("ai.openai.max_tokens", 500)
 	viper.SetDefault("ai.openai.temperature", 0.7)
 	viper.SetDefault("ai.gemini.model", "gemini-2.0-flash")

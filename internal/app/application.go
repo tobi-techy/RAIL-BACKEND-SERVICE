@@ -38,6 +38,8 @@ import (
 	portfolio_snapshot_worker "github.com/rail-service/rail_service/internal/workers/portfolio_snapshot_worker"
 	scheduled_investment_worker "github.com/rail-service/rail_service/internal/workers/scheduled_investment_worker"
 	scheduled_notifications "github.com/rail-service/rail_service/internal/workers/scheduled_notifications"
+	subscription_billing "github.com/rail-service/rail_service/internal/workers/subscription_billing"
+	gameplay_workers "github.com/rail-service/rail_service/internal/workers/gameplay"
 	walletprovisioning "github.com/rail-service/rail_service/internal/workers/wallet_provisioning"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/metrics"
@@ -64,6 +66,11 @@ type Application struct {
 	bridgeGovIDRepairWorker     *bridge_govid_repair.Worker
 	bridgeGovIDRepairCancel     context.CancelFunc
 	scheduledNotificationsWorker *scheduled_notifications.Worker
+	subscriptionBillingWorker    *subscription_billing.Worker
+	streakEvaluatorWorker        *gameplay_workers.StreakEvaluator
+	challengeRotatorWorker       *gameplay_workers.ChallengeRotator
+	achievementCheckerWorker     *gameplay_workers.AchievementChecker
+	insightGeneratorWorker       *gameplay_workers.InsightGenerator
 
 	// Tracing
 	tracingShutdown func(context.Context) error
@@ -239,6 +246,51 @@ func (app *Application) initializeWorkers() error {
 		)
 		go app.scheduledNotificationsWorker.Start(context.Background())
 		app.log.Info("Scheduled notifications worker started")
+	}
+
+	// Subscription billing worker
+	if app.container.SubscriptionService != nil {
+		app.subscriptionBillingWorker = subscription_billing.NewWorker(
+			app.container.SubscriptionService,
+			app.log.Zap(),
+		)
+		go app.subscriptionBillingWorker.Start(context.Background())
+		app.log.Info("Subscription billing worker started")
+	}
+
+	// Gameplay workers
+	if app.container.GameplayStreakService != nil {
+		// Resolve push notifier: SNS preferred, Expo fallback
+		var pushSender gameplay_workers.PushNotifier
+		if app.container.SNSPushService != nil {
+			pushSender = app.container.SNSPushService
+		} else if app.container.ExpoPushService != nil {
+			pushSender = app.container.ExpoPushService
+		}
+
+		app.streakEvaluatorWorker = gameplay_workers.NewStreakEvaluator(
+			app.container.GameplayStreakService, pushSender, app.log.Zap())
+		go app.streakEvaluatorWorker.Start(context.Background())
+
+		app.challengeRotatorWorker = gameplay_workers.NewChallengeRotator(
+			app.container.GameplayChallengeService, app.log.Zap())
+		go app.challengeRotatorWorker.Start(context.Background())
+
+		app.achievementCheckerWorker = gameplay_workers.NewAchievementChecker(
+			app.container.GameplayAchievementService, app.container.GameplayRepo, app.log.Zap())
+		go app.achievementCheckerWorker.Start(context.Background())
+
+		app.insightGeneratorWorker = gameplay_workers.NewInsightGenerator(
+			app.container.GameplayRepo,
+			app.container.LedgerService,
+			app.container.GameplayXPService,
+			app.container.GameplayStreakService,
+			app.container.SubscriptionService,
+			pushSender,
+			app.log.Zap())
+		go app.insightGeneratorWorker.Start(context.Background())
+
+		app.log.Info("Gameplay workers started (streak evaluator, challenge rotator, achievement checker, insight generator)")
 	}
 
 	return nil
@@ -689,6 +741,26 @@ func (app *Application) stopWorkers() {
 		app.log.Info("Stopping bridge gov ID repair worker...")
 		app.bridgeGovIDRepairCancel()
 		app.bridgeGovIDRepairCancel = nil
+	}
+
+	// Stop subscription billing worker
+	if app.subscriptionBillingWorker != nil {
+		app.log.Info("Stopping subscription billing worker...")
+		app.subscriptionBillingWorker.Stop()
+	}
+
+	// Stop gameplay workers
+	if app.streakEvaluatorWorker != nil {
+		app.streakEvaluatorWorker.Stop()
+	}
+	if app.challengeRotatorWorker != nil {
+		app.challengeRotatorWorker.Stop()
+	}
+	if app.achievementCheckerWorker != nil {
+		app.achievementCheckerWorker.Stop()
+	}
+	if app.insightGeneratorWorker != nil {
+		app.insightGeneratorWorker.Stop()
 	}
 }
 

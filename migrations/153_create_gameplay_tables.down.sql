@@ -1,0 +1,10 @@
+DROP TABLE IF EXISTS leaderboard_snapshots;
+DROP TABLE IF EXISTS subscription_charges;
+DROP TABLE IF EXISTS subscriptions;
+DROP TABLE IF EXISTS user_achievements;
+DROP TABLE IF EXISTS achievements;
+DROP TABLE IF EXISTS user_challenges;
+DROP TABLE IF EXISTS challenges;
+DROP TABLE IF EXISTS xp_events;
+DROP TABLE IF EXISTS user_xp;
+DROP TABLE IF EXISTS user_streaks;

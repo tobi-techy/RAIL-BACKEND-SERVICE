@@ -690,6 +690,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 			// Limits routes - deposit/withdrawal limits based on KYC tier
 			limits := protected.Group("/limits")
+
+			// Gameplay routes - streaks, XP, challenges, achievements, subscription
+			SetupGameplayRoutes(protected, container)
+
 			{
 				limitsHandler := container.GetLimitsHandler()
 				if limitsHandler != nil {
@@ -889,6 +893,18 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					aiGroup.GET("/wrapped", middleware.AuthRateLimit(10), aiChatHandlers.GetWrapped)
 					aiGroup.GET("/quick-insight", middleware.AuthRateLimit(20), aiChatHandlers.QuickInsight)
 					aiGroup.GET("/suggestions", aiChatHandlers.GetSuggestedQuestions)
+
+					// Voice session (WebSocket)
+					if container.Config.AI.OpenAI.APIKey != "" {
+						voiceHandler := handlers.NewVoiceHandler(
+							container.Config.AI.OpenAI.APIKey,
+							container.Config.AI.OpenAI.RealtimeModel,
+							container.GetAIOrchestrator(),
+							container.GetUsageService(),
+							container.ZapLog,
+						)
+						aiGroup.GET("/voice/session", voiceHandler.HandleSession)
+					}
 				}
 
 				// Conversation endpoints

@@ -25,6 +25,7 @@ const (
 	AccountTypeSystemBufferUSDC  AccountType = "system_buffer_usdc" // System on-chain USDC reserve
 	AccountTypeSystemBufferFiat  AccountType = "system_buffer_fiat" // System operational USD buffer
 	AccountTypeBrokerOperational AccountType = "broker_operational" // Pre-funded cash at Alpaca
+	AccountTypeSubscriptionRevenue AccountType = "subscription_revenue" // Rail Pro subscription revenue
 )
 
 // IsUserAccountType returns true if the account type belongs to a user
@@ -40,7 +41,8 @@ func (a AccountType) IsUserAccountType() bool {
 func (a AccountType) IsSystemAccountType() bool {
 	return a == AccountTypeSystemBufferUSDC ||
 		a == AccountTypeSystemBufferFiat ||
-		a == AccountTypeBrokerOperational
+		a == AccountTypeBrokerOperational ||
+		a == AccountTypeSubscriptionRevenue
 }
 
 // IsSystemAccount is an alias for IsSystemAccountType

@@ -50,6 +50,8 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/socialauth"
 	"github.com/rail-service/rail_service/internal/domain/services/stashlock"
 	"github.com/rail-service/rail_service/internal/domain/services/station"
+	"github.com/rail-service/rail_service/internal/domain/services/gameplay"
+	subscriptionsvc "github.com/rail-service/rail_service/internal/domain/services/subscription"
 	"github.com/rail-service/rail_service/internal/domain/services/strategy"
 	"github.com/rail-service/rail_service/internal/domain/services/twofa"
 	"github.com/rail-service/rail_service/internal/domain/services/wallet"
@@ -969,6 +971,12 @@ type Container struct {
 	AutoInvestService       *autoinvest.Service
 	StrategyEngine          *strategy.Engine
 	StationService          *station.Service
+	GameplayXPService       *gameplay.XPService
+	GameplayStreakService   *gameplay.StreakService
+	GameplayChallengeService *gameplay.ChallengeService
+	GameplayAchievementService *gameplay.AchievementService
+	GameplayRepo            *repositories.GameplayRepository
+	SubscriptionService     *subscriptionsvc.Service
 	NotificationService     *services.NotificationService
 	SocialAuthService       *socialauth.Service
 	WebAuthnService         *webauthn.Service
@@ -1104,6 +1112,7 @@ type Container struct {
 	DeviceTokenRepo  *repositories.DeviceTokenRepository
 	NotificationRepo *repositories.NotificationRepository
 	ExpoPushService  *adapters.ExpoPushService
+	SNSPushService   *adapters.SNSPushService
 
 	// Unified Webhook Handler
 	UnifiedFundingWebhookHandler *webhooks.UnifiedFundingWebhookHandler
@@ -1590,6 +1599,15 @@ func (c *Container) initializeDomainServices() error {
 	)
 	c.StationService.SetAlpacaAccountRepository(c.AlpacaAccountRepo)
 
+	// Initialize gameplay services (notifiers wired after push service is resolved below)
+	c.GameplayRepo = repositories.NewGameplayRepository(sqlxDB)
+	c.GameplayXPService = gameplay.NewXPService(c.GameplayRepo, nil, c.ZapLog)
+	c.GameplayStreakService = gameplay.NewStreakService(c.GameplayRepo, c.ZapLog)
+	c.GameplayChallengeService = gameplay.NewChallengeService(c.GameplayRepo, c.GameplayXPService, nil, c.ZapLog)
+	c.GameplayAchievementService = gameplay.NewAchievementService(c.GameplayRepo, c.GameplayStreakService, nil, c.ZapLog)
+	c.SubscriptionService = subscriptionsvc.NewService(c.GameplayRepo, c.LedgerService, nil, c.ZapLog)
+	c.GameplayChallengeService.SetSubscriptionChecker(c.SubscriptionService)
+
 	// Initialize investing service with repositories
 	basketRepo := repositories.NewBasketRepository(c.DB, c.ZapLog)
 	orderRepo := repositories.NewOrderRepository(c.DB, c.ZapLog)
@@ -1607,15 +1625,54 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize notification service with persister for in-app notifications
 	c.NotificationService = services.NewNotificationService(c.ZapLog)
 	c.NotificationService.SetPersister(adapters.NewNotificationPersisterAdapter(c.NotificationRepo))
-	// Wire Expo Push service for push notifications
-	expoPushService := adapters.NewExpoPushService(c.DeviceTokenRepo, c.ZapLog)
-	c.ExpoPushService = expoPushService
-	c.NotificationService.SetPushSender(expoPushService)
+	// Wire push notification service (SNS preferred, Expo fallback)
+	if c.Config.SNSPush.IOSPlatformARN != "" || c.Config.SNSPush.AndroidPlatformARN != "" {
+		region := c.Config.SNSPush.Region
+		if region == "" {
+			region = "us-east-1" // default
+		}
+		snsPushSvc, err := adapters.NewSNSPushService(context.Background(), adapters.SNSPushConfig{
+			Region:             region,
+			IOSPlatformARN:     c.Config.SNSPush.IOSPlatformARN,
+			AndroidPlatformARN: c.Config.SNSPush.AndroidPlatformARN,
+		}, c.DeviceTokenRepo, c.ZapLog)
+		if err != nil {
+			c.Logger.Warn("Failed to init SNS push, falling back to Expo", err)
+			expoPushService := adapters.NewExpoPushService(c.DeviceTokenRepo, c.ZapLog)
+			c.ExpoPushService = expoPushService
+			c.NotificationService.SetPushSender(expoPushService)
+		} else {
+			c.SNSPushService = snsPushSvc
+			c.NotificationService.SetPushSender(snsPushSvc)
+			c.Logger.Info("SNS push service initialized",
+				zap.Bool("ios", c.Config.SNSPush.IOSPlatformARN != ""),
+				zap.Bool("android", c.Config.SNSPush.AndroidPlatformARN != ""))
+		}
+	} else {
+		expoPushService := adapters.NewExpoPushService(c.DeviceTokenRepo, c.ZapLog)
+		c.ExpoPushService = expoPushService
+		c.NotificationService.SetPushSender(expoPushService)
+	}
 	// Wire email notifications for important events
 	if c.EmailService != nil {
 		c.NotificationService.SetEmailSender(adapters.NewEmailSenderAdapter(c.EmailService))
 	}
 	c.NotificationService.SetUserEmailLookup(adapters.NewUserEmailLookup(c.UserRepo))
+
+	// Wire push notifier into gameplay services (now that push provider is resolved)
+	// Use SNS if available, otherwise Expo
+	var pushNotifier gameplay.PushNotifier
+	if c.SNSPushService != nil {
+		pushNotifier = c.SNSPushService
+	} else if c.ExpoPushService != nil {
+		pushNotifier = c.ExpoPushService
+	}
+	if pushNotifier != nil {
+		c.GameplayXPService.SetNotifier(pushNotifier)
+		c.GameplayChallengeService.SetNotifier(pushNotifier)
+		c.GameplayAchievementService.SetNotifier(pushNotifier)
+		c.SubscriptionService.SetNotifier(pushNotifier)
+	}
 
 	// Wire notification service into auto-invest and allocation for failure alerts
 	c.AutoInvestService.SetNotificationService(c.NotificationService)
@@ -2569,6 +2626,12 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	}
 	if c.yieldRepo != nil {
 		c.AIOrchestrator.SetYieldProvider(c.yieldRepo)
+	}
+
+	// Wire tax, email, and goals tools
+	c.AIOrchestrator.SetUserProfile(&userProfileAdapter{userRepo: c.UserRepo})
+	if c.EmailService != nil {
+		c.AIOrchestrator.SetReportEmailSender(c.EmailService)
 	}
 
 	c.ZapLog.Info("AI Financial Manager services initialized",
