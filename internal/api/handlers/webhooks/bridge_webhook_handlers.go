@@ -318,6 +318,13 @@ func (h *BridgeWebhookHandler) handleLiquidationAddressDrain(c *gin.Context, pay
 	}
 
 	chain := getStringField(payload.EventObject, "chain")
+	// Drain objects may not have a top-level "chain". Fall back to
+	// destination.payment_rail which indicates where Bridge sent the funds.
+	if chain == "" {
+		if dest, ok := payload.EventObject["destination"].(map[string]interface{}); ok {
+			chain = getStringField(dest, "payment_rail")
+		}
+	}
 
 	if err := h.service.ProcessCryptoDeposit(c, drainID, customerID, amount, chain); err != nil {
 		h.logger.Error("Failed to process liquidation address drain",

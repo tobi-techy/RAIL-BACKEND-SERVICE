@@ -248,6 +248,41 @@ func (a *BridgeDepositAdapter) CreateLiquidationAddress(ctx context.Context, cus
 	return la.ID, la.Address, nil
 }
 
+func (a *BridgeDepositAdapter) CreateLiquidationAddressForWallet(ctx context.Context, customerID string, sourceChain string, walletID string, walletAddress string) (string, string, error) {
+	// Bridge custody wallets only exist on solana, base, ethereum.
+	// The liquidation address source chain must match the wallet chain when using bridge_wallet_id.
+	// For EVM chains where the wallet is on "ethereum" but the source is e.g. "polygon",
+	// we use destination_address instead of bridge_wallet_id.
+	walletChain := entities.WalletChain(sourceChain).ToBridgeWalletChain()
+	sourceRail := entities.WalletChain(sourceChain).ToBridgePaymentRail()
+
+	var req *bridge.CreateLiquidationAddressRequest
+	if sourceRail == walletChain {
+		// Direct match (solana→solana, base→base, ethereum→ethereum): use bridge_wallet_id
+		req = &bridge.CreateLiquidationAddressRequest{
+			Chain:          bridge.PaymentRail(sourceRail),
+			Currency:       bridge.CurrencyUSDC,
+			BridgeWalletID: walletID,
+		}
+	} else {
+		// Cross-chain EVM (polygon→ethereum wallet, arbitrum→ethereum wallet):
+		// use destination_address with the wallet's EVM address
+		req = &bridge.CreateLiquidationAddressRequest{
+			Chain:                  bridge.PaymentRail(sourceRail),
+			Currency:               bridge.CurrencyUSDC,
+			DestinationPaymentRail: bridge.PaymentRail(walletChain),
+			DestinationCurrency:    bridge.CurrencyUSDC,
+			DestinationAddress:     walletAddress,
+		}
+	}
+
+	la, err := a.client.CreateLiquidationAddress(ctx, customerID, req)
+	if err != nil {
+		return "", "", err
+	}
+	return la.ID, la.Address, nil
+}
+
 // AlpacaFundingAdapter adapts alpaca.FundingAdapter to funding.AlpacaAdapter interface
 type AlpacaFundingAdapter struct {
 	adapter *alpaca.FundingAdapter

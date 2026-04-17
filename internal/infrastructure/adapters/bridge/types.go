@@ -709,10 +709,11 @@ type ListExternalAccountsResponse = PaginatedResponse[ExternalAccount]
 type CreateLiquidationAddressRequest struct {
 	Chain                     PaymentRail `json:"chain"`
 	Currency                  Currency    `json:"currency"`
-	DestinationPaymentRail    PaymentRail `json:"destination_payment_rail"`
-	DestinationCurrency       Currency    `json:"destination_currency"`
+	DestinationPaymentRail    PaymentRail `json:"destination_payment_rail,omitempty"`
+	DestinationCurrency       Currency    `json:"destination_currency,omitempty"`
 	DestinationAddress        string      `json:"destination_address,omitempty"`
 	ExternalAccountID         string      `json:"external_account_id,omitempty"`
+	BridgeWalletID            string      `json:"bridge_wallet_id,omitempty"`
 	DestinationWireMessage    string      `json:"destination_wire_message,omitempty"`
 	CustomDeveloperFeePercent string      `json:"custom_developer_fee_percent,omitempty"`
 }

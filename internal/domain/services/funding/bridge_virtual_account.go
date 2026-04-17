@@ -683,7 +683,7 @@ func mapBridgeChain(chain string) entities.Chain {
 		return entities.ChainMATIC
 	case "base":
 		return entities.ChainBase
-	case "avalanche":
+	case "avalanche", "avalanche_c_chain":
 		return entities.ChainAvalanche
 	case "arbitrum":
 		return entities.ChainArbitrum
