@@ -241,3 +241,18 @@ type SubscriptionCharge struct {
 
 // ProSubscriptionPrice is the monthly price in USD
 const ProSubscriptionPrice = "4.99"
+
+// ProYearlyPrice is the yearly price in USD (save ~17%)
+const ProYearlyPrice = "49.99"
+
+// PlanDuration maps plan type to billing period
+var PlanDuration = map[string]int{
+	"pro_monthly": 30,
+	"pro_yearly":  365,
+}
+
+// PlanPrice maps plan type to price
+var PlanPrice = map[string]string{
+	"pro_monthly": "4.99",
+	"pro_yearly":  "49.99",
+}

@@ -205,7 +205,13 @@ func (h *Handlers) Subscribe(c *gin.Context) {
 	if !ok {
 		return
 	}
-	sub, err := h.subSvc.Subscribe(c.Request.Context(), userID)
+	var body struct {
+		Plan string `json:"plan"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Plan == "" {
+		body.Plan = "pro_monthly"
+	}
+	sub, err := h.subSvc.Subscribe(c.Request.Context(), userID, body.Plan)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return

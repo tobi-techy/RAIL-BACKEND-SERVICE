@@ -126,13 +126,6 @@ func (s *ChallengeService) assignRotatingChallenges(ctx context.Context, cType e
 	}
 
 	for _, userID := range userIDs {
-		// Only pro users get rotating challenges
-		if s.subCheck != nil {
-			isPro, _ := s.subCheck.IsProUser(ctx, userID)
-			if !isPro {
-				continue
-			}
-		}
 		picked := pickRandom(challenges, count)
 		for _, c := range picked {
 			if err := s.repo.AssignChallenge(ctx, userID, c.ID); err != nil {

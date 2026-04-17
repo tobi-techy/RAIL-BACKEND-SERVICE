@@ -62,7 +62,7 @@ func (s *Service) SetCache(cache CacheStore) { s.cache = cache }
 func (s *Service) SetNotifier(n PushNotifier) { s.notifier = n }
 
 // Subscribe creates a new Pro subscription and charges immediately
-func (s *Service) Subscribe(ctx context.Context, userID uuid.UUID) (*entities.Subscription, error) {
+func (s *Service) Subscribe(ctx context.Context, userID uuid.UUID, plan string) (*entities.Subscription, error) {
 	// Check for existing active subscription
 	existing, err := s.repo.GetSubscription(ctx, userID)
 	if err != nil {
@@ -72,13 +72,20 @@ func (s *Service) Subscribe(ctx context.Context, userID uuid.UUID) (*entities.Su
 		return existing, nil // Already subscribed
 	}
 
+	// Validate plan
+	days, ok := entities.PlanDuration[plan]
+	if !ok {
+		plan = "pro_monthly"
+		days = 30
+	}
+
 	now := time.Now()
-	periodEnd := now.Add(30 * 24 * time.Hour)
+	periodEnd := now.Add(time.Duration(days) * 24 * time.Hour)
 
 	sub := &entities.Subscription{
 		ID:                 uuid.New(),
 		UserID:             userID,
-		Plan:               "pro",
+		Plan:               plan,
 		Status:             entities.SubscriptionStatusActive,
 		StartedAt:          now,
 		CurrentPeriodStart: now,
@@ -148,7 +155,11 @@ func (s *Service) IsProUser(ctx context.Context, userID uuid.UUID) (bool, error)
 
 // ChargeSubscription debits spend balance and credits subscription revenue
 func (s *Service) ChargeSubscription(ctx context.Context, sub *entities.Subscription) error {
-	amount, _ := decimal.NewFromString(entities.ProSubscriptionPrice)
+	priceStr, ok := entities.PlanPrice[sub.Plan]
+	if !ok {
+		priceStr = entities.ProSubscriptionPrice
+	}
+	amount, _ := decimal.NewFromString(priceStr)
 
 	// Check balance first
 	balance, err := s.ledger.GetAccountBalance(ctx, sub.UserID, entities.AccountTypeSpendingBalance)
