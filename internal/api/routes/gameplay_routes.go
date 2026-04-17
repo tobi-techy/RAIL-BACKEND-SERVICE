@@ -36,6 +36,15 @@ func SetupGameplayRoutes(rg *gin.RouterGroup, container *di.Container) {
 		gp.POST("/test-push", func(c *gin.Context) {
 			userIDVal, _ := c.Get("user_id")
 			userID, _ := userIDVal.(uuid.UUID)
+			// Clear stale endpoint ARNs so SNS creates fresh ones on the current platform
+			if container.DeviceTokenRepo != nil {
+				tokens, _ := container.DeviceTokenRepo.GetUserTokens(c.Request.Context(), userID)
+				for _, t := range tokens {
+					if t.EndpointARN != nil && *t.EndpointARN != "" {
+						container.DeviceTokenRepo.UpdateEndpointARN(c.Request.Context(), t.ID, "")
+					}
+				}
+			}
 			// Try SNS first, fall back to Expo
 			var err error
 			if container.SNSPushService != nil {
