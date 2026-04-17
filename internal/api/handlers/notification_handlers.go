@@ -74,6 +74,11 @@ func (h *NotificationHandlers) RegisterDeviceToken(c *gin.Context) {
 		return
 	}
 
+	h.logger.Info("Device token registered",
+		zap.String("platform", req.Platform),
+		zap.Int("token_length", len(req.Token)),
+		zap.String("token_prefix", req.Token[:min(40, len(req.Token))]))
+
 	c.JSON(http.StatusOK, gin.H{"id": dt.ID, "message": "token registered"})
 }
 
