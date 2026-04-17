@@ -390,10 +390,29 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 	if walletAddress == "" {
 		id, addr, err := s.bridgeWallets.CreateWallet(ctx, customerID, bridgeChain, string(currency))
 		if err != nil {
-			return nil, fmt.Errorf("failed to create Bridge custody wallet: %w", err)
+			// Bridge returns 422 when the idempotency key was already used (wallet exists).
+			// Re-list wallets with a broader match to find it.
+			if strings.Contains(err.Error(), "idempotency") || strings.Contains(err.Error(), "422") {
+				s.logger.Warn("CreateWallet idempotency conflict, wallet likely exists — re-listing",
+					"user_id", userID, "chain", bridgeChain, "error", err)
+				retryWallets, retryErr := s.bridgeWallets.ListWallets(ctx, customerID)
+				if retryErr == nil {
+					for _, w := range retryWallets {
+						if w.Chain == bridgeChain {
+							walletID = w.ID
+							walletAddress = w.Address
+							break
+						}
+					}
+				}
+			}
+			if walletAddress == "" {
+				return nil, fmt.Errorf("failed to create Bridge custody wallet: %w", err)
+			}
+		} else {
+			walletID = id
+			walletAddress = addr
 		}
-		walletID = id
-		walletAddress = addr
 	}
 
 	// Persist custody wallet in managed_wallets if not already there
