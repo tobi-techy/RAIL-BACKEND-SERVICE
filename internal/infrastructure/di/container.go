@@ -1645,6 +1645,10 @@ func (c *Container) initializeDomainServices() error {
 	c.NotificationService = services.NewNotificationService(c.ZapLog)
 	c.NotificationService.SetPersister(adapters.NewNotificationPersisterAdapter(c.NotificationRepo))
 	// Wire push notification service (SNS preferred, Expo fallback)
+	c.ZapLog.Info("SNS push config check",
+		zap.String("ios_arn", c.Config.SNSPush.IOSPlatformARN),
+		zap.String("android_arn", c.Config.SNSPush.AndroidPlatformARN),
+		zap.String("region", c.Config.SNSPush.Region))
 	if c.Config.SNSPush.IOSPlatformARN != "" || c.Config.SNSPush.AndroidPlatformARN != "" {
 		region := c.Config.SNSPush.Region
 		if region == "" {
