@@ -2,6 +2,7 @@ package routes
 
 import (
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	gameplayhandlers "github.com/rail-service/rail_service/internal/api/handlers/gameplay"
 	"github.com/rail-service/rail_service/internal/api/middleware"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
@@ -30,6 +31,21 @@ func SetupGameplayRoutes(rg *gin.RouterGroup, container *di.Container) {
 		gp.GET("/xp/history", h.GetXPHistory)
 		gp.GET("/challenges", h.GetChallenges)
 		gp.GET("/achievements", h.GetAchievements)
+
+		// Test push notification — sends to the current user's devices
+		if container.SNSPushService != nil {
+			gp.POST("/test-push", func(c *gin.Context) {
+				userIDVal, _ := c.Get("user_id")
+				userID, _ := userIDVal.(uuid.UUID)
+				err := container.SNSPushService.SendToUser(c.Request.Context(), userID,
+					"Rail Pro", "Push notifications are working!", map[string]interface{}{"type": "test"})
+				if err != nil {
+					c.JSON(500, gin.H{"error": err.Error()})
+					return
+				}
+				c.JSON(200, gin.H{"message": "Push sent"})
+			})
+		}
 
 		// Leaderboard — Pro only
 		if container.SubscriptionService != nil {
