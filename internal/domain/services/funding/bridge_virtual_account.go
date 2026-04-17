@@ -768,6 +768,13 @@ func (s *BridgeVirtualAccountService) ProcessCryptoDeposit(ctx context.Context, 
 		}
 	}
 
+	// Notify user that deposit was received
+	if s.notificationService != nil {
+		if err := s.notificationService.NotifyDepositConfirmed(ctx, userID, amount.String(), chain, transferID); err != nil {
+			s.logger.Warn("Failed to send deposit confirmation notification", "user_id", userID, "error", err)
+		}
+	}
+
 	sourceTxID := transferID
 	if err := s.allocationService.ProcessIncomingFunds(ctx, &entities.IncomingFundsRequest{
 		UserID:     userID,
