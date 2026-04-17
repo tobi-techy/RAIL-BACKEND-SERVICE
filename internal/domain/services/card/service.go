@@ -42,6 +42,7 @@ type CardRepository interface {
 	GetTransactionsByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.BridgeCardTransaction, error)
 	UpdateTransactionStatus(ctx context.Context, id uuid.UUID, status string, declineReason *string) error
 	CountByUserID(ctx context.Context, userID uuid.UUID) (int, error)
+	CountTransactionsByUser(ctx context.Context, userID uuid.UUID) (int, error)
 }
 
 // UserProfileProvider provides user profile data
@@ -68,6 +69,10 @@ type LedgerService interface {
 }
 
 // CardNotificationService sends card-related push notifications
+type CardGameplayHooks interface {
+	OnFirstCardTransaction(ctx context.Context, userID uuid.UUID)
+}
+
 type CardNotificationService interface {
 	NotifyCardTransaction(ctx context.Context, userID uuid.UUID, amount, merchant string) error
 }
@@ -81,6 +86,7 @@ type Service struct {
 	balanceProvider     BalanceProvider
 	ledgerService       LedgerService
 	notificationService CardNotificationService
+	gameplayHooks       CardGameplayHooks
 	logger              *zap.Logger
 	defaultChain        string
 	enableCardsOnce     sync.Once
@@ -115,6 +121,11 @@ func (s *Service) SetLedgerService(ledgerService LedgerService) {
 
 func (s *Service) SetNotificationService(ns CardNotificationService) {
 	s.notificationService = ns
+}
+
+// SetGameplayHooks sets the gameplay hooks (optional)
+func (s *Service) SetGameplayHooks(gh CardGameplayHooks) {
+	s.gameplayHooks = gh
 }
 
 // CreateVirtualCard creates a virtual card for a user on first funding
@@ -416,6 +427,13 @@ func (s *Service) RecordTransaction(ctx context.Context, bridgeCardID, bridgeTra
 				}
 				_ = s.notificationService.NotifyCardTransaction(bgCtx, card.UserID, amount.StringFixed(2), merchant)
 			}()
+		}
+		// Gameplay: check if first card transaction
+		if s.gameplayHooks != nil {
+			count, _ := s.repo.CountTransactionsByUser(ctx, card.UserID)
+			if count <= 1 {
+				s.gameplayHooks.OnFirstCardTransaction(ctx, card.UserID)
+			}
 		}
 	}
 

@@ -276,3 +276,15 @@ func (r *GameplayRepository) GetActiveUserIDs(ctx context.Context) ([]uuid.UUID,
 	err := r.db.SelectContext(ctx, &ids, `SELECT id FROM users WHERE is_active = true`)
 	return ids, err
 }
+
+// --- Card transaction counting (for no-spend streak) ---
+
+func (r *GameplayRepository) CountCardTransactionsForDate(ctx context.Context, userID uuid.UUID, date time.Time) (int, error) {
+	var count int
+	err := r.db.GetContext(ctx, &count, `
+		SELECT COUNT(*) FROM card_transactions
+		WHERE user_id = $1 AND status = 'completed'
+		AND created_at >= $2 AND created_at < $3`,
+		userID, date.Truncate(24*time.Hour), date.Truncate(24*time.Hour).Add(24*time.Hour))
+	return count, err
+}

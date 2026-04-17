@@ -1620,6 +1620,9 @@ func (c *Container) initializeDomainServices() error {
 	if c.OnboardingService != nil {
 		c.OnboardingService.SetGameplayHooks(c.GameplayHooks)
 	}
+	if c.CardService != nil {
+		c.CardService.SetGameplayHooks(c.GameplayHooks)
+	}
 
 	// Wire user stats provider for achievement evaluation
 	c.GameplayAchievementService.SetUserStatsProvider(repositories.NewUserStatsRepository(sqlxDB))

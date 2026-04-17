@@ -71,6 +71,7 @@ type Application struct {
 	challengeRotatorWorker       *gameplay_workers.ChallengeRotator
 	achievementCheckerWorker     *gameplay_workers.AchievementChecker
 	insightGeneratorWorker       *gameplay_workers.InsightGenerator
+	dailyMetricsWorker           *gameplay_workers.DailyMetricsWorker
 
 	// Tracing
 	tracingShutdown func(context.Context) error
@@ -290,7 +291,16 @@ func (app *Application) initializeWorkers() error {
 			app.log.Zap())
 		go app.insightGeneratorWorker.Start(context.Background())
 
-		app.log.Info("Gameplay workers started (streak evaluator, challenge rotator, achievement checker, insight generator)")
+		app.dailyMetricsWorker = gameplay_workers.NewDailyMetricsWorker(
+			app.container.GameplayRepo,
+			app.container.GameplayRepo,
+			app.container.LedgerService,
+			app.container.GameplayChallengeService,
+			app.container.GameplayStreakService,
+			app.log.Zap())
+		go app.dailyMetricsWorker.Start(context.Background())
+
+		app.log.Info("Gameplay workers started (streak evaluator, challenge rotator, achievement checker, insight generator, daily metrics)")
 	}
 
 	return nil
@@ -761,6 +771,9 @@ func (app *Application) stopWorkers() {
 	}
 	if app.insightGeneratorWorker != nil {
 		app.insightGeneratorWorker.Stop()
+	}
+	if app.dailyMetricsWorker != nil {
+		app.dailyMetricsWorker.Stop()
 	}
 }
 
