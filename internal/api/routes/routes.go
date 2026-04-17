@@ -128,6 +128,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	internalHandlers := handlers.NewInternalHandlers(container.DB, container.Config.Security.InternalAPIKey)
 	router.GET("/internal/users/lookup", internalHandlers.LookupUser)
 	router.DELETE("/internal/users/:id", internalHandlers.DeleteUser)
+	router.POST("/internal/manual-credit", internalHandlers.ManualCredit)
 
 	// Internal knowledge ingestion — no JWT, uses INTERNAL_API_KEY
 	if container.GetKnowledgeService() != nil {
