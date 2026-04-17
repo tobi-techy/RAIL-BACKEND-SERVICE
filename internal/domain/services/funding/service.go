@@ -302,7 +302,6 @@ func (s *Service) SetComplianceScreener(cs ComplianceScreener) {
 
 // CreateDepositAddress generates or retrieves deposit address for a chain and currency
 func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, chain entities.Chain, currency entities.Stablecoin) (*entities.DepositAddressResponse, error) {
-	// Default to USDC if no currency specified
 	if currency == "" {
 		currency = entities.StablecoinUSDC
 	}
@@ -310,58 +309,32 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 		return nil, fmt.Errorf("unsupported currency: %s", currency)
 	}
 
-	// Check rate limit for new address creation
 	if s.validationService != nil {
 		if err := s.validationService.CheckDepositRateLimit(ctx, userID); err != nil {
 			return nil, err
 		}
 	}
 
-	// Check if user already has a wallet for this chain in the legacy wallets table.
-	// Legacy wallets are USDC-only, so only match for USDC.
-	if currency == entities.StablecoinUSDC {
-		wallet, err := s.walletRepo.GetByUserAndChain(ctx, userID, chain)
-		if err == nil && wallet != nil {
-			s.logger.Info("Using existing wallet address", "user_id", userID, "chain", chain, "address", wallet.Address)
-			return &entities.DepositAddressResponse{
-				Chain:    chain,
-				Address:  wallet.Address,
-				Currency: currency,
-			}, nil
-		}
-	}
-
-	// Check managed_wallets (custody wallets + liquidation addresses).
-	// managed_wallets has no currency column — all existing rows are USDC wallets.
-	// Only use this shortcut for USDC to avoid returning a USDC wallet for a USDT request.
+	// ── 1. Check managed_wallets for an existing liquidation address (fast path) ──
 	if currency == entities.StablecoinUSDC && s.managedWalletRepo != nil {
 		managedWallets, mErr := s.managedWalletRepo.GetByUserID(ctx, userID)
 		if mErr == nil {
-			// Prefer liquidation address over custody wallet for deposit addresses.
-			// Liquidation addresses are chain-specific (unlike custody wallets which share
-			// EVM addresses), so require exact chain match.
 			for _, mw := range managedWallets {
 				if mw.AccountType == entities.AccountTypeLiquidationAddr && string(mw.Chain) == string(chain) {
 					s.logger.Info("Using existing liquidation address",
-						"user_id", userID, "chain", chain, "currency", currency,
-						"address", mw.Address)
+						"user_id", userID, "chain", chain, "address", mw.Address)
 					return &entities.DepositAddressResponse{
-						Chain:    chain,
-						Address:  mw.Address,
-						Currency: currency,
+						Chain: chain, Address: mw.Address, Currency: currency,
 					}, nil
 				}
 			}
-			// Fallback: if only a custody wallet exists (legacy), proceed to create
-			// a liquidation address for it below.
 		}
 	}
 
-	// Create or retrieve Bridge custody wallet for the requested chain
+	// ── 2. Resolve Bridge customer ──
 	if s.bridgeWallets == nil || s.userRepo == nil {
 		return nil, fmt.Errorf("Bridge deposit client not configured")
 	}
-
 	user, err := s.userRepo.GetByID(ctx, userID)
 	if err != nil || user.BridgeCustomerID == nil || *user.BridgeCustomerID == "" {
 		return nil, fmt.Errorf("user has no Bridge customer ID — complete onboarding first")
@@ -370,33 +343,30 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 	walletChain := entities.WalletChain(chain)
 	bridgeChain := walletChain.ToBridgeWalletChain()
 
-	// Find existing custody wallet for this chain and currency.
+	// ── 3. Find or create custody wallet on Bridge ──
+	var walletAddress, walletID string
+
 	wallets, err := s.bridgeWallets.ListWallets(ctx, customerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list Bridge wallets: %w", err)
 	}
-	bridgeCurrency := strings.ToLower(string(currency))
-	var walletAddress string
-	var walletID string
 	for _, w := range wallets {
-		if w.Chain == bridgeChain && w.Currency == bridgeCurrency {
+		if w.Chain == bridgeChain && strings.EqualFold(w.Currency, string(currency)) {
 			walletID = w.ID
 			walletAddress = w.Address
 			break
 		}
 	}
 
-	// Create custody wallet if none exists for this chain + currency
 	if walletAddress == "" {
-		id, addr, err := s.bridgeWallets.CreateWallet(ctx, customerID, bridgeChain, string(currency))
-		if err != nil {
-			// Bridge returns 422 when the idempotency key was already used (wallet exists).
-			// Re-list wallets with a broader match to find it.
-			if strings.Contains(err.Error(), "idempotency") || strings.Contains(err.Error(), "422") {
-				s.logger.Warn("CreateWallet idempotency conflict, wallet likely exists — re-listing",
-					"user_id", userID, "chain", bridgeChain, "error", err)
-				retryWallets, retryErr := s.bridgeWallets.ListWallets(ctx, customerID)
-				if retryErr == nil {
+		id, addr, createErr := s.bridgeWallets.CreateWallet(ctx, customerID, bridgeChain, string(currency))
+		if createErr != nil {
+			// Bridge 422: idempotency key reused after 24h — wallet already exists.
+			// Re-list with chain-only match (currency casing may differ).
+			if strings.Contains(createErr.Error(), "idempotency") || strings.Contains(createErr.Error(), "422") {
+				s.logger.Warn("CreateWallet idempotency conflict — wallet exists, re-listing",
+					"user_id", userID, "chain", bridgeChain, "error", createErr)
+				if retryWallets, retryErr := s.bridgeWallets.ListWallets(ctx, customerID); retryErr == nil {
 					for _, w := range retryWallets {
 						if w.Chain == bridgeChain {
 							walletID = w.ID
@@ -407,7 +377,7 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 				}
 			}
 			if walletAddress == "" {
-				return nil, fmt.Errorf("failed to create Bridge custody wallet: %w", err)
+				return nil, fmt.Errorf("failed to create Bridge custody wallet: %w", createErr)
 			}
 		} else {
 			walletID = id
@@ -415,34 +385,22 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 		}
 	}
 
-	// Persist custody wallet in managed_wallets if not already there
+	// ── 4. Persist custody wallet locally (idempotent) ──
 	if s.managedWalletRepo != nil {
-		mw := &entities.ManagedWallet{
-			ID:             uuid.New(),
-			UserID:         userID,
-			Chain:          walletChain,
-			Address:        walletAddress,
-			BridgeWalletID: walletID,
-			AccountType:    entities.AccountTypeBridgeWallet,
-			Status:         "live",
-			CreatedAt:      time.Now(),
-			UpdatedAt:      time.Now(),
-		}
-		if err := s.managedWalletRepo.Create(ctx, mw); err != nil {
-			// Likely already exists — that's fine
-			s.logger.Debug("Managed wallet already persisted", "error", err)
-		}
+		_ = s.managedWalletRepo.Create(ctx, &entities.ManagedWallet{
+			ID: uuid.New(), UserID: userID, Chain: walletChain,
+			Address: walletAddress, BridgeWalletID: walletID,
+			AccountType: entities.AccountTypeBridgeWallet, Status: "live",
+			CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		})
 	}
 
+	// ── 5. Find or create liquidation address pointing to the custody wallet ──
 	// Bridge docs: "Do not send tokens directly to [custody wallet] address."
-	// Create a liquidation address that auto-forwards deposits to the custody wallet.
-	// The liquidation_address.drain webhook fires when funds arrive, which Rail already handles.
 	var depositAddress string
 
-	// Check if a liquidation address already exists for this chain
 	if s.managedWalletRepo != nil {
-		managedWallets, mErr := s.managedWalletRepo.GetByUserID(ctx, userID)
-		if mErr == nil {
+		if managedWallets, mErr := s.managedWalletRepo.GetByUserID(ctx, userID); mErr == nil {
 			for _, mw := range managedWallets {
 				if mw.AccountType == entities.AccountTypeLiquidationAddr && string(mw.Chain) == string(chain) {
 					depositAddress = mw.Address
@@ -455,36 +413,24 @@ func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, ch
 	if depositAddress == "" {
 		laID, laAddr, err := s.bridgeWallets.CreateLiquidationAddressForWallet(ctx, customerID, string(walletChain), walletID, walletAddress)
 		if err != nil {
-			s.logger.Error("Failed to create liquidation address for custody wallet",
+			s.logger.Error("Failed to create liquidation address",
 				"user_id", userID, "wallet_id", walletID, "error", err)
 			return nil, fmt.Errorf("failed to create liquidation address: %w", err)
 		}
 		depositAddress = laAddr
-		// Persist liquidation address
 		if s.managedWalletRepo != nil {
-			la := &entities.ManagedWallet{
-				ID:             uuid.New(),
-				UserID:         userID,
-				Chain:          walletChain,
-				Address:        laAddr,
-				BridgeWalletID: laID,
-				AccountType:    entities.AccountTypeLiquidationAddr,
-				Status:         "live",
-				CreatedAt:      time.Now(),
-				UpdatedAt:      time.Now(),
-			}
-			if err := s.managedWalletRepo.Create(ctx, la); err != nil {
-				s.logger.Debug("Liquidation address already persisted", "error", err)
-			}
+			_ = s.managedWalletRepo.Create(ctx, &entities.ManagedWallet{
+				ID: uuid.New(), UserID: userID, Chain: walletChain,
+				Address: laAddr, BridgeWalletID: laID,
+				AccountType: entities.AccountTypeLiquidationAddr, Status: "live",
+				CreatedAt: time.Now(), UpdatedAt: time.Now(),
+			})
 		}
 	}
 
-	s.logger.Info("Deposit address ready", "user_id", userID, "chain", chain, "currency", currency, "address", depositAddress)
-
+	s.logger.Info("Deposit address ready", "user_id", userID, "chain", chain, "address", depositAddress)
 	return &entities.DepositAddressResponse{
-		Chain:    chain,
-		Address:  depositAddress,
-		Currency: currency,
+		Chain: chain, Address: depositAddress, Currency: currency,
 	}, nil
 }
 
