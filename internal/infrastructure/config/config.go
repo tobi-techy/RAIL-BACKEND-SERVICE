@@ -863,6 +863,17 @@ func overrideFromEnv() {
 		viper.Set("webauthn.rp_display_name", rpDisplayName)
 	}
 
+	// SNS Push Notifications
+	if v := os.Getenv("SNS_PUSH_REGION"); v != "" {
+		viper.Set("sns_push.region", v)
+	}
+	if v := os.Getenv("SNS_PUSH_IOS_PLATFORM_ARN"); v != "" {
+		viper.Set("sns_push.ios_platform_arn", v)
+	}
+	if v := os.Getenv("SNS_PUSH_ANDROID_PLATFORM_ARN"); v != "" {
+		viper.Set("sns_push.android_platform_arn", v)
+	}
+
 	// Database
 	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
 		viper.Set("database.url", dbURL)
