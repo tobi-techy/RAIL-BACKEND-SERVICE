@@ -26,10 +26,16 @@ const (
 	FiatWithdrawalMinAmountUSD  = 10.00 // Minimum USD fiat withdrawal
 	FiatWithdrawalMinAmountEUR  = 10.00 // Minimum EUR fiat withdrawal
 	CryptoWithdrawalFeePercent  = 0.0  // Bridge transfers are gasless
-	FlatWithdrawalFee           = 0.50 // $0.50 flat fee on every withdrawal (crypto + fiat)
+	CryptoWithdrawalFeeSolana   = 0.10 // $0.10 flat fee for Solana (low gas)
+	CryptoWithdrawalFeeEVM      = 0.50 // $0.50 flat fee for EVM chains (higher gas)
+	FlatWithdrawalFee           = 0.50 // Default flat fee (legacy, use chain-specific)
+	FiatWithdrawalFeeUSD        = 1.00 // $1.00 flat fee for USD withdrawals
+	FiatWithdrawalFeeEUR        = 1.00 // €1.00 flat fee for EUR withdrawals
+	FiatWithdrawalFeeGBP        = 1.00 // £1.00 flat fee for GBP withdrawals
+	FiatWithdrawalFeeNGN        = 0.06 // ~₦100 flat fee for NGN withdrawals
 	FiatWithdrawalFeePercentUSD = 0.0  // No percentage fee — flat only
 	FiatWithdrawalFeePercentEUR = 0.0
-	MinWithdrawalAmount         = 1.00 // Minimum $1 withdrawal to avoid disproportionate fees
+	MinWithdrawalAmount         = 1.00 // Minimum $1 withdrawal
 	withdrawalLockShards        = 256
 )
 
@@ -1100,15 +1106,28 @@ func (s *WithdrawalService) reverseWithdrawalLedgerEntry(ctx context.Context, wi
 	)
 }
 
-// calculateCryptoWithdrawalFee returns the flat $0.50 service fee.
-// Bridge handles cross-chain routing internally — no network fee charged.
+// calculateCryptoWithdrawalFee returns chain-specific fees.
+// Solana is cheaper ($0.10) due to low gas. EVM chains are $0.50.
 func (s *WithdrawalService) calculateCryptoWithdrawalFee(ctx context.Context, amount decimal.Decimal, sourceChain, destChain string) (decimal.Decimal, error) {
-	return decimal.NewFromFloat(FlatWithdrawalFee), nil
+	chain := strings.ToUpper(strings.TrimSpace(destChain))
+	if chain == "SOL" || chain == "" {
+		return decimal.NewFromFloat(CryptoWithdrawalFeeSolana), nil
+	}
+	return decimal.NewFromFloat(CryptoWithdrawalFeeEVM), nil
 }
 
-// calculateFiatWithdrawalFee returns the flat $0.50 service fee for all fiat withdrawals.
+// calculateFiatWithdrawalFee returns currency-specific fees.
 func (s *WithdrawalService) calculateFiatWithdrawalFee(amount decimal.Decimal, currency entities.WithdrawalCurrency) decimal.Decimal {
-	return decimal.NewFromFloat(FlatWithdrawalFee)
+	switch strings.ToUpper(string(currency)) {
+	case "NGN":
+		return decimal.NewFromFloat(FiatWithdrawalFeeNGN)
+	case "EUR":
+		return decimal.NewFromFloat(FiatWithdrawalFeeEUR)
+	case "GBP":
+		return decimal.NewFromFloat(FiatWithdrawalFeeGBP)
+	default:
+		return decimal.NewFromFloat(FiatWithdrawalFeeUSD)
+	}
 }
 
 // resolveWithdrawalRoute determines the transfer route.
