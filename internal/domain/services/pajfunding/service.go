@@ -72,6 +72,7 @@ type Service struct {
 	walletProvider    WalletProvider
 	bridgeTransfer    BridgeCryptoTransferAdapter
 	pajChain          string // blockchain for Paj deposit addresses (e.g. "solana")
+	pajTxPoolAddress  string // Paj's static TX Pool address for offramp (fallback for sub-$1)
 	redis             cache.RedisClient
 	encryptionKey     string
 	logger            *zap.Logger
@@ -91,9 +92,10 @@ func (s *Service) SetNotificationService(ns NotificationService) { s.notifier = 
 func (s *Service) SetWalletProvider(wp WalletProvider) { s.walletProvider = wp }
 
 // SetBridgeTransfer sets the Bridge transfer adapter for sending USDC to Paj deposit addresses.
-func (s *Service) SetBridgeTransfer(bt BridgeCryptoTransferAdapter, chain string) {
+func (s *Service) SetBridgeTransfer(bt BridgeCryptoTransferAdapter, chain, txPoolAddress string) {
 	s.bridgeTransfer = bt
 	s.pajChain = chain
+	s.pajTxPoolAddress = txPoolAddress
 }
 
 // SetGameplayHooks sets the gameplay hooks for triggering XP/streak/challenge events.
@@ -286,9 +288,9 @@ func (s *Service) CreateOnrampOrder(ctx context.Context, userID uuid.UUID, fiatA
 const RailNGNWithdrawalFee = 0.06
 
 func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bankID, accountNumber string, fiatAmount float64, currency string) (*OfframpResult, error) {
-	// Enforce NGN minimum withdrawal
-	if fiatAmount < 100 {
-		return nil, fmt.Errorf("minimum withdrawal is ₦100")
+	// Enforce NGN minimum withdrawal (Paj Cash minimum is ₦500)
+	if fiatAmount < 500 {
+		return nil, fmt.Errorf("minimum withdrawal is ₦500")
 	}
 
 	token, err := s.getSessionToken(ctx, userID)
@@ -414,6 +416,16 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 			return nil, fmt.Errorf("failed to get wallet for withdrawal")
 		}
 
+		// For sub-$1 amounts, Bridge may reject the transfer. Use Paj's TX Pool
+		// address as destination — Paj matches by sender wallet + order context.
+		depositAddress := order.Address
+		if order.Amount < 1.0 && s.pajTxPoolAddress != "" {
+			depositAddress = s.pajTxPoolAddress
+			s.logger.Info("Using Paj TX Pool for sub-$1 offramp",
+				zap.String("paj_order_id", order.ID),
+				zap.Float64("amount", order.Amount))
+		}
+
 		transfer, transferErr := s.bridgeTransfer.TransferFunds(ctx, &bridgepkg.CreateTransferRequest{
 			OnBehalfOf: userID.String(),
 			Amount:     decimal.NewFromFloat(order.Amount).StringFixed(2),
@@ -425,7 +437,7 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 			Destination: bridgepkg.TransferDestination{
 				PaymentRail: paymentRail,
 				Currency:    bridgepkg.CurrencyUSDC,
-				ToAddress:   order.Address,
+				ToAddress:   depositAddress,
 			},
 		})
 		if transferErr != nil {
