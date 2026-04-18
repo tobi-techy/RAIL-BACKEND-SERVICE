@@ -103,6 +103,14 @@ func RunMigrations(databaseURL string) error {
 	}
 
 	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+		version, dirty, _ := m.Version()
+		if dirty {
+			_ = m.Force(int(version) - 1)
+			if retryErr := m.Up(); retryErr != nil && retryErr != migrate.ErrNoChange {
+				return fmt.Errorf("failed to run migrations after dirty recovery: %w", retryErr)
+			}
+			return nil
+		}
 		return fmt.Errorf("failed to run migrations: %w", err)
 	}
 

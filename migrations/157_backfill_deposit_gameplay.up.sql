@@ -102,7 +102,8 @@ FROM (
     FROM deposits
     WHERE status = 'confirmed'
     GROUP BY user_id
-) sub
-JOIN challenges c ON c.id = uc.challenge_id
+) sub,
+challenges c
 WHERE uc.user_id = sub.user_id
+  AND c.id = uc.challenge_id
   AND c.target_metric = 'deposit_count';
