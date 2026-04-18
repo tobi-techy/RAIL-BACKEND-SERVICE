@@ -283,7 +283,7 @@ func (r *GameplayRepository) GetDepositDates(ctx context.Context, userID uuid.UU
 	var dates []time.Time
 	err := r.db.SelectContext(ctx, &dates, `
 		SELECT DISTINCT DATE(created_at) FROM deposits
-		WHERE user_id = $1 AND status = 'completed' AND created_at >= $2
+		WHERE user_id = $1 AND status NOT IN ('failed', 'cancelled') AND created_at >= $2
 		ORDER BY DATE(created_at)`, userID, since)
 	return dates, err
 }
