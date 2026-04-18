@@ -465,19 +465,7 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 			s.logger.Error("CRITICAL: Bridge transfer to Paj deposit address failed",
 				zap.Error(transferErr), zap.String("user_id", userID.String()),
 				zap.String("paj_order_id", order.ID), zap.String("amount", totalHold.String()))
-			// Reverse the full hold since USDC couldn't be sent.
-			if s.ledger != nil {
-				reverseErr := s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
-					"paj_offramp_transfer_failed_"+order.ID, totalHold, map[string]interface{}{
-						"provider": "paj", "type": "offramp_transfer_failure_reversal",
-						"paj_order_id": order.ID, "reason": transferErr.Error(),
-					})
-				if reverseErr != nil {
-					s.logger.Error("CRITICAL: failed to reverse ledger hold after Bridge transfer failure",
-						zap.Error(reverseErr), zap.String("user_id", userID.String()),
-						zap.String("amount", totalHold.String()))
-				}
-			}
+			s.reverseHold(ctx, userID, order.ID, totalHold, "transfer_failed")
 			return nil, fmt.Errorf("failed to send USDC to Paj: %w", transferErr)
 		}
 
