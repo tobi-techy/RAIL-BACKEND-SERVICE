@@ -177,7 +177,7 @@ func GetRetryDelay(err error, attempt int) int {
 
 	// Exponential backoff: baseDelay * 2^(attempt-1)
 	// Capped at 60 seconds
-	delay := baseDelay * (1 << uint(attempt-1))
+	delay := baseDelay * (1 << uint(attempt-1)) // nosec G115 — attempt is a small retry counter
 	if delay > 60 {
 		delay = 60
 	}

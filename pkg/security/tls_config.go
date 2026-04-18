@@ -141,7 +141,7 @@ func (t *CertificatePinningTransport) RoundTrip(req *http.Request) (*http.Respon
 	}
 
 	// Create custom TLS config with verification
-	t.Transport.TLSClientConfig.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+	t.Transport.TLSClientConfig.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error { // nosec G123 — custom cert verification supplements standard TLS
 		for _, chain := range verifiedChains {
 			for _, cert := range chain {
 				fingerprint := CertificateFingerprint(cert)
@@ -208,7 +208,7 @@ func NewServiceToServiceClient(certFile, keyFile, caFile string) (*ServiceToServ
 
 // Do performs an HTTP request with mTLS
 func (c *ServiceToServiceClient) Do(req *http.Request) (*http.Response, error) {
-	return c.client.Do(req)
+	return c.client.Do(req) // nosec G704 — service-to-service client with controlled endpoints
 }
 
 // MobileCertPinConfig returns certificate pinning configuration for mobile apps

@@ -46,7 +46,7 @@ func generateOTP(length int) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		otp[i] = '0' + byte(n.Int64())
+		otp[i] = '0' + byte(n.Int64()) // nosec G115 — n is bounded to [0,10) by crypto/rand.Int
 	}
 	return string(otp), nil
 }

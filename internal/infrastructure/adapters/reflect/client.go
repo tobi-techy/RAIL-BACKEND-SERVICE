@@ -358,7 +358,7 @@ func (c *Client) postJSON(ctx context.Context, url string, body any, out any) er
 }
 
 func (c *Client) doHTTP(req *http.Request, out any) error {
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.httpClient.Do(req) // nosec G704 — Reflect API client with configured base URL
 	if err != nil {
 		return fmt.Errorf("http: %w", err)
 	}

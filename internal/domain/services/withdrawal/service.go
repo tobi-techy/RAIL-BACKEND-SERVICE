@@ -214,7 +214,7 @@ func advisoryLockKey(userID uuid.UUID) int64 {
 	h := fnv.New64a()
 	b := [16]byte(userID)
 	h.Write(b[:])
-	return int64(binary.BigEndian.Uint64(h.Sum(nil)[:8]))
+	return int64(binary.BigEndian.Uint64(h.Sum(nil)[:8])) // nosec G115 — intentional hash-to-int64 conversion, overflow is acceptable
 }
 
 // acquireAdvisoryLock acquires a PostgreSQL session-level advisory lock for the user.
