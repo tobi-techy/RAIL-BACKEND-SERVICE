@@ -126,10 +126,16 @@ func (h *PajHandlers) GetRates(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "PAJ_RATES_FAILED", "message": "Failed to fetch rates"})
 		return
 	}
+	// Bridge requires ≥ $1 USDC per transfer. Compute dynamic NGN minimum.
+	minNGN := rates.OffRampRate.Rate * 1.05 // ₦ equivalent of ~$1.05
+	if minNGN < 500 {
+		minNGN = 500 // Paj Cash absolute minimum
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"onRampRate":  rates.OnRampRate,
-		"offRampRate": rates.OffRampRate,
-		"railFee":     pajfunding.RailNGNWithdrawalFee,
+		"onRampRate":       rates.OnRampRate,
+		"offRampRate":      rates.OffRampRate,
+		"railFee":          pajfunding.RailNGNWithdrawalFee,
+		"minWithdrawalNGN": minNGN,
 	})
 }
 
