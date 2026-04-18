@@ -3,7 +3,9 @@ package pajfunding
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"fmt"
+	"hash/fnv"
 	"strings"
 	"time"
 
@@ -62,6 +64,11 @@ type BridgeCustomerIDProvider interface {
 	GetBridgeCustomerID(ctx context.Context, userID uuid.UUID) (string, error)
 }
 
+// WithdrawalLimitsChecker validates withdrawal amounts against daily/monthly limits.
+type WithdrawalLimitsChecker interface {
+	ValidateWithdrawal(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error
+}
+
 // BridgeCryptoTransferAdapter transfers USDC from a Bridge wallet to an external address.
 type BridgeCryptoTransferAdapter interface {
 	TransferFunds(ctx context.Context, req *bridgepkg.CreateTransferRequest) (*bridgepkg.Transfer, error)
@@ -80,6 +87,7 @@ type Service struct {
 	walletProvider    WalletProvider
 	bridgeTransfer    BridgeCryptoTransferAdapter
 	bridgeCustomerID  BridgeCustomerIDProvider
+	limitsChecker     WithdrawalLimitsChecker
 	pajChain          string // blockchain for Paj deposit addresses (e.g. "solana")
 	redis             cache.RedisClient
 	encryptionKey     string
@@ -108,6 +116,9 @@ func (s *Service) SetBridgeTransfer(bt BridgeCryptoTransferAdapter, chain string
 
 // SetGameplayHooks sets the gameplay hooks for triggering XP/streak/challenge events.
 func (s *Service) SetGameplayHooks(gh GameplayHooks) { s.gameplayHooks = gh }
+
+// SetLimitsChecker sets the withdrawal limits validator.
+func (s *Service) SetLimitsChecker(lc WithdrawalLimitsChecker) { s.limitsChecker = lc }
 
 // --- Session management ---
 
@@ -309,6 +320,24 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 		return nil, fmt.Errorf("minimum withdrawal is ₦500")
 	}
 
+	// P0: Distributed lock — prevent concurrent offramp requests per user.
+	unlock, lockErr := s.acquireOfframpLock(ctx, userID)
+	if lockErr != nil {
+		return nil, fmt.Errorf("withdrawal in progress, please wait")
+	}
+	defer unlock()
+
+	// P1: Idempotency — reject duplicate requests within a 30-second window.
+	idempotencyKey := fmt.Sprintf("paj-offramp:%s:%s:%.0f", userID, bankID, fiatAmount)
+	var exists bool
+	s.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM paj_orders WHERE user_id = $1 AND bank_id = $2 AND fiat_amount = $3 AND created_at > NOW() - interval '30 seconds' AND status != 'failed')`,
+		userID, bankID, fiatAmount).Scan(&exists)
+	if exists {
+		return nil, fmt.Errorf("duplicate withdrawal request, please wait")
+	}
+	_ = idempotencyKey // used for logging context
+
 	token, err := s.getSessionToken(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -339,6 +368,13 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 	// Total hold = estimated USDC (with slippage buffer) + Rail fee.
 	// Paj's fee is included in order.Amount (Paj deducts it from the token amount).
 	totalHold := estimatedUSDC.Add(railFee)
+
+	// P2: Withdrawal limits — enforce daily/monthly caps.
+	if s.limitsChecker != nil {
+		if limErr := s.limitsChecker.ValidateWithdrawal(ctx, userID, estimatedUSDC); limErr != nil {
+			return nil, limErr
+		}
+	}
 
 	// Check spend balance — user needs enough for amount + Rail fee.
 	if s.ledger != nil {
@@ -839,6 +875,33 @@ func (s *Service) reverseHold(ctx context.Context, userID uuid.UUID, pajOrderID 
 		s.logger.Error("CRITICAL: failed to reverse offramp hold",
 			zap.Error(err), zap.String("user_id", userID.String()),
 			zap.String("paj_order_id", pajOrderID), zap.String("amount", amount.String()))
+	}
+}
+
+// acquireOfframpLock acquires a PostgreSQL advisory lock for the user's offramp operations.
+func (s *Service) acquireOfframpLock(ctx context.Context, userID uuid.UUID) (func(), error) {
+	h := fnv.New64a()
+	b := [16]byte(userID)
+	h.Write(b[:])
+	// Use a different key space than withdrawal service (add offset)
+	key := int64(binary.BigEndian.Uint64(h.Sum(nil)[:8])) + 1000000
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var acquired bool
+		err := s.db.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&acquired)
+		if err != nil {
+			return func() {}, nil // fail open — don't block withdrawals on lock errors
+		}
+		if acquired {
+			return func() {
+				s.db.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", key)
+			}, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("timeout acquiring offramp lock")
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 }
 

@@ -18,7 +18,6 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services"
 	"github.com/rail-service/rail_service/internal/domain/services/account"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
-	compliancesvc "github.com/rail-service/rail_service/internal/domain/services/compliance"
 	"github.com/rail-service/rail_service/internal/domain/services/allocation"
 	alpacaservice "github.com/rail-service/rail_service/internal/domain/services/alpaca"
 	analyticsservice "github.com/rail-service/rail_service/internal/domain/services/analytics"
@@ -26,34 +25,35 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/audit"
 	"github.com/rail-service/rail_service/internal/domain/services/autoinvest"
 	"github.com/rail-service/rail_service/internal/domain/services/card"
+	compliancesvc "github.com/rail-service/rail_service/internal/domain/services/compliance"
 	conversationsvc "github.com/rail-service/rail_service/internal/domain/services/conversation"
 	"github.com/rail-service/rail_service/internal/domain/services/copytrading"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
-	"github.com/rail-service/rail_service/internal/domain/services/pajfunding"
+	"github.com/rail-service/rail_service/internal/domain/services/gameplay"
 	"github.com/rail-service/rail_service/internal/domain/services/integration"
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
+	knowledgesvc "github.com/rail-service/rail_service/internal/domain/services/knowledge"
 	"github.com/rail-service/rail_service/internal/domain/services/kyc"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/internal/domain/services/limits"
-	usagesvc "github.com/rail-service/rail_service/internal/domain/services/usage"
-	knowledgesvc "github.com/rail-service/rail_service/internal/domain/services/knowledge"
-	spendingsvc "github.com/rail-service/rail_service/internal/domain/services/spending"
 	marketservice "github.com/rail-service/rail_service/internal/domain/services/market"
 	newsservice "github.com/rail-service/rail_service/internal/domain/services/news"
 	"github.com/rail-service/rail_service/internal/domain/services/onboarding"
 	"github.com/rail-service/rail_service/internal/domain/services/p2p"
+	"github.com/rail-service/rail_service/internal/domain/services/pajfunding"
 	"github.com/rail-service/rail_service/internal/domain/services/passcode"
 	"github.com/rail-service/rail_service/internal/domain/services/reconciliation"
 	"github.com/rail-service/rail_service/internal/domain/services/roundup"
 	"github.com/rail-service/rail_service/internal/domain/services/security"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	"github.com/rail-service/rail_service/internal/domain/services/socialauth"
+	spendingsvc "github.com/rail-service/rail_service/internal/domain/services/spending"
 	"github.com/rail-service/rail_service/internal/domain/services/stashlock"
 	"github.com/rail-service/rail_service/internal/domain/services/station"
-	"github.com/rail-service/rail_service/internal/domain/services/gameplay"
-	subscriptionsvc "github.com/rail-service/rail_service/internal/domain/services/subscription"
 	"github.com/rail-service/rail_service/internal/domain/services/strategy"
+	subscriptionsvc "github.com/rail-service/rail_service/internal/domain/services/subscription"
 	"github.com/rail-service/rail_service/internal/domain/services/twofa"
+	usagesvc "github.com/rail-service/rail_service/internal/domain/services/usage"
 	"github.com/rail-service/rail_service/internal/domain/services/wallet"
 	"github.com/rail-service/rail_service/internal/domain/services/webauthn"
 	yieldsvc "github.com/rail-service/rail_service/internal/domain/services/yield"
@@ -61,9 +61,9 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/embeddings"
 	pajadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/paj"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/reflect"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
@@ -967,43 +967,43 @@ type Container struct {
 	BridgeCustomerStatusProcessor *webhooks.BridgeCustomerStatusProcessor
 
 	// Domain Services
-	OnboardingService       *onboarding.Service
-	OnboardingJobService    *services.OnboardingJobService
-	VerificationService     services.VerificationService
-	PasscodeService         *passcode.Service
-	SessionService          *session.Service
-	TwoFAService            *twofa.Service
-	APIKeyService           *apikey.Service
-	WalletService           *wallet.Service
-	FundingService          *funding.Service
-	InvestingService        *investing.Service
-	BalanceService          *services.BalanceService
-	LedgerService           *ledger.Service
-	YieldService            *yieldsvc.Service
-	yieldRepo               *repositories.YieldRepository
-	ReconciliationService   *reconciliation.Service
-	ReconciliationScheduler *reconciliation.Scheduler
-	StashReconciliation     *recon.Worker
-	TreasurySweepWorker     *treasury_sweep.Worker
-	YieldDistributionWorker *yield_distribution.Worker
-	AllocationService       *allocation.Service
-	AutoInvestService       *autoinvest.Service
-	StrategyEngine          *strategy.Engine
-	StationService          *station.Service
-	GameplayXPService       *gameplay.XPService
-	GameplayStreakService   *gameplay.StreakService
-	GameplayChallengeService *gameplay.ChallengeService
+	OnboardingService          *onboarding.Service
+	OnboardingJobService       *services.OnboardingJobService
+	VerificationService        services.VerificationService
+	PasscodeService            *passcode.Service
+	SessionService             *session.Service
+	TwoFAService               *twofa.Service
+	APIKeyService              *apikey.Service
+	WalletService              *wallet.Service
+	FundingService             *funding.Service
+	InvestingService           *investing.Service
+	BalanceService             *services.BalanceService
+	LedgerService              *ledger.Service
+	YieldService               *yieldsvc.Service
+	yieldRepo                  *repositories.YieldRepository
+	ReconciliationService      *reconciliation.Service
+	ReconciliationScheduler    *reconciliation.Scheduler
+	StashReconciliation        *recon.Worker
+	TreasurySweepWorker        *treasury_sweep.Worker
+	YieldDistributionWorker    *yield_distribution.Worker
+	AllocationService          *allocation.Service
+	AutoInvestService          *autoinvest.Service
+	StrategyEngine             *strategy.Engine
+	StationService             *station.Service
+	GameplayXPService          *gameplay.XPService
+	GameplayStreakService      *gameplay.StreakService
+	GameplayChallengeService   *gameplay.ChallengeService
 	GameplayAchievementService *gameplay.AchievementService
-	GameplayRepo            *repositories.GameplayRepository
-	GameplayHooks           *gameplay.Hooks
-	SubscriptionService     *subscriptionsvc.Service
-	NotificationService     *services.NotificationService
-	SocialAuthService       *socialauth.Service
-	WebAuthnService         *webauthn.Service
-	LimitsService           *limits.Service
-	DomainAuditService      *audit.Service
-	WithdrawalService       *services.WithdrawalService
-	StashLockService        *stashlock.Service
+	GameplayRepo               *repositories.GameplayRepository
+	GameplayHooks              *gameplay.Hooks
+	SubscriptionService        *subscriptionsvc.Service
+	NotificationService        *services.NotificationService
+	SocialAuthService          *socialauth.Service
+	WebAuthnService            *webauthn.Service
+	LimitsService              *limits.Service
+	DomainAuditService         *audit.Service
+	WithdrawalService          *services.WithdrawalService
+	StashLockService           *stashlock.Service
 
 	// AI Financial Manager Services
 	AIProviderManager     *ai.ProviderManager
@@ -1086,10 +1086,10 @@ type Container struct {
 
 	// Enhanced Security Services (MFA, Geo, Fraud, Incident Response)
 	MFAService              *security.MFAService
-	GeoSecurityService        *security.GeoSecurityService
-	FraudDetectionService     *security.FraudDetectionService
-	IncidentResponseService   *security.IncidentResponseService
-	OnboardingFraudService    *security.OnboardingFraudService
+	GeoSecurityService      *security.GeoSecurityService
+	FraudDetectionService   *security.FraudDetectionService
+	IncidentResponseService *security.IncidentResponseService
+	OnboardingFraudService  *security.OnboardingFraudService
 
 	// Token and Rate Limiting
 	TokenBlacklist      *auth.TokenBlacklist
@@ -3692,11 +3692,30 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 		if c.GameplayHooks != nil {
 			pajService.SetGameplayHooks(c.GameplayHooks)
 		}
+		if c.LimitsService != nil {
+			pajService.SetLimitsChecker(&PajLimitsAdapter{limitsService: c.LimitsService})
+		}
 		c.PajHandlers = fundinghandlers.NewPajHandlers(pajService, c.ZapLog)
 		c.ZapLog.Info("Paj Cash NGN ramp initialized")
 	} else {
 		c.ZapLog.Warn("Paj API key is empty, skipping initialization")
 	}
+}
+
+// PajLimitsAdapter adapts limits.Service to pajfunding.WithdrawalLimitsChecker.
+type PajLimitsAdapter struct {
+	limitsService *limits.Service
+}
+
+func (a *PajLimitsAdapter) ValidateWithdrawal(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error {
+	result, err := a.limitsService.ValidateWithdrawal(ctx, userID, amount)
+	if err != nil {
+		return err
+	}
+	if !result.Allowed {
+		return fmt.Errorf("%s", result.Reason)
+	}
+	return nil
 }
 
 // PajDepositLedgerAdapter credits USDC balance for PAJ onramp deposits using the
