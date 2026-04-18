@@ -22,11 +22,13 @@ func SetupGameplayRoutes(rg *gin.RouterGroup, container *di.Container) {
 		container.SubscriptionService,
 		container.ZapLog,
 	)
+	h.SetHeatmapRepo(container.GameplayRepo)
 
 	gp := rg.Group("/gameplay")
 	{
 		gp.GET("/profile", h.GetProfile)
 		gp.GET("/streaks", h.GetStreaks)
+		gp.GET("/activity-heatmap", h.GetActivityHeatmap)
 		gp.GET("/xp", h.GetXP)
 		gp.GET("/xp/history", h.GetXPHistory)
 		gp.GET("/challenges", h.GetChallenges)

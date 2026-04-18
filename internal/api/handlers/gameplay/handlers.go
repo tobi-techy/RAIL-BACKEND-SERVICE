@@ -1,8 +1,10 @@
 package gameplay
 
 import (
+	"context"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -12,6 +14,11 @@ import (
 	"go.uber.org/zap"
 )
 
+// HeatmapRepo provides deposit dates for the activity heatmap
+type HeatmapRepo interface {
+	GetDepositDates(ctx context.Context, userID uuid.UUID, since time.Time) ([]time.Time, error)
+}
+
 // Handlers handles gameplay API endpoints
 type Handlers struct {
 	xpSvc          *gameplayservice.XPService
@@ -19,6 +26,7 @@ type Handlers struct {
 	challengeSvc   *gameplayservice.ChallengeService
 	achievementSvc *gameplayservice.AchievementService
 	subSvc         *subscriptionsvc.Service
+	repo           HeatmapRepo
 	logger         *zap.Logger
 }
 
@@ -32,6 +40,8 @@ func NewHandlers(
 ) *Handlers {
 	return &Handlers{xpSvc: xpSvc, streakSvc: streakSvc, challengeSvc: challengeSvc, achievementSvc: achievementSvc, subSvc: subSvc, logger: logger}
 }
+
+func (h *Handlers) SetHeatmapRepo(r HeatmapRepo) { h.repo = r }
 
 func (h *Handlers) getUserID(c *gin.Context) (uuid.UUID, bool) {
 	val, exists := c.Get("user_id")
@@ -102,6 +112,26 @@ func (h *Handlers) GetStreaks(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"streaks": streaks})
+}
+
+// GetActivityHeatmap returns deposit dates for the last 90 days
+func (h *Handlers) GetActivityHeatmap(c *gin.Context) {
+	userID, ok := h.getUserID(c)
+	if !ok {
+		return
+	}
+	since := time.Now().AddDate(0, -3, 0)
+	dates, err := h.repo.GetDepositDates(c.Request.Context(), userID, since)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get activity"})
+		return
+	}
+	// Convert to date strings
+	dateStrs := make([]string, len(dates))
+	for i, d := range dates {
+		dateStrs[i] = d.Format("2006-01-02")
+	}
+	c.JSON(http.StatusOK, gin.H{"dates": dateStrs})
 }
 
 // GetXP returns XP and level info
