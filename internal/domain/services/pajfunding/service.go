@@ -811,6 +811,8 @@ func (s *Service) GetOrders(ctx context.Context, userID uuid.UUID) ([]PajOrder, 
 			COALESCE(rate, 0) as rate, COALESCE(fee, 0) as fee,
 			bank_account_number, created_at
 		FROM paj_orders WHERE user_id = $1
+		  AND (status = 'completed' OR status = 'paid'
+		       OR (status IN ('pending', 'failed') AND created_at > NOW() - interval '24 hours'))
 		ORDER BY created_at DESC LIMIT 50`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get paj orders: %w", err)
