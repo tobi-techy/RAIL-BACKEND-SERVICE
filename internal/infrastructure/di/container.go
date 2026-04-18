@@ -1642,6 +1642,9 @@ func (c *Container) initializeDomainServices() error {
 	if c.CardService != nil {
 		c.CardService.SetGameplayHooks(c.GameplayHooks)
 	}
+	if c.BridgeVirtualAccountService != nil {
+		c.BridgeVirtualAccountService.SetGameplayHooks(c.GameplayHooks)
+	}
 
 	// Wire user stats provider for achievement evaluation
 	c.GameplayAchievementService.SetUserStatsProvider(repositories.NewUserStatsRepository(sqlxDB))
@@ -3682,6 +3685,9 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 		}
 		if c.WalletService != nil {
 			pajService.SetWalletProvider(c.WalletService)
+		}
+		if c.GameplayHooks != nil {
+			pajService.SetGameplayHooks(c.GameplayHooks)
 		}
 		c.PajHandlers = fundinghandlers.NewPajHandlers(pajService, c.ZapLog)
 		c.ZapLog.Info("Paj Cash NGN ramp initialized")

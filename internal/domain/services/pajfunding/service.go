@@ -43,6 +43,11 @@ type NotificationService interface {
 	NotifyDepositConfirmed(ctx context.Context, userID uuid.UUID, amount, chain, txHash string) error
 }
 
+// GameplayHooks triggers gameplay events (XP, streaks, challenges) on deposit.
+type GameplayHooks interface {
+	OnDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID)
+}
+
 // WalletProvider looks up a user's Bridge wallet address by chain.
 type WalletProvider interface {
 	GetWalletByUserAndChain(ctx context.Context, userID uuid.UUID, chain entities.WalletChain) (*entities.ManagedWallet, error)
@@ -57,6 +62,7 @@ type Service struct {
 	depositLedger     DepositLedgerService
 	depositRepo       DepositRepository
 	notifier          NotificationService
+	gameplayHooks     GameplayHooks
 	walletProvider    WalletProvider
 	redis             cache.RedisClient
 	encryptionKey     string
@@ -75,6 +81,9 @@ func (s *Service) SetNotificationService(ns NotificationService) { s.notifier = 
 
 // SetWalletProvider sets the wallet provider for looking up user Bridge wallet addresses.
 func (s *Service) SetWalletProvider(wp WalletProvider) { s.walletProvider = wp }
+
+// SetGameplayHooks sets the gameplay hooks for triggering XP/streak/challenge events.
+func (s *Service) SetGameplayHooks(gh GameplayHooks) { s.gameplayHooks = gh }
 
 // --- Session management ---
 
@@ -471,7 +480,8 @@ func (s *Service) creditOnrampIfCompleted(ctx context.Context, userID uuid.UUID,
 	s.db.QueryRowContext(ctx,
 		`SELECT COALESCE(used_user_wallet, false) FROM paj_orders WHERE id = $1`, claimedID).Scan(&usedUserWallet)
 	if usedUserWallet {
-		// Bridge webhook handles crediting. Just notify the user.
+		// Bridge webhook handles crediting AND gameplay hooks via ProcessCircleWebhook.
+		// Only send notification here; do NOT call OnDeposit to avoid double XP.
 		if s.notifier != nil {
 			creditAmount := decimal.NewFromFloat(tx.USDCAmount)
 			s.notifier.NotifyDepositConfirmed(ctx, userID, creditAmount.StringFixed(2), "NGN", pajOrderID)
@@ -522,6 +532,7 @@ func (s *Service) creditOnrampIfCompleted(ctx context.Context, userID uuid.UUID,
 			// Reset claim so next webhook/poll retries the allocation.
 			// USDC credit is idempotent (same key), so re-entry is safe.
 			s.db.ExecContext(ctx, `UPDATE paj_orders SET deposit_id = NULL WHERE id = $1`, claimedID)
+			return // Don't persist deposit record, notify, or trigger gameplay until allocation succeeds.
 		}
 	}
 
@@ -552,6 +563,11 @@ func (s *Service) creditOnrampIfCompleted(ctx context.Context, userID uuid.UUID,
 		if err := s.notifier.NotifyDepositConfirmed(ctx, userID, creditAmount.StringFixed(2), "NGN", pajOrderID); err != nil {
 			s.logger.Warn("Failed to send PAJ deposit notification", zap.Error(err))
 		}
+	}
+
+	// Step 5: Trigger gameplay events (XP, streaks, challenges).
+	if s.gameplayHooks != nil {
+		s.gameplayHooks.OnDeposit(ctx, userID, creditAmount, claimedID)
 	}
 }
 
