@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	bridgepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/paj"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/pkg/crypto"
@@ -53,6 +54,11 @@ type WalletProvider interface {
 	GetWalletByUserAndChain(ctx context.Context, userID uuid.UUID, chain entities.WalletChain) (*entities.ManagedWallet, error)
 }
 
+// BridgeCryptoTransferAdapter transfers USDC from a Bridge wallet to an external address.
+type BridgeCryptoTransferAdapter interface {
+	TransferFunds(ctx context.Context, req *bridgepkg.CreateTransferRequest) (*bridgepkg.Transfer, error)
+}
+
 // Service handles Paj Cash NGN on/off ramp operations.
 type Service struct {
 	db                *sqlx.DB
@@ -64,6 +70,8 @@ type Service struct {
 	notifier          NotificationService
 	gameplayHooks     GameplayHooks
 	walletProvider    WalletProvider
+	bridgeTransfer    BridgeCryptoTransferAdapter
+	pajChain          string // blockchain for Paj deposit addresses (e.g. "solana")
 	redis             cache.RedisClient
 	encryptionKey     string
 	logger            *zap.Logger
@@ -81,6 +89,12 @@ func (s *Service) SetNotificationService(ns NotificationService) { s.notifier = 
 
 // SetWalletProvider sets the wallet provider for looking up user Bridge wallet addresses.
 func (s *Service) SetWalletProvider(wp WalletProvider) { s.walletProvider = wp }
+
+// SetBridgeTransfer sets the Bridge transfer adapter for sending USDC to Paj deposit addresses.
+func (s *Service) SetBridgeTransfer(bt BridgeCryptoTransferAdapter, chain string) {
+	s.bridgeTransfer = bt
+	s.pajChain = chain
+}
 
 // SetGameplayHooks sets the gameplay hooks for triggering XP/streak/challenge events.
 func (s *Service) SetGameplayHooks(gh GameplayHooks) { s.gameplayHooks = gh }
@@ -268,7 +282,10 @@ func (s *Service) CreateOnrampOrder(ctx context.Context, userID uuid.UUID, fiatA
 
 // --- Offramp (USDC → NGN) ---
 
-func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bankID, accountNumber string, fiatAmount float64, currency string) (*paj.OfframpOrder, error) {
+// RailNGNWithdrawalFee is Rail's flat fee for NGN withdrawals (in USDC).
+const RailNGNWithdrawalFee = 0.06
+
+func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bankID, accountNumber string, fiatAmount float64, currency string) (*OfframpResult, error) {
 	// Enforce NGN minimum withdrawal
 	if fiatAmount < 100 {
 		return nil, fmt.Errorf("minimum withdrawal is ₦100")
@@ -292,20 +309,29 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 	estimatedUSDC := decimal.NewFromFloat(fiatAmount).Div(decimal.NewFromFloat(rates.OffRampRate.Rate))
 	estimatedUSDC = estimatedUSDC.Mul(decimal.NewFromFloat(1.02)).Round(2)
 
-	// Check spend balance.
+	// Rail's flat fee for NGN withdrawals.
+	railFee := decimal.NewFromFloat(RailNGNWithdrawalFee)
+
+	// Total hold = estimated USDC (with slippage buffer) + Rail fee.
+	// Paj's fee is included in order.Amount (Paj deducts it from the token amount).
+	totalHold := estimatedUSDC.Add(railFee)
+
+	// Check spend balance — user needs enough for amount + Rail fee.
 	if s.ledger != nil {
 		balance, err := s.ledger.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
 		if err != nil {
 			return nil, fmt.Errorf("failed to check balance: %w", err)
 		}
-		if balance.LessThan(estimatedUSDC) {
-			return nil, fmt.Errorf("insufficient balance: have %s USDC, need ~%s USDC for ₦%.0f", balance.String(), estimatedUSDC.String(), fiatAmount)
+		if balance.LessThan(totalHold) {
+			return nil, fmt.Errorf("insufficient balance: have %s USDC, need ~%s USDC (incl. $%s fee) for ₦%.0f",
+				balance.String(), totalHold.String(), railFee.String(), fiatAmount)
 		}
 
-		// Debit spend balance (hold).
+		// Debit spend balance (hold = estimated USDC + Rail fee).
 		err = s.ledger.CreateTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
-			entities.TransactionTypeWithdrawal, estimatedUSDC, map[string]interface{}{
-				"provider": "paj", "type": "offramp_hold", "fiat_amount": fiatAmount, "currency": currency,
+			entities.TransactionTypeWithdrawal, totalHold, map[string]interface{}{
+				"provider": "paj", "type": "offramp_hold", "fiat_amount": fiatAmount,
+				"currency": currency, "rail_fee": railFee.String(),
 			})
 		if err != nil {
 			return nil, fmt.Errorf("failed to debit balance: %w", err)
@@ -315,16 +341,16 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 	// Create Paj offramp order.
 	order, err := s.pajClient.CreateOfframpOrder(ctx, token, bankID, accountNumber, fiatAmount, currency)
 	if err != nil {
-		// Reverse the ledger hold on Paj failure.
+		// Reverse the full hold on Paj failure.
 		if s.ledger != nil {
 			reverseErr := s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
-				"paj_offramp_failed", estimatedUSDC, map[string]interface{}{
+				"paj_offramp_failed", totalHold, map[string]interface{}{
 					"provider": "paj", "type": "offramp_reversal", "reason": err.Error(),
 				})
 			if reverseErr != nil {
 				s.logger.Error("CRITICAL: failed to reverse ledger hold after Paj failure",
 					zap.Error(reverseErr), zap.String("user_id", userID.String()),
-					zap.String("amount", estimatedUSDC.String()))
+					zap.String("amount", totalHold.String()))
 			}
 		}
 		return nil, err
@@ -334,12 +360,126 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 		INSERT INTO paj_orders (user_id, paj_order_id, order_type, status, fiat_amount, token_amount, currency, rate, fee, bank_id, bank_account_number, paj_deposit_address, hold_amount)
 		VALUES ($1, $2, 'offramp', 'pending', $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		userID, order.ID, order.FiatAmount, order.Amount, currency, order.Rate, order.Fee,
-		bankID, accountNumber, order.Address, estimatedUSDC)
+		bankID, accountNumber, order.Address, totalHold)
 	if dbErr != nil {
-		s.logger.Error("failed to persist paj offramp order", zap.Error(dbErr), zap.String("paj_order_id", order.ID))
+		s.logger.Error("CRITICAL: failed to persist paj offramp order — reversing hold",
+			zap.Error(dbErr), zap.String("paj_order_id", order.ID))
+		if s.ledger != nil {
+			s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
+				"paj_offramp_db_fail_"+order.ID, totalHold, map[string]interface{}{
+					"provider": "paj", "type": "offramp_db_failure_reversal", "paj_order_id": order.ID,
+				})
+		}
+		return nil, fmt.Errorf("failed to record withdrawal order")
 	}
 
-	return order, nil
+	// Validate prerequisites for Bridge transfer.
+	if s.bridgeTransfer == nil || s.walletProvider == nil {
+		s.logger.Error("bridge transfer not configured for Paj offramp — reversing hold",
+			zap.String("paj_order_id", order.ID))
+		s.reverseHold(ctx, userID, order.ID, totalHold, "no_bridge_config")
+		return nil, fmt.Errorf("withdrawal infrastructure not available")
+	}
+	if order.Address == "" {
+		s.logger.Error("Paj order missing deposit address — reversing hold",
+			zap.String("paj_order_id", order.ID))
+		s.reverseHold(ctx, userID, order.ID, totalHold, "no_deposit_address")
+		return nil, fmt.Errorf("withdrawal service returned invalid response")
+	}
+
+	// Transfer USDC from user's Bridge wallet to Paj's deposit address.
+	{
+		walletChain := entities.WalletChainSolana // default
+		paymentRail := bridgepkg.PaymentRailSolana
+		if s.pajChain != "" {
+			switch s.pajChain {
+			case "BASE":
+				walletChain = entities.WalletChainBase
+				paymentRail = bridgepkg.PaymentRailBase
+			case "POLYGON":
+				walletChain = entities.WalletChainPolygon
+				paymentRail = bridgepkg.PaymentRailPolygon
+			case "ETHEREUM":
+				walletChain = entities.WalletChainEthereum
+				paymentRail = bridgepkg.PaymentRailEthereum
+			}
+		}
+
+		wallet, walletErr := s.walletProvider.GetWalletByUserAndChain(ctx, userID, walletChain)
+		if walletErr != nil || wallet == nil || wallet.BridgeWalletID == "" {
+			s.logger.Error("failed to get user Bridge wallet for Paj offramp — reversing hold",
+				zap.Error(walletErr), zap.String("user_id", userID.String()),
+				zap.String("paj_order_id", order.ID))
+			s.reverseHold(ctx, userID, order.ID, totalHold, "no_wallet")
+			return nil, fmt.Errorf("failed to get wallet for withdrawal")
+		}
+
+		transfer, transferErr := s.bridgeTransfer.TransferFunds(ctx, &bridgepkg.CreateTransferRequest{
+				OnBehalfOf: userID.String(),
+				Amount:     decimal.NewFromFloat(order.Amount).StringFixed(2),
+				Source: bridgepkg.TransferSource{
+					PaymentRail:    bridgepkg.PaymentRail("bridge_wallet"),
+					Currency:       bridgepkg.CurrencyUSDC,
+					BridgeWalletID: wallet.BridgeWalletID,
+				},
+				Destination: bridgepkg.TransferDestination{
+					PaymentRail: paymentRail,
+					Currency:    bridgepkg.CurrencyUSDC,
+					ToAddress:   order.Address,
+				},
+			})
+			if transferErr != nil {
+				s.logger.Error("CRITICAL: Bridge transfer to Paj deposit address failed",
+					zap.Error(transferErr), zap.String("user_id", userID.String()),
+					zap.String("paj_order_id", order.ID), zap.String("amount", totalHold.String()))
+				// Reverse the full hold since USDC couldn't be sent.
+				if s.ledger != nil {
+					reverseErr := s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
+						"paj_offramp_transfer_failed_"+order.ID, totalHold, map[string]interface{}{
+							"provider": "paj", "type": "offramp_transfer_failure_reversal",
+							"paj_order_id": order.ID, "reason": transferErr.Error(),
+						})
+					if reverseErr != nil {
+						s.logger.Error("CRITICAL: failed to reverse ledger hold after Bridge transfer failure",
+							zap.Error(reverseErr), zap.String("user_id", userID.String()),
+							zap.String("amount", totalHold.String()))
+					}
+				}
+				return nil, fmt.Errorf("failed to send USDC to Paj: %w", transferErr)
+			}
+
+			// Store the Bridge transfer ID for reconciliation.
+			s.db.ExecContext(ctx, `UPDATE paj_orders SET bridge_transfer_id = $1 WHERE paj_order_id = $2`,
+				transfer.ID, order.ID)
+
+			// Refund slippage buffer: we debited estimatedUSDC (with 2% buffer)
+			// but Paj only needs order.Amount. Return the excess to the user.
+			// Rail fee is NOT refunded — it's our revenue.
+			actualAmount := decimal.NewFromFloat(order.Amount)
+			excess := estimatedUSDC.Sub(actualAmount)
+			if excess.IsPositive() && s.ledger != nil {
+				refundErr := s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
+					"paj_offramp_slippage_refund_"+order.ID, excess, map[string]interface{}{
+						"provider": "paj", "type": "slippage_refund", "paj_order_id": order.ID,
+						"estimated": estimatedUSDC.String(), "actual": actualAmount.String(),
+					})
+				if refundErr != nil {
+					s.logger.Error("failed to refund slippage buffer (non-fatal, user overcharged by dust)",
+						zap.Error(refundErr), zap.String("user_id", userID.String()),
+						zap.String("excess", excess.String()), zap.String("paj_order_id", order.ID))
+				}
+			}
+
+			s.logger.Info("Bridge transfer to Paj initiated",
+				zap.String("paj_order_id", order.ID),
+				zap.String("bridge_transfer_id", transfer.ID),
+				zap.String("amount", actualAmount.String()))
+	}
+
+	return &OfframpResult{
+		Order:   order,
+		RailFee: RailNGNWithdrawalFee,
+	}, nil
 }
 
 // --- Webhook processing ---
@@ -601,6 +741,58 @@ func (s *Service) reverseOfframpIfFailed(ctx context.Context, userID uuid.UUID, 
 	}
 }
 
+// OfframpResult wraps the Paj order with Rail-specific fee info for the API response.
+type OfframpResult struct {
+	Order   *paj.OfframpOrder
+	RailFee float64
+}
+
+// PajOrder represents a persisted Paj order for transaction history.
+type PajOrder struct {
+	ID                string          `db:"paj_order_id" json:"orderId"`
+	OrderType         string          `db:"order_type" json:"orderType"`
+	Status            string          `db:"status" json:"status"`
+	FiatAmount        float64         `db:"fiat_amount" json:"fiatAmount"`
+	TokenAmount       float64         `db:"token_amount" json:"tokenAmount"`
+	Currency          string          `db:"currency" json:"currency"`
+	Rate              float64         `db:"rate" json:"rate"`
+	Fee               float64         `db:"fee" json:"fee"`
+	BankAccountNumber *string         `db:"bank_account_number" json:"bankAccountNumber,omitempty"`
+	CreatedAt         time.Time       `db:"created_at" json:"createdAt"`
+}
+
+// GetOrders returns the user's Paj order history for transaction display.
+func (s *Service) GetOrders(ctx context.Context, userID uuid.UUID) ([]PajOrder, error) {
+	var orders []PajOrder
+	err := s.db.SelectContext(ctx, &orders, `
+		SELECT paj_order_id, order_type, status, COALESCE(fiat_amount, 0) as fiat_amount,
+			COALESCE(token_amount, 0) as token_amount, COALESCE(currency, 'NGN') as currency,
+			COALESCE(rate, 0) as rate, COALESCE(fee, 0) as fee,
+			bank_account_number, created_at
+		FROM paj_orders WHERE user_id = $1
+		ORDER BY created_at DESC LIMIT 50`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get paj orders: %w", err)
+	}
+	return orders, nil
+}
+
+// reverseHold reverses the full ledger hold for a failed offramp.
+func (s *Service) reverseHold(ctx context.Context, userID uuid.UUID, pajOrderID string, amount decimal.Decimal, reason string) {
+	if s.ledger == nil {
+		return
+	}
+	err := s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
+		"paj_offramp_"+reason+"_"+pajOrderID, amount, map[string]interface{}{
+			"provider": "paj", "type": "offramp_" + reason + "_reversal", "paj_order_id": pajOrderID,
+		})
+	if err != nil {
+		s.logger.Error("CRITICAL: failed to reverse offramp hold",
+			zap.Error(err), zap.String("user_id", userID.String()),
+			zap.String("paj_order_id", pajOrderID), zap.String("amount", amount.String()))
+	}
+}
+
 func mapPajStatus(pajStatus string) string {
 	switch pajStatus {
 	case "INIT":
@@ -609,7 +801,9 @@ func mapPajStatus(pajStatus string) string {
 		return "paid"
 	case "COMPLETED":
 		return "completed"
-	default:
+	case "FAILED":
 		return "failed"
+	default:
+		return "pending"
 	}
 }

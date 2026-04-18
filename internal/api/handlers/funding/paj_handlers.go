@@ -272,11 +272,12 @@ func (h *PajHandlers) CreateOfframp(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"orderId":    order.ID,
-		"fiatAmount": order.FiatAmount,
-		"amount":     order.Amount,
-		"rate":       order.Rate,
-		"fee":        order.Fee,
+		"orderId":    order.Order.ID,
+		"fiatAmount": order.Order.FiatAmount,
+		"amount":     order.Order.Amount,
+		"rate":       order.Order.Rate,
+		"fee":        order.Order.Fee,
+		"railFee":    order.RailFee,
 		"status":     "pending",
 	})
 }
@@ -309,6 +310,22 @@ func (h *PajHandlers) HandleWebhook(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+// GetOrders returns the user's Paj order history.
+// GET /v1/funding/paj/orders
+func (h *PajHandlers) GetOrders(c *gin.Context) {
+	userID, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	orders, err := h.service.GetOrders(c.Request.Context(), userID)
+	if err != nil {
+		h.logger.Error("failed to get paj orders", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "FETCH_FAILED", "message": "Failed to fetch order history"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"orders": orders})
 }
 
 // GetOrderStatus polls Paj for current order status.

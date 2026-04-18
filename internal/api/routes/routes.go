@@ -570,6 +570,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					paj.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
 					paj.GET("/rates", container.PajHandlers.GetRates)
 					paj.GET("/banks", container.PajHandlers.GetBanks)
+					paj.GET("/orders", container.PajHandlers.GetOrders)
 					paj.GET("/orders/:id/status", container.PajHandlers.GetOrderStatus)
 				}
 

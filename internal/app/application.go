@@ -32,6 +32,7 @@ import (
 	balance_reconciliation "github.com/rail-service/rail_service/internal/workers/balance_reconciliation"
 	bridge_govid_repair "github.com/rail-service/rail_service/internal/workers/bridge_govid_repair"
 	deposit_allocation_recovery "github.com/rail-service/rail_service/internal/workers/deposit_allocation_recovery"
+	paj_offramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_offramp_recovery"
 	"github.com/rail-service/rail_service/internal/workers/funding_webhook"
 	kyc_autoinvest "github.com/rail-service/rail_service/internal/workers/kyc_autoinvest"
 	"github.com/rail-service/rail_service/internal/workers/kyc_sync"
@@ -59,6 +60,7 @@ type Application struct {
 	scheduledInvestmentWorker   *scheduled_investment_worker.Worker
 	portfolioSnapshotWorker     *portfolio_snapshot_worker.Worker
 	depositAllocationWorker     *deposit_allocation_recovery.Worker
+	pajOfframpRecoveryWorker   *paj_offramp_recovery.Worker
 	kycAutoInvestWorker         *kyc_autoinvest.Worker
 	rebalancingWorker           *rebalancing_worker.Worker
 	kycSyncWorker               *kyc_sync.Worker
@@ -204,6 +206,13 @@ func (app *Application) initializeWorkers() error {
 		)
 		go app.depositAllocationWorker.Start(context.Background())
 		app.log.Info("Deposit allocation recovery worker started")
+	}
+
+	// Paj offramp recovery worker — auto-reverses stuck NGN withdrawals
+	if app.container.DB != nil && app.container.PajHandlers != nil {
+		app.pajOfframpRecoveryWorker = paj_offramp_recovery.NewWorker(app.container.DB, app.log.Zap())
+		go app.pajOfframpRecoveryWorker.Start(context.Background())
+		app.log.Info("Paj offramp recovery worker started")
 	}
 
 	// KYC auto-invest worker
@@ -726,6 +735,9 @@ func (app *Application) stopWorkers() {
 	if app.depositAllocationWorker != nil {
 		app.log.Info("Stopping deposit allocation recovery worker...")
 		app.depositAllocationWorker.Stop()
+	}
+	if app.pajOfframpRecoveryWorker != nil {
+		app.pajOfframpRecoveryWorker.Stop()
 	}
 
 	// Stop KYC auto-invest worker
