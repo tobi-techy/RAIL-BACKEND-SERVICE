@@ -126,7 +126,11 @@ func (h *PajHandlers) GetRates(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "PAJ_RATES_FAILED", "message": "Failed to fetch rates"})
 		return
 	}
-	c.JSON(http.StatusOK, rates)
+	c.JSON(http.StatusOK, gin.H{
+		"onRampRate":  rates.OnRampRate,
+		"offRampRate": rates.OffRampRate,
+		"railFee":     pajfunding.RailNGNWithdrawalFee,
+	})
 }
 
 // GetBanks returns the list of Nigerian banks.
