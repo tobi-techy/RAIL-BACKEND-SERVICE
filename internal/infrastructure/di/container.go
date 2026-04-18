@@ -3687,7 +3687,7 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 			pajService.SetWalletProvider(c.WalletService)
 		}
 		if c.BridgeAdapter != nil && c.WalletService != nil {
-			pajService.SetBridgeTransfer(c.BridgeAdapter, c.Config.Paj.Chain)
+			pajService.SetBridgeTransfer(c.BridgeAdapter, c.Config.Paj.Chain, &UserProfileProviderAdapter{repo: c.UserRepo})
 		}
 		if c.GameplayHooks != nil {
 			pajService.SetGameplayHooks(c.GameplayHooks)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -54,6 +55,11 @@ type WalletProvider interface {
 	GetWalletByUserAndChain(ctx context.Context, userID uuid.UUID, chain entities.WalletChain) (*entities.ManagedWallet, error)
 }
 
+// BridgeCustomerIDProvider resolves a user's Bridge customer ID for transfer API calls.
+type BridgeCustomerIDProvider interface {
+	GetBridgeCustomerID(ctx context.Context, userID uuid.UUID) (string, error)
+}
+
 // BridgeCryptoTransferAdapter transfers USDC from a Bridge wallet to an external address.
 type BridgeCryptoTransferAdapter interface {
 	TransferFunds(ctx context.Context, req *bridgepkg.CreateTransferRequest) (*bridgepkg.Transfer, error)
@@ -71,6 +77,7 @@ type Service struct {
 	gameplayHooks     GameplayHooks
 	walletProvider    WalletProvider
 	bridgeTransfer    BridgeCryptoTransferAdapter
+	bridgeCustomerID  BridgeCustomerIDProvider
 	pajChain          string // blockchain for Paj deposit addresses (e.g. "solana")
 	redis             cache.RedisClient
 	encryptionKey     string
@@ -91,9 +98,10 @@ func (s *Service) SetNotificationService(ns NotificationService) { s.notifier = 
 func (s *Service) SetWalletProvider(wp WalletProvider) { s.walletProvider = wp }
 
 // SetBridgeTransfer sets the Bridge transfer adapter for sending USDC to Paj deposit addresses.
-func (s *Service) SetBridgeTransfer(bt BridgeCryptoTransferAdapter, chain string) {
+func (s *Service) SetBridgeTransfer(bt BridgeCryptoTransferAdapter, chain string, customerIDProvider BridgeCustomerIDProvider) {
 	s.bridgeTransfer = bt
 	s.pajChain = chain
+	s.bridgeCustomerID = customerIDProvider
 }
 
 // SetGameplayHooks sets the gameplay hooks for triggering XP/streak/challenge events.
@@ -226,7 +234,15 @@ func (s *Service) AddBankAccount(ctx context.Context, userID uuid.UUID, bankID, 
 	if err != nil {
 		return nil, err
 	}
-	return s.pajClient.AddBankAccount(ctx, token, bankID, accountNumber)
+	account, err := s.pajClient.AddBankAccount(ctx, token, bankID, accountNumber)
+	if err != nil {
+		// Ignore "already exists" — the bank account is already saved on Paj's side.
+		if strings.Contains(err.Error(), "already exists") {
+			return &paj.SavedBankAccount{AccountNumber: accountNumber, Bank: bankID}, nil
+		}
+		return nil, err
+	}
+	return account, nil
 }
 
 func (s *Service) GetBankAccounts(ctx context.Context, userID uuid.UUID) ([]paj.SavedBankAccount, error) {
@@ -420,8 +436,17 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 			return nil, fmt.Errorf("failed to get wallet for withdrawal")
 		}
 
+		// Bridge requires the Bridge customer ID (not Rail user ID) for OnBehalfOf.
+		bridgeCustID, custErr := s.bridgeCustomerID.GetBridgeCustomerID(ctx, userID)
+		if custErr != nil || bridgeCustID == "" {
+			s.logger.Error("failed to get Bridge customer ID for Paj offramp — reversing hold",
+				zap.Error(custErr), zap.String("user_id", userID.String()))
+			s.reverseHold(ctx, userID, order.ID, totalHold, "no_bridge_customer")
+			return nil, fmt.Errorf("failed to get customer ID for withdrawal")
+		}
+
 		transfer, transferErr := s.bridgeTransfer.TransferFunds(ctx, &bridgepkg.CreateTransferRequest{
-			OnBehalfOf: userID.String(),
+			OnBehalfOf: bridgeCustID,
 			Amount:     decimal.NewFromFloat(order.Amount).StringFixed(2),
 			Source: bridgepkg.TransferSource{
 				PaymentRail:    bridgepkg.PaymentRail("bridge_wallet"),
