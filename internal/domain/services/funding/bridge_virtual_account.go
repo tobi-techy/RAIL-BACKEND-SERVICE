@@ -25,6 +25,7 @@ type BridgeVirtualAccountService struct {
 	complianceScreener  ComplianceScreener
 	ledgerIntegration   LedgerIntegration
 	notificationService FundingNotificationService
+	gameplayHooks       FundingGameplayHooks
 	walletProvider      WalletProvider
 	logger              *logger.Logger
 }
@@ -96,6 +97,11 @@ func (s *BridgeVirtualAccountService) SetWalletProvider(walletProvider WalletPro
 // SetComplianceScreener sets the compliance screening service (optional).
 func (s *BridgeVirtualAccountService) SetComplianceScreener(cs ComplianceScreener) {
 	s.complianceScreener = cs
+}
+
+// SetGameplayHooks sets the gameplay hooks for triggering XP/streak/challenge events.
+func (s *BridgeVirtualAccountService) SetGameplayHooks(gh FundingGameplayHooks) {
+	s.gameplayHooks = gh
 }
 
 // ProvisionVirtualAccounts creates virtual accounts for multiple currencies on KYC approval
@@ -584,6 +590,11 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 		}
 	}
 
+	// Trigger gameplay events (XP, streaks, challenges)
+	if s.gameplayHooks != nil {
+		s.gameplayHooks.OnDeposit(ctx, virtualAccount.UserID, amount, depositID)
+	}
+
 	s.logger.Info("Bridge fiat deposit processed successfully",
 		"user_id", virtualAccount.UserID,
 		"amount", amount,
@@ -773,6 +784,11 @@ func (s *BridgeVirtualAccountService) ProcessCryptoDeposit(ctx context.Context, 
 		if err := s.notificationService.NotifyDepositConfirmed(ctx, userID, amount.String(), chain, transferID); err != nil {
 			s.logger.Warn("Failed to send deposit confirmation notification", "user_id", userID, "error", err)
 		}
+	}
+
+	// Trigger gameplay events (XP, streaks, challenges)
+	if s.gameplayHooks != nil {
+		s.gameplayHooks.OnDeposit(ctx, userID, amount, depositID)
 	}
 
 	sourceTxID := transferID
