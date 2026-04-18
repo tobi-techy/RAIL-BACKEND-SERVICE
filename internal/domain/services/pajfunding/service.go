@@ -777,8 +777,14 @@ func (s *Service) GetOrders(ctx context.Context, userID uuid.UUID) ([]PajOrder, 
 	return orders, nil
 }
 
-// reverseHold reverses the full ledger hold for a failed offramp.
+// reverseHold reverses the full ledger hold for a failed offramp and marks the order
+// as failed with deposit_id set (prevents double-reversal by worker or webhook).
 func (s *Service) reverseHold(ctx context.Context, userID uuid.UUID, pajOrderID string, amount decimal.Decimal, reason string) {
+	// Mark order as failed and claim it (same idempotency as worker/webhook).
+	s.db.ExecContext(ctx, `
+		UPDATE paj_orders SET status = 'failed', deposit_id = gen_random_uuid(), updated_at = NOW()
+		WHERE paj_order_id = $1 AND status = 'pending'`, pajOrderID)
+
 	if s.ledger == nil {
 		return
 	}
