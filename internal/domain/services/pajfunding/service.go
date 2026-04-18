@@ -43,6 +43,8 @@ type DepositRepository interface {
 // NotificationService sends user-facing push/in-app notifications.
 type NotificationService interface {
 	NotifyDepositConfirmed(ctx context.Context, userID uuid.UUID, amount, chain, txHash string) error
+	NotifyWithdrawalCompleted(ctx context.Context, userID uuid.UUID, amount, destination string) error
+	NotifyWithdrawalFailed(ctx context.Context, userID uuid.UUID, amount, reason string) error
 }
 
 // GameplayHooks triggers gameplay events (XP, streaks, challenges) on deposit.
@@ -571,6 +573,9 @@ func (s *Service) HandleWebhook(ctx context.Context, payload *paj.WebhookPayload
 	// Reverse the ledger hold when an offramp fails.
 	s.reverseOfframpIfFailed(ctx, orderUserID, payload.ID, orderType, newStatus)
 
+	// Send push notification for offramp terminal states.
+	s.notifyOfframpStatus(ctx, orderUserID, payload.ID, orderType, newStatus, tx)
+
 	s.logger.Info("paj order status updated",
 		zap.String("paj_order_id", payload.ID),
 		zap.String("type", orderType),
@@ -615,6 +620,9 @@ func (s *Service) PollOrderStatus(ctx context.Context, userID uuid.UUID, pajOrde
 
 	// Reverse the ledger hold if offramp failed (same logic as webhook path).
 	s.reverseOfframpIfFailed(ctx, userID, pajOrderID, orderType, newStatus)
+
+	// Send push notification for offramp terminal states.
+	s.notifyOfframpStatus(ctx, userID, pajOrderID, orderType, newStatus, tx)
 
 	return tx, nil
 }
@@ -790,6 +798,20 @@ type PajOrder struct {
 	Fee               float64   `db:"fee" json:"fee"`
 	BankAccountNumber *string   `db:"bank_account_number" json:"bankAccountNumber,omitempty"`
 	CreatedAt         time.Time `db:"created_at" json:"createdAt"`
+}
+
+// notifyOfframpStatus sends a push notification when an offramp reaches a terminal state.
+func (s *Service) notifyOfframpStatus(ctx context.Context, userID uuid.UUID, pajOrderID, orderType, status string, tx *paj.PajTransaction) {
+	if s.notifier == nil || orderType != "offramp" {
+		return
+	}
+	amount := fmt.Sprintf("₦%.0f", tx.FiatAmount)
+	switch status {
+	case "completed":
+		s.notifier.NotifyWithdrawalCompleted(ctx, userID, amount, "bank account")
+	case "failed":
+		s.notifier.NotifyWithdrawalFailed(ctx, userID, amount, "Transaction failed. Funds returned to your balance.")
+	}
 }
 
 // GetOrders returns the user's Paj order history for transaction display.
