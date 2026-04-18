@@ -415,65 +415,65 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 		}
 
 		transfer, transferErr := s.bridgeTransfer.TransferFunds(ctx, &bridgepkg.CreateTransferRequest{
-				OnBehalfOf: userID.String(),
-				Amount:     decimal.NewFromFloat(order.Amount).StringFixed(2),
-				Source: bridgepkg.TransferSource{
-					PaymentRail:    bridgepkg.PaymentRail("bridge_wallet"),
-					Currency:       bridgepkg.CurrencyUSDC,
-					BridgeWalletID: wallet.BridgeWalletID,
-				},
-				Destination: bridgepkg.TransferDestination{
-					PaymentRail: paymentRail,
-					Currency:    bridgepkg.CurrencyUSDC,
-					ToAddress:   order.Address,
-				},
-			})
-			if transferErr != nil {
-				s.logger.Error("CRITICAL: Bridge transfer to Paj deposit address failed",
-					zap.Error(transferErr), zap.String("user_id", userID.String()),
-					zap.String("paj_order_id", order.ID), zap.String("amount", totalHold.String()))
-				// Reverse the full hold since USDC couldn't be sent.
-				if s.ledger != nil {
-					reverseErr := s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
-						"paj_offramp_transfer_failed_"+order.ID, totalHold, map[string]interface{}{
-							"provider": "paj", "type": "offramp_transfer_failure_reversal",
-							"paj_order_id": order.ID, "reason": transferErr.Error(),
-						})
-					if reverseErr != nil {
-						s.logger.Error("CRITICAL: failed to reverse ledger hold after Bridge transfer failure",
-							zap.Error(reverseErr), zap.String("user_id", userID.String()),
-							zap.String("amount", totalHold.String()))
-					}
-				}
-				return nil, fmt.Errorf("failed to send USDC to Paj: %w", transferErr)
-			}
-
-			// Store the Bridge transfer ID for reconciliation.
-			s.db.ExecContext(ctx, `UPDATE paj_orders SET bridge_transfer_id = $1 WHERE paj_order_id = $2`,
-				transfer.ID, order.ID)
-
-			// Refund slippage buffer: we debited estimatedUSDC (with 2% buffer)
-			// but Paj only needs order.Amount. Return the excess to the user.
-			// Rail fee is NOT refunded — it's our revenue.
-			actualAmount := decimal.NewFromFloat(order.Amount)
-			excess := estimatedUSDC.Sub(actualAmount)
-			if excess.IsPositive() && s.ledger != nil {
-				refundErr := s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
-					"paj_offramp_slippage_refund_"+order.ID, excess, map[string]interface{}{
-						"provider": "paj", "type": "slippage_refund", "paj_order_id": order.ID,
-						"estimated": estimatedUSDC.String(), "actual": actualAmount.String(),
+			OnBehalfOf: userID.String(),
+			Amount:     decimal.NewFromFloat(order.Amount).StringFixed(2),
+			Source: bridgepkg.TransferSource{
+				PaymentRail:    bridgepkg.PaymentRail("bridge_wallet"),
+				Currency:       bridgepkg.CurrencyUSDC,
+				BridgeWalletID: wallet.BridgeWalletID,
+			},
+			Destination: bridgepkg.TransferDestination{
+				PaymentRail: paymentRail,
+				Currency:    bridgepkg.CurrencyUSDC,
+				ToAddress:   order.Address,
+			},
+		})
+		if transferErr != nil {
+			s.logger.Error("CRITICAL: Bridge transfer to Paj deposit address failed",
+				zap.Error(transferErr), zap.String("user_id", userID.String()),
+				zap.String("paj_order_id", order.ID), zap.String("amount", totalHold.String()))
+			// Reverse the full hold since USDC couldn't be sent.
+			if s.ledger != nil {
+				reverseErr := s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
+					"paj_offramp_transfer_failed_"+order.ID, totalHold, map[string]interface{}{
+						"provider": "paj", "type": "offramp_transfer_failure_reversal",
+						"paj_order_id": order.ID, "reason": transferErr.Error(),
 					})
-				if refundErr != nil {
-					s.logger.Error("failed to refund slippage buffer (non-fatal, user overcharged by dust)",
-						zap.Error(refundErr), zap.String("user_id", userID.String()),
-						zap.String("excess", excess.String()), zap.String("paj_order_id", order.ID))
+				if reverseErr != nil {
+					s.logger.Error("CRITICAL: failed to reverse ledger hold after Bridge transfer failure",
+						zap.Error(reverseErr), zap.String("user_id", userID.String()),
+						zap.String("amount", totalHold.String()))
 				}
 			}
+			return nil, fmt.Errorf("failed to send USDC to Paj: %w", transferErr)
+		}
 
-			s.logger.Info("Bridge transfer to Paj initiated",
-				zap.String("paj_order_id", order.ID),
-				zap.String("bridge_transfer_id", transfer.ID),
-				zap.String("amount", actualAmount.String()))
+		// Store the Bridge transfer ID for reconciliation.
+		s.db.ExecContext(ctx, `UPDATE paj_orders SET bridge_transfer_id = $1 WHERE paj_order_id = $2`,
+			transfer.ID, order.ID)
+
+		// Refund slippage buffer: we debited estimatedUSDC (with 2% buffer)
+		// but Paj only needs order.Amount. Return the excess to the user.
+		// Rail fee is NOT refunded — it's our revenue.
+		actualAmount := decimal.NewFromFloat(order.Amount)
+		excess := estimatedUSDC.Sub(actualAmount)
+		if excess.IsPositive() && s.ledger != nil {
+			refundErr := s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
+				"paj_offramp_slippage_refund_"+order.ID, excess, map[string]interface{}{
+					"provider": "paj", "type": "slippage_refund", "paj_order_id": order.ID,
+					"estimated": estimatedUSDC.String(), "actual": actualAmount.String(),
+				})
+			if refundErr != nil {
+				s.logger.Error("failed to refund slippage buffer (non-fatal, user overcharged by dust)",
+					zap.Error(refundErr), zap.String("user_id", userID.String()),
+					zap.String("excess", excess.String()), zap.String("paj_order_id", order.ID))
+			}
+		}
+
+		s.logger.Info("Bridge transfer to Paj initiated",
+			zap.String("paj_order_id", order.ID),
+			zap.String("bridge_transfer_id", transfer.ID),
+			zap.String("amount", actualAmount.String()))
 	}
 
 	return &OfframpResult{
@@ -749,16 +749,16 @@ type OfframpResult struct {
 
 // PajOrder represents a persisted Paj order for transaction history.
 type PajOrder struct {
-	ID                string          `db:"paj_order_id" json:"orderId"`
-	OrderType         string          `db:"order_type" json:"orderType"`
-	Status            string          `db:"status" json:"status"`
-	FiatAmount        float64         `db:"fiat_amount" json:"fiatAmount"`
-	TokenAmount       float64         `db:"token_amount" json:"tokenAmount"`
-	Currency          string          `db:"currency" json:"currency"`
-	Rate              float64         `db:"rate" json:"rate"`
-	Fee               float64         `db:"fee" json:"fee"`
-	BankAccountNumber *string         `db:"bank_account_number" json:"bankAccountNumber,omitempty"`
-	CreatedAt         time.Time       `db:"created_at" json:"createdAt"`
+	ID                string    `db:"paj_order_id" json:"orderId"`
+	OrderType         string    `db:"order_type" json:"orderType"`
+	Status            string    `db:"status" json:"status"`
+	FiatAmount        float64   `db:"fiat_amount" json:"fiatAmount"`
+	TokenAmount       float64   `db:"token_amount" json:"tokenAmount"`
+	Currency          string    `db:"currency" json:"currency"`
+	Rate              float64   `db:"rate" json:"rate"`
+	Fee               float64   `db:"fee" json:"fee"`
+	BankAccountNumber *string   `db:"bank_account_number" json:"bankAccountNumber,omitempty"`
+	CreatedAt         time.Time `db:"created_at" json:"createdAt"`
 }
 
 // GetOrders returns the user's Paj order history for transaction display.
