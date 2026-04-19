@@ -7,6 +7,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -1113,6 +1114,7 @@ type BridgeWebhookServiceImpl struct {
 	notifier              BridgeWebhookNotifier
 	userRepo              UserRepositoryForCustomer
 	logger                *zap.Logger
+	db                    *sql.DB
 }
 
 // BridgeVirtualAccountProcessor processes virtual account events
@@ -1159,6 +1161,7 @@ func NewBridgeWebhookService(
 	notifier BridgeWebhookNotifier,
 	userRepo UserRepositoryForCustomer,
 	logger *zap.Logger,
+	db *sql.DB,
 ) *BridgeWebhookServiceImpl {
 	return &BridgeWebhookServiceImpl{
 		virtualAccountService: virtualAccountService,
@@ -1168,6 +1171,7 @@ func NewBridgeWebhookService(
 		notifier:              notifier,
 		userRepo:              userRepo,
 		logger:                logger,
+		db:                    db,
 	}
 }
 
@@ -1203,6 +1207,19 @@ func (s *BridgeWebhookServiceImpl) ProcessCryptoDeposit(ctx *gin.Context, transf
 
 func (s *BridgeWebhookServiceImpl) ProcessTransferCompleted(ctx *gin.Context, transferID string) error {
 	s.logger.Info("Provider transfer completed", zap.String("transfer_id", transferID))
+
+	// Mark PAJ offramp orders as completed (no session needed)
+	if s.db != nil {
+		result, _ := s.db.ExecContext(ctx, `
+			UPDATE paj_orders SET status = 'completed', updated_at = NOW()
+			WHERE bridge_transfer_id = $1 AND order_type = 'offramp' AND status NOT IN ('completed', 'failed')`,
+			transferID)
+		if rows, _ := result.RowsAffected(); rows > 0 {
+			s.logger.Info("PAJ offramp order marked completed via Bridge webhook",
+				zap.String("transfer_id", transferID))
+		}
+	}
+
 	if s.withdrawalService == nil {
 		s.logger.Warn("Withdrawal service not configured, skipping transfer settlement", zap.String("transfer_id", transferID))
 		return nil

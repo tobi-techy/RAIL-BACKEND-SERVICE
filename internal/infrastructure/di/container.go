@@ -1563,6 +1563,7 @@ func (c *Container) initializeDomainServices() error {
 			&bridgeWebhookNotifierAdapter{svc: c.NotificationService},
 			c.UserRepo,
 			c.ZapLog,
+			c.DB,
 		)
 
 		// Wire notifier into customer status processor so KYC events fire push notifications
@@ -1910,6 +1911,7 @@ func (c *Container) initializeDomainServices() error {
 			&bridgeWebhookNotifierAdapter{svc: c.NotificationService},
 			c.UserRepo,
 			c.ZapLog,
+			c.DB,
 		)
 		c.BridgeWebhookHandler.SetService(bridgeWebhookService)
 	}
@@ -2949,6 +2951,7 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 			&bridgeWebhookNotifierAdapter{svc: c.NotificationService},
 			c.UserRepo,
 			c.ZapLog,
+			c.DB,
 		)
 		c.BridgeWebhookHandler.SetService(bridgeWebhookService)
 	}
