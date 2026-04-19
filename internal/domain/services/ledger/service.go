@@ -19,6 +19,17 @@ type Service struct {
 	ledgerRepo *repositories.LedgerRepository
 	db         *sqlx.DB
 	logger     *logger.Logger
+	stashLock  StashLockChecker
+}
+
+// StashLockChecker enforces the 90-day lock / 7-day window rule.
+type StashLockChecker interface {
+	CanWithdraw(ctx context.Context, userID uuid.UUID) (bool, time.Time, error)
+}
+
+// SetStashLockChecker wires stash lock enforcement into the ledger.
+func (s *Service) SetStashLockChecker(c StashLockChecker) {
+	s.stashLock = c
 }
 
 // NewService creates a new ledger service
@@ -649,6 +660,17 @@ func (s *Service) TransferSpendingToStash(ctx context.Context, userID uuid.UUID,
 func (s *Service) TransferStashToSpending(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
 	if amount.IsZero() || amount.IsNegative() {
 		return fmt.Errorf("invalid transfer amount: %s", amount.String())
+	}
+
+	// Enforce stash lock: transfers from stash only allowed during the 7-day window.
+	if s.stashLock != nil {
+		canWithdraw, _, err := s.stashLock.CanWithdraw(ctx, userID)
+		if err != nil {
+			return fmt.Errorf("stash lock check failed: %w", err)
+		}
+		if !canWithdraw {
+			return fmt.Errorf("stash funds are locked: no active withdrawal window (funds lock for 90 days, then a 7-day window opens)")
+		}
 	}
 
 	spendAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)

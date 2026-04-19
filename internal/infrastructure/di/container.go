@@ -1926,6 +1926,7 @@ func (c *Container) initializeDomainServices() error {
 		stashLockSvc.SetNotifier(c.NotificationService)
 	}
 	c.WithdrawalService.SetStashLockChecker(stashLockSvc)
+	c.LedgerService.SetStashLockChecker(stashLockSvc)
 	c.StashLockService = stashLockSvc
 
 	// Initialize compliance screening (Didit transaction monitoring + AML) — wired below after DiditClient creation
