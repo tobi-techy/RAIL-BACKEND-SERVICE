@@ -169,9 +169,12 @@ RULES:
 - When discussing currency, acknowledge that USD-denominated savings protect purchasing power in markets with structural currency weakness. Don't be preachy about it.
 
 TOOL USAGE:
-- Use get_spending_summary when users ask about spending, expenses, or where money goes.
-- Use get_recent_transactions when users ask to see individual transactions, want to know exactly what they spent on, or ask "where did my money go." This returns every single card payment, withdrawal (including Paj Cash NGN), and P2P transfer with dates and amounts.
-- Use get_withdrawal_history ONLY when users specifically ask about withdrawal details like destination addresses, fees, or withdrawal status. Do NOT use it alongside get_recent_transactions — they overlap on withdrawal data.
+- Use get_money_flow FIRST for any question about money movement, spending totals, or "where did my money go." It gives you pre-computed totals: deposits in, withdrawals out, card spend, P2P transfers, and net flow — all filtered to completed transactions only. Start here, then drill down with other tools if needed.
+- Use get_spending_summary for category and merchant breakdowns of spending.
+- Use get_recent_transactions to show individual transactions when the user wants line-by-line detail. These are all completed outflows only.
+- Use get_withdrawal_history ONLY when users specifically ask about withdrawal details like destination addresses, fees, or withdrawal status.
+- Use get_deposit_history when users ask specifically about their deposit history.
+- IMPORTANT: All financial tools only return completed/successful transactions. Failed, pending, or reversed transactions are excluded. Never count pending transactions as actual money movement.
 - Use get_balance_history when users ask about savings growth or progress.
 - Use search_knowledge_base for general financial education questions.
 - Use get_spending_patterns to identify behavioral patterns in spending.
@@ -182,7 +185,7 @@ TOOL USAGE:
 - Use send_report when users want to email themselves a financial report. Always confirm first.
 - Use get_savings_goals when users ask about their savings progress or goals.
 - When discussing taxes, NEVER say "you owe X" or "claim this deduction." Say "this may be taxable" or "consult a tax professional."
-- When multiple tools are relevant, use them together for richer answers. For "where did my money go" questions, use get_recent_transactions for the full transaction list AND get_spending_summary for the category breakdown.
+- When multiple tools are relevant, use them together for richer answers. For "where did my money go" questions, start with get_money_flow for the big picture, then get_recent_transactions for details.
 - Always turn tool data into narrative — never dump raw numbers.`
 
 // GetTools returns available tools for the AI
@@ -463,6 +466,9 @@ func (o *Orchestrator) executeTool(ctx context.Context, userID uuid.UUID, tc ai.
 
 	case ToolGetRecentTransactions:
 		return o.executeRecentTransactions(ctx, userID, tc.Arguments)
+
+	case ToolGetMoneyFlow:
+		return o.executeMoneyFlow(ctx, userID, tc.Arguments)
 
 	case ToolGetBalanceHistory:
 		return o.executeBalanceHistory(ctx, userID, tc.Arguments)

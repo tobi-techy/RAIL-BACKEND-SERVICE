@@ -30,3 +30,15 @@ type SpendingTransaction struct {
 	Category string          `db:"category" json:"category"`
 	Source   string          `db:"source" json:"source"`
 }
+
+// MoneyFlowSummary holds pre-computed money-in and money-out totals for a period.
+type MoneyFlowSummary struct {
+	TotalDeposits    decimal.Decimal `json:"total_deposits"`
+	DepositCount     int             `json:"deposit_count"`
+	TotalWithdrawals decimal.Decimal `json:"total_withdrawals"`
+	WithdrawalCount  int             `json:"withdrawal_count"`
+	TotalCardSpend   decimal.Decimal `json:"total_card_spend"`
+	CardSpendCount   int             `json:"card_spend_count"`
+	TotalP2P         decimal.Decimal `json:"total_p2p"`
+	P2PCount         int             `json:"p2p_count"`
+}

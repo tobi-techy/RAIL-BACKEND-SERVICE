@@ -95,3 +95,14 @@ func (r *CardRepository) GetRecentOutflows(ctx context.Context, userID uuid.UUID
 	}
 	return results, nil
 }
+
+// GetMoneyFlow returns card-only money flow (no withdrawals/P2P). Stub for interface parity.
+func (r *CardRepository) GetMoneyFlow(ctx context.Context, userID uuid.UUID, start, end time.Time) (*entities.MoneyFlowSummary, error) {
+	s := &entities.MoneyFlowSummary{}
+	err := r.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(amount), 0), COUNT(*)
+		FROM card_transactions
+		WHERE user_id = $1 AND status = 'completed' AND created_at >= $2 AND created_at < $3`,
+		userID, start, end).Scan(&s.TotalCardSpend, &s.CardSpendCount)
+	return s, err
+}

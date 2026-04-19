@@ -149,21 +149,30 @@ func (o *Orchestrator) executeDepositHistory(ctx context.Context, userID uuid.UU
 	if l, ok := args["limit"].(float64); ok && l > 0 && l <= 10 {
 		limit = int(l)
 	}
-	deposits, err := o.depositHistory.GetByUserID(ctx, userID, limit, 0)
+	// Fetch more than needed so we can filter to completed only
+	deposits, err := o.depositHistory.GetByUserID(ctx, userID, limit*3, 0)
 	if err != nil {
 		return nil, fmt.Errorf("deposit history: %w", err)
 	}
-	items := make([]map[string]interface{}, len(deposits))
-	for i, d := range deposits {
-		items[i] = map[string]interface{}{
-			"amount": d.Amount.String(),
-			"token":  string(d.Token),
-			"chain":  string(d.Chain),
-			"status": d.Status,
-			"date":   d.CreatedAt.Format("Jan 2, 2006"),
+	items := make([]map[string]interface{}, 0, limit)
+	for _, d := range deposits {
+		if len(items) >= limit {
+			break
 		}
+		// Only show confirmed/completed deposits
+		if d.Status != "confirmed" && d.Status != "off_ramp_completed" && d.Status != "broker_funded" {
+			continue
+		}
+		items = append(items, map[string]interface{}{
+			"direction": "money_in",
+			"amount":    d.Amount.String(),
+			"token":     string(d.Token),
+			"chain":     string(d.Chain),
+			"status":    "completed",
+			"date":      d.CreatedAt.Format("Jan 2, 2006"),
+		})
 	}
-	return map[string]interface{}{"deposits": items, "count": len(items)}, nil
+	return map[string]interface{}{"deposits": items, "count": len(items), "note": "Only showing completed deposits"}, nil
 }
 
 func (o *Orchestrator) executeYieldEarned(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
@@ -209,18 +218,27 @@ func (o *Orchestrator) executeWithdrawalHistory(ctx context.Context, userID uuid
 	if l, ok := args["limit"].(float64); ok && l > 0 && l <= 10 {
 		limit = int(l)
 	}
-	withdrawals, err := o.withdrawalHistory.GetByUserID(ctx, userID, limit, 0)
+	// Fetch more than needed so we can filter to completed only
+	withdrawals, err := o.withdrawalHistory.GetByUserID(ctx, userID, limit*3, 0)
 	if err != nil {
 		return nil, fmt.Errorf("withdrawal history: %w", err)
 	}
-	items := make([]map[string]interface{}, len(withdrawals))
-	for i, w := range withdrawals {
+	items := make([]map[string]interface{}, 0, limit)
+	for _, w := range withdrawals {
+		if len(items) >= limit {
+			break
+		}
+		// Only show completed withdrawals
+		if w.Status != entities.WithdrawalStatusCompleted {
+			continue
+		}
 		item := map[string]interface{}{
+			"direction":      "money_out",
 			"amount":         w.Amount.String(),
 			"currency":       string(w.Currency),
 			"type":           string(w.WithdrawalType),
 			"source_account": string(w.SourceAccount),
-			"status":         string(w.Status),
+			"status":         "completed",
 			"date":           w.CreatedAt.Format("Jan 2, 2006"),
 		}
 		if w.DestinationAddress != nil {
@@ -229,7 +247,7 @@ func (o *Orchestrator) executeWithdrawalHistory(ctx context.Context, userID uuid
 		if w.FeeAmount.IsPositive() {
 			item["fee"] = w.FeeAmount.String()
 		}
-		items[i] = item
+		items = append(items, item)
 	}
-	return map[string]interface{}{"withdrawals": items, "count": len(items)}, nil
+	return map[string]interface{}{"withdrawals": items, "count": len(items), "note": "Only showing completed withdrawals"}, nil
 }

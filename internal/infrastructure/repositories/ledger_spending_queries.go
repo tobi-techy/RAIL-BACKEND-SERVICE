@@ -113,3 +113,59 @@ func (r *LedgerSpendingRepository) GetRecentOutflows(ctx context.Context, userID
 	}
 	return results, nil
 }
+
+func (r *LedgerSpendingRepository) GetMoneyFlow(ctx context.Context, userID uuid.UUID, start, end time.Time) (*entities.MoneyFlowSummary, error) {
+	s := &entities.MoneyFlowSummary{}
+
+	// Deposits (money in) — credit entries increase user balance via debit in this ledger
+	err := r.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(e.amount), 0), COUNT(*)
+		FROM ledger_entries e
+		JOIN ledger_transactions t ON t.id = e.transaction_id
+		JOIN ledger_accounts a ON a.id = e.account_id
+		WHERE a.user_id = $1 AND e.entry_type = 'debit'
+		  AND t.transaction_type = 'deposit' AND t.status = 'completed'
+		  AND e.created_at >= $2 AND e.created_at < $3`,
+		userID, start, end).Scan(&s.TotalDeposits, &s.DepositCount)
+	if err != nil {
+		return nil, err
+	}
+
+	// Withdrawals (money out via ledger)
+	err = r.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(e.amount), 0), COUNT(*)
+		FROM ledger_entries e
+		JOIN ledger_transactions t ON t.id = e.transaction_id
+		JOIN ledger_accounts a ON a.id = e.account_id
+		WHERE a.user_id = $1 AND e.entry_type = 'credit'
+		  AND t.transaction_type = 'withdrawal' AND t.status = 'completed'
+		  AND e.created_at >= $2 AND e.created_at < $3`,
+		userID, start, end).Scan(&s.TotalWithdrawals, &s.WithdrawalCount)
+	if err != nil {
+		return nil, err
+	}
+
+	// Card spend
+	err = r.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(amount), 0), COUNT(*)
+		FROM card_transactions
+		WHERE user_id = $1 AND status = 'completed'
+		  AND created_at >= $2 AND created_at < $3`,
+		userID, start, end).Scan(&s.TotalCardSpend, &s.CardSpendCount)
+	if err != nil {
+		return nil, err
+	}
+
+	// P2P sent
+	err = r.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(amount), 0), COUNT(*)
+		FROM p2p_transfers
+		WHERE sender_id = $1 AND status = 'completed'
+		  AND created_at >= $2 AND created_at < $3`,
+		userID, start, end).Scan(&s.TotalP2P, &s.P2PCount)
+	if err != nil {
+		return nil, err
+	}
+
+	return s, nil
+}

@@ -13,15 +13,17 @@ import (
 
 // Tool names for spending analysis.
 const (
-	ToolGetSpendingSummary      = "get_spending_summary"
-	ToolGetSpendingChart        = "get_spending_chart"
-	ToolGetRecentTransactions   = "get_recent_transactions"
+	ToolGetSpendingSummary    = "get_spending_summary"
+	ToolGetSpendingChart      = "get_spending_chart"
+	ToolGetRecentTransactions = "get_recent_transactions"
+	ToolGetMoneyFlow          = "get_money_flow"
 )
 
 // SpendingAnalyzer is the subset of spending.Service the orchestrator needs.
 type SpendingAnalyzer interface {
 	GetSummary(ctx context.Context, userID uuid.UUID, start, end time.Time) (*spending.Summary, error)
 	GetTransactions(ctx context.Context, userID uuid.UUID, start, end time.Time, limit int) ([]entities.SpendingTransaction, error)
+	GetMoneyFlow(ctx context.Context, userID uuid.UUID, start, end time.Time) (*entities.MoneyFlowSummary, error)
 }
 
 // SetSpending sets the spending analysis provider.
@@ -75,6 +77,20 @@ func SpendingTools() []infraai.Tool {
 						"type":        "integer",
 						"description": "Number of transactions to return (max 20)",
 						"default":     15,
+					},
+				},
+			},
+		},
+		{
+			Name:        ToolGetMoneyFlow,
+			Description: "Get a complete money flow summary: total money in (deposits) vs total money out (withdrawals, card spend, P2P transfers). Only counts completed/successful transactions. Use this FIRST when user asks 'where did my money go', 'how much did I spend', or any question about their overall financial picture.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"period": map[string]interface{}{
+						"type":        "string",
+						"enum":        []string{"this_month", "last_month", "last_7_days", "last_30_days"},
+						"description": "Time period for the summary",
 					},
 				},
 			},
@@ -182,12 +198,49 @@ func (o *Orchestrator) executeRecentTransactions(ctx context.Context, userID uui
 	items := make([]map[string]interface{}, len(txns))
 	for i, t := range txns {
 		items[i] = map[string]interface{}{
-			"date":     t.Date,
-			"amount":   t.Amount.String(),
-			"category": t.Category,
-			"source":   t.Source,
+			"direction": "money_out",
+			"date":      t.Date,
+			"amount":    t.Amount.String(),
+			"category":  t.Category,
+			"source":    t.Source,
 		}
 	}
 
-	return map[string]interface{}{"transactions": items, "count": len(items)}, nil
+	return map[string]interface{}{"transactions": items, "count": len(items), "note": "All transactions are completed outflows (money leaving your account)"}, nil
+}
+
+// executeMoneyFlow handles the get_money_flow tool call.
+func (o *Orchestrator) executeMoneyFlow(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+	if o.spending == nil {
+		return map[string]interface{}{"error": "spending analysis not available"}, nil
+	}
+
+	period, _ := args["period"].(string)
+	start, end := parsePeriod(period)
+
+	flow, err := o.spending.GetMoneyFlow(ctx, userID, start, end)
+	if err != nil {
+		return nil, fmt.Errorf("money flow: %w", err)
+	}
+
+	totalOut := flow.TotalWithdrawals.Add(flow.TotalCardSpend).Add(flow.TotalP2P)
+	net := flow.TotalDeposits.Sub(totalOut)
+
+	return map[string]interface{}{
+		"money_in": map[string]interface{}{
+			"total_deposits": flow.TotalDeposits.StringFixed(2),
+			"deposit_count":  flow.DepositCount,
+		},
+		"money_out": map[string]interface{}{
+			"total":            totalOut.StringFixed(2),
+			"withdrawals":      flow.TotalWithdrawals.StringFixed(2),
+			"withdrawal_count": flow.WithdrawalCount,
+			"card_spend":       flow.TotalCardSpend.StringFixed(2),
+			"card_count":       flow.CardSpendCount,
+			"p2p_transfers":    flow.TotalP2P.StringFixed(2),
+			"p2p_count":        flow.P2PCount,
+		},
+		"net_flow": net.StringFixed(2),
+		"note":     "All amounts are completed/successful transactions only. Net flow = deposits minus all outflows.",
+	}, nil
 }
