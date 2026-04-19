@@ -317,6 +317,12 @@ func Authentication(cfg *config.Config, log *logger.Logger, sessionService Sessi
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
+			// Fallback: check query param (needed for WebSocket connections)
+			if qToken := c.Query("token"); qToken != "" {
+				authHeader = "Bearer " + qToken
+			}
+		}
+		if authHeader == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error":      "Authorization header required",
 				"request_id": c.GetString("request_id"),

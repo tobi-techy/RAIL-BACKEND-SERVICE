@@ -123,6 +123,7 @@ var (
 	NewAIChatHandlers            = investing.NewAIChatHandlers
 	NewAICfoHandler              = investing.NewAICfoHandler
 	NewVoiceHandler              = investing.NewVoiceHandler
+	NewImageAnalysisHandler      = investing.NewImageAnalysisHandler
 	NewConversationHandlers      = investing.NewConversationHandlers
 	NewUsageHandlers             = investing.NewUsageHandlers
 	NewKnowledgeHandlers         = investing.NewKnowledgeHandlers

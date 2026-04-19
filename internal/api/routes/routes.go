@@ -895,6 +895,16 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					aiGroup.GET("/quick-insight", middleware.AuthRateLimit(20), aiChatHandlers.QuickInsight)
 					aiGroup.GET("/suggestions", aiChatHandlers.GetSuggestedQuestions)
 
+					// Image analysis (receipt scanning)
+					if container.Config.AI.OpenAI.APIKey != "" {
+						imageHandler := handlers.NewImageAnalysisHandler(
+							container.Config.AI.OpenAI.APIKey,
+							container.GetAIOrchestrator(),
+							container.ZapLog,
+						)
+						aiGroup.POST("/chat/image", middleware.AuthRateLimit(10), imageHandler.AnalyzeImage)
+					}
+
 					// Voice session (WebSocket)
 					if container.Config.AI.OpenAI.APIKey != "" {
 						voiceHandler := handlers.NewVoiceHandler(
