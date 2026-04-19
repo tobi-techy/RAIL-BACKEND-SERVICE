@@ -93,6 +93,7 @@ func (o *Orchestrator) executeComparativeContext(ctx context.Context, userID uui
 		"streak_days":       streakDays,
 		"monthly_spend":     monthlySpend.String(),
 		"days_into_month":   now.Day(),
-		"context_narrative": fmt.Sprintf("Stash: $%s (%s level). Savings rate: %s%%. Streak: %d days. Monthly spend so far: $%s.", stash.StringFixed(2), stashLevel, savingsRate.StringFixed(1), streakDays, monthlySpend.StringFixed(2)),
+		"note":              "spend_balance = available to spend (70% side). stash_balance = savings earning yield (30% side). total_balance = spend + stash. monthly_spend = completed outflows this month only.",
+		"context_narrative": fmt.Sprintf("Spend: $%s available. Stash: $%s (%s level). Total: $%s. Savings rate: %s%%. Streak: %d days. Monthly spend so far: $%s (%d days in).", spend.StringFixed(2), stash.StringFixed(2), stashLevel, total.StringFixed(2), savingsRate.StringFixed(1), streakDays, monthlySpend.StringFixed(2), now.Day()),
 	}, nil
 }

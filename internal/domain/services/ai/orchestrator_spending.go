@@ -146,6 +146,7 @@ func (o *Orchestrator) executeSpendingSummary(ctx context.Context, userID uuid.U
 		"period_days":       summary.PeriodDays,
 		"categories":        cats,
 		"top_merchants":     merchants,
+		"note":              "All amounts are completed transactions only (money out: card payments, withdrawals, P2P transfers)",
 	}, nil
 }
 
