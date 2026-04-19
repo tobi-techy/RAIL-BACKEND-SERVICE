@@ -32,7 +32,7 @@ const (
 	FiatWithdrawalFeeUSD        = 1.00 // $1.00 flat fee for USD withdrawals
 	FiatWithdrawalFeeEUR        = 1.00 // €1.00 flat fee for EUR withdrawals
 	FiatWithdrawalFeeGBP        = 1.00 // £1.00 flat fee for GBP withdrawals
-	FiatWithdrawalFeeNGN        = 0.06 // ~₦100 flat fee for NGN withdrawals
+	FiatWithdrawalFeeNGN        = 0.02 // ~₦30 flat fee for NGN withdrawals
 	FiatWithdrawalFeePercentUSD = 0.0  // No percentage fee — flat only
 	FiatWithdrawalFeePercentEUR = 0.0
 	MinWithdrawalAmount         = 1.00 // Minimum $1 withdrawal
