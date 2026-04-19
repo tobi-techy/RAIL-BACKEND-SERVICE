@@ -485,7 +485,7 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 
 		transfer, transferErr := s.bridgeTransfer.TransferFunds(ctx, &bridgepkg.CreateTransferRequest{
 			OnBehalfOf:   bridgeCustID,
-			Amount:       decimal.NewFromFloat(order.Amount).StringFixed(2),
+			Amount:       fmt.Sprintf("%.5f", order.Amount),
 			Source: bridgepkg.TransferSource{
 				PaymentRail:    bridgepkg.PaymentRail("bridge_wallet"),
 				Currency:       bridgepkg.CurrencyUSDC,
