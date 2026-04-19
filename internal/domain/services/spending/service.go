@@ -15,6 +15,7 @@ type Repository interface {
 	GetSpendingByMerchant(ctx context.Context, userID uuid.UUID, start, end time.Time, limit int) ([]entities.SpendingByMerchant, error)
 	GetSpendingByDay(ctx context.Context, userID uuid.UUID, start, end time.Time) ([]entities.SpendingByPeriod, error)
 	GetSpendingTotal(ctx context.Context, userID uuid.UUID, start, end time.Time) (decimal.Decimal, int, error)
+	GetRecentOutflows(ctx context.Context, userID uuid.UUID, start, end time.Time, limit int) ([]entities.SpendingTransaction, error)
 }
 
 // Summary is the full spending analysis for a period.
@@ -75,6 +76,11 @@ func (s *Service) GetSummary(ctx context.Context, userID uuid.UUID, start, end t
 		PeriodDays: days,
 		DailyAvg:   avg,
 	}, nil
+}
+
+// GetTransactions returns individual outflow transactions for the given period.
+func (s *Service) GetTransactions(ctx context.Context, userID uuid.UUID, start, end time.Time, limit int) ([]entities.SpendingTransaction, error) {
+	return s.repo.GetRecentOutflows(ctx, userID, start, end, limit)
 }
 
 // MonthStart returns the first day of the current month.

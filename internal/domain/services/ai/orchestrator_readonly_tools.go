@@ -13,9 +13,10 @@ import (
 
 // Tool names for read-only data tools.
 const (
-	ToolGetCardTransactions = "get_card_transactions"
-	ToolGetDepositHistory   = "get_deposit_history"
-	ToolGetYieldEarned      = "get_yield_earned"
+	ToolGetCardTransactions  = "get_card_transactions"
+	ToolGetDepositHistory    = "get_deposit_history"
+	ToolGetYieldEarned       = "get_yield_earned"
+	ToolGetWithdrawalHistory = "get_withdrawal_history"
 )
 
 // CardTransactionProvider returns recent card transactions.
@@ -33,6 +34,11 @@ type YieldProvider interface {
 	GetSnapshotsInWindow(ctx context.Context, userID uuid.UUID, from, to time.Time) ([]*entities.YieldBalanceSnapshot, error)
 }
 
+// WithdrawalHistoryProvider returns recent withdrawals.
+type WithdrawalHistoryProvider interface {
+	GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error)
+}
+
 // SetCardTransactions sets the card transaction provider.
 func (o *Orchestrator) SetCardTransactions(p CardTransactionProvider) {
 	o.cardTransactions = p
@@ -48,13 +54,18 @@ func (o *Orchestrator) SetYieldProvider(p YieldProvider) {
 	o.yieldProvider = p
 }
 
+// SetWithdrawalHistory sets the withdrawal history provider.
+func (o *Orchestrator) SetWithdrawalHistory(p WithdrawalHistoryProvider) {
+	o.withdrawalHistory = p
+}
+
 // ReadOnlyTools returns tool definitions for read-only data access.
-func ReadOnlyTools(hasCards, hasDeposits, hasYield bool) []infraai.Tool {
+func ReadOnlyTools(hasCards, hasDeposits, hasYield, hasWithdrawals bool) []infraai.Tool {
 	var tools []infraai.Tool
 	if hasCards {
 		tools = append(tools, infraai.Tool{
 			Name:        ToolGetCardTransactions,
-			Description: "Get recent card transactions. Use when user asks about card spending, recent purchases, or what they bought.",
+			Description: "Get recent card transactions with merchant details and status. Use when user asks specifically about card purchases or needs merchant-level detail. For a full view of all spending (cards + withdrawals + P2P), use get_recent_transactions instead.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -83,6 +94,18 @@ func ReadOnlyTools(hasCards, hasDeposits, hasYield bool) []infraai.Tool {
 				"type": "object",
 				"properties": map[string]interface{}{
 					"period": map[string]interface{}{"type": "string", "enum": []string{"last_7_days", "last_30_days", "last_90_days"}},
+				},
+			},
+		})
+	}
+	if hasWithdrawals {
+		tools = append(tools, infraai.Tool{
+			Name:        ToolGetWithdrawalHistory,
+			Description: "Get recent withdrawal history including Paj Cash NGN withdrawals, crypto withdrawals, and fiat offramps. Use when user asks where their money went, about withdrawals, cash outs, NGN conversions, or money leaving their account.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"limit": map[string]interface{}{"type": "integer", "description": "Number of withdrawals (max 10)", "default": 5},
 				},
 			},
 		})
@@ -176,4 +199,37 @@ func (o *Orchestrator) executeYieldEarned(ctx context.Context, userID uuid.UUID,
 		"current_balance": last.StringFixed(2),
 		"period_days":     int(now.Sub(from).Hours() / 24),
 	}, nil
+}
+
+func (o *Orchestrator) executeWithdrawalHistory(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+	if o.withdrawalHistory == nil {
+		return map[string]interface{}{"error": "withdrawal history not available"}, nil
+	}
+	limit := 5
+	if l, ok := args["limit"].(float64); ok && l > 0 && l <= 10 {
+		limit = int(l)
+	}
+	withdrawals, err := o.withdrawalHistory.GetByUserID(ctx, userID, limit, 0)
+	if err != nil {
+		return nil, fmt.Errorf("withdrawal history: %w", err)
+	}
+	items := make([]map[string]interface{}, len(withdrawals))
+	for i, w := range withdrawals {
+		item := map[string]interface{}{
+			"amount":         w.Amount.String(),
+			"currency":       string(w.Currency),
+			"type":           string(w.WithdrawalType),
+			"source_account": string(w.SourceAccount),
+			"status":         string(w.Status),
+			"date":           w.CreatedAt.Format("Jan 2, 2006"),
+		}
+		if w.DestinationAddress != nil {
+			item["destination"] = *w.DestinationAddress
+		}
+		if w.FeeAmount.IsPositive() {
+			item["fee"] = w.FeeAmount.String()
+		}
+		items[i] = item
+	}
+	return map[string]interface{}{"withdrawals": items, "count": len(items)}, nil
 }

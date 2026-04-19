@@ -106,6 +106,7 @@ type Orchestrator struct {
 	cardTransactions  CardTransactionProvider
 	depositHistory    DepositHistoryProvider
 	yieldProvider     YieldProvider
+	withdrawalHistory WithdrawalHistoryProvider
 	userProfile       UserProfileProvider
 	reportEmail       ReportEmailSender
 	pending           PendingActionStore
@@ -169,6 +170,8 @@ RULES:
 
 TOOL USAGE:
 - Use get_spending_summary when users ask about spending, expenses, or where money goes.
+- Use get_recent_transactions when users ask to see individual transactions, want to know exactly what they spent on, or ask "where did my money go." This returns every single card payment, withdrawal (including Paj Cash NGN), and P2P transfer with dates and amounts.
+- Use get_withdrawal_history ONLY when users specifically ask about withdrawal details like destination addresses, fees, or withdrawal status. Do NOT use it alongside get_recent_transactions — they overlap on withdrawal data.
 - Use get_balance_history when users ask about savings growth or progress.
 - Use search_knowledge_base for general financial education questions.
 - Use get_spending_patterns to identify behavioral patterns in spending.
@@ -179,7 +182,7 @@ TOOL USAGE:
 - Use send_report when users want to email themselves a financial report. Always confirm first.
 - Use get_savings_goals when users ask about their savings progress or goals.
 - When discussing taxes, NEVER say "you owe X" or "claim this deduction." Say "this may be taxable" or "consult a tax professional."
-- When multiple tools are relevant, use them together for richer answers.
+- When multiple tools are relevant, use them together for richer answers. For "where did my money go" questions, use get_recent_transactions for the full transaction list AND get_spending_summary for the category breakdown.
 - Always turn tool data into narrative — never dump raw numbers.`
 
 // GetTools returns available tools for the AI
@@ -254,7 +257,7 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 		tools = append(tools, ActionTools()...)
 	}
 	// Read-only data tools
-	tools = append(tools, ReadOnlyTools(o.cardTransactions != nil, o.depositHistory != nil, o.yieldProvider != nil)...)
+	tools = append(tools, ReadOnlyTools(o.cardTransactions != nil, o.depositHistory != nil, o.yieldProvider != nil, o.withdrawalHistory != nil)...)
 	// Tax, email, and goals tools
 	tools = append(tools, TaxAndReportTools(o.userProfile != nil, o.reportEmail != nil)...)
 	return tools
@@ -458,6 +461,9 @@ func (o *Orchestrator) executeTool(ctx context.Context, userID uuid.UUID, tc ai.
 	case ToolGetSpendingChart:
 		return o.executeSpendingChart(ctx, userID, tc.Arguments)
 
+	case ToolGetRecentTransactions:
+		return o.executeRecentTransactions(ctx, userID, tc.Arguments)
+
 	case ToolGetBalanceHistory:
 		return o.executeBalanceHistory(ctx, userID, tc.Arguments)
 
@@ -478,6 +484,9 @@ func (o *Orchestrator) executeTool(ctx context.Context, userID uuid.UUID, tc ai.
 
 	case ToolGetYieldEarned:
 		return o.executeYieldEarned(ctx, userID, tc.Arguments)
+
+	case ToolGetWithdrawalHistory:
+		return o.executeWithdrawalHistory(ctx, userID, tc.Arguments)
 
 	case ToolGetTaxSummary:
 		return o.executeTaxSummary(ctx, userID, tc.Arguments)

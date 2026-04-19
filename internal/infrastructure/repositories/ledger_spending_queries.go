@@ -22,7 +22,11 @@ func NewLedgerSpendingRepository(db *sqlx.DB) *LedgerSpendingRepository {
 // allOutflows is a CTE that unions all spending sources into a single view.
 const allOutflows = `WITH outflows AS (
 	-- Ledger withdrawals
-	SELECT t.created_at, e.amount, 'Withdrawal' AS category, COALESCE(t.description, 'Crypto/Fiat Withdrawal') AS source
+	SELECT t.created_at, e.amount,
+		CASE WHEN t.metadata->>'provider' = 'paj' THEN 'NGN Withdrawal'
+		     ELSE 'Withdrawal' END AS category,
+		CASE WHEN t.metadata->>'provider' = 'paj' THEN 'Paj Cash (₦' || COALESCE(t.metadata->>'fiat_amount', '?') || ')'
+		     ELSE COALESCE(t.description, 'Crypto/Fiat Withdrawal') END AS source
 	FROM ledger_entries e
 	JOIN ledger_transactions t ON t.id = e.transaction_id
 	JOIN ledger_accounts a ON a.id = e.account_id
@@ -93,4 +97,19 @@ func (r *LedgerSpendingRepository) GetSpendingTotal(ctx context.Context, userID 
 		SELECT COALESCE(SUM(amount), 0), COUNT(*) FROM outflows`,
 		userID, start, end).Scan(&total, &count)
 	return total, count, err
+}
+
+func (r *LedgerSpendingRepository) GetRecentOutflows(ctx context.Context, userID uuid.UUID, start, end time.Time, limit int) ([]entities.SpendingTransaction, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	query := allOutflows + `
+		SELECT TO_CHAR(created_at, 'YYYY-MM-DD') AS date, amount, category, source
+		FROM outflows ORDER BY created_at DESC LIMIT $4`
+
+	var results []entities.SpendingTransaction
+	if err := r.db.SelectContext(ctx, &results, query, userID, start, end, limit); err != nil {
+		return nil, err
+	}
+	return results, nil
 }

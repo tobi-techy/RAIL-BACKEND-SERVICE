@@ -6,19 +6,22 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/spending"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 )
 
 // Tool names for spending analysis.
 const (
-	ToolGetSpendingSummary = "get_spending_summary"
-	ToolGetSpendingChart   = "get_spending_chart"
+	ToolGetSpendingSummary      = "get_spending_summary"
+	ToolGetSpendingChart        = "get_spending_chart"
+	ToolGetRecentTransactions   = "get_recent_transactions"
 )
 
 // SpendingAnalyzer is the subset of spending.Service the orchestrator needs.
 type SpendingAnalyzer interface {
 	GetSummary(ctx context.Context, userID uuid.UUID, start, end time.Time) (*spending.Summary, error)
+	GetTransactions(ctx context.Context, userID uuid.UUID, start, end time.Time, limit int) ([]entities.SpendingTransaction, error)
 }
 
 // SetSpending sets the spending analysis provider.
@@ -53,6 +56,25 @@ func SpendingTools() []infraai.Tool {
 						"type":        "string",
 						"enum":        []string{"this_month", "last_month", "last_7_days", "last_30_days"},
 						"description": "Time period for chart data",
+					},
+				},
+			},
+		},
+		{
+			Name:        ToolGetRecentTransactions,
+			Description: "Get individual spending transactions: every card payment, withdrawal (including Paj Cash NGN), and P2P transfer. Use when user asks to see their transactions, wants to know exactly where money went, or asks about specific purchases.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"period": map[string]interface{}{
+						"type":        "string",
+						"enum":        []string{"this_month", "last_month", "last_7_days", "last_30_days"},
+						"description": "Time period for transactions",
+					},
+					"limit": map[string]interface{}{
+						"type":        "integer",
+						"description": "Number of transactions to return (max 20)",
+						"default":     15,
 					},
 				},
 			},
@@ -136,4 +158,36 @@ func (o *Orchestrator) executeSpendingChart(ctx context.Context, userID uuid.UUI
 		"daily_average": summary.DailyAvg.StringFixed(2),
 		"period_days":   summary.PeriodDays,
 	}, nil
+}
+
+// executeRecentTransactions handles the get_recent_transactions tool call.
+func (o *Orchestrator) executeRecentTransactions(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+	if o.spending == nil {
+		return map[string]interface{}{"error": "spending analysis not available"}, nil
+	}
+
+	period, _ := args["period"].(string)
+	start, end := parsePeriod(period)
+
+	limit := 15
+	if l, ok := args["limit"].(float64); ok && l > 0 && l <= 20 {
+		limit = int(l)
+	}
+
+	txns, err := o.spending.GetTransactions(ctx, userID, start, end, limit)
+	if err != nil {
+		return nil, fmt.Errorf("recent transactions: %w", err)
+	}
+
+	items := make([]map[string]interface{}, len(txns))
+	for i, t := range txns {
+		items[i] = map[string]interface{}{
+			"date":     t.Date,
+			"amount":   t.Amount.String(),
+			"category": t.Category,
+			"source":   t.Source,
+		}
+	}
+
+	return map[string]interface{}{"transactions": items, "count": len(items)}, nil
 }
