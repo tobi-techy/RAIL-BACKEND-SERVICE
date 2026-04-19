@@ -905,6 +905,20 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						aiGroup.POST("/chat/image", middleware.AuthRateLimit(10), imageHandler.AnalyzeImage)
 					}
 
+					// Premium AI endpoints (pro-gated)
+					if container.SubscriptionService != nil {
+						premiumHandlers := handlers.NewPremiumAIHandlers(
+							container.GetAIOrchestrator(),
+							container.SubscriptionService,
+							container.ZapLog,
+						)
+						aiGroup.GET("/report/weekly", middleware.AuthRateLimit(5), premiumHandlers.WeeklyReport)
+						aiGroup.POST("/simulate", middleware.AuthRateLimit(10), premiumHandlers.Simulate)
+						aiGroup.GET("/tax-summary", middleware.AuthRateLimit(5), premiumHandlers.TaxSummary)
+						aiGroup.POST("/challenge/generate", middleware.AuthRateLimit(10), premiumHandlers.GenerateChallenge)
+						aiGroup.GET("/goals/progress", middleware.AuthRateLimit(10), premiumHandlers.GoalProgress)
+					}
+
 					// Voice session (WebSocket)
 					if container.Config.AI.OpenAI.APIKey != "" {
 						voiceHandler := handlers.NewVoiceHandler(

@@ -32,22 +32,30 @@ type BalanceProvider interface {
 	GetAccountBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (decimal.Decimal, error)
 }
 
+// SubscriptionChecker checks if a user has Pro.
+type SubscriptionChecker interface {
+	IsProUser(ctx context.Context, userID uuid.UUID) (bool, error)
+}
+
 // Worker runs periodic proactive insight checks and sends push notifications.
 type Worker struct {
 	userRepo     UserRepo
 	pushSender   PushSender
 	spendingRepo SpendingRepo
 	balances     BalanceProvider
+	subChecker   SubscriptionChecker
 	logger       *zap.Logger
 	lastDigestDay int // day of year when last digest ran
 }
 
-func NewWorker(userRepo UserRepo, pushSender PushSender, spendingRepo SpendingRepo, balances BalanceProvider, logger *zap.Logger) *Worker {
+func NewWorker(userRepo UserRepo, pushSender PushSender, spendingRepo SpendingRepo, balances BalanceProvider, subChecker SubscriptionChecker, logger *zap.Logger) *Worker {
 	return &Worker{
 		userRepo:     userRepo,
 		pushSender:   pushSender,
 		spendingRepo: spendingRepo,
 		balances:     balances,
+		subChecker:   subChecker,
+		logger:       logger,
 		logger:       logger,
 	}
 }
@@ -106,6 +114,7 @@ func (w *Worker) runDailyInsights(ctx context.Context) {
 		userCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		w.checkSpendingAlert(userCtx, u.ID)
 		w.checkSavingsGrowth(userCtx, u.ID)
+		w.checkIdleMoney(userCtx, u.ID)
 		cancel()
 	}
 }
@@ -182,6 +191,15 @@ func (w *Worker) runWeeklyDigest(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+
+		// Weekly report is Pro-only
+		if w.subChecker != nil {
+			isPro, _ := w.subChecker.IsProUser(ctx, u.ID)
+			if !isPro {
+				continue
+			}
+		}
+
 		spent, txCount, err := w.spendingRepo.GetSpendingTotal(ctx, u.ID, weekStart, now)
 		if err != nil {
 			continue
@@ -322,4 +340,26 @@ func (w *Worker) runMonthRecap(ctx context.Context) {
 	}
 
 	w.logger.Info("Month recap complete")
+}
+
+// checkIdleMoney alerts when spend balance is high with no recent activity.
+func (w *Worker) checkIdleMoney(ctx context.Context, userID uuid.UUID) {
+	spend, err := w.balances.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil || spend.LessThan(decimal.NewFromInt(50)) {
+		return
+	}
+
+	now := time.Now().UTC()
+	weekAgo := now.AddDate(0, 0, -7)
+	spent, txCount, _ := w.spendingRepo.GetSpendingTotal(ctx, userID, weekAgo, now)
+
+	// If balance > $50 and fewer than 2 transactions in a week, suggest moving to stash
+	if txCount < 2 && spent.LessThan(decimal.NewFromInt(20)) {
+		suggestAmt := spend.Mul(decimal.NewFromFloat(0.3)).StringFixed(2)
+		_ = w.pushSender.SendToUser(ctx, userID,
+			"Money sitting idle 💤",
+			"$"+spend.StringFixed(2)+" in your spend wallet with barely any activity. Want to move $"+suggestAmt+" to stash where it earns yield?",
+			map[string]interface{}{"type": "idle_money", "action": "open_chat", "suggest_amount": suggestAmt},
+		)
+	}
 }
