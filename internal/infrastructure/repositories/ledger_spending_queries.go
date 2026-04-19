@@ -30,7 +30,7 @@ const allOutflows = `WITH outflows AS (
 	FROM ledger_entries e
 	JOIN ledger_transactions t ON t.id = e.transaction_id
 	JOIN ledger_accounts a ON a.id = e.account_id
-	WHERE a.user_id = $1 AND e.entry_type = 'debit'
+	WHERE a.user_id = $1 AND e.entry_type = 'credit'
 	  AND t.transaction_type = 'withdrawal' AND t.status = 'completed'
 	  AND e.created_at >= $2 AND e.created_at < $3
 
