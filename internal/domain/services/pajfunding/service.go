@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/fnv"
+	"math"
 	"strings"
 	"time"
 
@@ -484,9 +485,13 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 			return nil, fmt.Errorf("failed to get customer ID for withdrawal")
 		}
 
+		// Round to 2 decimal places to match Bridge API precision requirement.
+		// This ensures the stored and transferred amounts are identical.
+		transferAmount := math.Round(order.Amount*100) / 100
+
 		transfer, transferErr := s.bridgeTransfer.TransferFunds(ctx, &bridgepkg.CreateTransferRequest{
 			OnBehalfOf:   bridgeCustID,
-			Amount:       fmt.Sprintf("%.2f", order.Amount),
+			Amount:       fmt.Sprintf("%.2f", transferAmount),
 			Source: bridgepkg.TransferSource{
 				PaymentRail:    bridgepkg.PaymentRail("bridge_wallet"),
 				Currency:       bridgepkg.CurrencyUSDC,
@@ -510,10 +515,10 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 		s.db.ExecContext(ctx, `UPDATE paj_orders SET bridge_transfer_id = $1 WHERE paj_order_id = $2`,
 			transfer.ID, order.ID)
 
-		// Refund slippage buffer: we debited estimatedUSDC (with 2% buffer)
-		// but Paj only needs order.Amount. Return the excess to the user.
+		// Refund slippage buffer: we debited estimatedUSDC (with 1% buffer)
+		// but Paj only needs transferAmount (rounded to 2dp). Return the excess.
 		// Rail fee is NOT refunded — it's our revenue.
-		actualAmount := decimal.NewFromFloat(order.Amount)
+		actualAmount := decimal.NewFromFloat(transferAmount)
 		excess := estimatedUSDC.Sub(actualAmount)
 		if excess.IsPositive() && s.ledger != nil {
 			refundErr := s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
