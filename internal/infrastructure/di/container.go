@@ -926,6 +926,20 @@ func (a *deletionBridgeAdapter) DeleteCustomer(ctx context.Context, customerID s
 	return a.client.DeleteCustomer(ctx, customerID)
 }
 
+// tieredLimitsAdapter adapts security.WithdrawalLimitsService to withdrawal.TieredWithdrawalLimitChecker
+type tieredLimitsAdapter struct {
+	svc *security.WithdrawalLimitsService
+}
+
+func (a *tieredLimitsAdapter) CheckWithdrawalLimit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, accountAge time.Duration, kycLevel string) error {
+	_, err := a.svc.CheckWithdrawalLimit(ctx, userID, amount, accountAge, kycLevel)
+	return err
+}
+
+func (a *tieredLimitsAdapter) RecordWithdrawal(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error {
+	return a.svc.RecordWithdrawal(ctx, userID, amount)
+}
+
 // Container holds all application dependencies
 type Container struct {
 	Config *config.Config
@@ -1136,6 +1150,15 @@ type Container struct {
 
 	// Unified Webhook Handler
 	UnifiedFundingWebhookHandler *webhooks.UnifiedFundingWebhookHandler
+
+	// Security Features (v2) - Risk Scoring, Whitelist, Anomaly, Limits, Adaptive MFA
+	SecurityFeaturesRepo       *repositories.SecurityFeaturesRepository
+	RiskScoringService         *security.RiskScoringService
+	AddressWhitelistService    *security.AddressWhitelistService
+	SessionAnomalyService      *security.SessionAnomalyService
+	WithdrawalLimitsService    *security.WithdrawalLimitsService
+	AdaptiveMFAService         *security.AdaptiveMFAService
+	DeviceSecurityService      *security.DeviceSecurityService
 }
 
 // NewContainer creates a new dependency injection container
@@ -1782,6 +1805,15 @@ func (c *Container) initializeDomainServices() error {
 	onboardingFraudRepo := repositories.NewOnboardingFraudRepository(sqlxDB)
 	c.OnboardingFraudService = security.NewOnboardingFraudService(onboardingFraudRepo, c.ZapLog)
 
+	// Initialize security features v2 (risk scoring, whitelist, anomaly, limits, adaptive MFA)
+	c.SecurityFeaturesRepo = repositories.NewSecurityFeaturesRepository(sqlxDB)
+	c.RiskScoringService = security.NewRiskScoringService(c.SecurityFeaturesRepo, c.ZapLog)
+	c.AddressWhitelistService = security.NewAddressWhitelistService(c.SecurityFeaturesRepo, c.ZapLog)
+	c.SessionAnomalyService = security.NewSessionAnomalyService(c.SecurityFeaturesRepo, c.ZapLog)
+	c.WithdrawalLimitsService = security.NewWithdrawalLimitsService(c.SecurityFeaturesRepo, c.ZapLog)
+	c.AdaptiveMFAService = security.NewAdaptiveMFAService(c.SecurityFeaturesRepo, c.ZapLog)
+	c.DeviceSecurityService = security.NewDeviceSecurityService(c.DeviceTrackingService, c.SecurityEventLogger, c.ZapLog)
+
 	// Initialize token blacklist and JWT service
 	if c.Config.Security.EnableTokenBlacklist {
 		c.TokenBlacklist = auth.NewTokenBlacklist(c.RedisClient.Client())
@@ -2024,6 +2056,14 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog.Info("Compliance screening enabled (Didit transaction monitoring)")
 	}
 
+	// Wire security features v2 into withdrawal service
+	if c.AddressWhitelistService != nil {
+		c.WithdrawalService.SetAddressWhitelistChecker(c.AddressWhitelistService)
+	}
+	if c.WithdrawalLimitsService != nil {
+		c.WithdrawalService.SetTieredWithdrawalLimits(&tieredLimitsAdapter{svc: c.WithdrawalLimitsService})
+	}
+
 	// Initialize P2P transfer services
 	c.P2PRepo = repositories.NewP2PRepository(sqlxDB, c.ZapLog)
 	c.P2PNotificationSender = adapters.NewP2PNotificationSender(
@@ -2218,6 +2258,41 @@ func (c *Container) GetIncidentResponseService() *security.IncidentResponseServi
 // GetOnboardingFraudService returns the onboarding fraud detection service
 func (c *Container) GetOnboardingFraudService() *security.OnboardingFraudService {
 	return c.OnboardingFraudService
+}
+
+// GetSecurityFeaturesRepo returns the security features repository
+func (c *Container) GetSecurityFeaturesRepo() *repositories.SecurityFeaturesRepository {
+	return c.SecurityFeaturesRepo
+}
+
+// GetRiskScoringService returns the transaction risk scoring service
+func (c *Container) GetRiskScoringService() *security.RiskScoringService {
+	return c.RiskScoringService
+}
+
+// GetAddressWhitelistService returns the address whitelist service
+func (c *Container) GetAddressWhitelistService() *security.AddressWhitelistService {
+	return c.AddressWhitelistService
+}
+
+// GetSessionAnomalyService returns the session anomaly detection service
+func (c *Container) GetSessionAnomalyService() *security.SessionAnomalyService {
+	return c.SessionAnomalyService
+}
+
+// GetWithdrawalLimitsService returns the tiered withdrawal limits service
+func (c *Container) GetWithdrawalLimitsService() *security.WithdrawalLimitsService {
+	return c.WithdrawalLimitsService
+}
+
+// GetAdaptiveMFAService returns the adaptive MFA service
+func (c *Container) GetAdaptiveMFAService() *security.AdaptiveMFAService {
+	return c.AdaptiveMFAService
+}
+
+// GetDeviceSecurityService returns the device security service
+func (c *Container) GetDeviceSecurityService() *security.DeviceSecurityService {
+	return c.DeviceSecurityService
 }
 
 // GetTokenBlacklist returns the token blacklist service
@@ -2670,6 +2745,9 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	}
 	if c.DepositRepo != nil {
 		c.AIOrchestrator.SetDepositHistory(c.DepositRepo)
+	}
+	if c.WithdrawalRepo != nil {
+		c.AIOrchestrator.SetWithdrawalHistory(c.WithdrawalRepo)
 	}
 	if c.yieldRepo != nil {
 		c.AIOrchestrator.SetYieldProvider(c.yieldRepo)

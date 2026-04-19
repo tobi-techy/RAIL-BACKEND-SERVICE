@@ -275,6 +275,16 @@ type SecurityConfig struct {
 
 	// Adaptive rate limiting
 	AdaptiveRateLimit AdaptiveRateLimitConfig `mapstructure:"adaptive_rate_limit"`
+
+	// Webhook signature secrets for hardened verification (per-provider)
+	WebhookSignatureSecrets WebhookSignatureSecretsConfig `mapstructure:"webhook_signature_secrets"`
+}
+
+// WebhookSignatureSecretsConfig holds per-provider webhook signing secrets
+type WebhookSignatureSecretsConfig struct {
+	Bridge string `mapstructure:"bridge"`
+	Alpaca string `mapstructure:"alpaca"`
+	Due    string `mapstructure:"due"`
 }
 
 // DeviceBindingConfig for device-bound JWT tokens

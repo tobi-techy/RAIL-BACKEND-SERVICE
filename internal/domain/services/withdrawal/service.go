@@ -145,6 +145,8 @@ type WithdrawalService struct {
 	chainRailsAdapter  ChainRailsTransferAdapter
 	stashLock          StashLockChecker
 	complianceScreener ComplianceScreener
+	addressWhitelist   AddressWhitelistChecker
+	tieredLimits       TieredWithdrawalLimitChecker
 	stashLockMu         sync.RWMutex
 	db                  *sqlx.DB
 	logger              *logger.Logger
@@ -207,6 +209,32 @@ type ComplianceScreener interface {
 // SetComplianceScreener sets the compliance screening service (optional).
 func (s *WithdrawalService) SetComplianceScreener(cs ComplianceScreener) {
 	s.complianceScreener = cs
+}
+
+// AddressWhitelistChecker validates withdrawal addresses against user whitelist.
+type AddressWhitelistChecker interface {
+	ValidateWithdrawalAddress(ctx context.Context, userID uuid.UUID, chain, address string) error
+}
+
+// TieredWithdrawalLimitChecker enforces tiered daily/weekly withdrawal limits.
+type TieredWithdrawalLimitChecker interface {
+	CheckWithdrawalLimit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, accountAge time.Duration, kycLevel string) error
+	RecordWithdrawal(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error
+}
+
+// TransactionRiskScorer scores transactions for fraud risk.
+type TransactionRiskScorer interface {
+	ScoreTransaction(ctx context.Context, input interface{}) (interface{}, error)
+}
+
+// SetAddressWhitelistChecker wires address whitelist validation (optional).
+func (s *WithdrawalService) SetAddressWhitelistChecker(c AddressWhitelistChecker) {
+	s.addressWhitelist = c
+}
+
+// SetTieredWithdrawalLimits wires tiered withdrawal limit enforcement (optional).
+func (s *WithdrawalService) SetTieredWithdrawalLimits(c TieredWithdrawalLimitChecker) {
+	s.tieredLimits = c
 }
 
 // advisoryLockKey derives a stable int64 from a user UUID for pg_advisory_lock.
@@ -336,6 +364,30 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 		}
 	}
 
+	// Step 3.1: Validate destination address is whitelisted (if whitelist enabled)
+	if s.addressWhitelist != nil {
+		if err := s.addressWhitelist.ValidateWithdrawalAddress(ctx, req.UserID, req.DestinationChain, req.DestinationAddress); err != nil {
+			s.logger.Warn("Address whitelist validation failed", "error", err.Error(), "address", req.DestinationAddress)
+			return nil, fmt.Errorf("address not whitelisted or in cooling period: %w", err)
+		}
+	}
+
+	// Step 3.2: Enforce tiered daily/weekly withdrawal limits
+	if s.tieredLimits != nil {
+		user, userErr := s.userRepo.GetUserEntityByID(ctx, req.UserID)
+		if userErr == nil && user != nil {
+			accountAge := time.Since(user.CreatedAt)
+			kycLevel := "basic"
+			if user.KYCStatus == "approved" {
+				kycLevel = "full"
+			}
+			if limitErr := s.tieredLimits.CheckWithdrawalLimit(ctx, req.UserID, req.Amount, accountAge, kycLevel); limitErr != nil {
+				s.logger.Warn("Tiered withdrawal limit exceeded", "error", limitErr.Error())
+				return nil, limitErr
+			}
+		}
+	}
+
 	// Step 3.5: Compliance screening — submit to Didit for AML/sanctions monitoring
 	if s.complianceScreener != nil {
 		screenStatus, screenErr := s.complianceScreener.ScreenTransaction(ctx, req.UserID, idempotencyKey, "outbound", req.Amount, string(req.Currency), "")
@@ -422,6 +474,11 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	if err := s.ensurePendingExposureWithinBalance(ctx, req.UserID, currentBalance); err != nil {
 		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
 		return nil, err
+	}
+
+	// Record tiered withdrawal usage for daily/weekly tracking
+	if s.tieredLimits != nil {
+		_ = s.tieredLimits.RecordWithdrawal(ctx, req.UserID, req.Amount)
 	}
 
 	// Step 6.5: Post ledger debit BEFORE executing the on-chain burn.

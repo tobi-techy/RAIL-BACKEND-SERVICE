@@ -19,6 +19,7 @@ import (
 	"github.com/rail-service/rail_service/internal/api/handlers"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	kychandlers "github.com/rail-service/rail_service/internal/api/handlers/kyc"
+	securityHandlersV2 "github.com/rail-service/rail_service/internal/api/handlers/security"
 	"github.com/rail-service/rail_service/internal/api/middleware"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
@@ -103,6 +104,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	router.Use(middleware.CORS(container.Config.Server.AllowedOrigins))
 	router.Use(createRateLimitMiddleware(container))
 	router.Use(middleware.SecurityHeaders())
+	router.Use(middleware.DeviceFingerprintExtractor())
 	router.Use(middleware.APIVersionMiddleware(container.Config.Server.SupportedVersions))
 	router.Use(middleware.PaginationMiddleware())
 
@@ -374,6 +376,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			if lp := container.GetLoginProtectionService(); lp != nil {
 				authRateLimited.Use(middleware.LoginProtection(lp, container.ZapLog))
 			}
+			if anomalySvc := container.GetSessionAnomalyService(); anomalySvc != nil {
+				authRateLimited.Use(middleware.SessionAnomalyDetection(anomalySvc, container.ZapLog))
+			}
 			{
 				authRateLimited.POST("/login", authHandlers.Login)
 				authRateLimited.POST("/passcode-login", authHandlers.PasscodeLogin)
@@ -540,6 +545,14 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					securitySensitive.DELETE("/ip-whitelist/:id", securityEnhancedHandlers.RemoveIPFromWhitelist)
 					securitySensitive.POST("/withdrawals/confirm", securityEnhancedHandlers.ConfirmWithdrawal)
 				}
+
+				// Security features v2: address whitelist + adaptive MFA
+				securityFeaturesHandler := securityHandlersV2.NewSecurityFeaturesHandler(
+					container.GetAddressWhitelistService(),
+					container.GetAdaptiveMFAService(),
+					container.ZapLog,
+				)
+				RegisterSecurityFeatureRoutes(security, securityFeaturesHandler)
 			}
 
 			// Mobile-optimized API endpoints for better app performance
@@ -1062,6 +1075,18 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			webhooks.Use(middleware.WebhookSecurityWithRedisV8(
 				redisNative,
 				webhookConfig,
+				container.ZapLog,
+			))
+		}
+		// Hardened per-provider signature + timestamp verification
+		webhookSigSecrets := container.Config.Security.WebhookSignatureSecrets
+		if webhookSigSecrets.Bridge != "" || webhookSigSecrets.Alpaca != "" || webhookSigSecrets.Due != "" {
+			webhooks.Use(middleware.HardenedWebhookVerification(
+				middleware.WebhookProviderConfig{
+					BridgeSecret: webhookSigSecrets.Bridge,
+					AlpacaSecret: webhookSigSecrets.Alpaca,
+					DueSecret:    webhookSigSecrets.Due,
+				},
 				container.ZapLog,
 			))
 		}
