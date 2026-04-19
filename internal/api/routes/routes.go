@@ -148,6 +148,44 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	}
 
 	// Manual deposit credit — internal API key auth, no user JWT needed
+	// TEMP: Internal stash-to-spend transfer — REMOVE AFTER USE
+	if container.LedgerService != nil {
+		router.POST("/internal/stash-to-spend", func(c *gin.Context) {
+			key := c.GetHeader("Authorization")
+			if len(key) > 7 && key[:7] == "Bearer " {
+				key = key[7:]
+			}
+			if container.Config.Security.InternalAPIKey == "" || key != container.Config.Security.InternalAPIKey {
+				c.JSON(401, gin.H{"error": "unauthorized"})
+				return
+			}
+			var req struct {
+				UserID string `json:"user_id" binding:"required"`
+				Amount string `json:"amount" binding:"required"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(400, gin.H{"error": err.Error()})
+				return
+			}
+			userID, err := uuid.Parse(req.UserID)
+			if err != nil {
+				c.JSON(400, gin.H{"error": "invalid user_id"})
+				return
+			}
+			amount, err := decimal.NewFromString(req.Amount)
+			if err != nil || amount.IsNegative() || amount.IsZero() {
+				c.JSON(400, gin.H{"error": "invalid amount"})
+				return
+			}
+			idempotencyKey := fmt.Sprintf("manual-stash-to-spend-%s-%d", userID, time.Now().UnixMilli())
+			if err := container.LedgerService.TransferStashToSpending(c.Request.Context(), userID, amount, idempotencyKey); err != nil {
+				c.JSON(500, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(200, gin.H{"status": "transferred", "amount": amount.String()})
+		})
+	}
+
 	if container.FundingService != nil {
 		router.POST("/internal/deposit/credit", func(c *gin.Context) {
 			// Auth check using internal API key
