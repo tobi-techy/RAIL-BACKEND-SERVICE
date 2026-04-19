@@ -744,7 +744,7 @@ func setDefaults() {
 	// AI Provider defaults
 	viper.SetDefault("ai.primary", "openai")
 	viper.SetDefault("ai.openai.model", "gpt-4o-mini")
-	viper.SetDefault("ai.openai.realtime_model", "gpt-4o-mini-realtime-preview")
+	viper.SetDefault("ai.openai.realtime_model", "gpt-4o-realtime-preview-2024-12-17")
 	viper.SetDefault("ai.openai.max_tokens", 500)
 	viper.SetDefault("ai.openai.temperature", 0.7)
 	viper.SetDefault("ai.gemini.model", "gemini-2.0-flash")
