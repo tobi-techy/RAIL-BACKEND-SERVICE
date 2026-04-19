@@ -75,3 +75,23 @@ func (r *CardRepository) GetSpendingTotal(ctx context.Context, userID uuid.UUID,
 		userID, start, end).Scan(&total, &count)
 	return total, count, err
 }
+
+// GetRecentOutflows returns individual card transactions (card-only, no withdrawals/P2P).
+func (r *CardRepository) GetRecentOutflows(ctx context.Context, userID uuid.UUID, start, end time.Time, limit int) ([]entities.SpendingTransaction, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	query := `
+		SELECT TO_CHAR(created_at, 'YYYY-MM-DD') AS date, amount,
+		       COALESCE(merchant_category, 'Card Payment') AS category,
+		       COALESCE(merchant_name, 'Card Payment') AS source
+		FROM card_transactions
+		WHERE user_id = $1 AND status = 'completed' AND created_at >= $2 AND created_at < $3
+		ORDER BY created_at DESC LIMIT $4`
+
+	var results []entities.SpendingTransaction
+	if err := r.db.SelectContext(ctx, &results, query, userID, start, end, limit); err != nil {
+		return nil, err
+	}
+	return results, nil
+}

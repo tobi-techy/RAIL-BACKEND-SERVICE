@@ -22,3 +22,11 @@ type SpendingByPeriod struct {
 	Total  decimal.Decimal `db:"total" json:"total"`
 	Count  int             `db:"count" json:"count"`
 }
+
+// SpendingTransaction represents a single outflow transaction (card, withdrawal, or P2P).
+type SpendingTransaction struct {
+	Date     string          `db:"date" json:"date"`
+	Amount   decimal.Decimal `db:"amount" json:"amount"`
+	Category string          `db:"category" json:"category"`
+	Source   string          `db:"source" json:"source"`
+}
