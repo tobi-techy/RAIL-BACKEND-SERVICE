@@ -484,8 +484,9 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 		}
 
 		transfer, transferErr := s.bridgeTransfer.TransferFunds(ctx, &bridgepkg.CreateTransferRequest{
-			OnBehalfOf: bridgeCustID,
-			Amount:     decimal.NewFromFloat(order.Amount).StringFixed(2),
+			OnBehalfOf:   bridgeCustID,
+			Amount:       decimal.NewFromFloat(order.Amount).StringFixed(2),
+			DeveloperFee: railFee.StringFixed(2),
 			Source: bridgepkg.TransferSource{
 				PaymentRail:    bridgepkg.PaymentRail("bridge_wallet"),
 				Currency:       bridgepkg.CurrencyUSDC,
@@ -530,7 +531,8 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 		s.logger.Info("Bridge transfer to Paj initiated",
 			zap.String("paj_order_id", order.ID),
 			zap.String("bridge_transfer_id", transfer.ID),
-			zap.String("amount", actualAmount.String()))
+			zap.String("amount_to_paj", actualAmount.String()),
+			zap.String("developer_fee", railFee.String()))
 	}
 
 	return &OfframpResult{
