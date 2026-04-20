@@ -956,6 +956,7 @@ type Container struct {
 	WalletProvisioningJobRepo *repositories.WalletProvisioningJobRepository
 	DepositRepo               *repositories.DepositRepository
 	WithdrawalRepo            *repositories.WithdrawalRepository
+	ReceiptRepo               *repositories.ReceiptRepository
 	ConversionRepo            *repositories.ConversionRepository
 	BalanceRepo               *repositories.BalanceRepository
 	FundingEventJobRepo       *repositories.FundingEventJobRepository
@@ -1177,6 +1178,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	walletProvisioningJobRepo := repositories.NewWalletProvisioningJobRepository(db, zapLog)
 	depositRepo := repositories.NewDepositRepository(sqlxDB)
 	withdrawalRepo := repositories.NewWithdrawalRepository(sqlxDB)
+	receiptRepo := repositories.NewReceiptRepository(sqlxDB)
 	conversionRepo := repositories.NewConversionRepository(sqlxDB)
 	balanceRepo := repositories.NewBalanceRepository(db, zapLog)
 	fundingEventJobRepo := repositories.NewFundingEventJobRepository(db, log)
@@ -1277,6 +1279,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		WalletProvisioningJobRepo: walletProvisioningJobRepo,
 		DepositRepo:               depositRepo,
 		WithdrawalRepo:            withdrawalRepo,
+		ReceiptRepo:               receiptRepo,
 		ConversionRepo:            conversionRepo,
 		BalanceRepo:               balanceRepo,
 		FundingEventJobRepo:       fundingEventJobRepo,
@@ -2749,6 +2752,9 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	}
 	if c.WithdrawalRepo != nil {
 		c.AIOrchestrator.SetWithdrawalHistory(c.WithdrawalRepo)
+	}
+	if c.ReceiptRepo != nil {
+		c.AIOrchestrator.SetReceiptHistory(c.ReceiptRepo)
 	}
 	if c.yieldRepo != nil {
 		c.AIOrchestrator.SetYieldProvider(c.yieldRepo)

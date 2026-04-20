@@ -225,6 +225,7 @@ func (o *Orchestrator) executeMoneyFlow(ctx context.Context, userID uuid.UUID, a
 	}
 
 	totalOut := flow.TotalWithdrawals.Add(flow.TotalCardSpend).Add(flow.TotalP2P)
+	totalSpending := totalOut.Add(flow.TotalReceipts)
 	net := flow.TotalDeposits.Sub(totalOut)
 
 	return map[string]interface{}{
@@ -241,7 +242,13 @@ func (o *Orchestrator) executeMoneyFlow(ctx context.Context, userID uuid.UUID, a
 			"p2p_transfers":    flow.TotalP2P.StringFixed(2),
 			"p2p_count":        flow.P2PCount,
 		},
-		"net_flow": net.StringFixed(2),
-		"note":     "All amounts are completed/successful transactions only. Net flow = deposits minus all outflows.",
+		"scanned_receipts": map[string]interface{}{
+			"total": flow.TotalReceipts.StringFixed(2),
+			"count": flow.ReceiptCount,
+			"note":  "Offline/cash spending from scanned receipts — not included in money_out since these are external to Rail",
+		},
+		"total_all_spending": totalSpending.StringFixed(2),
+		"net_flow":           net.StringFixed(2),
+		"note":               "money_out = on-platform outflows (withdrawals + card + P2P). scanned_receipts = offline spending tracked via receipt scans. total_all_spending = both combined.",
 	}, nil
 }

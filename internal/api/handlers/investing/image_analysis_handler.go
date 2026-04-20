@@ -3,6 +3,7 @@ package investing
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,8 +11,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
+	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -19,16 +24,33 @@ import (
 type ImageAnalysisHandler struct {
 	apiKey       string
 	orchestrator *aiservice.Orchestrator
+	receiptRepo  *repositories.ReceiptRepository
 	logger       *zap.Logger
 }
 
-func NewImageAnalysisHandler(apiKey string, orchestrator *aiservice.Orchestrator, logger *zap.Logger) *ImageAnalysisHandler {
-	return &ImageAnalysisHandler{apiKey: apiKey, orchestrator: orchestrator, logger: logger}
+func NewImageAnalysisHandler(apiKey string, orchestrator *aiservice.Orchestrator, receiptRepo *repositories.ReceiptRepository, logger *zap.Logger) *ImageAnalysisHandler {
+	return &ImageAnalysisHandler{apiKey: apiKey, orchestrator: orchestrator, receiptRepo: receiptRepo, logger: logger}
 }
 
 type imageRequest struct {
 	Image   string `json:"image" binding:"required"` // base64-encoded image
 	Message string `json:"message"`
+}
+
+// visionReceiptResponse is the structured JSON we ask GPT-4o to return.
+type visionReceiptResponse struct {
+	IsReceipt bool   `json:"is_receipt"`
+	Merchant  string `json:"merchant"`
+	Amount    string `json:"amount"`
+	Currency  string `json:"currency"`
+	Date      string `json:"date"`
+	Category  string `json:"category"`
+	Items     []struct {
+		Name     string `json:"name"`
+		Quantity int    `json:"quantity"`
+		Price    string `json:"price"`
+	} `json:"items"`
+	Summary string `json:"summary"`
 }
 
 // AnalyzeImage handles POST /v1/ai/chat/image
@@ -54,17 +76,12 @@ func (h *ImageAnalysisHandler) AnalyzeImage(c *gin.Context) {
 		return
 	}
 
-	if len(req.Image) > 20*1024*1024 { // 20MB base64 limit
+	if len(req.Image) > 20*1024*1024 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "image too large (max 20MB)"})
 		return
 	}
 
-	msg := req.Message
-	if msg == "" {
-		msg = "Analyze this receipt or transaction image. Extract: merchant name, amount, date, currency, and category. Format as a clear summary."
-	}
-
-	content, err := h.callVisionAPI(c.Request.Context(), req.Image, msg)
+	raw, err := h.callVisionAPI(c.Request.Context(), req.Image, req.Message)
 	if err != nil {
 		h.logger.Error("vision API failed", zap.Error(err), zap.String("user_id", userID.String()))
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{
@@ -75,39 +92,133 @@ func (h *ImageAnalysisHandler) AnalyzeImage(c *gin.Context) {
 		return
 	}
 
-	// Build receipt insight card
+	// Try to parse structured receipt data
+	var parsed visionReceiptResponse
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil || !parsed.IsReceipt {
+		// Not a receipt or couldn't parse — return raw analysis
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{
+			"content":     raw,
+			"tokens_used": 0,
+			"provider":    "openai-vision",
+		}})
+		return
+	}
+
+	// Persist the receipt
+	scan := h.buildReceiptScan(userID, req.Image, &parsed, raw)
+	if h.receiptRepo != nil {
+		if dbErr := h.receiptRepo.Create(c.Request.Context(), scan); dbErr != nil {
+			h.logger.Warn("failed to persist receipt scan", zap.Error(dbErr))
+		}
+	}
+
+	// Build rich response
 	cards := []map[string]interface{}{
 		{
-			"type":  "highlight",
-			"title": "Receipt Analysis",
-			"data":  map[string]interface{}{"source": "vision"},
+			"type":  "receipt",
+			"title": parsed.Merchant,
+			"data": map[string]interface{}{
+				"merchant": parsed.Merchant,
+				"amount":   parsed.Amount,
+				"currency": parsed.Currency,
+				"date":     parsed.Date,
+				"category": parsed.Category,
+				"items":    parsed.Items,
+				"saved":    true,
+			},
 		},
 	}
 
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{
-		"content":     content,
+		"content":     parsed.Summary,
 		"cards":       cards,
+		"receipt_id":  scan.ID.String(),
 		"tokens_used": 0,
 		"provider":    "openai-vision",
 	}})
 }
 
-func (h *ImageAnalysisHandler) callVisionAPI(ctx context.Context, base64Image, message string) (string, error) {
+func (h *ImageAnalysisHandler) buildReceiptScan(userID uuid.UUID, base64Image string, parsed *visionReceiptResponse, rawText string) *entities.ReceiptScan {
+	amount, _ := decimal.NewFromString(parsed.Amount)
+	currency := parsed.Currency
+	if currency == "" {
+		currency = "USD"
+	}
+	category := parsed.Category
+	if category == "" {
+		category = "Uncategorized"
+	}
+
+	itemsJSON, _ := json.Marshal(parsed.Items)
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(base64Image[:min(1024, len(base64Image))])))
+
+	var receiptDate *time.Time
+	if parsed.Date != "" {
+		for _, layout := range []string{"2006-01-02", "01/02/2006", "02/01/2006", "Jan 2, 2006", "2 Jan 2006", "January 2, 2006"} {
+			if t, err := time.Parse(layout, parsed.Date); err == nil {
+				receiptDate = &t
+				break
+			}
+		}
+	}
+
+	return &entities.ReceiptScan{
+		ID:          uuid.New(),
+		UserID:      userID,
+		Merchant:    parsed.Merchant,
+		Amount:      amount,
+		Currency:    currency,
+		ReceiptDate: receiptDate,
+		Category:    category,
+		Items:       itemsJSON,
+		RawText:     &rawText,
+		ImageHash:   &hash,
+		CreatedAt:   time.Now(),
+	}
+}
+
+const visionSystemPrompt = `You are a receipt and financial document analyzer. Extract structured data from images.
+
+ALWAYS respond with valid JSON in this exact format:
+{
+  "is_receipt": true/false,
+  "merchant": "Store/Business name",
+  "amount": "123.45",
+  "currency": "USD",
+  "date": "2025-01-15",
+  "category": "one of: Food & Dining, Groceries, Transport, Shopping, Entertainment, Health, Utilities, Logistics, Education, Services, Subscriptions, Other",
+  "items": [{"name": "Item name", "quantity": 1, "price": "12.99"}],
+  "summary": "A friendly 1-2 sentence summary of this receipt for the user"
+}
+
+Rules:
+- If the image is NOT a receipt/invoice/bill, set is_receipt to false and put a description in summary.
+- Extract the TOTAL amount, not subtotals.
+- Parse the date into YYYY-MM-DD format.
+- Categorize accurately: fast food = "Food & Dining", supermarket = "Groceries", Uber/Bolt = "Transport", Amazon = "Shopping", etc.
+- List individual items if visible on the receipt.
+- Amount should be a plain number string without currency symbols.
+- Currency should be a 3-letter code (USD, NGN, GBP, EUR).`
+
+func (h *ImageAnalysisHandler) callVisionAPI(ctx context.Context, base64Image, userMessage string) (string, error) {
+	textContent := "Analyze this image and extract receipt details."
+	if userMessage != "" {
+		textContent = userMessage + "\n\nAlso extract structured receipt details if this is a receipt."
+	}
+
 	body := map[string]interface{}{
 		"model":      "gpt-4o",
 		"max_tokens": 1000,
+		"temperature": 0.1,
 		"messages": []map[string]interface{}{
-			{
-				"role": "system",
-				"content": "You are Miriam, a financial assistant for Rail. When analyzing receipts or transaction images, extract key details (merchant, amount, date, currency, category) and present them clearly. If it's not a receipt, describe what you see and how it relates to the user's finances.",
-			},
+			{"role": "system", "content": visionSystemPrompt},
 			{
 				"role": "user",
 				"content": []map[string]interface{}{
-					{"type": "text", "text": message},
+					{"type": "text", "text": textContent},
 					{"type": "image_url", "image_url": map[string]string{
 						"url":    "data:image/jpeg;base64," + base64Image,
-						"detail": "low",
+						"detail": "high",
 					}},
 				},
 			},
@@ -119,7 +230,7 @@ func (h *ImageAnalysisHandler) callVisionAPI(ctx context.Context, base64Image, m
 		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
-	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 
 	httpReq, err := http.NewRequestWithContext(reqCtx, "POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(jsonBody))

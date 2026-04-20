@@ -49,6 +49,14 @@ const allOutflows = `WITH outflows AS (
 	FROM p2p_transfers
 	WHERE sender_id = $1 AND status = 'completed'
 	  AND created_at >= $2 AND created_at < $3
+
+	UNION ALL
+
+	-- Scanned receipts (offline/cash spending)
+	SELECT created_at, amount, category, merchant AS source
+	FROM receipt_scans
+	WHERE user_id = $1
+	  AND created_at >= $2 AND created_at < $3
 )`
 
 func (r *LedgerSpendingRepository) GetSpendingByCategory(ctx context.Context, userID uuid.UUID, start, end time.Time) ([]entities.SpendingByCategory, error) {
@@ -163,6 +171,16 @@ func (r *LedgerSpendingRepository) GetMoneyFlow(ctx context.Context, userID uuid
 		WHERE sender_id = $1 AND status = 'completed'
 		  AND created_at >= $2 AND created_at < $3`,
 		userID, start, end).Scan(&s.TotalP2P, &s.P2PCount)
+	if err != nil {
+		return nil, err
+	}
+
+	// Scanned receipts (offline/cash spending)
+	err = r.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(amount), 0), COUNT(*)
+		FROM receipt_scans
+		WHERE user_id = $1 AND created_at >= $2 AND created_at < $3`,
+		userID, start, end).Scan(&s.TotalReceipts, &s.ReceiptCount)
 	if err != nil {
 		return nil, err
 	}

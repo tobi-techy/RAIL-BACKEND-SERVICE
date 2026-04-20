@@ -41,4 +41,6 @@ type MoneyFlowSummary struct {
 	CardSpendCount   int             `json:"card_spend_count"`
 	TotalP2P         decimal.Decimal `json:"total_p2p"`
 	P2PCount         int             `json:"p2p_count"`
+	TotalReceipts    decimal.Decimal `json:"total_receipts"`
+	ReceiptCount     int             `json:"receipt_count"`
 }

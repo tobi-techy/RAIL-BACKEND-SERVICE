@@ -107,6 +107,7 @@ type Orchestrator struct {
 	depositHistory    DepositHistoryProvider
 	yieldProvider     YieldProvider
 	withdrawalHistory WithdrawalHistoryProvider
+	receiptHistory    ReceiptHistoryProvider
 	userProfile       UserProfileProvider
 	reportEmail       ReportEmailSender
 	pending           PendingActionStore
@@ -190,19 +191,28 @@ TOOL DECISION TREE — follow this order:
 
 8. "What are my spending habits?" / "When do I spend most?" → get_spending_patterns (day-of-week breakdown, largest transactions, trends)
 
-9. "How am I doing compared to others?" → get_comparative_context
+9. "Show me my receipts" / "What did I scan?" / "Receipt details?" → get_receipt_history (scanned receipts with merchant, items, category, amounts)
 
-10. "What if I save X per month?" → simulate_savings
+10. "How am I doing compared to others?" → get_comparative_context
 
-11. "What about taxes?" → get_tax_summary / get_tax_calendar
+11. "What if I save X per month?" → simulate_savings
 
-12. General financial education → search_knowledge_base
+12. "What about taxes?" → get_tax_summary / get_tax_calendar
+
+13. General financial education → search_knowledge_base
 
 COMBINING TOOLS:
-- For "where did my money go": get_money_flow + get_recent_transactions
+- For "where did my money go": get_money_flow + get_recent_transactions (includes receipt data automatically)
 - For "how am I doing overall": get_comparative_context + get_money_flow
 - For "spending breakdown": get_spending_summary + get_spending_patterns
+- For "all my spending including cash": get_money_flow (includes scanned receipts) + get_receipt_history (for item-level detail)
 - NEVER call get_withdrawal_history AND get_recent_transactions together — they overlap on withdrawal data.
+
+RECEIPT SCANNING:
+- When users scan receipts, the data is automatically saved with merchant, amount, date, category, and individual items.
+- Scanned receipts appear in get_money_flow under "scanned_receipts" and in get_recent_transactions alongside card/withdrawal/P2P data.
+- Use get_receipt_history when users want to see item-level detail from their scanned receipts.
+- Receipt spending is offline/cash spending — it's tracked separately from on-platform transactions but included in total spending calculations.
 
 RULES:
 - NEVER give specific financial advice (no "buy X" or "sell Y"). Say "you might consider" or "many people in your situation..."
@@ -282,7 +292,7 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 		tools = append(tools, ActionTools()...)
 	}
 	// Read-only data tools
-	tools = append(tools, ReadOnlyTools(o.cardTransactions != nil, o.depositHistory != nil, o.yieldProvider != nil, o.withdrawalHistory != nil)...)
+	tools = append(tools, ReadOnlyTools(o.cardTransactions != nil, o.depositHistory != nil, o.yieldProvider != nil, o.withdrawalHistory != nil, o.receiptHistory != nil)...)
 	// Tax, email, and goals tools
 	tools = append(tools, TaxAndReportTools(o.userProfile != nil, o.reportEmail != nil)...)
 	return tools
@@ -515,6 +525,9 @@ func (o *Orchestrator) executeTool(ctx context.Context, userID uuid.UUID, tc ai.
 
 	case ToolGetWithdrawalHistory:
 		return o.executeWithdrawalHistory(ctx, userID, tc.Arguments)
+
+	case ToolGetReceiptHistory:
+		return o.executeReceiptHistory(ctx, userID, tc.Arguments)
 
 	case ToolGetTaxSummary:
 		return o.executeTaxSummary(ctx, userID, tc.Arguments)
