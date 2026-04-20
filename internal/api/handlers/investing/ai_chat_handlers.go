@@ -25,8 +25,37 @@ func NewAIChatHandlers(orchestrator *aiservice.Orchestrator, logger *logger.Logg
 
 // ChatRequest represents a chat message request
 type ChatRequest struct {
-	Message string       `json:"message" binding:"required"`
-	History []ai.Message `json:"history,omitempty"`
+	Message            string       `json:"message" binding:"required"`
+	History            []ai.Message `json:"history,omitempty"`
+	TransactionContext *TxContext   `json:"transaction_context,omitempty"`
+}
+
+// TxContext provides context about a specific transaction the user tapped on.
+type TxContext struct {
+	Type     string `json:"type"`     // "card", "withdrawal", "deposit", "p2p"
+	Amount   string `json:"amount"`
+	Currency string `json:"currency,omitempty"`
+	Merchant string `json:"merchant,omitempty"`
+	Date     string `json:"date,omitempty"`
+	Status   string `json:"status,omitempty"`
+}
+
+func (tc *TxContext) toPromptPrefix() string {
+	if tc == nil {
+		return ""
+	}
+	prefix := fmt.Sprintf("[The user is asking about a specific %s transaction: %s %s", tc.Type, tc.Amount, tc.Currency)
+	if tc.Merchant != "" {
+		prefix += " at " + tc.Merchant
+	}
+	if tc.Date != "" {
+		prefix += " on " + tc.Date
+	}
+	if tc.Status != "" {
+		prefix += " (status: " + tc.Status + ")"
+	}
+	prefix += "]\n\n"
+	return prefix
 }
 
 // ChatStream handles POST /api/v1/ai/chat/stream (SSE)
@@ -105,7 +134,7 @@ func (h *AIChatHandlers) Chat(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.orchestrator.Chat(c.Request.Context(), userID, req.Message, req.History)
+	resp, err := h.orchestrator.Chat(c.Request.Context(), userID, req.TransactionContext.toPromptPrefix()+req.Message, req.History)
 	if err != nil {
 		h.logger.Error("Chat failed", "error", err, "user_id", userID.String())
 		c.JSON(http.StatusOK, gin.H{

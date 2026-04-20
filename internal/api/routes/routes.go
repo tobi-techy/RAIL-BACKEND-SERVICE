@@ -913,6 +913,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						imageHandler := handlers.NewImageAnalysisHandler(
 							container.Config.AI.OpenAI.APIKey,
 							container.GetAIOrchestrator(),
+							container.ReceiptRepo,
 							container.ZapLog,
 						)
 						aiGroup.POST("/chat/image", middleware.AuthRateLimit(10), imageHandler.AnalyzeImage)

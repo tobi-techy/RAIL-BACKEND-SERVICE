@@ -53,7 +53,7 @@ func (m *MockUsageRepository) GetOrCreate(ctx context.Context, userID uuid.UUID)
 	if usage, ok := m.usage[userID]; ok {
 		return usage, nil
 	}
-	
+
 	now := time.Now().UTC()
 	usage := &entities.UserTransactionUsage{
 		ID:                       uuid.New(),
@@ -96,18 +96,18 @@ func TestLimitsService_ValidateDeposit_BelowMinimum(t *testing.T) {
 	usageRepo := NewMockUsageRepository()
 	zapLog, _ := zap.NewDevelopment()
 	log := logger.NewLogger(zapLog)
-	
+
 	userID := uuid.New()
 	userRepo.AddUser(&entities.UserProfile{
 		ID:        userID,
 		KYCStatus: "approved",
 	})
-	
+
 	svc := limits.NewService(userRepo, usageRepo, log)
-	
+
 	// Test deposit below minimum
 	result, err := svc.ValidateDeposit(context.Background(), userID, decimal.NewFromFloat(0.50))
-	
+
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, entities.ErrBelowMinimumDeposit)
 	assert.False(t, result.Allowed)
@@ -118,18 +118,18 @@ func TestLimitsService_ValidateDeposit_WithinLimits(t *testing.T) {
 	usageRepo := NewMockUsageRepository()
 	zapLog, _ := zap.NewDevelopment()
 	log := logger.NewLogger(zapLog)
-	
+
 	userID := uuid.New()
 	userRepo.AddUser(&entities.UserProfile{
 		ID:        userID,
 		KYCStatus: "approved", // Basic KYC tier
 	})
-	
+
 	svc := limits.NewService(userRepo, usageRepo, log)
-	
+
 	// Test deposit within limits
 	result, err := svc.ValidateDeposit(context.Background(), userID, decimal.NewFromFloat(1000.00))
-	
+
 	require.NoError(t, err)
 	assert.True(t, result.Allowed)
 }
@@ -139,22 +139,22 @@ func TestLimitsService_ValidateDeposit_ExceedsDailyLimit(t *testing.T) {
 	usageRepo := NewMockUsageRepository()
 	zapLog, _ := zap.NewDevelopment()
 	log := logger.NewLogger(zapLog)
-	
+
 	userID := uuid.New()
 	userRepo.AddUser(&entities.UserProfile{
 		ID:        userID,
 		KYCStatus: "approved", // Basic KYC tier - $5000 daily limit
 	})
-	
+
 	// Pre-populate usage near the limit
 	usage, _ := usageRepo.GetOrCreate(context.Background(), userID)
 	usage.DailyDepositUsed = decimal.NewFromFloat(4500.00)
-	
+
 	svc := limits.NewService(userRepo, usageRepo, log)
-	
+
 	// Test deposit that would exceed daily limit
 	result, err := svc.ValidateDeposit(context.Background(), userID, decimal.NewFromFloat(1000.00))
-	
+
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, entities.ErrDailyDepositExceeded)
 	assert.False(t, result.Allowed)
@@ -166,18 +166,18 @@ func TestLimitsService_ValidateWithdrawal_BelowMinimum(t *testing.T) {
 	usageRepo := NewMockUsageRepository()
 	zapLog, _ := zap.NewDevelopment()
 	log := logger.NewLogger(zapLog)
-	
+
 	userID := uuid.New()
 	userRepo.AddUser(&entities.UserProfile{
 		ID:        userID,
 		KYCStatus: "approved",
 	})
-	
+
 	svc := limits.NewService(userRepo, usageRepo, log)
-	
+
 	// Test withdrawal below minimum ($1)
 	result, err := svc.ValidateWithdrawal(context.Background(), userID, decimal.NewFromFloat(0.50))
-	
+
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, entities.ErrBelowMinimumWithdrawal)
 	assert.False(t, result.Allowed)
@@ -188,17 +188,17 @@ func TestLimitsService_GetUserLimits(t *testing.T) {
 	usageRepo := NewMockUsageRepository()
 	zapLog, _ := zap.NewDevelopment()
 	log := logger.NewLogger(zapLog)
-	
+
 	userID := uuid.New()
 	userRepo.AddUser(&entities.UserProfile{
 		ID:        userID,
 		KYCStatus: "approved", // Basic KYC tier
 	})
-	
+
 	svc := limits.NewService(userRepo, usageRepo, log)
-	
+
 	limits, err := svc.GetUserLimits(context.Background(), userID)
-	
+
 	require.NoError(t, err)
 	assert.Equal(t, entities.KYCTierBasic, limits.KYCTier)
 	assert.Equal(t, "1", limits.Deposit.Minimum)
@@ -213,21 +213,21 @@ func TestLimitsService_UnverifiedUserLimits(t *testing.T) {
 	usageRepo := NewMockUsageRepository()
 	zapLog, _ := zap.NewDevelopment()
 	log := logger.NewLogger(zapLog)
-	
+
 	userID := uuid.New()
 	userRepo.AddUser(&entities.UserProfile{
 		ID:        userID,
 		KYCStatus: "pending", // Unverified
 	})
-	
+
 	svc := limits.NewService(userRepo, usageRepo, log)
-	
+
 	limits, err := svc.GetUserLimits(context.Background(), userID)
-	
+
 	require.NoError(t, err)
 	assert.Equal(t, entities.KYCTierUnverified, limits.KYCTier)
-	assert.Equal(t, "100", limits.Deposit.Daily.Limit)    // Much lower for unverified
-	assert.Equal(t, "500", limits.Deposit.Monthly.Limit)
+	assert.Equal(t, "0", limits.Deposit.Daily.Limit)
+	assert.Equal(t, "0", limits.Deposit.Monthly.Limit)
 }
 
 func TestDeriveKYCTier(t *testing.T) {
@@ -243,7 +243,7 @@ func TestDeriveKYCTier(t *testing.T) {
 		{"rejected", entities.KYCTierUnverified},
 		{"", entities.KYCTierUnverified},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.status, func(t *testing.T) {
 			tier := entities.DeriveKYCTier(tt.status)

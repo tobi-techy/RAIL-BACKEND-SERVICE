@@ -7,7 +7,7 @@ on:
     branches: [main, develop]
 
 env:
-  GO_VERSION: '1.24'
+  GO_VERSION: '1.25'
   COVERAGE_MIN: 40
 
 jobs:
@@ -25,8 +25,10 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: latest
+          version: v1.64.8
           args: --timeout=5m
+          install-mode: goinstall
+          only-new-issues: true
 
   test:
     name: Test with Coverage

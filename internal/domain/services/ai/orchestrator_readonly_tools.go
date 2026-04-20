@@ -17,6 +17,7 @@ const (
 	ToolGetDepositHistory    = "get_deposit_history"
 	ToolGetYieldEarned       = "get_yield_earned"
 	ToolGetWithdrawalHistory = "get_withdrawal_history"
+	ToolGetReceiptHistory    = "get_receipt_history"
 )
 
 // CardTransactionProvider returns recent card transactions.
@@ -39,6 +40,12 @@ type WithdrawalHistoryProvider interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error)
 }
 
+// ReceiptHistoryProvider returns stored receipt scans.
+type ReceiptHistoryProvider interface {
+	GetByUserIDInRange(ctx context.Context, userID uuid.UUID, start, end time.Time, limit int) ([]*entities.ReceiptScan, error)
+	GetTotalByCategory(ctx context.Context, userID uuid.UUID, start, end time.Time) ([]entities.SpendingByCategory, error)
+}
+
 // SetCardTransactions sets the card transaction provider.
 func (o *Orchestrator) SetCardTransactions(p CardTransactionProvider) {
 	o.cardTransactions = p
@@ -59,8 +66,13 @@ func (o *Orchestrator) SetWithdrawalHistory(p WithdrawalHistoryProvider) {
 	o.withdrawalHistory = p
 }
 
+// SetReceiptHistory sets the receipt history provider.
+func (o *Orchestrator) SetReceiptHistory(p ReceiptHistoryProvider) {
+	o.receiptHistory = p
+}
+
 // ReadOnlyTools returns tool definitions for read-only data access.
-func ReadOnlyTools(hasCards, hasDeposits, hasYield, hasWithdrawals bool) []infraai.Tool {
+func ReadOnlyTools(hasCards, hasDeposits, hasYield, hasWithdrawals, hasReceipts bool) []infraai.Tool {
 	var tools []infraai.Tool
 	if hasCards {
 		tools = append(tools, infraai.Tool{
@@ -101,11 +113,23 @@ func ReadOnlyTools(hasCards, hasDeposits, hasYield, hasWithdrawals bool) []infra
 	if hasWithdrawals {
 		tools = append(tools, infraai.Tool{
 			Name:        ToolGetWithdrawalHistory,
-			Description: "Get recent withdrawal history including Paj Cash NGN withdrawals, crypto withdrawals, and fiat offramps. Use when user asks where their money went, about withdrawals, cash outs, NGN conversions, or money leaving their account.",
+			Description: "Get recent withdrawal history including naira withdrawals, crypto withdrawals, and fiat offramps. Use when user asks about withdrawals, cash outs, NGN conversions, or money leaving their account.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"limit": map[string]interface{}{"type": "integer", "description": "Number of withdrawals (max 10)", "default": 5},
+				},
+			},
+		})
+	}
+	if hasReceipts {
+		tools = append(tools, infraai.Tool{
+			Name:        ToolGetReceiptHistory,
+			Description: "Get scanned receipt history with full details: merchant, amount, date, category, and individual items purchased. Use when user asks about receipts they've scanned, specific purchases, or wants detailed spending breakdown from receipts. Also includes category totals from all scanned receipts.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"period": map[string]interface{}{"type": "string", "enum": []string{"this_month", "last_month", "last_7_days", "last_30_days"}},
 				},
 			},
 		})
@@ -149,21 +173,30 @@ func (o *Orchestrator) executeDepositHistory(ctx context.Context, userID uuid.UU
 	if l, ok := args["limit"].(float64); ok && l > 0 && l <= 10 {
 		limit = int(l)
 	}
-	deposits, err := o.depositHistory.GetByUserID(ctx, userID, limit, 0)
+	// Fetch more than needed so we can filter to completed only
+	deposits, err := o.depositHistory.GetByUserID(ctx, userID, limit*3, 0)
 	if err != nil {
 		return nil, fmt.Errorf("deposit history: %w", err)
 	}
-	items := make([]map[string]interface{}, len(deposits))
-	for i, d := range deposits {
-		items[i] = map[string]interface{}{
-			"amount": d.Amount.String(),
-			"token":  string(d.Token),
-			"chain":  string(d.Chain),
-			"status": d.Status,
-			"date":   d.CreatedAt.Format("Jan 2, 2006"),
+	items := make([]map[string]interface{}, 0, limit)
+	for _, d := range deposits {
+		if len(items) >= limit {
+			break
 		}
+		// Only show confirmed/completed deposits
+		if d.Status != "confirmed" && d.Status != "off_ramp_completed" && d.Status != "broker_funded" {
+			continue
+		}
+		items = append(items, map[string]interface{}{
+			"direction": "money_in",
+			"amount":    d.Amount.String(),
+			"token":     string(d.Token),
+			"chain":     string(d.Chain),
+			"status":    "completed",
+			"date":      d.CreatedAt.Format("Jan 2, 2006"),
+		})
 	}
-	return map[string]interface{}{"deposits": items, "count": len(items)}, nil
+	return map[string]interface{}{"deposits": items, "count": len(items), "note": "Only showing completed deposits"}, nil
 }
 
 func (o *Orchestrator) executeYieldEarned(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
@@ -209,18 +242,27 @@ func (o *Orchestrator) executeWithdrawalHistory(ctx context.Context, userID uuid
 	if l, ok := args["limit"].(float64); ok && l > 0 && l <= 10 {
 		limit = int(l)
 	}
-	withdrawals, err := o.withdrawalHistory.GetByUserID(ctx, userID, limit, 0)
+	// Fetch more than needed so we can filter to completed only
+	withdrawals, err := o.withdrawalHistory.GetByUserID(ctx, userID, limit*3, 0)
 	if err != nil {
 		return nil, fmt.Errorf("withdrawal history: %w", err)
 	}
-	items := make([]map[string]interface{}, len(withdrawals))
-	for i, w := range withdrawals {
+	items := make([]map[string]interface{}, 0, limit)
+	for _, w := range withdrawals {
+		if len(items) >= limit {
+			break
+		}
+		// Only show completed withdrawals
+		if w.Status != entities.WithdrawalStatusCompleted {
+			continue
+		}
 		item := map[string]interface{}{
+			"direction":      "money_out",
 			"amount":         w.Amount.String(),
 			"currency":       string(w.Currency),
 			"type":           string(w.WithdrawalType),
 			"source_account": string(w.SourceAccount),
-			"status":         string(w.Status),
+			"status":         "completed",
 			"date":           w.CreatedAt.Format("Jan 2, 2006"),
 		}
 		if w.DestinationAddress != nil {
@@ -229,7 +271,54 @@ func (o *Orchestrator) executeWithdrawalHistory(ctx context.Context, userID uuid
 		if w.FeeAmount.IsPositive() {
 			item["fee"] = w.FeeAmount.String()
 		}
+		items = append(items, item)
+	}
+	return map[string]interface{}{"withdrawals": items, "count": len(items), "note": "Only showing completed withdrawals"}, nil
+}
+
+func (o *Orchestrator) executeReceiptHistory(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+	if o.receiptHistory == nil {
+		return map[string]interface{}{"error": "receipt history not available"}, nil
+	}
+
+	period, _ := args["period"].(string)
+	start, end := parsePeriod(period)
+
+	receipts, err := o.receiptHistory.GetByUserIDInRange(ctx, userID, start, end, 15)
+	if err != nil {
+		return nil, fmt.Errorf("receipt history: %w", err)
+	}
+
+	items := make([]map[string]interface{}, len(receipts))
+	for i, r := range receipts {
+		item := map[string]interface{}{
+			"merchant": r.Merchant,
+			"amount":   r.Amount.String(),
+			"currency": r.Currency,
+			"category": r.Category,
+			"date":     r.CreatedAt.Format("Jan 2, 2006"),
+		}
+		if r.ReceiptDate != nil {
+			item["receipt_date"] = r.ReceiptDate.Format("Jan 2, 2006")
+		}
+		parsed := r.ParsedItems()
+		if len(parsed) > 0 {
+			item["items"] = parsed
+		}
 		items[i] = item
 	}
-	return map[string]interface{}{"withdrawals": items, "count": len(items)}, nil
+
+	// Category totals
+	catTotals, _ := o.receiptHistory.GetTotalByCategory(ctx, userID, start, end)
+	cats := make([]map[string]interface{}, len(catTotals))
+	for i, c := range catTotals {
+		cats[i] = map[string]interface{}{"category": c.Category, "total": c.Total.String(), "count": c.Count}
+	}
+
+	return map[string]interface{}{
+		"receipts":         items,
+		"count":            len(items),
+		"category_totals":  cats,
+		"note":             "These are receipts the user has scanned/uploaded. They represent offline/cash spending not captured by card transactions.",
+	}, nil
 }

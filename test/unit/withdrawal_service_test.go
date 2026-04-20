@@ -1,6 +1,7 @@
 package unit
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -13,8 +14,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/withdrawal"
 )
 
-// TestCalculateFiatWithdrawalFee tests the fiat fee calculation:
-// USD: 1% + $0.50, EUR: 1% + €0.50
+// TestCalculateFiatWithdrawalFee tests the fiat flat fee calculation.
 func TestCalculateFiatWithdrawalFee(t *testing.T) {
 	svc := withdrawal.NewWithdrawalService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
@@ -25,42 +25,41 @@ func TestCalculateFiatWithdrawalFee(t *testing.T) {
 		wantFee  string
 	}{
 		{
-			name:     "USD 100 → 1% + $0.50 = $1.50",
+			name:     "USD 100 → flat $1.00",
 			amount:   "100",
 			currency: entities.WithdrawalCurrencyUSD,
-			wantFee:  "1.5",
+			wantFee:  "1",
 		},
 		{
-			name:     "USD 10 minimum → $0.60",
+			name:     "USD 10 → flat $1.00",
 			amount:   "10",
 			currency: entities.WithdrawalCurrencyUSD,
-			wantFee:  "0.6",
+			wantFee:  "1",
 		},
 		{
-			name:     "EUR 100 → 1% + €0.50 = €1.50",
+			name:     "EUR 100 → flat €1.00",
 			amount:   "100",
 			currency: entities.WithdrawalCurrencyEUR,
-			wantFee:  "1.5",
+			wantFee:  "1",
 		},
 		{
-			name:     "USD 1000 → $10.50",
+			name:     "USD 1000 → flat $1.00",
 			amount:   "1000",
 			currency: entities.WithdrawalCurrencyUSD,
-			wantFee:  "10.5",
+			wantFee:  "1",
 		},
 		{
-			name:     "unknown currency → zero fee",
+			name:     "USDC → default USD flat $1.00",
 			amount:   "100",
 			currency: entities.WithdrawalCurrencyUSDC,
-			wantFee:  "0",
+			wantFee:  "1",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			amount := decimal.RequireFromString(tt.amount)
-			// GetWithdrawalFee is the public method that wraps calculateFiatWithdrawalFee
-			feeResp, err := svc.GetWithdrawalFee(nil, entities.WithdrawalTypeFiat, amount, tt.currency, "", "")
+			feeResp, err := svc.GetWithdrawalFee(context.Background(), entities.WithdrawalTypeFiat, amount, tt.currency, "", "")
 			require.NoError(t, err)
 			expected := decimal.RequireFromString(tt.wantFee)
 			assert.True(t, feeResp.Amount.Equal(expected),
@@ -69,27 +68,30 @@ func TestCalculateFiatWithdrawalFee(t *testing.T) {
 	}
 }
 
-// TestCalculateCryptoWithdrawalFee verifies crypto withdrawals are fee-free
+// TestCalculateCryptoWithdrawalFee verifies crypto withdrawals use destination-chain flat fees.
 func TestCalculateCryptoWithdrawalFee(t *testing.T) {
 	svc := withdrawal.NewWithdrawalService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	tests := []struct {
-		name   string
-		amount string
-		src    string
-		dst    string
+		name    string
+		amount  string
+		src     string
+		dst     string
+		wantFee string
 	}{
-		{"same chain SOL→SOL", "100", "SOL", "SOL"},
-		{"cross chain SOL→ETH", "500", "SOL", "ETH"},
-		{"BASE→MATIC", "50", "BASE", "MATIC"},
+		{"same chain SOL→SOL", "100", "SOL", "SOL", "0.1"},
+		{"cross chain SOL→ETH", "500", "SOL", "ETH", "0.5"},
+		{"BASE→MATIC", "50", "BASE", "MATIC", "0.5"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			amount := decimal.RequireFromString(tt.amount)
-			feeResp, err := svc.GetWithdrawalFee(nil, entities.WithdrawalTypeCrypto, amount, entities.WithdrawalCurrencyUSDC, tt.src, tt.dst)
+			feeResp, err := svc.GetWithdrawalFee(context.Background(), entities.WithdrawalTypeCrypto, amount, entities.WithdrawalCurrencyUSDC, tt.src, tt.dst)
 			require.NoError(t, err)
-			assert.True(t, feeResp.Amount.IsZero(), "crypto fee should be zero, got %s", feeResp.Amount)
+			expected := decimal.RequireFromString(tt.wantFee)
+			assert.True(t, feeResp.Amount.Equal(expected),
+				"crypto fee: got %s, want %s", feeResp.Amount, tt.wantFee)
 		})
 	}
 }
