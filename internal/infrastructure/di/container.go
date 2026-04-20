@@ -2756,6 +2756,8 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	if c.ReceiptRepo != nil {
 		c.AIOrchestrator.SetReceiptHistory(c.ReceiptRepo)
 	}
+	budgetRepo := repositories.NewBudgetRepository(sqlxDB)
+	c.AIOrchestrator.SetBudgetProvider(budgetRepo)
 	if c.yieldRepo != nil {
 		c.AIOrchestrator.SetYieldProvider(c.yieldRepo)
 	}

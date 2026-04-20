@@ -25,7 +25,7 @@ const allOutflows = `WITH outflows AS (
 	SELECT t.created_at, e.amount,
 		CASE WHEN t.metadata->>'provider' = 'paj' THEN 'NGN Withdrawal'
 		     ELSE 'Withdrawal' END AS category,
-		CASE WHEN t.metadata->>'provider' = 'paj' THEN 'Paj Cash (₦' || COALESCE(t.metadata->>'fiat_amount', '?') || ')'
+		CASE WHEN t.metadata->>'provider' = 'paj' THEN 'Naira Withdrawal (₦' || COALESCE(t.metadata->>'fiat_amount', '?') || ')'
 		     ELSE COALESCE(t.description, 'Crypto/Fiat Withdrawal') END AS source
 	FROM ledger_entries e
 	JOIN ledger_transactions t ON t.id = e.transaction_id
@@ -44,8 +44,11 @@ const allOutflows = `WITH outflows AS (
 
 	UNION ALL
 
-	-- P2P transfers (sent)
-	SELECT created_at, amount, 'P2P Transfer' AS category, COALESCE(recipient_identifier, 'P2P Send') AS source
+	-- P2P transfers (sent) — smart categorization by recipient
+	SELECT created_at, amount,
+		CASE WHEN LOWER(recipient_identifier) SIMILAR TO '%(store|shop|pay|mart|market|delivery|logistics|food|restaurant|cafe|hotel|travel|uber|bolt|taxi)%'
+		     THEN 'P2P Merchant' ELSE 'P2P Transfer' END AS category,
+		COALESCE(recipient_identifier, 'P2P Send') AS source
 	FROM p2p_transfers
 	WHERE sender_id = $1 AND status = 'completed'
 	  AND created_at >= $2 AND created_at < $3

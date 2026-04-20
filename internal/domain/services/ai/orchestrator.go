@@ -108,6 +108,7 @@ type Orchestrator struct {
 	yieldProvider     YieldProvider
 	withdrawalHistory WithdrawalHistoryProvider
 	receiptHistory    ReceiptHistoryProvider
+	budgetProvider    BudgetProvider
 	userProfile       UserProfileProvider
 	reportEmail       ReportEmailSender
 	pending           PendingActionStore
@@ -149,7 +150,7 @@ RAIL CONTEXT (you must know this):
 - Stash is USD-denominated. For Nigerian users, this means passive protection against naira devaluation.
 - Round-ups from card purchases go to Stash automatically.
 - Users can withdraw from both Spend and Stash anytime.
-- Withdrawals include: crypto withdrawals (USDC to external wallet), fiat withdrawals (to bank account), and Paj Cash NGN withdrawals (USDC converted to naira).
+- Withdrawals include: crypto withdrawals (USDC to external wallet), fiat withdrawals (to bank account), and naira withdrawals (USDC converted to NGN sent to bank).
 
 YOUR USERS:
 - Mostly 18-30 year olds in Nigeria and across Africa, plus diaspora in UK/US/Europe.
@@ -183,7 +184,7 @@ TOOL DECISION TREE — follow this order:
 
 4. "How much did I deposit?" / "Money coming in?" → get_deposit_history (completed deposits only, labeled as money_in)
 
-5. "How much did I withdraw?" / "Paj Cash?" / "NGN withdrawal?" → get_withdrawal_history (completed withdrawals only, with currency, type, destination, fees)
+5. "How much did I withdraw?" / "NGN withdrawal?" / "Naira?" → get_withdrawal_history (completed withdrawals only, with currency, type, destination, fees)
 
 6. "How are my savings growing?" / "Stash progress?" → get_balance_history (stash balance over time)
 
@@ -201,6 +202,10 @@ TOOL DECISION TREE — follow this order:
 
 13. General financial education → search_knowledge_base
 
+14. "Set my budget" / "Budget to X per month" → set_budget
+
+15. "How's my budget?" / "Am I on track?" → get_budget (shows limit, spent, remaining, daily allowance)
+
 COMBINING TOOLS:
 - For "where did my money go": get_money_flow + get_recent_transactions (includes receipt data automatically)
 - For "how am I doing overall": get_comparative_context + get_money_flow
@@ -213,6 +218,17 @@ RECEIPT SCANNING:
 - Scanned receipts appear in get_money_flow under "scanned_receipts" and in get_recent_transactions alongside card/withdrawal/P2P data.
 - Use get_receipt_history when users want to see item-level detail from their scanned receipts.
 - Receipt spending is offline/cash spending — it's tracked separately from on-platform transactions but included in total spending calculations.
+
+BUDGETS:
+- Users can set a monthly spending budget via set_budget.
+- get_budget shows: limit, spent so far, remaining, percent used, daily allowance, and status (on_track/almost_exceeded/exceeded).
+- When answering "how am I doing" or "where did my money go", also check get_budget if the user has one set — mention their budget progress.
+- If a user hasn't set a budget, suggest it when discussing spending.
+
+TRANSACTION CONTEXT:
+- Sometimes the user taps a specific transaction in the app and asks about it. The transaction details will be prepended to their message in brackets.
+- When you see [The user is asking about a specific transaction...], use those details to give a precise answer about that specific transaction.
+- Don't ask the user to clarify which transaction — you already have the context.
 
 RULES:
 - NEVER give specific financial advice (no "buy X" or "sell Y"). Say "you might consider" or "many people in your situation..."
@@ -295,6 +311,10 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 	tools = append(tools, ReadOnlyTools(o.cardTransactions != nil, o.depositHistory != nil, o.yieldProvider != nil, o.withdrawalHistory != nil, o.receiptHistory != nil)...)
 	// Tax, email, and goals tools
 	tools = append(tools, TaxAndReportTools(o.userProfile != nil, o.reportEmail != nil)...)
+	// Budget tools
+	if o.budgetProvider != nil {
+		tools = append(tools, BudgetTools()...)
+	}
 	return tools
 }
 
@@ -537,6 +557,12 @@ func (o *Orchestrator) executeTool(ctx context.Context, userID uuid.UUID, tc ai.
 
 	case ToolGetSavingsGoals:
 		return o.executeGetSavingsGoals(ctx, userID)
+
+	case ToolGetBudget:
+		return o.executeGetBudget(ctx, userID)
+
+	case ToolSetBudget:
+		return o.executeSetBudget(ctx, userID, tc.Arguments)
 
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", tc.Name)

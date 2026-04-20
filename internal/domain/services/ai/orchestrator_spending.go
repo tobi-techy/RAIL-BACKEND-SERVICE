@@ -64,7 +64,7 @@ func SpendingTools() []infraai.Tool {
 		},
 		{
 			Name:        ToolGetRecentTransactions,
-			Description: "Get individual spending transactions: every card payment, withdrawal (including Paj Cash NGN), and P2P transfer. Use when user asks to see their transactions, wants to know exactly where money went, or asks about specific purchases.",
+			Description: "Get individual spending transactions: every card payment, withdrawal (including naira withdrawals), and P2P transfer. Use when user asks to see their transactions, wants to know exactly where money went, or asks about specific purchases.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{

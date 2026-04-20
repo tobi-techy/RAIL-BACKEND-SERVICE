@@ -113,7 +113,7 @@ func ReadOnlyTools(hasCards, hasDeposits, hasYield, hasWithdrawals, hasReceipts 
 	if hasWithdrawals {
 		tools = append(tools, infraai.Tool{
 			Name:        ToolGetWithdrawalHistory,
-			Description: "Get recent withdrawal history including Paj Cash NGN withdrawals, crypto withdrawals, and fiat offramps. Use when user asks where their money went, about withdrawals, cash outs, NGN conversions, or money leaving their account.",
+			Description: "Get recent withdrawal history including naira withdrawals, crypto withdrawals, and fiat offramps. Use when user asks about withdrawals, cash outs, NGN conversions, or money leaving their account.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
