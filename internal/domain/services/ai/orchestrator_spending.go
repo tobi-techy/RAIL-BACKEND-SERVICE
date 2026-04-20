@@ -228,6 +228,32 @@ func (o *Orchestrator) executeMoneyFlow(ctx context.Context, userID uuid.UUID, a
 	totalSpending := totalOut.Add(flow.TotalReceipts)
 	net := flow.TotalDeposits.Sub(totalOut)
 
+	// Build chart data: breakdown by category for pie/bar charts
+	chartBreakdown := []map[string]interface{}{}
+	if flow.TotalWithdrawals.IsPositive() {
+		chartBreakdown = append(chartBreakdown, map[string]interface{}{"category": "Withdrawals", "amount": flow.TotalWithdrawals.StringFixed(2), "count": flow.WithdrawalCount})
+	}
+	if flow.TotalCardSpend.IsPositive() {
+		chartBreakdown = append(chartBreakdown, map[string]interface{}{"category": "Card Spend", "amount": flow.TotalCardSpend.StringFixed(2), "count": flow.CardSpendCount})
+	}
+	if flow.TotalP2P.IsPositive() {
+		chartBreakdown = append(chartBreakdown, map[string]interface{}{"category": "P2P Transfers", "amount": flow.TotalP2P.StringFixed(2), "count": flow.P2PCount})
+	}
+	if flow.TotalReceipts.IsPositive() {
+		chartBreakdown = append(chartBreakdown, map[string]interface{}{"category": "Receipts (cash)", "amount": flow.TotalReceipts.StringFixed(2), "count": flow.ReceiptCount})
+	}
+
+	// Daily spending trend
+	var dailyTrend []map[string]interface{}
+	if o.spending != nil {
+		summary, err := o.spending.GetSummary(ctx, userID, start, end)
+		if err == nil {
+			for _, d := range summary.DailyTrend {
+				dailyTrend = append(dailyTrend, map[string]interface{}{"date": d.Period, "amount": d.Total.String(), "count": d.Count})
+			}
+		}
+	}
+
 	return map[string]interface{}{
 		"money_in": map[string]interface{}{
 			"total_deposits": flow.TotalDeposits.StringFixed(2),
@@ -245,10 +271,13 @@ func (o *Orchestrator) executeMoneyFlow(ctx context.Context, userID uuid.UUID, a
 		"scanned_receipts": map[string]interface{}{
 			"total": flow.TotalReceipts.StringFixed(2),
 			"count": flow.ReceiptCount,
-			"note":  "Offline/cash spending from scanned receipts — not included in money_out since these are external to Rail",
 		},
 		"total_all_spending": totalSpending.StringFixed(2),
 		"net_flow":           net.StringFixed(2),
-		"note":               "money_out = on-platform outflows (withdrawals + card + P2P). scanned_receipts = offline spending tracked via receipt scans. total_all_spending = both combined.",
+		"chart": map[string]interface{}{
+			"spending_breakdown": chartBreakdown,
+			"daily_trend":        dailyTrend,
+		},
+		"note": "All amounts are USDC except NGN withdrawals which show the naira amount. Only completed transactions. Failed/reversed excluded.",
 	}, nil
 }

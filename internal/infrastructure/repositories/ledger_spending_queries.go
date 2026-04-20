@@ -21,8 +21,10 @@ func NewLedgerSpendingRepository(db *sqlx.DB) *LedgerSpendingRepository {
 
 // allOutflows is a CTE that unions all spending sources into a single view.
 const allOutflows = `WITH outflows AS (
-	-- Ledger withdrawals
-	SELECT t.created_at, e.amount,
+	-- Ledger withdrawals (excluding reversed: check for matching reversal entry)
+	SELECT t.created_at,
+		CASE WHEN t.metadata->>'provider' = 'paj' THEN COALESCE((t.metadata->>'fiat_amount')::numeric, e.amount)
+		     ELSE e.amount END AS amount,
 		CASE WHEN t.metadata->>'provider' = 'paj' THEN 'NGN Withdrawal'
 		     ELSE 'Withdrawal' END AS category,
 		CASE WHEN t.metadata->>'provider' = 'paj' THEN 'Naira Withdrawal (₦' || COALESCE(t.metadata->>'fiat_amount', '?') || ')'
@@ -33,6 +35,15 @@ const allOutflows = `WITH outflows AS (
 	WHERE a.user_id = $1 AND e.entry_type = 'credit'
 	  AND t.transaction_type = 'withdrawal' AND t.status = 'completed'
 	  AND e.created_at >= $2 AND e.created_at < $3
+	  AND NOT EXISTS (
+	    SELECT 1 FROM ledger_entries re
+	    JOIN ledger_transactions rt ON rt.id = re.transaction_id
+	    WHERE re.account_id = e.account_id AND re.entry_type = 'debit'
+	      AND rt.transaction_type = 'reversal' AND rt.status = 'completed'
+	      AND re.amount = e.amount
+	      AND re.created_at >= e.created_at
+	      AND re.created_at < e.created_at + interval '1 hour'
+	  )
 
 	UNION ALL
 
@@ -142,15 +153,27 @@ func (r *LedgerSpendingRepository) GetMoneyFlow(ctx context.Context, userID uuid
 		return nil, err
 	}
 
-	// Withdrawals (money out via ledger)
+	// Withdrawals (money out via ledger, excluding reversed)
 	err = r.db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(e.amount), 0), COUNT(*)
+		SELECT COALESCE(SUM(
+			CASE WHEN t.metadata->>'provider' = 'paj' THEN COALESCE((t.metadata->>'fiat_amount')::numeric, e.amount)
+			     ELSE e.amount END
+		), 0), COUNT(*)
 		FROM ledger_entries e
 		JOIN ledger_transactions t ON t.id = e.transaction_id
 		JOIN ledger_accounts a ON a.id = e.account_id
 		WHERE a.user_id = $1 AND e.entry_type = 'credit'
 		  AND t.transaction_type = 'withdrawal' AND t.status = 'completed'
-		  AND e.created_at >= $2 AND e.created_at < $3`,
+		  AND e.created_at >= $2 AND e.created_at < $3
+		  AND NOT EXISTS (
+		    SELECT 1 FROM ledger_entries re
+		    JOIN ledger_transactions rt ON rt.id = re.transaction_id
+		    WHERE re.account_id = e.account_id AND re.entry_type = 'debit'
+		      AND rt.transaction_type = 'reversal' AND rt.status = 'completed'
+		      AND re.amount = e.amount
+		      AND re.created_at >= e.created_at
+		      AND re.created_at < e.created_at + interval '1 hour'
+		  )`,
 		userID, start, end).Scan(&s.TotalWithdrawals, &s.WithdrawalCount)
 	if err != nil {
 		return nil, err
