@@ -84,6 +84,11 @@ func (s *Service) GetTransactions(ctx context.Context, userID uuid.UUID, start, 
 	return s.repo.GetRecentOutflows(ctx, userID, start, end, limit)
 }
 
+// GetDailyTrend returns daily spending totals for the given period.
+func (s *Service) GetDailyTrend(ctx context.Context, userID uuid.UUID, start, end time.Time) ([]entities.SpendingByPeriod, error) {
+	return s.repo.GetSpendingByDay(ctx, userID, start, end)
+}
+
 // GetMoneyFlow returns pre-computed money-in and money-out totals for the given period.
 func (s *Service) GetMoneyFlow(ctx context.Context, userID uuid.UUID, start, end time.Time) (*entities.MoneyFlowSummary, error) {
 	return s.repo.GetMoneyFlow(ctx, userID, start, end)
