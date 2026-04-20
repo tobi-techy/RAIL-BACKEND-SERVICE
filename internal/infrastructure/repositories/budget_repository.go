@@ -4,22 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/shopspring/decimal"
 )
-
-// SpendingBudget represents a user's monthly spending budget.
-type SpendingBudget struct {
-	ID           uuid.UUID       `db:"id" json:"id"`
-	UserID       uuid.UUID       `db:"user_id" json:"user_id"`
-	MonthlyLimit decimal.Decimal `db:"monthly_limit" json:"monthly_limit"`
-	Currency     string          `db:"currency" json:"currency"`
-	CreatedAt    time.Time       `db:"created_at" json:"created_at"`
-	UpdatedAt    time.Time       `db:"updated_at" json:"updated_at"`
-}
 
 type BudgetRepository struct {
 	db *sqlx.DB
@@ -41,8 +31,8 @@ func (r *BudgetRepository) Upsert(ctx context.Context, userID uuid.UUID, limit d
 	return nil
 }
 
-func (r *BudgetRepository) GetByUserID(ctx context.Context, userID uuid.UUID) (*SpendingBudget, error) {
-	var b SpendingBudget
+func (r *BudgetRepository) GetByUserID(ctx context.Context, userID uuid.UUID) (*entities.SpendingBudget, error) {
+	var b entities.SpendingBudget
 	err := r.db.GetContext(ctx, &b, `SELECT * FROM spending_budgets WHERE user_id = $1`, userID)
 	if err == sql.ErrNoRows {
 		return nil, nil

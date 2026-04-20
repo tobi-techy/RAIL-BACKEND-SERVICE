@@ -1,6 +1,11 @@
 package entities
 
-import "github.com/shopspring/decimal"
+import (
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
+)
 
 // SpendingByCategory represents spending grouped by merchant category.
 type SpendingByCategory struct {
@@ -43,4 +48,14 @@ type MoneyFlowSummary struct {
 	P2PCount         int             `json:"p2p_count"`
 	TotalReceipts    decimal.Decimal `json:"total_receipts"`
 	ReceiptCount     int             `json:"receipt_count"`
+}
+
+// SpendingBudget represents a user's monthly spending budget.
+type SpendingBudget struct {
+	ID           uuid.UUID       `db:"id" json:"id"`
+	UserID       uuid.UUID       `db:"user_id" json:"user_id"`
+	MonthlyLimit decimal.Decimal `db:"monthly_limit" json:"monthly_limit"`
+	Currency     string          `db:"currency" json:"currency"`
+	CreatedAt    time.Time       `db:"created_at" json:"created_at"`
+	UpdatedAt    time.Time       `db:"updated_at" json:"updated_at"`
 }

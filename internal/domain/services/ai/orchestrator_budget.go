@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
 )
@@ -18,7 +18,7 @@ const (
 
 // BudgetProvider reads and writes spending budgets.
 type BudgetProvider interface {
-	GetByUserID(ctx context.Context, userID uuid.UUID) (*repositories.SpendingBudget, error)
+	GetByUserID(ctx context.Context, userID uuid.UUID) (*entities.SpendingBudget, error)
 	Upsert(ctx context.Context, userID uuid.UUID, limit decimal.Decimal, currency string) error
 }
 
