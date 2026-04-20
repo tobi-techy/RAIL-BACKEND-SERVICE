@@ -19,6 +19,7 @@ type BalanceHistoryProvider interface {
 }
 
 // SetBalanceHistory sets the balance history provider.
+// Deprecated: Use NewOrchestratorWithDeps instead.
 func (o *Orchestrator) SetBalanceHistory(b BalanceHistoryProvider) {
 	o.balanceHistory = b
 }

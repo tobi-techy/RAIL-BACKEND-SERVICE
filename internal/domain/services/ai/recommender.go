@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -108,11 +109,57 @@ Respond in JSON format: [{"basket_id": "...", "reason": "...", "score": 85}]`, l
 		return r.fallbackRecommendations(baskets, allocations, limit), nil
 	}
 
-	// Parse AI response - for now use fallback as parsing is complex
-	recommendations := r.fallbackRecommendations(baskets, allocations, limit)
-	r.logger.Debug("Generated recommendations", zap.Int("count", len(recommendations)), zap.String("ai_response", resp.Content))
+	// Parse AI response
+	recommendations := r.parseAIRecommendations(resp.Content, baskets, limit)
+	if len(recommendations) > 0 {
+		return recommendations, nil
+	}
 
-	return recommendations, nil
+	r.logger.Warn("Failed to parse AI recommendations, using fallback", zap.String("ai_response", resp.Content))
+	return r.fallbackRecommendations(baskets, allocations, limit), nil
+}
+
+// aiRecommendation is the JSON shape returned by the AI.
+type aiRecommendation struct {
+	BasketID string `json:"basket_id"`
+	Reason   string `json:"reason"`
+	Score    int    `json:"score"`
+}
+
+// parseAIRecommendations parses the AI JSON response and maps basket IDs to real baskets.
+func (r *Recommender) parseAIRecommendations(content string, baskets []*entities.Basket, limit int) []*Recommendation {
+	var parsed []aiRecommendation
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		return nil
+	}
+
+	basketMap := make(map[uuid.UUID]*entities.Basket, len(baskets))
+	for _, b := range baskets {
+		basketMap[b.ID] = b
+	}
+
+	var result []*Recommendation
+	for _, p := range parsed {
+		if len(result) >= limit {
+			break
+		}
+		id, err := uuid.Parse(p.BasketID)
+		if err != nil {
+			continue
+		}
+		b, ok := basketMap[id]
+		if !ok {
+			continue
+		}
+		result = append(result, &Recommendation{
+			BasketID:   b.ID,
+			BasketName: b.Name,
+			Score:      decimal.NewFromInt(int64(p.Score)),
+			Reason:     p.Reason,
+			Tags:       []string{string(b.RiskLevel)},
+		})
+	}
+	return result
 }
 
 // fallbackRecommendations provides rule-based recommendations when AI fails

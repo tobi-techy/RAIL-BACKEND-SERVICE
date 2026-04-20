@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
 	"github.com/shopspring/decimal"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
@@ -753,6 +754,17 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				}
 			}
 
+			// Household expense tracking
+			if container.P2PService != nil {
+				householdHandler := handlers.NewHouseholdHandler(sqlx.NewDb(container.DB, "postgres"), container.P2PService, container.ZapLog)
+				household := protected.Group("/household/groups")
+				{
+					household.POST("", householdHandler.CreateGroup)
+					household.POST("/:id/receipts", householdHandler.ShareReceipt)
+					household.GET("/:id/summary", householdHandler.GetSummary)
+				}
+			}
+
 			// Notification routes - push tokens and in-app notifications
 			notificationHandlers := handlers.NewNotificationHandlers(
 				container.DeviceTokenRepo,
@@ -899,7 +911,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 			// AI Chat endpoints (AI Financial Manager)
 			if container.GetAIOrchestrator() != nil {
-				aiChatHandlers := handlers.NewAIChatHandlers(container.GetAIOrchestrator(), container.Logger)
+				aiChatHandlers := handlers.NewAIChatHandlers(container.GetAIOrchestrator(), container.GetConversationService(), container.Logger)
 				aiGroup := protected.Group("/ai")
 				{
 					aiGroup.POST("/chat", middleware.AuthRateLimit(20), middleware.PerUserRateLimit(20), aiChatHandlers.Chat)
@@ -916,7 +928,20 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 							container.ReceiptRepo,
 							container.ZapLog,
 						)
+						imageHandler.SetBudgetRepo(container.BudgetRepo)
+						imageHandler.SetSpendingRepo(container.LedgerSpendingRepo)
 						aiGroup.POST("/chat/image", middleware.AuthRateLimit(10), imageHandler.AnalyzeImage)
+						aiGroup.POST("/chat/images", middleware.AuthRateLimit(3), imageHandler.BatchAnalyzeImages)
+						aiGroup.GET("/receipts", imageHandler.GetReceipts)
+						aiGroup.GET("/receipts/gallery", imageHandler.GetReceiptGallery)
+						aiGroup.PUT("/receipts/:id", imageHandler.UpdateReceipt)
+						aiGroup.DELETE("/receipts/:id", imageHandler.DeleteReceipt)
+
+						// Receipt split with friends
+						if container.P2PService != nil {
+							splitHandler := handlers.NewReceiptSplitHandler(container.ReceiptRepo, container.P2PService, container.ZapLog)
+							aiGroup.POST("/receipts/:id/split", splitHandler.SplitReceipt)
+						}
 					}
 
 					// Premium AI endpoints (pro-gated)

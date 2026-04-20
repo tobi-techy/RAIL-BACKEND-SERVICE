@@ -11,11 +11,13 @@ import (
 )
 
 // SetConversations sets the conversation persistence layer (optional).
+// Deprecated: Use NewOrchestratorWithDeps instead.
 func (o *Orchestrator) SetConversations(c ConversationPersister) {
 	o.conversations = c
 }
 
 // SetUsageTracker sets the usage tracking layer (optional).
+// Deprecated: Use NewOrchestratorWithDeps instead.
 func (o *Orchestrator) SetUsageTracker(u UsageTracker) {
 	o.usage = u
 }
@@ -89,4 +91,14 @@ type CostCeilingResponse struct {
 	OverCeiling bool            `json:"over_ceiling"`
 	CurrentCost decimal.Decimal `json:"current_cost_usd"`
 	Ceiling     decimal.Decimal `json:"ceiling_usd"`
+}
+
+// TrackVisionUsage records token usage from a vision API call.
+func (o *Orchestrator) TrackVisionUsage(ctx context.Context, userID uuid.UUID, tokens int) {
+	if o.usage == nil || tokens <= 0 {
+		return
+	}
+	if err := o.usage.TrackInteraction(ctx, userID, "gpt-4o-vision", tokens); err != nil {
+		o.logger.Error("failed to track vision usage", zap.Error(err))
+	}
 }

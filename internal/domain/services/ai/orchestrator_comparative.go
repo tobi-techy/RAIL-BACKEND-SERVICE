@@ -19,6 +19,7 @@ type AggregateStatsProvider interface {
 }
 
 // SetAggregateStats sets the aggregate stats provider.
+// Deprecated: Use NewOrchestratorWithDeps instead.
 func (o *Orchestrator) SetAggregateStats(a AggregateStatsProvider) {
 	o.aggregateStats = a
 }

@@ -4,10 +4,16 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/jpeg"
+	_ "image/png"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -18,6 +24,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
+	"golang.org/x/image/draw"
 )
 
 // ImageAnalysisHandler handles receipt/image analysis via GPT-4o vision.
@@ -25,11 +32,23 @@ type ImageAnalysisHandler struct {
 	apiKey       string
 	orchestrator *aiservice.Orchestrator
 	receiptRepo  *repositories.ReceiptRepository
+	budgetRepo   *repositories.BudgetRepository
+	spendingRepo *repositories.LedgerSpendingRepository
 	logger       *zap.Logger
 }
 
 func NewImageAnalysisHandler(apiKey string, orchestrator *aiservice.Orchestrator, receiptRepo *repositories.ReceiptRepository, logger *zap.Logger) *ImageAnalysisHandler {
 	return &ImageAnalysisHandler{apiKey: apiKey, orchestrator: orchestrator, receiptRepo: receiptRepo, logger: logger}
+}
+
+// SetBudgetRepo sets the budget repository for budget impact lookups.
+func (h *ImageAnalysisHandler) SetBudgetRepo(b *repositories.BudgetRepository) {
+	h.budgetRepo = b
+}
+
+// SetSpendingRepo sets the spending repository for category spending lookups.
+func (h *ImageAnalysisHandler) SetSpendingRepo(s *repositories.LedgerSpendingRepository) {
+	h.spendingRepo = s
 }
 
 type imageRequest struct {
@@ -61,7 +80,7 @@ func (h *ImageAnalysisHandler) AnalyzeImage(c *gin.Context) {
 		return
 	}
 
-	if h.orchestrator.IsUserOverCostCeiling(c.Request.Context(), userID) {
+	if h.orchestrator != nil && h.orchestrator.IsUserOverCostCeiling(c.Request.Context(), userID) {
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{
 			"content":      "You've reached your monthly AI limit 💡",
 			"over_ceiling": true,
@@ -81,7 +100,7 @@ func (h *ImageAnalysisHandler) AnalyzeImage(c *gin.Context) {
 		return
 	}
 
-	raw, err := h.callVisionAPI(c.Request.Context(), req.Image, req.Message)
+	raw, tokensUsed, err := h.callVisionAPI(c.Request.Context(), req.Image, req.Message)
 	if err != nil {
 		h.logger.Error("vision API failed", zap.Error(err), zap.String("user_id", userID.String()))
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{
@@ -92,14 +111,33 @@ func (h *ImageAnalysisHandler) AnalyzeImage(c *gin.Context) {
 		return
 	}
 
+	// Track vision API usage
+	if h.orchestrator != nil && tokensUsed > 0 {
+		h.orchestrator.TrackVisionUsage(c.Request.Context(), userID, tokensUsed)
+	}
+
 	// Try to parse structured receipt data
 	var parsed visionReceiptResponse
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil || !parsed.IsReceipt {
-		// Not a receipt or couldn't parse — return raw analysis
+		// Not a receipt or couldn't parse — return structured card
+		summary := raw
+		if parsed.Summary != "" {
+			summary = parsed.Summary
+		}
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{
-			"content":     raw,
-			"tokens_used": 0,
+			"content":     summary,
+			"tokens_used": tokensUsed,
 			"provider":    "openai-vision",
+			"cards": []map[string]interface{}{
+				{
+					"type":  "image_analysis",
+					"title": "Image Analysis",
+					"data": map[string]interface{}{
+						"summary":    summary,
+						"is_receipt": false,
+					},
+				},
+			},
 		}})
 		return
 	}
@@ -107,8 +145,65 @@ func (h *ImageAnalysisHandler) AnalyzeImage(c *gin.Context) {
 	// Persist the receipt
 	scan := h.buildReceiptScan(userID, req.Image, &parsed, raw)
 	if h.receiptRepo != nil {
-		if dbErr := h.receiptRepo.Create(c.Request.Context(), scan); dbErr != nil {
-			h.logger.Warn("failed to persist receipt scan", zap.Error(dbErr))
+		// Check for duplicate
+		if scan.ImageHash != nil {
+			exists, err := h.receiptRepo.ExistsByImageHash(c.Request.Context(), userID, *scan.ImageHash)
+			if err == nil && exists {
+				existing, _ := h.receiptRepo.GetByImageHash(c.Request.Context(), userID, *scan.ImageHash)
+				if existing != nil {
+					c.JSON(http.StatusOK, gin.H{"data": gin.H{
+						"content":    "This receipt has already been scanned",
+						"receipt_id": existing.ID.String(),
+						"duplicate":  true,
+						"provider":   "openai-vision",
+					}})
+					return
+				}
+			}
+		}
+
+		// Only persist if amount is valid
+		if scan.Amount.IsPositive() {
+			if dbErr := h.receiptRepo.Create(c.Request.Context(), scan); dbErr != nil {
+				h.logger.Warn("failed to persist receipt scan", zap.Error(dbErr))
+			}
+		} else {
+			h.logger.Warn("receipt amount invalid, skipping persistence", zap.String("raw_amount", parsed.Amount))
+		}
+	}
+
+	saved := scan.Amount.IsPositive()
+
+	// Budget impact lookup
+	var budgetImpact map[string]interface{}
+	if saved && h.budgetRepo != nil && h.spendingRepo != nil {
+		if budget, err := h.budgetRepo.GetByUserID(c.Request.Context(), userID); err == nil && budget != nil {
+			now := time.Now().UTC()
+			monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+			monthEnd := time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC)
+			cats, err := h.spendingRepo.GetSpendingByCategory(c.Request.Context(), userID, monthStart, monthEnd)
+			if err == nil {
+				var catSpend decimal.Decimal
+				for _, cat := range cats {
+					if strings.EqualFold(cat.Category, parsed.Category) {
+						catSpend = cat.Total
+						break
+					}
+				}
+				remaining := budget.MonthlyLimit.Sub(catSpend)
+				pctUsed := decimal.Zero
+				if budget.MonthlyLimit.IsPositive() {
+					pctUsed = catSpend.Div(budget.MonthlyLimit).Mul(decimal.NewFromInt(100))
+				}
+				budgetImpact = map[string]interface{}{
+					"category":         parsed.Category,
+					"spent_this_month": catSpend.StringFixed(2),
+					"budget_limit":     budget.MonthlyLimit.StringFixed(2),
+					"remaining":        remaining.StringFixed(2),
+					"percent_used":     pctUsed.StringFixed(1),
+					"message":          fmt.Sprintf("This puts you at %s%% of your %s budget. $%s left.", pctUsed.StringFixed(0), parsed.Category, remaining.StringFixed(2)),
+				}
+			}
 		}
 	}
 
@@ -118,39 +213,60 @@ func (h *ImageAnalysisHandler) AnalyzeImage(c *gin.Context) {
 			"type":  "receipt",
 			"title": parsed.Merchant,
 			"data": map[string]interface{}{
-				"merchant": parsed.Merchant,
-				"amount":   parsed.Amount,
-				"currency": parsed.Currency,
-				"date":     parsed.Date,
-				"category": parsed.Category,
-				"items":    parsed.Items,
-				"saved":    true,
+				"merchant":      parsed.Merchant,
+				"amount":        parsed.Amount,
+				"currency":      parsed.Currency,
+				"date":          parsed.Date,
+				"category":      parsed.Category,
+				"items":         parsed.Items,
+				"saved":         saved,
+				"budget_impact": budgetImpact,
 			},
 		},
 	}
 
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+	resp := gin.H{
 		"content":     parsed.Summary,
 		"cards":       cards,
-		"receipt_id":  scan.ID.String(),
-		"tokens_used": 0,
+		"tokens_used": tokensUsed,
 		"provider":    "openai-vision",
-	}})
+	}
+	if saved {
+		resp["receipt_id"] = scan.ID.String()
+	} else {
+		resp["warning"] = "Could not extract a valid amount from this receipt"
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": resp})
+}
+
+func normalizeCurrency(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "naira", "₦", "ngn":
+		return "NGN"
+	case "dollar", "$", "usd":
+		return "USD"
+	case "pound", "£", "gbp":
+		return "GBP"
+	case "euro", "€", "eur":
+		return "EUR"
+	case "":
+		return "USD"
+	default:
+		return strings.ToUpper(strings.TrimSpace(raw))
+	}
 }
 
 func (h *ImageAnalysisHandler) buildReceiptScan(userID uuid.UUID, base64Image string, parsed *visionReceiptResponse, rawText string) *entities.ReceiptScan {
 	amount, _ := decimal.NewFromString(parsed.Amount)
-	currency := parsed.Currency
-	if currency == "" {
-		currency = "USD"
-	}
+	currency := normalizeCurrency(parsed.Currency)
 	category := parsed.Category
 	if category == "" {
 		category = "Uncategorized"
 	}
 
 	itemsJSON, _ := json.Marshal(parsed.Items)
-	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(base64Image[:min(1024, len(base64Image))])))
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(base64Image)))
 
 	var receiptDate *time.Time
 	if parsed.Date != "" {
@@ -173,6 +289,7 @@ func (h *ImageAnalysisHandler) buildReceiptScan(userID uuid.UUID, base64Image st
 		Items:       itemsJSON,
 		RawText:     &rawText,
 		ImageHash:   &hash,
+		Thumbnail:   generateThumbnail(base64Image),
 		CreatedAt:   time.Now(),
 	}
 }
@@ -200,7 +317,7 @@ Rules:
 - Amount should be a plain number string without currency symbols.
 - Currency should be a 3-letter code (USD, NGN, GBP, EUR).`
 
-func (h *ImageAnalysisHandler) callVisionAPI(ctx context.Context, base64Image, userMessage string) (string, error) {
+func (h *ImageAnalysisHandler) callVisionAPI(ctx context.Context, base64Image, userMessage string) (string, int, error) {
 	textContent := "Analyze this image and extract receipt details."
 	if userMessage != "" {
 		textContent = userMessage + "\n\nAlso extract structured receipt details if this is a receipt."
@@ -227,7 +344,7 @@ func (h *ImageAnalysisHandler) callVisionAPI(ctx context.Context, base64Image, u
 
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
-		return "", fmt.Errorf("marshal request: %w", err)
+		return "", 0, fmt.Errorf("marshal request: %w", err)
 	}
 
 	reqCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
@@ -235,24 +352,24 @@ func (h *ImageAnalysisHandler) callVisionAPI(ctx context.Context, base64Image, u
 
 	httpReq, err := http.NewRequestWithContext(reqCtx, "POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(jsonBody))
 	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
+		return "", 0, fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+h.apiKey)
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
-		return "", fmt.Errorf("vision API call: %w", err)
+		return "", 0, fmt.Errorf("vision API call: %w", err)
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 	if err != nil {
-		return "", fmt.Errorf("read response: %w", err)
+		return "", 0, fmt.Errorf("read response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("vision API error %d: %s", resp.StatusCode, string(respBody))
+		return "", 0, fmt.Errorf("vision API error %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var result struct {
@@ -261,14 +378,416 @@ func (h *ImageAnalysisHandler) callVisionAPI(ctx context.Context, base64Image, u
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("parse response: %w", err)
+		return "", 0, fmt.Errorf("parse response: %w", err)
 	}
 
 	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("no choices in response")
+		return "", 0, fmt.Errorf("no choices in response")
 	}
 
-	return result.Choices[0].Message.Content, nil
+	return result.Choices[0].Message.Content, result.Usage.TotalTokens, nil
+}
+
+func generateThumbnail(b64 string) *string {
+	data, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return truncateBase64(b64)
+	}
+	// Guard against decoding extremely large images into memory
+	const maxDecodedSize = 20 * 1024 * 1024 // 20MB decoded
+	if len(data) > maxDecodedSize {
+		return truncateBase64(b64)
+	}
+	// Peek at image dimensions before full decode to prevent decompression bombs
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return truncateBase64(b64)
+	}
+	const maxDimPixels = 8192
+	if cfg.Width > maxDimPixels || cfg.Height > maxDimPixels || cfg.Width <= 0 || cfg.Height <= 0 {
+		return truncateBase64(b64)
+	}
+	// Also guard total pixel count (e.g. 8192x8192 = 64M pixels * 4 bytes = 256MB)
+	const maxTotalPixels = 16 * 1024 * 1024 // 16 megapixels
+	if int64(cfg.Width)*int64(cfg.Height) > maxTotalPixels {
+		return truncateBase64(b64)
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return truncateBase64(b64)
+	}
+	bounds := img.Bounds()
+	w := bounds.Dx()
+	h := bounds.Dy()
+	if w <= 0 || h <= 0 {
+		return truncateBase64(b64)
+	}
+	const maxWidth = 200
+	if w > maxWidth {
+		newH := h * maxWidth / w
+		if newH <= 0 {
+			newH = 1
+		}
+		dst := image.NewRGBA(image.Rect(0, 0, maxWidth, newH))
+		draw.BiLinear.Scale(dst, dst.Bounds(), img, bounds, draw.Over, nil)
+		img = dst
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 60}); err != nil {
+		return truncateBase64(b64)
+	}
+	thumb := base64.StdEncoding.EncodeToString(buf.Bytes())
+	return &thumb
+}
+
+func truncateBase64(b64 string) *string {
+	const maxLen = 50 * 1024
+	if len(b64) > maxLen {
+		b64 = b64[:maxLen]
+	}
+	return &b64
+}
+
+// GetReceipts handles GET /v1/ai/receipts
+func (h *ImageAnalysisHandler) GetReceipts(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+	if limit <= 0 || limit > 100 {
+		limit = 10
+	}
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if offset < 0 {
+		offset = 0
+	}
+	if h.receiptRepo == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "receipt service unavailable"})
+		return
+	}
+	scans, err := h.receiptRepo.GetByUserIDPaginated(c.Request.Context(), userID, limit, offset)
+	if err != nil {
+		h.logger.Error("failed to get receipts", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get receipts"})
+		return
+	}
+	// Strip internal fields before returning to client
+	type safeReceipt struct {
+		ID          string          `json:"id"`
+		Merchant    string          `json:"merchant"`
+		Amount      string          `json:"amount"`
+		Currency    string          `json:"currency"`
+		ReceiptDate *string         `json:"receipt_date,omitempty"`
+		Category    string          `json:"category"`
+		Items       json.RawMessage `json:"items"`
+		CreatedAt   string          `json:"created_at"`
+	}
+	safe := make([]safeReceipt, 0, len(scans))
+	for _, s := range scans {
+		r := safeReceipt{
+			ID:       s.ID.String(),
+			Merchant: s.Merchant,
+			Amount:   s.Amount.StringFixed(2),
+			Currency: s.Currency,
+			Category: s.Category,
+			Items:    s.Items,
+			CreatedAt: s.CreatedAt.Format(time.RFC3339),
+		}
+		if s.ReceiptDate != nil {
+			d := s.ReceiptDate.Format("2006-01-02")
+			r.ReceiptDate = &d
+		}
+		safe = append(safe, r)
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"receipts": safe, "limit": limit, "offset": offset}})
+}
+
+// UpdateReceipt handles PUT /v1/ai/receipts/:id
+func (h *ImageAnalysisHandler) UpdateReceipt(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	receiptID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid receipt id"})
+		return
+	}
+	if h.receiptRepo == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "receipt service unavailable"})
+		return
+	}
+	existing, err := h.receiptRepo.GetByID(c.Request.Context(), userID, receiptID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "receipt not found"})
+		return
+	}
+	var req struct {
+		Merchant    string  `json:"merchant"`
+		Amount      string  `json:"amount"`
+		Currency    string  `json:"currency"`
+		Category    string  `json:"category"`
+		ReceiptDate *string `json:"receipt_date"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if req.Merchant != "" {
+		existing.Merchant = req.Merchant
+	}
+	if req.Amount != "" {
+		if a, err := decimal.NewFromString(req.Amount); err == nil {
+			existing.Amount = a
+		}
+	}
+	if req.Currency != "" {
+		existing.Currency = strings.ToUpper(req.Currency)
+	}
+	if req.Category != "" {
+		existing.Category = req.Category
+	}
+	if req.ReceiptDate != nil {
+		if *req.ReceiptDate == "" {
+			existing.ReceiptDate = nil
+		} else if t, err := time.Parse("2006-01-02", *req.ReceiptDate); err == nil {
+			existing.ReceiptDate = &t
+		}
+	}
+	if err := h.receiptRepo.Update(c.Request.Context(), existing); err != nil {
+		h.logger.Error("failed to update receipt", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update receipt"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"id":       existing.ID.String(),
+		"merchant": existing.Merchant,
+		"amount":   existing.Amount.StringFixed(2),
+		"currency": existing.Currency,
+		"category": existing.Category,
+	}})
+}
+
+// DeleteReceipt handles DELETE /v1/ai/receipts/:id
+func (h *ImageAnalysisHandler) DeleteReceipt(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	receiptID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid receipt id"})
+		return
+	}
+	if h.receiptRepo == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "receipt service unavailable"})
+		return
+	}
+	// Verify ownership
+	if _, err := h.receiptRepo.GetByID(c.Request.Context(), userID, receiptID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "receipt not found"})
+		return
+	}
+	if err := h.receiptRepo.Delete(c.Request.Context(), userID, receiptID); err != nil {
+		h.logger.Error("failed to delete receipt", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete receipt"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"deleted": true}})
+}
+
+// BatchAnalyzeImages handles POST /v1/ai/chat/images (batch)
+func (h *ImageAnalysisHandler) BatchAnalyzeImages(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	if h.orchestrator != nil && h.orchestrator.IsUserOverCostCeiling(c.Request.Context(), userID) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": gin.H{"code": "AI_LIMIT_REACHED", "message": "Monthly AI limit reached"}})
+		return
+	}
+
+	var req struct {
+		Images []imageRequest `json:"images" binding:"required"`
+		Max    int            `json:"max"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "images array is required"})
+		return
+	}
+
+	maxImages := 5
+	if req.Max > 0 && req.Max < maxImages {
+		maxImages = req.Max
+	}
+	if len(req.Images) > maxImages {
+		req.Images = req.Images[:maxImages]
+	}
+
+	type batchResult struct {
+		Index    int    `json:"index"`
+		ReceiptID string `json:"receipt_id,omitempty"`
+		Merchant string `json:"merchant,omitempty"`
+		Amount   string `json:"amount,omitempty"`
+		Saved    bool   `json:"saved"`
+		Error    string `json:"error,omitempty"`
+	}
+
+	var (
+		results     []batchResult
+		totalTokens int
+		savedCount  int
+		failedCount int
+		totalAmount decimal.Decimal
+	)
+
+	for i, img := range req.Images {
+		if len(img.Image) > 20*1024*1024 {
+			results = append(results, batchResult{Index: i, Error: "image too large", Saved: false})
+			failedCount++
+			continue
+		}
+
+		raw, tokens, err := h.callVisionAPI(c.Request.Context(), img.Image, img.Message)
+		totalTokens += tokens
+		if err != nil {
+			h.logger.Warn("batch vision API failed", zap.Int("index", i), zap.Error(err))
+			results = append(results, batchResult{Index: i, Error: "Could not analyze image", Saved: false})
+			failedCount++
+			continue
+		}
+
+		var parsed visionReceiptResponse
+		if err := json.Unmarshal([]byte(raw), &parsed); err != nil || !parsed.IsReceipt {
+			results = append(results, batchResult{Index: i, Error: "Could not parse receipt", Saved: false})
+			failedCount++
+			continue
+		}
+
+		scan := h.buildReceiptScan(userID, img.Image, &parsed, raw)
+		saved := false
+
+		if h.receiptRepo != nil && scan.Amount.IsPositive() {
+			// Check duplicate
+			if scan.ImageHash != nil {
+				if exists, err := h.receiptRepo.ExistsByImageHash(c.Request.Context(), userID, *scan.ImageHash); err == nil && exists {
+					results = append(results, batchResult{Index: i, Error: "duplicate receipt", Saved: false})
+					failedCount++
+					continue
+				}
+			}
+			if dbErr := h.receiptRepo.Create(c.Request.Context(), scan); dbErr != nil {
+				h.logger.Warn("batch: failed to persist receipt", zap.Int("index", i), zap.Error(dbErr))
+			} else {
+				saved = true
+			}
+		}
+
+		r := batchResult{Index: i, Merchant: parsed.Merchant, Amount: parsed.Amount, Saved: saved}
+		if saved {
+			r.ReceiptID = scan.ID.String()
+			savedCount++
+			totalAmount = totalAmount.Add(scan.Amount)
+		} else if !scan.Amount.IsPositive() {
+			r.Error = "invalid amount"
+			failedCount++
+		} else {
+			failedCount++
+		}
+		results = append(results, r)
+	}
+
+	if h.orchestrator != nil && totalTokens > 0 {
+		h.orchestrator.TrackVisionUsage(c.Request.Context(), userID, totalTokens)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"results": results,
+		"summary": gin.H{
+			"total_scanned": len(req.Images),
+			"saved":         savedCount,
+			"failed":        failedCount,
+			"total_amount":  totalAmount.StringFixed(2),
+			"tokens_used":   totalTokens,
+		},
+	}})
+}
+
+// GetReceiptGallery handles GET /v1/ai/receipts/gallery
+func (h *ImageAnalysisHandler) GetReceiptGallery(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if offset < 0 {
+		offset = 0
+	}
+	category := c.Query("category")
+
+	if h.receiptRepo == nil {
+		h.logger.Error("receipt repository not initialized")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "receipt service unavailable"})
+		return
+	}
+
+	scans, err := h.receiptRepo.GetGallery(c.Request.Context(), userID, category, limit, offset)
+	if err != nil {
+		h.logger.Error("failed to get receipt gallery", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get gallery"})
+		return
+	}
+
+	type galleryItem struct {
+		ID        string  `json:"id"`
+		Merchant  string  `json:"merchant"`
+		Amount    string  `json:"amount"`
+		Category  string  `json:"category"`
+		Date      *string `json:"date,omitempty"`
+		Thumbnail string  `json:"thumbnail"`
+	}
+
+	items := make([]galleryItem, 0, len(scans))
+	for _, s := range scans {
+		item := galleryItem{
+			ID:       s.ID.String(),
+			Merchant: s.Merchant,
+			Amount:   s.Amount.String(),
+			Category: s.Category,
+		}
+		if s.ReceiptDate != nil {
+			d := s.ReceiptDate.Format("2006-01-02")
+			item.Date = &d
+		}
+		if s.Thumbnail != nil {
+			item.Thumbnail = *s.Thumbnail
+		}
+		items = append(items, item)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"gallery":  items,
+		"limit":    limit,
+		"offset":   offset,
+		"category": category,
+	}})
 }
