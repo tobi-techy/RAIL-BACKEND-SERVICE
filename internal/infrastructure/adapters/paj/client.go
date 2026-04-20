@@ -405,7 +405,7 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}, 
 		}
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			c.logger.Error("Paj API error", zap.Int("status", resp.StatusCode), zap.String("body", string(respBody)), zap.String("path", path))
+			c.logger.Warn("Paj API error", zap.Int("status", resp.StatusCode), zap.String("body", string(respBody)), zap.String("path", path))
 			return fmt.Errorf("paj returned %d: %s", resp.StatusCode, string(respBody))
 		}
 

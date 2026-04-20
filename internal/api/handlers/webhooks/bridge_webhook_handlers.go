@@ -1241,6 +1241,20 @@ func (s *BridgeWebhookServiceImpl) ProcessTransferFailed(ctx *gin.Context, trans
 func (s *BridgeWebhookServiceImpl) ProcessTransferUnderReview(ctx *gin.Context, transferID string) error {
 	s.logger.Warn("Transfer under compliance review",
 		zap.String("transfer_id", transferID))
+
+	// Check if this is a PAJ offramp transfer first
+	if s.db != nil {
+		var exists bool
+		_ = s.db.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM paj_orders WHERE bridge_transfer_id = $1 AND order_type = 'offramp')`,
+			transferID).Scan(&exists)
+		if exists {
+			s.logger.Info("PAJ offramp transfer under review - no action needed, Bridge will auto-clear",
+				zap.String("transfer_id", transferID))
+			return nil
+		}
+	}
+
 	if s.withdrawalService == nil {
 		s.logger.Error("Withdrawal service not configured for ProcessTransferUnderReview", zap.String("transfer_id", transferID))
 		return fmt.Errorf("withdrawal service not configured for ProcessTransferUnderReview")
