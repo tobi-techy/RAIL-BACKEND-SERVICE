@@ -827,6 +827,7 @@ type PajOrder struct {
 	Currency          string    `db:"currency" json:"currency"`
 	Rate              float64   `db:"rate" json:"rate"`
 	Fee               float64   `db:"fee" json:"fee"`
+	BankID            *string   `db:"bank_id" json:"bankId,omitempty"`
 	BankAccountNumber *string   `db:"bank_account_number" json:"bankAccountNumber,omitempty"`
 	CreatedAt         time.Time `db:"created_at" json:"createdAt"`
 }
@@ -852,7 +853,7 @@ func (s *Service) GetOrders(ctx context.Context, userID uuid.UUID) ([]PajOrder, 
 		SELECT paj_order_id, order_type, status, COALESCE(fiat_amount, 0) as fiat_amount,
 			COALESCE(token_amount, 0) as token_amount, COALESCE(currency, 'NGN') as currency,
 			COALESCE(rate, 0) as rate, COALESCE(fee, 0) as fee,
-			bank_account_number, created_at
+			bank_id, bank_account_number, created_at
 		FROM paj_orders WHERE user_id = $1
 		  AND (status = 'completed' OR status = 'paid'
 		       OR (status IN ('pending', 'failed') AND created_at > NOW() - interval '24 hours'))
