@@ -28,6 +28,7 @@ jobs:
           version: v1.64.8
           args: --timeout=5m
           install-mode: goinstall
+          only-new-issues: true
 
   test:
     name: Test with Coverage
