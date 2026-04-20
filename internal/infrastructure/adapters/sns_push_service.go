@@ -105,6 +105,11 @@ func (s *SNSPushService) SendToUser(ctx context.Context, userID uuid.UUID, title
 
 // ensureEndpoint creates an SNS platform endpoint for a device token and stores the ARN.
 func (s *SNSPushService) ensureEndpoint(ctx context.Context, dt *repositories.DeviceToken) (string, error) {
+	// Skip Expo push tokens — they use Expo's own push service, not APNs/FCM directly
+	if strings.HasPrefix(dt.Token, "ExponentPushToken[") || strings.HasPrefix(dt.Token, "ExpoPushToken[") {
+		return "", fmt.Errorf("expo push token not compatible with SNS (use Expo push service)")
+	}
+
 	platformARN := s.platformARNForDevice(dt.Platform)
 	if platformARN == "" {
 		return "", fmt.Errorf("no platform ARN configured for platform: %s", dt.Platform)
