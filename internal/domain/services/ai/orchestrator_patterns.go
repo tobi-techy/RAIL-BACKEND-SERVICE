@@ -6,21 +6,37 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
 )
 
 const ToolGetSpendingPatterns = "get_spending_patterns"
 
+// WeekdaySpending represents spending grouped by day of week.
+type WeekdaySpending struct {
+	DayOfWeek int             `db:"dow" json:"day_of_week"`
+	DayName   string          `json:"day_name"`
+	Total     decimal.Decimal `db:"total" json:"total"`
+	Count     int             `db:"count" json:"count"`
+	AvgPerTx  decimal.Decimal `json:"avg_per_transaction"`
+}
+
+// LargeTransaction represents a notable transaction.
+type LargeTransaction struct {
+	Amount       decimal.Decimal `db:"amount" json:"amount"`
+	MerchantName *string         `db:"merchant_name" json:"merchant_name"`
+	CreatedAt    time.Time       `db:"created_at" json:"date"`
+}
+
 // PatternAnalyzer provides behavioral spending pattern data.
 type PatternAnalyzer interface {
-	GetSpendingByDayOfWeek(ctx context.Context, userID uuid.UUID, start, end time.Time) ([]repositories.WeekdaySpending, error)
-	GetLargestTransactions(ctx context.Context, userID uuid.UUID, start, end time.Time, limit int) ([]repositories.LargeTransaction, error)
+	GetSpendingByDayOfWeek(ctx context.Context, userID uuid.UUID, start, end time.Time) ([]WeekdaySpending, error)
+	GetLargestTransactions(ctx context.Context, userID uuid.UUID, start, end time.Time, limit int) ([]LargeTransaction, error)
 	GetSpendingTotal(ctx context.Context, userID uuid.UUID, start, end time.Time) (decimal.Decimal, int, error)
 }
 
 // SetPatterns sets the pattern analyzer.
+// Deprecated: Use NewOrchestratorWithDeps instead.
 func (o *Orchestrator) SetPatterns(p PatternAnalyzer) {
 	o.patterns = p
 }

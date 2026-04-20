@@ -128,6 +128,8 @@ var (
 	NewConversationHandlers      = investing.NewConversationHandlers
 	NewUsageHandlers             = investing.NewUsageHandlers
 	NewKnowledgeHandlers         = investing.NewKnowledgeHandlers
+	NewReceiptSplitHandler       = investing.NewReceiptSplitHandler
+	NewHouseholdHandler          = investing.NewHouseholdHandler
 )
 
 // Trading constructors

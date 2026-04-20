@@ -957,6 +957,8 @@ type Container struct {
 	DepositRepo               *repositories.DepositRepository
 	WithdrawalRepo            *repositories.WithdrawalRepository
 	ReceiptRepo               *repositories.ReceiptRepository
+	BudgetRepo                *repositories.BudgetRepository
+	LedgerSpendingRepo        *repositories.LedgerSpendingRepository
 	ConversionRepo            *repositories.ConversionRepository
 	BalanceRepo               *repositories.BalanceRepository
 	FundingEventJobRepo       *repositories.FundingEventJobRepository
@@ -1179,6 +1181,8 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	depositRepo := repositories.NewDepositRepository(sqlxDB)
 	withdrawalRepo := repositories.NewWithdrawalRepository(sqlxDB)
 	receiptRepo := repositories.NewReceiptRepository(sqlxDB)
+	budgetRepo := repositories.NewBudgetRepository(sqlxDB)
+	ledgerSpendingRepo := repositories.NewLedgerSpendingRepository(sqlxDB)
 	conversionRepo := repositories.NewConversionRepository(sqlxDB)
 	balanceRepo := repositories.NewBalanceRepository(db, zapLog)
 	fundingEventJobRepo := repositories.NewFundingEventJobRepository(db, log)
@@ -1280,6 +1284,8 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		DepositRepo:               depositRepo,
 		WithdrawalRepo:            withdrawalRepo,
 		ReceiptRepo:               receiptRepo,
+		BudgetRepo:                budgetRepo,
+		LedgerSpendingRepo:        ledgerSpendingRepo,
 		ConversionRepo:            conversionRepo,
 		BalanceRepo:               balanceRepo,
 		FundingEventJobRepo:       fundingEventJobRepo,
@@ -2675,12 +2681,13 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	)
 
 	// Initialize AI orchestrator (use primary provider directly)
-	c.AIOrchestrator = aiservice.NewOrchestrator(
+	c.AIOrchestrator = aiservice.NewOrchestratorWithDeps(
 		primary,
 		c.PortfolioDataProvider,
 		c.ActivityDataProvider,
 		&newsProviderAdapter{svc: c.NewsService},
 		c.ZapLog,
+		aiservice.OrchestratorDeps{},
 	)
 
 	// Initialize basket recommender
@@ -2710,11 +2717,8 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	}
 
 	// Initialize spending analysis (all outflows: card, withdrawal, p2p)
-	{
-		ledgerSpendingRepo := repositories.NewLedgerSpendingRepository(sqlxDB)
-		spendingSvc := spendingsvc.NewService(ledgerSpendingRepo)
-		c.AIOrchestrator.SetSpending(spendingSvc)
-	}
+	spendingSvc := spendingsvc.NewService(c.LedgerSpendingRepo)
+	c.AIOrchestrator.SetSpending(spendingSvc)
 
 	// Initialize balance history (stash growth chart)
 	if c.yieldRepo != nil {
@@ -2756,8 +2760,28 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	if c.ReceiptRepo != nil {
 		c.AIOrchestrator.SetReceiptHistory(c.ReceiptRepo)
 	}
-	budgetRepo := repositories.NewBudgetRepository(sqlxDB)
-	c.AIOrchestrator.SetBudgetProvider(budgetRepo)
+	c.AIOrchestrator.SetBudgetProvider(c.BudgetRepo)
+	warrantyRepo := repositories.NewWarrantyRepository(sqlxDB)
+	c.AIOrchestrator.SetWarrantyTracker(warrantyRepo)
+
+	// Wire recurring expense detector
+	recurringRepo := repositories.NewRecurringExpenseRepository(sqlxDB)
+	c.AIOrchestrator.SetRecurringDetector(recurringRepo)
+
+	// Wire receipt challenges and savings suggestions
+	if c.ReceiptRepo != nil {
+		c.AIOrchestrator.SetReceiptChallenges(aiservice.NewReceiptChallengeProvider(c.ReceiptRepo, c.BudgetRepo, spendingSvc))
+		c.AIOrchestrator.SetSavingsSuggestions(aiservice.NewSavingsSuggestionProvider(c.ReceiptRepo, spendingSvc))
+	}
+
+	// Wire price tracking
+	priceRepo := repositories.NewPriceTrackingRepository(sqlxDB)
+	c.AIOrchestrator.SetPriceTracker(priceRepo)
+
+	// Wire merchant intelligence
+	merchantRepo := repositories.NewMerchantRepository(sqlxDB)
+	c.AIOrchestrator.SetMerchantAnalyzer(merchantRepo)
+
 	if c.yieldRepo != nil {
 		c.AIOrchestrator.SetYieldProvider(c.yieldRepo)
 	}

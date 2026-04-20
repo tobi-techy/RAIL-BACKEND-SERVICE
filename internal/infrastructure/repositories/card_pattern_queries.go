@@ -5,20 +5,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/services/ai"
 	"github.com/shopspring/decimal"
 )
 
-// WeekdaySpending represents spending grouped by day of week.
-type WeekdaySpending struct {
-	DayOfWeek int             `db:"dow" json:"day_of_week"` // 0=Sun, 6=Sat
-	DayName   string          `json:"day_name"`
-	Total     decimal.Decimal `db:"total" json:"total"`
-	Count     int             `db:"count" json:"count"`
-	AvgPerTx  decimal.Decimal `json:"avg_per_transaction"`
-}
-
 // GetSpendingByDayOfWeek returns spending grouped by day of week.
-func (r *CardRepository) GetSpendingByDayOfWeek(ctx context.Context, userID uuid.UUID, start, end time.Time) ([]WeekdaySpending, error) {
+func (r *CardRepository) GetSpendingByDayOfWeek(ctx context.Context, userID uuid.UUID, start, end time.Time) ([]ai.WeekdaySpending, error) {
 	query := `
 		SELECT EXTRACT(DOW FROM created_at)::int AS dow,
 		       SUM(amount) AS total, COUNT(*) AS count
@@ -37,13 +29,13 @@ func (r *CardRepository) GetSpendingByDayOfWeek(ctx context.Context, userID uuid
 	}
 
 	dayNames := []string{"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"}
-	results := make([]WeekdaySpending, len(rows))
+	results := make([]ai.WeekdaySpending, len(rows))
 	for i, r := range rows {
 		avg := decimal.Zero
 		if r.Count > 0 {
 			avg = r.Total.Div(decimal.NewFromInt(int64(r.Count)))
 		}
-		results[i] = WeekdaySpending{
+		results[i] = ai.WeekdaySpending{
 			DayOfWeek: r.DOW,
 			DayName:   dayNames[r.DOW],
 			Total:     r.Total,
@@ -54,19 +46,12 @@ func (r *CardRepository) GetSpendingByDayOfWeek(ctx context.Context, userID uuid
 	return results, nil
 }
 
-// LargeTransaction represents a notable transaction.
-type LargeTransaction struct {
-	Amount       decimal.Decimal `db:"amount" json:"amount"`
-	MerchantName *string         `db:"merchant_name" json:"merchant_name"`
-	CreatedAt    time.Time       `db:"created_at" json:"date"`
-}
-
 // GetLargestTransactions returns the N largest transactions in a period.
-func (r *CardRepository) GetLargestTransactions(ctx context.Context, userID uuid.UUID, start, end time.Time, limit int) ([]LargeTransaction, error) {
+func (r *CardRepository) GetLargestTransactions(ctx context.Context, userID uuid.UUID, start, end time.Time, limit int) ([]ai.LargeTransaction, error) {
 	if limit <= 0 {
 		limit = 5
 	}
-	var results []LargeTransaction
+	var results []ai.LargeTransaction
 	err := r.db.SelectContext(ctx, &results, `
 		SELECT amount, merchant_name, created_at
 		FROM card_transactions

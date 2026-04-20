@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,9 +32,11 @@ type ReportEmailSender interface {
 }
 
 // SetUserProfile sets the user profile provider.
+// Deprecated: Use NewOrchestratorWithDeps instead.
 func (o *Orchestrator) SetUserProfile(p UserProfileProvider) { o.userProfile = p }
 
 // SetReportEmailSender sets the email sender for reports.
+// Deprecated: Use NewOrchestratorWithDeps instead.
 func (o *Orchestrator) SetReportEmailSender(s ReportEmailSender) { o.reportEmail = s }
 
 // TaxAndReportTools returns tool definitions for tax, email, and goals.
@@ -164,6 +167,14 @@ func (o *Orchestrator) executeTaxSummary(ctx context.Context, userID uuid.UUID, 
 		}
 	}
 
+	// Potential deductions from receipts
+	if o.receiptHistory != nil {
+		receipts, err := o.receiptHistory.GetByUserIDInRange(ctx, userID, start, end, 50)
+		if err == nil && len(receipts) > 0 {
+			result["potential_deductions"] = categorizeDeductions(receipts)
+		}
+	}
+
 	return result, nil
 }
 
@@ -274,10 +285,31 @@ func (o *Orchestrator) executeGetSavingsGoals(ctx context.Context, userID uuid.U
 		stash, _ = o.aggregateStats.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
 	}
 
-	return map[string]interface{}{
+	result := map[string]interface{}{
 		"stash_balance": stash.StringFixed(2),
-		"message":       "Savings goals are tracked in your stash. Your current stash balance represents your total savings progress.",
-	}, nil
+	}
+
+	if o.savingsGoalStore != nil {
+		goal, err := o.savingsGoalStore.Get(ctx, userID)
+		if err == nil && goal != nil {
+			target, _ := decimal.NewFromString(goal.Target)
+			progress := decimal.Zero
+			if !target.IsZero() {
+				progress = stash.Div(target).Mul(decimal.NewFromInt(100))
+			}
+			result["goal_name"] = goal.Name
+			result["goal_target"] = goal.Target
+			result["goal_deadline"] = goal.Deadline
+			result["goal_created_at"] = goal.CreatedAt
+			result["progress_pct"] = progress.StringFixed(1)
+			result["remaining"] = target.Sub(stash).StringFixed(2)
+			result["message"] = fmt.Sprintf("Your goal '%s' is %.1f%% complete.", goal.Name, progress.InexactFloat64())
+			return result, nil
+		}
+	}
+
+	result["message"] = "You don't have a savings goal set yet. Want me to help you create one?"
+	return result, nil
 }
 
 // executeSendReportAction sends the actual email after user confirmation.
@@ -308,15 +340,93 @@ func (o *Orchestrator) executeSendReportAction(ctx context.Context, userID uuid.
 		subject = "Your Rail Deposit History"
 	}
 
-	html := buildReportHTML(subject, summary)
+	html := buildReportHTML(subject, summaryToOrderedFields(summary))
 	return o.reportEmail.SendReportEmail(ctx, email, subject, html)
 }
 
-func buildReportHTML(title string, data map[string]interface{}) string {
+// summaryToOrderedFields converts a tax summary map to deterministically ordered fields.
+func summaryToOrderedFields(data map[string]interface{}) []reportField {
+	orderedKeys := []string{
+		"tax_year", "country", "period",
+		"total_deposits", "deposit_count",
+		"yield_earned", "yield_note",
+		"total_spending", "transaction_count",
+		"current_spend_balance", "current_stash_balance",
+	}
+	fields := make([]reportField, 0, len(orderedKeys))
+	for _, k := range orderedKeys {
+		if v, ok := data[k]; ok {
+			fields = append(fields, reportField{Key: k, Value: v})
+		}
+	}
+	return fields
+}
+
+// reportField is an ordered key-value pair for report HTML rendering.
+type reportField struct {
+	Key   string
+	Value interface{}
+}
+
+func buildReportHTML(title string, fields []reportField) string {
 	body := fmt.Sprintf(`<h2 style="color:#1A1A1A;font-family:sans-serif;">%s</h2><table style="width:100%%;border-collapse:collapse;font-family:sans-serif;">`, title)
-	for k, v := range data {
-		body += fmt.Sprintf(`<tr><td style="padding:8px 0;color:#8C8C8C;border-bottom:1px solid #f0f0f0;">%s</td><td style="padding:8px 0;color:#1A1A1A;text-align:right;border-bottom:1px solid #f0f0f0;">%v</td></tr>`, k, v)
+	for _, f := range fields {
+		body += fmt.Sprintf(`<tr><td style="padding:8px 0;color:#8C8C8C;border-bottom:1px solid #f0f0f0;">%s</td><td style="padding:8px 0;color:#1A1A1A;text-align:right;border-bottom:1px solid #f0f0f0;">%v</td></tr>`, f.Key, f.Value)
 	}
 	body += `</table><p style="color:#8C8C8C;font-size:12px;margin-top:24px;font-family:sans-serif;">This is an automated report from Rail. Not tax advice — consult a qualified professional.</p>`
 	return body
+}
+
+// deductionCategory maps keywords to potential tax deduction categories.
+var deductionCategories = map[string][]string{
+	"Education":  {"tuition", "books", "course", "school", "university", "training", "udemy", "coursera"},
+	"Health":     {"medical", "pharmacy", "hospital", "clinic", "doctor", "health", "dental"},
+	"Transport":  {"fuel", "uber", "bolt", "taxi", "petrol", "diesel", "transport"},
+	"Services":   {"software", "subscription", "professional", "consulting", "saas", "cloud"},
+	"Equipment":  {"electronics", "office", "laptop", "computer", "printer", "supplies"},
+}
+
+func categorizeDeductions(receipts []*entities.ReceiptScan) []map[string]interface{} {
+	type bucket struct {
+		total decimal.Decimal
+		count int
+	}
+	buckets := make(map[string]*bucket)
+
+	for _, r := range receipts {
+		cat := matchDeductionCategory(r.Merchant, r.Category)
+		if cat == "" {
+			continue
+		}
+		b, ok := buckets[cat]
+		if !ok {
+			b = &bucket{}
+			buckets[cat] = b
+		}
+		b.total = b.total.Add(r.Amount)
+		b.count++
+	}
+
+	results := make([]map[string]interface{}, 0, len(buckets))
+	for cat, b := range buckets {
+		results = append(results, map[string]interface{}{
+			"category": cat,
+			"total":    b.total.StringFixed(2),
+			"count":    b.count,
+			"note":     "May qualify as tax deduction — consult a tax professional",
+		})
+	}
+	return results
+}
+
+func matchDeductionCategory(merchant, category string) string {
+	lower := strings.ToLower(merchant + " " + category)
+	for cat, keywords := range deductionCategories {
+		for _, kw := range keywords {
+			if strings.Contains(lower, kw) {
+				return cat
+			}
+		}
+	}
+	return ""
 }

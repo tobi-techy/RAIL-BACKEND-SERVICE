@@ -9,6 +9,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/spending"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"github.com/shopspring/decimal"
 )
 
 // Tool names for spending analysis.
@@ -28,6 +29,7 @@ type SpendingAnalyzer interface {
 }
 
 // SetSpending sets the spending analysis provider.
+// Deprecated: Use NewOrchestratorWithDeps instead.
 func (o *Orchestrator) SetSpending(s SpendingAnalyzer) {
 	o.spending = s
 }
@@ -274,6 +276,23 @@ func (o *Orchestrator) executeMoneyFlow(ctx context.Context, userID uuid.UUID, a
 			"total": flow.TotalReceipts.StringFixed(2),
 			"count": flow.ReceiptCount,
 		},
+		"cash_vs_digital": func() map[string]interface{} {
+			cashPct := decimal.Zero
+			digitalPct := decimal.Zero
+			if totalSpending.IsPositive() {
+				cashPct = flow.TotalReceipts.Div(totalSpending).Mul(decimal.NewFromInt(100))
+				digitalPct = totalOut.Div(totalSpending).Mul(decimal.NewFromInt(100))
+			}
+			return map[string]interface{}{
+				"digital_total":      totalOut.StringFixed(2),
+				"cash_total":         flow.TotalReceipts.StringFixed(2),
+				"total_real_spending": totalSpending.StringFixed(2),
+				"cash_percent":       cashPct.StringFixed(1),
+				"digital_percent":    digitalPct.StringFixed(1),
+				"insight": fmt.Sprintf("You spent $%s digitally and $%s in cash this month. Your total real spending is $%s.",
+					totalOut.StringFixed(2), flow.TotalReceipts.StringFixed(2), totalSpending.StringFixed(2)),
+			}
+		}(),
 		"total_all_spending": totalSpending.StringFixed(2),
 		"net_flow":           net.StringFixed(2),
 		"chart": map[string]interface{}{

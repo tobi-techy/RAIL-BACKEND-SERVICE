@@ -47,26 +47,31 @@ type ReceiptHistoryProvider interface {
 }
 
 // SetCardTransactions sets the card transaction provider.
+// Deprecated: Use NewOrchestratorWithDeps instead.
 func (o *Orchestrator) SetCardTransactions(p CardTransactionProvider) {
 	o.cardTransactions = p
 }
 
 // SetDepositHistory sets the deposit history provider.
+// Deprecated: Use NewOrchestratorWithDeps instead.
 func (o *Orchestrator) SetDepositHistory(p DepositHistoryProvider) {
 	o.depositHistory = p
 }
 
 // SetYieldProvider sets the yield provider.
+// Deprecated: Use NewOrchestratorWithDeps instead.
 func (o *Orchestrator) SetYieldProvider(p YieldProvider) {
 	o.yieldProvider = p
 }
 
 // SetWithdrawalHistory sets the withdrawal history provider.
+// Deprecated: Use NewOrchestratorWithDeps instead.
 func (o *Orchestrator) SetWithdrawalHistory(p WithdrawalHistoryProvider) {
 	o.withdrawalHistory = p
 }
 
 // SetReceiptHistory sets the receipt history provider.
+// Deprecated: Use NewOrchestratorWithDeps instead.
 func (o *Orchestrator) SetReceiptHistory(p ReceiptHistoryProvider) {
 	o.receiptHistory = p
 }
@@ -218,7 +223,7 @@ func (o *Orchestrator) executeYieldEarned(ctx context.Context, userID uuid.UUID,
 		return nil, fmt.Errorf("yield data: %w", err)
 	}
 	if len(snapshots) < 2 {
-		return map[string]interface{}{"yield_earned": "0.00", "message": "Not enough data yet"}, nil
+		return map[string]interface{}{"estimated_yield": "0.00", "message": "Not enough data yet"}, nil
 	}
 	first := snapshots[0].Balance
 	last := snapshots[len(snapshots)-1].Balance
@@ -227,10 +232,11 @@ func (o *Orchestrator) executeYieldEarned(ctx context.Context, userID uuid.UUID,
 		earned = decimal.Zero
 	}
 	return map[string]interface{}{
-		"yield_earned":    earned.StringFixed(2),
+		"estimated_yield": earned.StringFixed(2),
 		"start_balance":   first.StringFixed(2),
 		"current_balance": last.StringFixed(2),
 		"period_days":     int(now.Sub(from).Hours() / 24),
+		"note":            "This is an estimate based on balance change. It may include effects of deposits and withdrawals, not just yield.",
 	}, nil
 }
 

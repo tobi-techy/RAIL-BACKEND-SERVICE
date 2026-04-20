@@ -17,9 +17,9 @@ type SpendingAlert struct {
 	Amount  string    `json:"amount"`
 }
 
-// CheckSpendingAlert analyzes a new transaction and returns an alert if anomalous.
+// CheckSpendingAlert analyzes a new transaction and returns alerts if anomalous.
 // Called from card/withdrawal webhook handlers after a transaction completes.
-func (o *Orchestrator) CheckSpendingAlert(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, merchant, category string) *SpendingAlert {
+func (o *Orchestrator) CheckSpendingAlert(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, merchant, category string) []*SpendingAlert {
 	if o.spending == nil {
 		return nil
 	}
@@ -72,8 +72,5 @@ func (o *Orchestrator) CheckSpendingAlert(ctx context.Context, userID uuid.UUID,
 		}
 	}
 
-	if len(alerts) > 0 {
-		return alerts[0] // Return the most important alert
-	}
-	return nil
+	return alerts
 }

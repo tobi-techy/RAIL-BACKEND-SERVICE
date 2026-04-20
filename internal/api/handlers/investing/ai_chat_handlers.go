@@ -4,23 +4,57 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+	"unicode"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
+	conversationsvc "github.com/rail-service/rail_service/internal/domain/services/conversation"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"golang.org/x/time/rate"
 )
+
+// aiChatLimiters provides per-user rate limiting for AI chat endpoints (10 req/min).
+// Entries are evicted every 10 minutes to prevent unbounded memory growth.
+var aiChatLimiters sync.Map
+
+func init() {
+	go func() {
+		for range time.NewTicker(10 * time.Minute).C {
+			aiChatLimiters.Range(func(key, _ interface{}) bool {
+				aiChatLimiters.Delete(key)
+				return true
+			})
+		}
+	}()
+}
+
+func getAIChatLimiter(userID string) *rate.Limiter {
+	if v, ok := aiChatLimiters.Load(userID); ok {
+		return v.(*rate.Limiter)
+	}
+	// 10 requests per minute = 1 every 6 seconds, burst of 10
+	l := rate.NewLimiter(rate.Limit(10.0/60.0), 10)
+	actual, _ := aiChatLimiters.LoadOrStore(userID, l)
+	return actual.(*rate.Limiter)
+}
 
 // AIChatHandlers handles AI chat endpoints
 type AIChatHandlers struct {
 	orchestrator *aiservice.Orchestrator
+	convService  *conversationsvc.Service
 	logger       *logger.Logger
 }
 
 // NewAIChatHandlers creates new AI chat handlers
-func NewAIChatHandlers(orchestrator *aiservice.Orchestrator, logger *logger.Logger) *AIChatHandlers {
-	return &AIChatHandlers{orchestrator: orchestrator, logger: logger}
+func NewAIChatHandlers(orchestrator *aiservice.Orchestrator, convService *conversationsvc.Service, logger *logger.Logger) *AIChatHandlers {
+	return &AIChatHandlers{orchestrator: orchestrator, convService: convService, logger: logger}
 }
 
 // ChatRequest represents a chat message request
@@ -28,6 +62,7 @@ type ChatRequest struct {
 	Message            string       `json:"message" binding:"required"`
 	History            []ai.Message `json:"history,omitempty"`
 	TransactionContext *TxContext   `json:"transaction_context,omitempty"`
+	ConversationID     string       `json:"conversation_id,omitempty"`
 }
 
 // TxContext provides context about a specific transaction the user tapped on.
@@ -44,18 +79,45 @@ func (tc *TxContext) toPromptPrefix() string {
 	if tc == nil {
 		return ""
 	}
-	prefix := fmt.Sprintf("[The user is asking about a specific %s transaction: %s %s", tc.Type, tc.Amount, tc.Currency)
+	prefix := fmt.Sprintf("[The user is asking about a specific %s transaction: %s %s", sanitizeField(tc.Type), sanitizeField(tc.Amount), sanitizeField(tc.Currency))
 	if tc.Merchant != "" {
-		prefix += " at " + tc.Merchant
+		prefix += " at " + sanitizeField(tc.Merchant)
 	}
 	if tc.Date != "" {
-		prefix += " on " + tc.Date
+		prefix += " on " + sanitizeField(tc.Date)
 	}
 	if tc.Status != "" {
-		prefix += " (status: " + tc.Status + ")"
+		prefix += " (status: " + sanitizeField(tc.Status) + ")"
 	}
 	prefix += "]\n\n"
 	return prefix
+}
+
+// Prompt injection patterns to strip from user input.
+var injectionPatterns = regexp.MustCompile(`(?i)(ignore previous instructions|you are now|system:|SYSTEM OVERRIDE|<\|im_start\|>|<\|im_end\|>|\[INST\]|\[/INST\])`)
+
+// sanitizeUserMessage strips control characters and prompt injection patterns.
+func sanitizeUserMessage(msg string) string {
+	// Strip control characters (keep newline, tab)
+	msg = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || !unicode.IsControl(r) {
+			return r
+		}
+		return -1
+	}, msg)
+	msg = injectionPatterns.ReplaceAllString(msg, "")
+	return strings.TrimSpace(msg)
+}
+
+// sanitizeField strips injection patterns from transaction context fields.
+func sanitizeField(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+	return injectionPatterns.ReplaceAllString(s, "")
 }
 
 // ChatStream handles POST /api/v1/ai/chat/stream (SSE)
@@ -63,6 +125,14 @@ func (h *AIChatHandlers) ChatStream(c *gin.Context) {
 	userID, err := common.GetUserIDFromContext(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	if !getAIChatLimiter(userID.String()).Allow() {
+		c.JSON(http.StatusTooManyRequests, gin.H{
+			"error":   "rate_limit_exceeded",
+			"message": "You're sending messages too fast — take a breather and try again in a minute 🕐",
+		})
 		return
 	}
 
@@ -91,11 +161,34 @@ func (h *AIChatHandlers) ChatStream(c *gin.Context) {
 	c.Header("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 
-	err = h.orchestrator.ChatStream(c.Request.Context(), userID, req.Message, req.History, func(event aiservice.StreamEvent) {
-		data, _ := json.Marshal(event)
-		fmt.Fprintf(c.Writer, "data: %s\n\n", data)
-		c.Writer.Flush()
-	})
+	err = func() error {
+		message := req.TransactionContext.toPromptPrefix() + sanitizeUserMessage(req.Message)
+		emitFn := func(event aiservice.StreamEvent) {
+			data, _ := json.Marshal(event)
+			fmt.Fprintf(c.Writer, "data: %s\n\n", data)
+			c.Writer.Flush()
+		}
+
+		if req.ConversationID != "" && h.convService != nil {
+			convID, parseErr := uuid.Parse(req.ConversationID)
+			if parseErr != nil {
+				errEvent, _ := json.Marshal(aiservice.StreamEvent{Type: "error", Content: "Invalid conversation ID"})
+				fmt.Fprintf(c.Writer, "data: %s\n\n", errEvent)
+				c.Writer.Flush()
+				return nil
+			}
+			conv, convErr := h.convService.GetConversation(c.Request.Context(), convID)
+			if convErr != nil || conv == nil || conv.UserID != userID {
+				errEvent, _ := json.Marshal(aiservice.StreamEvent{Type: "error", Content: "Conversation not found"})
+				fmt.Fprintf(c.Writer, "data: %s\n\n", errEvent)
+				c.Writer.Flush()
+				return nil
+			}
+			return h.orchestrator.ChatStreamInConversation(c.Request.Context(), userID, conv, message, emitFn)
+		}
+
+		return h.orchestrator.ChatStream(c.Request.Context(), userID, message, req.History, emitFn)
+	}()
 
 	if err != nil {
 		h.logger.Error("Stream chat failed", "error", err, "user_id", userID.String())
@@ -110,6 +203,14 @@ func (h *AIChatHandlers) Chat(c *gin.Context) {
 	userID, err := common.GetUserIDFromContext(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	if !getAIChatLimiter(userID.String()).Allow() {
+		c.JSON(http.StatusTooManyRequests, gin.H{
+			"error":   "rate_limit_exceeded",
+			"message": "You're sending messages too fast — take a breather and try again in a minute 🕐",
+		})
 		return
 	}
 
@@ -134,7 +235,9 @@ func (h *AIChatHandlers) Chat(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.orchestrator.Chat(c.Request.Context(), userID, req.TransactionContext.toPromptPrefix()+req.Message, req.History)
+	// Create a temporary conversation ID so action tools (transfer, set_budget, etc.) work.
+	convID := uuid.New()
+	resp, err := h.orchestrator.ChatInContext(c.Request.Context(), userID, convID, req.TransactionContext.toPromptPrefix()+sanitizeUserMessage(req.Message), req.History)
 	if err != nil {
 		h.logger.Error("Chat failed", "error", err, "user_id", userID.String())
 		c.JSON(http.StatusOK, gin.H{
@@ -146,12 +249,13 @@ func (h *AIChatHandlers) Chat(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"content":        resp.Content,
-		"cards":          resp.Cards,
-		"tool_calls":     resp.ToolCalls,
-		"tokens_used":    resp.TokensUsed,
-		"provider":       resp.Provider,
-		"pending_action": resp.PendingAction,
+		"content":         resp.Content,
+		"cards":           resp.Cards,
+		"tool_calls":      resp.ToolCalls,
+		"tokens_used":     resp.TokensUsed,
+		"provider":        resp.Provider,
+		"pending_action":  resp.PendingAction,
+		"conversation_id": convID.String(),
 	})
 }
 
@@ -178,6 +282,11 @@ func (h *AIChatHandlers) QuickInsight(c *gin.Context) {
 	userID, err := common.GetUserIDFromContext(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	if h.orchestrator.IsUserOverCostCeiling(c.Request.Context(), userID) {
+		c.JSON(http.StatusOK, gin.H{"type": "performance", "insight": "Your AI assistant will be back at full power next month 💡", "over_ceiling": true})
 		return
 	}
 

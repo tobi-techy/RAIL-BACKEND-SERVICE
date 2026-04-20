@@ -18,6 +18,7 @@ type KnowledgeSearcher interface {
 }
 
 // SetKnowledge sets the knowledge search provider (optional).
+// Deprecated: Use NewOrchestratorWithDeps instead.
 func (o *Orchestrator) SetKnowledge(k KnowledgeSearcher) {
 	o.knowledge = k
 }

@@ -27,6 +27,7 @@ type ReceiptScan struct {
 	Items       json.RawMessage `json:"items" db:"items"`
 	RawText     *string         `json:"raw_text,omitempty" db:"raw_text"`
 	ImageHash   *string         `json:"image_hash,omitempty" db:"image_hash"`
+	Thumbnail   *string         `json:"thumbnail,omitempty" db:"thumbnail"`
 	CreatedAt   time.Time       `json:"created_at" db:"created_at"`
 }
 
@@ -37,4 +38,19 @@ func (r *ReceiptScan) ParsedItems() []ReceiptItem {
 		json.Unmarshal(r.Items, &items)
 	}
 	return items
+}
+
+// WarrantyItem represents a purchased item with estimated warranty tracking.
+type WarrantyItem struct {
+	ItemName       string `json:"item_name"`
+	PurchaseDate   string `json:"purchase_date"`
+	Merchant       string `json:"merchant"`
+	Price          string `json:"price"`
+	Currency       string `json:"currency"`
+	Category       string `json:"category"`
+	WarrantyMonths int    `json:"warranty_months"`
+	ExpiryDate     string `json:"expiry_date"`
+	DaysRemaining  int    `json:"days_remaining"`
+	Status         string `json:"status"`
+	ReceiptID      string `json:"receipt_id"`
 }

@@ -23,6 +23,7 @@ type BudgetProvider interface {
 }
 
 // SetBudgetProvider sets the budget provider.
+// Deprecated: Use NewOrchestratorWithDeps instead.
 func (o *Orchestrator) SetBudgetProvider(b BudgetProvider) {
 	o.budgetProvider = b
 }
@@ -107,6 +108,31 @@ func (o *Orchestrator) executeGetBudget(ctx context.Context, userID uuid.UUID) (
 			}
 			return "0.00"
 		}(),
+	}, nil
+}
+
+func (o *Orchestrator) createSetBudgetAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+	limit, ok := args["monthly_limit"].(float64)
+	if !ok || limit <= 0 {
+		return map[string]interface{}{"error": "monthly_limit must be a positive number"}, nil
+	}
+
+	action := &entities.PendingAction{
+		ID:             uuid.New().String(),
+		ConversationID: convID,
+		UserID:         userID,
+		Action:         ToolSetBudget,
+		Description:    fmt.Sprintf("Set monthly spending budget to $%.2f", limit),
+		Params:         map[string]interface{}{"monthly_limit": limit},
+		ExpiresAt:      time.Now().Add(pendingActionTTL),
+		CreatedAt:      time.Now(),
+	}
+
+	o.pending.Set(ctx, convID, action)
+
+	return map[string]interface{}{
+		"action_required": true,
+		"pending_action":  action,
 	}, nil
 }
 

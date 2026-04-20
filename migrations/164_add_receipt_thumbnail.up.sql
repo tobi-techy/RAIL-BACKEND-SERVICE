@@ -1,0 +1,1 @@
+ALTER TABLE receipt_scans ADD COLUMN IF NOT EXISTS thumbnail TEXT;

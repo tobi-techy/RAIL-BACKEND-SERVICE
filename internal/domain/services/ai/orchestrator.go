@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,13 +17,12 @@ import (
 
 // Tool names
 const (
-	ToolGetPortfolioStats      = "get_portfolio_stats"
-	ToolGetTopMovers           = "get_top_movers"
-	ToolGetAllocations         = "get_allocations"
-	ToolGetContributions       = "get_contributions"
-	ToolGetWeeklyNews          = "get_weekly_news"
-	ToolGetBasketRecommendations = "get_basket_recommendations"
-	ToolGetStreak              = "get_streak"
+	ToolGetPortfolioStats = "get_portfolio_stats"
+	ToolGetTopMovers      = "get_top_movers"
+	ToolGetAllocations    = "get_allocations"
+	ToolGetContributions  = "get_contributions"
+	ToolGetWeeklyNews     = "get_weekly_news"
+	ToolGetStreak         = "get_streak"
 )
 
 // PortfolioDataProvider interface for portfolio data
@@ -111,11 +111,96 @@ type Orchestrator struct {
 	budgetProvider    BudgetProvider
 	userProfile       UserProfileProvider
 	reportEmail       ReportEmailSender
-	pending           PendingActionStore
+	savingsGoalStore  SavingsGoalStore
+	recurringDetector RecurringExpenseDetector
+	warrantyTracker     WarrantyTracker
+	receiptChallenges   ReceiptChallengeProvider
+	savingsSuggestions  SavingsSuggestionProvider
+	priceTracker        PriceTracker
+	merchantAnalyzer    MerchantAnalyzer
+	pending             PendingActionStore
 	logger            *zap.Logger
 }
 
-// NewOrchestrator creates a new AI orchestrator
+// OrchestratorDeps groups all optional dependencies for the Orchestrator.
+// Use NewOrchestratorWithDeps to wire them at construction time for compile-time safety.
+type OrchestratorDeps struct {
+	Conversations      ConversationPersister
+	Usage              UsageTracker
+	Knowledge          KnowledgeSearcher
+	Spending           SpendingAnalyzer
+	BalanceHistory     BalanceHistoryProvider
+	Patterns           PatternAnalyzer
+	AggregateStats     AggregateStatsProvider
+	FundsTransferer    FundsTransferer
+	ActionAuditor      ActionAuditor
+	CardTransactions   CardTransactionProvider
+	DepositHistory     DepositHistoryProvider
+	YieldProvider      YieldProvider
+	WithdrawalHistory  WithdrawalHistoryProvider
+	ReceiptHistory     ReceiptHistoryProvider
+	BudgetProvider     BudgetProvider
+	UserProfile        UserProfileProvider
+	ReportEmail        ReportEmailSender
+	Pending            PendingActionStore
+	SavingsGoalStore   SavingsGoalStore
+	RecurringDetector  RecurringExpenseDetector
+	WarrantyTracker    WarrantyTracker
+	ReceiptChallenges  ReceiptChallengeProvider
+	SavingsSuggestions SavingsSuggestionProvider
+	PriceTracker       PriceTracker
+	MerchantAnalyzer   MerchantAnalyzer
+}
+
+// NewOrchestratorWithDeps creates a new AI orchestrator with all dependencies provided upfront.
+// Prefer this over NewOrchestrator + individual SetX calls.
+func NewOrchestratorWithDeps(
+	aiProvider ai.AIProvider,
+	portfolioProvider PortfolioDataProvider,
+	activityProvider ActivityDataProvider,
+	newsProvider NewsDataProvider,
+	logger *zap.Logger,
+	deps OrchestratorDeps,
+) *Orchestrator {
+	pending := deps.Pending
+	if pending == nil {
+		pending = newInMemoryPendingActions()
+	}
+	return &Orchestrator{
+		aiProvider:        aiProvider,
+		portfolioProvider: portfolioProvider,
+		activityProvider:  activityProvider,
+		newsProvider:      newsProvider,
+		conversations:     deps.Conversations,
+		usage:             deps.Usage,
+		knowledge:         deps.Knowledge,
+		spending:          deps.Spending,
+		balanceHistory:    deps.BalanceHistory,
+		patterns:          deps.Patterns,
+		aggregateStats:    deps.AggregateStats,
+		fundsTransferer:   deps.FundsTransferer,
+		actionAuditor:     deps.ActionAuditor,
+		cardTransactions:  deps.CardTransactions,
+		depositHistory:    deps.DepositHistory,
+		yieldProvider:     deps.YieldProvider,
+		withdrawalHistory: deps.WithdrawalHistory,
+		receiptHistory:    deps.ReceiptHistory,
+		budgetProvider:    deps.BudgetProvider,
+		userProfile:       deps.UserProfile,
+		reportEmail:       deps.ReportEmail,
+		pending:           pending,
+		savingsGoalStore:   deps.SavingsGoalStore,
+		recurringDetector:  deps.RecurringDetector,
+		warrantyTracker:    deps.WarrantyTracker,
+		receiptChallenges:  deps.ReceiptChallenges,
+		savingsSuggestions: deps.SavingsSuggestions,
+		priceTracker:       deps.PriceTracker,
+		merchantAnalyzer:   deps.MerchantAnalyzer,
+		logger:            logger,
+	}
+}
+
+// Deprecated: Use NewOrchestratorWithDeps instead for compile-time dependency safety.
 func NewOrchestrator(
 	aiProvider ai.AIProvider,
 	portfolioProvider PortfolioDataProvider,
@@ -173,45 +258,6 @@ HOW TO RESPOND:
 - When showing numbers, give context. "$735 in stash — that's 3 months of growth from zero. At this pace, you'll cross $1,000 by July."
 - Keep responses under 200 words unless the user asks for detail.
 - Use emojis sparingly (1-2 per message max).
-
-TOOL DECISION TREE — follow this order:
-
-1. "How much do I have?" / "What's my balance?" → get_comparative_context (gives spend balance, stash balance, total, savings rate)
-
-2. "Where did my money go?" / "How much did I spend?" / "What happened to my money?" → get_money_flow FIRST (gives pre-computed totals: deposits in vs withdrawals/card/P2P out, net flow). Then get_recent_transactions for line-by-line detail if needed.
-
-3. "Show me my transactions" / "What did I buy?" → get_recent_transactions (individual completed outflows with dates, amounts, categories)
-
-4. "How much did I deposit?" / "Money coming in?" → get_deposit_history (completed deposits only, labeled as money_in)
-
-5. "How much did I withdraw?" / "NGN withdrawal?" / "Naira?" → get_withdrawal_history (completed withdrawals only, with currency, type, destination, fees)
-
-6. "How are my savings growing?" / "Stash progress?" → get_balance_history (stash balance over time)
-
-7. "How much yield/interest?" → get_yield_earned (yield earned on stash)
-
-8. "What are my spending habits?" / "When do I spend most?" → get_spending_patterns (day-of-week breakdown, largest transactions, trends)
-
-9. "Show me my receipts" / "What did I scan?" / "Receipt details?" → get_receipt_history (scanned receipts with merchant, items, category, amounts)
-
-10. "How am I doing compared to others?" → get_comparative_context
-
-11. "What if I save X per month?" → simulate_savings
-
-12. "What about taxes?" → get_tax_summary / get_tax_calendar
-
-13. General financial education → search_knowledge_base
-
-14. "Set my budget" / "Budget to X per month" → set_budget
-
-15. "How's my budget?" / "Am I on track?" → get_budget (shows limit, spent, remaining, daily allowance)
-
-COMBINING TOOLS:
-- For "where did my money go": get_money_flow + get_recent_transactions (includes receipt data automatically)
-- For "how am I doing overall": get_comparative_context + get_money_flow
-- For "spending breakdown": get_spending_summary + get_spending_patterns
-- For "all my spending including cash": get_money_flow (includes scanned receipts) + get_receipt_history (for item-level detail)
-- NEVER call get_withdrawal_history AND get_recent_transactions together — they overlap on withdrawal data.
 
 RECEIPT SCANNING:
 - When users scan receipts, the data is automatically saved with merchant, amount, date, category, and individual items.
@@ -315,6 +361,33 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 	if o.budgetProvider != nil {
 		tools = append(tools, BudgetTools()...)
 	}
+	// Recurring expense detection
+	if o.recurringDetector != nil {
+		tools = append(tools, RecurringExpenseTool())
+	}
+	// Warranty tracking
+	if o.warrantyTracker != nil {
+		tools = append(tools, WarrantyTool())
+	}
+	// Receipt challenges & savings suggestions
+	if o.receiptChallenges != nil {
+		tools = append(tools, ReceiptChallengeTool())
+	}
+	if o.savingsSuggestions != nil {
+		tools = append(tools, SavingsSuggestionTool())
+	}
+	// Price tracking
+	if o.priceTracker != nil {
+		tools = append(tools, PriceTrackingTool())
+	}
+	// Merchant intelligence
+	if o.merchantAnalyzer != nil {
+		tools = append(tools, MerchantInsightsTool())
+	}
+	// Receipt splitting (action tool — requires confirmation)
+	if o.receiptHistory != nil {
+		tools = append(tools, SplitReceiptTool())
+	}
 	return tools
 }
 
@@ -323,9 +396,18 @@ func (o *Orchestrator) Chat(ctx context.Context, userID uuid.UUID, message strin
 	return o.ChatInContext(ctx, userID, uuid.Nil, message, history)
 }
 
+// toolCacheKey returns a cache key for a tool call based on name + serialized args.
+func toolCacheKey(tc ai.ToolCall) string {
+	args, _ := json.Marshal(tc.Arguments)
+	return tc.Name + ":" + string(args)
+}
+
 // ChatInContext handles a chat message with an optional conversation ID for action support.
 func (o *Orchestrator) ChatInContext(ctx context.Context, userID, convID uuid.UUID, message string, history []ai.Message) (*ChatResponse, error) {
 	start := time.Now()
+
+	// Per-request tool result cache to avoid duplicate DB hits within a single chat call
+	toolCache := make(map[string]map[string]interface{})
 
 	// Build messages with history (copy to avoid mutating caller's slice)
 	messages := make([]ai.Message, len(history), len(history)+4)
@@ -348,16 +430,25 @@ func (o *Orchestrator) ChatInContext(ctx context.Context, userID, convID uuid.UU
 	}
 
 	// Process tool calls — up to 3 rounds of tool calling
+	totalTokens := resp.TokensUsed
 	toolResults := make([]ToolResult, 0)
 	allToolResults := make([]ToolResult, 0)
 	for round := 0; round < 3 && len(resp.ToolCalls) > 0; round++ {
-		for _, tc := range resp.ToolCalls {
+		// Separate action tools (sequential) from read-only tools (parallelizable)
+		type indexedCall struct {
+			index int
+			tc    ai.ToolCall
+		}
+		roundResults := make([]ToolResult, len(resp.ToolCalls))
+		var readOnlyCalls []indexedCall
+
+		for i, tc := range resp.ToolCalls {
 			// Intercept action tools — create pending action instead of executing
-			if isActionTool(tc.Name) && convID != uuid.Nil && o.fundsTransferer != nil {
+			if isActionTool(tc.Name) && convID != uuid.Nil && (o.fundsTransferer != nil || tc.Name == ToolSplitReceipt) {
 				result, err := o.executeActionTool(ctx, userID, convID, tc)
 				observeToolCall(tc.Name, err)
 				if err != nil {
-					result = map[string]interface{}{"error": err.Error()}
+					result = o.sanitizeToolError(tc.Name, err)
 				}
 				// If action requires confirmation, return immediately
 				if actionRequired, _ := result["action_required"].(bool); actionRequired {
@@ -366,28 +457,71 @@ func (o *Orchestrator) ChatInContext(ctx context.Context, userID, convID uuid.UU
 					if content == "" {
 						content = pendingRaw.Description
 					}
-					observeChat(resp.Provider, time.Since(start), resp.TokensUsed, nil)
+					observeChat(resp.Provider, time.Since(start), totalTokens, nil)
 					return &ChatResponse{
 						Content:       content,
 						ToolCalls:     append(allToolResults, ToolResult{Name: tc.Name, Result: result}),
-						TokensUsed:    resp.TokensUsed,
+						TokensUsed:    totalTokens,
 						Provider:      resp.Provider,
 						PendingAction: pendingRaw,
 					}, nil
 				}
-				toolResults = append(toolResults, ToolResult{Name: tc.Name, Result: result})
-				allToolResults = append(allToolResults, ToolResult{Name: tc.Name, Result: result})
+				roundResults[i] = ToolResult{Name: tc.Name, Result: result}
 				continue
 			}
 
-			result, err := o.executeTool(ctx, userID, tc)
-			observeToolCall(tc.Name, err)
-			if err != nil {
-				o.logger.Warn("Tool execution failed", zap.String("tool", tc.Name), zap.Error(err))
-				result = map[string]interface{}{"error": err.Error()}
+			// Check per-request cache
+			cacheKey := toolCacheKey(tc)
+			if cached, ok := toolCache[cacheKey]; ok {
+				roundResults[i] = ToolResult{Name: tc.Name, Result: cached}
+				continue
 			}
-			toolResults = append(toolResults, ToolResult{Name: tc.Name, Result: result})
-			allToolResults = append(allToolResults, ToolResult{Name: tc.Name, Result: result})
+
+			readOnlyCalls = append(readOnlyCalls, indexedCall{index: i, tc: tc})
+		}
+
+		// Execute read-only tools in parallel when multiple are pending
+		if len(readOnlyCalls) > 1 {
+			var wg sync.WaitGroup
+			for _, ic := range readOnlyCalls {
+				wg.Add(1)
+				go func(idx int, tc ai.ToolCall) {
+					defer wg.Done()
+					result, err := o.executeTool(ctx, userID, tc)
+					observeToolCall(tc.Name, err)
+					if err != nil {
+						o.logger.Warn("Tool execution failed", zap.String("tool", tc.Name), zap.Error(err))
+						result = o.sanitizeToolError(tc.Name, err)
+					}
+					roundResults[idx] = ToolResult{Name: tc.Name, Result: result}
+				}(ic.index, ic.tc)
+			}
+			wg.Wait()
+			// Cache results after all goroutines complete (no concurrent map writes)
+			for _, ic := range readOnlyCalls {
+				if r := roundResults[ic.index].Result; r != nil {
+					if _, hasErr := r["error"]; !hasErr {
+						toolCache[toolCacheKey(ic.tc)] = r
+					}
+				}
+			}
+		} else if len(readOnlyCalls) == 1 {
+			ic := readOnlyCalls[0]
+			result, err := o.executeTool(ctx, userID, ic.tc)
+			observeToolCall(ic.tc.Name, err)
+			if err != nil {
+				o.logger.Warn("Tool execution failed", zap.String("tool", ic.tc.Name), zap.Error(err))
+				result = o.sanitizeToolError(ic.tc.Name, err)
+			} else {
+				toolCache[toolCacheKey(ic.tc)] = result
+			}
+			roundResults[ic.index] = ToolResult{Name: ic.tc.Name, Result: result}
+		}
+
+		toolResults = toolResults[:0]
+		for _, tr := range roundResults {
+			toolResults = append(toolResults, tr)
+			allToolResults = append(allToolResults, tr)
 		}
 
 		toolResultsJSON, _ := json.Marshal(toolResults)
@@ -403,6 +537,7 @@ func (o *Orchestrator) ChatInContext(ctx context.Context, userID, convID uuid.UU
 		if err != nil {
 			return nil, fmt.Errorf("follow-up completion failed: %w", err)
 		}
+		totalTokens += resp.TokensUsed
 		toolResults = toolResults[:0]
 	}
 
@@ -412,13 +547,13 @@ func (o *Orchestrator) ChatInContext(ctx context.Context, userID, convID uuid.UU
 	// Build visual cards from tool results
 	cards := buildCardsFromToolResults(allToolResults)
 
-	observeChat(resp.Provider, time.Since(start), resp.TokensUsed, nil)
+	observeChat(resp.Provider, time.Since(start), totalTokens, nil)
 
 	return &ChatResponse{
 		Content:     content,
 		Cards:       cards,
 		ToolCalls:   allToolResults,
-		TokensUsed:  resp.TokensUsed,
+		TokensUsed:  totalTokens,
 		Provider:    resp.Provider,
 	}, nil
 }
@@ -430,6 +565,23 @@ func (o *Orchestrator) ExecuteToolPublic(ctx context.Context, userID uuid.UUID, 
 
 // executeTool executes a tool call and returns the result
 func (o *Orchestrator) executeTool(ctx context.Context, userID uuid.UUID, tc ai.ToolCall) (map[string]interface{}, error) {
+	o.logger.Debug("executing tool call",
+		zap.String("tool", tc.Name),
+		zap.Any("args", sanitizeToolArgs(tc.Arguments)),
+	)
+
+	toolCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	result, err := o.executeToolInner(toolCtx, userID, tc)
+	if err != nil && toolCtx.Err() == context.DeadlineExceeded {
+		o.logger.Warn("Tool execution timed out", zap.String("tool", tc.Name), zap.Duration("timeout", 5*time.Second))
+	}
+	return result, err
+}
+
+// executeToolInner performs the actual tool dispatch.
+func (o *Orchestrator) executeToolInner(ctx context.Context, userID uuid.UUID, tc ai.ToolCall) (map[string]interface{}, error) {
 	switch tc.Name {
 	case ToolGetPortfolioStats:
 		stats, err := o.portfolioProvider.GetWeeklyStats(ctx, userID)
@@ -561,8 +713,26 @@ func (o *Orchestrator) executeTool(ctx context.Context, userID uuid.UUID, tc ai.
 	case ToolGetBudget:
 		return o.executeGetBudget(ctx, userID)
 
-	case ToolSetBudget:
-		return o.executeSetBudget(ctx, userID, tc.Arguments)
+	case ToolGetRecurringExpenses:
+		return o.executeRecurringExpenses(ctx, userID)
+
+	case ToolGetWarrantyItems:
+		return o.executeGetWarrantyItems(ctx, userID)
+
+	case ToolGetReceiptChallenges:
+		return o.executeReceiptChallenges(ctx, userID)
+
+	case ToolGetSavingsSuggestions:
+		return o.executeSavingsSuggestions(ctx, userID)
+
+	case ToolGetPriceChanges:
+		return o.executePriceChanges(ctx, userID, tc.Arguments)
+
+	case ToolGetMerchantInsights:
+		return o.executeMerchantInsights(ctx, userID, tc.Arguments)
+
+	case ToolSplitReceipt:
+		return map[string]interface{}{"error": "Receipt splitting requires a conversation context. Please use the chat interface."}, nil
 
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", tc.Name)
@@ -585,17 +755,40 @@ var safetyPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)go all[- ]in on`),
 }
 
-const safetyReplacement = "some investors might consider"
+const safetyDisclaimer = "\n\n⚠️ Note: Rail doesn't provide specific investment advice. Consider consulting a financial professional for personalized guidance."
 
-// applySafetyFilter removes financial advice from responses
+// applySafetyFilter appends a disclaimer if financial advice patterns are detected
 func (o *Orchestrator) applySafetyFilter(content string) string {
 	for _, re := range safetyPatterns {
 		if re.MatchString(content) {
 			o.logger.Warn("Safety filter triggered", zap.String("pattern", re.String()))
-			content = re.ReplaceAllString(content, safetyReplacement)
+			return content + safetyDisclaimer
 		}
 	}
 	return content
+}
+
+// sanitizeToolError returns a user-friendly error message and logs the real error.
+func (o *Orchestrator) sanitizeToolError(toolName string, err error) map[string]interface{} {
+	o.logger.Error("Tool execution error", zap.String("tool", toolName), zap.Error(err))
+	return map[string]interface{}{"error": "This information is temporarily unavailable"}
+}
+
+// safeToolArgKeys are argument keys safe to log (no PII).
+var safeToolArgKeys = map[string]bool{
+	"period": true, "limit": true, "type": true, "year": true,
+	"report_type": true, "from": true, "to": true,
+}
+
+// sanitizeToolArgs redacts sensitive fields from tool arguments for logging.
+func sanitizeToolArgs(args map[string]interface{}) map[string]interface{} {
+	safe := make(map[string]interface{}, len(args))
+	for k, v := range args {
+		if safeToolArgKeys[k] {
+			safe[k] = v
+		}
+	}
+	return safe
 }
 
 // GenerateWrappedCards generates Spotify-Wrapped style cards

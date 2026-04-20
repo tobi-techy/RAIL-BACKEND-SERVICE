@@ -2,8 +2,6 @@ package di
 
 import (
 	"context"
-	"fmt"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
@@ -17,14 +15,12 @@ type fundsTransfererAdapter struct {
 	ledger *ledger.Service
 }
 
-func (a *fundsTransfererAdapter) TransferSpendToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error {
-	key := fmt.Sprintf("miriam-spend-to-stash-%s-%d", userID, time.Now().UnixMilli())
-	return a.ledger.TransferSpendingToStash(ctx, userID, amount, key)
+func (a *fundsTransfererAdapter) TransferSpendToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
+	return a.ledger.TransferSpendingToStash(ctx, userID, amount, idempotencyKey)
 }
 
-func (a *fundsTransfererAdapter) TransferStashToSpend(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error {
-	key := fmt.Sprintf("miriam-stash-to-spend-%s-%d", userID, time.Now().UnixMilli())
-	return a.ledger.TransferStashToSpending(ctx, userID, amount, key)
+func (a *fundsTransfererAdapter) TransferStashToSpend(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
+	return a.ledger.TransferStashToSpending(ctx, userID, amount, idempotencyKey)
 }
 
 func (a *fundsTransfererAdapter) GetSpendBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {

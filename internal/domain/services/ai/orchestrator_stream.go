@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -37,15 +38,32 @@ func (o *Orchestrator) ChatStreamInConversation(ctx context.Context, userID uuid
 		}
 	}
 
-	err := o.chatStreamInternal(ctx, userID, conv.ID, message, history, emit)
+	var accumulated strings.Builder
+	var totalTokens int
+	wrappedEmit := func(event StreamEvent) {
+		if event.Type == "token" {
+			accumulated.WriteString(event.Content)
+		}
+		if event.Type == "done" {
+			if m, ok := event.Data.(map[string]interface{}); ok {
+				if t, ok := m["tokens_used"].(int); ok {
+					totalTokens = t
+				}
+			}
+		}
+		emit(event)
+	}
+
+	err := o.chatStreamInternal(ctx, userID, conv.ID, message, history, wrappedEmit)
 
 	// Persist exchange in background (best-effort, mirrors ChatWithConversation)
 	if o.conversations != nil {
+		content := accumulated.String()
+		tokens := totalTokens
 		go func() {
 			pCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			// We don't have the full response content in streaming, so record a placeholder
-			_ = o.conversations.RecordExchange(pCtx, conv.ID, message, "[streamed response]", 0, decimal.Zero, "")
+			_ = o.conversations.RecordExchange(pCtx, conv.ID, message, content, tokens, decimal.Zero, "")
 		}()
 	}
 
@@ -80,8 +98,8 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 	req := &infraai.ChatRequest{
 		Messages:     messages,
 		SystemPrompt: SystemPrompt,
-		MaxTokens:    500,
-		Temperature:  0.7,
+		MaxTokens:    800,
+		Temperature:  0.4,
 	}
 
 	// Non-streaming tool call rounds (up to 3)
@@ -91,22 +109,23 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 		return fmt.Errorf("AI completion failed: %w", err)
 	}
 
+	cumulativeTokens := resp.TokensUsed
 	allToolResults := make([]ToolResult, 0)
 	for round := 0; round < 3 && len(resp.ToolCalls) > 0; round++ {
 		roundResults := make([]ToolResult, 0, len(resp.ToolCalls))
 		for _, tc := range resp.ToolCalls {
 			// Handle action tools (require confirmation)
-			if isActionTool(tc.Name) && convID != uuid.Nil && o.fundsTransferer != nil {
+			if isActionTool(tc.Name) && convID != uuid.Nil && (o.fundsTransferer != nil || tc.Name == ToolSplitReceipt) {
 				result, execErr := o.executeActionTool(ctx, userID, convID, tc)
 				observeToolCall(tc.Name, execErr)
 				if execErr != nil {
-					result = map[string]interface{}{"error": execErr.Error()}
+					result = o.sanitizeToolError(tc.Name, execErr)
 				}
 				if actionRequired, _ := result["action_required"].(bool); actionRequired {
 					pendingRaw, _ := result["pending_action"].(*entities.PendingAction)
 					emit(StreamEvent{Type: "pending_action", Data: pendingRaw})
-					emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": resp.TokensUsed, "provider": resp.Provider}})
-					observeChat(resp.Provider, time.Since(start), resp.TokensUsed, nil)
+					emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": cumulativeTokens, "provider": resp.Provider}})
+					observeChat(resp.Provider, time.Since(start), cumulativeTokens, nil)
 					return nil
 				}
 				roundResults = append(roundResults, ToolResult{Name: tc.Name, Result: result})
@@ -119,7 +138,7 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 			observeToolCall(tc.Name, execErr)
 			if execErr != nil {
 				o.logger.Warn("Tool execution failed", zap.String("tool", tc.Name), zap.Error(execErr))
-				result = map[string]interface{}{"error": execErr.Error()}
+				result = o.sanitizeToolError(tc.Name, execErr)
 			}
 			roundResults = append(roundResults, ToolResult{Name: tc.Name, Result: result})
 			allToolResults = append(allToolResults, ToolResult{Name: tc.Name, Result: result})
@@ -139,6 +158,7 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 		if err != nil {
 			return fmt.Errorf("follow-up completion failed: %w", err)
 		}
+		cumulativeTokens += resp.TokensUsed
 	}
 
 	// Emit cards from tool results
@@ -153,35 +173,47 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 			content := o.applySafetyFilter(resp.Content)
 			emit(StreamEvent{Type: "token", Content: content})
 		}
-		observeChat(resp.Provider, time.Since(start), resp.TokensUsed, nil)
-		emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": resp.TokensUsed, "provider": resp.Provider}})
+		observeChat(resp.Provider, time.Since(start), cumulativeTokens, nil)
+		emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": cumulativeTokens, "provider": resp.Provider}})
 		return nil
 	}
 
-	// Stream follow-up
+	// Stream follow-up — collect full content for safety filter
 	ch := make(chan infraai.StreamChunk, 32)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- streamer.ChatCompletionStream(ctx, req, nil, ch)
 	}()
 
-	var totalTokens int
+	var streamedContent strings.Builder
+	var streamTokens int
 	provider := resp.Provider
 	for chunk := range ch {
 		if chunk.Content != "" {
+			streamedContent.WriteString(chunk.Content)
 			emit(StreamEvent{Type: "token", Content: chunk.Content})
 		}
 		if chunk.Done {
-			totalTokens = chunk.TokensUsed
+			streamTokens = chunk.TokensUsed
 		}
 	}
+
+	// Apply safety filter to the fully assembled streamed content.
+	// If triggered, emit the disclaimer as a final token.
+	fullContent := streamedContent.String()
+	filtered := o.applySafetyFilter(fullContent)
+	if len(filtered) > len(fullContent) {
+		emit(StreamEvent{Type: "token", Content: filtered[len(fullContent):]})
+	}
+
+	cumulativeTokens += streamTokens
 
 	if streamErr := <-errCh; streamErr != nil {
 		observeChat(provider, time.Since(start), 0, streamErr)
 		return streamErr
 	}
 
-	observeChat(provider, time.Since(start), totalTokens, nil)
-	emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": totalTokens, "provider": provider}})
+	observeChat(provider, time.Since(start), cumulativeTokens, nil)
+	emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": cumulativeTokens, "provider": provider}})
 	return nil
 }

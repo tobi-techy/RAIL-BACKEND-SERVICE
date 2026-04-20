@@ -24,9 +24,14 @@ const (
 const pendingActionTTL = 2 * time.Minute
 
 // FundsTransferer moves money between spend and stash.
+//
+// Implementations MUST use database-level locking (e.g. SELECT FOR UPDATE) to
+// ensure the balance check and debit are atomic. The balance pre-check in
+// executeTransfer is defense-in-depth only; the real protection against
+// TOCTOU races must live in the FundsTransferer implementation.
 type FundsTransferer interface {
-	TransferSpendToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error
-	TransferStashToSpend(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error
+	TransferSpendToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error
+	TransferStashToSpend(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error
 	GetSpendBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
 	GetStashBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
 }
@@ -34,6 +39,20 @@ type FundsTransferer interface {
 // ActionAuditor persists action audit entries.
 type ActionAuditor interface {
 	RecordAction(ctx context.Context, entry *entities.ActionAuditEntry) error
+}
+
+// SavingsGoal represents a user's savings goal.
+type SavingsGoal struct {
+	Name      string `json:"name"`
+	Target    string `json:"target"`
+	Deadline  string `json:"deadline,omitempty"`
+	CreatedAt string `json:"created_at"`
+}
+
+// SavingsGoalStore persists savings goals (Redis-backed).
+type SavingsGoalStore interface {
+	Set(ctx context.Context, userID uuid.UUID, goal *SavingsGoal) error
+	Get(ctx context.Context, userID uuid.UUID) (*SavingsGoal, error)
 }
 
 // PendingActionStore persists pending actions (Redis-backed for multi-instance safety).
@@ -88,8 +107,14 @@ func (o *Orchestrator) SetPendingActions(p PendingActionStore) {
 }
 
 // SetActionAuditor wires the action audit dependency.
+// Deprecated: Use NewOrchestratorWithDeps instead.
 func (o *Orchestrator) SetActionAuditor(a ActionAuditor) {
 	o.actionAuditor = a
+}
+
+// SetSavingsGoalStore wires the savings goal store dependency.
+func (o *Orchestrator) SetSavingsGoalStore(s SavingsGoalStore) {
+	o.savingsGoalStore = s
 }
 
 // ActionTools returns the action-capable tools.
@@ -134,6 +159,10 @@ func (o *Orchestrator) executeActionTool(ctx context.Context, userID, convID uui
 		return o.createSavingsGoalAction(ctx, userID, convID, tc.Arguments)
 	case ToolSendReport:
 		return o.executeSendReport(ctx, userID, convID, tc.Arguments)
+	case ToolSetBudget:
+		return o.createSetBudgetAction(ctx, userID, convID, tc.Arguments)
+	case ToolSplitReceipt:
+		return o.createSplitReceiptAction(ctx, userID, convID, tc.Arguments)
 	default:
 		return nil, fmt.Errorf("unknown action tool: %s", tc.Name)
 	}
@@ -255,11 +284,30 @@ func (o *Orchestrator) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 	case ToolTransferFunds:
 		execErr = o.executeTransfer(ctx, userID, action)
 	case ToolSetSavingsGoal:
+		if o.savingsGoalStore != nil {
+			goal := &SavingsGoal{
+				Name:      fmt.Sprintf("%v", action.Params["name"]),
+				Target:    fmt.Sprintf("%v", action.Params["target"]),
+				CreatedAt: time.Now().UTC().Format(time.RFC3339),
+			}
+			if d, ok := action.Params["deadline"].(string); ok {
+				goal.Deadline = d
+			}
+			execErr = o.savingsGoalStore.Set(ctx, userID, goal)
+		}
 		o.logger.Info("Savings goal set via Miriam",
 			zap.String("user_id", userID.String()),
 			zap.Any("params", action.Params))
 	case ToolSendReport:
 		execErr = o.executeSendReportAction(ctx, userID, action)
+	case ToolSetBudget:
+		_, execErr = o.executeSetBudget(ctx, userID, action.Params)
+	case ToolSplitReceipt:
+		// Split receipt is confirmed — the actual P2P sends happen via the HTTP handler.
+		// The AI action just records the intent; execution is delegated to the receipt split endpoint.
+		o.logger.Info("Receipt split confirmed via Miriam",
+			zap.String("user_id", userID.String()),
+			zap.Any("params", action.Params))
 	default:
 		execErr = fmt.Errorf("unknown action: %s", action.Action)
 	}
@@ -302,7 +350,9 @@ func (o *Orchestrator) executeTransfer(ctx context.Context, userID uuid.UUID, ac
 		return fmt.Errorf("invalid amount: %w", err)
 	}
 
-	// Re-check balance at execution time (TOCTOU protection)
+	// Re-check balance at execution time — defense-in-depth only.
+	// The real TOCTOU protection MUST be in the FundsTransferer implementation
+	// via database-level locking (SELECT FOR UPDATE or similar).
 	var balance decimal.Decimal
 	if from == "spend" {
 		balance, err = o.fundsTransferer.GetSpendBalance(ctx, userID)
@@ -318,9 +368,9 @@ func (o *Orchestrator) executeTransfer(ctx context.Context, userID uuid.UUID, ac
 
 	// Use action ID as idempotency key to prevent double-execution
 	if from == "spend" {
-		return o.fundsTransferer.TransferSpendToStash(ctx, userID, amount)
+		return o.fundsTransferer.TransferSpendToStash(ctx, userID, amount, action.ID)
 	}
-	return o.fundsTransferer.TransferStashToSpend(ctx, userID, amount)
+	return o.fundsTransferer.TransferStashToSpend(ctx, userID, amount, action.ID)
 }
 
 func (o *Orchestrator) auditAction(ctx context.Context, userID, convID uuid.UUID, action *entities.PendingAction, status, errMsg string) {
@@ -344,5 +394,5 @@ func (o *Orchestrator) auditAction(ctx context.Context, userID, convID uuid.UUID
 
 // isActionTool returns true if the tool name is an action tool.
 func isActionTool(name string) bool {
-	return name == ToolTransferFunds || name == ToolSetSavingsGoal || name == ToolSendReport
+	return name == ToolTransferFunds || name == ToolSetSavingsGoal || name == ToolSendReport || name == ToolSetBudget || name == ToolSplitReceipt
 }
