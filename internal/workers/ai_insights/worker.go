@@ -39,12 +39,12 @@ type SubscriptionChecker interface {
 
 // Worker runs periodic proactive insight checks and sends push notifications.
 type Worker struct {
-	userRepo     UserRepo
-	pushSender   PushSender
-	spendingRepo SpendingRepo
-	balances     BalanceProvider
-	subChecker   SubscriptionChecker
-	logger       *zap.Logger
+	userRepo      UserRepo
+	pushSender    PushSender
+	spendingRepo  SpendingRepo
+	balances      BalanceProvider
+	subChecker    SubscriptionChecker
+	logger        *zap.Logger
 	lastDigestDay int // day of year when last digest ran
 }
 
@@ -55,7 +55,6 @@ func NewWorker(userRepo UserRepo, pushSender PushSender, spendingRepo SpendingRe
 		spendingRepo: spendingRepo,
 		balances:     balances,
 		subChecker:   subChecker,
-		logger:       logger,
 		logger:       logger,
 	}
 }
@@ -273,15 +272,15 @@ func (w *Worker) runMorningGreeting(ctx context.Context) {
 
 // countryTimezones maps ISO 3166-1 alpha-2 country codes to primary IANA timezone.
 var countryTimezones = map[string]string{
-	"NG": "Africa/Lagos",     // WAT (UTC+1)
-	"GH": "Africa/Accra",     // GMT (UTC+0)
-	"KE": "Africa/Nairobi",   // EAT (UTC+3)
+	"NG": "Africa/Lagos",        // WAT (UTC+1)
+	"GH": "Africa/Accra",        // GMT (UTC+0)
+	"KE": "Africa/Nairobi",      // EAT (UTC+3)
 	"ZA": "Africa/Johannesburg", // SAST (UTC+2)
-	"GB": "Europe/London",    // GMT/BST
-	"US": "America/New_York", // EST/EDT (default for US)
-	"CA": "America/Toronto",  // EST/EDT
-	"DE": "Europe/Berlin",    // CET/CEST
-	"FR": "Europe/Paris",     // CET/CEST
+	"GB": "Europe/London",       // GMT/BST
+	"US": "America/New_York",    // EST/EDT (default for US)
+	"CA": "America/Toronto",     // EST/EDT
+	"DE": "Europe/Berlin",       // CET/CEST
+	"FR": "Europe/Paris",        // CET/CEST
 }
 
 // isLocalMorning returns true if the current UTC time falls in the 7-8am window

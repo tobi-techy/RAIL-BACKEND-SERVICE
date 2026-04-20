@@ -129,6 +129,16 @@ func (m *mockCardRepository) CountByUserID(ctx context.Context, userID uuid.UUID
 	return count, nil
 }
 
+func (m *mockCardRepository) CountTransactionsByUser(ctx context.Context, userID uuid.UUID) (int, error) {
+	count := 0
+	for _, tx := range m.transactions {
+		if tx.UserID == userID {
+			count++
+		}
+	}
+	return count, nil
+}
+
 // mockCardBalanceProvider implements card.BalanceProvider for testing
 type mockCardBalanceProvider struct {
 	balance      decimal.Decimal
