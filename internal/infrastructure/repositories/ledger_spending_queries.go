@@ -21,11 +21,8 @@ func NewLedgerSpendingRepository(db *sqlx.DB) *LedgerSpendingRepository {
 
 // allOutflows is a CTE that unions all spending sources into a single view.
 const allOutflows = `WITH outflows AS (
-	-- Ledger withdrawals (excluding reversed, enriched with real amounts/currencies)
-	SELECT t.created_at,
-		CASE WHEN w.id IS NOT NULL THEN w.amount
-		     WHEN t.metadata->>'provider' = 'paj' THEN COALESCE((t.metadata->>'fiat_amount')::numeric, e.amount)
-		     ELSE e.amount END AS amount,
+	-- Ledger withdrawals (USDC amounts only, reversed excluded via status checks)
+	SELECT t.created_at, e.amount,
 		CASE WHEN COALESCE(w.currency, t.metadata->>'currency') = 'NGN' THEN 'NGN Withdrawal'
 		     WHEN w.currency = 'EUR' THEN 'EUR Withdrawal'
 		     WHEN w.currency = 'GBP' THEN 'GBP Withdrawal'
@@ -35,7 +32,7 @@ const allOutflows = `WITH outflows AS (
 		CASE WHEN w.id IS NOT NULL THEN
 		       w.currency || ' ' || w.amount::text ||
 		       CASE WHEN w.withdrawal_type = 'fiat' THEN ' to bank' ELSE ' to wallet' END
-		     WHEN t.metadata->>'provider' = 'paj' THEN 'NGN ' || COALESCE(t.metadata->>'fiat_amount', e.amount::text) || ' to bank'
+		     WHEN t.metadata->>'provider' = 'paj' THEN 'NGN ' || COALESCE(t.metadata->>'fiat_amount', '?') || ' to bank'
 		     ELSE COALESCE(t.description, 'Withdrawal') END AS source
 	FROM ledger_entries e
 	JOIN ledger_transactions t ON t.id = e.transaction_id
@@ -44,15 +41,17 @@ const allOutflows = `WITH outflows AS (
 	WHERE a.user_id = $1 AND e.entry_type = 'credit'
 	  AND t.transaction_type = 'withdrawal' AND t.status = 'completed'
 	  AND e.created_at >= $2 AND e.created_at < $3
-	  AND NOT EXISTS (
-	    SELECT 1 FROM ledger_entries re
-	    JOIN ledger_transactions rt ON rt.id = re.transaction_id
-	    WHERE re.account_id = e.account_id AND re.entry_type = 'debit'
-	      AND rt.transaction_type = 'reversal' AND rt.status = 'completed'
-	      AND re.amount = e.amount
-	      AND re.created_at >= e.created_at
-	      AND re.created_at < e.created_at + interval '1 hour'
-	  )
+	  -- Exclude reversed: WithdrawalService withdrawals check status on withdrawals table
+	  AND (w.id IS NULL OR w.status = 'completed')
+	  -- Exclude reversed: Paj withdrawals check for matching reversal transaction
+	  AND (t.metadata->>'provider' != 'paj' OR NOT EXISTS (
+	    SELECT 1 FROM ledger_transactions rt
+	    WHERE rt.user_id = t.user_id AND rt.transaction_type = 'reversal' AND rt.status = 'completed'
+	      AND rt.metadata->>'provider' = 'paj' AND rt.metadata->>'type' = 'offramp_reversal'
+	      AND rt.idempotency_key LIKE 'withdrawal-reversal-%'
+	      AND rt.created_at BETWEEN e.created_at AND e.created_at + interval '24 hours'
+	      AND EXISTS (SELECT 1 FROM ledger_entries re WHERE re.transaction_id = rt.id AND re.amount = e.amount)
+	  ))
 
 	UNION ALL
 
@@ -162,13 +161,9 @@ func (r *LedgerSpendingRepository) GetMoneyFlow(ctx context.Context, userID uuid
 		return nil, err
 	}
 
-	// Withdrawals (money out via ledger, excluding reversed, using real amounts)
+	// Withdrawals (money out via ledger, USDC amounts, reversed excluded via status)
 	err = r.db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(
-			CASE WHEN w.id IS NOT NULL THEN w.amount
-			     WHEN t.metadata->>'provider' = 'paj' THEN COALESCE((t.metadata->>'fiat_amount')::numeric, e.amount)
-			     ELSE e.amount END
-		), 0), COUNT(*)
+		SELECT COALESCE(SUM(e.amount), 0), COUNT(*)
 		FROM ledger_entries e
 		JOIN ledger_transactions t ON t.id = e.transaction_id
 		JOIN ledger_accounts a ON a.id = e.account_id
@@ -176,15 +171,15 @@ func (r *LedgerSpendingRepository) GetMoneyFlow(ctx context.Context, userID uuid
 		WHERE a.user_id = $1 AND e.entry_type = 'credit'
 		  AND t.transaction_type = 'withdrawal' AND t.status = 'completed'
 		  AND e.created_at >= $2 AND e.created_at < $3
-		  AND NOT EXISTS (
-		    SELECT 1 FROM ledger_entries re
-		    JOIN ledger_transactions rt ON rt.id = re.transaction_id
-		    WHERE re.account_id = e.account_id AND re.entry_type = 'debit'
-		      AND rt.transaction_type = 'reversal' AND rt.status = 'completed'
-		      AND re.amount = e.amount
-		      AND re.created_at >= e.created_at
-		      AND re.created_at < e.created_at + interval '1 hour'
-		  )`,
+		  AND (w.id IS NULL OR w.status = 'completed')
+		  AND (t.metadata->>'provider' != 'paj' OR NOT EXISTS (
+		    SELECT 1 FROM ledger_transactions rt
+		    WHERE rt.user_id = t.user_id AND rt.transaction_type = 'reversal' AND rt.status = 'completed'
+		      AND rt.metadata->>'provider' = 'paj' AND rt.metadata->>'type' = 'offramp_reversal'
+		      AND rt.idempotency_key LIKE 'withdrawal-reversal-%'
+		      AND rt.created_at BETWEEN e.created_at AND e.created_at + interval '24 hours'
+		      AND EXISTS (SELECT 1 FROM ledger_entries re WHERE re.transaction_id = rt.id AND re.amount = e.amount)
+		  ))`,
 		userID, start, end).Scan(&s.TotalWithdrawals, &s.WithdrawalCount)
 	if err != nil {
 		return nil, err

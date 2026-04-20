@@ -24,6 +24,7 @@ type SpendingAnalyzer interface {
 	GetSummary(ctx context.Context, userID uuid.UUID, start, end time.Time) (*spending.Summary, error)
 	GetTransactions(ctx context.Context, userID uuid.UUID, start, end time.Time, limit int) ([]entities.SpendingTransaction, error)
 	GetMoneyFlow(ctx context.Context, userID uuid.UUID, start, end time.Time) (*entities.MoneyFlowSummary, error)
+	GetDailyTrend(ctx context.Context, userID uuid.UUID, start, end time.Time) ([]entities.SpendingByPeriod, error)
 }
 
 // SetSpending sets the spending analysis provider.
@@ -246,11 +247,12 @@ func (o *Orchestrator) executeMoneyFlow(ctx context.Context, userID uuid.UUID, a
 	// Daily spending trend
 		dailyTrend := []map[string]interface{}{}
 	if o.spending != nil {
-		summary, err := o.spending.GetSummary(ctx, userID, start, end)
-		if err == nil {
-			for _, d := range summary.DailyTrend {
-				dailyTrend = append(dailyTrend, map[string]interface{}{"date": d.Period, "amount": d.Total.String(), "count": d.Count})
-			}
+		days, err := o.spending.GetDailyTrend(ctx, userID, start, end)
+		if err != nil {
+			return nil, fmt.Errorf("daily trend: %w", err)
+		}
+		for _, d := range days {
+			dailyTrend = append(dailyTrend, map[string]interface{}{"date": d.Period, "amount": d.Total.String(), "count": d.Count})
 		}
 	}
 
