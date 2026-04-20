@@ -21,17 +21,26 @@ func NewLedgerSpendingRepository(db *sqlx.DB) *LedgerSpendingRepository {
 
 // allOutflows is a CTE that unions all spending sources into a single view.
 const allOutflows = `WITH outflows AS (
-	-- Ledger withdrawals (excluding reversed: check for matching reversal entry)
+	-- Ledger withdrawals (excluding reversed, enriched with real amounts/currencies)
 	SELECT t.created_at,
-		CASE WHEN t.metadata->>'provider' = 'paj' THEN COALESCE((t.metadata->>'fiat_amount')::numeric, e.amount)
+		CASE WHEN w.id IS NOT NULL THEN w.amount
+		     WHEN t.metadata->>'provider' = 'paj' THEN COALESCE((t.metadata->>'fiat_amount')::numeric, e.amount)
 		     ELSE e.amount END AS amount,
-		CASE WHEN t.metadata->>'provider' = 'paj' THEN 'NGN Withdrawal'
+		CASE WHEN COALESCE(w.currency, t.metadata->>'currency') = 'NGN' THEN 'NGN Withdrawal'
+		     WHEN w.currency = 'EUR' THEN 'EUR Withdrawal'
+		     WHEN w.currency = 'GBP' THEN 'GBP Withdrawal'
+		     WHEN w.currency = 'USD' THEN 'USD Withdrawal'
+		     WHEN COALESCE(w.withdrawal_type, t.metadata->>'withdrawal_type') = 'crypto' THEN 'Crypto Withdrawal'
 		     ELSE 'Withdrawal' END AS category,
-		CASE WHEN t.metadata->>'provider' = 'paj' THEN 'Naira Withdrawal (₦' || COALESCE(t.metadata->>'fiat_amount', '?') || ')'
-		     ELSE COALESCE(t.description, 'Crypto/Fiat Withdrawal') END AS source
+		CASE WHEN w.id IS NOT NULL THEN
+		       w.currency || ' ' || w.amount::text ||
+		       CASE WHEN w.withdrawal_type = 'fiat' THEN ' to bank' ELSE ' to wallet' END
+		     WHEN t.metadata->>'provider' = 'paj' THEN 'NGN ' || COALESCE(t.metadata->>'fiat_amount', e.amount::text) || ' to bank'
+		     ELSE COALESCE(t.description, 'Withdrawal') END AS source
 	FROM ledger_entries e
 	JOIN ledger_transactions t ON t.id = e.transaction_id
 	JOIN ledger_accounts a ON a.id = e.account_id
+	LEFT JOIN withdrawals w ON w.id = (t.metadata->>'withdrawal_id')::uuid
 	WHERE a.user_id = $1 AND e.entry_type = 'credit'
 	  AND t.transaction_type = 'withdrawal' AND t.status = 'completed'
 	  AND e.created_at >= $2 AND e.created_at < $3
@@ -153,15 +162,17 @@ func (r *LedgerSpendingRepository) GetMoneyFlow(ctx context.Context, userID uuid
 		return nil, err
 	}
 
-	// Withdrawals (money out via ledger, excluding reversed)
+	// Withdrawals (money out via ledger, excluding reversed, using real amounts)
 	err = r.db.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(
-			CASE WHEN t.metadata->>'provider' = 'paj' THEN COALESCE((t.metadata->>'fiat_amount')::numeric, e.amount)
+			CASE WHEN w.id IS NOT NULL THEN w.amount
+			     WHEN t.metadata->>'provider' = 'paj' THEN COALESCE((t.metadata->>'fiat_amount')::numeric, e.amount)
 			     ELSE e.amount END
 		), 0), COUNT(*)
 		FROM ledger_entries e
 		JOIN ledger_transactions t ON t.id = e.transaction_id
 		JOIN ledger_accounts a ON a.id = e.account_id
+		LEFT JOIN withdrawals w ON w.id = (t.metadata->>'withdrawal_id')::uuid
 		WHERE a.user_id = $1 AND e.entry_type = 'credit'
 		  AND t.transaction_type = 'withdrawal' AND t.status = 'completed'
 		  AND e.created_at >= $2 AND e.created_at < $3
