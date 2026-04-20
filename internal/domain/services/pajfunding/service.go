@@ -419,10 +419,10 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 	}
 
 	_, dbErr := s.db.ExecContext(ctx, `
-		INSERT INTO paj_orders (user_id, paj_order_id, order_type, status, fiat_amount, token_amount, currency, rate, fee, bank_id, bank_account_number, paj_deposit_address, hold_amount)
-		VALUES ($1, $2, 'offramp', 'pending', $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		INSERT INTO paj_orders (user_id, paj_order_id, order_type, status, fiat_amount, token_amount, currency, rate, fee, bank_id, bank_account_number, bank_account_name, paj_deposit_address, hold_amount)
+		VALUES ($1, $2, 'offramp', 'pending', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 		userID, order.ID, order.FiatAmount, order.Amount, currency, order.Rate, order.Fee,
-		bankID, accountNumber, order.Address, totalHold)
+		bankID, accountNumber, s.resolveAccountName(ctx, token, accountNumber), order.Address, totalHold)
 	if dbErr != nil {
 		s.logger.Error("CRITICAL: failed to persist paj offramp order — reversing hold",
 			zap.Error(dbErr), zap.String("paj_order_id", order.ID))
@@ -829,6 +829,7 @@ type PajOrder struct {
 	Fee               float64   `db:"fee" json:"fee"`
 	BankID            *string   `db:"bank_id" json:"bankId,omitempty"`
 	BankAccountNumber *string   `db:"bank_account_number" json:"bankAccountNumber,omitempty"`
+	BankAccountName   *string   `db:"bank_account_name" json:"bankAccountName,omitempty"`
 	CreatedAt         time.Time `db:"created_at" json:"createdAt"`
 }
 
@@ -846,6 +847,20 @@ func (s *Service) notifyOfframpStatus(ctx context.Context, userID uuid.UUID, paj
 	}
 }
 
+// resolveAccountName looks up the account holder name from Paj saved bank accounts.
+func (s *Service) resolveAccountName(ctx context.Context, token, accountNumber string) *string {
+	accounts, err := s.pajClient.GetBankAccounts(ctx, token)
+	if err != nil {
+		return nil
+	}
+	for _, a := range accounts {
+		if a.AccountNumber == accountNumber {
+			return &a.AccountName
+		}
+	}
+	return nil
+}
+
 // GetOrders returns the user's Paj order history for transaction display.
 func (s *Service) GetOrders(ctx context.Context, userID uuid.UUID) ([]PajOrder, error) {
 	var orders []PajOrder
@@ -853,7 +868,7 @@ func (s *Service) GetOrders(ctx context.Context, userID uuid.UUID) ([]PajOrder, 
 		SELECT paj_order_id, order_type, status, COALESCE(fiat_amount, 0) as fiat_amount,
 			COALESCE(token_amount, 0) as token_amount, COALESCE(currency, 'NGN') as currency,
 			COALESCE(rate, 0) as rate, COALESCE(fee, 0) as fee,
-			bank_id, bank_account_number, created_at
+			bank_id, bank_account_number, bank_account_name, created_at
 		FROM paj_orders WHERE user_id = $1
 		  AND (status = 'completed' OR status = 'paid'
 		       OR (status IN ('pending', 'failed') AND created_at > NOW() - interval '24 hours'))
