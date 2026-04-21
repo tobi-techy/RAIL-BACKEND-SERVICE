@@ -42,7 +42,14 @@ type Config struct {
 	SocialAuth     SocialAuthConfig     `mapstructure:"social_auth"`
 	WebAuthn       WebAuthnConfig       `mapstructure:"webauthn"`
 	AI             AIConfig             `mapstructure:"ai"`
-	SNSPush        SNSPushConfig        `mapstructure:"sns_push"`
+	SNSPush        SNSPushConfig  `mapstructure:"sns_push"`
+	TelegramAlerts TelegramConfig `mapstructure:"telegram_alerts"`
+}
+
+// TelegramConfig contains Telegram bot alerting configuration
+type TelegramConfig struct {
+	BotToken string `mapstructure:"bot_token"` // Telegram bot token from @BotFather
+	ChatID   string `mapstructure:"chat_id"`   // Chat/group ID to send alerts to
 }
 
 // SNSPushConfig contains AWS SNS push notification configuration
@@ -1247,11 +1254,22 @@ func overrideFromEnv() {
 			viper.Set("security.disable_admin_creation", disabled)
 		}
 	}
+
+	// Telegram Alerts
+	if v := os.Getenv("TELEGRAM_ALERTS_BOT_TOKEN"); v != "" {
+		viper.Set("telegram_alerts.bot_token", v)
+	}
+	if v := os.Getenv("TELEGRAM_ALERTS_CHAT_ID"); v != "" {
+		viper.Set("telegram_alerts.chat_id", v)
+	}
 }
 
 func validate(config *Config) error {
 	if config.JWT.Secret == "" {
 		return fmt.Errorf("JWT secret is required")
+	}
+	if len(config.JWT.Secret) < 32 {
+		return fmt.Errorf("JWT secret must be at least 32 characters for adequate security")
 	}
 
 	if config.Security.EncryptionKey == "" {
@@ -1280,6 +1298,13 @@ func validate(config *Config) error {
 		}
 		if strings.TrimSpace(config.KYC.LevelName) == "" {
 			return fmt.Errorf("sumsub level name is required when kyc.provider=sumsub")
+		}
+	}
+
+	// Require Redis password in production and staging
+	if config.Environment == "production" || config.Environment == "staging" {
+		if config.Redis.Password == "" {
+			return fmt.Errorf("redis password is required in %s environment", config.Environment)
 		}
 	}
 

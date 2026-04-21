@@ -2,10 +2,12 @@ package routes
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -31,6 +33,7 @@ import (
 	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
+	"github.com/rail-service/rail_service/pkg/alerting"
 	"github.com/rail-service/rail_service/pkg/ratelimit"
 	"github.com/rail-service/rail_service/pkg/tracing"
 )
@@ -102,7 +105,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	router.Use(middleware.InputValidation())
 	router.Use(middleware.Logger(container.Logger))
 	router.Use(middleware.Recovery(container.Logger))
-	router.Use(middleware.CORS(container.Config.Server.AllowedOrigins))
+	router.Use(middleware.ErrorAlerter(alerting.NewTelegramAlerter(
+		container.Config.TelegramAlerts.BotToken,
+		container.Config.TelegramAlerts.ChatID,
+	)))
+	router.Use(middleware.CORS(container.Config.Server.AllowedOrigins, container.Config.Environment))
 	router.Use(createRateLimitMiddleware(container))
 	router.Use(middleware.SecurityHeaders())
 	router.Use(middleware.DeviceFingerprintExtractor())
@@ -128,19 +135,24 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	router.GET("/metrics", coreHandlers.Metrics)
 
 	// Internal ops endpoints — protected by dedicated INTERNAL_API_KEY (not JWT secret)
+	// Rate limited: 5 requests/minute to prevent abuse
 	internalHandlers := handlers.NewInternalHandlers(container.DB, container.Config.Security.InternalAPIKey)
-	router.GET("/internal/users/lookup", internalHandlers.LookupUser)
-	router.DELETE("/internal/users/:id", internalHandlers.DeleteUser)
+	internal := router.Group("/internal")
+	internal.Use(middleware.RateLimit(5))
+	{
+		internal.GET("/users/lookup", internalHandlers.LookupUser)
+		internal.DELETE("/users/:id", internalHandlers.DeleteUser)
+	}
 
 	// Internal knowledge ingestion — no JWT, uses INTERNAL_API_KEY
 	if container.GetKnowledgeService() != nil {
 		knowledgeHandlers := handlers.NewKnowledgeHandlers(container.GetKnowledgeService(), container.ZapLog)
-		router.POST("/internal/knowledge/ingest", func(c *gin.Context) {
+		internal.POST("/knowledge/ingest", func(c *gin.Context) {
 			key := c.GetHeader("Authorization")
 			if len(key) > 7 && key[:7] == "Bearer " {
 				key = key[7:]
 			}
-			if container.Config.Security.InternalAPIKey == "" || key != container.Config.Security.InternalAPIKey {
+			if container.Config.Security.InternalAPIKey == "" || subtle.ConstantTimeCompare([]byte(key), []byte(container.Config.Security.InternalAPIKey)) != 1 {
 				c.JSON(401, gin.H{"error": "unauthorized"})
 				return
 			}
@@ -150,13 +162,13 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 	// Manual deposit credit — internal API key auth, no user JWT needed
 	if container.FundingService != nil {
-		router.POST("/internal/deposit/credit", func(c *gin.Context) {
+		internal.POST("/deposit/credit", func(c *gin.Context) {
 			// Auth check using internal API key
 			key := c.GetHeader("Authorization")
 			if len(key) > 7 && key[:7] == "Bearer " {
 				key = key[7:]
 			}
-			if container.Config.Security.InternalAPIKey == "" || key != container.Config.Security.InternalAPIKey {
+			if container.Config.Security.InternalAPIKey == "" || subtle.ConstantTimeCompare([]byte(key), []byte(container.Config.Security.InternalAPIKey)) != 1 {
 				c.JSON(401, gin.H{"error": "unauthorized"})
 				return
 			}
@@ -200,9 +212,21 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		c.File("static/.well-known/apple-app-site-association")
 	})
 
-	// Swagger documentation (development only)
+	// Swagger documentation (development only, password-protected)
 	if container.Config.Environment == "development" {
-		router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+		swaggerPassword := strings.TrimSpace(os.Getenv("SWAGGER_PASSWORD"))
+		if swaggerPassword != "" {
+			router.GET("/swagger/*any", func(c *gin.Context) {
+				if c.Query("key") != swaggerPassword {
+					c.Header("WWW-Authenticate", `Basic realm="Swagger"`)
+					c.AbortWithStatus(http.StatusUnauthorized)
+					return
+				}
+				ginSwagger.WrapHandler(swaggerFiles.Handler)(c)
+			})
+		} else {
+			router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+		}
 	}
 	walletFundingHandlers := handlers.NewWalletFundingHandlers(
 		container.GetWalletService(),
@@ -365,7 +389,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			auth.POST("/register", middleware.AuthRateLimit(5), authHandlers.Register)
 			auth.POST("/verify", middleware.AuthRateLimit(5), authHandlers.Verify)
 			auth.POST("/refresh", middleware.AuthRateLimit(10), authHandlers.RefreshToken)
-			auth.POST("/logout", authHandlers.Logout)
 			auth.POST("/resend-code", authHandlers.ResendCode)
 
 			// Sensitive auth endpoints with stricter rate limiting
@@ -399,7 +422,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		onboarding := v1.Group("/onboarding")
 		{
 			authenticatedOnboarding := onboarding.Group("/")
-			authenticatedOnboarding.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator))
+			authenticatedOnboarding.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator, container.TokenBlacklist))
 			{
 				authenticatedOnboarding.POST("/basic-complete", authHandlers.BasicCompleteOnboarding)
 				// Fraud detection: correlate device fingerprint across accounts at onboarding completion.
@@ -458,9 +481,12 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 		// Protected routes (auth required)
 		protected := v1.Group("/")
-		protected.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator))
+		protected.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator, container.TokenBlacklist))
 		protected.Use(middleware.CSRFProtection(csrfStore))
 		{
+			// Logout (requires valid session)
+			protected.POST("/auth/logout", authHandlers.Logout)
+
 			// User management
 			users := protected.Group("/users")
 			{
@@ -726,7 +752,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				p2p.Use(middleware.AuthRateLimit(20))
 				p2p.Use(middleware.RequireBridgeCapability(container.UserRepo, container.ZapLog))
 				{
-					p2p.POST("/lookup", p2pHandlers.Lookup)
+					p2p.POST("/lookup", middleware.AuthRateLimit(10), p2pHandlers.Lookup)
 					p2p.POST("/send", p2pHandlers.Send)
 					p2p.GET("/transfers", p2pHandlers.GetTransfers)
 					p2p.GET("/recent", p2pHandlers.GetRecentRecipients)
@@ -1029,7 +1055,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 		// Admin routes (admin auth required)
 		admin := v1.Group("/admin")
-		admin.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator))
+		admin.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator, container.TokenBlacklist))
 		admin.Use(middleware.AdminAuth(container.DB, container.Logger))
 		admin.Use(middleware.CSRFProtection(csrfStore))
 		{
@@ -1158,6 +1184,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				container.Logger,
 				sessionValidator,
 				container.UserRepo,
+				container.TokenBlacklist,
 			)
 		}
 
@@ -1172,6 +1199,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				container.Config,
 				container.Logger,
 				sessionValidator,
+				container.TokenBlacklist,
 			)
 		}
 
@@ -1182,12 +1210,13 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			container.Config,
 			container.Logger,
 			sessionValidator,
+			container.TokenBlacklist,
 		)
 
 		// Register copy trading routes
 		if container.GetCopyTradingHandlers() != nil {
 			copyTradingHandlers := container.GetCopyTradingHandlers()
-			authMiddleware := middleware.Authentication(container.Config, container.Logger, sessionValidator)
+			authMiddleware := middleware.Authentication(container.Config, container.Logger, sessionValidator, container.TokenBlacklist)
 			SetupCopyTradingRoutes(v1, copyTradingHandlers, authMiddleware)
 		}
 
@@ -1199,6 +1228,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			container.Logger,
 			sessionValidator,
 			container.UserRepo,
+			container.TokenBlacklist,
 		)
 	}
 

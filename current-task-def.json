@@ -238,6 +238,14 @@
         {
           "name": "SNS_PUSH_ANDROID_PLATFORM_ARN",
           "valueFrom": "/rail/prod/SNS_PUSH_ANDROID_PLATFORM_ARN"
+        },
+        {
+          "name": "TELEGRAM_ALERTS_BOT_TOKEN",
+          "valueFrom": "/rail/prod/TELEGRAM_ALERTS_BOT_TOKEN"
+        },
+        {
+          "name": "TELEGRAM_ALERTS_CHAT_ID",
+          "valueFrom": "/rail/prod/TELEGRAM_ALERTS_CHAT_ID"
         }
       ],
       "logConfiguration": {
