@@ -23,6 +23,7 @@ const (
 	ToolGetContributions  = "get_contributions"
 	ToolGetWeeklyNews     = "get_weekly_news"
 	ToolGetStreak         = "get_streak"
+	ToolGetAccountSummary = "get_account_summary"
 )
 
 // PortfolioDataProvider interface for portfolio data
@@ -222,7 +223,7 @@ func NewOrchestrator(
 }
 
 // SystemPrompt for the AI Financial Manager
-const SystemPrompt = `You are Miriam — Rail's financial companion. You're warm, sharp, and genuinely invested in helping young people build wealth. You speak like a smart friend who happens to know a lot about money, not like a bank or a textbook.
+const SystemPrompt = `You are Miriam — Rail's chief financial agent. You're warm, sharp, and genuinely invested in helping young people build wealth. You speak like a smart friend who happens to know a lot about money, not like a bank or a textbook.
 
 YOUR PERSONALITY:
 - Name: Miriam. Users can call you Miriam.
@@ -246,21 +247,36 @@ YOUR USERS:
 - ₦5,000 is meaningful. Never dismiss small amounts.
 - Many are saving seriously for the first time. Be encouraging.
 
+MANDATORY TOOL USAGE (CRITICAL):
+- You MUST call the appropriate tool(s) BEFORE answering ANY question about the user's money, spending, balance, transactions, deposits, withdrawals, yield, or financial activity.
+- NEVER answer a financial question from memory or assumption. Always fetch fresh data first.
+- For general questions like "how am I doing", "give me an overview", "what's my financial situation" → call get_account_summary. It returns balances, this month's flow, budget status, and streak in one call.
+- For "where did my money go" or "how much did I spend" → call get_money_flow FIRST, then get_recent_transactions if the user wants details.
+- For "what's my balance" or "how much do I have" → call get_account_summary.
+- For "show me my transactions" → call get_recent_transactions.
+- For "how much did I deposit" → call get_deposit_history.
+- For "how much yield/interest" → call get_yield_earned.
+- If you need multiple data points, call multiple tools. Do NOT guess what one tool's data means without checking another.
+
 ACCURACY RULES (CRITICAL — users are paying for this):
 - NEVER invent, estimate, or round numbers. Only use exact data from tools.
-- NEVER guess what a transaction was for. If the data says "Crypto/Fiat Withdrawal", say that — don't assume it was for food or rent.
+- ALWAYS cite the exact figures returned by tools. If a tool says $342.50, say "$342.50" — do not round to "$340" or "about $350".
+- NEVER guess what a transaction was for. If the data says "Crypto Withdrawal" or "Withdrawal", say exactly that — don't assume it was for food, rent, or anything else.
 - Deposits are MONEY IN. Withdrawals, card payments, and P2P transfers are MONEY OUT. Never confuse these.
 - All financial tools only return COMPLETED/SUCCESSFUL transactions. Failed, pending, and reversed transactions are already excluded. Trust the numbers from tools.
 - When doing math, double-check: total money out = withdrawals + card spend + P2P transfers. Net = deposits minus total money out.
 - If a tool returns 0 transactions or empty data, say "I don't see any [X] for this period" — don't make up an explanation.
 - If you're unsure about something, say so. "I can see X but I'd need to check Y" is better than a wrong answer.
+- When listing transactions, include the exact amount, date, and category/source for each one. Do not skip or summarize transactions unless there are more than 10.
 
 HOW TO RESPOND:
-- Tell stories, not stats. Instead of "You spent $342.50 across 23 transactions", say "Your biggest money moment this month was that $89 dinner on the 15th — without it, your daily average drops from $11 to $8."
-- Use "you" statements. "You saved 18% this month — up from 12% last month. You're building momentum."
-- When showing numbers, give context. "$735 in stash — that's 3 months of growth from zero. At this pace, you'll cross $1,000 by July."
-- Keep responses under 200 words unless the user asks for detail.
+- Lead with the exact numbers, then add context and insight. Example: "You spent $342.50 this month across 23 transactions. Your biggest was $89 at [merchant] on the 15th — without it, your daily average drops from $15 to $10."
+- Use "you" statements. "You saved $735 this month — up from $612 last month. That's real momentum 💪"
+- Give context after the facts. "$735 in stash — that's 3 months of growth from zero. At this pace, you'll cross $1,000 by July."
+- Be thorough. If the user asks about spending, give them the full picture: total, top categories, top merchants, and any notable transactions.
 - Use emojis sparingly (1-2 per message max).
+- If the user asks a simple question ("how much did I spend?"), give a concise but complete answer with the exact number.
+- If the user asks for detail ("break down my spending"), give a comprehensive breakdown with all categories and amounts.
 
 RECEIPT SCANNING:
 - When users scan receipts, the data is automatically saved with merchant, amount, date, category, and individual items.
@@ -283,11 +299,16 @@ RULES:
 - NEVER give specific financial advice (no "buy X" or "sell Y"). Say "you might consider" or "many people in your situation..."
 - If the user asks about scams or "guaranteed returns," be direct and protective.
 - When discussing taxes, NEVER say "you owe X" or "claim this deduction." Say "this may be taxable" or "consult a tax professional."
-- Always turn tool data into narrative — never dump raw numbers.`
+- Present data clearly. Use exact numbers from tools. Add warmth and context around the facts, but never sacrifice accuracy for storytelling.`
 
 // GetTools returns available tools for the AI
 func (o *Orchestrator) GetTools() []ai.Tool {
 	tools := []ai.Tool{
+		{
+			Name:        ToolGetAccountSummary,
+			Description: "Get a complete account overview in one call: current spend and stash balances, this month's total deposits, total spending, net flow, and budget status if set. Use this FIRST for any general question like 'how am I doing', 'what's my balance', 'give me an overview', or 'summarize my finances'. This is the most efficient tool for broad financial questions.",
+			Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		},
 		{
 			Name:        ToolGetPortfolioStats,
 			Description: "Get current portfolio statistics including total value and returns",
@@ -413,16 +434,22 @@ func (o *Orchestrator) ChatInContext(ctx context.Context, userID, convID uuid.UU
 	toolCache := make(map[string]map[string]interface{})
 
 	// Build messages with history (copy to avoid mutating caller's slice)
-	messages := make([]ai.Message, len(history), len(history)+4)
+	messages := make([]ai.Message, len(history), len(history)+6)
 	copy(messages, history)
+
+	// Inject current balance snapshot so the LLM always knows the user's financial position
+	if balanceCtx := o.buildBalanceContext(ctx, userID); balanceCtx != "" {
+		messages = append(messages, ai.Message{Role: "system", Content: balanceCtx})
+	}
+
 	messages = append(messages, ai.Message{Role: "user", Content: message})
 
 	// Initial request
 	req := &ai.ChatRequest{
 		Messages:     messages,
 		SystemPrompt: SystemPrompt,
-		MaxTokens:    800,
-		Temperature:  0.4,
+		MaxTokens:    2048,
+		Temperature:  0.15,
 	}
 
 	// Get response with tools
@@ -432,11 +459,11 @@ func (o *Orchestrator) ChatInContext(ctx context.Context, userID, convID uuid.UU
 		return nil, fmt.Errorf("AI completion failed: %w", err)
 	}
 
-	// Process tool calls — up to 3 rounds of tool calling
+	// Process tool calls — up to 5 rounds of tool calling
 	totalTokens := resp.TokensUsed
 	toolResults := make([]ToolResult, 0)
 	allToolResults := make([]ToolResult, 0)
-	for round := 0; round < 3 && len(resp.ToolCalls) > 0; round++ {
+	for round := 0; round < 5 && len(resp.ToolCalls) > 0; round++ {
 		// Separate action tools (sequential) from read-only tools (parallelizable)
 		type indexedCall struct {
 			index int
@@ -586,6 +613,9 @@ func (o *Orchestrator) executeTool(ctx context.Context, userID uuid.UUID, tc ai.
 // executeToolInner performs the actual tool dispatch.
 func (o *Orchestrator) executeToolInner(ctx context.Context, userID uuid.UUID, tc ai.ToolCall) (map[string]interface{}, error) {
 	switch tc.Name {
+	case ToolGetAccountSummary:
+		return o.executeAccountSummary(ctx, userID)
+
 	case ToolGetPortfolioStats:
 		stats, err := o.portfolioProvider.GetWeeklyStats(ctx, userID)
 		if err != nil {
@@ -792,6 +822,111 @@ func sanitizeToolArgs(args map[string]interface{}) map[string]interface{} {
 		}
 	}
 	return safe
+}
+
+// executeAccountSummary returns a comprehensive account overview in a single tool call.
+func (o *Orchestrator) executeAccountSummary(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+	result := map[string]interface{}{}
+
+	// Balances
+	if o.aggregateStats != nil {
+		spend, _ := o.aggregateStats.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
+		stash, _ := o.aggregateStats.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
+		result["spend_balance"] = spend.StringFixed(2)
+		result["stash_balance"] = stash.StringFixed(2)
+		result["total_balance"] = spend.Add(stash).StringFixed(2)
+	}
+
+	// This month's money flow
+	if o.spending != nil {
+		now := time.Now().UTC()
+		monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+		monthEnd := time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC)
+		flow, err := o.spending.GetMoneyFlow(ctx, userID, monthStart, monthEnd)
+		if err == nil {
+			totalOut := flow.TotalWithdrawals.Add(flow.TotalCardSpend).Add(flow.TotalP2P)
+			result["this_month"] = map[string]interface{}{
+				"period":          fmt.Sprintf("%s 1 to today", now.Format("January")),
+				"total_deposits":  flow.TotalDeposits.StringFixed(2),
+				"total_spent":     totalOut.StringFixed(2),
+				"withdrawals":     flow.TotalWithdrawals.StringFixed(2),
+				"card_spend":      flow.TotalCardSpend.StringFixed(2),
+				"p2p_transfers":   flow.TotalP2P.StringFixed(2),
+				"net_flow":        flow.TotalDeposits.Sub(totalOut).StringFixed(2),
+				"deposit_count":   flow.DepositCount,
+				"spending_count":  flow.WithdrawalCount + flow.CardSpendCount + flow.P2PCount,
+			}
+		}
+	}
+
+	// Budget status
+	if o.budgetProvider != nil {
+		budget, err := o.budgetProvider.GetByUserID(ctx, userID)
+		if err == nil && budget != nil {
+			var monthlySpend decimal.Decimal
+			if o.spending != nil {
+				now := time.Now().UTC()
+				monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+				summary, err := o.spending.GetSummary(ctx, userID, monthStart, now)
+				if err == nil {
+					monthlySpend = summary.Total
+				}
+			}
+			remaining := budget.MonthlyLimit.Sub(monthlySpend)
+			pctUsed := decimal.Zero
+			if !budget.MonthlyLimit.IsZero() {
+				pctUsed = monthlySpend.Div(budget.MonthlyLimit).Mul(decimal.NewFromInt(100))
+			}
+			status := "on_track"
+			if pctUsed.GreaterThan(decimal.NewFromInt(90)) {
+				status = "almost_exceeded"
+			}
+			if remaining.IsNegative() {
+				status = "exceeded"
+			}
+			result["budget"] = map[string]interface{}{
+				"monthly_limit": budget.MonthlyLimit.StringFixed(2),
+				"spent":         monthlySpend.StringFixed(2),
+				"remaining":     remaining.StringFixed(2),
+				"percent_used":  pctUsed.StringFixed(1),
+				"status":        status,
+			}
+		} else {
+			result["budget"] = map[string]interface{}{"has_budget": false}
+		}
+	}
+
+	// Streak
+	if o.activityProvider != nil {
+		streak, err := o.activityProvider.GetStreak(ctx, userID)
+		if err == nil && streak != nil {
+			result["streak_days"] = streak.CurrentStreak
+		}
+	}
+
+	return result, nil
+}
+
+// buildBalanceContext fetches the user's current spend and stash balances
+// and returns a system message string the LLM can reference immediately.
+// Returns "" if balances can't be fetched (non-fatal).
+func (o *Orchestrator) buildBalanceContext(ctx context.Context, userID uuid.UUID) string {
+	if o.aggregateStats == nil {
+		return ""
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	spend, errS := o.aggregateStats.GetAccountBalance(fetchCtx, userID, entities.AccountTypeSpendingBalance)
+	stash, errI := o.aggregateStats.GetAccountBalance(fetchCtx, userID, entities.AccountTypeStashBalance)
+	if errS != nil && errI != nil {
+		return ""
+	}
+	total := spend.Add(stash)
+	return fmt.Sprintf(
+		"[User's current balances — Spend: $%s USDC | Stash: $%s USDB | Total: $%s. Use these as baseline context. For detailed history or transactions, call the appropriate tools.]",
+		spend.StringFixed(2), stash.StringFixed(2), total.StringFixed(2),
+	)
 }
 
 // GenerateWrappedCards generates Spotify-Wrapped style cards

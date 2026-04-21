@@ -132,6 +132,21 @@ func parsePeriod(period string) (time.Time, time.Time) {
 	}
 }
 
+// periodToLabel returns a human-readable label for the period so the LLM
+// knows exactly what timeframe the data covers.
+func periodToLabel(period string, start, end time.Time) string {
+	switch period {
+	case "last_month":
+		return fmt.Sprintf("Last month (%s)", start.Format("January 2006"))
+	case "last_7_days":
+		return fmt.Sprintf("Last 7 days (%s to %s)", start.Format("Jan 2"), end.Format("Jan 2, 2006"))
+	case "last_30_days":
+		return fmt.Sprintf("Last 30 days (%s to %s)", start.Format("Jan 2"), end.Format("Jan 2, 2006"))
+	default:
+		return fmt.Sprintf("This month (%s 1 to today)", start.Format("January"))
+	}
+}
+
 // executeSpendingSummary handles the get_spending_summary tool call.
 func (o *Orchestrator) executeSpendingSummary(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.spending == nil {
@@ -139,6 +154,9 @@ func (o *Orchestrator) executeSpendingSummary(ctx context.Context, userID uuid.U
 	}
 
 	period, _ := args["period"].(string)
+	if period == "" {
+		period = "this_month"
+	}
 	start, end := parsePeriod(period)
 
 	summary, err := o.spending.GetSummary(ctx, userID, start, end)
@@ -157,6 +175,7 @@ func (o *Orchestrator) executeSpendingSummary(ctx context.Context, userID uuid.U
 	}
 
 	return map[string]interface{}{
+		"period":            periodToLabel(period, start, end),
 		"total":             summary.Total.String(),
 		"transaction_count": summary.TxCount,
 		"daily_average":     summary.DailyAvg.StringFixed(2),
@@ -201,6 +220,9 @@ func (o *Orchestrator) executeRecentTransactions(ctx context.Context, userID uui
 	}
 
 	period, _ := args["period"].(string)
+	if period == "" {
+		period = "this_month"
+	}
 	start, end := parsePeriod(period)
 
 	limit := 15
@@ -221,10 +243,11 @@ func (o *Orchestrator) executeRecentTransactions(ctx context.Context, userID uui
 			"amount":    t.Amount.String(),
 			"category":  t.Category,
 			"source":    t.Source,
+			"merchant":  t.Source,
 		}
 	}
 
-	return map[string]interface{}{"transactions": items, "count": len(items), "note": "All transactions are completed outflows (money leaving your account)"}, nil
+	return map[string]interface{}{"period": periodToLabel(period, start, end), "transactions": items, "count": len(items), "note": "All transactions are completed outflows (money leaving your account). The 'source' and 'merchant' fields show the merchant name for card payments, recipient for P2P, or withdrawal type for withdrawals."}, nil
 }
 
 // executeMoneyFlow handles the get_money_flow tool call.
@@ -234,6 +257,9 @@ func (o *Orchestrator) executeMoneyFlow(ctx context.Context, userID uuid.UUID, a
 	}
 
 	period, _ := args["period"].(string)
+	if period == "" {
+		period = "this_month"
+	}
 	start, end := parsePeriod(period)
 
 	flow, err := o.spending.GetMoneyFlow(ctx, userID, start, end)
@@ -244,6 +270,9 @@ func (o *Orchestrator) executeMoneyFlow(ctx context.Context, userID uuid.UUID, a
 	totalOut := flow.TotalWithdrawals.Add(flow.TotalCardSpend).Add(flow.TotalP2P)
 	totalSpending := totalOut.Add(flow.TotalReceipts)
 	net := flow.TotalDeposits.Sub(totalOut)
+
+	// Human-readable period label
+	periodLabel := periodToLabel(period, start, end)
 
 	// Build chart data: breakdown by category for pie/bar charts
 	chartBreakdown := []map[string]interface{}{}
@@ -273,6 +302,7 @@ func (o *Orchestrator) executeMoneyFlow(ctx context.Context, userID uuid.UUID, a
 	}
 
 	return map[string]interface{}{
+		"period":   periodLabel,
 		"money_in": map[string]interface{}{
 			"total_deposits": flow.TotalDeposits.StringFixed(2),
 			"deposit_count":  flow.DepositCount,

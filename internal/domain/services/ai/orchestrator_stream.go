@@ -91,18 +91,24 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 		return nil
 	}
 
-	messages := make([]infraai.Message, len(history), len(history)+8)
+	messages := make([]infraai.Message, len(history), len(history)+10)
 	copy(messages, history)
+
+	// Inject current balance snapshot so the LLM always knows the user's financial position
+	if balanceCtx := o.buildBalanceContext(ctx, userID); balanceCtx != "" {
+		messages = append(messages, infraai.Message{Role: "system", Content: balanceCtx})
+	}
+
 	messages = append(messages, infraai.Message{Role: "user", Content: message})
 
 	req := &infraai.ChatRequest{
 		Messages:     messages,
 		SystemPrompt: SystemPrompt,
-		MaxTokens:    800,
-		Temperature:  0.4,
+		MaxTokens:    2048,
+		Temperature:  0.15,
 	}
 
-	// Non-streaming tool call rounds (up to 3)
+	// Non-streaming tool call rounds (up to 5)
 	resp, err := o.aiProvider.ChatCompletionWithTools(ctx, req, o.GetTools())
 	if err != nil {
 		observeChat("unknown", time.Since(start), 0, err)
@@ -111,7 +117,7 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 
 	cumulativeTokens := resp.TokensUsed
 	allToolResults := make([]ToolResult, 0)
-	for round := 0; round < 3 && len(resp.ToolCalls) > 0; round++ {
+	for round := 0; round < 5 && len(resp.ToolCalls) > 0; round++ {
 		roundResults := make([]ToolResult, 0, len(resp.ToolCalls))
 		for _, tc := range resp.ToolCalls {
 			// Handle action tools (require confirmation)

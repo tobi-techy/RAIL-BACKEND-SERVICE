@@ -32,6 +32,10 @@ func buildCardsFromToolResults(results []ToolResult) []entities.InsightCard {
 			cards = append(cards, buildSimulationCard(tr.Result))
 		case ToolGetComparativeContext:
 			cards = append(cards, buildComparativeCard(tr.Result))
+		case ToolGetMoneyFlow:
+			cards = append(cards, buildMoneyFlowCard(tr.Result))
+		case ToolGetAccountSummary:
+			cards = append(cards, buildAccountSummaryCard(tr.Result))
 		}
 	}
 	return cards
@@ -329,5 +333,72 @@ func buildComparativeCard(data map[string]interface{}) entities.InsightCard {
 			{Label: "Savings Rate", Value: str(data, "savings_rate"), Sentiment: sentiment},
 			{Label: "Streak", Value: fmt.Sprintf("%d days", num(data, "streak_days")), Icon: "🔥"},
 		},
+	}
+}
+
+func buildMoneyFlowCard(data map[string]interface{}) entities.InsightCard {
+	moneyIn, _ := data["money_in"].(map[string]interface{})
+	moneyOut, _ := data["money_out"].(map[string]interface{})
+
+	deposits := str(moneyIn, "total_deposits")
+	totalOut := str(moneyOut, "total")
+	netFlow := str(data, "net_flow")
+
+	sentiment := "positive"
+	if len(netFlow) > 0 && netFlow[0] == '-' {
+		sentiment = "negative"
+	}
+
+	items := []entities.StatItem{
+		{Label: "Money In", Value: "$" + deposits, Icon: "📥", Sentiment: "positive"},
+		{Label: "Money Out", Value: "$" + totalOut, Icon: "📤", Sentiment: "negative"},
+		{Label: "Net Flow", Value: "$" + netFlow, Sentiment: sentiment},
+	}
+
+	// Add breakdown if available
+	if withdrawals := str(moneyOut, "withdrawals"); withdrawals != "" && withdrawals != "0.00" {
+		items = append(items, entities.StatItem{Label: "Withdrawals", Value: "$" + withdrawals})
+	}
+	if cardSpend := str(moneyOut, "card_spend"); cardSpend != "" && cardSpend != "0.00" {
+		items = append(items, entities.StatItem{Label: "Card Spend", Value: "$" + cardSpend})
+	}
+	if p2p := str(moneyOut, "p2p_transfers"); p2p != "" && p2p != "0.00" {
+		items = append(items, entities.StatItem{Label: "P2P Transfers", Value: "$" + p2p})
+	}
+
+	return entities.InsightCard{
+		Type:      "stat_grid",
+		Title:     "Money Flow",
+		Subtitle:  str(data, "period"),
+		Sentiment: sentiment,
+		Data:      items,
+	}
+}
+
+func buildAccountSummaryCard(data map[string]interface{}) entities.InsightCard {
+	items := []entities.StatItem{
+		{Label: "Spend", Value: "$" + str(data, "spend_balance"), Icon: "💳"},
+		{Label: "Stash", Value: "$" + str(data, "stash_balance"), Icon: "🏦"},
+		{Label: "Total", Value: "$" + str(data, "total_balance"), Icon: "💰"},
+	}
+
+	if thisMonth, ok := data["this_month"].(map[string]interface{}); ok {
+		netFlow := str(thisMonth, "net_flow")
+		sentiment := "positive"
+		if len(netFlow) > 0 && netFlow[0] == '-' {
+			sentiment = "negative"
+		}
+		items = append(items, entities.StatItem{Label: "Net This Month", Value: "$" + netFlow, Sentiment: sentiment})
+	}
+
+	if streakDays := num(data, "streak_days"); streakDays > 0 {
+		items = append(items, entities.StatItem{Label: "Streak", Value: fmt.Sprintf("%d days 🔥", streakDays)})
+	}
+
+	return entities.InsightCard{
+		Type:      "stat_grid",
+		Title:     "Account Overview",
+		Sentiment: "neutral",
+		Data:      items,
 	}
 }

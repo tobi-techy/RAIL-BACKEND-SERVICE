@@ -177,7 +177,7 @@ func (h *ConversationHandlers) ChatInConversation(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.orchestrator.ChatWithConversation(c.Request.Context(), userID, conv, req.Message)
+	resp, err := h.orchestrator.ChatWithConversation(c.Request.Context(), userID, conv, sanitizeUserMessage(req.Message))
 	if err != nil {
 		h.logger.Error("chat failed", zap.Error(err), zap.String("user_id", userID.String()))
 		c.JSON(http.StatusOK, gin.H{
