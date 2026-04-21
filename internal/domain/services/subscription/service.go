@@ -86,7 +86,7 @@ func (s *Service) Subscribe(ctx context.Context, userID uuid.UUID, plan string) 
 		ID:                 uuid.New(),
 		UserID:             userID,
 		Plan:               plan,
-		Status:             entities.SubscriptionStatusActive,
+		Status:             entities.SubscriptionStatusPastDue,
 		StartedAt:          now,
 		CurrentPeriodStart: now,
 		CurrentPeriodEnd:   periodEnd,
@@ -96,10 +96,14 @@ func (s *Service) Subscribe(ctx context.Context, userID uuid.UUID, plan string) 
 		return nil, fmt.Errorf("create subscription: %w", err)
 	}
 
-	// Charge immediately
+	// Charge immediately — only activate if charge succeeds
 	if err := s.ChargeSubscription(ctx, sub); err != nil {
 		s.logger.Error("Failed initial subscription charge", zap.Error(err))
-		// Still return the subscription — billing worker will retry
+	} else {
+		sub.Status = entities.SubscriptionStatusActive
+		if err := s.repo.UpdateSubscription(ctx, sub); err != nil {
+			s.logger.Error("Failed to activate subscription after charge", zap.Error(err))
+		}
 	}
 
 	s.invalidateCache(ctx, userID)

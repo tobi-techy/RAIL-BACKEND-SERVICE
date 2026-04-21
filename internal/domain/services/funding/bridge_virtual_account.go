@@ -27,6 +27,7 @@ type BridgeVirtualAccountService struct {
 	notificationService FundingNotificationService
 	gameplayHooks       FundingGameplayHooks
 	walletProvider      WalletProvider
+	validationService   *ValidationService
 	logger              *logger.Logger
 }
 
@@ -102,6 +103,11 @@ func (s *BridgeVirtualAccountService) SetComplianceScreener(cs ComplianceScreene
 // SetGameplayHooks sets the gameplay hooks for triggering XP/streak/challenge events.
 func (s *BridgeVirtualAccountService) SetGameplayHooks(gh FundingGameplayHooks) {
 	s.gameplayHooks = gh
+}
+
+// SetValidationService sets the validation service for deposit limit checks.
+func (s *BridgeVirtualAccountService) SetValidationService(vs *ValidationService) {
+	s.validationService = vs
 }
 
 // ProvisionVirtualAccounts creates virtual accounts for multiple currencies on KYC approval
@@ -411,6 +417,15 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 		return fmt.Errorf("amount must be greater than zero")
 	}
 
+	// Validate minimum deposit amount
+	if s.validationService != nil {
+		if err := s.validationService.ValidateDepositAmount(amount); err != nil {
+			return fmt.Errorf("fiat deposit validation failed: %w", err)
+		}
+	} else if amount.LessThan(decimal.NewFromFloat(0.01)) {
+		return fmt.Errorf("deposit amount %s is below minimum", amount.String())
+	}
+
 	bridgeRepo, ok := s.virtualAccountRepo.(BridgeVirtualAccountRepository)
 	if !ok {
 		return fmt.Errorf("virtual account repository does not support bridge account lookup")
@@ -430,6 +445,13 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 
 	// Generate UUID-based idempotency key
 	idempotencyKey := generateFiatIdempotencyKey(transactionRef, virtualAccountID, amount.String())
+
+	// Validate daily deposit limit
+	if s.validationService != nil {
+		if err := s.validationService.ValidateDailyDepositLimit(ctx, virtualAccount.UserID, amount); err != nil {
+			return fmt.Errorf("fiat deposit limit exceeded: %w", err)
+		}
+	}
 
 	// Create deposit record FIRST with "pending" status to establish idempotency lock
 	// This prevents race conditions - the unique constraint on idempotency_key will reject duplicates

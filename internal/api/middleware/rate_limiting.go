@@ -76,11 +76,14 @@ func (rl *UserRateLimiter) checkUserRateLimit(userID, endpoint string, limit int
 	var count int
 	err := rl.db.QueryRowContext(ctx, query, userID, endpoint, windowStart).Scan(&count)
 	if err != nil {
-		rl.logger.Error("Failed to check user rate limit", 
+		// Fail-closed: deny requests when the rate limit backend is unavailable.
+		// This is intentional for security — allowing all traffic on DB errors
+		// would let an attacker bypass rate limiting by inducing backend failures.
+		rl.logger.Warn("Rate limit check failed, denying request (fail-closed)",
 			zap.Error(err),
 			zap.String("user_id", userID),
 			zap.String("endpoint", endpoint))
-		return true // Allow on error
+		return false
 	}
 
 	return count <= limit

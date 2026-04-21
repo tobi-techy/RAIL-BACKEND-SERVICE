@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"fmt"
+	"log"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -163,7 +164,18 @@ func Recovery(log *logger.Logger) gin.HandlerFunc {
 }
 
 // CORS handles Cross-Origin Resource Sharing
-func CORS(allowedOrigins []string) gin.HandlerFunc {
+func CORS(allowedOrigins []string, environment ...string) gin.HandlerFunc {
+	// Reject wildcard origins in production/staging
+	if len(environment) > 0 {
+		env := strings.ToLower(environment[0])
+		if env == "production" || env == "staging" {
+			for _, o := range allowedOrigins {
+				if o == "*" {
+					log.Fatalf("CORS wildcard origin not allowed in %s", env)
+				}
+			}
+		}
+	}
 	return func(c *gin.Context) {
 		origin := c.Request.Header.Get("Origin")
 
@@ -313,15 +325,9 @@ func SecurityHeaders() gin.HandlerFunc {
 }
 
 // Authentication validates JWT tokens with session management
-func Authentication(cfg *config.Config, log *logger.Logger, sessionService SessionValidator) gin.HandlerFunc {
+func Authentication(cfg *config.Config, log *logger.Logger, sessionService SessionValidator, blacklist ...*auth.TokenBlacklist) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			// Fallback: check query param (needed for WebSocket connections)
-			if qToken := c.Query("token"); qToken != "" {
-				authHeader = "Bearer " + qToken
-			}
-		}
 		if authHeader == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error":      "Authorization header required",
@@ -353,6 +359,21 @@ func Authentication(cfg *config.Config, log *logger.Logger, sessionService Sessi
 			return
 		}
 
+		// Check token blacklist if provided (C1 fix)
+		if len(blacklist) > 0 && blacklist[0] != nil {
+			bl := blacklist[0]
+			h := sha256.Sum256([]byte(tokenString))
+			tokenHash := fmt.Sprintf("%x", h)
+			if revoked, _ := bl.IsBlacklisted(c.Request.Context(), tokenHash); revoked {
+				c.JSON(http.StatusUnauthorized, gin.H{
+					"error":      "Token has been revoked",
+					"request_id": c.GetString("request_id"),
+				})
+				c.Abort()
+				return
+			}
+		}
+
 		// Validate session if service is provided
 		if sessionService != nil {
 			session, err := sessionService.ValidateSession(c.Request.Context(), tokenString)
@@ -376,9 +397,10 @@ func Authentication(cfg *config.Config, log *logger.Logger, sessionService Sessi
 	}
 }
 
-// AdminAuth checks if user has admin role
+// AdminAuth checks if user has admin role (JWT fast-path + DB verification)
 func AdminAuth(db *sql.DB, log *logger.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Fast-path rejection from JWT claims
 		userRole := c.GetString("user_role")
 		if userRole != "admin" && userRole != "super_admin" {
 			c.JSON(http.StatusForbidden, gin.H{
@@ -388,6 +410,19 @@ func AdminAuth(db *sql.DB, log *logger.Logger) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+
+		// Verify role against database to prevent stale/forged JWT claims
+		var dbRole string
+		err := db.QueryRowContext(c.Request.Context(), "SELECT role FROM users WHERE id = $1", c.GetString("user_id")).Scan(&dbRole)
+		if err != nil || (dbRole != "admin" && dbRole != "super_admin") {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error":      "Admin access required",
+				"request_id": c.GetString("request_id"),
+			})
+			c.Abort()
+			return
+		}
+
 		c.Next()
 	}
 }

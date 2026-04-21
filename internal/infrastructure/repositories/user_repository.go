@@ -76,7 +76,7 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.U
 	               auth_provider_id, email_verified, phone_verified,
 	               onboarding_status, kyc_status, kyc_provider_ref, kyc_submitted_at,
 	               kyc_approved_at, kyc_rejection_reason, bridge_customer_id, alpaca_account_id,
-	               is_active, created_at, updated_at
+	               is_active, COALESCE(withdrawals_frozen, false) AS withdrawals_frozen, created_at, updated_at
 	        FROM users 
 	        WHERE id = $1`
 
@@ -111,6 +111,7 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.U
 		&bridgeCustomerID,
 		&alpacaAccountID,
 		&user.IsActive,
+		&user.WithdrawalsFrozen,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
@@ -1424,6 +1425,9 @@ func (r *UserRepository) ClearPasscode(ctx context.Context, userID uuid.UUID) er
 
 // CreatePasswordResetToken stores a password reset token using selector-verifier pattern
 func (r *UserRepository) CreatePasswordResetToken(ctx context.Context, userID uuid.UUID, selector, verifierHash string, expiresAt time.Time) error {
+	// Invalidate any existing unused tokens for this user
+	_, _ = r.db.ExecContext(ctx, `UPDATE password_reset_tokens SET used_at = NOW() WHERE user_id = $1 AND used_at IS NULL`, userID)
+
 	query := `INSERT INTO password_reset_tokens (user_id, selector, token_hash, expires_at) VALUES ($1, $2, $3, $4)`
 	_, err := r.db.ExecContext(ctx, query, userID, selector, verifierHash, expiresAt)
 	if err != nil {

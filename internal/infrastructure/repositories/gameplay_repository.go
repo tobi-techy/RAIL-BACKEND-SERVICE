@@ -113,6 +113,14 @@ func (r *GameplayRepository) GetXPHistory(ctx context.Context, userID uuid.UUID,
 	return events, err
 }
 
+func (r *GameplayRepository) XPEventExists(ctx context.Context, userID uuid.UUID, eventType string, sourceID uuid.UUID) (bool, error) {
+	var exists bool
+	err := r.db.GetContext(ctx, &exists, `
+		SELECT EXISTS(SELECT 1 FROM xp_events WHERE user_id = $1 AND event_type = $2 AND source_id = $3)`,
+		userID, eventType, sourceID)
+	return exists, err
+}
+
 // --- Challenges ---
 
 func (r *GameplayRepository) GetChallengesByType(ctx context.Context, challengeType entities.ChallengeType) ([]*entities.Challenge, error) {
@@ -256,7 +264,7 @@ func (r *GameplayRepository) CreateCharge(ctx context.Context, c *entities.Subsc
 func (r *GameplayRepository) GetDueSubscriptions(ctx context.Context) ([]*entities.Subscription, error) {
 	var subs []*entities.Subscription
 	err := r.db.SelectContext(ctx, &subs, `
-		SELECT * FROM subscriptions WHERE status IN ('active', 'past_due') AND current_period_end <= NOW()`)
+		SELECT * FROM subscriptions WHERE status IN ('active', 'past_due') AND current_period_end <= NOW() FOR UPDATE SKIP LOCKED`)
 	return subs, err
 }
 

@@ -2,6 +2,7 @@ package unit
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -88,6 +89,26 @@ func (m *MockUsageRepository) IncrementWithdrawalUsage(ctx context.Context, user
 }
 
 func (m *MockUsageRepository) ResetExpiredPeriods(ctx context.Context, userID uuid.UUID) error {
+	return nil
+}
+
+func (m *MockUsageRepository) AtomicIncrementDeposit(ctx context.Context, userID uuid.UUID, amount, dailyLimit, monthlyLimit decimal.Decimal) error {
+	usage, _ := m.GetOrCreate(ctx, userID)
+	if usage.DailyDepositUsed.Add(amount).GreaterThan(dailyLimit) || usage.MonthlyDepositUsed.Add(amount).GreaterThan(monthlyLimit) {
+		return fmt.Errorf("deposit limit exceeded")
+	}
+	usage.DailyDepositUsed = usage.DailyDepositUsed.Add(amount)
+	usage.MonthlyDepositUsed = usage.MonthlyDepositUsed.Add(amount)
+	return nil
+}
+
+func (m *MockUsageRepository) AtomicIncrementWithdrawal(ctx context.Context, userID uuid.UUID, amount, dailyLimit, monthlyLimit decimal.Decimal) error {
+	usage, _ := m.GetOrCreate(ctx, userID)
+	if usage.DailyWithdrawalUsed.Add(amount).GreaterThan(dailyLimit) || usage.MonthlyWithdrawalUsed.Add(amount).GreaterThan(monthlyLimit) {
+		return fmt.Errorf("withdrawal limit exceeded")
+	}
+	usage.DailyWithdrawalUsed = usage.DailyWithdrawalUsed.Add(amount)
+	usage.MonthlyWithdrawalUsed = usage.MonthlyWithdrawalUsed.Add(amount)
 	return nil
 }
 

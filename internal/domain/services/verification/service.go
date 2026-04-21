@@ -3,6 +3,7 @@ package verification
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"fmt"
 	"math/big"
 	"strings"
@@ -161,7 +162,7 @@ func (s *verificationService) GenerateAndSendCode(ctx context.Context, identifie
 		}
 	}
 
-	s.logger.Info("Verification code generated and queued", zap.String("identifier", identifier), zap.String("code", code))
+	s.logger.Info("Verification code generated and queued", zap.String("identifier", identifier))
 	return code, nil
 }
 
@@ -194,7 +195,7 @@ func (s *verificationService) VerifyCode(ctx context.Context, identifierType, id
 	}
 
 	// Code is valid, delete it from Redis.
-	if storedData.Code == code {
+	if subtle.ConstantTimeCompare([]byte(storedData.Code), []byte(code)) == 1 {
 		if err := s.redisClient.Del(opCtx, key); err != nil {
 			s.logger.Error("Failed to delete verification code from Redis after successful verification", zap.Error(err), zap.String("key", key))
 			// Non-critical error, but log it

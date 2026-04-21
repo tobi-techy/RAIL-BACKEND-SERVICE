@@ -265,6 +265,16 @@ func (r *IncomingFundsRequest) Validate() error {
 		return fmt.Errorf("amount must be positive")
 	}
 
+	// Enforce minimum amount of 0.01 (1 cent)
+	if r.Amount.LessThan(decimal.NewFromFloat(0.01)) {
+		return fmt.Errorf("amount must be at least 0.01")
+	}
+
+	// Enforce maximum 8 decimal places of precision
+	if r.Amount.Exponent() < -8 {
+		return fmt.Errorf("amount exceeds maximum precision of 8 decimal places")
+	}
+
 	if err := r.EventType.Validate(); err != nil {
 		return err
 	}

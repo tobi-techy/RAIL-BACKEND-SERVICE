@@ -149,7 +149,26 @@ func (s *Service) ScreenTransaction(ctx context.Context, userID uuid.UUID, refer
 					defer s.wg.Done()
 					bgCtx, bgCancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer bgCancel()
-					s.screenAndRecord(bgCtx, userID, referenceID, direction, amount, currency, userFullName)
+					status, err := s.screenAndRecord(bgCtx, userID, referenceID, direction, amount, currency, userFullName)
+					if err != nil {
+						s.logger.Error("Async re-screen failed", zap.String("user_id", userID.String()), zap.Error(err))
+						return
+					}
+					if status == "DECLINED" {
+						if s.freeze != nil {
+							reason := fmt.Sprintf("Async re-screen declined transaction %s (approved on timeout)", referenceID)
+							if freezeErr := s.freeze.FreezeUser(bgCtx, userID, reason); freezeErr != nil {
+								s.logger.Error("CRITICAL: failed to freeze user after async decline",
+									zap.String("user_id", userID.String()), zap.String("ref", referenceID), zap.Error(freezeErr))
+							} else {
+								s.logger.Warn("User frozen after async re-screen declined",
+									zap.String("user_id", userID.String()), zap.String("ref", referenceID))
+							}
+						} else {
+							s.logger.Error("CRITICAL: async re-screen DECLINED but no freeze service available — manual intervention required",
+								zap.String("user_id", userID.String()), zap.String("ref", referenceID))
+						}
+					}
 				}()
 				return "APPROVED", nil
 			}

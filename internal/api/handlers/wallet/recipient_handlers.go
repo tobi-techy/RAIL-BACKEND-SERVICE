@@ -81,6 +81,12 @@ func (h *RecipientHandlers) List(c *gin.Context) {
 // Get returns a specific recipient
 // GET /api/v1/recipients/:id
 func (h *RecipientHandlers) Get(c *gin.Context) {
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid recipient id"})
@@ -88,7 +94,7 @@ func (h *RecipientHandlers) Get(c *gin.Context) {
 	}
 
 	result, err := h.service.GetByID(c.Request.Context(), id)
-	if err != nil || result == nil {
+	if err != nil || result == nil || result.UserID != userID.(uuid.UUID) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "recipient not found"})
 		return
 	}
@@ -123,13 +129,25 @@ func (h *RecipientHandlers) SetDefault(c *gin.Context) {
 // Delete removes a recipient
 // DELETE /api/v1/recipients/:id
 func (h *RecipientHandlers) Delete(c *gin.Context) {
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid recipient id"})
 		return
 	}
 
-	if err := h.service.Delete(c.Request.Context(), id); err != nil {
+	result, err := h.service.GetByID(c.Request.Context(), id)
+	if err != nil || result == nil || result.UserID != userID.(uuid.UUID) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "recipient not found"})
+		return
+	}
+
+	if err := h.service.Delete(c.Request.Context(), id, userID.(uuid.UUID)); err != nil {
 		h.logger.Error("Failed to delete recipient", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete recipient"})
 		return

@@ -9,6 +9,7 @@ import (
 	"github.com/rail-service/rail_service/internal/api/middleware"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
+	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -17,14 +18,14 @@ import (
 )
 
 // SetupStackRoutes configures STACK MVP routes matching OpenAPI specification
-func SetupStackRoutes(db *sql.DB, cfg *config.Config, log *logger.Logger, zapLog *zap.Logger) *gin.Engine {
+func SetupStackRoutes(db *sql.DB, cfg *config.Config, log *logger.Logger, zapLog *zap.Logger, tokenBlacklist *auth.TokenBlacklist) *gin.Engine {
 	router := gin.New()
 
 	// Global middleware
 	router.Use(middleware.RequestID())
 	router.Use(middleware.Logger(log))
 	router.Use(middleware.Recovery(log))
-	router.Use(middleware.CORS(cfg.Server.AllowedOrigins))
+	router.Use(middleware.CORS(cfg.Server.AllowedOrigins, cfg.Environment))
 	router.Use(middleware.RateLimit(cfg.Server.RateLimitPerMin, cfg.Cloudflare.Proxied))
 	router.Use(middleware.SecurityHeaders())
 
@@ -62,7 +63,7 @@ func SetupStackRoutes(db *sql.DB, cfg *config.Config, log *logger.Logger, zapLog
 	{
 		// === FUNDING ENDPOINTS ===
 		funding := v1.Group("/funding")
-		funding.Use(middleware.Authentication(cfg, log, sessionValidator))
+		funding.Use(middleware.Authentication(cfg, log, sessionValidator, tokenBlacklist))
 		funding.Use(middleware.CSRFProtection(csrfStore))
 		{
 			funding.POST("/deposit/address", walletFundingHandlers.CreateDepositAddress)
@@ -71,21 +72,21 @@ func SetupStackRoutes(db *sql.DB, cfg *config.Config, log *logger.Logger, zapLog
 
 		// Balance endpoint (separate from funding per OpenAPI)
 		balances := v1.Group("/balances")
-		balances.Use(middleware.Authentication(cfg, log, sessionValidator))
+		balances.Use(middleware.Authentication(cfg, log, sessionValidator, tokenBlacklist))
 		{
 			balances.GET("", walletFundingHandlers.GetBalances)
 		}
 
 		// === INVESTING ENDPOINTS ===
 		baskets := v1.Group("/baskets")
-		baskets.Use(middleware.Authentication(cfg, log, sessionValidator))
+		baskets.Use(middleware.Authentication(cfg, log, sessionValidator, tokenBlacklist))
 		{
 			baskets.GET("", walletFundingHandlers.GetBaskets)
 			baskets.GET("/:id", walletFundingHandlers.GetBasket)
 		}
 
 		orders := v1.Group("/orders")
-		orders.Use(middleware.Authentication(cfg, log, sessionValidator))
+		orders.Use(middleware.Authentication(cfg, log, sessionValidator, tokenBlacklist))
 		orders.Use(middleware.CSRFProtection(csrfStore))
 		{
 			orders.POST("", walletFundingHandlers.CreateOrder)
@@ -94,7 +95,7 @@ func SetupStackRoutes(db *sql.DB, cfg *config.Config, log *logger.Logger, zapLog
 		}
 
 		portfolio := v1.Group("/portfolio")
-		portfolio.Use(middleware.Authentication(cfg, log, sessionValidator))
+		portfolio.Use(middleware.Authentication(cfg, log, sessionValidator, tokenBlacklist))
 		{
 			portfolio.GET("", walletFundingHandlers.GetPortfolio)
 		}

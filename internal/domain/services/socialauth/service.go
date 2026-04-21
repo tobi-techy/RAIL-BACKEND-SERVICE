@@ -378,15 +378,13 @@ func (s *Service) authenticateGoogleIDToken(ctx context.Context, idToken string)
 		return nil, fmt.Errorf("invalid Google token issuer: %s", iss)
 	}
 
-	// Validate audience - fail-open with warning if ClientID is not configured
-	// This maintains backward compatibility with existing deployments
+	// Validate audience — hard-fail when ClientID is not configured
 	if s.config.Google.ClientID == "" {
-		s.logger.Warn("Google ClientID not configured - skipping audience validation (fail-open)")
-	} else {
-		aud, _ := claims["aud"].(string)
-		if aud != s.config.Google.ClientID {
-			return nil, fmt.Errorf("Google token audience mismatch: expected %s, got %s", s.config.Google.ClientID, aud)
-		}
+		return nil, fmt.Errorf("Google OAuth not configured: missing client ID")
+	}
+	aud, _ := claims["aud"].(string)
+	if aud != s.config.Google.ClientID {
+		return nil, fmt.Errorf("Google token audience mismatch: expected %s, got %s", s.config.Google.ClientID, aud)
 	}
 
 	sub, _ := claims["sub"].(string)
@@ -395,6 +393,19 @@ func (s *Service) authenticateGoogleIDToken(ctx context.Context, idToken string)
 	}
 
 	email, _ := claims["email"].(string)
+
+	// Verify the Google email is confirmed (claim may be bool or string)
+	emailVerified := false
+	switch v := claims["email_verified"].(type) {
+	case bool:
+		emailVerified = v
+	case string:
+		emailVerified = v == "true"
+	}
+	if !emailVerified {
+		return nil, fmt.Errorf("Google email not verified")
+	}
+
 	name, _ := claims["name"].(string)
 	picture, _ := claims["picture"].(string)
 

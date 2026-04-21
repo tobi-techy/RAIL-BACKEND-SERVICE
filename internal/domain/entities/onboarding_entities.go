@@ -130,6 +130,7 @@ type UserProfile struct {
 	BridgeCustomerID   *string          `json:"bridge_customer_id" db:"bridge_customer_id"`
 	AlpacaAccountID    *string          `json:"alpaca_account_id" db:"alpaca_account_id"`
 	IsActive           bool             `json:"is_active" db:"is_active"`
+	WithdrawalsFrozen  bool             `json:"withdrawals_frozen" db:"withdrawals_frozen"`
 	CreatedAt          time.Time        `json:"created_at" db:"created_at"`
 	UpdatedAt          time.Time        `json:"updated_at" db:"updated_at"`
 }

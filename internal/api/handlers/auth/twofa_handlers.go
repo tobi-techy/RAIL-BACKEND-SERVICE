@@ -48,6 +48,7 @@ func (h *TwoFAHandlers) Setup2FA(c *gin.Context) {
 		return
 	}
 
+	c.Header("Cache-Control", "no-store")
 	common.SendSuccess(c, setup)
 }
 

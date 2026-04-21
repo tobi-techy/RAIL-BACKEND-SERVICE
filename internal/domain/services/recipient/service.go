@@ -32,7 +32,7 @@ type Repository interface {
 	GetByProviderID(ctx context.Context, providerID string) (*Recipient, error)
 	GetDefault(ctx context.Context, userID uuid.UUID) (*Recipient, error)
 	SetDefault(ctx context.Context, userID, recipientID uuid.UUID) error
-	Delete(ctx context.Context, id uuid.UUID) error
+	Delete(ctx context.Context, id uuid.UUID, userID uuid.UUID) error
 }
 
 // CreateRequest represents a request to create a recipient
@@ -120,8 +120,8 @@ func (s *Service) SetDefault(ctx context.Context, userID, recipientID uuid.UUID)
 }
 
 // Delete removes a recipient
-func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
-	return s.repo.Delete(ctx, id)
+func (s *Service) Delete(ctx context.Context, id uuid.UUID, userID uuid.UUID) error {
+	return s.repo.Delete(ctx, id, userID)
 }
 
 // validateAddress validates blockchain address format

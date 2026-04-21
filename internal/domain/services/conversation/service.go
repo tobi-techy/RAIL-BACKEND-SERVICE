@@ -221,6 +221,10 @@ func (s *Service) generateTitle(convID uuid.UUID, firstMessage string) {
 
 // summarize compresses conversation history into a compact summary.
 // Runs with a 30s timeout to prevent goroutine leaks.
+//
+// PII RISK: The conversation messages sent to the LLM for summarization may
+// contain personal information (names, account numbers, addresses). The system
+// prompt instructs the model to exclude PII from the summary output.
 func (s *Service) summarize(convID uuid.UUID) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -241,7 +245,7 @@ func (s *Service) summarize(convID uuid.UUID) {
 	}
 
 	sumReq := &ai.ChatRequest{
-		SystemPrompt: "Summarize this conversation in under 200 words. Preserve key facts, user preferences, financial context, and any advice given. Be concise.",
+		SystemPrompt: "Do not include any personal information, account numbers, or addresses in the summary. Summarize this conversation in under 200 words. Preserve key facts, user preferences, financial context, and any advice given. Be concise.",
 		Messages:     []ai.Message{{Role: "user", Content: sb.String()}},
 		MaxTokens:    300,
 		Temperature:  0.3,

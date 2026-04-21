@@ -94,6 +94,9 @@ func (s *MarketDataService) GetQuote(ctx context.Context, symbol string) (*entit
 	}
 
 	s.cacheMu.Lock()
+	if len(s.priceCache) > 10000 {
+		s.priceCache = make(map[string]*cachedQuote)
+	}
 	s.priceCache[symbol] = &cachedQuote{quote: quote, fetchedAt: time.Now()}
 	s.cacheMu.Unlock()
 	return quote, nil
@@ -127,6 +130,9 @@ func (s *MarketDataService) GetQuotes(ctx context.Context, symbols []string) (ma
 
 	now := time.Now()
 	s.cacheMu.Lock()
+	if len(s.priceCache) > 10000 {
+		s.priceCache = make(map[string]*cachedQuote)
+	}
 	for sym, quote := range quotes {
 		s.priceCache[sym] = &cachedQuote{quote: quote, fetchedAt: now}
 		result[sym] = quote
@@ -153,6 +159,9 @@ func (s *MarketDataService) GetBars(ctx context.Context, symbol string, timefram
 	}
 
 	s.cacheMu.Lock()
+	if len(s.barsCache) > 10000 {
+		s.barsCache = make(map[string]*cachedBars)
+	}
 	s.barsCache[cacheKey] = &cachedBars{
 		bars:      bars,
 		fetchedAt: time.Now(),
@@ -295,6 +304,9 @@ func (s *MarketDataService) GetMarketNews(ctx context.Context, filters entities.
 	}
 
 	s.cacheMu.Lock()
+	if len(s.newsCache) > 10000 {
+		s.newsCache = make(map[string]*cachedNews)
+	}
 	s.newsCache[cacheKey] = &cachedNews{response: response, fetchedAt: time.Now()}
 	s.cacheMu.Unlock()
 

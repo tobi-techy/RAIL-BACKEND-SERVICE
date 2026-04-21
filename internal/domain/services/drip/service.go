@@ -43,7 +43,7 @@ type InvestmentRulesRepository interface {
 
 // OrderPlacer places reinvestment orders
 type OrderPlacer interface {
-	PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal) (*entities.AlpacaOrderResponse, error)
+	PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal, idempotencyKey string) (*entities.AlpacaOrderResponse, error)
 }
 
 // StrategyProvider gets user's target allocations for reinvestment
@@ -136,10 +136,10 @@ func (s *Service) reinvestDividend(ctx context.Context, event *DividendEvent, co
 
 	if config.ReinvestInSame {
 		// Reinvest in the same asset that paid the dividend
-		orderID, err = s.reinvestInSymbol(ctx, event.UserID, event.Symbol, reinvestAmount)
+		orderID, err = s.reinvestInSymbol(ctx, event.UserID, event.Symbol, reinvestAmount, event.ID.String())
 	} else {
 		// Reinvest according to user's strategy allocation
-		orderID, err = s.reinvestByStrategy(ctx, event.UserID, reinvestAmount)
+		orderID, err = s.reinvestByStrategy(ctx, event.UserID, reinvestAmount, event.ID.String())
 	}
 
 	if err != nil {
@@ -167,8 +167,8 @@ func (s *Service) reinvestDividend(ctx context.Context, event *DividendEvent, co
 	return nil
 }
 
-func (s *Service) reinvestInSymbol(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal) (uuid.UUID, error) {
-	order, err := s.orderPlacer.PlaceMarketOrder(ctx, userID, symbol, amount)
+func (s *Service) reinvestInSymbol(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal, idempotencyKey string) (uuid.UUID, error) {
+	order, err := s.orderPlacer.PlaceMarketOrder(ctx, userID, symbol, amount, idempotencyKey)
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -183,12 +183,12 @@ func (s *Service) reinvestInSymbol(ctx context.Context, userID uuid.UUID, symbol
 	return orderID, nil
 }
 
-func (s *Service) reinvestByStrategy(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (uuid.UUID, error) {
+func (s *Service) reinvestByStrategy(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) (uuid.UUID, error) {
 	// Get user's target allocations
 	targets, err := s.strategyProvider.GetTargetAllocations(ctx, userID)
 	if err != nil {
 		// Fallback to VTI if strategy unavailable
-		return s.reinvestInSymbol(ctx, userID, "VTI", amount)
+		return s.reinvestInSymbol(ctx, userID, "VTI", amount, idempotencyKey)
 	}
 
 	// Find the highest weighted symbol and reinvest there
@@ -205,7 +205,7 @@ func (s *Service) reinvestByStrategy(ctx context.Context, userID uuid.UUID, amou
 		maxSymbol = "VTI" // Fallback
 	}
 
-	return s.reinvestInSymbol(ctx, userID, maxSymbol, amount)
+	return s.reinvestInSymbol(ctx, userID, maxSymbol, amount, idempotencyKey)
 }
 
 // ProcessPendingReinvestments processes any dividends that failed to reinvest

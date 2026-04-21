@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
@@ -23,7 +24,15 @@ func NewRedisPendingActions(redis cache.RedisClient, logger *zap.Logger) Pending
 }
 
 func (r *RedisPendingActions) Set(ctx context.Context, convID uuid.UUID, action *entities.PendingAction) error {
-	return r.redis.Set(ctx, pendingActionKeyPrefix+convID.String(), action, pendingActionTTL)
+	key := pendingActionKeyPrefix + convID.String()
+	exists, err := r.redis.Exists(ctx, key)
+	if err != nil {
+		return fmt.Errorf("failed to check existing pending action: %w", err)
+	}
+	if exists {
+		return fmt.Errorf("a pending action already exists for conversation %s", convID)
+	}
+	return r.redis.Set(ctx, key, action, pendingActionTTL)
 }
 
 func (r *RedisPendingActions) Get(ctx context.Context, convID uuid.UUID) *entities.PendingAction {

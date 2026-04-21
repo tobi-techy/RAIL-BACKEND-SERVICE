@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -16,8 +17,8 @@ import (
 type UnifiedFundingWebhookHandler struct {
 	bridgeHandler             *BridgeWebhookHandler
 	alpacaHandler             *AlpacaWebhookHandlers
-	logger                    *zap.Logger
-	allowInsecureVerification bool
+	logger *zap.Logger
+	mu     sync.RWMutex
 }
 
 // NewUnifiedFundingWebhookHandler creates a unified webhook handler
@@ -26,18 +27,18 @@ func NewUnifiedFundingWebhookHandler(
 	_ interface{}, // legacy circleHandler removed
 	alpacaHandler *AlpacaWebhookHandlers,
 	logger *zap.Logger,
-	allowInsecureVerification bool,
 ) *UnifiedFundingWebhookHandler {
 	return &UnifiedFundingWebhookHandler{
-		bridgeHandler:             bridgeHandler,
-		alpacaHandler:             alpacaHandler,
-		logger:                    logger,
-		allowInsecureVerification: allowInsecureVerification,
+		bridgeHandler: bridgeHandler,
+		alpacaHandler: alpacaHandler,
+		logger:        logger,
 	}
 }
 
 // SetWebhookSecret sets the webhook secret for a source
 func (h *UnifiedFundingWebhookHandler) SetWebhookSecret(source, secret string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	switch strings.ToLower(strings.TrimSpace(source)) {
 	case string(WebhookSourceBridge):
 		if h.bridgeHandler != nil {
@@ -138,6 +139,8 @@ func (h *UnifiedFundingWebhookHandler) detectSource(c *gin.Context, body []byte)
 
 // verifySignature verifies the webhook signature based on source
 func (h *UnifiedFundingWebhookHandler) verifySignature(c *gin.Context, source WebhookSource, body []byte) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
 	switch source {
 	case WebhookSourceBridge:
 		if h.bridgeHandler == nil {

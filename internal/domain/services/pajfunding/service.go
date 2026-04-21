@@ -353,6 +353,9 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 	if rates.OffRampRate.Rate <= 0 {
 		return nil, fmt.Errorf("offramp rate unavailable")
 	}
+	if rates.OffRampRate.Rate < 100 || rates.OffRampRate.Rate > 10000 {
+		return nil, fmt.Errorf("offramp rate out of bounds: %.2f", rates.OffRampRate.Rate)
+	}
 
 	// Bridge requires ≥ $1 USDC per transfer. Enforce the NGN equivalent.
 	bridgeMinNGN := rates.OffRampRate.Rate * 1.05 // ₦ equivalent of ~$1.05 (with buffer)

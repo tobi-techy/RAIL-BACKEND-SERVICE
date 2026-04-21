@@ -18,6 +18,35 @@ type Service struct {
 	logger *zap.Logger
 }
 
+// allowedScopes defines the valid scopes that can be assigned to API keys.
+var allowedScopes = map[string]bool{
+	"read":    true,
+	"write":   true,
+	"trade":   true,
+	"admin":   true,
+}
+
+// adminOnlyScopes are scopes restricted to admin users.
+var adminOnlyScopes = map[string]bool{
+	"admin": true,
+}
+
+// validateScopes checks that all requested scopes are allowed and rejects wildcards.
+func validateScopes(scopes []string, isAdmin bool) error {
+	for _, scope := range scopes {
+		if scope == "*" {
+			return fmt.Errorf("wildcard scope '*' is not allowed")
+		}
+		if !allowedScopes[scope] {
+			return fmt.Errorf("invalid scope: %q", scope)
+		}
+		if adminOnlyScopes[scope] && !isAdmin {
+			return fmt.Errorf("scope %q requires admin role", scope)
+		}
+	}
+	return nil
+}
+
 type APIKey struct {
 	ID         uuid.UUID  `json:"id"`
 	Name       string     `json:"name"`
@@ -35,6 +64,7 @@ type CreateAPIKeyRequest struct {
 	UserID    *uuid.UUID `json:"user_id,omitempty"`
 	Scopes    []string   `json:"scopes"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	UserRole  string     `json:"-"` // set server-side, not from JSON
 }
 
 type CreateAPIKeyResponse struct {
@@ -49,8 +79,30 @@ func NewService(db *sql.DB, logger *zap.Logger) *Service {
 	}
 }
 
+// maxActiveKeysPerUser is the maximum number of active API keys a single user may hold.
+const maxActiveKeysPerUser = 10
+
 // CreateAPIKey creates a new API key
 func (s *Service) CreateAPIKey(ctx context.Context, req *CreateAPIKeyRequest) (*CreateAPIKeyResponse, error) {
+	// Enforce per-user API key limit
+	if req.UserID != nil {
+		var count int
+		err := s.db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM api_keys WHERE user_id = $1 AND is_active = true",
+			*req.UserID).Scan(&count)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check API key count: %w", err)
+		}
+		if count >= maxActiveKeysPerUser {
+			return nil, fmt.Errorf("maximum number of active API keys (%d) reached", maxActiveKeysPerUser)
+		}
+	}
+
+	// Validate scopes
+	if err := validateScopes(req.Scopes, req.UserRole == "admin"); err != nil {
+		return nil, err
+	}
+
 	// Generate API key
 	key, keyPrefix, keyHash, err := s.generateAPIKey()
 	if err != nil {
@@ -195,6 +247,12 @@ func (s *Service) RevokeAPIKey(ctx context.Context, keyID uuid.UUID, userID *uui
 
 // UpdateAPIKey updates an API key's properties
 func (s *Service) UpdateAPIKey(ctx context.Context, keyID uuid.UUID, name string, scopes []string, userID *uuid.UUID) error {
+	// Validate scopes (treat as non-admin for regular updates; admin path passes nil userID)
+	isAdmin := userID == nil
+	if err := validateScopes(scopes, isAdmin); err != nil {
+		return err
+	}
+
 	var query string
 	var args []interface{}
 

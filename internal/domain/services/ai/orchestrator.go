@@ -119,6 +119,7 @@ type Orchestrator struct {
 	priceTracker        PriceTracker
 	merchantAnalyzer    MerchantAnalyzer
 	pending             PendingActionStore
+	accountChecker      UserAccountChecker
 	logger            *zap.Logger
 }
 
@@ -150,6 +151,7 @@ type OrchestratorDeps struct {
 	SavingsSuggestions SavingsSuggestionProvider
 	PriceTracker       PriceTracker
 	MerchantAnalyzer   MerchantAnalyzer
+	AccountChecker     UserAccountChecker
 }
 
 // NewOrchestratorWithDeps creates a new AI orchestrator with all dependencies provided upfront.
@@ -196,6 +198,7 @@ func NewOrchestratorWithDeps(
 		savingsSuggestions: deps.SavingsSuggestions,
 		priceTracker:       deps.PriceTracker,
 		merchantAnalyzer:   deps.MerchantAnalyzer,
+		accountChecker:     deps.AccountChecker,
 		logger:            logger,
 	}
 }

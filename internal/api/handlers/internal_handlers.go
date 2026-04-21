@@ -4,8 +4,10 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 // InternalHandlers handles /internal/* ops endpoints.
@@ -13,10 +15,11 @@ import (
 type InternalHandlers struct {
 	db         *sql.DB
 	internalKey string
+	logger      *zap.Logger
 }
 
-func NewInternalHandlers(db *sql.DB, internalKey string) *InternalHandlers {
-	return &InternalHandlers{db: db, internalKey: internalKey}
+func NewInternalHandlers(db *sql.DB, internalKey string, logger *zap.Logger) *InternalHandlers {
+	return &InternalHandlers{db: db, internalKey: internalKey, logger: logger}
 }
 
 func (h *InternalHandlers) authenticate(c *gin.Context) bool {
@@ -126,6 +129,14 @@ func (h *InternalHandlers) DeleteUser(c *gin.Context) {
 		return
 	}
 	uid := c.Param("id")
+
+	// Audit log before destructive operation
+	h.logger.Warn("internal_delete_user",
+		zap.String("user_id", uid),
+		zap.String("caller_ip", c.ClientIP()),
+		zap.Time("timestamp", time.Now().UTC()),
+	)
+
 	deleted := map[string]int64{}
 	for table, stmt := range deleteStatements {
 		res, err := h.db.ExecContext(c.Request.Context(), stmt, uid)

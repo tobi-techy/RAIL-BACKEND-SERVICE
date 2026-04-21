@@ -151,6 +151,18 @@ func (h *HouseholdHandler) ShareReceipt(c *gin.Context) {
 		return
 	}
 
+	// Verify the receipt belongs to the caller
+	var receiptOwnerID uuid.UUID
+	if err := h.db.GetContext(c.Request.Context(), &receiptOwnerID,
+		`SELECT user_id FROM receipt_scans WHERE id = $1`, receiptID); err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidID, "Receipt not found")
+		return
+	}
+	if receiptOwnerID != userID {
+		common.SendForbidden(c, "You can only share your own receipts")
+		return
+	}
+
 	_, err = h.db.ExecContext(c.Request.Context(),
 		`INSERT INTO household_receipts (receipt_id, group_id, shared_by) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
 		receiptID, groupID, userID)

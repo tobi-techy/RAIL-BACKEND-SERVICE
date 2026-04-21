@@ -21,6 +21,20 @@ func ValidateOrderRequest(req *entities.AlpacaCreateOrderRequest) error {
 		return fmt.Errorf("either qty or notional must be specified")
 	}
 
+	// Validate positive values
+	if req.Qty != nil && !req.Qty.IsPositive() {
+		return fmt.Errorf("qty must be positive")
+	}
+	if req.Notional != nil && !req.Notional.IsPositive() {
+		return fmt.Errorf("notional must be positive")
+	}
+	if req.LimitPrice != nil && !req.LimitPrice.IsPositive() {
+		return fmt.Errorf("limit_price must be positive")
+	}
+	if req.StopPrice != nil && !req.StopPrice.IsPositive() {
+		return fmt.Errorf("stop_price must be positive")
+	}
+
 	// Fractional shares only supported for day orders
 	if req.Qty != nil && !req.Qty.IsInteger() && req.TimeInForce != entities.AlpacaTimeInForceDay {
 		return fmt.Errorf("fractional shares only supported for day orders")

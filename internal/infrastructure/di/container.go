@@ -1392,7 +1392,7 @@ func (c *Container) initializeDomainServices() error {
 
 	// Initialize security services
 	c.SessionService = session.NewService(c.DB, c.RedisClient.Client(), c.ZapLog)
-	c.TwoFAService = twofa.NewService(c.DB, c.ZapLog, c.Config.Security.EncryptionKey)
+	c.TwoFAService = twofa.NewService(c.DB, c.ZapLog, c.Config.Security.EncryptionKey, c.RedisClient)
 	c.APIKeyService = apikey.NewService(c.DB, c.ZapLog)
 
 	// Initialize social auth service
@@ -2006,7 +2006,6 @@ func (c *Container) initializeDomainServices() error {
 		nil, // circleHandler removed
 		alpacaWebhookHandler,
 		c.ZapLog,
-		c.Config.Environment == "development",
 	)
 	if bridgeSecret := strings.TrimSpace(c.Config.Bridge.WebhookSecret); bridgeSecret != "" {
 		c.UnifiedFundingWebhookHandler.SetWebhookSecret("bridge", bridgeSecret)
@@ -2742,6 +2741,11 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		c.AIOrchestrator.SetActionAuditor(auditRepo)
 	}
 
+	// Wire account checker for fraud/freeze checks on AI-initiated transfers
+	if c.UserRepo != nil {
+		c.AIOrchestrator.SetAccountChecker(&accountCheckerAdapter{repo: c.UserRepo})
+	}
+
 	// Use Redis for pending actions (survives restarts, works across instances)
 	if c.RedisClient != nil {
 		c.AIOrchestrator.SetPendingActions(aiservice.NewRedisPendingActions(c.RedisClient, c.ZapLog))
@@ -3025,6 +3029,7 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 		orderPlacer,
 		nil, // ContributionRecorder - can be added later
 		c.ZapLog,
+		sqlxDB,
 	)
 
 	// Initialize Copy Trading Service

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 
 	"go.uber.org/zap"
@@ -180,7 +181,7 @@ func (c *Client) GetBanks(ctx context.Context, sessionToken string) ([]Bank, err
 }
 
 func (c *Client) ResolveBankAccount(ctx context.Context, sessionToken, bankID, accountNumber string) (*ResolvedAccount, error) {
-	path := fmt.Sprintf("/pub/bank-account/confirm/?bankId=%s&accountNumber=%s", bankID, accountNumber)
+	path := fmt.Sprintf("/pub/bank-account/confirm/?bankId=%s&accountNumber=%s", url.QueryEscape(bankID), url.QueryEscape(accountNumber))
 	var resp ResolvedAccount
 	if err := c.get(ctx, path, &sessionToken, &resp); err != nil {
 		return nil, fmt.Errorf("paj resolve bank: %w", err)

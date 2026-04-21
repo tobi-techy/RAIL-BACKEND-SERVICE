@@ -31,6 +31,14 @@ func SplitReceiptTool() infraai.Tool {
 }
 
 func (o *Orchestrator) createSplitReceiptAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+	// R11-1: Check user account status before allowing split receipt (involves P2P transfers)
+	if blocked, err := o.checkUserCanTransact(ctx, userID); blocked != nil || err != nil {
+		if err != nil {
+			return nil, err
+		}
+		return blocked, nil
+	}
+
 	receiptIDStr, _ := args["receipt_id"].(string)
 	if receiptIDStr == "" {
 		return map[string]interface{}{"error": "receipt_id is required"}, nil

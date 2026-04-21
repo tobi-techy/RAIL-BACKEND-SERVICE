@@ -41,10 +41,8 @@ func (suite *VirtualAccountIntegrationTestSuite) SetupSuite() {
 
 	// Setup routes
 	v1 := suite.router.Group("/api/v1")
-	funding := v1.Group("/funding")
-	{
-		funding.POST("/virtual-account", suite.mockAuth(), fundingHandlers.CreateVirtualAccount)
-	}
+	_ = v1.Group("/funding")
+	_ = fundingHandlers // Legacy CreateVirtualAccount removed for security — use WalletFundingHandlers
 }
 
 // mockAuth simulates authentication middleware for testing

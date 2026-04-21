@@ -148,6 +148,10 @@ var engagementMessages = []struct{ title, body string }{
 }
 
 func (w *Worker) sendDepositReminders(ctx context.Context) {
+	// TODO(R3-L4): Check user notification preferences before sending.
+	// Each user should be able to opt out of deposit reminders, KYC reminders,
+	// and engagement notifications independently. Query a notification_preferences
+	// table (or user settings) and skip users who have opted out of this category.
 	users, err := w.userRepo.GetUsersWithNoDeposits(ctx)
 	if err != nil {
 		w.logger.Error("Failed to fetch users with no deposits", zap.Error(err))

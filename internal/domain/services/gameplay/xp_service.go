@@ -28,6 +28,7 @@ type XPRepository interface {
 	AwardXP(ctx context.Context, userID uuid.UUID, amount int, newLevel int) error
 	CreateXPEvent(ctx context.Context, e *entities.XPEvent) error
 	GetXPHistory(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.XPEvent, error)
+	XPEventExists(ctx context.Context, userID uuid.UUID, eventType string, sourceID uuid.UUID) (bool, error)
 }
 
 // PushNotifier sends push notifications
@@ -53,6 +54,17 @@ func (s *XPService) SetNotifier(n PushNotifier) { s.notifier = n }
 func (s *XPService) AwardXP(ctx context.Context, userID uuid.UUID, eventType string, amount int, sourceID *uuid.UUID) error {
 	if amount <= 0 {
 		return nil
+	}
+
+	// Idempotency: skip if this exact event was already awarded
+	if sourceID != nil {
+		exists, err := s.repo.XPEventExists(ctx, userID, eventType, *sourceID)
+		if err != nil {
+			return fmt.Errorf("check xp event exists: %w", err)
+		}
+		if exists {
+			return nil
+		}
 	}
 
 	// Get current XP to calculate new level

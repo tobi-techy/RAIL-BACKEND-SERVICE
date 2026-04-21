@@ -167,6 +167,52 @@ func (r *UsageRepository) IncrementWithdrawalUsage(ctx context.Context, userID u
 	return nil
 }
 
+// AtomicIncrementDeposit atomically validates limits and increments deposit usage.
+// Returns an error if the increment would exceed daily or monthly limits.
+func (r *UsageRepository) AtomicIncrementDeposit(ctx context.Context, userID uuid.UUID, amount, dailyLimit, monthlyLimit decimal.Decimal) error {
+	query := `
+		UPDATE user_transaction_usage
+		SET daily_deposit_used = daily_deposit_used + $2,
+			monthly_deposit_used = monthly_deposit_used + $2,
+			updated_at = $3
+		WHERE user_id = $1
+			AND daily_deposit_used + $2 <= $4
+			AND monthly_deposit_used + $2 <= $5`
+
+	result, err := r.db.ExecContext(ctx, query, userID, amount, time.Now().UTC(), dailyLimit, monthlyLimit)
+	if err != nil {
+		return fmt.Errorf("failed to atomic increment deposit usage: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("deposit limit exceeded")
+	}
+	return nil
+}
+
+// AtomicIncrementWithdrawal atomically validates limits and increments withdrawal usage.
+// Returns an error if the increment would exceed daily or monthly limits.
+func (r *UsageRepository) AtomicIncrementWithdrawal(ctx context.Context, userID uuid.UUID, amount, dailyLimit, monthlyLimit decimal.Decimal) error {
+	query := `
+		UPDATE user_transaction_usage
+		SET daily_withdrawal_used = daily_withdrawal_used + $2,
+			monthly_withdrawal_used = monthly_withdrawal_used + $2,
+			updated_at = $3
+		WHERE user_id = $1
+			AND daily_withdrawal_used + $2 <= $4
+			AND monthly_withdrawal_used + $2 <= $5`
+
+	result, err := r.db.ExecContext(ctx, query, userID, amount, time.Now().UTC(), dailyLimit, monthlyLimit)
+	if err != nil {
+		return fmt.Errorf("failed to atomic increment withdrawal usage: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("withdrawal limit exceeded")
+	}
+	return nil
+}
+
 // ResetExpiredPeriods resets usage counters if their periods have expired
 func (r *UsageRepository) ResetExpiredPeriods(ctx context.Context, userID uuid.UUID) error {
 	now := time.Now().UTC()

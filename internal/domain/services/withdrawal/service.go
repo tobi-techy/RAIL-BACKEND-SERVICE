@@ -337,18 +337,14 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	sl := s.stashLock
 	s.stashLockMu.RUnlock()
 	if req.SourceAccount == entities.WithdrawalSourceStashBalance && sl != nil {
-		canWithdraw, windowEnd, err := sl.CanWithdraw(ctx, req.UserID)
+		canWithdraw, _, err := sl.CanWithdraw(ctx, req.UserID)
 		if err != nil {
 			return nil, fmt.Errorf("stash lock check failed: %w", err)
 		}
 		if !canWithdraw {
 			return nil, fmt.Errorf("stash funds are locked: no active withdrawal window (funds lock for 90 days, then a 7-day window opens)")
 		}
-		// Mark the window consumed immediately — the per-user lock above prevents concurrent double-withdrawals.
-		if err := sl.MarkWithdrawn(ctx, req.UserID); err != nil {
-			return nil, fmt.Errorf("failed to mark stash window consumed: %w", err)
-		}
-		s.logger.Info("Stash withdrawal window consumed", "user_id", req.UserID, "window_end", windowEnd)
+		// MarkWithdrawn is deferred until after the withdrawal succeeds (ledger + transfer).
 	}
 
 	// Step 3: Validate against withdrawal limits
@@ -507,6 +503,15 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	if transferResult.TransferID != "" {
 		if err := s.withdrawalRepo.UpdateBridgeTransfer(ctx, withdrawal.ID, transferResult.TransferID); err != nil {
 			s.logger.Error("Failed to update transfer ID", "error", err)
+		}
+	}
+
+	// Mark stash lock window consumed AFTER the withdrawal has succeeded (ledger debit + transfer).
+	// This ensures a failed withdrawal does not consume the user's withdrawal window.
+	if req.SourceAccount == entities.WithdrawalSourceStashBalance && sl != nil {
+		if err := sl.MarkWithdrawn(ctx, req.UserID); err != nil {
+			s.logger.Error("Failed to mark stash window consumed (non-fatal, withdrawal already committed)",
+				"user_id", req.UserID, "error", err)
 		}
 	}
 

@@ -36,6 +36,11 @@ type FundsTransferer interface {
 	GetStashBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
 }
 
+// UserAccountChecker verifies user account status before executing financial actions.
+type UserAccountChecker interface {
+	IsActiveAndUnfrozen(ctx context.Context, userID uuid.UUID) (active bool, frozen bool, err error)
+}
+
 // ActionAuditor persists action audit entries.
 type ActionAuditor interface {
 	RecordAction(ctx context.Context, entry *entities.ActionAuditEntry) error
@@ -117,6 +122,29 @@ func (o *Orchestrator) SetSavingsGoalStore(s SavingsGoalStore) {
 	o.savingsGoalStore = s
 }
 
+// SetAccountChecker wires the user account checker dependency.
+func (o *Orchestrator) SetAccountChecker(c UserAccountChecker) {
+	o.accountChecker = c
+}
+
+// checkUserCanTransact verifies the user is active and not frozen before financial actions.
+func (o *Orchestrator) checkUserCanTransact(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+	if o.accountChecker == nil {
+		return nil, nil
+	}
+	active, frozen, err := o.accountChecker.IsActiveAndUnfrozen(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("check account status: %w", err)
+	}
+	if !active {
+		return map[string]interface{}{"error": "Your account is not active. Please contact support."}, nil
+	}
+	if frozen {
+		return map[string]interface{}{"error": "Withdrawals are temporarily frozen on your account. Please contact support."}, nil
+	}
+	return nil, nil
+}
+
 // ActionTools returns the action-capable tools.
 func ActionTools() []ai.Tool {
 	return []ai.Tool{
@@ -169,6 +197,14 @@ func (o *Orchestrator) executeActionTool(ctx context.Context, userID, convID uui
 }
 
 func (o *Orchestrator) createTransferAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+	// R11-1: Check user account status before allowing transfer creation
+	if blocked, err := o.checkUserCanTransact(ctx, userID); blocked != nil || err != nil {
+		if err != nil {
+			return nil, err
+		}
+		return blocked, nil
+	}
+
 	from, _ := args["from"].(string)
 	to, _ := args["to"].(string)
 	amountF, _ := args["amount"].(float64)
@@ -343,6 +379,20 @@ func (o *Orchestrator) CancelAction(ctx context.Context, userID, convID uuid.UUI
 }
 
 func (o *Orchestrator) executeTransfer(ctx context.Context, userID uuid.UUID, action *entities.PendingAction) error {
+	// R11-1: Re-check account status at execution time
+	if o.accountChecker != nil {
+		active, frozen, err := o.accountChecker.IsActiveAndUnfrozen(ctx, userID)
+		if err != nil {
+			return fmt.Errorf("check account status: %w", err)
+		}
+		if !active {
+			return fmt.Errorf("account is not active")
+		}
+		if frozen {
+			return fmt.Errorf("withdrawals are frozen on this account")
+		}
+	}
+
 	from, _ := action.Params["from"].(string)
 	amountStr, _ := action.Params["amount"].(string)
 	amount, err := decimal.NewFromString(amountStr)

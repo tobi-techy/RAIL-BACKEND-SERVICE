@@ -56,6 +56,11 @@ func (o *Orchestrator) executeKnowledgeSearch(ctx context.Context, args map[stri
 		return nil, fmt.Errorf("query is required")
 	}
 
+	// Truncate overly long queries to prevent abuse
+	if len(query) > 500 {
+		query = query[:500]
+	}
+
 	results, err := o.knowledge.Search(ctx, query, 3)
 	if err != nil {
 		return nil, fmt.Errorf("knowledge search: %w", err)

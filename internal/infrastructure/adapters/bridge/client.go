@@ -11,14 +11,31 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
+
+var (
+	emailRegex = regexp.MustCompile(`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`)
+	phoneRegex = regexp.MustCompile(`\+?[0-9][\d\-\s()]{7,}`)
+)
+
+// sanitizeBody truncates a response body to maxLen and redacts email/phone patterns.
+func sanitizeBody(body string, maxLen int) string {
+	s := emailRegex.ReplaceAllString(body, "[REDACTED_EMAIL]")
+	s = phoneRegex.ReplaceAllString(s, "[REDACTED_PHONE]")
+	if len(s) > maxLen {
+		s = s[:maxLen] + "...[truncated]"
+	}
+	return s
+}
 
 // idempotencyKeyCtxKey is the context key for idempotency keys
 type idempotencyKeyCtxKey struct{}
@@ -65,6 +82,10 @@ type Client struct {
 	config     Config
 	httpClient *http.Client
 	logger     *zap.Logger
+
+	// Circuit breaker: track consecutive 5xx failures
+	consecutiveFailures atomic.Int64
+	circuitOpenUntil    atomic.Int64 // unix timestamp when circuit closes
 }
 
 // NewClient creates a new Bridge API client
@@ -446,6 +467,11 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 
 	var lastErr error
 	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
+		// Circuit breaker: if open, fail fast
+		if openUntil := c.circuitOpenUntil.Load(); openUntil > 0 && time.Now().Unix() < openUntil {
+			return fmt.Errorf("bridge API circuit breaker open: too many consecutive 5xx errors")
+		}
+
 		if attempt > 0 {
 			baseBackoff := time.Duration(1<<(attempt-1)) * time.Second
 			jitter := time.Duration(rand.Float64() * 0.5 * float64(baseBackoff))
@@ -493,9 +519,18 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 
 		// Retry on 5xx errors
 		if resp.StatusCode >= 500 {
-			lastErr = fmt.Errorf("API error: status %d, body: %s", resp.StatusCode, string(respBody))
+			failures := c.consecutiveFailures.Add(1)
+			if failures >= 5 {
+				c.circuitOpenUntil.Store(time.Now().Add(30 * time.Second).Unix())
+				c.logger.Warn("Bridge API circuit breaker opened", zap.Int64("consecutive_failures", failures))
+			}
+			lastErr = fmt.Errorf("API error: status %d, body: %s", resp.StatusCode, sanitizeBody(string(respBody), 200))
 			continue
 		}
+
+		// Reset circuit breaker on any non-5xx response
+		c.consecutiveFailures.Store(0)
+		c.circuitOpenUntil.Store(0)
 
 		if resp.StatusCode >= 400 {
 			var errResp ErrorResponse
@@ -503,7 +538,7 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 				errResp.StatusCode = resp.StatusCode
 				return &errResp
 			}
-			return fmt.Errorf("API error: status %d, body: %s", resp.StatusCode, string(respBody))
+			return fmt.Errorf("API error: status %d, body: %s", resp.StatusCode, sanitizeBody(string(respBody), 200))
 		}
 
 		if response != nil && len(respBody) > 0 {

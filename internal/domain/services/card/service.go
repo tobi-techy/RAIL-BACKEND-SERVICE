@@ -65,6 +65,7 @@ type BalanceProvider interface {
 type LedgerService interface {
 	GetAccountBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (decimal.Decimal, error)
 	GetOrCreateUserAccount(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (*entities.LedgerAccount, error)
+	GetSystemAccount(ctx context.Context, accountType entities.AccountType) (*entities.LedgerAccount, error)
 	CreateTransaction(ctx context.Context, req *entities.CreateTransactionRequest) (*entities.LedgerTransaction, error)
 }
 
@@ -348,6 +349,15 @@ func (s *Service) ProcessCardAuthorization(ctx context.Context, bridgeCardID str
 		return false, "insufficient_funds", nil
 	}
 
+	// Reserve funds: debit spending_balance, credit pending_card_settlement.
+	// This is a real debit so the balance is no longer available for P2P/withdrawal.
+	if s.ledgerService != nil {
+		if err := s.holdFundsForCardAuth(ctx, card.UserID, amount, bridgeCardID); err != nil {
+			s.logger.Error("Failed to hold funds for card authorization", zap.Error(err))
+			return false, "hold_failed", err
+		}
+	}
+
 	s.logger.Info("Card authorization approved",
 		zap.String("card_id", card.ID.String()),
 		zap.String("amount", amount.String()))
@@ -378,13 +388,32 @@ func (s *Service) RecordTransaction(ctx context.Context, bridgeCardID, bridgeTra
 	if existing != nil {
 		// Update status if changed
 		if existing.Status != normalizedStatus {
-			// If transitioning to completed, deduct from spend balance
+			// Guard: terminal statuses (reversed, declined) cannot transition to completed
+			if (existing.Status == "reversed" || existing.Status == "declined") && normalizedStatus == "completed" {
+				s.logger.Warn("Blocked invalid card transaction status transition",
+					zap.String("transaction_id", bridgeTransID),
+					zap.String("current_status", existing.Status),
+					zap.String("attempted_status", normalizedStatus))
+				return nil
+			}
+			// If transitioning to completed, settle from hold account
 			if normalizedStatus == "completed" && existing.Status != "completed" {
 				if err := s.settleTransaction(ctx, card.UserID, amount, bridgeTransID, merchantName); err != nil {
 					s.logger.Error("Failed to settle card transaction",
 						zap.String("transaction_id", bridgeTransID),
 						zap.Error(err))
 					return err
+				}
+			}
+			// If transitioning to reversed or declined, release the hold back to spending
+			if (normalizedStatus == "reversed" || normalizedStatus == "declined") && existing.Status == "pending" {
+				if s.ledgerService != nil {
+					if err := s.releaseCardHold(ctx, card.UserID, amount, bridgeTransID); err != nil {
+						s.logger.Error("Failed to release card hold",
+							zap.String("transaction_id", bridgeTransID),
+							zap.Error(err))
+						return err
+					}
 				}
 			}
 			return s.repo.UpdateTransactionStatus(ctx, existing.ID, normalizedStatus, declineReason)
@@ -409,7 +438,7 @@ func (s *Service) RecordTransaction(ctx context.Context, bridgeCardID, bridgeTra
 		return err
 	}
 
-	// If transaction is already completed (captured), deduct from spend balance
+	// If transaction is already completed (captured), settle from hold account
 	if normalizedStatus == "completed" {
 		if err := s.settleTransaction(ctx, card.UserID, amount, bridgeTransID, merchantName); err != nil {
 			s.logger.Error("Failed to settle card transaction",
@@ -437,17 +466,28 @@ func (s *Service) RecordTransaction(ctx context.Context, bridgeCardID, bridgeTra
 		}
 	}
 
+	// If transaction arrived as reversed or declined, release the hold
+	if normalizedStatus == "reversed" || normalizedStatus == "declined" {
+		if s.ledgerService != nil && !amount.IsZero() {
+			if err := s.releaseCardHold(ctx, card.UserID, amount, bridgeTransID); err != nil {
+				s.logger.Error("Failed to release card hold for reversed transaction",
+					zap.String("transaction_id", bridgeTransID),
+					zap.Error(err))
+			}
+		}
+	}
+
 	return nil
 }
 
-// settleTransaction deducts from spend balance and creates ledger entry
+// settleTransaction deducts from hold account and creates ledger entry
 func (s *Service) settleTransaction(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, transactionID, merchantName string) error {
 	s.logger.Info("Settling card transaction",
 		zap.String("user_id", userID.String()),
 		zap.String("amount", amount.String()),
 		zap.String("transaction_id", transactionID))
 
-	// Create ledger entry - this is the single authoritative debit of spending_balance.
+	// Create ledger entry - settle from the hold account (funds were already debited from spending at auth time).
 	// DeductSpendBalance is intentionally NOT called here; it would double-debit.
 	if s.ledgerService != nil {
 		if err := s.createCardTransactionLedgerEntry(ctx, userID, amount, transactionID, merchantName); err != nil {
@@ -460,14 +500,19 @@ func (s *Service) settleTransaction(ctx context.Context, userID uuid.UUID, amoun
 
 // createCardTransactionLedgerEntry creates a ledger entry for a card transaction
 func (s *Service) createCardTransactionLedgerEntry(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, transactionID, merchantName string) error {
-	spendAccount, err := s.ledgerService.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	holdAccount, err := s.ledgerService.GetOrCreateUserAccount(ctx, userID, entities.AccountTypePendingCardSettlement)
 	if err != nil {
-		return fmt.Errorf("failed to get spend account: %w", err)
+		return fmt.Errorf("failed to get hold account: %w", err)
 	}
 
-	desc := fmt.Sprintf("Card transaction: %s", merchantName)
+	systemAccount, err := s.ledgerService.GetSystemAccount(ctx, entities.AccountTypeSystemBufferUSDC)
+	if err != nil {
+		return fmt.Errorf("failed to get system buffer account: %w", err)
+	}
+
+	desc := fmt.Sprintf("Card settlement: %s", merchantName)
 	if merchantName == "" {
-		desc = fmt.Sprintf("Card transaction: %s", transactionID)
+		desc = fmt.Sprintf("Card settlement: %s", transactionID)
 	}
 	idempotencyKey := fmt.Sprintf("card-tx:%s", transactionID)
 
@@ -478,8 +523,99 @@ func (s *Service) createCardTransactionLedgerEntry(ctx context.Context, userID u
 		Description:     &desc,
 		Entries: []entities.CreateEntryRequest{
 			{
+				AccountID:   holdAccount.ID,
+				EntryType:   entities.EntryTypeCredit, // Decrease hold (release reserved funds)
+				Amount:      amount,
+				Currency:    "USD",
+				Description: &desc,
+			},
+			{
+				AccountID:   systemAccount.ID,
+				EntryType:   entities.EntryTypeDebit, // System buffer absorbs the outflow (Bridge reconciles separately)
+				Amount:      amount,
+				Currency:    "USD",
+				Description: &desc,
+			},
+		},
+	}
+
+	_, err = s.ledgerService.CreateTransaction(ctx, txReq)
+	return err
+}
+
+// holdFundsForCardAuth reserves funds by moving from spending_balance to pending_card_settlement
+func (s *Service) holdFundsForCardAuth(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, bridgeCardID string) error {
+	spendAccount, err := s.ledgerService.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return fmt.Errorf("failed to get spend account: %w", err)
+	}
+
+	holdAccount, err := s.ledgerService.GetOrCreateUserAccount(ctx, userID, entities.AccountTypePendingCardSettlement)
+	if err != nil {
+		return fmt.Errorf("failed to get hold account: %w", err)
+	}
+
+	desc := fmt.Sprintf("Card authorization hold: %s", bridgeCardID)
+	idempotencyKey := fmt.Sprintf("card-hold:%s:%s", bridgeCardID, amount.String())
+
+	txReq := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeCardHold,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &desc,
+		Entries: []entities.CreateEntryRequest{
+			{
 				AccountID:   spendAccount.ID,
-				EntryType:   entities.EntryTypeCredit, // Decrease spend balance
+				EntryType:   entities.EntryTypeCredit, // Decrease spending balance
+				Amount:      amount,
+				Currency:    "USD",
+				Description: &desc,
+			},
+			{
+				AccountID:   holdAccount.ID,
+				EntryType:   entities.EntryTypeDebit, // Increase hold account
+				Amount:      amount,
+				Currency:    "USD",
+				Description: &desc,
+			},
+		},
+	}
+
+	_, err = s.ledgerService.CreateTransaction(ctx, txReq)
+	return err
+}
+
+// releaseCardHold returns held funds to spending_balance on authorization reversal or expiry
+func (s *Service) releaseCardHold(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, transactionID string) error {
+	spendAccount, err := s.ledgerService.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return fmt.Errorf("failed to get spend account: %w", err)
+	}
+
+	holdAccount, err := s.ledgerService.GetOrCreateUserAccount(ctx, userID, entities.AccountTypePendingCardSettlement)
+	if err != nil {
+		return fmt.Errorf("failed to get hold account: %w", err)
+	}
+
+	desc := fmt.Sprintf("Card hold released: %s", transactionID)
+	idempotencyKey := fmt.Sprintf("card-hold-release:%s", transactionID)
+
+	txReq := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeCardHold,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &desc,
+		Entries: []entities.CreateEntryRequest{
+			{
+				AccountID:   holdAccount.ID,
+				EntryType:   entities.EntryTypeCredit, // Decrease hold account
+				Amount:      amount,
+				Currency:    "USD",
+				Description: &desc,
+			},
+			{
+				AccountID:   spendAccount.ID,
+				EntryType:   entities.EntryTypeDebit, // Increase spending balance
 				Amount:      amount,
 				Currency:    "USD",
 				Description: &desc,

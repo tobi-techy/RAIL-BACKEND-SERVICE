@@ -3,12 +3,15 @@ package security
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/withdrawal"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 )
 
@@ -23,7 +26,24 @@ func NewAddressWhitelistService(repo *repositories.SecurityFeaturesRepository, l
 	return &AddressWhitelistService{repo: repo, logger: logger}
 }
 
+var validAddressPattern = regexp.MustCompile(`^[a-zA-Z0-9._\-:]+$`)
+
 func (s *AddressWhitelistService) AddAddress(ctx context.Context, userID uuid.UUID, chain, address, label string) (*entities.WhitelistedAddress, error) {
+	// Validate chain against supported chains.
+	chain = strings.ToUpper(strings.TrimSpace(chain))
+	if !withdrawal.SupportedChains[chain] {
+		return nil, fmt.Errorf("unsupported chain: %s", chain)
+	}
+
+	// Validate address format.
+	address = strings.TrimSpace(address)
+	if len(address) < 20 || len(address) > 128 {
+		return nil, fmt.Errorf("invalid address length")
+	}
+	if !validAddressPattern.MatchString(address) {
+		return nil, fmt.Errorf("address contains invalid characters")
+	}
+
 	existing, _ := s.repo.FindWhitelistedAddress(ctx, userID, chain, address)
 	if existing != nil {
 		return nil, fmt.Errorf("address already whitelisted")
@@ -65,6 +85,11 @@ func (s *AddressWhitelistService) GetAddresses(ctx context.Context, userID uuid.
 	for i := range addrs {
 		if addrs[i].Status == entities.WhitelistStatusPending && addrs[i].CoolingUntil != nil && now.After(*addrs[i].CoolingUntil) {
 			addrs[i].Status = entities.WhitelistStatusActive
+			// Persist the activation to the database.
+			if err := s.repo.UpdateWhitelistedAddressStatus(ctx, addrs[i].ID, entities.WhitelistStatusActive); err != nil {
+				s.logger.Warn("Failed to persist whitelist auto-activation",
+					zap.String("address_id", addrs[i].ID.String()), zap.Error(err))
+			}
 		}
 	}
 	return addrs, nil

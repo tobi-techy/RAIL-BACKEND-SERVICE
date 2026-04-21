@@ -52,7 +52,13 @@ func (s *ChallengeService) GetActiveChallenges(ctx context.Context, userID uuid.
 	return s.repo.GetUserChallenges(ctx, userID, entities.ChallengeStatusActive)
 }
 
-// UpdateProgress updates challenge progress for a given metric, auto-completes if target met
+// UpdateProgress updates challenge progress for a given metric, auto-completes if target met.
+//
+// SECURITY(R3-L6): This method trusts the provided newProgress value. It must NEVER be
+// exposed directly via a user-facing API endpoint. All progress updates must originate
+// from server-side event handlers (e.g., deposit confirmed, trade executed) that compute
+// the progress value from authoritative backend state. Allowing client-supplied progress
+// would let users trivially complete challenges and farm XP.
 func (s *ChallengeService) UpdateProgress(ctx context.Context, userID uuid.UUID, metric string, newProgress decimal.Decimal) error {
 	uc, err := s.repo.GetUserChallengeByMetric(ctx, userID, metric)
 	if err != nil {

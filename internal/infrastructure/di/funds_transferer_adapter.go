@@ -62,3 +62,16 @@ func (a *userProfileAdapter) GetEmail(ctx context.Context, userID uuid.UUID) (st
 	}
 	return user.Email, nil
 }
+
+// accountCheckerAdapter adapts UserRepository to the UserAccountChecker interface.
+type accountCheckerAdapter struct {
+	repo *repositories.UserRepository
+}
+
+func (a *accountCheckerAdapter) IsActiveAndUnfrozen(ctx context.Context, userID uuid.UUID) (bool, bool, error) {
+	user, err := a.repo.GetByID(ctx, userID)
+	if err != nil {
+		return false, false, err
+	}
+	return user.IsActive, user.WithdrawalsFrozen, nil
+}

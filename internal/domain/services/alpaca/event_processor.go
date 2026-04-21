@@ -29,6 +29,7 @@ type PositionRepository interface {
 // EventRepository interface for event persistence
 type EventRepository interface {
 	Create(ctx context.Context, event *entities.AlpacaEvent) error
+	ExistsByEventID(ctx context.Context, eventID string) (bool, error)
 	MarkProcessed(ctx context.Context, id uuid.UUID, errorMsg *string) error
 	GetUnprocessed(ctx context.Context, limit int) ([]*entities.AlpacaEvent, error)
 }
@@ -207,6 +208,11 @@ func (p *EventProcessor) StoreEvent(ctx context.Context, eventType, eventID stri
 		CreatedAt:       time.Now(),
 	}
 	return p.eventRepo.Create(ctx, event)
+}
+
+// EventExists checks if an event with the given ID has already been stored
+func (p *EventProcessor) EventExists(ctx context.Context, eventID string) (bool, error) {
+	return p.eventRepo.ExistsByEventID(ctx, eventID)
 }
 
 // ProcessPendingEvents processes unprocessed events

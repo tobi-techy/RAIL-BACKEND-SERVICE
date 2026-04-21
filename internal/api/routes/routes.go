@@ -136,7 +136,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 	// Internal ops endpoints — protected by dedicated INTERNAL_API_KEY (not JWT secret)
 	// Rate limited: 5 requests/minute to prevent abuse
-	internalHandlers := handlers.NewInternalHandlers(container.DB, container.Config.Security.InternalAPIKey)
+	internalHandlers := handlers.NewInternalHandlers(container.DB, container.Config.Security.InternalAPIKey, container.ZapLog)
 	internal := router.Group("/internal")
 	internal.Use(middleware.RateLimit(5))
 	{
@@ -182,6 +182,26 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				c.JSON(400, gin.H{"error": err.Error()})
 				return
 			}
+
+			// Security: cap single deposit credits at $10,000 USD to limit blast radius of compromised keys
+			amt, err := decimal.NewFromString(req.Amount)
+			if err != nil || amt.LessThanOrEqual(decimal.Zero) {
+				c.JSON(400, gin.H{"error": "invalid amount"})
+				return
+			}
+			maxDeposit := decimal.NewFromInt(10000)
+			if amt.GreaterThan(maxDeposit) {
+				c.JSON(400, gin.H{"error": "amount exceeds maximum allowed deposit of 10000 USD"})
+				return
+			}
+
+			// Audit trail for internal deposit credits
+			container.Logger.Info("internal deposit credit requested",
+				zap.String("client_ip", c.ClientIP()),
+				zap.String("amount", req.Amount),
+				zap.String("address", req.Address),
+				zap.String("tx_hash", req.TxHash),
+			)
 			chain := strings.ToUpper(req.Chain)
 			if chain == "" {
 				chain = "BASE"

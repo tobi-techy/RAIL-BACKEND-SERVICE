@@ -2,10 +2,13 @@ package security
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"math"
+	mrand "math/rand"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -13,6 +16,21 @@ import (
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
+
+// jitterRng is seeded from crypto/rand for unpredictable threshold jitter.
+var jitterRng *mrand.Rand
+
+func init() {
+	var seed int64
+	binary.Read(rand.Reader, binary.BigEndian, &seed)
+	jitterRng = mrand.New(mrand.NewSource(seed))
+}
+
+// jitter returns threshold * random factor in [0.85, 1.15], making thresholds
+// unpredictable to attackers probing exact limits.
+func jitter(threshold float64) float64 {
+	return threshold * (0.85 + jitterRng.Float64()*0.30)
+}
 
 type FraudDetectionService struct {
 	db     *sql.DB
@@ -161,8 +179,8 @@ func (s *FraudDetectionService) checkVelocity(ctx context.Context, txCtx *Transa
 		WHERE user_id = $1 AND created_at > NOW() - INTERVAL '24 hours'`,
 		txCtx.UserID).Scan(&dailyCount)
 
-	// High velocity thresholds
-	if hourlyCount > 10 || dailyCount > 50 {
+	// High velocity thresholds (jittered to prevent probing)
+	if float64(hourlyCount) > jitter(10) || float64(dailyCount) > jitter(50) {
 		value := math.Min(float64(hourlyCount)/10.0, 1.0)
 		return &FraudSignal{
 			Type:      "velocity",
@@ -191,8 +209,8 @@ func (s *FraudDetectionService) checkAmountAnomaly(ctx context.Context, txCtx *T
 
 	deviation := (currentAmount - avgAmount) / avgAmount
 
-	// Flag if >3x average
-	if deviation > 3.0 {
+	// Flag if >3x average (jittered)
+	if deviation > jitter(3.0) {
 		return &FraudSignal{
 			Type:      "amount_anomaly",
 			Value:     math.Min(deviation/5.0, 1.0),
@@ -306,8 +324,8 @@ func (s *FraudDetectionService) checkAccountAge(ctx context.Context, txCtx *Tran
 	accountAge := time.Since(createdAt)
 	amount := txCtx.Amount.InexactFloat64()
 
-	// New account (<7 days) with high value transaction (>$1000)
-	if accountAge < 7*24*time.Hour && amount > 1000 {
+	// New account (<7 days) with high value transaction (>$1000) — jittered
+	if accountAge < 7*24*time.Hour && amount > jitter(1000) {
 		return &FraudSignal{
 			Type:      "account_age",
 			Value:     0.4,
@@ -316,8 +334,8 @@ func (s *FraudDetectionService) checkAccountAge(ctx context.Context, txCtx *Tran
 		}
 	}
 
-	// Very new account (<24 hours) with any significant transaction (>$100)
-	if accountAge < 24*time.Hour && amount > 100 {
+	// Very new account (<24 hours) with any significant transaction (>$100) — jittered
+	if accountAge < 24*time.Hour && amount > jitter(100) {
 		return &FraudSignal{
 			Type:      "account_age",
 			Value:     0.5,
@@ -359,14 +377,14 @@ func (s *FraudDetectionService) calculateCompositeScore(signals []FraudSignal) f
 	return math.Min(1.0, 1.0-math.Exp(-score))
 }
 
-// determineAction decides what action to take based on fraud score
+// determineAction decides what action to take based on fraud score (jittered thresholds)
 func (s *FraudDetectionService) determineAction(score float64) (FraudAction, bool, bool) {
 	switch {
-	case score >= 0.8:
+	case score >= jitter(0.8):
 		return FraudActionBlock, false, true
-	case score >= 0.6:
+	case score >= jitter(0.6):
 		return FraudActionReview, true, true
-	case score >= 0.4:
+	case score >= jitter(0.4):
 		return FraudActionMFA, true, false
 	default:
 		return FraudActionAllow, false, false

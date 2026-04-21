@@ -196,6 +196,11 @@ func (s *Service) RunDistribution(ctx context.Context, periodStart, periodEnd, f
 	dist.Remainder = totalReward.Sub(totalDistributed)
 	dist.Status = "completed"
 
+	// Log remainder separately for reconciliation auditing (R3-L3).
+	s.logger.Info("yield distribution remainder",
+		zap.String("remainder", dist.Remainder.String()),
+		zap.String("distribution_id", dist.ID.String()))
+
 	if err := s.repo.UpdateDistribution(ctx, dist); err != nil {
 		return fmt.Errorf("yield: update distribution: %w", err)
 	}

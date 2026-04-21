@@ -68,6 +68,22 @@ func (s *WithdrawalSecurityService) AssessWithdrawalRisk(ctx context.Context, us
 		DailyLimit:  maxWithdrawalsPerDay,
 	}
 
+	// R11-5: Check if user's withdrawals are frozen
+	var frozen bool
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(withdrawals_frozen, false) FROM users WHERE id = $1`, userID).Scan(&frozen)
+	if err != nil {
+		s.logger.Error("Failed to check withdrawals_frozen", zap.Error(err))
+		// Fail closed: deny withdrawal if we can't verify freeze status
+		assessment.Allowed = false
+		assessment.RiskFactors = append(assessment.RiskFactors, "freeze_check_failed")
+		return assessment, nil
+	}
+	if frozen {
+		assessment.Allowed = false
+		assessment.RiskFactors = append(assessment.RiskFactors, "withdrawals_frozen")
+		return assessment, nil
+	}
+
 	// Check velocity (withdrawals per day)
 	dailyCount, err := s.getDailyWithdrawalCount(ctx, userID)
 	if err != nil {

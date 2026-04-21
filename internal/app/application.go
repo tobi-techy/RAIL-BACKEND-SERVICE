@@ -445,6 +445,7 @@ func (app *Application) initializeFundingWebhooks() error {
 		app.container.FundingService,
 		app.container.AuditService,
 		app.log,
+		app.container.RedisClient.Client(),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create webhook manager: %w", err)

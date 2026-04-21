@@ -6,12 +6,12 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	alpacaService "github.com/rail-service/rail_service/internal/domain/services/alpaca"
@@ -79,7 +79,12 @@ func (h *AlpacaWebhookHandlers) HandleTradeUpdate(c *gin.Context) {
 	}
 
 	// Store event for processing
-	eventID := uuid.New().String()
+	eventID := generateStableEventID("trade_update", body)
+	if exists, err := h.eventProcessor.EventExists(c.Request.Context(), eventID); err == nil && exists {
+		h.logger.Info("Duplicate trade_update webhook, skipping", "event_id", eventID)
+		c.JSON(http.StatusOK, gin.H{"status": "received"})
+		return
+	}
 	if err := h.eventProcessor.StoreEvent(c.Request.Context(), "trade_update", eventID, body, nil, nil); err != nil {
 		h.logger.Error("Failed to store event", "error", err)
 	}
@@ -155,7 +160,12 @@ func (h *AlpacaWebhookHandlers) HandleAccountUpdate(c *gin.Context) {
 	}
 
 	// Store event
-	eventID := uuid.New().String()
+	eventID := generateStableEventID("account_update", body)
+	if exists, err := h.eventProcessor.EventExists(c.Request.Context(), eventID); err == nil && exists {
+		h.logger.Info("Duplicate account_update webhook, skipping", "event_id", eventID)
+		c.JSON(http.StatusOK, gin.H{"status": "received"})
+		return
+	}
 	if err := h.eventProcessor.StoreEvent(c.Request.Context(), "account_update", eventID, body, nil, nil); err != nil {
 		h.logger.Error("Failed to store event", "error", err)
 	}
@@ -196,7 +206,12 @@ func (h *AlpacaWebhookHandlers) HandleTransferUpdate(c *gin.Context) {
 	}
 
 	// Store event for processing
-	eventID := uuid.New().String()
+	eventID := generateStableEventID("transfer_update", body)
+	if exists, err := h.eventProcessor.EventExists(c.Request.Context(), eventID); err == nil && exists {
+		h.logger.Info("Duplicate transfer_update webhook, skipping", "event_id", eventID)
+		c.JSON(http.StatusOK, gin.H{"status": "received"})
+		return
+	}
 	if err := h.eventProcessor.StoreEvent(c.Request.Context(), "transfer_update", eventID, body, nil, nil); err != nil {
 		h.logger.Error("Failed to store event", "error", err)
 	}
@@ -224,7 +239,12 @@ func (h *AlpacaWebhookHandlers) HandleNonTradeActivity(c *gin.Context) {
 	}
 
 	// Store event for processing
-	eventID := uuid.New().String()
+	eventID := generateStableEventID("nta", body)
+	if exists, err := h.eventProcessor.EventExists(c.Request.Context(), eventID); err == nil && exists {
+		h.logger.Info("Duplicate nta webhook, skipping", "event_id", eventID)
+		c.JSON(http.StatusOK, gin.H{"status": "received"})
+		return
+	}
 	if err := h.eventProcessor.StoreEvent(c.Request.Context(), "nta", eventID, body, nil, nil); err != nil {
 		h.logger.Error("Failed to store event", "error", err)
 	}
@@ -268,4 +288,14 @@ func safeTruncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen]
+}
+
+// generateStableEventID creates a deterministic event ID from the event type and payload body.
+// Retried webhooks with identical payloads produce the same ID, enabling deduplication.
+func generateStableEventID(eventType string, body []byte) string {
+	h := sha256.New()
+	h.Write([]byte(eventType))
+	h.Write([]byte(":"))
+	h.Write(body)
+	return fmt.Sprintf("alpaca_%s", hex.EncodeToString(h.Sum(nil))[:32])
 }

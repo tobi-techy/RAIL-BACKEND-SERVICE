@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"fmt"
+	"html"
 	"strings"
 	"time"
 
@@ -369,9 +370,9 @@ type reportField struct {
 }
 
 func buildReportHTML(title string, fields []reportField) string {
-	body := fmt.Sprintf(`<h2 style="color:#1A1A1A;font-family:sans-serif;">%s</h2><table style="width:100%%;border-collapse:collapse;font-family:sans-serif;">`, title)
+	body := fmt.Sprintf(`<h2 style="color:#1A1A1A;font-family:sans-serif;">%s</h2><table style="width:100%%;border-collapse:collapse;font-family:sans-serif;">`, html.EscapeString(title))
 	for _, f := range fields {
-		body += fmt.Sprintf(`<tr><td style="padding:8px 0;color:#8C8C8C;border-bottom:1px solid #f0f0f0;">%s</td><td style="padding:8px 0;color:#1A1A1A;text-align:right;border-bottom:1px solid #f0f0f0;">%v</td></tr>`, f.Key, f.Value)
+		body += fmt.Sprintf(`<tr><td style="padding:8px 0;color:#8C8C8C;border-bottom:1px solid #f0f0f0;">%s</td><td style="padding:8px 0;color:#1A1A1A;text-align:right;border-bottom:1px solid #f0f0f0;">%s</td></tr>`, html.EscapeString(f.Key), html.EscapeString(fmt.Sprintf("%v", f.Value)))
 	}
 	body += `</table><p style="color:#8C8C8C;font-size:12px;margin-top:24px;font-family:sans-serif;">This is an automated report from Rail. Not tax advice — consult a qualified professional.</p>`
 	return body

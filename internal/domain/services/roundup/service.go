@@ -2,10 +2,13 @@ package roundup
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
+	"hash/fnv"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
 	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/pkg/metrics"
@@ -53,6 +56,7 @@ type Service struct {
 	orderPlacer          OrderPlacer
 	contributionRecorder ContributionRecorder
 	gameplayHooks        RoundupGameplayHooks
+	db                   *sqlx.DB
 	logger               *zap.Logger
 }
 
@@ -63,12 +67,14 @@ func NewService(
 	orderPlacer OrderPlacer,
 	contributionRecorder ContributionRecorder,
 	logger *zap.Logger,
+	db *sqlx.DB,
 ) *Service {
 	return &Service{
 		repo:                 repo,
 		ledgerService:        ledgerService,
 		orderPlacer:          orderPlacer,
 		contributionRecorder: contributionRecorder,
+		db:                   db,
 		logger:               logger,
 	}
 }
@@ -257,13 +263,42 @@ func (s *Service) CollectPendingRoundups(ctx context.Context, userID uuid.UUID) 
 	return nil
 }
 
+// roundupAdvisoryLockKey derives a stable int64 from a user UUID for pg_advisory_lock.
+func roundupAdvisoryLockKey(userID uuid.UUID) int64 {
+	h := fnv.New64a()
+	b := [16]byte(userID)
+	h.Write(b[:])
+	// Offset to avoid collision with withdrawal advisory locks
+	return int64(binary.BigEndian.Uint64(h.Sum(nil)[:8])) ^ 0x526F756E64757021 // "Roundup!"
+}
+
 // triggerAutoInvest triggers auto-investment when threshold is reached
 func (s *Service) triggerAutoInvest(ctx context.Context, userID uuid.UUID) {
+	// Acquire advisory lock to prevent concurrent auto-invest for the same user
+	if s.db != nil {
+		key := roundupAdvisoryLockKey(userID)
+		var acquired bool
+		if err := s.db.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&acquired); err != nil {
+			s.logger.Error("Auto-invest advisory lock query failed", zap.Error(err), zap.String("user_id", userID.String()))
+			return
+		}
+		if !acquired {
+			s.logger.Debug("Auto-invest already in progress for user", zap.String("user_id", userID.String()))
+			return
+		}
+		defer func() {
+			if _, err := s.db.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", key); err != nil {
+				s.logger.Error("Failed to release auto-invest advisory lock", zap.Int64("key", key), zap.Error(err))
+			}
+		}()
+	}
+
 	settings, err := s.GetSettings(ctx, userID)
 	if err != nil || !settings.AutoInvestEnabled {
 		return
 	}
 
+	// Re-read accumulator under lock to confirm threshold is still met
 	acc, err := s.repo.GetAccumulator(ctx, userID)
 	if err != nil || acc.PendingAmount.LessThan(settings.Threshold) {
 		return

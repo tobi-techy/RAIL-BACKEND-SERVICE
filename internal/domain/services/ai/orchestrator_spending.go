@@ -1,3 +1,9 @@
+// PRIVACY NOTICE: This module sends user transaction details (merchant names,
+// amounts, dates, categories) to the configured LLM provider for AI-powered
+// spending analysis. This data sharing MUST be covered by a Data Processing
+// Agreement (DPA) with the LLM provider. Merchant names are truncated to 20
+// characters before transmission to limit PII exposure.
+
 package ai
 
 import (
@@ -32,6 +38,14 @@ type SpendingAnalyzer interface {
 // Deprecated: Use NewOrchestratorWithDeps instead.
 func (o *Orchestrator) SetSpending(s SpendingAnalyzer) {
 	o.spending = s
+}
+
+// truncateMerchant limits merchant name length to reduce PII sent to LLM.
+func truncateMerchant(name string) string {
+	if len(name) > 20 {
+		return name[:20]
+	}
+	return name
 }
 
 // SpendingTools returns tool definitions for spending analysis.
@@ -139,7 +153,7 @@ func (o *Orchestrator) executeSpendingSummary(ctx context.Context, userID uuid.U
 
 	merchants := make([]map[string]interface{}, len(summary.Merchants))
 	for i, m := range summary.Merchants {
-		merchants[i] = map[string]interface{}{"merchant": m.Merchant, "total": m.Total.String(), "count": m.Count}
+		merchants[i] = map[string]interface{}{"merchant": truncateMerchant(m.Merchant), "total": m.Total.String(), "count": m.Count}
 	}
 
 	return map[string]interface{}{

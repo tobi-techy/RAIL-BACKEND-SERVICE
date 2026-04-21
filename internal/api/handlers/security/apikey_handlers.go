@@ -40,6 +40,7 @@ func (h *APIKeyHandlers) CreateAPIKey(c *gin.Context) {
 	}
 	
 	req.UserID = &userID
+	req.UserRole = c.GetString("user_role")
 
 	response, err := h.apikeyService.CreateAPIKey(ctx, &req)
 	if err != nil {

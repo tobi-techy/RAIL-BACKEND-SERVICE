@@ -1655,6 +1655,7 @@ func (h *AuthHandlers) Enable2FA(c *gin.Context) {
 		return
 	}
 
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, gin.H{
 		"secret":      setup.Secret,
 		"qrCodeUrl":   setup.QRCodeURL,

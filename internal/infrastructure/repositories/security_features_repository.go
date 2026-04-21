@@ -86,6 +86,12 @@ func (r *SecurityFeaturesRepository) RemoveWhitelistedAddress(ctx context.Contex
 	return err
 }
 
+func (r *SecurityFeaturesRepository) UpdateWhitelistedAddressStatus(ctx context.Context, id uuid.UUID, status entities.WhitelistStatus) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE whitelisted_addresses SET status = $1, updated_at = NOW() WHERE id = $2`, status, id)
+	return err
+}
+
 func (r *SecurityFeaturesRepository) FindWhitelistedAddress(ctx context.Context, userID uuid.UUID, chain, address string) (*entities.WhitelistedAddress, error) {
 	var a entities.WhitelistedAddress
 	err := r.db.GetContext(ctx, &a,

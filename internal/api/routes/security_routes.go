@@ -54,7 +54,7 @@ func SetupSecurityRoutesEnhanced(
 ) {
 	// Initialize services
 	sessionService := session.NewService(db, nil, zapLog)
-	twofaService := twofa.NewService(db, zapLog, cfg.Security.EncryptionKey)
+	twofaService := twofa.NewService(db, zapLog, cfg.Security.EncryptionKey, nil)
 	apikeyService := apikey.NewService(db, zapLog)
 
 	// Create adapters
@@ -91,7 +91,7 @@ func SetupSecurityRoutesEnhanced(
 		if tokenBlacklist != nil {
 			auth.Use(middleware.EnhancedAuthentication(cfg, tokenBlacklist, log, sessionValidator))
 		} else {
-			auth.Use(middleware.Authentication(cfg, log, sessionValidator))
+			auth.Use(middleware.Authentication(cfg, log, sessionValidator, tokenBlacklist))
 		}
 		auth.Use(userRateLimiter.UserRateLimit(60))
 
@@ -134,7 +134,7 @@ func SetupSecurityRoutesEnhanced(
 		if tokenBlacklist != nil {
 			sensitive.Use(middleware.EnhancedAuthentication(cfg, tokenBlacklist, log, sessionValidator))
 		} else {
-			sensitive.Use(middleware.Authentication(cfg, log, sessionValidator))
+			sensitive.Use(middleware.Authentication(cfg, log, sessionValidator, tokenBlacklist))
 		}
 		if ipWhitelistService != nil {
 			sensitive.Use(middleware.RequireIPWhitelist(ipWhitelistService, zapLog))
@@ -145,7 +145,7 @@ func SetupSecurityRoutesEnhanced(
 		if tokenBlacklist != nil {
 			admin.Use(middleware.EnhancedAuthentication(cfg, tokenBlacklist, log, sessionValidator))
 		} else {
-			admin.Use(middleware.Authentication(cfg, log, sessionValidator))
+			admin.Use(middleware.Authentication(cfg, log, sessionValidator, tokenBlacklist))
 		}
 		admin.Use(middleware.AdminAuth(db, log))
 		admin.Use(userRateLimiter.UserRateLimit(120))
