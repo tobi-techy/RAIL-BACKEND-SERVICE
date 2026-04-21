@@ -59,6 +59,22 @@ func (t *TelegramAlerter) SendAlert(d ErrorDetails) {
 		text += fmt.Sprintf("\n*Error:* `%s`", d.Error)
 	}
 
+	t.send(text)
+}
+
+// SendFatal sends an alert for a fatal startup/shutdown crash.
+func (t *TelegramAlerter) SendFatal(msg string, err error) {
+	text := fmt.Sprintf(
+		"💀 *Server Crash*\n\n"+
+			"*Message:* `%s`\n"+
+			"*Error:* `%s`\n"+
+			"*Time:* `%s`",
+		msg, err.Error(), time.Now().UTC().Format(time.RFC3339),
+	)
+	t.send(text)
+}
+
+func (t *TelegramAlerter) send(text string) {
 	payload, _ := json.Marshal(map[string]interface{}{
 		"chat_id":    t.chatID,
 		"text":       text,

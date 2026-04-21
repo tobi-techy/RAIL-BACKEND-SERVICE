@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/rail-service/rail_service/internal/app"
+	"github.com/rail-service/rail_service/pkg/alerting"
 )
 
 // @title Rail Service API
@@ -31,11 +32,13 @@ func main() {
 	application := app.NewApplication()
 
 	if err := application.Initialize(); err != nil {
+		sendFatalAlert("Failed to initialize application", err)
 		fmt.Fprintf(os.Stderr, "Failed to initialize application: %v\n", err)
 		os.Exit(1)
 	}
 
 	if err := application.Start(); err != nil {
+		sendFatalAlert("Failed to start application", err)
 		fmt.Fprintf(os.Stderr, "Failed to start application: %v\n", err)
 		os.Exit(1)
 	}
@@ -45,5 +48,15 @@ func main() {
 	if err := application.Shutdown(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error during shutdown: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+func sendFatalAlert(msg string, err error) {
+	t := alerting.NewTelegramAlerter(
+		os.Getenv("TELEGRAM_ALERTS_BOT_TOKEN"),
+		os.Getenv("TELEGRAM_ALERTS_CHAT_ID"),
+	)
+	if t != nil {
+		t.SendFatal(msg, err)
 	}
 }
