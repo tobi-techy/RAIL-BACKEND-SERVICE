@@ -1011,6 +1011,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 							container.Config.AI.OpenAI.RealtimeModel,
 							container.GetAIOrchestrator(),
 							container.GetUsageService(),
+							container.Config.Server.AllowedOrigins,
 							container.ZapLog,
 						)
 						aiGroup.GET("/voice/session", voiceHandler.HandleSession)

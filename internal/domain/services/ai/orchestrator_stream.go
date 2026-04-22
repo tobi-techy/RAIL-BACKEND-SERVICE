@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"go.uber.org/zap"
@@ -16,7 +15,7 @@ import (
 
 // StreamEvent is sent to the client via SSE.
 type StreamEvent struct {
-	Type    string      `json:"type"`              // "token", "tool_result", "cards", "done", "error"
+	Type    string      `json:"type"` // "token", "tool_result", "cards", "done", "error"
 	Content string      `json:"content,omitempty"`
 	Data    interface{} `json:"data,omitempty"`
 }
@@ -40,6 +39,8 @@ func (o *Orchestrator) ChatStreamInConversation(ctx context.Context, userID uuid
 
 	var accumulated strings.Builder
 	var totalTokens int
+	var modelUsed string
+	var providerUsed string
 	var streamCards []entities.InsightCard
 	wrappedEmit := func(event StreamEvent) {
 		if event.Type == "token" {
@@ -47,8 +48,17 @@ func (o *Orchestrator) ChatStreamInConversation(ctx context.Context, userID uuid
 		}
 		if event.Type == "done" {
 			if m, ok := event.Data.(map[string]interface{}); ok {
-				if t, ok := m["tokens_used"].(int); ok {
+				switch t := m["tokens_used"].(type) {
+				case int:
 					totalTokens = t
+				case float64:
+					totalTokens = int(t)
+				}
+				if model, ok := m["model"].(string); ok {
+					modelUsed = model
+				}
+				if provider, ok := m["provider"].(string); ok {
+					providerUsed = provider
 				}
 			}
 		}
@@ -66,11 +76,27 @@ func (o *Orchestrator) ChatStreamInConversation(ctx context.Context, userID uuid
 	if o.conversations != nil {
 		content := accumulated.String()
 		tokens := totalTokens
+		model := modelUsed
+		if model == "" {
+			model = providerUsed
+		}
+		cost := entities.EstimateCost(model, tokens)
 		cards := streamCards
 		go func() {
 			pCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			_ = o.conversations.RecordExchange(pCtx, conv.ID, message, content, tokens, decimal.Zero, "", cards)
+
+			if persistErr := o.conversations.RecordExchange(pCtx, conv.ID, message, content, tokens, cost, model, cards); persistErr != nil {
+				o.logger.Error("failed to persist streamed chat exchange",
+					zap.Error(persistErr),
+					zap.String("conversation_id", conv.ID.String()),
+				)
+			}
+			if o.usage != nil && tokens > 0 {
+				if trackErr := o.usage.TrackInteraction(pCtx, userID, model, tokens); trackErr != nil {
+					o.logger.Error("failed to track streamed chat usage", zap.Error(trackErr))
+				}
+			}
 		}()
 	}
 
@@ -94,7 +120,7 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 		if resp.PendingAction != nil {
 			emit(StreamEvent{Type: "pending_action", Data: resp.PendingAction})
 		}
-		emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": resp.TokensUsed, "provider": resp.Provider}})
+		emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": resp.TokensUsed, "provider": resp.Provider, "model": resp.Provider}})
 		return nil
 	}
 
@@ -136,8 +162,12 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 				}
 				if actionRequired, _ := result["action_required"].(bool); actionRequired {
 					pendingRaw, _ := result["pending_action"].(*entities.PendingAction)
+					modelName := resp.Model
+					if modelName == "" {
+						modelName = resp.Provider
+					}
 					emit(StreamEvent{Type: "pending_action", Data: pendingRaw})
-					emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": cumulativeTokens, "provider": resp.Provider}})
+					emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": cumulativeTokens, "provider": resp.Provider, "model": modelName}})
 					observeChat(resp.Provider, time.Since(start), cumulativeTokens, nil)
 					return nil
 				}
@@ -186,8 +216,12 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 			content := o.applySafetyFilter(resp.Content)
 			emit(StreamEvent{Type: "token", Content: content})
 		}
+		modelName := resp.Model
+		if modelName == "" {
+			modelName = resp.Provider
+		}
 		observeChat(resp.Provider, time.Since(start), cumulativeTokens, nil)
-		emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": cumulativeTokens, "provider": resp.Provider}})
+		emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": cumulativeTokens, "provider": resp.Provider, "model": modelName}})
 		return nil
 	}
 
@@ -201,6 +235,10 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 	var streamedContent strings.Builder
 	var streamTokens int
 	provider := resp.Provider
+	model := resp.Model
+	if model == "" {
+		model = provider
+	}
 	for chunk := range ch {
 		if chunk.Content != "" {
 			streamedContent.WriteString(chunk.Content)
@@ -227,6 +265,6 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 	}
 
 	observeChat(provider, time.Since(start), cumulativeTokens, nil)
-	emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": cumulativeTokens, "provider": provider}})
+	emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": cumulativeTokens, "provider": provider, "model": model}})
 	return nil
 }

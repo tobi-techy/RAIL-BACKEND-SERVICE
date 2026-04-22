@@ -1,7 +1,9 @@
 package investing
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -13,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	conversationsvc "github.com/rail-service/rail_service/internal/domain/services/conversation"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
@@ -67,7 +70,7 @@ type ChatRequest struct {
 
 // TxContext provides context about a specific transaction the user tapped on.
 type TxContext struct {
-	Type     string `json:"type"`     // "card", "withdrawal", "deposit", "p2p"
+	Type     string `json:"type"` // "card", "withdrawal", "deposit", "p2p"
 	Amount   string `json:"amount"`
 	Currency string `json:"currency,omitempty"`
 	Merchant string `json:"merchant,omitempty"`
@@ -96,6 +99,11 @@ func (tc *TxContext) toPromptPrefix() string {
 // Prompt injection patterns to strip from user input.
 var injectionPatterns = regexp.MustCompile(`(?i)(ignore previous instructions|you are now|system:|SYSTEM OVERRIDE|<\|im_start\|>|<\|im_end\|>|\[INST\]|\[/INST\])`)
 
+var (
+	errInvalidConversationID = errors.New("invalid conversation id")
+	errConversationNotFound  = errors.New("conversation not found")
+)
+
 // sanitizeUserMessage strips control characters and prompt injection patterns.
 func sanitizeUserMessage(msg string) string {
 	// Strip control characters (keep newline, tab)
@@ -118,6 +126,30 @@ func sanitizeField(s string) string {
 		return r
 	}, s)
 	return injectionPatterns.ReplaceAllString(s, "")
+}
+
+func (h *AIChatHandlers) getOrCreateConversation(ctx context.Context, userID uuid.UUID, conversationID string) (*entities.AIConversation, error) {
+	if h.convService == nil {
+		return nil, nil
+	}
+
+	if conversationID == "" {
+		return h.convService.CreateConversation(ctx, userID, "")
+	}
+
+	convID, err := uuid.Parse(conversationID)
+	if err != nil {
+		return nil, errInvalidConversationID
+	}
+
+	conv, err := h.convService.GetConversation(ctx, convID)
+	if err != nil {
+		return nil, err
+	}
+	if conv == nil || conv.UserID != userID {
+		return nil, errConversationNotFound
+	}
+	return conv, nil
 }
 
 // ChatStream handles POST /api/v1/ai/chat/stream (SSE)
@@ -228,16 +260,56 @@ func (h *AIChatHandlers) Chat(c *gin.Context) {
 	// Cost ceiling check — degrade gracefully instead of blocking
 	if h.orchestrator.IsUserOverCostCeiling(c.Request.Context(), userID) {
 		c.JSON(http.StatusOK, gin.H{
-			"content":       "You've been chatting a lot this month! Your AI assistant will be back at full power next month. In the meantime, check your Station for balances and the spending tab for insights 💡",
-			"over_ceiling":  true,
-			"tokens_used":   0,
+			"content":      "You've been chatting a lot this month! Your AI assistant will be back at full power next month. In the meantime, check your Station for balances and the spending tab for insights 💡",
+			"over_ceiling": true,
+			"tokens_used":  0,
 		})
 		return
 	}
 
-	// Create a temporary conversation ID so action tools (transfer, set_budget, etc.) work.
-	convID := uuid.New()
-	resp, err := h.orchestrator.ChatInContext(c.Request.Context(), userID, convID, req.TransactionContext.toPromptPrefix()+sanitizeUserMessage(req.Message), req.History)
+	message := req.TransactionContext.toPromptPrefix() + sanitizeUserMessage(req.Message)
+
+	// Prefer persisted conversations so action confirmations and usage accounting are reliable.
+	if h.convService != nil {
+		conv, err := h.getOrCreateConversation(c.Request.Context(), userID, req.ConversationID)
+		if err != nil {
+			switch {
+			case errors.Is(err, errInvalidConversationID):
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid conversation id"})
+			case errors.Is(err, errConversationNotFound):
+				c.JSON(http.StatusNotFound, gin.H{"error": "conversation not found"})
+			default:
+				h.logger.Error("Failed to resolve conversation", "error", err, "user_id", userID.String())
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve conversation"})
+			}
+			return
+		}
+
+		resp, err := h.orchestrator.ChatWithConversation(c.Request.Context(), userID, conv, message)
+		if err != nil {
+			h.logger.Error("Chat failed", "error", err, "user_id", userID.String())
+			c.JSON(http.StatusOK, gin.H{
+				"content":     "I'm having a moment — try again in a few seconds 🔄",
+				"tokens_used": 0,
+				"fallback":    true,
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"content":         resp.Content,
+			"cards":           resp.Cards,
+			"tool_calls":      resp.ToolCalls,
+			"tokens_used":     resp.TokensUsed,
+			"provider":        resp.Provider,
+			"pending_action":  resp.PendingAction,
+			"conversation_id": conv.ID.String(),
+		})
+		return
+	}
+
+	// Fallback when conversation persistence is unavailable.
+	resp, err := h.orchestrator.ChatInContext(c.Request.Context(), userID, uuid.Nil, message, req.History)
 	if err != nil {
 		h.logger.Error("Chat failed", "error", err, "user_id", userID.String())
 		c.JSON(http.StatusOK, gin.H{
@@ -249,13 +321,12 @@ func (h *AIChatHandlers) Chat(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"content":         resp.Content,
-		"cards":           resp.Cards,
-		"tool_calls":      resp.ToolCalls,
-		"tokens_used":     resp.TokensUsed,
-		"provider":        resp.Provider,
-		"pending_action":  resp.PendingAction,
-		"conversation_id": convID.String(),
+		"content":        resp.Content,
+		"cards":          resp.Cards,
+		"tool_calls":     resp.ToolCalls,
+		"tokens_used":    resp.TokensUsed,
+		"provider":       resp.Provider,
+		"pending_action": resp.PendingAction,
 	})
 }
 

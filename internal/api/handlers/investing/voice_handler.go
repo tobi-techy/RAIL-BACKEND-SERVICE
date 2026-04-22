@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -17,7 +19,6 @@ import (
 )
 
 var wsUpgrader = websocket.Upgrader{
-	CheckOrigin:  func(r *http.Request) bool { return true },
 	ReadBufferSize:  16384,
 	WriteBufferSize: 16384,
 }
@@ -27,17 +28,36 @@ const (
 	idleTimeout        = 5 * time.Minute
 )
 
-// VoiceHandler handles real-time voice sessions.
-type VoiceHandler struct {
-	apiKey       string
-	model        string
-	orchestrator *aiservice.Orchestrator
-	usage        aiservice.UsageTracker
-	logger       *zap.Logger
+// VoiceUsageTracker tracks billable voice usage.
+type VoiceUsageTracker interface {
+	TrackVoice(ctx context.Context, userID uuid.UUID, seconds int) error
 }
 
-func NewVoiceHandler(apiKey, model string, orchestrator *aiservice.Orchestrator, usage aiservice.UsageTracker, logger *zap.Logger) *VoiceHandler {
-	return &VoiceHandler{apiKey: apiKey, model: model, orchestrator: orchestrator, usage: usage, logger: logger}
+// VoiceHandler handles real-time voice sessions.
+type VoiceHandler struct {
+	apiKey              string
+	model               string
+	orchestrator        *aiservice.Orchestrator
+	usage               VoiceUsageTracker
+	allowAnyOrigin      bool
+	allowedOriginSet    map[string]struct{}
+	allowedHostSet      map[string]struct{}
+	allowedHostSuffixes []string
+	logger              *zap.Logger
+}
+
+func NewVoiceHandler(apiKey, model string, orchestrator *aiservice.Orchestrator, usage VoiceUsageTracker, allowedOrigins []string, logger *zap.Logger) *VoiceHandler {
+	h := &VoiceHandler{
+		apiKey:           apiKey,
+		model:            model,
+		orchestrator:     orchestrator,
+		usage:            usage,
+		allowedOriginSet: make(map[string]struct{}),
+		allowedHostSet:   make(map[string]struct{}),
+		logger:           logger,
+	}
+	h.configureAllowedOrigins(allowedOrigins)
+	return h
 }
 
 // HandleSession upgrades to WebSocket and proxies audio between client and OpenAI Realtime API.
@@ -55,7 +75,9 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 	}
 
 	// Upgrade client connection to WebSocket
-	clientConn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
+	upgrader := wsUpgrader
+	upgrader.CheckOrigin = h.isAllowedOrigin
+	clientConn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		h.logger.Error("websocket upgrade failed", zap.Error(err))
 		return
@@ -137,9 +159,9 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 		}
 
 		var event struct {
-			Type     string `json:"type"`
-			CallID   string `json:"call_id"`
-			Name     string `json:"name"`
+			Type      string `json:"type"`
+			CallID    string `json:"call_id"`
+			Name      string `json:"name"`
 			Arguments string `json:"arguments"`
 		}
 		json.Unmarshal(raw, &event)
@@ -197,6 +219,81 @@ func (h *VoiceHandler) trackUsage(ctx context.Context, userID uuid.UUID, startTi
 	if h.usage != nil && seconds > 0 {
 		trackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		h.usage.TrackInteraction(trackCtx, userID, "gpt-4o-realtime", seconds)
+		if err := h.usage.TrackVoice(trackCtx, userID, seconds); err != nil {
+			h.logger.Warn("failed to track voice usage", zap.Error(err))
+		}
 	}
+}
+
+func (h *VoiceHandler) configureAllowedOrigins(allowedOrigins []string) {
+	for _, raw := range allowedOrigins {
+		origin := strings.TrimSpace(raw)
+		if origin == "" {
+			continue
+		}
+		if origin == "*" {
+			h.allowAnyOrigin = true
+			continue
+		}
+		hostPattern := origin
+		if strings.HasPrefix(hostPattern, "http://") || strings.HasPrefix(hostPattern, "https://") {
+			parsed, err := url.Parse(hostPattern)
+			if err != nil {
+				continue
+			}
+			if parsed.Host != "" {
+				normalized := strings.ToLower(strings.TrimRight(parsed.Scheme+"://"+parsed.Host, "/"))
+				h.allowedOriginSet[normalized] = struct{}{}
+			}
+			hostPattern = parsed.Hostname()
+		}
+
+		hostPattern = strings.ToLower(strings.TrimSpace(hostPattern))
+		hostPattern = strings.TrimPrefix(hostPattern, "*.")
+		hostPattern = strings.TrimPrefix(hostPattern, ".")
+		if hostPattern == "" {
+			continue
+		}
+
+		if strings.Contains(origin, "*.") {
+			h.allowedHostSuffixes = append(h.allowedHostSuffixes, hostPattern)
+			continue
+		}
+
+		h.allowedHostSet[hostPattern] = struct{}{}
+	}
+}
+
+func (h *VoiceHandler) isAllowedOrigin(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		// Native mobile and non-browser clients often do not send Origin.
+		return true
+	}
+	if h.allowAnyOrigin {
+		return true
+	}
+
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+
+	normalized := strings.ToLower(strings.TrimRight(parsed.Scheme+"://"+parsed.Host, "/"))
+	if _, ok := h.allowedOriginSet[normalized]; ok {
+		return true
+	}
+
+	host := strings.ToLower(parsed.Hostname())
+	if _, ok := h.allowedHostSet[host]; ok {
+		return true
+	}
+
+	for _, suffix := range h.allowedHostSuffixes {
+		if host == suffix || strings.HasSuffix(host, "."+suffix) {
+			return true
+		}
+	}
+
+	return false
 }

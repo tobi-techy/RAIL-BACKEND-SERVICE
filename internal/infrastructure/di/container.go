@@ -60,6 +60,8 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/umbra"
+	"github.com/rail-service/rail_service/internal/domain/services/umbrawallet"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/embeddings"
@@ -972,6 +974,8 @@ type Container struct {
 	AlpacaService *alpaca.Service
 	BridgeClient  *bridge.Client
 	BridgeAdapter *bridge.Adapter
+	UmbraClient        *umbra.Client
+	UmbraWalletService *umbrawallet.Service
 	EmailService  *adapters.EmailService
 	SMSService    *adapters.SMSService
 	AuditService  *adapters.AuditService
@@ -1219,6 +1223,15 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	bridgeClient := bridge.NewClient(bridgeConfig, zapLog)
 	bridgeAdapter := bridge.NewAdapter(bridgeClient, zapLog)
 
+	// Initialize Umbra privacy sidecar client
+	var umbraClient *umbra.Client
+	if cfg.Umbra.Enabled && cfg.Umbra.SidecarURL != "" {
+		umbraClient = umbra.NewClient(cfg.Umbra.SidecarURL, cfg.Umbra.AuthToken)
+		zapLog.Info("Umbra privacy sidecar enabled", zap.String("url", cfg.Umbra.SidecarURL), zap.String("network", cfg.Umbra.Network))
+	} else {
+		zapLog.Info("Umbra privacy sidecar disabled")
+	}
+
 	// Initialize email service with Unosend configuration
 	var err error
 	emailServiceConfig := adapters.EmailServiceConfig{
@@ -1303,6 +1316,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		AlpacaService: alpacaService,
 		BridgeClient:  bridgeClient,
 		BridgeAdapter: bridgeAdapter,
+		UmbraClient:   umbraClient,
 		EmailService:  emailService,
 		SMSService:    smsService,
 		AuditService:  auditService,
@@ -1755,6 +1769,21 @@ func (c *Container) initializeDomainServices() error {
 	// Wire notification service into auto-invest and allocation for failure alerts
 	c.AutoInvestService.SetNotificationService(c.NotificationService)
 	c.AllocationService.SetNotificationService(c.NotificationService)
+
+	// Wire Umbra privacy shielder into allocation service
+	if c.UmbraClient != nil {
+		umbraWalletRepo := repositories.NewUmbraWalletRepository(sqlxDB)
+		c.UmbraWalletService = umbrawallet.NewService(
+			umbraWalletRepo, c.UmbraClient,
+			c.Config.Security.EncryptionKey, c.Config.Umbra.Network,
+			c.Logger,
+		)
+		c.AllocationService.SetUmbraShielder(&UmbraShielderAdapter{
+			client:        c.UmbraClient,
+			walletService: c.UmbraWalletService,
+		})
+		c.OnboardingService.SetUmbraProvisioner(&UmbraProvisionerAdapter{walletService: c.UmbraWalletService})
+	}
 	if c.YieldService != nil {
 		c.YieldService.SetNotifier(c.NotificationService)
 	}
