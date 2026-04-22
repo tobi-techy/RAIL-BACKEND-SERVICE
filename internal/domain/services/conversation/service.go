@@ -145,7 +145,7 @@ func (s *Service) BuildContext(ctx context.Context, conv *entities.AIConversatio
 
 // RecordExchange persists a user message and assistant response, then
 // triggers summarization if the threshold is reached.
-func (s *Service) RecordExchange(ctx context.Context, convID uuid.UUID, userMsg, assistantMsg string, tokens int, cost decimal.Decimal, model string) error {
+func (s *Service) RecordExchange(ctx context.Context, convID uuid.UUID, userMsg, assistantMsg string, tokens int, cost decimal.Decimal, model string, cards []entities.InsightCard) error {
 	if err := s.repo.CreateMessage(ctx, &entities.AIMessage{
 		ConversationID: convID,
 		Role:           "user",
@@ -156,6 +156,12 @@ func (s *Service) RecordExchange(ctx context.Context, convID uuid.UUID, userMsg,
 		return fmt.Errorf("save user message: %w", err)
 	}
 
+	// Store cards in assistant message metadata so they persist across sessions
+	var metadata map[string]interface{}
+	if len(cards) > 0 {
+		metadata = map[string]interface{}{"cards": cards}
+	}
+
 	if err := s.repo.CreateMessage(ctx, &entities.AIMessage{
 		ConversationID: convID,
 		Role:           "assistant",
@@ -163,6 +169,7 @@ func (s *Service) RecordExchange(ctx context.Context, convID uuid.UUID, userMsg,
 		TokenCount:     tokens,
 		EstimatedCost:  cost,
 		Model:          model,
+		Metadata:       metadata,
 	}); err != nil {
 		return fmt.Errorf("save assistant message: %w", err)
 	}

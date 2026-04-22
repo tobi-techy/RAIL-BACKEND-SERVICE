@@ -40,6 +40,7 @@ func (o *Orchestrator) ChatStreamInConversation(ctx context.Context, userID uuid
 
 	var accumulated strings.Builder
 	var totalTokens int
+	var streamCards []entities.InsightCard
 	wrappedEmit := func(event StreamEvent) {
 		if event.Type == "token" {
 			accumulated.WriteString(event.Content)
@@ -51,6 +52,11 @@ func (o *Orchestrator) ChatStreamInConversation(ctx context.Context, userID uuid
 				}
 			}
 		}
+		if event.Type == "cards" {
+			if c, ok := event.Data.([]entities.InsightCard); ok {
+				streamCards = c
+			}
+		}
 		emit(event)
 	}
 
@@ -60,10 +66,11 @@ func (o *Orchestrator) ChatStreamInConversation(ctx context.Context, userID uuid
 	if o.conversations != nil {
 		content := accumulated.String()
 		tokens := totalTokens
+		cards := streamCards
 		go func() {
 			pCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			_ = o.conversations.RecordExchange(pCtx, conv.ID, message, content, tokens, decimal.Zero, "")
+			_ = o.conversations.RecordExchange(pCtx, conv.ID, message, content, tokens, decimal.Zero, "", cards)
 		}()
 	}
 

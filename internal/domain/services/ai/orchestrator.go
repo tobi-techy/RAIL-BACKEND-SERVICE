@@ -80,7 +80,7 @@ type ContributionSummary struct {
 // ConversationPersister is the subset of conversation.Service the orchestrator needs.
 type ConversationPersister interface {
 	BuildContext(ctx context.Context, conv *entities.AIConversation) ([]ai.Message, error)
-	RecordExchange(ctx context.Context, convID uuid.UUID, userMsg, assistantMsg string, tokens int, cost decimal.Decimal, model string) error
+	RecordExchange(ctx context.Context, convID uuid.UUID, userMsg, assistantMsg string, tokens int, cost decimal.Decimal, model string, cards []entities.InsightCard) error
 }
 
 // UsageTracker records AI usage for cost tracking and ceiling enforcement.

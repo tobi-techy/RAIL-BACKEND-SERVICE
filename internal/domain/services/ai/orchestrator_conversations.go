@@ -50,7 +50,7 @@ func (o *Orchestrator) ChatWithConversation(ctx context.Context, userID uuid.UUI
 		if persistErr := o.conversations.RecordExchange(
 			persistCtx, conv.ID,
 			message, resp.Content,
-			resp.TokensUsed, cost, resp.Provider,
+			resp.TokensUsed, cost, resp.Provider, resp.Cards,
 		); persistErr != nil {
 			o.logger.Error("failed to persist chat exchange",
 				zap.Error(persistErr),

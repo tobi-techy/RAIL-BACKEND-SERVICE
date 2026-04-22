@@ -40,7 +40,7 @@ const SummarizationThreshold = 10
 
 // RecentMessageWindow is the number of recent messages kept alongside the
 // summary when building context for the LLM.
-const RecentMessageWindow = 4
+const RecentMessageWindow = 10
 
 // MaxSummarizationMessages caps how many messages are fed to the summarizer
 // to avoid exceeding the LLM context window.
