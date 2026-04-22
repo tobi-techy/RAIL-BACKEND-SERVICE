@@ -684,22 +684,41 @@ func (s *Service) creditOnrampIfCompleted(ctx context.Context, userID uuid.UUID,
 	// When PAJ sends USDC to the user's Bridge wallet, Bridge detects the
 	// on-chain deposit and processes it via the normal webhook flow
 	// (ProcessCryptoDeposit → allocation split → notification).
-	// We only need to credit here as a fallback when the company wallet was used.
-	var recipientIsUserWallet bool
-	s.db.QueryRowContext(ctx,
-		`SELECT pay_account_name FROM paj_orders WHERE id = $1`, claimedID).Scan(&recipientIsUserWallet)
 	// Check if the order's recipient was a user wallet (stored during CreateOnrampOrder).
 	var usedUserWallet bool
 	s.db.QueryRowContext(ctx,
 		`SELECT COALESCE(used_user_wallet, false) FROM paj_orders WHERE id = $1`, claimedID).Scan(&usedUserWallet)
 	if usedUserWallet {
-		// Bridge webhook handles crediting AND gameplay hooks via ProcessCircleWebhook.
-		// Only send notification here; do NOT call OnDeposit to avoid double XP.
-		if s.notifier != nil {
-			creditAmount := decimal.NewFromFloat(tx.USDCAmount)
-			s.notifier.NotifyDepositConfirmed(ctx, userID, creditAmount.StringFixed(2), "NGN", pajOrderID)
+		// Bridge webhook normally handles crediting via ProcessCryptoDeposit.
+		// However, the webhook may be delayed or fail silently. Check if the
+		// deposit was already credited by looking for a matching ledger entry
+		// or deposit record. If found, skip to avoid double-crediting.
+		creditAmount := decimal.NewFromFloat(tx.USDCAmount)
+		idempotencyKey := "paj-onramp-" + pajOrderID
+
+		var alreadyCredited bool
+		// Check 1: Did our own fallback already run? (idempotency_key is on ledger_transactions)
+		_ = s.db.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM ledger_transactions WHERE idempotency_key = $1)`,
+			idempotencyKey).Scan(&alreadyCredited)
+		if !alreadyCredited {
+			// Check 2: Did Bridge webhook already credit via deposits table?
+			// Match on user + amount within the last hour to catch the Bridge-created record.
+			_ = s.db.QueryRowContext(ctx,
+				`SELECT EXISTS(SELECT 1 FROM deposits WHERE user_id = $1 AND status IN ('completed','confirmed') AND created_at > NOW() - INTERVAL '1 hour' AND amount = $2)`,
+				userID, creditAmount).Scan(&alreadyCredited)
 		}
-		return
+		if alreadyCredited {
+			if s.notifier != nil {
+				s.notifier.NotifyDepositConfirmed(ctx, userID, creditAmount.StringFixed(2), "NGN", pajOrderID)
+			}
+			return
+		}
+		s.logger.Warn("Bridge webhook has not credited PAJ onramp deposit, falling back to direct credit",
+			zap.String("user_id", userID.String()),
+			zap.String("paj_order_id", pajOrderID),
+			zap.String("amount", creditAmount.String()))
+		// Fall through to direct credit + allocation below.
 	}
 
 	creditAmount := decimal.NewFromFloat(tx.USDCAmount)
