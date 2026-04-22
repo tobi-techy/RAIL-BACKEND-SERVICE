@@ -1752,6 +1752,17 @@ func (c *Container) initializeDomainServices() error {
 		c.SubscriptionService.SetNotifier(pushNotifier)
 	}
 
+	// Wire Bridge transfer into subscription service for fee collection
+	if c.BridgeClient != nil && c.Config.Bridge.TreasuryWalletAddress != "" && c.WalletRepo != nil {
+		c.SubscriptionService.SetBridgeTransfer(&SubscriptionBridgeTransferAdapter{
+			bridgeClient:      c.BridgeClient,
+			walletRepo:        c.WalletRepo,
+			userRepo:          c.UserRepo,
+			companyWalletAddr: c.Config.Bridge.TreasuryWalletAddress,
+			logger:            c.ZapLog,
+		})
+	}
+
 	// Wire notification service into auto-invest and allocation for failure alerts
 	c.AutoInvestService.SetNotificationService(c.NotificationService)
 	c.AllocationService.SetNotificationService(c.NotificationService)
@@ -3935,4 +3946,52 @@ func (c *Container) GetRebalancingWorkerDeps() (
 		logger:           c.ZapLog,
 	}}
 	return
+}
+
+// SubscriptionBridgeTransferAdapter transfers subscription fees from user Bridge wallet to company wallet.
+type SubscriptionBridgeTransferAdapter struct {
+	bridgeClient      *bridge.Client
+	walletRepo        *repositories.WalletRepository
+	userRepo          *repositories.UserRepository
+	companyWalletAddr string
+	logger            *zap.Logger
+}
+
+func (a *SubscriptionBridgeTransferAdapter) TransferToCompanyWallet(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, reference string) error {
+	if a.companyWalletAddr == "" || a.bridgeClient == nil {
+		return fmt.Errorf("bridge transfer not configured")
+	}
+
+	wallet, err := a.walletRepo.GetByUserAndChain(ctx, userID, entities.WalletChainSolana)
+	if err != nil {
+		return fmt.Errorf("failed to get user wallet: %w", err)
+	}
+	if wallet == nil || wallet.BridgeWalletID == "" {
+		return fmt.Errorf("user has no Bridge Solana wallet")
+	}
+
+	user, err := a.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("failed to get user profile: %w", err)
+	}
+	if user == nil || user.BridgeCustomerID == nil || *user.BridgeCustomerID == "" {
+		return fmt.Errorf("user has no Bridge customer ID")
+	}
+
+	_, err = a.bridgeClient.CreateTransfer(ctx, &bridge.CreateTransferRequest{
+		ClientReferenceID: reference,
+		OnBehalfOf:        *user.BridgeCustomerID,
+		Amount:            amount.StringFixed(2),
+		Source: bridge.TransferSource{
+			PaymentRail:    bridge.PaymentRail("bridge_wallet"),
+			Currency:       bridge.CurrencyUSDC,
+			BridgeWalletID: wallet.BridgeWalletID,
+		},
+		Destination: bridge.TransferDestination{
+			PaymentRail: bridge.PaymentRailSolana,
+			Currency:    bridge.CurrencyUSDC,
+			ToAddress:   a.companyWalletAddr,
+		},
+	})
+	return err
 }
