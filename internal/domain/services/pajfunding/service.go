@@ -408,8 +408,9 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 	if err != nil {
 		// Reverse the full hold on Paj failure.
 		if s.ledger != nil {
+			reverseKey := fmt.Sprintf("paj_offramp_failed_%s_%d", userID, time.Now().UnixNano())
 			reverseErr := s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
-				"paj_offramp_failed", totalHold, map[string]interface{}{
+				reverseKey, totalHold, map[string]interface{}{
 					"provider": "paj", "type": "offramp_reversal", "reason": err.Error(),
 				})
 			if reverseErr != nil {
