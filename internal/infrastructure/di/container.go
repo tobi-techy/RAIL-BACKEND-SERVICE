@@ -2741,7 +2741,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 
 	// Initialize knowledge base (RAG)
 	if c.Config.AI.OpenAI.APIKey != "" {
-		c.EmbeddingsClient = embeddings.NewClient(c.Config.AI.OpenAI.APIKey, c.ZapLog)
+		c.EmbeddingsClient = embeddings.NewGeminiClient(c.Config.AI.Gemini.APIKey, c.ZapLog)
 		c.KnowledgeRepo = repositories.NewKnowledgeRepository(c.DB, c.ZapLog)
 		c.KnowledgeService = knowledgesvc.NewService(c.KnowledgeRepo, c.EmbeddingsClient, c.RedisClient, c.ZapLog)
 		c.AIOrchestrator.SetKnowledge(c.KnowledgeService)
