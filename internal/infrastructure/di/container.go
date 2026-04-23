@@ -13,6 +13,7 @@ import (
 	"github.com/rail-service/rail_service/internal/api/handlers"
 	fundinghandlers "github.com/rail-service/rail_service/internal/api/handlers/funding"
 	p2phandlers "github.com/rail-service/rail_service/internal/api/handlers/p2p"
+	premiumhandlers "github.com/rail-service/rail_service/internal/api/handlers/premium"
 	"github.com/rail-service/rail_service/internal/api/handlers/webhooks"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
@@ -42,6 +43,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/p2p"
 	"github.com/rail-service/rail_service/internal/domain/services/pajfunding"
 	"github.com/rail-service/rail_service/internal/domain/services/passcode"
+	"github.com/rail-service/rail_service/internal/domain/services/premium"
 	"github.com/rail-service/rail_service/internal/domain/services/reconciliation"
 	"github.com/rail-service/rail_service/internal/domain/services/roundup"
 	"github.com/rail-service/rail_service/internal/domain/services/security"
@@ -1167,6 +1169,28 @@ type Container struct {
 	WithdrawalLimitsService *security.WithdrawalLimitsService
 	AdaptiveMFAService      *security.AdaptiveMFAService
 	DeviceSecurityService   *security.DeviceSecurityService
+
+	// Premium Feature Repositories
+	FamilySupportRepo *repositories.FamilySupportRepository
+	ScamRepo          *repositories.ScamRepository
+	TaxResidencyRepo  *repositories.TaxResidencyRepository
+	WellnessRepo      *repositories.WellnessRepository
+	EmergencyRepo     *repositories.EmergencyRepository
+	ExchangeRateRepo  *repositories.ExchangeRateRepository
+	VisaProofRepo     *repositories.VisaProofRepository
+	ReceiptSplitRepo  *repositories.ReceiptSplitRepository
+
+	// Premium Feature Services
+	NairaShieldService      *premium.NairaShieldService
+	BlackTaxService         *premium.BlackTaxService
+	ReceiptSplitService     *premium.ReceiptSplitService
+	ScamIntelligenceService *premium.ScamIntelligenceService
+	TaxResidencyService     *premium.TaxResidencyService
+	IncomeSmoothingService  *premium.IncomeSmoothingService
+	FinancialTraumaService  *premium.FinancialTraumaService
+	VisaProofService        *premium.VisaProofService
+	PanicButtonService      *premium.PanicButtonService
+	PremiumHandlers         *premiumhandlers.Handlers
 }
 
 // NewContainer creates a new dependency injection container
@@ -1197,6 +1221,16 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	ledgerRepo := repositories.NewLedgerRepository(sqlxDB)
 	reconciliationRepo := repositories.NewPostgresReconciliationRepository(db)
 	onboardingJobRepo := repositories.NewOnboardingJobRepository(db, zapLog)
+
+	// Initialize premium feature repositories
+	familySupportRepo := repositories.NewFamilySupportRepository(sqlxDB)
+	scamRepo := repositories.NewScamRepository(sqlxDB)
+	taxResidencyRepo := repositories.NewTaxResidencyRepository(sqlxDB)
+	wellnessRepo := repositories.NewWellnessRepository(sqlxDB)
+	emergencyRepo := repositories.NewEmergencyRepository(sqlxDB)
+	exchangeRateRepo := repositories.NewExchangeRateRepository(sqlxDB)
+	visaProofRepo := repositories.NewVisaProofRepository(sqlxDB)
+	receiptSplitRepo := repositories.NewReceiptSplitRepository(sqlxDB)
 
 	// Initialize external services
 	// Initialize Alpaca service
@@ -1310,6 +1344,14 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		LedgerRepo:                ledgerRepo,
 		ReconciliationRepo:        reconciliationRepo,
 		OnboardingJobRepo:         onboardingJobRepo,
+		FamilySupportRepo:         familySupportRepo,
+		ScamRepo:                  scamRepo,
+		TaxResidencyRepo:          taxResidencyRepo,
+		WellnessRepo:              wellnessRepo,
+		EmergencyRepo:             emergencyRepo,
+		ExchangeRateRepo:          exchangeRateRepo,
+		VisaProofRepo:             visaProofRepo,
+		ReceiptSplitRepo:          receiptSplitRepo,
 		yieldRepo:                 repositories.NewYieldRepository(sqlxDB),
 		DeviceTokenRepo:           repositories.NewDeviceTokenRepository(db),
 		NotificationRepo:          repositories.NewNotificationRepository(db),
@@ -2150,6 +2192,17 @@ func (c *Container) initializeDomainServices() error {
 	if c.BridgeVirtualAccountService != nil && c.WalletService != nil {
 		c.BridgeVirtualAccountService.SetWalletProvider(c.WalletService)
 	}
+
+	// Initialize premium feature services
+	c.NairaShieldService = premium.NewNairaShieldService(c.ExchangeRateRepo, c.LedgerService, c.ZapLog)
+	c.BlackTaxService = premium.NewBlackTaxService(c.FamilySupportRepo, c.P2PService, c.ZapLog)
+	c.ReceiptSplitService = premium.NewReceiptSplitService(c.ReceiptRepo, c.ReceiptSplitRepo, c.P2PService, c.ZapLog)
+	c.ScamIntelligenceService = premium.NewScamIntelligenceService(c.ScamRepo, c.ZapLog)
+	c.TaxResidencyService = premium.NewTaxResidencyService(c.TaxResidencyRepo, c.ZapLog)
+	c.IncomeSmoothingService = premium.NewIncomeSmoothingService(c.DepositRepo, c.LedgerService, c.ZapLog)
+	c.FinancialTraumaService = premium.NewFinancialTraumaService(c.WellnessRepo, c.CardService, c.ZapLog)
+	c.VisaProofService = premium.NewVisaProofService(c.VisaProofRepo, c.LedgerService, c.DepositRepo, c.ZapLog)
+	c.PanicButtonService = premium.NewPanicButtonService(c.EmergencyRepo, c.LedgerService, c.ZapLog)
 
 	return nil
 }
@@ -3720,6 +3773,25 @@ func (c *Container) GetInvestmentStashHandlers() *handlers.InvestmentStashHandle
 		h.SetPortfolioSyncer(c.AlpacaPortfolioSync)
 	}
 	return h
+}
+
+// GetPremiumHandlers returns premium feature HTTP handlers
+func (c *Container) GetPremiumHandlers() *premiumhandlers.Handlers {
+	if c.PremiumHandlers == nil {
+		c.PremiumHandlers = premiumhandlers.NewHandlers(
+			c.NairaShieldService,
+			c.BlackTaxService,
+			c.ReceiptSplitService,
+			c.ScamIntelligenceService,
+			c.TaxResidencyService,
+			c.IncomeSmoothingService,
+			c.FinancialTraumaService,
+			c.VisaProofService,
+			c.PanicButtonService,
+			c.ZapLog,
+		)
+	}
+	return c.PremiumHandlers
 }
 
 // GetCopyTradingRepository returns the copy trading repository

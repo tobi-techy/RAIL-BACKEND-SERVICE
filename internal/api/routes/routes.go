@@ -1257,6 +1257,42 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			container.UserRepo,
 			container.TokenBlacklist,
 		)
+
+		// Register premium feature routes
+		if premiumHandlers := container.GetPremiumHandlers(); premiumHandlers != nil {
+			premium := protected.Group("/premium")
+			{
+				// Tier 1: Naira Shield
+				premium.GET("/naira-shield", premiumHandlers.GetNairaShield)
+				// Tier 1: Black Tax
+				premium.GET("/black-tax", premiumHandlers.GetBlackTaxSummary)
+				premium.POST("/black-tax/budget", premiumHandlers.SetBlackTaxBudget)
+				premium.POST("/black-tax/sync-recipients", premiumHandlers.SyncBlackTaxRecipients)
+				// Tier 1: Receipt Split
+				premium.POST("/receipts/split", premiumHandlers.SplitReceipt)
+				// Tier 2: Scam Intelligence
+				premium.POST("/scam/check-merchant", premiumHandlers.CheckMerchant)
+				premium.GET("/scam/alerts", premiumHandlers.GetScamAlerts)
+				premium.POST("/scam/alerts/:alertId/dismiss", premiumHandlers.DismissScamAlert)
+				// Tier 2: Tax Residency
+				premium.POST("/tax/location", premiumHandlers.LogLocation)
+				premium.GET("/tax/residency", premiumHandlers.GetTaxResidency)
+				premium.POST("/tax/profile", premiumHandlers.SetTaxProfile)
+				// Tier 2: Income Smoothing
+				premium.GET("/income/forecast", premiumHandlers.GetIncomeForecast)
+				// Tier 3: Financial Trauma
+				premium.GET("/wellness/score", premiumHandlers.GetWellnessScore)
+				// Tier 3: Visa Proof
+				premium.POST("/visa-proof", premiumHandlers.GenerateVisaProof)
+				premium.GET("/visa-proof", premiumHandlers.GetVisaProofs)
+				// Tier 3: Panic Button
+				premium.GET("/emergency/contacts", premiumHandlers.GetEmergencyContacts)
+				premium.POST("/emergency/contacts", premiumHandlers.AddEmergencyContact)
+				premium.DELETE("/emergency/contacts/:contactId", premiumHandlers.RemoveEmergencyContact)
+				premium.POST("/emergency/lock", premiumHandlers.TriggerEmergencyLock)
+				premium.GET("/emergency/lock", premiumHandlers.GetEmergencyLock)
+			}
+		}
 	}
 
 	// ZeroG and dedicated AI-CFO HTTP routes have been removed.
