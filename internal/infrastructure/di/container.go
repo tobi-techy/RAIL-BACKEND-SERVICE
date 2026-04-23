@@ -53,6 +53,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/strategy"
 	subscriptionsvc "github.com/rail-service/rail_service/internal/domain/services/subscription"
 	"github.com/rail-service/rail_service/internal/domain/services/twofa"
+	"github.com/rail-service/rail_service/internal/domain/services/umbrawallet"
 	usagesvc "github.com/rail-service/rail_service/internal/domain/services/usage"
 	"github.com/rail-service/rail_service/internal/domain/services/wallet"
 	"github.com/rail-service/rail_service/internal/domain/services/webauthn"
@@ -60,13 +61,12 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/umbra"
-	"github.com/rail-service/rail_service/internal/domain/services/umbrawallet"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/embeddings"
 	pajadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/paj"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/reflect"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/umbra"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
@@ -960,6 +960,7 @@ type Container struct {
 	WithdrawalRepo            *repositories.WithdrawalRepository
 	ReceiptRepo               *repositories.ReceiptRepository
 	BudgetRepo                *repositories.BudgetRepository
+	FinancialProfileRepo      *repositories.FinancialProfileRepository
 	LedgerSpendingRepo        *repositories.LedgerSpendingRepository
 	ConversionRepo            *repositories.ConversionRepository
 	BalanceRepo               *repositories.BalanceRepository
@@ -970,16 +971,16 @@ type Container struct {
 	ReconciliationRepo        repositories.ReconciliationRepository
 
 	// External Services
-	AlpacaClient  *alpaca.Client
-	AlpacaService *alpaca.Service
-	BridgeClient  *bridge.Client
-	BridgeAdapter *bridge.Adapter
+	AlpacaClient       *alpaca.Client
+	AlpacaService      *alpaca.Service
+	BridgeClient       *bridge.Client
+	BridgeAdapter      *bridge.Adapter
 	UmbraClient        *umbra.Client
 	UmbraWalletService *umbrawallet.Service
-	EmailService  *adapters.EmailService
-	SMSService    *adapters.SMSService
-	AuditService  *adapters.AuditService
-	RedisClient   cache.RedisClient
+	EmailService       *adapters.EmailService
+	SMSService         *adapters.SMSService
+	AuditService       *adapters.AuditService
+	RedisClient        cache.RedisClient
 
 	// Bridge Domain Adapters
 	BridgeKYCAdapter              *BridgeKYCAdapter
@@ -1159,13 +1160,13 @@ type Container struct {
 	UnifiedFundingWebhookHandler *webhooks.UnifiedFundingWebhookHandler
 
 	// Security Features (v2) - Risk Scoring, Whitelist, Anomaly, Limits, Adaptive MFA
-	SecurityFeaturesRepo       *repositories.SecurityFeaturesRepository
-	RiskScoringService         *security.RiskScoringService
-	AddressWhitelistService    *security.AddressWhitelistService
-	SessionAnomalyService      *security.SessionAnomalyService
-	WithdrawalLimitsService    *security.WithdrawalLimitsService
-	AdaptiveMFAService         *security.AdaptiveMFAService
-	DeviceSecurityService      *security.DeviceSecurityService
+	SecurityFeaturesRepo    *repositories.SecurityFeaturesRepository
+	RiskScoringService      *security.RiskScoringService
+	AddressWhitelistService *security.AddressWhitelistService
+	SessionAnomalyService   *security.SessionAnomalyService
+	WithdrawalLimitsService *security.WithdrawalLimitsService
+	AdaptiveMFAService      *security.AdaptiveMFAService
+	DeviceSecurityService   *security.DeviceSecurityService
 }
 
 // NewContainer creates a new dependency injection container
@@ -1186,6 +1187,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	withdrawalRepo := repositories.NewWithdrawalRepository(sqlxDB)
 	receiptRepo := repositories.NewReceiptRepository(sqlxDB)
 	budgetRepo := repositories.NewBudgetRepository(sqlxDB)
+	financialProfileRepo := repositories.NewFinancialProfileRepository(sqlxDB)
 	ledgerSpendingRepo := repositories.NewLedgerSpendingRepository(sqlxDB)
 	conversionRepo := repositories.NewConversionRepository(sqlxDB)
 	balanceRepo := repositories.NewBalanceRepository(db, zapLog)
@@ -1298,6 +1300,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		WithdrawalRepo:            withdrawalRepo,
 		ReceiptRepo:               receiptRepo,
 		BudgetRepo:                budgetRepo,
+		FinancialProfileRepo:      financialProfileRepo,
 		LedgerSpendingRepo:        ledgerSpendingRepo,
 		ConversionRepo:            conversionRepo,
 		BalanceRepo:               balanceRepo,
@@ -1764,6 +1767,17 @@ func (c *Container) initializeDomainServices() error {
 		c.GameplayChallengeService.SetNotifier(pushNotifier)
 		c.GameplayAchievementService.SetNotifier(pushNotifier)
 		c.SubscriptionService.SetNotifier(pushNotifier)
+	}
+
+	// Wire Bridge transfer into subscription service for fee collection
+	if c.BridgeClient != nil && c.Config.Bridge.TreasuryWalletAddress != "" && c.WalletRepo != nil {
+		c.SubscriptionService.SetBridgeTransfer(&SubscriptionBridgeTransferAdapter{
+			bridgeClient:      c.BridgeClient,
+			walletRepo:        c.WalletRepo,
+			userRepo:          c.UserRepo,
+			companyWalletAddr: c.Config.Bridge.TreasuryWalletAddress,
+			logger:            c.ZapLog,
+		})
 	}
 
 	// Wire notification service into auto-invest and allocation for failure alerts
@@ -2794,6 +2808,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		c.AIOrchestrator.SetReceiptHistory(c.ReceiptRepo)
 	}
 	c.AIOrchestrator.SetBudgetProvider(c.BudgetRepo)
+	c.AIOrchestrator.SetFinancialProfileProvider(c.FinancialProfileRepo)
 	warrantyRepo := repositories.NewWarrantyRepository(sqlxDB)
 	c.AIOrchestrator.SetWarrantyTracker(warrantyRepo)
 
@@ -3964,4 +3979,52 @@ func (c *Container) GetRebalancingWorkerDeps() (
 		logger:           c.ZapLog,
 	}}
 	return
+}
+
+// SubscriptionBridgeTransferAdapter transfers subscription fees from user Bridge wallet to company wallet.
+type SubscriptionBridgeTransferAdapter struct {
+	bridgeClient      *bridge.Client
+	walletRepo        *repositories.WalletRepository
+	userRepo          *repositories.UserRepository
+	companyWalletAddr string
+	logger            *zap.Logger
+}
+
+func (a *SubscriptionBridgeTransferAdapter) TransferToCompanyWallet(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, reference string) error {
+	if a.companyWalletAddr == "" || a.bridgeClient == nil {
+		return fmt.Errorf("bridge transfer not configured")
+	}
+
+	wallet, err := a.walletRepo.GetByUserAndChain(ctx, userID, entities.WalletChainSolana)
+	if err != nil {
+		return fmt.Errorf("failed to get user wallet: %w", err)
+	}
+	if wallet == nil || wallet.BridgeWalletID == "" {
+		return fmt.Errorf("user has no Bridge Solana wallet")
+	}
+
+	user, err := a.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("failed to get user profile: %w", err)
+	}
+	if user == nil || user.BridgeCustomerID == nil || *user.BridgeCustomerID == "" {
+		return fmt.Errorf("user has no Bridge customer ID")
+	}
+
+	_, err = a.bridgeClient.CreateTransfer(ctx, &bridge.CreateTransferRequest{
+		ClientReferenceID: reference,
+		OnBehalfOf:        *user.BridgeCustomerID,
+		Amount:            amount.StringFixed(2),
+		Source: bridge.TransferSource{
+			PaymentRail:    bridge.PaymentRail("bridge_wallet"),
+			Currency:       bridge.CurrencyUSDC,
+			BridgeWalletID: wallet.BridgeWalletID,
+		},
+		Destination: bridge.TransferDestination{
+			PaymentRail: bridge.PaymentRailSolana,
+			Currency:    bridge.CurrencyUSDC,
+			ToAddress:   a.companyWalletAddr,
+		},
+	})
+	return err
 }

@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -71,10 +71,10 @@ type Allocation struct {
 
 // ContributionSummary represents contribution totals
 type ContributionSummary struct {
-	Deposits  decimal.Decimal `json:"deposits"`
-	Roundups  decimal.Decimal `json:"roundups"`
-	Cashback  decimal.Decimal `json:"cashback"`
-	Total     decimal.Decimal `json:"total"`
+	Deposits decimal.Decimal `json:"deposits"`
+	Roundups decimal.Decimal `json:"roundups"`
+	Cashback decimal.Decimal `json:"cashback"`
+	Total    decimal.Decimal `json:"total"`
 }
 
 // ConversationPersister is the subset of conversation.Service the orchestrator needs.
@@ -91,37 +91,39 @@ type UsageTracker interface {
 
 // Orchestrator handles AI interactions with tool calling
 type Orchestrator struct {
-	aiProvider        ai.AIProvider
-	portfolioProvider PortfolioDataProvider
-	activityProvider  ActivityDataProvider
-	newsProvider      NewsDataProvider
-	conversations     ConversationPersister
-	usage             UsageTracker
-	knowledge         KnowledgeSearcher
-	spending          SpendingAnalyzer
-	balanceHistory    BalanceHistoryProvider
-	patterns          PatternAnalyzer
-	aggregateStats    AggregateStatsProvider
-	fundsTransferer   FundsTransferer
-	actionAuditor     ActionAuditor
-	cardTransactions  CardTransactionProvider
-	depositHistory    DepositHistoryProvider
-	yieldProvider     YieldProvider
-	withdrawalHistory WithdrawalHistoryProvider
-	receiptHistory    ReceiptHistoryProvider
-	budgetProvider    BudgetProvider
-	userProfile       UserProfileProvider
-	reportEmail       ReportEmailSender
-	savingsGoalStore  SavingsGoalStore
-	recurringDetector RecurringExpenseDetector
-	warrantyTracker     WarrantyTracker
-	receiptChallenges   ReceiptChallengeProvider
-	savingsSuggestions  SavingsSuggestionProvider
-	priceTracker        PriceTracker
-	merchantAnalyzer    MerchantAnalyzer
-	pending             PendingActionStore
-	accountChecker      UserAccountChecker
-	logger            *zap.Logger
+	aiProvider         ai.AIProvider
+	portfolioProvider  PortfolioDataProvider
+	activityProvider   ActivityDataProvider
+	newsProvider       NewsDataProvider
+	conversations      ConversationPersister
+	usage              UsageTracker
+	knowledge          KnowledgeSearcher
+	spending           SpendingAnalyzer
+	balanceHistory     BalanceHistoryProvider
+	patterns           PatternAnalyzer
+	aggregateStats     AggregateStatsProvider
+	fundsTransferer    FundsTransferer
+	actionAuditor      ActionAuditor
+	actionHistory      ActionHistoryReader
+	cardTransactions   CardTransactionProvider
+	depositHistory     DepositHistoryProvider
+	yieldProvider      YieldProvider
+	withdrawalHistory  WithdrawalHistoryProvider
+	receiptHistory     ReceiptHistoryProvider
+	budgetProvider     BudgetProvider
+	financialProfile   FinancialProfileProvider
+	userProfile        UserProfileProvider
+	reportEmail        ReportEmailSender
+	savingsGoalStore   SavingsGoalStore
+	recurringDetector  RecurringExpenseDetector
+	warrantyTracker    WarrantyTracker
+	receiptChallenges  ReceiptChallengeProvider
+	savingsSuggestions SavingsSuggestionProvider
+	priceTracker       PriceTracker
+	merchantAnalyzer   MerchantAnalyzer
+	pending            PendingActionStore
+	accountChecker     UserAccountChecker
+	logger             *zap.Logger
 }
 
 // OrchestratorDeps groups all optional dependencies for the Orchestrator.
@@ -136,12 +138,14 @@ type OrchestratorDeps struct {
 	AggregateStats     AggregateStatsProvider
 	FundsTransferer    FundsTransferer
 	ActionAuditor      ActionAuditor
+	ActionHistory      ActionHistoryReader
 	CardTransactions   CardTransactionProvider
 	DepositHistory     DepositHistoryProvider
 	YieldProvider      YieldProvider
 	WithdrawalHistory  WithdrawalHistoryProvider
 	ReceiptHistory     ReceiptHistoryProvider
 	BudgetProvider     BudgetProvider
+	FinancialProfile   FinancialProfileProvider
 	UserProfile        UserProfileProvider
 	ReportEmail        ReportEmailSender
 	Pending            PendingActionStore
@@ -170,28 +174,30 @@ func NewOrchestratorWithDeps(
 		pending = newInMemoryPendingActions()
 	}
 	return &Orchestrator{
-		aiProvider:        aiProvider,
-		portfolioProvider: portfolioProvider,
-		activityProvider:  activityProvider,
-		newsProvider:      newsProvider,
-		conversations:     deps.Conversations,
-		usage:             deps.Usage,
-		knowledge:         deps.Knowledge,
-		spending:          deps.Spending,
-		balanceHistory:    deps.BalanceHistory,
-		patterns:          deps.Patterns,
-		aggregateStats:    deps.AggregateStats,
-		fundsTransferer:   deps.FundsTransferer,
-		actionAuditor:     deps.ActionAuditor,
-		cardTransactions:  deps.CardTransactions,
-		depositHistory:    deps.DepositHistory,
-		yieldProvider:     deps.YieldProvider,
-		withdrawalHistory: deps.WithdrawalHistory,
-		receiptHistory:    deps.ReceiptHistory,
-		budgetProvider:    deps.BudgetProvider,
-		userProfile:       deps.UserProfile,
-		reportEmail:       deps.ReportEmail,
-		pending:           pending,
+		aiProvider:         aiProvider,
+		portfolioProvider:  portfolioProvider,
+		activityProvider:   activityProvider,
+		newsProvider:       newsProvider,
+		conversations:      deps.Conversations,
+		usage:              deps.Usage,
+		knowledge:          deps.Knowledge,
+		spending:           deps.Spending,
+		balanceHistory:     deps.BalanceHistory,
+		patterns:           deps.Patterns,
+		aggregateStats:     deps.AggregateStats,
+		fundsTransferer:    deps.FundsTransferer,
+		actionAuditor:      deps.ActionAuditor,
+		actionHistory:      deps.ActionHistory,
+		cardTransactions:   deps.CardTransactions,
+		depositHistory:     deps.DepositHistory,
+		yieldProvider:      deps.YieldProvider,
+		withdrawalHistory:  deps.WithdrawalHistory,
+		receiptHistory:     deps.ReceiptHistory,
+		budgetProvider:     deps.BudgetProvider,
+		financialProfile:   deps.FinancialProfile,
+		userProfile:        deps.UserProfile,
+		reportEmail:        deps.ReportEmail,
+		pending:            pending,
 		savingsGoalStore:   deps.SavingsGoalStore,
 		recurringDetector:  deps.RecurringDetector,
 		warrantyTracker:    deps.WarrantyTracker,
@@ -200,7 +206,7 @@ func NewOrchestratorWithDeps(
 		priceTracker:       deps.PriceTracker,
 		merchantAnalyzer:   deps.MerchantAnalyzer,
 		accountChecker:     deps.AccountChecker,
-		logger:            logger,
+		logger:             logger,
 	}
 }
 
@@ -268,6 +274,11 @@ ACCURACY RULES (CRITICAL — users are paying for this):
 - If a tool returns 0 transactions or empty data, say "I don't see any [X] for this period" — don't make up an explanation.
 - If you're unsure about something, say so. "I can see X but I'd need to check Y" is better than a wrong answer.
 - When listing transactions, include the exact amount, date, and category/source for each one. Do not skip or summarize transactions unless there are more than 10.
+- For personalized planning, use get_financial_profile when available. If important profile fields are missing, ask one or two clear questions instead of pretending to know the user's income, bills, goals, or risk tolerance.
+- Before giving recommendations, call get_financial_advice so the response is grounded in deterministic checks, exact evidence, and safety flags.
+- When the user asks what happened over time, call get_financial_timeline instead of reconstructing a story from memory.
+- For investment, tax, or legal questions, keep the answer conservative and informational. Never promise returns, give legal conclusions, or state tax liability as fact.
+- When using search_knowledge_base, ground the answer in the returned context and mention the source document names when helpful. Never present knowledge-base content as if it came from the user's account data.
 
 HOW TO RESPOND:
 - Lead with the exact numbers, then add context and insight. Example: "You spent $342.50 this month across 23 transactions. Your biggest was $89 at [merchant] on the 15th — without it, your daily average drops from $15 to $10."
@@ -385,6 +396,10 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 	if o.budgetProvider != nil {
 		tools = append(tools, BudgetTools()...)
 	}
+	// Durable financial profile tools
+	if o.financialProfile != nil {
+		tools = append(tools, FinancialProfileTools()...)
+	}
 	// Recurring expense detection
 	if o.recurringDetector != nil {
 		tools = append(tools, RecurringExpenseTool())
@@ -399,6 +414,12 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 	}
 	if o.savingsSuggestions != nil {
 		tools = append(tools, SavingsSuggestionTool())
+	}
+	if o.spending != nil && o.aggregateStats != nil {
+		tools = append(tools, FinancialIntelligenceTools(o.actionHistory != nil)...)
+	}
+	if o.spending != nil || o.depositHistory != nil || o.withdrawalHistory != nil || o.cardTransactions != nil || o.actionHistory != nil || o.financialProfile != nil {
+		tools = append(tools, FinancialGovernanceTools()...)
 	}
 	// Price tracking
 	if o.priceTracker != nil {
@@ -441,6 +462,9 @@ func (o *Orchestrator) ChatInContext(ctx context.Context, userID, convID uuid.UU
 	if balanceCtx := o.buildBalanceContext(ctx, userID); balanceCtx != "" {
 		messages = append(messages, ai.Message{Role: "system", Content: balanceCtx})
 	}
+	if profileCtx := o.buildFinancialProfileContext(ctx, userID); profileCtx != "" {
+		messages = append(messages, ai.Message{Role: "system", Content: profileCtx})
+	}
 
 	messages = append(messages, ai.Message{Role: "user", Content: message})
 
@@ -474,7 +498,7 @@ func (o *Orchestrator) ChatInContext(ctx context.Context, userID, convID uuid.UU
 
 		for i, tc := range resp.ToolCalls {
 			// Intercept action tools — create pending action instead of executing
-			if isActionTool(tc.Name) && convID != uuid.Nil && (o.fundsTransferer != nil || tc.Name == ToolSplitReceipt) {
+			if isActionTool(tc.Name) && convID != uuid.Nil && o.canCreateActionTool(tc.Name) {
 				result, err := o.executeActionTool(ctx, userID, convID, tc)
 				observeToolCall(tc.Name, err)
 				if err != nil {
@@ -580,11 +604,11 @@ func (o *Orchestrator) ChatInContext(ctx context.Context, userID, convID uuid.UU
 	observeChat(resp.Provider, time.Since(start), totalTokens, nil)
 
 	return &ChatResponse{
-		Content:     content,
-		Cards:       cards,
-		ToolCalls:   allToolResults,
-		TokensUsed:  totalTokens,
-		Provider:    resp.Provider,
+		Content:    content,
+		Cards:      cards,
+		ToolCalls:  allToolResults,
+		TokensUsed: totalTokens,
+		Provider:   resp.Provider,
 	}, nil
 }
 
@@ -746,6 +770,27 @@ func (o *Orchestrator) executeToolInner(ctx context.Context, userID uuid.UUID, t
 	case ToolGetBudget:
 		return o.executeGetBudget(ctx, userID)
 
+	case ToolGetFinancialProfile:
+		return o.executeGetFinancialProfile(ctx, userID)
+
+	case ToolGetFinancialHealth:
+		return o.executeFinancialHealth(ctx, userID)
+
+	case ToolGetFinancialPlan:
+		return o.executeFinancialPlan(ctx, userID)
+
+	case ToolGetCashFlowForecast:
+		return o.executeCashFlowForecast(ctx, userID)
+
+	case ToolGetActionReceipts:
+		return o.executeActionReceipts(ctx, userID, tc.Arguments)
+
+	case ToolGetFinancialAdvice:
+		return o.executeFinancialAdvice(ctx, userID, tc.Arguments)
+
+	case ToolGetFinancialTimeline:
+		return o.executeFinancialTimeline(ctx, userID, tc.Arguments)
+
 	case ToolGetRecurringExpenses:
 		return o.executeRecurringExpenses(ctx, userID)
 
@@ -766,6 +811,9 @@ func (o *Orchestrator) executeToolInner(ctx context.Context, userID uuid.UUID, t
 
 	case ToolSplitReceipt:
 		return map[string]interface{}{"error": "Receipt splitting requires a conversation context. Please use the chat interface."}, nil
+
+	case ToolUpdateFinancialProfile:
+		return map[string]interface{}{"error": "Updating your financial profile requires a conversation context. Please use the chat interface."}, nil
 
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", tc.Name)
@@ -846,15 +894,15 @@ func (o *Orchestrator) executeAccountSummary(ctx context.Context, userID uuid.UU
 		if err == nil {
 			totalOut := flow.TotalWithdrawals.Add(flow.TotalCardSpend).Add(flow.TotalP2P)
 			result["this_month"] = map[string]interface{}{
-				"period":          fmt.Sprintf("%s 1 to today", now.Format("January")),
-				"total_deposits":  flow.TotalDeposits.StringFixed(2),
-				"total_spent":     totalOut.StringFixed(2),
-				"withdrawals":     flow.TotalWithdrawals.StringFixed(2),
-				"card_spend":      flow.TotalCardSpend.StringFixed(2),
-				"p2p_transfers":   flow.TotalP2P.StringFixed(2),
-				"net_flow":        flow.TotalDeposits.Sub(totalOut).StringFixed(2),
-				"deposit_count":   flow.DepositCount,
-				"spending_count":  flow.WithdrawalCount + flow.CardSpendCount + flow.P2PCount,
+				"period":         fmt.Sprintf("%s 1 to today", now.Format("January")),
+				"total_deposits": flow.TotalDeposits.StringFixed(2),
+				"total_spent":    totalOut.StringFixed(2),
+				"withdrawals":    flow.TotalWithdrawals.StringFixed(2),
+				"card_spend":     flow.TotalCardSpend.StringFixed(2),
+				"p2p_transfers":  flow.TotalP2P.StringFixed(2),
+				"net_flow":       flow.TotalDeposits.Sub(totalOut).StringFixed(2),
+				"deposit_count":  flow.DepositCount,
+				"spending_count": flow.WithdrawalCount + flow.CardSpendCount + flow.P2PCount,
 			}
 		}
 	}

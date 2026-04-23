@@ -1305,8 +1305,9 @@ func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawa
 	}
 
 	transfer, err := s.bridgeCryptoAdapter.TransferFunds(ctx, &bridgepkg.CreateTransferRequest{
-		OnBehalfOf: withdrawal.UserID.String(),
-		Amount:     withdrawal.Amount.StringFixed(2),
+		OnBehalfOf:   withdrawal.UserID.String(),
+		Amount:       withdrawal.Amount.Add(withdrawal.FeeAmount).StringFixed(2),
+		DeveloperFee: withdrawal.FeeAmount.StringFixed(2),
 		Source: bridgepkg.TransferSource{
 			PaymentRail:    bridgepkg.PaymentRail("bridge_wallet"),
 			Currency:       bridgepkg.StablecoinToBridgeCurrency(string(withdrawal.Currency)),
@@ -1529,14 +1530,15 @@ func (s *WithdrawalService) executeFiatTransfer(ctx context.Context, withdrawal 
 		return "", fmt.Errorf("bank account not registered with Bridge")
 	}
 
-	// Format amount
-	amountStr := withdrawal.Amount.StringFixed(2)
+	// Format amount (include fee so Bridge delivers net amount to recipient)
+	amountStr := withdrawal.Amount.Add(withdrawal.FeeAmount).StringFixed(2)
 
 	// Create transfer request
 	req := map[string]interface{}{
-		"source":       "USDC",
-		"amount":       amountStr,
-		"currency":     string(withdrawal.Currency),
+		"source":        "USDC",
+		"amount":        amountStr,
+		"developer_fee": withdrawal.FeeAmount.StringFixed(2),
+		"currency":      string(withdrawal.Currency),
 		"recipient_id": *bankAccount.BridgeRecipientID,
 		"source_wallet_id": func() string {
 			if withdrawal.BridgeWalletID == nil {

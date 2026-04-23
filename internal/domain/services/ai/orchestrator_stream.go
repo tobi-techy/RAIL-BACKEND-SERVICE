@@ -131,6 +131,9 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 	if balanceCtx := o.buildBalanceContext(ctx, userID); balanceCtx != "" {
 		messages = append(messages, infraai.Message{Role: "system", Content: balanceCtx})
 	}
+	if profileCtx := o.buildFinancialProfileContext(ctx, userID); profileCtx != "" {
+		messages = append(messages, infraai.Message{Role: "system", Content: profileCtx})
+	}
 
 	messages = append(messages, infraai.Message{Role: "user", Content: message})
 
@@ -154,7 +157,7 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 		roundResults := make([]ToolResult, 0, len(resp.ToolCalls))
 		for _, tc := range resp.ToolCalls {
 			// Handle action tools (require confirmation)
-			if isActionTool(tc.Name) && convID != uuid.Nil && (o.fundsTransferer != nil || tc.Name == ToolSplitReceipt) {
+			if isActionTool(tc.Name) && convID != uuid.Nil && o.canCreateActionTool(tc.Name) {
 				result, execErr := o.executeActionTool(ctx, userID, convID, tc)
 				observeToolCall(tc.Name, execErr)
 				if execErr != nil {

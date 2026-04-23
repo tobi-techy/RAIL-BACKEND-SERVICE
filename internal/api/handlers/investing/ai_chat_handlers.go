@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -385,6 +386,152 @@ func (h *AIChatHandlers) QuickInsight(c *gin.Context) {
 		"type":    insightType,
 		"insight": resp.Content,
 	})
+}
+
+// FinancialHealth handles GET /api/v1/ai/financial-health.
+func (h *AIChatHandlers) FinancialHealth(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	result, err := h.orchestrator.ExecuteToolPublic(c.Request.Context(), userID, ai.ToolCall{
+		ID:        "financial-health-http",
+		Name:      aiservice.ToolGetFinancialHealth,
+		Arguments: map[string]interface{}{},
+	})
+	if err != nil {
+		h.logger.Error("financial health failed", "error", err, "user_id", userID.String())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get financial health"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+// CashFlowForecast handles GET /api/v1/ai/cash-flow-forecast.
+func (h *AIChatHandlers) CashFlowForecast(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	result, err := h.orchestrator.ExecuteToolPublic(c.Request.Context(), userID, ai.ToolCall{
+		ID:        "cash-flow-forecast-http",
+		Name:      aiservice.ToolGetCashFlowForecast,
+		Arguments: map[string]interface{}{},
+	})
+	if err != nil {
+		h.logger.Error("cash flow forecast failed", "error", err, "user_id", userID.String())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get cash flow forecast"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+// FinancialPlan handles GET /api/v1/ai/financial-plan.
+func (h *AIChatHandlers) FinancialPlan(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	result, err := h.orchestrator.ExecuteToolPublic(c.Request.Context(), userID, ai.ToolCall{
+		ID:        "financial-plan-http",
+		Name:      aiservice.ToolGetFinancialPlan,
+		Arguments: map[string]interface{}{},
+	})
+	if err != nil {
+		h.logger.Error("financial plan failed", "error", err, "user_id", userID.String())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get financial plan"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+// ActionReceipts handles GET /api/v1/ai/action-receipts.
+func (h *AIChatHandlers) ActionReceipts(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	result, err := h.orchestrator.ExecuteToolPublic(c.Request.Context(), userID, ai.ToolCall{
+		ID:   "action-receipts-http",
+		Name: aiservice.ToolGetActionReceipts,
+		Arguments: map[string]interface{}{
+			"limit": float64(5),
+		},
+	})
+	if err != nil {
+		h.logger.Error("action receipts failed", "error", err, "user_id", userID.String())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get action receipts"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+// FinancialAdvice handles GET /api/v1/ai/financial-advice.
+func (h *AIChatHandlers) FinancialAdvice(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	args := map[string]interface{}{}
+	if intent := strings.TrimSpace(c.Query("intent")); intent != "" {
+		args["intent"] = intent
+	}
+	if amount := strings.TrimSpace(c.Query("amount")); amount != "" {
+		if parsed, err := strconv.ParseFloat(amount, 64); err == nil {
+			args["proposed_amount"] = parsed
+		}
+	}
+
+	result, err := h.orchestrator.ExecuteToolPublic(c.Request.Context(), userID, ai.ToolCall{
+		ID:        "financial-advice-http",
+		Name:      aiservice.ToolGetFinancialAdvice,
+		Arguments: args,
+	})
+	if err != nil {
+		h.logger.Error("financial advice failed", "error", err, "user_id", userID.String())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get financial advice"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+// FinancialTimeline handles GET /api/v1/ai/financial-timeline.
+func (h *AIChatHandlers) FinancialTimeline(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	args := map[string]interface{}{}
+	if days := strings.TrimSpace(c.Query("days")); days != "" {
+		if parsed, err := strconv.Atoi(days); err == nil {
+			args["days"] = parsed
+		}
+	}
+	if limit := strings.TrimSpace(c.Query("limit")); limit != "" {
+		if parsed, err := strconv.Atoi(limit); err == nil {
+			args["limit"] = parsed
+		}
+	}
+
+	result, err := h.orchestrator.ExecuteToolPublic(c.Request.Context(), userID, ai.ToolCall{
+		ID:        "financial-timeline-http",
+		Name:      aiservice.ToolGetFinancialTimeline,
+		Arguments: args,
+	})
+	if err != nil {
+		h.logger.Error("financial timeline failed", "error", err, "user_id", userID.String())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get financial timeline"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
 }
 
 // GetSuggestedQuestions handles GET /api/v1/ai/suggestions

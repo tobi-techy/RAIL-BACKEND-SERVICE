@@ -491,10 +491,12 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 		// Round to 2 decimal places to match Bridge API precision requirement.
 		// This ensures the stored and transferred amounts are identical.
 		transferAmount := math.Round(order.Amount*100) / 100
+		totalTransfer := transferAmount + RailNGNWithdrawalFee
 
 		transfer, transferErr := s.bridgeTransfer.TransferFunds(ctx, &bridgepkg.CreateTransferRequest{
 			OnBehalfOf:   bridgeCustID,
-			Amount:       fmt.Sprintf("%.2f", transferAmount),
+			Amount:       fmt.Sprintf("%.2f", totalTransfer),
+			DeveloperFee: fmt.Sprintf("%.2f", RailNGNWithdrawalFee),
 			Source: bridgepkg.TransferSource{
 				PaymentRail:    bridgepkg.PaymentRail("bridge_wallet"),
 				Currency:       bridgepkg.CurrencyUSDC,

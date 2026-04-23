@@ -9,6 +9,15 @@ import (
 // GetPersonalizedSuggestions returns contextual suggestions based on user data.
 func (o *Orchestrator) GetPersonalizedSuggestions(ctx context.Context, userID uuid.UUID) []string {
 	suggestions := []string{"Where did my money go this month?"}
+	if o.spending != nil && o.aggregateStats != nil {
+		suggestions = append(suggestions,
+			"What's my financial health score?",
+			"Forecast my end-of-month balance",
+			"Build my personal money plan",
+			"Check my financial risks",
+			"Show my financial timeline",
+		)
+	}
 
 	if o.portfolioProvider != nil {
 		stats, err := o.portfolioProvider.GetWeeklyStats(ctx, userID)
@@ -30,7 +39,6 @@ func (o *Orchestrator) GetPersonalizedSuggestions(ctx context.Context, userID uu
 		}
 	}
 
-	// New: pattern-aware suggestions
 	if o.patterns != nil {
 		suggestions = append(suggestions, "What are my spending patterns?")
 	}
@@ -51,8 +59,8 @@ func (o *Orchestrator) GetPersonalizedSuggestions(ctx context.Context, userID uu
 		suggestions = append(suggestions, "What's the best way to start investing?")
 	}
 
-	if len(suggestions) > 6 {
-		suggestions = suggestions[:6]
+	if len(suggestions) > 8 {
+		suggestions = suggestions[:8]
 	}
 	return suggestions
 }

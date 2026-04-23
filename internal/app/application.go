@@ -22,25 +22,26 @@ import (
 	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
 	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	bridgeadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
-	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
 	diditadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
+	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/database"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
-	rebalancing_worker "github.com/rail-service/rail_service/internal/workers/rebalancing_worker"
+	ai_insights "github.com/rail-service/rail_service/internal/workers/ai_insights"
 	balance_reconciliation "github.com/rail-service/rail_service/internal/workers/balance_reconciliation"
 	bridge_govid_repair "github.com/rail-service/rail_service/internal/workers/bridge_govid_repair"
 	deposit_allocation_recovery "github.com/rail-service/rail_service/internal/workers/deposit_allocation_recovery"
-	paj_offramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_offramp_recovery"
 	"github.com/rail-service/rail_service/internal/workers/funding_webhook"
+	gameplay_workers "github.com/rail-service/rail_service/internal/workers/gameplay"
 	kyc_autoinvest "github.com/rail-service/rail_service/internal/workers/kyc_autoinvest"
 	"github.com/rail-service/rail_service/internal/workers/kyc_sync"
+	paj_offramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_offramp_recovery"
 	portfolio_snapshot_worker "github.com/rail-service/rail_service/internal/workers/portfolio_snapshot_worker"
+	rebalancing_worker "github.com/rail-service/rail_service/internal/workers/rebalancing_worker"
 	scheduled_investment_worker "github.com/rail-service/rail_service/internal/workers/scheduled_investment_worker"
 	scheduled_notifications "github.com/rail-service/rail_service/internal/workers/scheduled_notifications"
 	subscription_billing "github.com/rail-service/rail_service/internal/workers/subscription_billing"
-	gameplay_workers "github.com/rail-service/rail_service/internal/workers/gameplay"
 	walletprovisioning "github.com/rail-service/rail_service/internal/workers/wallet_provisioning"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/metrics"
@@ -55,18 +56,18 @@ type Application struct {
 	container *di.Container
 
 	// Workers
-	scheduler                   *walletprovisioning.Scheduler
-	webhookManager              *funding_webhook.Manager
-	scheduledInvestmentWorker   *scheduled_investment_worker.Worker
-	portfolioSnapshotWorker     *portfolio_snapshot_worker.Worker
-	depositAllocationWorker     *deposit_allocation_recovery.Worker
-	pajOfframpRecoveryWorker   *paj_offramp_recovery.Worker
-	kycAutoInvestWorker         *kyc_autoinvest.Worker
-	rebalancingWorker           *rebalancing_worker.Worker
-	kycSyncWorker               *kyc_sync.Worker
-	balanceReconciliationWorker *balance_reconciliation.Worker
-	bridgeGovIDRepairWorker     *bridge_govid_repair.Worker
-	bridgeGovIDRepairCancel     context.CancelFunc
+	scheduler                    *walletprovisioning.Scheduler
+	webhookManager               *funding_webhook.Manager
+	scheduledInvestmentWorker    *scheduled_investment_worker.Worker
+	portfolioSnapshotWorker      *portfolio_snapshot_worker.Worker
+	depositAllocationWorker      *deposit_allocation_recovery.Worker
+	pajOfframpRecoveryWorker     *paj_offramp_recovery.Worker
+	kycAutoInvestWorker          *kyc_autoinvest.Worker
+	rebalancingWorker            *rebalancing_worker.Worker
+	kycSyncWorker                *kyc_sync.Worker
+	balanceReconciliationWorker  *balance_reconciliation.Worker
+	bridgeGovIDRepairWorker      *bridge_govid_repair.Worker
+	bridgeGovIDRepairCancel      context.CancelFunc
 	scheduledNotificationsWorker *scheduled_notifications.Worker
 	subscriptionBillingWorker    *subscription_billing.Worker
 	streakEvaluatorWorker        *gameplay_workers.StreakEvaluator
@@ -74,6 +75,7 @@ type Application struct {
 	achievementCheckerWorker     *gameplay_workers.AchievementChecker
 	insightGeneratorWorker       *gameplay_workers.InsightGenerator
 	dailyMetricsWorker           *gameplay_workers.DailyMetricsWorker
+	aiInsightsWorker             *ai_insights.Worker
 
 	// Tracing
 	tracingShutdown func(context.Context) error
@@ -310,6 +312,34 @@ func (app *Application) initializeWorkers() error {
 		go app.dailyMetricsWorker.Start(context.Background())
 
 		app.log.Info("Gameplay workers started (streak evaluator, challenge rotator, achievement checker, insight generator, daily metrics)")
+	}
+
+	if app.container.UserRepo != nil && app.container.LedgerSpendingRepo != nil && app.container.LedgerService != nil {
+		var pushSender ai_insights.PushSender
+		if app.container.SNSPushService != nil {
+			pushSender = app.container.SNSPushService
+		} else if app.container.ExpoPushService != nil {
+			pushSender = app.container.ExpoPushService
+		}
+
+		if pushSender != nil {
+			var cooldowns ai_insights.CooldownStore
+			if app.container.RedisClient != nil {
+				cooldowns = app.container.RedisClient.Client()
+			}
+			app.aiInsightsWorker = ai_insights.NewWorker(
+				app.container.UserRepo,
+				pushSender,
+				cooldowns,
+				app.container.LedgerSpendingRepo,
+				app.container.BudgetRepo,
+				app.container.LedgerService,
+				app.container.SubscriptionService,
+				app.log.Zap(),
+			)
+			go app.aiInsightsWorker.Start(context.Background())
+			app.log.Info("AI insights worker started")
+		}
 	}
 
 	return nil

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
@@ -22,9 +23,19 @@ type PushSender interface {
 	SendToUser(ctx context.Context, userID uuid.UUID, title, body string, data map[string]interface{}) error
 }
 
+// CooldownStore provides distributed deduplication for alerts.
+type CooldownStore interface {
+	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.BoolCmd
+}
+
 // SpendingRepo provides spending data for alerts.
 type SpendingRepo interface {
 	GetSpendingTotal(ctx context.Context, userID uuid.UUID, start, end time.Time) (decimal.Decimal, int, error)
+}
+
+// BudgetProvider provides monthly budget data for pace alerts.
+type BudgetProvider interface {
+	GetByUserID(ctx context.Context, userID uuid.UUID) (*entities.SpendingBudget, error)
 }
 
 // BalanceProvider provides current balances.
@@ -41,18 +52,22 @@ type SubscriptionChecker interface {
 type Worker struct {
 	userRepo      UserRepo
 	pushSender    PushSender
+	cooldowns     CooldownStore
 	spendingRepo  SpendingRepo
+	budgets       BudgetProvider
 	balances      BalanceProvider
 	subChecker    SubscriptionChecker
 	logger        *zap.Logger
 	lastDigestDay int // day of year when last digest ran
 }
 
-func NewWorker(userRepo UserRepo, pushSender PushSender, spendingRepo SpendingRepo, balances BalanceProvider, subChecker SubscriptionChecker, logger *zap.Logger) *Worker {
+func NewWorker(userRepo UserRepo, pushSender PushSender, cooldowns CooldownStore, spendingRepo SpendingRepo, budgets BudgetProvider, balances BalanceProvider, subChecker SubscriptionChecker, logger *zap.Logger) *Worker {
 	return &Worker{
 		userRepo:     userRepo,
 		pushSender:   pushSender,
+		cooldowns:    cooldowns,
 		spendingRepo: spendingRepo,
+		budgets:      budgets,
 		balances:     balances,
 		subChecker:   subChecker,
 		logger:       logger,
@@ -112,10 +127,39 @@ func (w *Worker) runDailyInsights(ctx context.Context) {
 		}
 		userCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		w.checkSpendingAlert(userCtx, u.ID)
+		w.checkBudgetPace(userCtx, u.ID)
+		w.checkCashRunway(userCtx, u.ID)
 		w.checkSavingsGrowth(userCtx, u.ID)
 		w.checkIdleMoney(userCtx, u.ID)
 		cancel()
 	}
+}
+
+func (w *Worker) sendAlertOnce(ctx context.Context, key string, ttl time.Duration, fn func() error) bool {
+	if w.cooldowns != nil {
+		ok, err := w.cooldowns.SetNX(ctx, key, "1", ttl).Result()
+		if err != nil {
+			w.logger.Debug("alert cooldown check failed", zap.String("key", key), zap.Error(err))
+			return false
+		}
+		if !ok {
+			return false
+		}
+	}
+	if err := fn(); err != nil {
+		w.logger.Warn("failed to send alert", zap.String("key", key), zap.Error(err))
+		return false
+	}
+	return true
+}
+
+func alertBucket(value decimal.Decimal, thresholds ...decimal.Decimal) string {
+	for i, threshold := range thresholds {
+		if value.LessThanOrEqual(threshold) {
+			return fmt.Sprintf("tier_%d", i+1)
+		}
+	}
+	return fmt.Sprintf("tier_%d", len(thresholds)+1)
 }
 
 // checkSpendingAlert compares this week's spending to last week's.
@@ -137,12 +181,109 @@ func (w *Worker) checkSpendingAlert(ctx context.Context, userID uuid.UUID) {
 	ratio := thisWeek.Div(lastWeek)
 
 	if ratio.GreaterThan(decimal.NewFromFloat(1.5)) {
+		bucket := alertBucket(ratio, decimal.NewFromFloat(1.75), decimal.NewFromFloat(2.5))
 		pctIncrease := ratio.Sub(decimal.NewFromInt(1)).Mul(decimal.NewFromInt(100)).StringFixed(0)
-		_ = w.pushSender.SendToUser(ctx, userID,
-			"Spending Alert",
-			"You've spent "+pctIncrease+"% more this week than last week. Tap to see where your money went.",
-			map[string]interface{}{"type": "spending_alert", "action": "open_chat"},
-		)
+		key := fmt.Sprintf("ai-insights:spending:%s:%s:%s", userID.String(), thisWeekStart.Format("2006-01-02"), bucket)
+		_ = w.sendAlertOnce(ctx, key, 7*24*time.Hour, func() error {
+			return w.pushSender.SendToUser(ctx, userID,
+				"Spending Alert",
+				"You've spent "+pctIncrease+"% more this week than last week. Tap to see where your money went.",
+				map[string]interface{}{
+					"type":         "spending_alert",
+					"action":       "open_chat",
+					"severity":     bucket,
+					"data_used":    []string{"weekly_spending_comparison"},
+					"why":          "This week vs last week spend crossed the rule threshold.",
+					"pct_increase": pctIncrease,
+				},
+			)
+		})
+	}
+}
+
+// checkBudgetPace warns users before they exceed their monthly budget.
+func (w *Worker) checkBudgetPace(ctx context.Context, userID uuid.UUID) {
+	if w.budgets == nil {
+		return
+	}
+	budget, err := w.budgets.GetByUserID(ctx, userID)
+	if err != nil || budget == nil || !budget.MonthlyLimit.IsPositive() {
+		return
+	}
+
+	now := time.Now().UTC()
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	lastDay := time.Date(now.Year(), now.Month()+1, 0, 0, 0, 0, 0, time.UTC).Day()
+	spent, _, err := w.spendingRepo.GetSpendingTotal(ctx, userID, monthStart, now)
+	if err != nil || spent.IsZero() {
+		return
+	}
+
+	actualPct := spent.Div(budget.MonthlyLimit).Mul(decimal.NewFromInt(100))
+	expectedPct := decimal.NewFromInt(int64(now.Day())).Div(decimal.NewFromInt(int64(lastDay))).Mul(decimal.NewFromInt(100))
+	if actualPct.GreaterThan(expectedPct.Add(decimal.NewFromInt(20))) && actualPct.GreaterThan(decimal.NewFromInt(50)) {
+		bucket := alertBucket(actualPct.Sub(expectedPct), decimal.NewFromInt(20), decimal.NewFromInt(40))
+		remaining := budget.MonthlyLimit.Sub(spent)
+		displayRemaining := remaining
+		if displayRemaining.IsNegative() {
+			displayRemaining = decimal.Zero
+		}
+		body := fmt.Sprintf("You've used %s%% of your monthly budget by day %d. $%s left for the month.",
+			actualPct.StringFixed(0), now.Day(), displayRemaining.StringFixed(2))
+		key := fmt.Sprintf("ai-insights:budget-pace:%s:%s:%s", userID.String(), monthStart.Format("2006-01"), bucket)
+		_ = w.sendAlertOnce(ctx, key, 7*24*time.Hour, func() error {
+			return w.pushSender.SendToUser(ctx, userID,
+				"Budget pace alert",
+				body,
+				map[string]interface{}{
+					"type":         "budget_pace_alert",
+					"action":       "open_chat",
+					"severity":     bucket,
+					"why":          "Budget usage is moving faster than the month calendar.",
+					"data_used":    []string{"monthly_budget", "month_spending"},
+					"remaining":    displayRemaining.StringFixed(2),
+					"percent_used": actualPct.StringFixed(0),
+				},
+			)
+		})
+	}
+}
+
+// checkCashRunway warns when spend balance may not last the week at current pace.
+func (w *Worker) checkCashRunway(ctx context.Context, userID uuid.UUID) {
+	spendBalance, err := w.balances.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil || spendBalance.IsZero() {
+		return
+	}
+	now := time.Now().UTC()
+	weekAgo := now.AddDate(0, 0, -7)
+	spent, txCount, err := w.spendingRepo.GetSpendingTotal(ctx, userID, weekAgo, now)
+	if err != nil || txCount < 3 || spent.IsZero() {
+		return
+	}
+	dailyBurn := spent.Div(decimal.NewFromInt(7))
+	if dailyBurn.IsZero() {
+		return
+	}
+	runwayDays := spendBalance.Div(dailyBurn)
+	if runwayDays.LessThan(decimal.NewFromInt(7)) {
+		bucket := alertBucket(runwayDays, decimal.NewFromInt(3), decimal.NewFromInt(7))
+		key := fmt.Sprintf("ai-insights:runway:%s:%s:%s", userID.String(), weekAgo.Format("2006-01-02"), bucket)
+		_ = w.sendAlertOnce(ctx, key, 7*24*time.Hour, func() error {
+			return w.pushSender.SendToUser(ctx, userID,
+				"Spend balance may run low",
+				fmt.Sprintf("At your current $%s/day pace, your Spend balance may last about %s days.",
+					dailyBurn.StringFixed(2), runwayDays.StringFixed(0)),
+				map[string]interface{}{
+					"type":        "cash_runway_alert",
+					"action":      "open_chat",
+					"severity":    bucket,
+					"why":         "Spend balance runway fell below the warning threshold.",
+					"data_used":   []string{"spend_balance", "weekly_spending"},
+					"runway_days": runwayDays.StringFixed(0),
+				},
+			)
+		})
 	}
 }
 
@@ -163,11 +304,18 @@ func (w *Worker) checkSavingsGrowth(ctx context.Context, userID uuid.UUID) {
 
 	for _, m := range milestones {
 		if balance.GreaterThanOrEqual(m) && balance.Sub(m).LessThan(decimal.NewFromInt(10)) {
-			_ = w.pushSender.SendToUser(ctx, userID,
-				"Savings Milestone!",
-				"Your stash just crossed $"+m.String()+". Your money is working for you.",
-				map[string]interface{}{"type": "savings_milestone", "amount": m.String()},
-			)
+			key := fmt.Sprintf("ai-insights:savings-milestone:%s:%s", userID.String(), m.String())
+			_ = w.sendAlertOnce(ctx, key, 30*24*time.Hour, func() error {
+				return w.pushSender.SendToUser(ctx, userID,
+					"Savings Milestone!",
+					"Your stash just crossed $"+m.String()+". Your money is working for you.",
+					map[string]interface{}{
+						"type":      "savings_milestone",
+						"amount":    m.String(),
+						"data_used": []string{"stash_balance"},
+					},
+				)
+			})
 			return
 		}
 	}
@@ -227,11 +375,19 @@ func (w *Worker) runWeeklyDigest(ctx context.Context) {
 		}
 		body += "Stash: $" + stash.StringFixed(2) + ". Total: $" + total.StringFixed(2) + "."
 
-		_ = w.pushSender.SendToUser(ctx, u.ID,
-			"Your Weekly Money Recap",
-			body,
-			map[string]interface{}{"type": "weekly_digest", "action": "open_chat"},
-		)
+		isoYear, isoWeek := now.ISOWeek()
+		key := fmt.Sprintf("ai-insights:weekly-digest:%s:%04d-w%02d", u.ID.String(), isoYear, isoWeek)
+		_ = w.sendAlertOnce(ctx, key, 8*24*time.Hour, func() error {
+			return w.pushSender.SendToUser(ctx, u.ID,
+				"Your Weekly Money Recap",
+				body,
+				map[string]interface{}{
+					"type":      "weekly_digest",
+					"action":    "open_chat",
+					"data_used": []string{"weekly_spending", "stash_balance", "spend_balance"},
+				},
+			)
+		})
 	}
 
 	w.logger.Info("Weekly digest complete", zap.Int("users", len(users)))
@@ -262,11 +418,18 @@ func (w *Worker) runMorningGreeting(ctx context.Context) {
 
 		body := fmt.Sprintf("You have $%s to spend today. Stash: $%s and growing 📈", spend.StringFixed(2), stash.StringFixed(2))
 
-		_ = w.pushSender.SendToUser(ctx, u.ID,
-			"Good morning ☀️",
-			body,
-			map[string]interface{}{"type": "morning_greeting", "action": "open_home"},
-		)
+		key := fmt.Sprintf("ai-insights:morning:%s:%s", u.ID.String(), nowUTC.In(time.UTC).Format("2006-01-02"))
+		_ = w.sendAlertOnce(ctx, key, 26*time.Hour, func() error {
+			return w.pushSender.SendToUser(ctx, u.ID,
+				"Good morning ☀️",
+				body,
+				map[string]interface{}{
+					"type":      "morning_greeting",
+					"action":    "open_home",
+					"data_used": []string{"current_balances"},
+				},
+			)
+		})
 	}
 }
 
@@ -331,11 +494,18 @@ func (w *Worker) runMonthRecap(ctx context.Context) {
 		body := fmt.Sprintf("This month: $%s spent across %d transactions. Your stash is at $%s. Total balance: $%s. Ask Miriam for your full breakdown 💬",
 			spent.StringFixed(2), txCount, stash.StringFixed(2), total.StringFixed(2))
 
-		_ = w.pushSender.SendToUser(ctx, u.ID,
-			"Your Month in Review 📊",
-			body,
-			map[string]interface{}{"type": "month_recap", "action": "open_chat"},
-		)
+		key := fmt.Sprintf("ai-insights:month-recap:%s:%04d-%02d", u.ID.String(), now.Year(), now.Month())
+		_ = w.sendAlertOnce(ctx, key, 32*24*time.Hour, func() error {
+			return w.pushSender.SendToUser(ctx, u.ID,
+				"Your Month in Review 📊",
+				body,
+				map[string]interface{}{
+					"type":      "month_recap",
+					"action":    "open_chat",
+					"data_used": []string{"month_spending", "stash_balance", "spend_balance"},
+				},
+			)
+		})
 	}
 
 	w.logger.Info("Month recap complete")
@@ -355,10 +525,18 @@ func (w *Worker) checkIdleMoney(ctx context.Context, userID uuid.UUID) {
 	// If balance > $50 and fewer than 2 transactions in a week, suggest moving to stash
 	if txCount < 2 && spent.LessThan(decimal.NewFromInt(20)) {
 		suggestAmt := spend.Mul(decimal.NewFromFloat(0.3)).StringFixed(2)
-		_ = w.pushSender.SendToUser(ctx, userID,
-			"Money sitting idle 💤",
-			"$"+spend.StringFixed(2)+" in your spend wallet with barely any activity. Want to move $"+suggestAmt+" to stash where it earns yield?",
-			map[string]interface{}{"type": "idle_money", "action": "open_chat", "suggest_amount": suggestAmt},
-		)
+		key := fmt.Sprintf("ai-insights:idle-money:%s:%s", userID.String(), weekAgo.Format("2006-01-02"))
+		_ = w.sendAlertOnce(ctx, key, 7*24*time.Hour, func() error {
+			return w.pushSender.SendToUser(ctx, userID,
+				"Money sitting idle 💤",
+				"$"+spend.StringFixed(2)+" in your spend wallet with barely any activity. Want to move $"+suggestAmt+" to stash where it earns yield?",
+				map[string]interface{}{
+					"type":           "idle_money",
+					"action":         "open_chat",
+					"suggest_amount": suggestAmt,
+					"data_used":      []string{"spend_balance", "weekly_spending"},
+				},
+			)
+		})
 	}
 }

@@ -34,6 +34,11 @@ type PushNotifier interface {
 	SendToUser(ctx context.Context, userID uuid.UUID, title, body string, data map[string]interface{}) error
 }
 
+// BridgeTransferService transfers subscription fees from user wallet to company wallet
+type BridgeTransferService interface {
+	TransferToCompanyWallet(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, reference string) error
+}
+
 // CacheStore for caching pro status
 type CacheStore interface {
 	Get(ctx context.Context, key string) (string, error)
@@ -45,11 +50,12 @@ const maxRetries = 3
 
 // Service manages Pro subscriptions
 type Service struct {
-	repo     Repository
-	ledger   LedgerService
-	notifier PushNotifier
-	cache    CacheStore
-	logger   *zap.Logger
+	repo            Repository
+	ledger          LedgerService
+	notifier        PushNotifier
+	bridgeTransfer  BridgeTransferService
+	cache           CacheStore
+	logger          *zap.Logger
 }
 
 func NewService(repo Repository, ledger LedgerService, notifier PushNotifier, logger *zap.Logger) *Service {
@@ -57,6 +63,9 @@ func NewService(repo Repository, ledger LedgerService, notifier PushNotifier, lo
 }
 
 func (s *Service) SetCache(cache CacheStore) { s.cache = cache }
+
+// SetBridgeTransfer sets the bridge transfer service for sweeping subscription fees
+func (s *Service) SetBridgeTransfer(bt BridgeTransferService) { s.bridgeTransfer = bt }
 
 // SetNotifier sets the push notifier (called after DI wiring resolves push provider)
 func (s *Service) SetNotifier(n PushNotifier) { s.notifier = n }
@@ -223,6 +232,17 @@ func (s *Service) ChargeSubscription(ctx context.Context, sub *entities.Subscrip
 	charge.LedgerTransactionID = &tx.ID
 	charge.ChargedAt = &now
 	s.repo.CreateCharge(ctx, charge)
+
+	// Transfer subscription fee from user's Bridge wallet to company wallet
+	if s.bridgeTransfer != nil {
+		ref := fmt.Sprintf("sub-%s-%s", sub.ID, sub.CurrentPeriodStart.Format("2006-01-02"))
+		if err := s.bridgeTransfer.TransferToCompanyWallet(ctx, sub.UserID, amount, ref); err != nil {
+			s.logger.Warn("Subscription charged in ledger but Bridge transfer failed — will retry next cycle",
+				zap.String("user_id", sub.UserID.String()),
+				zap.String("amount", amount.String()),
+				zap.Error(err))
+		}
+	}
 
 	return nil
 }
