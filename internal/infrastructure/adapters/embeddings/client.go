@@ -14,7 +14,7 @@ import (
 
 const (
 	openAIEmbeddingsURL = "https://api.openai.com/v1/embeddings"
-	geminiEmbeddingsURL = "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent"
+	geminiEmbeddingsURL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent"
 )
 
 // Client calls an embeddings API (OpenAI or Gemini).
@@ -41,7 +41,7 @@ func NewClient(apiKey string, logger *zap.Logger) *Client {
 func NewGeminiClient(apiKey string, logger *zap.Logger) *Client {
 	return &Client{
 		apiKey:   apiKey,
-		model:    "text-embedding-004",
+		model:    "gemini-embedding-001",
 		provider: "gemini",
 		client:   &http.Client{Timeout: 30 * time.Second},
 		logger:   logger,
@@ -107,19 +107,6 @@ func (c *Client) embedOpenAI(ctx context.Context, text string) ([]float32, error
 	return result.Data[0].Embedding, nil
 }
 
-type geminiEmbedRequest struct {
-	Model   string              `json:"model"`
-	Content geminiEmbedContent  `json:"content"`
-}
-
-type geminiEmbedContent struct {
-	Parts []geminiEmbedPart `json:"parts"`
-}
-
-type geminiEmbedPart struct {
-	Text string `json:"text"`
-}
-
 type geminiEmbedResponse struct {
 	Embedding struct {
 		Values []float32 `json:"values"`
@@ -128,9 +115,12 @@ type geminiEmbedResponse struct {
 
 func (c *Client) embedGemini(ctx context.Context, text string) ([]float32, error) {
 	url := geminiEmbeddingsURL + "?key=" + c.apiKey
-	body, err := json.Marshal(geminiEmbedRequest{
-		Model:   "models/text-embedding-004",
-		Content: geminiEmbedContent{Parts: []geminiEmbedPart{{Text: text}}},
+	body, err := json.Marshal(map[string]interface{}{
+		"model": "models/gemini-embedding-001",
+		"content": map[string]interface{}{
+			"parts": []map[string]string{{"text": text}},
+		},
+		"outputDimensionality": 768,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
