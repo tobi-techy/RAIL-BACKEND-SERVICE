@@ -2644,7 +2644,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	if c.Config.AI.Kimi.APIKey != "" {
 		kimiConfig := &ai.ProviderConfig{
 			APIKey:       c.Config.AI.Kimi.APIKey,
-			BaseURL:      "https://api.moonshot.ai/v1",
+			BaseURL:      "https://api.kimi.ai/v1",
 			Model:        c.Config.AI.Kimi.Model,
 			MaxTokens:    2048,
 			Temperature:  0.15,

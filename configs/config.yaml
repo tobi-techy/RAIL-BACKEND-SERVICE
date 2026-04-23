@@ -282,7 +282,7 @@ ai:
     rate_limit_rpm: 30
   kimi:
     api_key: "${KIMI_API_KEY}"
-    model: "kimi-k2.5"
+    model: "kimi-k2.6"
     timeout_seconds: 30
     rate_limit_rpm: 60
   prompts:
