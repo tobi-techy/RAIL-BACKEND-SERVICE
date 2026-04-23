@@ -370,7 +370,11 @@ func (o *Orchestrator) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 			zap.String("user_id", userID.String()),
 			zap.Any("params", action.Params))
 	case ToolUpdateFinancialProfile:
-		_, execErr = o.executeUpdateFinancialProfile(ctx, userID, action.Params)
+		if o.financialProfile == nil {
+			execErr = fmt.Errorf("financial profile service is unavailable")
+		} else {
+			_, execErr = o.executeUpdateFinancialProfile(ctx, userID, action.Params)
+		}
 	default:
 		execErr = fmt.Errorf("unknown action: %s", action.Action)
 	}

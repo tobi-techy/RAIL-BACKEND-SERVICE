@@ -9,7 +9,7 @@ import (
 // GetPersonalizedSuggestions returns contextual suggestions based on user data.
 func (o *Orchestrator) GetPersonalizedSuggestions(ctx context.Context, userID uuid.UUID) []string {
 	suggestions := []string{"Where did my money go this month?"}
-	if o.spending != nil && o.aggregateStats != nil {
+	if o.spending != nil && o.aggregateStats != nil && o.financialProfile != nil {
 		suggestions = append(suggestions,
 			"What's my financial health score?",
 			"Forecast my end-of-month balance",

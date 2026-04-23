@@ -418,9 +418,7 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 	if o.spending != nil && o.aggregateStats != nil {
 		tools = append(tools, FinancialIntelligenceTools(o.actionHistory != nil)...)
 	}
-	if o.spending != nil || o.depositHistory != nil || o.withdrawalHistory != nil || o.cardTransactions != nil || o.actionHistory != nil || o.financialProfile != nil {
-		tools = append(tools, FinancialGovernanceTools()...)
-	}
+	tools = append(tools, FinancialGovernanceTools(o.hasFinancialAdviceProviders(), o.hasFinancialTimelineProviders())...)
 	// Price tracking
 	if o.priceTracker != nil {
 		tools = append(tools, PriceTrackingTool())
@@ -434,6 +432,19 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 		tools = append(tools, SplitReceiptTool())
 	}
 	return tools
+}
+
+func (o *Orchestrator) hasFinancialAdviceProviders() bool {
+	return o.spending != nil && o.aggregateStats != nil
+}
+
+func (o *Orchestrator) hasFinancialTimelineProviders() bool {
+	return o.depositHistory != nil ||
+		o.withdrawalHistory != nil ||
+		o.cardTransactions != nil ||
+		o.spending != nil ||
+		o.actionHistory != nil ||
+		o.financialProfile != nil
 }
 
 // Chat handles a chat message with tool calling
@@ -771,24 +782,45 @@ func (o *Orchestrator) executeToolInner(ctx context.Context, userID uuid.UUID, t
 		return o.executeGetBudget(ctx, userID)
 
 	case ToolGetFinancialProfile:
+		if o.financialProfile == nil {
+			return map[string]interface{}{"error": "financial profile service is unavailable"}, nil
+		}
 		return o.executeGetFinancialProfile(ctx, userID)
 
 	case ToolGetFinancialHealth:
+		if !o.hasFinancialAdviceProviders() {
+			return map[string]interface{}{"error": "financial health service is unavailable: spending and balance providers are not configured"}, nil
+		}
 		return o.executeFinancialHealth(ctx, userID)
 
 	case ToolGetFinancialPlan:
+		if !o.hasFinancialAdviceProviders() {
+			return map[string]interface{}{"error": "financial plan service is unavailable: spending and balance providers are not configured"}, nil
+		}
 		return o.executeFinancialPlan(ctx, userID)
 
 	case ToolGetCashFlowForecast:
+		if !o.hasFinancialAdviceProviders() {
+			return map[string]interface{}{"error": "cash flow forecast service is unavailable: spending and balance providers are not configured"}, nil
+		}
 		return o.executeCashFlowForecast(ctx, userID)
 
 	case ToolGetActionReceipts:
+		if o.actionHistory == nil {
+			return map[string]interface{}{"error": "action receipts service is unavailable"}, nil
+		}
 		return o.executeActionReceipts(ctx, userID, tc.Arguments)
 
 	case ToolGetFinancialAdvice:
+		if !o.hasFinancialAdviceProviders() {
+			return map[string]interface{}{"error": "financial advice service is unavailable: spending and balance providers are not configured"}, nil
+		}
 		return o.executeFinancialAdvice(ctx, userID, tc.Arguments)
 
 	case ToolGetFinancialTimeline:
+		if !o.hasFinancialTimelineProviders() {
+			return map[string]interface{}{"error": "financial timeline service is unavailable: no timeline data providers are configured"}, nil
+		}
 		return o.executeFinancialTimeline(ctx, userID, tc.Arguments)
 
 	case ToolGetRecurringExpenses:

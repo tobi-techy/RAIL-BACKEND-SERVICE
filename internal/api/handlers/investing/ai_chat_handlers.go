@@ -483,9 +483,12 @@ func (h *AIChatHandlers) FinancialAdvice(c *gin.Context) {
 		args["intent"] = intent
 	}
 	if amount := strings.TrimSpace(c.Query("amount")); amount != "" {
-		if parsed, err := strconv.ParseFloat(amount, 64); err == nil {
-			args["proposed_amount"] = parsed
+		parsed, parseErr := strconv.ParseFloat(amount, 64)
+		if parseErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid 'amount' query parameter: must be a valid number"})
+			return
 		}
+		args["proposed_amount"] = parsed
 	}
 
 	result, err := h.orchestrator.ExecuteToolPublic(c.Request.Context(), userID, ai.ToolCall{
@@ -511,14 +514,20 @@ func (h *AIChatHandlers) FinancialTimeline(c *gin.Context) {
 
 	args := map[string]interface{}{}
 	if days := strings.TrimSpace(c.Query("days")); days != "" {
-		if parsed, err := strconv.Atoi(days); err == nil {
-			args["days"] = parsed
+		parsed, parseErr := strconv.Atoi(days)
+		if parseErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid 'days' query parameter: must be a valid integer"})
+			return
 		}
+		args["days"] = parsed
 	}
 	if limit := strings.TrimSpace(c.Query("limit")); limit != "" {
-		if parsed, err := strconv.Atoi(limit); err == nil {
-			args["limit"] = parsed
+		parsed, parseErr := strconv.Atoi(limit)
+		if parseErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid 'limit' query parameter: must be a valid integer"})
+			return
 		}
+		args["limit"] = parsed
 	}
 
 	result, err := h.orchestrator.ExecuteToolPublic(c.Request.Context(), userID, ai.ToolCall{

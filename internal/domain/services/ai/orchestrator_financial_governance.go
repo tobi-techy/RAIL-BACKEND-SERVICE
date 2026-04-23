@@ -61,9 +61,10 @@ type FinancialTimeline struct {
 }
 
 // FinancialGovernanceTools returns deterministic advice and timeline tools.
-func FinancialGovernanceTools() []infraai.Tool {
-	return []infraai.Tool{
-		{
+func FinancialGovernanceTools(includeAdvice, includeTimeline bool) []infraai.Tool {
+	tools := make([]infraai.Tool, 0, 2)
+	if includeAdvice {
+		tools = append(tools, infraai.Tool{
 			Name:        ToolGetFinancialAdvice,
 			Description: "Run rule-based financial checks before giving recommendations. Covers low balance risk, budget overrun, upcoming bill pressure, abnormal spend, savings target drift, missing income data, stale profile data, and risky transfer impact. Use before making recommendations so the answer is explainable and grounded in exact data.",
 			Parameters: map[string]interface{}{
@@ -80,8 +81,10 @@ func FinancialGovernanceTools() []infraai.Tool {
 					},
 				},
 			},
-		},
-		{
+		})
+	}
+	if includeTimeline {
+		tools = append(tools, infraai.Tool{
 			Name:        ToolGetFinancialTimeline,
 			Description: "Return a merged timeline of recent money events: deposits, withdrawals, card spends, important spending transactions, budget changes, savings goals, and AI actions. Use when the user asks what happened, what Miriam changed, or wants a chronological view of their money history.",
 			Parameters: map[string]interface{}{
@@ -99,8 +102,9 @@ func FinancialGovernanceTools() []infraai.Tool {
 					},
 				},
 			},
-		},
+		})
 	}
+	return tools
 }
 
 func (o *Orchestrator) executeFinancialAdvice(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
@@ -120,6 +124,23 @@ func (o *Orchestrator) executeFinancialAdvice(ctx context.Context, userID uuid.U
 	totalOut := flow.TotalWithdrawals.Add(flow.TotalCardSpend).Add(flow.TotalP2P).Add(flow.TotalReceipts)
 	lastMonthOut := lastFlow.TotalWithdrawals.Add(lastFlow.TotalCardSpend).Add(lastFlow.TotalP2P).Add(lastFlow.TotalReceipts)
 	netFlow := flow.TotalDeposits.Sub(totalOut)
+	if spend.IsZero() &&
+		stash.IsZero() &&
+		totalBalance.IsZero() &&
+		flow.TotalDeposits.IsZero() &&
+		flow.TotalWithdrawals.IsZero() &&
+		flow.TotalCardSpend.IsZero() &&
+		flow.TotalP2P.IsZero() &&
+		flow.TotalReceipts.IsZero() &&
+		lastFlow.TotalDeposits.IsZero() &&
+		lastFlow.TotalWithdrawals.IsZero() &&
+		lastFlow.TotalCardSpend.IsZero() &&
+		lastFlow.TotalP2P.IsZero() &&
+		lastFlow.TotalReceipts.IsZero() {
+		return map[string]interface{}{
+			"error": "financial data is temporarily unavailable; please try again shortly",
+		}, nil
+	}
 
 	checks := make([]FinancialRuleCheck, 0, 8)
 
@@ -140,24 +161,27 @@ func (o *Orchestrator) executeFinancialAdvice(ctx context.Context, userID uuid.U
 	}
 
 	if o.budgetProvider != nil {
-		if budget, err := o.budgetProvider.GetByUserID(ctx, userID); err == nil && budget != nil && budget.MonthlyLimit.IsPositive() {
-			remaining := budget.MonthlyLimit.Sub(totalOut)
-			pctUsed := totalOut.Div(budget.MonthlyLimit).Mul(decimal.NewFromInt(100))
-			if remaining.IsNegative() || pctUsed.GreaterThan(decimal.NewFromInt(90)) {
-				checks = append(checks, FinancialRuleCheck{
-					Code:           "budget_overrun",
-					Severity:       "critical",
-					Title:          "Budget is at risk",
-					Why:            fmt.Sprintf("You've used %s%% of a $%s monthly budget with $%s left.", pctUsed.StringFixed(1), budget.MonthlyLimit.StringFixed(2), remaining.StringFixed(2)),
-					Recommendation: "Cut non-essential spend until the next budget reset.",
-					DataUsed:       []string{"budget", "month_money_flow"},
-					Evidence: map[string]interface{}{
-						"monthly_limit": budget.MonthlyLimit.StringFixed(2),
-						"spent_so_far":  totalOut.StringFixed(2),
-						"remaining":     remaining.StringFixed(2),
-						"percent_used":  pctUsed.StringFixed(1),
-					},
-				})
+		if budget, err := o.budgetProvider.GetByUserID(ctx, userID); err == nil && budget != nil {
+			hasPositiveBudgetLimit := !budget.MonthlyLimit.IsZero() && budget.MonthlyLimit.IsPositive()
+			if hasPositiveBudgetLimit {
+				remaining := budget.MonthlyLimit.Sub(totalOut)
+				pctUsed := totalOut.Div(budget.MonthlyLimit).Mul(decimal.NewFromInt(100))
+				if remaining.IsNegative() || pctUsed.GreaterThan(decimal.NewFromInt(90)) {
+					checks = append(checks, FinancialRuleCheck{
+						Code:           "budget_overrun",
+						Severity:       "critical",
+						Title:          "Budget is at risk",
+						Why:            fmt.Sprintf("You've used %s%% of a $%s monthly budget with $%s left.", pctUsed.StringFixed(1), budget.MonthlyLimit.StringFixed(2), remaining.StringFixed(2)),
+						Recommendation: "Cut non-essential spend until the next budget reset.",
+						DataUsed:       []string{"budget", "month_money_flow"},
+						Evidence: map[string]interface{}{
+							"monthly_limit": budget.MonthlyLimit.StringFixed(2),
+							"spent_so_far":  totalOut.StringFixed(2),
+							"remaining":     remaining.StringFixed(2),
+							"percent_used":  pctUsed.StringFixed(1),
+						},
+					})
+				}
 			}
 		}
 	}
@@ -234,28 +258,32 @@ func (o *Orchestrator) executeFinancialAdvice(ctx context.Context, userID uuid.U
 
 	if o.savingsGoalStore != nil {
 		if goal, err := o.savingsGoalStore.Get(ctx, userID); err == nil && goal != nil {
-			if target, err := decimal.NewFromString(goal.Target); err == nil && target.IsPositive() {
-				progress := decimal.Zero
-				if stash.IsPositive() {
-					progress = stash.Div(target).Mul(decimal.NewFromInt(100))
-				}
-				if stash.LessThan(target) {
-					missing := target.Sub(stash)
-					weeklyCatchUp := missing.Div(decimal.NewFromInt(4))
-					checks = append(checks, FinancialRuleCheck{
-						Code:           "goal_drift",
-						Severity:       "warning",
-						Title:          "Savings goal is behind pace",
-						Why:            fmt.Sprintf("Goal '%s' is %.1f%% complete and still needs $%s.", goal.Name, progress.InexactFloat64(), missing.StringFixed(2)),
-						Recommendation: fmt.Sprintf("Add about $%s per week to close the gap in roughly a month.", weeklyCatchUp.StringFixed(2)),
-						DataUsed:       []string{"savings_goal", "current_balances"},
-						Evidence: map[string]interface{}{
-							"goal_name":      goal.Name,
-							"goal_target":    target.StringFixed(2),
-							"stash_balance":  stash.StringFixed(2),
-							"completion_pct": progress.StringFixed(1),
-						},
-					})
+			if target, err := decimal.NewFromString(goal.Target); err == nil {
+				if target.IsZero() {
+					// Skip malformed goal targets so we do not divide by zero.
+				} else if target.IsPositive() {
+					progress := decimal.Zero
+					if stash.IsPositive() {
+						progress = stash.Div(target).Mul(decimal.NewFromInt(100))
+					}
+					if stash.LessThan(target) {
+						missing := target.Sub(stash)
+						weeklyCatchUp := missing.Div(decimal.NewFromInt(4))
+						checks = append(checks, FinancialRuleCheck{
+							Code:           "goal_drift",
+							Severity:       "warning",
+							Title:          "Savings goal is behind pace",
+							Why:            fmt.Sprintf("Goal '%s' is %.1f%% complete and still needs $%s.", goal.Name, progress.InexactFloat64(), missing.StringFixed(2)),
+							Recommendation: fmt.Sprintf("Add about $%s per week to close the gap in roughly a month.", weeklyCatchUp.StringFixed(2)),
+							DataUsed:       []string{"savings_goal", "current_balances"},
+							Evidence: map[string]interface{}{
+								"goal_name":      goal.Name,
+								"goal_target":    target.StringFixed(2),
+								"stash_balance":  stash.StringFixed(2),
+								"completion_pct": progress.StringFixed(1),
+							},
+						})
+					}
 				}
 			}
 		}
@@ -423,7 +451,7 @@ func (o *Orchestrator) executeFinancialTimeline(ctx context.Context, userID uuid
 		metadata    map[string]interface{}
 	}
 
-	items := make([]timelineItem, 0, limit*3)
+	items := make([]timelineItem, 0, limit*6)
 	appendItem := func(item timelineItem) {
 		items = append(items, item)
 	}
