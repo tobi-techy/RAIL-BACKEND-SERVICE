@@ -100,7 +100,7 @@ Respond in JSON format: [{"basket_id": "...", "reason": "...", "score": 85}]`, l
 	req := &ai.ChatRequest{
 		Messages:    []ai.Message{{Role: "user", Content: prompt}},
 		MaxTokens:   300,
-		Temperature: 0.7,
+		Temperature: ai.Float64(0.7),
 	}
 
 	resp, err := r.aiProvider.ChatCompletion(ctx, req)

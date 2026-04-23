@@ -176,6 +176,16 @@ func (m *ProviderManager) tryProviderWithRetry(ctx context.Context, provider AIP
 	return nil, lastErr
 }
 
+// Name returns the primary provider's name.
+func (m *ProviderManager) Name() string {
+	return m.primary.Name()
+}
+
+// IsAvailable returns true if the primary provider is available.
+func (m *ProviderManager) IsAvailable(ctx context.Context) bool {
+	return m.primary.IsAvailable(ctx)
+}
+
 // GetPrimaryProvider returns the primary provider
 func (m *ProviderManager) GetPrimaryProvider() AIProvider {
 	return m.primary
@@ -186,6 +196,17 @@ func (m *ProviderManager) GetAllProviders() []AIProvider {
 	providers := []AIProvider{m.primary}
 	providers = append(providers, m.fallbacks...)
 	return providers
+}
+
+// ChatCompletionStream delegates streaming to the primary provider only.
+// Streaming failover is intentionally not supported because stream chunks are
+// stateful — switching providers mid-stream would corrupt the response.
+func (m *ProviderManager) ChatCompletionStream(ctx context.Context, req *ChatRequest, tools []Tool, ch chan<- StreamChunk) error {
+	streamer, ok := m.primary.(StreamProvider)
+	if !ok {
+		return fmt.Errorf("primary provider %s does not support streaming", m.primary.Name())
+	}
+	return streamer.ChatCompletionStream(ctx, req, tools, ch)
 }
 
 // CheckProvidersHealth checks the health of all providers

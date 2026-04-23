@@ -91,6 +91,7 @@ type AIConfig struct {
 // KimiConfig contains Kimi (Moonshot) API configuration
 type KimiConfig struct {
 	APIKey         string  `mapstructure:"api_key"`
+	BaseURL        string  `mapstructure:"base_url"`
 	Model          string  `mapstructure:"model"`
 	MaxTokens      int     `mapstructure:"max_tokens"`
 	Temperature    float64 `mapstructure:"temperature"`

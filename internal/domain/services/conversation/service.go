@@ -138,7 +138,37 @@ func (s *Service) BuildContext(ctx context.Context, conv *entities.AIConversatio
 	}
 
 	for _, m := range recent {
-		msgs = append(msgs, ai.Message{Role: m.Role, Content: m.Content})
+		msg := ai.Message{Role: m.Role, Content: m.Content}
+		// Reconstruct tool call metadata if persisted in message metadata.
+		// This preserves multi-turn tool calling for conversations that
+		// store tool_call_id and tool_calls in metadata.
+		if m.Metadata != nil {
+			if tcID, ok := m.Metadata["tool_call_id"].(string); ok && tcID != "" {
+				msg.ToolCallID = tcID
+			}
+			if name, ok := m.Metadata["name"].(string); ok && name != "" {
+				msg.Name = name
+			}
+			if tcs, ok := m.Metadata["tool_calls"].([]interface{}); ok && len(tcs) > 0 {
+				msg.ToolCalls = make([]ai.ToolCall, 0, len(tcs))
+				for _, tc := range tcs {
+					if tcMap, ok := tc.(map[string]interface{}); ok {
+						toolCall := ai.ToolCall{}
+						if id, ok := tcMap["id"].(string); ok {
+							toolCall.ID = id
+						}
+						if name, ok := tcMap["name"].(string); ok {
+							toolCall.Name = name
+						}
+						if args, ok := tcMap["arguments"].(map[string]interface{}); ok {
+							toolCall.Arguments = args
+						}
+						msg.ToolCalls = append(msg.ToolCalls, toolCall)
+					}
+				}
+			}
+		}
+		msgs = append(msgs, msg)
 	}
 	return msgs, nil
 }
@@ -198,6 +228,10 @@ func (s *Service) RecordExchange(ctx context.Context, convID uuid.UUID, userMsg,
 
 // generateTitle creates a short title from the first user message.
 func (s *Service) generateTitle(convID uuid.UUID, firstMessage string) {
+	if s.summarizer == nil {
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -205,7 +239,7 @@ func (s *Service) generateTitle(convID uuid.UUID, firstMessage string) {
 		SystemPrompt: "Generate a short conversation title (max 6 words) for this user message. Return ONLY the title, no quotes or punctuation.",
 		Messages:     []ai.Message{{Role: "user", Content: firstMessage}},
 		MaxTokens:    20,
-		Temperature:  0.3,
+		Temperature:  ai.Float64(0.3),
 	})
 	if err != nil {
 		titleGenerationTotal.WithLabelValues("error").Inc()
@@ -233,6 +267,10 @@ func (s *Service) generateTitle(convID uuid.UUID, firstMessage string) {
 // contain personal information (names, account numbers, addresses). The system
 // prompt instructs the model to exclude PII from the summary output.
 func (s *Service) summarize(convID uuid.UUID) {
+	if s.summarizer == nil {
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -255,7 +293,7 @@ func (s *Service) summarize(convID uuid.UUID) {
 		SystemPrompt: "Do not include any personal information, account numbers, or addresses in the summary. Summarize this conversation in under 200 words. Preserve key facts, user preferences, financial context, and any advice given. Be concise.",
 		Messages:     []ai.Message{{Role: "user", Content: sb.String()}},
 		MaxTokens:    300,
-		Temperature:  0.3,
+		Temperature:  ai.Float64(0.3),
 	}
 
 	// Retry up to 2 times on failure

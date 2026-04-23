@@ -289,8 +289,15 @@ func (h *AIChatHandlers) Chat(c *gin.Context) {
 		resp, err := h.orchestrator.ChatWithConversation(c.Request.Context(), userID, conv, message)
 		if err != nil {
 			h.logger.Error("Chat failed", "error", err, "user_id", userID.String())
+
+			msg := "I'm having a moment — try again in a few seconds 🔄"
+			var provErr *ai.ProviderError
+			if errors.As(err, &provErr) && provErr.Code == ai.ErrorCodeAuthentication {
+				msg = "My brain is having trouble connecting right now — our team has been notified 🧠"
+			}
+
 			c.JSON(http.StatusOK, gin.H{
-				"content":     "I'm having a moment — try again in a few seconds 🔄",
+				"content":     msg,
 				"tokens_used": 0,
 				"fallback":    true,
 			})
@@ -313,8 +320,15 @@ func (h *AIChatHandlers) Chat(c *gin.Context) {
 	resp, err := h.orchestrator.ChatInContext(c.Request.Context(), userID, uuid.Nil, message, req.History)
 	if err != nil {
 		h.logger.Error("Chat failed", "error", err, "user_id", userID.String())
+
+		msg := "I'm having a moment — try again in a few seconds 🔄"
+		var provErr *ai.ProviderError
+		if errors.As(err, &provErr) && provErr.Code == ai.ErrorCodeAuthentication {
+			msg = "My brain is having trouble connecting right now — our team has been notified 🧠"
+		}
+
 		c.JSON(http.StatusOK, gin.H{
-			"content":     "I'm having a moment — try again in a few seconds 🔄",
+			"content":     msg,
 			"tokens_used": 0,
 			"fallback":    true,
 		})

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
@@ -76,6 +77,16 @@ func (c *RealtimeClient) ReadEvent() (json.RawMessage, error) {
 		return nil, err
 	}
 	return json.RawMessage(msg), nil
+}
+
+// Ping sends a WebSocket ping frame to keep the connection alive.
+func (c *RealtimeClient) Ping() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return fmt.Errorf("connection closed")
+	}
+	return c.conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(5*time.Second))
 }
 
 // Close closes the WebSocket connection.

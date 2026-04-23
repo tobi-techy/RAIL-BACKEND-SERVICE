@@ -2631,7 +2631,7 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 // initializeAIServices initializes AI Financial Manager services
 func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *repositories.PositionRepository, allocationRepo *repositories.AllocationRepository, basketRepo *repositories.BasketRepository) error {
 	// Check if AI is configured
-	if c.Config.AI.OpenAI.APIKey == "" && c.Config.AI.Gemini.APIKey == "" {
+	if c.Config.AI.OpenAI.APIKey == "" && c.Config.AI.Gemini.APIKey == "" && c.Config.AI.Kimi.APIKey == "" {
 		return fmt.Errorf("no AI provider configured")
 	}
 
@@ -2646,12 +2646,13 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	// Initialize AI providers
 	var providers []ai.AIProvider
 
-	if c.Config.AI.OpenAI.APIKey != "" {
+	if strings.TrimSpace(c.Config.AI.OpenAI.APIKey) != "" {
 		openaiConfig := &ai.ProviderConfig{
-			APIKey:       c.Config.AI.OpenAI.APIKey,
+			APIKey:       strings.TrimSpace(c.Config.AI.OpenAI.APIKey),
 			Model:        c.Config.AI.OpenAI.Model,
 			MaxTokens:    c.Config.AI.OpenAI.MaxTokens,
 			Temperature:  c.Config.AI.OpenAI.Temperature,
+			TopP:         c.Config.AI.OpenAI.TopP,
 			Timeout:      resolveTimeout(c.Config.AI.OpenAI.TimeoutSeconds),
 			RateLimitRPM: c.Config.AI.OpenAI.RateLimitRPM,
 		}
@@ -2659,12 +2660,13 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		providers = append(providers, openaiProvider)
 	}
 
-	if c.Config.AI.Gemini.APIKey != "" {
+	if strings.TrimSpace(c.Config.AI.Gemini.APIKey) != "" {
 		geminiConfig := &ai.ProviderConfig{
-			APIKey:       c.Config.AI.Gemini.APIKey,
+			APIKey:       strings.TrimSpace(c.Config.AI.Gemini.APIKey),
 			Model:        c.Config.AI.Gemini.Model,
 			MaxTokens:    c.Config.AI.Gemini.MaxTokens,
 			Temperature:  c.Config.AI.Gemini.Temperature,
+			TopP:         c.Config.AI.Gemini.TopP,
 			Timeout:      resolveTimeout(c.Config.AI.Gemini.TimeoutSeconds),
 			RateLimitRPM: c.Config.AI.Gemini.RateLimitRPM,
 		}
@@ -2673,16 +2675,27 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	}
 
 	// Kimi (Moonshot) — OpenAI-compatible provider
-	if c.Config.AI.Kimi.APIKey != "" {
+	if strings.TrimSpace(c.Config.AI.Kimi.APIKey) != "" {
+		baseURL := strings.TrimSpace(c.Config.AI.Kimi.BaseURL)
+		if baseURL == "" {
+			baseURL = "https://api.moonshot.ai/v1"
+		}
 		kimiConfig := &ai.ProviderConfig{
-			APIKey:       c.Config.AI.Kimi.APIKey,
-			BaseURL:      "https://api.moonshot.ai/v1",
+			APIKey:       strings.TrimSpace(c.Config.AI.Kimi.APIKey),
+			BaseURL:      baseURL,
 			Model:        c.Config.AI.Kimi.Model,
-			MaxTokens:    2048,
-			Temperature:  0.15,
+			MaxTokens:    c.Config.AI.Kimi.MaxTokens,
+			Temperature:  c.Config.AI.Kimi.Temperature,
+			TopP:         c.Config.AI.Kimi.TopP,
 			Timeout:      resolveTimeout(c.Config.AI.Kimi.TimeoutSeconds),
 			RateLimitRPM: c.Config.AI.Kimi.RateLimitRPM,
 			ProviderName: "kimi",
+		}
+		if kimiConfig.MaxTokens == 0 {
+			kimiConfig.MaxTokens = 2048
+		}
+		if kimiConfig.Temperature == 0 {
+			kimiConfig.Temperature = 0.15
 		}
 		kimiProvider := ai.NewOpenAIProvider(kimiConfig, c.ZapLog)
 		providers = append(providers, kimiProvider)
@@ -2716,6 +2729,20 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		RetryDelay:    500 * time.Millisecond,
 	}, c.ZapLog)
 
+	// Validate primary provider connectivity at startup (non-blocking)
+	go func() {
+		checkCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if !c.AIProviderManager.IsAvailable(checkCtx) {
+			c.ZapLog.Warn("Primary AI provider is not available",
+				zap.String("provider", primary.Name()),
+				zap.String("hint", "Check that the API key is valid and has not expired"),
+			)
+		} else {
+			c.ZapLog.Info("Primary AI provider is available", zap.String("provider", primary.Name()))
+		}
+	}()
+
 	// Initialize repositories for AI services
 	userNewsRepo := repositories.NewUserNewsRepository(c.DB, c.ZapLog)
 	streakRepo := repositories.NewInvestmentStreakRepository(c.DB, c.ZapLog)
@@ -2743,9 +2770,9 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		c.ZapLog,
 	)
 
-	// Initialize AI orchestrator (use primary provider directly)
+	// Initialize AI orchestrator (wired to ProviderManager for failover)
 	c.AIOrchestrator = aiservice.NewOrchestratorWithDeps(
-		primary,
+		c.AIProviderManager,
 		c.PortfolioDataProvider,
 		c.ActivityDataProvider,
 		&newsProviderAdapter{svc: c.NewsService},
@@ -2755,7 +2782,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 
 	// Initialize basket recommender
 	c.AIRecommender = aiservice.NewRecommender(
-		primary,
+		c.AIProviderManager,
 		&basketRepoAdapter{repo: basketRepo},
 		c.PortfolioDataProvider,
 		c.ZapLog,
@@ -2763,7 +2790,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 
 	// Initialize conversation persistence
 	c.ConversationRepo = repositories.NewConversationRepository(c.DB, c.ZapLog)
-	c.ConversationService = conversationsvc.NewService(c.ConversationRepo, primary, c.ZapLog)
+	c.ConversationService = conversationsvc.NewService(c.ConversationRepo, c.AIProviderManager, c.ZapLog)
 	c.AIOrchestrator.SetConversations(c.ConversationService)
 
 	// Initialize usage tracking
@@ -2772,8 +2799,9 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	c.AIOrchestrator.SetUsageTracker(c.UsageService)
 
 	// Initialize knowledge base (RAG)
-	if c.Config.AI.OpenAI.APIKey != "" {
-		c.EmbeddingsClient = embeddings.NewGeminiClient(c.Config.AI.Gemini.APIKey, c.ZapLog)
+	// Embeddings use Gemini regardless of chat provider; gate on Gemini key availability.
+	if strings.TrimSpace(c.Config.AI.Gemini.APIKey) != "" {
+		c.EmbeddingsClient = embeddings.NewGeminiClient(strings.TrimSpace(c.Config.AI.Gemini.APIKey), c.ZapLog)
 		c.KnowledgeRepo = repositories.NewKnowledgeRepository(c.DB, c.ZapLog)
 		c.KnowledgeService = knowledgesvc.NewService(c.KnowledgeRepo, c.EmbeddingsClient, c.RedisClient, c.ZapLog)
 		c.AIOrchestrator.SetKnowledge(c.KnowledgeService)

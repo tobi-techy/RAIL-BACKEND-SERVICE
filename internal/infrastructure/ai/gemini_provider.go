@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -27,6 +28,7 @@ type GeminiProvider struct {
 	logger    *zap.Logger
 	tracer    trace.Tracer
 	limiter   *rate.Limiter
+	mu        sync.RWMutex
 	lastError error
 	lastCheck time.Time
 }
@@ -58,25 +60,50 @@ func (p *GeminiProvider) Name() string {
 	return "gemini"
 }
 
-// IsAvailable checks if Gemini is available
+// IsAvailable checks if Gemini is available without burning tokens.
+// Uses the models list endpoint for a lightweight health check.
 func (p *GeminiProvider) IsAvailable(ctx context.Context) bool {
-	// Cache availability check for 1 minute
-	if time.Since(p.lastCheck) < time.Minute && p.lastError == nil {
-		return true
+	p.mu.RLock()
+	cached := p.lastCheck
+	lastErr := p.lastError
+	p.mu.RUnlock()
+
+	// Cache availability check for 30 seconds
+	if time.Since(cached) < 30*time.Second {
+		return lastErr == nil
 	}
 
-	req := &ChatRequest{
-		Messages: []Message{
-			{Role: "user", Content: "test"},
-		},
-		MaxTokens: 5,
+	apiURL := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models?key=%s&pageSize=1", p.config.APIKey)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		p.mu.Lock()
+		p.lastError = err
+		p.lastCheck = time.Now()
+		p.mu.Unlock()
+		return false
 	}
 
-	_, err := p.ChatCompletion(ctx, req)
-	p.lastError = err
+	resp, err := p.client.Do(req)
+	if err != nil {
+		p.mu.Lock()
+		p.lastError = err
+		p.lastCheck = time.Now()
+		p.mu.Unlock()
+		return false
+	}
+	defer resp.Body.Close()
+
+	var checkErr error
+	if resp.StatusCode != http.StatusOK {
+		checkErr = fmt.Errorf("health check failed: HTTP %d", resp.StatusCode)
+	}
+
+	p.mu.Lock()
+	p.lastError = checkErr
 	p.lastCheck = time.Now()
-
-	return err == nil
+	p.mu.Unlock()
+	return checkErr == nil
 }
 
 // ChatCompletion performs a standard chat completion
@@ -230,10 +257,16 @@ func (p *GeminiProvider) buildGeminiRequest(req *ChatRequest, tools []Tool) map[
 		genConfig["maxOutputTokens"] = p.config.MaxTokens
 	}
 
-	if req.Temperature > 0 {
-		genConfig["temperature"] = req.Temperature
+	if req.Temperature != nil {
+		genConfig["temperature"] = *req.Temperature
 	} else if p.config.Temperature > 0 {
 		genConfig["temperature"] = p.config.Temperature
+	}
+
+	if req.TopP != nil {
+		genConfig["topP"] = *req.TopP
+	} else if p.config.TopP > 0 {
+		genConfig["topP"] = p.config.TopP
 	}
 
 	if len(genConfig) > 0 {

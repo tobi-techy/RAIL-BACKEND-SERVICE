@@ -271,6 +271,7 @@ ai:
     model: "gpt-4o"
     max_tokens: 2048
     temperature: 0.15
+    top_p: 0.9
     timeout_seconds: 30
     rate_limit_rpm: 60
   gemini:
@@ -278,11 +279,16 @@ ai:
     model: "gemini-2.5-flash"
     max_tokens: 2048
     temperature: 0.15
+    top_p: 0.9
     timeout_seconds: 15
     rate_limit_rpm: 30
   kimi:
     api_key: "${KIMI_API_KEY}"
+    # base_url: "https://api.moonshot.cn/v1"  # Uncomment for China-registered keys; default is https://api.moonshot.ai/v1
     model: "kimi-k2.6"
+    max_tokens: 2048
+    temperature: 0.15
+    top_p: 0.9
     timeout_seconds: 30
     rate_limit_rpm: 60
   prompts:

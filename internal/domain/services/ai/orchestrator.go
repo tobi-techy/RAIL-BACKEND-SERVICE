@@ -484,7 +484,7 @@ func (o *Orchestrator) ChatInContext(ctx context.Context, userID, convID uuid.UU
 		Messages:     messages,
 		SystemPrompt: SystemPrompt,
 		MaxTokens:    2048,
-		Temperature:  0.15,
+		Temperature:  ai.Float64(0.15),
 	}
 
 	// Get response with tools
@@ -589,13 +589,33 @@ func (o *Orchestrator) ChatInContext(ctx context.Context, userID, convID uuid.UU
 			allToolResults = append(allToolResults, tr)
 		}
 
-		toolResultsJSON, _ := json.Marshal(toolResults)
+		// Build assistant message with tool_calls preserved (required by OpenAI-compatible APIs)
 		assistantContent := resp.Content
 		if assistantContent == "" {
 			assistantContent = "Calling tools..."
 		}
-		messages = append(messages, ai.Message{Role: "assistant", Content: assistantContent})
-		messages = append(messages, ai.Message{Role: "tool", Content: string(toolResultsJSON)})
+		assistantMsg := ai.Message{
+			Role:      "assistant",
+			Content:   assistantContent,
+			ToolCalls: resp.ToolCalls,
+		}
+		messages = append(messages, assistantMsg)
+
+		// Append each tool result with its corresponding tool_call_id.
+		// roundResults[i] maps 1:1 to resp.ToolCalls[i] by construction.
+		for i, tr := range roundResults {
+			resultJSON, _ := json.Marshal(tr.Result)
+			toolCallID := ""
+			if i < len(resp.ToolCalls) {
+				toolCallID = resp.ToolCalls[i].ID
+			}
+			messages = append(messages, ai.Message{
+				Role:       "tool",
+				Content:    string(resultJSON),
+				Name:       tr.Name,
+				ToolCallID: toolCallID,
+			})
+		}
 
 		req.Messages = messages
 		resp, err = o.aiProvider.ChatCompletionWithTools(ctx, req, o.GetTools())
@@ -635,12 +655,12 @@ func (o *Orchestrator) executeTool(ctx context.Context, userID uuid.UUID, tc ai.
 		zap.Any("args", sanitizeToolArgs(tc.Arguments)),
 	)
 
-	toolCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	toolCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
 	result, err := o.executeToolInner(toolCtx, userID, tc)
 	if err != nil && toolCtx.Err() == context.DeadlineExceeded {
-		o.logger.Warn("Tool execution timed out", zap.String("tool", tc.Name), zap.Duration("timeout", 5*time.Second))
+		o.logger.Warn("Tool execution timed out", zap.String("tool", tc.Name), zap.Duration("timeout", 15*time.Second))
 	}
 	return result, err
 }

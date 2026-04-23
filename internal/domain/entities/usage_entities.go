@@ -32,6 +32,9 @@ var ModelPricing = map[string]decimal.Decimal{
 	"gemini-pro":          decimal.NewFromFloat(0.000007),  // $7/1M tokens
 	"gemini":              decimal.NewFromFloat(0.0000001), // Gemini 2.0 Flash free tier, nominal cost
 	"gemini-2.0-flash":    decimal.NewFromFloat(0.0000001), // $0.10/1M tokens (effectively free)
+	"gemini-2.5-flash":    decimal.NewFromFloat(0.00000015), // $0.15/1M tokens
+	"kimi-k2.6":           decimal.NewFromFloat(0.000002),   // $2/1M tokens (Moonshot Kimi)
+	"kimi":                decimal.NewFromFloat(0.000002),   // fallback
 }
 
 // DefaultTokenCost is used when the model is not in the pricing table.

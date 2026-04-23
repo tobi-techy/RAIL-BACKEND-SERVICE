@@ -141,7 +141,7 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 		Messages:     messages,
 		SystemPrompt: SystemPrompt,
 		MaxTokens:    2048,
-		Temperature:  0.15,
+		Temperature:  infraai.Float64(0.15),
 	}
 
 	// Non-streaming tool call rounds (up to 5)
@@ -191,13 +191,33 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 			emit(StreamEvent{Type: "tool_result", Data: map[string]interface{}{"tool": tc.Name}})
 		}
 
-		toolResultsJSON, _ := json.Marshal(roundResults)
+		// Build assistant message with tool_calls preserved
 		assistantContent := resp.Content
 		if assistantContent == "" {
 			assistantContent = "Calling tools..."
 		}
-		messages = append(messages, infraai.Message{Role: "assistant", Content: assistantContent})
-		messages = append(messages, infraai.Message{Role: "tool", Content: string(toolResultsJSON)})
+		assistantMsg := infraai.Message{
+			Role:      "assistant",
+			Content:   assistantContent,
+			ToolCalls: resp.ToolCalls,
+		}
+		messages = append(messages, assistantMsg)
+
+		// Append each tool result with its corresponding tool_call_id.
+		// roundResults[i] maps 1:1 to resp.ToolCalls[i] by construction.
+		for i, tr := range roundResults {
+			resultJSON, _ := json.Marshal(tr.Result)
+			toolCallID := ""
+			if i < len(resp.ToolCalls) {
+				toolCallID = resp.ToolCalls[i].ID
+			}
+			messages = append(messages, infraai.Message{
+				Role:       "tool",
+				Content:    string(resultJSON),
+				Name:       tr.Name,
+				ToolCallID: toolCallID,
+			})
+		}
 		req.Messages = messages
 
 		resp, err = o.aiProvider.ChatCompletionWithTools(ctx, req, o.GetTools())

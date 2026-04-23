@@ -123,7 +123,7 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 		}
 	}()
 
-	// Goroutine: idle timeout checker
+	// Goroutine: idle timeout checker + WebSocket ping to prevent connection drops
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -132,6 +132,11 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				if err := openaiConn.Ping(); err != nil {
+					h.logger.Warn("voice ping failed, closing session", zap.Error(err))
+					cancel()
+					return
+				}
 				if last, ok := lastActivity.Load().(time.Time); ok && time.Since(last) > idleTimeout {
 					cancel()
 					return

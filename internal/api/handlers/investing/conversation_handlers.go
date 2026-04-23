@@ -1,6 +1,7 @@
 package investing
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	conversationsvc "github.com/rail-service/rail_service/internal/domain/services/conversation"
+	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"go.uber.org/zap"
 )
 
@@ -180,9 +182,19 @@ func (h *ConversationHandlers) ChatInConversation(c *gin.Context) {
 	resp, err := h.orchestrator.ChatWithConversation(c.Request.Context(), userID, conv, sanitizeUserMessage(req.Message))
 	if err != nil {
 		h.logger.Error("chat failed", zap.Error(err), zap.String("user_id", userID.String()))
+
+		// Detect auth/configuration errors for clearer user feedback
+		var provErr *ai.ProviderError
+		msg := "I'm having a moment — try again in a few seconds 🔄"
+		if errors.As(err, &provErr) {
+			if provErr.Code == ai.ErrorCodeAuthentication {
+				msg = "My brain is having trouble connecting right now — our team has been notified 🧠"
+			}
+		}
+
 		c.JSON(http.StatusOK, gin.H{
 			"data": gin.H{
-				"content":     "I'm having a moment — try again in a few seconds 🔄",
+				"content":     msg,
 				"tokens_used": 0,
 				"fallback":    true,
 			},
