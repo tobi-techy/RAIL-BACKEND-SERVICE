@@ -2,6 +2,7 @@ package funding
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/services/pajfunding"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/paj"
 	"go.uber.org/zap"
 )
@@ -367,10 +369,12 @@ func (h *PajHandlers) GetOrderStatus(c *gin.Context) {
 	})
 }
 
-// handleSessionError returns PAJ_VERIFICATION_REQUIRED if the session is missing/expired.
+// handleSessionError classifies service errors into appropriate HTTP responses.
 // Uses {"code", "message"} format so the frontend transformError extracts err.code correctly.
 func (h *PajHandlers) handleSessionError(c *gin.Context, err error) {
 	errMsg := err.Error()
+
+	// Auth / session errors → 403
 	if strings.Contains(errMsg, "no paj session") || strings.Contains(errMsg, "paj session expired") {
 		c.JSON(http.StatusForbidden, gin.H{
 			"code":    "PAJ_VERIFICATION_REQUIRED",
@@ -378,13 +382,8 @@ func (h *PajHandlers) handleSessionError(c *gin.Context, err error) {
 		})
 		return
 	}
-	if strings.Contains(errMsg, "insufficient balance") {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    "INSUFFICIENT_BALANCE",
-			"message": "Insufficient balance for this withdrawal",
-		})
-		return
-	}
+
+	// Not found → 404
 	if strings.Contains(errMsg, "order not found") {
 		c.JSON(http.StatusNotFound, gin.H{
 			"code":    "ORDER_NOT_FOUND",
@@ -392,6 +391,32 @@ func (h *PajHandlers) handleSessionError(c *gin.Context, err error) {
 		})
 		return
 	}
+
+	// User-actionable / validation errors → 400
+	switch {
+	case strings.Contains(errMsg, "insufficient balance"):
+		c.JSON(http.StatusBadRequest, gin.H{"code": "INSUFFICIENT_BALANCE", "message": "Insufficient balance for this withdrawal"})
+		return
+	case strings.Contains(errMsg, "minimum withdrawal") || strings.Contains(errMsg, "minimum deposit"):
+		c.JSON(http.StatusBadRequest, gin.H{"code": "BELOW_MINIMUM", "message": errMsg})
+		return
+	case strings.Contains(errMsg, "duplicate withdrawal") || strings.Contains(errMsg, "withdrawal in progress"):
+		c.JSON(http.StatusConflict, gin.H{"code": "DUPLICATE_REQUEST", "message": errMsg})
+		return
+	case strings.Contains(errMsg, "offramp rate unavailable") || strings.Contains(errMsg, "offramp rate out of bounds"):
+		c.JSON(http.StatusServiceUnavailable, gin.H{"code": "RATE_UNAVAILABLE", "message": "Exchange rate temporarily unavailable, please try again"})
+		return
+	}
+
+	// Bridge 4xx errors are user/config problems, not upstream failures.
+	var bridgeErr *bridge.ErrorResponse
+	if errors.As(err, &bridgeErr) && bridgeErr.StatusCode >= 400 && bridgeErr.StatusCode < 500 {
+		h.logger.Warn("paj operation failed: bridge client error", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"code": "WITHDRAWAL_REJECTED", "message": "Withdrawal could not be processed, please check your details and try again"})
+		return
+	}
+
+	// Everything else is a genuine upstream failure → 502
 	h.logger.Error("paj operation failed", zap.Error(err))
 	c.JSON(http.StatusBadGateway, gin.H{"code": "PAJ_ERROR", "message": "NGN service temporarily unavailable"})
 }
