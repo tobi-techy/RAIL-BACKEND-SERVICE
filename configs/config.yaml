@@ -265,7 +265,7 @@ webauthn:
     - "https://api.userail.money"
 
 ai:
-  primary: "openai"
+  primary: "kimi"
   openai:
     api_key: "${OPENAI_API_KEY}"
     model: "gpt-4o"
@@ -275,11 +275,16 @@ ai:
     rate_limit_rpm: 60
   gemini:
     api_key: "${GEMINI_API_KEY}"
-    model: "gemini-2.5-flash-lite"
+    model: "gemini-2.5-flash"
     max_tokens: 2048
     temperature: 0.15
     timeout_seconds: 15
     rate_limit_rpm: 30
+  kimi:
+    api_key: "${KIMI_API_KEY}"
+    model: "kimi-k2.5"
+    timeout_seconds: 30
+    rate_limit_rpm: 60
   prompts:
     wrapped_template: "prompts/wrapped.txt"
     chat_template: "prompts/chat.txt"

@@ -55,6 +55,9 @@ func NewOpenAIProvider(config *ProviderConfig, logger *zap.Logger) *OpenAIProvid
 
 // Name returns the provider name
 func (p *OpenAIProvider) Name() string {
+	if p.config.ProviderName != "" {
+		return p.config.ProviderName
+	}
 	return "openai"
 }
 
@@ -115,7 +118,11 @@ func (p *OpenAIProvider) ChatCompletionWithTools(ctx context.Context, req *ChatR
 	}
 
 	// Create HTTP request
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", openAIAPIURL, bytes.NewReader(reqBody))
+	apiURL := openAIAPIURL
+	if p.config.BaseURL != "" {
+		apiURL = p.config.BaseURL + "/chat/completions"
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(reqBody))
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("failed to create request: %w", err)

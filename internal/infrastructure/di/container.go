@@ -2640,6 +2640,22 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		providers = append(providers, geminiProvider)
 	}
 
+	// Kimi (Moonshot) — OpenAI-compatible provider
+	if c.Config.AI.Kimi.APIKey != "" {
+		kimiConfig := &ai.ProviderConfig{
+			APIKey:       c.Config.AI.Kimi.APIKey,
+			BaseURL:      "https://api.moonshot.ai/v1",
+			Model:        c.Config.AI.Kimi.Model,
+			MaxTokens:    2048,
+			Temperature:  0.15,
+			Timeout:      resolveTimeout(c.Config.AI.Kimi.TimeoutSeconds),
+			RateLimitRPM: c.Config.AI.Kimi.RateLimitRPM,
+			ProviderName: "kimi",
+		}
+		kimiProvider := ai.NewOpenAIProvider(kimiConfig, c.ZapLog)
+		providers = append(providers, kimiProvider)
+	}
+
 	if len(providers) == 0 {
 		return fmt.Errorf("no AI providers available")
 	}
@@ -2648,10 +2664,15 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	var primary ai.AIProvider
 	var fallbacks []ai.AIProvider
 
-	if c.Config.AI.Primary == "gemini" && len(providers) > 1 {
-		primary = providers[1]
-		fallbacks = []ai.AIProvider{providers[0]}
-	} else {
+	primaryName := c.Config.AI.Primary
+	for i, p := range providers {
+		if p.Name() == primaryName {
+			primary = p
+			fallbacks = append(providers[:i:i], providers[i+1:]...)
+			break
+		}
+	}
+	if primary == nil {
 		primary = providers[0]
 		if len(providers) > 1 {
 			fallbacks = providers[1:]
