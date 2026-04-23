@@ -90,10 +90,13 @@ type AIConfig struct {
 
 // KimiConfig contains Kimi (Moonshot) API configuration
 type KimiConfig struct {
-	APIKey         string `mapstructure:"api_key"`
-	Model          string `mapstructure:"model"`
-	TimeoutSeconds int    `mapstructure:"timeout_seconds"`
-	RateLimitRPM   int    `mapstructure:"rate_limit_rpm"`
+	APIKey         string  `mapstructure:"api_key"`
+	Model          string  `mapstructure:"model"`
+	MaxTokens      int     `mapstructure:"max_tokens"`
+	Temperature    float64 `mapstructure:"temperature"`
+	TopP           float64 `mapstructure:"top_p"`
+	TimeoutSeconds int     `mapstructure:"timeout_seconds"`
+	RateLimitRPM   int     `mapstructure:"rate_limit_rpm"`
 }
 
 // RateLimitConfig contains distributed rate limiting configuration
@@ -123,6 +126,7 @@ type OpenAIConfig struct {
 	Model          string  `mapstructure:"model"`
 	MaxTokens      int     `mapstructure:"max_tokens"`
 	Temperature    float64 `mapstructure:"temperature"`
+	TopP           float64 `mapstructure:"top_p"`
 	TimeoutSeconds int     `mapstructure:"timeout_seconds"`
 	RateLimitRPM   int     `mapstructure:"rate_limit_rpm"`
 	RealtimeModel  string  `mapstructure:"realtime_model"`
@@ -134,6 +138,7 @@ type GeminiConfig struct {
 	Model          string  `mapstructure:"model"`
 	MaxTokens      int     `mapstructure:"max_tokens"`
 	Temperature    float64 `mapstructure:"temperature"`
+	TopP           float64 `mapstructure:"top_p"`
 	TimeoutSeconds int     `mapstructure:"timeout_seconds"`
 	RateLimitRPM   int     `mapstructure:"rate_limit_rpm"`
 }
@@ -789,6 +794,7 @@ func setDefaults() {
 	// Explicit env bindings for AI keys (task def uses short names)
 	viper.BindEnv("ai.openai.api_key", "OPENAI_API_KEY")
 	viper.BindEnv("ai.gemini.api_key", "GEMINI_API_KEY")
+	viper.BindEnv("ai.kimi.api_key", "KIMI_API_KEY")
 	viper.BindEnv("ai.primary", "AI_PRIMARY")
 
 	// Compute defaults
