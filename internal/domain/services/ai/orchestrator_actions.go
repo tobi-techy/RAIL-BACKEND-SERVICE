@@ -7,18 +7,18 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
 // Action tool names.
 const (
-	ToolTransferFunds   = "transfer_funds"
-	ToolSetSavingsGoal  = "set_savings_goal"
-	ToolConfirmAction   = "confirm_action"
-	ToolCancelAction    = "cancel_action"
+	ToolTransferFunds  = "transfer_funds"
+	ToolSetSavingsGoal = "set_savings_goal"
+	ToolConfirmAction  = "confirm_action"
+	ToolCancelAction   = "cancel_action"
 )
 
 const pendingActionTTL = 2 * time.Minute
@@ -115,6 +115,9 @@ func (o *Orchestrator) SetPendingActions(p PendingActionStore) {
 // Deprecated: Use NewOrchestratorWithDeps instead.
 func (o *Orchestrator) SetActionAuditor(a ActionAuditor) {
 	o.actionAuditor = a
+	if reader, ok := a.(ActionHistoryReader); ok {
+		o.actionHistory = reader
+	}
 }
 
 // SetSavingsGoalStore wires the savings goal store dependency.
@@ -191,6 +194,8 @@ func (o *Orchestrator) executeActionTool(ctx context.Context, userID, convID uui
 		return o.createSetBudgetAction(ctx, userID, convID, tc.Arguments)
 	case ToolSplitReceipt:
 		return o.createSplitReceiptAction(ctx, userID, convID, tc.Arguments)
+	case ToolUpdateFinancialProfile:
+		return o.createFinancialProfileAction(ctx, userID, convID, tc.Arguments)
 	default:
 		return nil, fmt.Errorf("unknown action tool: %s", tc.Name)
 	}
@@ -246,13 +251,32 @@ func (o *Orchestrator) createTransferAction(ctx context.Context, userID, convID 
 		}, nil
 	}
 
+	var destinationBalance decimal.Decimal
+	if to == "spend" {
+		destinationBalance, err = o.fundsTransferer.GetSpendBalance(ctx, userID)
+	} else {
+		destinationBalance, err = o.fundsTransferer.GetStashBalance(ctx, userID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("check destination balance: %w", err)
+	}
+	impact := map[string]interface{}{
+		"source":                     from,
+		"destination":                to,
+		"amount":                     amount.StringFixed(2),
+		"source_balance_before":      balance.StringFixed(2),
+		"source_balance_after":       balance.Sub(amount).StringFixed(2),
+		"destination_balance_before": destinationBalance.StringFixed(2),
+		"destination_balance_after":  destinationBalance.Add(amount).StringFixed(2),
+	}
+
 	action := &entities.PendingAction{
 		ID:             uuid.New().String(),
 		ConversationID: convID,
 		UserID:         userID,
 		Action:         ToolTransferFunds,
 		Description:    fmt.Sprintf("Move $%s from %s to %s", amount.StringFixed(2), from, to),
-		Params:         map[string]interface{}{"from": from, "to": to, "amount": amount.StringFixed(2)},
+		Params:         map[string]interface{}{"from": from, "to": to, "amount": amount.StringFixed(2), "impact": impact},
 		ExpiresAt:      time.Now().Add(pendingActionTTL),
 		CreatedAt:      time.Now(),
 	}
@@ -262,6 +286,7 @@ func (o *Orchestrator) createTransferAction(ctx context.Context, userID, convID 
 	return map[string]interface{}{
 		"action_required": true,
 		"pending_action":  action,
+		"impact":          impact,
 	}, nil
 }
 
@@ -344,6 +369,12 @@ func (o *Orchestrator) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 		o.logger.Info("Receipt split confirmed via Miriam",
 			zap.String("user_id", userID.String()),
 			zap.Any("params", action.Params))
+	case ToolUpdateFinancialProfile:
+		if o.financialProfile == nil {
+			execErr = fmt.Errorf("financial profile service is unavailable")
+		} else {
+			_, execErr = o.executeUpdateFinancialProfile(ctx, userID, action.Params)
+		}
 	default:
 		execErr = fmt.Errorf("unknown action: %s", action.Action)
 	}
@@ -444,5 +475,22 @@ func (o *Orchestrator) auditAction(ctx context.Context, userID, convID uuid.UUID
 
 // isActionTool returns true if the tool name is an action tool.
 func isActionTool(name string) bool {
-	return name == ToolTransferFunds || name == ToolSetSavingsGoal || name == ToolSendReport || name == ToolSetBudget || name == ToolSplitReceipt
+	return name == ToolTransferFunds || name == ToolSetSavingsGoal || name == ToolSendReport || name == ToolSetBudget || name == ToolSplitReceipt || name == ToolUpdateFinancialProfile
+}
+
+func (o *Orchestrator) canCreateActionTool(name string) bool {
+	switch name {
+	case ToolTransferFunds, ToolSetSavingsGoal:
+		return o.fundsTransferer != nil
+	case ToolSendReport:
+		return o.reportEmail != nil
+	case ToolSetBudget:
+		return o.budgetProvider != nil
+	case ToolSplitReceipt:
+		return o.receiptHistory != nil
+	case ToolUpdateFinancialProfile:
+		return o.financialProfile != nil
+	default:
+		return false
+	}
 }

@@ -2,6 +2,7 @@ package ai
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/shopspring/decimal"
@@ -36,6 +37,18 @@ func buildCardsFromToolResults(results []ToolResult) []entities.InsightCard {
 			cards = append(cards, buildMoneyFlowCard(tr.Result))
 		case ToolGetAccountSummary:
 			cards = append(cards, buildAccountSummaryCard(tr.Result))
+		case ToolGetFinancialHealth:
+			cards = append(cards, buildFinancialHealthCard(tr.Result))
+		case ToolGetCashFlowForecast:
+			cards = append(cards, buildCashFlowForecastCard(tr.Result))
+		case ToolGetFinancialPlan:
+			cards = append(cards, buildFinancialPlanCard(tr.Result))
+		case ToolGetActionReceipts:
+			cards = append(cards, buildActionReceiptsCard(tr.Result))
+		case ToolGetFinancialAdvice:
+			cards = append(cards, buildFinancialAdviceCard(tr.Result))
+		case ToolGetFinancialTimeline:
+			cards = append(cards, buildFinancialTimelineCard(tr.Result))
 		}
 	}
 	return cards
@@ -400,5 +413,126 @@ func buildAccountSummaryCard(data map[string]interface{}) entities.InsightCard {
 		Title:     "Account Overview",
 		Sentiment: "neutral",
 		Data:      items,
+	}
+}
+
+func buildFinancialHealthCard(data map[string]interface{}) entities.InsightCard {
+	score := num(data, "score")
+	sentiment := "negative"
+	if score >= 80 {
+		sentiment = "positive"
+	} else if score >= 60 {
+		sentiment = "neutral"
+	}
+	return entities.InsightCard{
+		Type:      "stat_grid",
+		Title:     "Financial Health",
+		Subtitle:  fmt.Sprintf("%d/100", score),
+		Sentiment: sentiment,
+		Data: []entities.StatItem{
+			{Label: "Score", Value: fmt.Sprintf("%d", score), Sentiment: sentiment},
+			{Label: "Net Flow", Value: "$" + str(data, "net_flow")},
+			{Label: "Savings Rate", Value: str(data, "savings_rate_pct") + "%"},
+			{Label: "Budget", Value: str(data, "budget_status")},
+		},
+	}
+}
+
+func buildCashFlowForecastCard(data map[string]interface{}) entities.InsightCard {
+	projectedNet := str(data, "projected_net_flow")
+	sentiment := "positive"
+	if len(projectedNet) > 0 && projectedNet[0] == '-' {
+		sentiment = "negative"
+	}
+	return entities.InsightCard{
+		Type:      "stat_grid",
+		Title:     "Cash Flow Forecast",
+		Subtitle:  str(data, "period"),
+		Sentiment: sentiment,
+		Data: []entities.StatItem{
+			{Label: "Safe / Day", Value: "$" + str(data, "safe_daily_spend")},
+			{Label: "Daily Burn", Value: "$" + str(data, "daily_burn_rate")},
+			{Label: "Projected Net", Value: "$" + projectedNet, Sentiment: sentiment},
+			{Label: "End Balance", Value: "$" + str(data, "projected_end_balance")},
+		},
+	}
+}
+
+func buildFinancialPlanCard(data map[string]interface{}) entities.InsightCard {
+	steps := toMapSlice(data["next_steps"])
+	items := make([]entities.StatItem, 0, len(steps))
+	for _, step := range steps {
+		items = append(items, entities.StatItem{
+			Label: fmt.Sprintf("%v", step["title"]),
+			Value: fmt.Sprintf("%v", step["action"]),
+		})
+	}
+	return entities.InsightCard{
+		Type:  "stat_grid",
+		Title: "Your Money Plan",
+		Data:  items,
+	}
+}
+
+func buildActionReceiptsCard(data map[string]interface{}) entities.InsightCard {
+	receipts := toMapSlice(data["receipts"])
+	items := make([]entities.StatItem, 0, len(receipts))
+	for _, receipt := range receipts {
+		items = append(items, entities.StatItem{
+			Label: fmt.Sprintf("%v", receipt["action"]),
+			Value: fmt.Sprintf("%v", receipt["status"]),
+		})
+	}
+	return entities.InsightCard{
+		Type:  "stat_grid",
+		Title: "Miriam Action Receipts",
+		Data:  items,
+	}
+}
+
+func buildFinancialAdviceCard(data map[string]interface{}) entities.InsightCard {
+	checks := toMapSlice(data["checks"])
+	items := make([]entities.StatItem, 0, len(checks))
+	for _, check := range checks {
+		items = append(items, entities.StatItem{
+			Label: fmt.Sprintf("%v", check["title"]),
+			Value: fmt.Sprintf("%v", check["recommendation"]),
+		})
+	}
+	return entities.InsightCard{
+		Type:      "alert",
+		Title:     "Financial Advice",
+		Subtitle:  str(data, "overall_status"),
+		Sentiment: sentimentFromStatus(str(data, "overall_status")),
+		Data:      items,
+	}
+}
+
+func buildFinancialTimelineCard(data map[string]interface{}) entities.InsightCard {
+	events := toMapSlice(data["events"])
+	items := make([]entities.StatItem, 0, len(events))
+	for _, event := range events {
+		items = append(items, entities.StatItem{
+			Label: fmt.Sprintf("%v", event["title"]),
+			Value: fmt.Sprintf("%v", event["description"]),
+		})
+	}
+	return entities.InsightCard{
+		Type:      "breakdown",
+		Title:     "Financial Timeline",
+		Subtitle:  str(data, "summary"),
+		Sentiment: "neutral",
+		Data:      items,
+	}
+}
+
+func sentimentFromStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "critical", "warning", "fragile", "needs_attention":
+		return "negative"
+	case "good", "strong", "steady", "on_track":
+		return "positive"
+	default:
+		return "neutral"
 	}
 }

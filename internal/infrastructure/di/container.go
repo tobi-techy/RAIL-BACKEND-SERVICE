@@ -53,6 +53,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/strategy"
 	subscriptionsvc "github.com/rail-service/rail_service/internal/domain/services/subscription"
 	"github.com/rail-service/rail_service/internal/domain/services/twofa"
+	"github.com/rail-service/rail_service/internal/domain/services/umbrawallet"
 	usagesvc "github.com/rail-service/rail_service/internal/domain/services/usage"
 	"github.com/rail-service/rail_service/internal/domain/services/wallet"
 	"github.com/rail-service/rail_service/internal/domain/services/webauthn"
@@ -65,6 +66,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/embeddings"
 	pajadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/paj"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/reflect"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/umbra"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
@@ -958,6 +960,7 @@ type Container struct {
 	WithdrawalRepo            *repositories.WithdrawalRepository
 	ReceiptRepo               *repositories.ReceiptRepository
 	BudgetRepo                *repositories.BudgetRepository
+	FinancialProfileRepo      *repositories.FinancialProfileRepository
 	LedgerSpendingRepo        *repositories.LedgerSpendingRepository
 	ConversionRepo            *repositories.ConversionRepository
 	BalanceRepo               *repositories.BalanceRepository
@@ -968,14 +971,16 @@ type Container struct {
 	ReconciliationRepo        repositories.ReconciliationRepository
 
 	// External Services
-	AlpacaClient  *alpaca.Client
-	AlpacaService *alpaca.Service
-	BridgeClient  *bridge.Client
-	BridgeAdapter *bridge.Adapter
-	EmailService  *adapters.EmailService
-	SMSService    *adapters.SMSService
-	AuditService  *adapters.AuditService
-	RedisClient   cache.RedisClient
+	AlpacaClient       *alpaca.Client
+	AlpacaService      *alpaca.Service
+	BridgeClient       *bridge.Client
+	BridgeAdapter      *bridge.Adapter
+	UmbraClient        *umbra.Client
+	UmbraWalletService *umbrawallet.Service
+	EmailService       *adapters.EmailService
+	SMSService         *adapters.SMSService
+	AuditService       *adapters.AuditService
+	RedisClient        cache.RedisClient
 
 	// Bridge Domain Adapters
 	BridgeKYCAdapter              *BridgeKYCAdapter
@@ -1155,13 +1160,13 @@ type Container struct {
 	UnifiedFundingWebhookHandler *webhooks.UnifiedFundingWebhookHandler
 
 	// Security Features (v2) - Risk Scoring, Whitelist, Anomaly, Limits, Adaptive MFA
-	SecurityFeaturesRepo       *repositories.SecurityFeaturesRepository
-	RiskScoringService         *security.RiskScoringService
-	AddressWhitelistService    *security.AddressWhitelistService
-	SessionAnomalyService      *security.SessionAnomalyService
-	WithdrawalLimitsService    *security.WithdrawalLimitsService
-	AdaptiveMFAService         *security.AdaptiveMFAService
-	DeviceSecurityService      *security.DeviceSecurityService
+	SecurityFeaturesRepo    *repositories.SecurityFeaturesRepository
+	RiskScoringService      *security.RiskScoringService
+	AddressWhitelistService *security.AddressWhitelistService
+	SessionAnomalyService   *security.SessionAnomalyService
+	WithdrawalLimitsService *security.WithdrawalLimitsService
+	AdaptiveMFAService      *security.AdaptiveMFAService
+	DeviceSecurityService   *security.DeviceSecurityService
 }
 
 // NewContainer creates a new dependency injection container
@@ -1182,6 +1187,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	withdrawalRepo := repositories.NewWithdrawalRepository(sqlxDB)
 	receiptRepo := repositories.NewReceiptRepository(sqlxDB)
 	budgetRepo := repositories.NewBudgetRepository(sqlxDB)
+	financialProfileRepo := repositories.NewFinancialProfileRepository(sqlxDB)
 	ledgerSpendingRepo := repositories.NewLedgerSpendingRepository(sqlxDB)
 	conversionRepo := repositories.NewConversionRepository(sqlxDB)
 	balanceRepo := repositories.NewBalanceRepository(db, zapLog)
@@ -1218,6 +1224,15 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	}
 	bridgeClient := bridge.NewClient(bridgeConfig, zapLog)
 	bridgeAdapter := bridge.NewAdapter(bridgeClient, zapLog)
+
+	// Initialize Umbra privacy sidecar client
+	var umbraClient *umbra.Client
+	if cfg.Umbra.Enabled && cfg.Umbra.SidecarURL != "" {
+		umbraClient = umbra.NewClient(cfg.Umbra.SidecarURL, cfg.Umbra.AuthToken)
+		zapLog.Info("Umbra privacy sidecar enabled", zap.String("url", cfg.Umbra.SidecarURL), zap.String("network", cfg.Umbra.Network))
+	} else {
+		zapLog.Info("Umbra privacy sidecar disabled")
+	}
 
 	// Initialize email service with Unosend configuration
 	var err error
@@ -1285,6 +1300,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		WithdrawalRepo:            withdrawalRepo,
 		ReceiptRepo:               receiptRepo,
 		BudgetRepo:                budgetRepo,
+		FinancialProfileRepo:      financialProfileRepo,
 		LedgerSpendingRepo:        ledgerSpendingRepo,
 		ConversionRepo:            conversionRepo,
 		BalanceRepo:               balanceRepo,
@@ -1303,6 +1319,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		AlpacaService: alpacaService,
 		BridgeClient:  bridgeClient,
 		BridgeAdapter: bridgeAdapter,
+		UmbraClient:   umbraClient,
 		EmailService:  emailService,
 		SMSService:    smsService,
 		AuditService:  auditService,
@@ -1766,6 +1783,21 @@ func (c *Container) initializeDomainServices() error {
 	// Wire notification service into auto-invest and allocation for failure alerts
 	c.AutoInvestService.SetNotificationService(c.NotificationService)
 	c.AllocationService.SetNotificationService(c.NotificationService)
+
+	// Wire Umbra privacy shielder into allocation service
+	if c.UmbraClient != nil {
+		umbraWalletRepo := repositories.NewUmbraWalletRepository(sqlxDB)
+		c.UmbraWalletService = umbrawallet.NewService(
+			umbraWalletRepo, c.UmbraClient,
+			c.Config.Security.EncryptionKey, c.Config.Umbra.Network,
+			c.Logger,
+		)
+		c.AllocationService.SetUmbraShielder(&UmbraShielderAdapter{
+			client:        c.UmbraClient,
+			walletService: c.UmbraWalletService,
+		})
+		c.OnboardingService.SetUmbraProvisioner(&UmbraProvisionerAdapter{walletService: c.UmbraWalletService})
+	}
 	if c.YieldService != nil {
 		c.YieldService.SetNotifier(c.NotificationService)
 	}
@@ -2797,6 +2829,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		c.AIOrchestrator.SetReceiptHistory(c.ReceiptRepo)
 	}
 	c.AIOrchestrator.SetBudgetProvider(c.BudgetRepo)
+	c.AIOrchestrator.SetFinancialProfileProvider(c.FinancialProfileRepo)
 	warrantyRepo := repositories.NewWarrantyRepository(sqlxDB)
 	c.AIOrchestrator.SetWarrantyTracker(warrantyRepo)
 

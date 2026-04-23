@@ -39,6 +39,7 @@ type Service struct {
 	bridgeAdapter       BridgeAdapter
 	alpacaAdapter       AlpacaAdapter
 	allocationService   AllocationService
+	umbraProvisioner    UmbraWalletProvisioner
 	p2pService          P2PService
 	gameplayHooks       OnboardingGameplayHooks
 	logger              *zap.Logger
@@ -106,6 +107,11 @@ type AllocationService interface {
 	EnableMode(ctx context.Context, userID uuid.UUID, ratios entities.AllocationRatios) error
 }
 
+// UmbraWalletProvisioner provisions per-user Umbra privacy wallets.
+type UmbraWalletProvisioner interface {
+	ProvisionWallet(ctx context.Context, userID uuid.UUID) error
+}
+
 // P2PService interface for auto-claiming pending transfers
 type P2PService interface {
 	ClaimPendingForUser(ctx context.Context, userID uuid.UUID, email, phone string) (int, error)
@@ -150,6 +156,11 @@ func NewService(
 // SetAllocationService sets the allocation service (used to resolve circular dependency)
 func (s *Service) SetAllocationService(allocationService AllocationService) {
 	s.allocationService = allocationService
+}
+
+// SetUmbraProvisioner sets the Umbra wallet provisioner (to avoid circular dependency).
+func (s *Service) SetUmbraProvisioner(p UmbraWalletProvisioner) {
+	s.umbraProvisioner = p
 }
 
 // SetP2PService sets the P2P service (used to resolve circular dependency)
@@ -624,6 +635,18 @@ func (s *Service) CompletePasscodeCreation(ctx context.Context, userID uuid.UUID
 			s.logger.Info("Auto-enabled 70/30 allocation mode for user",
 				zap.String("userId", userID.String()))
 		}
+	}
+
+	// Provision Umbra privacy wallet (async, non-blocking)
+	if s.umbraProvisioner != nil {
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+			defer cancel()
+			if err := s.umbraProvisioner.ProvisionWallet(bgCtx, userID); err != nil {
+				s.logger.Error("Failed to provision Umbra wallet (non-fatal)",
+					zap.Error(err), zap.String("userId", userID.String()))
+			}
+		}()
 	}
 
 	// Log audit event

@@ -964,6 +964,12 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					aiGroup.POST("/chat/stream", middleware.AuthRateLimit(20), middleware.PerUserRateLimit(20), aiChatHandlers.ChatStream)
 					aiGroup.GET("/wrapped", middleware.AuthRateLimit(10), aiChatHandlers.GetWrapped)
 					aiGroup.GET("/quick-insight", middleware.AuthRateLimit(20), aiChatHandlers.QuickInsight)
+					aiGroup.GET("/financial-health", middleware.AuthRateLimit(20), aiChatHandlers.FinancialHealth)
+					aiGroup.GET("/cash-flow-forecast", middleware.AuthRateLimit(20), aiChatHandlers.CashFlowForecast)
+					aiGroup.GET("/financial-plan", middleware.AuthRateLimit(20), aiChatHandlers.FinancialPlan)
+					aiGroup.GET("/action-receipts", middleware.AuthRateLimit(20), aiChatHandlers.ActionReceipts)
+					aiGroup.GET("/financial-advice", middleware.AuthRateLimit(20), aiChatHandlers.FinancialAdvice)
+					aiGroup.GET("/financial-timeline", middleware.AuthRateLimit(20), aiChatHandlers.FinancialTimeline)
 					aiGroup.GET("/suggestions", aiChatHandlers.GetSuggestedQuestions)
 
 					// Image analysis (receipt scanning)
@@ -1011,6 +1017,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 							container.Config.AI.OpenAI.RealtimeModel,
 							container.GetAIOrchestrator(),
 							container.GetUsageService(),
+							container.Config.Server.AllowedOrigins,
 							container.ZapLog,
 						)
 						aiGroup.GET("/voice/session", voiceHandler.HandleSession)

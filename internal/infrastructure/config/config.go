@@ -44,12 +44,21 @@ type Config struct {
 	AI             AIConfig             `mapstructure:"ai"`
 	SNSPush        SNSPushConfig  `mapstructure:"sns_push"`
 	TelegramAlerts TelegramConfig `mapstructure:"telegram_alerts"`
+	Umbra          UmbraConfig    `mapstructure:"umbra"`
 }
 
 // TelegramConfig contains Telegram bot alerting configuration
 type TelegramConfig struct {
 	BotToken string `mapstructure:"bot_token"` // Telegram bot token from @BotFather
 	ChatID   string `mapstructure:"chat_id"`   // Chat/group ID to send alerts to
+}
+
+// UmbraConfig contains Umbra privacy sidecar configuration
+type UmbraConfig struct {
+	SidecarURL string `mapstructure:"sidecar_url"` // URL of the Umbra sidecar service (e.g. http://localhost:3100)
+	Enabled    bool   `mapstructure:"enabled"`      // Enable Umbra privacy shielding in allocation flow
+	Network    string `mapstructure:"network"`      // mainnet or devnet
+	AuthToken  string `mapstructure:"auth_token"`   // Shared secret for sidecar authentication
 }
 
 // SNSPushConfig contains AWS SNS push notification configuration
@@ -1270,6 +1279,22 @@ func overrideFromEnv() {
 	}
 	if v := os.Getenv("TELEGRAM_ALERTS_CHAT_ID"); v != "" {
 		viper.Set("telegram_alerts.chat_id", v)
+	}
+
+	// Umbra Privacy Sidecar
+	if v := os.Getenv("UMBRA_SIDECAR_URL"); v != "" {
+		viper.Set("umbra.sidecar_url", v)
+	}
+	if v := os.Getenv("UMBRA_ENABLED"); v != "" {
+		if enabled, err := strconv.ParseBool(v); err == nil {
+			viper.Set("umbra.enabled", enabled)
+		}
+	}
+	if v := os.Getenv("UMBRA_NETWORK"); v != "" {
+		viper.Set("umbra.network", v)
+	}
+	if v := os.Getenv("UMBRA_SIDECAR_AUTH_TOKEN"); v != "" {
+		viper.Set("umbra.auth_token", v)
 	}
 }
 

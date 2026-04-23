@@ -80,16 +80,24 @@ func (o *Orchestrator) executeKnowledgeSearch(ctx context.Context, args map[stri
 
 	// Build context from top results
 	var sb strings.Builder
+	sourceDocs := make([]map[string]interface{}, 0, len(filtered))
 	for i, r := range filtered {
 		fmt.Fprintf(&sb, "[Source: %s] %s", r.SourceDoc, r.ChunkText)
+		sourceDocs = append(sourceDocs, map[string]interface{}{
+			"source_doc":  r.SourceDoc,
+			"chunk_index": r.ChunkIndex,
+			"similarity":  r.Similarity,
+			"metadata":    r.Metadata,
+		})
 		if i < len(filtered)-1 {
 			sb.WriteString("\n\n")
 		}
 	}
 
 	return map[string]interface{}{
-		"found":   true,
-		"context": sb.String(),
-		"sources": len(filtered),
+		"found":       true,
+		"context":     sb.String(),
+		"sources":     len(filtered),
+		"source_docs": sourceDocs,
 	}, nil
 }

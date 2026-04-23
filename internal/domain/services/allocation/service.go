@@ -57,6 +57,11 @@ type spendingTotalReader interface {
 	GetTotalSpendingAdded(ctx context.Context, userID uuid.UUID, startDate, endDate time.Time) (decimal.Decimal, error)
 }
 
+// UmbraShielder shields allocated funds into Umbra encrypted balances.
+type UmbraShielder interface {
+	ShieldFunds(ctx context.Context, userID uuid.UUID, mint string, amount string) error
+}
+
 // AllocationNotificationService defines notification operations for allocation failures.
 type AllocationNotificationService interface {
 	SendGenericNotification(ctx context.Context, userID uuid.UUID, title, message string) error
@@ -71,6 +76,7 @@ type Service struct {
 	yieldSnapshotter    YieldSnapshotter
 	stashLockRecorder   StashLockRecorder
 	notificationService AllocationNotificationService
+	umbraShielder       UmbraShielder
 	logger              *logger.Logger
 }
 
@@ -105,6 +111,11 @@ func (s *Service) SetStashLockRecorder(r StashLockRecorder) {
 // SetNotificationService sets the notification service for user alerts on auto-invest failure.
 func (s *Service) SetNotificationService(ns AllocationNotificationService) {
 	s.notificationService = ns
+}
+
+// SetUmbraShielder sets the Umbra privacy shielder for post-allocation shielding.
+func (s *Service) SetUmbraShielder(u UmbraShielder) {
+	s.umbraShielder = u
 }
 
 // notifyAutoInvestFailure sends a user-facing notification when auto-invest fails silently in a goroutine.
@@ -465,6 +476,33 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		metrics.Business.AllocationExecutedTotal.WithLabelValues("success").Inc()
 		metrics.Business.AllocationSpendAmount.Observe(spendingAmount.InexactFloat64())
 		metrics.Business.AllocationStashAmount.Observe(stashAmount.InexactFloat64())
+	}
+
+	// Shield allocated funds through Umbra privacy layer (async, non-blocking)
+	if s.umbraShielder != nil {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					s.logger.Error("Panic in Umbra shielding goroutine",
+						"user_id", req.UserID, "panic", r)
+				}
+			}()
+			bgCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+
+			usdcMint := "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+			totalMicroUnits := req.Amount.Shift(6).IntPart() // USDC has 6 decimals
+			if err := s.umbraShielder.ShieldFunds(bgCtx, req.UserID, usdcMint, fmt.Sprintf("%d", totalMicroUnits)); err != nil {
+				s.logger.Error("Failed to shield funds through Umbra (non-fatal, ledger split already committed)",
+					"user_id", req.UserID,
+					"amount", req.Amount,
+					"error", err)
+			} else {
+				s.logger.Info("Successfully shielded funds through Umbra",
+					"user_id", req.UserID,
+					"amount", req.Amount)
+			}
+		}()
 	}
 
 	// Notify user that the split completed

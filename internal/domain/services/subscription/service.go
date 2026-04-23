@@ -64,7 +64,7 @@ func NewService(repo Repository, ledger LedgerService, notifier PushNotifier, lo
 
 func (s *Service) SetCache(cache CacheStore) { s.cache = cache }
 
-// SetBridgeTransfer sets the bridge transfer service for collecting subscription fees
+// SetBridgeTransfer sets the bridge transfer service for sweeping subscription fees
 func (s *Service) SetBridgeTransfer(bt BridgeTransferService) { s.bridgeTransfer = bt }
 
 // SetNotifier sets the push notifier (called after DI wiring resolves push provider)
@@ -237,7 +237,7 @@ func (s *Service) ChargeSubscription(ctx context.Context, sub *entities.Subscrip
 	if s.bridgeTransfer != nil {
 		ref := fmt.Sprintf("sub-%s-%s", sub.ID, sub.CurrentPeriodStart.Format("2006-01-02"))
 		if err := s.bridgeTransfer.TransferToCompanyWallet(ctx, sub.UserID, amount, ref); err != nil {
-			s.logger.Warn("Subscription charged in ledger but Bridge transfer failed",
+			s.logger.Warn("Subscription charged in ledger but Bridge transfer failed — will retry next cycle",
 				zap.String("user_id", sub.UserID.String()),
 				zap.String("amount", amount.String()),
 				zap.Error(err))
