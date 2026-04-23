@@ -188,6 +188,10 @@
           "valueFrom": "/rail/prod/OPENAI_API_KEY"
         },
         {
+          "name": "KIMI_API_KEY",
+          "valueFrom": "/rail/prod/KIMI_API_KEY"
+        },
+        {
           "name": "GEMINI_API_KEY",
           "valueFrom": "/rail/prod/GEMINI_API_KEY"
         },

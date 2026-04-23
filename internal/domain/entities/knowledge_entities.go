@@ -23,8 +23,8 @@ type KnowledgeSearchResult struct {
 	Similarity float64 `json:"similarity"`
 }
 
-// EmbeddingDimension is the vector size for OpenAI text-embedding-3-small.
-const EmbeddingDimension = 1536
+// EmbeddingDimension is the vector size for Gemini text-embedding-004.
+const EmbeddingDimension = 768
 
 // ChunkSize is the target character count per text chunk for ingestion.
 const ChunkSize = 1500

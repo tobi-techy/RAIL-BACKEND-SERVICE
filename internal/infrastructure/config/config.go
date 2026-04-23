@@ -84,7 +84,16 @@ type CCTPConfig struct {
 type AIConfig struct {
 	OpenAI  OpenAIConfig `mapstructure:"openai"`
 	Gemini  GeminiConfig `mapstructure:"gemini"`
-	Primary string       `mapstructure:"primary"` // "openai" or "gemini"
+	Kimi    KimiConfig   `mapstructure:"kimi"`
+	Primary string       `mapstructure:"primary"` // "openai", "gemini", or "kimi"
+}
+
+// KimiConfig contains Kimi (Moonshot) API configuration
+type KimiConfig struct {
+	APIKey         string `mapstructure:"api_key"`
+	Model          string `mapstructure:"model"`
+	TimeoutSeconds int    `mapstructure:"timeout_seconds"`
+	RateLimitRPM   int    `mapstructure:"rate_limit_rpm"`
 }
 
 // RateLimitConfig contains distributed rate limiting configuration

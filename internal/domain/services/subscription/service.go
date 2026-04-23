@@ -50,12 +50,12 @@ const maxRetries = 3
 
 // Service manages Pro subscriptions
 type Service struct {
-	repo            Repository
-	ledger          LedgerService
-	notifier        PushNotifier
-	bridgeTransfer  BridgeTransferService
-	cache           CacheStore
-	logger          *zap.Logger
+	repo           Repository
+	ledger         LedgerService
+	notifier       PushNotifier
+	bridgeTransfer BridgeTransferService
+	cache          CacheStore
+	logger         *zap.Logger
 }
 
 func NewService(repo Repository, ledger LedgerService, notifier PushNotifier, logger *zap.Logger) *Service {
