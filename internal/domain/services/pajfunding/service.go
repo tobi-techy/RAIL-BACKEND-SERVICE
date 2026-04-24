@@ -453,103 +453,100 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 		return nil, fmt.Errorf("withdrawal service returned invalid response")
 	}
 
-	// Transfer USDC from user's Bridge wallet to Paj's deposit address.
-	{
-		walletChain := entities.WalletChainSolana // default
-		paymentRail := bridgepkg.PaymentRailSolana
-		if s.pajChain != "" {
-			switch s.pajChain {
-			case "BASE":
-				walletChain = entities.WalletChainBase
-				paymentRail = bridgepkg.PaymentRailBase
-			case "POLYGON":
-				walletChain = entities.WalletChainPolygon
-				paymentRail = bridgepkg.PaymentRailPolygon
-			case "ETHEREUM":
-				walletChain = entities.WalletChainEthereum
-				paymentRail = bridgepkg.PaymentRailEthereum
-			}
-		}
-
-		wallet, walletErr := s.walletProvider.GetWalletByUserAndChain(ctx, userID, walletChain)
-		if walletErr != nil || wallet == nil || wallet.BridgeWalletID == "" {
-			s.logger.Error("failed to get user Bridge wallet for Paj offramp — reversing hold",
-				zap.Error(walletErr), zap.String("user_id", userID.String()),
-				zap.String("paj_order_id", order.ID))
-			s.reverseHold(ctx, userID, order.ID, totalHold, "no_wallet")
-			return nil, fmt.Errorf("failed to get wallet for withdrawal")
-		}
-
-		// Bridge requires the Bridge customer ID (not Rail user ID) for OnBehalfOf.
-		bridgeCustID, custErr := s.bridgeCustomerID.GetBridgeCustomerID(ctx, userID)
-		if custErr != nil || bridgeCustID == "" {
-			s.logger.Error("failed to get Bridge customer ID for Paj offramp — reversing hold",
-				zap.Error(custErr), zap.String("user_id", userID.String()))
-			s.reverseHold(ctx, userID, order.ID, totalHold, "no_bridge_customer")
-			return nil, fmt.Errorf("failed to get customer ID for withdrawal")
-		}
-
-		// Round to 2 decimal places to match Bridge API precision requirement.
-		// This ensures the stored and transferred amounts are identical.
-		transferAmount := math.Round(order.Amount*100) / 100
-		totalTransfer := transferAmount + RailNGNWithdrawalFee
-
-		transfer, transferErr := s.bridgeTransfer.TransferFunds(ctx, &bridgepkg.CreateTransferRequest{
-			OnBehalfOf:   bridgeCustID,
-			Amount:       fmt.Sprintf("%.2f", totalTransfer),
-			DeveloperFee: fmt.Sprintf("%.2f", RailNGNWithdrawalFee),
-			Source: bridgepkg.TransferSource{
-				PaymentRail:    bridgepkg.PaymentRail("bridge_wallet"),
-				Currency:       bridgepkg.CurrencyUSDC,
-				BridgeWalletID: wallet.BridgeWalletID,
-			},
-			Destination: bridgepkg.TransferDestination{
-				PaymentRail: paymentRail,
-				Currency:    bridgepkg.CurrencyUSDC,
-				ToAddress:   order.Address,
-			},
-		})
-		if transferErr != nil {
-			s.logger.Error("CRITICAL: Bridge transfer to Paj deposit address failed",
-				zap.Error(transferErr), zap.String("user_id", userID.String()),
-				zap.String("paj_order_id", order.ID), zap.String("amount", totalHold.String()))
-			s.reverseHold(ctx, userID, order.ID, totalHold, "transfer_failed")
-			return nil, fmt.Errorf("failed to send USDC to Paj: %w", transferErr)
-		}
-
-		// Store the Bridge transfer ID for reconciliation.
-		s.db.ExecContext(ctx, `UPDATE paj_orders SET bridge_transfer_id = $1 WHERE paj_order_id = $2`,
-			transfer.ID, order.ID)
-
-		// Refund slippage buffer: we debited estimatedUSDC (with 1% buffer)
-		// but Paj only needs transferAmount (rounded to 2dp). Return the excess.
-		// Rail fee is NOT refunded — it's our revenue.
-		actualAmount := decimal.NewFromFloat(transferAmount)
-		excess := estimatedUSDC.Sub(actualAmount)
-		if excess.IsPositive() && s.ledger != nil {
-			refundErr := s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
-				"paj_offramp_slippage_refund_"+order.ID, excess, map[string]interface{}{
-					"provider": "paj", "type": "slippage_refund", "paj_order_id": order.ID,
-					"estimated": estimatedUSDC.String(), "actual": actualAmount.String(),
-				})
-			if refundErr != nil {
-				s.logger.Error("failed to refund slippage buffer (non-fatal, user overcharged by dust)",
-					zap.Error(refundErr), zap.String("user_id", userID.String()),
-					zap.String("excess", excess.String()), zap.String("paj_order_id", order.ID))
-			}
-		}
-
-		s.logger.Info("Bridge transfer to Paj initiated",
-			zap.String("paj_order_id", order.ID),
-			zap.String("bridge_transfer_id", transfer.ID),
-			zap.String("amount_to_paj", actualAmount.String()),
-			zap.String("developer_fee", railFee.String()))
-	}
+	// Execute Bridge transfer asynchronously — user gets immediate response.
+	// The paj_offramp_recovery worker handles failures.
+	go s.executeBridgeTransfer(userID, order, totalHold, estimatedUSDC, railFee)
 
 	return &OfframpResult{
 		Order:   order,
 		RailFee: RailNGNWithdrawalFee,
 	}, nil
+}
+
+// executeBridgeTransfer sends USDC from the user's Bridge wallet to Paj's deposit address.
+// Runs in a background goroutine after the PAJ order is created.
+func (s *Service) executeBridgeTransfer(userID uuid.UUID, order *paj.OfframpOrder, totalHold, estimatedUSDC, railFee decimal.Decimal) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	walletChain := entities.WalletChainSolana
+	paymentRail := bridgepkg.PaymentRailSolana
+	if s.pajChain != "" {
+		switch s.pajChain {
+		case "BASE":
+			walletChain = entities.WalletChainBase
+			paymentRail = bridgepkg.PaymentRailBase
+		case "POLYGON":
+			walletChain = entities.WalletChainPolygon
+			paymentRail = bridgepkg.PaymentRailPolygon
+		case "ETHEREUM":
+			walletChain = entities.WalletChainEthereum
+			paymentRail = bridgepkg.PaymentRailEthereum
+		}
+	}
+
+	wallet, walletErr := s.walletProvider.GetWalletByUserAndChain(ctx, userID, walletChain)
+	if walletErr != nil || wallet == nil || wallet.BridgeWalletID == "" {
+		s.logger.Error("async: failed to get user Bridge wallet for Paj offramp — reversing hold",
+			zap.Error(walletErr), zap.String("user_id", userID.String()),
+			zap.String("paj_order_id", order.ID))
+		s.reverseHold(ctx, userID, order.ID, totalHold, "no_wallet")
+		return
+	}
+
+	bridgeCustID, custErr := s.bridgeCustomerID.GetBridgeCustomerID(ctx, userID)
+	if custErr != nil || bridgeCustID == "" {
+		s.logger.Error("async: failed to get Bridge customer ID for Paj offramp — reversing hold",
+			zap.Error(custErr), zap.String("user_id", userID.String()))
+		s.reverseHold(ctx, userID, order.ID, totalHold, "no_bridge_customer")
+		return
+	}
+
+	transferAmount := math.Round(order.Amount*100) / 100
+	totalTransfer := transferAmount + RailNGNWithdrawalFee
+
+	transfer, transferErr := s.bridgeTransfer.TransferFunds(ctx, &bridgepkg.CreateTransferRequest{
+		OnBehalfOf:   bridgeCustID,
+		Amount:       fmt.Sprintf("%.2f", totalTransfer),
+		DeveloperFee: fmt.Sprintf("%.2f", RailNGNWithdrawalFee),
+		Source: bridgepkg.TransferSource{
+			PaymentRail:    bridgepkg.PaymentRail("bridge_wallet"),
+			Currency:       bridgepkg.CurrencyUSDC,
+			BridgeWalletID: wallet.BridgeWalletID,
+		},
+		Destination: bridgepkg.TransferDestination{
+			PaymentRail: paymentRail,
+			Currency:    bridgepkg.CurrencyUSDC,
+			ToAddress:   order.Address,
+		},
+	})
+	if transferErr != nil {
+		s.logger.Error("async: Bridge transfer to Paj deposit address failed — reversing hold",
+			zap.Error(transferErr), zap.String("user_id", userID.String()),
+			zap.String("paj_order_id", order.ID), zap.String("amount", totalHold.String()))
+		s.reverseHold(ctx, userID, order.ID, totalHold, "transfer_failed")
+		return
+	}
+
+	s.db.ExecContext(ctx, `UPDATE paj_orders SET bridge_transfer_id = $1 WHERE paj_order_id = $2`,
+		transfer.ID, order.ID)
+
+	// Refund slippage buffer.
+	actualAmount := decimal.NewFromFloat(transferAmount)
+	excess := estimatedUSDC.Sub(actualAmount)
+	if excess.IsPositive() && s.ledger != nil {
+		s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
+			"paj_offramp_slippage_refund_"+order.ID, excess, map[string]interface{}{
+				"provider": "paj", "type": "slippage_refund", "paj_order_id": order.ID,
+				"estimated": estimatedUSDC.String(), "actual": actualAmount.String(),
+			})
+	}
+
+	s.logger.Info("async: Bridge transfer to Paj initiated",
+		zap.String("paj_order_id", order.ID),
+		zap.String("bridge_transfer_id", transfer.ID),
+		zap.String("amount_to_paj", actualAmount.String()),
+		zap.String("developer_fee", railFee.String()))
 }
 
 // --- Webhook processing ---
