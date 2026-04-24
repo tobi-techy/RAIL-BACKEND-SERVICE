@@ -2684,7 +2684,7 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 // initializeAIServices initializes AI Financial Manager services
 func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *repositories.PositionRepository, allocationRepo *repositories.AllocationRepository, basketRepo *repositories.BasketRepository) error {
 	// Check if AI is configured
-	if c.Config.AI.OpenAI.APIKey == "" && c.Config.AI.Gemini.APIKey == "" && c.Config.AI.Kimi.APIKey == "" {
+	if c.Config.AI.OpenAI.APIKey == "" && c.Config.AI.Gemini.APIKey == "" && c.Config.AI.Kimi.APIKey == "" && c.Config.AI.Groq.APIKey == "" {
 		return fmt.Errorf("no AI provider configured")
 	}
 
