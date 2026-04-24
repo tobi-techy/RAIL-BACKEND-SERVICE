@@ -1107,6 +1107,11 @@ func overrideFromEnv() {
 	} else {
 		viper.Set("ai.gemini.api_key", "")
 	}
+	if kimiKey := os.Getenv("KIMI_API_KEY"); kimiKey != "" {
+		viper.Set("ai.kimi.api_key", kimiKey)
+	} else {
+		viper.Set("ai.kimi.api_key", "")
+	}
 	if aiPrimary := os.Getenv("AI_PRIMARY_PROVIDER"); aiPrimary != "" {
 		viper.Set("ai.primary", aiPrimary)
 	}
