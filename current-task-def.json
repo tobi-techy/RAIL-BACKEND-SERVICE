@@ -3,7 +3,7 @@
   "containerDefinitions": [
     {
       "name": "rail-backend",
-      "image": "885160773772.dkr.ecr.us-east-1.amazonaws.com/rail-backend:e454daa3bc2a45b5040758f5b8692a90b8a52174-amd64",
+      "image": "885160773772.dkr.ecr.us-east-1.amazonaws.com/rail-backend:791bea5edffe01683c09a7e67159bcac2dc90a7f",
       "cpu": 0,
       "memory": 450,
       "portMappings": [
@@ -184,16 +184,8 @@
           "valueFrom": "/rail/prod/APPLE_PRIVATE_KEY"
         },
         {
-          "name": "OPENAI_API_KEY",
-          "valueFrom": "/rail/prod/OPENAI_API_KEY"
-        },
-        {
           "name": "KIMI_API_KEY",
           "valueFrom": "/rail/prod/KIMI_API_KEY"
-        },
-        {
-          "name": "GEMINI_API_KEY",
-          "valueFrom": "/rail/prod/GEMINI_API_KEY"
         },
         {
           "name": "GROQ_API_KEY",

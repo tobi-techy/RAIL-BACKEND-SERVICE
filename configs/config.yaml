@@ -265,7 +265,7 @@ webauthn:
     - "https://api.userail.money"
 
 ai:
-  primary: "kimi"
+  primary: "groq"
   openai:
     api_key: ""
     model: "gpt-4o"
@@ -283,7 +283,7 @@ ai:
     timeout_seconds: 15
     rate_limit_rpm: 30
   kimi:
-    api_key: "${KIMI_API_KEY}"
+    api_key: ""
     # base_url: "https://api.moonshot.cn/v1"  # Uncomment for China-registered keys; default is https://api.moonshot.ai/v1
     model: "kimi-k2.6"
     max_tokens: 2048
