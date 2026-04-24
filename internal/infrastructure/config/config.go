@@ -85,7 +85,8 @@ type AIConfig struct {
 	OpenAI  OpenAIConfig `mapstructure:"openai"`
 	Gemini  GeminiConfig `mapstructure:"gemini"`
 	Kimi    KimiConfig   `mapstructure:"kimi"`
-	Primary string       `mapstructure:"primary"` // "openai", "gemini", or "kimi"
+	Groq    GroqConfig   `mapstructure:"groq"`
+	Primary string       `mapstructure:"primary"` // "openai", "gemini", "kimi", or "groq"
 }
 
 // KimiConfig contains Kimi (Moonshot) API configuration
@@ -135,6 +136,17 @@ type OpenAIConfig struct {
 
 // GeminiConfig contains Google Gemini API configuration
 type GeminiConfig struct {
+	APIKey         string  `mapstructure:"api_key"`
+	Model          string  `mapstructure:"model"`
+	MaxTokens      int     `mapstructure:"max_tokens"`
+	Temperature    float64 `mapstructure:"temperature"`
+	TopP           float64 `mapstructure:"top_p"`
+	TimeoutSeconds int     `mapstructure:"timeout_seconds"`
+	RateLimitRPM   int     `mapstructure:"rate_limit_rpm"`
+}
+
+// GroqConfig contains Groq API configuration (OpenAI-compatible)
+type GroqConfig struct {
 	APIKey         string  `mapstructure:"api_key"`
 	Model          string  `mapstructure:"model"`
 	MaxTokens      int     `mapstructure:"max_tokens"`

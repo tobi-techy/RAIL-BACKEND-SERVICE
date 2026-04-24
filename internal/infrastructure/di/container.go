@@ -2699,6 +2699,20 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	// Initialize AI providers
 	var providers []ai.AIProvider
 
+	if strings.TrimSpace(c.Config.AI.Gemini.APIKey) != "" {
+		geminiConfig := &ai.ProviderConfig{
+			APIKey:       strings.TrimSpace(c.Config.AI.Gemini.APIKey),
+			Model:        c.Config.AI.Gemini.Model,
+			MaxTokens:    c.Config.AI.Gemini.MaxTokens,
+			Temperature:  c.Config.AI.Gemini.Temperature,
+			TopP:         c.Config.AI.Gemini.TopP,
+			Timeout:      resolveTimeout(c.Config.AI.Gemini.TimeoutSeconds),
+			RateLimitRPM: c.Config.AI.Gemini.RateLimitRPM,
+		}
+		geminiProvider := ai.NewGeminiProvider(geminiConfig, c.ZapLog)
+		providers = append(providers, geminiProvider)
+	}
+
 	if strings.TrimSpace(c.Config.AI.OpenAI.APIKey) != "" {
 		openaiConfig := &ai.ProviderConfig{
 			APIKey:       strings.TrimSpace(c.Config.AI.OpenAI.APIKey),
@@ -2713,18 +2727,21 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		providers = append(providers, openaiProvider)
 	}
 
-	if strings.TrimSpace(c.Config.AI.Gemini.APIKey) != "" {
-		geminiConfig := &ai.ProviderConfig{
-			APIKey:       strings.TrimSpace(c.Config.AI.Gemini.APIKey),
-			Model:        c.Config.AI.Gemini.Model,
-			MaxTokens:    c.Config.AI.Gemini.MaxTokens,
-			Temperature:  c.Config.AI.Gemini.Temperature,
-			TopP:         c.Config.AI.Gemini.TopP,
-			Timeout:      resolveTimeout(c.Config.AI.Gemini.TimeoutSeconds),
-			RateLimitRPM: c.Config.AI.Gemini.RateLimitRPM,
+	// Groq — OpenAI-compatible provider
+	if strings.TrimSpace(c.Config.AI.Groq.APIKey) != "" {
+		groqConfig := &ai.ProviderConfig{
+			APIKey:       strings.TrimSpace(c.Config.AI.Groq.APIKey),
+			BaseURL:      "https://api.groq.com/openai/v1",
+			Model:        c.Config.AI.Groq.Model,
+			MaxTokens:    c.Config.AI.Groq.MaxTokens,
+			Temperature:  c.Config.AI.Groq.Temperature,
+			TopP:         c.Config.AI.Groq.TopP,
+			Timeout:      resolveTimeout(c.Config.AI.Groq.TimeoutSeconds),
+			RateLimitRPM: c.Config.AI.Groq.RateLimitRPM,
+			ProviderName: "groq",
 		}
-		geminiProvider := ai.NewGeminiProvider(geminiConfig, c.ZapLog)
-		providers = append(providers, geminiProvider)
+		groqProvider := ai.NewOpenAIProvider(groqConfig, c.ZapLog)
+		providers = append(providers, groqProvider)
 	}
 
 	// Kimi (Moonshot) — OpenAI-compatible provider
@@ -2750,9 +2767,10 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		if kimiConfig.Temperature == 0 {
 			kimiConfig.Temperature = 1.0 // Kimi API requires temperature=1 for some models
 		}
-		// kimi-k2.6 only accepts temperature=1
+		// kimi-k2.6 only accepts temperature=1 and top_p=0.95
 		if strings.HasPrefix(kimiConfig.Model, "kimi-k2") {
 			kimiConfig.Temperature = 1.0
+			kimiConfig.TopP = 0.95
 		}
 		kimiProvider := ai.NewOpenAIProvider(kimiConfig, c.ZapLog)
 		providers = append(providers, kimiProvider)

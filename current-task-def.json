@@ -196,6 +196,10 @@
           "valueFrom": "/rail/prod/GEMINI_API_KEY"
         },
         {
+          "name": "GROQ_API_KEY",
+          "valueFrom": "/rail/prod/GROQ_API_KEY"
+        },
+        {
           "name": "NEWS_API_KEY",
           "valueFrom": "/rail/prod/NEWS_API_KEY"
         },

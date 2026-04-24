@@ -276,7 +276,7 @@ ai:
     rate_limit_rpm: 60
   gemini:
     api_key: "${GEMINI_API_KEY}"
-    model: "gemini-2.5-flash"
+    model: "gemini-2.0-flash"
     max_tokens: 2048
     temperature: 0.15
     top_p: 0.9
@@ -291,6 +291,14 @@ ai:
     top_p: 0.9
     timeout_seconds: 30
     rate_limit_rpm: 60
+  groq:
+    api_key: "${GROQ_API_KEY}"
+    model: "llama-3.3-70b-versatile"
+    max_tokens: 2048
+    temperature: 0.15
+    top_p: 0.9
+    timeout_seconds: 15
+    rate_limit_rpm: 30
   prompts:
     wrapped_template: "prompts/wrapped.txt"
     chat_template: "prompts/chat.txt"
