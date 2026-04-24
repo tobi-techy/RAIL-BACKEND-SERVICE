@@ -808,6 +808,7 @@ func setDefaults() {
 	viper.BindEnv("ai.openai.api_key", "OPENAI_API_KEY")
 	viper.BindEnv("ai.gemini.api_key", "GEMINI_API_KEY")
 	viper.BindEnv("ai.kimi.api_key", "KIMI_API_KEY")
+	viper.BindEnv("ai.groq.api_key", "GROQ_API_KEY")
 	viper.BindEnv("ai.primary", "AI_PRIMARY")
 
 	// Compute defaults
