@@ -486,137 +486,87 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 		return nil, fmt.Errorf("failed to post ledger debit: %w", err)
 	}
 
-	// Step 7: Execute Bridge transfer
-	transferResult, err := s.executeCryptoTransfer(ctx, withdrawal, req.DestinationAddress, req.DestinationChain, req.SourceChain, req.SourceWalletAddress)
-	if err != nil {
-		s.logger.Error("Failed to execute crypto transfer", "error", err)
-		// Reverse the ledger debit when transfer fails
-		if revErr := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); revErr != nil {
-			s.logger.Error("Failed to reverse ledger debit after transfer failure",
-				"error", revErr, "withdrawal_id", withdrawal.ID.String())
-		}
-		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
-		return nil, fmt.Errorf("failed to execute transfer: %w", err)
+	// Step 7: Execute Bridge transfer asynchronously.
+	// Ledger is debited, withdrawal record exists — return immediately and process in background.
+	if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusProcessing); err != nil {
+		s.logger.Error("Failed to mark withdrawal processing", "error", err)
+		return nil, fmt.Errorf("failed to update withdrawal status: %w", err)
 	}
+	withdrawal.Status = entities.WithdrawalStatusProcessing
 
-	// Persist provider transfer reference when available (reuses bridge_transfer_id column).
-	if transferResult.TransferID != "" {
-		if err := s.withdrawalRepo.UpdateBridgeTransfer(ctx, withdrawal.ID, transferResult.TransferID); err != nil {
-			s.logger.Error("Failed to update transfer ID", "error", err)
-		}
-	}
+	go s.executeCryptoWithdrawalAsync(withdrawal, req)
 
-	// Mark stash lock window consumed AFTER the withdrawal has succeeded (ledger debit + transfer).
-	// This ensures a failed withdrawal does not consume the user's withdrawal window.
-	if req.SourceAccount == entities.WithdrawalSourceStashBalance && sl != nil {
-		if err := sl.MarkWithdrawn(ctx, req.UserID); err != nil {
-			s.logger.Error("Failed to mark stash window consumed (non-fatal, withdrawal already committed)",
-				"user_id", req.UserID, "error", err)
-		}
-	}
-
-	// Update tx hash when available.
-	if transferResult.TxHash != "" {
-		if err := s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, transferResult.TxHash); err != nil {
-			s.logger.Error("Failed to update tx hash", "error", err)
-		} else {
-			withdrawal.Status = entities.WithdrawalStatusOnChainTransfer
-			withdrawal.TxHash = &transferResult.TxHash
-		}
-	}
-
-	// Bridge transfer requests can complete asynchronously.
-	// Only mark completed when Bridge explicitly reports a final successful state.
-	state := strings.ToUpper(strings.TrimSpace(transferResult.State))
-	isFinalSuccess := state == "COMPLETE" || state == "COMPLETED" || state == "CONFIRMED" || state == "SUCCESS"
-
-	// Record against limits as soon as the burn is accepted (sync or async).
-	// The withdrawal is committed at this point regardless of final on-chain state.
-	if s.limitsService != nil {
-		if err := s.limitsService.RecordWithdrawal(ctx, req.UserID, req.Amount); err != nil {
-			s.logger.Error("Failed to record withdrawal against limits", "error", err)
-		}
-	}
-
-	if !isFinalSuccess {
-		if withdrawal.Status == entities.WithdrawalStatusFailed {
-			// Reverse the ledger debit — the transfer failed on-chain.
-			if revErr := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); revErr != nil {
-				s.logger.Error("Failed to reverse ledger debit after provider failure",
-					"error", revErr, "withdrawal_id", withdrawal.ID.String())
-			}
-			failReason := "withdrawal failed during processing"
-			if withdrawal.ErrorMessage != nil && strings.TrimSpace(*withdrawal.ErrorMessage) != "" {
-				failReason = *withdrawal.ErrorMessage
-			}
-			return nil, fmt.Errorf("%s", failReason)
-		}
-
-		if withdrawal.Status == entities.WithdrawalStatusCompleted {
-			// Send notification
-			if s.notificationService != nil {
-				_ = s.notificationService.NotifyWithdrawalCompleted(ctx, req.UserID, req.Amount, req.DestinationAddress)
-			}
-
-			s.logger.Info("Crypto withdrawal completed",
-				"withdrawal_id", withdrawal.ID.String(),
-				"amount", req.Amount.String(),
-				"tx_hash", transferResult.TxHash)
-
-			return &entities.InitiateWithdrawalResponse{
-				WithdrawalID: withdrawal.ID,
-				Status:       withdrawal.Status,
-				Message:      "Withdrawal completed successfully",
-			}, nil
-		}
-
-		if withdrawal.Status == entities.WithdrawalStatusInitiated {
-			if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusProcessing); err != nil {
-				s.logger.Error("Failed to mark withdrawal processing", "error", err)
-				return nil, fmt.Errorf("failed to update withdrawal status: %w", err)
-			}
-			withdrawal.Status = entities.WithdrawalStatusProcessing
-		}
-
-		s.logger.Info("Crypto withdrawal submitted and processing",
-			"withdrawal_id", withdrawal.ID.String(),
-			"amount", req.Amount.String(),
-			"state", transferResult.State,
-			"transfer_id", transferResult.TransferID)
-
-		return &entities.InitiateWithdrawalResponse{
-			WithdrawalID: withdrawal.ID,
-			Status:       withdrawal.Status,
-			Message:      "Withdrawal submitted and is processing",
-		}, nil
-	}
-
-	// Step 8: Final success path.
-	if err := s.settleCompletedCryptoWithdrawal(ctx, withdrawal); err != nil {
-		s.logger.Error("Failed to settle completed withdrawal", "error", err, "withdrawal_id", withdrawal.ID.String())
-		withdrawal.Status = entities.WithdrawalStatusProcessing
-		return &entities.InitiateWithdrawalResponse{
-			WithdrawalID: withdrawal.ID,
-			Status:       withdrawal.Status,
-			Message:      "Withdrawal submitted and is processing",
-		}, nil
-	}
-
-	// Step 9: Send notification
-	if s.notificationService != nil {
-		_ = s.notificationService.NotifyWithdrawalCompleted(ctx, req.UserID, req.Amount, req.DestinationAddress)
-	}
-
-	s.logger.Info("Crypto withdrawal completed",
+	s.logger.Info("Crypto withdrawal submitted for async processing",
 		"withdrawal_id", withdrawal.ID.String(),
 		"amount", req.Amount.String(),
-		"tx_hash", transferResult.TxHash)
+		"destination", req.DestinationAddress)
 
 	return &entities.InitiateWithdrawalResponse{
 		WithdrawalID: withdrawal.ID,
 		Status:       withdrawal.Status,
-		Message:      "Withdrawal completed successfully",
+		Message:      "Withdrawal submitted and is processing",
 	}, nil
+}
+
+// executeCryptoWithdrawalAsync runs the Bridge transfer and post-processing in the background.
+func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Withdrawal, req *entities.InitiateCryptoWithdrawalRequest) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	transferResult, err := s.executeCryptoTransfer(ctx, withdrawal, req.DestinationAddress, req.DestinationChain, req.SourceChain, req.SourceWalletAddress)
+	if err != nil {
+		s.logger.Error("async: crypto transfer failed — reversing ledger",
+			"error", err, "withdrawal_id", withdrawal.ID.String())
+		if revErr := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); revErr != nil {
+			s.logger.Error("async: failed to reverse ledger debit",
+				"error", revErr, "withdrawal_id", withdrawal.ID.String())
+		}
+		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
+		return
+	}
+
+	if transferResult.TransferID != "" {
+		_ = s.withdrawalRepo.UpdateBridgeTransfer(ctx, withdrawal.ID, transferResult.TransferID)
+	}
+
+	// Mark stash lock window consumed after successful transfer.
+	s.stashLockMu.RLock()
+	sl := s.stashLock
+	s.stashLockMu.RUnlock()
+	if req.SourceAccount == entities.WithdrawalSourceStashBalance && sl != nil {
+		if err := sl.MarkWithdrawn(ctx, req.UserID); err != nil {
+			s.logger.Error("async: failed to mark stash window consumed",
+				"user_id", req.UserID, "error", err)
+		}
+	}
+
+	if transferResult.TxHash != "" {
+		_ = s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, transferResult.TxHash)
+	}
+
+	state := strings.ToUpper(strings.TrimSpace(transferResult.State))
+	isFinalSuccess := state == "COMPLETE" || state == "COMPLETED" || state == "CONFIRMED" || state == "SUCCESS"
+
+	if s.limitsService != nil {
+		_ = s.limitsService.RecordWithdrawal(ctx, req.UserID, req.Amount)
+	}
+
+	if isFinalSuccess {
+		_ = s.settleCompletedCryptoWithdrawal(ctx, withdrawal)
+		if s.notificationService != nil {
+			_ = s.notificationService.NotifyWithdrawalCompleted(ctx, req.UserID, req.Amount, req.DestinationAddress)
+		}
+		s.logger.Info("async: crypto withdrawal completed",
+			"withdrawal_id", withdrawal.ID.String(), "tx_hash", transferResult.TxHash)
+	} else if withdrawal.Status == entities.WithdrawalStatusFailed {
+		if revErr := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); revErr != nil {
+			s.logger.Error("async: failed to reverse ledger after provider failure",
+				"error", revErr, "withdrawal_id", withdrawal.ID.String())
+		}
+	} else {
+		s.logger.Info("async: crypto withdrawal processing",
+			"withdrawal_id", withdrawal.ID.String(), "state", transferResult.State)
+	}
 }
 
 // InitiateFiatWithdrawal initiates a fiat withdrawal (USDC to fiat via Bridge)
