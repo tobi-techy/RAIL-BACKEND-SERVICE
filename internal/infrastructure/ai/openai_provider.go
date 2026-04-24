@@ -412,10 +412,16 @@ func (p *OpenAIProvider) buildOpenAIRequest(req *ChatRequest, tools []Tool) map[
 		openAIReq["max_tokens"] = p.config.MaxTokens
 	}
 
-	if req.Temperature != nil {
-		openAIReq["temperature"] = *req.Temperature
-	} else if p.config.Temperature > 0 {
-		openAIReq["temperature"] = p.config.Temperature
+	// Kimi (Moonshot) API requires temperature=1 for some models (e.g. reasoning models).
+	// Attempting any other value results in: "invalid temperature: only 1 is allowed for this model"
+	if p.Name() == "kimi" {
+		openAIReq["temperature"] = 1.0
+	} else {
+		if req.Temperature != nil {
+			openAIReq["temperature"] = *req.Temperature
+		} else if p.config.Temperature > 0 {
+			openAIReq["temperature"] = p.config.Temperature
+		}
 	}
 
 	if req.TopP != nil {

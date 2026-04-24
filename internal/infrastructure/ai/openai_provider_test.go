@@ -158,6 +158,53 @@ func TestOpenAIProviderBuildRequest(t *testing.T) {
 	})
 }
 
+func TestKimiTemperatureForcedToOne(t *testing.T) {
+	logger := zap.NewNop()
+
+	t.Run("kimi ignores config temperature and forces 1.0", func(t *testing.T) {
+		kimiP := NewOpenAIProvider(&ProviderConfig{
+			ProviderName: "kimi",
+			Model:        "moonshot-v1-8k",
+			Temperature:  0.15,
+		}, logger)
+
+		req := &ChatRequest{
+			Messages: []Message{{Role: "user", Content: "hello"}},
+		}
+		body := kimiP.buildOpenAIRequest(req, nil)
+		assert.Equal(t, 1.0, body["temperature"])
+	})
+
+	t.Run("kimi ignores request temperature and forces 1.0", func(t *testing.T) {
+		kimiP := NewOpenAIProvider(&ProviderConfig{
+			ProviderName: "kimi",
+			Model:        "moonshot-v1-8k",
+		}, logger)
+
+		req := &ChatRequest{
+			Messages:    []Message{{Role: "user", Content: "hello"}},
+			Temperature: Float64(0.5),
+		}
+		body := kimiP.buildOpenAIRequest(req, nil)
+		assert.Equal(t, 1.0, body["temperature"])
+	})
+
+	t.Run("openai respects request temperature", func(t *testing.T) {
+		openaiP := NewOpenAIProvider(&ProviderConfig{
+			ProviderName: "openai",
+			Model:        "gpt-4o",
+			Temperature:  0.15,
+		}, logger)
+
+		req := &ChatRequest{
+			Messages:    []Message{{Role: "user", Content: "hello"}},
+			Temperature: Float64(0.7),
+		}
+		body := openaiP.buildOpenAIRequest(req, nil)
+		assert.Equal(t, 0.7, body["temperature"])
+	})
+}
+
 func TestOpenAIProviderAPIBaseURL(t *testing.T) {
 	t.Run("default base URL", func(t *testing.T) {
 		p := NewOpenAIProvider(&ProviderConfig{}, zap.NewNop())

@@ -2748,7 +2748,11 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 			kimiConfig.MaxTokens = 2048
 		}
 		if kimiConfig.Temperature == 0 {
-			kimiConfig.Temperature = 0.15
+			kimiConfig.Temperature = 1.0 // Kimi API requires temperature=1 for some models
+		}
+		// kimi-k2.6 only accepts temperature=1
+		if strings.HasPrefix(kimiConfig.Model, "kimi-k2") {
+			kimiConfig.Temperature = 1.0
 		}
 		kimiProvider := ai.NewOpenAIProvider(kimiConfig, c.ZapLog)
 		providers = append(providers, kimiProvider)
