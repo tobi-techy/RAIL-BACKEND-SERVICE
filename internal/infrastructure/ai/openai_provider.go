@@ -483,7 +483,7 @@ func (p *OpenAIProvider) convertResponse(resp *openAIResponse, duration time.Dur
 
 			chatResp.ToolCalls[i] = ToolCall{
 				ID:        tc.ID,
-				Name:      tc.Function.Name,
+				Name:      strings.TrimSuffix(tc.Function.Name, "{}"),
 				Arguments: args,
 			}
 		}
