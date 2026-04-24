@@ -1099,9 +1099,13 @@ func overrideFromEnv() {
 	// AI Providers
 	if openaiKey := os.Getenv("OPENAI_API_KEY"); openaiKey != "" {
 		viper.Set("ai.openai.api_key", openaiKey)
+	} else {
+		viper.Set("ai.openai.api_key", "")
 	}
 	if geminiKey := os.Getenv("GEMINI_API_KEY"); geminiKey != "" {
 		viper.Set("ai.gemini.api_key", geminiKey)
+	} else {
+		viper.Set("ai.gemini.api_key", "")
 	}
 	if aiPrimary := os.Getenv("AI_PRIMARY_PROVIDER"); aiPrimary != "" {
 		viper.Set("ai.primary", aiPrimary)

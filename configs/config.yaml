@@ -267,7 +267,7 @@ webauthn:
 ai:
   primary: "kimi"
   openai:
-    api_key: "${OPENAI_API_KEY}"
+    api_key: ""
     model: "gpt-4o"
     max_tokens: 2048
     temperature: 0.15
@@ -275,7 +275,7 @@ ai:
     timeout_seconds: 30
     rate_limit_rpm: 60
   gemini:
-    api_key: "${GEMINI_API_KEY}"
+    api_key: ""
     model: "gemini-2.0-flash"
     max_tokens: 2048
     temperature: 0.15
