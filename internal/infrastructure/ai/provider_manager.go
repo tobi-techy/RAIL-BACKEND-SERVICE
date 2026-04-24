@@ -94,6 +94,11 @@ func (m *ProviderManager) ChatCompletionWithTools(ctx context.Context, req *Chat
 
 		lastErr = err
 
+		// If the context is already canceled, no point trying other providers
+		if ctx.Err() != nil {
+			break
+		}
+
 		// Log the failure
 		m.logger.Warn("Provider failed",
 			zap.String("provider", providerName),

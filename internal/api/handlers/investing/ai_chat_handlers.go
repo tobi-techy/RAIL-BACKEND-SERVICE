@@ -389,10 +389,18 @@ func (h *AIChatHandlers) QuickInsight(c *gin.Context) {
 		prompt = "Give me a quick portfolio update"
 	}
 
-	resp, err := h.orchestrator.Chat(c.Request.Context(), userID, prompt, nil)
+	// Use a detached context so client disconnect doesn't cancel the AI call.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	resp, err := h.orchestrator.Chat(ctx, userID, prompt, nil)
 	if err != nil {
-		h.logger.Error("Quick insight failed", "error", err, "user_id", userID.String())
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get insight"})
+		h.logger.Warn("Quick insight failed", "error", err, "user_id", userID.String())
+		c.JSON(http.StatusOK, gin.H{
+			"type":    insightType,
+			"insight": "",
+			"error":   "temporarily_unavailable",
+		})
 		return
 	}
 
