@@ -53,31 +53,31 @@ func truncateMerchant(name string) string {
 func humanizeCategory(cat string) string {
 	switch strings.ToLower(strings.TrimSpace(cat)) {
 	case "food & dining", "food", "food_and_dining", "dining", "restaurants":
-		return "Jollof Fund 🍚"
+		return "Jollof Fund"
 	case "transportation", "transport", "ride", "uber", "bolt":
-		return "Movement Money 🚗"
+		return "Movement Money"
 	case "entertainment", "fun", "leisure":
-		return "Fun Fund 🎉"
+		return "Fun Fund"
 	case "shopping", "retail", "online shopping":
-		return "Treat Yourself 🛍️"
+		return "Treat Yourself"
 	case "bills & utilities", "bills", "utilities", "electricity", "internet", "airtime":
-		return "Adulting Costs 💡"
+		return "Adulting Costs"
 	case "transfer", "transfers", "p2p", "p2p transfers":
-		return "Money Moves 💸"
+		return "Money Moves"
 	case "withdrawal", "withdrawals", "ngn withdrawal", "crypto withdrawal", "ngn_withdrawal":
-		return "Cash Out 🏧"
+		return "Cash Out"
 	case "subscription", "subscriptions":
-		return "Auto-Deductions 🔄"
+		return "Auto-Deductions"
 	case "health", "healthcare", "pharmacy", "medical":
-		return "Self-Care 💊"
+		return "Self-Care"
 	case "education", "school", "learning", "books":
-		return "Level Up 📚"
+		return "Level Up"
 	case "groceries", "supermarket":
-		return "Groceries 🛒"
+		return "Groceries"
 	case "card spend", "card_spend":
-		return "Card Spend 💳"
+		return "Card Spend"
 	case "receipts (cash)", "scanned_receipts":
-		return "Cash Spending 💵"
+		return "Cash Spending"
 	default:
 		return cat
 	}
