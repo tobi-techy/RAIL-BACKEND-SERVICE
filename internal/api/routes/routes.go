@@ -222,6 +222,45 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		})
 	}
 
+	// Internal stash-to-spend transfer — bypasses stash lock, uses INTERNAL_API_KEY
+	internal.POST("/stash/transfer-to-spend", func(c *gin.Context) {
+		key := c.GetHeader("Authorization")
+		if len(key) > 7 && key[:7] == "Bearer " {
+			key = key[7:]
+		}
+		if container.Config.Security.InternalAPIKey == "" || subtle.ConstantTimeCompare([]byte(key), []byte(container.Config.Security.InternalAPIKey)) != 1 {
+			c.JSON(401, gin.H{"error": "unauthorized"})
+			return
+		}
+		var req struct {
+			UserID string `json:"user_id" binding:"required"`
+			Amount string `json:"amount" binding:"required"`
+			Reason string `json:"reason" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		userID, err := uuid.Parse(req.UserID)
+		if err != nil {
+			c.JSON(400, gin.H{"error": "invalid user_id"})
+			return
+		}
+		amt, err := decimal.NewFromString(req.Amount)
+		if err != nil || amt.LessThanOrEqual(decimal.Zero) {
+			c.JSON(400, gin.H{"error": "amount must be positive"})
+			return
+		}
+		idempotencyKey := fmt.Sprintf("admin_stash_xfer_%s_%d", userID.String(), time.Now().UnixNano())
+		if err := container.LedgerService.AdminTransferStashToSpending(c.Request.Context(), userID, amt, idempotencyKey, req.Reason); err != nil {
+			container.ZapLog.Error("internal stash-to-spend transfer failed", zap.String("user_id", req.UserID), zap.Error(err))
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		container.ZapLog.Warn("internal stash-to-spend transfer completed", zap.String("user_id", req.UserID), zap.String("amount", req.Amount), zap.String("reason", req.Reason))
+		c.JSON(200, gin.H{"status": "completed", "user_id": req.UserID, "amount": req.Amount})
+	})
+
 	// Apple App Site Association — required for passkey Associated Domains
 	router.GET("/.well-known/apple-app-site-association", func(c *gin.Context) {
 		c.Header("Content-Type", "application/json")
