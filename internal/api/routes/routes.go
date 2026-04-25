@@ -223,6 +223,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	}
 
 	// Internal stash-to-spend transfer — bypasses stash lock, uses INTERNAL_API_KEY
+	// Security: amount capped at $500, full audit trail with caller IP
 	internal.POST("/stash/transfer-to-spend", func(c *gin.Context) {
 		key := c.GetHeader("Authorization")
 		if len(key) > 7 && key[:7] == "Bearer " {
@@ -251,13 +252,32 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			c.JSON(400, gin.H{"error": "amount must be positive"})
 			return
 		}
+		maxTransfer := decimal.NewFromInt(500)
+		if amt.GreaterThan(maxTransfer) {
+			c.JSON(400, gin.H{"error": "amount exceeds maximum of $500"})
+			return
+		}
+
+		// Audit: log before execution with caller IP for forensics
+		container.ZapLog.Warn("internal stash-to-spend transfer REQUESTED",
+			zap.String("user_id", req.UserID),
+			zap.String("amount", req.Amount),
+			zap.String("reason", req.Reason),
+			zap.String("caller_ip", c.ClientIP()),
+			zap.String("user_agent", c.Request.UserAgent()),
+		)
+
 		idempotencyKey := fmt.Sprintf("admin_stash_xfer_%s_%d", userID.String(), time.Now().UnixNano())
 		if err := container.LedgerService.AdminTransferStashToSpending(c.Request.Context(), userID, amt, idempotencyKey, req.Reason); err != nil {
-			container.ZapLog.Error("internal stash-to-spend transfer failed", zap.String("user_id", req.UserID), zap.Error(err))
+			container.ZapLog.Error("internal stash-to-spend transfer FAILED", zap.String("user_id", req.UserID), zap.Error(err))
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}
-		container.ZapLog.Warn("internal stash-to-spend transfer completed", zap.String("user_id", req.UserID), zap.String("amount", req.Amount), zap.String("reason", req.Reason))
+		container.ZapLog.Warn("internal stash-to-spend transfer COMPLETED",
+			zap.String("user_id", req.UserID),
+			zap.String("amount", req.Amount),
+			zap.String("caller_ip", c.ClientIP()),
+		)
 		c.JSON(200, gin.H{"status": "completed", "user_id": req.UserID, "amount": req.Amount})
 	})
 
