@@ -198,9 +198,10 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 			assistantContent = "Calling tools..."
 		}
 		assistantMsg := infraai.Message{
-			Role:      "assistant",
-			Content:   assistantContent,
-			ToolCalls: resp.ToolCalls,
+			Role:             "assistant",
+			Content:          assistantContent,
+			ToolCalls:        resp.ToolCalls,
+			ReasoningContent: resp.ReasoningContent,
 		}
 		messages = append(messages, assistantMsg)
 

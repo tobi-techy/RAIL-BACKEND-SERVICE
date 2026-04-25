@@ -36,21 +36,23 @@ func Float64(v float64) *float64 { return &v }
 // Message represents a single message in a conversation
 type Message struct {
 	Role       string     `json:"role"`    // "user", "assistant", "system", "tool"
-	Content    string     `json:"content"`
-	Name       string     `json:"name,omitempty"`         // Function name for role="tool" (improves provider compatibility)
-	ToolCallID string     `json:"tool_call_id,omitempty"` // Required for role="tool"
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // Required on assistant messages that invoke tools
+	Content          string     `json:"content"`
+	Name             string     `json:"name,omitempty"`              // Function name for role="tool" (improves provider compatibility)
+	ToolCallID       string     `json:"tool_call_id,omitempty"`      // Required for role="tool"
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`        // Required on assistant messages that invoke tools
+	ReasoningContent string     `json:"reasoning_content,omitempty"` // Kimi K2 thinking mode
 }
 
 // ChatResponse represents the response from a chat completion
 type ChatResponse struct {
-	Content      string     `json:"content"`
-	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
-	TokensUsed   int        `json:"tokens_used"`
-	Provider     string     `json:"provider"`
-	FinishReason string     `json:"finish_reason"` // "stop", "length", "tool_calls", etc.
-	Model        string     `json:"model"`
-	Duration     time.Duration `json:"duration"`
+	Content          string        `json:"content"`
+	ReasoningContent string        `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall    `json:"tool_calls,omitempty"`
+	TokensUsed       int           `json:"tokens_used"`
+	Provider         string        `json:"provider"`
+	FinishReason     string        `json:"finish_reason"`
+	Model            string        `json:"model"`
+	Duration         time.Duration `json:"duration"`
 }
 
 // Tool represents a function/tool that the AI can call

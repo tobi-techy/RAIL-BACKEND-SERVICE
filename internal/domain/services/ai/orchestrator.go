@@ -596,9 +596,10 @@ func (o *Orchestrator) ChatInContext(ctx context.Context, userID, convID uuid.UU
 			assistantContent = "Calling tools..."
 		}
 		assistantMsg := ai.Message{
-			Role:      "assistant",
-			Content:   assistantContent,
-			ToolCalls: resp.ToolCalls,
+			Role:             "assistant",
+			Content:          assistantContent,
+			ToolCalls:        resp.ToolCalls,
+			ReasoningContent: resp.ReasoningContent,
 		}
 		messages = append(messages, assistantMsg)
 

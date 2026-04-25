@@ -383,6 +383,9 @@ func (p *OpenAIProvider) buildOpenAIRequest(req *ChatRequest, tools []Tool) map[
 			}
 		}
 		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			if msg.ReasoningContent != "" {
+				m["reasoning_content"] = msg.ReasoningContent
+			}
 			toolCalls := make([]map[string]interface{}, len(msg.ToolCalls))
 			for i, tc := range msg.ToolCalls {
 				args, _ := json.Marshal(tc.Arguments)
@@ -463,12 +466,13 @@ func (p *OpenAIProvider) convertResponse(resp *openAIResponse, duration time.Dur
 
 	choice := resp.Choices[0]
 	chatResp := &ChatResponse{
-		Content:      choice.Message.Content,
-		TokensUsed:   resp.Usage.TotalTokens,
-		Provider:     p.Name(),
-		FinishReason: choice.FinishReason,
-		Model:        resp.Model,
-		Duration:     duration,
+		Content:          choice.Message.Content,
+		ReasoningContent: choice.Message.ReasoningContent,
+		TokensUsed:       resp.Usage.TotalTokens,
+		Provider:         p.Name(),
+		FinishReason:     choice.FinishReason,
+		Model:            resp.Model,
+		Duration:         duration,
 	}
 
 	// Parse tool calls if present
@@ -560,9 +564,10 @@ type openAIResponse struct {
 	Choices []struct {
 		Index   int `json:"index"`
 		Message struct {
-			Role      string `json:"role"`
-			Content   string `json:"content"`
-			ToolCalls []struct {
+			Role             string `json:"role"`
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
+			ToolCalls        []struct {
 				ID       string `json:"id"`
 				Type     string `json:"type"`
 				Function struct {

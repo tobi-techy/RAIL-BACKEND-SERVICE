@@ -631,9 +631,10 @@ func TestOpenAIProviderConvertResponse(t *testing.T) {
 			Choices: []struct {
 				Index   int `json:"index"`
 				Message struct {
-					Role      string `json:"role"`
-					Content   string `json:"content"`
-					ToolCalls []struct {
+					Role             string `json:"role"`
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoning_content"`
+					ToolCalls        []struct {
 						ID       string `json:"id"`
 						Type     string `json:"type"`
 						Function struct {
@@ -646,9 +647,10 @@ func TestOpenAIProviderConvertResponse(t *testing.T) {
 			}{
 				{
 					Message: struct {
-						Role      string `json:"role"`
-						Content   string `json:"content"`
-						ToolCalls []struct {
+						Role             string `json:"role"`
+						Content          string `json:"content"`
+						ReasoningContent string `json:"reasoning_content"`
+						ToolCalls        []struct {
 							ID       string `json:"id"`
 							Type     string `json:"type"`
 							Function struct {
