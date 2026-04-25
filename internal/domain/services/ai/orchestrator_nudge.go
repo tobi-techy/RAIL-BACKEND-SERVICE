@@ -51,7 +51,7 @@ func (o *Orchestrator) GenerateNudge(ctx context.Context, userID uuid.UUID, req 
 			budgetRemaining = b.MonthlyLimit.Sub(totalOut)
 			if budgetRemaining.IsNegative() {
 				budgetStatus = "over_budget"
-			} else {
+			} else if b.MonthlyLimit.GreaterThan(decimal.Zero) {
 				pct := totalOut.Div(b.MonthlyLimit).Mul(decimal.NewFromInt(100))
 				if pct.GreaterThan(decimal.NewFromInt(90)) {
 					budgetStatus = "near_limit"
