@@ -29,17 +29,17 @@ func FinancialIntelligenceTools(hasActionHistory bool) []infraai.Tool {
 		{
 			Name:        ToolGetFinancialHealth,
 			Description: "Calculate the user's financial health score from current balances, savings rate, budget progress, cash flow, and profile targets. Use for 'how am I doing', financial score, financial health, or progress check questions.",
-			Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+			Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "required": []string{}, "additionalProperties": false},
 		},
 		{
 			Name:        ToolGetFinancialPlan,
 			Description: "Build a practical personalized financial plan using profile, balances, spending, budget, recurring expenses, and savings targets. Use when the user asks what they should do next or wants a plan.",
-			Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+			Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "required": []string{}, "additionalProperties": false},
 		},
 		{
 			Name:        ToolGetCashFlowForecast,
 			Description: "Forecast end-of-month balance and daily safe-to-spend amount from month-to-date income/spending, recurring expenses, current balances, and budget/profile targets.",
-			Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+			Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "required": []string{}, "additionalProperties": false},
 		},
 	}
 	if hasActionHistory {

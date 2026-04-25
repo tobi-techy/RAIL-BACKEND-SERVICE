@@ -34,7 +34,7 @@ func FinancialProfileTools() []infraai.Tool {
 		{
 			Name:        ToolGetFinancialProfile,
 			Description: "Get the user's durable financial profile: preferred currency, income cadence, income, fixed costs, savings targets, emergency fund target, risk tolerance, investment horizon, and main goal. Use before personalized planning or recommendations.",
-			Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+			Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "required": []string{}, "additionalProperties": false},
 		},
 		{
 			Name:        ToolUpdateFinancialProfile,

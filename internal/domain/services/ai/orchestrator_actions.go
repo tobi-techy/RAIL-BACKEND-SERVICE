@@ -80,7 +80,11 @@ func newInMemoryPendingActions() PendingActionStore {
 func (p *inMemoryPendingActions) Set(_ context.Context, convID uuid.UUID, action *entities.PendingAction) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.store[convID.String()] = action
+	key := convID.String()
+	if existing, ok := p.store[key]; ok && !existing.IsExpired() {
+		return fmt.Errorf("a pending action already exists for conversation %s", convID)
+	}
+	p.store[key] = action
 	return nil
 }
 
@@ -281,7 +285,9 @@ func (o *Orchestrator) createTransferAction(ctx context.Context, userID, convID 
 		CreatedAt:      time.Now(),
 	}
 
-	o.pending.Set(ctx, convID, action)
+	if err := o.pending.Set(ctx, convID, action); err != nil {
+		return nil, fmt.Errorf("store pending transfer action: %w", err)
+	}
 
 	return map[string]interface{}{
 		"action_required": true,
@@ -321,7 +327,9 @@ func (o *Orchestrator) createSavingsGoalAction(ctx context.Context, userID, conv
 		CreatedAt:      time.Now(),
 	}
 
-	o.pending.Set(ctx, convID, action)
+	if err := o.pending.Set(ctx, convID, action); err != nil {
+		return nil, fmt.Errorf("store pending savings goal action: %w", err)
+	}
 
 	return map[string]interface{}{
 		"action_required": true,

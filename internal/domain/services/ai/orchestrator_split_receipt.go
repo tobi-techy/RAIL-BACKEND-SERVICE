@@ -90,7 +90,9 @@ func (o *Orchestrator) createSplitReceiptAction(ctx context.Context, userID, con
 		CreatedAt:      time.Now(),
 	}
 
-	o.pending.Set(ctx, convID, action)
+	if err := o.pending.Set(ctx, convID, action); err != nil {
+		return nil, fmt.Errorf("store pending split receipt action: %w", err)
+	}
 
 	return map[string]interface{}{
 		"action_required": true,

@@ -145,7 +145,8 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 	}
 
 	// Non-streaming tool call rounds (up to 5)
-	resp, err := o.aiProvider.ChatCompletionWithTools(ctx, req, o.GetTools())
+	tools := o.GetTools()
+	resp, err := o.aiProvider.ChatCompletionWithTools(ctx, req, tools)
 	if err != nil {
 		observeChat("unknown", time.Since(start), 0, err)
 		return fmt.Errorf("AI completion failed: %w", err)
@@ -220,7 +221,7 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 		}
 		req.Messages = messages
 
-		resp, err = o.aiProvider.ChatCompletionWithTools(ctx, req, o.GetTools())
+		resp, err = o.aiProvider.ChatCompletionWithTools(ctx, req, tools)
 		if err != nil {
 			return fmt.Errorf("follow-up completion failed: %w", err)
 		}

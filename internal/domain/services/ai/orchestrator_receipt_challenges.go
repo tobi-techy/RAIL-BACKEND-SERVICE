@@ -172,7 +172,7 @@ func ReceiptChallengeTool() infraai.Tool {
 	return infraai.Tool{
 		Name:        ToolGetReceiptChallenges,
 		Description: "Get active spending challenges and receipt scanning streaks. Shows progress on budget challenges and scanning consistency.",
-		Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "required": []string{}, "additionalProperties": false},
 	}
 }
 

@@ -2,7 +2,6 @@ package ai
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -52,9 +51,9 @@ func DialRealtime(apiKey, model string, logger *zap.Logger) (*RealtimeClient, er
 	conn, resp, err := websocket.DefaultDialer.Dial(url, header)
 	if err != nil {
 		if resp != nil {
-			return nil, fmt.Errorf("realtime connection failed (status %d): %w", resp.StatusCode, errors.New("websocket dial error"))
+			return nil, fmt.Errorf("realtime connection failed (status %d): %w", resp.StatusCode, err)
 		}
-		return nil, fmt.Errorf("realtime connection failed: %w", errors.New("websocket dial error"))
+		return nil, fmt.Errorf("realtime connection failed: %w", err)
 	}
 
 	return &RealtimeClient{conn: conn, logger: logger}, nil

@@ -49,7 +49,7 @@ func (o *Orchestrator) CheckSpendingAlert(ctx context.Context, userID uuid.UUID,
 	// Alert 2: Budget warning
 	if o.budgetProvider != nil {
 		budget, err := o.budgetProvider.GetByUserID(ctx, userID)
-		if err == nil && budget != nil {
+		if err == nil && budget != nil && budget.MonthlyLimit.IsPositive() {
 			spent := summary.Total.Add(amount)
 			pct := spent.Div(budget.MonthlyLimit).Mul(decimal.NewFromInt(100))
 			remaining := budget.MonthlyLimit.Sub(spent)
