@@ -34,6 +34,7 @@ const (
 	WithdrawalCurrencyUSDG  WithdrawalCurrency = "USDG"
 	WithdrawalCurrencyUSD   WithdrawalCurrency = "USD"
 	WithdrawalCurrencyEUR   WithdrawalCurrency = "EUR"
+	WithdrawalCurrencyGBP   WithdrawalCurrency = "GBP"
 	WithdrawalCurrencyNGN   WithdrawalCurrency = "NGN"
 )
 
@@ -46,6 +47,7 @@ var ValidWithdrawalCurrencies = map[WithdrawalCurrency]bool{
 	WithdrawalCurrencyUSDG:  true,
 	WithdrawalCurrencyUSD:   true,
 	WithdrawalCurrencyEUR:   true,
+	WithdrawalCurrencyGBP:   true,
 	WithdrawalCurrencyNGN:   true,
 }
 
@@ -327,6 +329,16 @@ func (r *InitiateFiatWithdrawalRequest) Validate() error {
 			if (len(bic) != 8 && len(bic) != 11) || !isUpperAlphaNumeric(bic) {
 				return fmt.Errorf("BIC must be 8 or 11 alphanumeric characters")
 			}
+		}
+	}
+	if r.Currency == WithdrawalCurrencyGBP {
+		sortCode := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(r.RoutingNumber), " ", ""), "-", "")
+		account := strings.ReplaceAll(strings.TrimSpace(r.AccountNumber), " ", "")
+		if len(sortCode) != 6 {
+			return fmt.Errorf("sort code must be exactly 6 digits")
+		}
+		if len(account) != 8 {
+			return fmt.Errorf("account number must be exactly 8 digits for GBP")
 		}
 	}
 	if r.Currency == WithdrawalCurrencyUSD {

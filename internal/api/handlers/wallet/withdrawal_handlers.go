@@ -66,7 +66,7 @@ type CryptoWithdrawalRequest struct {
 // Only requires routing number - bank account created during withdrawal process
 type FiatWithdrawalRequest struct {
 	Amount            string `json:"amount" binding:"required"`
-	Currency          string `json:"currency" binding:"required,oneof=USD EUR NGN"`
+	Currency          string `json:"currency" binding:"required,oneof=USD EUR GBP NGN"`
 	AccountHolderName string `json:"account_holder_name" binding:"required,min=2,max=255"`
 	AccountNumber     string `json:"account_number,omitempty"`
 	RoutingNumber     string `json:"routing_number,omitempty"`
@@ -80,7 +80,7 @@ type FiatWithdrawalRequest struct {
 type WithdrawalFeeRequest struct {
 	WithdrawalType string `form:"type" binding:"required,oneof=crypto fiat"`
 	Amount         string `form:"amount" binding:"required"`
-	Currency       string `form:"currency" binding:"required,oneof=USDC USDT EURC PYUSD USDG USD EUR NGN"`
+	Currency       string `form:"currency" binding:"required,oneof=USDC USDT EURC PYUSD USDG USD EUR GBP NGN"`
 	SourceChain    string `form:"source_chain"`
 	DestChain      string `form:"dest_chain"`
 }
@@ -244,6 +244,10 @@ func (h *WithdrawalHandlers) InitiateFiatWithdrawal(c *gin.Context) {
 	currency := entities.WithdrawalCurrencyUSD
 	if req.Currency == "EUR" {
 		currency = entities.WithdrawalCurrencyEUR
+	} else if req.Currency == "GBP" {
+		currency = entities.WithdrawalCurrencyGBP
+	} else if req.Currency == "NGN" {
+		currency = entities.WithdrawalCurrencyNGN
 	}
 
 	wallet, err := h.walletProvider.GetUserWalletByChain(c.Request.Context(), userID, string(entities.WalletChainSolana))
@@ -308,6 +312,8 @@ func (h *WithdrawalHandlers) GetWithdrawalFees(c *gin.Context) {
 		currency = entities.WithdrawalCurrencyUSD
 	case "EUR":
 		currency = entities.WithdrawalCurrencyEUR
+	case "GBP":
+		currency = entities.WithdrawalCurrencyGBP
 	case "NGN":
 		currency = entities.WithdrawalCurrencyNGN
 	}
@@ -468,7 +474,13 @@ func (h *WithdrawalHandlers) handleWithdrawalError(c *gin.Context, err error, us
 		common.SendBadRequest(c, common.ErrCodeInvalidRequest, msg)
 	case strings.Contains(errLower, "bridge validation error"),
 		strings.Contains(errLower, "api parameter invalid"):
-		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Invalid withdrawal parameters")
+		// Surface the actual Bridge error for debugging
+		msg := "Invalid withdrawal parameters"
+		if strings.Contains(errMsg, "body:") {
+			msg = "Invalid withdrawal parameters: " + errMsg
+		}
+		h.logger.Warn("Bridge API parameter error", "raw_error", errMsg, "user_id", userID)
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, msg)
 	case strings.Contains(errMsg, "bridge client not configured"),
 		strings.Contains(errMsg, "bridge wallet ID not provided"),
 		strings.Contains(errMsg, "bridge wallet ID is required"):
@@ -595,6 +607,17 @@ func validateFiatDestination(req FiatWithdrawalRequest) error {
 				return fmt.Errorf("bic must be 8 or 11 alphanumeric characters")
 			}
 		}
+	case "GBP":
+		sortCode := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(req.RoutingNumber), " ", ""), "-", "")
+		account := strings.ReplaceAll(strings.TrimSpace(req.AccountNumber), " ", "")
+		if len(sortCode) != 6 || !isDigits(sortCode) {
+			return fmt.Errorf("sort code (routing_number) must be exactly 6 digits for GBP withdrawals")
+		}
+		if len(account) != 8 || !isDigits(account) {
+			return fmt.Errorf("account_number must be exactly 8 digits for GBP withdrawals")
+		}
+	case "NGN":
+		// NGN withdrawals use PAJ integration — bank details validated by PAJ
 	default:
 		return fmt.Errorf("unsupported fiat currency: %s", currency)
 	}
