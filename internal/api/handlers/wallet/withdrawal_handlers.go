@@ -474,13 +474,8 @@ func (h *WithdrawalHandlers) handleWithdrawalError(c *gin.Context, err error, us
 		common.SendBadRequest(c, common.ErrCodeInvalidRequest, msg)
 	case strings.Contains(errLower, "bridge validation error"),
 		strings.Contains(errLower, "api parameter invalid"):
-		// Surface the actual Bridge error for debugging
-		msg := "Invalid withdrawal parameters"
-		if strings.Contains(errMsg, "body:") {
-			msg = "Invalid withdrawal parameters: " + errMsg
-		}
 		h.logger.Warn("Bridge API parameter error", "raw_error", errMsg, "user_id", userID)
-		common.SendBadRequest(c, common.ErrCodeInvalidRequest, msg)
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Invalid withdrawal parameters. Please check your details and try again.")
 	case strings.Contains(errMsg, "bridge client not configured"),
 		strings.Contains(errMsg, "bridge wallet ID not provided"),
 		strings.Contains(errMsg, "bridge wallet ID is required"):

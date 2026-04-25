@@ -334,10 +334,10 @@ func (r *InitiateFiatWithdrawalRequest) Validate() error {
 	if r.Currency == WithdrawalCurrencyGBP {
 		sortCode := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(r.RoutingNumber), " ", ""), "-", "")
 		account := strings.ReplaceAll(strings.TrimSpace(r.AccountNumber), " ", "")
-		if len(sortCode) != 6 {
+		if len(sortCode) != 6 || !isDigitsOnly(sortCode) {
 			return fmt.Errorf("sort code must be exactly 6 digits")
 		}
-		if len(account) != 8 {
+		if len(account) != 8 || !isDigitsOnly(account) {
 			return fmt.Errorf("account number must be exactly 8 digits for GBP")
 		}
 	}

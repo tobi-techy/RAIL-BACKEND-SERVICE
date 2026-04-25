@@ -728,7 +728,11 @@ func (s *Service) AdminTransferStashToSpending(ctx context.Context, userID uuid.
 		return fmt.Errorf("get stash account: %w", err)
 	}
 
-	desc := fmt.Sprintf("Admin stash-to-spend transfer: %s (reason: %s)", amount.String(), adminReason)
+	reason := adminReason
+	if len(reason) > 255 {
+		reason = reason[:255]
+	}
+	desc := fmt.Sprintf("Admin stash-to-spend transfer: %s (reason: %s)", amount.String(), reason)
 	refType := "admin_stash_transfer"
 	txReq := &entities.CreateTransactionRequest{
 		UserID:          &userID,

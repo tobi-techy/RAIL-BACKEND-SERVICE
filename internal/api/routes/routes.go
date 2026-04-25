@@ -269,8 +269,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 		idempotencyKey := fmt.Sprintf("admin_stash_xfer_%s_%d", userID.String(), time.Now().UnixNano())
 		if err := container.LedgerService.AdminTransferStashToSpending(c.Request.Context(), userID, amt, idempotencyKey, req.Reason); err != nil {
-			container.ZapLog.Error("internal stash-to-spend transfer FAILED", zap.String("user_id", req.UserID), zap.Error(err))
-			c.JSON(500, gin.H{"error": err.Error()})
+			container.ZapLog.Error("internal stash-to-spend transfer FAILED", zap.String("user_id", req.UserID), zap.String("amount", req.Amount), zap.Error(err))
+			c.JSON(500, gin.H{"error": "transfer failed, check server logs"})
 			return
 		}
 		container.ZapLog.Warn("internal stash-to-spend transfer COMPLETED",

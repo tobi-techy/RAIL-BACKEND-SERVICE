@@ -2,15 +2,12 @@ package handlers
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"github.com/rail-service/rail_service/internal/domain/services/allocation"
-	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/internal/domain/services/yield"
 	recon "github.com/rail-service/rail_service/internal/workers/reconciliation"
 	yield_distribution "github.com/rail-service/rail_service/internal/workers/yield_distribution"
@@ -112,55 +109,5 @@ func TriggerYieldDistribution(worker *yield_distribution.Worker, logger *zap.Log
 			}
 		}()
 		c.JSON(http.StatusAccepted, gin.H{"status": "accepted", "period_start": req.PeriodStart, "period_end": req.PeriodEnd})
-	}
-}
-
-// AdminTransferStashToSpend transfers funds from stash to spend, bypassing the stash lock.
-// POST /admin/stash/transfer-to-spend
-// Body: { "user_id": "uuid", "amount": "3.87", "reason": "admin override" }
-func AdminTransferStashToSpend(ledgerService *ledger.Service, logger *zap.Logger) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var req struct {
-			UserID string `json:"user_id" binding:"required"`
-			Amount string `json:"amount" binding:"required"`
-			Reason string `json:"reason" binding:"required"`
-		}
-		if err := c.ShouldBindJSON(&req); err != nil {
-			common.SendBadRequest(c, "INVALID_REQUEST", err.Error())
-			return
-		}
-
-		userID, err := uuid.Parse(req.UserID)
-		if err != nil {
-			common.SendBadRequest(c, "INVALID_USER_ID", "Invalid user ID format")
-			return
-		}
-
-		amount, err := decimal.NewFromString(req.Amount)
-		if err != nil || amount.LessThanOrEqual(decimal.Zero) {
-			common.SendBadRequest(c, "INVALID_AMOUNT", "Amount must be a positive number")
-			return
-		}
-
-		idempotencyKey := fmt.Sprintf("admin_stash_transfer_%s_%s", userID.String(), uuid.New().String())
-
-		if err := ledgerService.AdminTransferStashToSpending(c.Request.Context(), userID, amount, idempotencyKey, req.Reason); err != nil {
-			logger.Error("Admin stash-to-spend transfer failed", zap.String("user_id", req.UserID), zap.String("amount", req.Amount), zap.Error(err))
-			common.SendInternalError(c, "TRANSFER_FAILED", err.Error())
-			return
-		}
-
-		logger.Warn("Admin stash-to-spend transfer completed",
-			zap.String("user_id", req.UserID),
-			zap.String("amount", req.Amount),
-			zap.String("reason", req.Reason),
-		)
-
-		c.JSON(http.StatusOK, gin.H{
-			"status":  "completed",
-			"user_id": req.UserID,
-			"amount":  req.Amount,
-			"reason":  req.Reason,
-		})
 	}
 }
