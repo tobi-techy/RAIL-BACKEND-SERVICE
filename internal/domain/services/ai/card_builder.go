@@ -136,7 +136,7 @@ func buildSpendingCards(data map[string]interface{}) []entities.InsightCard {
 				pct = amt.Div(totalDec).Mul(decimal.NewFromInt(100))
 			}
 			items = append(items, entities.BreakdownItem{
-				Label:   str(c, "category"),
+				Label:   humanizeCategory(str(c, "category")),
 				Amount:  amt,
 				Percent: pct,
 				Color:   categoryColors[i%len(categoryColors)],

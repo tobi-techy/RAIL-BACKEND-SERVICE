@@ -318,7 +318,7 @@ func (o *Orchestrator) executeReceiptHistory(ctx context.Context, userID uuid.UU
 	catTotals, _ := o.receiptHistory.GetTotalByCategory(ctx, userID, start, end)
 	cats := make([]map[string]interface{}, len(catTotals))
 	for i, c := range catTotals {
-		cats[i] = map[string]interface{}{"category": c.Category, "total": c.Total.String(), "count": c.Count}
+		cats[i] = map[string]interface{}{"category": humanizeCategory(c.Category), "total": c.Total.String(), "count": c.Count}
 	}
 
 	return map[string]interface{}{

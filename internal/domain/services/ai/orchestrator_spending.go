@@ -9,6 +9,7 @@ package ai
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,6 +47,40 @@ func truncateMerchant(name string) string {
 		return name[:20]
 	}
 	return name
+}
+
+// humanizeCategory replaces generic category names with personality-driven labels.
+func humanizeCategory(cat string) string {
+	switch strings.ToLower(strings.TrimSpace(cat)) {
+	case "food & dining", "food", "food_and_dining", "dining", "restaurants":
+		return "Jollof Fund 🍚"
+	case "transportation", "transport", "ride", "uber", "bolt":
+		return "Movement Money 🚗"
+	case "entertainment", "fun", "leisure":
+		return "Fun Fund 🎉"
+	case "shopping", "retail", "online shopping":
+		return "Treat Yourself 🛍️"
+	case "bills & utilities", "bills", "utilities", "electricity", "internet", "airtime":
+		return "Adulting Costs 💡"
+	case "transfer", "transfers", "p2p", "p2p transfers":
+		return "Money Moves 💸"
+	case "withdrawal", "withdrawals", "ngn withdrawal", "crypto withdrawal", "ngn_withdrawal":
+		return "Cash Out 🏧"
+	case "subscription", "subscriptions":
+		return "Auto-Deductions 🔄"
+	case "health", "healthcare", "pharmacy", "medical":
+		return "Self-Care 💊"
+	case "education", "school", "learning", "books":
+		return "Level Up 📚"
+	case "groceries", "supermarket":
+		return "Groceries 🛒"
+	case "card spend", "card_spend":
+		return "Card Spend 💳"
+	case "receipts (cash)", "scanned_receipts":
+		return "Cash Spending 💵"
+	default:
+		return cat
+	}
 }
 
 // SpendingTools returns tool definitions for spending analysis.
@@ -166,7 +201,7 @@ func (o *Orchestrator) executeSpendingSummary(ctx context.Context, userID uuid.U
 
 	cats := make([]map[string]interface{}, len(summary.Categories))
 	for i, c := range summary.Categories {
-		cats[i] = map[string]interface{}{"category": c.Category, "total": c.Total.String(), "count": c.Count}
+		cats[i] = map[string]interface{}{"category": humanizeCategory(c.Category), "total": c.Total.String(), "count": c.Count}
 	}
 
 	merchants := make([]map[string]interface{}, len(summary.Merchants))
@@ -241,7 +276,7 @@ func (o *Orchestrator) executeRecentTransactions(ctx context.Context, userID uui
 			"direction": "money_out",
 			"date":      t.Date,
 			"amount":    t.Amount.String(),
-			"category":  t.Category,
+			"category":  humanizeCategory(t.Category),
 			"source":    t.Source,
 			"merchant":  t.Source,
 		}
@@ -277,13 +312,13 @@ func (o *Orchestrator) executeMoneyFlow(ctx context.Context, userID uuid.UUID, a
 	// Build chart data: breakdown by category for pie/bar charts
 	chartBreakdown := []map[string]interface{}{}
 	if flow.TotalWithdrawals.IsPositive() {
-		chartBreakdown = append(chartBreakdown, map[string]interface{}{"category": "Withdrawals", "amount": flow.TotalWithdrawals.StringFixed(2), "count": flow.WithdrawalCount})
+		chartBreakdown = append(chartBreakdown, map[string]interface{}{"category": humanizeCategory("Withdrawals"), "amount": flow.TotalWithdrawals.StringFixed(2), "count": flow.WithdrawalCount})
 	}
 	if flow.TotalCardSpend.IsPositive() {
-		chartBreakdown = append(chartBreakdown, map[string]interface{}{"category": "Card Spend", "amount": flow.TotalCardSpend.StringFixed(2), "count": flow.CardSpendCount})
+		chartBreakdown = append(chartBreakdown, map[string]interface{}{"category": humanizeCategory("Card Spend"), "amount": flow.TotalCardSpend.StringFixed(2), "count": flow.CardSpendCount})
 	}
 	if flow.TotalP2P.IsPositive() {
-		chartBreakdown = append(chartBreakdown, map[string]interface{}{"category": "P2P Transfers", "amount": flow.TotalP2P.StringFixed(2), "count": flow.P2PCount})
+		chartBreakdown = append(chartBreakdown, map[string]interface{}{"category": humanizeCategory("P2P Transfers"), "amount": flow.TotalP2P.StringFixed(2), "count": flow.P2PCount})
 	}
 	if flow.TotalReceipts.IsPositive() {
 		chartBreakdown = append(chartBreakdown, map[string]interface{}{"category": "Receipts (cash)", "amount": flow.TotalReceipts.StringFixed(2), "count": flow.ReceiptCount})
