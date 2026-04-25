@@ -2771,6 +2771,9 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		if strings.HasPrefix(kimiConfig.Model, "kimi-k2") {
 			kimiConfig.Temperature = 1.0
 			kimiConfig.TopP = 0.95
+			if kimiConfig.Timeout < 60*time.Second {
+				kimiConfig.Timeout = 60 * time.Second // K2 thinking mode needs more time
+			}
 		}
 		kimiProvider := ai.NewOpenAIProvider(kimiConfig, c.ZapLog)
 		providers = append(providers, kimiProvider)
