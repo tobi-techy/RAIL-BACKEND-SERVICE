@@ -64,8 +64,10 @@ func humanizeCategory(cat string) string {
 		return "Adulting Costs"
 	case "transfer", "transfers", "p2p", "p2p transfers":
 		return "Money Moves"
-	case "withdrawal", "withdrawals", "ngn withdrawal", "crypto withdrawal", "ngn_withdrawal":
-		return "Cash Out"
+	case "withdrawal", "withdrawals", "crypto withdrawal":
+		return "Crypto Withdrawal"
+	case "ngn withdrawal", "ngn_withdrawal", "naira withdrawal":
+		return "Naira Cash Out"
 	case "subscription", "subscriptions":
 		return "Auto-Deductions"
 	case "health", "healthcare", "pharmacy", "medical":
