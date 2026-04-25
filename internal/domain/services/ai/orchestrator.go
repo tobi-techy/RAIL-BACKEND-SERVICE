@@ -318,7 +318,7 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 		{
 			Name:        ToolGetAccountSummary,
 			Description: "Get a complete account overview in one call: current spend and stash balances, this month's total deposits, total spending, net flow, and budget status if set. Use this FIRST for any general question like 'how am I doing', 'what's my balance', 'give me an overview', or 'summarize my finances'. This is the most efficient tool for broad financial questions.",
-			Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+			Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "required": []string{}, "additionalProperties": false},
 		},
 		{
 			Name:        ToolGetPortfolioStats,
@@ -343,7 +343,7 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 		{
 			Name:        ToolGetAllocations,
 			Description: "Get current portfolio allocation by basket",
-			Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+			Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "required": []string{}, "additionalProperties": false},
 		},
 		{
 			Name:        ToolGetContributions,
@@ -359,12 +359,12 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 		{
 			Name:        ToolGetWeeklyNews,
 			Description: "Get relevant news for user holdings this week",
-			Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+			Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "required": []string{}, "additionalProperties": false},
 		},
 		{
 			Name:        ToolGetStreak,
 			Description: "Get user's investment streak information",
-			Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+			Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "required": []string{}, "additionalProperties": false},
 		},
 	}
 	if o.knowledge != nil {
@@ -488,7 +488,8 @@ func (o *Orchestrator) ChatInContext(ctx context.Context, userID, convID uuid.UU
 	}
 
 	// Get response with tools
-	resp, err := o.aiProvider.ChatCompletionWithTools(ctx, req, o.GetTools())
+	tools := o.GetTools()
+	resp, err := o.aiProvider.ChatCompletionWithTools(ctx, req, tools)
 	if err != nil {
 		observeChat("unknown", time.Since(start), 0, err)
 		return nil, fmt.Errorf("AI completion failed: %w", err)
@@ -618,8 +619,9 @@ func (o *Orchestrator) ChatInContext(ctx context.Context, userID, convID uuid.UU
 		}
 
 		req.Messages = messages
-		resp, err = o.aiProvider.ChatCompletionWithTools(ctx, req, o.GetTools())
+		resp, err = o.aiProvider.ChatCompletionWithTools(ctx, req, tools)
 		if err != nil {
+			observeChat("unknown", time.Since(start), totalTokens, err)
 			return nil, fmt.Errorf("follow-up completion failed: %w", err)
 		}
 		totalTokens += resp.TokensUsed

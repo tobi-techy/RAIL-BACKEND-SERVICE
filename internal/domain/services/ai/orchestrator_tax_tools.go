@@ -58,7 +58,7 @@ func TaxAndReportTools(hasProfile, hasEmail bool) []infraai.Tool {
 	tools = append(tools, infraai.Tool{
 		Name:        ToolGetTaxCalendar,
 		Description: "Get upcoming tax filing deadlines for the user's country. Use when user asks about tax deadlines, when to file, or tax calendar.",
-		Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "required": []string{}, "additionalProperties": false},
 	})
 
 	if hasEmail {
@@ -82,7 +82,7 @@ func TaxAndReportTools(hasProfile, hasEmail bool) []infraai.Tool {
 	tools = append(tools, infraai.Tool{
 		Name:        ToolGetSavingsGoals,
 		Description: "Get the user's savings goals and progress. Use when user asks about their goals, savings targets, or how close they are to a goal.",
-		Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "required": []string{}, "additionalProperties": false},
 	})
 
 	return tools
@@ -271,7 +271,9 @@ func (o *Orchestrator) executeSendReport(ctx context.Context, userID, convID uui
 		ExpiresAt:      time.Now().Add(pendingActionTTL),
 		CreatedAt:      time.Now(),
 	}
-	o.pending.Set(ctx, convID, action)
+	if err := o.pending.Set(ctx, convID, action); err != nil {
+		return nil, fmt.Errorf("store pending report action: %w", err)
+	}
 
 	return map[string]interface{}{
 		"action_required": true,

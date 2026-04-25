@@ -49,6 +49,7 @@ func (p *GeminiProvider) ChatCompletionStream(ctx context.Context, req *ChatRequ
 	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
 
 	var totalTokens int
+	var sentDone bool
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -99,10 +100,19 @@ func (p *GeminiProvider) ChatCompletionStream(ctx context.Context, req *ChatRequ
 		if candidate.FinishReason == "STOP" || candidate.FinishReason == "MAX_TOKENS" {
 			sc.Done = true
 			sc.TokensUsed = totalTokens
+			sentDone = true
 		}
 
 		select {
 		case ch <- sc:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	if !sentDone {
+		select {
+		case ch <- StreamChunk{Done: true, TokensUsed: totalTokens}:
 		case <-ctx.Done():
 			return ctx.Err()
 		}

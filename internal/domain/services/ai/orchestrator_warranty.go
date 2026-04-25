@@ -26,7 +26,7 @@ func WarrantyTool() infraai.Tool {
 	return infraai.Tool{
 		Name:        ToolGetWarrantyItems,
 		Description: "Get items that may still be under warranty or within return period. Tracks high-value purchases from receipts and reminds about warranty expiry.",
-		Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "required": []string{}, "additionalProperties": false},
 	}
 }
 

@@ -46,8 +46,10 @@ func SpendingPatternsTool() infraai.Tool {
 		Name:        ToolGetSpendingPatterns,
 		Description: "Analyze spending behavior patterns: which days the user spends most, weekend vs weekday habits, largest transactions, and week-over-week trends. Use when user asks about spending habits, patterns, or behavioral insights.",
 		Parameters: map[string]interface{}{
-			"type":       "object",
-			"properties": map[string]interface{}{},
+			"type":                 "object",
+			"properties":           map[string]interface{}{},
+			"required":             []string{},
+			"additionalProperties": false,
 		},
 	}
 }

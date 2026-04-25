@@ -290,7 +290,7 @@ func (o *Orchestrator) executeMoneyFlow(ctx context.Context, userID uuid.UUID, a
 	}
 
 	// Daily spending trend
-		dailyTrend := []map[string]interface{}{}
+	dailyTrend := []map[string]interface{}{}
 	if o.spending != nil {
 		days, err := o.spending.GetDailyTrend(ctx, userID, start, end)
 		if err != nil {

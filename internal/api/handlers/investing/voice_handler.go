@@ -214,9 +214,14 @@ func (h *VoiceHandler) handleToolCall(ctx context.Context, userID uuid.UUID, con
 	resultJSON, _ := json.Marshal(result)
 
 	// Send tool result back to OpenAI
-	conn.Send(infraai.NewToolResult(callID, string(resultJSON)))
+	if err := conn.Send(infraai.NewToolResult(callID, string(resultJSON))); err != nil {
+		h.logger.Warn("failed to send tool result", zap.String("tool", name), zap.Error(err))
+		return
+	}
 	// Trigger model to continue generating after receiving tool result
-	conn.Send(infraai.NewResponseCreate())
+	if err := conn.Send(infraai.NewResponseCreate()); err != nil {
+		h.logger.Warn("failed to send response.create", zap.Error(err))
+	}
 }
 
 func (h *VoiceHandler) trackUsage(ctx context.Context, userID uuid.UUID, startTime time.Time) {

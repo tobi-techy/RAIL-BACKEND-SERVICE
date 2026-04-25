@@ -531,7 +531,7 @@ func (p *OpenAIProvider) handleHTTPError(statusCode int, body []byte) error {
 	switch statusCode {
 	case http.StatusTooManyRequests:
 		provErr.Code = ErrorCodeRateLimit
-		provErr.Retryable = false
+		provErr.Retryable = true
 	case http.StatusUnauthorized, http.StatusForbidden:
 		provErr.Code = ErrorCodeAuthentication
 	case http.StatusBadRequest:

@@ -29,8 +29,10 @@ func ComparativeContextTool() infraai.Tool {
 		Name:        ToolGetComparativeContext,
 		Description: "Get the user's financial position with context: current balances, savings rate, and how they compare. Use when user asks 'how am I doing?', 'am I saving enough?', or wants perspective on their progress.",
 		Parameters: map[string]interface{}{
-			"type":       "object",
-			"properties": map[string]interface{}{},
+			"type":                 "object",
+			"properties":           map[string]interface{}{},
+			"required":             []string{},
+			"additionalProperties": false,
 		},
 	}
 }

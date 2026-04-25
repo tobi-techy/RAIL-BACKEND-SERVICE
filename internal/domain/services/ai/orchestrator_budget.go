@@ -34,7 +34,7 @@ func BudgetTools() []infraai.Tool {
 		{
 			Name:        ToolGetBudget,
 			Description: "Get the user's monthly spending budget and current progress. Shows budget limit, amount spent so far this month, remaining budget, and percentage used. Use when user asks about their budget, spending limit, or how much they can still spend.",
-			Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+			Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "required": []string{}, "additionalProperties": false},
 		},
 		{
 			Name:        ToolSetBudget,
@@ -128,7 +128,9 @@ func (o *Orchestrator) createSetBudgetAction(ctx context.Context, userID, convID
 		CreatedAt:      time.Now(),
 	}
 
-	o.pending.Set(ctx, convID, action)
+	if err := o.pending.Set(ctx, convID, action); err != nil {
+		return nil, fmt.Errorf("store pending budget action: %w", err)
+	}
 
 	return map[string]interface{}{
 		"action_required": true,

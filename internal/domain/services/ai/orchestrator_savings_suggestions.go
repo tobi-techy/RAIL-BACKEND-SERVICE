@@ -158,7 +158,7 @@ func SavingsSuggestionTool() infraai.Tool {
 	return infraai.Tool{
 		Name:        ToolGetSavingsSuggestions,
 		Description: "Analyze spending patterns from receipts and transactions to suggest concrete ways to save money. Shows how much could be saved and the impact on stash growth.",
-		Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "required": []string{}, "additionalProperties": false},
 	}
 }
 

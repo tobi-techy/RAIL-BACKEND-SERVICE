@@ -38,7 +38,7 @@ func RecurringExpenseTool() infraai.Tool {
 	return infraai.Tool{
 		Name:        ToolGetRecurringExpenses,
 		Description: "Analyze receipts and card transactions to detect recurring expenses (subscriptions, regular purchases). Use when user asks about recurring spending, subscriptions, or regular expenses.",
-		Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "required": []string{}, "additionalProperties": false},
 	}
 }
 
