@@ -1030,6 +1030,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					aiGroup.GET("/financial-advice", middleware.AuthRateLimit(20), aiChatHandlers.FinancialAdvice)
 					aiGroup.GET("/financial-timeline", middleware.AuthRateLimit(20), aiChatHandlers.FinancialTimeline)
 					aiGroup.GET("/suggestions", aiChatHandlers.GetSuggestedQuestions)
+					aiGroup.POST("/nudge", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), aiChatHandlers.Nudge)
 
 					// Image analysis (receipt scanning)
 					if container.Config.AI.OpenAI.APIKey != "" {

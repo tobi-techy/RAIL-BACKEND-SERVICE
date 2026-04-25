@@ -584,3 +584,34 @@ type WrappedCard struct {
 	Content string                 `json:"content"`
 	Data    map[string]interface{} `json:"data,omitempty"`
 }
+
+// Nudge handles POST /api/v1/ai/nudge — lightweight ambient nudge for Miriam.
+func (h *AIChatHandlers) Nudge(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	var req aiservice.NudgeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "screen field is required"})
+		return
+	}
+	if req.Screen == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "screen field is required"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := h.orchestrator.GenerateNudge(ctx, userID, req)
+	if err != nil {
+		h.logger.Warn("nudge generation failed", "error", err, "user_id", userID.String())
+		c.JSON(http.StatusOK, gin.H{"show": false, "severity": "info"})
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
