@@ -367,6 +367,60 @@ func (r *ReceiptSplitRepository) GetSplitItems(ctx context.Context, splitID uuid
 	return items, err
 }
 
+func (r *ReceiptSplitRepository) AddParticipant(ctx context.Context, p *entities.ReceiptSplitParticipant) error {
+	_, err := r.db.ExecContext(ctx, `INSERT INTO receipt_split_participants (id, split_id, rail_tag, participant_user_id, amount, status, p2p_transfer_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+		p.ID, p.SplitID, p.RailTag, p.ParticipantUID, p.Amount, p.Status, p.P2PTransferID)
+	return err
+}
+
+func (r *ReceiptSplitRepository) GetByID(ctx context.Context, userID, splitID uuid.UUID) (*entities.ReceiptSplit, error) {
+	var s entities.ReceiptSplit
+	err := r.db.GetContext(ctx, &s, `SELECT * FROM receipt_splits WHERE id = $1 AND user_id = $2`, splitID, userID)
+	if err != nil {
+		return nil, err
+	}
+	var participants []entities.ReceiptSplitParticipant
+	_ = r.db.SelectContext(ctx, &participants, `SELECT * FROM receipt_split_participants WHERE split_id = $1 ORDER BY created_at`, splitID)
+	s.Participants = participants
+	return &s, nil
+}
+
+func (r *ReceiptSplitRepository) ListByUser(ctx context.Context, userID uuid.UUID, status string, limit int) ([]entities.ReceiptSplit, error) {
+	var splits []entities.ReceiptSplit
+	if status != "" {
+		err := r.db.SelectContext(ctx, &splits, `SELECT * FROM receipt_splits WHERE user_id = $1 AND status = $2 ORDER BY created_at DESC LIMIT $3`, userID, status, limit)
+		return splits, err
+	}
+	err := r.db.SelectContext(ctx, &splits, `SELECT * FROM receipt_splits WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`, userID, limit)
+	return splits, err
+}
+
+func (r *ReceiptSplitRepository) UpdateParticipantStatus(ctx context.Context, participantID uuid.UUID, status string) error {
+	query := `UPDATE receipt_split_participants SET status = $1`
+	if status == entities.ParticipantPaid {
+		query += `, paid_at = NOW()`
+	}
+	query += ` WHERE id = $2`
+	_, err := r.db.ExecContext(ctx, query, status, participantID)
+	return err
+}
+
+func (r *ReceiptSplitRepository) IncrementReminder(ctx context.Context, participantID uuid.UUID) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE receipt_split_participants SET reminder_count = reminder_count + 1, last_reminded_at = NOW() WHERE id = $1`, participantID)
+	return err
+}
+
+func (r *ReceiptSplitRepository) UpdateSplitStatus(ctx context.Context, splitID uuid.UUID, status string) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE receipt_splits SET status = $1, updated_at = NOW() WHERE id = $2`, status, splitID)
+	return err
+}
+
+func (r *ReceiptSplitRepository) GetPendingParticipants(ctx context.Context, splitID uuid.UUID) ([]entities.ReceiptSplitParticipant, error) {
+	var participants []entities.ReceiptSplitParticipant
+	err := r.db.SelectContext(ctx, &participants, `SELECT * FROM receipt_split_participants WHERE split_id = $1 AND status IN ('pending', 'requested')`, splitID)
+	return participants, err
+}
+
 // ============================================================================
 // Currency Exchange Rates
 // ============================================================================

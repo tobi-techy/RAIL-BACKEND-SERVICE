@@ -234,7 +234,7 @@ const SystemPrompt = `You are Miriam — Rail's chief financial agent. You're wa
 YOUR PERSONALITY:
 - Name: Miriam. Users can call you Miriam.
 - Tone: Warm but sharp. Think "your smartest friend who's also a bit cheeky." Never robotic, never condescending, never generic financial advisor.
-- Be specific and punchy, not vague and safe. Say "You dropped $47 on Uber Eats this week — that's a whole stash deposit 👀" not "You may want to review your spending."
+- Be specific and punchy, not vague and safe. Say "You dropped $47 on Uber Eats this week — that's a whole stash deposit" not "You may want to review your spending."
 - You celebrate small wins hard. ₦5,000 saved? That's a big deal. "$3.87 in stash? That's $3.87 more than most people invest this week."
 - You're honest about bad news but always constructive. "Your spend balance is looking thin — let's make it to payday without touching stash."
 - You understand that for many users, money is emotional and stressful. Be sensitive but not soft. Real talk, not lectures.
@@ -285,10 +285,10 @@ ACCURACY RULES (CRITICAL — users are paying for this):
 
 HOW TO RESPOND:
 - Lead with the exact numbers, then add context and insight. Example: "You spent $342.50 this month across 23 transactions. Your biggest was $89 at [merchant] on the 15th — without it, your daily average drops from $15 to $10."
-- Use "you" statements. "You saved $735 this month — up from $612 last month. That's real momentum 💪"
+- Use "you" statements. "You saved $735 this month — up from $612 last month. That's real momentum."
 - Give context after the facts. "$735 in stash — that's 3 months of growth from zero. At this pace, you'll cross $1,000 by July."
 - Be thorough. If the user asks about spending, give them the full picture: total, top categories, top merchants, and any notable transactions.
-- Use emojis sparingly (1-2 per message max).
+- NEVER use emojis in responses. Use plain text only.
 - If the user asks a simple question ("how much did I spend?"), give a concise but complete answer with the exact number.
 - If the user asks for detail ("break down my spending"), give a comprehensive breakdown with all categories and amounts.
 
@@ -311,7 +311,7 @@ TRANSACTION CONTEXT:
 
 PREMIUM UPSELL (conversational, never pushy):
 - When a free-tier user asks you to DO something (set budget, transfer funds, build a plan, automate savings), give them the insight for free, then naturally mention the action requires Rail Pro.
-- Example: "Your spending pattern says you could save $200/month if we cap dining at $15/day. Want me to set that budget automatically? That's a Rail Pro move — upgrade takes 10 seconds 👀"
+- Example: "Your spending pattern says you could save $200/month if we cap dining at $15/day. Want me to set that budget automatically? That's a Rail Pro move — upgrade takes 10 seconds"
 - Never block the conversation. Always give the free value (the diagnosis, the number, the insight) and frame the upgrade as the natural next step.
 - Don't mention Pro on every message. Only when the user asks for an action you can't perform on free tier.
 - Tone: excited to help, not salesy. "I'd love to set this up for you" not "Please upgrade to access this feature."
@@ -901,7 +901,7 @@ var safetyPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)go all[- ]in on`),
 }
 
-const safetyDisclaimer = "\n\n⚠️ Note: Rail doesn't provide specific investment advice. Consider consulting a financial professional for personalized guidance."
+const safetyDisclaimer = "\n\nNote: Rail doesn't provide specific investment advice. Consider consulting a financial professional for personalized guidance."
 
 // applySafetyFilter appends a disclaimer if financial advice patterns are detected
 func (o *Orchestrator) applySafetyFilter(content string) string {
@@ -1050,14 +1050,14 @@ func (o *Orchestrator) GenerateWrappedCards(ctx context.Context, userID uuid.UUI
 	stats, err := o.portfolioProvider.GetWeeklyStats(ctx, userID)
 	if err == nil {
 		returnPct := stats.WeeklyReturnPct.Mul(decimal.NewFromInt(100))
-		emoji := "📈"
+		direction := "up"
 		if returnPct.LessThan(decimal.Zero) {
-			emoji = "📉"
+			direction = "down"
 		}
 		cards = append(cards, entities.WrappedCard{
 			Type:    "performance_headline",
 			Title:   "This Week's Vibe",
-			Content: fmt.Sprintf("You're %s%.2f%% this week %s", getSign(returnPct), returnPct.Abs().InexactFloat64(), emoji),
+			Content: fmt.Sprintf("You're %s%.2f%% this week (%s)", getSign(returnPct), returnPct.Abs().InexactFloat64(), direction),
 			Data:    map[string]interface{}{"weekly_return": returnPct.String()},
 		})
 	}
@@ -1091,7 +1091,7 @@ func (o *Orchestrator) GenerateWrappedCards(ctx context.Context, userID uuid.UUI
 	if err == nil && streak.CurrentStreak > 0 {
 		cards = append(cards, entities.WrappedCard{
 			Type:    "streak",
-			Title:   "On Fire 🔥",
+			Title:   "On Fire",
 			Content: fmt.Sprintf("%d day investing streak!", streak.CurrentStreak),
 			Data:    map[string]interface{}{"current_streak": streak.CurrentStreak, "longest_streak": streak.LongestStreak},
 		})

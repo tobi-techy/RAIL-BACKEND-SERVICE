@@ -81,6 +81,11 @@ func (s *StreakService) GetUserStreaks(ctx context.Context, userID uuid.UUID) ([
 	return s.repo.GetStreaksByUserID(ctx, userID)
 }
 
+// ResetStreakByID resets a specific streak by ID
+func (s *StreakService) ResetStreakByID(ctx context.Context, id uuid.UUID) error {
+	return s.repo.ResetStreak(ctx, id)
+}
+
 // CheckAndResetStreaks finds and resets all broken streaks. Returns count of reset streaks.
 func (s *StreakService) CheckAndResetStreaks(ctx context.Context) (int, error) {
 	expired, err := s.repo.GetExpiredStreaks(ctx)

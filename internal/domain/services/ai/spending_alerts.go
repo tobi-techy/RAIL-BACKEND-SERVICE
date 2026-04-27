@@ -41,7 +41,7 @@ func (o *Orchestrator) CheckSpendingAlert(ctx context.Context, userID uuid.UUID,
 		alerts = append(alerts, &SpendingAlert{
 			UserID:  userID,
 			Type:    "high_spend",
-			Message: fmt.Sprintf("Heads up — that $%s transaction is more than 3x your daily average of $%s 💡", amount.StringFixed(2), dailyAvg.StringFixed(2)),
+			Message: fmt.Sprintf("Heads up — that $%s transaction is more than 3x your daily average of $%s", amount.StringFixed(2), dailyAvg.StringFixed(2)),
 			Amount:  amount.String(),
 		})
 	}
@@ -58,7 +58,7 @@ func (o *Orchestrator) CheckSpendingAlert(ctx context.Context, userID uuid.UUID,
 				alerts = append(alerts, &SpendingAlert{
 					UserID:  userID,
 					Type:    "budget_exceeded",
-					Message: fmt.Sprintf("You've exceeded your $%s monthly budget by $%s ⚠️", budget.MonthlyLimit.StringFixed(2), remaining.Abs().StringFixed(2)),
+					Message: fmt.Sprintf("You've exceeded your $%s monthly budget by $%s", budget.MonthlyLimit.StringFixed(2), remaining.Abs().StringFixed(2)),
 					Amount:  amount.String(),
 				})
 			} else if pct.GreaterThan(decimal.NewFromInt(80)) {

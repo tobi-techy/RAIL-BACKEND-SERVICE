@@ -35,7 +35,7 @@ func NewAlpacaWebhookHandlers(eventProcessor *alpacaService.EventProcessor, logg
 	}
 
 	if skipVerify {
-		logger.Warn("⚠️  INSECURE MODE: Alpaca webhook signature verification is DISABLED",
+		logger.Warn("INSECURE MODE: Alpaca webhook signature verification is DISABLED",
 			"environment", environment,
 			"warning", "This should only be used in local development")
 	}

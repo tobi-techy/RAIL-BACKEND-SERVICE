@@ -60,7 +60,7 @@ func (w *StreakEvaluator) run(ctx context.Context) {
 		for _, s := range nearBreaking {
 			if w.notifier != nil {
 				w.notifier.SendToUser(ctx, s.UserID,
-					"Your streak is about to break! 🔥",
+					"Your streak is about to break!",
 					"Deposit today to keep your streak alive.",
 					map[string]interface{}{"type": "streak_warning", "streak_type": string(s.StreakType)})
 			}

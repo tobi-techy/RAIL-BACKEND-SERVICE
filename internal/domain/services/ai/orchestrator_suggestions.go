@@ -59,6 +59,12 @@ func (o *Orchestrator) GetPersonalizedSuggestions(ctx context.Context, userID uu
 		suggestions = append(suggestions, "What's the best way to start investing?")
 	}
 
+	// Feature discovery — introduce new capabilities
+	suggestions = append(suggestions,
+		"Set up an automation to save every Friday",
+		"Create a savings goal with friends",
+	)
+
 	if len(suggestions) > 8 {
 		suggestions = suggestions[:8]
 	}

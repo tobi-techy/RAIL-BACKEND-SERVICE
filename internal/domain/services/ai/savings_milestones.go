@@ -57,20 +57,20 @@ func (o *Orchestrator) CheckSavingsMilestone(ctx context.Context, userID uuid.UU
 func milestoneMessage(threshold, balance decimal.Decimal) string {
 	switch {
 	case threshold.Equal(decimal.NewFromInt(100)):
-		return fmt.Sprintf("You just crossed $100 in stash! 🎉 Your savings journey is officially underway. Balance: $%s", balance.StringFixed(2))
+		return fmt.Sprintf("You just crossed $100 in stash! Your savings journey is officially underway. Balance: $%s", balance.StringFixed(2))
 	case threshold.Equal(decimal.NewFromInt(250)):
-		return fmt.Sprintf("$250 in stash! 💪 You're building real momentum. Balance: $%s", balance.StringFixed(2))
+		return fmt.Sprintf("$250 in stash! You're building real momentum. Balance: $%s", balance.StringFixed(2))
 	case threshold.Equal(decimal.NewFromInt(500)):
-		return fmt.Sprintf("Half a thousand dollars saved! 🚀 $500 in stash and growing. Balance: $%s", balance.StringFixed(2))
+		return fmt.Sprintf("Half a thousand dollars saved! $500 in stash and growing. Balance: $%s", balance.StringFixed(2))
 	case threshold.Equal(decimal.NewFromInt(1000)):
-		return fmt.Sprintf("$1,000 in stash! 🏆 This is a huge milestone — you're in the top tier of savers. Balance: $%s", balance.StringFixed(2))
+		return fmt.Sprintf("$1,000 in stash! This is a huge milestone — you're in the top tier of savers. Balance: $%s", balance.StringFixed(2))
 	case threshold.Equal(decimal.NewFromInt(2500)):
-		return fmt.Sprintf("$2,500 saved! 🌟 Your money is seriously working for you now. Balance: $%s", balance.StringFixed(2))
+		return fmt.Sprintf("$2,500 saved! Your money is seriously working for you now. Balance: $%s", balance.StringFixed(2))
 	case threshold.Equal(decimal.NewFromInt(5000)):
-		return fmt.Sprintf("$5,000 in stash! 💎 That's impressive discipline. Your yield is compounding beautifully. Balance: $%s", balance.StringFixed(2))
+		return fmt.Sprintf("$5,000 in stash! That's impressive discipline. Your yield is compounding beautifully. Balance: $%s", balance.StringFixed(2))
 	case threshold.Equal(decimal.NewFromInt(10000)):
-		return fmt.Sprintf("$10,000 saved! 👑 You've built something real. Balance: $%s", balance.StringFixed(2))
+		return fmt.Sprintf("$10,000 saved! You've built something real. Balance: $%s", balance.StringFixed(2))
 	default:
-		return fmt.Sprintf("New savings milestone: $%s! Balance: $%s 🎉", threshold.String(), balance.StringFixed(2))
+		return fmt.Sprintf("New savings milestone: $%s! Balance: $%s", threshold.String(), balance.StringFixed(2))
 	}
 }

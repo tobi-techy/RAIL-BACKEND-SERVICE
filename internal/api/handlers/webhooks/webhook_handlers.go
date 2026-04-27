@@ -48,7 +48,7 @@ func NewWebhookHandlers(
 	}
 
 	if skipSignatureVerify {
-		logger.Warn("⚠️  INSECURE MODE: Webhook signature verification is DISABLED",
+		logger.Warn("INSECURE MODE: Webhook signature verification is DISABLED",
 			"environment", environment,
 			"warning", "This should only be used in local development")
 	}

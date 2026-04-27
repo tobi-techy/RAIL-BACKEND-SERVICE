@@ -416,12 +416,12 @@ func (w *Worker) runMorningGreeting(ctx context.Context) {
 		}
 		stash, _ := w.balances.GetAccountBalance(ctx, u.ID, entities.AccountTypeStashBalance)
 
-		body := fmt.Sprintf("You have $%s to spend today. Stash: $%s and growing 📈", spend.StringFixed(2), stash.StringFixed(2))
+		body := fmt.Sprintf("You have $%s to spend today. Stash: $%s and growing", spend.StringFixed(2), stash.StringFixed(2))
 
 		key := fmt.Sprintf("ai-insights:morning:%s:%s", u.ID.String(), nowUTC.In(time.UTC).Format("2006-01-02"))
 		_ = w.sendAlertOnce(ctx, key, 26*time.Hour, func() error {
 			return w.pushSender.SendToUser(ctx, u.ID,
-				"Good morning ☀️",
+				"Good morning",
 				body,
 				map[string]interface{}{
 					"type":      "morning_greeting",
@@ -491,13 +491,13 @@ func (w *Worker) runMonthRecap(ctx context.Context) {
 			continue
 		}
 
-		body := fmt.Sprintf("This month: $%s spent across %d transactions. Your stash is at $%s. Total balance: $%s. Ask Miriam for your full breakdown 💬",
+		body := fmt.Sprintf("This month: $%s spent across %d transactions. Your stash is at $%s. Total balance: $%s. Ask Miriam for your full breakdown",
 			spent.StringFixed(2), txCount, stash.StringFixed(2), total.StringFixed(2))
 
 		key := fmt.Sprintf("ai-insights:month-recap:%s:%04d-%02d", u.ID.String(), now.Year(), now.Month())
 		_ = w.sendAlertOnce(ctx, key, 32*24*time.Hour, func() error {
 			return w.pushSender.SendToUser(ctx, u.ID,
-				"Your Month in Review 📊",
+				"Your Month in Review",
 				body,
 				map[string]interface{}{
 					"type":      "month_recap",
@@ -528,7 +528,7 @@ func (w *Worker) checkIdleMoney(ctx context.Context, userID uuid.UUID) {
 		key := fmt.Sprintf("ai-insights:idle-money:%s:%s", userID.String(), weekAgo.Format("2006-01-02"))
 		_ = w.sendAlertOnce(ctx, key, 7*24*time.Hour, func() error {
 			return w.pushSender.SendToUser(ctx, userID,
-				"Money sitting idle 💤",
+				"Money sitting idle",
 				"$"+spend.StringFixed(2)+" in your spend wallet with barely any activity. Want to move $"+suggestAmt+" to stash where it earns yield?",
 				map[string]interface{}{
 					"type":           "idle_money",
