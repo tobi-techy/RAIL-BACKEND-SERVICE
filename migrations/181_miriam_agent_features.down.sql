@@ -1,0 +1,10 @@
+-- Rollback Miriam Agent Features
+DROP TABLE IF EXISTS shared_goal_invites;
+DROP TABLE IF EXISTS shared_goal_contributions;
+DROP TABLE IF EXISTS shared_goal_members;
+DROP TABLE IF EXISTS shared_goals;
+DROP TABLE IF EXISTS user_context_signals;
+DROP TABLE IF EXISTS receipt_split_participants;
+DROP TABLE IF EXISTS receipt_splits;
+DROP TABLE IF EXISTS miriam_automation_logs;
+DROP TABLE IF EXISTS miriam_automations;

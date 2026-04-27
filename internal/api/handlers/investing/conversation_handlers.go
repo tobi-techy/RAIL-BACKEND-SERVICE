@@ -171,7 +171,7 @@ func (h *ConversationHandlers) ChatInConversation(c *gin.Context) {
 	if h.orchestrator.IsUserOverCostCeiling(c.Request.Context(), userID) {
 		c.JSON(http.StatusOK, gin.H{
 			"data": gin.H{
-				"content":      "You've been chatting a lot this month! Your AI assistant will be back at full power next month 💡",
+				"content":      "You've been chatting a lot this month! Your AI assistant will be back at full power next month",
 				"over_ceiling": true,
 				"tokens_used":  0,
 			},
@@ -185,10 +185,10 @@ func (h *ConversationHandlers) ChatInConversation(c *gin.Context) {
 
 		// Detect auth/configuration errors for clearer user feedback
 		var provErr *ai.ProviderError
-		msg := "I'm having a moment — try again in a few seconds 🔄"
+		msg := "I'm having a moment — try again in a few seconds"
 		if errors.As(err, &provErr) {
 			if provErr.Code == ai.ErrorCodeAuthentication {
-				msg = "My brain is having trouble connecting right now — our team has been notified 🧠"
+				msg = "My brain is having trouble connecting right now — our team has been notified"
 			}
 		}
 

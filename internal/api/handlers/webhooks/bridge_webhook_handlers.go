@@ -73,7 +73,7 @@ func NewBridgeWebhookHandler(service BridgeWebhookService, walletService WalletW
 
 	// Log warning if verification is being skipped
 	if skipWebhookVerification {
-		logger.Warn("⚠️  INSECURE MODE: Webhook signature verification is DISABLED",
+		logger.Warn("INSECURE MODE: Webhook signature verification is DISABLED",
 			zap.String("environment", environment),
 			zap.String("warning", "This should only be used in local development"))
 	}
@@ -947,7 +947,7 @@ func (h *BridgeWebhookHandler) handleCardStatusChanged(c *gin.Context, payload B
 func (h *BridgeWebhookHandler) verifySignature(signature string, body []byte) bool {
 	if h.webhookSecret == "" {
 		if h.skipWebhookVerification {
-			h.logger.Warn("⚠️  INSECURE: Bridge webhook verification disabled - no secret configured")
+			h.logger.Warn("INSECURE: Bridge webhook verification disabled - no secret configured")
 			return true
 		}
 		h.logger.Error("Bridge webhook public key not configured - rejecting webhook for security")

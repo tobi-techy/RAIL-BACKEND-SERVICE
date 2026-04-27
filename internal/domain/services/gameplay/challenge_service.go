@@ -85,7 +85,7 @@ func (s *ChallengeService) UpdateProgress(ctx context.Context, userID uuid.UUID,
 		// Notify
 		if s.notifier != nil {
 			s.notifier.SendToUser(ctx, userID,
-				"Challenge Complete! 🎯",
+				"Challenge Complete!",
 				fmt.Sprintf("You completed \"%s\" and earned %d XP!", uc.Challenge.Title, uc.Challenge.XPReward),
 				map[string]interface{}{"type": "challenge_complete", "challenge_id": uc.ChallengeID.String()})
 		}

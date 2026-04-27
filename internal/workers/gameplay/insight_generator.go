@@ -105,7 +105,7 @@ func (w *InsightGenerator) run(ctx context.Context) {
 			continue
 		}
 		if w.notifier != nil {
-			w.notifier.SendToUser(ctx, uid, "💡 Financial Insight", insight,
+			w.notifier.SendToUser(ctx, uid, "Financial Insight", insight,
 				map[string]interface{}{"type": "financial_insight"})
 			sent++
 		}

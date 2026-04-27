@@ -182,13 +182,20 @@ type EmergencyContact struct {
 type ReceiptSplit struct {
 	ID          uuid.UUID          `json:"id" db:"id"`
 	ReceiptID   uuid.UUID          `json:"receipt_id" db:"receipt_id"`
-	UserID      uuid.UUID          `json:"user_id" db:"user_id"` // creator
+	UserID      uuid.UUID          `json:"user_id" db:"user_id"`
+	SplitType   string             `json:"split_type" db:"split_type"`
 	TotalAmount decimal.Decimal    `json:"total_amount" db:"total_amount"`
+	YourShare   decimal.Decimal    `json:"your_share" db:"your_share"`
 	Currency    string             `json:"currency" db:"currency"`
-	Status      string             `json:"status" db:"status"` // pending, settled, cancelled
+	Status      string             `json:"status" db:"status"`
+	Message     *string            `json:"message,omitempty" db:"message"`
+	ExpiresAt   *time.Time         `json:"expires_at,omitempty" db:"expires_at"`
 	Items       []ReceiptSplitItem `json:"items" db:"items"`
 	CreatedAt   time.Time          `json:"created_at" db:"created_at"`
 	UpdatedAt   time.Time          `json:"updated_at" db:"updated_at"`
+
+	// Joined
+	Participants []ReceiptSplitParticipant `json:"participants,omitempty" db:"-"`
 }
 
 // ReceiptSplitItem tracks who pays for what.
@@ -201,6 +208,30 @@ type ReceiptSplitItem struct {
 	Paid          bool            `json:"paid" db:"paid"`
 	P2PTransferID *uuid.UUID      `json:"p2p_transfer_id,omitempty" db:"p2p_transfer_id"`
 	CreatedAt     time.Time       `json:"created_at" db:"created_at"`
+}
+
+// Participant statuses for receipt split tracking.
+const (
+	ParticipantPending   = "pending"
+	ParticipantRequested = "requested"
+	ParticipantPaid      = "paid"
+	ParticipantDeclined  = "declined"
+	ParticipantExpired   = "expired"
+)
+
+// ReceiptSplitParticipant tracks each person's share in a split.
+type ReceiptSplitParticipant struct {
+	ID              uuid.UUID       `json:"id" db:"id"`
+	SplitID         uuid.UUID       `json:"split_id" db:"split_id"`
+	RailTag         string          `json:"rail_tag" db:"rail_tag"`
+	ParticipantUID  *uuid.UUID      `json:"participant_user_id,omitempty" db:"participant_user_id"`
+	Amount          decimal.Decimal `json:"amount" db:"amount"`
+	Status          string          `json:"status" db:"status"`
+	P2PTransferID   *uuid.UUID      `json:"p2p_transfer_id,omitempty" db:"p2p_transfer_id"`
+	ReminderCount   int             `json:"reminder_count" db:"reminder_count"`
+	LastRemindedAt  *time.Time      `json:"last_reminded_at,omitempty" db:"last_reminded_at"`
+	PaidAt          *time.Time      `json:"paid_at,omitempty" db:"paid_at"`
+	CreatedAt       time.Time       `json:"created_at" db:"created_at"`
 }
 
 // ============================================================================

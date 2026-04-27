@@ -371,7 +371,7 @@ func (s *NotificationService) NotifyYieldCredited(ctx context.Context, userID uu
 }
 
 func (s *NotificationService) NotifyStashWindowOpen(ctx context.Context, userID uuid.UUID, windowEnd time.Time) error {
-	title := "Your stash is unlocked 🔓"
+	title := "Your stash is unlocked"
 	daysLeft := int(time.Until(windowEnd).Hours()/24) + 1
 	body := fmt.Sprintf("Your stash withdrawal window is open for %d days (until %s). Transfer to spend or withdraw before it re-locks for another 90 days.", daysLeft, windowEnd.Format("Jan 2"))
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "stash_window_open", "window_end": windowEnd.Format(time.RFC3339)})

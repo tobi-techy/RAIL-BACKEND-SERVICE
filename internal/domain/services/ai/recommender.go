@@ -172,10 +172,10 @@ func (r *Recommender) fallbackRecommendations(baskets []*entities.Basket, curren
 
 	recommendations := make([]*Recommendation, 0, limit)
 	reasons := []string{
-		"Diversify your portfolio with this one 📈",
-		"Popular choice among investors your age 🔥",
-		"Great for long-term growth potential 🚀",
-		"Balanced risk-reward ratio 💪",
+		"Diversify your portfolio with this one",
+		"Popular choice among investors your age",
+		"Great for long-term growth potential",
+		"Balanced risk-reward ratio",
 		"Trending basket this month ⭐",
 	}
 
@@ -237,7 +237,7 @@ func (r *Recommender) GetRebalanceSuggestions(ctx context.Context, userID uuid.U
 	if maxWeight.GreaterThan(threshold) {
 		return &RebalanceSuggestion{
 			NeedsRebalance: true,
-			Message:        fmt.Sprintf("Your portfolio is %s%% in %s - consider diversifying 🎯", maxWeight.Mul(decimal.NewFromInt(100)).StringFixed(0), maxBasket),
+			Message:        fmt.Sprintf("Your portfolio is %s%% in %s - consider diversifying", maxWeight.Mul(decimal.NewFromInt(100)).StringFixed(0), maxBasket),
 			Actions: []RebalanceAction{
 				{Type: "reduce", BasketName: maxBasket, Reason: "High concentration risk"},
 			},
@@ -246,7 +246,7 @@ func (r *Recommender) GetRebalanceSuggestions(ctx context.Context, userID uuid.U
 
 	return &RebalanceSuggestion{
 		NeedsRebalance: false,
-		Message:        "Your portfolio looks well-balanced! 🎉",
+		Message:        "Your portfolio looks well-balanced!",
 	}, nil
 }
 

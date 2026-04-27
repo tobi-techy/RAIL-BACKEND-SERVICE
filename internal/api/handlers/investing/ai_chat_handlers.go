@@ -164,7 +164,7 @@ func (h *AIChatHandlers) ChatStream(c *gin.Context) {
 	if !getAIChatLimiter(userID.String()).Allow() {
 		c.JSON(http.StatusTooManyRequests, gin.H{
 			"error":   "rate_limit_exceeded",
-			"message": "You're sending messages too fast — take a breather and try again in a minute 🕐",
+			"message": "You're sending messages too fast — take a breather and try again in a minute",
 		})
 		return
 	}
@@ -182,7 +182,7 @@ func (h *AIChatHandlers) ChatStream(c *gin.Context) {
 
 	if h.orchestrator.IsUserOverCostCeiling(c.Request.Context(), userID) {
 		c.JSON(http.StatusOK, gin.H{
-			"content":      "You've been chatting a lot this month! Your AI assistant will be back at full power next month 💡",
+			"content":      "You've been chatting a lot this month! Your AI assistant will be back at full power next month",
 			"over_ceiling": true,
 		})
 		return
@@ -225,10 +225,14 @@ func (h *AIChatHandlers) ChatStream(c *gin.Context) {
 
 	if err != nil {
 		h.logger.Error("Stream chat failed", "error", err, "user_id", userID.String())
-		errEvent, _ := json.Marshal(aiservice.StreamEvent{Type: "error", Content: "Something went wrong — try again 🔄"})
+		errEvent, _ := json.Marshal(aiservice.StreamEvent{Type: "error", Content: "Something went wrong — try again"})
 		fmt.Fprintf(c.Writer, "data: %s\n\n", errEvent)
 		c.Writer.Flush()
 	}
+
+	// Signal end of stream
+	fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
+	c.Writer.Flush()
 }
 
 // Chat handles POST /api/v1/ai/chat
@@ -242,7 +246,7 @@ func (h *AIChatHandlers) Chat(c *gin.Context) {
 	if !getAIChatLimiter(userID.String()).Allow() {
 		c.JSON(http.StatusTooManyRequests, gin.H{
 			"error":   "rate_limit_exceeded",
-			"message": "You're sending messages too fast — take a breather and try again in a minute 🕐",
+			"message": "You're sending messages too fast — take a breather and try again in a minute",
 		})
 		return
 	}
@@ -261,7 +265,7 @@ func (h *AIChatHandlers) Chat(c *gin.Context) {
 	// Cost ceiling check — degrade gracefully instead of blocking
 	if h.orchestrator.IsUserOverCostCeiling(c.Request.Context(), userID) {
 		c.JSON(http.StatusOK, gin.H{
-			"content":      "You've been chatting a lot this month! Your AI assistant will be back at full power next month. In the meantime, check your Station for balances and the spending tab for insights 💡",
+			"content":      "You've been chatting a lot this month! Your AI assistant will be back at full power next month. In the meantime, check your Station for balances and the spending tab for insights",
 			"over_ceiling": true,
 			"tokens_used":  0,
 		})
@@ -290,10 +294,10 @@ func (h *AIChatHandlers) Chat(c *gin.Context) {
 		if err != nil {
 			h.logger.Error("Chat failed", "error", err, "user_id", userID.String())
 
-			msg := "I'm having a moment — try again in a few seconds 🔄"
+			msg := "I'm having a moment — try again in a few seconds"
 			var provErr *ai.ProviderError
 			if errors.As(err, &provErr) && provErr.Code == ai.ErrorCodeAuthentication {
-				msg = "My brain is having trouble connecting right now — our team has been notified 🧠"
+				msg = "My brain is having trouble connecting right now — our team has been notified"
 			}
 
 			c.JSON(http.StatusOK, gin.H{
@@ -321,10 +325,10 @@ func (h *AIChatHandlers) Chat(c *gin.Context) {
 	if err != nil {
 		h.logger.Error("Chat failed", "error", err, "user_id", userID.String())
 
-		msg := "I'm having a moment — try again in a few seconds 🔄"
+		msg := "I'm having a moment — try again in a few seconds"
 		var provErr *ai.ProviderError
 		if errors.As(err, &provErr) && provErr.Code == ai.ErrorCodeAuthentication {
-			msg = "My brain is having trouble connecting right now — our team has been notified 🧠"
+			msg = "My brain is having trouble connecting right now — our team has been notified"
 		}
 
 		c.JSON(http.StatusOK, gin.H{
@@ -372,7 +376,7 @@ func (h *AIChatHandlers) QuickInsight(c *gin.Context) {
 	}
 
 	if h.orchestrator.IsUserOverCostCeiling(c.Request.Context(), userID) {
-		c.JSON(http.StatusOK, gin.H{"type": "performance", "insight": "Your AI assistant will be back at full power next month 💡", "over_ceiling": true})
+		c.JSON(http.StatusOK, gin.H{"type": "performance", "insight": "Your AI assistant will be back at full power next month", "over_ceiling": true})
 		return
 	}
 

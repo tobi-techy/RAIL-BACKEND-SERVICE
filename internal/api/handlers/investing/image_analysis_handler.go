@@ -82,7 +82,7 @@ func (h *ImageAnalysisHandler) AnalyzeImage(c *gin.Context) {
 
 	if h.orchestrator != nil && h.orchestrator.IsUserOverCostCeiling(c.Request.Context(), userID) {
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{
-			"content":      "You've reached your monthly AI limit 💡",
+			"content":      "You've reached your monthly AI limit",
 			"over_ceiling": true,
 			"tokens_used":  0,
 		}})
@@ -104,7 +104,7 @@ func (h *ImageAnalysisHandler) AnalyzeImage(c *gin.Context) {
 	if err != nil {
 		h.logger.Error("vision API failed", zap.Error(err), zap.String("user_id", userID.String()))
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{
-			"content":     "I couldn't analyze that image — try a clearer photo 📸",
+			"content":     "I couldn't analyze that image — try a clearer photo",
 			"tokens_used": 0,
 			"fallback":    true,
 		}})

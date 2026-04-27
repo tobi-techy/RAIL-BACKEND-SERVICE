@@ -108,7 +108,7 @@ func (w *Worker) sendDigest(ctx context.Context, userID uuid.UUID, start, end ti
 	totalOut := flow.TotalWithdrawals.Add(flow.TotalCardSpend).Add(flow.TotalP2P)
 
 	// Build digest message
-	title := "Your Weekly Money Digest 📊"
+	title := "Your Weekly Money Digest"
 	body := fmt.Sprintf("This week: $%s in, $%s out. ", flow.TotalDeposits.StringFixed(2), totalOut.StringFixed(2))
 
 	if totalOut.IsZero() && flow.TotalDeposits.IsZero() {
@@ -118,7 +118,7 @@ func (w *Worker) sendDigest(ctx context.Context, userID uuid.UUID, start, end ti
 	body += fmt.Sprintf("Balances: $%s spend, $%s stash.", spend.StringFixed(2), stash.StringFixed(2))
 
 	if !stash.IsZero() {
-		body += " Your stash is earning yield automatically 💰"
+		body += " Your stash is earning yield automatically"
 	}
 
 	return w.push.SendToUser(ctx, userID, title, body, map[string]interface{}{

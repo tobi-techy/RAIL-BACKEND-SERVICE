@@ -434,7 +434,7 @@ func (s *Service) sendSlackAlert(ctx context.Context, exceptions []*entities.Rec
 			"type": "header",
 			"text": map[string]string{
 				"type": "plain_text",
-				"text": "🚨 Reconciliation Alert",
+				"text": "Reconciliation Alert",
 			},
 		},
 		{

@@ -246,7 +246,7 @@ func buildPatternCards(data map[string]interface{}) []entities.InsightCard {
 		Title:     "Spending Patterns",
 		Sentiment: trendSentiment,
 		Data: []entities.StatItem{
-			{Label: "Peak Day", Value: peakDay, Icon: "📅"},
+			{Label: "Peak Day", Value: peakDay, Icon: "calendar-03"},
 			{Label: "Week Trend", Value: trendIcon + " " + weekChangePct + "%", Sentiment: trendSentiment},
 			{Label: "Weekend", Value: "$" + str(data, "weekend_total")},
 			{Label: "Weekday", Value: "$" + str(data, "weekday_total")},
@@ -341,10 +341,10 @@ func buildComparativeCard(data map[string]interface{}) entities.InsightCard {
 		Title:     "Your Financial Snapshot",
 		Sentiment: sentiment,
 		Data: []entities.StatItem{
-			{Label: "Spend Balance", Value: "$" + str(data, "spend_balance"), Icon: "💳"},
-			{Label: "Stash Balance", Value: "$" + str(data, "stash_balance"), Icon: "🏦"},
+			{Label: "Spend Balance", Value: "$" + str(data, "spend_balance"), Icon: "credit-card"},
+			{Label: "Stash Balance", Value: "$" + str(data, "stash_balance"), Icon: "safe-box"},
 			{Label: "Savings Rate", Value: str(data, "savings_rate"), Sentiment: sentiment},
-			{Label: "Streak", Value: fmt.Sprintf("%d days", num(data, "streak_days")), Icon: "🔥"},
+			{Label: "Streak", Value: fmt.Sprintf("%d days", num(data, "streak_days")), Icon: "fire"},
 		},
 	}
 }
@@ -363,8 +363,8 @@ func buildMoneyFlowCard(data map[string]interface{}) entities.InsightCard {
 	}
 
 	items := []entities.StatItem{
-		{Label: "Money In", Value: "$" + deposits, Icon: "📥", Sentiment: "positive"},
-		{Label: "Money Out", Value: "$" + totalOut, Icon: "📤", Sentiment: "negative"},
+		{Label: "Money In", Value: "$" + deposits, Icon: "arrow-down-01", Sentiment: "positive"},
+		{Label: "Money Out", Value: "$" + totalOut, Icon: "arrow-up-01", Sentiment: "negative"},
 		{Label: "Net Flow", Value: "$" + netFlow, Sentiment: sentiment},
 	}
 
@@ -390,9 +390,9 @@ func buildMoneyFlowCard(data map[string]interface{}) entities.InsightCard {
 
 func buildAccountSummaryCard(data map[string]interface{}) entities.InsightCard {
 	items := []entities.StatItem{
-		{Label: "Spend", Value: "$" + str(data, "spend_balance"), Icon: "💳"},
-		{Label: "Stash", Value: "$" + str(data, "stash_balance"), Icon: "🏦"},
-		{Label: "Total", Value: "$" + str(data, "total_balance"), Icon: "💰"},
+		{Label: "Spend", Value: "$" + str(data, "spend_balance"), Icon: "credit-card"},
+		{Label: "Stash", Value: "$" + str(data, "stash_balance"), Icon: "safe-box"},
+		{Label: "Total", Value: "$" + str(data, "total_balance"), Icon: "wallet-01"},
 	}
 
 	if thisMonth, ok := data["this_month"].(map[string]interface{}); ok {
@@ -405,7 +405,7 @@ func buildAccountSummaryCard(data map[string]interface{}) entities.InsightCard {
 	}
 
 	if streakDays := num(data, "streak_days"); streakDays > 0 {
-		items = append(items, entities.StatItem{Label: "Streak", Value: fmt.Sprintf("%d days 🔥", streakDays)})
+		items = append(items, entities.StatItem{Label: "Streak", Value: fmt.Sprintf("%d days", streakDays)})
 	}
 
 	return entities.InsightCard{
