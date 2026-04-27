@@ -11,18 +11,24 @@ import (
 type StreakType string
 
 const (
-	StreakTypeDeposit     StreakType = "deposit"
-	StreakTypeNoSpend     StreakType = "no_spend"
-	StreakTypeStashGrowth StreakType = "stash_growth"
-	StreakTypeRoundup     StreakType = "roundup"
+	StreakTypeDeposit             StreakType = "deposit"
+	StreakTypeNoSpend             StreakType = "no_spend"
+	StreakTypeStashGrowth         StreakType = "stash_growth"
+	StreakTypeRoundup             StreakType = "roundup"
+	StreakTypeNoPanicWithdrawal   StreakType = "no_panic_withdrawal"
+	StreakTypeWeeklyGoal          StreakType = "weekly_goal"
+	StreakTypeEmergencyFundGrowth StreakType = "emergency_fund_growth"
 )
 
 // StreakResetDays defines how many days of inactivity before a streak resets
 var StreakResetDays = map[StreakType]int{
-	StreakTypeDeposit:     7,
-	StreakTypeNoSpend:     1, // resets on any spend day
-	StreakTypeStashGrowth: 7, // checked weekly
-	StreakTypeRoundup:     7,
+	StreakTypeDeposit:             7,
+	StreakTypeNoSpend:             1, // resets on any spend day
+	StreakTypeStashGrowth:         7, // checked weekly
+	StreakTypeRoundup:             7,
+	StreakTypeNoPanicWithdrawal:   1, // resets on any panic withdrawal
+	StreakTypeWeeklyGoal:          7,
+	StreakTypeEmergencyFundGrowth: 7,
 }
 
 // UserStreak tracks a user's streak for a specific behavior
@@ -45,21 +51,21 @@ var LevelThresholds = []struct {
 	XP    int64
 	Title string
 }{
-	{1, 0, "Newcomer"},
-	{2, 100, "Starter"},
-	{3, 300, "Builder"},
-	{4, 700, "Consistent"},
-	{5, 1500, "Disciplined"},
-	{6, 3000, "Wealth Builder"},
-	{7, 6000, "Money Master"},
-	{8, 12000, "Rail OG"},
-	{9, 25000, "Top 1%"},
-	{10, 50000, "Legend"},
+	{1, 0, "New Rider"},
+	{2, 100, "Steady Saver"},
+	{3, 300, "Budget Killer"},
+	{4, 700, "Quiet Builder"},
+	{5, 1500, "Wealth Pilot"},
+	{6, 3000, "Rail Legend"},
+	{7, 6000, "Rail Legend II"},
+	{8, 12000, "Rail Legend III"},
+	{9, 25000, "Rail Legend IV"},
+	{10, 50000, "Rail Legend V"},
 }
 
 // LevelForXP returns the level and title for a given XP total
 func LevelForXP(totalXP int64) (int, string) {
-	level, title := 1, "Newcomer"
+	level, title := 1, "New Rider"
 	for _, t := range LevelThresholds {
 		if totalXP >= t.XP {
 			level, title = t.Level, t.Title
@@ -255,4 +261,199 @@ var PlanDuration = map[string]int{
 var PlanPrice = map[string]string{
 	"pro_monthly": "4.99",
 	"pro_yearly":  "49.99",
+}
+
+// --- Rings (Apple Fitness style) ---
+
+// DailyRing tracks a user's 3-ring progress for a single day
+type DailyRing struct {
+	ID          uuid.UUID       `json:"id" db:"id"`
+	UserID      uuid.UUID       `json:"user_id" db:"user_id"`
+	RingDate    time.Time       `json:"ring_date" db:"ring_date"`
+	SpendTarget decimal.Decimal `json:"spend_target" db:"spend_target"`
+	SpendActual decimal.Decimal `json:"spend_actual" db:"spend_actual"`
+	SaveTarget  decimal.Decimal `json:"save_target" db:"save_target"`
+	SaveActual  decimal.Decimal `json:"save_actual" db:"save_actual"`
+	GrowTarget  decimal.Decimal `json:"grow_target" db:"grow_target"`
+	GrowActual  decimal.Decimal `json:"grow_actual" db:"grow_actual"`
+	SpendClosed bool            `json:"spend_closed" db:"spend_closed"`
+	SaveClosed  bool            `json:"save_closed" db:"save_closed"`
+	GrowClosed  bool            `json:"grow_closed" db:"grow_closed"`
+	AllClosed   bool            `json:"all_closed" db:"all_closed"`
+	CreatedAt   time.Time       `json:"created_at" db:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at" db:"updated_at"`
+}
+
+// RingProgress returns 0.0-1.0 progress for each ring
+// SpendProgress is inverted: spending LESS than target = 1.0 (closed), spending MORE = proportionally less
+func (r *DailyRing) SpendProgress() float64 {
+	if r.SpendTarget.IsZero() {
+		return 0
+	}
+	if r.SpendActual.LessThanOrEqual(r.SpendTarget) {
+		return 1.0 // under budget = ring closed
+	}
+	// Over budget: show how far over (1.0 - overage ratio), clamped to 0
+	ratio, _ := r.SpendActual.Div(r.SpendTarget).Float64()
+	p := 2.0 - ratio // at 2x overspend, progress = 0
+	if p < 0 {
+		return 0
+	}
+	return p
+}
+
+func (r *DailyRing) SaveProgress() float64 {
+	if r.SaveTarget.IsZero() {
+		return 0
+	}
+	p, _ := r.SaveActual.Div(r.SaveTarget).Float64()
+	if p > 1 {
+		return 1
+	}
+	return p
+}
+
+func (r *DailyRing) GrowProgress() float64 {
+	if r.GrowTarget.IsZero() {
+		return 0
+	}
+	p, _ := r.GrowActual.Div(r.GrowTarget).Float64()
+	if p > 1 {
+		return 1
+	}
+	return p
+}
+
+// --- Boosts (Cash App style) ---
+
+type BoostType string
+
+const (
+	BoostTypeCashbackStash   BoostType = "cashback_stash"
+	BoostTypePointsMultiplier BoostType = "points_multiplier"
+	BoostTypeSetAside        BoostType = "set_aside"
+	BoostTypeNoSpendBonus    BoostType = "no_spend_bonus"
+)
+
+type BoostStatus string
+
+const (
+	BoostStatusActive    BoostStatus = "active"
+	BoostStatusCompleted BoostStatus = "completed"
+	BoostStatusExpired   BoostStatus = "expired"
+)
+
+// Boost defines a boost template
+type Boost struct {
+	ID             uuid.UUID       `json:"id" db:"id"`
+	Name           string          `json:"name" db:"name"`
+	Description    string          `json:"description" db:"description"`
+	BoostType      BoostType       `json:"boost_type" db:"boost_type"`
+	Category       *string         `json:"category,omitempty" db:"category"`
+	RewardValue    decimal.Decimal `json:"reward_value" db:"reward_value"`
+	RewardUnit     string          `json:"reward_unit" db:"reward_unit"`
+	ConditionType  string          `json:"condition_type" db:"condition_type"`
+	ConditionValue decimal.Decimal `json:"condition_value" db:"condition_value"`
+	DurationDays   int             `json:"duration_days" db:"duration_days"`
+	IsActive       bool            `json:"is_active" db:"is_active"`
+	CreatedAt      time.Time       `json:"created_at" db:"created_at"`
+}
+
+// UserBoost tracks a user's active/completed boost
+type UserBoost struct {
+	ID           uuid.UUID       `json:"id" db:"id"`
+	UserID       uuid.UUID       `json:"user_id" db:"user_id"`
+	BoostID      uuid.UUID       `json:"boost_id" db:"boost_id"`
+	Status       BoostStatus     `json:"status" db:"status"`
+	ActivatedAt  time.Time       `json:"activated_at" db:"activated_at"`
+	ExpiresAt    time.Time       `json:"expires_at" db:"expires_at"`
+	Progress     decimal.Decimal `json:"progress" db:"progress"`
+	RewardEarned decimal.Decimal `json:"reward_earned" db:"reward_earned"`
+	CreatedAt    time.Time       `json:"created_at" db:"created_at"`
+	Boost        *Boost          `json:"boost,omitempty" db:"-"`
+}
+
+// --- Rail Points (Starbucks style) ---
+
+type PointEventType string
+
+const (
+	PointEventEarn   PointEventType = "earn"
+	PointEventSpend  PointEventType = "spend"
+	PointEventExpire PointEventType = "expire"
+	PointEventBonus  PointEventType = "bonus"
+)
+
+// Rail point earn sources
+const (
+	PointSourceDeposit          = "deposit"
+	PointSourceStreakDay         = "streak_day"
+	PointSourceChallengeComplete = "challenge_complete"
+	PointSourceBoostComplete    = "boost_complete"
+	PointSourceRingsClosed      = "rings_closed"
+	PointSourceReferral         = "referral"
+	PointSourceGraceDayPurchase = "grace_day_purchase"
+	PointSourceCardSkinPurchase = "card_skin_purchase"
+)
+
+// RailPoints tracks a user's point balance
+type RailPoints struct {
+	ID              uuid.UUID `json:"id" db:"id"`
+	UserID          uuid.UUID `json:"user_id" db:"user_id"`
+	Balance         int64     `json:"balance" db:"balance"`
+	LifetimeEarned  int64     `json:"lifetime_earned" db:"lifetime_earned"`
+	LifetimeSpent   int64     `json:"lifetime_spent" db:"lifetime_spent"`
+	CreatedAt       time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at" db:"updated_at"`
+}
+
+// RailPointEvent records a single point transaction
+type RailPointEvent struct {
+	ID          uuid.UUID      `json:"id" db:"id"`
+	UserID      uuid.UUID      `json:"user_id" db:"user_id"`
+	EventType   PointEventType `json:"event_type" db:"event_type"`
+	Amount      int64          `json:"amount" db:"amount"`
+	Source      string         `json:"source" db:"source"`
+	SourceID    *uuid.UUID     `json:"source_id,omitempty" db:"source_id"`
+	Description string         `json:"description" db:"description"`
+	CreatedAt   time.Time      `json:"created_at" db:"created_at"`
+}
+
+// Point costs
+const (
+	GraceDayPointCost = 500
+)
+
+// --- Grace Days (Duolingo streak freeze) ---
+
+// GraceDay tracks a user's streak freeze inventory
+type GraceDay struct {
+	ID         uuid.UUID  `json:"id" db:"id"`
+	UserID     uuid.UUID  `json:"user_id" db:"user_id"`
+	Remaining  int        `json:"remaining" db:"remaining"`
+	UsedTotal  int        `json:"used_total" db:"used_total"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty" db:"last_used_at"`
+	CreatedAt  time.Time  `json:"created_at" db:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at" db:"updated_at"`
+}
+
+// --- Weekly Recap (Nike Run Club style) ---
+
+// WeeklyRecap holds a user's weekly coaching summary
+type WeeklyRecap struct {
+	ID                  uuid.UUID       `json:"id" db:"id"`
+	UserID              uuid.UUID       `json:"user_id" db:"user_id"`
+	WeekStart           time.Time       `json:"week_start" db:"week_start"`
+	WeekEnd             time.Time       `json:"week_end" db:"week_end"`
+	TotalDeposited      decimal.Decimal `json:"total_deposited" db:"total_deposited"`
+	TotalSpent          decimal.Decimal `json:"total_spent" db:"total_spent"`
+	TotalSaved          decimal.Decimal `json:"total_saved" db:"total_saved"`
+	TotalGrown          decimal.Decimal `json:"total_grown" db:"total_grown"`
+	SpendVsLastWeekPct  decimal.Decimal `json:"spend_vs_last_week_pct" db:"spend_vs_last_week_pct"`
+	RingsClosed         int             `json:"rings_closed" db:"rings_closed"`
+	StreakDays          int             `json:"streak_days" db:"streak_days"`
+	PointsEarned        int64           `json:"points_earned" db:"points_earned"`
+	BadgesEarned        int             `json:"badges_earned" db:"badges_earned"`
+	CoachingMessage     string          `json:"coaching_message" db:"coaching_message"`
+	CreatedAt           time.Time       `json:"created_at" db:"created_at"`
 }
