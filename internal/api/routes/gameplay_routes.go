@@ -24,6 +24,23 @@ func SetupGameplayRoutes(rg *gin.RouterGroup, container *di.Container) {
 	)
 	h.SetHeatmapRepo(container.GameplayRepo)
 
+	// Wire new V2 services
+	if container.GameplayRingsService != nil {
+		h.SetRingsService(container.GameplayRingsService)
+	}
+	if container.GameplayBoostService != nil {
+		h.SetBoostService(container.GameplayBoostService)
+	}
+	if container.GameplayPointsService != nil {
+		h.SetPointsService(container.GameplayPointsService)
+	}
+	if container.GameplayGraceDayService != nil {
+		h.SetGraceDayService(container.GameplayGraceDayService)
+	}
+	if container.GameplayRecapService != nil {
+		h.SetRecapService(container.GameplayRecapService)
+	}
+
 	gp := rg.Group("/gameplay")
 	{
 		gp.GET("/profile", h.GetProfile)
@@ -33,6 +50,25 @@ func SetupGameplayRoutes(rg *gin.RouterGroup, container *di.Container) {
 		gp.GET("/xp/history", h.GetXPHistory)
 		gp.GET("/challenges", h.GetChallenges)
 		gp.GET("/achievements", h.GetAchievements)
+
+		// Rings (Apple Fitness style)
+		gp.GET("/rings", h.GetRings)
+
+		// Boosts (Cash App style)
+		gp.GET("/boosts", h.GetBoosts)
+		gp.POST("/boosts/activate", h.ActivateBoost)
+		gp.GET("/boosts/history", h.GetBoostHistory)
+
+		// Rail Points (Starbucks style)
+		gp.GET("/points", h.GetRailPoints)
+
+		// Grace Days (Duolingo streak freeze)
+		gp.GET("/grace-days", h.GetGraceDays)
+		gp.POST("/grace-days/purchase", h.PurchaseGraceDay)
+
+		// Weekly Recap (Nike Run Club style)
+		gp.GET("/recap", h.GetWeeklyRecap)
+		gp.GET("/recap/history", h.GetWeeklyRecapHistory)
 
 		// Test push notification — sends to the current user's devices
 		gp.POST("/test-push", func(c *gin.Context) {

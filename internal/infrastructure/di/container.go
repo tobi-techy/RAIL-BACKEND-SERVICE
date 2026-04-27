@@ -1020,6 +1020,11 @@ type Container struct {
 	GameplayAchievementService *gameplay.AchievementService
 	GameplayRepo               *repositories.GameplayRepository
 	GameplayHooks              *gameplay.Hooks
+	GameplayRingsService       *gameplay.RingsService
+	GameplayBoostService       *gameplay.BoostService
+	GameplayPointsService      *gameplay.PointsService
+	GameplayGraceDayService    *gameplay.GraceDayService
+	GameplayRecapService       *gameplay.RecapService
 	SubscriptionService        *subscriptionsvc.Service
 	NotificationService        *services.NotificationService
 	SocialAuthService          *socialauth.Service
@@ -1721,6 +1726,24 @@ func (c *Container) initializeDomainServices() error {
 	c.GameplayChallengeService.SetSubscriptionChecker(c.SubscriptionService)
 	c.GameplayHooks = gameplay.NewHooks(c.GameplayXPService, c.GameplayStreakService, c.GameplayChallengeService, c.ZapLog)
 
+	// Initialize V2 gameplay services
+	c.GameplayRingsService = gameplay.NewRingsService(c.GameplayRepo, c.ZapLog)
+	c.GameplayBoostService = gameplay.NewBoostService(c.GameplayRepo, nil, c.ZapLog)
+	c.GameplayPointsService = gameplay.NewPointsService(c.GameplayRepo, c.ZapLog)
+	c.GameplayGraceDayService = gameplay.NewGraceDayService(c.GameplayRepo, c.GameplayPointsService, nil, c.ZapLog)
+	c.GameplayRecapService = gameplay.NewRecapService(c.GameplayRepo, c.GameplayRingsService, c.GameplayPointsService, c.ZapLog)
+
+	// Wire new services into hooks
+	c.GameplayHooks.SetBoosts(c.GameplayBoostService)
+	c.GameplayHooks.SetPoints(c.GameplayPointsService)
+	c.GameplayHooks.SetGraceDay(c.GameplayGraceDayService)
+
+	// Wire V2 services into achievement evaluator
+	c.GameplayAchievementService.SetRingsService(c.GameplayRingsService)
+	c.GameplayAchievementService.SetPointsService(c.GameplayPointsService)
+	c.GameplayAchievementService.SetBoostService(c.GameplayBoostService)
+	c.GameplayAchievementService.SetGraceDayService(c.GameplayGraceDayService)
+
 	// Wire gameplay hooks into existing services
 	if c.FundingService != nil {
 		c.FundingService.SetGameplayHooks(c.GameplayHooks)
@@ -1809,6 +1832,8 @@ func (c *Container) initializeDomainServices() error {
 		c.GameplayChallengeService.SetNotifier(pushNotifier)
 		c.GameplayAchievementService.SetNotifier(pushNotifier)
 		c.SubscriptionService.SetNotifier(pushNotifier)
+		c.GameplayBoostService.SetNotifier(pushNotifier)
+		c.GameplayGraceDayService.SetNotifier(pushNotifier)
 	}
 
 	// Wire Bridge transfer into subscription service for fee collection
