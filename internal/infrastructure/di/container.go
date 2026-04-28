@@ -2932,6 +2932,11 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	c.ConversationService = conversationsvc.NewService(c.ConversationRepo, c.AIProviderManager, c.ZapLog)
 	c.AIOrchestrator.SetConversations(c.ConversationService)
 
+	// Initialize Miriam's long-term memory (fact extraction + tone calibration)
+	memoryRepo := repositories.NewMiriamMemoryRepository(sqlxDB)
+	memorySvc := aiservice.NewMemoryService(memoryRepo, c.AIProviderManager, c.ZapLog)
+	c.AIOrchestrator.SetMemory(memorySvc)
+
 	// Initialize usage tracking
 	c.UsageRepo = repositories.NewAIUsageRepository(c.DB, c.ZapLog)
 	c.UsageService = usagesvc.NewService(c.UsageRepo, c.ZapLog)

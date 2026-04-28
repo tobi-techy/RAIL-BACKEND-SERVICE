@@ -16,6 +16,11 @@ func (o *Orchestrator) SetConversations(c ConversationPersister) {
 	o.conversations = c
 }
 
+// SetMemory sets the long-term memory service (optional).
+func (o *Orchestrator) SetMemory(m *MemoryService) {
+	o.memory = m
+}
+
 // SetUsageTracker sets the usage tracking layer (optional).
 // Deprecated: Use NewOrchestratorWithDeps instead.
 func (o *Orchestrator) SetUsageTracker(u UsageTracker) {
@@ -62,6 +67,11 @@ func (o *Orchestrator) ChatWithConversation(ctx context.Context, userID uuid.UUI
 			if trackErr := o.usage.TrackInteraction(persistCtx, userID, resp.Provider, resp.TokensUsed); trackErr != nil {
 				o.logger.Error("failed to track usage", zap.Error(trackErr))
 			}
+		}
+
+		// Extract facts and calibrate tone from this exchange
+		if o.memory != nil {
+			o.memory.ProcessExchange(userID, message, resp.Content)
 		}
 	}()
 
