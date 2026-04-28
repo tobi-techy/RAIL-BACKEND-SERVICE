@@ -859,6 +859,21 @@ func (h *WalletFundingHandlers) CreateDepositAddress(c *gin.Context) {
 
 	response, err := h.fundingService.CreateDepositAddress(c.Request.Context(), userUUID, req.Chain, req.Currency)
 	if err != nil {
+		// Fallback: if Bridge fails (no customer ID), try returning Circle wallet address
+		if h.walletService != nil {
+			chain := entities.WalletChain(strings.ToUpper(string(req.Chain)))
+			wallet, walletErr := h.walletService.GetWalletByUserAndChain(c.Request.Context(), userUUID, chain)
+			if walletErr == nil && wallet != nil && wallet.Address != "" {
+				c.JSON(http.StatusOK, gin.H{
+					"address":    wallet.Address,
+					"chain":      req.Chain,
+					"currency":   req.Currency,
+					"provider":   "circle",
+				})
+				return
+			}
+		}
+
 		h.logger.Error("Failed to create deposit address", "error", err, "user_id", userUUID, "chain", req.Chain)
 		errStr := err.Error()
 		switch {

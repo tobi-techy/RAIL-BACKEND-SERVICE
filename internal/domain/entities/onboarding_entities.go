@@ -66,12 +66,13 @@ const (
 	KYCStatusApproved   KYCStatus = "approved"
 	KYCStatusRejected   KYCStatus = "rejected"
 	KYCStatusExpired    KYCStatus = "expired"
+	KYCStatusNonKYC     KYCStatus = "non_kyc"
 )
 
 // IsValid checks if KYC status is valid
 func (s KYCStatus) IsValid() bool {
 	switch s {
-	case KYCStatusPending, KYCStatusProcessing, KYCStatusApproved, KYCStatusRejected, KYCStatusExpired:
+	case KYCStatusPending, KYCStatusProcessing, KYCStatusApproved, KYCStatusRejected, KYCStatusExpired, KYCStatusNonKYC:
 		return true
 	default:
 		return false

@@ -421,6 +421,23 @@ func (s *Service) BasicCompleteOnboarding(ctx context.Context, req *entities.Bas
 		return nil, fmt.Errorf("failed to update onboarding status: %w", err)
 	}
 
+	// Set KYC status to non_kyc — enables limited crypto transfers without full KYC
+	if err := s.userRepo.UpdateKYCStatus(ctx, req.UserID, entities.KYCStatusNonKYC, nil, nil); err != nil {
+		s.logger.Warn("Failed to set non_kyc status", zap.Error(err), zap.String("user_id", req.UserID.String()))
+	}
+
+	// Create Circle wallets for the user (async — don't block onboarding)
+	if s.walletService != nil {
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			if err := s.walletService.CreateWalletsForUser(bgCtx, req.UserID, nil); err != nil {
+				s.logger.Error("Failed to create Circle wallets during basic onboarding",
+					zap.Error(err), zap.String("user_id", req.UserID.String()))
+			}
+		}()
+	}
+
 	if err := s.auditService.LogOnboardingEvent(ctx, req.UserID, "basic_signup_completed", "user", nil, map[string]any{
 		"password_set": true,
 	}); err != nil {

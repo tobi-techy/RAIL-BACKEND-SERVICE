@@ -220,7 +220,9 @@ func DeriveKYCTier(kycStatus string) KYCTier {
 	case "advanced_approved", "advanced_verified":
 		return KYCTierAdvanced
 	case "non_kyc", "basic_complete":
-		// User completed basic onboarding (has Circle wallet) but no KYC
+		return KYCTierNonKYC
+	case "pending", "processing":
+		// Users who signed up but haven't done KYC — allow limited crypto
 		return KYCTierNonKYC
 	default:
 		return KYCTierUnverified
