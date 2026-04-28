@@ -308,7 +308,8 @@ func (s *Service) processWalletProvisioningAsync(jobID, userID uuid.UUID) {
 	}
 }
 
-// ProcessWalletProvisioningJob creates wallets on Bridge and saves them locally.
+// ProcessWalletProvisioningJob processes a queued wallet provisioning job.
+// Delegates to CreateWalletsForUser which uses Circle for wallet creation.
 func (s *Service) ProcessWalletProvisioningJob(ctx context.Context, jobID uuid.UUID) error {
 	job, err := s.provisioningJobRepo.GetByID(ctx, jobID)
 	if err != nil {
@@ -321,134 +322,24 @@ func (s *Service) ProcessWalletProvisioningJob(ctx context.Context, jobID uuid.U
 		return fmt.Errorf("failed to update job status: %w", err)
 	}
 
-	customerID, err := s.userProfiles.GetBridgeCustomerID(ctx, job.UserID)
-	if err != nil || customerID == "" {
-		msg := "bridge customer ID not found"
-		job.MarkFailed(msg, 30*time.Second)
+	var chains []entities.WalletChain
+	for _, ch := range job.Chains {
+		chains = append(chains, entities.WalletChain(ch))
+	}
+
+	if err := s.CreateWalletsForUser(ctx, job.UserID, chains); err != nil {
+		job.MarkFailed(err.Error(), 30*time.Second)
 		_ = s.provisioningJobRepo.Update(ctx, job)
-		return fmt.Errorf("%s for user %s", msg, job.UserID)
-	}
-
-	// Fetch existing Bridge wallets once to avoid duplicates.
-	remoteWallets, _ := s.bridgeWallets.ListWallets(ctx, customerID)
-	remoteBridgeChains := make(map[string]*entities.ManagedWallet)
-	for _, rw := range remoteWallets {
-		remoteBridgeChains[string(rw.Chain.ToBridgeWalletChain())] = rw
-	}
-
-	// Track which Bridge chains we've already created/imported in this run
-	// to avoid creating duplicate ethereum/solana/base wallets.
-	createdBridgeChains := make(map[string]string) // bridgeChain -> address
-
-	saved := 0
-	for _, chain := range job.Chains {
-		existing, _ := s.walletRepo.GetByUserAndChain(ctx, job.UserID, entities.WalletChain(chain))
-		if existing != nil {
-			saved++
-			continue
-		}
-
-		bridgeChain := entities.WalletChain(chain).ToBridgeWalletChain()
-
-		// If we already created/imported a wallet for this Bridge chain in this run,
-		// reuse the same address (e.g. MATIC, CELO, AVAX all share "ethereum").
-		if addr, ok := createdBridgeChains[bridgeChain]; ok {
-			mw := &entities.ManagedWallet{
-				ID:      uuid.New(),
-				UserID:  job.UserID,
-				Chain:   entities.WalletChain(chain),
-				Address: addr,
-				Status:  entities.WalletStatusLive,
-			}
-			if err := s.walletRepo.Create(ctx, mw); err != nil {
-				s.logger.Error("Failed to save alias wallet", zap.Error(err), zap.String("chain", chain))
-				continue
-			}
-			saved++
-			continue
-		}
-
-		// Check if Bridge already has a wallet for this chain — avoid creating duplicates.
-		if rw, ok := remoteBridgeChains[bridgeChain]; ok {
-			rw.UserID = job.UserID
-			rw.Chain = entities.WalletChain(chain)
-			if err := s.walletRepo.Create(ctx, rw); err != nil {
-				s.logger.Error("Failed to save recovered wallet", zap.Error(err), zap.String("chain", chain))
-				continue
-			}
-			createdBridgeChains[bridgeChain] = rw.Address
-			saved++
-			s.logger.Info("Imported existing Bridge wallet",
-				zap.String("chain", chain), zap.String("address", rw.Address))
-			continue
-		}
-
-		mw, err := s.bridgeWallets.CreateWalletForCustomer(ctx, customerID, chain)
-		if err != nil {
-			s.logger.Warn("Failed to create wallet on Bridge",
-				zap.Error(err), zap.String("chain", chain))
-			mw = s.recoverWalletFromBridge(ctx, customerID, chain)
-			if mw == nil {
-				continue
-			}
-		}
-
-		mw.UserID = job.UserID
-		if err := s.walletRepo.Create(ctx, mw); err != nil {
-			s.logger.Error("Failed to save wallet", zap.Error(err), zap.String("chain", chain))
-			continue
-		}
-		createdBridgeChains[bridgeChain] = mw.Address
-		saved++
-		s.logger.Info("Wallet created and saved",
-			zap.String("userID", job.UserID.String()),
-			zap.String("chain", chain),
-			zap.String("address", mw.Address),
-			zap.String("bridgeWalletID", mw.BridgeWalletID))
-	}
-
-	if saved == 0 {
-		job.MarkFailed("failed to create any wallets", 30*time.Second)
-		_ = s.provisioningJobRepo.Update(ctx, job)
-		return fmt.Errorf("failed to create any wallets")
+		return fmt.Errorf("circle wallet creation failed: %w", err)
 	}
 
 	job.MarkCompleted()
 	_ = s.provisioningJobRepo.Update(ctx, job)
 
-	s.logger.Info("Wallet provisioning completed",
+	s.logger.Info("Wallet provisioning completed via Circle",
 		zap.String("userID", job.UserID.String()),
-		zap.Int("saved", saved),
-		zap.Int("total", len(job.Chains)))
+		zap.Int("chains", len(job.Chains)))
 
-	return nil
-}
-
-// recoverWalletFromBridge attempts to find an existing wallet on Bridge when
-// creation fails (e.g. stale idempotency key after >24h). Returns nil if no
-// matching wallet is found.
-func (s *Service) recoverWalletFromBridge(ctx context.Context, customerID, chain string) *entities.ManagedWallet {
-	remoteWallets, err := s.bridgeWallets.ListWallets(ctx, customerID)
-	if err != nil {
-		s.logger.Error("Failed to list Bridge wallets for recovery",
-			zap.Error(err), zap.String("customerID", customerID))
-		return nil
-	}
-
-	targetRail := entities.WalletChain(chain).ToBridgeWalletChain()
-	for _, rw := range remoteWallets {
-		rwRail := rw.Chain.ToBridgeWalletChain()
-		if rwRail == targetRail {
-			s.logger.Info("Recovered existing wallet from Bridge",
-				zap.String("chain", chain),
-				zap.String("bridgeWalletID", rw.BridgeWalletID),
-				zap.String("address", rw.Address))
-			return rw
-		}
-	}
-
-	s.logger.Warn("No matching wallet found on Bridge for recovery",
-		zap.String("chain", chain), zap.String("customerID", customerID))
 	return nil
 }
 
@@ -603,21 +494,21 @@ func (s *Service) RetryFailedWalletProvisioning(ctx context.Context, limit int) 
 	return nil
 }
 
-// ensureWalletSet is no longer used — wallet creation is handled by Bridge in onboarding_processor.
+// ensureWalletSet is deprecated — wallet creation uses Circle via CreateWalletsForUser.
 func (s *Service) ensureWalletSet(ctx context.Context) (*entities.WalletSet, error) {
-	return nil, fmt.Errorf("wallet sets are no longer used; wallets are created via Bridge")
+	return nil, fmt.Errorf("wallet sets are deprecated; use CreateWalletsForUser (Circle)")
 }
 
-// createEVMWallets is no longer used — wallet creation is handled by Bridge in onboarding_processor.
+// createEVMWallets is deprecated — use CreateWalletsForUser which handles multi-chain via Circle.
 func (s *Service) createEVMWallets(ctx context.Context, userID uuid.UUID, evmChains []entities.WalletChain,
 	walletSet *entities.WalletSet, job *entities.WalletProvisioningJob) (int, error) {
-	return 0, fmt.Errorf("EVM wallet creation via Circle is no longer supported; use Bridge onboarding")
+	return 0, fmt.Errorf("deprecated: use CreateWalletsForUser (Circle)")
 }
 
-// createWalletForChain is no longer used — wallet creation is handled by Bridge in onboarding_processor.
+// createWalletForChain is deprecated — use CreateWalletsForUser which handles multi-chain via Circle.
 func (s *Service) createWalletForChain(ctx context.Context, userID uuid.UUID, chain entities.WalletChain,
 	walletSet *entities.WalletSet, job *entities.WalletProvisioningJob) error {
-	return fmt.Errorf("wallet creation via Circle is no longer supported; use Bridge onboarding")
+	return fmt.Errorf("deprecated: use CreateWalletsForUser (Circle)")
 }
 
 // HealthCheck performs health checks on the wallet service

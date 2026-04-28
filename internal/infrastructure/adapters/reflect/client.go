@@ -41,9 +41,6 @@ func NewClient(baseURL, apiKey, solanaRPC, ownerPubkey, privateKeyBase58 string,
 	if baseURL == "" {
 		baseURL = prodBaseURL
 	}
-	if apiKey == "" {
-		return nil, fmt.Errorf("reflect: api_key is required")
-	}
 	if solanaRPC == "" {
 		return nil, fmt.Errorf("reflect: solana_rpc is required")
 	}
@@ -319,7 +316,9 @@ func (c *Client) get(ctx context.Context, path string, params map[string]string,
 	if err != nil {
 		return err
 	}
-	req.Header.Set("x-api-key", c.apiKey)
+	if c.apiKey != "" {
+		req.Header.Set("x-api-key", c.apiKey)
+	}
 	if len(params) > 0 {
 		q := req.URL.Query()
 		for k, v := range params {
@@ -339,7 +338,9 @@ func (c *Client) post(ctx context.Context, path string, body any, out any) error
 	if err != nil {
 		return err
 	}
-	req.Header.Set("x-api-key", c.apiKey)
+	if c.apiKey != "" {
+		req.Header.Set("x-api-key", c.apiKey)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	return c.doHTTP(req, out)
 }

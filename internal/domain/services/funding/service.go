@@ -577,6 +577,80 @@ func (s *Service) GetBalance(ctx context.Context, userID uuid.UUID) (*entities.B
 }
 
 // ProcessChainDeposit processes incoming chain deposit webhook
+// ProcessCircleDeposit handles an inbound USDC deposit detected by Circle webhook.
+// It records the deposit, credits the ledger, and triggers the 70/30 allocation split.
+func (s *Service) ProcessCircleDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, chain, txHash, circleWalletID string) error {
+	s.logger.Info("Processing Circle deposit",
+		"user_id", userID.String(),
+		"amount", amount.String(),
+		"chain", chain,
+		"tx_hash", txHash)
+
+	// Idempotency: check by txHash
+	existing, _ := s.depositRepo.GetByTxHash(ctx, txHash)
+	if existing != nil {
+		s.logger.Info("Circle deposit already processed", "tx_hash", txHash, "deposit_id", existing.ID.String())
+		return nil
+	}
+
+	// Create deposit record
+	depositID := uuid.New()
+	now := time.Now()
+	deposit := &entities.Deposit{
+		ID:             depositID,
+		UserID:         userID,
+		Chain:          entities.Chain(chain),
+		Token:          entities.StablecoinUSDC,
+		Amount:         amount,
+		TxHash:         txHash,
+		Status:         "confirmed",
+		IdempotencyKey: fmt.Sprintf("circle:%s:%s", chain, txHash),
+		ConfirmedAt:    &now,
+	}
+	if err := s.depositRepo.Create(ctx, deposit); err != nil {
+		return fmt.Errorf("create deposit record: %w", err)
+	}
+
+	// Credit ledger
+	if s.ledgerIntegration != nil {
+		if err := s.ledgerIntegration.RecordDeposit(ctx, userID, amount, depositID, chain, txHash); err != nil {
+			return fmt.Errorf("ledger credit: %w", err)
+		}
+	}
+
+	// Trigger 70/30 allocation split
+	if s.allocationService != nil {
+		txHashRef := txHash
+		if err := s.allocationService.ProcessIncomingFunds(ctx, &entities.IncomingFundsRequest{
+			UserID:     userID,
+			Amount:     amount,
+			EventType:  entities.AllocationEventTypeCryptoDeposit,
+			SourceTxID: &txHashRef,
+			DepositID:  &depositID,
+			Metadata: map[string]any{
+				"chain":            chain,
+				"circle_wallet_id": circleWalletID,
+				"provider":         "circle",
+			},
+		}); err != nil {
+			s.logger.Error("Allocation failed for Circle deposit", "error", err, "deposit_id", depositID.String())
+			// Don't return error — deposit is recorded, allocation recovery worker will retry
+		}
+	}
+
+	// Invalidate balance cache
+	if s.cache != nil {
+		_ = s.cache.Delete(ctx, fmt.Sprintf("balance:%s", userID.String()))
+	}
+
+	s.logger.Info("Circle deposit processed",
+		"deposit_id", depositID.String(),
+		"user_id", userID.String(),
+		"amount", amount.String())
+
+	return nil
+}
+
 func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.ChainDepositWebhook) error {
 	// Generate or use provided correlation ID for distributed tracing
 	correlationID := webhook.CorrelationID

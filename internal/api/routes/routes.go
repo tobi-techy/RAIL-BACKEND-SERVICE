@@ -694,37 +694,41 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				}
 
 				// KYC-gated funding operations
-				fundingGated := funding.Group("/")
-				fundingGated.Use(middleware.RequireBridgeCapability(container.UserRepo, container.ZapLog))
+					// Deposit address — available to all users with Circle wallets (no KYC required)
+				funding.POST("/deposit/address", walletFundingHandlers.CreateDepositAddress)
+
+				// Bridge KYC required: fiat virtual accounts and instant funding
+				fundingBridgeGated := funding.Group("/")
+				fundingBridgeGated.Use(middleware.RequireBridgeCapability(container.UserRepo, container.ZapLog))
 				{
-					fundingGated.POST("/deposit/address", walletFundingHandlers.CreateDepositAddress)
-					fundingGated.POST("/virtual-account", walletFundingHandlers.CreateVirtualAccount)
-					fundingGated.GET("/virtual-accounts", walletFundingHandlers.GetVirtualAccounts)
+					fundingBridgeGated.POST("/virtual-account", walletFundingHandlers.CreateVirtualAccount)
+					fundingBridgeGated.GET("/virtual-accounts", walletFundingHandlers.GetVirtualAccounts)
 
 					if instantFundingHandlers := container.GetInstantFundingHandlers(); instantFundingHandlers != nil {
-						fundingGated.POST("/instant", instantFundingHandlers.RequestInstantFunding)
-						fundingGated.GET("/instant/status", instantFundingHandlers.GetInstantFundingStatus)
+						fundingBridgeGated.POST("/instant", instantFundingHandlers.RequestInstantFunding)
+						fundingBridgeGated.GET("/instant/status", instantFundingHandlers.GetInstantFundingStatus)
 					}
+				}
 
-					if container.ChainRailsHandlers != nil {
-						chainrails := fundingGated.Group("/chainrails")
-						chainrails.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
-						chainrails.POST("/session",
-							middleware.AuthRateLimit(10),
-							container.ChainRailsHandlers.CreateSession)
-					}
+				// Crypto-capable: ChainRails and PAJ (no KYC required, backend enforces limits)
+				if container.ChainRailsHandlers != nil {
+					chainrails := funding.Group("/chainrails")
+					chainrails.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
+					chainrails.POST("/session",
+						middleware.AuthRateLimit(10),
+						container.ChainRailsHandlers.CreateSession)
+				}
 
-					if container.PajHandlers != nil {
-						pajGated := fundingGated.Group("/paj")
-						pajGated.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
-						pajGated.POST("/initiate", middleware.AuthRateLimit(5), container.PajHandlers.Initiate)
-						pajGated.POST("/verify", middleware.AuthRateLimit(10), container.PajHandlers.Verify)
-						pajGated.POST("/banks/resolve", container.PajHandlers.ResolveBankAccount)
-						pajGated.POST("/banks/add", container.PajHandlers.AddBankAccount)
-						pajGated.GET("/banks/saved", container.PajHandlers.GetBankAccounts)
-						pajGated.POST("/onramp", middleware.AuthRateLimit(10), container.PajHandlers.CreateOnramp)
-						pajGated.POST("/offramp", middleware.AuthRateLimit(10), container.PajHandlers.CreateOfframp)
-					}
+				if container.PajHandlers != nil {
+					paj := funding.Group("/paj")
+					paj.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
+					paj.POST("/initiate", middleware.AuthRateLimit(5), container.PajHandlers.Initiate)
+					paj.POST("/verify", middleware.AuthRateLimit(10), container.PajHandlers.Verify)
+					paj.POST("/banks/resolve", container.PajHandlers.ResolveBankAccount)
+					paj.POST("/banks/add", container.PajHandlers.AddBankAccount)
+					paj.GET("/banks/saved", container.PajHandlers.GetBankAccounts)
+					paj.POST("/onramp", middleware.AuthRateLimit(10), container.PajHandlers.CreateOnramp)
+					paj.POST("/offramp", middleware.AuthRateLimit(10), container.PajHandlers.CreateOfframp)
 				}
 			}
 
@@ -741,7 +745,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			}
 			// Write operations require Bridge KYC
 			depositsGated := deposits.Group("/")
-			depositsGated.Use(middleware.RequireBridgeCapability(container.UserRepo, container.ZapLog))
+			depositsGated.Use(middleware.RequireCryptoCapability(container.UserRepo, container.ZapLog))
 			// Fraud detection on deposit creation: catches suspicious first deposits from fraud ring accounts.
 			if fraudSvc := container.GetOnboardingFraudService(); fraudSvc != nil {
 				depositsGated.Use(middleware.DepositFraudMiddleware(fraudSvc, container.ZapLog))
@@ -832,7 +836,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			if p2pHandlers != nil {
 				p2p := protected.Group("/p2p")
 				p2p.Use(middleware.AuthRateLimit(20))
-				p2p.Use(middleware.RequireBridgeCapability(container.UserRepo, container.ZapLog))
+				p2p.Use(middleware.RequireCryptoCapability(container.UserRepo, container.ZapLog))
 				{
 					p2p.POST("/lookup", middleware.AuthRateLimit(10), p2pHandlers.Lookup)
 					p2p.POST("/send", p2pHandlers.Send)
@@ -1131,7 +1135,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 			// Allocation routes - 70/30 Smart Allocation Mode (ON/OFF)
 			allocation := protected.Group("/allocation")
-			allocation.Use(middleware.RequireBridgeCapability(container.UserRepo, container.ZapLog))
+			allocation.Use(middleware.RequireCryptoCapability(container.UserRepo, container.ZapLog))
 			{
 				allocation.POST("/enable", allocationHandlers.EnableAllocationMode)
 				allocation.POST("/disable", allocationHandlers.DisableAllocationMode)
@@ -1261,6 +1265,13 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				pajWebhooks := webhooks.Group("/paj")
 				pajWebhooks.Use(middleware.RateLimit(100))
 				pajWebhooks.POST("", container.PajHandlers.HandleWebhook)
+			}
+
+			// Circle Programmable Wallets webhooks for inbound deposits
+			if circleWebhookHandler := container.GetCircleWebhookHandler(); circleWebhookHandler != nil {
+				circleWebhooks := webhooks.Group("/circle")
+				circleWebhooks.Use(middleware.RateLimit(100))
+				circleWebhooks.POST("", circleWebhookHandler.HandleWebhook)
 			}
 		}
 

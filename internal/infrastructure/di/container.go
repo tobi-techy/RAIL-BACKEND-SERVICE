@@ -3915,6 +3915,11 @@ func (c *Container) GetBridgeWebhookHandler() *handlers.BridgeWebhookHandler {
 	return c.BridgeWebhookHandler
 }
 
+// GetCircleWebhookHandler returns the Circle webhook handler (nil if Circle not configured).
+func (c *Container) GetCircleWebhookHandler() *webhooks.CircleWebhookHandler {
+	return nil // TODO: wire up when Circle webhook subscription is configured
+}
+
 // GetBridgeVirtualAccountService returns the Bridge virtual account service
 func (c *Container) GetBridgeVirtualAccountService() *funding.BridgeVirtualAccountService {
 	return c.BridgeVirtualAccountService

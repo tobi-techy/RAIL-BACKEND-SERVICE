@@ -66,8 +66,7 @@ func (c WalletChain) GetTokenAddress(token Stablecoin) string {
 	case StablecoinUSDC:
 		return c.GetUSDCTokenAddress()
 	default:
-		// Other stablecoins are handled by Bridge at the API level;
-		// on-chain contract addresses are not needed for Bridge custody wallets.
+		// Only USDC contract addresses are tracked; other tokens are not currently supported.
 		return ""
 	}
 }
@@ -183,7 +182,7 @@ const (
 	WalletSetStatusInactive WalletSetStatus = "inactive"
 )
 
-// WalletSet represents a legacy Circle wallet set (deprecated; Bridge is primary).
+// WalletSet represents a Circle wallet set used for grouping developer-controlled wallets.
 type WalletSet struct {
 	ID                     uuid.UUID       `json:"id" db:"id"`
 	Name                   string          `json:"name" db:"name" validate:"required"`
@@ -752,15 +751,8 @@ type CircleTransferRequest struct {
 	DestinationMemoType    string   `json:"destinationMemoType,omitempty"`
 	RefID                  string   `json:"refId,omitempty"`
 	Fee                    string   `json:"fee,omitempty"`
-	FeeLevel               string   `json:"feeLevel,omitempty"`
-	MaxFee                 string   `json:"maxFee,omitempty"`
-	PriorityFee            string   `json:"priorityFee,omitempty"`
-	GasPrice               string   `json:"gasPrice,omitempty"`
-	GasLimit               string   `json:"gasLimit,omitempty"`
-	Nonce                  string   `json:"nonce,omitempty"`
+	FeeLevel               string   `json:"feeLevel,omitempty"`     // LOW, MEDIUM, HIGH — Circle handles gas
 	Note                   string   `json:"note,omitempty"`
-	AutoGas                bool     `json:"autoGas,omitempty"`
-	NetworkFee             string   `json:"networkFee,omitempty"`
 	ReplaceTxByHash        string   `json:"replaceTxByHash,omitempty"`
 	SequenceID             string   `json:"sequenceId,omitempty"`
 	SourceAddress          string   `json:"sourceAddress,omitempty"`

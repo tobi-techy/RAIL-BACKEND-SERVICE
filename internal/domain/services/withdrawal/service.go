@@ -26,9 +26,9 @@ const (
 	CryptoWithdrawalMinAmount   = 10.00 // Minimum crypto withdrawal
 	FiatWithdrawalMinAmountUSD  = 10.00 // Minimum USD fiat withdrawal
 	FiatWithdrawalMinAmountEUR  = 10.00 // Minimum EUR fiat withdrawal
-	CryptoWithdrawalFeePercent  = 0.0  // Bridge transfers are gasless
-	CryptoWithdrawalFeeSolana   = 0.10 // $0.10 flat fee for Solana (low gas)
-	CryptoWithdrawalFeeEVM      = 0.50 // $0.50 flat fee for EVM chains (higher gas)
+	CryptoWithdrawalFeePercent  = 0.0  // No percentage fee — flat only
+	CryptoWithdrawalFeeSolana   = 0.10 // $0.10 flat service fee for Solana withdrawals
+	CryptoWithdrawalFeeEVM      = 0.50 // $0.50 flat service fee for EVM chain withdrawals
 	FlatWithdrawalFee           = 0.50 // Default flat fee (legacy, use chain-specific)
 	FiatWithdrawalFeeUSD        = 1.00 // $1.00 flat fee for USD withdrawals
 	FiatWithdrawalFeeEUR        = 1.00 // €1.00 flat fee for EUR withdrawals
@@ -1132,8 +1132,8 @@ func (s *WithdrawalService) reverseWithdrawalLedgerEntry(ctx context.Context, wi
 	)
 }
 
-// calculateCryptoWithdrawalFee returns chain-specific fees.
-// Solana is cheaper ($0.10) due to low gas. EVM chains are $0.50.
+// calculateCryptoWithdrawalFee returns chain-specific flat service fees.
+// Gas/network fees are handled by Circle internally — these are Rail's service charges.
 func (s *WithdrawalService) calculateCryptoWithdrawalFee(ctx context.Context, amount decimal.Decimal, sourceChain, destChain string) (decimal.Decimal, error) {
 	chain := strings.ToUpper(strings.TrimSpace(destChain))
 	if chain == "SOL" || chain == "" {
