@@ -9,7 +9,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
-	yieldsvc "github.com/rail-service/rail_service/internal/domain/services/yield"
 	"github.com/shopspring/decimal"
 )
 
@@ -212,50 +211,17 @@ func (a *P2PBridgeOfframpAdapter) InitiateTransfer(ctx context.Context, req map[
 
 func mapChainToBridgePaymentRail(chain entities.Chain) bridge.PaymentRail {
 	switch chain {
-	case entities.ChainMATIC, entities.ChainMATICAmoy:
+	case entities.ChainMATIC:
 		return bridge.PaymentRailPolygon
-	case entities.ChainAVAX, entities.ChainAVAXFuji:
-		return bridge.PaymentRailAvalanche
-	case entities.ChainSOL, entities.ChainSOLDevnet:
+	case entities.ChainCELO:
+		return bridge.PaymentRailCelo
+	case entities.ChainSOL:
 		return bridge.PaymentRailSolana
-	case entities.ChainBASE, entities.ChainBASESepolia:
+	case entities.ChainBase:
 		return bridge.PaymentRailBase
+	case entities.ChainAvalanche:
+		return bridge.PaymentRailAvalanche
 	default:
 		return ""
 	}
-}
-
-// bridgeRewardsAdapter adapts bridge.Client to yieldsvc.BridgeRewards.
-type bridgeRewardsAdapter struct {
-	client *bridge.Client
-}
-
-func (a *bridgeRewardsAdapter) GetRewardsSummary(ctx context.Context, currency string) (*yieldsvc.RewardSummary, error) {
-	if strings.TrimSpace(currency) == "" {
-		return nil, fmt.Errorf("bridgeRewardsAdapter: currency parameter cannot be empty")
-	}
-	s, err := a.client.GetRewardsSummary(ctx, currency)
-	if err != nil {
-		return nil, fmt.Errorf("bridgeRewardsAdapter: failed to get rewards summary for currency %s: %w", currency, err)
-	}
-	if s == nil {
-		return nil, fmt.Errorf("bridgeRewardsAdapter: received nil response from bridge client")
-	}
-	return &yieldsvc.RewardSummary{Rewards: s.Rewards}, nil
-}
-
-// reconciliationBridgeAdapter adapts bridge.Client to reconciliation.BridgeWallet.
-type reconciliationBridgeAdapter struct {
-	client *bridge.Client
-}
-
-func (a *reconciliationBridgeAdapter) GetWalletBalance(ctx context.Context, customerID, walletID string) (decimal.Decimal, error) {
-	wb, err := a.client.GetWalletBalance(ctx, customerID, walletID)
-	if err != nil {
-		return decimal.Zero, err
-	}
-	if wb == nil {
-		return decimal.Zero, fmt.Errorf("reconciliationBridgeAdapter: nil wallet balance response")
-	}
-	return decimal.NewFromString(wb.GetUSDCAmount())
 }

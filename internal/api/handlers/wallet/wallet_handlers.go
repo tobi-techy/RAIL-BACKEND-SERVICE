@@ -1,8 +1,8 @@
 package wallet
 
 import (
-	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"fmt"
+	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"net/http"
 	"strconv"
 
@@ -424,7 +424,13 @@ func (h *WalletHandlers) validateChains(chainStrs []string) ([]entities.WalletCh
 func (h *WalletHandlers) validateInitiationChains(chainStrs []string) ([]entities.WalletChain, error) {
 	chains := chainStrs
 	if len(chains) == 0 {
-		chains = []string{string(entities.WalletChainSOLDevnet)}
+		chains = []string{
+			string(entities.WalletChainSolana),
+			string(entities.WalletChainPolygon),
+			string(entities.WalletChainCelo),
+			string(entities.WalletChainBase),
+			string(entities.WalletChainAvalanche),
+		}
 	}
 
 	var chainEntities []entities.WalletChain
@@ -433,11 +439,6 @@ func (h *WalletHandlers) validateInitiationChains(chainStrs []string) ([]entitie
 		if !chain.IsValid() {
 			h.logger.Warn("Invalid chain in request", zap.String("chain", chainStr))
 			return nil, fmt.Errorf("invalid chain: %s", chainStr)
-		}
-
-		if !chain.IsTestnet() {
-			h.logger.Warn("Mainnet chain not supported for wallet creation", zap.String("chain", chainStr))
-			return nil, fmt.Errorf("only testnet chains supported")
 		}
 
 		chainEntities = append(chainEntities, chain)
@@ -474,7 +475,7 @@ func (h *WalletHandlers) extractUserIDFromContext(c *gin.Context) (uuid.UUID, er
 // Helper functions
 
 func getSupportedChains() []string {
-	chains := append(entities.GetMainnetChains(), entities.GetTestnetChains()...)
+	chains := entities.GetMainnetChains()
 	result := make([]string, len(chains))
 	for i, c := range chains {
 		result[i] = string(c)

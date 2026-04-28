@@ -534,6 +534,16 @@ func (s *Service) ProcessSignal(ctx context.Context, signal *entities.Signal) er
 
 // executeCopyTrade executes a single copy trade for a drafter
 func (s *Service) executeCopyTrade(ctx context.Context, draft *entities.Draft, signal *entities.Signal) error {
+	// Re-fetch draft from DB to get current AUM (avoid stale in-memory value)
+	freshDraft, err := s.repo.GetDraftByID(ctx, draft.ID)
+	if err != nil {
+		return fmt.Errorf("failed to re-fetch draft: %w", err)
+	}
+	if freshDraft == nil {
+		return fmt.Errorf("draft not found: %s", draft.ID)
+	}
+	draft = freshDraft
+
 	// Generate idempotency key
 	idempotencyKey := fmt.Sprintf("copy_%s_%s", draft.ID.String(), signal.ID.String())
 

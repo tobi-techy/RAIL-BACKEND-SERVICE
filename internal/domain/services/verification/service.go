@@ -3,6 +3,7 @@ package verification
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"fmt"
 	"math/big"
 	"strings"
@@ -20,7 +21,10 @@ const (
 	verificationCodeTTL     = 10 * time.Minute
 	maxVerificationAttempts = 3
 	rateLimitWindow         = 1 * time.Minute
-	maxSendAttempts         = 5
+	maxSendAttempts         = 3 // max OTPs per minute
+	maxSendAttemptsHourly   = 8 // max OTPs per hour
+	maxSendAttemptsDaily    = 15 // max OTPs per 24h
+	minResendCooldown       = 30 * time.Second // minimum gap between consecutive sends
 	sendOperationTimeout    = 15 * time.Second
 	redisOperationTimeout   = 2 * time.Second
 	sendWorkerCount         = 2
@@ -93,22 +97,9 @@ func (s *verificationService) GenerateAndSendCode(ctx context.Context, identifie
 
 	identifier = normalizeVerificationIdentifier(identifierType, identifier)
 
-	// Check rate limit for sending codes
-	sendAttemptsKey := fmt.Sprintf("send_attempts:%s:%s", identifierType, identifier)
-	sendAttempts, err := s.redisClient.Incr(opCtx, sendAttemptsKey)
-	if err != nil {
-		s.logger.Error("Failed to increment send attempts counter", zap.Error(err), zap.String("key", sendAttemptsKey))
-		return "", fmt.Errorf("failed to check send rate limit: %w", err)
-	}
-	if sendAttempts == 1 {
-		// Set expiration for the first attempt in the window
-		if err := s.redisClient.Expire(opCtx, sendAttemptsKey, rateLimitWindow); err != nil {
-			s.logger.Error("Failed to set expiration for send attempts counter", zap.Error(err), zap.String("key", sendAttemptsKey))
-		}
-	}
-	if sendAttempts > maxSendAttempts {
-		s.logger.Warn("Rate limit exceeded for sending verification code", zap.String("identifier", identifier))
-		return "", fmt.Errorf("too many verification code send attempts. Please try again after %s", rateLimitWindow.String())
+	// Check rate limits: cooldown → per-minute → per-hour → per-day
+	if err := s.checkSendRateLimits(opCtx, identifierType, identifier); err != nil {
+		return "", err
 	}
 
 	code, err := generateNumericCode(verificationCodeLength)
@@ -171,13 +162,13 @@ func (s *verificationService) GenerateAndSendCode(ctx context.Context, identifie
 		}
 	}
 
-	s.logger.Info("Verification code generated and queued", zap.String("identifier", identifier), zap.String("code", code))
+	s.logger.Info("Verification code generated and queued", zap.String("identifier", identifier))
 	return code, nil
 }
 
 func isDevEnvironment(env string) bool {
 	switch strings.ToLower(strings.TrimSpace(env)) {
-	case "", "dev", "development", "local", "test", "testing":
+	case "dev", "development", "local", "test", "testing":
 		return true
 	default:
 		return false
@@ -204,7 +195,7 @@ func (s *verificationService) VerifyCode(ctx context.Context, identifierType, id
 	}
 
 	// Code is valid, delete it from Redis.
-	if storedData.Code == code {
+	if subtle.ConstantTimeCompare([]byte(storedData.Code), []byte(code)) == 1 {
 		if err := s.redisClient.Del(opCtx, key); err != nil {
 			s.logger.Error("Failed to delete verification code from Redis after successful verification", zap.Error(err), zap.String("key", key))
 			// Non-critical error, but log it
@@ -242,20 +233,31 @@ func (s *verificationService) CanResendCode(ctx context.Context, identifierType,
 
 	identifier = normalizeVerificationIdentifier(identifierType, identifier)
 
-	sendAttemptsKey := fmt.Sprintf("send_attempts:%s:%s", identifierType, identifier)
-	var sendAttemptsStr string
-	err := s.redisClient.Get(opCtx, sendAttemptsKey, &sendAttemptsStr) // Get as string to check existence
-	if err != nil && err.Error() != fmt.Sprintf("key '%s' not found: redis: nil", sendAttemptsKey) {
-		s.logger.Error("Failed to check send attempts counter", zap.Error(err), zap.String("key", sendAttemptsKey))
-		return false, fmt.Errorf("failed to check resend eligibility: %w", err)
+	// Check cooldown
+	cooldownKey := fmt.Sprintf("otp_cooldown:%s:%s", identifierType, identifier)
+	if exists, _ := s.redisClient.Exists(opCtx, cooldownKey); exists {
+		return false, nil
 	}
 
-	var currentAttempts int64
-	if sendAttemptsStr != "" {
-		fmt.Sscanf(sendAttemptsStr, "%d", &currentAttempts)
+	// Check per-minute limit
+	minuteKey := fmt.Sprintf("send_attempts:%s:%s", identifierType, identifier)
+	if count, _ := s.getCounter(opCtx, minuteKey); count >= maxSendAttempts {
+		return false, nil
 	}
 
-	return currentAttempts < maxSendAttempts, nil
+	// Check hourly limit
+	hourlyKey := fmt.Sprintf("send_attempts_hourly:%s:%s", identifierType, identifier)
+	if count, _ := s.getCounter(opCtx, hourlyKey); count >= maxSendAttemptsHourly {
+		return false, nil
+	}
+
+	// Check daily limit
+	dailyKey := fmt.Sprintf("send_attempts_daily:%s:%s", identifierType, identifier)
+	if count, _ := s.getCounter(opCtx, dailyKey); count >= maxSendAttemptsDaily {
+		return false, nil
+	}
+
+	return true, nil
 }
 
 // RecordSendAttempt records a send attempt for rate limiting
@@ -265,19 +267,71 @@ func (s *verificationService) RecordSendAttempt(ctx context.Context, identifierT
 
 	identifier = normalizeVerificationIdentifier(identifierType, identifier)
 
-	sendAttemptsKey := fmt.Sprintf("send_attempts:%s:%s", identifierType, identifier)
-	sendAttempts, err := s.redisClient.Incr(opCtx, sendAttemptsKey)
-	if err != nil {
-		s.logger.Error("Failed to increment send attempts counter", zap.Error(err), zap.String("key", sendAttemptsKey))
-		return fmt.Errorf("failed to record send attempt: %w", err)
-	}
-	if sendAttempts == 1 {
-		// Set expiration for the first attempt in the window
-		if err := s.redisClient.Expire(opCtx, sendAttemptsKey, rateLimitWindow); err != nil {
-			s.logger.Error("Failed to set expiration for send attempts counter", zap.Error(err), zap.String("key", sendAttemptsKey))
-		}
-	}
+	s.incrWithTTL(opCtx, fmt.Sprintf("send_attempts:%s:%s", identifierType, identifier), rateLimitWindow)
+	s.incrWithTTL(opCtx, fmt.Sprintf("send_attempts_hourly:%s:%s", identifierType, identifier), time.Hour)
+	s.incrWithTTL(opCtx, fmt.Sprintf("send_attempts_daily:%s:%s", identifierType, identifier), 24*time.Hour)
+	_ = s.redisClient.Set(opCtx, fmt.Sprintf("otp_cooldown:%s:%s", identifierType, identifier), "1", minResendCooldown)
 	return nil
+}
+
+// checkSendRateLimits enforces cooldown, per-minute, hourly, and daily OTP send limits.
+func (s *verificationService) checkSendRateLimits(ctx context.Context, identifierType, identifier string) error {
+	// 1. Cooldown between consecutive sends
+	cooldownKey := fmt.Sprintf("otp_cooldown:%s:%s", identifierType, identifier)
+	if exists, _ := s.redisClient.Exists(ctx, cooldownKey); exists {
+		s.logger.Warn("OTP cooldown active", zap.String("identifier", identifier))
+		return fmt.Errorf("please wait %s before requesting another code", minResendCooldown)
+	}
+
+	// 2. Per-minute limit
+	minuteKey := fmt.Sprintf("send_attempts:%s:%s", identifierType, identifier)
+	if count, _ := s.getCounter(ctx, minuteKey); count >= maxSendAttempts {
+		s.logger.Warn("Per-minute OTP rate limit exceeded", zap.String("identifier", identifier))
+		return fmt.Errorf("too many verification code send attempts. Please try again after %s", rateLimitWindow)
+	}
+
+	// 3. Hourly limit
+	hourlyKey := fmt.Sprintf("send_attempts_hourly:%s:%s", identifierType, identifier)
+	if count, _ := s.getCounter(ctx, hourlyKey); count >= maxSendAttemptsHourly {
+		s.logger.Warn("Hourly OTP rate limit exceeded", zap.String("identifier", identifier))
+		return fmt.Errorf("too many verification codes sent this hour. Please try again later")
+	}
+
+	// 4. Daily limit
+	dailyKey := fmt.Sprintf("send_attempts_daily:%s:%s", identifierType, identifier)
+	if count, _ := s.getCounter(ctx, dailyKey); count >= maxSendAttemptsDaily {
+		s.logger.Warn("Daily OTP rate limit exceeded", zap.String("identifier", identifier))
+		return fmt.Errorf("daily verification code limit reached. Please try again tomorrow")
+	}
+
+	// All checks passed — record the attempt across all windows
+	s.incrWithTTL(ctx, minuteKey, rateLimitWindow)
+	s.incrWithTTL(ctx, hourlyKey, time.Hour)
+	s.incrWithTTL(ctx, dailyKey, 24*time.Hour)
+	_ = s.redisClient.Set(ctx, cooldownKey, "1", minResendCooldown)
+
+	return nil
+}
+
+func (s *verificationService) getCounter(ctx context.Context, key string) (int64, error) {
+	var val string
+	if err := s.redisClient.Get(ctx, key, &val); err != nil {
+		return 0, nil // key doesn't exist = 0 attempts
+	}
+	var n int64
+	fmt.Sscanf(val, "%d", &n)
+	return n, nil
+}
+
+func (s *verificationService) incrWithTTL(ctx context.Context, key string, ttl time.Duration) {
+	count, err := s.redisClient.Incr(ctx, key)
+	if err != nil {
+		s.logger.Error("Failed to increment rate limit counter", zap.Error(err), zap.String("key", key))
+		return
+	}
+	if count == 1 {
+		_ = s.redisClient.Expire(ctx, key, ttl)
+	}
 }
 
 func withTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {

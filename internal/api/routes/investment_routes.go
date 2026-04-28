@@ -4,6 +4,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rail-service/rail_service/internal/api/middleware"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
+	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/logger"
 )
 
@@ -19,9 +20,10 @@ func RegisterInvestmentRoutes(
 	cfg *config.Config,
 	log *logger.Logger,
 	sessionValidator middleware.SessionValidator,
+	tokenBlacklist *auth.TokenBlacklist,
 ) {
 	investment := router.Group("/investment")
-	investment.Use(middleware.Authentication(cfg, log, sessionValidator))
+	investment.Use(middleware.Authentication(cfg, log, sessionValidator, tokenBlacklist))
 	{
 		investment.GET("/baskets", h.GetBaskets)
 		investment.POST("/baskets/:basket_type/invest", h.InvestInBasket)

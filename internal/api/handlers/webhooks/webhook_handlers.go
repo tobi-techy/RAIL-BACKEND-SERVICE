@@ -27,6 +27,7 @@ type WebhookHandlers struct {
 	validator               *validator.Validate
 	webhookSecret           string
 	skipSignatureVerify     bool // Only true in development when secret is not configured
+	environment             string // Track environment to enforce verification in production
 	logger                  *logger.Logger
 }
 
@@ -38,13 +39,27 @@ func NewWebhookHandlers(
 	logger *logger.Logger,
 	webhookSecret string,
 	skipSignatureVerify bool,
+	environment string,
 ) *WebhookHandlers {
+	// Security fix: Never allow skipping verification in production or staging
+	if (strings.EqualFold(environment, "production") || strings.EqualFold(environment, "staging")) && skipSignatureVerify {
+		logger.Error("SECURITY VIOLATION: Attempted to skip webhook signature verification in production/staging - forcing verification ON")
+		skipSignatureVerify = false
+	}
+
+	if skipSignatureVerify {
+		logger.Warn("INSECURE MODE: Webhook signature verification is DISABLED",
+			"environment", environment,
+			"warning", "This should only be used in local development")
+	}
+
 	return &WebhookHandlers{
 		fundingService:      fundingService,
 		investingService:    investingService,
 		validator:           validator.New(),
 		webhookSecret:       webhookSecret,
 		skipSignatureVerify: skipSignatureVerify,
+		environment:         environment,
 		logger:              logger,
 	}
 }

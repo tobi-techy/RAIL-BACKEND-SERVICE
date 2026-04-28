@@ -9,6 +9,21 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 )
 
+// maxQueryLength is the maximum allowed GraphQL query length (bytes).
+const maxQueryLength = 2000
+
+// errQueryTooComplex is returned when a query exceeds the complexity limit.
+var errQueryTooComplex = errors.New("query too complex or too large")
+
+// checkQueryComplexity rejects queries that exceed maxQueryLength.
+// The raw query string is expected in context under the "graphql_query" key.
+func checkQueryComplexity(ctx context.Context) error {
+	if q, ok := ctx.Value("graphql_query").(string); ok && len(q) > maxQueryLength {
+		return errQueryTooComplex
+	}
+	return nil
+}
+
 type WithdrawalService interface {
 	InitiateCryptoWithdrawal(ctx context.Context, req *entities.InitiateCryptoWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error)
 	InitiateFiatWithdrawal(ctx context.Context, req *entities.InitiateFiatWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error)
@@ -39,6 +54,10 @@ type InitiateFiatWithdrawalInput struct {
 }
 
 func (r *WithdrawalResolver) InitiateCryptoWithdrawal(ctx context.Context, input InitiateCryptoWithdrawalInput) (*entities.InitiateWithdrawalResponse, error) {
+	if err := checkQueryComplexity(ctx); err != nil {
+		return nil, err
+	}
+
 	userID, ok := ctx.Value("user_id").(uuid.UUID)
 	if !ok {
 		return nil, ErrUnauthorized
@@ -62,6 +81,10 @@ func (r *WithdrawalResolver) InitiateCryptoWithdrawal(ctx context.Context, input
 }
 
 func (r *WithdrawalResolver) InitiateFiatWithdrawal(ctx context.Context, input InitiateFiatWithdrawalInput) (*entities.InitiateWithdrawalResponse, error) {
+	if err := checkQueryComplexity(ctx); err != nil {
+		return nil, err
+	}
+
 	userID, ok := ctx.Value("user_id").(uuid.UUID)
 	if !ok {
 		return nil, ErrUnauthorized
@@ -89,6 +112,10 @@ func (r *WithdrawalResolver) InitiateFiatWithdrawal(ctx context.Context, input I
 }
 
 func (r *WithdrawalResolver) Withdrawal(ctx context.Context, id string) (*entities.Withdrawal, error) {
+	if err := checkQueryComplexity(ctx); err != nil {
+		return nil, err
+	}
+
 	userID, ok := ctx.Value("user_id").(uuid.UUID)
 	if !ok {
 		return nil, ErrUnauthorized

@@ -1,0 +1,14 @@
+DROP TABLE IF EXISTS currency_exchange_rates;
+DROP TABLE IF EXISTS visa_proof_requests;
+DROP TABLE IF EXISTS receipt_split_items;
+DROP TABLE IF EXISTS receipt_splits;
+DROP TABLE IF EXISTS emergency_locks;
+DROP TABLE IF EXISTS emergency_contacts;
+DROP TABLE IF EXISTS financial_wellness_scores;
+DROP TABLE IF EXISTS behavioral_health_metrics;
+DROP TABLE IF EXISTS user_tax_profiles;
+DROP TABLE IF EXISTS user_location_logs;
+DROP TABLE IF EXISTS user_scam_alerts;
+DROP TABLE IF EXISTS merchant_risk_patterns;
+DROP TABLE IF EXISTS family_support_recipients;
+DROP TABLE IF EXISTS family_support_budgets;

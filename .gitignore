@@ -30,6 +30,8 @@ go.work
 .env
 .env.local
 .env.*.local
+.env.staging
+.env.bak
 *.env
 .env.temp
 !.env.example
@@ -42,6 +44,8 @@ go.work
 *.pfx
 *secret*
 *credentials*
+*store-secrets
+
 .secrets.baseline  # Generated file, not to be tracked
 
 # Additional secret patterns
@@ -60,6 +64,7 @@ secrets.yml
 *~
 
 # OS
+**/.DS_Store
 .DS_Store
 Thumbs.db
 
@@ -120,4 +125,8 @@ infra/terraform/.terraform/
 infra/terraform/*.tfstate
 infra/terraform/*.tfstate.backup
 infra/terraform/.terraform.lock.hcl
+infra/terraform/plan.out
 backfill-va-details
+
+# Performance test artifacts
+k6.tar.gz

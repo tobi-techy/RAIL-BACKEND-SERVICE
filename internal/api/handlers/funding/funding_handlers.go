@@ -44,7 +44,7 @@ func (h *FundingHandlers) CreateDepositAddress(c *gin.Context) {
 		return
 	}
 
-	response, err := h.fundingService.CreateDepositAddress(c.Request.Context(), userUUID, req.Chain)
+	response, err := h.fundingService.CreateDepositAddress(c.Request.Context(), userUUID, req.Chain, req.Currency)
 	if err != nil {
 		h.logger.Error("Failed to create deposit address",
 			"error", err,
@@ -109,52 +109,6 @@ func (h *FundingHandlers) GetBalances(c *gin.Context) {
 	}
 
 	common.SendSuccess(c, balances)
-}
-
-// CreateVirtualAccount handles POST /api/v1/funding/virtual-account
-func (h *FundingHandlers) CreateVirtualAccount(c *gin.Context) {
-	var req entities.CreateVirtualAccountRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		common.RespondBadRequest(c, "Invalid request format", map[string]interface{}{"error": err.Error()})
-		return
-	}
-
-	userUUID, err := common.GetUserID(c)
-	if err != nil {
-		h.logger.Error("Failed to get user ID", "error", err)
-		common.RespondUnauthorized(c, "User not authenticated")
-		return
-	}
-
-	req.UserID = userUUID
-
-	// BridgeCustomerID is required for virtual account creation
-	if req.BridgeCustomerID == "" {
-		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Bridge customer ID is required")
-		return
-	}
-
-	response, err := h.fundingService.CreateVirtualAccount(c.Request.Context(), &req)
-	if err != nil {
-		h.logger.Error("Failed to create virtual account",
-			"error", err,
-			"user_id", userUUID)
-
-		if errMsg := err.Error(); strings.Contains(errMsg, "already exists") {
-			common.SendConflict(c, "VIRTUAL_ACCOUNT_EXISTS", "Virtual account already exists for this Alpaca account")
-			return
-		}
-
-		if strings.Contains(err.Error(), "not active") {
-			common.SendBadRequest(c, "ALPACA_ACCOUNT_INACTIVE", "Alpaca account is not active")
-			return
-		}
-
-		common.SendInternalError(c, "VIRTUAL_ACCOUNT_ERROR", "Failed to create virtual account")
-		return
-	}
-
-	common.SendCreated(c, response)
 }
 
 // GetVirtualAccounts handles GET /api/v1/funding/virtual-accounts

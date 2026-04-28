@@ -1,0 +1,237 @@
+{
+  "containerDefinitions": [
+    {
+      "name": "rail-backend",
+      "image": "885160773772.dkr.ecr.us-east-1.amazonaws.com/rail-backend:d2a3c1fc4ce0284c31a031c955428f3064cb2a0e",
+      "cpu": 0,
+      "memory": 450,
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "hostPort": 0,
+          "protocol": "tcp"
+        }
+      ],
+      "essential": true,
+      "environment": [
+        {
+          "name": "REDIS_HOST",
+          "value": "rail-prod.q0riyh.0001.use1.cache.amazonaws.com"
+        },
+        {
+          "name": "PORT",
+          "value": "8080"
+        },
+        {
+          "name": "REDIS_PORT",
+          "value": "6379"
+        },
+        {
+          "name": "OTEL_SDK_DISABLED",
+          "value": "true"
+        },
+        {
+          "name": "GIN_MODE",
+          "value": "release"
+        },
+        {
+          "name": "ENVIRONMENT",
+          "value": "prod"
+        },
+        {
+          "name": "CHAINRAILS_API_KEY",
+          "value": "cr_live_a63a565407301c61a1e7dfb247e07981f879d7d132c75c1358b9929b002f85c7"
+        },
+        {
+          "name": "CHAINRAILS_WEBHOOK_SECRET",
+          "value": "cccc325ff055847d53302d4c72bc5943ee83e31bbe6dc40158c184dea66a0391"
+        },
+        {
+          "name": "CHAINRAILS_BASE_URL",
+          "value": "https://api.chainrails.io/api/v1"
+        },
+        {
+          "name": "CHAINRAILS_DESTINATION_CHAIN",
+          "value": "BASE_MAINNET"
+        },
+        {
+          "name": "CHAINRAILS_SETTLEMENT_TOKEN",
+          "value": "USDC"
+        }
+      ],
+      "mountPoints": [],
+      "volumesFrom": [],
+      "secrets": [
+        {
+          "name": "EMAIL_PROVIDER",
+          "valueFrom": "/rail/prod/EMAIL_PROVIDER"
+        },
+        {
+          "name": "RESEND_API_KEY",
+          "valueFrom": "/rail/prod/RESEND_API_KEY"
+        },
+        {
+          "name": "EMAIL_FROM_EMAIL",
+          "valueFrom": "/rail/prod/EMAIL_FROM_EMAIL"
+        },
+        {
+          "name": "EMAIL_FROM_NAME",
+          "valueFrom": "/rail/prod/EMAIL_FROM_NAME"
+        },
+        {
+          "name": "EMAIL_REPLY_TO",
+          "valueFrom": "/rail/prod/EMAIL_REPLY_TO"
+        },
+        {
+          "name": "DIDIT_API_KEY",
+          "valueFrom": "/rail/prod/DIDIT_API_KEY"
+        },
+        {
+          "name": "DIDIT_WORKFLOW_ID",
+          "valueFrom": "/rail/prod/DIDIT_WORKFLOW_ID"
+        },
+        {
+          "name": "DIDIT_WEBHOOK_SECRET",
+          "valueFrom": "/rail/prod/DIDIT_WEBHOOK_SECRET"
+        },
+        {
+          "name": "JWT_SECRET",
+          "valueFrom": "/rail/prod/JWT_SECRET"
+        },
+        {
+          "name": "ENCRYPTION_KEY",
+          "valueFrom": "/rail/prod/ENCRYPTION_KEY"
+        },
+        {
+          "name": "DATABASE_URL",
+          "valueFrom": "/rail/prod/DATABASE_URL"
+        },
+        {
+          "name": "DATABASE_HOST",
+          "valueFrom": "/rail/prod/DATABASE_HOST"
+        },
+        {
+          "name": "DATABASE_USER",
+          "valueFrom": "/rail/prod/DATABASE_USER"
+        },
+        {
+          "name": "DATABASE_PASSWORD",
+          "valueFrom": "/rail/prod/DATABASE_PASSWORD"
+        },
+        {
+          "name": "DATABASE_NAME",
+          "valueFrom": "/rail/prod/DATABASE_NAME"
+        },
+        {
+          "name": "DATABASE_SSL_MODE",
+          "valueFrom": "/rail/prod/DATABASE_SSL_MODE"
+        },
+        {
+          "name": "ALPACA_API_KEY",
+          "valueFrom": "/rail/prod/ALPACA_API_KEY"
+        },
+        {
+          "name": "ALPACA_API_SECRET",
+          "valueFrom": "/rail/prod/ALPACA_API_SECRET"
+        },
+        {
+          "name": "ALPACA_BASE_URL",
+          "valueFrom": "/rail/prod/ALPACA_BASE_URL"
+        },
+        {
+          "name": "ALPACA_DATA_BASE_URL",
+          "valueFrom": "/rail/prod/ALPACA_DATA_BASE_URL"
+        },
+        {
+          "name": "ALPACA_ENVIRONMENT",
+          "valueFrom": "/rail/prod/ALPACA_ENVIRONMENT"
+        },
+        {
+          "name": "ALPACA_WEBHOOK_SECRET",
+          "valueFrom": "/rail/prod/ALPACA_WEBHOOK_SECRET"
+        },
+        {
+          "name": "ALPACA_FIRM_ACCOUNT_NO",
+          "valueFrom": "/rail/prod/ALPACA_FIRM_ACCOUNT_NO"
+        },
+        {
+          "name": "BRIDGE_API_KEY",
+          "valueFrom": "/rail/prod/BRIDGE_API_KEY"
+        },
+        {
+          "name": "BRIDGE_BASE_URL",
+          "valueFrom": "/rail/prod/BRIDGE_BASE_URL"
+        },
+        {
+          "name": "BRIDGE_ENVIRONMENT",
+          "valueFrom": "/rail/prod/BRIDGE_ENVIRONMENT"
+        },
+        {
+          "name": "BRIDGE_WEBHOOK_SECRET",
+          "valueFrom": "/rail/prod/BRIDGE_WEBHOOK_SECRET"
+        },
+        {
+          "name": "REFLECT_API_KEY",
+          "valueFrom": "/rail/prod/LULO_API_KEY"
+        },
+        {
+          "name": "REFLECT_SOLANA_RPC",
+          "valueFrom": "/rail/prod/LULO_SOLANA_RPC"
+        },
+        {
+          "name": "REFLECT_OWNER_WALLET",
+          "valueFrom": "/rail/prod/LULO_OWNER_WALLET"
+        },
+        {
+          "name": "REFLECT_PRIVATE_KEY",
+          "valueFrom": "/rail/prod/LULO_PRIVATE_KEY"
+        },
+        {
+          "name": "REFLECT_BRIDGE_SOURCE_WALLET_ID",
+          "valueFrom": "/rail/prod/LULO_BRIDGE_SOURCE_WALLET_ID"
+        },
+        {
+          "name": "APPLE_TEAM_ID",
+          "valueFrom": "/rail/prod/APPLE_TEAM_ID"
+        },
+        {
+          "name": "APPLE_KEY_ID",
+          "valueFrom": "/rail/prod/APPLE_KEY_ID"
+        },
+        {
+          "name": "APPLE_PRIVATE_KEY",
+          "valueFrom": "/rail/prod/APPLE_PRIVATE_KEY"
+        },
+        {
+          "name": "OPENAI_API_KEY",
+          "valueFrom": "/rail/prod/OPENAI_API_KEY"
+        },
+        {
+          "name": "GEMINI_API_KEY",
+          "valueFrom": "/rail/prod/GEMINI_API_KEY"
+        },
+        {
+          "name": "NEWS_API_KEY",
+          "valueFrom": "/rail/prod/NEWS_API_KEY"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/rail-prod",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "systemControls": []
+    }
+  ],
+  "family": "rail-prod",
+  "taskRoleArn": "arn:aws:iam::885160773772:role/rail-prod-ecs-task",
+  "executionRoleArn": "arn:aws:iam::885160773772:role/rail-prod-ecs-execution",
+  "networkMode": "bridge",
+  "volumes": [],
+  "requiresCompatibilities": [
+    "EC2"
+  ]
+}

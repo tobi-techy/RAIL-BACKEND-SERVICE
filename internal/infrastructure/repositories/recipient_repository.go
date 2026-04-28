@@ -117,8 +117,8 @@ func (r *RecipientRepository) SetDefault(ctx context.Context, userID, recipientI
 }
 
 // Delete removes a recipient
-func (r *RecipientRepository) Delete(ctx context.Context, id uuid.UUID) error {
-	_, err := r.db.ExecContext(ctx, `DELETE FROM recipients WHERE id = $1`, id)
+func (r *RecipientRepository) Delete(ctx context.Context, id uuid.UUID, userID uuid.UUID) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM recipients WHERE id = $1 AND user_id = $2`, id, userID)
 	if err != nil {
 		return fmt.Errorf("failed to delete recipient: %w", err)
 	}

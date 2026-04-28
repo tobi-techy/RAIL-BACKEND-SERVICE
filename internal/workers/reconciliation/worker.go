@@ -13,26 +13,35 @@ type LedgerReader interface {
 	GetTotalStashBalance(ctx context.Context) (decimal.Decimal, error)
 }
 
-// BridgeWallet returns the USDB balance held in Rail's Bridge custody wallet.
+// BridgeWallet returns the balance held in the yield provider's custody.
 type BridgeWallet interface {
 	GetWalletBalance(ctx context.Context, customerID, walletID string) (decimal.Decimal, error)
 }
 
+// DistributedYieldReader returns the total yield ever distributed to users.
+// Used to reconcile ledger stash (which includes distributed yield) against
+// the Reflect position (which holds only the original principal).
+type DistributedYieldReader interface {
+	GetTotalDistributedYield(ctx context.Context) (decimal.Decimal, error)
+}
+
 // Worker performs a daily reconciliation between the internal ledger stash total
-// and the actual USDB balance held in Bridge custody.
+// and the actual balance held in the yield provider (Reflect).
 type Worker struct {
-	ledger     LedgerReader
-	bridge     BridgeWallet
-	customerID string
-	walletID   string
-	logger     *zap.Logger
+	ledger           LedgerReader
+	bridge           BridgeWallet
+	distributedYield DistributedYieldReader
+	customerID       string
+	walletID         string
+	logger           *zap.Logger
 }
 
-func NewWorker(ledger LedgerReader, bridge BridgeWallet, customerID, walletID string, logger *zap.Logger) *Worker {
-	return &Worker{ledger: ledger, bridge: bridge, customerID: customerID, walletID: walletID, logger: logger}
+func NewWorker(ledger LedgerReader, bridge BridgeWallet, distributedYield DistributedYieldReader, customerID, walletID string, logger *zap.Logger) *Worker {
+	return &Worker{ledger: ledger, bridge: bridge, distributedYield: distributedYield, customerID: customerID, walletID: walletID, logger: logger}
 }
 
-// Run compares sum(stash_balance) in the ledger against the Bridge USDB wallet balance.
+// Run compares sum(stash_balance) - total_distributed_yield in the ledger
+// against the yield provider balance (depositedUSDC × rate).
 // Any discrepancy is logged as an error for alerting. No auto-correction is performed.
 func (w *Worker) Run(ctx context.Context) error {
 	ledgerTotal, err := w.ledger.GetTotalStashBalance(ctx)
@@ -40,25 +49,36 @@ func (w *Worker) Run(ctx context.Context) error {
 		return fmt.Errorf("reconciliation: get ledger stash total: %w", err)
 	}
 
-	bridgeBalance, err := w.bridge.GetWalletBalance(ctx, w.customerID, w.walletID)
+	totalDistributed, err := w.distributedYield.GetTotalDistributedYield(ctx)
 	if err != nil {
-		return fmt.Errorf("reconciliation: get bridge usdb balance: %w", err)
+		return fmt.Errorf("reconciliation: get total distributed yield: %w", err)
 	}
 
-	diff := ledgerTotal.Sub(bridgeBalance).Abs()
+	// Ledger stash includes yield already credited to users.
+	// Reflect position holds only the original principal.
+	// Subtract distributed yield to make them comparable.
+	ledgerPrincipal := ledgerTotal.Sub(totalDistributed)
+
+	bridgeBalance, err := w.bridge.GetWalletBalance(ctx, w.customerID, w.walletID)
+	if err != nil {
+		return fmt.Errorf("reconciliation: get yield provider balance: %w", err)
+	}
+
+	diff := ledgerPrincipal.Sub(bridgeBalance).Abs()
 	fields := []zap.Field{
 		zap.String("ledger_stash_total", ledgerTotal.StringFixed(6)),
-		zap.String("bridge_usdb_balance", bridgeBalance.StringFixed(6)),
+		zap.String("total_distributed_yield", totalDistributed.StringFixed(6)),
+		zap.String("ledger_principal", ledgerPrincipal.StringFixed(6)),
+		zap.String("provider_balance", bridgeBalance.StringFixed(6)),
 		zap.String("discrepancy", diff.StringFixed(6)),
 	}
 
 	if diff.IsZero() {
-		w.logger.Info("Reconciliation OK: ledger matches Bridge", fields...)
+		w.logger.Info("Reconciliation OK: ledger principal matches yield provider", fields...)
 		return nil
 	}
 
-	// Any discrepancy is an error — alert immediately.
-	w.logger.Error("RECONCILIATION MISMATCH: ledger stash total does not match Bridge USDB balance", fields...)
-	return fmt.Errorf("reconciliation mismatch: ledger=%s bridge=%s diff=%s",
-		ledgerTotal.StringFixed(6), bridgeBalance.StringFixed(6), diff.StringFixed(6))
+	w.logger.Error("RECONCILIATION MISMATCH: ledger principal does not match yield provider balance", fields...)
+	return fmt.Errorf("reconciliation mismatch: ledger_principal=%s provider=%s diff=%s",
+		ledgerPrincipal.StringFixed(6), bridgeBalance.StringFixed(6), diff.StringFixed(6))
 }

@@ -71,6 +71,12 @@ type AuditService interface {
 	LogDeposit(ctx context.Context, userID uuid.UUID, depositID uuid.UUID, amount string, chain string, status string) error
 }
 
+// FundingGameplayHooks interface for triggering gameplay events from deposits
+type FundingGameplayHooks interface {
+	OnDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID)
+	OnFirstDeposit(ctx context.Context, userID uuid.UUID, depositID uuid.UUID)
+}
+
 // FundingNotificationService interface for sending funding-related notifications
 type FundingNotificationService interface {
 	NotifyDepositConfirmed(ctx context.Context, userID uuid.UUID, amount, chain, txHash string) error
@@ -95,8 +101,10 @@ type Service struct {
 	auditService        AuditService
 	notificationService FundingNotificationService
 	allocationService   AllocationService
+	complianceScreener  ComplianceScreener
 	cache               CacheClient
 	config              *FundingConfig
+	gameplayHooks       FundingGameplayHooks
 	logger              *logger.Logger
 }
 
@@ -129,16 +137,18 @@ type ManagedWalletRepository interface {
 type BridgeDepositClient interface {
 	IsSandbox() bool
 	ListWallets(ctx context.Context, customerID string) ([]BridgeWalletInfo, error)
-	CreateWallet(ctx context.Context, customerID string, chain string) (id string, address string, err error)
+	CreateWallet(ctx context.Context, customerID string, chain string, currency string) (id string, address string, err error)
 	ListLiquidationAddresses(ctx context.Context, customerID string) ([]BridgeLiquidationAddr, error)
 	CreateLiquidationAddress(ctx context.Context, customerID string, sourceChain string, destinationChain string, destinationAddress string) (id string, address string, err error)
+	CreateLiquidationAddressForWallet(ctx context.Context, customerID string, sourceChain string, walletID string, walletAddress string) (id string, address string, err error)
 }
 
 // BridgeWalletInfo is a minimal wallet summary from Bridge
 type BridgeWalletInfo struct {
-	ID      string
-	Chain   string
-	Address string
+	ID       string
+	Chain    string
+	Currency string
+	Address  string
 }
 
 // BridgeLiquidationAddr is a minimal liquidation address summary from Bridge
@@ -244,6 +254,11 @@ func (s *Service) SetNotificationService(ns FundingNotificationService) {
 	s.notificationService = ns
 }
 
+// SetGameplayHooks sets the gameplay hooks (optional)
+func (s *Service) SetGameplayHooks(gh FundingGameplayHooks) {
+	s.gameplayHooks = gh
+}
+
 // SetBridgeVAService sets the Bridge virtual account service (optional)
 func (s *Service) SetBridgeVAService(bva *BridgeVirtualAccountService) {
 	s.bridgeVAService = bva
@@ -275,120 +290,179 @@ func (s *Service) SetAllocationService(as AllocationService) {
 	s.allocationService = as
 }
 
-// CreateDepositAddress generates or retrieves deposit address for a chain
-func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, chain entities.Chain) (*entities.DepositAddressResponse, error) {
-	// Check rate limit for new address creation
+// ComplianceScreener screens transactions for AML/sanctions compliance.
+type ComplianceScreener interface {
+	ScreenTransaction(ctx context.Context, userID uuid.UUID, referenceID, direction string, amount decimal.Decimal, currency, userFullName string) (string, error)
+}
+
+// SetComplianceScreener sets the compliance screening service (optional).
+func (s *Service) SetComplianceScreener(cs ComplianceScreener) {
+	s.complianceScreener = cs
+}
+
+// CreateDepositAddress generates or retrieves deposit address for a chain and currency
+func (s *Service) CreateDepositAddress(ctx context.Context, userID uuid.UUID, chain entities.Chain, currency entities.Stablecoin) (*entities.DepositAddressResponse, error) {
+	if currency == "" {
+		currency = entities.StablecoinUSDC
+	}
+	if !currency.IsValid() {
+		return nil, fmt.Errorf("unsupported currency: %s", currency)
+	}
+
 	if s.validationService != nil {
 		if err := s.validationService.CheckDepositRateLimit(ctx, userID); err != nil {
 			return nil, err
 		}
 	}
 
-	// Check if user already has a wallet for this chain in the legacy wallets table.
-	wallet, err := s.walletRepo.GetByUserAndChain(ctx, userID, chain)
-	if err == nil && wallet != nil {
-		s.logger.Info("Using existing wallet address", "user_id", userID, "chain", chain, "address", wallet.Address)
-		return &entities.DepositAddressResponse{
-			Chain:   chain,
-			Address: wallet.Address,
-		}, nil
-	}
-
-	// Check managed_wallets (custody wallets + liquidation addresses) — these are the
-	// primary wallet type for testnet chains like MATIC-AMOY, AVAX-FUJI, SOL-DEVNET.
-	if s.managedWalletRepo != nil {
+	// ── 1. Check managed_wallets for an existing liquidation address (fast path) ──
+	if currency == entities.StablecoinUSDC && s.managedWalletRepo != nil {
 		managedWallets, mErr := s.managedWalletRepo.GetByUserID(ctx, userID)
 		if mErr == nil {
 			for _, mw := range managedWallets {
-				if mw.AccountType == entities.AccountTypeBridgeWallet && matchesManagedWalletChain(mw.Chain, chain) {
-					s.logger.Info("Using existing managed wallet address",
-						"user_id", userID, "chain", chain,
-						"managed_chain", mw.Chain, "address", mw.Address)
+				if mw.AccountType == entities.AccountTypeLiquidationAddr && string(mw.Chain) == string(chain) {
+					s.logger.Info("Using existing liquidation address",
+						"user_id", userID, "chain", chain, "address", mw.Address)
 					return &entities.DepositAddressResponse{
-						Chain:   chain,
-						Address: mw.Address,
+						Chain: chain, Address: mw.Address, Currency: currency,
 					}, nil
 				}
 			}
 		}
 	}
 
-	// Create or retrieve Bridge custody wallet for the requested chain
+	// ── 2. Resolve Bridge customer ──
 	if s.bridgeWallets == nil || s.userRepo == nil {
 		return nil, fmt.Errorf("Bridge deposit client not configured")
 	}
-
 	user, err := s.userRepo.GetByID(ctx, userID)
 	if err != nil || user.BridgeCustomerID == nil || *user.BridgeCustomerID == "" {
 		return nil, fmt.Errorf("user has no Bridge customer ID — complete onboarding first")
 	}
 	customerID := *user.BridgeCustomerID
 	walletChain := entities.WalletChain(chain)
-	bridgeChain := walletChain.ToBridgePaymentRail()
+	bridgeChain := walletChain.ToBridgeWalletChain()
 
-	// Find existing custody wallet for this chain
+	// ── 3. Find or create custody wallet on Bridge ──
+	var walletAddress, walletID string
+
 	wallets, err := s.bridgeWallets.ListWallets(ctx, customerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list Bridge wallets: %w", err)
 	}
-	var walletAddress string
-	var walletID string
 	for _, w := range wallets {
-		if w.Chain == bridgeChain {
+		if w.Chain == bridgeChain && strings.EqualFold(w.Currency, string(currency)) {
 			walletID = w.ID
 			walletAddress = w.Address
 			break
 		}
 	}
 
-	// Create custody wallet if none exists for this chain
 	if walletAddress == "" {
-		id, addr, err := s.bridgeWallets.CreateWallet(ctx, customerID, bridgeChain)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create Bridge custody wallet: %w", err)
+		id, addr, createErr := s.bridgeWallets.CreateWallet(ctx, customerID, bridgeChain, string(currency))
+		if createErr != nil {
+			// Bridge 422: idempotency key reused after 24h — wallet already exists.
+			// Re-list with chain-only match (currency casing may differ).
+			if strings.Contains(createErr.Error(), "idempotency") || strings.Contains(createErr.Error(), "422") {
+				s.logger.Warn("CreateWallet idempotency conflict — wallet exists, re-listing",
+					"user_id", userID, "chain", bridgeChain, "error", createErr)
+				if retryWallets, retryErr := s.bridgeWallets.ListWallets(ctx, customerID); retryErr == nil {
+					for _, w := range retryWallets {
+						if w.Chain == bridgeChain {
+							walletID = w.ID
+							walletAddress = w.Address
+							break
+						}
+					}
+				}
+			}
+			if walletAddress == "" {
+				return nil, fmt.Errorf("failed to create Bridge custody wallet: %w", createErr)
+			}
+		} else {
+			walletID = id
+			walletAddress = addr
 		}
-		walletID = id
-		walletAddress = addr
 	}
 
-	// Persist in managed_wallets if not already there
+	// ── 4. Persist custody wallet locally (idempotent) ──
 	if s.managedWalletRepo != nil {
-		mw := &entities.ManagedWallet{
-			ID:             uuid.New(),
-			UserID:         userID,
-			Chain:          walletChain,
-			Address:        walletAddress,
-			BridgeWalletID: walletID,
-			AccountType:    entities.AccountTypeBridgeWallet,
-			Status:         "live",
-			CreatedAt:      time.Now(),
-			UpdatedAt:      time.Now(),
-		}
-		if err := s.managedWalletRepo.Create(ctx, mw); err != nil {
-			// Likely already exists — that's fine
-			s.logger.Debug("Managed wallet already persisted", "error", err)
+		_ = s.managedWalletRepo.Create(ctx, &entities.ManagedWallet{
+			ID: uuid.New(), UserID: userID, Chain: walletChain,
+			Address: walletAddress, BridgeWalletID: walletID,
+			AccountType: entities.AccountTypeBridgeWallet, Status: "live",
+			CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		})
+	}
+
+	// ── 5. Find or create liquidation address pointing to the custody wallet ──
+	// Bridge docs: "Do not send tokens directly to [custody wallet] address."
+	var depositAddress string
+
+	if s.managedWalletRepo != nil {
+		if managedWallets, mErr := s.managedWalletRepo.GetByUserID(ctx, userID); mErr == nil {
+			for _, mw := range managedWallets {
+				if mw.AccountType == entities.AccountTypeLiquidationAddr && string(mw.Chain) == string(chain) {
+					depositAddress = mw.Address
+					break
+				}
+			}
 		}
 	}
 
-	s.logger.Info("Deposit address ready", "user_id", userID, "chain", chain, "address", walletAddress)
+	if depositAddress == "" {
+		laID, laAddr, err := s.bridgeWallets.CreateLiquidationAddressForWallet(ctx, customerID, string(walletChain), walletID, walletAddress)
+		if err != nil {
+			s.logger.Error("Failed to create liquidation address",
+				"user_id", userID, "wallet_id", walletID, "error", err)
+			return nil, fmt.Errorf("failed to create liquidation address: %w", err)
+		}
+		depositAddress = laAddr
+		if s.managedWalletRepo != nil {
+			_ = s.managedWalletRepo.Create(ctx, &entities.ManagedWallet{
+				ID: uuid.New(), UserID: userID, Chain: walletChain,
+				Address: laAddr, BridgeWalletID: laID,
+				AccountType: entities.AccountTypeLiquidationAddr, Status: "live",
+				CreatedAt: time.Now(), UpdatedAt: time.Now(),
+			})
+		}
+	}
 
+	s.logger.Info("Deposit address ready", "user_id", userID, "chain", chain, "address", depositAddress)
 	return &entities.DepositAddressResponse{
-		Chain:   chain,
-		Address: walletAddress,
+		Chain: chain, Address: depositAddress, Currency: currency,
 	}, nil
 }
 
 // matchesManagedWalletChain checks if a managed wallet's chain matches the requested deposit chain.
+// EVM chains (Polygon, Celo, Base, Avalanche) share the same Ethereum address on Bridge, so they cross-match.
 func matchesManagedWalletChain(walletChain entities.WalletChain, depositChain entities.Chain) bool {
+	evmWallets := map[entities.WalletChain]bool{
+		entities.WalletChainEthereum:  true,
+		entities.WalletChainPolygon:   true,
+		entities.WalletChainCelo:      true,
+		entities.WalletChainBase:      true,
+		entities.WalletChainAvalanche: true,
+		entities.WalletChainArbitrum:  true,
+		entities.WalletChainOptimism:  true,
+	}
+	evmDeposits := map[entities.Chain]bool{
+		entities.ChainETH:       true,
+		entities.ChainMATIC:     true,
+		entities.ChainCELO:      true,
+		entities.ChainBase:      true,
+		entities.ChainAvalanche: true,
+		entities.ChainArbitrum:  true,
+		entities.ChainOptimism:  true,
+	}
+	// EVM chains share the same Bridge wallet address
+	if evmWallets[walletChain] && evmDeposits[depositChain] {
+		return true
+	}
+
 	switch depositChain {
-	case entities.ChainMATIC, entities.ChainMATICAmoy:
-		return walletChain == entities.WalletChainMATICAmoy || walletChain == entities.WalletChainPolygon
-	case entities.ChainAVAX, entities.ChainAVAXFuji:
-		return walletChain == entities.WalletChainAVAXFuji || walletChain == entities.WalletChainAvalanche
-	case entities.ChainSOL, entities.ChainSOLDevnet:
-		return walletChain == entities.WalletChainSOLDevnet || walletChain == entities.WalletChainSolana
-	case entities.ChainBASE, entities.ChainBASESepolia:
-		return walletChain == entities.WalletChainBase || walletChain == entities.WalletChainBASESepolia
+	case entities.ChainSOL:
+		return walletChain == entities.WalletChainSolana
 	default:
 		return string(walletChain) == string(depositChain)
 	}
@@ -651,6 +725,21 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 	// Generate idempotency key (must be done after we have all details)
 	idempotencyKey = generateIdempotencyKey(string(webhook.Chain), string(token), amount.String(), webhook.TxHash)
 
+	// Compliance screening — submit to Didit for AML/sanctions monitoring
+	if s.complianceScreener != nil {
+		screenStatus, screenErr := s.complianceScreener.ScreenTransaction(ctx, userID, webhook.TxHash, "inbound", amount, string(token), "")
+		if screenErr != nil {
+			s.logger.Error("Compliance screening unavailable, blocking deposit for review",
+				"user_id", userID.String(), "tx_hash", webhook.TxHash, "error", screenErr)
+			return fmt.Errorf("deposit held: compliance screening unavailable")
+		}
+		if screenStatus != "APPROVED" {
+			s.logger.Warn("Deposit not approved by compliance screening",
+				"user_id", userID.String(), "tx_hash", webhook.TxHash, "status", screenStatus)
+			return fmt.Errorf("deposit held: compliance status %s", screenStatus)
+		}
+	}
+
 	// Create deposit record FIRST with "pending" status to establish idempotency lock
 	// The unique constraint on idempotency_key prevents race conditions
 	now := time.Now()
@@ -791,6 +880,11 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 		if err := s.cache.Delete(ctx, cacheKey); err != nil {
 			s.logger.Warn("Failed to invalidate balance cache", "error", err, "user_id", userID.String())
 		}
+	}
+
+	// Trigger gameplay events (XP, streaks, challenges)
+	if s.gameplayHooks != nil {
+		s.gameplayHooks.OnDeposit(ctx, userID, usdAmount, deposit.ID)
 	}
 
 	s.logger.Info("Deposit processed successfully",

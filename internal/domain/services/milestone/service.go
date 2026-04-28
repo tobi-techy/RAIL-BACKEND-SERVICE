@@ -281,26 +281,26 @@ func GetMilestoneMessage(milestoneType entities.MilestoneType, amount decimal.De
 	case entities.MilestoneTypeBalance:
 		switch {
 		case amount.Equal(decimal.NewFromInt(100)):
-			return "🎉 First $100!", "You've hit your first $100 invested! This is just the beginning."
+			return "First $100!", "You've hit your first $100 invested! This is just the beginning."
 		case amount.Equal(decimal.NewFromInt(500)):
-			return "🚀 $500 Milestone!", "Half a thousand dollars working for you. Keep it up!"
+			return "$500 Milestone!", "Half a thousand dollars working for you. Keep it up!"
 		case amount.Equal(decimal.NewFromInt(1000)):
-			return "💰 $1,000 Club!", "Welcome to the four-figure club! Your money is growing."
+			return "$1,000 Club!", "Welcome to the four-figure club! Your money is growing."
 		case amount.Equal(decimal.NewFromInt(5000)):
-			return "⭐ $5,000 Achieved!", "Five thousand dollars invested. You're building real wealth."
+			return "$5,000 Achieved!", "Five thousand dollars invested. You're building real wealth."
 		case amount.Equal(decimal.NewFromInt(10000)):
-			return "🏆 $10,000 Milestone!", "Five figures! You're in the top tier of young investors."
+			return "$10,000 Milestone!", "Five figures! You're in the top tier of young investors."
 		default:
-			return fmt.Sprintf("🎯 $%s Milestone!", amountStr), fmt.Sprintf("You've reached $%s invested. Amazing progress!", amountStr)
+			return fmt.Sprintf("$%s Milestone!", amountStr), fmt.Sprintf("You've reached $%s invested. Amazing progress!", amountStr)
 		}
 
 	case entities.MilestoneTypeContribution:
-		return fmt.Sprintf("💪 $%s Contributed!", amountStr), fmt.Sprintf("You've contributed $%s total. Consistency wins!", amountStr)
+		return fmt.Sprintf("$%s Contributed!", amountStr), fmt.Sprintf("You've contributed $%s total. Consistency wins!", amountStr)
 
 	case entities.MilestoneTypeGain:
-		return fmt.Sprintf("📈 $%s in Gains!", amountStr), fmt.Sprintf("Your investments have earned $%s. Your money is working!", amountStr)
+		return fmt.Sprintf("$%s in Gains!", amountStr), fmt.Sprintf("Your investments have earned $%s. Your money is working!", amountStr)
 
 	default:
-		return "🎉 Milestone Achieved!", fmt.Sprintf("You've reached a $%s milestone!", amountStr)
+		return "Milestone Achieved!", fmt.Sprintf("You've reached a $%s milestone!", amountStr)
 	}
 }

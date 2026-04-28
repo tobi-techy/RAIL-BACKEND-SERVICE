@@ -182,6 +182,9 @@ func (c *Client) VerifyWebhookSignature(body []byte, signatureHeader, timestampH
 // --- internal helpers ---
 
 func (c *Client) doRequest(ctx context.Context, method, path string, body any, out any) error {
+	reqCtx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+
 	var payload io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -191,7 +194,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any, o
 		payload = bytes.NewReader(data)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, payload)
+	req, err := http.NewRequestWithContext(reqCtx, method, baseURL+path, payload)
 	if err != nil {
 		return fmt.Errorf("failed to create didit request: %w", err)
 	}
@@ -324,8 +327,11 @@ func sortedJSON(v interface{}) string {
 
 // DeleteSession permanently deletes a verification session and all associated data (GDPR).
 func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
+	reqCtx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+
 	url := fmt.Sprintf("%s/v3/session/%s/delete/", baseURL, sessionID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodDelete, url, nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
@@ -346,4 +352,138 @@ func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	return fmt.Errorf("delete session failed (%d): %s", resp.StatusCode, string(body))
+}
+
+// --- Transaction Monitoring types ---
+
+type TransactionDetails struct {
+	Direction              string  `json:"direction"`                          // "inbound" or "outbound"
+	Amount                 float64 `json:"amount"`
+	Currency               string  `json:"currency"`
+	CurrencyKind           string  `json:"currency_kind,omitempty"`            // "fiat" or "crypto"
+	AmountInDefaultCurrency float64 `json:"amount_in_default_currency,omitempty"`
+	DefaultCurrency        string  `json:"default_currency,omitempty"`
+	PaymentDetails         string  `json:"payment_details,omitempty"`
+	PaymentReferenceID     string  `json:"payment_reference_id,omitempty"`
+	ActionType             string  `json:"action_type,omitempty"`
+}
+
+type TransactionSubject struct {
+	VendorData string `json:"vendor_data"`
+	FullName   string `json:"full_name,omitempty"`
+	EntityType string `json:"entity_type,omitempty"`
+}
+
+type TransactionCounterparty struct {
+	EntityType string `json:"entity_type,omitempty"`
+	VendorData string `json:"vendor_data,omitempty"`
+	FullName   string `json:"full_name,omitempty"`
+}
+
+type CreateTransactionRequest struct {
+	TransactionID       string                   `json:"transaction_id"`
+	TransactionCategory string                   `json:"transaction_category"`
+	TransactionDetails  TransactionDetails       `json:"transaction_details"`
+	Subject             TransactionSubject       `json:"subject"`
+	TransactionAt       string                   `json:"transaction_at,omitempty"`
+	Counterparty        *TransactionCounterparty `json:"counterparty,omitempty"`
+	CustomProperties    map[string]interface{}   `json:"custom_properties,omitempty"`
+	IncludeAMLScreening *bool                    `json:"include_aml_screening,omitempty"`
+}
+
+type TransactionResponse struct {
+	UUID     string `json:"uuid"`
+	TxnID    string `json:"txn_id"`
+	Status   string `json:"status"`   // APPROVED, IN_REVIEW, DECLINED, AWAITING_USER
+	Score    int    `json:"score"`
+	Severity string `json:"severity"` // LOW, MEDIUM, HIGH, CRITICAL
+}
+
+// --- AML Screening types ---
+
+type AMLScreeningRequest struct {
+	FullName                  string  `json:"full_name"`
+	EntityType                string  `json:"entity_type,omitempty"`
+	DateOfBirth               string  `json:"date_of_birth,omitempty"`
+	Nationality               string  `json:"nationality,omitempty"`
+	DocumentNumber            string  `json:"document_number,omitempty"`
+	AMLScoreApproveThreshold  float64 `json:"aml_score_approve_threshold,omitempty"`
+	AMLScoreReviewThreshold   float64 `json:"aml_score_review_threshold,omitempty"`
+	IncludeAdverseMedia       bool    `json:"include_adverse_media,omitempty"`
+	IncludeOngoingMonitoring  bool    `json:"include_ongoing_monitoring,omitempty"`
+	SaveAPIRequest            bool    `json:"save_api_request"`
+	VendorData                string  `json:"vendor_data,omitempty"`
+}
+
+type AMLScreeningResponse struct {
+	RequestID string     `json:"request_id"`
+	AML       AMLResult  `json:"aml"`
+	CreatedAt string     `json:"created_at"`
+}
+
+type AMLResult struct {
+	Status     string      `json:"status"` // "Approved", "In Review", "Declined"
+	TotalHits  int         `json:"total_hits"`
+	EntityType string      `json:"entity_type"`
+	Score      int         `json:"score"`
+	Hits       []AMLHit    `json:"hits"`
+	Warnings   []AMLWarning `json:"warnings"`
+}
+
+type AMLHit struct {
+	ID           string   `json:"id"`
+	Caption      string   `json:"caption"`
+	Datasets     []string `json:"datasets"` // "PEP", "Sanctions", etc.
+	MatchScore   int      `json:"match_score"`
+	RiskScore    int      `json:"risk_score"`
+	ReviewStatus string   `json:"review_status"`
+}
+
+type AMLWarning struct {
+	Risk             string `json:"risk"`
+	ShortDescription string `json:"short_description"`
+	LongDescription  string `json:"long_description"`
+}
+
+// --- Transaction Monitoring methods ---
+
+// CreateTransaction submits a transaction for monitoring and AML screening.
+func (c *Client) CreateTransaction(ctx context.Context, req *CreateTransactionRequest) (*TransactionResponse, error) {
+	var resp TransactionResponse
+	if err := c.doRequest(ctx, http.MethodPost, "/v3/transactions/", req, &resp); err != nil {
+		return nil, fmt.Errorf("create transaction: %w", err)
+	}
+	return &resp, nil
+}
+
+// GetTransaction retrieves a transaction by its Didit UUID.
+func (c *Client) GetTransaction(ctx context.Context, txnUUID string) (*TransactionResponse, error) {
+	path := fmt.Sprintf("/v3/transactions/%s/", txnUUID)
+	var resp TransactionResponse
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, fmt.Errorf("get transaction: %w", err)
+	}
+	return &resp, nil
+}
+
+// --- AML Screening methods ---
+
+// ScreenAML runs a standalone AML screening against global watchlists.
+func (c *Client) ScreenAML(ctx context.Context, req *AMLScreeningRequest) (*AMLScreeningResponse, error) {
+	var resp AMLScreeningResponse
+	if err := c.doRequest(ctx, http.MethodPost, "/v3/aml/", req, &resp); err != nil {
+		return nil, fmt.Errorf("aml screening: %w", err)
+	}
+	return &resp, nil
+}
+
+// --- Transaction Webhook types ---
+
+type TransactionWebhookPayload struct {
+	TransactionID string `json:"transaction_id"`
+	UUID          string `json:"uuid"`
+	Status        string `json:"status"`
+	Score         int    `json:"score"`
+	Severity      string `json:"severity"`
+	WebhookType   string `json:"webhook_type"` // "transaction.created" or "transaction.status.updated"
 }

@@ -134,7 +134,7 @@ func (s *JWTService) GenerateTokenPairEnhanced(userID uuid.UUID, email, role str
 }
 
 // RefreshTokensWithRotation refreshes tokens and invalidates the old refresh token
-func (s *JWTService) RefreshTokensWithRotation(ctx context.Context, refreshToken string) (*EnhancedTokenPair, error) {
+func (s *JWTService) RefreshTokensWithRotation(ctx context.Context, refreshToken string, oldAccessToken string) (*EnhancedTokenPair, error) {
 	// Parse and validate refresh token
 	claims, err := s.ValidateEnhancedToken(refreshToken)
 	if err != nil {
@@ -151,6 +151,11 @@ func (s *JWTService) RefreshTokensWithRotation(ctx context.Context, refreshToken
 		_, err := s.blacklist.ValidateRefreshToken(ctx, refreshHash)
 		if err != nil {
 			return nil, fmt.Errorf("refresh token already used or invalid: %w", err)
+		}
+
+		// Blacklist the old access token to prevent continued use
+		if oldAccessToken != "" {
+			_ = s.blacklist.Blacklist(ctx, hashTokenString(oldAccessToken), time.Now().Add(time.Duration(s.accessTTL)*time.Second))
 		}
 	}
 

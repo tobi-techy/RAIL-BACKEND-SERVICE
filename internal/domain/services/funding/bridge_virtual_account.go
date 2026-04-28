@@ -12,6 +12,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/rail-service/rail_service/pkg/metrics"
 	"github.com/shopspring/decimal"
 )
 
@@ -21,9 +22,12 @@ type BridgeVirtualAccountService struct {
 	virtualAccountRepo  VirtualAccountRepository
 	depositRepo         DepositRepository
 	allocationService   AllocationService
+	complianceScreener  ComplianceScreener
 	ledgerIntegration   LedgerIntegration
 	notificationService FundingNotificationService
+	gameplayHooks       FundingGameplayHooks
 	walletProvider      WalletProvider
+	validationService   *ValidationService
 	logger              *logger.Logger
 }
 
@@ -91,6 +95,21 @@ func (s *BridgeVirtualAccountService) SetWalletProvider(walletProvider WalletPro
 	s.walletProvider = walletProvider
 }
 
+// SetComplianceScreener sets the compliance screening service (optional).
+func (s *BridgeVirtualAccountService) SetComplianceScreener(cs ComplianceScreener) {
+	s.complianceScreener = cs
+}
+
+// SetGameplayHooks sets the gameplay hooks for triggering XP/streak/challenge events.
+func (s *BridgeVirtualAccountService) SetGameplayHooks(gh FundingGameplayHooks) {
+	s.gameplayHooks = gh
+}
+
+// SetValidationService sets the validation service for deposit limit checks.
+func (s *BridgeVirtualAccountService) SetValidationService(vs *ValidationService) {
+	s.validationService = vs
+}
+
 // ProvisionVirtualAccounts creates virtual accounts for multiple currencies on KYC approval
 func (s *BridgeVirtualAccountService) ProvisionVirtualAccounts(ctx context.Context, userID uuid.UUID, bridgeCustomerID string, currencies []string) error {
 	if s.walletProvider == nil {
@@ -101,11 +120,13 @@ func (s *BridgeVirtualAccountService) ProvisionVirtualAccounts(ctx context.Conte
 	// Prefer mainnet Solana, fall back to devnet, then any EVM chain.
 	walletChainsToTry := []entities.WalletChain{
 		entities.WalletChainSolana,
-		entities.WalletChainSOLDevnet,
-		entities.WalletChainMATICAmoy,
+		entities.WalletChainEthereum,
 		entities.WalletChainPolygon,
-		entities.WalletChainAVAXFuji,
-		entities.WalletChainBASESepolia,
+		entities.WalletChainBase,
+		entities.WalletChainAvalanche,
+		entities.WalletChainCelo,
+		entities.WalletChainArbitrum,
+		entities.WalletChainOptimism,
 	}
 
 	var wallet *entities.ManagedWallet
@@ -396,6 +417,15 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 		return fmt.Errorf("amount must be greater than zero")
 	}
 
+	// Validate minimum deposit amount
+	if s.validationService != nil {
+		if err := s.validationService.ValidateDepositAmount(amount); err != nil {
+			return fmt.Errorf("fiat deposit validation failed: %w", err)
+		}
+	} else if amount.LessThan(decimal.NewFromFloat(0.01)) {
+		return fmt.Errorf("deposit amount %s is below minimum", amount.String())
+	}
+
 	bridgeRepo, ok := s.virtualAccountRepo.(BridgeVirtualAccountRepository)
 	if !ok {
 		return fmt.Errorf("virtual account repository does not support bridge account lookup")
@@ -416,11 +446,33 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 	// Generate UUID-based idempotency key
 	idempotencyKey := generateFiatIdempotencyKey(transactionRef, virtualAccountID, amount.String())
 
+	// Validate daily deposit limit
+	if s.validationService != nil {
+		if err := s.validationService.ValidateDailyDepositLimit(ctx, virtualAccount.UserID, amount); err != nil {
+			return fmt.Errorf("fiat deposit limit exceeded: %w", err)
+		}
+	}
+
 	// Create deposit record FIRST with "pending" status to establish idempotency lock
 	// This prevents race conditions - the unique constraint on idempotency_key will reject duplicates
 	now := time.Now()
 	depositID := uuid.New()
 	virtAccountUUID := virtualAccount.ID
+
+	// Compliance screening — submit to Didit for AML/sanctions monitoring
+	if s.complianceScreener != nil {
+		screenStatus, screenErr := s.complianceScreener.ScreenTransaction(ctx, virtualAccount.UserID, transactionRef, "inbound", amount, event.Currency, "")
+		if screenErr != nil {
+			s.logger.Error("Compliance screening unavailable, blocking fiat deposit",
+				"user_id", virtualAccount.UserID.String(), "ref", transactionRef, "error", screenErr)
+			return fmt.Errorf("deposit held: compliance screening unavailable")
+		}
+		if screenStatus != "APPROVED" {
+			s.logger.Warn("Fiat deposit not approved by compliance",
+				"user_id", virtualAccount.UserID.String(), "ref", transactionRef, "status", screenStatus)
+			return fmt.Errorf("deposit held: compliance status %s", screenStatus)
+		}
+	}
 
 	deposit := &entities.Deposit{
 		ID:               depositID,
@@ -480,6 +532,11 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 				"deposit_id", depositID,
 				"error", err)
 		}
+	}
+
+	if metrics.Business != nil {
+		metrics.Business.DepositsCompleted.WithLabelValues("fiat").Inc()
+		metrics.Business.DepositAmount.WithLabelValues("fiat").Observe(amount.InexactFloat64())
 	}
 
 	// Process 70/30 allocation split
@@ -553,6 +610,11 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 				"error", notifyErr,
 				"user_id", virtualAccount.UserID)
 		}
+	}
+
+	// Trigger gameplay events (XP, streaks, challenges)
+	if s.gameplayHooks != nil {
+		s.gameplayHooks.OnDeposit(ctx, virtualAccount.UserID, amount, depositID)
 	}
 
 	s.logger.Info("Bridge fiat deposit processed successfully",
@@ -643,6 +705,30 @@ type DepositInstructions struct {
 }
 
 // generateFiatIdempotencyKey creates a deterministic UUID for fiat deposits
+// mapBridgeChain converts a Bridge chain string to the Rail Chain constant.
+func mapBridgeChain(chain string) entities.Chain {
+	switch strings.ToLower(chain) {
+	case "solana":
+		return entities.ChainSOL
+	case "ethereum":
+		return entities.ChainETH
+	case "polygon":
+		return entities.ChainMATIC
+	case "base":
+		return entities.ChainBase
+	case "avalanche", "avalanche_c_chain":
+		return entities.ChainAvalanche
+	case "arbitrum":
+		return entities.ChainArbitrum
+	case "optimism":
+		return entities.ChainOptimism
+	case "celo":
+		return entities.ChainCELO
+	default:
+		return entities.ChainSOL
+	}
+}
+
 func generateFiatIdempotencyKey(transactionRef, virtualAccountID, amount string) string {
 	input := fmt.Sprintf("fiat-deposit:%s:%s:%s", strings.ToLower(transactionRef), strings.ToLower(virtualAccountID), strings.ToLower(amount))
 	hash := sha256.Sum256([]byte(input))
@@ -652,7 +738,7 @@ func generateFiatIdempotencyKey(transactionRef, virtualAccountID, amount string)
 
 // ProcessCryptoDeposit processes an incoming crypto deposit from a Bridge liquidation address
 // and triggers the 70/30 allocation split.
-func (s *BridgeVirtualAccountService) ProcessCryptoDeposit(ctx context.Context, userID uuid.UUID, transferID string, amount decimal.Decimal) error {
+func (s *BridgeVirtualAccountService) ProcessCryptoDeposit(ctx context.Context, userID uuid.UUID, transferID string, amount decimal.Decimal, chain string) error {
 	if !amount.GreaterThan(decimal.Zero) {
 		return fmt.Errorf("amount must be greater than zero")
 	}
@@ -661,11 +747,27 @@ func (s *BridgeVirtualAccountService) ProcessCryptoDeposit(ctx context.Context, 
 
 	now := time.Now()
 	depositID := uuid.New()
+
+	// Compliance screening
+	if s.complianceScreener != nil {
+		screenStatus, screenErr := s.complianceScreener.ScreenTransaction(ctx, userID, transferID, "inbound", amount, "USDC", "")
+		if screenErr != nil {
+			s.logger.Error("Compliance screening unavailable, blocking crypto deposit",
+				"user_id", userID.String(), "transfer_id", transferID, "error", screenErr)
+			return fmt.Errorf("deposit held: compliance screening unavailable")
+		}
+		if screenStatus != "APPROVED" {
+			s.logger.Warn("Crypto deposit not approved by compliance",
+				"user_id", userID.String(), "transfer_id", transferID, "status", screenStatus)
+			return fmt.Errorf("deposit held: compliance status %s", screenStatus)
+		}
+	}
+
 	deposit := &entities.Deposit{
 		ID:             depositID,
 		IdempotencyKey: idempotencyKey,
 		UserID:         userID,
-		Chain:          entities.ChainSOLDevnet,
+		Chain:          mapBridgeChain(chain),
 		TxHash:         transferID,
 		Token:          entities.StablecoinUSDC,
 		Amount:         amount,
@@ -697,6 +799,18 @@ func (s *BridgeVirtualAccountService) ProcessCryptoDeposit(ctx context.Context, 
 		if err := s.depositRepo.UpdateStatus(ctx, depositID, "confirmed", &confirmedAt); err != nil {
 			s.logger.Error("Failed to update deposit status to confirmed", "deposit_id", depositID, "error", err)
 		}
+	}
+
+	// Notify user that deposit was received
+	if s.notificationService != nil {
+		if err := s.notificationService.NotifyDepositConfirmed(ctx, userID, amount.String(), chain, transferID); err != nil {
+			s.logger.Warn("Failed to send deposit confirmation notification", "user_id", userID, "error", err)
+		}
+	}
+
+	// Trigger gameplay events (XP, streaks, challenges)
+	if s.gameplayHooks != nil {
+		s.gameplayHooks.OnDeposit(ctx, userID, amount, depositID)
 	}
 
 	sourceTxID := transferID

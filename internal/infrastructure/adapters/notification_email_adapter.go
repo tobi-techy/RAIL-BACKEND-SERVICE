@@ -2,11 +2,11 @@ package adapters
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"html"
 
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 )
 
 // EmailSenderAdapter adapts EmailService to the notification.EmailSenderService interface
@@ -45,20 +45,24 @@ func (a *EmailSenderAdapter) SendGenericEmail(ctx context.Context, to, subject, 
 	return a.emailService.SendCustomEmail(ctx, to, subject, htmlContent, body)
 }
 
-// UserEmailLookup looks up a user's email from the database
-type UserEmailLookup struct {
-	db *sql.DB
+// UserRepo is the minimal interface needed for email lookup.
+type UserRepo interface {
+	GetByID(ctx context.Context, id uuid.UUID) (*entities.UserProfile, error)
 }
 
-func NewUserEmailLookup(db *sql.DB) *UserEmailLookup {
-	return &UserEmailLookup{db: db}
+// UserEmailLookup resolves a user's email via the user repository.
+type UserEmailLookup struct {
+	repo UserRepo
+}
+
+func NewUserEmailLookup(repo UserRepo) *UserEmailLookup {
+	return &UserEmailLookup{repo: repo}
 }
 
 func (u *UserEmailLookup) GetEmailByUserID(ctx context.Context, userID uuid.UUID) (string, error) {
-	var email string
-	err := u.db.QueryRowContext(ctx, "SELECT email FROM users WHERE id = $1", userID).Scan(&email)
+	user, err := u.repo.GetByID(ctx, userID)
 	if err != nil {
 		return "", fmt.Errorf("lookup user email: %w", err)
 	}
-	return email, nil
+	return user.Email, nil
 }

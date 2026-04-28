@@ -8,16 +8,34 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
+
+var (
+	emailRegex = regexp.MustCompile(`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`)
+	phoneRegex = regexp.MustCompile(`\+?[0-9][\d\-\s()]{7,}`)
+)
+
+// sanitizeBody truncates a response body to maxLen and redacts email/phone patterns.
+func sanitizeBody(body string, maxLen int) string {
+	s := emailRegex.ReplaceAllString(body, "[REDACTED_EMAIL]")
+	s = phoneRegex.ReplaceAllString(s, "[REDACTED_PHONE]")
+	if len(s) > maxLen {
+		s = s[:maxLen] + "...[truncated]"
+	}
+	return s
+}
 
 // idempotencyKeyCtxKey is the context key for idempotency keys
 type idempotencyKeyCtxKey struct{}
@@ -64,12 +82,16 @@ type Client struct {
 	config     Config
 	httpClient *http.Client
 	logger     *zap.Logger
+
+	// Circuit breaker: track consecutive 5xx failures
+	consecutiveFailures atomic.Int64
+	circuitOpenUntil    atomic.Int64 // unix timestamp when circuit closes
 }
 
 // NewClient creates a new Bridge API client
 func NewClient(config Config, logger *zap.Logger) *Client {
 	if config.Timeout == 0 {
-		config.Timeout = 60 * time.Second // Bridge sandbox can be slow
+		config.Timeout = 30 * time.Second // Production-appropriate timeout
 	}
 	if config.BaseURL == "" {
 		if strings.EqualFold(strings.TrimSpace(config.Environment), "sandbox") {
@@ -99,9 +121,8 @@ func NewClient(config Config, logger *zap.Logger) *Client {
 
 // CreateCustomer creates a new customer
 func (c *Client) CreateCustomer(ctx context.Context, req *CreateCustomerRequest) (*Customer, error) {
-	// Debug log the request
-	reqJSON, _ := json.Marshal(req)
-	c.logger.Info("Creating Bridge customer", zap.String("request", string(reqJSON)))
+	// Debug log the request (body redacted for PII safety)
+	c.logger.Info("Creating Bridge customer")
 
 	var customer Customer
 	if err := c.doRequest(ctx, http.MethodPost, "/v0/customers", req, &customer); err != nil {
@@ -439,23 +460,28 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 		}
 	}
 
-	// Use a detached context with the client's timeout to prevent request context
-	// cancellation from aborting external API calls. This ensures Bridge operations
-	// complete even if the HTTP client disconnects.
-	reqCtx, cancel := context.WithTimeout(context.Background(), c.config.Timeout)
+	// Use incoming context as parent, with client timeout as ceiling.
+	// This ensures proper cancellation propagation while preventing unbounded waits.
+	reqCtx, cancel := context.WithTimeout(ctx, c.config.Timeout)
 	defer cancel()
 
 	var lastErr error
 	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
+		// Circuit breaker: if open, fail fast
+		if openUntil := c.circuitOpenUntil.Load(); openUntil > 0 && time.Now().Unix() < openUntil {
+			return fmt.Errorf("bridge API circuit breaker open: too many consecutive 5xx errors")
+		}
+
 		if attempt > 0 {
-			// Exponential backoff: 1s, 2s, 4s...
-			backoff := time.Duration(1<<(attempt-1)) * time.Second
+			baseBackoff := time.Duration(1<<(attempt-1)) * time.Second
+			jitter := time.Duration(rand.Float64() * 0.5 * float64(baseBackoff))
+			backoff := baseBackoff/2 + jitter
 			select {
 			case <-reqCtx.Done():
 				return reqCtx.Err()
 			case <-time.After(backoff):
 			}
-			c.logger.Debug("Retrying Bridge API request", zap.Int("attempt", attempt), zap.String("method", method), zap.String("url", fullURL))
+			c.logger.Debug("Retrying Bridge API request", zap.Int("attempt", attempt), zap.String("method", method), zap.String("url", fullURL), zap.Duration("backoff", backoff))
 		}
 
 		req, err := http.NewRequestWithContext(reqCtx, method, fullURL, bytes.NewReader(reqBody))
@@ -489,13 +515,22 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 			continue
 		}
 
-		c.logger.Debug("Received Bridge API response", zap.Int("status_code", resp.StatusCode), zap.Int("body_size", len(respBody)), zap.String("body", string(respBody)))
+		c.logger.Debug("Received Bridge API response", zap.Int("status_code", resp.StatusCode), zap.Int("body_size", len(respBody)))
 
 		// Retry on 5xx errors
 		if resp.StatusCode >= 500 {
-			lastErr = fmt.Errorf("API error: status %d, body: %s", resp.StatusCode, string(respBody))
+			failures := c.consecutiveFailures.Add(1)
+			if failures >= 5 {
+				c.circuitOpenUntil.Store(time.Now().Add(30 * time.Second).Unix())
+				c.logger.Warn("Bridge API circuit breaker opened", zap.Int64("consecutive_failures", failures))
+			}
+			lastErr = fmt.Errorf("API error: status %d, body: %s", resp.StatusCode, sanitizeBody(string(respBody), 200))
 			continue
 		}
+
+		// Reset circuit breaker on any non-5xx response
+		c.consecutiveFailures.Store(0)
+		c.circuitOpenUntil.Store(0)
 
 		if resp.StatusCode >= 400 {
 			var errResp ErrorResponse
@@ -503,7 +538,7 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 				errResp.StatusCode = resp.StatusCode
 				return &errResp
 			}
-			return fmt.Errorf("API error: status %d, body: %s", resp.StatusCode, string(respBody))
+			return fmt.Errorf("API error: status %d, body: %s", resp.StatusCode, sanitizeBody(string(respBody), 200))
 		}
 
 		if response != nil && len(respBody) > 0 {

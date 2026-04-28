@@ -76,7 +76,7 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.U
 	               auth_provider_id, email_verified, phone_verified,
 	               onboarding_status, kyc_status, kyc_provider_ref, kyc_submitted_at,
 	               kyc_approved_at, kyc_rejection_reason, bridge_customer_id, alpaca_account_id,
-	               is_active, created_at, updated_at
+	               is_active, COALESCE(withdrawals_frozen, false) AS withdrawals_frozen, created_at, updated_at
 	        FROM users 
 	        WHERE id = $1`
 
@@ -111,6 +111,7 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.U
 		&bridgeCustomerID,
 		&alpacaAccountID,
 		&user.IsActive,
+		&user.WithdrawalsFrozen,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
@@ -532,6 +533,10 @@ func (r *UserRepository) Update(ctx context.Context, user *entities.UserProfile)
 
 // UpdateOnboardingStatus updates the onboarding status
 func (r *UserRepository) UpdateOnboardingStatus(ctx context.Context, userID uuid.UUID, status entities.OnboardingStatus) error {
+	if !status.IsValid() {
+		return fmt.Errorf("invalid onboarding status: %s", status)
+	}
+
 	query := `UPDATE users SET onboarding_status = $2, updated_at = $3 WHERE id = $1`
 
 	_, err := r.db.ExecContext(ctx, query, userID, string(status), time.Now())
@@ -545,7 +550,11 @@ func (r *UserRepository) UpdateOnboardingStatus(ctx context.Context, userID uuid
 }
 
 // UpdateKYCStatus updates the KYC status and related fields
-func (r *UserRepository) UpdateKYCStatus(ctx context.Context, userID uuid.UUID, status string, approvedAt *time.Time, rejectionReason *string) error {
+func (r *UserRepository) UpdateKYCStatus(ctx context.Context, userID uuid.UUID, status entities.KYCStatus, approvedAt *time.Time, rejectionReason *string) error {
+	if !status.IsValid() {
+		return fmt.Errorf("invalid KYC status: %s", status)
+	}
+
 	query := `
 		UPDATE users SET 
 			kyc_status = $2, 
@@ -554,13 +563,13 @@ func (r *UserRepository) UpdateKYCStatus(ctx context.Context, userID uuid.UUID, 
 			updated_at = $5 
 		WHERE id = $1`
 
-	_, err := r.db.ExecContext(ctx, query, userID, status, approvedAt, rejectionReason, time.Now())
+	_, err := r.db.ExecContext(ctx, query, userID, string(status), approvedAt, rejectionReason, time.Now())
 	if err != nil {
 		r.logger.Error("Failed to update KYC status", zap.Error(err), zap.String("user_id", userID.String()))
 		return fmt.Errorf("failed to update KYC status: %w", err)
 	}
 
-	r.logger.Debug("KYC status updated", zap.String("user_id", userID.String()), zap.String("status", status))
+	r.logger.Debug("KYC status updated", zap.String("user_id", userID.String()), zap.String("status", string(status)))
 	return nil
 }
 
@@ -1416,6 +1425,9 @@ func (r *UserRepository) ClearPasscode(ctx context.Context, userID uuid.UUID) er
 
 // CreatePasswordResetToken stores a password reset token using selector-verifier pattern
 func (r *UserRepository) CreatePasswordResetToken(ctx context.Context, userID uuid.UUID, selector, verifierHash string, expiresAt time.Time) error {
+	// Invalidate any existing unused tokens for this user
+	_, _ = r.db.ExecContext(ctx, `UPDATE password_reset_tokens SET used_at = NOW() WHERE user_id = $1 AND used_at IS NULL`, userID)
+
 	query := `INSERT INTO password_reset_tokens (user_id, selector, token_hash, expires_at) VALUES ($1, $2, $3, $4)`
 	_, err := r.db.ExecContext(ctx, query, userID, selector, verifierHash, expiresAt)
 	if err != nil {
@@ -1479,6 +1491,45 @@ func (r *UserRepository) ValidatePasswordResetToken(ctx context.Context, rawToke
 		return uuid.Nil, fmt.Errorf("failed to validate token: %w", err)
 	}
 
+	return userID, nil
+}
+
+// ValidatePasswordResetOTP validates a 6-digit OTP by email (selector) and marks as used
+func (r *UserRepository) ValidatePasswordResetOTP(ctx context.Context, email, code string) (uuid.UUID, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	query := `
+		SELECT id, user_id, token_hash 
+		FROM password_reset_tokens 
+		WHERE selector = $1 AND expires_at > NOW() AND used_at IS NULL
+		ORDER BY created_at DESC LIMIT 1
+		FOR UPDATE`
+
+	var tokenID, userID uuid.UUID
+	var storedHash string
+	err = tx.QueryRowContext(ctx, query, email).Scan(&tokenID, &userID, &storedHash)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return uuid.Nil, fmt.Errorf("invalid or expired code")
+		}
+		return uuid.Nil, fmt.Errorf("failed to query reset token: %w", err)
+	}
+
+	if bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(code)) != nil {
+		return uuid.Nil, fmt.Errorf("invalid or expired code")
+	}
+
+	if _, err := tx.ExecContext(ctx, `UPDATE password_reset_tokens SET used_at = NOW() WHERE id = $1`, tokenID); err != nil {
+		return uuid.Nil, fmt.Errorf("failed to mark token as used: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return uuid.Nil, fmt.Errorf("failed to commit: %w", err)
+	}
 	return userID, nil
 }
 
@@ -1710,7 +1761,7 @@ func (r *UserRepository) SetRailTag(ctx context.Context, userID uuid.UUID, railT
 func (r *UserRepository) FindApprovedNotActiveBridge(ctx context.Context, limit int) ([]uuid.UUID, error) {
 	query := `
 		SELECT u.id FROM users u
-		WHERE u.kyc_status = 'approved'
+		WHERE u.kyc_status IN ('approved', 'processing')
 		  AND (u.bridge_kyc_status IS NULL OR u.bridge_kyc_status NOT IN ('active', 'rejected'))
 		  AND u.kyc_provider_ref IS NOT NULL
 		  AND u.bridge_customer_id IS NOT NULL
@@ -1734,4 +1785,98 @@ func (r *UserRepository) FindApprovedNotActiveBridge(ctx context.Context, limit 
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// NotificationUser holds minimal user data needed for sending notifications.
+type NotificationUser struct {
+	ID      uuid.UUID
+	Country string // ISO 3166-1 alpha-2 (e.g. "NG", "GB", "US"), empty if unknown
+}
+
+// GetUnverifiedUsersForNotification returns IDs of users whose KYC is not approved,
+// who have at least one registered device token, and who signed up more than 1 hour ago.
+func (r *UserRepository) GetUnverifiedUsersForNotification(ctx context.Context) ([]NotificationUser, error) {
+	query := `
+		SELECT DISTINCT u.id, COALESCE(u.country, '') AS country
+		FROM users u
+		JOIN device_tokens dt ON dt.user_id = u.id
+		WHERE u.kyc_status NOT IN ('approved')
+		  AND u.is_active = true
+		  AND u.anonymized_at IS NULL
+		  AND u.created_at < NOW() - INTERVAL '1 hour'
+		  AND dt.is_active = true
+	`
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("GetUnverifiedUsersForNotification: %w", err)
+	}
+	defer rows.Close()
+
+	var users []NotificationUser
+	for rows.Next() {
+		var u NotificationUser
+		if err := rows.Scan(&u.ID, &u.Country); err != nil {
+			return nil, fmt.Errorf("GetUnverifiedUsersForNotification scan: %w", err)
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
+// GetAllActiveUsers returns IDs of all non-anonymized users with a registered device token.
+func (r *UserRepository) GetAllActiveUsers(ctx context.Context) ([]NotificationUser, error) {
+	query := `
+		SELECT DISTINCT u.id, COALESCE(u.country, '') AS country
+		FROM users u
+		JOIN device_tokens dt ON dt.user_id = u.id
+		WHERE u.is_active = true
+		  AND u.anonymized_at IS NULL
+		  AND dt.is_active = true
+	`
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("GetAllActiveUsers: %w", err)
+	}
+	defer rows.Close()
+
+	var users []NotificationUser
+	for rows.Next() {
+		var u NotificationUser
+		if err := rows.Scan(&u.ID, &u.Country); err != nil {
+			return nil, fmt.Errorf("GetAllActiveUsers scan: %w", err)
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
+// GetUsersWithNoDeposits returns IDs of active, KYC-approved users who have a device token
+// but have never made a deposit, and signed up more than 24 hours ago.
+func (r *UserRepository) GetUsersWithNoDeposits(ctx context.Context) ([]NotificationUser, error) {
+	query := `
+		SELECT DISTINCT u.id
+		FROM users u
+		JOIN device_tokens dt ON dt.user_id = u.id
+		LEFT JOIN deposits d ON d.user_id = u.id
+		WHERE u.is_active = true
+		  AND u.anonymized_at IS NULL
+		  AND u.created_at < NOW() - INTERVAL '24 hours'
+		  AND dt.is_active = true
+		  AND d.id IS NULL
+	`
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("GetUsersWithNoDeposits: %w", err)
+	}
+	defer rows.Close()
+
+	var users []NotificationUser
+	for rows.Next() {
+		var u NotificationUser
+		if err := rows.Scan(&u.ID); err != nil {
+			return nil, fmt.Errorf("GetUsersWithNoDeposits scan: %w", err)
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
 }

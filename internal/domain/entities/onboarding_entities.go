@@ -13,6 +13,7 @@ type OnboardingStatus string
 
 const (
 	OnboardingStatusStarted        OnboardingStatus = "started"
+	OnboardingStatusBasicComplete  OnboardingStatus = "basic_complete"
 	OnboardingStatusKYCPending     OnboardingStatus = "kyc_pending"
 	OnboardingStatusKYCApproved    OnboardingStatus = "kyc_approved"
 	OnboardingStatusKYCRejected    OnboardingStatus = "kyc_rejected"
@@ -23,7 +24,7 @@ const (
 // IsValid checks if the onboarding status is valid
 func (s OnboardingStatus) IsValid() bool {
 	switch s {
-	case OnboardingStatusStarted, OnboardingStatusKYCPending, OnboardingStatusKYCApproved,
+	case OnboardingStatusStarted, OnboardingStatusBasicComplete, OnboardingStatusKYCPending, OnboardingStatusKYCApproved,
 		OnboardingStatusKYCRejected, OnboardingStatusWalletsPending, OnboardingStatusCompleted:
 		return true
 	default:
@@ -34,7 +35,8 @@ func (s OnboardingStatus) IsValid() bool {
 // CanTransitionTo checks if transition to target status is allowed
 func (s OnboardingStatus) CanTransitionTo(target OnboardingStatus) bool {
 	transitions := map[OnboardingStatus][]OnboardingStatus{
-		OnboardingStatusStarted:        {OnboardingStatusWalletsPending, OnboardingStatusKYCPending},
+		OnboardingStatusStarted:        {OnboardingStatusBasicComplete, OnboardingStatusWalletsPending, OnboardingStatusKYCPending},
+		OnboardingStatusBasicComplete:  {OnboardingStatusWalletsPending, OnboardingStatusKYCPending},
 		OnboardingStatusKYCPending:     {OnboardingStatusKYCApproved, OnboardingStatusKYCRejected, OnboardingStatusWalletsPending},
 		OnboardingStatusKYCApproved:    {OnboardingStatusWalletsPending},
 		OnboardingStatusKYCRejected:    {OnboardingStatusKYCPending, OnboardingStatusWalletsPending}, // Allow retry or continue without KYC
@@ -128,6 +130,7 @@ type UserProfile struct {
 	BridgeCustomerID   *string          `json:"bridge_customer_id" db:"bridge_customer_id"`
 	AlpacaAccountID    *string          `json:"alpaca_account_id" db:"alpaca_account_id"`
 	IsActive           bool             `json:"is_active" db:"is_active"`
+	WithdrawalsFrozen  bool             `json:"withdrawals_frozen" db:"withdrawals_frozen"`
 	CreatedAt          time.Time        `json:"created_at" db:"created_at"`
 	UpdatedAt          time.Time        `json:"updated_at" db:"updated_at"`
 }
@@ -180,7 +183,7 @@ func (u *UserProfile) CanStartKYC() bool {
 	}
 
 	switch u.OnboardingStatus {
-	case OnboardingStatusStarted, OnboardingStatusKYCRejected, OnboardingStatusWalletsPending, OnboardingStatusCompleted:
+	case OnboardingStatusStarted, OnboardingStatusBasicComplete, OnboardingStatusKYCRejected, OnboardingStatusWalletsPending, OnboardingStatusCompleted:
 		return true
 	case OnboardingStatusKYCPending:
 		// Allow initial submission when we're in the pending state but nothing was sent yet
@@ -200,7 +203,7 @@ func (u *UserProfile) CanCreateWallets() bool {
 	switch u.OnboardingStatus {
 	case OnboardingStatusWalletsPending, OnboardingStatusCompleted:
 		return true
-	case OnboardingStatusStarted, OnboardingStatusKYCPending, OnboardingStatusKYCApproved, OnboardingStatusKYCRejected:
+	case OnboardingStatusStarted, OnboardingStatusBasicComplete, OnboardingStatusKYCPending, OnboardingStatusKYCApproved, OnboardingStatusKYCRejected:
 		return true
 	default:
 		return false
@@ -366,11 +369,26 @@ type Address struct {
 	Country    string `json:"country" validate:"required,len=2"`
 }
 
+// BasicCompleteRequest represents the slim signup request — name + password only
+type BasicCompleteRequest struct {
+	UserID    uuid.UUID `json:"-" validate:"-"`
+	FirstName string    `json:"firstName" validate:"required"`
+	LastName  string    `json:"lastName" validate:"required"`
+	Password  string    `json:"password" validate:"required,min=8"`
+}
+
+// BasicCompleteResponse represents the response after basic signup completion
+type BasicCompleteResponse struct {
+	UserID           uuid.UUID `json:"userId"`
+	OnboardingStatus string    `json:"onboardingStatus"`
+	Message          string    `json:"message"`
+}
+
 // OnboardingCompleteRequest represents the request to complete onboarding with password, personal info, and account creation
 type OnboardingCompleteRequest struct {
 	UserID            uuid.UUID  `json:"-" validate:"-"` // Set from auth context
 	Email             *string    `json:"email,omitempty" validate:"omitempty,email"`
-	Password          string     `json:"password,omitempty" validate:"omitempty,min=12"` // Optional for passkey users
+	Password          string     `json:"password,omitempty" validate:"omitempty,min=8"` // Optional for passkey users
 	FirstName         string     `json:"firstName" validate:"required"`
 	LastName          string     `json:"lastName" validate:"required"`
 	DateOfBirth       *time.Time `json:"dateOfBirth" validate:"required"`

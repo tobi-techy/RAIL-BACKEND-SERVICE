@@ -18,13 +18,15 @@ const (
 	AccountTypePendingInvestment AccountType = "pending_investment" // User's reserved funds for in-flight trades
 
 	// Smart Allocation Mode account types
-	AccountTypeSpendingBalance AccountType = "spending_balance" // User's 70% spending balance (available for payments)
-	AccountTypeStashBalance    AccountType = "stash_balance"    // User's 30% stash balance (locked savings)
+	AccountTypeSpendingBalance        AccountType = "spending_balance"         // User's 70% spending balance (available for payments)
+	AccountTypeStashBalance           AccountType = "stash_balance"            // User's 30% stash balance (locked savings)
+	AccountTypePendingCardSettlement  AccountType = "pending_card_settlement"  // Funds held for authorized but unsettled card transactions
 
 	// System account types
 	AccountTypeSystemBufferUSDC  AccountType = "system_buffer_usdc" // System on-chain USDC reserve
 	AccountTypeSystemBufferFiat  AccountType = "system_buffer_fiat" // System operational USD buffer
 	AccountTypeBrokerOperational AccountType = "broker_operational" // Pre-funded cash at Alpaca
+	AccountTypeSubscriptionRevenue AccountType = "subscription_revenue" // Rail Pro subscription revenue
 )
 
 // IsUserAccountType returns true if the account type belongs to a user
@@ -33,14 +35,16 @@ func (a AccountType) IsUserAccountType() bool {
 		a == AccountTypeFiatExposure ||
 		a == AccountTypePendingInvestment ||
 		a == AccountTypeSpendingBalance ||
-		a == AccountTypeStashBalance
+		a == AccountTypeStashBalance ||
+		a == AccountTypePendingCardSettlement
 }
 
 // IsSystemAccountType returns true if the account type is system-level
 func (a AccountType) IsSystemAccountType() bool {
 	return a == AccountTypeSystemBufferUSDC ||
 		a == AccountTypeSystemBufferFiat ||
-		a == AccountTypeBrokerOperational
+		a == AccountTypeBrokerOperational ||
+		a == AccountTypeSubscriptionRevenue
 }
 
 // IsSystemAccount is an alias for IsSystemAccountType
@@ -57,7 +61,7 @@ func (a AccountType) IsValid() bool {
 func (a AccountType) Validate() error {
 	switch a {
 	case AccountTypeUSDCBalance, AccountTypeFiatExposure, AccountTypePendingInvestment,
-		AccountTypeSpendingBalance, AccountTypeStashBalance,
+		AccountTypeSpendingBalance, AccountTypeStashBalance, AccountTypePendingCardSettlement,
 		AccountTypeSystemBufferUSDC, AccountTypeSystemBufferFiat, AccountTypeBrokerOperational:
 		return nil
 	default:
@@ -77,6 +81,7 @@ const (
 	TransactionTypeBufferReplenishment TransactionType = "buffer_replenishment"
 	TransactionTypeReversal            TransactionType = "reversal"
 	TransactionTypeCardPayment         TransactionType = "card_payment"
+	TransactionTypeCardHold            TransactionType = "card_hold"
 	TransactionTypeP2PTransfer         TransactionType = "p2p_transfer"
 )
 
@@ -86,7 +91,7 @@ func (t TransactionType) Validate() error {
 	case TransactionTypeDeposit, TransactionTypeWithdrawal, TransactionTypeInvestment,
 		TransactionTypeConversion, TransactionTypeInternalTransfer,
 		TransactionTypeBufferReplenishment, TransactionTypeReversal, TransactionTypeCardPayment,
-		TransactionTypeP2PTransfer:
+		TransactionTypeCardHold, TransactionTypeP2PTransfer:
 		return nil
 	default:
 		return fmt.Errorf("invalid transaction type: %s", t)

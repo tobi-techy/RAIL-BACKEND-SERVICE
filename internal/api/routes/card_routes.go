@@ -5,6 +5,7 @@ import (
 	"github.com/rail-service/rail_service/internal/api/handlers"
 	"github.com/rail-service/rail_service/internal/api/middleware"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
+	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/logger"
 )
 
@@ -16,6 +17,7 @@ func RegisterCardRoutes(
 	log *logger.Logger,
 	sessionValidator middleware.SessionValidator,
 	userReader middleware.UserEntityReader,
+	tokenBlacklist *auth.TokenBlacklist,
 ) {
 	if cardHandlers == nil {
 		log.Warn("Card handlers not initialized, skipping card routes")
@@ -24,7 +26,7 @@ func RegisterCardRoutes(
 
 	// Protected card routes
 	cards := v1.Group("/cards")
-	cards.Use(middleware.Authentication(cfg, log, sessionValidator))
+	cards.Use(middleware.Authentication(cfg, log, sessionValidator, tokenBlacklist))
 	cards.Use(middleware.RequireBridgeCapability(userReader, log.Zap()))
 	{
 		// List all user cards

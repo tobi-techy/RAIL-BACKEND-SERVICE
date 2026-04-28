@@ -1,0 +1,1 @@
+ALTER TABLE paj_orders ADD COLUMN IF NOT EXISTS used_user_wallet BOOLEAN NOT NULL DEFAULT false;

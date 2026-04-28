@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"sync"
 	"time"
 
+	"github.com/go-redis/redis/v8"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 
@@ -48,6 +50,7 @@ type Reconciler struct {
 	validator   *ChainValidator
 	auditSvc    *adapters.AuditService
 	logger      *logger.Logger
+	redisClient *redis.Client
 
 	// Metrics
 	meter             metric.Meter
@@ -71,6 +74,7 @@ func NewReconciler(
 	validator *ChainValidator,
 	auditSvc *adapters.AuditService,
 	logger *logger.Logger,
+	redisClient *redis.Client,
 ) (*Reconciler, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -121,6 +125,7 @@ func NewReconciler(
 		validator:         validator,
 		auditSvc:          auditSvc,
 		logger:            logger,
+		redisClient:       redisClient,
 		meter:             meter,
 		runsCounter:       runsCounter,
 		recoveredCounter:  recoveredCounter,
@@ -199,6 +204,21 @@ func (r *Reconciler) reconciliationLoop(ctx context.Context) {
 
 // runReconciliation performs a reconciliation pass
 func (r *Reconciler) runReconciliation(ctx context.Context) {
+	// Acquire distributed lock to prevent concurrent reconciliation runs
+	const lockKey = "rail:reconciliation:lock"
+	if r.redisClient != nil {
+		ok, err := r.redisClient.SetNX(ctx, lockKey, "1", r.config.Interval).Result()
+		if err != nil {
+			r.logger.Error("Failed to acquire reconciliation lock", "error", err)
+			return
+		}
+		if !ok {
+			r.logger.Debug("Reconciliation already running on another instance, skipping")
+			return
+		}
+		defer r.redisClient.Del(ctx, lockKey)
+	}
+
 	startTime := time.Now()
 
 	r.logger.Info("Starting reconciliation run", "threshold", r.config.Threshold)
@@ -217,9 +237,9 @@ func (r *Reconciler) runReconciliation(ctx context.Context) {
 	threshold := r.config.Threshold
 	if threshold > 24*365*10*time.Hour { // Cap at 10 years to prevent overflow
 		r.logger.Warn("Threshold too large, capping at 10 years", "original", threshold)
-		threshold = 24*365*10*time.Hour
+		threshold = 24 * 365 * 10 * time.Hour
 	}
-	
+
 	candidates, err := r.jobRepo.GetPendingDepositsForReconciliation(ctx, threshold, r.config.BatchSize)
 	if err != nil {
 		r.logger.Error("Failed to get reconciliation candidates", "error", err)
@@ -488,14 +508,49 @@ func NewChainValidator(logger *logger.Logger, config *ChainValidatorConfig) *Cha
 	}
 }
 
+// Transaction hash validation patterns
+var (
+	evmTxHashRegex    = regexp.MustCompile(`^0x[a-fA-F0-9]{64}$`)
+	solanaTxHashRegex = regexp.MustCompile(`^[1-9A-HJ-NP-Za-km-z]{86,88}$`)
+	aptosTxHashRegex  = regexp.MustCompile(`^0x[a-fA-F0-9]{64}$`)
+)
+
+// validateTxHash validates a transaction hash format for the given chain
+func validateTxHash(chain entities.Chain, txHash string) error {
+	switch chain {
+	case entities.ChainSOL:
+		if !solanaTxHashRegex.MatchString(txHash) {
+			return fmt.Errorf("invalid Solana tx hash format: %s", txHash)
+		}
+	case entities.ChainMATIC, entities.ChainETH, entities.ChainBase, entities.ChainArbitrum, entities.ChainOptimism, entities.ChainBNB:
+		if !evmTxHashRegex.MatchString(txHash) {
+			return fmt.Errorf("invalid EVM tx hash format: %s", txHash)
+		}
+	case entities.ChainStarknet:
+		if !evmTxHashRegex.MatchString(txHash) {
+			return fmt.Errorf("invalid Starknet tx hash format: %s", txHash)
+		}
+	default:
+		// Aptos and others: validate if it looks like a hex hash used in URL interpolation
+		if !aptosTxHashRegex.MatchString(txHash) {
+			return fmt.Errorf("invalid tx hash format for chain %s: %s", chain, txHash)
+		}
+	}
+	return nil
+}
+
 // ValidateTransaction validates a transaction on the specified chain
 func (v *ChainValidator) ValidateTransaction(ctx context.Context, chain entities.Chain, txHash string) (TransactionStatus, error) {
 	v.logger.Debug("Validating transaction", "chain", chain, "tx_hash", txHash)
 
+	if err := validateTxHash(chain, txHash); err != nil {
+		return TransactionStatusNotFound, err
+	}
+
 	switch chain {
-	case entities.ChainSOL, entities.ChainSOLDevnet:
+	case entities.ChainSOL:
 		return v.validateSolanaTransaction(ctx, txHash)
-	case entities.ChainMATIC, entities.ChainMATICAmoy:
+	case entities.ChainMATIC:
 		return v.validateEVMTransaction(ctx, v.polygonRPC, txHash)
 	default:
 		return TransactionStatusNotFound, fmt.Errorf("unsupported chain: %s", chain)

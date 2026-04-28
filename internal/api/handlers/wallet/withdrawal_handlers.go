@@ -55,8 +55,9 @@ func NewWithdrawalHandlers(withdrawalService WithdrawalServiceInterface, walletP
 // CryptoWithdrawalRequest represents the HTTP request for crypto withdrawal
 type CryptoWithdrawalRequest struct {
 	Amount             string `json:"amount" binding:"required"`
+	Currency           string `json:"currency,omitempty"`                       // USDC, USDT, EURC, PYUSD, USDG (defaults to USDC)
 	DestinationAddress string `json:"destination_address" binding:"required"`
-	DestinationChain   string `json:"destination_chain"` // optional, defaults to SOL-DEVNET
+	DestinationChain   string `json:"destination_chain"` // optional, defaults to SOL
 	Category           string `json:"category,omitempty"`
 	Narration          string `json:"narration,omitempty"`
 }
@@ -65,7 +66,7 @@ type CryptoWithdrawalRequest struct {
 // Only requires routing number - bank account created during withdrawal process
 type FiatWithdrawalRequest struct {
 	Amount            string `json:"amount" binding:"required"`
-	Currency          string `json:"currency" binding:"required,oneof=USD EUR"`
+	Currency          string `json:"currency" binding:"required,oneof=USD EUR GBP NGN"`
 	AccountHolderName string `json:"account_holder_name" binding:"required,min=2,max=255"`
 	AccountNumber     string `json:"account_number,omitempty"`
 	RoutingNumber     string `json:"routing_number,omitempty"`
@@ -79,7 +80,7 @@ type FiatWithdrawalRequest struct {
 type WithdrawalFeeRequest struct {
 	WithdrawalType string `form:"type" binding:"required,oneof=crypto fiat"`
 	Amount         string `form:"amount" binding:"required"`
-	Currency       string `form:"currency" binding:"required,oneof=USDC USD EUR"`
+	Currency       string `form:"currency" binding:"required,oneof=USDC USDT EURC PYUSD USDG USD EUR GBP NGN"`
 	SourceChain    string `form:"source_chain"`
 	DestChain      string `form:"dest_chain"`
 }
@@ -107,6 +108,10 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 		common.SendBadRequest(c, common.ErrCodeInvalidAmount, err.Error())
 		return
 	}
+	if amount.LessThan(decimal.NewFromInt(1)) {
+		common.SendBadRequest(c, common.ErrCodeInvalidAmount, "Minimum withdrawal amount is $1.00")
+		return
+	}
 	if !h.validateWithdrawalAmountPolicy(c, userID, amount) {
 		return
 	}
@@ -128,10 +133,10 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 		return
 	}
 
-	// Determine destination chain (default to SOL-DEVNET)
+	// Determine destination chain (default to SOL)
 	destChain := req.DestinationChain
 	if destChain == "" {
-		destChain = string(entities.WalletChainSOLDevnet)
+		destChain = string(entities.WalletChainSolana)
 	}
 
 	// Validate destination address format for the target chain
@@ -141,7 +146,7 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 	}
 
 	// The source is always the user's spending wallet.
-	// Try SOL (mainnet) first; the adapter falls back to SOL-DEVNET automatically.
+	// Get user's Solana spending wallet.
 	wallet, err := h.walletProvider.GetUserWalletByChain(c.Request.Context(), userID, string(entities.WalletChainSolana))
 	if err != nil {
 		h.logger.Error("Failed to get user wallet", "error", err, "user_id", userID)
@@ -154,14 +159,26 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 		return
 	}
 
+	// Parse withdrawal currency (default to USDC)
+	withdrawalCurrency := entities.WithdrawalCurrencyUSDC
+	if req.Currency != "" {
+		withdrawalCurrency = entities.WithdrawalCurrency(strings.ToUpper(strings.TrimSpace(req.Currency)))
+		if !withdrawalCurrency.IsStablecoinCurrency() {
+			common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Unsupported crypto withdrawal currency. Supported: USDC, USDT, EURC, PYUSD, USDG")
+			return
+		}
+	}
+
 	serviceReq := &entities.InitiateCryptoWithdrawalRequest{
 		UserID:             userID,
 		Amount:             amount,
+		Currency:           withdrawalCurrency,
 		DestinationAddress: req.DestinationAddress,
 		DestinationChain:   destChain,
 		SourceChain:        string(wallet.Chain),
 		SourceAccount:      entities.WithdrawalSourceSpendingBalance,
-		BridgeWalletID:     wallet.BridgeWalletID,
+		BridgeWalletID:      wallet.BridgeWalletID,
+		SourceWalletAddress: wallet.Address,
 		Category:           category,
 		Narration:          narration,
 		IdempotencyKey:     idempotencyKey,
@@ -199,6 +216,10 @@ func (h *WithdrawalHandlers) InitiateFiatWithdrawal(c *gin.Context) {
 		common.SendBadRequest(c, common.ErrCodeInvalidAmount, err.Error())
 		return
 	}
+	if amount.LessThan(decimal.NewFromInt(1)) {
+		common.SendBadRequest(c, common.ErrCodeInvalidAmount, "Minimum withdrawal amount is $1.00")
+		return
+	}
 	if !h.validateWithdrawalAmountPolicy(c, userID, amount) {
 		return
 	}
@@ -223,6 +244,10 @@ func (h *WithdrawalHandlers) InitiateFiatWithdrawal(c *gin.Context) {
 	currency := entities.WithdrawalCurrencyUSD
 	if req.Currency == "EUR" {
 		currency = entities.WithdrawalCurrencyEUR
+	} else if req.Currency == "GBP" {
+		currency = entities.WithdrawalCurrencyGBP
+	} else if req.Currency == "NGN" {
+		currency = entities.WithdrawalCurrencyNGN
 	}
 
 	wallet, err := h.walletProvider.GetUserWalletByChain(c.Request.Context(), userID, string(entities.WalletChainSolana))
@@ -287,6 +312,10 @@ func (h *WithdrawalHandlers) GetWithdrawalFees(c *gin.Context) {
 		currency = entities.WithdrawalCurrencyUSD
 	case "EUR":
 		currency = entities.WithdrawalCurrencyEUR
+	case "GBP":
+		currency = entities.WithdrawalCurrencyGBP
+	case "NGN":
+		currency = entities.WithdrawalCurrencyNGN
 	}
 
 	fee, err := h.withdrawalService.GetWithdrawalFee(
@@ -445,7 +474,8 @@ func (h *WithdrawalHandlers) handleWithdrawalError(c *gin.Context, err error, us
 		common.SendBadRequest(c, common.ErrCodeInvalidRequest, msg)
 	case strings.Contains(errLower, "bridge validation error"),
 		strings.Contains(errLower, "api parameter invalid"):
-		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Invalid withdrawal parameters")
+		h.logger.Warn("Bridge API parameter error", "raw_error", errMsg, "user_id", userID)
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Invalid withdrawal parameters. Please check your details and try again.")
 	case strings.Contains(errMsg, "bridge client not configured"),
 		strings.Contains(errMsg, "bridge wallet ID not provided"),
 		strings.Contains(errMsg, "bridge wallet ID is required"):
@@ -572,6 +602,17 @@ func validateFiatDestination(req FiatWithdrawalRequest) error {
 				return fmt.Errorf("bic must be 8 or 11 alphanumeric characters")
 			}
 		}
+	case "GBP":
+		sortCode := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(req.RoutingNumber), " ", ""), "-", "")
+		account := strings.ReplaceAll(strings.TrimSpace(req.AccountNumber), " ", "")
+		if len(sortCode) != 6 || !isDigits(sortCode) {
+			return fmt.Errorf("sort code (routing_number) must be exactly 6 digits for GBP withdrawals")
+		}
+		if len(account) != 8 || !isDigits(account) {
+			return fmt.Errorf("account_number must be exactly 8 digits for GBP withdrawals")
+		}
+	case "NGN":
+		// NGN withdrawals use PAJ integration — bank details validated by PAJ
 	default:
 		return fmt.Errorf("unsupported fiat currency: %s", currency)
 	}
@@ -648,7 +689,10 @@ func validateCryptoAddress(address, chain string) error {
 		}
 	case strings.Contains(chainUpper, "ETH"), strings.Contains(chainUpper, "MATIC"),
 		strings.Contains(chainUpper, "AVAX"), strings.Contains(chainUpper, "BASE"),
-		strings.Contains(chainUpper, "ARB"), strings.Contains(chainUpper, "OP"):
+		strings.Contains(chainUpper, "ARB"), strings.Contains(chainUpper, "OP"),
+		strings.Contains(chainUpper, "BSC"), strings.Contains(chainUpper, "BNB"),
+		strings.Contains(chainUpper, "MONAD"), strings.Contains(chainUpper, "HYPEREVM"),
+		strings.Contains(chainUpper, "LISK"):
 		// EVM addresses are 0x-prefixed hex, 42 characters
 		if len(addr) != 42 {
 			return fmt.Errorf("invalid EVM address: must be 42 characters (0x + 40 hex)")
@@ -660,6 +704,20 @@ func validateCryptoAddress(address, chain string) error {
 		for _, c := range hexPart {
 			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
 				return fmt.Errorf("invalid EVM address: must be valid hex after 0x")
+			}
+		}
+	case strings.Contains(chainUpper, "STARK"):
+		// Starknet addresses are 0x-prefixed hex, up to 66 characters (0x + 64 hex)
+		if len(addr) < 42 || len(addr) > 66 {
+			return fmt.Errorf("invalid Starknet address: must be 42-66 characters")
+		}
+		if !strings.HasPrefix(addr, "0x") {
+			return fmt.Errorf("invalid Starknet address: must start with 0x")
+		}
+		hexPart := addr[2:]
+		for _, c := range hexPart {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+				return fmt.Errorf("invalid Starknet address: must be valid hex after 0x")
 			}
 		}
 	default:

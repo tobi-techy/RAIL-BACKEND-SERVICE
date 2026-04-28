@@ -2,12 +2,16 @@ package roundup
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
+	"hash/fnv"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
 	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/pkg/metrics"
 	"go.uber.org/zap"
 )
 
@@ -40,12 +44,19 @@ type ContributionRecorder interface {
 	RecordContribution(ctx context.Context, userID uuid.UUID, contributionType entities.ContributionType, amount decimal.Decimal, source string) error
 }
 
+// RoundupGameplayHooks interface for triggering gameplay events from roundups
+type RoundupGameplayHooks interface {
+	OnRoundup(ctx context.Context, userID uuid.UUID, txID uuid.UUID)
+}
+
 // Service handles round-up operations
 type Service struct {
 	repo                 Repository
 	ledgerService        LedgerService
 	orderPlacer          OrderPlacer
 	contributionRecorder ContributionRecorder
+	gameplayHooks        RoundupGameplayHooks
+	db                   *sqlx.DB
 	logger               *zap.Logger
 }
 
@@ -56,12 +67,14 @@ func NewService(
 	orderPlacer OrderPlacer,
 	contributionRecorder ContributionRecorder,
 	logger *zap.Logger,
+	db *sqlx.DB,
 ) *Service {
 	return &Service{
 		repo:                 repo,
 		ledgerService:        ledgerService,
 		orderPlacer:          orderPlacer,
 		contributionRecorder: contributionRecorder,
+		db:                   db,
 		logger:               logger,
 	}
 }
@@ -156,6 +169,11 @@ func (s *Service) ProcessTransaction(ctx context.Context, req *ProcessTransactio
 		return nil, fmt.Errorf("create transaction: %w", err)
 	}
 
+	if metrics.Business != nil {
+		metrics.Business.RoundUpTotal.Inc()
+		metrics.Business.RoundUpAmount.Observe(multiplied.InexactFloat64())
+	}
+
 	// Update accumulator
 	acc, err := s.repo.GetAccumulator(ctx, req.UserID)
 	if err != nil {
@@ -179,7 +197,17 @@ func (s *Service) ProcessTransaction(ctx context.Context, req *ProcessTransactio
 		go s.triggerAutoInvest(context.Background(), req.UserID)
 	}
 
+	// Trigger gameplay events
+	if s.gameplayHooks != nil {
+		s.gameplayHooks.OnRoundup(ctx, req.UserID, tx.ID)
+	}
+
 	return tx, nil
+}
+
+// SetGameplayHooks sets the gameplay hooks (optional)
+func (s *Service) SetGameplayHooks(gh RoundupGameplayHooks) {
+	s.gameplayHooks = gh
 }
 
 // CollectPendingRoundups collects pending round-ups and moves to allocation
@@ -235,13 +263,42 @@ func (s *Service) CollectPendingRoundups(ctx context.Context, userID uuid.UUID) 
 	return nil
 }
 
+// roundupAdvisoryLockKey derives a stable int64 from a user UUID for pg_advisory_lock.
+func roundupAdvisoryLockKey(userID uuid.UUID) int64 {
+	h := fnv.New64a()
+	b := [16]byte(userID)
+	h.Write(b[:])
+	// Offset to avoid collision with withdrawal advisory locks
+	return int64(binary.BigEndian.Uint64(h.Sum(nil)[:8])) ^ 0x526F756E64757021 // "Roundup!"
+}
+
 // triggerAutoInvest triggers auto-investment when threshold is reached
 func (s *Service) triggerAutoInvest(ctx context.Context, userID uuid.UUID) {
+	// Acquire advisory lock to prevent concurrent auto-invest for the same user
+	if s.db != nil {
+		key := roundupAdvisoryLockKey(userID)
+		var acquired bool
+		if err := s.db.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&acquired); err != nil {
+			s.logger.Error("Auto-invest advisory lock query failed", zap.Error(err), zap.String("user_id", userID.String()))
+			return
+		}
+		if !acquired {
+			s.logger.Debug("Auto-invest already in progress for user", zap.String("user_id", userID.String()))
+			return
+		}
+		defer func() {
+			if _, err := s.db.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", key); err != nil {
+				s.logger.Error("Failed to release auto-invest advisory lock", zap.Int64("key", key), zap.Error(err))
+			}
+		}()
+	}
+
 	settings, err := s.GetSettings(ctx, userID)
 	if err != nil || !settings.AutoInvestEnabled {
 		return
 	}
 
+	// Re-read accumulator under lock to confirm threshold is still met
 	acc, err := s.repo.GetAccumulator(ctx, userID)
 	if err != nil || acc.PendingAmount.LessThan(settings.Threshold) {
 		return

@@ -12,6 +12,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/pkg/crypto"
+	"github.com/rail-service/rail_service/pkg/metrics"
 	"go.uber.org/zap"
 )
 
@@ -29,16 +30,18 @@ func chainsToStrings(chains []entities.WalletChain) []string {
 
 // Service handles onboarding operations - user creation, KYC flow, wallet provisioning
 type Service struct {
-	userRepo              UserRepository
-	onboardingFlowRepo    OnboardingFlowRepository
-	kycSubmissionRepo     KYCSubmissionRepository
+	userRepo            UserRepository
+	onboardingFlowRepo  OnboardingFlowRepository
+	kycSubmissionRepo   KYCSubmissionRepository
 	walletService       WalletService
 	emailService        EmailService
 	auditService        AuditService
 	bridgeAdapter       BridgeAdapter
 	alpacaAdapter       AlpacaAdapter
 	allocationService   AllocationService
+	umbraProvisioner    UmbraWalletProvisioner
 	p2pService          P2PService
+	gameplayHooks       OnboardingGameplayHooks
 	logger              *zap.Logger
 	defaultWalletChains []entities.WalletChain
 }
@@ -51,7 +54,8 @@ type UserRepository interface {
 	GetByAuthProviderID(ctx context.Context, authProviderID string) (*entities.UserProfile, error)
 	Update(ctx context.Context, user *entities.UserProfile) error
 	UpdateOnboardingStatus(ctx context.Context, userID uuid.UUID, status entities.OnboardingStatus) error
-	UpdateKYCStatus(ctx context.Context, userID uuid.UUID, status string, approvedAt *time.Time, rejectionReason *string) error
+	UpdateKYCStatus(ctx context.Context, userID uuid.UUID, status entities.KYCStatus, approvedAt *time.Time, rejectionReason *string) error
+	UpdateBridgeKYCStatus(ctx context.Context, userID uuid.UUID, status string) error
 	UpdatePassword(ctx context.Context, userID uuid.UUID, hash string) error
 }
 
@@ -103,9 +107,19 @@ type AllocationService interface {
 	EnableMode(ctx context.Context, userID uuid.UUID, ratios entities.AllocationRatios) error
 }
 
+// UmbraWalletProvisioner provisions per-user Umbra privacy wallets.
+type UmbraWalletProvisioner interface {
+	ProvisionWallet(ctx context.Context, userID uuid.UUID) error
+}
+
 // P2PService interface for auto-claiming pending transfers
 type P2PService interface {
 	ClaimPendingForUser(ctx context.Context, userID uuid.UUID, email, phone string) (int, error)
+}
+
+// OnboardingGameplayHooks interface for triggering gameplay events
+type OnboardingGameplayHooks interface {
+	OnOnboardingComplete(ctx context.Context, userID uuid.UUID)
 }
 
 // NewService creates a new onboarding service
@@ -144,16 +158,26 @@ func (s *Service) SetAllocationService(allocationService AllocationService) {
 	s.allocationService = allocationService
 }
 
+// SetUmbraProvisioner sets the Umbra wallet provisioner (to avoid circular dependency).
+func (s *Service) SetUmbraProvisioner(p UmbraWalletProvisioner) {
+	s.umbraProvisioner = p
+}
+
 // SetP2PService sets the P2P service (used to resolve circular dependency)
 func (s *Service) SetP2PService(p2pService P2PService) {
 	s.p2pService = p2pService
 }
 
+// SetGameplayHooks sets the gameplay hooks (optional)
+func (s *Service) SetGameplayHooks(gh OnboardingGameplayHooks) {
+	s.gameplayHooks = gh
+}
+
 func normalizeDefaultWalletChains(chains []entities.WalletChain, logger *zap.Logger) []entities.WalletChain {
 	if len(chains) == 0 {
-		logger.Warn("No default wallet chains configured; falling back to SOL-DEVNET")
+		logger.Warn("No default wallet chains configured; falling back to SOL")
 		return []entities.WalletChain{
-			entities.WalletChainSOLDevnet,
+			entities.WalletChainSolana,
 		}
 	}
 
@@ -173,9 +197,9 @@ func normalizeDefaultWalletChains(chains []entities.WalletChain, logger *zap.Log
 	}
 
 	if len(normalized) == 0 {
-		logger.Warn("Configured wallet chains invalid; falling back to SOL-DEVNET")
+		logger.Warn("Configured wallet chains invalid; falling back to SOL")
 		return []entities.WalletChain{
-			entities.WalletChainSOLDevnet,
+			entities.WalletChainSolana,
 		}
 	}
 
@@ -223,6 +247,10 @@ func (s *Service) StartOnboarding(ctx context.Context, req *entities.OnboardingS
 		return nil, fmt.Errorf("failed to create user: %w", err)
 	}
 
+	if metrics.Business != nil {
+		metrics.Business.UsersRegistered.Inc()
+	}
+
 	// Create initial onboarding flow steps
 	if err := s.createInitialOnboardingSteps(ctx, user.ID); err != nil {
 		s.logger.Error("Failed to create onboarding steps", zap.Error(err), zap.String("userId", user.ID.String()))
@@ -265,6 +293,21 @@ func (s *Service) GetOnboardingStatus(ctx context.Context, userID uuid.UUID) (*e
 
 	// Get completed steps
 	completedSteps, err := s.onboardingFlowRepo.GetCompletedSteps(ctx, userID)
+
+	// Poll Bridge if user has a Bridge customer but bridge_kyc_status may not be synced
+	if user.BridgeCustomerID != nil && *user.BridgeCustomerID != "" {
+		if bridgeCust, err := s.bridgeAdapter.GetCustomerByEmail(ctx, user.Email); err == nil && bridgeCust != nil && bridgeCust.Status == "active" {
+			if user.KYCStatus != "approved" || user.OnboardingStatus != entities.OnboardingStatusCompleted {
+				now := time.Now()
+				_ = s.userRepo.UpdateKYCStatus(ctx, userID, entities.KYCStatusApproved, &now, nil)
+				_ = s.userRepo.UpdateOnboardingStatus(ctx, userID, entities.OnboardingStatusCompleted)
+				user.KYCStatus = "approved"
+				user.KYCApprovedAt = &now
+				user.OnboardingStatus = entities.OnboardingStatusCompleted
+			}
+			_ = s.userRepo.UpdateBridgeKYCStatus(ctx, userID, "active")
+		}
+	}
 	if err != nil {
 		s.logger.Warn("Failed to get completed steps", zap.Error(err), zap.String("userId", userID.String()))
 		completedSteps = []entities.OnboardingStepType{}
@@ -337,6 +380,58 @@ func (s *Service) CompleteEmailVerification(ctx context.Context, userID uuid.UUI
 	}
 
 	return nil
+}
+
+// BasicCompleteOnboarding handles the slim signup — saves name + password, transitions to basic_complete
+func (s *Service) BasicCompleteOnboarding(ctx context.Context, req *entities.BasicCompleteRequest) (*entities.BasicCompleteResponse, error) {
+	s.logger.Info("Basic complete onboarding", zap.String("user_id", req.UserID.String()))
+
+	user, err := s.userRepo.GetByID(ctx, req.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+
+	if !user.EmailVerified {
+		return nil, fmt.Errorf("email must be verified before completing onboarding")
+	}
+
+	if user.OnboardingStatus != entities.OnboardingStatusStarted {
+		return nil, fmt.Errorf("basic-complete is only allowed from 'started' status, current: %s", user.OnboardingStatus)
+	}
+
+	// Hash and set password
+	passwordHash, err := crypto.HashPassword(req.Password)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash password: %w", err)
+	}
+	if err := s.userRepo.UpdatePassword(ctx, req.UserID, passwordHash); err != nil {
+		return nil, fmt.Errorf("failed to set password: %w", err)
+	}
+
+	// Update name
+	user.FirstName = &req.FirstName
+	user.LastName = &req.LastName
+	user.UpdatedAt = time.Now()
+	if err := s.userRepo.Update(ctx, user); err != nil {
+		return nil, fmt.Errorf("failed to update user profile: %w", err)
+	}
+
+	// Transition to basic_complete
+	if err := s.userRepo.UpdateOnboardingStatus(ctx, req.UserID, entities.OnboardingStatusBasicComplete); err != nil {
+		return nil, fmt.Errorf("failed to update onboarding status: %w", err)
+	}
+
+	if err := s.auditService.LogOnboardingEvent(ctx, req.UserID, "basic_signup_completed", "user", nil, map[string]any{
+		"password_set": true,
+	}); err != nil {
+		s.logger.Warn("Failed to log audit event", zap.Error(err))
+	}
+
+	return &entities.BasicCompleteResponse{
+		UserID:           req.UserID,
+		OnboardingStatus: string(entities.OnboardingStatusBasicComplete),
+		Message:          "Basic signup completed. Complete your profile to unlock all features.",
+	}, nil
 }
 
 // CompleteOnboarding handles the completion of onboarding with personal info, password, and Bridge customer creation
@@ -459,66 +554,6 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 
 	// NOTE: Alpaca account creation removed - now handled in KYC flow via POST /kyc/submit
 
-	// Mark passcode creation step as completed and trigger wallet creation
-	stepData := map[string]any{
-		"completed_at": time.Now(),
-	}
-	if req.EmploymentStatus != nil {
-		if trimmed := strings.TrimSpace(*req.EmploymentStatus); trimmed != "" {
-			stepData["employment_status"] = trimmed
-		}
-	}
-	if req.YearlyIncome != nil {
-		stepData["yearly_income"] = *req.YearlyIncome
-	}
-	if req.UserExperience != nil {
-		if trimmed := strings.TrimSpace(*req.UserExperience); trimmed != "" {
-			stepData["user_experience"] = trimmed
-		}
-	}
-	if len(req.InvestmentGoals) > 0 {
-		stepData["investment_goals"] = req.InvestmentGoals
-	}
-
-	if err := s.markStepCompleted(ctx, req.UserID, entities.StepPasscodeCreation, stepData); err != nil {
-		s.logger.Warn("Failed to mark passcode creation step as completed", zap.Error(err))
-	}
-
-	// Transition to wallet provisioning
-	if err := s.userRepo.UpdateOnboardingStatus(ctx, req.UserID, entities.OnboardingStatusWalletsPending); err != nil {
-		return nil, fmt.Errorf("failed to update onboarding status: %w", err)
-	}
-
-	// Trigger wallet provisioning
-	if err := s.walletService.CreateWalletsForUser(ctx, req.UserID, s.defaultWalletChains); err != nil {
-		s.logger.Error("Failed to trigger wallet provisioning", zap.Error(err), zap.String("userId", req.UserID.String()))
-		return nil, fmt.Errorf("failed to create wallets: %w", err)
-	}
-
-	// Auto-enable 70/30 allocation mode (Rail MVP default - non-negotiable)
-	if s.allocationService != nil {
-		defaultRatios := entities.AllocationRatios{
-			SpendingRatio: entities.DefaultSpendingRatio,
-			StashRatio:    entities.DefaultStashRatio,
-		}
-		if err := s.allocationService.EnableMode(ctx, req.UserID, defaultRatios); err != nil {
-			s.logger.Error("Failed to enable default 70/30 allocation mode", zap.Error(err), zap.String("userId", req.UserID.String()))
-		}
-	}
-
-	// Auto-claim any pending P2P transfers sent to this user's email/phone
-	if s.p2pService != nil {
-		phone := ""
-		if user.Phone != nil {
-			phone = *user.Phone
-		}
-		if claimed, err := s.p2pService.ClaimPendingForUser(ctx, req.UserID, user.Email, phone); err != nil {
-			s.logger.Warn("Failed to auto-claim P2P transfers", zap.Error(err), zap.String("userId", req.UserID.String()))
-		} else if claimed > 0 {
-			s.logger.Info("Auto-claimed P2P transfers", zap.Int("count", claimed), zap.String("userId", req.UserID.String()))
-		}
-	}
-
 	// Get final IDs from user (may have been set in this request or previously)
 
 	bridgeCustomerID := ""
@@ -529,8 +564,8 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 	// Log audit event
 	if err := s.auditService.LogOnboardingEvent(ctx, req.UserID, "signup_completed", "user", nil, map[string]any{
 		"bridge_customer_id": bridgeCustomerID,
-		"password_set":       true,
-		"wallets_queued":     true,
+		"password_set":       req.Password != "",
+		"wallets_queued":     false,
 	}); err != nil {
 		s.logger.Warn("Failed to log audit event", zap.Error(err))
 	}
@@ -538,7 +573,12 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 	s.logger.Info("Onboarding completed successfully",
 		zap.String("user_id", req.UserID.String()),
 		zap.String("bridge_customer_id", bridgeCustomerID),
-		zap.Bool("wallets_queued", true))
+		zap.Bool("wallets_queued", false))
+
+	// Trigger gameplay: assign onboarding challenges
+	if s.gameplayHooks != nil {
+		s.gameplayHooks.OnOnboardingComplete(ctx, req.UserID)
+	}
 
 	return &entities.OnboardingCompleteResponse{
 		UserID:           req.UserID,
@@ -597,6 +637,18 @@ func (s *Service) CompletePasscodeCreation(ctx context.Context, userID uuid.UUID
 		}
 	}
 
+	// Provision Umbra privacy wallet (async, non-blocking)
+	if s.umbraProvisioner != nil {
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+			defer cancel()
+			if err := s.umbraProvisioner.ProvisionWallet(bgCtx, userID); err != nil {
+				s.logger.Error("Failed to provision Umbra wallet (non-fatal)",
+					zap.Error(err), zap.String("userId", userID.String()))
+			}
+		}()
+	}
+
 	// Log audit event
 	if err := s.auditService.LogOnboardingEvent(ctx, userID, "passcode_created", "user", nil, map[string]any{
 		"created_at": time.Now(),
@@ -647,19 +699,17 @@ func (s *Service) ProcessKYCCallback(ctx context.Context, providerRef string, st
 
 	switch status {
 	case entities.KYCStatusApproved:
-		now := time.Now()
-		kycApprovedAt = &now
+		// Identity provider approved — set processing, not approved.
+		// Bridge webhook will promote to approved when Bridge goes active.
+		status = entities.KYCStatusProcessing
 
 		// Mark KYC review step as completed
 		if err := s.markStepCompleted(ctx, user.ID, entities.StepKYCReview, map[string]any{
-			"status":      string(status),
-			"approved_at": now,
+			"status":      "identity_approved",
+			"approved_at": time.Now(),
 		}); err != nil {
 			s.logger.Warn("Failed to mark KYC review step as completed", zap.Error(err))
 		}
-
-		// Virtual accounts are now created on-demand when the user requests one
-		// via POST /api/v1/funding/virtual-account, not auto-provisioned here.
 
 	case entities.KYCStatusRejected:
 		if len(rejectionReasons) > 0 {
@@ -679,7 +729,7 @@ func (s *Service) ProcessKYCCallback(ctx context.Context, providerRef string, st
 	}
 
 	// Update user status
-	if err := s.userRepo.UpdateKYCStatus(ctx, user.ID, string(status), kycApprovedAt, kycRejectionReason); err != nil {
+	if err := s.userRepo.UpdateKYCStatus(ctx, user.ID, status, kycApprovedAt, kycRejectionReason); err != nil {
 		return fmt.Errorf("failed to update user KYC status: %w", err)
 	}
 
@@ -717,7 +767,7 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 		if latest, latestErr := s.kycSubmissionRepo.GetLatestByUserID(ctx, userID); latestErr == nil &&
 			latest != nil && latest.Status == entities.KYCStatusApproved {
 			now := time.Now()
-			_ = s.userRepo.UpdateKYCStatus(ctx, userID, string(entities.KYCStatusApproved), &now, nil)
+			_ = s.userRepo.UpdateKYCStatus(ctx, userID, entities.KYCStatusApproved, &now, nil)
 			status = string(entities.KYCStatusApproved)
 		}
 	}

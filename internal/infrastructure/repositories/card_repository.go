@@ -207,3 +207,9 @@ func (r *CardRepository) CountByUserID(ctx context.Context, userID uuid.UUID) (i
 	}
 	return count, nil
 }
+
+func (r *CardRepository) CountTransactionsByUser(ctx context.Context, userID uuid.UUID) (int, error) {
+	var count int
+	err := r.db.GetContext(ctx, &count, `SELECT COUNT(*) FROM card_transactions WHERE user_id = $1 AND status = 'completed'`, userID)
+	return count, err
+}

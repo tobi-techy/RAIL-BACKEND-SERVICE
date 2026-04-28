@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -27,15 +28,21 @@ type GeminiProvider struct {
 	logger    *zap.Logger
 	tracer    trace.Tracer
 	limiter   *rate.Limiter
+	mu        sync.RWMutex
 	lastError error
 	lastCheck time.Time
 }
 
 // NewGeminiProvider creates a new Gemini provider
 func NewGeminiProvider(config *ProviderConfig, logger *zap.Logger) *GeminiProvider {
-	// Create rate limiter based on RPM config
-	rps := float64(config.RateLimitRPM) / 60.0
-	limiter := rate.NewLimiter(rate.Limit(rps), 1)
+	// Create rate limiter based on RPM config; 0 means no local limit
+	var limiter *rate.Limiter
+	if config.RateLimitRPM > 0 {
+		rps := float64(config.RateLimitRPM) / 60.0
+		limiter = rate.NewLimiter(rate.Limit(rps), max(config.RateLimitRPM/10, 1))
+	} else {
+		limiter = rate.NewLimiter(rate.Inf, 1)
+	}
 
 	return &GeminiProvider{
 		config: config,
@@ -53,25 +60,50 @@ func (p *GeminiProvider) Name() string {
 	return "gemini"
 }
 
-// IsAvailable checks if Gemini is available
+// IsAvailable checks if Gemini is available without burning tokens.
+// Uses the models list endpoint for a lightweight health check.
 func (p *GeminiProvider) IsAvailable(ctx context.Context) bool {
-	// Cache availability check for 1 minute
-	if time.Since(p.lastCheck) < time.Minute && p.lastError == nil {
-		return true
+	p.mu.RLock()
+	cached := p.lastCheck
+	lastErr := p.lastError
+	p.mu.RUnlock()
+
+	// Cache availability check for 30 seconds
+	if time.Since(cached) < 30*time.Second {
+		return lastErr == nil
 	}
 
-	req := &ChatRequest{
-		Messages: []Message{
-			{Role: "user", Content: "test"},
-		},
-		MaxTokens: 5,
+	apiURL := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models?key=%s&pageSize=1", p.config.APIKey)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		p.mu.Lock()
+		p.lastError = err
+		p.lastCheck = time.Now()
+		p.mu.Unlock()
+		return false
 	}
 
-	_, err := p.ChatCompletion(ctx, req)
-	p.lastError = err
+	resp, err := p.client.Do(req)
+	if err != nil {
+		p.mu.Lock()
+		p.lastError = err
+		p.lastCheck = time.Now()
+		p.mu.Unlock()
+		return false
+	}
+	defer resp.Body.Close()
+
+	var checkErr error
+	if resp.StatusCode != http.StatusOK {
+		checkErr = fmt.Errorf("health check failed: HTTP %d", resp.StatusCode)
+	}
+
+	p.mu.Lock()
+	p.lastError = checkErr
 	p.lastCheck = time.Now()
-
-	return err == nil
+	p.mu.Unlock()
+	return checkErr == nil
 }
 
 // ChatCompletion performs a standard chat completion
@@ -172,6 +204,7 @@ func (p *GeminiProvider) ChatCompletionWithTools(ctx context.Context, req *ChatR
 // buildGeminiRequest converts our ChatRequest to Gemini's format
 func (p *GeminiProvider) buildGeminiRequest(req *ChatRequest, tools []Tool) map[string]interface{} {
 	contents := make([]map[string]interface{}, 0, len(req.Messages))
+	var systemParts []string
 
 	// Gemini uses "user" and "model" roles (not "assistant")
 	for _, msg := range req.Messages {
@@ -180,8 +213,13 @@ func (p *GeminiProvider) buildGeminiRequest(req *ChatRequest, tools []Tool) map[
 			role = "model"
 		}
 		if role == "system" {
-			// Gemini doesn't have system role, prepend to first user message
+			// Gemini doesn't have system role, collect for prepending
+			systemParts = append(systemParts, msg.Content)
 			continue
+		}
+		if role == "tool" {
+			// Gemini doesn't have tool role; send as user with prefix
+			role = "user"
 		}
 
 		contents = append(contents, map[string]interface{}{
@@ -192,10 +230,17 @@ func (p *GeminiProvider) buildGeminiRequest(req *ChatRequest, tools []Tool) map[
 		})
 	}
 
-	// Prepend system prompt to first user message if present
-	if req.SystemPrompt != "" && len(contents) > 0 {
+	// Prepend system prompt + any system messages to first user message
+	prefix := req.SystemPrompt
+	for _, sp := range systemParts {
+		if prefix != "" {
+			prefix += "\n\n"
+		}
+		prefix += sp
+	}
+	if prefix != "" && len(contents) > 0 {
 		if firstMsg, ok := contents[0]["parts"].([]map[string]string); ok && len(firstMsg) > 0 {
-			firstMsg[0]["text"] = req.SystemPrompt + "\n\n" + firstMsg[0]["text"]
+			firstMsg[0]["text"] = prefix + "\n\n" + firstMsg[0]["text"]
 		}
 	}
 
@@ -212,10 +257,16 @@ func (p *GeminiProvider) buildGeminiRequest(req *ChatRequest, tools []Tool) map[
 		genConfig["maxOutputTokens"] = p.config.MaxTokens
 	}
 
-	if req.Temperature > 0 {
-		genConfig["temperature"] = req.Temperature
+	if req.Temperature != nil {
+		genConfig["temperature"] = *req.Temperature
 	} else if p.config.Temperature > 0 {
 		genConfig["temperature"] = p.config.Temperature
+	}
+
+	if req.TopP != nil {
+		genConfig["topP"] = *req.TopP
+	} else if p.config.TopP > 0 {
+		genConfig["topP"] = p.config.TopP
 	}
 
 	if len(genConfig) > 0 {
@@ -273,9 +324,13 @@ func (p *GeminiProvider) convertResponse(resp *geminiResponse, duration time.Dur
 	// Parse tool calls if present (function calls in Gemini)
 	for _, part := range candidate.Content.Parts {
 		if funcCall, ok := part["functionCall"].(map[string]interface{}); ok {
+			name, _ := funcCall["name"].(string)
+			if name == "" {
+				continue
+			}
 			toolCall := ToolCall{
 				ID:   fmt.Sprintf("call_%d", len(chatResp.ToolCalls)),
-				Name: funcCall["name"].(string),
+				Name: name,
 			}
 
 			if args, ok := funcCall["args"].(map[string]interface{}); ok {

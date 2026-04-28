@@ -13,6 +13,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/autoinvest"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/rail-service/rail_service/pkg/metrics"
 	"github.com/shopspring/decimal"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -56,6 +57,11 @@ type spendingTotalReader interface {
 	GetTotalSpendingAdded(ctx context.Context, userID uuid.UUID, startDate, endDate time.Time) (decimal.Decimal, error)
 }
 
+// UmbraShielder shields allocated funds into Umbra encrypted balances.
+type UmbraShielder interface {
+	ShieldFunds(ctx context.Context, userID uuid.UUID, mint string, amount string) error
+}
+
 // AllocationNotificationService defines notification operations for allocation failures.
 type AllocationNotificationService interface {
 	SendGenericNotification(ctx context.Context, userID uuid.UUID, title, message string) error
@@ -70,6 +76,7 @@ type Service struct {
 	yieldSnapshotter    YieldSnapshotter
 	stashLockRecorder   StashLockRecorder
 	notificationService AllocationNotificationService
+	umbraShielder       UmbraShielder
 	logger              *logger.Logger
 }
 
@@ -104,6 +111,11 @@ func (s *Service) SetStashLockRecorder(r StashLockRecorder) {
 // SetNotificationService sets the notification service for user alerts on auto-invest failure.
 func (s *Service) SetNotificationService(ns AllocationNotificationService) {
 	s.notificationService = ns
+}
+
+// SetUmbraShielder sets the Umbra privacy shielder for post-allocation shielding.
+func (s *Service) SetUmbraShielder(u UmbraShielder) {
+	s.umbraShielder = u
 }
 
 // notifyAutoInvestFailure sends a user-facing notification when auto-invest fails silently in a goroutine.
@@ -384,49 +396,25 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 	}
 	allocationBaseKey := fmt.Sprintf("allocation-%s", uuid.NewSHA1(uuid.NameSpaceOID, []byte(idempotencySeed)).String())
 
-	if err := s.createAllocationTransfer(
+	// Create a single atomic ledger transaction for both spending and stash allocations.
+	// This eliminates the need for compensating transactions if one leg fails.
+	if err := s.createAtomicAllocationTransfer(
 		ctx,
 		req,
 		spendingAccount.ID,
-		usdcAccount.ID,
-		spendingAmount,
-		"spending",
-		allocationBaseKey+"-spending",
-		fmt.Sprintf("Spending allocation: %s", spendingAmount.String()),
-		desc,
-		metadata,
-	); err != nil {
-		span.RecordError(err)
-		return fmt.Errorf("failed to create spending allocation transfer: %w", err)
-	}
-
-	if err := s.createAllocationTransfer(
-		ctx,
-		req,
 		stashAccount.ID,
 		usdcAccount.ID,
+		spendingAmount,
 		stashAmount,
-		"stash",
-		allocationBaseKey+"-stash",
-		fmt.Sprintf("Stash allocation: %s", stashAmount.String()),
+		allocationBaseKey,
 		desc,
 		metadata,
 	); err != nil {
 		span.RecordError(err)
-		// Compensate: reverse the spending transfer that already committed
-		s.logger.Error("Stash transfer failed after spending transfer succeeded, compensating",
-			"user_id", req.UserID, "spending_amount", spendingAmount, "error", err)
-		compKey := allocationBaseKey + "-spending-reversal"
-		compDesc := fmt.Sprintf("Reversal of spending allocation: %s (stash transfer failed)", spendingAmount.String())
-		if compErr := s.createAllocationTransfer(ctx, req, usdcAccount.ID, spendingAccount.ID, spendingAmount,
-			"spending_reversal", compKey, compDesc, compDesc, map[string]any{"compensation": true}); compErr != nil {
-			// CRITICAL: Compensation failed - this is a serious issue requiring manual intervention
-			s.logger.Error("CRITICAL: Failed to compensate spending transfer — funds partially split - MANUAL INTERVENTION REQUIRED",
-				"user_id", req.UserID, "spending_amount", spendingAmount, "original_error", err, "compensation_error", compErr)
-			// Return both errors so this can be tracked and resolved
-			return fmt.Errorf("CRITICAL: failed to create stash allocation transfer: %w; COMPENSATION ALSO FAILED: %v - requires manual reconciliation", err, compErr)
+		if metrics.Business != nil {
+			metrics.Business.AllocationExecutedTotal.WithLabelValues("failed").Inc()
 		}
-		return fmt.Errorf("failed to create stash allocation transfer: %w", err)
+		return fmt.Errorf("failed to create allocation transfer: %w", err)
 	}
 
 	// Record yield snapshot after stash balance changes.
@@ -483,6 +471,39 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		"total", req.Amount,
 		"spending", spendingAmount,
 		"stash", stashAmount)
+
+	if metrics.Business != nil {
+		metrics.Business.AllocationExecutedTotal.WithLabelValues("success").Inc()
+		metrics.Business.AllocationSpendAmount.Observe(spendingAmount.InexactFloat64())
+		metrics.Business.AllocationStashAmount.Observe(stashAmount.InexactFloat64())
+	}
+
+	// Shield allocated funds through Umbra privacy layer (async, non-blocking)
+	if s.umbraShielder != nil {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					s.logger.Error("Panic in Umbra shielding goroutine",
+						"user_id", req.UserID, "panic", r)
+				}
+			}()
+			bgCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+
+			usdcMint := "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+			totalMicroUnits := req.Amount.Shift(6).IntPart() // USDC has 6 decimals
+			if err := s.umbraShielder.ShieldFunds(bgCtx, req.UserID, usdcMint, fmt.Sprintf("%d", totalMicroUnits)); err != nil {
+				s.logger.Error("Failed to shield funds through Umbra (non-fatal, ledger split already committed)",
+					"user_id", req.UserID,
+					"amount", req.Amount,
+					"error", err)
+			} else {
+				s.logger.Info("Successfully shielded funds through Umbra",
+					"user_id", req.UserID,
+					"amount", req.Amount)
+			}
+		}()
+	}
 
 	// Notify user that the split completed
 	if s.notificationService != nil {
@@ -914,6 +935,89 @@ func (s *Service) initializeAllocationAccounts(ctx context.Context, userID uuid.
 	_, err = s.ledgerService.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
 	if err != nil {
 		return fmt.Errorf("failed to create stash balance account: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Service) createAtomicAllocationTransfer(
+	ctx context.Context,
+	req *entities.IncomingFundsRequest,
+	spendingAccountID uuid.UUID,
+	stashAccountID uuid.UUID,
+	sourceAccountID uuid.UUID,
+	spendingAmount decimal.Decimal,
+	stashAmount decimal.Decimal,
+	idempotencyKey string,
+	description string,
+	baseMetadata map[string]any,
+) error {
+	metadata := make(map[string]any, len(baseMetadata)+1)
+	for k, v := range baseMetadata {
+		metadata[k] = v
+	}
+	metadata["allocation_type"] = "atomic_split"
+
+	var entries []entities.CreateEntryRequest
+
+	if !spendingAmount.IsZero() {
+		spendDesc := fmt.Sprintf("Spending allocation: %s", spendingAmount.String())
+		entries = append(entries,
+			entities.CreateEntryRequest{
+				AccountID:   spendingAccountID,
+				EntryType:   entities.EntryTypeDebit,
+				Amount:      spendingAmount,
+				Currency:    "USDC",
+				Description: stringPtr(spendDesc),
+			},
+			entities.CreateEntryRequest{
+				AccountID:   sourceAccountID,
+				EntryType:   entities.EntryTypeCredit,
+				Amount:      spendingAmount,
+				Currency:    "USDC",
+				Description: &description,
+			},
+		)
+	}
+
+	if !stashAmount.IsZero() {
+		stashDesc := fmt.Sprintf("Stash allocation: %s", stashAmount.String())
+		entries = append(entries,
+			entities.CreateEntryRequest{
+				AccountID:   stashAccountID,
+				EntryType:   entities.EntryTypeDebit,
+				Amount:      stashAmount,
+				Currency:    "USDC",
+				Description: stringPtr(stashDesc),
+			},
+			entities.CreateEntryRequest{
+				AccountID:   sourceAccountID,
+				EntryType:   entities.EntryTypeCredit,
+				Amount:      stashAmount,
+				Currency:    "USDC",
+				Description: &description,
+			},
+		)
+	}
+
+	if len(entries) == 0 {
+		return nil
+	}
+
+	reqTx := &entities.CreateTransactionRequest{
+		UserID:          &req.UserID,
+		TransactionType: entities.TransactionTypeInternalTransfer,
+		ReferenceID:     req.DepositID,
+		ReferenceType:   stringPtr("allocation_split"),
+		IdempotencyKey:  idempotencyKey,
+		Description:     &description,
+		Metadata:        metadata,
+		Entries:         entries,
+	}
+
+	_, err := s.ledgerService.CreateTransaction(ctx, reqTx)
+	if err != nil {
+		return fmt.Errorf("create atomic allocation transfer: %w", err)
 	}
 
 	return nil

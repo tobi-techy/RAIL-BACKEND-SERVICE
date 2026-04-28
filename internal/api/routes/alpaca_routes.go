@@ -5,6 +5,7 @@ import (
 	"github.com/rail-service/rail_service/internal/api/handlers"
 	"github.com/rail-service/rail_service/internal/api/middleware"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
+	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/logger"
 )
 
@@ -18,10 +19,11 @@ func RegisterAlpacaRoutes(
 	log *logger.Logger,
 	sessionValidator middleware.SessionValidator,
 	userReader middleware.UserEntityReader,
+	tokenBlacklist *auth.TokenBlacklist,
 ) {
 	// Investment routes (authenticated)
 	investment := router.Group("/investment")
-	investment.Use(middleware.Authentication(cfg, log, sessionValidator))
+	investment.Use(middleware.Authentication(cfg, log, sessionValidator, tokenBlacklist))
 	investment.Use(middleware.RequireAlpacaCapability(userReader, log.Zap()))
 	{
 		// Account management

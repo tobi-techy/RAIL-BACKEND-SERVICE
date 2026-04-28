@@ -14,6 +14,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/strategy"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/rail-service/rail_service/pkg/metrics"
 	"github.com/shopspring/decimal"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -336,13 +337,14 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 		}
 	}
 
-	// Fix #8: Re-check balance right before transfer.
-	// Funds may already be in fiat_exposure from a prior market-closed deferral — in that
-	// case skip the stash→fiat_exposure transfer and go straight to order placement.
+	// Balance pre-check removed as authoritative guard: CreateTransaction uses SELECT FOR
+	// UPDATE internally, which atomically checks and prevents overdraft. A blocking check
+	// here was a TOCTOU race. The check below is advisory-only for amount adjustment.
 	currentStash, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
 	if err != nil {
-		s.markEventFailed(ctx, userID, eventID, "balance re-check failed")
-		return fmt.Errorf("failed to re-check stash balance: %w", err)
+		s.logger.Warn("Advisory stash balance check failed, proceeding with original amount",
+			"user_id", userID, "error", err)
+		currentStash = amount // proceed with original amount; ledger tx is the authoritative guard
 	}
 	currentFiatExposure, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeFiatExposure)
 	if err != nil {
@@ -355,7 +357,7 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 		// Normal path: funds are still in stash — adjust amount if balance changed.
 		currentBalance := currentStash
 		if currentBalance.LessThan(amount) {
-			s.logger.Warn("Balance changed since initial check, adjusting",
+			s.logger.Warn("Advisory: balance may have changed, adjusting amount",
 				"user_id", userID,
 				"expected", amount,
 				"actual", currentBalance)
@@ -364,10 +366,16 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 				threshold = decimal.Zero
 			}
 			if currentBalance.LessThanOrEqual(threshold) {
-				s.markEventFailed(ctx, userID, eventID, "insufficient balance after re-check")
-				return nil
+				// Advisory warning only — proceed anyway; the atomic ledger debit
+				// (SELECT FOR UPDATE) in CreateTransaction will reject if truly insufficient.
+				s.logger.Warn("Advisory: balance at or below threshold, atomic ledger debit will be authoritative",
+					"user_id", userID, "balance", currentBalance, "threshold", threshold)
 			}
-			amount = currentBalance.Sub(threshold)
+			adjusted := currentBalance.Sub(threshold)
+			if adjusted.IsPositive() {
+				amount = adjusted
+			}
+			// If adjusted is non-positive, keep original amount — the ledger tx will reject atomically.
 			if s.repo != nil && eventID != uuid.Nil {
 				_ = s.repo.UpdateEventAmount(ctx, userID, eventID, amount)
 			}
@@ -460,8 +468,15 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 
 	if orderErr != nil {
 		s.markEventFailed(ctx, userID, eventID, "strategy orders failed: "+orderErr.Error())
+		if metrics.Business != nil {
+			metrics.Business.AutoInvestExecutedTotal.WithLabelValues("failed").Inc()
+		}
 	} else {
 		s.markEventCompleted(ctx, userID, eventID)
+		if metrics.Business != nil {
+			metrics.Business.AutoInvestExecutedTotal.WithLabelValues("success").Inc()
+			metrics.Business.AutoInvestAmount.Observe(amount.InexactFloat64())
+		}
 	}
 	return orderErr
 }

@@ -32,13 +32,40 @@ type Config struct {
 	Verification   VerificationConfig   `mapstructure:"verification"`
 	Alpaca         AlpacaConfig         `mapstructure:"alpaca"`
 	Bridge         BridgeConfig         `mapstructure:"bridge"`
+	Reflect        ReflectConfig        `mapstructure:"reflect"`
 	Grid           GridConfig           `mapstructure:"grid"`
 	CCTP           CCTPConfig           `mapstructure:"cctp"`
+	ChainRails     ChainRailsConfig     `mapstructure:"chainrails"`
+	Paj            PajConfig            `mapstructure:"paj"`
 	Workers        WorkerConfig         `mapstructure:"workers"`
 	Reconciliation ReconciliationConfig `mapstructure:"reconciliation"`
 	SocialAuth     SocialAuthConfig     `mapstructure:"social_auth"`
 	WebAuthn       WebAuthnConfig       `mapstructure:"webauthn"`
 	AI             AIConfig             `mapstructure:"ai"`
+	SNSPush        SNSPushConfig  `mapstructure:"sns_push"`
+	TelegramAlerts TelegramConfig `mapstructure:"telegram_alerts"`
+	Umbra          UmbraConfig    `mapstructure:"umbra"`
+}
+
+// TelegramConfig contains Telegram bot alerting configuration
+type TelegramConfig struct {
+	BotToken string `mapstructure:"bot_token"` // Telegram bot token from @BotFather
+	ChatID   string `mapstructure:"chat_id"`   // Chat/group ID to send alerts to
+}
+
+// UmbraConfig contains Umbra privacy sidecar configuration
+type UmbraConfig struct {
+	SidecarURL string `mapstructure:"sidecar_url"` // URL of the Umbra sidecar service (e.g. http://localhost:3100)
+	Enabled    bool   `mapstructure:"enabled"`      // Enable Umbra privacy shielding in allocation flow
+	Network    string `mapstructure:"network"`      // mainnet or devnet
+	AuthToken  string `mapstructure:"auth_token"`   // Shared secret for sidecar authentication
+}
+
+// SNSPushConfig contains AWS SNS push notification configuration
+type SNSPushConfig struct {
+	Region             string `mapstructure:"region"`              // AWS region (defaults to app region)
+	IOSPlatformARN     string `mapstructure:"ios_platform_arn"`    // SNS Platform Application ARN for APNs
+	AndroidPlatformARN string `mapstructure:"android_platform_arn"` // SNS Platform Application ARN for FCM
 }
 
 // GridConfig contains Grid API configuration
@@ -57,7 +84,21 @@ type CCTPConfig struct {
 type AIConfig struct {
 	OpenAI  OpenAIConfig `mapstructure:"openai"`
 	Gemini  GeminiConfig `mapstructure:"gemini"`
-	Primary string       `mapstructure:"primary"` // "openai" or "gemini"
+	Kimi    KimiConfig   `mapstructure:"kimi"`
+	Groq    GroqConfig   `mapstructure:"groq"`
+	Primary string       `mapstructure:"primary"` // "openai", "gemini", "kimi", or "groq"
+}
+
+// KimiConfig contains Kimi (Moonshot) API configuration
+type KimiConfig struct {
+	APIKey         string  `mapstructure:"api_key"`
+	BaseURL        string  `mapstructure:"base_url"`
+	Model          string  `mapstructure:"model"`
+	MaxTokens      int     `mapstructure:"max_tokens"`
+	Temperature    float64 `mapstructure:"temperature"`
+	TopP           float64 `mapstructure:"top_p"`
+	TimeoutSeconds int     `mapstructure:"timeout_seconds"`
+	RateLimitRPM   int     `mapstructure:"rate_limit_rpm"`
 }
 
 // RateLimitConfig contains distributed rate limiting configuration
@@ -83,18 +124,36 @@ type EndpointLimitConfig struct {
 
 // OpenAIConfig contains OpenAI API configuration
 type OpenAIConfig struct {
-	APIKey      string  `mapstructure:"api_key"`
-	Model       string  `mapstructure:"model"`
-	MaxTokens   int     `mapstructure:"max_tokens"`
-	Temperature float64 `mapstructure:"temperature"`
+	APIKey         string  `mapstructure:"api_key"`
+	Model          string  `mapstructure:"model"`
+	MaxTokens      int     `mapstructure:"max_tokens"`
+	Temperature    float64 `mapstructure:"temperature"`
+	TopP           float64 `mapstructure:"top_p"`
+	TimeoutSeconds int     `mapstructure:"timeout_seconds"`
+	RateLimitRPM   int     `mapstructure:"rate_limit_rpm"`
+	RealtimeModel  string  `mapstructure:"realtime_model"`
 }
 
 // GeminiConfig contains Google Gemini API configuration
 type GeminiConfig struct {
-	APIKey      string  `mapstructure:"api_key"`
-	Model       string  `mapstructure:"model"`
-	MaxTokens   int     `mapstructure:"max_tokens"`
-	Temperature float64 `mapstructure:"temperature"`
+	APIKey         string  `mapstructure:"api_key"`
+	Model          string  `mapstructure:"model"`
+	MaxTokens      int     `mapstructure:"max_tokens"`
+	Temperature    float64 `mapstructure:"temperature"`
+	TopP           float64 `mapstructure:"top_p"`
+	TimeoutSeconds int     `mapstructure:"timeout_seconds"`
+	RateLimitRPM   int     `mapstructure:"rate_limit_rpm"`
+}
+
+// GroqConfig contains Groq API configuration (OpenAI-compatible)
+type GroqConfig struct {
+	APIKey         string  `mapstructure:"api_key"`
+	Model          string  `mapstructure:"model"`
+	MaxTokens      int     `mapstructure:"max_tokens"`
+	Temperature    float64 `mapstructure:"temperature"`
+	TopP           float64 `mapstructure:"top_p"`
+	TimeoutSeconds int     `mapstructure:"timeout_seconds"`
+	RateLimitRPM   int     `mapstructure:"rate_limit_rpm"`
 }
 
 type ServerConfig struct {
@@ -251,11 +310,24 @@ type SecurityConfig struct {
 	// Device binding settings
 	DeviceBinding DeviceBindingConfig `mapstructure:"device_binding"`
 
+	// Internal API key for service-to-service auth
+	InternalAPIKey string `mapstructure:"internal_api_key"`
+
 	// Webhook replay protection
 	WebhookReplay WebhookReplayConfig `mapstructure:"webhook_replay"`
 
 	// Adaptive rate limiting
 	AdaptiveRateLimit AdaptiveRateLimitConfig `mapstructure:"adaptive_rate_limit"`
+
+	// Webhook signature secrets for hardened verification (per-provider)
+	WebhookSignatureSecrets WebhookSignatureSecretsConfig `mapstructure:"webhook_signature_secrets"`
+}
+
+// WebhookSignatureSecretsConfig holds per-provider webhook signing secrets
+type WebhookSignatureSecretsConfig struct {
+	Bridge string `mapstructure:"bridge"`
+	Alpaca string `mapstructure:"alpaca"`
+	Due    string `mapstructure:"due"`
 }
 
 // DeviceBindingConfig for device-bound JWT tokens
@@ -373,8 +445,39 @@ type BridgeConfig struct {
 	WebhookSecret         string   `mapstructure:"webhook_secret"`
 	TreasuryWalletAddress string   `mapstructure:"treasury_wallet_address"`
 	// Rail's own Bridge custody account — used for reconciliation.
-	RailCustomerID    string `mapstructure:"rail_customer_id"`
-	RailUSDBWalletID  string `mapstructure:"rail_usdb_wallet_id"`
+	RailCustomerID string `mapstructure:"rail_customer_id"`
+}
+
+// ReflectConfig contains Reflect Money API configuration for yield-bearing stablecoin treasury management.
+type ReflectConfig struct {
+	APIKey               string `mapstructure:"api_key"`
+	BaseURL              string `mapstructure:"base_url"`                // default: https://prod.api.reflect.money
+	SolanaRPC            string `mapstructure:"solana_rpc"`              // Solana RPC endpoint
+	OwnerWallet          string `mapstructure:"owner_wallet"`            // Rail's Solana wallet pubkey (base58)
+	PrivateKey           string `mapstructure:"private_key"`             // Rail's Solana wallet private key (base58, 64 bytes)
+	StablecoinIndex      int    `mapstructure:"stablecoin_index"`        // 0 = USDC+, 2 = LST Delta-Neutral
+	MinSweepAmount       string `mapstructure:"min_sweep_amount"`        // Minimum USDC to sweep (e.g. "100")
+	SweepInterval        int    `mapstructure:"sweep_interval"`          // Sweep interval in minutes
+	BridgeSourceWalletID string `mapstructure:"bridge_source_wallet_id"` // Bridge custody wallet funding the Solana wallet
+}
+
+// ChainRailsConfig contains ChainRails cross-chain deposit configuration.
+type ChainRailsConfig struct {
+	APIKey           string `mapstructure:"api_key"`
+	WebhookSecret    string `mapstructure:"webhook_secret"`
+	BaseURL          string `mapstructure:"base_url"`          // default: https://api.chainrails.io/api/v1
+	DestinationChain string `mapstructure:"destination_chain"` // e.g. "BASE_MAINNET"
+	SettlementToken  string `mapstructure:"settlement_token"`  // e.g. "USDC"
+}
+
+// PajConfig contains Paj Cash NGN on/off ramp configuration.
+type PajConfig struct {
+	APIKey        string `mapstructure:"api_key"`
+	BaseURL       string `mapstructure:"base_url"`       // default: https://api.paj.cash
+	WebhookURL    string `mapstructure:"webhook_url"`    // Rail's webhook endpoint URL (Paj posts per-order)
+	WalletAddress string `mapstructure:"wallet_address"` // Rail's USDC custody wallet (onramp recipient)
+	TokenMint     string `mapstructure:"token_mint"`     // USDC mint address on Solana
+	Chain         string `mapstructure:"chain"`           // default: SOLANA
 }
 
 // WorkerConfig contains background worker configuration
@@ -694,11 +797,19 @@ func setDefaults() {
 	// AI Provider defaults
 	viper.SetDefault("ai.primary", "openai")
 	viper.SetDefault("ai.openai.model", "gpt-4o-mini")
+	viper.SetDefault("ai.openai.realtime_model", "gpt-4o-mini-realtime-preview")
 	viper.SetDefault("ai.openai.max_tokens", 500)
 	viper.SetDefault("ai.openai.temperature", 0.7)
-	viper.SetDefault("ai.gemini.model", "gemini-1.5-flash")
+	viper.SetDefault("ai.gemini.model", "gemini-2.0-flash")
 	viper.SetDefault("ai.gemini.max_tokens", 500)
 	viper.SetDefault("ai.gemini.temperature", 0.7)
+
+	// Explicit env bindings for AI keys (task def uses short names)
+	viper.BindEnv("ai.openai.api_key", "OPENAI_API_KEY")
+	viper.BindEnv("ai.gemini.api_key", "GEMINI_API_KEY")
+	viper.BindEnv("ai.kimi.api_key", "KIMI_API_KEY")
+	viper.BindEnv("ai.groq.api_key", "GROQ_API_KEY")
+	viper.BindEnv("ai.primary", "AI_PRIMARY")
 
 	// Compute defaults
 	viper.SetDefault("zerog.compute.broker_endpoint", "")
@@ -725,8 +836,20 @@ func setDefaults() {
 	viper.SetDefault("bridge.environment", "production")
 	viper.SetDefault("bridge.base_url", "https://api.bridge.xyz")
 	viper.SetDefault("bridge.timeout", 30)
+
+	// Reflect defaults
+	viper.SetDefault("reflect.base_url", "https://prod.api.reflect.money")
+	viper.SetDefault("reflect.stablecoin_index", 0) // 0 = USDC+
+	viper.SetDefault("reflect.min_sweep_amount", "100")
+	viper.SetDefault("reflect.sweep_interval", 10) // minutes
+
+	// Reflect defaults
+	viper.SetDefault("reflect.base_url", "https://prod.api.reflect.money")
+	viper.SetDefault("reflect.stablecoin_index", 0)  // 0 = USDC+
+	viper.SetDefault("reflect.min_sweep_amount", "100")
+	viper.SetDefault("reflect.sweep_interval", 10) // minutes
 	viper.SetDefault("bridge.max_retries", 3)
-	viper.SetDefault("bridge.supported_chains", []string{"ETH", "MATIC", "AVAX", "SOL"})
+	viper.SetDefault("bridge.supported_chains", []string{"SOL", "MATIC", "CELO", "TRON", "BASE", "AVAX"})
 
 	// Worker defaults
 	viper.SetDefault("workers.count", 10)
@@ -793,6 +916,17 @@ func overrideFromEnv() {
 	}
 	if rpDisplayName := os.Getenv("WEBAUTHN_RP_DISPLAY_NAME"); rpDisplayName != "" {
 		viper.Set("webauthn.rp_display_name", rpDisplayName)
+	}
+
+	// SNS Push Notifications
+	if v := os.Getenv("SNS_PUSH_REGION"); v != "" {
+		viper.Set("sns_push.region", v)
+	}
+	if v := os.Getenv("SNS_PUSH_IOS_PLATFORM_ARN"); v != "" {
+		viper.Set("sns_push.ios_platform_arn", v)
+	}
+	if v := os.Getenv("SNS_PUSH_ANDROID_PLATFORM_ARN"); v != "" {
+		viper.Set("sns_push.android_platform_arn", v)
 	}
 
 	// Database
@@ -965,9 +1099,18 @@ func overrideFromEnv() {
 	// AI Providers
 	if openaiKey := os.Getenv("OPENAI_API_KEY"); openaiKey != "" {
 		viper.Set("ai.openai.api_key", openaiKey)
+	} else {
+		viper.Set("ai.openai.api_key", "")
 	}
 	if geminiKey := os.Getenv("GEMINI_API_KEY"); geminiKey != "" {
 		viper.Set("ai.gemini.api_key", geminiKey)
+	} else {
+		viper.Set("ai.gemini.api_key", "")
+	}
+	if kimiKey := os.Getenv("KIMI_API_KEY"); kimiKey != "" {
+		viper.Set("ai.kimi.api_key", kimiKey)
+	} else {
+		viper.Set("ai.kimi.api_key", "")
 	}
 	if aiPrimary := os.Getenv("AI_PRIMARY_PROVIDER"); aiPrimary != "" {
 		viper.Set("ai.primary", aiPrimary)
@@ -1072,6 +1215,83 @@ func overrideFromEnv() {
 		viper.Set("bridge.webhook_secret", bridgeWebhookSecret)
 	}
 
+	// ChainRails API
+	viper.BindEnv("chainrails.api_key", "CHAINRAILS_API_KEY")
+	viper.BindEnv("chainrails.webhook_secret", "CHAINRAILS_WEBHOOK_SECRET")
+	viper.BindEnv("chainrails.base_url", "CHAINRAILS_BASE_URL")
+	viper.BindEnv("chainrails.destination_chain", "CHAINRAILS_DESTINATION_CHAIN")
+	viper.BindEnv("chainrails.settlement_token", "CHAINRAILS_SETTLEMENT_TOKEN")
+
+	viper.BindEnv("security.internal_api_key", "SECURITY_INTERNAL_API_KEY")
+	
+	if chainrailsAPIKey := os.Getenv("CHAINRAILS_API_KEY"); chainrailsAPIKey != "" {
+		viper.Set("chainrails.api_key", chainrailsAPIKey)
+	}
+	if chainrailsWebhookSecret := os.Getenv("CHAINRAILS_WEBHOOK_SECRET"); chainrailsWebhookSecret != "" {
+		viper.Set("chainrails.webhook_secret", chainrailsWebhookSecret)
+	}
+	if chainrailsBaseURL := os.Getenv("CHAINRAILS_BASE_URL"); chainrailsBaseURL != "" {
+		viper.Set("chainrails.base_url", chainrailsBaseURL)
+	}
+	if chainrailsDestinationChain := os.Getenv("CHAINRAILS_DESTINATION_CHAIN"); chainrailsDestinationChain != "" {
+		viper.Set("chainrails.destination_chain", chainrailsDestinationChain)
+	}
+	if chainrailsSettlementToken := os.Getenv("CHAINRAILS_SETTLEMENT_TOKEN"); chainrailsSettlementToken != "" {
+		viper.Set("chainrails.settlement_token", chainrailsSettlementToken)
+	}
+
+	// Paj Cash NGN ramp
+	viper.BindEnv("paj.api_key", "PAJ_API_KEY")
+	viper.BindEnv("paj.base_url", "PAJ_BASE_URL")
+	viper.BindEnv("paj.webhook_url", "PAJ_WEBHOOK_URL")
+	viper.BindEnv("paj.wallet_address", "PAJ_WALLET_ADDRESS")
+	viper.BindEnv("paj.token_mint", "PAJ_TOKEN_MINT")
+	viper.BindEnv("paj.chain", "PAJ_CHAIN")
+
+	for _, kv := range [][2]string{
+		{"paj.api_key", "PAJ_API_KEY"},
+		{"paj.base_url", "PAJ_BASE_URL"},
+		{"paj.webhook_url", "PAJ_WEBHOOK_URL"},
+		{"paj.wallet_address", "PAJ_WALLET_ADDRESS"},
+		{"paj.token_mint", "PAJ_TOKEN_MINT"},
+		{"paj.chain", "PAJ_CHAIN"},
+	} {
+		if v := os.Getenv(kv[1]); v != "" {
+			viper.Set(kv[0], v)
+		}
+	}
+
+	// Apple Sign-In
+	if v := os.Getenv("APPLE_TEAM_ID"); v != "" {
+		viper.Set("social_auth.apple.team_id", v)
+	}
+	if v := os.Getenv("APPLE_KEY_ID"); v != "" {
+		viper.Set("social_auth.apple.key_id", v)
+	}
+	if v := os.Getenv("APPLE_PRIVATE_KEY"); v != "" {
+		viper.Set("social_auth.apple.private_key", v)
+	}
+
+	// Reflect Money yield
+	if v := os.Getenv("REFLECT_API_KEY"); v != "" {
+		viper.Set("reflect.api_key", v)
+	}
+	if v := os.Getenv("REFLECT_BASE_URL"); v != "" {
+		viper.Set("reflect.base_url", v)
+	}
+	if v := os.Getenv("REFLECT_SOLANA_RPC"); v != "" {
+		viper.Set("reflect.solana_rpc", v)
+	}
+	if v := os.Getenv("REFLECT_OWNER_WALLET"); v != "" {
+		viper.Set("reflect.owner_wallet", v)
+	}
+	if v := os.Getenv("REFLECT_PRIVATE_KEY"); v != "" {
+		viper.Set("reflect.private_key", v)
+	}
+	if v := os.Getenv("REFLECT_BRIDGE_SOURCE_WALLET_ID"); v != "" {
+		viper.Set("reflect.bridge_source_wallet_id", v)
+	}
+
 	// Admin security settings
 	if adminBootstrapToken := os.Getenv("ADMIN_BOOTSTRAP_TOKEN"); adminBootstrapToken != "" {
 		viper.Set("security.admin_bootstrap_token", adminBootstrapToken)
@@ -1081,11 +1301,38 @@ func overrideFromEnv() {
 			viper.Set("security.disable_admin_creation", disabled)
 		}
 	}
+
+	// Telegram Alerts
+	if v := os.Getenv("TELEGRAM_ALERTS_BOT_TOKEN"); v != "" {
+		viper.Set("telegram_alerts.bot_token", v)
+	}
+	if v := os.Getenv("TELEGRAM_ALERTS_CHAT_ID"); v != "" {
+		viper.Set("telegram_alerts.chat_id", v)
+	}
+
+	// Umbra Privacy Sidecar
+	if v := os.Getenv("UMBRA_SIDECAR_URL"); v != "" {
+		viper.Set("umbra.sidecar_url", v)
+	}
+	if v := os.Getenv("UMBRA_ENABLED"); v != "" {
+		if enabled, err := strconv.ParseBool(v); err == nil {
+			viper.Set("umbra.enabled", enabled)
+		}
+	}
+	if v := os.Getenv("UMBRA_NETWORK"); v != "" {
+		viper.Set("umbra.network", v)
+	}
+	if v := os.Getenv("UMBRA_SIDECAR_AUTH_TOKEN"); v != "" {
+		viper.Set("umbra.auth_token", v)
+	}
 }
 
 func validate(config *Config) error {
 	if config.JWT.Secret == "" {
 		return fmt.Errorf("JWT secret is required")
+	}
+	if len(config.JWT.Secret) < 32 {
+		return fmt.Errorf("JWT secret must be at least 32 characters for adequate security")
 	}
 
 	if config.Security.EncryptionKey == "" {
@@ -1114,6 +1361,13 @@ func validate(config *Config) error {
 		}
 		if strings.TrimSpace(config.KYC.LevelName) == "" {
 			return fmt.Errorf("sumsub level name is required when kyc.provider=sumsub")
+		}
+	}
+
+	// Require Redis password in production and staging
+	if config.Environment == "production" || config.Environment == "staging" {
+		if config.Redis.Password == "" {
+			return fmt.Errorf("redis password is required in %s environment", config.Environment)
 		}
 	}
 

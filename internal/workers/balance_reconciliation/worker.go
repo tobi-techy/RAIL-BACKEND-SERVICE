@@ -134,6 +134,18 @@ func (w *Worker) reconcile(ctx context.Context) {
 			continue
 		}
 
+		// Discrepancies exceeding $10 require manual review — do not auto-correct.
+		maxAutoCorrect := decimal.NewFromInt(10)
+		if diff.GreaterThan(maxAutoCorrect) {
+			w.logger.Error("CRITICAL: large balance discrepancy requires manual review — skipping auto-correction",
+				zap.String("user_id", wallet.UserID.String()),
+				zap.String("ledger", ledgerBalance.String()),
+				zap.String("bridge", bridgeBalance.String()),
+				zap.String("diff", diff.String()))
+			failed++
+			continue
+		}
+
 		if err := w.ledgerService.ReconcileBalance(ctx, wallet.UserID, entities.AccountTypeSpendingBalance, bridgeBalance); err != nil {
 			w.logger.Error("Failed to reconcile",
 				zap.String("user_id", wallet.UserID.String()),

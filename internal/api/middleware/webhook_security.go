@@ -27,6 +27,8 @@ type WebhookSecurityConfig struct {
 	RateLimits map[string]security.WebhookRateLimit
 	// Skip verification in development
 	SkipVerification bool
+	// Environment name to enforce verification in production
+	Environment string
 }
 
 // DefaultWebhookSecurityConfig returns sensible defaults
@@ -65,6 +67,13 @@ func WebhookSecurity(
 	config WebhookSecurityConfig,
 	logger *zap.Logger,
 ) gin.HandlerFunc {
+	// Security fix: Never allow skipping verification in production or staging
+	if (strings.EqualFold(config.Environment, "production") || strings.EqualFold(config.Environment, "staging")) && config.SkipVerification {
+		logger.Error("SECURITY VIOLATION: Attempted to skip webhook verification in production/staging - forcing verification ON",
+			zap.String("environment", config.Environment))
+		config.SkipVerification = false
+	}
+
 	var ipWhitelist *security.WebhookIPWhitelist
 	var rateLimiter *security.WebhookRateLimiter
 	var replayProtection *security.WebhookReplayProtection
@@ -297,6 +306,13 @@ func WebhookSecurityWithRedisV8(
 	config WebhookSecurityConfig,
 	logger *zap.Logger,
 ) gin.HandlerFunc {
+	// Security fix: Never allow skipping verification in production or staging
+	if (strings.EqualFold(config.Environment, "production") || strings.EqualFold(config.Environment, "staging")) && config.SkipVerification {
+		logger.Error("SECURITY VIOLATION: Attempted to skip webhook verification in production/staging - forcing verification ON",
+			zap.String("environment", config.Environment))
+		config.SkipVerification = false
+	}
+
 	// For v8 compatibility, we provide IP whitelisting, basic rate limiting,
 	// and lightweight replay dedupe based on signed payload fingerprints.
 

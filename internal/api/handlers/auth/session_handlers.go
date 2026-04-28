@@ -4,6 +4,7 @@ import (
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -43,7 +44,36 @@ func (h *SessionHandlers) GetSessions(c *gin.Context) {
 		return
 	}
 
-	common.SendSuccess(c, gin.H{"sessions": sessions})
+	// Map sessions to safe response struct to avoid leaking token hashes
+	type SessionResponse struct {
+		ID         uuid.UUID  `json:"id"`
+		IPAddress  string     `json:"ip_address"`
+		UserAgent  string     `json:"user_agent"`
+		Location   string     `json:"location"`
+		IsActive   bool       `json:"is_active"`
+		IsCurrent  bool       `json:"is_current"`
+		CreatedAt  time.Time  `json:"created_at"`
+		LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+		ExpiresAt  time.Time  `json:"expires_at"`
+	}
+
+	currentSessionID, _ := c.Get("session_id")
+	safeSessions := make([]SessionResponse, len(sessions))
+	for i, s := range sessions {
+		safeSessions[i] = SessionResponse{
+			ID:         s.ID,
+			IPAddress:  s.IPAddress,
+			UserAgent:  s.UserAgent,
+			Location:   s.Location,
+			IsActive:   s.IsActive,
+			IsCurrent:  s.ID == currentSessionID,
+			CreatedAt:  s.CreatedAt,
+			LastUsedAt: s.LastUsedAt,
+			ExpiresAt:  s.ExpiresAt,
+		}
+	}
+
+	common.SendSuccess(c, gin.H{"sessions": safeSessions})
 }
 
 // InvalidateSession handles POST /api/v1/security/sessions/invalidate

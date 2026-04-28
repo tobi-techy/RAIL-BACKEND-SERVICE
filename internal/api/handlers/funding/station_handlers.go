@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/station"
 	"github.com/shopspring/decimal"
@@ -106,19 +107,13 @@ func (h *StationHandlers) GetStation(c *gin.Context) {
 
 	userIDVal, exists := c.Get("user_id")
 	if !exists {
-		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
-			Code:    "UNAUTHORIZED",
-			Message: "User not authenticated",
-		})
+		common.SendUnauthorized(c, "User not authenticated")
 		return
 	}
 
 	userID, ok := userIDVal.(uuid.UUID)
 	if !ok {
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-			Code:    "INTERNAL_ERROR",
-			Message: "Invalid user context",
-		})
+		common.SendInternalError(c, common.ErrCodeInternalError, "Invalid user context")
 		return
 	}
 
@@ -185,10 +180,7 @@ func (h *StationHandlers) GetStation(c *gin.Context) {
 
 	if balanceErr != nil {
 		h.logger.Error("Failed to get user balances", zap.Error(balanceErr), zap.String("user_id", userID.String()))
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
-			Code:    "BALANCE_ERROR",
-			Message: "Failed to retrieve balances",
-		})
+		common.SendInternalError(c, "BALANCE_ERROR", "Failed to retrieve balances")
 		return
 	}
 

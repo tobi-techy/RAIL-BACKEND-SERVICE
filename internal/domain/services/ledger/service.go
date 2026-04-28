@@ -19,6 +19,17 @@ type Service struct {
 	ledgerRepo *repositories.LedgerRepository
 	db         *sqlx.DB
 	logger     *logger.Logger
+	stashLock  StashLockChecker
+}
+
+// StashLockChecker enforces the 90-day lock / 7-day window rule.
+type StashLockChecker interface {
+	CanWithdraw(ctx context.Context, userID uuid.UUID) (bool, time.Time, error)
+}
+
+// SetStashLockChecker wires stash lock enforcement into the ledger.
+func (s *Service) SetStashLockChecker(c StashLockChecker) {
+	s.stashLock = c
 }
 
 // NewService creates a new ledger service
@@ -295,11 +306,8 @@ func (s *Service) ReserveForInvestment(ctx context.Context, userID uuid.UUID, am
 		return fmt.Errorf("get pending account: %w", err)
 	}
 
-	// Check sufficient balance
-	if usdcAccount.Balance.LessThan(amount) {
-		return fmt.Errorf("insufficient USDC balance: have %s, need %s",
-			usdcAccount.Balance.String(), amount.String())
-	}
+	// Balance check removed: CreateTransaction uses SELECT FOR UPDATE internally,
+	// which atomically checks and prevents overdraft. Pre-flight check was a TOCTOU race.
 
 	// Create reservation transaction
 	idempotencyKey := fmt.Sprintf("reserve-%s-%s-%d", userID.String(), amount.String(), time.Now().UnixNano())
@@ -353,11 +361,8 @@ func (s *Service) ReleaseReservation(ctx context.Context, userID uuid.UUID, amou
 		return fmt.Errorf("get pending account: %w", err)
 	}
 
-	// Check sufficient pending balance
-	if pendingAccount.Balance.LessThan(amount) {
-		return fmt.Errorf("insufficient pending balance: have %s, need %s",
-			pendingAccount.Balance.String(), amount.String())
-	}
+	// Balance check removed: CreateTransaction uses SELECT FOR UPDATE internally,
+	// which atomically checks and prevents overdraft. Pre-flight check was a TOCTOU race.
 
 	// Create release transaction
 	idempotencyKey := fmt.Sprintf("release-%s-%s-%d", userID.String(), amount.String(), time.Now().UnixNano())
@@ -551,11 +556,8 @@ func (s *Service) RecordCardTransaction(ctx context.Context, userID uuid.UUID, a
 		return fmt.Errorf("get spend account: %w", err)
 	}
 
-	// Check sufficient balance
-	if spendAccount.Balance.LessThan(amount) {
-		return fmt.Errorf("insufficient spend balance: have %s, need %s",
-			spendAccount.Balance.String(), amount.String())
-	}
+	// Balance check removed: CreateTransaction uses SELECT FOR UPDATE internally,
+	// which atomically checks and prevents overdraft. Pre-flight check was a TOCTOU race.
 
 	// Get system card settlement account (or create one)
 	settlementAccount, err := s.GetSystemAccount(ctx, entities.AccountTypeSystemBufferFiat)
@@ -612,6 +614,9 @@ func stringPtr(s string) *string {
 // TransferSpendingToStash moves funds from spending_balance to stash_balance.
 // Used for roundup collection: the spare change is already in spending and should move to stash.
 func (s *Service) TransferSpendingToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
+	if amount.IsZero() || amount.IsNegative() {
+		return fmt.Errorf("invalid transfer amount: %s", amount.String())
+	}
 	spendAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
 	if err != nil {
 		return fmt.Errorf("get spending account: %w", err)
@@ -651,6 +656,118 @@ func (s *Service) TransferSpendingToStash(ctx context.Context, userID uuid.UUID,
 	return err
 }
 
+// TransferStashToSpending moves funds from stash to spending.
+func (s *Service) TransferStashToSpending(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
+	if amount.IsZero() || amount.IsNegative() {
+		return fmt.Errorf("invalid transfer amount: %s", amount.String())
+	}
+
+	// Enforce stash lock: transfers from stash only allowed during the 7-day window.
+	if s.stashLock != nil {
+		canWithdraw, _, err := s.stashLock.CanWithdraw(ctx, userID)
+		if err != nil {
+			return fmt.Errorf("stash lock check failed: %w", err)
+		}
+		if !canWithdraw {
+			return fmt.Errorf("stash funds are locked: no active withdrawal window (funds lock for 90 days, then a 7-day window opens)")
+		}
+	}
+
+	spendAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return fmt.Errorf("get spending account: %w", err)
+	}
+	stashAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		return fmt.Errorf("get stash account: %w", err)
+	}
+
+	desc := fmt.Sprintf("Transfer stash to spending: %s", amount.String())
+	refType := "miriam_transfer"
+	txReq := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeInternalTransfer,
+		ReferenceType:   &refType,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &desc,
+		Entries: []entities.CreateEntryRequest{
+			{
+				AccountID:   stashAccount.ID,
+				EntryType:   entities.EntryTypeCredit, // debit stash
+				Amount:      amount,
+				Currency:    "USD",
+				Description: &desc,
+			},
+			{
+				AccountID:   spendAccount.ID,
+				EntryType:   entities.EntryTypeDebit, // credit spending
+				Amount:      amount,
+				Currency:    "USD",
+				Description: &desc,
+			},
+		},
+	}
+
+	_, err = s.CreateTransaction(ctx, txReq)
+	return err
+}
+
+// AdminTransferStashToSpending moves funds from stash to spending, bypassing the stash lock.
+// This is an admin-only operation with a distinct reference type for audit trail.
+func (s *Service) AdminTransferStashToSpending(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey, adminReason string) error {
+	if amount.IsZero() || amount.IsNegative() {
+		return fmt.Errorf("invalid transfer amount: %s", amount.String())
+	}
+
+	spendAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return fmt.Errorf("get spending account: %w", err)
+	}
+	stashAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		return fmt.Errorf("get stash account: %w", err)
+	}
+
+	reason := adminReason
+	if len(reason) > 255 {
+		reason = reason[:255]
+	}
+	desc := fmt.Sprintf("Admin stash-to-spend transfer: %s (reason: %s)", amount.String(), reason)
+	refType := "admin_stash_transfer"
+	txReq := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeInternalTransfer,
+		ReferenceType:   &refType,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &desc,
+		Entries: []entities.CreateEntryRequest{
+			{
+				AccountID:   stashAccount.ID,
+				EntryType:   entities.EntryTypeCredit,
+				Amount:      amount,
+				Currency:    "USD",
+				Description: &desc,
+			},
+			{
+				AccountID:   spendAccount.ID,
+				EntryType:   entities.EntryTypeDebit,
+				Amount:      amount,
+				Currency:    "USD",
+				Description: &desc,
+			},
+		},
+	}
+
+	s.logger.Warn("Admin stash-to-spend transfer (bypasses stash lock)",
+		"user_id", userID.String(),
+		"amount", amount.String(),
+		"reason", adminReason,
+	)
+
+	_, err = s.CreateTransaction(ctx, txReq)
+	return err
+}
+
 // CreditStash credits a user's stash_balance from the system USDC buffer.
 // Used for yield distribution payouts.
 func (s *Service) CreditStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, description string) error {
@@ -676,8 +793,8 @@ func (s *Service) CreditStash(ctx context.Context, userID uuid.UUID, amount deci
 		IdempotencyKey:  idempotencyKey,
 		Description:     &description,
 		Entries: []entities.CreateEntryRequest{
-			{AccountID: stashAccount.ID, EntryType: entities.EntryTypeDebit, Amount: amount, Currency: "USDB", Description: &description},
-			{AccountID: systemAccount.ID, EntryType: entities.EntryTypeCredit, Amount: amount, Currency: "USDB", Description: &description},
+			{AccountID: stashAccount.ID, EntryType: entities.EntryTypeDebit, Amount: amount, Currency: "USDC", Description: &description},
+			{AccountID: systemAccount.ID, EntryType: entities.EntryTypeCredit, Amount: amount, Currency: "USDC", Description: &description},
 		},
 	}
 	_, err = s.CreateTransaction(ctx, req)

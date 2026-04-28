@@ -74,15 +74,8 @@ func (s *CSRFStore) Validate(token string) bool {
 // CSRFProtection validates CSRF tokens for state-changing requests.
 // For browser clients: requires X-CSRF-Token header.
 // For API clients: requires X-Requested-With: RailApp header.
-// In development: skipped entirely for API testing convenience.
-func CSRFProtection(store *CSRFStore, isDev bool) gin.HandlerFunc {
+func CSRFProtection(store *CSRFStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Skip CSRF in development for API testing
-		if isDev {
-			c.Next()
-			return
-		}
-
 		if c.Request.Method == "GET" || c.Request.Method == "HEAD" || c.Request.Method == "OPTIONS" {
 			c.Next()
 			return

@@ -100,11 +100,18 @@ func (r *NotificationRepository) GetUnreadCount(ctx context.Context, userID uuid
 	return count, err
 }
 
-// MarkAsRead marks a single notification as read
-func (r *NotificationRepository) MarkAsRead(ctx context.Context, userID, notificationID uuid.UUID) error {
-	query := `UPDATE notifications SET read = true, read_at = NOW() WHERE id = $1 AND user_id = $2`
-	_, err := r.db.ExecContext(ctx, query, notificationID, userID)
-	return err
+// MarkAsRead marks a single notification as read. Returns true if a row was updated.
+func (r *NotificationRepository) MarkAsRead(ctx context.Context, userID, notificationID uuid.UUID) (bool, error) {
+	query := `UPDATE notifications SET read = true, read_at = NOW() WHERE id = $1 AND user_id = $2 AND read = false`
+	result, err := r.db.ExecContext(ctx, query, notificationID, userID)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
 }
 
 // MarkAllAsRead marks all notifications as read for a user
@@ -112,4 +119,27 @@ func (r *NotificationRepository) MarkAllAsRead(ctx context.Context, userID uuid.
 	query := `UPDATE notifications SET read = true, read_at = NOW() WHERE user_id = $1 AND read = false`
 	_, err := r.db.ExecContext(ctx, query, userID)
 	return err
+}
+
+// DeleteOlderThan removes notifications older than the given duration.
+// Intended to be called by a periodic cleanup job.
+func (r *NotificationRepository) DeleteOlderThan(ctx context.Context, age time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-age)
+	query := `DELETE FROM notifications WHERE created_at < $1`
+	result, err := r.db.ExecContext(ctx, query, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("delete old notifications: %w", err)
+	}
+	return result.RowsAffected()
+}
+
+// DeleteReadOlderThan removes read notifications older than the given duration.
+func (r *NotificationRepository) DeleteReadOlderThan(ctx context.Context, age time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-age)
+	query := `DELETE FROM notifications WHERE read = true AND created_at < $1`
+	result, err := r.db.ExecContext(ctx, query, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("delete old read notifications: %w", err)
+	}
+	return result.RowsAffected()
 }

@@ -12,14 +12,34 @@ import (
 )
 
 type TransactionControlService struct {
-	logger *zap.Logger
+	logger      *zap.Logger
+	userChecker UserChecker
 }
 
-func NewTransactionControlService(logger *zap.Logger) *TransactionControlService {
-	return &TransactionControlService{logger: logger}
+// UserChecker verifies user account status before allowing transactions.
+type UserChecker interface {
+	GetByID(ctx context.Context, id uuid.UUID) (*entities.UserProfile, error)
+}
+
+func NewTransactionControlService(logger *zap.Logger, userChecker UserChecker) *TransactionControlService {
+	return &TransactionControlService{logger: logger, userChecker: userChecker}
 }
 
 func (s *TransactionControlService) CheckLimit(ctx context.Context, userID uuid.UUID, limitType entities.LimitType, amount decimal.Decimal, limit *entities.TransactionLimit) error {
+	// Check user account status before evaluating limits
+	if s.userChecker != nil {
+		user, err := s.userChecker.GetByID(ctx, userID)
+		if err != nil {
+			return fmt.Errorf("failed to verify user status: %w", err)
+		}
+		if !user.IsActive {
+			return fmt.Errorf("account is not active")
+		}
+		if user.WithdrawalsFrozen {
+			return fmt.Errorf("account withdrawals are frozen")
+		}
+	}
+
 	if limit.ResetAt.Before(time.Now()) {
 		limit.UsedAmount = decimal.Zero
 		limit.ResetAt = s.calculateNextReset(limit.Period)

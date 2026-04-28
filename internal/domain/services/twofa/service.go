@@ -13,13 +13,21 @@ import (
 	"github.com/pquerna/otp/totp"
 	"go.uber.org/zap"
 
+	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/pkg/crypto"
+)
+
+const (
+	attemptsKeyPrefix = "2fa_attempts:"
+	max2FAAttempts    = 5
+	attemptsTTL       = 5 * time.Minute
 )
 
 type Service struct {
 	db            *sql.DB
 	logger        *zap.Logger
 	encryptionKey string
+	redis         cache.RedisClient
 }
 
 type TwoFASetup struct {
@@ -34,15 +42,18 @@ type TwoFAStatus struct {
 	BackupCodesCount int  `json:"backup_codes_count"`
 }
 
-func NewService(db *sql.DB, logger *zap.Logger, encryptionKey string) *Service {
+func NewService(db *sql.DB, logger *zap.Logger, encryptionKey string, redis cache.RedisClient) *Service {
 	return &Service{
 		db:            db,
 		logger:        logger,
 		encryptionKey: encryptionKey,
+		redis:         redis,
 	}
 }
 
-// GenerateSecret generates a new 2FA secret for a user
+// GenerateSecret generates a new 2FA secret for a user.
+// SECURITY: The response contains the TOTP secret and backup codes. Handlers MUST set
+// Cache-Control: no-store on the HTTP response to prevent caching of sensitive material.
 func (s *Service) GenerateSecret(ctx context.Context, userID uuid.UUID, userEmail string) (*TwoFASetup, error) {
 	// Check if 2FA is already enabled
 	var exists bool
@@ -150,6 +161,15 @@ func (s *Service) VerifyAndEnable(ctx context.Context, userID uuid.UUID, code st
 
 // Verify verifies a TOTP code or backup code
 func (s *Service) Verify(ctx context.Context, userID uuid.UUID, code string) (bool, error) {
+	// Rate limit: check attempt counter
+	attemptsKey := attemptsKeyPrefix + userID.String()
+	if s.redis != nil {
+		var attempts int64
+		if err := s.redis.Get(ctx, attemptsKey, &attempts); err == nil && attempts >= max2FAAttempts {
+			return false, fmt.Errorf("too many attempts, try again later")
+		}
+	}
+
 	// Get 2FA data
 	var encryptedSecret string
 	var encryptedBackupCodes []string
@@ -175,6 +195,9 @@ func (s *Service) Verify(ctx context.Context, userID uuid.UUID, code string) (bo
 	}
 
 	if totp.Validate(code, secret) {
+		if s.redis != nil {
+			_ = s.redis.Del(ctx, attemptsKey)
+		}
 		return true, nil
 	}
 
@@ -198,7 +221,18 @@ func (s *Service) Verify(ctx context.Context, userID uuid.UUID, code string) (bo
 			if err != nil {
 				s.logger.Error("Failed to mark backup code as used", zap.Error(err))
 			}
+			if s.redis != nil {
+				_ = s.redis.Del(ctx, attemptsKey)
+			}
 			return true, nil
+		}
+	}
+
+	// All verification methods failed — increment attempt counter
+	if s.redis != nil {
+		count, err := s.redis.Incr(ctx, attemptsKey)
+		if err == nil && count == 1 {
+			_ = s.redis.Expire(ctx, attemptsKey, attemptsTTL)
 		}
 	}
 

@@ -1,0 +1,16 @@
+prometheus.scrape "rail_backend" {
+  targets    = [{"__address__" = "rail-backend:8080"}]
+  metrics_path = "/metrics"
+  scrape_interval = "60s"
+  forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+}
+
+prometheus.remote_write "grafana_cloud" {
+  endpoint {
+    url = "https://prometheus-prod-66-prod-us-east-3.grafana.net/api/prom/push"
+    basic_auth {
+      username = "3102964"
+      password = env("GRAFANA_API_TOKEN")
+    }
+  }
+}

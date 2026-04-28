@@ -68,6 +68,7 @@ func NewPortfolioDataProvider(
 func (p *PortfolioDataProviderImpl) GetWeeklyStats(ctx context.Context, userID uuid.UUID) (*PortfolioStats, error) {
 	now := time.Now()
 	weekAgo := now.AddDate(0, 0, -7)
+	monthAgo := now.AddDate(0, -1, 0)
 
 	// Get current portfolio value
 	currentValue, err := p.portfolioValueProvider.GetPortfolioValue(ctx, userID, now)
@@ -83,6 +84,13 @@ func (p *PortfolioDataProviderImpl) GetWeeklyStats(ctx context.Context, userID u
 		weekAgoValue = decimal.Zero
 	}
 
+	// Get month-ago portfolio value
+	monthAgoValue, err := p.portfolioValueProvider.GetPortfolioValue(ctx, userID, monthAgo)
+	if err != nil {
+		p.logger.Warn("Failed to get month-ago portfolio value", zap.Error(err))
+		monthAgoValue = decimal.Zero
+	}
+
 	// Calculate returns
 	weeklyReturn := currentValue.Sub(weekAgoValue)
 	weeklyReturnPct := decimal.Zero
@@ -90,11 +98,16 @@ func (p *PortfolioDataProviderImpl) GetWeeklyStats(ctx context.Context, userID u
 		weeklyReturnPct = weeklyReturn.Div(weekAgoValue)
 	}
 
+	monthlyReturn := decimal.Zero
+	if !monthAgoValue.IsZero() {
+		monthlyReturn = currentValue.Sub(monthAgoValue)
+	}
+
 	return &PortfolioStats{
 		TotalValue:      currentValue,
 		WeeklyReturn:    weeklyReturn,
 		WeeklyReturnPct: weeklyReturnPct,
-		MonthlyReturn:   weeklyReturn.Mul(decimal.NewFromInt(4)), // Approximate
+		MonthlyReturn:   monthlyReturn,
 		TotalGainLoss:   weeklyReturn,
 	}, nil
 }

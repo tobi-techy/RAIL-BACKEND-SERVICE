@@ -1,0 +1,214 @@
+SOURCE: IRS.gov - Digital Assets
+URL: https://www.irs.gov/businesses/small-businesses-self-employed/digital-assets
+
+Digital assets | Internal Revenue Service
+An official website of the United States government
+Here's how you know
+Here's how you know
+Official websites use .gov
+A .gov website belongs to an official government organization in the United States.
+Secure .gov websites use HTTPS
+A lock
+or https:// means you've safely connected to the .gov website. Share sensitive information only on official, secure websites.
+English
+Español 中文 (简体) 中文 (繁體) 한국어 Русский Tiếng Việt Kreyòl ayisyen
+Information Menu
+Tax Pros
+Sign in
+Individual
+Business
+Tax Pro
+Access your tax information with an IRS account.
+Refunds
+Payments
+Tax records
+Create account
+Search
+Sign in
+Individual
+Business
+Tax Pro
+Access your tax information with an IRS account.
+Refunds
+Payments
+Tax records
+Create account
+Search
+Include Historical Content
+- Any - No
+Include Historical Content
+- Any - No
+Search
+Main navigation
+Overview
+INFORMATION FOR…
+Individuals
+Business and self-employed
+Charities and nonprofits
+International filers
+Retirement
+Governments and tax-exempt bonds
+Indian Tribal Governments
+FILING FOR INDIVIDUALS
+How to file
+When to file
+Where to file
+Update your information
+POPULAR
+Tax record (transcript)
+Apply for an Employer ID Number (EIN)
+Amend return
+Identity Protection PIN (IP PIN)
+Overview
+PAY BY
+Bank Account (Direct Pay)
+Payment Plan (Installment Agreement)
+Electronic Federal Tax Payment System (EFTPS)
+POPULAR
+Your Online Account
+Tax Withholding Estimator
+Estimated Taxes
+Penalties
+Refunds
+Overview
+About refunds
+Direct deposit
+Reduced refunds
+Where’s my amended return?
+Credits & Deductions
+Overview
+INFORMATION FOR...
+Individuals
+For you and your family
+Businesses & Self-Employed
+Standard mileage and other information
+POPULAR
+Earned Income Credit (EITC)
+Child Tax Credit
+Clean Energy and Vehicle Credits
+Standard Deduction
+Retirement Plans
+Forms
+Overview
+POPULAR FORMS & INSTRUCTIONS
+Form 1040
+Individual Income Tax Return
+Form 1040 Instructions
+Instructions for Form 1040
+Form W-9
+Request for Taxpayer Identification Number (TIN) and Certification
+Form 4506-T
+Request for Transcript of Tax Return
+Form W-4
+Employee's Withholding Certificate
+Form 941
+Employer's Quarterly Federal Tax Return
+Form W-2
+Wage and Tax Statement
+Form 9465
+Installment Agreement Request
+POPULAR FOR TAX PROS
+Form 1040-X
+Amended Individual Income Tax Return
+Form 2848
+Power of Attorney
+Form W-7
+Apply for an ITIN
+Circular 230
+Regulations Governing Practice before the IRS
+Report Fraud
+Overview
+Tax fraud and scams
+Identity theft
+Fake IRS email or message
+Tax return preparer
+Search
+Include Historical Content
+- Any - No
+Include Historical Content
+- Any - No
+Search
+Information Menu
+Tax Pros
+Sign in
+Individual
+Business
+Tax Pro
+Access your tax information with an IRS account.
+Refunds
+Payments
+Tax records
+Create account
+Overview INFORMATION FOR… Individuals Business and self-employed Charities and nonprofits International filers Retirement Governments and tax-exempt bonds Indian Tribal Governments FILING FOR INDIVIDUALS How to file When to file Where to file Update your information POPULAR Tax record (transcript) Apply for an Employer ID Number (EIN) Amend return Identity Protection PIN (IP PIN)
+Overview PAY BY Bank Account (Direct Pay) Payment Plan (Installment Agreement) Electronic Federal Tax Payment System (EFTPS) POPULAR Your Online Account Tax Withholding Estimator Estimated Taxes Penalties
+Refunds
+Overview About refunds Direct deposit Reduced refunds Where’s my amended return?
+Credits & Deductions
+Overview INFORMATION FOR... Individuals Businesses & Self-Employed POPULAR Earned Income Credit (EITC) Child Tax Credit Clean Energy and Vehicle Credits Standard Deduction Retirement Plans
+Forms
+Overview POPULAR FORMS & INSTRUCTIONS Form 1040 Form 1040 Instructions Form W-9 Form 4506-T Form W-4 Form 941 Form W-2 Form 9465 POPULAR FOR TAX PROS Form 1040-X Form 2848 Form W-7 Circular 230
+Report Fraud
+Overview Tax fraud and scams Identity theft Fake IRS email or message Tax return preparer
+Main navigation
+Refunds
+Credits & Deductions
+Forms & Instructions
+Info Menu Mobile
+Charities & Nonprofits
+Tax Pros
+Home File Digital assets
+Digital assets
+English Español 中文 (简体) 中文 (繁體) 한국어 Русский Tiếng Việt Kreyòl ayisyen
+More In File
+Individuals
+Businesses and self-employed
+Charities and nonprofits
+International taxpayers
+Governmental liaisons
+Federal, state and local governments
+Indian tribal governments
+Tax exempt bonds
+Taxpayer identification numbers (TIN)
+You may have to report transactions with digital assets such as cryptocurrency and non fungible tokens (NFTs) on your tax return. Income from digital assets is taxable. On this page What's a digital asset About the digital assets question on your tax return How to answer the digital assets question How to report digital asset transactions Broker compliance What's a digital asset For U.S. tax purposes, digital assets are considered property, not currency. A digital asset is stored electronically and can be bought, sold, owned, transferred or traded. The tax definition of a digital asset is any digital representation of value recorded on a cryptographically secured, distributed ledger (blockchain) or similar technology ( Infrastructure Investment and Jobs Act ). Examples of digital assets These include: Convertible virtual currencies and cryptocurrencies such as Bitcoin Stablecoins Non fungible tokens (NFTs) How a digital asset is used A digital asset that has an equivalent value in real currency, or acts as a substitute for real currency, is referred to as convertible virtual currency, for example, a cryptocurrency. It can be: Used to pay for goods and services Digitally traded Exchanged for or converted into currencies or other digital assets About the digital assets question on your tax return On federal income tax returns, you must answer "Yes" or "No" to a question about digital assets: At any time during the tax year, did you: (a) receive (as a reward, award or payment for property or services); or (b) sell, exchange, or otherwise dispose of a digital asset (or a financial interest in a digital asset)? A version of the question appears on these tax returns: Form 709, United States Gift (and Generation-Skipping Transfer) Tax Return Form 1040, Individual Income Tax Return and Form 1040-SR, U.S. Tax Return for Seniors Form 1040-NR, U.S. Nonresident Alien Income Tax Return Form 1041, U.S. Income Tax Return for Estates and Trusts Form 1065, U.S. Return of Partnership Income Form 1120, U.S. Corporation Income Tax Return Form 1120-S, U.S. Income Tax Return for an S Corporation How to answer the digital assets question Your answer depends on whether you had digital asset transactions. Use this questionnaire to help determine how to answer the digital assets question . You can also follow these instructions: If you didn't have digital asset transactions, answer "No" Check No in the digital assets box if you: Didn't own any digital assets Only owned or held digital assets in a wallet or account, but did not engage in any digital asset transactions during the year Purchased, but did not sell, digital assets using U.S. or other real currency, including through electronic platforms Transferred digital assets from one wallet or account you own or control to another wallet or account you own or control ( unless you paid a transaction fee with digital assets . This would be a digital asset transaction.) If you had digital asset transactions, answer "Yes" Check Yes in the digital assets box if you: Received digital assets for: Payment for property or services provided A reward or award Mining, staking and similar activities An airdrop as it relates to a hard fork Disposed, sold, exchanged or transferred ownership of digital assets: For another digital asset For U.S. dollars or other currency In exchange or trade for property, goods or services in any amount By paying a transfer fee with digital assets By a transfer of ownership or financial interest You have a financial interest in a digital asset if you: Are recorded as the owner of a digital asset Have an ownership stake in an account that holds one or more digital assets, including the rights and obligations to acquire a financial interest Own a wallet that holds digital assets If you answer Yes, find how to report digital asset transactions . How to report digital asset transactions If you have digital asset transactions, you must report them whether or not they result in a taxable gain or loss. To report digital asset transactions: Keep records If you had digital asset transactions, keep records that document: Your purchase, receipt, sale, exchange or any other disposition of the digital assets The fair market value as measured in U.S. dollars of all digital assets received as income or as a payment in the ordinary course of a trade or business The Internal Revenue Code and regulations require taxpayers to maintain sufficient records to establish the positions taken on federal income tax returns. Calculate your capital gain or loss To calculate the capital gain or loss of a digital asset that you sold or disposed of in a transaction, you'll need this information: Type of digital asset Date and time of transaction Number of units Fair market value at time of transaction (as measured in U.S. dollars) Basis of digital asset sold or disposed of Find how to calculate gain or loss, identify the units sold or disposed, and determine fair market value for your situation: FAQs on virtual currency transactions . If you own and use a digital asset for personal or investment purposes The income would be taxed as a capital gain or loss when you sell or dispose it. If you receive a digital asset in exchange for goods or services in a business context The income would be taxed as ordinary income or a loss. Find details about ordinary or capital gain or loss . How to determine if your capital gain or loss is short-term or long-term Short-term capital gain: If you held the digital asset as a capital asset for one year or less before selling, exchanging, or otherwise disposing of the digital asset. Long-term capital gain: If you held the digital asset as a capital asset for more than one year before selling, exchanging, or otherwise disposing of it. Find details on short-term and long-term capital gains and losses in Sales and Other Dispositions of Assets, Publication 544 . Determine your basis The basis of property is its cost. Generally, the basis of a digital asset is the cost in U.S. dollars. How you determine your basis for digital assets depends on the type of transaction you had. Find how to determine your basis for your situation in FAQs on virtual currency transactions . To determine your basis, you'll need this information: Type of digital asset you acquired (for example Bitcoin) Date and time you acquired the digital asset Number of units of the digital asset acquired Fair market value of the digital asset when acquired (as measured in U.S. dollars) Find additional details on Basis of Assets, Publication 551 . Report on the correct form The form you use depends on the type of transaction: If you sold, exchanged or otherwise disposed of a digital asset you held as a capital asset Use Form 8949, Sales and Other Dispositions of Capital Assets . If you have other ordinary income related to digital assets To report income from forks, staking, mining, etc., use Form 1040 (Schedule 1), Additional Income and Adjustments to Income PDF . If you gave a gift in the form of digital assets Use Form 709, United States Gift (and Generation-Skipping Transfer) Tax Return . If you were paid as an employee or independent contractor with digital assets For wages you receive as an employee, report the digital asset income on Form 1040, U.S. Individual Income Tax Return . For payments you receive as an independent contractor, report the digital asset income on Schedule C (Form 1040), Profit or Loss from Business (Sole Proprietorship) . If you sold, exchanged or otherwise disposed of digital assets to customers Report these transactions on Form 1040 (Schedule C), Profit or Loss from Business (Sole Proprietorship) PDF . For details, see tax year 2023 1040 (and 1040-SR) instructions . Broker compliance The requirement for brokers to report digital asset transactions is a result of changes to Internal Revenue Code §6045 made by the Infrastructure Investment and Jobs Act (IIJA) (signed in late 2021). Treasury and IRS issued final regulations on reporting by brokers on dispositions of digital assets for customers in certain sale or exchange transactions. This reporting is required to be made on Form 1099-DA beginning with transactions on or after Jan. 1, 2025. Regulations apply to certain digital asset sale and exchange transactions The final regulations apply to brokers that take possession of the digital assets being sold by their customers, including operators of custodial digital asset trading platforms, certain digital asset hosted wallet providers, digital asset kiosks and certain processors of digital asset payments (PDAPs). The regulations provide gain (and loss) computation rules, basis determination rules and backup withholding rules applicable to digital asset sale and exchange transactions. Focus points of the regulations The final regulations ensure that taxpayers will receive statements that include information reported to the IRS on Form 1099-DA, Digital Asset Proceeds from Broker Transactions, that will help them file their income tax returns and determine their tax obligations. This information will give taxpayers confidence in reporting income from digital assets while improving compliance efforts. The regulations phase in reporting over time. Specifically, under the final regulations: Brokers must report gross proceeds for transactions effected on or after Jan. 1, 2025. Brokers must report basis on certain transactions effected on or after Jan. 1, 2026. Real estate professionals that are treated as brokers must report the fair market value of digital assets paid by buyers and received by sellers in real estate transactions with closing dates on or after Jan. 1, 2026. For certain sales of stablecoins and non-fungible tokens (NFTs), brokers may choose to report the transactions on an aggregate basis to the extent the sales exceed respective de minimis thresholds. A separate de minimis threshold also applies for PDAP sales. The final regulations do not include reporting requirements for brokers commonly known as decentralized or non-custodial brokers that do not take possession of the digital assets being sold or exchanged. Notice for Penalty Relief Notice 2024-56 PDF and Notice 2025-33 PDF provide information regarding the transition relief for brokers; For transactions occurring in calendar year 2025 (and reported in 2026), the IRS will not impose penalties for failure to file and to furnish Forms 1099-DA if the broker makes a good faith effort to file the Forms 1099-DA and furnish associated payee statements correctly and on time. The notices also provide relief to brokers from backup withholding obligations and associated penalties: For all transactions that occur in 2025 and 2026 For 2027, for any transaction effected on behalf of a customer from whom the broker obtains the customer’s TIN and submits the customer’s name and TIN to the IRS’s TIN-matching program and receives a response that the name-TIN combination matches IRS records. For 2027, for any transaction effected on behalf of a customer with a preexisting account showing a non-U.S. address if that customer has not been previously classified by the broker as a U.S. person. Until further guidance is published, for dispositions of digital assets in return for certain NFTs or real property, and for certain sales effected by PDAPs. Notice on temporary exceptions to reporting for certain identified transactions Notice 2024-57 identifies transactions for which brokers are not required to file Forms 1099-DA or furnish associated payee statements until the Treasury Department and IRS issue further guidance. This reporting exception does not apply to rewards or other compensation earned by or otherwise derived by participants in these transactions. The identified transactions are: Wrapping and unwrapping transactions, Liquidity provider transactions, Staking transactions, Transactions described by digital asset market participants as the lending of digital assets, Transactions described by digital asset market participants as short sales of digital assets, and Notional principal contracts. Revenue Procedure 2024-28 PDF allows taxpayers to allocate units of unused basis to remaining digital asset units in digital asset wallets or accounts as of Jan. 1, 2025 The Revenue Procedure provides transitional guidance on how taxpayers may transition to the basis identification methodology to allocate unused basis of digital assets to digital assets held within each wallet or account of a taxpayer as of Jan. 1, 2025, as required by the final regulations. FAQs Frequently asked questions on broker reporting Frequently asked questions on virtual currency transactions Part I FAQs : Part I of these FAQs, which includes FAQs 1-46, explains the general tax principles applicable to property transactions outlined in Notice 2014-21 and subsequent guidance issued before the 2024 digital asset information reporting regulations. Part I of these FAQs also explains use of the term “virtual currency” and generally applies to transactions involving virtual currency completed before January 1, 2025. Part II FAQs : Part II of these FAQs, which includes FAQs 47-111, addresses the changes made by the 2024 digital asset information reporting regulations, including the use of the term “digital asset.” Part II of these FAQs addresses the general tax principles discussed in Part I as well as the subsequent guidance reflected in the 2024 digital asset information reporting regulations. Part II of these FAQs generally applies to transactions involving digital assets completed on or after January 1, 2025. Publications Taxable and Nontaxable Income, Publication 525 – Miscellaneous income from exchanges involving property or services Charitable Contributions, Publication 526 – Charitable contribution deductions Sales and Other Dispositions of Assets, Publication 544 – Capital assets and the character of gain or loss Basis of Assets, Publication 551 – Computation of basis Determining the Value of Donated Property, Publication 561 – Appraisal of donated property worth more than $5,000 Guidance Notice 2025-07 PDF – Temporary relief for eligible taxpayers to rely on alternative methods for making an adequate identification regarding units of a digital asset held in the custody of a broker Final Regulations 2024-07-09 – Gross proceeds and basis reporting by brokers and determination of amount realized and basis for digital asset transactions Revenue Procedure 2024-28 - Guidance to allocate basis in digital assets to wallets or accounts as of January 1, 2025 Notice 2024-57 – Broker reporting and penalty relief for certain digital asset transactions Notice 2024-56 - Transitional relief for information reporting and backup withholding on digital assets by brokers Revenue Ruling 2023-14 – Taxability of staking income Revenue Ruling 2019-24 – Tax implications of a hard fork Notice 2023-34 – Modifies Notice 2014-21 background section to remove the statement that virtual currency doesn’t have legal tender status and to make other changes Notice 2023-27 – Treatment of certain NFT as collectibles Notice 2014-21 – Tax treatment of transactions using convertible virtual currencies Chief Counsel Advice (CCA) 202444009 PDF – Frozen rewards related to bankrupt digital asset platforms Chief Counsel Advice (CCA) 202316008 PDF – Individual tax consequences when holding a cryptocurrency native to a blockchain distributed ledger that has a protocol upgrade Chief Counsel Advice (CCA) 202035011 PDF – Tax consequences of receiving convertible virtual currency as payment for performing microtasks through a crowdsourcing platform Chief Counsel Advice (CCA) 202114020 PDF – Receipt of Bitcoin Cash as a result of the hard fork Chief Counsel Advice (CCA) 202124008 PDF – IRC Section 1031 doesn't apply to exchanges of Bitcoin for Ether, Bitcoin for Litecoin, or Ether for Litecoin Chief Counsel Advice (CCA) 202302011 PDF – Applicability of IRC section 165 to cryptocurrency that has declined in value Chief Counsel Advice (CCA) 202302012 PDF – Qualified appraisal requirement for charitable contributions of cryptocurrency Private Letter Ruling 202019028 PDF – Certain issues about the tax-exempt status of entities in the digital asset industry FinCEN Notice 2020-2 PDF – Report of Foreign Bank and Financial Accounts (FBAR) reporting requirements related to virtual currency
+Related
+Fact sheet 2025-06 : Tax professionals can prepare now to assist their clients with reporting proceeds from certain digital asset transactions
+News release IR-2024-178 - Final regulations requiring custodial brokers to report sales and exchanges of digital assets, including cryptocurrency
+Fact sheet 2024-23 - Final regulations and related IRS guidance for reporting by brokers on sales and exchanges of digital assets
+Page Last Reviewed or Updated: 03-Apr-2026
+Share Facebook Twitter Linkedin Print
+Our Agency
+About IRS
+Careers
+Operations and Budget
+Tax Statistics
+Find a Local Office
+Know Your Rights
+Taxpayer Bill of Rights
+Taxpayer Advocate Service
+Independent Office of Appeals
+Civil Rights
+No FEAR Act Data
+Reliance on Guidance
+Resolve an Issue
+IRS Notices and Letters
+Identity Theft
+Tax scams
+Tax Fraud
+Criminal Investigation
+Whistleblower Office
+Languages
+Español
+中文 (简体)
+中文 (繁體)
+Pусский
+Tiếng Việt
+Kreyòl ayisyen
+English
+Related Sites
+U.S. Treasury
+Treasury Inspector General for Tax Administration
+USA.gov
+USAspending.gov
+Vote.gov
+Privacy Policy
+Accessibility

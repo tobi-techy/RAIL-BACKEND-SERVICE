@@ -7,6 +7,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -29,7 +30,7 @@ import (
 // BridgeWebhookService defines operations for processing Bridge events
 type BridgeWebhookService interface {
 	ProcessFiatDeposit(ctx *gin.Context, event *BridgeDepositEvent) error
-	ProcessCryptoDeposit(ctx *gin.Context, transferID string, customerID string, amount decimal.Decimal) error
+	ProcessCryptoDeposit(ctx *gin.Context, transferID string, customerID string, amount decimal.Decimal, chain string) error
 	ProcessTransferCompleted(ctx *gin.Context, transferID string) error
 	ProcessTransferFailed(ctx *gin.Context, transferID string, status string) error
 	ProcessTransferUnderReview(ctx *gin.Context, transferID string) error
@@ -45,9 +46,15 @@ type BridgeWebhookService interface {
 	ProcessCardStatusChanged(ctx *gin.Context, cardID, status string) error
 }
 
+// WalletWebhookService defines operations for processing wallet-related webhook events
+type WalletWebhookService interface {
+	SyncWalletStatus(ctx context.Context, bridgeWalletID string, status string) error
+}
+
 // BridgeWebhookHandler handles Bridge API webhook notifications
 type BridgeWebhookHandler struct {
 	service                 BridgeWebhookService
+	walletService           WalletWebhookService
 	logger                  *zap.Logger
 	webhookSecret           string
 	skipWebhookVerification bool   // Should ONLY be true in development with explicit config
@@ -57,7 +64,7 @@ type BridgeWebhookHandler struct {
 // NewBridgeWebhookHandler creates a new Bridge webhook handler
 // skipWebhookVerification should ONLY be true in development/testing environments with explicit config
 // IMPORTANT: In production, verification can NEVER be skipped regardless of this flag
-func NewBridgeWebhookHandler(service BridgeWebhookService, logger *zap.Logger, webhookSecret string, skipWebhookVerification bool, environment string) *BridgeWebhookHandler {
+func NewBridgeWebhookHandler(service BridgeWebhookService, walletService WalletWebhookService, logger *zap.Logger, webhookSecret string, skipWebhookVerification bool, environment string) *BridgeWebhookHandler {
 	// Security fix: Never allow skipping verification in production
 	if strings.EqualFold(environment, "production") && skipWebhookVerification {
 		logger.Error("SECURITY VIOLATION: Attempted to skip webhook verification in production - forcing verification ON")
@@ -66,13 +73,14 @@ func NewBridgeWebhookHandler(service BridgeWebhookService, logger *zap.Logger, w
 
 	// Log warning if verification is being skipped
 	if skipWebhookVerification {
-		logger.Warn("⚠️  INSECURE MODE: Webhook signature verification is DISABLED",
+		logger.Warn("INSECURE MODE: Webhook signature verification is DISABLED",
 			zap.String("environment", environment),
 			zap.String("warning", "This should only be used in local development"))
 	}
 
 	return &BridgeWebhookHandler{
 		service:                 service,
+		walletService:           walletService,
 		logger:                  logger,
 		webhookSecret:           webhookSecret,
 		skipWebhookVerification: skipWebhookVerification,
@@ -269,6 +277,10 @@ func (h *BridgeWebhookHandler) HandleWebhook(c *gin.Context) {
 	case "card_withdrawal":
 		h.handleCardWithdrawalEvent(c, payload)
 
+	// Wallet lifecycle events
+	case "wallet":
+		h.handleWalletEvent(c, payload)
+
 	default:
 		// Fallback to legacy event_type routing for backwards compatibility
 		h.handleLegacyEventType(c, payload)
@@ -306,7 +318,16 @@ func (h *BridgeWebhookHandler) handleLiquidationAddressDrain(c *gin.Context, pay
 		amount, _ = decimal.NewFromString(amountStr)
 	}
 
-	if err := h.service.ProcessCryptoDeposit(c, drainID, customerID, amount); err != nil {
+	chain := getStringField(payload.EventObject, "chain")
+	// Drain objects may not have a top-level "chain". Fall back to
+	// destination.payment_rail which indicates where Bridge sent the funds.
+	if chain == "" {
+		if dest, ok := payload.EventObject["destination"].(map[string]interface{}); ok {
+			chain = getStringField(dest, "payment_rail")
+		}
+	}
+
+	if err := h.service.ProcessCryptoDeposit(c, drainID, customerID, amount, chain); err != nil {
 		h.logger.Error("Failed to process liquidation address drain",
 			zap.String("drain_id", drainID),
 			zap.String("customer_id", customerID),
@@ -642,6 +663,37 @@ func (h *BridgeWebhookHandler) handleCardWithdrawalEvent(c *gin.Context, payload
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
 }
 
+func (h *BridgeWebhookHandler) handleWalletEvent(c *gin.Context, payload BridgeWebhookPayload) {
+	walletID := payload.EventObjectID
+	status := payload.EventObjectStatus
+	walletAddress := getStringField(payload.EventObject, "address")
+	chain := getStringField(payload.EventObject, "chain")
+
+	h.logger.Info("Wallet event received",
+		zap.String("wallet_id", walletID),
+		zap.String("status", status),
+		zap.String("address", walletAddress),
+		zap.String("chain", chain),
+		zap.String("event_type", payload.EventType))
+
+	if h.walletService == nil {
+		h.logger.Warn("Wallet service not configured for webhook handling - logging event only")
+		c.JSON(http.StatusOK, gin.H{"status": "acknowledged", "message": "wallet service not configured"})
+		return
+	}
+
+	if err := h.walletService.SyncWalletStatus(c.Request.Context(), walletID, status); err != nil {
+		h.logger.Error("Failed to sync wallet status",
+			zap.String("wallet_id", walletID),
+			zap.String("status", status),
+			zap.Error(err))
+		c.JSON(http.StatusOK, gin.H{"status": "acknowledged", "synced": false})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "acknowledged", "synced": true})
+}
+
 // handleLegacyEventType handles old-style event types for backwards compatibility
 func (h *BridgeWebhookHandler) handleLegacyEventType(c *gin.Context, payload BridgeWebhookPayload) {
 	switch payload.EventType {
@@ -895,7 +947,7 @@ func (h *BridgeWebhookHandler) handleCardStatusChanged(c *gin.Context, payload B
 func (h *BridgeWebhookHandler) verifySignature(signature string, body []byte) bool {
 	if h.webhookSecret == "" {
 		if h.skipWebhookVerification {
-			h.logger.Warn("⚠️  INSECURE: Bridge webhook verification disabled - no secret configured")
+			h.logger.Warn("INSECURE: Bridge webhook verification disabled - no secret configured")
 			return true
 		}
 		h.logger.Error("Bridge webhook public key not configured - rejecting webhook for security")
@@ -1062,12 +1114,13 @@ type BridgeWebhookServiceImpl struct {
 	notifier              BridgeWebhookNotifier
 	userRepo              UserRepositoryForCustomer
 	logger                *zap.Logger
+	db                    *sql.DB
 }
 
 // BridgeVirtualAccountProcessor processes virtual account events
 type BridgeVirtualAccountProcessor interface {
 	ProcessFiatDeposit(ctx *gin.Context, event *BridgeDepositEvent) error
-	ProcessCryptoDeposit(ctx context.Context, userID uuid.UUID, transferID string, amount decimal.Decimal) error
+	ProcessCryptoDeposit(ctx context.Context, userID uuid.UUID, transferID string, amount decimal.Decimal, chain string) error
 }
 
 // BridgeCustomerProcessor processes customer events
@@ -1108,6 +1161,7 @@ func NewBridgeWebhookService(
 	notifier BridgeWebhookNotifier,
 	userRepo UserRepositoryForCustomer,
 	logger *zap.Logger,
+	db *sql.DB,
 ) *BridgeWebhookServiceImpl {
 	return &BridgeWebhookServiceImpl{
 		virtualAccountService: virtualAccountService,
@@ -1117,6 +1171,7 @@ func NewBridgeWebhookService(
 		notifier:              notifier,
 		userRepo:              userRepo,
 		logger:                logger,
+		db:                    db,
 	}
 }
 
@@ -1124,7 +1179,7 @@ func (s *BridgeWebhookServiceImpl) ProcessFiatDeposit(ctx *gin.Context, event *B
 	return s.virtualAccountService.ProcessFiatDeposit(ctx, event)
 }
 
-func (s *BridgeWebhookServiceImpl) ProcessCryptoDeposit(ctx *gin.Context, transferID string, customerID string, amount decimal.Decimal) error {
+func (s *BridgeWebhookServiceImpl) ProcessCryptoDeposit(ctx *gin.Context, transferID string, customerID string, amount decimal.Decimal, chain string) error {
 	s.logger.Info("Crypto deposit transfer completed", zap.String("transfer_id", transferID), zap.String("customer_id", customerID), zap.String("amount", amount.String()))
 	if s.virtualAccountService == nil {
 		s.logger.Warn("Virtual account service not configured, skipping crypto deposit", zap.String("transfer_id", transferID))
@@ -1147,11 +1202,24 @@ func (s *BridgeWebhookServiceImpl) ProcessCryptoDeposit(ctx *gin.Context, transf
 		s.logger.Warn("No user found for Bridge customer ID", zap.String("customer_id", customerID))
 		return nil
 	}
-	return s.virtualAccountService.ProcessCryptoDeposit(ctx, user.ID, transferID, amount)
+	return s.virtualAccountService.ProcessCryptoDeposit(ctx, user.ID, transferID, amount, chain)
 }
 
 func (s *BridgeWebhookServiceImpl) ProcessTransferCompleted(ctx *gin.Context, transferID string) error {
 	s.logger.Info("Provider transfer completed", zap.String("transfer_id", transferID))
+
+	// Mark PAJ offramp orders as completed (no session needed)
+	if s.db != nil {
+		result, _ := s.db.ExecContext(ctx, `
+			UPDATE paj_orders SET status = 'completed', updated_at = NOW()
+			WHERE bridge_transfer_id = $1 AND order_type = 'offramp' AND status NOT IN ('completed', 'failed')`,
+			transferID)
+		if rows, _ := result.RowsAffected(); rows > 0 {
+			s.logger.Info("PAJ offramp order marked completed via Bridge webhook",
+				zap.String("transfer_id", transferID))
+		}
+	}
+
 	if s.withdrawalService == nil {
 		s.logger.Warn("Withdrawal service not configured, skipping transfer settlement", zap.String("transfer_id", transferID))
 		return nil
@@ -1173,6 +1241,20 @@ func (s *BridgeWebhookServiceImpl) ProcessTransferFailed(ctx *gin.Context, trans
 func (s *BridgeWebhookServiceImpl) ProcessTransferUnderReview(ctx *gin.Context, transferID string) error {
 	s.logger.Warn("Transfer under compliance review",
 		zap.String("transfer_id", transferID))
+
+	// Check if this is a PAJ offramp transfer first
+	if s.db != nil {
+		var exists bool
+		_ = s.db.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM paj_orders WHERE bridge_transfer_id = $1 AND order_type = 'offramp')`,
+			transferID).Scan(&exists)
+		if exists {
+			s.logger.Info("PAJ offramp transfer under review - no action needed, Bridge will auto-clear",
+				zap.String("transfer_id", transferID))
+			return nil
+		}
+	}
+
 	if s.withdrawalService == nil {
 		s.logger.Error("Withdrawal service not configured for ProcessTransferUnderReview", zap.String("transfer_id", transferID))
 		return fmt.Errorf("withdrawal service not configured for ProcessTransferUnderReview")
@@ -1333,6 +1415,8 @@ type BridgeCustomerStatusProcessor struct {
 type UserRepositoryForCustomer interface {
 	GetByBridgeCustomerID(ctx context.Context, bridgeCustomerID string) (*entities.UserProfile, error)
 	UpdateBridgeKYCStatus(ctx context.Context, userID uuid.UUID, status string) error
+	UpdateKYCStatus(ctx context.Context, userID uuid.UUID, status entities.KYCStatus, approvedAt *time.Time, rejectionReason *string) error
+	UpdateOnboardingStatus(ctx context.Context, userID uuid.UUID, status entities.OnboardingStatus) error
 }
 
 // NewBridgeCustomerStatusProcessor creates a new customer status processor
@@ -1391,6 +1475,22 @@ func (s *BridgeCustomerStatusProcessor) UpdateCustomerStatus(ctx context.Context
 	s.logger.Info("Updated bridge_kyc_status",
 		zap.String("user_id", user.ID.String()),
 		zap.String("new_status", bridgeKYCStatus))
+
+	// When Bridge goes active, promote kyc_status to approved and complete onboarding.
+	// Bridge is the authoritative source for KYC approval.
+	if bridgeKYCStatus == "active" {
+		now := time.Now()
+		if err := s.userRepo.UpdateKYCStatus(ctx, user.ID, entities.KYCStatusApproved, &now, nil); err != nil {
+			s.logger.Error("Failed to promote kyc_status to approved on Bridge active",
+				zap.Error(err), zap.String("user_id", user.ID.String()))
+		}
+		if err := s.userRepo.UpdateOnboardingStatus(ctx, user.ID, entities.OnboardingStatusCompleted); err != nil {
+			s.logger.Error("Failed to complete onboarding on Bridge active",
+				zap.Error(err), zap.String("user_id", user.ID.String()))
+		}
+		s.logger.Info("KYC approved — Bridge active",
+			zap.String("user_id", user.ID.String()))
+	}
 
 	// Send push notification for KYC outcome
 	if s.notifier != nil {

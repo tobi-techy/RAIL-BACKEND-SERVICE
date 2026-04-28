@@ -1,0 +1,432 @@
+{
+  "dashboard": {
+    "uid": "rail-user-lifecycle",
+    "title": "RAIL - User Lifecycle & Retention",
+    "tags": ["rail", "business", "users"],
+    "schemaVersion": 39,
+    "refresh": "1m",
+    "time": {
+      "from": "now-7d",
+      "to": "now"
+    },
+    "timezone": "browser",
+    "editable": true,
+    "fiscalYearStartMonth": 0,
+    "graphTooltip": 1,
+    "panels": [
+      {
+        "id": 1,
+        "title": "Total Registrations",
+        "description": "All-time user registrations",
+        "type": "stat",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 5, "w": 4, "x": 0, "y": 0 },
+        "fieldConfig": {
+          "defaults": {
+            "color": { "mode": "fixed", "fixedColor": "blue" },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": {
+          "colorMode": "background",
+          "graphMode": "area",
+          "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+          "textMode": "auto",
+          "justifyMode": "auto",
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "stack_users_registered_total",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "KYC Approved",
+        "description": "Users who passed KYC",
+        "type": "stat",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 5, "w": 4, "x": 4, "y": 0 },
+        "fieldConfig": {
+          "defaults": {
+            "color": { "mode": "fixed", "fixedColor": "green" },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": {
+          "colorMode": "background",
+          "graphMode": "area",
+          "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+          "textMode": "auto",
+          "justifyMode": "auto",
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "stack_users_kyc_approved_total",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "title": "KYC Rejected",
+        "description": "Users who failed KYC",
+        "type": "stat",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 5, "w": 4, "x": 8, "y": 0 },
+        "fieldConfig": {
+          "defaults": {
+            "color": { "mode": "fixed", "fixedColor": "red" },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": {
+          "colorMode": "background",
+          "graphMode": "area",
+          "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+          "textMode": "auto",
+          "justifyMode": "auto",
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "stack_users_kyc_rejected_total",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "KYC Pass Rate",
+        "description": "KYC approval rate",
+        "type": "stat",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 5, "w": 4, "x": 12, "y": 0 },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "decimals": 1,
+            "color": { "mode": "thresholds" },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "color": "red", "value": null },
+                { "color": "yellow", "value": 70 },
+                { "color": "green", "value": 85 }
+              ]
+            }
+          },
+          "overrides": []
+        },
+        "options": {
+          "colorMode": "background",
+          "graphMode": "none",
+          "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+          "textMode": "auto",
+          "justifyMode": "auto",
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "stack_users_kyc_approved_total / (stack_users_kyc_approved_total + stack_users_kyc_rejected_total) * 100",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Active Users",
+        "description": "Currently active users",
+        "type": "stat",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 5, "w": 4, "x": 16, "y": 0 },
+        "fieldConfig": {
+          "defaults": {
+            "color": { "mode": "fixed", "fixedColor": "super-light-blue" },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "super-light-blue", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": {
+          "colorMode": "background",
+          "graphMode": "area",
+          "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+          "textMode": "auto",
+          "justifyMode": "auto",
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "stack_active_users",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Churned (30d)",
+        "description": "Users churned in last 30 days",
+        "type": "stat",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 5, "w": 4, "x": 20, "y": 0 },
+        "fieldConfig": {
+          "defaults": {
+            "decimals": 0,
+            "color": { "mode": "fixed", "fixedColor": "red" },
+            "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }] }
+          },
+          "overrides": []
+        },
+        "options": {
+          "colorMode": "background",
+          "graphMode": "none",
+          "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+          "textMode": "auto",
+          "justifyMode": "auto",
+          "orientation": "auto"
+        },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "increase(stack_users_churned_total[30d])",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 7,
+        "title": "Registration Funnel",
+        "description": "Daily registration funnel from signup through KYC",
+        "type": "timeseries",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 9, "w": 12, "x": 0, "y": 5 },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "drawStyle": "bars",
+              "fillOpacity": 80,
+              "stacking": { "mode": "none" },
+              "lineWidth": 1,
+              "pointSize": 5,
+              "showPoints": "auto",
+              "axisBorderShow": false,
+              "scaleDistribution": { "type": "linear" }
+            }
+          },
+          "overrides": [
+            {
+              "matcher": { "id": "byName", "options": "Registered" },
+              "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }]
+            },
+            {
+              "matcher": { "id": "byName", "options": "KYC Approved" },
+              "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }]
+            },
+            {
+              "matcher": { "id": "byName", "options": "KYC Rejected" },
+              "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+            }
+          ]
+        },
+        "options": {
+          "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+          "tooltip": { "mode": "multi", "sort": "desc" }
+        },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "increase(stack_users_registered_total[$__interval])",
+            "legendFormat": "Registered",
+            "refId": "A"
+          },
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "increase(stack_users_kyc_approved_total[$__interval])",
+            "legendFormat": "KYC Approved",
+            "refId": "B"
+          },
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "increase(stack_users_kyc_rejected_total[$__interval])",
+            "legendFormat": "KYC Rejected",
+            "refId": "C"
+          }
+        ]
+      },
+      {
+        "id": 8,
+        "title": "KYC Conversion Rate Over Time",
+        "description": "Rolling KYC approval rate",
+        "type": "timeseries",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 9, "w": 12, "x": 12, "y": 5 },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "custom": {
+              "drawStyle": "line",
+              "fillOpacity": 10,
+              "lineWidth": 2,
+              "pointSize": 5,
+              "showPoints": "auto",
+              "scaleDistribution": { "type": "linear" },
+              "thresholdsStyle": { "mode": "line" }
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "color": "red", "value": null },
+                { "color": "green", "value": 85 }
+              ]
+            }
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+          "tooltip": { "mode": "multi", "sort": "desc" }
+        },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "increase(stack_users_kyc_approved_total[1d]) / (increase(stack_users_kyc_approved_total[1d]) + increase(stack_users_kyc_rejected_total[1d])) * 100",
+            "legendFormat": "Approval %",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 9,
+        "title": "Active vs Churned",
+        "description": "Active user count vs daily churn",
+        "type": "timeseries",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 9, "w": 12, "x": 0, "y": 14 },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "drawStyle": "line",
+              "fillOpacity": 15,
+              "lineWidth": 2,
+              "pointSize": 5,
+              "showPoints": "auto",
+              "scaleDistribution": { "type": "linear" }
+            }
+          },
+          "overrides": [
+            {
+              "matcher": { "id": "byName", "options": "Active" },
+              "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }]
+            },
+            {
+              "matcher": { "id": "byName", "options": "Churned" },
+              "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+            }
+          ]
+        },
+        "options": {
+          "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+          "tooltip": { "mode": "multi", "sort": "desc" }
+        },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "stack_active_users",
+            "legendFormat": "Active",
+            "refId": "A"
+          },
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "increase(stack_users_churned_total[$__interval])",
+            "legendFormat": "Churned",
+            "refId": "B"
+          }
+        ]
+      },
+      {
+        "id": 10,
+        "title": "Reactivations",
+        "description": "Previously churned users who returned",
+        "type": "timeseries",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 9, "w": 12, "x": 12, "y": 14 },
+        "fieldConfig": {
+          "defaults": {
+            "color": { "mode": "fixed", "fixedColor": "light-green" },
+            "custom": {
+              "drawStyle": "bars",
+              "fillOpacity": 80,
+              "lineWidth": 1,
+              "pointSize": 5,
+              "showPoints": "auto",
+              "scaleDistribution": { "type": "linear" }
+            }
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+          "tooltip": { "mode": "multi", "sort": "desc" }
+        },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "increase(stack_users_reactivated_total[$__interval])",
+            "legendFormat": "Reactivated",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 11,
+        "title": "Average Balance per User",
+        "description": "Average balance per user over time — key health metric",
+        "type": "timeseries",
+        "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+        "gridPos": { "h": 9, "w": 24, "x": 0, "y": 23 },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "color": { "mode": "fixed", "fixedColor": "purple" },
+            "custom": {
+              "drawStyle": "line",
+              "fillOpacity": 25,
+              "gradientMode": "scheme",
+              "lineWidth": 2,
+              "pointSize": 5,
+              "showPoints": "auto",
+              "scaleDistribution": { "type": "linear" }
+            }
+          },
+          "overrides": []
+        },
+        "options": {
+          "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+          "tooltip": { "mode": "multi", "sort": "desc" }
+        },
+        "targets": [
+          {
+            "datasource": { "type": "prometheus", "uid": "grafanacloud-prom" },
+            "expr": "stack_average_balance_usd",
+            "legendFormat": "Avg Balance",
+            "refId": "A"
+          }
+        ]
+      }
+    ],
+    "templating": { "list": [] },
+    "annotations": { "list": [] },
+    "links": []
+  }
+}

@@ -20,6 +20,7 @@ import (
 	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/crypto"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/rail-service/rail_service/pkg/security"
 	"go.uber.org/zap"
 )
 
@@ -97,7 +98,7 @@ func (h *AdminHandlers) CreateAdmin(c *gin.Context) {
 	if adminCount == 0 {
 		// Audit log: first admin creation attempt
 		h.logger.Info("first admin creation attempt",
-			zap.String("email", req.Email),
+			zap.String("email", security.MaskString(req.Email)),
 			zap.String("client_ip", c.ClientIP()),
 			zap.String("user_agent", c.GetHeader("User-Agent")),
 		)
@@ -105,7 +106,7 @@ func (h *AdminHandlers) CreateAdmin(c *gin.Context) {
 		// Security: Require bootstrap token for first admin creation
 		if err := h.validateBootstrapToken(c); err != nil {
 			h.logger.Warn("first admin creation rejected - invalid bootstrap token",
-				zap.String("email", req.Email),
+				zap.String("email", security.MaskString(req.Email)),
 				zap.String("client_ip", c.ClientIP()),
 				zap.Error(err),
 			)
@@ -120,14 +121,14 @@ func (h *AdminHandlers) CreateAdmin(c *gin.Context) {
 	} else {
 		// Audit log: subsequent admin creation attempt
 		h.logger.Info("admin creation attempt",
-			zap.String("email", req.Email),
+			zap.String("email", security.MaskString(req.Email)),
 			zap.String("client_ip", c.ClientIP()),
 			zap.String("requested_role", string(desiredRole)),
 		)
 
 		if err := h.ensureSuperAdmin(c); err != nil {
 			h.logger.Warn("admin creation rejected - insufficient permissions",
-				zap.String("email", req.Email),
+				zap.String("email", security.MaskString(req.Email)),
 				zap.String("client_ip", c.ClientIP()),
 				zap.Error(err),
 			)
@@ -145,7 +146,7 @@ func (h *AdminHandlers) CreateAdmin(c *gin.Context) {
 
 	exists, err := h.emailExists(ctx, req.Email)
 	if err != nil {
-		h.logger.Error("failed to check email existence", zap.Error(err), zap.String("email", req.Email))
+		h.logger.Error("failed to check email existence", zap.Error(err), zap.String("email", security.MaskString(req.Email)))
 		common.SendInternalError(c, common.ErrCodeInternalError, "Failed to process request")
 		return
 	}

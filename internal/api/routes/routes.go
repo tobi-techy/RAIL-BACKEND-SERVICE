@@ -2,19 +2,27 @@ package routes
 
 import (
 	"context"
+	"crypto/subtle"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
 	"github.com/shopspring/decimal"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
+	"go.uber.org/zap"
 
 	"github.com/rail-service/rail_service/internal/api/handlers"
+	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	kychandlers "github.com/rail-service/rail_service/internal/api/handlers/kyc"
+	securityHandlersV2 "github.com/rail-service/rail_service/internal/api/handlers/security"
 	"github.com/rail-service/rail_service/internal/api/middleware"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
@@ -25,6 +33,7 @@ import (
 	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
+	"github.com/rail-service/rail_service/pkg/alerting"
 	"github.com/rail-service/rail_service/pkg/ratelimit"
 	"github.com/rail-service/rail_service/pkg/tracing"
 )
@@ -46,22 +55,6 @@ func (a *WithdrawalWalletProviderAdapter) GetUserWalletByChain(ctx context.Conte
 	wallet, err := a.getWalletByUserAndChain(ctx, userID, normalized)
 	if err == nil {
 		return wallet, nil
-	}
-
-	// Backward-compatible fallbacks: mainnet chain → testnet equivalent on not-found.
-	if strings.Contains(err.Error(), "not found") {
-		var fallback entities.WalletChain
-		switch normalized {
-		case entities.WalletChainSolana:
-			fallback = entities.WalletChainSOLDevnet
-		case entities.WalletChainPolygon:
-			fallback = entities.WalletChainMATICAmoy
-		case entities.WalletChainAvalanche:
-			fallback = entities.WalletChainAVAXFuji
-		}
-		if fallback != "" {
-			return a.getWalletByUserAndChain(ctx, userID, fallback)
-		}
 	}
 
 	return nil, err
@@ -112,9 +105,14 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	router.Use(middleware.InputValidation())
 	router.Use(middleware.Logger(container.Logger))
 	router.Use(middleware.Recovery(container.Logger))
-	router.Use(middleware.CORS(container.Config.Server.AllowedOrigins))
+	router.Use(middleware.ErrorAlerter(alerting.NewTelegramAlerter(
+		container.Config.TelegramAlerts.BotToken,
+		container.Config.TelegramAlerts.ChatID,
+	)))
+	router.Use(middleware.CORS(container.Config.Server.AllowedOrigins, container.Config.Environment))
 	router.Use(createRateLimitMiddleware(container))
 	router.Use(middleware.SecurityHeaders())
+	router.Use(middleware.DeviceFingerprintExtractor())
 	router.Use(middleware.APIVersionMiddleware(container.Config.Server.SupportedVersions))
 	router.Use(middleware.PaginationMiddleware())
 
@@ -136,86 +134,151 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	router.GET("/version", coreHandlers.Version)
 	router.GET("/metrics", coreHandlers.Metrics)
 
-	// Internal ops endpoint — protected by JWT_SECRET as bearer token
-	router.GET("/internal/users/lookup", func(c *gin.Context) {
-		token := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
-		if token == "" || token != container.Config.JWT.Secret {
-			c.JSON(401, gin.H{"error": "unauthorized"})
-			return
-		}
-		email := c.Query("email")
-		uid := c.Query("id")
-		if email == "" && uid == "" {
-			c.JSON(400, gin.H{"error": "email or id query param required"})
-			return
-		}
-		q := "SELECT id, email, first_name, last_name, kyc_status, bridge_kyc_status, is_active, alpaca_account_id, bridge_customer_id, created_at, updated_at FROM users WHERE email = $1"
-		param := email
-		if email == "" {
-			q = "SELECT id, email, first_name, last_name, kyc_status, bridge_kyc_status, is_active, alpaca_account_id, bridge_customer_id, created_at, updated_at FROM users WHERE id = $1"
-			param = uid
-		}
-		rows, err := container.DB.QueryContext(c.Request.Context(), q, param)
-		if err != nil {
-			c.JSON(500, gin.H{"error": err.Error()})
-			return
-		}
-		defer rows.Close()
-		cols, _ := rows.Columns()
-		if !rows.Next() {
-			c.JSON(404, gin.H{"error": "user not found"})
-			return
-		}
-		vals := make([]interface{}, len(cols))
-		ptrs := make([]interface{}, len(cols))
-		for i := range vals {
-			ptrs[i] = &vals[i]
-		}
-		rows.Scan(ptrs...)
-		result := make(map[string]interface{}, len(cols))
-		for i, col := range cols {
-			if b, ok := vals[i].([]byte); ok {
-				result[col] = string(b)
-			} else {
-				result[col] = vals[i]
-			}
-		}
-		c.JSON(200, gin.H{"user": result})
-	})
+	// Internal ops endpoints — protected by dedicated INTERNAL_API_KEY (not JWT secret)
+	// Rate limited: 5 requests/minute to prevent abuse
+	internalHandlers := handlers.NewInternalHandlers(container.DB, container.Config.Security.InternalAPIKey, container.ZapLog)
+	internal := router.Group("/internal")
+	internal.Use(middleware.RateLimit(5))
+	{
+		internal.GET("/users/lookup", internalHandlers.LookupUser)
+		internal.DELETE("/users/:id", internalHandlers.DeleteUser)
+	}
 
-	// Internal delete user — cascades through related tables
-	router.DELETE("/internal/users/:id", func(c *gin.Context) {
-		token := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
-		if token == "" || token != container.Config.JWT.Secret {
+	// Internal knowledge ingestion — no JWT, uses INTERNAL_API_KEY
+	if container.GetKnowledgeService() != nil {
+		knowledgeHandlers := handlers.NewKnowledgeHandlers(container.GetKnowledgeService(), container.ZapLog)
+		internal.POST("/knowledge/ingest", func(c *gin.Context) {
+			key := c.GetHeader("Authorization")
+			if len(key) > 7 && key[:7] == "Bearer " {
+				key = key[7:]
+			}
+			if container.Config.Security.InternalAPIKey == "" || subtle.ConstantTimeCompare([]byte(key), []byte(container.Config.Security.InternalAPIKey)) != 1 {
+				c.JSON(401, gin.H{"error": "unauthorized"})
+				return
+			}
+			knowledgeHandlers.Ingest(c)
+		})
+	}
+
+	// Manual deposit credit — internal API key auth, no user JWT needed
+	if container.FundingService != nil {
+		internal.POST("/deposit/credit", func(c *gin.Context) {
+			// Auth check using internal API key
+			key := c.GetHeader("Authorization")
+			if len(key) > 7 && key[:7] == "Bearer " {
+				key = key[7:]
+			}
+			if container.Config.Security.InternalAPIKey == "" || subtle.ConstantTimeCompare([]byte(key), []byte(container.Config.Security.InternalAPIKey)) != 1 {
+				c.JSON(401, gin.H{"error": "unauthorized"})
+				return
+			}
+			var req struct {
+				Address string `json:"address" binding:"required"`
+				Amount  string `json:"amount" binding:"required"`
+				TxHash  string `json:"tx_hash" binding:"required"`
+				Chain   string `json:"chain"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(400, gin.H{"error": err.Error()})
+				return
+			}
+
+			// Security: cap single deposit credits at $10,000 USD to limit blast radius of compromised keys
+			amt, err := decimal.NewFromString(req.Amount)
+			if err != nil || amt.LessThanOrEqual(decimal.Zero) {
+				c.JSON(400, gin.H{"error": "invalid amount"})
+				return
+			}
+			maxDeposit := decimal.NewFromInt(10000)
+			if amt.GreaterThan(maxDeposit) {
+				c.JSON(400, gin.H{"error": "amount exceeds maximum allowed deposit of 10000 USD"})
+				return
+			}
+
+			// Audit trail for internal deposit credits
+			container.Logger.Info("internal deposit credit requested",
+				zap.String("client_ip", c.ClientIP()),
+				zap.String("amount", req.Amount),
+				zap.String("address", req.Address),
+				zap.String("tx_hash", req.TxHash),
+			)
+			chain := strings.ToUpper(req.Chain)
+			if chain == "" {
+				chain = "BASE"
+			}
+			deposit := &entities.ChainDepositWebhook{
+				Chain:     entities.Chain(chain),
+				Address:   req.Address,
+				Token:     entities.StablecoinUSDC,
+				Amount:    req.Amount,
+				TxHash:    req.TxHash,
+				BlockTime: time.Now(),
+			}
+			if err := container.FundingService.ProcessChainDeposit(c.Request.Context(), deposit); err != nil {
+				c.JSON(500, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(200, gin.H{"status": "credited"})
+		})
+	}
+
+	// Internal stash-to-spend transfer — bypasses stash lock, uses INTERNAL_API_KEY
+	// Security: amount capped at $500, full audit trail with caller IP
+	internal.POST("/stash/transfer-to-spend", func(c *gin.Context) {
+		key := c.GetHeader("Authorization")
+		if len(key) > 7 && key[:7] == "Bearer " {
+			key = key[7:]
+		}
+		if container.Config.Security.InternalAPIKey == "" || subtle.ConstantTimeCompare([]byte(key), []byte(container.Config.Security.InternalAPIKey)) != 1 {
 			c.JSON(401, gin.H{"error": "unauthorized"})
 			return
 		}
-		uid := c.Param("id")
-		tables := []string{
-			"sessions", "notifications", "deposits", "ledger_entries", "ledger_transactions",
-			"ledger_accounts", "allocation_events", "smart_allocation_modes",
-			"virtual_accounts", "wallets", "cards", "user_settings",
-			"auto_invest_events", "auto_invest_settings", "stash_lock_cycles",
-			"yield_snapshots", "yield_distributions",
+		var req struct {
+			UserID string `json:"user_id" binding:"required"`
+			Amount string `json:"amount" binding:"required"`
+			Reason string `json:"reason" binding:"required"`
 		}
-		deleted := map[string]int64{}
-		for _, t := range tables {
-			res, err := container.DB.ExecContext(c.Request.Context(), "DELETE FROM "+t+" WHERE user_id = $1", uid)
-			if err != nil {
-				continue // table may not exist or no user_id column
-			}
-			n, _ := res.RowsAffected()
-			if n > 0 {
-				deleted[t] = n
-			}
-		}
-		res, err := container.DB.ExecContext(c.Request.Context(), "DELETE FROM users WHERE id = $1", uid)
-		if err != nil {
-			c.JSON(500, gin.H{"error": err.Error(), "deleted_related": deleted})
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
-		n, _ := res.RowsAffected()
-		c.JSON(200, gin.H{"deleted": n > 0, "user_id": uid, "related_rows_deleted": deleted})
+		userID, err := uuid.Parse(req.UserID)
+		if err != nil {
+			c.JSON(400, gin.H{"error": "invalid user_id"})
+			return
+		}
+		amt, err := decimal.NewFromString(req.Amount)
+		if err != nil || amt.LessThanOrEqual(decimal.Zero) {
+			c.JSON(400, gin.H{"error": "amount must be positive"})
+			return
+		}
+		maxTransfer := decimal.NewFromInt(500)
+		if amt.GreaterThan(maxTransfer) {
+			c.JSON(400, gin.H{"error": "amount exceeds maximum of $500"})
+			return
+		}
+
+		// Audit: log before execution with caller IP for forensics
+		container.ZapLog.Warn("internal stash-to-spend transfer REQUESTED",
+			zap.String("user_id", req.UserID),
+			zap.String("amount", req.Amount),
+			zap.String("reason", req.Reason),
+			zap.String("caller_ip", c.ClientIP()),
+			zap.String("user_agent", c.Request.UserAgent()),
+		)
+
+		idempotencyKey := fmt.Sprintf("admin_stash_xfer_%s_%d", userID.String(), time.Now().UnixNano())
+		if err := container.LedgerService.AdminTransferStashToSpending(c.Request.Context(), userID, amt, idempotencyKey, req.Reason); err != nil {
+			container.ZapLog.Error("internal stash-to-spend transfer FAILED", zap.String("user_id", req.UserID), zap.String("amount", req.Amount), zap.Error(err))
+			c.JSON(500, gin.H{"error": "transfer failed, check server logs"})
+			return
+		}
+		container.ZapLog.Warn("internal stash-to-spend transfer COMPLETED",
+			zap.String("user_id", req.UserID),
+			zap.String("amount", req.Amount),
+			zap.String("caller_ip", c.ClientIP()),
+		)
+		c.JSON(200, gin.H{"status": "completed", "user_id": req.UserID, "amount": req.Amount})
 	})
 
 	// Apple App Site Association — required for passkey Associated Domains
@@ -228,9 +291,21 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		c.File("static/.well-known/apple-app-site-association")
 	})
 
-	// Swagger documentation (development only)
+	// Swagger documentation (development only, password-protected)
 	if container.Config.Environment == "development" {
-		router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+		swaggerPassword := strings.TrimSpace(os.Getenv("SWAGGER_PASSWORD"))
+		if swaggerPassword != "" {
+			router.GET("/swagger/*any", func(c *gin.Context) {
+				if c.Query("key") != swaggerPassword {
+					c.Header("WWW-Authenticate", `Basic realm="Swagger"`)
+					c.AbortWithStatus(http.StatusUnauthorized)
+					return
+				}
+				ginSwagger.WrapHandler(swaggerFiles.Handler)(c)
+			})
+		} else {
+			router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+		}
 	}
 	walletFundingHandlers := handlers.NewWalletFundingHandlers(
 		container.GetWalletService(),
@@ -375,6 +450,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	if container.NotificationService != nil {
 		kycService.SetNotifier(container.NotificationService)
 	}
+	if container.ComplianceService != nil {
+		kycService.SetAMLScreener(container.ComplianceService)
+	}
 	kycEligibilityMiddleware := middleware.NewKYCMiddleware(container.UserRepo, container.Logger)
 
 	// Create session validator adapter
@@ -390,7 +468,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			auth.POST("/register", middleware.AuthRateLimit(5), authHandlers.Register)
 			auth.POST("/verify", middleware.AuthRateLimit(5), authHandlers.Verify)
 			auth.POST("/refresh", middleware.AuthRateLimit(10), authHandlers.RefreshToken)
-			auth.POST("/logout", authHandlers.Logout)
 			auth.POST("/resend-code", authHandlers.ResendCode)
 
 			// Sensitive auth endpoints with stricter rate limiting
@@ -402,10 +479,14 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			if lp := container.GetLoginProtectionService(); lp != nil {
 				authRateLimited.Use(middleware.LoginProtection(lp, container.ZapLog))
 			}
+			if anomalySvc := container.GetSessionAnomalyService(); anomalySvc != nil {
+				authRateLimited.Use(middleware.SessionAnomalyDetection(anomalySvc, container.ZapLog))
+			}
 			{
 				authRateLimited.POST("/login", authHandlers.Login)
 				authRateLimited.POST("/passcode-login", authHandlers.PasscodeLogin)
 				authRateLimited.POST("/forgot-password", authHandlers.ForgotPassword)
+				authRateLimited.POST("/verify-reset-code", authHandlers.VerifyResetCode)
 				authRateLimited.POST("/reset-password", authHandlers.ResetPassword)
 			}
 
@@ -420,13 +501,24 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		onboarding := v1.Group("/onboarding")
 		{
 			authenticatedOnboarding := onboarding.Group("/")
-			authenticatedOnboarding.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator))
+			authenticatedOnboarding.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator, container.TokenBlacklist))
 			{
-				authenticatedOnboarding.POST("/complete", authHandlers.CompleteOnboarding)
+				authenticatedOnboarding.POST("/basic-complete", authHandlers.BasicCompleteOnboarding)
+				// Fraud detection: correlate device fingerprint across accounts at onboarding completion.
+				// Catches fraud rings using purchased KYC identities from the same device.
+				if fraudSvc := container.GetOnboardingFraudService(); fraudSvc != nil {
+					authenticatedOnboarding.POST("/complete", middleware.OnboardingFraudMiddleware(fraudSvc, container.ZapLog), authHandlers.CompleteOnboarding)
+				} else {
+					authenticatedOnboarding.POST("/complete", authHandlers.CompleteOnboarding)
+				}
 			}
 		}
 
 		// KYC provider webhooks (no auth required for external callbacks)
+		// NOTE: Signature verification is handled inside each handler:
+		// - ProcessKYCCallback: verifies via h.verifyKYCCallbackSignature() when secret is configured
+		// - HandleSumsubWebhook: verifies via kycService.VerifySumsubWebhookSignature()
+		// - HandleDiditWebhook: verifies via kycService.VerifyDiditWebhookSignature()
 		kyc := v1.Group("/kyc")
 		{
 			kyc.POST("/callback/:provider_ref", authHandlers.ProcessKYCCallback)
@@ -435,14 +527,45 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			}
 			if diditClient != nil {
 				kyc.POST("/didit/webhook", kycHTTPHandlers.HandleDiditWebhook)
+				// Didit transaction monitoring webhook
+				if container.ComplianceService != nil {
+					kyc.POST("/didit/transaction-webhook", func(c *gin.Context) {
+						body, err := io.ReadAll(c.Request.Body)
+						if err != nil {
+							c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
+							return
+						}
+						sig := c.GetHeader("X-Signature-V2")
+						ts := c.GetHeader("X-Timestamp")
+						if err := diditClient.VerifyWebhookSignature(body, sig, ts); err != nil {
+							container.ZapLog.Warn("Invalid Didit transaction webhook signature", zap.Error(err))
+							c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
+							return
+						}
+						var payload diditadapter.TransactionWebhookPayload
+						if err := json.Unmarshal(body, &payload); err != nil {
+							c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+							return
+						}
+						if err := container.ComplianceService.HandleTransactionWebhook(c.Request.Context(), &payload); err != nil {
+							container.ZapLog.Error("Failed to handle transaction webhook", zap.Error(err))
+							c.JSON(http.StatusInternalServerError, gin.H{"error": "processing failed"})
+							return
+						}
+						c.JSON(http.StatusOK, gin.H{"status": "ok"})
+					})
+				}
 			}
 		}
 
 		// Protected routes (auth required)
 		protected := v1.Group("/")
-		protected.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator))
-		protected.Use(middleware.CSRFProtection(csrfStore, container.Config.Environment == "development"))
+		protected.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator, container.TokenBlacklist))
+		protected.Use(middleware.CSRFProtection(csrfStore))
 		{
+			// Logout (requires valid session)
+			protected.POST("/auth/logout", authHandlers.Logout)
+
 			// User management
 			users := protected.Group("/users")
 			{
@@ -528,6 +651,14 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					securitySensitive.DELETE("/ip-whitelist/:id", securityEnhancedHandlers.RemoveIPFromWhitelist)
 					securitySensitive.POST("/withdrawals/confirm", securityEnhancedHandlers.ConfirmWithdrawal)
 				}
+
+				// Security features v2: address whitelist + adaptive MFA
+				securityFeaturesHandler := securityHandlersV2.NewSecurityFeaturesHandler(
+					container.GetAddressWhitelistService(),
+					container.GetAdaptiveMFAService(),
+					container.ZapLog,
+				)
+				RegisterSecurityFeatureRoutes(security, securityFeaturesHandler)
 			}
 
 			// Mobile-optimized API endpoints for better app performance
@@ -550,17 +681,50 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			funding := protected.Group("/funding")
 			funding.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
 			{
-				funding.POST("/deposit/address", walletFundingHandlers.CreateDepositAddress)
-				funding.POST("/virtual-account", walletFundingHandlers.CreateVirtualAccount)
-				funding.GET("/virtual-accounts", walletFundingHandlers.GetVirtualAccounts)
+				funding.GET("/transactions", walletFundingHandlers.GetTransactionHistory)
+				// Pre-KYC: TOS link needed during onboarding, read-only Paj lookups
 				funding.GET("/tos-link", walletFundingHandlers.GetBridgeTOSLink)
+				if container.PajHandlers != nil {
+					paj := funding.Group("/paj")
+					paj.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
+					paj.GET("/rates", container.PajHandlers.GetRates)
+					paj.GET("/banks", container.PajHandlers.GetBanks)
+					paj.GET("/orders", container.PajHandlers.GetOrders)
+					paj.GET("/orders/:id/status", container.PajHandlers.GetOrderStatus)
+				}
 
-				// Instant Funding - simplified API for trading
-				// POST /funding/instant - Request instant buying power
-				// GET /funding/instant/status - Check instant funding state
-				if instantFundingHandlers := container.GetInstantFundingHandlers(); instantFundingHandlers != nil {
-					funding.POST("/instant", instantFundingHandlers.RequestInstantFunding)
-					funding.GET("/instant/status", instantFundingHandlers.GetInstantFundingStatus)
+				// KYC-gated funding operations
+				fundingGated := funding.Group("/")
+				fundingGated.Use(middleware.RequireBridgeCapability(container.UserRepo, container.ZapLog))
+				{
+					fundingGated.POST("/deposit/address", walletFundingHandlers.CreateDepositAddress)
+					fundingGated.POST("/virtual-account", walletFundingHandlers.CreateVirtualAccount)
+					fundingGated.GET("/virtual-accounts", walletFundingHandlers.GetVirtualAccounts)
+
+					if instantFundingHandlers := container.GetInstantFundingHandlers(); instantFundingHandlers != nil {
+						fundingGated.POST("/instant", instantFundingHandlers.RequestInstantFunding)
+						fundingGated.GET("/instant/status", instantFundingHandlers.GetInstantFundingStatus)
+					}
+
+					if container.ChainRailsHandlers != nil {
+						chainrails := fundingGated.Group("/chainrails")
+						chainrails.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
+						chainrails.POST("/session",
+							middleware.AuthRateLimit(10),
+							container.ChainRailsHandlers.CreateSession)
+					}
+
+					if container.PajHandlers != nil {
+						pajGated := fundingGated.Group("/paj")
+						pajGated.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
+						pajGated.POST("/initiate", middleware.AuthRateLimit(5), container.PajHandlers.Initiate)
+						pajGated.POST("/verify", middleware.AuthRateLimit(10), container.PajHandlers.Verify)
+						pajGated.POST("/banks/resolve", container.PajHandlers.ResolveBankAccount)
+						pajGated.POST("/banks/add", container.PajHandlers.AddBankAccount)
+						pajGated.GET("/banks/saved", container.PajHandlers.GetBankAccounts)
+						pajGated.POST("/onramp", middleware.AuthRateLimit(10), container.PajHandlers.CreateOnramp)
+						pajGated.POST("/offramp", middleware.AuthRateLimit(10), container.PajHandlers.CreateOfframp)
+					}
 				}
 			}
 
@@ -571,14 +735,25 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			deposits := protected.Group("/deposits")
 			deposits.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
 			{
-				deposits.POST("", walletFundingHandlers.CreateDeposit)
+				// Read-only: no KYC gate — all authenticated users can view their deposits
 				deposits.GET("", walletFundingHandlers.ListDeposits)
 				deposits.GET("/:id", walletFundingHandlers.GetDeposit)
+			}
+			// Write operations require Bridge KYC
+			depositsGated := deposits.Group("/")
+			depositsGated.Use(middleware.RequireBridgeCapability(container.UserRepo, container.ZapLog))
+			// Fraud detection on deposit creation: catches suspicious first deposits from fraud ring accounts.
+			if fraudSvc := container.GetOnboardingFraudService(); fraudSvc != nil {
+				depositsGated.Use(middleware.DepositFraudMiddleware(fraudSvc, container.ZapLog))
+			}
+			{
+				depositsGated.POST("", walletFundingHandlers.CreateDeposit)
 			}
 
 			// Unified Withdrawal routes with security middleware
 			withdrawals := protected.Group("/withdrawals")
 			withdrawals.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
+			withdrawals.Use(middleware.RequireBridgeCapability(container.UserRepo, container.ZapLog))
 			// Apply withdrawal security: rate limits (3/day) and daily max ($10k new, $100k established)
 			if withdrawalSecurityStore := container.GetWithdrawalSecurityStore(); withdrawalSecurityStore != nil {
 				withdrawals.Use(middleware.WithdrawalSecurityMiddleware(
@@ -635,6 +810,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 			// Limits routes - deposit/withdrawal limits based on KYC tier
 			limits := protected.Group("/limits")
+
+			// Gameplay routes - streaks, XP, challenges, achievements, subscription
+			SetupGameplayRoutes(protected, container)
+
 			{
 				limitsHandler := container.GetLimitsHandler()
 				if limitsHandler != nil {
@@ -650,8 +829,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			if p2pHandlers != nil {
 				p2p := protected.Group("/p2p")
 				p2p.Use(middleware.AuthRateLimit(20))
+				p2p.Use(middleware.RequireBridgeCapability(container.UserRepo, container.ZapLog))
 				{
-					p2p.POST("/lookup", p2pHandlers.Lookup)
+					p2p.POST("/lookup", middleware.AuthRateLimit(10), p2pHandlers.Lookup)
 					p2p.POST("/send", p2pHandlers.Send)
 					p2p.GET("/transfers", p2pHandlers.GetTransfers)
 					p2p.GET("/recent", p2pHandlers.GetRecentRecipients)
@@ -659,6 +839,12 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					p2p.POST("/claim/:token", p2pHandlers.ClaimByToken)
 					p2p.POST("/railtag", p2pHandlers.SetRailTag)
 					p2p.POST("/railtag/check", p2pHandlers.CheckRailTag)
+
+					// Tap-to-pay secure handshake
+					p2p.POST("/tap/intent", p2pHandlers.TapIntent)
+					tapSensitive := p2p.Group("/tap")
+					tapSensitive.Use(middleware.RequirePasscodeSession(container.GetPasscodeService(), true, container.ZapLog))
+					tapSensitive.POST("/confirm", p2pHandlers.TapConfirm)
 				}
 			}
 
@@ -670,6 +856,17 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				{
 					publicP2P.GET("/claim/:token", p2pHandlers.GetClaimInfo)
 					publicP2P.POST("/claim/:token/bank", p2pHandlers.ClaimToBank)
+				}
+			}
+
+			// Household expense tracking
+			if container.P2PService != nil {
+				householdHandler := handlers.NewHouseholdHandler(sqlx.NewDb(container.DB, "postgres"), container.P2PService, container.ZapLog)
+				household := protected.Group("/household/groups")
+				{
+					household.POST("", householdHandler.CreateGroup)
+					household.POST("/:id/receipts", householdHandler.ShareReceipt)
+					household.GET("/:id/summary", householdHandler.GetSummary)
 				}
 			}
 
@@ -704,7 +901,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						ctx := c.Request.Context()
 						basketList, err := investingService.ListBaskets(ctx)
 						if err != nil {
-							c.JSON(500, gin.H{"error": "INTERNAL_ERROR", "message": "Failed to get baskets"})
+							common.SendInternalError(c, common.ErrCodeInternalError, "Failed to get baskets")
 							return
 						}
 						c.JSON(200, gin.H{"baskets": basketList})
@@ -714,16 +911,16 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						ctx := c.Request.Context()
 						basketID, err := uuid.Parse(c.Param("id"))
 						if err != nil {
-							c.JSON(400, gin.H{"error": "INVALID_ID", "message": "Invalid basket ID"})
+							common.SendBadRequest(c, common.ErrCodeInvalidID, "Invalid basket ID")
 							return
 						}
 						basket, err := investingService.GetBasket(ctx, basketID)
 						if err != nil {
-							c.JSON(500, gin.H{"error": "INTERNAL_ERROR", "message": "Failed to get basket"})
+							common.SendInternalError(c, common.ErrCodeInternalError, "Failed to get basket")
 							return
 						}
 						if basket == nil {
-							c.JSON(404, gin.H{"error": "NOT_FOUND", "message": "Basket not found"})
+							common.SendNotFound(c, common.ErrCodeBasketNotFound, "Basket not found")
 							return
 						}
 						c.JSON(200, basket)
@@ -734,19 +931,19 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						userID, _ := uuid.Parse(c.GetString("user_id"))
 						basketID, err := uuid.Parse(c.Param("id"))
 						if err != nil {
-							c.JSON(400, gin.H{"error": "INVALID_ID", "message": "Invalid basket ID"})
+							common.SendBadRequest(c, common.ErrCodeInvalidID, "Invalid basket ID")
 							return
 						}
 						var req struct {
 							Amount string `json:"amount" binding:"required"`
 						}
 						if err := c.ShouldBindJSON(&req); err != nil {
-							c.JSON(400, gin.H{"error": "INVALID_REQUEST", "message": err.Error()})
+							common.SendBadRequest(c, common.ErrCodeInvalidRequest, err.Error())
 							return
 						}
 						amount, err := decimal.NewFromString(req.Amount)
 						if err != nil {
-							c.JSON(400, gin.H{"error": "INVALID_AMOUNT", "message": "Invalid amount format"})
+							common.SendBadRequest(c, common.ErrCodeInvalidAmount, "Invalid amount format")
 							return
 						}
 						// Create order request
@@ -757,7 +954,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						}
 						order, err := investingService.CreateOrder(ctx, userID, orderReq)
 						if err != nil {
-							c.JSON(500, gin.H{"error": "INVESTMENT_FAILED", "message": err.Error()})
+							common.SendInternalError(c, common.ErrCodeOperationFailed, err.Error())
 							return
 						}
 						c.JSON(201, gin.H{"order": order})
@@ -819,13 +1016,93 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 			// AI Chat endpoints (AI Financial Manager)
 			if container.GetAIOrchestrator() != nil {
-				aiChatHandlers := handlers.NewAIChatHandlers(container.GetAIOrchestrator(), container.Logger)
+				aiChatHandlers := handlers.NewAIChatHandlers(container.GetAIOrchestrator(), container.GetConversationService(), container.Logger)
 				aiGroup := protected.Group("/ai")
 				{
-					aiGroup.POST("/chat", aiChatHandlers.Chat)
-					aiGroup.GET("/wrapped", aiChatHandlers.GetWrapped)
-					aiGroup.GET("/quick-insight", aiChatHandlers.QuickInsight)
+					aiGroup.POST("/chat", middleware.AuthRateLimit(20), middleware.PerUserRateLimit(20), aiChatHandlers.Chat)
+					aiGroup.POST("/chat/stream", middleware.AuthRateLimit(20), middleware.PerUserRateLimit(20), aiChatHandlers.ChatStream)
+					aiGroup.GET("/wrapped", middleware.AuthRateLimit(10), aiChatHandlers.GetWrapped)
+					aiGroup.GET("/quick-insight", middleware.AuthRateLimit(20), aiChatHandlers.QuickInsight)
+					aiGroup.GET("/financial-health", middleware.AuthRateLimit(20), aiChatHandlers.FinancialHealth)
+					aiGroup.GET("/cash-flow-forecast", middleware.AuthRateLimit(20), aiChatHandlers.CashFlowForecast)
+					aiGroup.GET("/financial-plan", middleware.AuthRateLimit(20), aiChatHandlers.FinancialPlan)
+					aiGroup.GET("/action-receipts", middleware.AuthRateLimit(20), aiChatHandlers.ActionReceipts)
+					aiGroup.GET("/financial-advice", middleware.AuthRateLimit(20), aiChatHandlers.FinancialAdvice)
+					aiGroup.GET("/financial-timeline", middleware.AuthRateLimit(20), aiChatHandlers.FinancialTimeline)
 					aiGroup.GET("/suggestions", aiChatHandlers.GetSuggestedQuestions)
+					aiGroup.POST("/nudge", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), aiChatHandlers.Nudge)
+
+					// Image analysis (receipt scanning)
+					if container.Config.AI.OpenAI.APIKey != "" {
+						imageHandler := handlers.NewImageAnalysisHandler(
+							container.Config.AI.OpenAI.APIKey,
+							container.GetAIOrchestrator(),
+							container.ReceiptRepo,
+							container.ZapLog,
+						)
+						imageHandler.SetBudgetRepo(container.BudgetRepo)
+						imageHandler.SetSpendingRepo(container.LedgerSpendingRepo)
+						aiGroup.POST("/chat/image", middleware.AuthRateLimit(10), imageHandler.AnalyzeImage)
+						aiGroup.POST("/chat/images", middleware.AuthRateLimit(3), imageHandler.BatchAnalyzeImages)
+						aiGroup.GET("/receipts", imageHandler.GetReceipts)
+						aiGroup.GET("/receipts/gallery", imageHandler.GetReceiptGallery)
+						aiGroup.PUT("/receipts/:id", imageHandler.UpdateReceipt)
+						aiGroup.DELETE("/receipts/:id", imageHandler.DeleteReceipt)
+
+						// Receipt split with friends
+						if container.P2PService != nil {
+							splitHandler := handlers.NewReceiptSplitHandler(container.ReceiptRepo, container.P2PService, container.ZapLog)
+							aiGroup.POST("/receipts/:id/split", splitHandler.SplitReceipt)
+						}
+					}
+
+					// Premium AI endpoints (pro-gated)
+					if container.SubscriptionService != nil {
+						premiumHandlers := handlers.NewPremiumAIHandlers(
+							container.GetAIOrchestrator(),
+							container.SubscriptionService,
+							container.ZapLog,
+						)
+						aiGroup.GET("/report/weekly", middleware.AuthRateLimit(5), premiumHandlers.WeeklyReport)
+						aiGroup.POST("/simulate", middleware.AuthRateLimit(10), premiumHandlers.Simulate)
+						aiGroup.GET("/tax-summary", middleware.AuthRateLimit(5), premiumHandlers.TaxSummary)
+						aiGroup.POST("/challenge/generate", middleware.AuthRateLimit(10), premiumHandlers.GenerateChallenge)
+						aiGroup.GET("/goals/progress", middleware.AuthRateLimit(10), premiumHandlers.GoalProgress)
+					}
+
+					// Voice session (WebSocket)
+					if container.Config.AI.OpenAI.APIKey != "" {
+						voiceHandler := handlers.NewVoiceHandler(
+							container.Config.AI.OpenAI.APIKey,
+							container.Config.AI.OpenAI.RealtimeModel,
+							container.GetAIOrchestrator(),
+							container.GetUsageService(),
+							container.Config.Server.AllowedOrigins,
+							container.ZapLog,
+						)
+						aiGroup.GET("/voice/session", voiceHandler.HandleSession)
+					}
+				}
+
+				// Conversation endpoints
+				if container.GetConversationService() != nil {
+					convHandlers := handlers.NewConversationHandlers(container.GetAIOrchestrator(), container.GetConversationService(), container.ZapLog)
+					convGroup := protected.Group("/ai/conversations")
+					{
+						convGroup.POST("", convHandlers.CreateConversation)
+						convGroup.GET("", convHandlers.ListConversations)
+						convGroup.GET("/:id", convHandlers.GetConversation)
+						convGroup.DELETE("/:id", convHandlers.DeleteConversation)
+						convGroup.POST("/:id/chat", middleware.AuthRateLimit(20), middleware.PerUserRateLimit(20), convHandlers.ChatInConversation)
+						convGroup.POST("/:id/confirm", convHandlers.ConfirmAction)
+						convGroup.POST("/:id/cancel", convHandlers.CancelAction)
+					}
+				}
+
+				// Usage tracking endpoint
+				if container.GetUsageService() != nil {
+					usageHandlers := handlers.NewUsageHandlers(container.GetUsageService(), container.ZapLog)
+					aiGroup.GET("/usage", usageHandlers.GetUsage)
 				}
 			}
 
@@ -851,6 +1128,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 			// Allocation routes - 70/30 Smart Allocation Mode (ON/OFF)
 			allocation := protected.Group("/allocation")
+			allocation.Use(middleware.RequireBridgeCapability(container.UserRepo, container.ZapLog))
 			{
 				allocation.POST("/enable", allocationHandlers.EnableAllocationMode)
 				allocation.POST("/disable", allocationHandlers.DisableAllocationMode)
@@ -864,47 +1142,12 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 		// Admin routes (admin auth required)
 		admin := v1.Group("/admin")
-		admin.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator))
+		admin.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator, container.TokenBlacklist))
 		admin.Use(middleware.AdminAuth(container.DB, container.Logger))
-		admin.Use(middleware.CSRFProtection(csrfStore, container.Config.Environment == "development"))
+		admin.Use(middleware.CSRFProtection(csrfStore))
 		{
 			// User lookup
-			admin.GET("/users/lookup", func(c *gin.Context) {
-				email := c.Query("email")
-				uid := c.Query("id")
-				if email == "" && uid == "" {
-					c.JSON(400, gin.H{"error": "email or id required"})
-					return
-				}
-				q := "SELECT id, email, first_name, last_name, kyc_status, bridge_kyc_status, is_active, alpaca_account_id, bridge_customer_id, created_at, updated_at FROM users WHERE email = $1"
-				param := email
-				if email == "" {
-					q = "SELECT id, email, first_name, last_name, kyc_status, bridge_kyc_status, is_active, alpaca_account_id, bridge_customer_id, created_at, updated_at FROM users WHERE id = $1"
-					param = uid
-				}
-				rows, err := container.DB.QueryContext(c.Request.Context(), q, param)
-				if err != nil {
-					c.JSON(500, gin.H{"error": err.Error()})
-					return
-				}
-				defer rows.Close()
-				cols, _ := rows.Columns()
-				if !rows.Next() {
-					c.JSON(404, gin.H{"error": "user not found"})
-					return
-				}
-				vals := make([]interface{}, len(cols))
-				ptrs := make([]interface{}, len(cols))
-				for i := range vals {
-					ptrs[i] = &vals[i]
-				}
-				rows.Scan(ptrs...)
-				result := make(map[string]interface{}, len(cols))
-				for i, col := range cols {
-					result[col] = vals[i]
-				}
-				c.JSON(200, gin.H{"user": result})
-			})
+			admin.GET("/users/lookup", handlers.AdminLookupUser(container.DB))
 
 			// Wallet admin routes
 			admin.POST("/wallet/create", walletFundingHandlers.CreateWalletsForUser)
@@ -912,9 +1155,25 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			admin.GET("/wallet/health", walletFundingHandlers.HealthCheck)
 			admin.POST("/reconcile/:user_id", walletFundingHandlers.ReconcileUserBalance)
 
+			// Yield distribution — manually trigger for a period (format: YYYY-MM-DD)
+			if container.YieldDistributionWorker != nil {
+				admin.POST("/yield/distribute", handlers.TriggerYieldDistribution(container.YieldDistributionWorker, container.ZapLog))
+			}
+
+			// Stash reconciliation — manually trigger a check of ledger vs Reflect balance
+			if container.StashReconciliation != nil {
+				admin.POST("/stash/reconcile", handlers.TriggerStashReconciliation(container.StashReconciliation, container.ZapLog))
+			}
+
 			// KYC admin routes
 			admin.POST("/kyc/resync-bridge", kycHTTPHandlers.ResyncBridge)
 			admin.POST("/kyc/repair-bridge-govid", kycHTTPHandlers.RepairBridgeGovID)
+
+			// Knowledge base admin routes
+			if container.GetKnowledgeService() != nil {
+				knowledgeHandlers := handlers.NewKnowledgeHandlers(container.GetKnowledgeService(), container.ZapLog)
+				admin.POST("/knowledge/ingest", knowledgeHandlers.Ingest)
+			}
 
 			// Security admin routes
 			adminMFAHandlers := handlers.NewMFAHandlers(
@@ -944,7 +1203,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		// Webhooks (external systems) - OpenAPI spec compliant
 		// Apply webhook security middleware (rate limiting, IP whitelisting, replay protection)
 		webhookConfig := middleware.DefaultWebhookSecurityConfig()
-		webhookConfig.SkipVerification = container.Config.Environment == "development"
+		webhookConfig.Environment = container.Config.Environment
 		webhookConfig.Secrets = map[string]string{
 			"bridge": container.Config.Bridge.WebhookSecret,
 			"alpaca": container.Config.Alpaca.WebhookSecret,
@@ -955,6 +1214,18 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			webhooks.Use(middleware.WebhookSecurityWithRedisV8(
 				redisNative,
 				webhookConfig,
+				container.ZapLog,
+			))
+		}
+		// Hardened per-provider signature + timestamp verification
+		webhookSigSecrets := container.Config.Security.WebhookSignatureSecrets
+		if webhookSigSecrets.Bridge != "" || webhookSigSecrets.Alpaca != "" || webhookSigSecrets.Due != "" {
+			webhooks.Use(middleware.HardenedWebhookVerification(
+				middleware.WebhookProviderConfig{
+					BridgeSecret: webhookSigSecrets.Bridge,
+					AlpacaSecret: webhookSigSecrets.Alpaca,
+					DueSecret:    webhookSigSecrets.Due,
+				},
 				container.ZapLog,
 			))
 		}
@@ -974,6 +1245,20 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				// Synchronous real-time card authorization webhook (Bridge calls this during transactions)
 				webhooks.POST("/bridge/card-auth", bridgeWebhookHandler.HandleRealTimeAuth)
 			}
+
+			// ChainRails webhooks for cross-chain deposits
+			if container.ChainRailsHandlers != nil {
+				chainrailsWebhooks := webhooks.Group("/chainrails")
+				chainrailsWebhooks.Use(middleware.RateLimit(100)) // 100 req/min per IP
+				chainrailsWebhooks.POST("", container.ChainRailsHandlers.HandleWebhook)
+			}
+
+			// Paj Cash webhooks (per-order, no signature verification — verified by polling)
+			if container.PajHandlers != nil {
+				pajWebhooks := webhooks.Group("/paj")
+				pajWebhooks.Use(middleware.RateLimit(100))
+				pajWebhooks.POST("", container.PajHandlers.HandleWebhook)
+			}
 		}
 
 		// Register Alpaca investment routes
@@ -986,6 +1271,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				container.Logger,
 				sessionValidator,
 				container.UserRepo,
+				container.TokenBlacklist,
 			)
 		}
 
@@ -1000,6 +1286,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				container.Config,
 				container.Logger,
 				sessionValidator,
+				container.TokenBlacklist,
 			)
 		}
 
@@ -1010,12 +1297,13 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			container.Config,
 			container.Logger,
 			sessionValidator,
+			container.TokenBlacklist,
 		)
 
 		// Register copy trading routes
 		if container.GetCopyTradingHandlers() != nil {
 			copyTradingHandlers := container.GetCopyTradingHandlers()
-			authMiddleware := middleware.Authentication(container.Config, container.Logger, sessionValidator)
+			authMiddleware := middleware.Authentication(container.Config, container.Logger, sessionValidator, container.TokenBlacklist)
 			SetupCopyTradingRoutes(v1, copyTradingHandlers, authMiddleware)
 		}
 
@@ -1027,7 +1315,44 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			container.Logger,
 			sessionValidator,
 			container.UserRepo,
+			container.TokenBlacklist,
 		)
+
+		// Register premium feature routes
+		if premiumHandlers := container.GetPremiumHandlers(); premiumHandlers != nil {
+			premium := protected.Group("/premium")
+			{
+				// Tier 1: Naira Shield
+				premium.GET("/naira-shield", premiumHandlers.GetNairaShield)
+				// Tier 1: Black Tax
+				premium.GET("/black-tax", premiumHandlers.GetBlackTaxSummary)
+				premium.POST("/black-tax/budget", premiumHandlers.SetBlackTaxBudget)
+				premium.POST("/black-tax/sync-recipients", premiumHandlers.SyncBlackTaxRecipients)
+				// Tier 1: Receipt Split
+				premium.POST("/receipts/split", premiumHandlers.SplitReceipt)
+				// Tier 2: Scam Intelligence
+				premium.POST("/scam/check-merchant", premiumHandlers.CheckMerchant)
+				premium.GET("/scam/alerts", premiumHandlers.GetScamAlerts)
+				premium.POST("/scam/alerts/:alertId/dismiss", premiumHandlers.DismissScamAlert)
+				// Tier 2: Tax Residency
+				premium.POST("/tax/location", premiumHandlers.LogLocation)
+				premium.GET("/tax/residency", premiumHandlers.GetTaxResidency)
+				premium.POST("/tax/profile", premiumHandlers.SetTaxProfile)
+				// Tier 2: Income Smoothing
+				premium.GET("/income/forecast", premiumHandlers.GetIncomeForecast)
+				// Tier 3: Financial Trauma
+				premium.GET("/wellness/score", premiumHandlers.GetWellnessScore)
+				// Tier 3: Visa Proof
+				premium.POST("/visa-proof", premiumHandlers.GenerateVisaProof)
+				premium.GET("/visa-proof", premiumHandlers.GetVisaProofs)
+				// Tier 3: Panic Button
+				premium.GET("/emergency/contacts", premiumHandlers.GetEmergencyContacts)
+				premium.POST("/emergency/contacts", premiumHandlers.AddEmergencyContact)
+				premium.DELETE("/emergency/contacts/:contactId", premiumHandlers.RemoveEmergencyContact)
+				premium.POST("/emergency/lock", premiumHandlers.TriggerEmergencyLock)
+				premium.GET("/emergency/lock", premiumHandlers.GetEmergencyLock)
+			}
+		}
 	}
 
 	// ZeroG and dedicated AI-CFO HTTP routes have been removed.

@@ -35,6 +35,7 @@ type DiditWebhookProcessor interface {
 // ProviderRetryProcessor handles per-provider retry jobs for Bridge and Alpaca.
 type ProviderRetryProcessor interface {
 	RetryBridgeSync(ctx context.Context, payload []byte) error
+	RetryBridgeDiditSync(ctx context.Context, payload []byte) error
 	RetryAlpacaSync(ctx context.Context, payload []byte) error
 }
 
@@ -183,6 +184,10 @@ func (w *Worker) processJob(ctx context.Context, job *entities.KYCSyncJob) {
 		case "bridge":
 			if w.providerRetryProc != nil {
 				err = w.providerRetryProc.RetryBridgeSync(ctx, job.Payload)
+			}
+		case "bridge_didit":
+			if w.providerRetryProc != nil {
+				err = w.providerRetryProc.RetryBridgeDiditSync(ctx, job.Payload)
 			}
 		case "alpaca":
 			if w.providerRetryProc != nil {

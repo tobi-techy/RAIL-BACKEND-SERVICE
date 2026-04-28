@@ -22,7 +22,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
-	"github.com/rail-service/rail_service/pkg/crypto"
+	"github.com/rail-service/rail_service/pkg/metrics"
 )
 
 var (
@@ -129,6 +129,7 @@ type Service struct {
 	sumsubLevelName        string
 	encryptionKey          string
 	notifier               KYCNotifier
+	amlScreener            AMLScreener
 	logger                 *zap.Logger
 	resyncMu               sync.Mutex
 	resyncInFlight         map[string]bool
@@ -137,6 +138,16 @@ type Service struct {
 // SetNotifier wires the push notification sender for KYC outcomes.
 func (s *Service) SetNotifier(n KYCNotifier) {
 	s.notifier = n
+}
+
+// AMLScreener runs standalone AML screening on users.
+type AMLScreener interface {
+	ScreenUserAML(ctx context.Context, userID uuid.UUID, fullName, dob, nationality, docNumber string) (string, error)
+}
+
+// SetAMLScreener wires the AML screening service (optional).
+func (s *Service) SetAMLScreener(a AMLScreener) {
+	s.amlScreener = a
 }
 
 type UserRepository interface {
@@ -671,26 +682,21 @@ func (s *Service) processSumsubApproved(ctx context.Context, submission *entitie
 		}
 	}
 
-	// Sumsub approval is sufficient — approve KYC regardless of Bridge result.
-	// Bridge activates asynchronously and will update bridge_kyc_status via webhook.
-	user.KYCStatus = string(entities.KYCStatusApproved)
-	user.KYCApprovedAt = &now
+	// Sumsub approved but Bridge hasn't activated yet — set processing, not approved.
+	// Bridge webhook will promote to approved when Bridge goes active.
+	user.KYCStatus = string(entities.KYCStatusProcessing)
 	user.KYCRejectionReason = nil
-
-	_ = alpacaResult // used in verification data below
 
 	if user.KYCSubmittedAt == nil {
 		user.KYCSubmittedAt = &now
 	}
 
-	// Advance onboarding status when KYC is approved so the frontend routing guard
-	// lets the user through to the dashboard.
-	if user.KYCStatus == string(entities.KYCStatusApproved) {
-		user.OnboardingStatus = entities.OnboardingStatusCompleted
-	}
-
 	if err := s.userRepo.Update(ctx, user); err != nil {
 		return fmt.Errorf("failed to update user after sumsub approval: %w", err)
+	}
+
+	if metrics.Business != nil {
+		metrics.Business.UsersKYCApproved.Inc()
 	}
 
 	submission.UpdatedAt = now
@@ -787,6 +793,10 @@ func (s *Service) processSumsubRejected(ctx context.Context, submission *entitie
 	}
 	if err := s.userRepo.Update(ctx, user); err != nil {
 		return fmt.Errorf("failed to update user after sumsub rejection: %w", err)
+	}
+
+	if metrics.Business != nil {
+		metrics.Business.UsersKYCRejected.Inc()
 	}
 
 	submission.MarkReviewed(entities.KYCStatusRejected, rejectionReasons)
@@ -1291,7 +1301,9 @@ func isTaxIDTypeSupportedForCountry(issuingCountry, taxIDType string) bool {
 	if supported == "" {
 		// Unknown country — accept any valid type
 		switch strings.ToLower(strings.TrimSpace(taxIDType)) {
-		case "ssn", "itin", "nino", "utr", "nin", "bvn", "tin", "passport", "national_id":
+		case "ssn", "itin", "nino", "utr", "nin", "bvn", "tin", "passport", "national_id",
+			"sin", "tfn", "steuer_id", "pan", "ghana_tin", "kra_pin", "sa_id",
+			"cpf", "rfc", "nric", "emirates_id", "bsn", "codice_fiscale", "nif", "pesel", "personnummer":
 			return true
 		default:
 			return false
@@ -1310,6 +1322,40 @@ func GetSupportedTaxIDType(issuingCountry string) string {
 		return "nino"
 	case "NGA":
 		return "nin"
+	case "CAN":
+		return "sin"
+	case "AUS":
+		return "tfn"
+	case "DEU":
+		return "steuer_id"
+	case "FRA":
+		return "tin"
+	case "IND":
+		return "pan"
+	case "GHA":
+		return "ghana_tin"
+	case "KEN":
+		return "kra_pin"
+	case "ZAF":
+		return "sa_id"
+	case "BRA":
+		return "cpf"
+	case "MEX":
+		return "rfc"
+	case "SGP":
+		return "nric"
+	case "ARE":
+		return "emirates_id"
+	case "NLD":
+		return "bsn"
+	case "ITA":
+		return "codice_fiscale"
+	case "ESP":
+		return "nif"
+	case "POL":
+		return "pesel"
+	case "SWE":
+		return "personnummer"
 	default:
 		return ""
 	}
@@ -1535,10 +1581,16 @@ func fetchImageAsDataURI(imageURL string) (string, error) {
 	if imageURL == "" {
 		return "", nil
 	}
-	// SSRF guard: only allow Didit's image host.
+	// SSRF guard: only allow Didit's image hosts.
 	parsed, err := url.Parse(imageURL)
-	if err != nil || !strings.HasSuffix(parsed.Hostname(), "didit.me") {
-		return "", fmt.Errorf("fetchImageAsDataURI: untrusted host %q", parsed.Hostname())
+	if err != nil {
+		return "", fmt.Errorf("fetchImageAsDataURI: invalid URL %q", imageURL)
+	}
+	host := parsed.Hostname()
+	trusted := strings.HasSuffix(host, "didit.me") ||
+		strings.HasPrefix(host, "service-didit-") && strings.HasSuffix(host, ".s3.amazonaws.com")
+	if !trusted {
+		return "", fmt.Errorf("fetchImageAsDataURI: untrusted host %q", host)
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
@@ -1680,11 +1732,11 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 				if procErr := s.ProcessDiditWebhook(bgCtx, payload); procErr != nil {
 					s.logger.Warn("Didit poll: failed to process approved status", zap.Error(procErr))
 				} else {
-					overall = "approved"
 					if freshUser, reloadErr := s.userRepo.GetByID(bgCtx, userID); reloadErr != nil {
 						s.logger.Error("Didit poll: failed to reload user after approval", zap.Error(reloadErr))
 					} else {
 						user = freshUser
+						overall = determineOverallStatus(user)
 					}
 				}
 			case entities.DiditStatusDeclined:
@@ -1692,11 +1744,11 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 				if procErr := s.ProcessDiditWebhook(ctx, payload); procErr != nil {
 					s.logger.Warn("Didit poll: failed to process declined status", zap.Error(procErr))
 				} else {
-					overall = "rejected"
 					if freshUser, reloadErr := s.userRepo.GetByID(ctx, userID); reloadErr != nil {
 						s.logger.Error("Didit poll: failed to reload user after decline", zap.Error(reloadErr))
 					} else {
 						user = freshUser
+						overall = determineOverallStatus(user)
 					}
 				}
 			}
@@ -1746,25 +1798,22 @@ func determineOverallStatus(user *entities.User) string {
 	kycStatus := strings.ToLower(strings.TrimSpace(user.KYCStatus))
 	bridgeStatus := strings.ToLower(strings.TrimSpace(stringValue(user.BridgeKYCStatus)))
 
-	// Primary approval: Sumsub approval or an active Bridge customer both unlock the account.
-	// But if Bridge explicitly rejected, the user is not fully approved.
+	// Bridge is authoritative — only fully approved when Bridge is active.
 	if bridgeStatus == "active" {
-		return "approved"
-	}
-	if kycStatus == "approved" && bridgeStatus != "rejected" {
 		return "approved"
 	}
 	if kycStatus == "rejected" || kycStatus == "expired" || bridgeStatus == "rejected" {
 		return "rejected"
 	}
+	// Identity provider approved but Bridge not yet active → pending.
+	if kycStatus == "approved" || kycStatus == "processing" {
+		return "pending"
+	}
 	if user.KYCSubmittedAt != nil {
 		return "pending"
 	}
-	if kycStatus == "processing" {
-		return "pending"
-	}
 	switch bridgeStatus {
-	case "pending", "processing", "under_review", "in_review":
+	case "pending", "processing", "under_review", "in_review", "incomplete":
 		return "pending"
 	}
 	return "not_started"
@@ -1833,6 +1882,25 @@ func (s *Service) RetryBridgeSync(ctx context.Context, payload []byte) error {
 	bridgeStatus := "pending" // Bridge activates asynchronously via webhook
 	user.BridgeKYCStatus = &bridgeStatus
 	return s.userRepo.Update(ctx, user)
+}
+
+// RetryBridgeDiditSync re-fetches Didit session decision and pushes gov ID to Bridge.
+func (s *Service) RetryBridgeDiditSync(ctx context.Context, payload []byte) error {
+	var data map[string]any
+	if err := json.Unmarshal(payload, &data); err != nil {
+		return fmt.Errorf("invalid bridge_didit retry payload: %w", err)
+	}
+
+	userIDStr := getMapString(data, "user_id")
+	if userIDStr == "" {
+		return fmt.Errorf("bridge_didit retry payload missing user_id")
+	}
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		return fmt.Errorf("bridge_didit retry payload invalid user_id: %w", err)
+	}
+
+	return s.RepairBridgeGovID(ctx, userID)
 }
 
 // RetryAlpacaSync re-submits to Alpaca using the job payload.
@@ -2305,20 +2373,6 @@ func (s *Service) processDiditApproved(ctx context.Context, submission *entities
 	}
 
 	now := time.Now()
-	bridgeStatus := "pending"
-	user.BridgeKYCStatus = &bridgeStatus
-	user.KYCRejectionReason = nil
-	if user.KYCSubmittedAt == nil {
-		user.KYCSubmittedAt = &now
-	}
-	user.KYCStatus = string(entities.KYCStatusApproved)
-	user.KYCApprovedAt = &now
-	user.OnboardingStatus = entities.OnboardingStatusCompleted
-
-	if err := s.userRepo.Update(ctx, user); err != nil {
-		return fmt.Errorf("failed to update user after didit approval: %w", err)
-	}
-
 	submission.UpdatedAt = now
 	if submission.VerificationData == nil {
 		submission.VerificationData = map[string]any{}
@@ -2330,31 +2384,98 @@ func (s *Service) processDiditApproved(ctx context.Context, submission *entities
 	// Hydrate document data from Didit (uses inline webhook decision or fetches via API).
 	s.hydrateSubmissionFromDidit(ctx, submission, payload)
 
-	submission.MarkReviewed(entities.KYCStatusApproved, nil)
+	// Run AML screening on the approved user (sanctions, PEP, adverse media).
+	if s.amlScreener != nil {
+		fullName := getMapString(submission.VerificationData, "didit_first_name") + " " + getMapString(submission.VerificationData, "didit_last_name")
+		dob := getMapString(submission.VerificationData, "didit_dob")
+		nationality := getMapString(submission.VerificationData, "didit_nationality")
+		docNumber := getMapString(submission.VerificationData, "didit_doc_number")
+		amlStatus, amlErr := s.amlScreener.ScreenUserAML(ctx, submission.UserID, strings.TrimSpace(fullName), dob, nationality, docNumber)
+		if amlErr != nil {
+			s.logger.Warn("AML screening failed at KYC approval, proceeding",
+				zap.Error(amlErr), zap.String("user_id", submission.UserID.String()))
+		} else {
+			submission.VerificationData["aml_status"] = amlStatus
+			s.logger.Info("AML screening completed at KYC approval",
+				zap.String("user_id", submission.UserID.String()), zap.String("aml_status", amlStatus))
+			// Block KYC approval if AML screening returns Declined (sanctions match)
+			if amlStatus == "Declined" {
+				reason := "AML screening declined — potential sanctions or watchlist match"
+				user.KYCStatus = string(entities.KYCStatusRejected)
+				user.KYCRejectionReason = &reason
+				user.OnboardingStatus = entities.OnboardingStatusKYCRejected
+				if err := s.userRepo.Update(ctx, user); err != nil {
+					return fmt.Errorf("failed to update user after AML decline: %w", err)
+				}
+				submission.MarkReviewed(entities.KYCStatusRejected, []string{reason})
+				if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {
+					return fmt.Errorf("failed to update submission after AML decline: %w", err)
+				}
+				return nil // Stop processing — do not push to Bridge
+			}
+			// Hold KYC if AML screening is under review (PEP/partial match)
+			if amlStatus == "In Review" {
+				s.logger.Warn("AML screening in review, holding KYC approval pending manual review",
+					zap.String("user_id", submission.UserID.String()))
+				submission.VerificationData["aml_hold"] = true
+				submission.Status = entities.KYCStatusProcessing
+				if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {
+					return fmt.Errorf("failed to update submission for AML hold: %w", err)
+				}
+				return nil // Hold — do not push to Bridge until AML review completes
+			}
+		}
+	}
 
-	// Push gov ID + verified_govid_at to Bridge to satisfy their "Upload government ID" task.
-	// submitToBridgeFromDidit scrubs PII from submission.VerificationData after sending.
+	// Push gov ID to Bridge BEFORE marking approved, so retries can re-enter this method.
+	bridgeSuccess := false
 	if profile.BridgeCustomerID != nil && *profile.BridgeCustomerID != "" {
 		if result := s.submitToBridgeFromDidit(ctx, *profile.BridgeCustomerID, submission); !result.Success {
 			s.logger.Warn("Failed to push gov ID to Bridge after Didit approval",
 				zap.String("user_id", submission.UserID.String()),
 				zap.String("error", result.Error))
+			// Enqueue retry job so the sync worker retries automatically.
+			if s.kycSyncJobRepo != nil {
+				retryPayload, _ := encodeProviderRetryPayload(submission.VerificationData, submission.UserID.String())
+				if _, enqErr := s.kycSyncJobRepo.EnqueueProviderRetry(ctx, submission.UserID.String(), "bridge_didit", retryPayload); enqErr != nil {
+					s.logger.Warn("Failed to enqueue Bridge retry job for Didit",
+						zap.Error(enqErr),
+						zap.String("user_id", submission.UserID.String()))
+				}
+			}
 		} else {
+			bridgeSuccess = true
 			s.logger.Info("Gov ID pushed to Bridge after Didit approval",
 				zap.String("user_id", submission.UserID.String()),
 				zap.String("bridge_customer_id", *profile.BridgeCustomerID))
 		}
 	}
 
-	// Persist after Bridge sync so scrubbed state (no PII) is what gets saved.
+	// Only mark submission approved after Bridge push attempt.
+	// If Bridge failed, keep as processing so webhook re-delivery or retry worker can re-enter.
+	if bridgeSuccess {
+		submission.MarkReviewed(entities.KYCStatusApproved, nil)
+	} else {
+		submission.Status = entities.KYCStatusProcessing
+	}
+
+	// Persist submission — PII is only scrubbed on Bridge success.
 	if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {
 		return fmt.Errorf("failed to update didit submission: %w", err)
 	}
 
-	if s.notifier != nil {
-		if err := s.notifier.NotifyKYCApproved(ctx, submission.UserID); err != nil {
-			s.logger.Warn("Failed to send KYC approved notification", zap.String("user_id", submission.UserID.String()), zap.Error(err))
-		}
+	// Didit approved but Bridge hasn't activated yet — set processing, not approved.
+	// Bridge webhook will promote to approved when Bridge goes active.
+	bridgeKYCStatus := "pending"
+	user.BridgeKYCStatus = &bridgeKYCStatus
+	user.KYCRejectionReason = nil
+	if user.KYCSubmittedAt == nil {
+		user.KYCSubmittedAt = &now
+	}
+	user.KYCStatus = string(entities.KYCStatusProcessing)
+
+	if err := s.userRepo.Update(ctx, user); err != nil {
+		return fmt.Errorf("failed to update user after didit approval: %w", err)
 	}
 
 	return nil
@@ -2534,79 +2655,50 @@ func (s *Service) hydrateSubmissionFromDidit(ctx context.Context, submission *en
 	}
 }
 
-// submitToBridgeFromDidit forwards KYC data to Bridge after Didit approval (no images).
+// submitToBridgeFromDidit forwards the gov ID document to Bridge after Didit approval.
+// Tax ID (SSN/NIN) was already sent to Bridge in StartDiditSession — only the
+// government-issued document (images + document number + verified timestamps) is sent here.
 func (s *Service) submitToBridgeFromDidit(ctx context.Context, bridgeCustomerID string, submission *entities.KYCSubmission) entities.KYCProviderResult {
 	data := submission.VerificationData
 	if data == nil {
 		return entities.KYCProviderResult{Success: false, Status: "failed", Error: "no verification data"}
 	}
 
-	taxIDType, _ := data["tax_id_type"].(string)
 	country, _ := data["issuing_country"].(string)
-
-	var taxID string
-	encTaxID, hasEnc := data["tax_id_enc"].(string)
-	if hasEnc && encTaxID != "" && s.encryptionKey != "" {
-		dec, err := crypto.Decrypt(encTaxID, s.encryptionKey)
-		if err != nil {
-			s.logger.Error("Failed to decrypt tax_id_enc - cannot proceed", zap.Error(err))
-			return entities.KYCProviderResult{Success: false, Status: "failed", Error: "failed to decrypt tax_id"}
-		}
-		taxID = dec
-	} else if hasPlaintext := data["tax_id"].(string); hasPlaintext != "" {
-		s.logger.Error("Plaintext tax_id found in verification_data - this should not happen")
-		return entities.KYCProviderResult{Success: false, Status: "failed", Error: "plaintext tax_id found - security violation"}
-	}
-
-	if taxID == "" {
-		return entities.KYCProviderResult{Success: false, Status: "failed", Error: "missing tax_id"}
-	}
-
 	issuingCountry := strings.ToLower(country)
 
-	// Primary: tax ID (SSN, NIN, etc.)
-	identifyingInfo := []bridge.IdentifyingInfo{
-		{
-			Type:           mapTaxIDTypeToBridge(taxIDType),
-			IssuingCountry: issuingCountry,
-			Number:         taxID,
-		},
-	}
-
-	// Secondary: government-issued document with images if available from Didit.
 	docNumber, _ := data["didit_doc_number"].(string)
 	docType, _ := data["didit_doc_type"].(string)
 	expiration, _ := data["didit_expiration_date"].(string)
 	frontImageURL, _ := data["didit_front_image"].(string)
 	backImageURL, _ := data["didit_back_image"].(string)
 
-	if docNumber != "" || frontImageURL != "" {
-		frontDataURI, err := fetchImageAsDataURI(frontImageURL)
-		if err != nil {
-			s.logger.Warn("Failed to fetch front image for Bridge", zap.Error(err))
-		}
-		backDataURI, err := fetchImageAsDataURI(backImageURL)
-		if err != nil {
-			s.logger.Warn("Failed to fetch back image for Bridge", zap.Error(err))
-		}
+	if docNumber == "" && frontImageURL == "" {
+		return entities.KYCProviderResult{Success: false, Status: "failed", Error: "no gov ID document data from Didit"}
+	}
 
-		docEntry := bridge.IdentifyingInfo{
-			Type:           mapDocTypeToBridge(docType),
-			IssuingCountry: issuingCountry,
-			Number:         docNumber,
-			Expiration:     expiration,
-			ImageFront:     frontDataURI,
-			ImageBack:      backDataURI,
-		}
-		identifyingInfo = append(identifyingInfo, docEntry)
+	frontDataURI, err := fetchImageAsDataURI(frontImageURL)
+	if err != nil {
+		s.logger.Warn("Failed to fetch front image for Bridge", zap.Error(err))
+	}
+	backDataURI, err := fetchImageAsDataURI(backImageURL)
+	if err != nil {
+		s.logger.Warn("Failed to fetch back image for Bridge", zap.Error(err))
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	req := &bridge.UpdateCustomerRequest{
-		IdentifyingInformation: identifyingInfo,
-	}
-	if docNumber != "" || frontImageURL != "" {
-		req.VerifiedGovidAt = now
+		IdentifyingInformation: []bridge.IdentifyingInfo{
+			{
+				Type:           mapDocTypeToBridge(docType),
+				IssuingCountry: issuingCountry,
+				Number:         docNumber,
+				Expiration:     expiration,
+				ImageFront:     frontDataURI,
+				ImageBack:      backDataURI,
+			},
+		},
+		VerifiedGovidAt: now,
 	}
 	portraitImage, _ := data["didit_portrait_image"].(string)
 	if portraitImage != "" {
@@ -2774,7 +2866,8 @@ func (s *Service) RepairBridgeGovID(ctx context.Context, userID uuid.UUID) error
 	}
 	var submission *entities.KYCSubmission
 	for _, sub := range submissions {
-		if sub.Provider == "didit" && sub.Status == entities.KYCStatusApproved &&
+		if sub.Provider == "didit" &&
+			(sub.Status == entities.KYCStatusApproved || sub.Status == entities.KYCStatusProcessing) &&
 			(submission == nil || sub.CreatedAt.After(submission.CreatedAt)) {
 			submission = sub
 		}

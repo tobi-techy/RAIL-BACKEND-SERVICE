@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -15,11 +16,10 @@ const (
 	defaultCleanupTTL      = 10 * time.Minute
 )
 
-// Package-level singleton for AuthRateLimit middleware
+// Package-level registry for AuthRateLimit middleware (keyed by requestsPerMinute)
 var (
-	authRateLimiterInstance *AuthRateLimiter
-	authRateLimiterOnce     sync.Once
-	authRateLimiterMu       sync.Mutex
+	authRateLimiters   = make(map[int]*AuthRateLimiter)
+	authRateLimiterMu  sync.Mutex
 )
 
 // limiterEntry stores a rate limiter with its last access time for TTL-based cleanup
@@ -191,46 +191,72 @@ func (al *AuthRateLimiter) Limit() gin.HandlerFunc {
 	}
 }
 
-// AuthRateLimit creates middleware with specified requests per minute.
-// This function uses a singleton pattern - the first call creates the limiter,
-// subsequent calls return the same instance. This prevents goroutine leaks
-// from multiple cleanup goroutines.
-//
-// To stop the singleton (e.g., in tests or shutdown), call StopAuthRateLimiter().
-func AuthRateLimit(requestsPerMinute int) gin.HandlerFunc {
-	authRateLimiterOnce.Do(func() {
-		authRateLimiterInstance = NewAuthRateLimiter(requestsPerMinute)
-	})
-	return authRateLimiterInstance.Limit()
+// PerUserRateLimit creates middleware that rate limits by authenticated user ID.
+// Falls through if no user_id is in context (unauthenticated requests).
+func PerUserRateLimit(requestsPerMinute int) gin.HandlerFunc {
+	limiter := NewAuthRateLimiterWithTTL(requestsPerMinute, defaultCleanupTTL)
+	return func(c *gin.Context) {
+		userID, exists := c.Get("user_id")
+		if !exists {
+			c.Next()
+			return
+		}
+		key := fmt.Sprintf("%v", userID)
+		if !limiter.getLimiter(key).Allow() {
+			c.JSON(http.StatusTooManyRequests, gin.H{
+				"error":       "RATE_LIMIT_EXCEEDED",
+				"message":     "Too many requests. Please try again later.",
+				"retry_after": 60,
+			})
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
 }
 
-// GetAuthRateLimiter returns the singleton AuthRateLimiter instance, or nil if not initialized.
+// AuthRateLimit creates middleware with specified requests per minute.
+// Each unique requestsPerMinute value gets its own limiter instance.
+func AuthRateLimit(requestsPerMinute int) gin.HandlerFunc {
+	authRateLimiterMu.Lock()
+	limiter, exists := authRateLimiters[requestsPerMinute]
+	if !exists {
+		limiter = NewAuthRateLimiter(requestsPerMinute)
+		authRateLimiters[requestsPerMinute] = limiter
+	}
+	authRateLimiterMu.Unlock()
+	return limiter.Limit()
+}
+
+// GetAuthRateLimiter returns the AuthRateLimiter for the given rate, or nil if not initialized.
 func GetAuthRateLimiter() *AuthRateLimiter {
 	authRateLimiterMu.Lock()
 	defer authRateLimiterMu.Unlock()
-	return authRateLimiterInstance
+	// Return any limiter for backward compat; prefer lowest rate
+	for _, l := range authRateLimiters {
+		return l
+	}
+	return nil
 }
 
-// StopAuthRateLimiter stops the singleton AuthRateLimiter's cleanup goroutine.
-// Should be called during application shutdown or in test cleanup.
+// StopAuthRateLimiter stops all AuthRateLimiter cleanup goroutines.
+// Should be called during application shutdown.
 func StopAuthRateLimiter() {
 	authRateLimiterMu.Lock()
 	defer authRateLimiterMu.Unlock()
-	if authRateLimiterInstance != nil {
-		authRateLimiterInstance.Stop()
+	for _, l := range authRateLimiters {
+		l.Stop()
 	}
 }
 
-// ResetAuthRateLimiter stops and resets the singleton for testing purposes.
-// This allows tests to create fresh instances.
+// ResetAuthRateLimiter stops and resets all limiters for testing purposes.
 func ResetAuthRateLimiter() {
 	authRateLimiterMu.Lock()
 	defer authRateLimiterMu.Unlock()
-	if authRateLimiterInstance != nil {
-		authRateLimiterInstance.Stop()
-		authRateLimiterInstance = nil
+	for _, l := range authRateLimiters {
+		l.Stop()
 	}
-	authRateLimiterOnce = sync.Once{}
+	authRateLimiters = make(map[int]*AuthRateLimiter)
 }
 
 // Size returns the current number of entries in the limiter map (for testing/monitoring)

@@ -68,6 +68,7 @@ const (
 	PaymentRailArbitrum  PaymentRail = "arbitrum"
 	PaymentRailAvalanche PaymentRail = "avalanche_c_chain"
 	PaymentRailBase      PaymentRail = "base"
+	PaymentRailCelo      PaymentRail = "celo"
 	PaymentRailEthereum  PaymentRail = "ethereum"
 	PaymentRailOptimism  PaymentRail = "optimism"
 	PaymentRailPolygon   PaymentRail = "polygon"
@@ -85,18 +86,36 @@ const (
 	CurrencyGBP   Currency = "gbp"
 	CurrencyMXN   Currency = "mxn"
 	CurrencyBRL   Currency = "brl"
-	CurrencyUSDB  Currency = "usdb"
 	CurrencyUSDC  Currency = "usdc"
 	CurrencyUSDT  Currency = "usdt"
 	CurrencyDAI   Currency = "dai"
 	CurrencyPYUSD Currency = "pyusd"
 	CurrencyEURC  Currency = "eurc"
+	CurrencyUSDG  Currency = "usdg"
 )
 
 // Card funding strategies
 const (
 	CardFundingStrategyTopUp = "top_up"
 )
+
+// StablecoinToBridgeCurrency maps a domain Stablecoin to a Bridge Currency.
+func StablecoinToBridgeCurrency(token string) Currency {
+	switch token {
+	case "USDC":
+		return CurrencyUSDC
+	case "USDT":
+		return CurrencyUSDT
+	case "EURC":
+		return CurrencyEURC
+	case "PYUSD":
+		return CurrencyPYUSD
+	case "USDG":
+		return CurrencyUSDG
+	default:
+		return CurrencyUSDC
+	}
+}
 
 // Address represents a physical address
 type Address struct {
@@ -310,7 +329,7 @@ type WalletBalance struct {
 // GetUSDCAmount returns the USDC balance string, or "0" if not found
 func (wb *WalletBalance) GetUSDCAmount() string {
 	for _, b := range wb.Balances {
-		if b.Currency == CurrencyUSDC || b.Currency == CurrencyUSDB {
+		if b.Currency == CurrencyUSDC {
 			return b.Balance
 		}
 	}
@@ -690,10 +709,11 @@ type ListExternalAccountsResponse = PaginatedResponse[ExternalAccount]
 type CreateLiquidationAddressRequest struct {
 	Chain                     PaymentRail `json:"chain"`
 	Currency                  Currency    `json:"currency"`
-	DestinationPaymentRail    PaymentRail `json:"destination_payment_rail"`
-	DestinationCurrency       Currency    `json:"destination_currency"`
+	DestinationPaymentRail    PaymentRail `json:"destination_payment_rail,omitempty"`
+	DestinationCurrency       Currency    `json:"destination_currency,omitempty"`
 	DestinationAddress        string      `json:"destination_address,omitempty"`
 	ExternalAccountID         string      `json:"external_account_id,omitempty"`
+	BridgeWalletID            string      `json:"bridge_wallet_id,omitempty"`
 	DestinationWireMessage    string      `json:"destination_wire_message,omitempty"`
 	CustomDeveloperFeePercent string      `json:"custom_developer_fee_percent,omitempty"`
 }

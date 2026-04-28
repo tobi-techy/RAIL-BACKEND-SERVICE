@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
@@ -28,6 +29,7 @@ func NewManager(
 	fundingSvc *funding.Service,
 	auditSvc *adapters.AuditService,
 	logger *logger.Logger,
+	redisClient *redis.Client,
 ) (*Manager, error) {
 	// Create processor
 	processor, err := NewProcessor(
@@ -53,6 +55,7 @@ func NewManager(
 		validator,
 		auditSvc,
 		logger,
+		redisClient,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create reconciler: %w", err)

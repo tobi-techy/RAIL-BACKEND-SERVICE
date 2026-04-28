@@ -13,6 +13,7 @@ import (
 	"github.com/rail-service/rail_service/internal/api/handlers"
 	fundinghandlers "github.com/rail-service/rail_service/internal/api/handlers/funding"
 	p2phandlers "github.com/rail-service/rail_service/internal/api/handlers/p2p"
+	premiumhandlers "github.com/rail-service/rail_service/internal/api/handlers/premium"
 	"github.com/rail-service/rail_service/internal/api/handlers/webhooks"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
@@ -25,10 +26,14 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/audit"
 	"github.com/rail-service/rail_service/internal/domain/services/autoinvest"
 	"github.com/rail-service/rail_service/internal/domain/services/card"
+	compliancesvc "github.com/rail-service/rail_service/internal/domain/services/compliance"
+	conversationsvc "github.com/rail-service/rail_service/internal/domain/services/conversation"
 	"github.com/rail-service/rail_service/internal/domain/services/copytrading"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
+	"github.com/rail-service/rail_service/internal/domain/services/gameplay"
 	"github.com/rail-service/rail_service/internal/domain/services/integration"
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
+	knowledgesvc "github.com/rail-service/rail_service/internal/domain/services/knowledge"
 	"github.com/rail-service/rail_service/internal/domain/services/kyc"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/internal/domain/services/limits"
@@ -36,28 +41,41 @@ import (
 	newsservice "github.com/rail-service/rail_service/internal/domain/services/news"
 	"github.com/rail-service/rail_service/internal/domain/services/onboarding"
 	"github.com/rail-service/rail_service/internal/domain/services/p2p"
+	"github.com/rail-service/rail_service/internal/domain/services/pajfunding"
 	"github.com/rail-service/rail_service/internal/domain/services/passcode"
+	"github.com/rail-service/rail_service/internal/domain/services/premium"
 	"github.com/rail-service/rail_service/internal/domain/services/reconciliation"
 	"github.com/rail-service/rail_service/internal/domain/services/roundup"
 	"github.com/rail-service/rail_service/internal/domain/services/security"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	"github.com/rail-service/rail_service/internal/domain/services/socialauth"
+	spendingsvc "github.com/rail-service/rail_service/internal/domain/services/spending"
 	"github.com/rail-service/rail_service/internal/domain/services/stashlock"
 	"github.com/rail-service/rail_service/internal/domain/services/station"
 	"github.com/rail-service/rail_service/internal/domain/services/strategy"
+	subscriptionsvc "github.com/rail-service/rail_service/internal/domain/services/subscription"
 	"github.com/rail-service/rail_service/internal/domain/services/twofa"
+	"github.com/rail-service/rail_service/internal/domain/services/umbrawallet"
+	usagesvc "github.com/rail-service/rail_service/internal/domain/services/usage"
 	"github.com/rail-service/rail_service/internal/domain/services/wallet"
 	"github.com/rail-service/rail_service/internal/domain/services/webauthn"
 	yieldsvc "github.com/rail-service/rail_service/internal/domain/services/yield"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/embeddings"
+	pajadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/paj"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/reflect"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/umbra"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	recon "github.com/rail-service/rail_service/internal/workers/reconciliation"
+	treasury_sweep "github.com/rail-service/rail_service/internal/workers/treasury_sweep"
+	yield_distribution "github.com/rail-service/rail_service/internal/workers/yield_distribution"
 	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/captcha"
 	commonmetrics "github.com/rail-service/rail_service/pkg/common/metrics"
@@ -78,8 +96,16 @@ type BridgeWalletProvisioningAdapter struct {
 }
 
 func (a *BridgeWalletProvisioningAdapter) CreateWalletForCustomer(ctx context.Context, customerID string, chain string) (*entities.ManagedWallet, error) {
-	w, err := a.client.CreateWallet(ctx, customerID, &bridge.CreateWalletRequest{
-		Chain:    bridge.PaymentRail(entities.WalletChain(chain).ToBridgePaymentRail()),
+	bridgeChain := entities.WalletChain(chain).ToBridgeWalletChain()
+	if bridgeChain == "" {
+		return nil, fmt.Errorf("unsupported chain: %s", chain)
+	}
+
+	idempotencyKey := fmt.Sprintf("wallet-%s-%s-%s", customerID, chain, bridgeChain)
+	ctxWithKey := bridge.WithIdempotencyKey(ctx, idempotencyKey)
+
+	w, err := a.client.CreateWallet(ctxWithKey, customerID, &bridge.CreateWalletRequest{
+		Chain:    bridge.PaymentRail(bridgeChain),
 		Currency: bridge.CurrencyUSDC,
 	})
 	if err != nil {
@@ -164,13 +190,17 @@ func (a *BridgeDepositAdapter) ListWallets(ctx context.Context, customerID strin
 	}
 	out := make([]funding.BridgeWalletInfo, len(resp.Data))
 	for i, w := range resp.Data {
-		out[i] = funding.BridgeWalletInfo{ID: w.ID, Chain: string(w.Chain), Address: w.Address}
+		out[i] = funding.BridgeWalletInfo{ID: w.ID, Chain: string(w.Chain), Currency: string(w.Currency), Address: w.Address}
 	}
 	return out, nil
 }
 
-func (a *BridgeDepositAdapter) CreateWallet(ctx context.Context, customerID string, chain string) (string, string, error) {
-	w, err := a.client.CreateWallet(ctx, customerID, &bridge.CreateWalletRequest{Chain: bridge.PaymentRail(chain)})
+func (a *BridgeDepositAdapter) CreateWallet(ctx context.Context, customerID string, chain string, currency string) (string, string, error) {
+	cur := bridge.CurrencyUSDC
+	if currency != "" {
+		cur = bridge.StablecoinToBridgeCurrency(currency)
+	}
+	w, err := a.client.CreateWallet(ctx, customerID, &bridge.CreateWalletRequest{Chain: bridge.PaymentRail(chain), Currency: cur})
 	if err != nil {
 		return "", "", err
 	}
@@ -200,13 +230,40 @@ func (a *BridgeDepositAdapter) IsSandbox() bool {
 }
 
 func (a *BridgeDepositAdapter) CreateLiquidationAddress(ctx context.Context, customerID string, sourceChain string, destinationChain string, destinationAddress string) (string, string, error) {
+	sourceRail := entities.WalletChain(sourceChain).ToBridgePaymentRail()
+	destRail := entities.WalletChain(destinationChain).ToBridgePaymentRail()
+	if sourceRail == "" {
+		return "", "", fmt.Errorf("unsupported source chain: %s", sourceChain)
+	}
+	if destRail == "" {
+		return "", "", fmt.Errorf("unsupported destination chain: %s", destinationChain)
+	}
 	req := &bridge.CreateLiquidationAddressRequest{
-		Chain:                  bridge.PaymentRail(sourceChain),
+		Chain:                  bridge.PaymentRail(sourceRail),
 		Currency:               bridge.CurrencyUSDC,
-		DestinationPaymentRail: bridge.PaymentRail(destinationChain),
+		DestinationPaymentRail: bridge.PaymentRail(destRail),
 		DestinationCurrency:    bridge.CurrencyUSDC,
 		DestinationAddress:     destinationAddress,
 	}
+	la, err := a.client.CreateLiquidationAddress(ctx, customerID, req)
+	if err != nil {
+		return "", "", err
+	}
+	return la.ID, la.Address, nil
+}
+
+func (a *BridgeDepositAdapter) CreateLiquidationAddressForWallet(ctx context.Context, customerID string, sourceChain string, walletID string, walletAddress string) (string, string, error) {
+	sourceRail := entities.WalletChain(sourceChain).ToBridgePaymentRail()
+	walletChain := entities.WalletChain(sourceChain).ToBridgeWalletChain()
+
+	req := &bridge.CreateLiquidationAddressRequest{
+		Chain:                  bridge.PaymentRail(sourceRail),
+		Currency:               bridge.CurrencyUSDC,
+		DestinationPaymentRail: bridge.PaymentRail(walletChain),
+		DestinationCurrency:    bridge.CurrencyUSDC,
+		DestinationAddress:     walletAddress,
+	}
+
 	la, err := a.client.CreateLiquidationAddress(ctx, customerID, req)
 	if err != nil {
 		return "", "", err
@@ -288,11 +345,11 @@ func (a *BridgeVirtualAccountWebhookAdapter) ProcessFiatDeposit(ctx *gin.Context
 	})
 }
 
-func (a *BridgeVirtualAccountWebhookAdapter) ProcessCryptoDeposit(ctx context.Context, userID uuid.UUID, transferID string, amount decimal.Decimal) error {
+func (a *BridgeVirtualAccountWebhookAdapter) ProcessCryptoDeposit(ctx context.Context, userID uuid.UUID, transferID string, amount decimal.Decimal, chain string) error {
 	if a == nil || a.service == nil {
 		return fmt.Errorf("bridge virtual account service not configured")
 	}
-	return a.service.ProcessCryptoDeposit(ctx, userID, transferID, amount)
+	return a.service.ProcessCryptoDeposit(ctx, userID, transferID, amount, chain)
 }
 
 // BridgeCardWebhookAdapter adapts domain card service to Bridge webhook card processor interface.
@@ -873,6 +930,20 @@ func (a *deletionBridgeAdapter) DeleteCustomer(ctx context.Context, customerID s
 	return a.client.DeleteCustomer(ctx, customerID)
 }
 
+// tieredLimitsAdapter adapts security.WithdrawalLimitsService to withdrawal.TieredWithdrawalLimitChecker
+type tieredLimitsAdapter struct {
+	svc *security.WithdrawalLimitsService
+}
+
+func (a *tieredLimitsAdapter) CheckWithdrawalLimit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, accountAge time.Duration, kycLevel string) error {
+	_, err := a.svc.CheckWithdrawalLimit(ctx, userID, amount, accountAge, kycLevel)
+	return err
+}
+
+func (a *tieredLimitsAdapter) RecordWithdrawal(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error {
+	return a.svc.RecordWithdrawal(ctx, userID, amount)
+}
+
 // Container holds all application dependencies
 type Container struct {
 	Config *config.Config
@@ -889,6 +960,10 @@ type Container struct {
 	WalletProvisioningJobRepo *repositories.WalletProvisioningJobRepository
 	DepositRepo               *repositories.DepositRepository
 	WithdrawalRepo            *repositories.WithdrawalRepository
+	ReceiptRepo               *repositories.ReceiptRepository
+	BudgetRepo                *repositories.BudgetRepository
+	FinancialProfileRepo      *repositories.FinancialProfileRepository
+	LedgerSpendingRepo        *repositories.LedgerSpendingRepository
 	ConversionRepo            *repositories.ConversionRepository
 	BalanceRepo               *repositories.BalanceRepository
 	FundingEventJobRepo       *repositories.FundingEventJobRepository
@@ -898,14 +973,16 @@ type Container struct {
 	ReconciliationRepo        repositories.ReconciliationRepository
 
 	// External Services
-	AlpacaClient  *alpaca.Client
-	AlpacaService *alpaca.Service
-	BridgeClient  *bridge.Client
-	BridgeAdapter *bridge.Adapter
-	EmailService  *adapters.EmailService
-	SMSService    *adapters.SMSService
-	AuditService  *adapters.AuditService
-	RedisClient   cache.RedisClient
+	AlpacaClient       *alpaca.Client
+	AlpacaService      *alpaca.Service
+	BridgeClient       *bridge.Client
+	BridgeAdapter      *bridge.Adapter
+	UmbraClient        *umbra.Client
+	UmbraWalletService *umbrawallet.Service
+	EmailService       *adapters.EmailService
+	SMSService         *adapters.SMSService
+	AuditService       *adapters.AuditService
+	RedisClient        cache.RedisClient
 
 	// Bridge Domain Adapters
 	BridgeKYCAdapter              *BridgeKYCAdapter
@@ -914,42 +991,65 @@ type Container struct {
 	BridgeCustomerStatusProcessor *webhooks.BridgeCustomerStatusProcessor
 
 	// Domain Services
-	OnboardingService       *onboarding.Service
-	OnboardingJobService    *services.OnboardingJobService
-	VerificationService     services.VerificationService
-	PasscodeService         *passcode.Service
-	SessionService          *session.Service
-	TwoFAService            *twofa.Service
-	APIKeyService           *apikey.Service
-	WalletService           *wallet.Service
-	FundingService          *funding.Service
-	InvestingService        *investing.Service
-	BalanceService          *services.BalanceService
-	LedgerService           *ledger.Service
-	YieldService            *yieldsvc.Service
-	yieldRepo               *repositories.YieldRepository
-	ReconciliationService   *reconciliation.Service
-	ReconciliationScheduler *reconciliation.Scheduler
-	StashReconciliation     *recon.Worker
-	AllocationService       *allocation.Service
-	AutoInvestService       *autoinvest.Service
-	StrategyEngine          *strategy.Engine
-	StationService          *station.Service
-	NotificationService     *services.NotificationService
-	SocialAuthService       *socialauth.Service
-	WebAuthnService         *webauthn.Service
-	LimitsService           *limits.Service
-	DomainAuditService      *audit.Service
-	WithdrawalService       *services.WithdrawalService
-	StashLockService        *stashlock.Service
+	OnboardingService          *onboarding.Service
+	OnboardingJobService       *services.OnboardingJobService
+	VerificationService        services.VerificationService
+	PasscodeService            *passcode.Service
+	SessionService             *session.Service
+	TwoFAService               *twofa.Service
+	APIKeyService              *apikey.Service
+	WalletService              *wallet.Service
+	FundingService             *funding.Service
+	InvestingService           *investing.Service
+	BalanceService             *services.BalanceService
+	LedgerService              *ledger.Service
+	YieldService               *yieldsvc.Service
+	yieldRepo                  *repositories.YieldRepository
+	ReconciliationService      *reconciliation.Service
+	ReconciliationScheduler    *reconciliation.Scheduler
+	StashReconciliation        *recon.Worker
+	TreasurySweepWorker        *treasury_sweep.Worker
+	YieldDistributionWorker    *yield_distribution.Worker
+	AllocationService          *allocation.Service
+	AutoInvestService          *autoinvest.Service
+	StrategyEngine             *strategy.Engine
+	StationService             *station.Service
+	GameplayXPService          *gameplay.XPService
+	GameplayStreakService      *gameplay.StreakService
+	GameplayChallengeService   *gameplay.ChallengeService
+	GameplayAchievementService *gameplay.AchievementService
+	GameplayRepo               *repositories.GameplayRepository
+	GameplayHooks              *gameplay.Hooks
+	GameplayRingsService       *gameplay.RingsService
+	GameplayBoostService       *gameplay.BoostService
+	GameplayPointsService      *gameplay.PointsService
+	GameplayGraceDayService    *gameplay.GraceDayService
+	GameplayRecapService       *gameplay.RecapService
+	SubscriptionService        *subscriptionsvc.Service
+	NotificationService        *services.NotificationService
+	SocialAuthService          *socialauth.Service
+	WebAuthnService            *webauthn.Service
+	LimitsService              *limits.Service
+	DomainAuditService         *audit.Service
+	WithdrawalService          *services.WithdrawalService
+	StashLockService           *stashlock.Service
 
 	// AI Financial Manager Services
 	AIProviderManager     *ai.ProviderManager
 	AIOrchestrator        *aiservice.Orchestrator
+	DiditClient           *didit.Client
+	ComplianceService     *compliancesvc.Service
 	AIRecommender         *aiservice.Recommender
 	NewsService           *newsservice.Service
 	PortfolioDataProvider *aiservice.PortfolioDataProviderImpl
 	ActivityDataProvider  *aiservice.ActivityDataProviderImpl
+	ConversationRepo      *repositories.ConversationRepository
+	ConversationService   *conversationsvc.Service
+	UsageRepo             *repositories.AIUsageRepository
+	UsageService          *usagesvc.Service
+	EmbeddingsClient      *embeddings.Client
+	KnowledgeRepo         *repositories.KnowledgeRepository
+	KnowledgeService      *knowledgesvc.Service
 
 	// Additional Repositories
 	OnboardingJobRepo *repositories.OnboardingJobRepository
@@ -1018,6 +1118,7 @@ type Container struct {
 	GeoSecurityService      *security.GeoSecurityService
 	FraudDetectionService   *security.FraudDetectionService
 	IncidentResponseService *security.IncidentResponseService
+	OnboardingFraudService  *security.OnboardingFraudService
 
 	// Token and Rate Limiting
 	TokenBlacklist      *auth.TokenBlacklist
@@ -1040,6 +1141,8 @@ type Container struct {
 	UserAccountRepo        *repositories.UserAccountRepository
 	InstantFundingService  *funding.InstantFundingService
 	InstantFundingHandlers *fundinghandlers.InstantFundingHandlers
+	ChainRailsHandlers     *fundinghandlers.ChainRailsHandlers
+	PajHandlers            *fundinghandlers.PajHandlers
 
 	// Security Stores
 	WithdrawalSecurityStore *repositories.WithdrawalSecurityStore
@@ -1057,9 +1160,42 @@ type Container struct {
 	// Notification Services
 	DeviceTokenRepo  *repositories.DeviceTokenRepository
 	NotificationRepo *repositories.NotificationRepository
+	ExpoPushService  *adapters.ExpoPushService
+	SNSPushService   *adapters.SNSPushService
 
 	// Unified Webhook Handler
 	UnifiedFundingWebhookHandler *webhooks.UnifiedFundingWebhookHandler
+
+	// Security Features (v2) - Risk Scoring, Whitelist, Anomaly, Limits, Adaptive MFA
+	SecurityFeaturesRepo    *repositories.SecurityFeaturesRepository
+	RiskScoringService      *security.RiskScoringService
+	AddressWhitelistService *security.AddressWhitelistService
+	SessionAnomalyService   *security.SessionAnomalyService
+	WithdrawalLimitsService *security.WithdrawalLimitsService
+	AdaptiveMFAService      *security.AdaptiveMFAService
+	DeviceSecurityService   *security.DeviceSecurityService
+
+	// Premium Feature Repositories
+	FamilySupportRepo *repositories.FamilySupportRepository
+	ScamRepo          *repositories.ScamRepository
+	TaxResidencyRepo  *repositories.TaxResidencyRepository
+	WellnessRepo      *repositories.WellnessRepository
+	EmergencyRepo     *repositories.EmergencyRepository
+	ExchangeRateRepo  *repositories.ExchangeRateRepository
+	VisaProofRepo     *repositories.VisaProofRepository
+	ReceiptSplitRepo  *repositories.ReceiptSplitRepository
+
+	// Premium Feature Services
+	NairaShieldService      *premium.NairaShieldService
+	BlackTaxService         *premium.BlackTaxService
+	ReceiptSplitService     *premium.ReceiptSplitService
+	ScamIntelligenceService *premium.ScamIntelligenceService
+	TaxResidencyService     *premium.TaxResidencyService
+	IncomeSmoothingService  *premium.IncomeSmoothingService
+	FinancialTraumaService  *premium.FinancialTraumaService
+	VisaProofService        *premium.VisaProofService
+	PanicButtonService      *premium.PanicButtonService
+	PremiumHandlers         *premiumhandlers.Handlers
 }
 
 // NewContainer creates a new dependency injection container
@@ -1078,6 +1214,10 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	walletProvisioningJobRepo := repositories.NewWalletProvisioningJobRepository(db, zapLog)
 	depositRepo := repositories.NewDepositRepository(sqlxDB)
 	withdrawalRepo := repositories.NewWithdrawalRepository(sqlxDB)
+	receiptRepo := repositories.NewReceiptRepository(sqlxDB)
+	budgetRepo := repositories.NewBudgetRepository(sqlxDB)
+	financialProfileRepo := repositories.NewFinancialProfileRepository(sqlxDB)
+	ledgerSpendingRepo := repositories.NewLedgerSpendingRepository(sqlxDB)
 	conversionRepo := repositories.NewConversionRepository(sqlxDB)
 	balanceRepo := repositories.NewBalanceRepository(db, zapLog)
 	fundingEventJobRepo := repositories.NewFundingEventJobRepository(db, log)
@@ -1086,6 +1226,16 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	ledgerRepo := repositories.NewLedgerRepository(sqlxDB)
 	reconciliationRepo := repositories.NewPostgresReconciliationRepository(db)
 	onboardingJobRepo := repositories.NewOnboardingJobRepository(db, zapLog)
+
+	// Initialize premium feature repositories
+	familySupportRepo := repositories.NewFamilySupportRepository(sqlxDB)
+	scamRepo := repositories.NewScamRepository(sqlxDB)
+	taxResidencyRepo := repositories.NewTaxResidencyRepository(sqlxDB)
+	wellnessRepo := repositories.NewWellnessRepository(sqlxDB)
+	emergencyRepo := repositories.NewEmergencyRepository(sqlxDB)
+	exchangeRateRepo := repositories.NewExchangeRateRepository(sqlxDB)
+	visaProofRepo := repositories.NewVisaProofRepository(sqlxDB)
+	receiptSplitRepo := repositories.NewReceiptSplitRepository(sqlxDB)
 
 	// Initialize external services
 	// Initialize Alpaca service
@@ -1113,6 +1263,15 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	}
 	bridgeClient := bridge.NewClient(bridgeConfig, zapLog)
 	bridgeAdapter := bridge.NewAdapter(bridgeClient, zapLog)
+
+	// Initialize Umbra privacy sidecar client
+	var umbraClient *umbra.Client
+	if cfg.Umbra.Enabled && cfg.Umbra.SidecarURL != "" {
+		umbraClient = umbra.NewClient(cfg.Umbra.SidecarURL, cfg.Umbra.AuthToken)
+		zapLog.Info("Umbra privacy sidecar enabled", zap.String("url", cfg.Umbra.SidecarURL), zap.String("network", cfg.Umbra.Network))
+	} else {
+		zapLog.Info("Umbra privacy sidecar disabled")
+	}
 
 	// Initialize email service with Unosend configuration
 	var err error
@@ -1178,6 +1337,10 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		WalletProvisioningJobRepo: walletProvisioningJobRepo,
 		DepositRepo:               depositRepo,
 		WithdrawalRepo:            withdrawalRepo,
+		ReceiptRepo:               receiptRepo,
+		BudgetRepo:                budgetRepo,
+		FinancialProfileRepo:      financialProfileRepo,
+		LedgerSpendingRepo:        ledgerSpendingRepo,
 		ConversionRepo:            conversionRepo,
 		BalanceRepo:               balanceRepo,
 		FundingEventJobRepo:       fundingEventJobRepo,
@@ -1186,6 +1349,14 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		LedgerRepo:                ledgerRepo,
 		ReconciliationRepo:        reconciliationRepo,
 		OnboardingJobRepo:         onboardingJobRepo,
+		FamilySupportRepo:         familySupportRepo,
+		ScamRepo:                  scamRepo,
+		TaxResidencyRepo:          taxResidencyRepo,
+		WellnessRepo:              wellnessRepo,
+		EmergencyRepo:             emergencyRepo,
+		ExchangeRateRepo:          exchangeRateRepo,
+		VisaProofRepo:             visaProofRepo,
+		ReceiptSplitRepo:          receiptSplitRepo,
 		yieldRepo:                 repositories.NewYieldRepository(sqlxDB),
 		DeviceTokenRepo:           repositories.NewDeviceTokenRepository(db),
 		NotificationRepo:          repositories.NewNotificationRepository(db),
@@ -1195,6 +1366,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		AlpacaService: alpacaService,
 		BridgeClient:  bridgeClient,
 		BridgeAdapter: bridgeAdapter,
+		UmbraClient:   umbraClient,
 		EmailService:  emailService,
 		SMSService:    smsService,
 		AuditService:  auditService,
@@ -1284,7 +1456,7 @@ func (c *Container) initializeDomainServices() error {
 
 	// Initialize security services
 	c.SessionService = session.NewService(c.DB, c.RedisClient.Client(), c.ZapLog)
-	c.TwoFAService = twofa.NewService(c.DB, c.ZapLog, c.Config.Security.EncryptionKey)
+	c.TwoFAService = twofa.NewService(c.DB, c.ZapLog, c.Config.Security.EncryptionKey, c.RedisClient)
 	c.APIKeyService = apikey.NewService(c.DB, c.ZapLog)
 
 	// Initialize social auth service
@@ -1332,21 +1504,81 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize ledger service
 	c.LedgerService = ledger.NewService(c.LedgerRepo, sqlxDB, c.Logger)
 
-	// Initialize yield service
-	c.YieldService = yieldsvc.NewService(c.yieldRepo, &bridgeRewardsAdapter{client: c.BridgeClient}, c.LedgerService, c.ZapLog)
-	if c.NotificationService != nil {
-		c.YieldService.SetNotifier(c.NotificationService)
-	}
-
-	// Stash reconciliation: daily check that ledger stash total == Bridge USDB wallet balance.
-	if c.Config.Bridge.RailCustomerID != "" && c.Config.Bridge.RailUSDBWalletID != "" {
-		c.StashReconciliation = recon.NewWorker(
-			c.LedgerRepo,
-			&reconciliationBridgeAdapter{client: c.BridgeClient},
-			c.Config.Bridge.RailCustomerID,
-			c.Config.Bridge.RailUSDBWalletID,
+	// Initialize yield service (Reflect-backed) — skip if private key not configured
+	if c.Config.Reflect.PrivateKey != "" {
+		reflectClient, err := reflect.NewClient(
+			c.Config.Reflect.BaseURL,
+			c.Config.Reflect.APIKey,
+			c.Config.Reflect.SolanaRPC,
+			c.Config.Reflect.OwnerWallet,
+			c.Config.Reflect.PrivateKey,
+			c.Config.Reflect.StablecoinIndex,
 			c.ZapLog,
 		)
+		if err != nil {
+			return fmt.Errorf("failed to create reflect client: %w", err)
+		}
+		rewardsAdapter := &reflectRewardsAdapter{client: reflectClient, db: sqlxDB}
+
+		minSweep, _ := decimal.NewFromString(c.Config.Reflect.MinSweepAmount)
+		if minSweep.IsZero() {
+			minSweep = decimal.NewFromInt(100)
+		}
+		interval := time.Duration(c.Config.Reflect.SweepInterval) * time.Minute
+		if interval == 0 {
+			interval = 10 * time.Minute
+		}
+		sweepWorker := treasury_sweep.NewWorker(
+			reflectClient,
+			c.BridgeClient,
+			c.LedgerRepo,
+			c.yieldRepo,
+			sqlxDB,
+			c.Config.Bridge.RailCustomerID,
+			c.Config.Reflect.BridgeSourceWalletID,
+			c.Config.Reflect.OwnerWallet,
+			minSweep,
+			interval,
+			c.ZapLog,
+		)
+		if c.BridgeClient == nil {
+			c.ZapLog.Warn("Bridge client not configured; treasury sweep disabled")
+		} else {
+			sweepWorker.Start()
+		}
+		c.TreasurySweepWorker = sweepWorker
+
+		c.YieldService = yieldsvc.NewService(c.yieldRepo, c.LedgerService, c.ZapLog)
+
+		// Stash reconciliation: daily check that ledger stash total matches Reflect deposited value.
+		if c.Config.Reflect.OwnerWallet != "" {
+			reconAdapter := &reflectReconciliationAdapter{db: sqlxDB}
+			c.StashReconciliation = recon.NewWorker(
+				c.LedgerRepo,
+				reconAdapter,
+				c.yieldRepo,
+				c.Config.Reflect.OwnerWallet,
+				c.Config.Reflect.OwnerWallet,
+				c.ZapLog,
+			)
+		}
+
+		// Yield distribution worker — wired with injected rate functions to avoid di→worker circular dep.
+		c.YieldDistributionWorker = yield_distribution.NewWorker(
+			c.YieldService,
+			rewardsAdapter,
+			func(ctx context.Context) (decimal.Decimal, error) {
+				return reflectClient.GetExchangeRate(ctx)
+			},
+			func(ctx context.Context, db *sqlx.DB, rate decimal.Decimal, distributedYield decimal.Decimal) error {
+				return AdvanceExchangeRateMark(ctx, db, rate, distributedYield)
+			},
+			sqlxDB,
+			c.ZapLog,
+		)
+	} else {
+		c.ZapLog.Warn("Reflect private key not configured; yield/sweep/reconciliation disabled")
+		c.YieldService = yieldsvc.NewService(c.yieldRepo, c.LedgerService, c.ZapLog)
 	}
 
 	// Initialize ledger integration (bridges legacy and new ledger system)
@@ -1406,7 +1638,7 @@ func (c *Container) initializeDomainServices() error {
 		)
 		c.FundingService.SetBridgeVAService(c.BridgeVirtualAccountService)
 
-		// Wire notification service to Bridge VA service for allocation failure notifications
+		// Wire notification service to Bridge VA service
 		if c.NotificationService != nil {
 			notificationAdapter := &FundingNotificationAdapter{svc: c.NotificationService}
 			c.BridgeVirtualAccountService.SetNotificationService(notificationAdapter)
@@ -1427,6 +1659,7 @@ func (c *Container) initializeDomainServices() error {
 			&bridgeWebhookNotifierAdapter{svc: c.NotificationService},
 			c.UserRepo,
 			c.ZapLog,
+			c.DB,
 		)
 
 		// Wire notifier into customer status processor so KYC events fire push notifications
@@ -1436,8 +1669,10 @@ func (c *Container) initializeDomainServices() error {
 		// Security fix: Only skip verification if explicitly configured for development AND no secret is set
 		// This ensures production ALWAYS requires verification
 		skipWebhookVerification := c.Config.Environment == "development" && webhookSecret == ""
+		walletWebhookAdapter := &walletWebhookAdapter{walletService: c.WalletService}
 		c.BridgeWebhookHandler = handlers.NewBridgeWebhookHandler(
 			bridgeWebhookService,
+			walletWebhookAdapter,
 			c.ZapLog,
 			webhookSecret,
 			skipWebhookVerification,
@@ -1481,6 +1716,54 @@ func (c *Container) initializeDomainServices() error {
 	)
 	c.StationService.SetAlpacaAccountRepository(c.AlpacaAccountRepo)
 
+	// Initialize gameplay services (notifiers wired after push service is resolved below)
+	c.GameplayRepo = repositories.NewGameplayRepository(sqlxDB)
+	c.GameplayXPService = gameplay.NewXPService(c.GameplayRepo, nil, c.ZapLog)
+	c.GameplayStreakService = gameplay.NewStreakService(c.GameplayRepo, c.ZapLog)
+	c.GameplayChallengeService = gameplay.NewChallengeService(c.GameplayRepo, c.GameplayXPService, nil, c.ZapLog)
+	c.GameplayAchievementService = gameplay.NewAchievementService(c.GameplayRepo, c.GameplayStreakService, nil, c.ZapLog)
+	c.SubscriptionService = subscriptionsvc.NewService(c.GameplayRepo, c.LedgerService, nil, c.ZapLog)
+	c.GameplayChallengeService.SetSubscriptionChecker(c.SubscriptionService)
+	c.GameplayHooks = gameplay.NewHooks(c.GameplayXPService, c.GameplayStreakService, c.GameplayChallengeService, c.ZapLog)
+
+	// Initialize V2 gameplay services
+	c.GameplayRingsService = gameplay.NewRingsService(c.GameplayRepo, c.ZapLog)
+	c.GameplayBoostService = gameplay.NewBoostService(c.GameplayRepo, nil, c.ZapLog)
+	c.GameplayPointsService = gameplay.NewPointsService(c.GameplayRepo, c.ZapLog)
+	c.GameplayGraceDayService = gameplay.NewGraceDayService(c.GameplayRepo, c.GameplayPointsService, nil, c.ZapLog)
+	c.GameplayRecapService = gameplay.NewRecapService(c.GameplayRepo, c.GameplayRingsService, c.GameplayPointsService, c.ZapLog)
+
+	// Wire new services into hooks
+	c.GameplayHooks.SetBoosts(c.GameplayBoostService)
+	c.GameplayHooks.SetPoints(c.GameplayPointsService)
+	c.GameplayHooks.SetGraceDay(c.GameplayGraceDayService)
+
+	// Wire V2 services into achievement evaluator
+	c.GameplayAchievementService.SetRingsService(c.GameplayRingsService)
+	c.GameplayAchievementService.SetPointsService(c.GameplayPointsService)
+	c.GameplayAchievementService.SetBoostService(c.GameplayBoostService)
+	c.GameplayAchievementService.SetGraceDayService(c.GameplayGraceDayService)
+
+	// Wire gameplay hooks into existing services
+	if c.FundingService != nil {
+		c.FundingService.SetGameplayHooks(c.GameplayHooks)
+	}
+	if c.RoundupService != nil {
+		c.RoundupService.SetGameplayHooks(c.GameplayHooks)
+	}
+	if c.OnboardingService != nil {
+		c.OnboardingService.SetGameplayHooks(c.GameplayHooks)
+	}
+	if c.CardService != nil {
+		c.CardService.SetGameplayHooks(c.GameplayHooks)
+	}
+	if c.BridgeVirtualAccountService != nil {
+		c.BridgeVirtualAccountService.SetGameplayHooks(c.GameplayHooks)
+	}
+
+	// Wire user stats provider for achievement evaluation
+	c.GameplayAchievementService.SetUserStatsProvider(repositories.NewUserStatsRepository(sqlxDB))
+
 	// Initialize investing service with repositories
 	basketRepo := repositories.NewBasketRepository(c.DB, c.ZapLog)
 	orderRepo := repositories.NewOrderRepository(c.DB, c.ZapLog)
@@ -1498,18 +1781,93 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize notification service with persister for in-app notifications
 	c.NotificationService = services.NewNotificationService(c.ZapLog)
 	c.NotificationService.SetPersister(adapters.NewNotificationPersisterAdapter(c.NotificationRepo))
-	// Wire Expo Push service for push notifications
-	expoPushService := adapters.NewExpoPushService(c.DeviceTokenRepo, c.ZapLog)
-	c.NotificationService.SetPushSender(expoPushService)
+	// Wire push notification service (SNS preferred, Expo fallback)
+	c.ZapLog.Info("SNS push config check",
+		zap.String("ios_arn", c.Config.SNSPush.IOSPlatformARN),
+		zap.String("android_arn", c.Config.SNSPush.AndroidPlatformARN),
+		zap.String("region", c.Config.SNSPush.Region))
+	if c.Config.SNSPush.IOSPlatformARN != "" || c.Config.SNSPush.AndroidPlatformARN != "" {
+		region := c.Config.SNSPush.Region
+		if region == "" {
+			region = "us-east-1" // default
+		}
+		snsPushSvc, err := adapters.NewSNSPushService(context.Background(), adapters.SNSPushConfig{
+			Region:             region,
+			IOSPlatformARN:     c.Config.SNSPush.IOSPlatformARN,
+			AndroidPlatformARN: c.Config.SNSPush.AndroidPlatformARN,
+		}, c.DeviceTokenRepo, c.ZapLog)
+		if err != nil {
+			c.Logger.Warn("Failed to init SNS push, falling back to Expo", err)
+			expoPushService := adapters.NewExpoPushService(c.DeviceTokenRepo, c.ZapLog)
+			c.ExpoPushService = expoPushService
+			c.NotificationService.SetPushSender(expoPushService)
+		} else {
+			c.SNSPushService = snsPushSvc
+			c.NotificationService.SetPushSender(snsPushSvc)
+			c.Logger.Info("SNS push service initialized",
+				zap.Bool("ios", c.Config.SNSPush.IOSPlatformARN != ""),
+				zap.Bool("android", c.Config.SNSPush.AndroidPlatformARN != ""))
+		}
+	} else {
+		expoPushService := adapters.NewExpoPushService(c.DeviceTokenRepo, c.ZapLog)
+		c.ExpoPushService = expoPushService
+		c.NotificationService.SetPushSender(expoPushService)
+	}
 	// Wire email notifications for important events
 	if c.EmailService != nil {
 		c.NotificationService.SetEmailSender(adapters.NewEmailSenderAdapter(c.EmailService))
 	}
-	c.NotificationService.SetUserEmailLookup(adapters.NewUserEmailLookup(c.DB))
+	c.NotificationService.SetUserEmailLookup(adapters.NewUserEmailLookup(c.UserRepo))
+
+	// Wire push notifier into gameplay services (now that push provider is resolved)
+	// Use SNS if available, otherwise Expo
+	var pushNotifier gameplay.PushNotifier
+	if c.SNSPushService != nil {
+		pushNotifier = c.SNSPushService
+	} else if c.ExpoPushService != nil {
+		pushNotifier = c.ExpoPushService
+	}
+	if pushNotifier != nil {
+		c.GameplayXPService.SetNotifier(pushNotifier)
+		c.GameplayChallengeService.SetNotifier(pushNotifier)
+		c.GameplayAchievementService.SetNotifier(pushNotifier)
+		c.SubscriptionService.SetNotifier(pushNotifier)
+		c.GameplayBoostService.SetNotifier(pushNotifier)
+		c.GameplayGraceDayService.SetNotifier(pushNotifier)
+	}
+
+	// Wire Bridge transfer into subscription service for fee collection
+	if c.BridgeClient != nil && c.Config.Bridge.TreasuryWalletAddress != "" && c.WalletRepo != nil {
+		c.SubscriptionService.SetBridgeTransfer(&SubscriptionBridgeTransferAdapter{
+			bridgeClient:      c.BridgeClient,
+			walletRepo:        c.WalletRepo,
+			userRepo:          c.UserRepo,
+			companyWalletAddr: c.Config.Bridge.TreasuryWalletAddress,
+			logger:            c.ZapLog,
+		})
+	}
 
 	// Wire notification service into auto-invest and allocation for failure alerts
 	c.AutoInvestService.SetNotificationService(c.NotificationService)
 	c.AllocationService.SetNotificationService(c.NotificationService)
+
+	// Wire Umbra privacy shielder into allocation service
+	if c.UmbraClient != nil {
+		umbraWalletRepo := repositories.NewUmbraWalletRepository(sqlxDB)
+		c.UmbraWalletService = umbrawallet.NewService(
+			umbraWalletRepo, c.UmbraClient,
+			c.Config.Security.EncryptionKey, c.Config.Umbra.Network,
+			c.Logger,
+		)
+		c.AllocationService.SetUmbraShielder(&UmbraShielderAdapter{
+			client:        c.UmbraClient,
+			walletService: c.UmbraWalletService,
+		})
+		c.OnboardingService.SetUmbraProvisioner(&UmbraProvisionerAdapter{walletService: c.UmbraWalletService})
+	}
+	if c.YieldService != nil {
+		c.YieldService.SetNotifier(c.NotificationService)
+	}
 
 	c.InvestingService = investing.NewService(
 		basketRepo,
@@ -1561,6 +1919,19 @@ func (c *Container) initializeDomainServices() error {
 	c.GeoSecurityService = security.NewGeoSecurityService(c.DB, c.RedisClient.Client(), c.ZapLog, "")                   // IP API key can be configured
 	c.FraudDetectionService = security.NewFraudDetectionService(c.DB, c.RedisClient.Client(), c.ZapLog)
 	c.IncidentResponseService = security.NewIncidentResponseService(c.DB, c.RedisClient.Client(), c.ZapLog, nil, c.SecurityEventLogger)
+
+	// Initialize onboarding fraud detection (cross-account device/IP correlation)
+	onboardingFraudRepo := repositories.NewOnboardingFraudRepository(sqlxDB)
+	c.OnboardingFraudService = security.NewOnboardingFraudService(onboardingFraudRepo, c.ZapLog)
+
+	// Initialize security features v2 (risk scoring, whitelist, anomaly, limits, adaptive MFA)
+	c.SecurityFeaturesRepo = repositories.NewSecurityFeaturesRepository(sqlxDB)
+	c.RiskScoringService = security.NewRiskScoringService(c.SecurityFeaturesRepo, c.ZapLog)
+	c.AddressWhitelistService = security.NewAddressWhitelistService(c.SecurityFeaturesRepo, c.ZapLog)
+	c.SessionAnomalyService = security.NewSessionAnomalyService(c.SecurityFeaturesRepo, c.ZapLog)
+	c.WithdrawalLimitsService = security.NewWithdrawalLimitsService(c.SecurityFeaturesRepo, c.ZapLog)
+	c.AdaptiveMFAService = security.NewAdaptiveMFAService(c.SecurityFeaturesRepo, c.ZapLog)
+	c.DeviceSecurityService = security.NewDeviceSecurityService(c.DeviceTrackingService, c.SecurityEventLogger, c.ZapLog)
 
 	// Initialize token blacklist and JWT service
 	if c.Config.Security.EnableTokenBlacklist {
@@ -1663,6 +2034,7 @@ func (c *Container) initializeDomainServices() error {
 		withdrawalNotificationAdapter,
 		withdrawalBridgeAdapter, // BridgeAdapter (fiat offramp)
 		c.BridgeAdapter,         // BridgeCryptoTransferAdapter (crypto wallet transfers)
+		sqlx.NewDb(c.DB, "postgres"),
 		c.Logger,
 	)
 
@@ -1673,7 +2045,10 @@ func (c *Container) initializeDomainServices() error {
 		stashLockSvc.SetNotifier(c.NotificationService)
 	}
 	c.WithdrawalService.SetStashLockChecker(stashLockSvc)
+	c.LedgerService.SetStashLockChecker(stashLockSvc)
 	c.StashLockService = stashLockSvc
+
+	// Initialize compliance screening (Didit transaction monitoring + AML) — wired below after DiditClient creation
 
 	if c.BridgeWebhookHandler != nil && c.BridgeVirtualAccountService != nil {
 		var cardProcessor webhooks.BridgeCardProcessor
@@ -1688,6 +2063,7 @@ func (c *Container) initializeDomainServices() error {
 			&bridgeWebhookNotifierAdapter{svc: c.NotificationService},
 			c.UserRepo,
 			c.ZapLog,
+			c.DB,
 		)
 		c.BridgeWebhookHandler.SetService(bridgeWebhookService)
 	}
@@ -1730,6 +2106,9 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog.Warn("Advanced features initialization failed", zap.Error(err))
 	}
 
+	// Initialize instant funding + ChainRails cross-chain deposit services
+	c.initializeInstantFundingServices(sqlxDB)
+
 	// Initialize unified funding webhook handler (Bridge + Alpaca).
 	alpacaWebhookHandler := c.GetAlpacaWebhookHandlers()
 	c.UnifiedFundingWebhookHandler = webhooks.NewUnifiedFundingWebhookHandler(
@@ -1737,7 +2116,6 @@ func (c *Container) initializeDomainServices() error {
 		nil, // circleHandler removed
 		alpacaWebhookHandler,
 		c.ZapLog,
-		c.Config.Environment == "development",
 	)
 	if bridgeSecret := strings.TrimSpace(c.Config.Bridge.WebhookSecret); bridgeSecret != "" {
 		c.UnifiedFundingWebhookHandler.SetWebhookSecret("bridge", bridgeSecret)
@@ -1778,9 +2156,31 @@ func (c *Container) initializeDomainServices() error {
 			return fmt.Errorf("UserRepo must be initialized before setting up Didit client")
 		}
 		diditClient := didit.NewClient(didit.Config{
-			APIKey: diditAPIKey,
+			APIKey:        diditAPIKey,
+			WebhookSecret: c.Config.KYC.DiditWebhookSecret,
 		}, c.ZapLog)
+		c.DiditClient = diditClient
 		c.AccountDeletionService.SetDiditClient(diditClient, c.UserRepo, c.KYCSubmissionRepo)
+
+		// Wire compliance screening (transaction monitoring + AML)
+		complianceRepo := repositories.NewComplianceRepository(sqlxDB, c.ZapLog)
+		c.ComplianceService = compliancesvc.NewService(diditClient, complianceRepo, c.ZapLog)
+		c.ComplianceService.SetUserLookup(c.UserRepo)
+		c.ComplianceService.SetUserFreezer(&complianceUserFreezer{userRepo: c.UserRepo, logger: c.ZapLog})
+		c.FundingService.SetComplianceScreener(c.ComplianceService)
+		c.WithdrawalService.SetComplianceScreener(c.ComplianceService)
+		if c.BridgeVirtualAccountService != nil {
+			c.BridgeVirtualAccountService.SetComplianceScreener(c.ComplianceService)
+		}
+		c.ZapLog.Info("Compliance screening enabled (Didit transaction monitoring)")
+	}
+
+	// Wire security features v2 into withdrawal service
+	if c.AddressWhitelistService != nil {
+		c.WithdrawalService.SetAddressWhitelistChecker(c.AddressWhitelistService)
+	}
+	if c.WithdrawalLimitsService != nil {
+		c.WithdrawalService.SetTieredWithdrawalLimits(&tieredLimitsAdapter{svc: c.WithdrawalLimitsService})
 	}
 
 	// Initialize P2P transfer services
@@ -1804,6 +2204,7 @@ func (c *Container) initializeDomainServices() error {
 	)
 	c.P2PService.SetUserUpdater(c.UserRepo)
 	c.P2PService.SetWalletLookup(c.WalletRepo)
+	c.P2PService.SetTapIntentStore(c.RedisClient)
 	if c.BridgeClient != nil {
 		c.P2PService.SetBridgeOfframp(NewP2PBridgeOfframpAdapter(bridge.NewAdapter(c.BridgeClient, c.ZapLog)))
 	}
@@ -1816,6 +2217,17 @@ func (c *Container) initializeDomainServices() error {
 	if c.BridgeVirtualAccountService != nil && c.WalletService != nil {
 		c.BridgeVirtualAccountService.SetWalletProvider(c.WalletService)
 	}
+
+	// Initialize premium feature services
+	c.NairaShieldService = premium.NewNairaShieldService(c.ExchangeRateRepo, c.LedgerService, c.ZapLog)
+	c.BlackTaxService = premium.NewBlackTaxService(c.FamilySupportRepo, c.P2PService, c.ZapLog)
+	c.ReceiptSplitService = premium.NewReceiptSplitService(c.ReceiptRepo, c.ReceiptSplitRepo, c.P2PService, c.ZapLog)
+	c.ScamIntelligenceService = premium.NewScamIntelligenceService(c.ScamRepo, c.ZapLog)
+	c.TaxResidencyService = premium.NewTaxResidencyService(c.TaxResidencyRepo, c.ZapLog)
+	c.IncomeSmoothingService = premium.NewIncomeSmoothingService(c.DepositRepo, c.LedgerService, c.ZapLog)
+	c.FinancialTraumaService = premium.NewFinancialTraumaService(c.WellnessRepo, c.CardService, c.ZapLog)
+	c.VisaProofService = premium.NewVisaProofService(c.VisaProofRepo, c.LedgerService, c.DepositRepo, c.ZapLog)
+	c.PanicButtonService = premium.NewPanicButtonService(c.EmergencyRepo, c.LedgerService, c.ZapLog)
 
 	return nil
 }
@@ -1971,6 +2383,46 @@ func (c *Container) GetFraudDetectionService() *security.FraudDetectionService {
 // GetIncidentResponseService returns the incident response service
 func (c *Container) GetIncidentResponseService() *security.IncidentResponseService {
 	return c.IncidentResponseService
+}
+
+// GetOnboardingFraudService returns the onboarding fraud detection service
+func (c *Container) GetOnboardingFraudService() *security.OnboardingFraudService {
+	return c.OnboardingFraudService
+}
+
+// GetSecurityFeaturesRepo returns the security features repository
+func (c *Container) GetSecurityFeaturesRepo() *repositories.SecurityFeaturesRepository {
+	return c.SecurityFeaturesRepo
+}
+
+// GetRiskScoringService returns the transaction risk scoring service
+func (c *Container) GetRiskScoringService() *security.RiskScoringService {
+	return c.RiskScoringService
+}
+
+// GetAddressWhitelistService returns the address whitelist service
+func (c *Container) GetAddressWhitelistService() *security.AddressWhitelistService {
+	return c.AddressWhitelistService
+}
+
+// GetSessionAnomalyService returns the session anomaly detection service
+func (c *Container) GetSessionAnomalyService() *security.SessionAnomalyService {
+	return c.SessionAnomalyService
+}
+
+// GetWithdrawalLimitsService returns the tiered withdrawal limits service
+func (c *Container) GetWithdrawalLimitsService() *security.WithdrawalLimitsService {
+	return c.WithdrawalLimitsService
+}
+
+// GetAdaptiveMFAService returns the adaptive MFA service
+func (c *Container) GetAdaptiveMFAService() *security.AdaptiveMFAService {
+	return c.AdaptiveMFAService
+}
+
+// GetDeviceSecurityService returns the device security service
+func (c *Container) GetDeviceSecurityService() *security.DeviceSecurityService {
+	return c.DeviceSecurityService
 }
 
 // GetTokenBlacklist returns the token blacklist service
@@ -2215,20 +2667,20 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 			switch normalizedKey {
 			case "SOLANA", "SOL":
 				chain = entities.WalletChainSolana
-			case "SOL_DEVNET":
-				chain = entities.WalletChainSOLDevnet
+			case "ETHEREUM", "ETH":
+				chain = entities.WalletChainEthereum
 			case "POLYGON", "MATIC":
 				chain = entities.WalletChainPolygon
-			case "MATIC_AMOY":
-				chain = entities.WalletChainMATICAmoy
-			case "AVALANCHE", "AVAX", "AVALANCHE_C_CHAIN":
-				chain = entities.WalletChainAvalanche
-			case "AVAX_FUJI":
-				chain = entities.WalletChainAVAXFuji
+			case "CELO":
+				chain = entities.WalletChainCelo
 			case "BASE":
 				chain = entities.WalletChainBase
-			case "BASE_SEPOLIA":
-				chain = entities.WalletChainBASESepolia
+			case "AVALANCHE", "AVAX":
+				chain = entities.WalletChainAvalanche
+			case "ARBITRUM", "ARB":
+				chain = entities.WalletChainArbitrum
+			case "OPTIMISM", "OP":
+				chain = entities.WalletChainOptimism
 			default:
 				logger.Warn("Ignoring unsupported wallet chain from configuration", zap.String("chain", upper))
 				continue
@@ -2257,35 +2709,99 @@ func convertWalletChains(raw []string, logger *zap.Logger) []entities.WalletChai
 // initializeAIServices initializes AI Financial Manager services
 func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *repositories.PositionRepository, allocationRepo *repositories.AllocationRepository, basketRepo *repositories.BasketRepository) error {
 	// Check if AI is configured
-	if c.Config.AI.OpenAI.APIKey == "" && c.Config.AI.Gemini.APIKey == "" {
+	if c.Config.AI.OpenAI.APIKey == "" && c.Config.AI.Gemini.APIKey == "" && c.Config.AI.Kimi.APIKey == "" && c.Config.AI.Groq.APIKey == "" {
 		return fmt.Errorf("no AI provider configured")
+	}
+
+	// Helper to resolve timeout from config with a sensible default
+	resolveTimeout := func(seconds int) time.Duration {
+		if seconds > 0 {
+			return time.Duration(seconds) * time.Second
+		}
+		return 10 * time.Second
 	}
 
 	// Initialize AI providers
 	var providers []ai.AIProvider
 
-	if c.Config.AI.OpenAI.APIKey != "" {
+	if strings.TrimSpace(c.Config.AI.Gemini.APIKey) != "" {
+		geminiConfig := &ai.ProviderConfig{
+			APIKey:       strings.TrimSpace(c.Config.AI.Gemini.APIKey),
+			Model:        c.Config.AI.Gemini.Model,
+			MaxTokens:    c.Config.AI.Gemini.MaxTokens,
+			Temperature:  c.Config.AI.Gemini.Temperature,
+			TopP:         c.Config.AI.Gemini.TopP,
+			Timeout:      resolveTimeout(c.Config.AI.Gemini.TimeoutSeconds),
+			RateLimitRPM: c.Config.AI.Gemini.RateLimitRPM,
+		}
+		geminiProvider := ai.NewGeminiProvider(geminiConfig, c.ZapLog)
+		providers = append(providers, geminiProvider)
+	}
+
+	if strings.TrimSpace(c.Config.AI.OpenAI.APIKey) != "" {
 		openaiConfig := &ai.ProviderConfig{
-			APIKey:      c.Config.AI.OpenAI.APIKey,
-			Model:       c.Config.AI.OpenAI.Model,
-			MaxTokens:   c.Config.AI.OpenAI.MaxTokens,
-			Temperature: c.Config.AI.OpenAI.Temperature,
-			Timeout:     30 * time.Second,
+			APIKey:       strings.TrimSpace(c.Config.AI.OpenAI.APIKey),
+			Model:        c.Config.AI.OpenAI.Model,
+			MaxTokens:    c.Config.AI.OpenAI.MaxTokens,
+			Temperature:  c.Config.AI.OpenAI.Temperature,
+			TopP:         c.Config.AI.OpenAI.TopP,
+			Timeout:      resolveTimeout(c.Config.AI.OpenAI.TimeoutSeconds),
+			RateLimitRPM: c.Config.AI.OpenAI.RateLimitRPM,
 		}
 		openaiProvider := ai.NewOpenAIProvider(openaiConfig, c.ZapLog)
 		providers = append(providers, openaiProvider)
 	}
 
-	if c.Config.AI.Gemini.APIKey != "" {
-		geminiConfig := &ai.ProviderConfig{
-			APIKey:      c.Config.AI.Gemini.APIKey,
-			Model:       c.Config.AI.Gemini.Model,
-			MaxTokens:   c.Config.AI.Gemini.MaxTokens,
-			Temperature: c.Config.AI.Gemini.Temperature,
-			Timeout:     30 * time.Second,
+	// Groq — OpenAI-compatible provider
+	if strings.TrimSpace(c.Config.AI.Groq.APIKey) != "" {
+		groqConfig := &ai.ProviderConfig{
+			APIKey:       strings.TrimSpace(c.Config.AI.Groq.APIKey),
+			BaseURL:      "https://api.groq.com/openai/v1",
+			Model:        c.Config.AI.Groq.Model,
+			MaxTokens:    c.Config.AI.Groq.MaxTokens,
+			Temperature:  c.Config.AI.Groq.Temperature,
+			TopP:         c.Config.AI.Groq.TopP,
+			Timeout:      resolveTimeout(c.Config.AI.Groq.TimeoutSeconds),
+			RateLimitRPM: c.Config.AI.Groq.RateLimitRPM,
+			ProviderName: "groq",
 		}
-		geminiProvider := ai.NewGeminiProvider(geminiConfig, c.ZapLog)
-		providers = append(providers, geminiProvider)
+		groqProvider := ai.NewOpenAIProvider(groqConfig, c.ZapLog)
+		providers = append(providers, groqProvider)
+	}
+
+	// Kimi (Moonshot) — OpenAI-compatible provider
+	if strings.TrimSpace(c.Config.AI.Kimi.APIKey) != "" {
+		baseURL := strings.TrimSpace(c.Config.AI.Kimi.BaseURL)
+		if baseURL == "" {
+			baseURL = "https://api.moonshot.ai/v1"
+		}
+		kimiConfig := &ai.ProviderConfig{
+			APIKey:       strings.TrimSpace(c.Config.AI.Kimi.APIKey),
+			BaseURL:      baseURL,
+			Model:        c.Config.AI.Kimi.Model,
+			MaxTokens:    c.Config.AI.Kimi.MaxTokens,
+			Temperature:  c.Config.AI.Kimi.Temperature,
+			TopP:         c.Config.AI.Kimi.TopP,
+			Timeout:      resolveTimeout(c.Config.AI.Kimi.TimeoutSeconds),
+			RateLimitRPM: c.Config.AI.Kimi.RateLimitRPM,
+			ProviderName: "kimi",
+		}
+		if kimiConfig.MaxTokens == 0 {
+			kimiConfig.MaxTokens = 2048
+		}
+		if kimiConfig.Temperature == 0 {
+			kimiConfig.Temperature = 1.0 // Kimi API requires temperature=1 for some models
+		}
+		// kimi-k2.6 only accepts temperature=1 and top_p=0.95
+		if strings.HasPrefix(kimiConfig.Model, "kimi-k2") {
+			kimiConfig.Temperature = 1.0
+			kimiConfig.TopP = 0.95
+			if kimiConfig.Timeout < 60*time.Second {
+				kimiConfig.Timeout = 60 * time.Second // K2 thinking mode needs more time
+			}
+		}
+		kimiProvider := ai.NewOpenAIProvider(kimiConfig, c.ZapLog)
+		providers = append(providers, kimiProvider)
 	}
 
 	if len(providers) == 0 {
@@ -2296,17 +2812,39 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	var primary ai.AIProvider
 	var fallbacks []ai.AIProvider
 
-	if c.Config.AI.Primary == "gemini" && len(providers) > 1 {
-		primary = providers[1]
-		fallbacks = []ai.AIProvider{providers[0]}
-	} else {
+	primaryName := c.Config.AI.Primary
+	for i, p := range providers {
+		if p.Name() == primaryName {
+			primary = p
+			fallbacks = append(providers[:i:i], providers[i+1:]...)
+			break
+		}
+	}
+	if primary == nil {
 		primary = providers[0]
 		if len(providers) > 1 {
 			fallbacks = providers[1:]
 		}
 	}
 
-	c.AIProviderManager = ai.NewProviderManager(primary, fallbacks, nil, c.ZapLog)
+	c.AIProviderManager = ai.NewProviderManager(primary, fallbacks, &ai.ProviderManagerConfig{
+		RetryAttempts: 1,
+		RetryDelay:    500 * time.Millisecond,
+	}, c.ZapLog)
+
+	// Validate primary provider connectivity at startup (non-blocking)
+	go func() {
+		checkCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if !c.AIProviderManager.IsAvailable(checkCtx) {
+			c.ZapLog.Warn("Primary AI provider is not available",
+				zap.String("provider", primary.Name()),
+				zap.String("hint", "Check that the API key is valid and has not expired"),
+			)
+		} else {
+			c.ZapLog.Info("Primary AI provider is available", zap.String("provider", primary.Name()))
+		}
+	}()
 
 	// Initialize repositories for AI services
 	userNewsRepo := repositories.NewUserNewsRepository(c.DB, c.ZapLog)
@@ -2335,22 +2873,124 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		c.ZapLog,
 	)
 
-	// Initialize AI orchestrator (use primary provider directly)
-	c.AIOrchestrator = aiservice.NewOrchestrator(
-		primary,
+	// Initialize AI orchestrator (wired to ProviderManager for failover)
+	c.AIOrchestrator = aiservice.NewOrchestratorWithDeps(
+		c.AIProviderManager,
 		c.PortfolioDataProvider,
 		c.ActivityDataProvider,
 		&newsProviderAdapter{svc: c.NewsService},
 		c.ZapLog,
+		aiservice.OrchestratorDeps{},
 	)
 
 	// Initialize basket recommender
 	c.AIRecommender = aiservice.NewRecommender(
-		primary,
+		c.AIProviderManager,
 		&basketRepoAdapter{repo: basketRepo},
 		c.PortfolioDataProvider,
 		c.ZapLog,
 	)
+
+	// Initialize conversation persistence
+	c.ConversationRepo = repositories.NewConversationRepository(c.DB, c.ZapLog)
+	c.ConversationService = conversationsvc.NewService(c.ConversationRepo, c.AIProviderManager, c.ZapLog)
+	c.AIOrchestrator.SetConversations(c.ConversationService)
+
+	// Initialize usage tracking
+	c.UsageRepo = repositories.NewAIUsageRepository(c.DB, c.ZapLog)
+	c.UsageService = usagesvc.NewService(c.UsageRepo, c.ZapLog)
+	c.AIOrchestrator.SetUsageTracker(c.UsageService)
+
+	// Initialize knowledge base (RAG)
+	// Embeddings use Gemini regardless of chat provider; gate on Gemini key availability.
+	if strings.TrimSpace(c.Config.AI.Gemini.APIKey) != "" {
+		c.EmbeddingsClient = embeddings.NewGeminiClient(strings.TrimSpace(c.Config.AI.Gemini.APIKey), c.ZapLog)
+		c.KnowledgeRepo = repositories.NewKnowledgeRepository(c.DB, c.ZapLog)
+		c.KnowledgeService = knowledgesvc.NewService(c.KnowledgeRepo, c.EmbeddingsClient, c.RedisClient, c.ZapLog)
+		c.AIOrchestrator.SetKnowledge(c.KnowledgeService)
+	}
+
+	// Initialize spending analysis (all outflows: card, withdrawal, p2p)
+	spendingSvc := spendingsvc.NewService(c.LedgerSpendingRepo)
+	c.AIOrchestrator.SetSpending(spendingSvc)
+
+	// Initialize balance history (stash growth chart)
+	if c.yieldRepo != nil {
+		c.AIOrchestrator.SetBalanceHistory(c.yieldRepo)
+	}
+
+	// Initialize pattern analysis
+	if c.CardRepo != nil {
+		c.AIOrchestrator.SetPatterns(c.CardRepo)
+	}
+
+	// Initialize comparative context (uses ledger for balances)
+	if c.LedgerService != nil {
+		c.AIOrchestrator.SetAggregateStats(c.LedgerService)
+	}
+
+	// Initialize action tools (funds transfer + audit)
+	if c.LedgerService != nil {
+		c.AIOrchestrator.SetFundsTransferer(&fundsTransfererAdapter{ledger: c.LedgerService})
+		auditRepo := repositories.NewActionAuditRepository(sqlxDB, c.ZapLog)
+		c.AIOrchestrator.SetActionAuditor(auditRepo)
+	}
+
+	// Wire account checker for fraud/freeze checks on AI-initiated transfers
+	if c.UserRepo != nil {
+		c.AIOrchestrator.SetAccountChecker(&accountCheckerAdapter{repo: c.UserRepo})
+	}
+
+	// Use Redis for pending actions (survives restarts, works across instances)
+	if c.RedisClient != nil {
+		c.AIOrchestrator.SetPendingActions(aiservice.NewRedisPendingActions(c.RedisClient, c.ZapLog))
+	}
+
+	// Wire read-only data tools
+	if c.CardRepo != nil {
+		c.AIOrchestrator.SetCardTransactions(c.CardRepo)
+	}
+	if c.DepositRepo != nil {
+		c.AIOrchestrator.SetDepositHistory(c.DepositRepo)
+	}
+	if c.WithdrawalRepo != nil {
+		c.AIOrchestrator.SetWithdrawalHistory(c.WithdrawalRepo)
+	}
+	if c.ReceiptRepo != nil {
+		c.AIOrchestrator.SetReceiptHistory(c.ReceiptRepo)
+	}
+	c.AIOrchestrator.SetBudgetProvider(c.BudgetRepo)
+	c.AIOrchestrator.SetFinancialProfileProvider(c.FinancialProfileRepo)
+	warrantyRepo := repositories.NewWarrantyRepository(sqlxDB)
+	c.AIOrchestrator.SetWarrantyTracker(warrantyRepo)
+
+	// Wire recurring expense detector
+	recurringRepo := repositories.NewRecurringExpenseRepository(sqlxDB)
+	c.AIOrchestrator.SetRecurringDetector(recurringRepo)
+
+	// Wire receipt challenges and savings suggestions
+	if c.ReceiptRepo != nil {
+		c.AIOrchestrator.SetReceiptChallenges(aiservice.NewReceiptChallengeProvider(c.ReceiptRepo, c.BudgetRepo, spendingSvc))
+		c.AIOrchestrator.SetSavingsSuggestions(aiservice.NewSavingsSuggestionProvider(c.ReceiptRepo, spendingSvc))
+	}
+
+	// Wire price tracking
+	priceRepo := repositories.NewPriceTrackingRepository(sqlxDB)
+	c.AIOrchestrator.SetPriceTracker(priceRepo)
+
+	// Wire merchant intelligence
+	merchantRepo := repositories.NewMerchantRepository(sqlxDB)
+	c.AIOrchestrator.SetMerchantAnalyzer(merchantRepo)
+
+	if c.yieldRepo != nil {
+		c.AIOrchestrator.SetYieldProvider(c.yieldRepo)
+	}
+
+	// Wire tax, email, and goals tools
+	c.AIOrchestrator.SetUserProfile(&userProfileAdapter{userRepo: c.UserRepo})
+	if c.EmailService != nil {
+		c.AIOrchestrator.SetReportEmailSender(c.EmailService)
+	}
 
 	c.ZapLog.Info("AI Financial Manager services initialized",
 		zap.String("primary_provider", primary.Name()),
@@ -2426,6 +3066,21 @@ func (c *Container) GetAIOrchestrator() *aiservice.Orchestrator {
 // GetAIRecommender returns the AI recommender
 func (c *Container) GetAIRecommender() *aiservice.Recommender {
 	return c.AIRecommender
+}
+
+// GetConversationService returns the conversation service
+func (c *Container) GetConversationService() *conversationsvc.Service {
+	return c.ConversationService
+}
+
+// GetUsageService returns the usage service
+func (c *Container) GetUsageService() *usagesvc.Service {
+	return c.UsageService
+}
+
+// GetKnowledgeService returns the knowledge service
+func (c *Container) GetKnowledgeService() *knowledgesvc.Service {
+	return c.KnowledgeService
 }
 
 // GetNewsService returns the news service
@@ -2570,6 +3225,7 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 		orderPlacer,
 		nil, // ContributionRecorder - can be added later
 		c.ZapLog,
+		sqlxDB,
 	)
 
 	// Initialize Copy Trading Service
@@ -2607,6 +3263,7 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 			&bridgeWebhookNotifierAdapter{svc: c.NotificationService},
 			c.UserRepo,
 			c.ZapLog,
+			c.DB,
 		)
 		c.BridgeWebhookHandler.SetService(bridgeWebhookService)
 	}
@@ -2625,6 +3282,18 @@ func (a *marketNotificationAdapter) SendPushNotification(ctx context.Context, us
 		return nil
 	}
 	return a.svc.SendGenericNotification(ctx, userID, title, message)
+}
+
+// walletWebhookAdapter adapts wallet.Service to WalletWebhookService interface
+type walletWebhookAdapter struct {
+	walletService *wallet.Service
+}
+
+func (a *walletWebhookAdapter) SyncWalletStatus(ctx context.Context, bridgeWalletID string, status string) error {
+	if a.walletService == nil {
+		return fmt.Errorf("wallet service not available")
+	}
+	return a.walletService.SyncWalletStatus(ctx, bridgeWalletID, status)
 }
 
 // bridgeWebhookNotifierAdapter adapts NotificationService to BridgeWebhookNotifier
@@ -3030,7 +3699,7 @@ func (c *Container) GetAlpacaWebhookHandlers() *handlers.AlpacaWebhookHandlers {
 	}
 	// Determine if webhook verification should be skipped (only in development)
 	skipWebhookVerification := c.Config.Environment == "development" && webhookSecret == ""
-	return handlers.NewAlpacaWebhookHandlers(c.AlpacaEventProcessor, c.Logger, webhookSecret, skipWebhookVerification)
+	return handlers.NewAlpacaWebhookHandlers(c.AlpacaEventProcessor, c.Logger, webhookSecret, skipWebhookVerification, c.Config.Environment)
 }
 
 // GetAnalyticsHandlers returns analytics handlers
@@ -3156,6 +3825,25 @@ func (c *Container) GetInvestmentStashHandlers() *handlers.InvestmentStashHandle
 	return h
 }
 
+// GetPremiumHandlers returns premium feature HTTP handlers
+func (c *Container) GetPremiumHandlers() *premiumhandlers.Handlers {
+	if c.PremiumHandlers == nil {
+		c.PremiumHandlers = premiumhandlers.NewHandlers(
+			c.NairaShieldService,
+			c.BlackTaxService,
+			c.ReceiptSplitService,
+			c.ScamIntelligenceService,
+			c.TaxResidencyService,
+			c.IncomeSmoothingService,
+			c.FinancialTraumaService,
+			c.VisaProofService,
+			c.PanicButtonService,
+			c.ZapLog,
+		)
+	}
+	return c.PremiumHandlers
+}
+
 // GetCopyTradingRepository returns the copy trading repository
 func (c *Container) GetCopyTradingRepository() *repositories.CopyTradingRepository {
 	return c.CopyTradingRepo
@@ -3212,6 +3900,7 @@ func (c *Container) initializeBridgeServices() {
 	// Full service will be wired after domain services are initialized
 	c.BridgeWebhookHandler = handlers.NewBridgeWebhookHandler(
 		nil, // Service will be set later
+		&walletWebhookAdapter{walletService: c.WalletService},
 		c.ZapLog,
 		webhookSecret,
 		skipWebhookVerification,
@@ -3284,6 +3973,114 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 	}
 
 	c.ZapLog.Info("Instant funding services initialized")
+
+	// --- ChainRails (cross-chain deposit funnel) ---
+	c.ZapLog.Info("ChainRails config",
+		zap.Bool("api_key_present", c.Config.ChainRails.APIKey != ""),
+		zap.Bool("webhook_secret_present", c.Config.ChainRails.WebhookSecret != ""),
+		zap.String("destination_chain", c.Config.ChainRails.DestinationChain),
+		zap.String("settlement_token", c.Config.ChainRails.SettlementToken))
+
+	if c.Config.ChainRails.APIKey != "" {
+		crClient := chainrails.NewClient(chainrails.Config{
+			APIKey:           c.Config.ChainRails.APIKey,
+			WebhookSecret:    c.Config.ChainRails.WebhookSecret,
+			BaseURL:          c.Config.ChainRails.BaseURL,
+			DestinationChain: c.Config.ChainRails.DestinationChain,
+			SettlementToken:  c.Config.ChainRails.SettlementToken,
+		}, c.ZapLog)
+		c.ChainRailsHandlers = fundinghandlers.NewChainRailsHandlers(
+			crClient, c.FundingService, c.Config.ChainRails.WebhookSecret, c.Logger,
+		)
+		// Wire ChainRails into withdrawal service for cross-chain withdrawals
+		if c.WithdrawalService != nil {
+			c.WithdrawalService.SetChainRailsAdapter(crClient)
+			c.ChainRailsHandlers.SetWithdrawalService(c.WithdrawalService)
+		}
+		c.ZapLog.Info("ChainRails deposit funnel initialized")
+	} else {
+		c.ZapLog.Warn("ChainRails API key is empty, skipping initialization")
+	}
+
+	// --- Paj Cash (NGN on/off ramp) ---
+	if c.Config.Paj.APIKey != "" {
+		pajClient := pajadapter.NewClient(pajadapter.Config{
+			APIKey:        c.Config.Paj.APIKey,
+			BaseURL:       c.Config.Paj.BaseURL,
+			WebhookURL:    c.Config.Paj.WebhookURL,
+			WalletAddress: c.Config.Paj.WalletAddress,
+			TokenMint:     c.Config.Paj.TokenMint,
+			Chain:         c.Config.Paj.Chain,
+		}, c.ZapLog)
+		pajService := pajfunding.NewService(sqlxDB, pajClient, &WithdrawalLedgerAdapter{ledgerService: c.LedgerService}, c.AllocationService, &PajDepositLedgerAdapter{ledgerService: c.LedgerService}, c.RedisClient, c.Config.Security.EncryptionKey, c.ZapLog)
+		pajService.SetDepositRepository(c.DepositRepo)
+		if c.NotificationService != nil {
+			pajService.SetNotificationService(c.NotificationService)
+		}
+		if c.WalletService != nil {
+			pajService.SetWalletProvider(c.WalletService)
+		}
+		if c.BridgeAdapter != nil && c.WalletService != nil {
+			pajService.SetBridgeTransfer(c.BridgeAdapter, c.Config.Paj.Chain, &UserProfileProviderAdapter{repo: c.UserRepo})
+		}
+		if c.GameplayHooks != nil {
+			pajService.SetGameplayHooks(c.GameplayHooks)
+		}
+		if c.LimitsService != nil {
+			pajService.SetLimitsChecker(&PajLimitsAdapter{limitsService: c.LimitsService})
+		}
+		c.PajHandlers = fundinghandlers.NewPajHandlers(pajService, c.ZapLog)
+		c.ZapLog.Info("Paj Cash NGN ramp initialized")
+	} else {
+		c.ZapLog.Warn("Paj API key is empty, skipping initialization")
+	}
+}
+
+// PajLimitsAdapter adapts limits.Service to pajfunding.WithdrawalLimitsChecker.
+type PajLimitsAdapter struct {
+	limitsService *limits.Service
+}
+
+func (a *PajLimitsAdapter) ValidateWithdrawal(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error {
+	result, err := a.limitsService.ValidateWithdrawal(ctx, userID, amount)
+	if err != nil {
+		return err
+	}
+	if !result.Allowed {
+		return fmt.Errorf("%s", result.Reason)
+	}
+	return nil
+}
+
+// PajDepositLedgerAdapter credits USDC balance for PAJ onramp deposits using the
+// correct double-entry direction (Debit = increase user balance).
+type PajDepositLedgerAdapter struct {
+	ledgerService *ledger.Service
+}
+
+func (a *PajDepositLedgerAdapter) CreditUSDCBalance(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string, metadata map[string]interface{}) error {
+	userAccount, err := a.ledgerService.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeUSDCBalance)
+	if err != nil {
+		return fmt.Errorf("get user USDC account: %w", err)
+	}
+	systemAccount, err := a.ledgerService.GetSystemAccount(ctx, entities.AccountTypeSystemBufferUSDC)
+	if err != nil {
+		return fmt.Errorf("get system buffer account: %w", err)
+	}
+	desc := "PAJ onramp USDC deposit"
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeDeposit,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &desc,
+		Metadata:        metadata,
+		Entries: []entities.CreateEntryRequest{
+			{AccountID: userAccount.ID, EntryType: entities.EntryTypeDebit, Amount: amount, Currency: "USDC", Description: &desc},
+			{AccountID: systemAccount.ID, EntryType: entities.EntryTypeCredit, Amount: amount, Currency: "USDC", Description: &desc},
+		},
+	}
+	_, err = a.ledgerService.CreateTransaction(ctx, req)
+	return err
 }
 
 // InstantFundingAlpacaAdapterImpl adapts alpaca.Service to funding.InstantFundingAlpacaAdapter
@@ -3353,4 +4150,52 @@ func (c *Container) GetRebalancingWorkerDeps() (
 		logger:           c.ZapLog,
 	}}
 	return
+}
+
+// SubscriptionBridgeTransferAdapter transfers subscription fees from user Bridge wallet to company wallet.
+type SubscriptionBridgeTransferAdapter struct {
+	bridgeClient      *bridge.Client
+	walletRepo        *repositories.WalletRepository
+	userRepo          *repositories.UserRepository
+	companyWalletAddr string
+	logger            *zap.Logger
+}
+
+func (a *SubscriptionBridgeTransferAdapter) TransferToCompanyWallet(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, reference string) error {
+	if a.companyWalletAddr == "" || a.bridgeClient == nil {
+		return fmt.Errorf("bridge transfer not configured")
+	}
+
+	wallet, err := a.walletRepo.GetByUserAndChain(ctx, userID, entities.WalletChainSolana)
+	if err != nil {
+		return fmt.Errorf("failed to get user wallet: %w", err)
+	}
+	if wallet == nil || wallet.BridgeWalletID == "" {
+		return fmt.Errorf("user has no Bridge Solana wallet")
+	}
+
+	user, err := a.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("failed to get user profile: %w", err)
+	}
+	if user == nil || user.BridgeCustomerID == nil || *user.BridgeCustomerID == "" {
+		return fmt.Errorf("user has no Bridge customer ID")
+	}
+
+	_, err = a.bridgeClient.CreateTransfer(ctx, &bridge.CreateTransferRequest{
+		ClientReferenceID: reference,
+		OnBehalfOf:        *user.BridgeCustomerID,
+		Amount:            amount.StringFixed(2),
+		Source: bridge.TransferSource{
+			PaymentRail:    bridge.PaymentRail("bridge_wallet"),
+			Currency:       bridge.CurrencyUSDC,
+			BridgeWalletID: wallet.BridgeWalletID,
+		},
+		Destination: bridge.TransferDestination{
+			PaymentRail: bridge.PaymentRailSolana,
+			Currency:    bridge.CurrencyUSDC,
+			ToAddress:   a.companyWalletAddr,
+		},
+	})
+	return err
 }

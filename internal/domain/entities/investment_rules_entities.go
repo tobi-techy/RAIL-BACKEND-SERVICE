@@ -273,5 +273,16 @@ func (c *InvestmentRulesConfig) Validate() error {
 	if err := c.RoundUpMultiplier.Validate(); err != nil {
 		return err
 	}
+	if c.AgeBasedAllocation != nil && c.AgeBasedAllocation.Enabled {
+		if c.AgeBasedAllocation.MinStockPct.LessThan(decimal.NewFromInt(20)) {
+			return fmt.Errorf("MinStockPct must be >= 20, got %s", c.AgeBasedAllocation.MinStockPct)
+		}
+		if c.AgeBasedAllocation.MaxStockPct.GreaterThan(decimal.NewFromInt(95)) {
+			return fmt.Errorf("MaxStockPct must be <= 95, got %s", c.AgeBasedAllocation.MaxStockPct)
+		}
+		if c.AgeBasedAllocation.MinStockPct.GreaterThan(c.AgeBasedAllocation.MaxStockPct) {
+			return fmt.Errorf("MinStockPct (%s) must be <= MaxStockPct (%s)", c.AgeBasedAllocation.MinStockPct, c.AgeBasedAllocation.MaxStockPct)
+		}
+	}
 	return nil
 }

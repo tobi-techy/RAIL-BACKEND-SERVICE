@@ -22,21 +22,26 @@ import (
 	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
 	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	bridgeadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
-	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
 	diditadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
+	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/database"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
-	rebalancing_worker "github.com/rail-service/rail_service/internal/workers/rebalancing_worker"
+	ai_insights "github.com/rail-service/rail_service/internal/workers/ai_insights"
 	balance_reconciliation "github.com/rail-service/rail_service/internal/workers/balance_reconciliation"
 	bridge_govid_repair "github.com/rail-service/rail_service/internal/workers/bridge_govid_repair"
 	deposit_allocation_recovery "github.com/rail-service/rail_service/internal/workers/deposit_allocation_recovery"
 	"github.com/rail-service/rail_service/internal/workers/funding_webhook"
+	gameplay_workers "github.com/rail-service/rail_service/internal/workers/gameplay"
 	kyc_autoinvest "github.com/rail-service/rail_service/internal/workers/kyc_autoinvest"
 	"github.com/rail-service/rail_service/internal/workers/kyc_sync"
+	paj_offramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_offramp_recovery"
 	portfolio_snapshot_worker "github.com/rail-service/rail_service/internal/workers/portfolio_snapshot_worker"
+	rebalancing_worker "github.com/rail-service/rail_service/internal/workers/rebalancing_worker"
 	scheduled_investment_worker "github.com/rail-service/rail_service/internal/workers/scheduled_investment_worker"
+	scheduled_notifications "github.com/rail-service/rail_service/internal/workers/scheduled_notifications"
+	subscription_billing "github.com/rail-service/rail_service/internal/workers/subscription_billing"
 	walletprovisioning "github.com/rail-service/rail_service/internal/workers/wallet_provisioning"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/metrics"
@@ -51,17 +56,26 @@ type Application struct {
 	container *di.Container
 
 	// Workers
-	scheduler                   *walletprovisioning.Scheduler
-	webhookManager              *funding_webhook.Manager
-	scheduledInvestmentWorker   *scheduled_investment_worker.Worker
-	portfolioSnapshotWorker     *portfolio_snapshot_worker.Worker
-	depositAllocationWorker     *deposit_allocation_recovery.Worker
-	kycAutoInvestWorker         *kyc_autoinvest.Worker
-	rebalancingWorker           *rebalancing_worker.Worker
-	kycSyncWorker               *kyc_sync.Worker
-	balanceReconciliationWorker *balance_reconciliation.Worker
-	bridgeGovIDRepairWorker     *bridge_govid_repair.Worker
-	bridgeGovIDRepairCancel     context.CancelFunc
+	scheduler                    *walletprovisioning.Scheduler
+	webhookManager               *funding_webhook.Manager
+	scheduledInvestmentWorker    *scheduled_investment_worker.Worker
+	portfolioSnapshotWorker      *portfolio_snapshot_worker.Worker
+	depositAllocationWorker      *deposit_allocation_recovery.Worker
+	pajOfframpRecoveryWorker     *paj_offramp_recovery.Worker
+	kycAutoInvestWorker          *kyc_autoinvest.Worker
+	rebalancingWorker            *rebalancing_worker.Worker
+	kycSyncWorker                *kyc_sync.Worker
+	balanceReconciliationWorker  *balance_reconciliation.Worker
+	bridgeGovIDRepairWorker      *bridge_govid_repair.Worker
+	bridgeGovIDRepairCancel      context.CancelFunc
+	scheduledNotificationsWorker *scheduled_notifications.Worker
+	subscriptionBillingWorker    *subscription_billing.Worker
+	streakEvaluatorWorker        *gameplay_workers.StreakEvaluator
+	challengeRotatorWorker       *gameplay_workers.ChallengeRotator
+	achievementCheckerWorker     *gameplay_workers.AchievementChecker
+	insightGeneratorWorker       *gameplay_workers.InsightGenerator
+	dailyMetricsWorker           *gameplay_workers.DailyMetricsWorker
+	aiInsightsWorker             *ai_insights.Worker
 
 	// Tracing
 	tracingShutdown func(context.Context) error
@@ -196,6 +210,13 @@ func (app *Application) initializeWorkers() error {
 		app.log.Info("Deposit allocation recovery worker started")
 	}
 
+	// Paj offramp recovery worker — auto-reverses stuck NGN withdrawals
+	if app.container.DB != nil && app.container.PajHandlers != nil {
+		app.pajOfframpRecoveryWorker = paj_offramp_recovery.NewWorker(app.container.DB, app.log.Zap())
+		go app.pajOfframpRecoveryWorker.Start(context.Background())
+		app.log.Info("Paj offramp recovery worker started")
+	}
+
 	// KYC auto-invest worker
 	if app.container.DB != nil && app.container.GetAutoInvestService() != nil {
 		app.kycAutoInvestWorker = kyc_autoinvest.NewWorker(
@@ -226,6 +247,99 @@ func (app *Application) initializeWorkers() error {
 	// KYC Sumsub sync worker
 	if err := app.initializeKYCSyncWorker(); err != nil {
 		return fmt.Errorf("failed to initialize KYC sync worker: %w", err)
+	}
+
+	// Scheduled push notifications (KYC reminders + daily engagement)
+	if app.container.ExpoPushService != nil && app.container.UserRepo != nil {
+		app.scheduledNotificationsWorker = scheduled_notifications.NewWorker(
+			app.container.UserRepo,
+			app.container.ExpoPushService,
+			app.log.Zap(),
+		)
+		go app.scheduledNotificationsWorker.Start(context.Background())
+		app.log.Info("Scheduled notifications worker started")
+	}
+
+	// Subscription billing worker
+	if app.container.SubscriptionService != nil {
+		app.subscriptionBillingWorker = subscription_billing.NewWorker(
+			app.container.SubscriptionService,
+			app.log.Zap(),
+		)
+		go app.subscriptionBillingWorker.Start(context.Background())
+		app.log.Info("Subscription billing worker started")
+	}
+
+	// Gameplay workers
+	if app.container.GameplayStreakService != nil {
+		// Resolve push notifier: SNS preferred, Expo fallback
+		var pushSender gameplay_workers.PushNotifier
+		if app.container.SNSPushService != nil {
+			pushSender = app.container.SNSPushService
+		} else if app.container.ExpoPushService != nil {
+			pushSender = app.container.ExpoPushService
+		}
+
+		app.streakEvaluatorWorker = gameplay_workers.NewStreakEvaluator(
+			app.container.GameplayStreakService, pushSender, app.log.Zap())
+		go app.streakEvaluatorWorker.Start(context.Background())
+
+		app.challengeRotatorWorker = gameplay_workers.NewChallengeRotator(
+			app.container.GameplayChallengeService, app.log.Zap())
+		go app.challengeRotatorWorker.Start(context.Background())
+
+		app.achievementCheckerWorker = gameplay_workers.NewAchievementChecker(
+			app.container.GameplayAchievementService, app.container.GameplayRepo, app.log.Zap())
+		go app.achievementCheckerWorker.Start(context.Background())
+
+		app.insightGeneratorWorker = gameplay_workers.NewInsightGenerator(
+			app.container.GameplayRepo,
+			app.container.LedgerService,
+			app.container.GameplayXPService,
+			app.container.GameplayStreakService,
+			app.container.SubscriptionService,
+			pushSender,
+			app.log.Zap())
+		go app.insightGeneratorWorker.Start(context.Background())
+
+		app.dailyMetricsWorker = gameplay_workers.NewDailyMetricsWorker(
+			app.container.GameplayRepo,
+			app.container.GameplayRepo,
+			app.container.LedgerService,
+			app.container.GameplayChallengeService,
+			app.container.GameplayStreakService,
+			app.log.Zap())
+		go app.dailyMetricsWorker.Start(context.Background())
+
+		app.log.Info("Gameplay workers started (streak evaluator, challenge rotator, achievement checker, insight generator, daily metrics)")
+	}
+
+	if app.container.UserRepo != nil && app.container.LedgerSpendingRepo != nil && app.container.LedgerService != nil {
+		var pushSender ai_insights.PushSender
+		if app.container.SNSPushService != nil {
+			pushSender = app.container.SNSPushService
+		} else if app.container.ExpoPushService != nil {
+			pushSender = app.container.ExpoPushService
+		}
+
+		if pushSender != nil {
+			var cooldowns ai_insights.CooldownStore
+			if app.container.RedisClient != nil {
+				cooldowns = app.container.RedisClient.Client()
+			}
+			app.aiInsightsWorker = ai_insights.NewWorker(
+				app.container.UserRepo,
+				pushSender,
+				cooldowns,
+				app.container.LedgerSpendingRepo,
+				app.container.BudgetRepo,
+				app.container.LedgerService,
+				app.container.SubscriptionService,
+				app.log.Zap(),
+			)
+			go app.aiInsightsWorker.Start(context.Background())
+			app.log.Info("AI insights worker started")
+		}
 	}
 
 	return nil
@@ -272,6 +386,9 @@ func (app *Application) initializeKYCSyncWorker() error {
 		app.log.Zap(),
 		diditClient,
 	)
+	if app.container.NotificationService != nil {
+		kycSvc.SetNotifier(app.container.NotificationService)
+	}
 
 	app.kycSyncWorker = kyc_sync.NewWorkerWithRetry(
 		app.container.KYCSyncJobRepo,
@@ -358,6 +475,7 @@ func (app *Application) initializeFundingWebhooks() error {
 		app.container.FundingService,
 		app.container.AuditService,
 		app.log,
+		app.container.RedisClient.Client(),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create webhook manager: %w", err)
@@ -433,6 +551,7 @@ func (app *Application) Start() error {
 	}()
 
 	// Start metrics collection
+	metrics.InitBusinessMetrics()
 	go app.startMetricsCollection()
 
 	// One-time backfill: populate missing virtual account details from Bridge
@@ -440,6 +559,11 @@ func (app *Application) Start() error {
 
 	// Drop legacy constraints on virtual_accounts that block multi-currency VAs
 	go app.dropLegacyVirtualAccountConstraints()
+
+	// Hotfix: ensure basic_complete is in onboarding_status CHECK constraints.
+	// Migration 140 was a no-op (ALTER TYPE on a TEXT column) and 142 may not
+	// run if schema_migrations is dirty. This is idempotent — safe on every boot.
+	go app.fixOnboardingStatusConstraint()
 
 	return nil
 }
@@ -515,16 +639,64 @@ func (app *Application) dropLegacyVirtualAccountConstraints() {
 	app.log.Info("Legacy virtual_accounts constraints dropped")
 }
 
+// fixOnboardingStatusConstraint ensures basic_complete is allowed in the onboarding_status CHECK constraints.
+func (app *Application) fixOnboardingStatusConstraint() {
+	stmts := []string{
+		`ALTER TABLE users DROP CONSTRAINT IF EXISTS chk_onboarding_status`,
+		`ALTER TABLE users ADD CONSTRAINT chk_onboarding_status CHECK (onboarding_status IN ('started', 'basic_complete', 'kyc_pending', 'kyc_approved', 'kyc_rejected', 'wallets_pending', 'completed'))`,
+		`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_onboarding_status_check`,
+		`ALTER TABLE users ADD CONSTRAINT users_onboarding_status_check CHECK (onboarding_status IN ('started', 'basic_complete', 'kyc_pending', 'kyc_approved', 'kyc_rejected', 'wallets_pending', 'completed'))`,
+	}
+	for _, stmt := range stmts {
+		if _, err := app.container.DB.Exec(stmt); err != nil {
+			app.log.Warn("fixOnboardingStatusConstraint failed", "error", err, "stmt", stmt)
+		}
+	}
+	app.log.Info("Onboarding status constraint fixed")
+}
+
 func (app *Application) startMetricsCollection() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
+		ctx := context.Background()
+
 		// Update database connection metrics
 		stats := app.container.DB.Stats()
 		metrics.DatabaseConnectionsGauge.WithLabelValues("open").Set(float64(stats.OpenConnections))
 		metrics.DatabaseConnectionsGauge.WithLabelValues("idle").Set(float64(stats.Idle))
 		metrics.DatabaseConnectionsGauge.WithLabelValues("in_use").Set(float64(stats.InUse))
+
+		// Update business gauges from DB
+		if metrics.Business != nil {
+			var count int
+			if err := app.container.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM users").Scan(&count); err == nil {
+				metrics.Business.UsersRegistered.Add(0) // ensure metric exists
+				metrics.ActiveUsersGauge.Set(float64(count))
+				metrics.Business.ActiveUsers.Set(float64(count))
+			}
+
+			var totalBalance float64
+			if err := app.container.DB.QueryRowContext(ctx, "SELECT COALESCE(SUM(balance),0) FROM ledger_accounts WHERE account_type IN ('spending_balance','stash_balance')").Scan(&totalBalance); err == nil {
+				metrics.Business.TotalBalance.Set(totalBalance)
+			}
+
+			var stashBal float64
+			if err := app.container.DB.QueryRowContext(ctx, "SELECT COALESCE(SUM(balance),0) FROM ledger_accounts WHERE account_type = 'stash_balance'").Scan(&stashBal); err == nil {
+				metrics.Business.StashBalanceTotal.Set(stashBal)
+			}
+
+			var spendBal float64
+			if err := app.container.DB.QueryRowContext(ctx, "SELECT COALESCE(SUM(balance),0) FROM ledger_accounts WHERE account_type = 'spending_balance'").Scan(&spendBal); err == nil {
+				metrics.Business.SpendBalanceTotal.Set(spendBal)
+			}
+
+			var avgBal float64
+			if err := app.container.DB.QueryRowContext(ctx, "SELECT COALESCE(AVG(balance),0) FROM ledger_accounts WHERE account_type IN ('spending_balance','stash_balance') AND balance > 0").Scan(&avgBal); err == nil {
+				metrics.Business.AverageBalance.Set(avgBal)
+			}
+		}
 	}
 }
 
@@ -595,6 +767,9 @@ func (app *Application) stopWorkers() {
 		app.log.Info("Stopping deposit allocation recovery worker...")
 		app.depositAllocationWorker.Stop()
 	}
+	if app.pajOfframpRecoveryWorker != nil {
+		app.pajOfframpRecoveryWorker.Stop()
+	}
 
 	// Stop KYC auto-invest worker
 	if app.kycAutoInvestWorker != nil {
@@ -619,6 +794,29 @@ func (app *Application) stopWorkers() {
 		app.log.Info("Stopping bridge gov ID repair worker...")
 		app.bridgeGovIDRepairCancel()
 		app.bridgeGovIDRepairCancel = nil
+	}
+
+	// Stop subscription billing worker
+	if app.subscriptionBillingWorker != nil {
+		app.log.Info("Stopping subscription billing worker...")
+		app.subscriptionBillingWorker.Stop()
+	}
+
+	// Stop gameplay workers
+	if app.streakEvaluatorWorker != nil {
+		app.streakEvaluatorWorker.Stop()
+	}
+	if app.challengeRotatorWorker != nil {
+		app.challengeRotatorWorker.Stop()
+	}
+	if app.achievementCheckerWorker != nil {
+		app.achievementCheckerWorker.Stop()
+	}
+	if app.insightGeneratorWorker != nil {
+		app.insightGeneratorWorker.Stop()
+	}
+	if app.dailyMetricsWorker != nil {
+		app.dailyMetricsWorker.Stop()
 	}
 }
 

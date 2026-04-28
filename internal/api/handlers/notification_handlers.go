@@ -11,6 +11,8 @@ import (
 	"go.uber.org/zap"
 )
 
+const maxNotificationLimit = 100
+
 // DeviceTokenRepo interface for device token operations
 type DeviceTokenRepo interface {
 	RegisterToken(ctx context.Context, userID uuid.UUID, token, platform string, appVersion, deviceModel, osVersion *string) (*repositories.DeviceToken, error)
@@ -21,7 +23,7 @@ type DeviceTokenRepo interface {
 type NotificationRepo interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*repositories.Notification, error)
 	GetUnreadCount(ctx context.Context, userID uuid.UUID) (int, error)
-	MarkAsRead(ctx context.Context, userID, notificationID uuid.UUID) error
+	MarkAsRead(ctx context.Context, userID, notificationID uuid.UUID) (bool, error)
 	MarkAllAsRead(ctx context.Context, userID uuid.UUID) error
 }
 
@@ -72,7 +74,11 @@ func (h *NotificationHandlers) RegisterDeviceToken(c *gin.Context) {
 		return
 	}
 
-	h.logger.Info("Device token registered", zap.String("user_id", userID.(uuid.UUID).String()), zap.String("platform", req.Platform))
+	h.logger.Info("Device token registered",
+		zap.String("platform", req.Platform),
+		zap.Int("token_length", len(req.Token)),
+		zap.String("token_prefix", req.Token[:min(40, len(req.Token))]))
+
 	c.JSON(http.StatusOK, gin.H{"id": dt.ID, "message": "token registered"})
 }
 
@@ -116,6 +122,15 @@ func (h *NotificationHandlers) GetNotifications(c *gin.Context) {
 
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > maxNotificationLimit {
+		limit = maxNotificationLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
 
 	notifications, err := h.notificationRepo.GetByUserID(c.Request.Context(), userID.(uuid.UUID), limit, offset)
 	if err != nil {
@@ -169,9 +184,14 @@ func (h *NotificationHandlers) MarkAsRead(c *gin.Context) {
 		return
 	}
 
-	if err := h.notificationRepo.MarkAsRead(c.Request.Context(), userID.(uuid.UUID), notificationID); err != nil {
+	found, err := h.notificationRepo.MarkAsRead(c.Request.Context(), userID.(uuid.UUID), notificationID)
+	if err != nil {
 		h.logger.Error("Failed to mark notification as read", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to mark as read"})
+		return
+	}
+	if !found {
+		c.JSON(http.StatusNotFound, gin.H{"error": "notification not found"})
 		return
 	}
 

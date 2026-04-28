@@ -1,0 +1,173 @@
+SOURCE: HMRC GOV.UK - Check if you need to pay tax when you receive cryptoassets
+URL: https://www.gov.uk/guidance/check-if-you-need-to-pay-tax-when-you-receive-cryptoassets
+LAST UPDATED: April 2025
+
+Check if you need to pay tax when you receive cryptoassets - GOV.UK
+GOV.UK
+Services and information
+Benefits
+Births, death, marriages and care
+Business and self-employed
+Childcare and parenting
+Citizenship and living in the UK
+Crime, justice and the law
+Disabled people
+Driving and transport
+Education and learning
+Employing people
+Environment and countryside
+Housing and local services
+Money and tax
+Passports, travel and living abroad
+Visas and immigration
+Working, jobs and pensions
+Government activity
+Departments
+Departments, agencies and public bodies
+News stories, speeches, letters and notices
+Guidance and regulation
+Detailed guidance, regulations and rules
+Research and statistics
+Reports, analysis and official statistics
+Policy papers and consultations
+Consultations and strategy
+Transparency
+Data, Freedom of Information releases and corporate reports
+Search GOV.UK
+Search GOV.UK
+Search
+Search GOV.UK
+Search
+Money
+Dealing with HMRC
+Paying HMRC
+Income Tax and National Insurance
+Guidance
+Check if you need to pay tax when you receive cryptoassets
+Find out how Income Tax and National Insurance contributions apply when you receive cryptoassets (like cryptocurrency or bitcoin).
+From:
+HM Revenue & Customs
+Published
+19 December 2018
+Last updated
+28 April 2025
+See all updates
+Get emails about this page
+Contents
+If you receive tokens from mining, staking, lending or liquidity pool arrangements
+If an employer pays you tokens
+If you sell the cryptoasset you received at a later date
+Records you must keep
+More information
+Print this page
+Any cryptoasset exchange tokens (also known as cryptocurrency) you receive from employment, or from activities such as mining, staking or lending count as income. This includes any income earned from Decentralised Finance ( DeFi ).
+If you receive tokens as income, you’ll need to keep records and may need to pay:
+Income Tax
+National Insurance contributions
+If you purchased the tokens yourself, you do not need to pay tax on the tokens when you buy them, but you may need to pay tax when you sell them .
+If you receive tokens from mining, staking, lending or liquidity pool arrangements
+If you receive tokens from mining, staking or lending (including from DeFi ) and are not carrying on a trade, HMRC will treat the tokens as other taxable income .
+You can get up to £1,000 allowance each tax year for trading and miscellaneous income. The income you earn from your cryptoassets will count towards this allowance.
+You must tell HMRC if your total miscellaneous income from all sources is:
+between £1,000 and £2,500 — contact HMRC
+over £2,500 — register for Self Assessment
+If an employer pays you tokens
+If you receive cryptoassets as employment income they will count as ‘money’s worth’. The value of the asset you receive will be subject to Income Tax and National Insurance contributions.
+Check if the tokens you’re paid are classed as readily convertible assets (an asset that can be easily exchanged for cash).
+Exchange tokens like bitcoin are readily convertible assets.
+If your income is a readily convertible asset
+UK employers must pay your Income Tax and National Insurance contributions through PAYE before they pay you.
+If they pay you in tokens, they’ll estimate the value of them, and pay Income Tax and National Insurance contributions based on the estimate. They’ll then deduct tax and contributions from other wages you receive in that period.
+It is your responsibility to check and make sure the correct tax is paid to HMRC.
+If your income is not a readily convertible asset
+Ask your employer if they’ve paid your Income Tax through PAYE. If they have not, you’ll need to pay it yourself.
+To pay your own Income Tax, complete a Self Assessment tax return in pound sterling.
+If you sell the cryptoasset you received at a later date
+If you sell the cryptoasset that you’ve paid Income Tax on at a later date, you should calculate Capital Gains Tax as normal on any increase in the value of the tokens since you received them.
+Records you must keep
+You must keep separate records for the tokens you receive, including:
+type of tokens
+date you received them
+number of tokens you received
+number of tokens you have in total
+value in pound sterling
+bank statements
+the details of the disposal — if you dispose of the tokens
+You may also want to keep other records such as wallet addresses.
+HMRC might ask for your records if they carry out a compliance check.
+More information
+You can read further guidance on how cryptoassets are taxed .
+Watch a video about how cryptoassets are taxed for individuals.
+Cryptoassets and paying tax
+Updates to this page
+Published 19 December 2018
+Last updated 28 April 2025
+‐ hide all updates"
+data-module="ga4-event-tracker"
+data-ga4-expandable> + show all updates
+28 April 2025
+Updated to include guidance on selling cryptoassets received at a later date, added a YouTube video on how cryptoassets are taxed for individuals. Also removed links to the cryptoassets taskforce final report and the HS287 helpsheet as no longer relevant.
+19 December 2018
+First published.
+Get emails about this page
+Print this page
+Contents
+Related content
+Check if you need to pay tax when you receive cryptoassets
+Cryptoassets
+Cryptoassets Manual
+Detailed guidance
+Information you need to give to UK cryptoasset service providers
+Check if you need to pay tax when you sell cryptoassets
+Tell HMRC about unpaid tax on cryptoassets
+Collection
+Cryptoassets
+Explore the topic
+Income Tax and National Insurance
+Paying HMRC
+Special types of pay
+Maybe
+Yes this page is useful
+No this page is not useful
+Thank you for your feedback
+Don’t include personal or financial information like your National Insurance number or credit card details.
+This field is for robots only. Please leave blank
+What were you doing?
+What went wrong?
+Cancel
+Please fill in this survey (opens in a new tab) .
+Cancel
+Services and information
+Benefits
+Births, death, marriages and care
+Business and self-employed
+Childcare and parenting
+Citizenship and living in the UK
+Crime, justice and the law
+Disabled people
+Driving and transport
+Education and learning
+Employing people
+Environment and countryside
+Housing and local services
+Money and tax
+Passports, travel and living abroad
+Visas and immigration
+Working, jobs and pensions
+Government activity
+Departments
+Guidance and regulation
+Research and statistics
+Policy papers and consultations
+Transparency
+How government works
+Get involved
+Support links
+Privacy
+Accessibility statement
+Contact
+Terms and conditions
+Rhestr o Wasanaethau Cymraeg
+Government Digital Service
+All content is available under the Open Government Licence v3.0 , except where otherwise stated
+© Crown copyright

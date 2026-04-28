@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.24-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 # Install necessary packages for building
 RUN apk add --no-cache git ca-certificates tzdata gcc musl-dev
@@ -49,6 +49,9 @@ COPY --from=builder /app/configs /configs
 
 # Copy migrations
 COPY --from=builder /app/migrations /migrations
+
+# Copy static files (AASA for passkeys)
+COPY --from=builder /app/static /static
 
 # Use non-root user
 USER builduser

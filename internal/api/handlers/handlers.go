@@ -44,6 +44,9 @@ type (
 	MarketHandlers            = investing.MarketHandlers
 	AIChatHandlers            = investing.AIChatHandlers
 	AICfoHandler              = investing.AICfoHandler
+	ConversationHandlers      = investing.ConversationHandlers
+	UsageHandlers             = investing.UsageHandlers
+	KnowledgeHandlers         = investing.KnowledgeHandlers
 
 	// Trading
 	CopyTradingHandlers         = trading.CopyTradingHandlers
@@ -77,7 +80,10 @@ type (
 	IntegrationHandlers        = common.IntegrationHandlers
 	MobileHandlers             = common.MobileHandlers
 	NewsHandlers               = common.NewsHandlers
-	NotificationWorkerHandlers = common.NotificationWorkerHandlers
+	// NotificationWorkerHandlers is deprecated — use WorkerAdminHandlers for worker admin
+	// and NotificationHandlers for notification CRUD.
+	NotificationWorkerHandlers = common.WorkerAdminHandlers
+	WorkerAdminHandlers        = common.WorkerAdminHandlers
 )
 
 // Re-export constructors from subpackages
@@ -116,6 +122,14 @@ var (
 	NewMarketHandlers            = investing.NewMarketHandlers
 	NewAIChatHandlers            = investing.NewAIChatHandlers
 	NewAICfoHandler              = investing.NewAICfoHandler
+	NewVoiceHandler              = investing.NewVoiceHandler
+	NewImageAnalysisHandler      = investing.NewImageAnalysisHandler
+	NewPremiumAIHandlers         = investing.NewPremiumAIHandlers
+	NewConversationHandlers      = investing.NewConversationHandlers
+	NewUsageHandlers             = investing.NewUsageHandlers
+	NewKnowledgeHandlers         = investing.NewKnowledgeHandlers
+	NewReceiptSplitHandler       = investing.NewReceiptSplitHandler
+	NewHouseholdHandler          = investing.NewHouseholdHandler
 )
 
 // Trading constructors
@@ -161,7 +175,8 @@ var (
 	NewIntegrationHandlers        = common.NewIntegrationHandlers
 	NewMobileHandlers             = common.NewMobileHandlers
 	NewNewsHandlers               = common.NewNewsHandlers
-	NewNotificationWorkerHandlers = common.NewNotificationWorkerHandlers
+	NewNotificationWorkerHandlers = common.NewWorkerAdminHandlers
+	NewWorkerAdminHandlers        = common.NewWorkerAdminHandlers
 )
 
 // Re-export common utilities

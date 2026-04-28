@@ -48,7 +48,9 @@ func (s *LoginProtectionService) CheckLoginAllowed(ctx context.Context, identifi
 	lockTTL, err := s.redis.TTL(ctx, lockKey).Result()
 	if err != nil && err != redis.Nil {
 		s.logger.Error("Failed to check account lock", zap.Error(err))
-		return &LoginAttemptResult{Allowed: true}, nil // Fail open
+		// Fail-closed: deny login when Redis is unavailable to prevent
+		// bypassing rate limits during infrastructure failures.
+		return &LoginAttemptResult{Allowed: false, Reason: "service temporarily unavailable"}, nil
 	}
 
 	if lockTTL > 0 {

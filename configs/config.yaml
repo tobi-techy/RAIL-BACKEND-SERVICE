@@ -1,6 +1,14 @@
 environment: production
 log_level: info
 
+# ChainRails cross-chain deposit integration
+chainrails:
+  api_key: "${CHAINRAILS_API_KEY}"
+  webhook_secret: "${CHAINRAILS_WEBHOOK_SECRET}"
+  base_url: "https://api.chainrails.io/api/v1"
+  destination_chain: "BASE_MAINNET"
+  settlement_token: "USDC"
+
 server:
   port: 8081
   host: 0.0.0.0
@@ -212,8 +220,11 @@ bridge:
   rail_usdb_wallet_id: "${BRIDGE_RAIL_USDB_WALLET_ID}"
   supported_chains:
     - "solana"
+    - "ethereum"
     - "polygon"
-    - "avalanche_c_chain"
+    - "AVAX"
+    - "arbitrum"
+    - "optimism"
 
   transaction_limits:
   deposit:
@@ -254,22 +265,40 @@ webauthn:
     - "https://api.userail.money"
 
 ai:
-  primary_provider: "openai"  # or "gemini"
-  fallback_provider: "gemini"
+  primary: "groq"
   openai:
-    api_key: "${OPENAI_API_KEY}"
-    model: "gpt-3.5-turbo"  # Free tier model
-    max_tokens: 1000
-    temperature: 0.7
-    timeout: 30s
-    rate_limit_rpm: 3  # Requests per minute (free tier limit)
+    api_key: ""
+    model: "gpt-4o"
+    max_tokens: 2048
+    temperature: 0.15
+    top_p: 0.9
+    timeout_seconds: 30
+    rate_limit_rpm: 60
   gemini:
-    api_key: "${GEMINI_API_KEY}"
-    model: "gemini-1.5-flash"  # Free tier model
-    max_tokens: 1000
-    temperature: 0.7
-    timeout: 30s
-    rate_limit_rpm: 15  # Requests per minute (free tier limit)
+    api_key: ""
+    model: "gemini-2.0-flash"
+    max_tokens: 2048
+    temperature: 0.15
+    top_p: 0.9
+    timeout_seconds: 15
+    rate_limit_rpm: 30
+  kimi:
+    api_key: ""
+    # base_url: "https://api.moonshot.cn/v1"  # Uncomment for China-registered keys; default is https://api.moonshot.ai/v1
+    model: "kimi-k2.6"
+    max_tokens: 2048
+    temperature: 0.15
+    top_p: 0.9
+    timeout_seconds: 30
+    rate_limit_rpm: 60
+  groq:
+    api_key: "${GROQ_API_KEY}"
+    model: "llama-3.3-70b-versatile"
+    max_tokens: 2048
+    temperature: 0.15
+    top_p: 0.9
+    timeout_seconds: 15
+    rate_limit_rpm: 30
   prompts:
     wrapped_template: "prompts/wrapped.txt"
     chat_template: "prompts/chat.txt"
@@ -298,3 +327,15 @@ chat:
   session_timeout: "24h"
   enable_safety_filter: true
   rate_limit_per_hour: 50
+
+# Lulo Yield Configuration
+lulo:
+  api_key: ""
+  base_url: "https://api.lulo.fi"
+  solana_rpc: "https://api.mainnet-beta.solana.com"
+  owner_wallet: ""
+  private_key: ""
+  pool_type: "protected"
+  min_sweep_amount: "10"
+  sweep_interval: 30
+  bridge_source_wallet_id: ""

@@ -39,6 +39,7 @@ type OffRampService = offramp.OffRampService
 
 // Transaction types
 type TransactionControlService = transaction.TransactionControlService
+type UserChecker = transaction.UserChecker
 
 // Investing types
 type (

@@ -26,6 +26,7 @@ import (
 	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/crypto"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/rail-service/rail_service/pkg/security"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -125,6 +126,19 @@ func (h *SecurityAdminHandlers) CreateAdmin(c *gin.Context) {
 	}
 
 	if adminCount == 0 {
+		// Security: Require bootstrap token for first admin creation
+		if err := h.validateBootstrapToken(c); err != nil {
+			h.logger.Warn("first admin creation rejected - invalid bootstrap token",
+				zap.String("email", security.MaskString(req.Email)),
+				zap.String("client_ip", c.ClientIP()),
+				zap.Error(err),
+			)
+			c.JSON(http.StatusForbidden, gin.H{
+				"error":   "BOOTSTRAP_TOKEN_REQUIRED",
+				"message": "Valid bootstrap token required for first admin creation",
+			})
+			return
+		}
 		desiredRole = entities.AdminRoleSuperAdmin
 	} else {
 		if err := h.ensureSuperAdminHelper(c); err != nil {
@@ -142,7 +156,7 @@ func (h *SecurityAdminHandlers) CreateAdmin(c *gin.Context) {
 
 	exists, err := h.emailExistsHelper(ctx, req.Email)
 	if err != nil {
-		h.logger.Error("failed to check email existence", zap.Error(err), zap.String("email", req.Email))
+		h.logger.Error("failed to check email existence", zap.Error(err), zap.String("email", security.MaskString(req.Email)))
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":   "INTERNAL_ERROR",
 			"message": "Failed to process request",
@@ -873,6 +887,31 @@ func (h *SecurityAdminHandlers) ensureSuperAdminHelper(c *gin.Context) error {
 
 	if claims.Role != string(entities.AdminRoleSuperAdmin) {
 		return errors.New("super_admin role required")
+	}
+
+	return nil
+}
+
+// validateBootstrapToken validates the bootstrap token for first admin creation.
+// Mirrors AdminHandlers.validateBootstrapToken — token via X-Bootstrap-Token header or query param.
+func (h *SecurityAdminHandlers) validateBootstrapToken(c *gin.Context) error {
+	configuredToken := h.cfg.Security.AdminBootstrapToken
+
+	if configuredToken == "" {
+		return errors.New("bootstrap token not configured - first admin creation disabled")
+	}
+
+	providedToken := c.GetHeader("X-Bootstrap-Token")
+	if providedToken == "" {
+		providedToken = c.Query("bootstrap_token")
+	}
+
+	if providedToken == "" {
+		return errors.New("bootstrap token required")
+	}
+
+	if !constantTimeCompare(providedToken, configuredToken) {
+		return errors.New("invalid bootstrap token")
 	}
 
 	return nil
@@ -1654,6 +1693,7 @@ func (h *EnhancedSecurityHandlers) Setup2FA(c *gin.Context) {
 		return
 	}
 
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, setup)
 }
 
@@ -2004,7 +2044,14 @@ func NewComplianceHandler(auditService *adapters.AuditService, logger *zap.Logge
 }
 
 func (h *ComplianceHandler) RequestDataExport(c *gin.Context) {
-	userID := uuid.MustParse(c.GetString("user_id"))
+	userID, err := uuid.Parse(c.GetString("user_id"))
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error":   "INVALID_USER_ID",
+			"message": "Authentication required",
+		})
+		return
+	}
 
 	// Log data export request
 	h.auditService.LogSystemEvent(c.Request.Context(), "data_export_requested", "user_data", map[string]interface{}{
@@ -2021,7 +2068,14 @@ func (h *ComplianceHandler) RequestDataExport(c *gin.Context) {
 }
 
 func (h *ComplianceHandler) RequestDataDeletion(c *gin.Context) {
-	userID := uuid.MustParse(c.GetString("user_id"))
+	userID, err := uuid.Parse(c.GetString("user_id"))
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error":   "INVALID_USER_ID",
+			"message": "Authentication required",
+		})
+		return
+	}
 
 	// Log data deletion request
 	h.auditService.LogSystemEvent(c.Request.Context(), "data_deletion_requested", "user_data", map[string]interface{}{

@@ -5,6 +5,7 @@ import (
 	"github.com/rail-service/rail_service/internal/api/handlers"
 	"github.com/rail-service/rail_service/internal/api/middleware"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
+	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/logger"
 )
 
@@ -18,10 +19,11 @@ func RegisterAdvancedFeaturesRoutes(
 	cfg *config.Config,
 	log *logger.Logger,
 	sessionValidator middleware.SessionValidator,
+	tokenBlacklist *auth.TokenBlacklist,
 ) {
 	// Analytics routes (authenticated)
 	analytics := router.Group("/analytics")
-	analytics.Use(middleware.Authentication(cfg, log, sessionValidator))
+	analytics.Use(middleware.Authentication(cfg, log, sessionValidator, tokenBlacklist))
 	{
 		analytics.GET("/dashboard", analyticsHandlers.GetDashboard)
 		analytics.GET("/performance", analyticsHandlers.GetPerformanceMetrics)
@@ -46,7 +48,7 @@ func RegisterAdvancedFeaturesRoutes(
 
 		// Authenticated endpoints for alerts
 		alerts := market.Group("/alerts")
-		alerts.Use(middleware.Authentication(cfg, log, sessionValidator))
+		alerts.Use(middleware.Authentication(cfg, log, sessionValidator, tokenBlacklist))
 		{
 			alerts.POST("", marketHandlers.CreateAlert)
 			alerts.GET("", marketHandlers.GetAlerts)
@@ -56,7 +58,7 @@ func RegisterAdvancedFeaturesRoutes(
 
 	// Scheduled investments routes (authenticated)
 	scheduled := router.Group("/scheduled-investments")
-	scheduled.Use(middleware.Authentication(cfg, log, sessionValidator))
+	scheduled.Use(middleware.Authentication(cfg, log, sessionValidator, tokenBlacklist))
 	{
 		scheduled.POST("", scheduledInvestmentHandlers.CreateScheduledInvestment)
 		scheduled.GET("", scheduledInvestmentHandlers.GetScheduledInvestments)
@@ -70,7 +72,7 @@ func RegisterAdvancedFeaturesRoutes(
 
 	// Rebalancing routes (authenticated)
 	rebalancing := router.Group("/rebalancing")
-	rebalancing.Use(middleware.Authentication(cfg, log, sessionValidator))
+	rebalancing.Use(middleware.Authentication(cfg, log, sessionValidator, tokenBlacklist))
 	{
 		rebalancing.POST("/configs", rebalancingHandlers.CreateRebalancingConfig)
 		rebalancing.GET("/configs", rebalancingHandlers.GetRebalancingConfigs)
@@ -90,13 +92,14 @@ func RegisterRoundupRoutes(
 	cfg *config.Config,
 	log *logger.Logger,
 	sessionValidator middleware.SessionValidator,
+	tokenBlacklist *auth.TokenBlacklist,
 ) {
 	if roundupHandlers == nil {
 		return
 	}
 
 	roundups := router.Group("/roundups")
-	roundups.Use(middleware.Authentication(cfg, log, sessionValidator))
+	roundups.Use(middleware.Authentication(cfg, log, sessionValidator, tokenBlacklist))
 	{
 		roundups.GET("/settings", roundupHandlers.GetSettings)
 		roundups.PUT("/settings", roundupHandlers.UpdateSettings)

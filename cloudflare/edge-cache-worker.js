@@ -164,11 +164,44 @@ async function handleWebhook(event) {
     });
   }
 
-  // TODO: Add actual signature verification here
-  // Currently only checks if signature exists but doesn't verify it
-  // The signature should be verified against a secret before processing
-  
-  const response = await fetch(request);
+  // Verify HMAC-SHA256 signature
+  const body = await request.text();
+  const secret = typeof WEBHOOK_SECRET !== "undefined" ? WEBHOOK_SECRET : "";
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, encoder.encode(body));
+  const computed = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, "0")).join("");
+
+  // Constant-time comparison
+  if (computed.length !== signature.length) {
+    return new Response(JSON.stringify({ error: "INVALID_SIGNATURE" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  let mismatch = 0;
+  for (let i = 0; i < computed.length; i++) {
+    mismatch |= computed.charCodeAt(i) ^ signature.charCodeAt(i);
+  }
+  if (mismatch !== 0) {
+    return new Response(JSON.stringify({ error: "INVALID_SIGNATURE" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  // Re-create request with consumed body for forwarding
+  const response = await fetch(new Request(request.url, {
+    method: request.method,
+    headers: request.headers,
+    body: body,
+  }));
   
   if (response.ok) {
     const nonceResponse = new Response("nonce", {

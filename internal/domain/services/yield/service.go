@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/pkg/metrics"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -25,12 +26,7 @@ type Repository interface {
 	GetDistributionByPeriod(ctx context.Context, start, end time.Time) (*entities.YieldDistribution, error)
 }
 
-// BridgeRewards fetches the accrued reward amount from Bridge.
-type BridgeRewards interface {
-	GetRewardsSummary(ctx context.Context, currency string) (*RewardSummary, error)
-}
-
-// RewardSummary is a local copy to avoid importing the bridge adapter package.
+// RewardSummary holds the distributable reward amount from the yield provider.
 type RewardSummary struct {
 	Rewards string
 }
@@ -48,14 +44,13 @@ type YieldNotifier interface {
 // Service handles yield distribution.
 type Service struct {
 	repo     Repository
-	bridge   BridgeRewards
 	ledger   LedgerCreditor
 	notifier YieldNotifier
 	logger   *zap.Logger
 }
 
-func NewService(repo Repository, bridge BridgeRewards, ledger LedgerCreditor, logger *zap.Logger) *Service {
-	return &Service{repo: repo, bridge: bridge, ledger: ledger, logger: logger}
+func NewService(repo Repository, ledger LedgerCreditor, logger *zap.Logger) *Service {
+	return &Service{repo: repo, ledger: ledger, logger: logger}
 }
 
 // SetNotifier wires push notifications for yield credited events.
@@ -78,7 +73,7 @@ func (s *Service) EstimateDailyYield(stashBalance, apy decimal.Decimal) decimal.
 }
 
 // RunDistribution executes the monthly yield distribution for a given period.
-// totalReward must be the actual amount already received from Bridge — never estimated.
+// totalReward must be the actual amount already received from the yield provider — never estimated.
 // freezeTime should be time.Now() at job start; snapshots after this are ignored.
 func (s *Service) RunDistribution(ctx context.Context, periodStart, periodEnd, freezeTime time.Time, totalReward decimal.Decimal) error {
 	if totalReward.LessThanOrEqual(decimal.Zero) {
@@ -201,8 +196,18 @@ func (s *Service) RunDistribution(ctx context.Context, periodStart, periodEnd, f
 	dist.Remainder = totalReward.Sub(totalDistributed)
 	dist.Status = "completed"
 
+	// Log remainder separately for reconciliation auditing (R3-L3).
+	s.logger.Info("yield distribution remainder",
+		zap.String("remainder", dist.Remainder.String()),
+		zap.String("distribution_id", dist.ID.String()))
+
 	if err := s.repo.UpdateDistribution(ctx, dist); err != nil {
 		return fmt.Errorf("yield: update distribution: %w", err)
+	}
+
+	if metrics.Business != nil {
+		metrics.Business.YieldDistributed.Inc()
+		metrics.Business.YieldDistributionAmt.Observe(totalDistributed.InexactFloat64())
 	}
 
 	s.logger.Info("Yield distribution completed",

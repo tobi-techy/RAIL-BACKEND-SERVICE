@@ -206,14 +206,13 @@ func (s *DeletionService) deleteAccountInternal(ctx context.Context, req *Delete
 	if totalBalance.GreaterThan(MinSweepThreshold) {
 		sweepTxHash, err = s.sweepFundsToTreasury(ctx, req.UserID, totalBalance)
 		if err != nil {
-			// Log but don't block deletion — sweep failure is operational, not a data integrity issue
-			s.logger.Error("Failed to sweep funds, proceeding with deletion", "error", err, "amount", totalBalance.String())
-		} else {
-			s.logger.Info("Funds swept to treasury",
-				"user_id", req.UserID.String(),
-				"amount", totalBalance.String(),
-				"tx_hash", sweepTxHash)
+			s.logger.Error("Failed to sweep funds, aborting deletion", "error", err, "amount", totalBalance.String())
+			return nil, fmt.Errorf("cannot delete account: fund sweep failed with balance %s: %w", totalBalance.String(), err)
 		}
+		s.logger.Info("Funds swept to treasury",
+			"user_id", req.UserID.String(),
+			"amount", totalBalance.String(),
+			"tx_hash", sweepTxHash)
 	}
 
 	// Step 3: Clean up external provider accounts (best-effort — never blocks deletion)

@@ -247,13 +247,16 @@ func (c *Client) GetInspectionImage(ctx context.Context, inspectionID, imageID s
 		url.PathEscape(imageID),
 	)
 
+	reqCtx, cancel := context.WithTimeout(ctx, c.config.Timeout)
+	defer cancel()
+
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 	signaturePayload := timestamp + http.MethodGet + path
 	mac := hmac.New(sha256.New, []byte(c.config.SecretKey))
 	_, _ = mac.Write([]byte(signaturePayload))
 	signature := hex.EncodeToString(mac.Sum(nil))
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.config.BaseURL+path, nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, c.config.BaseURL+path, nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create sumsub image request: %w", err)
 	}
@@ -337,6 +340,9 @@ func (c *Client) doSignedJSONRequest(ctx context.Context, method, path string, b
 		return fmt.Errorf("sumsub credentials are not configured")
 	}
 
+	reqCtx, cancel := context.WithTimeout(ctx, c.config.Timeout)
+	defer cancel()
+
 	var payload []byte
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -352,7 +358,7 @@ func (c *Client) doSignedJSONRequest(ctx context.Context, method, path string, b
 	_, _ = mac.Write([]byte(signaturePayload))
 	signature := hex.EncodeToString(mac.Sum(nil))
 
-	req, err := http.NewRequestWithContext(ctx, method, c.config.BaseURL+path, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(reqCtx, method, c.config.BaseURL+path, bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("failed to create sumsub request: %w", err)
 	}

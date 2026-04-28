@@ -327,6 +327,9 @@ func (s *ExplorerService) getSnapshots(ctx context.Context, symbols []string) (m
 			s.mu.Lock()
 			for symbol, quote := range snapshots {
 				normalizedSymbol := strings.ToUpper(symbol)
+				if len(s.snapshotCache) > 10000 {
+					s.snapshotCache = make(map[string]*cachedExplorerQuote)
+				}
 				s.snapshotCache[normalizedSymbol] = &cachedExplorerQuote{quote: quote, fetchedAt: now}
 				result[normalizedSymbol] = quote
 			}
@@ -633,6 +636,9 @@ func (r *logoResolver) Resolve(symbol string) *string {
 	}
 
 	r.mu.Lock()
+	if len(r.cache) > 10000 {
+		r.cache = make(map[string]cachedLogoURL)
+	}
 	r.cache[normalized] = cachedLogoURL{url: resolved, fetchedAt: now}
 	r.mu.Unlock()
 
@@ -641,6 +647,12 @@ func (r *logoResolver) Resolve(symbol string) *string {
 
 func (r *logoResolver) resolveLogoDevURL(symbol string) *string {
 	if strings.TrimSpace(r.token) == "" {
+		return nil
+	}
+
+	// R7-5: logo.dev publishable keys (pk_*) are designed for client-side embedding.
+	// Reject non-publishable tokens to avoid leaking secret keys to clients.
+	if !strings.HasPrefix(r.token, "pk_") {
 		return nil
 	}
 

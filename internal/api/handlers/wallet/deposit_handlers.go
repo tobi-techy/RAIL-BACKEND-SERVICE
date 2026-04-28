@@ -1,6 +1,7 @@
 package wallet
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ import (
 type CreateDepositRequest struct {
 	Type            string `json:"type" binding:"required,oneof=crypto fiat"` // "crypto" or "fiat"
 	Chain           string `json:"chain,omitempty"`                           // required for crypto
+	Currency        string `json:"currency,omitempty"`                        // stablecoin: USDC, USDT, EURC, PYUSD, USDG (defaults to USDC)
 	AlpacaAccountID string `json:"alpaca_account_id,omitempty"`               // required for fiat
 }
 
@@ -25,9 +27,10 @@ type CreateDepositResponse struct {
 	DepositID string `json:"deposit_id,omitempty"`
 	Type      string `json:"type"`
 	Status    string `json:"status"`
-	Address   string `json:"address,omitempty"` // for crypto
-	Chain     string `json:"chain,omitempty"`   // for crypto
-	Message   string `json:"message,omitempty"` // instructions
+	Address   string `json:"address,omitempty"`  // for crypto
+	Chain     string `json:"chain,omitempty"`    // for crypto
+	Currency  string `json:"currency,omitempty"` // stablecoin currency
+	Message   string `json:"message,omitempty"`  // instructions
 }
 
 // DepositDetailResponse represents a single deposit
@@ -68,29 +71,47 @@ func (h *WalletFundingHandlers) CreateDeposit(c *gin.Context) {
 		}
 		chain := entities.Chain(strings.ToUpper(strings.TrimSpace(req.Chain)))
 		validChains := map[entities.Chain]bool{
-			entities.ChainSOLDevnet: true,
-			entities.ChainMATICAmoy: true,
-			entities.ChainAVAXFuji:  true,
+			entities.ChainSOL:       true,
+			entities.ChainETH:       true,
+			entities.ChainMATIC:     true,
+			entities.ChainCELO:      true,
+			entities.ChainBase:      true,
+			entities.ChainAvalanche: true,
+			entities.ChainArbitrum:  true,
+			entities.ChainOptimism:  true,
 		}
 		if !validChains[chain] {
 			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 				Code:    "INVALID_CHAIN",
-				Message: "Unsupported chain. Supported: SOL-DEVNET, MATIC-AMOY, AVAX-FUJI",
+				Message: "Unsupported chain. Supported: SOL, ETH, MATIC, CELO, BASE, AVAX, ARB, OP",
 			})
 			return
 		}
-		resp, err := h.fundingService.CreateDepositAddress(ctx, userUUID, chain)
+		// Parse currency (default to USDC)
+		currency := entities.StablecoinUSDC
+		if req.Currency != "" {
+			currency = entities.Stablecoin(strings.ToUpper(strings.TrimSpace(req.Currency)))
+			if !currency.IsValid() {
+				c.JSON(http.StatusBadRequest, entities.ErrorResponse{
+					Code:    "INVALID_CURRENCY",
+					Message: "Unsupported currency. Supported: USDC, USDT, EURC, PYUSD, USDG",
+				})
+				return
+			}
+		}
+		resp, err := h.fundingService.CreateDepositAddress(ctx, userUUID, chain, currency)
 		if err != nil {
 			h.logger.Error("Failed to create deposit address", "error", err, "user_id", userUUID)
 			c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "DEPOSIT_ERROR", Message: "Failed to create deposit address"})
 			return
 		}
 		c.JSON(http.StatusCreated, CreateDepositResponse{
-			Type:    "crypto",
-			Status:  "pending",
-			Address: resp.Address,
-			Chain:   string(resp.Chain),
-			Message: "Send USDC to the address below",
+			Type:     "crypto",
+			Status:   "pending",
+			Address:  resp.Address,
+			Chain:    string(resp.Chain),
+			Currency: string(resp.Currency),
+			Message:  fmt.Sprintf("Send %s to the address below", currency),
 		})
 
 	case "fiat":
@@ -174,7 +195,10 @@ func (h *WalletFundingHandlers) ListDeposits(c *gin.Context) {
 	deposits := make([]DepositDetailResponse, 0, len(confirmations))
 	for _, conf := range confirmations {
 		depositType := "crypto"
-		currency := "USDC"
+		currency := string(conf.Token)
+		if currency == "" {
+			currency = "USDC"
+		}
 		chain := string(conf.Chain)
 		if chain == "" || strings.EqualFold(chain, "fiat") || strings.HasPrefix(strings.ToLower(conf.Status), "off_ramp") || strings.EqualFold(conf.Status, "broker_funded") {
 			depositType = "fiat"
@@ -233,7 +257,10 @@ func (h *WalletFundingHandlers) GetDeposit(c *gin.Context) {
 	}
 
 	depositType := "crypto"
-	currency := "USDC"
+	currency := string(confirmation.Token)
+	if currency == "" {
+		currency = "USDC"
+	}
 	chain := string(confirmation.Chain)
 	if chain == "" || strings.HasPrefix(strings.ToLower(confirmation.Status), "off_ramp") || strings.EqualFold(confirmation.Status, "broker_funded") {
 		depositType = "fiat"

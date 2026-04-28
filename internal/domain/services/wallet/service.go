@@ -62,6 +62,7 @@ type WalletProvisioningJobRepository interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID) (*entities.WalletProvisioningJob, error)
 	GetRetryableJobs(ctx context.Context, limit int) ([]*entities.WalletProvisioningJob, error)
 	Update(ctx context.Context, job *entities.WalletProvisioningJob) error
+	GetOrCreateForUser(ctx context.Context, userID uuid.UUID, chains []string) (job *entities.WalletProvisioningJob, created bool, err error)
 }
 
 type AuditService interface {
@@ -108,6 +109,10 @@ func normalizeSupportedChains(chains []entities.WalletChain, logger *zap.Logger)
 	if len(chains) == 0 {
 		return []entities.WalletChain{
 			entities.WalletChainSolana,
+			entities.WalletChainPolygon,
+			entities.WalletChainCelo,
+			entities.WalletChainBase,
+			entities.WalletChainAvalanche,
 		}
 	}
 
@@ -129,6 +134,8 @@ func normalizeSupportedChains(chains []entities.WalletChain, logger *zap.Logger)
 	if len(normalized) == 0 {
 		return []entities.WalletChain{
 			entities.WalletChainSolana,
+			entities.WalletChainPolygon,
+			entities.WalletChainCelo,
 		}
 	}
 
@@ -137,6 +144,7 @@ func normalizeSupportedChains(chains []entities.WalletChain, logger *zap.Logger)
 
 // CreateWalletsForUser creates developer-controlled wallets for a user across specified chains
 // This follows the developer-controlled-wallet pattern where we use a pre-registered Entity Secret Ciphertext
+// Uses a transactional approach to prevent race conditions when concurrent requests create wallets
 func (s *Service) CreateWalletsForUser(ctx context.Context, userID uuid.UUID, chains []entities.WalletChain) error {
 	s.logger.Info("Creating developer-controlled wallets for user",
 		zap.String("userID", userID.String()),
@@ -146,44 +154,24 @@ func (s *Service) CreateWalletsForUser(ctx context.Context, userID uuid.UUID, ch
 		chains = s.config.SupportedChains
 	}
 
-	// Check if user already has a provisioning job
-	existingJob, err := s.provisioningJobRepo.GetByUserID(ctx, userID)
-	if err == nil && existingJob != nil {
-		s.logger.Info("User already has a provisioning job",
-			zap.String("userID", userID.String()),
-			zap.String("jobID", existingJob.ID.String()),
-			zap.String("status", string(existingJob.Status)))
-
-		// If job is in progress or queued, don't create a new one
-		if existingJob.Status == entities.ProvisioningStatusQueued ||
-			existingJob.Status == entities.ProvisioningStatusInProgress {
-			return nil
-		}
-	}
-
-	// Convert chain types to strings
 	chainStrings := make([]string, len(chains))
 	for i, chain := range chains {
 		chainStrings[i] = string(chain)
 	}
 
-	// Create provisioning job
-	job := &entities.WalletProvisioningJob{
-		ID:           uuid.New(),
-		UserID:       userID,
-		Chains:       chainStrings,
-		Status:       entities.ProvisioningStatusQueued,
-		AttemptCount: 0,
-		MaxAttempts:  3,
-		CreatedAt:    time.Now(),
-		UpdatedAt:    time.Now(),
+	job, created, err := s.provisioningJobRepo.GetOrCreateForUser(ctx, userID, chainStrings)
+	if err != nil {
+		return fmt.Errorf("failed to get or create provisioning job: %w", err)
 	}
 
-	if err := s.provisioningJobRepo.Create(ctx, job); err != nil {
-		return fmt.Errorf("failed to create provisioning job: %w", err)
+	if !created {
+		s.logger.Info("User already has an active provisioning job",
+			zap.String("userID", userID.String()),
+			zap.String("jobID", job.ID.String()),
+			zap.String("status", string(job.Status)))
+		return nil
 	}
 
-	// Process asynchronously so API requests return immediately after queueing.
 	go s.processWalletProvisioningAsync(job.ID, userID)
 
 	return nil
@@ -198,6 +186,15 @@ func (s *Service) processWalletProvisioningAsync(jobID, userID uuid.UUID) {
 			zap.Error(err),
 			zap.String("jobID", jobID.String()),
 			zap.String("userID", userID.String()))
+
+		if job, getErr := s.provisioningJobRepo.GetByID(bgCtx, jobID); getErr == nil {
+			job.MarkFailed(err.Error(), 30*time.Second)
+			if updateErr := s.provisioningJobRepo.Update(bgCtx, job); updateErr != nil {
+				s.logger.Error("Failed to update job status after async failure",
+					zap.Error(updateErr),
+					zap.String("jobID", jobID.String()))
+			}
+		}
 	}
 }
 
@@ -209,7 +206,10 @@ func (s *Service) ProcessWalletProvisioningJob(ctx context.Context, jobID uuid.U
 	}
 
 	job.MarkStarted()
-	_ = s.provisioningJobRepo.Update(ctx, job)
+	if err := s.provisioningJobRepo.Update(ctx, job); err != nil {
+		s.logger.Error("Failed to update job status to started", zap.Error(err), zap.String("job_id", jobID.String()))
+		return fmt.Errorf("failed to update job status: %w", err)
+	}
 
 	customerID, err := s.userProfiles.GetBridgeCustomerID(ctx, job.UserID)
 	if err != nil || customerID == "" {
@@ -219,6 +219,17 @@ func (s *Service) ProcessWalletProvisioningJob(ctx context.Context, jobID uuid.U
 		return fmt.Errorf("%s for user %s", msg, job.UserID)
 	}
 
+	// Fetch existing Bridge wallets once to avoid duplicates.
+	remoteWallets, _ := s.bridgeWallets.ListWallets(ctx, customerID)
+	remoteBridgeChains := make(map[string]*entities.ManagedWallet)
+	for _, rw := range remoteWallets {
+		remoteBridgeChains[string(rw.Chain.ToBridgeWalletChain())] = rw
+	}
+
+	// Track which Bridge chains we've already created/imported in this run
+	// to avoid creating duplicate ethereum/solana/base wallets.
+	createdBridgeChains := make(map[string]string) // bridgeChain -> address
+
 	saved := 0
 	for _, chain := range job.Chains {
 		existing, _ := s.walletRepo.GetByUserAndChain(ctx, job.UserID, entities.WalletChain(chain))
@@ -227,13 +238,45 @@ func (s *Service) ProcessWalletProvisioningJob(ctx context.Context, jobID uuid.U
 			continue
 		}
 
+		bridgeChain := entities.WalletChain(chain).ToBridgeWalletChain()
+
+		// If we already created/imported a wallet for this Bridge chain in this run,
+		// reuse the same address (e.g. MATIC, CELO, AVAX all share "ethereum").
+		if addr, ok := createdBridgeChains[bridgeChain]; ok {
+			mw := &entities.ManagedWallet{
+				ID:      uuid.New(),
+				UserID:  job.UserID,
+				Chain:   entities.WalletChain(chain),
+				Address: addr,
+				Status:  entities.WalletStatusLive,
+			}
+			if err := s.walletRepo.Create(ctx, mw); err != nil {
+				s.logger.Error("Failed to save alias wallet", zap.Error(err), zap.String("chain", chain))
+				continue
+			}
+			saved++
+			continue
+		}
+
+		// Check if Bridge already has a wallet for this chain — avoid creating duplicates.
+		if rw, ok := remoteBridgeChains[bridgeChain]; ok {
+			rw.UserID = job.UserID
+			rw.Chain = entities.WalletChain(chain)
+			if err := s.walletRepo.Create(ctx, rw); err != nil {
+				s.logger.Error("Failed to save recovered wallet", zap.Error(err), zap.String("chain", chain))
+				continue
+			}
+			createdBridgeChains[bridgeChain] = rw.Address
+			saved++
+			s.logger.Info("Imported existing Bridge wallet",
+				zap.String("chain", chain), zap.String("address", rw.Address))
+			continue
+		}
+
 		mw, err := s.bridgeWallets.CreateWalletForCustomer(ctx, customerID, chain)
 		if err != nil {
-			s.logger.Warn("Failed to create wallet on Bridge, checking if already exists remotely",
-				zap.Error(err), zap.String("chain", chain), zap.String("customerID", customerID))
-
-			// Wallet may already exist on Bridge (e.g. stale idempotency key after >24h).
-			// Recover by listing remote wallets and importing the match.
+			s.logger.Warn("Failed to create wallet on Bridge",
+				zap.Error(err), zap.String("chain", chain))
 			mw = s.recoverWalletFromBridge(ctx, customerID, chain)
 			if mw == nil {
 				continue
@@ -245,6 +288,7 @@ func (s *Service) ProcessWalletProvisioningJob(ctx context.Context, jobID uuid.U
 			s.logger.Error("Failed to save wallet", zap.Error(err), zap.String("chain", chain))
 			continue
 		}
+		createdBridgeChains[bridgeChain] = mw.Address
 		saved++
 		s.logger.Info("Wallet created and saved",
 			zap.String("userID", job.UserID.String()),
@@ -254,10 +298,9 @@ func (s *Service) ProcessWalletProvisioningJob(ctx context.Context, jobID uuid.U
 	}
 
 	if saved == 0 {
-		msg := "failed to create any wallets"
-		job.MarkFailed(msg, 30*time.Second)
+		job.MarkFailed("failed to create any wallets", 30*time.Second)
 		_ = s.provisioningJobRepo.Update(ctx, job)
-		return fmt.Errorf(msg)
+		return fmt.Errorf("failed to create any wallets")
 	}
 
 	job.MarkCompleted()
@@ -282,9 +325,9 @@ func (s *Service) recoverWalletFromBridge(ctx context.Context, customerID, chain
 		return nil
 	}
 
-	targetRail := entities.WalletChain(chain).ToBridgePaymentRail()
+	targetRail := entities.WalletChain(chain).ToBridgeWalletChain()
 	for _, rw := range remoteWallets {
-		rwRail := rw.Chain.ToBridgePaymentRail()
+		rwRail := rw.Chain.ToBridgeWalletChain()
 		if rwRail == targetRail {
 			s.logger.Info("Recovered existing wallet from Bridge",
 				zap.String("chain", chain),
@@ -557,4 +600,48 @@ func (s *Service) GetMetrics() map[string]interface{} {
 // SupportedChains returns the configured wallet chains
 func (s *Service) SupportedChains() []entities.WalletChain {
 	return append([]entities.WalletChain(nil), s.config.SupportedChains...)
+}
+
+// SyncWalletStatus updates a wallet's status from Bridge webhook events
+func (s *Service) SyncWalletStatus(ctx context.Context, bridgeWalletID string, bridgeStatus string) error {
+	wallet, err := s.walletRepo.GetByBridgeWalletID(ctx, bridgeWalletID)
+	if err != nil {
+		return fmt.Errorf("wallet not found for Bridge ID %s: %w", bridgeWalletID, err)
+	}
+
+	localStatus := mapBridgeStatusToWalletStatus(bridgeStatus)
+	if wallet.Status == localStatus {
+		s.logger.Debug("Wallet status unchanged",
+			zap.String("wallet_id", wallet.ID.String()),
+			zap.String("bridge_wallet_id", bridgeWalletID),
+			zap.String("status", string(wallet.Status)))
+		return nil
+	}
+
+	wallet.Status = localStatus
+	if err := s.walletRepo.Update(ctx, wallet); err != nil {
+		return fmt.Errorf("failed to update wallet status: %w", err)
+	}
+
+	s.logger.Info("Wallet status synced from Bridge",
+		zap.String("wallet_id", wallet.ID.String()),
+		zap.String("bridge_wallet_id", bridgeWalletID),
+		zap.String("old_status", string(wallet.Status)),
+		zap.String("new_status", string(localStatus)))
+
+	return nil
+}
+
+// mapBridgeStatusToWalletStatus converts Bridge wallet status to local wallet status
+func mapBridgeStatusToWalletStatus(bridgeStatus string) entities.WalletStatus {
+	switch bridgeStatus {
+	case "active", "live", "ready":
+		return entities.WalletStatusLive
+	case "failed", "error", "rejected":
+		return entities.WalletStatusFailed
+	case "creating", "pending", "processing", "initializing":
+		return entities.WalletStatusCreating
+	default:
+		return entities.WalletStatusCreating
+	}
 }

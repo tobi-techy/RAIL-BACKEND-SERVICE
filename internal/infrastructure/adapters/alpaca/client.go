@@ -580,6 +580,9 @@ func (c *Client) doRequestWithRetry(ctx context.Context, method, endpoint string
 
 // doRequest performs a single HTTP request
 func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, response interface{}, useDataAPI bool) error {
+	reqCtx, cancel := context.WithTimeout(ctx, c.config.Timeout)
+	defer cancel()
+
 	baseURL := c.config.BaseURL
 	if useDataAPI {
 		baseURL = c.config.DataBaseURL
@@ -596,7 +599,7 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 		reqBody = bytes.NewReader(jsonData)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, fullURL, reqBody)
+	req, err := http.NewRequestWithContext(reqCtx, method, fullURL, reqBody)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
@@ -1101,6 +1104,9 @@ func (c *Client) doDataRequest(ctx context.Context, method, endpoint string, bod
 		return fmt.Errorf("market data credentials not configured")
 	}
 
+	reqCtx, cancel := context.WithTimeout(ctx, c.config.Timeout)
+	defer cancel()
+
 	var lastAuthErr error
 
 	for _, baseURL := range baseURLs {
@@ -1112,7 +1118,7 @@ func (c *Client) doDataRequest(ctx context.Context, method, endpoint string, bod
 				reqBody = bytes.NewReader(requestBody)
 			}
 
-			req, err := http.NewRequestWithContext(ctx, method, fullURL, reqBody)
+			req, err := http.NewRequestWithContext(reqCtx, method, fullURL, reqBody)
 			if err != nil {
 				return fmt.Errorf("create request: %w", err)
 			}

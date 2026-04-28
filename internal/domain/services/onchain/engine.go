@@ -115,10 +115,8 @@ func DefaultEngineConfig() *EngineConfig {
 	return &EngineConfig{
 		DepositPollInterval: 30 * time.Second,
 		ConfirmationBlocks: map[entities.Chain]int{
-			entities.ChainSOLDevnet: 32,
-			entities.ChainSOL:      32,
-			entities.ChainMATICAmoy: 128,
-			entities.ChainMATIC:    128,
+			entities.ChainSOL:   32,
+			entities.ChainMATIC: 128,
 		},
 		MinDepositAmount:        decimal.NewFromFloat(1.0),   // $1 minimum
 		WithdrawalGasBuffer:     decimal.NewFromFloat(0.001), // Small buffer
@@ -382,41 +380,43 @@ func (e *Engine) ExecuteWithdrawal(ctx context.Context, withdrawalID uuid.UUID) 
 		return fmt.Errorf("withdrawal not pending: status=%s", withdrawal.Status)
 	}
 
-	// Verify user has sufficient ledger balance
+	// Balance pre-check removed: CreateTransaction uses SELECT FOR UPDATE internally,
+	// which atomically checks and prevents overdraft. A pre-flight check here was a
+	// TOCTOU race — balance could change between the check and the ledger debit.
+	// The advisory log below helps with debugging but does not block the withdrawal.
 	balance, err := e.ledgerService.GetAccountBalance(ctx, withdrawal.UserID, entities.AccountTypeUSDCBalance)
 	if err != nil {
-		return fmt.Errorf("failed to get user balance: %w", err)
-	}
-
-	if balance.LessThan(withdrawal.Amount) {
-		e.logger.Error("Insufficient balance for withdrawal",
-			"withdrawal_id", withdrawalID,
-			"balance", balance,
-			"requested", withdrawal.Amount)
-
-		// Mark as failed
-		if err := e.withdrawalRepo.UpdateStatus(ctx, withdrawalID, entities.WithdrawalStatusFailed); err != nil {
-			e.logger.Error("Failed to update withdrawal status", "error", err)
-		}
-		return fmt.Errorf("insufficient balance: have %s, need %s", balance, withdrawal.Amount)
+		e.logger.Warn("Advisory balance check failed, proceeding to atomic ledger debit",
+			"withdrawal_id", withdrawalID, "error", err)
+	} else if balance.LessThan(withdrawal.Amount) {
+		e.logger.Warn("Advisory: balance may be insufficient, atomic ledger debit will be authoritative",
+			"withdrawal_id", withdrawalID, "balance", balance, "requested", withdrawal.Amount)
 	}
 
 	// Post ledger entries first (debit user balance, credit system buffer)
-	if err := e.postWithdrawalLedgerEntries(ctx, withdrawal); err != nil {
+	ledgerTxID, err := e.postWithdrawalLedgerEntries(ctx, withdrawal)
+	if err != nil {
 		return fmt.Errorf("failed to post ledger entries: %w", err)
 	}
 
 	// Execute on-chain transfer via Bridge
 	txHash, err := e.executeBridgeTransfer(ctx, withdrawal)
 	if err != nil {
-		e.logger.Error("Failed to execute Bridge transfer",
+		e.logger.Error("Failed to execute Bridge transfer, reversing ledger debit",
 			"withdrawal_id", withdrawalID,
+			"ledger_tx_id", ledgerTxID,
 			"error", err)
 
-		// Reversal should be handled separately
-		// For now, mark as failed
-		if err := e.withdrawalRepo.UpdateStatus(ctx, withdrawalID, entities.WithdrawalStatusFailed); err != nil {
-			e.logger.Error("Failed to update withdrawal status", "error", err)
+		// Reverse the ledger debit to restore user's balance
+		if reverseErr := e.ledgerService.ReverseTransaction(ctx, ledgerTxID, fmt.Sprintf("Bridge transfer failed for withdrawal %s: %v", withdrawalID, err)); reverseErr != nil {
+			e.logger.Error("CRITICAL: failed to reverse ledger debit after Bridge failure",
+				"withdrawal_id", withdrawalID,
+				"ledger_tx_id", ledgerTxID,
+				"error", reverseErr)
+		}
+
+		if statusErr := e.withdrawalRepo.UpdateStatus(ctx, withdrawalID, entities.WithdrawalStatusFailed); statusErr != nil {
+			e.logger.Error("Failed to update withdrawal status", "error", statusErr)
 		}
 		return fmt.Errorf("failed to execute transfer: %w", err)
 	}
@@ -445,7 +445,7 @@ func (e *Engine) ExecuteWithdrawal(ctx context.Context, withdrawalID uuid.UUID) 
 
 // postWithdrawalLedgerEntries creates ledger entries for a withdrawal
 // Debit user's usdc_balance, Credit system_buffer_usdc
-func (e *Engine) postWithdrawalLedgerEntries(ctx context.Context, withdrawal *entities.Withdrawal) error {
+func (e *Engine) postWithdrawalLedgerEntries(ctx context.Context, withdrawal *entities.Withdrawal) (uuid.UUID, error) {
 	e.logger.Info("Posting withdrawal ledger entries",
 		"withdrawal_id", withdrawal.ID,
 		"user_id", withdrawal.UserID,
@@ -454,13 +454,13 @@ func (e *Engine) postWithdrawalLedgerEntries(ctx context.Context, withdrawal *en
 	// Get user's USDC balance account
 	userAccount, err := e.ledgerService.GetOrCreateUserAccount(ctx, withdrawal.UserID, entities.AccountTypeUSDCBalance)
 	if err != nil {
-		return fmt.Errorf("failed to get user account: %w", err)
+		return uuid.Nil, fmt.Errorf("failed to get user account: %w", err)
 	}
 
 	// Get system buffer account
 	systemAccount, err := e.ledgerService.GetSystemAccount(ctx, entities.AccountTypeSystemBufferUSDC)
 	if err != nil {
-		return fmt.Errorf("failed to get system account: %w", err)
+		return uuid.Nil, fmt.Errorf("failed to get system account: %w", err)
 	}
 
 	// Create ledger transaction
@@ -505,7 +505,7 @@ func (e *Engine) postWithdrawalLedgerEntries(ctx context.Context, withdrawal *en
 
 	ledgerTx, err := e.ledgerService.CreateTransaction(ctx, ledgerReq)
 	if err != nil {
-		return fmt.Errorf("failed to create ledger transaction: %w", err)
+		return uuid.Nil, fmt.Errorf("failed to create ledger transaction: %w", err)
 	}
 
 	e.logger.Info("Withdrawal ledger entries posted",
@@ -513,7 +513,7 @@ func (e *Engine) postWithdrawalLedgerEntries(ctx context.Context, withdrawal *en
 		"ledger_tx_id", ledgerTx.ID,
 		"amount", withdrawal.Amount)
 
-	return nil
+	return ledgerTx.ID, nil
 }
 
 // executeBridgeTransfer executes the actual on-chain transfer via Bridge

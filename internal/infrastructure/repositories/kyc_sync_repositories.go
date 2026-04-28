@@ -167,7 +167,7 @@ func (r *KYCSyncJobRepository) GetNextPendingJobs(ctx context.Context, limit int
 	const query = `
 		SELECT
 			id, dedupe_key, applicant_id, correlation_id, event_type, payload,
-			status, attempt_count, max_attempts, next_retry_at, last_error, created_at, updated_at
+			provider, status, attempt_count, max_attempts, next_retry_at, last_error, created_at, updated_at
 		FROM kyc_sync_jobs
 		WHERE status = 'pending'
 		   OR (status = 'retry' AND next_retry_at IS NOT NULL AND next_retry_at <= NOW())
@@ -241,6 +241,7 @@ func scanKYCSyncJob(scanner interface {
 }) (*entities.KYCSyncJob, error) {
 	job := &entities.KYCSyncJob{}
 	var correlationID sql.NullString
+	var provider sql.NullString
 	var nextRetryAt sql.NullTime
 	var lastError sql.NullString
 
@@ -251,6 +252,7 @@ func scanKYCSyncJob(scanner interface {
 		&correlationID,
 		&job.EventType,
 		&job.Payload,
+		&provider,
 		&job.Status,
 		&job.AttemptCount,
 		&job.MaxAttempts,
@@ -265,6 +267,9 @@ func scanKYCSyncJob(scanner interface {
 
 	if correlationID.Valid {
 		job.CorrelationID = correlationID.String
+	}
+	if provider.Valid {
+		job.Provider = &provider.String
 	}
 	if nextRetryAt.Valid {
 		job.NextRetryAt = &nextRetryAt.Time
@@ -288,7 +293,7 @@ func (r *KYCSyncJobRepository) GetDLQJobs(ctx context.Context, limit int) ([]*en
 	const query = `
 		SELECT
 			id, dedupe_key, applicant_id, correlation_id, event_type, payload,
-			status, attempt_count, max_attempts, next_retry_at, last_error, created_at, updated_at
+			provider, status, attempt_count, max_attempts, next_retry_at, last_error, created_at, updated_at
 		FROM kyc_sync_jobs
 		WHERE status = 'dlq'
 		ORDER BY updated_at ASC

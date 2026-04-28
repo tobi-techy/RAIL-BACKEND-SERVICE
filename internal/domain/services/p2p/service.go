@@ -88,15 +88,16 @@ type ClaimToBankRequest struct {
 
 // Service handles P2P transfer operations
 type Service struct {
-	repo          Repository
-	userLookup    UserLookup
-	userUpdater   UserUpdater
-	balance       BalanceProvider
-	walletLookup  WalletLookup
-	transfer      TransferExecutor
-	notification  NotificationSender
-	bridgeOfframp BridgeOfframp
-	logger        *zap.Logger
+	repo           Repository
+	userLookup     UserLookup
+	userUpdater    UserUpdater
+	balance        BalanceProvider
+	walletLookup   WalletLookup
+	transfer       TransferExecutor
+	notification   NotificationSender
+	bridgeOfframp  BridgeOfframp
+	tapIntentStore TapIntentStore
+	logger         *zap.Logger
 }
 
 // NewService creates a new P2P service
@@ -249,6 +250,15 @@ func (s *Service) LookupRecipient(ctx context.Context, identifier string) (*enti
 
 // Send initiates a P2P transfer
 func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2PSendRequest) (*entities.P2PTransferResponse, error) {
+	// KYC gate: verify sender has approved KYC status before allowing transfers
+	sender, err := s.userLookup.GetByID(ctx, senderID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to verify sender: %w", err)
+	}
+	if sender == nil || sender.KYCStatus != string(entities.KYCStatusApproved) {
+		return nil, fmt.Errorf("KYC verification required before sending transfers")
+	}
+
 	// Generate or use provided idempotency key
 	idempotencyKey := req.IdempotencyKey
 	if idempotencyKey == "" {
@@ -273,19 +283,19 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2
 	// Parse amount
 	amount, err := decimal.NewFromString(req.Amount)
 	if err != nil || amount.LessThanOrEqual(decimal.Zero) {
-		return nil, fmt.Errorf("invalid amount")
+		return nil, entities.ErrP2PInvalidAmount
 	}
 
 	// Validate minimum transfer amount
 	minAmount := decimal.NewFromFloat(P2PMinTransferAmount)
 	if amount.LessThan(minAmount) {
-		return nil, fmt.Errorf("amount below minimum transfer limit of $%.2f", P2PMinTransferAmount)
+		return nil, entities.ErrP2PAmountTooLow
 	}
 
 	// Validate maximum transfer amount
 	maxAmount := decimal.NewFromFloat(P2PMaxTransferAmount)
 	if amount.GreaterThan(maxAmount) {
-		return nil, fmt.Errorf("amount exceeds maximum transfer limit of $%.2f", P2PMaxTransferAmount)
+		return nil, entities.ErrP2PAmountTooHigh
 	}
 
 	// Check sender balance
@@ -294,7 +304,7 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2
 		return nil, fmt.Errorf("failed to get balance: %w", err)
 	}
 	if balance.LessThan(amount) {
-		return nil, fmt.Errorf("insufficient balance")
+		return nil, entities.ErrP2PInsufficientFunds
 	}
 
 	// Lookup recipient
@@ -652,6 +662,12 @@ func (s *Service) ClaimPendingForUser(ctx context.Context, userID uuid.UUID, ema
 
 	claimed := 0
 	for _, transfer := range transfers {
+		// NOTE: AcquirePendingByID atomically transitions the transfer to "processing".
+		// If the process crashes after acquire but before completion, the transfer will
+		// be stuck in "processing" state. The p2p_expiry worker (internal/workers/p2p_expiry)
+		// handles expired transfers, but a separate recovery mechanism should reset
+		// "processing" transfers older than 10 minutes back to "pending" to prevent
+		// funds from being locked indefinitely. See: R3-L2 security review.
 		lockedTransfer, err := s.repo.AcquirePendingByID(ctx, transfer.ID)
 		if err != nil {
 			if err == sql.ErrNoRows {

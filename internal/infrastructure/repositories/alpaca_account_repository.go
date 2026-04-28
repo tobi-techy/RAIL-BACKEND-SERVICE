@@ -272,6 +272,13 @@ func (r *AlpacaEventRepository) Create(ctx context.Context, event *entities.Alpa
 	return err
 }
 
+func (r *AlpacaEventRepository) ExistsByEventID(ctx context.Context, eventID string) (bool, error) {
+	var exists bool
+	query := `SELECT EXISTS(SELECT 1 FROM alpaca_events WHERE event_id = $1)`
+	err := r.db.GetContext(ctx, &exists, query, eventID)
+	return exists, err
+}
+
 func (r *AlpacaEventRepository) MarkProcessed(ctx context.Context, id uuid.UUID, errorMsg *string) error {
 	now := time.Now()
 	query := `UPDATE alpaca_events SET processed = true, processed_at = $2, error_message = $3 WHERE id = $1`

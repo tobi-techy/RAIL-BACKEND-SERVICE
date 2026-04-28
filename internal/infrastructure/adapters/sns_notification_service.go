@@ -15,6 +15,13 @@ import (
 	"go.uber.org/zap"
 )
 
+// Deprecated: SNSNotificationService is not currently wired in the DI container.
+// Push notifications are delivered via ExpoPushService instead.
+// This adapter is retained for potential future use with AWS SNS/SQS.
+//
+// Known issue: NotificationMessage.Data uses map[string]string which is incompatible
+// with the domain service's map[string]interface{}. If re-enabling, unify the types.
+
 // SNSConfig holds AWS SNS configuration
 type SNSConfig struct {
 	Region              string
