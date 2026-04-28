@@ -179,7 +179,7 @@ resource "aws_elasticache_replication_group" "redis" {
 
 resource "aws_ecr_repository" "app" {
   name                 = "rail-backend"
-  image_tag_mutability = "IMMUTABLE"
+  image_tag_mutability = "MUTABLE"
 
   image_scanning_configuration {
     scan_on_push = true
@@ -346,6 +346,8 @@ resource "aws_ecs_task_definition" "app" {
       { name = "PORT",           value = "8080" },
       { name = "REDIS_HOST",     value = aws_elasticache_replication_group.redis.primary_endpoint_address },
       { name = "REDIS_PORT",     value = "6379" },
+      { name = "REDIS_TLS",      value = "true" },
+      { name = "REDIS_PASSWORD", value = "" },
       { name = "OTEL_SDK_DISABLED", value = "true" },
     ]
 
@@ -527,11 +529,15 @@ resource "aws_dynamodb_table" "terraform_lock" {
 resource "aws_wafv2_web_acl" "main" {
   name  = "${var.project_name}-waf"
   scope = "REGIONAL"
-  default_action { allow {} }
+  default_action {
+    allow {}
+  }
   rule {
     name     = "aws-managed-common"
     priority = 1
-    override_action { none {} }
+    override_action {
+      none {}
+    }
     statement {
       managed_rule_group_statement {
         name        = "AWSManagedRulesCommonRuleSet"
@@ -547,7 +553,9 @@ resource "aws_wafv2_web_acl" "main" {
   rule {
     name     = "rate-limit"
     priority = 2
-    action { block {} }
+    action {
+      block {}
+    }
     statement {
       rate_based_statement {
         limit              = 2000

@@ -30,7 +30,7 @@ output "rds_endpoint" {
 }
 
 output "redis_endpoint" {
-  value     = aws_elasticache_cluster.redis.cache_nodes[0].address
+  value     = aws_elasticache_replication_group.redis.primary_endpoint_address
   sensitive = true
 }
 

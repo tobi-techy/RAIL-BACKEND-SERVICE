@@ -1374,8 +1374,8 @@ func validate(config *Config) error {
 		}
 	}
 
-	// Require Redis password in production and staging
-	if config.Environment == "production" || config.Environment == "staging" {
+	// Require Redis password in production
+	if config.Environment == "production" {
 		if config.Redis.Password == "" {
 			return fmt.Errorf("redis password is required in %s environment", config.Environment)
 		}
