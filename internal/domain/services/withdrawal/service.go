@@ -14,6 +14,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	bridgepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	chainrailspkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
+	circlepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/metrics"
 	"github.com/shopspring/decimal"
@@ -119,6 +120,13 @@ type BridgeCryptoTransferAdapter interface {
 	TransferFunds(ctx context.Context, req *bridgepkg.CreateTransferRequest) (*bridgepkg.Transfer, error)
 }
 
+// CircleCryptoTransferAdapter interface for Circle crypto wallet transfers.
+// Uses Circle wallet ID and chain to route transfers.
+type CircleCryptoTransferAdapter interface {
+	TransferUSDC(ctx context.Context, walletID, tokenID, destinationAddress, amount string) (*circlepkg.Transaction, error)
+	GetWalletBalance(ctx context.Context, circleWalletID string) (string, error)
+}
+
 // StashLockChecker enforces the 90-day lock / 7-day window rule for stash withdrawals.
 type StashLockChecker interface {
 	CanWithdraw(ctx context.Context, userID uuid.UUID) (bool, time.Time, error)
@@ -142,6 +150,7 @@ type WithdrawalService struct {
 	notificationService WithdrawalNotificationService
 	bridgeAdapter       BridgeAdapter
 	bridgeCryptoAdapter BridgeCryptoTransferAdapter
+	circleTransfer      CircleCryptoTransferAdapter
 	chainRailsAdapter  ChainRailsTransferAdapter
 	stashLock          StashLockChecker
 	complianceScreener ComplianceScreener
@@ -199,6 +208,11 @@ func (s *WithdrawalService) SetStashLockChecker(c StashLockChecker) {
 // SetChainRailsAdapter wires the ChainRails cross-chain transfer adapter.
 func (s *WithdrawalService) SetChainRailsAdapter(a ChainRailsTransferAdapter) {
 	s.chainRailsAdapter = a
+}
+
+// SetCircleTransferAdapter wires the Circle crypto transfer adapter.
+func (s *WithdrawalService) SetCircleTransferAdapter(a CircleCryptoTransferAdapter) {
+	s.circleTransfer = a
 }
 
 // ComplianceScreener screens transactions for AML/sanctions compliance.
@@ -1245,6 +1259,11 @@ func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawa
 		return s.executeChainRailsTransfer(ctx, withdrawal, destinationAddress, crChain, sourceWalletAddress)
 	}
 
+	// Route through Circle if the wallet has a CircleWalletID (stored in BridgeWalletID field)
+	if s.circleTransfer != nil && withdrawal.BridgeWalletID != nil && *withdrawal.BridgeWalletID != "" {
+		return s.executeCircleTransfer(ctx, withdrawal, destinationAddress, destinationChain)
+	}
+
 	if s.bridgeCryptoAdapter == nil {
 		return nil, fmt.Errorf("bridge crypto adapter not configured")
 	}
@@ -1281,6 +1300,38 @@ func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawa
 	return &CryptoTransferResult{
 		TransferID: transfer.ID,
 		State:      string(transfer.State),
+	}, nil
+}
+
+// executeCircleTransfer sends USDC via Circle Programmable Wallets.
+func (s *WithdrawalService) executeCircleTransfer(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, destinationChain string) (*CryptoTransferResult, error) {
+	walletID := *withdrawal.BridgeWalletID // Circle wallet ID stored in this field
+
+	// Use on-chain USDC contract address for the destination chain.
+	// NOTE: Circle REST API uses tokenId (UUID), not contract address.
+	// The adapter's TransferUSDC passes this as tokenId — Circle's API
+	// may require a token lookup to resolve contract address → UUID.
+	// For SDK-style calls, tokenAddress (contract address) works directly.
+	chain := entities.WalletChain(destinationChain)
+	tokenAddress := chain.GetUSDCTokenAddress()
+	if tokenAddress == "" {
+		return nil, fmt.Errorf("no USDC token address for chain %s", destinationChain)
+	}
+
+	tx, err := s.circleTransfer.TransferUSDC(ctx, walletID, tokenAddress, destinationAddress, withdrawal.Amount.StringFixed(2))
+	if err != nil {
+		return nil, fmt.Errorf("circle transfer failed: %w", err)
+	}
+
+	s.logger.Info("Circle crypto transfer initiated",
+		"withdrawal_id", withdrawal.ID.String(),
+		"circle_tx_id", tx.ID,
+		"state", string(tx.State))
+
+	return &CryptoTransferResult{
+		TransferID: tx.ID,
+		TxHash:     tx.TxHash,
+		State:      string(tx.State),
 	}, nil
 }
 

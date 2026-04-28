@@ -32,6 +32,38 @@ func extractUserID(c *gin.Context) (uuid.UUID, error) {
 	}
 }
 
+// RequireCryptoCapability allows crypto transfers for both KYC'd users and non-KYC
+// users with Circle wallets. Non-KYC users get limited transfer amounts (enforced
+// by the limits service, not this middleware).
+func RequireCryptoCapability(userReader UserEntityReader, log *zap.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userID, err := extractUserID(c)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": "UNAUTHORIZED", "message": "Authentication required"})
+			return
+		}
+
+		user, err := userReader.GetUserEntityByID(c.Request.Context(), userID)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"code": "USER_LOOKUP_ERROR", "message": "Unable to verify account"})
+			return
+		}
+
+		tier := entities.DeriveKYCTier(user.KYCStatus)
+		if tier == entities.KYCTierUnverified {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"code":    "ACCOUNT_SETUP_REQUIRED",
+				"message": "Complete account setup to access crypto transfers",
+			})
+			return
+		}
+
+		// Set tier in context for downstream handlers/limits
+		c.Set("kyc_tier", string(tier))
+		c.Next()
+	}
+}
+
 // RequireBridgeCapability enforces Bridge KYC eligibility for Bridge-dependent features.
 func RequireBridgeCapability(userReader UserEntityReader, log *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {

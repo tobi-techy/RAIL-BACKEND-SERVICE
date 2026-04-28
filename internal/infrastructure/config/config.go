@@ -351,17 +351,21 @@ type AdaptiveRateLimitConfig struct {
 	EnableRiskScoring bool `mapstructure:"enable_risk_scoring"`
 }
 
-// CircleConfig is legacy configuration for Circle (deprecated; Bridge is primary).
+// CircleConfig holds configuration for Circle Programmable Wallets (primary wallet/custody provider).
 type CircleConfig struct {
 	APIKey                 string   `mapstructure:"api_key"`
 	Environment            string   `mapstructure:"environment"` // sandbox or production
 	BaseURL                string   `mapstructure:"base_url"`
+	EntitySecret           string   `mapstructure:"entity_secret"`            // 64-char hex (32 bytes), stored securely
 	EntitySecretCiphertext string   `mapstructure:"entity_secret_ciphertext"` // Pre-registered ciphertext from Circle Dashboard
 	PublicKeyPEM           string   `mapstructure:"public_key_pem"`           // Circle public key for entity secret encryption
 	DefaultWalletSetID     string   `mapstructure:"default_wallet_set_id"`
 	DefaultWalletSetName   string   `mapstructure:"default_wallet_set_name"`
 	SupportedChains        []string `mapstructure:"supported_chains"`
-	TreasuryWalletAddress  string   `mapstructure:"treasury_wallet_address"` // Company wallet for account closure fund sweeps
+	TreasuryWalletAddress  string   `mapstructure:"treasury_wallet_address"`
+	WebhookSecret          string   `mapstructure:"webhook_secret"`
+	Timeout                int      `mapstructure:"timeout"`
+	MaxRetries             int      `mapstructure:"max_retries"`
 }
 
 type KYCConfig struct {
@@ -985,6 +989,9 @@ func overrideFromEnv() {
 	if circleBaseURL := os.Getenv("CIRCLE_BASE_URL"); circleBaseURL != "" {
 		viper.Set("circle.base_url", circleBaseURL)
 	}
+	if circleEntitySecret := os.Getenv("CIRCLE_ENTITY_SECRET"); circleEntitySecret != "" {
+		viper.Set("circle.entity_secret", circleEntitySecret)
+	}
 	// Load pre-registered entity secret ciphertext from environment
 	if circleEntitySecretCiphertext := os.Getenv("CIRCLE_ENTITY_SECRET_CIPHERTEXT"); circleEntitySecretCiphertext != "" {
 		viper.Set("circle.entity_secret_ciphertext", circleEntitySecretCiphertext)
@@ -1017,6 +1024,9 @@ func overrideFromEnv() {
 	}
 	if treasuryWallet := os.Getenv("CIRCLE_TREASURY_WALLET_ADDRESS"); treasuryWallet != "" {
 		viper.Set("circle.treasury_wallet_address", treasuryWallet)
+	}
+	if circleWebhookSec := os.Getenv("CIRCLE_WEBHOOK_SECRET"); circleWebhookSec != "" {
+		viper.Set("circle.webhook_secret", circleWebhookSec)
 	}
 	if paymentWebhookSecret := os.Getenv("PAYMENT_WEBHOOK_SECRET"); paymentWebhookSecret != "" {
 		viper.Set("payment.webhook_secret", paymentWebhookSecret)

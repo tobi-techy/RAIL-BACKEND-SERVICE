@@ -16,6 +16,13 @@ type BridgeWalletLister interface {
 	ListWallets(ctx context.Context, customerID string) ([]*entities.ManagedWallet, error)
 }
 
+// CircleWalletProvider creates and manages wallets via Circle Programmable Wallets.
+type CircleWalletProvider interface {
+	CreateWalletForUser(ctx context.Context, userID uuid.UUID, walletSetID string, chain entities.WalletChain) (*entities.ManagedWallet, error)
+	CreateMultiChainWallets(ctx context.Context, userID uuid.UUID, walletSetID string, chains []entities.WalletChain) ([]*entities.ManagedWallet, error)
+	GetWalletBalance(ctx context.Context, circleWalletID string) (string, error)
+}
+
 // UserProfileProvider retrieves user profile data needed during provisioning.
 type UserProfileProvider interface {
 	GetBridgeCustomerID(ctx context.Context, userID uuid.UUID) (string, error)
@@ -28,6 +35,7 @@ type Service struct {
 	auditService        AuditService
 	onboardingService   OnboardingService
 	bridgeWallets       BridgeWalletLister
+	circleWallets       CircleWalletProvider
 	userProfiles        UserProfileProvider
 	logger              *zap.Logger
 	config              Config
@@ -80,6 +88,7 @@ func NewService(
 	auditService AuditService,
 	onboardingService OnboardingService,
 	bridgeWallets BridgeWalletLister,
+	circleWallets CircleWalletProvider,
 	userProfiles UserProfileProvider,
 	logger *zap.Logger,
 	cfg Config,
@@ -94,6 +103,7 @@ func NewService(
 		auditService:        auditService,
 		onboardingService:   onboardingService,
 		bridgeWallets:       bridgeWallets,
+		circleWallets:       circleWallets,
 		userProfiles:        userProfiles,
 		logger:              logger,
 		config:              cfg,
@@ -109,9 +119,11 @@ func normalizeSupportedChains(chains []entities.WalletChain, logger *zap.Logger)
 	if len(chains) == 0 {
 		return []entities.WalletChain{
 			entities.WalletChainSolana,
-			entities.WalletChainPolygon,
-			entities.WalletChainCelo,
+			entities.WalletChainEthereum,
 			entities.WalletChainBase,
+			entities.WalletChainArbitrum,
+			entities.WalletChainOptimism,
+			entities.WalletChainPolygon,
 			entities.WalletChainAvalanche,
 		}
 	}
@@ -134,45 +146,143 @@ func normalizeSupportedChains(chains []entities.WalletChain, logger *zap.Logger)
 	if len(normalized) == 0 {
 		return []entities.WalletChain{
 			entities.WalletChainSolana,
-			entities.WalletChainPolygon,
-			entities.WalletChainCelo,
+			entities.WalletChainEthereum,
+			entities.WalletChainBase,
 		}
 	}
 
 	return normalized
 }
 
-// CreateWalletsForUser creates developer-controlled wallets for a user across specified chains
-// This follows the developer-controlled-wallet pattern where we use a pre-registered Entity Secret Ciphertext
-// Uses a transactional approach to prevent race conditions when concurrent requests create wallets
+// GetCircleWalletBalance returns the USDC balance for a user's wallet on a given chain.
+func (s *Service) GetCircleWalletBalance(ctx context.Context, userID uuid.UUID, chain entities.WalletChain) (string, error) {
+	if s.circleWallets == nil {
+		return "", fmt.Errorf("circle wallet provider not configured")
+	}
+	wallet, err := s.walletRepo.GetByUserAndChain(ctx, userID, chain)
+	if err != nil {
+		return "", fmt.Errorf("wallet lookup failed: %w", err)
+	}
+	if wallet == nil {
+		return "", fmt.Errorf("wallet not found for chain %s", chain)
+	}
+	if wallet.CircleWalletID == "" {
+		return "", fmt.Errorf("wallet has no Circle ID (legacy Bridge wallet)")
+	}
+	return s.circleWallets.GetWalletBalance(ctx, wallet.CircleWalletID)
+}
+
+// CreateWalletsForUser creates Circle wallets for a user across specified chains.
+// EVM chains share a single wallet address (Circle unified addressing).
+// This replaces the old Bridge async provisioning — Circle wallet creation is synchronous.
 func (s *Service) CreateWalletsForUser(ctx context.Context, userID uuid.UUID, chains []entities.WalletChain) error {
-	s.logger.Info("Creating developer-controlled wallets for user",
-		zap.String("userID", userID.String()),
-		zap.Any("chains", chains))
+	if s.circleWallets == nil {
+		return fmt.Errorf("circle wallet provider not configured")
+	}
+	if s.config.DefaultWalletSetID == "" {
+		return fmt.Errorf("circle default wallet set ID not configured")
+	}
 
 	if len(chains) == 0 {
 		chains = s.config.SupportedChains
 	}
 
-	chainStrings := make([]string, len(chains))
-	for i, chain := range chains {
-		chainStrings[i] = string(chain)
+	s.logger.Info("Creating Circle wallets for user",
+		zap.String("userID", userID.String()),
+		zap.Any("chains", chains))
+
+	// Deduplicate: one SOL wallet + one EVM wallet (covers all EVM chains).
+	var needSOL bool
+	var needEVM bool
+	for _, chain := range chains {
+		existing, _ := s.walletRepo.GetByUserAndChain(ctx, userID, chain)
+		if existing != nil {
+			continue
+		}
+		if chain == entities.WalletChainSolana {
+			needSOL = true
+		} else if chain.GetChainFamily() == "EVM" {
+			needEVM = true
+		}
 	}
 
-	job, created, err := s.provisioningJobRepo.GetOrCreateForUser(ctx, userID, chainStrings)
-	if err != nil {
-		return fmt.Errorf("failed to get or create provisioning job: %w", err)
-	}
-
-	if !created {
-		s.logger.Info("User already has an active provisioning job",
-			zap.String("userID", userID.String()),
-			zap.String("jobID", job.ID.String()),
-			zap.String("status", string(job.Status)))
+	if !needSOL && !needEVM {
+		s.logger.Info("User already has all wallets", zap.String("userID", userID.String()))
 		return nil
 	}
 
-	go s.processWalletProvisioningAsync(job.ID, userID)
+	// Build the list of chains to create on Circle (one per family).
+	var circleChains []entities.WalletChain
+	if needSOL {
+		circleChains = append(circleChains, entities.WalletChainSolana)
+	}
+	if needEVM {
+		// Create one EVM wallet — Circle gives same address across all EVM chains.
+		circleChains = append(circleChains, entities.WalletChainEthereum)
+	}
+
+	wallets, err := s.circleWallets.CreateMultiChainWallets(ctx, userID, s.config.DefaultWalletSetID, circleChains)
+	if err != nil {
+		return fmt.Errorf("circle create wallets: %w", err)
+	}
+
+	// Save the Circle wallets and create alias rows for all EVM chains.
+	var evmAddress string
+	var evmCircleWalletID string
+	for _, w := range wallets {
+		if err := s.walletRepo.Create(ctx, w); err != nil {
+			s.logger.Error("Failed to save wallet", zap.Error(err), zap.String("chain", string(w.Chain)))
+			continue
+		}
+		if w.Chain.GetChainFamily() == "EVM" {
+			evmAddress = w.Address
+			evmCircleWalletID = w.CircleWalletID
+		}
+		s.logger.Info("Circle wallet created",
+			zap.String("userID", userID.String()),
+			zap.String("chain", string(w.Chain)),
+			zap.String("address", w.Address))
+	}
+
+	// Create alias wallet rows for remaining EVM chains (same address).
+	if evmAddress != "" {
+		for _, chain := range chains {
+			if chain == entities.WalletChainSolana || chain == entities.WalletChainEthereum {
+				continue
+			}
+			if chain.GetChainFamily() != "EVM" {
+				continue
+			}
+			existing, _ := s.walletRepo.GetByUserAndChain(ctx, userID, chain)
+			if existing != nil {
+				continue
+			}
+			alias := &entities.ManagedWallet{
+				ID:             uuid.New(),
+				UserID:         userID,
+				Chain:          chain,
+				Address:        evmAddress,
+				CircleWalletID: evmCircleWalletID,
+				AccountType:    entities.AccountTypeEOA,
+				Status:         entities.WalletStatusLive,
+			}
+			if err := s.walletRepo.Create(ctx, alias); err != nil {
+				s.logger.Error("Failed to save EVM alias wallet", zap.Error(err), zap.String("chain", string(chain)))
+			}
+		}
+	}
+
+	s.logger.Info("Wallet provisioning completed",
+		zap.String("userID", userID.String()),
+		zap.Int("chains", len(chains)))
+
+	// Notify onboarding service that wallets are ready.
+	if s.onboardingService != nil {
+		if err := s.onboardingService.ProcessWalletCreationComplete(ctx, userID); err != nil {
+			s.logger.Warn("Failed to notify onboarding of wallet creation",
+				zap.Error(err), zap.String("userID", userID.String()))
+		}
+	}
 
 	return nil
 }

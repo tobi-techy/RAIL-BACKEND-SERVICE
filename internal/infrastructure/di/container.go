@@ -64,6 +64,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
+	circleadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/embeddings"
 	pajadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/paj"
@@ -977,6 +978,7 @@ type Container struct {
 	AlpacaService      *alpaca.Service
 	BridgeClient       *bridge.Client
 	BridgeAdapter      *bridge.Adapter
+	CircleAdapter      *circleadapter.Adapter
 	UmbraClient        *umbra.Client
 	UmbraWalletService *umbrawallet.Service
 	EmailService       *adapters.EmailService
@@ -1264,6 +1266,33 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	bridgeClient := bridge.NewClient(bridgeConfig, zapLog)
 	bridgeAdapter := bridge.NewAdapter(bridgeClient, zapLog)
 
+	// Initialize Circle Programmable Wallets client
+	var circleAdapter *circleadapter.Adapter
+	if cfg.Circle.APIKey != "" && cfg.Circle.EntitySecret != "" {
+		circleClient, circleErr := circleadapter.NewHTTPClient(circleadapter.Config{
+			APIKey:             cfg.Circle.APIKey,
+			EntitySecret:       cfg.Circle.EntitySecret,
+			PublicKeyPEM:       cfg.Circle.PublicKeyPEM,
+			BaseURL:            cfg.Circle.BaseURL,
+			Timeout:            time.Duration(cfg.Circle.Timeout) * time.Second,
+			MaxRetries:         cfg.Circle.MaxRetries,
+			DefaultWalletSetID: cfg.Circle.DefaultWalletSetID,
+		}, zapLog)
+		if circleErr != nil {
+			zapLog.Warn("Circle client init failed, wallet features degraded", zap.Error(circleErr))
+		} else {
+			isSandbox := cfg.Circle.Environment == "sandbox"
+			if isSandbox {
+				circleAdapter = circleadapter.NewSandboxAdapter(circleClient, zapLog)
+			} else {
+				circleAdapter = circleadapter.NewAdapter(circleClient, zapLog)
+			}
+			zapLog.Info("Circle Programmable Wallets initialized", zap.Bool("sandbox", isSandbox))
+		}
+	} else {
+		zapLog.Info("Circle Programmable Wallets not configured (missing API key or entity secret)")
+	}
+
 	// Initialize Umbra privacy sidecar client
 	var umbraClient *umbra.Client
 	if cfg.Umbra.Enabled && cfg.Umbra.SidecarURL != "" {
@@ -1366,6 +1395,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		AlpacaService: alpacaService,
 		BridgeClient:  bridgeClient,
 		BridgeAdapter: bridgeAdapter,
+		CircleAdapter: circleAdapter,
 		UmbraClient:   umbraClient,
 		EmailService:  emailService,
 		SMSService:    smsService,
@@ -1417,6 +1447,7 @@ func (c *Container) initializeDomainServices() error {
 		c.AuditService,
 		c.OnboardingService,
 		&BridgeWalletProvisioningAdapter{client: c.BridgeClient},
+		c.CircleAdapter,
 		&UserProfileProviderAdapter{repo: c.UserRepo},
 		c.ZapLog,
 		walletServiceConfig,
@@ -2047,6 +2078,11 @@ func (c *Container) initializeDomainServices() error {
 	c.WithdrawalService.SetStashLockChecker(stashLockSvc)
 	c.LedgerService.SetStashLockChecker(stashLockSvc)
 	c.StashLockService = stashLockSvc
+
+	// Wire Circle crypto transfer adapter
+	if c.CircleAdapter != nil {
+		c.WithdrawalService.SetCircleTransferAdapter(c.CircleAdapter)
+	}
 
 	// Initialize compliance screening (Didit transaction monitoring + AML) — wired below after DiditClient creation
 

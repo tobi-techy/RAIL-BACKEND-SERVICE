@@ -753,7 +753,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// Unified Withdrawal routes with security middleware
 			withdrawals := protected.Group("/withdrawals")
 			withdrawals.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
-			withdrawals.Use(middleware.RequireBridgeCapability(container.UserRepo, container.ZapLog))
+			withdrawals.Use(middleware.RequireCryptoCapability(container.UserRepo, container.ZapLog))
 			// Apply withdrawal security: rate limits (3/day) and daily max ($10k new, $100k established)
 			if withdrawalSecurityStore := container.GetWithdrawalSecurityStore(); withdrawalSecurityStore != nil {
 				withdrawals.Use(middleware.WithdrawalSecurityMiddleware(
@@ -768,7 +768,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				// Keep POST /withdrawals for backward compatibility and treat it as crypto withdrawal.
 				withdrawalsSensitive.POST("", withdrawalHandlers.InitiateCryptoWithdrawal)
 				withdrawalsSensitive.POST("/crypto", withdrawalHandlers.InitiateCryptoWithdrawal)
-				withdrawalsSensitive.POST("/fiat", withdrawalHandlers.InitiateFiatWithdrawal)
+				// Fiat withdrawals require full Bridge KYC
+				fiatWithdrawals := withdrawalsSensitive.Group("/")
+				fiatWithdrawals.Use(middleware.RequireBridgeCapability(container.UserRepo, container.ZapLog))
+				fiatWithdrawals.POST("/fiat", withdrawalHandlers.InitiateFiatWithdrawal)
 				withdrawals.GET("/fees", withdrawalHandlers.GetWithdrawalFees)
 				withdrawals.GET("", withdrawalHandlers.GetUserWithdrawals)
 				withdrawals.GET("/:withdrawalId", withdrawalHandlers.GetWithdrawal)

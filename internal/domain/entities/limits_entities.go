@@ -12,9 +12,19 @@ import (
 type KYCTier string
 
 const (
-	KYCTierUnverified KYCTier = "unverified" // No KYC — deposits/withdrawals blocked
+	KYCTierUnverified KYCTier = "unverified" // No account setup — all transactions blocked
+	KYCTierNonKYC     KYCTier = "non_kyc"    // Circle wallet created, no KYC — limited crypto only
 	KYCTierBasic      KYCTier = "basic"      // Basic identity verification (Tier 1)
 	KYCTierAdvanced   KYCTier = "advanced"   // Advanced verification with proof of address/funds (Tier 2)
+)
+
+// ── Non-KYC Limits (crypto-only, no fiat) ────────────────────────
+
+var (
+	NonKYCDailyTransferLimit   = decimal.NewFromFloat(100.00)   // $100/day
+	NonKYCMonthlyTransferLimit = decimal.NewFromFloat(500.00)   // $500/month
+	NonKYCMaxTransferAmount    = decimal.NewFromFloat(100.00)   // $100 per transaction
+	NonKYCMinTransferAmount    = decimal.NewFromFloat(1.00)     // $1 minimum
 )
 
 // ── USD Limits ───────────────────────────────────────────────────
@@ -82,6 +92,22 @@ func GetLimitConfigForTierAndCurrency(tier KYCTier, currency string) Transaction
 			Tier:     KYCTierUnverified,
 			Currency: currency,
 			// All zeros — unverified users cannot transact
+		}
+	}
+
+	if tier == KYCTierNonKYC {
+		// Non-KYC: crypto transfers only, no fiat. Currency-agnostic USD limits.
+		return TransactionLimitConfig{
+			Tier:                   KYCTierNonKYC,
+			Currency:               "USD",
+			MinWithdrawal:          NonKYCMinTransferAmount,
+			MaxWithdrawal:          NonKYCMaxTransferAmount,
+			DailyWithdrawalLimit:   NonKYCDailyTransferLimit,
+			MonthlyWithdrawalLimit: NonKYCMonthlyTransferLimit,
+			// Deposits: same limits as withdrawals for non-KYC
+			MinDeposit:          NonKYCMinTransferAmount,
+			DailyDepositLimit:   NonKYCDailyTransferLimit,
+			MonthlyDepositLimit: NonKYCMonthlyTransferLimit,
 		}
 	}
 
@@ -186,13 +212,16 @@ var (
 	ErrMonthlyWithdrawalExceeded = errors.New("monthly withdrawal limit exceeded")
 )
 
-// DeriveKYCTier derives the KYC tier from KYC status
+// DeriveKYCTier derives the KYC tier from KYC status and onboarding status.
 func DeriveKYCTier(kycStatus string) KYCTier {
 	switch kycStatus {
 	case "approved", "verified":
 		return KYCTierBasic
 	case "advanced_approved", "advanced_verified":
 		return KYCTierAdvanced
+	case "non_kyc", "basic_complete":
+		// User completed basic onboarding (has Circle wallet) but no KYC
+		return KYCTierNonKYC
 	default:
 		return KYCTierUnverified
 	}
