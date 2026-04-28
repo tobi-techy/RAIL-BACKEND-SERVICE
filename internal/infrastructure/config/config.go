@@ -699,6 +699,9 @@ func setDefaults() {
 	viper.SetDefault("redis.port", 6379)
 	viper.SetDefault("redis.db", 0)
 	viper.SetDefault("redis.tls", false)
+	if redisTLS := os.Getenv("REDIS_TLS"); redisTLS != "" {
+		viper.Set("redis.tls", redisTLS == "true")
+	}
 	viper.SetDefault("redis.cluster_mode", false)
 	viper.SetDefault("redis.max_retries", 3)
 	viper.SetDefault("redis.pool_size", 10)
