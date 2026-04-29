@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/fnv"
+	"math/big"
 	"strings"
 	"sync"
 	"time"
@@ -125,7 +126,7 @@ type BridgeCryptoTransferAdapter interface {
 type CircleCryptoTransferAdapter interface {
 	TransferUSDC(ctx context.Context, walletID, tokenID, destinationAddress, amount string) (*circlepkg.Transaction, error)
 	GetWalletBalance(ctx context.Context, circleWalletID string) (string, error)
-	FindWalletWithUSDC(ctx context.Context, userRefID string) (walletID string, tokenID string, blockchain string, err error)
+	FindWalletWithUSDC(ctx context.Context, userRefID string) (walletID string, tokenID string, blockchain string, address string, err error)
 }
 
 // StashLockChecker enforces the 90-day lock / 7-day window rule for stash withdrawals.
@@ -536,7 +537,7 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 
 // executeCryptoWithdrawalAsync runs the Bridge transfer and post-processing in the background.
 func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Withdrawal, req *entities.InitiateCryptoWithdrawalRequest) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 
 	transferResult, err := s.executeCryptoTransfer(ctx, withdrawal, req.DestinationAddress, req.DestinationChain, req.SourceChain, req.SourceWalletAddress)
@@ -1268,7 +1269,10 @@ func validateChainPair(sourceChain, destChain string) error {
 func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, destinationChain, sourceChain, sourceWalletAddress string) (*CryptoTransferResult, error) {
 	// Circle users: route ALL crypto withdrawals through ChainRails for cross-chain support.
 	// Circle transfer funds the ChainRails intent, ChainRails delivers to any destination chain.
-	if s.circleTransfer != nil && s.chainRailsAdapter != nil && withdrawal.BridgeWalletID != nil && *withdrawal.BridgeWalletID != "" {
+	if s.circleTransfer != nil && withdrawal.BridgeWalletID != nil && *withdrawal.BridgeWalletID != "" {
+		if s.chainRailsAdapter == nil {
+			return nil, fmt.Errorf("circle wallet configured without chainrails — cannot route withdrawal")
+		}
 		return s.executeCircleViaChainRails(ctx, withdrawal, destinationAddress, destinationChain)
 	}
 
@@ -1329,7 +1333,6 @@ var circleChainToChainRails = map[string]struct{ chain, token string }{
 	"ARB":          {"ARBITRUM_MAINNET", "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"},
 	"OP-SEPOLIA":   {"OPTIMISM_TESTNET", "0x5fd84259d66Cd46123540766Be93DFE6D43130D7"},
 	"OP":           {"OPTIMISM_MAINNET", "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85"},
-	"MATIC-AMOY":   {"POLYGON_MAINNET", "0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582"}, // no testnet
 	"MATIC":        {"POLYGON_MAINNET", "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"},
 	"AVAX-FUJI":    {"AVALANCHE_TESTNET", "0x5425890298aed601595a70AB815c96711a31Bc65"},
 	"AVAX":         {"AVALANCHE_MAINNET", "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E"},
@@ -1342,7 +1345,7 @@ var destChainToChainRails = map[string]string{
 	"BASE": "BASE_MAINNET", "BASE-SEPOLIA": "BASE_TESTNET",
 	"ARB": "ARBITRUM_MAINNET", "ARB-SEPOLIA": "ARBITRUM_TESTNET", "ARBITRUM": "ARBITRUM_MAINNET",
 	"OP": "OPTIMISM_MAINNET", "OP-SEPOLIA": "OPTIMISM_TESTNET", "OPTIMISM": "OPTIMISM_MAINNET",
-	"MATIC": "POLYGON_MAINNET", "MATIC-AMOY": "POLYGON_MAINNET", "POLYGON": "POLYGON_MAINNET",
+	"MATIC": "POLYGON_MAINNET", "POLYGON": "POLYGON_MAINNET",
 	"AVAX": "AVALANCHE_MAINNET", "AVAX-FUJI": "AVALANCHE_TESTNET", "AVALANCHE": "AVALANCHE_MAINNET",
 	"STARKNET": "STARKNET_MAINNET", "BSC": "BSC_MAINNET", "BNB": "BSC_MAINNET",
 	"MONAD": "MONAD_MAINNET", "HYPEREVM": "HYPEREVM_MAINNET", "LISK": "LISK_MAINNET",
@@ -1354,8 +1357,8 @@ var destChainToChainRails = map[string]string{
 // 3. Circle transfers USDC to ChainRails intent address (same-chain)
 // 4. ChainRails delivers to destination on any chain
 func (s *WithdrawalService) executeCircleViaChainRails(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, destinationChain string) (*CryptoTransferResult, error) {
-	// Step 1: Find wallet with USDC and its blockchain
-	walletID, tokenID, blockchain, err := s.circleTransfer.FindWalletWithUSDC(ctx, withdrawal.UserID.String())
+	// Step 1: Find wallet with USDC, its blockchain, and on-chain address
+	walletID, tokenID, blockchain, onChainAddress, err := s.circleTransfer.FindWalletWithUSDC(ctx, withdrawal.UserID.String())
 	if err != nil {
 		return nil, fmt.Errorf("no USDC wallet found: %w", err)
 	}
@@ -1374,7 +1377,7 @@ func (s *WithdrawalService) executeCircleViaChainRails(ctx context.Context, with
 
 	amountMicro := withdrawal.Amount.Shift(6).IntPart()
 
-	// Step 4: Create ChainRails intent
+	// Step 4: Create ChainRails intent — use on-chain address for sender/refund, NOT Circle UUID
 	intent, err := s.chainRailsAdapter.CreateIntent(ctx, &chainrailspkg.CreateIntentRequest{
 		Amount:           fmt.Sprintf("%d", amountMicro),
 		AmountSymbol:     "USDC",
@@ -1382,8 +1385,8 @@ func (s *WithdrawalService) executeCircleViaChainRails(ctx context.Context, with
 		SourceChain:      sourceChainRails.chain,
 		DestinationChain: crDestChain,
 		Recipient:        destinationAddress,
-		Sender:           walletID,
-		RefundAddress:    walletID,
+		Sender:           onChainAddress,
+		RefundAddress:    onChainAddress,
 		Metadata: map[string]interface{}{
 			"withdrawal_id": withdrawal.ID.String(),
 			"user_id":       withdrawal.UserID.String(),
@@ -1398,16 +1401,32 @@ func (s *WithdrawalService) executeCircleViaChainRails(ctx context.Context, with
 		"intent_id", intent.ID,
 		"intent_address", intent.IntentAddress,
 		"source_chain", sourceChainRails.chain,
-		"dest_chain", crDestChain)
+		"dest_chain", crDestChain,
+		"total_amount", intent.TotalAmountInAssetToken)
 
-	// Step 5: Fund the intent via Circle transfer (same-chain to intent address)
-	tx, err := s.circleTransfer.TransferUSDC(ctx, walletID, tokenID, intent.IntentAddress, withdrawal.Amount.StringFixed(2))
+	// Step 5: Fund the intent — use total_amount_in_asset_token (includes fees) converted to human-readable
+	circleAmount := withdrawal.Amount.StringFixed(2)
+	if intent.TotalAmountInAssetToken != "" && intent.AssetTokenDecimals > 0 {
+		totalMicro, parseOk := new(big.Int).SetString(intent.TotalAmountInAssetToken, 10)
+		if parseOk {
+			divisor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(intent.AssetTokenDecimals)), nil)
+			humanAmount := new(big.Float).Quo(new(big.Float).SetInt(totalMicro), new(big.Float).SetInt(divisor))
+			circleAmount = humanAmount.Text('f', intent.AssetTokenDecimals)
+		}
+	}
+
+	tx, err := s.circleTransfer.TransferUSDC(ctx, walletID, tokenID, intent.IntentAddress, circleAmount)
 	if err != nil {
 		s.logger.Error("Circle transfer to ChainRails intent failed",
 			"withdrawal_id", withdrawal.ID.String(),
 			"intent_id", intent.ID,
 			"error", err)
 		return nil, fmt.Errorf("circle transfer to chainrails intent failed: %w", err)
+	}
+
+	// H6: Check Circle transfer state
+	if tx.State == "DENIED" || tx.State == "FAILED" || tx.State == "CANCELLED" {
+		return nil, fmt.Errorf("circle transfer %s", string(tx.State))
 	}
 
 	s.logger.Info("Circle transfer to ChainRails intent initiated",
@@ -1423,7 +1442,7 @@ func (s *WithdrawalService) executeCircleViaChainRails(ctx context.Context, with
 
 // executeCircleTransfer sends USDC via Circle Programmable Wallets (same-chain only).
 func (s *WithdrawalService) executeCircleTransfer(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, destinationChain string) (*CryptoTransferResult, error) {
-	walletID, tokenID, _, err := s.circleTransfer.FindWalletWithUSDC(ctx, withdrawal.UserID.String())
+	walletID, tokenID, _, _, err := s.circleTransfer.FindWalletWithUSDC(ctx, withdrawal.UserID.String())
 	if err != nil {
 		return nil, fmt.Errorf("no USDC wallet found: %w", err)
 	}
