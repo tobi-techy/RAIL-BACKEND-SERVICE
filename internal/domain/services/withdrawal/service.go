@@ -375,10 +375,15 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	}
 
 	// Step 3.1: Validate destination address is whitelisted (if whitelist enabled)
+	// Skip whitelist for non-KYC users — they have strict transfer limits instead.
 	if s.addressWhitelist != nil {
-		if err := s.addressWhitelist.ValidateWithdrawalAddress(ctx, req.UserID, req.DestinationChain, req.DestinationAddress); err != nil {
-			s.logger.Warn("Address whitelist validation failed", "error", err.Error(), "address", req.DestinationAddress)
-			return nil, fmt.Errorf("address not whitelisted or in cooling period: %w", err)
+		user, userErr := s.userRepo.GetUserEntityByID(ctx, req.UserID)
+		skipWhitelist := userErr == nil && user != nil && entities.DeriveKYCTier(user.KYCStatus) == entities.KYCTierNonKYC
+		if !skipWhitelist {
+			if err := s.addressWhitelist.ValidateWithdrawalAddress(ctx, req.UserID, req.DestinationChain, req.DestinationAddress); err != nil {
+				s.logger.Warn("Address whitelist validation failed", "error", err.Error(), "address", req.DestinationAddress)
+				return nil, fmt.Errorf("address not whitelisted or in cooling period: %w", err)
+			}
 		}
 	}
 
