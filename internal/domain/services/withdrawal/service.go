@@ -540,7 +540,7 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 
-	transferResult, err := s.executeCryptoTransfer(ctx, withdrawal, req.DestinationAddress, req.DestinationChain, req.SourceChain, req.SourceWalletAddress)
+	transferResult, err := s.executeCryptoTransfer(ctx, withdrawal, req.DestinationAddress, req.DestinationChain, req.SourceChain, req.SourceWalletAddress, req.CircleWalletID)
 	if err != nil {
 		s.logger.Error("async: crypto transfer failed — reversing ledger",
 			"error", err, "withdrawal_id", withdrawal.ID.String())
@@ -1266,10 +1266,10 @@ func validateChainPair(sourceChain, destChain string) error {
 
 // executeCryptoTransfer executes a crypto transfer via Bridge custodial wallets
 // or ChainRails for chains not natively supported by Bridge.
-func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, destinationChain, sourceChain, sourceWalletAddress string) (*CryptoTransferResult, error) {
+func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, destinationChain, sourceChain, sourceWalletAddress, circleWalletID string) (*CryptoTransferResult, error) {
 	// Circle users: route ALL crypto withdrawals through ChainRails for cross-chain support.
 	// Circle transfer funds the ChainRails intent, ChainRails delivers to any destination chain.
-	if s.circleTransfer != nil && withdrawal.BridgeWalletID != nil && *withdrawal.BridgeWalletID != "" {
+	if s.circleTransfer != nil && circleWalletID != "" {
 		if s.chainRailsAdapter == nil {
 			return nil, fmt.Errorf("circle wallet configured without chainrails — cannot route withdrawal")
 		}
@@ -1333,7 +1333,8 @@ var circleChainToChainRails = map[string]struct{ chain, token string }{
 	"ARB":          {"ARBITRUM_MAINNET", "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"},
 	"OP-SEPOLIA":   {"OPTIMISM_TESTNET", "0x5fd84259d66Cd46123540766Be93DFE6D43130D7"},
 	"OP":           {"OPTIMISM_MAINNET", "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85"},
-	"MATIC":        {"POLYGON_MAINNET", "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"},
+	"MATIC-AMOY":   {"POLYGON_MAINNET", "0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582"}, // no ChainRails testnet — use mainnet
+	"MATIC":         {"POLYGON_MAINNET", "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"},
 	"AVAX-FUJI":    {"AVALANCHE_TESTNET", "0x5425890298aed601595a70AB815c96711a31Bc65"},
 	"AVAX":         {"AVALANCHE_MAINNET", "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E"},
 }
@@ -1405,15 +1406,16 @@ func (s *WithdrawalService) executeCircleViaChainRails(ctx context.Context, with
 		"total_amount", intent.TotalAmountInAssetToken)
 
 	// Step 5: Fund the intent — use total_amount_in_asset_token (includes fees) converted to human-readable
-	circleAmount := withdrawal.Amount.StringFixed(2)
-	if intent.TotalAmountInAssetToken != "" && intent.AssetTokenDecimals > 0 {
-		totalMicro, parseOk := new(big.Int).SetString(intent.TotalAmountInAssetToken, 10)
-		if parseOk {
-			divisor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(intent.AssetTokenDecimals)), nil)
-			humanAmount := new(big.Float).Quo(new(big.Float).SetInt(totalMicro), new(big.Float).SetInt(divisor))
-			circleAmount = humanAmount.Text('f', intent.AssetTokenDecimals)
-		}
+	if intent.TotalAmountInAssetToken == "" || intent.AssetTokenDecimals == 0 {
+		return nil, fmt.Errorf("chainrails did not return total amount — cannot determine funding amount")
 	}
+	totalMicro, parseOk := new(big.Int).SetString(intent.TotalAmountInAssetToken, 10)
+	if !parseOk {
+		return nil, fmt.Errorf("failed to parse chainrails total amount: %s", intent.TotalAmountInAssetToken)
+	}
+	divisor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(intent.AssetTokenDecimals)), nil)
+	humanAmount := new(big.Float).Quo(new(big.Float).SetInt(totalMicro), new(big.Float).SetInt(divisor))
+	circleAmount := humanAmount.Text('f', intent.AssetTokenDecimals)
 
 	tx, err := s.circleTransfer.TransferUSDC(ctx, walletID, tokenID, intent.IntentAddress, circleAmount)
 	if err != nil {
