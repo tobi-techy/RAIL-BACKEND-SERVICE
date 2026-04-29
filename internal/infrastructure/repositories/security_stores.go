@@ -24,7 +24,8 @@ func NewWithdrawalSecurityStore(db *sqlx.DB) *WithdrawalSecurityStore {
 func (s *WithdrawalSecurityStore) GetTodayWithdrawalCount(ctx context.Context, userID uuid.UUID) (int, error) {
 	query := `
 		SELECT COUNT(*) FROM withdrawals 
-		WHERE user_id = $1 AND created_at >= CURRENT_DATE`
+		WHERE user_id = $1 AND created_at >= CURRENT_DATE
+		AND status NOT IN ('failed', 'cancelled', 'reversed')`
 	var count int
 	err := s.db.QueryRowContext(ctx, query, userID).Scan(&count)
 	if err == sql.ErrNoRows {

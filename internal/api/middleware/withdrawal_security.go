@@ -25,7 +25,7 @@ type WithdrawalSecurityConfig struct {
 // DefaultWithdrawalSecurityConfig returns default security settings
 func DefaultWithdrawalSecurityConfig() WithdrawalSecurityConfig {
 	return WithdrawalSecurityConfig{
-		MaxRequestsPerDay:   3,
+		MaxRequestsPerDay:   20,
 		NewAccountDailyMax:  decimal.NewFromInt(10000),
 		EstablishedDailyMax: decimal.NewFromInt(100000),
 		NewAccountAgeDays:   30,
