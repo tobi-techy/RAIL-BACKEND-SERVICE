@@ -38,7 +38,7 @@ type MiriamUserFact struct {
 	Source          string          `json:"source" db:"source"`
 	Confidence      decimal.Decimal `json:"confidence" db:"confidence"`
 	SupersededBy    *uuid.UUID      `json:"superseded_by,omitempty" db:"superseded_by"`
-	Embedding       []byte          `json:"-" db:"embedding"`
+	Embedding       []byte          `json:"-" db:"-"`
 	FirstObservedAt time.Time       `json:"first_observed_at" db:"first_observed_at"`
 	LastConfirmedAt time.Time       `json:"last_confirmed_at" db:"last_confirmed_at"`
 	CreatedAt       time.Time       `json:"created_at" db:"created_at"`

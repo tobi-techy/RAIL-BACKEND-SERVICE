@@ -81,7 +81,8 @@ func (r *MiriamMemoryRepository) GetActiveFactsByCategory(ctx context.Context, u
 		       first_observed_at, last_confirmed_at, created_at
 		FROM miriam_user_facts
 		WHERE user_id = $1 AND category = $2 AND superseded_by IS NULL
-		ORDER BY last_confirmed_at DESC`, userID, category)
+		ORDER BY last_confirmed_at DESC
+		LIMIT 20`, userID, category)
 	if err != nil {
 		return nil, fmt.Errorf("get facts by category: %w", err)
 	}
