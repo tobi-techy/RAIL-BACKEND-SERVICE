@@ -246,6 +246,38 @@
         {
           "name": "TELEGRAM_ALERTS_CHAT_ID",
           "valueFrom": "/rail/prod/TELEGRAM_ALERTS_CHAT_ID"
+        },
+        {
+          "name": "OPENAI_API_KEY",
+          "valueFrom": "/rail/prod/OPENAI_API_KEY"
+        },
+        {
+          "name": "GEMINI_API_KEY",
+          "valueFrom": "/rail/prod/GEMINI_API_KEY"
+        },
+        {
+          "name": "AI_PRIMARY",
+          "valueFrom": "/rail/prod/AI_PRIMARY"
+        },
+        {
+          "name": "CIRCLE_API_KEY",
+          "valueFrom": "/rail/prod/CIRCLE_API_KEY"
+        },
+        {
+          "name": "CIRCLE_ENTITY_SECRET",
+          "valueFrom": "/rail/prod/CIRCLE_ENTITY_SECRET"
+        },
+        {
+          "name": "CIRCLE_ENVIRONMENT",
+          "valueFrom": "/rail/prod/CIRCLE_ENVIRONMENT"
+        },
+        {
+          "name": "CIRCLE_DEFAULT_WALLET_SET_ID",
+          "valueFrom": "/rail/prod/CIRCLE_DEFAULT_WALLET_SET_ID"
+        },
+        {
+          "name": "CIRCLE_WEBHOOK_SECRET",
+          "valueFrom": "/rail/prod/CIRCLE_WEBHOOK_SECRET"
         }
       ],
       "logConfiguration": {

@@ -91,6 +91,19 @@ type BridgeWalletBalanceAdapter struct {
 	adapter *bridge.Adapter
 }
 
+// circleWalletLookupAdapter adapts WalletRepository to webhooks.CircleWalletLookup.
+type circleWalletLookupAdapter struct {
+	repo *repositories.WalletRepository
+}
+
+func (a *circleWalletLookupAdapter) GetUserByCircleWalletID(ctx context.Context, circleWalletID string) (uuid.UUID, error) {
+	wallet, err := a.repo.GetByCircleWalletID(ctx, circleWalletID)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return wallet.UserID, nil
+}
+
 // BridgeWalletProvisioningAdapter adapts bridge.Client to wallet.BridgeWalletLister
 type BridgeWalletProvisioningAdapter struct {
 	client *bridge.Client
@@ -990,6 +1003,7 @@ type Container struct {
 	BridgeKYCAdapter              *BridgeKYCAdapter
 	BridgeVirtualAccountService   *funding.BridgeVirtualAccountService
 	BridgeWebhookHandler          *handlers.BridgeWebhookHandler
+	CircleWebhookHandler          *webhooks.CircleWebhookHandler
 	BridgeCustomerStatusProcessor *webhooks.BridgeCustomerStatusProcessor
 
 	// Domain Services
@@ -1711,6 +1725,15 @@ func (c *Container) initializeDomainServices() error {
 		)
 	} else {
 		c.ZapLog.Warn("Bridge client not configured - Bridge virtual account service disabled")
+	}
+
+	// Initialize Circle webhook handler for inbound deposit notifications.
+	if c.FundingService != nil && c.WalletRepo != nil {
+		c.CircleWebhookHandler = webhooks.NewCircleWebhookHandler(
+			c.FundingService,
+			&circleWalletLookupAdapter{repo: c.WalletRepo},
+			c.ZapLog,
+		)
 	}
 
 	// Initialize auto-invest service (OrderPlacer will be set after InvestingService is created)
@@ -3915,9 +3938,9 @@ func (c *Container) GetBridgeWebhookHandler() *handlers.BridgeWebhookHandler {
 	return c.BridgeWebhookHandler
 }
 
-// GetCircleWebhookHandler returns the Circle webhook handler (nil if Circle not configured).
+// GetCircleWebhookHandler returns the Circle webhook handler.
 func (c *Container) GetCircleWebhookHandler() *webhooks.CircleWebhookHandler {
-	return nil // TODO: wire up when Circle webhook subscription is configured
+	return c.CircleWebhookHandler
 }
 
 // GetBridgeVirtualAccountService returns the Bridge virtual account service
