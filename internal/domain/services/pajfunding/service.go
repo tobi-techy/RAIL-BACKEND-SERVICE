@@ -142,8 +142,8 @@ func (s *Service) SetChainRailsAdapter(cr ChainRailsAdapter) { s.chainRailsAdapt
 
 // evmToChainRails maps Circle EVM blockchain IDs to ChainRails source chain + USDC token.
 var evmToChainRails = map[string]struct{ chain, token string }{
-	"ETH-SEPOLIA":  {"ETH_TESTNET", "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"},
-	"ETH":          {"ETH_MAINNET", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"},
+	"ETH-SEPOLIA":  {"ETHEREUM_TESTNET", "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"},
+	"ETH":          {"ETHEREUM_MAINNET", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"},
 	"BASE-SEPOLIA": {"BASE_TESTNET", "0x036CbD53842c5426634e7929541eC2318f3dCF7e"},
 	"BASE":         {"BASE_MAINNET", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"},
 	"ARB-SEPOLIA":  {"ARBITRUM_TESTNET", "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d"},
@@ -165,9 +165,9 @@ func (s *Service) executeCircleViaCRToPaj(ctx context.Context, userID uuid.UUID,
 	}
 
 	// Determine Solana dest chain based on environment
-	solDest := "SOL_MAINNET"
+	solDest := "SOLANA_MAINNET"
 	if strings.Contains(blockchain, "SEPOLIA") || strings.Contains(blockchain, "FUJI") || strings.Contains(blockchain, "AMOY") || strings.Contains(blockchain, "DEVNET") {
-		solDest = "SOL_TESTNET"
+		solDest = "SOLANA_TESTNET"
 	}
 
 	amountMicro := decimal.NewFromFloat(totalTransfer).Shift(6).IntPart()
