@@ -1159,6 +1159,7 @@ type Container struct {
 	InstantFundingService  *funding.InstantFundingService
 	InstantFundingHandlers *fundinghandlers.InstantFundingHandlers
 	ChainRailsHandlers     *fundinghandlers.ChainRailsHandlers
+	ChainRailsClient       *chainrails.Client
 	PajHandlers            *fundinghandlers.PajHandlers
 
 	// Security Stores
@@ -4065,12 +4066,13 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 			DestinationChain: c.Config.ChainRails.DestinationChain,
 			SettlementToken:  c.Config.ChainRails.SettlementToken,
 		}, c.ZapLog)
+		c.ChainRailsClient = crClient
 		c.ChainRailsHandlers = fundinghandlers.NewChainRailsHandlers(
-			crClient, c.FundingService, c.Config.ChainRails.WebhookSecret, c.Logger,
+			c.ChainRailsClient, c.FundingService, c.Config.ChainRails.WebhookSecret, c.Logger,
 		)
 		// Wire ChainRails into withdrawal service for cross-chain withdrawals
 		if c.WithdrawalService != nil {
-			c.WithdrawalService.SetChainRailsAdapter(crClient)
+			c.WithdrawalService.SetChainRailsAdapter(c.ChainRailsClient)
 			c.ChainRailsHandlers.SetWithdrawalService(c.WithdrawalService)
 		}
 		c.ZapLog.Info("ChainRails deposit funnel initialized")
@@ -4101,6 +4103,9 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 		}
 		if c.CircleAdapter != nil {
 			pajService.SetCircleTransfer(c.CircleAdapter)
+		}
+		if c.ChainRailsClient != nil {
+			pajService.SetChainRailsAdapter(c.ChainRailsClient)
 		}
 		if c.GameplayHooks != nil {
 			pajService.SetGameplayHooks(c.GameplayHooks)

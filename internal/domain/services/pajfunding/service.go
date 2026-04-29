@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"math"
+	"math/big"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	bridgepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	circlepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
+	chainrailspkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/paj"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/pkg/crypto"
@@ -67,6 +69,11 @@ type CircleTransferAdapter interface {
 	TransferUSDC(ctx context.Context, walletID, tokenID, destinationAddress, amount string) (*circlepkg.Transaction, error)
 }
 
+// ChainRailsAdapter creates cross-chain transfer intents.
+type ChainRailsAdapter interface {
+	CreateIntent(ctx context.Context, req *chainrailspkg.CreateIntentRequest) (*chainrailspkg.CreateIntentResponse, error)
+}
+
 // BridgeCustomerIDProvider resolves a user's Bridge customer ID for transfer API calls.
 type BridgeCustomerIDProvider interface {
 	GetBridgeCustomerID(ctx context.Context, userID uuid.UUID) (string, error)
@@ -96,6 +103,7 @@ type Service struct {
 	bridgeTransfer    BridgeCryptoTransferAdapter
 	bridgeCustomerID  BridgeCustomerIDProvider
 	circleTransfer    CircleTransferAdapter
+	chainRailsAdapter ChainRailsAdapter
 	limitsChecker     WithdrawalLimitsChecker
 	pajChain          string // blockchain for Paj deposit addresses (e.g. "solana")
 	redis             cache.RedisClient
@@ -128,6 +136,98 @@ func (s *Service) SetGameplayHooks(gh GameplayHooks) { s.gameplayHooks = gh }
 
 // SetCircleTransfer sets the Circle transfer adapter for offramp.
 func (s *Service) SetCircleTransfer(ct CircleTransferAdapter) { s.circleTransfer = ct }
+
+// SetChainRailsAdapter sets the ChainRails adapter for cross-chain offramp.
+func (s *Service) SetChainRailsAdapter(cr ChainRailsAdapter) { s.chainRailsAdapter = cr }
+
+// evmToChainRails maps Circle EVM blockchain IDs to ChainRails source chain + USDC token.
+var evmToChainRails = map[string]struct{ chain, token string }{
+	"ETH-SEPOLIA":  {"ETH_TESTNET", "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"},
+	"ETH":          {"ETH_MAINNET", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"},
+	"BASE-SEPOLIA": {"BASE_TESTNET", "0x036CbD53842c5426634e7929541eC2318f3dCF7e"},
+	"BASE":         {"BASE_MAINNET", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"},
+	"ARB-SEPOLIA":  {"ARBITRUM_TESTNET", "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d"},
+	"ARB":          {"ARBITRUM_MAINNET", "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"},
+	"OP-SEPOLIA":   {"OPTIMISM_TESTNET", "0x5fd84259d66Cd46123540766Be93DFE6D43130D7"},
+	"OP":           {"OPTIMISM_MAINNET", "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85"},
+	"AVAX-FUJI":    {"AVALANCHE_TESTNET", "0x5425890298aed601595a70AB815c96711a31Bc65"},
+	"AVAX":         {"AVALANCHE_MAINNET", "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E"},
+}
+
+// executeCircleViaCRToPaj bridges EVM USDC to PAJ's Solana address via ChainRails.
+// ChainRails handles the cross-chain delivery in one step.
+func (s *Service) executeCircleViaCRToPaj(ctx context.Context, userID uuid.UUID, walletID, tokenID, blockchain string, order *paj.OfframpOrder, totalHold decimal.Decimal, totalTransfer float64) {
+	source, ok := evmToChainRails[blockchain]
+	if !ok {
+		s.logger.Error("unsupported EVM chain for ChainRails Paj bridge", zap.String("blockchain", blockchain))
+		s.reverseHold(ctx, userID, order.ID, totalHold, "unsupported_chain")
+		return
+	}
+
+	// Determine Solana dest chain based on environment
+	solDest := "SOL_MAINNET"
+	if strings.Contains(blockchain, "SEPOLIA") || strings.Contains(blockchain, "FUJI") || strings.Contains(blockchain, "AMOY") || strings.Contains(blockchain, "DEVNET") {
+		solDest = "SOL_TESTNET"
+	}
+
+	amountMicro := int64(totalTransfer * 1_000_000)
+
+	// Step 1: Create ChainRails intent — source=EVM chain, dest=Solana, recipient=PAJ address
+	intent, err := s.chainRailsAdapter.CreateIntent(ctx, &chainrailspkg.CreateIntentRequest{
+		Amount:           fmt.Sprintf("%d", amountMicro),
+		AmountSymbol:     "USDC",
+		TokenIn:          source.token,
+		SourceChain:      source.chain,
+		DestinationChain: solDest,
+		Recipient:        order.Address,
+		Sender:           walletID,
+		RefundAddress:    walletID,
+		Metadata: map[string]interface{}{
+			"paj_order_id": order.ID,
+			"user_id":      userID.String(),
+			"type":         "paj_offramp_bridge",
+		},
+	})
+	if err != nil {
+		s.logger.Error("ChainRails intent for Paj bridge failed — reversing hold",
+			zap.Error(err), zap.String("paj_order_id", order.ID))
+		s.reverseHold(ctx, userID, order.ID, totalHold, "chainrails_intent_failed")
+		return
+	}
+
+	// Step 2: Fund the intent via Circle (same-chain EVM transfer to intent address)
+	circleAmount := fmt.Sprintf("%.2f", totalTransfer)
+	if intent.TotalAmountInAssetToken != "" && intent.AssetTokenDecimals > 0 {
+		totalMicro, parseOk := new(big.Int).SetString(intent.TotalAmountInAssetToken, 10)
+		if parseOk {
+			divisor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(intent.AssetTokenDecimals)), nil)
+			humanAmount := new(big.Float).Quo(new(big.Float).SetInt(totalMicro), new(big.Float).SetInt(divisor))
+			circleAmount = humanAmount.Text('f', intent.AssetTokenDecimals)
+		}
+	}
+
+	tx, txErr := s.circleTransfer.TransferUSDC(ctx, walletID, tokenID, intent.IntentAddress, circleAmount)
+	if txErr != nil {
+		s.logger.Error("Circle transfer to ChainRails intent for Paj failed — reversing hold",
+			zap.Error(txErr), zap.String("paj_order_id", order.ID))
+		s.reverseHold(ctx, userID, order.ID, totalHold, "circle_cr_transfer_failed")
+		return
+	}
+	if tx.State == "DENIED" || tx.State == "FAILED" || tx.State == "CANCELLED" {
+		s.reverseHold(ctx, userID, order.ID, totalHold, "circle_cr_"+string(tx.State))
+		return
+	}
+
+	s.logger.Info("Circle→ChainRails→Paj bridge initiated",
+		zap.String("circle_tx_id", tx.ID),
+		zap.Int("cr_intent_id", intent.ID),
+		zap.String("paj_order_id", order.ID),
+		zap.String("source", source.chain),
+		zap.String("dest", solDest))
+
+	s.db.ExecContext(ctx, `UPDATE paj_orders SET bridge_transfer_id = $1 WHERE paj_order_id = $2`,
+		fmt.Sprintf("circle-cr:%s:%d", tx.ID, intent.ID), order.ID)
+}
 
 // SetLimitsChecker sets the withdrawal limits validator.
 func (s *Service) SetLimitsChecker(lc WithdrawalLimitsChecker) { s.limitsChecker = lc }
@@ -485,28 +585,38 @@ func (s *Service) executeBridgeTransfer(userID uuid.UUID, order *paj.OfframpOrde
 
 	// Try Circle first (all new users have Circle wallets)
 	if s.circleTransfer != nil {
-		walletID, tokenID, _, _, err := s.circleTransfer.FindWalletWithUSDC(ctx, userID.String())
+		walletID, tokenID, blockchain, _, err := s.circleTransfer.FindWalletWithUSDC(ctx, userID.String())
 		if err == nil {
-			tx, txErr := s.circleTransfer.TransferUSDC(ctx, walletID, tokenID, order.Address, fmt.Sprintf("%.2f", totalTransfer))
-			if txErr != nil {
-				s.logger.Error("async: Circle transfer to Paj failed — reversing hold",
-					zap.Error(txErr), zap.String("user_id", userID.String()),
-					zap.String("paj_order_id", order.ID))
-				s.reverseHold(ctx, userID, order.ID, totalHold, "circle_transfer_failed")
+			isSolana := strings.Contains(strings.ToUpper(blockchain), "SOL")
+
+			if isSolana {
+				// Direct transfer — wallet is already on Solana, send straight to PAJ
+				tx, txErr := s.circleTransfer.TransferUSDC(ctx, walletID, tokenID, order.Address, fmt.Sprintf("%.2f", totalTransfer))
+				if txErr != nil {
+					s.logger.Error("async: Circle SOL transfer to Paj failed — reversing hold",
+						zap.Error(txErr), zap.String("paj_order_id", order.ID))
+					s.reverseHold(ctx, userID, order.ID, totalHold, "circle_transfer_failed")
+					return
+				}
+				if tx.State == "DENIED" || tx.State == "FAILED" || tx.State == "CANCELLED" {
+					s.reverseHold(ctx, userID, order.ID, totalHold, "circle_transfer_"+string(tx.State))
+					return
+				}
+				s.logger.Info("Circle SOL transfer to Paj initiated",
+					zap.String("circle_tx_id", tx.ID), zap.String("paj_order_id", order.ID))
+				s.db.ExecContext(ctx, `UPDATE paj_orders SET bridge_transfer_id = $1 WHERE paj_order_id = $2`,
+					"circle:"+tx.ID, order.ID)
 				return
 			}
-			if tx.State == "DENIED" || tx.State == "FAILED" || tx.State == "CANCELLED" {
-				s.logger.Error("async: Circle transfer to Paj rejected",
-					zap.String("state", string(tx.State)), zap.String("paj_order_id", order.ID))
-				s.reverseHold(ctx, userID, order.ID, totalHold, "circle_transfer_"+string(tx.State))
+
+			// EVM wallet — use ChainRails to bridge to PAJ's Solana address
+			if s.chainRailsAdapter != nil {
+				s.executeCircleViaCRToPaj(ctx, userID, walletID, tokenID, blockchain, order, totalHold, totalTransfer)
 				return
 			}
-			s.logger.Info("Circle transfer to Paj initiated",
-				zap.String("circle_tx_id", tx.ID), zap.String("paj_order_id", order.ID),
-				zap.String("amount", fmt.Sprintf("%.2f", totalTransfer)))
-			s.db.ExecContext(ctx, `UPDATE paj_orders SET bridge_transfer_id = $1 WHERE paj_order_id = $2`,
-				"circle:"+tx.ID, order.ID)
-			return
+
+			s.logger.Warn("USDC on EVM but no ChainRails — cannot bridge to Solana for Paj",
+				zap.String("blockchain", blockchain), zap.String("user_id", userID.String()))
 		}
 		s.logger.Warn("Circle wallet not found, falling back to Bridge", zap.Error(err), zap.String("user_id", userID.String()))
 	}
