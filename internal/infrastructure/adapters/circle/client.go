@@ -292,7 +292,7 @@ func (c *HTTPClient) CreateWallets(ctx context.Context, walletSetID string, bloc
 		WalletSetID:            walletSetID,
 		Blockchains:            blockchains,
 		Count:                  count,
-		AccountType:            "EOA",
+		AccountType:            "SCA",
 		Metadata:               metadata,
 	}
 
