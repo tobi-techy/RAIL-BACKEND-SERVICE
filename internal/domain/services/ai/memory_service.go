@@ -28,7 +28,7 @@ type MemoryStore interface {
 	ExpireLowConfidenceFacts(ctx context.Context, threshold decimal.Decimal) (int64, error)
 	// Embeddings
 	SetFactEmbedding(ctx context.Context, factID uuid.UUID, embedding []float32) error
-	FindSimilarFacts(ctx context.Context, userID uuid.UUID, embedding []float32, category string, limit int) ([]*entities.MiriamUserFact, error)
+	FindSimilarFacts(ctx context.Context, userID uuid.UUID, embedding []float32, category string, limit int) ([]entities.SimilarFact, error)
 	// Summary
 	GetMemorySummary(ctx context.Context, userID uuid.UUID) (*entities.MiriamMemorySummary, error)
 	UpsertMemorySummary(ctx context.Context, userID uuid.UUID, summary string, factCount int) error
@@ -211,16 +211,16 @@ func (m *MemoryService) saveFacts(ctx context.Context, userID uuid.UUID, result 
 			emb, embErr := m.embedder.Embed(ctx, factText)
 			if embErr == nil && len(emb) > 0 {
 				similar, _ := m.store.FindSimilarFacts(ctx, userID, emb, f.Category, 1)
-				if len(similar) > 0 {
-					// Cosine distance < ~0.15 means very similar (pgvector <=> returns distance)
-					// Since we got the top-1 result, check if it's the same fact
-					if strings.EqualFold(similar[0].Fact, factText) {
+				if len(similar) > 0 && similar[0].Distance < 0.3 {
+					// Distance < 0.3 = semantically similar enough to be the same fact
+					if similar[0].Distance < 0.15 {
+						// Very similar — just confirm the existing fact
 						if err := m.store.ConfirmFact(ctx, similar[0].ID, userID); err != nil {
 							m.logger.Warn("failed to confirm fact", zap.Error(err))
 						}
 						goto nextFact
 					}
-					// Similar but different text — supersede for single-value categories
+					// Moderately similar — supersede for single-value categories
 					if isSingleValueCategory(f.Category) {
 						supersedes = &similar[0].ID
 					}

@@ -53,6 +53,12 @@ type MiriamMemorySummary struct {
 	CreatedAt        time.Time `json:"created_at" db:"created_at"`
 }
 
+// SimilarFact wraps a fact with its cosine distance from a query vector.
+type SimilarFact struct {
+	MiriamUserFact
+	Distance float64 `db:"distance"`
+}
+
 // ToneProfile controls how Miriam speaks to a specific user.
 // All dimension values range from 0.0 to 1.0.
 type MiriamToneProfile struct {

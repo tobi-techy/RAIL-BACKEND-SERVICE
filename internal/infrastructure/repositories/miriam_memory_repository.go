@@ -195,12 +195,16 @@ func (r *MiriamMemoryRepository) SetFactEmbedding(ctx context.Context, factID uu
 	return nil
 }
 
+// SimilarFact wraps a fact with its cosine distance from the query vector.
+type SimilarFact = entities.SimilarFact
+
 // FindSimilarFacts returns active facts for a user whose embedding is similar to the given vector.
-func (r *MiriamMemoryRepository) FindSimilarFacts(ctx context.Context, userID uuid.UUID, embedding []float32, category string, limit int) ([]*entities.MiriamUserFact, error) {
-	var facts []*entities.MiriamUserFact
+func (r *MiriamMemoryRepository) FindSimilarFacts(ctx context.Context, userID uuid.UUID, embedding []float32, category string, limit int) ([]SimilarFact, error) {
+	var facts []SimilarFact
 	err := r.db.SelectContext(ctx, &facts, `
 		SELECT id, user_id, category, fact, source, confidence, superseded_by,
-		       first_observed_at, last_confirmed_at, created_at
+		       first_observed_at, last_confirmed_at, created_at,
+		       (embedding <=> $3) AS distance
 		FROM miriam_user_facts
 		WHERE user_id = $1 AND category = $2 AND superseded_by IS NULL AND embedding IS NOT NULL
 		ORDER BY embedding <=> $3

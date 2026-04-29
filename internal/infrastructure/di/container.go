@@ -2959,9 +2959,6 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	// Initialize Miriam's long-term memory (fact extraction + tone calibration)
 	memoryRepo := repositories.NewMiriamMemoryRepository(sqlxDB)
 	memorySvc := aiservice.NewMemoryService(memoryRepo, c.AIProviderManager, c.ZapLog)
-	if c.EmbeddingsClient != nil {
-		memorySvc.SetEmbedder(c.EmbeddingsClient)
-	}
 	c.AIOrchestrator.SetMemory(memorySvc)
 	c.MemoryService = memorySvc
 
@@ -2977,6 +2974,11 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		c.KnowledgeRepo = repositories.NewKnowledgeRepository(c.DB, c.ZapLog)
 		c.KnowledgeService = knowledgesvc.NewService(c.KnowledgeRepo, c.EmbeddingsClient, c.RedisClient, c.ZapLog)
 		c.AIOrchestrator.SetKnowledge(c.KnowledgeService)
+	}
+
+	// Wire embedder to memory service now that EmbeddingsClient is initialized
+	if c.EmbeddingsClient != nil && c.MemoryService != nil {
+		c.MemoryService.SetEmbedder(c.EmbeddingsClient)
 	}
 
 	// Initialize spending analysis (all outflows: card, withdrawal, p2p)

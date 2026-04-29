@@ -2,7 +2,6 @@ package memory_worker
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -121,10 +120,8 @@ func (w *Worker) detectUserPatterns(ctx context.Context, userID uuid.UUID, month
 	if prevFlow != nil {
 		prevOut := prevFlow.TotalWithdrawals.Add(prevFlow.TotalCardSpend).Add(prevFlow.TotalP2P)
 		if prevOut.IsPositive() && totalOut.GreaterThan(prevOut.Mul(decimal.NewFromFloat(1.5))) {
-			pattern := fmt.Sprintf("Spending up %.0f%% vs last month ($%s vs $%s)",
-				totalOut.Sub(prevOut).Div(prevOut).Mul(decimal.NewFromInt(100)).InexactFloat64(),
-				totalOut.StringFixed(0), prevOut.StringFixed(0))
-			if err := w.memory.SaveTransactionPattern(ctx, userID, pattern, entities.FactCategoryFinancialBehavior, 0.7); err == nil {
+			pattern := "Spending significantly higher than last month"
+			if err := w.memory.SaveTransactionPattern(fetchCtx, userID, pattern, entities.FactCategoryFinancialBehavior, 0.7); err == nil {
 				detected++
 			}
 		}
@@ -134,18 +131,17 @@ func (w *Worker) detectUserPatterns(ctx context.Context, userID uuid.UUID, month
 	if flow.TotalDeposits.GreaterThan(totalOut) && prevFlow != nil {
 		prevOut := prevFlow.TotalWithdrawals.Add(prevFlow.TotalCardSpend).Add(prevFlow.TotalP2P)
 		if prevFlow.TotalDeposits.GreaterThan(prevOut) {
-			if err := w.memory.SaveTransactionPattern(ctx, userID, "Consistently saves more than they spend", entities.FactCategoryFinancialBehavior, 0.8); err == nil {
+			if err := w.memory.SaveTransactionPattern(fetchCtx, userID, "Consistently saves more than they spend", entities.FactCategoryFinancialBehavior, 0.8); err == nil {
 				detected++
 			}
 		}
 	}
 
-	// Pattern: stash discipline (check if stash untouched)
+	// Pattern: stash discipline (low withdrawals relative to stash balance)
 	stash, _ := w.balances.GetAccountBalance(fetchCtx, userID, entities.AccountTypeStashBalance)
 	if stash.GreaterThan(decimal.NewFromInt(100)) {
-		// If no stash withdrawals this month
 		if flow.TotalWithdrawals.IsZero() || flow.TotalWithdrawals.LessThan(stash.Mul(decimal.NewFromFloat(0.1))) {
-			if err := w.memory.SaveTransactionPattern(ctx, userID, "Disciplined with stash — rarely withdraws", entities.FactCategoryFinancialBehavior, 0.7); err == nil {
+			if err := w.memory.SaveTransactionPattern(fetchCtx, userID, "Keeps a healthy stash balance with minimal withdrawals", entities.FactCategoryFinancialBehavior, 0.7); err == nil {
 				detected++
 			}
 		}
@@ -158,7 +154,7 @@ func (w *Worker) detectUserPatterns(ctx context.Context, userID uuid.UUID, month
 			weeklyRate := weekOut.Div(decimal.NewFromInt(7))
 			monthlyRate := totalOut.Div(decimal.NewFromInt(int64(now.Day())))
 			if weeklyRate.GreaterThan(monthlyRate.Mul(decimal.NewFromFloat(1.3))) {
-				if err := w.memory.SaveTransactionPattern(ctx, userID, "Spending has been higher than usual this week", entities.FactCategoryHabit, 0.6); err == nil {
+				if err := w.memory.SaveTransactionPattern(fetchCtx, userID, "Spending has been higher than usual this week", entities.FactCategoryHabit, 0.6); err == nil {
 					detected++
 				}
 			}
