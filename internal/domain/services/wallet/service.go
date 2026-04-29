@@ -191,34 +191,21 @@ func (s *Service) CreateWalletsForUser(ctx context.Context, userID uuid.UUID, ch
 		zap.String("userID", userID.String()),
 		zap.Any("chains", chains))
 
-	// Deduplicate: one SOL wallet + one EVM wallet (covers all EVM chains).
-	var needSOL bool
-	var needEVM bool
+	// Build the list of chains to create on Circle.
+	// Create wallets on ALL chains — Circle needs a wallet per chain to monitor deposits,
+	// even though EVM addresses are the same (unified addressing).
+	var circleChains []entities.WalletChain
 	for _, chain := range chains {
 		existing, _ := s.walletRepo.GetByUserAndChain(ctx, userID, chain)
 		if existing != nil {
 			continue
 		}
-		if chain == entities.WalletChainSolana {
-			needSOL = true
-		} else if chain.GetChainFamily() == "EVM" {
-			needEVM = true
-		}
+		circleChains = append(circleChains, chain)
 	}
 
-	if !needSOL && !needEVM {
+	if len(circleChains) == 0 {
 		s.logger.Info("User already has all wallets", zap.String("userID", userID.String()))
 		return nil
-	}
-
-	// Build the list of chains to create on Circle (one per family).
-	var circleChains []entities.WalletChain
-	if needSOL {
-		circleChains = append(circleChains, entities.WalletChainSolana)
-	}
-	if needEVM {
-		// Create one EVM wallet — Circle gives same address across all EVM chains.
-		circleChains = append(circleChains, entities.WalletChainEthereum)
 	}
 
 	wallets, err := s.circleWallets.CreateMultiChainWallets(ctx, userID, s.config.DefaultWalletSetID, circleChains)
@@ -226,50 +213,16 @@ func (s *Service) CreateWalletsForUser(ctx context.Context, userID uuid.UUID, ch
 		return fmt.Errorf("circle create wallets: %w", err)
 	}
 
-	// Save the Circle wallets and create alias rows for all EVM chains.
-	var evmAddress string
-	var evmCircleWalletID string
+	// Save the Circle wallets.
 	for _, w := range wallets {
 		if err := s.walletRepo.Create(ctx, w); err != nil {
 			s.logger.Error("Failed to save wallet", zap.Error(err), zap.String("chain", string(w.Chain)))
 			continue
 		}
-		if w.Chain.GetChainFamily() == "EVM" {
-			evmAddress = w.Address
-			evmCircleWalletID = w.CircleWalletID
-		}
 		s.logger.Info("Circle wallet created",
 			zap.String("userID", userID.String()),
 			zap.String("chain", string(w.Chain)),
 			zap.String("address", w.Address))
-	}
-
-	// Create alias wallet rows for remaining EVM chains (same address).
-	if evmAddress != "" {
-		for _, chain := range chains {
-			if chain == entities.WalletChainSolana || chain == entities.WalletChainEthereum {
-				continue
-			}
-			if chain.GetChainFamily() != "EVM" {
-				continue
-			}
-			existing, _ := s.walletRepo.GetByUserAndChain(ctx, userID, chain)
-			if existing != nil {
-				continue
-			}
-			alias := &entities.ManagedWallet{
-				ID:             uuid.New(),
-				UserID:         userID,
-				Chain:          chain,
-				Address:        evmAddress,
-				CircleWalletID: evmCircleWalletID,
-				AccountType:    entities.AccountTypeEOA,
-				Status:         entities.WalletStatusLive,
-			}
-			if err := s.walletRepo.Create(ctx, alias); err != nil {
-				s.logger.Error("Failed to save EVM alias wallet", zap.Error(err), zap.String("chain", string(chain)))
-			}
-		}
 	}
 
 	s.logger.Info("Wallet provisioning completed",
