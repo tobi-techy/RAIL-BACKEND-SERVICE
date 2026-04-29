@@ -406,17 +406,22 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	}
 
 	// Step 3.5: Compliance screening — submit to Didit for AML/sanctions monitoring
+	// Skip for non-KYC users — they have strict transfer limits ($100/tx) that enforce safety.
 	if s.complianceScreener != nil {
-		screenStatus, screenErr := s.complianceScreener.ScreenTransaction(ctx, req.UserID, idempotencyKey, "outbound", req.Amount, string(req.Currency), "")
-		if screenErr != nil {
-			s.logger.Error("Compliance screening unavailable, blocking withdrawal for review",
-				"user_id", req.UserID.String(), "error", screenErr)
-			return nil, fmt.Errorf("withdrawal held: compliance screening unavailable")
-		}
-		if screenStatus != "APPROVED" {
-			s.logger.Warn("Withdrawal not approved by compliance screening",
-				"user_id", req.UserID.String(), "amount", req.Amount.String(), "status", screenStatus)
-			return nil, fmt.Errorf("withdrawal held: compliance status %s", screenStatus)
+		user, userErr := s.userRepo.GetUserEntityByID(ctx, req.UserID)
+		skipCompliance := userErr == nil && user != nil && entities.DeriveKYCTier(user.KYCStatus) == entities.KYCTierNonKYC
+		if !skipCompliance {
+			screenStatus, screenErr := s.complianceScreener.ScreenTransaction(ctx, req.UserID, idempotencyKey, "outbound", req.Amount, string(req.Currency), "")
+			if screenErr != nil {
+				s.logger.Error("Compliance screening unavailable, blocking withdrawal for review",
+					"user_id", req.UserID.String(), "error", screenErr)
+				return nil, fmt.Errorf("withdrawal held: compliance screening unavailable")
+			}
+			if screenStatus != "APPROVED" {
+				s.logger.Warn("Withdrawal not approved by compliance screening",
+					"user_id", req.UserID.String(), "amount", req.Amount.String(), "status", screenStatus)
+				return nil, fmt.Errorf("withdrawal held: compliance status %s", screenStatus)
+			}
 		}
 	}
 
