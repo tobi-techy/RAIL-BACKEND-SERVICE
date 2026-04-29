@@ -349,6 +349,12 @@ func (c *HTTPClient) GetUSDCTokenID(ctx context.Context, walletID string) (strin
 }
 
 func (c *HTTPClient) CreateTransfer(ctx context.Context, req *CreateTransferRequest) (*Transaction, error) {
+	c.logger.Info("Circle CreateTransfer request",
+		zap.String("walletId", req.WalletID),
+		zap.String("tokenId", req.TokenID),
+		zap.String("destinationAddress", req.DestinationAddress),
+		zap.Strings("amounts", req.Amounts))
+
 	ciphertext, err := c.encryptEntitySecret()
 	if err != nil {
 		return nil, err
