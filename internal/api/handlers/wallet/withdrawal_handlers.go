@@ -98,6 +98,11 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 		return
 	}
 
+	h.logger.Info("Crypto withdrawal request received",
+		"amount", req.Amount,
+		"destination", req.DestinationAddress,
+		"chain", req.DestinationChain)
+
 	userID, ok := h.extractUserID(c)
 	if !ok {
 		return
