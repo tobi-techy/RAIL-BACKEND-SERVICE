@@ -401,6 +401,9 @@ resource "aws_ecs_task_definition" "app" {
       { name = "CIRCLE_ENTITY_SECRET",        valueFrom = "/rail/${local.env}/CIRCLE_ENTITY_SECRET" },
       { name = "CIRCLE_ENVIRONMENT",          valueFrom = "/rail/${local.env}/CIRCLE_ENVIRONMENT" },
       { name = "CIRCLE_DEFAULT_WALLET_SET_ID", valueFrom = "/rail/${local.env}/CIRCLE_DEFAULT_WALLET_SET_ID" },
+      # ChainRails
+      { name = "CHAINRAILS_API_KEY",          valueFrom = "/rail/${local.env}/CHAINRAILS_API_KEY" },
+      { name = "CHAINRAILS_WEBHOOK_SECRET",   valueFrom = "/rail/${local.env}/CHAINRAILS_WEBHOOK_SECRET" },
       # SNS Push Notifications
       { name = "SNS_PUSH_REGION",              valueFrom = "/rail/${local.env}/SNS_PUSH_REGION" },
       { name = "SNS_PUSH_IOS_PLATFORM_ARN",    valueFrom = "/rail/${local.env}/SNS_PUSH_IOS_PLATFORM_ARN" },
