@@ -270,8 +270,8 @@ func (r *InitiateCryptoWithdrawalRequest) Validate() error {
 	if !ValidWithdrawalSourceAccounts[r.SourceAccount] {
 		return fmt.Errorf("invalid source account: %s", r.SourceAccount)
 	}
-	if r.BridgeWalletID == "" {
-		return fmt.Errorf("bridge wallet ID is required")
+	if r.BridgeWalletID == "" && r.CircleWalletID == "" {
+		return fmt.Errorf("wallet provider ID is required")
 	}
 	if r.Currency == "" || !r.Currency.IsStablecoinCurrency() {
 		return fmt.Errorf("invalid crypto withdrawal currency: %s", r.Currency)
