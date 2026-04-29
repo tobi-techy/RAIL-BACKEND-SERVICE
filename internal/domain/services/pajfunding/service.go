@@ -14,6 +14,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	bridgepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	circlepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/paj"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/pkg/crypto"
@@ -60,6 +61,12 @@ type WalletProvider interface {
 	GetWalletByUserAndChain(ctx context.Context, userID uuid.UUID, chain entities.WalletChain) (*entities.ManagedWallet, error)
 }
 
+// CircleTransferAdapter transfers USDC via Circle Programmable Wallets.
+type CircleTransferAdapter interface {
+	FindWalletWithUSDC(ctx context.Context, userRefID string) (walletID, tokenID, blockchain, address string, err error)
+	TransferUSDC(ctx context.Context, walletID, tokenID, destinationAddress, amount string) (*circlepkg.Transaction, error)
+}
+
 // BridgeCustomerIDProvider resolves a user's Bridge customer ID for transfer API calls.
 type BridgeCustomerIDProvider interface {
 	GetBridgeCustomerID(ctx context.Context, userID uuid.UUID) (string, error)
@@ -88,6 +95,7 @@ type Service struct {
 	walletProvider    WalletProvider
 	bridgeTransfer    BridgeCryptoTransferAdapter
 	bridgeCustomerID  BridgeCustomerIDProvider
+	circleTransfer    CircleTransferAdapter
 	limitsChecker     WithdrawalLimitsChecker
 	pajChain          string // blockchain for Paj deposit addresses (e.g. "solana")
 	redis             cache.RedisClient
@@ -117,6 +125,9 @@ func (s *Service) SetBridgeTransfer(bt BridgeCryptoTransferAdapter, chain string
 
 // SetGameplayHooks sets the gameplay hooks for triggering XP/streak/challenge events.
 func (s *Service) SetGameplayHooks(gh GameplayHooks) { s.gameplayHooks = gh }
+
+// SetCircleTransfer sets the Circle transfer adapter for offramp.
+func (s *Service) SetCircleTransfer(ct CircleTransferAdapter) { s.circleTransfer = ct }
 
 // SetLimitsChecker sets the withdrawal limits validator.
 func (s *Service) SetLimitsChecker(lc WithdrawalLimitsChecker) { s.limitsChecker = lc }
@@ -439,11 +450,11 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 		return nil, fmt.Errorf("failed to record withdrawal order")
 	}
 
-	// Validate prerequisites for Bridge transfer.
-	if s.bridgeTransfer == nil || s.walletProvider == nil {
-		s.logger.Error("bridge transfer not configured for Paj offramp — reversing hold",
+	// Validate prerequisites for transfer.
+	if s.circleTransfer == nil && (s.bridgeTransfer == nil || s.walletProvider == nil) {
+		s.logger.Error("no transfer provider configured for Paj offramp — reversing hold",
 			zap.String("paj_order_id", order.ID))
-		s.reverseHold(ctx, userID, order.ID, totalHold, "no_bridge_config")
+		s.reverseHold(ctx, userID, order.ID, totalHold, "no_transfer_config")
 		return nil, fmt.Errorf("withdrawal infrastructure not available")
 	}
 	if order.Address == "" {
@@ -466,9 +477,41 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 // executeBridgeTransfer sends USDC from the user's Bridge wallet to Paj's deposit address.
 // Runs in a background goroutine after the PAJ order is created.
 func (s *Service) executeBridgeTransfer(userID uuid.UUID, order *paj.OfframpOrder, totalHold, estimatedUSDC, railFee decimal.Decimal) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
+	transferAmount := math.Round(order.Amount*100) / 100
+	totalTransfer := transferAmount + RailNGNWithdrawalFee
+
+	// Try Circle first (all new users have Circle wallets)
+	if s.circleTransfer != nil {
+		walletID, tokenID, _, _, err := s.circleTransfer.FindWalletWithUSDC(ctx, userID.String())
+		if err == nil {
+			tx, txErr := s.circleTransfer.TransferUSDC(ctx, walletID, tokenID, order.Address, fmt.Sprintf("%.2f", totalTransfer))
+			if txErr != nil {
+				s.logger.Error("async: Circle transfer to Paj failed — reversing hold",
+					zap.Error(txErr), zap.String("user_id", userID.String()),
+					zap.String("paj_order_id", order.ID))
+				s.reverseHold(ctx, userID, order.ID, totalHold, "circle_transfer_failed")
+				return
+			}
+			if tx.State == "DENIED" || tx.State == "FAILED" || tx.State == "CANCELLED" {
+				s.logger.Error("async: Circle transfer to Paj rejected",
+					zap.String("state", string(tx.State)), zap.String("paj_order_id", order.ID))
+				s.reverseHold(ctx, userID, order.ID, totalHold, "circle_transfer_"+string(tx.State))
+				return
+			}
+			s.logger.Info("Circle transfer to Paj initiated",
+				zap.String("circle_tx_id", tx.ID), zap.String("paj_order_id", order.ID),
+				zap.String("amount", fmt.Sprintf("%.2f", totalTransfer)))
+			s.db.ExecContext(ctx, `UPDATE paj_orders SET bridge_transfer_id = $1 WHERE paj_order_id = $2`,
+				"circle:"+tx.ID, order.ID)
+			return
+		}
+		s.logger.Warn("Circle wallet not found, falling back to Bridge", zap.Error(err), zap.String("user_id", userID.String()))
+	}
+
+	// Fallback: Bridge transfer (legacy users)
 	walletChain := entities.WalletChainSolana
 	paymentRail := bridgepkg.PaymentRailSolana
 	if s.pajChain != "" {
@@ -502,12 +545,12 @@ func (s *Service) executeBridgeTransfer(userID uuid.UUID, order *paj.OfframpOrde
 		return
 	}
 
-	transferAmount := math.Round(order.Amount*100) / 100
-	totalTransfer := transferAmount + RailNGNWithdrawalFee
+	bridgeTransferAmount := math.Round(order.Amount*100) / 100
+	bridgeTotalTransfer := bridgeTransferAmount + RailNGNWithdrawalFee
 
 	transfer, transferErr := s.bridgeTransfer.TransferFunds(ctx, &bridgepkg.CreateTransferRequest{
 		OnBehalfOf:   bridgeCustID,
-		Amount:       fmt.Sprintf("%.2f", totalTransfer),
+		Amount:       fmt.Sprintf("%.2f", bridgeTotalTransfer),
 		DeveloperFee: fmt.Sprintf("%.2f", RailNGNWithdrawalFee),
 		Source: bridgepkg.TransferSource{
 			PaymentRail:    bridgepkg.PaymentRail("bridge_wallet"),
