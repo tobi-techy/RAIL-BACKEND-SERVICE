@@ -265,7 +265,7 @@ webauthn:
     - "https://api.userail.money"
 
 ai:
-  primary: "groq"
+  primary: "kimi"
   openai:
     api_key: ""
     model: "gpt-4o"
