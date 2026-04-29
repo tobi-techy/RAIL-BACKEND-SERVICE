@@ -125,6 +125,7 @@ type BridgeCryptoTransferAdapter interface {
 type CircleCryptoTransferAdapter interface {
 	TransferUSDC(ctx context.Context, walletID, tokenID, destinationAddress, amount string) (*circlepkg.Transaction, error)
 	GetWalletBalance(ctx context.Context, circleWalletID string) (string, error)
+	FindWalletWithUSDC(ctx context.Context, userRefID string) (walletID string, tokenID string, err error)
 }
 
 // StashLockChecker enforces the 90-day lock / 7-day window rule for stash withdrawals.
@@ -1315,27 +1316,23 @@ func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawa
 }
 
 // executeCircleTransfer sends USDC via Circle Programmable Wallets.
+// Cross-chain: finds whichever user wallet holds USDC, regardless of destination chain.
 func (s *WithdrawalService) executeCircleTransfer(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, destinationChain string) (*CryptoTransferResult, error) {
-	walletID := *withdrawal.BridgeWalletID // Circle wallet ID stored in this field
-
-	// Use on-chain USDC contract address for the destination chain.
-	// NOTE: Circle REST API uses tokenId (UUID), not contract address.
-	// The adapter's TransferUSDC passes this as tokenId — Circle's API
-	// may require a token lookup to resolve contract address → UUID.
-	// For SDK-style calls, tokenAddress (contract address) works directly.
-	chain := entities.WalletChain(destinationChain)
-	tokenAddress := chain.GetUSDCTokenAddress()
-	if tokenAddress == "" {
-		return nil, fmt.Errorf("no USDC token address for chain %s", destinationChain)
+	walletID, tokenID, err := s.circleTransfer.FindWalletWithUSDC(ctx, withdrawal.UserID.String())
+	if err != nil {
+		return nil, fmt.Errorf("no USDC wallet found: %w", err)
 	}
 
-	tx, err := s.circleTransfer.TransferUSDC(ctx, walletID, tokenAddress, destinationAddress, withdrawal.Amount.StringFixed(2))
+	tx, err := s.circleTransfer.TransferUSDC(ctx, walletID, tokenID, destinationAddress, withdrawal.Amount.StringFixed(2))
 	if err != nil {
 		return nil, fmt.Errorf("circle transfer failed: %w", err)
 	}
 
 	s.logger.Info("Circle crypto transfer initiated",
 		"withdrawal_id", withdrawal.ID.String(),
+		"source_wallet", walletID,
+		"destination", destinationAddress,
+		"dest_chain", destinationChain,
 		"circle_tx_id", tx.ID,
 		"state", string(tx.State))
 

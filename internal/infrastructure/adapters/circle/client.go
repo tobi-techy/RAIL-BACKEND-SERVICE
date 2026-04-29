@@ -317,6 +317,15 @@ func (c *HTTPClient) ListWallets(ctx context.Context, walletSetID string) ([]Wal
 	return resp.Data.Wallets, nil
 }
 
+func (c *HTTPClient) ListWalletsByRefID(ctx context.Context, refID string) ([]Wallet, error) {
+	var resp apiResponse[WalletsData]
+	path := "/v1/w3s/wallets?refId=" + refID
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Data.Wallets, nil
+}
+
 func (c *HTTPClient) GetTokenBalance(ctx context.Context, walletID string) ([]TokenBalance, error) {
 	var resp apiResponse[TokenBalancesData]
 	if err := c.doRequest(ctx, http.MethodGet, "/v1/w3s/wallets/"+walletID+"/balances", nil, &resp); err != nil {

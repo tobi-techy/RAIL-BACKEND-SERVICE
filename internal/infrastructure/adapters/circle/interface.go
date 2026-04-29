@@ -11,6 +11,7 @@ type Client interface {
 	CreateWallets(ctx context.Context, walletSetID string, blockchains []Blockchain, count int, metadata []WalletMetadata) ([]Wallet, error)
 	GetWallet(ctx context.Context, walletID string) (*Wallet, error)
 	ListWallets(ctx context.Context, walletSetID string) ([]Wallet, error)
+	ListWalletsByRefID(ctx context.Context, refID string) ([]Wallet, error)
 	GetTokenBalance(ctx context.Context, walletID string) ([]TokenBalance, error)
 	GetUSDCTokenID(ctx context.Context, walletID string) (string, error)
 
