@@ -325,6 +325,20 @@ func (c *HTTPClient) GetTokenBalance(ctx context.Context, walletID string) ([]To
 	return resp.Data.TokenBalances, nil
 }
 
+// GetUSDCTokenID looks up the USDC token UUID from a wallet's balances.
+func (c *HTTPClient) GetUSDCTokenID(ctx context.Context, walletID string) (string, error) {
+	balances, err := c.GetTokenBalance(ctx, walletID)
+	if err != nil {
+		return "", err
+	}
+	for _, b := range balances {
+		if strings.EqualFold(b.Token.Symbol, "USDC") {
+			return b.Token.ID, nil
+		}
+	}
+	return "", fmt.Errorf("no USDC token found in wallet %s", walletID)
+}
+
 func (c *HTTPClient) CreateTransfer(ctx context.Context, req *CreateTransferRequest) (*Transaction, error) {
 	ciphertext, err := c.encryptEntitySecret()
 	if err != nil {

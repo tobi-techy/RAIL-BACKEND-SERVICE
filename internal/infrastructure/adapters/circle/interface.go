@@ -12,6 +12,7 @@ type Client interface {
 	GetWallet(ctx context.Context, walletID string) (*Wallet, error)
 	ListWallets(ctx context.Context, walletSetID string) ([]Wallet, error)
 	GetTokenBalance(ctx context.Context, walletID string) ([]TokenBalance, error)
+	GetUSDCTokenID(ctx context.Context, walletID string) (string, error)
 
 	// Transfers
 	CreateTransfer(ctx context.Context, req *CreateTransferRequest) (*Transaction, error)
