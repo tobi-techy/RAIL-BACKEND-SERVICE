@@ -119,18 +119,18 @@ func (a *Adapter) TransferUSDC(ctx context.Context, walletID, tokenID, destinati
 
 // FindWalletWithUSDC searches all wallets for a user (by refId) and returns the first
 // wallet+tokenId that holds USDC. Enables cross-chain withdrawals.
-func (a *Adapter) FindWalletWithUSDC(ctx context.Context, userRefID string) (string, string, error) {
+func (a *Adapter) FindWalletWithUSDC(ctx context.Context, userRefID string) (string, string, string, error) {
 	wallets, err := a.client.ListWalletsByRefID(ctx, userRefID)
 	if err != nil {
-		return "", "", fmt.Errorf("list wallets: %w", err)
+		return "", "", "", fmt.Errorf("list wallets: %w", err)
 	}
 	for _, w := range wallets {
 		tokenID, err := a.client.GetUSDCTokenID(ctx, w.ID)
 		if err == nil && tokenID != "" {
-			return w.ID, tokenID, nil
+			return w.ID, tokenID, string(w.Blockchain), nil
 		}
 	}
-	return "", "", fmt.Errorf("no wallet with USDC found for user %s", userRefID)
+	return "", "", "", fmt.Errorf("no wallet with USDC found for user %s", userRefID)
 }
 
 // HealthCheck verifies Circle API connectivity.
