@@ -156,7 +156,7 @@ var evmToChainRails = map[string]struct{ chain, token string }{
 
 // executeCircleViaCRToPaj bridges EVM USDC to PAJ's Solana address via ChainRails.
 // ChainRails handles the cross-chain delivery in one step.
-func (s *Service) executeCircleViaCRToPaj(ctx context.Context, userID uuid.UUID, walletID, tokenID, blockchain string, order *paj.OfframpOrder, totalHold decimal.Decimal, totalTransfer float64) {
+func (s *Service) executeCircleViaCRToPaj(ctx context.Context, userID uuid.UUID, walletID, tokenID, blockchain, onChainAddress string, order *paj.OfframpOrder, totalHold decimal.Decimal, totalTransfer float64) {
 	source, ok := evmToChainRails[blockchain]
 	if !ok {
 		s.logger.Error("unsupported EVM chain for ChainRails Paj bridge", zap.String("blockchain", blockchain))
@@ -170,7 +170,7 @@ func (s *Service) executeCircleViaCRToPaj(ctx context.Context, userID uuid.UUID,
 		solDest = "SOL_TESTNET"
 	}
 
-	amountMicro := int64(totalTransfer * 1_000_000)
+	amountMicro := decimal.NewFromFloat(totalTransfer).Shift(6).IntPart()
 
 	// Step 1: Create ChainRails intent — source=EVM chain, dest=Solana, recipient=PAJ address
 	intent, err := s.chainRailsAdapter.CreateIntent(ctx, &chainrailspkg.CreateIntentRequest{
@@ -180,8 +180,8 @@ func (s *Service) executeCircleViaCRToPaj(ctx context.Context, userID uuid.UUID,
 		SourceChain:      source.chain,
 		DestinationChain: solDest,
 		Recipient:        order.Address,
-		Sender:           walletID,
-		RefundAddress:    walletID,
+		Sender:           onChainAddress,
+		RefundAddress:    onChainAddress,
 		Metadata: map[string]interface{}{
 			"paj_order_id": order.ID,
 			"user_id":      userID.String(),
@@ -585,7 +585,7 @@ func (s *Service) executeBridgeTransfer(userID uuid.UUID, order *paj.OfframpOrde
 
 	// Try Circle first (all new users have Circle wallets)
 	if s.circleTransfer != nil {
-		walletID, tokenID, blockchain, _, err := s.circleTransfer.FindWalletWithUSDC(ctx, userID.String())
+		walletID, tokenID, blockchain, onChainAddress, err := s.circleTransfer.FindWalletWithUSDC(ctx, userID.String())
 		if err == nil {
 			isSolana := strings.Contains(strings.ToUpper(blockchain), "SOL")
 
@@ -611,12 +611,15 @@ func (s *Service) executeBridgeTransfer(userID uuid.UUID, order *paj.OfframpOrde
 
 			// EVM wallet — use ChainRails to bridge to PAJ's Solana address
 			if s.chainRailsAdapter != nil {
-				s.executeCircleViaCRToPaj(ctx, userID, walletID, tokenID, blockchain, order, totalHold, totalTransfer)
+				s.executeCircleViaCRToPaj(ctx, userID, walletID, tokenID, blockchain, onChainAddress, order, totalHold, totalTransfer)
 				return
 			}
 
+			// EVM wallet but no ChainRails — reverse hold and return
 			s.logger.Warn("USDC on EVM but no ChainRails — cannot bridge to Solana for Paj",
 				zap.String("blockchain", blockchain), zap.String("user_id", userID.String()))
+			s.reverseHold(ctx, userID, order.ID, totalHold, "no_chainrails_evm")
+			return
 		}
 		s.logger.Warn("Circle wallet not found, falling back to Bridge", zap.Error(err), zap.String("user_id", userID.String()))
 	}
