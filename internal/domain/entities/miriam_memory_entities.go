@@ -38,9 +38,19 @@ type MiriamUserFact struct {
 	Source          string          `json:"source" db:"source"`
 	Confidence      decimal.Decimal `json:"confidence" db:"confidence"`
 	SupersededBy    *uuid.UUID      `json:"superseded_by,omitempty" db:"superseded_by"`
+	Embedding       []byte          `json:"-" db:"embedding"`
 	FirstObservedAt time.Time       `json:"first_observed_at" db:"first_observed_at"`
 	LastConfirmedAt time.Time       `json:"last_confirmed_at" db:"last_confirmed_at"`
 	CreatedAt       time.Time       `json:"created_at" db:"created_at"`
+}
+
+// MiriamMemorySummary is a compressed narrative of all facts for a user.
+type MiriamMemorySummary struct {
+	UserID           uuid.UUID `json:"user_id" db:"user_id"`
+	Summary          string    `json:"summary" db:"summary"`
+	FactCount        int       `json:"fact_count" db:"fact_count"`
+	LastSummarizedAt time.Time `json:"last_summarized_at" db:"last_summarized_at"`
+	CreatedAt        time.Time `json:"created_at" db:"created_at"`
 }
 
 // ToneProfile controls how Miriam speaks to a specific user.

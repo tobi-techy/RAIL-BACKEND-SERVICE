@@ -1066,6 +1066,7 @@ type Container struct {
 	EmbeddingsClient      *embeddings.Client
 	KnowledgeRepo         *repositories.KnowledgeRepository
 	KnowledgeService      *knowledgesvc.Service
+	MemoryService         *aiservice.MemoryService
 
 	// Additional Repositories
 	OnboardingJobRepo *repositories.OnboardingJobRepository
@@ -2958,7 +2959,11 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	// Initialize Miriam's long-term memory (fact extraction + tone calibration)
 	memoryRepo := repositories.NewMiriamMemoryRepository(sqlxDB)
 	memorySvc := aiservice.NewMemoryService(memoryRepo, c.AIProviderManager, c.ZapLog)
+	if c.EmbeddingsClient != nil {
+		memorySvc.SetEmbedder(c.EmbeddingsClient)
+	}
 	c.AIOrchestrator.SetMemory(memorySvc)
+	c.MemoryService = memorySvc
 
 	// Initialize usage tracking
 	c.UsageRepo = repositories.NewAIUsageRepository(c.DB, c.ZapLog)

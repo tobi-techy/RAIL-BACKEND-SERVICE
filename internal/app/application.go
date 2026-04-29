@@ -36,6 +36,7 @@ import (
 	gameplay_workers "github.com/rail-service/rail_service/internal/workers/gameplay"
 	kyc_autoinvest "github.com/rail-service/rail_service/internal/workers/kyc_autoinvest"
 	"github.com/rail-service/rail_service/internal/workers/kyc_sync"
+	memory_worker "github.com/rail-service/rail_service/internal/workers/memory_worker"
 	paj_offramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_offramp_recovery"
 	portfolio_snapshot_worker "github.com/rail-service/rail_service/internal/workers/portfolio_snapshot_worker"
 	rebalancing_worker "github.com/rail-service/rail_service/internal/workers/rebalancing_worker"
@@ -76,6 +77,7 @@ type Application struct {
 	insightGeneratorWorker       *gameplay_workers.InsightGenerator
 	dailyMetricsWorker           *gameplay_workers.DailyMetricsWorker
 	aiInsightsWorker             *ai_insights.Worker
+	memoryWorker                 *memory_worker.Worker
 
 	// Tracing
 	tracingShutdown func(context.Context) error
@@ -340,6 +342,18 @@ func (app *Application) initializeWorkers() error {
 			go app.aiInsightsWorker.Start(context.Background())
 			app.log.Info("AI insights worker started")
 		}
+	}
+
+	// Start memory worker (transaction patterns, decay, summarization)
+	if app.container.MemoryService != nil && app.container.LedgerSpendingRepo != nil {
+		app.memoryWorker = memory_worker.NewWorker(
+			app.container.MemoryService,
+			app.container.LedgerSpendingRepo,
+			app.container.LedgerService,
+			app.log.Zap(),
+		)
+		go app.memoryWorker.Start(context.Background())
+		app.log.Info("Memory worker started")
 	}
 
 	return nil

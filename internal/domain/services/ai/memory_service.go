@@ -20,20 +20,41 @@ type MemoryStore interface {
 	GetActiveFacts(ctx context.Context, userID uuid.UUID) ([]*entities.MiriamUserFact, error)
 	GetActiveFactsByCategory(ctx context.Context, userID uuid.UUID, category string) ([]*entities.MiriamUserFact, error)
 	ConfirmFact(ctx context.Context, factID, userID uuid.UUID) error
+	DeleteFact(ctx context.Context, factID, userID uuid.UUID) error
 	GetToneProfile(ctx context.Context, userID uuid.UUID) (*entities.MiriamToneProfile, error)
 	UpsertToneProfile(ctx context.Context, userID uuid.UUID, formality, directness, warmth, humor, brevity decimal.Decimal, preferredName, languageStyle string) error
+	// Staleness
+	DecayStaleFacts(ctx context.Context, staleDuration time.Duration, decayAmount decimal.Decimal) (int64, error)
+	ExpireLowConfidenceFacts(ctx context.Context, threshold decimal.Decimal) (int64, error)
+	// Embeddings
+	SetFactEmbedding(ctx context.Context, factID uuid.UUID, embedding []float32) error
+	FindSimilarFacts(ctx context.Context, userID uuid.UUID, embedding []float32, category string, limit int) ([]*entities.MiriamUserFact, error)
+	// Summary
+	GetMemorySummary(ctx context.Context, userID uuid.UUID) (*entities.MiriamMemorySummary, error)
+	UpsertMemorySummary(ctx context.Context, userID uuid.UUID, summary string, factCount int) error
+	// Batch
+	GetAllActiveUserIDs(ctx context.Context) ([]uuid.UUID, error)
+}
+
+// Embedder generates vector embeddings for text.
+type Embedder interface {
+	Embed(ctx context.Context, text string) ([]float32, error)
 }
 
 // MemoryService handles fact extraction and tone calibration after each conversation exchange.
 type MemoryService struct {
 	store      MemoryStore
 	aiProvider infraai.AIProvider
+	embedder   Embedder
 	logger     *zap.Logger
 }
 
 func NewMemoryService(store MemoryStore, aiProvider infraai.AIProvider, logger *zap.Logger) *MemoryService {
 	return &MemoryService{store: store, aiProvider: aiProvider, logger: logger}
 }
+
+// SetEmbedder enables semantic dedup (optional — works without it).
+func (m *MemoryService) SetEmbedder(e Embedder) { m.embedder = e }
 
 // factExtractionPrompt instructs the LLM to extract structured facts from a conversation exchange.
 const factExtractionPrompt = `You are a memory extraction system for a financial coaching AI named Miriam. Analyze the user's message and extract any personal facts worth remembering long-term.
@@ -184,18 +205,53 @@ func (m *MemoryService) saveFacts(ctx context.Context, userID uuid.UUID, result 
 		}
 
 		var supersedes *uuid.UUID
-		for _, ex := range existing {
-			if strings.EqualFold(ex.Fact, factText) {
-				// Same fact — just confirm it
-				if err := m.store.ConfirmFact(ctx, ex.ID, userID); err != nil {
-					m.logger.Warn("failed to confirm fact", zap.Error(err))
+
+		// Semantic dedup: use embeddings if available, fall back to exact match
+		if m.embedder != nil {
+			emb, embErr := m.embedder.Embed(ctx, factText)
+			if embErr == nil && len(emb) > 0 {
+				similar, _ := m.store.FindSimilarFacts(ctx, userID, emb, f.Category, 1)
+				if len(similar) > 0 {
+					// Cosine distance < ~0.15 means very similar (pgvector <=> returns distance)
+					// Since we got the top-1 result, check if it's the same fact
+					if strings.EqualFold(similar[0].Fact, factText) {
+						if err := m.store.ConfirmFact(ctx, similar[0].ID, userID); err != nil {
+							m.logger.Warn("failed to confirm fact", zap.Error(err))
+						}
+						goto nextFact
+					}
+					// Similar but different text — supersede for single-value categories
+					if isSingleValueCategory(f.Category) {
+						supersedes = &similar[0].ID
+					}
 				}
-				supersedes = nil
+				// Save fact with embedding
+				fact := &entities.MiriamUserFact{
+					UserID:     userID,
+					Category:   f.Category,
+					Fact:       factText,
+					Source:     entities.FactSourceConversation,
+					Confidence: decimal.NewFromFloat(f.Confidence),
+				}
+				if err := m.store.SaveFact(ctx, fact, supersedes); err != nil {
+					m.logger.Warn("failed to save fact", zap.Error(err), zap.String("category", f.Category))
+				} else {
+					_ = m.store.SetFactEmbedding(ctx, fact.ID, emb)
+				}
 				goto nextFact
 			}
 		}
 
-		// For single-value categories (work, location), supersede the old one
+		// Fallback: exact match dedup
+		for _, ex := range existing {
+			if strings.EqualFold(ex.Fact, factText) {
+				if err := m.store.ConfirmFact(ctx, ex.ID, userID); err != nil {
+					m.logger.Warn("failed to confirm fact", zap.Error(err))
+				}
+				goto nextFact
+			}
+		}
+
 		if len(existing) > 0 && isSingleValueCategory(f.Category) {
 			supersedes = &existing[0].ID
 		}
@@ -362,4 +418,132 @@ func (m *MemoryService) BuildToneContext(ctx context.Context, userID uuid.UUID) 
 	}
 
 	return "[TONE CALIBRATION — adapt your style for this user: " + strings.Join(parts, ". ") + ".]"
+}
+
+// --- Memory Summarization ---
+
+const memorySummarizationPrompt = `Compress these user facts into a concise narrative paragraph (under 150 words). Write in third person. Include: who they are, what they do, their financial goals, habits, concerns, and personality. This will be used as context for a financial coaching AI.
+
+Do NOT include any account numbers, passwords, or sensitive financial details. Focus on personality, goals, and behavioral patterns.`
+
+// SummarizeMemory compresses all active facts into a narrative for users with many facts.
+func (m *MemoryService) SummarizeMemory(ctx context.Context, userID uuid.UUID) error {
+	facts, err := m.store.GetActiveFacts(ctx, userID)
+	if err != nil || len(facts) < 10 {
+		return err // Only summarize when there are enough facts
+	}
+
+	var sb strings.Builder
+	for _, f := range facts {
+		sb.WriteString(fmt.Sprintf("- [%s] %s\n", f.Category, f.Fact))
+	}
+
+	resp, err := m.aiProvider.ChatCompletion(ctx, &infraai.ChatRequest{
+		SystemPrompt: memorySummarizationPrompt,
+		Messages:     []infraai.Message{{Role: "user", Content: sb.String()}},
+		MaxTokens:    300,
+		Temperature:  infraai.Float64(0.2),
+	})
+	if err != nil {
+		return fmt.Errorf("summarization LLM call: %w", err)
+	}
+
+	summary := strings.TrimSpace(resp.Content)
+	if summary == "" {
+		return nil
+	}
+
+	return m.store.UpsertMemorySummary(ctx, userID, summary, len(facts))
+}
+
+// BuildMemoryContextWithSummary uses the summary when available, falling back to individual facts.
+func (m *MemoryService) BuildMemoryContextWithSummary(ctx context.Context, userID uuid.UUID) string {
+	fetchCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	// Try summary first (more compact for users with many facts)
+	if summary, err := m.store.GetMemorySummary(fetchCtx, userID); err == nil && summary != nil && summary.Summary != "" {
+		return fmt.Sprintf("[MIRIAM'S MEMORY — what you know about this user. Use naturally, never list back.]\n%s", summary.Summary)
+	}
+
+	// Fall back to individual facts
+	return m.BuildMemoryContext(ctx, userID)
+}
+
+// --- Memory Decay ---
+
+// RunDecay reduces confidence of stale facts and expires very low confidence ones.
+func (m *MemoryService) RunDecay(ctx context.Context) error {
+	// Decay facts not confirmed in 90 days by 0.15
+	decayed, err := m.store.DecayStaleFacts(ctx, 90*24*time.Hour, decimal.NewFromFloat(0.15))
+	if err != nil {
+		return err
+	}
+	// Expire facts that have decayed below 0.2
+	expired, err := m.store.ExpireLowConfidenceFacts(ctx, decimal.NewFromFloat(0.2))
+	if err != nil {
+		return err
+	}
+	if decayed > 0 || expired > 0 {
+		m.logger.Info("memory decay complete", zap.Int64("decayed", decayed), zap.Int64("expired", expired))
+	}
+	return nil
+}
+
+// --- User-Facing Memory Controls ---
+
+// ListUserFacts returns all active facts for a user (for "what do you know about me?").
+func (m *MemoryService) ListUserFacts(ctx context.Context, userID uuid.UUID) ([]*entities.MiriamUserFact, error) {
+	return m.store.GetActiveFacts(ctx, userID)
+}
+
+// ForgetFact deletes a specific fact (for "forget that").
+func (m *MemoryService) ForgetFact(ctx context.Context, userID, factID uuid.UUID) error {
+	return m.store.DeleteFact(ctx, factID, userID)
+}
+
+// ForgetCategory deletes all facts in a category (for "forget everything about my work").
+func (m *MemoryService) ForgetCategory(ctx context.Context, userID uuid.UUID, category string) error {
+	facts, err := m.store.GetActiveFactsByCategory(ctx, userID, category)
+	if err != nil {
+		return err
+	}
+	for _, f := range facts {
+		if err := m.store.DeleteFact(ctx, f.ID, userID); err != nil {
+			m.logger.Warn("failed to delete fact in category", zap.Error(err))
+		}
+	}
+	return nil
+}
+
+// --- Transaction Pattern → Memory Facts ---
+
+// ListActiveUserIDs returns all user IDs with active memory facts.
+func (m *MemoryService) ListActiveUserIDs(ctx context.Context) ([]uuid.UUID, error) {
+	return m.store.GetAllActiveUserIDs(ctx)
+}
+
+// SaveTransactionPattern converts a detected transaction pattern into a memory fact.
+func (m *MemoryService) SaveTransactionPattern(ctx context.Context, userID uuid.UUID, pattern, category string, confidence float64) error {
+	// Check for existing similar fact
+	existing, _ := m.store.GetActiveFactsByCategory(ctx, userID, category)
+	for _, ex := range existing {
+		if strings.EqualFold(ex.Fact, pattern) {
+			return m.store.ConfirmFact(ctx, ex.ID, userID)
+		}
+	}
+
+	var supersedes *uuid.UUID
+	if len(existing) > 0 && isSingleValueCategory(category) {
+		supersedes = &existing[0].ID
+	}
+
+	fact := &entities.MiriamUserFact{
+		UserID:     userID,
+		Category:   category,
+		Fact:       pattern,
+		Source:     entities.FactSourceTransactionPattern,
+		Confidence: decimal.NewFromFloat(confidence),
+	}
+	return m.store.SaveFact(ctx, fact, supersedes)
 }

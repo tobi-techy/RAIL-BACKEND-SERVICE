@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
@@ -150,4 +152,127 @@ func (r *MiriamMemoryRepository) UpsertToneProfile(ctx context.Context, userID u
 		return fmt.Errorf("upsert tone profile: %w", err)
 	}
 	return nil
+}
+
+// --- Staleness & Decay ---
+
+// DecayStaleFacts reduces confidence of facts not confirmed within the given duration.
+func (r *MiriamMemoryRepository) DecayStaleFacts(ctx context.Context, staleDuration time.Duration, decayAmount decimal.Decimal) (int64, error) {
+	cutoff := time.Now().Add(-staleDuration)
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE miriam_user_facts
+		SET confidence = GREATEST(0.1, confidence - $1)
+		WHERE superseded_by IS NULL
+		  AND last_confirmed_at < $2
+		  AND confidence > 0.1`, decayAmount, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("decay stale facts: %w", err)
+	}
+	return result.RowsAffected()
+}
+
+// ExpireLowConfidenceFacts soft-deletes facts below a confidence threshold.
+func (r *MiriamMemoryRepository) ExpireLowConfidenceFacts(ctx context.Context, threshold decimal.Decimal) (int64, error) {
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE miriam_user_facts
+		SET superseded_by = id
+		WHERE superseded_by IS NULL AND confidence <= $1`, threshold)
+	if err != nil {
+		return 0, fmt.Errorf("expire low confidence facts: %w", err)
+	}
+	return result.RowsAffected()
+}
+
+// --- Embeddings ---
+
+// SetFactEmbedding stores the embedding vector for a fact.
+func (r *MiriamMemoryRepository) SetFactEmbedding(ctx context.Context, factID uuid.UUID, embedding []float32) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE miriam_user_facts SET embedding = $1 WHERE id = $2`, pgvectorFromFloat32(embedding), factID)
+	if err != nil {
+		return fmt.Errorf("set fact embedding: %w", err)
+	}
+	return nil
+}
+
+// FindSimilarFacts returns active facts for a user whose embedding is similar to the given vector.
+func (r *MiriamMemoryRepository) FindSimilarFacts(ctx context.Context, userID uuid.UUID, embedding []float32, category string, limit int) ([]*entities.MiriamUserFact, error) {
+	var facts []*entities.MiriamUserFact
+	err := r.db.SelectContext(ctx, &facts, `
+		SELECT id, user_id, category, fact, source, confidence, superseded_by,
+		       first_observed_at, last_confirmed_at, created_at
+		FROM miriam_user_facts
+		WHERE user_id = $1 AND category = $2 AND superseded_by IS NULL AND embedding IS NOT NULL
+		ORDER BY embedding <=> $3
+		LIMIT $4`, userID, category, pgvectorFromFloat32(embedding), limit)
+	if err != nil {
+		return nil, fmt.Errorf("find similar facts: %w", err)
+	}
+	return facts, nil
+}
+
+// pgvectorFromFloat32 converts a float32 slice to pgvector string format.
+func pgvectorFromFloat32(v []float32) string {
+	if len(v) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteByte('[')
+	for i, f := range v {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		sb.WriteString(fmt.Sprintf("%g", f))
+	}
+	sb.WriteByte(']')
+	return sb.String()
+}
+
+// --- Memory Summary ---
+
+// GetMemorySummary returns the compressed narrative for a user.
+func (r *MiriamMemoryRepository) GetMemorySummary(ctx context.Context, userID uuid.UUID) (*entities.MiriamMemorySummary, error) {
+	var s entities.MiriamMemorySummary
+	err := r.db.GetContext(ctx, &s, `
+		SELECT user_id, summary, fact_count, last_summarized_at, created_at
+		FROM miriam_memory_summaries WHERE user_id = $1`, userID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get memory summary: %w", err)
+	}
+	return &s, nil
+}
+
+// UpsertMemorySummary creates or replaces the memory summary.
+func (r *MiriamMemoryRepository) UpsertMemorySummary(ctx context.Context, userID uuid.UUID, summary string, factCount int) error {
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO miriam_memory_summaries (user_id, summary, fact_count, last_summarized_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (user_id) DO UPDATE SET
+			summary = $2, fact_count = $3, last_summarized_at = NOW()`,
+		userID, summary, factCount)
+	if err != nil {
+		return fmt.Errorf("upsert memory summary: %w", err)
+	}
+	return nil
+}
+
+// --- User-Facing ---
+
+// DeleteFactByUser allows a user to delete a specific fact they own.
+func (r *MiriamMemoryRepository) DeleteFactByUser(ctx context.Context, factID, userID uuid.UUID) error {
+	return r.DeleteFact(ctx, factID, userID)
+}
+
+// GetAllActiveUserIDs returns distinct user IDs that have active facts (for batch workers).
+func (r *MiriamMemoryRepository) GetAllActiveUserIDs(ctx context.Context) ([]uuid.UUID, error) {
+	var ids []uuid.UUID
+	err := r.db.SelectContext(ctx, &ids, `
+		SELECT DISTINCT user_id FROM miriam_user_facts WHERE superseded_by IS NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("get active user ids: %w", err)
+	}
+	return ids, nil
 }

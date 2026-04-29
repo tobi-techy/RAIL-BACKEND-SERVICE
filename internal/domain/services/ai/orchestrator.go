@@ -467,6 +467,10 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 	if o.receiptHistory != nil {
 		tools = append(tools, SplitReceiptTool())
 	}
+	// Memory controls (list/forget)
+	if o.memory != nil {
+		tools = append(tools, MemoryTools()...)
+	}
 	return tools
 }
 
@@ -515,7 +519,7 @@ func (o *Orchestrator) ChatInContext(ctx context.Context, userID, convID uuid.UU
 
 	// Inject long-term memory (facts Miriam has learned about this user)
 	if o.memory != nil {
-		if memCtx := o.memory.BuildMemoryContext(ctx, userID); memCtx != "" {
+		if memCtx := o.memory.BuildMemoryContextWithSummary(ctx, userID); memCtx != "" {
 			messages = append(messages, ai.Message{Role: "system", Content: memCtx})
 		}
 		if toneCtx := o.memory.BuildToneContext(ctx, userID); toneCtx != "" {
@@ -915,6 +919,15 @@ func (o *Orchestrator) executeToolInner(ctx context.Context, userID uuid.UUID, t
 
 	case ToolUpdateFinancialProfile:
 		return map[string]interface{}{"error": "Updating your financial profile requires a conversation context. Please use the chat interface."}, nil
+
+	case ToolListMemory:
+		return o.executeListMemory(ctx, userID)
+
+	case ToolForgetFact:
+		return o.executeForgetFact(ctx, userID, tc.Arguments)
+
+	case ToolForgetCategory:
+		return o.executeForgetCategory(ctx, userID, tc.Arguments)
 
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", tc.Name)
