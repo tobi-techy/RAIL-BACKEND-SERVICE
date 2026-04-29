@@ -447,6 +447,12 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 		narrationPtr = &narration
 	}
 
+	// Use CircleWalletID if available, otherwise BridgeWalletID
+	walletProviderID := req.BridgeWalletID
+	if req.CircleWalletID != "" {
+		walletProviderID = req.CircleWalletID
+	}
+
 	withdrawal := &entities.Withdrawal{
 		ID:                 uuid.New(),
 		UserID:             req.UserID,
@@ -454,7 +460,7 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 		Currency:           req.Currency,
 		Amount:             req.Amount,
 		SourceAccount:      req.SourceAccount,
-		BridgeWalletID:     &req.BridgeWalletID,
+		BridgeWalletID:     &walletProviderID,
 		DestinationType:    entities.DestinationTypeCryptoWallet,
 		DestinationChain:   strings.ToUpper(req.DestinationChain),
 		DestinationAddress: &req.DestinationAddress,

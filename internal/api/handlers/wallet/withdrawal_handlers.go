@@ -146,15 +146,18 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 	}
 
 	// The source is always the user's spending wallet.
-	// Get user's Solana spending wallet.
-	wallet, err := h.walletProvider.GetUserWalletByChain(c.Request.Context(), userID, string(entities.WalletChainSolana))
+	// Try destination chain wallet first, fall back to Solana.
+	wallet, err := h.walletProvider.GetUserWalletByChain(c.Request.Context(), userID, destChain)
+	if err != nil {
+		wallet, err = h.walletProvider.GetUserWalletByChain(c.Request.Context(), userID, string(entities.WalletChainSolana))
+	}
 	if err != nil {
 		h.logger.Error("Failed to get user wallet", "error", err, "user_id", userID)
 		common.SendBadRequest(c, "NO_WALLET", "No wallet found for user")
 		return
 	}
-	if strings.TrimSpace(wallet.BridgeWalletID) == "" {
-		h.logger.Error("User wallet has no Bridge wallet ID", "user_id", userID)
+	if wallet.CircleWalletID == "" && strings.TrimSpace(wallet.BridgeWalletID) == "" {
+		h.logger.Error("User wallet has no provider wallet ID", "user_id", userID)
 		common.SendInternalError(c, "PROVIDER_NOT_CONFIGURED", "Withdrawal provider is not available for this account")
 		return
 	}
@@ -177,7 +180,8 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 		DestinationChain:   destChain,
 		SourceChain:        string(wallet.Chain),
 		SourceAccount:      entities.WithdrawalSourceSpendingBalance,
-		BridgeWalletID:      wallet.BridgeWalletID,
+		BridgeWalletID:     wallet.BridgeWalletID,
+		CircleWalletID:     wallet.CircleWalletID,
 		SourceWalletAddress: wallet.Address,
 		Category:           category,
 		Narration:          narration,

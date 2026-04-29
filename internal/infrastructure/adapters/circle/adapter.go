@@ -106,10 +106,10 @@ func (a *Adapter) ListWallets(ctx context.Context, walletSetID string, userID uu
 }
 
 // TransferUSDC initiates a USDC transfer from a Circle wallet using walletId + tokenId (REST API style).
-func (a *Adapter) TransferUSDC(ctx context.Context, walletID, tokenID, destinationAddress, amount string) (*Transaction, error) {
+func (a *Adapter) TransferUSDC(ctx context.Context, walletID, tokenAddress, destinationAddress, amount string) (*Transaction, error) {
 	req := &CreateTransferRequest{
 		WalletID:           walletID,
-		TokenID:            tokenID,
+		TokenAddress:       tokenAddress,
 		DestinationAddress: destinationAddress,
 		Amounts:            []string{amount},
 		Fee:                FeeConfig{Type: "level", Config: FeeConfigLevel{FeeLevel: "MEDIUM"}},
