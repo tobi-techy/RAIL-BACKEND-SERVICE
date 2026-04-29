@@ -153,7 +153,8 @@ type CreateTransferRequest struct {
 	TokenAddress           string    `json:"tokenAddress,omitempty"`
 	DestinationAddress     string    `json:"destinationAddress"`
 	Amounts                []string  `json:"amounts"`
-	Fee                    FeeConfig `json:"fee"`
+	FeeLevel               string     `json:"feeLevel,omitempty"`
+	Fee                    *FeeConfig `json:"fee,omitempty"`
 }
 
 type Transaction struct {

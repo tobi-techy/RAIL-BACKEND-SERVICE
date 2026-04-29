@@ -112,7 +112,7 @@ func (a *Adapter) TransferUSDC(ctx context.Context, walletID, tokenID, destinati
 		TokenID:            tokenID,
 		DestinationAddress: destinationAddress,
 		Amounts:            []string{amount},
-		Fee:                FeeConfig{Type: "level", Config: FeeConfigLevel{FeeLevel: "MEDIUM"}},
+		FeeLevel:           "MEDIUM",
 	}
 	return a.client.CreateTransfer(ctx, req)
 }

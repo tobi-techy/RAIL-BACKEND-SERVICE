@@ -225,6 +225,9 @@ func (c *HTTPClient) doRequest(ctx context.Context, method, path string, body in
 		if apiErr.Message == "" {
 			apiErr.Message = http.StatusText(resp.StatusCode)
 		}
+		c.logger.Warn("Circle API error response",
+			zap.Int("status", resp.StatusCode),
+			zap.String("body", string(respBody)))
 
 		// 5xx → circuit breaker
 		if resp.StatusCode >= 500 {
