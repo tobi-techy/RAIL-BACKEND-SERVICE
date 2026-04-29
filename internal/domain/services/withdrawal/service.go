@@ -1374,10 +1374,15 @@ func (s *WithdrawalService) executeCircleViaChainRails(ctx context.Context, with
 		return nil, fmt.Errorf("unsupported source chain for ChainRails: %s", blockchain)
 	}
 
-	// Step 3: Map destination chain
+	// Step 3: Map destination chain — match testnet/mainnet to source
 	crDestChain := destChainToChainRails[strings.ToUpper(destinationChain)]
 	if crDestChain == "" {
 		return nil, fmt.Errorf("unsupported destination chain for ChainRails: %s", destinationChain)
+	}
+	// If source is testnet, force destination to testnet too
+	sourceIsTestnet := strings.Contains(sourceChainRails.chain, "TESTNET")
+	if sourceIsTestnet && strings.Contains(crDestChain, "MAINNET") {
+		crDestChain = strings.Replace(crDestChain, "MAINNET", "TESTNET", 1)
 	}
 
 	amountMicro := withdrawal.Amount.Shift(6).IntPart()
