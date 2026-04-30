@@ -230,7 +230,7 @@ func (h *ConversationHandlers) ConfirmAction(c *gin.Context) {
 	action, err := h.orchestrator.ConfirmAction(c.Request.Context(), userID, conv.ID)
 	if err != nil {
 		h.logger.Error("confirm action failed", zap.Error(err), zap.String("user_id", userID.String()))
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request. Please check your input."})
 		return
 	}
 
@@ -258,7 +258,7 @@ func (h *ConversationHandlers) CancelAction(c *gin.Context) {
 
 	if err := h.orchestrator.CancelAction(c.Request.Context(), userID, conv.ID); err != nil {
 		h.logger.Error("cancel action failed", zap.Error(err))
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request. Please check your input."})
 		return
 	}
 

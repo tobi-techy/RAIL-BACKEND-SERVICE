@@ -99,7 +99,7 @@ func (h *RoundupHandlers) UpdateSettings(c *gin.Context) {
 	settings, err := h.service.UpdateSettings(c.Request.Context(), userID, svcReq)
 	if err != nil {
 		h.logger.Error("Failed to update settings", zap.Error(err))
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request. Please check your input."})
 		return
 	}
 
@@ -143,7 +143,7 @@ func (h *RoundupHandlers) ProcessTransaction(c *gin.Context) {
 	})
 	if err != nil {
 		h.logger.Error("Failed to process transaction", zap.Error(err))
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request. Please check your input."})
 		return
 	}
 
@@ -208,7 +208,7 @@ func (h *RoundupHandlers) CollectRoundups(c *gin.Context) {
 
 	if err := h.service.CollectPendingRoundups(c.Request.Context(), userID); err != nil {
 		h.logger.Error("Failed to collect roundups", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "An unexpected error occurred. Please try again."})
 		return
 	}
 

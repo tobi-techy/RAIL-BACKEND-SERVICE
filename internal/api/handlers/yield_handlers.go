@@ -64,7 +64,7 @@ func TriggerStashReconciliation(worker *recon.Worker, logger *zap.Logger) gin.Ha
 	return func(c *gin.Context) {
 		if err := worker.Run(c.Request.Context()); err != nil {
 			logger.Error("Stash reconciliation failed", zap.Error(err))
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "An unexpected error occurred. Please try again."})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})

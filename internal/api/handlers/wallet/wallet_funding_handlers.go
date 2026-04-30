@@ -154,7 +154,7 @@ func (h *WalletFundingHandlers) GetWalletAddresses(c *gin.Context) {
 	userID, err := common.GetUserID(c)
 	if err != nil {
 		h.logger.Warn("Invalid or missing user ID", zap.Error(err))
-		common.RespondBadRequest(c, "Invalid or missing user ID", map[string]interface{}{"error": err.Error()})
+		common.RespondBadRequest(c, "Invalid or missing user ID", nil)
 		return
 	}
 
@@ -230,7 +230,7 @@ func (h *WalletFundingHandlers) GetWalletStatus(c *gin.Context) {
 	userID, err := common.GetUserID(c)
 	if err != nil {
 		h.logger.Warn("Invalid or missing user ID", zap.Error(err))
-		common.RespondBadRequest(c, "Invalid or missing user ID", map[string]interface{}{"error": err.Error()})
+		common.RespondBadRequest(c, "Invalid or missing user ID", nil)
 		return
 	}
 
@@ -296,7 +296,7 @@ func (h *WalletFundingHandlers) CreateWalletsForUser(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 			Code:    "INVALID_REQUEST",
 			Message: "Invalid wallet creation request payload",
-			Details: map[string]interface{}{"error": err.Error()},
+			Details: nil,
 		})
 		return
 	}
@@ -441,7 +441,7 @@ func (h *WalletFundingHandlers) HealthCheck(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{
 			Code:    "HEALTH_CHECK_FAILED",
 			Message: "Wallet service health check failed",
-			Details: map[string]interface{}{"error": err.Error()},
+			Details: nil,
 		})
 		return
 	}
@@ -479,7 +479,7 @@ func (h *WalletFundingHandlers) InitiateWalletCreation(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 			Code:    "INVALID_REQUEST",
 			Message: "Invalid request payload",
-			Details: map[string]interface{}{"error": err.Error()},
+			Details: nil,
 		})
 		return
 	}
@@ -846,7 +846,7 @@ func (h *WalletFundingHandlers) GetWalletByChain(c *gin.Context) {
 func (h *WalletFundingHandlers) CreateDepositAddress(c *gin.Context) {
 	var req entities.DepositAddressRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		common.RespondBadRequest(c, "Invalid request format", map[string]interface{}{"error": err.Error()})
+		common.RespondBadRequest(c, "Invalid request format", nil)
 		return
 	}
 
@@ -1291,7 +1291,7 @@ func (h *WalletFundingHandlers) GetBasket(c *gin.Context) {
 func (h *WalletFundingHandlers) CreateOrder(c *gin.Context) {
 	var req entities.OrderCreateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		common.RespondBadRequest(c, "Invalid request format", map[string]interface{}{"error": err.Error()})
+		common.RespondBadRequest(c, "Invalid request format", nil)
 		return
 	}
 
@@ -1515,7 +1515,7 @@ func (h *WalletFundingHandlers) ChainDepositWebhook(c *gin.Context) {
 
 	var webhook entities.ChainDepositWebhook
 	if err := json.Unmarshal(rawBody, &webhook); err != nil {
-		common.RespondBadRequest(c, "Invalid webhook payload", map[string]interface{}{"error": err.Error()})
+		common.RespondBadRequest(c, "Invalid webhook payload", nil)
 		return
 	}
 
@@ -1628,7 +1628,7 @@ func (h *WalletFundingHandlers) BrokerageFillWebhook(c *gin.Context) {
 
 	var webhook entities.BrokerageFillWebhook
 	if err := json.Unmarshal(rawBody, &webhook); err != nil {
-		common.RespondBadRequest(c, "Invalid webhook payload", map[string]interface{}{"error": err.Error()})
+		common.RespondBadRequest(c, "Invalid webhook payload", nil)
 		return
 	}
 

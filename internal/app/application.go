@@ -38,12 +38,14 @@ import (
 	"github.com/rail-service/rail_service/internal/workers/kyc_sync"
 	memory_worker "github.com/rail-service/rail_service/internal/workers/memory_worker"
 	paj_offramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_offramp_recovery"
+	paj_onramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_onramp_recovery"
 	portfolio_snapshot_worker "github.com/rail-service/rail_service/internal/workers/portfolio_snapshot_worker"
 	rebalancing_worker "github.com/rail-service/rail_service/internal/workers/rebalancing_worker"
 	scheduled_investment_worker "github.com/rail-service/rail_service/internal/workers/scheduled_investment_worker"
 	scheduled_notifications "github.com/rail-service/rail_service/internal/workers/scheduled_notifications"
 	subscription_billing "github.com/rail-service/rail_service/internal/workers/subscription_billing"
 	walletprovisioning "github.com/rail-service/rail_service/internal/workers/wallet_provisioning"
+	withdrawal_recovery "github.com/rail-service/rail_service/internal/workers/withdrawal_recovery"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/metrics"
 	"github.com/rail-service/rail_service/pkg/tracing"
@@ -63,6 +65,8 @@ type Application struct {
 	portfolioSnapshotWorker      *portfolio_snapshot_worker.Worker
 	depositAllocationWorker      *deposit_allocation_recovery.Worker
 	pajOfframpRecoveryWorker     *paj_offramp_recovery.Worker
+	pajOnrampRecoveryWorker      *paj_onramp_recovery.Worker
+	withdrawalRecoveryWorker     *withdrawal_recovery.Worker
 	kycAutoInvestWorker          *kyc_autoinvest.Worker
 	rebalancingWorker            *rebalancing_worker.Worker
 	kycSyncWorker                *kyc_sync.Worker
@@ -217,6 +221,20 @@ func (app *Application) initializeWorkers() error {
 		app.pajOfframpRecoveryWorker = paj_offramp_recovery.NewWorker(app.container.DB, app.log.Zap())
 		go app.pajOfframpRecoveryWorker.Start(context.Background())
 		app.log.Info("Paj offramp recovery worker started")
+	}
+
+	// Paj onramp recovery worker — marks stuck NGN deposits as failed for retry
+	if app.container.DB != nil && app.container.PajHandlers != nil {
+		app.pajOnrampRecoveryWorker = paj_onramp_recovery.NewWorker(app.container.DB, app.log.Zap())
+		go app.pajOnrampRecoveryWorker.Start(context.Background())
+		app.log.Info("Paj onramp recovery worker started")
+	}
+
+	// Withdrawal recovery worker — auto-reverses stuck crypto withdrawals
+	if app.container.DB != nil {
+		app.withdrawalRecoveryWorker = withdrawal_recovery.NewWorker(app.container.DB, app.log.Zap())
+		go app.withdrawalRecoveryWorker.Start(context.Background())
+		app.log.Info("Withdrawal recovery worker started")
 	}
 
 	// KYC auto-invest worker

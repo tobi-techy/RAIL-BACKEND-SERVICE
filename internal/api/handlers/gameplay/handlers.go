@@ -306,7 +306,7 @@ func (h *Handlers) Subscribe(c *gin.Context) {
 	}
 	sub, err := h.subSvc.Subscribe(c.Request.Context(), userID, body.Plan)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request. Please check your input."})
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"subscription": sub})
@@ -319,7 +319,7 @@ func (h *Handlers) CancelSubscription(c *gin.Context) {
 		return
 	}
 	if err := h.subSvc.Cancel(c.Request.Context(), userID); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request. Please check your input."})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Subscription cancelled. Access continues until period end."})
@@ -406,7 +406,7 @@ func (h *Handlers) ActivateBoost(c *gin.Context) {
 	}
 	ub, err := h.boostsSvc.ActivateBoost(c.Request.Context(), userID, boostID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request. Please check your input."})
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"boost": ub})
@@ -478,7 +478,7 @@ func (h *Handlers) PurchaseGraceDay(c *gin.Context) {
 		return
 	}
 	if err := h.graceDaySvc.Purchase(c.Request.Context(), userID); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request. Please check your input."})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Grace Day purchased!", "cost": entities.GraceDayPointCost})

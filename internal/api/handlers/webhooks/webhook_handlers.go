@@ -80,7 +80,7 @@ func (h *WebhookHandlers) ChainDepositWebhook(c *gin.Context) {
 
 	var webhook entities.ChainDepositWebhook
 	if err := json.Unmarshal(rawBody, &webhook); err != nil {
-		common.RespondBadRequest(c, "Invalid webhook payload", map[string]interface{}{"error": err.Error()})
+		common.RespondBadRequest(c, "Invalid webhook payload", nil)
 		return
 	}
 
@@ -147,7 +147,7 @@ func (h *WebhookHandlers) BrokerageFillWebhook(c *gin.Context) {
 
 	var webhook entities.BrokerageFillWebhook
 	if err := c.ShouldBindJSON(&webhook); err != nil {
-		common.RespondBadRequest(c, "Invalid webhook payload", map[string]interface{}{"error": err.Error()})
+		common.RespondBadRequest(c, "Invalid webhook payload", nil)
 		return
 	}
 
@@ -178,7 +178,7 @@ func (h *WebhookHandlers) TransferWebhook(c *gin.Context) {
 
 	var payload map[string]interface{}
 	if err := json.Unmarshal(rawBody, &payload); err != nil {
-		common.RespondBadRequest(c, "Invalid webhook payload", map[string]interface{}{"error": err.Error()})
+		common.RespondBadRequest(c, "Invalid webhook payload", nil)
 		return
 	}
 
@@ -220,7 +220,7 @@ func (h *WebhookHandlers) AccountWebhook(c *gin.Context) {
 
 	var payload map[string]interface{}
 	if err := json.Unmarshal(rawBody, &payload); err != nil {
-		common.RespondBadRequest(c, "Invalid webhook payload", map[string]interface{}{"error": err.Error()})
+		common.RespondBadRequest(c, "Invalid webhook payload", nil)
 		return
 	}
 

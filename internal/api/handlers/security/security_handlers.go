@@ -66,7 +66,7 @@ func (h *SecurityEnhancedHandlers) TrustDevice(c *gin.Context) {
 	}
 
 	if err := h.deviceService.TrustDevice(c.Request.Context(), userID, deviceID); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request. Please check your input."})
 		return
 	}
 
@@ -132,7 +132,7 @@ func (h *SecurityEnhancedHandlers) AddIPToWhitelist(c *gin.Context) {
 
 	ip, err := h.ipWhitelistSvc.AddIP(c.Request.Context(), userID, req.IPAddress, req.Label)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request. Please check your input."})
 		return
 	}
 
@@ -166,7 +166,7 @@ func (h *SecurityEnhancedHandlers) VerifyWhitelistedIP(c *gin.Context) {
 	}
 
 	if err := h.ipWhitelistSvc.VerifyIP(c.Request.Context(), userID, ipID); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request. Please check your input."})
 		return
 	}
 
@@ -238,7 +238,7 @@ func (h *SecurityEnhancedHandlers) ConfirmWithdrawal(c *gin.Context) {
 
 	confirmation, err := h.withdrawalSecSvc.VerifyConfirmation(c.Request.Context(), req.Token, userID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request. Please check your input."})
 		return
 	}
 

@@ -168,7 +168,7 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 			Code:    "INVALID_REQUEST",
 			Message: "Invalid request payload",
-			Details: map[string]interface{}{"error": err.Error()},
+			Details: nil,
 		})
 		return
 	}
@@ -510,7 +510,7 @@ func (h *AuthHandlers) ResendCode(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 			Code:    "INVALID_REQUEST",
 			Message: "Invalid request payload",
-			Details: map[string]interface{}{"error": err.Error()},
+			Details: nil,
 		})
 		return
 	}
@@ -764,7 +764,7 @@ func (h *AuthHandlers) Login(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 			Code:    "INVALID_REQUEST",
 			Message: "Invalid request payload",
-			Details: map[string]interface{}{"error": err.Error()},
+			Details: nil,
 		})
 		return
 	}
@@ -936,7 +936,7 @@ func (h *AuthHandlers) PasscodeLogin(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 			Code:    "INVALID_REQUEST",
 			Message: "Invalid request payload",
-			Details: map[string]interface{}{"error": err.Error()},
+			Details: nil,
 		})
 		return
 	}
@@ -1296,7 +1296,7 @@ func (h *AuthHandlers) ResetPassword(c *gin.Context) {
 		return
 	}
 	if err := crypto.ValidatePasswordStrength(req.Password); err != nil {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "WEAK_PASSWORD", Message: err.Error()})
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "WEAK_PASSWORD", Message: "An unexpected error occurred. Please try again."})
 		return
 	}
 	newHash, err := crypto.HashPassword(req.Password)
@@ -1425,7 +1425,7 @@ func (h *AuthHandlers) UpdateProfile(c *gin.Context) {
 	}
 	var payload entities.UserProfile
 	if err := c.ShouldBindJSON(&payload); err != nil {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "Invalid payload", Details: map[string]interface{}{"error": err.Error()}})
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "Invalid payload", Details: nil})
 		return
 	}
 	user, err := h.userRepo.GetByID(ctx, userID)
@@ -1520,7 +1520,7 @@ func (h *AuthHandlers) ChangePassword(c *gin.Context) {
 		return
 	}
 	if err := crypto.ValidatePasswordStrength(req.NewPassword); err != nil {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "WEAK_PASSWORD", Message: err.Error()})
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "WEAK_PASSWORD", Message: "An unexpected error occurred. Please try again."})
 		return
 	}
 	newHash, err := crypto.HashPassword(req.NewPassword)
@@ -1628,7 +1628,7 @@ func (h *AuthHandlers) Enable2FA(c *gin.Context) {
 
 		if err := h.twoFAService.VerifyAndEnable(ctx, userID, req.Code); err != nil {
 			h.logger.Warn("Failed to verify 2FA code", zap.Error(err), zap.String("user_id", userID.String()))
-			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_CODE", Message: err.Error()})
+			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_CODE", Message: "An unexpected error occurred. Please try again."})
 			return
 		}
 
@@ -1651,7 +1651,7 @@ func (h *AuthHandlers) Enable2FA(c *gin.Context) {
 	setup, err := h.twoFAService.GenerateSecret(ctx, userID, user.Email)
 	if err != nil {
 		h.logger.Error("Failed to generate 2FA secret", zap.Error(err), zap.String("user_id", userID.String()))
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "2FA_SETUP_FAILED", Message: err.Error()})
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "2FA_SETUP_FAILED", Message: "An unexpected error occurred. Please try again."})
 		return
 	}
 
@@ -1700,7 +1700,7 @@ func (h *AuthHandlers) Disable2FA(c *gin.Context) {
 
 	if err := h.twoFAService.Disable(ctx, userID, req.Code); err != nil {
 		h.logger.Warn("Failed to disable 2FA", zap.Error(err), zap.String("user_id", userID.String()))
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "DISABLE_FAILED", Message: err.Error()})
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "DISABLE_FAILED", Message: "An unexpected error occurred. Please try again."})
 		return
 	}
 
@@ -1781,7 +1781,7 @@ func (h *AuthHandlers) ProcessKYCCallback(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{
 			Code:    "INVALID_CALLBACK",
 			Message: "Invalid callback payload",
-			Details: map[string]interface{}{"error": err.Error()},
+			Details: nil,
 		})
 		return
 	}
@@ -1907,7 +1907,7 @@ func (h *AuthHandlers) BasicCompleteOnboarding(c *gin.Context) {
 	if err != nil {
 		h.logger.Error("Failed to basic-complete onboarding", zap.Error(err), zap.String("user_id", userID.String()))
 		if strings.Contains(err.Error(), "only allowed from") {
-			c.JSON(http.StatusConflict, entities.ErrorResponse{Code: "INVALID_STATUS", Message: err.Error()})
+			c.JSON(http.StatusConflict, entities.ErrorResponse{Code: "INVALID_STATUS", Message: "An unexpected error occurred. Please try again."})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "ONBOARDING_FAILED", Message: "Failed to complete basic signup"})

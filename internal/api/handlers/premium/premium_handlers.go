@@ -105,7 +105,7 @@ func (h *Handlers) SetBlackTaxBudget(c *gin.Context) {
 
 	var req setBudgetRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request. Please check your input."})
 		return
 	}
 
@@ -161,7 +161,7 @@ func (h *Handlers) SplitReceipt(c *gin.Context) {
 
 	var req splitReceiptRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request. Please check your input."})
 		return
 	}
 
@@ -197,7 +197,7 @@ func (h *Handlers) CheckMerchant(c *gin.Context) {
 
 	var req checkMerchantRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request. Please check your input."})
 		return
 	}
 
@@ -261,7 +261,7 @@ func (h *Handlers) LogLocation(c *gin.Context) {
 
 	var req logLocationRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request. Please check your input."})
 		return
 	}
 	if req.Source == "" {
@@ -309,7 +309,7 @@ func (h *Handlers) SetTaxProfile(c *gin.Context) {
 
 	var req setTaxProfileRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request. Please check your input."})
 		return
 	}
 
@@ -384,7 +384,7 @@ func (h *Handlers) GenerateVisaProof(c *gin.Context) {
 
 	var req premium.VisaProofPayload
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request. Please check your input."})
 		return
 	}
 
@@ -450,7 +450,7 @@ func (h *Handlers) AddEmergencyContact(c *gin.Context) {
 
 	var req emergencyContactRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request. Please check your input."})
 		return
 	}
 
@@ -499,7 +499,7 @@ func (h *Handlers) TriggerEmergencyLock(c *gin.Context) {
 
 	var req triggerLockRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request. Please check your input."})
 		return
 	}
 	if req.Reason == "" {
@@ -509,7 +509,7 @@ func (h *Handlers) TriggerEmergencyLock(c *gin.Context) {
 	lock, err := h.panicButton.TriggerLock(c.Request.Context(), userID, req.Reason)
 	if err != nil {
 		h.logger.Error("trigger lock failed", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not trigger lock: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not trigger lock. Please try again."})
 		return
 	}
 

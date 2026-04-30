@@ -81,7 +81,7 @@ func (h *MFAHandlers) SetupSMSMFA(c *gin.Context) {
 		PhoneNumber string `json:"phone_number" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "INVALID_REQUEST", "message": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "INVALID_REQUEST", "message": "An unexpected error occurred. Please try again."})
 		return
 	}
 
@@ -126,7 +126,7 @@ func (h *MFAHandlers) SendMFACode(c *gin.Context) {
 	switch req.Method {
 	case "sms":
 		if err := h.mfaService.SendSMSCode(c.Request.Context(), userID); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "SEND_FAILED", "message": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "SEND_FAILED", "message": "An unexpected error occurred. Please try again."})
 			return
 		}
 	default:
@@ -341,7 +341,7 @@ func (h *MFAHandlers) ExecutePlaybook(c *gin.Context) {
 	}
 
 	if err := h.incidentService.ExecutePlaybook(c.Request.Context(), incidentID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "PLAYBOOK_FAILED", "message": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "PLAYBOOK_FAILED", "message": "An unexpected error occurred. Please try again."})
 		return
 	}
 

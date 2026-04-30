@@ -108,7 +108,7 @@ func NewSocialAuthHandlers(
 func (h *SocialAuthHandlers) GetSocialAuthURL(c *gin.Context) {
 	var req entities.SocialAuthURLRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: err.Error()})
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "An unexpected error occurred. Please try again."})
 		return
 	}
 
@@ -127,7 +127,7 @@ func (h *SocialAuthHandlers) GetSocialAuthURL(c *gin.Context) {
 	url, err := h.socialAuthService.GetAuthURL(req.Provider, req.RedirectURI, state)
 	if err != nil {
 		h.logger.Error("Failed to generate auth URL", zap.Error(err))
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "AUTH_URL_ERROR", Message: err.Error()})
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "AUTH_URL_ERROR", Message: "An unexpected error occurred. Please try again."})
 		return
 	}
 
@@ -140,7 +140,7 @@ func (h *SocialAuthHandlers) SocialLogin(c *gin.Context) {
 
 	var req entities.SocialLoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: err.Error()})
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "An unexpected error occurred. Please try again."})
 		return
 	}
 
@@ -329,7 +329,7 @@ func (h *SocialAuthHandlers) LinkSocialAccount(c *gin.Context) {
 
 	var req entities.SocialLoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: err.Error()})
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "An unexpected error occurred. Please try again."})
 		return
 	}
 
@@ -375,7 +375,7 @@ func (h *SocialAuthHandlers) UnlinkSocialAccount(c *gin.Context) {
 	}
 
 	if err := h.socialAuthService.UnlinkAccount(ctx, userID, provider); err != nil {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "UNLINK_FAILED", Message: err.Error()})
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "UNLINK_FAILED", Message: "An unexpected error occurred. Please try again."})
 		return
 	}
 
@@ -396,7 +396,7 @@ func (h *SocialAuthHandlers) BeginWebAuthnRegistration(c *gin.Context) {
 
 	var req entities.WebAuthnRegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: err.Error()})
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "An unexpected error occurred. Please try again."})
 		return
 	}
 
@@ -423,7 +423,7 @@ func (h *SocialAuthHandlers) BeginWebAuthnRegistration(c *gin.Context) {
 	options, sessionData, err := h.webauthnService.BeginRegistration(ctx, userID, user.Email, displayName)
 	if err != nil {
 		h.logger.Error("Failed to begin WebAuthn registration", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "REGISTRATION_ERROR", Message: err.Error()})
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "REGISTRATION_ERROR", Message: "An unexpected error occurred. Please try again."})
 		return
 	}
 	h.logger.Info("WebAuthn registration begin options",
@@ -502,7 +502,7 @@ func (h *SocialAuthHandlers) DeleteWebAuthnCredential(c *gin.Context) {
 	}
 
 	if err := h.webauthnService.DeleteCredential(ctx, userID, credID); err != nil {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "DELETE_FAILED", Message: err.Error()})
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "DELETE_FAILED", Message: "An unexpected error occurred. Please try again."})
 		return
 	}
 
@@ -515,7 +515,7 @@ func (h *SocialAuthHandlers) BeginWebAuthnLogin(c *gin.Context) {
 
 	var req entities.WebAuthnLoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: err.Error()})
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "An unexpected error occurred. Please try again."})
 		return
 	}
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
@@ -543,7 +543,7 @@ func (h *SocialAuthHandlers) BeginWebAuthnLogin(c *gin.Context) {
 	options, sessionData, err := h.webauthnService.BeginLogin(ctx, user.ID, user.Email)
 	if err != nil {
 		h.logger.Error("Failed to begin WebAuthn login", zap.Error(err))
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "LOGIN_ERROR", Message: err.Error()})
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "LOGIN_ERROR", Message: "An unexpected error occurred. Please try again."})
 		return
 	}
 	h.logger.Info("WebAuthn login begin session",
@@ -585,7 +585,7 @@ func (h *SocialAuthHandlers) FinishWebAuthnRegistration(c *gin.Context) {
 
 	var req entities.WebAuthnRegisterFinishRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: err.Error()})
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "An unexpected error occurred. Please try again."})
 		return
 	}
 	if strings.TrimSpace(req.SessionID) == "" || len(req.Response) == 0 {
@@ -656,7 +656,7 @@ func (h *SocialAuthHandlers) FinishWebAuthnLogin(c *gin.Context) {
 
 	var req entities.WebAuthnLoginFinishRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: err.Error()})
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "An unexpected error occurred. Please try again."})
 		return
 	}
 	if strings.TrimSpace(req.SessionID) == "" || len(req.Response) == 0 {

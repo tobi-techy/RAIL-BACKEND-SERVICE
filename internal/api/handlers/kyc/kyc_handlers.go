@@ -364,7 +364,7 @@ func (h *Handler) ResyncBridge(c *gin.Context) {
 		IssuingCountry string `json:"issuing_country" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request. Please check your input."})
 		return
 	}
 	userID, err := uuid.Parse(req.UserID)
@@ -374,7 +374,7 @@ func (h *Handler) ResyncBridge(c *gin.Context) {
 	}
 	if err := h.kycService.ResyncBridge(c.Request.Context(), userID, req.TaxID, req.TaxIDType, req.IssuingCountry); err != nil {
 		h.logger.Error("ResyncBridge failed", "user_id", req.UserID, "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "An unexpected error occurred. Please try again."})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -387,7 +387,7 @@ func (h *Handler) RepairBridgeGovID(c *gin.Context) {
 		UserID string `json:"user_id" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request. Please check your input."})
 		return
 	}
 	userID, err := uuid.Parse(req.UserID)
@@ -397,7 +397,7 @@ func (h *Handler) RepairBridgeGovID(c *gin.Context) {
 	}
 	if err := h.kycService.RepairBridgeGovID(c.Request.Context(), userID); err != nil {
 		h.logger.Error("RepairBridgeGovID failed", "user_id", req.UserID, "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "An unexpected error occurred. Please try again."})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
