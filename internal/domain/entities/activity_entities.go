@@ -143,7 +143,6 @@ type PajOrderForActivity struct {
 	Rate              float64
 	Fee               float64
 	BankAccountName   *string
-	DepositID         *uuid.UUID // links to deposit if onramp credited
 	CreatedAt         time.Time
 }
 

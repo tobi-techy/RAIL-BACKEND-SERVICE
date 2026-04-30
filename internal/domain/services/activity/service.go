@@ -96,10 +96,10 @@ func (s *Service) GetActivityFeed(ctx context.Context, userID uuid.UUID, limit, 
 // fetchDepositsAndPajOrders fetches deposits and PAJ onramp orders, suppressing
 // deposits that were created by a PAJ onramp (to avoid showing both).
 func (s *Service) fetchDepositsAndPajOrders(ctx context.Context, userID uuid.UUID, limit int) ([]entities.ActivityItem, error) {
-	// Get PAJ onramp orders first to know which deposit_ids to suppress
+	// Get PAJ onramp order IDs to suppress their linked deposits
 	pajRows, err := s.db.QueryContext(ctx, `
 		SELECT paj_order_id, order_type, status, fiat_amount, COALESCE(token_amount,0),
-		       currency, COALESCE(rate,0), COALESCE(fee,0), pay_account_name, deposit_id, created_at
+		       currency, COALESCE(rate,0), COALESCE(fee,0), pay_account_name, created_at
 		FROM paj_orders
 		WHERE user_id = $1 AND order_type = 'onramp'
 		ORDER BY created_at DESC LIMIT $2`, userID, limit)
@@ -108,41 +108,39 @@ func (s *Service) fetchDepositsAndPajOrders(ctx context.Context, userID uuid.UUI
 	}
 	defer pajRows.Close()
 
-	suppressDepositIDs := make(map[string]bool)
+	suppressDepositKeys := make(map[string]bool)
 	var items []entities.ActivityItem
 
 	for pajRows.Next() {
 		var o entities.PajOrderForActivity
-		var depositID *uuid.UUID
 		var bankName *string
 		if err := pajRows.Scan(&o.ID, &o.OrderType, &o.Status, &o.FiatAmount, &o.TokenAmount,
-			&o.Currency, &o.Rate, &o.Fee, &bankName, &depositID, &o.CreatedAt); err != nil {
+			&o.Currency, &o.Rate, &o.Fee, &bankName, &o.CreatedAt); err != nil {
 			s.logger.Warn("scan paj order", zap.Error(err))
 			continue
 		}
 		o.BankAccountName = bankName
-		o.DepositID = depositID
 		items = append(items, entities.NormalizePajOrderToActivity(&o))
-		if depositID != nil {
-			suppressDepositIDs[depositID.String()] = true
-		}
+		// Deposits created by PAJ onramp use idempotency_key = "paj-onramp-{orderID}"
+		suppressDepositKeys["paj-onramp-"+o.ID] = true
 	}
 
-	// Fetch deposits, excluding those linked to PAJ onramp orders
+	// Fetch deposits
 	depRows, err := s.db.QueryContext(ctx, `
-		SELECT id, chain, tx_hash, token, amount, status, confirmed_at, created_at
+		SELECT id, chain, tx_hash, token, amount, status, confirmed_at, created_at, COALESCE(idempotency_key, '')
 		FROM deposits
 		WHERE user_id = $1
 		ORDER BY created_at DESC LIMIT $2`, userID, limit)
 	if err != nil {
-		return items, err // return PAJ items even if deposits fail
+		return items, err
 	}
 	defer depRows.Close()
 
 	for depRows.Next() {
 		var d entities.Deposit
 		var confirmedAt sql.NullTime
-		if err := depRows.Scan(&d.ID, &d.Chain, &d.TxHash, &d.Token, &d.Amount, &d.Status, &confirmedAt, &d.CreatedAt); err != nil {
+		var idempotencyKey string
+		if err := depRows.Scan(&d.ID, &d.Chain, &d.TxHash, &d.Token, &d.Amount, &d.Status, &confirmedAt, &d.CreatedAt, &idempotencyKey); err != nil {
 			s.logger.Warn("scan deposit", zap.Error(err))
 			continue
 		}
@@ -150,7 +148,7 @@ func (s *Service) fetchDepositsAndPajOrders(ctx context.Context, userID uuid.UUI
 			d.ConfirmedAt = &confirmedAt.Time
 		}
 		// Suppress deposits that are part of a PAJ onramp
-		if suppressDepositIDs[d.ID.String()] {
+		if suppressDepositKeys[idempotencyKey] {
 			continue
 		}
 		items = append(items, entities.NormalizeDepositToActivity(&d))
