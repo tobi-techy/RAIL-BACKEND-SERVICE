@@ -238,7 +238,7 @@ func TestLimitsService_UnverifiedUserLimits(t *testing.T) {
 	userID := uuid.New()
 	userRepo.AddUser(&entities.UserProfile{
 		ID:        userID,
-		KYCStatus: "pending", // Unverified
+		KYCStatus: "rejected", // Unverified
 	})
 
 	svc := limits.NewService(userRepo, usageRepo, log)
@@ -260,7 +260,7 @@ func TestDeriveKYCTier(t *testing.T) {
 		{"verified", entities.KYCTierBasic},
 		{"advanced_approved", entities.KYCTierAdvanced},
 		{"advanced_verified", entities.KYCTierAdvanced},
-		{"pending", entities.KYCTierUnverified},
+		{"pending", entities.KYCTierNonKYC},
 		{"rejected", entities.KYCTierUnverified},
 		{"", entities.KYCTierUnverified},
 	}

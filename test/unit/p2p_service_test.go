@@ -348,7 +348,7 @@ func TestP2PService_SendPending_ReservesFunds(t *testing.T) {
 	transferExec := &mockP2PTransferExecutor{}
 	userLookup := &mockP2PUserLookup{
 		usersByID: map[uuid.UUID]*entities.UserProfile{
-			senderID: {ID: senderID, Email: "sender@example.com"},
+			senderID: {ID: senderID, Email: "sender@example.com", KYCStatus: string(entities.KYCStatusApproved)},
 		},
 	}
 

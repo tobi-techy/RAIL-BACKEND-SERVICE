@@ -1735,6 +1735,7 @@ func (c *Container) initializeDomainServices() error {
 			c.FundingService,
 			&circleWalletLookupAdapter{repo: c.WalletRepo},
 			c.ZapLog,
+			c.Config.Circle.WebhookSecret,
 		)
 	}
 
@@ -4074,6 +4075,9 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 		if c.WithdrawalService != nil {
 			c.WithdrawalService.SetChainRailsAdapter(c.ChainRailsClient)
 			c.ChainRailsHandlers.SetWithdrawalService(c.WithdrawalService)
+		}
+		if c.WalletService != nil {
+			c.ChainRailsHandlers.SetWalletLookup(c.WalletService)
 		}
 		c.ZapLog.Info("ChainRails deposit funnel initialized")
 	} else {

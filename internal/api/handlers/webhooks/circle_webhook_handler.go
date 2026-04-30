@@ -2,6 +2,9 @@ package webhooks
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -57,6 +60,7 @@ type CircleWebhookHandler struct {
 	depositProcessor CircleDepositProcessor
 	walletLookup     CircleWalletLookup
 	logger           *zap.Logger
+	webhookSecret    string
 	processedEvents  map[string]bool // simple idempotency (use Redis in production)
 }
 
@@ -65,11 +69,13 @@ func NewCircleWebhookHandler(
 	depositProcessor CircleDepositProcessor,
 	walletLookup CircleWalletLookup,
 	logger *zap.Logger,
+	webhookSecret string,
 ) *CircleWebhookHandler {
 	return &CircleWebhookHandler{
 		depositProcessor: depositProcessor,
 		walletLookup:     walletLookup,
 		logger:           logger,
+		webhookSecret:    webhookSecret,
 		processedEvents:  make(map[string]bool),
 	}
 }
@@ -81,6 +87,24 @@ func (h *CircleWebhookHandler) HandleWebhook(c *gin.Context) {
 		h.logger.Error("Failed to read Circle webhook body", zap.Error(err))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
+	}
+
+	// Verify webhook signature if secret is configured
+	if h.webhookSecret != "" {
+		sig := c.GetHeader("X-Circle-Signature")
+		if sig == "" {
+			h.logger.Warn("Circle webhook missing signature header")
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing signature"})
+			return
+		}
+		mac := hmac.New(sha256.New, []byte(h.webhookSecret))
+		mac.Write(body)
+		expected := hex.EncodeToString(mac.Sum(nil))
+		if !hmac.Equal([]byte(sig), []byte(expected)) {
+			h.logger.Warn("Circle webhook signature mismatch")
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
+			return
+		}
 	}
 
 	var event CircleWebhookEvent

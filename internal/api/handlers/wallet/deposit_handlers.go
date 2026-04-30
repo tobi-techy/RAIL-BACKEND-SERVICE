@@ -99,7 +99,7 @@ func (h *WalletFundingHandlers) CreateDeposit(c *gin.Context) {
 				return
 			}
 		}
-		resp, err := h.fundingService.CreateDepositAddress(ctx, userUUID, chain, currency)
+		resp, err := h.getOrCreateCircleWallet(ctx, userUUID, entities.WalletChain(chain))
 		if err != nil {
 			h.logger.Error("Failed to create deposit address", "error", err, "user_id", userUUID)
 			c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "DEPOSIT_ERROR", Message: "Failed to create deposit address"})
@@ -110,7 +110,7 @@ func (h *WalletFundingHandlers) CreateDeposit(c *gin.Context) {
 			Status:   "pending",
 			Address:  resp.Address,
 			Chain:    string(resp.Chain),
-			Currency: string(resp.Currency),
+			Currency: string(currency),
 			Message:  fmt.Sprintf("Send %s to the address below", currency),
 		})
 

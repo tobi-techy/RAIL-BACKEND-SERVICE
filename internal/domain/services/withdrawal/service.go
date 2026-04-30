@@ -504,11 +504,6 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 		return nil, err
 	}
 
-	// Record tiered withdrawal usage for daily/weekly tracking
-	if s.tieredLimits != nil {
-		_ = s.tieredLimits.RecordWithdrawal(ctx, req.UserID, req.Amount)
-	}
-
 	// Step 6.5: Post ledger debit BEFORE executing the on-chain burn.
 	// This ensures the balance is decremented even if the burn succeeds but the
 	// subsequent ledger write would otherwise fail after funds are already gone.
@@ -553,6 +548,7 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 			s.logger.Error("async: failed to reverse ledger debit",
 				"error", revErr, "withdrawal_id", withdrawal.ID.String())
 		}
+		// Reverse tiered limit usage on failure — no-op since limits recorded on success only
 		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
 		return
 	}
@@ -579,11 +575,13 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 	state := strings.ToUpper(strings.TrimSpace(transferResult.State))
 	isFinalSuccess := state == "COMPLETE" || state == "COMPLETED" || state == "CONFIRMED" || state == "SUCCESS"
 
-	if s.limitsService != nil {
-		_ = s.limitsService.RecordWithdrawal(ctx, req.UserID, req.Amount)
-	}
-
 	if isFinalSuccess {
+		if s.limitsService != nil {
+			_ = s.limitsService.RecordWithdrawal(ctx, req.UserID, req.Amount)
+		}
+		if s.tieredLimits != nil {
+			_ = s.tieredLimits.RecordWithdrawal(ctx, req.UserID, req.Amount)
+		}
 		_ = s.settleCompletedCryptoWithdrawal(ctx, withdrawal)
 		if s.notificationService != nil {
 			_ = s.notificationService.NotifyWithdrawalCompleted(ctx, req.UserID, req.Amount, req.DestinationAddress)
@@ -991,11 +989,17 @@ func (s *WithdrawalService) CancelWithdrawal(ctx context.Context, userID, withdr
 	}
 
 	if withdrawal.ProviderTransferID != nil && strings.TrimSpace(*withdrawal.ProviderTransferID) != "" {
-		if err := s.bridgeAdapter.CancelTransfer(ctx, *withdrawal.ProviderTransferID); err != nil {
-			return fmt.Errorf("provider cancellation failed: %w", err)
+		transferID := *withdrawal.ProviderTransferID
+		if strings.HasPrefix(transferID, "cr:") {
+			// ChainRails withdrawals cannot be cancelled via provider — they auto-expire if unfunded
+			s.logger.Info("ChainRails withdrawal cancel — skipping provider cancel (auto-expires)",
+				"transfer_id", transferID)
+		} else if s.bridgeAdapter != nil {
+			if err := s.bridgeAdapter.CancelTransfer(ctx, transferID); err != nil {
+				return fmt.Errorf("provider cancellation failed: %w", err)
+			}
+			s.logger.Info("Bridge transfer cancelled", "transfer_id", transferID)
 		}
-		s.logger.Info("Bridge transfer cancelled",
-			"transfer_id", *withdrawal.ProviderTransferID)
 	}
 
 	if err := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); err != nil {
@@ -1426,6 +1430,9 @@ func (s *WithdrawalService) executeCircleViaChainRails(ctx context.Context, with
 	humanAmount := new(big.Float).Quo(new(big.Float).SetInt(totalMicro), new(big.Float).SetInt(divisor))
 	circleAmount := humanAmount.Text('f', intent.AssetTokenDecimals)
 
+	// Calculate ChainRails bridging fee (total - user amount) for post-transfer debit
+	crFee := decimal.NewFromBigInt(totalMicro, 0).Div(decimal.New(1, int32(intent.AssetTokenDecimals))).Sub(withdrawal.Amount)
+
 	tx, err := s.circleTransfer.TransferUSDC(ctx, walletID, tokenID, intent.IntentAddress, circleAmount)
 	if err != nil {
 		s.logger.Error("Circle transfer to ChainRails intent failed",
@@ -1438,6 +1445,22 @@ func (s *WithdrawalService) executeCircleViaChainRails(ctx context.Context, with
 	// H6: Check Circle transfer state
 	if tx.State == "DENIED" || tx.State == "FAILED" || tx.State == "CANCELLED" {
 		return nil, fmt.Errorf("circle transfer %s", string(tx.State))
+	}
+
+	// Debit ChainRails bridging fee from ledger AFTER successful Circle transfer
+	if crFee.IsPositive() && s.ledgerService != nil {
+		accountType, _ := mapWithdrawalSourceToAccountType(withdrawal.SourceAccount)
+		if feeErr := s.ledgerService.CreateTransaction(ctx, withdrawal.UserID, accountType, entities.TransactionTypeWithdrawal,
+			crFee, map[string]interface{}{
+				"withdrawal_id": withdrawal.ID.String(),
+				"fee_type":      "chainrails_bridging",
+			}); feeErr != nil {
+			// Fee debit failed but Circle transfer already sent — log critical, don't fail the withdrawal
+			s.logger.Error("CRITICAL: ChainRails fee debit failed after Circle transfer succeeded",
+				"error", feeErr, "withdrawal_id", withdrawal.ID.String(), "fee", crFee.String())
+		} else {
+			s.logger.Info("ChainRails bridging fee debited", "withdrawal_id", withdrawal.ID.String(), "fee", crFee.String())
+		}
 	}
 
 	s.logger.Info("Circle transfer to ChainRails intent initiated",
@@ -1576,6 +1599,16 @@ func (s *WithdrawalService) CompleteChainRailsWithdrawal(ctx context.Context, in
 	if err != nil {
 		return fmt.Errorf("withdrawal not found for intent %d: %w", intentID, err)
 	}
+
+	lock := s.userWithdrawalLock(withdrawal.UserID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// Re-read after acquiring lock
+	withdrawal, err = s.withdrawalRepo.GetByProviderTransferIDPrefix(ctx, prefix)
+	if err != nil {
+		return fmt.Errorf("withdrawal not found for intent %d: %w", intentID, err)
+	}
 	if withdrawal.Status == entities.WithdrawalStatusCompleted {
 		return fmt.Errorf("already processed")
 	}
@@ -1588,6 +1621,23 @@ func (s *WithdrawalService) CompleteChainRailsWithdrawal(ctx context.Context, in
 
 	if err := s.withdrawalRepo.MarkCompleted(ctx, withdrawal.ID); err != nil {
 		return fmt.Errorf("failed to mark withdrawal completed: %w", err)
+	}
+
+	// Record limit usage on successful completion
+	if s.limitsService != nil {
+		_ = s.limitsService.RecordWithdrawal(ctx, withdrawal.UserID, withdrawal.Amount)
+	}
+	if s.tieredLimits != nil {
+		_ = s.tieredLimits.RecordWithdrawal(ctx, withdrawal.UserID, withdrawal.Amount)
+	}
+
+	// Notify user
+	if s.notificationService != nil {
+		destAddr := ""
+		if withdrawal.DestinationAddress != nil {
+			destAddr = *withdrawal.DestinationAddress
+		}
+		_ = s.notificationService.NotifyWithdrawalCompleted(ctx, withdrawal.UserID, withdrawal.Amount, destAddr)
 	}
 
 	s.logger.Info("ChainRails withdrawal completed",
@@ -1940,6 +1990,12 @@ func (s *WithdrawalService) syncWithdrawalStatusFromProvider(ctx context.Context
 	}
 
 	transferID := strings.TrimSpace(*withdrawal.ProviderTransferID)
+
+	// ChainRails withdrawals are tracked via webhooks, not polling
+	if strings.HasPrefix(transferID, "cr:") {
+		return withdrawal.Status, nil
+	}
+
 	transfer, err := s.bridgeAdapter.GetTransferStatus(ctx, transferID)
 	if err != nil {
 		return withdrawal.Status, err

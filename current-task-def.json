@@ -1,9 +1,9 @@
 {
-  "taskDefinitionArn": "arn:aws:ecs:us-east-1:885160773772:task-definition/rail-prod:17",
+  "taskDefinitionArn": "arn:aws:ecs:us-east-1:885160773772:task-definition/rail-prod:204",
   "containerDefinitions": [
     {
       "name": "rail-backend",
-      "image": "885160773772.dkr.ecr.us-east-1.amazonaws.com/rail-backend:791bea5edffe01683c09a7e67159bcac2dc90a7f",
+      "image": "885160773772.dkr.ecr.us-east-1.amazonaws.com/rail-backend:96f762fb8c308807e9c1460642fdbebddeeb8166",
       "cpu": 0,
       "memory": 450,
       "portMappings": [
@@ -38,6 +38,10 @@
         {
           "name": "ENVIRONMENT",
           "value": "prod"
+        },
+        {
+          "name": "AI_PRIMARY",
+          "value": "kimi"
         }
       ],
       "mountPoints": [],
@@ -248,36 +252,8 @@
           "valueFrom": "/rail/prod/TELEGRAM_ALERTS_CHAT_ID"
         },
         {
-          "name": "OPENAI_API_KEY",
-          "valueFrom": "/rail/prod/OPENAI_API_KEY"
-        },
-        {
-          "name": "GEMINI_API_KEY",
-          "valueFrom": "/rail/prod/GEMINI_API_KEY"
-        },
-        {
-          "name": "AI_PRIMARY",
-          "valueFrom": "/rail/prod/AI_PRIMARY"
-        },
-        {
-          "name": "CIRCLE_API_KEY",
-          "valueFrom": "/rail/prod/CIRCLE_API_KEY"
-        },
-        {
-          "name": "CIRCLE_ENTITY_SECRET",
-          "valueFrom": "/rail/prod/CIRCLE_ENTITY_SECRET"
-        },
-        {
-          "name": "CIRCLE_ENVIRONMENT",
-          "valueFrom": "/rail/prod/CIRCLE_ENVIRONMENT"
-        },
-        {
-          "name": "CIRCLE_DEFAULT_WALLET_SET_ID",
-          "valueFrom": "/rail/prod/CIRCLE_DEFAULT_WALLET_SET_ID"
-        },
-        {
-          "name": "CIRCLE_WEBHOOK_SECRET",
-          "valueFrom": "/rail/prod/CIRCLE_WEBHOOK_SECRET"
+          "name": "CIRCLE_TREASURY_WALLET_ADDRESS",
+          "valueFrom": "/rail/prod/CIRCLE_TREASURY_WALLET_ADDRESS"
         }
       ],
       "logConfiguration": {
@@ -295,40 +271,10 @@
   "taskRoleArn": "arn:aws:iam::885160773772:role/rail-prod-ecs-task",
   "executionRoleArn": "arn:aws:iam::885160773772:role/rail-prod-ecs-execution",
   "networkMode": "bridge",
-  "revision": 17,
+  "revision": 204,
   "volumes": [],
-  "status": "ACTIVE",
-  "requiresAttributes": [
-    {
-      "name": "com.amazonaws.ecs.capability.logging-driver.awslogs"
-    },
-    {
-      "name": "ecs.capability.execution-role-awslogs"
-    },
-    {
-      "name": "com.amazonaws.ecs.capability.ecr-auth"
-    },
-    {
-      "name": "com.amazonaws.ecs.capability.docker-remote-api.1.19"
-    },
-    {
-      "name": "com.amazonaws.ecs.capability.task-iam-role"
-    },
-    {
-      "name": "ecs.capability.execution-role-ecr-pull"
-    },
-    {
-      "name": "ecs.capability.secrets.ssm.environment-variables"
-    }
-  ],
   "placementConstraints": [],
-  "compatibilities": [
-    "EXTERNAL",
-    "EC2"
-  ],
   "requiresCompatibilities": [
     "EC2"
-  ],
-  "registeredAt": "2026-04-05T20:46:13.194000+01:00",
-  "registeredBy": "arn:aws:iam::885160773772:root"
+  ]
 }

@@ -431,9 +431,32 @@ func (s *Service) BasicCompleteOnboarding(ctx context.Context, req *entities.Bas
 		go func() {
 			bgCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
-			if err := s.walletService.CreateWalletsForUser(bgCtx, req.UserID, nil); err != nil {
-				s.logger.Error("Failed to create Circle wallets during basic onboarding",
-					zap.Error(err), zap.String("user_id", req.UserID.String()))
+			// Retry wallet creation up to 3 times
+			var walletErr error
+			for attempt := 0; attempt < 3; attempt++ {
+				if walletErr = s.walletService.CreateWalletsForUser(bgCtx, req.UserID, nil); walletErr == nil {
+					break
+				}
+				s.logger.Warn("Wallet creation attempt failed, retrying",
+					zap.Error(walletErr), zap.Int("attempt", attempt+1), zap.String("user_id", req.UserID.String()))
+				time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
+			}
+			if walletErr != nil {
+				s.logger.Error("Failed to create Circle wallets during basic onboarding after retries",
+					zap.Error(walletErr), zap.String("user_id", req.UserID.String()))
+				return
+			}
+			// Set default allocation mode (70/30 spending/stash)
+			if s.allocationService != nil {
+				if allocErr := s.allocationService.EnableMode(bgCtx, req.UserID, entities.AllocationRatios{SpendingRatio: entities.DefaultSpendingRatio, StashRatio: entities.DefaultStashRatio}); allocErr != nil {
+					s.logger.Warn("Failed to set allocation mode during basic onboarding",
+						zap.Error(allocErr), zap.String("user_id", req.UserID.String()))
+				}
+			}
+			// Transition to completed
+			if statusErr := s.userRepo.UpdateOnboardingStatus(bgCtx, req.UserID, entities.OnboardingStatusCompleted); statusErr != nil {
+				s.logger.Warn("Failed to transition to completed after wallet creation",
+					zap.Error(statusErr), zap.String("user_id", req.UserID.String()))
 			}
 		}()
 	}
@@ -988,8 +1011,10 @@ func (s *Service) GetOnboardingProgress(ctx context.Context, userID uuid.UUID) (
 
 	// Determine capabilities
 	kycApproved := entities.KYCStatus(user.KYCStatus) == entities.KYCStatusApproved
-	canInvest := user.OnboardingStatus == entities.OnboardingStatusCompleted
-	canWithdraw := canInvest && kycApproved
+	tier := entities.DeriveKYCTier(user.KYCStatus)
+	canInvest := user.OnboardingStatus == entities.OnboardingStatusCompleted && kycApproved
+	// Non-KYC users can withdraw crypto at limited amounts ($100/tx) — don't require full KYC
+	canWithdraw := tier != entities.KYCTierUnverified
 
 	return &entities.OnboardingProgressResponse{
 		UserID:          user.ID,

@@ -857,37 +857,59 @@ func (h *WalletFundingHandlers) CreateDepositAddress(c *gin.Context) {
 		return
 	}
 
-	response, err := h.fundingService.CreateDepositAddress(c.Request.Context(), userUUID, req.Chain, req.Currency)
-	if err != nil {
-		// Fallback: if Bridge fails (no customer ID), try returning Circle wallet address
-		if h.walletService != nil {
-			chain := entities.WalletChain(strings.ToUpper(string(req.Chain)))
-			wallet, walletErr := h.walletService.GetWalletByUserAndChain(c.Request.Context(), userUUID, chain)
-			if walletErr == nil && wallet != nil && wallet.Address != "" {
-				c.JSON(http.StatusOK, gin.H{
-					"address":    wallet.Address,
-					"chain":      req.Chain,
-					"currency":   req.Currency,
-					"provider":   "circle",
-				})
-				return
-			}
-		}
+	if req.Currency == "" {
+		req.Currency = entities.StablecoinUSDC
+	}
 
-		h.logger.Error("Failed to create deposit address", "error", err, "user_id", userUUID, "chain", req.Chain)
-		errStr := err.Error()
-		switch {
-		case strings.Contains(errStr, "has_not_accepted_tos"):
-			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "has_not_accepted_tos", Message: "Please accept the Terms of Service before creating a deposit address"})
-		case strings.Contains(errStr, "requires_active_kyc_status"):
-			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "kyc_required", Message: "Identity verification must be completed before receiving crypto"})
-		default:
-			c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "DEPOSIT_ADDRESS_ERROR", Message: "Failed to create deposit address"})
-		}
+	chain := entities.WalletChain(strings.ToUpper(string(req.Chain)))
+	if !chain.IsValid() {
+		common.RespondBadRequest(c, "Unsupported chain", nil)
 		return
 	}
 
-	c.JSON(http.StatusOK, response)
+	result, err := h.getOrCreateCircleWallet(c.Request.Context(), userUUID, chain)
+	if err != nil {
+		h.logger.Error("Failed to create deposit address", "error", err, "user_id", userUUID, "chain", chain)
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "DEPOSIT_ADDRESS_ERROR", Message: "Failed to create deposit address"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"address":  result.Address,
+		"chain":    req.Chain,
+		"currency": req.Currency,
+		"provider": "circle",
+	})
+}
+
+// getOrCreateCircleWallet looks up or creates a Circle wallet for the given user and chain.
+type circleWalletResult struct {
+	Address string
+	Chain   entities.WalletChain
+}
+
+func (h *WalletFundingHandlers) getOrCreateCircleWallet(ctx context.Context, userID uuid.UUID, chain entities.WalletChain) (*circleWalletResult, error) {
+	if h.walletService == nil {
+		return nil, fmt.Errorf("wallet service not available")
+	}
+
+	w, err := h.walletService.GetWalletByUserAndChain(ctx, userID, chain)
+	if err == nil && w != nil && w.Address != "" {
+		return &circleWalletResult{Address: w.Address, Chain: chain}, nil
+	}
+
+	if createErr := h.walletService.CreateWalletsForUser(ctx, userID, []entities.WalletChain{chain}); createErr != nil {
+		return nil, fmt.Errorf("create circle wallet: %w", createErr)
+	}
+
+	w, err = h.walletService.GetWalletByUserAndChain(ctx, userID, chain)
+	if err != nil {
+		return nil, fmt.Errorf("wallet created but fetch failed: %w", err)
+	}
+	if w == nil || w.Address == "" {
+		return nil, fmt.Errorf("wallet created but address is empty")
+	}
+	return &circleWalletResult{Address: w.Address, Chain: chain}, nil
 }
 
 // GetFundingConfirmations lists recent funding confirmations

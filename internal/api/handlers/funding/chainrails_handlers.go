@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
@@ -46,8 +47,15 @@ type ChainRailsHandlers struct {
 	crClient          *chainrails.Client
 	fundingService    *funding.Service
 	withdrawalService ChainRailsWithdrawalService
+	walletLookup      ChainRailsWalletLookup
 	webhookSecret     string
 	logger            *logger.Logger
+}
+
+// ChainRailsWalletLookup resolves a Circle wallet address for a user+chain.
+type ChainRailsWalletLookup interface {
+	GetWalletByUserAndChain(ctx context.Context, userID uuid.UUID, chain entities.WalletChain) (*entities.ManagedWallet, error)
+	CreateWalletsForUser(ctx context.Context, userID uuid.UUID, chains []entities.WalletChain) error
 }
 
 // ChainRailsWithdrawalService is the subset of withdrawal service needed for webhook handling.
@@ -73,6 +81,11 @@ func NewChainRailsHandlers(
 // SetWithdrawalService wires the withdrawal service for webhook handling.
 func (h *ChainRailsHandlers) SetWithdrawalService(ws ChainRailsWithdrawalService) {
 	h.withdrawalService = ws
+}
+
+// SetWalletLookup wires the wallet service for deposit address resolution.
+func (h *ChainRailsHandlers) SetWalletLookup(wl ChainRailsWalletLookup) {
+	h.walletLookup = wl
 }
 
 // --- POST /v1/funding/chainrails/session ---
@@ -109,18 +122,38 @@ func (h *ChainRailsHandlers) CreateSession(c *gin.Context) {
 		return
 	}
 
-	// Look up user's Bridge custody wallet address as the ChainRails recipient.
+	// Look up user's Circle wallet address as the ChainRails recipient.
 	// ChainRails will bridge funds to this address on the destination chain.
-	depositAddr, err := h.fundingService.CreateDepositAddress(c.Request.Context(), userID, entities.ChainBase, entities.StablecoinUSDC)
-	if err != nil {
+	var depositAddress string
+	if h.walletLookup != nil {
+		chain := entities.WalletChainBase
+		w, wErr := h.walletLookup.GetWalletByUserAndChain(c.Request.Context(), userID, chain)
+		if wErr != nil || w == nil || w.Address == "" {
+			// Try creating the wallet
+			if cErr := h.walletLookup.CreateWalletsForUser(c.Request.Context(), userID, []entities.WalletChain{chain}); cErr != nil {
+				chainrailsSessionsTotal.WithLabelValues("wallet_error").Inc()
+				h.logger.Error("Failed to create Circle wallet for ChainRails", "user_id", userID, "error", cErr)
+				common.SendInternalError(c, "WALLET_ERROR", "Could not resolve deposit address")
+				return
+			}
+			w, wErr = h.walletLookup.GetWalletByUserAndChain(c.Request.Context(), userID, chain)
+			if wErr != nil || w == nil || w.Address == "" {
+				chainrailsSessionsTotal.WithLabelValues("wallet_error").Inc()
+				h.logger.Error("Failed to get wallet after creation", "user_id", userID, "error", wErr)
+				common.SendInternalError(c, "WALLET_ERROR", "Could not resolve deposit address")
+				return
+			}
+		}
+		depositAddress = w.Address
+	} else {
 		chainrailsSessionsTotal.WithLabelValues("wallet_error").Inc()
-		h.logger.Error("Failed to get user deposit address", "user_id", userID, "error", err)
-		common.SendInternalError(c, "WALLET_ERROR", "Could not resolve deposit address")
+		h.logger.Error("Wallet lookup not configured")
+		common.SendInternalError(c, "WALLET_ERROR", "Wallet service not available")
 		return
 	}
 
 	session, err := h.crClient.CreateSessionRaw(c.Request.Context(), &chainrails.CreateSessionRequest{
-		Recipient:        depositAddr.Address,
+		Recipient:        depositAddress,
 		TokenOut:         "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // USDC on Base
 		DestinationChain: "BASE_MAINNET",
 		Amount:           req.Amount,
