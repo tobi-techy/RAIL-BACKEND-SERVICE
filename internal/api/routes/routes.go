@@ -737,6 +737,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// Unified Balance route
 			protected.GET("/balances", middleware.TimeoutMiddleware(10*time.Second), walletFundingHandlers.GetUnifiedBalances)
 
+			// Unified Activity feed — single endpoint for all transaction history
+			if container.ActivityHandlers != nil {
+				protected.GET("/activity", middleware.TimeoutMiddleware(10*time.Second), container.ActivityHandlers.GetActivityFeed)
+			}
+
 			// Unified Deposit routes
 			deposits := protected.Group("/deposits")
 			deposits.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())

@@ -12,6 +12,8 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/api/handlers"
 	fundinghandlers "github.com/rail-service/rail_service/internal/api/handlers/funding"
+	activityhandlers "github.com/rail-service/rail_service/internal/api/handlers/activity"
+	activitysvc "github.com/rail-service/rail_service/internal/domain/services/activity"
 	p2phandlers "github.com/rail-service/rail_service/internal/api/handlers/p2p"
 	premiumhandlers "github.com/rail-service/rail_service/internal/api/handlers/premium"
 	"github.com/rail-service/rail_service/internal/api/handlers/webhooks"
@@ -1165,6 +1167,7 @@ type Container struct {
 	ChainRailsHandlers     *fundinghandlers.ChainRailsHandlers
 	ChainRailsClient       *chainrails.Client
 	PajHandlers            *fundinghandlers.PajHandlers
+	ActivityHandlers       *activityhandlers.Handlers
 
 	// Security Stores
 	WithdrawalSecurityStore *repositories.WithdrawalSecurityStore
@@ -4131,6 +4134,11 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 	} else {
 		c.ZapLog.Warn("Paj API key is empty, skipping initialization")
 	}
+
+	// Initialize unified activity feed service
+	activityService := activitysvc.NewService(sqlxDB, c.ZapLog)
+	c.ActivityHandlers = activityhandlers.NewHandlers(activityService, c.ZapLog)
+	c.ZapLog.Info("Activity feed service initialized")
 }
 
 // PajLimitsAdapter adapts limits.Service to pajfunding.WithdrawalLimitsChecker.
