@@ -722,6 +722,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				if container.PajHandlers != nil {
 					paj := funding.Group("/paj")
 					paj.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
+					paj.Use(middleware.RequireCryptoCapability(container.UserRepo, container.ZapLog))
 					paj.POST("/initiate", middleware.AuthRateLimit(5), container.PajHandlers.Initiate)
 					paj.POST("/verify", middleware.AuthRateLimit(10), container.PajHandlers.Verify)
 					paj.POST("/banks/resolve", container.PajHandlers.ResolveBankAccount)

@@ -84,6 +84,11 @@ type WithdrawalLimitsChecker interface {
 	ValidateWithdrawal(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error
 }
 
+// DepositLimitsChecker validates deposit amounts against daily/monthly limits.
+type DepositLimitsChecker interface {
+	ValidateDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (*entities.LimitCheckResult, error)
+}
+
 // BridgeCryptoTransferAdapter transfers USDC from a Bridge wallet to an external address.
 type BridgeCryptoTransferAdapter interface {
 	TransferFunds(ctx context.Context, req *bridgepkg.CreateTransferRequest) (*bridgepkg.Transfer, error)
@@ -105,6 +110,7 @@ type Service struct {
 	circleTransfer    CircleTransferAdapter
 	chainRailsAdapter ChainRailsAdapter
 	limitsChecker     WithdrawalLimitsChecker
+	depositLimits     DepositLimitsChecker
 	pajChain          string // blockchain for Paj deposit addresses (e.g. "solana")
 	redis             cache.RedisClient
 	encryptionKey     string
@@ -227,10 +233,24 @@ func (s *Service) executeCircleViaCRToPaj(ctx context.Context, userID uuid.UUID,
 
 	s.db.ExecContext(ctx, `UPDATE paj_orders SET bridge_transfer_id = $1 WHERE paj_order_id = $2`,
 		fmt.Sprintf("circle-cr:%s:%d", tx.ID, intent.ID), order.ID)
+
+	// Refund slippage buffer (totalHold includes 1% buffer + fee, totalTransfer is actual)
+	actualAmount := decimal.NewFromFloat(totalTransfer)
+	excess := totalHold.Sub(actualAmount)
+	if excess.IsPositive() && s.ledger != nil {
+		s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
+			"paj_offramp_slippage_refund_"+order.ID, excess, map[string]interface{}{
+				"provider": "paj", "type": "slippage_refund", "paj_order_id": order.ID,
+				"path": "circle_chainrails",
+			})
+	}
 }
 
 // SetLimitsChecker sets the withdrawal limits validator.
 func (s *Service) SetLimitsChecker(lc WithdrawalLimitsChecker) { s.limitsChecker = lc }
+
+// SetDepositLimits sets the deposit limits validator.
+func (s *Service) SetDepositLimits(dl DepositLimitsChecker) { s.depositLimits = dl }
 
 // --- Session management ---
 
@@ -389,6 +409,21 @@ func (s *Service) CreateOnrampOrder(ctx context.Context, userID uuid.UUID, fiatA
 	// Enforce NGN minimum deposit
 	if fiatAmount < 100 {
 		return nil, fmt.Errorf("minimum deposit is ₦100")
+	}
+
+	// Enforce deposit limits (estimate USDC from fiat using cached rate)
+	if s.depositLimits != nil {
+		rates, rateErr := s.pajClient.GetRates(ctx)
+		if rateErr == nil && rates != nil && rates.OnRampRate.Rate > 0 {
+			estimatedUSDC := decimal.NewFromFloat(fiatAmount).Div(decimal.NewFromFloat(rates.OnRampRate.Rate))
+			if result, limErr := s.depositLimits.ValidateDeposit(ctx, userID, estimatedUSDC); limErr != nil || (result != nil && !result.Allowed) {
+				msg := "deposit limit exceeded"
+				if result != nil && result.Reason != "" {
+					msg = result.Reason
+				}
+				return nil, fmt.Errorf(msg)
+			}
+		}
 	}
 
 	// Look up user's Bridge Solana wallet so USDC goes directly to them.
@@ -606,6 +641,16 @@ func (s *Service) executeBridgeTransfer(userID uuid.UUID, order *paj.OfframpOrde
 					zap.String("circle_tx_id", tx.ID), zap.String("paj_order_id", order.ID))
 				s.db.ExecContext(ctx, `UPDATE paj_orders SET bridge_transfer_id = $1 WHERE paj_order_id = $2`,
 					"circle:"+tx.ID, order.ID)
+				// Refund slippage buffer
+				actualAmount := decimal.NewFromFloat(totalTransfer)
+				excess := totalHold.Sub(actualAmount)
+				if excess.IsPositive() && s.ledger != nil {
+					s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
+						"paj_offramp_slippage_refund_"+order.ID, excess, map[string]interface{}{
+							"provider": "paj", "type": "slippage_refund", "paj_order_id": order.ID,
+							"path": "circle_sol",
+						})
+				}
 				return
 			}
 
@@ -732,9 +777,30 @@ func (s *Service) HandleWebhook(ctx context.Context, payload *paj.WebhookPayload
 	// Verify by polling Paj directly — don't trust unsigned webhook payload.
 	token, err := s.getSessionToken(ctx, orderUserID)
 	if err != nil {
+		// Session expired — for onramp orders, trust the webhook payload since
+		// the money flow is PAJ→us (user already paid to PAJ's bank account).
+		// For offramp, the session should still be valid since user just initiated it.
+		if orderType == "onramp" && payload.Status != "" {
+			s.logger.Info("paj session expired, processing onramp webhook from payload",
+				zap.String("paj_order_id", payload.ID), zap.String("status", payload.Status))
+			newStatus := mapPajStatus(payload.Status)
+			_, dbErr := s.db.ExecContext(ctx, `
+				UPDATE paj_orders SET
+					status = $1, token_amount = $2, rate = $3,
+					last_webhook_status = $4, last_webhook_at = NOW(), updated_at = NOW()
+				WHERE paj_order_id = $5 AND status NOT IN ('completed', 'failed')`,
+				newStatus, payload.USDCAmount, payload.Rate, payload.Status, payload.ID)
+			if dbErr != nil {
+				return fmt.Errorf("update paj order from payload: %w", dbErr)
+			}
+			s.creditOnrampIfCompleted(ctx, orderUserID, payload.ID, newStatus, &paj.PajTransaction{
+				ID: payload.ID, Status: payload.Status, Amount: payload.USDCAmount, Rate: payload.Rate,
+			})
+			return nil
+		}
 		s.logger.Warn("cannot verify paj webhook — no session, dropping",
-			zap.String("paj_order_id", payload.ID))
-		return nil // Drop unverifiable webhooks — frontend polling will catch up.
+			zap.String("paj_order_id", payload.ID), zap.String("order_type", orderType))
+		return nil
 	}
 
 	tx, err := s.pajClient.GetTransaction(ctx, token, payload.ID)
@@ -1092,7 +1158,8 @@ func (s *Service) acquireOfframpLock(ctx context.Context, userID uuid.UUID) (fun
 		var acquired bool
 		err := s.db.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&acquired)
 		if err != nil {
-			return func() {}, nil // fail open — don't block withdrawals on lock errors
+			s.logger.Error("advisory lock query failed", zap.Error(err), zap.String("user_id", userID.String()))
+			return nil, fmt.Errorf("failed to acquire offramp lock: %w", err)
 		}
 		if acquired {
 			return func() {

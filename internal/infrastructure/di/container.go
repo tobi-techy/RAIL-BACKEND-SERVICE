@@ -4116,6 +4116,7 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 		}
 		if c.LimitsService != nil {
 			pajService.SetLimitsChecker(&PajLimitsAdapter{limitsService: c.LimitsService})
+			pajService.SetDepositLimits(c.LimitsService)
 		}
 		c.PajHandlers = fundinghandlers.NewPajHandlers(pajService, c.ZapLog)
 		c.ZapLog.Info("Paj Cash NGN ramp initialized")
