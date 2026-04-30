@@ -64,15 +64,22 @@ func EnhancedAuthentication(cfg *config.Config, blacklist *auth.TokenBlacklist, 
 			return
 		}
 
-		// Check token blacklist
+		// Check token blacklist (fail-closed: reject on Redis error)
 		if blacklist != nil {
 			tokenHash := hashToken(tokenString)
 
-			// Check if specific token is blacklisted
 			isBlacklisted, err := blacklist.IsBlacklisted(c.Request.Context(), tokenHash)
 			if err != nil {
-				log.Errorw("Failed to check token blacklist", "error", err)
-			} else if isBlacklisted {
+				log.Errorw("Token blacklist check failed — rejecting request", "error", err)
+				c.JSON(http.StatusServiceUnavailable, gin.H{
+					"error":      "SECURITY_CHECK_UNAVAILABLE",
+					"message":    "Security check unavailable, please retry",
+					"request_id": c.GetString("request_id"),
+				})
+				c.Abort()
+				return
+			}
+			if isBlacklisted {
 				c.JSON(http.StatusUnauthorized, gin.H{
 					"error":      "TOKEN_REVOKED",
 					"message":    "Token has been revoked",
@@ -86,8 +93,16 @@ func EnhancedAuthentication(cfg *config.Config, blacklist *auth.TokenBlacklist, 
 			if claims.IssuedAt != nil {
 				isUserBlacklisted, err := blacklist.IsUserBlacklisted(c.Request.Context(), claims.UserID.String(), claims.IssuedAt.Time)
 				if err != nil {
-					log.Errorw("Failed to check user blacklist", "error", err)
-				} else if isUserBlacklisted {
+					log.Errorw("User blacklist check failed — rejecting request", "error", err)
+					c.JSON(http.StatusServiceUnavailable, gin.H{
+						"error":      "SECURITY_CHECK_UNAVAILABLE",
+						"message":    "Security check unavailable, please retry",
+						"request_id": c.GetString("request_id"),
+					})
+					c.Abort()
+					return
+				}
+				if isUserBlacklisted {
 					c.JSON(http.StatusUnauthorized, gin.H{
 						"error":      "SESSION_INVALIDATED",
 						"message":    "All sessions have been invalidated",

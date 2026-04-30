@@ -49,8 +49,10 @@ func RegisterAlpacaRoutes(
 		investment.DELETE("/orders/:id", investmentHandlers.CancelOrder)
 	}
 
-	// Webhook routes (no auth - verified by signature)
+	// Webhook routes (no JWT auth - verified by HMAC signature)
+	// Rate limited to prevent abuse of unsigned endpoints
 	webhooks := router.Group("/webhooks/alpaca")
+	webhooks.Use(middleware.RateLimit(100))
 	{
 		webhooks.POST("/trade", webhookHandlers.HandleTradeUpdate)
 		webhooks.POST("/account", webhookHandlers.HandleAccountUpdate)

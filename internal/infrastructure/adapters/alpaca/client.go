@@ -644,7 +644,7 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20)) // 10MB max
 	if err != nil {
 		return fmt.Errorf("failed to read response body: %w", err)
 	}
@@ -1133,7 +1133,7 @@ func (c *Client) doDataRequest(ctx context.Context, method, endpoint string, bod
 				return fmt.Errorf("request failed: %w", err)
 			}
 
-			respBody, readErr := io.ReadAll(resp.Body)
+			respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 10<<20)) // 10MB max
 			resp.Body.Close()
 			if readErr != nil {
 				return fmt.Errorf("read response: %w", readErr)

@@ -2,7 +2,6 @@ package routes
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -132,46 +131,30 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	router.GET("/ready", coreHandlers.Ready)
 	router.GET("/live", coreHandlers.Live)
 	router.GET("/version", coreHandlers.Version)
-	router.GET("/metrics", coreHandlers.Metrics)
 
-	// Internal ops endpoints — protected by dedicated INTERNAL_API_KEY (not JWT secret)
+	// /metrics requires internal API key — exposes internal system state
+	router.GET("/metrics", middleware.InternalAPIKeyAuth(container.Config.Security.InternalAPIKey), coreHandlers.Metrics)
+
+	// Internal ops endpoints — protected by group-level INTERNAL_API_KEY middleware
 	// Rate limited: 5 requests/minute to prevent abuse
 	internalHandlers := handlers.NewInternalHandlers(container.DB, container.Config.Security.InternalAPIKey, container.ZapLog)
 	internal := router.Group("/internal")
 	internal.Use(middleware.RateLimit(5))
+	internal.Use(middleware.InternalAPIKeyAuth(container.Config.Security.InternalAPIKey))
 	{
 		internal.GET("/users/lookup", internalHandlers.LookupUser)
 		internal.DELETE("/users/:id", internalHandlers.DeleteUser)
 	}
 
-	// Internal knowledge ingestion — no JWT, uses INTERNAL_API_KEY
+	// Internal knowledge ingestion — auth handled by group middleware
 	if container.GetKnowledgeService() != nil {
 		knowledgeHandlers := handlers.NewKnowledgeHandlers(container.GetKnowledgeService(), container.ZapLog)
-		internal.POST("/knowledge/ingest", func(c *gin.Context) {
-			key := c.GetHeader("Authorization")
-			if len(key) > 7 && key[:7] == "Bearer " {
-				key = key[7:]
-			}
-			if container.Config.Security.InternalAPIKey == "" || subtle.ConstantTimeCompare([]byte(key), []byte(container.Config.Security.InternalAPIKey)) != 1 {
-				c.JSON(401, gin.H{"error": "unauthorized"})
-				return
-			}
-			knowledgeHandlers.Ingest(c)
-		})
+		internal.POST("/knowledge/ingest", knowledgeHandlers.Ingest)
 	}
 
-	// Manual deposit credit — internal API key auth, no user JWT needed
+	// Manual deposit credit — auth handled by group middleware
 	if container.FundingService != nil {
 		internal.POST("/deposit/credit", func(c *gin.Context) {
-			// Auth check using internal API key
-			key := c.GetHeader("Authorization")
-			if len(key) > 7 && key[:7] == "Bearer " {
-				key = key[7:]
-			}
-			if container.Config.Security.InternalAPIKey == "" || subtle.ConstantTimeCompare([]byte(key), []byte(container.Config.Security.InternalAPIKey)) != 1 {
-				c.JSON(401, gin.H{"error": "unauthorized"})
-				return
-			}
 			var req struct {
 				Address string `json:"address" binding:"required"`
 				Amount  string `json:"amount" binding:"required"`
@@ -222,17 +205,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		})
 	}
 
-	// Internal stash-to-spend transfer — bypasses stash lock, uses INTERNAL_API_KEY
+	// Internal stash-to-spend transfer — bypasses stash lock, auth handled by group middleware
 	// Security: amount capped at $500, full audit trail with caller IP
 	internal.POST("/stash/transfer-to-spend", func(c *gin.Context) {
-		key := c.GetHeader("Authorization")
-		if len(key) > 7 && key[:7] == "Bearer " {
-			key = key[7:]
-		}
-		if container.Config.Security.InternalAPIKey == "" || subtle.ConstantTimeCompare([]byte(key), []byte(container.Config.Security.InternalAPIKey)) != 1 {
-			c.JSON(401, gin.H{"error": "unauthorized"})
-			return
-		}
 		var req struct {
 			UserID string `json:"user_id" binding:"required"`
 			Amount string `json:"amount" binding:"required"`
@@ -314,8 +289,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.GetInvestingService(),
 		container.Logger,
 	)
-	// Configure webhook secret - only skip verification in development when secret is not set
+	// Configure webhook secret - SECURITY: only skip verification in explicit development mode
 	skipWebhookVerify := container.Config.Environment == "development" && container.Config.Payment.WebhookSecret == ""
+	if skipWebhookVerify && (container.Config.Environment == "production" || container.Config.Environment == "staging") {
+		skipWebhookVerify = false // fail-closed: never skip in production/staging
+	}
 	walletFundingHandlers.SetWebhookSecret(container.Config.Payment.WebhookSecret, skipWebhookVerify)
 
 	// Wire user profile provider for withdrawal AlpacaAccountID lookup

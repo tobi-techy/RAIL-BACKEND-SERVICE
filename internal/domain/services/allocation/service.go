@@ -167,6 +167,12 @@ func (s *Service) EnableMode(ctx context.Context, userID uuid.UUID, ratios entit
 		return fmt.Errorf("invalid ratios: %w", err)
 	}
 
+	// SECURITY: Enforce minimum stash ratio at service level — defense in depth.
+	minStash := decimal.NewFromFloat(0.10)
+	if ratios.StashRatio.LessThan(minStash) {
+		return fmt.Errorf("stash ratio must be at least 10%%")
+	}
+
 	s.logger.Info("Enabling smart allocation mode",
 		"user_id", userID,
 		"spending_ratio", ratios.SpendingRatio,

@@ -105,22 +105,25 @@ func (h *CircleWebhookHandler) HandleWebhook(c *gin.Context) {
 		return
 	}
 
-	// Verify webhook signature if secret is configured
-	if h.webhookSecret != "" {
-		sig := c.GetHeader("X-Circle-Signature")
-		if sig == "" {
-			h.logger.Warn("Circle webhook missing signature header")
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing signature"})
-			return
-		}
-		mac := hmac.New(sha256.New, []byte(h.webhookSecret))
-		mac.Write(body)
-		expected := hex.EncodeToString(mac.Sum(nil))
-		if !hmac.Equal([]byte(sig), []byte(expected)) {
-			h.logger.Warn("Circle webhook signature mismatch")
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
-			return
-		}
+	// SECURITY: Always verify webhook signature. Reject if no secret is configured.
+	if h.webhookSecret == "" {
+		h.logger.Error("Circle webhook secret not configured — rejecting request")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "webhook verification not configured"})
+		return
+	}
+	sig := c.GetHeader("X-Circle-Signature")
+	if sig == "" {
+		h.logger.Warn("Circle webhook missing signature header")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing signature"})
+		return
+	}
+	mac := hmac.New(sha256.New, []byte(h.webhookSecret))
+	mac.Write(body)
+	expected := hex.EncodeToString(mac.Sum(nil))
+	if !hmac.Equal([]byte(sig), []byte(expected)) {
+		h.logger.Warn("Circle webhook signature mismatch")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
+		return
 	}
 
 	var event CircleWebhookEvent
@@ -130,14 +133,23 @@ func (h *CircleWebhookHandler) HandleWebhook(c *gin.Context) {
 		return
 	}
 
-	// Idempotency: skip already-processed notifications via Redis
-	if h.redis != nil {
-		redisKey := "circle_wh:" + event.NotificationID
-		if exists, _ := h.redis.Exists(c.Request.Context(), redisKey); exists {
-			h.logger.Debug("Duplicate Circle webhook, skipping", zap.String("notificationId", event.NotificationID))
-			c.JSON(http.StatusOK, gin.H{"status": "already_processed"})
-			return
-		}
+	// Idempotency: skip already-processed notifications via Redis (fail-closed)
+	if h.redis == nil {
+		h.logger.Error("Circle webhook Redis not configured — rejecting request")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "idempotency store unavailable"})
+		return
+	}
+	redisKey := "circle_wh:" + event.NotificationID
+	exists, err := h.redis.Exists(c.Request.Context(), redisKey)
+	if err != nil {
+		h.logger.Error("Circle webhook Redis check failed — rejecting", zap.Error(err))
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "idempotency check failed"})
+		return
+	}
+	if exists {
+		h.logger.Debug("Duplicate Circle webhook, skipping", zap.String("notificationId", event.NotificationID))
+		c.JSON(http.StatusOK, gin.H{"status": "already_processed"})
+		return
 	}
 
 	h.logger.Info("Circle webhook received",
@@ -175,9 +187,9 @@ func (h *CircleWebhookHandler) HandleWebhook(c *gin.Context) {
 		return
 	}
 
-	// Mark as processed in Redis (24h TTL)
-	if h.redis != nil {
-		_ = h.redis.Set(c.Request.Context(), "circle_wh:"+event.NotificationID, true, 24*time.Hour)
+	// Mark as processed in Redis (24h TTL) — fail-closed: if store fails, log but deposit already processed
+	if err := h.redis.Set(c.Request.Context(), "circle_wh:"+event.NotificationID, true, 24*time.Hour); err != nil {
+		h.logger.Error("Failed to mark Circle webhook as processed in Redis", zap.Error(err), zap.String("notificationId", event.NotificationID))
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "processed"})
 }

@@ -149,8 +149,12 @@ func (h *SocialAuthHandlers) SocialLogin(c *gin.Context) {
 		return
 	}
 
-	// Validate OAuth state to prevent CSRF
-	if req.State != "" && h.redisClient != nil {
+	// Validate OAuth state to prevent CSRF — always required
+	if req.State == "" {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "MISSING_STATE", Message: "OAuth state parameter is required"})
+		return
+	}
+	if h.redisClient != nil {
 		stateKey := "oauth:state:" + req.State
 		exists, _ := h.redisClient.Exists(ctx, stateKey)
 		if !exists {

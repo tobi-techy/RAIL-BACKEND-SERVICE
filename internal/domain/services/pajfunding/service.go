@@ -778,28 +778,10 @@ func (s *Service) HandleWebhook(ctx context.Context, payload *paj.WebhookPayload
 	// Verify by polling Paj directly — don't trust unsigned webhook payload.
 	token, err := s.getSessionToken(ctx, orderUserID)
 	if err != nil {
-		// Session expired — for onramp orders, trust the webhook payload since
-		// the money flow is PAJ→us (user already paid to PAJ's bank account).
-		// For offramp, the session should still be valid since user just initiated it.
-		if orderType == "onramp" && payload.Status != "" {
-			s.logger.Info("paj session expired, processing onramp webhook from payload",
-				zap.String("paj_order_id", payload.ID), zap.String("status", payload.Status))
-			newStatus := mapPajStatus(payload.Status)
-			_, dbErr := s.db.ExecContext(ctx, `
-				UPDATE paj_orders SET
-					status = $1, token_amount = $2, rate = $3,
-					last_webhook_status = $4, last_webhook_at = NOW(), updated_at = NOW()
-				WHERE paj_order_id = $5 AND status NOT IN ('completed', 'failed')`,
-				newStatus, payload.USDCAmount, payload.Rate, payload.Status, payload.ID)
-			if dbErr != nil {
-				return fmt.Errorf("update paj order from payload: %w", dbErr)
-			}
-			s.creditOnrampIfCompleted(ctx, orderUserID, payload.ID, newStatus, &paj.PajTransaction{
-				ID: payload.ID, Status: payload.Status, USDCAmount: payload.USDCAmount, Amount: payload.USDCAmount, Rate: payload.Rate,
-			})
-			return nil
-		}
-		s.logger.Warn("cannot verify paj webhook — no session, dropping",
+		// SECURITY: Never trust unsigned webhook payloads for financial state transitions.
+		// If the session is expired, drop the webhook. The user can check status manually,
+		// or a reconciliation worker can poll PAJ later.
+		s.logger.Warn("cannot verify paj webhook — session expired, dropping",
 			zap.String("paj_order_id", payload.ID), zap.String("order_type", orderType))
 		return nil
 	}

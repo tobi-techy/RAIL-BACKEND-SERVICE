@@ -59,6 +59,13 @@ type BridgeWebhookHandler struct {
 	webhookSecret           string
 	skipWebhookVerification bool   // Should ONLY be true in development with explicit config
 	environment             string // Track environment to enforce verification in production
+	redis                   BridgeWebhookRedis // Redis for event deduplication
+}
+
+// BridgeWebhookRedis is the subset of Redis needed for webhook deduplication.
+type BridgeWebhookRedis interface {
+	Exists(ctx context.Context, key string) (bool, error)
+	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error
 }
 
 // NewBridgeWebhookHandler creates a new Bridge webhook handler
@@ -92,6 +99,9 @@ func NewBridgeWebhookHandler(service BridgeWebhookService, walletService WalletW
 func (h *BridgeWebhookHandler) SetService(service BridgeWebhookService) {
 	h.service = service
 }
+
+// SetRedis wires the Redis client for event deduplication.
+func (h *BridgeWebhookHandler) SetRedis(r BridgeWebhookRedis) { h.redis = r }
 
 // BridgeWebhookPayload represents the Bridge webhook payload structure
 type BridgeWebhookPayload struct {
@@ -238,6 +248,24 @@ func (h *BridgeWebhookHandler) HandleWebhook(c *gin.Context) {
 		zap.String("event_type", payload.EventType),
 		zap.String("event_category", payload.EventCategory),
 		zap.String("event_object_status", payload.EventObjectStatus))
+
+	// Redis-based event deduplication — prevent replay attacks
+	if h.redis != nil && payload.EventID != "" {
+		redisKey := "bridge_wh:" + payload.EventID
+		exists, err := h.redis.Exists(c.Request.Context(), redisKey)
+		if err != nil {
+			h.logger.Error("Bridge webhook Redis dedup check failed — rejecting", zap.Error(err))
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "dedup check failed"})
+			return
+		}
+		if exists {
+			h.logger.Debug("Duplicate Bridge webhook, skipping", zap.String("event_id", payload.EventID))
+			c.JSON(http.StatusOK, gin.H{"status": "already_processed"})
+			return
+		}
+		// Mark as seen (24h TTL)
+		_ = h.redis.Set(c.Request.Context(), redisKey, "1", 24*time.Hour)
+	}
 
 	// Route by event category (new Bridge format) or event type (legacy)
 	switch payload.EventCategory {
@@ -997,9 +1025,9 @@ func (h *BridgeWebhookHandler) verifyRSASignature(timestamp, sig string, body []
 		h.logger.Warn("Bridge RSA signature timestamp parse failed", zap.Error(err))
 		return false
 	}
-	// Allow up to 72 hours for retried/delayed deliveries (Bridge retries stuck webhooks days later).
-	// Replay protection is handled by Redis deduplication in the webhook security middleware.
-	if time.Since(eventTime) > 72*time.Hour {
+	// Allow up to 10 minutes for clock skew and network delays.
+	// Replay protection is handled by Redis deduplication + DB idempotency for retries.
+	if time.Since(eventTime) > 10*time.Minute {
 		h.logger.Warn("Bridge webhook timestamp too old", zap.Time("event_time", eventTime))
 		return false
 	}

@@ -56,7 +56,7 @@ func (w *Worker) recover(ctx context.Context) {
 	maxAgeSeconds := int(w.maxStuckAge.Seconds())
 
 	rows, err := w.db.QueryContext(ctx, `
-		SELECT id, user_id, amount, fee_amount, source_account, provider_transfer_id
+		SELECT id, user_id, amount, fee_amount, source_account, bridge_transfer_id
 		FROM withdrawals
 		WHERE status IN ('initiated', 'processing')
 		  AND withdrawal_type = 'crypto'
@@ -69,18 +69,18 @@ func (w *Worker) recover(ctx context.Context) {
 	defer rows.Close()
 
 	type stuck struct {
-		ID                 uuid.UUID
-		UserID             uuid.UUID
-		Amount             decimal.Decimal
-		FeeAmount          decimal.Decimal
-		SourceAccount      string
-		ProviderTransferID *string
+		ID                uuid.UUID
+		UserID            uuid.UUID
+		Amount            decimal.Decimal
+		FeeAmount         decimal.Decimal
+		SourceAccount     string
+		BridgeTransferID  *string
 	}
 
 	var items []stuck
 	for rows.Next() {
 		var s stuck
-		if err := rows.Scan(&s.ID, &s.UserID, &s.Amount, &s.FeeAmount, &s.SourceAccount, &s.ProviderTransferID); err != nil {
+		if err := rows.Scan(&s.ID, &s.UserID, &s.Amount, &s.FeeAmount, &s.SourceAccount, &s.BridgeTransferID); err != nil {
 			w.logger.Error("withdrawal recovery: scan failed", zap.Error(err))
 			continue
 		}
@@ -89,10 +89,10 @@ func (w *Worker) recover(ctx context.Context) {
 
 	for _, s := range items {
 		// Skip ChainRails withdrawals that have a provider ID — they may still complete via webhook
-		if s.ProviderTransferID != nil && len(*s.ProviderTransferID) > 0 {
+		if s.BridgeTransferID != nil && len(*s.BridgeTransferID) > 0 {
 			w.logger.Info("withdrawal recovery: skipping — has provider transfer, may complete via webhook",
 				zap.String("withdrawal_id", s.ID.String()),
-				zap.String("provider_transfer_id", *s.ProviderTransferID))
+				zap.String("bridge_transfer_id", *s.BridgeTransferID))
 			continue
 		}
 

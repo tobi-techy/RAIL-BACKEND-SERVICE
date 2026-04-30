@@ -51,28 +51,48 @@ func (a *Adapter) CreateWalletForUser(ctx context.Context, userID uuid.UUID, wal
 
 // CreateMultiChainWallets creates wallets on all provided chains in a single API call.
 func (a *Adapter) CreateMultiChainWallets(ctx context.Context, userID uuid.UUID, walletSetID string, chains []entities.WalletChain) ([]*entities.ManagedWallet, error) {
-	var blockchains []Blockchain
+	// Split chains: Solana requires EOA, EVM chains support SCA
+	var solChains, evmChains []Blockchain
 	for _, ch := range chains {
 		bc := domainChainToCircleForEnv(ch, a.sandbox)
-		if bc != "" {
-			blockchains = append(blockchains, bc)
+		if bc == "" {
+			continue
+		}
+		if ch == entities.WalletChainSolana {
+			solChains = append(solChains, bc)
+		} else {
+			evmChains = append(evmChains, bc)
 		}
 	}
-	if len(blockchains) == 0 {
+	if len(solChains) == 0 && len(evmChains) == 0 {
 		return nil, fmt.Errorf("no supported chains provided")
 	}
 
-	wallets, err := a.client.CreateWallets(ctx, walletSetID, blockchains, 1, []WalletMetadata{
-		{RefID: userID.String()},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("circle create wallets: %w", err)
+	metadata := []WalletMetadata{{RefID: userID.String()}}
+	var result []*entities.ManagedWallet
+
+	// Create Solana wallets as EOA (SCA not supported on SOL)
+	if len(solChains) > 0 {
+		wallets, err := a.client.CreateWalletsWithType(ctx, walletSetID, solChains, 1, "EOA", metadata)
+		if err != nil {
+			return nil, fmt.Errorf("circle create wallets: %w", err)
+		}
+		for _, w := range wallets {
+			result = append(result, walletToDomain(w, userID))
+		}
 	}
 
-	var result []*entities.ManagedWallet
-	for _, w := range wallets {
-		result = append(result, walletToDomain(w, userID))
+	// Create EVM wallets as SCA
+	if len(evmChains) > 0 {
+		wallets, err := a.client.CreateWalletsWithType(ctx, walletSetID, evmChains, 1, "SCA", metadata)
+		if err != nil {
+			return nil, fmt.Errorf("circle create wallets: %w", err)
+		}
+		for _, w := range wallets {
+			result = append(result, walletToDomain(w, userID))
+		}
 	}
+
 	return result, nil
 }
 

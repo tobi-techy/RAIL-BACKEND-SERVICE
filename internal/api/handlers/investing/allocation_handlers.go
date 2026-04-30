@@ -34,11 +34,14 @@ func NewAllocationHandlers(
 
 // Request/Response models
 
-// EnableAllocationModeRequest represents the request to enable 70/30 allocation mode
+// EnableAllocationModeRequest represents the request to enable allocation mode.
+// Users may customise the split but the stash ratio must be at least 10%.
 type EnableAllocationModeRequest struct {
-	SpendingRatio float64 `json:"spending_ratio" validate:"required,gte=0,lte=1"`
-	StashRatio    float64 `json:"stash_ratio" validate:"required,gte=0,lte=1"`
+	SpendingRatio float64 `json:"spending_ratio" validate:"required,gte=0,lte=0.9"`
+	StashRatio    float64 `json:"stash_ratio" validate:"required,gte=0.1,lte=1"`
 }
+
+const MinStashRatio = 0.10 // Minimum 10% must go to stash — non-negotiable
 
 // AllocationModeResponse represents the allocation mode status response
 type AllocationModeResponse struct {
@@ -94,6 +97,11 @@ func (h *AllocationHandlers) EnableAllocationMode(c *gin.Context) {
 	sum := req.SpendingRatio + req.StashRatio
 	if sum < 0.999 || sum > 1.001 {
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_RATIOS", Message: "Spending and stash ratios must sum to 1.0"})
+		return
+	}
+
+	if req.StashRatio < MinStashRatio {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "STASH_RATIO_TOO_LOW", Message: "Stash ratio must be at least 10% to ensure automatic investing"})
 		return
 	}
 

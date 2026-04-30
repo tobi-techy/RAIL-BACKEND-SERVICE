@@ -508,7 +508,7 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 			continue // Retry on network errors
 		}
 
-		respBody, err := io.ReadAll(resp.Body)
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20)) // 10MB max
 		resp.Body.Close()
 		if err != nil {
 			lastErr = fmt.Errorf("failed to read response body: %w", err)

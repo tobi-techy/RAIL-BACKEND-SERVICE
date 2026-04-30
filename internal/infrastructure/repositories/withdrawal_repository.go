@@ -143,9 +143,14 @@ func (r *WithdrawalRepository) UpdateStatus(ctx context.Context, id uuid.UUID, s
 		return err
 	}
 
-	_, err := r.db.ExecContext(ctx, `UPDATE withdrawals SET status = $1, updated_at = $2 WHERE id = $3`, status, time.Now(), id)
+	// SECURITY: Use WHERE clause with current status to enforce state machine atomically.
+	// This prevents race conditions where two concurrent updates both pass the check above.
+	result, err := r.db.ExecContext(ctx, `UPDATE withdrawals SET status = $1, updated_at = $2 WHERE id = $3 AND status = $4`, status, time.Now(), id, current)
 	if err != nil {
 		return fmt.Errorf("failed to update withdrawal status: %w", err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return fmt.Errorf("withdrawal %s status changed concurrently, retry required", id)
 	}
 	return nil
 }
@@ -218,7 +223,7 @@ func (r *WithdrawalRepository) MarkCompleted(ctx context.Context, id uuid.UUID) 
 
 // MarkFailed marks the withdrawal as failed, skipping already-terminal states.
 func (r *WithdrawalRepository) MarkFailed(ctx context.Context, id uuid.UUID, errorMsg string) error {
-	_, err := r.db.ExecContext(ctx,
+	result, err := r.db.ExecContext(ctx,
 		`UPDATE withdrawals SET status = $1, error_message = $2, updated_at = $3
 		 WHERE id = $4 AND status NOT IN ($5, $6, $7, $8)`,
 		entities.WithdrawalStatusFailed, errorMsg, time.Now(), id,
@@ -229,6 +234,9 @@ func (r *WithdrawalRepository) MarkFailed(ctx context.Context, id uuid.UUID, err
 	)
 	if err != nil {
 		return fmt.Errorf("failed to mark withdrawal failed: %w", err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return fmt.Errorf("withdrawal %s is already in a terminal state — skipping", id)
 	}
 	return nil
 }

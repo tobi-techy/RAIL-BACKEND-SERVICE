@@ -100,6 +100,7 @@ type SessionService interface {
 	InvalidateAllUserSessions(ctx context.Context, userID uuid.UUID) error
 	CreateSession(ctx context.Context, userID uuid.UUID, accessToken, refreshToken, ipAddress, userAgent, deviceFingerprint, location string, expiresAt time.Time) (*session.Session, error)
 	RotateSessionTokensByRefreshToken(ctx context.Context, userID uuid.UUID, currentRefreshToken, newAccessToken, newRefreshToken string, newExpiresAt time.Time) (*session.Session, error)
+	ValidateSession(ctx context.Context, token string) (*session.Session, error)
 }
 
 // TwoFAService interface for 2FA management
@@ -1113,6 +1114,17 @@ func (h *AuthHandlers) RefreshToken(c *gin.Context) {
 		h.logger.Warn("Failed to validate refresh token", zap.Error(err))
 		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "INVALID_TOKEN", Message: "Invalid refresh token"})
 		return
+	}
+
+	// SECURITY: Check blacklist BEFORE issuing new tokens to prevent replay attacks.
+	// ValidateSession checks is_active=true, so a previously consumed/invalidated
+	// refresh token will be rejected here.
+	if h.sessionService != nil {
+		if _, err := h.sessionService.ValidateSession(ctx, refreshToken); err != nil {
+			h.logger.Warn("Refresh token session invalid or already consumed", zap.Error(err), zap.String("user_id", userID.String()))
+			c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "TOKEN_REVOKED", Message: "Refresh token has been revoked"})
+			return
+		}
 	}
 
 	// Fetch current user data from database

@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"fmt"
 	"log"
@@ -359,12 +360,22 @@ func Authentication(cfg *config.Config, log *logger.Logger, sessionService Sessi
 			return
 		}
 
-		// Check token blacklist if provided (C1 fix)
+		// Check token blacklist if provided (fail-closed: reject on error)
 		if len(blacklist) > 0 && blacklist[0] != nil {
 			bl := blacklist[0]
 			h := sha256.Sum256([]byte(tokenString))
 			tokenHash := fmt.Sprintf("%x", h)
-			if revoked, _ := bl.IsBlacklisted(c.Request.Context(), tokenHash); revoked {
+			revoked, err := bl.IsBlacklisted(c.Request.Context(), tokenHash)
+			if err != nil {
+				log.Errorw("Token blacklist check failed — rejecting request", "error", err)
+				c.JSON(http.StatusServiceUnavailable, gin.H{
+					"error":      "Security check unavailable",
+					"request_id": c.GetString("request_id"),
+				})
+				c.Abort()
+				return
+			}
+			if revoked {
 				c.JSON(http.StatusUnauthorized, gin.H{
 					"error":      "Token has been revoked",
 					"request_id": c.GetString("request_id"),
@@ -546,6 +557,28 @@ func isCacheableByETag(path string) bool {
 func PrivateNoCache() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Cache-Control", "private, no-store")
+		c.Next()
+	}
+}
+
+// InternalAPIKeyAuth validates the internal API key at the group level.
+// This prevents new endpoints from accidentally being exposed without auth.
+func InternalAPIKeyAuth(apiKey string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if apiKey == "" {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "internal API key not configured"})
+			c.Abort()
+			return
+		}
+		key := c.GetHeader("Authorization")
+		if len(key) > 7 && key[:7] == "Bearer " {
+			key = key[7:]
+		}
+		if subtle.ConstantTimeCompare([]byte(key), []byte(apiKey)) != 1 {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			c.Abort()
+			return
+		}
 		c.Next()
 	}
 }

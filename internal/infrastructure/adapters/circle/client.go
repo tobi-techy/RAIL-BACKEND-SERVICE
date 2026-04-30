@@ -303,6 +303,28 @@ func (c *HTTPClient) CreateWallets(ctx context.Context, walletSetID string, bloc
 	return resp.Data.Wallets, nil
 }
 
+// CreateWalletsWithType creates wallets with a specific account type (EOA or SCA).
+func (c *HTTPClient) CreateWalletsWithType(ctx context.Context, walletSetID string, blockchains []Blockchain, count int, accountType string, metadata []WalletMetadata) ([]Wallet, error) {
+	ciphertext, err := c.encryptEntitySecret()
+	if err != nil {
+		return nil, err
+	}
+	req := CreateWalletsRequest{
+		IdempotencyKey:         uuid.New().String(),
+		EntitySecretCiphertext: ciphertext,
+		WalletSetID:            walletSetID,
+		Blockchains:            blockchains,
+		Count:                  count,
+		AccountType:            accountType,
+		Metadata:               metadata,
+	}
+	var resp apiResponse[WalletsData]
+	if err := c.doRequest(ctx, http.MethodPost, "/v1/w3s/developer/wallets", req, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Data.Wallets, nil
+}
+
 func (c *HTTPClient) GetWallet(ctx context.Context, walletID string) (*Wallet, error) {
 	var resp apiResponse[WalletData]
 	if err := c.doRequest(ctx, http.MethodGet, "/v1/w3s/wallets/"+walletID, nil, &resp); err != nil {

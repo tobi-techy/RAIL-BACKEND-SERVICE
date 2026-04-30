@@ -163,6 +163,13 @@ func (s *Service) updateAccountBalanceInTx(ctx context.Context, accountID uuid.U
 			return fmt.Errorf("insufficient balance: current=%s, adjustment=%s %s",
 				currentBalance.String(), amount.String(), entryType)
 		}
+		// SECURITY: Solvency guard — system accounts cannot go below -$100,000.
+		// This prevents unbounded liability from bugs in yield distribution or reconciliation.
+		maxDeficit := decimal.NewFromInt(-100000)
+		if newBalance.LessThan(maxDeficit) {
+			return fmt.Errorf("system account solvency limit breached: balance=%s exceeds max deficit=%s",
+				newBalance.String(), maxDeficit.String())
+		}
 	}
 
 	// Update balance
@@ -717,6 +724,11 @@ func (s *Service) TransferStashToSpending(ctx context.Context, userID uuid.UUID,
 func (s *Service) AdminTransferStashToSpending(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey, adminReason string) error {
 	if amount.IsZero() || amount.IsNegative() {
 		return fmt.Errorf("invalid transfer amount: %s", amount.String())
+	}
+	// SECURITY: Enforce cap at service level — defense in depth regardless of caller.
+	maxAdminTransfer := decimal.NewFromInt(500)
+	if amount.GreaterThan(maxAdminTransfer) {
+		return fmt.Errorf("admin transfer amount %s exceeds maximum of $500", amount.String())
 	}
 
 	spendAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)

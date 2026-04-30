@@ -54,18 +54,17 @@ func (s *CSRFStore) Generate() string {
 	return token
 }
 
-// Validate checks if a CSRF token is valid and not expired
+// Validate checks if a CSRF token is valid, not expired, and consumes it (single-use).
 func (s *CSRFStore) Validate(token string) bool {
-	s.mu.RLock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	expiry, exists := s.tokens[token]
-	s.mu.RUnlock()
 	if !exists {
 		return false
 	}
+	// Always delete — token is single-use
+	delete(s.tokens, token)
 	if time.Now().After(expiry) {
-		s.mu.Lock()
-		delete(s.tokens, token)
-		s.mu.Unlock()
 		return false
 	}
 	return true

@@ -674,6 +674,20 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 		}, nil
 	}
 
+	// Step 3.5: Stash lock enforcement — stash withdrawals only allowed during the 7-day window.
+	s.stashLockMu.RLock()
+	sl := s.stashLock
+	s.stashLockMu.RUnlock()
+	if req.SourceAccount == entities.WithdrawalSourceStashBalance && sl != nil {
+		canWithdraw, _, err := sl.CanWithdraw(ctx, req.UserID)
+		if err != nil {
+			return nil, fmt.Errorf("stash lock check failed: %w", err)
+		}
+		if !canWithdraw {
+			return nil, fmt.Errorf("stash funds are locked: no active withdrawal window (funds lock for 90 days, then a 7-day window opens)")
+		}
+	}
+
 	// Step 4: Validate against withdrawal limits
 	if s.limitsService != nil {
 		result, err := s.limitsService.ValidateWithdrawal(ctx, req.UserID, req.Amount)
@@ -2047,10 +2061,11 @@ func (s *WithdrawalService) syncCryptoWithdrawalStatusFromProvider(ctx context.C
 func scopedWithdrawalIdempotencyKey(userID uuid.UUID, flow string, clientKey string) string {
 	normalized := strings.TrimSpace(clientKey)
 	if normalized == "" {
-		// Derive a stable key from the request identity so that retries within
-		// the same 1-hour window are deduplicated even without a client key.
-		window := time.Now().UTC().Truncate(1 * time.Hour).Unix()
-		normalized = fmt.Sprintf("auto:%d", window)
+		// SECURITY: Auto-generated keys must NOT collide across different withdrawal
+		// requests. Using only a time window caused silent deduplication of distinct
+		// withdrawals. Require a client-provided idempotency key for all withdrawals.
+		// If none provided, use a random UUID so each request is unique (no dedup).
+		normalized = "auto:" + uuid.New().String()
 	}
 	// Use UUID v5 (deterministic) so the result is a valid UUID format
 	// as required by provider idempotencyKey fields.
