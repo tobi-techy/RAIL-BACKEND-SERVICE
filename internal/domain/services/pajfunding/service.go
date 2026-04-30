@@ -794,7 +794,7 @@ func (s *Service) HandleWebhook(ctx context.Context, payload *paj.WebhookPayload
 				return fmt.Errorf("update paj order from payload: %w", dbErr)
 			}
 			s.creditOnrampIfCompleted(ctx, orderUserID, payload.ID, newStatus, &paj.PajTransaction{
-				ID: payload.ID, Status: payload.Status, Amount: payload.USDCAmount, Rate: payload.Rate,
+				ID: payload.ID, Status: payload.Status, USDCAmount: payload.USDCAmount, Amount: payload.USDCAmount, Rate: payload.Rate,
 			})
 			return nil
 		}
