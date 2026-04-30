@@ -49,6 +49,7 @@ type DepositRepository interface {
 // NotificationService sends user-facing push/in-app notifications.
 type NotificationService interface {
 	NotifyDepositConfirmed(ctx context.Context, userID uuid.UUID, amount, chain, txHash string) error
+	NotifyDepositDetected(ctx context.Context, userID uuid.UUID, chain string) error
 	NotifyWithdrawalCompleted(ctx context.Context, userID uuid.UUID, amount, destination string) error
 	NotifyWithdrawalFailed(ctx context.Context, userID uuid.UUID, amount, reason string) error
 }
@@ -825,6 +826,13 @@ func (s *Service) HandleWebhook(ctx context.Context, payload *paj.WebhookPayload
 
 	// Credit user's spend balance when onramp completes (USDC arrived in custody).
 	s.creditOnrampIfCompleted(ctx, orderUserID, payload.ID, newStatus, tx)
+
+	// Notify user of onramp status changes
+	if orderType == "onramp" && s.notifier != nil {
+		if newStatus == "paid" || newStatus == "processing" {
+			_ = s.notifier.NotifyDepositDetected(ctx, orderUserID, "NGN")
+		}
+	}
 
 	// Reverse the ledger hold when an offramp fails.
 	s.reverseOfframpIfFailed(ctx, orderUserID, payload.ID, orderType, newStatus)

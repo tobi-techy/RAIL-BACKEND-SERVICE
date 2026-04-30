@@ -300,6 +300,18 @@ func (s *NotificationService) NotifyDepositConfirmed(ctx context.Context, userID
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "deposit_confirmed", "tx_hash": txHash, "chain": chain})
 }
 
+func (s *NotificationService) NotifyDepositDetected(ctx context.Context, userID uuid.UUID, chain string) error {
+	title := "Deposit detected"
+	body := "We've detected an incoming deposit. It will be confirmed shortly."
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "deposit_detected", "chain": chain})
+}
+
+func (s *NotificationService) NotifyWithdrawalSubmitted(ctx context.Context, userID uuid.UUID, amount string) error {
+	title := "Withdrawal processing"
+	body := fmt.Sprintf("Your withdrawal of $%s has been submitted and is being processed.", amount)
+	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "withdrawal_submitted"})
+}
+
 func (s *NotificationService) NotifyWithdrawalCompleted(ctx context.Context, userID uuid.UUID, amount, destinationAddress string) error {
 	title := "Withdrawal sent"
 	body := fmt.Sprintf("Your withdrawal of $%s is on its way.", amount)

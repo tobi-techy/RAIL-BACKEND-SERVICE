@@ -105,6 +105,7 @@ type WithdrawalAuditService interface {
 type WithdrawalNotificationService interface {
 	NotifyWithdrawalCompleted(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, destination string) error
 	NotifyWithdrawalFailed(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, reason string) error
+	NotifyWithdrawalSubmitted(ctx context.Context, userID uuid.UUID, amount string) error
 	NotifyLargeBalanceChange(ctx context.Context, userID uuid.UUID, changeType string, amount decimal.Decimal, newBalance decimal.Decimal) error
 }
 
@@ -521,6 +522,11 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	}
 	withdrawal.Status = entities.WithdrawalStatusProcessing
 
+	// Notify user immediately that withdrawal is being processed
+	if s.notificationService != nil {
+		_ = s.notificationService.NotifyWithdrawalSubmitted(ctx, req.UserID, req.Amount.String())
+	}
+
 	go s.executeCryptoWithdrawalAsync(withdrawal, req)
 
 	s.logger.Info("Crypto withdrawal submitted for async processing",
@@ -550,6 +556,9 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 		}
 		// Reverse tiered limit usage on failure — no-op since limits recorded on success only
 		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
+		if s.notificationService != nil {
+			_ = s.notificationService.NotifyWithdrawalFailed(ctx, req.UserID, req.Amount, "Transfer failed. Your funds have been returned to your balance.")
+		}
 		return
 	}
 
@@ -1690,6 +1699,11 @@ func (s *WithdrawalService) RefundChainRailsWithdrawal(ctx context.Context, inte
 	s.logger.Info("ChainRails withdrawal refunded and reversed",
 		"withdrawal_id", withdrawal.ID.String(),
 		"intent_id", intentID)
+
+	if s.notificationService != nil {
+		_ = s.notificationService.NotifyWithdrawalFailed(ctx, withdrawal.UserID, withdrawal.Amount,
+			"Cross-chain transfer was refunded. Your funds have been returned.")
+	}
 	return nil
 }
 

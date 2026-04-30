@@ -618,29 +618,42 @@ func (s *Service) ProcessCircleDeposit(ctx context.Context, userID uuid.UUID, am
 		}
 	}
 
-	// Trigger 70/30 allocation split
-	if s.allocationService != nil {
-		txHashRef := txHash
-		if err := s.allocationService.ProcessIncomingFunds(ctx, &entities.IncomingFundsRequest{
-			UserID:     userID,
-			Amount:     amount,
-			EventType:  entities.AllocationEventTypeCryptoDeposit,
-			SourceTxID: &txHashRef,
-			DepositID:  &depositID,
-			Metadata: map[string]any{
-				"chain":            chain,
-				"circle_wallet_id": circleWalletID,
-				"provider":         "circle",
-			},
-		}); err != nil {
-			s.logger.Error("Allocation failed for Circle deposit", "error", err, "deposit_id", depositID.String())
-			// Don't return error — deposit is recorded, allocation recovery worker will retry
-		}
-	}
-
-	// Invalidate balance cache
+	// Invalidate balance cache IMMEDIATELY so user sees updated balance
 	if s.cache != nil {
 		_ = s.cache.Delete(ctx, fmt.Sprintf("balance:%s", userID.String()))
+	}
+
+	// Notify user instantly
+	if s.notificationService != nil {
+		_ = s.notificationService.NotifyDepositConfirmed(ctx, userID, amount.String(), chain, txHash)
+	}
+
+	// Trigger 70/30 allocation split ASYNC — don't block balance visibility
+	if s.allocationService != nil {
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			txHashRef := txHash
+			if err := s.allocationService.ProcessIncomingFunds(bgCtx, &entities.IncomingFundsRequest{
+				UserID:     userID,
+				Amount:     amount,
+				EventType:  entities.AllocationEventTypeCryptoDeposit,
+				SourceTxID: &txHashRef,
+				DepositID:  &depositID,
+				Metadata: map[string]any{
+					"chain":            chain,
+					"circle_wallet_id": circleWalletID,
+					"provider":         "circle",
+				},
+			}); err != nil {
+				s.logger.Error("Allocation failed for Circle deposit — recovery worker will retry",
+					"error", err, "deposit_id", depositID.String())
+			}
+			// Re-invalidate cache after allocation completes
+			if s.cache != nil {
+				_ = s.cache.Delete(bgCtx, fmt.Sprintf("balance:%s", userID.String()))
+			}
+		}()
 	}
 
 	s.logger.Info("Circle deposit processed",

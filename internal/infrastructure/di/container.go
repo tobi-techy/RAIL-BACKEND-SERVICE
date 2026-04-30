@@ -908,6 +908,10 @@ func (a *WithdrawalNotificationAdapter) NotifyLargeBalanceChange(ctx context.Con
 	return a.svc.NotifyLargeBalanceChange(ctx, userID, changeType, amount, newBalance)
 }
 
+func (a *WithdrawalNotificationAdapter) NotifyWithdrawalSubmitted(ctx context.Context, userID uuid.UUID, amount string) error {
+	return a.svc.NotifyWithdrawalSubmitted(ctx, userID, amount)
+}
+
 // deletionLedgerAdapter adapts LedgerService to account.LedgerService
 type deletionLedgerAdapter struct {
 	ledgerService *ledger.Service
@@ -1738,6 +1742,9 @@ func (c *Container) initializeDomainServices() error {
 			c.Config.Circle.WebhookSecret,
 			c.RedisClient,
 		)
+		if c.NotificationService != nil {
+			c.CircleWebhookHandler.SetNotifier(c.NotificationService)
+		}
 	}
 
 	// Initialize auto-invest service (OrderPlacer will be set after InvestingService is created)

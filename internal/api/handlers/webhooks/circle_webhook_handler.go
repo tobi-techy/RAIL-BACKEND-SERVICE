@@ -55,10 +55,16 @@ type CircleWalletLookup interface {
 	GetUserByCircleWalletID(ctx context.Context, circleWalletID string) (uuid.UUID, error)
 }
 
+// CircleDepositNotifier sends deposit-related push notifications.
+type CircleDepositNotifier interface {
+	NotifyDepositDetected(ctx context.Context, userID uuid.UUID, chain string) error
+}
+
 // CircleWebhookHandler handles Circle webhook notifications for inbound deposits.
 type CircleWebhookHandler struct {
 	depositProcessor CircleDepositProcessor
 	walletLookup     CircleWalletLookup
+	notifier         CircleDepositNotifier
 	logger           *zap.Logger
 	webhookSecret    string
 	redis            CircleWebhookRedis
@@ -86,6 +92,9 @@ func NewCircleWebhookHandler(
 		redis:            redis,
 	}
 }
+
+// SetNotifier wires the deposit notification sender.
+func (h *CircleWebhookHandler) SetNotifier(n CircleDepositNotifier) { h.notifier = n }
 
 // HandleWebhook is the Gin handler for POST /webhooks/circle.
 func (h *CircleWebhookHandler) HandleWebhook(c *gin.Context) {
@@ -143,7 +152,13 @@ func (h *CircleWebhookHandler) HandleWebhook(c *gin.Context) {
 		return
 	}
 	if event.Notification.State != "COMPLETED" && event.Notification.State != "COMPLETE" {
-		c.JSON(http.StatusOK, gin.H{"status": "ignored", "reason": "not complete"})
+		// Send "deposit detected" notification for confirmed (but not yet complete) deposits
+		if event.Notification.State == "CONFIRMED" && h.notifier != nil && h.walletLookup != nil {
+			if userID, err := h.walletLookup.GetUserByCircleWalletID(c.Request.Context(), event.Notification.WalletID); err == nil {
+				_ = h.notifier.NotifyDepositDetected(c.Request.Context(), userID, event.Notification.Blockchain)
+			}
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "acknowledged"})
 		return
 	}
 
