@@ -28,6 +28,7 @@ type ChatRequest struct {
 	Temperature  *float64  `json:"temperature,omitempty"` // nil = use provider default
 	TopP         *float64  `json:"top_p,omitempty"`       // nil = use provider default
 	UserID       string    `json:"user_id,omitempty"`     // For tracking and rate limiting
+	ModelHint    string    `json:"model_hint,omitempty"`  // "fast" for simple queries, "quality" for complex analysis
 }
 
 // Float64 returns a pointer to v. Useful for setting *float64 fields in ChatRequest.

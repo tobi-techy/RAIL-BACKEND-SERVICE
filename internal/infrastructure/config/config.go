@@ -82,11 +82,24 @@ type CCTPConfig struct {
 
 // AIConfig contains AI provider configuration
 type AIConfig struct {
-	OpenAI  OpenAIConfig `mapstructure:"openai"`
-	Gemini  GeminiConfig `mapstructure:"gemini"`
-	Kimi    KimiConfig   `mapstructure:"kimi"`
-	Groq    GroqConfig   `mapstructure:"groq"`
-	Primary string       `mapstructure:"primary"` // "openai", "gemini", "kimi", or "groq"
+	OpenAI  OpenAIConfig  `mapstructure:"openai"`
+	Gemini  GeminiConfig  `mapstructure:"gemini"`
+	Kimi    KimiConfig    `mapstructure:"kimi"`
+	Groq    GroqConfig    `mapstructure:"groq"`
+	Bedrock BedrockConfig `mapstructure:"bedrock"`
+	Primary string        `mapstructure:"primary"` // "openai", "gemini", "kimi", "groq", or "bedrock"
+}
+
+// BedrockConfig contains Amazon Bedrock configuration
+type BedrockConfig struct {
+	Region           string  `mapstructure:"region"`
+	ModelID          string  `mapstructure:"model_id"`
+	MaxTokens        int     `mapstructure:"max_tokens"`
+	Temperature      float64 `mapstructure:"temperature"`
+	TopP             float64 `mapstructure:"top_p"`
+	TimeoutSeconds   int     `mapstructure:"timeout_seconds"`
+	GuardrailID      string  `mapstructure:"guardrail_id"`
+	GuardrailVersion string  `mapstructure:"guardrail_version"`
 }
 
 // KimiConfig contains Kimi (Moonshot) API configuration
@@ -802,7 +815,7 @@ func setDefaults() {
 	viper.SetDefault("security.adaptive_rate_limit.enable_risk_scoring", true)
 
 	// AI Provider defaults
-	viper.SetDefault("ai.primary", "openai")
+	viper.SetDefault("ai.primary", "bedrock")
 	viper.SetDefault("ai.openai.model", "gpt-4o-mini")
 	viper.SetDefault("ai.openai.realtime_model", "gpt-4o-mini-realtime-preview")
 	viper.SetDefault("ai.openai.max_tokens", 500)
@@ -817,6 +830,15 @@ func setDefaults() {
 	viper.BindEnv("ai.kimi.api_key", "KIMI_API_KEY")
 	viper.BindEnv("ai.groq.api_key", "GROQ_API_KEY")
 	viper.BindEnv("ai.primary", "AI_PRIMARY")
+	viper.BindEnv("ai.bedrock.region", "BEDROCK_REGION")
+	viper.BindEnv("ai.bedrock.model_id", "BEDROCK_MODEL_ID")
+	viper.BindEnv("ai.bedrock.guardrail_id", "BEDROCK_GUARDRAIL_ID")
+	viper.BindEnv("ai.bedrock.guardrail_version", "BEDROCK_GUARDRAIL_VERSION")
+	viper.SetDefault("ai.bedrock.model_id", "anthropic.claude-sonnet-4-20250514")
+	viper.SetDefault("ai.bedrock.max_tokens", 4096)
+	viper.SetDefault("ai.bedrock.temperature", 0.7)
+	viper.SetDefault("ai.bedrock.top_p", 0.9)
+	viper.SetDefault("ai.bedrock.timeout_seconds", 30)
 
 	// Compute defaults
 	viper.SetDefault("zerog.compute.broker_endpoint", "")

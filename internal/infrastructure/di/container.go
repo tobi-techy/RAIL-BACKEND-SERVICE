@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/rail-service/rail_service/internal/api/handlers"
 	fundinghandlers "github.com/rail-service/rail_service/internal/api/handlers/funding"
 	activityhandlers "github.com/rail-service/rail_service/internal/api/handlers/activity"
@@ -912,6 +913,11 @@ func (a *WithdrawalNotificationAdapter) NotifyLargeBalanceChange(ctx context.Con
 
 func (a *WithdrawalNotificationAdapter) NotifyWithdrawalSubmitted(ctx context.Context, userID uuid.UUID, amount string) error {
 	return a.svc.NotifyWithdrawalSubmitted(ctx, userID, amount)
+}
+
+func (a *WithdrawalNotificationAdapter) NotifyEmergencyWithdrawal(ctx context.Context, userID uuid.UUID, amount, fee decimal.Decimal) error {
+	msg := fmt.Sprintf("Emergency withdrawal of $%s completed (fee: $%s)", amount.StringFixed(2), fee.StringFixed(2))
+	return a.svc.NotifyWithdrawalCompleted(ctx, userID, amount.String(), msg)
 }
 
 // deletionLedgerAdapter adapts LedgerService to account.LedgerService
@@ -2113,6 +2119,7 @@ func (c *Container) initializeDomainServices() error {
 		stashLockSvc.SetNotifier(c.NotificationService)
 	}
 	c.WithdrawalService.SetStashLockChecker(stashLockSvc)
+	c.WithdrawalService.SetEmergencyLedger(c.LedgerService)
 	c.LedgerService.SetStashLockChecker(stashLockSvc)
 	c.StashLockService = stashLockSvc
 
@@ -2794,9 +2801,33 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		return 10 * time.Second
 	}
 
-	// Initialize AI providers
+	// Initialize AI providers — Bedrock first (primary), others as fallbacks
 	var providers []ai.AIProvider
 
+	// Amazon Bedrock — primary provider, uses AWS IAM credentials (no API key needed)
+	if strings.TrimSpace(c.Config.AI.Bedrock.ModelID) != "" {
+		bedrockRegion := c.Config.AI.Bedrock.Region
+		if bedrockRegion == "" {
+			bedrockRegion = "us-east-1"
+		}
+		awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion(bedrockRegion))
+		if err != nil {
+			c.ZapLog.Warn("bedrock: failed to load AWS config, skipping", zap.Error(err))
+		} else {
+			bedrockProvider := ai.NewBedrockProvider(&ai.BedrockConfig{
+				AWSConfig:        awsCfg,
+				ModelID:          c.Config.AI.Bedrock.ModelID,
+				MaxTokens:        c.Config.AI.Bedrock.MaxTokens,
+				Temperature:      c.Config.AI.Bedrock.Temperature,
+				TopP:             c.Config.AI.Bedrock.TopP,
+				GuardrailID:      c.Config.AI.Bedrock.GuardrailID,
+				GuardrailVersion: c.Config.AI.Bedrock.GuardrailVersion,
+			}, c.ZapLog)
+			providers = append(providers, bedrockProvider)
+		}
+	}
+
+	// Fallback providers (used if Bedrock is unavailable or not configured)
 	if strings.TrimSpace(c.Config.AI.Gemini.APIKey) != "" {
 		geminiConfig := &ai.ProviderConfig{
 			APIKey:       strings.TrimSpace(c.Config.AI.Gemini.APIKey),

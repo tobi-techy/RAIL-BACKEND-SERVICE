@@ -141,7 +141,8 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 		Messages:     messages,
 		SystemPrompt: SystemPrompt,
 		MaxTokens:    2048,
-		Temperature:  infraai.Float64(0.15),
+		Temperature:  infraai.Float64(0.4),
+		ModelHint:    classifyQueryComplexity(message),
 	}
 
 	// Non-streaming tool call rounds (up to 5)

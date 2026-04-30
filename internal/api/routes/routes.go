@@ -762,6 +762,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				fiatWithdrawals.Use(middleware.RequireBridgeCapability(container.UserRepo, container.ZapLog))
 				fiatWithdrawals.POST("/fiat", withdrawalHandlers.InitiateFiatWithdrawal)
 				withdrawals.GET("/fees", withdrawalHandlers.GetWithdrawalFees)
+				withdrawals.GET("/emergency/preview", withdrawalHandlers.EmergencyWithdrawalPreview)
+				withdrawalsSensitive.POST("/emergency/to-spending", withdrawalHandlers.EmergencyStashToSpending)
 				withdrawals.GET("", withdrawalHandlers.GetUserWithdrawals)
 				withdrawals.GET("/:withdrawalId", withdrawalHandlers.GetWithdrawal)
 				withdrawals.DELETE("/:withdrawalId", withdrawalHandlers.CancelWithdrawal)
@@ -842,10 +844,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			}
 
 			// Public P2P claim routes (no auth required — for web claim page)
-			// Rate limited: 10 per minute by IP to prevent enumeration attacks
+			// SECURITY: Rate limited to 3/min per IP to prevent claim token enumeration and bank detail brute-force
 			if p2pHandlers != nil {
 				publicP2P := router.Group("/api/v1/p2p")
-				publicP2P.Use(middleware.AuthRateLimit(10))
+				publicP2P.Use(middleware.AuthRateLimit(3))
 				{
 					publicP2P.GET("/claim/:token", p2pHandlers.GetClaimInfo)
 					publicP2P.POST("/claim/:token/bank", p2pHandlers.ClaimToBank)
@@ -1023,6 +1025,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					aiGroup.GET("/financial-advice", middleware.AuthRateLimit(20), aiChatHandlers.FinancialAdvice)
 					aiGroup.GET("/financial-timeline", middleware.AuthRateLimit(20), aiChatHandlers.FinancialTimeline)
 					aiGroup.GET("/suggestions", aiChatHandlers.GetSuggestedQuestions)
+					aiGroup.GET("/starters", middleware.AuthRateLimit(10), aiChatHandlers.GetConversationStarters)
 					aiGroup.POST("/nudge", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), aiChatHandlers.Nudge)
 
 					// Image analysis (receipt scanning)

@@ -45,11 +45,22 @@ func (s *Service) GetCurrentUsage(ctx context.Context, userID uuid.UUID) (*entit
 	return s.repo.GetByUserPeriod(ctx, userID, time.Now())
 }
 
-// IsOverCostCeiling returns true if the user has exceeded the monthly cost ceiling.
+// IsOverCostCeiling returns true if the user has exceeded the monthly or daily cost ceiling.
 func (s *Service) IsOverCostCeiling(ctx context.Context, userID uuid.UUID) (bool, error) {
 	u, err := s.repo.GetByUserPeriod(ctx, userID, time.Now())
 	if err != nil {
 		return false, err
 	}
-	return u.EstimatedCost.GreaterThanOrEqual(entities.CostCeilingUSD), nil
+	if u.EstimatedCost.GreaterThanOrEqual(entities.CostCeilingUSD) {
+		return true, nil
+	}
+	// Estimate daily spend: monthly cost / days elapsed so far
+	// This prevents a user from burning the entire monthly budget in one day.
+	now := time.Now().UTC()
+	dayOfMonth := now.Day()
+	if dayOfMonth < 1 {
+		dayOfMonth = 1
+	}
+	dailyAvg := u.EstimatedCost.Div(decimal.NewFromInt(int64(dayOfMonth)))
+	return dailyAvg.GreaterThanOrEqual(entities.DailyCostCeilingUSD), nil
 }

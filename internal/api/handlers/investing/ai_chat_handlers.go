@@ -98,7 +98,7 @@ func (tc *TxContext) toPromptPrefix() string {
 }
 
 // Prompt injection patterns to strip from user input.
-var injectionPatterns = regexp.MustCompile(`(?i)(ignore previous instructions|you are now|system:|SYSTEM OVERRIDE|<\|im_start\|>|<\|im_end\|>|\[INST\]|\[/INST\])`)
+var injectionPatterns = regexp.MustCompile(`(?i)(ignore previous instructions|ignore all instructions|you are now|system:|SYSTEM OVERRIDE|<\|im_start\|>|<\|im_end\|>|\[INST\]|\[/INST\]|forget everything|new instructions|<\|endoftext\|>|### System|### Human|### Assistant|<system>|</system>|ADMIN OVERRIDE|do not follow|disregard|pretend you are|act as if|roleplay as|bypass|override safety|jailbreak)`)
 
 var (
 	errInvalidConversationID = errors.New("invalid conversation id")
@@ -579,6 +579,19 @@ func (h *AIChatHandlers) GetSuggestedQuestions(c *gin.Context) {
 
 	suggestions := h.orchestrator.GetPersonalizedSuggestions(c.Request.Context(), userID)
 	c.JSON(http.StatusOK, gin.H{"suggestions": suggestions})
+}
+
+// GetConversationStarters handles GET /api/v1/ai/starters
+// Returns AI-generated contextual conversation starters based on the user's financial state.
+func (h *AIChatHandlers) GetConversationStarters(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	starters := h.orchestrator.GetConversationStarters(c.Request.Context(), userID)
+	c.JSON(http.StatusOK, gin.H{"starters": starters})
 }
 
 // WrappedCard represents a Spotify-Wrapped style card (for response typing)

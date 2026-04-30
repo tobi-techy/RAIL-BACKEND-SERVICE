@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -45,6 +46,11 @@ type PushSender interface {
 	SendToUser(ctx context.Context, userID uuid.UUID, title, body string, data map[string]interface{}) error
 }
 
+// NudgeGenerator generates AI-powered nudge text. Nil-safe — returns "" if not set.
+type NudgeGenerator interface {
+	GenerateNudge(ctx context.Context, snapshot string) string
+}
+
 // Worker sends a daily personalized money pulse notification from Miriam.
 type Worker struct {
 	users    UserRepo
@@ -53,6 +59,7 @@ type Worker struct {
 	budgets  BudgetProvider
 	streaks  StreakProvider
 	push     PushSender
+	nudger   NudgeGenerator
 	logger   *zap.Logger
 	lastDate string
 }
@@ -71,6 +78,9 @@ func NewWorker(
 		budgets: budgets, streaks: streaks, push: push, logger: logger,
 	}
 }
+
+// SetNudger sets an optional AI nudge generator for personalized pulse messages.
+func (w *Worker) SetNudger(n NudgeGenerator) { w.nudger = n }
 
 // Start runs the daily pulse loop. Sends at 9:00 UTC every day.
 func (w *Worker) Start(ctx context.Context) {
@@ -163,7 +173,15 @@ func (w *Worker) buildPulse(ctx context.Context, userID uuid.UUID) (string, stri
 		}
 	}
 
-	// Pick the best pulse based on available data
+	// Try AI-generated nudge first (fast model, ~1s)
+	if w.nudger != nil {
+		snapshot := buildNudgeSnapshot(total, spend, stash, daySpend, monthNet, budgetRemaining, hasBudget, streakDays, now)
+		if nudge := w.nudger.GenerateNudge(fetchCtx, snapshot); nudge != "" {
+			return "Miriam", nudge
+		}
+	}
+
+	// Fallback to template-based pulse
 	type pulse struct {
 		title string
 		body  string
@@ -255,4 +273,25 @@ func maxInt64(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+func buildNudgeSnapshot(total, spend, stash, daySpend, monthNet, budgetRemaining decimal.Decimal, hasBudget bool, streakDays int, now time.Time) string {
+	var parts []string
+	if total.IsPositive() {
+		parts = append(parts, fmt.Sprintf("Total: $%s (spend $%s, stash $%s)", total.StringFixed(2), spend.StringFixed(2), stash.StringFixed(2)))
+	}
+	if daySpend.IsPositive() {
+		parts = append(parts, fmt.Sprintf("Yesterday spent: $%s", daySpend.StringFixed(2)))
+	}
+	if !monthNet.IsZero() {
+		parts = append(parts, fmt.Sprintf("Month net: $%s", monthNet.StringFixed(2)))
+	}
+	if hasBudget {
+		parts = append(parts, fmt.Sprintf("Budget remaining: $%s", budgetRemaining.StringFixed(2)))
+	}
+	if streakDays > 0 {
+		parts = append(parts, fmt.Sprintf("Saving streak: %d days", streakDays))
+	}
+	parts = append(parts, fmt.Sprintf("Day: %s", now.Format("Monday")))
+	return fmt.Sprintf("%s", strings.Join(parts, ". "))
 }
