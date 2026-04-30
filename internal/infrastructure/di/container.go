@@ -1736,6 +1736,7 @@ func (c *Container) initializeDomainServices() error {
 			&circleWalletLookupAdapter{repo: c.WalletRepo},
 			c.ZapLog,
 			c.Config.Circle.WebhookSecret,
+			c.RedisClient,
 		)
 	}
 

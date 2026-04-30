@@ -61,7 +61,13 @@ type CircleWebhookHandler struct {
 	walletLookup     CircleWalletLookup
 	logger           *zap.Logger
 	webhookSecret    string
-	processedEvents  map[string]bool // simple idempotency (use Redis in production)
+	redis            CircleWebhookRedis
+}
+
+// CircleWebhookRedis is the subset of Redis needed for webhook idempotency.
+type CircleWebhookRedis interface {
+	Exists(ctx context.Context, key string) (bool, error)
+	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error
 }
 
 // NewCircleWebhookHandler creates a new Circle webhook handler.
@@ -70,13 +76,14 @@ func NewCircleWebhookHandler(
 	walletLookup CircleWalletLookup,
 	logger *zap.Logger,
 	webhookSecret string,
+	redis CircleWebhookRedis,
 ) *CircleWebhookHandler {
 	return &CircleWebhookHandler{
 		depositProcessor: depositProcessor,
 		walletLookup:     walletLookup,
 		logger:           logger,
 		webhookSecret:    webhookSecret,
-		processedEvents:  make(map[string]bool),
+		redis:            redis,
 	}
 }
 
@@ -114,11 +121,14 @@ func (h *CircleWebhookHandler) HandleWebhook(c *gin.Context) {
 		return
 	}
 
-	// Idempotency: skip already-processed notifications
-	if h.processedEvents[event.NotificationID] {
-		h.logger.Debug("Duplicate Circle webhook, skipping", zap.String("notificationId", event.NotificationID))
-		c.JSON(http.StatusOK, gin.H{"status": "already_processed"})
-		return
+	// Idempotency: skip already-processed notifications via Redis
+	if h.redis != nil {
+		redisKey := "circle_wh:" + event.NotificationID
+		if exists, _ := h.redis.Exists(c.Request.Context(), redisKey); exists {
+			h.logger.Debug("Duplicate Circle webhook, skipping", zap.String("notificationId", event.NotificationID))
+			c.JSON(http.StatusOK, gin.H{"status": "already_processed"})
+			return
+		}
 	}
 
 	h.logger.Info("Circle webhook received",
@@ -150,7 +160,10 @@ func (h *CircleWebhookHandler) HandleWebhook(c *gin.Context) {
 		return
 	}
 
-	h.processedEvents[event.NotificationID] = true
+	// Mark as processed in Redis (24h TTL)
+	if h.redis != nil {
+		_ = h.redis.Set(c.Request.Context(), "circle_wh:"+event.NotificationID, true, 24*time.Hour)
+	}
 	c.JSON(http.StatusOK, gin.H{"status": "processed"})
 }
 

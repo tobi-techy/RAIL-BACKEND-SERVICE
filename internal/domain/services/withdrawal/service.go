@@ -2034,8 +2034,8 @@ func scopedWithdrawalIdempotencyKey(userID uuid.UUID, flow string, clientKey str
 	normalized := strings.TrimSpace(clientKey)
 	if normalized == "" {
 		// Derive a stable key from the request identity so that retries within
-		// the same 5-minute window are deduplicated even without a client key.
-		window := time.Now().UTC().Truncate(5 * time.Minute).Unix()
+		// the same 1-hour window are deduplicated even without a client key.
+		window := time.Now().UTC().Truncate(1 * time.Hour).Unix()
 		normalized = fmt.Sprintf("auto:%d", window)
 	}
 	// Use UUID v5 (deterministic) so the result is a valid UUID format

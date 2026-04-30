@@ -663,6 +663,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 			// Mobile-optimized API endpoints for better app performance
 			mobile := protected.Group("/mobile")
+			mobile.Use(middleware.TimeoutMiddleware(10 * time.Second))
 			{
 				mobileHandlers := handlers.NewMobileHandlers(
 					container.StationService,
@@ -734,7 +735,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			}
 
 			// Unified Balance route
-			protected.GET("/balances", walletFundingHandlers.GetUnifiedBalances)
+			protected.GET("/balances", middleware.TimeoutMiddleware(10*time.Second), walletFundingHandlers.GetUnifiedBalances)
 
 			// Unified Deposit routes
 			deposits := protected.Group("/deposits")
@@ -785,6 +786,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 			// Account routes - Station (home screen) endpoint
 			account := protected.Group("/account")
+			account.Use(middleware.TimeoutMiddleware(10 * time.Second))
 			{
 				stationHandlers := container.GetStationHandlers()
 				if stationHandlers != nil {
