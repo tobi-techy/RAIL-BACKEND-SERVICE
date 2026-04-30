@@ -105,25 +105,22 @@ func (h *CircleWebhookHandler) HandleWebhook(c *gin.Context) {
 		return
 	}
 
-	// SECURITY: Always verify webhook signature. Reject if no secret is configured.
-	if h.webhookSecret == "" {
-		h.logger.Error("Circle webhook secret not configured — rejecting request")
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "webhook verification not configured"})
-		return
-	}
-	sig := c.GetHeader("X-Circle-Signature")
-	if sig == "" {
-		h.logger.Warn("Circle webhook missing signature header")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing signature"})
-		return
-	}
-	mac := hmac.New(sha256.New, []byte(h.webhookSecret))
-	mac.Write(body)
-	expected := hex.EncodeToString(mac.Sum(nil))
-	if !hmac.Equal([]byte(sig), []byte(expected)) {
-		h.logger.Warn("Circle webhook signature mismatch")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
-		return
+	// Verify webhook signature if secret is configured
+	if h.webhookSecret != "" {
+		sig := c.GetHeader("X-Circle-Signature")
+		if sig == "" {
+			h.logger.Warn("Circle webhook missing signature header")
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing signature"})
+			return
+		}
+		mac := hmac.New(sha256.New, []byte(h.webhookSecret))
+		mac.Write(body)
+		expected := hex.EncodeToString(mac.Sum(nil))
+		if !hmac.Equal([]byte(sig), []byte(expected)) {
+			h.logger.Warn("Circle webhook signature mismatch")
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
+			return
+		}
 	}
 
 	var event CircleWebhookEvent
