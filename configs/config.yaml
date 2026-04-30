@@ -84,7 +84,7 @@ redis:
   # Single node mode (development/staging)
   host: "${REDIS_HOST}"
   port: 6379
-  password: "${REDIS_PASSWORD}"
+  password: ""
   db: 0
   # Cluster mode (production) - requires multiple Redis nodes
   cluster_mode: false
