@@ -27,6 +27,7 @@ const (
 	AccountTypeSystemBufferFiat  AccountType = "system_buffer_fiat" // System operational USD buffer
 	AccountTypeBrokerOperational AccountType = "broker_operational" // Pre-funded cash at Alpaca
 	AccountTypeSubscriptionRevenue AccountType = "subscription_revenue" // Rail Pro subscription revenue
+	AccountTypeEmergencyWithdrawalRevenue AccountType = "emergency_withdrawal_revenue" // Emergency stash withdrawal fee revenue
 )
 
 // IsUserAccountType returns true if the account type belongs to a user
@@ -44,7 +45,8 @@ func (a AccountType) IsSystemAccountType() bool {
 	return a == AccountTypeSystemBufferUSDC ||
 		a == AccountTypeSystemBufferFiat ||
 		a == AccountTypeBrokerOperational ||
-		a == AccountTypeSubscriptionRevenue
+		a == AccountTypeSubscriptionRevenue ||
+		a == AccountTypeEmergencyWithdrawalRevenue
 }
 
 // IsSystemAccount is an alias for IsSystemAccountType
@@ -62,7 +64,8 @@ func (a AccountType) Validate() error {
 	switch a {
 	case AccountTypeUSDCBalance, AccountTypeFiatExposure, AccountTypePendingInvestment,
 		AccountTypeSpendingBalance, AccountTypeStashBalance, AccountTypePendingCardSettlement,
-		AccountTypeSystemBufferUSDC, AccountTypeSystemBufferFiat, AccountTypeBrokerOperational:
+		AccountTypeSystemBufferUSDC, AccountTypeSystemBufferFiat, AccountTypeBrokerOperational,
+		AccountTypeSubscriptionRevenue, AccountTypeEmergencyWithdrawalRevenue:
 		return nil
 	default:
 		return fmt.Errorf("invalid account type: %s", a)

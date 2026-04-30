@@ -166,7 +166,13 @@ async function handleWebhook(event) {
 
   // Verify HMAC-SHA256 signature
   const body = await request.text();
-  const secret = typeof WEBHOOK_SECRET !== "undefined" ? WEBHOOK_SECRET : "";
+  const secret = typeof WEBHOOK_SECRET !== "undefined" && WEBHOOK_SECRET !== "" ? WEBHOOK_SECRET : null;
+  if (!secret) {
+    return new Response(JSON.stringify({ error: "WEBHOOK_SECRET_NOT_CONFIGURED" }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
     "raw",

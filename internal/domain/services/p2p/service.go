@@ -299,6 +299,9 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2
 	}
 
 	// Check sender balance
+	// NOTE: This is a pre-check for UX. The actual overdraft protection is enforced
+	// atomically by the ledger's SELECT FOR UPDATE in TransferBetweenUsers.
+	// Concurrent P2P sends that both pass this check will be caught at the ledger layer.
 	balance, err := s.balance.GetSpendBalance(ctx, senderID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get balance: %w", err)

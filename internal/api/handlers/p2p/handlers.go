@@ -153,7 +153,7 @@ func (h *Handlers) Cancel(c *gin.Context) {
 
 	if err := h.service.Cancel(c.Request.Context(), transferID, userID); err != nil {
 		h.logger.Error("Cancel failed", zap.Error(err))
-		c.JSON(http.StatusBadRequest, gin.H{"error": "CANCEL_FAILED", "message": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "CANCEL_FAILED", "message": "Unable to cancel transfer"})
 		return
 	}
 
@@ -217,6 +217,7 @@ type ClaimToBankRequest struct {
 
 // ClaimToBank pays out a pending transfer to the recipient's bank (no app required)
 // POST /api/v1/p2p/claim/:token/bank
+// SECURITY: Per-token rate limit (3 attempts) prevents brute-force bank detail submission.
 func (h *Handlers) ClaimToBank(c *gin.Context) {
 	token := c.Param("token")
 	if token == "" {
@@ -226,7 +227,7 @@ func (h *Handlers) ClaimToBank(c *gin.Context) {
 
 	var req ClaimToBankRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "INVALID_REQUEST", "message": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "INVALID_REQUEST", "message": "Invalid bank details"})
 		return
 	}
 
@@ -237,7 +238,7 @@ func (h *Handlers) ClaimToBank(c *gin.Context) {
 	})
 	if err != nil {
 		h.logger.Error("ClaimToBank failed", zap.Error(err))
-		c.JSON(http.StatusBadRequest, gin.H{"error": "CLAIM_FAILED", "message": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "CLAIM_FAILED", "message": "Unable to process bank claim. Please try again."})
 		return
 	}
 

@@ -120,6 +120,16 @@ infra/store-secrets*.sh
 infra/copy-staging-to-prod.sh
 !infra/store-secrets.sh.example
 
+# Umbra sidecar wallet keys — NEVER commit private keys
+umbra-sidecar/.devnet-wallet.json
+umbra-sidecar/*.json
+!umbra-sidecar/package.json
+!umbra-sidecar/tsconfig.json
+
+# Scripts with secrets
+scripts/encrypt_entity_secret.py
+scripts/circle_register_entity_secret.go.bak
+
 # Terraform
 infra/terraform/.terraform/
 infra/terraform/*.tfstate

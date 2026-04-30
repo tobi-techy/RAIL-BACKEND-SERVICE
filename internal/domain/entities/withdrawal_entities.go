@@ -247,6 +247,7 @@ type InitiateCryptoWithdrawalRequest struct {
 	SourceWalletAddress string                 `json:"source_wallet_address"` // On-chain address for refunds
 	Category           string                  `json:"category,omitempty"`
 	Narration          string                  `json:"narration,omitempty"`
+	Emergency          bool                    `json:"emergency"` // If true, bypass stash lock with penalty fee
 	IdempotencyKey     string                  // Generated server-side
 }
 
@@ -293,6 +294,7 @@ type InitiateFiatWithdrawalRequest struct {
 	BridgeWalletID    string                  `json:"bridge_wallet_id"`
 	Category          string                  `json:"category,omitempty"`
 	Narration         string                  `json:"narration,omitempty"`
+	Emergency         bool                    `json:"emergency"` // If true, bypass stash lock with penalty fee
 	IdempotencyKey    string                  // Optional client-provided idempotency key
 }
 
@@ -391,6 +393,26 @@ type InitiateWithdrawalResponse struct {
 	WithdrawalID uuid.UUID        `json:"withdrawal_id"`
 	Status       WithdrawalStatus `json:"status"`
 	Message      string           `json:"message"`
+	EmergencyFee decimal.Decimal  `json:"emergency_fee,omitempty"` // Fee charged for emergency stash withdrawal
+}
+
+// EmergencyWithdrawalPreviewResponse is returned by the preview endpoint.
+type EmergencyWithdrawalPreviewResponse struct {
+	Amount      decimal.Decimal `json:"amount"`
+	FeePercent  decimal.Decimal `json:"fee_percent"`
+	FeeAmount   decimal.Decimal `json:"fee_amount"`
+	NetAmount   decimal.Decimal `json:"net_amount"`
+	LockAgeDays int             `json:"lock_age_days"`
+	FeeTier     string          `json:"fee_tier"`
+}
+
+// EmergencyWithdrawalResult is returned after executing an emergency stash-to-spending transfer.
+type EmergencyWithdrawalResult struct {
+	Amount     decimal.Decimal `json:"amount"`
+	Fee        decimal.Decimal `json:"fee"`
+	FeePercent decimal.Decimal `json:"fee_percent"`
+	NetAmount  decimal.Decimal `json:"net_amount"`
+	TransferID uuid.UUID       `json:"transfer_id"`
 }
 
 // WithdrawalFee represents withdrawal fee information

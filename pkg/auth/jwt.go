@@ -97,6 +97,12 @@ func ValidateToken(tokenString, secret string) (*Claims, error) {
 	}
 
 	if claims, ok := token.Claims.(*Claims); ok && token.Valid {
+		// SECURITY: Reject refresh tokens used as access tokens.
+		// Both token types share the same signing key, so without this check
+		// a 30-day refresh token could be used as a 1-hour access token.
+		if claims.TokenType != "access" {
+			return nil, fmt.Errorf("invalid token type: expected access token")
+		}
 		return claims, nil
 	}
 

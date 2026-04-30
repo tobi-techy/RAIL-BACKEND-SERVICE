@@ -669,6 +669,16 @@ func (h *AdminHandlers) getUserByID(ctx context.Context, userID uuid.UUID) (*ent
 }
 
 func (h *AdminHandlers) updateUserStatus(ctx context.Context, userID uuid.UUID, isActive bool) (*entities.AdminUserResponse, error) {
+	// SECURITY: Prevent admins from deactivating users with equal or higher role.
+	// Check the target user's role first.
+	var targetRole string
+	if err := h.db.QueryRowContext(ctx, "SELECT role FROM users WHERE id = $1", userID).Scan(&targetRole); err != nil {
+		return nil, err
+	}
+	if targetRole == "super_admin" {
+		return nil, fmt.Errorf("cannot modify super_admin accounts via this endpoint")
+	}
+
 	query := `
 		UPDATE users
 		SET is_active = $1, updated_at = $2

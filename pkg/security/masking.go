@@ -14,6 +14,7 @@ var (
 	jwtPattern      = regexp.MustCompile(`eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*`)
 	apiKeyPattern   = regexp.MustCompile(`(?i)(api[_-]?key|apikey|secret|token|password|auth)["\s:=]+["']?([a-zA-Z0-9_-]{16,})["']?`)
 	walletPattern   = regexp.MustCompile(`0x[a-fA-F0-9]{40}`)
+	solanaPattern   = regexp.MustCompile(`\b[1-9A-HJ-NP-Za-km-z]{32,44}\b`)
 	
 	// Sensitive field names
 	sensitiveFields = []string{
@@ -46,6 +47,9 @@ func MaskString(s string) string {
 	
 	// Mask wallet addresses (partial)
 	s = walletPattern.ReplaceAllStringFunc(s, maskWalletAddress)
+
+	// Mask Solana addresses (base58, 32-44 chars)
+	s = solanaPattern.ReplaceAllStringFunc(s, maskWalletAddress)
 	
 	return s
 }
@@ -175,16 +179,18 @@ func SanitizeForLog(data interface{}) interface{} {
 func RedactHeaders(headers map[string][]string) map[string]string {
 	redacted := make(map[string]string)
 	sensitiveHeaders := []string{"authorization", "x-api-key", "cookie", "set-cookie"}
-	
+
 	for k, v := range headers {
 		lower := strings.ToLower(k)
+		matched := false
 		for _, sensitive := range sensitiveHeaders {
 			if strings.Contains(lower, sensitive) {
 				redacted[k] = "***REDACTED***"
-				continue
+				matched = true
+				break
 			}
 		}
-		if len(v) > 0 {
+		if !matched && len(v) > 0 {
 			redacted[k] = v[0]
 		}
 	}

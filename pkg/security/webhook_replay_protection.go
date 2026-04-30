@@ -109,10 +109,10 @@ func (w *WebhookReplayProtection) ValidateWebhook(
 		return nil, fmt.Errorf("signature verification failed: %w", err)
 	}
 
-	// 5. Store event ID and nonce for future deduplication
+	// 5. Store event ID and nonce for future deduplication (fail-closed)
 	if err := w.storeWebhookData(ctx, provider, eventID, nonce); err != nil {
-		w.logger.Error("Failed to store webhook data", zap.Error(err))
-		// Don't fail the request, just log
+		w.logger.Error("Failed to store webhook data — rejecting to prevent replay", zap.Error(err))
+		return nil, fmt.Errorf("failed to store deduplication data: %w", err)
 	}
 
 	return &ProtectedWebhookPayload{

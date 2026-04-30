@@ -12,12 +12,25 @@ const NETWORK = (process.env.UMBRA_NETWORK || "mainnet") as "mainnet" | "devnet"
 const INDEXER_URL = process.env.UMBRA_INDEXER_URL || "https://utxo-indexer.api.umbraprivacy.com";
 const RELAYER_URL = process.env.UMBRA_RELAYER_URL || "https://relayer.api.umbraprivacy.com";
 
+// SECURITY: Load private key from environment variable — never accept over HTTP.
+const PRIVATE_KEY = process.env.UMBRA_PRIVATE_KEY || "";
+
 let svc: Awaited<ReturnType<typeof createUmbraService>> | null = null;
+
+// SECURITY: Require auth token in all non-dev environments. Fail to start if missing.
+if (!AUTH_TOKEN) {
+  const env = process.env.NODE_ENV || "development";
+  if (env !== "development" && env !== "test") {
+    console.error("FATAL: UMBRA_SIDECAR_AUTH_TOKEN is required in non-development environments");
+    process.exit(1);
+  }
+  console.warn("WARNING: Running without auth token — development mode only");
+}
 
 // Auth middleware — reject requests without valid token
 app.use((req, res, next) => {
-  if (req.path === "/health") return next(); // health check is public
-  if (!AUTH_TOKEN) return next(); // no token configured = dev mode
+  if (req.path === "/health") return next();
+  if (!AUTH_TOKEN) return next(); // dev mode only (enforced above)
   const token = req.headers["x-sidecar-token"] || req.headers["authorization"]?.replace("Bearer ", "");
   if (token !== AUTH_TOKEN) {
     res.status(401).json({ error: "unauthorized" });
@@ -30,22 +43,13 @@ app.get("/health", (_req, res) => {
   res.json({ status: svc ? "ready" : "initializing" });
 });
 
-app.post("/init", async (req, res) => {
-  try {
-    const { privateKey } = req.body;
-    if (!privateKey) { res.status(400).json({ error: "privateKey required" }); return; }
-    svc = await createUmbraService({
-      privateKey, rpcUrl: RPC_URL, rpcWsUrl: RPC_WS_URL,
-      network: NETWORK, indexerUrl: INDEXER_URL, relayerUrl: RELAYER_URL,
-    });
-    res.json({ status: "initialized", address: svc.address });
-  } catch (err: any) { res.status(500).json({ error: err.message }); }
-});
+// /init endpoint REMOVED — private keys must never be transmitted over HTTP.
+// The sidecar now initializes from the UMBRA_PRIVATE_KEY environment variable at startup.
 
 app.post("/register", async (_req, res) => {
   if (!svc) { res.status(503).json({ error: "not initialized" }); return; }
   try { res.json(await svc.register()); }
-  catch (err: any) { res.status(500).json({ error: err.message }); }
+  catch (err: any) { res.status(500).json({ error: "internal error" }); }
 });
 
 app.post("/shield", async (req, res) => {
@@ -53,7 +57,7 @@ app.post("/shield", async (req, res) => {
   try {
     const { mint, amount, destination } = req.body;
     res.json(await svc.shield(mint, BigInt(amount), destination));
-  } catch (err: any) { res.status(500).json({ error: err.message }); }
+  } catch (err: any) { res.status(500).json({ error: "internal error" }); }
 });
 
 app.post("/unshield", async (req, res) => {
@@ -61,19 +65,19 @@ app.post("/unshield", async (req, res) => {
   try {
     const { mint, amount, destination } = req.body;
     res.json(await svc.unshield(mint, BigInt(amount), destination));
-  } catch (err: any) { res.status(500).json({ error: err.message }); }
+  } catch (err: any) { res.status(500).json({ error: "internal error" }); }
 });
 
 app.post("/balance", async (req, res) => {
   if (!svc) { res.status(503).json({ error: "not initialized" }); return; }
   try { res.json(await svc.getEncryptedBalance(req.body.mint)); }
-  catch (err: any) { res.status(500).json({ error: err.message }); }
+  catch (err: any) { res.status(500).json({ error: "internal error" }); }
 });
 
 app.post("/scan-utxos", async (req, res) => {
   if (!svc) { res.status(503).json({ error: "not initialized" }); return; }
   try { res.json(await svc.scanUtxos(req.body.treeIndex ?? 0, req.body.startIndex ?? 0)); }
-  catch (err: any) { res.status(500).json({ error: err.message }); }
+  catch (err: any) { res.status(500).json({ error: "internal error" }); }
 });
 
 app.post("/viewing-key", async (req, res) => {
@@ -81,7 +85,27 @@ app.post("/viewing-key", async (req, res) => {
   try {
     const { scope, year, month, day } = req.body;
     res.json(await svc.deriveViewingKey(scope, year, month, day));
-  } catch (err: any) { res.status(500).json({ error: err.message }); }
+  } catch (err: any) { res.status(500).json({ error: "internal error" }); }
 });
 
-app.listen(PORT, () => console.log(`Umbra sidecar listening on port ${PORT}`));
+// Auto-initialize from environment variable at startup
+async function init() {
+  if (!PRIVATE_KEY) {
+    console.warn("UMBRA_PRIVATE_KEY not set — sidecar will start but remain uninitialized");
+    return;
+  }
+  try {
+    svc = await createUmbraService({
+      privateKey: PRIVATE_KEY, rpcUrl: RPC_URL, rpcWsUrl: RPC_WS_URL,
+      network: NETWORK, indexerUrl: INDEXER_URL, relayerUrl: RELAYER_URL,
+    });
+    console.log(`Umbra sidecar initialized, address: ${svc.address}`);
+  } catch (err) {
+    console.error("Failed to initialize Umbra service:", err);
+    process.exit(1);
+  }
+}
+
+init().then(() => {
+  app.listen(PORT, () => console.log(`Umbra sidecar listening on port ${PORT}`));
+});

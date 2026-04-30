@@ -3,6 +3,7 @@ package twofa
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/base32"
 	"fmt"
@@ -212,7 +213,7 @@ func (s *Service) Verify(ctx context.Context, userID uuid.UUID, code string) (bo
 			continue
 		}
 
-		if backupCode == code {
+		if subtle.ConstantTimeCompare([]byte(backupCode), []byte(code)) == 1 {
 			// Mark backup code as used
 			encryptedBackupCodes[i] = ""
 			_, err = s.db.ExecContext(ctx, 
@@ -327,9 +328,10 @@ func (s *Service) RegenerateBackupCodes(ctx context.Context, userID uuid.UUID, c
 func (s *Service) generateBackupCodes(count int) []string {
 	codes := make([]string, count)
 	for i := 0; i < count; i++ {
-		// Generate 8-character backup code
 		bytes := make([]byte, 5)
-		rand.Read(bytes)
+		if _, err := rand.Read(bytes); err != nil {
+			panic("crypto/rand.Read failed: " + err.Error())
+		}
 		code := base32.StdEncoding.EncodeToString(bytes)
 		code = strings.TrimRight(code, "=")
 		codes[i] = code[:8]

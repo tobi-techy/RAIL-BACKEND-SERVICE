@@ -107,6 +107,7 @@ type WithdrawalNotificationService interface {
 	NotifyWithdrawalFailed(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, reason string) error
 	NotifyWithdrawalSubmitted(ctx context.Context, userID uuid.UUID, amount string) error
 	NotifyLargeBalanceChange(ctx context.Context, userID uuid.UUID, changeType string, amount decimal.Decimal, newBalance decimal.Decimal) error
+	NotifyEmergencyWithdrawal(ctx context.Context, userID uuid.UUID, amount, fee decimal.Decimal) error
 }
 
 // BridgeAdapter interface for Bridge offramp operations
@@ -134,6 +135,13 @@ type CircleCryptoTransferAdapter interface {
 type StashLockChecker interface {
 	CanWithdraw(ctx context.Context, userID uuid.UUID) (bool, time.Time, error)
 	MarkWithdrawn(ctx context.Context, userID uuid.UUID) error
+	EmergencyWithdrawalFeePercent(ctx context.Context, userID uuid.UUID) (decimal.Decimal, int, error)
+	MarkEmergencyWithdrawn(ctx context.Context, userID uuid.UUID) error
+}
+
+// EmergencyLedger is the subset of ledger operations needed for emergency withdrawals.
+type EmergencyLedger interface {
+	EmergencyTransferStashToSpending(ctx context.Context, userID uuid.UUID, amount, fee decimal.Decimal, idempotencyKey string) error
 }
 
 // ChainRailsTransferAdapter creates cross-chain intents via ChainRails.
@@ -156,6 +164,7 @@ type WithdrawalService struct {
 	circleTransfer      CircleCryptoTransferAdapter
 	chainRailsAdapter  ChainRailsTransferAdapter
 	stashLock          StashLockChecker
+	emergencyLedger    EmergencyLedger
 	complianceScreener ComplianceScreener
 	addressWhitelist   AddressWhitelistChecker
 	tieredLimits       TieredWithdrawalLimitChecker
@@ -252,6 +261,93 @@ func (s *WithdrawalService) SetAddressWhitelistChecker(c AddressWhitelistChecker
 // SetTieredWithdrawalLimits wires tiered withdrawal limit enforcement (optional).
 func (s *WithdrawalService) SetTieredWithdrawalLimits(c TieredWithdrawalLimitChecker) {
 	s.tieredLimits = c
+}
+
+// SetEmergencyLedger wires the emergency ledger for stash-to-spending transfers with fee.
+func (s *WithdrawalService) SetEmergencyLedger(l EmergencyLedger) {
+	s.emergencyLedger = l
+}
+
+// EmergencyWithdrawalPreview returns the fee breakdown for an emergency stash withdrawal.
+func (s *WithdrawalService) EmergencyWithdrawalPreview(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (*entities.EmergencyWithdrawalPreviewResponse, error) {
+	if amount.LessThanOrEqual(decimal.Zero) {
+		return nil, fmt.Errorf("amount must be positive")
+	}
+	s.stashLockMu.RLock()
+	sl := s.stashLock
+	s.stashLockMu.RUnlock()
+	if sl == nil {
+		return nil, fmt.Errorf("stash lock service not configured")
+	}
+	feePct, days, err := sl.EmergencyWithdrawalFeePercent(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	fee := amount.Mul(feePct).RoundBank(2)
+	tier := "1%"
+	if days <= 30 {
+		tier = "3%"
+	} else if days <= 60 {
+		tier = "2%"
+	}
+	return &entities.EmergencyWithdrawalPreviewResponse{
+		Amount:      amount,
+		FeePercent:  feePct,
+		FeeAmount:   fee,
+		NetAmount:   amount.Sub(fee),
+		LockAgeDays: days,
+		FeeTier:     tier,
+	}, nil
+}
+
+// EmergencyStashToSpending executes an emergency stash-to-spending transfer with fee.
+func (s *WithdrawalService) EmergencyStashToSpending(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) (*entities.EmergencyWithdrawalResult, error) {
+	if amount.LessThanOrEqual(decimal.Zero) {
+		return nil, fmt.Errorf("amount must be positive")
+	}
+	s.stashLockMu.RLock()
+	sl := s.stashLock
+	s.stashLockMu.RUnlock()
+	if sl == nil {
+		return nil, fmt.Errorf("stash lock service not configured")
+	}
+	if s.emergencyLedger == nil {
+		return nil, fmt.Errorf("emergency ledger not configured")
+	}
+
+	// Check balance
+	balance, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get stash balance: %w", err)
+	}
+
+	feePct, _, err := sl.EmergencyWithdrawalFeePercent(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	fee := amount.Mul(feePct).RoundBank(2)
+	total := amount.Add(fee)
+	if balance.LessThan(total) {
+		return nil, fmt.Errorf("insufficient stash balance: have %s, need %s (amount %s + fee %s)", balance.String(), total.String(), amount.String(), fee.String())
+	}
+
+	if err := s.emergencyLedger.EmergencyTransferStashToSpending(ctx, userID, amount, fee, idempotencyKey); err != nil {
+		return nil, fmt.Errorf("emergency transfer failed: %w", err)
+	}
+	if err := sl.MarkEmergencyWithdrawn(ctx, userID); err != nil {
+		s.logger.Error("failed to mark cycles as emergency withdrawn", zap.String("user_id", userID.String()), zap.Error(err))
+	}
+	if s.notificationService != nil {
+		_ = s.notificationService.NotifyEmergencyWithdrawal(ctx, userID, amount, fee)
+	}
+
+	return &entities.EmergencyWithdrawalResult{
+		Amount:     amount,
+		Fee:        fee,
+		FeePercent: feePct,
+		NetAmount:  amount.Sub(fee),
+		TransferID: uuid.New(),
+	}, nil
 }
 
 // advisoryLockKey derives a stable int64 from a user UUID for pg_advisory_lock.
@@ -353,13 +449,22 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	s.stashLockMu.RLock()
 	sl := s.stashLock
 	s.stashLockMu.RUnlock()
+	var emergencyFee decimal.Decimal
 	if req.SourceAccount == entities.WithdrawalSourceStashBalance && sl != nil {
 		canWithdraw, _, err := sl.CanWithdraw(ctx, req.UserID)
 		if err != nil {
 			return nil, fmt.Errorf("stash lock check failed: %w", err)
 		}
 		if !canWithdraw {
-			return nil, fmt.Errorf("stash funds are locked: no active withdrawal window (funds lock for 90 days, then a 7-day window opens)")
+			if !req.Emergency {
+				return nil, fmt.Errorf("stash funds are locked: no active withdrawal window (funds lock for 90 days, then a 7-day window opens)")
+			}
+			// Emergency withdrawal: calculate penalty fee
+			feePct, _, feeErr := sl.EmergencyWithdrawalFeePercent(ctx, req.UserID)
+			if feeErr != nil {
+				return nil, fmt.Errorf("emergency fee calculation failed: %w", feeErr)
+			}
+			emergencyFee = req.Amount.Mul(feePct).RoundBank(2)
 		}
 		// MarkWithdrawn is deferred until after the withdrawal succeeds (ledger + transfer).
 	}
@@ -442,7 +547,7 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	if err != nil {
 		return nil, fmt.Errorf("failed to calculate fee: %w", err)
 	}
-	totalAmount := req.Amount.Add(fee)
+	totalAmount := req.Amount.Add(fee).Add(emergencyFee)
 
 	if balance.LessThan(totalAmount) {
 		return nil, fmt.Errorf("insufficient balance for withdrawal + fee: have %s, need %s", balance.String(), totalAmount.String())
@@ -571,9 +676,24 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 	sl := s.stashLock
 	s.stashLockMu.RUnlock()
 	if req.SourceAccount == entities.WithdrawalSourceStashBalance && sl != nil {
-		if err := sl.MarkWithdrawn(ctx, req.UserID); err != nil {
-			s.logger.Error("async: failed to mark stash window consumed",
-				"user_id", req.UserID, "error", err)
+		if req.Emergency {
+			// Emergency withdrawal: debit fee to revenue account and mark cycles
+			feePct, _, _ := sl.EmergencyWithdrawalFeePercent(ctx, req.UserID)
+			eFee := req.Amount.Mul(feePct).RoundBank(2)
+			if eFee.IsPositive() && s.emergencyLedger != nil {
+				idemKey := fmt.Sprintf("emergency-fee-%s", withdrawal.ID.String())
+				if feeErr := s.emergencyLedger.EmergencyTransferStashToSpending(ctx, req.UserID, decimal.Zero, eFee, idemKey); feeErr != nil {
+					s.logger.Error("async: failed to debit emergency fee", "error", feeErr, "withdrawal_id", withdrawal.ID.String())
+				}
+			}
+			if err := sl.MarkEmergencyWithdrawn(ctx, req.UserID); err != nil {
+				s.logger.Error("async: failed to mark emergency withdrawn", "user_id", req.UserID, "error", err)
+			}
+		} else {
+			if err := sl.MarkWithdrawn(ctx, req.UserID); err != nil {
+				s.logger.Error("async: failed to mark stash window consumed",
+					"user_id", req.UserID, "error", err)
+			}
 		}
 	}
 
@@ -678,13 +798,21 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 	s.stashLockMu.RLock()
 	sl := s.stashLock
 	s.stashLockMu.RUnlock()
+	var emergencyFee decimal.Decimal
 	if req.SourceAccount == entities.WithdrawalSourceStashBalance && sl != nil {
 		canWithdraw, _, err := sl.CanWithdraw(ctx, req.UserID)
 		if err != nil {
 			return nil, fmt.Errorf("stash lock check failed: %w", err)
 		}
 		if !canWithdraw {
-			return nil, fmt.Errorf("stash funds are locked: no active withdrawal window (funds lock for 90 days, then a 7-day window opens)")
+			if !req.Emergency {
+				return nil, fmt.Errorf("stash funds are locked: no active withdrawal window (funds lock for 90 days, then a 7-day window opens)")
+			}
+			feePct, _, feeErr := sl.EmergencyWithdrawalFeePercent(ctx, req.UserID)
+			if feeErr != nil {
+				return nil, fmt.Errorf("emergency fee calculation failed: %w", feeErr)
+			}
+			emergencyFee = req.Amount.Mul(feePct).RoundBank(2)
 		}
 	}
 
@@ -714,7 +842,7 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 
 	// Step 6: Calculate fee
 	fee := s.calculateFiatWithdrawalFee(req.Amount, req.Currency)
-	totalAmount := req.Amount.Add(fee)
+	totalAmount := req.Amount.Add(fee).Add(emergencyFee)
 
 	if balance.LessThan(totalAmount) {
 		return nil, fmt.Errorf("insufficient balance for withdrawal + fee: have %s, need %s", balance.String(), totalAmount.String())
@@ -794,6 +922,17 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 		s.logger.Error("Failed to post pre-transfer ledger debit", "error", err, "withdrawal_id", withdrawal.ID.String())
 		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "ledger debit failed: "+err.Error())
 		return nil, fmt.Errorf("failed to post ledger debit: %w", err)
+	}
+
+	// Debit emergency fee to revenue account if this is an emergency withdrawal
+	if emergencyFee.IsPositive() && s.emergencyLedger != nil {
+		idemKey := fmt.Sprintf("emergency-fee-%s", withdrawal.ID.String())
+		if feeErr := s.emergencyLedger.EmergencyTransferStashToSpending(ctx, req.UserID, decimal.Zero, emergencyFee, idemKey); feeErr != nil {
+			s.logger.Error("Failed to debit emergency fee", "error", feeErr, "withdrawal_id", withdrawal.ID.String())
+		}
+		if sl != nil {
+			_ = sl.MarkEmergencyWithdrawn(ctx, req.UserID)
+		}
 	}
 
 	// Step 9: Execute Bridge offramp transfer

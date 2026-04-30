@@ -14,6 +14,7 @@ import (
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/pkg/crypto"
+	"github.com/rail-service/rail_service/pkg/security"
 )
 
 // UserRepository implements the user repository interface using PostgreSQL
@@ -61,7 +62,7 @@ func (r *UserRepository) Create(ctx context.Context, user *entities.UserProfile)
 		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
 			return fmt.Errorf("user with email already exists: %w", err)
 		}
-		r.logger.Error("Failed to create user", zap.Error(err), zap.String("email", user.Email))
+		r.logger.Error("Failed to create user", zap.Error(err), zap.String("email", security.MaskString(user.Email)))
 		return fmt.Errorf("failed to create user: %w", err)
 	}
 
@@ -709,16 +710,16 @@ func (r *UserRepository) CreateUserFromAuth(ctx context.Context, req *entities.R
 
 	if err != nil {
 		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
-			r.logger.Warn("User registration failed - email already exists", zap.String("email", req.Email))
+			r.logger.Warn("User registration failed - email already exists", zap.String("email", security.MaskString(req.Email)))
 			return nil, fmt.Errorf("user with email already exists")
 		}
-		r.logger.Error("Failed to create user", zap.Error(err), zap.String("email", req.Email))
+		r.logger.Error("Failed to create user", zap.Error(err), zap.String("email", security.MaskString(req.Email)))
 		return nil, fmt.Errorf("failed to create user: %w", err)
 	}
 
 	r.logger.Info("User created successfully",
 		zap.String("user_id", user.ID.String()),
-		zap.String("email", user.Email))
+		zap.String("email", security.MaskString(user.Email)))
 
 	return user, nil
 }
@@ -857,11 +858,11 @@ func (r *UserRepository) PhoneExists(ctx context.Context, phone string) (bool, e
 	var exists bool
 	err := r.db.QueryRowContext(ctx, query, phone).Scan(&exists)
 	if err != nil {
-		r.logger.Error("Failed to check phone existence", zap.Error(err), zap.String("phone", phone))
+		r.logger.Error("Failed to check phone existence", zap.Error(err), zap.String("phone", security.MaskPhoneNumber(phone)))
 		return false, fmt.Errorf("failed to check phone existence: %w", err)
 	}
 
-	r.logger.Debug("Checked phone existence", zap.String("phone", phone), zap.Bool("exists", exists))
+	r.logger.Debug("Checked phone existence", zap.String("phone", security.MaskPhoneNumber(phone)), zap.Bool("exists", exists))
 	return exists, nil
 }
 
@@ -907,7 +908,7 @@ func (r *UserRepository) GetUserByPhoneForLogin(ctx context.Context, phone strin
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("user not found")
 		}
-		r.logger.Error("Failed to get user by phone for login", zap.Error(err), zap.String("phone", phone))
+		r.logger.Error("Failed to get user by phone for login", zap.Error(err), zap.String("phone", security.MaskPhoneNumber(phone)))
 		return nil, fmt.Errorf("failed to get user: %w", err)
 	}
 
@@ -1584,7 +1585,7 @@ func (r *UserRepository) GetByPhone(ctx context.Context, phone string) (*entitie
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("user not found")
 		}
-		r.logger.Error("Failed to get user by phone", zap.Error(err), zap.String("phone", phone))
+		r.logger.Error("Failed to get user by phone", zap.Error(err), zap.String("phone", security.MaskPhoneNumber(phone)))
 		return nil, fmt.Errorf("failed to get user: %w", err)
 	}
 

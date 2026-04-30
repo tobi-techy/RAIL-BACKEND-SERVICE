@@ -16,8 +16,9 @@ const (
 	StashCycleStatusLocked         = "locked"
 	StashCycleStatusWindowOpen     = "window_open"
 	StashCycleStatusWindowNotified = "window_notified"
-	StashCycleStatusWithdrawn      = "withdrawn"
-	StashCycleStatusRelocked       = "relocked"
+	StashCycleStatusWithdrawn            = "withdrawn"
+	StashCycleStatusRelocked             = "relocked"
+	StashCycleStatusEmergencyWithdrawn   = "emergency_withdrawn"
 )
 
 type StashLockCycle struct {

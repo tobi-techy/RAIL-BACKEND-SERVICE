@@ -109,7 +109,7 @@ func (h *RoundupHandlers) UpdateSettings(c *gin.Context) {
 // ProcessTransactionRequest represents a transaction to process for round-up
 type ProcessTransactionRequest struct {
 	Amount       string  `json:"amount" binding:"required"` // String for precise decimal (e.g., "10.50")
-	SourceType   string  `json:"source_type" binding:"required,oneof=card bank manual"`
+	SourceType   string  `json:"source_type" binding:"required,oneof=card bank"`
 	SourceRef    *string `json:"source_ref,omitempty"`
 	MerchantName *string `json:"merchant_name,omitempty"`
 }

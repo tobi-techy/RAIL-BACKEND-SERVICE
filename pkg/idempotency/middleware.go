@@ -95,8 +95,14 @@ func Middleware(repo *repositories.IdempotencyRepository, logger *zap.Logger) gi
 			logger.Error("Failed to check idempotency key",
 				zap.String("idempotency_key", idempotencyKey),
 				zap.Error(err))
-			// On error, proceed with request (fail open)
-			c.Next()
+			// SECURITY: Fail closed — reject request if idempotency store is unavailable
+			// to prevent duplicate processing of financial operations.
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"error":      "Idempotency check unavailable",
+				"message":    "Please retry your request",
+				"request_id": c.GetString("request_id"),
+			})
+			c.Abort()
 			return
 		}
 

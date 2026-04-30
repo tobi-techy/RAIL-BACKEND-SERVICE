@@ -1763,22 +1763,20 @@ func (h *AuthHandlers) ProcessKYCCallback(c *gin.Context) {
 		return
 	}
 
-	// SECURITY: Verify webhook signature if secret is configured
-	if h.kycWebhookSecret != "" {
-		if !h.verifyKYCCallbackSignature(c) {
-			h.logger.Warn("Invalid KYC callback signature", zap.String("provider_ref", providerRef))
-			c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
-				Code:    "INVALID_SIGNATURE",
-				Message: "Invalid webhook signature",
-			})
-			return
-		}
-	} else if h.cfg != nil && h.cfg.Environment == "production" {
-		// Block in production if no secret configured
-		h.logger.Error("SECURITY: KYC webhook secret not configured in production")
-		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+	// SECURITY: Always verify webhook signature. Block if no secret configured.
+	if h.kycWebhookSecret == "" {
+		h.logger.Error("SECURITY: KYC webhook secret not configured — rejecting callback")
+		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{
 			Code:    "CONFIGURATION_ERROR",
 			Message: "Webhook verification not configured",
+		})
+		return
+	}
+	if !h.verifyKYCCallbackSignature(c) {
+		h.logger.Warn("Invalid KYC callback signature", zap.String("provider_ref", providerRef))
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
+			Code:    "INVALID_SIGNATURE",
+			Message: "Invalid webhook signature",
 		})
 		return
 	}
@@ -2038,13 +2036,8 @@ func (h *AuthHandlers) getUserIDFromContext(c *gin.Context) (uuid.UUID, error) {
 		}
 	}
 
-	// Fallback to query parameter for development/admin use
-	userIDQuery := c.Query("user_id")
-	if userIDQuery != "" {
-		return uuid.Parse(userIDQuery)
-	}
-
-	return uuid.Nil, fmt.Errorf("user ID not found in context or query parameters")
+	// SECURITY: Never fall back to query parameters for user identity.
+	return uuid.Nil, fmt.Errorf("user ID not found in context")
 }
 
 func extractSessionDetails(c *gin.Context) (ipAddress, userAgent, deviceFingerprint, location string) {

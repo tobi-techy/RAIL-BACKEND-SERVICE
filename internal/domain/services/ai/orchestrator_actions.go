@@ -230,8 +230,14 @@ func (o *Orchestrator) createTransferAction(ctx context.Context, userID, convID 
 	if to != "spend" && to != "stash" {
 		return map[string]interface{}{"error": "Destination must be 'spend' or 'stash'"}, nil
 	}
-	if amountF > 50000 {
-		return map[string]interface{}{"error": "Transfer amount exceeds maximum ($50,000)"}, nil
+	if amountF > 500 {
+		return map[string]interface{}{"error": "Transfer amount exceeds maximum ($500). Use the app for larger transfers."}, nil
+	}
+	if amountF > 100 {
+		return map[string]interface{}{
+			"requires_passcode": true,
+			"message":           "Transfers over $100 require passcode verification. Please confirm in the app.",
+		}, nil
 	}
 
 	amount := decimal.NewFromFloat(amountF)

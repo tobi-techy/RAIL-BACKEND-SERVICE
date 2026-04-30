@@ -183,3 +183,62 @@ func (s *Service) NotifyWindowsOpened(ctx context.Context) (int, error) {
 	s.logger.Info("Notified stash window open", zap.Int("count", count))
 	return count, nil
 }
+
+// EmergencyWithdrawalFeePercent returns the fee percentage and lock age in days
+// for an emergency withdrawal. Uses the oldest locked cycle for the most favorable fee.
+// Returns error if no locked cycles exist.
+func (s *Service) EmergencyWithdrawalFeePercent(ctx context.Context, userID uuid.UUID) (decimal.Decimal, int, error) {
+	cycles, err := s.repo.GetByUserID(ctx, userID)
+	if err != nil {
+		return decimal.Zero, 0, err
+	}
+	now := time.Now()
+	var oldest *entities.StashLockCycle
+	for _, c := range cycles {
+		if c.Status != entities.StashCycleStatusLocked {
+			continue
+		}
+		if oldest == nil || c.LockStart.Before(oldest.LockStart) {
+			oldest = c
+		}
+	}
+	if oldest == nil {
+		return decimal.Zero, 0, fmt.Errorf("no locked stash cycles found")
+	}
+	days := int(now.Sub(oldest.LockStart).Hours() / 24)
+	pct := emergencyFeeTier(days)
+	return pct, days, nil
+}
+
+// emergencyFeeTier returns the fee percentage for the given lock age in days.
+func emergencyFeeTier(days int) decimal.Decimal {
+	switch {
+	case days <= 30:
+		return decimal.NewFromFloat(0.03)
+	case days <= 60:
+		return decimal.NewFromFloat(0.02)
+	default:
+		return decimal.NewFromFloat(0.01)
+	}
+}
+
+// CalculateEmergencyFee computes the fee amount from a withdrawal amount and fee percentage.
+func CalculateEmergencyFee(amount, feePercent decimal.Decimal) decimal.Decimal {
+	return amount.Mul(feePercent).RoundBank(2)
+}
+
+// MarkEmergencyWithdrawn marks all locked cycles for a user as emergency_withdrawn.
+func (s *Service) MarkEmergencyWithdrawn(ctx context.Context, userID uuid.UUID) error {
+	cycles, err := s.repo.GetByUserID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	for _, c := range cycles {
+		if c.Status == entities.StashCycleStatusLocked {
+			if err := s.repo.UpdateStatus(ctx, c.ID, entities.StashCycleStatusEmergencyWithdrawn); err != nil {
+				return fmt.Errorf("stashlock: mark emergency withdrawn: %w", err)
+			}
+		}
+	}
+	return nil
+}

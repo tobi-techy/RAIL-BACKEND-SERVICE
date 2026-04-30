@@ -5,9 +5,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"unicode"
@@ -31,15 +29,15 @@ func ValidatePassword(password, hash string) bool {
 }
 
 // ValidatePasswordStrength checks that a password meets minimum policy requirements:
-// at least 8 characters, one uppercase, one lowercase, and one digit.
+// at least 12 characters, one uppercase, one lowercase, one digit, and one special character.
 func ValidatePasswordStrength(password string) error {
 	if len(password) > 72 {
 		return fmt.Errorf("password must not exceed 72 characters")
 	}
-	if len(password) < 8 {
-		return fmt.Errorf("password must be at least 8 characters")
+	if len(password) < 12 {
+		return fmt.Errorf("password must be at least 12 characters")
 	}
-	var hasUpper, hasLower, hasDigit bool
+	var hasUpper, hasLower, hasDigit, hasSpecial bool
 	for _, c := range password {
 		switch {
 		case unicode.IsUpper(c):
@@ -48,6 +46,8 @@ func ValidatePasswordStrength(password string) error {
 			hasLower = true
 		case unicode.IsDigit(c):
 			hasDigit = true
+		case unicode.IsPunct(c) || unicode.IsSymbol(c):
+			hasSpecial = true
 		}
 	}
 	if !hasUpper {
@@ -58,6 +58,9 @@ func ValidatePasswordStrength(password string) error {
 	}
 	if !hasDigit {
 		return fmt.Errorf("password must contain at least one digit")
+	}
+	if !hasSpecial {
+		return fmt.Errorf("password must contain at least one special character")
 	}
 	return nil
 }
@@ -203,47 +206,8 @@ func ParseSelectorVerifierToken(fullToken string) (selector, verifier string, er
 	return "", "", fmt.Errorf("invalid token format: missing separator")
 }
 
-// DecodeJWTClaims decodes JWT claims without verification (for trusted tokens)
-func DecodeJWTClaims(token string) (map[string]interface{}, error) {
-	parts := splitJWT(token)
-	if len(parts) != 3 {
-		return nil, fmt.Errorf("invalid JWT format")
-	}
+// DecodeJWTClaims is intentionally removed.
+// Decoding JWT claims without signature verification is a security risk.
+// Use pkg/auth.ValidateToken() instead which verifies the signature.
 
-	// Decode payload (second part)
-	payload, err := base64URLDecode(parts[1])
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode payload: %w", err)
-	}
-
-	var claims map[string]interface{}
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return nil, fmt.Errorf("failed to parse claims: %w", err)
-	}
-
-	return claims, nil
-}
-
-func splitJWT(token string) []string {
-	var parts []string
-	start := 0
-	for i := 0; i < len(token); i++ {
-		if token[i] == '.' {
-			parts = append(parts, token[start:i])
-			start = i + 1
-		}
-	}
-	parts = append(parts, token[start:])
-	return parts
-}
-
-func base64URLDecode(s string) ([]byte, error) {
-	// Add padding if needed
-	switch len(s) % 4 {
-	case 2:
-		s += "=="
-	case 3:
-		s += "="
-	}
-	return base64.URLEncoding.DecodeString(s)
-}
+// (splitJWT and base64URLDecode removed — were only used by DecodeJWTClaims)

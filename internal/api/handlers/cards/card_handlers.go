@@ -365,6 +365,12 @@ func (h *CardHandlers) SetDailyLimit(c *gin.Context) {
 		return
 	}
 
+	// SECURITY: Validate limit is positive if provided
+	if req.LimitCents != nil && *req.LimitCents <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "INVALID_LIMIT", "message": "Daily limit must be a positive value"})
+		return
+	}
+
 	cardData, err := h.service.SetDailyLimit(c.Request.Context(), userID, cardID, req.LimitCents)
 	if err != nil {
 		if err == card.ErrCardNotFound {

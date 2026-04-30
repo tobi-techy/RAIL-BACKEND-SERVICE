@@ -27,6 +27,8 @@ type WithdrawalServiceInterface interface {
 	GetUserWithdrawals(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error)
 	CancelWithdrawal(ctx context.Context, userID, withdrawalID uuid.UUID) error
 	GetWithdrawalFee(ctx context.Context, withdrawalType entities.WithdrawalType, amount decimal.Decimal, currency entities.WithdrawalCurrency, sourceChain, destChain string) (*entities.WithdrawalFee, error)
+	EmergencyWithdrawalPreview(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (*entities.EmergencyWithdrawalPreviewResponse, error)
+	EmergencyStashToSpending(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) (*entities.EmergencyWithdrawalResult, error)
 }
 
 // WalletProvider interface for getting user's Bridge-managed wallet
@@ -58,6 +60,8 @@ type CryptoWithdrawalRequest struct {
 	Currency           string `json:"currency,omitempty"`                       // USDC, USDT, EURC, PYUSD, USDG (defaults to USDC)
 	DestinationAddress string `json:"destination_address" binding:"required"`
 	DestinationChain   string `json:"destination_chain"` // optional, defaults to SOL
+	SourceAccount      string `json:"source_account,omitempty"` // spending_balance (default) or stash_balance
+	Emergency          bool   `json:"emergency,omitempty"` // bypass stash lock with penalty fee
 	Category           string `json:"category,omitempty"`
 	Narration          string `json:"narration,omitempty"`
 }
@@ -72,6 +76,8 @@ type FiatWithdrawalRequest struct {
 	RoutingNumber     string `json:"routing_number,omitempty"`
 	IBAN              string `json:"iban,omitempty"`
 	BIC               string `json:"bic,omitempty"`
+	SourceAccount     string `json:"source_account,omitempty"` // spending_balance (default) or stash_balance
+	Emergency         bool   `json:"emergency,omitempty"` // bypass stash lock with penalty fee
 	Category          string `json:"category,omitempty"`
 	Narration         string `json:"narration,omitempty"`
 }
@@ -184,12 +190,13 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 		DestinationAddress: req.DestinationAddress,
 		DestinationChain:   destChain,
 		SourceChain:        string(wallet.Chain),
-		SourceAccount:      entities.WithdrawalSourceSpendingBalance,
+		SourceAccount:      resolveSourceAccount(req.SourceAccount),
 		BridgeWalletID:     wallet.BridgeWalletID,
 		CircleWalletID:     wallet.CircleWalletID,
 		SourceWalletAddress: wallet.Address,
 		Category:           category,
 		Narration:          narration,
+		Emergency:          req.Emergency,
 		IdempotencyKey:     idempotencyKey,
 	}
 
@@ -280,10 +287,11 @@ func (h *WithdrawalHandlers) InitiateFiatWithdrawal(c *gin.Context) {
 		RoutingNumber:     strings.ReplaceAll(strings.TrimSpace(req.RoutingNumber), " ", ""),
 		IBAN:              normalizeIBAN(req.IBAN),
 		BIC:               strings.ToUpper(strings.TrimSpace(req.BIC)),
-		SourceAccount:     entities.WithdrawalSourceSpendingBalance, // Default to spending
+		SourceAccount:     resolveSourceAccount(req.SourceAccount),
 		BridgeWalletID:    wallet.BridgeWalletID,
 		Category:          category,
 		Narration:         narration,
+		Emergency:         req.Emergency,
 		IdempotencyKey:    idempotencyKey,
 	}
 
@@ -791,4 +799,77 @@ func (h *AdminWithdrawalHandlers) AdminGetWithdrawals(c *gin.Context) {
 		"items": withdrawals,
 		"count": len(withdrawals),
 	})
+}
+
+// resolveSourceAccount maps the HTTP source_account string to the entity type.
+func resolveSourceAccount(raw string) entities.WithdrawalSourceAccount {
+	if strings.TrimSpace(strings.ToLower(raw)) == "stash_balance" {
+		return entities.WithdrawalSourceStashBalance
+	}
+	return entities.WithdrawalSourceSpendingBalance
+}
+
+// EmergencyWithdrawalPreview handles GET /api/v1/withdrawals/emergency/preview?amount=X
+func (h *WithdrawalHandlers) EmergencyWithdrawalPreview(c *gin.Context) {
+	userID, ok := h.extractUserID(c)
+	if !ok {
+		return
+	}
+	amount, err := parsePositiveDecimal(c.Query("amount"))
+	if err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidAmount, err.Error())
+		return
+	}
+	preview, err := h.withdrawalService.EmergencyWithdrawalPreview(c.Request.Context(), userID, amount)
+	if err != nil {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "no locked") {
+			common.SendBadRequest(c, "NO_LOCKED_CYCLES", "No locked stash cycles found")
+			return
+		}
+		h.logger.Error("Emergency withdrawal preview failed", "error", err, "user_id", userID)
+		common.SendInternalError(c, "PREVIEW_ERROR", "Failed to calculate emergency withdrawal fee")
+		return
+	}
+	c.JSON(http.StatusOK, preview)
+}
+
+// EmergencyStashToSpendingRequest is the HTTP request for emergency stash-to-spending transfer.
+type EmergencyStashToSpendingRequest struct {
+	Amount string `json:"amount" binding:"required"`
+}
+
+// EmergencyStashToSpending handles POST /api/v1/withdrawals/emergency/to-spending
+func (h *WithdrawalHandlers) EmergencyStashToSpending(c *gin.Context) {
+	userID, ok := h.extractUserID(c)
+	if !ok {
+		return
+	}
+	var req EmergencyStashToSpendingRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Invalid request: "+err.Error())
+		return
+	}
+	amount, err := parsePositiveDecimal(req.Amount)
+	if err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidAmount, err.Error())
+		return
+	}
+	idempotencyKey, _ := getIdempotencyKey(c)
+
+	result, err := h.withdrawalService.EmergencyStashToSpending(c.Request.Context(), userID, amount, idempotencyKey)
+	if err != nil {
+		errMsg := err.Error()
+		switch {
+		case strings.Contains(errMsg, "insufficient"):
+			common.SendBadRequest(c, common.ErrCodeInsufficientFunds, errMsg)
+		case strings.Contains(errMsg, "no locked"):
+			common.SendBadRequest(c, "NO_LOCKED_CYCLES", "No locked stash cycles found")
+		default:
+			h.logger.Error("Emergency stash-to-spending failed", "error", err, "user_id", userID)
+			common.SendInternalError(c, "EMERGENCY_WITHDRAWAL_ERROR", "Failed to execute emergency withdrawal")
+		}
+		return
+	}
+	c.JSON(http.StatusOK, result)
 }

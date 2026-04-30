@@ -780,6 +780,49 @@ func (s *Service) AdminTransferStashToSpending(ctx context.Context, userID uuid.
 	return err
 }
 
+// EmergencyTransferStashToSpending moves funds from stash to spending with a fee
+// credited to the emergency withdrawal revenue account. Bypasses stash lock.
+func (s *Service) EmergencyTransferStashToSpending(ctx context.Context, userID uuid.UUID, amount, fee decimal.Decimal, idempotencyKey string) error {
+	if amount.IsZero() || amount.IsNegative() {
+		return fmt.Errorf("invalid transfer amount: %s", amount.String())
+	}
+	if fee.IsNegative() {
+		return fmt.Errorf("fee cannot be negative")
+	}
+
+	stashAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		return fmt.Errorf("get stash account: %w", err)
+	}
+	spendAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return fmt.Errorf("get spending account: %w", err)
+	}
+	revenueAccount, err := s.GetSystemAccount(ctx, entities.AccountTypeEmergencyWithdrawalRevenue)
+	if err != nil {
+		return fmt.Errorf("get emergency revenue account: %w", err)
+	}
+
+	total := amount.Add(fee)
+	desc := fmt.Sprintf("Emergency stash withdrawal: %s (fee: %s)", amount.String(), fee.String())
+	refType := "emergency_stash_transfer"
+	txReq := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeInternalTransfer,
+		ReferenceType:   &refType,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &desc,
+		Entries: []entities.CreateEntryRequest{
+			{AccountID: stashAccount.ID, EntryType: entities.EntryTypeCredit, Amount: total, Currency: "USD"},
+			{AccountID: spendAccount.ID, EntryType: entities.EntryTypeDebit, Amount: amount, Currency: "USD"},
+			{AccountID: revenueAccount.ID, EntryType: entities.EntryTypeDebit, Amount: fee, Currency: "USD"},
+		},
+	}
+
+	_, err = s.CreateTransaction(ctx, txReq)
+	return err
+}
+
 // CreditStash credits a user's stash_balance from the system USDC buffer.
 // Used for yield distribution payouts.
 func (s *Service) CreditStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, description string) error {
