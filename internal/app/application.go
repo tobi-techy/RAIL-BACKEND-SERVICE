@@ -37,6 +37,7 @@ import (
 	kyc_autoinvest "github.com/rail-service/rail_service/internal/workers/kyc_autoinvest"
 	"github.com/rail-service/rail_service/internal/workers/kyc_sync"
 	memory_worker "github.com/rail-service/rail_service/internal/workers/memory_worker"
+	automation_worker "github.com/rail-service/rail_service/internal/workers/automation_worker"
 	paj_offramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_offramp_recovery"
 	paj_onramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_onramp_recovery"
 	portfolio_snapshot_worker "github.com/rail-service/rail_service/internal/workers/portfolio_snapshot_worker"
@@ -82,6 +83,7 @@ type Application struct {
 	dailyMetricsWorker           *gameplay_workers.DailyMetricsWorker
 	aiInsightsWorker             *ai_insights.Worker
 	memoryWorker                 *memory_worker.Worker
+	automationWorker             *automation_worker.Worker
 
 	// Tracing
 	tracingShutdown func(context.Context) error
@@ -372,6 +374,13 @@ func (app *Application) initializeWorkers() error {
 		)
 		go app.memoryWorker.Start(context.Background())
 		app.log.Info("Memory worker started")
+	}
+
+	// Start automation worker (evaluates scheduled and threshold-based automations every 5 min)
+	if app.container.AutomationService != nil {
+		app.automationWorker = automation_worker.NewWorker(app.container.AutomationService, app.log.Zap())
+		go app.automationWorker.Start(context.Background())
+		app.log.Info("Automation worker started")
 	}
 
 	return nil

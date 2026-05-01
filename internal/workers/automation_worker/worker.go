@@ -38,6 +38,9 @@ func (w *Worker) Start(ctx context.Context) {
 			if err := w.service.EvaluateScheduled(ctx); err != nil {
 				w.logger.Error("automation evaluation failed", zap.Error(err))
 			}
+			if err := w.service.EvaluateAllBalanceThresholds(ctx); err != nil {
+				w.logger.Error("balance threshold evaluation failed", zap.Error(err))
+			}
 		}
 	}
 }

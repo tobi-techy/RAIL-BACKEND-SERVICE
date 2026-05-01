@@ -31,6 +31,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/card"
 	compliancesvc "github.com/rail-service/rail_service/internal/domain/services/compliance"
 	conversationsvc "github.com/rail-service/rail_service/internal/domain/services/conversation"
+	"github.com/rail-service/rail_service/internal/domain/services/automation"
 	"github.com/rail-service/rail_service/internal/domain/services/copytrading"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/domain/services/gameplay"
@@ -1119,6 +1120,9 @@ type Container struct {
 	// Copy Trading Services
 	CopyTradingRepo    *repositories.CopyTradingRepository
 	CopyTradingService *copytrading.Service
+
+	// Automation Services
+	AutomationService *automation.Service
 
 	// Card Services
 	CardRepo    *repositories.CardRepository
@@ -3352,6 +3356,18 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 		c.ZapLog,
 	)
 
+	// Initialize Automation Service and wire to AI orchestrator
+	automationRepo := repositories.NewAutomationRepository(sqlxDB)
+	c.AutomationService = automation.NewService(
+		automationRepo,
+		&automationBalanceAdapter{ledger: c.LedgerService},
+		&automationTransferAdapter{ledger: c.LedgerService},
+		c.ZapLog,
+	)
+	if c.AIOrchestrator != nil {
+		c.AIOrchestrator.SetAutomationProvider(&automationProviderAdapter{svc: c.AutomationService})
+	}
+
 	// Initialize Card Service
 	c.CardRepo = repositories.NewCardRepository(sqlxDB)
 	c.CardService = card.NewService(
@@ -4334,4 +4350,68 @@ func (a *SubscriptionBridgeTransferAdapter) TransferToCompanyWallet(ctx context.
 		},
 	})
 	return err
+}
+
+// automationBalanceAdapter adapts LedgerService for automation balance checks.
+type automationBalanceAdapter struct {
+	ledger *ledger.Service
+}
+
+func (a *automationBalanceAdapter) GetSpendBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
+	if a.ledger == nil {
+		return decimal.Zero, fmt.Errorf("ledger not available")
+	}
+	acct, err := a.ledger.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	return acct.Balance, nil
+}
+
+func (a *automationBalanceAdapter) GetStashBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
+	if a.ledger == nil {
+		return decimal.Zero, fmt.Errorf("ledger not available")
+	}
+	acct, err := a.ledger.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	return acct.Balance, nil
+}
+
+// automationTransferAdapter adapts LedgerService for automation transfers.
+type automationTransferAdapter struct {
+	ledger *ledger.Service
+}
+
+func (a *automationTransferAdapter) TransferBetweenStashes(ctx context.Context, userID uuid.UUID, from, to string, amount decimal.Decimal) error {
+	if a.ledger == nil {
+		return fmt.Errorf("ledger not available")
+	}
+	if from == "spend" && to == "stash" {
+		return a.ledger.TransferSpendingToStash(ctx, userID, amount, uuid.New().String())
+	}
+	return a.ledger.TransferStashToSpending(ctx, userID, amount, uuid.New().String())
+}
+
+// automationProviderAdapter adapts automation.Service to the AI orchestrator's AutomationProvider interface.
+type automationProviderAdapter struct {
+	svc *automation.Service
+}
+
+func (a *automationProviderAdapter) Create(ctx context.Context, userID uuid.UUID, req *aiservice.AutomationRequest) (*entities.MiriamAutomation, error) {
+	return a.svc.Create(ctx, userID, &automation.CreateAutomationRequest{
+		Name:              req.Name,
+		Description:       req.Description,
+		TriggerType:       req.TriggerType,
+		TriggerConfig:     req.TriggerConfig,
+		ActionType:        req.ActionType,
+		ActionConfig:      req.ActionConfig,
+		MaxTriggersPerDay: req.MaxTriggersPerDay,
+		CooldownMinutes:   req.CooldownMinutes,
+	})
+}
+
+func (a *automationProviderAdapter) List(ctx context.Context, userID uuid.UUID) ([]entities.MiriamAutomation, error) {
+	return a.svc.List(ctx, userID)
 }

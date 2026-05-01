@@ -44,6 +44,7 @@ type (
 	MarketHandlers            = investing.MarketHandlers
 	AIChatHandlers            = investing.AIChatHandlers
 	AICfoHandler              = investing.AICfoHandler
+	ImageAnalysisHandler      = investing.ImageAnalysisHandler
 	ConversationHandlers      = investing.ConversationHandlers
 	UsageHandlers             = investing.UsageHandlers
 	KnowledgeHandlers         = investing.KnowledgeHandlers
@@ -123,7 +124,8 @@ var (
 	NewAIChatHandlers            = investing.NewAIChatHandlers
 	NewAICfoHandler              = investing.NewAICfoHandler
 	NewVoiceHandler              = investing.NewVoiceHandler
-	NewImageAnalysisHandler      = investing.NewImageAnalysisHandler
+	NewImageAnalysisHandler         = investing.NewImageAnalysisHandler
+	NewImageAnalysisHandlerWithVision = investing.NewImageAnalysisHandlerWithVision
 	NewPremiumAIHandlers         = investing.NewPremiumAIHandlers
 	NewConversationHandlers      = investing.NewConversationHandlers
 	NewUsageHandlers             = investing.NewUsageHandlers

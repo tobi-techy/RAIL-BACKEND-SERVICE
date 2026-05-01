@@ -200,6 +200,8 @@ func (o *Orchestrator) executeActionTool(ctx context.Context, userID, convID uui
 		return o.createSplitReceiptAction(ctx, userID, convID, tc.Arguments)
 	case ToolUpdateFinancialProfile:
 		return o.createFinancialProfileAction(ctx, userID, convID, tc.Arguments)
+	case ToolCreateAutomation:
+		return o.createAutomationAction(ctx, userID, convID, tc.Arguments)
 	default:
 		return nil, fmt.Errorf("unknown action tool: %s", tc.Name)
 	}
@@ -389,6 +391,12 @@ func (o *Orchestrator) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 		} else {
 			_, execErr = o.executeUpdateFinancialProfile(ctx, userID, action.Params)
 		}
+	case ToolCreateAutomation:
+		if o.automationProvider == nil {
+			execErr = fmt.Errorf("automation service is unavailable")
+		} else {
+			_, execErr = o.executeCreateAutomation(ctx, userID, action.Params)
+		}
 	default:
 		execErr = fmt.Errorf("unknown action: %s", action.Action)
 	}
@@ -489,7 +497,7 @@ func (o *Orchestrator) auditAction(ctx context.Context, userID, convID uuid.UUID
 
 // isActionTool returns true if the tool name is an action tool.
 func isActionTool(name string) bool {
-	return name == ToolTransferFunds || name == ToolSetSavingsGoal || name == ToolSendReport || name == ToolSetBudget || name == ToolSplitReceipt || name == ToolUpdateFinancialProfile
+	return name == ToolTransferFunds || name == ToolSetSavingsGoal || name == ToolSendReport || name == ToolSetBudget || name == ToolSplitReceipt || name == ToolUpdateFinancialProfile || name == ToolCreateAutomation
 }
 
 func (o *Orchestrator) canCreateActionTool(name string) bool {
@@ -504,6 +512,8 @@ func (o *Orchestrator) canCreateActionTool(name string) bool {
 		return o.receiptHistory != nil
 	case ToolUpdateFinancialProfile:
 		return o.financialProfile != nil
+	case ToolCreateAutomation:
+		return o.automationProvider != nil
 	default:
 		return false
 	}

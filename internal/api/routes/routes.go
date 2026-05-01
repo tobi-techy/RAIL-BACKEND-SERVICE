@@ -1028,14 +1028,30 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					aiGroup.GET("/starters", middleware.AuthRateLimit(10), aiChatHandlers.GetConversationStarters)
 					aiGroup.POST("/nudge", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), aiChatHandlers.Nudge)
 
-					// Image analysis (receipt scanning)
+					// Image analysis (receipt scanning) — works with OpenAI or any OpenAI-compatible vision provider (e.g. Kimi moonshot-v1-8k)
+					var imageHandler *handlers.ImageAnalysisHandler
 					if container.Config.AI.OpenAI.APIKey != "" {
-						imageHandler := handlers.NewImageAnalysisHandler(
+						imageHandler = handlers.NewImageAnalysisHandler(
 							container.Config.AI.OpenAI.APIKey,
 							container.GetAIOrchestrator(),
 							container.ReceiptRepo,
 							container.ZapLog,
 						)
+					} else if container.Config.AI.Kimi.APIKey != "" {
+						kimiBase := container.Config.AI.Kimi.BaseURL
+						if kimiBase == "" {
+							kimiBase = "https://api.moonshot.ai/v1"
+						}
+						imageHandler = handlers.NewImageAnalysisHandlerWithVision(
+							container.Config.AI.Kimi.APIKey,
+							kimiBase,
+							"moonshot-v1-8k", // Kimi's vision-capable model
+							container.GetAIOrchestrator(),
+							container.ReceiptRepo,
+							container.ZapLog,
+						)
+					}
+					if imageHandler != nil {
 						imageHandler.SetBudgetRepo(container.BudgetRepo)
 						imageHandler.SetSpendingRepo(container.LedgerSpendingRepo)
 						aiGroup.POST("/chat/image", middleware.AuthRateLimit(10), imageHandler.AnalyzeImage)

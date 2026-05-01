@@ -127,7 +127,7 @@ func (s *Service) EvaluateScheduled(ctx context.Context) error {
 	return nil
 }
 
-// EvaluateBalanceThresholds checks balance-triggered automations.
+// EvaluateBalanceThresholds checks balance-triggered automations for a specific user.
 func (s *Service) EvaluateBalanceThresholds(ctx context.Context, userID uuid.UUID) error {
 	automations, err := s.repo.ListByUser(ctx, userID)
 	if err != nil {
@@ -138,6 +138,20 @@ func (s *Service) EvaluateBalanceThresholds(ctx context.Context, userID uuid.UUI
 		if !a.IsActive || a.TriggerType != entities.TriggerBalanceThreshold {
 			continue
 		}
+		if s.checkBalanceThreshold(ctx, &a) {
+			go s.execute(context.Background(), &a)
+		}
+	}
+	return nil
+}
+
+// EvaluateAllBalanceThresholds checks balance-triggered automations across all users.
+func (s *Service) EvaluateAllBalanceThresholds(ctx context.Context) error {
+	automations, err := s.repo.ListActiveByTrigger(ctx, entities.TriggerBalanceThreshold)
+	if err != nil {
+		return err
+	}
+	for _, a := range automations {
 		if s.checkBalanceThreshold(ctx, &a) {
 			go s.execute(context.Background(), &a)
 		}
@@ -160,7 +174,7 @@ func (s *Service) shouldTrigger(ctx context.Context, a *entities.MiriamAutomatio
 	var cfg entities.ScheduleTriggerConfig
 	json.Unmarshal(a.TriggerConfig, &cfg)
 
-	// Simple weekday + hour matching
+	// Weekday matching
 	if len(cfg.Weekdays) > 0 {
 		todayWeekday := int(now.Weekday())
 		matched := false
@@ -174,8 +188,18 @@ func (s *Service) shouldTrigger(ctx context.Context, a *entities.MiriamAutomatio
 			return false
 		}
 	}
-	if cfg.Hour > 0 && now.Hour() != cfg.Hour {
+	// Hour matching — cfg.Hour==0 means "any hour" (zero value = not set due to omitempty)
+	if cfg.Hour != 0 && now.Hour() != cfg.Hour {
 		return false
+	}
+	// Prevent re-firing within the same hour if already triggered today
+	if a.LastTriggeredAt != nil {
+		sameHour := a.LastTriggeredAt.Year() == now.Year() &&
+			a.LastTriggeredAt.YearDay() == now.YearDay() &&
+			a.LastTriggeredAt.Hour() == now.Hour()
+		if sameHour {
+			return false
+		}
 	}
 	return true
 }

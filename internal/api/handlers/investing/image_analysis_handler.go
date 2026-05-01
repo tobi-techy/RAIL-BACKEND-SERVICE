@@ -27,18 +27,53 @@ import (
 	"golang.org/x/image/draw"
 )
 
-// ImageAnalysisHandler handles receipt/image analysis via GPT-4o vision.
+// ImageAnalysisHandler handles receipt/image analysis via vision-capable LLM.
 type ImageAnalysisHandler struct {
-	apiKey       string
-	orchestrator *aiservice.Orchestrator
-	receiptRepo  *repositories.ReceiptRepository
-	budgetRepo   *repositories.BudgetRepository
-	spendingRepo *repositories.LedgerSpendingRepository
-	logger       *zap.Logger
+	apiKey          string
+	visionURL       string    // e.g. https://api.openai.com/v1 or https://api.moonshot.ai/v1
+	visionModel     string    // e.g. gpt-4o or moonshot-v1-8k
+	visionTemp      float64   // temperature for vision calls (Kimi requires 1.0)
+	orchestrator    *aiservice.Orchestrator
+	receiptRepo     *repositories.ReceiptRepository
+	budgetRepo      *repositories.BudgetRepository
+	spendingRepo    *repositories.LedgerSpendingRepository
+	logger          *zap.Logger
 }
 
 func NewImageAnalysisHandler(apiKey string, orchestrator *aiservice.Orchestrator, receiptRepo *repositories.ReceiptRepository, logger *zap.Logger) *ImageAnalysisHandler {
-	return &ImageAnalysisHandler{apiKey: apiKey, orchestrator: orchestrator, receiptRepo: receiptRepo, logger: logger}
+	return &ImageAnalysisHandler{
+		apiKey:       apiKey,
+		visionURL:    "https://api.openai.com/v1",
+		visionModel:  "gpt-4o",
+		visionTemp:   0.1,
+		orchestrator: orchestrator,
+		receiptRepo:  receiptRepo,
+		logger:       logger,
+	}
+}
+
+// NewImageAnalysisHandlerWithVision creates a handler using any OpenAI-compatible vision endpoint.
+func NewImageAnalysisHandlerWithVision(apiKey, baseURL, model string, orchestrator *aiservice.Orchestrator, receiptRepo *repositories.ReceiptRepository, logger *zap.Logger) *ImageAnalysisHandler {
+	if baseURL == "" {
+		baseURL = "https://api.openai.com/v1"
+	}
+	if model == "" {
+		model = "gpt-4o"
+	}
+	// Kimi moonshot models require temperature=1.0
+	temp := 0.1
+	if strings.Contains(model, "moonshot") || strings.Contains(model, "kimi") {
+		temp = 1.0
+	}
+	return &ImageAnalysisHandler{
+		apiKey:       apiKey,
+		visionURL:    baseURL,
+		visionModel:  model,
+		visionTemp:   temp,
+		orchestrator: orchestrator,
+		receiptRepo:  receiptRepo,
+		logger:       logger,
+	}
 }
 
 // SetBudgetRepo sets the budget repository for budget impact lookups.
@@ -324,9 +359,9 @@ func (h *ImageAnalysisHandler) callVisionAPI(ctx context.Context, base64Image, u
 	}
 
 	body := map[string]interface{}{
-		"model":      "gpt-4o",
-		"max_tokens": 1000,
-		"temperature": 0.1,
+		"model":       h.visionModel,
+		"max_tokens":  1000,
+		"temperature": h.visionTemp,
 		"messages": []map[string]interface{}{
 			{"role": "system", "content": visionSystemPrompt},
 			{
@@ -350,7 +385,7 @@ func (h *ImageAnalysisHandler) callVisionAPI(ctx context.Context, base64Image, u
 	reqCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 
-	httpReq, err := http.NewRequestWithContext(reqCtx, "POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(jsonBody))
+	httpReq, err := http.NewRequestWithContext(reqCtx, "POST", strings.TrimRight(h.visionURL, "/")+"/chat/completions", bytes.NewReader(jsonBody))
 	if err != nil {
 		return "", 0, fmt.Errorf("create request: %w", err)
 	}
