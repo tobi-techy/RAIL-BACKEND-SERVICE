@@ -31,9 +31,11 @@ var DailyCostCeilingUSD = decimal.NewFromFloat(0.25)
 // conservative upper-bound estimate. Update when provider prices change.
 var ModelPricing = map[string]decimal.Decimal{
 	// Bedrock models (primary)
-	"anthropic.claude-sonnet-4-20250514":  decimal.NewFromFloat(0.000015),  // $15/1M tokens
-	"anthropic.claude-3-5-haiku-20241022": decimal.NewFromFloat(0.000001),  // $1/1M tokens
-	"meta.llama3-1-70b-instruct-v1:0":    decimal.NewFromFloat(0.00000265), // $2.65/1M tokens
+	"anthropic.claude-sonnet-4-5-20250929-v1:0":  decimal.NewFromFloat(0.000015),  // $15/1M tokens
+	"anthropic.claude-sonnet-4-20250514-v1:0":    decimal.NewFromFloat(0.000015),  // $15/1M tokens (legacy)
+	"anthropic.claude-haiku-4-5-20251001-v1:0":   decimal.NewFromFloat(0.000001),  // $1/1M tokens
+	"anthropic.claude-3-5-haiku-20241022-v1:0":   decimal.NewFromFloat(0.000001),  // $1/1M tokens (legacy)
+	"anthropic.claude-3-haiku-20240307-v1:0":     decimal.NewFromFloat(0.00000125), // $1.25/1M tokens
 	// Legacy direct-API models (fallback/voice)
 	"gpt-4o":              decimal.NewFromFloat(0.00001),    // $10/1M tokens
 	"gpt-4o-mini":         decimal.NewFromFloat(0.0000006), // $0.60/1M tokens

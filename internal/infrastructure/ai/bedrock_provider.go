@@ -54,15 +54,15 @@ func NewBedrockProvider(cfg *BedrockConfig, logger *zap.Logger) *BedrockProvider
 	}
 	fallbacks := cfg.FallbackModels
 	if len(fallbacks) == 0 {
-		// Default failover chain: Claude Sonnet → Haiku (cheap+fast) → Llama (no Anthropic dependency)
+		// Default failover chain: Haiku 4.5 (active) → Haiku 3.5 (legacy fallback)
 		fallbacks = []string{
-			"anthropic.claude-3-5-haiku-20241022",
-			"meta.llama3-1-70b-instruct-v1:0",
+			"anthropic.claude-haiku-4-5-20251001-v1:0",
+			"anthropic.claude-3-5-haiku-20241022-v1:0",
 		}
 	}
 	fastModel := cfg.FastModel
 	if fastModel == "" {
-		fastModel = "anthropic.claude-3-5-haiku-20241022"
+		fastModel = "anthropic.claude-haiku-4-5-20251001-v1:0"
 	}
 	return &BedrockProvider{
 		client:           client,
