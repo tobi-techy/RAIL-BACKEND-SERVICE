@@ -282,7 +282,7 @@ func (p *GeminiProvider) buildGeminiRequest(req *ChatRequest, tools []Tool) map[
 			functionDeclarations = append(functionDeclarations, map[string]interface{}{
 				"name":        tool.Name,
 				"description": tool.Description,
-				"parameters":  tool.Parameters,
+				"parameters":  stripUnsupportedSchemaFields(tool.Parameters),
 			})
 		}
 
@@ -405,4 +405,24 @@ type geminiResponse struct {
 		CandidatesTokenCount int `json:"candidatesTokenCount"`
 		TotalTokenCount      int `json:"totalTokenCount"`
 	} `json:"usageMetadata,omitempty"`
+}
+
+// stripUnsupportedSchemaFields removes JSON Schema fields that Gemini doesn't support
+// (e.g. "additionalProperties") from tool parameter definitions.
+func stripUnsupportedSchemaFields(params map[string]interface{}) map[string]interface{} {
+	if params == nil {
+		return nil
+	}
+	cleaned := make(map[string]interface{}, len(params))
+	for k, v := range params {
+		if k == "additionalProperties" {
+			continue
+		}
+		if nested, ok := v.(map[string]interface{}); ok {
+			cleaned[k] = stripUnsupportedSchemaFields(nested)
+		} else {
+			cleaned[k] = v
+		}
+	}
+	return cleaned
 }
