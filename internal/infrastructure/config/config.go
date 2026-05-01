@@ -815,7 +815,7 @@ func setDefaults() {
 	viper.SetDefault("security.adaptive_rate_limit.enable_risk_scoring", true)
 
 	// AI Provider defaults
-	viper.SetDefault("ai.primary", "gemini")
+	viper.SetDefault("ai.primary", "kimi")
 	viper.SetDefault("ai.openai.model", "gpt-4o-mini")
 	viper.SetDefault("ai.openai.realtime_model", "gpt-4o-mini-realtime-preview")
 	viper.SetDefault("ai.openai.max_tokens", 500)
