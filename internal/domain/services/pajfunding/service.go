@@ -14,7 +14,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/domain/entities"
-	bridgepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	circlepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
 	chainrailspkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/paj"
@@ -59,7 +58,7 @@ type GameplayHooks interface {
 	OnDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID)
 }
 
-// WalletProvider looks up a user's Bridge wallet address by chain.
+// WalletProvider looks up a user's wallet address by chain.
 type WalletProvider interface {
 	GetWalletByUserAndChain(ctx context.Context, userID uuid.UUID, chain entities.WalletChain) (*entities.ManagedWallet, error)
 }
@@ -75,11 +74,6 @@ type ChainRailsAdapter interface {
 	CreateIntent(ctx context.Context, req *chainrailspkg.CreateIntentRequest) (*chainrailspkg.CreateIntentResponse, error)
 }
 
-// BridgeCustomerIDProvider resolves a user's Bridge customer ID for transfer API calls.
-type BridgeCustomerIDProvider interface {
-	GetBridgeCustomerID(ctx context.Context, userID uuid.UUID) (string, error)
-}
-
 // WithdrawalLimitsChecker validates withdrawal amounts against daily/monthly limits.
 type WithdrawalLimitsChecker interface {
 	ValidateWithdrawal(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error
@@ -88,11 +82,6 @@ type WithdrawalLimitsChecker interface {
 // DepositLimitsChecker validates deposit amounts against daily/monthly limits.
 type DepositLimitsChecker interface {
 	ValidateDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (*entities.LimitCheckResult, error)
-}
-
-// BridgeCryptoTransferAdapter transfers USDC from a Bridge wallet to an external address.
-type BridgeCryptoTransferAdapter interface {
-	TransferFunds(ctx context.Context, req *bridgepkg.CreateTransferRequest) (*bridgepkg.Transfer, error)
 }
 
 // Service handles Paj Cash NGN on/off ramp operations.
@@ -106,13 +95,10 @@ type Service struct {
 	notifier          NotificationService
 	gameplayHooks     GameplayHooks
 	walletProvider    WalletProvider
-	bridgeTransfer    BridgeCryptoTransferAdapter
-	bridgeCustomerID  BridgeCustomerIDProvider
 	circleTransfer    CircleTransferAdapter
 	chainRailsAdapter ChainRailsAdapter
 	limitsChecker     WithdrawalLimitsChecker
 	depositLimits     DepositLimitsChecker
-	pajChain          string // blockchain for Paj deposit addresses (e.g. "solana")
 	redis             cache.RedisClient
 	encryptionKey     string
 	logger            *zap.Logger
@@ -128,15 +114,8 @@ func (s *Service) SetDepositRepository(repo DepositRepository) { s.depositRepo =
 // SetNotificationService sets the notification service for deposit alerts.
 func (s *Service) SetNotificationService(ns NotificationService) { s.notifier = ns }
 
-// SetWalletProvider sets the wallet provider for looking up user Bridge wallet addresses.
+// SetWalletProvider sets the wallet provider for looking up user wallet addresses.
 func (s *Service) SetWalletProvider(wp WalletProvider) { s.walletProvider = wp }
-
-// SetBridgeTransfer sets the Bridge transfer adapter for sending USDC to Paj deposit addresses.
-func (s *Service) SetBridgeTransfer(bt BridgeCryptoTransferAdapter, chain string, customerIDProvider BridgeCustomerIDProvider) {
-	s.bridgeTransfer = bt
-	s.pajChain = chain
-	s.bridgeCustomerID = customerIDProvider
-}
 
 // SetGameplayHooks sets the gameplay hooks for triggering XP/streak/challenge events.
 func (s *Service) SetGameplayHooks(gh GameplayHooks) { s.gameplayHooks = gh }
@@ -427,14 +406,21 @@ func (s *Service) CreateOnrampOrder(ctx context.Context, userID uuid.UUID, fiatA
 		}
 	}
 
-	// Look up user's Bridge Solana wallet so USDC goes directly to them.
+	// Look up user's Circle wallet address so USDC goes directly to them.
+	// Prefer Solana (PAJ settles on Solana), fall back to any wallet with address.
 	var recipient string
-	if s.walletProvider != nil {
+	if s.circleTransfer != nil {
+		_, _, blockchain, address, findErr := s.circleTransfer.FindWalletWithUSDC(ctx, userID.String())
+		if findErr == nil && address != "" && strings.Contains(strings.ToUpper(blockchain), "SOL") {
+			recipient = address
+		}
+	}
+	if recipient == "" && s.walletProvider != nil {
 		wallet, err := s.walletProvider.GetWalletByUserAndChain(ctx, userID, entities.WalletChainSolana)
 		if err == nil && wallet != nil && wallet.Address != "" {
 			recipient = wallet.Address
 		} else {
-			s.logger.Warn("could not resolve user Solana wallet, falling back to company wallet",
+			s.logger.Warn("could not resolve user Solana wallet for onramp",
 				zap.String("user_id", userID.String()), zap.Error(err))
 		}
 	}
@@ -504,10 +490,10 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 		return nil, fmt.Errorf("offramp rate out of bounds: %.2f", rates.OffRampRate.Rate)
 	}
 
-	// Bridge requires ≥ $1 USDC per transfer. Enforce the NGN equivalent.
-	bridgeMinNGN := rates.OffRampRate.Rate * 1.05 // ₦ equivalent of ~$1.05 (with buffer)
-	if fiatAmount < bridgeMinNGN {
-		return nil, fmt.Errorf("minimum withdrawal is ₦%.0f", bridgeMinNGN)
+	// Circle requires ≥ $1 USDC per transfer. Enforce the NGN equivalent.
+	minNGN := rates.OffRampRate.Rate * 1.05 // ₦ equivalent of ~$1.05 (with buffer)
+	if fiatAmount < minNGN {
+		return nil, fmt.Errorf("minimum withdrawal is ₦%.0f", minNGN)
 	}
 
 	// Estimate USDC amount: fiatAmount / rate. Add 1% buffer for rate slippage.
@@ -587,8 +573,8 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 	}
 
 	// Validate prerequisites for transfer.
-	if s.circleTransfer == nil && (s.bridgeTransfer == nil || s.walletProvider == nil) {
-		s.logger.Error("no transfer provider configured for Paj offramp — reversing hold",
+	if s.circleTransfer == nil {
+		s.logger.Error("Circle transfer adapter not configured for Paj offramp — reversing hold",
 			zap.String("paj_order_id", order.ID))
 		s.reverseHold(ctx, userID, order.ID, totalHold, "no_transfer_config")
 		return nil, fmt.Errorf("withdrawal infrastructure not available")
@@ -600,9 +586,9 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 		return nil, fmt.Errorf("withdrawal service returned invalid response")
 	}
 
-	// Execute Bridge transfer asynchronously — user gets immediate response.
-	// The paj_offramp_recovery worker handles failures.
-	go s.executeBridgeTransfer(userID, order, totalHold, estimatedUSDC, railFee)
+	// Execute transfer asynchronously — user gets immediate response.
+	// Circle is the primary wallet provider.
+	go s.executeCircleTransferToPaj(userID, order, totalHold, estimatedUSDC, railFee)
 
 	return &OfframpResult{
 		Order:   order,
@@ -610,145 +596,72 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 	}, nil
 }
 
-// executeBridgeTransfer sends USDC from the user's Bridge wallet to Paj's deposit address.
-// Runs in a background goroutine after the PAJ order is created.
-func (s *Service) executeBridgeTransfer(userID uuid.UUID, order *paj.OfframpOrder, totalHold, estimatedUSDC, railFee decimal.Decimal) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+// executeCircleTransferToPaj sends USDC from the user's Circle wallet to Paj's deposit address.
+// For Solana wallets: direct transfer. For EVM wallets: bridges via ChainRails.
+func (s *Service) executeCircleTransferToPaj(userID uuid.UUID, order *paj.OfframpOrder, totalHold, estimatedUSDC, railFee decimal.Decimal) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
 	transferAmount := math.Round(order.Amount*100) / 100
 	totalTransfer := transferAmount + RailNGNWithdrawalFee
 
-	// Try Circle first (all new users have Circle wallets)
-	if s.circleTransfer != nil {
-		walletID, tokenID, blockchain, onChainAddress, err := s.circleTransfer.FindWalletWithUSDC(ctx, userID.String())
-		if err == nil {
-			isSolana := strings.Contains(strings.ToUpper(blockchain), "SOL")
+	if s.circleTransfer == nil {
+		s.logger.Error("Circle transfer adapter not configured — reversing hold",
+			zap.String("paj_order_id", order.ID))
+		s.reverseHold(ctx, userID, order.ID, totalHold, "no_circle_adapter")
+		return
+	}
 
-			if isSolana {
-				// Direct transfer — wallet is already on Solana, send straight to PAJ
-				tx, txErr := s.circleTransfer.TransferUSDC(ctx, walletID, tokenID, order.Address, fmt.Sprintf("%.2f", totalTransfer))
-				if txErr != nil {
-					s.logger.Error("async: Circle SOL transfer to Paj failed — reversing hold",
-						zap.Error(txErr), zap.String("paj_order_id", order.ID))
-					s.reverseHold(ctx, userID, order.ID, totalHold, "circle_transfer_failed")
-					return
-				}
-				if tx.State == "DENIED" || tx.State == "FAILED" || tx.State == "CANCELLED" {
-					s.reverseHold(ctx, userID, order.ID, totalHold, "circle_transfer_"+string(tx.State))
-					return
-				}
-				s.logger.Info("Circle SOL transfer to Paj initiated",
-					zap.String("circle_tx_id", tx.ID), zap.String("paj_order_id", order.ID))
-				s.db.ExecContext(ctx, `UPDATE paj_orders SET bridge_transfer_id = $1 WHERE paj_order_id = $2`,
-					"circle:"+tx.ID, order.ID)
-				// Refund slippage buffer
-				actualAmount := decimal.NewFromFloat(totalTransfer)
-				excess := totalHold.Sub(actualAmount)
-				if excess.IsPositive() && s.ledger != nil {
-					s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
-						"paj_offramp_slippage_refund_"+order.ID, excess, map[string]interface{}{
-							"provider": "paj", "type": "slippage_refund", "paj_order_id": order.ID,
-							"path": "circle_sol",
-						})
-				}
-				return
-			}
+	walletID, tokenID, blockchain, onChainAddress, err := s.circleTransfer.FindWalletWithUSDC(ctx, userID.String())
+	if err != nil {
+		s.logger.Error("async: no Circle wallet with USDC for Paj offramp — reversing hold",
+			zap.Error(err), zap.String("user_id", userID.String()),
+			zap.String("paj_order_id", order.ID))
+		s.reverseHold(ctx, userID, order.ID, totalHold, "no_usdc_wallet")
+		return
+	}
 
-			// EVM wallet — use ChainRails to bridge to PAJ's Solana address
-			if s.chainRailsAdapter != nil {
-				s.executeCircleViaCRToPaj(ctx, userID, walletID, tokenID, blockchain, onChainAddress, order, totalHold, totalTransfer)
-				return
-			}
+	isSolana := strings.Contains(strings.ToUpper(blockchain), "SOL")
 
-			// EVM wallet but no ChainRails — reverse hold and return
-			s.logger.Warn("USDC on EVM but no ChainRails — cannot bridge to Solana for Paj",
-				zap.String("blockchain", blockchain), zap.String("user_id", userID.String()))
-			s.reverseHold(ctx, userID, order.ID, totalHold, "no_chainrails_evm")
+	if isSolana {
+		// Direct transfer — wallet is already on Solana, send straight to PAJ
+		tx, txErr := s.circleTransfer.TransferUSDC(ctx, walletID, tokenID, order.Address, fmt.Sprintf("%.2f", totalTransfer))
+		if txErr != nil {
+			s.logger.Error("async: Circle SOL transfer to Paj failed — reversing hold",
+				zap.Error(txErr), zap.String("paj_order_id", order.ID))
+			s.reverseHold(ctx, userID, order.ID, totalHold, "circle_transfer_failed")
 			return
 		}
-		s.logger.Warn("Circle wallet not found, falling back to Bridge", zap.Error(err), zap.String("user_id", userID.String()))
-	}
-
-	// Fallback: Bridge transfer (legacy users)
-	walletChain := entities.WalletChainSolana
-	paymentRail := bridgepkg.PaymentRailSolana
-	if s.pajChain != "" {
-		switch s.pajChain {
-		case "BASE":
-			walletChain = entities.WalletChainBase
-			paymentRail = bridgepkg.PaymentRailBase
-		case "POLYGON":
-			walletChain = entities.WalletChainPolygon
-			paymentRail = bridgepkg.PaymentRailPolygon
-		case "ETHEREUM":
-			walletChain = entities.WalletChainEthereum
-			paymentRail = bridgepkg.PaymentRailEthereum
+		if tx.State == "DENIED" || tx.State == "FAILED" || tx.State == "CANCELLED" {
+			s.reverseHold(ctx, userID, order.ID, totalHold, "circle_transfer_"+string(tx.State))
+			return
 		}
-	}
-
-	wallet, walletErr := s.walletProvider.GetWalletByUserAndChain(ctx, userID, walletChain)
-	if walletErr != nil || wallet == nil || wallet.BridgeWalletID == "" {
-		s.logger.Error("async: failed to get user Bridge wallet for Paj offramp — reversing hold",
-			zap.Error(walletErr), zap.String("user_id", userID.String()),
-			zap.String("paj_order_id", order.ID))
-		s.reverseHold(ctx, userID, order.ID, totalHold, "no_wallet")
+		s.logger.Info("Circle SOL transfer to Paj initiated",
+			zap.String("circle_tx_id", tx.ID), zap.String("paj_order_id", order.ID))
+		s.db.ExecContext(ctx, `UPDATE paj_orders SET bridge_transfer_id = $1 WHERE paj_order_id = $2`,
+			"circle:"+tx.ID, order.ID)
+		// Refund slippage buffer
+		actualAmount := decimal.NewFromFloat(totalTransfer)
+		excess := totalHold.Sub(actualAmount)
+		if excess.IsPositive() && s.ledger != nil {
+			s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
+				"paj_offramp_slippage_refund_"+order.ID, excess, map[string]interface{}{
+					"provider": "paj", "type": "slippage_refund", "paj_order_id": order.ID,
+					"path": "circle_sol",
+				})
+		}
 		return
 	}
 
-	bridgeCustID, custErr := s.bridgeCustomerID.GetBridgeCustomerID(ctx, userID)
-	if custErr != nil || bridgeCustID == "" {
-		s.logger.Error("async: failed to get Bridge customer ID for Paj offramp — reversing hold",
-			zap.Error(custErr), zap.String("user_id", userID.String()))
-		s.reverseHold(ctx, userID, order.ID, totalHold, "no_bridge_customer")
+	// EVM wallet — use ChainRails to bridge to PAJ's Solana address
+	if s.chainRailsAdapter != nil {
+		s.executeCircleViaCRToPaj(ctx, userID, walletID, tokenID, blockchain, onChainAddress, order, totalHold, totalTransfer)
 		return
 	}
 
-	bridgeTransferAmount := math.Round(order.Amount*100) / 100
-	bridgeTotalTransfer := bridgeTransferAmount + RailNGNWithdrawalFee
-
-	transfer, transferErr := s.bridgeTransfer.TransferFunds(ctx, &bridgepkg.CreateTransferRequest{
-		OnBehalfOf:   bridgeCustID,
-		Amount:       fmt.Sprintf("%.2f", bridgeTotalTransfer),
-		DeveloperFee: fmt.Sprintf("%.2f", RailNGNWithdrawalFee),
-		Source: bridgepkg.TransferSource{
-			PaymentRail:    bridgepkg.PaymentRail("bridge_wallet"),
-			Currency:       bridgepkg.CurrencyUSDC,
-			BridgeWalletID: wallet.BridgeWalletID,
-		},
-		Destination: bridgepkg.TransferDestination{
-			PaymentRail: paymentRail,
-			Currency:    bridgepkg.CurrencyUSDC,
-			ToAddress:   order.Address,
-		},
-	})
-	if transferErr != nil {
-		s.logger.Error("async: Bridge transfer to Paj deposit address failed — reversing hold",
-			zap.Error(transferErr), zap.String("user_id", userID.String()),
-			zap.String("paj_order_id", order.ID), zap.String("amount", totalHold.String()))
-		s.reverseHold(ctx, userID, order.ID, totalHold, "transfer_failed")
-		return
-	}
-
-	s.db.ExecContext(ctx, `UPDATE paj_orders SET bridge_transfer_id = $1 WHERE paj_order_id = $2`,
-		transfer.ID, order.ID)
-
-	// Refund slippage buffer.
-	actualAmount := decimal.NewFromFloat(transferAmount)
-	excess := estimatedUSDC.Sub(actualAmount)
-	if excess.IsPositive() && s.ledger != nil {
-		s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
-			"paj_offramp_slippage_refund_"+order.ID, excess, map[string]interface{}{
-				"provider": "paj", "type": "slippage_refund", "paj_order_id": order.ID,
-				"estimated": estimatedUSDC.String(), "actual": actualAmount.String(),
-			})
-	}
-
-	s.logger.Info("async: Bridge transfer to Paj initiated",
-		zap.String("paj_order_id", order.ID),
-		zap.String("bridge_transfer_id", transfer.ID),
-		zap.String("amount_to_paj", actualAmount.String()),
-		zap.String("developer_fee", railFee.String()))
+	s.logger.Error("USDC on EVM but no ChainRails — cannot bridge to Solana for Paj",
+		zap.String("blockchain", blockchain), zap.String("user_id", userID.String()))
+	s.reverseHold(ctx, userID, order.ID, totalHold, "no_chainrails_evm")
 }
 
 // --- Webhook processing ---

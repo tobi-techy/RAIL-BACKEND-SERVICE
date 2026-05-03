@@ -56,7 +56,7 @@ func (w *Worker) recover(ctx context.Context) {
 	maxAgeSeconds := int(w.maxStuckAge.Seconds())
 
 	rows, err := w.db.QueryContext(ctx, `
-		SELECT id, user_id, amount, fee_amount, source_account, bridge_transfer_id
+		SELECT id, user_id, amount, fee_amount, source_account, bridge_transfer_id, updated_at
 		FROM withdrawals
 		WHERE status IN ('initiated', 'processing')
 		  AND withdrawal_type = 'crypto'
@@ -75,12 +75,13 @@ func (w *Worker) recover(ctx context.Context) {
 		FeeAmount         decimal.Decimal
 		SourceAccount     string
 		BridgeTransferID  *string
+		UpdatedAt         time.Time
 	}
 
 	var items []stuck
 	for rows.Next() {
 		var s stuck
-		if err := rows.Scan(&s.ID, &s.UserID, &s.Amount, &s.FeeAmount, &s.SourceAccount, &s.BridgeTransferID); err != nil {
+		if err := rows.Scan(&s.ID, &s.UserID, &s.Amount, &s.FeeAmount, &s.SourceAccount, &s.BridgeTransferID, &s.UpdatedAt); err != nil {
 			w.logger.Error("withdrawal recovery: scan failed", zap.Error(err))
 			continue
 		}
@@ -88,12 +89,19 @@ func (w *Worker) recover(ctx context.Context) {
 	}
 
 	for _, s := range items {
-		// Skip ChainRails withdrawals that have a provider ID — they may still complete via webhook
+		// ChainRails withdrawals (cr: prefix) complete via webhook — only reverse if very old (>1 hour)
 		if s.BridgeTransferID != nil && len(*s.BridgeTransferID) > 0 {
-			w.logger.Info("withdrawal recovery: skipping — has provider transfer, may complete via webhook",
+			age := time.Since(s.UpdatedAt)
+			if age < time.Hour {
+				w.logger.Info("withdrawal recovery: skipping — has provider transfer, may complete via webhook",
+					zap.String("withdrawal_id", s.ID.String()),
+					zap.String("bridge_transfer_id", *s.BridgeTransferID),
+					zap.Duration("age", age))
+				continue
+			}
+			w.logger.Warn("withdrawal recovery: provider transfer stuck >1h, reversing",
 				zap.String("withdrawal_id", s.ID.String()),
 				zap.String("bridge_transfer_id", *s.BridgeTransferID))
-			continue
 		}
 
 		if err := w.reverseStuckWithdrawal(ctx, s.ID, s.UserID, s.Amount.Add(s.FeeAmount), s.SourceAccount); err != nil {

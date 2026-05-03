@@ -6,7 +6,7 @@ chainrails:
   api_key: "${CHAINRAILS_API_KEY}"
   webhook_secret: "${CHAINRAILS_WEBHOOK_SECRET}"
   base_url: "https://api.chainrails.io/api/v1"
-  destination_chain: "BASE_MAINNET"
+  destination_chain: "SOLANA_MAINNET"
   settlement_token: "USDC"
 
 server:
@@ -153,7 +153,7 @@ circle:
   entity_secret_ciphertext: ""
   default_wallet_set_id: ""
   default_wallet_set_name: "STACK-WalletSet"
-  supported_chains: ["SOL-DEVNET", "MATIC-AMOY"]
+  supported_chains: ["SOL", "ETH", "MATIC", "BASE", "AVAX", "ARB", "OP"]
   treasury_wallet_address: ""  # Company wallet for account closure fund sweeps
 
 kyc:

@@ -49,6 +49,7 @@ type ChainRailsHandlers struct {
 	withdrawalService ChainRailsWithdrawalService
 	walletLookup      ChainRailsWalletLookup
 	webhookSecret     string
+	destinationChain  string // e.g. "BASE_MAINNET" or "BASE_TESTNET"
 	logger            *logger.Logger
 }
 
@@ -68,13 +69,15 @@ func NewChainRailsHandlers(
 	crClient *chainrails.Client,
 	fundingService *funding.Service,
 	webhookSecret string,
+	destinationChain string,
 	logger *logger.Logger,
 ) *ChainRailsHandlers {
 	return &ChainRailsHandlers{
-		crClient:       crClient,
-		fundingService: fundingService,
-		webhookSecret:  webhookSecret,
-		logger:         logger,
+		crClient:         crClient,
+		fundingService:   fundingService,
+		webhookSecret:    webhookSecret,
+		destinationChain: destinationChain,
+		logger:           logger,
 	}
 }
 
@@ -126,7 +129,7 @@ func (h *ChainRailsHandlers) CreateSession(c *gin.Context) {
 	// ChainRails will bridge funds to this address on the destination chain.
 	var depositAddress string
 	if h.walletLookup != nil {
-		chain := entities.WalletChainBase
+		chain := entities.WalletChainSolana
 		w, wErr := h.walletLookup.GetWalletByUserAndChain(c.Request.Context(), userID, chain)
 		if wErr != nil || w == nil || w.Address == "" {
 			// Try creating the wallet
@@ -152,10 +155,20 @@ func (h *ChainRailsHandlers) CreateSession(c *gin.Context) {
 		return
 	}
 
+	// Resolve USDC token address for the destination chain
+	destChain := h.destinationChain
+	if destChain == "" {
+		destChain = h.crClient.Config().DestinationChain
+	}
+	tokenOut := h.crClient.Config().SettlementToken
+	if tokenOut == "" || tokenOut == "USDC" {
+		tokenOut = usdcTokenForChainRailsChain(destChain)
+	}
+
 	session, err := h.crClient.CreateSessionRaw(c.Request.Context(), &chainrails.CreateSessionRequest{
 		Recipient:        depositAddress,
-		TokenOut:         "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // USDC on Base
-		DestinationChain: "BASE_MAINNET",
+		TokenOut:         tokenOut,
+		DestinationChain: destChain,
 		Amount:           req.Amount,
 	})
 	if err != nil {
@@ -388,6 +401,30 @@ func mapToken(tokenOut string) entities.Stablecoin {
 		return entities.StablecoinUSDG
 	default:
 		return entities.StablecoinUSDC // default — Rail settles in USDC
+	}
+}
+
+// usdcTokenForChainRailsChain returns the USDC contract address for a ChainRails chain ID.
+func usdcTokenForChainRailsChain(chain string) string {
+	switch chain {
+	case "SOLANA_MAINNET":
+		return "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+	case "SOLANA_TESTNET":
+		return "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+	case "BASE_MAINNET":
+		return "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+	case "BASE_TESTNET":
+		return "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
+	case "ETHEREUM_MAINNET":
+		return "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+	case "ETHEREUM_TESTNET":
+		return "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"
+	case "ARBITRUM_MAINNET":
+		return "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
+	case "ARBITRUM_TESTNET":
+		return "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d"
+	default:
+		return "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" // Solana mainnet fallback
 	}
 }
 

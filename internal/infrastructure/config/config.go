@@ -739,7 +739,7 @@ func setDefaults() {
 	viper.SetDefault("circle.base_url", "")
 	viper.SetDefault("circle.default_wallet_set_id", "")
 	viper.SetDefault("circle.default_wallet_set_name", "STACK-WalletSet")
-	viper.SetDefault("circle.supported_chains", []string{"SOL-DEVNET", "MATIC-AMOY"})
+	viper.SetDefault("circle.supported_chains", []string{"SOL", "ETH", "MATIC", "BASE", "AVAX", "ARB", "OP"})
 
 	// KYC defaults
 	viper.SetDefault("kyc.provider", "")

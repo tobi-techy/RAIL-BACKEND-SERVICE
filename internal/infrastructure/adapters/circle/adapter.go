@@ -138,19 +138,40 @@ func (a *Adapter) TransferUSDC(ctx context.Context, walletID, tokenID, destinati
 }
 
 // FindWalletWithUSDC searches all wallets for a user (by refId) and returns the first
-// wallet+tokenId that holds USDC. Enables cross-chain withdrawals.
+// wallet+tokenId that holds USDC. Prefers Solana (primary custody chain), then EVM fallback.
 func (a *Adapter) FindWalletWithUSDC(ctx context.Context, userRefID string) (string, string, string, string, error) {
 	wallets, err := a.client.ListWalletsByRefID(ctx, userRefID)
 	if err != nil {
 		return "", "", "", "", fmt.Errorf("list wallets: %w", err)
 	}
+
+	// First pass: prefer Solana (primary custody chain)
 	for _, w := range wallets {
+		if !isSolanaBlockchain(w.Blockchain) {
+			continue
+		}
 		tokenID, err := a.client.GetUSDCTokenID(ctx, w.ID)
 		if err == nil && tokenID != "" {
 			return w.ID, tokenID, string(w.Blockchain), w.Address, nil
 		}
 	}
+
+	// Second pass: fall back to EVM wallets
+	for _, w := range wallets {
+		if isSolanaBlockchain(w.Blockchain) {
+			continue
+		}
+		tokenID, err := a.client.GetUSDCTokenID(ctx, w.ID)
+		if err == nil && tokenID != "" {
+			return w.ID, tokenID, string(w.Blockchain), w.Address, nil
+		}
+	}
+
 	return "", "", "", "", fmt.Errorf("no wallet with USDC found for user %s", userRefID)
+}
+
+func isSolanaBlockchain(bc Blockchain) bool {
+	return bc == BlockchainSOL || bc == BlockchainSOLDevnet
 }
 
 // HealthCheck verifies Circle API connectivity.

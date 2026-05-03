@@ -1472,7 +1472,12 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 
 // initializeDomainServices initializes all domain services with their dependencies
 func (c *Container) initializeDomainServices() error {
-	defaultWalletChains := convertWalletChains(c.Config.Bridge.SupportedChains, c.ZapLog)
+	// Use Circle supported chains when Circle is the wallet provider, fall back to Bridge chains.
+	walletChainSource := c.Config.Bridge.SupportedChains
+	if c.CircleAdapter != nil && len(c.Config.Circle.SupportedChains) > 0 {
+		walletChainSource = c.Config.Circle.SupportedChains
+	}
+	defaultWalletChains := convertWalletChains(walletChainSource, c.ZapLog)
 	walletServiceConfig := wallet.Config{
 		WalletSetNamePrefix: c.Config.Circle.DefaultWalletSetName,
 		SupportedChains:     defaultWalletChains,
@@ -4129,7 +4134,7 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 		}, c.ZapLog)
 		c.ChainRailsClient = crClient
 		c.ChainRailsHandlers = fundinghandlers.NewChainRailsHandlers(
-			c.ChainRailsClient, c.FundingService, c.Config.ChainRails.WebhookSecret, c.Logger,
+			c.ChainRailsClient, c.FundingService, c.Config.ChainRails.WebhookSecret, c.Config.ChainRails.DestinationChain, c.Logger,
 		)
 		// Wire ChainRails into withdrawal service for cross-chain withdrawals
 		if c.WithdrawalService != nil {
@@ -4161,9 +4166,6 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 		}
 		if c.WalletService != nil {
 			pajService.SetWalletProvider(c.WalletService)
-		}
-		if c.BridgeAdapter != nil && c.WalletService != nil {
-			pajService.SetBridgeTransfer(c.BridgeAdapter, c.Config.Paj.Chain, &UserProfileProviderAdapter{repo: c.UserRepo})
 		}
 		if c.CircleAdapter != nil {
 			pajService.SetCircleTransfer(c.CircleAdapter)
