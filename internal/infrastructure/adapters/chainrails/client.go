@@ -61,6 +61,9 @@ func NewClient(cfg Config, logger *zap.Logger) *Client {
 	}
 }
 
+// Config returns the client configuration.
+func (c *Client) Config() Config { return c.config }
+
 // --- Intent creation (direct API integration) ---
 
 type CreateIntentRequest struct {

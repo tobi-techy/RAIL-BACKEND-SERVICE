@@ -58,13 +58,16 @@ func (w *Worker) recover(ctx context.Context) {
 	maxAgeSeconds := int(w.maxPendingAge.Seconds())
 
 	rows, err := w.db.QueryContext(ctx, `
-		SELECT id, paj_order_id, user_id, COALESCE(hold_amount, token_amount, 0), fiat_amount
+		SELECT id, paj_order_id, user_id, COALESCE(hold_amount, token_amount, 0), fiat_amount, bridge_transfer_id, created_at
 		FROM paj_orders
 		WHERE order_type = 'offramp'
 		  AND status = 'pending'
-		  AND bridge_transfer_id IS NULL
 		  AND deposit_id IS NULL
-		  AND created_at < NOW() - make_interval(secs => $1)
+		  AND (
+		    (bridge_transfer_id IS NULL AND created_at < NOW() - make_interval(secs => $1))
+		    OR
+		    (bridge_transfer_id IS NOT NULL AND created_at < NOW() - interval '1 hour')
+		  )
 		LIMIT 10`, maxAgeSeconds)
 	if err != nil {
 		w.logger.Error("paj offramp recovery: query failed", zap.Error(err))
@@ -78,12 +81,14 @@ func (w *Worker) recover(ctx context.Context) {
 		UserID     uuid.UUID
 		HoldAmount decimal.Decimal
 		FiatAmount float64
+		TransferID *string
+		CreatedAt  time.Time
 	}
 
 	var stuck []candidate
 	for rows.Next() {
 		var o candidate
-		if err := rows.Scan(&o.ID, &o.PajOrderID, &o.UserID, &o.HoldAmount, &o.FiatAmount); err != nil {
+		if err := rows.Scan(&o.ID, &o.PajOrderID, &o.UserID, &o.HoldAmount, &o.FiatAmount, &o.TransferID, &o.CreatedAt); err != nil {
 			w.logger.Error("paj offramp recovery: scan failed", zap.Error(err))
 			continue
 		}
@@ -118,7 +123,6 @@ func (w *Worker) reverseStuckOrder(ctx context.Context, pajOrderID string, userI
 		SET status = 'failed', deposit_id = gen_random_uuid(), updated_at = NOW()
 		WHERE paj_order_id = $1
 		  AND status = 'pending'
-		  AND bridge_transfer_id IS NULL
 		  AND deposit_id IS NULL
 		RETURNING COALESCE(hold_amount, token_amount)`, pajOrderID).Scan(&claimedHold)
 	if err != nil {
