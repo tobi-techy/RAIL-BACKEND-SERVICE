@@ -703,6 +703,9 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 
 	state := strings.ToUpper(strings.TrimSpace(transferResult.State))
 	isFinalSuccess := state == "COMPLETE" || state == "COMPLETED" || state == "CONFIRMED" || state == "SUCCESS"
+	isFinalFailure := state == "FAILED" || state == "DENIED" || state == "CANCELLED" ||
+		state == "CANCELED" || state == "REJECTED" || state == "ERROR" ||
+		state == "UNDELIVERABLE" || state == "RETURNED" || state == "REFUNDED"
 
 	if isFinalSuccess {
 		if s.limitsService != nil {
@@ -717,10 +720,16 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 		}
 		s.logger.Info("async: crypto withdrawal completed",
 			"withdrawal_id", withdrawal.ID.String(), "tx_hash", transferResult.TxHash)
-	} else if withdrawal.Status == entities.WithdrawalStatusFailed {
+	} else if isFinalFailure {
+		s.logger.Error("async: crypto transfer returned failure state — reversing ledger",
+			"withdrawal_id", withdrawal.ID.String(), "state", state)
 		if revErr := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); revErr != nil {
 			s.logger.Error("async: failed to reverse ledger after provider failure",
 				"error", revErr, "withdrawal_id", withdrawal.ID.String())
+		}
+		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "provider returned: "+state)
+		if s.notificationService != nil {
+			_ = s.notificationService.NotifyWithdrawalFailed(ctx, req.UserID, req.Amount, "Transfer failed. Your funds have been returned to your balance.")
 		}
 	} else {
 		s.logger.Info("async: crypto withdrawal processing",
