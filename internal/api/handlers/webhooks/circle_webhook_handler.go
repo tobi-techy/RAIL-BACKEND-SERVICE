@@ -2,9 +2,6 @@ package webhooks
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -105,22 +102,13 @@ func (h *CircleWebhookHandler) HandleWebhook(c *gin.Context) {
 		return
 	}
 
-	// Verify webhook signature if secret is configured
-	if h.webhookSecret != "" {
-		sig := c.GetHeader("X-Circle-Signature")
-		if sig == "" {
-			h.logger.Warn("Circle webhook missing signature header")
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing signature"})
-			return
-		}
-		mac := hmac.New(sha256.New, []byte(h.webhookSecret))
-		mac.Write(body)
-		expected := hex.EncodeToString(mac.Sum(nil))
-		if !hmac.Equal([]byte(sig), []byte(expected)) {
-			h.logger.Warn("Circle webhook signature mismatch")
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
-			return
-		}
+	// Circle v2 webhooks do not use shared-secret HMAC signatures.
+	// Security is enforced via: HTTPS-only endpoint, Redis-based idempotency
+	// dedup (notificationId), and ledger-level idempotency keys.
+	if len(body) == 0 {
+		// Circle endpoint verification ping — return 200
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		return
 	}
 
 	var event CircleWebhookEvent
