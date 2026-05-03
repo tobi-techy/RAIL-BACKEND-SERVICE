@@ -539,6 +539,10 @@ func (a *WithdrawalLedgerAdapter) ReverseTransaction(ctx context.Context, userID
 	return err
 }
 
+func (a *WithdrawalLedgerAdapter) TransferSpendingToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
+	return a.ledgerService.TransferSpendingToStash(ctx, userID, amount, idempotencyKey)
+}
+
 // WithdrawalBridgeAdapter adapts bridge.Adapter to withdrawal.BridgeAdapter interface
 type WithdrawalBridgeAdapter struct {
 	adapter *bridge.Adapter

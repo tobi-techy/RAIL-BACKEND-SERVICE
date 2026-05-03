@@ -29,6 +29,7 @@ type WithdrawalServiceInterface interface {
 	GetWithdrawalFee(ctx context.Context, withdrawalType entities.WithdrawalType, amount decimal.Decimal, currency entities.WithdrawalCurrency, sourceChain, destChain string) (*entities.WithdrawalFee, error)
 	EmergencyWithdrawalPreview(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (*entities.EmergencyWithdrawalPreviewResponse, error)
 	EmergencyStashToSpending(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) (*entities.EmergencyWithdrawalResult, error)
+	FundStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) (*entities.FundStashResult, error)
 }
 
 // WalletProvider interface for getting user's Bridge-managed wallet
@@ -868,6 +869,46 @@ func (h *WithdrawalHandlers) EmergencyStashToSpending(c *gin.Context) {
 		default:
 			h.logger.Error("Emergency stash-to-spending failed", "error", err, "user_id", userID)
 			common.SendInternalError(c, "EMERGENCY_WITHDRAWAL_ERROR", "Failed to execute emergency withdrawal")
+		}
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// FundStashRequest is the HTTP request for funding stash from spending balance.
+type FundStashRequest struct {
+	Amount string `json:"amount" binding:"required"`
+}
+
+// FundStash handles POST /api/v1/funding/stash
+func (h *WithdrawalHandlers) FundStash(c *gin.Context) {
+	userID, ok := h.extractUserID(c)
+	if !ok {
+		return
+	}
+	var req FundStashRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Invalid request: "+err.Error())
+		return
+	}
+	amount, err := parsePositiveDecimal(req.Amount)
+	if err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidAmount, err.Error())
+		return
+	}
+	idempotencyKey, _ := getIdempotencyKey(c)
+
+	result, err := h.withdrawalService.FundStash(c.Request.Context(), userID, amount, idempotencyKey)
+	if err != nil {
+		errMsg := err.Error()
+		switch {
+		case strings.Contains(errMsg, "insufficient"):
+			common.SendBadRequest(c, common.ErrCodeInsufficientFunds, errMsg)
+		case strings.Contains(errMsg, "minimum"):
+			common.SendBadRequest(c, common.ErrCodeInvalidAmount, errMsg)
+		default:
+			h.logger.Error("Fund stash failed", "error", err, "user_id", userID)
+			common.SendInternalError(c, "FUND_STASH_ERROR", "Failed to fund stash")
 		}
 		return
 	}

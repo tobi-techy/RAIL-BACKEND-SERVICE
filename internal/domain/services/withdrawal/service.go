@@ -46,6 +46,7 @@ type LedgerService interface {
 	GetAccountBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (decimal.Decimal, error)
 	CreateTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, txType entities.TransactionType, amount decimal.Decimal, metadata map[string]interface{}) error
 	ReverseTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, originalTxID string, amount decimal.Decimal, metadata map[string]interface{}) error
+	TransferSpendingToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error
 }
 
 // BankAccountRepository interface for bank account persistence
@@ -268,6 +269,21 @@ func (s *WithdrawalService) SetEmergencyLedger(l EmergencyLedger) {
 	s.emergencyLedger = l
 }
 
+// IsStashLocked returns true if the user has no open withdrawal window.
+func (s *WithdrawalService) IsStashLocked(ctx context.Context, userID uuid.UUID) (bool, error) {
+	s.stashLockMu.RLock()
+	sl := s.stashLock
+	s.stashLockMu.RUnlock()
+	if sl == nil {
+		return false, nil // No lock service configured — not locked
+	}
+	canWithdraw, _, err := sl.CanWithdraw(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	return !canWithdraw, nil
+}
+
 // EmergencyWithdrawalPreview returns the fee breakdown for an emergency stash withdrawal.
 func (s *WithdrawalService) EmergencyWithdrawalPreview(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (*entities.EmergencyWithdrawalPreviewResponse, error) {
 	if amount.LessThanOrEqual(decimal.Zero) {
@@ -347,6 +363,45 @@ func (s *WithdrawalService) EmergencyStashToSpending(ctx context.Context, userID
 		FeePercent: feePct,
 		NetAmount:  amount.Sub(fee),
 		TransferID: uuid.New(),
+	}, nil
+}
+
+// FundStash transfers funds from spending balance to investment stash.
+func (s *WithdrawalService) FundStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) (*entities.FundStashResult, error) {
+	if amount.LessThan(decimal.NewFromInt(1)) {
+		return nil, fmt.Errorf("minimum amount is $1.00")
+	}
+
+	balance, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get spending balance: %w", err)
+	}
+	if balance.LessThan(amount) {
+		return nil, fmt.Errorf("insufficient spending balance: have %s, need %s", balance.String(), amount.String())
+	}
+
+	if err := s.ledgerService.TransferSpendingToStash(ctx, userID, amount, idempotencyKey); err != nil {
+		return nil, fmt.Errorf("transfer failed: %w", err)
+	}
+
+	transferID := uuid.New()
+	now := time.Now()
+	transfer := &entities.StashTransfer{
+		ID:        transferID,
+		UserID:    userID,
+		Amount:    amount,
+		Direction: entities.StashTransferDirectionSpendingToStash,
+		Status:    entities.StashTransferStatusCompleted,
+		CreatedAt: now,
+	}
+	if err := s.stashTransferRepo.Create(ctx, transfer); err != nil {
+		s.logger.Error("failed to record stash transfer", zap.String("user_id", userID.String()), zap.Error(err))
+	}
+
+	return &entities.FundStashResult{
+		TransferID: transferID,
+		Amount:     amount,
+		Status:     "completed",
 	}, nil
 }
 
