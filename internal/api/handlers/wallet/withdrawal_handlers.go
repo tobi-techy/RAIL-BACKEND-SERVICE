@@ -897,6 +897,9 @@ func (h *WithdrawalHandlers) FundStash(c *gin.Context) {
 		return
 	}
 	idempotencyKey, _ := getIdempotencyKey(c)
+	if idempotencyKey == "" {
+		idempotencyKey = uuid.New().String()
+	}
 
 	result, err := h.withdrawalService.FundStash(c.Request.Context(), userID, amount, idempotencyKey)
 	if err != nil {
