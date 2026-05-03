@@ -11,7 +11,13 @@ import (
 // to personalize guidance without relying on chat history alone.
 type FinancialProfile struct {
 	UserID               uuid.UUID              `json:"user_id" db:"user_id"`
+	UserType             string                 `json:"user_type" db:"user_type"`
+	ResidenceCountry     string                 `json:"residence_country" db:"residence_country"`
+	TaxCountry           string                 `json:"tax_country" db:"tax_country"`
 	PrimaryCurrency      string                 `json:"primary_currency" db:"primary_currency"`
+	EarningCurrency      string                 `json:"earning_currency" db:"earning_currency"`
+	SpendingCurrency     string                 `json:"spending_currency" db:"spending_currency"`
+	FamilySupportCountry string                 `json:"family_support_country" db:"family_support_country"`
 	IncomeFrequency      string                 `json:"income_frequency" db:"income_frequency"`
 	MonthlyIncome        decimal.Decimal        `json:"monthly_income" db:"monthly_income"`
 	MonthlyFixedCosts    decimal.Decimal        `json:"monthly_fixed_costs" db:"monthly_fixed_costs"`
@@ -28,7 +34,13 @@ type FinancialProfile struct {
 // FinancialProfileUpdate is a partial update payload for financial_profiles.
 // Nil fields mean "leave unchanged".
 type FinancialProfileUpdate struct {
+	UserType             *string
+	ResidenceCountry     *string
+	TaxCountry           *string
 	PrimaryCurrency      *string
+	EarningCurrency      *string
+	SpendingCurrency     *string
+	FamilySupportCountry *string
 	IncomeFrequency      *string
 	MonthlyIncome        *decimal.Decimal
 	MonthlyFixedCosts    *decimal.Decimal

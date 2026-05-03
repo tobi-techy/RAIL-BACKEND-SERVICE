@@ -2,6 +2,7 @@ package di
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
@@ -21,6 +22,18 @@ func (a *fundsTransfererAdapter) TransferSpendToStash(ctx context.Context, userI
 
 func (a *fundsTransfererAdapter) TransferStashToSpend(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
 	return a.ledger.TransferStashToSpending(ctx, userID, amount, idempotencyKey)
+}
+
+func (a *fundsTransfererAdapter) TransferBetweenStashes(ctx context.Context, userID uuid.UUID, from, to string, amount decimal.Decimal) error {
+	idempotencyKey := "automation-" + userID.String() + "-" + from + "-" + to + "-" + amount.String()
+	switch {
+	case from == "spend" && to == "stash":
+		return a.TransferSpendToStash(ctx, userID, amount, idempotencyKey)
+	case from == "stash" && to == "spend":
+		return a.TransferStashToSpend(ctx, userID, amount, idempotencyKey)
+	default:
+		return fmt.Errorf("unsupported transfer route: %s to %s", from, to)
+	}
 }
 
 func (a *fundsTransfererAdapter) GetSpendBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {

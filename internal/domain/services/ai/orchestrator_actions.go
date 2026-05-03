@@ -15,10 +15,11 @@ import (
 
 // Action tool names.
 const (
-	ToolTransferFunds  = "transfer_funds"
-	ToolSetSavingsGoal = "set_savings_goal"
-	ToolConfirmAction  = "confirm_action"
-	ToolCancelAction   = "cancel_action"
+	ToolTransferFunds            = "transfer_funds"
+	ToolSetSavingsGoal           = "set_savings_goal"
+	ToolCreateObligationReminder = "create_obligation_reminder"
+	ToolConfirmAction            = "confirm_action"
+	ToolCancelAction             = "cancel_action"
 )
 
 const pendingActionTTL = 2 * time.Minute
@@ -58,6 +59,39 @@ type SavingsGoal struct {
 type SavingsGoalStore interface {
 	Set(ctx context.Context, userID uuid.UUID, goal *SavingsGoal) error
 	Get(ctx context.Context, userID uuid.UUID) (*SavingsGoal, error)
+}
+
+// AutomationCreator creates Miriam automation rules after confirmation.
+type AutomationCreator interface {
+	CreateAutomationFromAI(ctx context.Context, userID uuid.UUID, req AIServiceAutomationRequest) (*entities.MiriamAutomation, error)
+}
+
+// ObligationCreator creates manual obligations after confirmation.
+type ObligationCreator interface {
+	CreateObligationFromAI(ctx context.Context, userID uuid.UUID, req AIServiceObligationRequest) (*entities.FinancialObligation, error)
+}
+
+type AIServiceAutomationRequest struct {
+	Name              string
+	Description       *string
+	TriggerType       string
+	TriggerConfig     map[string]interface{}
+	ActionType        string
+	ActionConfig      map[string]interface{}
+	MaxTriggersPerDay int
+	CooldownMinutes   int
+}
+
+type AIServiceObligationRequest struct {
+	Type         string
+	Name         string
+	Amount       decimal.Decimal
+	Currency     string
+	Cadence      string
+	DueDay       *int
+	Priority     string
+	Counterparty *string
+	Metadata     map[string]interface{}
 }
 
 // PendingActionStore persists pending actions (Redis-backed for multi-instance safety).
@@ -129,6 +163,14 @@ func (o *Orchestrator) SetSavingsGoalStore(s SavingsGoalStore) {
 	o.savingsGoalStore = s
 }
 
+func (o *Orchestrator) SetAutomationCreator(a AutomationCreator) {
+	o.automationCreator = a
+}
+
+func (o *Orchestrator) SetObligationCreator(c ObligationCreator) {
+	o.obligationCreator = c
+}
+
 // SetAccountChecker wires the user account checker dependency.
 func (o *Orchestrator) SetAccountChecker(c UserAccountChecker) {
 	o.accountChecker = c
@@ -181,6 +223,25 @@ func ActionTools() []ai.Tool {
 				"required": []string{"name", "target"},
 			},
 		},
+		{
+			Name:        ToolCreateObligationReminder,
+			Description: "Create a manual financial obligation or reminder for bills, taxes, invoices, payroll, rent, education, insurance, family support, subscriptions, or vendor bills. Requires user confirmation before saving.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"type":         map[string]interface{}{"type": "string", "enum": []string{"debt", "invoice", "payroll", "insurance", "education", "rent", "family_support", "tax", "subscription", "vendor_bill", "other"}},
+					"name":         map[string]interface{}{"type": "string"},
+					"amount":       map[string]interface{}{"type": "number"},
+					"currency":     map[string]interface{}{"type": "string"},
+					"cadence":      map[string]interface{}{"type": "string", "enum": []string{"one_time", "weekly", "biweekly", "monthly", "quarterly", "annual"}},
+					"due_day":      map[string]interface{}{"type": "integer"},
+					"priority":     map[string]interface{}{"type": "string", "enum": []string{"critical", "high", "medium", "low"}},
+					"counterparty": map[string]interface{}{"type": "string"},
+					"metadata":     map[string]interface{}{"type": "object"},
+				},
+				"required": []string{"type", "name", "amount", "currency", "cadence"},
+			},
+		},
 	}
 }
 
@@ -196,12 +257,14 @@ func (o *Orchestrator) executeActionTool(ctx context.Context, userID, convID uui
 		return o.executeSendReport(ctx, userID, convID, tc.Arguments)
 	case ToolSetBudget:
 		return o.createSetBudgetAction(ctx, userID, convID, tc.Arguments)
+	case ToolCreateAutomation:
+		return o.createAutomationAction(ctx, userID, convID, tc.Arguments)
+	case ToolCreateObligationReminder:
+		return o.createObligationReminderAction(ctx, userID, convID, tc.Arguments)
 	case ToolSplitReceipt:
 		return o.createSplitReceiptAction(ctx, userID, convID, tc.Arguments)
 	case ToolUpdateFinancialProfile:
 		return o.createFinancialProfileAction(ctx, userID, convID, tc.Arguments)
-	case ToolCreateAutomation:
-		return o.createAutomationAction(ctx, userID, convID, tc.Arguments)
 	default:
 		return nil, fmt.Errorf("unknown action tool: %s", tc.Name)
 	}
@@ -379,6 +442,10 @@ func (o *Orchestrator) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 		execErr = o.executeSendReportAction(ctx, userID, action)
 	case ToolSetBudget:
 		_, execErr = o.executeSetBudget(ctx, userID, action.Params)
+	case ToolCreateAutomation:
+		_, execErr = o.executeCreateAutomation(ctx, userID, action.Params)
+	case ToolCreateObligationReminder:
+		_, execErr = o.executeCreateObligationReminder(ctx, userID, action.Params)
 	case ToolSplitReceipt:
 		// Split receipt is confirmed — the actual P2P sends happen via the HTTP handler.
 		// The AI action just records the intent; execution is delegated to the receipt split endpoint.
@@ -390,12 +457,6 @@ func (o *Orchestrator) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 			execErr = fmt.Errorf("financial profile service is unavailable")
 		} else {
 			_, execErr = o.executeUpdateFinancialProfile(ctx, userID, action.Params)
-		}
-	case ToolCreateAutomation:
-		if o.automationProvider == nil {
-			execErr = fmt.Errorf("automation service is unavailable")
-		} else {
-			_, execErr = o.executeCreateAutomation(ctx, userID, action.Params)
 		}
 	default:
 		execErr = fmt.Errorf("unknown action: %s", action.Action)
@@ -497,7 +558,7 @@ func (o *Orchestrator) auditAction(ctx context.Context, userID, convID uuid.UUID
 
 // isActionTool returns true if the tool name is an action tool.
 func isActionTool(name string) bool {
-	return name == ToolTransferFunds || name == ToolSetSavingsGoal || name == ToolSendReport || name == ToolSetBudget || name == ToolSplitReceipt || name == ToolUpdateFinancialProfile || name == ToolCreateAutomation
+	return name == ToolTransferFunds || name == ToolSetSavingsGoal || name == ToolSendReport || name == ToolSetBudget || name == ToolCreateAutomation || name == ToolCreateObligationReminder || name == ToolSplitReceipt || name == ToolUpdateFinancialProfile
 }
 
 func (o *Orchestrator) canCreateActionTool(name string) bool {
@@ -508,12 +569,14 @@ func (o *Orchestrator) canCreateActionTool(name string) bool {
 		return o.reportEmail != nil
 	case ToolSetBudget:
 		return o.budgetProvider != nil
+	case ToolCreateAutomation:
+		return o.automationProvider != nil
+	case ToolCreateObligationReminder:
+		return o.obligationCreator != nil
 	case ToolSplitReceipt:
 		return o.receiptHistory != nil
 	case ToolUpdateFinancialProfile:
 		return o.financialProfile != nil
-	case ToolCreateAutomation:
-		return o.automationProvider != nil
 	default:
 		return false
 	}

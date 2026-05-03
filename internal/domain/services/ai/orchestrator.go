@@ -113,6 +113,10 @@ type Orchestrator struct {
 	receiptHistory     ReceiptHistoryProvider
 	budgetProvider     BudgetProvider
 	financialProfile   FinancialProfileProvider
+	obligations        FinancialObligationProvider
+	automationCreator  AutomationCreator
+	obligationCreator  ObligationCreator
+	currencyRates      CurrencyRateProvider
 	userProfile        UserProfileProvider
 	reportEmail        ReportEmailSender
 	savingsGoalStore   SavingsGoalStore
@@ -149,6 +153,10 @@ type OrchestratorDeps struct {
 	ReceiptHistory     ReceiptHistoryProvider
 	BudgetProvider     BudgetProvider
 	FinancialProfile   FinancialProfileProvider
+	Obligations        FinancialObligationProvider
+	AutomationCreator  AutomationCreator
+	ObligationCreator  ObligationCreator
+	CurrencyRates      CurrencyRateProvider
 	UserProfile        UserProfileProvider
 	ReportEmail        ReportEmailSender
 	Pending            PendingActionStore
@@ -200,6 +208,10 @@ func NewOrchestratorWithDeps(
 		receiptHistory:     deps.ReceiptHistory,
 		budgetProvider:     deps.BudgetProvider,
 		financialProfile:   deps.FinancialProfile,
+		obligations:        deps.Obligations,
+		automationCreator:  deps.AutomationCreator,
+		obligationCreator:  deps.ObligationCreator,
+		currencyRates:      deps.CurrencyRates,
 		userProfile:        deps.UserProfile,
 		reportEmail:        deps.ReportEmail,
 		pending:            pending,
@@ -283,6 +295,50 @@ CURRENCY CONVERSION — CRITICAL:
 - Example: "₦50,000 salary" → "that's roughly $31 at today's rate"
 - If the user gives you a USD target, work with it directly.
 - For GBP: use £1 = $1.27. For EUR: use €1 = $1.09.
+
+YOUR USERS:
+- Mostly 18-30 year olds in Nigeria and across Africa, plus diaspora in UK/US/Europe.
+- Many earn in naira, pounds, or dollars. Many have irregular income.
+- ₦5,000 is meaningful. Never dismiss small amounts.
+- Many are saving seriously for the first time. Be encouraging.
+
+MANDATORY TOOL USAGE (CRITICAL):
+- You MUST call the appropriate tool(s) BEFORE answering ANY question about the user's money, spending, balance, transactions, deposits, withdrawals, yield, or financial activity.
+- NEVER answer a financial question from memory or assumption. Always fetch fresh data first.
+- For general questions like "how am I doing", "give me an overview", "what's my financial situation" → call get_account_summary. It returns balances, this month's flow, budget status, and streak in one call.
+- For "where did my money go" or "how much did I spend" → call get_money_flow FIRST, then get_recent_transactions if the user wants details.
+- For "what's my balance" or "how much do I have" → call get_account_summary.
+- For "show me my transactions" → call get_recent_transactions.
+- For "how much did I deposit" → call get_deposit_history.
+- For "how much yield/interest" → call get_yield_earned.
+- If you need multiple data points, call multiple tools. Do NOT guess what one tool's data means without checking another.
+
+ACCURACY RULES (CRITICAL — users are paying for this):
+- NEVER invent, estimate, or round numbers. Only use exact data from tools.
+- ALWAYS cite the exact figures returned by tools. If a tool says $342.50, say "$342.50" — do not round to "$340" or "about $350".
+- NEVER guess what a transaction was for. If the data says "Crypto Withdrawal" or "Withdrawal", say exactly that — don't assume it was for food, rent, or anything else.
+- Deposits are MONEY IN. Withdrawals, card payments, and P2P transfers are MONEY OUT. Never confuse these.
+- All financial tools only return COMPLETED/SUCCESSFUL transactions. Failed, pending, and reversed transactions are already excluded. Trust the numbers from tools.
+- When doing math, double-check: total money out = withdrawals + card spend + P2P transfers. Net = deposits minus total money out.
+- If a tool returns 0 transactions or empty data, say "I don't see any [X] for this period" — don't make up an explanation.
+- If you're unsure about something, say so. "I can see X but I'd need to check Y" is better than a wrong answer.
+- When listing transactions, include the exact amount, date, and category/source for each one. Do not skip or summarize transactions unless there are more than 10.
+- For personalized planning, use get_financial_profile when available. If important profile fields are missing, ask one or two clear questions instead of pretending to know the user's income, bills, goals, or risk tolerance.
+- Before giving recommendations, call get_financial_advice so the response is grounded in deterministic checks, exact evidence, and safety flags.
+- When the user asks what happened over time, call get_financial_timeline instead of reconstructing a story from memory.
+- For persona-specific planning (individuals, freelancers, founders, families, high earners) or geography/cross-currency questions, call get_persona_money_context before answering. Use its persona_priorities, paid_workflows, geo_playbook, and missing_fields. If key fields are missing, ask one or two questions instead of giving a generic plan.
+- For monthly operating plans, safe-spend decisions, obligation coverage, tax reserve, family-support limits, or "what should I do this month" questions, call get_money_operating_plan before answering. Treat its next_actions as approval-gated proposals; never imply money moved unless a pending action was confirmed.
+- For investment, tax, or legal questions, keep the answer conservative and informational. Never promise returns, give legal conclusions, or state tax liability as fact.
+- When using search_knowledge_base, ground the answer in the returned context and mention the source document names when helpful. Never present knowledge-base content as if it came from the user's account data.
+
+HOW TO RESPOND:
+- Lead with the exact numbers, then add context and insight. Example: "You spent $342.50 this month across 23 transactions. Your biggest was $89 at [merchant] on the 15th — without it, your daily average drops from $15 to $10."
+- Use "you" statements. "You saved $735 this month — up from $612 last month. That's real momentum."
+- Give context after the facts. "$735 in stash — that's 3 months of growth from zero. At this pace, you'll cross $1,000 by July."
+- Be thorough. If the user asks about spending, give them the full picture: total, top categories, top merchants, and any notable transactions.
+- NEVER use emojis in responses. Use plain text only.
+- If the user asks a simple question ("how much did I spend?"), give a concise but complete answer with the exact number.
+- If the user asks for detail ("break down my spending"), give a comprehensive breakdown with all categories and amounts.
 
 RECEIPT SCANNING:
 - You can see receipts the user has scanned. Use get_receipt_history to pull them.
@@ -414,6 +470,9 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 	// Durable financial profile tools
 	if o.financialProfile != nil {
 		tools = append(tools, FinancialProfileTools()...)
+	}
+	if o.financialProfile != nil && o.aggregateStats != nil {
+		tools = append(tools, MoneyOperatingPlanTool())
 	}
 	// Recurring expense detection
 	if o.recurringDetector != nil {
@@ -843,6 +902,18 @@ func (o *Orchestrator) executeToolInner(ctx context.Context, userID uuid.UUID, t
 			return map[string]interface{}{"error": "financial profile service is unavailable"}, nil
 		}
 		return o.executeGetFinancialProfile(ctx, userID)
+
+	case ToolGetPersonaMoneyContext:
+		if o.financialProfile == nil {
+			return map[string]interface{}{"error": "persona money context service is unavailable"}, nil
+		}
+		return o.executePersonaMoneyContext(ctx, userID)
+
+	case ToolGetMoneyOperatingPlan:
+		if o.financialProfile == nil || o.aggregateStats == nil {
+			return map[string]interface{}{"error": "money operating plan service is unavailable"}, nil
+		}
+		return o.executeMoneyOperatingPlan(ctx, userID)
 
 	case ToolGetFinancialHealth:
 		if !o.hasFinancialAdviceProviders() {

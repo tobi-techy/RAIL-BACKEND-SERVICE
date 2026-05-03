@@ -673,7 +673,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				}
 
 				// KYC-gated funding operations
-					// Deposit address — available to all users with Circle wallets (no KYC required)
+				// Deposit address — available to all users with Circle wallets (no KYC required)
 				funding.POST("/deposit/address", walletFundingHandlers.CreateDepositAddress)
 
 				// Bridge KYC required: fiat virtual accounts and instant funding
@@ -865,6 +865,18 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				}
 			}
 
+			if container.FinancialObligationService != nil {
+				obligationHandler := handlers.NewFinancialObligationHandler(container.FinancialObligationService, container.ZapLog)
+				obligations := protected.Group("/financial-obligations")
+				{
+					obligations.POST("", obligationHandler.Create)
+					obligations.GET("", obligationHandler.List)
+					obligations.GET("/:id", obligationHandler.Get)
+					obligations.PATCH("/:id", obligationHandler.Update)
+					obligations.DELETE("/:id", obligationHandler.Delete)
+				}
+			}
+
 			// Notification routes - push tokens and in-app notifications
 			notificationHandlers := handlers.NewNotificationHandlers(
 				container.DeviceTokenRepo,
@@ -1027,6 +1039,24 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					aiGroup.GET("/suggestions", aiChatHandlers.GetSuggestedQuestions)
 					aiGroup.GET("/starters", middleware.AuthRateLimit(10), aiChatHandlers.GetConversationStarters)
 					aiGroup.POST("/nudge", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), aiChatHandlers.Nudge)
+					enhancedNudgeHandler := handlers.NewEnhancedNudgeHandler(container.GetAIOrchestrator(), container.ZapLog)
+					aiGroup.POST("/nudge/enhanced", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), enhancedNudgeHandler.HandleEnhancedNudge)
+
+					if container.AutomationService != nil {
+						automationHandler := handlers.NewAutomationHandler(container.AutomationService, container.ZapLog, container.GetPasscodeService())
+						automations := aiGroup.Group("/automations")
+						if container.SubscriptionService != nil {
+							automations.Use(middleware.ProGate(container.SubscriptionService))
+						}
+						{
+							automations.POST("", automationHandler.CreateAutomation)
+							automations.GET("", automationHandler.ListAutomations)
+							automations.GET("/logs", automationHandler.GetAutomationLogs)
+							automations.GET("/:id", automationHandler.GetAutomation)
+							automations.PATCH("/:id", automationHandler.UpdateAutomation)
+							automations.DELETE("/:id", automationHandler.DeleteAutomation)
+						}
+					}
 
 					// Image analysis (receipt scanning) — works with OpenAI or any OpenAI-compatible vision provider (e.g. Kimi moonshot-v1-8k)
 					var imageHandler *handlers.ImageAnalysisHandler
@@ -1074,10 +1104,15 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 							container.GetAIOrchestrator(),
 							container.SubscriptionService,
 							container.ZapLog,
+							container.GetConversationService(),
 						)
+						premiumHandlers.SetPasscodeValidator(container.GetPasscodeService())
 						aiGroup.GET("/report/weekly", middleware.AuthRateLimit(5), premiumHandlers.WeeklyReport)
 						aiGroup.POST("/simulate", middleware.AuthRateLimit(10), premiumHandlers.Simulate)
 						aiGroup.GET("/tax-summary", middleware.AuthRateLimit(5), premiumHandlers.TaxSummary)
+						aiGroup.GET("/operating-plan", middleware.AuthRateLimit(10), premiumHandlers.OperatingPlan)
+						aiGroup.POST("/operating-plan/actions", middleware.AuthRateLimit(10), premiumHandlers.StageOperatingPlanAction)
+						aiGroup.GET("/money-across-borders-report", middleware.AuthRateLimit(5), premiumHandlers.MoneyAcrossBordersReport)
 						aiGroup.POST("/challenge/generate", middleware.AuthRateLimit(10), premiumHandlers.GenerateChallenge)
 						aiGroup.GET("/goals/progress", middleware.AuthRateLimit(10), premiumHandlers.GoalProgress)
 					}

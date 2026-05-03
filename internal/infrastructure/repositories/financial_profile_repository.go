@@ -24,13 +24,21 @@ func (r *FinancialProfileRepository) GetByUserID(ctx context.Context, userID uui
 	var profile entities.FinancialProfile
 	var metadataJSON []byte
 	err := r.db.QueryRowxContext(ctx, `
-		SELECT user_id, primary_currency, income_frequency, monthly_income, monthly_fixed_costs,
-		       monthly_savings_target, emergency_fund_target, risk_tolerance, investment_horizon,
-		       financial_goal, metadata, created_at, updated_at
-		FROM financial_profiles
-		WHERE user_id = $1`, userID).Scan(
+			SELECT user_id, user_type, residence_country, tax_country, primary_currency,
+			       earning_currency, spending_currency, family_support_country,
+			       income_frequency, monthly_income, monthly_fixed_costs,
+			       monthly_savings_target, emergency_fund_target, risk_tolerance, investment_horizon,
+			       financial_goal, metadata, created_at, updated_at
+			FROM financial_profiles
+			WHERE user_id = $1`, userID).Scan(
 		&profile.UserID,
+		&profile.UserType,
+		&profile.ResidenceCountry,
+		&profile.TaxCountry,
 		&profile.PrimaryCurrency,
+		&profile.EarningCurrency,
+		&profile.SpendingCurrency,
+		&profile.FamilySupportCountry,
 		&profile.IncomeFrequency,
 		&profile.MonthlyIncome,
 		&profile.MonthlyFixedCosts,
@@ -68,43 +76,63 @@ func (r *FinancialProfileRepository) Upsert(ctx context.Context, userID uuid.UUI
 	}
 
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO financial_profiles (
-			user_id, primary_currency, income_frequency, monthly_income, monthly_fixed_costs,
-			monthly_savings_target, emergency_fund_target, risk_tolerance, investment_horizon,
-			financial_goal, metadata, created_at, updated_at
-		)
-		VALUES (
-			$1,
-			COALESCE($2, 'USD'),
-			COALESCE($3, 'unknown'),
-			COALESCE($4::numeric, 0),
-			COALESCE($5::numeric, 0),
-			COALESCE($6::numeric, 0),
-			COALESCE($7::numeric, 0),
-			COALESCE($8, 'unknown'),
-			COALESCE($9, 'unknown'),
-			COALESCE($10, ''),
-			COALESCE($11::jsonb, '{}'::jsonb),
-			NOW(),
-			NOW()
-		)
-		ON CONFLICT (user_id) DO UPDATE SET
-			primary_currency = COALESCE($2, financial_profiles.primary_currency),
-			income_frequency = COALESCE($3, financial_profiles.income_frequency),
-			monthly_income = COALESCE($4::numeric, financial_profiles.monthly_income),
-			monthly_fixed_costs = COALESCE($5::numeric, financial_profiles.monthly_fixed_costs),
-			monthly_savings_target = COALESCE($6::numeric, financial_profiles.monthly_savings_target),
-			emergency_fund_target = COALESCE($7::numeric, financial_profiles.emergency_fund_target),
-			risk_tolerance = COALESCE($8, financial_profiles.risk_tolerance),
-			investment_horizon = COALESCE($9, financial_profiles.investment_horizon),
-			financial_goal = COALESCE($10, financial_profiles.financial_goal),
-			metadata = CASE
-				WHEN $11::jsonb IS NULL THEN financial_profiles.metadata
-				ELSE financial_profiles.metadata || $11::jsonb
-			END,
-			updated_at = NOW()`,
+			INSERT INTO financial_profiles (
+				user_id, user_type, residence_country, tax_country, primary_currency,
+				earning_currency, spending_currency, family_support_country,
+				income_frequency, monthly_income, monthly_fixed_costs,
+				monthly_savings_target, emergency_fund_target, risk_tolerance, investment_horizon,
+				financial_goal, metadata, created_at, updated_at
+			)
+			VALUES (
+				$1,
+				COALESCE($2, 'individual'),
+				COALESCE($3, ''),
+				COALESCE($4, ''),
+				COALESCE($5, 'USD'),
+				COALESCE($6, ''),
+				COALESCE($7, ''),
+				COALESCE($8, ''),
+				COALESCE($9, 'unknown'),
+				COALESCE($10::numeric, 0),
+				COALESCE($11::numeric, 0),
+				COALESCE($12::numeric, 0),
+				COALESCE($13::numeric, 0),
+				COALESCE($14, 'unknown'),
+				COALESCE($15, 'unknown'),
+				COALESCE($16, ''),
+				COALESCE($17::jsonb, '{}'::jsonb),
+				NOW(),
+				NOW()
+			)
+			ON CONFLICT (user_id) DO UPDATE SET
+				user_type = COALESCE($2, financial_profiles.user_type),
+				residence_country = COALESCE($3, financial_profiles.residence_country),
+				tax_country = COALESCE($4, financial_profiles.tax_country),
+				primary_currency = COALESCE($5, financial_profiles.primary_currency),
+				earning_currency = COALESCE($6, financial_profiles.earning_currency),
+				spending_currency = COALESCE($7, financial_profiles.spending_currency),
+				family_support_country = COALESCE($8, financial_profiles.family_support_country),
+				income_frequency = COALESCE($9, financial_profiles.income_frequency),
+				monthly_income = COALESCE($10::numeric, financial_profiles.monthly_income),
+				monthly_fixed_costs = COALESCE($11::numeric, financial_profiles.monthly_fixed_costs),
+				monthly_savings_target = COALESCE($12::numeric, financial_profiles.monthly_savings_target),
+				emergency_fund_target = COALESCE($13::numeric, financial_profiles.emergency_fund_target),
+				risk_tolerance = COALESCE($14, financial_profiles.risk_tolerance),
+				investment_horizon = COALESCE($15, financial_profiles.investment_horizon),
+				financial_goal = COALESCE($16, financial_profiles.financial_goal),
+				metadata = CASE
+					WHEN $17::jsonb IS NULL THEN financial_profiles.metadata
+					ELSE financial_profiles.metadata || $17::jsonb
+				END,
+				updated_at = NOW()`,
 		userID,
+		update.UserType,
+		update.ResidenceCountry,
+		update.TaxCountry,
 		update.PrimaryCurrency,
+		update.EarningCurrency,
+		update.SpendingCurrency,
+		update.FamilySupportCountry,
 		update.IncomeFrequency,
 		update.MonthlyIncome,
 		update.MonthlyFixedCosts,

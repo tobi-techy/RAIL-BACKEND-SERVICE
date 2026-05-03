@@ -1,25 +1,43 @@
 package investing
 
 import (
+	"context"
+	"fmt"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
-	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"github.com/rail-service/rail_service/internal/domain/services/automation"
+	conversationsvc "github.com/rail-service/rail_service/internal/domain/services/conversation"
 	"github.com/rail-service/rail_service/internal/domain/services/subscription"
+	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"go.uber.org/zap"
 )
 
 // PremiumAIHandlers handles pro-gated AI feature endpoints.
 type PremiumAIHandlers struct {
-	orchestrator *aiservice.Orchestrator
-	subService   *subscription.Service
-	logger       *zap.Logger
+	orchestrator      *aiservice.Orchestrator
+	subService        *subscription.Service
+	convService       *conversationsvc.Service
+	passcodeValidator automationPasscodeValidator
+	logger            *zap.Logger
 }
 
-func NewPremiumAIHandlers(orchestrator *aiservice.Orchestrator, subService *subscription.Service, logger *zap.Logger) *PremiumAIHandlers {
-	return &PremiumAIHandlers{orchestrator: orchestrator, subService: subService, logger: logger}
+func NewPremiumAIHandlers(orchestrator *aiservice.Orchestrator, subService *subscription.Service, logger *zap.Logger, convService ...*conversationsvc.Service) *PremiumAIHandlers {
+	h := &PremiumAIHandlers{orchestrator: orchestrator, subService: subService, logger: logger}
+	if len(convService) > 0 {
+		h.convService = convService[0]
+	}
+	return h
+}
+
+func (h *PremiumAIHandlers) SetPasscodeValidator(validator automationPasscodeValidator) {
+	h.passcodeValidator = validator
 }
 
 func (h *PremiumAIHandlers) requirePro(c *gin.Context) bool {
@@ -117,6 +135,161 @@ func (h *PremiumAIHandlers) TaxSummary(c *gin.Context) {
 			"cards":       resp.Cards,
 			"tokens_used": resp.TokensUsed,
 			"year":        year,
+		},
+	})
+}
+
+// OperatingPlan returns Miriam's persona-aware monthly operating plan (pro-only).
+func (h *PremiumAIHandlers) OperatingPlan(c *gin.Context) {
+	if !h.requirePro(c) {
+		return
+	}
+	userID, _ := common.GetUserIDFromContext(c)
+
+	result, err := h.orchestrator.ExecuteToolPublic(c.Request.Context(), userID, infraai.ToolCall{
+		ID:        "operating-plan-http",
+		Name:      aiservice.ToolGetMoneyOperatingPlan,
+		Arguments: map[string]interface{}{},
+	})
+	if err != nil {
+		h.logger.Error("operating plan failed", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate operating plan"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+// StageOperatingPlanAction stages a plan proposal into the pending-action confirmation flow.
+func (h *PremiumAIHandlers) StageOperatingPlanAction(c *gin.Context) {
+	if !h.requirePro(c) {
+		return
+	}
+	if h.convService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "conversation service unavailable"})
+		return
+	}
+	userID, _ := common.GetUserIDFromContext(c)
+
+	var req struct {
+		ConversationID string                 `json:"conversation_id"`
+		Type           string                 `json:"type" binding:"required"`
+		Params         map[string]interface{} `json:"params" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+	if req.Type == "create_automation" && isTransferAutomation(valueString(req.Params["action_type"])) {
+		actionConfig, _ := req.Params["action_config"].(map[string]interface{})
+		if actionConfig == nil {
+			actionConfig = map[string]interface{}{}
+			req.Params["action_config"] = actionConfig
+		}
+		if !h.requirePlanTransferAutomationPasscode(c, userID, actionConfig) {
+			return
+		}
+	}
+
+	conv, err := h.getOrCreatePlanConversation(c.Request.Context(), userID, req.ConversationID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	result, err := h.orchestrator.StageOperatingPlanAction(c.Request.Context(), userID, conv.ID, req.Type, req.Params)
+	if err != nil {
+		h.logger.Error("stage operating plan action failed", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to stage action"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"conversation_id": conv.ID,
+		"staged":          result,
+		"confirm_url":     "/api/v1/ai/conversations/" + conv.ID.String() + "/confirm",
+		"cancel_url":      "/api/v1/ai/conversations/" + conv.ID.String() + "/cancel",
+	}})
+}
+
+func (h *PremiumAIHandlers) getOrCreatePlanConversation(ctx context.Context, userID uuid.UUID, conversationID string) (*entities.AIConversation, error) {
+	if conversationID == "" {
+		return h.convService.CreateConversation(ctx, userID, "Miriam operating plan")
+	}
+	convID, err := uuid.Parse(conversationID)
+	if err != nil {
+		return nil, err
+	}
+	conv, err := h.convService.GetConversation(ctx, convID)
+	if err != nil {
+		return nil, err
+	}
+	if conv == nil || conv.UserID != userID {
+		return nil, fmt.Errorf("conversation not found")
+	}
+	return conv, nil
+}
+
+func (h *PremiumAIHandlers) requirePlanTransferAutomationPasscode(c *gin.Context, userID uuid.UUID, actionConfig map[string]interface{}) bool {
+	if h.passcodeValidator == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "PASSCODE_SESSION_UNAVAILABLE", "message": "Passcode session validation is currently unavailable"})
+		return false
+	}
+	token := strings.TrimSpace(c.GetHeader("X-Passcode-Session"))
+	if token == "" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "PASSCODE_SESSION_REQUIRED", "message": "Passcode verification is required to create a transfer automation"})
+		return false
+	}
+	valid, err := h.passcodeValidator.ValidateSession(c.Request.Context(), userID, token)
+	if err != nil || !valid {
+		c.JSON(http.StatusForbidden, gin.H{"error": "PASSCODE_SESSION_INVALID", "message": "Passcode session is invalid or expired"})
+		return false
+	}
+	automation.StampTransferConsent(actionConfig, time.Now().UTC())
+	if err := h.passcodeValidator.InvalidateSession(c.Request.Context(), userID, token); err != nil {
+		h.logger.Warn("failed to invalidate passcode session after operating plan automation consent", zap.Error(err), zap.String("user_id", userID.String()))
+	}
+	return true
+}
+
+func valueString(value interface{}) string {
+	if s, ok := value.(string); ok {
+		return s
+	}
+	return ""
+}
+
+// MoneyAcrossBordersReport returns a geography and currency report for diaspora/cross-border users (pro-only).
+func (h *PremiumAIHandlers) MoneyAcrossBordersReport(c *gin.Context) {
+	if !h.requirePro(c) {
+		return
+	}
+	userID, _ := common.GetUserIDFromContext(c)
+
+	persona, err := h.orchestrator.ExecuteToolPublic(c.Request.Context(), userID, infraai.ToolCall{
+		ID:        "persona-context-http",
+		Name:      aiservice.ToolGetPersonaMoneyContext,
+		Arguments: map[string]interface{}{},
+	})
+	if err != nil {
+		h.logger.Error("money across borders persona context failed", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate report"})
+		return
+	}
+	plan, err := h.orchestrator.ExecuteToolPublic(c.Request.Context(), userID, infraai.ToolCall{
+		ID:        "money-across-borders-plan-http",
+		Name:      aiservice.ToolGetMoneyOperatingPlan,
+		Arguments: map[string]interface{}{},
+	})
+	if err != nil {
+		h.logger.Error("money across borders plan failed", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate report"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data": gin.H{
+			"persona_context":          persona,
+			"operating_plan":           plan,
+			"professional_review_note": "Cross-border tax, legal, estate, and investment notes are informational. Review with a qualified professional before filing, investing, or changing legal documents.",
 		},
 	})
 }

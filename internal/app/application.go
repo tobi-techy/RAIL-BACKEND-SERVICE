@@ -29,15 +29,16 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	ai_insights "github.com/rail-service/rail_service/internal/workers/ai_insights"
+	automation_worker "github.com/rail-service/rail_service/internal/workers/automation_worker"
 	balance_reconciliation "github.com/rail-service/rail_service/internal/workers/balance_reconciliation"
 	bridge_govid_repair "github.com/rail-service/rail_service/internal/workers/bridge_govid_repair"
+	daily_pulse "github.com/rail-service/rail_service/internal/workers/daily_pulse"
 	deposit_allocation_recovery "github.com/rail-service/rail_service/internal/workers/deposit_allocation_recovery"
 	"github.com/rail-service/rail_service/internal/workers/funding_webhook"
 	gameplay_workers "github.com/rail-service/rail_service/internal/workers/gameplay"
 	kyc_autoinvest "github.com/rail-service/rail_service/internal/workers/kyc_autoinvest"
 	"github.com/rail-service/rail_service/internal/workers/kyc_sync"
 	memory_worker "github.com/rail-service/rail_service/internal/workers/memory_worker"
-	automation_worker "github.com/rail-service/rail_service/internal/workers/automation_worker"
 	paj_offramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_offramp_recovery"
 	paj_onramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_onramp_recovery"
 	portfolio_snapshot_worker "github.com/rail-service/rail_service/internal/workers/portfolio_snapshot_worker"
@@ -82,8 +83,9 @@ type Application struct {
 	insightGeneratorWorker       *gameplay_workers.InsightGenerator
 	dailyMetricsWorker           *gameplay_workers.DailyMetricsWorker
 	aiInsightsWorker             *ai_insights.Worker
-	memoryWorker                 *memory_worker.Worker
 	automationWorker             *automation_worker.Worker
+	memoryWorker                 *memory_worker.Worker
+	dailyPulseWorker             *daily_pulse.Worker
 
 	// Tracing
 	tracingShutdown func(context.Context) error
@@ -376,11 +378,32 @@ func (app *Application) initializeWorkers() error {
 		app.log.Info("Memory worker started")
 	}
 
-	// Start automation worker (evaluates scheduled and threshold-based automations every 5 min)
 	if app.container.AutomationService != nil {
 		app.automationWorker = automation_worker.NewWorker(app.container.AutomationService, app.log.Zap())
 		go app.automationWorker.Start(context.Background())
-		app.log.Info("Automation worker started")
+		app.log.Info("Miriam automation worker started")
+	}
+
+	if app.container.UserRepo != nil && app.container.LedgerService != nil && app.container.LedgerSpendingRepo != nil && app.container.BudgetRepo != nil {
+		var pushSender daily_pulse.PushSender
+		if app.container.SNSPushService != nil {
+			pushSender = app.container.SNSPushService
+		} else if app.container.ExpoPushService != nil {
+			pushSender = app.container.ExpoPushService
+		}
+		if pushSender != nil {
+			app.dailyPulseWorker = daily_pulse.NewWorker(
+				&dailyPulseUserRepoAdapter{repo: app.container.UserRepo},
+				app.container.LedgerService,
+				app.container.LedgerSpendingRepo,
+				app.container.BudgetRepo,
+				nil,
+				pushSender,
+				app.log.Zap(),
+			)
+			go app.dailyPulseWorker.Start(context.Background())
+			app.log.Info("Miriam daily pulse worker started")
+		}
 	}
 
 	return nil
@@ -859,6 +882,31 @@ func (app *Application) stopWorkers() {
 	if app.dailyMetricsWorker != nil {
 		app.dailyMetricsWorker.Stop()
 	}
+}
+
+type dailyPulseUserRepoAdapter struct {
+	repo *repositories.UserRepository
+}
+
+func (a *dailyPulseUserRepoAdapter) GetAllActiveUsers(ctx context.Context) ([]struct {
+	ID      uuid.UUID
+	Country string
+}, error) {
+	users, err := a.repo.GetAllActiveUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]struct {
+		ID      uuid.UUID
+		Country string
+	}, 0, len(users))
+	for _, user := range users {
+		out = append(out, struct {
+			ID      uuid.UUID
+			Country string
+		}{ID: user.ID, Country: user.Country})
+	}
+	return out, nil
 }
 
 // WaitForShutdown waits for interrupt signal

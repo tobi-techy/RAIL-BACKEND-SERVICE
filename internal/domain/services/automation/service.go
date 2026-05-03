@@ -3,7 +3,9 @@ package automation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,6 +14,10 @@ import (
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
+
+const transferAutomationReauthorizationWindow = 90 * 24 * time.Hour
+
+var ErrTransferAutomationReauthorizationRequired = errors.New("transfer automation requires passcode reauthorization")
 
 // BalanceProvider fetches user balances for threshold checks.
 type BalanceProvider interface {
@@ -38,27 +44,106 @@ func NewService(repo *repositories.AutomationRepository, balance BalanceProvider
 
 // Create creates a new automation rule.
 func (s *Service) Create(ctx context.Context, userID uuid.UUID, req *CreateAutomationRequest) (*entities.MiriamAutomation, error) {
+	if err := validateCreateRequest(req); err != nil {
+		return nil, err
+	}
 	triggerConfig, _ := json.Marshal(req.TriggerConfig)
 	actionConfig, _ := json.Marshal(req.ActionConfig)
 
 	a := &entities.MiriamAutomation{
-		ID:               uuid.New(),
-		UserID:           userID,
-		Name:             req.Name,
-		Description:      req.Description,
-		TriggerType:      req.TriggerType,
-		TriggerConfig:    triggerConfig,
-		ActionType:       req.ActionType,
-		ActionConfig:     actionConfig,
-		IsActive:         true,
+		ID:                uuid.New(),
+		UserID:            userID,
+		Name:              req.Name,
+		Description:       req.Description,
+		TriggerType:       req.TriggerType,
+		TriggerConfig:     triggerConfig,
+		ActionType:        req.ActionType,
+		ActionConfig:      actionConfig,
+		IsActive:          true,
 		MaxTriggersPerDay: coalesce(req.MaxTriggersPerDay, 3),
-		CooldownMinutes:  coalesce(req.CooldownMinutes, 60),
+		CooldownMinutes:   coalesce(req.CooldownMinutes, 60),
 	}
 
 	if err := s.repo.Create(ctx, a); err != nil {
 		return nil, fmt.Errorf("create automation: %w", err)
 	}
 	return a, nil
+}
+
+func validateCreateRequest(req *CreateAutomationRequest) error {
+	if req == nil {
+		return fmt.Errorf("request is required")
+	}
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" || len(req.Name) > 200 {
+		return fmt.Errorf("automation name must be between 1 and 200 characters")
+	}
+	if !validTrigger(req.TriggerType) {
+		return fmt.Errorf("unsupported trigger type: %s", req.TriggerType)
+	}
+	if !validAction(req.ActionType) {
+		return fmt.Errorf("unsupported action type: %s", req.ActionType)
+	}
+	if req.TriggerConfig == nil {
+		return fmt.Errorf("trigger_config is required")
+	}
+	if req.ActionConfig == nil {
+		return fmt.Errorf("action_config is required")
+	}
+	if req.MaxTriggersPerDay < 0 || req.MaxTriggersPerDay > 24 {
+		return fmt.Errorf("max_triggers_per_day must be between 1 and 24")
+	}
+	if req.CooldownMinutes < 0 || req.CooldownMinutes > 10080 {
+		return fmt.Errorf("cooldown_minutes must be between 1 and 10080")
+	}
+	if req.ActionType == entities.ActionTransferToStash || req.ActionType == entities.ActionTransferToSpend {
+		amount, ok := numericConfig(req.ActionConfig, "amount")
+		if !ok || amount <= 0 {
+			return fmt.Errorf("transfer automation requires a positive action_config.amount")
+		}
+		if amount > 10000 {
+			return fmt.Errorf("transfer automation amount exceeds maximum of 10000")
+		}
+		ack, _ := req.ActionConfig["acknowledged_future_transfer"].(bool)
+		if !ack {
+			return fmt.Errorf("transfer automation requires acknowledged_future_transfer consent")
+		}
+		if _, err := transferConsentWindow(req.ActionConfig, time.Now().UTC()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validTrigger(value string) bool {
+	switch value {
+	case entities.TriggerSchedule, entities.TriggerBalanceThreshold, entities.TriggerIncomeDetected, entities.TriggerSpendingSpike, entities.TriggerPayday, entities.TriggerCustom:
+		return true
+	default:
+		return false
+	}
+}
+
+func validAction(value string) bool {
+	switch value {
+	case entities.ActionTransferToStash, entities.ActionTransferToSpend, entities.ActionNotify, entities.ActionCustom:
+		return true
+	default:
+		return false
+	}
+}
+
+func numericConfig(config map[string]interface{}, key string) (float64, bool) {
+	switch value := config[key].(type) {
+	case float64:
+		return value, true
+	case int:
+		return float64(value), true
+	case int64:
+		return float64(value), true
+	default:
+		return 0, false
+	}
 }
 
 // List returns all automations for a user.
@@ -94,10 +179,30 @@ func (s *Service) Update(ctx context.Context, userID, id uuid.UUID, req *UpdateA
 		ac, _ := json.Marshal(req.ActionConfig)
 		a.ActionConfig = ac
 	}
+	if err := validateAutomation(a); err != nil {
+		return nil, err
+	}
 	if err := s.repo.Update(ctx, a); err != nil {
 		return nil, err
 	}
 	return a, nil
+}
+
+func validateAutomation(a *entities.MiriamAutomation) error {
+	triggerConfig := map[string]interface{}{}
+	actionConfig := map[string]interface{}{}
+	_ = json.Unmarshal(a.TriggerConfig, &triggerConfig)
+	_ = json.Unmarshal(a.ActionConfig, &actionConfig)
+	return validateCreateRequest(&CreateAutomationRequest{
+		Name:              a.Name,
+		Description:       a.Description,
+		TriggerType:       a.TriggerType,
+		TriggerConfig:     triggerConfig,
+		ActionType:        a.ActionType,
+		ActionConfig:      actionConfig,
+		MaxTriggersPerDay: a.MaxTriggersPerDay,
+		CooldownMinutes:   a.CooldownMinutes,
+	})
 }
 
 // Delete removes an automation.
@@ -243,6 +348,10 @@ func (s *Service) execute(ctx context.Context, a *entities.MiriamAutomation) {
 		errMsg := err.Error()
 		log.ErrorMessage = &errMsg
 		s.logger.Warn("automation execution failed", zap.String("id", a.ID.String()), zap.Error(err))
+		if errors.Is(err, ErrTransferAutomationReauthorizationRequired) {
+			a.IsActive = false
+			_ = s.repo.Update(ctx, a)
+		}
 	} else {
 		log.Status = "success"
 		s.repo.MarkTriggered(ctx, a.ID)
@@ -253,13 +362,21 @@ func (s *Service) execute(ctx context.Context, a *entities.MiriamAutomation) {
 
 func (s *Service) executeAction(ctx context.Context, a *entities.MiriamAutomation) error {
 	var cfg entities.TransferActionConfig
+	var raw map[string]interface{}
+	_ = json.Unmarshal(a.ActionConfig, &raw)
 	json.Unmarshal(a.ActionConfig, &cfg)
 
 	switch a.ActionType {
 	case entities.ActionTransferToStash:
+		if err := ensureTransferReauthorization(raw, time.Now().UTC()); err != nil {
+			return err
+		}
 		amount := decimal.NewFromFloat(cfg.Amount)
 		return s.transfer.TransferBetweenStashes(ctx, a.UserID, "spend", "stash", amount)
 	case entities.ActionTransferToSpend:
+		if err := ensureTransferReauthorization(raw, time.Now().UTC()); err != nil {
+			return err
+		}
 		amount := decimal.NewFromFloat(cfg.Amount)
 		return s.transfer.TransferBetweenStashes(ctx, a.UserID, "stash", "spend", amount)
 	case entities.ActionNotify:
@@ -270,17 +387,68 @@ func (s *Service) executeAction(ctx context.Context, a *entities.MiriamAutomatio
 	}
 }
 
+func StampTransferConsent(actionConfig map[string]interface{}, now time.Time) map[string]interface{} {
+	if actionConfig == nil {
+		actionConfig = map[string]interface{}{}
+	}
+	actionConfig["acknowledged_future_transfer"] = true
+	actionConfig["passcode_session_verified_at"] = now.UTC().Format(time.RFC3339)
+	actionConfig["reauthorization_due_at"] = now.UTC().Add(transferAutomationReauthorizationWindow).Format(time.RFC3339)
+	actionConfig["reauthorization_window_days"] = int(transferAutomationReauthorizationWindow.Hours() / 24)
+	return actionConfig
+}
+
+func ensureTransferReauthorization(actionConfig map[string]interface{}, now time.Time) error {
+	dueAt, err := transferConsentWindow(actionConfig, now)
+	if err != nil {
+		return err
+	}
+	if !now.Before(dueAt) {
+		return fmt.Errorf("%w: passcode consent expired on %s", ErrTransferAutomationReauthorizationRequired, dueAt.Format(time.RFC3339))
+	}
+	return nil
+}
+
+func transferConsentWindow(actionConfig map[string]interface{}, now time.Time) (time.Time, error) {
+	verifiedRaw, _ := actionConfig["passcode_session_verified_at"].(string)
+	if verifiedRaw == "" {
+		return time.Time{}, fmt.Errorf("%w: passcode_session_verified_at is required", ErrTransferAutomationReauthorizationRequired)
+	}
+	verifiedAt, err := time.Parse(time.RFC3339, verifiedRaw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%w: invalid passcode_session_verified_at", ErrTransferAutomationReauthorizationRequired)
+	}
+	if verifiedAt.After(now.Add(2 * time.Minute)) {
+		return time.Time{}, fmt.Errorf("%w: passcode consent timestamp is in the future", ErrTransferAutomationReauthorizationRequired)
+	}
+	dueRaw, _ := actionConfig["reauthorization_due_at"].(string)
+	if dueRaw == "" {
+		return time.Time{}, fmt.Errorf("%w: reauthorization_due_at is required", ErrTransferAutomationReauthorizationRequired)
+	}
+	dueAt, err := time.Parse(time.RFC3339, dueRaw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%w: invalid reauthorization_due_at", ErrTransferAutomationReauthorizationRequired)
+	}
+	if dueAt.Before(now.Add(-transferAutomationReauthorizationWindow)) {
+		return time.Time{}, fmt.Errorf("%w: reauthorization_due_at is stale", ErrTransferAutomationReauthorizationRequired)
+	}
+	if dueAt.After(verifiedAt.Add(transferAutomationReauthorizationWindow + time.Minute)) {
+		return time.Time{}, fmt.Errorf("%w: reauthorization window is too long", ErrTransferAutomationReauthorizationRequired)
+	}
+	return dueAt, nil
+}
+
 // --- Request types ---
 
 type CreateAutomationRequest struct {
-	Name             string                 `json:"name" binding:"required"`
-	Description      *string                `json:"description"`
-	TriggerType      string                 `json:"trigger_type" binding:"required"`
-	TriggerConfig    map[string]interface{} `json:"trigger_config" binding:"required"`
-	ActionType       string                 `json:"action_type" binding:"required"`
-	ActionConfig     map[string]interface{} `json:"action_config" binding:"required"`
-	MaxTriggersPerDay int                   `json:"max_triggers_per_day"`
-	CooldownMinutes  int                    `json:"cooldown_minutes"`
+	Name              string                 `json:"name" binding:"required"`
+	Description       *string                `json:"description"`
+	TriggerType       string                 `json:"trigger_type" binding:"required"`
+	TriggerConfig     map[string]interface{} `json:"trigger_config" binding:"required"`
+	ActionType        string                 `json:"action_type" binding:"required"`
+	ActionConfig      map[string]interface{} `json:"action_config" binding:"required"`
+	MaxTriggersPerDay int                    `json:"max_triggers_per_day"`
+	CooldownMinutes   int                    `json:"cooldown_minutes"`
 }
 
 type UpdateAutomationRequest struct {

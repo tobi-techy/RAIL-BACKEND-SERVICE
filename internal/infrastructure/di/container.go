@@ -7,20 +7,20 @@ import (
 	"strings"
 	"time"
 
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/rail-service/rail_service/internal/api/handlers"
-	fundinghandlers "github.com/rail-service/rail_service/internal/api/handlers/funding"
 	activityhandlers "github.com/rail-service/rail_service/internal/api/handlers/activity"
-	activitysvc "github.com/rail-service/rail_service/internal/domain/services/activity"
+	fundinghandlers "github.com/rail-service/rail_service/internal/api/handlers/funding"
 	p2phandlers "github.com/rail-service/rail_service/internal/api/handlers/p2p"
 	premiumhandlers "github.com/rail-service/rail_service/internal/api/handlers/premium"
 	"github.com/rail-service/rail_service/internal/api/handlers/webhooks"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
 	"github.com/rail-service/rail_service/internal/domain/services/account"
+	activitysvc "github.com/rail-service/rail_service/internal/domain/services/activity"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	"github.com/rail-service/rail_service/internal/domain/services/allocation"
 	alpacaservice "github.com/rail-service/rail_service/internal/domain/services/alpaca"
@@ -28,10 +28,10 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/apikey"
 	"github.com/rail-service/rail_service/internal/domain/services/audit"
 	"github.com/rail-service/rail_service/internal/domain/services/autoinvest"
+	"github.com/rail-service/rail_service/internal/domain/services/automation"
 	"github.com/rail-service/rail_service/internal/domain/services/card"
 	compliancesvc "github.com/rail-service/rail_service/internal/domain/services/compliance"
 	conversationsvc "github.com/rail-service/rail_service/internal/domain/services/conversation"
-	"github.com/rail-service/rail_service/internal/domain/services/automation"
 	"github.com/rail-service/rail_service/internal/domain/services/copytrading"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/domain/services/gameplay"
@@ -43,6 +43,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/limits"
 	marketservice "github.com/rail-service/rail_service/internal/domain/services/market"
 	newsservice "github.com/rail-service/rail_service/internal/domain/services/news"
+	obligationservice "github.com/rail-service/rail_service/internal/domain/services/obligation"
 	"github.com/rail-service/rail_service/internal/domain/services/onboarding"
 	"github.com/rail-service/rail_service/internal/domain/services/p2p"
 	"github.com/rail-service/rail_service/internal/domain/services/pajfunding"
@@ -990,6 +991,8 @@ type Container struct {
 	ReceiptRepo               *repositories.ReceiptRepository
 	BudgetRepo                *repositories.BudgetRepository
 	FinancialProfileRepo      *repositories.FinancialProfileRepository
+	FinancialObligationRepo   *repositories.FinancialObligationRepository
+	AutomationRepo            *repositories.AutomationRepository
 	LedgerSpendingRepo        *repositories.LedgerSpendingRepository
 	ConversionRepo            *repositories.ConversionRepository
 	BalanceRepo               *repositories.BalanceRepository
@@ -1055,6 +1058,8 @@ type Container struct {
 	GameplayGraceDayService    *gameplay.GraceDayService
 	GameplayRecapService       *gameplay.RecapService
 	SubscriptionService        *subscriptionsvc.Service
+	FinancialObligationService *obligationservice.Service
+	AutomationService          *automation.Service
 	NotificationService        *services.NotificationService
 	SocialAuthService          *socialauth.Service
 	WebAuthnService            *webauthn.Service
@@ -1120,9 +1125,6 @@ type Container struct {
 	// Copy Trading Services
 	CopyTradingRepo    *repositories.CopyTradingRepository
 	CopyTradingService *copytrading.Service
-
-	// Automation Services
-	AutomationService *automation.Service
 
 	// Card Services
 	CardRepo    *repositories.CardRepository
@@ -1252,6 +1254,8 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	receiptRepo := repositories.NewReceiptRepository(sqlxDB)
 	budgetRepo := repositories.NewBudgetRepository(sqlxDB)
 	financialProfileRepo := repositories.NewFinancialProfileRepository(sqlxDB)
+	financialObligationRepo := repositories.NewFinancialObligationRepository(sqlxDB)
+	automationRepo := repositories.NewAutomationRepository(sqlxDB)
 	ledgerSpendingRepo := repositories.NewLedgerSpendingRepository(sqlxDB)
 	conversionRepo := repositories.NewConversionRepository(sqlxDB)
 	balanceRepo := repositories.NewBalanceRepository(db, zapLog)
@@ -1402,6 +1406,8 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		ReceiptRepo:               receiptRepo,
 		BudgetRepo:                budgetRepo,
 		FinancialProfileRepo:      financialProfileRepo,
+		FinancialObligationRepo:   financialObligationRepo,
+		AutomationRepo:            automationRepo,
 		LedgerSpendingRepo:        ledgerSpendingRepo,
 		ConversionRepo:            conversionRepo,
 		BalanceRepo:               balanceRepo,
@@ -1567,6 +1573,9 @@ func (c *Container) initializeDomainServices() error {
 
 	// Initialize ledger service
 	c.LedgerService = ledger.NewService(c.LedgerRepo, sqlxDB, c.Logger)
+	c.FinancialObligationService = obligationservice.NewService(c.FinancialObligationRepo)
+	automationAdapter := &fundsTransfererAdapter{ledger: c.LedgerService}
+	c.AutomationService = automation.NewService(c.AutomationRepo, automationAdapter, automationAdapter, c.ZapLog)
 
 	// Initialize yield service (Reflect-backed) — skip if private key not configured
 	if c.Config.Reflect.PrivateKey != "" {
@@ -3080,6 +3089,11 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	}
 	c.AIOrchestrator.SetBudgetProvider(c.BudgetRepo)
 	c.AIOrchestrator.SetFinancialProfileProvider(c.FinancialProfileRepo)
+	c.AIOrchestrator.SetFinancialObligationProvider(c.FinancialObligationService)
+	c.AIOrchestrator.SetAutomationCreator(&automationCreatorAdapter{service: c.AutomationService})
+	c.AIOrchestrator.SetAutomationProvider(&automationProviderAdapter{svc: c.AutomationService})
+	c.AIOrchestrator.SetObligationCreator(&obligationCreatorAdapter{service: c.FinancialObligationService})
+	c.AIOrchestrator.SetCurrencyRateProvider(c.ExchangeRateRepo)
 	warrantyRepo := repositories.NewWarrantyRepository(sqlxDB)
 	c.AIOrchestrator.SetWarrantyTracker(warrantyRepo)
 
@@ -3355,18 +3369,6 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 		&copyTradingTradingAdapter{alpacaClient: c.AlpacaClient, accountRepo: c.AlpacaAccountRepo},
 		c.ZapLog,
 	)
-
-	// Initialize Automation Service and wire to AI orchestrator
-	automationRepo := repositories.NewAutomationRepository(sqlxDB)
-	c.AutomationService = automation.NewService(
-		automationRepo,
-		&automationBalanceAdapter{ledger: c.LedgerService},
-		&automationTransferAdapter{ledger: c.LedgerService},
-		c.ZapLog,
-	)
-	if c.AIOrchestrator != nil {
-		c.AIOrchestrator.SetAutomationProvider(&automationProviderAdapter{svc: c.AutomationService})
-	}
 
 	// Initialize Card Service
 	c.CardRepo = repositories.NewCardRepository(sqlxDB)

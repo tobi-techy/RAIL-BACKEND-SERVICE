@@ -36,18 +36,21 @@ type (
 	StationHandlers = funding.StationHandlers
 
 	// Investing
-	InvestmentHandlers        = investing.InvestmentHandlers
-	InvestingHandlers         = investing.InvestingHandlers
-	AllocationHandlers        = investing.AllocationHandlers
-	PortfolioActivityHandlers = investing.PortfolioActivityHandlers
-	AnalyticsHandlers         = investing.AnalyticsHandlers
-	MarketHandlers            = investing.MarketHandlers
-	AIChatHandlers            = investing.AIChatHandlers
-	AICfoHandler              = investing.AICfoHandler
-	ImageAnalysisHandler      = investing.ImageAnalysisHandler
-	ConversationHandlers      = investing.ConversationHandlers
-	UsageHandlers             = investing.UsageHandlers
-	KnowledgeHandlers         = investing.KnowledgeHandlers
+	InvestmentHandlers         = investing.InvestmentHandlers
+	InvestingHandlers          = investing.InvestingHandlers
+	AllocationHandlers         = investing.AllocationHandlers
+	PortfolioActivityHandlers  = investing.PortfolioActivityHandlers
+	AnalyticsHandlers          = investing.AnalyticsHandlers
+	MarketHandlers             = investing.MarketHandlers
+	AIChatHandlers             = investing.AIChatHandlers
+	AICfoHandler               = investing.AICfoHandler
+	ImageAnalysisHandler       = investing.ImageAnalysisHandler
+	ConversationHandlers       = investing.ConversationHandlers
+	UsageHandlers              = investing.UsageHandlers
+	KnowledgeHandlers          = investing.KnowledgeHandlers
+	AutomationHandler          = investing.AutomationHandler
+	EnhancedNudgeHandler       = investing.EnhancedNudgeHandler
+	FinancialObligationHandler = investing.FinancialObligationHandler
 
 	// Trading
 	CopyTradingHandlers         = trading.CopyTradingHandlers
@@ -61,8 +64,8 @@ type (
 	// Admin
 	AdminHandlers            = admin.AdminHandlers
 	SecurityAdminHandlers    = admin.SecurityAdminHandlers
-	SecurityHandlers         = admin.SecurityHandlers          // Passcode-related security handlers
-	EnhancedSecurityHandlers = admin.EnhancedSecurityHandlers  // 2FA and session handlers
+	SecurityHandlers         = admin.SecurityHandlers         // Passcode-related security handlers
+	EnhancedSecurityHandlers = admin.EnhancedSecurityHandlers // 2FA and session handlers
 
 	// Webhooks
 	WebhookHandlers       = webhooks.WebhookHandlers
@@ -76,11 +79,11 @@ type (
 	LimitsHandler            = security.LimitsHandler
 
 	// Common
-	CoreHandlers               = common.CoreHandlers
-	HealthHandler              = common.HealthHandler
-	IntegrationHandlers        = common.IntegrationHandlers
-	MobileHandlers             = common.MobileHandlers
-	NewsHandlers               = common.NewsHandlers
+	CoreHandlers        = common.CoreHandlers
+	HealthHandler       = common.HealthHandler
+	IntegrationHandlers = common.IntegrationHandlers
+	MobileHandlers      = common.MobileHandlers
+	NewsHandlers        = common.NewsHandlers
 	// NotificationWorkerHandlers is deprecated — use WorkerAdminHandlers for worker admin
 	// and NotificationHandlers for notification CRUD.
 	NotificationWorkerHandlers = common.WorkerAdminHandlers
@@ -115,23 +118,26 @@ var (
 
 // Investing constructors
 var (
-	NewInvestmentHandlers        = investing.NewInvestmentHandlers
-	NewInvestingHandlers         = investing.NewInvestingHandlers
-	NewAllocationHandlers        = investing.NewAllocationHandlers
-	NewPortfolioActivityHandlers = investing.NewPortfolioActivityHandlers
-	NewAnalyticsHandlers         = investing.NewAnalyticsHandlers
-	NewMarketHandlers            = investing.NewMarketHandlers
-	NewAIChatHandlers            = investing.NewAIChatHandlers
-	NewAICfoHandler              = investing.NewAICfoHandler
-	NewVoiceHandler              = investing.NewVoiceHandler
-	NewImageAnalysisHandler         = investing.NewImageAnalysisHandler
+	NewInvestmentHandlers             = investing.NewInvestmentHandlers
+	NewInvestingHandlers              = investing.NewInvestingHandlers
+	NewAllocationHandlers             = investing.NewAllocationHandlers
+	NewPortfolioActivityHandlers      = investing.NewPortfolioActivityHandlers
+	NewAnalyticsHandlers              = investing.NewAnalyticsHandlers
+	NewMarketHandlers                 = investing.NewMarketHandlers
+	NewAIChatHandlers                 = investing.NewAIChatHandlers
+	NewAICfoHandler                   = investing.NewAICfoHandler
+	NewVoiceHandler                   = investing.NewVoiceHandler
+	NewImageAnalysisHandler           = investing.NewImageAnalysisHandler
 	NewImageAnalysisHandlerWithVision = investing.NewImageAnalysisHandlerWithVision
-	NewPremiumAIHandlers         = investing.NewPremiumAIHandlers
-	NewConversationHandlers      = investing.NewConversationHandlers
-	NewUsageHandlers             = investing.NewUsageHandlers
-	NewKnowledgeHandlers         = investing.NewKnowledgeHandlers
-	NewReceiptSplitHandler       = investing.NewReceiptSplitHandler
-	NewHouseholdHandler          = investing.NewHouseholdHandler
+	NewPremiumAIHandlers              = investing.NewPremiumAIHandlers
+	NewConversationHandlers           = investing.NewConversationHandlers
+	NewUsageHandlers                  = investing.NewUsageHandlers
+	NewKnowledgeHandlers              = investing.NewKnowledgeHandlers
+	NewReceiptSplitHandler            = investing.NewReceiptSplitHandler
+	NewHouseholdHandler               = investing.NewHouseholdHandler
+	NewAutomationHandler              = investing.NewAutomationHandler
+	NewEnhancedNudgeHandler           = investing.NewEnhancedNudgeHandler
+	NewFinancialObligationHandler     = investing.NewFinancialObligationHandler
 )
 
 // Trading constructors
@@ -151,8 +157,8 @@ var (
 var (
 	NewAdminHandlers            = admin.NewAdminHandlers
 	NewSecurityAdminHandlers    = admin.NewSecurityAdminHandlers
-	NewSecurityHandlers         = admin.NewSecurityHandlers          // Passcode-related security handlers
-	NewEnhancedSecurityHandlers = admin.NewEnhancedSecurityHandlers  // 2FA and session handlers
+	NewSecurityHandlers         = admin.NewSecurityHandlers         // Passcode-related security handlers
+	NewEnhancedSecurityHandlers = admin.NewEnhancedSecurityHandlers // 2FA and session handlers
 )
 
 // Webhooks constructors
@@ -191,6 +197,6 @@ var (
 
 // Re-export interfaces from investing package
 type (
-	InvestmentStreakRepository   = investing.InvestmentStreakRepository
-	UserContributionsRepository  = investing.UserContributionsRepository
+	InvestmentStreakRepository  = investing.InvestmentStreakRepository
+	UserContributionsRepository = investing.UserContributionsRepository
 )
