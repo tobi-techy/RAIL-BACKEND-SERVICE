@@ -404,8 +404,10 @@ func (s *WithdrawalService) FundStash(ctx context.Context, userID uuid.UUID, amo
 		Status:    entities.StashTransferStatusCompleted,
 		CreatedAt: now,
 	}
-	if err := s.stashTransferRepo.Create(ctx, transfer); err != nil {
-		s.logger.Error("failed to record stash transfer", zap.String("user_id", userID.String()), zap.Error(err))
+	if s.stashTransferRepo != nil {
+		if err := s.stashTransferRepo.Create(ctx, transfer); err != nil {
+			s.logger.Error("failed to record stash transfer", zap.String("user_id", userID.String()), zap.Error(err))
+		}
 	}
 
 	return &entities.FundStashResult{
