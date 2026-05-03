@@ -297,7 +297,12 @@ func (s *WithdrawalService) EmergencyWithdrawalPreview(ctx context.Context, user
 	}
 	feePct, days, err := sl.EmergencyWithdrawalFeePercent(ctx, userID)
 	if err != nil {
-		return nil, err
+		if strings.Contains(err.Error(), "no locked") {
+			feePct = decimal.NewFromFloat(0.03)
+			days = 0
+		} else {
+			return nil, err
+		}
 	}
 	fee := amount.Mul(feePct).RoundBank(2)
 	tier := "1%"
@@ -339,7 +344,12 @@ func (s *WithdrawalService) EmergencyStashToSpending(ctx context.Context, userID
 
 	feePct, _, err := sl.EmergencyWithdrawalFeePercent(ctx, userID)
 	if err != nil {
-		return nil, err
+		// No locked cycles — apply maximum fee tier (3%) as default
+		if strings.Contains(err.Error(), "no locked") {
+			feePct = decimal.NewFromFloat(0.03)
+		} else {
+			return nil, err
+		}
 	}
 	fee := amount.Mul(feePct).RoundBank(2)
 	total := amount.Add(fee)
