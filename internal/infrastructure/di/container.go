@@ -890,7 +890,8 @@ type FundingNotificationAdapter struct {
 
 // automationNotificationAdapter adapts NotificationService to automation.NotificationSender.
 type automationNotificationAdapter struct {
-	svc *services.NotificationService
+	svc    *services.NotificationService
+	logger *zap.Logger
 }
 
 func (a *automationNotificationAdapter) SendPush(ctx context.Context, userID uuid.UUID, title, message string, data map[string]interface{}) error {
@@ -905,7 +906,14 @@ func (a *automationNotificationAdapter) SendPush(ctx context.Context, userID uui
 		Body:     message,
 		Data:     data,
 	}
-	_ = a.svc.Send(ctx, notif, nil)
+	if err := a.svc.Send(ctx, notif, nil); err != nil {
+		if a.logger != nil {
+			a.logger.Error("Failed to send automation push notification",
+				zap.Error(err),
+				zap.String("user_id", userID.String()),
+				zap.String("notification_id", notif.ID.String()))
+		}
+	}
 
 	// Also persist in-app so the deep-link data is available from notification center
 	inApp := *notif
@@ -1615,7 +1623,7 @@ func (c *Container) initializeDomainServices() error {
 
 	// Wire optional automation dependencies
 	if c.NotificationService != nil {
-		c.AutomationService.SetNotificationSender(&automationNotificationAdapter{svc: c.NotificationService})
+		c.AutomationService.SetNotificationSender(&automationNotificationAdapter{svc: c.NotificationService, logger: c.ZapLog})
 	}
 	if c.FinancialObligationService != nil {
 		c.AutomationService.SetObligationProvider(c.FinancialObligationService)
@@ -1766,9 +1774,12 @@ func (c *Container) initializeDomainServices() error {
 		} else if !schemaReady {
 			c.ZapLog.Warn("Circle-backed user-wallet Reflect deposit router disabled because required tables are missing; apply migration 189 before enabling it")
 		} else {
-			c.AllocationService.SetYieldRouter(c.ReflectDepositRouter)
-			c.ReflectDepositRouter.Start()
-			c.ZapLog.Info("Circle-backed user-wallet Reflect deposit router started")
+			if err := c.ReflectDepositRouter.Start(); err != nil {
+				c.ZapLog.Error("Failed to start Circle-backed user-wallet Reflect deposit router", zap.Error(err))
+			} else {
+				c.AllocationService.SetYieldRouter(c.ReflectDepositRouter)
+				c.ZapLog.Info("Circle-backed user-wallet Reflect deposit router started")
+			}
 		}
 	} else if reflectClient != nil {
 		c.ZapLog.Warn("Circle-backed Reflect deposit router disabled",

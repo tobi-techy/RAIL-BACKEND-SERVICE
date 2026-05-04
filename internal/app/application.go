@@ -833,7 +833,9 @@ func (app *Application) stopWorkers() {
 	}
 	if app.container != nil && app.container.ReflectDepositRouter != nil {
 		app.log.Info("Stopping Reflect deposit router...")
-		app.container.ReflectDepositRouter.Stop()
+		if err := app.container.ReflectDepositRouter.Stop(); err != nil {
+			app.log.Error("Error stopping Reflect deposit router", "error", err)
+		}
 	}
 	if app.pajOfframpRecoveryWorker != nil {
 		app.pajOfframpRecoveryWorker.Stop()

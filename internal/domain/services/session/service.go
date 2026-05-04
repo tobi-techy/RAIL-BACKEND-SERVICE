@@ -163,16 +163,31 @@ func (s *Service) ValidateSessionByRefreshToken(ctx context.Context, refreshToke
 	return session, nil
 }
 
-// InvalidateSession invalidates a specific session
+// InvalidateSession invalidates a specific session by access or refresh token.
 func (s *Service) InvalidateSession(ctx context.Context, token string) error {
 	tokenHash := s.hashToken(token)
 
-	// Remove from cache
+	// Remove the provided token from cache; if it is a refresh token, also remove
+	// any cached access token for the matched session.
 	s.invalidateSessionCache(ctx, tokenHash)
 
-	query := `UPDATE sessions SET is_active = false WHERE token_hash = $1`
+	rows, err := s.db.QueryContext(ctx, `SELECT token_hash FROM sessions WHERE token_hash = $1 OR refresh_token_hash = $1`, tokenHash)
+	if err != nil {
+		return fmt.Errorf("failed to load session cache keys: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var accessTokenHash string
+		if err := rows.Scan(&accessTokenHash); err == nil {
+			s.invalidateSessionCache(ctx, accessTokenHash)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("failed to scan session cache keys: %w", err)
+	}
 
-	_, err := s.db.ExecContext(ctx, query, tokenHash)
+	query := `UPDATE sessions SET is_active = false WHERE token_hash = $1 OR refresh_token_hash = $1`
+	_, err = s.db.ExecContext(ctx, query, tokenHash)
 	if err != nil {
 		return fmt.Errorf("failed to invalidate session: %w", err)
 	}

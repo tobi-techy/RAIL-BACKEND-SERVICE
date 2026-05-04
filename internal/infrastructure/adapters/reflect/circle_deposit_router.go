@@ -171,7 +171,23 @@ func (r *CircleDepositRouter) RequiredSchemaAvailable(ctx context.Context) (bool
 }
 
 // Start begins background retry for routes that failed after allocation.
-func (r *CircleDepositRouter) Start() {
+func (r *CircleDepositRouter) Start() error {
+	if r == nil {
+		return fmt.Errorf("reflect deposit router is not configured")
+	}
+	if r.db == nil {
+		return fmt.Errorf("reflect deposit router database is not configured")
+	}
+	if r.circle == nil {
+		return fmt.Errorf("reflect deposit router Circle client is not configured")
+	}
+	if r.reflect == nil {
+		return fmt.Errorf("reflect deposit router client is not configured")
+	}
+	if len(r.allowedProgramIDs) == 0 {
+		return fmt.Errorf("reflect deposit router allowed program IDs are not configured")
+	}
+
 	ticker := time.NewTicker(r.retryInterval)
 	go func() {
 		defer ticker.Stop()
@@ -185,11 +201,16 @@ func (r *CircleDepositRouter) Start() {
 			}
 		}
 	}()
+	return nil
 }
 
 // Stop stops background retry.
-func (r *CircleDepositRouter) Stop() {
+func (r *CircleDepositRouter) Stop() error {
+	if r == nil {
+		return nil
+	}
 	r.stopOnce.Do(func() { close(r.stopCh) })
+	return nil
 }
 
 // RouteDepositYield idempotently routes a deposit's stash allocation into Reflect.

@@ -10,6 +10,11 @@ import (
 	"github.com/spf13/viper"
 )
 
+const (
+	reflectOwnerWalletPlaceholder = "REPLACE_WITH_YOUR_SOLANA_WALLET_ADDRESS"
+	reflectPrivateKeyPlaceholder  = "REPLACE_WITH_BASE58_ENCODED_PRIVATE_KEY_NEVER_COMMIT_THIS"
+)
+
 // Config holds all configuration for the application
 type Config struct {
 	Environment    string               `mapstructure:"environment"`
@@ -1391,6 +1396,10 @@ func validate(config *Config) error {
 		return fmt.Errorf("bridge supported chains configuration is required")
 	}
 
+	if err := validateReflectConfig(config); err != nil {
+		return err
+	}
+
 	if strings.EqualFold(strings.TrimSpace(config.KYC.Provider), "sumsub") {
 		if strings.TrimSpace(config.KYC.APIKey) == "" {
 			return fmt.Errorf("sumsub app token is required when kyc.provider=sumsub")
@@ -1427,6 +1436,23 @@ func validate(config *Config) error {
 		}
 	}
 
+	return nil
+}
+
+func validateReflectConfig(config *Config) error {
+	ownerWallet := strings.TrimSpace(config.Reflect.OwnerWallet)
+	privateKey := strings.TrimSpace(config.Reflect.PrivateKey)
+	if ownerWallet == reflectOwnerWalletPlaceholder {
+		return fmt.Errorf("reflect owner wallet placeholder must be replaced")
+	}
+	if privateKey == reflectPrivateKeyPlaceholder {
+		return fmt.Errorf("reflect private key placeholder must be replaced")
+	}
+
+	reflectEnabled := strings.TrimSpace(config.Reflect.SolanaRPC) != ""
+	if reflectEnabled && !isDevEnvironment(config.Environment) && len(config.Reflect.AllowedProgramIDs) == 0 {
+		return fmt.Errorf("reflect allowed_program_ids must be configured in %s environment", config.Environment)
+	}
 	return nil
 }
 

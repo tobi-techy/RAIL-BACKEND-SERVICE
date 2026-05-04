@@ -1,22 +1,24 @@
 DO $$
 DECLARE
-    account_balance DECIMAL;
+    revenue_account_type TEXT;
+    revenue_account_balance DECIMAL;
 BEGIN
-    SELECT balance
-    INTO account_balance
+    SELECT account_type, balance
+    INTO revenue_account_type, revenue_account_balance
     FROM ledger_accounts
-    WHERE account_type = 'emergency_withdrawal_revenue'
-      AND user_id IS NULL;
+    WHERE account_type IN ('emergency_withdrawal_revenue', 'subscription_revenue')
+      AND user_id IS NULL
+      AND balance <> 0
+    LIMIT 1;
 
-    IF account_balance IS NOT NULL AND account_balance <> 0 THEN
-        RAISE EXCEPTION 'emergency withdrawal revenue account has non-zero balance % and requires manual intervention', account_balance;
+    IF revenue_account_type IS NOT NULL THEN
+        RAISE EXCEPTION 'revenue account % has non-zero balance % and requires manual intervention', revenue_account_type, revenue_account_balance;
     END IF;
 
     DELETE FROM ledger_accounts
-    WHERE account_type = 'emergency_withdrawal_revenue'
+    WHERE account_type IN ('emergency_withdrawal_revenue', 'subscription_revenue')
       AND user_id IS NULL;
 END $$;
-DELETE FROM ledger_accounts WHERE account_type = 'subscription_revenue' AND user_id IS NULL AND balance = 0;
 
 ALTER TABLE ledger_accounts DROP CONSTRAINT IF EXISTS chk_account_type;
 ALTER TABLE ledger_accounts ADD CONSTRAINT chk_account_type CHECK (account_type IN (

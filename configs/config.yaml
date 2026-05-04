@@ -337,8 +337,13 @@ reflect:
   owner_wallet: ""
   private_key: ""
   stablecoin_index: 0
+  # $100 avoids uneconomical Reflect sweeps at small sizes; lower only after confirming current Reflect and Solana transaction costs.
   min_sweep_amount: "100"
   sweep_interval: 10
   bridge_source_wallet_id: ""
   # Reflect program IDs must be explicitly configured before Circle will sign user-wallet yield transactions.
+  # TODO: replace with official Reflect program IDs before staging/production deployment.
+  # Example format: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"]
+  # SECURITY: only use program IDs from official Reflect documentation/support. Wrong IDs may block legitimate transactions or permit unsafe signing.
+  # Reference: https://docs.reflect.money/
   allowed_program_ids: []

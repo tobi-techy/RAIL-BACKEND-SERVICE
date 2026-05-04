@@ -362,7 +362,8 @@ func (o *Orchestrator) createTransferAction(ctx context.Context, userID, convID 
 				return nil, fmt.Errorf("emergency withdrawal preview: %w", previewErr)
 			}
 			emergencyPreview = preview
-			// Verify balance covers amount + fee
+			// Emergency withdrawals charge the fee separately: spending receives the full
+			// requested amount, while stash is debited by amount + fee.
 			if balance.LessThan(amount.Add(preview.FeeAmount)) {
 				return map[string]interface{}{
 					"error":             "Insufficient stash balance after early withdrawal fee",

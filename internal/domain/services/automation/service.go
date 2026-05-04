@@ -54,14 +54,14 @@ type GoalChecker interface {
 
 // Service manages automation CRUD and execution.
 type Service struct {
-	repo         *repositories.AutomationRepository
-	balance      BalanceProvider
-	transfer     TransferExecutor
-	card         CardController
-	notifier     NotificationSender
-	obligations  ObligationProvider
-	goals        GoalChecker
-	logger       *zap.Logger
+	repo        *repositories.AutomationRepository
+	balance     BalanceProvider
+	transfer    TransferExecutor
+	card        CardController
+	notifier    NotificationSender
+	obligations ObligationProvider
+	goals       GoalChecker
+	logger      *zap.Logger
 }
 
 func NewService(repo *repositories.AutomationRepository, balance BalanceProvider, transfer TransferExecutor, logger *zap.Logger) *Service {
@@ -266,10 +266,11 @@ func (s *Service) EvaluateScheduled(ctx context.Context) error {
 
 	now := time.Now().UTC()
 	for _, a := range automations {
-		if !s.shouldTrigger(ctx, &a, now) {
+		automation := a
+		if !s.shouldTrigger(ctx, &automation, now) {
 			continue
 		}
-		go s.execute(context.Background(), &a)
+		go s.execute(context.Background(), &automation)
 	}
 	return nil
 }
@@ -285,8 +286,9 @@ func (s *Service) EvaluateBalanceThresholds(ctx context.Context, userID uuid.UUI
 		if !a.IsActive || a.TriggerType != entities.TriggerBalanceThreshold {
 			continue
 		}
-		if s.checkBalanceThreshold(ctx, &a) {
-			go s.execute(context.Background(), &a)
+		automation := a
+		if s.checkBalanceThreshold(ctx, &automation) {
+			go s.execute(context.Background(), &automation)
 		}
 	}
 	return nil
@@ -299,8 +301,9 @@ func (s *Service) EvaluateAllBalanceThresholds(ctx context.Context) error {
 		return err
 	}
 	for _, a := range automations {
-		if s.checkBalanceThreshold(ctx, &a) {
-			go s.execute(context.Background(), &a)
+		automation := a
+		if s.checkBalanceThreshold(ctx, &automation) {
+			go s.execute(context.Background(), &automation)
 		}
 	}
 	return nil
@@ -506,13 +509,18 @@ func (s *Service) executePauseCardCooldown(ctx context.Context, a *entities.Miri
 			automationPushData("spending_spike", "My card was just paused because of a spending spike. Can you review my recent spending?"))
 	}
 
-	// Schedule unfreeze after cooldown
+	// TODO: Replace this in-memory timer with a database-backed scheduled job so
+	// card unfreezes survive service restarts during the cooldown window.
 	go func() {
 		time.Sleep(time.Duration(cooldown) * time.Minute)
 		unfreezeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := s.card.UnfreezeCard(unfreezeCtx, a.UserID, cardID); err != nil {
-			s.logger.Error("failed to unfreeze card after cooldown", zap.Error(err), zap.String("automation_id", a.ID.String()))
+			s.logger.Error("failed to unfreeze card after cooldown",
+				zap.Error(err),
+				zap.String("automation_id", a.ID.String()),
+				zap.String("user_id", a.UserID.String()),
+				zap.String("card_id", cardID.String()))
 		} else if s.notifier != nil {
 			_ = s.notifier.SendPush(unfreezeCtx, a.UserID, "Card Resumed", "Your cooldown period is over. Your card is active again.",
 				automationPushData("card_resumed", "My card cooldown just ended. How's my spending looking today?"))
@@ -593,7 +601,8 @@ func (s *Service) EvaluateObligationDue(ctx context.Context) error {
 			continue
 		}
 		if s.isObligationDueSoon(ctx, &a, now) {
-			go s.execute(context.Background(), &a)
+			automation := a
+			go s.execute(context.Background(), &automation)
 		}
 	}
 	return nil

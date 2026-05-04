@@ -12,9 +12,9 @@ import (
 )
 
 const (
-	ToolCreateAutomation     = "create_automation"
-	ToolListAutomations      = "list_automations"
-	ToolSuggestSmartTiming   = "suggest_smart_timing"
+	ToolCreateAutomation      = "create_automation"
+	ToolListAutomations       = "list_automations"
+	ToolSuggestSmartTiming    = "suggest_smart_timing"
 	ToolSuggestAdaptiveAmount = "suggest_adaptive_amount"
 )
 
@@ -204,14 +204,9 @@ func (o *Orchestrator) executeCreateAutomation(ctx context.Context, userID uuid.
 	actionConfig, _ := params["action_config"].(map[string]interface{})
 
 	if actionType == entities.ActionTransferToStash || actionType == entities.ActionTransferToSpend {
-		if actionConfig == nil {
-			actionConfig = map[string]interface{}{}
+		if err := validateTransferAutomationAuthorization(actionConfig, time.Now().UTC()); err != nil {
+			return nil, err
 		}
-		now := time.Now().UTC()
-		actionConfig["acknowledged_future_transfer"] = true
-		actionConfig["passcode_session_verified_at"] = now.Format(time.RFC3339)
-		actionConfig["reauthorization_due_at"] = now.Add(90 * 24 * time.Hour).Format(time.RFC3339)
-		actionConfig["reauthorization_window_days"] = 90
 	}
 
 	req := &AutomationRequest{
@@ -242,6 +237,27 @@ func (o *Orchestrator) executeCreateAutomation(ctx context.Context, userID uuid.
 	return map[string]interface{}{"id": result.ID.String(), "name": result.Name, "created": true}, nil
 }
 
+func validateTransferAutomationAuthorization(actionConfig map[string]interface{}, now time.Time) error {
+	if actionConfig == nil {
+		return fmt.Errorf("transfer automation requires passcode authorization metadata")
+	}
+	verifiedRaw, _ := actionConfig["passcode_session_verified_at"].(string)
+	if verifiedRaw == "" {
+		return fmt.Errorf("transfer automation requires passcode_session_verified_at from passcode verification")
+	}
+	verifiedAt, err := time.Parse(time.RFC3339, verifiedRaw)
+	if err != nil {
+		return fmt.Errorf("transfer automation has invalid passcode_session_verified_at: %w", err)
+	}
+	if verifiedAt.After(now.Add(30 * time.Second)) {
+		return fmt.Errorf("transfer automation passcode authorization timestamp is in the future")
+	}
+	if now.Sub(verifiedAt) > 5*time.Minute {
+		return fmt.Errorf("transfer automation passcode authorization expired")
+	}
+	return nil
+}
+
 func (o *Orchestrator) executeSuggestSmartTiming(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	if o.patterns == nil {
 		return map[string]interface{}{"error": "spending pattern analysis is unavailable"}, nil
@@ -251,10 +267,10 @@ func (o *Orchestrator) executeSuggestSmartTiming(ctx context.Context, userID uui
 	dayData, err := o.patterns.GetSpendingByDayOfWeek(ctx, userID, start, end)
 	if err != nil || len(dayData) == 0 {
 		return map[string]interface{}{
-			"suggested_weekday":      1, // Monday default
-			"suggested_hour":         9,
-			"reasoning":              "Not enough spending data yet. Defaulting to Monday 9am.",
-			"data_available":         false,
+			"suggested_weekday": 1, // Monday default
+			"suggested_hour":    9,
+			"reasoning":         "Not enough spending data yet. Defaulting to Monday 9am.",
+			"data_available":    false,
 		}, nil
 	}
 
