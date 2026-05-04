@@ -3,6 +3,7 @@ package reflect
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 	chainrailspkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	circlepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
 	"github.com/shopspring/decimal"
@@ -66,6 +68,7 @@ type CircleDepositRouter struct {
 	stopCh                     chan struct{}
 	stopOnce                   sync.Once
 	reconcileMutex             sync.Mutex
+	schemaUnavailable          bool
 }
 
 type depositRoute struct {
@@ -894,6 +897,9 @@ func (r *CircleDepositRouter) processPending(ctx context.Context) {
 	if r == nil || r.db == nil {
 		return
 	}
+	if r.schemaUnavailable {
+		return
+	}
 	if !r.reconcileMutex.TryLock() {
 		return
 	}
@@ -917,6 +923,11 @@ func (r *CircleDepositRouter) processPending(ctx context.Context) {
 		ORDER BY created_at ASC
 		LIMIT $6
 	`, routeStatusPending, routeStatusTransferFailed, routeStatusTransferSubmitted, routeStatusTransferComplete, routeStatusMintFailed, r.batchSize); err != nil {
+		if isUndefinedTableError(err) {
+			r.schemaUnavailable = true
+			r.logger.Warn("Reflect deposit router disabled because required tables are missing; apply migration 189 before enabling it", zap.Error(err))
+			return
+		}
 		r.logger.Error("Failed to list pending Reflect deposit routes", zap.Error(err))
 		return
 	}
@@ -930,6 +941,11 @@ func (r *CircleDepositRouter) processPending(ctx context.Context) {
 				zap.Error(err))
 		}
 	}
+}
+
+func isUndefinedTableError(err error) bool {
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && pqErr.Code == "42P01"
 }
 
 func (r *CircleDepositRouter) markFailed(ctx context.Context, depositID uuid.UUID, status string, err error) {

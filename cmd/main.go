@@ -5,6 +5,8 @@ import (
 	"os"
 
 	"github.com/rail-service/rail_service/internal/app"
+	"github.com/rail-service/rail_service/internal/infrastructure/config"
+	"github.com/rail-service/rail_service/internal/infrastructure/database"
 	"github.com/rail-service/rail_service/pkg/alerting"
 )
 
@@ -29,6 +31,24 @@ import (
 // @description Type "Bearer" followed by a space and JWT token.
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "migrate":
+			if err := runMigrations(); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to run migrations: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("Migrations complete")
+			return
+		case "--health-check":
+			if err := runHealthCheck(); err != nil {
+				fmt.Fprintf(os.Stderr, "Health check failed: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
+
 	application := app.NewApplication()
 
 	if err := application.Initialize(); err != nil {
@@ -49,6 +69,27 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error during shutdown: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func runMigrations() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+	return database.RunMigrations(cfg.Database.URL)
+}
+
+func runHealthCheck() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+	db, err := database.NewConnection(cfg.Database)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return database.HealthCheck(db)
 }
 
 func sendFatalAlert(msg string, err error) {

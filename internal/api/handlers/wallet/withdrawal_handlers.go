@@ -58,11 +58,11 @@ func NewWithdrawalHandlers(withdrawalService WithdrawalServiceInterface, walletP
 // CryptoWithdrawalRequest represents the HTTP request for crypto withdrawal
 type CryptoWithdrawalRequest struct {
 	Amount             string `json:"amount" binding:"required"`
-	Currency           string `json:"currency,omitempty"`                       // USDC, USDT, EURC, PYUSD, USDG (defaults to USDC)
+	Currency           string `json:"currency,omitempty"` // USDC, USDT, EURC, PYUSD, USDG (defaults to USDC)
 	DestinationAddress string `json:"destination_address" binding:"required"`
-	DestinationChain   string `json:"destination_chain"` // optional, defaults to SOL
+	DestinationChain   string `json:"destination_chain"`        // optional, defaults to SOL
 	SourceAccount      string `json:"source_account,omitempty"` // spending_balance (default) or stash_balance
-	Emergency          bool   `json:"emergency,omitempty"` // bypass stash lock with penalty fee
+	Emergency          bool   `json:"emergency,omitempty"`      // bypass stash lock with penalty fee
 	Category           string `json:"category,omitempty"`
 	Narration          string `json:"narration,omitempty"`
 }
@@ -78,7 +78,7 @@ type FiatWithdrawalRequest struct {
 	IBAN              string `json:"iban,omitempty"`
 	BIC               string `json:"bic,omitempty"`
 	SourceAccount     string `json:"source_account,omitempty"` // spending_balance (default) or stash_balance
-	Emergency         bool   `json:"emergency,omitempty"` // bypass stash lock with penalty fee
+	Emergency         bool   `json:"emergency,omitempty"`      // bypass stash lock with penalty fee
 	Category          string `json:"category,omitempty"`
 	Narration         string `json:"narration,omitempty"`
 }
@@ -185,20 +185,20 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 	}
 
 	serviceReq := &entities.InitiateCryptoWithdrawalRequest{
-		UserID:             userID,
-		Amount:             amount,
-		Currency:           withdrawalCurrency,
-		DestinationAddress: req.DestinationAddress,
-		DestinationChain:   destChain,
-		SourceChain:        string(wallet.Chain),
-		SourceAccount:      resolveSourceAccount(req.SourceAccount),
-		BridgeWalletID:     wallet.BridgeWalletID,
-		CircleWalletID:     wallet.CircleWalletID,
+		UserID:              userID,
+		Amount:              amount,
+		Currency:            withdrawalCurrency,
+		DestinationAddress:  req.DestinationAddress,
+		DestinationChain:    destChain,
+		SourceChain:         string(wallet.Chain),
+		SourceAccount:       resolveSourceAccount(req.SourceAccount),
+		BridgeWalletID:      wallet.BridgeWalletID,
+		CircleWalletID:      wallet.CircleWalletID,
 		SourceWalletAddress: wallet.Address,
-		Category:           category,
-		Narration:          narration,
-		Emergency:          req.Emergency,
-		IdempotencyKey:     idempotencyKey,
+		Category:            category,
+		Narration:           narration,
+		Emergency:           req.Emergency,
+		IdempotencyKey:      idempotencyKey,
 	}
 
 	response, err := h.withdrawalService.InitiateCryptoWithdrawal(c.Request.Context(), serviceReq)
@@ -856,7 +856,14 @@ func (h *WithdrawalHandlers) EmergencyStashToSpending(c *gin.Context) {
 		common.SendBadRequest(c, common.ErrCodeInvalidAmount, err.Error())
 		return
 	}
-	idempotencyKey, _ := getIdempotencyKey(c)
+	idempotencyKey, err := getIdempotencyKey(c)
+	if err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, err.Error())
+		return
+	}
+	if idempotencyKey == "" {
+		idempotencyKey = uuid.New().String()
+	}
 
 	result, err := h.withdrawalService.EmergencyStashToSpending(c.Request.Context(), userID, amount, idempotencyKey)
 	if err != nil {
@@ -896,7 +903,11 @@ func (h *WithdrawalHandlers) FundStash(c *gin.Context) {
 		common.SendBadRequest(c, common.ErrCodeInvalidAmount, err.Error())
 		return
 	}
-	idempotencyKey, _ := getIdempotencyKey(c)
+	idempotencyKey, err := getIdempotencyKey(c)
+	if err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, err.Error())
+		return
+	}
 	if idempotencyKey == "" {
 		idempotencyKey = uuid.New().String()
 	}
