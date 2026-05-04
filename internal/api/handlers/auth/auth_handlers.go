@@ -33,8 +33,8 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/crypto"
-	pkgsecurity "github.com/rail-service/rail_service/pkg/security"
 	"github.com/rail-service/rail_service/pkg/ratelimit"
+	pkgsecurity "github.com/rail-service/rail_service/pkg/security"
 	"go.uber.org/zap"
 )
 
@@ -101,6 +101,7 @@ type SessionService interface {
 	CreateSession(ctx context.Context, userID uuid.UUID, accessToken, refreshToken, ipAddress, userAgent, deviceFingerprint, location string, expiresAt time.Time) (*session.Session, error)
 	RotateSessionTokensByRefreshToken(ctx context.Context, userID uuid.UUID, currentRefreshToken, newAccessToken, newRefreshToken string, newExpiresAt time.Time) (*session.Session, error)
 	ValidateSession(ctx context.Context, token string) (*session.Session, error)
+	ValidateSessionByRefreshToken(ctx context.Context, refreshToken string) (*session.Session, error)
 }
 
 // TwoFAService interface for 2FA management
@@ -1117,10 +1118,10 @@ func (h *AuthHandlers) RefreshToken(c *gin.Context) {
 	}
 
 	// SECURITY: Check blacklist BEFORE issuing new tokens to prevent replay attacks.
-	// ValidateSession checks is_active=true, so a previously consumed/invalidated
+	// ValidateSessionByRefreshToken checks is_active=true, so a previously consumed/invalidated
 	// refresh token will be rejected here.
 	if h.sessionService != nil {
-		if _, err := h.sessionService.ValidateSession(ctx, refreshToken); err != nil {
+		if _, err := h.sessionService.ValidateSessionByRefreshToken(ctx, refreshToken); err != nil {
 			h.logger.Warn("Refresh token session invalid or already consumed", zap.Error(err), zap.String("user_id", userID.String()))
 			c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "TOKEN_REVOKED", Message: "Refresh token has been revoked"})
 			return
@@ -1140,13 +1141,6 @@ func (h *AuthHandlers) RefreshToken(c *gin.Context) {
 		h.logger.Warn("Inactive user attempted token refresh", zap.String("user_id", userID.String()))
 		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "ACCOUNT_INACTIVE", Message: "Account is inactive"})
 		return
-	}
-
-	// Blacklist the consumed refresh token to prevent replay attacks
-	if h.sessionService != nil {
-		if err := h.sessionService.InvalidateSession(ctx, refreshToken); err != nil {
-			h.logger.Warn("Failed to blacklist consumed refresh token", zap.Error(err), zap.String("user_id", userID.String()))
-		}
 	}
 
 	// Generate a new token pair (rotates refresh token as well).

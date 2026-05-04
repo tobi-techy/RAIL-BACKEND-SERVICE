@@ -18,9 +18,9 @@ func NewAutomationRepository(db *sqlx.DB) *AutomationRepository {
 }
 
 func (r *AutomationRepository) Create(ctx context.Context, a *entities.MiriamAutomation) error {
-	query := `INSERT INTO miriam_automations (id, user_id, name, description, trigger_type, trigger_config, action_type, action_config, is_active, max_triggers_per_day, cooldown_minutes, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())`
-	_, err := r.db.ExecContext(ctx, query, a.ID, a.UserID, a.Name, a.Description, a.TriggerType, a.TriggerConfig, a.ActionType, a.ActionConfig, a.IsActive, a.MaxTriggersPerDay, a.CooldownMinutes)
+	query := `INSERT INTO miriam_automations (id, user_id, name, description, trigger_type, trigger_config, action_type, action_config, is_active, max_triggers_per_day, cooldown_minutes, savings_goal_id, obligation_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())`
+	_, err := r.db.ExecContext(ctx, query, a.ID, a.UserID, a.Name, a.Description, a.TriggerType, a.TriggerConfig, a.ActionType, a.ActionConfig, a.IsActive, a.MaxTriggersPerDay, a.CooldownMinutes, a.SavingsGoalID, a.ObligationID)
 	return err
 }
 
@@ -49,8 +49,8 @@ func (r *AutomationRepository) ListActiveByTrigger(ctx context.Context, triggerT
 }
 
 func (r *AutomationRepository) Update(ctx context.Context, a *entities.MiriamAutomation) error {
-	query := `UPDATE miriam_automations SET name=$1, description=$2, trigger_type=$3, trigger_config=$4, action_type=$5, action_config=$6, is_active=$7, max_triggers_per_day=$8, cooldown_minutes=$9, updated_at=NOW() WHERE id=$10 AND user_id=$11`
-	_, err := r.db.ExecContext(ctx, query, a.Name, a.Description, a.TriggerType, a.TriggerConfig, a.ActionType, a.ActionConfig, a.IsActive, a.MaxTriggersPerDay, a.CooldownMinutes, a.ID, a.UserID)
+	query := `UPDATE miriam_automations SET name=$1, description=$2, trigger_type=$3, trigger_config=$4, action_type=$5, action_config=$6, is_active=$7, max_triggers_per_day=$8, cooldown_minutes=$9, savings_goal_id=$10, obligation_id=$11, updated_at=NOW() WHERE id=$12 AND user_id=$13`
+	_, err := r.db.ExecContext(ctx, query, a.Name, a.Description, a.TriggerType, a.TriggerConfig, a.ActionType, a.ActionConfig, a.IsActive, a.MaxTriggersPerDay, a.CooldownMinutes, a.SavingsGoalID, a.ObligationID, a.ID, a.UserID)
 	return err
 }
 

@@ -257,7 +257,7 @@ func TestCreateWallets(t *testing.T) {
 		assert.Equal(t, "ws-123", body.WalletSetID)
 		assert.Equal(t, []Blockchain{BlockchainSOL, BlockchainETH}, body.Blockchains)
 		assert.Equal(t, 1, body.Count)
-		assert.Equal(t, "EOA", body.AccountType)
+		assert.Equal(t, "SCA", body.AccountType)
 		assert.NotEmpty(t, body.EntitySecretCiphertext)
 
 		w.WriteHeader(http.StatusCreated)
@@ -324,11 +324,52 @@ func TestCreateTransfer(t *testing.T) {
 		TokenID:            "tok-usdc",
 		DestinationAddress: "0xdest",
 		Amounts:            []string{"10.00"},
-		Fee:                FeeConfig{Type: "level", Config: FeeConfigLevel{FeeLevel: "MEDIUM"}},
+		Fee:                &FeeConfig{Type: "level", Config: FeeConfigLevel{FeeLevel: "MEDIUM"}},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "tx-abc", tx.ID)
 	assert.Equal(t, TransactionStateInitiated, tx.State)
+}
+
+func TestSignTransaction(t *testing.T) {
+	_, pubPEM := generateTestKeyPair(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/w3s/developer/sign/transaction", r.URL.Path)
+
+		var body SignTransactionRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, "w-sol", body.WalletID)
+		assert.Equal(t, "raw-base64", body.RawTransaction)
+		assert.Equal(t, "Deposit USDC into Reflect yield", body.Memo)
+		assert.NotEmpty(t, body.EntitySecretCiphertext)
+
+		json.NewEncoder(w).Encode(apiResponse[SignedTransactionData]{
+			Data: SignedTransactionData{
+				Signature:         "sig",
+				SignedTransaction: "signed-base64",
+				TxHash:            "tx-hash",
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewHTTPClient(Config{
+		APIKey:       "test-key",
+		BaseURL:      server.URL,
+		EntitySecret: generateTestEntitySecret(),
+		PublicKeyPEM: pubPEM,
+	}, zap.NewNop())
+	require.NoError(t, err)
+
+	signed, err := client.SignTransaction(context.Background(), &SignTransactionRequest{
+		WalletID:       "w-sol",
+		RawTransaction: "raw-base64",
+		Memo:           "Deposit USDC into Reflect yield",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "signed-base64", signed.SignedTransaction)
+	assert.Equal(t, "tx-hash", signed.TxHash)
 }
 
 func TestGetTokenBalance(t *testing.T) {

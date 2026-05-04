@@ -34,13 +34,14 @@ func DefaultConfig() *Config {
 }
 
 type depositCandidate struct {
-	ID        uuid.UUID
-	UserID    uuid.UUID
-	Amount    decimal.Decimal
-	TxHash    string
-	Chain     string
-	Token     string
-	CreatedAt time.Time
+	ID             uuid.UUID
+	UserID         uuid.UUID
+	Amount         decimal.Decimal
+	TxHash         string
+	Chain          string
+	Token          string
+	CircleWalletID sql.NullString
+	CreatedAt      time.Time
 }
 
 // Worker periodically retries allocation for deposits that were confirmed but never split.
@@ -146,6 +147,9 @@ func (w *Worker) reconcile(ctx context.Context) {
 				"tx_hash":  candidate.TxHash,
 			},
 		}
+		if candidate.CircleWalletID.Valid && candidate.CircleWalletID.String != "" {
+			req.Metadata["circle_wallet_id"] = candidate.CircleWalletID.String
+		}
 
 		if err := w.allocationService.ProcessIncomingFunds(ctx, req); err != nil {
 			w.logger.Error("Failed to recover allocation for deposit",
@@ -170,15 +174,35 @@ func (w *Worker) listUnallocatedDeposits(ctx context.Context, limit int) ([]depo
 	minAge := time.Now().Add(-1 * time.Minute) // avoid racing with normal flow
 
 	const query = `
-		SELECT
-			d.id,
-			d.user_id,
-			d.amount,
-			d.tx_hash,
-			d.chain,
-			d.token,
-			d.created_at
-		FROM deposits d
+			SELECT
+				d.id,
+				d.user_id,
+				d.amount,
+				d.tx_hash,
+				d.chain,
+				d.token,
+				(
+					SELECT mw.circle_wallet_id
+					FROM (
+						SELECT circle_wallet_id, created_at
+						FROM managed_wallets
+						WHERE user_id = d.user_id
+							AND chain = d.chain
+							AND circle_wallet_id IS NOT NULL
+							AND circle_wallet_id <> ''
+						UNION ALL
+						SELECT circle_wallet_id, created_at
+						FROM wallets
+						WHERE user_id = d.user_id
+							AND chain = d.chain
+							AND circle_wallet_id IS NOT NULL
+							AND circle_wallet_id <> ''
+					) mw
+					ORDER BY mw.created_at DESC
+					LIMIT 1
+				) AS circle_wallet_id,
+				d.created_at
+			FROM deposits d
 		INNER JOIN ledger_accounts la
 			ON la.user_id = d.user_id
 			AND la.account_type = 'usdc_balance'
@@ -210,7 +234,7 @@ func (w *Worker) listUnallocatedDeposits(ctx context.Context, limit int) ([]depo
 	candidates := make([]depositCandidate, 0, limit)
 	for rows.Next() {
 		var c depositCandidate
-		if err := rows.Scan(&c.ID, &c.UserID, &c.Amount, &c.TxHash, &c.Chain, &c.Token, &c.CreatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.UserID, &c.Amount, &c.TxHash, &c.Chain, &c.Token, &c.CircleWalletID, &c.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan unallocated deposit: %w", err)
 		}
 		candidates = append(candidates, c)

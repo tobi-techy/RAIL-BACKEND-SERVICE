@@ -30,17 +30,55 @@ type TransferExecutor interface {
 	TransferBetweenStashes(ctx context.Context, userID uuid.UUID, from, to string, amount decimal.Decimal) error
 }
 
+// CardController freezes/unfreezes cards for cooldown automations.
+type CardController interface {
+	FreezeCard(ctx context.Context, userID, cardID uuid.UUID) error
+	UnfreezeCard(ctx context.Context, userID, cardID uuid.UUID) error
+	GetCardsByUser(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
+}
+
+// NotificationSender sends push/in-app notifications.
+type NotificationSender interface {
+	SendPush(ctx context.Context, userID uuid.UUID, title, message string, data map[string]interface{}) error
+}
+
+// ObligationProvider lists active obligations for bill shield evaluation.
+type ObligationProvider interface {
+	ListActive(ctx context.Context, userID uuid.UUID) ([]entities.FinancialObligation, error)
+}
+
+// GoalChecker checks if a savings goal has been reached.
+type GoalChecker interface {
+	IsGoalReached(ctx context.Context, userID uuid.UUID, goalID uuid.UUID) (bool, error)
+}
+
 // Service manages automation CRUD and execution.
 type Service struct {
-	repo     *repositories.AutomationRepository
-	balance  BalanceProvider
-	transfer TransferExecutor
-	logger   *zap.Logger
+	repo         *repositories.AutomationRepository
+	balance      BalanceProvider
+	transfer     TransferExecutor
+	card         CardController
+	notifier     NotificationSender
+	obligations  ObligationProvider
+	goals        GoalChecker
+	logger       *zap.Logger
 }
 
 func NewService(repo *repositories.AutomationRepository, balance BalanceProvider, transfer TransferExecutor, logger *zap.Logger) *Service {
 	return &Service{repo: repo, balance: balance, transfer: transfer, logger: logger}
 }
+
+// SetCardController sets the card controller for pause/resume automations.
+func (s *Service) SetCardController(c CardController) { s.card = c }
+
+// SetNotificationSender sets the notification sender for notify automations.
+func (s *Service) SetNotificationSender(n NotificationSender) { s.notifier = n }
+
+// SetObligationProvider sets the obligation provider for bill shield automations.
+func (s *Service) SetObligationProvider(o ObligationProvider) { s.obligations = o }
+
+// SetGoalChecker sets the goal checker for goal-linked automations.
+func (s *Service) SetGoalChecker(g GoalChecker) { s.goals = g }
 
 // Create creates a new automation rule.
 func (s *Service) Create(ctx context.Context, userID uuid.UUID, req *CreateAutomationRequest) (*entities.MiriamAutomation, error) {
@@ -62,6 +100,8 @@ func (s *Service) Create(ctx context.Context, userID uuid.UUID, req *CreateAutom
 		IsActive:          true,
 		MaxTriggersPerDay: coalesce(req.MaxTriggersPerDay, 3),
 		CooldownMinutes:   coalesce(req.CooldownMinutes, 60),
+		SavingsGoalID:     req.SavingsGoalID,
+		ObligationID:      req.ObligationID,
 	}
 
 	if err := s.repo.Create(ctx, a); err != nil {
@@ -117,7 +157,8 @@ func validateCreateRequest(req *CreateAutomationRequest) error {
 
 func validTrigger(value string) bool {
 	switch value {
-	case entities.TriggerSchedule, entities.TriggerBalanceThreshold, entities.TriggerIncomeDetected, entities.TriggerSpendingSpike, entities.TriggerPayday, entities.TriggerCustom:
+	case entities.TriggerSchedule, entities.TriggerBalanceThreshold, entities.TriggerIncomeDetected, entities.TriggerSpendingSpike, entities.TriggerPayday, entities.TriggerCustom,
+		entities.TriggerObligationDue, entities.TriggerLifeEvent:
 		return true
 	default:
 		return false
@@ -126,7 +167,8 @@ func validTrigger(value string) bool {
 
 func validAction(value string) bool {
 	switch value {
-	case entities.ActionTransferToStash, entities.ActionTransferToSpend, entities.ActionNotify, entities.ActionCustom:
+	case entities.ActionTransferToStash, entities.ActionTransferToSpend, entities.ActionNotify, entities.ActionCustom,
+		entities.ActionPauseCard, entities.ActionResumeCard, entities.ActionPauseCardCooldown:
 		return true
 	default:
 		return false
@@ -380,11 +422,104 @@ func (s *Service) executeAction(ctx context.Context, a *entities.MiriamAutomatio
 		amount := decimal.NewFromFloat(cfg.Amount)
 		return s.transfer.TransferBetweenStashes(ctx, a.UserID, "stash", "spend", amount)
 	case entities.ActionNotify:
-		// Notification-only automations are logged but don't execute transfers
-		return nil
+		return s.executeNotify(ctx, a)
+	case entities.ActionPauseCard:
+		return s.executePauseCard(ctx, a.UserID)
+	case entities.ActionResumeCard:
+		return s.executeResumeCard(ctx, a.UserID)
+	case entities.ActionPauseCardCooldown:
+		return s.executePauseCardCooldown(ctx, a)
 	default:
 		return fmt.Errorf("unsupported action type: %s", a.ActionType)
 	}
+}
+
+func (s *Service) executeNotify(ctx context.Context, a *entities.MiriamAutomation) error {
+	if s.notifier == nil {
+		s.logger.Warn("notify action skipped: no notification sender configured", zap.String("id", a.ID.String()))
+		return nil
+	}
+	var cfg entities.NotifyActionConfig
+	json.Unmarshal(a.ActionConfig, &cfg)
+	title := cfg.Title
+	if title == "" {
+		title = "Rail Automation"
+	}
+	msg := cfg.Message
+	if msg == "" {
+		msg = a.Name
+	}
+	return s.notifier.SendPush(ctx, a.UserID, title, msg,
+		automationPushData("notify", fmt.Sprintf("My automation '%s' just triggered. What should I do?", a.Name)))
+}
+
+func (s *Service) executePauseCard(ctx context.Context, userID uuid.UUID) error {
+	if s.card == nil {
+		return fmt.Errorf("card controller not configured")
+	}
+	cardIDs, err := s.card.GetCardsByUser(ctx, userID)
+	if err != nil || len(cardIDs) == 0 {
+		return fmt.Errorf("no cards found for user")
+	}
+	return s.card.FreezeCard(ctx, userID, cardIDs[0])
+}
+
+func (s *Service) executeResumeCard(ctx context.Context, userID uuid.UUID) error {
+	if s.card == nil {
+		return fmt.Errorf("card controller not configured")
+	}
+	cardIDs, err := s.card.GetCardsByUser(ctx, userID)
+	if err != nil || len(cardIDs) == 0 {
+		return fmt.Errorf("no cards found for user")
+	}
+	return s.card.UnfreezeCard(ctx, userID, cardIDs[0])
+}
+
+func (s *Service) executePauseCardCooldown(ctx context.Context, a *entities.MiriamAutomation) error {
+	if s.card == nil {
+		return fmt.Errorf("card controller not configured")
+	}
+	var cfg entities.PauseCardCooldownConfig
+	json.Unmarshal(a.ActionConfig, &cfg)
+	cooldown := cfg.CooldownMinutes
+	if cooldown <= 0 {
+		cooldown = 30
+	}
+
+	cardIDs, err := s.card.GetCardsByUser(ctx, a.UserID)
+	if err != nil || len(cardIDs) == 0 {
+		return fmt.Errorf("no cards found for user")
+	}
+	cardID := cardIDs[0]
+
+	if err := s.card.FreezeCard(ctx, a.UserID, cardID); err != nil {
+		return fmt.Errorf("freeze card: %w", err)
+	}
+
+	// Notify user about the cooldown
+	if s.notifier != nil {
+		msg := cfg.Message
+		if msg == "" {
+			msg = fmt.Sprintf("Spending spike detected. Your card is paused for %d minutes to cool down.", cooldown)
+		}
+		_ = s.notifier.SendPush(ctx, a.UserID, "Card Paused — Cooldown Active", msg,
+			automationPushData("spending_spike", "My card was just paused because of a spending spike. Can you review my recent spending?"))
+	}
+
+	// Schedule unfreeze after cooldown
+	go func() {
+		time.Sleep(time.Duration(cooldown) * time.Minute)
+		unfreezeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := s.card.UnfreezeCard(unfreezeCtx, a.UserID, cardID); err != nil {
+			s.logger.Error("failed to unfreeze card after cooldown", zap.Error(err), zap.String("automation_id", a.ID.String()))
+		} else if s.notifier != nil {
+			_ = s.notifier.SendPush(unfreezeCtx, a.UserID, "Card Resumed", "Your cooldown period is over. Your card is active again.",
+				automationPushData("card_resumed", "My card cooldown just ended. How's my spending looking today?"))
+		}
+	}()
+
+	return nil
 }
 
 func StampTransferConsent(actionConfig map[string]interface{}, now time.Time) map[string]interface{} {
@@ -438,6 +573,162 @@ func transferConsentWindow(actionConfig map[string]interface{}, now time.Time) (
 	return dueAt, nil
 }
 
+// EvaluateObligationDue checks obligation_due triggered automations.
+// For each automation linked to an obligation, it checks if the obligation is due
+// within the configured days_before_due window and triggers the action.
+func (s *Service) EvaluateObligationDue(ctx context.Context) error {
+	if s.obligations == nil {
+		return nil
+	}
+	automations, err := s.repo.ListActiveByTrigger(ctx, entities.TriggerObligationDue)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	for _, a := range automations {
+		if a.ObligationID == nil {
+			continue
+		}
+		if a.LastTriggeredAt != nil && now.Sub(*a.LastTriggeredAt) < time.Duration(a.CooldownMinutes)*time.Minute {
+			continue
+		}
+		if s.isObligationDueSoon(ctx, &a, now) {
+			go s.execute(context.Background(), &a)
+		}
+	}
+	return nil
+}
+
+func (s *Service) isObligationDueSoon(ctx context.Context, a *entities.MiriamAutomation, now time.Time) bool {
+	if s.obligations == nil || a.ObligationID == nil {
+		return false
+	}
+	obligations, err := s.obligations.ListActive(ctx, a.UserID)
+	if err != nil {
+		return false
+	}
+	var cfg entities.ObligationDueTriggerConfig
+	json.Unmarshal(a.TriggerConfig, &cfg)
+	daysWindow := cfg.DaysBeforeDue
+	if daysWindow <= 0 {
+		daysWindow = 3
+	}
+	for _, ob := range obligations {
+		if ob.ID != *a.ObligationID {
+			continue
+		}
+		if ob.DueDay == nil {
+			continue
+		}
+		dueThisMonth := time.Date(now.Year(), now.Month(), *ob.DueDay, 0, 0, 0, 0, time.UTC)
+		if dueThisMonth.Before(now) {
+			dueThisMonth = dueThisMonth.AddDate(0, 1, 0)
+		}
+		daysUntilDue := int(dueThisMonth.Sub(now).Hours() / 24)
+		return daysUntilDue <= daysWindow
+	}
+	return false
+}
+
+// EvaluateBillShield checks if spend balance covers upcoming obligations for a user.
+// If not, auto-transfers from stash to cover the shortfall.
+func (s *Service) EvaluateBillShield(ctx context.Context, userID uuid.UUID) error {
+	if s.obligations == nil || s.balance == nil {
+		return nil
+	}
+	obligations, err := s.obligations.ListActive(ctx, userID)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	var totalDueSoon decimal.Decimal
+	for _, ob := range obligations {
+		if ob.DueDay == nil {
+			continue
+		}
+		dueThisMonth := time.Date(now.Year(), now.Month(), *ob.DueDay, 0, 0, 0, 0, time.UTC)
+		if dueThisMonth.Before(now) {
+			dueThisMonth = dueThisMonth.AddDate(0, 1, 0)
+		}
+		if int(dueThisMonth.Sub(now).Hours()/24) <= 7 {
+			totalDueSoon = totalDueSoon.Add(ob.Amount)
+		}
+	}
+	if !totalDueSoon.IsPositive() {
+		return nil
+	}
+	spendBal, err := s.balance.GetSpendBalance(ctx, userID)
+	if err != nil {
+		return err
+	}
+	shortfall := totalDueSoon.Sub(spendBal)
+	if !shortfall.IsPositive() {
+		return nil
+	}
+	stashBal, err := s.balance.GetStashBalance(ctx, userID)
+	if err != nil {
+		return err
+	}
+	transferAmt := decimal.Min(shortfall, stashBal)
+	if !transferAmt.IsPositive() {
+		if s.notifier != nil {
+			_ = s.notifier.SendPush(ctx, userID, "Bill Shield Alert",
+				fmt.Sprintf("You have $%s in bills due within 7 days but insufficient balance.", totalDueSoon.StringFixed(2)),
+				automationPushData("bill_shield", "I got a bill shield alert about insufficient balance. What are my options?"))
+		}
+		return nil
+	}
+	if err := s.transfer.TransferBetweenStashes(ctx, userID, "stash", "spend", transferAmt); err != nil {
+		return fmt.Errorf("bill shield transfer: %w", err)
+	}
+	if s.notifier != nil {
+		_ = s.notifier.SendPush(ctx, userID, "Bill Shield Activated",
+			fmt.Sprintf("Moved $%s from Stash to Spend to cover upcoming bills.", transferAmt.StringFixed(2)),
+			automationPushData("bill_shield", fmt.Sprintf("Bill Shield just moved $%s to cover my upcoming bills. Can you show me what's due?", transferAmt.StringFixed(2))))
+	}
+	s.logger.Info("bill shield transfer executed",
+		zap.String("user_id", userID.String()),
+		zap.String("amount", transferAmt.StringFixed(2)))
+	return nil
+}
+
+// DeactivateCompletedGoalAutomations deactivates automations whose savings goal is reached.
+func (s *Service) DeactivateCompletedGoalAutomations(ctx context.Context) error {
+	if s.goals == nil {
+		return nil
+	}
+	automations, err := s.repo.ListActive(ctx)
+	if err != nil {
+		return err
+	}
+	for _, a := range automations {
+		if a.SavingsGoalID == nil {
+			continue
+		}
+		reached, err := s.goals.IsGoalReached(ctx, a.UserID, *a.SavingsGoalID)
+		if err != nil {
+			s.logger.Warn("goal check failed", zap.Error(err), zap.String("automation_id", a.ID.String()))
+			continue
+		}
+		if reached {
+			a.IsActive = false
+			if err := s.repo.Update(ctx, &a); err != nil {
+				s.logger.Error("failed to deactivate goal-linked automation", zap.Error(err))
+				continue
+			}
+			if s.notifier != nil {
+				_ = s.notifier.SendPush(ctx, a.UserID, "Goal Reached! 🎉",
+					fmt.Sprintf("Your automation '%s' has been deactivated because your savings goal was reached.", a.Name),
+					automationPushData("goal_reached", fmt.Sprintf("I just reached my savings goal! The '%s' automation was deactivated. What should I do with my stash now?", a.Name)))
+			}
+			s.logger.Info("goal-linked automation deactivated",
+				zap.String("automation_id", a.ID.String()),
+				zap.String("goal_id", a.SavingsGoalID.String()))
+		}
+	}
+	return nil
+}
+
 // --- Request types ---
 
 type CreateAutomationRequest struct {
@@ -449,6 +740,8 @@ type CreateAutomationRequest struct {
 	ActionConfig      map[string]interface{} `json:"action_config" binding:"required"`
 	MaxTriggersPerDay int                    `json:"max_triggers_per_day"`
 	CooldownMinutes   int                    `json:"cooldown_minutes"`
+	SavingsGoalID     *uuid.UUID             `json:"savings_goal_id,omitempty"`
+	ObligationID      *uuid.UUID             `json:"obligation_id,omitempty"`
 }
 
 type UpdateAutomationRequest struct {
@@ -464,4 +757,15 @@ func coalesce(val, def int) int {
 		return val
 	}
 	return def
+}
+
+// automationPushData builds a push notification data map that deep-links into
+// the Miriam AI chat with a contextual pre-loaded message.
+func automationPushData(automationType, preloadedMessage string) map[string]interface{} {
+	return map[string]interface{}{
+		"type":              "automation",
+		"screen":            "ai-chat",
+		"automation_type":   automationType,
+		"preloaded_message": preloadedMessage,
+	}
 }

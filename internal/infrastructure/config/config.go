@@ -42,9 +42,9 @@ type Config struct {
 	SocialAuth     SocialAuthConfig     `mapstructure:"social_auth"`
 	WebAuthn       WebAuthnConfig       `mapstructure:"webauthn"`
 	AI             AIConfig             `mapstructure:"ai"`
-	SNSPush        SNSPushConfig  `mapstructure:"sns_push"`
-	TelegramAlerts TelegramConfig `mapstructure:"telegram_alerts"`
-	Umbra          UmbraConfig    `mapstructure:"umbra"`
+	SNSPush        SNSPushConfig        `mapstructure:"sns_push"`
+	TelegramAlerts TelegramConfig       `mapstructure:"telegram_alerts"`
+	Umbra          UmbraConfig          `mapstructure:"umbra"`
 }
 
 // TelegramConfig contains Telegram bot alerting configuration
@@ -56,15 +56,15 @@ type TelegramConfig struct {
 // UmbraConfig contains Umbra privacy sidecar configuration
 type UmbraConfig struct {
 	SidecarURL string `mapstructure:"sidecar_url"` // URL of the Umbra sidecar service (e.g. http://localhost:3100)
-	Enabled    bool   `mapstructure:"enabled"`      // Enable Umbra privacy shielding in allocation flow
-	Network    string `mapstructure:"network"`      // mainnet or devnet
-	AuthToken  string `mapstructure:"auth_token"`   // Shared secret for sidecar authentication
+	Enabled    bool   `mapstructure:"enabled"`     // Enable Umbra privacy shielding in allocation flow
+	Network    string `mapstructure:"network"`     // mainnet or devnet
+	AuthToken  string `mapstructure:"auth_token"`  // Shared secret for sidecar authentication
 }
 
 // SNSPushConfig contains AWS SNS push notification configuration
 type SNSPushConfig struct {
-	Region             string `mapstructure:"region"`              // AWS region (defaults to app region)
-	IOSPlatformARN     string `mapstructure:"ios_platform_arn"`    // SNS Platform Application ARN for APNs
+	Region             string `mapstructure:"region"`               // AWS region (defaults to app region)
+	IOSPlatformARN     string `mapstructure:"ios_platform_arn"`     // SNS Platform Application ARN for APNs
 	AndroidPlatformARN string `mapstructure:"android_platform_arn"` // SNS Platform Application ARN for FCM
 }
 
@@ -467,15 +467,16 @@ type BridgeConfig struct {
 
 // ReflectConfig contains Reflect Money API configuration for yield-bearing stablecoin treasury management.
 type ReflectConfig struct {
-	APIKey               string `mapstructure:"api_key"`
-	BaseURL              string `mapstructure:"base_url"`                // default: https://prod.api.reflect.money
-	SolanaRPC            string `mapstructure:"solana_rpc"`              // Solana RPC endpoint
-	OwnerWallet          string `mapstructure:"owner_wallet"`            // Rail's Solana wallet pubkey (base58)
-	PrivateKey           string `mapstructure:"private_key"`             // Rail's Solana wallet private key (base58, 64 bytes)
-	StablecoinIndex      int    `mapstructure:"stablecoin_index"`        // 0 = USDC+, 2 = LST Delta-Neutral
-	MinSweepAmount       string `mapstructure:"min_sweep_amount"`        // Minimum USDC to sweep (e.g. "100")
-	SweepInterval        int    `mapstructure:"sweep_interval"`          // Sweep interval in minutes
-	BridgeSourceWalletID string `mapstructure:"bridge_source_wallet_id"` // Bridge custody wallet funding the Solana wallet
+	APIKey               string   `mapstructure:"api_key"`
+	BaseURL              string   `mapstructure:"base_url"`                // default: https://prod.api.reflect.money
+	SolanaRPC            string   `mapstructure:"solana_rpc"`              // Solana RPC endpoint
+	OwnerWallet          string   `mapstructure:"owner_wallet"`            // Rail's Solana wallet pubkey (base58)
+	PrivateKey           string   `mapstructure:"private_key"`             // Rail's Solana wallet private key (base58, 64 bytes)
+	StablecoinIndex      int      `mapstructure:"stablecoin_index"`        // 0 = USDC+, 2 = LST Delta-Neutral
+	MinSweepAmount       string   `mapstructure:"min_sweep_amount"`        // Minimum USDC to sweep (e.g. "100")
+	SweepInterval        int      `mapstructure:"sweep_interval"`          // Sweep interval in minutes
+	BridgeSourceWalletID string   `mapstructure:"bridge_source_wallet_id"` // Bridge custody wallet funding the Solana wallet
+	AllowedProgramIDs    []string `mapstructure:"allowed_program_ids"`     // Reflect/Solana programs Circle may sign for user yield routes
 }
 
 // ChainRailsConfig contains ChainRails cross-chain deposit configuration.
@@ -494,7 +495,7 @@ type PajConfig struct {
 	WebhookURL    string `mapstructure:"webhook_url"`    // Rail's webhook endpoint URL (Paj posts per-order)
 	WalletAddress string `mapstructure:"wallet_address"` // Rail's USDC custody wallet (onramp recipient)
 	TokenMint     string `mapstructure:"token_mint"`     // USDC mint address on Solana
-	Chain         string `mapstructure:"chain"`           // default: SOLANA
+	Chain         string `mapstructure:"chain"`          // default: SOLANA
 }
 
 // WorkerConfig contains background worker configuration
@@ -874,7 +875,7 @@ func setDefaults() {
 
 	// Reflect defaults
 	viper.SetDefault("reflect.base_url", "https://prod.api.reflect.money")
-	viper.SetDefault("reflect.stablecoin_index", 0)  // 0 = USDC+
+	viper.SetDefault("reflect.stablecoin_index", 0) // 0 = USDC+
 	viper.SetDefault("reflect.min_sweep_amount", "100")
 	viper.SetDefault("reflect.sweep_interval", 10) // minutes
 	viper.SetDefault("bridge.max_retries", 3)
@@ -1258,7 +1259,7 @@ func overrideFromEnv() {
 	viper.BindEnv("chainrails.settlement_token", "CHAINRAILS_SETTLEMENT_TOKEN")
 
 	viper.BindEnv("security.internal_api_key", "SECURITY_INTERNAL_API_KEY")
-	
+
 	if chainrailsAPIKey := os.Getenv("CHAINRAILS_API_KEY"); chainrailsAPIKey != "" {
 		viper.Set("chainrails.api_key", chainrailsAPIKey)
 	}
@@ -1325,6 +1326,12 @@ func overrideFromEnv() {
 	}
 	if v := os.Getenv("REFLECT_BRIDGE_SOURCE_WALLET_ID"); v != "" {
 		viper.Set("reflect.bridge_source_wallet_id", v)
+	}
+	if v := os.Getenv("REFLECT_ALLOWED_PROGRAM_IDS"); v != "" {
+		viper.Set("reflect.allowed_program_ids", splitCommaSeparated(v))
+	}
+	if v := os.Getenv("REFLECT_STABLECOIN_INDEX"); v != "" {
+		viper.Set("reflect.stablecoin_index", v)
 	}
 
 	// Admin security settings
@@ -1430,4 +1437,16 @@ func isDevEnvironment(env string) bool {
 	default:
 		return false
 	}
+}
+
+func splitCommaSeparated(v string) []string {
+	parts := strings.Split(v, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			values = append(values, part)
+		}
+	}
+	return values
 }

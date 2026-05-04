@@ -15,37 +15,42 @@ const (
 	TriggerSpendingSpike    = "spending_spike"
 	TriggerPayday           = "payday"
 	TriggerCustom           = "custom"
+	TriggerObligationDue    = "obligation_due"
+	TriggerLifeEvent        = "life_event"
 )
 
 // Automation action types
 const (
-	ActionTransferToStash = "transfer_to_stash"
-	ActionTransferToSpend = "transfer_to_spend"
-	ActionSendP2P         = "send_p2p"
-	ActionSetBudgetAlert  = "set_budget_alert"
-	ActionPauseCard       = "pause_card"
-	ActionResumeCard      = "resume_card"
-	ActionNotify          = "notify"
-	ActionCustom          = "custom"
+	ActionTransferToStash    = "transfer_to_stash"
+	ActionTransferToSpend    = "transfer_to_spend"
+	ActionSendP2P            = "send_p2p"
+	ActionSetBudgetAlert     = "set_budget_alert"
+	ActionPauseCard          = "pause_card"
+	ActionResumeCard         = "resume_card"
+	ActionNotify             = "notify"
+	ActionCustom             = "custom"
+	ActionPauseCardCooldown  = "pause_card_cooldown"
 )
 
 // MiriamAutomation represents a user-defined automation rule.
 type MiriamAutomation struct {
-	ID               uuid.UUID       `json:"id" db:"id"`
-	UserID           uuid.UUID       `json:"user_id" db:"user_id"`
-	Name             string          `json:"name" db:"name"`
-	Description      *string         `json:"description,omitempty" db:"description"`
-	TriggerType      string          `json:"trigger_type" db:"trigger_type"`
-	TriggerConfig    json.RawMessage `json:"trigger_config" db:"trigger_config"`
-	ActionType       string          `json:"action_type" db:"action_type"`
-	ActionConfig     json.RawMessage `json:"action_config" db:"action_config"`
-	IsActive         bool            `json:"is_active" db:"is_active"`
-	LastTriggeredAt  *time.Time      `json:"last_triggered_at,omitempty" db:"last_triggered_at"`
-	TriggerCount     int             `json:"trigger_count" db:"trigger_count"`
-	MaxTriggersPerDay int            `json:"max_triggers_per_day" db:"max_triggers_per_day"`
-	CooldownMinutes  int             `json:"cooldown_minutes" db:"cooldown_minutes"`
-	CreatedAt        time.Time       `json:"created_at" db:"created_at"`
-	UpdatedAt        time.Time       `json:"updated_at" db:"updated_at"`
+	ID                uuid.UUID       `json:"id" db:"id"`
+	UserID            uuid.UUID       `json:"user_id" db:"user_id"`
+	Name              string          `json:"name" db:"name"`
+	Description       *string         `json:"description,omitempty" db:"description"`
+	TriggerType       string          `json:"trigger_type" db:"trigger_type"`
+	TriggerConfig     json.RawMessage `json:"trigger_config" db:"trigger_config"`
+	ActionType        string          `json:"action_type" db:"action_type"`
+	ActionConfig      json.RawMessage `json:"action_config" db:"action_config"`
+	IsActive          bool            `json:"is_active" db:"is_active"`
+	LastTriggeredAt   *time.Time      `json:"last_triggered_at,omitempty" db:"last_triggered_at"`
+	TriggerCount      int             `json:"trigger_count" db:"trigger_count"`
+	MaxTriggersPerDay int             `json:"max_triggers_per_day" db:"max_triggers_per_day"`
+	CooldownMinutes   int             `json:"cooldown_minutes" db:"cooldown_minutes"`
+	SavingsGoalID     *uuid.UUID      `json:"savings_goal_id,omitempty" db:"savings_goal_id"`
+	ObligationID      *uuid.UUID      `json:"obligation_id,omitempty" db:"obligation_id"`
+	CreatedAt         time.Time       `json:"created_at" db:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at" db:"updated_at"`
 }
 
 // ScheduleTriggerConfig for cron-like scheduling.
@@ -66,9 +71,33 @@ type BalanceThresholdConfig struct {
 
 // TransferActionConfig for stash/spend transfers.
 type TransferActionConfig struct {
-	Amount   float64 `json:"amount"`
-	FromWallet string `json:"from_wallet"` // "spend" or "stash"
-	ToWallet   string `json:"to_wallet"`
+	Amount     float64 `json:"amount"`
+	FromWallet string  `json:"from_wallet"` // "spend" or "stash"
+	ToWallet   string  `json:"to_wallet"`
+}
+
+// ObligationDueTriggerConfig triggers N days before an obligation is due.
+type ObligationDueTriggerConfig struct {
+	DaysBeforeDue int `json:"days_before_due"` // e.g. 3 = trigger 3 days before due
+}
+
+// PauseCardCooldownConfig pauses the card then resumes after a cooldown.
+type PauseCardCooldownConfig struct {
+	CooldownMinutes int    `json:"cooldown_minutes"` // how long to pause
+	Message         string `json:"message,omitempty"` // notification message
+}
+
+// NotifyActionConfig for notification-only automations.
+type NotifyActionConfig struct {
+	Title   string `json:"title"`
+	Message string `json:"message"`
+	Channel string `json:"channel,omitempty"` // push, email, in_app; defaults to push
+}
+
+// LifeEventTriggerConfig for aspirational triggers Miriam detects.
+type LifeEventTriggerConfig struct {
+	EventType string  `json:"event_type"` // "income_increase", "income_decrease", "new_recurring_expense", "expense_removed"
+	Threshold float64 `json:"threshold,omitempty"` // e.g. 0.20 = 20% increase
 }
 
 // MiriamAutomationLog records each automation execution.

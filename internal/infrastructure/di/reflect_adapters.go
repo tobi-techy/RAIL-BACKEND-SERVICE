@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	yieldsvc "github.com/rail-service/rail_service/internal/domain/services/yield"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/reflect"
 	"github.com/shopspring/decimal"
@@ -79,7 +82,6 @@ func AdvanceExchangeRateMark(ctx context.Context, db *sqlx.DB, newRate decimal.D
 	return nil
 }
 
-
 // reflectReconciliationAdapter adapts yield_state to reconciliation.BridgeWallet.
 // Returns raw reflect_deposited_usdc — the invariant is ledger_principal == deposited_usdc.
 type reflectReconciliationAdapter struct {
@@ -97,4 +99,58 @@ func (a *reflectReconciliationAdapter) GetWalletBalance(ctx context.Context, cus
 		return decimal.Zero, fmt.Errorf("reflectReconciliationAdapter: read deposited usdc: %w", err)
 	}
 	return depositedUSDC, nil
+}
+
+type reflectFeeLedgerAdapter struct {
+	ledger *ledger.Service
+}
+
+func (a *reflectFeeLedgerAdapter) DebitChainRailsFee(ctx context.Context, userID, depositID uuid.UUID, amount decimal.Decimal) error {
+	if a == nil || a.ledger == nil {
+		return fmt.Errorf("ledger service not configured")
+	}
+	if !amount.GreaterThan(decimal.Zero) {
+		return nil
+	}
+	spendingAccount, err := a.ledger.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return err
+	}
+	systemAccount, err := a.ledger.GetSystemAccount(ctx, entities.AccountTypeSystemBufferUSDC)
+	if err != nil {
+		return err
+	}
+	desc := "ChainRails bridge fee for Reflect deposit"
+	refType := "reflect_chainrails_fee"
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeWithdrawal,
+		ReferenceID:     &depositID,
+		ReferenceType:   &refType,
+		IdempotencyKey:  "reflect-chainrails-fee-" + depositID.String(),
+		Description:     &desc,
+		Metadata: map[string]any{
+			"deposit_id": depositID.String(),
+			"fee_type":   "chainrails_reflect_route",
+			"amount":     amount.StringFixed(6),
+		},
+		Entries: []entities.CreateEntryRequest{
+			{
+				AccountID:   spendingAccount.ID,
+				EntryType:   entities.EntryTypeCredit,
+				Amount:      amount,
+				Currency:    "USDC",
+				Description: &desc,
+			},
+			{
+				AccountID:   systemAccount.ID,
+				EntryType:   entities.EntryTypeDebit,
+				Amount:      amount,
+				Currency:    "USDC",
+				Description: &desc,
+			},
+		},
+	}
+	_, err = a.ledger.CreateTransaction(ctx, req)
+	return err
 }

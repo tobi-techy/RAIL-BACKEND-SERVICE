@@ -1756,8 +1756,10 @@ func (c *Container) initializeDomainServices() error {
 			c.CircleAdapter,
 			reflectClient,
 			c.Config.Reflect.OwnerWallet,
+			c.Config.Reflect.AllowedProgramIDs,
 			c.ZapLog,
 		)
+		c.ReflectDepositRouter.SetYieldLedger(&reflectFeeLedgerAdapter{ledger: c.LedgerService})
 		c.AllocationService.SetYieldRouter(c.ReflectDepositRouter)
 		c.ReflectDepositRouter.Start()
 		c.ZapLog.Info("Circle-backed user-wallet Reflect deposit router started")
@@ -2206,6 +2208,9 @@ func (c *Container) initializeDomainServices() error {
 	// Wire Circle crypto transfer adapter
 	if c.CircleAdapter != nil {
 		c.WithdrawalService.SetCircleTransferAdapter(c.CircleAdapter)
+	}
+	if c.ReflectDepositRouter != nil {
+		c.WithdrawalService.SetStashYieldRedeemer(c.ReflectDepositRouter)
 	}
 
 	// Initialize compliance screening (Didit transaction monitoring + AML) — wired below after DiditClient creation

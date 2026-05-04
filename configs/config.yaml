@@ -328,14 +328,17 @@ chat:
   enable_safety_filter: true
   rate_limit_per_hour: 50
 
-# Lulo Yield Configuration
-lulo:
+# Reflect Money Yield Configuration
+reflect:
+  # API key is optional for public Reflect endpoints. Only set it for whitelisted endpoints.
   api_key: ""
-  base_url: "https://api.lulo.fi"
+  base_url: "https://prod.api.reflect.money"
   solana_rpc: "https://api.mainnet-beta.solana.com"
   owner_wallet: ""
   private_key: ""
-  pool_type: "protected"
-  min_sweep_amount: "10"
-  sweep_interval: 30
+  stablecoin_index: 0
+  min_sweep_amount: "100"
+  sweep_interval: 10
   bridge_source_wallet_id: ""
+  # Reflect program IDs must be explicitly configured before Circle will sign user-wallet yield transactions.
+  allowed_program_ids: []

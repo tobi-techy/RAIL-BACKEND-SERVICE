@@ -26,14 +26,14 @@ import (
 
 // Config holds Circle API configuration.
 type Config struct {
-	APIKey            string
-	BaseURL           string
-	Environment       string // "sandbox" or "production"
-	EntitySecret      string // 64-char hex string (32 bytes)
-	PublicKeyPEM      string // Circle RSA public key for entity secret encryption
+	APIKey             string
+	BaseURL            string
+	Environment        string // "sandbox" or "production"
+	EntitySecret       string // 64-char hex string (32 bytes)
+	PublicKeyPEM       string // Circle RSA public key for entity secret encryption
 	DefaultWalletSetID string
-	Timeout           time.Duration
-	MaxRetries        int
+	Timeout            time.Duration
+	MaxRetries         int
 }
 
 // HTTPClient implements the Client interface via Circle REST API.
@@ -405,6 +405,26 @@ func (c *HTTPClient) GetTransaction(ctx context.Context, txID string) (*Transact
 		return nil, err
 	}
 	return &resp.Data.Transaction, nil
+}
+
+func (c *HTTPClient) SignTransaction(ctx context.Context, req *SignTransactionRequest) (*SignedTransaction, error) {
+	ciphertext, err := c.encryptEntitySecret()
+	if err != nil {
+		return nil, err
+	}
+
+	outReq := *req
+	outReq.EntitySecretCiphertext = ciphertext
+
+	var resp apiResponse[SignedTransactionData]
+	if err := c.doRequest(ctx, http.MethodPost, "/v1/w3s/developer/sign/transaction", outReq, &resp); err != nil {
+		return nil, err
+	}
+	return &SignedTransaction{
+		Signature:         resp.Data.Signature,
+		SignedTransaction: resp.Data.SignedTransaction,
+		TxHash:            resp.Data.TxHash,
+	}, nil
 }
 
 func (c *HTTPClient) EstimateTransferFee(ctx context.Context, req *EstimateFeeRequest) (*FeeEstimate, error) {

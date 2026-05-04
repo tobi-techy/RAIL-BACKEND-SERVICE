@@ -35,8 +35,8 @@ type Client struct {
 	logger          *zap.Logger
 }
 
-// NewClient creates a Reflect client.
-// privateKeyBase58 is the 64-byte ed25519 private key encoded in base58.
+// NewClient creates a Reflect client. privateKeyBase58 is optional for flows where
+// Circle signs generated transactions with a user wallet.
 func NewClient(baseURL, apiKey, solanaRPC, ownerPubkey, privateKeyBase58 string, stablecoinIndex int, logger *zap.Logger) (*Client, error) {
 	if baseURL == "" {
 		baseURL = prodBaseURL
@@ -44,22 +44,23 @@ func NewClient(baseURL, apiKey, solanaRPC, ownerPubkey, privateKeyBase58 string,
 	if solanaRPC == "" {
 		return nil, fmt.Errorf("reflect: solana_rpc is required")
 	}
-	if ownerPubkey == "" {
-		return nil, fmt.Errorf("reflect: owner_wallet is required")
-	}
-	keyBytes, err := base58.Decode(privateKeyBase58)
-	if err != nil {
-		return nil, fmt.Errorf("decode private key: %w", err)
-	}
-	if len(keyBytes) != ed25519.PrivateKeySize {
-		return nil, fmt.Errorf("invalid private key length: got %d, want %d", len(keyBytes), ed25519.PrivateKeySize)
+	var privateKey ed25519.PrivateKey
+	if privateKeyBase58 != "" {
+		keyBytes, err := base58.Decode(privateKeyBase58)
+		if err != nil {
+			return nil, fmt.Errorf("decode private key: %w", err)
+		}
+		if len(keyBytes) != ed25519.PrivateKeySize {
+			return nil, fmt.Errorf("invalid private key length: got %d, want %d", len(keyBytes), ed25519.PrivateKeySize)
+		}
+		privateKey = ed25519.PrivateKey(keyBytes)
 	}
 	return &Client{
 		baseURL:         baseURL,
 		apiKey:          apiKey,
 		solanaRPC:       solanaRPC,
 		owner:           ownerPubkey,
-		privateKey:      ed25519.PrivateKey(keyBytes),
+		privateKey:      privateKey,
 		stablecoinIndex: stablecoinIndex,
 		httpClient:      &http.Client{Timeout: 30 * time.Second},
 		logger:          logger,
@@ -131,9 +132,35 @@ func (c *Client) GetAPY(ctx context.Context) (decimal.Decimal, error) {
 // amount is in USDC (6 decimal places). Internally converted to micro-USDC integer units.
 // Uses POST /stablecoin/mint
 func (c *Client) Mint(ctx context.Context, amount decimal.Decimal) (string, error) {
+	if c.owner == "" {
+		return "", fmt.Errorf("reflect mint: owner wallet is required for local signing")
+	}
+	if len(c.privateKey) == 0 {
+		return "", fmt.Errorf("reflect mint: private key is required for local signing")
+	}
+	serializedTx, err := c.GenerateMintTransaction(ctx, amount, c.owner, c.owner)
+	if err != nil {
+		return "", err
+	}
+	txHash, err := c.signAndSubmit(ctx, serializedTx)
+	if err != nil {
+		return "", fmt.Errorf("reflect submit mint tx: %w", err)
+	}
+	c.logger.Info("Reflect mint submitted", zap.String("amount", amount.String()), zap.String("tx", txHash))
+	return txHash, nil
+}
+
+// GenerateMintTransaction asks Reflect to build an unsigned mint transaction for the provided signer.
+func (c *Client) GenerateMintTransaction(ctx context.Context, amount decimal.Decimal, signer, feePayer string) (string, error) {
 	microAmount := amount.Truncate(6).Mul(decimal.NewFromInt(1_000_000)).IntPart()
 	if microAmount <= 0 {
 		return "", fmt.Errorf("reflect mint: amount %s is below minimum (1 micro-USDC)", amount.String())
+	}
+	if signer == "" {
+		return "", fmt.Errorf("reflect mint: signer is required")
+	}
+	if feePayer == "" {
+		feePayer = signer
 	}
 	// Apply slippage: floor at 1 to avoid sending minimumReceived=0 which disables protection.
 	minReceived := microAmount * (10000 - slippageBPS) / 10000
@@ -144,8 +171,8 @@ func (c *Client) Mint(ctx context.Context, amount decimal.Decimal) (string, erro
 	body := map[string]any{
 		"stablecoinIndex": c.stablecoinIndex,
 		"depositAmount":   microAmount,
-		"signer":          c.owner,
-		"feePayer":        c.owner,
+		"signer":          signer,
+		"feePayer":        feePayer,
 		"collateralMint":  usdcMint,
 		"minimumReceived": minReceived,
 	}
@@ -161,21 +188,42 @@ func (c *Client) Mint(ctx context.Context, amount decimal.Decimal) (string, erro
 	if !resp.Success || resp.Data.Transaction == "" {
 		return "", fmt.Errorf("reflect returned empty mint transaction")
 	}
-	txHash, err := c.signAndSubmit(ctx, resp.Data.Transaction)
-	if err != nil {
-		return "", fmt.Errorf("reflect submit mint tx: %w", err)
-	}
-	c.logger.Info("Reflect mint submitted", zap.String("amount", amount.String()), zap.String("tx", txHash))
-	return txHash, nil
+	return resp.Data.Transaction, nil
 }
 
 // Burn generates a burn/redeem transaction via Reflect API, signs it, and submits to Solana.
 // amount is in USDC+ tokens (6 decimal places). Internally converted to micro-unit integer.
 // Uses POST /stablecoin/burn
 func (c *Client) Burn(ctx context.Context, amount decimal.Decimal) (string, error) {
+	if c.owner == "" {
+		return "", fmt.Errorf("reflect burn: owner wallet is required for local signing")
+	}
+	if len(c.privateKey) == 0 {
+		return "", fmt.Errorf("reflect burn: private key is required for local signing")
+	}
+	serializedTx, err := c.GenerateBurnTransaction(ctx, amount, c.owner, c.owner)
+	if err != nil {
+		return "", err
+	}
+	txHash, err := c.signAndSubmit(ctx, serializedTx)
+	if err != nil {
+		return "", fmt.Errorf("reflect submit burn tx: %w", err)
+	}
+	c.logger.Info("Reflect burn submitted", zap.String("amount", amount.String()), zap.String("tx", txHash))
+	return txHash, nil
+}
+
+// GenerateBurnTransaction asks Reflect to build an unsigned burn transaction for the provided signer.
+func (c *Client) GenerateBurnTransaction(ctx context.Context, amount decimal.Decimal, signer, feePayer string) (string, error) {
 	microAmount := amount.Truncate(6).Mul(decimal.NewFromInt(1_000_000)).IntPart()
 	if microAmount <= 0 {
 		return "", fmt.Errorf("reflect burn: amount %s is below minimum (1 micro-USDC)", amount.String())
+	}
+	if signer == "" {
+		return "", fmt.Errorf("reflect burn: signer is required")
+	}
+	if feePayer == "" {
+		feePayer = signer
 	}
 	minReceived := microAmount * (10000 - slippageBPS) / 10000
 	if minReceived <= 0 {
@@ -185,8 +233,8 @@ func (c *Client) Burn(ctx context.Context, amount decimal.Decimal) (string, erro
 	body := map[string]any{
 		"stablecoinIndex": c.stablecoinIndex,
 		"depositAmount":   microAmount,
-		"signer":          c.owner,
-		"feePayer":        c.owner,
+		"signer":          signer,
+		"feePayer":        feePayer,
 		"collateralMint":  usdcMint,
 		"minimumReceived": minReceived,
 	}
@@ -202,12 +250,12 @@ func (c *Client) Burn(ctx context.Context, amount decimal.Decimal) (string, erro
 	if !resp.Success || resp.Data.Transaction == "" {
 		return "", fmt.Errorf("reflect returned empty burn transaction")
 	}
-	txHash, err := c.signAndSubmit(ctx, resp.Data.Transaction)
-	if err != nil {
-		return "", fmt.Errorf("reflect submit burn tx: %w", err)
-	}
-	c.logger.Info("Reflect burn submitted", zap.String("amount", amount.String()), zap.String("tx", txHash))
-	return txHash, nil
+	return resp.Data.Transaction, nil
+}
+
+// SubmitSignedTransaction submits a base64-encoded signed Solana transaction to the configured RPC.
+func (c *Client) SubmitSignedTransaction(ctx context.Context, signedTransaction string) (string, error) {
+	return c.submitBase64Transaction(ctx, signedTransaction)
 }
 
 // signAndSubmit decodes a base64 serialized Solana transaction, signs it, and submits via RPC.
@@ -249,6 +297,10 @@ func (c *Client) signAndSubmit(ctx context.Context, serializedTx string) (string
 	copy(txBytes[slotStart:slotStart+64], sig)
 
 	encoded := base64.StdEncoding.EncodeToString(txBytes)
+	return c.submitBase64Transaction(ctx, encoded)
+}
+
+func (c *Client) submitBase64Transaction(ctx context.Context, encoded string) (string, error) {
 	rpcReq := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,

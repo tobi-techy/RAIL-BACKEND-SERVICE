@@ -28,8 +28,8 @@ const (
 type WalletState string
 
 const (
-	WalletStateLive    WalletState = "LIVE"
-	WalletStateFrozen  WalletState = "FROZEN"
+	WalletStateLive   WalletState = "LIVE"
+	WalletStateFrozen WalletState = "FROZEN"
 )
 
 // TransactionState represents the state of a Circle transaction.
@@ -60,11 +60,11 @@ type CreateWalletSetRequest struct {
 }
 
 type WalletSet struct {
-	ID         string    `json:"id"`
-	CustodyType string  `json:"custodyType"`
-	Name       string    `json:"name,omitempty"`
-	CreateDate time.Time `json:"createDate"`
-	UpdateDate time.Time `json:"updateDate"`
+	ID          string    `json:"id"`
+	CustodyType string    `json:"custodyType"`
+	Name        string    `json:"name,omitempty"`
+	CreateDate  time.Time `json:"createDate"`
+	UpdateDate  time.Time `json:"updateDate"`
 }
 
 type WalletSetData struct {
@@ -142,19 +142,19 @@ type FeeConfigLevel struct {
 }
 
 type CreateTransferRequest struct {
-	IdempotencyKey         string    `json:"idempotencyKey"`
-	EntitySecretCiphertext string    `json:"entitySecretCiphertext"`
+	IdempotencyKey         string `json:"idempotencyKey"`
+	EntitySecretCiphertext string `json:"entitySecretCiphertext"`
 	// REST API fields (walletId + tokenId)
-	WalletID               string    `json:"walletId,omitempty"`
-	TokenID                string    `json:"tokenId,omitempty"`
+	WalletID string `json:"walletId,omitempty"`
+	TokenID  string `json:"tokenId,omitempty"`
 	// SDK-style fields (blockchain + walletAddress + tokenAddress)
-	Blockchain             string    `json:"blockchain,omitempty"`
-	WalletAddress          string    `json:"walletAddress,omitempty"`
-	TokenAddress           string    `json:"tokenAddress,omitempty"`
-	DestinationAddress     string    `json:"destinationAddress"`
-	Amounts                []string  `json:"amounts"`
-	FeeLevel               string     `json:"feeLevel,omitempty"`
-	Fee                    *FeeConfig `json:"fee,omitempty"`
+	Blockchain         string     `json:"blockchain,omitempty"`
+	WalletAddress      string     `json:"walletAddress,omitempty"`
+	TokenAddress       string     `json:"tokenAddress,omitempty"`
+	DestinationAddress string     `json:"destinationAddress"`
+	Amounts            []string   `json:"amounts"`
+	FeeLevel           string     `json:"feeLevel,omitempty"`
+	Fee                *FeeConfig `json:"fee,omitempty"`
 }
 
 type Transaction struct {
@@ -174,6 +174,30 @@ type Transaction struct {
 
 type TransactionData struct {
 	Transaction Transaction `json:"transaction"`
+}
+
+// --- Transaction Signing ---
+
+type SignTransactionRequest struct {
+	EntitySecretCiphertext string     `json:"entitySecretCiphertext"`
+	WalletID               string     `json:"walletId,omitempty"`
+	RawTransaction         string     `json:"rawTransaction,omitempty"`
+	Transaction            string     `json:"transaction,omitempty"`
+	Memo                   string     `json:"memo,omitempty"`
+	Blockchain             Blockchain `json:"blockchain,omitempty"`
+	WalletAddress          string     `json:"walletAddress,omitempty"`
+}
+
+type SignedTransaction struct {
+	Signature         string `json:"signature"`
+	SignedTransaction string `json:"signedTransaction"`
+	TxHash            string `json:"txHash,omitempty"`
+}
+
+type SignedTransactionData struct {
+	Signature         string `json:"signature"`
+	SignedTransaction string `json:"signedTransaction"`
+	TxHash            string `json:"txHash,omitempty"`
 }
 
 // --- Fee Estimation ---

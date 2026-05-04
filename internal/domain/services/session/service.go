@@ -135,6 +135,34 @@ func (s *Service) ValidateSession(ctx context.Context, token string) (*Session, 
 	return session, nil
 }
 
+// ValidateSessionByRefreshToken validates an active session by refresh token hash.
+func (s *Service) ValidateSessionByRefreshToken(ctx context.Context, refreshToken string) (*Session, error) {
+	refreshTokenHash := s.hashToken(refreshToken)
+
+	query := `
+		SELECT id, user_id, token_hash, refresh_token_hash, ip_address, user_agent,
+		       device_fingerprint, location, is_active, expires_at, created_at, last_used_at
+		FROM sessions
+		WHERE refresh_token_hash = $1 AND is_active = true AND expires_at > NOW()`
+
+	session := &Session{}
+	err := s.db.QueryRowContext(ctx, query, refreshTokenHash).Scan(
+		&session.ID, &session.UserID, &session.TokenHash, &session.RefreshTokenHash,
+		&session.IPAddress, &session.UserAgent, &session.DeviceFingerprint, &session.Location,
+		&session.IsActive, &session.ExpiresAt, &session.CreatedAt, &session.LastUsedAt)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("session not found or expired")
+		}
+		return nil, fmt.Errorf("failed to validate refresh session: %w", err)
+	}
+
+	go s.updateLastUsed(context.Background(), session.ID)
+
+	return session, nil
+}
+
 // InvalidateSession invalidates a specific session
 func (s *Service) InvalidateSession(ctx context.Context, token string) error {
 	tokenHash := s.hashToken(token)

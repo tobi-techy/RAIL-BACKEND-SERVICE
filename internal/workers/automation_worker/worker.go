@@ -41,6 +41,12 @@ func (w *Worker) Start(ctx context.Context) {
 			if err := w.service.EvaluateAllBalanceThresholds(ctx); err != nil {
 				w.logger.Error("balance threshold evaluation failed", zap.Error(err))
 			}
+			if err := w.service.EvaluateObligationDue(ctx); err != nil {
+				w.logger.Error("obligation due evaluation failed", zap.Error(err))
+			}
+			if err := w.service.DeactivateCompletedGoalAutomations(ctx); err != nil {
+				w.logger.Error("goal-linked deactivation failed", zap.Error(err))
+			}
 		}
 	}
 }
