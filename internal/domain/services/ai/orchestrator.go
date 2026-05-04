@@ -128,6 +128,7 @@ type Orchestrator struct {
 	merchantAnalyzer   MerchantAnalyzer
 	pending            PendingActionStore
 	accountChecker     UserAccountChecker
+	emergencyWithdrawer EmergencyWithdrawer
 	automationProvider AutomationProvider
 	memory             *MemoryService
 	logger             *zap.Logger
@@ -285,7 +286,9 @@ RAIL CONTEXT:
 - The split is automatic and fixed. That IS the product. Users cannot change the ratio.
 - Stash = USD-denominated savings. For Nigerian users = naira devaluation protection.
 - Round-ups from card purchases go to Stash automatically.
-- Users can withdraw from Spend and Stash anytime — no lockup.
+- Users can withdraw from Spend anytime — no lockup.
+- Stash funds lock for 90 days after each deposit, then a 7-day withdrawal window opens. If the user needs money from stash before the window, they can do an early withdrawal with a fee: 3% if within 30 days, 2% if 31-60 days, 1% if 61-90 days. The fee is deducted from their stash balance. Always tell the user the exact fee before they confirm.
+- When the user asks to move money from stash to spend and the stash is locked, present the early withdrawal option with the fee — never just say "funds are locked".
 - Automations: users can set rules that run automatically (e.g. move $50 to stash every Friday, or move money when balance crosses a threshold). You can create these right now.
 
 CURRENCY CONVERSION — CRITICAL:
@@ -989,6 +992,12 @@ func (o *Orchestrator) executeToolInner(ctx context.Context, userID uuid.UUID, t
 
 	case ToolCreateAutomation:
 		return map[string]interface{}{"error": "Creating an automation requires a conversation context. Please use the chat interface."}, nil
+
+	case ToolSuggestSmartTiming:
+		return o.executeSuggestSmartTiming(ctx, userID)
+
+	case ToolSuggestAdaptiveAmount:
+		return o.executeSuggestAdaptiveAmount(ctx, userID)
 
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", tc.Name)

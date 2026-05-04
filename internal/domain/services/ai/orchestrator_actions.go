@@ -37,6 +37,14 @@ type FundsTransferer interface {
 	GetStashBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
 }
 
+// EmergencyWithdrawer handles stash withdrawals during the lock period (with fee).
+type EmergencyWithdrawer interface {
+	// IsStashLocked returns true if the user has no open withdrawal window (funds are locked).
+	IsStashLocked(ctx context.Context, userID uuid.UUID) (bool, error)
+	EmergencyWithdrawalPreview(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (*entities.EmergencyWithdrawalPreviewResponse, error)
+	EmergencyStashToSpending(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) (*entities.EmergencyWithdrawalResult, error)
+}
+
 // UserAccountChecker verifies user account status before executing financial actions.
 type UserAccountChecker interface {
 	IsActiveAndUnfrozen(ctx context.Context, userID uuid.UUID) (active bool, frozen bool, err error)
@@ -174,6 +182,11 @@ func (o *Orchestrator) SetObligationCreator(c ObligationCreator) {
 // SetAccountChecker wires the user account checker dependency.
 func (o *Orchestrator) SetAccountChecker(c UserAccountChecker) {
 	o.accountChecker = c
+}
+
+// SetEmergencyWithdrawer wires the emergency stash withdrawal dependency.
+func (o *Orchestrator) SetEmergencyWithdrawer(e EmergencyWithdrawer) {
+	o.emergencyWithdrawer = e
 }
 
 // checkUserCanTransact verifies the user is active and not frozen before financial actions.
@@ -335,6 +348,33 @@ func (o *Orchestrator) createTransferAction(ctx context.Context, userID, convID 
 	if err != nil {
 		return nil, fmt.Errorf("check destination balance: %w", err)
 	}
+
+	// When moving from stash, check if funds are locked and preview the emergency fee.
+	var emergencyPreview *entities.EmergencyWithdrawalPreviewResponse
+	if from == "stash" && o.emergencyWithdrawer != nil {
+		locked, lockErr := o.emergencyWithdrawer.IsStashLocked(ctx, userID)
+		if lockErr != nil {
+			return nil, fmt.Errorf("check stash lock: %w", lockErr)
+		}
+		if locked {
+			preview, previewErr := o.emergencyWithdrawer.EmergencyWithdrawalPreview(ctx, userID, amount)
+			if previewErr != nil {
+				return nil, fmt.Errorf("emergency withdrawal preview: %w", previewErr)
+			}
+			emergencyPreview = preview
+			// Verify balance covers amount + fee
+			if balance.LessThan(amount.Add(preview.FeeAmount)) {
+				return map[string]interface{}{
+					"error":             "Insufficient stash balance after early withdrawal fee",
+					"available_balance": balance.StringFixed(2),
+					"requested_amount":  amount.StringFixed(2),
+					"fee_amount":        preview.FeeAmount.StringFixed(2),
+					"total_needed":      amount.Add(preview.FeeAmount).StringFixed(2),
+				}, nil
+			}
+		}
+	}
+
 	impact := map[string]interface{}{
 		"source":                     from,
 		"destination":                to,
@@ -344,13 +384,27 @@ func (o *Orchestrator) createTransferAction(ctx context.Context, userID, convID 
 		"destination_balance_before": destinationBalance.StringFixed(2),
 		"destination_balance_after":  destinationBalance.Add(amount).StringFixed(2),
 	}
+	if emergencyPreview != nil {
+		impact["emergency_withdrawal"] = true
+		impact["fee_percent"] = emergencyPreview.FeePercent.StringFixed(2)
+		impact["fee_amount"] = emergencyPreview.FeeAmount.StringFixed(2)
+		impact["fee_tier"] = emergencyPreview.FeeTier
+		impact["lock_age_days"] = emergencyPreview.LockAgeDays
+		impact["net_amount"] = emergencyPreview.NetAmount.StringFixed(2)
+		impact["source_balance_after"] = balance.Sub(amount).Sub(emergencyPreview.FeeAmount).StringFixed(2)
+	}
+
+	description := fmt.Sprintf("Move $%s from %s to %s", amount.StringFixed(2), from, to)
+	if emergencyPreview != nil {
+		description = fmt.Sprintf("Early withdrawal: move $%s from stash to spend (fee: $%s)", amount.StringFixed(2), emergencyPreview.FeeAmount.StringFixed(2))
+	}
 
 	action := &entities.PendingAction{
 		ID:             uuid.New().String(),
 		ConversationID: convID,
 		UserID:         userID,
 		Action:         ToolTransferFunds,
-		Description:    fmt.Sprintf("Move $%s from %s to %s", amount.StringFixed(2), from, to),
+		Description:    description,
 		Params:         map[string]interface{}{"from": from, "to": to, "amount": amount.StringFixed(2), "impact": impact},
 		ExpiresAt:      time.Now().Add(pendingActionTTL),
 		CreatedAt:      time.Now(),
@@ -534,6 +588,17 @@ func (o *Orchestrator) executeTransfer(ctx context.Context, userID uuid.UUID, ac
 	if from == "spend" {
 		return o.fundsTransferer.TransferSpendToStash(ctx, userID, amount, action.ID)
 	}
+
+	// If the action was flagged as emergency at creation time, go straight to emergency path.
+	if o.emergencyWithdrawer != nil {
+		if impact, ok := action.Params["impact"].(map[string]interface{}); ok {
+			if _, isEmergency := impact["emergency_withdrawal"]; isEmergency {
+				_, execErr := o.emergencyWithdrawer.EmergencyStashToSpending(ctx, userID, amount, action.ID)
+				return execErr
+			}
+		}
+	}
+
 	return o.fundsTransferer.TransferStashToSpend(ctx, userID, amount, action.ID)
 }
 
