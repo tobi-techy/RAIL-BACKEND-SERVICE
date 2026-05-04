@@ -905,11 +905,14 @@ func (h *WithdrawalHandlers) FundStash(c *gin.Context) {
 	}
 	idempotencyKey, err := getIdempotencyKey(c)
 	if err != nil {
-		common.SendBadRequest(c, common.ErrCodeInvalidRequest, err.Error())
+		h.logger.Error("Invalid idempotency key for fund stash", "error", err, "user_id", userID)
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Missing or invalid idempotency key")
 		return
 	}
 	if idempotencyKey == "" {
-		idempotencyKey = uuid.New().String()
+		h.logger.Error("Missing idempotency key for fund stash", "user_id", userID)
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Idempotency key is required for fund transfers")
+		return
 	}
 
 	result, err := h.withdrawalService.FundStash(c.Request.Context(), userID, amount, idempotencyKey)

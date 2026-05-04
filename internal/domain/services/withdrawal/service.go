@@ -3,6 +3,7 @@ package withdrawal
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"math/big"
@@ -13,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	stashlocksvc "github.com/rail-service/rail_service/internal/domain/services/stashlock"
 	bridgepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	chainrailspkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	circlepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
@@ -308,7 +310,7 @@ func (s *WithdrawalService) EmergencyWithdrawalPreview(ctx context.Context, user
 	}
 	feePct, days, err := sl.EmergencyWithdrawalFeePercent(ctx, userID)
 	if err != nil {
-		if strings.Contains(err.Error(), "no locked") {
+		if errors.Is(err, stashlocksvc.ErrNoLockedCycles) {
 			feePct = decimal.NewFromFloat(0.03)
 			days = 0
 		} else {
@@ -356,7 +358,7 @@ func (s *WithdrawalService) EmergencyStashToSpending(ctx context.Context, userID
 	feePct, _, err := sl.EmergencyWithdrawalFeePercent(ctx, userID)
 	if err != nil {
 		// No locked cycles — apply maximum fee tier (3%) as default
-		if strings.Contains(err.Error(), "no locked") {
+		if errors.Is(err, stashlocksvc.ErrNoLockedCycles) {
 			feePct = decimal.NewFromFloat(0.03)
 		} else {
 			return nil, err
@@ -418,6 +420,7 @@ func (s *WithdrawalService) FundStash(ctx context.Context, userID uuid.UUID, amo
 	if s.stashTransferRepo != nil {
 		if err := s.stashTransferRepo.Create(ctx, transfer); err != nil {
 			s.logger.Error("failed to record stash transfer", zap.String("user_id", userID.String()), zap.Error(err))
+			return nil, fmt.Errorf("transfer completed but failed to record: %w", err)
 		}
 	}
 

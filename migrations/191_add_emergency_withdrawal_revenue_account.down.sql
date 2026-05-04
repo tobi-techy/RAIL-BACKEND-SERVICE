@@ -1,4 +1,21 @@
-DELETE FROM ledger_accounts WHERE account_type = 'emergency_withdrawal_revenue' AND user_id IS NULL AND balance = 0;
+DO $$
+DECLARE
+    account_balance DECIMAL;
+BEGIN
+    SELECT balance
+    INTO account_balance
+    FROM ledger_accounts
+    WHERE account_type = 'emergency_withdrawal_revenue'
+      AND user_id IS NULL;
+
+    IF account_balance IS NOT NULL AND account_balance <> 0 THEN
+        RAISE EXCEPTION 'emergency withdrawal revenue account has non-zero balance % and requires manual intervention', account_balance;
+    END IF;
+
+    DELETE FROM ledger_accounts
+    WHERE account_type = 'emergency_withdrawal_revenue'
+      AND user_id IS NULL;
+END $$;
 DELETE FROM ledger_accounts WHERE account_type = 'subscription_revenue' AND user_id IS NULL AND balance = 0;
 
 ALTER TABLE ledger_accounts DROP CONSTRAINT IF EXISTS chk_account_type;

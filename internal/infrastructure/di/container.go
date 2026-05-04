@@ -1760,9 +1760,16 @@ func (c *Container) initializeDomainServices() error {
 			c.ZapLog,
 		)
 		c.ReflectDepositRouter.SetYieldLedger(&reflectFeeLedgerAdapter{ledger: c.LedgerService})
-		c.AllocationService.SetYieldRouter(c.ReflectDepositRouter)
-		c.ReflectDepositRouter.Start()
-		c.ZapLog.Info("Circle-backed user-wallet Reflect deposit router started")
+		schemaReady, schemaErr := c.ReflectDepositRouter.RequiredSchemaAvailable(context.Background())
+		if schemaErr != nil {
+			c.ZapLog.Warn("Circle-backed user-wallet Reflect deposit router disabled because schema check failed", zap.Error(schemaErr))
+		} else if !schemaReady {
+			c.ZapLog.Warn("Circle-backed user-wallet Reflect deposit router disabled because required tables are missing; apply migration 189 before enabling it")
+		} else {
+			c.AllocationService.SetYieldRouter(c.ReflectDepositRouter)
+			c.ReflectDepositRouter.Start()
+			c.ZapLog.Info("Circle-backed user-wallet Reflect deposit router started")
+		}
 	} else if reflectClient != nil {
 		c.ZapLog.Warn("Circle-backed Reflect deposit router disabled",
 			zap.Bool("circle_configured", c.CircleAdapter != nil))

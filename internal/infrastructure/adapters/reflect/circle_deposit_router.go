@@ -153,6 +153,23 @@ func (r *CircleDepositRouter) SetChainRailsBridge(client ChainRailsBridge, desti
 	r.chainRailsDestinationChain = strings.TrimSpace(destinationChain)
 }
 
+// RequiredSchemaAvailable reports whether the migration-backed route tables exist.
+func (r *CircleDepositRouter) RequiredSchemaAvailable(ctx context.Context) (bool, error) {
+	if r == nil || r.db == nil {
+		return false, nil
+	}
+	var available bool
+	err := r.db.GetContext(ctx, &available, `
+		SELECT to_regclass('reflect_deposit_routes') IS NOT NULL
+			AND to_regclass('user_yield_positions') IS NOT NULL
+			AND to_regclass('user_yield_redemptions') IS NOT NULL
+	`)
+	if err != nil {
+		return false, fmt.Errorf("check reflect deposit router schema: %w", err)
+	}
+	return available, nil
+}
+
 // Start begins background retry for routes that failed after allocation.
 func (r *CircleDepositRouter) Start() {
 	ticker := time.NewTicker(r.retryInterval)
