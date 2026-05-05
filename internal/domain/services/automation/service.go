@@ -509,23 +509,15 @@ func (s *Service) executePauseCardCooldown(ctx context.Context, a *entities.Miri
 			automationPushData("spending_spike", "My card was just paused because of a spending spike. Can you review my recent spending?"))
 	}
 
-	// TODO: Replace this in-memory timer with a database-backed scheduled job so
-	// card unfreezes survive service restarts during the cooldown window.
-	go func() {
-		time.Sleep(time.Duration(cooldown) * time.Minute)
-		unfreezeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := s.card.UnfreezeCard(unfreezeCtx, a.UserID, cardID); err != nil {
-			s.logger.Error("failed to unfreeze card after cooldown",
-				zap.Error(err),
-				zap.String("automation_id", a.ID.String()),
-				zap.String("user_id", a.UserID.String()),
-				zap.String("card_id", cardID.String()))
-		} else if s.notifier != nil {
-			_ = s.notifier.SendPush(unfreezeCtx, a.UserID, "Card Resumed", "Your cooldown period is over. Your card is active again.",
-				automationPushData("card_resumed", "My card cooldown just ended. How's my spending looking today?"))
-		}
-	}()
+	// Persist the scheduled unfreeze so it survives service restarts.
+	unfreezeAt := time.Now().Add(time.Duration(cooldown) * time.Minute)
+	if err := s.repo.InsertPendingUnfreeze(ctx, a.UserID, cardID, a.ID, unfreezeAt); err != nil {
+		s.logger.Error("failed to persist pending card unfreeze",
+			zap.Error(err),
+			zap.String("automation_id", a.ID.String()),
+			zap.String("user_id", a.UserID.String()),
+			zap.String("card_id", cardID.String()))
+	}
 
 	return nil
 }
@@ -777,4 +769,34 @@ func automationPushData(automationType, preloadedMessage string) map[string]inte
 		"automation_type":   automationType,
 		"preloaded_message": preloadedMessage,
 	}
+}
+
+// ProcessPendingUnfreezes polls for due card unfreeze operations and executes them.
+func (s *Service) ProcessPendingUnfreezes(ctx context.Context) error {
+	if s.card == nil {
+		return nil
+	}
+	due, err := s.repo.GetDueUnfreezes(ctx, time.Now(), 50)
+	if err != nil {
+		return fmt.Errorf("get due unfreezes: %w", err)
+	}
+	for _, job := range due {
+		unfreezeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		if err := s.card.UnfreezeCard(unfreezeCtx, job.UserID, job.CardID); err != nil {
+			s.logger.Error("failed to unfreeze card",
+				zap.Error(err),
+				zap.String("user_id", job.UserID.String()),
+				zap.String("card_id", job.CardID.String()))
+			_ = s.repo.IncrementUnfreezeAttempt(ctx, job.ID, err.Error())
+			cancel()
+			continue
+		}
+		cancel()
+		_ = s.repo.DeletePendingUnfreeze(ctx, job.ID)
+		if s.notifier != nil {
+			_ = s.notifier.SendPush(ctx, job.UserID, "Card Resumed", "Your cooldown period is over. Your card is active again.",
+				automationPushData("card_resumed", "My card cooldown just ended. How's my spending looking today?"))
+		}
+	}
+	return nil
 }

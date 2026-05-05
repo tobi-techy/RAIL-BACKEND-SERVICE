@@ -81,3 +81,42 @@ func (r *AutomationRepository) GetLogs(ctx context.Context, userID uuid.UUID, li
 	err := r.db.SelectContext(ctx, &logs, `SELECT * FROM miriam_automation_logs WHERE user_id = $1 ORDER BY executed_at DESC LIMIT $2`, userID, limit)
 	return logs, err
 }
+
+// PendingCardUnfreeze represents a scheduled card unfreeze operation.
+type PendingCardUnfreeze struct {
+	ID           uuid.UUID  `db:"id"`
+	UserID       uuid.UUID  `db:"user_id"`
+	CardID       uuid.UUID  `db:"card_id"`
+	AutomationID uuid.UUID  `db:"automation_id"`
+	UnfreezeAt   time.Time  `db:"unfreeze_at"`
+	Attempts     int        `db:"attempts"`
+	LastError    *string    `db:"last_error"`
+	CreatedAt    time.Time  `db:"created_at"`
+}
+
+func (r *AutomationRepository) InsertPendingUnfreeze(ctx context.Context, userID, cardID, automationID uuid.UUID, unfreezeAt time.Time) error {
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO pending_card_unfreezes (user_id, card_id, automation_id, unfreeze_at) VALUES ($1, $2, $3, $4)`,
+		userID, cardID, automationID, unfreezeAt)
+	return err
+}
+
+func (r *AutomationRepository) GetDueUnfreezes(ctx context.Context, now time.Time, limit int) ([]PendingCardUnfreeze, error) {
+	var list []PendingCardUnfreeze
+	err := r.db.SelectContext(ctx, &list,
+		`SELECT * FROM pending_card_unfreezes WHERE unfreeze_at <= $1 AND attempts < 5 ORDER BY unfreeze_at LIMIT $2`,
+		now, limit)
+	return list, err
+}
+
+func (r *AutomationRepository) DeletePendingUnfreeze(ctx context.Context, id uuid.UUID) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM pending_card_unfreezes WHERE id = $1`, id)
+	return err
+}
+
+func (r *AutomationRepository) IncrementUnfreezeAttempt(ctx context.Context, id uuid.UUID, errMsg string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE pending_card_unfreezes SET attempts = attempts + 1, last_error = $1 WHERE id = $2`,
+		errMsg, id)
+	return err
+}

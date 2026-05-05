@@ -27,13 +27,19 @@ func NewWorker(service *automation.Service, logger *zap.Logger) *Worker {
 func (w *Worker) Start(ctx context.Context) {
 	w.logger.Info("automation worker started", zap.Duration("interval", w.interval))
 	ticker := time.NewTicker(w.interval)
+	unfreezeTicker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
+	defer unfreezeTicker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			w.logger.Info("automation worker stopped")
 			return
+		case <-unfreezeTicker.C:
+			if err := w.service.ProcessPendingUnfreezes(ctx); err != nil {
+				w.logger.Error("pending card unfreeze processing failed", zap.Error(err))
+			}
 		case <-ticker.C:
 			if err := w.service.EvaluateScheduled(ctx); err != nil {
 				w.logger.Error("automation evaluation failed", zap.Error(err))

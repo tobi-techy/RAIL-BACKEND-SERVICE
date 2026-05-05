@@ -1445,8 +1445,20 @@ func validateReflectConfig(config *Config) error {
 	if ownerWallet == reflectOwnerWalletPlaceholder {
 		return fmt.Errorf("reflect owner wallet placeholder must be replaced")
 	}
+	if ownerWallet == "" {
+		return fmt.Errorf("reflect owner wallet cannot be empty")
+	}
+	if strings.Contains(strings.ToUpper(ownerWallet), "REPLACE") || strings.Contains(strings.ToUpper(ownerWallet), "PLACEHOLDER") {
+		return fmt.Errorf("reflect owner wallet appears to contain placeholder text")
+	}
 	if privateKey == reflectPrivateKeyPlaceholder {
 		return fmt.Errorf("reflect private key placeholder must be replaced")
+	}
+	if privateKey == "" {
+		return fmt.Errorf("reflect private key cannot be empty")
+	}
+	if strings.Contains(strings.ToUpper(privateKey), "REPLACE") || strings.Contains(strings.ToUpper(privateKey), "PLACEHOLDER") {
+		return fmt.Errorf("reflect private key appears to contain placeholder text")
 	}
 
 	reflectEnabled := strings.TrimSpace(config.Reflect.SolanaRPC) != ""
