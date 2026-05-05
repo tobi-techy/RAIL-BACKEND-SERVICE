@@ -113,9 +113,18 @@ func (r *AutomationRepository) GetDueUnfreezes(ctx context.Context, now time.Tim
 		tx.Rollback()
 		return nil, err
 	}
-	// Immediately delete claimed rows so other workers won't pick them up.
-	for _, job := range list {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM pending_card_unfreezes WHERE id = $1`, job.ID); err != nil {
+	// Batch delete all claimed rows in a single query.
+	if len(list) > 0 {
+		ids := make([]uuid.UUID, len(list))
+		for i, job := range list {
+			ids[i] = job.ID
+		}
+		query, args, err := sqlx.In(`DELETE FROM pending_card_unfreezes WHERE id IN (?)`, ids)
+		if err != nil {
+			tx.Rollback()
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, tx.Rebind(query), args...); err != nil {
 			tx.Rollback()
 			return nil, err
 		}
