@@ -38,6 +38,23 @@ func generateCorrelationID() string {
 	return uuid.New().String()
 }
 
+func (s *Service) circleWalletIDForDepositAddress(ctx context.Context, address string) string {
+	if s == nil {
+		return ""
+	}
+	if s.walletRepo != nil {
+		if wallet, err := s.walletRepo.GetByAddress(ctx, address); err == nil && wallet != nil {
+			return strings.TrimSpace(wallet.CircleWalletID)
+		}
+	}
+	if s.managedWalletRepo != nil {
+		if wallet, err := s.managedWalletRepo.GetByAddress(ctx, address); err == nil && wallet != nil {
+			return strings.TrimSpace(wallet.CircleWalletID)
+		}
+	}
+	return ""
+}
+
 // LedgerBalanceView represents user balance from ledger
 type LedgerBalanceView struct {
 	USDCBalance       decimal.Decimal
@@ -745,6 +762,7 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 			_ = s.depositRepo.UpdateStatus(ctx, existingDeposit.ID, "confirmed", &confirmedAt)
 
 			if s.allocationService != nil {
+				circleWalletID := s.circleWalletIDForDepositAddress(ctx, webhook.Address)
 				allocationReq := &entities.IncomingFundsRequest{
 					UserID:     existingDeposit.UserID,
 					Amount:     existingDeposit.Amount,
@@ -757,6 +775,9 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 						"token":   string(existingDeposit.Token),
 						"tx_hash": existingDeposit.TxHash,
 					},
+				}
+				if circleWalletID != "" {
+					allocationReq.Metadata["circle_wallet_id"] = circleWalletID
 				}
 				if err := s.allocationService.ProcessIncomingFunds(ctx, allocationReq); err != nil {
 					s.logger.Error("Failed to reconcile allocation split for pending deposit",
@@ -781,6 +802,7 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 	// Find the wallet to get user ID.
 	// Prefer legacy wallets table for backward compatibility, then fall back to managed_wallets.
 	var userID uuid.UUID
+	var circleWalletID string
 	wallet, err := s.walletRepo.GetByAddress(ctx, webhook.Address)
 	if err != nil {
 		managedWallet, managedErr := s.managedWalletRepo.GetByAddress(ctx, webhook.Address)
@@ -788,8 +810,10 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 			return fmt.Errorf("failed to find wallet for address %s: legacy_error=%v managed_error=%w", webhook.Address, err, managedErr)
 		}
 		userID = managedWallet.UserID
+		circleWalletID = strings.TrimSpace(managedWallet.CircleWalletID)
 	} else {
 		userID = wallet.UserID
+		circleWalletID = strings.TrimSpace(wallet.CircleWalletID)
 	}
 
 	// USDC is pegged 1:1 to USD; no conversion needed.
@@ -896,6 +920,9 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 				"token":   string(token),
 				"tx_hash": webhook.TxHash,
 			},
+		}
+		if circleWalletID != "" {
+			allocationReq.Metadata["circle_wallet_id"] = circleWalletID
 		}
 		if err := s.allocationService.ProcessIncomingFunds(ctx, allocationReq); err != nil {
 			// Deposit is confirmed and credited to ledger. Allocation failed but the

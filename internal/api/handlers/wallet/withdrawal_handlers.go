@@ -29,6 +29,7 @@ type WithdrawalServiceInterface interface {
 	GetWithdrawalFee(ctx context.Context, withdrawalType entities.WithdrawalType, amount decimal.Decimal, currency entities.WithdrawalCurrency, sourceChain, destChain string) (*entities.WithdrawalFee, error)
 	EmergencyWithdrawalPreview(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (*entities.EmergencyWithdrawalPreviewResponse, error)
 	EmergencyStashToSpending(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) (*entities.EmergencyWithdrawalResult, error)
+	FundStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) (*entities.FundStashResult, error)
 }
 
 // WalletProvider interface for getting user's Bridge-managed wallet
@@ -57,11 +58,11 @@ func NewWithdrawalHandlers(withdrawalService WithdrawalServiceInterface, walletP
 // CryptoWithdrawalRequest represents the HTTP request for crypto withdrawal
 type CryptoWithdrawalRequest struct {
 	Amount             string `json:"amount" binding:"required"`
-	Currency           string `json:"currency,omitempty"`                       // USDC, USDT, EURC, PYUSD, USDG (defaults to USDC)
+	Currency           string `json:"currency,omitempty"` // USDC, USDT, EURC, PYUSD, USDG (defaults to USDC)
 	DestinationAddress string `json:"destination_address" binding:"required"`
-	DestinationChain   string `json:"destination_chain"` // optional, defaults to SOL
+	DestinationChain   string `json:"destination_chain"`        // optional, defaults to SOL
 	SourceAccount      string `json:"source_account,omitempty"` // spending_balance (default) or stash_balance
-	Emergency          bool   `json:"emergency,omitempty"` // bypass stash lock with penalty fee
+	Emergency          bool   `json:"emergency,omitempty"`      // bypass stash lock with penalty fee
 	Category           string `json:"category,omitempty"`
 	Narration          string `json:"narration,omitempty"`
 }
@@ -77,7 +78,7 @@ type FiatWithdrawalRequest struct {
 	IBAN              string `json:"iban,omitempty"`
 	BIC               string `json:"bic,omitempty"`
 	SourceAccount     string `json:"source_account,omitempty"` // spending_balance (default) or stash_balance
-	Emergency         bool   `json:"emergency,omitempty"` // bypass stash lock with penalty fee
+	Emergency         bool   `json:"emergency,omitempty"`      // bypass stash lock with penalty fee
 	Category          string `json:"category,omitempty"`
 	Narration         string `json:"narration,omitempty"`
 }
@@ -184,20 +185,20 @@ func (h *WithdrawalHandlers) InitiateCryptoWithdrawal(c *gin.Context) {
 	}
 
 	serviceReq := &entities.InitiateCryptoWithdrawalRequest{
-		UserID:             userID,
-		Amount:             amount,
-		Currency:           withdrawalCurrency,
-		DestinationAddress: req.DestinationAddress,
-		DestinationChain:   destChain,
-		SourceChain:        string(wallet.Chain),
-		SourceAccount:      resolveSourceAccount(req.SourceAccount),
-		BridgeWalletID:     wallet.BridgeWalletID,
-		CircleWalletID:     wallet.CircleWalletID,
+		UserID:              userID,
+		Amount:              amount,
+		Currency:            withdrawalCurrency,
+		DestinationAddress:  req.DestinationAddress,
+		DestinationChain:    destChain,
+		SourceChain:         string(wallet.Chain),
+		SourceAccount:       resolveSourceAccount(req.SourceAccount),
+		BridgeWalletID:      wallet.BridgeWalletID,
+		CircleWalletID:      wallet.CircleWalletID,
 		SourceWalletAddress: wallet.Address,
-		Category:           category,
-		Narration:          narration,
-		Emergency:          req.Emergency,
-		IdempotencyKey:     idempotencyKey,
+		Category:            category,
+		Narration:           narration,
+		Emergency:           req.Emergency,
+		IdempotencyKey:      idempotencyKey,
 	}
 
 	response, err := h.withdrawalService.InitiateCryptoWithdrawal(c.Request.Context(), serviceReq)
@@ -855,7 +856,14 @@ func (h *WithdrawalHandlers) EmergencyStashToSpending(c *gin.Context) {
 		common.SendBadRequest(c, common.ErrCodeInvalidAmount, err.Error())
 		return
 	}
-	idempotencyKey, _ := getIdempotencyKey(c)
+	idempotencyKey, err := getIdempotencyKey(c)
+	if err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, err.Error())
+		return
+	}
+	if idempotencyKey == "" {
+		idempotencyKey = uuid.New().String()
+	}
 
 	result, err := h.withdrawalService.EmergencyStashToSpending(c.Request.Context(), userID, amount, idempotencyKey)
 	if err != nil {
@@ -868,6 +876,56 @@ func (h *WithdrawalHandlers) EmergencyStashToSpending(c *gin.Context) {
 		default:
 			h.logger.Error("Emergency stash-to-spending failed", "error", err, "user_id", userID)
 			common.SendInternalError(c, "EMERGENCY_WITHDRAWAL_ERROR", "Failed to execute emergency withdrawal")
+		}
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// FundStashRequest is the HTTP request for funding stash from spending balance.
+type FundStashRequest struct {
+	Amount string `json:"amount" binding:"required"`
+}
+
+// FundStash handles POST /api/v1/funding/stash
+func (h *WithdrawalHandlers) FundStash(c *gin.Context) {
+	userID, ok := h.extractUserID(c)
+	if !ok {
+		return
+	}
+	var req FundStashRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Invalid request: "+err.Error())
+		return
+	}
+	amount, err := parsePositiveDecimal(req.Amount)
+	if err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidAmount, err.Error())
+		return
+	}
+	idempotencyKey, err := getIdempotencyKey(c)
+	if err != nil {
+		h.logger.Error("Invalid idempotency key for fund stash", "error", err, "user_id", userID)
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Missing or invalid idempotency key")
+		return
+	}
+	if idempotencyKey == "" {
+		h.logger.Error("Missing idempotency key for fund stash", "user_id", userID)
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Idempotency key is required for fund transfers")
+		return
+	}
+
+	result, err := h.withdrawalService.FundStash(c.Request.Context(), userID, amount, idempotencyKey)
+	if err != nil {
+		errMsg := err.Error()
+		switch {
+		case strings.Contains(errMsg, "insufficient"):
+			common.SendBadRequest(c, common.ErrCodeInsufficientFunds, errMsg)
+		case strings.Contains(errMsg, "minimum"):
+			common.SendBadRequest(c, common.ErrCodeInvalidAmount, errMsg)
+		default:
+			h.logger.Error("Fund stash failed", "error", err, "user_id", userID)
+			common.SendInternalError(c, "FUND_STASH_ERROR", "Failed to fund stash")
 		}
 		return
 	}

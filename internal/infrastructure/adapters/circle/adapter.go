@@ -29,6 +29,15 @@ func NewSandboxAdapter(client Client, logger *zap.Logger) *Adapter {
 
 // --- Wallet Operations ---
 
+// GetWallet returns a Circle wallet by ID.
+func (a *Adapter) GetWallet(ctx context.Context, walletID string) (*Wallet, error) {
+	wallet, err := a.client.GetWallet(ctx, walletID)
+	if err != nil {
+		return nil, fmt.Errorf("circle get wallet: %w", err)
+	}
+	return wallet, nil
+}
+
 // CreateWalletForUser creates a Circle wallet on the given chain and returns a domain ManagedWallet.
 func (a *Adapter) CreateWalletForUser(ctx context.Context, userID uuid.UUID, walletSetID string, chain entities.WalletChain) (*entities.ManagedWallet, error) {
 	bc := domainChainToCircleForEnv(chain, a.sandbox)
@@ -125,9 +134,20 @@ func (a *Adapter) ListWallets(ctx context.Context, walletSetID string, userID uu
 	return result, nil
 }
 
+// ListCircleWalletsByRefID returns raw Circle wallets matching a user refId.
+func (a *Adapter) ListCircleWalletsByRefID(ctx context.Context, refID string) ([]Wallet, error) {
+	return a.client.ListWalletsByRefID(ctx, refID)
+}
+
 // TransferUSDC initiates a USDC transfer from a Circle wallet using walletId + tokenId (REST API style).
 func (a *Adapter) TransferUSDC(ctx context.Context, walletID, tokenID, destinationAddress, amount string) (*Transaction, error) {
+	return a.TransferUSDCWithIdempotency(ctx, walletID, tokenID, destinationAddress, amount, "")
+}
+
+// TransferUSDCWithIdempotency initiates an idempotent USDC transfer from a Circle wallet.
+func (a *Adapter) TransferUSDCWithIdempotency(ctx context.Context, walletID, tokenID, destinationAddress, amount, idempotencyKey string) (*Transaction, error) {
 	req := &CreateTransferRequest{
+		IdempotencyKey:     idempotencyKey,
 		WalletID:           walletID,
 		TokenID:            tokenID,
 		DestinationAddress: destinationAddress,
@@ -135,6 +155,25 @@ func (a *Adapter) TransferUSDC(ctx context.Context, walletID, tokenID, destinati
 		FeeLevel:           "MEDIUM",
 	}
 	return a.client.CreateTransfer(ctx, req)
+}
+
+// GetUSDCTokenID returns Circle's token ID for USDC in the given wallet.
+func (a *Adapter) GetUSDCTokenID(ctx context.Context, walletID string) (string, error) {
+	return a.client.GetUSDCTokenID(ctx, walletID)
+}
+
+// GetTransaction returns a Circle transaction by ID.
+func (a *Adapter) GetTransaction(ctx context.Context, txID string) (*Transaction, error) {
+	return a.client.GetTransaction(ctx, txID)
+}
+
+// SignTransaction signs a raw transaction with a Circle developer-controlled wallet.
+func (a *Adapter) SignTransaction(ctx context.Context, walletID, rawTransaction, memo string) (*SignedTransaction, error) {
+	return a.client.SignTransaction(ctx, &SignTransactionRequest{
+		WalletID:       walletID,
+		RawTransaction: rawTransaction,
+		Memo:           memo,
+	})
 }
 
 // FindWalletWithUSDC searches all wallets for a user (by refId) and returns the first

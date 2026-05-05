@@ -24,14 +24,15 @@ func NewStashTransferRepository(db *sqlx.DB) *StashTransferRepository {
 // Create creates a new stash transfer
 func (r *StashTransferRepository) Create(ctx context.Context, transfer *entities.StashTransfer) error {
 	query := `
-		INSERT INTO stash_transfers (id, user_id, amount, status, created_at)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO stash_transfers (id, user_id, amount, direction, status, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
 	`
 
 	_, err := r.db.ExecContext(ctx, query,
 		transfer.ID,
 		transfer.UserID,
 		transfer.Amount,
+		transfer.Direction,
 		transfer.Status,
 		transfer.CreatedAt,
 	)
@@ -45,7 +46,7 @@ func (r *StashTransferRepository) Create(ctx context.Context, transfer *entities
 // GetByID retrieves a stash transfer by ID
 func (r *StashTransferRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.StashTransfer, error) {
 	query := `
-		SELECT id, user_id, amount, status, created_at, completed_at
+		SELECT id, user_id, amount, direction, status, created_at, completed_at
 		FROM stash_transfers
 		WHERE id = $1
 	`
@@ -65,7 +66,7 @@ func (r *StashTransferRepository) GetByID(ctx context.Context, id uuid.UUID) (*e
 // GetByUserID retrieves stash transfers for a user
 func (r *StashTransferRepository) GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.StashTransfer, error) {
 	query := `
-		SELECT id, user_id, amount, status, created_at, completed_at
+		SELECT id, user_id, amount, direction, status, created_at, completed_at
 		FROM stash_transfers
 		WHERE user_id = $1
 		ORDER BY created_at DESC

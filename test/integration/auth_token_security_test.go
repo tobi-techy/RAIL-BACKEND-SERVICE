@@ -243,7 +243,7 @@ func TestRefreshTokenReplayFailsAfterRotation(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
-	assert.Contains(t, w.Body.String(), "INVALID_TOKEN")
+	assert.Contains(t, w.Body.String(), "TOKEN_REVOKED")
 }
 
 func TestPasscodeLoginTokenAccessesProtectedRoute(t *testing.T) {
