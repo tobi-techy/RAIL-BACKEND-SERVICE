@@ -105,26 +105,68 @@ jobs:
           CLUSTER="rail-$ENV"
           SERVICE="rail-$ENV"
 
-          NETWORK_CONFIGURATION=$(aws ecs describe-services \
+          if ! LAUNCH_TYPE=$(aws ecs describe-services \
             --cluster "$CLUSTER" \
             --services "$SERVICE" \
             --region "${{ env.AWS_REGION }}" \
-            --query 'services[0].networkConfiguration.awsvpcConfiguration' \
-            --output json)
+            --query 'services[0].launchType' \
+            --output text); then
+            echo "Failed to retrieve launch type for ECS service $SERVICE in cluster $CLUSTER"
+            exit 1
+          fi
 
-          SUBNETS=$(echo "$NETWORK_CONFIGURATION" | jq -r '.subnets | join(",")')
-          SECURITY_GROUPS=$(echo "$NETWORK_CONFIGURATION" | jq -r '.securityGroups | join(",")')
-          ASSIGN_PUBLIC_IP=$(echo "$NETWORK_CONFIGURATION" | jq -r '.assignPublicIp // "DISABLED"')
+          if [ -z "$LAUNCH_TYPE" ] || [ "$LAUNCH_TYPE" = "None" ]; then
+            echo "Failed to retrieve launch type for ECS service $SERVICE in cluster $CLUSTER"
+            exit 1
+          fi
 
-          TASK_ARN=$(aws ecs run-task \
-            --cluster "$CLUSTER" \
-            --launch-type FARGATE \
-            --task-definition "$TASK_DEFINITION_ARN" \
-            --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SECURITY_GROUPS],assignPublicIp=$ASSIGN_PUBLIC_IP}" \
-            --overrides '{"containerOverrides":[{"name":"rail-backend","command":["migrate"]}]}' \
-            --region "${{ env.AWS_REGION }}" \
-            --query 'tasks[0].taskArn' \
-            --output text)
+          RUN_TASK_ARGS=(
+            --cluster "$CLUSTER"
+            --task-definition "$TASK_DEFINITION_ARN"
+            --overrides '{"containerOverrides":[{"name":"rail-backend","command":["migrate"]}]}'
+            --region "${{ env.AWS_REGION }}"
+            --query 'tasks[0].taskArn'
+            --output text
+          )
+
+          if [ "$LAUNCH_TYPE" = "FARGATE" ]; then
+            if ! NETWORK_CONFIGURATION=$(aws ecs describe-services \
+              --cluster "$CLUSTER" \
+              --services "$SERVICE" \
+              --region "${{ env.AWS_REGION }}" \
+              --query 'services[0].networkConfiguration.awsvpcConfiguration' \
+              --output json); then
+              echo "Failed to retrieve network configuration for Fargate ECS service $SERVICE in cluster $CLUSTER"
+              exit 1
+            fi
+
+            if [ -z "$NETWORK_CONFIGURATION" ] || [ "$NETWORK_CONFIGURATION" = "null" ]; then
+              echo "Fargate ECS service $SERVICE in cluster $CLUSTER requires a valid network configuration"
+              exit 1
+            fi
+
+            SUBNETS=$(echo "$NETWORK_CONFIGURATION" | jq -r '.subnets | join(",")')
+            SECURITY_GROUPS=$(echo "$NETWORK_CONFIGURATION" | jq -r '.securityGroups | join(",")')
+            ASSIGN_PUBLIC_IP=$(echo "$NETWORK_CONFIGURATION" | jq -r '.assignPublicIp // "DISABLED"')
+
+            RUN_TASK_ARGS+=(
+              --launch-type FARGATE
+              --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SECURITY_GROUPS],assignPublicIp=$ASSIGN_PUBLIC_IP}"
+            )
+          else
+            RUN_TASK_ARGS+=(--launch-type "$LAUNCH_TYPE")
+          fi
+
+          set +e
+          TASK_ARN=$(aws ecs run-task "${RUN_TASK_ARGS[@]}" 2>&1)
+          EXIT_CODE=$?
+          set -e
+
+          if [ "$EXIT_CODE" -ne 0 ]; then
+            echo "Failed to start migration task:"
+            echo "$TASK_ARN"
+            exit 1
+          fi
 
           if [ -z "$TASK_ARN" ] || [ "$TASK_ARN" = "None" ]; then
             echo "Failed to start migration task"

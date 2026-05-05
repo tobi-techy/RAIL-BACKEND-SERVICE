@@ -149,27 +149,40 @@ func (h *SocialAuthHandlers) SocialLogin(c *gin.Context) {
 		return
 	}
 
-	// Validate OAuth state to prevent CSRF — always required
-	if req.State == "" {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "MISSING_STATE", Message: "OAuth state parameter is required"})
-		return
-	}
-	if h.redisClient != nil {
-		stateKey := "oauth:state:" + req.State
-		exists, _ := h.redisClient.Exists(ctx, stateKey)
-		if !exists {
-			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_STATE", Message: "Invalid or expired OAuth state"})
+	var socialInfo *socialauth.SocialUserInfo
+
+	if req.IDToken != "" {
+		// Mobile SDK flows may not use redirect state, but only skip state after the ID token is verified.
+		var err error
+		socialInfo, err = h.socialAuthService.Authenticate(ctx, &req)
+		if err != nil {
+			h.logger.Error("Social authentication failed", zap.Error(err), zap.String("provider", string(req.Provider)))
+			c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "AUTH_FAILED", Message: "Authentication failed"})
 			return
 		}
-		h.redisClient.Del(ctx, stateKey)
-	}
+	} else {
+		// Validate OAuth state to prevent CSRF for web code-exchange flows.
+		if req.State == "" {
+			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "MISSING_STATE", Message: "OAuth state parameter is required"})
+			return
+		}
+		if h.redisClient != nil {
+			stateKey := "oauth:state:" + req.State
+			exists, _ := h.redisClient.Exists(ctx, stateKey)
+			if !exists {
+				c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_STATE", Message: "Invalid or expired OAuth state"})
+				return
+			}
+			h.redisClient.Del(ctx, stateKey)
+		}
 
-	// Authenticate with provider
-	socialInfo, err := h.socialAuthService.Authenticate(ctx, &req)
-	if err != nil {
-		h.logger.Error("Social authentication failed", zap.Error(err), zap.String("provider", string(req.Provider)))
-		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "AUTH_FAILED", Message: "Authentication failed"})
-		return
+		var err error
+		socialInfo, err = h.socialAuthService.Authenticate(ctx, &req)
+		if err != nil {
+			h.logger.Error("Social authentication failed", zap.Error(err), zap.String("provider", string(req.Provider)))
+			c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "AUTH_FAILED", Message: "Authentication failed"})
+			return
+		}
 	}
 
 	// Check if user exists with this social account

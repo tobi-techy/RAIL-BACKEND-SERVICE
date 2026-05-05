@@ -10,11 +10,6 @@ import (
 	"github.com/spf13/viper"
 )
 
-const (
-	reflectOwnerWalletPlaceholder = "REPLACE_WITH_YOUR_SOLANA_WALLET_ADDRESS"
-	reflectPrivateKeyPlaceholder  = "REPLACE_WITH_BASE58_ENCODED_PRIVATE_KEY_NEVER_COMMIT_THIS"
-)
-
 // Config holds all configuration for the application
 type Config struct {
 	Environment    string               `mapstructure:"environment"`
@@ -1440,37 +1435,26 @@ func validate(config *Config) error {
 }
 
 func validateReflectConfig(config *Config) error {
-	ownerWallet := strings.TrimSpace(config.Reflect.OwnerWallet)
-	privateKey := strings.TrimSpace(config.Reflect.PrivateKey)
-	if ownerWallet == reflectOwnerWalletPlaceholder {
-		return fmt.Errorf("reflect owner wallet placeholder must be replaced")
-	}
-	if ownerWallet == "" {
-		return fmt.Errorf("reflect owner wallet cannot be empty")
-	}
-	if strings.Contains(strings.ToUpper(ownerWallet), "REPLACE") || strings.Contains(strings.ToUpper(ownerWallet), "PLACEHOLDER") {
-		return fmt.Errorf("reflect owner wallet appears to contain placeholder text")
-	}
-	if privateKey == reflectPrivateKeyPlaceholder {
-		return fmt.Errorf("reflect private key placeholder must be replaced")
-	}
-	if privateKey == "" {
-		return fmt.Errorf("reflect private key cannot be empty")
-	}
-	if strings.Contains(strings.ToUpper(privateKey), "REPLACE") || strings.Contains(strings.ToUpper(privateKey), "PLACEHOLDER") {
-		return fmt.Errorf("reflect private key appears to contain placeholder text")
-	}
-
 	reflectEnabled := strings.TrimSpace(config.Reflect.SolanaRPC) != ""
-	if reflectEnabled && !isDevEnvironment(config.Environment) && len(config.Reflect.AllowedProgramIDs) == 0 {
-		return fmt.Errorf("reflect allowed_program_ids must be configured in %s environment", config.Environment)
+	if reflectEnabled && !isDevEnvironment(config.Environment) {
+		privateKey := strings.TrimSpace(config.Reflect.PrivateKey)
+		if privateKey == "" {
+			return fmt.Errorf("reflect private_key must be configured in %s environment", config.Environment)
+		}
+		upperPrivateKey := strings.ToUpper(privateKey)
+		if strings.Contains(upperPrivateKey, "REPLACE") || strings.Contains(upperPrivateKey, "PLACEHOLDER") {
+			return fmt.Errorf("reflect private_key contains placeholder text in %s environment", config.Environment)
+		}
+		if len(config.Reflect.AllowedProgramIDs) == 0 {
+			return fmt.Errorf("reflect allowed_program_ids must be configured in %s environment", config.Environment)
+		}
 	}
 	return nil
 }
 
 func isDevEnvironment(env string) bool {
 	switch strings.ToLower(strings.TrimSpace(env)) {
-	case "", "dev", "development", "local", "test", "testing":
+	case "", "dev", "development", "local", "test", "testing", "staging":
 		return true
 	default:
 		return false
