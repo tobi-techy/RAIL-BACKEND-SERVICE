@@ -102,21 +102,35 @@ func (r *AutomationRepository) InsertPendingUnfreeze(ctx context.Context, userID
 }
 
 func (r *AutomationRepository) GetDueUnfreezes(ctx context.Context, now time.Time, limit int) ([]PendingCardUnfreeze, error) {
+	tx, err := r.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
 	var list []PendingCardUnfreeze
-	err := r.db.SelectContext(ctx, &list,
-		`SELECT * FROM pending_card_unfreezes WHERE unfreeze_at <= $1 AND attempts < 5 ORDER BY unfreeze_at LIMIT $2`,
-		now, limit)
-	return list, err
+	if err := tx.SelectContext(ctx, &list,
+		`SELECT * FROM pending_card_unfreezes WHERE unfreeze_at <= $1 AND attempts < 5 ORDER BY unfreeze_at LIMIT $2 FOR UPDATE SKIP LOCKED`,
+		now, limit); err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+	// Immediately delete claimed rows so other workers won't pick them up.
+	for _, job := range list {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM pending_card_unfreezes WHERE id = $1`, job.ID); err != nil {
+			tx.Rollback()
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return list, nil
 }
 
-func (r *AutomationRepository) DeletePendingUnfreeze(ctx context.Context, id uuid.UUID) error {
-	_, err := r.db.ExecContext(ctx, `DELETE FROM pending_card_unfreezes WHERE id = $1`, id)
-	return err
-}
-
-func (r *AutomationRepository) IncrementUnfreezeAttempt(ctx context.Context, id uuid.UUID, errMsg string) error {
+func (r *AutomationRepository) ReinsertFailedUnfreeze(ctx context.Context, job PendingCardUnfreeze, errMsg string) error {
 	_, err := r.db.ExecContext(ctx,
-		`UPDATE pending_card_unfreezes SET attempts = attempts + 1, last_error = $1 WHERE id = $2`,
-		errMsg, id)
+		`INSERT INTO pending_card_unfreezes (user_id, card_id, automation_id, unfreeze_at, attempts, last_error)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 ON CONFLICT (card_id) DO UPDATE SET attempts = EXCLUDED.attempts, last_error = EXCLUDED.last_error, unfreeze_at = EXCLUDED.unfreeze_at`,
+		job.UserID, job.CardID, job.AutomationID, job.UnfreezeAt, job.Attempts+1, errMsg)
 	return err
 }

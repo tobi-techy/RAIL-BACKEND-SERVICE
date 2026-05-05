@@ -782,17 +782,16 @@ func (s *Service) ProcessPendingUnfreezes(ctx context.Context) error {
 	}
 	for _, job := range due {
 		unfreezeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		if err := s.card.UnfreezeCard(unfreezeCtx, job.UserID, job.CardID); err != nil {
+		err := s.card.UnfreezeCard(unfreezeCtx, job.UserID, job.CardID)
+		cancel()
+		if err != nil {
 			s.logger.Error("failed to unfreeze card",
 				zap.Error(err),
 				zap.String("user_id", job.UserID.String()),
 				zap.String("card_id", job.CardID.String()))
-			_ = s.repo.IncrementUnfreezeAttempt(ctx, job.ID, err.Error())
-			cancel()
+			_ = s.repo.ReinsertFailedUnfreeze(ctx, job, err.Error())
 			continue
 		}
-		cancel()
-		_ = s.repo.DeletePendingUnfreeze(ctx, job.ID)
 		if s.notifier != nil {
 			_ = s.notifier.SendPush(ctx, job.UserID, "Card Resumed", "Your cooldown period is over. Your card is active again.",
 				automationPushData("card_resumed", "My card cooldown just ended. How's my spending looking today?"))

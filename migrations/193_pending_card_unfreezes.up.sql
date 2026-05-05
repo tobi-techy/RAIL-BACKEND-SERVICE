@@ -6,7 +6,8 @@ CREATE TABLE IF NOT EXISTS pending_card_unfreezes (
     unfreeze_at TIMESTAMPTZ NOT NULL,
     attempts INT NOT NULL DEFAULT 0,
     last_error TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(card_id)
 );
 
 CREATE INDEX idx_pending_card_unfreezes_due ON pending_card_unfreezes (unfreeze_at) WHERE attempts < 5;
