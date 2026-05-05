@@ -112,6 +112,11 @@ jobs:
             --query 'services[0].networkConfiguration.awsvpcConfiguration' \
             --output json)
 
+          if [ "$NETWORK_CONFIGURATION" = "null" ] || [ -z "$NETWORK_CONFIGURATION" ]; then
+            echo "Error: Could not retrieve network configuration for service $SERVICE in cluster $CLUSTER"
+            exit 1
+          fi
+
           SUBNETS=$(echo "$NETWORK_CONFIGURATION" | jq -r '.subnets | join(",")')
           SECURITY_GROUPS=$(echo "$NETWORK_CONFIGURATION" | jq -r '.securityGroups | join(",")')
           ASSIGN_PUBLIC_IP=$(echo "$NETWORK_CONFIGURATION" | jq -r '.assignPublicIp // "DISABLED"')
