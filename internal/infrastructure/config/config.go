@@ -1436,8 +1436,18 @@ func validate(config *Config) error {
 
 func validateReflectConfig(config *Config) error {
 	reflectEnabled := strings.TrimSpace(config.Reflect.SolanaRPC) != ""
-	if reflectEnabled && !isDevEnvironment(config.Environment) && len(config.Reflect.AllowedProgramIDs) == 0 {
-		return fmt.Errorf("reflect allowed_program_ids must be configured in %s environment", config.Environment)
+	if reflectEnabled && !isDevEnvironment(config.Environment) {
+		privateKey := strings.TrimSpace(config.Reflect.PrivateKey)
+		if privateKey == "" {
+			return fmt.Errorf("reflect private_key must be configured in %s environment", config.Environment)
+		}
+		upperPrivateKey := strings.ToUpper(privateKey)
+		if strings.Contains(upperPrivateKey, "REPLACE") || strings.Contains(upperPrivateKey, "PLACEHOLDER") {
+			return fmt.Errorf("reflect private_key contains placeholder text in %s environment", config.Environment)
+		}
+		if len(config.Reflect.AllowedProgramIDs) == 0 {
+			return fmt.Errorf("reflect allowed_program_ids must be configured in %s environment", config.Environment)
+		}
 	}
 	return nil
 }
