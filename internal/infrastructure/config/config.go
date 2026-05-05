@@ -10,10 +10,6 @@ import (
 	"github.com/spf13/viper"
 )
 
-const (
-	reflectPrivateKeyPlaceholder = "REPLACE_WITH_BASE58_ENCODED_PRIVATE_KEY_NEVER_COMMIT_THIS"
-)
-
 // Config holds all configuration for the application
 type Config struct {
 	Environment    string               `mapstructure:"environment"`
@@ -1439,17 +1435,6 @@ func validate(config *Config) error {
 }
 
 func validateReflectConfig(config *Config) error {
-	privateKey := strings.TrimSpace(config.Reflect.PrivateKey)
-	if privateKey == reflectPrivateKeyPlaceholder {
-		return fmt.Errorf("reflect private key placeholder must be replaced")
-	}
-	if privateKey == "" {
-		return fmt.Errorf("reflect private key cannot be empty")
-	}
-	if strings.Contains(strings.ToUpper(privateKey), "REPLACE") || strings.Contains(strings.ToUpper(privateKey), "PLACEHOLDER") {
-		return fmt.Errorf("reflect private key appears to contain placeholder text")
-	}
-
 	reflectEnabled := strings.TrimSpace(config.Reflect.SolanaRPC) != ""
 	if reflectEnabled && !isDevEnvironment(config.Environment) && len(config.Reflect.AllowedProgramIDs) == 0 {
 		return fmt.Errorf("reflect allowed_program_ids must be configured in %s environment", config.Environment)
