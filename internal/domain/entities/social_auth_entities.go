@@ -45,6 +45,59 @@ type SocialLoginRequest struct {
 	FamilyName string `json:"familyName,omitempty"`
 }
 
+func (r *SocialLoginRequest) UnmarshalJSON(data []byte) error {
+	type socialLoginRequest SocialLoginRequest
+	var req struct {
+		socialLoginRequest
+		IDTokenSnake       string `json:"id_token,omitempty"`
+		IdentityToken      string `json:"identityToken,omitempty"`
+		IdentityTokenSnake string `json:"identity_token,omitempty"`
+		AccessTokenSnake   string `json:"access_token,omitempty"`
+		AuthorizationCode  string `json:"authorizationCode,omitempty"`
+		AuthCodeSnake      string `json:"authorization_code,omitempty"`
+		RedirectURISnake   string `json:"redirect_uri,omitempty"`
+		GivenNameSnake     string `json:"given_name,omitempty"`
+		FamilyNameSnake    string `json:"family_name,omitempty"`
+	}
+
+	if err := json.Unmarshal(data, &req); err != nil {
+		return err
+	}
+
+	*r = SocialLoginRequest(req.socialLoginRequest)
+	if r.IDToken == "" {
+		switch {
+		case req.IDTokenSnake != "":
+			r.IDToken = req.IDTokenSnake
+		case req.IdentityToken != "":
+			r.IDToken = req.IdentityToken
+		case req.IdentityTokenSnake != "":
+			r.IDToken = req.IdentityTokenSnake
+		}
+	}
+	if r.AccessToken == "" {
+		r.AccessToken = req.AccessTokenSnake
+	}
+	if r.Code == "" {
+		if req.AuthorizationCode != "" {
+			r.Code = req.AuthorizationCode
+		} else {
+			r.Code = req.AuthCodeSnake
+		}
+	}
+	if r.RedirectURI == "" {
+		r.RedirectURI = req.RedirectURISnake
+	}
+	if r.GivenName == "" {
+		r.GivenName = req.GivenNameSnake
+	}
+	if r.FamilyName == "" {
+		r.FamilyName = req.FamilyNameSnake
+	}
+
+	return nil
+}
+
 // SocialLoginResponse represents the response after social login
 type SocialLoginResponse struct {
 	User             *UserInfo `json:"user"`
