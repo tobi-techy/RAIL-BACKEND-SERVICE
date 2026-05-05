@@ -105,31 +105,43 @@ jobs:
           CLUSTER="rail-$ENV"
           SERVICE="rail-$ENV"
 
-          NETWORK_CONFIGURATION=$(aws ecs describe-services \
+          LAUNCH_TYPE=$(aws ecs describe-services \
             --cluster "$CLUSTER" \
             --services "$SERVICE" \
             --region "${{ env.AWS_REGION }}" \
-            --query 'services[0].networkConfiguration.awsvpcConfiguration' \
-            --output json)
+            --query 'services[0].launchType' \
+            --output text)
 
-          if [ "$NETWORK_CONFIGURATION" = "null" ] || [ -z "$NETWORK_CONFIGURATION" ]; then
-            echo "Error: Could not retrieve network configuration for service $SERVICE in cluster $CLUSTER"
-            exit 1
+          RUN_TASK_ARGS=(
+            --cluster "$CLUSTER"
+            --task-definition "$TASK_DEFINITION_ARN"
+            --overrides '{"containerOverrides":[{"name":"rail-backend","command":["migrate"]}]}'
+            --region "${{ env.AWS_REGION }}"
+            --query 'tasks[0].taskArn'
+            --output text
+          )
+
+          if [ "$LAUNCH_TYPE" = "FARGATE" ]; then
+            NETWORK_CONFIGURATION=$(aws ecs describe-services \
+              --cluster "$CLUSTER" \
+              --services "$SERVICE" \
+              --region "${{ env.AWS_REGION }}" \
+              --query 'services[0].networkConfiguration.awsvpcConfiguration' \
+              --output json)
+
+            SUBNETS=$(echo "$NETWORK_CONFIGURATION" | jq -r '.subnets | join(",")')
+            SECURITY_GROUPS=$(echo "$NETWORK_CONFIGURATION" | jq -r '.securityGroups | join(",")')
+            ASSIGN_PUBLIC_IP=$(echo "$NETWORK_CONFIGURATION" | jq -r '.assignPublicIp // "DISABLED"')
+
+            RUN_TASK_ARGS+=(
+              --launch-type FARGATE
+              --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SECURITY_GROUPS],assignPublicIp=$ASSIGN_PUBLIC_IP}"
+            )
+          else
+            RUN_TASK_ARGS+=(--launch-type "$LAUNCH_TYPE")
           fi
 
-          SUBNETS=$(echo "$NETWORK_CONFIGURATION" | jq -r '.subnets | join(",")')
-          SECURITY_GROUPS=$(echo "$NETWORK_CONFIGURATION" | jq -r '.securityGroups | join(",")')
-          ASSIGN_PUBLIC_IP=$(echo "$NETWORK_CONFIGURATION" | jq -r '.assignPublicIp // "DISABLED"')
-
-          TASK_ARN=$(aws ecs run-task \
-            --cluster "$CLUSTER" \
-            --launch-type FARGATE \
-            --task-definition "$TASK_DEFINITION_ARN" \
-            --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SECURITY_GROUPS],assignPublicIp=$ASSIGN_PUBLIC_IP}" \
-            --overrides '{"containerOverrides":[{"name":"rail-backend","command":["migrate"]}]}' \
-            --region "${{ env.AWS_REGION }}" \
-            --query 'tasks[0].taskArn' \
-            --output text)
+          TASK_ARN=$(aws ecs run-task "${RUN_TASK_ARGS[@]}")
 
           if [ -z "$TASK_ARN" ] || [ "$TASK_ARN" = "None" ]; then
             echo "Failed to start migration task"
