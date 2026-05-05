@@ -11,8 +11,7 @@ import (
 )
 
 const (
-	reflectOwnerWalletPlaceholder = "REPLACE_WITH_YOUR_SOLANA_WALLET_ADDRESS"
-	reflectPrivateKeyPlaceholder  = "REPLACE_WITH_BASE58_ENCODED_PRIVATE_KEY_NEVER_COMMIT_THIS"
+	reflectPrivateKeyPlaceholder = "REPLACE_WITH_BASE58_ENCODED_PRIVATE_KEY_NEVER_COMMIT_THIS"
 )
 
 // Config holds all configuration for the application
@@ -1440,17 +1439,7 @@ func validate(config *Config) error {
 }
 
 func validateReflectConfig(config *Config) error {
-	ownerWallet := strings.TrimSpace(config.Reflect.OwnerWallet)
 	privateKey := strings.TrimSpace(config.Reflect.PrivateKey)
-	if ownerWallet == reflectOwnerWalletPlaceholder {
-		return fmt.Errorf("reflect owner wallet placeholder must be replaced")
-	}
-	if ownerWallet == "" {
-		return fmt.Errorf("reflect owner wallet cannot be empty")
-	}
-	if strings.Contains(strings.ToUpper(ownerWallet), "REPLACE") || strings.Contains(strings.ToUpper(ownerWallet), "PLACEHOLDER") {
-		return fmt.Errorf("reflect owner wallet appears to contain placeholder text")
-	}
 	if privateKey == reflectPrivateKeyPlaceholder {
 		return fmt.Errorf("reflect private key placeholder must be replaced")
 	}
