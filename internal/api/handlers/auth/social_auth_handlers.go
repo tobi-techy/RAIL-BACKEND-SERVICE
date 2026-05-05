@@ -149,19 +149,22 @@ func (h *SocialAuthHandlers) SocialLogin(c *gin.Context) {
 		return
 	}
 
-	// Validate OAuth state to prevent CSRF — always required
-	if req.State == "" {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "MISSING_STATE", Message: "OAuth state parameter is required"})
-		return
-	}
-	if h.redisClient != nil {
-		stateKey := "oauth:state:" + req.State
-		exists, _ := h.redisClient.Exists(ctx, stateKey)
-		if !exists {
-			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_STATE", Message: "Invalid or expired OAuth state"})
+	// Validate OAuth state for CSRF protection — only required for web code-exchange flows.
+	// Mobile SDK flows (idToken present) don't use redirects, so state is not applicable.
+	if req.IDToken == "" {
+		if req.State == "" {
+			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "MISSING_STATE", Message: "OAuth state parameter is required"})
 			return
 		}
-		h.redisClient.Del(ctx, stateKey)
+		if h.redisClient != nil {
+			stateKey := "oauth:state:" + req.State
+			exists, _ := h.redisClient.Exists(ctx, stateKey)
+			if !exists {
+				c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_STATE", Message: "Invalid or expired OAuth state"})
+				return
+			}
+			h.redisClient.Del(ctx, stateKey)
+		}
 	}
 
 	// Authenticate with provider

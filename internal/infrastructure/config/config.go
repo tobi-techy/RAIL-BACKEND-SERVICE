@@ -1444,7 +1444,7 @@ func validateReflectConfig(config *Config) error {
 
 func isDevEnvironment(env string) bool {
 	switch strings.ToLower(strings.TrimSpace(env)) {
-	case "", "dev", "development", "local", "test", "testing":
+	case "", "dev", "development", "local", "test", "testing", "staging":
 		return true
 	default:
 		return false
