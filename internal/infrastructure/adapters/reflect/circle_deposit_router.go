@@ -505,7 +505,7 @@ func (r *CircleDepositRouter) mintWithUserWallet(ctx context.Context, route *dep
 	if err != nil {
 		return "", fmt.Errorf("reflect generate user mint transaction: %w", err)
 	}
-	if err := validateReflectUserMintTransaction(rawTransaction, wallet.Address, route.Amount, r.allowedProgramIDs); err != nil {
+	if err := r.reflect.validateReflectUserMintTransaction(ctx, rawTransaction, wallet.Address, route.Amount, r.allowedProgramIDs); err != nil {
 		return "", fmt.Errorf("refusing unsafe Reflect mint transaction: %w", err)
 	}
 	signed, err := r.circle.SignTransaction(ctx, wallet.CircleWalletID, rawTransaction, "Deposit USDC into Reflect yield")
@@ -556,7 +556,7 @@ func (r *CircleDepositRouter) RedeemStashYield(ctx context.Context, userID uuid.
 	if err != nil {
 		return fmt.Errorf("reflect generate user burn transaction: %w", err)
 	}
-	if err := validateReflectUserBurnTransaction(rawTransaction, wallet.Address, r.allowedProgramIDs); err != nil {
+	if err := r.reflect.validateReflectUserBurnTransaction(ctx, rawTransaction, wallet.Address, r.allowedProgramIDs); err != nil {
 		return fmt.Errorf("refusing unsafe Reflect burn transaction: %w", err)
 	}
 	signed, err := r.circle.SignTransaction(ctx, wallet.CircleWalletID, rawTransaction, "Redeem Reflect yield for stash withdrawal")
@@ -917,7 +917,7 @@ func recomputeReflectDepositedUSDC(ctx context.Context, tx *sqlx.Tx) error {
 		) + (
 			SELECT COALESCE(SUM(CASE
 				WHEN operation = 'deposit' THEN amount
-				WHEN operation = 'withdraw' THEN -amount
+				WHEN operation = 'withdrawal' THEN -amount
 				ELSE 0
 			END), 0)
 			FROM treasury_positions

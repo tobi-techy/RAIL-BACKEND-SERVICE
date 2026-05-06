@@ -1,6 +1,7 @@
 package reflect
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"testing"
@@ -48,6 +49,30 @@ func TestValidateReflectUserMintTransactionRejectsAmountMismatch(t *testing.T) {
 	require.ErrorContains(t, err, "amount mismatch")
 }
 
+func TestValidateReflectUserMintTransactionSupportsAddressLookupTables(t *testing.T) {
+	wallet := base58.Encode(bytesOf(1))
+	tableAddress := base58.Encode(bytesOf(9))
+	tx := buildTestMintTransactionWithLookupTable(t, wallet, tableAddress, 1_000_000)
+	resolver := func(_ context.Context, address string) ([]string, error) {
+		require.Equal(t, tableAddress, address)
+		return []string{usdcMint}, nil
+	}
+
+	err := validateReflectUserMintTransactionWithResolver(context.Background(), tx, wallet, decimal.NewFromInt(1), nil, resolver)
+
+	require.NoError(t, err)
+}
+
+func TestValidateReflectUserMintTransactionRequiresLookupResolver(t *testing.T) {
+	wallet := base58.Encode(bytesOf(1))
+	tableAddress := base58.Encode(bytesOf(9))
+	tx := buildTestMintTransactionWithLookupTable(t, wallet, tableAddress, 1_000_000)
+
+	err := validateReflectUserMintTransaction(tx, wallet, decimal.NewFromInt(1), nil)
+
+	require.ErrorContains(t, err, "lookup table resolver")
+}
+
 func buildTestMintTransaction(t *testing.T, walletAddress, programID, mintAddress string, amount uint64) string {
 	t.Helper()
 	wallet := mustDecodePubkey(t, walletAddress)
@@ -71,6 +96,36 @@ func buildTestMintTransaction(t *testing.T, walletAddress, programID, mintAddres
 	data[9] = 6
 	tx = append(tx, byte(len(data)))
 	tx = append(tx, data...)
+	return base64.StdEncoding.EncodeToString(tx)
+}
+
+func buildTestMintTransactionWithLookupTable(t *testing.T, walletAddress, tableAddress string, amount uint64) string {
+	t.Helper()
+	wallet := mustDecodePubkey(t, walletAddress)
+	program := mustDecodePubkey(t, solanaTokenProgramID)
+	lookupTable := mustDecodePubkey(t, tableAddress)
+
+	tx := []byte{1}
+	tx = append(tx, make([]byte, 64)...)
+	tx = append(tx, 0x80)
+	tx = append(tx, 1, 0, 1)
+	tx = append(tx, 2)
+	tx = append(tx, wallet...)
+	tx = append(tx, program...)
+	tx = append(tx, make([]byte, 32)...)
+	tx = append(tx, 1)
+	tx = append(tx, 1)
+	tx = append(tx, 4, 0, 2, 0, 0)
+	data := make([]byte, 10)
+	data[0] = 12
+	binary.LittleEndian.PutUint64(data[1:9], amount)
+	data[9] = 6
+	tx = append(tx, byte(len(data)))
+	tx = append(tx, data...)
+	tx = append(tx, 1)
+	tx = append(tx, lookupTable...)
+	tx = append(tx, 0)
+	tx = append(tx, 1, 0)
 	return base64.StdEncoding.EncodeToString(tx)
 }
 

@@ -142,6 +142,9 @@ func (c *Client) Mint(ctx context.Context, amount decimal.Decimal) (string, erro
 	if err != nil {
 		return "", err
 	}
+	if err := c.validateReflectUserMintTransaction(ctx, serializedTx, c.owner, amount, nil); err != nil {
+		return "", fmt.Errorf("reflect validate mint tx: %w", err)
+	}
 	txHash, err := c.signAndSubmit(ctx, serializedTx)
 	if err != nil {
 		return "", fmt.Errorf("reflect submit mint tx: %w", err)
@@ -204,6 +207,9 @@ func (c *Client) Burn(ctx context.Context, amount decimal.Decimal) (string, erro
 	serializedTx, err := c.GenerateBurnTransaction(ctx, amount, c.owner, c.owner)
 	if err != nil {
 		return "", err
+	}
+	if err := c.validateReflectUserBurnTransaction(ctx, serializedTx, c.owner, nil); err != nil {
+		return "", fmt.Errorf("reflect validate burn tx: %w", err)
 	}
 	txHash, err := c.signAndSubmit(ctx, serializedTx)
 	if err != nil {
