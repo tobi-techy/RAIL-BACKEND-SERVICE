@@ -53,6 +53,12 @@ type StashLockRecorder interface {
 	RecordDeposit(ctx context.Context, userID, depositID uuid.UUID, amount decimal.Decimal) error
 }
 
+// YieldRouter routes allocated stash principal into the configured yield provider.
+type YieldRouter interface {
+	EnsureDepositYieldRoute(ctx context.Context, userID, depositID uuid.UUID, amount decimal.Decimal, metadata map[string]any) error
+	RouteDepositYield(ctx context.Context, userID, depositID uuid.UUID, amount decimal.Decimal, metadata map[string]any) error
+}
+
 type spendingTotalReader interface {
 	GetTotalSpendingAdded(ctx context.Context, userID uuid.UUID, startDate, endDate time.Time) (decimal.Decimal, error)
 }
@@ -75,6 +81,7 @@ type Service struct {
 	autoInvestService   AutoInvestService
 	yieldSnapshotter    YieldSnapshotter
 	stashLockRecorder   StashLockRecorder
+	yieldRouter         YieldRouter
 	notificationService AllocationNotificationService
 	umbraShielder       UmbraShielder
 	logger              *logger.Logger
@@ -101,6 +108,11 @@ func (s *Service) SetAutoInvestService(autoInvestService AutoInvestService) {
 // SetYieldSnapshotter sets the yield snapshot recorder.
 func (s *Service) SetYieldSnapshotter(ys YieldSnapshotter) {
 	s.yieldSnapshotter = ys
+}
+
+// SetYieldRouter sets the provider that routes stash principal into yield after deposit allocation.
+func (s *Service) SetYieldRouter(router YieldRouter) {
+	s.yieldRouter = router
 }
 
 // SetStashLockRecorder sets the stash lock recorder.
@@ -440,6 +452,22 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		}
 	}
 
+	routeYield := s.yieldRouter != nil && req.DepositID != nil && stashAmount.GreaterThan(decimal.Zero) && metadataHasValue(req.Metadata, "circle_wallet_id")
+	var routeDepositID uuid.UUID
+	routeAmount := stashAmount
+	routeMetadata := copyMetadata(req.Metadata)
+	if routeYield {
+		routeDepositID = *req.DepositID
+		if err := s.yieldRouter.EnsureDepositYieldRoute(ctx, req.UserID, routeDepositID, routeAmount, routeMetadata); err != nil {
+			s.logger.Error("Failed to create durable yield route after allocation ledger transfer",
+				"user_id", req.UserID,
+				"deposit_id", routeDepositID,
+				"amount", routeAmount,
+				"error", err)
+			return fmt.Errorf("failed to create durable yield route: %w", err)
+		}
+	}
+
 	// Create allocation event for audit trail
 	eventID := uuid.New()
 	if req.DepositID != nil {
@@ -482,6 +510,34 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		metrics.Business.AllocationExecutedTotal.WithLabelValues("success").Inc()
 		metrics.Business.AllocationSpendAmount.Observe(spendingAmount.InexactFloat64())
 		metrics.Business.AllocationStashAmount.Observe(stashAmount.InexactFloat64())
+	}
+
+	// Route the stash principal into the yield provider as soon as a Circle-backed
+	// deposit has been split. This is async because Circle transfer settlement and
+	// Reflect minting can outlive the deposit webhook request.
+	if routeYield {
+		userID := req.UserID
+		depositID := routeDepositID
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					s.logger.Error("Panic in yield routing goroutine",
+						"user_id", userID,
+						"deposit_id", depositID,
+						"panic", r,
+						"stack", string(debug.Stack()))
+				}
+			}()
+			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			if err := s.yieldRouter.RouteDepositYield(bgCtx, userID, depositID, routeAmount, routeMetadata); err != nil {
+				s.logger.Error("Failed to route deposit stash into yield provider; retry worker will continue",
+					"user_id", userID,
+					"deposit_id", depositID,
+					"amount", routeAmount,
+					"error", err)
+			}
+		}()
 	}
 
 	// Shield allocated funds through Umbra privacy layer (async, non-blocking)
@@ -1088,4 +1144,26 @@ func (s *Service) createAllocationTransfer(
 // stringPtr returns a pointer to a string
 func stringPtr(s string) *string {
 	return &s
+}
+
+func metadataHasValue(metadata map[string]any, key string) bool {
+	if metadata == nil {
+		return false
+	}
+	value, ok := metadata[key]
+	if !ok || value == nil {
+		return false
+	}
+	return strings.TrimSpace(fmt.Sprintf("%v", value)) != ""
+}
+
+func copyMetadata(metadata map[string]any) map[string]any {
+	if metadata == nil {
+		return nil
+	}
+	out := make(map[string]any, len(metadata))
+	for k, v := range metadata {
+		out[k] = v
+	}
+	return out
 }

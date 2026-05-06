@@ -539,6 +539,10 @@ func (a *WithdrawalLedgerAdapter) ReverseTransaction(ctx context.Context, userID
 	return err
 }
 
+func (a *WithdrawalLedgerAdapter) TransferSpendingToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
+	return a.ledgerService.TransferSpendingToStash(ctx, userID, amount, idempotencyKey)
+}
+
 // WithdrawalBridgeAdapter adapts bridge.Adapter to withdrawal.BridgeAdapter interface
 type WithdrawalBridgeAdapter struct {
 	adapter *bridge.Adapter
@@ -884,6 +888,40 @@ type FundingNotificationAdapter struct {
 	svc *services.NotificationService
 }
 
+// automationNotificationAdapter adapts NotificationService to automation.NotificationSender.
+type automationNotificationAdapter struct {
+	svc    *services.NotificationService
+	logger *zap.Logger
+}
+
+func (a *automationNotificationAdapter) SendPush(ctx context.Context, userID uuid.UUID, title, message string, data map[string]interface{}) error {
+	// Send push notification
+	notif := &entities.Notification{
+		ID:       uuid.New(),
+		UserID:   userID,
+		Type:     "automation",
+		Channel:  entities.ChannelPush,
+		Priority: entities.PriorityMedium,
+		Title:    title,
+		Body:     message,
+		Data:     data,
+	}
+	if err := a.svc.Send(ctx, notif, nil); err != nil {
+		if a.logger != nil {
+			a.logger.Error("Failed to send automation push notification",
+				zap.Error(err),
+				zap.String("user_id", userID.String()),
+				zap.String("notification_id", notif.ID.String()))
+		}
+	}
+
+	// Also persist in-app so the deep-link data is available from notification center
+	inApp := *notif
+	inApp.ID = uuid.New()
+	inApp.Channel = entities.ChannelInApp
+	return a.svc.Send(ctx, &inApp, nil)
+}
+
 func (a *FundingNotificationAdapter) NotifyDepositConfirmed(ctx context.Context, userID uuid.UUID, amount, chain, txHash string) error {
 	return a.svc.NotifyDepositConfirmed(ctx, userID, amount, chain, txHash)
 }
@@ -1041,6 +1079,7 @@ type Container struct {
 	ReconciliationScheduler    *reconciliation.Scheduler
 	StashReconciliation        *recon.Worker
 	TreasurySweepWorker        *treasury_sweep.Worker
+	ReflectDepositRouter       *reflect.CircleDepositRouter
 	YieldDistributionWorker    *yield_distribution.Worker
 	AllocationService          *allocation.Service
 	AutoInvestService          *autoinvest.Service
@@ -1582,9 +1621,21 @@ func (c *Container) initializeDomainServices() error {
 	automationAdapter := &fundsTransfererAdapter{ledger: c.LedgerService}
 	c.AutomationService = automation.NewService(c.AutomationRepo, automationAdapter, automationAdapter, c.ZapLog)
 
-	// Initialize yield service (Reflect-backed) — skip if private key not configured
-	if c.Config.Reflect.PrivateKey != "" {
-		reflectClient, err := reflect.NewClient(
+	// Wire optional automation dependencies
+	if c.NotificationService != nil {
+		c.AutomationService.SetNotificationSender(&automationNotificationAdapter{svc: c.NotificationService, logger: c.ZapLog})
+	}
+	if c.FinancialObligationService != nil {
+		c.AutomationService.SetObligationProvider(c.FinancialObligationService)
+	}
+
+	// Initialize yield service (Reflect-backed). A private key is only needed for
+	// treasury-owned sweeps; Circle-backed deposit routes use user Circle wallets
+	// to sign Reflect mint transactions.
+	var reflectClient *reflect.Client
+	if c.Config.Reflect.SolanaRPC != "" {
+		var err error
+		reflectClient, err = reflect.NewClient(
 			c.Config.Reflect.BaseURL,
 			c.Config.Reflect.APIKey,
 			c.Config.Reflect.SolanaRPC,
@@ -1606,25 +1657,29 @@ func (c *Container) initializeDomainServices() error {
 		if interval == 0 {
 			interval = 10 * time.Minute
 		}
-		sweepWorker := treasury_sweep.NewWorker(
-			reflectClient,
-			c.BridgeClient,
-			c.LedgerRepo,
-			c.yieldRepo,
-			sqlxDB,
-			c.Config.Bridge.RailCustomerID,
-			c.Config.Reflect.BridgeSourceWalletID,
-			c.Config.Reflect.OwnerWallet,
-			minSweep,
-			interval,
-			c.ZapLog,
-		)
-		if c.BridgeClient == nil {
-			c.ZapLog.Warn("Bridge client not configured; treasury sweep disabled")
+		if c.BridgeClient == nil || c.Config.Reflect.BridgeSourceWalletID == "" || c.Config.Reflect.PrivateKey == "" || c.Config.Reflect.OwnerWallet == "" {
+			c.ZapLog.Warn("Bridge treasury sweep disabled; Circle-backed deposits are routed by Reflect deposit router",
+				zap.Bool("bridge_client_configured", c.BridgeClient != nil),
+				zap.Bool("bridge_source_wallet_configured", c.Config.Reflect.BridgeSourceWalletID != ""),
+				zap.Bool("reflect_owner_wallet_configured", c.Config.Reflect.OwnerWallet != ""),
+				zap.Bool("reflect_private_key_configured", c.Config.Reflect.PrivateKey != ""))
 		} else {
+			sweepWorker := treasury_sweep.NewWorker(
+				reflectClient,
+				c.BridgeClient,
+				c.LedgerRepo,
+				c.yieldRepo,
+				sqlxDB,
+				c.Config.Bridge.RailCustomerID,
+				c.Config.Reflect.BridgeSourceWalletID,
+				c.Config.Reflect.OwnerWallet,
+				minSweep,
+				interval,
+				c.ZapLog,
+			)
 			sweepWorker.Start()
+			c.TreasurySweepWorker = sweepWorker
 		}
-		c.TreasurySweepWorker = sweepWorker
 
 		c.YieldService = yieldsvc.NewService(c.yieldRepo, c.LedgerService, c.ZapLog)
 
@@ -1655,7 +1710,7 @@ func (c *Container) initializeDomainServices() error {
 			c.ZapLog,
 		)
 	} else {
-		c.ZapLog.Warn("Reflect private key not configured; yield/sweep/reconciliation disabled")
+		c.ZapLog.Warn("Reflect Solana RPC not configured; yield routing disabled")
 		c.YieldService = yieldsvc.NewService(c.yieldRepo, c.LedgerService, c.ZapLog)
 	}
 
@@ -1703,6 +1758,33 @@ func (c *Container) initializeDomainServices() error {
 		c.LedgerService,
 		c.Logger,
 	)
+	if reflectClient != nil && c.CircleAdapter != nil {
+		c.ReflectDepositRouter = reflect.NewCircleDepositRouter(
+			sqlxDB,
+			c.CircleAdapter,
+			reflectClient,
+			c.Config.Reflect.OwnerWallet,
+			c.Config.Reflect.AllowedProgramIDs,
+			c.ZapLog,
+		)
+		c.ReflectDepositRouter.SetYieldLedger(&reflectFeeLedgerAdapter{ledger: c.LedgerService})
+		schemaReady, schemaErr := c.ReflectDepositRouter.RequiredSchemaAvailable(context.Background())
+		if schemaErr != nil {
+			c.ZapLog.Warn("Circle-backed user-wallet Reflect deposit router disabled because schema check failed", zap.Error(schemaErr))
+		} else if !schemaReady {
+			c.ZapLog.Warn("Circle-backed user-wallet Reflect deposit router disabled because required tables are missing; apply migration 189 before enabling it")
+		} else {
+			if err := c.ReflectDepositRouter.Start(); err != nil {
+				c.ZapLog.Error("Failed to start Circle-backed user-wallet Reflect deposit router", zap.Error(err))
+			} else {
+				c.AllocationService.SetYieldRouter(c.ReflectDepositRouter)
+				c.ZapLog.Info("Circle-backed user-wallet Reflect deposit router started")
+			}
+		}
+	} else if reflectClient != nil {
+		c.ZapLog.Warn("Circle-backed Reflect deposit router disabled",
+			zap.Bool("circle_configured", c.CircleAdapter != nil))
+	}
 
 	// Initialize Bridge virtual account service now that allocation + ledger are available.
 	if c.BridgeClient != nil {
@@ -2144,6 +2226,9 @@ func (c *Container) initializeDomainServices() error {
 	// Wire Circle crypto transfer adapter
 	if c.CircleAdapter != nil {
 		c.WithdrawalService.SetCircleTransferAdapter(c.CircleAdapter)
+	}
+	if c.ReflectDepositRouter != nil {
+		c.WithdrawalService.SetStashYieldRedeemer(c.ReflectDepositRouter)
 	}
 
 	// Initialize compliance screening (Didit transaction monitoring + AML) — wired below after DiditClient creation
@@ -3072,6 +3157,11 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	// Wire account checker for fraud/freeze checks on AI-initiated transfers
 	if c.UserRepo != nil {
 		c.AIOrchestrator.SetAccountChecker(&accountCheckerAdapter{repo: c.UserRepo})
+	}
+
+	// Wire emergency withdrawer for stash-to-spend transfers during lock period
+	if c.WithdrawalService != nil {
+		c.AIOrchestrator.SetEmergencyWithdrawer(c.WithdrawalService)
 	}
 
 	// Use Redis for pending actions (survives restarts, works across instances)
@@ -4144,6 +4234,11 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 		if c.WalletService != nil {
 			c.ChainRailsHandlers.SetWalletLookup(c.WalletService)
 		}
+		if c.ReflectDepositRouter != nil {
+			c.ReflectDepositRouter.SetChainRailsBridge(c.ChainRailsClient, c.Config.ChainRails.DestinationChain)
+			c.ZapLog.Info("ChainRails wired into Reflect deposit router",
+				zap.String("destination_chain", c.Config.ChainRails.DestinationChain))
+		}
 		c.ZapLog.Info("ChainRails deposit funnel initialized")
 	} else {
 		c.ZapLog.Warn("ChainRails API key is empty, skipping initialization")
@@ -4413,6 +4508,8 @@ func (a *automationProviderAdapter) Create(ctx context.Context, userID uuid.UUID
 		ActionConfig:      req.ActionConfig,
 		MaxTriggersPerDay: req.MaxTriggersPerDay,
 		CooldownMinutes:   req.CooldownMinutes,
+		SavingsGoalID:     req.SavingsGoalID,
+		ObligationID:      req.ObligationID,
 	})
 }
 

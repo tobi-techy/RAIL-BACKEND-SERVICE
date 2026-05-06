@@ -24,14 +24,23 @@ var ValidStashTransferStatuses = map[StashTransferStatus]bool{
 	StashTransferStatusFailed:    true,
 }
 
-// StashTransfer represents a transfer from stash to spending balance
+// StashTransferDirection represents the direction of a stash transfer
+type StashTransferDirection string
+
+const (
+	StashTransferDirectionStashToSpending StashTransferDirection = "stash_to_spending"
+	StashTransferDirectionSpendingToStash StashTransferDirection = "spending_to_stash"
+)
+
+// StashTransfer represents a transfer between stash and spending balance
 type StashTransfer struct {
-	ID          uuid.UUID           `json:"id" db:"id"`
-	UserID      uuid.UUID           `json:"user_id" db:"user_id"`
-	Amount      decimal.Decimal     `json:"amount" db:"amount"`
-	Status      StashTransferStatus `json:"status" db:"status"`
-	CreatedAt   time.Time           `json:"created_at" db:"created_at"`
-	CompletedAt *time.Time          `json:"completed_at,omitempty" db:"completed_at"`
+	ID          uuid.UUID              `json:"id" db:"id"`
+	UserID      uuid.UUID              `json:"user_id" db:"user_id"`
+	Amount      decimal.Decimal        `json:"amount" db:"amount"`
+	Direction   StashTransferDirection `json:"direction" db:"direction"`
+	Status      StashTransferStatus    `json:"status" db:"status"`
+	CreatedAt   time.Time              `json:"created_at" db:"created_at"`
+	CompletedAt *time.Time             `json:"completed_at,omitempty" db:"completed_at"`
 }
 
 // Validate validates the stash transfer entity

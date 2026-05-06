@@ -64,13 +64,152 @@ jobs:
           container-name: rail-backend
           image: ${{ steps.build.outputs.image }}
 
+      - name: Register ECS task definition
+        id: register-task-def
+        run: |
+          jq '{
+            family,
+            taskRoleArn,
+            executionRoleArn,
+            networkMode,
+            containerDefinitions,
+            volumes,
+            placementConstraints,
+            requiresCompatibilities,
+            cpu,
+            memory,
+            tags,
+            pidMode,
+            ipcMode,
+            proxyConfiguration,
+            inferenceAccelerators,
+            ephemeralStorage,
+            runtimePlatform
+          } | with_entries(select(.value != null and .value != []))' \
+            "${{ steps.task-def.outputs.task-definition }}" > task-definition-register.json
+
+          TASK_DEFINITION_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://task-definition-register.json \
+            --region "${{ env.AWS_REGION }}" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          echo "task-definition-arn=$TASK_DEFINITION_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Run database migrations
+        env:
+          ENV: ${{ steps.env.outputs.env }}
+          TASK_DEFINITION_ARN: ${{ steps.register-task-def.outputs.task-definition-arn }}
+        run: |
+          set -euo pipefail
+
+          CLUSTER="rail-$ENV"
+          SERVICE="rail-$ENV"
+
+          if ! LAUNCH_TYPE=$(aws ecs describe-services \
+            --cluster "$CLUSTER" \
+            --services "$SERVICE" \
+            --region "${{ env.AWS_REGION }}" \
+            --query 'services[0].launchType' \
+            --output text); then
+            echo "Failed to retrieve launch type for ECS service $SERVICE in cluster $CLUSTER"
+            exit 1
+          fi
+
+          if [ -z "$LAUNCH_TYPE" ] || [ "$LAUNCH_TYPE" = "None" ]; then
+            echo "Failed to retrieve launch type for ECS service $SERVICE in cluster $CLUSTER"
+            exit 1
+          fi
+
+          RUN_TASK_ARGS=(
+            --cluster "$CLUSTER"
+            --task-definition "$TASK_DEFINITION_ARN"
+            --overrides '{"containerOverrides":[{"name":"rail-backend","command":["migrate"]}]}'
+            --region "${{ env.AWS_REGION }}"
+            --query 'tasks[0].taskArn'
+            --output text
+          )
+
+          if [ "$LAUNCH_TYPE" = "FARGATE" ]; then
+            if ! NETWORK_CONFIGURATION=$(aws ecs describe-services \
+              --cluster "$CLUSTER" \
+              --services "$SERVICE" \
+              --region "${{ env.AWS_REGION }}" \
+              --query 'services[0].networkConfiguration.awsvpcConfiguration' \
+              --output json); then
+              echo "Failed to retrieve network configuration for Fargate ECS service $SERVICE in cluster $CLUSTER"
+              exit 1
+            fi
+
+            if [ -z "$NETWORK_CONFIGURATION" ] || [ "$NETWORK_CONFIGURATION" = "null" ]; then
+              echo "Fargate ECS service $SERVICE in cluster $CLUSTER requires a valid network configuration"
+              exit 1
+            fi
+
+            SUBNETS=$(echo "$NETWORK_CONFIGURATION" | jq -r '.subnets | join(",")')
+            SECURITY_GROUPS=$(echo "$NETWORK_CONFIGURATION" | jq -r '.securityGroups | join(",")')
+            ASSIGN_PUBLIC_IP=$(echo "$NETWORK_CONFIGURATION" | jq -r '.assignPublicIp // "DISABLED"')
+
+            RUN_TASK_ARGS+=(
+              --launch-type FARGATE
+              --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SECURITY_GROUPS],assignPublicIp=$ASSIGN_PUBLIC_IP}"
+            )
+          else
+            RUN_TASK_ARGS+=(--launch-type "$LAUNCH_TYPE")
+          fi
+
+          set +e
+          TASK_ARN=$(aws ecs run-task "${RUN_TASK_ARGS[@]}" 2>&1)
+          EXIT_CODE=$?
+          set -e
+
+          if [ "$EXIT_CODE" -ne 0 ]; then
+            echo "Failed to start migration task:"
+            echo "$TASK_ARN"
+            exit 1
+          fi
+
+          if [ -z "$TASK_ARN" ] || [ "$TASK_ARN" = "None" ]; then
+            echo "Failed to start migration task"
+            exit 1
+          fi
+
+          echo "Started migration task: $TASK_ARN"
+          aws ecs wait tasks-stopped \
+            --cluster "$CLUSTER" \
+            --tasks "$TASK_ARN" \
+            --region "${{ env.AWS_REGION }}"
+
+          EXIT_CODE=$(aws ecs describe-tasks \
+            --cluster "$CLUSTER" \
+            --tasks "$TASK_ARN" \
+            --region "${{ env.AWS_REGION }}" \
+            --query 'tasks[0].containers[?name==`rail-backend`].exitCode | [0]' \
+            --output text)
+          REASON=$(aws ecs describe-tasks \
+            --cluster "$CLUSTER" \
+            --tasks "$TASK_ARN" \
+            --region "${{ env.AWS_REGION }}" \
+            --query 'tasks[0].stoppedReason' \
+            --output text)
+
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "Migration task failed with exit code $EXIT_CODE: $REASON"
+            exit 1
+          fi
+
+          echo "Database migrations completed"
+
       - name: Deploy to ECS
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
-        with:
-          task-definition: ${{ steps.task-def.outputs.task-definition }}
-          service: rail-${{ steps.env.outputs.env }}
-          cluster: rail-${{ steps.env.outputs.env }}
-          wait-for-service-stability: false
+        env:
+          ENV: ${{ steps.env.outputs.env }}
+          TASK_DEFINITION_ARN: ${{ steps.register-task-def.outputs.task-definition-arn }}
+        run: |
+          aws ecs update-service \
+            --cluster rail-$ENV \
+            --service rail-$ENV \
+            --task-definition "$TASK_DEFINITION_ARN" \
+            --force-new-deployment \
+            --region "${{ env.AWS_REGION }}"
 
       - name: Verify deployment health
         env:

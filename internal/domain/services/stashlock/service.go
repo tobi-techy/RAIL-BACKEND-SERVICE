@@ -2,6 +2,7 @@ package stashlock
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,6 +11,9 @@ import (
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
+
+// ErrNoLockedCycles indicates that a user has no locked stash cycles.
+var ErrNoLockedCycles = errors.New("no locked stash cycles found")
 
 // Repository persists stash lock cycles.
 type Repository interface {
@@ -203,7 +207,7 @@ func (s *Service) EmergencyWithdrawalFeePercent(ctx context.Context, userID uuid
 		}
 	}
 	if oldest == nil {
-		return decimal.Zero, 0, fmt.Errorf("no locked stash cycles found")
+		return decimal.Zero, 0, ErrNoLockedCycles
 	}
 	days := int(now.Sub(oldest.LockStart).Hours() / 24)
 	pct := emergencyFeeTier(days)

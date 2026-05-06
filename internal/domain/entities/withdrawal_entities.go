@@ -415,6 +415,13 @@ type EmergencyWithdrawalResult struct {
 	TransferID uuid.UUID       `json:"transfer_id"`
 }
 
+// FundStashResult is returned after a spend-to-stash transfer.
+type FundStashResult struct {
+	TransferID uuid.UUID       `json:"transfer_id"`
+	Amount     decimal.Decimal `json:"amount"`
+	Status     string          `json:"status"`
+}
+
 // WithdrawalFee represents withdrawal fee information
 type WithdrawalFee struct {
 	Amount    decimal.Decimal    `json:"amount"`

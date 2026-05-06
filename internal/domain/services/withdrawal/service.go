@@ -3,6 +3,7 @@ package withdrawal
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"math/big"
@@ -13,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	stashlocksvc "github.com/rail-service/rail_service/internal/domain/services/stashlock"
 	bridgepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	chainrailspkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	circlepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
@@ -27,15 +29,15 @@ const (
 	CryptoWithdrawalMinAmount   = 10.00 // Minimum crypto withdrawal
 	FiatWithdrawalMinAmountUSD  = 10.00 // Minimum USD fiat withdrawal
 	FiatWithdrawalMinAmountEUR  = 10.00 // Minimum EUR fiat withdrawal
-	CryptoWithdrawalFeePercent  = 0.0  // No percentage fee — flat only
-	CryptoWithdrawalFeeSolana   = 0.10 // $0.10 flat service fee for Solana withdrawals
-	CryptoWithdrawalFeeEVM      = 0.50 // $0.50 flat service fee for EVM chain withdrawals
-	FlatWithdrawalFee           = 0.50 // Default flat fee (legacy, use chain-specific)
-	FiatWithdrawalFeeUSD        = 1.00 // $1.00 flat fee for USD withdrawals
-	FiatWithdrawalFeeEUR        = 1.00 // €1.00 flat fee for EUR withdrawals
-	FiatWithdrawalFeeGBP        = 1.00 // £1.00 flat fee for GBP withdrawals
-	FiatWithdrawalFeeNGN        = 0.02 // ~₦30 flat fee for NGN withdrawals
-	FiatWithdrawalFeePercentUSD = 0.0  // No percentage fee — flat only
+	CryptoWithdrawalFeePercent  = 0.0   // No percentage fee — flat only
+	CryptoWithdrawalFeeSolana   = 0.10  // $0.10 flat service fee for Solana withdrawals
+	CryptoWithdrawalFeeEVM      = 0.50  // $0.50 flat service fee for EVM chain withdrawals
+	FlatWithdrawalFee           = 0.50  // Default flat fee (legacy, use chain-specific)
+	FiatWithdrawalFeeUSD        = 1.00  // $1.00 flat fee for USD withdrawals
+	FiatWithdrawalFeeEUR        = 1.00  // €1.00 flat fee for EUR withdrawals
+	FiatWithdrawalFeeGBP        = 1.00  // £1.00 flat fee for GBP withdrawals
+	FiatWithdrawalFeeNGN        = 0.02  // ~₦30 flat fee for NGN withdrawals
+	FiatWithdrawalFeePercentUSD = 0.0   // No percentage fee — flat only
 	FiatWithdrawalFeePercentEUR = 0.0
 	MinWithdrawalAmount         = 1.00 // Minimum $1 withdrawal
 	withdrawalLockShards        = 256
@@ -46,6 +48,7 @@ type LedgerService interface {
 	GetAccountBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (decimal.Decimal, error)
 	CreateTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, txType entities.TransactionType, amount decimal.Decimal, metadata map[string]interface{}) error
 	ReverseTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, originalTxID string, amount decimal.Decimal, metadata map[string]interface{}) error
+	TransferSpendingToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error
 }
 
 // BankAccountRepository interface for bank account persistence
@@ -144,6 +147,11 @@ type EmergencyLedger interface {
 	EmergencyTransferStashToSpending(ctx context.Context, userID uuid.UUID, amount, fee decimal.Decimal, idempotencyKey string) error
 }
 
+// StashYieldRedeemer converts user-wallet Reflect receipt tokens back to USDC before stash exits.
+type StashYieldRedeemer interface {
+	RedeemStashYield(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error
+}
+
 // ChainRailsTransferAdapter creates cross-chain intents via ChainRails.
 type ChainRailsTransferAdapter interface {
 	CreateIntent(ctx context.Context, req *chainrailspkg.CreateIntentRequest) (*chainrailspkg.CreateIntentResponse, error)
@@ -162,12 +170,13 @@ type WithdrawalService struct {
 	bridgeAdapter       BridgeAdapter
 	bridgeCryptoAdapter BridgeCryptoTransferAdapter
 	circleTransfer      CircleCryptoTransferAdapter
-	chainRailsAdapter  ChainRailsTransferAdapter
-	stashLock          StashLockChecker
-	emergencyLedger    EmergencyLedger
-	complianceScreener ComplianceScreener
-	addressWhitelist   AddressWhitelistChecker
-	tieredLimits       TieredWithdrawalLimitChecker
+	chainRailsAdapter   ChainRailsTransferAdapter
+	stashLock           StashLockChecker
+	emergencyLedger     EmergencyLedger
+	stashYieldRedeemer  StashYieldRedeemer
+	complianceScreener  ComplianceScreener
+	addressWhitelist    AddressWhitelistChecker
+	tieredLimits        TieredWithdrawalLimitChecker
 	stashLockMu         sync.RWMutex
 	db                  *sqlx.DB
 	logger              *logger.Logger
@@ -227,6 +236,11 @@ func (s *WithdrawalService) SetCircleTransferAdapter(a CircleCryptoTransferAdapt
 	s.circleTransfer = a
 }
 
+// SetStashYieldRedeemer wires the Reflect user-wallet redeem path for stash withdrawals.
+func (s *WithdrawalService) SetStashYieldRedeemer(r StashYieldRedeemer) {
+	s.stashYieldRedeemer = r
+}
+
 // ComplianceScreener screens transactions for AML/sanctions compliance.
 type ComplianceScreener interface {
 	ScreenTransaction(ctx context.Context, userID uuid.UUID, referenceID, direction string, amount decimal.Decimal, currency, userFullName string) (string, error)
@@ -268,6 +282,21 @@ func (s *WithdrawalService) SetEmergencyLedger(l EmergencyLedger) {
 	s.emergencyLedger = l
 }
 
+// IsStashLocked returns true if the user has no open withdrawal window.
+func (s *WithdrawalService) IsStashLocked(ctx context.Context, userID uuid.UUID) (bool, error) {
+	s.stashLockMu.RLock()
+	sl := s.stashLock
+	s.stashLockMu.RUnlock()
+	if sl == nil {
+		return false, nil // No lock service configured — not locked
+	}
+	canWithdraw, _, err := sl.CanWithdraw(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	return !canWithdraw, nil
+}
+
 // EmergencyWithdrawalPreview returns the fee breakdown for an emergency stash withdrawal.
 func (s *WithdrawalService) EmergencyWithdrawalPreview(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (*entities.EmergencyWithdrawalPreviewResponse, error) {
 	if amount.LessThanOrEqual(decimal.Zero) {
@@ -281,7 +310,12 @@ func (s *WithdrawalService) EmergencyWithdrawalPreview(ctx context.Context, user
 	}
 	feePct, days, err := sl.EmergencyWithdrawalFeePercent(ctx, userID)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, stashlocksvc.ErrNoLockedCycles) {
+			feePct = decimal.NewFromFloat(0.03)
+			days = 0
+		} else {
+			return nil, err
+		}
 	}
 	fee := amount.Mul(feePct).RoundBank(2)
 	tier := "1%"
@@ -323,7 +357,12 @@ func (s *WithdrawalService) EmergencyStashToSpending(ctx context.Context, userID
 
 	feePct, _, err := sl.EmergencyWithdrawalFeePercent(ctx, userID)
 	if err != nil {
-		return nil, err
+		// No locked cycles — apply maximum fee tier (3%) as default
+		if errors.Is(err, stashlocksvc.ErrNoLockedCycles) {
+			feePct = decimal.NewFromFloat(0.03)
+		} else {
+			return nil, err
+		}
 	}
 	fee := amount.Mul(feePct).RoundBank(2)
 	total := amount.Add(fee)
@@ -347,6 +386,48 @@ func (s *WithdrawalService) EmergencyStashToSpending(ctx context.Context, userID
 		FeePercent: feePct,
 		NetAmount:  amount.Sub(fee),
 		TransferID: uuid.New(),
+	}, nil
+}
+
+// FundStash transfers funds from spending balance to investment stash.
+func (s *WithdrawalService) FundStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) (*entities.FundStashResult, error) {
+	if amount.LessThan(decimal.NewFromInt(1)) {
+		return nil, fmt.Errorf("minimum amount is $1.00")
+	}
+
+	balance, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get spending balance: %w", err)
+	}
+	if balance.LessThan(amount) {
+		return nil, fmt.Errorf("insufficient spending balance: have %s, need %s", balance.String(), amount.String())
+	}
+
+	if err := s.ledgerService.TransferSpendingToStash(ctx, userID, amount, idempotencyKey); err != nil {
+		return nil, fmt.Errorf("transfer failed: %w", err)
+	}
+
+	transferID := uuid.New()
+	now := time.Now()
+	transfer := &entities.StashTransfer{
+		ID:        transferID,
+		UserID:    userID,
+		Amount:    amount,
+		Direction: entities.StashTransferDirectionSpendingToStash,
+		Status:    entities.StashTransferStatusCompleted,
+		CreatedAt: now,
+	}
+	if s.stashTransferRepo != nil {
+		if err := s.stashTransferRepo.Create(ctx, transfer); err != nil {
+			s.logger.Error("failed to record stash transfer", zap.String("user_id", userID.String()), zap.Error(err))
+			return nil, fmt.Errorf("transfer completed but failed to record: %w", err)
+		}
+	}
+
+	return &entities.FundStashResult{
+		TransferID: transferID,
+		Amount:     amount,
+		Status:     "completed",
 	}, nil
 }
 
@@ -651,6 +732,20 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
+	if err := s.prepareStashYieldForCryptoWithdrawal(ctx, withdrawal, req); err != nil {
+		s.logger.Error("async: stash yield redemption failed — reversing ledger",
+			"error", err, "withdrawal_id", withdrawal.ID.String())
+		if revErr := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); revErr != nil {
+			s.logger.Error("async: failed to reverse ledger debit",
+				"error", revErr, "withdrawal_id", withdrawal.ID.String())
+		}
+		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
+		if s.notificationService != nil {
+			_ = s.notificationService.NotifyWithdrawalFailed(ctx, req.UserID, req.Amount, "Your stash withdrawal could not be redeemed from yield. Your funds have been returned to your stash balance.")
+		}
+		return
+	}
+
 	transferResult, err := s.executeCryptoTransfer(ctx, withdrawal, req.DestinationAddress, req.DestinationChain, req.SourceChain, req.SourceWalletAddress, req.CircleWalletID)
 	if err != nil {
 		s.logger.Error("async: crypto transfer failed — reversing ledger",
@@ -735,6 +830,20 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 		s.logger.Info("async: crypto withdrawal processing",
 			"withdrawal_id", withdrawal.ID.String(), "state", transferResult.State)
 	}
+}
+
+func (s *WithdrawalService) prepareStashYieldForCryptoWithdrawal(ctx context.Context, withdrawal *entities.Withdrawal, req *entities.InitiateCryptoWithdrawalRequest) error {
+	if req.SourceAccount != entities.WithdrawalSourceStashBalance || strings.TrimSpace(req.CircleWalletID) == "" {
+		return nil
+	}
+	if s.stashYieldRedeemer == nil {
+		return fmt.Errorf("stash withdrawal requires Reflect redemption but no redeemer is configured")
+	}
+	redeemAmount := withdrawal.Amount.Add(withdrawal.FeeAmount)
+	if !redeemAmount.GreaterThan(decimal.Zero) {
+		return nil
+	}
+	return s.stashYieldRedeemer.RedeemStashYield(ctx, withdrawal.UserID, redeemAmount, "withdrawal-"+withdrawal.ID.String())
 }
 
 // InitiateFiatWithdrawal initiates a fiat withdrawal (USDC to fiat via Bridge)
@@ -1909,7 +2018,7 @@ func (s *WithdrawalService) executeFiatTransfer(ctx context.Context, withdrawal 
 		"amount":        amountStr,
 		"developer_fee": withdrawal.FeeAmount.StringFixed(2),
 		"currency":      string(withdrawal.Currency),
-		"recipient_id": *bankAccount.BridgeRecipientID,
+		"recipient_id":  *bankAccount.BridgeRecipientID,
 		"source_wallet_id": func() string {
 			if withdrawal.BridgeWalletID == nil {
 				return ""

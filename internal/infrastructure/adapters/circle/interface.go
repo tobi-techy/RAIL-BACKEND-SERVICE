@@ -19,6 +19,7 @@ type Client interface {
 	// Transfers
 	CreateTransfer(ctx context.Context, req *CreateTransferRequest) (*Transaction, error)
 	GetTransaction(ctx context.Context, txID string) (*Transaction, error)
+	SignTransaction(ctx context.Context, req *SignTransactionRequest) (*SignedTransaction, error)
 	EstimateTransferFee(ctx context.Context, req *EstimateFeeRequest) (*FeeEstimate, error)
 
 	// Config

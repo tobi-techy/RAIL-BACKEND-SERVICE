@@ -14,8 +14,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/domain/entities"
-	circlepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
 	chainrailspkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
+	circlepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/paj"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/pkg/crypto"
@@ -401,7 +401,7 @@ func (s *Service) CreateOnrampOrder(ctx context.Context, userID uuid.UUID, fiatA
 				if result != nil && result.Reason != "" {
 					msg = result.Reason
 				}
-				return nil, fmt.Errorf(msg)
+				return nil, fmt.Errorf("%s", msg)
 			}
 		}
 	}

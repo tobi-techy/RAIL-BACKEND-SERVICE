@@ -769,6 +769,13 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				withdrawals.DELETE("/:withdrawalId", withdrawalHandlers.CancelWithdrawal)
 			}
 
+			// Funding routes - fund stash from spending balance
+			fundingRoutes := protected.Group("/funding")
+			fundingRoutes.Use(middleware.RequirePasscodeSession(container.GetPasscodeService(), true, container.ZapLog))
+			{
+				fundingRoutes.POST("/stash", withdrawalHandlers.FundStash)
+			}
+
 			// Account routes - Station (home screen) endpoint
 			account := protected.Group("/account")
 			account.Use(middleware.TimeoutMiddleware(10 * time.Second))

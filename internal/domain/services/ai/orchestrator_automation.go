@@ -8,11 +8,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"github.com/shopspring/decimal"
 )
 
 const (
-	ToolCreateAutomation = "create_automation"
-	ToolListAutomations  = "list_automations"
+	ToolCreateAutomation      = "create_automation"
+	ToolListAutomations       = "list_automations"
+	ToolSuggestSmartTiming    = "suggest_smart_timing"
+	ToolSuggestAdaptiveAmount = "suggest_adaptive_amount"
 )
 
 // AutomationProvider is the subset of automation.Service the orchestrator needs.
@@ -31,6 +34,8 @@ type AutomationRequest struct {
 	ActionConfig      map[string]interface{} `json:"action_config"`
 	MaxTriggersPerDay int                    `json:"max_triggers_per_day"`
 	CooldownMinutes   int                    `json:"cooldown_minutes"`
+	SavingsGoalID     *uuid.UUID             `json:"savings_goal_id,omitempty"`
+	ObligationID      *uuid.UUID             `json:"obligation_id,omitempty"`
 }
 
 // SetAutomationProvider wires the automation dependency.
@@ -46,26 +51,44 @@ func AutomationTools() []infraai.Tool {
 			Description: `Create an automation rule that runs automatically without the user having to do anything.
 Use when the user wants to:
 - Move money on a schedule ("move $50 to stash every Friday", "save $20 every Monday")
-- Trigger a transfer when balance crosses a threshold ("when spend goes above $500, move $100 to stash", "if stash drops below $200, move $50 from spend")
+- Trigger a transfer when balance crosses a threshold ("when spend goes above $500, move $100 to stash")
+- Get notified when balance is low ("alert me when spend drops below $100")
+- Pause card on spending spikes ("freeze my card if I spend too much")
+- Save toward a goal ("save $50/week until I hit $2000 for my trip")
+- Get reminded before bills are due ("remind me 3 days before rent is due")
+- React to life events ("when I get a raise, increase my stash transfer by 20%")
 
 Trigger types:
-- "schedule": runs on specific weekdays at a specific hour. trigger_config: {"weekdays": [5], "hour": 9} (0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat)
-- "balance_threshold": fires when a wallet balance crosses a level. trigger_config: {"wallet": "spend", "operator": "above", "threshold": 500}
+- "schedule": runs on specific weekdays at a specific hour. trigger_config: {"weekdays": [5], "hour": 9}
+- "balance_threshold": fires when a wallet balance crosses a level. trigger_config: {"wallet": "spend", "operator": "below", "threshold": 100}
+- "spending_spike": fires when unusual spending is detected. trigger_config: {}
+- "obligation_due": fires N days before an obligation is due. trigger_config: {"days_before_due": 3}
+- "life_event": fires when Miriam detects a life event. trigger_config: {"event_type": "income_increase", "threshold": 0.20}
 
 Action types:
 - "transfer_to_stash": move money from spend to stash. action_config: {"amount": 50}
 - "transfer_to_spend": move money from stash to spend. action_config: {"amount": 50}
+- "notify": send a notification. action_config: {"title": "Low Balance", "message": "Your spend is below $100"}
+- "pause_card_cooldown": pause card for a cooldown period then auto-resume. action_config: {"cooldown_minutes": 30, "message": "Spending spike detected"}
+- "pause_card": freeze the card. action_config: {}
+- "resume_card": unfreeze the card. action_config: {}
+
+Optional fields:
+- savings_goal_id: link to a savings goal; automation auto-deactivates when goal is reached
+- obligation_id: link to an obligation for bill-aware triggers
 
 Requires user confirmation before creating.`,
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"name":           map[string]interface{}{"type": "string", "description": "Short name, e.g. 'Friday Stash Move'"},
-					"trigger_type":   map[string]interface{}{"type": "string", "enum": []string{"schedule", "balance_threshold"}},
-					"trigger_config": map[string]interface{}{"type": "object", "description": "For schedule: {weekdays:[5], hour:9} where hour is 1-23 (0 means any hour). For balance_threshold: {wallet:'spend', operator:'above', threshold:500}"},
-					"action_type":    map[string]interface{}{"type": "string", "enum": []string{"transfer_to_stash", "transfer_to_spend"}},
-					"action_config":  map[string]interface{}{"type": "object", "description": "{amount: 50}"},
-					"description":    map[string]interface{}{"type": "string"},
+					"name":            map[string]interface{}{"type": "string", "description": "Short name, e.g. 'Friday Stash Move'"},
+					"trigger_type":    map[string]interface{}{"type": "string", "enum": []string{"schedule", "balance_threshold", "spending_spike", "obligation_due", "life_event"}},
+					"trigger_config":  map[string]interface{}{"type": "object"},
+					"action_type":     map[string]interface{}{"type": "string", "enum": []string{"transfer_to_stash", "transfer_to_spend", "notify", "pause_card_cooldown", "pause_card", "resume_card"}},
+					"action_config":   map[string]interface{}{"type": "object"},
+					"description":     map[string]interface{}{"type": "string"},
+					"savings_goal_id": map[string]interface{}{"type": "string", "description": "UUID of savings goal to link to"},
+					"obligation_id":   map[string]interface{}{"type": "string", "description": "UUID of obligation to link to"},
 				},
 				"required": []string{"name", "trigger_type", "trigger_config", "action_type", "action_config"},
 			},
@@ -74,6 +97,20 @@ Requires user confirmation before creating.`,
 			Name:        ToolListAutomations,
 			Description: "List the user's active automation rules. Use when user asks 'what automations do I have', 'show my rules', 'what's set up automatically', or 'is anything running for me'.",
 			Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "required": []string{}, "additionalProperties": false},
+		},
+		{
+			Name: ToolSuggestSmartTiming,
+			Description: `Analyze the user's spending patterns to suggest the best day and time to run automated transfers.
+Use when the user asks "when should I save?", "what's the best day to move money?", or when creating a scheduled automation and you want to suggest optimal timing.
+Returns the lowest-spending day of the week and recommended hour.`,
+			Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "required": []string{}, "additionalProperties": false},
+		},
+		{
+			Name: ToolSuggestAdaptiveAmount,
+			Description: `Calculate a recommended transfer amount based on the user's recent income, spending, and upcoming obligations.
+Use when the user asks "how much should I save?", "what can I afford to move to stash?", or when creating a transfer automation and you want to suggest an amount.
+Returns a recommended amount and the reasoning.`,
+			Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "required": []string{}, "additionalProperties": false},
 		},
 	}
 }
@@ -88,8 +125,12 @@ func (o *Orchestrator) createAutomationAction(ctx context.Context, userID, convI
 	if name == "" || triggerType == "" || actionType == "" || triggerConfig == nil || actionConfig == nil {
 		return map[string]interface{}{"error": "name, trigger_type, trigger_config, action_type, and action_config are required"}, nil
 	}
-	if amountF, ok := actionConfig["amount"].(float64); !ok || amountF <= 0 {
-		return map[string]interface{}{"error": "action_config must include a positive amount"}, nil
+	// Only require positive amount for transfer actions
+	isTransfer := actionType == entities.ActionTransferToStash || actionType == entities.ActionTransferToSpend
+	if isTransfer {
+		if amountF, ok := actionConfig["amount"].(float64); !ok || amountF <= 0 {
+			return map[string]interface{}{"error": "transfer action_config must include a positive amount"}, nil
+		}
 	}
 
 	params := map[string]interface{}{
@@ -101,6 +142,12 @@ func (o *Orchestrator) createAutomationAction(ctx context.Context, userID, convI
 	}
 	if desc, ok := args["description"].(string); ok && desc != "" {
 		params["description"] = desc
+	}
+	if goalID, ok := args["savings_goal_id"].(string); ok && goalID != "" {
+		params["savings_goal_id"] = goalID
+	}
+	if obligationID, ok := args["obligation_id"].(string); ok && obligationID != "" {
+		params["obligation_id"] = obligationID
 	}
 
 	action := &entities.PendingAction{
@@ -156,6 +203,12 @@ func (o *Orchestrator) executeCreateAutomation(ctx context.Context, userID uuid.
 	triggerConfig, _ := params["trigger_config"].(map[string]interface{})
 	actionConfig, _ := params["action_config"].(map[string]interface{})
 
+	if actionType == entities.ActionTransferToStash || actionType == entities.ActionTransferToSpend {
+		if err := validateTransferAutomationAuthorization(actionConfig, time.Now().UTC()); err != nil {
+			return nil, err
+		}
+	}
+
 	req := &AutomationRequest{
 		Name:          name,
 		TriggerType:   triggerType,
@@ -166,10 +219,140 @@ func (o *Orchestrator) executeCreateAutomation(ctx context.Context, userID uuid.
 	if desc, ok := params["description"].(string); ok && desc != "" {
 		req.Description = &desc
 	}
+	if goalIDStr, ok := params["savings_goal_id"].(string); ok && goalIDStr != "" {
+		if gid, err := uuid.Parse(goalIDStr); err == nil {
+			req.SavingsGoalID = &gid
+		}
+	}
+	if obligationIDStr, ok := params["obligation_id"].(string); ok && obligationIDStr != "" {
+		if oid, err := uuid.Parse(obligationIDStr); err == nil {
+			req.ObligationID = &oid
+		}
+	}
 
-	automation, err := o.automationProvider.Create(ctx, userID, req)
+	result, err := o.automationProvider.Create(ctx, userID, req)
 	if err != nil {
 		return nil, fmt.Errorf("create automation: %w", err)
 	}
-	return map[string]interface{}{"id": automation.ID.String(), "name": automation.Name, "created": true}, nil
+	return map[string]interface{}{"id": result.ID.String(), "name": result.Name, "created": true}, nil
+}
+
+func validateTransferAutomationAuthorization(actionConfig map[string]interface{}, now time.Time) error {
+	if actionConfig == nil {
+		return fmt.Errorf("transfer automation requires passcode authorization metadata")
+	}
+	verifiedRaw, _ := actionConfig["passcode_session_verified_at"].(string)
+	if verifiedRaw == "" {
+		return fmt.Errorf("transfer automation requires passcode_session_verified_at from passcode verification")
+	}
+	verifiedAt, err := time.Parse(time.RFC3339, verifiedRaw)
+	if err != nil {
+		return fmt.Errorf("transfer automation has invalid passcode_session_verified_at: %w", err)
+	}
+	if verifiedAt.After(now.Add(30 * time.Second)) {
+		return fmt.Errorf("transfer automation passcode authorization timestamp is in the future")
+	}
+	if now.Sub(verifiedAt) > 5*time.Minute {
+		return fmt.Errorf("transfer automation passcode authorization expired")
+	}
+	return nil
+}
+
+func (o *Orchestrator) executeSuggestSmartTiming(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+	if o.patterns == nil {
+		return map[string]interface{}{"error": "spending pattern analysis is unavailable"}, nil
+	}
+	end := time.Now().UTC()
+	start := end.AddDate(0, -1, 0)
+	dayData, err := o.patterns.GetSpendingByDayOfWeek(ctx, userID, start, end)
+	if err != nil || len(dayData) == 0 {
+		return map[string]interface{}{
+			"suggested_weekday": 1, // Monday default
+			"suggested_hour":    9,
+			"reasoning":         "Not enough spending data yet. Defaulting to Monday 9am.",
+			"data_available":    false,
+		}, nil
+	}
+
+	// Find the day with the lowest spending
+	minDay := 0
+	minAmount := dayData[0].Total
+	for _, d := range dayData {
+		if d.Total.LessThan(minAmount) {
+			minAmount = d.Total
+			minDay = d.DayOfWeek
+		}
+	}
+	dayNames := []string{"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"}
+	return map[string]interface{}{
+		"suggested_weekday":      minDay,
+		"suggested_weekday_name": dayNames[minDay],
+		"suggested_hour":         9,
+		"lowest_spending_amount": minAmount.StringFixed(2),
+		"reasoning":              fmt.Sprintf("You spend the least on %ss ($%s avg). Moving money then minimizes the chance you'll need it for spending.", dayNames[minDay], minAmount.StringFixed(2)),
+		"data_available":         true,
+	}, nil
+}
+
+func (o *Orchestrator) executeSuggestAdaptiveAmount(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+	end := time.Now().UTC()
+	start := end.AddDate(0, -1, 0)
+
+	// Get total spending last month
+	var monthlySpend decimal.Decimal
+	if o.patterns != nil {
+		total, _, err := o.patterns.GetSpendingTotal(ctx, userID, start, end)
+		if err == nil {
+			monthlySpend = total
+		}
+	}
+
+	// Get spend balance
+	var spendBal decimal.Decimal
+	if o.fundsTransferer != nil {
+		bal, err := o.fundsTransferer.GetSpendBalance(ctx, userID)
+		if err == nil {
+			spendBal = bal
+		}
+	}
+
+	// Get upcoming obligations
+	var obligationTotal decimal.Decimal
+	if o.obligations != nil {
+		obs, err := o.obligations.ListActive(ctx, userID)
+		if err == nil {
+			for _, ob := range obs {
+				obligationTotal = obligationTotal.Add(ob.Amount)
+			}
+		}
+	}
+
+	// Calculate: available = spend balance - monthly spending average - obligations buffer
+	// Recommend saving 20% of the surplus
+	weeklySpend := monthlySpend.Div(decimal.NewFromInt(4))
+	buffer := weeklySpend.Add(obligationTotal)
+	surplus := spendBal.Sub(buffer)
+
+	var recommended decimal.Decimal
+	var reasoning string
+	if surplus.IsPositive() {
+		recommended = surplus.Mul(decimal.NewFromFloat(0.20)).Round(0)
+		if recommended.LessThan(decimal.NewFromInt(5)) {
+			recommended = decimal.NewFromInt(5)
+		}
+		reasoning = fmt.Sprintf("Based on your $%s spend balance, ~$%s/week spending, and $%s in obligations, you have ~$%s surplus. Recommending $%s/week to stash.",
+			spendBal.StringFixed(2), weeklySpend.StringFixed(2), obligationTotal.StringFixed(2), surplus.StringFixed(2), recommended.StringFixed(0))
+	} else {
+		recommended = decimal.NewFromInt(10)
+		reasoning = "Your balance is tight relative to spending and obligations. Starting with a small $10/week transfer to build the habit."
+	}
+
+	return map[string]interface{}{
+		"recommended_amount":  recommended.InexactFloat64(),
+		"recommended_cadence": "weekly",
+		"spend_balance":       spendBal.StringFixed(2),
+		"monthly_spending":    monthlySpend.StringFixed(2),
+		"monthly_obligations": obligationTotal.StringFixed(2),
+		"reasoning":           reasoning,
+	}, nil
 }
