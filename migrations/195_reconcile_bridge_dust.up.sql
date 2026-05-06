@@ -22,3 +22,13 @@ BEGIN
 
     UPDATE ledger_accounts SET balance = balance - 0.42, updated_at = NOW() WHERE id = v_account_id;
 END $$;
+
+-- Fix withdrawals that were ledger-reversed but still show as 'failed' or 'processing'
+UPDATE withdrawals SET status = 'reversed', updated_at = NOW()
+WHERE user_id = 'a28c1e1a-3e6d-4a3d-9fec-8186396cc478'
+  AND status IN ('failed', 'processing')
+  AND id IN (
+    SELECT w.id FROM withdrawals w
+    JOIN ledger_transactions lt ON lt.reference_id = w.id::text AND lt.transaction_type = 'reversal'
+    WHERE w.user_id = 'a28c1e1a-3e6d-4a3d-9fec-8186396cc478'
+  );

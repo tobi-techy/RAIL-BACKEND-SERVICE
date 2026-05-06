@@ -753,9 +753,10 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 		if revErr := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); revErr != nil {
 			s.logger.Error("async: failed to reverse ledger debit",
 				"error", revErr, "withdrawal_id", withdrawal.ID.String())
+			_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
+		} else {
+			_ = s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusReversed)
 		}
-		// Reverse tiered limit usage on failure — no-op since limits recorded on success only
-		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
 		if s.notificationService != nil {
 			_ = s.notificationService.NotifyWithdrawalFailed(ctx, req.UserID, req.Amount, "Transfer failed. Your funds have been returned to your balance.")
 		}
