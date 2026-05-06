@@ -1,5 +1,4 @@
 -- One-time ledger adjustment: debit $0.42 to sync ledger with on-chain balance ($2.95).
--- $0.23 bridge dust below transfer minimum + $0.19 chainrails fees from failed withdrawals.
 DO $$
 DECLARE
     v_account_id UUID;
@@ -12,9 +11,9 @@ BEGIN
 
     v_tx_id := gen_random_uuid();
 
-    INSERT INTO ledger_transactions (id, user_id, transaction_type, status, amount, currency, description, idempotency_key, created_at, updated_at)
-    VALUES (v_tx_id, 'a28c1e1a-3e6d-4a3d-9fec-8186396cc478', 'reversal', 'completed', 0.42, 'USDC',
-            'reconciliation: bridge dust + chainrails fee write-off', 'reconcile-bridge-dust-20260506', NOW(), NOW());
+    INSERT INTO ledger_transactions (id, user_id, transaction_type, status, description, idempotency_key, created_at)
+    VALUES (v_tx_id, 'a28c1e1a-3e6d-4a3d-9fec-8186396cc478', 'reversal', 'completed',
+            'reconciliation: bridge dust + chainrails fee write-off', 'reconcile-bridge-dust-20260506', NOW());
 
     INSERT INTO ledger_entries (id, transaction_id, account_id, entry_type, amount, currency, description, created_at)
     VALUES (gen_random_uuid(), v_tx_id, v_account_id, 'debit', 0.42, 'USDC',
@@ -29,6 +28,6 @@ WHERE user_id = 'a28c1e1a-3e6d-4a3d-9fec-8186396cc478'
   AND status IN ('failed', 'processing')
   AND id IN (
     SELECT w.id FROM withdrawals w
-    JOIN ledger_transactions lt ON lt.reference_id = w.id::text AND lt.transaction_type = 'reversal'
+    JOIN ledger_transactions lt ON lt.reference_id = w.id AND lt.transaction_type = 'reversal'
     WHERE w.user_id = 'a28c1e1a-3e6d-4a3d-9fec-8186396cc478'
   );
