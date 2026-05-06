@@ -415,8 +415,8 @@ func (s *Service) CreateOnrampOrder(ctx context.Context, userID uuid.UUID, fiatA
 	}
 
 	// Enforce NGN minimum deposit
-	if fiatAmount < 100 {
-		return nil, fmt.Errorf("minimum deposit is ₦100")
+	if fiatAmount < 500 {
+		return nil, fmt.Errorf("minimum deposit is ₦500")
 	}
 
 	// Enforce deposit limits (estimate USDC from fiat using cached rate)
