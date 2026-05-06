@@ -1445,9 +1445,6 @@ func validateReflectConfig(config *Config) error {
 		if strings.Contains(upperPrivateKey, "REPLACE") || strings.Contains(upperPrivateKey, "PLACEHOLDER") {
 			return fmt.Errorf("reflect private_key contains placeholder text in %s environment", config.Environment)
 		}
-		if len(config.Reflect.AllowedProgramIDs) == 0 {
-			return fmt.Errorf("reflect allowed_program_ids must be configured in %s environment", config.Environment)
-		}
 	}
 	return nil
 }

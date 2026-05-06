@@ -72,11 +72,15 @@ func main() {
 }
 
 func runMigrations() error {
-	cfg, err := config.Load()
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		cfg, err := config.Load()
+		if err != nil {
+			return fmt.Errorf("failed to load config: %w", err)
+		}
+		dbURL = cfg.Database.URL
 	}
-	return database.RunMigrations(cfg.Database.URL)
+	return database.RunMigrations(dbURL)
 }
 
 func runHealthCheck() error {
