@@ -26,40 +26,16 @@ WHERE NOT EXISTS (
     WHERE user_id IS NULL AND account_type = 'subscription_revenue'
 );
 
-WITH duplicate_system_accounts AS (
-    SELECT
-        id,
-        ROW_NUMBER() OVER (
-            PARTITION BY account_type
-            ORDER BY
-                CASE WHEN balance = 0 THEN 1 ELSE 0 END,
-                created_at,
-                id
-        ) AS row_num
-    FROM ledger_accounts
-    WHERE user_id IS NULL
-      AND account_type IN (
-          'system_buffer_usdc', 'system_buffer_fiat', 'broker_operational',
-          'subscription_revenue', 'emergency_withdrawal_revenue'
-      )
-),
-empty_duplicates AS (
-    SELECT d.id
-    FROM duplicate_system_accounts d
-    WHERE d.row_num > 1
-      AND NOT EXISTS (
-          SELECT 1 FROM ledger_entries e WHERE e.account_id = d.id
-      )
-)
-DELETE FROM ledger_accounts la
-USING empty_duplicates d
-WHERE la.id = d.id
-  AND la.balance = 0;
-
+-- Merge duplicate system accounts: reassign entries and sum balances into the canonical row.
 DO $$
+DECLARE
+    rec RECORD;
 BEGIN
-    IF EXISTS (
-        SELECT 1
+    FOR rec IN
+        SELECT account_type,
+               (array_agg(id ORDER BY created_at, id))[1] AS keep_id,
+               array_remove(array_agg(id ORDER BY created_at, id),
+                            (array_agg(id ORDER BY created_at, id))[1]) AS dup_ids
         FROM ledger_accounts
         WHERE user_id IS NULL
           AND account_type IN (
@@ -68,9 +44,22 @@ BEGIN
           )
         GROUP BY account_type
         HAVING COUNT(*) > 1
-    ) THEN
-        RAISE EXCEPTION 'duplicate system ledger accounts must be resolved before enforcing uniqueness';
-    END IF;
+    LOOP
+        -- Reassign ledger entries from duplicates to the canonical account
+        UPDATE ledger_entries
+        SET account_id = rec.keep_id
+        WHERE account_id = ANY(rec.dup_ids);
+
+        -- Sum duplicate balances into the canonical account
+        UPDATE ledger_accounts
+        SET balance = balance + COALESCE((
+            SELECT SUM(balance) FROM ledger_accounts WHERE id = ANY(rec.dup_ids)
+        ), 0)
+        WHERE id = rec.keep_id;
+
+        -- Delete the now-empty duplicates
+        DELETE FROM ledger_accounts WHERE id = ANY(rec.dup_ids);
+    END LOOP;
 END $$;
 
 DROP INDEX IF EXISTS idx_ledger_accounts_system_type;
