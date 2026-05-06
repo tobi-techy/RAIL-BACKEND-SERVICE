@@ -176,6 +176,10 @@
           "valueFrom": "/rail/prod/LULO_BRIDGE_SOURCE_WALLET_ID"
         },
         {
+          "name": "REFLECT_ALLOWED_PROGRAM_IDS",
+          "valueFrom": "/rail/prod/REFLECT_ALLOWED_PROGRAM_IDS"
+        },
+        {
           "name": "APPLE_TEAM_ID",
           "valueFrom": "/rail/prod/APPLE_TEAM_ID"
         },

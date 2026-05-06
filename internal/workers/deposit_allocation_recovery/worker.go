@@ -173,6 +173,10 @@ func (w *Worker) listUnallocatedDeposits(ctx context.Context, limit int) ([]depo
 	maxAge := time.Now().Add(-w.maxDepositAge)
 	minAge := time.Now().Add(-1 * time.Minute) // avoid racing with normal flow
 
+	// Find deposits that were confirmed and ledger-credited but never had an
+	// allocation event recorded. We check that the USDC balance is sufficient OR
+	// that an allocation_split ledger transaction already exists (meaning the split
+	// happened but the event/notification was skipped due to a downstream failure).
 	const query = `
 			SELECT
 				d.id,
@@ -203,10 +207,6 @@ func (w *Worker) listUnallocatedDeposits(ctx context.Context, limit int) ([]depo
 				) AS circle_wallet_id,
 				d.created_at
 			FROM deposits d
-		INNER JOIN ledger_accounts la
-			ON la.user_id = d.user_id
-			AND la.account_type = 'usdc_balance'
-			AND la.balance >= d.amount
 		LEFT JOIN allocation_events ae
 			ON ae.user_id = d.user_id
 			AND ae.source_tx_id = d.tx_hash
@@ -217,6 +217,21 @@ func (w *Worker) listUnallocatedDeposits(ctx context.Context, limit int) ([]depo
 				FROM ledger_transactions dep_lt
 				WHERE dep_lt.reference_id = d.id
 					AND dep_lt.reference_type = 'deposit'
+			)
+			AND (
+				-- Either USDC balance is sufficient for a fresh split
+				EXISTS (
+					SELECT 1 FROM ledger_accounts la
+					WHERE la.user_id = d.user_id
+						AND la.account_type = 'usdc_balance'
+						AND la.balance >= d.amount
+				)
+				-- Or the split already happened (USDC debited) but event was never recorded
+				OR EXISTS (
+					SELECT 1 FROM ledger_transactions alt
+					WHERE alt.reference_id = d.id
+						AND alt.reference_type = 'allocation_split'
+				)
 			)
 			AND d.created_at >= $2
 			AND d.created_at <= $3

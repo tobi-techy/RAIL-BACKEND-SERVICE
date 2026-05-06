@@ -459,12 +459,14 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 	if routeYield {
 		routeDepositID = *req.DepositID
 		if err := s.yieldRouter.EnsureDepositYieldRoute(ctx, req.UserID, routeDepositID, routeAmount, routeMetadata); err != nil {
-			s.logger.Error("Failed to create durable yield route after allocation ledger transfer",
+			// Non-fatal: ledger split is already committed. The async RouteDepositYield
+			// goroutine and its retry loop will handle routing. Don't block notification
+			// and event recording.
+			s.logger.Error("Failed to create durable yield route after allocation ledger transfer (non-fatal, will retry async)",
 				"user_id", req.UserID,
 				"deposit_id", routeDepositID,
 				"amount", routeAmount,
 				"error", err)
-			return fmt.Errorf("failed to create durable yield route: %w", err)
 		}
 	}
 
