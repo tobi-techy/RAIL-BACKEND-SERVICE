@@ -67,15 +67,10 @@ func (w *Worker) Run(ctx context.Context, batchSize int) (*Result, error) {
 	start := time.Now()
 	res := &Result{}
 
+	// Pass 1: Create Circle wallets for legacy Bridge-only users
 	wallets, err := w.getLegacyWallets(ctx, batchSize)
 	if err != nil {
 		return nil, fmt.Errorf("query legacy wallets: %w", err)
-	}
-	res.Total = len(wallets)
-
-	if len(wallets) == 0 {
-		res.Duration = time.Since(start)
-		return res, nil
 	}
 
 	for _, lw := range wallets {
@@ -90,6 +85,22 @@ func (w *Worker) Run(ctx context.Context, batchSize int) (*Result, error) {
 		res.Transferred = res.Transferred.Add(transferred)
 	}
 
+	// Pass 2: Sweep remaining Bridge balances for already-migrated wallets
+	sweepWallets, err := w.getWalletsNeedingSweep(ctx, batchSize)
+	if err != nil {
+		w.logger.Warn("failed to query sweep wallets", zap.Error(err))
+	} else {
+		for _, sw := range sweepWallets {
+			transferred, err := w.sweepBridgeBalance(ctx, sw)
+			if err != nil {
+				w.logger.Warn("bridge balance sweep failed", zap.String("user_id", sw.UserID.String()), zap.Error(err))
+				continue
+			}
+			res.Transferred = res.Transferred.Add(transferred)
+		}
+	}
+
+	res.Total = len(wallets) + len(sweepWallets)
 	res.Duration = time.Since(start)
 	w.logger.Info("wallet migration batch complete",
 		zap.Int("total", res.Total), zap.Int("migrated", res.Migrated),
@@ -121,6 +132,89 @@ func (w *Worker) getLegacyWallets(ctx context.Context, limit int) ([]legacyWalle
 		out = append(out, lw)
 	}
 	return out, rows.Err()
+}
+
+// sweepWallet is a wallet that has both bridge and circle IDs — needs balance sweep.
+type sweepWallet struct {
+	ID             uuid.UUID
+	UserID         uuid.UUID
+	Chain          entities.WalletChain
+	BridgeWalletID string
+	CircleAddress  string
+}
+
+// getWalletsNeedingSweep returns wallets that have both bridge_wallet_id and circle_wallet_id set.
+func (w *Worker) getWalletsNeedingSweep(ctx context.Context, limit int) ([]sweepWallet, error) {
+	rows, err := w.db.QueryContext(ctx, `
+		SELECT id, user_id, chain, bridge_wallet_id, address
+		FROM managed_wallets
+		WHERE bridge_wallet_id IS NOT NULL AND bridge_wallet_id != ''
+		  AND circle_wallet_id IS NOT NULL AND circle_wallet_id != ''
+		  AND status = 'live'
+		ORDER BY created_at
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []sweepWallet
+	for rows.Next() {
+		var sw sweepWallet
+		if err := rows.Scan(&sw.ID, &sw.UserID, &sw.Chain, &sw.BridgeWalletID, &sw.CircleAddress); err != nil {
+			return nil, err
+		}
+		out = append(out, sw)
+	}
+	return out, rows.Err()
+}
+
+// sweepBridgeBalance transfers any remaining USDC from a Bridge wallet to the Circle wallet address.
+func (w *Worker) sweepBridgeBalance(ctx context.Context, sw sweepWallet) (decimal.Decimal, error) {
+	bridgeCustomerID, err := w.getBridgeCustomerID(ctx, sw.UserID)
+	if err != nil {
+		return decimal.Zero, err
+	}
+
+	balance, err := w.bridgeClient.GetWalletBalance(ctx, bridgeCustomerID, sw.BridgeWalletID)
+	if err != nil {
+		return decimal.Zero, err
+	}
+
+	var transferred decimal.Decimal
+	for _, entry := range balance.Balances {
+		amt, _ := decimal.NewFromString(entry.Balance)
+		if amt.LessThanOrEqual(decimal.Zero) {
+			continue
+		}
+		if !strings.EqualFold(string(entry.Currency), "usdc") {
+			continue
+		}
+
+		_, err := w.bridgeClient.CreateTransfer(ctx, &bridge.CreateTransferRequest{
+			OnBehalfOf: bridgeCustomerID,
+			Amount:     amt.String(),
+			Source: bridge.TransferSource{
+				PaymentRail:    bridge.PaymentRail("bridge_wallet"),
+				Currency:       bridge.CurrencyUSDC,
+				BridgeWalletID: sw.BridgeWalletID,
+			},
+			Destination: bridge.TransferDestination{
+				PaymentRail: chainToPaymentRail(sw.Chain),
+				Currency:    bridge.CurrencyUSDC,
+				ToAddress:   sw.CircleAddress,
+			},
+		})
+		if err != nil {
+			w.logger.Warn("bridge sweep transfer failed",
+				zap.String("user_id", sw.UserID.String()), zap.String("amount", amt.String()), zap.Error(err))
+			continue
+		}
+		transferred = transferred.Add(amt)
+		w.logger.Info("bridge balance swept to circle",
+			zap.String("user_id", sw.UserID.String()), zap.String("amount", amt.String()), zap.String("chain", string(sw.Chain)))
+	}
+	return transferred, nil
 }
 
 // migrateOne creates a Circle wallet for the user on the same chain, transfers any Bridge balance, and updates the DB row.
@@ -160,7 +254,7 @@ func (w *Worker) migrateOne(ctx context.Context, lw legacyWallet) (decimal.Decim
 			OnBehalfOf: bridgeCustomerID,
 			Amount:     amt.String(),
 			Source: bridge.TransferSource{
-				PaymentRail:    chainToPaymentRail(lw.Chain),
+				PaymentRail:    bridge.PaymentRail("bridge_wallet"),
 				Currency:       bridge.CurrencyUSDC,
 				BridgeWalletID: lw.BridgeWalletID,
 			},
