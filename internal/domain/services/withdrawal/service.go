@@ -1507,6 +1507,32 @@ func isChainRailsChain(destChain string) string {
 	return chainRailsChains[strings.ToUpper(destChain)]
 }
 
+// isSameChainFamily returns true if source and destination are the same network
+// (e.g. both Solana, or both the same EVM chain).
+func isSameChainFamily(source, dest string) bool {
+	normalize := func(c string) string {
+		switch strings.ToLower(c) {
+		case "solana", "sol", "sol-devnet":
+			return "solana"
+		case "ethereum", "eth":
+			return "ethereum"
+		case "base", "base-sepolia":
+			return "base"
+		case "polygon", "matic", "matic-amoy":
+			return "polygon"
+		case "arbitrum", "arb":
+			return "arbitrum"
+		case "optimism", "op":
+			return "optimism"
+		case "avalanche", "avax":
+			return "avalanche"
+		default:
+			return strings.ToLower(c)
+		}
+	}
+	return normalize(source) == normalize(dest)
+}
+
 // withdrawalChainsForCurrency maps each stablecoin to the chains that support it.
 // Source: Bridge route table + ChainRails token availability docs.
 var withdrawalChainsForCurrency = map[string]map[string]bool{
@@ -1556,11 +1582,14 @@ func validateChainPair(sourceChain, destChain string) error {
 // executeCryptoTransfer executes a crypto transfer via Bridge custodial wallets
 // or ChainRails for chains not natively supported by Bridge.
 func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, destinationChain, sourceChain, sourceWalletAddress, circleWalletID string) (*CryptoTransferResult, error) {
-	// Circle users: route ALL crypto withdrawals through ChainRails for cross-chain support.
-	// Circle transfer funds the ChainRails intent, ChainRails delivers to any destination chain.
+	// Circle users: route crypto withdrawals.
+	// Same-chain: direct Circle transfer. Cross-chain: via ChainRails.
 	if s.circleTransfer != nil && circleWalletID != "" {
+		if sourceChain == destinationChain || isSameChainFamily(sourceChain, destinationChain) {
+			return s.executeCircleTransfer(ctx, withdrawal, destinationAddress, destinationChain)
+		}
 		if s.chainRailsAdapter == nil {
-			return nil, fmt.Errorf("circle wallet configured without chainrails — cannot route withdrawal")
+			return nil, fmt.Errorf("circle wallet configured without chainrails — cannot route cross-chain withdrawal")
 		}
 		return s.executeCircleViaChainRails(ctx, withdrawal, destinationAddress, destinationChain)
 	}
