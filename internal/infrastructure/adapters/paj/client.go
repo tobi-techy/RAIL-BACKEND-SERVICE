@@ -209,12 +209,12 @@ func (c *Client) GetBankAccounts(ctx context.Context, sessionToken string) ([]Sa
 // --- Onramp (NGN → USDC) ---
 
 type CreateOnrampOrderRequest struct {
-	FiatAmount     float64 `json:"fiatAmount"`
-	Currency       string  `json:"currency"`
-	Recipient      string  `json:"recipient"` // wallet address to receive USDC
-	Mint           string  `json:"mint"`      // USDC mint address
-	Chain          string  `json:"chain"`
-	WebhookURL     string  `json:"webhookURL"`
+	FiatAmount      float64 `json:"fiatAmount"`
+	Currency        string  `json:"currency"`
+	Recipient       string  `json:"recipient"` // wallet address to receive USDC
+	Mint            string  `json:"mint"`      // USDC mint address
+	Chain           string  `json:"chain"`
+	WebhookURL      string  `json:"webhookURL"`
 	BusinessUSDCFee float64 `json:"businessUSDCFee,omitempty"`
 }
 
@@ -400,14 +400,14 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}, 
 		}
 
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			lastErr = fmt.Errorf("paj returned %d: %s", resp.StatusCode, string(respBody))
+			lastErr = &APIError{StatusCode: resp.StatusCode, Body: string(respBody), Path: path}
 			c.logger.Warn("Paj retryable error", zap.Int("status", resp.StatusCode), zap.Int("attempt", attempt+1))
 			continue
 		}
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			c.logger.Warn("Paj API error", zap.Int("status", resp.StatusCode), zap.String("body", string(respBody)), zap.String("path", path))
-			return fmt.Errorf("paj returned %d: %s", resp.StatusCode, string(respBody))
+			return &APIError{StatusCode: resp.StatusCode, Body: string(respBody), Path: path}
 		}
 
 		if dest != nil {

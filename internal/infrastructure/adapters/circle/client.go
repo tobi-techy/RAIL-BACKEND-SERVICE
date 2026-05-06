@@ -15,6 +15,7 @@ import (
 	"io"
 	mrand "math/rand"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -287,7 +288,7 @@ func (c *HTTPClient) CreateWallets(ctx context.Context, walletSetID string, bloc
 	}
 
 	req := CreateWalletsRequest{
-		IdempotencyKey:         uuid.New().String(),
+		IdempotencyKey:         walletCreationIdempotencyKey(walletSetID, blockchains, count, "SCA", metadata),
 		EntitySecretCiphertext: ciphertext,
 		WalletSetID:            walletSetID,
 		Blockchains:            blockchains,
@@ -310,7 +311,7 @@ func (c *HTTPClient) CreateWalletsWithType(ctx context.Context, walletSetID stri
 		return nil, err
 	}
 	req := CreateWalletsRequest{
-		IdempotencyKey:         uuid.New().String(),
+		IdempotencyKey:         walletCreationIdempotencyKey(walletSetID, blockchains, count, accountType, metadata),
 		EntitySecretCiphertext: ciphertext,
 		WalletSetID:            walletSetID,
 		Blockchains:            blockchains,
@@ -323,6 +324,30 @@ func (c *HTTPClient) CreateWalletsWithType(ctx context.Context, walletSetID stri
 		return nil, err
 	}
 	return resp.Data.Wallets, nil
+}
+
+func walletCreationIdempotencyKey(walletSetID string, blockchains []Blockchain, count int, accountType string, metadata []WalletMetadata) string {
+	chainParts := make([]string, 0, len(blockchains))
+	for _, blockchain := range blockchains {
+		chainParts = append(chainParts, string(blockchain))
+	}
+	sort.Strings(chainParts)
+
+	metadataParts := make([]string, 0, len(metadata))
+	for _, item := range metadata {
+		metadataParts = append(metadataParts, item.Name+":"+item.RefID)
+	}
+	sort.Strings(metadataParts)
+
+	keyMaterial := strings.Join([]string{
+		walletSetID,
+		accountType,
+		fmt.Sprintf("%d", count),
+		strings.Join(chainParts, ","),
+		strings.Join(metadataParts, ","),
+	}, "|")
+
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(keyMaterial)).String()
 }
 
 func (c *HTTPClient) GetWallet(ctx context.Context, walletID string) (*Wallet, error) {

@@ -489,6 +489,69 @@ func TestAdapterCreateWalletForUser(t *testing.T) {
 	assert.Equal(t, entities.WalletStatusLive, mw.Status)
 }
 
+func TestAdapterCreateWalletForUserReusesExistingWalletByRefID(t *testing.T) {
+	userID := uuid.New()
+	var createCalls int
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case http.MethodGet + " /v1/w3s/wallets":
+			assert.Equal(t, userID.String(), r.URL.Query().Get("refId"))
+			json.NewEncoder(w).Encode(apiResponse[WalletsData]{
+				Data: WalletsData{Wallets: []Wallet{
+					{
+						ID:          "existing-wallet",
+						Address:     "0xexisting",
+						Blockchain:  BlockchainETH,
+						State:       WalletStateLive,
+						WalletSetID: "ws-1",
+						AccountType: "SCA",
+					},
+				}},
+			})
+		case http.MethodPost + " /v1/w3s/developer/wallets":
+			createCalls++
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(apiResponse[WalletsData]{})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	httpClient, err := NewHTTPClient(Config{
+		APIKey:       "test-key",
+		BaseURL:      server.URL,
+		EntitySecret: generateTestEntitySecret(),
+	}, zap.NewNop())
+	require.NoError(t, err)
+
+	adapter := NewAdapter(httpClient, zap.NewNop())
+	mw, err := adapter.CreateWalletForUser(context.Background(), userID, "ws-1", entities.WalletChainEthereum)
+	require.NoError(t, err)
+	assert.Equal(t, "existing-wallet", mw.CircleWalletID)
+	assert.Equal(t, entities.AccountTypeSCA, mw.AccountType)
+	assert.Zero(t, createCalls)
+}
+
+func TestAdapterCreateMultiChainWalletsRejectsUnsupportedMixedChain(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/w3s/wallets", r.URL.Path)
+		json.NewEncoder(w).Encode(apiResponse[WalletsData]{Data: WalletsData{Wallets: nil}})
+	}))
+	defer server.Close()
+
+	httpClient, err := NewHTTPClient(Config{APIKey: "test-key", BaseURL: server.URL}, zap.NewNop())
+	require.NoError(t, err)
+
+	adapter := NewAdapter(httpClient, zap.NewNop())
+	_, err = adapter.CreateMultiChainWallets(context.Background(), uuid.New(), "ws-1", []entities.WalletChain{
+		entities.WalletChainSolana,
+		entities.WalletChainCelo,
+	})
+	assert.ErrorContains(t, err, "unsupported chain for Circle: CELO")
+}
+
 func TestAdapterGetWalletBalance_USDC(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(apiResponse[TokenBalancesData]{

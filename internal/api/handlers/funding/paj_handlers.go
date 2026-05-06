@@ -360,12 +360,12 @@ func (h *PajHandlers) GetOrderStatus(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"orderId": tx.ID,
-		"status":  tx.Status,
-		"amount":  tx.Amount,
+		"orderId":    tx.ID,
+		"status":     tx.Status,
+		"amount":     tx.Amount,
 		"fiatAmount": tx.FiatAmount,
-		"rate":    tx.Rate,
-		"type":    tx.TransactionType,
+		"rate":       tx.Rate,
+		"type":       tx.TransactionType,
 	})
 }
 
@@ -375,7 +375,10 @@ func (h *PajHandlers) handleSessionError(c *gin.Context, err error) {
 	errMsg := err.Error()
 
 	// Auth / session errors → 403
-	if strings.Contains(errMsg, "no paj session") || strings.Contains(errMsg, "paj session expired") {
+	var pajErr *paj.APIError
+	if strings.Contains(errMsg, "no paj session") ||
+		strings.Contains(errMsg, "paj session expired") ||
+		(errors.As(err, &pajErr) && pajErr.StatusCode == http.StatusUnauthorized) {
 		c.JSON(http.StatusForbidden, gin.H{
 			"code":    "PAJ_VERIFICATION_REQUIRED",
 			"message": "Please verify your identity to enable NGN transactions",

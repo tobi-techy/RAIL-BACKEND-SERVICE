@@ -3,6 +3,7 @@ package wallet
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,6 +22,14 @@ type CircleWalletProvider interface {
 	CreateWalletForUser(ctx context.Context, userID uuid.UUID, walletSetID string, chain entities.WalletChain) (*entities.ManagedWallet, error)
 	CreateMultiChainWallets(ctx context.Context, userID uuid.UUID, walletSetID string, chains []entities.WalletChain) ([]*entities.ManagedWallet, error)
 	GetWalletBalance(ctx context.Context, circleWalletID string) (string, error)
+}
+
+type CircleWalletListerByUser interface {
+	ListWalletsForUser(ctx context.Context, userID uuid.UUID, walletSetID string) ([]*entities.ManagedWallet, error)
+}
+
+type UserWalletProvisioningLocker interface {
+	LockUserWalletProvisioning(ctx context.Context, userID uuid.UUID) (func(), error)
 }
 
 // UserProfileProvider retrieves user profile data needed during provisioning.
@@ -93,6 +102,9 @@ func NewService(
 	logger *zap.Logger,
 	cfg Config,
 ) *Service {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	if cfg.WalletSetNamePrefix == "" {
 		cfg.WalletSetNamePrefix = defaultWalletSetNamePrefix
 	}
@@ -186,21 +198,38 @@ func (s *Service) CreateWalletsForUser(ctx context.Context, userID uuid.UUID, ch
 	if len(chains) == 0 {
 		chains = s.config.SupportedChains
 	}
+	chains = uniqueValidChains(chains)
+	if len(chains) == 0 {
+		return nil
+	}
+
+	if locker, ok := s.walletRepo.(UserWalletProvisioningLocker); ok {
+		unlock, err := locker.LockUserWalletProvisioning(ctx, userID)
+		if err != nil {
+			return fmt.Errorf("lock wallet provisioning: %w", err)
+		}
+		defer unlock()
+	}
 
 	s.logger.Info("Creating Circle wallets for user",
 		zap.String("userID", userID.String()),
 		zap.Any("chains", chains))
 
-	// Build the list of chains to create on Circle.
-	// Create wallets on ALL chains — Circle needs a wallet per chain to monitor deposits,
-	// even though EVM addresses are the same (unified addressing).
-	var circleChains []entities.WalletChain
-	for _, chain := range chains {
-		existing, _ := s.walletRepo.GetByUserAndChain(ctx, userID, chain)
-		if existing != nil {
-			continue
+	circleChains, err := s.missingCircleChains(ctx, userID, chains)
+	if err != nil {
+		return err
+	}
+
+	if len(circleChains) > 0 {
+		if err := s.reconcileExistingCircleWallets(ctx, userID, circleChains); err != nil {
+			s.logger.Warn("Failed to reconcile existing Circle wallets before create",
+				zap.Error(err),
+				zap.String("userID", userID.String()))
 		}
-		circleChains = append(circleChains, chain)
+		circleChains, err = s.missingCircleChains(ctx, userID, chains)
+		if err != nil {
+			return err
+		}
 	}
 
 	if len(circleChains) == 0 {
@@ -214,15 +243,28 @@ func (s *Service) CreateWalletsForUser(ctx context.Context, userID uuid.UUID, ch
 	}
 
 	// Save the Circle wallets.
+	var saveErrors []string
 	for _, w := range wallets {
-		if err := s.walletRepo.Create(ctx, w); err != nil {
-			s.logger.Error("Failed to save wallet", zap.Error(err), zap.String("chain", string(w.Chain)))
+		if err := s.upsertCircleWallet(ctx, userID, w); err != nil {
+			s.logger.Error("Failed to save Circle wallet", zap.Error(err), zap.String("chain", string(w.Chain)))
+			saveErrors = append(saveErrors, fmt.Sprintf("%s: %v", w.Chain, err))
 			continue
 		}
 		s.logger.Info("Circle wallet created",
 			zap.String("userID", userID.String()),
 			zap.String("chain", string(w.Chain)),
 			zap.String("address", w.Address))
+	}
+	if len(saveErrors) > 0 {
+		return fmt.Errorf("failed to persist Circle wallets: %s", strings.Join(saveErrors, "; "))
+	}
+
+	stillMissing, err := s.missingCircleChains(ctx, userID, circleChains)
+	if err != nil {
+		return err
+	}
+	if len(stillMissing) > 0 {
+		return fmt.Errorf("circle wallet creation incomplete; missing chains: %v", stillMissing)
 	}
 
 	s.logger.Info("Wallet provisioning completed",
@@ -238,6 +280,125 @@ func (s *Service) CreateWalletsForUser(ctx context.Context, userID uuid.UUID, ch
 	}
 
 	return nil
+}
+
+func (s *Service) missingCircleChains(ctx context.Context, userID uuid.UUID, chains []entities.WalletChain) ([]entities.WalletChain, error) {
+	wallets, err := s.walletRepo.GetByUserID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get existing wallets: %w", err)
+	}
+
+	hasCircle := make(map[entities.WalletChain]struct{}, len(wallets))
+	for _, w := range wallets {
+		if isCircleBackedWallet(w) {
+			hasCircle[w.Chain] = struct{}{}
+		}
+	}
+
+	missing := make([]entities.WalletChain, 0, len(chains))
+	for _, chain := range chains {
+		if _, ok := hasCircle[chain]; ok {
+			continue
+		}
+		missing = append(missing, chain)
+	}
+	return missing, nil
+}
+
+func (s *Service) reconcileExistingCircleWallets(ctx context.Context, userID uuid.UUID, chains []entities.WalletChain) error {
+	lister, ok := s.circleWallets.(CircleWalletListerByUser)
+	if !ok {
+		return nil
+	}
+
+	wallets, err := lister.ListWalletsForUser(ctx, userID, s.config.DefaultWalletSetID)
+	if err != nil {
+		return err
+	}
+
+	needed := make(map[entities.WalletChain]struct{}, len(chains))
+	for _, chain := range chains {
+		needed[chain] = struct{}{}
+	}
+
+	for _, w := range preferredWalletsByChain(wallets) {
+		if _, ok := needed[w.Chain]; !ok {
+			continue
+		}
+		if err := s.upsertCircleWallet(ctx, userID, w); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) upsertCircleWallet(ctx context.Context, userID uuid.UUID, wallet *entities.ManagedWallet) error {
+	if wallet == nil || wallet.CircleWalletID == "" {
+		return nil
+	}
+	wallet.UserID = userID
+
+	existing, err := s.walletRepo.GetByUserAndChain(ctx, userID, wallet.Chain)
+	if err == nil && existing != nil {
+		if existing.CircleWalletID == wallet.CircleWalletID {
+			return nil
+		}
+		if existing.CircleWalletID == "" {
+			if existing.AccountType == entities.AccountTypeBridgeWallet || existing.AccountType == entities.AccountTypeLiquidationAddr {
+				if err := s.walletRepo.Create(ctx, wallet); err != nil {
+					if isDuplicateWalletError(err) {
+						return nil
+					}
+					return err
+				}
+				return nil
+			}
+			existing.CircleWalletID = wallet.CircleWalletID
+			existing.Address = wallet.Address
+			if wallet.WalletSetID != uuid.Nil {
+				existing.WalletSetID = wallet.WalletSetID
+			}
+			existing.AccountType = wallet.AccountType
+			existing.Status = wallet.Status
+			existing.UpdatedAt = time.Now()
+			return s.walletRepo.Update(ctx, existing)
+		}
+		return nil
+	}
+
+	if err := s.walletRepo.Create(ctx, wallet); err != nil {
+		if isDuplicateWalletError(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func uniqueValidChains(chains []entities.WalletChain) []entities.WalletChain {
+	unique := make([]entities.WalletChain, 0, len(chains))
+	seen := make(map[entities.WalletChain]struct{}, len(chains))
+	for _, chain := range chains {
+		if !chain.IsValid() {
+			continue
+		}
+		if _, ok := seen[chain]; ok {
+			continue
+		}
+		seen[chain] = struct{}{}
+		unique = append(unique, chain)
+	}
+	return unique
+}
+
+func isDuplicateWalletError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "wallet already exists") ||
+		strings.Contains(msg, "duplicate key value") ||
+		strings.Contains(msg, "unique constraint")
 }
 
 func (s *Service) processWalletProvisioningAsync(jobID, userID uuid.UUID) {
@@ -320,6 +481,7 @@ func (s *Service) GetWalletAddresses(ctx context.Context, userID uuid.UUID, chai
 		if err != nil {
 			return nil, fmt.Errorf("failed to get wallets for user: %w", err)
 		}
+		wallets = preferredWalletsByChain(wallets)
 	}
 
 	// Convert to response format
@@ -348,6 +510,7 @@ func (s *Service) GetWalletStatus(ctx context.Context, userID uuid.UUID) (*entit
 	if err != nil {
 		return nil, fmt.Errorf("failed to get wallets: %w", err)
 	}
+	wallets = preferredWalletsByChain(wallets)
 
 	// Get provisioning job if exists
 	provisioningJob, err := s.provisioningJobRepo.GetByUserID(ctx, userID)
@@ -415,6 +578,72 @@ func (s *Service) GetWalletStatus(ctx context.Context, userID uuid.UUID) (*entit
 	}
 
 	return response, nil
+}
+
+func preferredWalletsByChain(wallets []*entities.ManagedWallet) []*entities.ManagedWallet {
+	byChain := make(map[entities.WalletChain]*entities.ManagedWallet)
+	order := make([]entities.WalletChain, 0, len(wallets))
+
+	for _, w := range wallets {
+		if w == nil {
+			continue
+		}
+		current, exists := byChain[w.Chain]
+		if !exists {
+			byChain[w.Chain] = w
+			order = append(order, w.Chain)
+			continue
+		}
+		if shouldPreferWallet(w, current) {
+			byChain[w.Chain] = w
+		}
+	}
+
+	preferred := make([]*entities.ManagedWallet, 0, len(byChain))
+	for _, chain := range order {
+		preferred = append(preferred, byChain[chain])
+	}
+	return preferred
+}
+
+func shouldPreferWallet(candidate, current *entities.ManagedWallet) bool {
+	if current == nil {
+		return true
+	}
+	if candidate == nil {
+		return false
+	}
+	candidateRank := walletPreferenceRank(candidate)
+	currentRank := walletPreferenceRank(current)
+	if candidateRank != currentRank {
+		return candidateRank < currentRank
+	}
+	candidateReady := candidate.IsReady()
+	currentReady := current.IsReady()
+	if candidateReady != currentReady {
+		return candidateReady
+	}
+	return candidate.UpdatedAt.After(current.UpdatedAt)
+}
+
+func isCircleBackedWallet(w *entities.ManagedWallet) bool {
+	return w != nil && w.CircleWalletID != ""
+}
+
+func walletPreferenceRank(w *entities.ManagedWallet) int {
+	if w == nil {
+		return 3
+	}
+	if w.CircleWalletID != "" && w.AccountType != entities.AccountTypeBridgeWallet && w.AccountType != entities.AccountTypeLiquidationAddr {
+		return 0
+	}
+	if w.CircleWalletID != "" {
+		return 1
+	}
+	if w.BridgeWalletID != "" {
+		return 2
+	}
+	return 3
 }
 
 // RetryFailedWalletProvisioning retries failed wallet provisioning jobs
@@ -503,7 +732,7 @@ func (s *Service) GetWalletByUserAndChain(ctx context.Context, userID uuid.UUID,
 	if chain.GetChainFamily() == "EVM" {
 		allWallets, listErr := s.walletRepo.GetByUserID(ctx, userID)
 		if listErr == nil {
-			for _, w := range allWallets {
+			for _, w := range preferredWalletsByChain(allWallets) {
 				if w.GetChainFamily() == "EVM" && w.IsReady() {
 					s.logger.Debug("EVM wallet fallback: returning wallet from sibling chain",
 						zap.String("userID", userID.String()),

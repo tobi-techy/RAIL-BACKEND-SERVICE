@@ -19,11 +19,17 @@ type Adapter struct {
 
 // NewAdapter creates a new Circle adapter.
 func NewAdapter(client Client, logger *zap.Logger) *Adapter {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	return &Adapter{client: client, logger: logger}
 }
 
 // NewSandboxAdapter creates a Circle adapter that uses testnet chains.
 func NewSandboxAdapter(client Client, logger *zap.Logger) *Adapter {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	return &Adapter{client: client, logger: logger, sandbox: true}
 }
 
@@ -45,7 +51,19 @@ func (a *Adapter) CreateWalletForUser(ctx context.Context, userID uuid.UUID, wal
 		return nil, fmt.Errorf("unsupported chain for Circle: %s", chain)
 	}
 
-	wallets, err := a.client.CreateWallets(ctx, walletSetID, []Blockchain{bc}, 1, []WalletMetadata{
+	existing, err := a.findExistingWallets(ctx, userID, walletSetID, []entities.WalletChain{chain})
+	if err == nil && len(existing) > 0 {
+		return existing[0], nil
+	}
+	if err != nil {
+		a.logger.Warn("Failed to check existing Circle wallet before create",
+			zap.Error(err),
+			zap.String("userID", userID.String()),
+			zap.String("chain", string(chain)))
+	}
+
+	accountType := circleAccountTypeForChain(chain)
+	wallets, err := a.client.CreateWalletsWithType(ctx, walletSetID, []Blockchain{bc}, 1, accountType, []WalletMetadata{
 		{Name: string(chain), RefID: userID.String()},
 	})
 	if err != nil {
@@ -55,18 +73,38 @@ func (a *Adapter) CreateWalletForUser(ctx context.Context, userID uuid.UUID, wal
 		return nil, fmt.Errorf("circle returned no wallets")
 	}
 
-	return walletToDomain(wallets[0], userID), nil
+	return walletToDomainWithAccountType(wallets[0], userID, entities.WalletAccountType(accountType)), nil
 }
 
 // CreateMultiChainWallets creates wallets on all provided chains in a single API call.
 func (a *Adapter) CreateMultiChainWallets(ctx context.Context, userID uuid.UUID, walletSetID string, chains []entities.WalletChain) ([]*entities.ManagedWallet, error) {
+	if len(chains) == 0 {
+		return nil, fmt.Errorf("no chains provided")
+	}
+	for _, ch := range chains {
+		if domainChainToCircleForEnv(ch, a.sandbox) == "" {
+			return nil, fmt.Errorf("unsupported chain for Circle: %s", ch)
+		}
+	}
+
+	existing, err := a.findExistingWallets(ctx, userID, walletSetID, chains)
+	if err != nil {
+		a.logger.Warn("Failed to check existing Circle wallets before create",
+			zap.Error(err),
+			zap.String("userID", userID.String()))
+	}
+	existingByChain := make(map[entities.WalletChain]*entities.ManagedWallet, len(existing))
+	for _, w := range existing {
+		existingByChain[w.Chain] = w
+	}
+
 	// Split chains: Solana requires EOA, EVM chains support SCA
 	var solChains, evmChains []Blockchain
 	for _, ch := range chains {
-		bc := domainChainToCircleForEnv(ch, a.sandbox)
-		if bc == "" {
+		if _, ok := existingByChain[ch]; ok {
 			continue
 		}
+		bc := domainChainToCircleForEnv(ch, a.sandbox)
 		if ch == entities.WalletChainSolana {
 			solChains = append(solChains, bc)
 		} else {
@@ -74,11 +112,14 @@ func (a *Adapter) CreateMultiChainWallets(ctx context.Context, userID uuid.UUID,
 		}
 	}
 	if len(solChains) == 0 && len(evmChains) == 0 {
+		if len(existing) > 0 {
+			return existing, nil
+		}
 		return nil, fmt.Errorf("no supported chains provided")
 	}
 
 	metadata := []WalletMetadata{{RefID: userID.String()}}
-	var result []*entities.ManagedWallet
+	result := append([]*entities.ManagedWallet(nil), existing...)
 
 	// Create Solana wallets as EOA (SCA not supported on SOL)
 	if len(solChains) > 0 {
@@ -87,7 +128,7 @@ func (a *Adapter) CreateMultiChainWallets(ctx context.Context, userID uuid.UUID,
 			return nil, fmt.Errorf("circle create wallets: %w", err)
 		}
 		for _, w := range wallets {
-			result = append(result, walletToDomain(w, userID))
+			result = append(result, walletToDomainWithAccountType(w, userID, entities.AccountTypeEOA))
 		}
 	}
 
@@ -98,10 +139,30 @@ func (a *Adapter) CreateMultiChainWallets(ctx context.Context, userID uuid.UUID,
 			return nil, fmt.Errorf("circle create wallets: %w", err)
 		}
 		for _, w := range wallets {
-			result = append(result, walletToDomain(w, userID))
+			result = append(result, walletToDomainWithAccountType(w, userID, entities.AccountTypeSCA))
 		}
 	}
 
+	return result, nil
+}
+
+func (a *Adapter) findExistingWallets(ctx context.Context, userID uuid.UUID, walletSetID string, chains []entities.WalletChain) ([]*entities.ManagedWallet, error) {
+	wallets, err := a.ListWalletsForUser(ctx, userID, walletSetID)
+	if err != nil {
+		return nil, err
+	}
+
+	needed := make(map[entities.WalletChain]struct{}, len(chains))
+	for _, chain := range chains {
+		needed[chain] = struct{}{}
+	}
+
+	var result []*entities.ManagedWallet
+	for _, w := range preferredWalletsByChain(wallets) {
+		if _, ok := needed[w.Chain]; ok {
+			result = append(result, w)
+		}
+	}
 	return result, nil
 }
 
@@ -137,6 +198,22 @@ func (a *Adapter) ListWallets(ctx context.Context, walletSetID string, userID uu
 // ListCircleWalletsByRefID returns raw Circle wallets matching a user refId.
 func (a *Adapter) ListCircleWalletsByRefID(ctx context.Context, refID string) ([]Wallet, error) {
 	return a.client.ListWalletsByRefID(ctx, refID)
+}
+
+func (a *Adapter) ListWalletsForUser(ctx context.Context, userID uuid.UUID, walletSetID string) ([]*entities.ManagedWallet, error) {
+	wallets, err := a.client.ListWalletsByRefID(ctx, userID.String())
+	if err != nil {
+		return nil, fmt.Errorf("circle list wallets by refId: %w", err)
+	}
+
+	result := make([]*entities.ManagedWallet, 0, len(wallets))
+	for _, w := range wallets {
+		if walletSetID != "" && w.WalletSetID != walletSetID {
+			continue
+		}
+		result = append(result, walletToDomain(w, userID))
+	}
+	return result, nil
 }
 
 // TransferUSDC initiates a USDC transfer from a Circle wallet using walletId + tokenId (REST API style).
@@ -213,6 +290,13 @@ func isSolanaBlockchain(bc Blockchain) bool {
 	return bc == BlockchainSOL || bc == BlockchainSOLDevnet
 }
 
+func circleAccountTypeForChain(chain entities.WalletChain) string {
+	if chain == entities.WalletChainSolana {
+		return string(entities.AccountTypeEOA)
+	}
+	return string(entities.AccountTypeSCA)
+}
+
 // HealthCheck verifies Circle API connectivity.
 func (a *Adapter) HealthCheck(ctx context.Context) error {
 	return a.client.Ping(ctx)
@@ -222,17 +306,75 @@ func (a *Adapter) HealthCheck(ctx context.Context) error {
 
 // walletToDomain converts a Circle Wallet to a domain ManagedWallet.
 func walletToDomain(w Wallet, userID uuid.UUID) *entities.ManagedWallet {
+	return walletToDomainWithAccountType(w, userID, "")
+}
+
+func walletToDomainWithAccountType(w Wallet, userID uuid.UUID, fallback entities.WalletAccountType) *entities.ManagedWallet {
+	accountType := entities.WalletAccountType(w.AccountType)
+	if !accountType.IsValid() {
+		accountType = fallback
+	}
+	if !accountType.IsValid() {
+		accountType = entities.AccountTypeEOA
+	}
+	var walletSetID uuid.UUID
+	if parsed, err := uuid.Parse(w.WalletSetID); err == nil {
+		walletSetID = parsed
+	}
+
 	return &entities.ManagedWallet{
 		ID:             uuid.New(),
 		UserID:         userID,
+		WalletSetID:    walletSetID,
 		Chain:          circleChainToDomain(w.Blockchain),
 		Address:        w.Address,
 		CircleWalletID: w.ID,
-		AccountType:    entities.AccountTypeEOA,
+		AccountType:    accountType,
 		Status:         circleStateToDomainStatus(w.State),
 		CreatedAt:      w.CreateDate,
 		UpdatedAt:      w.UpdateDate,
 	}
+}
+
+func preferredWalletsByChain(wallets []*entities.ManagedWallet) []*entities.ManagedWallet {
+	byChain := make(map[entities.WalletChain]*entities.ManagedWallet)
+	order := make([]entities.WalletChain, 0, len(wallets))
+
+	for _, w := range wallets {
+		if w == nil {
+			continue
+		}
+		current, exists := byChain[w.Chain]
+		if !exists {
+			byChain[w.Chain] = w
+			order = append(order, w.Chain)
+			continue
+		}
+		if shouldPreferWallet(w, current) {
+			byChain[w.Chain] = w
+		}
+	}
+
+	preferred := make([]*entities.ManagedWallet, 0, len(byChain))
+	for _, chain := range order {
+		preferred = append(preferred, byChain[chain])
+	}
+	return preferred
+}
+
+func shouldPreferWallet(candidate, current *entities.ManagedWallet) bool {
+	if current == nil {
+		return true
+	}
+	if candidate == nil {
+		return false
+	}
+	candidateReady := candidate.IsReady()
+	currentReady := current.IsReady()
+	if candidateReady != currentReady {
+		return candidateReady
+	}
+	return candidate.UpdatedAt.After(current.UpdatedAt)
 }
 
 // domainChainToCircle maps domain WalletChain → Circle Blockchain identifier.

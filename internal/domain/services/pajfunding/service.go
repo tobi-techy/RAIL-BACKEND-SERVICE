@@ -300,6 +300,19 @@ func (s *Service) getSessionToken(ctx context.Context, userID uuid.UUID) (string
 	return crypto.Decrypt(encrypted, s.encryptionKey)
 }
 
+func (s *Service) invalidateSessionIfUnauthorized(ctx context.Context, userID uuid.UUID, err error) error {
+	if !paj.IsUnauthorized(err) {
+		return err
+	}
+	if s.db != nil {
+		if _, dbErr := s.db.ExecContext(ctx, `DELETE FROM paj_sessions WHERE user_id = $1`, userID); dbErr != nil {
+			s.logger.Warn("failed to invalidate rejected paj session",
+				zap.String("user_id", userID.String()), zap.Error(dbErr))
+		}
+	}
+	return fmt.Errorf("paj session expired: %w", err)
+}
+
 // --- Rates ---
 
 const pajRatesCacheKey = "paj:rates"
@@ -343,7 +356,11 @@ func (s *Service) GetBanks(ctx context.Context, userID uuid.UUID) ([]paj.Bank, e
 	if err != nil {
 		return nil, err
 	}
-	return s.pajClient.GetBanks(ctx, token)
+	banks, err := s.pajClient.GetBanks(ctx, token)
+	if err != nil {
+		return nil, s.invalidateSessionIfUnauthorized(ctx, userID, err)
+	}
+	return banks, nil
 }
 
 func (s *Service) ResolveBankAccount(ctx context.Context, userID uuid.UUID, bankID, accountNumber string) (*paj.ResolvedAccount, error) {
@@ -351,7 +368,11 @@ func (s *Service) ResolveBankAccount(ctx context.Context, userID uuid.UUID, bank
 	if err != nil {
 		return nil, err
 	}
-	return s.pajClient.ResolveBankAccount(ctx, token, bankID, accountNumber)
+	account, err := s.pajClient.ResolveBankAccount(ctx, token, bankID, accountNumber)
+	if err != nil {
+		return nil, s.invalidateSessionIfUnauthorized(ctx, userID, err)
+	}
+	return account, nil
 }
 
 func (s *Service) AddBankAccount(ctx context.Context, userID uuid.UUID, bankID, accountNumber string) (*paj.SavedBankAccount, error) {
@@ -361,6 +382,9 @@ func (s *Service) AddBankAccount(ctx context.Context, userID uuid.UUID, bankID, 
 	}
 	account, err := s.pajClient.AddBankAccount(ctx, token, bankID, accountNumber)
 	if err != nil {
+		if paj.IsUnauthorized(err) {
+			return nil, s.invalidateSessionIfUnauthorized(ctx, userID, err)
+		}
 		// Ignore "already exists" — the bank account is already saved on Paj's side.
 		if strings.Contains(err.Error(), "already exists") {
 			return &paj.SavedBankAccount{AccountNumber: accountNumber, Bank: bankID}, nil
@@ -375,7 +399,11 @@ func (s *Service) GetBankAccounts(ctx context.Context, userID uuid.UUID) ([]paj.
 	if err != nil {
 		return nil, err
 	}
-	return s.pajClient.GetBankAccounts(ctx, token)
+	accounts, err := s.pajClient.GetBankAccounts(ctx, token)
+	if err != nil {
+		return nil, s.invalidateSessionIfUnauthorized(ctx, userID, err)
+	}
+	return accounts, nil
 }
 
 // --- Onramp (NGN → USDC) ---
@@ -427,7 +455,7 @@ func (s *Service) CreateOnrampOrder(ctx context.Context, userID uuid.UUID, fiatA
 
 	order, err := s.pajClient.CreateOnrampOrder(ctx, token, fiatAmount, currency, recipient)
 	if err != nil {
-		return nil, err
+		return nil, s.invalidateSessionIfUnauthorized(ctx, userID, err)
 	}
 
 	// Persist order for webhook reconciliation.
@@ -475,7 +503,7 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 
 	token, err := s.getSessionToken(ctx, userID)
 	if err != nil {
-		return nil, err
+		return nil, s.invalidateSessionIfUnauthorized(ctx, userID, err)
 	}
 
 	// Get the rate first to calculate the USDC amount we need to debit.
@@ -701,6 +729,7 @@ func (s *Service) HandleWebhook(ctx context.Context, payload *paj.WebhookPayload
 
 	tx, err := s.pajClient.GetTransaction(ctx, token, payload.ID)
 	if err != nil {
+		err = s.invalidateSessionIfUnauthorized(ctx, orderUserID, err)
 		s.logger.Warn("paj transaction verification failed, dropping webhook",
 			zap.String("paj_order_id", payload.ID), zap.Error(err))
 		return nil // Don't trust unverified payload.
@@ -764,7 +793,7 @@ func (s *Service) PollOrderStatus(ctx context.Context, userID uuid.UUID, pajOrde
 
 	tx, err := s.pajClient.GetTransaction(ctx, token, pajOrderID)
 	if err != nil {
-		return nil, err
+		return nil, s.invalidateSessionIfUnauthorized(ctx, userID, err)
 	}
 
 	// Update local order status from Paj's response.
