@@ -67,6 +67,7 @@ type ChatRequest struct {
 	History            []ai.Message `json:"history,omitempty"`
 	TransactionContext *TxContext   `json:"transaction_context,omitempty"`
 	ConversationID     string       `json:"conversation_id,omitempty"`
+	ToneMode           string       `json:"tone_mode,omitempty"` // "gentle", "direct", or "hard"
 }
 
 // TxContext provides context about a specific transaction the user tapped on.
@@ -217,10 +218,10 @@ func (h *AIChatHandlers) ChatStream(c *gin.Context) {
 				c.Writer.Flush()
 				return nil
 			}
-			return h.orchestrator.ChatStreamInConversation(c.Request.Context(), userID, conv, message, emitFn)
+			return h.orchestrator.ChatStreamInConversationWithOptions(c.Request.Context(), userID, conv, message, aiservice.ChatOptions{ToneMode: req.ToneMode}, emitFn)
 		}
 
-		return h.orchestrator.ChatStream(c.Request.Context(), userID, message, req.History, emitFn)
+		return h.orchestrator.ChatStreamWithOptions(c.Request.Context(), userID, message, req.History, aiservice.ChatOptions{ToneMode: req.ToneMode}, emitFn)
 	}()
 
 	if err != nil {
@@ -290,7 +291,7 @@ func (h *AIChatHandlers) Chat(c *gin.Context) {
 			return
 		}
 
-		resp, err := h.orchestrator.ChatWithConversation(c.Request.Context(), userID, conv, message)
+		resp, err := h.orchestrator.ChatWithConversationWithOptions(c.Request.Context(), userID, conv, message, aiservice.ChatOptions{ToneMode: req.ToneMode})
 		if err != nil {
 			h.logger.Error("Chat failed", "error", err, "user_id", userID.String())
 
@@ -321,7 +322,7 @@ func (h *AIChatHandlers) Chat(c *gin.Context) {
 	}
 
 	// Fallback when conversation persistence is unavailable.
-	resp, err := h.orchestrator.ChatInContext(c.Request.Context(), userID, uuid.Nil, message, req.History)
+	resp, err := h.orchestrator.ChatInContextWithOptions(c.Request.Context(), userID, uuid.Nil, message, req.History, aiservice.ChatOptions{ToneMode: req.ToneMode})
 	if err != nil {
 		h.logger.Error("Chat failed", "error", err, "user_id", userID.String())
 
@@ -429,6 +430,47 @@ func (h *AIChatHandlers) FinancialHealth(c *gin.Context) {
 	if err != nil {
 		h.logger.Error("financial health failed", "error", err, "user_id", userID.String())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get financial health"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+// FinancialAudit handles GET /api/v1/ai/financial-audit.
+func (h *AIChatHandlers) FinancialAudit(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	args := map[string]interface{}{}
+	if period := strings.TrimSpace(c.Query("period")); period != "" {
+		switch period {
+		case "this_month", "last_month", "last_7_days", "last_30_days":
+			args["period"] = period
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid 'period' query parameter"})
+			return
+		}
+	}
+	if intensity := strings.TrimSpace(c.Query("intensity")); intensity != "" {
+		switch intensity {
+		case "gentle", "direct", "hard":
+			args["intensity"] = intensity
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid 'intensity' query parameter"})
+			return
+		}
+	}
+
+	result, err := h.orchestrator.ExecuteToolPublic(c.Request.Context(), userID, ai.ToolCall{
+		ID:        "financial-audit-http",
+		Name:      aiservice.ToolGetFinancialAudit,
+		Arguments: args,
+	})
+	if err != nil {
+		h.logger.Error("financial audit failed", "error", err, "user_id", userID.String())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get financial audit"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": result})

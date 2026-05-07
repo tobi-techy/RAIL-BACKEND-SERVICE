@@ -1320,16 +1320,21 @@ func (h *AuthHandlers) ResetPassword(c *gin.Context) {
 	}
 	ctx := c.Request.Context()
 
-	// Validate the reset token issued by VerifyResetCode
-	selector := "reset:" + req.Token[:16]
-	userID, err := h.userRepo.ValidatePasswordResetOTP(ctx, selector, req.Token)
+	// Validate the reset token issued by VerifyResetCode.
+	resetToken := strings.TrimSpace(req.Token)
+	if len(resetToken) < 16 {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_TOKEN", Message: "Invalid or expired reset token"})
+		return
+	}
+	selector := "reset:" + resetToken[:16]
+	userID, err := h.userRepo.ValidatePasswordResetOTP(ctx, selector, resetToken)
 	if err != nil {
 		h.logger.Warn("Invalid password reset token", zap.Error(err))
 		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_TOKEN", Message: "Invalid or expired reset token"})
 		return
 	}
 	if err := crypto.ValidatePasswordStrength(req.Password); err != nil {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "WEAK_PASSWORD", Message: "An unexpected error occurred. Please try again."})
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "WEAK_PASSWORD", Message: err.Error()})
 		return
 	}
 	newHash, err := crypto.HashPassword(req.Password)
@@ -1553,7 +1558,7 @@ func (h *AuthHandlers) ChangePassword(c *gin.Context) {
 		return
 	}
 	if err := crypto.ValidatePasswordStrength(req.NewPassword); err != nil {
-		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "WEAK_PASSWORD", Message: "An unexpected error occurred. Please try again."})
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "WEAK_PASSWORD", Message: err.Error()})
 		return
 	}
 	newHash, err := crypto.HashPassword(req.NewPassword)

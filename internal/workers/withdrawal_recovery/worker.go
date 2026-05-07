@@ -3,26 +3,34 @@ package withdrawal_recovery
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
+
+type LedgerReverser interface {
+	ReverseTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, originalTxID string, amount decimal.Decimal, metadata map[string]interface{}) error
+}
 
 // Worker periodically finds crypto withdrawals stuck in processing/initiated
 // status and reverses the ledger debit if the provider transfer never completed.
 type Worker struct {
 	db            *sql.DB
+	ledger        LedgerReverser
 	logger        *zap.Logger
 	checkInterval time.Duration
 	maxStuckAge   time.Duration
 	stopCh        chan struct{}
 }
 
-func NewWorker(db *sql.DB, logger *zap.Logger) *Worker {
+func NewWorker(db *sql.DB, ledger LedgerReverser, logger *zap.Logger) *Worker {
 	return &Worker{
 		db:            db,
+		ledger:        ledger,
 		logger:        logger,
 		checkInterval: 5 * time.Minute,
 		maxStuckAge:   30 * time.Minute,
@@ -56,10 +64,11 @@ func (w *Worker) recover(ctx context.Context) {
 	maxAgeSeconds := int(w.maxStuckAge.Seconds())
 
 	rows, err := w.db.QueryContext(ctx, `
-		SELECT id, user_id, amount, fee_amount, source_account, bridge_transfer_id, updated_at
+		SELECT id, user_id, amount, fee_amount, source_account, status, updated_at
 		FROM withdrawals
 		WHERE status IN ('initiated', 'processing')
 		  AND withdrawal_type = 'crypto'
+		  AND (bridge_transfer_id IS NULL OR bridge_transfer_id = '')
 		  AND updated_at < NOW() - make_interval(secs => $1)
 		LIMIT 10`, maxAgeSeconds)
 	if err != nil {
@@ -69,19 +78,19 @@ func (w *Worker) recover(ctx context.Context) {
 	defer rows.Close()
 
 	type stuck struct {
-		ID                uuid.UUID
-		UserID            uuid.UUID
-		Amount            decimal.Decimal
-		FeeAmount         decimal.Decimal
-		SourceAccount     string
-		BridgeTransferID  *string
-		UpdatedAt         time.Time
+		ID            uuid.UUID
+		UserID        uuid.UUID
+		Amount        decimal.Decimal
+		FeeAmount     decimal.Decimal
+		SourceAccount string
+		Status        string
+		UpdatedAt     time.Time
 	}
 
 	var items []stuck
 	for rows.Next() {
 		var s stuck
-		if err := rows.Scan(&s.ID, &s.UserID, &s.Amount, &s.FeeAmount, &s.SourceAccount, &s.BridgeTransferID, &s.UpdatedAt); err != nil {
+		if err := rows.Scan(&s.ID, &s.UserID, &s.Amount, &s.FeeAmount, &s.SourceAccount, &s.Status, &s.UpdatedAt); err != nil {
 			w.logger.Error("withdrawal recovery: scan failed", zap.Error(err))
 			continue
 		}
@@ -89,102 +98,52 @@ func (w *Worker) recover(ctx context.Context) {
 	}
 
 	for _, s := range items {
-		// ChainRails withdrawals (cr: prefix) complete via webhook — only reverse if very old (>1 hour)
-		if s.BridgeTransferID != nil && len(*s.BridgeTransferID) > 0 {
-			age := time.Since(s.UpdatedAt)
-			if age < time.Hour {
-				w.logger.Info("withdrawal recovery: skipping — has provider transfer, may complete via webhook",
-					zap.String("withdrawal_id", s.ID.String()),
-					zap.String("bridge_transfer_id", *s.BridgeTransferID),
-					zap.Duration("age", age))
-				continue
-			}
-			w.logger.Warn("withdrawal recovery: provider transfer stuck >1h, reversing",
-				zap.String("withdrawal_id", s.ID.String()),
-				zap.String("bridge_transfer_id", *s.BridgeTransferID))
-		}
-
-		if err := w.reverseStuckWithdrawal(ctx, s.ID, s.UserID, s.Amount.Add(s.FeeAmount), s.SourceAccount); err != nil {
+		if err := w.recoverStuckWithdrawal(ctx, s.ID, s.UserID, s.Amount.Add(s.FeeAmount), s.SourceAccount, s.Status); err != nil {
 			w.logger.Error("withdrawal recovery: reversal failed",
 				zap.Error(err), zap.String("withdrawal_id", s.ID.String()))
 		}
 	}
 }
 
-func (w *Worker) reverseStuckWithdrawal(ctx context.Context, withdrawalID, userID uuid.UUID, totalAmount decimal.Decimal, sourceAccount string) error {
-	tx, err := w.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+func (w *Worker) recoverStuckWithdrawal(ctx context.Context, withdrawalID, userID uuid.UUID, totalAmount decimal.Decimal, sourceAccount, status string) error {
+	if status == string(entities.WithdrawalStatusInitiated) {
+		_, err := w.db.ExecContext(ctx, `
+			UPDATE withdrawals
+			SET status = 'failed', error_message = 'auto-failed: stuck before ledger debit', updated_at = NOW()
+			WHERE id = $1 AND status = 'initiated'`, withdrawalID)
+		return err
+	}
+
+	if status != string(entities.WithdrawalStatusProcessing) {
+		return nil
+	}
+
+	if w.ledger == nil {
+		return fmt.Errorf("ledger reverser not configured")
+	}
+
+	accountType := entities.AccountTypeSpendingBalance
+	if sourceAccount == string(entities.WithdrawalSourceStashBalance) {
+		accountType = entities.AccountTypeStashBalance
+	}
+
+	if err := w.ledger.ReverseTransaction(ctx, userID, accountType, withdrawalID.String(), totalAmount, map[string]interface{}{
+		"withdrawal_id":   withdrawalID.String(),
+		"reversal_reason": "auto_recovery_stuck_processing",
+		"source_account":  sourceAccount,
+	}); err != nil {
+		return err
+	}
+
+	res, err := w.db.ExecContext(ctx, `
+		UPDATE withdrawals
+		SET status = 'reversed', error_message = 'auto-reversed: stuck in processing without provider transfer', updated_at = NOW()
+		WHERE id = $1 AND status = 'processing'`, withdrawalID)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
-
-	// Atomically claim — only reverse if still stuck
-	var claimed uuid.UUID
-	err = tx.QueryRowContext(ctx, `
-		UPDATE withdrawals SET status = 'failed', failure_reason = 'auto-reversed: stuck in processing', updated_at = NOW()
-		WHERE id = $1 AND status IN ('initiated', 'processing')
-		RETURNING id`, withdrawalID).Scan(&claimed)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil
-		}
-		return err
-	}
-
-	accountType := "spending_balance"
-	if sourceAccount == "stash_balance" {
-		accountType = "stash_balance"
-	}
-
-	var userAccountID, systemAccountID uuid.UUID
-	if err := tx.QueryRowContext(ctx,
-		`SELECT id FROM ledger_accounts WHERE user_id = $1 AND account_type = $2`,
-		userID, accountType).Scan(&userAccountID); err != nil {
-		return err
-	}
-	if err := tx.QueryRowContext(ctx,
-		`SELECT id FROM ledger_accounts WHERE account_type = 'system_buffer_usdc' AND user_id IS NULL LIMIT 1`,
-	).Scan(&systemAccountID); err != nil {
-		return err
-	}
-
-	txID := uuid.New()
-	idempotencyKey := "withdrawal-auto-reversal-" + withdrawalID.String()
-
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO ledger_transactions (id, user_id, transaction_type, idempotency_key, status, description, metadata, created_at)
-		VALUES ($1, $2, 'reversal', $3, 'completed', 'Auto-reversal: stuck withdrawal',
-			jsonb_build_object('withdrawal_id', $4::text, 'type', 'auto_withdrawal_reversal'), NOW())`,
-		txID, userID, idempotencyKey, withdrawalID.String())
-	if err != nil {
-		return err
-	}
-
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO ledger_entries (id, transaction_id, account_id, entry_type, amount, currency, description, created_at)
-		VALUES ($1, $2, $3, 'debit', $4, 'USDC', 'Auto-reversal: stuck withdrawal', NOW())`,
-		uuid.New(), txID, userAccountID, totalAmount)
-	if err != nil {
-		return err
-	}
-
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO ledger_entries (id, transaction_id, account_id, entry_type, amount, currency, description, created_at)
-		VALUES ($1, $2, $3, 'credit', $4, 'USDC', 'Auto-reversal: stuck withdrawal', NOW())`,
-		uuid.New(), txID, systemAccountID, totalAmount)
-	if err != nil {
-		return err
-	}
-
-	_, err = tx.ExecContext(ctx,
-		`UPDATE ledger_accounts SET balance = balance + $1 WHERE id = $2`,
-		totalAmount, userAccountID)
-	if err != nil {
-		return err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return err
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		return nil
 	}
 
 	w.logger.Info("Withdrawal auto-reversed",

@@ -31,8 +31,12 @@ func (o *Orchestrator) SetUsageTracker(u UsageTracker) {
 // for context. It loads summary + recent messages, calls the LLM, and persists
 // the exchange. Tracks usage for cost monitoring.
 func (o *Orchestrator) ChatWithConversation(ctx context.Context, userID uuid.UUID, conv *entities.AIConversation, message string) (*ChatResponse, error) {
+	return o.ChatWithConversationWithOptions(ctx, userID, conv, message, ChatOptions{})
+}
+
+func (o *Orchestrator) ChatWithConversationWithOptions(ctx context.Context, userID uuid.UUID, conv *entities.AIConversation, message string, opts ChatOptions) (*ChatResponse, error) {
 	if o.conversations == nil {
-		return o.ChatInContext(ctx, userID, uuid.Nil, message, nil)
+		return o.ChatInContextWithOptions(ctx, userID, uuid.Nil, message, nil, opts)
 	}
 
 	history, err := o.conversations.BuildContext(ctx, conv)
@@ -41,7 +45,7 @@ func (o *Orchestrator) ChatWithConversation(ctx context.Context, userID uuid.UUI
 		history = nil
 	}
 
-	resp, err := o.ChatInContext(ctx, userID, conv.ID, message, history)
+	resp, err := o.ChatInContextWithOptions(ctx, userID, conv.ID, message, history, opts)
 	if err != nil {
 		return nil, err
 	}

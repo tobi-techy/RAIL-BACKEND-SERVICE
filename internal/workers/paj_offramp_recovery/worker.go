@@ -7,23 +7,30 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
+
+type LedgerReverser interface {
+	ReverseTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, originalTxID string, amount decimal.Decimal, metadata map[string]interface{}) error
+}
 
 // Worker periodically finds stuck Paj offramp orders (pending too long with no
 // bridge_transfer_id) and reverses the ledger hold atomically.
 type Worker struct {
 	db            *sql.DB
+	ledger        LedgerReverser
 	logger        *zap.Logger
 	checkInterval time.Duration
 	maxPendingAge time.Duration
 	stopCh        chan struct{}
 }
 
-func NewWorker(db *sql.DB, logger *zap.Logger) *Worker {
+func NewWorker(db *sql.DB, ledger LedgerReverser, logger *zap.Logger) *Worker {
 	return &Worker{
 		db:            db,
+		ledger:        ledger,
 		logger:        logger,
 		checkInterval: 2 * time.Minute,
 		maxPendingAge: 15 * time.Minute,
@@ -63,11 +70,8 @@ func (w *Worker) recover(ctx context.Context) {
 		WHERE order_type = 'offramp'
 		  AND status = 'pending'
 		  AND deposit_id IS NULL
-		  AND (
-		    (bridge_transfer_id IS NULL AND created_at < NOW() - make_interval(secs => $1))
-		    OR
-		    (bridge_transfer_id IS NOT NULL AND created_at < NOW() - interval '1 hour')
-		  )
+		  AND bridge_transfer_id IS NULL
+		  AND created_at < NOW() - make_interval(secs => $1)
 		LIMIT 10`, maxAgeSeconds)
 	if err != nil {
 		w.logger.Error("paj offramp recovery: query failed", zap.Error(err))
@@ -106,19 +110,14 @@ func (w *Worker) recover(ctx context.Context) {
 	}
 }
 
-// reverseStuckOrder atomically claims the order AND reverses the ledger hold
-// in a single database transaction to prevent double-reversal races.
+// reverseStuckOrder claims the order before reversing the ledger hold through
+// the shared ledger service. The ledger idempotency key prevents double credits
+// if recovery races with a webhook or a retry.
 func (w *Worker) reverseStuckOrder(ctx context.Context, pajOrderID string, userID uuid.UUID, holdAmount decimal.Decimal, fiatAmount float64) error {
-	tx, err := w.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
 	// Atomically claim: set status=failed AND deposit_id (blocks both worker re-entry
 	// AND the webhook reverseOfframpIfFailed path which checks deposit_id IS NULL).
 	var claimedHold decimal.Decimal
-	err = tx.QueryRowContext(ctx, `
+	err := w.db.QueryRowContext(ctx, `
 		UPDATE paj_orders
 		SET status = 'failed', deposit_id = gen_random_uuid(), updated_at = NOW()
 		WHERE paj_order_id = $1
@@ -136,66 +135,25 @@ func (w *Worker) reverseStuckOrder(ctx context.Context, pajOrderID string, userI
 		return nil
 	}
 
-	// Get account IDs within the same transaction.
-	var userAccountID, systemAccountID uuid.UUID
-	err = tx.QueryRowContext(ctx,
-		`SELECT id FROM ledger_accounts WHERE user_id = $1 AND account_type = 'spending_balance'`,
-		userID).Scan(&userAccountID)
-	if err != nil {
-		return fmt.Errorf("user account lookup: %w", err)
+	if w.ledger == nil {
+		_, _ = w.db.ExecContext(ctx, `
+			UPDATE paj_orders SET status = 'pending', deposit_id = NULL, updated_at = NOW()
+			WHERE paj_order_id = $1 AND status = 'failed'`, pajOrderID)
+		return fmt.Errorf("ledger reverser not configured")
 	}
 
-	err = tx.QueryRowContext(ctx,
-		`SELECT id FROM ledger_accounts WHERE account_type = 'system_buffer_usdc' AND user_id IS NULL LIMIT 1`,
-	).Scan(&systemAccountID)
+	err = w.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
+		"paj-offramp-"+pajOrderID, claimedHold, map[string]interface{}{
+			"provider":     "paj",
+			"type":         "auto_offramp_reversal",
+			"paj_order_id": pajOrderID,
+			"fiat_amount":  fiatAmount,
+		})
 	if err != nil {
-		return fmt.Errorf("system account lookup: %w", err)
-	}
-
-	// Create reversal with idempotent key (prevents duplicate reversals on retry).
-	txID := uuid.New()
-	idempotencyKey := "paj-offramp-auto-reversal-" + pajOrderID
-	desc := "Auto-reversal: stuck Paj offramp (no Bridge transfer)"
-
-	// Use parameterized JSON to prevent injection.
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO ledger_transactions (id, user_id, transaction_type, idempotency_key, status, description, metadata, created_at)
-		VALUES ($1, $2, 'reversal', $3, 'completed', $4,
-			jsonb_build_object('provider','paj','type','auto_offramp_reversal','paj_order_id',$5::text,'fiat_amount',$6::numeric),
-			NOW())`,
-		txID, userID, idempotencyKey, desc, pajOrderID, fiatAmount)
-	if err != nil {
-		return fmt.Errorf("insert reversal tx: %w", err)
-	}
-
-	// Debit user account (increases balance).
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO ledger_entries (id, transaction_id, account_id, entry_type, amount, currency, description, created_at)
-		VALUES ($1, $2, $3, 'debit', $4, 'USDC', $5, NOW())`,
-		uuid.New(), txID, userAccountID, claimedHold, desc)
-	if err != nil {
-		return fmt.Errorf("insert debit entry: %w", err)
-	}
-
-	// Credit system buffer.
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO ledger_entries (id, transaction_id, account_id, entry_type, amount, currency, description, created_at)
-		VALUES ($1, $2, $3, 'credit', $4, 'USDC', $5, NOW())`,
-		uuid.New(), txID, systemAccountID, claimedHold, desc)
-	if err != nil {
-		return fmt.Errorf("insert credit entry: %w", err)
-	}
-
-	// Update cached balance atomically.
-	_, err = tx.ExecContext(ctx,
-		`UPDATE ledger_accounts SET balance = balance + $1 WHERE id = $2`,
-		claimedHold, userAccountID)
-	if err != nil {
-		return fmt.Errorf("update cached balance: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit: %w", err)
+		_, _ = w.db.ExecContext(ctx, `
+			UPDATE paj_orders SET status = 'pending', deposit_id = NULL, updated_at = NOW()
+			WHERE paj_order_id = $1 AND status = 'failed'`, pajOrderID)
+		return fmt.Errorf("reverse hold: %w", err)
 	}
 
 	w.logger.Info("Paj offramp auto-reversed stuck order",

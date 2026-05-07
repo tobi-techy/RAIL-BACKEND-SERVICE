@@ -29,13 +29,13 @@ func ValidatePassword(password, hash string) bool {
 }
 
 // ValidatePasswordStrength checks that a password meets minimum policy requirements:
-// at least 12 characters, one uppercase, one lowercase, one digit, and one special character.
+// at least 8 characters and at least 3 of uppercase, lowercase, digit, or special character.
 func ValidatePasswordStrength(password string) error {
 	if len(password) > 72 {
 		return fmt.Errorf("password must not exceed 72 characters")
 	}
-	if len(password) < 12 {
-		return fmt.Errorf("password must be at least 12 characters")
+	if len(password) < 8 {
+		return fmt.Errorf("password must be at least 8 characters")
 	}
 	var hasUpper, hasLower, hasDigit, hasSpecial bool
 	for _, c := range password {
@@ -50,17 +50,14 @@ func ValidatePasswordStrength(password string) error {
 			hasSpecial = true
 		}
 	}
-	if !hasUpper {
-		return fmt.Errorf("password must contain at least one uppercase letter")
+	complexityCount := 0
+	for _, ok := range []bool{hasUpper, hasLower, hasDigit, hasSpecial} {
+		if ok {
+			complexityCount++
+		}
 	}
-	if !hasLower {
-		return fmt.Errorf("password must contain at least one lowercase letter")
-	}
-	if !hasDigit {
-		return fmt.Errorf("password must contain at least one digit")
-	}
-	if !hasSpecial {
-		return fmt.Errorf("password must contain at least one special character")
+	if complexityCount < 3 {
+		return fmt.Errorf("password must contain at least 3 of: uppercase, lowercase, digit, special character")
 	}
 	return nil
 }

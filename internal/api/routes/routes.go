@@ -1048,6 +1048,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					aiGroup.GET("/wrapped", middleware.AuthRateLimit(10), aiChatHandlers.GetWrapped)
 					aiGroup.GET("/quick-insight", middleware.AuthRateLimit(20), aiChatHandlers.QuickInsight)
 					aiGroup.GET("/financial-health", middleware.AuthRateLimit(20), aiChatHandlers.FinancialHealth)
+					aiGroup.GET("/financial-audit", middleware.AuthRateLimit(20), aiChatHandlers.FinancialAudit)
 					aiGroup.GET("/cash-flow-forecast", middleware.AuthRateLimit(20), aiChatHandlers.CashFlowForecast)
 					aiGroup.GET("/financial-plan", middleware.AuthRateLimit(20), aiChatHandlers.FinancialPlan)
 					aiGroup.GET("/action-receipts", middleware.AuthRateLimit(20), aiChatHandlers.ActionReceipts)

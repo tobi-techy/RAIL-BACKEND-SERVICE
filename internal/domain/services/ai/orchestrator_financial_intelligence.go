@@ -26,6 +26,7 @@ type ActionHistoryReader interface {
 
 func FinancialIntelligenceTools(hasActionHistory bool) []infraai.Tool {
 	tools := []infraai.Tool{
+		FinancialAuditTool(),
 		{
 			Name:        ToolGetFinancialHealth,
 			Description: "Calculate the user's financial health score from current balances, savings rate, budget progress, cash flow, and profile targets. Use for 'how am I doing', financial score, financial health, or progress check questions.",

@@ -90,48 +90,54 @@ type UsageTracker interface {
 	IsOverCostCeiling(ctx context.Context, userID uuid.UUID) (bool, error)
 }
 
+// ChatOptions carries product-controlled chat behavior that should be injected
+// as system context instead of mixed into user text.
+type ChatOptions struct {
+	ToneMode string
+}
+
 // Orchestrator handles AI interactions with tool calling
 type Orchestrator struct {
-	aiProvider         ai.AIProvider
-	portfolioProvider  PortfolioDataProvider
-	activityProvider   ActivityDataProvider
-	newsProvider       NewsDataProvider
-	conversations      ConversationPersister
-	usage              UsageTracker
-	knowledge          KnowledgeSearcher
-	spending           SpendingAnalyzer
-	balanceHistory     BalanceHistoryProvider
-	patterns           PatternAnalyzer
-	aggregateStats     AggregateStatsProvider
-	fundsTransferer    FundsTransferer
-	actionAuditor      ActionAuditor
-	actionHistory      ActionHistoryReader
-	cardTransactions   CardTransactionProvider
-	depositHistory     DepositHistoryProvider
-	yieldProvider      YieldProvider
-	withdrawalHistory  WithdrawalHistoryProvider
-	receiptHistory     ReceiptHistoryProvider
-	budgetProvider     BudgetProvider
-	financialProfile   FinancialProfileProvider
-	obligations        FinancialObligationProvider
-	automationCreator  AutomationCreator
-	obligationCreator  ObligationCreator
-	currencyRates      CurrencyRateProvider
-	userProfile        UserProfileProvider
-	reportEmail        ReportEmailSender
-	savingsGoalStore   SavingsGoalStore
-	recurringDetector  RecurringExpenseDetector
-	warrantyTracker    WarrantyTracker
-	receiptChallenges  ReceiptChallengeProvider
-	savingsSuggestions SavingsSuggestionProvider
-	priceTracker       PriceTracker
-	merchantAnalyzer   MerchantAnalyzer
-	pending            PendingActionStore
-	accountChecker     UserAccountChecker
+	aiProvider          ai.AIProvider
+	portfolioProvider   PortfolioDataProvider
+	activityProvider    ActivityDataProvider
+	newsProvider        NewsDataProvider
+	conversations       ConversationPersister
+	usage               UsageTracker
+	knowledge           KnowledgeSearcher
+	spending            SpendingAnalyzer
+	balanceHistory      BalanceHistoryProvider
+	patterns            PatternAnalyzer
+	aggregateStats      AggregateStatsProvider
+	fundsTransferer     FundsTransferer
+	actionAuditor       ActionAuditor
+	actionHistory       ActionHistoryReader
+	cardTransactions    CardTransactionProvider
+	depositHistory      DepositHistoryProvider
+	yieldProvider       YieldProvider
+	withdrawalHistory   WithdrawalHistoryProvider
+	receiptHistory      ReceiptHistoryProvider
+	budgetProvider      BudgetProvider
+	financialProfile    FinancialProfileProvider
+	obligations         FinancialObligationProvider
+	automationCreator   AutomationCreator
+	obligationCreator   ObligationCreator
+	currencyRates       CurrencyRateProvider
+	userProfile         UserProfileProvider
+	reportEmail         ReportEmailSender
+	savingsGoalStore    SavingsGoalStore
+	recurringDetector   RecurringExpenseDetector
+	warrantyTracker     WarrantyTracker
+	receiptChallenges   ReceiptChallengeProvider
+	savingsSuggestions  SavingsSuggestionProvider
+	priceTracker        PriceTracker
+	merchantAnalyzer    MerchantAnalyzer
+	pending             PendingActionStore
+	accountChecker      UserAccountChecker
 	emergencyWithdrawer EmergencyWithdrawer
-	automationProvider AutomationProvider
-	memory             *MemoryService
-	logger             *zap.Logger
+	automationProvider  AutomationProvider
+	memory              *MemoryService
+	logger              *zap.Logger
 }
 
 // OrchestratorDeps groups all optional dependencies for the Orchestrator.
@@ -331,6 +337,7 @@ ACCURACY RULES (CRITICAL — users are paying for this):
 - When the user asks what happened over time, call get_financial_timeline instead of reconstructing a story from memory.
 - For persona-specific planning (individuals, freelancers, founders, families, high earners) or geography/cross-currency questions, call get_persona_money_context before answering. Use its persona_priorities, paid_workflows, geo_playbook, and missing_fields. If key fields are missing, ask one or two questions instead of giving a generic plan.
 - For monthly operating plans, safe-spend decisions, obligation coverage, tax reserve, family-support limits, or "what should I do this month" questions, call get_money_operating_plan before answering. Treat its next_actions as approval-gated proposals; never imply money moved unless a pending action was confirmed.
+- For "audit me", "hard mode", "roast my finances", "reality check", "no sugarcoating", or Caleb-style accountability requests, call get_financial_audit before answering. This is an opt-in audit mode: be blunt about patterns, never cruel to the person, never imitate a specific creator, and keep every critique tied to exact tool evidence.
 - For investment, tax, or legal questions, keep the answer conservative and informational. Never promise returns, give legal conclusions, or state tax liability as fact.
 - When using search_knowledge_base, ground the answer in the returned context and mention the source document names when helpful. Never present knowledge-base content as if it came from the user's account data.
 
@@ -375,6 +382,7 @@ RESPONSE STYLE:
 - When you know their goals, connect the dots. "You spent $200 on dining — your car fund target is $12,500 by December, just saying."
 - Ask follow-ups that show you're paying attention, not just processing queries.
 - When balance is very low (under $50): acknowledge it plainly, don't lecture. "Yeah, $17.90 is thin. What's coming in next?"
+- Audit mode: use the tool's segment labels and delivery contract. Attack the pattern, not the person. Strong line, exact number, practical fix. No humiliation, no name-calling, no creator impersonation.
 
 ACTIONS:
 - You can: transfer between spend and stash, set savings goals, set budgets, create automations, split receipts.
@@ -545,6 +553,10 @@ func toolCacheKey(tc ai.ToolCall) string {
 
 // ChatInContext handles a chat message with an optional conversation ID for action support.
 func (o *Orchestrator) ChatInContext(ctx context.Context, userID, convID uuid.UUID, message string, history []ai.Message) (*ChatResponse, error) {
+	return o.ChatInContextWithOptions(ctx, userID, convID, message, history, ChatOptions{})
+}
+
+func (o *Orchestrator) ChatInContextWithOptions(ctx context.Context, userID, convID uuid.UUID, message string, history []ai.Message, opts ChatOptions) (*ChatResponse, error) {
 	start := time.Now()
 
 	// Per-request tool result cache to avoid duplicate DB hits within a single chat call
@@ -570,6 +582,9 @@ func (o *Orchestrator) ChatInContext(ctx context.Context, userID, convID uuid.UU
 		if toneCtx := o.memory.BuildToneContext(ctx, userID); toneCtx != "" {
 			messages = append(messages, ai.Message{Role: "system", Content: toneCtx})
 		}
+	}
+	if toneModeCtx := buildToneModeContext(opts.ToneMode); toneModeCtx != "" {
+		messages = append(messages, ai.Message{Role: "system", Content: toneModeCtx})
 	}
 
 	messages = append(messages, ai.Message{Role: "user", Content: message})
@@ -924,6 +939,12 @@ func (o *Orchestrator) executeToolInner(ctx context.Context, userID uuid.UUID, t
 		}
 		return o.executeFinancialHealth(ctx, userID)
 
+	case ToolGetFinancialAudit:
+		if !o.hasFinancialAdviceProviders() {
+			return map[string]interface{}{"error": "financial audit service is unavailable: spending and balance providers are not configured"}, nil
+		}
+		return o.executeFinancialAudit(ctx, userID, tc.Arguments)
+
 	case ToolGetFinancialPlan:
 		if !o.hasFinancialAdviceProviders() {
 			return map[string]interface{}{"error": "financial plan service is unavailable: spending and balance providers are not configured"}, nil
@@ -1018,6 +1039,7 @@ func classifyQueryComplexity(message string) string {
 		"tax", "budget plan", "financial health", "risk",
 		"help me", "explain", "break down", "deep dive",
 		"optimize", "rebalance", "goal", "timeline",
+		"audit", "hard mode", "roast", "reality check", "no sugar",
 	}
 	for _, p := range complexPatterns {
 		if strings.Contains(lower, p) {

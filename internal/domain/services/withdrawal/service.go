@@ -27,18 +27,18 @@ import (
 
 // Crypto withdrawal constants
 const (
-	CryptoWithdrawalMinAmount   = 10.00 // Minimum crypto withdrawal
-	FiatWithdrawalMinAmountUSD  = 10.00 // Minimum USD fiat withdrawal
-	FiatWithdrawalMinAmountEUR  = 10.00 // Minimum EUR fiat withdrawal
-	CryptoWithdrawalFeePercent  = 0.0   // No percentage fee — flat only
-	CryptoWithdrawalFeeSolana   = 0.10  // $0.10 flat service fee for Solana withdrawals
-	CryptoWithdrawalFeeEVM      = 0.50  // $0.50 flat service fee for EVM chain withdrawals
-	FlatWithdrawalFee           = 0.50  // Default flat fee (legacy, use chain-specific)
-	FiatWithdrawalFeeUSD        = 1.00  // $1.00 flat fee for USD withdrawals
-	FiatWithdrawalFeeEUR        = 1.00  // €1.00 flat fee for EUR withdrawals
-	FiatWithdrawalFeeGBP        = 1.00  // £1.00 flat fee for GBP withdrawals
-	FiatWithdrawalFeeNGN        = 0.02  // ~₦30 flat fee for NGN withdrawals
-	FiatWithdrawalFeePercentUSD = 0.0   // No percentage fee — flat only
+	CryptoWithdrawalMinAmount   = 1.00 // Minimum crypto withdrawal
+	FiatWithdrawalMinAmountUSD  = 1.00 // Minimum USD fiat withdrawal
+	FiatWithdrawalMinAmountEUR  = 1.00 // Minimum EUR fiat withdrawal
+	CryptoWithdrawalFeePercent  = 0.0  // No percentage fee — flat only
+	CryptoWithdrawalFeeSolana   = 0.10 // $0.10 flat service fee for Solana withdrawals
+	CryptoWithdrawalFeeEVM      = 0.50 // $0.50 flat service fee for EVM chain withdrawals
+	FlatWithdrawalFee           = 0.50 // Default flat fee (legacy, use chain-specific)
+	FiatWithdrawalFeeUSD        = 1.00 // $1.00 flat fee for USD withdrawals
+	FiatWithdrawalFeeEUR        = 1.00 // €1.00 flat fee for EUR withdrawals
+	FiatWithdrawalFeeGBP        = 1.00 // £1.00 flat fee for GBP withdrawals
+	FiatWithdrawalFeeNGN        = 0.02 // ~₦30 flat fee for NGN withdrawals
+	FiatWithdrawalFeePercentUSD = 0.0  // No percentage fee — flat only
 	FiatWithdrawalFeePercentEUR = 0.0
 	MinWithdrawalAmount         = 1.00 // Minimum $1 withdrawal
 	withdrawalLockShards        = 256
@@ -565,8 +565,7 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	}
 
 	// Step 3.1: Validate destination address is whitelisted (if whitelist enabled)
-	// TEMPORARILY DISABLED: skip whitelist for all users until frontend whitelist management is ready.
-	if false && s.addressWhitelist != nil {
+	if s.addressWhitelist != nil {
 		user, userErr := s.userRepo.GetUserEntityByID(ctx, req.UserID)
 		skipWhitelist := userErr == nil && user != nil && entities.DeriveKYCTier(user.KYCStatus) == entities.KYCTierNonKYC
 		if !skipWhitelist {
@@ -976,7 +975,7 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 }
 
 func (s *WithdrawalService) prepareStashYieldForCryptoWithdrawal(ctx context.Context, withdrawal *entities.Withdrawal, req *entities.InitiateCryptoWithdrawalRequest) error {
-	if req.SourceAccount != entities.WithdrawalSourceStashBalance || strings.TrimSpace(req.CircleWalletID) == "" {
+	if req.SourceAccount != entities.WithdrawalSourceStashBalance {
 		return nil
 	}
 	if s.stashYieldRedeemer == nil {
@@ -1179,21 +1178,16 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 		return nil, err
 	}
 
+	if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusProcessing); err != nil {
+		s.logger.Error("Failed to claim fiat withdrawal for processing", "error", err, "withdrawal_id", withdrawal.ID.String())
+		return nil, fmt.Errorf("failed to update status: %w", err)
+	}
+	withdrawal.Status = entities.WithdrawalStatusProcessing
+
 	if err := s.postWithdrawalLedgerEntries(ctx, withdrawal); err != nil {
 		s.logger.Error("Failed to post pre-transfer ledger debit", "error", err, "withdrawal_id", withdrawal.ID.String())
 		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "ledger debit failed: "+err.Error())
 		return nil, fmt.Errorf("failed to post ledger debit: %w", err)
-	}
-
-	// Debit emergency fee to revenue account if this is an emergency withdrawal
-	if emergencyFee.IsPositive() && s.emergencyLedger != nil {
-		idemKey := fmt.Sprintf("emergency-fee-%s", withdrawal.ID.String())
-		if feeErr := s.emergencyLedger.EmergencyTransferStashToSpending(ctx, req.UserID, decimal.Zero, emergencyFee, idemKey); feeErr != nil {
-			s.logger.Error("Failed to debit emergency fee", "error", feeErr, "withdrawal_id", withdrawal.ID.String())
-		}
-		if sl != nil {
-			_ = sl.MarkEmergencyWithdrawn(ctx, req.UserID)
-		}
 	}
 
 	// Step 9: Execute Bridge offramp transfer
@@ -1210,24 +1204,36 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 	}
 
 	// Update bridge transfer ID
-	if err := s.withdrawalRepo.UpdateBridgeTransfer(ctx, withdrawal.ID, transferID); err != nil {
-		s.logger.Error("Failed to update bridge transfer ID", "error", err)
-	} else {
-		withdrawal.ProviderTransferID = &transferID
-	}
-
-	// Update status to processing
-	if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusProcessing); err != nil {
-		s.logger.Error("Failed to update withdrawal status", "error", err)
-		return nil, fmt.Errorf("failed to update status: %w", err)
-	}
-
-	withdrawal.Status = entities.WithdrawalStatusProcessing
-
-	if s.limitsService != nil {
-		if err := s.limitsService.RecordWithdrawal(ctx, req.UserID, req.Amount); err != nil {
-			s.logger.Error("Failed to record fiat withdrawal against limits", "error", err)
+	var updateTransferErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		updateTransferErr = s.withdrawalRepo.UpdateBridgeTransfer(ctx, withdrawal.ID, transferID)
+		if updateTransferErr == nil {
+			withdrawal.ProviderTransferID = &transferID
+			break
 		}
+		s.logger.Error("Failed to update bridge transfer ID",
+			"error", updateTransferErr,
+			"withdrawal_id", withdrawal.ID.String(),
+			"transfer_id", transferID,
+			"attempt", attempt)
+		time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+	}
+	if updateTransferErr != nil {
+		s.logger.Error("CRITICAL: fiat transfer accepted but provider transfer ID was not persisted",
+			"error", updateTransferErr,
+			"withdrawal_id", withdrawal.ID.String(),
+			"transfer_id", transferID)
+	}
+
+	if emergencyFee.IsPositive() && s.emergencyLedger != nil {
+		idemKey := fmt.Sprintf("emergency-fee-%s", withdrawal.ID.String())
+		if feeErr := s.emergencyLedger.EmergencyTransferStashToSpending(ctx, req.UserID, decimal.Zero, emergencyFee, idemKey); feeErr != nil {
+			s.logger.Error("CRITICAL: failed to debit emergency fee after fiat transfer accepted",
+				"error", feeErr, "withdrawal_id", withdrawal.ID.String(), "fee", emergencyFee.String())
+		}
+	}
+	if req.Emergency && sl != nil {
+		_ = sl.MarkEmergencyWithdrawn(ctx, req.UserID)
 	}
 
 	s.logger.Info("Fiat withdrawal initiated",
@@ -1411,17 +1417,37 @@ func (s *WithdrawalService) CancelWithdrawal(ctx context.Context, userID, withdr
 		return fmt.Errorf("cannot cancel withdrawal in status: %s", withdrawal.Status)
 	}
 
+	if withdrawal.Status == entities.WithdrawalStatusInitiated || withdrawal.Status == entities.WithdrawalStatusComplianceReview {
+		if err := s.withdrawalRepo.MarkCancelled(ctx, withdrawalID); err != nil {
+			return fmt.Errorf("failed to cancel withdrawal: %w", err)
+		}
+		if s.notificationService != nil {
+			_ = s.notificationService.NotifyWithdrawalFailed(ctx, userID, withdrawal.Amount, "Cancelled by user")
+		}
+		return nil
+	}
+
 	if withdrawal.ProviderTransferID != nil && strings.TrimSpace(*withdrawal.ProviderTransferID) != "" {
 		transferID := *withdrawal.ProviderTransferID
 		if strings.HasPrefix(transferID, "cr:") {
-			// ChainRails withdrawals cannot be cancelled via provider — they auto-expire if unfunded
-			s.logger.Info("ChainRails withdrawal cancel — skipping provider cancel (auto-expires)",
+			s.logger.Warn("ChainRails withdrawal cancellation rejected after provider transfer started",
 				"transfer_id", transferID)
-		} else if s.bridgeAdapter != nil {
-			if err := s.bridgeAdapter.CancelTransfer(ctx, transferID); err != nil {
-				return fmt.Errorf("provider cancellation failed: %w", err)
-			}
-			s.logger.Info("Bridge transfer cancelled", "transfer_id", transferID)
+			return fmt.Errorf("cannot cancel cross-chain withdrawal after provider transfer has started")
+		}
+		if s.bridgeAdapter == nil {
+			return fmt.Errorf("provider cancellation unavailable")
+		}
+		if err := s.bridgeAdapter.CancelTransfer(ctx, transferID); err != nil {
+			return fmt.Errorf("provider cancellation failed: %w", err)
+		}
+		s.logger.Info("Bridge transfer cancelled", "transfer_id", transferID)
+	} else {
+		switch withdrawal.Status {
+		case entities.WithdrawalStatusProcessing, entities.WithdrawalStatusPending:
+			s.logger.Info("Cancelling withdrawal before provider transfer was recorded",
+				"withdrawal_id", withdrawal.ID.String(), "status", withdrawal.Status)
+		default:
+			return fmt.Errorf("cannot cancel withdrawal in status: %s", withdrawal.Status)
 		}
 	}
 
@@ -1458,6 +1484,8 @@ func (s *WithdrawalService) GetWithdrawal(ctx context.Context, userID, withdrawa
 			s.logger.Warn("Failed to sync withdrawal status on read",
 				"withdrawal_id", withdrawal.ID.String(),
 				"error", err)
+		} else if refreshed, refreshErr := s.withdrawalRepo.GetByID(ctx, withdrawalID); refreshErr == nil && refreshed != nil {
+			withdrawal = refreshed
 		}
 	}
 
@@ -2071,8 +2099,8 @@ func (s *WithdrawalService) CompleteChainRailsWithdrawal(ctx context.Context, in
 		}
 	}
 
-	if err := s.withdrawalRepo.MarkCompleted(ctx, withdrawal.ID); err != nil {
-		return fmt.Errorf("failed to mark withdrawal completed: %w", err)
+	if err := s.settleCompletedCryptoWithdrawal(ctx, withdrawal); err != nil {
+		return fmt.Errorf("failed to settle withdrawal completion: %w", err)
 	}
 
 	// Record limit usage on successful completion
@@ -2276,6 +2304,12 @@ func (s *WithdrawalService) settleCompletedFiatWithdrawal(ctx context.Context, w
 	withdrawal.Status = entities.WithdrawalStatusCompleted
 	withdrawal.CompletedAt = &now
 	withdrawal.UpdatedAt = now
+
+	if s.limitsService != nil {
+		if err := s.limitsService.RecordWithdrawal(ctx, withdrawal.UserID, withdrawal.Amount); err != nil {
+			s.logger.Error("Failed to record fiat withdrawal against limits", "error", err, "withdrawal_id", withdrawal.ID.String())
+		}
+	}
 
 	if metrics.Business != nil {
 		metrics.Business.WithdrawalsCompleted.WithLabelValues("fiat").Inc()

@@ -425,6 +425,10 @@ type WithdrawalLedgerAdapter struct {
 	ledgerService *ledger.Service
 }
 
+func NewWithdrawalLedgerAdapter(ledgerService *ledger.Service) *WithdrawalLedgerAdapter {
+	return &WithdrawalLedgerAdapter{ledgerService: ledgerService}
+}
+
 func (a *WithdrawalLedgerAdapter) GetAccountBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (decimal.Decimal, error) {
 	account, err := a.ledgerService.GetOrCreateUserAccount(ctx, userID, accountType)
 	if err != nil {

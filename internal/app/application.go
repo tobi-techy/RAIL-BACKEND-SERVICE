@@ -221,8 +221,8 @@ func (app *Application) initializeWorkers() error {
 	}
 
 	// Paj offramp recovery worker — auto-reverses stuck NGN withdrawals
-	if app.container.DB != nil && app.container.PajHandlers != nil {
-		app.pajOfframpRecoveryWorker = paj_offramp_recovery.NewWorker(app.container.DB, app.log.Zap())
+	if app.container.DB != nil && app.container.PajHandlers != nil && app.container.LedgerService != nil {
+		app.pajOfframpRecoveryWorker = paj_offramp_recovery.NewWorker(app.container.DB, di.NewWithdrawalLedgerAdapter(app.container.LedgerService), app.log.Zap())
 		go app.pajOfframpRecoveryWorker.Start(context.Background())
 		app.log.Info("Paj offramp recovery worker started")
 	}
@@ -235,8 +235,8 @@ func (app *Application) initializeWorkers() error {
 	}
 
 	// Withdrawal recovery worker — auto-reverses stuck crypto withdrawals
-	if app.container.DB != nil {
-		app.withdrawalRecoveryWorker = withdrawal_recovery.NewWorker(app.container.DB, app.log.Zap())
+	if app.container.DB != nil && app.container.LedgerService != nil {
+		app.withdrawalRecoveryWorker = withdrawal_recovery.NewWorker(app.container.DB, di.NewWithdrawalLedgerAdapter(app.container.LedgerService), app.log.Zap())
 		go app.withdrawalRecoveryWorker.Start(context.Background())
 		app.log.Info("Withdrawal recovery worker started")
 	}
