@@ -530,6 +530,16 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 							c.JSON(http.StatusInternalServerError, gin.H{"error": "processing failed"})
 							return
 						}
+						if strings.EqualFold(payload.Status, "APPROVED") && container.WithdrawalService != nil {
+							if err := container.WithdrawalService.ResumeComplianceApprovedWithdrawal(c.Request.Context(), payload.TransactionID); err != nil {
+								container.ZapLog.Error("Failed to resume compliance-approved withdrawal",
+									zap.Error(err),
+									zap.String("didit_uuid", payload.UUID),
+									zap.String("transaction_id", payload.TransactionID))
+								c.JSON(http.StatusInternalServerError, gin.H{"error": "withdrawal resume failed"})
+								return
+							}
+						}
 						c.JSON(http.StatusOK, gin.H{"status": "ok"})
 					})
 				}

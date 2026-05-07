@@ -2,6 +2,7 @@ package wallet
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"github.com/rail-service/rail_service/internal/api/middleware"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	domainerrors "github.com/rail-service/rail_service/internal/domain/errors"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
@@ -472,6 +474,23 @@ func (h *WithdrawalHandlers) handleWithdrawalError(c *gin.Context, err error, us
 		"user_id", userID,
 		"amount", amount,
 		"request_id", c.GetString("request_id"))
+
+	var domainErr *domainerrors.DomainError
+	if stderrors.As(err, &domainErr) {
+		code := domainerrors.GetErrorCode(domainErr)
+		details := domainerrors.GetErrorDetails(domainErr)
+		switch {
+		case stderrors.Is(domainErr, domainerrors.ErrInvalidInput):
+			common.NewError(http.StatusBadRequest, code).Message(domainErr.Error()).Details(details).Send(c)
+			return
+		case stderrors.Is(domainErr, domainerrors.ErrConflict):
+			common.NewError(http.StatusConflict, code).Message(domainErr.Error()).Details(details).Send(c)
+			return
+		case stderrors.Is(domainErr, domainerrors.ErrServiceUnavailable):
+			common.NewError(http.StatusServiceUnavailable, code).Message(domainErr.Error()).Details(details).Send(c)
+			return
+		}
+	}
 
 	errMsg := err.Error()
 	errLower := strings.ToLower(errMsg)
