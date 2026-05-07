@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	domainerrors "github.com/rail-service/rail_service/internal/domain/errors"
 	stashlocksvc "github.com/rail-service/rail_service/internal/domain/services/stashlock"
 	bridgepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	chainrailspkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
@@ -592,26 +593,6 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 		}
 	}
 
-	// Step 3.5: Compliance screening — submit to Didit for AML/sanctions monitoring
-	// Skip for non-KYC users — they have strict transfer limits ($100/tx) that enforce safety.
-	if s.complianceScreener != nil {
-		user, userErr := s.userRepo.GetUserEntityByID(ctx, req.UserID)
-		skipCompliance := userErr == nil && user != nil && entities.DeriveKYCTier(user.KYCStatus) == entities.KYCTierNonKYC
-		if !skipCompliance {
-			screenStatus, screenErr := s.complianceScreener.ScreenTransaction(ctx, req.UserID, idempotencyKey, "outbound", req.Amount, string(req.Currency), "")
-			if screenErr != nil {
-				s.logger.Error("Compliance screening unavailable, blocking withdrawal for review",
-					"user_id", req.UserID.String(), "error", screenErr)
-				return nil, fmt.Errorf("withdrawal held: compliance screening unavailable")
-			}
-			if screenStatus != "APPROVED" {
-				s.logger.Warn("Withdrawal not approved by compliance screening",
-					"user_id", req.UserID.String(), "amount", req.Amount.String(), "status", screenStatus)
-				return nil, fmt.Errorf("withdrawal held: compliance status %s", screenStatus)
-			}
-		}
-	}
-
 	// Step 4: Check balance based on source account
 	balance, err := s.getSourceBalance(ctx, req.UserID, req.SourceAccount)
 	if err != nil {
@@ -648,29 +629,39 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 
 	// Use CircleWalletID if available, otherwise BridgeWalletID
 	walletProviderID := req.BridgeWalletID
+	providerWalletType := "bridge"
 	if req.CircleWalletID != "" {
 		walletProviderID = req.CircleWalletID
+		providerWalletType = "circle"
+	}
+	var sourceWalletAddressPtr *string
+	if strings.TrimSpace(req.SourceWalletAddress) != "" {
+		sourceWalletAddressPtr = &req.SourceWalletAddress
 	}
 
 	withdrawal := &entities.Withdrawal{
-		ID:                 uuid.New(),
-		UserID:             req.UserID,
-		WithdrawalType:     entities.WithdrawalTypeCrypto,
-		Currency:           req.Currency,
-		Amount:             req.Amount,
-		SourceAccount:      req.SourceAccount,
-		BridgeWalletID:     &walletProviderID,
-		DestinationType:    entities.DestinationTypeCryptoWallet,
-		DestinationChain:   strings.ToUpper(req.DestinationChain),
-		DestinationAddress: &req.DestinationAddress,
-		FeeAmount:          fee,
-		FeeCurrency:        req.Currency,
-		Category:           categoryPtr,
-		Narration:          narrationPtr,
-		Status:             entities.WithdrawalStatusInitiated,
-		IdempotencyKey:     &idempotencyKey,
-		CreatedAt:          time.Now(),
-		UpdatedAt:          time.Now(),
+		ID:                  uuid.New(),
+		UserID:              req.UserID,
+		WithdrawalType:      entities.WithdrawalTypeCrypto,
+		Currency:            req.Currency,
+		Amount:              req.Amount,
+		SourceAccount:       req.SourceAccount,
+		SourceChain:         req.SourceChain,
+		SourceWalletAddress: sourceWalletAddressPtr,
+		ProviderWalletType:  providerWalletType,
+		Emergency:           req.Emergency,
+		BridgeWalletID:      &walletProviderID,
+		DestinationType:     entities.DestinationTypeCryptoWallet,
+		DestinationChain:    strings.ToUpper(req.DestinationChain),
+		DestinationAddress:  &req.DestinationAddress,
+		FeeAmount:           fee,
+		FeeCurrency:         req.Currency,
+		Category:            categoryPtr,
+		Narration:           narrationPtr,
+		Status:              entities.WithdrawalStatusInitiated,
+		IdempotencyKey:      &idempotencyKey,
+		CreatedAt:           time.Now(),
+		UpdatedAt:           time.Now(),
 	}
 
 	if err := s.withdrawalRepo.Create(ctx, withdrawal); err != nil {
@@ -680,33 +671,92 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 
 	// Re-check pending exposure after creating the record to protect against near-simultaneous requests.
 	// Must re-fetch balance since the old balance is stale after creating the withdrawal record.
-	currentBalance, err := s.getSourceBalance(ctx, req.UserID, req.SourceAccount)
-	if err != nil {
-		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "failed to re-check balance")
-		return nil, fmt.Errorf("failed to re-check balance: %w", err)
-	}
-
-	if err := s.ensurePendingExposureWithinBalance(ctx, req.UserID, currentBalance); err != nil {
+	if err := s.ensureWithdrawalExposure(ctx, withdrawal); err != nil {
 		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
 		return nil, err
 	}
 
-	// Step 6.5: Post ledger debit BEFORE executing the on-chain burn.
-	// This ensures the balance is decremented even if the burn succeeds but the
-	// subsequent ledger write would otherwise fail after funds are already gone.
+	// Step 6.5: Compliance screening — submit to Didit for AML/sanctions monitoring.
+	// If Didit returns IN_REVIEW, leave the withdrawal in compliance_review so the
+	// transaction webhook can resume it after manual approval.
+	if s.complianceScreener != nil {
+		user, userErr := s.userRepo.GetUserEntityByID(ctx, req.UserID)
+		skipCompliance := userErr == nil && user != nil && entities.DeriveKYCTier(user.KYCStatus) == entities.KYCTierNonKYC
+		if !skipCompliance {
+			if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusComplianceReview); err != nil {
+				_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "failed to hold for compliance review")
+				return nil, fmt.Errorf("failed to update withdrawal status: %w", err)
+			}
+			withdrawal.Status = entities.WithdrawalStatusComplianceReview
+
+			screenStatus, screenErr := s.complianceScreener.ScreenTransaction(ctx, req.UserID, idempotencyKey, "outbound", req.Amount, string(req.Currency), "")
+			if screenErr != nil {
+				s.logger.Error("Compliance screening unavailable, blocking withdrawal",
+					"user_id", req.UserID.String(), "withdrawal_id", withdrawal.ID.String(), "error", screenErr)
+				_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "compliance screening unavailable")
+				return nil, domainerrors.NewDomainError(
+					domainerrors.ErrServiceUnavailable,
+					"COMPLIANCE_UNAVAILABLE",
+					"Compliance screening is temporarily unavailable. Please try again.",
+				).WithRetryable(true)
+			}
+			if screenStatus != "APPROVED" {
+				s.logger.Warn("Withdrawal not approved by compliance screening",
+					"user_id", req.UserID.String(), "withdrawal_id", withdrawal.ID.String(), "amount", req.Amount.String(), "status", screenStatus)
+				if screenStatus == "DECLINED" {
+					_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "compliance declined")
+					return nil, domainerrors.NewDomainError(
+						domainerrors.ErrConflict,
+						"COMPLIANCE_DECLINED",
+						"Withdrawal was declined by compliance screening.",
+					).WithDetails(map[string]interface{}{"status": screenStatus})
+				}
+				return &entities.InitiateWithdrawalResponse{
+					WithdrawalID: withdrawal.ID,
+					Status:       withdrawal.Status,
+					Message:      "Withdrawal is pending compliance review",
+				}, nil
+			}
+		}
+	}
+
+	return s.submitApprovedCryptoWithdrawal(ctx, withdrawal, req)
+}
+
+func (s *WithdrawalService) ensureWithdrawalExposure(ctx context.Context, withdrawal *entities.Withdrawal) error {
+	currentBalance, err := s.getSourceBalance(ctx, withdrawal.UserID, withdrawal.SourceAccount)
+	if err != nil {
+		return fmt.Errorf("failed to re-check balance: %w", err)
+	}
+	return s.ensurePendingExposureWithinBalance(ctx, withdrawal.UserID, currentBalance)
+}
+
+func (s *WithdrawalService) submitApprovedCryptoWithdrawal(ctx context.Context, withdrawal *entities.Withdrawal, req *entities.InitiateCryptoWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error) {
+	if withdrawal.Status == entities.WithdrawalStatusComplianceReview {
+		if err := s.ensureWithdrawalExposure(ctx, withdrawal); err != nil {
+			_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
+			return nil, err
+		}
+	}
+
+	// Claim the withdrawal before debiting so a webhook retry cannot double-post
+	// the ledger entry. The external transfer still starts only after the debit.
+	if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusProcessing); err != nil {
+		s.logger.Error("Failed to mark withdrawal processing", "error", err)
+		return nil, fmt.Errorf("failed to update withdrawal status: %w", err)
+	}
+	withdrawal.Status = entities.WithdrawalStatusProcessing
+
+	// Post ledger debit BEFORE executing the on-chain burn.
+	// This ensures the balance is decremented before funds can leave custody.
 	if err := s.postWithdrawalLedgerEntries(ctx, withdrawal); err != nil {
 		s.logger.Error("Failed to post pre-burn ledger debit", "error", err, "withdrawal_id", withdrawal.ID.String())
 		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "ledger debit failed: "+err.Error())
 		return nil, fmt.Errorf("failed to post ledger debit: %w", err)
 	}
 
-	// Step 7: Execute Bridge transfer asynchronously.
+	// Execute transfer asynchronously.
 	// Ledger is debited, withdrawal record exists — return immediately and process in background.
-	if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusProcessing); err != nil {
-		s.logger.Error("Failed to mark withdrawal processing", "error", err)
-		return nil, fmt.Errorf("failed to update withdrawal status: %w", err)
-	}
-	withdrawal.Status = entities.WithdrawalStatusProcessing
 
 	// Notify user immediately that withdrawal is being processed
 	if s.notificationService != nil {
@@ -725,6 +775,98 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 		Status:       withdrawal.Status,
 		Message:      "Withdrawal submitted and is processing",
 	}, nil
+}
+
+// ResumeComplianceApprovedWithdrawal resumes a crypto withdrawal that was held
+// by Didit transaction monitoring and later approved by webhook.
+func (s *WithdrawalService) ResumeComplianceApprovedWithdrawal(ctx context.Context, referenceID string) error {
+	referenceID = strings.TrimSpace(referenceID)
+	if referenceID == "" {
+		return fmt.Errorf("compliance webhook missing transaction reference")
+	}
+
+	withdrawal, err := s.withdrawalRepo.GetByIdempotencyKey(ctx, referenceID)
+	if err != nil {
+		return fmt.Errorf("load compliance-held withdrawal: %w", err)
+	}
+	if withdrawal == nil {
+		s.logger.Warn("Compliance approval has no matching withdrawal", "reference_id", referenceID)
+		return nil
+	}
+
+	unlock, err := s.acquireAdvisoryLock(ctx, withdrawal.UserID)
+	if err != nil {
+		return fmt.Errorf("failed to acquire distributed lock: %w", err)
+	}
+	defer unlock()
+
+	lock := s.userWithdrawalLock(withdrawal.UserID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	withdrawal, err = s.withdrawalRepo.GetByIdempotencyKey(ctx, referenceID)
+	if err != nil {
+		return fmt.Errorf("reload compliance-held withdrawal: %w", err)
+	}
+	if withdrawal == nil {
+		return nil
+	}
+	if withdrawal.Status != entities.WithdrawalStatusComplianceReview {
+		s.logger.Info("Compliance approval ignored for non-review withdrawal",
+			"withdrawal_id", withdrawal.ID.String(),
+			"status", withdrawal.Status,
+			"reference_id", referenceID)
+		return nil
+	}
+	if withdrawal.WithdrawalType != entities.WithdrawalTypeCrypto {
+		return fmt.Errorf("compliance approval resume only supports crypto withdrawals: %s", withdrawal.WithdrawalType)
+	}
+	if withdrawal.DestinationAddress == nil || strings.TrimSpace(*withdrawal.DestinationAddress) == "" {
+		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "missing destination address for compliance resume")
+		return fmt.Errorf("withdrawal %s missing destination address", withdrawal.ID)
+	}
+
+	sourceChain := strings.TrimSpace(withdrawal.SourceChain)
+	if sourceChain == "" {
+		sourceChain = withdrawal.DestinationChain
+	}
+	sourceWalletAddress := ""
+	if withdrawal.SourceWalletAddress != nil {
+		sourceWalletAddress = *withdrawal.SourceWalletAddress
+	}
+	providerWalletID := ""
+	if withdrawal.BridgeWalletID != nil {
+		providerWalletID = *withdrawal.BridgeWalletID
+	}
+	req := &entities.InitiateCryptoWithdrawalRequest{
+		UserID:              withdrawal.UserID,
+		Amount:              withdrawal.Amount,
+		Currency:            withdrawal.Currency,
+		DestinationAddress:  *withdrawal.DestinationAddress,
+		DestinationChain:    withdrawal.DestinationChain,
+		SourceChain:         sourceChain,
+		SourceAccount:       withdrawal.SourceAccount,
+		SourceWalletAddress: sourceWalletAddress,
+		Emergency:           withdrawal.Emergency,
+		IdempotencyKey:      referenceID,
+	}
+	switch strings.ToLower(strings.TrimSpace(withdrawal.ProviderWalletType)) {
+	case "circle":
+		req.CircleWalletID = providerWalletID
+	default:
+		req.BridgeWalletID = providerWalletID
+	}
+	if withdrawal.Category != nil {
+		req.Category = *withdrawal.Category
+	}
+	if withdrawal.Narration != nil {
+		req.Narration = *withdrawal.Narration
+	}
+
+	if _, err := s.submitApprovedCryptoWithdrawal(ctx, withdrawal, req); err != nil {
+		return fmt.Errorf("resume approved withdrawal: %w", err)
+	}
+	return nil
 }
 
 // executeCryptoWithdrawalAsync runs the Bridge transfer and post-processing in the background.
