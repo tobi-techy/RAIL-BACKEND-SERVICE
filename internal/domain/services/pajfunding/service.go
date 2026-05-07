@@ -317,6 +317,8 @@ func (s *Service) invalidateSessionIfUnauthorized(ctx context.Context, userID uu
 
 const pajRatesCacheKey = "paj:rates"
 const pajRatesCacheTTL = 5 * time.Minute
+const pajBanksCacheKey = "paj:banks"
+const pajBanksCacheTTL = 24 * time.Hour
 
 func (s *Service) GetRates(ctx context.Context) (*paj.RateResponse, error) {
 	// Try cache first.
@@ -356,9 +358,34 @@ func (s *Service) GetBanks(ctx context.Context, userID uuid.UUID) ([]paj.Bank, e
 	if err != nil {
 		return nil, err
 	}
-	banks, err := s.pajClient.GetBanks(ctx, token)
+
+	if s.redis != nil {
+		var cached []paj.Bank
+		if err := s.redis.Get(ctx, pajBanksCacheKey, &cached); err == nil && len(cached) > 0 {
+			return cached, nil
+		}
+	}
+
+	bankCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	banks, err := s.pajClient.GetBanks(bankCtx, token)
 	if err != nil {
+		if paj.IsUnauthorized(err) {
+			return nil, s.invalidateSessionIfUnauthorized(ctx, userID, err)
+		}
+		if s.redis != nil {
+			var stale []paj.Bank
+			if cacheErr := s.redis.Get(ctx, pajBanksCacheKey, &stale); cacheErr == nil && len(stale) > 0 {
+				s.logger.Warn("paj banks upstream failed, serving cached banks", zap.Error(err))
+				return stale, nil
+			}
+		}
 		return nil, s.invalidateSessionIfUnauthorized(ctx, userID, err)
+	}
+	if s.redis != nil && len(banks) > 0 {
+		if cacheErr := s.redis.Set(ctx, pajBanksCacheKey, banks, pajBanksCacheTTL); cacheErr != nil {
+			s.logger.Warn("failed to cache paj banks", zap.Error(cacheErr))
+		}
 	}
 	return banks, nil
 }
