@@ -472,6 +472,12 @@ func (s *Service) CreateOnrampOrder(ctx context.Context, userID uuid.UUID, fiatA
 			if result != nil && result.Reason != "" {
 				msg = result.Reason
 			}
+			if limErr != nil {
+				if msg != limErr.Error() {
+					return nil, fmt.Errorf("%s: %w", msg, limErr)
+				}
+				return nil, limErr
+			}
 			return nil, fmt.Errorf("%s", msg)
 		}
 	}

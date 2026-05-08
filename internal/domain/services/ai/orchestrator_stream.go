@@ -81,8 +81,8 @@ func (o *Orchestrator) ChatStreamInConversationWithOptions(ctx context.Context, 
 	err := o.chatStreamInternal(ctx, userID, conv.ID, message, history, opts, wrappedEmit)
 
 	// Persist exchange in background (best-effort, mirrors ChatWithConversation)
-	if o.conversations != nil {
-		content := accumulated.String()
+	content := accumulated.String()
+	if o.conversations != nil && err == nil && strings.TrimSpace(content) != "" {
 		tokens := totalTokens
 		model := modelUsed
 		if model == "" {

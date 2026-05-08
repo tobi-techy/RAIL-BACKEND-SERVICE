@@ -824,11 +824,13 @@ func setDefaults() {
 	viper.SetDefault("ai.gemini.model", "gemini-2.0-flash")
 	viper.SetDefault("ai.gemini.max_tokens", 500)
 	viper.SetDefault("ai.gemini.temperature", 0.7)
+	viper.SetDefault("ai.kimi.model", "kimi-k2.6")
 
 	// Explicit env bindings for AI keys (task def uses short names)
 	viper.BindEnv("ai.openai.api_key", "OPENAI_API_KEY")
 	viper.BindEnv("ai.gemini.api_key", "GEMINI_API_KEY")
 	viper.BindEnv("ai.kimi.api_key", "KIMI_API_KEY")
+	viper.BindEnv("ai.kimi.model", "KIMI_MODEL")
 	viper.BindEnv("ai.groq.api_key", "GROQ_API_KEY")
 	viper.BindEnv("ai.primary", "AI_PRIMARY")
 	viper.BindEnv("ai.bedrock.region", "BEDROCK_REGION")

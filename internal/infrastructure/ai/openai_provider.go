@@ -26,14 +26,14 @@ const (
 
 // OpenAIProvider implements AIProvider for OpenAI's API and OpenAI-compatible providers (Kimi, etc.)
 type OpenAIProvider struct {
-	config     *ProviderConfig
-	client     *http.Client
-	logger     *zap.Logger
-	tracer     trace.Tracer
-	limiter    *rate.Limiter
-	mu         sync.RWMutex
-	lastError  error
-	lastCheck  time.Time
+	config    *ProviderConfig
+	client    *http.Client
+	logger    *zap.Logger
+	tracer    trace.Tracer
+	limiter   *rate.Limiter
+	mu        sync.RWMutex
+	lastError error
+	lastCheck time.Time
 }
 
 // NewOpenAIProvider creates a new OpenAI provider
@@ -373,9 +373,17 @@ func (p *OpenAIProvider) buildOpenAIRequest(req *ChatRequest, tools []Tool) map[
 
 	// Add conversation messages
 	for _, msg := range req.Messages {
+		content := msg.Content
+		if msg.Role == "assistant" && strings.TrimSpace(content) == "" {
+			if len(msg.ToolCalls) == 0 {
+				p.logger.Warn("skipping empty assistant message in OpenAI request")
+				continue
+			}
+			content = "Calling tools..."
+		}
 		m := map[string]interface{}{
 			"role":    msg.Role,
-			"content": msg.Content,
+			"content": content,
 		}
 		if msg.Role == "tool" && msg.ToolCallID != "" {
 			m["tool_call_id"] = msg.ToolCallID
@@ -639,8 +647,8 @@ type openAIStreamChunk struct {
 	Created int64  `json:"created"`
 	Model   string `json:"model"`
 	Choices []struct {
-		Index        int `json:"index"`
-		Delta        struct {
+		Index int `json:"index"`
+		Delta struct {
 			Role      string `json:"role"`
 			Content   string `json:"content"`
 			ToolCalls []struct {

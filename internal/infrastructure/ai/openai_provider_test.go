@@ -109,6 +109,7 @@ func TestOpenAIProviderBuildRequest(t *testing.T) {
 		msgs := body["messages"].([]map[string]interface{})
 		require.Len(t, msgs, 1)
 		assert.Equal(t, "assistant", msgs[0]["role"])
+		assert.Equal(t, "Calling tools...", msgs[0]["content"])
 
 		toolCalls := msgs[0]["tool_calls"].([]map[string]interface{})
 		require.Len(t, toolCalls, 1)
@@ -118,6 +119,23 @@ func TestOpenAIProviderBuildRequest(t *testing.T) {
 		fn := toolCalls[0]["function"].(map[string]interface{})
 		assert.Equal(t, "get_balance", fn["name"])
 		assert.Equal(t, `{"user_id":"123"}`, fn["arguments"])
+	})
+
+	t.Run("empty assistant message without tool calls is skipped", func(t *testing.T) {
+		req := &ChatRequest{
+			Messages: []Message{
+				{Role: "user", Content: "hello"},
+				{Role: "assistant", Content: ""},
+				{Role: "user", Content: "next"},
+			},
+		}
+		body := p.buildOpenAIRequest(req, nil)
+		msgs := body["messages"].([]map[string]interface{})
+		require.Len(t, msgs, 2)
+		assert.Equal(t, "user", msgs[0]["role"])
+		assert.Equal(t, "hello", msgs[0]["content"])
+		assert.Equal(t, "user", msgs[1]["role"])
+		assert.Equal(t, "next", msgs[1]["content"])
 	})
 
 	t.Run("tools included when provided", func(t *testing.T) {
@@ -308,8 +326,8 @@ func TestOpenAIProviderChatCompletion(t *testing.T) {
 	t.Run("handles tool calls in response", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			resp := map[string]interface{}{
-				"id":     "chatcmpl-123",
-				"model":  "gpt-4o",
+				"id":    "chatcmpl-123",
+				"model": "gpt-4o",
 				"choices": []map[string]interface{}{
 					{
 						"message": map[string]interface{}{
