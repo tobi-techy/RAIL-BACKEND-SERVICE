@@ -1035,6 +1035,7 @@ type Container struct {
 	FinancialProfileRepo      *repositories.FinancialProfileRepository
 	FinancialObligationRepo   *repositories.FinancialObligationRepository
 	AutomationRepo            *repositories.AutomationRepository
+	ContextSignalRepo         *repositories.ContextSignalRepository
 	LedgerSpendingRepo        *repositories.LedgerSpendingRepository
 	ConversionRepo            *repositories.ConversionRepository
 	BalanceRepo               *repositories.BalanceRepository
@@ -3135,6 +3136,9 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	// Initialize spending analysis (all outflows: card, withdrawal, p2p)
 	spendingSvc := spendingsvc.NewService(c.LedgerSpendingRepo)
 	c.AIOrchestrator.SetSpending(spendingSvc)
+
+	c.ContextSignalRepo = repositories.NewContextSignalRepository(sqlxDB)
+	c.AIOrchestrator.SetContextSignals(c.ContextSignalRepo)
 
 	// Initialize balance history (stash growth chart)
 	if c.yieldRepo != nil {

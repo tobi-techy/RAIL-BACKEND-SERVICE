@@ -14,6 +14,11 @@ import (
 	"go.uber.org/zap"
 )
 
+// SetContextSignals wires active behavioral signals into ambient nudges.
+func (o *Orchestrator) SetContextSignals(p ContextSignalProvider) {
+	o.contextSignals = p
+}
+
 // GenerateEnhancedNudge uses multi-modal context (time, signals, spending patterns)
 // to produce a richer, actionable nudge.
 func (o *Orchestrator) GenerateEnhancedNudge(ctx context.Context, userID uuid.UUID, req entities.EnhancedNudgeRequest) (*entities.EnhancedNudgeResponse, error) {
@@ -27,8 +32,14 @@ func (o *Orchestrator) GenerateEnhancedNudge(ctx context.Context, userID uuid.UU
 	flow := o.monthFlow(ctx, userID, monthStart, nextMonth)
 	totalOut := flow.TotalWithdrawals.Add(flow.TotalCardSpend).Add(flow.TotalP2P).Add(flow.TotalReceipts)
 
-	// Gather context signals (optional — requires ContextSignalProvider to be wired)
 	var signals []entities.UserContextSignal
+	if o.contextSignals != nil {
+		if active, err := o.contextSignals.GetActiveByUser(ctx, userID); err == nil {
+			signals = active
+		} else if o.logger != nil {
+			o.logger.Debug("enhanced nudge context signals unavailable", zap.Error(err), zap.String("user_id", userID.String()))
+		}
+	}
 
 	// Budget info
 	budgetStatus, budgetLimit, budgetRemaining := o.getBudgetContext(ctx, userID, totalOut)

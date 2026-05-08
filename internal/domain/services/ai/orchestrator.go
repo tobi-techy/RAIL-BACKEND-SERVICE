@@ -45,6 +45,11 @@ type NewsDataProvider interface {
 	GetWeeklyNews(ctx context.Context, userID uuid.UUID) ([]*entities.UserNews, error)
 }
 
+// ContextSignalProvider reads active behavioral signals for ambient Miriam nudges.
+type ContextSignalProvider interface {
+	GetActiveByUser(ctx context.Context, userID uuid.UUID) ([]entities.UserContextSignal, error)
+}
+
 // PortfolioStats represents weekly portfolio statistics
 type PortfolioStats struct {
 	TotalValue      decimal.Decimal `json:"total_value"`
@@ -136,6 +141,7 @@ type Orchestrator struct {
 	accountChecker      UserAccountChecker
 	emergencyWithdrawer EmergencyWithdrawer
 	automationProvider  AutomationProvider
+	contextSignals      ContextSignalProvider
 	memory              *MemoryService
 	logger              *zap.Logger
 }

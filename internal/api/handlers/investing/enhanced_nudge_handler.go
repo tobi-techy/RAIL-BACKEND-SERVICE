@@ -2,6 +2,7 @@ package investing
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -34,10 +35,16 @@ func (h *EnhancedNudgeHandler) HandleEnhancedNudge(c *gin.Context) {
 		common.SendBadRequest(c, common.ErrCodeInvalidRequest, err.Error())
 		return
 	}
+	if strings.TrimSpace(req.Screen) == "" {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "screen is required")
+		return
+	}
 
 	resp, err := h.orchestrator.GenerateEnhancedNudge(c.Request.Context(), userID, req)
 	if err != nil {
-		h.logger.Warn("enhanced nudge failed", zap.Error(err))
+		if h.logger != nil {
+			h.logger.Warn("enhanced nudge failed", zap.Error(err))
+		}
 		c.JSON(http.StatusOK, entities.EnhancedNudgeResponse{Show: false, Severity: "info"})
 		return
 	}

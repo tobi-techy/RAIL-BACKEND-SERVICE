@@ -401,6 +401,9 @@ func (app *Application) initializeWorkers() error {
 				pushSender,
 				app.log.Zap(),
 			)
+			if app.container.AIProviderManager != nil {
+				app.dailyPulseWorker.SetNudger(daily_pulse.NewAINudger(app.container.AIProviderManager, app.log.Zap()))
+			}
 			go app.dailyPulseWorker.Start(context.Background())
 			app.log.Info("Miriam daily pulse worker started")
 		}
