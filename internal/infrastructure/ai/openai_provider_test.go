@@ -615,6 +615,29 @@ func TestOpenAIProviderHandleHTTPError(t *testing.T) {
 	}
 }
 
+func TestOpenAIProviderHandleHTTPErrorRetryAfter(t *testing.T) {
+	p := NewOpenAIProvider(&ProviderConfig{ProviderName: "openai"}, zap.NewNop())
+
+	t.Run("header", func(t *testing.T) {
+		header := http.Header{}
+		header.Set("Retry-After", "1.5")
+
+		err := p.handleHTTPError(http.StatusTooManyRequests, []byte(`{"error":{"message":"rate limited"}}`), header)
+		provErr, ok := err.(*ProviderError)
+		require.True(t, ok)
+		assert.Equal(t, ErrorCodeRateLimit, provErr.Code)
+		assert.True(t, provErr.Retryable)
+		assert.Equal(t, 1500*time.Millisecond, provErr.RetryAfter)
+	})
+
+	t.Run("message fallback", func(t *testing.T) {
+		err := p.handleHTTPError(http.StatusTooManyRequests, []byte(`{"error":{"message":"request reached max organization concurrency: 3, please try again after 1 seconds"}}`))
+		provErr, ok := err.(*ProviderError)
+		require.True(t, ok)
+		assert.Equal(t, time.Second, provErr.RetryAfter)
+	})
+}
+
 func TestOpenAIProviderConvertResponse(t *testing.T) {
 	p := NewOpenAIProvider(&ProviderConfig{}, zap.NewNop())
 
@@ -741,6 +764,30 @@ func TestProviderManagerNonRetryableSkipsImmediately(t *testing.T) {
 	assert.Equal(t, "hello", resp.Content)
 }
 
+func TestProviderManagerHonorsRetryAfter(t *testing.T) {
+	logger := zap.NewNop()
+	retryAfter := 25 * time.Millisecond
+	primary := &sequenceProvider{
+		name: "primary",
+		results: []providerResult{
+			{err: &ProviderError{Provider: "primary", Code: ErrorCodeRateLimit, Message: "busy", Retryable: true, RetryAfter: retryAfter}},
+			{resp: &ChatResponse{Content: "hello"}},
+		},
+	}
+
+	pm := NewProviderManager(primary, nil, &ProviderManagerConfig{RetryAttempts: 1, RetryDelay: time.Millisecond}, logger)
+
+	start := time.Now()
+	resp, err := pm.ChatCompletion(context.Background(), &ChatRequest{
+		Messages: []Message{{Role: "user", Content: "hi"}},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "hello", resp.Content)
+	assert.GreaterOrEqual(t, time.Since(start), retryAfter)
+	assert.Equal(t, 2, primary.calls)
+}
+
 func TestProviderManagerStreamDelegatesToPrimary(t *testing.T) {
 	logger := zap.NewNop()
 	streamer := &mockStreamProvider{name: "primary"}
@@ -811,6 +858,38 @@ func (m *mockStreamProvider) ChatCompletionStream(ctx context.Context, req *Chat
 	close(ch)
 	return nil
 }
+
+type providerResult struct {
+	resp *ChatResponse
+	err  error
+}
+
+type sequenceProvider struct {
+	name    string
+	results []providerResult
+	calls   int
+}
+
+func (m *sequenceProvider) ChatCompletion(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
+	return m.ChatCompletionWithTools(ctx, req, nil)
+}
+
+func (m *sequenceProvider) ChatCompletionWithTools(ctx context.Context, req *ChatRequest, tools []Tool) (*ChatResponse, error) {
+	m.calls++
+	idx := m.calls - 1
+	if idx >= len(m.results) {
+		idx = len(m.results) - 1
+	}
+	result := m.results[idx]
+	if result.err != nil {
+		return nil, result.err
+	}
+	return result.resp, nil
+}
+
+func (m *sequenceProvider) Name() string { return m.name }
+
+func (m *sequenceProvider) IsAvailable(ctx context.Context) bool { return true }
 
 // Helper to create SSE data lines for streaming tests.
 func sseData(data string) string {
