@@ -16,6 +16,27 @@ import (
 
 const ToolGetFinancialAudit = "get_financial_audit"
 
+var financialAuditPeriods = []string{
+	"last_90_days",
+	"last_6_months",
+	"last_12_months",
+	"this_month",
+	"last_month",
+	"last_7_days",
+	"last_30_days",
+}
+
+// IsFinancialAuditPeriod reports whether a period is accepted by the audit tool.
+func IsFinancialAuditPeriod(period string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(period))
+	for _, allowed := range financialAuditPeriods {
+		if normalized == allowed {
+			return true
+		}
+	}
+	return false
+}
+
 // FinancialAuditTool returns the deterministic audit tool Miriam uses for
 // opt-in accountability sessions.
 func FinancialAuditTool() infraai.Tool {
@@ -27,8 +48,8 @@ func FinancialAuditTool() infraai.Tool {
 			"properties": map[string]interface{}{
 				"period": map[string]interface{}{
 					"type":        "string",
-					"enum":        []string{"this_month", "last_month", "last_7_days", "last_30_days"},
-					"description": "Time period to audit",
+					"enum":        financialAuditPeriods,
+					"description": "Time period to audit. Default to last_90_days for a real financial audit; use last_6_months or last_12_months when the user asks for a deeper audit.",
 				},
 				"intensity": map[string]interface{}{
 					"type":        "string",
@@ -47,7 +68,7 @@ func (o *Orchestrator) executeFinancialAudit(ctx context.Context, userID uuid.UU
 		return map[string]interface{}{"error": "financial audit service is unavailable: spending and balance providers are not configured"}, nil
 	}
 
-	period := auditStringArg(args, "period", "this_month")
+	period := normalizeAuditPeriod(auditStringArg(args, "period", "last_90_days"))
 	intensity := normalizeAuditIntensity(auditStringArg(args, "intensity", "direct"))
 	start, end := parsePeriod(period)
 	now := time.Now().UTC()
@@ -76,28 +97,34 @@ func (o *Orchestrator) executeFinancialAudit(ctx context.Context, userID uuid.UU
 	netFlow := flow.TotalDeposits.Sub(totalOut)
 	savingsRate := percentOf(netFlow, flow.TotalDeposits)
 	stashRatio := percentOf(stash, totalBalance)
+	observedMonths := auditObservedMonths(start, end)
+	monthlyOut := totalOut.Div(observedMonths)
+	monthlyNetFlow := netFlow.Div(observedMonths)
+	monthlyDeposits := flow.TotalDeposits.Div(observedMonths)
 
-	topCategories := auditTopCategories(summary.Categories, 5)
-	topMerchants := auditTopMerchants(summary.Merchants, 5)
+	topCategories := auditTopCategories(summary.Categories, 8)
+	topMerchants := auditTopMerchants(summary.Merchants, 8)
 	biggestLeak := auditBiggestLeak(topCategories, totalOut)
+	monthlyTrend := o.auditMonthlyTrend(ctx, userID, start, end)
+	dataCoverage := auditDataCoverage(summary, monthlyTrend, start, end)
 
 	profileData, profile := o.auditProfile(ctx, userID)
 	obligationData, obligationRequired, obligationWarnings := o.auditObligations(ctx, userID, now)
-	budgetData := o.auditBudget(ctx, userID, totalOut, now)
+	budgetData := o.auditBudget(ctx, userID, monthlyOut, now)
 	recurringData, recurringMonthly, recurringWarnings := o.auditRecurring(ctx, userID)
 
 	score := auditScore{
 		CashFlow:           scoreCashFlow(netFlow, flow.TotalDeposits),
-		SpendingControl:    scoreSpendingControl(budgetData, totalOut, now),
+		SpendingControl:    scoreSpendingControl(budgetData, monthlyOut, now),
 		StashDiscipline:    scoreStashDiscipline(stashRatio),
 		ObligationCoverage: scoreObligationCoverage(spend, obligationRequired, o.obligations != nil),
-		GoalAlignment:      scoreGoalAlignment(profile, netFlow),
+		GoalAlignment:      scoreGoalAlignment(profile, monthlyNetFlow),
 	}
 	score.Total = clampScore(score.CashFlow+score.SpendingControl+score.StashDiscipline+score.ObligationCoverage+score.GoalAlignment, 0, 100)
 
-	contradictions := auditContradictions(profile, flow, totalOut, netFlow, topCategories, budgetData, obligationRequired, spend, recurringMonthly)
+	contradictions := auditContradictions(profile, flow, totalOut, netFlow, monthlyDeposits, monthlyNetFlow, topCategories, budgetData, obligationRequired, spend, recurringMonthly)
 	riskFlags := auditRiskFlags(flow, totalOut, netFlow, spend, stash, obligationRequired, recurringMonthly, budgetData)
-	nextActions := auditNextActions(spend, flow, netFlow, stashRatio, budgetData, obligationRequired)
+	nextActions := auditNextActions(spend, monthlyDeposits, netFlow, stashRatio, budgetData, obligationRequired)
 
 	warnings := append(obligationWarnings, recurringWarnings...)
 
@@ -129,6 +156,9 @@ func (o *Orchestrator) executeFinancialAudit(ctx context.Context, userID uuid.UU
 			"receipt_cash_out":    flow.TotalReceipts.StringFixed(2),
 			"total_money_out":     totalOut.StringFixed(2),
 			"net_flow":            netFlow.StringFixed(2),
+			"average_monthly_in":  monthlyDeposits.StringFixed(2),
+			"average_monthly_out": monthlyOut.StringFixed(2),
+			"average_monthly_net": monthlyNetFlow.StringFixed(2),
 			"savings_rate_pct":    savingsRate.StringFixed(1),
 			"stash_ratio_pct":     stashRatio.StringFixed(1),
 			"transaction_count":   summary.TxCount,
@@ -142,6 +172,8 @@ func (o *Orchestrator) executeFinancialAudit(ctx context.Context, userID uuid.UU
 			"primary_issue": auditPrimaryIssue(netFlow, totalOut, obligationRequired, spend, budgetData),
 		},
 		"the_pattern":             auditPatterns(flow, totalOut, netFlow, topCategories, recurringMonthly, stashRatio),
+		"data_coverage":           dataCoverage,
+		"monthly_trend":           monthlyTrend,
 		"contradictions":          contradictions,
 		"top_spending_categories": topCategories,
 		"top_merchants":           topMerchants,
@@ -154,8 +186,9 @@ func (o *Orchestrator) executeFinancialAudit(ctx context.Context, userID uuid.UU
 		"warnings":                warnings,
 		"data_used": []string{
 			"current_balances",
-			"money_flow",
-			"spending_summary",
+			"multi_month_money_flow",
+			"multi_month_spending_summary",
+			"monthly_trend",
 			"budget_if_present",
 			"financial_profile_if_present",
 			"manual_obligations_if_present",
@@ -181,6 +214,16 @@ func auditStringArg(args map[string]interface{}, key, fallback string) string {
 		return strings.TrimSpace(v)
 	}
 	return fallback
+}
+
+func normalizeAuditPeriod(value string) string {
+	period := strings.ToLower(strings.TrimSpace(value))
+	for _, allowed := range financialAuditPeriods {
+		if period == allowed {
+			return period
+		}
+	}
+	return "last_90_days"
 }
 
 func normalizeAuditIntensity(value string) string {
@@ -286,6 +329,143 @@ func auditBiggestLeak(topCategories []map[string]interface{}, totalOut decimal.D
 	}
 }
 
+func (o *Orchestrator) auditMonthlyTrend(ctx context.Context, userID uuid.UUID, start, end time.Time) []map[string]interface{} {
+	if o.spending == nil {
+		return nil
+	}
+	now := time.Now().UTC()
+	if end.After(now) {
+		end = now
+	}
+	if !end.After(start) {
+		return nil
+	}
+
+	monthStart := time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, time.UTC)
+	items := make([]map[string]interface{}, 0, 12)
+	for cursor := monthStart; cursor.Before(end) && len(items) < 12; cursor = cursor.AddDate(0, 1, 0) {
+		chunkStart := cursor
+		if chunkStart.Before(start) {
+			chunkStart = start
+		}
+		chunkEnd := cursor.AddDate(0, 1, 0)
+		if chunkEnd.After(end) {
+			chunkEnd = end
+		}
+		if !chunkEnd.After(chunkStart) {
+			continue
+		}
+
+		flow, err := o.spending.GetMoneyFlow(ctx, userID, chunkStart, chunkEnd)
+		if err != nil || flow == nil {
+			continue
+		}
+		moneyOut := auditTotalOut(flow)
+		items = append(items, map[string]interface{}{
+			"month":             cursor.Format("2006-01"),
+			"label":             cursor.Format("Jan 2006"),
+			"start":             chunkStart.Format("2006-01-02"),
+			"end":               chunkEnd.Format("2006-01-02"),
+			"money_in":          flow.TotalDeposits.StringFixed(2),
+			"money_out":         moneyOut.StringFixed(2),
+			"net_flow":          flow.TotalDeposits.Sub(moneyOut).StringFixed(2),
+			"deposit_count":     flow.DepositCount,
+			"outflow_count":     flow.WithdrawalCount + flow.CardSpendCount + flow.P2PCount + flow.ReceiptCount,
+			"card_spend":        flow.TotalCardSpend.StringFixed(2),
+			"withdrawals":       flow.TotalWithdrawals.StringFixed(2),
+			"p2p":               flow.TotalP2P.StringFixed(2),
+			"receipt_cash_out":  flow.TotalReceipts.StringFixed(2),
+			"savings_rate_pct":  percentOf(flow.TotalDeposits.Sub(moneyOut), flow.TotalDeposits).StringFixed(1),
+			"money_out_per_100": percentOf(moneyOut, flow.TotalDeposits).StringFixed(2),
+		})
+	}
+	return items
+}
+
+func auditDataCoverage(summary *spendingsvc.Summary, monthlyTrend []map[string]interface{}, start, end time.Time) map[string]interface{} {
+	periodDays := int(end.Sub(start).Hours()/24) + 1
+	if periodDays < 1 {
+		periodDays = 1
+	}
+	txCount := 0
+	dailyAvg := decimal.Zero
+	if summary != nil {
+		txCount = summary.TxCount
+		dailyAvg = summary.DailyAvg
+		if summary.PeriodDays > 0 {
+			periodDays = summary.PeriodDays
+		}
+	}
+
+	totalIn := decimal.Zero
+	totalOut := decimal.Zero
+	activeMonths := 0
+	peakMonth := map[string]interface{}{"found": false}
+	peakOut := decimal.Zero
+	for _, month := range monthlyTrend {
+		in := decimalFromAuditMap(month, "money_in")
+		out := decimalFromAuditMap(month, "money_out")
+		if in.IsPositive() || out.IsPositive() {
+			activeMonths++
+		}
+		totalIn = totalIn.Add(in)
+		totalOut = totalOut.Add(out)
+		if out.GreaterThan(peakOut) {
+			peakOut = out
+			peakMonth = map[string]interface{}{
+				"found":     true,
+				"label":     month["label"],
+				"money_out": out.StringFixed(2),
+			}
+		}
+	}
+
+	monthCount := len(monthlyTrend)
+	divisor := decimal.NewFromInt(int64(maxInt(1, monthCount)))
+	return map[string]interface{}{
+		"period_days":               periodDays,
+		"months_analyzed":           monthCount,
+		"active_months":             activeMonths,
+		"transaction_count":         txCount,
+		"daily_average_spend":       dailyAvg.StringFixed(2),
+		"average_monthly_money_in":  totalIn.Div(divisor).StringFixed(2),
+		"average_monthly_money_out": totalOut.Div(divisor).StringFixed(2),
+		"peak_spend_month":          peakMonth,
+		"has_3_month_window":        periodDays >= 89,
+		"has_6_month_window":        periodDays >= 180,
+		"has_12_month_window":       periodDays >= 365,
+	}
+}
+
+func auditObservedMonths(start, end time.Time) decimal.Decimal {
+	if !end.After(start) {
+		return decimal.NewFromInt(1)
+	}
+	months := decimal.NewFromFloat(end.Sub(start).Hours() / 24 / 30.4375)
+	if months.LessThan(decimal.NewFromInt(1)) {
+		return decimal.NewFromInt(1)
+	}
+	return months
+}
+
+func auditTotalOut(flow *entities.MoneyFlowSummary) decimal.Decimal {
+	if flow == nil {
+		return decimal.Zero
+	}
+	return flow.TotalWithdrawals.Add(flow.TotalCardSpend).Add(flow.TotalP2P).Add(flow.TotalReceipts)
+}
+
+func decimalFromAuditMap(data map[string]interface{}, key string) decimal.Decimal {
+	if data == nil {
+		return decimal.Zero
+	}
+	value, err := decimal.NewFromString(fmt.Sprint(data[key]))
+	if err != nil {
+		return decimal.Zero
+	}
+	return value
+}
+
 func (o *Orchestrator) auditProfile(ctx context.Context, userID uuid.UUID) (map[string]interface{}, *entities.FinancialProfile) {
 	if o.financialProfile == nil {
 		return map[string]interface{}{"has_profile": false}, nil
@@ -328,7 +508,7 @@ func (o *Orchestrator) auditObligations(ctx context.Context, userID uuid.UUID, n
 	}, summary.RequiredThisMonth, nil
 }
 
-func (o *Orchestrator) auditBudget(ctx context.Context, userID uuid.UUID, totalOut decimal.Decimal, now time.Time) map[string]interface{} {
+func (o *Orchestrator) auditBudget(ctx context.Context, userID uuid.UUID, monthlyOut decimal.Decimal, now time.Time) map[string]interface{} {
 	if o.budgetProvider == nil {
 		return map[string]interface{}{"has_budget": false}
 	}
@@ -336,8 +516,8 @@ func (o *Orchestrator) auditBudget(ctx context.Context, userID uuid.UUID, totalO
 	if err != nil || budget == nil || !budget.MonthlyLimit.IsPositive() {
 		return map[string]interface{}{"has_budget": false}
 	}
-	remaining := budget.MonthlyLimit.Sub(totalOut)
-	usedPct := percentOf(totalOut, budget.MonthlyLimit)
+	remaining := budget.MonthlyLimit.Sub(monthlyOut)
+	usedPct := percentOf(monthlyOut, budget.MonthlyLimit)
 	daysElapsed := decimal.NewFromInt(int64(maxInt(1, now.Day())))
 	daysInMonth := decimal.NewFromInt(int64(time.Date(now.Year(), now.Month()+1, 0, 0, 0, 0, 0, time.UTC).Day()))
 	expectedPct := daysElapsed.Div(daysInMonth).Mul(decimal.NewFromInt(100))
@@ -354,7 +534,8 @@ func (o *Orchestrator) auditBudget(ctx context.Context, userID uuid.UUID, totalO
 	return map[string]interface{}{
 		"has_budget":       true,
 		"monthly_limit":    budget.MonthlyLimit.StringFixed(2),
-		"spent_so_far":     totalOut.StringFixed(2),
+		"spent_so_far":     monthlyOut.StringFixed(2),
+		"basis":            "average_monthly_spend",
 		"remaining":        remaining.StringFixed(2),
 		"used_pct":         usedPct.StringFixed(1),
 		"expected_pct_now": expectedPct.StringFixed(1),
@@ -491,7 +672,7 @@ func auditStatus(score int) string {
 	}
 }
 
-func auditContradictions(profile *entities.FinancialProfile, flow *entities.MoneyFlowSummary, totalOut, netFlow decimal.Decimal, topCategories []map[string]interface{}, budget map[string]interface{}, obligations, spend, recurringMonthly decimal.Decimal) []map[string]interface{} {
+func auditContradictions(profile *entities.FinancialProfile, flow *entities.MoneyFlowSummary, totalOut, netFlow, monthlyDeposits, monthlyNetFlow decimal.Decimal, topCategories []map[string]interface{}, budget map[string]interface{}, obligations, spend, recurringMonthly decimal.Decimal) []map[string]interface{} {
 	items := make([]map[string]interface{}, 0)
 	add := func(code, claim, reality, take string, evidence map[string]interface{}) {
 		items = append(items, map[string]interface{}{
@@ -510,13 +691,14 @@ func auditContradictions(profile *entities.FinancialProfile, flow *entities.Mone
 			"net_flow":  netFlow.StringFixed(2),
 		})
 	}
-	if profile != nil && profile.MonthlySavingsTarget.IsPositive() && netFlow.LessThan(profile.MonthlySavingsTarget) {
+	if profile != nil && profile.MonthlySavingsTarget.IsPositive() && monthlyNetFlow.LessThan(profile.MonthlySavingsTarget) {
 		goal := "Monthly savings target"
 		if strings.TrimSpace(profile.FinancialGoal) != "" {
 			goal = profile.FinancialGoal
 		}
-		add("goal_gap", goal, fmt.Sprintf("Net flow is $%s against a $%s monthly savings target.", netFlow.StringFixed(2), profile.MonthlySavingsTarget.StringFixed(2)), "The goal is not impossible. The current pace is just not funding it.", map[string]interface{}{
-			"net_flow":               netFlow.StringFixed(2),
+		add("goal_gap", goal, fmt.Sprintf("Average monthly net flow is $%s against a $%s monthly savings target.", monthlyNetFlow.StringFixed(2), profile.MonthlySavingsTarget.StringFixed(2)), "The goal is not impossible. The current pace is just not funding it.", map[string]interface{}{
+			"average_monthly_net":    monthlyNetFlow.StringFixed(2),
+			"period_net_flow":        netFlow.StringFixed(2),
 			"monthly_savings_target": profile.MonthlySavingsTarget.StringFixed(2),
 		})
 	}
@@ -547,10 +729,10 @@ func auditContradictions(profile *entities.FinancialProfile, flow *entities.Mone
 			"obligation_shortfall": obligations.Sub(spend).StringFixed(2),
 		})
 	}
-	if recurringMonthly.IsPositive() && flow.TotalDeposits.IsPositive() && percentOf(recurringMonthly, flow.TotalDeposits).GreaterThan(decimal.NewFromInt(20)) {
-		add("recurring_drag", "Subscriptions are small.", fmt.Sprintf("Recurring spend is about $%s/month, %s%% of observed deposits.", recurringMonthly.StringFixed(2), percentOf(recurringMonthly, flow.TotalDeposits).StringFixed(1)), "Small automatic charges become a salary leak when nobody audits them.", map[string]interface{}{
+	if recurringMonthly.IsPositive() && monthlyDeposits.IsPositive() && percentOf(recurringMonthly, monthlyDeposits).GreaterThan(decimal.NewFromInt(20)) {
+		add("recurring_drag", "Subscriptions are small.", fmt.Sprintf("Recurring spend is about $%s/month, %s%% of average monthly deposits.", recurringMonthly.StringFixed(2), percentOf(recurringMonthly, monthlyDeposits).StringFixed(1)), "Small automatic charges become a salary leak when nobody audits them.", map[string]interface{}{
 			"recurring_monthly": recurringMonthly.StringFixed(2),
-			"income_share_pct":  percentOf(recurringMonthly, flow.TotalDeposits).StringFixed(1),
+			"income_share_pct":  percentOf(recurringMonthly, monthlyDeposits).StringFixed(1),
 		})
 	}
 	return items
@@ -627,7 +809,7 @@ func auditPrimaryIssue(netFlow, totalOut, obligations, spend decimal.Decimal, bu
 	return "No crisis, but the audit still found places to tighten."
 }
 
-func auditNextActions(spend decimal.Decimal, flow *entities.MoneyFlowSummary, netFlow, stashRatio decimal.Decimal, budget map[string]interface{}, obligations decimal.Decimal) []map[string]interface{} {
+func auditNextActions(spend, monthlyDeposits, netFlow, stashRatio decimal.Decimal, budget map[string]interface{}, obligations decimal.Decimal) []map[string]interface{} {
 	actions := make([]map[string]interface{}, 0)
 	add := func(title, rationale, tool string, params map[string]interface{}, requiresConfirmation bool) {
 		actions = append(actions, map[string]interface{}{
@@ -638,9 +820,9 @@ func auditNextActions(spend decimal.Decimal, flow *entities.MoneyFlowSummary, ne
 			"requires_confirmation": requiresConfirmation,
 		})
 	}
-	if hasBudget, _ := budget["has_budget"].(bool); !hasBudget && flow.TotalDeposits.IsPositive() {
-		limit := flow.TotalDeposits.Mul(decimal.NewFromFloat(0.70)).Round(2)
-		add("Set a monthly spending ceiling", fmt.Sprintf("Observed deposits are $%s; a $%s spending ceiling keeps the 70/30 Rail habit honest.", flow.TotalDeposits.StringFixed(2), limit.StringFixed(2)), ToolSetBudget, map[string]interface{}{"monthly_limit": limit.InexactFloat64()}, true)
+	if hasBudget, _ := budget["has_budget"].(bool); !hasBudget && monthlyDeposits.IsPositive() {
+		limit := monthlyDeposits.Mul(decimal.NewFromFloat(0.70)).Round(2)
+		add("Set a monthly spending ceiling", fmt.Sprintf("Average monthly deposits are $%s; a $%s spending ceiling keeps the 70/30 Rail habit honest.", monthlyDeposits.StringFixed(2), limit.StringFixed(2)), ToolSetBudget, map[string]interface{}{"monthly_limit": limit.InexactFloat64()}, true)
 	}
 	if stashRatio.LessThan(decimal.NewFromInt(20)) && spend.GreaterThan(decimal.NewFromInt(30)) {
 		amount := spend.Mul(decimal.NewFromFloat(0.10)).Round(2)

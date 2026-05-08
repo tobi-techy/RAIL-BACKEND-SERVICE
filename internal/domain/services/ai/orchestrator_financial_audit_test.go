@@ -82,7 +82,7 @@ func TestExecuteFinancialAuditFindsContradictionsAndActions(t *testing.T) {
 		}},
 		budgetProvider: govBudgetProviderFake{budget: &entities.SpendingBudget{
 			UserID:       userID,
-			MonthlyLimit: decimalRequire("800"),
+			MonthlyLimit: decimalRequire("300"),
 			Currency:     "USD",
 		}},
 		obligations: operatingPlanObligationsFake{obligations: []entities.FinancialObligation{
@@ -109,6 +109,12 @@ func TestExecuteFinancialAuditFindsContradictionsAndActions(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, true, result["audit_mode"])
 	require.Equal(t, "hard", result["intensity"])
+	period := result["period"].(map[string]interface{})
+	require.Equal(t, "last_90_days", period["key"])
+
+	coverage := result["data_coverage"].(map[string]interface{})
+	require.Equal(t, true, coverage["has_3_month_window"])
+	require.NotEmpty(t, result["monthly_trend"])
 
 	snapshot := result["snapshot"].(map[string]interface{})
 	require.Equal(t, "950.00", snapshot["total_money_out"])
@@ -171,6 +177,16 @@ func TestFinancialAuditBuildsInlineCard(t *testing.T) {
 		},
 		"top_spending_categories": []map[string]interface{}{
 			{"category": "Jollof Fund", "total": "350.00", "count": 12},
+		},
+		"period": map[string]interface{}{
+			"label": "Last 90 days",
+		},
+		"data_coverage": map[string]interface{}{
+			"months_analyzed":           3,
+			"average_monthly_money_out": "316.67",
+		},
+		"monthly_trend": []map[string]interface{}{
+			{"label": "Mar 2026", "money_out": "350.00", "net_flow": "50.00"},
 		},
 		"risk_flags": []map[string]interface{}{
 			{"code": "thin_spend_balance", "severity": "high", "title": "Spend balance is thin"},

@@ -492,6 +492,9 @@ func buildFinancialAuditCard(data map[string]interface{}) entities.InsightCard {
 		Sentiment: sentiment,
 		Data: map[string]interface{}{
 			"score":          score,
+			"period":         data["period"],
+			"data_coverage":  data["data_coverage"],
+			"monthly_trend":  data["monthly_trend"],
 			"metrics":        metrics,
 			"breakdown":      breakdown,
 			"snapshot":       snapshot,

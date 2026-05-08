@@ -164,6 +164,12 @@ func parsePeriod(period string) (time.Time, time.Time) {
 		return now.AddDate(0, 0, -7), now
 	case "last_30_days":
 		return now.AddDate(0, 0, -30), now
+	case "last_90_days":
+		return now.AddDate(0, 0, -90), now
+	case "last_6_months":
+		return time.Date(now.Year(), now.Month()-5, 1, 0, 0, 0, 0, time.UTC), now
+	case "last_12_months":
+		return time.Date(now.Year(), now.Month()-11, 1, 0, 0, 0, 0, time.UTC), now
 	default: // this_month
 		return spending.MonthStart(), spending.MonthEnd()
 	}
@@ -179,6 +185,12 @@ func periodToLabel(period string, start, end time.Time) string {
 		return fmt.Sprintf("Last 7 days (%s to %s)", start.Format("Jan 2"), end.Format("Jan 2, 2006"))
 	case "last_30_days":
 		return fmt.Sprintf("Last 30 days (%s to %s)", start.Format("Jan 2"), end.Format("Jan 2, 2006"))
+	case "last_90_days":
+		return fmt.Sprintf("Last 90 days (%s to %s)", start.Format("Jan 2"), end.Format("Jan 2, 2006"))
+	case "last_6_months":
+		return fmt.Sprintf("Last 6 months (%s to %s)", start.Format("Jan 2"), end.Format("Jan 2, 2006"))
+	case "last_12_months":
+		return fmt.Sprintf("Last 12 months (%s to %s)", start.Format("Jan 2, 2006"), end.Format("Jan 2, 2006"))
 	default:
 		return fmt.Sprintf("This month (%s 1 to today)", start.Format("January"))
 	}
@@ -339,7 +351,7 @@ func (o *Orchestrator) executeMoneyFlow(ctx context.Context, userID uuid.UUID, a
 	}
 
 	return map[string]interface{}{
-		"period":   periodLabel,
+		"period": periodLabel,
 		"money_in": map[string]interface{}{
 			"total_deposits": flow.TotalDeposits.StringFixed(2),
 			"deposit_count":  flow.DepositCount,
@@ -365,11 +377,11 @@ func (o *Orchestrator) executeMoneyFlow(ctx context.Context, userID uuid.UUID, a
 				digitalPct = totalOut.Div(totalSpending).Mul(decimal.NewFromInt(100))
 			}
 			return map[string]interface{}{
-				"digital_total":      totalOut.StringFixed(2),
-				"cash_total":         flow.TotalReceipts.StringFixed(2),
+				"digital_total":       totalOut.StringFixed(2),
+				"cash_total":          flow.TotalReceipts.StringFixed(2),
 				"total_real_spending": totalSpending.StringFixed(2),
-				"cash_percent":       cashPct.StringFixed(1),
-				"digital_percent":    digitalPct.StringFixed(1),
+				"cash_percent":        cashPct.StringFixed(1),
+				"digital_percent":     digitalPct.StringFixed(1),
 				"insight": fmt.Sprintf("You spent $%s digitally and $%s in cash this month. Your total real spending is $%s.",
 					totalOut.StringFixed(2), flow.TotalReceipts.StringFixed(2), totalSpending.StringFixed(2)),
 			}

@@ -445,10 +445,9 @@ func (h *AIChatHandlers) FinancialAudit(c *gin.Context) {
 
 	args := map[string]interface{}{}
 	if period := strings.TrimSpace(c.Query("period")); period != "" {
-		switch period {
-		case "this_month", "last_month", "last_7_days", "last_30_days":
+		if aiservice.IsFinancialAuditPeriod(period) {
 			args["period"] = period
-		default:
+		} else {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid 'period' query parameter"})
 			return
 		}
