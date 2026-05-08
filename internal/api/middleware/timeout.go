@@ -22,16 +22,13 @@ func TimeoutMiddleware(timeout time.Duration) gin.HandlerFunc {
 
 		c.Request = c.Request.WithContext(ctx)
 
-		done := make(chan struct{})
-		go func() {
-			c.Next()
-			close(done)
-		}()
+		c.Next()
 
-		select {
-		case <-done:
+		if ctx.Err() == nil || c.Writer.Written() {
 			return
-		case <-ctx.Done():
+		}
+
+		if ctx.Err() == context.DeadlineExceeded {
 			c.AbortWithStatusJSON(http.StatusGatewayTimeout, gin.H{
 				"error":   "REQUEST_TIMEOUT",
 				"message": "Request processing timeout",
