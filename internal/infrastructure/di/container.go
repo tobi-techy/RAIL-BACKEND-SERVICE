@@ -4311,6 +4311,17 @@ func (a *PajLimitsAdapter) ValidateWithdrawal(ctx context.Context, userID uuid.U
 	return nil
 }
 
+func (a *PajLimitsAdapter) ValidateWithdrawalWithCurrency(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currency string) error {
+	result, err := a.limitsService.ValidateWithdrawalWithCurrency(ctx, userID, amount, currency)
+	if err != nil {
+		return err
+	}
+	if !result.Allowed {
+		return fmt.Errorf("%s", result.Reason)
+	}
+	return nil
+}
+
 // PajDepositLedgerAdapter credits USDC balance for PAJ onramp deposits using the
 // correct double-entry direction (Debit = increase user balance).
 type PajDepositLedgerAdapter struct {

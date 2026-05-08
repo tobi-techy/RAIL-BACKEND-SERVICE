@@ -224,6 +224,26 @@ func TestLimitsService_ValidateWithdrawal_BelowMinimum(t *testing.T) {
 	assert.False(t, result.Allowed)
 }
 
+func TestLimitsService_ValidateWithdrawalWithCurrency_NGNAllowsSmallNairaWithdrawal(t *testing.T) {
+	userRepo := NewMockUserRepository()
+	usageRepo := NewMockUsageRepository()
+	zapLog, _ := zap.NewDevelopment()
+	log := logger.NewLogger(zapLog)
+
+	userID := uuid.New()
+	userRepo.AddUser(&entities.UserProfile{
+		ID:        userID,
+		KYCStatus: "approved",
+	})
+
+	svc := limits.NewService(userRepo, usageRepo, log)
+
+	result, err := svc.ValidateWithdrawalWithCurrency(context.Background(), userID, decimal.NewFromFloat(1000), "NGN")
+
+	require.NoError(t, err)
+	assert.True(t, result.Allowed)
+}
+
 func TestLimitsService_GetUserLimits(t *testing.T) {
 	userRepo := NewMockUserRepository()
 	usageRepo := NewMockUsageRepository()

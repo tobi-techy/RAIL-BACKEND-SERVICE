@@ -77,6 +77,7 @@ type ChainRailsAdapter interface {
 // WithdrawalLimitsChecker validates withdrawal amounts against daily/monthly limits.
 type WithdrawalLimitsChecker interface {
 	ValidateWithdrawal(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error
+	ValidateWithdrawalWithCurrency(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currency string) error
 }
 
 // DepositLimitsChecker validates deposit amounts against daily/monthly limits.
@@ -433,6 +434,8 @@ func (s *Service) GetBankAccounts(ctx context.Context, userID uuid.UUID) ([]paj.
 	return accounts, nil
 }
 
+const MinNGNTransactionAmount = 500
+
 // --- Onramp (NGN → USDC) ---
 
 func (s *Service) CreateOnrampOrder(ctx context.Context, userID uuid.UUID, fiatAmount float64, currency string) (*paj.OnrampOrder, error) {
@@ -441,9 +444,8 @@ func (s *Service) CreateOnrampOrder(ctx context.Context, userID uuid.UUID, fiatA
 		return nil, err
 	}
 
-	// Enforce NGN minimum deposit
-	if fiatAmount < 500 {
-		return nil, fmt.Errorf("minimum deposit is ₦500")
+	if fiatAmount < MinNGNTransactionAmount {
+		return nil, fmt.Errorf("minimum deposit is ₦%.0f", float64(MinNGNTransactionAmount))
 	}
 
 	// Enforce deposit limits in the currency the user entered. PAJ onramp
@@ -509,8 +511,8 @@ const RailNGNWithdrawalFee = 0.02
 
 func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bankID, accountNumber string, fiatAmount float64, currency string) (*OfframpResult, error) {
 	// Quick sanity check before any API calls.
-	if fiatAmount < 500 {
-		return nil, fmt.Errorf("minimum withdrawal is ₦500")
+	if fiatAmount < MinNGNTransactionAmount {
+		return nil, fmt.Errorf("minimum withdrawal is ₦%.0f", float64(MinNGNTransactionAmount))
 	}
 
 	// P0: Distributed lock — prevent concurrent offramp requests per user.
@@ -548,12 +550,6 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 		return nil, fmt.Errorf("offramp rate out of bounds: %.2f", rates.OffRampRate.Rate)
 	}
 
-	// Circle requires ≥ $1 USDC per transfer. Enforce the NGN equivalent.
-	minNGN := rates.OffRampRate.Rate * 1.05 // ₦ equivalent of ~$1.05 (with buffer)
-	if fiatAmount < minNGN {
-		return nil, fmt.Errorf("minimum withdrawal is ₦%.0f", minNGN)
-	}
-
 	// Estimate USDC amount: fiatAmount / rate. Add 1% buffer for rate slippage.
 	estimatedUSDC := decimal.NewFromFloat(fiatAmount).Div(decimal.NewFromFloat(rates.OffRampRate.Rate))
 	estimatedUSDC = estimatedUSDC.Mul(decimal.NewFromFloat(1.01)).Round(2)
@@ -565,9 +561,15 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 	// Paj's fee is included in order.Amount (Paj deducts it from the token amount).
 	totalHold := estimatedUSDC.Add(railFee)
 
-	// P2: Withdrawal limits — enforce daily/monthly caps.
+	// P2: Withdrawal limits — enforce daily/monthly caps in the currency the
+	// user entered. PAJ withdrawals are requested in NGN, so a valid ₦500+
+	// withdrawal should not be rejected by the crypto $1 minimum.
 	if s.limitsChecker != nil {
-		if limErr := s.limitsChecker.ValidateWithdrawal(ctx, userID, estimatedUSDC); limErr != nil {
+		limitCurrency := strings.ToUpper(strings.TrimSpace(currency))
+		if limitCurrency == "" {
+			limitCurrency = "NGN"
+		}
+		if limErr := s.limitsChecker.ValidateWithdrawalWithCurrency(ctx, userID, decimal.NewFromFloat(fiatAmount), limitCurrency); limErr != nil {
 			return nil, limErr
 		}
 	}
