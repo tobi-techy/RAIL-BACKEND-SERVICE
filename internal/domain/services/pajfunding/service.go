@@ -81,7 +81,7 @@ type WithdrawalLimitsChecker interface {
 
 // DepositLimitsChecker validates deposit amounts against daily/monthly limits.
 type DepositLimitsChecker interface {
-	ValidateDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (*entities.LimitCheckResult, error)
+	ValidateDepositWithCurrency(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currency string) (*entities.LimitCheckResult, error)
 }
 
 // Service handles Paj Cash NGN on/off ramp operations.
@@ -446,18 +446,21 @@ func (s *Service) CreateOnrampOrder(ctx context.Context, userID uuid.UUID, fiatA
 		return nil, fmt.Errorf("minimum deposit is ₦500")
 	}
 
-	// Enforce deposit limits (estimate USDC from fiat using cached rate)
+	// Enforce deposit limits in the currency the user entered. PAJ onramp
+	// deposits use NGN minimums/limits, so a valid ₦500+ deposit should not be
+	// rejected just because its USDC equivalent is below the crypto $1 minimum.
 	if s.depositLimits != nil {
-		rates, rateErr := s.pajClient.GetRates(ctx)
-		if rateErr == nil && rates != nil && rates.OnRampRate.Rate > 0 {
-			estimatedUSDC := decimal.NewFromFloat(fiatAmount).Div(decimal.NewFromFloat(rates.OnRampRate.Rate))
-			if result, limErr := s.depositLimits.ValidateDeposit(ctx, userID, estimatedUSDC); limErr != nil || (result != nil && !result.Allowed) {
-				msg := "deposit limit exceeded"
-				if result != nil && result.Reason != "" {
-					msg = result.Reason
-				}
-				return nil, fmt.Errorf("%s", msg)
+		limitCurrency := strings.ToUpper(strings.TrimSpace(currency))
+		if limitCurrency == "" {
+			limitCurrency = "NGN"
+		}
+		fiatDecimal := decimal.NewFromFloat(fiatAmount)
+		if result, limErr := s.depositLimits.ValidateDepositWithCurrency(ctx, userID, fiatDecimal, limitCurrency); limErr != nil || (result != nil && !result.Allowed) {
+			msg := "deposit limit exceeded"
+			if result != nil && result.Reason != "" {
+				msg = result.Reason
 			}
+			return nil, fmt.Errorf("%s", msg)
 		}
 	}
 
