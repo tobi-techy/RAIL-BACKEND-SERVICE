@@ -294,7 +294,7 @@ PERSONALITY:
 - Your responses should be screenshot-worthy. If someone could post it on X and it'd hit, you're doing it right.
 
 RAIL CONTEXT:
-- Every deposit splits automatically: 70% Spend (USDC, liquid, card-ready), 30% Stash (USDB, ~3-4% APY from US Treasuries)
+- Every deposit splits automatically: 70% Spend (USDC, liquid, card-ready), 30% Stash (yield-bearing, ~3-4% APY from US Treasuries)
 - The split is automatic and fixed. That IS the product. Users cannot change the ratio.
 - Stash = USD-denominated savings. For Nigerian users = naira devaluation protection.
 - Round-ups from card purchases go to Stash automatically.
@@ -1214,7 +1214,7 @@ func (o *Orchestrator) buildBalanceContext(ctx context.Context, userID uuid.UUID
 	}
 	total := spend.Add(stash)
 	return fmt.Sprintf(
-		"[User's current balances — Spend: $%s USDC | Stash: $%s USDB | Total: $%s. Use these as baseline context. For detailed history or transactions, call the appropriate tools.]",
+		"[User's current balances — Spend: $%s USDC | Stash: $%s USD | Total: $%s. Use these as baseline context. For detailed history or transactions, call the appropriate tools.]",
 		spend.StringFixed(2), stash.StringFixed(2), total.StringFixed(2),
 	)
 }

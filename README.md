@@ -75,7 +75,7 @@ Rail operates at the intersection of two converging trends:
 The playbook is established: accept deposits, hold in stablecoins, earn yield, enable spending. What's missing is a product that executes this automatically, without asking users to configure anything. Rail does this with a non-negotiable allocation rule — the 70/30 split is not a feature, it's the product.
 
 **2. Global demand for USD-denominated savings**
-In markets with structural currency weakness — Nigeria, Argentina, Turkey, and others — there is organic, growing demand for USD-denominated savings instruments. Stablecoins are the most accessible form of this. Rail routes the investing portion into USDB (Bridge's yield-bearing stablecoin), giving users passive USD exposure from the moment they deposit.
+In markets with structural currency weakness — Nigeria, Argentina, Turkey, and others — there is organic, growing demand for USD-denominated savings instruments. Stablecoins are the most accessible form of this. Rail routes the stash portion into a yield-bearing position via Reflect Money (backed by US Treasuries), giving users passive USD exposure from the moment they deposit.
 
 **The gap Rail fills**:
 Every competing product is opt-in. Users must choose to save, choose to invest, choose a strategy. Rail is opt-out-impossible by design. The split happens automatically. No competitor — among live products, hackathon winners, or accelerator-backed startups — has claimed this combination of rule-enforced allocation, multi-currency fiat rails, and automated yield.
@@ -88,7 +88,7 @@ Every competing product is opt-in. Users must choose to save, choose to invest, 
 | NectarFi, Fizen | Crypto super-apps | User-configured, DeFi-native UX, no automation |
 | LocalPay, Tsara, FossaPay | Africa payments | Payments only, no wealth automation |
 | Robinhood, Acorns | Consumer investing | USD-only, no stablecoin yield, no Africa rails |
-| **Rail** | Automated wealth engine | 70/30 split + multi-currency fiat + USDB yield + debit card |
+| **Rail** | Automated wealth engine | 70/30 split + multi-currency fiat + automated yield + debit card |
 
 ---
 
@@ -112,7 +112,7 @@ Every deposit is automatically divided the moment it clears:
       +----------+              +----------+
       | 70% SPEND|              |30% STASH |
       +----------+              +----------+
-      | USDC     |              | USDB     |
+      | USDC     |              | USDC     |
       | Liquid   |              | Yield    |
       | Card     |              | Auto     |
       +----------+              +----------+
@@ -124,7 +124,7 @@ Every deposit is automatically divided the moment it clears:
 | User control | None — ratio is fixed |
 | Timing | Within seconds of deposit clearing |
 | Spend currency | USDC |
-| Stash currency | USDB (earns Bridge treasury yield automatically) |
+| Stash currency | USDC (earns yield automatically via Reflect Money) |
 | Disclosure | Shown before first deposit |
 
 ### Funding Methods
@@ -176,10 +176,10 @@ The 70% spend wallet functions as a full checking account replacement.
 
 ### 2. Stash (Yield Layer)
 
-The 30% stash wallet holds USDB — Bridge's yield-bearing stablecoin backed by US Treasuries.
+The 30% stash wallet holds USDC in a yield-bearing position via Reflect Money, backed by US Treasuries.
 
 - Yield accrues automatically, no staking or claiming required
-- ~3-4% APY from Bridge treasury rewards
+- ~3-4% APY from Reflect Money (US Treasury-backed)
 - Balance grows passively while the user does nothing
 - Withdrawable at any time — no lockup
 
@@ -317,7 +317,7 @@ Rail shows direction, not detail.
 | **Investing** | Auto-allocation, trade execution, portfolio management | Alpaca |
 | **Wallet** | Multi-chain wallet management, address generation, custody | Bridge |
 | **Conductor** | Copy trading, track management, follower trade mirroring | Alpaca |
-| **Yield** | USDB yield distribution, stash balance reconciliation | Bridge |
+| **Yield** | Yield distribution, stash balance reconciliation | Reflect Money |
 
 ### Workers
 
@@ -327,7 +327,7 @@ Background workers handle async operations that cannot block the request path:
 |--------|---------|
 | `allocation` | Executes 70/30 split after deposit confirmation |
 | `autoinvest` | Deploys stash capital to Alpaca strategies |
-| `yield_distribution` | Distributes USDB yield to stash balances |
+| `yield_distribution` | Distributes yield to stash balances |
 | `reconciliation` | Reconciles Bridge wallet balances against ledger |
 | `conductor_copy` | Mirrors Conductor trades to follower accounts |
 | `recovery` | Retries failed allocations and stuck deposits |
@@ -354,7 +354,7 @@ rail_service/
 │   │       ├── funding/            # Deposit handling
 │   │       ├── onboarding/         # KYC + wallet provisioning
 │   │       ├── spending/           # Card + ledger
-│   │       └── yield_distribution/ # USDB yield
+│   │       └── yield_distribution/ # Yield distribution
 │   │
 │   ├── infrastructure/
 │   │   ├── adapters/
@@ -403,10 +403,10 @@ rail_service/
 
 | Service | Provider | Purpose |
 |---------|----------|---------|
-| Custodial wallets | Bridge | USDC/USDB custody, multi-chain |
+| Custodial wallets | Bridge | USDC custody, multi-chain |
 | Virtual accounts | Bridge | USD, GBP fiat deposit rails |
 | NGN virtual accounts | Due Network | NGN bank transfer rails |
-| USDB yield | Bridge | Treasury-backed stablecoin yield |
+| Yield | Reflect Money | Treasury-backed stablecoin yield |
 | Debit card | Bridge Cards | Visa card issuance and spending |
 | Brokerage | Alpaca | Stock/ETF trade execution |
 | KYC | Bridge KYC | Identity verification |

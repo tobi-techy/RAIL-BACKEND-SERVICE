@@ -58,7 +58,7 @@ type BusinessMetrics struct {
 	AllocationStashAmount   prometheus.Histogram // 30% portion amounts
 
 	// Stash & yield
-	StashBalanceTotal    prometheus.Gauge // total USDB across all users
+	StashBalanceTotal    prometheus.Gauge // total stash USD across all users
 	SpendBalanceTotal    prometheus.Gauge // total USDC across all users
 	YieldDistributed     prometheus.Counter
 	YieldDistributionAmt prometheus.Histogram
@@ -329,7 +329,7 @@ func NewBusinessMetrics() *BusinessMetrics {
 
 		StashBalanceTotal: promauto.NewGauge(prometheus.GaugeOpts{
 			Name: "stack_stash_balance_total_usd",
-			Help: "Total USDB stash balance across all users",
+			Help: "Total stash balance across all users",
 		}),
 		SpendBalanceTotal: promauto.NewGauge(prometheus.GaugeOpts{
 			Name: "stack_spend_balance_total_usd",

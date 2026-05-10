@@ -1656,7 +1656,7 @@ func (c *Container) initializeDomainServices() error {
 
 		minSweep, _ := decimal.NewFromString(c.Config.Reflect.MinSweepAmount)
 		if minSweep.IsZero() {
-			minSweep = decimal.NewFromInt(100)
+			minSweep = decimal.NewFromFloat(0.01)
 		}
 		interval := time.Duration(c.Config.Reflect.SweepInterval) * time.Minute
 		if interval == 0 {

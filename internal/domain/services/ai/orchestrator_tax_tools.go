@@ -130,7 +130,7 @@ func (o *Orchestrator) executeTaxSummary(ctx context.Context, userID uuid.UUID, 
 				yieldEarned = decimal.Zero
 			}
 			result["yield_earned"] = yieldEarned.StringFixed(2)
-			result["yield_note"] = "USDB yield is likely taxable as interest/savings income"
+			result["yield_note"] = "Stash yield is likely taxable as interest/savings income"
 		}
 	}
 

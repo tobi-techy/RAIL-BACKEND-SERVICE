@@ -21,7 +21,7 @@ The result: money sits idle in bank accounts earning nothing, or gets spent enti
 
 THE 70/30 SPLIT
 
-Every deposit into Rail is automatically divided: 70% goes to your Spend wallet (USDC, liquid, card-ready), 30% goes to your Stash (USDB, earning yield automatically).
+Every deposit into Rail is automatically divided: 70% goes to your Spend wallet (USDC, liquid, card-ready), 30% goes to your Stash (earning yield automatically via Reflect Money).
 
 Why 70/30 specifically:
 - 70% preserves spending power. You can still pay rent, buy food, live your life. Rail doesn't lock your money away.
@@ -67,7 +67,7 @@ Rail is automation taken to its logical conclusion. You don't set up auto-transf
 
 THE STASH: YIELD WITHOUT EFFORT
 
-The 30% that goes to Stash is held in USDB — Bridge's yield-bearing stablecoin backed by US Treasuries. It earns approximately 3-4% APY automatically.
+The 30% that goes to Stash is held in a yield-bearing position via Reflect Money, backed by US Treasuries. It earns approximately 3-4% APY automatically.
 
 You don't stake it. You don't claim rewards. You don't pick a pool. You don't approve transactions. The yield accrues passively while you do nothing.
 

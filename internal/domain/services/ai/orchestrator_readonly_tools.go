@@ -106,7 +106,7 @@ func ReadOnlyTools(hasCards, hasDeposits, hasYield, hasWithdrawals, hasReceipts 
 	if hasYield {
 		tools = append(tools, infraai.Tool{
 			Name:        ToolGetYieldEarned,
-			Description: "Get yield earned on stash (USDB). Use when user asks about interest, yield, earnings on savings, or how much their stash has earned.",
+			Description: "Get yield earned on stash. Use when user asks about interest, yield, earnings on savings, or how much their stash has earned.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
