@@ -330,6 +330,7 @@ const pajRatesCacheKey = "paj:rates"
 const pajRatesCacheTTL = 5 * time.Minute
 const pajBanksCacheKey = "paj:banks"
 const pajBanksCacheTTL = 24 * time.Hour
+const pajBanksRequestTimeout = 10 * time.Second
 
 func (s *Service) GetRates(ctx context.Context) (*paj.RateResponse, error) {
 	// Try cache first.
@@ -377,7 +378,7 @@ func (s *Service) GetBanks(ctx context.Context, userID uuid.UUID) ([]paj.Bank, e
 		}
 	}
 
-	bankCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	bankCtx, cancel := context.WithTimeout(ctx, pajBanksRequestTimeout)
 	defer cancel()
 	banks, err := s.pajClient.GetBanks(bankCtx, token)
 	if err != nil {
