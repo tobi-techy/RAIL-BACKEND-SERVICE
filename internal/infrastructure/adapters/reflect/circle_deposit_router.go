@@ -305,6 +305,8 @@ func (r *CircleDepositRouter) processRoute(ctx context.Context, route *depositRo
 	if err := r.recordYieldWallet(ctx, route.DepositID, yieldWallet); err != nil {
 		return err
 	}
+	route.YieldCircleWalletID = nullableString(yieldWallet.CircleWalletID)
+	route.YieldWalletAddress = nullableString(yieldWallet.Address)
 
 	transferID := strings.TrimSpace(route.CircleTransferID.String)
 	var transfer *circlepkg.Transaction
@@ -552,7 +554,15 @@ func (r *CircleDepositRouter) RedeemStashYield(ctx context.Context, userID uuid.
 	if err != nil {
 		return err
 	}
-	rawTransaction, err := r.reflect.GenerateBurnTransaction(ctx, amount, wallet.Address, wallet.Address)
+	currentRate, err := r.reflect.GetExchangeRate(ctx)
+	if err != nil {
+		return fmt.Errorf("reflect get exchange rate for redemption: %w", err)
+	}
+	if currentRate.LessThanOrEqual(decimal.Zero) {
+		return fmt.Errorf("reflect exchange rate is not positive: %s", currentRate.String())
+	}
+	receiptAmount := amount.Div(currentRate).Truncate(6)
+	rawTransaction, err := r.reflect.GenerateBurnTransaction(ctx, receiptAmount, wallet.Address, wallet.Address)
 	if err != nil {
 		return fmt.Errorf("reflect generate user burn transaction: %w", err)
 	}

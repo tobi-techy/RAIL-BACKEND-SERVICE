@@ -47,6 +47,7 @@ func GenerateTokenPair(userID uuid.UUID, email, role, secret string, accessTTL, 
 			NotBefore: jwt.NewNumericDate(now),
 			Issuer:    "rail_service",
 			Subject:   userID.String(),
+			ID:        uuid.NewString(),
 		},
 	}
 
@@ -59,6 +60,7 @@ func GenerateTokenPair(userID uuid.UUID, email, role, secret string, accessTTL, 
 			NotBefore: jwt.NewNumericDate(now),
 			Issuer:    "rail_service",
 			Subject:   userID.String(),
+			ID:        uuid.NewString(),
 		},
 	}
 
@@ -164,6 +166,7 @@ func GenerateAccessToken(userID uuid.UUID, email, role, secret string, accessTTL
 			NotBefore: jwt.NewNumericDate(now),
 			Issuer:    "rail_service",
 			Subject:   userID.String(),
+			ID:        uuid.NewString(),
 		},
 	}
 
@@ -175,5 +178,3 @@ func GenerateAccessToken(userID uuid.UUID, email, role, secret string, accessTTL
 
 	return accessTokenString, accessExp, nil
 }
-
-

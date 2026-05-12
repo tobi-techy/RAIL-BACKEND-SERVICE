@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -17,6 +18,11 @@ import (
 const (
 	sessionCacheTTL    = 30 * time.Second
 	sessionCachePrefix = "session:"
+)
+
+var (
+	ErrRefreshSessionNotFound  = errors.New("refresh session not found")
+	ErrSessionRotationConflict = errors.New("session rotation conflict")
 )
 
 // RedisClient interface for session caching
@@ -246,7 +252,7 @@ func (s *Service) RotateSessionTokensByRefreshToken(
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("active session not found for refresh token")
+			return nil, ErrRefreshSessionNotFound
 		}
 		return nil, fmt.Errorf("failed to load session for refresh token: %w", err)
 	}
@@ -261,7 +267,7 @@ func (s *Service) RotateSessionTokensByRefreshToken(
 	}
 	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
-		return nil, fmt.Errorf("session not updated during token rotation")
+		return nil, ErrSessionRotationConflict
 	}
 
 	// Invalidate old access token cache and cache new hash.

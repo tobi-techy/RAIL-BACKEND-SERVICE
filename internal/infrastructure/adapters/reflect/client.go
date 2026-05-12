@@ -21,6 +21,8 @@ const (
 	prodBaseURL   = "https://prod.api.reflect.money"
 	usdcMint      = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 	slippageBPS   = 10 // 0.1% slippage tolerance
+	rateBPSScale  = 10_000
+	rateNanoScale = 1_000_000_000
 )
 
 // Client interacts with the Reflect Money REST API and submits signed Solana transactions.
@@ -86,26 +88,48 @@ func (c *Client) Health(ctx context.Context) (*HealthResponse, error) {
 
 // GetExchangeRate returns the current exchange rate for the configured stablecoin as a decimal.
 // Uses GET /stablecoin/{index}/exchange-rate
-// The API returns base_usd_value_bps where 10000 = $1.00 (e.g. 10043 = $1.0043).
-// We convert to a decimal rate: bps / 10000.
+// The API has returned two exchange-rate response shapes in production:
+//   - base_usd_value_bps / receipt_usd_value_bps, historically scaled as bps.
+//   - base / receipt, currently scaled to 1e9 precision.
+//
+// We normalize both to a decimal rate, e.g. 1.024153.
 func (c *Client) GetExchangeRate(ctx context.Context) (decimal.Decimal, error) {
 	var resp struct {
 		Success bool `json:"success"`
 		Data    struct {
 			BaseUSDValueBPS    int64 `json:"base_usd_value_bps"`
 			ReceiptUSDValueBPS int64 `json:"receipt_usd_value_bps"`
+			Base               int64 `json:"base"`
+			Receipt            int64 `json:"receipt"`
 		} `json:"data"`
 	}
 	path := fmt.Sprintf("/stablecoin/%d/exchange-rate", c.stablecoinIndex)
 	if err := c.get(ctx, path, nil, &resp); err != nil {
 		return decimal.Zero, fmt.Errorf("reflect exchange rate: %w", err)
 	}
-	if !resp.Success || resp.Data.BaseUSDValueBPS == 0 {
+	if !resp.Success {
 		return decimal.Zero, fmt.Errorf("reflect: invalid exchange rate response for index %d", c.stablecoinIndex)
 	}
-	// base_usd_value_bps: 10000 = $1.00
-	rate := decimal.NewFromInt(resp.Data.BaseUSDValueBPS).Div(decimal.NewFromInt(10000))
+	rawRate := resp.Data.BaseUSDValueBPS
+	if rawRate == 0 {
+		rawRate = resp.Data.Base
+	}
+	rate, err := normalizeExchangeRate(rawRate)
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("reflect: invalid exchange rate response for index %d: %w", c.stablecoinIndex, err)
+	}
 	return rate, nil
+}
+
+func normalizeExchangeRate(raw int64) (decimal.Decimal, error) {
+	if raw <= 0 {
+		return decimal.Zero, fmt.Errorf("rate must be positive")
+	}
+	scale := int64(rateBPSScale)
+	if raw >= rateNanoScale/100 {
+		scale = rateNanoScale
+	}
+	return decimal.NewFromInt(raw).Div(decimal.NewFromInt(scale)), nil
 }
 
 // GetAPY returns the current APY for the configured stablecoin.
@@ -166,9 +190,13 @@ func (c *Client) GenerateMintTransaction(ctx context.Context, amount decimal.Dec
 		feePayer = signer
 	}
 	// Apply slippage: floor at 1 to avoid sending minimumReceived=0 which disables protection.
-	minReceived := microAmount * (10000 - slippageBPS) / 10000
+	currentRate, err := c.GetExchangeRate(ctx)
+	if err != nil {
+		return "", fmt.Errorf("reflect mint: get exchange rate: %w", err)
+	}
+	minReceived := slippageAdjustedMicroAmount(decimal.NewFromInt(microAmount).Div(currentRate))
 	if minReceived <= 0 {
-		minReceived = 1
+		return "", fmt.Errorf("reflect mint: computed minimum received is below 1 micro-unit")
 	}
 
 	body := map[string]any{
@@ -231,9 +259,13 @@ func (c *Client) GenerateBurnTransaction(ctx context.Context, amount decimal.Dec
 	if feePayer == "" {
 		feePayer = signer
 	}
-	minReceived := microAmount * (10000 - slippageBPS) / 10000
+	currentRate, err := c.GetExchangeRate(ctx)
+	if err != nil {
+		return "", fmt.Errorf("reflect burn: get exchange rate: %w", err)
+	}
+	minReceived := slippageAdjustedMicroAmount(decimal.NewFromInt(microAmount).Mul(currentRate))
 	if minReceived <= 0 {
-		minReceived = 1
+		return "", fmt.Errorf("reflect burn: computed minimum received is below 1 micro-unit")
 	}
 
 	body := map[string]any{
@@ -257,6 +289,14 @@ func (c *Client) GenerateBurnTransaction(ctx context.Context, amount decimal.Dec
 		return "", fmt.Errorf("reflect returned empty burn transaction")
 	}
 	return resp.Data.Transaction, nil
+}
+
+func slippageAdjustedMicroAmount(expected decimal.Decimal) int64 {
+	return expected.
+		Mul(decimal.NewFromInt(10000 - slippageBPS)).
+		Div(decimal.NewFromInt(10000)).
+		Floor().
+		IntPart()
 }
 
 // SubmitSignedTransaction submits a base64-encoded signed Solana transaction to the configured RPC.

@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -1062,12 +1063,20 @@ func (h *AuthHandlers) PasscodeLogin(c *gin.Context) {
 
 	sessionExpiresAt := h.sessionExpiryFromRefreshTTL()
 	if _, err := h.sessionService.RotateSessionTokensByRefreshToken(ctx, userProfile.ID, refreshToken, tokens.AccessToken, tokens.RefreshToken, sessionExpiresAt); err != nil {
-		h.recordLoginFailure(c, identifier)
-		h.logger.Warn("Failed to rotate session tokens after passcode login", zap.Error(err), zap.String("user_id", userProfile.ID.String()))
-		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
-			Code:    "INVALID_REFRESH_TOKEN",
-			Message: "Refresh token is invalid or expired",
-		})
+		if isRefreshSessionConsumed(err) {
+			h.recordLoginFailure(c, identifier)
+			h.logger.Warn("Failed to rotate session tokens after passcode login", zap.Error(err), zap.String("user_id", userProfile.ID.String()))
+			c.JSON(http.StatusUnauthorized, entities.ErrorResponse{
+				Code:    "INVALID_REFRESH_TOKEN",
+				Message: "Refresh token is invalid or expired",
+			})
+		} else {
+			h.logger.Error("Failed to rotate session tokens after passcode login", zap.Error(err), zap.String("user_id", userProfile.ID.String()))
+			c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+				Code:    "SESSION_ROTATION_FAILED",
+				Message: "Failed to rotate session tokens",
+			})
+		}
 		return
 	}
 
@@ -1117,19 +1126,6 @@ func (h *AuthHandlers) RefreshToken(c *gin.Context) {
 		return
 	}
 
-	// SECURITY: Check blacklist BEFORE issuing new tokens to prevent replay attacks.
-	// ValidateSessionByRefreshToken checks is_active=true, so a previously consumed/invalidated
-	// refresh token will be rejected here.
-	var currentSession *session.Session
-	if h.sessionService != nil {
-		currentSession, err = h.sessionService.ValidateSessionByRefreshToken(ctx, refreshToken)
-		if err != nil {
-			h.logger.Warn("Refresh token session invalid or already consumed", zap.Error(err), zap.String("user_id", userID.String()))
-			c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "TOKEN_REVOKED", Message: "Refresh token has been revoked"})
-			return
-		}
-	}
-
 	// Fetch current user data from database
 	user, err := h.userRepo.GetUserEntityByID(ctx, userID)
 	if err != nil {
@@ -1143,16 +1139,6 @@ func (h *AuthHandlers) RefreshToken(c *gin.Context) {
 		h.logger.Warn("Inactive user attempted token refresh", zap.String("user_id", userID.String()))
 		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "ACCOUNT_INACTIVE", Message: "Account is inactive"})
 		return
-	}
-
-	if h.sessionService != nil {
-		// SECURITY: refresh tokens are one-time-use. Invalidate the consumed token
-		// before issuing a replacement so replay attempts cannot reuse it.
-		if err := h.sessionService.InvalidateSession(ctx, refreshToken); err != nil {
-			h.logger.Error("Failed to invalidate consumed refresh token", zap.Error(err), zap.String("user_id", user.ID.String()))
-			c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "SESSION_INVALIDATION_FAILED", Message: "Failed to rotate refresh token"})
-			return
-		}
 	}
 
 	// Generate a replacement token pair for the new session.
@@ -1172,24 +1158,14 @@ func (h *AuthHandlers) RefreshToken(c *gin.Context) {
 
 	if h.sessionService != nil {
 		sessionExpiresAt := h.sessionExpiryFromRefreshTTL()
-		ipAddress, userAgent, fingerprint, location := extractSessionDetails(c)
-		if currentSession != nil {
-			if ipAddress == "" {
-				ipAddress = currentSession.IPAddress
+		if _, err := h.sessionService.RotateSessionTokensByRefreshToken(ctx, user.ID, refreshToken, tokens.AccessToken, tokens.RefreshToken, sessionExpiresAt); err != nil {
+			if isRefreshSessionConsumed(err) {
+				h.logger.Warn("Refresh token session invalid or already consumed", zap.Error(err), zap.String("user_id", user.ID.String()))
+				c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "TOKEN_REVOKED", Message: "Refresh token has been revoked"})
+			} else {
+				h.logger.Error("Failed to rotate refresh token session", zap.Error(err), zap.String("user_id", user.ID.String()))
+				c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "SESSION_ROTATION_FAILED", Message: "Failed to rotate refresh token"})
 			}
-			if userAgent == "" {
-				userAgent = currentSession.UserAgent
-			}
-			if fingerprint == "" {
-				fingerprint = currentSession.DeviceFingerprint
-			}
-			if location == "" {
-				location = currentSession.Location
-			}
-		}
-		if _, err := h.sessionService.CreateSession(ctx, user.ID, tokens.AccessToken, tokens.RefreshToken, ipAddress, userAgent, fingerprint, location, sessionExpiresAt); err != nil {
-			h.logger.Error("Failed to create rotated session on refresh", zap.Error(err), zap.String("user_id", user.ID.String()))
-			c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "SESSION_CREATION_FAILED", Message: "Failed to rotate refresh token"})
 			return
 		}
 	}
@@ -1201,6 +1177,11 @@ func (h *AuthHandlers) RefreshToken(c *gin.Context) {
 		"expires_at":         tokens.ExpiresAt,
 		"session_expires_at": sessionExpiresAt,
 	})
+}
+
+func isRefreshSessionConsumed(err error) bool {
+	return errors.Is(err, session.ErrRefreshSessionNotFound) ||
+		errors.Is(err, session.ErrSessionRotationConflict)
 }
 
 // Logout handles user logout
