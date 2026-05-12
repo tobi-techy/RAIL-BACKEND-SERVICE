@@ -234,6 +234,39 @@ func (a *Adapter) TransferUSDCWithIdempotency(ctx context.Context, walletID, tok
 	return a.client.CreateTransfer(ctx, req)
 }
 
+// GetTokenSymbol returns the symbol for a token currently visible in a Circle wallet balance.
+func (a *Adapter) GetTokenSymbol(ctx context.Context, walletID, tokenID string) (string, error) {
+	balances, err := a.client.GetTokenBalance(ctx, walletID)
+	if err != nil {
+		return "", fmt.Errorf("circle get token balances: %w", err)
+	}
+	for _, b := range balances {
+		if strings.EqualFold(b.Token.ID, tokenID) {
+			return b.Token.Symbol, nil
+		}
+	}
+	return "", fmt.Errorf("token %s not found in wallet %s balances", tokenID, walletID)
+}
+
+// ReturnUnsupportedToken sends an inbound unsupported token back to its source address.
+func (a *Adapter) ReturnUnsupportedToken(ctx context.Context, walletID, tokenID, destinationAddress string, amounts []string, idempotencyKey string) error {
+	if len(amounts) == 0 {
+		return fmt.Errorf("amounts are required")
+	}
+	_, err := a.client.CreateTransfer(ctx, &CreateTransferRequest{
+		IdempotencyKey:     idempotencyKey,
+		WalletID:           walletID,
+		TokenID:            tokenID,
+		DestinationAddress: destinationAddress,
+		Amounts:            amounts,
+		FeeLevel:           "MEDIUM",
+	})
+	if err != nil {
+		return fmt.Errorf("circle return unsupported token: %w", err)
+	}
+	return nil
+}
+
 // GetUSDCTokenID returns Circle's token ID for USDC in the given wallet.
 func (a *Adapter) GetUSDCTokenID(ctx context.Context, walletID string) (string, error) {
 	return a.client.GetUSDCTokenID(ctx, walletID)

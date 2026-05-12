@@ -247,11 +247,12 @@ func (r *DepositRepository) GetByIdempotencyKey(ctx context.Context, idempotency
 func (r *DepositRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status string, confirmedAt *time.Time) error {
 	query := `
 		UPDATE deposits
-		SET status = $2
+		SET status = $2,
+			confirmed_at = COALESCE($3, confirmed_at)
 		WHERE id = $1
 	`
 
-	_, err := r.db.ExecContext(ctx, query, id, status)
+	_, err := r.db.ExecContext(ctx, query, id, status, confirmedAt)
 	if err != nil {
 		return fmt.Errorf("failed to update deposit status: %w", err)
 	}

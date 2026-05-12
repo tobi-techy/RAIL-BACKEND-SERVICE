@@ -15,9 +15,9 @@ import (
 	"github.com/rail-service/rail_service/internal/api/handlers"
 	activityhandlers "github.com/rail-service/rail_service/internal/api/handlers/activity"
 	fundinghandlers "github.com/rail-service/rail_service/internal/api/handlers/funding"
+	opportunityhandlers "github.com/rail-service/rail_service/internal/api/handlers/opportunities"
 	p2phandlers "github.com/rail-service/rail_service/internal/api/handlers/p2p"
 	premiumhandlers "github.com/rail-service/rail_service/internal/api/handlers/premium"
-	opportunityhandlers "github.com/rail-service/rail_service/internal/api/handlers/opportunities"
 	"github.com/rail-service/rail_service/internal/api/handlers/webhooks"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
@@ -46,8 +46,8 @@ import (
 	marketservice "github.com/rail-service/rail_service/internal/domain/services/market"
 	newsservice "github.com/rail-service/rail_service/internal/domain/services/news"
 	obligationservice "github.com/rail-service/rail_service/internal/domain/services/obligation"
-	opportunitysvc "github.com/rail-service/rail_service/internal/domain/services/opportunity"
 	"github.com/rail-service/rail_service/internal/domain/services/onboarding"
+	opportunitysvc "github.com/rail-service/rail_service/internal/domain/services/opportunity"
 	"github.com/rail-service/rail_service/internal/domain/services/p2p"
 	"github.com/rail-service/rail_service/internal/domain/services/pajfunding"
 	"github.com/rail-service/rail_service/internal/domain/services/passcode"
@@ -76,8 +76,8 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/embeddings"
 	pajadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/paj"
-	superteamadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/superteam"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/reflect"
+	superteamadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/superteam"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/umbra"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
@@ -1869,6 +1869,9 @@ func (c *Container) initializeDomainServices() error {
 		)
 		if c.NotificationService != nil {
 			c.CircleWebhookHandler.SetNotifier(c.NotificationService)
+		}
+		if c.CircleAdapter != nil {
+			c.CircleWebhookHandler.SetUnsupportedAssetService(c.CircleAdapter)
 		}
 	}
 

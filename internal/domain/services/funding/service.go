@@ -594,12 +594,17 @@ func (s *Service) GetBalance(ctx context.Context, userID uuid.UUID) (*entities.B
 }
 
 // ProcessChainDeposit processes incoming chain deposit webhook
-// ProcessCircleDeposit handles an inbound USDC deposit detected by Circle webhook.
+// ProcessCircleDeposit handles an inbound supported stablecoin deposit detected by Circle webhook.
 // It records the deposit, credits the ledger, and triggers the 70/30 allocation split.
-func (s *Service) ProcessCircleDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, chain, txHash, circleWalletID string) error {
+func (s *Service) ProcessCircleDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, token entities.Stablecoin, chain, txHash, circleWalletID string) error {
+	if !token.IsValid() {
+		return fmt.Errorf("unsupported Circle deposit token: %s", token)
+	}
+
 	s.logger.Info("Processing Circle deposit",
 		"user_id", userID.String(),
 		"amount", amount.String(),
+		"token", string(token),
 		"chain", chain,
 		"tx_hash", txHash)
 
@@ -607,22 +612,34 @@ func (s *Service) ProcessCircleDeposit(ctx context.Context, userID uuid.UUID, am
 	existing, _ := s.depositRepo.GetByTxHash(ctx, txHash)
 	if existing != nil {
 		s.logger.Info("Circle deposit already processed", "tx_hash", txHash, "deposit_id", existing.ID.String())
+		if existing.Status == "pending" {
+			if s.ledgerIntegration != nil {
+				if err := s.ledgerIntegration.RecordDeposit(ctx, existing.UserID, existing.Amount, existing.ID, string(existing.Chain), existing.TxHash); err != nil {
+					return fmt.Errorf("reconcile pending Circle deposit ledger credit: %w", err)
+				}
+			}
+			confirmedAt := time.Now()
+			if err := s.depositRepo.UpdateStatus(ctx, existing.ID, "confirmed", &confirmedAt); err != nil {
+				return fmt.Errorf("confirm reconciled Circle deposit: %w", err)
+			}
+		}
 		return nil
 	}
 
-	// Create deposit record
+	// Create a pending deposit record first so retries can safely reconcile if
+	// ledger credit succeeds but final status update fails.
 	depositID := uuid.New()
 	now := time.Now()
 	deposit := &entities.Deposit{
 		ID:             depositID,
 		UserID:         userID,
 		Chain:          entities.Chain(chain),
-		Token:          entities.StablecoinUSDC,
+		Token:          token,
 		Amount:         amount,
 		TxHash:         txHash,
-		Status:         "confirmed",
+		Status:         "pending",
 		IdempotencyKey: fmt.Sprintf("circle:%s:%s", chain, txHash),
-		ConfirmedAt:    &now,
+		CreatedAt:      now,
 	}
 	if err := s.depositRepo.Create(ctx, deposit); err != nil {
 		return fmt.Errorf("create deposit record: %w", err)
@@ -631,8 +648,18 @@ func (s *Service) ProcessCircleDeposit(ctx context.Context, userID uuid.UUID, am
 	// Credit ledger
 	if s.ledgerIntegration != nil {
 		if err := s.ledgerIntegration.RecordDeposit(ctx, userID, amount, depositID, chain, txHash); err != nil {
+			if delErr := s.depositRepo.DeletePendingDeposit(ctx, depositID); delErr != nil {
+				s.logger.Error("CRITICAL: failed to delete pending Circle deposit after ledger failure",
+					"deposit_id", depositID.String(),
+					"error", delErr)
+			}
 			return fmt.Errorf("ledger credit: %w", err)
 		}
+	}
+
+	confirmedAt := now
+	if err := s.depositRepo.UpdateStatus(ctx, depositID, "confirmed", &confirmedAt); err != nil {
+		return fmt.Errorf("confirm Circle deposit: %w", err)
 	}
 
 	// Invalidate balance cache IMMEDIATELY so user sees updated balance
@@ -659,6 +686,7 @@ func (s *Service) ProcessCircleDeposit(ctx context.Context, userID uuid.UUID, am
 				DepositID:  &depositID,
 				Metadata: map[string]any{
 					"chain":            chain,
+					"token":            string(token),
 					"circle_wallet_id": circleWalletID,
 					"provider":         "circle",
 				},
@@ -676,7 +704,8 @@ func (s *Service) ProcessCircleDeposit(ctx context.Context, userID uuid.UUID, am
 	s.logger.Info("Circle deposit processed",
 		"deposit_id", depositID.String(),
 		"user_id", userID.String(),
-		"amount", amount.String())
+		"amount", amount.String(),
+		"token", string(token))
 
 	return nil
 }
