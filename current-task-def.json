@@ -258,6 +258,10 @@
         {
           "name": "CIRCLE_TREASURY_WALLET_ADDRESS",
           "valueFrom": "/rail/prod/CIRCLE_TREASURY_WALLET_ADDRESS"
+        },
+        {
+          "name": "MIXPANEL_TOKEN",
+          "valueFrom": "/rail/prod/MIXPANEL_TOKEN"
         }
       ],
       "logConfiguration": {

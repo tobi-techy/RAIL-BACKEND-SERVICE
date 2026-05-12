@@ -19,6 +19,7 @@ import (
 	bridgepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	chainrailspkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	circlepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
+	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/metrics"
 	"github.com/shopspring/decimal"
@@ -922,6 +923,9 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 				if feeErr := s.emergencyLedger.EmergencyTransferStashToSpending(ctx, req.UserID, decimal.Zero, eFee, idemKey); feeErr != nil {
 					s.logger.Error("async: failed to debit emergency fee", "error", feeErr, "withdrawal_id", withdrawal.ID.String())
 				}
+				analytics.G().TrackRevenue(ctx, req.UserID.String(), eFee.InexactFloat64(), map[string]any{
+					"type": "emergency_withdrawal_fee", "withdrawal_id": withdrawal.ID.String(),
+				})
 			}
 			if err := sl.MarkEmergencyWithdrawn(ctx, req.UserID); err != nil {
 				s.logger.Error("async: failed to mark emergency withdrawn", "user_id", req.UserID, "error", err)
@@ -955,6 +959,14 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 		if s.notificationService != nil {
 			_ = s.notificationService.NotifyWithdrawalCompleted(ctx, req.UserID, req.Amount, req.DestinationAddress)
 		}
+		analytics.TrackEvent(ctx, req.UserID.String(), analytics.EventNetInflowRecorded, map[string]any{
+			"amount":    req.Amount.InexactFloat64(),
+			"direction": "outflow",
+			"type":      "crypto_withdrawal",
+		})
+		analytics.G().TrackRevenue(ctx, req.UserID.String(), withdrawal.FeeAmount.InexactFloat64(), map[string]any{
+			"type": "withdrawal_fee",
+		})
 		s.logger.Info("async: crypto withdrawal completed",
 			"withdrawal_id", withdrawal.ID.String(), "tx_hash", transferResult.TxHash)
 	} else if isFinalFailure {

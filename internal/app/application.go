@@ -39,6 +39,7 @@ import (
 	kyc_autoinvest "github.com/rail-service/rail_service/internal/workers/kyc_autoinvest"
 	"github.com/rail-service/rail_service/internal/workers/kyc_sync"
 	memory_worker "github.com/rail-service/rail_service/internal/workers/memory_worker"
+	opportunity_sync "github.com/rail-service/rail_service/internal/workers/opportunity_sync"
 	paj_offramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_offramp_recovery"
 	paj_onramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_onramp_recovery"
 	portfolio_snapshot_worker "github.com/rail-service/rail_service/internal/workers/portfolio_snapshot_worker"
@@ -49,6 +50,7 @@ import (
 	walletprovisioning "github.com/rail-service/rail_service/internal/workers/wallet_provisioning"
 	withdrawal_recovery "github.com/rail-service/rail_service/internal/workers/withdrawal_recovery"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/rail-service/rail_service/pkg/metrics"
 	"github.com/rail-service/rail_service/pkg/tracing"
 )
@@ -86,6 +88,7 @@ type Application struct {
 	automationWorker             *automation_worker.Worker
 	memoryWorker                 *memory_worker.Worker
 	dailyPulseWorker             *daily_pulse.Worker
+	opportunitySyncWorker        *opportunity_sync.Worker
 
 	// Tracing
 	tracingShutdown func(context.Context) error
@@ -124,6 +127,9 @@ func (app *Application) Initialize() error {
 	if err := app.initializeTracing(); err != nil {
 		return fmt.Errorf("failed to initialize tracing: %w", err)
 	}
+
+	// Initialize Mixpanel analytics
+	analytics.Init(log.Zap())
 
 	// Build dependency injection container
 	container, err := di.NewContainer(cfg, db, log)
@@ -382,6 +388,17 @@ func (app *Application) initializeWorkers() error {
 		app.automationWorker = automation_worker.NewWorker(app.container.AutomationService, app.log.Zap())
 		go app.automationWorker.Start(context.Background())
 		app.log.Info("Miriam automation worker started")
+	}
+
+	// Opportunity sync worker — ingests Superteam Earn listings and generates weekly picks
+	if app.container.OpportunityService != nil && app.container.UserRepo != nil {
+		app.opportunitySyncWorker = opportunity_sync.NewWorker(
+			app.container.OpportunityService,
+			&opportunityUserListerAdapter{repo: app.container.UserRepo},
+			app.log.Zap(),
+		)
+		go app.opportunitySyncWorker.Start(context.Background())
+		app.log.Info("Opportunity sync worker started")
 	}
 
 	if app.container.UserRepo != nil && app.container.LedgerService != nil && app.container.LedgerSpendingRepo != nil && app.container.BudgetRepo != nil {
@@ -1035,4 +1052,21 @@ func (a *bridgeWalletBalanceAdapter) GetWalletBalance(ctx context.Context, custo
 		return "0", err
 	}
 	return bal.GetUSDCAmount(), nil
+}
+
+// opportunityUserListerAdapter adapts UserRepository to opportunity_sync.UserLister.
+type opportunityUserListerAdapter struct {
+	repo *repositories.UserRepository
+}
+
+func (a *opportunityUserListerAdapter) GetAllActiveUserIDs(ctx context.Context) ([]uuid.UUID, error) {
+	users, err := a.repo.GetAllActiveUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]uuid.UUID, 0, len(users))
+	for _, u := range users {
+		ids = append(ids, u.ID)
+	}
+	return ids, nil
 }

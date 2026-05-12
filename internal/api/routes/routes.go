@@ -33,6 +33,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/rail-service/rail_service/pkg/alerting"
+	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/rail-service/rail_service/pkg/ratelimit"
 	"github.com/rail-service/rail_service/pkg/tracing"
 )
@@ -111,6 +112,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	router.Use(middleware.CORS(container.Config.Server.AllowedOrigins, container.Config.Environment))
 	router.Use(createRateLimitMiddleware(container))
 	router.Use(middleware.SecurityHeaders())
+	router.Use(analytics.Middleware())
 	router.Use(middleware.DeviceFingerprintExtractor())
 	router.Use(middleware.APIVersionMiddleware(container.Config.Server.SupportedVersions))
 	router.Use(middleware.PaginationMiddleware())
@@ -1387,6 +1389,17 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			container.Logger,
 			sessionValidator,
 			container.UserRepo,
+			container.TokenBlacklist,
+		)
+
+		// Register opportunity routes
+		RegisterOpportunityRoutes(
+			v1,
+			internal,
+			container.GetOpportunityHandlers(),
+			container.Config,
+			container.Logger,
+			sessionValidator,
 			container.TokenBlacklist,
 		)
 
