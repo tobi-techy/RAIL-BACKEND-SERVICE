@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	fundinghandlers "github.com/rail-service/rail_service/internal/api/handlers/funding"
 	p2phandlers "github.com/rail-service/rail_service/internal/api/handlers/p2p"
 	premiumhandlers "github.com/rail-service/rail_service/internal/api/handlers/premium"
+	opportunityhandlers "github.com/rail-service/rail_service/internal/api/handlers/opportunities"
 	"github.com/rail-service/rail_service/internal/api/handlers/webhooks"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
@@ -44,6 +46,7 @@ import (
 	marketservice "github.com/rail-service/rail_service/internal/domain/services/market"
 	newsservice "github.com/rail-service/rail_service/internal/domain/services/news"
 	obligationservice "github.com/rail-service/rail_service/internal/domain/services/obligation"
+	opportunitysvc "github.com/rail-service/rail_service/internal/domain/services/opportunity"
 	"github.com/rail-service/rail_service/internal/domain/services/onboarding"
 	"github.com/rail-service/rail_service/internal/domain/services/p2p"
 	"github.com/rail-service/rail_service/internal/domain/services/pajfunding"
@@ -73,6 +76,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/embeddings"
 	pajadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/paj"
+	superteamadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/superteam"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/reflect"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/umbra"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
@@ -1277,6 +1281,10 @@ type Container struct {
 	VisaProofService        *premium.VisaProofService
 	PanicButtonService      *premium.PanicButtonService
 	PremiumHandlers         *premiumhandlers.Handlers
+
+	// Opportunity Intelligence
+	OpportunityRepo    *repositories.OpportunityRepository
+	OpportunityService *opportunitysvc.Service
 }
 
 // NewContainer creates a new dependency injection container
@@ -1510,6 +1518,9 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	)
 
 	container.OnboardingJobService = services.NewOnboardingJobService(container.OnboardingJobRepo, container.ZapLog, convertWalletChains(cfg.Bridge.SupportedChains, container.ZapLog))
+
+	// Initialize opportunity intelligence
+	container.initializeOpportunityService(sqlxDB)
 
 	return container, nil
 }
@@ -4534,4 +4545,28 @@ func (a *automationProviderAdapter) Create(ctx context.Context, userID uuid.UUID
 
 func (a *automationProviderAdapter) List(ctx context.Context, userID uuid.UUID) ([]entities.MiriamAutomation, error) {
 	return a.svc.List(ctx, userID)
+}
+
+// initializeOpportunityService sets up the opportunity intelligence layer.
+func (c *Container) initializeOpportunityService(sqlxDB *sqlx.DB) {
+	superteamAPIKey := os.Getenv("SUPERTEAM_EARN_API_KEY")
+	if superteamAPIKey == "" {
+		c.ZapLog.Warn("SUPERTEAM_EARN_API_KEY not set, opportunity service disabled")
+		return
+	}
+
+	superteamClient := superteamadapter.NewClient(superteamadapter.Config{
+		APIKey: superteamAPIKey,
+	}, c.ZapLog)
+
+	c.OpportunityRepo = repositories.NewOpportunityRepository(sqlxDB)
+	c.OpportunityService = opportunitysvc.NewService(c.OpportunityRepo, superteamClient, c.ZapLog)
+}
+
+// GetOpportunityHandlers returns opportunity HTTP handlers.
+func (c *Container) GetOpportunityHandlers() *opportunityhandlers.Handlers {
+	if c.OpportunityService == nil {
+		return nil
+	}
+	return opportunityhandlers.NewHandlers(c.OpportunityService, c.ZapLog)
 }
