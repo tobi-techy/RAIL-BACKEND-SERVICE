@@ -195,9 +195,19 @@ func (a *Adapter) ListWallets(ctx context.Context, walletSetID string, userID uu
 	return result, nil
 }
 
+// ListCircleWallets returns raw Circle wallets in a wallet set.
+func (a *Adapter) ListCircleWallets(ctx context.Context, walletSetID string) ([]Wallet, error) {
+	return a.client.ListWallets(ctx, walletSetID)
+}
+
 // ListCircleWalletsByRefID returns raw Circle wallets matching a user refId.
 func (a *Adapter) ListCircleWalletsByRefID(ctx context.Context, refID string) ([]Wallet, error) {
 	return a.client.ListWalletsByRefID(ctx, refID)
+}
+
+// GetTokenBalance returns raw Circle token balances for a wallet.
+func (a *Adapter) GetTokenBalance(ctx context.Context, walletID string) ([]TokenBalance, error) {
+	return a.client.GetTokenBalance(ctx, walletID)
 }
 
 func (a *Adapter) ListWalletsForUser(ctx context.Context, userID uuid.UUID, walletSetID string) ([]*entities.ManagedWallet, error) {

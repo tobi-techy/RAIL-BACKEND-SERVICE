@@ -1796,6 +1796,7 @@ func (c *Container) initializeDomainServices() error {
 			c.ZapLog,
 		)
 		c.ReflectDepositRouter.SetYieldLedger(&reflectFeeLedgerAdapter{ledger: c.LedgerService})
+		c.ReflectDepositRouter.SetSolanaFeeFunding(c.Config.Circle.DefaultWalletSetID, c.Config.Circle.TreasuryWalletAddress)
 		schemaReady, schemaErr := c.ReflectDepositRouter.RequiredSchemaAvailable(context.Background())
 		if schemaErr != nil {
 			c.ZapLog.Warn("Circle-backed user-wallet Reflect deposit router disabled because schema check failed", zap.Error(schemaErr))
