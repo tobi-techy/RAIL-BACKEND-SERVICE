@@ -1924,7 +1924,7 @@ func (h *AuthHandlers) BasicCompleteOnboarding(c *gin.Context) {
 	if err != nil {
 		h.logger.Error("Failed to basic-complete onboarding", zap.Error(err), zap.String("user_id", userID.String()))
 		if strings.Contains(err.Error(), "only allowed from") {
-			c.JSON(http.StatusConflict, entities.ErrorResponse{Code: "INVALID_STATUS", Message: "An unexpected error occurred. Please try again."})
+			c.JSON(http.StatusConflict, entities.ErrorResponse{Code: "ALREADY_COMPLETED", Message: "This step has already been completed. Please log in."})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "ONBOARDING_FAILED", Message: "Failed to complete basic signup"})

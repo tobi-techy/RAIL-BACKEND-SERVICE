@@ -396,7 +396,14 @@ func (s *Service) BasicCompleteOnboarding(ctx context.Context, req *entities.Bas
 	}
 
 	if user.OnboardingStatus != entities.OnboardingStatusStarted {
-		return nil, fmt.Errorf("basic-complete is only allowed from 'started' status, current: %s", user.OnboardingStatus)
+		s.logger.Info("Basic onboarding already complete; returning idempotent success",
+			zap.String("user_id", req.UserID.String()),
+			zap.String("status", string(user.OnboardingStatus)))
+		return basicCompleteResponse(req.UserID, user.OnboardingStatus), nil
+	}
+
+	if err := crypto.ValidatePasswordStrength(req.Password); err != nil {
+		return nil, fmt.Errorf("invalid password: %w", err)
 	}
 
 	// Hash and set password
@@ -467,11 +474,36 @@ func (s *Service) BasicCompleteOnboarding(ctx context.Context, req *entities.Bas
 		s.logger.Warn("Failed to log audit event", zap.Error(err))
 	}
 
+	return basicCompleteResponse(req.UserID, entities.OnboardingStatusBasicComplete), nil
+}
+
+func isBasicOnboardingAlreadyComplete(user *entities.UserProfile) bool {
+	if user.FirstName == nil || strings.TrimSpace(*user.FirstName) == "" {
+		return false
+	}
+	if user.LastName == nil || strings.TrimSpace(*user.LastName) == "" {
+		return false
+	}
+
+	switch user.OnboardingStatus {
+	case entities.OnboardingStatusBasicComplete,
+		entities.OnboardingStatusKYCPending,
+		entities.OnboardingStatusKYCApproved,
+		entities.OnboardingStatusKYCRejected,
+		entities.OnboardingStatusWalletsPending,
+		entities.OnboardingStatusCompleted:
+		return true
+	default:
+		return false
+	}
+}
+
+func basicCompleteResponse(userID uuid.UUID, status entities.OnboardingStatus) *entities.BasicCompleteResponse {
 	return &entities.BasicCompleteResponse{
-		UserID:           req.UserID,
-		OnboardingStatus: string(entities.OnboardingStatusBasicComplete),
+		UserID:           userID,
+		OnboardingStatus: string(status),
 		Message:          "Basic signup completed. Complete your profile to unlock all features.",
-	}, nil
+	}
 }
 
 // CompleteOnboarding handles the completion of onboarding with personal info, password, and Bridge customer creation
