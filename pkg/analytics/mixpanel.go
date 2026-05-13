@@ -15,7 +15,7 @@ type Client struct {
 
 // New creates a Mixpanel analytics client.
 func New(token string, logger *zap.Logger) *Client {
-	mp := mixpanel.NewApiClient(token)
+	mp := mixpanel.NewApiClient(token, mixpanel.EuResidency())
 	return &Client{mp: mp, logger: logger}
 }
 

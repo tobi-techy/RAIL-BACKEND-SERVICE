@@ -2,6 +2,7 @@ package analytics
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -18,7 +19,15 @@ func Middleware() gin.HandlerFunc {
 		status := c.Writer.Status()
 		path := c.FullPath()
 		method := c.Request.Method
-		userID := c.GetString("user_id")
+		userID := ""
+		if raw, exists := c.Get("user_id"); exists {
+			switch v := raw.(type) {
+			case string:
+				userID = v
+			default:
+				userID = fmt.Sprintf("%v", v)
+			}
+		}
 		if userID == "" {
 			return // skip anonymous requests
 		}

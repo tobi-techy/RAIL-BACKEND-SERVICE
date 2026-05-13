@@ -39,11 +39,12 @@ type HealthCheck struct {
 
 // HealthResponse represents the overall health response
 type HealthResponse struct {
-	Status    string                 `json:"status"`
-	Timestamp time.Time              `json:"timestamp"`
-	Version   string                 `json:"version"`
-	Uptime    time.Duration          `json:"uptime"`
-	Checks    map[string]HealthCheck `json:"checks"`
+	Status        string                 `json:"status"`
+	Timestamp     time.Time              `json:"timestamp"`
+	Version       string                 `json:"version"`
+	MinAppVersion string                 `json:"min_app_version"`
+	Uptime        time.Duration          `json:"uptime"`
+	Checks        map[string]HealthCheck `json:"checks"`
 }
 
 // Health performs comprehensive health checks
@@ -61,11 +62,12 @@ func (h *CoreHandlers) Health(c *gin.Context) {
 	}
 
 	response := HealthResponse{
-		Status:    overallStatus,
-		Timestamp: time.Now(),
-		Version:   "1.0.0",
-		Uptime:    time.Since(startTime),
-		Checks:    checks,
+		Status:        overallStatus,
+		Timestamp:     time.Now(),
+		Version:       "1.0.0",
+		MinAppVersion: "1.1.0",
+		Uptime:        time.Since(startTime),
+		Checks:        checks,
 	}
 
 	statusCode := http.StatusOK
