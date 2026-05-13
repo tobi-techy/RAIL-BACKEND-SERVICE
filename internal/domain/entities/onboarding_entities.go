@@ -36,7 +36,7 @@ func (s OnboardingStatus) IsValid() bool {
 func (s OnboardingStatus) CanTransitionTo(target OnboardingStatus) bool {
 	transitions := map[OnboardingStatus][]OnboardingStatus{
 		OnboardingStatusStarted:        {OnboardingStatusBasicComplete, OnboardingStatusWalletsPending, OnboardingStatusKYCPending},
-		OnboardingStatusBasicComplete:  {OnboardingStatusWalletsPending, OnboardingStatusKYCPending},
+		OnboardingStatusBasicComplete:  {OnboardingStatusWalletsPending, OnboardingStatusKYCPending, OnboardingStatusCompleted},
 		OnboardingStatusKYCPending:     {OnboardingStatusKYCApproved, OnboardingStatusKYCRejected, OnboardingStatusWalletsPending},
 		OnboardingStatusKYCApproved:    {OnboardingStatusWalletsPending},
 		OnboardingStatusKYCRejected:    {OnboardingStatusKYCPending, OnboardingStatusWalletsPending}, // Allow retry or continue without KYC
