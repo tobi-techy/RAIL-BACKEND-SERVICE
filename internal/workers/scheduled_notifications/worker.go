@@ -24,12 +24,12 @@ type PushSender interface {
 
 // Worker runs scheduled push notification jobs.
 type Worker struct {
-	userRepo         UserRepo
-	pushSender       PushSender
-	logger           *zap.Logger
-	lastKYCDate      string // "YYYY-MM-DD" of last KYC send
-	lastEngageDate   string // "YYYY-MM-DD" of last engagement send
-	lastDepositDate  string // "YYYY-MM-DD" of last deposit reminder send
+	userRepo        UserRepo
+	pushSender      PushSender
+	logger          *zap.Logger
+	lastKYCDate     string // "YYYY-MM-DD" of last KYC send
+	lastEngageDate  string // "YYYY-MM-DD" of last engagement send
+	lastDepositDate string // "YYYY-MM-DD" of last deposit reminder send
 }
 
 func NewWorker(userRepo UserRepo, pushSender PushSender, logger *zap.Logger) *Worker {
@@ -90,60 +90,60 @@ func (w *Worker) runIfDue(ctx context.Context) {
 // kycMessages are rotated so users don't see the same copy every time.
 var kycMessages = []struct{ title, body string }{
 	{
-		title: "Unlock your full Rail experience",
-		body:  "Verify your identity in under 5 minutes to withdraw to your bank, get a Rail Card, and more.",
+		title: "Miriam saved your seat",
+		body:  "Finish ID check and the good stuff opens: deposits, withdrawals, and your Rail Card.",
 	},
 	{
-		title: "One step away from full access",
-		body:  "Complete your identity verification to unlock bank withdrawals, deposits, and your Rail Debit Card.",
+		title: "One small unlock left",
+		body:  "Two minutes of verification, then Rail can actually start moving for you.",
 	},
 	{
 		title: "Your Rail Card is waiting",
-		body:  "Finish KYC verification to activate your Rail Debit Card and start spending your crypto anywhere.",
+		body:  "Miriam checked: identity verification is the only thing between you and full access.",
 	},
 }
 
 // depositMessages nudge verified users who haven't made their first deposit.
 var depositMessages = []struct{ title, body string }{
 	{
-		title: "Your money could be working right now",
-		body:  "Make your first deposit and Rail automatically splits it — 70% to spend, 30% to invest.",
+		title: "Your first deposit is ready",
+		body:  "Add funds and Rail starts the 70/30 split before your money gets lazy.",
 	},
 	{
-		title: "Start with as little as $1",
-		body:  "Deposit any amount and watch Rail put your money to work instantly. No setup needed.",
+		title: "Start tiny, still counts",
+		body:  "Even $1 lets Miriam show you how the 70/30 split feels in real life.",
 	},
 	{
-		title: "You're all set up — just add funds",
-		body:  "Your Rail account is ready. Deposit via bank transfer or crypto to activate your 70/30 split.",
+		title: "Rail is set up",
+		body:  "The empty account era can end with one bank transfer or crypto deposit.",
 	},
 	{
-		title: "Don't let your money sit idle",
-		body:  "Every deposit on Rail earns yield automatically. Fund your account to get started.",
+		title: "Miriam is ready",
+		body:  "Your account is ready. Add funds and let the split engine do its thing.",
 	},
 }
 
 // engagementMessages are rotated daily to keep things fresh.
 var engagementMessages = []struct{ title, body string }{
 	{
-		title: "Your portfolio is moving",
-		body:  "Check in on your stash performance and see what the market is doing today.",
+		title: "Miriam found your trail",
+		body:  "Open Rail for the tiny money recap your future self will pretend was obvious.",
 	},
 	{
-		title: "Good evening",
-		body:  "See how your investments performed today and explore what's trending on Rail.",
+		title: "Evening money check",
+		body:  "Spend, Stash, and recent moves are waiting. Miriam made it painless.",
 	},
 	{
-		title: "Markets are open",
-		body:  "Stay on top of your finances — open Rail to review your balance and recent activity.",
+		title: "Your money moved today",
+		body:  "A 20-second check beats wondering where everything went later.",
 	},
 	{
-		title: "Rail tip of the day",
-		body:  "Did you know you can send money to anyone with a RailTag instantly? Try it today.",
+		title: "Tiny Rail trick",
+		body:  "RailTag sends are quick. Miriam thinks your contact list deserves the shortcut.",
 	},
 	{
-		title: "Your money, your rules",
-		body:  "Check your spending stash and investment positions — all in one place on Rail.",
+		title: "Miriam wants receipts",
+		body:  "Not paper ones. Just a clean look at Spend, Stash, and recent activity.",
 	},
 }
 

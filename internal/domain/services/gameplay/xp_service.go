@@ -105,8 +105,8 @@ func (s *XPService) AwardXP(ctx context.Context, userID uuid.UUID, eventType str
 
 	// Notify on level-up
 	if newLevel > oldLevel && s.notifier != nil {
-		title := fmt.Sprintf("Level %d — %s!", newLevel, newTitle)
-		body := fmt.Sprintf("You've reached Level %d. Keep building!", newLevel)
+		title := fmt.Sprintf("Level %d: %s", newLevel, newTitle)
+		body := fmt.Sprintf("Miriam saw the level-up. Level %d looks good on you.", newLevel)
 		if err := s.notifier.SendToUser(ctx, userID, title, body, map[string]interface{}{
 			"type":  "level_up",
 			"level": newLevel,
