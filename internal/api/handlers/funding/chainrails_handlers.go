@@ -196,8 +196,8 @@ func (h *ChainRailsHandlers) HandleWebhook(c *gin.Context) {
 	const maxPayloadSize = 1024 * 1024 // 1MB
 	if len(rawBody) > maxPayloadSize {
 		chainrailsWebhooksTotal.WithLabelValues("unknown", "payload_too_large").Inc()
-		h.logger.Warn("ChainRails webhook payload too large", 
-			"size", len(rawBody), 
+		h.logger.Warn("ChainRails webhook payload too large",
+			"size", len(rawBody),
 			"max_size", maxPayloadSize,
 			"client_ip", c.ClientIP(),
 			"user_agent", c.GetHeader("User-Agent"))
@@ -210,7 +210,7 @@ func (h *ChainRailsHandlers) HandleWebhook(c *gin.Context) {
 
 	if err := chainrails.VerifyWebhookSignature(rawBody, sig, ts, h.webhookSecret); err != nil {
 		chainrailsWebhooksTotal.WithLabelValues("unknown", "unauthorized").Inc()
-		h.logger.Warn("ChainRails webhook signature invalid", 
+		h.logger.Warn("ChainRails webhook signature invalid",
 			"error", err,
 			"client_ip", c.ClientIP(),
 			"user_agent", c.GetHeader("User-Agent"))
@@ -431,6 +431,8 @@ func usdcTokenForChainRailsChain(chain string) string {
 // mapChainRailsChain converts ChainRails chain names to Rail's Chain type.
 func mapChainRailsChain(cr string) entities.Chain {
 	switch cr {
+	case "SOLANA_MAINNET", "SOLANA_TESTNET":
+		return entities.ChainSOL
 	case "ETHEREUM_MAINNET", "ETHEREUM_TESTNET":
 		return entities.ChainETH
 	case "BASE_MAINNET", "BASE_TESTNET":

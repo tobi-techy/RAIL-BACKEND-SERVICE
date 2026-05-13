@@ -214,24 +214,67 @@ func (r *CircleDepositRouter) backfillMissingRoutes(ctx context.Context) {
 	defer cancel()
 
 	res, err := r.db.ExecContext(ctx, `
+		WITH candidates AS (
+			SELECT DISTINCT ON (d.id)
+				d.id AS deposit_id,
+				ae.user_id,
+				COALESCE(
+					NULLIF(ae.metadata->>'circle_wallet_id', ''),
+					user_wallet.circle_wallet_id
+				) AS circle_wallet_id,
+				ae.stash_amount,
+				ae.created_at
+			FROM allocation_events ae
+			JOIN deposits d ON d.user_id = ae.user_id
+				AND (
+					d.id::text = ae.metadata->>'deposit_id'
+					OR (ae.source_tx_id IS NOT NULL AND ae.source_tx_id <> '' AND d.tx_hash = ae.source_tx_id)
+					OR (
+						COALESCE(ae.metadata->>'source_tx_id', '') <> ''
+						AND d.tx_hash = ae.metadata->>'source_tx_id'
+					)
+					OR (
+						COALESCE(ae.metadata->>'tx_hash', '') <> ''
+						AND d.tx_hash = ae.metadata->>'tx_hash'
+					)
+				)
+			LEFT JOIN LATERAL (
+				SELECT mw.circle_wallet_id
+				FROM (
+					SELECT circle_wallet_id, created_at
+					FROM managed_wallets
+					WHERE user_id = ae.user_id
+						AND chain = d.chain
+						AND COALESCE(circle_wallet_id, '') <> ''
+					UNION ALL
+					SELECT circle_wallet_id, created_at
+					FROM wallets
+					WHERE user_id = ae.user_id
+						AND chain = d.chain
+						AND COALESCE(circle_wallet_id, '') <> ''
+				) mw
+				ORDER BY mw.created_at DESC
+				LIMIT 1
+			) user_wallet ON true
+			LEFT JOIN reflect_deposit_routes rdr ON rdr.deposit_id = d.id
+			WHERE rdr.id IS NULL
+				AND ae.stash_amount > 0
+				AND ae.event_type IN ('deposit', 'fiat_deposit', 'crypto_deposit')
+				AND d.status IN ('confirmed', 'completed', 'broker_funded', 'pending_allocation')
+			ORDER BY d.id, ae.created_at DESC
+		)
 		INSERT INTO reflect_deposit_routes (
 			id, deposit_id, user_id, circle_wallet_id, amount, status, next_retry_at
 		)
 		SELECT uuid_generate_v4(),
-			d.id,
-			ae.user_id,
-			ae.metadata->>'circle_wallet_id',
-			ae.stash_amount,
+			deposit_id,
+			user_id,
+			circle_wallet_id,
+			stash_amount,
 			$1,
 			NOW()
-		FROM allocation_events ae
-		JOIN deposits d ON d.id::text = ae.metadata->>'deposit_id'
-		LEFT JOIN reflect_deposit_routes rdr ON rdr.deposit_id = d.id
-		WHERE rdr.id IS NULL
-			AND ae.stash_amount > 0
-			AND COALESCE(ae.metadata->>'circle_wallet_id', '') <> ''
-			AND ae.event_type IN ('deposit', 'fiat_deposit', 'crypto_deposit')
-			AND d.status IN ('confirmed', 'completed', 'broker_funded')
+		FROM candidates
+		WHERE COALESCE(circle_wallet_id, '') <> ''
 		ON CONFLICT (deposit_id) DO NOTHING
 	`, routeStatusPending)
 	if err != nil {
