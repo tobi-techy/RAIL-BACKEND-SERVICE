@@ -177,7 +177,7 @@ func (w *Worker) buildPulse(ctx context.Context, userID uuid.UUID) (string, stri
 	if w.nudger != nil {
 		snapshot := buildNudgeSnapshot(total, spend, stash, daySpend, monthNet, budgetRemaining, hasBudget, streakDays, now)
 		if nudge := w.nudger.GenerateNudge(fetchCtx, snapshot); nudge != "" {
-			return "Miriam", nudge
+			return "Miriam checked the math", nudge
 		}
 	}
 
@@ -192,8 +192,8 @@ func (w *Worker) buildPulse(ctx context.Context, userID uuid.UUID) (string, stri
 	// Yesterday's spending
 	if daySpend.IsPositive() {
 		candidates = append(candidates, pulse{
-			title: "Miriam's Daily Pulse",
-			body:  fmt.Sprintf("You spent $%s yesterday. Your total balance is $%s.", daySpend.StringFixed(2), total.StringFixed(2)),
+			title: "Miriam spotted a move",
+			body:  fmt.Sprintf("$%s left Spend yesterday. Want the quick read on what changed?", daySpend.StringFixed(2)),
 			score: 3,
 		})
 	}
@@ -203,15 +203,15 @@ func (w *Worker) buildPulse(ctx context.Context, userID uuid.UUID) (string, stri
 		daysLeft := daysRemainingInMonth(now)
 		daily := budgetRemaining.Div(decimal.NewFromInt(maxInt64(int64(daysLeft), 1)))
 		candidates = append(candidates, pulse{
-			title: "Miriam's Daily Pulse",
-			body:  fmt.Sprintf("$%s left in your budget this month. That's about $%s/day — you got this.", budgetRemaining.StringFixed(2), daily.StringFixed(2)),
+			title: "Miriam likes this pace",
+			body:  fmt.Sprintf("$%s left this month. That's about $%s/day if we keep it tidy.", budgetRemaining.StringFixed(2), daily.StringFixed(2)),
 			score: 4,
 		})
 	}
 	if hasBudget && budgetRemaining.IsNegative() {
 		candidates = append(candidates, pulse{
-			title: "Miriam's Daily Pulse",
-			body:  fmt.Sprintf("Heads up — you're $%s over budget this month. Time to chill on spending.", budgetRemaining.Abs().StringFixed(2)),
+			title: "Tiny budget reset?",
+			body:  fmt.Sprintf("Budget is $%s over. Not a crisis, just a course correction.", budgetRemaining.Abs().StringFixed(2)),
 			score: 5,
 		})
 	}
@@ -219,8 +219,8 @@ func (w *Worker) buildPulse(ctx context.Context, userID uuid.UUID) (string, stri
 	// Streak
 	if streakDays >= 3 {
 		candidates = append(candidates, pulse{
-			title: "Miriam's Daily Pulse",
-			body:  fmt.Sprintf("Day %d of your saving streak. Don't break it now.", streakDays),
+			title: "Streak is still alive",
+			body:  fmt.Sprintf("Day %d. Your future self is quietly enjoying this consistency.", streakDays),
 			score: 2,
 		})
 	}
@@ -228,8 +228,8 @@ func (w *Worker) buildPulse(ctx context.Context, userID uuid.UUID) (string, stri
 	// Stash growth
 	if stash.IsPositive() {
 		candidates = append(candidates, pulse{
-			title: "Miriam's Daily Pulse",
-			body:  fmt.Sprintf("Your stash is at $%s and earning yield while you sleep. Keep stacking.", stash.StringFixed(2)),
+			title: "Stash check",
+			body:  fmt.Sprintf("$%s in Stash. Quiet money, doing useful things.", stash.StringFixed(2)),
 			score: 1,
 		})
 	}
@@ -237,8 +237,8 @@ func (w *Worker) buildPulse(ctx context.Context, userID uuid.UUID) (string, stri
 	// Net flow
 	if monthNet.IsPositive() {
 		candidates = append(candidates, pulse{
-			title: "Miriam's Daily Pulse",
-			body:  fmt.Sprintf("You're up $%s this month. More in than out — that's the goal.", monthNet.StringFixed(2)),
+			title: "Miriam did a small nod",
+			body:  fmt.Sprintf("You're up $%s this month. More in than out is the whole trick.", monthNet.StringFixed(2)),
 			score: 3,
 		})
 	}
@@ -246,7 +246,7 @@ func (w *Worker) buildPulse(ctx context.Context, userID uuid.UUID) (string, stri
 	// Fallback
 	if len(candidates) == 0 {
 		if total.IsPositive() {
-			return "Miriam's Daily Pulse", fmt.Sprintf("Your balance is $%s. Your money's working even when you're not.", total.StringFixed(2))
+			return "Miriam checked in", fmt.Sprintf("$%s across Rail. Your money clocked in before you did.", total.StringFixed(2))
 		}
 		return "", "" // No data, skip this user
 	}
