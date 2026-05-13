@@ -27,14 +27,15 @@ const (
 
 // Client interacts with the Reflect Money REST API and submits signed Solana transactions.
 type Client struct {
-	baseURL         string
-	apiKey          string
-	solanaRPC       string
-	owner           string
-	privateKey      ed25519.PrivateKey
-	stablecoinIndex int
-	httpClient      *http.Client
-	logger          *zap.Logger
+	baseURL           string
+	apiKey            string
+	solanaRPC         string
+	owner             string
+	privateKey        ed25519.PrivateKey
+	stablecoinIndex   int
+	allowedProgramIDs []string
+	httpClient        *http.Client
+	logger            *zap.Logger
 }
 
 // NewClient creates a Reflect client. privateKeyBase58 is optional for flows where
@@ -67,6 +68,15 @@ func NewClient(baseURL, apiKey, solanaRPC, ownerPubkey, privateKeyBase58 string,
 		httpClient:      &http.Client{Timeout: 30 * time.Second},
 		logger:          logger,
 	}, nil
+}
+
+// SetAllowedProgramIDs configures extra Solana programs that Reflect-generated
+// transactions may use. The validator already permits standard Solana programs.
+func (c *Client) SetAllowedProgramIDs(ids []string) {
+	if c == nil {
+		return
+	}
+	c.allowedProgramIDs = normalizeProgramIDs(ids)
 }
 
 // HealthResponse is returned by GET /health.
@@ -166,7 +176,7 @@ func (c *Client) Mint(ctx context.Context, amount decimal.Decimal) (string, erro
 	if err != nil {
 		return "", err
 	}
-	if err := c.validateReflectUserMintTransaction(ctx, serializedTx, c.owner, amount, nil); err != nil {
+	if err := c.validateReflectUserMintTransaction(ctx, serializedTx, c.owner, amount, c.allowedProgramIDs); err != nil {
 		return "", fmt.Errorf("reflect validate mint tx: %w", err)
 	}
 	txHash, err := c.signAndSubmit(ctx, serializedTx)
@@ -236,7 +246,7 @@ func (c *Client) Burn(ctx context.Context, amount decimal.Decimal) (string, erro
 	if err != nil {
 		return "", err
 	}
-	if err := c.validateReflectUserBurnTransaction(ctx, serializedTx, c.owner, nil); err != nil {
+	if err := c.validateReflectUserBurnTransaction(ctx, serializedTx, c.owner, c.allowedProgramIDs); err != nil {
 		return "", fmt.Errorf("reflect validate burn tx: %w", err)
 	}
 	txHash, err := c.signAndSubmit(ctx, serializedTx)

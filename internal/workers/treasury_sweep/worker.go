@@ -2,6 +2,7 @@ package treasury_sweep
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -9,7 +10,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	"github.com/lib/pq"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/reflect"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
@@ -26,19 +28,26 @@ type DistributedYieldReader interface {
 	GetTotalDistributedYield(ctx context.Context) (decimal.Decimal, error)
 }
 
+// CircleTransferSource is the subset of Circle wallet operations needed to fund
+// Rail's Solana Reflect wallet from Circle custody.
+type CircleTransferSource interface {
+	GetUSDCTokenID(ctx context.Context, walletID string) (string, error)
+	TransferUSDCWithIdempotency(ctx context.Context, walletID, tokenID, destinationAddress, amount, idempotencyKey string) (*circle.Transaction, error)
+	GetTransaction(ctx context.Context, txID string) (*circle.Transaction, error)
+}
+
 // Worker periodically sweeps aggregate stash USDC into the Reflect yield pool.
 //
 // Two-phase flow:
-//  1. Transfer USDC from Bridge custody wallet → Rail's Solana wallet (via Bridge API)
+//  1. Transfer USDC from Circle custody wallet → Rail's Solana wallet (via Circle API)
 //  2. Mint USDC+ from Solana wallet → Reflect (via Reflect tx on Solana)
 type Worker struct {
 	reflect            *reflect.Client
-	bridgeClient       *bridge.Client
+	circle             CircleTransferSource
 	ledger             LedgerReader
 	distributedYield   DistributedYieldReader
 	db                 *sqlx.DB
-	bridgeCustomerID   string
-	bridgeSourceWallet string
+	circleSourceWallet string
 	solanaWallet       string
 	minSweepAmount     decimal.Decimal
 	interval           time.Duration
@@ -51,12 +60,11 @@ type Worker struct {
 // NewWorker creates a treasury sweep worker.
 func NewWorker(
 	reflectClient *reflect.Client,
-	bridgeClient *bridge.Client,
+	circleSource CircleTransferSource,
 	ledger LedgerReader,
 	distributedYield DistributedYieldReader,
 	db *sqlx.DB,
-	bridgeCustomerID string,
-	bridgeSourceWallet string,
+	circleSourceWallet string,
 	solanaWallet string,
 	minSweepAmount decimal.Decimal,
 	interval time.Duration,
@@ -64,12 +72,11 @@ func NewWorker(
 ) *Worker {
 	return &Worker{
 		reflect:            reflectClient,
-		bridgeClient:       bridgeClient,
+		circle:             circleSource,
 		ledger:             ledger,
 		distributedYield:   distributedYield,
 		db:                 db,
-		bridgeCustomerID:   bridgeCustomerID,
-		bridgeSourceWallet: bridgeSourceWallet,
+		circleSourceWallet: circleSourceWallet,
 		solanaWallet:       solanaWallet,
 		minSweepAmount:     minSweepAmount,
 		interval:           interval,
@@ -82,6 +89,7 @@ func NewWorker(
 func (w *Worker) Start() {
 	ticker := time.NewTicker(w.interval)
 	go func() {
+		w.runSweep()
 		for {
 			select {
 			case <-ticker.C:
@@ -133,11 +141,24 @@ func (w *Worker) sweep(ctx context.Context) error {
 		return fmt.Errorf("get reflect deposited usdc: %w", err)
 	}
 
+	pendingRoutes, err := w.pendingReflectRoutesAmount(ctx)
+	if err != nil {
+		return fmt.Errorf("get pending reflect routes amount: %w", err)
+	}
+
 	// Compare ledger principal against raw deposited USDC (not rate-multiplied).
-	// Invariant: ledgerPrincipal == depositedUSDC
+	// For deposits, exclude funds already claimed by the per-user Circle Reflect
+	// router so treasury backfill does not duplicate an in-flight user route.
+	// Invariant: ledgerPrincipal == depositedUSDC + pendingRoutes + unsweptBacklog
 	// Rate appreciation is unrealised yield — not a sweep trigger.
 	// We only sweep when users deposit/withdraw, changing the principal.
 	diff := ledgerPrincipal.Sub(depositedUSDC)
+	if diff.IsPositive() {
+		diff = diff.Sub(pendingRoutes)
+		if diff.IsNegative() {
+			diff = decimal.Zero
+		}
+	}
 
 	// Still need rate for the withdraw path (to compute token amount to burn).
 	var rate decimal.Decimal
@@ -153,27 +174,43 @@ func (w *Worker) sweep(ctx context.Context) error {
 		zap.String("total_distributed", totalDistributed.StringFixed(6)),
 		zap.String("ledger_principal", ledgerPrincipal.StringFixed(6)),
 		zap.String("reflect_deposited_usdc", depositedUSDC.StringFixed(6)),
+		zap.String("pending_reflect_routes", pendingRoutes.StringFixed(6)),
 		zap.String("diff", diff.StringFixed(6)),
+		zap.String("min_sweep_amount", w.minSweepAmount.StringFixed(6)),
 	)
 
 	if diff.Abs().LessThan(w.minSweepAmount) {
+		w.logger.Info("Treasury sweep skipped: diff below minimum",
+			zap.String("diff", diff.StringFixed(6)),
+			zap.String("min_sweep_amount", w.minSweepAmount.StringFixed(6)))
 		return nil
 	}
 
 	if diff.IsPositive() {
-		return w.deposit(ctx, diff)
+		sweepKey := deterministicSweepKey("deposit", depositedUSDC, diff)
+		w.logger.Info("Treasury sweep depositing principal into Reflect",
+			zap.String("amount", diff.StringFixed(6)),
+			zap.String("circle_source_wallet_id", w.circleSourceWallet),
+			zap.String("solana_wallet", w.solanaWallet),
+			zap.String("sweep_key", sweepKey))
+		return w.deposit(ctx, diff, sweepKey)
 	}
+	sweepKey := deterministicSweepKey("withdrawal", depositedUSDC, diff.Abs())
+	w.logger.Info("Treasury sweep withdrawing principal from Reflect",
+		zap.String("amount", diff.Abs().StringFixed(6)),
+		zap.String("exchange_rate", rate.String()),
+		zap.String("sweep_key", sweepKey))
 	return w.withdraw(ctx, diff.Abs(), rate)
 }
 
-// deposit executes the two-phase flow: Bridge→Solana, then Solana→Reflect mint.
-func (w *Worker) deposit(ctx context.Context, amount decimal.Decimal) error {
-	bridgeTxID, err := w.fundSolanaWallet(ctx, amount)
+// deposit executes the two-phase flow: Circle→Solana, then Solana→Reflect mint.
+func (w *Worker) deposit(ctx context.Context, amount decimal.Decimal, sweepKey string) error {
+	circleTxID, err := w.fundSolanaWallet(ctx, amount, sweepKey)
 	if err != nil {
 		return fmt.Errorf("fund solana wallet: %w", err)
 	}
-	if err := w.waitForBridgeTransfer(ctx, bridgeTxID); err != nil {
-		return fmt.Errorf("bridge transfer did not settle: %w", err)
+	if err := w.waitForCircleTransfer(ctx, circleTxID); err != nil {
+		return fmt.Errorf("circle transfer did not settle: %w", err)
 	}
 
 	txHash, err := w.reflect.Mint(ctx, amount)
@@ -201,38 +238,45 @@ func (w *Worker) withdraw(ctx context.Context, usdcAmount decimal.Decimal, rate 
 	return w.recordOperationAndUpdateDeposit(ctx, "withdrawal", usdcAmount, txHash)
 }
 
-// fundSolanaWallet creates a Bridge transfer from the custody wallet to the Solana wallet.
-func (w *Worker) fundSolanaWallet(ctx context.Context, amount decimal.Decimal) (string, error) {
-	req := &bridge.CreateTransferRequest{
-		ClientReferenceID: fmt.Sprintf("reflect-sweep-%s", uuid.New().String()[:8]),
-		OnBehalfOf:        w.bridgeCustomerID,
-		Amount:            amount.Truncate(6).String(),
-		Source: bridge.TransferSource{
-			PaymentRail:    bridge.PaymentRailSolana,
-			Currency:       bridge.CurrencyUSDC,
-			BridgeWalletID: w.bridgeSourceWallet,
-		},
-		Destination: bridge.TransferDestination{
-			PaymentRail: bridge.PaymentRailSolana,
-			Currency:    bridge.CurrencyUSDC,
-			ToAddress:   w.solanaWallet,
-		},
-	}
-
-	transfer, err := w.bridgeClient.CreateTransfer(ctx, req)
+// fundSolanaWallet creates a Circle transfer from the custody wallet to the Solana wallet.
+func (w *Worker) fundSolanaWallet(ctx context.Context, amount decimal.Decimal, sweepKey string) (string, error) {
+	tokenID, err := w.circle.GetUSDCTokenID(ctx, w.circleSourceWallet)
 	if err != nil {
-		return "", fmt.Errorf("create bridge transfer: %w", err)
+		return "", fmt.Errorf("get circle usdc token id: %w", err)
 	}
 
-	w.logger.Info("Bridge→Solana transfer created",
+	transfer, err := w.circle.TransferUSDCWithIdempotency(
+		ctx,
+		w.circleSourceWallet,
+		tokenID,
+		w.solanaWallet,
+		amount.Truncate(6).StringFixed(6),
+		sweepKey,
+	)
+	if err != nil {
+		return "", fmt.Errorf("create circle transfer: %w", err)
+	}
+
+	w.logger.Info("Circle→Solana transfer created",
 		zap.String("transfer_id", transfer.ID),
 		zap.String("amount", amount.StringFixed(6)),
+		zap.String("circle_source_wallet_id", w.circleSourceWallet),
+		zap.String("solana_wallet", w.solanaWallet),
 	)
 	return transfer.ID, nil
 }
 
-// waitForBridgeTransfer polls the Bridge transfer until it settles or fails.
-func (w *Worker) waitForBridgeTransfer(ctx context.Context, transferID string) error {
+func deterministicSweepKey(operation string, depositedUSDC, amount decimal.Decimal) string {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf(
+		"reflect-sweep:%s:%s:%s",
+		operation,
+		depositedUSDC.StringFixed(6),
+		amount.StringFixed(6),
+	))).String()
+}
+
+// waitForCircleTransfer polls the Circle transfer until it settles or fails.
+func (w *Worker) waitForCircleTransfer(ctx context.Context, transferID string) error {
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 
@@ -241,27 +285,52 @@ func (w *Worker) waitForBridgeTransfer(ctx context.Context, transferID string) e
 		case <-ctx.Done():
 			return fmt.Errorf("context cancelled waiting for transfer %s", transferID)
 		case <-ticker.C:
-			transfer, err := w.bridgeClient.GetTransfer(ctx, transferID)
+			transfer, err := w.circle.GetTransaction(ctx, transferID)
 			if err != nil {
-				w.logger.Warn("Failed to poll bridge transfer", zap.String("id", transferID), zap.Error(err))
+				w.logger.Warn("Failed to poll circle transfer", zap.String("id", transferID), zap.Error(err))
 				continue
 			}
 
 			switch transfer.State {
-			case bridge.TransferStatusPaymentProcessed:
-				w.logger.Info("Bridge transfer settled", zap.String("id", transferID))
+			case circle.TransactionStateComplete:
+				w.logger.Info("Circle transfer settled", zap.String("id", transferID), zap.String("tx_hash", transfer.TxHash))
 				return nil
-			case bridge.TransferStatusPaymentSubmitted, bridge.TransferStatusFundsReceived:
-				// Still in progress — keep polling.
+			case circle.TransactionStateInitiated, circle.TransactionStateQueued, circle.TransactionStateSent:
 				continue
-			case bridge.TransferStatusAwaitingFunds, bridge.TransferStatusInReview:
-				continue
+			case circle.TransactionStateFailed, circle.TransactionStateCancelled, circle.TransactionStateDenied:
+				return fmt.Errorf("circle transfer %s failed with state %s: %s", transferID, transfer.State, transfer.ErrorReason)
 			default:
-				// Any terminal failure state.
-				return fmt.Errorf("bridge transfer %s failed with state: %s", transferID, transfer.State)
+				w.logger.Warn("Circle transfer returned unknown state; continuing poll",
+					zap.String("id", transferID),
+					zap.String("state", string(transfer.State)))
+				continue
 			}
 		}
 	}
+}
+
+func (w *Worker) pendingReflectRoutesAmount(ctx context.Context) (decimal.Decimal, error) {
+	if w.db == nil {
+		return decimal.Zero, nil
+	}
+
+	var pending decimal.Decimal
+	if err := w.db.GetContext(ctx, &pending, `
+		SELECT COALESCE(SUM(amount), 0)
+		FROM reflect_deposit_routes
+		WHERE status <> 'complete'
+	`); err != nil {
+		if isUndefinedTableError(err) {
+			return decimal.Zero, nil
+		}
+		return decimal.Zero, err
+	}
+	return pending, nil
+}
+
+func isUndefinedTableError(err error) bool {
+	var pqErr *pq.Error
+	return err != nil && errors.As(err, &pqErr) && pqErr.Code == "42P01"
 }
 
 // recordOperationAndUpdateDeposit atomically records the treasury operation and

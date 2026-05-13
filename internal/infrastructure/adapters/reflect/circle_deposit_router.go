@@ -191,10 +191,12 @@ func (r *CircleDepositRouter) Start() error {
 	ticker := time.NewTicker(r.retryInterval)
 	go func() {
 		defer ticker.Stop()
+		r.backfillMissingRoutes(context.Background())
 		r.processPending(context.Background())
 		for {
 			select {
 			case <-ticker.C:
+				r.backfillMissingRoutes(context.Background())
 				r.processPending(context.Background())
 			case <-r.stopCh:
 				return
@@ -202,6 +204,49 @@ func (r *CircleDepositRouter) Start() error {
 		}
 	}()
 	return nil
+}
+
+func (r *CircleDepositRouter) backfillMissingRoutes(ctx context.Context) {
+	if r == nil || r.db == nil || r.schemaUnavailable {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	res, err := r.db.ExecContext(ctx, `
+		INSERT INTO reflect_deposit_routes (
+			id, deposit_id, user_id, circle_wallet_id, amount, status, next_retry_at
+		)
+		SELECT uuid_generate_v4(),
+			d.id,
+			ae.user_id,
+			ae.metadata->>'circle_wallet_id',
+			ae.stash_amount,
+			$1,
+			NOW()
+		FROM allocation_events ae
+		JOIN deposits d ON d.id::text = ae.metadata->>'deposit_id'
+		LEFT JOIN reflect_deposit_routes rdr ON rdr.deposit_id = d.id
+		WHERE rdr.id IS NULL
+			AND ae.stash_amount > 0
+			AND COALESCE(ae.metadata->>'circle_wallet_id', '') <> ''
+			AND ae.event_type IN ('deposit', 'fiat_deposit', 'crypto_deposit')
+			AND d.status IN ('confirmed', 'completed', 'broker_funded')
+		ON CONFLICT (deposit_id) DO NOTHING
+	`, routeStatusPending)
+	if err != nil {
+		if isUndefinedTableError(err) {
+			r.schemaUnavailable = true
+			r.logger.Warn("Reflect deposit router backfill disabled because required tables are missing; apply migration 189 before enabling it", zap.Error(err))
+			return
+		}
+		r.logger.Error("Failed to backfill missing Reflect deposit routes", zap.Error(err))
+		return
+	}
+	rows, _ := res.RowsAffected()
+	if rows > 0 {
+		r.logger.Info("Backfilled missing Circle-backed Reflect deposit routes", zap.Int64("count", rows))
+	}
 }
 
 // Stop stops background retry.

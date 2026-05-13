@@ -1663,38 +1663,50 @@ func (c *Container) initializeDomainServices() error {
 		if err != nil {
 			return fmt.Errorf("failed to create reflect client: %w", err)
 		}
+		reflectClient.SetAllowedProgramIDs(c.Config.Reflect.AllowedProgramIDs)
 		rewardsAdapter := &reflectRewardsAdapter{client: reflectClient, db: sqlxDB}
 
-		minSweep, _ := decimal.NewFromString(c.Config.Reflect.MinSweepAmount)
-		if minSweep.IsZero() {
-			minSweep = decimal.NewFromFloat(0.01)
-		}
-		interval := time.Duration(c.Config.Reflect.SweepInterval) * time.Minute
-		if interval == 0 {
-			interval = 10 * time.Minute
-		}
-		if c.BridgeClient == nil || c.Config.Reflect.BridgeSourceWalletID == "" || c.Config.Reflect.PrivateKey == "" || c.Config.Reflect.OwnerWallet == "" {
-			c.ZapLog.Warn("Bridge treasury sweep disabled; Circle-backed deposits are routed by Reflect deposit router",
-				zap.Bool("bridge_client_configured", c.BridgeClient != nil),
-				zap.Bool("bridge_source_wallet_configured", c.Config.Reflect.BridgeSourceWalletID != ""),
-				zap.Bool("reflect_owner_wallet_configured", c.Config.Reflect.OwnerWallet != ""),
-				zap.Bool("reflect_private_key_configured", c.Config.Reflect.PrivateKey != ""))
+		if c.Config.Reflect.EnableTreasurySweep {
+			minSweep, err := decimal.NewFromString(c.Config.Reflect.MinSweepAmount)
+			if err != nil {
+				return fmt.Errorf("invalid reflect.min_sweep_amount %q: %w", c.Config.Reflect.MinSweepAmount, err)
+			}
+			if minSweep.IsZero() {
+				minSweep = decimal.NewFromFloat(0.01)
+			}
+			interval := time.Duration(c.Config.Reflect.SweepInterval) * time.Minute
+			if interval == 0 {
+				interval = 10 * time.Minute
+			}
+			if c.CircleAdapter == nil || c.Config.Reflect.CircleSourceWalletID == "" || c.Config.Reflect.PrivateKey == "" || c.Config.Reflect.OwnerWallet == "" {
+				c.ZapLog.Warn("Circle treasury sweep enabled but not fully configured; user-wallet Reflect routing remains primary",
+					zap.Bool("circle_adapter_configured", c.CircleAdapter != nil),
+					zap.Bool("circle_source_wallet_configured", c.Config.Reflect.CircleSourceWalletID != ""),
+					zap.Bool("reflect_owner_wallet_configured", c.Config.Reflect.OwnerWallet != ""),
+					zap.Bool("reflect_private_key_configured", c.Config.Reflect.PrivateKey != ""))
+			} else {
+				sweepWorker := treasury_sweep.NewWorker(
+					reflectClient,
+					c.CircleAdapter,
+					c.LedgerRepo,
+					c.yieldRepo,
+					sqlxDB,
+					c.Config.Reflect.CircleSourceWalletID,
+					c.Config.Reflect.OwnerWallet,
+					minSweep,
+					interval,
+					c.ZapLog,
+				)
+				sweepWorker.Start()
+				c.TreasurySweepWorker = sweepWorker
+				c.ZapLog.Info("Circle treasury sweep started",
+					zap.String("min_sweep_amount", minSweep.String()),
+					zap.Duration("interval", interval),
+					zap.String("circle_source_wallet_id", c.Config.Reflect.CircleSourceWalletID),
+					zap.String("reflect_owner_wallet", c.Config.Reflect.OwnerWallet))
+			}
 		} else {
-			sweepWorker := treasury_sweep.NewWorker(
-				reflectClient,
-				c.BridgeClient,
-				c.LedgerRepo,
-				c.yieldRepo,
-				sqlxDB,
-				c.Config.Bridge.RailCustomerID,
-				c.Config.Reflect.BridgeSourceWalletID,
-				c.Config.Reflect.OwnerWallet,
-				minSweep,
-				interval,
-				c.ZapLog,
-			)
-			sweepWorker.Start()
-			c.TreasurySweepWorker = sweepWorker
+			c.ZapLog.Info("Reflect treasury sweep disabled; user Circle wallet mint/burn routing is primary")
 		}
 
 		c.YieldService = yieldsvc.NewService(c.yieldRepo, c.LedgerService, c.ZapLog)

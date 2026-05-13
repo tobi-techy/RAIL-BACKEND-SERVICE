@@ -334,12 +334,18 @@ reflect:
   api_key: ""
   base_url: "https://prod.api.reflect.money"
   solana_rpc: "https://api.mainnet-beta.solana.com"
+  # API key is optional for public Reflect endpoints; only set it for whitelisted endpoints.
   owner_wallet: ""
   private_key: ""
   stablecoin_index: 0
-  # $100 avoids uneconomical Reflect sweeps at small sizes; lower only after confirming current Reflect and Solana transaction costs.
-  min_sweep_amount: "100"
+  # User Circle wallet mint/burn routing is primary. Leave treasury sweep disabled unless explicitly doing legacy backfill.
+  enable_treasury_sweep: false
+  # Only used when enable_treasury_sweep is true.
+  min_sweep_amount: "1"
   sweep_interval: 10
+  # Only used when enable_treasury_sweep is true.
+  circle_source_wallet_id: ""
+  # Legacy Bridge fallback.
   bridge_source_wallet_id: ""
   # Reflect program IDs Circle may sign for user-wallet yield transactions.
   # Default Solana system/token/ATA/compute/memo programs are allowed in code;

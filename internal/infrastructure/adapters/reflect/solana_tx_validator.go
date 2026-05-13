@@ -53,6 +53,7 @@ func validateReflectUserMintTransactionWithResolver(ctx context.Context, rawTran
 
 	expectedMicroAmount := amount.Truncate(6).Shift(6).IntPart()
 	seenUSDCTransfer := false
+	seenReflectInstruction := false
 	for _, ix := range msg.Instructions {
 		switch ix.ProgramID {
 		case solanaSystemProgramID:
@@ -73,10 +74,14 @@ func validateReflectUserMintTransactionWithResolver(ctx context.Context, rawTran
 				}
 				seenUSDCTransfer = true
 			}
+		default:
+			if isConfiguredProgram(ix.ProgramID, allowedProgramIDs) {
+				seenReflectInstruction = true
+			}
 		}
 	}
-	if !seenUSDCTransfer {
-		return fmt.Errorf("reflect mint transaction does not contain a checked USDC transfer")
+	if !seenUSDCTransfer && !seenReflectInstruction {
+		return fmt.Errorf("reflect mint transaction does not contain a checked USDC transfer or configured Reflect instruction")
 	}
 	return nil
 }
@@ -133,6 +138,15 @@ func validateReflectUserTransactionEnvelope(msg *solanaMessage, walletAddress st
 		}
 	}
 	return nil
+}
+
+func isConfiguredProgram(programID string, allowedProgramIDs []string) bool {
+	for _, id := range allowedProgramIDs {
+		if strings.TrimSpace(id) == programID {
+			return true
+		}
+	}
+	return false
 }
 
 func defaultAllowedSolanaPrograms() map[string]struct{} {

@@ -467,15 +467,17 @@ type BridgeConfig struct {
 
 // ReflectConfig contains Reflect Money API configuration for yield-bearing stablecoin treasury management.
 type ReflectConfig struct {
-	APIKey               string   `mapstructure:"api_key"`
+	APIKey               string   `mapstructure:"api_key"`                 // Optional; only needed for whitelisted Reflect endpoints
 	BaseURL              string   `mapstructure:"base_url"`                // default: https://prod.api.reflect.money
 	SolanaRPC            string   `mapstructure:"solana_rpc"`              // Solana RPC endpoint
-	OwnerWallet          string   `mapstructure:"owner_wallet"`            // Rail's Solana wallet pubkey (base58)
-	PrivateKey           string   `mapstructure:"private_key"`             // Rail's Solana wallet private key (base58, 64 bytes)
+	OwnerWallet          string   `mapstructure:"owner_wallet"`            // Optional Rail treasury Solana wallet pubkey (legacy treasury sweep only)
+	PrivateKey           string   `mapstructure:"private_key"`             // Optional Rail treasury private key (legacy treasury sweep only)
 	StablecoinIndex      int      `mapstructure:"stablecoin_index"`        // 0 = USDC+, 2 = LST Delta-Neutral
-	MinSweepAmount       string   `mapstructure:"min_sweep_amount"`        // Minimum USDC to sweep (e.g. "100")
+	EnableTreasurySweep  bool     `mapstructure:"enable_treasury_sweep"`   // Legacy treasury-owned sweep; user Circle wallet routing is primary
+	MinSweepAmount       string   `mapstructure:"min_sweep_amount"`        // Minimum USDC to sweep (e.g. "1")
 	SweepInterval        int      `mapstructure:"sweep_interval"`          // Sweep interval in minutes
-	BridgeSourceWalletID string   `mapstructure:"bridge_source_wallet_id"` // Bridge custody wallet funding the Solana wallet
+	CircleSourceWalletID string   `mapstructure:"circle_source_wallet_id"` // Optional Circle treasury wallet for legacy treasury sweep only
+	BridgeSourceWalletID string   `mapstructure:"bridge_source_wallet_id"` // Legacy Bridge custody wallet
 	AllowedProgramIDs    []string `mapstructure:"allowed_program_ids"`     // Reflect/Solana programs Circle may sign for user yield routes
 }
 
@@ -872,14 +874,18 @@ func setDefaults() {
 	// Reflect defaults
 	viper.SetDefault("reflect.base_url", "https://prod.api.reflect.money")
 	viper.SetDefault("reflect.stablecoin_index", 0) // 0 = USDC+
-	viper.SetDefault("reflect.min_sweep_amount", "100")
+	viper.SetDefault("reflect.enable_treasury_sweep", false)
+	viper.SetDefault("reflect.min_sweep_amount", "1")
 	viper.SetDefault("reflect.sweep_interval", 10) // minutes
+	viper.SetDefault("reflect.allowed_program_ids", []string{"rFLctqnUuxLmYsW5r9zNujfJx9hGpnP1csXr9PYwVgX"})
 
 	// Reflect defaults
 	viper.SetDefault("reflect.base_url", "https://prod.api.reflect.money")
 	viper.SetDefault("reflect.stablecoin_index", 0) // 0 = USDC+
-	viper.SetDefault("reflect.min_sweep_amount", "100")
+	viper.SetDefault("reflect.enable_treasury_sweep", false)
+	viper.SetDefault("reflect.min_sweep_amount", "1")
 	viper.SetDefault("reflect.sweep_interval", 10) // minutes
+	viper.SetDefault("reflect.allowed_program_ids", []string{"rFLctqnUuxLmYsW5r9zNujfJx9hGpnP1csXr9PYwVgX"})
 	viper.SetDefault("bridge.max_retries", 3)
 	viper.SetDefault("bridge.supported_chains", []string{"SOL", "MATIC", "CELO", "TRON", "BASE", "AVAX"})
 
@@ -1329,6 +1335,15 @@ func overrideFromEnv() {
 	if v := os.Getenv("REFLECT_BRIDGE_SOURCE_WALLET_ID"); v != "" {
 		viper.Set("reflect.bridge_source_wallet_id", v)
 	}
+	if v := os.Getenv("REFLECT_CIRCLE_SOURCE_WALLET_ID"); v != "" {
+		viper.Set("reflect.circle_source_wallet_id", v)
+	}
+	if v := os.Getenv("REFLECT_ENABLE_TREASURY_SWEEP"); v != "" {
+		viper.Set("reflect.enable_treasury_sweep", v)
+	}
+	if v := os.Getenv("REFLECT_MIN_SWEEP_AMOUNT"); v != "" {
+		viper.Set("reflect.min_sweep_amount", v)
+	}
 	if v := os.Getenv("REFLECT_ALLOWED_PROGRAM_IDS"); v != "" {
 		viper.Set("reflect.allowed_program_ids", splitCommaSeparated(v))
 	}
@@ -1438,14 +1453,20 @@ func validate(config *Config) error {
 
 func validateReflectConfig(config *Config) error {
 	reflectEnabled := strings.TrimSpace(config.Reflect.SolanaRPC) != ""
-	if reflectEnabled && !isDevEnvironment(config.Environment) {
+	if reflectEnabled && config.Reflect.EnableTreasurySweep && !isDevEnvironment(config.Environment) {
 		privateKey := strings.TrimSpace(config.Reflect.PrivateKey)
 		if privateKey == "" {
-			return fmt.Errorf("reflect private_key must be configured in %s environment", config.Environment)
+			return fmt.Errorf("reflect private_key must be configured when reflect.enable_treasury_sweep is true in %s environment", config.Environment)
 		}
 		upperPrivateKey := strings.ToUpper(privateKey)
 		if strings.Contains(upperPrivateKey, "REPLACE") || strings.Contains(upperPrivateKey, "PLACEHOLDER") {
 			return fmt.Errorf("reflect private_key contains placeholder text in %s environment", config.Environment)
+		}
+		if strings.TrimSpace(config.Reflect.OwnerWallet) == "" {
+			return fmt.Errorf("reflect owner_wallet must be configured when reflect.enable_treasury_sweep is true in %s environment", config.Environment)
+		}
+		if strings.TrimSpace(config.Reflect.CircleSourceWalletID) == "" {
+			return fmt.Errorf("reflect circle_source_wallet_id must be configured when reflect.enable_treasury_sweep is true in %s environment", config.Environment)
 		}
 	}
 	return nil

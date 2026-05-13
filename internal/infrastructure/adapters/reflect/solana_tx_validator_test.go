@@ -20,6 +20,26 @@ func TestValidateReflectUserMintTransaction(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestValidateReflectUserMintTransactionAcceptsConfiguredReflectProgram(t *testing.T) {
+	wallet := base58.Encode(bytesOf(1))
+	reflectProgram := base58.Encode(bytesOf(9))
+	tx := buildTestReflectProgramTransaction(t, wallet, reflectProgram)
+
+	err := validateReflectUserMintTransaction(tx, wallet, decimal.NewFromInt(1), []string{reflectProgram})
+
+	require.NoError(t, err)
+}
+
+func TestValidateReflectUserMintTransactionRejectsUnconfiguredReflectProgram(t *testing.T) {
+	wallet := base58.Encode(bytesOf(1))
+	reflectProgram := base58.Encode(bytesOf(9))
+	tx := buildTestReflectProgramTransaction(t, wallet, reflectProgram)
+
+	err := validateReflectUserMintTransaction(tx, wallet, decimal.NewFromInt(1), nil)
+
+	require.ErrorContains(t, err, "unapproved Solana program")
+}
+
 func TestValidateReflectUserMintTransactionRejectsWrongFeePayer(t *testing.T) {
 	wallet := base58.Encode(bytesOf(1))
 	otherWallet := base58.Encode(bytesOf(2))
@@ -96,6 +116,26 @@ func buildTestMintTransaction(t *testing.T, walletAddress, programID, mintAddres
 	data[9] = 6
 	tx = append(tx, byte(len(data)))
 	tx = append(tx, data...)
+	return base64.StdEncoding.EncodeToString(tx)
+}
+
+func buildTestReflectProgramTransaction(t *testing.T, walletAddress, programID string) string {
+	t.Helper()
+	wallet := mustDecodePubkey(t, walletAddress)
+	program := mustDecodePubkey(t, programID)
+
+	tx := []byte{1}
+	tx = append(tx, make([]byte, 64)...)
+	tx = append(tx, 1, 0, 1)
+	tx = append(tx, 2)
+	tx = append(tx, wallet...)
+	tx = append(tx, program...)
+	tx = append(tx, make([]byte, 32)...)
+	tx = append(tx, 1)
+	tx = append(tx, 1)
+	tx = append(tx, 1, 0)
+	tx = append(tx, 8)
+	tx = append(tx, []byte{1, 2, 3, 4, 5, 6, 7, 8}...)
 	return base64.StdEncoding.EncodeToString(tx)
 }
 
