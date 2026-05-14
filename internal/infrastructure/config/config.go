@@ -486,7 +486,7 @@ type ChainRailsConfig struct {
 	APIKey           string `mapstructure:"api_key"`
 	WebhookSecret    string `mapstructure:"webhook_secret"`
 	BaseURL          string `mapstructure:"base_url"`          // default: https://api.chainrails.io/api/v1
-	DestinationChain string `mapstructure:"destination_chain"` // e.g. "BASE_MAINNET"
+	DestinationChain string `mapstructure:"destination_chain"` // e.g. "SOLANA_MAINNET"
 	SettlementToken  string `mapstructure:"settlement_token"`  // e.g. "USDC"
 }
 

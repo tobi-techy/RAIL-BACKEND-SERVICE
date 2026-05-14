@@ -37,6 +37,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/copytrading"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/domain/services/gameplay"
+	"github.com/rail-service/rail_service/internal/domain/services/growthmail"
 	"github.com/rail-service/rail_service/internal/domain/services/integration"
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
 	knowledgesvc "github.com/rail-service/rail_service/internal/domain/services/knowledge"
@@ -44,6 +45,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/internal/domain/services/limits"
 	marketservice "github.com/rail-service/rail_service/internal/domain/services/market"
+	moneyguardservice "github.com/rail-service/rail_service/internal/domain/services/moneyguard"
 	newsservice "github.com/rail-service/rail_service/internal/domain/services/news"
 	obligationservice "github.com/rail-service/rail_service/internal/domain/services/obligation"
 	"github.com/rail-service/rail_service/internal/domain/services/onboarding"
@@ -1048,6 +1050,7 @@ type Container struct {
 	KYCSyncJobRepo            *repositories.KYCSyncJobRepository
 	LedgerRepo                *repositories.LedgerRepository
 	ReconciliationRepo        repositories.ReconciliationRepository
+	GrowthMailRepo            *repositories.GrowthMailRepository
 
 	// External Services
 	AlpacaClient       *alpaca.Client
@@ -1107,7 +1110,9 @@ type Container struct {
 	GameplayRecapService       *gameplay.RecapService
 	SubscriptionService        *subscriptionsvc.Service
 	FinancialObligationService *obligationservice.Service
+	MoneyGuardService          *moneyguardservice.Service
 	AutomationService          *automation.Service
+	GrowthMailService          *growthmail.Service
 	NotificationService        *services.NotificationService
 	SocialAuthService          *socialauth.Service
 	WebAuthnService            *webauthn.Service
@@ -1226,6 +1231,7 @@ type Container struct {
 	InstantFundingHandlers *fundinghandlers.InstantFundingHandlers
 	ChainRailsHandlers     *fundinghandlers.ChainRailsHandlers
 	ChainRailsClient       *chainrails.Client
+	DepositSweepRepo       *repositories.DepositSweepRepository
 	PajHandlers            *fundinghandlers.PajHandlers
 	ActivityHandlers       *activityhandlers.Handlers
 
@@ -1317,6 +1323,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	ledgerRepo := repositories.NewLedgerRepository(sqlxDB)
 	reconciliationRepo := repositories.NewPostgresReconciliationRepository(db)
 	onboardingJobRepo := repositories.NewOnboardingJobRepository(db, zapLog)
+	growthMailRepo := repositories.NewGrowthMailRepository(db)
 
 	// Initialize premium feature repositories
 	familySupportRepo := repositories.NewFamilySupportRepository(sqlxDB)
@@ -1469,6 +1476,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		LedgerRepo:                ledgerRepo,
 		ReconciliationRepo:        reconciliationRepo,
 		OnboardingJobRepo:         onboardingJobRepo,
+		GrowthMailRepo:            growthMailRepo,
 		FamilySupportRepo:         familySupportRepo,
 		ScamRepo:                  scamRepo,
 		TaxResidencyRepo:          taxResidencyRepo,
@@ -1518,6 +1526,15 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	)
 
 	container.OnboardingJobService = services.NewOnboardingJobService(container.OnboardingJobRepo, container.ZapLog, convertWalletChains(cfg.Bridge.SupportedChains, container.ZapLog))
+
+	if container.EmailService != nil {
+		container.GrowthMailService = growthmail.NewService(
+			container.GrowthMailRepo,
+			container.EmailService,
+			growthmail.Config{BaseURL: cfg.Email.BaseURL, Limit: 500},
+			container.ZapLog,
+		)
+	}
 
 	// Initialize opportunity intelligence
 	container.initializeOpportunityService(sqlxDB)
@@ -1644,6 +1661,20 @@ func (c *Container) initializeDomainServices() error {
 	if c.FinancialObligationService != nil {
 		c.AutomationService.SetObligationProvider(c.FinancialObligationService)
 	}
+	moneyGuardSpendingSvc := spendingsvc.NewService(c.LedgerSpendingRepo)
+	c.MoneyGuardService = moneyguardservice.NewService(
+		repositories.NewMoneyGuardRepository(sqlxDB),
+		c.LedgerService,
+		c.LedgerService,
+		moneyGuardSpendingSvc,
+		c.BudgetRepo,
+		c.FinancialObligationService,
+		c.FinancialProfileRepo,
+		c.NotificationService,
+		c.AutomationService,
+		c.ZapLog,
+	)
+	c.LedgerService.SetStashRaidObserver(c.MoneyGuardService)
 
 	// Initialize yield service (Reflect-backed). A private key is only needed for
 	// treasury-owned sweeps; Circle-backed deposit routes use user Circle wallets
@@ -3515,6 +3546,12 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 	if c.NotificationService != nil {
 		c.CardService.SetNotificationService(c.NotificationService)
 	}
+	if c.AutomationService != nil {
+		c.AutomationService.SetCardController(&automationCardControllerAdapter{card: c.CardService})
+	}
+	if c.MoneyGuardService != nil {
+		c.CardService.SetMoneyGuard(&cardMoneyGuardAdapter{service: c.MoneyGuardService})
+	}
 
 	// Rewire Bridge webhook service now that card service is available.
 	if c.BridgeWebhookHandler != nil && c.BridgeVirtualAccountService != nil {
@@ -3545,6 +3582,44 @@ func (a *marketNotificationAdapter) SendPushNotification(ctx context.Context, us
 		return nil
 	}
 	return a.svc.SendGenericNotification(ctx, userID, title, message)
+}
+
+type automationCardControllerAdapter struct {
+	card *card.Service
+}
+
+func (a *automationCardControllerAdapter) FreezeCard(ctx context.Context, userID, cardID uuid.UUID) error {
+	_, err := a.card.FreezeCard(ctx, userID, cardID)
+	return err
+}
+
+func (a *automationCardControllerAdapter) UnfreezeCard(ctx context.Context, userID, cardID uuid.UUID) error {
+	_, err := a.card.UnfreezeCard(ctx, userID, cardID)
+	return err
+}
+
+func (a *automationCardControllerAdapter) GetCardsByUser(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	cards, err := a.card.GetUserCards(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]uuid.UUID, 0, len(cards))
+	for _, c := range cards {
+		ids = append(ids, c.ID)
+	}
+	return ids, nil
+}
+
+type cardMoneyGuardAdapter struct {
+	service *moneyguardservice.Service
+}
+
+func (a *cardMoneyGuardAdapter) EvaluateCardTransaction(ctx context.Context, userID uuid.UUID, input card.MoneyGuardTransactionInput) error {
+	_, err := a.service.EvaluateCardTransaction(ctx, userID, moneyguardservice.TransactionInput{
+		Amount: input.Amount, Currency: input.Currency, Merchant: input.Merchant,
+		Category: input.Category, Reference: input.Reference,
+	})
+	return err
 }
 
 // walletWebhookAdapter adapts wallet.Service to WalletWebhookService interface
@@ -4269,6 +4344,13 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 		if c.WalletService != nil {
 			c.ChainRailsHandlers.SetWalletLookup(c.WalletService)
 		}
+		// Wire deposit sweep repository for auto-sweep and webhook handling
+		c.DepositSweepRepo = repositories.NewDepositSweepRepository(sqlxDB)
+		if c.FundingService != nil {
+			c.FundingService.SetDepositSweepRepo(c.DepositSweepRepo)
+		}
+		c.ChainRailsHandlers.SetSweepService(c.DepositSweepRepo)
+
 		if c.ReflectDepositRouter != nil {
 			c.ReflectDepositRouter.SetChainRailsBridge(c.ChainRailsClient, c.Config.ChainRails.DestinationChain)
 			c.ZapLog.Info("ChainRails wired into Reflect deposit router",

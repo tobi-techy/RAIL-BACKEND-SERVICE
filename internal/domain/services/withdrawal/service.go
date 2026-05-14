@@ -1765,10 +1765,10 @@ func validateChainPair(sourceChain, destChain string) error {
 // executeCryptoTransfer executes a crypto transfer via Bridge custodial wallets
 // or ChainRails for chains not natively supported by Bridge.
 func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, destinationChain, sourceChain, sourceWalletAddress, circleWalletID string) (*CryptoTransferResult, error) {
-	// Circle users: route crypto withdrawals.
-	// Same-chain: direct Circle transfer. Cross-chain: via ChainRails.
+	// Unified Solana Settlement: all Circle withdrawals source from Solana.
 	if s.circleTransfer != nil && circleWalletID != "" {
-		if sourceChain == destinationChain || isSameChainFamily(sourceChain, destinationChain) {
+		sourceChain = "SOL"
+		if isSameChainFamily(sourceChain, destinationChain) {
 			return s.executeCircleTransfer(ctx, withdrawal, destinationAddress, destinationChain)
 		}
 		if s.chainRailsAdapter == nil {

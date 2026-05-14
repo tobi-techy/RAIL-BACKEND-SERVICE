@@ -34,8 +34,10 @@ import (
 	bridge_govid_repair "github.com/rail-service/rail_service/internal/workers/bridge_govid_repair"
 	daily_pulse "github.com/rail-service/rail_service/internal/workers/daily_pulse"
 	deposit_allocation_recovery "github.com/rail-service/rail_service/internal/workers/deposit_allocation_recovery"
+	deposit_autosweep "github.com/rail-service/rail_service/internal/workers/deposit_autosweep"
 	"github.com/rail-service/rail_service/internal/workers/funding_webhook"
 	gameplay_workers "github.com/rail-service/rail_service/internal/workers/gameplay"
+	growth_mail "github.com/rail-service/rail_service/internal/workers/growth_mail"
 	kyc_autoinvest "github.com/rail-service/rail_service/internal/workers/kyc_autoinvest"
 	"github.com/rail-service/rail_service/internal/workers/kyc_sync"
 	memory_worker "github.com/rail-service/rail_service/internal/workers/memory_worker"
@@ -49,8 +51,8 @@ import (
 	subscription_billing "github.com/rail-service/rail_service/internal/workers/subscription_billing"
 	walletprovisioning "github.com/rail-service/rail_service/internal/workers/wallet_provisioning"
 	withdrawal_recovery "github.com/rail-service/rail_service/internal/workers/withdrawal_recovery"
-	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/analytics"
+	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/metrics"
 	"github.com/rail-service/rail_service/pkg/tracing"
 )
@@ -88,7 +90,9 @@ type Application struct {
 	automationWorker             *automation_worker.Worker
 	memoryWorker                 *memory_worker.Worker
 	dailyPulseWorker             *daily_pulse.Worker
+	growthMailWorker             *growth_mail.Worker
 	opportunitySyncWorker        *opportunity_sync.Worker
+	depositAutoSweepWorker       *deposit_autosweep.Worker
 
 	// Tracing
 	tracingShutdown func(context.Context) error
@@ -401,6 +405,18 @@ func (app *Application) initializeWorkers() error {
 		app.log.Info("Opportunity sync worker started")
 	}
 
+	// Deposit auto-sweep worker: bridges non-Solana Circle deposits to Solana
+	if app.container.DepositSweepRepo != nil && app.container.ChainRailsClient != nil && app.container.WalletRepo != nil {
+		app.depositAutoSweepWorker = deposit_autosweep.NewWorker(
+			app.container.DepositSweepRepo,
+			app.container.WalletRepo,
+			app.container.ChainRailsClient,
+			app.log.Zap(),
+		)
+		app.depositAutoSweepWorker.Start()
+		app.log.Info("Deposit auto-sweep worker started")
+	}
+
 	if app.container.UserRepo != nil && app.container.LedgerService != nil && app.container.LedgerSpendingRepo != nil && app.container.BudgetRepo != nil {
 		var pushSender daily_pulse.PushSender
 		if app.container.SNSPushService != nil {
@@ -424,6 +440,12 @@ func (app *Application) initializeWorkers() error {
 			go app.dailyPulseWorker.Start(context.Background())
 			app.log.Info("Miriam daily pulse worker started")
 		}
+	}
+
+	if app.container.GrowthMailService != nil {
+		app.growthMailWorker = growth_mail.NewWorker(app.container.GrowthMailService, app.log.Zap())
+		go app.growthMailWorker.Start(context.Background())
+		app.log.Info("Growth mail worker started")
 	}
 
 	return nil
@@ -907,6 +929,9 @@ func (app *Application) stopWorkers() {
 	}
 	if app.dailyMetricsWorker != nil {
 		app.dailyMetricsWorker.Stop()
+	}
+	if app.depositAutoSweepWorker != nil {
+		app.depositAutoSweepWorker.Stop()
 	}
 }
 

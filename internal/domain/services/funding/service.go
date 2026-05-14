@@ -38,6 +38,16 @@ func generateCorrelationID() string {
 	return uuid.New().String()
 }
 
+// isSolanaChain returns true if the chain identifier represents Solana.
+func isSolanaChain(chain string) bool {
+	switch strings.ToUpper(chain) {
+	case "SOL", "SOLANA", "SOL-DEVNET":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Service) circleWalletIDForDepositAddress(ctx context.Context, address string) string {
 	if s == nil {
 		return ""
@@ -122,7 +132,13 @@ type Service struct {
 	cache               CacheClient
 	config              *FundingConfig
 	gameplayHooks       FundingGameplayHooks
+	depositSweepRepo    DepositSweepCreator
 	logger              *logger.Logger
+}
+
+// DepositSweepCreator creates sweep records for non-Solana Circle deposits.
+type DepositSweepCreator interface {
+	CreateSweep(ctx context.Context, depositID, userID uuid.UUID, sourceChain string, amount decimal.Decimal) error
 }
 
 // DepositRepository interface for deposit persistence
@@ -280,6 +296,9 @@ func (s *Service) SetGameplayHooks(gh FundingGameplayHooks) {
 func (s *Service) SetBridgeVAService(bva *BridgeVirtualAccountService) {
 	s.bridgeVAService = bva
 }
+
+// SetDepositSweepRepo wires the deposit sweep repository for auto-sweeping non-Solana deposits.
+func (s *Service) SetDepositSweepRepo(r DepositSweepCreator) { s.depositSweepRepo = r }
 
 // GetVirtualAccounts retrieves all virtual accounts for a user
 func (s *Service) GetVirtualAccounts(ctx context.Context, userID uuid.UUID) ([]*entities.VirtualAccount, error) {
@@ -672,11 +691,21 @@ func (s *Service) ProcessCircleDeposit(ctx context.Context, userID uuid.UUID, am
 		_ = s.notificationService.NotifyDepositConfirmed(ctx, userID, amount.String(), chain, txHash)
 	}
 
+	// Auto-sweep: if deposit landed on a non-Solana chain, queue a sweep to Solana.
+	// Done synchronously before allocation to guarantee the record is created.
+	if s.depositSweepRepo != nil && !isSolanaChain(chain) {
+		if sweepErr := s.depositSweepRepo.CreateSweep(ctx, depositID, userID, chain, amount); sweepErr != nil {
+			s.logger.Error("Failed to create deposit sweep record",
+				"deposit_id", depositID.String(), "chain", chain, "error", sweepErr)
+		}
+	}
+
 	// Trigger 70/30 allocation split ASYNC — don't block balance visibility
 	if s.allocationService != nil {
 		go func() {
 			bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
+
 			txHashRef := txHash
 			if err := s.allocationService.ProcessIncomingFunds(bgCtx, &entities.IncomingFundsRequest{
 				UserID:     userID,
