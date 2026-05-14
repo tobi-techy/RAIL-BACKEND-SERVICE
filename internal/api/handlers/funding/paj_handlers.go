@@ -417,6 +417,18 @@ func (h *PajHandlers) handleSessionError(c *gin.Context, err error) {
 	case strings.Contains(errLower, "duplicate withdrawal") || strings.Contains(errLower, "withdrawal in progress"):
 		c.JSON(http.StatusConflict, gin.H{"code": "DUPLICATE_REQUEST", "message": errMsg})
 		return
+	case strings.Contains(errLower, "deposit already in progress"):
+		c.JSON(http.StatusConflict, gin.H{"code": "DUPLICATE_REQUEST", "message": errMsg})
+		return
+	case strings.Contains(errLower, "please wait a few seconds"):
+		c.JSON(http.StatusTooManyRequests, gin.H{"code": "RATE_LIMITED", "message": errMsg})
+		return
+	case strings.Contains(errLower, "unable to verify deposit limits"):
+		c.JSON(http.StatusServiceUnavailable, gin.H{"code": "RATE_UNAVAILABLE", "message": errMsg})
+		return
+	case strings.Contains(errLower, "failed to create deposit order"):
+		c.JSON(http.StatusInternalServerError, gin.H{"code": "ORDER_FAILED", "message": errMsg})
+		return
 	case strings.Contains(errLower, "offramp rate unavailable") || strings.Contains(errLower, "offramp rate out of bounds"):
 		c.JSON(http.StatusServiceUnavailable, gin.H{"code": "RATE_UNAVAILABLE", "message": "Exchange rate temporarily unavailable, please try again"})
 		return

@@ -459,16 +459,34 @@ func (s *Service) CreateOnrampOrder(ctx context.Context, userID uuid.UUID, fiatA
 		return nil, fmt.Errorf("minimum deposit is ₦%.0f", float64(MinNGNTransactionAmount))
 	}
 
-	// Enforce deposit limits in the currency the user entered. PAJ onramp
-	// deposits use NGN minimums/limits, so a valid ₦500+ deposit should not be
-	// rejected just because its USDC equivalent is below the crypto $1 minimum.
+	// Duplicate protection: reject if user has a pending onramp order created in the last 30s
+	// with the same amount (prevents button spam).
+	var hasDuplicate bool
+	s.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM paj_orders WHERE user_id = $1 AND order_type = 'onramp' AND fiat_amount = $2 AND status NOT IN ('completed', 'failed') AND created_at > NOW() - interval '30 seconds')`,
+		userID, fiatAmount).Scan(&hasDuplicate)
+	if hasDuplicate {
+		return nil, fmt.Errorf("deposit already in progress, please wait")
+	}
+
+	// Enforce deposit limits. Non-KYC users have USD-denominated limits ($100/day),
+	// so convert NGN amounts to USD equivalent using the live PAJ rate before checking.
 	if s.depositLimits != nil {
+		limitAmount := decimal.NewFromFloat(fiatAmount)
 		limitCurrency := strings.ToUpper(strings.TrimSpace(currency))
 		if limitCurrency == "" {
 			limitCurrency = "NGN"
 		}
-		fiatDecimal := decimal.NewFromFloat(fiatAmount)
-		if result, limErr := s.depositLimits.ValidateDepositWithCurrency(ctx, userID, fiatDecimal, limitCurrency); limErr != nil || (result != nil && !result.Allowed) {
+		if limitCurrency == "NGN" {
+			// Convert NGN to USD equivalent using PAJ onramp rate for accurate limit comparison.
+			rates, rateErr := s.GetRates(ctx)
+			if rateErr != nil || rates.OnRampRate.Rate <= 0 {
+				return nil, fmt.Errorf("unable to verify deposit limits, please try again")
+			}
+			limitAmount = limitAmount.Div(decimal.NewFromFloat(rates.OnRampRate.Rate))
+			limitCurrency = "USD"
+		}
+		if result, limErr := s.depositLimits.ValidateDepositWithCurrency(ctx, userID, limitAmount, limitCurrency); limErr != nil || (result != nil && !result.Allowed) {
 			msg := "deposit limit exceeded"
 			if result != nil && result.Reason != "" {
 				msg = result.Reason
@@ -507,14 +525,16 @@ func (s *Service) CreateOnrampOrder(ctx context.Context, userID uuid.UUID, fiatA
 		return nil, s.invalidateSessionIfUnauthorized(ctx, userID, err)
 	}
 
-	// Persist order for webhook reconciliation.
+	// Persist order for webhook reconciliation. This MUST succeed — without it,
+	// the webhook/poll won't find the order and the deposit will never be credited.
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO paj_orders (user_id, paj_order_id, order_type, status, fiat_amount, token_amount, currency, fee, pay_account_number, pay_account_name, pay_bank, used_user_wallet)
 		VALUES ($1, $2, 'onramp', 'pending', $3, $4, $5, $6, $7, $8, $9, $10)`,
 		userID, order.ID, order.FiatAmount, order.Amount, currency, order.Fee,
 		order.AccountNumber, order.AccountName, order.Bank, recipient != "")
 	if err != nil {
-		s.logger.Error("failed to persist paj onramp order", zap.Error(err), zap.String("paj_order_id", order.ID))
+		s.logger.Error("CRITICAL: failed to persist paj onramp order", zap.Error(err), zap.String("paj_order_id", order.ID))
+		return nil, fmt.Errorf("failed to create deposit order, please try again")
 	}
 
 	return order, nil
@@ -578,15 +598,21 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 	// Paj's fee is included in order.Amount (Paj deducts it from the token amount).
 	totalHold := estimatedUSDC.Add(railFee)
 
-	// P2: Withdrawal limits — enforce daily/monthly caps in the currency the
-	// user entered. PAJ withdrawals are requested in NGN, so a valid ₦500+
-	// withdrawal should not be rejected by the crypto $1 minimum.
+	// P2: Withdrawal limits — enforce daily/monthly caps. Non-KYC users have
+	// USD-denominated limits, so convert NGN to USD equivalent before checking.
 	if s.limitsChecker != nil {
+		limitAmount := decimal.NewFromFloat(fiatAmount)
 		limitCurrency := strings.ToUpper(strings.TrimSpace(currency))
 		if limitCurrency == "" {
 			limitCurrency = "NGN"
 		}
-		if limErr := s.limitsChecker.ValidateWithdrawalWithCurrency(ctx, userID, decimal.NewFromFloat(fiatAmount), limitCurrency); limErr != nil {
+		if limitCurrency == "NGN" {
+			if rates.OffRampRate.Rate > 0 {
+				limitAmount = limitAmount.Div(decimal.NewFromFloat(rates.OffRampRate.Rate))
+			}
+			limitCurrency = "USD"
+		}
+		if limErr := s.limitsChecker.ValidateWithdrawalWithCurrency(ctx, userID, limitAmount, limitCurrency); limErr != nil {
 			return nil, limErr
 		}
 	}
@@ -786,11 +812,13 @@ func (s *Service) HandleWebhook(ctx context.Context, payload *paj.WebhookPayload
 	// Verify by polling Paj directly — don't trust unsigned webhook payload.
 	token, err := s.getSessionToken(ctx, orderUserID)
 	if err != nil {
-		// SECURITY: Never trust unsigned webhook payloads for financial state transitions.
-		// If the session is expired, drop the webhook. The user can check status manually,
-		// or a reconciliation worker can poll PAJ later.
-		s.logger.Warn("cannot verify paj webhook — session expired, dropping",
+		// Session expired — we can't verify via PAJ API. For onramp orders,
+		// mark as needing verification so PollOrderStatus or recovery worker
+		// can pick it up when the user re-authenticates.
+		s.logger.Warn("cannot verify paj webhook — session expired, marking for retry",
 			zap.String("paj_order_id", payload.ID), zap.String("order_type", orderType))
+		s.db.ExecContext(ctx, `UPDATE paj_orders SET last_webhook_status = $1, last_webhook_at = NOW() WHERE paj_order_id = $2`,
+			"unverified:"+payload.Status, payload.ID)
 		return nil
 	}
 
@@ -840,7 +868,18 @@ func (s *Service) HandleWebhook(ctx context.Context, payload *paj.WebhookPayload
 
 // PollOrderStatus checks order status directly from Paj API.
 // Verifies the order belongs to the requesting user.
+// Rate-limited to 1 poll per 5 seconds per user to avoid hammering PAJ.
 func (s *Service) PollOrderStatus(ctx context.Context, userID uuid.UUID, pajOrderID string) (*paj.PajTransaction, error) {
+	// Rate limit: 1 poll per 5 seconds per user.
+	if s.redis != nil {
+		pollKey := fmt.Sprintf("paj:poll:%s", userID.String())
+		var exists bool
+		if err := s.redis.Get(ctx, pollKey, &exists); err == nil {
+			return nil, fmt.Errorf("please wait a few seconds before checking again")
+		}
+		s.redis.Set(ctx, pollKey, true, 5*time.Second)
+	}
+
 	// Verify ownership before polling.
 	var ownerID uuid.UUID
 	var orderType string
