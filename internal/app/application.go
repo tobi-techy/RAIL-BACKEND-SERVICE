@@ -92,6 +92,7 @@ type Application struct {
 	memoryWorker                 *memory_worker.Worker
 	dailyPulseWorker             *daily_pulse.Worker
 	growthMailWorker             *growth_mail.Worker
+	growthMailCancel             context.CancelFunc
 	opportunitySyncWorker        *opportunity_sync.Worker
 	depositAutoSweepWorker       *deposit_autosweep.Worker
 
@@ -455,7 +456,9 @@ func (app *Application) initializeWorkers() error {
 
 	if app.container.GrowthMailService != nil {
 		app.growthMailWorker = growth_mail.NewWorker(app.container.GrowthMailService, app.log.Zap())
-		go app.growthMailWorker.Start(context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		app.growthMailCancel = cancel
+		go app.growthMailWorker.Start(ctx)
 		app.log.Info("Growth mail worker started")
 	}
 
@@ -943,6 +946,9 @@ func (app *Application) stopWorkers() {
 	}
 	if app.depositAutoSweepWorker != nil {
 		app.depositAutoSweepWorker.Stop()
+	}
+	if app.growthMailCancel != nil {
+		app.growthMailCancel()
 	}
 }
 
