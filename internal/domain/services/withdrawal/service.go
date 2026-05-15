@@ -897,7 +897,7 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 				"error", revErr, "withdrawal_id", withdrawal.ID.String())
 			_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
 		} else {
-			_ = s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusReversed)
+			_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, fmt.Sprintf("transfer failed (reversed): %v", err))
 		}
 		if s.notificationService != nil {
 			_ = s.notificationService.NotifyWithdrawalFailed(ctx, req.UserID, req.Amount, "Transfer failed. Your funds have been returned to your balance.")

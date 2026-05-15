@@ -115,7 +115,10 @@ func runWalletMigration(dbURL string) error {
 	}
 	defer db.Close()
 
-	logger, _ := zap.NewProduction()
+	logger, err := zap.NewProduction()
+	if err != nil {
+		return fmt.Errorf("create logger: %w", err)
+	}
 	defer logger.Sync()
 
 	bridgeClient := bridge.NewClient(bridge.Config{APIKey: bridgeAPIKey, BaseURL: "https://api.bridge.xyz"}, logger)

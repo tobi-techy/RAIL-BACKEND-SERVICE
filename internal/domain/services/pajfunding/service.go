@@ -392,7 +392,7 @@ func (s *Service) GetBanks(ctx context.Context, userID uuid.UUID) ([]paj.Bank, e
 				return stale, nil
 			}
 		}
-		return nil, s.invalidateSessionIfUnauthorized(ctx, userID, err)
+		return nil, err
 	}
 	if s.redis != nil && len(banks) > 0 {
 		if cacheErr := s.redis.Set(ctx, pajBanksCacheKey, banks, pajBanksCacheTTL); cacheErr != nil {

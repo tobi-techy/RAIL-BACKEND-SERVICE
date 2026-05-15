@@ -183,7 +183,12 @@ func (w *Worker) sweepBridgeBalance(ctx context.Context, sw sweepWallet) (decima
 
 	var transferred decimal.Decimal
 	for _, entry := range balance.Balances {
-		amt, _ := decimal.NewFromString(entry.Balance)
+		amt, err := decimal.NewFromString(entry.Balance)
+		if err != nil {
+			w.logger.Error("failed to parse balance during sweep",
+				zap.String("user_id", sw.UserID.String()), zap.String("balance", entry.Balance), zap.Error(err))
+			continue
+		}
 		if amt.LessThanOrEqual(decimal.Zero) {
 			continue
 		}
@@ -191,7 +196,7 @@ func (w *Worker) sweepBridgeBalance(ctx context.Context, sw sweepWallet) (decima
 			continue
 		}
 
-		_, err := w.bridgeClient.CreateTransfer(ctx, &bridge.CreateTransferRequest{
+		_, err = w.bridgeClient.CreateTransfer(ctx, &bridge.CreateTransferRequest{
 			OnBehalfOf: bridgeCustomerID,
 			Amount:     amt.String(),
 			Source: bridge.TransferSource{
@@ -206,9 +211,9 @@ func (w *Worker) sweepBridgeBalance(ctx context.Context, sw sweepWallet) (decima
 			},
 		})
 		if err != nil {
-			w.logger.Warn("bridge sweep transfer failed",
+			w.logger.Error("bridge sweep transfer failed",
 				zap.String("user_id", sw.UserID.String()), zap.String("amount", amt.String()), zap.Error(err))
-			continue
+			return decimal.Zero, fmt.Errorf("sweep transfer of %s USDC failed: %w", amt.String(), err)
 		}
 		transferred = transferred.Add(amt)
 		w.logger.Info("bridge balance swept to circle",
@@ -228,21 +233,27 @@ func (w *Worker) migrateOne(ctx context.Context, lw legacyWallet) (decimal.Decim
 	// 2. Check Bridge wallet balance
 	bridgeCustomerID, err := w.getBridgeCustomerID(ctx, lw.UserID)
 	if err != nil {
-		// Still update the circle wallet ID even if we can't check balance
-		w.updateCircleWalletID(ctx, lw.ID, circleWallet.CircleWalletID, circleWallet.Address)
+		w.logger.Warn("cannot check bridge balance — will retry on next run",
+			zap.String("user_id", lw.UserID.String()), zap.Error(err))
 		return decimal.Zero, fmt.Errorf("get bridge customer id: %w", err)
 	}
 
 	balance, err := w.bridgeClient.GetWalletBalance(ctx, bridgeCustomerID, lw.BridgeWalletID)
 	if err != nil {
-		w.updateCircleWalletID(ctx, lw.ID, circleWallet.CircleWalletID, circleWallet.Address)
-		return decimal.Zero, nil // non-fatal: wallet created, balance check failed
+		w.logger.Error("failed to check bridge balance, migration incomplete",
+			zap.String("user_id", lw.UserID.String()), zap.Error(err))
+		return decimal.Zero, fmt.Errorf("get wallet balance: %w", err)
 	}
 
 	// 3. Transfer any USDC balance to the new Circle wallet
 	var transferred decimal.Decimal
 	for _, entry := range balance.Balances {
-		amt, _ := decimal.NewFromString(entry.Balance)
+		amt, err := decimal.NewFromString(entry.Balance)
+		if err != nil {
+			w.logger.Error("failed to parse balance during migration",
+				zap.String("user_id", lw.UserID.String()), zap.String("balance", entry.Balance), zap.Error(err))
+			continue
+		}
 		if amt.LessThanOrEqual(decimal.Zero) {
 			continue
 		}
@@ -250,7 +261,7 @@ func (w *Worker) migrateOne(ctx context.Context, lw legacyWallet) (decimal.Decim
 			continue
 		}
 
-		_, err := w.bridgeClient.CreateTransfer(ctx, &bridge.CreateTransferRequest{
+		_, err = w.bridgeClient.CreateTransfer(ctx, &bridge.CreateTransferRequest{
 			OnBehalfOf: bridgeCustomerID,
 			Amount:     amt.String(),
 			Source: bridge.TransferSource{
@@ -265,9 +276,9 @@ func (w *Worker) migrateOne(ctx context.Context, lw legacyWallet) (decimal.Decim
 			},
 		})
 		if err != nil {
-			w.logger.Warn("bridge transfer failed, wallet still migrated",
-				zap.String("user_id", lw.UserID.String()), zap.Error(err))
-			continue
+			w.logger.Error("bridge transfer failed during migration",
+				zap.String("user_id", lw.UserID.String()), zap.String("amount", amt.String()), zap.Error(err))
+			return decimal.Zero, fmt.Errorf("bridge transfer of %s USDC failed: %w", amt.String(), err)
 		}
 		transferred = transferred.Add(amt)
 	}
