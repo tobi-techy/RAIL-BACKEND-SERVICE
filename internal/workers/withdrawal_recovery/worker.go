@@ -28,6 +28,9 @@ type Worker struct {
 }
 
 func NewWorker(db *sql.DB, ledger LedgerReverser, logger *zap.Logger) *Worker {
+	if ledger == nil {
+		panic("NewWorker: ledger reverser cannot be nil")
+	}
 	return &Worker{
 		db:            db,
 		ledger:        ledger,

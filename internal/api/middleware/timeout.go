@@ -22,17 +22,29 @@ func TimeoutMiddleware(timeout time.Duration) gin.HandlerFunc {
 
 		c.Request = c.Request.WithContext(ctx)
 
-		c.Next()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			defer func() {
+				if r := recover(); r != nil {
+					// Let Gin's recovery middleware handle panics
+				}
+			}()
+			c.Next()
+		}()
 
-		if ctx.Err() == nil || c.Writer.Written() {
-			return
-		}
-
-		if ctx.Err() == context.DeadlineExceeded {
-			c.AbortWithStatusJSON(http.StatusGatewayTimeout, gin.H{
-				"error":   "REQUEST_TIMEOUT",
-				"message": "Request processing timeout",
-			})
+		select {
+		case <-done:
+			// Handler completed normally
+		case <-ctx.Done():
+			// Timeout or cancellation
+			if ctx.Err() == context.DeadlineExceeded && !c.Writer.Written() {
+				c.AbortWithStatusJSON(http.StatusGatewayTimeout, gin.H{
+					"error":   "REQUEST_TIMEOUT",
+					"message": "Request processing timeout",
+				})
+			}
+			<-done // Wait for goroutine to finish to prevent leaks
 		}
 	}
 }
