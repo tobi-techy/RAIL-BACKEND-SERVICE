@@ -5,6 +5,7 @@ CREATE TABLE deposit_sweeps (
     user_id UUID NOT NULL REFERENCES users(id),
     source_chain TEXT NOT NULL,
     amount NUMERIC(20,6) NOT NULL,
+    fee_amount NUMERIC(20,6),
     intent_address TEXT,
     chainrails_intent_id INT,
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'completed')),

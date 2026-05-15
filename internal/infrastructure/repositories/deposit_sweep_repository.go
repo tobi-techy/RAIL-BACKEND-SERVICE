@@ -14,20 +14,21 @@ import (
 
 // DepositSweep represents a pending or completed auto-sweep from a non-Solana chain to Solana.
 type DepositSweep struct {
-	ID                 uuid.UUID       `db:"id"`
-	DepositID          uuid.UUID       `db:"deposit_id"`
-	UserID             uuid.UUID       `db:"user_id"`
-	SourceChain        string          `db:"source_chain"`
-	Amount             decimal.Decimal `db:"amount"`
-	IntentAddress      *string         `db:"intent_address"`
-	ChainRailsIntentID *int            `db:"chainrails_intent_id"`
-	Status             string          `db:"status"`
-	TxHash             *string         `db:"tx_hash"`
-	ErrorMessage       *string         `db:"error_message"`
-	Attempts           int             `db:"attempts"`
-	CreatedAt          time.Time       `db:"created_at"`
-	UpdatedAt          time.Time       `db:"updated_at"`
-	CompletedAt        *time.Time      `db:"completed_at"`
+	ID                 uuid.UUID        `db:"id"`
+	DepositID          uuid.UUID        `db:"deposit_id"`
+	UserID             uuid.UUID        `db:"user_id"`
+	SourceChain        string           `db:"source_chain"`
+	Amount             decimal.Decimal  `db:"amount"`
+	FeeAmount          *decimal.Decimal `db:"fee_amount"`
+	IntentAddress      *string          `db:"intent_address"`
+	ChainRailsIntentID *int             `db:"chainrails_intent_id"`
+	Status             string           `db:"status"`
+	TxHash             *string          `db:"tx_hash"`
+	ErrorMessage       *string          `db:"error_message"`
+	Attempts           int              `db:"attempts"`
+	CreatedAt          time.Time        `db:"created_at"`
+	UpdatedAt          time.Time        `db:"updated_at"`
+	CompletedAt        *time.Time       `db:"completed_at"`
 }
 
 // DepositSweepRepository handles deposit sweep persistence.
@@ -64,7 +65,7 @@ func (r *DepositSweepRepository) GetPending(ctx context.Context, maxAttempts int
 	defer tx.Rollback()
 
 	query := `
-		SELECT id, deposit_id, user_id, source_chain, amount, intent_address,
+		SELECT id, deposit_id, user_id, source_chain, amount, fee_amount, intent_address,
 		       chainrails_intent_id, status, tx_hash, error_message, attempts,
 		       created_at, updated_at, completed_at
 		FROM deposit_sweeps
@@ -100,13 +101,13 @@ func (r *DepositSweepRepository) GetPending(ctx context.Context, maxAttempts int
 	return sweeps, nil
 }
 
-func (r *DepositSweepRepository) MarkInProgress(ctx context.Context, id uuid.UUID, intentAddress string, intentID int) error {
+func (r *DepositSweepRepository) MarkInProgress(ctx context.Context, id uuid.UUID, intentAddress string, intentID int, feeAmount *decimal.Decimal) error {
 	query := `
 		UPDATE deposit_sweeps
-		SET intent_address = $2, chainrails_intent_id = $3, updated_at = NOW()
+		SET intent_address = $2, chainrails_intent_id = $3, fee_amount = $4, updated_at = NOW()
 		WHERE id = $1
 	`
-	_, err := r.db.ExecContext(ctx, query, id, intentAddress, intentID)
+	_, err := r.db.ExecContext(ctx, query, id, intentAddress, intentID, feeAmount)
 	if err != nil {
 		return fmt.Errorf("mark sweep in_progress: %w", err)
 	}
@@ -141,7 +142,7 @@ func (r *DepositSweepRepository) MarkFailed(ctx context.Context, id uuid.UUID, e
 
 func (r *DepositSweepRepository) GetBySweepID(ctx context.Context, id uuid.UUID) (*DepositSweep, error) {
 	query := `
-		SELECT id, deposit_id, user_id, source_chain, amount, intent_address,
+		SELECT id, deposit_id, user_id, source_chain, amount, fee_amount, intent_address,
 		       chainrails_intent_id, status, tx_hash, error_message, attempts,
 		       created_at, updated_at, completed_at
 		FROM deposit_sweeps
@@ -159,7 +160,7 @@ func (r *DepositSweepRepository) GetBySweepID(ctx context.Context, id uuid.UUID)
 
 func (r *DepositSweepRepository) GetByIntentAddress(ctx context.Context, intentAddress string) (*DepositSweep, error) {
 	query := `
-		SELECT id, deposit_id, user_id, source_chain, amount, intent_address,
+		SELECT id, deposit_id, user_id, source_chain, amount, fee_amount, intent_address,
 		       chainrails_intent_id, status, tx_hash, error_message, attempts,
 		       created_at, updated_at, completed_at
 		FROM deposit_sweeps
@@ -177,7 +178,7 @@ func (r *DepositSweepRepository) GetByIntentAddress(ctx context.Context, intentA
 
 func (r *DepositSweepRepository) GetByDepositID(ctx context.Context, depositID uuid.UUID) (*DepositSweep, error) {
 	query := `
-		SELECT id, deposit_id, user_id, source_chain, amount, intent_address,
+		SELECT id, deposit_id, user_id, source_chain, amount, fee_amount, intent_address,
 		       chainrails_intent_id, status, tx_hash, error_message, attempts,
 		       created_at, updated_at, completed_at
 		FROM deposit_sweeps
@@ -196,7 +197,7 @@ func (r *DepositSweepRepository) GetByDepositID(ctx context.Context, depositID u
 // GetStale returns sweeps stuck in 'in_progress' for longer than the given duration.
 func (r *DepositSweepRepository) GetStale(ctx context.Context, olderThan time.Duration) ([]*DepositSweep, error) {
 	query := `
-		SELECT id, deposit_id, user_id, source_chain, amount, intent_address,
+		SELECT id, deposit_id, user_id, source_chain, amount, fee_amount, intent_address,
 		       chainrails_intent_id, status, tx_hash, error_message, attempts,
 		       created_at, updated_at, completed_at
 		FROM deposit_sweeps

@@ -9,9 +9,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -20,6 +23,28 @@ const (
 	maxAttempts  = 5
 )
 
+var (
+	sweepsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "rail_deposit_sweeps_total",
+		Help: "Total deposit sweeps by outcome",
+	}, []string{"status"})
+	sweepDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "rail_deposit_sweep_duration_seconds",
+		Help:    "Time from sweep creation to completion",
+		Buckets: []float64{10, 30, 60, 120, 300, 600, 1800},
+	})
+	sweepAttempts = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "rail_deposit_sweep_attempts",
+		Help:    "Number of attempts before sweep resolution",
+		Buckets: []float64{1, 2, 3, 4, 5},
+	})
+)
+
+// Alerter sends alerts when sweeps exhaust retries.
+type Alerter interface {
+	SendSweepExhausted(sweepID, depositID, sourceChain string, amount string, attempts int)
+}
+
 // WalletLookup resolves a user's managed wallet by chain.
 type WalletLookup interface {
 	GetByUserAndChain(ctx context.Context, userID uuid.UUID, chain entities.WalletChain) (*entities.ManagedWallet, error)
@@ -27,25 +52,28 @@ type WalletLookup interface {
 
 // Worker polls for pending deposit sweeps and creates ChainRails intents to bridge to Solana.
 type Worker struct {
-	sweepRepo    *repositories.DepositSweepRepository
-	walletRepo   WalletLookup
-	crClient     *chainrails.Client
-	logger       *zap.Logger
-	stopCh       chan struct{}
-	stopOnce     sync.Once
-	running      int32
+	sweepRepo *repositories.DepositSweepRepository
+	walletRepo WalletLookup
+	crClient   *chainrails.Client
+	alerter    Alerter
+	logger     *zap.Logger
+	stopCh     chan struct{}
+	stopOnce   sync.Once
+	running    int32
 }
 
 func NewWorker(
 	sweepRepo *repositories.DepositSweepRepository,
 	walletRepo WalletLookup,
 	crClient *chainrails.Client,
+	alerter Alerter,
 	logger *zap.Logger,
 ) *Worker {
 	return &Worker{
 		sweepRepo:  sweepRepo,
 		walletRepo: walletRepo,
 		crClient:   crClient,
+		alerter:    alerter,
 		logger:     logger,
 		stopCh:     make(chan struct{}),
 	}
@@ -99,6 +127,17 @@ func (w *Worker) poll() {
 					zap.String("deposit_id", sweep.DepositID.String()),
 					zap.Error(err))
 				_ = w.sweepRepo.MarkFailed(ctx, sweep.ID, err.Error())
+				sweepsTotal.WithLabelValues("failed").Inc()
+
+				// Alert if this was the last attempt
+				if sweep.Attempts+1 >= maxAttempts && w.alerter != nil {
+					w.alerter.SendSweepExhausted(
+						sweep.ID.String(), sweep.DepositID.String(),
+						sweep.SourceChain, sweep.Amount.StringFixed(2), sweep.Attempts+1,
+					)
+				}
+			} else {
+				sweepsTotal.WithLabelValues("initiated").Inc()
 			}
 		}
 	}
@@ -159,7 +198,7 @@ func (w *Worker) processSweep(ctx context.Context, sweep *repositories.DepositSw
 		return fmt.Errorf("create chainrails intent: %w", err)
 	}
 
-	if err := w.sweepRepo.MarkInProgress(ctx, sweep.ID, intent.IntentAddress, intent.ID); err != nil {
+	if err := w.sweepRepo.MarkInProgress(ctx, sweep.ID, intent.IntentAddress, intent.ID, parseSweepFee(intent)); err != nil {
 		return fmt.Errorf("mark in_progress: %w", err)
 	}
 
@@ -273,10 +312,14 @@ func (w *Worker) reconcileStale(ctx context.Context) {
 		switch strings.ToLower(status.Status) {
 		case "completed", "settled":
 			_ = w.sweepRepo.MarkCompleted(ctx, sweep.ID, status.TxHash)
+			sweepsTotal.WithLabelValues("completed").Inc()
+			sweepDuration.Observe(time.Since(sweep.CreatedAt).Seconds())
+			sweepAttempts.Observe(float64(sweep.Attempts))
 			w.logger.Info("Reconciled stale sweep as completed",
 				zap.String("sweep_id", sweep.ID.String()), zap.String("tx_hash", status.TxHash))
 		case "refunded", "failed", "expired":
 			_ = w.sweepRepo.MarkFailed(ctx, sweep.ID, "reconciled: "+status.Status)
+			sweepsTotal.WithLabelValues("failed").Inc()
 			w.logger.Warn("Reconciled stale sweep as failed",
 				zap.String("sweep_id", sweep.ID.String()), zap.String("status", status.Status))
 		default:
@@ -285,4 +328,16 @@ func (w *Worker) reconcileStale(ctx context.Context) {
 				zap.String("sweep_id", sweep.ID.String()), zap.String("status", status.Status))
 		}
 	}
+}
+
+// parseSweepFee extracts the bridging fee from a ChainRails intent response.
+func parseSweepFee(intent *chainrails.CreateIntentResponse) *decimal.Decimal {
+	if intent.FeesInUSD == "" {
+		return nil
+	}
+	fee, err := decimal.NewFromString(intent.FeesInUSD)
+	if err != nil {
+		return nil
+	}
+	return &fee
 }

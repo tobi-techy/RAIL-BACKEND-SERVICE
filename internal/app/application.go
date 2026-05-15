@@ -51,6 +51,7 @@ import (
 	subscription_billing "github.com/rail-service/rail_service/internal/workers/subscription_billing"
 	walletprovisioning "github.com/rail-service/rail_service/internal/workers/wallet_provisioning"
 	withdrawal_recovery "github.com/rail-service/rail_service/internal/workers/withdrawal_recovery"
+	"github.com/rail-service/rail_service/pkg/alerting"
 	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/metrics"
@@ -407,10 +408,18 @@ func (app *Application) initializeWorkers() error {
 
 	// Deposit auto-sweep worker: bridges non-Solana Circle deposits to Solana
 	if app.container.DepositSweepRepo != nil && app.container.ChainRailsClient != nil && app.container.WalletRepo != nil {
+		var sweepAlerter deposit_autosweep.Alerter
+		if ta := alerting.NewTelegramAlerter(
+			app.cfg.TelegramAlerts.BotToken,
+			app.cfg.TelegramAlerts.ChatID,
+		); ta != nil {
+			sweepAlerter = ta
+		}
 		app.depositAutoSweepWorker = deposit_autosweep.NewWorker(
 			app.container.DepositSweepRepo,
 			app.container.WalletRepo,
 			app.container.ChainRailsClient,
+			sweepAlerter,
 			app.log.Zap(),
 		)
 		app.depositAutoSweepWorker.Start()
