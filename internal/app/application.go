@@ -414,6 +414,8 @@ func (app *Application) initializeWorkers() error {
 			app.cfg.TelegramAlerts.ChatID,
 		); ta != nil {
 			sweepAlerter = ta
+		} else {
+			app.log.Warn("Deposit auto-sweep alerter not configured — exhausted sweeps will not trigger alerts")
 		}
 		app.depositAutoSweepWorker = deposit_autosweep.NewWorker(
 			app.container.DepositSweepRepo,

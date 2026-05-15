@@ -129,8 +129,8 @@ func (w *Worker) poll() {
 				_ = w.sweepRepo.MarkFailed(ctx, sweep.ID, err.Error())
 				sweepsTotal.WithLabelValues("failed").Inc()
 
-				// Alert if this was the last attempt
-				if sweep.Attempts+1 >= maxAttempts && w.alerter != nil {
+				// Alert exactly once when this attempt exhausts retries
+				if sweep.Attempts+1 == maxAttempts && w.alerter != nil {
 					w.alerter.SendSweepExhausted(
 						sweep.ID.String(), sweep.DepositID.String(),
 						sweep.SourceChain, sweep.Amount.StringFixed(2), sweep.Attempts+1,
