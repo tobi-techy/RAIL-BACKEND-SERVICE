@@ -82,6 +82,12 @@ func NewWorker(
 func (w *Worker) Start() {
 	w.logger.Info("Deposit auto-sweep worker started")
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				w.logger.Error("Deposit auto-sweep worker panicked",
+					zap.Any("panic", r), zap.Stack("stack"))
+			}
+		}()
 		w.poll()
 		ticker := time.NewTicker(pollInterval)
 		defer ticker.Stop()
@@ -126,7 +132,10 @@ func (w *Worker) poll() {
 					zap.String("sweep_id", sweep.ID.String()),
 					zap.String("deposit_id", sweep.DepositID.String()),
 					zap.Error(err))
-				_ = w.sweepRepo.MarkFailed(ctx, sweep.ID, err.Error())
+				if markErr := w.sweepRepo.MarkFailed(ctx, sweep.ID, err.Error()); markErr != nil {
+					w.logger.Error("Failed to mark sweep as failed",
+						zap.String("sweep_id", sweep.ID.String()), zap.Error(markErr))
+				}
 				sweepsTotal.WithLabelValues("failed").Inc()
 
 				// Alert exactly once when this attempt exhausts retries

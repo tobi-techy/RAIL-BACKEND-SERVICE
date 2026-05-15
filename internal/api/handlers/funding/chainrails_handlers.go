@@ -427,7 +427,7 @@ func (h *ChainRailsHandlers) handleSweepIntentCompleted(c *gin.Context, event *c
 		h.logger.Error("Failed to complete deposit sweep",
 			"event_id", event.ID, "intent_address", event.Data.IntentAddress, "error", err)
 		chainrailsWebhooksTotal.WithLabelValues("intent.completed", "sweep_error").Inc()
-		c.JSON(http.StatusOK, gin.H{"received": true, "status": "error"})
+		common.SendInternalError(c, "SWEEP_ERROR", "Failed to complete sweep")
 		return
 	}
 	chainrailsWebhooksTotal.WithLabelValues("intent.completed", "sweep_success").Inc()
