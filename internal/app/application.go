@@ -34,11 +34,14 @@ import (
 	bridge_govid_repair "github.com/rail-service/rail_service/internal/workers/bridge_govid_repair"
 	daily_pulse "github.com/rail-service/rail_service/internal/workers/daily_pulse"
 	deposit_allocation_recovery "github.com/rail-service/rail_service/internal/workers/deposit_allocation_recovery"
+	deposit_autosweep "github.com/rail-service/rail_service/internal/workers/deposit_autosweep"
 	"github.com/rail-service/rail_service/internal/workers/funding_webhook"
 	gameplay_workers "github.com/rail-service/rail_service/internal/workers/gameplay"
+	growth_mail "github.com/rail-service/rail_service/internal/workers/growth_mail"
 	kyc_autoinvest "github.com/rail-service/rail_service/internal/workers/kyc_autoinvest"
 	"github.com/rail-service/rail_service/internal/workers/kyc_sync"
 	memory_worker "github.com/rail-service/rail_service/internal/workers/memory_worker"
+	opportunity_sync "github.com/rail-service/rail_service/internal/workers/opportunity_sync"
 	paj_offramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_offramp_recovery"
 	paj_onramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_onramp_recovery"
 	portfolio_snapshot_worker "github.com/rail-service/rail_service/internal/workers/portfolio_snapshot_worker"
@@ -48,6 +51,8 @@ import (
 	subscription_billing "github.com/rail-service/rail_service/internal/workers/subscription_billing"
 	walletprovisioning "github.com/rail-service/rail_service/internal/workers/wallet_provisioning"
 	withdrawal_recovery "github.com/rail-service/rail_service/internal/workers/withdrawal_recovery"
+	"github.com/rail-service/rail_service/pkg/alerting"
+	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/metrics"
 	"github.com/rail-service/rail_service/pkg/tracing"
@@ -86,6 +91,10 @@ type Application struct {
 	automationWorker             *automation_worker.Worker
 	memoryWorker                 *memory_worker.Worker
 	dailyPulseWorker             *daily_pulse.Worker
+	growthMailWorker             *growth_mail.Worker
+	growthMailCancel             context.CancelFunc
+	opportunitySyncWorker        *opportunity_sync.Worker
+	depositAutoSweepWorker       *deposit_autosweep.Worker
 
 	// Tracing
 	tracingShutdown func(context.Context) error
@@ -124,6 +133,9 @@ func (app *Application) Initialize() error {
 	if err := app.initializeTracing(); err != nil {
 		return fmt.Errorf("failed to initialize tracing: %w", err)
 	}
+
+	// Initialize Mixpanel analytics
+	analytics.Init(log.Zap())
 
 	// Build dependency injection container
 	container, err := di.NewContainer(cfg, db, log)
@@ -221,8 +233,8 @@ func (app *Application) initializeWorkers() error {
 	}
 
 	// Paj offramp recovery worker — auto-reverses stuck NGN withdrawals
-	if app.container.DB != nil && app.container.PajHandlers != nil {
-		app.pajOfframpRecoveryWorker = paj_offramp_recovery.NewWorker(app.container.DB, app.log.Zap())
+	if app.container.DB != nil && app.container.PajHandlers != nil && app.container.LedgerService != nil {
+		app.pajOfframpRecoveryWorker = paj_offramp_recovery.NewWorker(app.container.DB, di.NewWithdrawalLedgerAdapter(app.container.LedgerService), app.log.Zap())
 		go app.pajOfframpRecoveryWorker.Start(context.Background())
 		app.log.Info("Paj offramp recovery worker started")
 	}
@@ -235,8 +247,8 @@ func (app *Application) initializeWorkers() error {
 	}
 
 	// Withdrawal recovery worker — auto-reverses stuck crypto withdrawals
-	if app.container.DB != nil {
-		app.withdrawalRecoveryWorker = withdrawal_recovery.NewWorker(app.container.DB, app.log.Zap())
+	if app.container.DB != nil && app.container.LedgerService != nil {
+		app.withdrawalRecoveryWorker = withdrawal_recovery.NewWorker(app.container.DB, di.NewWithdrawalLedgerAdapter(app.container.LedgerService), app.log.Zap())
 		go app.withdrawalRecoveryWorker.Start(context.Background())
 		app.log.Info("Withdrawal recovery worker started")
 	}
@@ -384,6 +396,39 @@ func (app *Application) initializeWorkers() error {
 		app.log.Info("Miriam automation worker started")
 	}
 
+	// Opportunity sync worker — ingests Superteam Earn listings and generates weekly picks
+	if app.container.OpportunityService != nil && app.container.UserRepo != nil {
+		app.opportunitySyncWorker = opportunity_sync.NewWorker(
+			app.container.OpportunityService,
+			&opportunityUserListerAdapter{repo: app.container.UserRepo},
+			app.log.Zap(),
+		)
+		go app.opportunitySyncWorker.Start(context.Background())
+		app.log.Info("Opportunity sync worker started")
+	}
+
+	// Deposit auto-sweep worker: bridges non-Solana Circle deposits to Solana
+	if app.container.DepositSweepRepo != nil && app.container.ChainRailsClient != nil && app.container.WalletRepo != nil {
+		var sweepAlerter deposit_autosweep.Alerter
+		if ta := alerting.NewTelegramAlerter(
+			app.cfg.TelegramAlerts.BotToken,
+			app.cfg.TelegramAlerts.ChatID,
+		); ta != nil {
+			sweepAlerter = ta
+		} else {
+			app.log.Warn("Deposit auto-sweep alerter not configured — exhausted sweeps will not trigger alerts")
+		}
+		app.depositAutoSweepWorker = deposit_autosweep.NewWorker(
+			app.container.DepositSweepRepo,
+			app.container.WalletRepo,
+			app.container.ChainRailsClient,
+			sweepAlerter,
+			app.log.Zap(),
+		)
+		app.depositAutoSweepWorker.Start()
+		app.log.Info("Deposit auto-sweep worker started")
+	}
+
 	if app.container.UserRepo != nil && app.container.LedgerService != nil && app.container.LedgerSpendingRepo != nil && app.container.BudgetRepo != nil {
 		var pushSender daily_pulse.PushSender
 		if app.container.SNSPushService != nil {
@@ -401,9 +446,20 @@ func (app *Application) initializeWorkers() error {
 				pushSender,
 				app.log.Zap(),
 			)
+			if app.container.AIProviderManager != nil {
+				app.dailyPulseWorker.SetNudger(daily_pulse.NewAINudger(app.container.AIProviderManager, app.log.Zap()))
+			}
 			go app.dailyPulseWorker.Start(context.Background())
 			app.log.Info("Miriam daily pulse worker started")
 		}
+	}
+
+	if app.container.GrowthMailService != nil {
+		app.growthMailWorker = growth_mail.NewWorker(app.container.GrowthMailService, app.log.Zap())
+		ctx, cancel := context.WithCancel(context.Background())
+		app.growthMailCancel = cancel
+		go app.growthMailWorker.Start(ctx)
+		app.log.Info("Growth mail worker started")
 	}
 
 	return nil
@@ -888,6 +944,12 @@ func (app *Application) stopWorkers() {
 	if app.dailyMetricsWorker != nil {
 		app.dailyMetricsWorker.Stop()
 	}
+	if app.depositAutoSweepWorker != nil {
+		app.depositAutoSweepWorker.Stop()
+	}
+	if app.growthMailCancel != nil {
+		app.growthMailCancel()
+	}
 }
 
 type dailyPulseUserRepoAdapter struct {
@@ -1032,4 +1094,21 @@ func (a *bridgeWalletBalanceAdapter) GetWalletBalance(ctx context.Context, custo
 		return "0", err
 	}
 	return bal.GetUSDCAmount(), nil
+}
+
+// opportunityUserListerAdapter adapts UserRepository to opportunity_sync.UserLister.
+type opportunityUserListerAdapter struct {
+	repo *repositories.UserRepository
+}
+
+func (a *opportunityUserListerAdapter) GetAllActiveUserIDs(ctx context.Context) ([]uuid.UUID, error) {
+	users, err := a.repo.GetAllActiveUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]uuid.UUID, 0, len(users))
+	for _, u := range users {
+		ids = append(ids, u.ID)
+	}
+	return ids, nil
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/rail-service/rail_service/pkg/metrics"
 )
 
@@ -366,6 +367,12 @@ func (s *Service) ProcessCardAuthorization(ctx context.Context, bridgeCardID str
 		metrics.Business.CardTransactionsTotal.WithLabelValues("approved").Inc()
 		metrics.Business.CardSpendAmount.Observe(amount.InexactFloat64())
 	}
+
+	analytics.TrackEvent(ctx, card.UserID.String(), analytics.EventCardTransaction, map[string]any{
+		"amount":            amount.InexactFloat64(),
+		"merchant_name":     merchantName,
+		"merchant_category": merchantCategory,
+	})
 
 	return true, "", nil
 }

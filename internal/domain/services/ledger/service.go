@@ -783,11 +783,14 @@ func (s *Service) AdminTransferStashToSpending(ctx context.Context, userID uuid.
 // EmergencyTransferStashToSpending moves funds from stash to spending with a fee
 // credited to the emergency withdrawal revenue account. Bypasses stash lock.
 func (s *Service) EmergencyTransferStashToSpending(ctx context.Context, userID uuid.UUID, amount, fee decimal.Decimal, idempotencyKey string) error {
-	if amount.IsZero() || amount.IsNegative() {
+	if amount.IsNegative() {
 		return fmt.Errorf("invalid transfer amount: %s", amount.String())
 	}
 	if fee.IsNegative() {
 		return fmt.Errorf("fee cannot be negative")
+	}
+	if amount.IsZero() && !fee.IsPositive() {
+		return fmt.Errorf("transfer amount or fee must be positive")
 	}
 
 	stashAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
@@ -798,25 +801,43 @@ func (s *Service) EmergencyTransferStashToSpending(ctx context.Context, userID u
 	if err != nil {
 		return fmt.Errorf("get spending account: %w", err)
 	}
-	revenueAccount, err := s.GetSystemAccount(ctx, entities.AccountTypeEmergencyWithdrawalRevenue)
-	if err != nil {
-		return fmt.Errorf("get emergency revenue account: %w", err)
+	var revenueAccount *entities.LedgerAccount
+	if fee.IsPositive() {
+		revenueAccount, err = s.GetSystemAccount(ctx, entities.AccountTypeEmergencyWithdrawalRevenue)
+		if err != nil {
+			return fmt.Errorf("get emergency revenue account: %w", err)
+		}
 	}
 
 	total := amount.Add(fee)
 	desc := fmt.Sprintf("Emergency stash withdrawal: %s (fee: %s)", amount.String(), fee.String())
 	refType := "emergency_stash_transfer"
+	entries := []entities.CreateEntryRequest{
+		{AccountID: stashAccount.ID, EntryType: entities.EntryTypeCredit, Amount: total, Currency: "USD"},
+	}
+	if amount.IsPositive() {
+		entries = append(entries, entities.CreateEntryRequest{
+			AccountID: spendAccount.ID,
+			EntryType: entities.EntryTypeDebit,
+			Amount:    amount,
+			Currency:  "USD",
+		})
+	}
+	if fee.IsPositive() {
+		entries = append(entries, entities.CreateEntryRequest{
+			AccountID: revenueAccount.ID,
+			EntryType: entities.EntryTypeDebit,
+			Amount:    fee,
+			Currency:  "USD",
+		})
+	}
 	txReq := &entities.CreateTransactionRequest{
 		UserID:          &userID,
 		TransactionType: entities.TransactionTypeInternalTransfer,
 		ReferenceType:   &refType,
 		IdempotencyKey:  idempotencyKey,
 		Description:     &desc,
-		Entries: []entities.CreateEntryRequest{
-			{AccountID: stashAccount.ID, EntryType: entities.EntryTypeCredit, Amount: total, Currency: "USD"},
-			{AccountID: spendAccount.ID, EntryType: entities.EntryTypeDebit, Amount: amount, Currency: "USD"},
-			{AccountID: revenueAccount.ID, EntryType: entities.EntryTypeDebit, Amount: fee, Currency: "USD"},
-		},
+		Entries:         entries,
 	}
 
 	_, err = s.CreateTransaction(ctx, txReq)

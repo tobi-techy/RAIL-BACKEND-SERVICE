@@ -271,62 +271,62 @@ func (s *NotificationService) queueNotification(ctx context.Context, userID uuid
 // --- Convenience notification methods ---
 
 func (s *NotificationService) SendWeeklySummary(ctx context.Context, userID uuid.UUID, weekStart time.Time) error {
-	title := "Your Weekly Investment Summary"
-	body := fmt.Sprintf("Here's your investment summary for the week of %s", weekStart.Format("Jan 2, 2006"))
+	title := "Miriam's weekly recap"
+	body := fmt.Sprintf("Your week of %s is ready. Miriam kept the receipts.", weekStart.Format("Jan 2, 2006"))
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "weekly_summary"})
 }
 
 func (s *NotificationService) NotifyOffRampSuccess(ctx context.Context, userID uuid.UUID, amount string) error {
-	title := "Withdrawal Complete"
-	body := fmt.Sprintf("Your withdrawal of $%s has been processed successfully.", amount)
+	title := "Withdrawal landed"
+	body := fmt.Sprintf("$%s is processed. Miriam can stop staring at the progress bar.", amount)
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "offramp_success", "amount": amount})
 }
 
 func (s *NotificationService) NotifyOffRampFailure(ctx context.Context, userID uuid.UUID, reason string) error {
-	title := "Withdrawal Failed"
-	body := fmt.Sprintf("Your withdrawal could not be processed: %s", reason)
+	title := "Withdrawal needs attention"
+	body := fmt.Sprintf("Miriam hit a snag: %s", reason)
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "offramp_failure"})
 }
 
 func (s *NotificationService) NotifyTransactionDeclined(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, transactionType string) error {
-	title := "Transaction Declined"
-	body := fmt.Sprintf("Your %s of $%s was declined due to spending limits.", transactionType, amount.String())
+	title := "Miriam blocked a spend"
+	body := fmt.Sprintf("That %s for $%s crossed your spending limits.", transactionType, amount.String())
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "transaction_declined"})
 }
 
 func (s *NotificationService) NotifyDepositConfirmed(ctx context.Context, userID uuid.UUID, amount, chain, txHash string) error {
-	title := "Deposit confirmed"
-	body := fmt.Sprintf("Your deposit of %s has arrived and your money is being put to work.", amount)
+	title := "Deposit made it in"
+	body := fmt.Sprintf("%s arrived. Miriam is already sorting the money lanes.", amount)
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "deposit_confirmed", "tx_hash": txHash, "chain": chain})
 }
 
 func (s *NotificationService) NotifyDepositDetected(ctx context.Context, userID uuid.UUID, chain string) error {
-	title := "Deposit detected"
-	body := "We've detected an incoming deposit. It will be confirmed shortly."
+	title := "Miriam sees money inbound"
+	body := "Incoming deposit spotted. Confirmation is the next little checkpoint."
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "deposit_detected", "chain": chain})
 }
 
 func (s *NotificationService) NotifyWithdrawalSubmitted(ctx context.Context, userID uuid.UUID, amount string) error {
-	title := "Withdrawal processing"
-	body := fmt.Sprintf("Your withdrawal of $%s has been submitted and is being processed.", amount)
+	title := "Withdrawal is moving"
+	body := fmt.Sprintf("$%s is submitted. Miriam is watching the handoff.", amount)
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "withdrawal_submitted"})
 }
 
 func (s *NotificationService) NotifyWithdrawalCompleted(ctx context.Context, userID uuid.UUID, amount, destinationAddress string) error {
 	title := "Withdrawal sent"
-	body := fmt.Sprintf("Your withdrawal of $%s is on its way.", amount)
+	body := fmt.Sprintf("$%s is on its way. Clean exit.", amount)
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "withdrawal_completed"})
 }
 
 func (s *NotificationService) NotifyWithdrawalFailed(ctx context.Context, userID uuid.UUID, amount, reason string) error {
-	title := "Withdrawal failed"
-	body := fmt.Sprintf("Your withdrawal of $%s could not be processed. Please try again.", amount)
+	title := "Withdrawal needs a retry"
+	body := fmt.Sprintf("$%s could not be processed. Miriam saved the context.", amount)
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "withdrawal_failed"})
 }
 
 func (s *NotificationService) NotifyLargeBalanceChange(ctx context.Context, userID uuid.UUID, changeType string, amount decimal.Decimal, newBalance decimal.Decimal) error {
-	title := "Balance updated"
-	body := fmt.Sprintf("A %s of $%s has been processed.", changeType, amount.String())
+	title := "Balance changed"
+	body := fmt.Sprintf("%s of $%s processed. New balance is $%s.", changeType, amount.String(), newBalance.StringFixed(2))
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "balance_change"})
 }
 
@@ -337,8 +337,8 @@ func (s *NotificationService) NotifyAllocationFailed(ctx context.Context, userID
 		zap.String("amount", amount.String()),
 		zap.String("failure_reason", reason))
 
-	title := "Action needed"
-	body := fmt.Sprintf("Your deposit of $%s arrived but the automatic split could not complete. Contact support.", amount.String())
+	title := "Miriam needs backup"
+	body := fmt.Sprintf("$%s arrived, but the automatic split could not complete. Contact support.", amount.String())
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{
 		"type":       "allocation_failed",
 		"deposit_id": depositID.String(),
@@ -347,50 +347,50 @@ func (s *NotificationService) NotifyAllocationFailed(ctx context.Context, userID
 }
 
 func (s *NotificationService) NotifyKYCApproved(ctx context.Context, userID uuid.UUID) error {
-	title := "Identity verified"
-	body := "Your identity has been verified. You can now deposit and start investing."
+	title := "Miriam unlocked the doors"
+	body := "Identity verified. Deposits, withdrawals, and the real Rail flow are open."
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "kyc_approved"})
 }
 
 func (s *NotificationService) NotifyKYCRejected(ctx context.Context, userID uuid.UUID) error {
-	title := "Verification unsuccessful"
-	body := "We could not verify your identity. Please check your documents and try again."
+	title := "Verification needs a redo"
+	body := "Miriam could not verify this round. Check the documents and try again."
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "kyc_rejected"})
 }
 
 func (s *NotificationService) NotifyAllocationComplete(ctx context.Context, userID uuid.UUID, spendAmount, investAmount string) error {
-	title := "Money deployed"
-	body := fmt.Sprintf("$%s to spending, $%s to investing. Your money is working.", spendAmount, investAmount)
+	title := "Split engine did it"
+	body := fmt.Sprintf("$%s to Spend, $%s to Invest. Miriam loves clean automation.", spendAmount, investAmount)
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "allocation_complete"})
 }
 
 func (s *NotificationService) NotifyInvestmentComplete(ctx context.Context, userID uuid.UUID, amount string) error {
 	title := "Investment placed"
-	body := fmt.Sprintf("$%s has been automatically invested on your behalf.", amount)
+	body := fmt.Sprintf("$%s invested automatically. Miriam handled the decision fatigue.", amount)
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "investment_complete"})
 }
 
 func (s *NotificationService) NotifyCardTransaction(ctx context.Context, userID uuid.UUID, amount, merchant string) error {
-	title := "Card transaction"
-	body := fmt.Sprintf("$%s spent at %s", amount, merchant)
+	title := "Miriam saw the swipe"
+	body := fmt.Sprintf("$%s at %s. Receipt energy logged.", amount, merchant)
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "card_transaction"})
 }
 
 func (s *NotificationService) NotifyYieldCredited(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error {
-	title := "Yield credited"
-	body := fmt.Sprintf("$%s in yield has been added to your stash.", amount.StringFixed(2))
+	title := "Tiny Stash win"
+	body := fmt.Sprintf("$%s in yield landed in Stash. Quiet compounding moment.", amount.StringFixed(2))
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "yield_credited", "amount": amount.String()})
 }
 
 func (s *NotificationService) NotifyStashWindowOpen(ctx context.Context, userID uuid.UUID, windowEnd time.Time) error {
-	title := "Your stash is unlocked"
+	title := "Stash window is open"
 	daysLeft := int(time.Until(windowEnd).Hours()/24) + 1
-	body := fmt.Sprintf("Your stash withdrawal window is open for %d days (until %s). Transfer to spend or withdraw before it re-locks for another 90 days.", daysLeft, windowEnd.Format("Jan 2"))
+	body := fmt.Sprintf("%d days to move Stash money before it locks again on %s.", daysLeft, windowEnd.Format("Jan 2"))
 	return s.queueNotification(ctx, userID, "push", title, body, map[string]interface{}{"type": "stash_window_open", "window_end": windowEnd.Format(time.RFC3339)})
 }
 
 func (s *NotificationService) NotifyP2PClaimed(ctx context.Context, senderID uuid.UUID, recipientName, amount string) error {
-	body := fmt.Sprintf("%s claimed your %s transfer", recipientName, amount)
+	body := fmt.Sprintf("%s claimed your %s transfer. Miriam can close that loop.", recipientName, amount)
 	return s.queueNotification(ctx, senderID, "push", "Transfer claimed", body, map[string]interface{}{"type": "p2p_claimed"})
 }
 
@@ -417,23 +417,23 @@ func getMilestoneMessage(milestoneType entities.MilestoneType, amount decimal.De
 	case entities.MilestoneTypeBalance:
 		switch {
 		case amount.Equal(decimal.NewFromInt(100)):
-			return "First $100 invested", "You've hit your first $100 invested. This is just the beginning."
+			return "First $100 invested", "Miriam saw the first three digits. Tiny number, serious signal."
 		case amount.Equal(decimal.NewFromInt(500)):
-			return "$500 milestone", "Half a thousand dollars working for you. Keep it up."
+			return "$500 milestone", "Half a thousand invested. Miriam is doing the respectful nod."
 		case amount.Equal(decimal.NewFromInt(1000)):
-			return "$1,000 invested", "Welcome to the four-figure club. Your money is growing."
+			return "$1,000 invested", "Four figures invested. That is not beginner energy anymore."
 		case amount.Equal(decimal.NewFromInt(5000)):
-			return "$5,000 invested", "Five thousand dollars invested. You're building real wealth."
+			return "$5,000 invested", "Five thousand invested. Miriam is officially paying attention."
 		case amount.Equal(decimal.NewFromInt(10000)):
-			return "$10,000 milestone", "Five figures. You're in the top tier of young investors."
+			return "$10,000 milestone", "Five figures invested. Quiet flex, loud discipline."
 		default:
-			return fmt.Sprintf("$%s milestone", amountStr), fmt.Sprintf("You've reached $%s invested.", amountStr)
+			return fmt.Sprintf("$%s milestone", amountStr), fmt.Sprintf("$%s invested. Miriam marked the receipt.", amountStr)
 		}
 	case entities.MilestoneTypeContribution:
-		return fmt.Sprintf("$%s contributed", amountStr), fmt.Sprintf("You've contributed $%s total. Consistency wins.", amountStr)
+		return fmt.Sprintf("$%s contributed", amountStr), fmt.Sprintf("$%s contributed total. Consistency is doing the heavy lifting.", amountStr)
 	case entities.MilestoneTypeGain:
-		return fmt.Sprintf("$%s in gains", amountStr), fmt.Sprintf("Your investments have earned $%s. Your money is working.", amountStr)
+		return fmt.Sprintf("$%s in gains", amountStr), fmt.Sprintf("$%s in gains. Miriam likes when the graph behaves.", amountStr)
 	default:
-		return "Milestone reached", fmt.Sprintf("You've reached a $%s milestone.", amountStr)
+		return "Milestone reached", fmt.Sprintf("$%s milestone reached. Miriam kept the confetti tasteful.", amountStr)
 	}
 }

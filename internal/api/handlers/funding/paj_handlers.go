@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/pajfunding"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/paj"
@@ -128,16 +129,11 @@ func (h *PajHandlers) GetRates(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "PAJ_RATES_FAILED", "message": "Failed to fetch rates"})
 		return
 	}
-	// Bridge requires ≥ $1 USDC per transfer. Compute dynamic NGN minimum.
-	minNGN := rates.OffRampRate.Rate * 1.05 // ₦ equivalent of ~$1.05
-	if minNGN < 500 {
-		minNGN = 500 // Paj Cash absolute minimum
-	}
 	c.JSON(http.StatusOK, gin.H{
 		"onRampRate":       rates.OnRampRate,
 		"offRampRate":      rates.OffRampRate,
 		"railFee":          pajfunding.RailNGNWithdrawalFee,
-		"minWithdrawalNGN": minNGN,
+		"minWithdrawalNGN": pajfunding.MinNGNTransactionAmount,
 	})
 }
 
@@ -360,12 +356,12 @@ func (h *PajHandlers) GetOrderStatus(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"orderId": tx.ID,
-		"status":  tx.Status,
-		"amount":  tx.Amount,
+		"orderId":    tx.ID,
+		"status":     tx.Status,
+		"amount":     tx.Amount,
 		"fiatAmount": tx.FiatAmount,
-		"rate":    tx.Rate,
-		"type":    tx.TransactionType,
+		"rate":       tx.Rate,
+		"type":       tx.TransactionType,
 	})
 }
 
@@ -373,9 +369,13 @@ func (h *PajHandlers) GetOrderStatus(c *gin.Context) {
 // Uses {"code", "message"} format so the frontend transformError extracts err.code correctly.
 func (h *PajHandlers) handleSessionError(c *gin.Context, err error) {
 	errMsg := err.Error()
+	errLower := strings.ToLower(errMsg)
 
 	// Auth / session errors → 403
-	if strings.Contains(errMsg, "no paj session") || strings.Contains(errMsg, "paj session expired") {
+	var pajErr *paj.APIError
+	if strings.Contains(errLower, "no paj session") ||
+		strings.Contains(errLower, "paj session expired") ||
+		(errors.As(err, &pajErr) && pajErr.StatusCode == http.StatusUnauthorized) {
 		c.JSON(http.StatusForbidden, gin.H{
 			"code":    "PAJ_VERIFICATION_REQUIRED",
 			"message": "Please verify your identity to enable NGN transactions",
@@ -394,16 +394,42 @@ func (h *PajHandlers) handleSessionError(c *gin.Context, err error) {
 
 	// User-actionable / validation errors → 400
 	switch {
-	case strings.Contains(errMsg, "insufficient balance"):
+	case errors.Is(err, entities.ErrDailyDepositExceeded),
+		errors.Is(err, entities.ErrMonthlyDepositExceeded),
+		strings.Contains(errLower, "daily deposit limit exceeded"),
+		strings.Contains(errLower, "monthly deposit limit exceeded"),
+		strings.Contains(errLower, "deposit limit exceeded"):
+		c.JSON(http.StatusBadRequest, gin.H{"code": "LIMIT_EXCEEDED", "message": errMsg})
+		return
+	case errors.Is(err, entities.ErrDailyWithdrawalExceeded),
+		errors.Is(err, entities.ErrMonthlyWithdrawalExceeded),
+		strings.Contains(errLower, "daily withdrawal limit exceeded"),
+		strings.Contains(errLower, "monthly withdrawal limit exceeded"),
+		strings.Contains(errLower, "withdrawal limit exceeded"):
+		c.JSON(http.StatusBadRequest, gin.H{"code": "LIMIT_EXCEEDED", "message": errMsg})
+		return
+	case strings.Contains(errLower, "insufficient balance"):
 		c.JSON(http.StatusBadRequest, gin.H{"code": "INSUFFICIENT_BALANCE", "message": "Insufficient balance for this withdrawal"})
 		return
-	case strings.Contains(errMsg, "minimum withdrawal") || strings.Contains(errMsg, "minimum deposit"):
+	case strings.Contains(errLower, "minimum withdrawal") || strings.Contains(errLower, "minimum deposit"):
 		c.JSON(http.StatusBadRequest, gin.H{"code": "BELOW_MINIMUM", "message": errMsg})
 		return
-	case strings.Contains(errMsg, "duplicate withdrawal") || strings.Contains(errMsg, "withdrawal in progress"):
+	case strings.Contains(errLower, "duplicate withdrawal") || strings.Contains(errLower, "withdrawal in progress"):
 		c.JSON(http.StatusConflict, gin.H{"code": "DUPLICATE_REQUEST", "message": errMsg})
 		return
-	case strings.Contains(errMsg, "offramp rate unavailable") || strings.Contains(errMsg, "offramp rate out of bounds"):
+	case strings.Contains(errLower, "deposit already in progress"):
+		c.JSON(http.StatusConflict, gin.H{"code": "DUPLICATE_REQUEST", "message": errMsg})
+		return
+	case strings.Contains(errLower, "please wait a few seconds"):
+		c.JSON(http.StatusTooManyRequests, gin.H{"code": "RATE_LIMITED", "message": errMsg})
+		return
+	case strings.Contains(errLower, "unable to verify deposit limits"):
+		c.JSON(http.StatusServiceUnavailable, gin.H{"code": "RATE_UNAVAILABLE", "message": errMsg})
+		return
+	case strings.Contains(errLower, "failed to create deposit order"):
+		c.JSON(http.StatusInternalServerError, gin.H{"code": "ORDER_FAILED", "message": errMsg})
+		return
+	case strings.Contains(errLower, "offramp rate unavailable") || strings.Contains(errLower, "offramp rate out of bounds"):
 		c.JSON(http.StatusServiceUnavailable, gin.H{"code": "RATE_UNAVAILABLE", "message": "Exchange rate temporarily unavailable, please try again"})
 		return
 	}

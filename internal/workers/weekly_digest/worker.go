@@ -108,24 +108,24 @@ func (w *Worker) sendDigest(ctx context.Context, userID uuid.UUID, start, end ti
 	totalOut := flow.TotalWithdrawals.Add(flow.TotalCardSpend).Add(flow.TotalP2P)
 
 	// Build digest message
-	title := "Your Weekly Money Digest"
+	title := "Miriam's weekly recap"
 	body := fmt.Sprintf("This week: $%s in, $%s out. ", flow.TotalDeposits.StringFixed(2), totalOut.StringFixed(2))
 
 	if totalOut.IsZero() && flow.TotalDeposits.IsZero() {
-		body = "Quiet week — no deposits or spending. "
+		body = "Quiet week. No deposits, no spending, no mystery plot. "
 	}
 
-	body += fmt.Sprintf("Balances: $%s spend, $%s stash.", spend.StringFixed(2), stash.StringFixed(2))
+	body += fmt.Sprintf("Spend $%s. Stash $%s.", spend.StringFixed(2), stash.StringFixed(2))
 
 	if !stash.IsZero() {
-		body += " Your stash is earning yield automatically"
+		body += " Miriam likes the Stash discipline."
 	}
 
 	return w.push.SendToUser(ctx, userID, title, body, map[string]interface{}{
-		"type":       "weekly_digest",
-		"deposits":   flow.TotalDeposits.String(),
-		"outflows":   totalOut.String(),
-		"spend_bal":  spend.String(),
-		"stash_bal":  stash.String(),
+		"type":      "weekly_digest",
+		"deposits":  flow.TotalDeposits.String(),
+		"outflows":  totalOut.String(),
+		"spend_bal": spend.String(),
+		"stash_bal": stash.String(),
 	})
 }

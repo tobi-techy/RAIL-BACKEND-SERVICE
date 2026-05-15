@@ -186,8 +186,8 @@ func (w *Worker) checkSpendingAlert(ctx context.Context, userID uuid.UUID) {
 		key := fmt.Sprintf("ai-insights:spending:%s:%s:%s", userID.String(), thisWeekStart.Format("2006-01-02"), bucket)
 		_ = w.sendAlertOnce(ctx, key, 7*24*time.Hour, func() error {
 			return w.pushSender.SendToUser(ctx, userID,
-				"Spending Alert",
-				"You've spent "+pctIncrease+"% more this week than last week. Tap to see where your money went.",
+				"Miriam noticed a jump",
+				"You spent "+pctIncrease+"% more than last week. Tap for Miriam's quick breakdown.",
 				map[string]interface{}{
 					"type":         "spending_alert",
 					"action":       "open_chat",
@@ -228,12 +228,12 @@ func (w *Worker) checkBudgetPace(ctx context.Context, userID uuid.UUID) {
 		if displayRemaining.IsNegative() {
 			displayRemaining = decimal.Zero
 		}
-		body := fmt.Sprintf("You've used %s%% of your monthly budget by day %d. $%s left for the month.",
+		body := fmt.Sprintf("%s%% of budget used by day %d. $%s left. Miriam suggests a tiny reset.",
 			actualPct.StringFixed(0), now.Day(), displayRemaining.StringFixed(2))
 		key := fmt.Sprintf("ai-insights:budget-pace:%s:%s:%s", userID.String(), monthStart.Format("2006-01"), bucket)
 		_ = w.sendAlertOnce(ctx, key, 7*24*time.Hour, func() error {
 			return w.pushSender.SendToUser(ctx, userID,
-				"Budget pace alert",
+				"Budget pace check",
 				body,
 				map[string]interface{}{
 					"type":         "budget_pace_alert",
@@ -271,7 +271,7 @@ func (w *Worker) checkCashRunway(ctx context.Context, userID uuid.UUID) {
 		key := fmt.Sprintf("ai-insights:runway:%s:%s:%s", userID.String(), weekAgo.Format("2006-01-02"), bucket)
 		_ = w.sendAlertOnce(ctx, key, 7*24*time.Hour, func() error {
 			return w.pushSender.SendToUser(ctx, userID,
-				"Spend balance may run low",
+				"Spend balance check",
 				fmt.Sprintf("At your current $%s/day pace, your Spend balance may last about %s days.",
 					dailyBurn.StringFixed(2), runwayDays.StringFixed(0)),
 				map[string]interface{}{
@@ -307,8 +307,8 @@ func (w *Worker) checkSavingsGrowth(ctx context.Context, userID uuid.UUID) {
 			key := fmt.Sprintf("ai-insights:savings-milestone:%s:%s", userID.String(), m.String())
 			_ = w.sendAlertOnce(ctx, key, 30*24*time.Hour, func() error {
 				return w.pushSender.SendToUser(ctx, userID,
-					"Savings Milestone!",
-					"Your stash just crossed $"+m.String()+". Your money is working for you.",
+					"Stash milestone unlocked",
+					"$"+m.String()+" crossed. Quiet flex, real progress.",
 					map[string]interface{}{
 						"type":      "savings_milestone",
 						"amount":    m.String(),
@@ -373,13 +373,13 @@ func (w *Worker) runWeeklyDigest(ctx context.Context) {
 		} else {
 			body += "No spending this week. "
 		}
-		body += "Stash: $" + stash.StringFixed(2) + ". Total: $" + total.StringFixed(2) + "."
+		body += "Stash $" + stash.StringFixed(2) + ". Total $" + total.StringFixed(2) + "."
 
 		isoYear, isoWeek := now.ISOWeek()
 		key := fmt.Sprintf("ai-insights:weekly-digest:%s:%04d-w%02d", u.ID.String(), isoYear, isoWeek)
 		_ = w.sendAlertOnce(ctx, key, 8*24*time.Hour, func() error {
 			return w.pushSender.SendToUser(ctx, u.ID,
-				"Your Weekly Money Recap",
+				"Miriam's weekly recap",
 				body,
 				map[string]interface{}{
 					"type":      "weekly_digest",
@@ -416,12 +416,12 @@ func (w *Worker) runMorningGreeting(ctx context.Context) {
 		}
 		stash, _ := w.balances.GetAccountBalance(ctx, u.ID, entities.AccountTypeStashBalance)
 
-		body := fmt.Sprintf("You have $%s to spend today. Stash: $%s and growing", spend.StringFixed(2), stash.StringFixed(2))
+		body := fmt.Sprintf("$%s ready to spend today. Stash is $%s and still in the game.", spend.StringFixed(2), stash.StringFixed(2))
 
 		key := fmt.Sprintf("ai-insights:morning:%s:%s", u.ID.String(), nowUTC.In(time.UTC).Format("2006-01-02"))
 		_ = w.sendAlertOnce(ctx, key, 26*time.Hour, func() error {
 			return w.pushSender.SendToUser(ctx, u.ID,
-				"Good morning",
+				"Miriam did the math",
 				body,
 				map[string]interface{}{
 					"type":      "morning_greeting",
@@ -491,13 +491,13 @@ func (w *Worker) runMonthRecap(ctx context.Context) {
 			continue
 		}
 
-		body := fmt.Sprintf("This month: $%s spent across %d transactions. Your stash is at $%s. Total balance: $%s. Ask Miriam for your full breakdown",
-			spent.StringFixed(2), txCount, stash.StringFixed(2), total.StringFixed(2))
+		body := fmt.Sprintf("$%s spent across %d transactions. Stash is $%s. Ask Miriam for the full read.",
+			spent.StringFixed(2), txCount, stash.StringFixed(2))
 
 		key := fmt.Sprintf("ai-insights:month-recap:%s:%04d-%02d", u.ID.String(), now.Year(), now.Month())
 		_ = w.sendAlertOnce(ctx, key, 32*24*time.Hour, func() error {
 			return w.pushSender.SendToUser(ctx, u.ID,
-				"Your Month in Review",
+				"Your month, decoded",
 				body,
 				map[string]interface{}{
 					"type":      "month_recap",
@@ -528,8 +528,8 @@ func (w *Worker) checkIdleMoney(ctx context.Context, userID uuid.UUID) {
 		key := fmt.Sprintf("ai-insights:idle-money:%s:%s", userID.String(), weekAgo.Format("2006-01-02"))
 		_ = w.sendAlertOnce(ctx, key, 7*24*time.Hour, func() error {
 			return w.pushSender.SendToUser(ctx, userID,
-				"Money sitting idle",
-				"$"+spend.StringFixed(2)+" in your spend wallet with barely any activity. Want to move $"+suggestAmt+" to stash where it earns yield?",
+				"Miriam found idle cash",
+				"$"+spend.StringFixed(2)+" barely moved this week. Want to tuck $"+suggestAmt+" into Stash?",
 				map[string]interface{}{
 					"type":           "idle_money",
 					"action":         "open_chat",

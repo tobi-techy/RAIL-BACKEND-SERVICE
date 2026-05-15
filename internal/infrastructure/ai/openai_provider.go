@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,14 +26,14 @@ const (
 
 // OpenAIProvider implements AIProvider for OpenAI's API and OpenAI-compatible providers (Kimi, etc.)
 type OpenAIProvider struct {
-	config     *ProviderConfig
-	client     *http.Client
-	logger     *zap.Logger
-	tracer     trace.Tracer
-	limiter    *rate.Limiter
-	mu         sync.RWMutex
-	lastError  error
-	lastCheck  time.Time
+	config    *ProviderConfig
+	client    *http.Client
+	logger    *zap.Logger
+	tracer    trace.Tracer
+	limiter   *rate.Limiter
+	mu        sync.RWMutex
+	lastError error
+	lastCheck time.Time
 }
 
 // NewOpenAIProvider creates a new OpenAI provider
@@ -191,7 +192,7 @@ func (p *OpenAIProvider) ChatCompletionWithTools(ctx context.Context, req *ChatR
 
 	// Handle HTTP errors
 	if resp.StatusCode != http.StatusOK {
-		return nil, p.handleHTTPError(resp.StatusCode, body)
+		return nil, p.handleHTTPError(resp.StatusCode, body, resp.Header)
 	}
 
 	// Parse OpenAI response
@@ -275,7 +276,7 @@ func (p *OpenAIProvider) ChatCompletionStream(ctx context.Context, req *ChatRequ
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return p.handleHTTPError(resp.StatusCode, body)
+		return p.handleHTTPError(resp.StatusCode, body, resp.Header)
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -372,9 +373,17 @@ func (p *OpenAIProvider) buildOpenAIRequest(req *ChatRequest, tools []Tool) map[
 
 	// Add conversation messages
 	for _, msg := range req.Messages {
+		content := msg.Content
+		if msg.Role == "assistant" && strings.TrimSpace(content) == "" {
+			if len(msg.ToolCalls) == 0 {
+				p.logger.Warn("skipping empty assistant message in OpenAI request")
+				continue
+			}
+			content = "Calling tools..."
+		}
 		m := map[string]interface{}{
 			"role":    msg.Role,
-			"content": msg.Content,
+			"content": content,
 		}
 		if msg.Role == "tool" && msg.ToolCallID != "" {
 			m["tool_call_id"] = msg.ToolCallID
@@ -496,8 +505,8 @@ func (p *OpenAIProvider) convertResponse(resp *openAIResponse, duration time.Dur
 	return chatResp
 }
 
-// handleHTTPError converts HTTP error responses to ProviderError
-func (p *OpenAIProvider) handleHTTPError(statusCode int, body []byte) error {
+// handleHTTPError converts HTTP error responses to ProviderError.
+func (p *OpenAIProvider) handleHTTPError(statusCode int, body []byte, headers ...http.Header) error {
 	// Try OpenAI-style error first
 	var openAIErr struct {
 		Error struct {
@@ -536,6 +545,7 @@ func (p *OpenAIProvider) handleHTTPError(statusCode int, body []byte) error {
 	case http.StatusTooManyRequests:
 		provErr.Code = ErrorCodeRateLimit
 		provErr.Retryable = true
+		provErr.RetryAfter = retryAfterDuration(message, headers...)
 	case http.StatusUnauthorized, http.StatusForbidden:
 		provErr.Code = ErrorCodeAuthentication
 	case http.StatusBadRequest:
@@ -547,12 +557,58 @@ func (p *OpenAIProvider) handleHTTPError(statusCode int, body []byte) error {
 		provErr.Code = ErrorCodeUnavailable
 	}
 
-	p.logger.Error("OpenAI API error",
+	fields := []zap.Field{
+		zap.String("provider", p.Name()),
 		zap.Int("status_code", statusCode),
 		zap.String("error_message", message),
-	)
+	}
+	if provErr.RetryAfter > 0 {
+		fields = append(fields, zap.Duration("retry_after", provErr.RetryAfter))
+	}
+	if provErr.Retryable {
+		p.logger.Warn("AI provider API error", fields...)
+	} else {
+		p.logger.Error("AI provider API error", fields...)
+	}
 
 	return provErr
+}
+
+func retryAfterDuration(message string, headers ...http.Header) time.Duration {
+	for _, header := range headers {
+		if header == nil {
+			continue
+		}
+		value := strings.TrimSpace(header.Get("Retry-After"))
+		if value == "" {
+			continue
+		}
+		if seconds, err := strconv.ParseFloat(value, 64); err == nil && seconds >= 0 {
+			return time.Duration(seconds * float64(time.Second))
+		}
+		if retryAt, err := http.ParseTime(value); err == nil {
+			if delay := time.Until(retryAt); delay > 0 {
+				return delay
+			}
+		}
+	}
+
+	const marker = "try again after "
+	lowerMessage := strings.ToLower(message)
+	idx := strings.Index(lowerMessage, marker)
+	if idx == -1 {
+		return 0
+	}
+	remainder := message[idx+len(marker):]
+	fields := strings.Fields(remainder)
+	if len(fields) == 0 {
+		return 0
+	}
+	seconds, err := strconv.ParseFloat(strings.Trim(fields[0], ","), 64)
+	if err != nil || seconds < 0 {
+		return 0
+	}
+	return time.Duration(seconds * float64(time.Second))
 }
 
 // OpenAI API response structures
@@ -591,8 +647,8 @@ type openAIStreamChunk struct {
 	Created int64  `json:"created"`
 	Model   string `json:"model"`
 	Choices []struct {
-		Index        int `json:"index"`
-		Delta        struct {
+		Index int `json:"index"`
+		Delta struct {
 			Role      string `json:"role"`
 			Content   string `json:"content"`
 			ToolCalls []struct {

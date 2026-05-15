@@ -39,6 +39,8 @@ func buildCardsFromToolResults(results []ToolResult) []entities.InsightCard {
 			cards = append(cards, buildAccountSummaryCard(tr.Result))
 		case ToolGetFinancialHealth:
 			cards = append(cards, buildFinancialHealthCard(tr.Result))
+		case ToolGetFinancialAudit:
+			cards = append(cards, buildFinancialAuditCard(tr.Result))
 		case ToolGetCashFlowForecast:
 			cards = append(cards, buildCashFlowForecastCard(tr.Result))
 		case ToolGetFinancialPlan:
@@ -438,6 +440,74 @@ func buildFinancialHealthCard(data map[string]interface{}) entities.InsightCard 
 	}
 }
 
+func buildFinancialAuditCard(data map[string]interface{}) entities.InsightCard {
+	score, _ := data["score"].(map[string]interface{})
+	snapshot, _ := data["snapshot"].(map[string]interface{})
+	damage, _ := data["the_damage"].(map[string]interface{})
+
+	totalScore := num(score, "total")
+	status := fmt.Sprintf("%v", score["status"])
+	sentiment := "negative"
+	if totalScore >= 80 {
+		sentiment = "positive"
+	} else if totalScore >= 60 {
+		sentiment = "neutral"
+	}
+
+	metrics := []entities.StatItem{
+		{Label: "Audit Score", Value: fmt.Sprintf("%d/100", totalScore), Sentiment: sentiment},
+		{Label: "Money In", Value: "$" + str(snapshot, "money_in"), Sentiment: "positive"},
+		{Label: "Money Out", Value: "$" + str(snapshot, "total_money_out"), Sentiment: "negative"},
+		{Label: "Net Flow", Value: "$" + str(snapshot, "net_flow"), Sentiment: sentimentFromSignedValue(str(snapshot, "net_flow"))},
+	}
+
+	breakdown := make([]entities.BreakdownItem, 0)
+	if moneyIn := decimalFromString(str(snapshot, "money_in")); moneyIn.IsPositive() {
+		breakdown = append(breakdown, entities.BreakdownItem{Label: "Money In", Amount: moneyIn, Percent: decimal.NewFromInt(100), Color: "#1A7A6D"})
+	}
+	for _, item := range []struct {
+		label string
+		key   string
+		color string
+	}{
+		{label: "Digital Out", key: "digital_money_out", color: "#FF3E00"},
+		{label: "Cash Receipts", key: "receipt_cash_out", color: "#FFB199"},
+	} {
+		amount := decimalFromString(str(snapshot, item.key))
+		totalOut := decimalFromString(str(snapshot, "total_money_out"))
+		if amount.IsPositive() {
+			breakdown = append(breakdown, entities.BreakdownItem{
+				Label:   item.label,
+				Amount:  amount,
+				Percent: percentDecimal(amount, totalOut),
+				Color:   item.color,
+			})
+		}
+	}
+
+	return entities.InsightCard{
+		Type:      "financial_audit",
+		Title:     "Miriam Audit",
+		Subtitle:  strings.ReplaceAll(status, "_", " "),
+		Sentiment: sentiment,
+		Data: map[string]interface{}{
+			"score":          score,
+			"period":         data["period"],
+			"data_coverage":  data["data_coverage"],
+			"monthly_trend":  data["monthly_trend"],
+			"metrics":        metrics,
+			"breakdown":      breakdown,
+			"snapshot":       snapshot,
+			"damage":         damage,
+			"patterns":       data["the_pattern"],
+			"contradictions": data["contradictions"],
+			"top_categories": data["top_spending_categories"],
+			"risk_flags":     data["risk_flags"],
+			"next_actions":   data["do_this_today"],
+		},
+	}
+}
+
 func buildCashFlowForecastCard(data map[string]interface{}) entities.InsightCard {
 	projectedNet := str(data, "projected_net_flow")
 	sentiment := "positive"
@@ -535,4 +605,26 @@ func sentimentFromStatus(status string) string {
 	default:
 		return "neutral"
 	}
+}
+
+func sentimentFromSignedValue(value string) string {
+	if strings.HasPrefix(strings.TrimSpace(value), "-") {
+		return "negative"
+	}
+	return "positive"
+}
+
+func decimalFromString(value string) decimal.Decimal {
+	d, err := decimal.NewFromString(strings.TrimSpace(value))
+	if err != nil {
+		return decimal.Zero
+	}
+	return d
+}
+
+func percentDecimal(part, total decimal.Decimal) decimal.Decimal {
+	if total.IsZero() {
+		return decimal.Zero
+	}
+	return part.Div(total).Mul(decimal.NewFromInt(100))
 }

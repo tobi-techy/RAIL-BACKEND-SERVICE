@@ -13,10 +13,10 @@ import (
 
 // ProviderManager manages multiple AI providers with automatic failover
 type ProviderManager struct {
-	primary      AIProvider
-	fallbacks    []AIProvider
-	logger       *zap.Logger
-	tracer       trace.Tracer
+	primary       AIProvider
+	fallbacks     []AIProvider
+	logger        *zap.Logger
+	tracer        trace.Tracer
 	retryAttempts int
 	retryDelay    time.Duration
 }
@@ -145,6 +145,9 @@ func (m *ProviderManager) tryProviderWithRetry(ctx context.Context, provider AIP
 		if attempt > 0 {
 			// Exponential backoff
 			delay := m.retryDelay * time.Duration(1<<uint(attempt-1))
+			if provErr, ok := lastErr.(*ProviderError); ok && provErr.RetryAfter > delay {
+				delay = provErr.RetryAfter
+			}
 			m.logger.Debug("Retrying after delay",
 				zap.String("provider", provider.Name()),
 				zap.Int("attempt", attempt+1),

@@ -36,7 +36,7 @@ func Float64(v float64) *float64 { return &v }
 
 // Message represents a single message in a conversation
 type Message struct {
-	Role       string     `json:"role"`    // "user", "assistant", "system", "tool"
+	Role             string     `json:"role"` // "user", "assistant", "system", "tool"
 	Content          string     `json:"content"`
 	Name             string     `json:"name,omitempty"`              // Function name for role="tool" (improves provider compatibility)
 	ToolCallID       string     `json:"tool_call_id,omitempty"`      // Required for role="tool"
@@ -79,16 +79,17 @@ type ProviderConfig struct {
 	Temperature  float64
 	TopP         float64
 	Timeout      time.Duration
-	RateLimitRPM int // Requests per minute
+	RateLimitRPM int    // Requests per minute
 	ProviderName string // Override provider name (e.g. "kimi" instead of "openai")
 }
 
 // ProviderError represents an error from an AI provider
 type ProviderError struct {
-	Provider string
-	Code     string
-	Message  string
-	Retryable bool
+	Provider   string
+	Code       string
+	Message    string
+	Retryable  bool
+	RetryAfter time.Duration
 }
 
 func (e *ProviderError) Error() string {
@@ -97,12 +98,12 @@ func (e *ProviderError) Error() string {
 
 // Common error codes
 const (
-	ErrorCodeRateLimit       = "rate_limit"
-	ErrorCodeInvalidRequest  = "invalid_request"
-	ErrorCodeAuthentication  = "authentication"
-	ErrorCodeServerError     = "server_error"
-	ErrorCodeTimeout         = "timeout"
-	ErrorCodeUnavailable     = "unavailable"
+	ErrorCodeRateLimit      = "rate_limit"
+	ErrorCodeInvalidRequest = "invalid_request"
+	ErrorCodeAuthentication = "authentication"
+	ErrorCodeServerError    = "server_error"
+	ErrorCodeTimeout        = "timeout"
+	ErrorCodeUnavailable    = "unavailable"
 )
 
 // StreamChunk represents a single chunk in a streaming response.

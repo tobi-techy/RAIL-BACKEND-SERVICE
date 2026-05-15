@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/shopspring/decimal"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -137,8 +137,8 @@ func (nm *NotificationManager) notifySpendingWarning(
 		ID: uuid.New(), UserID: userID,
 		Type: entities.NotificationTypePortfolio, Channel: entities.ChannelPush,
 		Priority: entities.PriorityMedium,
-		Title:    "Spending Limit Warning",
-		Body:    fmt.Sprintf("You're nearing your spending limit (%s%% used). $%s remaining in your spending balance.", pct, remainingBalance.StringFixed(2)),
+		Title:    "Miriam sees the limit",
+		Body:     fmt.Sprintf("%s%% used. $%s left in Spend before Stash protection kicks harder.", pct, remainingBalance.StringFixed(2)),
 		Data: map[string]interface{}{
 			"type": "spending_warning", "threshold": "warning", "percentage": percentage.String(),
 			"remaining_balance": remainingBalance.String(), "total_spending": totalSpending.String(), "threshold_type": "80_percent",
@@ -169,8 +169,8 @@ func (nm *NotificationManager) notifySpendingCritical(
 		ID: uuid.New(), UserID: userID,
 		Type: entities.NotificationTypePortfolio, Channel: entities.ChannelPush,
 		Priority: entities.PriorityHigh,
-		Title:    "Spending Limit Critical",
-		Body:    fmt.Sprintf("You're very close to your spending limit (%s%% used). Only $%s remaining.", pct, remainingBalance.StringFixed(2)),
+		Title:    "Spend is almost capped",
+		Body:     fmt.Sprintf("%s%% used. $%s left before Miriam guards the Stash line.", pct, remainingBalance.StringFixed(2)),
 		Data: map[string]interface{}{
 			"type": "spending_critical", "threshold": "critical", "percentage": percentage.String(),
 			"remaining_balance": remainingBalance.String(), "total_spending": totalSpending.String(), "threshold_type": "95_percent",
@@ -200,8 +200,8 @@ func (nm *NotificationManager) notifySpendingDepleted(
 		ID: uuid.New(), UserID: userID,
 		Type: entities.NotificationTypePortfolio, Channel: entities.ChannelPush,
 		Priority: entities.PriorityCritical,
-		Title:    "Spending Limit Reached",
-		Body:    "You've reached your 70% spending limit. Your 30% savings remain protected.",
+		Title:    "Miriam protected Stash",
+		Body:     "The 70% Spend line is reached. The 30% Stash lane stays protected.",
 		Data: map[string]interface{}{
 			"type": "spending_depleted", "threshold": "depleted", "percentage": "100",
 			"remaining_balance": remainingBalance.String(), "total_spending": totalSpending.String(), "threshold_type": "100_percent",
@@ -233,8 +233,8 @@ func (nm *NotificationManager) NotifyTransactionDeclined(
 		ID: uuid.New(), UserID: userID,
 		Type: entities.NotificationTypePortfolio, Channel: entities.ChannelPush,
 		Priority: entities.PriorityCritical,
-		Title:    "Transaction Declined",
-		Body:    fmt.Sprintf("Your %s of $%s was declined. You've reached your spending limit. Your stash is safe.", transactionType, amount.StringFixed(2)),
+		Title:    "Miriam blocked a spend",
+		Body:     fmt.Sprintf("That %s for $%s hit the Spend limit. Stash stays safe.", transactionType, amount.StringFixed(2)),
 		Data: map[string]interface{}{
 			"declined_amount": amount.String(), "transaction_type": transactionType, "reason": "spending_limit_reached",
 		},
@@ -260,8 +260,8 @@ func (nm *NotificationManager) NotifyModeEnabled(
 		ID: uuid.New(), UserID: userID,
 		Type: entities.NotificationTypePortfolio, Channel: entities.ChannelPush,
 		Priority: entities.PriorityMedium,
-		Title:    "Smart Allocation Enabled",
-		Body: fmt.Sprintf("Your funds will now be split: %s%% for spending, %s%% saved automatically.",
+		Title:    "Split engine is on",
+		Body: fmt.Sprintf("%s%% Spend, %s%% Stash. Miriam will route new money automatically.",
 			spendingRatio.Mul(decimal.NewFromInt(100)).StringFixed(0),
 			stashRatio.Mul(decimal.NewFromInt(100)).StringFixed(0)),
 		Data: map[string]interface{}{
@@ -285,10 +285,10 @@ func (nm *NotificationManager) NotifyModePaused(ctx context.Context, userID uuid
 	notification := &entities.Notification{
 		ID: uuid.New(), UserID: userID,
 		Type: entities.NotificationTypePortfolio, Channel: entities.ChannelPush,
-		Priority: entities.PriorityLow,
-		Title:    "Smart Allocation Paused",
-		Body:    "Your allocation mode has been paused. New deposits won't be split automatically.",
-		Data:     map[string]interface{}{"mode_status": "paused"},
+		Priority:  entities.PriorityLow,
+		Title:     "Split engine paused",
+		Body:      "New deposits will not split automatically until Miriam gets the green light again.",
+		Data:      map[string]interface{}{"mode_status": "paused"},
 		CreatedAt: time.Now(),
 	}
 

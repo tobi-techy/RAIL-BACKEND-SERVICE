@@ -168,6 +168,15 @@ func (s *Service) BuildContext(ctx context.Context, conv *entities.AIConversatio
 				}
 			}
 		}
+		if msg.Role == "assistant" && strings.TrimSpace(msg.Content) == "" {
+			if len(msg.ToolCalls) == 0 {
+				s.logger.Warn("skipping empty assistant message in conversation context",
+					zap.String("conversation_id", conv.ID.String()),
+				)
+				continue
+			}
+			msg.Content = "Calling tools..."
+		}
 		msgs = append(msgs, msg)
 	}
 	return msgs, nil

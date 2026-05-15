@@ -165,7 +165,11 @@ func (h *Handler) CreateSumsubSession(c *gin.Context) {
 		case kyc.ErrSumsubNotConfigured:
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "KYC provider not configured"})
 		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create verification session"})
+			if strings.Contains(err.Error(), "failed to submit KYC data to Bridge") {
+				c.JSON(http.StatusBadGateway, gin.H{"error": "Unable to submit verification data. Please try again shortly."})
+			} else {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create verification session"})
+			}
 		}
 		return
 	}
@@ -305,6 +309,10 @@ func (h *Handler) CreateDiditSession(c *gin.Context) {
 					"error":          "Profile incomplete - complete all fields before starting KYC",
 					"missing_fields": profileErr.MissingFields,
 				})
+			} else if strings.Contains(err.Error(), "failed to submit KYC data to Bridge") {
+				c.JSON(http.StatusBadGateway, gin.H{"error": "Unable to submit verification data. Please try again shortly."})
+			} else if strings.Contains(err.Error(), "failed to create didit session") {
+				c.JSON(http.StatusBadGateway, gin.H{"error": "Verification service temporarily unavailable. Please try again."})
 			} else {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create verification session"})
 			}

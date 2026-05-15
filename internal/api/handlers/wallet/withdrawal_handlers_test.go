@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	domainerrors "github.com/rail-service/rail_service/internal/domain/errors"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
@@ -140,6 +141,46 @@ func TestFundStashRejectsOversizedIdempotencyKey(t *testing.T) {
 
 	require.Equal(t, http.StatusBadRequest, res.Code)
 	require.False(t, svc.fundStashCalled)
+}
+
+func TestHandleWithdrawalErrorMapsComplianceReviewToConflict(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	handler := NewWithdrawalHandlers(&stubWithdrawalService{}, nil, testLogger())
+	res := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(res)
+
+	err := domainerrors.NewDomainError(
+		domainerrors.ErrConflict,
+		"COMPLIANCE_REVIEW",
+		"Withdrawal is pending compliance review.",
+	).WithDetails(map[string]interface{}{
+		"status": "IN_REVIEW",
+	})
+
+	handler.handleWithdrawalError(c, err, uuid.New(), "1.00")
+
+	require.Equal(t, http.StatusConflict, res.Code)
+	require.JSONEq(t, `{"code":"COMPLIANCE_REVIEW","message":"Withdrawal is pending compliance review.","details":{"status":"IN_REVIEW"}}`, res.Body.String())
+}
+
+func TestHandleWithdrawalErrorMapsComplianceUnavailableToServiceUnavailable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	handler := NewWithdrawalHandlers(&stubWithdrawalService{}, nil, testLogger())
+	res := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(res)
+
+	err := domainerrors.NewDomainError(
+		domainerrors.ErrServiceUnavailable,
+		"COMPLIANCE_UNAVAILABLE",
+		"Compliance screening is temporarily unavailable. Please try again.",
+	).WithRetryable(true)
+
+	handler.handleWithdrawalError(c, err, uuid.New(), "1.00")
+
+	require.Equal(t, http.StatusServiceUnavailable, res.Code)
+	require.JSONEq(t, `{"code":"COMPLIANCE_UNAVAILABLE","message":"Compliance screening is temporarily unavailable. Please try again."}`, res.Body.String())
 }
 
 func testLogger() *logger.Logger {

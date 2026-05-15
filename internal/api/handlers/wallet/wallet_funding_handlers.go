@@ -894,7 +894,7 @@ func (h *WalletFundingHandlers) getOrCreateCircleWallet(ctx context.Context, use
 	}
 
 	w, err := h.walletService.GetWalletByUserAndChain(ctx, userID, chain)
-	if err == nil && w != nil && w.Address != "" {
+	if err == nil && w != nil && w.CircleWalletID != "" && w.Address != "" {
 		return &circleWalletResult{Address: w.Address, Chain: chain}, nil
 	}
 

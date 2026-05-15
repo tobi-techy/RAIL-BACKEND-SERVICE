@@ -11,6 +11,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/rail-service/rail_service/pkg/metrics"
 	"go.uber.org/zap"
 )
@@ -173,6 +174,13 @@ func (s *Service) ProcessTransaction(ctx context.Context, req *ProcessTransactio
 		metrics.Business.RoundUpTotal.Inc()
 		metrics.Business.RoundUpAmount.Observe(multiplied.InexactFloat64())
 	}
+
+	analytics.TrackEvent(ctx, req.UserID.String(), analytics.EventRoundUpTriggered, map[string]any{
+		"amount":        multiplied.InexactFloat64(),
+		"spare_change":  spareChange.InexactFloat64(),
+		"merchant_name": req.MerchantName,
+		"source_type":   req.SourceType,
+	})
 
 	// Update accumulator
 	acc, err := s.repo.GetAccumulator(ctx, req.UserID)

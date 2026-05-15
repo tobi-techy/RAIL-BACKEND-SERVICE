@@ -7,6 +7,7 @@ import (
 
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/domain/services/yield"
+	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -106,5 +107,12 @@ func (w *Worker) Run(ctx context.Context, periodStart, periodEnd time.Time) erro
 		zap.String("period_end", periodEnd.Format(time.DateOnly)),
 		zap.String("total_reward", totalReward.String()),
 	)
+
+	analytics.TrackEvent(ctx, "system", analytics.EventYieldDistributed, map[string]any{
+		"total_reward": totalReward.InexactFloat64(),
+		"period_start": periodStart.Format(time.DateOnly),
+		"period_end":   periodEnd.Format(time.DateOnly),
+	})
+
 	return nil
 }

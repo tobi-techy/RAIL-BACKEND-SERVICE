@@ -396,7 +396,14 @@ func (s *Service) BasicCompleteOnboarding(ctx context.Context, req *entities.Bas
 	}
 
 	if user.OnboardingStatus != entities.OnboardingStatusStarted {
-		return nil, fmt.Errorf("basic-complete is only allowed from 'started' status, current: %s", user.OnboardingStatus)
+		s.logger.Info("Basic onboarding already complete; returning idempotent success",
+			zap.String("user_id", req.UserID.String()),
+			zap.String("status", string(user.OnboardingStatus)))
+		return basicCompleteResponse(req.UserID, user.OnboardingStatus), nil
+	}
+
+	if err := crypto.ValidatePasswordStrength(req.Password); err != nil {
+		return nil, fmt.Errorf("invalid password: %w", err)
 	}
 
 	// Hash and set password
@@ -467,11 +474,36 @@ func (s *Service) BasicCompleteOnboarding(ctx context.Context, req *entities.Bas
 		s.logger.Warn("Failed to log audit event", zap.Error(err))
 	}
 
+	return basicCompleteResponse(req.UserID, entities.OnboardingStatusBasicComplete), nil
+}
+
+func isBasicOnboardingAlreadyComplete(user *entities.UserProfile) bool {
+	if user.FirstName == nil || strings.TrimSpace(*user.FirstName) == "" {
+		return false
+	}
+	if user.LastName == nil || strings.TrimSpace(*user.LastName) == "" {
+		return false
+	}
+
+	switch user.OnboardingStatus {
+	case entities.OnboardingStatusBasicComplete,
+		entities.OnboardingStatusKYCPending,
+		entities.OnboardingStatusKYCApproved,
+		entities.OnboardingStatusKYCRejected,
+		entities.OnboardingStatusWalletsPending,
+		entities.OnboardingStatusCompleted:
+		return true
+	default:
+		return false
+	}
+}
+
+func basicCompleteResponse(userID uuid.UUID, status entities.OnboardingStatus) *entities.BasicCompleteResponse {
 	return &entities.BasicCompleteResponse{
-		UserID:           req.UserID,
-		OnboardingStatus: string(entities.OnboardingStatusBasicComplete),
+		UserID:           userID,
+		OnboardingStatus: string(status),
 		Message:          "Basic signup completed. Complete your profile to unlock all features.",
-	}, nil
+	}
 }
 
 // CompleteOnboarding handles the completion of onboarding with personal info, password, and Bridge customer creation
@@ -635,7 +667,7 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 func (s *Service) CompletePasscodeCreation(ctx context.Context, userID uuid.UUID) error {
 	s.logger.Info("Processing passcode creation completion", zap.String("userId", userID.String()))
 
-	_, err := s.userRepo.GetByID(ctx, userID)
+	user, err := s.userRepo.GetByID(ctx, userID)
 	if err != nil {
 		return fmt.Errorf("failed to get user: %w", err)
 	}
@@ -645,6 +677,14 @@ func (s *Service) CompletePasscodeCreation(ctx context.Context, userID uuid.UUID
 		"completed_at": time.Now(),
 	}); err != nil {
 		s.logger.Warn("Failed to mark passcode creation step as completed", zap.Error(err))
+	}
+
+	// If wallets already completed (race with BasicCompleteOnboarding goroutine),
+	// skip redundant provisioning and just ensure status is completed.
+	if user.OnboardingStatus == entities.OnboardingStatusCompleted {
+		s.logger.Info("User already completed onboarding, skipping wallet provisioning",
+			zap.String("userId", userID.String()))
+		return nil
 	}
 
 	// Transition to wallet provisioning
@@ -1036,11 +1076,12 @@ func (s *Service) ProcessWalletCreationComplete(ctx context.Context, userID uuid
 		return fmt.Errorf("failed to get user: %w", err)
 	}
 
-	// Allow wallets_pending OR kyc_approved — KYC may have been approved while wallets
-	// were still provisioning, which sets onboarding_status to kyc_approved.
+	// Allow wallets_pending, kyc_approved, OR basic_complete — wallets may finish
+	// before the passcode step transitions the user to wallets_pending (race condition).
 	if user.OnboardingStatus != entities.OnboardingStatusWalletsPending &&
-		user.OnboardingStatus != entities.OnboardingStatusKYCApproved {
-		s.logger.Warn("User is not in wallets_pending or kyc_approved status, skipping",
+		user.OnboardingStatus != entities.OnboardingStatusKYCApproved &&
+		user.OnboardingStatus != entities.OnboardingStatusBasicComplete {
+		s.logger.Warn("User is not in wallets_pending, kyc_approved, or basic_complete status, skipping",
 			zap.String("userId", userID.String()),
 			zap.String("status", string(user.OnboardingStatus)))
 		return nil

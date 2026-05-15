@@ -77,11 +77,12 @@ type ChainRailsAdapter interface {
 // WithdrawalLimitsChecker validates withdrawal amounts against daily/monthly limits.
 type WithdrawalLimitsChecker interface {
 	ValidateWithdrawal(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error
+	ValidateWithdrawalWithCurrency(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currency string) error
 }
 
 // DepositLimitsChecker validates deposit amounts against daily/monthly limits.
 type DepositLimitsChecker interface {
-	ValidateDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (*entities.LimitCheckResult, error)
+	ValidateDepositWithCurrency(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currency string) (*entities.LimitCheckResult, error)
 }
 
 // Service handles Paj Cash NGN on/off ramp operations.
@@ -142,7 +143,7 @@ var evmToChainRails = map[string]struct{ chain, token string }{
 
 // executeCircleViaCRToPaj bridges EVM USDC to PAJ's Solana address via ChainRails.
 // ChainRails handles the cross-chain delivery in one step.
-func (s *Service) executeCircleViaCRToPaj(ctx context.Context, userID uuid.UUID, walletID, tokenID, blockchain, onChainAddress string, order *paj.OfframpOrder, totalHold decimal.Decimal, totalTransfer float64) {
+func (s *Service) executeCircleViaCRToPaj(ctx context.Context, userID uuid.UUID, walletID, tokenID, blockchain, onChainAddress string, order *paj.OfframpOrder, totalHold, transferAmount, railFee decimal.Decimal) {
 	source, ok := evmToChainRails[blockchain]
 	if !ok {
 		s.logger.Error("unsupported EVM chain for ChainRails Paj bridge", zap.String("blockchain", blockchain))
@@ -156,7 +157,7 @@ func (s *Service) executeCircleViaCRToPaj(ctx context.Context, userID uuid.UUID,
 		solDest = "SOLANA_TESTNET"
 	}
 
-	amountMicro := decimal.NewFromFloat(totalTransfer).Shift(6).IntPart()
+	amountMicro := transferAmount.Shift(6).IntPart()
 
 	// Step 1: Create ChainRails intent — source=EVM chain, dest=Solana, recipient=PAJ address
 	intent, err := s.chainRailsAdapter.CreateIntent(ctx, &chainrailspkg.CreateIntentRequest{
@@ -182,14 +183,25 @@ func (s *Service) executeCircleViaCRToPaj(ctx context.Context, userID uuid.UUID,
 	}
 
 	// Step 2: Fund the intent via Circle (same-chain EVM transfer to intent address)
-	circleAmount := fmt.Sprintf("%.2f", totalTransfer)
+	circleAmountDecimal := transferAmount
+	circleAmount := transferAmount.StringFixed(2)
 	if intent.TotalAmountInAssetToken != "" && intent.AssetTokenDecimals > 0 {
 		totalMicro, parseOk := new(big.Int).SetString(intent.TotalAmountInAssetToken, 10)
 		if parseOk {
-			divisor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(intent.AssetTokenDecimals)), nil)
-			humanAmount := new(big.Float).Quo(new(big.Float).SetInt(totalMicro), new(big.Float).SetInt(divisor))
-			circleAmount = humanAmount.Text('f', intent.AssetTokenDecimals)
+			circleAmountDecimal = decimal.NewFromBigInt(totalMicro, -int32(intent.AssetTokenDecimals))
+			circleAmount = circleAmountDecimal.StringFixed(int32(intent.AssetTokenDecimals))
 		}
+	}
+
+	actualDebit := circleAmountDecimal.Add(railFee)
+	if actualDebit.GreaterThan(totalHold) {
+		s.logger.Error("ChainRails Paj bridge amount exceeds ledger hold — reversing hold",
+			zap.String("paj_order_id", order.ID),
+			zap.String("hold_amount", totalHold.String()),
+			zap.String("transfer_amount", circleAmountDecimal.String()),
+			zap.String("rail_fee", railFee.String()))
+		s.reverseHold(ctx, userID, order.ID, totalHold, "transfer_exceeds_hold")
+		return
 	}
 
 	tx, txErr := s.circleTransfer.TransferUSDC(ctx, walletID, tokenID, intent.IntentAddress, circleAmount)
@@ -214,9 +226,8 @@ func (s *Service) executeCircleViaCRToPaj(ctx context.Context, userID uuid.UUID,
 	s.db.ExecContext(ctx, `UPDATE paj_orders SET bridge_transfer_id = $1 WHERE paj_order_id = $2`,
 		fmt.Sprintf("circle-cr:%s:%d", tx.ID, intent.ID), order.ID)
 
-	// Refund slippage buffer (totalHold includes 1% buffer + fee, totalTransfer is actual)
-	actualAmount := decimal.NewFromFloat(totalTransfer)
-	excess := totalHold.Sub(actualAmount)
+	// Refund only the slippage buffer. Rail fee remains charged.
+	excess := totalHold.Sub(actualDebit)
 	if excess.IsPositive() && s.ledger != nil {
 		s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
 			"paj_offramp_slippage_refund_"+order.ID, excess, map[string]interface{}{
@@ -300,10 +311,26 @@ func (s *Service) getSessionToken(ctx context.Context, userID uuid.UUID) (string
 	return crypto.Decrypt(encrypted, s.encryptionKey)
 }
 
+func (s *Service) invalidateSessionIfUnauthorized(ctx context.Context, userID uuid.UUID, err error) error {
+	if !paj.IsUnauthorized(err) {
+		return err
+	}
+	if s.db != nil {
+		if _, dbErr := s.db.ExecContext(ctx, `DELETE FROM paj_sessions WHERE user_id = $1`, userID); dbErr != nil {
+			s.logger.Warn("failed to invalidate rejected paj session",
+				zap.String("user_id", userID.String()), zap.Error(dbErr))
+		}
+	}
+	return fmt.Errorf("paj session expired: %w", err)
+}
+
 // --- Rates ---
 
 const pajRatesCacheKey = "paj:rates"
 const pajRatesCacheTTL = 5 * time.Minute
+const pajBanksCacheKey = "paj:banks"
+const pajBanksCacheTTL = 24 * time.Hour
+const pajBanksRequestTimeout = 10 * time.Second
 
 func (s *Service) GetRates(ctx context.Context) (*paj.RateResponse, error) {
 	// Try cache first.
@@ -343,7 +370,36 @@ func (s *Service) GetBanks(ctx context.Context, userID uuid.UUID) ([]paj.Bank, e
 	if err != nil {
 		return nil, err
 	}
-	return s.pajClient.GetBanks(ctx, token)
+
+	if s.redis != nil {
+		var cached []paj.Bank
+		if err := s.redis.Get(ctx, pajBanksCacheKey, &cached); err == nil && len(cached) > 0 {
+			return cached, nil
+		}
+	}
+
+	bankCtx, cancel := context.WithTimeout(ctx, pajBanksRequestTimeout)
+	defer cancel()
+	banks, err := s.pajClient.GetBanks(bankCtx, token)
+	if err != nil {
+		if paj.IsUnauthorized(err) {
+			return nil, s.invalidateSessionIfUnauthorized(ctx, userID, err)
+		}
+		if s.redis != nil {
+			var stale []paj.Bank
+			if cacheErr := s.redis.Get(ctx, pajBanksCacheKey, &stale); cacheErr == nil && len(stale) > 0 {
+				s.logger.Warn("paj banks upstream failed, serving cached banks", zap.Error(err))
+				return stale, nil
+			}
+		}
+		return nil, err
+	}
+	if s.redis != nil && len(banks) > 0 {
+		if cacheErr := s.redis.Set(ctx, pajBanksCacheKey, banks, pajBanksCacheTTL); cacheErr != nil {
+			s.logger.Warn("failed to cache paj banks", zap.Error(cacheErr))
+		}
+	}
+	return banks, nil
 }
 
 func (s *Service) ResolveBankAccount(ctx context.Context, userID uuid.UUID, bankID, accountNumber string) (*paj.ResolvedAccount, error) {
@@ -351,7 +407,11 @@ func (s *Service) ResolveBankAccount(ctx context.Context, userID uuid.UUID, bank
 	if err != nil {
 		return nil, err
 	}
-	return s.pajClient.ResolveBankAccount(ctx, token, bankID, accountNumber)
+	account, err := s.pajClient.ResolveBankAccount(ctx, token, bankID, accountNumber)
+	if err != nil {
+		return nil, s.invalidateSessionIfUnauthorized(ctx, userID, err)
+	}
+	return account, nil
 }
 
 func (s *Service) AddBankAccount(ctx context.Context, userID uuid.UUID, bankID, accountNumber string) (*paj.SavedBankAccount, error) {
@@ -361,6 +421,9 @@ func (s *Service) AddBankAccount(ctx context.Context, userID uuid.UUID, bankID, 
 	}
 	account, err := s.pajClient.AddBankAccount(ctx, token, bankID, accountNumber)
 	if err != nil {
+		if paj.IsUnauthorized(err) {
+			return nil, s.invalidateSessionIfUnauthorized(ctx, userID, err)
+		}
 		// Ignore "already exists" — the bank account is already saved on Paj's side.
 		if strings.Contains(err.Error(), "already exists") {
 			return &paj.SavedBankAccount{AccountNumber: accountNumber, Bank: bankID}, nil
@@ -375,8 +438,14 @@ func (s *Service) GetBankAccounts(ctx context.Context, userID uuid.UUID) ([]paj.
 	if err != nil {
 		return nil, err
 	}
-	return s.pajClient.GetBankAccounts(ctx, token)
+	accounts, err := s.pajClient.GetBankAccounts(ctx, token)
+	if err != nil {
+		return nil, s.invalidateSessionIfUnauthorized(ctx, userID, err)
+	}
+	return accounts, nil
 }
+
+const MinNGNTransactionAmount = 500
 
 // --- Onramp (NGN → USDC) ---
 
@@ -386,23 +455,49 @@ func (s *Service) CreateOnrampOrder(ctx context.Context, userID uuid.UUID, fiatA
 		return nil, err
 	}
 
-	// Enforce NGN minimum deposit
-	if fiatAmount < 100 {
-		return nil, fmt.Errorf("minimum deposit is ₦100")
+	if fiatAmount < MinNGNTransactionAmount {
+		return nil, fmt.Errorf("minimum deposit is ₦%.0f", float64(MinNGNTransactionAmount))
 	}
 
-	// Enforce deposit limits (estimate USDC from fiat using cached rate)
+	// Duplicate protection: reject if user has a pending onramp order created in the last 30s
+	// with the same amount (prevents button spam).
+	var hasDuplicate bool
+	s.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM paj_orders WHERE user_id = $1 AND order_type = 'onramp' AND fiat_amount = $2 AND status NOT IN ('completed', 'failed') AND created_at > NOW() - interval '30 seconds')`,
+		userID, fiatAmount).Scan(&hasDuplicate)
+	if hasDuplicate {
+		return nil, fmt.Errorf("deposit already in progress, please wait")
+	}
+
+	// Enforce deposit limits. Non-KYC users have USD-denominated limits ($100/day),
+	// so convert NGN amounts to USD equivalent using the live PAJ rate before checking.
 	if s.depositLimits != nil {
-		rates, rateErr := s.pajClient.GetRates(ctx)
-		if rateErr == nil && rates != nil && rates.OnRampRate.Rate > 0 {
-			estimatedUSDC := decimal.NewFromFloat(fiatAmount).Div(decimal.NewFromFloat(rates.OnRampRate.Rate))
-			if result, limErr := s.depositLimits.ValidateDeposit(ctx, userID, estimatedUSDC); limErr != nil || (result != nil && !result.Allowed) {
-				msg := "deposit limit exceeded"
-				if result != nil && result.Reason != "" {
-					msg = result.Reason
-				}
-				return nil, fmt.Errorf("%s", msg)
+		limitAmount := decimal.NewFromFloat(fiatAmount)
+		limitCurrency := strings.ToUpper(strings.TrimSpace(currency))
+		if limitCurrency == "" {
+			limitCurrency = "NGN"
+		}
+		if limitCurrency == "NGN" {
+			// Convert NGN to USD equivalent using PAJ onramp rate for accurate limit comparison.
+			rates, rateErr := s.GetRates(ctx)
+			if rateErr != nil || rates.OnRampRate.Rate <= 0 {
+				return nil, fmt.Errorf("unable to verify deposit limits, please try again")
 			}
+			limitAmount = limitAmount.Div(decimal.NewFromFloat(rates.OnRampRate.Rate))
+			limitCurrency = "USD"
+		}
+		if result, limErr := s.depositLimits.ValidateDepositWithCurrency(ctx, userID, limitAmount, limitCurrency); limErr != nil || (result != nil && !result.Allowed) {
+			msg := "deposit limit exceeded"
+			if result != nil && result.Reason != "" {
+				msg = result.Reason
+			}
+			if limErr != nil {
+				if msg != limErr.Error() {
+					return nil, fmt.Errorf("%s: %w", msg, limErr)
+				}
+				return nil, limErr
+			}
+			return nil, fmt.Errorf("%s", msg)
 		}
 	}
 
@@ -427,17 +522,19 @@ func (s *Service) CreateOnrampOrder(ctx context.Context, userID uuid.UUID, fiatA
 
 	order, err := s.pajClient.CreateOnrampOrder(ctx, token, fiatAmount, currency, recipient)
 	if err != nil {
-		return nil, err
+		return nil, s.invalidateSessionIfUnauthorized(ctx, userID, err)
 	}
 
-	// Persist order for webhook reconciliation.
+	// Persist order for webhook reconciliation. This MUST succeed — without it,
+	// the webhook/poll won't find the order and the deposit will never be credited.
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO paj_orders (user_id, paj_order_id, order_type, status, fiat_amount, token_amount, currency, fee, pay_account_number, pay_account_name, pay_bank, used_user_wallet)
 		VALUES ($1, $2, 'onramp', 'pending', $3, $4, $5, $6, $7, $8, $9, $10)`,
 		userID, order.ID, order.FiatAmount, order.Amount, currency, order.Fee,
 		order.AccountNumber, order.AccountName, order.Bank, recipient != "")
 	if err != nil {
-		s.logger.Error("failed to persist paj onramp order", zap.Error(err), zap.String("paj_order_id", order.ID))
+		s.logger.Error("CRITICAL: failed to persist paj onramp order", zap.Error(err), zap.String("paj_order_id", order.ID))
+		return nil, fmt.Errorf("failed to create deposit order, please try again")
 	}
 
 	return order, nil
@@ -451,8 +548,8 @@ const RailNGNWithdrawalFee = 0.02
 
 func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bankID, accountNumber string, fiatAmount float64, currency string) (*OfframpResult, error) {
 	// Quick sanity check before any API calls.
-	if fiatAmount < 500 {
-		return nil, fmt.Errorf("minimum withdrawal is ₦500")
+	if fiatAmount < MinNGNTransactionAmount {
+		return nil, fmt.Errorf("minimum withdrawal is ₦%.0f", float64(MinNGNTransactionAmount))
 	}
 
 	// P0: Distributed lock — prevent concurrent offramp requests per user.
@@ -475,7 +572,7 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 
 	token, err := s.getSessionToken(ctx, userID)
 	if err != nil {
-		return nil, err
+		return nil, s.invalidateSessionIfUnauthorized(ctx, userID, err)
 	}
 
 	// Get the rate first to calculate the USDC amount we need to debit.
@@ -490,12 +587,6 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 		return nil, fmt.Errorf("offramp rate out of bounds: %.2f", rates.OffRampRate.Rate)
 	}
 
-	// Circle requires ≥ $1 USDC per transfer. Enforce the NGN equivalent.
-	minNGN := rates.OffRampRate.Rate * 1.05 // ₦ equivalent of ~$1.05 (with buffer)
-	if fiatAmount < minNGN {
-		return nil, fmt.Errorf("minimum withdrawal is ₦%.0f", minNGN)
-	}
-
 	// Estimate USDC amount: fiatAmount / rate. Add 1% buffer for rate slippage.
 	estimatedUSDC := decimal.NewFromFloat(fiatAmount).Div(decimal.NewFromFloat(rates.OffRampRate.Rate))
 	estimatedUSDC = estimatedUSDC.Mul(decimal.NewFromFloat(1.01)).Round(2)
@@ -507,9 +598,21 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 	// Paj's fee is included in order.Amount (Paj deducts it from the token amount).
 	totalHold := estimatedUSDC.Add(railFee)
 
-	// P2: Withdrawal limits — enforce daily/monthly caps.
+	// P2: Withdrawal limits — enforce daily/monthly caps. Non-KYC users have
+	// USD-denominated limits, so convert NGN to USD equivalent before checking.
 	if s.limitsChecker != nil {
-		if limErr := s.limitsChecker.ValidateWithdrawal(ctx, userID, estimatedUSDC); limErr != nil {
+		limitAmount := decimal.NewFromFloat(fiatAmount)
+		limitCurrency := strings.ToUpper(strings.TrimSpace(currency))
+		if limitCurrency == "" {
+			limitCurrency = "NGN"
+		}
+		if limitCurrency == "NGN" {
+			if rates.OffRampRate.Rate > 0 {
+				limitAmount = limitAmount.Div(decimal.NewFromFloat(rates.OffRampRate.Rate))
+			}
+			limitCurrency = "USD"
+		}
+		if limErr := s.limitsChecker.ValidateWithdrawalWithCurrency(ctx, userID, limitAmount, limitCurrency); limErr != nil {
 			return nil, limErr
 		}
 	}
@@ -588,7 +691,7 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 
 	// Execute transfer asynchronously — user gets immediate response.
 	// Circle is the primary wallet provider.
-	go s.executeCircleTransferToPaj(userID, order, totalHold, estimatedUSDC, railFee)
+	go s.executeCircleTransferToPaj(userID, order, totalHold, railFee)
 
 	return &OfframpResult{
 		Order:   order,
@@ -598,12 +701,17 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 
 // executeCircleTransferToPaj sends USDC from the user's Circle wallet to Paj's deposit address.
 // For Solana wallets: direct transfer. For EVM wallets: bridges via ChainRails.
-func (s *Service) executeCircleTransferToPaj(userID uuid.UUID, order *paj.OfframpOrder, totalHold, estimatedUSDC, railFee decimal.Decimal) {
+func (s *Service) executeCircleTransferToPaj(userID uuid.UUID, order *paj.OfframpOrder, totalHold, railFee decimal.Decimal) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	transferAmount := math.Round(order.Amount*100) / 100
-	totalTransfer := transferAmount + RailNGNWithdrawalFee
+	transferAmount, slippageRefund, calcErr := calculateOfframpTransferAmounts(order.Amount, totalHold, railFee)
+	if calcErr != nil {
+		s.logger.Error("Paj offramp transfer amount invalid — reversing hold",
+			zap.Error(calcErr), zap.String("paj_order_id", order.ID))
+		s.reverseHold(ctx, userID, order.ID, totalHold, "invalid_transfer_amount")
+		return
+	}
 
 	if s.circleTransfer == nil {
 		s.logger.Error("Circle transfer adapter not configured — reversing hold",
@@ -625,7 +733,7 @@ func (s *Service) executeCircleTransferToPaj(userID uuid.UUID, order *paj.Offram
 
 	if isSolana {
 		// Direct transfer — wallet is already on Solana, send straight to PAJ
-		tx, txErr := s.circleTransfer.TransferUSDC(ctx, walletID, tokenID, order.Address, fmt.Sprintf("%.2f", totalTransfer))
+		tx, txErr := s.circleTransfer.TransferUSDC(ctx, walletID, tokenID, order.Address, transferAmount.StringFixed(2))
 		if txErr != nil {
 			s.logger.Error("async: Circle SOL transfer to Paj failed — reversing hold",
 				zap.Error(txErr), zap.String("paj_order_id", order.ID))
@@ -640,12 +748,10 @@ func (s *Service) executeCircleTransferToPaj(userID uuid.UUID, order *paj.Offram
 			zap.String("circle_tx_id", tx.ID), zap.String("paj_order_id", order.ID))
 		s.db.ExecContext(ctx, `UPDATE paj_orders SET bridge_transfer_id = $1 WHERE paj_order_id = $2`,
 			"circle:"+tx.ID, order.ID)
-		// Refund slippage buffer
-		actualAmount := decimal.NewFromFloat(totalTransfer)
-		excess := totalHold.Sub(actualAmount)
-		if excess.IsPositive() && s.ledger != nil {
+		// Refund only the slippage buffer. Rail fee remains charged.
+		if slippageRefund.IsPositive() && s.ledger != nil {
 			s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
-				"paj_offramp_slippage_refund_"+order.ID, excess, map[string]interface{}{
+				"paj_offramp_slippage_refund_"+order.ID, slippageRefund, map[string]interface{}{
 					"provider": "paj", "type": "slippage_refund", "paj_order_id": order.ID,
 					"path": "circle_sol",
 				})
@@ -655,13 +761,28 @@ func (s *Service) executeCircleTransferToPaj(userID uuid.UUID, order *paj.Offram
 
 	// EVM wallet — use ChainRails to bridge to PAJ's Solana address
 	if s.chainRailsAdapter != nil {
-		s.executeCircleViaCRToPaj(ctx, userID, walletID, tokenID, blockchain, onChainAddress, order, totalHold, totalTransfer)
+		s.executeCircleViaCRToPaj(ctx, userID, walletID, tokenID, blockchain, onChainAddress, order, totalHold, transferAmount, railFee)
 		return
 	}
 
 	s.logger.Error("USDC on EVM but no ChainRails — cannot bridge to Solana for Paj",
 		zap.String("blockchain", blockchain), zap.String("user_id", userID.String()))
 	s.reverseHold(ctx, userID, order.ID, totalHold, "no_chainrails_evm")
+}
+
+func calculateOfframpTransferAmounts(orderAmount float64, totalHold, railFee decimal.Decimal) (decimal.Decimal, decimal.Decimal, error) {
+	transferAmount := decimal.NewFromFloat(math.Round(orderAmount*100) / 100)
+	if !transferAmount.IsPositive() {
+		return decimal.Zero, decimal.Zero, fmt.Errorf("transfer amount must be positive")
+	}
+
+	actualDebit := transferAmount.Add(railFee)
+	if actualDebit.GreaterThan(totalHold) {
+		return decimal.Zero, decimal.Zero, fmt.Errorf("transfer amount %s plus fee %s exceeds hold %s",
+			transferAmount.String(), railFee.String(), totalHold.String())
+	}
+
+	return transferAmount, totalHold.Sub(actualDebit), nil
 }
 
 // --- Webhook processing ---
@@ -691,16 +812,19 @@ func (s *Service) HandleWebhook(ctx context.Context, payload *paj.WebhookPayload
 	// Verify by polling Paj directly — don't trust unsigned webhook payload.
 	token, err := s.getSessionToken(ctx, orderUserID)
 	if err != nil {
-		// SECURITY: Never trust unsigned webhook payloads for financial state transitions.
-		// If the session is expired, drop the webhook. The user can check status manually,
-		// or a reconciliation worker can poll PAJ later.
-		s.logger.Warn("cannot verify paj webhook — session expired, dropping",
+		// Session expired — we can't verify via PAJ API. For onramp orders,
+		// mark as needing verification so PollOrderStatus or recovery worker
+		// can pick it up when the user re-authenticates.
+		s.logger.Warn("cannot verify paj webhook — session expired, marking for retry",
 			zap.String("paj_order_id", payload.ID), zap.String("order_type", orderType))
+		s.db.ExecContext(ctx, `UPDATE paj_orders SET last_webhook_status = $1, last_webhook_at = NOW() WHERE paj_order_id = $2`,
+			"unverified:"+payload.Status, payload.ID)
 		return nil
 	}
 
 	tx, err := s.pajClient.GetTransaction(ctx, token, payload.ID)
 	if err != nil {
+		err = s.invalidateSessionIfUnauthorized(ctx, orderUserID, err)
 		s.logger.Warn("paj transaction verification failed, dropping webhook",
 			zap.String("paj_order_id", payload.ID), zap.Error(err))
 		return nil // Don't trust unverified payload.
@@ -744,7 +868,18 @@ func (s *Service) HandleWebhook(ctx context.Context, payload *paj.WebhookPayload
 
 // PollOrderStatus checks order status directly from Paj API.
 // Verifies the order belongs to the requesting user.
+// Rate-limited to 1 poll per 5 seconds per user to avoid hammering PAJ.
 func (s *Service) PollOrderStatus(ctx context.Context, userID uuid.UUID, pajOrderID string) (*paj.PajTransaction, error) {
+	// Rate limit: 1 poll per 5 seconds per user.
+	if s.redis != nil {
+		pollKey := fmt.Sprintf("paj:poll:%s", userID.String())
+		var exists bool
+		if err := s.redis.Get(ctx, pollKey, &exists); err == nil {
+			return nil, fmt.Errorf("please wait a few seconds before checking again")
+		}
+		s.redis.Set(ctx, pollKey, true, 5*time.Second)
+	}
+
 	// Verify ownership before polling.
 	var ownerID uuid.UUID
 	var orderType string
@@ -764,7 +899,7 @@ func (s *Service) PollOrderStatus(ctx context.Context, userID uuid.UUID, pajOrde
 
 	tx, err := s.pajClient.GetTransaction(ctx, token, pajOrderID)
 	if err != nil {
-		return nil, err
+		return nil, s.invalidateSessionIfUnauthorized(ctx, userID, err)
 	}
 
 	// Update local order status from Paj's response.

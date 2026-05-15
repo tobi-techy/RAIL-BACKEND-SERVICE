@@ -28,9 +28,10 @@ func (r *WithdrawalRepository) Create(ctx context.Context, withdrawal *entities.
 	query := `
 		INSERT INTO withdrawals (
 			id, user_id, withdrawal_type, currency, amount, source_account,
+			source_chain, source_wallet_address, provider_wallet_type, emergency,
 			circle_wallet_id, destination_type, destination_chain, destination_address, bank_account_id,
 			fee_amount, fee_currency, category, narration, status, idempotency_key, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
 	`
 
 	_, err := r.db.ExecContext(ctx, query,
@@ -40,6 +41,10 @@ func (r *WithdrawalRepository) Create(ctx context.Context, withdrawal *entities.
 		withdrawal.Currency,
 		withdrawal.Amount,
 		withdrawal.SourceAccount,
+		withdrawal.SourceChain,
+		withdrawal.SourceWalletAddress,
+		withdrawal.ProviderWalletType,
+		withdrawal.Emergency,
 		withdrawal.BridgeWalletID,
 		withdrawal.DestinationType,
 		withdrawal.DestinationChain,
@@ -65,6 +70,8 @@ func (r *WithdrawalRepository) Create(ctx context.Context, withdrawal *entities.
 func (r *WithdrawalRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.Withdrawal, error) {
 	query := `
 		SELECT id, user_id, withdrawal_type, currency, amount, source_account,
+			COALESCE(source_chain, '') AS source_chain, source_wallet_address, COALESCE(provider_wallet_type, '') AS provider_wallet_type,
+			COALESCE(emergency, false) AS emergency,
 			circle_wallet_id AS bridge_wallet_id, destination_type, destination_chain, destination_address, bank_account_id,
 			fee_amount, fee_currency, category, narration, status, bridge_transfer_id, tx_hash, error_message,
 			idempotency_key, created_at, updated_at, completed_at
@@ -88,6 +95,8 @@ func (r *WithdrawalRepository) GetByID(ctx context.Context, id uuid.UUID) (*enti
 func (r *WithdrawalRepository) GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error) {
 	query := `
 		SELECT id, user_id, withdrawal_type, currency, amount, source_account,
+			COALESCE(source_chain, '') AS source_chain, source_wallet_address, COALESCE(provider_wallet_type, '') AS provider_wallet_type,
+			COALESCE(emergency, false) AS emergency,
 			circle_wallet_id AS bridge_wallet_id, destination_type, destination_chain, destination_address, bank_account_id,
 			fee_amount, fee_currency, category, narration, status, bridge_transfer_id, tx_hash, error_message,
 			idempotency_key, created_at, updated_at, completed_at
@@ -110,6 +119,8 @@ func (r *WithdrawalRepository) GetByUserID(ctx context.Context, userID uuid.UUID
 func (r *WithdrawalRepository) GetByIdempotencyKey(ctx context.Context, key string) (*entities.Withdrawal, error) {
 	query := `
 		SELECT id, user_id, withdrawal_type, currency, amount, source_account,
+			COALESCE(source_chain, '') AS source_chain, source_wallet_address, COALESCE(provider_wallet_type, '') AS provider_wallet_type,
+			COALESCE(emergency, false) AS emergency,
 			circle_wallet_id AS bridge_wallet_id, destination_type, destination_chain, destination_address, bank_account_id,
 			fee_amount, fee_currency, category, narration, status, bridge_transfer_id, tx_hash, error_message,
 			idempotency_key, created_at, updated_at, completed_at
@@ -288,6 +299,8 @@ func (r *WithdrawalRepository) GetStuckWithdrawals(ctx context.Context, slaThres
 	cutoff := time.Now().Add(-slaThreshold)
 	query := `
 		SELECT id, user_id, withdrawal_type, currency, amount, source_account,
+			COALESCE(source_chain, '') AS source_chain, source_wallet_address, COALESCE(provider_wallet_type, '') AS provider_wallet_type,
+			COALESCE(emergency, false) AS emergency,
 			circle_wallet_id AS bridge_wallet_id, destination_type, destination_chain, destination_address, bank_account_id,
 			fee_amount, fee_currency, category, narration, status, bridge_transfer_id, tx_hash, error_message,
 			idempotency_key, created_at, updated_at, completed_at
@@ -350,6 +363,8 @@ func (r *WithdrawalRepository) MarkCancelled(ctx context.Context, id uuid.UUID) 
 func (r *WithdrawalRepository) GetByProviderTransferID(ctx context.Context, transferID string) (*entities.Withdrawal, error) {
 	query := `
 		SELECT id, user_id, withdrawal_type, currency, amount, source_account,
+			COALESCE(source_chain, '') AS source_chain, source_wallet_address, COALESCE(provider_wallet_type, '') AS provider_wallet_type,
+			COALESCE(emergency, false) AS emergency,
 			circle_wallet_id AS bridge_wallet_id, destination_type, destination_chain, destination_address, bank_account_id,
 			fee_amount, fee_currency, category, narration, status, bridge_transfer_id, tx_hash, error_message,
 			idempotency_key, created_at, updated_at, completed_at
@@ -373,6 +388,8 @@ func (r *WithdrawalRepository) GetByProviderTransferID(ctx context.Context, tran
 func (r *WithdrawalRepository) GetByProviderTransferIDPrefix(ctx context.Context, prefix string) (*entities.Withdrawal, error) {
 	query := `
 		SELECT id, user_id, withdrawal_type, currency, amount, source_account,
+			COALESCE(source_chain, '') AS source_chain, source_wallet_address, COALESCE(provider_wallet_type, '') AS provider_wallet_type,
+			COALESCE(emergency, false) AS emergency,
 			circle_wallet_id AS bridge_wallet_id, destination_type, destination_chain, destination_address, bank_account_id,
 			fee_amount, fee_currency, category, narration, status, bridge_transfer_id, tx_hash, error_message,
 			idempotency_key, created_at, updated_at, completed_at

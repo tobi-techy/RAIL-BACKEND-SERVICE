@@ -54,12 +54,13 @@ func (r *YieldRepository) GetLastSnapshotBefore(ctx context.Context, userID uuid
 	return &s, err
 }
 
-// GetAllUsersWithSnapshotsInWindow returns distinct user IDs that have any snapshot activity
-// within or before the window (i.e. users with a non-zero stash during the period).
+// GetAllUsersWithSnapshotsInWindow returns distinct user IDs that had a positive stash balance
+// at any point up to the end of the window. The computeTWB function handles zero-balance periods.
 func (r *YieldRepository) GetAllUsersWithSnapshotsInWindow(ctx context.Context, from, to time.Time) ([]uuid.UUID, error) {
 	var ids []uuid.UUID
 	err := r.db.SelectContext(ctx, &ids,
-		`SELECT DISTINCT user_id FROM yield_balance_snapshots WHERE recorded_at >= $1 AND recorded_at <= $2`,
+		`SELECT DISTINCT user_id FROM yield_balance_snapshots
+		 WHERE recorded_at <= $2 AND balance > 0`,
 		from, to)
 	return ids, err
 }

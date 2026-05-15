@@ -88,3 +88,23 @@ func (t *TelegramAlerter) send(text string) {
 	}
 	resp.Body.Close()
 }
+
+// SendSweepExhausted alerts when a deposit sweep has exhausted all retry attempts.
+func (t *TelegramAlerter) SendSweepExhausted(sweepID, depositID, sourceChain, amount string, attempts int) {
+	if t == nil {
+		return
+	}
+	text := fmt.Sprintf(
+		"⚠️ *Deposit Sweep Exhausted*\n\n"+
+			"*Sweep ID:* `%s`\n"+
+			"*Deposit ID:* `%s`\n"+
+			"*Source Chain:* `%s`\n"+
+			"*Amount:* `%s USDC`\n"+
+			"*Attempts:* `%d/%d`\n"+
+			"*Time:* `%s`\n\n"+
+			"Manual intervention required — funds remain on source chain.",
+		sweepID, depositID, sourceChain, amount, attempts, 5,
+		time.Now().UTC().Format(time.RFC3339),
+	)
+	t.send(text)
+}

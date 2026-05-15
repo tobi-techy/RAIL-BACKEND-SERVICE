@@ -33,7 +33,9 @@ const (
 // CircleYieldSource is the Circle wallet API surface required to route user stash funds into Reflect.
 type CircleYieldSource interface {
 	GetWallet(ctx context.Context, walletID string) (*circlepkg.Wallet, error)
+	ListCircleWallets(ctx context.Context, walletSetID string) ([]circlepkg.Wallet, error)
 	ListCircleWalletsByRefID(ctx context.Context, refID string) ([]circlepkg.Wallet, error)
+	GetTokenBalance(ctx context.Context, walletID string) ([]circlepkg.TokenBalance, error)
 	GetUSDCTokenID(ctx context.Context, walletID string) (string, error)
 	TransferUSDCWithIdempotency(ctx context.Context, walletID, tokenID, destinationAddress, amount, idempotencyKey string) (*circlepkg.Transaction, error)
 	GetTransaction(ctx context.Context, txID string) (*circlepkg.Transaction, error)
@@ -61,6 +63,11 @@ type CircleDepositRouter struct {
 	ledger                     YieldLedger
 	chainRails                 ChainRailsBridge
 	chainRailsDestinationChain string
+	feeFundingWalletSetID      string
+	feeFundingWalletAddress    string
+	feeFundingWalletID         string
+	minSolFeeBalance           decimal.Decimal
+	solFeeTopUpAmount          decimal.Decimal
 	configMu                   sync.RWMutex
 	retryInterval              time.Duration
 	batchSize                  int
@@ -129,6 +136,8 @@ func NewCircleDepositRouter(db *sqlx.DB, circle CircleYieldSource, reflectClient
 		allowedProgramIDs: normalizeProgramIDs(allowedProgramIDs),
 		retryInterval:     30 * time.Second,
 		batchSize:         25,
+		minSolFeeBalance:  decimal.RequireFromString("0.003"),
+		solFeeTopUpAmount: decimal.RequireFromString("0.01"),
 		logger:            logger,
 		stopCh:            make(chan struct{}),
 	}
@@ -151,6 +160,18 @@ func (r *CircleDepositRouter) SetChainRailsBridge(client ChainRailsBridge, desti
 	defer r.configMu.Unlock()
 	r.chainRails = client
 	r.chainRailsDestinationChain = strings.TrimSpace(destinationChain)
+}
+
+// SetSolanaFeeFunding configures a Circle Solana wallet that can fund tiny SOL
+// balances for user wallets before Reflect raw transactions are broadcast.
+func (r *CircleDepositRouter) SetSolanaFeeFunding(walletSetID, walletAddress string) {
+	if r == nil {
+		return
+	}
+	r.configMu.Lock()
+	defer r.configMu.Unlock()
+	r.feeFundingWalletSetID = strings.TrimSpace(walletSetID)
+	r.feeFundingWalletAddress = strings.TrimSpace(walletAddress)
 }
 
 // RequiredSchemaAvailable reports whether the migration-backed route tables exist.
@@ -191,16 +212,132 @@ func (r *CircleDepositRouter) Start() error {
 	ticker := time.NewTicker(r.retryInterval)
 	go func() {
 		defer ticker.Stop()
+		r.backfillMissingRoutes(context.Background())
 		r.processPending(context.Background())
 		for {
 			select {
 			case <-ticker.C:
+				r.backfillMissingRoutes(context.Background())
 				r.processPending(context.Background())
 			case <-r.stopCh:
 				return
 			}
 		}
 	}()
+	return nil
+}
+
+func (r *CircleDepositRouter) backfillMissingRoutes(ctx context.Context) {
+	if r == nil || r.db == nil || r.schemaUnavailable {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	if err := r.pauseInferredRoutesWithoutCircleMetadata(ctx); err != nil {
+		r.logger.Error("Failed to pause inferred Reflect routes without Circle metadata", zap.Error(err))
+	}
+
+	res, err := r.db.ExecContext(ctx, `
+		WITH candidates AS (
+			SELECT DISTINCT ON (d.id)
+				d.id AS deposit_id,
+				ae.user_id,
+				NULLIF(ae.metadata->>'circle_wallet_id', '') AS circle_wallet_id,
+				ae.stash_amount,
+				ae.created_at
+			FROM allocation_events ae
+			JOIN deposits d ON d.user_id = ae.user_id
+				AND (
+					d.id::text = ae.metadata->>'deposit_id'
+					OR (ae.source_tx_id IS NOT NULL AND ae.source_tx_id <> '' AND d.tx_hash = ae.source_tx_id)
+					OR (
+						COALESCE(ae.metadata->>'source_tx_id', '') <> ''
+						AND d.tx_hash = ae.metadata->>'source_tx_id'
+					)
+					OR (
+						COALESCE(ae.metadata->>'tx_hash', '') <> ''
+						AND d.tx_hash = ae.metadata->>'tx_hash'
+					)
+				)
+			LEFT JOIN reflect_deposit_routes rdr ON rdr.deposit_id = d.id
+			WHERE rdr.id IS NULL
+				AND ae.stash_amount > 0
+				AND COALESCE(ae.metadata->>'circle_wallet_id', '') <> ''
+				AND ae.event_type IN ('deposit', 'fiat_deposit', 'crypto_deposit')
+				AND d.status IN ('confirmed', 'completed', 'broker_funded', 'pending_allocation')
+			ORDER BY d.id, ae.created_at DESC
+		)
+		INSERT INTO reflect_deposit_routes (
+			id, deposit_id, user_id, circle_wallet_id, amount, status, next_retry_at
+		)
+		SELECT uuid_generate_v4(),
+			deposit_id,
+			user_id,
+			circle_wallet_id,
+			stash_amount,
+			$1,
+			NOW()
+		FROM candidates
+		WHERE COALESCE(circle_wallet_id, '') <> ''
+		ON CONFLICT (deposit_id) DO NOTHING
+	`, routeStatusPending)
+	if err != nil {
+		if isUndefinedTableError(err) {
+			r.schemaUnavailable = true
+			r.logger.Warn("Reflect deposit router backfill disabled because required tables are missing; apply migration 189 before enabling it", zap.Error(err))
+			return
+		}
+		r.logger.Error("Failed to backfill missing Reflect deposit routes", zap.Error(err))
+		return
+	}
+	rows, _ := res.RowsAffected()
+	if rows > 0 {
+		r.logger.Info("Backfilled missing Circle-backed Reflect deposit routes", zap.Int64("count", rows))
+	}
+}
+
+func (r *CircleDepositRouter) pauseInferredRoutesWithoutCircleMetadata(ctx context.Context) error {
+	res, err := r.db.ExecContext(ctx, `
+		WITH route_events AS (
+			SELECT DISTINCT ON (d.id)
+				rdr.deposit_id,
+				COALESCE(ae.metadata->>'circle_wallet_id', '') AS metadata_circle_wallet_id
+			FROM reflect_deposit_routes rdr
+			JOIN deposits d ON d.id = rdr.deposit_id
+			JOIN allocation_events ae ON ae.user_id = d.user_id
+				AND ae.event_type IN ('deposit', 'fiat_deposit', 'crypto_deposit')
+				AND (
+					d.id::text = ae.metadata->>'deposit_id'
+					OR (ae.source_tx_id IS NOT NULL AND ae.source_tx_id <> '' AND d.tx_hash = ae.source_tx_id)
+					OR (
+						COALESCE(ae.metadata->>'source_tx_id', '') <> ''
+						AND d.tx_hash = ae.metadata->>'source_tx_id'
+					)
+					OR (
+						COALESCE(ae.metadata->>'tx_hash', '') <> ''
+						AND d.tx_hash = ae.metadata->>'tx_hash'
+					)
+				)
+			ORDER BY d.id, ae.created_at DESC
+		)
+		UPDATE reflect_deposit_routes rdr
+		SET status = 'source_wallet_unresolved',
+			last_error = 'Paused: route was inferred without allocation circle_wallet_id metadata; refusing to mint from an unverified Circle wallet',
+			next_retry_at = NOW() + INTERVAL '24 hours',
+			updated_at = NOW()
+		FROM route_events re
+		WHERE rdr.deposit_id = re.deposit_id
+			AND re.metadata_circle_wallet_id = ''
+			AND rdr.status IN ($1, $2, $3)
+	`, routeStatusPending, routeStatusTransferFailed, routeStatusMintFailed)
+	if err != nil {
+		return err
+	}
+	rows, _ := res.RowsAffected()
+	if rows > 0 {
+		r.logger.Warn("Paused inferred Reflect routes without Circle wallet metadata", zap.Int64("count", rows))
+	}
 	return nil
 }
 
@@ -305,6 +442,8 @@ func (r *CircleDepositRouter) processRoute(ctx context.Context, route *depositRo
 	if err := r.recordYieldWallet(ctx, route.DepositID, yieldWallet); err != nil {
 		return err
 	}
+	route.YieldCircleWalletID = nullableString(yieldWallet.CircleWalletID)
+	route.YieldWalletAddress = nullableString(yieldWallet.Address)
 
 	transferID := strings.TrimSpace(route.CircleTransferID.String)
 	var transfer *circlepkg.Transaction
@@ -379,6 +518,11 @@ func (r *CircleDepositRouter) processRoute(ctx context.Context, route *depositRo
 		`, route.DepositID, chainRailsTxHash); err != nil {
 			return fmt.Errorf("record ChainRails settlement tx: %w", err)
 		}
+	}
+
+	if err := r.ensureMintFunding(ctx, route, yieldWallet); err != nil {
+		r.markRetry(ctx, route.DepositID, routeStatusTransferComplete, err)
+		return err
 	}
 
 	if _, err := r.db.ExecContext(ctx, `
@@ -505,7 +649,7 @@ func (r *CircleDepositRouter) mintWithUserWallet(ctx context.Context, route *dep
 	if err != nil {
 		return "", fmt.Errorf("reflect generate user mint transaction: %w", err)
 	}
-	if err := validateReflectUserMintTransaction(rawTransaction, wallet.Address, route.Amount, r.allowedProgramIDs); err != nil {
+	if err := r.reflect.validateReflectUserMintTransaction(ctx, rawTransaction, wallet.Address, route.Amount, r.allowedProgramIDs); err != nil {
 		return "", fmt.Errorf("refusing unsafe Reflect mint transaction: %w", err)
 	}
 	signed, err := r.circle.SignTransaction(ctx, wallet.CircleWalletID, rawTransaction, "Deposit USDC into Reflect yield")
@@ -520,6 +664,102 @@ func (r *CircleDepositRouter) mintWithUserWallet(ctx context.Context, route *dep
 		return "", fmt.Errorf("reflect submit user-signed mint transaction: %w", err)
 	}
 	return txHash, nil
+}
+
+func (r *CircleDepositRouter) ensureMintFunding(ctx context.Context, route *depositRoute, wallet userYieldWallet) error {
+	balances, err := r.circle.GetTokenBalance(ctx, wallet.CircleWalletID)
+	if err != nil {
+		return fmt.Errorf("get Circle token balances for Reflect yield wallet: %w", err)
+	}
+	usdcBalance := tokenBalanceBySymbol(balances, "USDC")
+	if usdcBalance.LessThan(route.Amount.Truncate(6)) {
+		return fmt.Errorf("Reflect yield wallet %s has %s USDC; need %s before mint",
+			wallet.CircleWalletID,
+			usdcBalance.StringFixed(6),
+			route.Amount.Truncate(6).StringFixed(6))
+	}
+	return r.ensureSolanaFeeBalance(ctx, "reflect-sol-fee-"+route.DepositID.String(), wallet)
+}
+
+func (r *CircleDepositRouter) ensureSolanaFeeBalance(ctx context.Context, idempotencyKey string, wallet userYieldWallet) error {
+	balances, err := r.circle.GetTokenBalance(ctx, wallet.CircleWalletID)
+	if err != nil {
+		return fmt.Errorf("get Circle token balances for Solana fee check: %w", err)
+	}
+	if tokenBalanceBySymbol(balances, "SOL").GreaterThanOrEqual(r.minSolFeeBalance) {
+		return nil
+	}
+
+	sourceWalletID, err := r.resolveSolanaFeeFundingWallet(ctx)
+	if err != nil {
+		return err
+	}
+	sourceBalances, err := r.circle.GetTokenBalance(ctx, sourceWalletID)
+	if err != nil {
+		return fmt.Errorf("get Circle token balances for SOL fee funding wallet: %w", err)
+	}
+	solTokenID := tokenIDBySymbol(sourceBalances, "SOL")
+	if solTokenID == "" {
+		return fmt.Errorf("SOL fee funding wallet %s has no SOL token balance visible in Circle", sourceWalletID)
+	}
+	sourceSOL := tokenBalanceBySymbol(sourceBalances, "SOL")
+	if sourceSOL.LessThan(r.solFeeTopUpAmount) {
+		return fmt.Errorf("SOL fee funding wallet %s has %s SOL; need at least %s",
+			sourceWalletID,
+			sourceSOL.String(),
+			r.solFeeTopUpAmount.String())
+	}
+
+	transfer, err := r.circle.TransferUSDCWithIdempotency(
+		ctx,
+		sourceWalletID,
+		solTokenID,
+		wallet.Address,
+		r.solFeeTopUpAmount.String(),
+		idempotencyKey,
+	)
+	if err != nil {
+		return fmt.Errorf("fund Solana fees for Reflect wallet: %w", err)
+	}
+	if _, err := r.waitForCircleTransfer(ctx, transfer.ID, transfer); err != nil {
+		return fmt.Errorf("wait for Solana fee funding transfer: %w", err)
+	}
+	r.logger.Info("Funded Solana fees for Reflect wallet",
+		zap.String("circle_wallet_id", wallet.CircleWalletID),
+		zap.String("address", wallet.Address),
+		zap.String("amount_sol", r.solFeeTopUpAmount.String()),
+		zap.String("transfer_id", transfer.ID))
+	return nil
+}
+
+func (r *CircleDepositRouter) resolveSolanaFeeFundingWallet(ctx context.Context) (string, error) {
+	r.configMu.RLock()
+	cachedID := strings.TrimSpace(r.feeFundingWalletID)
+	walletSetID := strings.TrimSpace(r.feeFundingWalletSetID)
+	walletAddress := strings.TrimSpace(r.feeFundingWalletAddress)
+	r.configMu.RUnlock()
+
+	if cachedID != "" {
+		return cachedID, nil
+	}
+	if walletSetID == "" || walletAddress == "" {
+		return "", fmt.Errorf("Solana fee funding is not configured; set CIRCLE_DEFAULT_WALLET_SET_ID and CIRCLE_TREASURY_WALLET_ADDRESS or enable Circle Gas Station for Solana")
+	}
+	wallets, err := r.circle.ListCircleWallets(ctx, walletSetID)
+	if err != nil {
+		return "", fmt.Errorf("list Circle wallets for Solana fee funding: %w", err)
+	}
+	for _, wallet := range wallets {
+		if strings.EqualFold(strings.TrimSpace(wallet.Address), walletAddress) &&
+			isSolanaCircleChain(strings.ToUpper(strings.TrimSpace(string(wallet.Blockchain)))) &&
+			strings.TrimSpace(wallet.ID) != "" {
+			r.configMu.Lock()
+			r.feeFundingWalletID = wallet.ID
+			r.configMu.Unlock()
+			return wallet.ID, nil
+		}
+	}
+	return "", fmt.Errorf("Circle treasury wallet address %s was not found as a Solana wallet in wallet set %s", walletAddress, walletSetID)
 }
 
 // RedeemStashYield burns user-held Reflect receipt tokens before a stash withdrawal spends USDC.
@@ -552,12 +792,23 @@ func (r *CircleDepositRouter) RedeemStashYield(ctx context.Context, userID uuid.
 	if err != nil {
 		return err
 	}
-	rawTransaction, err := r.reflect.GenerateBurnTransaction(ctx, amount, wallet.Address, wallet.Address)
+	currentRate, err := r.reflect.GetExchangeRate(ctx)
+	if err != nil {
+		return fmt.Errorf("reflect get exchange rate for redemption: %w", err)
+	}
+	if currentRate.LessThanOrEqual(decimal.Zero) {
+		return fmt.Errorf("reflect exchange rate is not positive: %s", currentRate.String())
+	}
+	receiptAmount := amount.Div(currentRate).Truncate(6)
+	rawTransaction, err := r.reflect.GenerateBurnTransaction(ctx, receiptAmount, wallet.Address, wallet.Address)
 	if err != nil {
 		return fmt.Errorf("reflect generate user burn transaction: %w", err)
 	}
-	if err := validateReflectUserBurnTransaction(rawTransaction, wallet.Address, r.allowedProgramIDs); err != nil {
+	if err := r.reflect.validateReflectUserBurnTransaction(ctx, rawTransaction, wallet.Address, r.allowedProgramIDs); err != nil {
 		return fmt.Errorf("refusing unsafe Reflect burn transaction: %w", err)
+	}
+	if err := r.ensureSolanaFeeBalance(ctx, "reflect-sol-redemption-"+strings.TrimSpace(idempotencyKey), wallet); err != nil {
+		return err
 	}
 	signed, err := r.circle.SignTransaction(ctx, wallet.CircleWalletID, rawTransaction, "Redeem Reflect yield for stash withdrawal")
 	if err != nil {
@@ -917,7 +1168,7 @@ func recomputeReflectDepositedUSDC(ctx context.Context, tx *sqlx.Tx) error {
 		) + (
 			SELECT COALESCE(SUM(CASE
 				WHEN operation = 'deposit' THEN amount
-				WHEN operation = 'withdraw' THEN -amount
+				WHEN operation = 'withdrawal' THEN -amount
 				ELSE 0
 			END), 0)
 			FROM treasury_positions
@@ -1027,6 +1278,29 @@ func metadataString(metadata map[string]any, key string) string {
 
 func nullableString(v string) sql.NullString {
 	return sql.NullString{String: v, Valid: strings.TrimSpace(v) != ""}
+}
+
+func tokenIDBySymbol(balances []circlepkg.TokenBalance, symbol string) string {
+	for _, balance := range balances {
+		if strings.EqualFold(strings.TrimSpace(balance.Token.Symbol), symbol) {
+			return strings.TrimSpace(balance.Token.ID)
+		}
+	}
+	return ""
+}
+
+func tokenBalanceBySymbol(balances []circlepkg.TokenBalance, symbol string) decimal.Decimal {
+	for _, balance := range balances {
+		if !strings.EqualFold(strings.TrimSpace(balance.Token.Symbol), symbol) {
+			continue
+		}
+		amount, err := decimal.NewFromString(strings.TrimSpace(balance.Amount))
+		if err != nil {
+			return decimal.Zero
+		}
+		return amount
+	}
+	return decimal.Zero
 }
 
 func normalizeProgramIDs(ids []string) []string {

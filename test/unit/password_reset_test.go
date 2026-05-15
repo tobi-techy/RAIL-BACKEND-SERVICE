@@ -2,6 +2,7 @@ package unit
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -146,6 +147,30 @@ func TestParseSelectorVerifierTokenInvalid(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			_, _, err := crypto.ParseSelectorVerifierToken(tt.token)
 			assert.Error(t, err)
+		})
+	}
+}
+
+func TestPasswordStrengthPolicy(t *testing.T) {
+	tests := []struct {
+		name      string
+		password  string
+		wantError bool
+	}{
+		{name: "accepts eight characters with three categories", password: "Rail1234", wantError: false},
+		{name: "rejects shorter than eight", password: "Rail123", wantError: true},
+		{name: "rejects fewer than three categories", password: "railonly", wantError: true},
+		{name: "rejects bcrypt overflow", password: "Rail1234" + strings.Repeat("x", 65), wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := crypto.ValidatePasswordStrength(tt.password)
+			if tt.wantError {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
 		})
 	}
 }

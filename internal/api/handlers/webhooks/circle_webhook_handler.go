@@ -18,12 +18,12 @@ import (
 
 // CircleWebhookEvent represents a Circle webhook notification.
 type CircleWebhookEvent struct {
-	SubscriptionID string                 `json:"subscriptionId"`
-	NotificationID string                 `json:"notificationId"`
-	NotificationType string              `json:"notificationType"`
-	Notification   CircleTransactionEvent `json:"notification"`
-	Timestamp      string                 `json:"timestamp"`
-	Version        int                    `json:"version"`
+	SubscriptionID   string                 `json:"subscriptionId"`
+	NotificationID   string                 `json:"notificationId"`
+	NotificationType string                 `json:"notificationType"`
+	Notification     CircleTransactionEvent `json:"notification"`
+	Timestamp        string                 `json:"timestamp"`
+	Version          int                    `json:"version"`
 }
 
 // CircleTransactionEvent is the Transaction Object inside the webhook.
@@ -44,7 +44,7 @@ type CircleTransactionEvent struct {
 
 // CircleDepositProcessor processes inbound Circle deposits into the allocation engine.
 type CircleDepositProcessor interface {
-	ProcessCircleDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, chain, txHash, circleWalletID string) error
+	ProcessCircleDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, token entities.Stablecoin, chain, txHash, circleWalletID string) error
 }
 
 // CircleWalletLookup finds a user by their Circle wallet ID.
@@ -57,11 +57,18 @@ type CircleDepositNotifier interface {
 	NotifyDepositDetected(ctx context.Context, userID uuid.UUID, chain string) error
 }
 
+// CircleUnsupportedAssetService identifies and returns assets Rail does not support.
+type CircleUnsupportedAssetService interface {
+	GetTokenSymbol(ctx context.Context, walletID, tokenID string) (string, error)
+	ReturnUnsupportedToken(ctx context.Context, walletID, tokenID, destinationAddress string, amounts []string, idempotencyKey string) error
+}
+
 // CircleWebhookHandler handles Circle webhook notifications for inbound deposits.
 type CircleWebhookHandler struct {
 	depositProcessor CircleDepositProcessor
 	walletLookup     CircleWalletLookup
 	notifier         CircleDepositNotifier
+	assetService     CircleUnsupportedAssetService
 	logger           *zap.Logger
 	webhookSecret    string
 	redis            CircleWebhookRedis
@@ -92,6 +99,11 @@ func NewCircleWebhookHandler(
 
 // SetNotifier wires the deposit notification sender.
 func (h *CircleWebhookHandler) SetNotifier(n CircleDepositNotifier) { h.notifier = n }
+
+// SetUnsupportedAssetService wires Circle token validation and same-token return transfers.
+func (h *CircleWebhookHandler) SetUnsupportedAssetService(s CircleUnsupportedAssetService) {
+	h.assetService = s
+}
 
 // HandleWebhook is the Gin handler for POST /webhooks/circle.
 func (h *CircleWebhookHandler) HandleWebhook(c *gin.Context) {
@@ -203,13 +215,102 @@ func (h *CircleWebhookHandler) processInboundDeposit(ctx context.Context, event 
 	// Map Circle blockchain to domain chain
 	chain := circleBlockchainToDomainChain(tx.Blockchain)
 
+	tokenSymbol, err := h.circleTokenSymbol(ctx, tx.WalletID, tx.TokenID)
+	if err != nil {
+		return fmt.Errorf("circle token validation failed for wallet %s token %s: %w", tx.WalletID, tx.TokenID, err)
+	}
+	token := entities.Stablecoin(tokenSymbol)
+	if !token.IsValid() {
+		return h.handleUnsupportedInboundAsset(ctx, &event.Notification, userID, tokenSymbol)
+	}
+
 	h.logger.Info("Processing Circle inbound deposit",
 		zap.String("userID", userID.String()),
 		zap.String("amount", amount.String()),
 		zap.String("chain", chain),
+		zap.String("tokenSymbol", tokenSymbol),
 		zap.String("txHash", tx.TxHash))
 
-	return h.depositProcessor.ProcessCircleDeposit(ctx, userID, amount, chain, tx.TxHash, tx.WalletID)
+	return h.depositProcessor.ProcessCircleDeposit(ctx, userID, amount, token, chain, tx.TxHash, tx.WalletID)
+}
+
+func (h *CircleWebhookHandler) circleTokenSymbol(ctx context.Context, walletID, tokenID string) (string, error) {
+	if strings.TrimSpace(tokenID) == "" {
+		return "", fmt.Errorf("missing tokenId")
+	}
+	if h.assetService == nil {
+		return "", fmt.Errorf("unsupported asset service not configured")
+	}
+
+	symbol, err := h.assetService.GetTokenSymbol(ctx, walletID, tokenID)
+	if err != nil {
+		return "", err
+	}
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	if symbol == "" {
+		return "", fmt.Errorf("empty token symbol")
+	}
+	return symbol, nil
+}
+
+func (h *CircleWebhookHandler) handleUnsupportedInboundAsset(ctx context.Context, tx *CircleTransactionEvent, userID uuid.UUID, tokenSymbol string) error {
+	h.logger.Warn("Unsupported Circle inbound asset detected; skipping ledger credit",
+		zap.String("userID", userID.String()),
+		zap.String("walletId", tx.WalletID),
+		zap.String("tokenId", tx.TokenID),
+		zap.String("tokenSymbol", tokenSymbol),
+		zap.String("sourceAddress", tx.SourceAddress),
+		zap.String("destinationAddress", tx.DestinationAddress),
+		zap.String("txHash", tx.TxHash),
+		zap.Strings("amounts", tx.Amounts))
+
+	if h.assetService == nil {
+		return fmt.Errorf("unsupported asset service not configured")
+	}
+	if strings.TrimSpace(tx.TokenID) == "" {
+		h.logger.Error("Cannot auto-return unsupported Circle asset without tokenId",
+			zap.String("walletId", tx.WalletID),
+			zap.String("txHash", tx.TxHash))
+		return nil
+	}
+	if strings.TrimSpace(tx.SourceAddress) == "" {
+		h.logger.Error("Cannot auto-return unsupported Circle asset without sourceAddress",
+			zap.String("walletId", tx.WalletID),
+			zap.String("tokenId", tx.TokenID),
+			zap.String("txHash", tx.TxHash))
+		return nil
+	}
+	if strings.EqualFold(strings.TrimSpace(tx.SourceAddress), strings.TrimSpace(tx.DestinationAddress)) {
+		h.logger.Error("Refusing unsupported Circle asset return to the same wallet address",
+			zap.String("walletId", tx.WalletID),
+			zap.String("tokenId", tx.TokenID),
+			zap.String("txHash", tx.TxHash))
+		return nil
+	}
+
+	idempotencyKey := circleUnsupportedRefundIdempotencyKey(tx.ID, tx.TxHash, tx.TokenID)
+	if err := h.assetService.ReturnUnsupportedToken(ctx, tx.WalletID, tx.TokenID, tx.SourceAddress, tx.Amounts, idempotencyKey); err != nil {
+		return fmt.Errorf("return unsupported Circle asset: %w", err)
+	}
+
+	h.logger.Info("Unsupported Circle inbound asset return submitted",
+		zap.String("userID", userID.String()),
+		zap.String("walletId", tx.WalletID),
+		zap.String("tokenId", tx.TokenID),
+		zap.String("tokenSymbol", tokenSymbol),
+		zap.String("destinationAddress", tx.SourceAddress),
+		zap.String("idempotencyKey", idempotencyKey),
+		zap.String("txHash", tx.TxHash))
+	return nil
+}
+
+func circleUnsupportedRefundIdempotencyKey(txID, txHash, tokenID string) string {
+	for _, candidate := range []string{txID, txHash} {
+		if parsed, err := uuid.Parse(strings.TrimSpace(candidate)); err == nil {
+			return parsed.String()
+		}
+	}
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("circle:unsupported-refund:"+txHash+":"+tokenID)).String()
 }
 
 func circleBlockchainToDomainChain(blockchain string) string {

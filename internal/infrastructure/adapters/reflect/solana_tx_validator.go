@@ -1,8 +1,10 @@
 package reflect
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -28,11 +30,20 @@ type solanaInstruction struct {
 type solanaMessage struct {
 	RequiredSigners int
 	StaticAccounts  []string
+	AccountKeys     []string
 	Instructions    []solanaInstruction
 }
 
 func validateReflectUserMintTransaction(rawTransaction, walletAddress string, amount decimal.Decimal, allowedProgramIDs []string) error {
-	msg, err := parseSolanaTransaction(rawTransaction)
+	return validateReflectUserMintTransactionWithResolver(context.Background(), rawTransaction, walletAddress, amount, allowedProgramIDs, nil)
+}
+
+func (c *Client) validateReflectUserMintTransaction(ctx context.Context, rawTransaction, walletAddress string, amount decimal.Decimal, allowedProgramIDs []string) error {
+	return validateReflectUserMintTransactionWithResolver(ctx, rawTransaction, walletAddress, amount, allowedProgramIDs, c.resolveLookupTableAddresses)
+}
+
+func validateReflectUserMintTransactionWithResolver(ctx context.Context, rawTransaction, walletAddress string, amount decimal.Decimal, allowedProgramIDs []string, resolver solanaLookupTableResolver) error {
+	msg, err := parseSolanaTransactionWithResolver(ctx, rawTransaction, resolver)
 	if err != nil {
 		return err
 	}
@@ -42,6 +53,7 @@ func validateReflectUserMintTransaction(rawTransaction, walletAddress string, am
 
 	expectedMicroAmount := amount.Truncate(6).Shift(6).IntPart()
 	seenUSDCTransfer := false
+	seenReflectInstruction := false
 	for _, ix := range msg.Instructions {
 		switch ix.ProgramID {
 		case solanaSystemProgramID:
@@ -49,7 +61,7 @@ func validateReflectUserMintTransaction(rawTransaction, walletAddress string, am
 				return fmt.Errorf("reflect transaction contains a System Program instruction")
 			}
 		case solanaTokenProgramID, solanaToken2022ProgramID:
-			mint, transferAmount, ok, err := parseTokenTransferChecked(ix, msg.StaticAccounts)
+			mint, transferAmount, ok, err := parseTokenTransferChecked(ix, msg.AccountKeys)
 			if err != nil {
 				return err
 			}
@@ -62,16 +74,28 @@ func validateReflectUserMintTransaction(rawTransaction, walletAddress string, am
 				}
 				seenUSDCTransfer = true
 			}
+		default:
+			if isConfiguredProgram(ix.ProgramID, allowedProgramIDs) {
+				seenReflectInstruction = true
+			}
 		}
 	}
-	if !seenUSDCTransfer {
-		return fmt.Errorf("reflect mint transaction does not contain a checked USDC transfer")
+	if !seenUSDCTransfer && !seenReflectInstruction {
+		return fmt.Errorf("reflect mint transaction does not contain a checked USDC transfer or configured Reflect instruction")
 	}
 	return nil
 }
 
 func validateReflectUserBurnTransaction(rawTransaction, walletAddress string, allowedProgramIDs []string) error {
-	msg, err := parseSolanaTransaction(rawTransaction)
+	return validateReflectUserBurnTransactionWithResolver(context.Background(), rawTransaction, walletAddress, allowedProgramIDs, nil)
+}
+
+func (c *Client) validateReflectUserBurnTransaction(ctx context.Context, rawTransaction, walletAddress string, allowedProgramIDs []string) error {
+	return validateReflectUserBurnTransactionWithResolver(ctx, rawTransaction, walletAddress, allowedProgramIDs, c.resolveLookupTableAddresses)
+}
+
+func validateReflectUserBurnTransactionWithResolver(ctx context.Context, rawTransaction, walletAddress string, allowedProgramIDs []string, resolver solanaLookupTableResolver) error {
+	msg, err := parseSolanaTransactionWithResolver(ctx, rawTransaction, resolver)
 	if err != nil {
 		return err
 	}
@@ -116,6 +140,15 @@ func validateReflectUserTransactionEnvelope(msg *solanaMessage, walletAddress st
 	return nil
 }
 
+func isConfiguredProgram(programID string, allowedProgramIDs []string) bool {
+	for _, id := range allowedProgramIDs {
+		if strings.TrimSpace(id) == programID {
+			return true
+		}
+	}
+	return false
+}
+
 func defaultAllowedSolanaPrograms() map[string]struct{} {
 	return map[string]struct{}{
 		solanaSystemProgramID:          {},
@@ -127,7 +160,19 @@ func defaultAllowedSolanaPrograms() map[string]struct{} {
 	}
 }
 
+type solanaLookupTableResolver func(ctx context.Context, tableAddress string) ([]string, error)
+
+type compiledSolanaInstruction struct {
+	ProgramIndex int
+	Accounts     []int
+	Data         []byte
+}
+
 func parseSolanaTransaction(rawTransaction string) (*solanaMessage, error) {
+	return parseSolanaTransactionWithResolver(context.Background(), rawTransaction, nil)
+}
+
+func parseSolanaTransactionWithResolver(ctx context.Context, rawTransaction string, resolver solanaLookupTableResolver) (*solanaMessage, error) {
 	txBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rawTransaction))
 	if err != nil {
 		return nil, fmt.Errorf("decode Solana transaction: %w", err)
@@ -144,15 +189,17 @@ func parseSolanaTransaction(rawTransaction string) (*solanaMessage, error) {
 		return nil, fmt.Errorf("transaction signature section exceeds length")
 	}
 	pos += sigCount * 64
-	return parseSolanaMessage(txBytes[pos:])
+	return parseSolanaMessage(ctx, txBytes[pos:], resolver)
 }
 
-func parseSolanaMessage(message []byte) (*solanaMessage, error) {
+func parseSolanaMessage(ctx context.Context, message []byte, resolver solanaLookupTableResolver) (*solanaMessage, error) {
 	if len(message) < 3 {
 		return nil, fmt.Errorf("Solana message too short")
 	}
 	pos := 0
+	versioned := false
 	if message[pos]&0x80 != 0 {
+		versioned = true
 		version := message[pos] & 0x7f
 		if version != 0 {
 			return nil, fmt.Errorf("unsupported Solana transaction version %d", version)
@@ -175,9 +222,9 @@ func parseSolanaMessage(message []byte) (*solanaMessage, error) {
 	if pos+accountCount*32 > len(message) {
 		return nil, fmt.Errorf("Solana account list exceeds message length")
 	}
-	accounts := make([]string, accountCount)
+	staticAccounts := make([]string, accountCount)
 	for i := 0; i < accountCount; i++ {
-		accounts[i] = base58.Encode(message[pos : pos+32])
+		staticAccounts[i] = base58.Encode(message[pos : pos+32])
 		pos += 32
 	}
 	if pos+32 > len(message) {
@@ -189,16 +236,13 @@ func parseSolanaMessage(message []byte) (*solanaMessage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read instruction count: %w", err)
 	}
-	instructions := make([]solanaInstruction, 0, instructionCount)
+	compiledInstructions := make([]compiledSolanaInstruction, 0, instructionCount)
 	for i := 0; i < instructionCount; i++ {
 		if pos >= len(message) {
 			return nil, fmt.Errorf("instruction %d missing program index", i)
 		}
 		programIndex := int(message[pos])
 		pos++
-		if programIndex >= len(accounts) {
-			return nil, fmt.Errorf("instruction %d program index %d outside static accounts", i, programIndex)
-		}
 		accountIndexCount, err := readCompactU16(message, &pos)
 		if err != nil {
 			return nil, fmt.Errorf("instruction %d account indexes: %w", i, err)
@@ -208,11 +252,7 @@ func parseSolanaMessage(message []byte) (*solanaMessage, error) {
 		}
 		ixAccounts := make([]int, accountIndexCount)
 		for j := 0; j < accountIndexCount; j++ {
-			accountIndex := int(message[pos])
-			if accountIndex >= len(accounts) {
-				return nil, fmt.Errorf("instruction %d account index %d outside static accounts", i, accountIndex)
-			}
-			ixAccounts[j] = accountIndex
+			ixAccounts[j] = int(message[pos])
 			pos++
 		}
 		dataLen, err := readCompactU16(message, &pos)
@@ -224,28 +264,166 @@ func parseSolanaMessage(message []byte) (*solanaMessage, error) {
 		}
 		data := append([]byte(nil), message[pos:pos+dataLen]...)
 		pos += dataLen
-		instructions = append(instructions, solanaInstruction{
-			ProgramID: accounts[programIndex],
-			Accounts:  ixAccounts,
-			Data:      data,
+		compiledInstructions = append(compiledInstructions, compiledSolanaInstruction{
+			ProgramIndex: programIndex,
+			Accounts:     ixAccounts,
+			Data:         data,
 		})
 	}
 
-	if pos < len(message) {
+	accountKeys := append([]string(nil), staticAccounts...)
+	if versioned {
 		lookupCount, err := readCompactU16(message, &pos)
 		if err != nil {
 			return nil, fmt.Errorf("read address table lookup count: %w", err)
 		}
 		if lookupCount > 0 {
-			return nil, fmt.Errorf("address table lookups are not allowed in Reflect user-wallet transactions")
+			if resolver == nil {
+				return nil, fmt.Errorf("address table lookups require a Solana lookup table resolver")
+			}
+			for i := 0; i < lookupCount; i++ {
+				if pos+32 > len(message) {
+					return nil, fmt.Errorf("address table lookup %d missing table address", i)
+				}
+				tableAddress := base58.Encode(message[pos : pos+32])
+				pos += 32
+				tableAddresses, err := resolver(ctx, tableAddress)
+				if err != nil {
+					return nil, fmt.Errorf("resolve address table %s: %w", tableAddress, err)
+				}
+				writableIndexes, err := readLookupIndexes(message, &pos)
+				if err != nil {
+					return nil, fmt.Errorf("address table lookup %d writable indexes: %w", i, err)
+				}
+				readonlyIndexes, err := readLookupIndexes(message, &pos)
+				if err != nil {
+					return nil, fmt.Errorf("address table lookup %d readonly indexes: %w", i, err)
+				}
+				for _, index := range writableIndexes {
+					if index >= len(tableAddresses) {
+						return nil, fmt.Errorf("address table lookup %d writable index %d out of range", i, index)
+					}
+					accountKeys = append(accountKeys, tableAddresses[index])
+				}
+				for _, index := range readonlyIndexes {
+					if index >= len(tableAddresses) {
+						return nil, fmt.Errorf("address table lookup %d readonly index %d out of range", i, index)
+					}
+					accountKeys = append(accountKeys, tableAddresses[index])
+				}
+			}
 		}
+	} else if pos < len(message) {
+		return nil, fmt.Errorf("legacy Solana message has unexpected trailing data")
+	}
+
+	if pos != len(message) {
+		return nil, fmt.Errorf("Solana message has %d trailing bytes", len(message)-pos)
+	}
+
+	instructions := make([]solanaInstruction, 0, len(compiledInstructions))
+	for i, ix := range compiledInstructions {
+		if ix.ProgramIndex >= len(accountKeys) {
+			return nil, fmt.Errorf("instruction %d program index %d outside account keys", i, ix.ProgramIndex)
+		}
+		for _, accountIndex := range ix.Accounts {
+			if accountIndex >= len(accountKeys) {
+				return nil, fmt.Errorf("instruction %d account index %d outside account keys", i, accountIndex)
+			}
+		}
+		instructions = append(instructions, solanaInstruction{
+			ProgramID: accountKeys[ix.ProgramIndex],
+			Accounts:  ix.Accounts,
+			Data:      ix.Data,
+		})
 	}
 
 	return &solanaMessage{
 		RequiredSigners: requiredSigners,
-		StaticAccounts:  accounts,
+		StaticAccounts:  staticAccounts,
+		AccountKeys:     accountKeys,
 		Instructions:    instructions,
 	}, nil
+}
+
+func readLookupIndexes(data []byte, pos *int) ([]int, error) {
+	count, err := readCompactU16(data, pos)
+	if err != nil {
+		return nil, err
+	}
+	if *pos+count > len(data) {
+		return nil, fmt.Errorf("lookup indexes exceed message length")
+	}
+	indexes := make([]int, count)
+	for i := 0; i < count; i++ {
+		indexes[i] = int(data[*pos])
+		*pos = *pos + 1
+	}
+	return indexes, nil
+}
+
+func (c *Client) resolveLookupTableAddresses(ctx context.Context, tableAddress string) ([]string, error) {
+	if strings.TrimSpace(c.solanaRPC) == "" {
+		return nil, fmt.Errorf("solana_rpc is required")
+	}
+	req := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "getAccountInfo",
+		"params": []any{
+			tableAddress,
+			map[string]any{"encoding": "base64"},
+		},
+	}
+	var resp struct {
+		Result struct {
+			Value *struct {
+				Data json.RawMessage `json:"data"`
+			} `json:"value"`
+		} `json:"result"`
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := c.postJSON(ctx, c.solanaRPC, req, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Error != nil {
+		return nil, fmt.Errorf("solana rpc error %d: %s", resp.Error.Code, resp.Error.Message)
+	}
+	if resp.Result.Value == nil {
+		return nil, fmt.Errorf("lookup table account not found")
+	}
+	var dataTuple []string
+	if err := json.Unmarshal(resp.Result.Value.Data, &dataTuple); err != nil {
+		return nil, fmt.Errorf("decode lookup table account data tuple: %w", err)
+	}
+	if len(dataTuple) == 0 || strings.TrimSpace(dataTuple[0]) == "" {
+		return nil, fmt.Errorf("lookup table account returned empty data")
+	}
+	accountData, err := base64.StdEncoding.DecodeString(dataTuple[0])
+	if err != nil {
+		return nil, fmt.Errorf("decode lookup table account data: %w", err)
+	}
+	return parseLookupTableAccountAddresses(accountData)
+}
+
+func parseLookupTableAccountAddresses(data []byte) ([]string, error) {
+	const lookupTableMetaSize = 56
+	if len(data) < lookupTableMetaSize {
+		return nil, fmt.Errorf("lookup table account data too short: %d", len(data))
+	}
+	addressData := data[lookupTableMetaSize:]
+	if len(addressData)%32 != 0 {
+		return nil, fmt.Errorf("lookup table address data length %d is not a multiple of 32", len(addressData))
+	}
+	addresses := make([]string, 0, len(addressData)/32)
+	for len(addressData) > 0 {
+		addresses = append(addresses, base58.Encode(addressData[:32]))
+		addressData = addressData[32:]
+	}
+	return addresses, nil
 }
 
 func readCompactU16(data []byte, pos *int) (int, error) {

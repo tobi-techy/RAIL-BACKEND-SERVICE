@@ -23,11 +23,19 @@ type StreamEvent struct {
 // ChatStream streams a chat response via SSE. Tool calls are executed
 // non-streaming (up to 3 rounds), then the final answer is streamed.
 func (o *Orchestrator) ChatStream(ctx context.Context, userID uuid.UUID, message string, history []infraai.Message, emit func(StreamEvent)) error {
-	return o.chatStreamInternal(ctx, userID, uuid.Nil, message, history, emit)
+	return o.ChatStreamWithOptions(ctx, userID, message, history, ChatOptions{}, emit)
+}
+
+func (o *Orchestrator) ChatStreamWithOptions(ctx context.Context, userID uuid.UUID, message string, history []infraai.Message, opts ChatOptions, emit func(StreamEvent)) error {
+	return o.chatStreamInternal(ctx, userID, uuid.Nil, message, history, opts, emit)
 }
 
 // ChatStreamInConversation streams a chat response within a persisted conversation.
 func (o *Orchestrator) ChatStreamInConversation(ctx context.Context, userID uuid.UUID, conv *entities.AIConversation, message string, emit func(StreamEvent)) error {
+	return o.ChatStreamInConversationWithOptions(ctx, userID, conv, message, ChatOptions{}, emit)
+}
+
+func (o *Orchestrator) ChatStreamInConversationWithOptions(ctx context.Context, userID uuid.UUID, conv *entities.AIConversation, message string, opts ChatOptions, emit func(StreamEvent)) error {
 	var history []infraai.Message
 	if o.conversations != nil {
 		var err error
@@ -70,11 +78,11 @@ func (o *Orchestrator) ChatStreamInConversation(ctx context.Context, userID uuid
 		emit(event)
 	}
 
-	err := o.chatStreamInternal(ctx, userID, conv.ID, message, history, wrappedEmit)
+	err := o.chatStreamInternal(ctx, userID, conv.ID, message, history, opts, wrappedEmit)
 
 	// Persist exchange in background (best-effort, mirrors ChatWithConversation)
-	if o.conversations != nil {
-		content := accumulated.String()
+	content := accumulated.String()
+	if o.conversations != nil && err == nil && strings.TrimSpace(content) != "" {
 		tokens := totalTokens
 		model := modelUsed
 		if model == "" {
@@ -103,13 +111,13 @@ func (o *Orchestrator) ChatStreamInConversation(ctx context.Context, userID uuid
 	return err
 }
 
-func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uuid.UUID, message string, history []infraai.Message, emit func(StreamEvent)) error {
+func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uuid.UUID, message string, history []infraai.Message, opts ChatOptions, emit func(StreamEvent)) error {
 	start := time.Now()
 
 	streamer, ok := o.aiProvider.(infraai.StreamProvider)
 	if !ok {
 		// Fallback: non-streaming
-		resp, err := o.ChatInContext(ctx, userID, convID, message, history)
+		resp, err := o.ChatInContextWithOptions(ctx, userID, convID, message, history, opts)
 		if err != nil {
 			return err
 		}
@@ -133,6 +141,17 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 	}
 	if profileCtx := o.buildFinancialProfileContext(ctx, userID); profileCtx != "" {
 		messages = append(messages, infraai.Message{Role: "system", Content: profileCtx})
+	}
+	if o.memory != nil {
+		if memCtx := o.memory.BuildMemoryContextWithSummary(ctx, userID); memCtx != "" {
+			messages = append(messages, infraai.Message{Role: "system", Content: memCtx})
+		}
+		if toneCtx := o.memory.BuildToneContext(ctx, userID); toneCtx != "" {
+			messages = append(messages, infraai.Message{Role: "system", Content: toneCtx})
+		}
+	}
+	if toneModeCtx := buildToneModeContext(opts.ToneMode); toneModeCtx != "" {
+		messages = append(messages, infraai.Message{Role: "system", Content: toneModeCtx})
 	}
 
 	messages = append(messages, infraai.Message{Role: "user", Content: message})

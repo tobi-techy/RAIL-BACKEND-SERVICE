@@ -12,6 +12,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/autoinvest"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
+	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/metrics"
 	"github.com/shopspring/decimal"
@@ -459,12 +460,14 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 	if routeYield {
 		routeDepositID = *req.DepositID
 		if err := s.yieldRouter.EnsureDepositYieldRoute(ctx, req.UserID, routeDepositID, routeAmount, routeMetadata); err != nil {
-			s.logger.Error("Failed to create durable yield route after allocation ledger transfer",
+			// Non-fatal: ledger split is already committed. The async RouteDepositYield
+			// goroutine and its retry loop will handle routing. Don't block notification
+			// and event recording.
+			s.logger.Error("Failed to create durable yield route after allocation ledger transfer (non-fatal, will retry async)",
 				"user_id", req.UserID,
 				"deposit_id", routeDepositID,
 				"amount", routeAmount,
 				"error", err)
-			return fmt.Errorf("failed to create durable yield route: %w", err)
 		}
 	}
 
@@ -511,6 +514,21 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		metrics.Business.AllocationSpendAmount.Observe(spendingAmount.InexactFloat64())
 		metrics.Business.AllocationStashAmount.Observe(stashAmount.InexactFloat64())
 	}
+
+	// Track net inflow and AUM for Mixpanel
+	analytics.TrackEvent(ctx, req.UserID.String(), analytics.EventNetInflowRecorded, map[string]any{
+		"amount":         req.Amount.InexactFloat64(),
+		"spend_amount":   spendingAmount.InexactFloat64(),
+		"stash_amount":   stashAmount.InexactFloat64(),
+		"direction":      "inflow",
+		"event_type":     string(req.EventType),
+	})
+	analytics.G().Increment(ctx, req.UserID.String(), map[string]int{
+		analytics.PropTotalDeposits: 1,
+	})
+	analytics.G().Identify(ctx, req.UserID.String(), map[string]any{
+		analytics.PropLastDepositAt: time.Now().UTC().Format(time.RFC3339),
+	})
 
 	// Route the stash principal into the yield provider as soon as a Circle-backed
 	// deposit has been split. This is async because Circle transfer settlement and

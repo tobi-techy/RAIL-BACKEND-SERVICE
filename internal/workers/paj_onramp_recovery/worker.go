@@ -3,6 +3,7 @@ package paj_onramp_recovery
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -72,9 +73,10 @@ func (w *Worker) Stop() { close(w.stopCh) }
 func (w *Worker) recover(ctx context.Context) {
 	maxAgeSeconds := int(w.maxPendingAge.Seconds())
 
-	// Find onramp orders stuck in pending/processing with no deposit_id (not yet credited)
+	// Find onramp orders stuck in pending/processing with no deposit_id (not yet credited).
+	// Also pick up orders that received an unverified webhook (session was expired at the time).
 	rows, err := w.db.QueryContext(ctx, `
-		SELECT paj_order_id, user_id, fiat_amount, COALESCE(token_amount, 0), status
+		SELECT paj_order_id, user_id, fiat_amount, COALESCE(token_amount, 0), status, last_webhook_status
 		FROM paj_orders
 		WHERE order_type = 'onramp'
 		  AND status NOT IN ('completed', 'failed')
@@ -88,17 +90,18 @@ func (w *Worker) recover(ctx context.Context) {
 	defer rows.Close()
 
 	type stuckOrder struct {
-		PajOrderID  string
-		UserID      uuid.UUID
-		FiatAmount  float64
-		TokenAmount float64
-		Status      string
+		PajOrderID        string
+		UserID            uuid.UUID
+		FiatAmount        float64
+		TokenAmount       float64
+		Status            string
+		LastWebhookStatus *string
 	}
 
 	var stuck []stuckOrder
 	for rows.Next() {
 		var o stuckOrder
-		if err := rows.Scan(&o.PajOrderID, &o.UserID, &o.FiatAmount, &o.TokenAmount, &o.Status); err != nil {
+		if err := rows.Scan(&o.PajOrderID, &o.UserID, &o.FiatAmount, &o.TokenAmount, &o.Status, &o.LastWebhookStatus); err != nil {
 			w.logger.Error("paj onramp recovery: scan failed", zap.Error(err))
 			continue
 		}
@@ -112,8 +115,17 @@ func (w *Worker) recover(ctx context.Context) {
 	w.logger.Info("paj onramp recovery: found stuck orders", zap.Int("count", len(stuck)))
 
 	for _, o := range stuck {
+		// If we received an unverified webhook indicating completion, log it for manual review.
+		if o.LastWebhookStatus != nil && strings.Contains(*o.LastWebhookStatus, "unverified:COMPLETED") {
+			w.logger.Warn("paj onramp recovery: order has unverified COMPLETED webhook — needs manual credit or user re-auth",
+				zap.String("paj_order_id", o.PajOrderID),
+				zap.String("user_id", o.UserID.String()),
+				zap.Float64("fiat_amount", o.FiatAmount))
+			// Don't mark as failed — leave it for the user to poll when they re-authenticate.
+			continue
+		}
+
 		// Mark as failed after being stuck too long — user can retry
-		// We don't auto-credit because we can't verify payment without a PAJ session
 		_, err := w.db.ExecContext(ctx, `
 			UPDATE paj_orders
 			SET status = 'failed', updated_at = NOW(),

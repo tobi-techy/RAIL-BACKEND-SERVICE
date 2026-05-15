@@ -39,6 +39,29 @@ func NewWalletRepository(db *sql.DB, logger *zap.Logger) *WalletRepository {
 	}
 }
 
+func (r *WalletRepository) LockUserWalletProvisioning(ctx context.Context, userID uuid.UUID) (func(), error) {
+	conn, err := r.db.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get wallet lock connection: %w", err)
+	}
+
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock(hashtext('managed_wallets'), hashtext($1))`, userID.String()); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("failed to acquire wallet provisioning lock: %w", err)
+	}
+
+	unlock := func() {
+		if _, err := conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock(hashtext('managed_wallets'), hashtext($1))`, userID.String()); err != nil {
+			r.logger.Warn("Failed to release wallet provisioning lock", zap.Error(err), zap.String("user_id", userID.String()))
+		}
+		if err := conn.Close(); err != nil {
+			r.logger.Warn("Failed to close wallet lock connection", zap.Error(err), zap.String("user_id", userID.String()))
+		}
+	}
+
+	return unlock, nil
+}
+
 // Create creates a new managed wallet
 func (r *WalletRepository) Create(ctx context.Context, wallet *entities.ManagedWallet) error {
 	accountType := wallet.AccountType
@@ -183,7 +206,15 @@ func (r *WalletRepository) GetByUserAndChain(ctx context.Context, userID uuid.UU
 		SELECT id, user_id, COALESCE(wallet_set_id, '00000000-0000-0000-0000-000000000000') AS wallet_set_id, COALESCE(circle_wallet_id, '') AS circle_wallet_id, COALESCE(bridge_wallet_id, '') AS bridge_wallet_id, chain, 
 		       address, account_type, status, created_at, updated_at
 		FROM managed_wallets 
-		WHERE user_id = $1 AND chain = $2`
+		WHERE user_id = $1 AND chain = $2
+		ORDER BY
+			CASE
+				WHEN COALESCE(circle_wallet_id, '') <> '' AND account_type NOT IN ('bridge_wallet', 'liquidation_address') THEN 0
+				WHEN COALESCE(circle_wallet_id, '') <> '' THEN 1
+				ELSE 2
+			END,
+			updated_at DESC
+		LIMIT 1`
 
 	wallet := &entities.ManagedWallet{}
 
@@ -323,23 +354,43 @@ func (r *WalletRepository) Update(ctx context.Context, wallet *entities.ManagedW
 	if accountType == "" {
 		accountType = entities.AccountTypeEOA
 	}
+	provider := "circle"
+	if strings.TrimSpace(wallet.BridgeWalletID) != "" ||
+		accountType == entities.AccountTypeBridgeWallet ||
+		accountType == entities.AccountTypeLiquidationAddr {
+		provider = "bridge"
+	}
 
 	query := `
 		UPDATE managed_wallets SET 
 			wallet_set_id = $2, circle_wallet_id = $3, bridge_wallet_id = $4, chain = $5, 
-			address = $6, account_type = $7, status = $8, updated_at = $9
+			address = $6, account_type = $7, status = $8, updated_at = $9, provider = $10
 		WHERE id = $1`
+
+	var walletSetID interface{}
+	if wallet.WalletSetID != uuid.Nil {
+		walletSetID = wallet.WalletSetID
+	}
+	var circleWalletID interface{}
+	if wallet.CircleWalletID != "" {
+		circleWalletID = wallet.CircleWalletID
+	}
+	var bridgeWalletID interface{}
+	if wallet.BridgeWalletID != "" {
+		bridgeWalletID = wallet.BridgeWalletID
+	}
 
 	_, err := r.db.ExecContext(ctx, query,
 		wallet.ID,
-		wallet.WalletSetID,
-		wallet.CircleWalletID,
-		wallet.BridgeWalletID,
+		walletSetID,
+		circleWalletID,
+		bridgeWalletID,
 		string(wallet.Chain),
 		wallet.Address,
 		string(accountType),
 		string(wallet.Status),
 		time.Now(),
+		provider,
 	)
 
 	if err != nil {

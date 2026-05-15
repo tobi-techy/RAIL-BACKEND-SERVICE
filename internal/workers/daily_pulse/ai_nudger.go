@@ -27,10 +27,17 @@ func (n *AINudger) GenerateNudge(ctx context.Context, snapshot string) string {
 			Role:    "user",
 			Content: "Financial snapshot:\n" + snapshot,
 		}},
-		SystemPrompt: `You are Miriam, a witty money coach. Write ONE push notification (max 15 words) based on the user's financial snapshot. Be specific with their numbers. Sound like a sharp friend texting them, not an app. No emojis. No greetings. Just the one-liner.`,
-		MaxTokens:    60,
-		Temperature:  ai.Float64(0.9),
-		ModelHint:    "fast",
+		SystemPrompt: `You are Miriam, Rail's sharp but kind money coach. Write ONE habit-forming push notification body inspired by the best consumer app notifications, without copying any brand's wording. Rules:
+- 8 to 18 words.
+- Use the user's numbers when useful.
+- Sound like a clever friend with taste, not a corporate alert.
+- Create curiosity or a light reason to open Miriam chat.
+- Never shame, guilt, threaten, overpromise returns, or give investment advice.
+- No emojis, greetings, hashtags, or quotation marks.
+Return only the notification body.`,
+		MaxTokens:   60,
+		Temperature: ai.Float64(0.9),
+		ModelHint:   "fast",
 	})
 	if err != nil {
 		n.logger.Debug("ai nudge generation failed", zap.Error(err))

@@ -84,6 +84,7 @@ type WithdrawalStatus string
 
 const (
 	WithdrawalStatusInitiated            WithdrawalStatus = "initiated"             // Request created
+	WithdrawalStatusComplianceReview     WithdrawalStatus = "compliance_review"     // Held for compliance review
 	WithdrawalStatusPending              WithdrawalStatus = "pending"               // Sent to processor
 	WithdrawalStatusProcessing           WithdrawalStatus = "processing"            // Provider processing
 	WithdrawalStatusAwaitingConfirmation WithdrawalStatus = "awaiting_confirmation" // Waiting for on-chain/fiat confirmation
@@ -98,6 +99,7 @@ const (
 // ValidWithdrawalStatuses contains all valid withdrawal statuses
 var ValidWithdrawalStatuses = map[WithdrawalStatus]bool{
 	WithdrawalStatusInitiated:            true,
+	WithdrawalStatusComplianceReview:     true,
 	WithdrawalStatusPending:              true,
 	WithdrawalStatusProcessing:           true,
 	WithdrawalStatusAwaitingConfirmation: true,
@@ -111,7 +113,8 @@ var ValidWithdrawalStatuses = map[WithdrawalStatus]bool{
 
 // ValidWithdrawalTransitions defines allowed status transitions
 var ValidWithdrawalTransitions = map[WithdrawalStatus][]WithdrawalStatus{
-	WithdrawalStatusInitiated:            {WithdrawalStatusPending, WithdrawalStatusProcessing, WithdrawalStatusFailed, WithdrawalStatusCancelled},
+	WithdrawalStatusInitiated:            {WithdrawalStatusComplianceReview, WithdrawalStatusPending, WithdrawalStatusProcessing, WithdrawalStatusFailed, WithdrawalStatusCancelled},
+	WithdrawalStatusComplianceReview:     {WithdrawalStatusProcessing, WithdrawalStatusFailed, WithdrawalStatusCancelled},
 	WithdrawalStatusPending:              {WithdrawalStatusProcessing, WithdrawalStatusFailed, WithdrawalStatusTimeout, WithdrawalStatusCancelled},
 	WithdrawalStatusProcessing:           {WithdrawalStatusAwaitingConfirmation, WithdrawalStatusFailed, WithdrawalStatusReversed, WithdrawalStatusCancelled},
 	WithdrawalStatusAwaitingConfirmation: {WithdrawalStatusCompleted, WithdrawalStatusFailed, WithdrawalStatusTimeout},
@@ -166,29 +169,33 @@ func (s WithdrawalStatus) ValidateTransition(newStatus WithdrawalStatus) error {
 
 // Withdrawal represents a withdrawal request
 type Withdrawal struct {
-	ID                 uuid.UUID               `json:"id" db:"id"`
-	UserID             uuid.UUID               `json:"user_id" db:"user_id"`
-	WithdrawalType     WithdrawalType          `json:"withdrawal_type" db:"withdrawal_type"`
-	Currency           WithdrawalCurrency      `json:"currency" db:"currency"`
-	Amount             decimal.Decimal         `json:"amount" db:"amount"`
-	SourceAccount      WithdrawalSourceAccount `json:"source_account" db:"source_account"`
-	BridgeWalletID     *string                 `json:"bridge_wallet_id,omitempty" db:"bridge_wallet_id"`
-	DestinationType    DestinationType         `json:"destination_type" db:"destination_type"`
-	DestinationChain   string                  `json:"destination_chain" db:"destination_chain"`
-	DestinationAddress *string                 `json:"destination_address,omitempty" db:"destination_address"`
-	BankAccountID      *uuid.UUID              `json:"bank_account_id,omitempty" db:"bank_account_id"`
-	FeeAmount          decimal.Decimal         `json:"fee_amount" db:"fee_amount"`
-	FeeCurrency        WithdrawalCurrency      `json:"fee_currency" db:"fee_currency"`
-	Category           *string                 `json:"category,omitempty" db:"category"`
-	Narration          *string                 `json:"narration,omitempty" db:"narration"`
-	Status             WithdrawalStatus        `json:"status" db:"status"`
-	ProviderTransferID *string                 `json:"provider_transfer_id,omitempty" db:"bridge_transfer_id"`
-	TxHash             *string                 `json:"tx_hash,omitempty" db:"tx_hash"`
-	ErrorMessage       *string                 `json:"error_message,omitempty" db:"error_message"`
-	IdempotencyKey     *string                 `json:"idempotency_key,omitempty" db:"idempotency_key"`
-	CreatedAt          time.Time               `json:"created_at" db:"created_at"`
-	UpdatedAt          time.Time               `json:"updated_at" db:"updated_at"`
-	CompletedAt        *time.Time              `json:"completed_at,omitempty" db:"completed_at"`
+	ID                  uuid.UUID               `json:"id" db:"id"`
+	UserID              uuid.UUID               `json:"user_id" db:"user_id"`
+	WithdrawalType      WithdrawalType          `json:"withdrawal_type" db:"withdrawal_type"`
+	Currency            WithdrawalCurrency      `json:"currency" db:"currency"`
+	Amount              decimal.Decimal         `json:"amount" db:"amount"`
+	SourceAccount       WithdrawalSourceAccount `json:"source_account" db:"source_account"`
+	SourceChain         string                  `json:"source_chain,omitempty" db:"source_chain"`
+	SourceWalletAddress *string                 `json:"source_wallet_address,omitempty" db:"source_wallet_address"`
+	ProviderWalletType  string                  `json:"provider_wallet_type,omitempty" db:"provider_wallet_type"`
+	Emergency           bool                    `json:"emergency,omitempty" db:"emergency"`
+	BridgeWalletID      *string                 `json:"bridge_wallet_id,omitempty" db:"bridge_wallet_id"`
+	DestinationType     DestinationType         `json:"destination_type" db:"destination_type"`
+	DestinationChain    string                  `json:"destination_chain" db:"destination_chain"`
+	DestinationAddress  *string                 `json:"destination_address,omitempty" db:"destination_address"`
+	BankAccountID       *uuid.UUID              `json:"bank_account_id,omitempty" db:"bank_account_id"`
+	FeeAmount           decimal.Decimal         `json:"fee_amount" db:"fee_amount"`
+	FeeCurrency         WithdrawalCurrency      `json:"fee_currency" db:"fee_currency"`
+	Category            *string                 `json:"category,omitempty" db:"category"`
+	Narration           *string                 `json:"narration,omitempty" db:"narration"`
+	Status              WithdrawalStatus        `json:"status" db:"status"`
+	ProviderTransferID  *string                 `json:"provider_transfer_id,omitempty" db:"bridge_transfer_id"`
+	TxHash              *string                 `json:"tx_hash,omitempty" db:"tx_hash"`
+	ErrorMessage        *string                 `json:"error_message,omitempty" db:"error_message"`
+	IdempotencyKey      *string                 `json:"idempotency_key,omitempty" db:"idempotency_key"`
+	CreatedAt           time.Time               `json:"created_at" db:"created_at"`
+	UpdatedAt           time.Time               `json:"updated_at" db:"updated_at"`
+	CompletedAt         *time.Time              `json:"completed_at,omitempty" db:"completed_at"`
 }
 
 // Validate validates the withdrawal entity
@@ -235,20 +242,20 @@ func (w *Withdrawal) IsFiat() bool {
 
 // InitiateCryptoWithdrawalRequest represents a crypto withdrawal request
 type InitiateCryptoWithdrawalRequest struct {
-	UserID             uuid.UUID               `json:"user_id"`
-	Amount             decimal.Decimal         `json:"amount"`
-	Currency           WithdrawalCurrency      `json:"currency"`            // USDC, USDT, EURC, PYUSD, USDG
-	DestinationAddress string                  `json:"destination_address"`
-	DestinationChain   string                  `json:"destination_chain"`
-	SourceChain        string                  `json:"source_chain"`
-	SourceAccount      WithdrawalSourceAccount `json:"source_account"`
-	BridgeWalletID     string                  `json:"bridge_wallet_id"`
-	CircleWalletID     string                  `json:"circle_wallet_id"`
-	SourceWalletAddress string                 `json:"source_wallet_address"` // On-chain address for refunds
-	Category           string                  `json:"category,omitempty"`
-	Narration          string                  `json:"narration,omitempty"`
-	Emergency          bool                    `json:"emergency"` // If true, bypass stash lock with penalty fee
-	IdempotencyKey     string                  // Generated server-side
+	UserID              uuid.UUID               `json:"user_id"`
+	Amount              decimal.Decimal         `json:"amount"`
+	Currency            WithdrawalCurrency      `json:"currency"` // USDC, USDT, EURC, PYUSD, USDG
+	DestinationAddress  string                  `json:"destination_address"`
+	DestinationChain    string                  `json:"destination_chain"`
+	SourceChain         string                  `json:"source_chain"`
+	SourceAccount       WithdrawalSourceAccount `json:"source_account"`
+	BridgeWalletID      string                  `json:"bridge_wallet_id"`
+	CircleWalletID      string                  `json:"circle_wallet_id"`
+	SourceWalletAddress string                  `json:"source_wallet_address"` // On-chain address for refunds
+	Category            string                  `json:"category,omitempty"`
+	Narration           string                  `json:"narration,omitempty"`
+	Emergency           bool                    `json:"emergency"` // If true, bypass stash lock with penalty fee
+	IdempotencyKey      string                  // Generated server-side
 }
 
 // Validate validates the crypto withdrawal request

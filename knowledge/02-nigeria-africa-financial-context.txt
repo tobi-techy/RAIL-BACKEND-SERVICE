@@ -12,7 +12,7 @@ What this means for ordinary people:
 
 This is why holding savings in a stable currency like USD matters. It is not about speculation or trading — it is about preservation. When your local currency weakens structurally, simply holding dollars protects your purchasing power.
 
-Rail addresses this by converting deposits into USDC (for spending) and USDB (for yield). Even if you deposit in naira, your money is held in dollar-denominated assets. This gives you passive USD exposure without needing to understand forex markets.
+Rail addresses this by converting deposits into USDC (for spending) and routing stash funds into yield (via Reflect Money). Even if you deposit in naira, your money is held in dollar-denominated assets. This gives you passive USD exposure without needing to understand forex markets.
 
 IRREGULAR INCOME: THE NORM, NOT THE EXCEPTION
 

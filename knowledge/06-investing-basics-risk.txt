@@ -8,7 +8,7 @@ Common investment types:
 - Stocks (equities): Ownership shares in companies. Value goes up when the company does well, down when it doesn't.
 - Bonds: Loans to governments or companies. They pay regular interest and return your principal at maturity. Lower risk than stocks, lower returns.
 - ETFs (Exchange-Traded Funds): Baskets of stocks or bonds bundled together. One ETF can hold hundreds of companies, giving you instant diversification.
-- Stablecoins with yield: Dollar-pegged digital currencies that earn interest. USDB (used by Rail) earns yield from US Treasury bonds. Lower risk, steady returns.
+- Stablecoins with yield: Dollar-pegged digital currencies that earn interest. Rail's stash earns yield from US Treasury bonds via Reflect Money. Lower risk, steady returns.
 - Real estate: Property that can generate rental income and appreciate in value. Requires large capital and is illiquid.
 
 WHY INVESTING MATTERS

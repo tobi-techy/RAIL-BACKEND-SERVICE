@@ -47,9 +47,10 @@ type ChainRailsHandlers struct {
 	crClient          *chainrails.Client
 	fundingService    *funding.Service
 	withdrawalService ChainRailsWithdrawalService
+	sweepService      ChainRailsSweepService
 	walletLookup      ChainRailsWalletLookup
 	webhookSecret     string
-	destinationChain  string // e.g. "BASE_MAINNET" or "BASE_TESTNET"
+	destinationChain  string // e.g. "SOLANA_MAINNET"
 	logger            *logger.Logger
 }
 
@@ -63,6 +64,12 @@ type ChainRailsWalletLookup interface {
 type ChainRailsWithdrawalService interface {
 	CompleteChainRailsWithdrawal(ctx context.Context, intentID int, txHash string) error
 	RefundChainRailsWithdrawal(ctx context.Context, intentID int) error
+}
+
+// ChainRailsSweepService handles deposit sweep webhook callbacks.
+type ChainRailsSweepService interface {
+	CompleteSweep(ctx context.Context, intentAddress, txHash string) error
+	FailSweep(ctx context.Context, intentAddress, reason string) error
 }
 
 func NewChainRailsHandlers(
@@ -89,6 +96,11 @@ func (h *ChainRailsHandlers) SetWithdrawalService(ws ChainRailsWithdrawalService
 // SetWalletLookup wires the wallet service for deposit address resolution.
 func (h *ChainRailsHandlers) SetWalletLookup(wl ChainRailsWalletLookup) {
 	h.walletLookup = wl
+}
+
+// SetSweepService wires the deposit sweep service for webhook handling.
+func (h *ChainRailsHandlers) SetSweepService(ss ChainRailsSweepService) {
+	h.sweepService = ss
 }
 
 // --- POST /v1/funding/chainrails/session ---
@@ -196,8 +208,8 @@ func (h *ChainRailsHandlers) HandleWebhook(c *gin.Context) {
 	const maxPayloadSize = 1024 * 1024 // 1MB
 	if len(rawBody) > maxPayloadSize {
 		chainrailsWebhooksTotal.WithLabelValues("unknown", "payload_too_large").Inc()
-		h.logger.Warn("ChainRails webhook payload too large", 
-			"size", len(rawBody), 
+		h.logger.Warn("ChainRails webhook payload too large",
+			"size", len(rawBody),
 			"max_size", maxPayloadSize,
 			"client_ip", c.ClientIP(),
 			"user_agent", c.GetHeader("User-Agent"))
@@ -210,7 +222,7 @@ func (h *ChainRailsHandlers) HandleWebhook(c *gin.Context) {
 
 	if err := chainrails.VerifyWebhookSignature(rawBody, sig, ts, h.webhookSecret); err != nil {
 		chainrailsWebhooksTotal.WithLabelValues("unknown", "unauthorized").Inc()
-		h.logger.Warn("ChainRails webhook signature invalid", 
+		h.logger.Warn("ChainRails webhook signature invalid",
 			"error", err,
 			"client_ip", c.ClientIP(),
 			"user_agent", c.GetHeader("User-Agent"))
@@ -228,10 +240,14 @@ func (h *ChainRailsHandlers) HandleWebhook(c *gin.Context) {
 	switch event.Type {
 	case "intent.completed":
 		chainrailsWebhooksTotal.WithLabelValues("intent.completed", "received").Inc()
-		// Check metadata to distinguish deposit vs withdrawal intents
+		// Check metadata to distinguish deposit vs withdrawal vs sweep intents
 		if event.Data.Metadata != nil {
 			if _, isWithdrawal := event.Data.Metadata["withdrawal_id"]; isWithdrawal {
 				h.handleWithdrawalIntentCompleted(c, &event)
+				return
+			}
+			if event.Data.Metadata["type"] == "deposit_sweep" {
+				h.handleSweepIntentCompleted(c, &event)
 				return
 			}
 		}
@@ -241,6 +257,10 @@ func (h *ChainRailsHandlers) HandleWebhook(c *gin.Context) {
 		if event.Data.Metadata != nil {
 			if _, isWithdrawal := event.Data.Metadata["withdrawal_id"]; isWithdrawal {
 				h.handleWithdrawalIntentRefunded(c, &event)
+				return
+			}
+			if event.Data.Metadata["type"] == "deposit_sweep" {
+				h.handleSweepIntentRefunded(c, &event)
 				return
 			}
 		}
@@ -260,6 +280,16 @@ func (h *ChainRailsHandlers) HandleWebhook(c *gin.Context) {
 
 func (h *ChainRailsHandlers) handleIntentCompleted(c *gin.Context, event *chainrails.WebhookEvent) {
 	data := event.Data
+
+	// Safety guard: reject sweep intents that leaked past the metadata check
+	if data.Metadata != nil {
+		if data.Metadata["type"] == "deposit_sweep" || data.Metadata["sweep_id"] != "" {
+			h.logger.Warn("Sweep intent leaked to handleIntentCompleted — rerouting",
+				"event_id", event.ID, "intent_address", data.IntentAddress)
+			h.handleSweepIntentCompleted(c, event)
+			return
+		}
+	}
 
 	// Parse block time from event data or fall back to event creation time
 	var blockTime time.Time
@@ -387,6 +417,38 @@ func (h *ChainRailsHandlers) handleWithdrawalIntentRefunded(c *gin.Context, even
 	c.JSON(http.StatusOK, gin.H{"received": true})
 }
 
+func (h *ChainRailsHandlers) handleSweepIntentCompleted(c *gin.Context, event *chainrails.WebhookEvent) {
+	if h.sweepService == nil {
+		h.logger.Warn("Sweep service not configured — acknowledging webhook")
+		c.JSON(http.StatusOK, gin.H{"received": true})
+		return
+	}
+	if err := h.sweepService.CompleteSweep(c.Request.Context(), event.Data.IntentAddress, event.Data.TxHash); err != nil {
+		h.logger.Error("Failed to complete deposit sweep",
+			"event_id", event.ID, "intent_address", event.Data.IntentAddress, "error", err)
+		chainrailsWebhooksTotal.WithLabelValues("intent.completed", "sweep_error").Inc()
+		c.JSON(http.StatusOK, gin.H{"received": true, "status": "error"})
+		return
+	}
+	chainrailsWebhooksTotal.WithLabelValues("intent.completed", "sweep_success").Inc()
+	c.JSON(http.StatusOK, gin.H{"received": true})
+}
+
+func (h *ChainRailsHandlers) handleSweepIntentRefunded(c *gin.Context, event *chainrails.WebhookEvent) {
+	if h.sweepService == nil {
+		h.logger.Warn("Sweep service not configured — acknowledging webhook")
+		c.JSON(http.StatusOK, gin.H{"received": true})
+		return
+	}
+	reason := "intent refunded"
+	if err := h.sweepService.FailSweep(c.Request.Context(), event.Data.IntentAddress, reason); err != nil {
+		h.logger.Error("Failed to mark deposit sweep as failed",
+			"event_id", event.ID, "intent_address", event.Data.IntentAddress, "error", err)
+	}
+	chainrailsWebhooksTotal.WithLabelValues("intent.refunded", "sweep_failed").Inc()
+	c.JSON(http.StatusOK, gin.H{"received": true})
+}
+
 // mapToken converts a token contract address or symbol to Rail's Stablecoin type.
 func mapToken(tokenOut string) entities.Stablecoin {
 	lower := strings.ToLower(tokenOut)
@@ -431,6 +493,8 @@ func usdcTokenForChainRailsChain(chain string) string {
 // mapChainRailsChain converts ChainRails chain names to Rail's Chain type.
 func mapChainRailsChain(cr string) entities.Chain {
 	switch cr {
+	case "SOLANA_MAINNET", "SOLANA_TESTNET":
+		return entities.ChainSOL
 	case "ETHEREUM_MAINNET", "ETHEREUM_TESTNET":
 		return entities.ChainETH
 	case "BASE_MAINNET", "BASE_TESTNET":

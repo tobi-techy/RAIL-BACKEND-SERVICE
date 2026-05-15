@@ -1457,7 +1457,7 @@ func (r *UserRepository) ValidatePasswordResetToken(ctx context.Context, rawToke
 	// Fast lookup by selector with row lock (FOR UPDATE)
 	query := `
 		SELECT id, user_id, token_hash 
-		FROM password_reset_tokens 
+		FROM password_reset_tokens
 		WHERE selector = $1 AND expires_at > NOW() AND used_at IS NULL
 		FOR UPDATE`
 
@@ -1495,8 +1495,10 @@ func (r *UserRepository) ValidatePasswordResetToken(ctx context.Context, rawToke
 	return userID, nil
 }
 
-// ValidatePasswordResetOTP validates a 6-digit OTP by email (selector) and marks as used
-func (r *UserRepository) ValidatePasswordResetOTP(ctx context.Context, email, code string) (uuid.UUID, error) {
+const maxPasswordResetAttempts = 3
+
+// ValidatePasswordResetOTP validates a password reset OTP/token by selector and marks it as used.
+func (r *UserRepository) ValidatePasswordResetOTP(ctx context.Context, selector, code string) (uuid.UUID, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to begin transaction: %w", err)
@@ -1504,7 +1506,7 @@ func (r *UserRepository) ValidatePasswordResetOTP(ctx context.Context, email, co
 	defer tx.Rollback()
 
 	query := `
-		SELECT id, user_id, token_hash 
+		SELECT id, user_id, token_hash, attempts
 		FROM password_reset_tokens 
 		WHERE selector = $1 AND expires_at > NOW() AND used_at IS NULL
 		ORDER BY created_at DESC LIMIT 1
@@ -1512,7 +1514,8 @@ func (r *UserRepository) ValidatePasswordResetOTP(ctx context.Context, email, co
 
 	var tokenID, userID uuid.UUID
 	var storedHash string
-	err = tx.QueryRowContext(ctx, query, email).Scan(&tokenID, &userID, &storedHash)
+	var attempts int
+	err = tx.QueryRowContext(ctx, query, selector).Scan(&tokenID, &userID, &storedHash, &attempts)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return uuid.Nil, fmt.Errorf("invalid or expired code")
@@ -1521,6 +1524,17 @@ func (r *UserRepository) ValidatePasswordResetOTP(ctx context.Context, email, co
 	}
 
 	if bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(code)) != nil {
+		attempts++
+		if attempts >= maxPasswordResetAttempts {
+			if _, err := tx.ExecContext(ctx, `UPDATE password_reset_tokens SET attempts = $2, used_at = NOW() WHERE id = $1`, tokenID, attempts); err != nil {
+				return uuid.Nil, fmt.Errorf("failed to invalidate reset token: %w", err)
+			}
+		} else if _, err := tx.ExecContext(ctx, `UPDATE password_reset_tokens SET attempts = $2 WHERE id = $1`, tokenID, attempts); err != nil {
+			return uuid.Nil, fmt.Errorf("failed to record reset attempt: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return uuid.Nil, fmt.Errorf("failed to commit: %w", err)
+		}
 		return uuid.Nil, fmt.Errorf("invalid or expired code")
 	}
 

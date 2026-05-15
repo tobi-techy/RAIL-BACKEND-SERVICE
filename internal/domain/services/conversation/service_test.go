@@ -237,6 +237,7 @@ func TestServiceBuildContextWithToolCalls(t *testing.T) {
 
 	// Assistant message should have ToolCalls reconstructed
 	assert.Equal(t, "assistant", msgs[0].Role)
+	assert.Equal(t, "Calling tools...", msgs[0].Content)
 	require.Len(t, msgs[0].ToolCalls, 1)
 	assert.Equal(t, "call_abc", msgs[0].ToolCalls[0].ID)
 	assert.Equal(t, "get_balance", msgs[0].ToolCalls[0].Name)
@@ -246,6 +247,39 @@ func TestServiceBuildContextWithToolCalls(t *testing.T) {
 	assert.Equal(t, "tool", msgs[1].Role)
 	assert.Equal(t, "call_abc", msgs[1].ToolCallID)
 	assert.Equal(t, "get_balance", msgs[1].Name)
+}
+
+func TestServiceBuildContextSkipsEmptyAssistantMessages(t *testing.T) {
+	repo := newMockRepo()
+	svc := NewService(repo, nil, zap.NewNop())
+
+	convID := uuid.New()
+	conv := &entities.AIConversation{ID: convID, UserID: uuid.New()}
+	require.NoError(t, repo.CreateConversation(context.Background(), conv))
+
+	require.NoError(t, repo.CreateMessage(context.Background(), &entities.AIMessage{
+		ConversationID: convID,
+		Role:           "user",
+		Content:        "hello",
+	}))
+	require.NoError(t, repo.CreateMessage(context.Background(), &entities.AIMessage{
+		ConversationID: convID,
+		Role:           "assistant",
+		Content:        "",
+	}))
+	require.NoError(t, repo.CreateMessage(context.Background(), &entities.AIMessage{
+		ConversationID: convID,
+		Role:           "user",
+		Content:        "what's my balance?",
+	}))
+
+	msgs, err := svc.BuildContext(context.Background(), conv)
+	require.NoError(t, err)
+	require.Len(t, msgs, 2)
+	assert.Equal(t, "user", msgs[0].Role)
+	assert.Equal(t, "hello", msgs[0].Content)
+	assert.Equal(t, "user", msgs[1].Role)
+	assert.Equal(t, "what's my balance?", msgs[1].Content)
 }
 
 func TestServiceRecordExchange(t *testing.T) {
