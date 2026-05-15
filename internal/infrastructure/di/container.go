@@ -3549,7 +3549,7 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 	if c.AutomationService != nil {
 		c.AutomationService.SetCardController(&automationCardControllerAdapter{card: c.CardService})
 	}
-	if c.MoneyGuardService != nil {
+	if c.MoneyGuardService != nil && c.CardService != nil {
 		c.CardService.SetMoneyGuard(&cardMoneyGuardAdapter{service: c.MoneyGuardService})
 	}
 
