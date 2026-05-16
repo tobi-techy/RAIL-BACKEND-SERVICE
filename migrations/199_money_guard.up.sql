@@ -31,7 +31,10 @@ CREATE TABLE IF NOT EXISTS spending_caps (
 );
 
 CREATE INDEX IF NOT EXISTS idx_spending_caps_user_active
-    ON spending_caps(user_id, is_active, scope);
+    ON spending_caps(user_id, is_active, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_spending_caps_user_scope
+    ON spending_caps(user_id, scope) WHERE is_active = TRUE;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_spending_caps_user_scope_unique
     ON spending_caps(user_id, scope, scope_value, period) WHERE is_active = TRUE;

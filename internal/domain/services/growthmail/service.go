@@ -59,6 +59,12 @@ func (s *Service) SendDue(ctx context.Context, now time.Time) (int, int, error) 
 
 	sent, failed := 0, 0
 	for _, c := range candidates {
+		select {
+		case <-ctx.Done():
+			s.logger.Warn("growth mail interrupted", zap.Int("sent", sent), zap.Int("failed", failed), zap.Int("remaining", len(candidates)-sent-failed))
+			return sent, failed, ctx.Err()
+		default:
+		}
 		campaign, ok, err := s.nextUnsentCampaign(ctx, c, now)
 		if err != nil {
 			failed++
