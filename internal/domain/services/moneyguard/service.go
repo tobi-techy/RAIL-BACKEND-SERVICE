@@ -502,6 +502,7 @@ func (s *Service) HabitScore(ctx context.Context, userID uuid.UUID, safe entitie
 		monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 		if budget, err := s.budgets.GetByUserID(ctx, userID); err == nil && budget != nil && budget.MonthlyLimit.IsPositive() {
 			if summary, err := s.spending.GetSummary(ctx, userID, monthStart, now); err == nil {
+				// Safe: IsPositive() above guarantees MonthlyLimit > 0, no division by zero.
 				pct := summary.Total.Div(budget.MonthlyLimit).Mul(decimal.NewFromInt(100))
 				if pct.GreaterThan(decimal.NewFromInt(100)) {
 					score -= 25
