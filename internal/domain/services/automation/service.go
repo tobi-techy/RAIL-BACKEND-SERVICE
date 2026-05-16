@@ -523,8 +523,8 @@ func (s *Service) executePauseCardCooldown(ctx context.Context, a *entities.Miri
 }
 
 // PauseUserCards freezes the user's first card and schedules an automatic
-// unfreeze. This is used by Money Guard real-time interventions outside the
-// automation rule engine.
+// PauseUserCards freezes all user cards with a scheduled auto-unfreeze.
+// Authorization: must only be called by internal services (Money Guard) after validating context.
 func (s *Service) PauseUserCards(ctx context.Context, userID uuid.UUID, cooldownMinutes int, reason string) error {
 	if s.card == nil {
 		return fmt.Errorf("card controller not configured")
@@ -536,13 +536,16 @@ func (s *Service) PauseUserCards(ctx context.Context, userID uuid.UUID, cooldown
 	if err != nil || len(cardIDs) == 0 {
 		return fmt.Errorf("no cards found for user")
 	}
-	cardID := cardIDs[0]
-	if err := s.card.FreezeCard(ctx, userID, cardID); err != nil {
-		return fmt.Errorf("freeze card: %w", err)
-	}
 	unfreezeAt := time.Now().Add(time.Duration(cooldownMinutes) * time.Minute)
-	if err := s.repo.InsertPendingUnfreeze(ctx, userID, cardID, uuid.Nil, unfreezeAt); err != nil {
-		return fmt.Errorf("schedule card unfreeze: %w", err)
+	for _, cardID := range cardIDs {
+		if err := s.card.FreezeCard(ctx, userID, cardID); err != nil {
+			return fmt.Errorf("freeze card %s: %w", cardID, err)
+		}
+		if err := s.repo.InsertPendingUnfreeze(ctx, userID, cardID, uuid.Nil, unfreezeAt); err != nil {
+			// Rollback: unfreeze the card we just froze
+			_ = s.card.UnfreezeCard(ctx, userID, cardID)
+			return fmt.Errorf("schedule card unfreeze: %w", err)
+		}
 	}
 	if s.notifier != nil {
 		msg := reason

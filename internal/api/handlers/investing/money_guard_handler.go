@@ -48,7 +48,8 @@ func (h *MoneyGuardHandler) UpdateSettings(c *gin.Context) {
 	}
 	result, err := h.service.UpdateSettings(c.Request.Context(), userID, req)
 	if err != nil {
-		common.SendBadRequest(c, common.ErrCodeValidationError, err.Error())
+		h.logger.Error("update settings failed", zap.Error(err), zap.String("user_id", userID.String()))
+		common.SendInternalError(c, common.ErrCodeInternalError, "failed to update settings")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": result})
@@ -67,7 +68,8 @@ func (h *MoneyGuardHandler) CreateCap(c *gin.Context) {
 	}
 	result, err := h.service.CreateCap(c.Request.Context(), userID, req)
 	if err != nil {
-		common.SendBadRequest(c, common.ErrCodeValidationError, err.Error())
+		h.logger.Error("create cap failed", zap.Error(err), zap.String("user_id", userID.String()))
+		common.SendInternalError(c, common.ErrCodeInternalError, "failed to create spending cap")
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": result})

@@ -45,11 +45,11 @@ func (w *Worker) runIfDue(ctx context.Context) {
 		return
 	}
 
-	w.lastRun = today
 	sent, failed, err := w.service.SendDue(ctx, now)
 	if err != nil {
 		w.logger.Error("Growth mail run failed", zap.Error(err))
 		return
 	}
+	w.lastRun = today
 	w.logger.Info("Growth mail run complete", zap.Int("sent", sent), zap.Int("failed", failed))
 }
