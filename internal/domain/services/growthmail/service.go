@@ -35,6 +35,9 @@ type Service struct {
 }
 
 func NewService(repo CandidateRepository, email EmailSender, cfg Config, logger *zap.Logger) *Service {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	if cfg.Limit <= 0 {
 		cfg.Limit = 500
 	}

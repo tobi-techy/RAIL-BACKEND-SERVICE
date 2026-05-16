@@ -7,7 +7,8 @@ CREATE TABLE IF NOT EXISTS money_guard_settings (
         CHECK (stash_raid_limit_per_month BETWEEN 0 AND 20),
     card_cooldown_minutes INTEGER NOT NULL DEFAULT 30
         CHECK (card_cooldown_minutes BETWEEN 0 AND 1440),
-    safe_to_spend_floor NUMERIC(20, 2) NOT NULL DEFAULT 10,
+    safe_to_spend_floor NUMERIC(20, 2) NOT NULL DEFAULT 10
+        CHECK (safe_to_spend_floor >= 0),
     recovery_mode_until TIMESTAMPTZ,
     last_weekly_autopsy_sent_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -31,6 +32,9 @@ CREATE TABLE IF NOT EXISTS spending_caps (
 
 CREATE INDEX IF NOT EXISTS idx_spending_caps_user_active
     ON spending_caps(user_id, is_active, scope);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_spending_caps_user_scope_unique
+    ON spending_caps(user_id, scope, scope_value, period) WHERE is_active = TRUE;
 
 CREATE TABLE IF NOT EXISTS money_guard_events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -315,7 +315,10 @@ func (s *Service) EvaluateCardTransaction(ctx context.Context, userID uuid.UUID,
 	if err != nil {
 		return nil, err
 	}
-	caps, _ := s.repo.ListCaps(ctx, userID, true)
+	caps, err := s.repo.ListCaps(ctx, userID, true)
+	if err != nil {
+		return nil, fmt.Errorf("list caps: %w", err)
+	}
 	triggered := s.triggeredCaps(ctx, userID, caps, input)
 	reasons := make([]string, 0, len(triggered)+2)
 	for _, cap := range triggered {
@@ -572,7 +575,7 @@ func (s *Service) triggeredCaps(ctx context.Context, userID uuid.UUID, caps []en
 				}
 			}
 		}
-		if used.GreaterThan(cap.LimitAmount) {
+		if used.Add(input.Amount).GreaterThan(cap.LimitAmount) {
 			triggered = append(triggered, cap)
 		}
 	}

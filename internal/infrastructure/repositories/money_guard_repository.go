@@ -106,7 +106,9 @@ func (r *MoneyGuardRepository) DeleteCap(ctx context.Context, userID, id uuid.UU
 	if err != nil {
 		return fmt.Errorf("delete cap: %w", err)
 	}
-	if rows, _ := res.RowsAffected(); rows == 0 {
+	if rows, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("check rows affected: %w", err)
+	} else if rows == 0 {
 		return sql.ErrNoRows
 	}
 	return nil

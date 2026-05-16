@@ -101,6 +101,7 @@ type Service struct {
 	ledgerService       LedgerService
 	notificationService CardNotificationService
 	moneyGuard          MoneyGuardEvaluator
+	moneyGuardSem       chan struct{}
 	gameplayHooks       CardGameplayHooks
 	logger              *zap.Logger
 	defaultChain        string
@@ -123,6 +124,7 @@ func NewService(
 		userProvider:    userProvider,
 		walletProvider:  walletProvider,
 		balanceProvider: balanceProvider,
+		moneyGuardSem:   make(chan struct{}, 100),
 		logger:          logger,
 		defaultChain:    string(entities.WalletChainSolana), // Keep card funding chain aligned with Bridge card rail
 	}
@@ -482,22 +484,30 @@ func (s *Service) RecordTransaction(ctx context.Context, bridgeCardID, bridgeTra
 			}()
 		}
 		if s.moneyGuard != nil {
-			go func() {
-				bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-				defer cancel()
-				if err := s.moneyGuard.EvaluateCardTransaction(bgCtx, card.UserID, MoneyGuardTransactionInput{
-					Amount:    amount,
-					Currency:  card.Currency,
-					Merchant:  merchantName,
-					Category:  merchantCategory,
-					Reference: bridgeTransID,
-				}); err != nil {
-					s.logger.Warn("money guard transaction evaluation failed",
-						zap.String("user_id", card.UserID.String()),
-						zap.String("transaction_id", bridgeTransID),
-						zap.Error(err))
-				}
-			}()
+			select {
+			case s.moneyGuardSem <- struct{}{}:
+				go func() {
+					defer func() { <-s.moneyGuardSem }()
+					bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+					defer cancel()
+					if err := s.moneyGuard.EvaluateCardTransaction(bgCtx, card.UserID, MoneyGuardTransactionInput{
+						Amount:    amount,
+						Currency:  card.Currency,
+						Merchant:  merchantName,
+						Category:  merchantCategory,
+						Reference: bridgeTransID,
+					}); err != nil {
+						s.logger.Warn("money guard transaction evaluation failed",
+							zap.String("user_id", card.UserID.String()),
+							zap.String("transaction_id", bridgeTransID),
+							zap.Error(err))
+					}
+				}()
+			default:
+				s.logger.Warn("money guard semaphore full, skipping evaluation",
+					zap.String("user_id", card.UserID.String()),
+					zap.String("transaction_id", bridgeTransID))
+			}
 		}
 		// Gameplay: check if first card transaction
 		if s.gameplayHooks != nil {
