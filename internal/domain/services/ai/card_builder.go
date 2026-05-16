@@ -51,6 +51,16 @@ func buildCardsFromToolResults(results []ToolResult) []entities.InsightCard {
 			cards = append(cards, buildFinancialAdviceCard(tr.Result))
 		case ToolGetFinancialTimeline:
 			cards = append(cards, buildFinancialTimelineCard(tr.Result))
+		case ToolGetSubscriptions:
+			cards = append(cards, BuildSubscriptionAuditCard(tr.Result))
+		case ToolGetRunway:
+			cards = append(cards, BuildRunwayCard(tr.Result))
+		case ToolGetDepositPattern:
+			cards = append(cards, BuildDepositPatternCard(tr.Result))
+		case ToolGetYieldSummary:
+			cards = append(cards, BuildYieldSummaryCard(tr.Result))
+		case ToolGetSpendingComparison:
+			cards = append(cards, BuildComparisonCard(tr.Result))
 		}
 	}
 	return cards
@@ -627,4 +637,190 @@ func percentDecimal(part, total decimal.Decimal) decimal.Decimal {
 		return decimal.Zero
 	}
 	return part.Div(total).Mul(decimal.NewFromInt(100))
+}
+
+// ─── New Card Builders ────────────────────────────────────────────────────────
+
+// BuildTipCard creates a contextual financial tip card.
+func BuildTipCard(emoji, title, message, severity string) entities.InsightCard {
+	if severity == "" {
+		severity = "info"
+	}
+	return entities.InsightCard{
+		Type:  "tip",
+		Title: title,
+		Data: entities.TipData{
+			Emoji:    emoji,
+			Message:  message,
+			Severity: severity,
+		},
+	}
+}
+
+// BuildSubscriptionAuditCard creates a subscription analysis card from detected recurring charges.
+func BuildSubscriptionAuditCard(data map[string]interface{}) entities.InsightCard {
+	subs := toMapSlice(data["subscriptions"])
+	totalMonthly := decimalFromString(str(data, "total_monthly"))
+	totalYearly := decimalFromString(str(data, "total_yearly"))
+
+	items := make([]entities.SubscriptionItem, 0, len(subs))
+	for _, s := range subs {
+		items = append(items, entities.SubscriptionItem{
+			Name:      str(s, "name"),
+			Amount:    decimalFromString(str(s, "amount")),
+			Frequency: str(s, "frequency"),
+			Category:  str(s, "category"),
+			Status:    str(s, "status"),
+		})
+	}
+
+	return entities.InsightCard{
+		Type:  "subscription_audit",
+		Title: "Subscriptions",
+		Data: entities.SubscriptionAuditData{
+			TotalMonthly:  totalMonthly,
+			TotalYearly:   totalYearly,
+			Subscriptions: items,
+			SavingsTip:    str(data, "savings_tip"),
+		},
+	}
+}
+
+// BuildRunwayCard creates a runway card showing how long money lasts.
+func BuildRunwayCard(data map[string]interface{}) entities.InsightCard {
+	months := num(data, "months")
+	days := num(data, "days")
+	status := str(data, "status")
+	if status == "" {
+		switch {
+		case months >= 6:
+			status = "healthy"
+		case months >= 2:
+			status = "caution"
+		default:
+			status = "critical"
+		}
+	}
+
+	sentiment := "positive"
+	if status == "critical" {
+		sentiment = "negative"
+	} else if status == "caution" {
+		sentiment = "neutral"
+	}
+
+	return entities.InsightCard{
+		Type:      "runway",
+		Title:     "Financial Runway",
+		Sentiment: sentiment,
+		Data: entities.RunwayData{
+			Months:       months,
+			Days:         days,
+			Status:       status,
+			DailyBurn:    decimalFromString(str(data, "daily_burn")),
+			Balance:      decimalFromString(str(data, "balance")),
+			ProjectedEnd: str(data, "projected_end"),
+		},
+	}
+}
+
+// BuildDepositPatternCard creates a deposit frequency/consistency card.
+func BuildDepositPatternCard(data map[string]interface{}) entities.InsightCard {
+	history := toMapSlice(data["history"])
+	points := make([]entities.ChartPoint, 0, len(history))
+	for _, h := range history {
+		val := decimalFromString(str(h, "amount"))
+		points = append(points, entities.ChartPoint{Label: str(h, "date"), Value: val})
+	}
+
+	consistency := num(data, "consistency")
+	sentiment := "positive"
+	if consistency < 50 {
+		sentiment = "negative"
+	} else if consistency < 75 {
+		sentiment = "neutral"
+	}
+
+	return entities.InsightCard{
+		Type:      "deposit_pattern",
+		Title:     "Deposit Pattern",
+		Sentiment: sentiment,
+		Data: entities.DepositPatternData{
+			Frequency:     str(data, "frequency"),
+			AverageAmount: decimalFromString(str(data, "average_amount")),
+			LastDeposit:   str(data, "last_deposit"),
+			NextExpected:  str(data, "next_expected"),
+			Streak:        num(data, "streak"),
+			Consistency:   consistency,
+			History:       points,
+		},
+	}
+}
+
+// BuildYieldSummaryCard creates a stash yield performance card.
+func BuildYieldSummaryCard(data map[string]interface{}) entities.InsightCard {
+	growthPoints := toMapSlice(data["growth_points"])
+	points := make([]entities.ChartPoint, 0, len(growthPoints))
+	for _, p := range growthPoints {
+		val := decimalFromString(str(p, "balance"))
+		points = append(points, entities.ChartPoint{Label: str(p, "date"), Value: val})
+	}
+
+	return entities.InsightCard{
+		Type:      "yield_summary",
+		Title:     "Stash Yield",
+		Sentiment: "positive",
+		Data: entities.YieldSummaryData{
+			TotalEarned:   decimalFromString(str(data, "total_earned")),
+			MonthEarned:   decimalFromString(str(data, "month_earned")),
+			CurrentAPY:    decimalFromString(str(data, "current_apy")),
+			StashBalance:  decimalFromString(str(data, "stash_balance")),
+			DailyEstimate: decimalFromString(str(data, "daily_estimate")),
+			GrowthPoints:  points,
+		},
+	}
+}
+
+// BuildComparisonCard creates a month-over-month or period comparison card.
+func BuildComparisonCard(data map[string]interface{}) entities.InsightCard {
+	deltaPct := decimalFromString(str(data, "delta_pct"))
+	sentiment := "neutral"
+	direction := str(data, "direction") // "spending" or "saving"
+	if direction == "spending" {
+		if deltaPct.IsNegative() {
+			sentiment = "positive" // spending went down = good
+		} else if deltaPct.IsPositive() {
+			sentiment = "negative"
+		}
+	} else {
+		if deltaPct.IsPositive() {
+			sentiment = "positive" // saving went up = good
+		} else if deltaPct.IsNegative() {
+			sentiment = "negative"
+		}
+	}
+
+	current, _ := data["current"].(map[string]interface{})
+	previous, _ := data["previous"].(map[string]interface{})
+
+	return entities.InsightCard{
+		Type:      "comparison",
+		Title:     str(data, "title"),
+		Sentiment: sentiment,
+		Data: entities.ComparisonData{
+			MetricLabel: str(data, "metric_label"),
+			Current: entities.ComparisonItem{
+				Label: str(current, "label"),
+				Value: decimalFromString(str(current, "value")),
+				Color: str(current, "color"),
+			},
+			Previous: entities.ComparisonItem{
+				Label: str(previous, "label"),
+				Value: decimalFromString(str(previous, "value")),
+				Color: str(previous, "color"),
+			},
+			DeltaPct:  deltaPct,
+			Sentiment: sentiment,
+		},
+	}
 }
