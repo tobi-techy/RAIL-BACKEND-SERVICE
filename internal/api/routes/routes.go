@@ -896,6 +896,20 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				}
 			}
 
+			if container.MoneyGuardService != nil {
+				moneyGuardHandler := handlers.NewMoneyGuardHandler(container.MoneyGuardService, container.ZapLog)
+				moneyGuard := protected.Group("/money-guard")
+				{
+					moneyGuard.GET("/summary", moneyGuardHandler.Summary)
+					moneyGuard.PATCH("/settings", moneyGuardHandler.UpdateSettings)
+					moneyGuard.POST("/caps", moneyGuardHandler.CreateCap)
+					moneyGuard.GET("/caps", moneyGuardHandler.ListCaps)
+					moneyGuard.DELETE("/caps/:id", moneyGuardHandler.DeleteCap)
+					moneyGuard.GET("/weekly-autopsy", moneyGuardHandler.WeeklyAutopsy)
+					moneyGuard.GET("/recovery-plan", moneyGuardHandler.RecoveryPlan)
+				}
+			}
+
 			// Notification routes - push tokens and in-app notifications
 			notificationHandlers := handlers.NewNotificationHandlers(
 				container.DeviceTokenRepo,

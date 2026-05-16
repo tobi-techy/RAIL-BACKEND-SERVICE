@@ -51,6 +51,7 @@ type (
 	AutomationHandler          = investing.AutomationHandler
 	EnhancedNudgeHandler       = investing.EnhancedNudgeHandler
 	FinancialObligationHandler = investing.FinancialObligationHandler
+	MoneyGuardHandler          = investing.MoneyGuardHandler
 
 	// Trading
 	CopyTradingHandlers         = trading.CopyTradingHandlers
@@ -138,6 +139,7 @@ var (
 	NewAutomationHandler              = investing.NewAutomationHandler
 	NewEnhancedNudgeHandler           = investing.NewEnhancedNudgeHandler
 	NewFinancialObligationHandler     = investing.NewFinancialObligationHandler
+	NewMoneyGuardHandler              = investing.NewMoneyGuardHandler
 )
 
 // Trading constructors

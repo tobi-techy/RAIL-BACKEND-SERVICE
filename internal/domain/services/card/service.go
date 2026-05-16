@@ -79,6 +79,18 @@ type CardNotificationService interface {
 	NotifyCardTransaction(ctx context.Context, userID uuid.UUID, amount, merchant string) error
 }
 
+type MoneyGuardEvaluator interface {
+	EvaluateCardTransaction(ctx context.Context, userID uuid.UUID, input MoneyGuardTransactionInput) error
+}
+
+type MoneyGuardTransactionInput struct {
+	Amount    decimal.Decimal
+	Currency  string
+	Merchant  string
+	Category  string
+	Reference string
+}
+
 // Service handles card business logic
 type Service struct {
 	repo                CardRepository
@@ -88,6 +100,7 @@ type Service struct {
 	balanceProvider     BalanceProvider
 	ledgerService       LedgerService
 	notificationService CardNotificationService
+	moneyGuard          MoneyGuardEvaluator
 	gameplayHooks       CardGameplayHooks
 	logger              *zap.Logger
 	defaultChain        string
@@ -123,6 +136,10 @@ func (s *Service) SetLedgerService(ledgerService LedgerService) {
 
 func (s *Service) SetNotificationService(ns CardNotificationService) {
 	s.notificationService = ns
+}
+
+func (s *Service) SetMoneyGuard(mg MoneyGuardEvaluator) {
+	s.moneyGuard = mg
 }
 
 // SetGameplayHooks sets the gameplay hooks (optional)
@@ -462,6 +479,24 @@ func (s *Service) RecordTransaction(ctx context.Context, bridgeCardID, bridgeTra
 					merchant = "merchant"
 				}
 				_ = s.notificationService.NotifyCardTransaction(bgCtx, card.UserID, amount.StringFixed(2), merchant)
+			}()
+		}
+		if s.moneyGuard != nil {
+			go func() {
+				bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				if err := s.moneyGuard.EvaluateCardTransaction(bgCtx, card.UserID, MoneyGuardTransactionInput{
+					Amount:    amount,
+					Currency:  card.Currency,
+					Merchant:  merchantName,
+					Category:  merchantCategory,
+					Reference: bridgeTransID,
+				}); err != nil {
+					s.logger.Warn("money guard transaction evaluation failed",
+						zap.String("user_id", card.UserID.String()),
+						zap.String("transaction_id", bridgeTransID),
+						zap.Error(err))
+				}
 			}()
 		}
 		// Gameplay: check if first card transaction

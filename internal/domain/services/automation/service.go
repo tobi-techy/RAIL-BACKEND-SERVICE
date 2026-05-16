@@ -522,6 +522,39 @@ func (s *Service) executePauseCardCooldown(ctx context.Context, a *entities.Miri
 	return nil
 }
 
+// PauseUserCards freezes the user's first card and schedules an automatic
+// unfreeze. This is used by Money Guard real-time interventions outside the
+// automation rule engine.
+func (s *Service) PauseUserCards(ctx context.Context, userID uuid.UUID, cooldownMinutes int, reason string) error {
+	if s.card == nil {
+		return fmt.Errorf("card controller not configured")
+	}
+	if cooldownMinutes <= 0 {
+		cooldownMinutes = 30
+	}
+	cardIDs, err := s.card.GetCardsByUser(ctx, userID)
+	if err != nil || len(cardIDs) == 0 {
+		return fmt.Errorf("no cards found for user")
+	}
+	cardID := cardIDs[0]
+	if err := s.card.FreezeCard(ctx, userID, cardID); err != nil {
+		return fmt.Errorf("freeze card: %w", err)
+	}
+	unfreezeAt := time.Now().Add(time.Duration(cooldownMinutes) * time.Minute)
+	if err := s.repo.InsertPendingUnfreeze(ctx, userID, cardID, uuid.Nil, unfreezeAt); err != nil {
+		return fmt.Errorf("schedule card unfreeze: %w", err)
+	}
+	if s.notifier != nil {
+		msg := reason
+		if strings.TrimSpace(msg) == "" {
+			msg = fmt.Sprintf("Money Guard paused your card for %d minutes.", cooldownMinutes)
+		}
+		_ = s.notifier.SendPush(ctx, userID, "Money Guard cooldown", msg,
+			automationPushData("money_guard_cooldown", "Money Guard paused my card. Show me my recovery plan."))
+	}
+	return nil
+}
+
 func StampTransferConsent(actionConfig map[string]interface{}, now time.Time) map[string]interface{} {
 	if actionConfig == nil {
 		actionConfig = map[string]interface{}{}

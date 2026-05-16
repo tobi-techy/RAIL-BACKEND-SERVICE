@@ -20,6 +20,7 @@ type Service struct {
 	db         *sqlx.DB
 	logger     *logger.Logger
 	stashLock  StashLockChecker
+	stashRaids StashRaidObserver
 }
 
 // StashLockChecker enforces the 90-day lock / 7-day window rule.
@@ -27,9 +28,19 @@ type StashLockChecker interface {
 	CanWithdraw(ctx context.Context, userID uuid.UUID) (bool, time.Time, error)
 }
 
+// StashRaidObserver receives successful stash-to-spend transfers for behavioral
+// guardrails. It must never be required for ledger correctness.
+type StashRaidObserver interface {
+	EvaluateStashRaid(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, reference string) error
+}
+
 // SetStashLockChecker wires stash lock enforcement into the ledger.
 func (s *Service) SetStashLockChecker(c StashLockChecker) {
 	s.stashLock = c
+}
+
+func (s *Service) SetStashRaidObserver(o StashRaidObserver) {
+	s.stashRaids = o
 }
 
 // NewService creates a new ledger service
@@ -716,7 +727,11 @@ func (s *Service) TransferStashToSpending(ctx context.Context, userID uuid.UUID,
 	}
 
 	_, err = s.CreateTransaction(ctx, txReq)
-	return err
+	if err != nil {
+		return err
+	}
+	s.observeStashRaid(userID, amount, idempotencyKey)
+	return nil
 }
 
 // AdminTransferStashToSpending moves funds from stash to spending, bypassing the stash lock.
@@ -841,7 +856,13 @@ func (s *Service) EmergencyTransferStashToSpending(ctx context.Context, userID u
 	}
 
 	_, err = s.CreateTransaction(ctx, txReq)
-	return err
+	if err != nil {
+		return err
+	}
+	if amount.IsPositive() {
+		s.observeStashRaid(userID, amount, idempotencyKey)
+	}
+	return nil
 }
 
 // CreditStash credits a user's stash_balance from the system USDC buffer.
@@ -875,4 +896,17 @@ func (s *Service) CreditStash(ctx context.Context, userID uuid.UUID, amount deci
 	}
 	_, err = s.CreateTransaction(ctx, req)
 	return err
+}
+
+func (s *Service) observeStashRaid(userID uuid.UUID, amount decimal.Decimal, reference string) {
+	if s.stashRaids == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := s.stashRaids.EvaluateStashRaid(ctx, userID, amount, reference); err != nil {
+			s.logger.Warn("stash raid observer failed", "user_id", userID.String(), "error", err)
+		}
+	}()
 }
