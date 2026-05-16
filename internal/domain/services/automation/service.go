@@ -541,14 +541,18 @@ func (s *Service) PauseUserCards(ctx context.Context, userID uuid.UUID, cooldown
 	for _, cardID := range cardIDs {
 		if err := s.card.FreezeCard(ctx, userID, cardID); err != nil {
 			for _, fid := range frozenCards {
-				_ = s.card.UnfreezeCard(ctx, userID, fid)
+				if ufErr := s.card.UnfreezeCard(ctx, userID, fid); ufErr != nil {
+					s.logger.Error("rollback unfreeze failed", zap.String("card_id", fid.String()), zap.Error(ufErr))
+				}
 			}
 			return fmt.Errorf("freeze card %s: %w", cardID, err)
 		}
 		frozenCards = append(frozenCards, cardID)
 		if err := s.repo.InsertPendingUnfreeze(ctx, userID, cardID, uuid.Nil, unfreezeAt); err != nil {
 			for _, fid := range frozenCards {
-				_ = s.card.UnfreezeCard(ctx, userID, fid)
+				if ufErr := s.card.UnfreezeCard(ctx, userID, fid); ufErr != nil {
+					s.logger.Error("rollback unfreeze failed", zap.String("card_id", fid.String()), zap.Error(ufErr))
+				}
 			}
 			return fmt.Errorf("schedule card unfreeze: %w", err)
 		}
