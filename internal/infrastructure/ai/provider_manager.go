@@ -129,10 +129,17 @@ func (m *ProviderManager) ChatCompletionWithTools(ctx context.Context, req *Chat
 	span.RecordError(lastErr)
 	span.SetAttributes(attribute.Bool("all_providers_failed", true))
 
-	m.logger.Error("All AI providers failed",
-		zap.Error(lastErr),
-		zap.Int("providers_tried", len(providers)),
-	)
+	if ctx.Err() != nil {
+		m.logger.Warn("AI providers cancelled (client disconnect)",
+			zap.Error(ctx.Err()),
+			zap.Int("providers_tried", len(providers)),
+		)
+	} else {
+		m.logger.Error("All AI providers failed",
+			zap.Error(lastErr),
+			zap.Int("providers_tried", len(providers)),
+		)
+	}
 
 	return nil, fmt.Errorf("all AI providers failed, last error: %w", lastErr)
 }
