@@ -537,13 +537,19 @@ func (s *Service) PauseUserCards(ctx context.Context, userID uuid.UUID, cooldown
 		return fmt.Errorf("no cards found for user")
 	}
 	unfreezeAt := time.Now().Add(time.Duration(cooldownMinutes) * time.Minute)
+	var frozenCards []uuid.UUID
 	for _, cardID := range cardIDs {
 		if err := s.card.FreezeCard(ctx, userID, cardID); err != nil {
+			for _, fid := range frozenCards {
+				_ = s.card.UnfreezeCard(ctx, userID, fid)
+			}
 			return fmt.Errorf("freeze card %s: %w", cardID, err)
 		}
+		frozenCards = append(frozenCards, cardID)
 		if err := s.repo.InsertPendingUnfreeze(ctx, userID, cardID, uuid.Nil, unfreezeAt); err != nil {
-			// Rollback: unfreeze the card we just froze
-			_ = s.card.UnfreezeCard(ctx, userID, cardID)
+			for _, fid := range frozenCards {
+				_ = s.card.UnfreezeCard(ctx, userID, fid)
+			}
 			return fmt.Errorf("schedule card unfreeze: %w", err)
 		}
 	}
