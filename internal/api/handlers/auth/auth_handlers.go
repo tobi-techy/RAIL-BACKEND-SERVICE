@@ -2160,3 +2160,41 @@ func (h *AuthHandlers) verifyKYCCallbackSignature(c *gin.Context) bool {
 
 	return true
 }
+
+// GetTOSAcceptance returns whether the user has accepted the TOS
+func (h *AuthHandlers) GetTOSAcceptance(c *gin.Context) {
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "UNAUTHORIZED", Message: "User not authenticated"})
+		return
+	}
+
+	var acceptedAt sql.NullTime
+	err := h.db.QueryRowContext(c.Request.Context(),
+		`SELECT tos_accepted_at FROM user_settings WHERE user_id = $1`, userID).Scan(&acceptedAt)
+	if err != nil && err != sql.ErrNoRows {
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "INTERNAL_ERROR", Message: "Failed to check TOS status"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"accepted": acceptedAt.Valid, "accepted_at": acceptedAt.Time})
+}
+
+// AcceptTOS records the user's TOS acceptance
+func (h *AuthHandlers) AcceptTOS(c *gin.Context) {
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "UNAUTHORIZED", Message: "User not authenticated"})
+		return
+	}
+
+	_, err := h.db.ExecContext(c.Request.Context(),
+		`INSERT INTO user_settings (user_id, tos_accepted_at) VALUES ($1, NOW())
+		 ON CONFLICT (user_id) DO UPDATE SET tos_accepted_at = NOW(), updated_at = NOW()`, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "INTERNAL_ERROR", Message: "Failed to record TOS acceptance"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"accepted": true})
+}

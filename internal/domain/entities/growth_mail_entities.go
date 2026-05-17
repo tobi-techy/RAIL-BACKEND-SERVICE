@@ -12,6 +12,7 @@ const (
 	GrowthMailFirstDeposit  GrowthMailCampaign = "first_deposit"
 	GrowthMailFirstSplit    GrowthMailCampaign = "first_split"
 	GrowthMailWeeklyExplore GrowthMailCampaign = "weekly_explore"
+	GrowthMailStatusSending                    = "sending"
 	GrowthMailStatusSent                       = "sent"
 	GrowthMailStatusFailed                     = "failed"
 )

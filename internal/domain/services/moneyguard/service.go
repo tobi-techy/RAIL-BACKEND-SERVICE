@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -25,6 +26,8 @@ type Repository interface {
 	CountEvents(ctx context.Context, userID uuid.UUID, since time.Time, severities ...string) (int, error)
 	CountEventsByType(ctx context.Context, userID uuid.UUID, eventType string, since time.Time) (int, error)
 }
+
+var ErrValidation = errors.New("money guard validation")
 
 type BalanceProvider interface {
 	GetAccountBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (decimal.Decimal, error)
@@ -136,7 +139,7 @@ func (s *Service) UpdateSettings(ctx context.Context, userID uuid.UUID, req Upda
 	if req.GuardianMode != nil {
 		mode := strings.ToLower(strings.TrimSpace(*req.GuardianMode))
 		if !validGuardianMode(mode) {
-			return nil, fmt.Errorf("unsupported guardian_mode: %s", mode)
+			return nil, fmt.Errorf("%w: unsupported guardian_mode: %s", ErrValidation, mode)
 		}
 		settings.GuardianMode = mode
 	}
@@ -145,19 +148,19 @@ func (s *Service) UpdateSettings(ctx context.Context, userID uuid.UUID, req Upda
 	}
 	if req.StashRaidLimitPerMonth != nil {
 		if *req.StashRaidLimitPerMonth < 0 || *req.StashRaidLimitPerMonth > 20 {
-			return nil, fmt.Errorf("stash_raid_limit_per_month must be between 0 and 20")
+			return nil, fmt.Errorf("%w: stash_raid_limit_per_month must be between 0 and 20", ErrValidation)
 		}
 		settings.StashRaidLimitPerMonth = *req.StashRaidLimitPerMonth
 	}
 	if req.CardCooldownMinutes != nil {
 		if *req.CardCooldownMinutes < 0 || *req.CardCooldownMinutes > 1440 {
-			return nil, fmt.Errorf("card_cooldown_minutes must be between 0 and 1440")
+			return nil, fmt.Errorf("%w: card_cooldown_minutes must be between 0 and 1440", ErrValidation)
 		}
 		settings.CardCooldownMinutes = *req.CardCooldownMinutes
 	}
 	if req.SafeToSpendFloor != nil {
 		if req.SafeToSpendFloor.IsNegative() {
-			return nil, fmt.Errorf("safe_to_spend_floor cannot be negative")
+			return nil, fmt.Errorf("%w: safe_to_spend_floor cannot be negative", ErrValidation)
 		}
 		settings.SafeToSpendFloor = *req.SafeToSpendFloor
 	}
@@ -189,16 +192,16 @@ func (s *Service) CreateCap(ctx context.Context, userID uuid.UUID, req CreateCap
 		req.Currency = "USD"
 	}
 	if !validCapScope(scope) {
-		return nil, fmt.Errorf("unsupported cap scope: %s", scope)
+		return nil, fmt.Errorf("%w: unsupported cap scope: %s", ErrValidation, scope)
 	}
 	if !validCapPeriod(period) {
-		return nil, fmt.Errorf("unsupported cap period: %s", period)
+		return nil, fmt.Errorf("%w: unsupported cap period: %s", ErrValidation, period)
 	}
 	if !validCapAction(action) {
-		return nil, fmt.Errorf("unsupported enforcement_action: %s", action)
+		return nil, fmt.Errorf("%w: unsupported enforcement_action: %s", ErrValidation, action)
 	}
 	if !req.LimitAmount.IsPositive() {
-		return nil, fmt.Errorf("limit_amount must be positive")
+		return nil, fmt.Errorf("%w: limit_amount must be positive", ErrValidation)
 	}
 	cap := &entities.SpendingCap{
 		ID: uuid.New(), UserID: userID, Scope: scope, ScopeValue: strings.TrimSpace(req.ScopeValue),
@@ -206,7 +209,7 @@ func (s *Service) CreateCap(ctx context.Context, userID uuid.UUID, req CreateCap
 		EnforcementAction: action, IsActive: true,
 	}
 	if (scope == entities.CapScopeCategory || scope == entities.CapScopeMerchant) && cap.ScopeValue == "" {
-		return nil, fmt.Errorf("scope_value is required for %s caps", scope)
+		return nil, fmt.Errorf("%w: scope_value is required for %s caps", ErrValidation, scope)
 	}
 	if err := s.repo.CreateCap(ctx, cap); err != nil {
 		return nil, err
@@ -307,6 +310,14 @@ func (s *Service) SafeToSpend(ctx context.Context, userID uuid.UUID) (entities.S
 }
 
 func (s *Service) EvaluateCardTransaction(ctx context.Context, userID uuid.UUID, input TransactionInput) (*entities.MoneyGuardDecision, error) {
+	return s.evaluateCardTransaction(ctx, userID, input, true, true)
+}
+
+func (s *Service) EvaluateCardAuthorization(ctx context.Context, userID uuid.UUID, input TransactionInput) (*entities.MoneyGuardDecision, error) {
+	return s.evaluateCardTransaction(ctx, userID, input, true, false)
+}
+
+func (s *Service) evaluateCardTransaction(ctx context.Context, userID uuid.UUID, input TransactionInput, applySideEffects, sweepDecimal bool) (*entities.MoneyGuardDecision, error) {
 	settings, err := s.GetSettings(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -353,20 +364,20 @@ func (s *Service) EvaluateCardTransaction(ctx context.Context, userID uuid.UUID,
 		Message: message, Reasons: reasons, TriggeredCaps: triggered, SafeToSpend: safe,
 	}
 
-	if settings.DecimalSweepEnabled && s.sweeper != nil {
+	if applySideEffects && sweepDecimal && settings.DecimalSweepEnabled && s.sweeper != nil {
 		if swept := s.sweepDecimalBalance(ctx, userID, input.Reference); swept.IsPositive() {
 			decision.DecimalSweep = swept
 		}
 	}
 
-	if severity != "info" {
+	if applySideEffects && severity != "info" {
 		s.recordDecision(ctx, userID, input, decision)
 		if s.notifier != nil {
 			_ = s.notifier.SendGenericNotification(ctx, userID, "Money Guard", message)
 		}
 	}
 
-	if settings.GuardianMode == entities.GuardianModeStrict && (action == entities.CapActionPauseCard || severity == "critical") && s.cardPauser != nil {
+	if applySideEffects && settings.GuardianMode == entities.GuardianModeStrict && (action == entities.CapActionPauseCard || severity == "critical") && s.cardPauser != nil {
 		if err := s.cardPauser.PauseUserCards(ctx, userID, settings.CardCooldownMinutes, message); err != nil {
 			s.logger.Warn("money guard failed to pause card", zap.String("user_id", userID.String()), zap.Error(err))
 		}

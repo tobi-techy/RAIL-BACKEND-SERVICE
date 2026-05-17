@@ -3614,12 +3614,18 @@ type cardMoneyGuardAdapter struct {
 	service *moneyguardservice.Service
 }
 
-func (a *cardMoneyGuardAdapter) EvaluateCardTransaction(ctx context.Context, userID uuid.UUID, input card.MoneyGuardTransactionInput) error {
-	_, err := a.service.EvaluateCardTransaction(ctx, userID, moneyguardservice.TransactionInput{
+func (a *cardMoneyGuardAdapter) EvaluateCardAuthorization(ctx context.Context, userID uuid.UUID, input card.MoneyGuardTransactionInput) (*entities.MoneyGuardDecision, error) {
+	return a.service.EvaluateCardAuthorization(ctx, userID, moneyguardservice.TransactionInput{
 		Amount: input.Amount, Currency: input.Currency, Merchant: input.Merchant,
 		Category: input.Category, Reference: input.Reference,
 	})
-	return err
+}
+
+func (a *cardMoneyGuardAdapter) EvaluateCardTransaction(ctx context.Context, userID uuid.UUID, input card.MoneyGuardTransactionInput) (*entities.MoneyGuardDecision, error) {
+	return a.service.EvaluateCardTransaction(ctx, userID, moneyguardservice.TransactionInput{
+		Amount: input.Amount, Currency: input.Currency, Merchant: input.Merchant,
+		Category: input.Category, Reference: input.Reference,
+	})
 }
 
 // walletWebhookAdapter adapts wallet.Service to WalletWebhookService interface

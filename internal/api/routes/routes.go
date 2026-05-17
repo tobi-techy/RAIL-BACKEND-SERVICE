@@ -565,6 +565,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				users.DELETE("/me", middleware.AuthRateLimit(3), authHandlers.DeleteAccount)
 				users.POST("/me/enable-2fa", authHandlers.Enable2FA)
 				users.POST("/me/disable-2fa", authHandlers.Disable2FA)
+				users.GET("/me/tos", authHandlers.GetTOSAcceptance)
+				users.POST("/me/tos", authHandlers.AcceptTOS)
 			}
 
 			// KYC status utilities (auth required but no KYC gate)

@@ -84,6 +84,50 @@ func (r *GrowthMailRepository) HasSuccessfulSend(ctx context.Context, userID uui
 	return exists, nil
 }
 
+func (r *GrowthMailRepository) ClaimSend(ctx context.Context, event *entities.GrowthMailEvent) (bool, error) {
+	if event.ID == uuid.Nil {
+		event.ID = uuid.New()
+	}
+	now := time.Now().UTC()
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = now
+	}
+	event.Status = entities.GrowthMailStatusSending
+
+	query := `
+		INSERT INTO growth_email_events (
+			id, user_id, campaign_key, campaign, subject, status, error, sent_at, created_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, $7)
+		ON CONFLICT (user_id, campaign_key) DO UPDATE SET
+			id = EXCLUDED.id,
+			status = EXCLUDED.status,
+			error = NULL,
+			sent_at = NULL,
+			created_at = EXCLUDED.created_at
+		WHERE growth_email_events.status = $8`
+	res, err := r.db.ExecContext(
+		ctx,
+		query,
+		event.ID,
+		event.UserID,
+		event.CampaignKey,
+		string(event.Campaign),
+		event.Subject,
+		event.Status,
+		event.CreatedAt,
+		entities.GrowthMailStatusFailed,
+	)
+	if err != nil {
+		return false, fmt.Errorf("claim growth mail send: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("claim growth mail send rows affected: %w", err)
+	}
+	return rows > 0, nil
+}
+
 func (r *GrowthMailRepository) RecordSend(ctx context.Context, event *entities.GrowthMailEvent) error {
 	if event.ID == uuid.Nil {
 		event.ID = uuid.New()

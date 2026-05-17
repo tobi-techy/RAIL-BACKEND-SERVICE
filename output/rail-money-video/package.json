@@ -1,0 +1,22 @@
+{
+  "name": "rail-money-video",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "render": "remotion render src/index.ts RailMoneyStory out/rail-money-story.mp4 --codec h264 --crf 18 --color-space bt709",
+    "render:poster": "remotion still src/index.ts RailMoneyStory out/poster.png --frame=54"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.380",
+    "@remotion/noise": "^4.0.380",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "remotion": "^4.0.380"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.10",
+    "typescript": "^5.9.2"
+  }
+}

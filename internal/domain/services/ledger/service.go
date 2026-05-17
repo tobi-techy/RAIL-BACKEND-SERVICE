@@ -59,27 +59,32 @@ func NewService(
 // CreateTransaction creates a new ledger transaction with entries atomically
 // This is the core operation that ensures double-entry bookkeeping integrity
 func (s *Service) CreateTransaction(ctx context.Context, req *entities.CreateTransactionRequest) (*entities.LedgerTransaction, error) {
+	ledgerTx, _, err := s.createTransaction(ctx, req)
+	return ledgerTx, err
+}
+
+func (s *Service) createTransaction(ctx context.Context, req *entities.CreateTransactionRequest) (*entities.LedgerTransaction, bool, error) {
 	// Validate request
 	if err := req.Validate(); err != nil {
-		return nil, fmt.Errorf("validate request: %w", err)
+		return nil, false, fmt.Errorf("validate request: %w", err)
 	}
 
 	// Check for idempotency
 	existing, err := s.ledgerRepo.GetTransactionByIdempotencyKey(ctx, req.IdempotencyKey)
 	if err != nil {
-		return nil, fmt.Errorf("check idempotency: %w", err)
+		return nil, false, fmt.Errorf("check idempotency: %w", err)
 	}
 	if existing != nil {
 		s.logger.Info("Transaction already exists (idempotent)",
 			"idempotency_key", req.IdempotencyKey,
 			"transaction_id", existing.ID)
-		return existing, nil
+		return existing, false, nil
 	}
 
 	// Begin database transaction
 	tx, err := s.db.BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
-		return nil, fmt.Errorf("begin transaction: %w", err)
+		return nil, false, fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -102,7 +107,7 @@ func (s *Service) CreateTransaction(ctx context.Context, req *entities.CreateTra
 	txCtx := repositories.WithTx(ctx, tx)
 
 	if err := s.ledgerRepo.CreateTransaction(txCtx, ledgerTx); err != nil {
-		return nil, fmt.Errorf("create transaction: %w", err)
+		return nil, false, fmt.Errorf("create transaction: %w", err)
 	}
 
 	// Create entries and update account balances
@@ -120,24 +125,24 @@ func (s *Service) CreateTransaction(ctx context.Context, req *entities.CreateTra
 		}
 
 		if err := s.ledgerRepo.CreateEntry(txCtx, entry); err != nil {
-			return nil, fmt.Errorf("create entry: %w", err)
+			return nil, false, fmt.Errorf("create entry: %w", err)
 		}
 
 		// Update account balance
 		if err := s.updateAccountBalanceInTx(txCtx, entryReq.AccountID, entryReq.EntryType, entryReq.Amount); err != nil {
-			return nil, fmt.Errorf("update account balance: %w", err)
+			return nil, false, fmt.Errorf("update account balance: %w", err)
 		}
 	}
 
 	// Mark transaction as completed
 	ledgerTx.MarkCompleted()
 	if err := s.ledgerRepo.UpdateTransactionStatus(txCtx, ledgerTx.ID, entities.TransactionStatusCompleted); err != nil {
-		return nil, fmt.Errorf("update transaction status: %w", err)
+		return nil, false, fmt.Errorf("update transaction status: %w", err)
 	}
 
 	// Commit database transaction
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit transaction: %w", err)
+		return nil, false, fmt.Errorf("commit transaction: %w", err)
 	}
 
 	s.logger.Info("Ledger transaction created successfully",
@@ -145,7 +150,7 @@ func (s *Service) CreateTransaction(ctx context.Context, req *entities.CreateTra
 		"type", ledgerTx.TransactionType,
 		"user_id", ledgerTx.UserID)
 
-	return ledgerTx, nil
+	return ledgerTx, true, nil
 }
 
 // updateAccountBalanceInTx updates an account balance within a database transaction
@@ -726,11 +731,13 @@ func (s *Service) TransferStashToSpending(ctx context.Context, userID uuid.UUID,
 		},
 	}
 
-	_, err = s.CreateTransaction(ctx, txReq)
+	_, created, err := s.createTransaction(ctx, txReq)
 	if err != nil {
 		return err
 	}
-	s.observeStashRaid(userID, amount, idempotencyKey)
+	if created {
+		s.observeStashRaid(userID, amount, idempotencyKey)
+	}
 	return nil
 }
 
@@ -855,11 +862,11 @@ func (s *Service) EmergencyTransferStashToSpending(ctx context.Context, userID u
 		Entries:         entries,
 	}
 
-	_, err = s.CreateTransaction(ctx, txReq)
+	_, created, err := s.createTransaction(ctx, txReq)
 	if err != nil {
 		return err
 	}
-	if amount.IsPositive() {
+	if created && amount.IsPositive() {
 		s.observeStashRaid(userID, amount, idempotencyKey)
 	}
 	return nil

@@ -133,7 +133,7 @@ func (n *notifierFake) SendGenericNotification(_ context.Context, _ uuid.UUID, _
 
 func TestSafeToSpendProtectsBillsAndBudget(t *testing.T) {
 	userID := uuid.New()
-	dueDay := time.Now().UTC().AddDate(0, 0, 2).Day()
+	dueDate := time.Now().UTC().AddDate(0, 0, 2)
 	svc := NewService(
 		&repoFake{},
 		&balanceFake{spend: decimal.NewFromInt(300)},
@@ -143,7 +143,7 @@ func TestSafeToSpendProtectsBillsAndBudget(t *testing.T) {
 		obligationFake{obligations: []entities.FinancialObligation{{
 			ID: uuid.New(), UserID: userID, Name: "Rent", Type: entities.ObligationTypeRent,
 			Amount: decimal.NewFromInt(80), Currency: "USD", Cadence: entities.ObligationCadenceMonthly,
-			DueDay: &dueDay, Status: entities.ObligationStatusActive,
+			DueDate: &dueDate, Status: entities.ObligationStatusActive,
 		}}},
 		nil, nil, nil, zap.NewNop(),
 	)

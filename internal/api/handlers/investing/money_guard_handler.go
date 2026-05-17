@@ -2,6 +2,7 @@ package investing
 
 import (
 	"database/sql"
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -48,6 +49,10 @@ func (h *MoneyGuardHandler) UpdateSettings(c *gin.Context) {
 	}
 	result, err := h.service.UpdateSettings(c.Request.Context(), userID, req)
 	if err != nil {
+		if errors.Is(err, moneyguardservice.ErrValidation) {
+			common.SendBadRequest(c, common.ErrCodeValidationError, err.Error())
+			return
+		}
 		h.logger.Error("update settings failed", zap.Error(err), zap.String("user_id", userID.String()))
 		common.SendInternalError(c, common.ErrCodeInternalError, "failed to update settings")
 		return
@@ -68,6 +73,10 @@ func (h *MoneyGuardHandler) CreateCap(c *gin.Context) {
 	}
 	result, err := h.service.CreateCap(c.Request.Context(), userID, req)
 	if err != nil {
+		if errors.Is(err, moneyguardservice.ErrValidation) {
+			common.SendBadRequest(c, common.ErrCodeValidationError, err.Error())
+			return
+		}
 		h.logger.Error("create cap failed", zap.Error(err), zap.String("user_id", userID.String()))
 		common.SendInternalError(c, common.ErrCodeInternalError, "failed to create spending cap")
 		return
