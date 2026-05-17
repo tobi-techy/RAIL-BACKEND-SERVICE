@@ -300,8 +300,14 @@ func (h *Handler) CreateDiditSession(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "KYC already approved"})
 		case errors.Is(err, kyc.ErrNoBridgeCustomer):
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Complete signup first"})
+		case errors.Is(err, kyc.ErrBridgeNotConfigured):
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "KYC provider not configured"})
 		case errors.Is(err, kyc.ErrDiditNotConfigured):
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "KYC provider not configured"})
+		case errors.Is(err, kyc.ErrBridgeSubmissionFailed):
+			c.JSON(http.StatusBadGateway, gin.H{"error": "Unable to submit verification data. Please try again shortly."})
+		case errors.Is(err, kyc.ErrDiditSessionFailed):
+			c.JSON(http.StatusBadGateway, gin.H{"error": "Verification service temporarily unavailable. Please try again."})
 		default:
 			var profileErr *kyc.IncompleteProfileError
 			if errors.As(err, &profileErr) {
