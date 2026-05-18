@@ -100,11 +100,9 @@ func (r *GrowthMailRepository) ClaimSend(ctx context.Context, event *entities.Gr
 		)
 		VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, $7)
 		ON CONFLICT (user_id, campaign_key) DO UPDATE SET
-			id = EXCLUDED.id,
 			status = EXCLUDED.status,
 			error = NULL,
-			sent_at = NULL,
-			created_at = EXCLUDED.created_at
+			sent_at = NULL
 		WHERE growth_email_events.status = $8`
 	res, err := r.db.ExecContext(
 		ctx,

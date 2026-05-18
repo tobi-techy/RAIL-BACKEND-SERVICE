@@ -8,10 +8,11 @@ import (
 )
 
 const (
-	DepositSweepStatusPending    = "pending"
-	DepositSweepStatusInProgress = "in_progress"
-	DepositSweepStatusCompleted  = "completed"
-	DepositSweepStatusFailed     = "failed"
+	DepositSweepStatusPending        = "pending"
+	DepositSweepStatusInProgress     = "in_progress"
+	DepositSweepStatusCompleted      = "completed"
+	DepositSweepStatusFailed         = "failed"
+	DepositSweepStatusFailedTerminal = "failed_terminal"
 )
 
 // DepositSweep represents an auto-sweep from a non-Solana deposit chain to the user's Solana wallet.

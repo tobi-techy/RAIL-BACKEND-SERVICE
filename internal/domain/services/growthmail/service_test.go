@@ -98,6 +98,10 @@ func (r *fakeGrowthRepo) ClaimSend(ctx context.Context, event *entities.GrowthMa
 		return false, nil
 	}
 	event.Status = entities.GrowthMailStatusSending
+	if r.alreadySent == nil {
+		r.alreadySent = make(map[string]bool)
+	}
+	r.alreadySent[event.CampaignKey] = true
 	return true, nil
 }
 

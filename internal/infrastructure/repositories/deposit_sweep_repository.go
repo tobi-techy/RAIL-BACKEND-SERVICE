@@ -128,7 +128,7 @@ func (r *DepositSweepRepository) MarkTerminalFailed(ctx context.Context, id uuid
 		SET status = $2, error_message = $3, attempts = attempts + 1, updated_at = NOW()
 		WHERE id = $1
 	`
-	_, err := r.db.ExecContext(ctx, query, id, entities.DepositSweepStatusFailed, errMsg)
+	_, err := r.db.ExecContext(ctx, query, id, entities.DepositSweepStatusFailedTerminal, errMsg)
 	if err != nil {
 		return fmt.Errorf("mark sweep terminal failed: %w", err)
 	}

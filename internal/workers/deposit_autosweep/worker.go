@@ -2,6 +2,7 @@ package deposit_autosweep
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -157,8 +158,9 @@ func (w *Worker) poll(parent context.Context) {
 					zap.String("deposit_id", sweep.DepositID.String()),
 					zap.Error(err))
 				exhausted := sweep.Attempts+1 >= maxAttempts
+				terminal := isTerminalSweepError(err)
 				var markErr error
-				if exhausted {
+				if terminal || exhausted {
 					markErr = w.sweepRepo.MarkTerminalFailed(ctx, sweep.ID, err.Error())
 				} else {
 					markErr = w.sweepRepo.MarkFailed(ctx, sweep.ID, err.Error())
@@ -190,14 +192,14 @@ func (w *Worker) processSweep(ctx context.Context, sweep *entities.DepositSweep)
 	// Resolve source wallet (where the deposit landed)
 	sourceChain := chainrouting.WalletChainFromCircleChain(sweep.SourceChain)
 	if sourceChain == "" {
-		return fmt.Errorf("unsupported source chain: %s", sweep.SourceChain)
+		return newTerminalSweepError("unsupported source chain: %s", sweep.SourceChain)
 	}
 	sourceWallet, err := w.walletRepo.GetByUserAndChain(ctx, sweep.UserID, sourceChain)
 	if err != nil {
 		return fmt.Errorf("resolve source wallet for chain %s: %w", sweep.SourceChain, err)
 	}
 	if sourceWallet == nil {
-		return fmt.Errorf("no wallet found for user %s on chain %s", sweep.UserID, sweep.SourceChain)
+		return newTerminalSweepError("no wallet found for user %s on chain %s", sweep.UserID, sweep.SourceChain)
 	}
 
 	// Resolve destination (user's Solana wallet)
@@ -206,17 +208,17 @@ func (w *Worker) processSweep(ctx context.Context, sweep *entities.DepositSweep)
 		return fmt.Errorf("resolve solana wallet: %w", err)
 	}
 	if solWallet == nil {
-		return fmt.Errorf("no solana wallet found for user %s", sweep.UserID)
+		return newTerminalSweepError("no solana wallet found for user %s", sweep.UserID)
 	}
 
 	crSourceChain := chainrouting.CircleChainToChainRailsChain(sweep.SourceChain)
 	if crSourceChain == "" {
-		return fmt.Errorf("unsupported source chain for sweep: %s", sweep.SourceChain)
+		return newTerminalSweepError("unsupported source chain for sweep: %s", sweep.SourceChain)
 	}
 
 	tokenIn := chainrouting.USDCTokenForChainRailsChain(crSourceChain)
 	if tokenIn == "" {
-		return fmt.Errorf("no USDC token address for chain: %s", crSourceChain)
+		return newTerminalSweepError("no USDC token address for chain: %s", crSourceChain)
 	}
 
 	intent, err := w.crClient.CreateIntent(ctx, &chainrails.CreateIntentRequest{
@@ -278,7 +280,7 @@ func (w *Worker) reconcileStale(ctx context.Context) {
 			w.logger.Info("Reconciled stale sweep as completed",
 				zap.String("sweep_id", sweep.ID.String()), zap.String("tx_hash", status.TxHash))
 		case "refunded", "failed", "expired":
-			_ = w.sweepRepo.MarkTerminalFailed(ctx, sweep.ID, "reconciled: "+status.Status)
+			_ = w.sweepRepo.MarkFailed(ctx, sweep.ID, "reconciled: "+status.Status)
 			sweepsTotal.WithLabelValues("failed").Inc()
 			w.logger.Warn("Reconciled stale sweep as failed",
 				zap.String("sweep_id", sweep.ID.String()), zap.String("status", status.Status))
@@ -300,4 +302,29 @@ func parseSweepFee(intent *chainrails.CreateIntentResponse) *decimal.Decimal {
 		return nil
 	}
 	return &fee
+}
+
+type terminalSweepError struct {
+	err error
+}
+
+func newTerminalSweepError(format string, args ...interface{}) error {
+	return &terminalSweepError{err: fmt.Errorf(format, args...)}
+}
+
+func (e *terminalSweepError) Error() string {
+	return e.err.Error()
+}
+
+func (e *terminalSweepError) Unwrap() error {
+	return e.err
+}
+
+func isTerminalSweepError(err error) bool {
+	var terminal *terminalSweepError
+	if errors.As(err, &terminal) {
+		return true
+	}
+	var apiErr *chainrails.APIError
+	return errors.As(err, &apiErr) && !apiErr.Retryable()
 }

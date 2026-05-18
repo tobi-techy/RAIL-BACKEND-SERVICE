@@ -86,6 +86,11 @@ func (s *Service) SendDue(ctx context.Context, now time.Time) (int, int, error) 
 		claimed, err := s.repo.ClaimSend(ctx, event)
 		if err != nil {
 			failed++
+			event.Status = entities.GrowthMailStatusFailed
+			event.Error = err.Error()
+			if recordErr := s.repo.RecordSend(ctx, event); recordErr != nil {
+				s.logger.Warn("growth mail claim failure record failed", zap.String("user_id", c.UserID.String()), zap.String("campaign", campaign.key), zap.Error(recordErr))
+			}
 			s.logger.Warn("growth mail claim failed", zap.String("user_id", c.UserID.String()), zap.String("campaign", campaign.key), zap.Error(err))
 			continue
 		}

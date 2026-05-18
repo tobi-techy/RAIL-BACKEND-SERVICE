@@ -314,7 +314,7 @@ func (s *Service) EvaluateCardTransaction(ctx context.Context, userID uuid.UUID,
 }
 
 func (s *Service) EvaluateCardAuthorization(ctx context.Context, userID uuid.UUID, input TransactionInput) (*entities.MoneyGuardDecision, error) {
-	return s.evaluateCardTransaction(ctx, userID, input, true, false)
+	return s.evaluateCardTransaction(ctx, userID, input, false, false)
 }
 
 func (s *Service) evaluateCardTransaction(ctx context.Context, userID uuid.UUID, input TransactionInput, applySideEffects, sweepDecimal bool) (*entities.MoneyGuardDecision, error) {

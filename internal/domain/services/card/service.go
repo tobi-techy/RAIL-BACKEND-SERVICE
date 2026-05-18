@@ -19,13 +19,14 @@ import (
 )
 
 var (
-	ErrCardNotFound      = errors.New("card not found")
-	ErrCardAlreadyExists = errors.New("user already has an active card of this type")
-	ErrCardFrozen        = errors.New("card is frozen")
-	ErrCardCancelled     = errors.New("card is cancelled")
-	ErrInsufficientFunds = errors.New("insufficient spend balance")
-	ErrCustomerNotFound  = errors.New("bridge customer not found")
-	ErrWalletNotFound    = errors.New("wallet not found for card creation")
+	ErrCardNotFound         = errors.New("card not found")
+	ErrCardAlreadyExists    = errors.New("user already has an active card of this type")
+	ErrCardFrozen           = errors.New("card is frozen")
+	ErrCardCancelled        = errors.New("card is cancelled")
+	ErrInsufficientFunds    = errors.New("insufficient spend balance")
+	ErrCustomerNotFound     = errors.New("bridge customer not found")
+	ErrWalletNotFound       = errors.New("wallet not found for card creation")
+	ErrMoneyGuardNoDecision = errors.New("money guard returned no authorization decision")
 )
 
 // CardRepository defines card persistence operations
@@ -385,24 +386,28 @@ func (s *Service) ProcessCardAuthorization(ctx context.Context, bridgeCardID str
 				zap.Error(err))
 			return false, "money_guard_check_failed", err
 		}
-		if decision != nil {
-			switch {
-			case !decision.Allowed:
-				if metrics.Business != nil {
-					metrics.Business.CardTransactionsTotal.WithLabelValues("declined").Inc()
-				}
-				return false, "money_guard_declined", nil
-			case decision.Action == entities.CapActionRequirePin:
-				if metrics.Business != nil {
-					metrics.Business.CardTransactionsTotal.WithLabelValues("declined").Inc()
-				}
-				return false, "money_guard_passcode_required", nil
-			case decision.Mode == entities.GuardianModeStrict && decision.Action == entities.CapActionPauseCard:
-				if metrics.Business != nil {
-					metrics.Business.CardTransactionsTotal.WithLabelValues("declined").Inc()
-				}
-				return false, "money_guard_card_paused", nil
+		if decision == nil {
+			s.logger.Warn("money guard authorization returned nil decision",
+				zap.String("user_id", card.UserID.String()),
+				zap.String("bridge_card_id", bridgeCardID))
+			return false, "money_guard_no_decision", ErrMoneyGuardNoDecision
+		}
+		switch {
+		case !decision.Allowed:
+			if metrics.Business != nil {
+				metrics.Business.CardTransactionsTotal.WithLabelValues("declined").Inc()
 			}
+			return false, "money_guard_declined", nil
+		case decision.Action == entities.CapActionRequirePin:
+			if metrics.Business != nil {
+				metrics.Business.CardTransactionsTotal.WithLabelValues("declined").Inc()
+			}
+			return false, "money_guard_passcode_required", nil
+		case decision.Mode == entities.GuardianModeStrict && decision.Action == entities.CapActionPauseCard:
+			if metrics.Business != nil {
+				metrics.Business.CardTransactionsTotal.WithLabelValues("declined").Inc()
+			}
+			return false, "money_guard_card_paused", nil
 		}
 	}
 

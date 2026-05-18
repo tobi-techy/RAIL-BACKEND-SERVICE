@@ -189,6 +189,40 @@ func TestEvaluateCardTransactionTriggersCapPauseAndDecimalSweep(t *testing.T) {
 	require.Len(t, repo.events, 1)
 }
 
+func TestEvaluateCardAuthorizationDoesNotApplySideEffects(t *testing.T) {
+	userID := uuid.New()
+	repo := &repoFake{
+		settings: &entities.MoneyGuardSettings{
+			UserID: userID, GuardianMode: entities.GuardianModeStrict, DecimalSweepEnabled: true,
+			CardCooldownMinutes: 20, SafeToSpendFloor: decimal.NewFromInt(10),
+		},
+		caps: []entities.SpendingCap{{
+			ID: uuid.New(), UserID: userID, Scope: entities.CapScopeMerchant, ScopeValue: "Uber Eats",
+			Period: entities.CapPeriodMonth, LimitAmount: decimal.NewFromInt(50),
+			Currency: "USD", EnforcementAction: entities.CapActionPauseCard, IsActive: true,
+		}},
+	}
+	balances := &balanceFake{spend: decimal.RequireFromString("123.45")}
+	sweeper := &sweeperFake{}
+	pauser := &pauserFake{}
+	notifier := &notifierFake{}
+	svc := NewService(
+		repo, balances, sweeper,
+		spendingFake{total: decimal.NewFromInt(90), merchant: "Uber Eats", merchantTx: decimal.NewFromInt(75)},
+		nil, nil, nil, notifier, pauser, zap.NewNop(),
+	)
+
+	decision, err := svc.EvaluateCardAuthorization(context.Background(), userID, TransactionInput{
+		Amount: decimal.NewFromInt(25), Merchant: "Uber Eats", Reference: "auth_123",
+	})
+	require.NoError(t, err)
+	require.Equal(t, entities.CapActionPauseCard, decision.Action)
+	require.False(t, pauser.called)
+	require.False(t, notifier.called)
+	require.True(t, sweeper.amount.IsZero())
+	require.Empty(t, repo.events)
+}
+
 func TestEvaluateStashRaidWarnsAndPausesAfterLimit(t *testing.T) {
 	userID := uuid.New()
 	repo := &repoFake{

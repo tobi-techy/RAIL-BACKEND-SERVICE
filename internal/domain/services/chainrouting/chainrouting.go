@@ -38,7 +38,7 @@ func CircleChainToChainRailsChain(chain string) string {
 	case "MATIC":
 		return "POLYGON_MAINNET"
 	case "MATIC-AMOY":
-		return "POLYGON_MAINNET"
+		return "POLYGON_TESTNET"
 	case "ARB":
 		return "ARBITRUM_MAINNET"
 	case "ARB-SEPOLIA":
@@ -72,6 +72,8 @@ func USDCTokenForChainRailsChain(chain string) string {
 		return "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
 	case "POLYGON_MAINNET":
 		return "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+	case "POLYGON_TESTNET":
+		return "0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582"
 	case "ARBITRUM_MAINNET":
 		return "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
 	case "ARBITRUM_TESTNET":
