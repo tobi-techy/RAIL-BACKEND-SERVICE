@@ -409,6 +409,7 @@ func (s *Service) ProcessCardAuthorization(ctx context.Context, bridgeCardID str
 			}
 			return false, "money_guard_card_paused", nil
 		}
+		// No Money Guard decline condition matched; continue with the approved authorization flow.
 	}
 
 	// Reserve funds: debit spending_balance, credit pending_card_settlement.

@@ -280,7 +280,7 @@ func (w *Worker) reconcileStale(ctx context.Context) {
 			w.logger.Info("Reconciled stale sweep as completed",
 				zap.String("sweep_id", sweep.ID.String()), zap.String("tx_hash", status.TxHash))
 		case "refunded", "failed", "expired":
-			_ = w.sweepRepo.MarkFailed(ctx, sweep.ID, "reconciled: "+status.Status)
+			_ = w.sweepRepo.MarkTerminalFailed(ctx, sweep.ID, "reconciled: "+status.Status)
 			sweepsTotal.WithLabelValues("failed").Inc()
 			w.logger.Warn("Reconciled stale sweep as failed",
 				zap.String("sweep_id", sweep.ID.String()), zap.String("status", status.Status))
