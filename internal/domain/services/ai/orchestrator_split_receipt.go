@@ -13,6 +13,11 @@ import (
 
 const ToolSplitReceipt = "split_receipt"
 
+// ReceiptSplitter executes a receipt split (P2P sends to participants).
+type ReceiptSplitter interface {
+	ExecuteSplit(ctx context.Context, userID uuid.UUID, receiptID uuid.UUID, participants []string, message string) (map[string]interface{}, error)
+}
+
 // SplitReceiptTool returns the tool definition for splitting a receipt.
 func SplitReceiptTool() infraai.Tool {
 	return infraai.Tool{

@@ -660,3 +660,179 @@ func (e *EmailService) SendP2PExpiredEmail(ctx context.Context, toEmail, identif
 
 	return e.sendEmail(ctx, toEmail, subject, htmlContent, textContent)
 }
+
+// DepositEmailDetails contains details for a deposit confirmation email.
+type DepositEmailDetails struct {
+	Amount    string
+	Currency  string
+	Method    string // e.g. "SOL • USDC", "Bank Transfer"
+	Reference string
+	Date      time.Time
+}
+
+// SendDepositConfirmationEmail sends a clean deposit confirmation email.
+func (e *EmailService) SendDepositConfirmationEmail(ctx context.Context, toEmail, firstName string, details DepositEmailDetails) error {
+	subject := "Deposit Confirmed"
+	dateStr := details.Date.Format("01/02/2006 - 03:04 PM UTC")
+
+	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
+<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:40px 20px;">
+<tr><td align="center">
+<table width="100%%" cellpadding="0" cellspacing="0" style="max-width:560px;background-color:#ffffff;border-radius:16px;overflow:hidden;">
+  <tr><td style="background-color:#111111;padding:28px 32px;">
+    <span style="font-family:-apple-system,SF Pro Display,Helvetica Neue,sans-serif;font-size:20px;font-weight:700;color:#ffffff;letter-spacing:0.5px;">RAIL</span>
+  </td></tr>
+  <tr><td style="padding:36px 32px 24px;">
+    <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:15px;color:#1d1d1f;margin:0 0 8px;">Hello %s,</p>
+    <h1 style="font-family:-apple-system,SF Pro Display,Helvetica Neue,sans-serif;font-size:24px;font-weight:700;color:#1d1d1f;margin:0 0 8px;">Your wallet has been funded successfully! 🤑</h1>
+    <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:15px;color:#6e6e73;margin:0;">The details are shown below:</p>
+  </td></tr>
+  <tr><td style="padding:0 32px 32px;">
+    <table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f0f4ff;border-radius:12px;padding:24px;">
+      <tr><td style="padding:16px 20px;border-bottom:1px solid #e0e4ef;">
+        <table width="100%%"><tr>
+          <td style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;font-weight:600;color:#1d1d1f;">Transaction Type:</td>
+          <td align="right" style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;color:#1d1d1f;">%s</td>
+        </tr></table>
+      </td></tr>
+      <tr><td style="padding:16px 20px;border-bottom:1px solid #e0e4ef;">
+        <table width="100%%"><tr>
+          <td style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;font-weight:600;color:#1d1d1f;">Amount received:</td>
+          <td align="right" style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;color:#1d1d1f;">%s%s</td>
+        </tr></table>
+      </td></tr>
+      <tr><td style="padding:16px 20px;border-bottom:1px solid #e0e4ef;">
+        <table width="100%%"><tr>
+          <td style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;font-weight:600;color:#1d1d1f;">Reference:</td>
+          <td align="right" style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;color:#1d1d1f;">%s</td>
+        </tr></table>
+      </td></tr>
+      <tr><td style="padding:16px 20px;">
+        <table width="100%%"><tr>
+          <td style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;font-weight:600;color:#1d1d1f;">Date &amp; Time:</td>
+          <td align="right" style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;color:#1d1d1f;">%s</td>
+        </tr></table>
+      </td></tr>
+    </table>
+  </td></tr>
+  <tr><td style="padding:0 32px 36px;">
+    <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:13px;color:#6e6e73;margin:0;line-height:1.5;">If you didn't initiate this transaction, please contact our support team immediately via in-app or email <a href="mailto:support@rail.money" style="color:#0066cc;">support@rail.money</a></p>
+  </td></tr>
+</table>
+</td></tr></table>
+</body></html>`,
+		html.EscapeString(firstName),
+		html.EscapeString(details.Method),
+		html.EscapeString(details.Currency),
+		html.EscapeString(details.Amount),
+		html.EscapeString(details.Reference),
+		html.EscapeString(dateStr),
+	)
+
+	textContent := fmt.Sprintf("Hello %s,\n\nYour wallet has been funded successfully!\n\nAmount: %s%s\nMethod: %s\nReference: %s\nDate: %s\n\n— Rail", firstName, details.Currency, details.Amount, details.Method, details.Reference, dateStr)
+
+	return e.sendEmail(ctx, toEmail, subject, htmlContent, textContent)
+}
+
+// WithdrawalEmailDetails contains details for a withdrawal confirmation email.
+type WithdrawalEmailDetails struct {
+	AmountTendered string
+	AmountReceived string
+	Currency       string
+	BankName       string
+	AccountName    string
+	AccountNumber  string
+	Reference      string
+	Date           time.Time
+}
+
+// SendWithdrawalConfirmationEmail sends a clean withdrawal confirmation email.
+func (e *EmailService) SendWithdrawalConfirmationEmail(ctx context.Context, toEmail, firstName string, details WithdrawalEmailDetails) error {
+	subject := "Withdrawal Successful"
+	dateStr := details.Date.Format("01/02/2006 - 03:04 PM UTC")
+
+	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
+<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:40px 20px;">
+<tr><td align="center">
+<table width="100%%" cellpadding="0" cellspacing="0" style="max-width:560px;background-color:#ffffff;border-radius:16px;overflow:hidden;">
+  <tr><td style="background-color:#111111;padding:28px 32px;">
+    <span style="font-family:-apple-system,SF Pro Display,Helvetica Neue,sans-serif;font-size:20px;font-weight:700;color:#ffffff;letter-spacing:0.5px;">RAIL</span>
+  </td></tr>
+  <tr><td style="padding:36px 32px 24px;">
+    <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:15px;color:#1d1d1f;margin:0 0 8px;">Hello %s,</p>
+    <h1 style="font-family:-apple-system,SF Pro Display,Helvetica Neue,sans-serif;font-size:24px;font-weight:700;color:#1d1d1f;margin:0 0 8px;">Your withdrawal was successful 😀</h1>
+    <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:15px;color:#6e6e73;margin:0;">The details are shown below:</p>
+  </td></tr>
+  <tr><td style="padding:0 32px 32px;">
+    <table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f0f4ff;border-radius:12px;padding:24px;">
+      <tr><td style="padding:16px 20px;border-bottom:1px solid #e0e4ef;">
+        <table width="100%%"><tr>
+          <td style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;font-weight:600;color:#1d1d1f;">Amount tendered:</td>
+          <td align="right" style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;color:#1d1d1f;">%s%s</td>
+        </tr></table>
+      </td></tr>
+      <tr><td style="padding:16px 20px;border-bottom:1px solid #e0e4ef;">
+        <table width="100%%"><tr>
+          <td style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;font-weight:600;color:#1d1d1f;">Amount received:</td>
+          <td align="right" style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;color:#1d1d1f;">%s%s</td>
+        </tr></table>
+      </td></tr>
+      <tr><td style="padding:16px 20px;border-bottom:1px solid #e0e4ef;">
+        <table width="100%%"><tr>
+          <td style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;font-weight:600;color:#1d1d1f;">Bank name:</td>
+          <td align="right" style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;color:#1d1d1f;">%s</td>
+        </tr></table>
+      </td></tr>
+      <tr><td style="padding:16px 20px;border-bottom:1px solid #e0e4ef;">
+        <table width="100%%"><tr>
+          <td style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;font-weight:600;color:#1d1d1f;">Account name:</td>
+          <td align="right" style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;color:#1d1d1f;">%s</td>
+        </tr></table>
+      </td></tr>
+      <tr><td style="padding:16px 20px;border-bottom:1px solid #e0e4ef;">
+        <table width="100%%"><tr>
+          <td style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;font-weight:600;color:#1d1d1f;">Account number:</td>
+          <td align="right" style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;color:#1d1d1f;">%s</td>
+        </tr></table>
+      </td></tr>
+      <tr><td style="padding:16px 20px;border-bottom:1px solid #e0e4ef;">
+        <table width="100%%"><tr>
+          <td style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;font-weight:600;color:#1d1d1f;">Reference:</td>
+          <td align="right" style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;color:#1d1d1f;">%s</td>
+        </tr></table>
+      </td></tr>
+      <tr><td style="padding:16px 20px;">
+        <table width="100%%"><tr>
+          <td style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;font-weight:600;color:#1d1d1f;">Date &amp; Time:</td>
+          <td align="right" style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;color:#1d1d1f;">%s</td>
+        </tr></table>
+      </td></tr>
+    </table>
+  </td></tr>
+  <tr><td style="padding:0 32px 36px;">
+    <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:13px;color:#6e6e73;margin:0;line-height:1.5;">If you didn't initiate this transaction, please contact our support team immediately via in-app or email <a href="mailto:support@rail.money" style="color:#0066cc;">support@rail.money</a></p>
+  </td></tr>
+</table>
+</td></tr></table>
+</body></html>`,
+		html.EscapeString(firstName),
+		html.EscapeString(details.Currency),
+		html.EscapeString(details.AmountTendered),
+		html.EscapeString(details.Currency),
+		html.EscapeString(details.AmountReceived),
+		html.EscapeString(details.BankName),
+		html.EscapeString(details.AccountName),
+		html.EscapeString(details.AccountNumber),
+		html.EscapeString(details.Reference),
+		html.EscapeString(dateStr),
+	)
+
+	textContent := fmt.Sprintf("Hello %s,\n\nYour withdrawal was successful!\n\nAmount tendered: %s%s\nAmount received: %s%s\nBank: %s\nAccount: %s (%s)\nReference: %s\nDate: %s\n\nIf you didn't initiate this, contact support@rail.money\n\n— Rail",
+		firstName, details.Currency, details.AmountTendered, details.Currency, details.AmountReceived, details.BankName, details.AccountName, details.AccountNumber, details.Reference, dateStr)
+
+	return e.sendEmail(ctx, toEmail, subject, htmlContent, textContent)
+}
