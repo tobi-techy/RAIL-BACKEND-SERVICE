@@ -3,6 +3,7 @@ package station
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -107,16 +108,16 @@ type AlpacaAccountService interface {
 
 // Service handles station/home screen data retrieval
 type Service struct {
-	ledgerService      LedgerService
-	allocationRepo     AllocationRepository
-	depositRepo        DepositRepository
-	settingsRepo       UserSettingsRepository
-	snapshotRepo       BalanceSnapshotRepository
-	notificationRepo   NotificationRepository
-	transactionRepo    TransactionRepository
-	alpacaAccountRepo  AlpacaAccountRepository
-	alpacaAccountSvc   AlpacaAccountService
-	logger             *zap.Logger
+	ledgerService     LedgerService
+	allocationRepo    AllocationRepository
+	depositRepo       DepositRepository
+	settingsRepo      UserSettingsRepository
+	snapshotRepo      BalanceSnapshotRepository
+	notificationRepo  NotificationRepository
+	transactionRepo   TransactionRepository
+	alpacaAccountRepo AlpacaAccountRepository
+	alpacaAccountSvc  AlpacaAccountService
+	logger            *zap.Logger
 }
 
 // NewService creates a new station service
@@ -164,6 +165,26 @@ func (s *Service) SetAlpacaAccountService(svc AlpacaAccountService) {
 	s.alpacaAccountSvc = svc
 }
 
+func (s *Service) getAccountBalanceOrZero(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, label string) decimal.Decimal {
+	balance, err := s.ledgerService.GetAccountBalance(ctx, userID, accountType)
+	if err == nil {
+		return balance
+	}
+
+	fields := []zap.Field{
+		zap.Error(err),
+		zap.String("user_id", userID.String()),
+		zap.String("account_type", string(accountType)),
+	}
+	if strings.Contains(err.Error(), "account not found") {
+		s.logger.Debug("Ledger account missing, defaulting to zero", fields...)
+		return decimal.Zero
+	}
+
+	s.logger.Warn(label+", defaulting to zero", fields...)
+	return decimal.Zero
+}
+
 // GetUserBalances retrieves the user's spend and invest balances
 func (s *Service) GetUserBalances(ctx context.Context, userID uuid.UUID) (*Balances, error) {
 	mode, err := s.allocationRepo.GetMode(ctx, userID)
@@ -182,24 +203,12 @@ func (s *Service) GetUserBalances(ctx context.Context, userID uuid.UUID) (*Balan
 
 		go func() {
 			defer wg.Done()
-			bal, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeUSDCBalance)
-			if err != nil {
-				s.logger.Warn("Failed to get USDC balance, defaulting to zero",
-					zap.Error(err), zap.String("user_id", userID.String()))
-				return
-			}
-			usdcBalance = bal
+			usdcBalance = s.getAccountBalanceOrZero(ctx, userID, entities.AccountTypeUSDCBalance, "Failed to get USDC balance")
 		}()
 
 		go func() {
 			defer wg.Done()
-			bal, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeFiatExposure)
-			if err != nil {
-				s.logger.Warn("Failed to get fiat exposure balance, defaulting to zero",
-					zap.Error(err), zap.String("user_id", userID.String()))
-				return
-			}
-			fiatExposure = bal
+			fiatExposure = s.getAccountBalanceOrZero(ctx, userID, entities.AccountTypeFiatExposure, "Failed to get fiat exposure balance")
 		}()
 
 		wg.Wait()
@@ -240,54 +249,22 @@ func (s *Service) GetUserBalances(ctx context.Context, userID uuid.UUID) (*Balan
 
 	go func() {
 		defer wg.Done()
-		balance, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
-		if err != nil {
-			s.logger.Warn("Failed to get spending balance, defaulting to zero",
-				zap.Error(err),
-				zap.String("user_id", userID.String()))
-			spendingBalance = decimal.Zero
-			return
-		}
-		spendingBalance = balance
+		spendingBalance = s.getAccountBalanceOrZero(ctx, userID, entities.AccountTypeSpendingBalance, "Failed to get spending balance")
 	}()
 
 	go func() {
 		defer wg.Done()
-		balance, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
-		if err != nil {
-			s.logger.Warn("Failed to get stash balance, defaulting to zero",
-				zap.Error(err),
-				zap.String("user_id", userID.String()))
-			stashBalance = decimal.Zero
-			return
-		}
-		stashBalance = balance
+		stashBalance = s.getAccountBalanceOrZero(ctx, userID, entities.AccountTypeStashBalance, "Failed to get stash balance")
 	}()
 
 	go func() {
 		defer wg.Done()
-		balance, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeFiatExposure)
-		if err != nil {
-			s.logger.Warn("Failed to get fiat exposure, defaulting to zero",
-				zap.Error(err),
-				zap.String("user_id", userID.String()))
-			fiatExposure = decimal.Zero
-			return
-		}
-		fiatExposure = balance
+		fiatExposure = s.getAccountBalanceOrZero(ctx, userID, entities.AccountTypeFiatExposure, "Failed to get fiat exposure")
 	}()
 
 	go func() {
 		defer wg.Done()
-		balance, err := s.ledgerService.GetAccountBalance(ctx, userID, entities.AccountTypeUSDCBalance)
-		if err != nil {
-			s.logger.Warn("Failed to get unallocated USDC, defaulting to zero",
-				zap.Error(err),
-				zap.String("user_id", userID.String()))
-			usdcBalance = decimal.Zero
-			return
-		}
-		usdcBalance = balance
+		usdcBalance = s.getAccountBalanceOrZero(ctx, userID, entities.AccountTypeUSDCBalance, "Failed to get unallocated USDC")
 	}()
 
 	wg.Wait()
