@@ -2,9 +2,11 @@ package bridgegovidrepair
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
+	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
 	"go.uber.org/zap"
 )
 
@@ -67,8 +69,14 @@ func (w *Worker) run(ctx context.Context) {
 			return
 		}
 		if err := w.kycSvc.RepairBridgeGovID(ctx, id); err != nil {
-			w.logger.Warn("bridge_govid_repair: repair failed",
-				zap.String("user_id", id.String()), zap.Error(err))
+			if errors.Is(err, kycservice.ErrDiditGovIDDataMissing) {
+				w.logger.Info("bridge_govid_repair: repair skipped",
+					zap.String("user_id", id.String()),
+					zap.String("reason", err.Error()))
+			} else {
+				w.logger.Warn("bridge_govid_repair: repair failed",
+					zap.String("user_id", id.String()), zap.Error(err))
+			}
 		}
 		processed++
 		// Rate-limit between operations, but not after the last one.

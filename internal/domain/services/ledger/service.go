@@ -3,6 +3,7 @@ package ledger
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -13,6 +14,9 @@ import (
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/shopspring/decimal"
 )
+
+// ErrAccountNotFound is returned when a requested user ledger account does not exist.
+var ErrAccountNotFound = errors.New("ledger account not found")
 
 // Service handles ledger operations using double-entry bookkeeping
 type Service struct {
@@ -204,6 +208,9 @@ func (s *Service) GetAccountBalance(ctx context.Context, userID uuid.UUID, accou
 
 	account, err := s.ledgerRepo.GetAccountByUserAndType(ctx, userID, accountType)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return decimal.Zero, fmt.Errorf("%w: user_id=%s account_type=%s", ErrAccountNotFound, userID, accountType)
+		}
 		return decimal.Zero, fmt.Errorf("get account: %w", err)
 	}
 
