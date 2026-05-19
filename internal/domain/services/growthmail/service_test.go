@@ -93,6 +93,18 @@ func (r *fakeGrowthRepo) HasSuccessfulSend(ctx context.Context, userID uuid.UUID
 	return r.alreadySent[campaignKey], nil
 }
 
+func (r *fakeGrowthRepo) ClaimSend(ctx context.Context, event *entities.GrowthMailEvent) (bool, error) {
+	if r.alreadySent[event.CampaignKey] {
+		return false, nil
+	}
+	event.Status = entities.GrowthMailStatusSending
+	if r.alreadySent == nil {
+		r.alreadySent = make(map[string]bool)
+	}
+	r.alreadySent[event.CampaignKey] = true
+	return true, nil
+}
+
 func (r *fakeGrowthRepo) RecordSend(ctx context.Context, event *entities.GrowthMailEvent) error {
 	r.recorded = append(r.recorded, event)
 	return nil

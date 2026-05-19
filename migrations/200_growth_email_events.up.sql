@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS growth_email_events (
     campaign_key VARCHAR(120) NOT NULL,
     campaign VARCHAR(80) NOT NULL,
     subject TEXT NOT NULL,
-    status VARCHAR(20) NOT NULL CHECK (status IN ('sent', 'failed')),
+    status VARCHAR(20) NOT NULL CHECK (status IN ('sending', 'sent', 'failed')),
     error TEXT,
     sent_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

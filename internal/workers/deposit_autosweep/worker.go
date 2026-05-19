@@ -2,6 +2,7 @@ package deposit_autosweep
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -12,8 +13,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/chainrouting"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
-	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -50,20 +51,31 @@ type WalletLookup interface {
 	GetByUserAndChain(ctx context.Context, userID uuid.UUID, chain entities.WalletChain) (*entities.ManagedWallet, error)
 }
 
+type SweepRepository interface {
+	GetPending(ctx context.Context, maxAttempts int) ([]*entities.DepositSweep, error)
+	MarkInProgress(ctx context.Context, id uuid.UUID, intentAddress string, intentID int, feeAmount *decimal.Decimal) error
+	MarkCompleted(ctx context.Context, id uuid.UUID, txHash string) error
+	MarkFailed(ctx context.Context, id uuid.UUID, errMsg string) error
+	MarkTerminalFailed(ctx context.Context, id uuid.UUID, errMsg string) error
+	GetStale(ctx context.Context, olderThan time.Duration) ([]*entities.DepositSweep, error)
+}
+
 // Worker polls for pending deposit sweeps and creates ChainRails intents to bridge to Solana.
 type Worker struct {
-	sweepRepo *repositories.DepositSweepRepository
+	sweepRepo  SweepRepository
 	walletRepo WalletLookup
 	crClient   *chainrails.Client
 	alerter    Alerter
 	logger     *zap.Logger
 	stopCh     chan struct{}
 	stopOnce   sync.Once
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
 	running    int32
 }
 
 func NewWorker(
-	sweepRepo *repositories.DepositSweepRepository,
+	sweepRepo SweepRepository,
 	walletRepo WalletLookup,
 	crClient *chainrails.Client,
 	alerter Alerter,
@@ -81,22 +93,28 @@ func NewWorker(
 
 func (w *Worker) Start() {
 	w.logger.Info("Deposit auto-sweep worker started")
+	ctx, cancel := context.WithCancel(context.Background())
+	w.cancel = cancel
+	w.wg.Add(1)
 	go func() {
+		defer w.wg.Done()
 		defer func() {
 			if r := recover(); r != nil {
 				w.logger.Error("Deposit auto-sweep worker panicked",
 					zap.Any("panic", r), zap.Stack("stack"))
 			}
 		}()
-		w.poll()
+		w.poll(ctx)
 		ticker := time.NewTicker(pollInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-w.stopCh:
 				return
+			case <-ctx.Done():
+				return
 			case <-ticker.C:
-				w.poll()
+				w.poll(ctx)
 			}
 		}
 	}()
@@ -105,17 +123,21 @@ func (w *Worker) Start() {
 func (w *Worker) Stop() {
 	w.stopOnce.Do(func() {
 		w.logger.Info("Deposit auto-sweep worker stopping")
+		if w.cancel != nil {
+			w.cancel()
+		}
 		close(w.stopCh)
+		w.wg.Wait()
 	})
 }
 
-func (w *Worker) poll() {
+func (w *Worker) poll(parent context.Context) {
 	if !atomic.CompareAndSwapInt32(&w.running, 0, 1) {
 		return
 	}
 	defer atomic.StoreInt32(&w.running, 0)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
 
 	// Process pending sweeps
@@ -128,18 +150,29 @@ func (w *Worker) poll() {
 		w.logger.Info("Processing pending deposit sweeps", zap.Int("count", len(sweeps)))
 		for _, sweep := range sweeps {
 			if err := w.processSweep(ctx, sweep); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				w.logger.Error("Failed to process sweep",
 					zap.String("sweep_id", sweep.ID.String()),
 					zap.String("deposit_id", sweep.DepositID.String()),
 					zap.Error(err))
-				if markErr := w.sweepRepo.MarkFailed(ctx, sweep.ID, err.Error()); markErr != nil {
+				exhausted := sweep.Attempts+1 >= maxAttempts
+				terminal := isTerminalSweepError(err)
+				var markErr error
+				if terminal || exhausted {
+					markErr = w.sweepRepo.MarkTerminalFailed(ctx, sweep.ID, err.Error())
+				} else {
+					markErr = w.sweepRepo.MarkFailed(ctx, sweep.ID, err.Error())
+				}
+				if markErr != nil {
 					w.logger.Error("Failed to mark sweep as failed",
 						zap.String("sweep_id", sweep.ID.String()), zap.Error(markErr))
 				}
 				sweepsTotal.WithLabelValues("failed").Inc()
 
 				// Alert exactly once when this attempt exhausts retries
-				if sweep.Attempts+1 == maxAttempts && w.alerter != nil {
+				if exhausted && w.alerter != nil {
 					w.alerter.SendSweepExhausted(
 						sweep.ID.String(), sweep.DepositID.String(),
 						sweep.SourceChain, sweep.Amount.StringFixed(2), sweep.Attempts+1,
@@ -155,18 +188,18 @@ func (w *Worker) poll() {
 	w.reconcileStale(ctx)
 }
 
-func (w *Worker) processSweep(ctx context.Context, sweep *repositories.DepositSweep) error {
+func (w *Worker) processSweep(ctx context.Context, sweep *entities.DepositSweep) error {
 	// Resolve source wallet (where the deposit landed)
-	sourceChain := walletChainFromCircleChain(sweep.SourceChain)
+	sourceChain := chainrouting.WalletChainFromCircleChain(sweep.SourceChain)
 	if sourceChain == "" {
-		return fmt.Errorf("unsupported source chain: %s", sweep.SourceChain)
+		return newTerminalSweepError("unsupported source chain: %s", sweep.SourceChain)
 	}
 	sourceWallet, err := w.walletRepo.GetByUserAndChain(ctx, sweep.UserID, sourceChain)
 	if err != nil {
 		return fmt.Errorf("resolve source wallet for chain %s: %w", sweep.SourceChain, err)
 	}
 	if sourceWallet == nil {
-		return fmt.Errorf("no wallet found for user %s on chain %s", sweep.UserID, sweep.SourceChain)
+		return newTerminalSweepError("no wallet found for user %s on chain %s", sweep.UserID, sweep.SourceChain)
 	}
 
 	// Resolve destination (user's Solana wallet)
@@ -175,17 +208,17 @@ func (w *Worker) processSweep(ctx context.Context, sweep *repositories.DepositSw
 		return fmt.Errorf("resolve solana wallet: %w", err)
 	}
 	if solWallet == nil {
-		return fmt.Errorf("no solana wallet found for user %s", sweep.UserID)
+		return newTerminalSweepError("no solana wallet found for user %s", sweep.UserID)
 	}
 
-	crSourceChain := circleChainToChainRailsChain(sweep.SourceChain)
+	crSourceChain := chainrouting.CircleChainToChainRailsChain(sweep.SourceChain)
 	if crSourceChain == "" {
-		return fmt.Errorf("unsupported source chain for sweep: %s", sweep.SourceChain)
+		return newTerminalSweepError("unsupported source chain for sweep: %s", sweep.SourceChain)
 	}
 
-	tokenIn := usdcTokenForChain(crSourceChain)
+	tokenIn := chainrouting.USDCTokenForChainRailsChain(crSourceChain)
 	if tokenIn == "" {
-		return fmt.Errorf("no USDC token address for chain: %s", crSourceChain)
+		return newTerminalSweepError("no USDC token address for chain: %s", crSourceChain)
 	}
 
 	intent, err := w.crClient.CreateIntent(ctx, &chainrails.CreateIntentRequest{
@@ -218,86 +251,6 @@ func (w *Worker) processSweep(ctx context.Context, sweep *repositories.DepositSw
 	return nil
 }
 
-// walletChainFromCircleChain maps Circle blockchain identifiers to WalletChain.
-// Returns empty string for unsupported chains.
-func walletChainFromCircleChain(chain string) entities.WalletChain {
-	switch strings.ToUpper(chain) {
-	case "ETH", "ETH-SEPOLIA":
-		return entities.WalletChainEthereum
-	case "BASE", "BASE-SEPOLIA":
-		return entities.WalletChainBase
-	case "MATIC", "MATIC-AMOY":
-		return entities.WalletChainPolygon
-	case "ARB", "ARB-SEPOLIA":
-		return entities.WalletChainArbitrum
-	case "OP", "OP-SEPOLIA":
-		return entities.WalletChainOptimism
-	case "AVAX", "AVAX-FUJI":
-		return entities.WalletChainAvalanche
-	default:
-		return ""
-	}
-}
-
-// circleChainToChainRailsChain maps Circle chain IDs to ChainRails chain IDs.
-func circleChainToChainRailsChain(chain string) string {
-	switch strings.ToUpper(chain) {
-	case "ETH":
-		return "ETHEREUM_MAINNET"
-	case "ETH-SEPOLIA":
-		return "ETHEREUM_TESTNET"
-	case "BASE":
-		return "BASE_MAINNET"
-	case "BASE-SEPOLIA":
-		return "BASE_TESTNET"
-	case "MATIC":
-		return "POLYGON_MAINNET"
-	case "MATIC-AMOY":
-		return "POLYGON_MAINNET" // ChainRails has no Polygon testnet; route to mainnet
-	case "ARB":
-		return "ARBITRUM_MAINNET"
-	case "ARB-SEPOLIA":
-		return "ARBITRUM_TESTNET"
-	case "OP":
-		return "OPTIMISM_MAINNET"
-	case "OP-SEPOLIA":
-		return "OPTIMISM_TESTNET"
-	case "AVAX":
-		return "AVALANCHE_MAINNET"
-	case "AVAX-FUJI":
-		return "AVALANCHE_TESTNET"
-	default:
-		return ""
-	}
-}
-
-// usdcTokenForChain returns the USDC contract/mint address for a ChainRails chain.
-// Returns empty string for unsupported/testnet chains.
-func usdcTokenForChain(chain string) string {
-	switch chain {
-	case "ETHEREUM_MAINNET":
-		return "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
-	case "ETHEREUM_TESTNET":
-		return "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"
-	case "BASE_MAINNET":
-		return "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
-	case "BASE_TESTNET":
-		return "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
-	case "POLYGON_MAINNET":
-		return "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
-	case "ARBITRUM_MAINNET":
-		return "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
-	case "ARBITRUM_TESTNET":
-		return "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d"
-	case "OPTIMISM_MAINNET":
-		return "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85"
-	case "AVALANCHE_MAINNET":
-		return "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E"
-	default:
-		return ""
-	}
-}
-
 const staleThreshold = 10 * time.Minute
 
 // reconcileStale checks for sweeps stuck in 'in_progress' and polls ChainRails for their status.
@@ -327,7 +280,13 @@ func (w *Worker) reconcileStale(ctx context.Context) {
 			w.logger.Info("Reconciled stale sweep as completed",
 				zap.String("sweep_id", sweep.ID.String()), zap.String("tx_hash", status.TxHash))
 		case "refunded", "failed", "expired":
-			_ = w.sweepRepo.MarkFailed(ctx, sweep.ID, "reconciled: "+status.Status)
+			if err := w.sweepRepo.MarkTerminalFailed(ctx, sweep.ID, "reconciled: "+status.Status); err != nil {
+				w.logger.Error("Failed to mark reconciled sweep as terminal failed",
+					zap.String("sweep_id", sweep.ID.String()),
+					zap.String("status", status.Status),
+					zap.Error(err))
+				continue
+			}
 			sweepsTotal.WithLabelValues("failed").Inc()
 			w.logger.Warn("Reconciled stale sweep as failed",
 				zap.String("sweep_id", sweep.ID.String()), zap.String("status", status.Status))
@@ -349,4 +308,29 @@ func parseSweepFee(intent *chainrails.CreateIntentResponse) *decimal.Decimal {
 		return nil
 	}
 	return &fee
+}
+
+type terminalSweepError struct {
+	err error
+}
+
+func newTerminalSweepError(format string, args ...interface{}) error {
+	return &terminalSweepError{err: fmt.Errorf(format, args...)}
+}
+
+func (e *terminalSweepError) Error() string {
+	return e.err.Error()
+}
+
+func (e *terminalSweepError) Unwrap() error {
+	return e.err
+}
+
+func isTerminalSweepError(err error) bool {
+	var terminal *terminalSweepError
+	if errors.As(err, &terminal) {
+		return true
+	}
+	var apiErr *chainrails.APIError
+	return errors.As(err, &apiErr) && !apiErr.Retryable()
 }

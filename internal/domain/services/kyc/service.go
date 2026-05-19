@@ -26,21 +26,25 @@ import (
 )
 
 var (
-	ErrInvalidSSN            = errors.New("invalid SSN format")
-	ErrInvalidITIN           = errors.New("invalid ITIN format")
-	ErrUnsupportedTaxIDType  = errors.New("unsupported tax_id_type for issuing_country")
-	ErrInvalidIssuingCountry = errors.New("issuing_country must be an ISO alpha-3 code")
-	ErrInvalidImage          = errors.New("invalid image format")
-	ErrImageTooLarge         = errors.New("image exceeds 10MB limit")
-	ErrKYCAlreadyApproved    = errors.New("KYC already approved")
-	ErrNoBridgeCustomer      = errors.New("no Bridge customer ID found")
-	ErrSumsubNotConfigured   = errors.New("sumsub KYC provider is not configured")
-	ErrDiditNotConfigured    = errors.New("didit KYC provider is not configured")
-	ErrMissingTaxID          = errors.New("tax_id is required")
-	ErrMissingTaxIDType      = errors.New("tax_id_type is required")
-	ErrMissingDocumentFront  = errors.New("id_document_front is required")
-	ErrTaxIDEncryptionFailed = errors.New("failed to encrypt tax_id - cannot proceed")
-	ErrTaxIDDecryptionFailed = errors.New("failed to decrypt stored tax_id - cannot proceed")
+	ErrInvalidSSN             = errors.New("invalid SSN format")
+	ErrInvalidITIN            = errors.New("invalid ITIN format")
+	ErrUnsupportedTaxIDType   = errors.New("unsupported tax_id_type for issuing_country")
+	ErrInvalidIssuingCountry  = errors.New("issuing_country must be an ISO alpha-3 code")
+	ErrInvalidImage           = errors.New("invalid image format")
+	ErrImageTooLarge          = errors.New("image exceeds 10MB limit")
+	ErrKYCAlreadyApproved     = errors.New("KYC already approved")
+	ErrNoBridgeCustomer       = errors.New("no Bridge customer ID found")
+	ErrBridgeNotConfigured    = errors.New("Bridge KYC provider is not configured")
+	ErrSumsubNotConfigured    = errors.New("sumsub KYC provider is not configured")
+	ErrDiditNotConfigured     = errors.New("didit KYC provider is not configured")
+	ErrBridgeSubmissionFailed = errors.New("failed to submit KYC data to Bridge")
+	ErrDiditSessionFailed     = errors.New("failed to create didit session")
+	ErrMissingTaxID           = errors.New("tax_id is required")
+	ErrMissingTaxIDType       = errors.New("tax_id_type is required")
+	ErrMissingDocumentFront   = errors.New("id_document_front is required")
+	ErrTaxIDEncryptionFailed  = errors.New("failed to encrypt tax_id - cannot proceed")
+	ErrTaxIDDecryptionFailed  = errors.New("failed to decrypt stored tax_id - cannot proceed")
+	ErrDiditGovIDDataMissing  = errors.New("didit gov ID document data missing")
 
 	BridgeCustomerExistsError = errors.New("Bridge customer already exists")
 )
@@ -2049,6 +2053,9 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 	if req == nil {
 		return nil, fmt.Errorf("missing request")
 	}
+	if s.bridgeAdapter == nil {
+		return nil, ErrBridgeNotConfigured
+	}
 	if !isTaxIDTypeSupportedForCountry(req.IssuingCountry, req.TaxIDType) {
 		return nil, ErrUnsupportedTaxIDType
 	}
@@ -2163,7 +2170,7 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 		s.logger.Error("Failed to submit KYC data to Bridge after retries",
 			zap.String("user_id", userID.String()),
 			zap.Error(lastBridgeErr))
-		return nil, fmt.Errorf("failed to submit KYC data to Bridge: %w", lastBridgeErr)
+		return nil, fmt.Errorf("%w: %v", ErrBridgeSubmissionFailed, lastBridgeErr)
 	}
 	s.logger.Info("KYC data sent directly to Bridge (no sensitive data stored locally)",
 		zap.String("user_id", userID.String()),
@@ -2192,7 +2199,13 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 	// Step 4: Create Didit session
 	sess, err := s.diditAdapter.CreateSession(ctx, userID.String())
 	if err != nil {
-		return nil, fmt.Errorf("failed to create didit session: %w", err)
+		return nil, fmt.Errorf("%w: %v", ErrDiditSessionFailed, err)
+	}
+	if sess == nil || strings.TrimSpace(sess.SessionID) == "" {
+		return nil, fmt.Errorf("%w: missing session_id in provider response", ErrDiditSessionFailed)
+	}
+	if strings.TrimSpace(sess.SessionToken) == "" && strings.TrimSpace(sess.URL) == "" {
+		return nil, fmt.Errorf("%w: missing launch token or URL in provider response", ErrDiditSessionFailed)
 	}
 
 	// Step 5: Persist ONLY session reference - NO sensitive data
@@ -2382,7 +2395,12 @@ func (s *Service) processDiditApproved(ctx context.Context, submission *entities
 	submission.VerificationData["didit_approved_at"] = now.Format(time.RFC3339)
 
 	// Hydrate document data from Didit (uses inline webhook decision or fetches via API).
-	s.hydrateSubmissionFromDidit(ctx, submission, payload)
+	if _, hydrateErr := s.hydrateSubmissionFromDidit(ctx, submission, payload); hydrateErr != nil {
+		s.logger.Warn("Didit approval missing hydrated document data",
+			zap.Error(hydrateErr),
+			zap.String("user_id", submission.UserID.String()),
+			zap.String("session_id", submission.ProviderRef))
+	}
 
 	// Run AML screening on the approved user (sanctions, PEP, adverse media).
 	if s.amlScreener != nil {
@@ -2576,7 +2594,8 @@ func (s *Service) markDiditExpired(ctx context.Context, submission *entities.KYC
 }
 
 // hydrateSubmissionFromDidit fetches the session decision and merges ID data into verification data.
-func (s *Service) hydrateSubmissionFromDidit(ctx context.Context, submission *entities.KYCSubmission, payload *entities.DiditWebhookPayload) {
+// It returns false with a nil error when Didit has no ID verification payload.
+func (s *Service) hydrateSubmissionFromDidit(ctx context.Context, submission *entities.KYCSubmission, payload *entities.DiditWebhookPayload) (bool, error) {
 	if submission.VerificationData == nil {
 		submission.VerificationData = map[string]any{}
 	}
@@ -2590,7 +2609,7 @@ func (s *Service) hydrateSubmissionFromDidit(ctx context.Context, submission *en
 		if err != nil {
 			s.logger.Warn("Failed to fetch Didit session decision",
 				zap.Error(err), zap.String("session_id", submission.ProviderRef))
-			return
+			return false, err
 		}
 		// Map adapter type to entity type.
 		for _, v := range decision.IDVerifications {
@@ -2615,7 +2634,7 @@ func (s *Service) hydrateSubmissionFromDidit(ctx context.Context, submission *en
 	}
 
 	if len(idVerifications) == 0 {
-		return
+		return false, nil
 	}
 	v := idVerifications[0]
 	submission.VerificationData["didit_first_name"] = v.FirstName
@@ -2653,6 +2672,34 @@ func (s *Service) hydrateSubmissionFromDidit(ctx context.Context, submission *en
 		submission.VerificationData["didit_address_country"] = v.ParsedAddress.Country
 		submission.VerificationData["didit_address_postal_code"] = v.ParsedAddress.PostalCode
 	}
+	return true, nil
+}
+
+func hasDiditGovIDData(data map[string]any) bool {
+	if data == nil {
+		return false
+	}
+	docNumber, _ := data["didit_doc_number"].(string)
+	frontImageURL, _ := data["didit_front_image"].(string)
+	return docNumber != "" || frontImageURL != ""
+}
+
+func (s *Service) markBridgeGovIDRepair(ctx context.Context, submission *entities.KYCSubmission, status, reason string, nonRetryable bool) {
+	if submission.VerificationData == nil {
+		submission.VerificationData = map[string]any{}
+	}
+	submission.VerificationData["bridge_govid_repair"] = map[string]any{
+		"status":        status,
+		"reason":        reason,
+		"non_retryable": nonRetryable,
+		"updated_at":    time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {
+		s.logger.Warn("Failed to persist Bridge gov ID repair state",
+			zap.String("user_id", submission.UserID.String()),
+			zap.String("status", status),
+			zap.Error(err))
+	}
 }
 
 // submitToBridgeFromDidit forwards the gov ID document to Bridge after Didit approval.
@@ -2673,7 +2720,7 @@ func (s *Service) submitToBridgeFromDidit(ctx context.Context, bridgeCustomerID 
 	frontImageURL, _ := data["didit_front_image"].(string)
 	backImageURL, _ := data["didit_back_image"].(string)
 
-	if docNumber == "" && frontImageURL == "" {
+	if !hasDiditGovIDData(data) {
 		return entities.KYCProviderResult{Success: false, Status: "failed", Error: "no gov ID document data from Didit"}
 	}
 
@@ -2877,12 +2924,23 @@ func (s *Service) RepairBridgeGovID(ctx context.Context, userID uuid.UUID) error
 	}
 
 	// Hydrate document data from Didit session decision.
-	s.hydrateSubmissionFromDidit(ctx, submission, nil)
+	if _, err := s.hydrateSubmissionFromDidit(ctx, submission, nil); err != nil {
+		s.markBridgeGovIDRepair(ctx, submission, "retryable_error", err.Error(), false)
+		return fmt.Errorf("failed to hydrate Didit session decision: %w", err)
+	}
+	if !hasDiditGovIDData(submission.VerificationData) {
+		const reason = "no gov ID document data from Didit"
+		s.markBridgeGovIDRepair(ctx, submission, "failed", reason, true)
+		return fmt.Errorf("%w: %s", ErrDiditGovIDDataMissing, reason)
+	}
 
 	result := s.submitToBridgeFromDidit(ctx, *profile.BridgeCustomerID, submission)
 	if !result.Success {
+		s.clearSensitiveDiditData(submission)
+		s.markBridgeGovIDRepair(ctx, submission, "retryable_error", result.Error, false)
 		return fmt.Errorf("bridge gov ID push failed: %s", result.Error)
 	}
+	s.markBridgeGovIDRepair(ctx, submission, "succeeded", "", false)
 
 	// Persist updated verification data.
 	if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {

@@ -122,9 +122,11 @@ type Orchestrator struct {
 	yieldProvider       YieldProvider
 	withdrawalHistory   WithdrawalHistoryProvider
 	receiptHistory      ReceiptHistoryProvider
+	receiptSplitter     ReceiptSplitter
 	budgetProvider      BudgetProvider
 	financialProfile    FinancialProfileProvider
 	obligations         FinancialObligationProvider
+	obligationManager   FinancialObligationManager
 	automationCreator   AutomationCreator
 	obligationCreator   ObligationCreator
 	currencyRates       CurrencyRateProvider
@@ -164,9 +166,11 @@ type OrchestratorDeps struct {
 	YieldProvider      YieldProvider
 	WithdrawalHistory  WithdrawalHistoryProvider
 	ReceiptHistory     ReceiptHistoryProvider
+	ReceiptSplitter    ReceiptSplitter
 	BudgetProvider     BudgetProvider
 	FinancialProfile   FinancialProfileProvider
 	Obligations        FinancialObligationProvider
+	ObligationManager  FinancialObligationManager
 	AutomationCreator  AutomationCreator
 	ObligationCreator  ObligationCreator
 	CurrencyRates      CurrencyRateProvider
@@ -219,9 +223,11 @@ func NewOrchestratorWithDeps(
 		yieldProvider:      deps.YieldProvider,
 		withdrawalHistory:  deps.WithdrawalHistory,
 		receiptHistory:     deps.ReceiptHistory,
+		receiptSplitter:    deps.ReceiptSplitter,
 		budgetProvider:     deps.BudgetProvider,
 		financialProfile:   deps.FinancialProfile,
 		obligations:        deps.Obligations,
+		obligationManager:  deps.ObligationManager,
 		automationCreator:  deps.AutomationCreator,
 		obligationCreator:  deps.ObligationCreator,
 		currencyRates:      deps.CurrencyRates,
@@ -325,6 +331,7 @@ MANDATORY TOOL USAGE (CRITICAL):
 - For "what's my balance" or "how much do I have" → call get_account_summary.
 - For "show me my transactions" → call get_recent_transactions.
 - For "how much did I deposit" → call get_deposit_history.
+- For "how much do I earn", "monthly earning", "income trend", "money coming in over time", or "what will I make this month" → call get_income_trend. Call it an estimate from completed deposits, not guaranteed salary.
 - For "how much yield/interest" → call get_yield_earned.
 - If you need multiple data points, call multiple tools. Do NOT guess what one tool's data means without checking another.
 
@@ -339,6 +346,7 @@ ACCURACY RULES (CRITICAL — users are paying for this):
 - If you're unsure about something, say so. "I can see X but I'd need to check Y" is better than a wrong answer.
 - When listing transactions, include the exact amount, date, and category/source for each one. Do not skip or summarize transactions unless there are more than 10.
 - For personalized planning, use get_financial_profile when available. If important profile fields are missing, ask one or two clear questions instead of pretending to know the user's income, bills, goals, or risk tolerance.
+- Use user persona context from the app profile when available: name, city, country, address country, financial profile, memory, and locale style. Personalize from known data only. Never invent tribe, culture, religion, city, job, or income.
 - Before giving recommendations, call get_financial_advice so the response is grounded in deterministic checks, exact evidence, and safety flags.
 - When the user asks what happened over time, call get_financial_timeline instead of reconstructing a story from memory.
 - For persona-specific planning (individuals, freelancers, founders, families, high earners) or geography/cross-currency questions, call get_persona_money_context before answering. Use its persona_priorities, paid_workflows, geo_playbook, and missing_fields. If key fields are missing, ask one or two questions instead of giving a generic plan.
@@ -477,7 +485,8 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 		tools = append(tools, ActionTools()...)
 	}
 	// Read-only data tools
-	tools = append(tools, ReadOnlyTools(o.cardTransactions != nil, o.depositHistory != nil, o.yieldProvider != nil, o.withdrawalHistory != nil, o.receiptHistory != nil)...)
+	_, hasIncomeTrend := o.depositHistory.(DepositIncomeProvider)
+	tools = append(tools, ReadOnlyTools(o.cardTransactions != nil, o.depositHistory != nil, hasIncomeTrend, o.yieldProvider != nil, o.withdrawalHistory != nil, o.receiptHistory != nil)...)
 	// Tax, email, and goals tools
 	tools = append(tools, TaxAndReportTools(o.userProfile != nil, o.reportEmail != nil)...)
 	// Budget tools
@@ -487,6 +496,9 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 	// Durable financial profile tools
 	if o.financialProfile != nil {
 		tools = append(tools, FinancialProfileTools()...)
+	}
+	if o.obligationManager != nil {
+		tools = append(tools, FinancialObligationTools()...)
 	}
 	if o.financialProfile != nil && o.aggregateStats != nil {
 		tools = append(tools, MoneyOperatingPlanTool())
@@ -510,7 +522,7 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 		tools = append(tools, FinancialIntelligenceTools(o.actionHistory != nil)...)
 	}
 	// Expanded insight cards (subscriptions, runway, deposits, yield, comparisons)
-	if o.spending != nil {
+	if o.spending != nil || o.recurringDetector != nil {
 		tools = append(tools, ExpandedInsightTools()...)
 	}
 	tools = append(tools, FinancialGovernanceTools(o.hasFinancialAdviceProviders(), o.hasFinancialTimelineProviders())...)
@@ -582,6 +594,9 @@ func (o *Orchestrator) ChatInContextWithOptions(ctx context.Context, userID, con
 	}
 	if profileCtx := o.buildFinancialProfileContext(ctx, userID); profileCtx != "" {
 		messages = append(messages, ai.Message{Role: "system", Content: profileCtx})
+	}
+	if userProfileCtx := o.buildUserProfileContext(ctx, userID); userProfileCtx != "" {
+		messages = append(messages, ai.Message{Role: "system", Content: userProfileCtx})
 	}
 
 	// Inject long-term memory (facts Miriam has learned about this user)
@@ -904,6 +919,12 @@ func (o *Orchestrator) executeToolInner(ctx context.Context, userID uuid.UUID, t
 	case ToolGetDepositHistory:
 		return o.executeDepositHistory(ctx, userID, tc.Arguments)
 
+	case ToolGetIncomeTrend:
+		if _, ok := o.depositHistory.(DepositIncomeProvider); !ok || o.depositHistory == nil {
+			return map[string]interface{}{"error": "income trend data is not available"}, nil
+		}
+		return o.executeIncomeTrend(ctx, userID, tc.Arguments)
+
 	case ToolGetYieldEarned:
 		return o.executeYieldEarned(ctx, userID, tc.Arguments)
 
@@ -942,6 +963,21 @@ func (o *Orchestrator) executeToolInner(ctx context.Context, userID uuid.UUID, t
 			return map[string]interface{}{"error": "money operating plan service is unavailable"}, nil
 		}
 		return o.executeMoneyOperatingPlan(ctx, userID)
+
+	case ToolListFinancialObligations:
+		if o.obligationManager == nil {
+			return map[string]interface{}{"error": "obligation service is unavailable"}, nil
+		}
+		return o.executeListFinancialObligations(ctx, userID, tc.Arguments)
+
+	case ToolFindObligationPayments:
+		if o.obligationManager == nil {
+			return map[string]interface{}{"error": "obligation service is unavailable"}, nil
+		}
+		return o.executeFindObligationPaymentMatches(ctx, userID, tc.Arguments)
+
+	case ToolMarkObligationPaid:
+		return map[string]interface{}{"error": "Marking an obligation paid requires a conversation context. Please use the chat interface."}, nil
 
 	case ToolGetFinancialHealth:
 		if !o.hasFinancialAdviceProviders() {
@@ -1032,6 +1068,9 @@ func (o *Orchestrator) executeToolInner(ctx context.Context, userID uuid.UUID, t
 
 	case ToolGetSubscriptions:
 		return o.executeGetSubscriptions(ctx, userID)
+
+	case ToolProtectSubscription, ToolMarkSubscriptionCancelled, ToolIgnoreSubscription:
+		return map[string]interface{}{"error": "Changing subscription tracking requires a conversation context. Please use the chat interface."}, nil
 
 	case ToolGetRunway:
 		return o.executeGetRunway(ctx, userID)

@@ -99,6 +99,7 @@ type AIServiceObligationRequest struct {
 	DueDay       *int
 	Priority     string
 	Counterparty *string
+	Status       string
 	Metadata     map[string]interface{}
 }
 
@@ -274,6 +275,14 @@ func (o *Orchestrator) executeActionTool(ctx context.Context, userID, convID uui
 		return o.createAutomationAction(ctx, userID, convID, tc.Arguments)
 	case ToolCreateObligationReminder:
 		return o.createObligationReminderAction(ctx, userID, convID, tc.Arguments)
+	case ToolMarkObligationPaid:
+		return o.createMarkObligationPaidAction(ctx, userID, convID, tc.Arguments)
+	case ToolProtectSubscription:
+		return o.createProtectSubscriptionAction(ctx, userID, convID, tc.Arguments)
+	case ToolMarkSubscriptionCancelled:
+		return o.createMarkSubscriptionCancelledAction(ctx, userID, convID, tc.Arguments)
+	case ToolIgnoreSubscription:
+		return o.createIgnoreSubscriptionAction(ctx, userID, convID, tc.Arguments)
 	case ToolSplitReceipt:
 		return o.createSplitReceiptAction(ctx, userID, convID, tc.Arguments)
 	case ToolUpdateFinancialProfile:
@@ -501,12 +510,58 @@ func (o *Orchestrator) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 		_, execErr = o.executeCreateAutomation(ctx, userID, action.Params)
 	case ToolCreateObligationReminder:
 		_, execErr = o.executeCreateObligationReminder(ctx, userID, action.Params)
-	case ToolSplitReceipt:
-		// Split receipt is confirmed — the actual P2P sends happen via the HTTP handler.
-		// The AI action just records the intent; execution is delegated to the receipt split endpoint.
-		o.logger.Info("Receipt split confirmed via Miriam",
+	case ToolMarkObligationPaid:
+		if o.obligationManager == nil {
+			execErr = fmt.Errorf("obligation service unavailable")
+		} else {
+			_, execErr = o.executeMarkObligationPaid(ctx, userID, action.Params)
+		}
+	case ToolProtectSubscription:
+		if o.obligationCreator == nil {
+			execErr = fmt.Errorf("subscription service unavailable")
+		} else {
+			_, execErr = o.executeProtectSubscription(ctx, userID, action.Params)
+		}
+	case ToolMarkSubscriptionCancelled:
+		if o.obligationCreator == nil {
+			execErr = fmt.Errorf("subscription service unavailable")
+		} else {
+			_, execErr = o.executeMarkSubscriptionCancelled(ctx, userID, action.Params)
+		}
+	case ToolIgnoreSubscription:
+		o.logger.Info("Subscription ignored via Miriam",
 			zap.String("user_id", userID.String()),
 			zap.Any("params", action.Params))
+	case ToolSplitReceipt:
+		if o.receiptSplitter == nil {
+			execErr = fmt.Errorf("receipt split service unavailable")
+		} else {
+			receiptIDStr, ok := action.Params["receipt_id"].(string)
+			if !ok || receiptIDStr == "" {
+				execErr = fmt.Errorf("missing or invalid receipt_id in action params")
+			} else if receiptID, parseErr := uuid.Parse(receiptIDStr); parseErr != nil {
+				execErr = fmt.Errorf("invalid receipt_id format: %w", parseErr)
+			} else {
+				participantsRaw, ok := action.Params["participants"].([]interface{})
+				if !ok || len(participantsRaw) == 0 {
+					execErr = fmt.Errorf("invalid or missing participants in action params")
+				} else {
+					participants := make([]string, 0, len(participantsRaw))
+					for _, p := range participantsRaw {
+						if tag, ok := p.(string); ok && tag != "" {
+							participants = append(participants, tag)
+						}
+					}
+					if len(participants) == 0 {
+						execErr = fmt.Errorf("no valid participants for receipt split")
+					} else {
+						message, _ := action.Params["message"].(string)
+						// ExecuteSplit must verify receipt ownership (userID owns receiptID)
+						_, execErr = o.receiptSplitter.ExecuteSplit(ctx, userID, receiptID, participants, message)
+					}
+				}
+			}
+		}
 	case ToolUpdateFinancialProfile:
 		if o.financialProfile == nil {
 			execErr = fmt.Errorf("financial profile service is unavailable")
@@ -624,7 +679,7 @@ func (o *Orchestrator) auditAction(ctx context.Context, userID, convID uuid.UUID
 
 // isActionTool returns true if the tool name is an action tool.
 func isActionTool(name string) bool {
-	return name == ToolTransferFunds || name == ToolSetSavingsGoal || name == ToolSendReport || name == ToolSetBudget || name == ToolCreateAutomation || name == ToolCreateObligationReminder || name == ToolSplitReceipt || name == ToolUpdateFinancialProfile
+	return name == ToolTransferFunds || name == ToolSetSavingsGoal || name == ToolSendReport || name == ToolSetBudget || name == ToolCreateAutomation || name == ToolCreateObligationReminder || name == ToolMarkObligationPaid || name == ToolProtectSubscription || name == ToolMarkSubscriptionCancelled || name == ToolIgnoreSubscription || name == ToolSplitReceipt || name == ToolUpdateFinancialProfile
 }
 
 func (o *Orchestrator) canCreateActionTool(name string) bool {
@@ -639,6 +694,14 @@ func (o *Orchestrator) canCreateActionTool(name string) bool {
 		return o.automationProvider != nil
 	case ToolCreateObligationReminder:
 		return o.obligationCreator != nil
+	case ToolMarkObligationPaid:
+		return o.obligationManager != nil
+	case ToolProtectSubscription:
+		return o.obligationCreator != nil
+	case ToolMarkSubscriptionCancelled:
+		return o.obligationManager != nil || o.obligationCreator != nil
+	case ToolIgnoreSubscription:
+		return true
 	case ToolSplitReceipt:
 		return o.receiptHistory != nil
 	case ToolUpdateFinancialProfile:

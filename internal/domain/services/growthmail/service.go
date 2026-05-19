@@ -15,6 +15,7 @@ import (
 type CandidateRepository interface {
 	ListCandidates(ctx context.Context, limit int) ([]entities.GrowthMailCandidate, error)
 	HasSuccessfulSend(ctx context.Context, userID uuid.UUID, campaignKey string) (bool, error)
+	ClaimSend(ctx context.Context, event *entities.GrowthMailEvent) (bool, error)
 	RecordSend(ctx context.Context, event *entities.GrowthMailEvent) error
 }
 
@@ -75,15 +76,31 @@ func (s *Service) SendDue(ctx context.Context, now time.Time) (int, int, error) 
 			continue
 		}
 
-		htmlBody, textBody := renderCampaign(campaign, c, s.cfg.BaseURL)
-		sendErr := s.email.SendCustomEmail(ctx, c.Email, campaign.subject, htmlBody, textBody)
 		event := &entities.GrowthMailEvent{
 			UserID:      c.UserID,
 			CampaignKey: campaign.key,
 			Campaign:    campaign.name,
 			Subject:     campaign.subject,
-			Status:      entities.GrowthMailStatusSent,
+			Status:      entities.GrowthMailStatusSending,
 		}
+		claimed, err := s.repo.ClaimSend(ctx, event)
+		if err != nil {
+			failed++
+			event.Status = entities.GrowthMailStatusFailed
+			event.Error = err.Error()
+			if recordErr := s.repo.RecordSend(ctx, event); recordErr != nil {
+				s.logger.Warn("growth mail claim failure record failed", zap.String("user_id", c.UserID.String()), zap.String("campaign", campaign.key), zap.Error(recordErr))
+			}
+			s.logger.Warn("growth mail claim failed", zap.String("user_id", c.UserID.String()), zap.String("campaign", campaign.key), zap.Error(err))
+			continue
+		}
+		if !claimed {
+			continue
+		}
+
+		htmlBody, textBody := renderCampaign(campaign, c, s.cfg.BaseURL)
+		sendErr := s.email.SendCustomEmail(ctx, c.Email, campaign.subject, htmlBody, textBody)
+		event.Status = entities.GrowthMailStatusSent
 		if sendErr != nil {
 			failed++
 			event.Status = entities.GrowthMailStatusFailed

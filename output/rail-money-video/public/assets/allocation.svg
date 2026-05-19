@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <defs>
+    <linearGradient id="gSplit" x1="12" y1="4" x2="12" y2="20" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4AE3A7"/>
+      <stop offset="1" stop-color="#1FBF7F"/>
+    </linearGradient>
+  </defs>
+
+  <circle cx="12" cy="12" r="8.6" fill="url(#gSplit)"/>
+  <!-- wedge cut (Fuse-like negative space) -->
+  <path d="M12 12V3.6A8.6 8.6 0 0 1 20.4 12H12Z" fill="#FFFFFF" fill-opacity=".92"/>
+</svg>

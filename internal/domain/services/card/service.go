@@ -19,13 +19,14 @@ import (
 )
 
 var (
-	ErrCardNotFound      = errors.New("card not found")
-	ErrCardAlreadyExists = errors.New("user already has an active card of this type")
-	ErrCardFrozen        = errors.New("card is frozen")
-	ErrCardCancelled     = errors.New("card is cancelled")
-	ErrInsufficientFunds = errors.New("insufficient spend balance")
-	ErrCustomerNotFound  = errors.New("bridge customer not found")
-	ErrWalletNotFound    = errors.New("wallet not found for card creation")
+	ErrCardNotFound         = errors.New("card not found")
+	ErrCardAlreadyExists    = errors.New("user already has an active card of this type")
+	ErrCardFrozen           = errors.New("card is frozen")
+	ErrCardCancelled        = errors.New("card is cancelled")
+	ErrInsufficientFunds    = errors.New("insufficient spend balance")
+	ErrCustomerNotFound     = errors.New("bridge customer not found")
+	ErrWalletNotFound       = errors.New("wallet not found for card creation")
+	ErrMoneyGuardNoDecision = errors.New("money guard returned no authorization decision")
 )
 
 // CardRepository defines card persistence operations
@@ -80,7 +81,8 @@ type CardNotificationService interface {
 }
 
 type MoneyGuardEvaluator interface {
-	EvaluateCardTransaction(ctx context.Context, userID uuid.UUID, input MoneyGuardTransactionInput) error
+	EvaluateCardAuthorization(ctx context.Context, userID uuid.UUID, input MoneyGuardTransactionInput) (*entities.MoneyGuardDecision, error)
+	EvaluateCardTransaction(ctx context.Context, userID uuid.UUID, input MoneyGuardTransactionInput) (*entities.MoneyGuardDecision, error)
 }
 
 type MoneyGuardTransactionInput struct {
@@ -369,6 +371,47 @@ func (s *Service) ProcessCardAuthorization(ctx context.Context, bridgeCardID str
 		return false, "insufficient_funds", nil
 	}
 
+	if s.moneyGuard != nil {
+		decision, err := s.moneyGuard.EvaluateCardAuthorization(ctx, card.UserID, MoneyGuardTransactionInput{
+			Amount:    amount,
+			Currency:  card.Currency,
+			Merchant:  merchantName,
+			Category:  merchantCategory,
+			Reference: bridgeCardID,
+		})
+		if err != nil {
+			s.logger.Warn("money guard authorization check failed",
+				zap.String("user_id", card.UserID.String()),
+				zap.String("bridge_card_id", bridgeCardID),
+				zap.Error(err))
+			return false, "money_guard_check_failed", err
+		}
+		if decision == nil {
+			s.logger.Warn("money guard authorization returned nil decision",
+				zap.String("user_id", card.UserID.String()),
+				zap.String("bridge_card_id", bridgeCardID))
+			return false, "money_guard_no_decision", ErrMoneyGuardNoDecision
+		}
+		switch {
+		case !decision.Allowed:
+			if metrics.Business != nil {
+				metrics.Business.CardTransactionsTotal.WithLabelValues("declined").Inc()
+			}
+			return false, "money_guard_declined", nil
+		case decision.Action == entities.CapActionRequirePin:
+			if metrics.Business != nil {
+				metrics.Business.CardTransactionsTotal.WithLabelValues("declined").Inc()
+			}
+			return false, "money_guard_passcode_required", nil
+		case decision.Mode == entities.GuardianModeStrict && decision.Action == entities.CapActionPauseCard:
+			if metrics.Business != nil {
+				metrics.Business.CardTransactionsTotal.WithLabelValues("declined").Inc()
+			}
+			return false, "money_guard_card_paused", nil
+		}
+		// No Money Guard decline condition matched; continue with the approved authorization flow.
+	}
+
 	// Reserve funds: debit spending_balance, credit pending_card_settlement.
 	// This is a real debit so the balance is no longer available for P2P/withdrawal.
 	if s.ledgerService != nil {
@@ -442,7 +485,13 @@ func (s *Service) RecordTransaction(ctx context.Context, bridgeCardID, bridgeTra
 					}
 				}
 			}
-			return s.repo.UpdateTransactionStatus(ctx, existing.ID, normalizedStatus, declineReason)
+			if err := s.repo.UpdateTransactionStatus(ctx, existing.ID, normalizedStatus, declineReason); err != nil {
+				return err
+			}
+			if normalizedStatus == "completed" && existing.Status != "completed" {
+				s.afterCompletedCardTransaction(ctx, card, amount, bridgeTransID, merchantName, merchantCategory)
+			}
+			return nil
 		}
 		return nil
 	}
@@ -472,50 +521,7 @@ func (s *Service) RecordTransaction(ctx context.Context, bridgeCardID, bridgeTra
 				zap.Error(err))
 			return err
 		}
-		if s.notificationService != nil {
-			go func() {
-				bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				merchant := merchantName
-				if merchant == "" {
-					merchant = "merchant"
-				}
-				_ = s.notificationService.NotifyCardTransaction(bgCtx, card.UserID, amount.StringFixed(2), merchant)
-			}()
-		}
-		if s.moneyGuard != nil {
-			select {
-			case s.moneyGuardSem <- struct{}{}:
-				go func() {
-					defer func() { <-s.moneyGuardSem }()
-					bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-					defer cancel()
-					if err := s.moneyGuard.EvaluateCardTransaction(bgCtx, card.UserID, MoneyGuardTransactionInput{
-						Amount:    amount,
-						Currency:  card.Currency,
-						Merchant:  merchantName,
-						Category:  merchantCategory,
-						Reference: bridgeTransID,
-					}); err != nil {
-						s.logger.Warn("money guard transaction evaluation failed",
-							zap.String("user_id", card.UserID.String()),
-							zap.String("transaction_id", bridgeTransID),
-							zap.Error(err))
-					}
-				}()
-			default:
-				s.logger.Warn("money guard semaphore full, skipping evaluation",
-					zap.String("user_id", card.UserID.String()),
-					zap.String("transaction_id", bridgeTransID))
-			}
-		}
-		// Gameplay: check if first card transaction
-		if s.gameplayHooks != nil {
-			count, _ := s.repo.CountTransactionsByUser(ctx, card.UserID)
-			if count <= 1 {
-				s.gameplayHooks.OnFirstCardTransaction(ctx, card.UserID)
-			}
-		}
+		s.afterCompletedCardTransaction(ctx, card, amount, bridgeTransID, merchantName, merchantCategory)
 	}
 
 	// If transaction arrived as reversed or declined, release the hold
@@ -530,6 +536,52 @@ func (s *Service) RecordTransaction(ctx context.Context, bridgeCardID, bridgeTra
 	}
 
 	return nil
+}
+
+func (s *Service) afterCompletedCardTransaction(ctx context.Context, card *entities.BridgeCard, amount decimal.Decimal, bridgeTransID, merchantName, merchantCategory string) {
+	if s.notificationService != nil {
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			merchant := merchantName
+			if merchant == "" {
+				merchant = "merchant"
+			}
+			_ = s.notificationService.NotifyCardTransaction(bgCtx, card.UserID, amount.StringFixed(2), merchant)
+		}()
+	}
+	if s.moneyGuard != nil {
+		select {
+		case s.moneyGuardSem <- struct{}{}:
+			go func() {
+				defer func() { <-s.moneyGuardSem }()
+				bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				if _, err := s.moneyGuard.EvaluateCardTransaction(bgCtx, card.UserID, MoneyGuardTransactionInput{
+					Amount:    amount,
+					Currency:  card.Currency,
+					Merchant:  merchantName,
+					Category:  merchantCategory,
+					Reference: bridgeTransID,
+				}); err != nil {
+					s.logger.Warn("money guard transaction evaluation failed",
+						zap.String("user_id", card.UserID.String()),
+						zap.String("transaction_id", bridgeTransID),
+						zap.Error(err))
+				}
+			}()
+		default:
+			s.logger.Warn("money guard semaphore full, skipping evaluation",
+				zap.String("user_id", card.UserID.String()),
+				zap.String("transaction_id", bridgeTransID))
+		}
+	}
+	if s.gameplayHooks != nil {
+		count, _ := s.repo.CountTransactionsByUser(ctx, card.UserID)
+		if count <= 1 {
+			s.gameplayHooks.OnFirstCardTransaction(ctx, card.UserID)
+		}
+	}
 }
 
 // settleTransaction deducts from hold account and creates ledger entry

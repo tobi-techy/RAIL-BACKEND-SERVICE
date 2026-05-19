@@ -358,11 +358,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.ZapLog,
 	)
 
-	// Initialize integration handlers (Alpaca only - Due replaced by Bridge)
+	// Initialize integration handlers (Alpaca only)
 	integrationHandlers := handlers.NewIntegrationHandlers(
 		container.AlpacaClient,
-		nil, // Due service removed - Bridge handles virtual accounts
-		"",  // Due webhook secret removed
+		nil,  // Deprecated: Due service removed
+		"",   // Deprecated: Due webhook secret removed
 		services.NewNotificationService(container.ZapLog),
 		container.Logger,
 	)
@@ -565,6 +565,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				users.DELETE("/me", middleware.AuthRateLimit(3), authHandlers.DeleteAccount)
 				users.POST("/me/enable-2fa", authHandlers.Enable2FA)
 				users.POST("/me/disable-2fa", authHandlers.Disable2FA)
+				users.GET("/me/tos", authHandlers.GetTOSAcceptance)
+				users.POST("/me/tos", authHandlers.AcceptTOS)
 			}
 
 			// KYC status utilities (auth required but no KYC gate)
@@ -1109,7 +1111,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						imageHandler = handlers.NewImageAnalysisHandlerWithVision(
 							container.Config.AI.Kimi.APIKey,
 							kimiBase,
-							"moonshot-v1-8k", // Kimi's vision-capable model
+							container.Config.AI.Kimi.Model, // kimi-k2.6 supports vision natively
 							container.GetAIOrchestrator(),
 							container.ReceiptRepo,
 							container.ZapLog,
@@ -1118,6 +1120,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					if imageHandler != nil {
 						imageHandler.SetBudgetRepo(container.BudgetRepo)
 						imageHandler.SetSpendingRepo(container.LedgerSpendingRepo)
+						if container.GetConversationService() != nil {
+							imageHandler.SetConversationPersister(container.GetConversationService())
+						}
 						aiGroup.POST("/chat/image", middleware.AuthRateLimit(10), imageHandler.AnalyzeImage)
 						aiGroup.POST("/chat/images", middleware.AuthRateLimit(3), imageHandler.BatchAnalyzeImages)
 						aiGroup.GET("/receipts", imageHandler.GetReceipts)
@@ -1152,16 +1157,16 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					}
 
 					// Voice session (WebSocket)
-					if container.Config.AI.OpenAI.APIKey != "" {
+					if container.Config.AI.AssemblyAI.APIKey != "" {
 						voiceHandler := handlers.NewVoiceHandler(
-							container.Config.AI.OpenAI.APIKey,
-							container.Config.AI.OpenAI.RealtimeModel,
+							container.Config.AI.AssemblyAI.APIKey,
+							container.Config.AI.AssemblyAI.Voice,
 							container.GetAIOrchestrator(),
 							container.GetUsageService(),
 							container.Config.Server.AllowedOrigins,
 							container.ZapLog,
 						)
-						aiGroup.GET("/voice/session", voiceHandler.HandleSession)
+						aiGroup.GET("/voice/session", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), voiceHandler.HandleSession)
 					}
 				}
 
@@ -1300,12 +1305,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		}
 		// Hardened per-provider signature + timestamp verification
 		webhookSigSecrets := container.Config.Security.WebhookSignatureSecrets
-		if webhookSigSecrets.Bridge != "" || webhookSigSecrets.Alpaca != "" || webhookSigSecrets.Due != "" {
+		if webhookSigSecrets.Bridge != "" || webhookSigSecrets.Alpaca != "" {
 			webhooks.Use(middleware.HardenedWebhookVerification(
 				middleware.WebhookProviderConfig{
 					BridgeSecret: webhookSigSecrets.Bridge,
 					AlpacaSecret: webhookSigSecrets.Alpaca,
-					DueSecret:    webhookSigSecrets.Due,
 				},
 				container.ZapLog,
 			))

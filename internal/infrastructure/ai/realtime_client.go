@@ -11,28 +11,9 @@ import (
 	"go.uber.org/zap"
 )
 
-const realtimeURL = "wss://api.openai.com/v1/realtime?model=%s"
+const assemblyAIEndpoint = "wss://agents.assemblyai.com/v1/ws"
 
-// RealtimeEvent is a message sent to/from the OpenAI Realtime API.
-type RealtimeEvent struct {
-	Type string `json:"type"`
-	// Fields vary by event type — we keep the raw JSON and decode as needed.
-	raw json.RawMessage
-}
-
-func (e *RealtimeEvent) UnmarshalJSON(data []byte) error {
-	var obj struct{ Type string `json:"type"` }
-	if err := json.Unmarshal(data, &obj); err != nil {
-		return err
-	}
-	e.Type = obj.Type
-	e.raw = data
-	return nil
-}
-
-func (e RealtimeEvent) Raw() json.RawMessage { return e.raw }
-
-// RealtimeClient manages a WebSocket connection to the OpenAI Realtime API.
+// RealtimeClient manages a WebSocket connection to the AssemblyAI Voice Agent API.
 type RealtimeClient struct {
 	conn   *websocket.Conn
 	mu     sync.Mutex
@@ -40,26 +21,25 @@ type RealtimeClient struct {
 	closed bool
 }
 
-// DialRealtime opens a WebSocket to the OpenAI Realtime API.
-func DialRealtime(apiKey, model string, logger *zap.Logger) (*RealtimeClient, error) {
-	url := fmt.Sprintf(realtimeURL, model)
+// DialRealtime opens a WebSocket to the AssemblyAI Voice Agent API.
+func DialRealtime(apiKey string, logger *zap.Logger) (*RealtimeClient, error) {
 	header := http.Header{
 		"Authorization": []string{"Bearer " + apiKey},
-		"OpenAI-Beta":   []string{"realtime=v1"},
 	}
 
-	conn, resp, err := websocket.DefaultDialer.Dial(url, header)
+	conn, resp, err := websocket.DefaultDialer.Dial(assemblyAIEndpoint, header)
 	if err != nil {
 		if resp != nil {
-			return nil, fmt.Errorf("realtime connection failed (status %d): %w", resp.StatusCode, err)
+			resp.Body.Close()
+			return nil, fmt.Errorf("voice agent connection failed (status %d): %w", resp.StatusCode, err)
 		}
-		return nil, fmt.Errorf("realtime connection failed: %w", err)
+		return nil, fmt.Errorf("voice agent connection failed: %w", err)
 	}
 
 	return &RealtimeClient{conn: conn, logger: logger}, nil
 }
 
-// Send sends a JSON event to the Realtime API.
+// Send sends a JSON event to the Voice Agent API.
 func (c *RealtimeClient) Send(event interface{}) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -69,7 +49,7 @@ func (c *RealtimeClient) Send(event interface{}) error {
 	return c.conn.WriteJSON(event)
 }
 
-// ReadEvent reads the next event from the Realtime API. Blocks until a message arrives.
+// ReadEvent reads the next event from the Voice Agent API. Blocks until a message arrives.
 func (c *RealtimeClient) ReadEvent() (json.RawMessage, error) {
 	_, msg, err := c.conn.ReadMessage()
 	if err != nil {
@@ -98,24 +78,35 @@ func (c *RealtimeClient) Close() {
 	}
 }
 
-// --- Outbound event helpers (client → OpenAI) ---
+// --- Outbound event types (client → AssemblyAI) ---
 
-// SessionUpdate configures the session (system prompt, tools, voice, etc.)
+// SessionUpdate configures the voice agent session.
 type SessionUpdate struct {
 	Type    string        `json:"type"`
 	Session SessionConfig `json:"session"`
 }
 
 type SessionConfig struct {
-	Modalities       []string          `json:"modalities"`
-	Instructions     string            `json:"instructions"`
-	Voice            string            `json:"voice"`
-	InputAudioFormat string            `json:"input_audio_format"`
-	OutputAudioFormat string           `json:"output_audio_format"`
-	Tools            []SessionTool     `json:"tools,omitempty"`
-	TurnDetection    *TurnDetection    `json:"turn_detection,omitempty"`
-	Temperature      float64           `json:"temperature,omitempty"`
-	MaxResponseOutputTokens interface{} `json:"max_response_output_tokens,omitempty"`
+	SystemPrompt string        `json:"system_prompt,omitempty"`
+	Greeting     string        `json:"greeting,omitempty"`
+	Tools        []SessionTool `json:"tools,omitempty"`
+	Input        *InputConfig  `json:"input,omitempty"`
+	Output       *OutputConfig `json:"output,omitempty"`
+}
+
+type InputConfig struct {
+	Format        *AudioFormat   `json:"format,omitempty"`
+	Keyterms      []string       `json:"keyterms,omitempty"`
+	TurnDetection *TurnDetection `json:"turn_detection,omitempty"`
+}
+
+type OutputConfig struct {
+	Voice  string       `json:"voice,omitempty"`
+	Format *AudioFormat `json:"format,omitempty"`
+}
+
+type AudioFormat struct {
+	Encoding string `json:"encoding"` // "audio/pcm"
 }
 
 type SessionTool struct {
@@ -126,73 +117,61 @@ type SessionTool struct {
 }
 
 type TurnDetection struct {
-	Type            string  `json:"type"` // "server_vad"
-	Threshold       float64 `json:"threshold,omitempty"`
-	PrefixPaddingMs int     `json:"prefix_padding_ms,omitempty"`
-	SilenceDurationMs int   `json:"silence_duration_ms,omitempty"`
+	VadThreshold      float64 `json:"vad_threshold,omitempty"`
+	MinSilence        int     `json:"min_silence,omitempty"`
+	MaxSilence        int     `json:"max_silence,omitempty"`
+	InterruptResponse *bool   `json:"interrupt_response,omitempty"`
 }
 
-// InputAudioBufferAppend sends audio data to the Realtime API.
-type InputAudioBufferAppend struct {
+// InputAudio sends audio data to the Voice Agent API.
+type InputAudio struct {
 	Type  string `json:"type"`
-	Audio string `json:"audio"` // base64-encoded PCM16 audio
+	Audio string `json:"audio"` // base64-encoded PCM16 24kHz mono
 }
 
-// ConversationItemCreate sends a tool result back to the Realtime API.
-type ConversationItemCreate struct {
-	Type string           `json:"type"`
-	Item ConversationItem `json:"item"`
-}
-
-type ConversationItem struct {
-	Type   string `json:"type"` // "function_call_output"
+// ToolResult sends a tool execution result back to the Voice Agent API.
+type ToolResult struct {
+	Type   string `json:"type"`
 	CallID string `json:"call_id"`
-	Output string `json:"output"` // JSON string of tool result
+	Result string `json:"result"` // JSON string
 }
 
-// ResponseCreate triggers the model to generate a response.
-type ResponseCreate struct {
-	Type string `json:"type"`
-}
-
-// NewSessionUpdate creates a session.update event with Miriam's config.
-func NewSessionUpdate(instructions string, tools []SessionTool) SessionUpdate {
+// NewSessionUpdate creates a session.update event for Miriam.
+func NewSessionUpdate(instructions string, voice string, greeting string, tools []SessionTool) SessionUpdate {
 	return SessionUpdate{
 		Type: "session.update",
 		Session: SessionConfig{
-			Modalities:        []string{"text", "audio"},
-			Instructions:      instructions,
-			Voice:             "nova",
-			InputAudioFormat:  "pcm16",
-			OutputAudioFormat: "pcm16",
-			Tools:             tools,
-			TurnDetection: &TurnDetection{
-				Type:              "server_vad",
-				Threshold:         0.5,
-				PrefixPaddingMs:   300,
-				SilenceDurationMs: 500,
+			SystemPrompt: instructions,
+			Greeting:     greeting,
+			Tools:        tools,
+			Input: &InputConfig{
+				Format: &AudioFormat{Encoding: "audio/pcm"},
+				Keyterms: []string{
+					"Rail", "stash", "Miriam", "USDC", "naira",
+					"spend wallet", "stash wallet", "automation",
+					"obligation", "round-up", "yield", "deposit",
+					"Rail tag", "operating plan", "stash lock",
+				},
+				// Turn detection: use AssemblyAI's semantic defaults (no overrides).
+				// Semantic turn detection + intelligent interruption handling is superior
+				// to fixed VAD thresholds for conversational voice agents.
 			},
-			Temperature:             0.7,
-			MaxResponseOutputTokens: "inf",
+			Output: &OutputConfig{
+				Voice:  voice,
+				Format: &AudioFormat{Encoding: "audio/pcm"},
+			},
 		},
 	}
 }
 
-func NewAudioAppend(base64Audio string) InputAudioBufferAppend {
-	return InputAudioBufferAppend{Type: "input_audio_buffer.append", Audio: base64Audio}
+func NewAudioInput(base64Audio string) InputAudio {
+	return InputAudio{Type: "input.audio", Audio: base64Audio}
 }
 
-func NewToolResult(callID, resultJSON string) ConversationItemCreate {
-	return ConversationItemCreate{
-		Type: "conversation.item.create",
-		Item: ConversationItem{
-			Type:   "function_call_output",
-			CallID: callID,
-			Output: resultJSON,
-		},
+func NewToolResult(callID, resultJSON string) ToolResult {
+	return ToolResult{
+		Type:   "tool.result",
+		CallID: callID,
+		Result: resultJSON,
 	}
-}
-
-func NewResponseCreate() ResponseCreate {
-	return ResponseCreate{Type: "response.create"}
 }

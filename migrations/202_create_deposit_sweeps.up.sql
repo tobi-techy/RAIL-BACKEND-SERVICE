@@ -8,7 +8,7 @@ CREATE TABLE deposit_sweeps (
     fee_amount NUMERIC(20,6) CHECK (fee_amount >= 0),
     intent_address TEXT,
     chainrails_intent_id INT,
-    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'completed')),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'completed', 'failed', 'failed_terminal')),
     tx_hash TEXT,
     error_message TEXT,
     attempts INT NOT NULL DEFAULT 0 CHECK (attempts >= 0),

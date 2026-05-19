@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/chainrouting"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	"github.com/rail-service/rail_service/pkg/logger"
@@ -468,50 +469,18 @@ func mapToken(tokenOut string) entities.Stablecoin {
 
 // usdcTokenForChainRailsChain returns the USDC contract address for a ChainRails chain ID.
 func usdcTokenForChainRailsChain(chain string) string {
-	switch chain {
-	case "SOLANA_MAINNET":
-		return "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-	case "SOLANA_TESTNET":
-		return "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-	case "BASE_MAINNET":
-		return "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
-	case "BASE_TESTNET":
-		return "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
-	case "ETHEREUM_MAINNET":
-		return "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
-	case "ETHEREUM_TESTNET":
-		return "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"
-	case "ARBITRUM_MAINNET":
-		return "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
-	case "ARBITRUM_TESTNET":
-		return "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d"
-	default:
+	token := chainrouting.USDCTokenForChainRailsChain(chain)
+	if token == "" {
 		return "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" // Solana mainnet fallback
 	}
+	return token
 }
 
 // mapChainRailsChain converts ChainRails chain names to Rail's Chain type.
 func mapChainRailsChain(cr string) entities.Chain {
-	switch cr {
-	case "SOLANA_MAINNET", "SOLANA_TESTNET":
-		return entities.ChainSOL
-	case "ETHEREUM_MAINNET", "ETHEREUM_TESTNET":
-		return entities.ChainETH
-	case "BASE_MAINNET", "BASE_TESTNET":
-		return entities.ChainBase
-	case "ARBITRUM_MAINNET", "ARBITRUM_TESTNET":
-		return entities.ChainArbitrum
-	case "POLYGON_MAINNET":
-		return entities.ChainMATIC
-	case "OPTIMISM_MAINNET", "OPTIMISM_TESTNET":
-		return entities.ChainOptimism
-	case "AVALANCHE_MAINNET", "AVALANCHE_TESTNET":
-		return entities.ChainAvalanche
-	case "STARKNET_MAINNET", "STARKNET_TESTNET":
-		return entities.ChainStarknet
-	case "BNB_MAINNET", "BSC_MAINNET":
-		return entities.ChainBNB
-	default:
+	chain := chainrouting.ChainFromChainRailsChain(cr)
+	if chain == "" {
 		return entities.ChainBase
 	}
+	return chain
 }

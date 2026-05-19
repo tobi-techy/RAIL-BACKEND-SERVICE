@@ -1784,6 +1784,13 @@ func (r *UserRepository) FindApprovedNotActiveBridge(ctx context.Context, limit 
 		      SELECT 1 FROM kyc_submissions ks
 		      WHERE ks.user_id = u.id AND ks.provider = 'didit'
 		  )
+		  AND COALESCE((
+		      SELECT ks.verification_data->'bridge_govid_repair'->>'non_retryable'
+		      FROM kyc_submissions ks
+		      WHERE ks.user_id = u.id AND ks.provider = 'didit'
+		      ORDER BY ks.created_at DESC
+		      LIMIT 1
+		  ), 'false') <> 'true'
 		ORDER BY u.kyc_approved_at ASC
 		LIMIT $1`
 	rows, err := r.db.QueryContext(ctx, query, limit)

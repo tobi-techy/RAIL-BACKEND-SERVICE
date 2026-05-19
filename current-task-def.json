@@ -42,6 +42,10 @@
         {
           "name": "AI_PRIMARY",
           "value": "kimi"
+        },
+        {
+          "name": "ASSEMBLYAI_VOICE",
+          "value": "ivy"
         }
       ],
       "mountPoints": [],
@@ -262,6 +266,10 @@
         {
           "name": "MIXPANEL_TOKEN",
           "valueFrom": "/rail/prod/MIXPANEL_TOKEN"
+        },
+        {
+          "name": "ASSEMBLYAI_API_KEY",
+          "valueFrom": "/rail/prod/ASSEMBLYAI_API_KEY"
         }
       ],
       "logConfiguration": {
