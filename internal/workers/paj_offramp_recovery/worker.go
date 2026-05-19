@@ -136,9 +136,8 @@ func (w *Worker) reverseStuckOrder(ctx context.Context, pajOrderID string, userI
 	}
 
 	if w.ledger == nil {
-		_, _ = w.db.ExecContext(ctx, `
-			UPDATE paj_orders SET status = 'pending', deposit_id = NULL, updated_at = NOW()
-			WHERE paj_order_id = $1 AND status = 'failed'`, pajOrderID)
+		w.logger.Error("CRITICAL: ledger reverser not configured, order already claimed as failed",
+			zap.String("paj_order_id", pajOrderID), zap.String("user_id", userID.String()))
 		return fmt.Errorf("ledger reverser not configured")
 	}
 
@@ -150,9 +149,8 @@ func (w *Worker) reverseStuckOrder(ctx context.Context, pajOrderID string, userI
 			"fiat_amount":  fiatAmount,
 		})
 	if err != nil {
-		_, _ = w.db.ExecContext(ctx, `
-			UPDATE paj_orders SET status = 'pending', deposit_id = NULL, updated_at = NOW()
-			WHERE paj_order_id = $1 AND status = 'failed'`, pajOrderID)
+		w.logger.Error("ledger reversal failed, order stuck in failed state",
+			zap.String("paj_order_id", pajOrderID), zap.String("user_id", userID.String()), zap.Error(err))
 		return fmt.Errorf("reverse hold: %w", err)
 	}
 

@@ -522,6 +522,52 @@ func (s *Service) executePauseCardCooldown(ctx context.Context, a *entities.Miri
 	return nil
 }
 
+// PauseUserCards freezes the user's first card and schedules an automatic
+// PauseUserCards freezes all user cards with a scheduled auto-unfreeze.
+// Authorization: must only be called by internal services (Money Guard) after validating context.
+func (s *Service) PauseUserCards(ctx context.Context, userID uuid.UUID, cooldownMinutes int, reason string) error {
+	if s.card == nil {
+		return fmt.Errorf("card controller not configured")
+	}
+	if cooldownMinutes <= 0 {
+		cooldownMinutes = 30
+	}
+	cardIDs, err := s.card.GetCardsByUser(ctx, userID)
+	if err != nil || len(cardIDs) == 0 {
+		return fmt.Errorf("no cards found for user")
+	}
+	unfreezeAt := time.Now().Add(time.Duration(cooldownMinutes) * time.Minute)
+	var frozenCards []uuid.UUID
+	for _, cardID := range cardIDs {
+		if err := s.card.FreezeCard(ctx, userID, cardID); err != nil {
+			for _, fid := range frozenCards {
+				if ufErr := s.card.UnfreezeCard(ctx, userID, fid); ufErr != nil {
+					s.logger.Error("rollback unfreeze failed", zap.String("card_id", fid.String()), zap.Error(ufErr))
+				}
+			}
+			return fmt.Errorf("freeze card %s: %w", cardID, err)
+		}
+		frozenCards = append(frozenCards, cardID)
+		if err := s.repo.InsertPendingUnfreeze(ctx, userID, cardID, uuid.Nil, unfreezeAt); err != nil {
+			for _, fid := range frozenCards {
+				if ufErr := s.card.UnfreezeCard(ctx, userID, fid); ufErr != nil {
+					s.logger.Error("rollback unfreeze failed", zap.String("card_id", fid.String()), zap.Error(ufErr))
+				}
+			}
+			return fmt.Errorf("schedule card unfreeze: %w", err)
+		}
+	}
+	if s.notifier != nil {
+		msg := reason
+		if strings.TrimSpace(msg) == "" {
+			msg = fmt.Sprintf("Money Guard paused your card for %d minutes.", cooldownMinutes)
+		}
+		_ = s.notifier.SendPush(ctx, userID, "Money Guard cooldown", msg,
+			automationPushData("money_guard_cooldown", "Money Guard paused my card. Show me my recovery plan."))
+	}
+	return nil
+}
+
 func StampTransferConsent(actionConfig map[string]interface{}, now time.Time) map[string]interface{} {
 	if actionConfig == nil {
 		actionConfig = map[string]interface{}{}

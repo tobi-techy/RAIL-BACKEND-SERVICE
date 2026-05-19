@@ -897,7 +897,7 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 				"error", revErr, "withdrawal_id", withdrawal.ID.String())
 			_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
 		} else {
-			_ = s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusReversed)
+			_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, fmt.Sprintf("transfer failed (reversed): %v", err))
 		}
 		if s.notificationService != nil {
 			_ = s.notificationService.NotifyWithdrawalFailed(ctx, req.UserID, req.Amount, "Transfer failed. Your funds have been returned to your balance.")
@@ -1765,10 +1765,10 @@ func validateChainPair(sourceChain, destChain string) error {
 // executeCryptoTransfer executes a crypto transfer via Bridge custodial wallets
 // or ChainRails for chains not natively supported by Bridge.
 func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, destinationChain, sourceChain, sourceWalletAddress, circleWalletID string) (*CryptoTransferResult, error) {
-	// Circle users: route crypto withdrawals.
-	// Same-chain: direct Circle transfer. Cross-chain: via ChainRails.
+	// Unified Solana Settlement: all Circle withdrawals source from Solana.
 	if s.circleTransfer != nil && circleWalletID != "" {
-		if sourceChain == destinationChain || isSameChainFamily(sourceChain, destinationChain) {
+		sourceChain = "SOL"
+		if isSameChainFamily(sourceChain, destinationChain) {
 			return s.executeCircleTransfer(ctx, withdrawal, destinationAddress, destinationChain)
 		}
 		if s.chainRailsAdapter == nil {

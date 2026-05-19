@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/chainrouting"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	"github.com/rail-service/rail_service/pkg/logger"
@@ -47,9 +48,10 @@ type ChainRailsHandlers struct {
 	crClient          *chainrails.Client
 	fundingService    *funding.Service
 	withdrawalService ChainRailsWithdrawalService
+	sweepService      ChainRailsSweepService
 	walletLookup      ChainRailsWalletLookup
 	webhookSecret     string
-	destinationChain  string // e.g. "BASE_MAINNET" or "BASE_TESTNET"
+	destinationChain  string // e.g. "SOLANA_MAINNET"
 	logger            *logger.Logger
 }
 
@@ -63,6 +65,12 @@ type ChainRailsWalletLookup interface {
 type ChainRailsWithdrawalService interface {
 	CompleteChainRailsWithdrawal(ctx context.Context, intentID int, txHash string) error
 	RefundChainRailsWithdrawal(ctx context.Context, intentID int) error
+}
+
+// ChainRailsSweepService handles deposit sweep webhook callbacks.
+type ChainRailsSweepService interface {
+	CompleteSweep(ctx context.Context, intentAddress, txHash string) error
+	FailSweep(ctx context.Context, intentAddress, reason string) error
 }
 
 func NewChainRailsHandlers(
@@ -89,6 +97,11 @@ func (h *ChainRailsHandlers) SetWithdrawalService(ws ChainRailsWithdrawalService
 // SetWalletLookup wires the wallet service for deposit address resolution.
 func (h *ChainRailsHandlers) SetWalletLookup(wl ChainRailsWalletLookup) {
 	h.walletLookup = wl
+}
+
+// SetSweepService wires the deposit sweep service for webhook handling.
+func (h *ChainRailsHandlers) SetSweepService(ss ChainRailsSweepService) {
+	h.sweepService = ss
 }
 
 // --- POST /v1/funding/chainrails/session ---
@@ -228,10 +241,14 @@ func (h *ChainRailsHandlers) HandleWebhook(c *gin.Context) {
 	switch event.Type {
 	case "intent.completed":
 		chainrailsWebhooksTotal.WithLabelValues("intent.completed", "received").Inc()
-		// Check metadata to distinguish deposit vs withdrawal intents
+		// Check metadata to distinguish deposit vs withdrawal vs sweep intents
 		if event.Data.Metadata != nil {
 			if _, isWithdrawal := event.Data.Metadata["withdrawal_id"]; isWithdrawal {
 				h.handleWithdrawalIntentCompleted(c, &event)
+				return
+			}
+			if event.Data.Metadata["type"] == "deposit_sweep" {
+				h.handleSweepIntentCompleted(c, &event)
 				return
 			}
 		}
@@ -241,6 +258,10 @@ func (h *ChainRailsHandlers) HandleWebhook(c *gin.Context) {
 		if event.Data.Metadata != nil {
 			if _, isWithdrawal := event.Data.Metadata["withdrawal_id"]; isWithdrawal {
 				h.handleWithdrawalIntentRefunded(c, &event)
+				return
+			}
+			if event.Data.Metadata["type"] == "deposit_sweep" {
+				h.handleSweepIntentRefunded(c, &event)
 				return
 			}
 		}
@@ -260,6 +281,16 @@ func (h *ChainRailsHandlers) HandleWebhook(c *gin.Context) {
 
 func (h *ChainRailsHandlers) handleIntentCompleted(c *gin.Context, event *chainrails.WebhookEvent) {
 	data := event.Data
+
+	// Safety guard: reject sweep intents that leaked past the metadata check
+	if data.Metadata != nil {
+		if data.Metadata["type"] == "deposit_sweep" || data.Metadata["sweep_id"] != "" {
+			h.logger.Warn("Sweep intent leaked to handleIntentCompleted — rerouting",
+				"event_id", event.ID, "intent_address", data.IntentAddress)
+			h.handleSweepIntentCompleted(c, event)
+			return
+		}
+	}
 
 	// Parse block time from event data or fall back to event creation time
 	var blockTime time.Time
@@ -387,6 +418,38 @@ func (h *ChainRailsHandlers) handleWithdrawalIntentRefunded(c *gin.Context, even
 	c.JSON(http.StatusOK, gin.H{"received": true})
 }
 
+func (h *ChainRailsHandlers) handleSweepIntentCompleted(c *gin.Context, event *chainrails.WebhookEvent) {
+	if h.sweepService == nil {
+		h.logger.Warn("Sweep service not configured — acknowledging webhook")
+		c.JSON(http.StatusOK, gin.H{"received": true})
+		return
+	}
+	if err := h.sweepService.CompleteSweep(c.Request.Context(), event.Data.IntentAddress, event.Data.TxHash); err != nil {
+		h.logger.Error("Failed to complete deposit sweep",
+			"event_id", event.ID, "intent_address", event.Data.IntentAddress, "error", err)
+		chainrailsWebhooksTotal.WithLabelValues("intent.completed", "sweep_error").Inc()
+		common.SendInternalError(c, "SWEEP_ERROR", "Failed to complete sweep")
+		return
+	}
+	chainrailsWebhooksTotal.WithLabelValues("intent.completed", "sweep_success").Inc()
+	c.JSON(http.StatusOK, gin.H{"received": true})
+}
+
+func (h *ChainRailsHandlers) handleSweepIntentRefunded(c *gin.Context, event *chainrails.WebhookEvent) {
+	if h.sweepService == nil {
+		h.logger.Warn("Sweep service not configured — acknowledging webhook")
+		c.JSON(http.StatusOK, gin.H{"received": true})
+		return
+	}
+	reason := "intent refunded"
+	if err := h.sweepService.FailSweep(c.Request.Context(), event.Data.IntentAddress, reason); err != nil {
+		h.logger.Error("Failed to mark deposit sweep as failed",
+			"event_id", event.ID, "intent_address", event.Data.IntentAddress, "error", err)
+	}
+	chainrailsWebhooksTotal.WithLabelValues("intent.refunded", "sweep_failed").Inc()
+	c.JSON(http.StatusOK, gin.H{"received": true})
+}
+
 // mapToken converts a token contract address or symbol to Rail's Stablecoin type.
 func mapToken(tokenOut string) entities.Stablecoin {
 	lower := strings.ToLower(tokenOut)
@@ -406,50 +469,18 @@ func mapToken(tokenOut string) entities.Stablecoin {
 
 // usdcTokenForChainRailsChain returns the USDC contract address for a ChainRails chain ID.
 func usdcTokenForChainRailsChain(chain string) string {
-	switch chain {
-	case "SOLANA_MAINNET":
-		return "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-	case "SOLANA_TESTNET":
-		return "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-	case "BASE_MAINNET":
-		return "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
-	case "BASE_TESTNET":
-		return "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
-	case "ETHEREUM_MAINNET":
-		return "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
-	case "ETHEREUM_TESTNET":
-		return "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"
-	case "ARBITRUM_MAINNET":
-		return "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
-	case "ARBITRUM_TESTNET":
-		return "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d"
-	default:
+	token := chainrouting.USDCTokenForChainRailsChain(chain)
+	if token == "" {
 		return "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" // Solana mainnet fallback
 	}
+	return token
 }
 
 // mapChainRailsChain converts ChainRails chain names to Rail's Chain type.
 func mapChainRailsChain(cr string) entities.Chain {
-	switch cr {
-	case "SOLANA_MAINNET", "SOLANA_TESTNET":
-		return entities.ChainSOL
-	case "ETHEREUM_MAINNET", "ETHEREUM_TESTNET":
-		return entities.ChainETH
-	case "BASE_MAINNET", "BASE_TESTNET":
-		return entities.ChainBase
-	case "ARBITRUM_MAINNET", "ARBITRUM_TESTNET":
-		return entities.ChainArbitrum
-	case "POLYGON_MAINNET":
-		return entities.ChainMATIC
-	case "OPTIMISM_MAINNET", "OPTIMISM_TESTNET":
-		return entities.ChainOptimism
-	case "AVALANCHE_MAINNET", "AVALANCHE_TESTNET":
-		return entities.ChainAvalanche
-	case "STARKNET_MAINNET", "STARKNET_TESTNET":
-		return entities.ChainStarknet
-	case "BNB_MAINNET", "BSC_MAINNET":
-		return entities.ChainBNB
-	default:
+	chain := chainrouting.ChainFromChainRailsChain(cr)
+	if chain == "" {
 		return entities.ChainBase
 	}
+	return chain
 }

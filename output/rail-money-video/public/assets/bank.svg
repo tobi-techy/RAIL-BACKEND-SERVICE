@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <defs>
+    <linearGradient id="gBank" x1="12" y1="5" x2="12" y2="19" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#A08BFF"/>
+      <stop offset="1" stop-color="#6C7CFF"/>
+    </linearGradient>
+  </defs>
+
+  <!-- roof -->
+  <path fill="url(#gBank)" d="M11.4 4.7a1.2 1.2 0 0 1 1.2 0l6.2 3.6c.95.55.56 2.0-.54 2.0H5.74c-1.10 0-1.49-1.45-.54-2.0l6.2-3.6Z"/>
+
+  <!-- columns -->
+  <path fill="url(#gBank)" d="M6.8 11.3c0-.66.54-1.2 1.2-1.2h.9c.66 0 1.2.54 1.2 1.2v6.6c0 .66-.54 1.2-1.2 1.2H8.0c-.66 0-1.2-.54-1.2-1.2v-6.6Z"/>
+  <path fill="url(#gBank)" d="M11.0 11.3c0-.66.54-1.2 1.2-1.2h.9c.66 0 1.2.54 1.2 1.2v6.6c0 .66-.54 1.2-1.2 1.2h-.9c-.66 0-1.2-.54-1.2-1.2v-6.6Z"/>
+  <path fill="url(#gBank)" d="M15.2 11.3c0-.66.54-1.2 1.2-1.2h.9c.66 0 1.2.54 1.2 1.2v6.6c0 .66-.54 1.2-1.2 1.2h-.9c-.66 0-1.2-.54-1.2-1.2v-6.6Z"/>
+
+  <!-- base -->
+  <path fill="url(#gBank)" d="M5.6 19.0c0-.66.54-1.2 1.2-1.2h10.4c.66 0 1.2.54 1.2 1.2v.3c0 .95-.77 1.7-1.7 1.7H7.3c-.93 0-1.7-.75-1.7-1.7V19Z"/>
+
+  <!-- highlight -->
+  <path fill="#FFFFFF" fill-opacity=".18" d="M6.6 10.4h10.8c.5 0 .9.4.9.9s-.4.9-.9.9H6.6c-.5 0-.9-.4-.9-.9s.4-.9.9-.9Z"/>
+</svg>

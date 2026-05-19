@@ -26,21 +26,24 @@ import (
 )
 
 var (
-	ErrInvalidSSN            = errors.New("invalid SSN format")
-	ErrInvalidITIN           = errors.New("invalid ITIN format")
-	ErrUnsupportedTaxIDType  = errors.New("unsupported tax_id_type for issuing_country")
-	ErrInvalidIssuingCountry = errors.New("issuing_country must be an ISO alpha-3 code")
-	ErrInvalidImage          = errors.New("invalid image format")
-	ErrImageTooLarge         = errors.New("image exceeds 10MB limit")
-	ErrKYCAlreadyApproved    = errors.New("KYC already approved")
-	ErrNoBridgeCustomer      = errors.New("no Bridge customer ID found")
-	ErrSumsubNotConfigured   = errors.New("sumsub KYC provider is not configured")
-	ErrDiditNotConfigured    = errors.New("didit KYC provider is not configured")
-	ErrMissingTaxID          = errors.New("tax_id is required")
-	ErrMissingTaxIDType      = errors.New("tax_id_type is required")
-	ErrMissingDocumentFront  = errors.New("id_document_front is required")
-	ErrTaxIDEncryptionFailed = errors.New("failed to encrypt tax_id - cannot proceed")
-	ErrTaxIDDecryptionFailed = errors.New("failed to decrypt stored tax_id - cannot proceed")
+	ErrInvalidSSN             = errors.New("invalid SSN format")
+	ErrInvalidITIN            = errors.New("invalid ITIN format")
+	ErrUnsupportedTaxIDType   = errors.New("unsupported tax_id_type for issuing_country")
+	ErrInvalidIssuingCountry  = errors.New("issuing_country must be an ISO alpha-3 code")
+	ErrInvalidImage           = errors.New("invalid image format")
+	ErrImageTooLarge          = errors.New("image exceeds 10MB limit")
+	ErrKYCAlreadyApproved     = errors.New("KYC already approved")
+	ErrNoBridgeCustomer       = errors.New("no Bridge customer ID found")
+	ErrBridgeNotConfigured    = errors.New("Bridge KYC provider is not configured")
+	ErrSumsubNotConfigured    = errors.New("sumsub KYC provider is not configured")
+	ErrDiditNotConfigured     = errors.New("didit KYC provider is not configured")
+	ErrBridgeSubmissionFailed = errors.New("failed to submit KYC data to Bridge")
+	ErrDiditSessionFailed     = errors.New("failed to create didit session")
+	ErrMissingTaxID           = errors.New("tax_id is required")
+	ErrMissingTaxIDType       = errors.New("tax_id_type is required")
+	ErrMissingDocumentFront   = errors.New("id_document_front is required")
+	ErrTaxIDEncryptionFailed  = errors.New("failed to encrypt tax_id - cannot proceed")
+	ErrTaxIDDecryptionFailed  = errors.New("failed to decrypt stored tax_id - cannot proceed")
 
 	BridgeCustomerExistsError = errors.New("Bridge customer already exists")
 )
@@ -2049,6 +2052,9 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 	if req == nil {
 		return nil, fmt.Errorf("missing request")
 	}
+	if s.bridgeAdapter == nil {
+		return nil, ErrBridgeNotConfigured
+	}
 	if !isTaxIDTypeSupportedForCountry(req.IssuingCountry, req.TaxIDType) {
 		return nil, ErrUnsupportedTaxIDType
 	}
@@ -2163,7 +2169,7 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 		s.logger.Error("Failed to submit KYC data to Bridge after retries",
 			zap.String("user_id", userID.String()),
 			zap.Error(lastBridgeErr))
-		return nil, fmt.Errorf("failed to submit KYC data to Bridge: %w", lastBridgeErr)
+		return nil, fmt.Errorf("%w: %v", ErrBridgeSubmissionFailed, lastBridgeErr)
 	}
 	s.logger.Info("KYC data sent directly to Bridge (no sensitive data stored locally)",
 		zap.String("user_id", userID.String()),
@@ -2192,7 +2198,13 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 	// Step 4: Create Didit session
 	sess, err := s.diditAdapter.CreateSession(ctx, userID.String())
 	if err != nil {
-		return nil, fmt.Errorf("failed to create didit session: %w", err)
+		return nil, fmt.Errorf("%w: %v", ErrDiditSessionFailed, err)
+	}
+	if sess == nil || strings.TrimSpace(sess.SessionID) == "" {
+		return nil, fmt.Errorf("%w: missing session_id in provider response", ErrDiditSessionFailed)
+	}
+	if strings.TrimSpace(sess.SessionToken) == "" && strings.TrimSpace(sess.URL) == "" {
+		return nil, fmt.Errorf("%w: missing launch token or URL in provider response", ErrDiditSessionFailed)
 	}
 
 	// Step 5: Persist ONLY session reference - NO sensitive data

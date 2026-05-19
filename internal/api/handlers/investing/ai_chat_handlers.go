@@ -225,6 +225,11 @@ func (h *AIChatHandlers) ChatStream(c *gin.Context) {
 	}()
 
 	if err != nil {
+		if c.Request.Context().Err() != nil {
+			// Client disconnected — expected for streaming, don't log as error
+			h.logger.Info("Stream chat client disconnected", "user_id", userID.String())
+			return
+		}
 		h.logger.Error("Stream chat failed", "error", err, "user_id", userID.String())
 		errEvent, _ := json.Marshal(aiservice.StreamEvent{Type: "error", Content: "Something went wrong — try again"})
 		fmt.Fprintf(c.Writer, "data: %s\n\n", errEvent)

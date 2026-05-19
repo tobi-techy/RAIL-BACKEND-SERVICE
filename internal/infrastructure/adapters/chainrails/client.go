@@ -20,12 +20,12 @@ const (
 )
 
 type Config struct {
-	APIKey         string
-	WebhookSecret  string
-	BaseURL        string
-	Timeout        time.Duration
-	MaxRetries     int
-	RetryDelay     time.Duration
+	APIKey        string
+	WebhookSecret string
+	BaseURL       string
+	Timeout       time.Duration
+	MaxRetries    int
+	RetryDelay    time.Duration
 	// DestinationChain is the chain where Rail's Bridge wallet lives (e.g. "BASE_MAINNET").
 	DestinationChain string
 	// SettlementToken is the token Rail accepts (e.g. "USDC").
@@ -36,6 +36,21 @@ type Client struct {
 	config     Config
 	httpClient *http.Client
 	logger     *zap.Logger
+}
+
+// APIError preserves ChainRails HTTP status codes so callers can distinguish
+// permanent request failures from retryable provider failures.
+type APIError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("chainrails returned %d: %s", e.StatusCode, e.Body)
+}
+
+func (e *APIError) Retryable() bool {
+	return e.StatusCode == http.StatusTooManyRequests || e.StatusCode >= http.StatusInternalServerError
 }
 
 func NewClient(cfg Config, logger *zap.Logger) *Client {
@@ -79,42 +94,42 @@ type CreateIntentRequest struct {
 }
 
 type CreateIntentResponse struct {
-	ID                      int    `json:"id"`
-	ClientID                string `json:"client_id"`
-	Sender                  string `json:"sender"`
-	InitialAmount           string `json:"initialAmount"`
-	FeesInUSD               string `json:"fees_in_usd"`
-	AppFeeInUSD             string `json:"app_fee_in_usd"`
-	TotalAmountInUSD        string `json:"total_amount_in_usd"`
-	TotalAmountInAssetToken string `json:"total_amount_in_asset_token"`
-	FeesInAssetToken        string `json:"fees_in_asset_token"`
-	AppFeeInAssetToken      string `json:"app_fee_in_asset_token"`
-	AssetTokenSymbol        string `json:"asset_token_symbol"`
-	AssetTokenDecimals      int    `json:"asset_token_decimals"`
-	Slippage                string `json:"slippage"`
-	TokenIn                 string `json:"tokenIn"`
-	TokenOut                string `json:"tokenOut"`
-	IntentAddress           string `json:"intent_address"`
-	DestinationIntentAddress string `json:"destination_intent_address"`
-	SourceChain             string `json:"source_chain"`
-	DestinationChain        string `json:"destination_chain"`
-	Recipient               string `json:"recipient"`
-	RefundAddress           string `json:"refund_address"`
-	Relayer                 string `json:"relayer"`
-	Coordinator             string `json:"coordinator"`
-	Bridger                 string `json:"bridger"`
-	BridgeExtraData         string `json:"bridgeExtraData"`
-	IntentNonce             int64  `json:"intent_nonce"`
-	IntentStatus            string `json:"intent_status"`
-	TxHash                  string `json:"tx_hash"`
-	NeedsRelay              bool   `json:"needs_relay"`
-	RelayerClaimed          bool   `json:"relayer_claimed"`
-	PaymasterUsed           bool   `json:"paymaster_used"`
-	Mode                    string `json:"mode"`
-	ExpiresAt               string `json:"expires_at"`
-	Metadata                map[string]interface{} `json:"metadata"`
-	CreatedAt               string `json:"created_at"`
-	UpdatedAt               string `json:"updated_at"`
+	ID                       int                    `json:"id"`
+	ClientID                 string                 `json:"client_id"`
+	Sender                   string                 `json:"sender"`
+	InitialAmount            string                 `json:"initialAmount"`
+	FeesInUSD                string                 `json:"fees_in_usd"`
+	AppFeeInUSD              string                 `json:"app_fee_in_usd"`
+	TotalAmountInUSD         string                 `json:"total_amount_in_usd"`
+	TotalAmountInAssetToken  string                 `json:"total_amount_in_asset_token"`
+	FeesInAssetToken         string                 `json:"fees_in_asset_token"`
+	AppFeeInAssetToken       string                 `json:"app_fee_in_asset_token"`
+	AssetTokenSymbol         string                 `json:"asset_token_symbol"`
+	AssetTokenDecimals       int                    `json:"asset_token_decimals"`
+	Slippage                 string                 `json:"slippage"`
+	TokenIn                  string                 `json:"tokenIn"`
+	TokenOut                 string                 `json:"tokenOut"`
+	IntentAddress            string                 `json:"intent_address"`
+	DestinationIntentAddress string                 `json:"destination_intent_address"`
+	SourceChain              string                 `json:"source_chain"`
+	DestinationChain         string                 `json:"destination_chain"`
+	Recipient                string                 `json:"recipient"`
+	RefundAddress            string                 `json:"refund_address"`
+	Relayer                  string                 `json:"relayer"`
+	Coordinator              string                 `json:"coordinator"`
+	Bridger                  string                 `json:"bridger"`
+	BridgeExtraData          string                 `json:"bridgeExtraData"`
+	IntentNonce              int64                  `json:"intent_nonce"`
+	IntentStatus             string                 `json:"intent_status"`
+	TxHash                   string                 `json:"tx_hash"`
+	NeedsRelay               bool                   `json:"needs_relay"`
+	RelayerClaimed           bool                   `json:"relayer_claimed"`
+	PaymasterUsed            bool                   `json:"paymaster_used"`
+	Mode                     string                 `json:"mode"`
+	ExpiresAt                string                 `json:"expires_at"`
+	Metadata                 map[string]interface{} `json:"metadata"`
+	CreatedAt                string                 `json:"created_at"`
+	UpdatedAt                string                 `json:"updated_at"`
 }
 
 // --- Session creation (server-side, keeps API key private) ---
@@ -141,7 +156,7 @@ func (c *Client) CreateSessionRaw(ctx context.Context, req *CreateSessionRequest
 
 	const maxResponseSize = 10 * 1024 * 1024 // 10MB
 	var lastErr error
-	
+
 	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
 		if attempt > 0 {
 			select {
@@ -161,8 +176,8 @@ func (c *Client) CreateSessionRaw(ctx context.Context, req *CreateSessionRequest
 		resp, err := c.httpClient.Do(httpReq)
 		if err != nil {
 			lastErr = fmt.Errorf("chainrails session request failed: %w", err)
-			c.logger.Warn("ChainRails session attempt failed", 
-				zap.Int("attempt", attempt+1), 
+			c.logger.Warn("ChainRails session attempt failed",
+				zap.Int("attempt", attempt+1),
 				zap.Error(err))
 			continue
 		}
@@ -171,7 +186,7 @@ func (c *Client) CreateSessionRaw(ctx context.Context, req *CreateSessionRequest
 		limitedReader := io.LimitReader(resp.Body, maxResponseSize)
 		respBody, err := io.ReadAll(limitedReader)
 		resp.Body.Close()
-		
+
 		if err != nil {
 			lastErr = fmt.Errorf("read response body: %w", err)
 			c.logger.Warn("ChainRails response read failed",
@@ -189,7 +204,7 @@ func (c *Client) CreateSessionRaw(ctx context.Context, req *CreateSessionRequest
 		}
 
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			lastErr = fmt.Errorf("chainrails returned %d: %s", resp.StatusCode, string(respBody))
+			lastErr = &APIError{StatusCode: resp.StatusCode, Body: string(respBody)}
 			c.logger.Warn("ChainRails session retryable error",
 				zap.Int("status", resp.StatusCode),
 				zap.Int("attempt", attempt+1),
@@ -202,7 +217,7 @@ func (c *Client) CreateSessionRaw(ctx context.Context, req *CreateSessionRequest
 				zap.Int("status", resp.StatusCode),
 				zap.String("body", string(respBody)),
 			)
-			return nil, fmt.Errorf("chainrails returned %d: %s", resp.StatusCode, string(respBody))
+			return nil, &APIError{StatusCode: resp.StatusCode, Body: string(respBody)}
 		}
 
 		var session CreateSessionResponse
@@ -224,7 +239,7 @@ func (c *Client) CreateIntent(ctx context.Context, req *CreateIntentRequest) (*C
 
 	const maxResponseSize = 10 * 1024 * 1024 // 10MB
 	var lastErr error
-	
+
 	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
 		if attempt > 0 {
 			select {
@@ -244,8 +259,8 @@ func (c *Client) CreateIntent(ctx context.Context, req *CreateIntentRequest) (*C
 		resp, err := c.httpClient.Do(httpReq)
 		if err != nil {
 			lastErr = fmt.Errorf("chainrails intent request failed: %w", err)
-			c.logger.Warn("ChainRails intent attempt failed", 
-				zap.Int("attempt", attempt+1), 
+			c.logger.Warn("ChainRails intent attempt failed",
+				zap.Int("attempt", attempt+1),
 				zap.Error(err))
 			continue
 		}
@@ -254,7 +269,7 @@ func (c *Client) CreateIntent(ctx context.Context, req *CreateIntentRequest) (*C
 		limitedReader := io.LimitReader(resp.Body, maxResponseSize)
 		respBody, err := io.ReadAll(limitedReader)
 		resp.Body.Close()
-		
+
 		if err != nil {
 			lastErr = fmt.Errorf("read response body: %w", err)
 			c.logger.Warn("ChainRails response read failed",
@@ -272,7 +287,7 @@ func (c *Client) CreateIntent(ctx context.Context, req *CreateIntentRequest) (*C
 		}
 
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			lastErr = fmt.Errorf("chainrails returned %d: %s", resp.StatusCode, string(respBody))
+			lastErr = &APIError{StatusCode: resp.StatusCode, Body: string(respBody)}
 			c.logger.Warn("ChainRails intent retryable error",
 				zap.Int("status", resp.StatusCode),
 				zap.Int("attempt", attempt+1),
@@ -285,7 +300,7 @@ func (c *Client) CreateIntent(ctx context.Context, req *CreateIntentRequest) (*C
 				zap.Int("status", resp.StatusCode),
 				zap.String("body", string(respBody)),
 			)
-			return nil, fmt.Errorf("chainrails returned %d: %s", resp.StatusCode, string(respBody))
+			return nil, &APIError{StatusCode: resp.StatusCode, Body: string(respBody)}
 		}
 
 		var intent CreateIntentResponse
@@ -330,13 +345,13 @@ func (c *Client) GetIntentStatus(ctx context.Context, intentAddress string) (*In
 	limitedReader := io.LimitReader(resp.Body, maxResponseSize)
 	respBody, err := io.ReadAll(limitedReader)
 	resp.Body.Close()
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("read response body: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("chainrails returned %d: %s", resp.StatusCode, string(respBody))
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
 
 	var status IntentStatus

@@ -167,9 +167,9 @@ func parsePeriod(period string) (time.Time, time.Time) {
 	case "last_90_days":
 		return now.AddDate(0, 0, -90), now
 	case "last_6_months":
-		return time.Date(now.Year(), now.Month()-5, 1, 0, 0, 0, 0, time.UTC), now
+		return now.AddDate(0, -6, 0), now
 	case "last_12_months":
-		return time.Date(now.Year(), now.Month()-11, 1, 0, 0, 0, 0, time.UTC), now
+		return now.AddDate(0, -12, 0), now
 	default: // this_month
 		return spending.MonthStart(), spending.MonthEnd()
 	}

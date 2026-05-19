@@ -509,6 +509,10 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 	if o.spending != nil && o.aggregateStats != nil {
 		tools = append(tools, FinancialIntelligenceTools(o.actionHistory != nil)...)
 	}
+	// Expanded insight cards (subscriptions, runway, deposits, yield, comparisons)
+	if o.spending != nil {
+		tools = append(tools, ExpandedInsightTools()...)
+	}
 	tools = append(tools, FinancialGovernanceTools(o.hasFinancialAdviceProviders(), o.hasFinancialTimelineProviders())...)
 	// Price tracking
 	if o.priceTracker != nil {
@@ -1025,6 +1029,21 @@ func (o *Orchestrator) executeToolInner(ctx context.Context, userID uuid.UUID, t
 
 	case ToolSuggestAdaptiveAmount:
 		return o.executeSuggestAdaptiveAmount(ctx, userID)
+
+	case ToolGetSubscriptions:
+		return o.executeGetSubscriptions(ctx, userID)
+
+	case ToolGetRunway:
+		return o.executeGetRunway(ctx, userID)
+
+	case ToolGetDepositPattern:
+		return o.executeGetDepositPattern(ctx, userID)
+
+	case ToolGetYieldSummary:
+		return o.executeGetYieldSummary(ctx, userID)
+
+	case ToolGetSpendingComparison:
+		return o.executeGetSpendingComparison(ctx, userID)
 
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", tc.Name)

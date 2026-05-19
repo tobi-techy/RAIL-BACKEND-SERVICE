@@ -21,14 +21,9 @@ func TimeoutMiddleware(timeout time.Duration) gin.HandlerFunc {
 		defer cancel()
 
 		c.Request = c.Request.WithContext(ctx)
-
 		c.Next()
 
-		if ctx.Err() == nil || c.Writer.Written() {
-			return
-		}
-
-		if ctx.Err() == context.DeadlineExceeded {
+		if ctx.Err() == context.DeadlineExceeded && !c.Writer.Written() {
 			c.AbortWithStatusJSON(http.StatusGatewayTimeout, gin.H{
 				"error":   "REQUEST_TIMEOUT",
 				"message": "Request processing timeout",

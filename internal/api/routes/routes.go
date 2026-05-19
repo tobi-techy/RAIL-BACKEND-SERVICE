@@ -565,6 +565,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				users.DELETE("/me", middleware.AuthRateLimit(3), authHandlers.DeleteAccount)
 				users.POST("/me/enable-2fa", authHandlers.Enable2FA)
 				users.POST("/me/disable-2fa", authHandlers.Disable2FA)
+				users.GET("/me/tos", authHandlers.GetTOSAcceptance)
+				users.POST("/me/tos", authHandlers.AcceptTOS)
 			}
 
 			// KYC status utilities (auth required but no KYC gate)
@@ -893,6 +895,20 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					obligations.GET("/:id", obligationHandler.Get)
 					obligations.PATCH("/:id", obligationHandler.Update)
 					obligations.DELETE("/:id", obligationHandler.Delete)
+				}
+			}
+
+			if container.MoneyGuardService != nil {
+				moneyGuardHandler := handlers.NewMoneyGuardHandler(container.MoneyGuardService, container.ZapLog)
+				moneyGuard := protected.Group("/money-guard")
+				{
+					moneyGuard.GET("/summary", moneyGuardHandler.Summary)
+					moneyGuard.PATCH("/settings", moneyGuardHandler.UpdateSettings)
+					moneyGuard.POST("/caps", moneyGuardHandler.CreateCap)
+					moneyGuard.GET("/caps", moneyGuardHandler.ListCaps)
+					moneyGuard.DELETE("/caps/:id", moneyGuardHandler.DeleteCap)
+					moneyGuard.GET("/weekly-autopsy", moneyGuardHandler.WeeklyAutopsy)
+					moneyGuard.GET("/recovery-plan", moneyGuardHandler.RecoveryPlan)
 				}
 			}
 
