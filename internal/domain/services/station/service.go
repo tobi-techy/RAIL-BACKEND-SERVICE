@@ -2,13 +2,14 @@ package station
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	ledger "github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -176,7 +177,7 @@ func (s *Service) getAccountBalanceOrZero(ctx context.Context, userID uuid.UUID,
 		zap.String("user_id", userID.String()),
 		zap.String("account_type", string(accountType)),
 	}
-	if strings.Contains(err.Error(), "account not found") {
+	if errors.Is(err, ledger.ErrAccountNotFound) {
 		s.logger.Debug("Ledger account missing, defaulting to zero", fields...)
 		return decimal.Zero
 	}
