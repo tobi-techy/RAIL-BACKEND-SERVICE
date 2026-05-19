@@ -329,6 +329,12 @@ func SecurityHeaders() gin.HandlerFunc {
 func Authentication(cfg *config.Config, log *logger.Logger, sessionService SessionValidator, blacklist ...*auth.TokenBlacklist) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
+		// Fallback: WebSocket clients pass token as query param (can't set headers)
+		if authHeader == "" {
+			if qToken := c.Query("token"); qToken != "" {
+				authHeader = "Bearer " + qToken
+			}
+		}
 		if authHeader == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error":      "Authorization header required",
