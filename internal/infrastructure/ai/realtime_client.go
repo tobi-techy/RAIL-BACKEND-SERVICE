@@ -150,13 +150,11 @@ func NewSessionUpdate(instructions string, voice string, greeting string, tools 
 					"Rail", "stash", "Miriam", "USDC", "naira",
 					"spend wallet", "stash wallet", "automation",
 					"obligation", "round-up", "yield", "deposit",
-					"Rail tag", "operating plan",
+					"Rail tag", "operating plan", "stash lock",
 				},
-				TurnDetection: &TurnDetection{
-					VadThreshold: 0.5,
-					MinSilence:   800,
-					MaxSilence:   2500,
-				},
+				// Turn detection: use AssemblyAI's semantic defaults (no overrides).
+				// Semantic turn detection + intelligent interruption handling is superior
+				// to fixed VAD thresholds for conversational voice agents.
 			},
 			Output: &OutputConfig{
 				Voice:  voice,
