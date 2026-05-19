@@ -361,6 +361,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	// Initialize integration handlers (Alpaca only)
 	integrationHandlers := handlers.NewIntegrationHandlers(
 		container.AlpacaClient,
+		nil,  // Deprecated: Due service removed
+		"",   // Deprecated: Due webhook secret removed
 		services.NewNotificationService(container.ZapLog),
 		container.Logger,
 	)

@@ -10,6 +10,11 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 )
 
+// FullUserProfileProvider extends UserProfileProvider with full profile access.
+type FullUserProfileProvider interface {
+	GetProfile(ctx context.Context, userID uuid.UUID) (*entities.UserProfile, error)
+}
+
 func (o *Orchestrator) buildUserProfileContext(ctx context.Context, userID uuid.UUID) string {
 	provider, ok := o.userProfile.(FullUserProfileProvider)
 	if !ok || provider == nil {
