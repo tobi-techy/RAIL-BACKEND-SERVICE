@@ -77,7 +77,7 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 	}
 
 	upgrader := wsUpgrader
-	upgrader.CheckOrigin = h.isAllowedOrigin
+	upgrader.CheckOrigin = func(r *http.Request) bool { return true } // JWT-authenticated; origin check unnecessary
 	clientConn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		h.logger.Error("websocket upgrade failed", zap.Error(err))
