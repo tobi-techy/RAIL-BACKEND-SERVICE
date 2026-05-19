@@ -333,3 +333,43 @@ func (s *Service) summarize(convID uuid.UUID) {
 		zap.Int("tokens_used", resp.TokensUsed),
 	)
 }
+
+// RecordImageExchange persists an image-based exchange with the thumbnail stored in metadata.
+func (s *Service) RecordImageExchange(ctx context.Context, convID uuid.UUID, userMsg, assistantMsg string, thumbnail string, tokens int, model string) error {
+	userMeta := map[string]interface{}{}
+	if thumbnail != "" {
+		userMeta["image_url"] = thumbnail
+	}
+
+	if err := s.repo.CreateMessage(ctx, &entities.AIMessage{
+		ConversationID: convID,
+		Role:           "user",
+		Content:        userMsg,
+		EstimatedCost:  decimal.Zero,
+		Model:          model,
+		Metadata:       userMeta,
+	}); err != nil {
+		return fmt.Errorf("save user image message: %w", err)
+	}
+
+	if err := s.repo.CreateMessage(ctx, &entities.AIMessage{
+		ConversationID: convID,
+		Role:           "assistant",
+		Content:        assistantMsg,
+		TokenCount:     tokens,
+		EstimatedCost:  decimal.Zero,
+		Model:          model,
+	}); err != nil {
+		// User message saved but assistant failed — conversation is inconsistent.
+		// Log for monitoring; the orphaned user message is harmless (shows image was sent).
+		s.logger.Error("partial image exchange persist: assistant message failed after user message saved",
+			zap.String("conversation_id", convID.String()),
+			zap.Error(err))
+		return fmt.Errorf("save assistant message: %w", err)
+	}
+
+	if err := s.repo.IncrementStats(ctx, convID, tokens, decimal.Zero); err != nil {
+		s.logger.Warn("failed to increment stats for image exchange", zap.Error(err))
+	}
+	return nil
+}

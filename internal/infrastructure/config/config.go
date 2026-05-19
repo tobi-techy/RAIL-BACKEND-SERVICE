@@ -82,12 +82,19 @@ type CCTPConfig struct {
 
 // AIConfig contains AI provider configuration
 type AIConfig struct {
-	OpenAI  OpenAIConfig  `mapstructure:"openai"`
-	Gemini  GeminiConfig  `mapstructure:"gemini"`
-	Kimi    KimiConfig    `mapstructure:"kimi"`
-	Groq    GroqConfig    `mapstructure:"groq"`
-	Bedrock BedrockConfig `mapstructure:"bedrock"`
-	Primary string        `mapstructure:"primary"` // "openai", "gemini", "kimi", "groq", or "bedrock"
+	OpenAI     OpenAIConfig     `mapstructure:"openai"`
+	Gemini     GeminiConfig     `mapstructure:"gemini"`
+	Kimi       KimiConfig       `mapstructure:"kimi"`
+	Groq       GroqConfig       `mapstructure:"groq"`
+	Bedrock    BedrockConfig    `mapstructure:"bedrock"`
+	AssemblyAI AssemblyAIConfig `mapstructure:"assemblyai"`
+	Primary    string           `mapstructure:"primary"` // "openai", "gemini", "kimi", "groq", or "bedrock"
+}
+
+// AssemblyAIConfig contains AssemblyAI Voice Agent API configuration
+type AssemblyAIConfig struct {
+	APIKey string `mapstructure:"api_key"`
+	Voice  string `mapstructure:"voice"`
 }
 
 // BedrockConfig contains Amazon Bedrock configuration
@@ -340,7 +347,6 @@ type SecurityConfig struct {
 type WebhookSignatureSecretsConfig struct {
 	Bridge string `mapstructure:"bridge"`
 	Alpaca string `mapstructure:"alpaca"`
-	Due    string `mapstructure:"due"`
 }
 
 // DeviceBindingConfig for device-bound JWT tokens
@@ -819,6 +825,7 @@ func setDefaults() {
 
 	// AI Provider defaults
 	viper.SetDefault("ai.primary", "kimi")
+	viper.SetDefault("ai.assemblyai.voice", "ivy")
 	viper.SetDefault("ai.openai.model", "gpt-4o-mini")
 	viper.SetDefault("ai.openai.realtime_model", "gpt-4o-mini-realtime-preview")
 	viper.SetDefault("ai.openai.max_tokens", 500)
@@ -829,6 +836,8 @@ func setDefaults() {
 	viper.SetDefault("ai.kimi.model", "kimi-k2.6")
 
 	// Explicit env bindings for AI keys (task def uses short names)
+	viper.BindEnv("ai.assemblyai.api_key", "ASSEMBLYAI_API_KEY")
+	viper.BindEnv("ai.assemblyai.voice", "ASSEMBLYAI_VOICE")
 	viper.BindEnv("ai.openai.api_key", "OPENAI_API_KEY")
 	viper.BindEnv("ai.gemini.api_key", "GEMINI_API_KEY")
 	viper.BindEnv("ai.kimi.api_key", "KIMI_API_KEY")
@@ -1141,6 +1150,14 @@ func overrideFromEnv() {
 	}
 
 	// AI Providers
+	if assemblyAIKey := os.Getenv("ASSEMBLYAI_API_KEY"); assemblyAIKey != "" {
+		viper.Set("ai.assemblyai.api_key", assemblyAIKey)
+	} else {
+		viper.Set("ai.assemblyai.api_key", "")
+	}
+	if assemblyAIVoice := os.Getenv("ASSEMBLYAI_VOICE"); assemblyAIVoice != "" {
+		viper.Set("ai.assemblyai.voice", assemblyAIVoice)
+	}
 	if openaiKey := os.Getenv("OPENAI_API_KEY"); openaiKey != "" {
 		viper.Set("ai.openai.api_key", openaiKey)
 	} else {

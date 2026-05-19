@@ -37,7 +37,13 @@ type ImageAnalysisHandler struct {
 	receiptRepo     *repositories.ReceiptRepository
 	budgetRepo      *repositories.BudgetRepository
 	spendingRepo    *repositories.LedgerSpendingRepository
+	convPersister   ConversationPersister
 	logger          *zap.Logger
+}
+
+// ConversationPersister saves image messages to conversations.
+type ConversationPersister interface {
+	RecordImageExchange(ctx context.Context, convID uuid.UUID, userMsg, assistantMsg string, thumbnail string, tokens int, model string) error
 }
 
 func NewImageAnalysisHandler(apiKey string, orchestrator *aiservice.Orchestrator, receiptRepo *repositories.ReceiptRepository, logger *zap.Logger) *ImageAnalysisHandler {
@@ -81,14 +87,20 @@ func (h *ImageAnalysisHandler) SetBudgetRepo(b *repositories.BudgetRepository) {
 	h.budgetRepo = b
 }
 
+// SetConversationPersister sets the conversation persister for image message persistence.
+func (h *ImageAnalysisHandler) SetConversationPersister(cp ConversationPersister) {
+	h.convPersister = cp
+}
+
 // SetSpendingRepo sets the spending repository for category spending lookups.
 func (h *ImageAnalysisHandler) SetSpendingRepo(s *repositories.LedgerSpendingRepository) {
 	h.spendingRepo = s
 }
 
 type imageRequest struct {
-	Image   string `json:"image" binding:"required"` // base64-encoded image
-	Message string `json:"message"`
+	Image          string `json:"image" binding:"required"` // base64-encoded image
+	Message        string `json:"message"`
+	ConversationID string `json:"conversation_id"`
 }
 
 // visionReceiptResponse is the structured JSON we ask GPT-4o to return.
@@ -151,9 +163,19 @@ func (h *ImageAnalysisHandler) AnalyzeImage(c *gin.Context) {
 		h.orchestrator.TrackVisionUsage(c.Request.Context(), userID, tokensUsed)
 	}
 
+	// Strip markdown code fences if present (some models wrap JSON in ```json ... ```)
+	cleanRaw := strings.TrimSpace(raw)
+	if strings.HasPrefix(cleanRaw, "```") {
+		if idx := strings.Index(cleanRaw, "\n"); idx != -1 {
+			cleanRaw = cleanRaw[idx+1:]
+		}
+		cleanRaw = strings.TrimSuffix(strings.TrimSpace(cleanRaw), "```")
+		cleanRaw = strings.TrimSpace(cleanRaw)
+	}
+
 	// Try to parse structured receipt data
 	var parsed visionReceiptResponse
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil || !parsed.IsReceipt {
+	if err := json.Unmarshal([]byte(cleanRaw), &parsed); err != nil || !parsed.IsReceipt {
 		// Not a receipt or couldn't parse — return structured card
 		summary := raw
 		if parsed.Summary != "" {
@@ -270,6 +292,29 @@ func (h *ImageAnalysisHandler) AnalyzeImage(c *gin.Context) {
 		resp["receipt_id"] = scan.ID.String()
 	} else {
 		resp["warning"] = "Could not extract a valid amount from this receipt"
+	}
+	// Include thumbnail so frontend can display the image in chat history
+	if scan.Thumbnail != nil {
+		resp["image_url"] = "data:image/jpeg;base64," + *scan.Thumbnail
+	}
+
+	// Persist to conversation if conversation_id provided
+	if req.ConversationID != "" && h.convPersister != nil {
+		if convID, err := uuid.Parse(req.ConversationID); err == nil {
+			thumbValue := ""
+			if scan.Thumbnail != nil {
+				thumbValue = "data:image/jpeg;base64," + *scan.Thumbnail
+			}
+			go func(convID uuid.UUID, userMsg, summary, thumb string, tokens int, model string) {
+				persistCtx, persistCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer persistCancel()
+				if err := h.convPersister.RecordImageExchange(
+					persistCtx, convID, userMsg, summary, thumb, tokens, model,
+				); err != nil {
+					h.logger.Warn("failed to persist image exchange to conversation", zap.Error(err))
+				}
+			}(convID, req.Message, parsed.Summary, thumbValue, tokensUsed, h.visionModel)
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"data": resp})
