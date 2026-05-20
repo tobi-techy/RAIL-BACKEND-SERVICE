@@ -1123,8 +1123,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						if container.GetConversationService() != nil {
 							imageHandler.SetConversationPersister(container.GetConversationService())
 						}
-						aiGroup.POST("/chat/image", middleware.AuthRateLimit(10), imageHandler.AnalyzeImage)
-						aiGroup.POST("/chat/images", middleware.AuthRateLimit(3), imageHandler.BatchAnalyzeImages)
+						aiGroup.POST("/chat/image", middleware.LargeBodyLimit(25*1024*1024), middleware.AuthRateLimit(10), imageHandler.AnalyzeImage)
+						aiGroup.POST("/chat/images", middleware.LargeBodyLimit(25*1024*1024), middleware.AuthRateLimit(3), imageHandler.BatchAnalyzeImages)
 						aiGroup.GET("/receipts", imageHandler.GetReceipts)
 						aiGroup.GET("/receipts/gallery", imageHandler.GetReceiptGallery)
 						aiGroup.PUT("/receipts/:id", imageHandler.UpdateReceipt)
