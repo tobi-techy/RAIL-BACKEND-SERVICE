@@ -88,6 +88,11 @@ func (o *Orchestrator) SetReceiptSplitter(s ReceiptSplitter) {
 	o.receiptSplitter = s
 }
 
+// SetWithdrawalInitiator sets the withdrawal service for voice-triggered withdrawals.
+func (o *Orchestrator) SetWithdrawalInitiator(w WithdrawalInitiator) {
+	o.withdrawalInitiator = w
+}
+
 // ReadOnlyTools returns tool definitions for read-only data access.
 func ReadOnlyTools(hasCards, hasDeposits, hasIncomeTrend, hasYield, hasWithdrawals, hasReceipts bool) []infraai.Tool {
 	var tools []infraai.Tool

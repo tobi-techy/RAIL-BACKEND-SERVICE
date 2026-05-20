@@ -275,6 +275,8 @@ func (o *Orchestrator) executeActionTool(ctx context.Context, userID, convID uui
 		return o.createAutomationAction(ctx, userID, convID, tc.Arguments)
 	case ToolCreateObligationReminder:
 		return o.createObligationReminderAction(ctx, userID, convID, tc.Arguments)
+	case ToolInitiateWithdrawal:
+		return o.createWithdrawalAction(ctx, userID, convID, tc.Arguments)
 	case ToolMarkObligationPaid:
 		return o.createMarkObligationPaidAction(ctx, userID, convID, tc.Arguments)
 	case ToolProtectSubscription:
@@ -510,6 +512,8 @@ func (o *Orchestrator) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 		_, execErr = o.executeCreateAutomation(ctx, userID, action.Params)
 	case ToolCreateObligationReminder:
 		_, execErr = o.executeCreateObligationReminder(ctx, userID, action.Params)
+	case ToolInitiateWithdrawal:
+		execErr = o.executeWithdrawal(ctx, userID, action)
 	case ToolMarkObligationPaid:
 		if o.obligationManager == nil {
 			execErr = fmt.Errorf("obligation service unavailable")
@@ -679,7 +683,7 @@ func (o *Orchestrator) auditAction(ctx context.Context, userID, convID uuid.UUID
 
 // isActionTool returns true if the tool name is an action tool.
 func isActionTool(name string) bool {
-	return name == ToolTransferFunds || name == ToolSetSavingsGoal || name == ToolSendReport || name == ToolSetBudget || name == ToolCreateAutomation || name == ToolCreateObligationReminder || name == ToolMarkObligationPaid || name == ToolProtectSubscription || name == ToolMarkSubscriptionCancelled || name == ToolIgnoreSubscription || name == ToolSplitReceipt || name == ToolUpdateFinancialProfile
+	return name == ToolTransferFunds || name == ToolSetSavingsGoal || name == ToolSendReport || name == ToolSetBudget || name == ToolCreateAutomation || name == ToolCreateObligationReminder || name == ToolMarkObligationPaid || name == ToolProtectSubscription || name == ToolMarkSubscriptionCancelled || name == ToolIgnoreSubscription || name == ToolSplitReceipt || name == ToolUpdateFinancialProfile || name == ToolInitiateWithdrawal
 }
 
 func (o *Orchestrator) canCreateActionTool(name string) bool {
@@ -704,6 +708,8 @@ func (o *Orchestrator) canCreateActionTool(name string) bool {
 		return true
 	case ToolSplitReceipt:
 		return o.receiptHistory != nil
+	case ToolInitiateWithdrawal:
+		return o.withdrawalInitiator != nil
 	case ToolUpdateFinancialProfile:
 		return o.financialProfile != nil
 	default:

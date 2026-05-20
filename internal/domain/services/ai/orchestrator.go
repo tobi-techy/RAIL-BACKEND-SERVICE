@@ -123,6 +123,7 @@ type Orchestrator struct {
 	withdrawalHistory   WithdrawalHistoryProvider
 	receiptHistory      ReceiptHistoryProvider
 	receiptSplitter     ReceiptSplitter
+	withdrawalInitiator WithdrawalInitiator
 	budgetProvider      BudgetProvider
 	financialProfile    FinancialProfileProvider
 	obligations         FinancialObligationProvider
@@ -483,6 +484,10 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 	// Action tools (require funds transferer)
 	if o.fundsTransferer != nil {
 		tools = append(tools, ActionTools()...)
+	}
+	// Withdrawal tool (voice-triggered)
+	if o.withdrawalInitiator != nil {
+		tools = append(tools, WithdrawalTool())
 	}
 	// Read-only data tools
 	_, hasIncomeTrend := o.depositHistory.(DepositIncomeProvider)
