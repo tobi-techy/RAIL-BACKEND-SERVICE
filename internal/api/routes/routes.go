@@ -1232,6 +1232,23 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		admin.Use(middleware.AdminAuth(container.DB, container.Logger))
 		admin.Use(middleware.CSRFProtection(csrfStore))
 		{
+			// Complete stuck PAJ orders
+			admin.POST("/paj/complete/:order_id", func(c *gin.Context) {
+				orderID := c.Param("order_id")
+				if orderID == "" {
+					c.JSON(400, gin.H{"error": "order_id required"})
+					return
+				}
+				result, err := container.DB.ExecContext(c.Request.Context(),
+					`UPDATE paj_orders SET status = 'completed', updated_at = NOW() WHERE paj_order_id = $1 AND status NOT IN ('completed', 'failed')`, orderID)
+				if err != nil {
+					c.JSON(500, gin.H{"error": err.Error()})
+					return
+				}
+				rows, _ := result.RowsAffected()
+				c.JSON(200, gin.H{"updated": rows, "order_id": orderID})
+			})
+
 			// User lookup
 			admin.GET("/users/lookup", handlers.AdminLookupUser(container.DB))
 
