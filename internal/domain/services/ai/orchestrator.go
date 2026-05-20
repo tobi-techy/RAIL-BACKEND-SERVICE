@@ -1090,6 +1090,12 @@ func (o *Orchestrator) executeToolInner(ctx context.Context, userID uuid.UUID, t
 		return o.executeGetSpendingComparison(ctx, userID)
 
 	default:
+		// Action tools (transfer_funds, initiate_withdrawal, etc.) — execute directly in voice mode.
+		// In chat mode these are intercepted earlier with pending/confirm flow.
+		// In voice mode (ExecuteToolPublic), AssemblyAI handles confirmation conversationally.
+		if isActionTool(tc.Name) && o.canCreateActionTool(tc.Name) {
+			return o.executeActionToolDirect(ctx, userID, tc)
+		}
 		return nil, fmt.Errorf("unknown tool: %s", tc.Name)
 	}
 }

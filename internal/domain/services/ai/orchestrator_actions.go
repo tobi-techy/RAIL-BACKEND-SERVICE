@@ -681,6 +681,54 @@ func (o *Orchestrator) auditAction(ctx context.Context, userID, convID uuid.UUID
 	}
 }
 
+// executeActionToolDirect executes action tools immediately without the pending/confirm flow.
+// Used in voice mode where AssemblyAI handles confirmation conversationally.
+func (o *Orchestrator) executeActionToolDirect(ctx context.Context, userID uuid.UUID, tc ai.ToolCall) (map[string]interface{}, error) {
+	switch tc.Name {
+	case ToolTransferFunds:
+		from, _ := tc.Arguments["from"].(string)
+		to, _ := tc.Arguments["to"].(string)
+		amountF, _ := tc.Arguments["amount"].(float64)
+		if from == "" || to == "" || amountF <= 0 {
+			return map[string]interface{}{"error": "Invalid transfer parameters"}, nil
+		}
+		amount := decimal.NewFromFloat(amountF)
+		key := uuid.New().String()
+		var err error
+		if from == "spend" && to == "stash" {
+			err = o.fundsTransferer.TransferSpendToStash(ctx, userID, amount, key)
+		} else if from == "stash" && to == "spend" {
+			err = o.fundsTransferer.TransferStashToSpend(ctx, userID, amount, key)
+		} else {
+			return map[string]interface{}{"error": "Invalid from/to combination"}, nil
+		}
+		if err != nil {
+			return map[string]interface{}{"error": err.Error()}, nil
+		}
+		// Get new balances
+		spend, _ := o.fundsTransferer.GetSpendBalance(ctx, userID)
+		stash, _ := o.fundsTransferer.GetStashBalance(ctx, userID)
+		return map[string]interface{}{
+			"success":     true,
+			"transferred": amount.StringFixed(2),
+			"from":        from,
+			"to":          to,
+			"new_spend":   spend.StringFixed(2),
+			"new_stash":   stash.StringFixed(2),
+		}, nil
+
+	case ToolInitiateWithdrawal:
+		return o.createWithdrawalAction(ctx, userID, uuid.New(), tc.Arguments)
+
+	case ToolCreateAutomation:
+		return o.createAutomationAction(ctx, userID, uuid.New(), tc.Arguments)
+
+	default:
+		// For other action tools, return a message that it needs the app
+		return map[string]interface{}{"message": "This action needs to be completed in the app."}, nil
+	}
+}
+
 // isActionTool returns true if the tool name is an action tool.
 func isActionTool(name string) bool {
 	return name == ToolTransferFunds || name == ToolSetSavingsGoal || name == ToolSendReport || name == ToolSetBudget || name == ToolCreateAutomation || name == ToolCreateObligationReminder || name == ToolMarkObligationPaid || name == ToolProtectSubscription || name == ToolMarkSubscriptionCancelled || name == ToolIgnoreSubscription || name == ToolSplitReceipt || name == ToolUpdateFinancialProfile || name == ToolInitiateWithdrawal
