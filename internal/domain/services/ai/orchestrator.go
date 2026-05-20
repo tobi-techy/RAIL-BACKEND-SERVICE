@@ -794,6 +794,9 @@ func (o *Orchestrator) ChatInContextWithOptions(ctx context.Context, userID, con
 
 // ExecuteToolPublic exposes tool execution for the voice handler.
 func (o *Orchestrator) ExecuteToolPublic(ctx context.Context, userID uuid.UUID, tc ai.ToolCall) (map[string]interface{}, error) {
+	if isActionTool(tc.Name) && o.canCreateActionTool(tc.Name) {
+		return o.executeActionToolDirect(ctx, userID, tc)
+	}
 	return o.executeTool(ctx, userID, tc)
 }
 

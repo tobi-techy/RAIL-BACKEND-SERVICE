@@ -29,6 +29,7 @@ const (
 	maxSessionDuration = 15 * time.Minute
 	idleTimeout        = 5 * time.Minute
 	voiceToolTimeout   = 12 * time.Second
+	voiceToolDrainWait = 100 * time.Millisecond
 )
 
 // VoiceUsageTracker tracks billable voice usage.
@@ -165,6 +166,45 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 	// AssemblyAI → Client: handle events
 	var pendingTools []pendingTool
 	var pendingMu sync.Mutex
+	lastAgentEvent := ""
+	waitingForAnswer := false
+
+	setLastAgentEvent := func(eventType string) {
+		pendingMu.Lock()
+		lastAgentEvent = eventType
+		pendingMu.Unlock()
+	}
+
+	dropPendingTools := func() {
+		pendingMu.Lock()
+		pendingTools = nil
+		pendingMu.Unlock()
+	}
+
+	var flushReadyTools func()
+	flushReadyTools = func() {
+		var readyTools []completedTool
+		pendingMu.Lock()
+		if lastAgentEvent == "reply.done" {
+			remaining := pendingTools[:0]
+			for _, pt := range pendingTools {
+				select {
+				case result := <-pt.result:
+					readyTools = append(readyTools, completedTool{callID: pt.callID, result: result})
+				default:
+					remaining = append(remaining, pt)
+				}
+			}
+			pendingTools = remaining
+		}
+		pendingMu.Unlock()
+
+		for _, tool := range readyTools {
+			if err := agentConn.Send(infraai.NewToolResult(tool.callID, tool.result)); err != nil {
+				h.logger.Warn("failed to send tool result", zap.Error(err))
+			}
+		}
+	}
 
 	for {
 		select {
@@ -202,6 +242,56 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 				zap.String("user_id", userID.String()),
 				zap.String("session_id", readyEvent.SessionID))
 			readyOnce.Do(func() { close(ready) })
+			if !h.writeClientEvent(clientConn, raw, cancel) {
+				return
+			}
+
+		case "reply.started":
+			setLastAgentEvent(event.Type)
+			if !h.writeClientEvent(clientConn, raw, cancel) {
+				return
+			}
+
+		case "input.speech.started":
+			setLastAgentEvent(event.Type)
+			lastActivity.Store(time.Now())
+			dropPendingTools()
+			if !h.writeClientControlEvent(clientConn, "rail.playback.flush", map[string]string{"reason": "input_speech_started"}, cancel) {
+				return
+			}
+			if !h.writeClientEvent(clientConn, raw, cancel) {
+				return
+			}
+
+		case "transcript.user":
+			lastActivity.Store(time.Now())
+			if waitingForAnswer {
+				waitingForAnswer = false
+				if err := agentConn.Send(infraai.NewBaselineTurnDetectionUpdate()); err != nil {
+					h.logger.Warn("failed to restore voice turn detection", zap.Error(err))
+				}
+			}
+			if !h.writeClientEvent(clientConn, raw, cancel) {
+				return
+			}
+
+		case "transcript.agent":
+			var transcriptEvent struct {
+				Text        string `json:"text"`
+				Interrupted bool   `json:"interrupted"`
+			}
+			_ = json.Unmarshal(raw, &transcriptEvent)
+			if transcriptEvent.Interrupted {
+				dropPendingTools()
+				if !h.writeClientControlEvent(clientConn, "rail.playback.flush", map[string]string{"reason": "agent_interrupted"}, cancel) {
+					return
+				}
+			} else if strings.HasSuffix(strings.TrimSpace(transcriptEvent.Text), "?") && !waitingForAnswer {
+				waitingForAnswer = true
+				if err := agentConn.Send(infraai.NewQuestionTurnDetectionUpdate()); err != nil {
+					h.logger.Warn("failed to extend voice turn detection", zap.Error(err))
+				}
+			}
 			if !h.writeClientEvent(clientConn, raw, cancel) {
 				return
 			}
@@ -249,51 +339,30 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 					// Context cancelled — bounded wait to avoid leak
 					select {
 					case resultCh <- string(resultJSON):
-					case <-time.After(100 * time.Millisecond):
+					case <-time.After(voiceToolDrainWait):
 					}
 				}
+				flushReadyTools()
 			}(event.CallID, event.Name, event.Arguments)
 
 		case "reply.done":
 			lastActivity.Store(time.Now())
-			var toolsToSend []pendingTool
-			pendingMu.Lock()
 			if event.Status == "interrupted" {
 				// User barged in — discard pending tool results
-				pendingTools = nil
-			} else if len(pendingTools) > 0 {
-				toolsToSend = append(toolsToSend, pendingTools...)
-				pendingTools = nil
-			}
-			pendingMu.Unlock()
-
-			for _, pt := range toolsToSend {
-				select {
-				case result := <-pt.result:
-					if err := agentConn.Send(infraai.NewToolResult(pt.callID, result)); err != nil {
-						h.logger.Warn("failed to send tool result", zap.Error(err))
-					}
-				case <-ctx.Done():
+				setLastAgentEvent("reply.interrupted")
+				dropPendingTools()
+				if !h.writeClientControlEvent(clientConn, "rail.playback.flush", map[string]string{"reason": "reply_interrupted"}, cancel) {
 					return
-				case <-time.After(voiceToolTimeout):
-					timeoutResult := map[string]interface{}{"error": "tool timed out"}
-					resultJSON, _ := json.Marshal(timeoutResult)
-					if err := agentConn.Send(infraai.NewToolResult(pt.callID, string(resultJSON))); err != nil {
-						h.logger.Warn("failed to send timed-out tool result", zap.Error(err))
-					}
-					// Drain the channel so the tool goroutine can exit
-					go func(ch <-chan string, ctx context.Context) {
-						select {
-						case <-ch:
-						case <-ctx.Done():
-						case <-time.After(voiceToolTimeout):
-						}
-					}(pt.result, ctx)
 				}
+			} else {
+				setLastAgentEvent(event.Type)
 			}
 
 			if !h.writeClientEvent(clientConn, raw, cancel) {
 				return
+			}
+			if event.Status != "interrupted" {
+				flushReadyTools()
 			}
 
 		case "session.error":
@@ -324,6 +393,11 @@ type pendingTool struct {
 	result <-chan string
 }
 
+type completedTool struct {
+	callID string
+	result string
+}
+
 func (h *VoiceHandler) writeClientEvent(conn *websocket.Conn, raw json.RawMessage, cancel context.CancelFunc) bool {
 	// Note: caller must not hold clientMu — this is the only writer path
 	if err := conn.WriteMessage(websocket.TextMessage, raw); err != nil {
@@ -332,6 +406,19 @@ func (h *VoiceHandler) writeClientEvent(conn *websocket.Conn, raw json.RawMessag
 		return false
 	}
 	return true
+}
+
+func (h *VoiceHandler) writeClientControlEvent(conn *websocket.Conn, eventType string, fields map[string]string, cancel context.CancelFunc) bool {
+	payload := map[string]string{"type": eventType}
+	for k, v := range fields {
+		payload[k] = v
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		h.logger.Warn("voice control event marshal failed", zap.Error(err))
+		return true
+	}
+	return h.writeClientEvent(conn, raw, cancel)
 }
 
 func normalizeClientVoiceEvent(messageType int, msg []byte) interface{} {
@@ -353,27 +440,17 @@ func normalizeClientVoiceEvent(messageType int, msg []byte) interface{} {
 func (h *VoiceHandler) configureSession(ctx context.Context, userID uuid.UUID, conn *infraai.RealtimeClient) error {
 	tools := h.orchestrator.GetTools()
 	// Voice: limit to ≤10 tools for better selection accuracy (AssemblyAI docs)
-	voiceToolNames := map[string]bool{
-		"get_account_summary":          true,
-		"transfer_funds":               true,
-		"initiate_withdrawal":          true,
-		"get_linked_banks":             true,
-		"create_automation":            true,
-		"set_savings_goal":             true,
-		"create_obligation_reminder":   true,
-		"get_withdrawal_history":       true,
-		"get_deposit_history":          true,
-		"get_card_transactions":        true,
-	}
+	voiceTools := voiceToolDescriptions()
 	var filteredTools []infraai.SessionTool
 	for _, t := range tools {
-		if !voiceToolNames[t.Name] {
+		description, ok := voiceTools[t.Name]
+		if !ok {
 			continue
 		}
 		filteredTools = append(filteredTools, infraai.SessionTool{
 			Type:           "function",
 			Name:           t.Name,
-			Description:    t.Description,
+			Description:    description,
 			Parameters:     t.Parameters,
 			ExecutionMode:  "interactive",
 			TimeoutSeconds: 15,
@@ -384,6 +461,21 @@ func (h *VoiceHandler) configureSession(ctx context.Context, userID uuid.UUID, c
 	instructions := h.orchestrator.BuildRealtimeInstructions(ctx, userID)
 	greeting := h.orchestrator.BuildRealtimeGreeting(ctx, userID)
 	return conn.Send(infraai.NewSessionUpdate(instructions, h.voice, greeting, sessionTools))
+}
+
+func voiceToolDescriptions() map[string]string {
+	return map[string]string{
+		aiservice.ToolGetAccountSummary:        "Call when the user asks for balance, overview, safe spend, or how their money looks. Fast account snapshot.",
+		aiservice.ToolTransferFunds:            "Call when the user asks to move money between Spend and Stash. Never say money moved unless this succeeds.",
+		aiservice.ToolInitiateWithdrawal:       "Call when the user asks to withdraw or cash out to a linked bank. Ask for missing amount or currency first.",
+		aiservice.ToolGetLinkedBanks:           "Call before a withdrawal if the user asks which bank is linked or does not specify a destination.",
+		aiservice.ToolSetSavingsGoal:           "Call when the user wants to save for a named target, like rent, travel, emergency fund, or school fees.",
+		aiservice.ToolCreateAutomation:         "Call when the user wants an automatic rule. Never claim it is active until the tool succeeds; if authorization is required, say that clearly.",
+		aiservice.ToolCreateObligationReminder: "Call when the user wants Miriam to remember a bill, debt, rent, invoice, subscription, tax, or family support obligation.",
+		aiservice.ToolGetMoneyFlow:             "Call when the user asks where money went, how much they spent, or wants spending versus deposits.",
+		aiservice.ToolGetWithdrawalHistory:     "Call when the user asks about recent withdrawals, cash-outs, or money leaving Rail.",
+		aiservice.ToolGetDepositHistory:        "Call when the user asks about deposits, funding, pay-ins, or money coming into Rail.",
+	}
 }
 
 func (h *VoiceHandler) trackUsage(ctx context.Context, userID uuid.UUID, startTime time.Time) {

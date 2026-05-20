@@ -36,3 +36,13 @@ func TestNormalizeClientVoiceEventPreservesAssemblyAIEvent(t *testing.T) {
 	require.True(t, ok)
 	require.JSONEq(t, string(raw), string(msg))
 }
+
+func TestVoiceToolDescriptionsStaySmallAndActionCapable(t *testing.T) {
+	tools := voiceToolDescriptions()
+
+	require.Len(t, tools, 10)
+	require.Contains(t, tools, "transfer_funds")
+	require.Contains(t, tools, "create_automation")
+	require.Contains(t, tools, "get_money_flow")
+	require.NotContains(t, tools, "get_card_transactions")
+}
