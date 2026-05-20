@@ -162,8 +162,8 @@ func (r *CircleDepositRouter) SetChainRailsBridge(client ChainRailsBridge, desti
 	r.chainRailsDestinationChain = strings.TrimSpace(destinationChain)
 }
 
-// SetSolanaFeeFunding configures a Circle Solana wallet that can fund tiny SOL
-// balances for user wallets before Reflect raw transactions are broadcast.
+// SetSolanaFeeFunding is kept for backward compatibility but is no longer called
+// in the hot path — Circle Gas Station covers Solana transaction fees automatically.
 func (r *CircleDepositRouter) SetSolanaFeeFunding(walletSetID, walletAddress string) {
 	if r == nil {
 		return
@@ -678,7 +678,8 @@ func (r *CircleDepositRouter) ensureMintFunding(ctx context.Context, route *depo
 			usdcBalance.StringFixed(6),
 			route.Amount.Truncate(6).StringFixed(6))
 	}
-	return r.ensureSolanaFeeBalance(ctx, "reflect-sol-fee-"+route.DepositID.String(), wallet)
+	// Circle Gas Station covers Solana transaction fees — no manual SOL top-up needed.
+	return nil
 }
 
 func (r *CircleDepositRouter) ensureSolanaFeeBalance(ctx context.Context, idempotencyKey string, wallet userYieldWallet) error {
@@ -743,7 +744,7 @@ func (r *CircleDepositRouter) resolveSolanaFeeFundingWallet(ctx context.Context)
 		return cachedID, nil
 	}
 	if walletSetID == "" || walletAddress == "" {
-		return "", fmt.Errorf("Solana fee funding is not configured; set CIRCLE_DEFAULT_WALLET_SET_ID and CIRCLE_TREASURY_WALLET_ADDRESS or enable Circle Gas Station for Solana")
+		return "", fmt.Errorf("Solana fee funding is not configured; set CIRCLE_TREASURY_WALLET_ID or both CIRCLE_DEFAULT_WALLET_SET_ID and CIRCLE_TREASURY_WALLET_ADDRESS")
 	}
 	wallets, err := r.circle.ListCircleWallets(ctx, walletSetID)
 	if err != nil {
