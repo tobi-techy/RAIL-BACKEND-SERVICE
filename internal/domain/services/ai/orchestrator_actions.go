@@ -226,7 +226,7 @@ func ActionTools() []ai.Tool {
 		},
 		{
 			Name:        ToolSetSavingsGoal,
-			Description: "Set a savings goal with a target amount and optional deadline for the user. Requires user confirmation.",
+			Description: "Set a savings goal. Call this when the user says 'save for', 'I want to save', 'set a goal', 'saving up for', or mentions a target amount for something. When in doubt, call this.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -239,7 +239,7 @@ func ActionTools() []ai.Tool {
 		},
 		{
 			Name:        ToolCreateObligationReminder,
-			Description: "Create a manual financial obligation or reminder for bills, taxes, invoices, payroll, rent, education, insurance, family support, subscriptions, or vendor bills. Requires user confirmation before saving.",
+			Description: "Create a bill reminder or financial obligation. Call this when the user says 'remind me about rent', 'I have a bill due', 'track my subscription', 'I owe', or mentions any recurring payment. When in doubt, call this.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{

@@ -53,7 +53,7 @@ const ToolGetLinkedBanks = "get_linked_banks"
 func LinkedBanksTool() infraai.Tool {
 	return infraai.Tool{
 		Name:        ToolGetLinkedBanks,
-		Description: "Get the user's linked bank accounts. Call this before initiating a withdrawal to confirm which bank to send to. Returns bank name, last 4 digits of account number, currency, and account ID.",
+		Description: "Get the user's linked bank accounts. Call this when the user mentions withdrawing, sending to bank, or cashing out. Returns bank name, last 4 digits, currency. Call this BEFORE initiate_withdrawal.",
 		Parameters: map[string]interface{}{
 			"type":                 "object",
 			"properties":           map[string]interface{}{},
