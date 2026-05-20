@@ -1232,8 +1232,13 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		admin.Use(middleware.AdminAuth(container.DB, container.Logger))
 		admin.Use(middleware.CSRFProtection(csrfStore))
 		{
-			// Complete stuck PAJ orders
+			// Complete stuck PAJ orders (internal key auth)
 			admin.POST("/paj/complete/:order_id", func(c *gin.Context) {
+				key := c.GetHeader("X-Internal-Key")
+				if key == "" || key != container.Config.JWT.Secret {
+					c.JSON(401, gin.H{"error": "unauthorized"})
+					return
+				}
 				orderID := c.Param("order_id")
 				if orderID == "" {
 					c.JSON(400, gin.H{"error": "order_id required"})
