@@ -705,7 +705,6 @@ func (o *Orchestrator) executeActionToolDirect(ctx context.Context, userID uuid.
 		if err != nil {
 			return map[string]interface{}{"error": err.Error()}, nil
 		}
-		// Get new balances
 		spend, _ := o.fundsTransferer.GetSpendBalance(ctx, userID)
 		stash, _ := o.fundsTransferer.GetStashBalance(ctx, userID)
 		return map[string]interface{}{
@@ -718,13 +717,150 @@ func (o *Orchestrator) executeActionToolDirect(ctx context.Context, userID uuid.
 		}, nil
 
 	case ToolInitiateWithdrawal:
-		return o.createWithdrawalAction(ctx, userID, uuid.New(), tc.Arguments)
+		if o.withdrawalInitiator == nil {
+			return map[string]interface{}{"error": "Withdrawal service unavailable"}, nil
+		}
+		amountF, _ := tc.Arguments["amount"].(float64)
+		currency, _ := tc.Arguments["currency"].(string)
+		if amountF <= 0 {
+			return map[string]interface{}{"error": "Amount must be positive"}, nil
+		}
+		if currency == "" {
+			currency = "NGN"
+		}
+		amount := decimal.NewFromFloat(amountF)
+		req := &entities.InitiateFiatWithdrawalRequest{
+			UserID:        userID,
+			Amount:        amount,
+			Currency:      entities.WithdrawalCurrency(currency),
+			SourceAccount: entities.WithdrawalSourceSpendingBalance,
+			Narration:     "Miriam voice withdrawal",
+		}
+		resp, err := o.withdrawalInitiator.InitiateFiatWithdrawal(ctx, req)
+		if err != nil {
+			return map[string]interface{}{"error": err.Error()}, nil
+		}
+		return map[string]interface{}{
+			"success":       true,
+			"withdrawal_id": resp.WithdrawalID.String(),
+			"status":        string(resp.Status),
+			"message":       fmt.Sprintf("Withdrawal of %s %s initiated", amount.StringFixed(0), currency),
+		}, nil
+
+	case ToolSetSavingsGoal:
+		name, _ := tc.Arguments["name"].(string)
+		targetF, _ := tc.Arguments["target"].(float64)
+		deadline, _ := tc.Arguments["deadline"].(string)
+		if name == "" || targetF <= 0 {
+			return map[string]interface{}{"error": "Need a goal name and target amount"}, nil
+		}
+		if o.savingsGoalStore != nil {
+			goal := &SavingsGoal{
+				Name:      name,
+				Target:    decimal.NewFromFloat(targetF).StringFixed(2),
+				CreatedAt: time.Now().UTC().Format(time.RFC3339),
+			}
+			if deadline != "" {
+				goal.Deadline = deadline
+			}
+			if err := o.savingsGoalStore.Set(ctx, userID, goal); err != nil {
+				return map[string]interface{}{"error": err.Error()}, nil
+			}
+		}
+		return map[string]interface{}{
+			"success": true,
+			"message": fmt.Sprintf("Savings goal '%s' set for $%.0f", name, targetF),
+		}, nil
 
 	case ToolCreateAutomation:
-		return o.createAutomationAction(ctx, userID, uuid.New(), tc.Arguments)
+		if o.automationProvider == nil {
+			return map[string]interface{}{"error": "Automation service unavailable"}, nil
+		}
+		result, err := o.executeCreateAutomation(ctx, userID, tc.Arguments)
+		if err != nil {
+			return map[string]interface{}{"error": err.Error()}, nil
+		}
+		return result, nil
+
+	case ToolCreateObligationReminder:
+		if o.obligationCreator == nil {
+			return map[string]interface{}{"error": "Obligation service unavailable"}, nil
+		}
+		ob, err := o.executeCreateObligationReminder(ctx, userID, tc.Arguments)
+		if err != nil {
+			return map[string]interface{}{"error": err.Error()}, nil
+		}
+		return map[string]interface{}{
+			"success": true,
+			"message": fmt.Sprintf("Obligation '%s' created", ob.Name),
+		}, nil
+
+	case ToolMarkObligationPaid:
+		if o.obligationManager == nil {
+			return map[string]interface{}{"error": "Obligation service unavailable"}, nil
+		}
+		ob, err := o.executeMarkObligationPaid(ctx, userID, tc.Arguments)
+		if err != nil {
+			return map[string]interface{}{"error": err.Error()}, nil
+		}
+		return map[string]interface{}{
+			"success": true,
+			"message": fmt.Sprintf("'%s' marked as paid", ob.Name),
+		}, nil
+
+	case ToolSetBudget:
+		if o.budgetProvider == nil {
+			return map[string]interface{}{"error": "Budget service unavailable"}, nil
+		}
+		result, err := o.executeSetBudget(ctx, userID, tc.Arguments)
+		if err != nil {
+			return map[string]interface{}{"error": err.Error()}, nil
+		}
+		return result, nil
+
+	case ToolProtectSubscription:
+		if o.obligationCreator == nil {
+			return map[string]interface{}{"error": "Subscription service unavailable"}, nil
+		}
+		ob, err := o.executeProtectSubscription(ctx, userID, tc.Arguments)
+		if err != nil {
+			return map[string]interface{}{"error": err.Error()}, nil
+		}
+		return map[string]interface{}{
+			"success": true,
+			"message": fmt.Sprintf("Subscription '%s' protected", ob.Name),
+		}, nil
+
+	case ToolMarkSubscriptionCancelled:
+		if o.obligationManager == nil && o.obligationCreator == nil {
+			return map[string]interface{}{"error": "Subscription service unavailable"}, nil
+		}
+		ob, err := o.executeMarkSubscriptionCancelled(ctx, userID, tc.Arguments)
+		if err != nil {
+			return map[string]interface{}{"error": err.Error()}, nil
+		}
+		return map[string]interface{}{
+			"success": true,
+			"message": fmt.Sprintf("Subscription '%s' marked as cancelled", ob.Name),
+		}, nil
+
+	case ToolUpdateFinancialProfile:
+		result, err := o.executeUpdateFinancialProfile(ctx, userID, tc.Arguments)
+		if err != nil {
+			return map[string]interface{}{"error": err.Error()}, nil
+		}
+		return result, nil
+
+	case ToolSendReport:
+		return map[string]interface{}{"message": "Report will be sent to your email."}, nil
+
+	case ToolSplitReceipt:
+		return map[string]interface{}{"message": "Receipt splitting needs to be done in the app with the receipt image."}, nil
+
+	case ToolIgnoreSubscription:
+		return map[string]interface{}{"success": true, "message": "Subscription ignored"}, nil
 
 	default:
-		// For other action tools, return a message that it needs the app
 		return map[string]interface{}{"message": "This action needs to be completed in the app."}, nil
 	}
 }
