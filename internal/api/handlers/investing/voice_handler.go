@@ -352,15 +352,34 @@ func normalizeClientVoiceEvent(messageType int, msg []byte) interface{} {
 
 func (h *VoiceHandler) configureSession(ctx context.Context, userID uuid.UUID, conn *infraai.RealtimeClient) error {
 	tools := h.orchestrator.GetTools()
-	sessionTools := make([]infraai.SessionTool, len(tools))
-	for i, t := range tools {
-		sessionTools[i] = infraai.SessionTool{
-			Type:        "function",
-			Name:        t.Name,
-			Description: t.Description,
-			Parameters:  t.Parameters,
-		}
+	// Voice: limit to ≤10 tools for better selection accuracy (AssemblyAI docs)
+	voiceToolNames := map[string]bool{
+		"get_account_summary":          true,
+		"transfer_funds":               true,
+		"initiate_withdrawal":          true,
+		"get_linked_banks":             true,
+		"create_automation":            true,
+		"set_savings_goal":             true,
+		"create_obligation_reminder":   true,
+		"get_withdrawal_history":       true,
+		"get_deposit_history":          true,
+		"get_card_transactions":        true,
 	}
+	var filteredTools []infraai.SessionTool
+	for _, t := range tools {
+		if !voiceToolNames[t.Name] {
+			continue
+		}
+		filteredTools = append(filteredTools, infraai.SessionTool{
+			Type:           "function",
+			Name:           t.Name,
+			Description:    t.Description,
+			Parameters:     t.Parameters,
+			ExecutionMode:  "interactive",
+			TimeoutSeconds: 15,
+		})
+	}
+	sessionTools := filteredTools
 
 	instructions := h.orchestrator.BuildRealtimeInstructions(ctx, userID)
 	greeting := h.orchestrator.BuildRealtimeGreeting(ctx, userID)

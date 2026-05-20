@@ -213,7 +213,7 @@ func ActionTools() []ai.Tool {
 	return []ai.Tool{
 		{
 			Name:        ToolTransferFunds,
-			Description: "Transfer money between the user's Spend and Stash wallets. You MUST call this tool to execute the transfer — saying 'done' without calling it does nothing. Ask the user to confirm the amount and direction first, then call this tool.",
+			Description: "Move money between Spend and Stash wallets. Call this when the user says 'move to stash', 'transfer to spend', 'put in stash', 'send to stash', or any variation. When in doubt, call this. A wasted call is fine; saying 'done' without calling is not.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{

@@ -110,10 +110,12 @@ type AudioFormat struct {
 }
 
 type SessionTool struct {
-	Type        string                 `json:"type"` // "function"
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	Parameters  map[string]interface{} `json:"parameters"`
+	Type           string                 `json:"type"`            // "function"
+	Name           string                 `json:"name"`
+	Description    string                 `json:"description"`
+	Parameters     map[string]interface{} `json:"parameters"`
+	ExecutionMode  string                 `json:"execution_mode,omitempty"`  // "interactive" or "hold"
+	TimeoutSeconds int                    `json:"timeout_seconds,omitempty"` // 1-300
 }
 
 type TurnDetection struct {
