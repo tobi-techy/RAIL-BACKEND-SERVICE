@@ -147,10 +147,14 @@ func NewSessionUpdate(instructions string, voice string, greeting string, tools 
 			Input: &InputConfig{
 				Format: &AudioFormat{Encoding: "audio/pcm"},
 				Keyterms: []string{
-					"Rail", "stash", "Miriam", "USDC", "naira",
-					"spend wallet", "stash wallet", "automation",
-					"obligation", "round-up", "yield", "deposit",
-					"Rail tag", "operating plan", "stash lock",
+					"Rail", "Rail Money", "stash", "Miriam", "USDC",
+					"naira", "spend", "spend wallet", "stash wallet",
+					"transfer", "move to stash", "move to spend",
+					"withdraw", "withdrawal", "bank account",
+					"automation", "obligation", "round-up", "yield",
+					"deposit", "savings goal", "budget",
+					"GTBank", "Access Bank", "First Bank", "UBA",
+					"zero point two", "zero point five", "point two",
 				},
 				// Turn detection: use AssemblyAI's semantic defaults (no overrides).
 				// Semantic turn detection + intelligent interruption handling is superior

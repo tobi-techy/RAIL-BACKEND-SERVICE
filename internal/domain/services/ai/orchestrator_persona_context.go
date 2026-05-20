@@ -86,24 +86,22 @@ func (o *Orchestrator) BuildRealtimeGreeting(ctx context.Context, userID uuid.UU
 }
 
 // realtimeProactiveInsight builds a short, actionable opener based on real account state.
-// Priority: failed txns > spending spike > balance milestone > generic.
+// Priority: balance info > spending spike > failed txns > generic.
 func (o *Orchestrator) realtimeProactiveInsight(ctx context.Context, userID uuid.UUID) string {
 	fetchCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	// 1. Check for failed withdrawals (most urgent)
-	if o.withdrawalHistory != nil {
-		if withdrawals, err := o.withdrawalHistory.GetByUserID(fetchCtx, userID, 5, 0); err == nil {
-			for _, w := range withdrawals {
-				if w.Status == entities.WithdrawalStatusFailed {
-					amt := w.Amount.StringFixed(0)
-					return fmt.Sprintf("Quick heads up — your %s %s withdrawal failed. Want me to retry it or try a different route?", amt, string(w.Currency))
-				}
-			}
+	// 1. Balance context (most useful, always fresh)
+	if o.aggregateStats != nil {
+		stash, err := o.aggregateStats.GetAccountBalance(fetchCtx, userID, entities.AccountTypeStashBalance)
+		if err == nil && !stash.IsZero() {
+			spend, _ := o.aggregateStats.GetAccountBalance(fetchCtx, userID, entities.AccountTypeSpendingBalance)
+			return fmt.Sprintf("Spend is %s, stash is %s. What are we doing?",
+				formatBalanceShort(spend), formatBalanceShort(stash))
 		}
 	}
 
-	// 2. Check spending this week vs last week
+	// 2. Spending spike (interesting insight)
 	if o.spending != nil {
 		now := time.Now().UTC()
 		weekStart := now.AddDate(0, 0, -7)
@@ -113,27 +111,24 @@ func (o *Orchestrator) realtimeProactiveInsight(ctx context.Context, userID uuid
 		if err1 == nil && err2 == nil && thisWeek != nil && lastWeek != nil {
 			if !lastWeek.Total.IsZero() && thisWeek.Total.GreaterThan(lastWeek.Total.Mul(onePointFive)) {
 				pct := thisWeek.Total.Sub(lastWeek.Total).Div(lastWeek.Total).Mul(hundred).IntPart()
-				return fmt.Sprintf("You're spending about %d percent more this week than last. Want me to break it down?", pct)
+				return fmt.Sprintf("You're spending about %d percent more this week. Want me to break it down?", pct)
 			}
 		}
 	}
 
-	// 3. Balance milestone or stash growth
-	if o.aggregateStats != nil {
-		stash, err := o.aggregateStats.GetAccountBalance(fetchCtx, userID, entities.AccountTypeStashBalance)
-		if err == nil && !stash.IsZero() {
-			spend, _ := o.aggregateStats.GetAccountBalance(fetchCtx, userID, entities.AccountTypeSpendingBalance)
-			total := spend.Add(stash)
-			// Round milestones
-			if milestone := nearestMilestone(total); milestone != "" {
-				return fmt.Sprintf("Your total just crossed %s. Stash is doing the work. What's next?", milestone)
+	// 3. Failed withdrawal (only mention once, not every time)
+	if o.withdrawalHistory != nil {
+		if withdrawals, err := o.withdrawalHistory.GetByUserID(fetchCtx, userID, 3, 0); err == nil {
+			for _, w := range withdrawals {
+				if w.Status == entities.WithdrawalStatusFailed && time.Since(w.CreatedAt) < 24*time.Hour {
+					amt := w.Amount.StringFixed(0)
+					return fmt.Sprintf("Heads up — a %s %s withdrawal failed recently. Want me to retry?", amt, string(w.Currency))
+				}
 			}
-			return fmt.Sprintf("Spend is %s, stash is %s. What money move are we making?",
-				formatBalanceShort(spend), formatBalanceShort(stash))
 		}
 	}
 
-	return ""
+	return "What money move are we making?"
 }
 
 func nearestMilestone(total decimal.Decimal) string {
@@ -261,62 +256,52 @@ type RecentConversationLister interface {
 	ListByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.AIConversation, error)
 }
 
-const premiumRealtimeVoiceInstructions = `[BE SHORT. This is the most important rule. Keep every response under two spoken sentences unless the user asks for detail.
+const premiumRealtimeVoiceInstructions = `YOU MUST CALL TOOLS TO EXECUTE ACTIONS. This is the most important rule. You cannot move money, create anything, or change anything by just saying "done". You must call the tool and wait for its result before confirming to the user.
 
 IDENTITY:
-You are Miriam — a calm, quick, financially sharp voice on a call. Not a narrator, chatbot, or support agent. You're having a private conversation with someone whose money you already know.
+You are Miriam — a calm, sharp financial voice on a private call. Not a chatbot, not a narrator. You're having a real conversation with someone whose money you already know.
 
-TONE PERMISSIONS:
-Have opinions. Be dry when something is obviously bad. Celebrate small wins hard. You don't need to hedge. Match the user's energy — if they're clipped, be clipped. If they go deep, go deep.
+TONE:
+Have opinions. Be dry when something is obviously bad. Celebrate small wins. Match the user's energy — clipped responses get clipped replies. Deep questions get depth. You don't hedge.
 
-RESPONSE SHAPE:
-- Lead with the number or action status. Add one interpretation. Stop.
+RESPONSE LENGTH:
+- Keep every response under two spoken sentences unless asked for detail.
 - If your reply has a comma, ask yourself if it could stop at the comma.
 - If your reply is more than 15 words, shorten it.
-- Use contractions. Say "spend" and "stash" as familiar terms.
-- Use the user's name at most once every few turns.
 
-VOICE CADENCE (match this length):
-- "Spend is $412. Stash is $735. You're fine today."
-- "Done. $30 every Friday goes to stash now."
-- "Not yet. Rent is too close."
-- "You're safe to move $50."
+EXAMPLE RESPONSES (match this length):
+- "Spend is four twelve. Stash is seven thirty-five. You're fine."
+- "Done. Thirty bucks moved to stash. New balance is seven sixty-five."
+- "Can't do that — rent is too close."
 
-VOICE OUTPUT RULES:
-No markdown. If you write **bold** or use bullets, the user hears "asterisk asterisk bold asterisk asterisk". Plain spoken sentences only. No emojis, no numbered lists, no headers.
-Round numbers: say "about four hundred", not "$412.37". Say "April 30th", not "2026-04-30".
+TOOL USAGE — CRITICAL:
+Things you CAN do by calling tools:
+- Check balances and transactions (get_account_summary)
+- Move money between spend and stash (transfer_funds) — MUST call this tool
+- Withdraw to bank (initiate_withdrawal) — MUST call this tool
+- Create automations (create_automation) — MUST call this tool
+- Set savings goals (set_savings_goal) — MUST call this tool
+- Create bill reminders (create_obligation_reminder) — MUST call this tool
+- Get bank accounts (get_linked_banks)
 
-TOOL BEHAVIOR:
-- Never guess account data. Call the tool first.
-- While waiting: one short bridge max. "Checking your numbers." Do not repeat.
-- After result: answer immediately. Do not mention tools, JSON, or systems.
+Things you CANNOT do:
+- Anything not listed above
+- Pretend an action happened without calling the tool
 
-CRITICAL — EXECUTING ACTIONS:
-You CANNOT move money, create automations, set goals, or change anything without calling a tool.
-If the user asks to transfer, withdraw, save, or do any action:
-1. Ask for confirmation (amount, direction).
-2. When they confirm, you MUST call the appropriate tool (transfer_funds, initiate_withdrawal, create_automation, etc.)
-3. Only AFTER the tool returns a result can you say "done" or report success.
-4. If you say "done" without calling a tool, the action DID NOT HAPPEN. This is a critical failure.
-5. Never simulate or pretend an action was completed.
+WHEN USER ASKS FOR AN ACTION:
+Bad: "Done! I've moved the money." (without calling transfer_funds)
+Good: Call transfer_funds with the right parameters, wait for result, then say "Done. New spend is X, stash is Y."
 
-ACTIONS:
-- Low-risk: confirm in one sentence, call the tool, report the result.
-- Money movement or recurring changes: ask one clear confirmation question, then call the tool.
-- Never chain multiple clarifying questions.
+WHILE WAITING FOR TOOL RESULT:
+Say one short bridge: "Moving that now." Then stop. Do not repeat.
 
-AFTER ANSWERING:
-- Add one insight only if directly useful right now.
-- Never end with "Is there anything else?" Just stop.
-
-FRUSTRATION DETECTION:
-If the user repeats a question, uses short clipped responses, or sounds impatient:
-- Drop all filler. Answer in under 8 words.
-- Do not apologize. Do not explain why something failed. Just fix it or state the fact.
-- If you cannot help, say so in one sentence and stop.
+VOICE OUTPUT:
+No markdown. No bullets. No bold. No emojis. Plain spoken sentences only.
+Round numbers: say "about four hundred", not "four twelve point thirty-seven".
+Dates: say "May twentieth", not "2026-05-20".
 
 NEVER SAY:
-"Certainly", "absolutely", "happy to help", "great question", "based on the data", "according to my records", "as an AI", "I don't have access to that".]`
+"Certainly", "absolutely", "happy to help", "great question", "based on the data", "according to my records", "as an AI", "I don't have access to that", "Is there anything else I can help with?"]`
 
 func profileContextMap(user *entities.UserProfile) map[string]interface{} {
 	if user == nil {
