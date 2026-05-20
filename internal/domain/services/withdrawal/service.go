@@ -1569,9 +1569,11 @@ func (s *WithdrawalService) postWithdrawalLedgerEntries(ctx context.Context, wit
 	}
 
 	metadata := map[string]interface{}{
-		"withdrawal_id":   withdrawal.ID.String(),
-		"withdrawal_type": string(withdrawal.WithdrawalType),
-		"source_account":  string(withdrawal.SourceAccount),
+		"withdrawal_id":    withdrawal.ID.String(),
+		"withdrawal_type":  string(withdrawal.WithdrawalType),
+		"source_account":   string(withdrawal.SourceAccount),
+		"principal_amount": withdrawal.Amount.String(),
+		"fee_amount":       withdrawal.FeeAmount.String(),
 	}
 	if withdrawal.DestinationAddress != nil {
 		metadata["destination_address"] = *withdrawal.DestinationAddress
@@ -1604,6 +1606,7 @@ func (s *WithdrawalService) reverseWithdrawalLedgerEntry(ctx context.Context, wi
 		"withdrawal_id":   withdrawal.ID.String(),
 		"reversal_reason": "transfer_failed",
 		"original_amount": withdrawal.Amount.String(),
+		"fee_amount":      withdrawal.FeeAmount.String(),
 		"source_account":  string(withdrawal.SourceAccount),
 	}
 
@@ -2047,8 +2050,9 @@ func (s *WithdrawalService) executeChainRailsTransfer(ctx context.Context, withd
 
 	// Step 2: Fund the intent by transferring USDC from user's Bridge wallet to the intent address on Base
 	transfer, err := s.bridgeCryptoAdapter.TransferFunds(ctx, &bridgepkg.CreateTransferRequest{
-		OnBehalfOf: withdrawal.UserID.String(),
-		Amount:     withdrawal.Amount.StringFixed(2),
+		OnBehalfOf:   withdrawal.UserID.String(),
+		Amount:       withdrawal.Amount.Add(withdrawal.FeeAmount).StringFixed(2),
+		DeveloperFee: withdrawal.FeeAmount.StringFixed(2),
 		Source: bridgepkg.TransferSource{
 			PaymentRail:    bridgepkg.PaymentRail("bridge_wallet"),
 			Currency:       bridgepkg.CurrencyUSDC,

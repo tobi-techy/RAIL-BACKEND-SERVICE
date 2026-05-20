@@ -453,6 +453,20 @@ func (a *WithdrawalLedgerAdapter) CreateTransaction(ctx context.Context, userID 
 	if err != nil {
 		return err
 	}
+	feeAmount, err := withdrawalPlatformFeeFromMetadata(metadata, amount)
+	if err != nil {
+		return err
+	}
+	if feeAmount.IsPositive() {
+		if metadata == nil {
+			metadata = make(map[string]interface{})
+		}
+		metadata["fee_revenue_posted"] = true
+	}
+	principalAmount := amount.Sub(feeAmount)
+	if principalAmount.IsNegative() {
+		return fmt.Errorf("withdrawal fee %s exceeds total amount %s", feeAmount.String(), amount.String())
+	}
 
 	desc := "Withdrawal transaction"
 	idempotencyKey := fmt.Sprintf("withdrawal-ledger-%s-%d", userID.String(), time.Now().UnixNano())
@@ -462,28 +476,45 @@ func (a *WithdrawalLedgerAdapter) CreateTransaction(ctx context.Context, userID 
 		}
 	}
 
+	entries := []entities.CreateEntryRequest{
+		{
+			AccountID:   userAccount.ID,
+			EntryType:   entities.EntryTypeCredit,
+			Amount:      amount,
+			Currency:    "USDC",
+			Description: &desc,
+		},
+	}
+	if principalAmount.IsPositive() || feeAmount.IsZero() {
+		entries = append(entries, entities.CreateEntryRequest{
+			AccountID:   systemAccount.ID,
+			EntryType:   entities.EntryTypeDebit,
+			Amount:      principalAmount,
+			Currency:    "USDC",
+			Description: &desc,
+		})
+	}
+	if feeAmount.IsPositive() {
+		revenueAccount, err := a.ledgerService.GetSystemAccount(ctx, entities.AccountTypeWithdrawalFeeRevenue)
+		if err != nil {
+			return fmt.Errorf("get withdrawal fee revenue account: %w", err)
+		}
+		entries = append(entries, entities.CreateEntryRequest{
+			AccountID:   revenueAccount.ID,
+			EntryType:   entities.EntryTypeDebit,
+			Amount:      feeAmount,
+			Currency:    "USDC",
+			Description: &desc,
+		})
+	}
+
 	req := &entities.CreateTransactionRequest{
 		UserID:          &userID,
 		TransactionType: txType,
 		IdempotencyKey:  idempotencyKey,
 		Description:     &desc,
 		Metadata:        metadata,
-		Entries: []entities.CreateEntryRequest{
-			{
-				AccountID:   userAccount.ID,
-				EntryType:   entities.EntryTypeCredit,
-				Amount:      amount,
-				Currency:    "USDC",
-				Description: &desc,
-			},
-			{
-				AccountID:   systemAccount.ID,
-				EntryType:   entities.EntryTypeDebit,
-				Amount:      amount,
-				Currency:    "USDC",
-				Description: &desc,
-			},
-		},
+		Entries:         entries,
 	}
 
 	_, err = a.ledgerService.CreateTransaction(ctx, req)
@@ -499,6 +530,17 @@ func (a *WithdrawalLedgerAdapter) ReverseTransaction(ctx context.Context, userID
 	systemAccount, err := a.ledgerService.GetSystemAccount(ctx, entities.AccountTypeSystemBufferUSDC)
 	if err != nil {
 		return err
+	}
+	feeAmount, err := withdrawalPlatformFeeFromMetadata(metadata, amount)
+	if err != nil {
+		return err
+	}
+	if feeAmount.IsPositive() && !a.withdrawalFeeRevenueWasPosted(ctx, originalTxID, metadata) {
+		feeAmount = decimal.Zero
+	}
+	principalAmount := amount.Sub(feeAmount)
+	if principalAmount.IsNegative() {
+		return fmt.Errorf("withdrawal fee %s exceeds reversal amount %s", feeAmount.String(), amount.String())
 	}
 
 	desc := "Withdrawal reversal"
@@ -521,32 +563,134 @@ func (a *WithdrawalLedgerAdapter) ReverseTransaction(ctx context.Context, userID
 		revMetadata[k] = v
 	}
 
+	entries := []entities.CreateEntryRequest{
+		{
+			AccountID:   userAccount.ID,
+			EntryType:   entities.EntryTypeDebit,
+			Amount:      amount,
+			Currency:    "USDC",
+			Description: &desc,
+		},
+	}
+	if principalAmount.IsPositive() || feeAmount.IsZero() {
+		entries = append(entries, entities.CreateEntryRequest{
+			AccountID:   systemAccount.ID,
+			EntryType:   entities.EntryTypeCredit,
+			Amount:      principalAmount,
+			Currency:    "USDC",
+			Description: &desc,
+		})
+	}
+	if feeAmount.IsPositive() {
+		revenueAccount, err := a.ledgerService.GetSystemAccount(ctx, entities.AccountTypeWithdrawalFeeRevenue)
+		if err != nil {
+			return fmt.Errorf("get withdrawal fee revenue account: %w", err)
+		}
+		entries = append(entries, entities.CreateEntryRequest{
+			AccountID:   revenueAccount.ID,
+			EntryType:   entities.EntryTypeCredit,
+			Amount:      feeAmount,
+			Currency:    "USDC",
+			Description: &desc,
+		})
+	}
+
 	req := &entities.CreateTransactionRequest{
 		UserID:          &userID,
 		TransactionType: entities.TransactionTypeReversal,
 		IdempotencyKey:  revIdempotencyKey,
 		Description:     &desc,
 		Metadata:        revMetadata,
-		Entries: []entities.CreateEntryRequest{
-			{
-				AccountID:   userAccount.ID,
-				EntryType:   entities.EntryTypeDebit,
-				Amount:      amount,
-				Currency:    "USDC",
-				Description: &desc,
-			},
-			{
-				AccountID:   systemAccount.ID,
-				EntryType:   entities.EntryTypeCredit,
-				Amount:      amount,
-				Currency:    "USDC",
-				Description: &desc,
-			},
-		},
+		Entries:         entries,
 	}
 
 	_, err = a.ledgerService.CreateTransaction(ctx, req)
 	return err
+}
+
+func withdrawalPlatformFeeFromMetadata(metadata map[string]interface{}, total decimal.Decimal) (decimal.Decimal, error) {
+	if metadata == nil {
+		return decimal.Zero, nil
+	}
+	for _, key := range []string{"fee_amount", "rail_fee"} {
+		value, ok := metadata[key]
+		if !ok {
+			continue
+		}
+		fee, err := decimalFromMetadataValue(value)
+		if err != nil {
+			return decimal.Zero, fmt.Errorf("invalid %s metadata: %w", key, err)
+		}
+		if fee.IsNegative() {
+			return decimal.Zero, fmt.Errorf("%s cannot be negative", key)
+		}
+		if fee.GreaterThan(total) {
+			return decimal.Zero, fmt.Errorf("%s %s exceeds total %s", key, fee.String(), total.String())
+		}
+		return fee, nil
+	}
+	return decimal.Zero, nil
+}
+
+func (a *WithdrawalLedgerAdapter) withdrawalFeeRevenueWasPosted(ctx context.Context, originalTxID string, metadata map[string]interface{}) bool {
+	if metadataBool(metadata, "fee_revenue_posted") {
+		return true
+	}
+	originalKey := ""
+	if metadata != nil {
+		if withdrawalID, ok := metadata["withdrawal_id"].(string); ok && strings.TrimSpace(withdrawalID) != "" {
+			originalKey = "withdrawal-ledger-" + strings.TrimSpace(withdrawalID)
+		}
+	}
+	if originalKey == "" && strings.TrimSpace(originalTxID) != "" {
+		originalKey = "withdrawal-ledger-" + strings.TrimSpace(originalTxID)
+	}
+	if originalKey == "" {
+		return false
+	}
+	tx, err := a.ledgerService.GetTransactionByIdempotencyKey(ctx, originalKey)
+	if err != nil || tx == nil {
+		return false
+	}
+	return metadataBool(tx.Metadata, "fee_revenue_posted")
+}
+
+func metadataBool(metadata map[string]interface{}, key string) bool {
+	if metadata == nil {
+		return false
+	}
+	switch v := metadata[key].(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(strings.TrimSpace(v), "true")
+	default:
+		return false
+	}
+}
+
+func decimalFromMetadataValue(value interface{}) (decimal.Decimal, error) {
+	switch v := value.(type) {
+	case decimal.Decimal:
+		return v, nil
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return decimal.Zero, nil
+		}
+		return decimal.NewFromString(strings.TrimSpace(v))
+	case float64:
+		return decimal.NewFromFloat(v), nil
+	case float32:
+		return decimal.NewFromFloat32(v), nil
+	case int:
+		return decimal.NewFromInt(int64(v)), nil
+	case int64:
+		return decimal.NewFromInt(v), nil
+	case int32:
+		return decimal.NewFromInt(int64(v)), nil
+	default:
+		return decimal.Zero, fmt.Errorf("unsupported type %T", value)
+	}
 }
 
 func (a *WithdrawalLedgerAdapter) TransferSpendingToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
@@ -593,6 +737,7 @@ func (a *WithdrawalBridgeAdapter) CreateRecipient(ctx context.Context, req map[s
 
 func (a *WithdrawalBridgeAdapter) InitiateTransfer(ctx context.Context, req map[string]interface{}) (map[string]interface{}, error) {
 	amount, _ := req["amount"].(string)
+	developerFee, _ := req["developer_fee"].(string)
 	currency, _ := req["currency"].(string)
 	recipientID, _ := req["recipient_id"].(string)
 	sourceWalletID, _ := req["source_wallet_id"].(string)
@@ -627,6 +772,7 @@ func (a *WithdrawalBridgeAdapter) InitiateTransfer(ctx context.Context, req map[
 			Currency:          bridgeCurrency,
 			ExternalAccountID: externalAccountID,
 		},
+		DeveloperFee: strings.TrimSpace(developerFee),
 	}
 
 	transfer, err := a.adapter.TransferFunds(ctx, transferReq)

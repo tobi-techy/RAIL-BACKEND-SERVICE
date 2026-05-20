@@ -648,6 +648,7 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 			reverseErr := s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
 				reverseKey, totalHold, map[string]interface{}{
 					"provider": "paj", "type": "offramp_reversal", "reason": err.Error(),
+					"rail_fee": railFee.String(), "fee_revenue_posted": true,
 				})
 			if reverseErr != nil {
 				s.logger.Error("CRITICAL: failed to reverse ledger hold after Paj failure",
@@ -670,6 +671,7 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 			s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
 				"paj_offramp_db_fail_"+order.ID, totalHold, map[string]interface{}{
 					"provider": "paj", "type": "offramp_db_failure_reversal", "paj_order_id": order.ID,
+					"rail_fee": railFee.String(), "fee_revenue_posted": true,
 				})
 		}
 		return nil, fmt.Errorf("failed to record withdrawal order")
@@ -1083,6 +1085,7 @@ func (s *Service) reverseOfframpIfFailed(ctx context.Context, userID uuid.UUID, 
 	err = s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
 		"paj-offramp-"+pajOrderID, holdAmount, map[string]interface{}{
 			"provider": "paj", "type": "offramp_failure_reversal", "paj_order_id": pajOrderID,
+			"rail_fee": decimal.NewFromFloat(RailNGNWithdrawalFee).String(), "fee_revenue_posted": true,
 		})
 	if err != nil {
 		s.logger.Error("CRITICAL: failed to reverse offramp hold after failure",
@@ -1175,6 +1178,7 @@ func (s *Service) reverseHold(ctx context.Context, userID uuid.UUID, pajOrderID 
 	err := s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
 		"paj_offramp_"+reason+"_"+pajOrderID, amount, map[string]interface{}{
 			"provider": "paj", "type": "offramp_" + reason + "_reversal", "paj_order_id": pajOrderID,
+			"rail_fee": decimal.NewFromFloat(RailNGNWithdrawalFee).String(), "fee_revenue_posted": true,
 		})
 	if err != nil {
 		s.logger.Error("CRITICAL: failed to reverse offramp hold",
