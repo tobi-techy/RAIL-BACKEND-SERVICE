@@ -124,6 +124,7 @@ type Orchestrator struct {
 	receiptHistory      ReceiptHistoryProvider
 	receiptSplitter     ReceiptSplitter
 	withdrawalInitiator WithdrawalInitiator
+	bankAccountProvider BankAccountProvider
 	budgetProvider      BudgetProvider
 	financialProfile    FinancialProfileProvider
 	obligations         FinancialObligationProvider
@@ -488,6 +489,10 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 	// Withdrawal tool (voice-triggered)
 	if o.withdrawalInitiator != nil {
 		tools = append(tools, WithdrawalTool())
+	}
+	// Bank accounts lookup (for withdrawal confirmation)
+	if o.bankAccountProvider != nil {
+		tools = append(tools, LinkedBanksTool())
 	}
 	// Read-only data tools
 	_, hasIncomeTrend := o.depositHistory.(DepositIncomeProvider)
@@ -1088,6 +1093,9 @@ func (o *Orchestrator) executeToolInner(ctx context.Context, userID uuid.UUID, t
 
 	case ToolGetSpendingComparison:
 		return o.executeGetSpendingComparison(ctx, userID)
+
+	case ToolGetLinkedBanks:
+		return o.executeGetLinkedBanks(ctx, userID)
 
 	default:
 		// Action tools (transfer_funds, initiate_withdrawal, etc.) — execute directly in voice mode.

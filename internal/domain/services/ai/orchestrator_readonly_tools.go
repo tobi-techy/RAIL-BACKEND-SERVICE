@@ -93,6 +93,11 @@ func (o *Orchestrator) SetWithdrawalInitiator(w WithdrawalInitiator) {
 	o.withdrawalInitiator = w
 }
 
+// SetBankAccountProvider sets the bank account provider for withdrawal details.
+func (o *Orchestrator) SetBankAccountProvider(b BankAccountProvider) {
+	o.bankAccountProvider = b
+}
+
 // ReadOnlyTools returns tool definitions for read-only data access.
 func ReadOnlyTools(hasCards, hasDeposits, hasIncomeTrend, hasYield, hasWithdrawals, hasReceipts bool) []infraai.Tool {
 	var tools []infraai.Tool

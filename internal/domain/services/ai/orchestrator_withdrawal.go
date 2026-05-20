@@ -19,24 +19,74 @@ type WithdrawalInitiator interface {
 	InitiateFiatWithdrawal(ctx context.Context, req *entities.InitiateFiatWithdrawalRequest) (*entities.InitiateWithdrawalResponse, error)
 }
 
+// BankAccountProvider retrieves user's linked bank accounts.
+type BankAccountProvider interface {
+	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.BankAccount, error)
+}
+
 // WithdrawalTool returns the tool definition for voice-triggered withdrawals.
 func WithdrawalTool() infraai.Tool {
 	return infraai.Tool{
 		Name: ToolInitiateWithdrawal,
 		Description: `Withdraw money from the user's spend wallet to their linked bank account.
 Use when the user says "send money to my bank", "withdraw to bank", "cash out", "I need naira in my account".
-Requires user confirmation before execution.
-The currency determines the destination: NGN goes to their naira bank, USD to their dollar account.`,
+
+IMPORTANT: Before calling this tool, you MUST first call get_linked_banks to see the user's bank accounts.
+Then confirm the details with the user: amount, currency, and which bank (name + last 4 digits).
+Only call this tool AFTER the user confirms.`,
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
-				"amount":   map[string]interface{}{"type": "number", "description": "Amount to withdraw"},
-				"currency": map[string]interface{}{"type": "string", "enum": []string{"NGN", "USD", "GBP", "EUR"}, "description": "Withdrawal currency"},
+				"amount":          map[string]interface{}{"type": "number", "description": "Amount to withdraw"},
+				"currency":        map[string]interface{}{"type": "string", "enum": []string{"NGN", "USD", "GBP", "EUR"}, "description": "Withdrawal currency"},
+				"bank_account_id": map[string]interface{}{"type": "string", "description": "Bank account ID from get_linked_banks. If user has only one account for the currency, use that."},
 			},
 			"required":             []string{"amount", "currency"},
 			"additionalProperties": false,
 		},
 	}
+}
+
+const ToolGetLinkedBanks = "get_linked_banks"
+
+// LinkedBanksTool returns the tool to list user's bank accounts.
+func LinkedBanksTool() infraai.Tool {
+	return infraai.Tool{
+		Name:        ToolGetLinkedBanks,
+		Description: "Get the user's linked bank accounts. Call this before initiating a withdrawal to confirm which bank to send to. Returns bank name, last 4 digits of account number, currency, and account ID.",
+		Parameters: map[string]interface{}{
+			"type":                 "object",
+			"properties":           map[string]interface{}{},
+			"required":             []string{},
+			"additionalProperties": false,
+		},
+	}
+}
+
+func (o *Orchestrator) executeGetLinkedBanks(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+	if o.bankAccountProvider == nil {
+		return map[string]interface{}{"accounts": []interface{}{}, "message": "No bank accounts linked yet"}, nil
+	}
+	accounts, err := o.bankAccountProvider.GetByUserID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if len(accounts) == 0 {
+		return map[string]interface{}{"accounts": []interface{}{}, "message": "No bank accounts linked. User needs to add one in the app."}, nil
+	}
+	result := make([]map[string]interface{}, 0, len(accounts))
+	for _, a := range accounts {
+		acc := map[string]interface{}{
+			"id":        a.ID.String(),
+			"bank_name": a.BankName,
+			"last4":     a.AccountNumberLast4,
+			"currency":  string(a.Currency),
+			"primary":   a.IsPrimary,
+			"verified":  a.IsVerified,
+		}
+		result = append(result, acc)
+	}
+	return map[string]interface{}{"accounts": result}, nil
 }
 
 func (o *Orchestrator) createWithdrawalAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
