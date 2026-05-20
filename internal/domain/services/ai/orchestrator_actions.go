@@ -213,7 +213,7 @@ func ActionTools() []ai.Tool {
 	return []ai.Tool{
 		{
 			Name:        ToolTransferFunds,
-			Description: "Transfer money between the user's Spend and Stash wallets. Requires user confirmation before execution.",
+			Description: "Transfer money between the user's Spend and Stash wallets. You MUST call this tool to execute the transfer — saying 'done' without calling it does nothing. Ask the user to confirm the amount and direction first, then call this tool.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -684,8 +684,16 @@ func (o *Orchestrator) auditAction(ctx context.Context, userID, convID uuid.UUID
 // executeActionToolDirect executes action tools immediately without the pending/confirm flow.
 // Used in voice mode where AssemblyAI handles confirmation conversationally.
 func (o *Orchestrator) executeActionToolDirect(ctx context.Context, userID uuid.UUID, tc ai.ToolCall) (map[string]interface{}, error) {
+	o.logger.Info("executeActionToolDirect called",
+		zap.String("user_id", userID.String()),
+		zap.String("tool", tc.Name),
+		zap.Any("args", tc.Arguments))
 	switch tc.Name {
 	case ToolTransferFunds:
+		if o.fundsTransferer == nil {
+			o.logger.Error("fundsTransferer is nil")
+			return map[string]interface{}{"error": "Transfer service unavailable"}, nil
+		}
 		from, _ := tc.Arguments["from"].(string)
 		to, _ := tc.Arguments["to"].(string)
 		amountF, _ := tc.Arguments["amount"].(float64)
