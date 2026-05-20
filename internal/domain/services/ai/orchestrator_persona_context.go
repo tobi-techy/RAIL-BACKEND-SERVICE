@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/shopspring/decimal"
 )
 
 // FullUserProfileProvider extends UserProfileProvider with full profile access.
@@ -71,15 +72,91 @@ func (o *Orchestrator) buildUserProfileContext(ctx context.Context, userID uuid.
 // the voice session starts. Keep it calm, contextual, and privacy-aware.
 func (o *Orchestrator) BuildRealtimeGreeting(ctx context.Context, userID uuid.UUID) string {
 	name := o.realtimeFirstName(ctx, userID)
-	contextLine := "I have Rail open."
-	if o.realtimeHasBalanceContext(ctx, userID) {
-		contextLine = "I have your Rail numbers in front of me."
-	}
+	insight := o.realtimeProactiveInsight(ctx, userID)
+
+	greeting := "Hey"
 	if name != "" {
-		return fmt.Sprintf("Hey %s. Miriam here. %s What money move are we making?", name, contextLine)
+		greeting = "Hey " + name
 	}
-	return fmt.Sprintf("Hey. Miriam here. %s What money move are we making?", contextLine)
+
+	if insight != "" {
+		return fmt.Sprintf("%s. Miriam here. %s", greeting, insight)
+	}
+	return fmt.Sprintf("%s. Miriam here. I have your Rail numbers in front of me. What money move are we making?", greeting)
 }
+
+// realtimeProactiveInsight builds a short, actionable opener based on real account state.
+// Priority: failed txns > spending spike > balance milestone > generic.
+func (o *Orchestrator) realtimeProactiveInsight(ctx context.Context, userID uuid.UUID) string {
+	fetchCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	// 1. Check for failed withdrawals (most urgent)
+	if o.withdrawalHistory != nil {
+		if withdrawals, err := o.withdrawalHistory.GetByUserID(fetchCtx, userID, 5, 0); err == nil {
+			for _, w := range withdrawals {
+				if w.Status == entities.WithdrawalStatusFailed {
+					amt := w.Amount.StringFixed(0)
+					return fmt.Sprintf("Quick heads up — your %s %s withdrawal failed. Want me to retry it or try a different route?", amt, string(w.Currency))
+				}
+			}
+		}
+	}
+
+	// 2. Check spending this week vs last week
+	if o.spending != nil {
+		now := time.Now().UTC()
+		weekStart := now.AddDate(0, 0, -7)
+		prevWeekStart := now.AddDate(0, 0, -14)
+		thisWeek, err1 := o.spending.GetSummary(fetchCtx, userID, weekStart, now)
+		lastWeek, err2 := o.spending.GetSummary(fetchCtx, userID, prevWeekStart, weekStart)
+		if err1 == nil && err2 == nil && thisWeek != nil && lastWeek != nil {
+			if !lastWeek.Total.IsZero() && thisWeek.Total.GreaterThan(lastWeek.Total.Mul(onePointFive)) {
+				pct := thisWeek.Total.Sub(lastWeek.Total).Div(lastWeek.Total).Mul(hundred).IntPart()
+				return fmt.Sprintf("You're spending about %d percent more this week than last. Want me to break it down?", pct)
+			}
+		}
+	}
+
+	// 3. Balance milestone or stash growth
+	if o.aggregateStats != nil {
+		stash, err := o.aggregateStats.GetAccountBalance(fetchCtx, userID, entities.AccountTypeStashBalance)
+		if err == nil && !stash.IsZero() {
+			spend, _ := o.aggregateStats.GetAccountBalance(fetchCtx, userID, entities.AccountTypeSpendingBalance)
+			total := spend.Add(stash)
+			// Round milestones
+			if milestone := nearestMilestone(total); milestone != "" {
+				return fmt.Sprintf("Your total just crossed %s. Stash is doing the work. What's next?", milestone)
+			}
+			return fmt.Sprintf("Spend is %s, stash is %s. What money move are we making?",
+				formatBalanceShort(spend), formatBalanceShort(stash))
+		}
+	}
+
+	return ""
+}
+
+func nearestMilestone(total decimal.Decimal) string {
+	milestones := []int64{10000, 5000, 2000, 1000, 500, 100}
+	val := total.IntPart()
+	for _, m := range milestones {
+		if val >= m && val < m+m/10 { // within 10% above milestone
+			return fmt.Sprintf("$%d", m)
+		}
+	}
+	return ""
+}
+
+func formatBalanceShort(d decimal.Decimal) string {
+	val := d.IntPart()
+	if val >= 1000 {
+		return fmt.Sprintf("about $%d", val)
+	}
+	return fmt.Sprintf("$%d", val)
+}
+
+var onePointFive = decimal.NewFromFloat(1.5)
+var hundred = decimal.NewFromInt(100)
 
 func (o *Orchestrator) realtimeFirstName(ctx context.Context, userID uuid.UUID) string {
 	provider, ok := o.userProfile.(FullUserProfileProvider)
@@ -141,9 +218,47 @@ func (o *Orchestrator) BuildRealtimeInstructions(ctx context.Context, userID uui
 			parts = append(parts, toneCtx)
 		}
 	}
+	// Inject recent conversation summaries for continuity
+	if convCtx := o.buildRecentConversationContext(ctx, userID); convCtx != "" {
+		parts = append(parts, convCtx)
+	}
 	parts = append(parts, premiumRealtimeVoiceInstructions)
 
 	return strings.Join(parts, "\n\n")
+}
+
+// buildRecentConversationContext pulls the last 3 conversation summaries
+// so Miriam can reference what was discussed recently.
+func (o *Orchestrator) buildRecentConversationContext(ctx context.Context, userID uuid.UUID) string {
+	provider, ok := o.conversations.(RecentConversationLister)
+	if !ok || provider == nil {
+		return ""
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	convs, err := provider.ListByUserID(fetchCtx, userID, 3, 0)
+	if err != nil || len(convs) == 0 {
+		return ""
+	}
+
+	var summaries []string
+	for _, c := range convs {
+		if c.SummaryContext != "" {
+			summaries = append(summaries, fmt.Sprintf("- %s: %s", c.CreatedAt.Format("Jan 2"), c.SummaryContext))
+		} else if c.Title != "" {
+			summaries = append(summaries, fmt.Sprintf("- %s: %s", c.CreatedAt.Format("Jan 2"), c.Title))
+		}
+	}
+	if len(summaries) == 0 {
+		return ""
+	}
+	return "[RECENT CONVERSATIONS — reference naturally if relevant, never list back.]\n" + strings.Join(summaries, "\n")
+}
+
+// RecentConversationLister is optionally implemented by the conversation persister.
+type RecentConversationLister interface {
+	ListByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.AIConversation, error)
 }
 
 const premiumRealtimeVoiceInstructions = `[BE SHORT. This is the most important rule. Keep every response under two spoken sentences unless the user asks for detail.
@@ -184,6 +299,12 @@ ACTIONS:
 AFTER ANSWERING:
 - Add one insight only if directly useful right now.
 - Never end with "Is there anything else?" Just stop.
+
+FRUSTRATION DETECTION:
+If the user repeats a question, uses short clipped responses, or sounds impatient:
+- Drop all filler. Answer in under 8 words.
+- Do not apologize. Do not explain why something failed. Just fix it or state the fact.
+- If you cannot help, say so in one sentence and stop.
 
 NEVER SAY:
 "Certainly", "absolutely", "happy to help", "great question", "based on the data", "according to my records", "as an AI", "I don't have access to that".]`
