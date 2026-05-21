@@ -169,8 +169,14 @@ func (o *Orchestrator) executeVoiceMoneyAction(ctx context.Context, userID uuid.
 		return map[string]interface{}{"error": fmt.Sprintf("%s is not configured for this user", action)}, nil
 	}
 
-	params, _ := args["params"].(map[string]interface{})
-	if params == nil {
+	var params map[string]interface{}
+	if rawParams, hasParams := args["params"]; hasParams {
+		var ok bool
+		params, ok = rawParams.(map[string]interface{})
+		if !ok || params == nil {
+			return map[string]interface{}{"error": "params must be an object"}, nil
+		}
+	} else {
 		params = voiceForwardArgs(args, "action")
 	}
 	return o.executeActionToolDirect(ctx, userID, infraai.ToolCall{

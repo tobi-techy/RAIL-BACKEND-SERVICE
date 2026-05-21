@@ -402,16 +402,21 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 				return
 			}
 			if event.Status != "interrupted" && silentReplyText != "" && silentReplyRetries < maxSilentRetries {
+				repairText := silentReplyText
+				silentReplyText = ""
 				silentReplyRetries++
 				if !h.writeClientControlEvent(clientConn, "rail.voice.audio_missing", map[string]string{
 					"reply_id": firstNonEmpty(replyID, event.ReplyID),
 				}, cancel) {
 					return
 				}
-				if err := agentConn.Send(infraai.NewReplyCreate("Repeat this exact response out loud. The previous audio stream was silent: " + truncateForVoiceRepair(silentReplyText))); err != nil {
+				if err := agentConn.Send(infraai.NewReplyCreate("Repeat this exact response out loud. The previous audio stream was silent: " + truncateForVoiceRepair(repairText))); err != nil {
 					h.logger.Warn("failed to request silent voice repair", zap.Error(err))
+					silentReplyRetries = 0
+				} else {
+					replyAudioChunks = 0
+					replyAudioBytes = 0
 				}
-				silentReplyText = ""
 			}
 			if event.Status != "interrupted" {
 				flushReadyTools()
