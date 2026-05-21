@@ -40,9 +40,11 @@ func TestNormalizeClientVoiceEventPreservesAssemblyAIEvent(t *testing.T) {
 func TestVoiceToolDescriptionsStaySmallAndActionCapable(t *testing.T) {
 	tools := voiceToolDescriptions()
 
-	require.Len(t, tools, 10)
+	require.Len(t, tools, 12)
 	require.Contains(t, tools, "transfer_funds")
 	require.Contains(t, tools, "create_automation")
 	require.Contains(t, tools, "get_money_flow")
+	require.Contains(t, tools, "get_financial_health")
+	require.Contains(t, tools, "get_financial_audit")
 	require.NotContains(t, tools, "get_card_transactions")
 }

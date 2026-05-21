@@ -74,15 +74,39 @@ func (o *Orchestrator) BuildRealtimeGreeting(ctx context.Context, userID uuid.UU
 	name := o.realtimeFirstName(ctx, userID)
 	insight := o.realtimeProactiveInsight(ctx, userID)
 
-	greeting := "Hey"
-	if name != "" {
-		greeting = "Hey " + name
+	hour := time.Now().Hour()
+	var greeting string
+	switch {
+	case hour >= 5 && hour < 12:
+		if name != "" {
+			greeting = "Morning " + name + ". Miriam. What's the plan today?"
+		} else {
+			greeting = "Morning. Miriam. What's the plan today?"
+		}
+	case hour >= 12 && hour < 17:
+		if name != "" {
+			greeting = "Hey " + name + ". Miriam here. What do you need?"
+		} else {
+			greeting = "Hey. Miriam here. What do you need?"
+		}
+	case hour >= 17 && hour < 21:
+		if name != "" {
+			greeting = name + ". Miriam. How'd today go?"
+		} else {
+			greeting = "Miriam. How'd today go?"
+		}
+	default:
+		if name != "" {
+			greeting = "Late one, " + name + ". Miriam. What's up?"
+		} else {
+			greeting = "Late one. Miriam. What's up?"
+		}
 	}
 
 	if insight != "" {
-		return fmt.Sprintf("%s. Miriam here. %s", greeting, insight)
+		return fmt.Sprintf("%s %s", greeting, insight)
 	}
-	return fmt.Sprintf("%s. Miriam here. I have your Rail numbers in front of me. What money move are we making?", greeting)
+	return greeting
 }
 
 // realtimeProactiveInsight builds a short, actionable opener based on real account state.
@@ -121,8 +145,7 @@ func (o *Orchestrator) realtimeProactiveInsight(ctx context.Context, userID uuid
 		if withdrawals, err := o.withdrawalHistory.GetByUserID(fetchCtx, userID, 3, 0); err == nil {
 			for _, w := range withdrawals {
 				if w.Status == entities.WithdrawalStatusFailed && time.Since(w.CreatedAt) < 24*time.Hour {
-					amt := w.Amount.StringFixed(0)
-					return fmt.Sprintf("Heads up — a %s %s withdrawal failed recently. Want me to retry?", amt, string(w.Currency))
+					return "I noticed something that needs your attention — ask me about it when you're ready."
 				}
 			}
 		}

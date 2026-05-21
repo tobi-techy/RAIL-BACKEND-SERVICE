@@ -22,7 +22,7 @@ const (
 	ToolCancelAction             = "cancel_action"
 )
 
-const pendingActionTTL = 2 * time.Minute
+const pendingActionTTL = 5 * time.Minute
 
 // FundsTransferer moves money between spend and stash.
 //
@@ -320,12 +320,12 @@ func (o *Orchestrator) createTransferAction(ctx context.Context, userID, convID 
 		return map[string]interface{}{"error": "Destination must be 'spend' or 'stash'"}, nil
 	}
 	if amountF > 500 {
-		return map[string]interface{}{"error": "Transfer amount exceeds maximum ($500). Use the app for larger transfers."}, nil
+		return map[string]interface{}{"error": "For safety, single transfers are capped at $500. Want me to move $500 now and you can do the rest from the app? Or I can split it into multiple moves."}, nil
 	}
 	if amountF > 100 {
 		return map[string]interface{}{
 			"requires_passcode": true,
-			"message":           "Transfers over $100 require passcode verification. Please confirm in the app.",
+			"message":           "Transfers over $100 need extra verification. I can split this into smaller moves, or you can do it in one go from the app with biometric confirmation. What works?",
 		}, nil
 	}
 
@@ -479,7 +479,7 @@ func (o *Orchestrator) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 	action := o.pending.Get(ctx, convID)
 	if action == nil {
 		// Check if it was expired (Get auto-deletes expired)
-		return nil, fmt.Errorf("no pending action or action expired")
+		return nil, fmt.Errorf("action_expired: That action timed out. Just ask me again and I'll set it up fresh — it only takes a sec.")
 	}
 	if action.UserID != userID {
 		return nil, fmt.Errorf("action does not belong to user")

@@ -48,17 +48,23 @@ func (o *Orchestrator) executeMoneyOperatingPlan(ctx context.Context, userID uui
 		return nil, fmt.Errorf("get financial profile: %w", err)
 	}
 	if profile == nil {
+		allFields := []string{
+			"user_type",
+			"residence_country",
+			"tax_country",
+			"earning_currency",
+			"spending_currency",
+			"manual_obligations",
+		}
+		priorityQuestions := allFields
+		if len(priorityQuestions) > 3 {
+			priorityQuestions = priorityQuestions[:3]
+		}
 		return map[string]interface{}{
-			"has_profile": false,
-			"message":     "No persona/geography profile saved yet. Ask for user type, residence country, tax country, earning currency, spending currency, and obligations before building a paid operating plan.",
-			"required_fields": []string{
-				"user_type",
-				"residence_country",
-				"tax_country",
-				"earning_currency",
-				"spending_currency",
-				"manual_obligations",
-			},
+			"has_profile":        false,
+			"message":            "No persona/geography profile saved yet. Ask for user type, residence country, tax country, earning currency, spending currency, and obligations before building a paid operating plan.",
+			"required_fields":    allFields,
+			"priority_questions": priorityQuestions,
 		}, nil
 	}
 

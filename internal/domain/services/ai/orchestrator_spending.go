@@ -85,12 +85,53 @@ func humanizeCategory(cat string) string {
 	}
 }
 
+// humanizeCategoryForLocale returns personality-driven labels for Nigerian locale,
+// neutral English labels otherwise.
+func humanizeCategoryForLocale(cat, locale string) string {
+	if strings.EqualFold(locale, "ng") || strings.EqualFold(locale, "nigeria") {
+		return humanizeCategory(cat)
+	}
+	// Neutral English labels for non-Nigerian locales
+	switch strings.ToLower(strings.TrimSpace(cat)) {
+	case "food & dining", "food", "food_and_dining", "dining", "restaurants":
+		return "Food & Dining"
+	case "transportation", "transport", "ride", "uber", "bolt":
+		return "Transport"
+	case "entertainment", "fun", "leisure":
+		return "Entertainment"
+	case "shopping", "retail", "online shopping":
+		return "Shopping"
+	case "bills & utilities", "bills", "utilities", "electricity", "internet", "airtime":
+		return "Bills & Utilities"
+	case "transfer", "transfers", "p2p", "p2p transfers":
+		return "Transfers"
+	case "withdrawal", "withdrawals", "crypto withdrawal":
+		return "Withdrawals"
+	case "ngn withdrawal", "ngn_withdrawal", "naira withdrawal":
+		return "NGN Withdrawal"
+	case "subscription", "subscriptions":
+		return "Subscriptions"
+	case "health", "healthcare", "pharmacy", "medical":
+		return "Healthcare"
+	case "education", "school", "learning", "books":
+		return "Education"
+	case "groceries", "supermarket":
+		return "Groceries"
+	case "card spend", "card_spend":
+		return "Card Spend"
+	case "receipts (cash)", "scanned_receipts":
+		return "Cash Spending"
+	default:
+		return cat
+	}
+}
+
 // SpendingTools returns tool definitions for spending analysis.
 func SpendingTools() []infraai.Tool {
 	return []infraai.Tool{
 		{
 			Name:        ToolGetSpendingSummary,
-			Description: "Get spending analysis: total spent, breakdown by category and merchant, daily average. Use when user asks about their spending, expenses, where their money goes, or budgeting.",
+			Description: "Category and merchant breakdown of spending. Use for 'what am I spending on', 'top categories', 'biggest expenses by type'. NOT for totals or individual transactions.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -118,7 +159,7 @@ func SpendingTools() []infraai.Tool {
 		},
 		{
 			Name:        ToolGetRecentTransactions,
-			Description: "Get individual spending transactions: every card payment, withdrawal (including naira withdrawals), and P2P transfer. Use when user asks to see their transactions, wants to know exactly where money went, or asks about specific purchases.",
+			Description: "List of individual transactions with amounts, dates, merchants. Use for 'show me my transactions', 'what was that charge', 'last 5 purchases'. NOT for totals or category analysis.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -137,7 +178,7 @@ func SpendingTools() []infraai.Tool {
 		},
 		{
 			Name:        ToolGetMoneyFlow,
-			Description: "Get a complete money flow summary: total money in (deposits) vs total money out (withdrawals, card spend, P2P transfers). Only counts completed/successful transactions. Use this FIRST when user asks 'where did my money go', 'how much did I spend', or any question about their overall financial picture.",
+			Description: "Total money in vs money out for a period. Use for 'where did my money go', 'how much did I spend total', 'am I positive or negative'. NOT for category breakdown or individual transactions.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{

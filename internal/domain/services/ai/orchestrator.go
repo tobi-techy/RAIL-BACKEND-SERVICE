@@ -87,6 +87,7 @@ type ContributionSummary struct {
 type ConversationPersister interface {
 	BuildContext(ctx context.Context, conv *entities.AIConversation) ([]ai.Message, error)
 	RecordExchange(ctx context.Context, convID uuid.UUID, userMsg, assistantMsg string, tokens int, cost decimal.Decimal, model string, cards []entities.InsightCard) error
+	UpdateTitle(ctx context.Context, convID uuid.UUID, title string) error
 }
 
 // UsageTracker records AI usage for cost tracking and ceiling enforcement.
@@ -415,7 +416,7 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 	tools := []ai.Tool{
 		{
 			Name:        ToolGetAccountSummary,
-			Description: "Get a complete account overview in one call: current spend and stash balances, this month's total deposits, total spending, net flow, and budget status if set. Use this FIRST for any general question like 'how am I doing', 'what's my balance', 'give me an overview', or 'summarize my finances'. This is the most efficient tool for broad financial questions.",
+			Description: "Current balances, this month's totals, budget status, and streak in one call. Use for 'how much do I have', 'what's my balance', 'give me an overview'. NOT for detailed spending breakdown.",
 			Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "required": []string{}, "additionalProperties": false},
 		},
 		{
@@ -602,6 +603,9 @@ func (o *Orchestrator) ChatInContextWithOptions(ctx context.Context, userID, con
 	if balanceCtx := o.buildBalanceContext(ctx, userID); balanceCtx != "" {
 		messages = append(messages, ai.Message{Role: "system", Content: balanceCtx})
 	}
+	if stashLockCtx := o.buildStashLockContext(ctx, userID); stashLockCtx != "" {
+		messages = append(messages, ai.Message{Role: "system", Content: stashLockCtx})
+	}
 	if profileCtx := o.buildFinancialProfileContext(ctx, userID); profileCtx != "" {
 		messages = append(messages, ai.Message{Role: "system", Content: profileCtx})
 	}
@@ -620,6 +624,9 @@ func (o *Orchestrator) ChatInContextWithOptions(ctx context.Context, userID, con
 	}
 	if toneModeCtx := buildToneModeContext(opts.ToneMode); toneModeCtx != "" {
 		messages = append(messages, ai.Message{Role: "system", Content: toneModeCtx})
+	}
+	if timeCtx := buildTimeContext(); timeCtx != "" {
+		messages = append(messages, ai.Message{Role: "system", Content: timeCtx})
 	}
 
 	messages = append(messages, ai.Message{Role: "user", Content: message})
@@ -765,6 +772,16 @@ func (o *Orchestrator) ChatInContextWithOptions(ctx context.Context, userID, con
 			})
 		}
 
+		// Increase MaxTokens for follow-up completions when heavy tools (audit, financial health)
+		// produce large payloads that require detailed LLM responses.
+		maxFollowUp := 2048
+		for _, tr := range roundResults {
+			if tr.Name == ToolGetFinancialAudit || tr.Name == ToolGetFinancialHealth {
+				maxFollowUp = 4096
+				break
+			}
+		}
+		req.MaxTokens = maxFollowUp
 		req.Messages = messages
 		resp, err = o.aiProvider.ChatCompletionWithTools(ctx, req, tools)
 		if err != nil {
@@ -807,12 +824,18 @@ func (o *Orchestrator) executeTool(ctx context.Context, userID uuid.UUID, tc ai.
 		zap.Any("args", sanitizeToolArgs(tc.Arguments)),
 	)
 
-	toolCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	// Heavy tools (audit, financial health) make multiple DB calls across months
+	timeout := 15 * time.Second
+	if tc.Name == ToolGetFinancialAudit || tc.Name == ToolGetFinancialHealth {
+		timeout = 30 * time.Second
+	}
+
+	toolCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	result, err := o.executeToolInner(toolCtx, userID, tc)
 	if err != nil && toolCtx.Err() == context.DeadlineExceeded {
-		o.logger.Warn("Tool execution timed out", zap.String("tool", tc.Name), zap.Duration("timeout", 15*time.Second))
+		o.logger.Warn("Tool execution timed out", zap.String("tool", tc.Name), zap.Duration("timeout", timeout))
 	}
 	return result, err
 }
@@ -996,7 +1019,7 @@ func (o *Orchestrator) executeToolInner(ctx context.Context, userID uuid.UUID, t
 		if !o.hasFinancialAdviceProviders() {
 			return map[string]interface{}{"error": "financial health service is unavailable: spending and balance providers are not configured"}, nil
 		}
-		return o.executeFinancialHealth(ctx, userID)
+		return o.executeFinancialHealth(ctx, userID, tc.Arguments)
 
 	case ToolGetFinancialAudit:
 		if !o.hasFinancialAdviceProviders() {
@@ -1126,6 +1149,9 @@ func classifyQueryComplexity(message string) string {
 		"help me", "explain", "break down", "deep dive",
 		"optimize", "rebalance", "goal", "timeline",
 		"audit", "hard mode", "roast", "reality check", "no sugar",
+		"compared to", "versus", "vs ", "more than last", "less than last",
+		"how come", "what caused", "what happened",
+		"trend", "over time", "month over month", "week over week",
 	}
 	for _, p := range complexPatterns {
 		if strings.Contains(lower, p) {
@@ -1140,6 +1166,21 @@ func classifyQueryComplexity(message string) string {
 
 	// Everything else is simple — balance, transactions, spending, streak, etc.
 	return "fast"
+}
+
+// buildTimeContext returns a short system instruction based on the current hour.
+func buildTimeContext() string {
+	hour := time.Now().Hour()
+	switch {
+	case hour >= 5 && hour < 12:
+		return "[Time context: morning. Be energetic and forward-looking.]"
+	case hour >= 12 && hour < 17:
+		return "[Time context: afternoon. Be efficient and practical.]"
+	case hour >= 17 && hour < 21:
+		return "[Time context: evening. Be relaxed and reflective.]"
+	default:
+		return "[Time context: late night. Be brief and calm, no lectures.]"
+	}
 }
 
 // Pre-compiled safety filter patterns.
@@ -1297,6 +1338,34 @@ func (o *Orchestrator) buildBalanceContext(ctx context.Context, userID uuid.UUID
 		"[User's current balances — Spend: $%s USDC | Stash: $%s USD | Total: $%s. Use these as baseline context. For detailed history or transactions, call the appropriate tools.]",
 		spend.StringFixed(2), stash.StringFixed(2), total.StringFixed(2),
 	)
+}
+
+// buildStashLockContext returns a system context string about the user's stash lock status.
+// Returns "" if the emergency withdrawer is not configured or stash is not locked.
+func (o *Orchestrator) buildStashLockContext(ctx context.Context, userID uuid.UUID) string {
+	if o.emergencyWithdrawer == nil {
+		return ""
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	locked, err := o.emergencyWithdrawer.IsStashLocked(fetchCtx, userID)
+	if err != nil || !locked {
+		return ""
+	}
+
+	// Get preview with a small amount to learn lock age and fee tier
+	preview, err := o.emergencyWithdrawer.EmergencyWithdrawalPreview(fetchCtx, userID, decimal.NewFromInt(1))
+	if err != nil {
+		return "[Stash lock: LOCKED. Early withdrawal available with fee.]"
+	}
+
+	daysRemaining := 90 - preview.LockAgeDays
+	if daysRemaining < 0 {
+		daysRemaining = 0
+	}
+	return fmt.Sprintf("[Stash lock: LOCKED, %d days into 90-day lock. Early withdrawal fee: %s%%. %d days until next window.]",
+		preview.LockAgeDays, preview.FeePercent.StringFixed(0), daysRemaining)
 }
 
 // GenerateWrappedCards generates Spotify-Wrapped style cards
