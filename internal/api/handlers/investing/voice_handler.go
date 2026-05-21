@@ -153,6 +153,8 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
+		sessionWarned := false
+		idleWarned := false
 		for {
 			select {
 			case <-ctx.Done():
@@ -162,9 +164,27 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 					cancel()
 					return
 				}
-				if last, ok := lastActivity.Load().(time.Time); ok && time.Since(last) > idleTimeout {
-					cancel()
-					return
+				// Warn 1 minute before max session duration
+				elapsed := time.Since(startTime)
+				if !sessionWarned && elapsed >= maxSessionDuration-1*time.Minute {
+					sessionWarned = true
+					h.writeClientControlEvent(clientConn, "rail.session.timeout_warning", map[string]string{"message": "Session ending in 1 minute"}, cancel)
+				}
+				// Warn 1 minute before idle timeout
+				if last, ok := lastActivity.Load().(time.Time); ok {
+					idle := time.Since(last)
+					if !idleWarned && idle >= idleTimeout-1*time.Minute {
+						idleWarned = true
+						h.writeClientControlEvent(clientConn, "rail.session.timeout_warning", map[string]string{"message": "Disconnecting due to inactivity in 1 minute"}, cancel)
+					}
+					if idle > idleTimeout {
+						cancel()
+						return
+					}
+					// Reset idle warning if activity resumes
+					if idle < idleTimeout-1*time.Minute {
+						idleWarned = false
+					}
 				}
 			}
 		}
@@ -365,7 +385,7 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 						zap.String("tool", name),
 						zap.Duration("duration", time.Since(toolStart)),
 						zap.Error(err))
-					result = map[string]interface{}{"error": "I couldn't complete that from voice right now. Try again in a moment."}
+					result = map[string]interface{}{"error": voiceToolErrorMessage(name)}
 				} else {
 					h.logger.Debug("voice tool execution completed",
 						zap.String("user_id", userID.String()),
@@ -588,6 +608,34 @@ func voiceToolDescriptions() map[string]string {
 		aiservice.ToolCreateAutomation:         "Call when the user wants an automatic rule. Never claim it is active until the tool succeeds; if authorization is required, say that clearly.",
 		aiservice.ToolCreateObligationReminder: "Call when the user wants Miriam to remember a bill, debt, rent, invoice, subscription, tax, or family support obligation.",
 		aiservice.ToolGetMoneyFlow:             "Call when the user asks where money went, how much they spent, or wants spending versus deposits.",
+		aiservice.ToolGetWithdrawalHistory:     "Call when the user asks about recent withdrawals, cash-outs, or money leaving Rail.",
+		aiservice.ToolGetDepositHistory:        "Call when the user asks about deposits, funding, pay-ins, or money coming into Rail.",
+		aiservice.ToolGetFinancialHealth:       "Call when the user asks how they are doing financially, their financial health, score, or progress. Supports multi-month analysis.",
+		aiservice.ToolGetFinancialAudit:        "Call when the user says audit me, hard mode, roast my finances, reality check, or wants accountability. Provides detailed financial audit with scores and recommendations.",
+	}
+}
+
+// voiceToolErrorMessage returns a user-friendly error message specific to the tool that failed.
+func voiceToolErrorMessage(toolName string) string {
+	switch toolName {
+	case aiservice.ToolTransferFunds:
+		return "I couldn't move your money right now. Try again in a moment, or use the app to transfer."
+	case aiservice.ToolInitiateWithdrawal:
+		return "The withdrawal didn't go through. Try again shortly, or withdraw from the app."
+	case aiservice.ToolGetAccountSummary:
+		return "I couldn't pull up your balance right now. Give it a sec and ask again."
+	case aiservice.ToolSetSavingsGoal:
+		return "I couldn't set that goal right now. Try again in a moment."
+	case aiservice.ToolCreateAutomation:
+		return "I couldn't create that automation. Try again, or set it up in the app."
+	case aiservice.ToolCreateObligationReminder:
+		return "I couldn't save that reminder. Try again in a moment."
+	case aiservice.ToolGetMoneyFlow, aiservice.ToolGetWithdrawalHistory, aiservice.ToolGetDepositHistory:
+		return "I couldn't fetch your transaction history right now. Try again shortly."
+	case aiservice.ToolGetFinancialHealth, aiservice.ToolGetFinancialAudit:
+		return "I couldn't run your financial check right now. Try again in a moment."
+	default:
+		return "That didn't work from voice. Try again in a moment, or do it in the app."
 	}
 }
 

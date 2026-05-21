@@ -177,6 +177,7 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 	for round := 0; round < 5 && len(resp.ToolCalls) > 0; round++ {
 		roundResults := make([]ToolResult, 0, len(resp.ToolCalls))
 		for _, tc := range resp.ToolCalls {
+			emit(StreamEvent{Type: "thinking", Content: thinkingMessage(tc.Name)})
 			// Handle action tools (require confirmation)
 			if isActionTool(tc.Name) && convID != uuid.Nil && o.canCreateActionTool(tc.Name) {
 				result, execErr := o.executeActionTool(ctx, userID, convID, tc)
@@ -240,6 +241,15 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 				ToolCallID: toolCallID,
 			})
 		}
+		// Increase MaxTokens for follow-up completions when heavy tools produce large payloads
+		maxFollowUp := 2048
+		for _, tr := range roundResults {
+			if tr.Name == ToolGetFinancialAudit || tr.Name == ToolGetFinancialHealth {
+				maxFollowUp = 4096
+				break
+			}
+		}
+		req.MaxTokens = maxFollowUp
 		req.Messages = messages
 
 		resp, err = o.aiProvider.ChatCompletionWithTools(ctx, req, tools)
@@ -312,4 +322,36 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 	observeChat(provider, time.Since(start), cumulativeTokens, nil)
 	emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": cumulativeTokens, "provider": provider, "model": model}})
 	return nil
+}
+
+// thinkingMessage returns a user-facing thinking indicator for a tool execution.
+func thinkingMessage(toolName string) string {
+	switch toolName {
+	case ToolGetSpendingSummary, ToolGetSpendingChart:
+		return "Checking your spending..."
+	case ToolGetRecentTransactions, ToolGetCardTransactions:
+		return "Pulling your transactions..."
+	case ToolGetMoneyFlow:
+		return "Running the numbers..."
+	case ToolGetAccountSummary:
+		return "Checking your balances..."
+	case ToolGetFinancialAudit:
+		return "Running your financial audit..."
+	case ToolGetFinancialHealth:
+		return "Calculating your financial health..."
+	case ToolGetDepositHistory:
+		return "Looking at your deposits..."
+	case ToolGetWithdrawalHistory:
+		return "Checking your withdrawals..."
+	case ToolGetYieldEarned:
+		return "Checking your yield..."
+	case ToolTransferFunds:
+		return "Preparing your transfer..."
+	case ToolGetBalanceHistory:
+		return "Looking at your balance history..."
+	case ToolGetRecurringExpenses:
+		return "Scanning for recurring expenses..."
+	default:
+		return "Working on it..."
+	}
 }

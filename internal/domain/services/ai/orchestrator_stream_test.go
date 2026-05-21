@@ -41,6 +41,10 @@ func (r *recordingConversationPersister) RecordExchange(ctx context.Context, con
 	return nil
 }
 
+func (r *recordingConversationPersister) UpdateTitle(ctx context.Context, convID uuid.UUID, title string) error {
+	return nil
+}
+
 func TestChatStreamInConversationDoesNotPersistFailedEmptyResponse(t *testing.T) {
 	persister := &recordingConversationPersister{}
 	orchestrator := NewOrchestratorWithDeps(

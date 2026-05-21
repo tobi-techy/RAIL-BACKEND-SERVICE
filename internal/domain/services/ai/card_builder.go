@@ -127,6 +127,20 @@ func buildSpendingCards(data map[string]interface{}) []entities.InsightCard {
 	dailyAvg := str(data, "daily_average")
 	txCount := num(data, "transaction_count")
 
+	// Empty state: no transactions or all zeros
+	if txCount == 0 || (total == "" || total == "0" || total == "0.00") {
+		return []entities.InsightCard{{
+			Type:  "empty_state",
+			Title: "No activity yet",
+			Data: map[string]interface{}{
+				"type":    "empty_state",
+				"title":   "No activity yet",
+				"message": "Once you start using Rail, I'll show you where your money goes.",
+				"action":  "fund_account",
+			},
+		}}
+	}
+
 	cards = append(cards, entities.InsightCard{
 		Type:  "stat_grid",
 		Title: "Spending Summary",
@@ -368,6 +382,20 @@ func buildMoneyFlowCard(data map[string]interface{}) entities.InsightCard {
 	deposits := str(moneyIn, "total_deposits")
 	totalOut := str(moneyOut, "total")
 	netFlow := str(data, "net_flow")
+
+	// Empty state: no flow data
+	if (deposits == "" || deposits == "0.00") && (totalOut == "" || totalOut == "0.00") {
+		return entities.InsightCard{
+			Type:  "empty_state",
+			Title: "No activity yet",
+			Data: map[string]interface{}{
+				"type":    "empty_state",
+				"title":   "No activity yet",
+				"message": "Once you start using Rail, I'll show you where your money goes.",
+				"action":  "fund_account",
+			},
+		}
+	}
 
 	sentiment := "positive"
 	if len(netFlow) > 0 && netFlow[0] == '-' {

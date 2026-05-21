@@ -129,7 +129,7 @@ func (h *ImageAnalysisHandler) AnalyzeImage(c *gin.Context) {
 
 	if h.orchestrator != nil && h.orchestrator.IsUserOverCostCeiling(c.Request.Context(), userID) {
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{
-			"content":      "You've reached your monthly AI limit",
+			"content":      "You've hit your monthly AI limit. You can still check balances and transactions in the app tabs — Miriam will be back at full power next month.",
 			"over_ceiling": true,
 			"tokens_used":  0,
 		}})
@@ -696,7 +696,7 @@ func (h *ImageAnalysisHandler) BatchAnalyzeImages(c *gin.Context) {
 	}
 
 	if h.orchestrator != nil && h.orchestrator.IsUserOverCostCeiling(c.Request.Context(), userID) {
-		c.JSON(http.StatusTooManyRequests, gin.H{"error": gin.H{"code": "AI_LIMIT_REACHED", "message": "Monthly AI limit reached"}})
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": gin.H{"code": "AI_LIMIT_REACHED", "message": "You've hit your monthly AI limit. You can still check balances and transactions in the app tabs — Miriam will be back at full power next month."}})
 		return
 	}
 

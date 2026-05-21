@@ -3,7 +3,6 @@ package ai
 import (
 	"context"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -29,8 +28,19 @@ func FinancialIntelligenceTools(hasActionHistory bool) []infraai.Tool {
 		FinancialAuditTool(),
 		{
 			Name:        ToolGetFinancialHealth,
-			Description: "Calculate the user's financial health score from current balances, savings rate, budget progress, cash flow, and profile targets. Use for 'how am I doing', financial score, financial health, or progress check questions.",
-			Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "required": []string{}, "additionalProperties": false},
+			Description: "Calculate the user's financial health score from balances, savings rate, budget progress, cash flow, and profile targets. Use for 'how am I doing', financial score, financial health, or progress check questions. Supports multi-month analysis for deeper insights.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"period": map[string]interface{}{
+						"type":        "string",
+						"enum":        financialAuditPeriods,
+						"description": "Time period to analyze. Default to last_90_days for a comprehensive view. Use last_6_months or last_12_months for long-term health trends.",
+					},
+				},
+				"required":             []string{},
+				"additionalProperties": false,
+			},
 		},
 		{
 			Name:        ToolGetFinancialPlan,
@@ -58,16 +68,28 @@ func FinancialIntelligenceTools(hasActionHistory bool) []infraai.Tool {
 	return tools
 }
 
-func (o *Orchestrator) executeFinancialHealth(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *Orchestrator) executeFinancialHealth(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+	period := normalizeAuditPeriod(auditStringArg(args, "period", "last_90_days"))
+	start, end := parsePeriod(period)
 	now := time.Now().UTC()
-	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-	nextMonth := time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC)
-	daysElapsed := maxInt(1, now.Day())
+	if period == "this_month" {
+		end = now
+	}
+	observedMonths := end.Sub(start).Hours() / 24 / 30.4375
+	if observedMonths < 1 {
+		observedMonths = 1
+	}
 
 	spend, stash, totalBalance := o.currentBalances(ctx, userID)
-	flow := o.monthFlow(ctx, userID, monthStart, nextMonth)
+	flow := o.monthFlow(ctx, userID, start, end)
 	totalOut := flow.TotalWithdrawals.Add(flow.TotalCardSpend).Add(flow.TotalP2P).Add(flow.TotalReceipts)
 	netFlow := flow.TotalDeposits.Sub(totalOut)
+
+	// Monthly averages for multi-month periods
+	monthDivisor := decimal.NewFromFloat(observedMonths)
+	monthlyIncome := flow.TotalDeposits.Div(monthDivisor)
+	monthlyOutflow := totalOut.Div(monthDivisor)
+	monthlyNet := netFlow.Div(monthDivisor)
 
 	budgetScore := 20
 	budgetStatus := "not_set"
@@ -76,8 +98,8 @@ func (o *Orchestrator) executeFinancialHealth(ctx context.Context, userID uuid.U
 		budget, err := o.budgetProvider.GetByUserID(ctx, userID)
 		if err == nil && budget != nil && budget.MonthlyLimit.IsPositive() {
 			budgetLimit = budget.MonthlyLimit
-			budgetRemaining = budget.MonthlyLimit.Sub(totalOut)
-			pctUsed := totalOut.Div(budget.MonthlyLimit).Mul(decimal.NewFromInt(100))
+			budgetRemaining = budget.MonthlyLimit.Sub(monthlyOutflow)
+			pctUsed := monthlyOutflow.Div(budget.MonthlyLimit).Mul(decimal.NewFromInt(100))
 			budgetStatus = "on_track"
 			switch {
 			case pctUsed.LessThanOrEqual(decimal.NewFromInt(70)):
@@ -99,7 +121,7 @@ func (o *Orchestrator) executeFinancialHealth(ctx context.Context, userID uuid.U
 	if flow.TotalDeposits.IsPositive() {
 		savingsRate = netFlow.Div(flow.TotalDeposits).Mul(decimal.NewFromInt(100))
 	}
-	savingsScore := clampScore(int(math.Round(savingsRate.InexactFloat64())), 0, 25)
+	savingsScore := 8
 	if savingsRate.GreaterThanOrEqual(decimal.NewFromInt(25)) {
 		savingsScore = 25
 	} else if savingsRate.GreaterThanOrEqual(decimal.NewFromInt(15)) {
@@ -113,8 +135,8 @@ func (o *Orchestrator) executeFinancialHealth(ctx context.Context, userID uuid.U
 	}
 
 	runwayScore := 10
-	if totalOut.IsPositive() {
-		avgDailyOut := totalOut.Div(decimal.NewFromInt(int64(daysElapsed)))
+	if monthlyOutflow.IsPositive() {
+		avgDailyOut := monthlyOutflow.Div(decimal.NewFromFloat(30.4375))
 		runwayDays := decimal.Zero
 		if avgDailyOut.IsPositive() {
 			runwayDays = totalBalance.Div(avgDailyOut)
@@ -154,14 +176,20 @@ func (o *Orchestrator) executeFinancialHealth(ctx context.Context, userID uuid.U
 		status = "fragile"
 	}
 
+	// Monthly trend for multi-month periods
+	var monthlyTrend []map[string]interface{}
+	if observedMonths >= 2 {
+		monthlyTrend = o.auditMonthlyTrend(ctx, userID, start, end)
+	}
+
 	actions := []string{}
 	if budgetStatus == "not_set" {
 		actions = append(actions, "Set a monthly spending budget so Miriam can track safe daily spend.")
 	} else if budgetRemaining.IsNegative() {
-		actions = append(actions, fmt.Sprintf("Pause non-essential spend; you are $%s over budget.", budgetRemaining.Abs().StringFixed(2)))
+		actions = append(actions, fmt.Sprintf("Pause non-essential spend; you are $%s over budget on average.", budgetRemaining.Abs().StringFixed(2)))
 	}
 	if savingsRate.LessThan(decimal.NewFromInt(10)) && flow.TotalDeposits.IsPositive() {
-		actions = append(actions, "Aim to save at least 10% of incoming money this month.")
+		actions = append(actions, "Aim to save at least 10% of incoming money.")
 	}
 	if stash.LessThan(spend.Mul(decimal.NewFromFloat(0.25))) && spend.GreaterThan(decimal.NewFromInt(20)) {
 		actions = append(actions, "Move a small amount from Spend to Stash so more of your money earns yield.")
@@ -170,26 +198,41 @@ func (o *Orchestrator) executeFinancialHealth(ctx context.Context, userID uuid.U
 		actions = append(actions, "Keep your current pace and review your forecast weekly.")
 	}
 
-	return map[string]interface{}{
-		"score":               score,
+	result := map[string]interface{}{
+		"score":                score,
 		"status":              status,
+		"period":              period,
+		"period_label":        periodToLabel(period, start, end),
 		"spend_balance":       spend.StringFixed(2),
 		"stash_balance":       stash.StringFixed(2),
 		"total_balance":       totalBalance.StringFixed(2),
-		"monthly_income":      flow.TotalDeposits.StringFixed(2),
-		"monthly_outflow":     totalOut.StringFixed(2),
-		"net_flow":            netFlow.StringFixed(2),
+		"total_income":        flow.TotalDeposits.StringFixed(2),
+		"total_outflow":       totalOut.StringFixed(2),
+		"total_net_flow":      netFlow.StringFixed(2),
+		"monthly_income":      monthlyIncome.StringFixed(2),
+		"monthly_outflow":     monthlyOutflow.StringFixed(2),
+		"monthly_net_flow":    monthlyNet.StringFixed(2),
 		"savings_rate_pct":    savingsRate.StringFixed(1),
 		"budget_status":       budgetStatus,
 		"budget_limit":        budgetLimit.StringFixed(2),
 		"budget_remaining":    budgetRemaining.StringFixed(2),
 		"recommended_actions": actions,
-		"data_used":           []string{"current_balances", "month_money_flow", "budget", "stash_ratio"},
-	}, nil
+		"score_components": []map[string]interface{}{
+			{"name": "Savings Rate", "score": savingsScore, "max": 25, "status": componentStatus(savingsScore, 25)},
+			{"name": "Budget Control", "score": budgetScore, "max": 20, "status": componentStatus(budgetScore, 20)},
+			{"name": "Runway", "score": runwayScore, "max": 25, "status": componentStatus(runwayScore, 25)},
+			{"name": "Stash Discipline", "score": stashScore, "max": 20, "status": componentStatus(stashScore, 20)},
+		},
+		"data_used": []string{"current_balances", "period_money_flow", "budget", "stash_ratio"},
+	}
+	if len(monthlyTrend) > 0 {
+		result["monthly_trend"] = monthlyTrend
+	}
+	return result, nil
 }
 
 func (o *Orchestrator) executeFinancialPlan(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
-	health, err := o.executeFinancialHealth(ctx, userID)
+	health, err := o.executeFinancialHealth(ctx, userID, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -355,4 +398,16 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func componentStatus(score, max int) string {
+	pct := float64(score) / float64(max) * 100
+	switch {
+	case pct >= 80:
+		return "strong"
+	case pct >= 50:
+		return "okay"
+	default:
+		return "needs_work"
+	}
 }

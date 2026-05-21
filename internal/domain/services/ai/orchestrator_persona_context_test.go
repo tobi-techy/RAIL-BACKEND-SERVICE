@@ -42,7 +42,11 @@ func TestBuildRealtimeGreetingUsesNameAndBalanceContext(t *testing.T) {
 
 	greeting := o.BuildRealtimeGreeting(context.Background(), userID)
 
-	require.Equal(t, "Hey Tobi. Miriam here. I have your Rail numbers in front of me. What money move are we making?", greeting)
+	require.Contains(t, greeting, "Tobi")
+	require.Contains(t, greeting, "Miriam")
+	// Balance insight should be appended
+	require.Contains(t, greeting, "Spend is")
+	require.Contains(t, greeting, "stash is")
 }
 
 func TestBuildRealtimeGreetingDoesNotClaimNumbersWithoutBalanceContext(t *testing.T) {
@@ -51,7 +55,10 @@ func TestBuildRealtimeGreetingDoesNotClaimNumbersWithoutBalanceContext(t *testin
 
 	greeting := o.BuildRealtimeGreeting(context.Background(), userID)
 
-	require.Equal(t, "Hey. Miriam here. I have Rail open. What money move are we making?", greeting)
+	require.Contains(t, greeting, "Miriam")
+	// Should NOT mention numbers when no balance provider
+	require.NotContains(t, greeting, "Spend is")
+	require.NotContains(t, greeting, "stash is")
 }
 
 func TestBuildRealtimeInstructionsIncludesPremiumVoiceMode(t *testing.T) {

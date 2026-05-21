@@ -167,6 +167,7 @@ func (o *Orchestrator) executePersonaMoneyContext(ctx context.Context, userID uu
 		"paid_workflows":     workflows,
 		"geo_playbook":       geo,
 		"missing_fields":     missing,
+		"priority_questions": priorityQuestions(missing),
 		"guidance":           personaGuidance(userType),
 		"data_used":          []string{"financial_profile", "current_balances", "month_money_flow"},
 	}, nil
@@ -576,6 +577,25 @@ func missingPersonaFields(profile *entities.FinancialProfile) []string {
 		missing = append(missing, "monthly_income")
 	}
 	return missing
+}
+
+// priorityQuestions returns top 3 priority items from missing fields,
+// ordered: country/currency first, then income frequency, then savings target.
+func priorityQuestions(missing []string) []string {
+	priority := []string{"residence_country", "earning_currency", "spending_currency", "tax_country", "income_frequency", "monthly_income", "user_type"}
+	var result []string
+	for _, p := range priority {
+		for _, m := range missing {
+			if m == p {
+				result = append(result, m)
+				break
+			}
+		}
+		if len(result) >= 3 {
+			break
+		}
+	}
+	return result
 }
 
 func personaPriorities(userType string) ([]string, []string) {
