@@ -424,8 +424,16 @@ func (s *Service) AddBankAccount(ctx context.Context, userID uuid.UUID, bankID, 
 		if paj.IsUnauthorized(err) {
 			return nil, s.invalidateSessionIfUnauthorized(ctx, userID, err)
 		}
-		// Ignore "already exists" — the bank account is already saved on Paj's side.
+		// "already exists" — fetch the existing account so we return full data (including ID).
 		if strings.Contains(err.Error(), "already exists") {
+			accounts, fetchErr := s.pajClient.GetBankAccounts(ctx, token)
+			if fetchErr == nil {
+				for i := range accounts {
+					if accounts[i].AccountNumber == accountNumber {
+						return &accounts[i], nil
+					}
+				}
+			}
 			return &paj.SavedBankAccount{AccountNumber: accountNumber, Bank: bankID}, nil
 		}
 		return nil, err
