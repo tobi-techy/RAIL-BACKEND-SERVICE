@@ -2198,3 +2198,61 @@ func (h *AuthHandlers) AcceptTOS(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"accepted": true})
 }
+
+// GetMissingKycFields returns which profile fields are still needed before KYC submission.
+// The client uses this to skip already-completed steps in the complete-kyc flow.
+func (h *AuthHandlers) GetMissingKycFields(c *gin.Context) {
+	userID, err := common.GetUserID(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_USER_ID", Message: "Invalid or missing user ID"})
+		return
+	}
+
+	user, err := h.userRepo.GetByID(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "INTERNAL_ERROR", Message: "Failed to fetch user"})
+		return
+	}
+
+	var missingFields []string
+	startStep := "none"
+
+	hasDOB := user.DateOfBirth != nil
+	hasAddress := user.AddressStreet != nil && user.AddressCity != nil && user.AddressState != nil && user.AddressPostalCode != nil
+	hasPhone := user.Phone != nil && *user.Phone != ""
+
+	if !hasDOB {
+		missingFields = append(missingFields, "date_of_birth")
+	}
+	if !hasAddress {
+		if user.AddressStreet == nil {
+			missingFields = append(missingFields, "address_street")
+		}
+		if user.AddressCity == nil {
+			missingFields = append(missingFields, "address_city")
+		}
+		if user.AddressState == nil {
+			missingFields = append(missingFields, "address_state")
+		}
+		if user.AddressPostalCode == nil {
+			missingFields = append(missingFields, "address_postal_code")
+		}
+	}
+	if !hasPhone {
+		missingFields = append(missingFields, "phone")
+	}
+
+	// Determine which step to start from (earliest missing)
+	if !hasDOB {
+		startStep = "date_of_birth"
+	} else if !hasAddress {
+		startStep = "address"
+	} else if !hasPhone {
+		startStep = "phone"
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"missingFields": missingFields,
+		"startStep":     startStep,
+	})
+}
