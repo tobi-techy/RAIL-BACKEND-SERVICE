@@ -38,3 +38,10 @@ func TestTurnDetectionUpdatesUseVoiceDefaults(t *testing.T) {
 	require.Equal(t, 6000, question.Session.Input.TurnDetection.MaxSilence)
 	require.True(t, *question.Session.Input.TurnDetection.InterruptResponse)
 }
+
+func TestNewReplyCreate(t *testing.T) {
+	reply := NewReplyCreate("Say this out loud.")
+
+	require.Equal(t, "reply.create", reply.Type)
+	require.Equal(t, "Say this out loud.", reply.Instructions)
+}

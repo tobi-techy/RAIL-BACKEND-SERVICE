@@ -11,8 +11,9 @@ import (
 )
 
 func TestNormalizeClientVoiceEventConvertsOpenAIAudioAppend(t *testing.T) {
-	event := normalizeClientVoiceEvent(websocket.TextMessage, []byte(`{"type":"input_audio_buffer.append","audio":"abc123"}`))
+	event, ok := normalizeClientVoiceEvent(websocket.TextMessage, []byte(`{"type":"input_audio_buffer.append","audio":"abc123"}`))
 
+	require.True(t, ok)
 	audio, ok := event.(infraai.InputAudio)
 	require.True(t, ok)
 	require.Equal(t, "input.audio", audio.Type)
@@ -20,8 +21,9 @@ func TestNormalizeClientVoiceEventConvertsOpenAIAudioAppend(t *testing.T) {
 }
 
 func TestNormalizeClientVoiceEventWrapsBinaryAudio(t *testing.T) {
-	event := normalizeClientVoiceEvent(websocket.BinaryMessage, []byte{0x01, 0x02, 0x03})
+	event, ok := normalizeClientVoiceEvent(websocket.BinaryMessage, []byte{0x01, 0x02, 0x03})
 
+	require.True(t, ok)
 	audio, ok := event.(infraai.InputAudio)
 	require.True(t, ok)
 	require.Equal(t, "input.audio", audio.Type)
@@ -30,19 +32,37 @@ func TestNormalizeClientVoiceEventWrapsBinaryAudio(t *testing.T) {
 
 func TestNormalizeClientVoiceEventPreservesAssemblyAIEvent(t *testing.T) {
 	raw := []byte(`{"type":"input.audio","audio":"abc123"}`)
-	event := normalizeClientVoiceEvent(websocket.TextMessage, raw)
+	event, ok := normalizeClientVoiceEvent(websocket.TextMessage, raw)
 
+	require.True(t, ok)
 	msg, ok := event.(json.RawMessage)
 	require.True(t, ok)
 	require.JSONEq(t, string(raw), string(msg))
 }
 
+func TestNormalizeClientVoiceEventDropsOpenAIControlEvents(t *testing.T) {
+	event, ok := normalizeClientVoiceEvent(websocket.TextMessage, []byte(`{"type":"response.create"}`))
+
+	require.False(t, ok)
+	require.Nil(t, event)
+}
+
+func TestVoiceAudioDurationHelpers(t *testing.T) {
+	require.Equal(t, 4, decodedBase64Len("AQIDBA=="))
+	require.Equal(t, 1000, pcm16DurationMS(48000, voiceSampleRateHz))
+}
+
 func TestVoiceToolDescriptionsStaySmallAndActionCapable(t *testing.T) {
 	tools := voiceToolDescriptions()
 
-	require.Len(t, tools, 10)
+	require.Len(t, tools, 12)
+	require.Contains(t, tools, "voice_money_lookup")
+	require.Contains(t, tools, "voice_money_action")
 	require.Contains(t, tools, "transfer_funds")
 	require.Contains(t, tools, "create_automation")
 	require.Contains(t, tools, "get_money_flow")
+	require.Contains(t, tools, "get_budget")
+	require.Contains(t, tools, "set_budget")
 	require.NotContains(t, tools, "get_card_transactions")
+	require.NotContains(t, tools, "get_deposit_history")
 }
