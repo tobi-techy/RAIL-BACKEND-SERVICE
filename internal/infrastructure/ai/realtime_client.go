@@ -148,6 +148,12 @@ type ToolResult struct {
 	Result string `json:"result"` // JSON string
 }
 
+// ReplyCreate asks the Voice Agent API to speak without waiting for user audio.
+type ReplyCreate struct {
+	Type         string `json:"type"`
+	Instructions string `json:"instructions,omitempty"`
+}
+
 // NewSessionUpdate creates a session.update event for Miriam.
 func NewSessionUpdate(instructions string, voice string, greeting string, tools []SessionTool) SessionUpdate {
 	interrupt := true
@@ -214,4 +220,8 @@ func NewToolResult(callID, resultJSON string) ToolResult {
 		CallID: callID,
 		Result: resultJSON,
 	}
+}
+
+func NewReplyCreate(instructions string) ReplyCreate {
+	return ReplyCreate{Type: "reply.create", Instructions: instructions}
 }

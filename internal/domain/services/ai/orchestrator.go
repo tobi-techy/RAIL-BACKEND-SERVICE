@@ -794,6 +794,9 @@ func (o *Orchestrator) ChatInContextWithOptions(ctx context.Context, userID, con
 
 // ExecuteToolPublic exposes tool execution for the voice handler.
 func (o *Orchestrator) ExecuteToolPublic(ctx context.Context, userID uuid.UUID, tc ai.ToolCall) (map[string]interface{}, error) {
+	if tc.Name == ToolVoiceMoneyAction {
+		return o.executeVoiceMoneyAction(ctx, userID, tc.Arguments)
+	}
 	if isActionTool(tc.Name) && o.canCreateActionTool(tc.Name) {
 		return o.executeActionToolDirect(ctx, userID, tc)
 	}
@@ -820,6 +823,12 @@ func (o *Orchestrator) executeTool(ctx context.Context, userID uuid.UUID, tc ai.
 // executeToolInner performs the actual tool dispatch.
 func (o *Orchestrator) executeToolInner(ctx context.Context, userID uuid.UUID, tc ai.ToolCall) (map[string]interface{}, error) {
 	switch tc.Name {
+	case ToolVoiceMoneyLookup:
+		return o.executeVoiceMoneyLookup(ctx, userID, tc.Arguments)
+
+	case ToolVoiceMoneyAction:
+		return o.executeVoiceMoneyAction(ctx, userID, tc.Arguments)
+
 	case ToolGetAccountSummary:
 		return o.executeAccountSummary(ctx, userID)
 
