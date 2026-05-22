@@ -116,7 +116,14 @@ ALTER TABLE users ALTER COLUMN withdrawals_frozen SET NOT NULL;
 ALTER TABLE users ALTER COLUMN deposits_frozen SET NOT NULL;
 ALTER TABLE users ALTER COLUMN sanctions_status SET NOT NULL;
 
--- Seed default fraud rules
+-- Seed default fraud rules (ensure severity column exists from prior partial runs)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'fraud_rules' AND column_name = 'severity') THEN
+        ALTER TABLE fraud_rules ADD COLUMN severity VARCHAR(20) NOT NULL DEFAULT 'medium';
+    END IF;
+END $$;
+
 INSERT INTO fraud_rules (name, description, rule_type, conditions, action, severity, score_weight, applies_to) VALUES
 ('High velocity deposits', 'More than 5 deposits in 1 hour', 'velocity', '{"event": "deposit", "count_threshold": 5, "window_seconds": 3600}', 'flag', 'medium', 1.0, 'deposit'),
 ('Large first deposit', 'First deposit over $5000 on account less than 24h old', 'amount', '{"min_amount": 5000, "max_account_age_hours": 24, "first_transaction": true}', 'manual_review', 'high', 1.5, 'deposit'),
