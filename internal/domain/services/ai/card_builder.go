@@ -51,6 +51,8 @@ func buildCardsFromToolResults(results []ToolResult) []entities.InsightCard {
 			cards = append(cards, buildFinancialAdviceCard(tr.Result))
 		case ToolGetFinancialTimeline:
 			cards = append(cards, buildFinancialTimelineCard(tr.Result))
+		case ToolGetMiriamBrief:
+			cards = append(cards, buildMiriamBriefCard(tr.Result))
 		case ToolGetSubscriptions:
 			cards = append(cards, BuildSubscriptionAuditCard(tr.Result))
 		case ToolGetRunway:
@@ -64,6 +66,33 @@ func buildCardsFromToolResults(results []ToolResult) []entities.InsightCard {
 		}
 	}
 	return cards
+}
+
+func buildMiriamBriefCard(data map[string]interface{}) entities.InsightCard {
+	insights := toMapSlice(data["insights"])
+	actions := toMapSlice(data["next_actions"])
+	title := "Miriam Brief"
+	subtitle := "What changed, what matters, and the next move"
+	sentiment := "neutral"
+	if len(insights) > 0 {
+		if titleVal, ok := insights[0]["title"]; ok {
+			title = fmt.Sprintf("%v", titleVal)
+		}
+		if severityVal, ok := insights[0]["severity"]; ok {
+			sentiment = fmt.Sprintf("%v", severityVal)
+		}
+	}
+	return entities.InsightCard{
+		Type:      "miriam_brief",
+		Title:     title,
+		Subtitle:  subtitle,
+		Sentiment: sentiment,
+		Data: map[string]interface{}{
+			"snapshot":     data["snapshot"],
+			"insights":     insights,
+			"next_actions": actions,
+		},
+	}
 }
 
 func str(data map[string]interface{}, key string) string {
@@ -86,6 +115,36 @@ func toMapSlice(v interface{}) []map[string]interface{} {
 	switch s := v.(type) {
 	case []map[string]interface{}:
 		return s
+	case []miriamInsight:
+		out := make([]map[string]interface{}, 0, len(s))
+		for _, item := range s {
+			out = append(out, map[string]interface{}{
+				"id":         item.ID,
+				"type":       item.Type,
+				"severity":   item.Severity,
+				"title":      item.Title,
+				"body":       item.Body,
+				"importance": item.Importance,
+				"evidence":   item.Evidence,
+			})
+		}
+		return out
+	case []miriamAction:
+		out := make([]map[string]interface{}, 0, len(s))
+		for _, item := range s {
+			out = append(out, map[string]interface{}{
+				"id":                    item.ID,
+				"type":                  item.Type,
+				"priority":              item.Priority,
+				"title":                 item.Title,
+				"body":                  item.Body,
+				"cta":                   item.CTA,
+				"tool_name":             item.ToolName,
+				"params":                item.Params,
+				"requires_confirmation": item.RequiresConfirmation,
+			})
+		}
+		return out
 	case []interface{}:
 		out := make([]map[string]interface{}, 0, len(s))
 		for _, item := range s {

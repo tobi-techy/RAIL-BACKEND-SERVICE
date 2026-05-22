@@ -361,8 +361,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	// Initialize integration handlers (Alpaca only)
 	integrationHandlers := handlers.NewIntegrationHandlers(
 		container.AlpacaClient,
-		nil,  // Deprecated: Due service removed
-		"",   // Deprecated: Due webhook secret removed
+		nil, // Deprecated: Due service removed
+		"",  // Deprecated: Due webhook secret removed
 		services.NewNotificationService(container.ZapLog),
 		container.Logger,
 	)
@@ -1073,6 +1073,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					aiGroup.GET("/action-receipts", middleware.AuthRateLimit(20), aiChatHandlers.ActionReceipts)
 					aiGroup.GET("/financial-advice", middleware.AuthRateLimit(20), aiChatHandlers.FinancialAdvice)
 					aiGroup.GET("/financial-timeline", middleware.AuthRateLimit(20), aiChatHandlers.FinancialTimeline)
+					aiGroup.GET("/miriam-brief", middleware.AuthRateLimit(20), aiChatHandlers.MiriamBrief)
 					aiGroup.GET("/suggestions", aiChatHandlers.GetSuggestedQuestions)
 					aiGroup.GET("/starters", middleware.AuthRateLimit(10), aiChatHandlers.GetConversationStarters)
 					aiGroup.POST("/nudge", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), aiChatHandlers.Nudge)

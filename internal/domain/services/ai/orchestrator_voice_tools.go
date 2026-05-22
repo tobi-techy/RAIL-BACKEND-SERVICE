@@ -92,6 +92,7 @@ func voiceLookupToolNames() []string {
 		ToolGetActionReceipts,
 		ToolGetFinancialAdvice,
 		ToolGetFinancialTimeline,
+		ToolGetMiriamBrief,
 		ToolGetRecurringExpenses,
 		ToolGetWarrantyItems,
 		ToolGetReceiptChallenges,
