@@ -18,8 +18,8 @@ WHERE NOT EXISTS (
     WHERE user_id IS NULL AND account_type = 'withdrawal_fee_revenue'
 );
 
-DROP INDEX CONCURRENTLY IF EXISTS idx_ledger_accounts_system_type;
-CREATE UNIQUE INDEX CONCURRENTLY idx_ledger_accounts_system_type
+DROP INDEX IF EXISTS idx_ledger_accounts_system_type;
+CREATE UNIQUE INDEX idx_ledger_accounts_system_type
     ON ledger_accounts(account_type)
     WHERE user_id IS NULL
       AND account_type IN (
