@@ -22,6 +22,7 @@ import (
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	kychandlers "github.com/rail-service/rail_service/internal/api/handlers/kyc"
 	securityHandlersV2 "github.com/rail-service/rail_service/internal/api/handlers/security"
+	waitlisthandlers "github.com/rail-service/rail_service/internal/api/handlers/waitlist"
 	"github.com/rail-service/rail_service/internal/api/middleware"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
@@ -475,6 +476,16 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			authRateLimited.POST("/social/login", socialAuthHandlers.SocialLogin)
 			authRateLimited.POST("/webauthn/login/begin", socialAuthHandlers.BeginWebAuthnLogin)
 			authRateLimited.POST("/webauthn/login/finish", socialAuthHandlers.FinishWebAuthnLogin)
+		}
+
+		// Waitlist routes (public, no auth required)
+		if container.WaitlistService != nil {
+			wlHandlers := waitlisthandlers.NewHandlers(container.WaitlistService, container.ZapLog)
+			waitlist := v1.Group("/waitlist")
+			{
+				waitlist.POST("", middleware.RateLimit(10), wlHandlers.Signup)
+				waitlist.GET("/count", wlHandlers.Count)
+			}
 		}
 
 		// Onboarding routes
@@ -1283,6 +1294,12 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			if container.GetKnowledgeService() != nil {
 				knowledgeHandlers := handlers.NewKnowledgeHandlers(container.GetKnowledgeService(), container.ZapLog)
 				admin.POST("/knowledge/ingest", knowledgeHandlers.Ingest)
+			}
+
+			// Waitlist admin routes
+			if container.WaitlistService != nil {
+				wlHandlers := waitlisthandlers.NewHandlers(container.WaitlistService, container.ZapLog)
+				admin.GET("/waitlist", wlHandlers.List)
 			}
 
 			// Security admin routes

@@ -67,6 +67,10 @@ func (s *Service) CreateTransaction(ctx context.Context, req *entities.CreateTra
 	return ledgerTx, err
 }
 
+func (s *Service) GetTransactionByIdempotencyKey(ctx context.Context, key string) (*entities.LedgerTransaction, error) {
+	return s.ledgerRepo.GetTransactionByIdempotencyKey(ctx, key)
+}
+
 func (s *Service) createTransaction(ctx context.Context, req *entities.CreateTransactionRequest) (*entities.LedgerTransaction, bool, error) {
 	// Validate request
 	if err := req.Validate(); err != nil {
@@ -548,6 +552,8 @@ func (s *Service) GetSystemBufferBalance(ctx context.Context, accountType string
 		accountTypeEnum = entities.AccountTypeSystemBufferFiat
 	case "broker_operational":
 		accountTypeEnum = entities.AccountTypeBrokerOperational
+	case "withdrawal_fee_revenue":
+		accountTypeEnum = entities.AccountTypeWithdrawalFeeRevenue
 	default:
 		return decimal.Zero, fmt.Errorf("unknown account type: %s", accountType)
 	}

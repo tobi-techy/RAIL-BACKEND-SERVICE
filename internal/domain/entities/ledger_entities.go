@@ -18,15 +18,16 @@ const (
 	AccountTypePendingInvestment AccountType = "pending_investment" // User's reserved funds for in-flight trades
 
 	// Smart Allocation Mode account types
-	AccountTypeSpendingBalance        AccountType = "spending_balance"         // User's 70% spending balance (available for payments)
-	AccountTypeStashBalance           AccountType = "stash_balance"            // User's 30% stash balance (locked savings)
-	AccountTypePendingCardSettlement  AccountType = "pending_card_settlement"  // Funds held for authorized but unsettled card transactions
+	AccountTypeSpendingBalance       AccountType = "spending_balance"        // User's 70% spending balance (available for payments)
+	AccountTypeStashBalance          AccountType = "stash_balance"           // User's 30% stash balance (locked savings)
+	AccountTypePendingCardSettlement AccountType = "pending_card_settlement" // Funds held for authorized but unsettled card transactions
 
 	// System account types
-	AccountTypeSystemBufferUSDC  AccountType = "system_buffer_usdc" // System on-chain USDC reserve
-	AccountTypeSystemBufferFiat  AccountType = "system_buffer_fiat" // System operational USD buffer
-	AccountTypeBrokerOperational AccountType = "broker_operational" // Pre-funded cash at Alpaca
-	AccountTypeSubscriptionRevenue AccountType = "subscription_revenue" // Rail Pro subscription revenue
+	AccountTypeSystemBufferUSDC           AccountType = "system_buffer_usdc"           // System on-chain USDC reserve
+	AccountTypeSystemBufferFiat           AccountType = "system_buffer_fiat"           // System operational USD buffer
+	AccountTypeBrokerOperational          AccountType = "broker_operational"           // Pre-funded cash at Alpaca
+	AccountTypeSubscriptionRevenue        AccountType = "subscription_revenue"         // Rail Pro subscription revenue
+	AccountTypeWithdrawalFeeRevenue       AccountType = "withdrawal_fee_revenue"       // Rail withdrawal fee revenue
 	AccountTypeEmergencyWithdrawalRevenue AccountType = "emergency_withdrawal_revenue" // Emergency stash withdrawal fee revenue
 )
 
@@ -46,6 +47,7 @@ func (a AccountType) IsSystemAccountType() bool {
 		a == AccountTypeSystemBufferFiat ||
 		a == AccountTypeBrokerOperational ||
 		a == AccountTypeSubscriptionRevenue ||
+		a == AccountTypeWithdrawalFeeRevenue ||
 		a == AccountTypeEmergencyWithdrawalRevenue
 }
 
@@ -65,7 +67,7 @@ func (a AccountType) Validate() error {
 	case AccountTypeUSDCBalance, AccountTypeFiatExposure, AccountTypePendingInvestment,
 		AccountTypeSpendingBalance, AccountTypeStashBalance, AccountTypePendingCardSettlement,
 		AccountTypeSystemBufferUSDC, AccountTypeSystemBufferFiat, AccountTypeBrokerOperational,
-		AccountTypeSubscriptionRevenue, AccountTypeEmergencyWithdrawalRevenue:
+		AccountTypeSubscriptionRevenue, AccountTypeWithdrawalFeeRevenue, AccountTypeEmergencyWithdrawalRevenue:
 		return nil
 	default:
 		return fmt.Errorf("invalid account type: %s", a)
