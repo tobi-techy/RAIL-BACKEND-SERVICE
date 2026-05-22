@@ -281,7 +281,7 @@ func (s *Service) SafeToSpend(ctx context.Context, userID uuid.UUID) (entities.S
 	}
 
 	available := spend.Sub(protected)
-	budgetAvailable := budgetRemaining.Sub(protected)
+	budgetAvailable := budgetRemaining
 	if budgetAvailable.LessThan(available) {
 		available = budgetAvailable
 	}

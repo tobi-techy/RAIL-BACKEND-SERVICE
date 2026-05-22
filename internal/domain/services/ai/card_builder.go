@@ -75,8 +75,12 @@ func buildMiriamBriefCard(data map[string]interface{}) entities.InsightCard {
 	subtitle := "What changed, what matters, and the next move"
 	sentiment := "neutral"
 	if len(insights) > 0 {
-		title = fmt.Sprintf("%v", insights[0]["title"])
-		sentiment = fmt.Sprintf("%v", insights[0]["severity"])
+		if titleVal, ok := insights[0]["title"]; ok {
+			title = fmt.Sprintf("%v", titleVal)
+		}
+		if severityVal, ok := insights[0]["severity"]; ok {
+			sentiment = fmt.Sprintf("%v", severityVal)
+		}
 	}
 	return entities.InsightCard{
 		Type:      "miriam_brief",

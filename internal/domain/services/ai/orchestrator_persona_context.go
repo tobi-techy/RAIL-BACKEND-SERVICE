@@ -75,6 +75,9 @@ func (o *Orchestrator) BuildRealtimeGreeting(ctx context.Context, userID uuid.UU
 	insight := o.realtimeProactiveInsight(ctx, userID)
 
 	loc, _, _ := o.resolveMiriamLocation(ctx, userID, nil)
+	if loc == nil {
+		loc = time.Local
+	}
 	hour := time.Now().In(loc).Hour()
 	var greeting string
 	switch {

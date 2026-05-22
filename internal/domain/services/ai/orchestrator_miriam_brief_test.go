@@ -103,6 +103,17 @@ func TestExecuteMiriamBriefReturnsEmptyState(t *testing.T) {
 	require.Equal(t, "no-money-data-yet", insights[0].ID)
 }
 
+func TestExecuteMiriamBriefReturnsErrorWhenMoneyFlowUnavailable(t *testing.T) {
+	userID := uuid.New()
+	o := &Orchestrator{
+		aggregateStats: govAggregateStatsFake{},
+		logger:         zap.NewNop(),
+	}
+
+	_, err := o.executeMiriamBrief(context.Background(), userID, nil)
+	require.ErrorContains(t, err, "spending service unavailable")
+}
+
 func sameDayIn(a, b time.Time, loc *time.Location) bool {
 	ay, am, ad := a.In(loc).Date()
 	by, bm, bd := b.In(loc).Date()

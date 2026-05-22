@@ -67,11 +67,26 @@ func (o *Orchestrator) executeMiriamBrief(ctx context.Context, userID uuid.UUID,
 	weekStart := weekStartLocal.UTC()
 	prevWeekStart := prevWeekStartLocal.UTC()
 
-	spend, stash, totalBalance := o.currentBalances(ctx, userID)
-	monthFlow := o.monthFlow(ctx, userID, monthStart, now)
-	lastMonthFlow := o.monthFlow(ctx, userID, lastMonthStart, monthStart)
-	weekFlow := o.monthFlow(ctx, userID, weekStart, now)
-	prevWeekFlow := o.monthFlow(ctx, userID, prevWeekStart, weekStart)
+	spend, stash, totalBalance, err := o.currentBalancesForMiriamBrief(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("build Miriam brief balances: %w", err)
+	}
+	monthFlow, err := o.moneyFlowForMiriamBrief(ctx, userID, monthStart, now, "current month")
+	if err != nil {
+		return nil, fmt.Errorf("build Miriam brief money flow: %w", err)
+	}
+	lastMonthFlow, err := o.moneyFlowForMiriamBrief(ctx, userID, lastMonthStart, monthStart, "previous month")
+	if err != nil {
+		return nil, fmt.Errorf("build Miriam brief money flow: %w", err)
+	}
+	weekFlow, err := o.moneyFlowForMiriamBrief(ctx, userID, weekStart, now, "last 7 days")
+	if err != nil {
+		return nil, fmt.Errorf("build Miriam brief money flow: %w", err)
+	}
+	prevWeekFlow, err := o.moneyFlowForMiriamBrief(ctx, userID, prevWeekStart, weekStart, "previous 7 days")
+	if err != nil {
+		return nil, fmt.Errorf("build Miriam brief money flow: %w", err)
+	}
 
 	monthOut := totalOutflow(monthFlow)
 	lastMonthOut := totalOutflow(lastMonthFlow)
@@ -499,6 +514,39 @@ func obligationDueInWindow(obligation entities.FinancialObligation, start, end t
 
 func (o *Orchestrator) buildUserTimeContext(ctx context.Context, userID uuid.UUID) string {
 	loc, timezone, _ := o.resolveMiriamLocation(ctx, userID, nil)
+	if loc == nil {
+		loc = time.Local
+		timezone = loc.String()
+	}
 	now := time.Now().In(loc)
 	return buildTimeContextAt(now, timezone)
+}
+
+func (o *Orchestrator) currentBalancesForMiriamBrief(ctx context.Context, userID uuid.UUID) (decimal.Decimal, decimal.Decimal, decimal.Decimal, error) {
+	if o.aggregateStats == nil {
+		return decimal.Zero, decimal.Zero, decimal.Zero, fmt.Errorf("aggregate stats service unavailable")
+	}
+	spend, err := o.aggregateStats.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return decimal.Zero, decimal.Zero, decimal.Zero, fmt.Errorf("get spending balance: %w", err)
+	}
+	stash, err := o.aggregateStats.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		return decimal.Zero, decimal.Zero, decimal.Zero, fmt.Errorf("get stash balance: %w", err)
+	}
+	return spend, stash, spend.Add(stash), nil
+}
+
+func (o *Orchestrator) moneyFlowForMiriamBrief(ctx context.Context, userID uuid.UUID, start, end time.Time, label string) (*entities.MoneyFlowSummary, error) {
+	if o.spending == nil {
+		return nil, fmt.Errorf("spending service unavailable")
+	}
+	flow, err := o.spending.GetMoneyFlow(ctx, userID, start, end)
+	if err != nil {
+		return nil, fmt.Errorf("get %s money flow: %w", label, err)
+	}
+	if flow == nil {
+		return nil, fmt.Errorf("get %s money flow: empty result", label)
+	}
+	return flow, nil
 }
