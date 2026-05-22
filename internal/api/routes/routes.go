@@ -362,8 +362,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	// Initialize integration handlers (Alpaca only)
 	integrationHandlers := handlers.NewIntegrationHandlers(
 		container.AlpacaClient,
-		nil,  // Deprecated: Due service removed
-		"",   // Deprecated: Due webhook secret removed
+		nil, // Deprecated: Due service removed
+		"",  // Deprecated: Due webhook secret removed
 		services.NewNotificationService(container.ZapLog),
 		container.Logger,
 	)
@@ -495,6 +495,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			authenticatedOnboarding.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator, container.TokenBlacklist))
 			{
 				authenticatedOnboarding.POST("/basic-complete", authHandlers.BasicCompleteOnboarding)
+				authenticatedOnboarding.GET("/kyc/missing-fields", authHandlers.GetMissingKycFields)
 				// Fraud detection: correlate device fingerprint across accounts at onboarding completion.
 				// Catches fraud rings using purchased KYC identities from the same device.
 				if fraudSvc := container.GetOnboardingFraudService(); fraudSvc != nil {
@@ -1083,6 +1084,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					aiGroup.GET("/action-receipts", middleware.AuthRateLimit(20), aiChatHandlers.ActionReceipts)
 					aiGroup.GET("/financial-advice", middleware.AuthRateLimit(20), aiChatHandlers.FinancialAdvice)
 					aiGroup.GET("/financial-timeline", middleware.AuthRateLimit(20), aiChatHandlers.FinancialTimeline)
+					aiGroup.GET("/miriam-brief", middleware.AuthRateLimit(20), aiChatHandlers.MiriamBrief)
 					aiGroup.GET("/suggestions", aiChatHandlers.GetSuggestedQuestions)
 					aiGroup.GET("/starters", middleware.AuthRateLimit(10), aiChatHandlers.GetConversationStarters)
 					aiGroup.POST("/nudge", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), aiChatHandlers.Nudge)
@@ -1243,6 +1245,28 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		admin.Use(middleware.AdminAuth(container.DB, container.Logger))
 		admin.Use(middleware.CSRFProtection(csrfStore))
 		{
+			// Complete stuck PAJ orders (internal key auth)
+			admin.POST("/paj/complete/:order_id", func(c *gin.Context) {
+				key := c.GetHeader("X-Internal-Key")
+				if key == "" || key != container.Config.JWT.Secret {
+					c.JSON(401, gin.H{"error": "unauthorized"})
+					return
+				}
+				orderID := c.Param("order_id")
+				if orderID == "" {
+					c.JSON(400, gin.H{"error": "order_id required"})
+					return
+				}
+				result, err := container.DB.ExecContext(c.Request.Context(),
+					`UPDATE paj_orders SET status = 'completed', updated_at = NOW() WHERE paj_order_id = $1 AND status NOT IN ('completed', 'failed')`, orderID)
+				if err != nil {
+					c.JSON(500, gin.H{"error": err.Error()})
+					return
+				}
+				rows, _ := result.RowsAffected()
+				c.JSON(200, gin.H{"updated": rows, "order_id": orderID})
+			})
+
 			// User lookup
 			admin.GET("/users/lookup", handlers.AdminLookupUser(container.DB))
 

@@ -62,6 +62,9 @@ func (a *userProfileAdapter) GetCountry(ctx context.Context, userID uuid.UUID) (
 	if err != nil {
 		return "", err
 	}
+	if user.AddressCountry != nil {
+		return *user.AddressCountry, nil
+	}
 	if user.Country != nil {
 		return *user.Country, nil
 	}
@@ -74,6 +77,10 @@ func (a *userProfileAdapter) GetEmail(ctx context.Context, userID uuid.UUID) (st
 		return "", err
 	}
 	return user.Email, nil
+}
+
+func (a *userProfileAdapter) GetProfile(ctx context.Context, userID uuid.UUID) (*entities.UserProfile, error) {
+	return a.userRepo.GetByID(ctx, userID)
 }
 
 // accountCheckerAdapter adapts UserRepository to the UserAccountChecker interface.

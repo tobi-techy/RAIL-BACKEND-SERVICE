@@ -424,8 +424,16 @@ func (s *Service) AddBankAccount(ctx context.Context, userID uuid.UUID, bankID, 
 		if paj.IsUnauthorized(err) {
 			return nil, s.invalidateSessionIfUnauthorized(ctx, userID, err)
 		}
-		// Ignore "already exists" — the bank account is already saved on Paj's side.
+		// "already exists" — fetch the existing account so we return full data (including ID).
 		if strings.Contains(err.Error(), "already exists") {
+			accounts, fetchErr := s.pajClient.GetBankAccounts(ctx, token)
+			if fetchErr == nil {
+				for i := range accounts {
+					if accounts[i].AccountNumber == accountNumber {
+						return &accounts[i], nil
+					}
+				}
+			}
 			return &paj.SavedBankAccount{AccountNumber: accountNumber, Bank: bankID}, nil
 		}
 		return nil, err
@@ -598,19 +606,12 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 	// Paj's fee is included in order.Amount (Paj deducts it from the token amount).
 	totalHold := estimatedUSDC.Add(railFee)
 
-	// P2: Withdrawal limits — enforce daily/monthly caps. Non-KYC users have
-	// USD-denominated limits, so convert NGN to USD equivalent before checking.
+	// P2: Withdrawal limits — enforce daily/monthly caps.
 	if s.limitsChecker != nil {
 		limitAmount := decimal.NewFromFloat(fiatAmount)
 		limitCurrency := strings.ToUpper(strings.TrimSpace(currency))
 		if limitCurrency == "" {
 			limitCurrency = "NGN"
-		}
-		if limitCurrency == "NGN" {
-			if rates.OffRampRate.Rate > 0 {
-				limitAmount = limitAmount.Div(decimal.NewFromFloat(rates.OffRampRate.Rate))
-			}
-			limitCurrency = "USD"
 		}
 		if limErr := s.limitsChecker.ValidateWithdrawalWithCurrency(ctx, userID, limitAmount, limitCurrency); limErr != nil {
 			return nil, limErr

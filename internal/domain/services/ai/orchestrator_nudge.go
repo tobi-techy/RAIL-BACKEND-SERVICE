@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,6 +13,25 @@ import (
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
+
+// nudgeCooldowns tracks per-user per-screen nudge timestamps for deduplication.
+var nudgeCooldowns sync.Map
+
+const nudgeCooldownTTL = 15 * time.Minute
+
+func init() {
+	go func() {
+		for range time.NewTicker(5 * time.Minute).C {
+			now := time.Now()
+			nudgeCooldowns.Range(func(key, val interface{}) bool {
+				if now.Sub(val.(time.Time)) > nudgeCooldownTTL {
+					nudgeCooldowns.Delete(key)
+				}
+				return true
+			})
+		}
+	}()
+}
 
 // NudgeRequest describes the screen context for an ambient nudge.
 type NudgeRequest struct {
@@ -31,6 +51,14 @@ type NudgeResponse struct {
 // GenerateNudge gathers financial context and asks the LLM for a short,
 // conversational nudge. It is designed to be fast (<3s) and cheap (small prompt).
 func (o *Orchestrator) GenerateNudge(ctx context.Context, userID uuid.UUID, req NudgeRequest) (*NudgeResponse, error) {
+	// Deduplication: skip if same user+screen was nudged within cooldown window
+	cooldownKey := fmt.Sprintf("nudge:%s:%s", userID.String(), req.Screen)
+	if lastTime, ok := nudgeCooldowns.Load(cooldownKey); ok {
+		if time.Since(lastTime.(time.Time)) < nudgeCooldownTTL {
+			return &NudgeResponse{Show: false, Severity: "info"}, nil
+		}
+	}
+
 	now := time.Now().UTC()
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	nextMonth := time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC)
@@ -91,6 +119,9 @@ func (o *Orchestrator) GenerateNudge(ctx context.Context, userID uuid.UUID, req 
 	if budgetLimit.IsPositive() {
 		sb.WriteString(fmt.Sprintf("Budget limit: $%s, remaining: $%s\n", budgetLimit.StringFixed(2), budgetRemaining.StringFixed(2)))
 	}
+	if ms := nearMilestone(stash); ms != "" {
+		sb.WriteString(fmt.Sprintf("Near milestone: stash is close to %s\n", ms))
+	}
 
 	systemPrompt := `You are Miriam, a witty financial companion inside the Rail Money app. You give SHORT ambient nudges (1-2 sentences max) based on the user's financial context.
 
@@ -123,7 +154,11 @@ Set shake=true ONLY for genuine warnings (over budget, spending > 50% of balance
 		return &NudgeResponse{Show: false, Severity: "info"}, nil
 	}
 
-	return parseNudgeResponse(resp.Content), nil
+	result := parseNudgeResponse(resp.Content)
+	if result.Show {
+		nudgeCooldowns.Store(cooldownKey, time.Now())
+	}
+	return result, nil
 }
 
 // parseNudgeResponse extracts the JSON nudge from the LLM output.
@@ -150,4 +185,17 @@ func parseNudgeResponse(raw string) *NudgeResponse {
 		nr.Severity = "info"
 	}
 	return &nr
+}
+
+// nearMilestone returns the milestone label if balance is within 10% below it.
+func nearMilestone(balance decimal.Decimal) string {
+	milestones := []int64{10000, 5000, 2500, 1000, 500, 250, 100}
+	val := balance.IntPart()
+	for _, m := range milestones {
+		threshold := m - m/10 // within 10% below
+		if val >= threshold && val < m {
+			return fmt.Sprintf("$%d", m)
+		}
+	}
+	return ""
 }

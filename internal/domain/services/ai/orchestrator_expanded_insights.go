@@ -53,6 +53,47 @@ func ExpandedInsightTools() []infraai.Tool {
 
 // executeGetSubscriptions detects recurring charges from transaction history.
 func (o *Orchestrator) executeGetSubscriptions(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+	if o.recurringDetector != nil {
+		expenses, err := o.recurringDetector.DetectRecurring(ctx, userID)
+		if err == nil {
+			candidates := make([]map[string]interface{}, 0, len(expenses))
+			totalMonthly := decimal.Zero
+			for _, e := range expenses {
+				monthly := e.AvgAmount
+				if e.Frequency == "weekly" {
+					monthly = e.AvgAmount.Mul(decimal.NewFromFloat(4.33))
+				}
+				totalMonthly = totalMonthly.Add(monthly)
+				candidateID := fmt.Sprintf("%s:%s:%s", e.Merchant, e.Frequency, e.AvgAmount.StringFixed(2))
+				candidates = append(candidates, map[string]interface{}{
+					"candidate_id": candidateID,
+					"name":         e.Merchant,
+					"amount":       e.AvgAmount.StringFixed(2),
+					"monthly":      monthly.StringFixed(2),
+					"frequency":    e.Frequency,
+					"first_seen":   e.FirstSeen,
+					"last_seen":    e.LastSeen,
+					"count":        e.Count,
+					"status":       "candidate",
+					"recommended_actions": []map[string]interface{}{
+						{"type": ToolProtectSubscription, "label": "Track this bill", "requires_confirmation": true},
+						{"type": ToolMarkSubscriptionCancelled, "label": "Mark cancelled", "requires_confirmation": true},
+						{"type": ToolIgnoreSubscription, "label": "Ignore", "requires_confirmation": true},
+					},
+				})
+			}
+			totalYearly := totalMonthly.Mul(decimal.NewFromInt(12))
+			return map[string]interface{}{
+				"source":        "recurring_detector",
+				"candidates":    candidates,
+				"subscriptions": candidates,
+				"total_monthly": totalMonthly.StringFixed(2),
+				"total_yearly":  totalYearly.StringFixed(2),
+				"savings_tip":   subscriptionSavingsTip(totalYearly),
+			}, nil
+		}
+	}
+
 	if o.spending == nil {
 		return map[string]interface{}{"error": "spending service unavailable"}, nil
 	}
@@ -113,11 +154,19 @@ func (o *Orchestrator) executeGetSubscriptions(ctx context.Context, userID uuid.
 	}
 
 	return map[string]interface{}{
+		"source":        "transaction_grouping",
 		"subscriptions": subs,
 		"total_monthly": totalMonthly.StringFixed(2),
 		"total_yearly":  totalYearly.StringFixed(2),
 		"savings_tip":   tip,
 	}, nil
+}
+
+func subscriptionSavingsTip(totalYearly decimal.Decimal) string {
+	if totalYearly.GreaterThan(decimal.NewFromInt(0)) {
+		return fmt.Sprintf("These recurring charges add up to $%s/year. Keep the ones that still earn their place.", totalYearly.StringFixed(0))
+	}
+	return ""
 }
 
 // executeGetRunway calculates how long the user's money will last.

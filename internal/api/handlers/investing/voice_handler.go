@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,6 +31,8 @@ const (
 	idleTimeout        = 5 * time.Minute
 	voiceToolTimeout   = 12 * time.Second
 	voiceToolDrainWait = 100 * time.Millisecond
+	voiceSampleRateHz  = 24000
+	maxSilentRetries   = 1
 )
 
 // VoiceUsageTracker tracks billable voice usage.
@@ -136,7 +139,11 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 				return
 			}
 			lastActivity.Store(time.Now())
-			if err := agentConn.Send(normalizeClientVoiceEvent(messageType, msg)); err != nil {
+			event, ok := normalizeClientVoiceEvent(messageType, msg)
+			if !ok {
+				continue
+			}
+			if err := agentConn.Send(event); err != nil {
 				return
 			}
 		}
@@ -146,6 +153,8 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
+		sessionWarned := false
+		idleWarned := false
 		for {
 			select {
 			case <-ctx.Done():
@@ -155,9 +164,27 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 					cancel()
 					return
 				}
-				if last, ok := lastActivity.Load().(time.Time); ok && time.Since(last) > idleTimeout {
-					cancel()
-					return
+				// Warn 1 minute before max session duration
+				elapsed := time.Since(startTime)
+				if !sessionWarned && elapsed >= maxSessionDuration-1*time.Minute {
+					sessionWarned = true
+					h.writeClientControlEvent(clientConn, "rail.session.timeout_warning", map[string]string{"message": "Session ending in 1 minute"}, cancel)
+				}
+				// Warn 1 minute before idle timeout
+				if last, ok := lastActivity.Load().(time.Time); ok {
+					idle := time.Since(last)
+					if !idleWarned && idle >= idleTimeout-1*time.Minute {
+						idleWarned = true
+						h.writeClientControlEvent(clientConn, "rail.session.timeout_warning", map[string]string{"message": "Disconnecting due to inactivity in 1 minute"}, cancel)
+					}
+					if idle > idleTimeout {
+						cancel()
+						return
+					}
+					// Reset idle warning if activity resumes
+					if idle < idleTimeout-1*time.Minute {
+						idleWarned = false
+					}
 				}
 			}
 		}
@@ -168,6 +195,11 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 	var pendingMu sync.Mutex
 	lastAgentEvent := ""
 	waitingForAnswer := false
+	replyAudioChunks := 0
+	replyAudioBytes := 0
+	replyID := ""
+	silentReplyRetries := 0
+	silentReplyText := ""
 
 	setLastAgentEvent := func(eventType string) {
 		pendingMu.Lock()
@@ -229,6 +261,8 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 			Name      string                 `json:"name"`
 			Arguments map[string]interface{} `json:"arguments"`
 			Status    string                 `json:"status"`
+			ReplyID   string                 `json:"reply_id"`
+			Data      string                 `json:"data"`
 		}
 		json.Unmarshal(raw, &event)
 
@@ -248,6 +282,19 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 
 		case "reply.started":
 			setLastAgentEvent(event.Type)
+			replyID = event.ReplyID
+			replyAudioChunks = 0
+			replyAudioBytes = 0
+			silentReplyText = ""
+			if !h.writeClientEvent(clientConn, raw, cancel) {
+				return
+			}
+
+		case "reply.audio":
+			if event.Data != "" {
+				replyAudioChunks++
+				replyAudioBytes += decodedBase64Len(event.Data)
+			}
 			if !h.writeClientEvent(clientConn, raw, cancel) {
 				return
 			}
@@ -295,6 +342,19 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 			if !h.writeClientEvent(clientConn, raw, cancel) {
 				return
 			}
+			if !transcriptEvent.Interrupted && strings.TrimSpace(transcriptEvent.Text) != "" {
+				durationMs := pcm16DurationMS(replyAudioBytes, voiceSampleRateHz)
+				if !h.writeClientControlEvent(clientConn, "rail.transcript.agent.sync", map[string]string{
+					"reply_id":              firstNonEmpty(replyID, event.ReplyID),
+					"text":                  transcriptEvent.Text,
+					"estimated_duration_ms": durationMsString(durationMs),
+				}, cancel) {
+					return
+				}
+				if replyAudioChunks == 0 {
+					silentReplyText = transcriptEvent.Text
+				}
+			}
 
 		case "tool.call":
 			// Execute tool and accumulate result. AssemblyAI expects tool.result only after reply.done.
@@ -325,7 +385,7 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 						zap.String("tool", name),
 						zap.Duration("duration", time.Since(toolStart)),
 						zap.Error(err))
-					result = map[string]interface{}{"error": "I couldn't complete that from voice right now. Try again in a moment."}
+					result = map[string]interface{}{"error": voiceToolErrorMessage(name)}
 				} else {
 					h.logger.Debug("voice tool execution completed",
 						zap.String("user_id", userID.String()),
@@ -360,6 +420,23 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 
 			if !h.writeClientEvent(clientConn, raw, cancel) {
 				return
+			}
+			if event.Status != "interrupted" && silentReplyText != "" && silentReplyRetries < maxSilentRetries {
+				repairText := silentReplyText
+				silentReplyText = ""
+				silentReplyRetries++
+				if !h.writeClientControlEvent(clientConn, "rail.voice.audio_missing", map[string]string{
+					"reply_id": firstNonEmpty(replyID, event.ReplyID),
+				}, cancel) {
+					return
+				}
+				if err := agentConn.Send(infraai.NewReplyCreate("Repeat this exact response out loud. The previous audio stream was silent: " + truncateForVoiceRepair(repairText))); err != nil {
+					h.logger.Warn("failed to request silent voice repair", zap.Error(err))
+					silentReplyRetries = 0
+				} else {
+					replyAudioChunks = 0
+					replyAudioBytes = 0
+				}
 			}
 			if event.Status != "interrupted" {
 				flushReadyTools()
@@ -421,9 +498,9 @@ func (h *VoiceHandler) writeClientControlEvent(conn *websocket.Conn, eventType s
 	return h.writeClientEvent(conn, raw, cancel)
 }
 
-func normalizeClientVoiceEvent(messageType int, msg []byte) interface{} {
+func normalizeClientVoiceEvent(messageType int, msg []byte) (interface{}, bool) {
 	if messageType == websocket.BinaryMessage {
-		return infraai.NewAudioInput(base64.StdEncoding.EncodeToString(msg))
+		return infraai.NewAudioInput(base64.StdEncoding.EncodeToString(msg)), true
 	}
 
 	var event struct {
@@ -431,15 +508,69 @@ func normalizeClientVoiceEvent(messageType int, msg []byte) interface{} {
 		Audio string `json:"audio"`
 	}
 	if err := json.Unmarshal(msg, &event); err == nil && event.Type == "input_audio_buffer.append" && event.Audio != "" {
-		return infraai.NewAudioInput(event.Audio)
+		return infraai.NewAudioInput(event.Audio), true
+	}
+	switch event.Type {
+	case "input_audio_buffer.commit", "input_audio_buffer.clear", "response.create":
+		// OpenAI Realtime clients send these control events. AssemblyAI handles
+		// turn commits and response creation server-side, so forwarding them
+		// would produce invalid_format session errors.
+		return nil, false
 	}
 
-	return json.RawMessage(msg)
+	return json.RawMessage(msg), true
+}
+
+func decodedBase64Len(s string) int {
+	if s == "" {
+		return 0
+	}
+	padding := 0
+	if strings.HasSuffix(s, "==") {
+		padding = 2
+	} else if strings.HasSuffix(s, "=") {
+		padding = 1
+	}
+	return (len(s)/4)*3 - padding
+}
+
+func pcm16DurationMS(byteLen, sampleRate int) int {
+	if byteLen <= 0 || sampleRate <= 0 {
+		return 0
+	}
+	return int((float64(byteLen) / 2 / float64(sampleRate)) * 1000)
+}
+
+func durationMsString(ms int) string {
+	if ms <= 0 {
+		return "0"
+	}
+	return strconv.Itoa(ms)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func truncateForVoiceRepair(text string) string {
+	text = strings.TrimSpace(text)
+	const maxRunes = 240
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	return string(runes[:maxRunes]) + "."
 }
 
 func (h *VoiceHandler) configureSession(ctx context.Context, userID uuid.UUID, conn *infraai.RealtimeClient) error {
-	tools := h.orchestrator.GetTools()
-	// Voice: limit to ≤10 tools for better selection accuracy (AssemblyAI docs)
+	tools := append(h.orchestrator.GetTools(), aiservice.VoiceTools()...)
+	// Voice gets two router tools for chat parity plus a small set of direct
+	// high-frequency actions for better parameter extraction.
 	voiceTools := voiceToolDescriptions()
 	var filteredTools []infraai.SessionTool
 	for _, t := range tools {
@@ -465,16 +596,46 @@ func (h *VoiceHandler) configureSession(ctx context.Context, userID uuid.UUID, c
 
 func voiceToolDescriptions() map[string]string {
 	return map[string]string{
+		aiservice.ToolVoiceMoneyLookup:         "Use for any read-only question Miriam can answer in chat: balances, budgets, spending, transactions, deposits, withdrawals, income, yield, taxes, goals, profile, obligations, automations, subscriptions, runway, receipts, audits, financial health, advice, timeline, investing, market/news, knowledge, or memory. Set the tool field to the underlying chat tool name.",
+		aiservice.ToolVoiceMoneyAction:         "Use for less-common chat actions in voice. Set action to the underlying action tool name and params to that action's arguments. Use after clear user intent or confirmation.",
 		aiservice.ToolGetAccountSummary:        "Call when the user asks for balance, overview, safe spend, or how their money looks. Fast account snapshot.",
+		aiservice.ToolGetBudget:                "Call when the user asks about their budget, monthly limit, remaining budget, daily allowance, budget status, or how much they can still spend.",
+		aiservice.ToolSetBudget:                "Call when the user wants to set or change their monthly spending budget. Never say the budget changed unless this succeeds.",
 		aiservice.ToolTransferFunds:            "Call when the user asks to move money between Spend and Stash. Never say money moved unless this succeeds.",
 		aiservice.ToolInitiateWithdrawal:       "Call when the user asks to withdraw or cash out to a linked bank. Ask for missing amount or currency first.",
 		aiservice.ToolGetLinkedBanks:           "Call before a withdrawal if the user asks which bank is linked or does not specify a destination.",
 		aiservice.ToolSetSavingsGoal:           "Call when the user wants to save for a named target, like rent, travel, emergency fund, or school fees.",
 		aiservice.ToolCreateAutomation:         "Call when the user wants an automatic rule. Never claim it is active until the tool succeeds; if authorization is required, say that clearly.",
 		aiservice.ToolCreateObligationReminder: "Call when the user wants Miriam to remember a bill, debt, rent, invoice, subscription, tax, or family support obligation.",
+		aiservice.ToolGetMiriamBrief:           "Call when the user asks what changed, what matters, or what they should do next. Fast canonical Miriam brief.",
 		aiservice.ToolGetMoneyFlow:             "Call when the user asks where money went, how much they spent, or wants spending versus deposits.",
 		aiservice.ToolGetWithdrawalHistory:     "Call when the user asks about recent withdrawals, cash-outs, or money leaving Rail.",
-		aiservice.ToolGetDepositHistory:        "Call when the user asks about deposits, funding, pay-ins, or money coming into Rail.",
+		aiservice.ToolGetFinancialHealth:       "Call when the user asks how they are doing financially, their financial health, score, or progress. Supports multi-month analysis.",
+		aiservice.ToolGetFinancialAudit:        "Call when the user says audit me, hard mode, roast my finances, reality check, or wants accountability. Provides detailed financial audit with scores and recommendations.",
+	}
+}
+
+// voiceToolErrorMessage returns a user-friendly error message specific to the tool that failed.
+func voiceToolErrorMessage(toolName string) string {
+	switch toolName {
+	case aiservice.ToolTransferFunds:
+		return "I couldn't move your money right now. Try again in a moment, or use the app to transfer."
+	case aiservice.ToolInitiateWithdrawal:
+		return "The withdrawal didn't go through. Try again shortly, or withdraw from the app."
+	case aiservice.ToolGetAccountSummary:
+		return "I couldn't pull up your balance right now. Give it a sec and ask again."
+	case aiservice.ToolSetSavingsGoal:
+		return "I couldn't set that goal right now. Try again in a moment."
+	case aiservice.ToolCreateAutomation:
+		return "I couldn't create that automation. Try again, or set it up in the app."
+	case aiservice.ToolCreateObligationReminder:
+		return "I couldn't save that reminder. Try again in a moment."
+	case aiservice.ToolGetMoneyFlow, aiservice.ToolGetWithdrawalHistory, aiservice.ToolGetDepositHistory:
+		return "I couldn't fetch your transaction history right now. Try again shortly."
+	case aiservice.ToolGetFinancialHealth, aiservice.ToolGetFinancialAudit:
+		return "I couldn't run your financial check right now. Try again in a moment."
+	default:
+		return "That didn't work from voice. Try again in a moment, or do it in the app."
 	}
 }
 

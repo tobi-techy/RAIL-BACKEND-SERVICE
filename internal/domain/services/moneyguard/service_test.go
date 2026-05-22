@@ -117,6 +117,12 @@ func (o obligationFake) ListActive(_ context.Context, _ uuid.UUID) ([]entities.F
 	return o.obligations, nil
 }
 
+type profileFake struct{ profile *entities.FinancialProfile }
+
+func (p profileFake) GetByUserID(_ context.Context, _ uuid.UUID) (*entities.FinancialProfile, error) {
+	return p.profile, nil
+}
+
 type pauserFake struct{ called bool }
 
 func (p *pauserFake) PauseUserCards(_ context.Context, _ uuid.UUID, _ int, _ string) error {
@@ -145,14 +151,15 @@ func TestSafeToSpendProtectsBillsAndBudget(t *testing.T) {
 			Amount: decimal.NewFromInt(80), Currency: "USD", Cadence: entities.ObligationCadenceMonthly,
 			DueDate: &dueDate, Status: entities.ObligationStatusActive,
 		}}},
-		nil, nil, nil, zap.NewNop(),
+		profileFake{profile: &entities.FinancialProfile{UserID: userID, IncomeFrequency: "monthly"}},
+		nil, nil, zap.NewNop(),
 	)
 
 	safe, err := svc.SafeToSpend(context.Background(), userID)
 	require.NoError(t, err)
 	require.Equal(t, "100.00", safe.BudgetRemaining.StringFixed(2))
 	require.Equal(t, "80.00", safe.ProtectedAmount.StringFixed(2))
-	require.True(t, safe.DailySafeToSpend.LessThan(decimal.NewFromInt(10)))
+	require.Equal(t, "3.33", safe.DailySafeToSpend.StringFixed(2))
 }
 
 func TestEvaluateCardTransactionTriggersCapPauseAndDecimalSweep(t *testing.T) {

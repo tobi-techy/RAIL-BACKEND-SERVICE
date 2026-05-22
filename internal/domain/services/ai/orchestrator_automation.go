@@ -234,7 +234,16 @@ func (o *Orchestrator) executeCreateAutomation(ctx context.Context, userID uuid.
 	if err != nil {
 		return nil, fmt.Errorf("create automation: %w", err)
 	}
-	return map[string]interface{}{"id": result.ID.String(), "name": result.Name, "created": true}, nil
+	resp := map[string]interface{}{"id": result.ID.String(), "name": result.Name, "created": true}
+	// If schedule-based without specific day/time, suggest payday alignment
+	if triggerType == "schedule" {
+		if _, hasDay := triggerConfig["day"]; !hasDay {
+			if _, hasTime := triggerConfig["time"]; !hasTime {
+				resp["suggestion"] = "Tip: Most Rail users automate savings the day after payday. Want me to adjust the timing?"
+			}
+		}
+	}
+	return resp, nil
 }
 
 func validateTransferAutomationAuthorization(actionConfig map[string]interface{}, now time.Time) error {

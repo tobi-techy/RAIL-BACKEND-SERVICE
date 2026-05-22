@@ -78,6 +78,9 @@ func (o *Orchestrator) GenerateEnhancedNudge(ctx context.Context, userID uuid.UU
 		sb.WriteString(fmt.Sprintf(" (limit: $%s, remaining: $%s)", budgetLimit.StringFixed(2), budgetRemaining.StringFixed(2)))
 	}
 	sb.WriteString("\n")
+	if ms := nearMilestone(stash); ms != "" {
+		sb.WriteString(fmt.Sprintf("Near milestone: stash is close to %s\n", ms))
+	}
 
 	// Add detected signals
 	if len(signals) > 0 {

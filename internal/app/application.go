@@ -3,6 +3,7 @@ package app
 import (
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -19,11 +20,13 @@ import (
 
 	"github.com/rail-service/rail_service/internal/api/routes"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
 	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	bridgeadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	diditadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
+	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/database"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
@@ -446,6 +449,9 @@ func (app *Application) initializeWorkers() error {
 				pushSender,
 				app.log.Zap(),
 			)
+			if app.container.AIOrchestrator != nil {
+				app.dailyPulseWorker.SetBriefProvider(&dailyPulseBriefProvider{orchestrator: app.container.AIOrchestrator})
+			}
 			if app.container.AIProviderManager != nil {
 				app.dailyPulseWorker.SetNudger(daily_pulse.NewAINudger(app.container.AIProviderManager, app.log.Zap()))
 			}
@@ -954,6 +960,34 @@ func (app *Application) stopWorkers() {
 
 type dailyPulseUserRepoAdapter struct {
 	repo *repositories.UserRepository
+}
+
+type dailyPulseBriefProvider struct {
+	orchestrator *aiservice.Orchestrator
+}
+
+func (p *dailyPulseBriefProvider) GetMiriamBrief(ctx context.Context, userID uuid.UUID, country string) (map[string]interface{}, error) {
+	result, err := p.orchestrator.ExecuteToolPublic(ctx, userID, infraai.ToolCall{
+		ID:   "daily-pulse-miriam-brief",
+		Name: aiservice.ToolGetMiriamBrief,
+		Arguments: map[string]interface{}{
+			"country": country,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Normalize typed internal slices into JSON-like maps for the worker package.
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	var normalized map[string]interface{}
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		return nil, err
+	}
+	return normalized, nil
 }
 
 func (a *dailyPulseUserRepoAdapter) GetAllActiveUsers(ctx context.Context) ([]struct {
