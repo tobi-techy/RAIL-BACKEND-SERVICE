@@ -485,7 +485,7 @@ func (a *WithdrawalLedgerAdapter) CreateTransaction(ctx context.Context, userID 
 			Description: &desc,
 		},
 	}
-	if principalAmount.IsPositive() || feeAmount.IsZero() {
+	if principalAmount.IsPositive() {
 		entries = append(entries, entities.CreateEntryRequest{
 			AccountID:   systemAccount.ID,
 			EntryType:   entities.EntryTypeDebit,
@@ -535,8 +535,14 @@ func (a *WithdrawalLedgerAdapter) ReverseTransaction(ctx context.Context, userID
 	if err != nil {
 		return err
 	}
-	if feeAmount.IsPositive() && !a.withdrawalFeeRevenueWasPosted(ctx, originalTxID, metadata) {
-		feeAmount = decimal.Zero
+	if feeAmount.IsPositive() {
+		posted, err := a.withdrawalFeeRevenueWasPosted(ctx, originalTxID, metadata)
+		if err != nil {
+			return err
+		}
+		if !posted {
+			feeAmount = decimal.Zero
+		}
 	}
 	principalAmount := amount.Sub(feeAmount)
 	if principalAmount.IsNegative() {
@@ -572,7 +578,7 @@ func (a *WithdrawalLedgerAdapter) ReverseTransaction(ctx context.Context, userID
 			Description: &desc,
 		},
 	}
-	if principalAmount.IsPositive() || feeAmount.IsZero() {
+	if principalAmount.IsPositive() {
 		entries = append(entries, entities.CreateEntryRequest{
 			AccountID:   systemAccount.ID,
 			EntryType:   entities.EntryTypeCredit,
@@ -632,9 +638,9 @@ func withdrawalPlatformFeeFromMetadata(metadata map[string]interface{}, total de
 	return decimal.Zero, nil
 }
 
-func (a *WithdrawalLedgerAdapter) withdrawalFeeRevenueWasPosted(ctx context.Context, originalTxID string, metadata map[string]interface{}) bool {
+func (a *WithdrawalLedgerAdapter) withdrawalFeeRevenueWasPosted(ctx context.Context, originalTxID string, metadata map[string]interface{}) (bool, error) {
 	if metadataBool(metadata, "fee_revenue_posted") {
-		return true
+		return true, nil
 	}
 	originalKey := ""
 	if metadata != nil {
@@ -646,13 +652,16 @@ func (a *WithdrawalLedgerAdapter) withdrawalFeeRevenueWasPosted(ctx context.Cont
 		originalKey = "withdrawal-ledger-" + strings.TrimSpace(originalTxID)
 	}
 	if originalKey == "" {
-		return false
+		return false, nil
 	}
 	tx, err := a.ledgerService.GetTransactionByIdempotencyKey(ctx, originalKey)
-	if err != nil || tx == nil {
-		return false
+	if err != nil {
+		return false, fmt.Errorf("lookup fee revenue posting: %w", err)
 	}
-	return metadataBool(tx.Metadata, "fee_revenue_posted")
+	if tx == nil {
+		return false, nil
+	}
+	return metadataBool(tx.Metadata, "fee_revenue_posted"), nil
 }
 
 func metadataBool(metadata map[string]interface{}, key string) bool {
@@ -736,8 +745,21 @@ func (a *WithdrawalBridgeAdapter) CreateRecipient(ctx context.Context, req map[s
 }
 
 func (a *WithdrawalBridgeAdapter) InitiateTransfer(ctx context.Context, req map[string]interface{}) (map[string]interface{}, error) {
-	amount, _ := req["amount"].(string)
-	developerFee, _ := req["developer_fee"].(string)
+	amountDec, err := decimalFromMetadataValue(req["amount"])
+	if err != nil || amountDec.IsZero() {
+		return nil, fmt.Errorf("invalid or missing amount in transfer request")
+	}
+	amount := amountDec.StringFixed(2)
+
+	var developerFee string
+	if raw, ok := req["developer_fee"]; ok && raw != nil {
+		feeDec, err := decimalFromMetadataValue(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid developer_fee in transfer request: %w", err)
+		}
+		developerFee = feeDec.StringFixed(2)
+	}
+
 	currency, _ := req["currency"].(string)
 	recipientID, _ := req["recipient_id"].(string)
 	sourceWalletID, _ := req["source_wallet_id"].(string)

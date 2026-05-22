@@ -8,7 +8,9 @@ BEGIN
     FROM ledger_accounts
     WHERE user_id IS NULL AND account_type = 'withdrawal_fee_revenue';
 
-    IF revenue_balance IS NOT NULL AND revenue_balance <> 0 THEN
+    IF NOT FOUND THEN
+        RAISE NOTICE 'withdrawal_fee_revenue account does not exist, skipping balance check';
+    ELSIF revenue_balance <> 0 THEN
         RAISE EXCEPTION 'withdrawal_fee_revenue account has non-zero balance % and requires manual intervention', revenue_balance;
     END IF;
 END $$;

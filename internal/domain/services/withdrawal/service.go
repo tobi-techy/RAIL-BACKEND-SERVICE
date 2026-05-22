@@ -2049,6 +2049,9 @@ func (s *WithdrawalService) executeChainRailsTransfer(ctx context.Context, withd
 		"fees_usd", intent.FeesInUSD)
 
 	// Step 2: Fund the intent by transferring USDC from user's Bridge wallet to the intent address on Base
+	if withdrawal.FeeAmount.IsZero() {
+		return nil, fmt.Errorf("withdrawal fee amount is required for ChainRails transfer")
+	}
 	transfer, err := s.bridgeCryptoAdapter.TransferFunds(ctx, &bridgepkg.CreateTransferRequest{
 		OnBehalfOf:   withdrawal.UserID.String(),
 		Amount:       withdrawal.Amount.Add(withdrawal.FeeAmount).StringFixed(2),

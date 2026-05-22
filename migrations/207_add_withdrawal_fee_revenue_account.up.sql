@@ -8,7 +8,8 @@ ALTER TABLE ledger_accounts ADD CONSTRAINT chk_account_type CHECK (account_type 
     'fiat_exposure', 'pending_investment', 'pending_card_settlement',
     'system_buffer_usdc', 'system_buffer_fiat', 'broker_operational',
     'subscription_revenue', 'withdrawal_fee_revenue', 'emergency_withdrawal_revenue'
-));
+)) NOT VALID;
+ALTER TABLE ledger_accounts VALIDATE CONSTRAINT chk_account_type;
 
 INSERT INTO ledger_accounts (id, user_id, account_type, currency, balance)
 SELECT uuid_generate_v4(), NULL, 'withdrawal_fee_revenue', 'USDC', 0
@@ -17,8 +18,8 @@ WHERE NOT EXISTS (
     WHERE user_id IS NULL AND account_type = 'withdrawal_fee_revenue'
 );
 
-DROP INDEX IF EXISTS idx_ledger_accounts_system_type;
-CREATE UNIQUE INDEX idx_ledger_accounts_system_type
+DROP INDEX CONCURRENTLY IF EXISTS idx_ledger_accounts_system_type;
+CREATE UNIQUE INDEX CONCURRENTLY idx_ledger_accounts_system_type
     ON ledger_accounts(account_type)
     WHERE user_id IS NULL
       AND account_type IN (

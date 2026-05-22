@@ -41,6 +41,26 @@ func TestWithdrawalPlatformFeeFromMetadata(t *testing.T) {
 			metadata: map[string]interface{}{"fee_amount": "-0.01"},
 			wantErr:  true,
 		},
+		{
+			name:     "invalid decimal format",
+			metadata: map[string]interface{}{"fee_amount": "invalid"},
+			wantErr:  true,
+		},
+		{
+			name:     "empty string fee",
+			metadata: map[string]interface{}{"fee_amount": ""},
+			want:     decimal.Zero,
+		},
+		{
+			name:     "fee_amount takes precedence over rail_fee",
+			metadata: map[string]interface{}{"fee_amount": "1.00", "rail_fee": "0.50"},
+			want:     decimal.RequireFromString("1.00"),
+		},
+		{
+			name:     "explicit zero fee",
+			metadata: map[string]interface{}{"fee_amount": "0"},
+			want:     decimal.Zero,
+		},
 	}
 
 	for _, tt := range tests {
