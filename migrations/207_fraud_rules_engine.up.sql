@@ -91,22 +91,30 @@ CREATE TABLE IF NOT EXISTS fund_through_detections (
 );
 CREATE INDEX idx_fund_through_user ON fund_through_detections(user_id, created_at DESC);
 
--- Add withdrawals_frozen column if not exists (may already exist from withdrawal_security)
+-- Add columns safely: add without NOT NULL, backfill, then add constraint
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'withdrawals_frozen') THEN
-        ALTER TABLE users ADD COLUMN withdrawals_frozen BOOLEAN NOT NULL DEFAULT false;
+        ALTER TABLE users ADD COLUMN withdrawals_frozen BOOLEAN DEFAULT false;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'deposits_frozen') THEN
-        ALTER TABLE users ADD COLUMN deposits_frozen BOOLEAN NOT NULL DEFAULT false;
+        ALTER TABLE users ADD COLUMN deposits_frozen BOOLEAN DEFAULT false;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'account_frozen_at') THEN
         ALTER TABLE users ADD COLUMN account_frozen_at TIMESTAMPTZ;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'sanctions_status') THEN
-        ALTER TABLE users ADD COLUMN sanctions_status VARCHAR(20) NOT NULL DEFAULT 'clear';
+        ALTER TABLE users ADD COLUMN sanctions_status VARCHAR(20) DEFAULT 'clear';
     END IF;
 END $$;
+
+-- Backfill NULLs and add NOT NULL constraints
+UPDATE users SET withdrawals_frozen = false WHERE withdrawals_frozen IS NULL;
+UPDATE users SET deposits_frozen = false WHERE deposits_frozen IS NULL;
+UPDATE users SET sanctions_status = 'clear' WHERE sanctions_status IS NULL;
+ALTER TABLE users ALTER COLUMN withdrawals_frozen SET NOT NULL;
+ALTER TABLE users ALTER COLUMN deposits_frozen SET NOT NULL;
+ALTER TABLE users ALTER COLUMN sanctions_status SET NOT NULL;
 
 -- Seed default fraud rules
 INSERT INTO fraud_rules (name, description, rule_type, conditions, action, severity, score_weight, applies_to) VALUES

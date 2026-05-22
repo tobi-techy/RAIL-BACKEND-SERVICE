@@ -16,9 +16,8 @@ import (
 )
 
 // SanctionsScreeningService screens users against OFAC, UN, and EU sanctions lists.
-// In production, this would integrate with a third-party API (e.g., ComplyAdvantage,
-// Chainalysis, Dow Jones). This implementation provides the framework and local
-// fuzzy matching that can be swapped for an API call.
+// In production, integrate with a third-party API (e.g., ComplyAdvantage, Sardine, Chainalysis).
+// This implementation provides the framework and local fuzzy matching as fallback.
 type SanctionsScreeningService struct {
 	db     *sql.DB
 	logger *zap.Logger
@@ -29,7 +28,6 @@ func NewSanctionsScreeningService(db *sql.DB, logger *zap.Logger) *SanctionsScre
 }
 
 // ScreenUser performs sanctions screening against a user's name.
-// Called during onboarding and periodically for existing users.
 func (s *SanctionsScreeningService) ScreenUser(ctx context.Context, userID uuid.UUID, fullName, checkType string) (*entities.SanctionsCheck, error) {
 	check := &entities.SanctionsCheck{
 		ID:           uuid.New(),
@@ -42,18 +40,16 @@ func (s *SanctionsScreeningService) ScreenUser(ctx context.Context, userID uuid.
 		CreatedAt:    time.Now(),
 	}
 
-	// Perform screening against each list
 	matches := s.screenAgainstLists(ctx, fullName)
 
 	if len(matches) > 0 {
 		check.MatchFound = true
-		check.MatchDetails = map[string]interface{}{"matches": matches}
+		check.MatchDetails = entities.SanctionsMatchDetails{Matches: matches}
 
-		// Determine highest match score
 		var maxScore float64
 		for _, m := range matches {
-			if score, ok := m["score"].(float64); ok && score > maxScore {
-				maxScore = score
+			if m.Score > maxScore {
+				maxScore = m.Score
 			}
 		}
 		check.MatchScore = maxScore
@@ -65,15 +61,16 @@ func (s *SanctionsScreeningService) ScreenUser(ctx context.Context, userID uuid.
 		}
 	}
 
-	// Persist the check
 	if err := s.saveCheck(ctx, check); err != nil {
 		s.logger.Error("Failed to save sanctions check", zap.Error(err))
 		return check, err
 	}
 
-	// If match found, freeze the account and create alert
 	if check.MatchFound && check.MatchScore >= 0.7 {
-		s.handleMatch(ctx, userID, check)
+		if err := s.handleMatch(ctx, userID, check); err != nil {
+			s.logger.Error("Failed to handle sanctions match",
+				zap.String("user_id", userID.String()), zap.Error(err))
+		}
 	}
 
 	s.logger.Info("Sanctions screening completed",
@@ -86,7 +83,6 @@ func (s *SanctionsScreeningService) ScreenUser(ctx context.Context, userID uuid.
 }
 
 // ScreenAllUsers performs periodic re-screening of all active users.
-// Should be called by a scheduled worker (e.g., weekly).
 func (s *SanctionsScreeningService) ScreenAllUsers(ctx context.Context) (int, int, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, CONCAT(first_name, ' ', last_name) as full_name 
@@ -101,11 +97,14 @@ func (s *SanctionsScreeningService) ScreenAllUsers(ctx context.Context) (int, in
 		var userID uuid.UUID
 		var fullName string
 		if err := rows.Scan(&userID, &fullName); err != nil {
+			s.logger.Error("Failed to scan user row for sanctions screening", zap.Error(err))
 			continue
 		}
 
 		check, err := s.ScreenUser(ctx, userID, fullName, "periodic")
 		if err != nil {
+			s.logger.Error("Sanctions screening failed for user",
+				zap.String("user_id", userID.String()), zap.Error(err))
 			continue
 		}
 
@@ -119,19 +118,20 @@ func (s *SanctionsScreeningService) ScreenAllUsers(ctx context.Context) (int, in
 }
 
 // screenAgainstLists performs fuzzy matching against sanctions entries.
-// In production, replace this with an API call to ComplyAdvantage/Chainalysis.
-func (s *SanctionsScreeningService) screenAgainstLists(ctx context.Context, fullName string) []map[string]interface{} {
+// NOTE: Requires pg_trgm extension and sanctions_entries table.
+// In production, replace with API call to ComplyAdvantage/Sardine/Chainalysis.
+func (s *SanctionsScreeningService) screenAgainstLists(ctx context.Context, fullName string) []entities.SanctionsMatchEntry {
 	normalized := normalizeName(fullName)
-	var matches []map[string]interface{}
+	var matches []entities.SanctionsMatchEntry
 
-	// Query local sanctions entries (if maintained) or call external API
-	// For now, we check against a local table if it exists, otherwise return empty
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT name, list_source, entry_id FROM sanctions_entries 
 		WHERE is_active = true AND similarity(LOWER(name), LOWER($1)) > 0.6
 		ORDER BY similarity(LOWER(name), LOWER($1)) DESC LIMIT 5`, normalized)
 	if err != nil {
-		// Table may not exist yet — that's fine, external API would be used
+		// Table or pg_trgm extension may not exist — log and return empty
+		s.logger.Warn("Sanctions local screening query failed (requires pg_trgm extension and sanctions_entries table)",
+			zap.Error(err))
 		return matches
 	}
 	defer rows.Close()
@@ -139,15 +139,17 @@ func (s *SanctionsScreeningService) screenAgainstLists(ctx context.Context, full
 	for rows.Next() {
 		var name, listSource, entryID string
 		if err := rows.Scan(&name, &listSource, &entryID); err != nil {
+			s.logger.Error("Failed to scan sanctions entry row",
+				zap.String("search_name", normalized), zap.Error(err))
 			continue
 		}
 		score := calculateNameSimilarity(normalized, normalizeName(name))
 		if score >= 0.7 {
-			matches = append(matches, map[string]interface{}{
-				"name":        name,
-				"list":        listSource,
-				"entry_id":    entryID,
-				"score":       score,
+			matches = append(matches, entities.SanctionsMatchEntry{
+				MatchedName: name,
+				ListName:    listSource,
+				EntryID:     entryID,
+				Score:       score,
 			})
 		}
 	}
@@ -155,33 +157,59 @@ func (s *SanctionsScreeningService) screenAgainstLists(ctx context.Context, full
 	return matches
 }
 
-func (s *SanctionsScreeningService) handleMatch(ctx context.Context, userID uuid.UUID, check *entities.SanctionsCheck) {
+func (s *SanctionsScreeningService) handleMatch(ctx context.Context, userID uuid.UUID, check *entities.SanctionsCheck) error {
 	// Update user sanctions status
-	s.db.ExecContext(ctx, `UPDATE users SET sanctions_status = $1 WHERE id = $2`,
-		string(check.Status), userID)
+	if _, err := s.db.ExecContext(ctx, `UPDATE users SET sanctions_status = $1 WHERE id = $2`,
+		string(check.Status), userID); err != nil {
+		s.logger.Error("Failed to update user sanctions status",
+			zap.String("user_id", userID.String()), zap.Error(err))
+		return fmt.Errorf("update sanctions status: %w", err)
+	}
 
-	// Freeze account if confirmed or potential match
+	// Freeze account if confirmed match
 	if check.Status == entities.SanctionsStatusConfirmedMatch {
-		s.db.ExecContext(ctx, `
-			UPDATE users SET withdrawals_frozen = true, deposits_frozen = true, account_frozen_at = NOW() WHERE id = $1`, userID)
+		if _, err := s.db.ExecContext(ctx, `
+			UPDATE users SET withdrawals_frozen = true, deposits_frozen = true, account_frozen_at = NOW() WHERE id = $1`, userID); err != nil {
+			s.logger.Error("Failed to freeze user account for sanctions match",
+				zap.String("user_id", userID.String()), zap.Error(err))
+			return fmt.Errorf("freeze account: %w", err)
+		}
 
-		s.db.ExecContext(ctx, `
+		if _, err := s.db.ExecContext(ctx, `
 			INSERT INTO account_freezes (id, user_id, freeze_type, reason, triggered_by, is_active, created_at)
 			VALUES ($1, $2, 'sanctions', $3, 'system', true, NOW())`,
-			uuid.New(), userID, fmt.Sprintf("Sanctions match: score %.2f", check.MatchScore))
+			uuid.New(), userID, fmt.Sprintf("Sanctions match: score %.2f", check.MatchScore)); err != nil {
+			s.logger.Error("Failed to record account freeze",
+				zap.String("user_id", userID.String()), zap.Error(err))
+		}
 	}
 
 	// Create fraud alert for ops team
-	details, _ := json.Marshal(check.MatchDetails)
-	s.db.ExecContext(ctx, `
+	details, err := json.Marshal(check.MatchDetails)
+	if err != nil {
+		s.logger.Error("Failed to marshal sanctions match details",
+			zap.String("user_id", userID.String()), zap.Error(err))
+		details = []byte("{}")
+	}
+	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO fraud_alerts (id, user_id, alert_type, severity, status, details, created_at)
 		VALUES ($1, $2, 'sanctions_match', 'critical', 'open', $3, NOW())`,
-		uuid.New(), userID, details)
+		uuid.New(), userID, details); err != nil {
+		s.logger.Error("Failed to create sanctions fraud alert",
+			zap.String("user_id", userID.String()), zap.Error(err))
+	}
+
+	return nil
 }
 
 func (s *SanctionsScreeningService) saveCheck(ctx context.Context, check *entities.SanctionsCheck) error {
-	matchDetails, _ := json.Marshal(check.MatchDetails)
-	_, err := s.db.ExecContext(ctx, `
+	matchDetails, err := json.Marshal(check.MatchDetails)
+	if err != nil {
+		s.logger.Error("Failed to marshal match details for sanctions check",
+			zap.String("check_id", check.ID.String()), zap.Error(err))
+		return fmt.Errorf("marshal match details: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO sanctions_checks (id, user_id, check_type, full_name, lists_checked, match_found, match_details, match_score, status, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		check.ID, check.UserID, check.CheckType, check.FullName, check.ListsChecked,
@@ -189,26 +217,20 @@ func (s *SanctionsScreeningService) saveCheck(ctx context.Context, check *entiti
 	return err
 }
 
-// normalizeName strips accents, lowercases, and removes extra whitespace.
 func normalizeName(name string) string {
 	name = strings.ToLower(strings.TrimSpace(name))
-	// Remove non-letter/space characters
 	var b strings.Builder
 	for _, r := range name {
 		if unicode.IsLetter(r) || unicode.IsSpace(r) {
 			b.WriteRune(r)
 		}
 	}
-	// Collapse multiple spaces
 	return strings.Join(strings.Fields(b.String()), " ")
 }
 
-// calculateNameSimilarity uses a simple token-based Jaccard similarity.
-// In production, use Jaro-Winkler or Levenshtein via pg_trgm.
 func calculateNameSimilarity(a, b string) float64 {
 	tokensA := strings.Fields(a)
 	tokensB := strings.Fields(b)
-
 	if len(tokensA) == 0 || len(tokensB) == 0 {
 		return 0
 	}
@@ -231,7 +253,6 @@ func calculateNameSimilarity(a, b string) float64 {
 			union++
 		}
 	}
-
 	if union == 0 {
 		return 0
 	}

@@ -94,6 +94,7 @@ func (w *Worker) processUnscored(ctx context.Context) {
 	for rows.Next() {
 		var tx entities.MonitoredTransaction
 		if err := rows.Scan(&tx.ID, &tx.UserID, &tx.Type, &tx.Amount, &tx.Currency, &tx.CreatedAt); err != nil {
+			w.logger.Error("Failed to scan transaction row", zap.Error(err))
 			continue
 		}
 
@@ -139,7 +140,6 @@ func (w *Worker) handleTriggeredRules(ctx context.Context, tx *entities.Monitore
 	}
 
 	// Create alert
-	details := map[string]interface{}{"triggered_rules": results}
 	alert := &entities.FraudRuleAlert{
 		ID:              uuid.New(),
 		UserID:          tx.UserID,
@@ -147,7 +147,7 @@ func (w *Worker) handleTriggeredRules(ctx context.Context, tx *entities.Monitore
 		AlertType:       "rule_trigger",
 		Severity:        severity,
 		Status:          entities.AlertStatusOpen,
-		Details:         details,
+		Details:         entities.AlertDetails{TriggeredRules: results},
 		TransactionID:   &tx.ID,
 		TransactionType: tx.Type,
 		Amount:          tx.Amount,
@@ -185,7 +185,12 @@ func (w *Worker) checkFundThrough(ctx context.Context, tx *entities.MonitoredTra
 		ORDER BY amount DESC LIMIT 1`,
 		tx.UserID).Scan(&depositID, &depositAmount, &depositTime)
 
-	if err != nil || depositAmount.IsZero() {
+	if err == sql.ErrNoRows || depositAmount.IsZero() {
+		return
+	}
+	if err != nil {
+		w.logger.Error("Fund-through deposit query failed",
+			zap.String("user_id", tx.UserID.String()), zap.Error(err))
 		return
 	}
 
@@ -227,21 +232,26 @@ func (w *Worker) checkFundThrough(ctx context.Context, tx *entities.MonitoredTra
 }
 
 func (w *Worker) checkAutoFreeze(ctx context.Context, userID uuid.UUID) {
-	// Get cumulative fraud score from recent signals
 	var avgScore float64
 	var signalCount int
-	w.db.QueryRowContext(ctx, `
+	if err := w.db.QueryRowContext(ctx, `
 		SELECT COALESCE(AVG(signal_value), 0), COUNT(*) FROM fraud_signals 
 		WHERE user_id = $1 AND created_at > NOW() - INTERVAL '24 hours'`,
-		userID).Scan(&avgScore, &signalCount)
+		userID).Scan(&avgScore, &signalCount); err != nil {
+		w.logger.Error("Failed to query fraud signals for auto-freeze",
+			zap.String("user_id", userID.String()), zap.Error(err))
+		return
+	}
 
-	// Auto-freeze if: high average score AND multiple signals in 24h
 	if avgScore >= 0.6 && signalCount >= 5 {
-		// Check if already frozen
 		var alreadyFrozen bool
-		w.db.QueryRowContext(ctx, `
+		if err := w.db.QueryRowContext(ctx, `
 			SELECT COALESCE(withdrawals_frozen, false) FROM users WHERE id = $1`,
-			userID).Scan(&alreadyFrozen)
+			userID).Scan(&alreadyFrozen); err != nil {
+			w.logger.Error("Failed to check frozen status for auto-freeze",
+				zap.String("user_id", userID.String()), zap.Error(err))
+			return
+		}
 
 		if !alreadyFrozen {
 			w.freezeAccount(ctx, userID, "fraud_score",
@@ -251,15 +261,20 @@ func (w *Worker) checkAutoFreeze(ctx context.Context, userID uuid.UUID) {
 }
 
 func (w *Worker) freezeAccount(ctx context.Context, userID uuid.UUID, freezeType, reason string, alertID *uuid.UUID) {
-	// Freeze withdrawals
-	w.db.ExecContext(ctx, `
-		UPDATE users SET withdrawals_frozen = true, account_frozen_at = NOW() WHERE id = $1`, userID)
+	if _, err := w.db.ExecContext(ctx, `
+		UPDATE users SET withdrawals_frozen = true, account_frozen_at = NOW() WHERE id = $1`, userID); err != nil {
+		w.logger.Error("Failed to freeze user account",
+			zap.String("user_id", userID.String()), zap.Error(err))
+		return
+	}
 
-	// Record the freeze
-	w.db.ExecContext(ctx, `
+	if _, err := w.db.ExecContext(ctx, `
 		INSERT INTO account_freezes (id, user_id, freeze_type, reason, triggered_by, alert_id, is_active, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, true, NOW())`,
-		uuid.New(), userID, freezeType, reason, "system", alertID)
+		uuid.New(), userID, freezeType, reason, "system", alertID); err != nil {
+		w.logger.Error("Failed to record account freeze",
+			zap.String("user_id", userID.String()), zap.Error(err))
+	}
 
 	w.logger.Warn("Account frozen",
 		zap.String("user_id", userID.String()),
@@ -268,16 +283,22 @@ func (w *Worker) freezeAccount(ctx context.Context, userID uuid.UUID, freezeType
 }
 
 func (w *Worker) blockTransaction(ctx context.Context, tx *entities.MonitoredTransaction) {
-	w.db.ExecContext(ctx, `
-		UPDATE transactions SET status = 'blocked', updated_at = NOW() WHERE id = $1`, tx.ID)
+	if _, err := w.db.ExecContext(ctx, `
+		UPDATE transactions SET status = 'blocked', updated_at = NOW() WHERE id = $1`, tx.ID); err != nil {
+		w.logger.Error("Failed to block transaction",
+			zap.String("tx_id", tx.ID.String()), zap.Error(err))
+	}
 }
 
 func (w *Worker) saveFundThroughDetection(ctx context.Context, d *entities.FundThroughDetection) {
-	w.db.ExecContext(ctx, `
+	if _, err := w.db.ExecContext(ctx, `
 		INSERT INTO fund_through_detections (id, user_id, deposit_id, withdrawal_id, deposit_amount, withdrawal_amount, time_between_seconds, withdrawal_ratio, risk_score, action_taken, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		d.ID, d.UserID, d.DepositID, d.WithdrawalID, d.DepositAmount, d.WithdrawalAmount,
-		d.TimeBetweenSeconds, d.WithdrawalRatio, d.RiskScore, d.ActionTaken, d.CreatedAt)
+		d.TimeBetweenSeconds, d.WithdrawalRatio, d.RiskScore, d.ActionTaken, d.CreatedAt); err != nil {
+		w.logger.Error("Failed to save fund-through detection",
+			zap.String("user_id", d.UserID.String()), zap.Error(err))
+	}
 }
 
 func (w *Worker) getLastProcessedTime(ctx context.Context) time.Time {
