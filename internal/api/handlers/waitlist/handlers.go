@@ -48,6 +48,13 @@ func (h *Handlers) Signup(c *gin.Context) {
 
 // List handles GET /api/v1/admin/waitlist (admin only)
 func (h *Handlers) List(c *gin.Context) {
+	// Defensive check: verify admin role even though route middleware should enforce this
+	role, _ := c.Get("user_role")
+	if role != "admin" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
+		return
+	}
+
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 
@@ -65,9 +72,9 @@ func (h *Handlers) List(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"users": users,
-		"total": total,
-		"limit": limit,
+		"users":  users,
+		"total":  total,
+		"limit":  limit,
 		"offset": offset,
 	})
 }

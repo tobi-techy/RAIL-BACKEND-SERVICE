@@ -79,7 +79,10 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupRespons
 	if err := s.repo.Create(ctx, user); err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			// Race condition: re-fetch
-			existing, _ := s.repo.GetByEmail(ctx, email)
+			existing, refetchErr := s.repo.GetByEmail(ctx, email)
+			if refetchErr != nil {
+				return nil, fmt.Errorf("race condition re-fetch failed: %w", refetchErr)
+			}
 			if existing != nil {
 				return &SignupResponse{Position: existing.Position, ReferralCode: existing.ReferralCode, TotalAhead: existing.Position - 1}, nil
 			}
@@ -113,6 +116,8 @@ func (s *Service) Count(ctx context.Context) (int, error) {
 
 func generateReferralCode() string {
 	b := make([]byte, 4)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("crypto/rand failed: %v", err))
+	}
 	return "RAIL-" + strings.ToUpper(hex.EncodeToString(b))
 }

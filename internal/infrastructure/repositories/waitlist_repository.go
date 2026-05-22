@@ -97,12 +97,12 @@ func (r *WaitlistRepository) List(ctx context.Context, status *entities.Waitlist
 }
 
 func (r *WaitlistRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status entities.WaitlistStatus) error {
-	var extra string
+	var err error
 	if status == entities.WaitlistStatusInvited {
-		extra = ", invited_at = NOW()"
+		_, err = r.db.ExecContext(ctx, `UPDATE waitlist_users SET status = $1, invited_at = NOW() WHERE id = $2`, status, id)
+	} else {
+		_, err = r.db.ExecContext(ctx, `UPDATE waitlist_users SET status = $1 WHERE id = $2`, status, id)
 	}
-	query := fmt.Sprintf("UPDATE waitlist_users SET status = $1%s WHERE id = $2", extra)
-	_, err := r.db.ExecContext(ctx, query, status, id)
 	if err != nil {
 		return fmt.Errorf("update waitlist status: %w", err)
 	}
