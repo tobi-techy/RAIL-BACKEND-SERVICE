@@ -22,6 +22,8 @@ server:
     - "100.64.0.0/10"  # Railway internal network range
   allowed_origins:
     - "https://userail.money"
+    - "https://www.userail.money"
+    - "https://rail-money-website.pages.dev"
 
 # Distributed Rate Limiting Configuration
 # Uses Redis-backed sliding window algorithm for multi-instance rate limiting

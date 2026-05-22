@@ -50,6 +50,7 @@ import (
 	obligationservice "github.com/rail-service/rail_service/internal/domain/services/obligation"
 	"github.com/rail-service/rail_service/internal/domain/services/onboarding"
 	opportunitysvc "github.com/rail-service/rail_service/internal/domain/services/opportunity"
+	waitlistsvc "github.com/rail-service/rail_service/internal/domain/services/waitlist"
 	"github.com/rail-service/rail_service/internal/domain/services/p2p"
 	"github.com/rail-service/rail_service/internal/domain/services/pajfunding"
 	"github.com/rail-service/rail_service/internal/domain/services/passcode"
@@ -1459,6 +1460,10 @@ type Container struct {
 	// Opportunity Intelligence
 	OpportunityRepo    *repositories.OpportunityRepository
 	OpportunityService *opportunitysvc.Service
+
+	// Waitlist
+	WaitlistRepo    *repositories.WaitlistRepository
+	WaitlistService *waitlistsvc.Service
 }
 
 // NewContainer creates a new dependency injection container
@@ -1706,6 +1711,10 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 
 	// Initialize opportunity intelligence
 	container.initializeOpportunityService(sqlxDB)
+
+	// Initialize waitlist
+	container.WaitlistRepo = repositories.NewWaitlistRepository(db, zapLog)
+	container.WaitlistService = waitlistsvc.NewService(container.WaitlistRepo, zapLog)
 
 	return container, nil
 }
