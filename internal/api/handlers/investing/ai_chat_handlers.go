@@ -643,6 +643,27 @@ func (h *AIChatHandlers) FinancialTimeline(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": result})
 }
 
+// MiriamBrief handles GET /api/v1/ai/miriam-brief.
+func (h *AIChatHandlers) MiriamBrief(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	result, err := h.orchestrator.ExecuteToolPublic(c.Request.Context(), userID, ai.ToolCall{
+		ID:        "miriam-brief-http",
+		Name:      aiservice.ToolGetMiriamBrief,
+		Arguments: map[string]interface{}{},
+	})
+	if err != nil {
+		h.logger.Error("miriam brief failed", "error", err, "user_id", userID.String())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get miriam brief"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
 // GetSuggestedQuestions handles GET /api/v1/ai/suggestions
 func (h *AIChatHandlers) GetSuggestedQuestions(c *gin.Context) {
 	userID, err := common.GetUserIDFromContext(c)

@@ -142,6 +142,9 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 	if profileCtx := o.buildFinancialProfileContext(ctx, userID); profileCtx != "" {
 		messages = append(messages, infraai.Message{Role: "system", Content: profileCtx})
 	}
+	if userProfileCtx := o.buildUserProfileContext(ctx, userID); userProfileCtx != "" {
+		messages = append(messages, infraai.Message{Role: "system", Content: userProfileCtx})
+	}
 	if o.memory != nil {
 		if memCtx := o.memory.BuildMemoryContextWithSummary(ctx, userID); memCtx != "" {
 			messages = append(messages, infraai.Message{Role: "system", Content: memCtx})
@@ -152,6 +155,9 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 	}
 	if toneModeCtx := buildToneModeContext(opts.ToneMode); toneModeCtx != "" {
 		messages = append(messages, infraai.Message{Role: "system", Content: toneModeCtx})
+	}
+	if timeCtx := o.buildUserTimeContext(ctx, userID); timeCtx != "" {
+		messages = append(messages, infraai.Message{Role: "system", Content: timeCtx})
 	}
 
 	messages = append(messages, infraai.Message{Role: "user", Content: message})

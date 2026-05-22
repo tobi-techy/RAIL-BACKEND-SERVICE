@@ -74,7 +74,8 @@ func (o *Orchestrator) BuildRealtimeGreeting(ctx context.Context, userID uuid.UU
 	name := o.realtimeFirstName(ctx, userID)
 	insight := o.realtimeProactiveInsight(ctx, userID)
 
-	hour := time.Now().Hour()
+	loc, _, _ := o.resolveMiriamLocation(ctx, userID, nil)
+	hour := time.Now().In(loc).Hour()
 	var greeting string
 	switch {
 	case hour >= 5 && hour < 12:
@@ -239,6 +240,9 @@ func (o *Orchestrator) BuildRealtimeInstructions(ctx context.Context, userID uui
 	// Inject recent conversation summaries for continuity
 	if convCtx := o.buildRecentConversationContext(ctx, userID); convCtx != "" {
 		parts = append(parts, convCtx)
+	}
+	if timeCtx := o.buildUserTimeContext(ctx, userID); timeCtx != "" {
+		parts = append(parts, timeCtx)
 	}
 	parts = append(parts, premiumRealtimeVoiceInstructions)
 

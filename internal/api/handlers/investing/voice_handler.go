@@ -607,9 +607,9 @@ func voiceToolDescriptions() map[string]string {
 		aiservice.ToolSetSavingsGoal:           "Call when the user wants to save for a named target, like rent, travel, emergency fund, or school fees.",
 		aiservice.ToolCreateAutomation:         "Call when the user wants an automatic rule. Never claim it is active until the tool succeeds; if authorization is required, say that clearly.",
 		aiservice.ToolCreateObligationReminder: "Call when the user wants Miriam to remember a bill, debt, rent, invoice, subscription, tax, or family support obligation.",
+		aiservice.ToolGetMiriamBrief:           "Call when the user asks what changed, what matters, or what they should do next. Fast canonical Miriam brief.",
 		aiservice.ToolGetMoneyFlow:             "Call when the user asks where money went, how much they spent, or wants spending versus deposits.",
 		aiservice.ToolGetWithdrawalHistory:     "Call when the user asks about recent withdrawals, cash-outs, or money leaving Rail.",
-		aiservice.ToolGetDepositHistory:        "Call when the user asks about deposits, funding, pay-ins, or money coming into Rail.",
 		aiservice.ToolGetFinancialHealth:       "Call when the user asks how they are doing financially, their financial health, score, or progress. Supports multi-month analysis.",
 		aiservice.ToolGetFinancialAudit:        "Call when the user says audit me, hard mode, roast my finances, reality check, or wants accountability. Provides detailed financial audit with scores and recommendations.",
 	}

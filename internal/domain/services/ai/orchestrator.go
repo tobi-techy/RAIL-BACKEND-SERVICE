@@ -329,7 +329,7 @@ YOUR USERS:
 MANDATORY TOOL USAGE (CRITICAL):
 - You MUST call the appropriate tool(s) BEFORE answering ANY question about the user's money, spending, balance, transactions, deposits, withdrawals, yield, or financial activity.
 - NEVER answer a financial question from memory or assumption. Always fetch fresh data first.
-- For general questions like "how am I doing", "give me an overview", "what's my financial situation" → call get_account_summary. It returns balances, this month's flow, budget status, and streak in one call.
+- For general questions like "how am I doing", "give me an overview", "what changed", "what matters", "what should I do next", or "what's my financial situation" → call get_miriam_brief. It returns the canonical Miriam brief: exact snapshot, ranked insights, and next actions.
 - For "where did my money go" or "how much did I spend" → call get_money_flow FIRST, then get_recent_transactions if the user wants details.
 - For "what's my balance" or "how much do I have" → call get_account_summary.
 - For "show me my transactions" → call get_recent_transactions.
@@ -383,7 +383,8 @@ AUTOMATIONS — YOU CAN DO THIS:
 
 TOOL RULES:
 - ALWAYS call tools before answering money questions. Never guess balances or transactions.
-- Use get_account_summary for "how am I doing" / "what's my balance" / general overview.
+- Use get_miriam_brief for "how am I doing" / "what changed" / "what matters" / "what should I do next" / general overview.
+- Use get_account_summary only for a simple balance snapshot.
 - Use get_money_flow for "where did my money go" / spending questions.
 - Use exact numbers from tools. $342.50 means $342.50, not "about $340".
 - Never guess what a transaction was for. If it says "Withdrawal", say "Withdrawal".
@@ -531,6 +532,7 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 	}
 	if o.spending != nil && o.aggregateStats != nil {
 		tools = append(tools, FinancialIntelligenceTools(o.actionHistory != nil)...)
+		tools = append(tools, MiriamBriefTool())
 	}
 	// Expanded insight cards (subscriptions, runway, deposits, yield, comparisons)
 	if o.spending != nil || o.recurringDetector != nil {
@@ -625,7 +627,7 @@ func (o *Orchestrator) ChatInContextWithOptions(ctx context.Context, userID, con
 	if toneModeCtx := buildToneModeContext(opts.ToneMode); toneModeCtx != "" {
 		messages = append(messages, ai.Message{Role: "system", Content: toneModeCtx})
 	}
-	if timeCtx := buildTimeContext(); timeCtx != "" {
+	if timeCtx := o.buildUserTimeContext(ctx, userID); timeCtx != "" {
 		messages = append(messages, ai.Message{Role: "system", Content: timeCtx})
 	}
 
@@ -1066,6 +1068,12 @@ func (o *Orchestrator) executeToolInner(ctx context.Context, userID uuid.UUID, t
 		}
 		return o.executeFinancialTimeline(ctx, userID, tc.Arguments)
 
+	case ToolGetMiriamBrief:
+		if !o.hasFinancialAdviceProviders() {
+			return map[string]interface{}{"error": "miriam brief service is unavailable: spending and balance providers are not configured"}, nil
+		}
+		return o.executeMiriamBrief(ctx, userID, tc.Arguments)
+
 	case ToolGetRecurringExpenses:
 		return o.executeRecurringExpenses(ctx, userID)
 
@@ -1179,16 +1187,21 @@ func classifyQueryComplexity(message string) string {
 
 // buildTimeContext returns a short system instruction based on the current hour.
 func buildTimeContext() string {
-	hour := time.Now().Hour()
+	return buildTimeContextAt(time.Now(), time.Local.String())
+}
+
+func buildTimeContextAt(now time.Time, timezone string) string {
+	hour := now.Hour()
+	datePrefix := fmt.Sprintf("[Time context: %s, %s. ", now.Format("Monday, January 2, 2006 15:04"), timezone)
 	switch {
 	case hour >= 5 && hour < 12:
-		return "[Time context: morning. Be energetic and forward-looking.]"
+		return datePrefix + "It is morning for the user. Be energetic and forward-looking.]"
 	case hour >= 12 && hour < 17:
-		return "[Time context: afternoon. Be efficient and practical.]"
+		return datePrefix + "It is afternoon for the user. Be efficient and practical.]"
 	case hour >= 17 && hour < 21:
-		return "[Time context: evening. Be relaxed and reflective.]"
+		return datePrefix + "It is evening for the user. Be relaxed and reflective.]"
 	default:
-		return "[Time context: late night. Be brief and calm, no lectures.]"
+		return datePrefix + "It is late night for the user. Be brief and calm, no lectures.]"
 	}
 }
 
