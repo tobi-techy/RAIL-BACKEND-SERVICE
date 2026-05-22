@@ -606,19 +606,12 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 	// Paj's fee is included in order.Amount (Paj deducts it from the token amount).
 	totalHold := estimatedUSDC.Add(railFee)
 
-	// P2: Withdrawal limits — enforce daily/monthly caps. Non-KYC users have
-	// USD-denominated limits, so convert NGN to USD equivalent before checking.
+	// P2: Withdrawal limits — enforce daily/monthly caps.
 	if s.limitsChecker != nil {
 		limitAmount := decimal.NewFromFloat(fiatAmount)
 		limitCurrency := strings.ToUpper(strings.TrimSpace(currency))
 		if limitCurrency == "" {
 			limitCurrency = "NGN"
-		}
-		if limitCurrency == "NGN" {
-			if rates.OffRampRate.Rate > 0 {
-				limitAmount = limitAmount.Div(decimal.NewFromFloat(rates.OffRampRate.Rate))
-			}
-			limitCurrency = "USD"
 		}
 		if limErr := s.limitsChecker.ValidateWithdrawalWithCurrency(ctx, userID, limitAmount, limitCurrency); limErr != nil {
 			return nil, limErr
