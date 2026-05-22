@@ -41,7 +41,6 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupRespons
 		return nil, fmt.Errorf("valid email and full_name are required")
 	}
 
-	// Check if already on waitlist
 	existing, err := s.repo.GetByEmail(ctx, email)
 	if err != nil {
 		return nil, fmt.Errorf("check existing: %w", err)
@@ -54,7 +53,6 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupRespons
 		}, nil
 	}
 
-	// Resolve referrer
 	var referredBy *uuid.UUID
 	if req.ReferralCode != "" {
 		referrer, err := s.repo.GetByReferralCode(ctx, req.ReferralCode)
@@ -68,17 +66,21 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupRespons
 		source = "website"
 	}
 
+	code, err := generateReferralCode()
+	if err != nil {
+		return nil, fmt.Errorf("generate referral code: %w", err)
+	}
+
 	user := &entities.WaitlistUser{
 		Email:        email,
 		FullName:     req.FullName,
-		ReferralCode: generateReferralCode(),
+		ReferralCode: code,
 		ReferredBy:   referredBy,
 		Source:       source,
 	}
 
 	if err := s.repo.Create(ctx, user); err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
-			// Race condition: re-fetch
 			existing, refetchErr := s.repo.GetByEmail(ctx, email)
 			if refetchErr != nil {
 				return nil, fmt.Errorf("race condition re-fetch failed: %w", refetchErr)
@@ -114,10 +116,10 @@ func (s *Service) Count(ctx context.Context) (int, error) {
 	return s.repo.Count(ctx)
 }
 
-func generateReferralCode() string {
+func generateReferralCode() (string, error) {
 	b := make([]byte, 4)
 	if _, err := rand.Read(b); err != nil {
-		panic(fmt.Sprintf("crypto/rand failed: %v", err))
+		return "", fmt.Errorf("crypto/rand failed: %w", err)
 	}
-	return "RAIL-" + strings.ToUpper(hex.EncodeToString(b))
+	return "RAIL-" + strings.ToUpper(hex.EncodeToString(b)), nil
 }

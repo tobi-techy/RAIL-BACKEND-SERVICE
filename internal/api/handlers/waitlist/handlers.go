@@ -49,18 +49,33 @@ func (h *Handlers) Signup(c *gin.Context) {
 // List handles GET /api/v1/admin/waitlist (admin only)
 func (h *Handlers) List(c *gin.Context) {
 	// Defensive check: verify admin role even though route middleware should enforce this
-	role, _ := c.Get("user_role")
-	if role != "admin" {
+	role, exists := c.Get("user_role")
+	roleStr, ok := role.(string)
+	if !exists || !ok || roleStr != "admin" {
 		c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
 		return
 	}
 
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
-	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	limit := 50
+	if v, err := strconv.Atoi(c.Query("limit")); err == nil && v > 0 {
+		limit = v
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	offset := 0
+	if v, err := strconv.Atoi(c.Query("offset")); err == nil && v > 0 {
+		offset = v
+	}
 
 	var status *entities.WaitlistStatus
 	if s := c.Query("status"); s != "" {
 		st := entities.WaitlistStatus(s)
+		if st != entities.WaitlistStatusWaitlist && st != entities.WaitlistStatusInvited && st != entities.WaitlistStatusConverted {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported status value"})
+			return
+		}
 		status = &st
 	}
 

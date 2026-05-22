@@ -97,26 +97,41 @@ func (r *WaitlistRepository) List(ctx context.Context, status *entities.Waitlist
 }
 
 func (r *WaitlistRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status entities.WaitlistStatus) error {
+	var res sql.Result
 	var err error
 	if status == entities.WaitlistStatusInvited {
-		_, err = r.db.ExecContext(ctx, `UPDATE waitlist_users SET status = $1, invited_at = NOW() WHERE id = $2`, status, id)
+		res, err = r.db.ExecContext(ctx, `UPDATE waitlist_users SET status = $1, invited_at = NOW() WHERE id = $2`, status, id)
 	} else {
-		_, err = r.db.ExecContext(ctx, `UPDATE waitlist_users SET status = $1 WHERE id = $2`, status, id)
+		res, err = r.db.ExecContext(ctx, `UPDATE waitlist_users SET status = $1 WHERE id = $2`, status, id)
 	}
 	if err != nil {
 		return fmt.Errorf("update waitlist status: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update waitlist status rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("waitlist user not found: %s", id)
 	}
 	return nil
 }
 
 func (r *WaitlistRepository) MarkConverted(ctx context.Context, email string, userID uuid.UUID) error {
-	_, err := r.db.ExecContext(ctx, `
+	res, err := r.db.ExecContext(ctx, `
 		UPDATE waitlist_users SET status = 'converted', converted_user_id = $1, converted_at = $2
 		WHERE email = $3 AND status != 'converted'`,
 		userID, time.Now(), email,
 	)
 	if err != nil {
 		return fmt.Errorf("mark waitlist converted: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("mark waitlist converted rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("waitlist user not found or already converted: %s", email)
 	}
 	return nil
 }
