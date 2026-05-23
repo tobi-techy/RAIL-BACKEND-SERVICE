@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -156,15 +157,15 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 	// Client → AssemblyAI: forward audio
 	go func() {
 		defer cancel()
+		windowStart := time.Now()
+		windowAudioBytes := 0
+		totalAudioBytes := 0
 		// Block until session is ready before processing client audio
 		select {
 		case <-ready:
 		case <-ctx.Done():
 			return
 		}
-		windowStart := time.Now()
-		windowAudioBytes := 0
-		totalAudioBytes := 0
 		for {
 			messageType, msg, err := clientConn.ReadMessage()
 			if err != nil {
@@ -524,9 +525,14 @@ func (h *VoiceHandler) authenticateVoiceSession(c *gin.Context) (uuid.UUID, erro
 		ticket = strings.TrimSpace(c.Query("ticket"))
 	}
 	if ticket == "" {
-		return uuid.Nil, http.ErrNoCookie
+		return uuid.Nil, fmt.Errorf("voice session token required")
 	}
-	return auth.ValidateVoiceSessionToken(ticket, h.tokenSecret)
+	userID, err := auth.ValidateVoiceSessionToken(ticket, h.tokenSecret)
+	if err != nil {
+		h.logger.Warn("voice session authentication failed", zap.Error(err), zap.String("remote_addr", c.ClientIP()))
+		return uuid.Nil, err
+	}
+	return userID, nil
 }
 
 type pendingTool struct {

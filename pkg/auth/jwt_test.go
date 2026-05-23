@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -70,6 +71,22 @@ func TestVoiceSessionTokenValidatesOnlyAsVoiceSession(t *testing.T) {
 	}
 	if _, err := ValidateToken(token, "test-secret"); err == nil {
 		t.Fatal("voice session token must not validate as an access token")
+	}
+}
+
+func TestVoiceSessionTokenRejectsExpiredTokens(t *testing.T) {
+	userID := uuid.New()
+	token, _, err := GenerateVoiceSessionToken(userID, "test-secret", time.Nanosecond)
+	if err != nil {
+		t.Fatalf("GenerateVoiceSessionToken failed: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	_, err = ValidateVoiceSessionToken(token, "test-secret")
+	if err == nil {
+		t.Fatal("expected error for expired token")
+	}
+	if !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expected error containing 'expired', got: %v", err)
 	}
 }
 

@@ -1085,7 +1085,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						container.Config.Server.AllowedOrigins,
 						container.ZapLog,
 					)
-					v1.GET("/ai/voice/session", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), voiceHandler.HandleSession)
 				}
 				aiGroup := protected.Group("/ai")
 				{
@@ -1188,6 +1187,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					// Voice session ticket (protected); WebSocket uses the short-lived ticket.
 					if voiceHandler != nil {
 						aiGroup.POST("/voice/session-token", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), voiceHandler.IssueSessionToken)
+						aiGroup.GET("/voice/session", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), voiceHandler.HandleSession)
 					}
 				}
 
