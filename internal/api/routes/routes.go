@@ -23,6 +23,7 @@ import (
 	kychandlers "github.com/rail-service/rail_service/internal/api/handlers/kyc"
 	securityHandlersV2 "github.com/rail-service/rail_service/internal/api/handlers/security"
 	waitlisthandlers "github.com/rail-service/rail_service/internal/api/handlers/waitlist"
+	admin_handlers "github.com/rail-service/rail_service/internal/api/handlers/admin"
 	"github.com/rail-service/rail_service/internal/api/middleware"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
@@ -1300,6 +1301,22 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			if container.WaitlistService != nil {
 				wlHandlers := waitlisthandlers.NewHandlers(container.WaitlistService, container.ZapLog)
 				admin.GET("/waitlist", wlHandlers.List)
+			}
+
+			// Analytics admin routes
+			if container.AdminAnalyticsService != nil {
+				ah := admin_handlers.NewAnalyticsHandlers(container.AdminAnalyticsService, container.ZapLog)
+				ag := admin.Group("/analytics")
+				{
+					ag.GET("/overview", ah.Overview)
+					ag.GET("/users", ah.Users)
+					ag.GET("/waitlist", ah.Waitlist)
+					ag.GET("/miriam", ah.Miriam)
+					ag.GET("/money-movement", ah.MoneyMovement)
+					ag.GET("/retention", ah.Retention)
+					ag.GET("/trust", ah.Trust)
+					ag.GET("/chains", ah.Chains)
+				}
 			}
 
 			// Security admin routes

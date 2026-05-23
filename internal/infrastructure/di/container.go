@@ -1464,6 +1464,10 @@ type Container struct {
 	// Waitlist
 	WaitlistRepo    *repositories.WaitlistRepository
 	WaitlistService *waitlistsvc.Service
+
+	// Admin Analytics
+	AdminAnalyticsRepo    *repositories.AnalyticsRepository
+	AdminAnalyticsService *analyticsservice.Service
 }
 
 // NewContainer creates a new dependency injection container
@@ -1715,6 +1719,10 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	// Initialize waitlist
 	container.WaitlistRepo = repositories.NewWaitlistRepository(db, zapLog)
 	container.WaitlistService = waitlistsvc.NewService(container.WaitlistRepo, zapLog)
+
+	// Initialize admin analytics
+	container.AdminAnalyticsRepo = repositories.NewAnalyticsRepository(db, zapLog)
+	container.AdminAnalyticsService = analyticsservice.NewService(container.AdminAnalyticsRepo, container.RedisClient, zapLog)
 
 	return container, nil
 }
