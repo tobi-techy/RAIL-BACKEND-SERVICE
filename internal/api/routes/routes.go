@@ -515,6 +515,40 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			c.JSON(200, gin.H{"token": tokenPair.AccessToken, "role": role, "email": email})
 		})
 
+		// Dashboard analytics (JWT-only auth, no session required)
+		if container.AdminAnalyticsService != nil {
+			dashAnalytics := v1.Group("/dashboard/analytics")
+			dashAnalytics.Use(func(c *gin.Context) {
+				authHeader := c.GetHeader("Authorization")
+				if len(authHeader) < 8 || authHeader[:7] != "Bearer " {
+					c.JSON(401, gin.H{"error": "unauthorized"})
+					c.Abort()
+					return
+				}
+				claims, err := container.JWTService.ValidateEnhancedToken(authHeader[7:])
+				if err != nil {
+					c.JSON(401, gin.H{"error": "invalid token"})
+					c.Abort()
+					return
+				}
+				c.Set("user_id", claims.UserID.String())
+				c.Set("user_role", claims.Role)
+				c.Next()
+			})
+			dashAnalytics.Use(middleware.AdminAuth(container.DB, container.Logger))
+			{
+				ah := admin_handlers.NewAnalyticsHandlers(container.AdminAnalyticsService, container.ZapLog)
+				dashAnalytics.GET("/overview", ah.Overview)
+				dashAnalytics.GET("/users", ah.Users)
+				dashAnalytics.GET("/waitlist", ah.Waitlist)
+				dashAnalytics.GET("/miriam", ah.Miriam)
+				dashAnalytics.GET("/money-movement", ah.MoneyMovement)
+				dashAnalytics.GET("/retention", ah.Retention)
+				dashAnalytics.GET("/trust", ah.Trust)
+				dashAnalytics.GET("/chains", ah.Chains)
+			}
+		}
+
 		// Onboarding routes
 		onboarding := v1.Group("/onboarding")
 		{
@@ -1330,20 +1364,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			}
 
 			// Analytics admin routes
-			if container.AdminAnalyticsService != nil {
-				ah := admin_handlers.NewAnalyticsHandlers(container.AdminAnalyticsService, container.ZapLog)
-				ag := admin.Group("/analytics")
-				{
-					ag.GET("/overview", ah.Overview)
-					ag.GET("/users", ah.Users)
-					ag.GET("/waitlist", ah.Waitlist)
-					ag.GET("/miriam", ah.Miriam)
-					ag.GET("/money-movement", ah.MoneyMovement)
-					ag.GET("/retention", ah.Retention)
-					ag.GET("/trust", ah.Trust)
-					ag.GET("/chains", ah.Chains)
-				}
-			}
+			// Analytics routes moved to /api/v1/dashboard/analytics (JWT-only auth)
 
 
 			// Security admin routes
