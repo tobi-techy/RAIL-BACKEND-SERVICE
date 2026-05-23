@@ -99,7 +99,7 @@ func (s *Service) SendDue(ctx context.Context, now time.Time) (int, int, error) 
 		}
 
 		htmlBody, textBody := renderCampaign(campaign, c, s.cfg.BaseURL)
-		sendErr := s.email.SendCustomEmail(ctx, c.Email, campaign.subject, htmlBody, textBody)
+		sendErr := s.sendCampaignEmail(ctx, c.Email, campaign, htmlBody, textBody)
 		event.Status = entities.GrowthMailStatusSent
 		if sendErr != nil {
 			failed++
@@ -120,8 +120,12 @@ func (s *Service) SendDue(ctx context.Context, now time.Time) (int, int, error) 
 	return sent, failed, nil
 }
 
+func (s *Service) sendCampaignEmail(ctx context.Context, to string, campaign campaign, htmlBody, textBody string) error {
+	return s.email.SendCustomEmail(ctx, to, campaign.subject, htmlBody, textBody)
+}
+
 func (s *Service) nextUnsentCampaign(ctx context.Context, c entities.GrowthMailCandidate, now time.Time) (campaign, bool, error) {
-	for _, campaign := range campaignsForCandidate(c, now) {
+	for _, campaign := range campaignsForCandidateWithConfig(c, now, s.cfg) {
 		alreadySent, err := s.repo.HasSuccessfulSend(ctx, c.UserID, campaign.key)
 		if err != nil {
 			return campaign, false, err
@@ -146,6 +150,10 @@ type campaign struct {
 }
 
 func campaignsForCandidate(c entities.GrowthMailCandidate, now time.Time) []campaign {
+	return campaignsForCandidateWithConfig(c, now, Config{})
+}
+
+func campaignsForCandidateWithConfig(c entities.GrowthMailCandidate, now time.Time, _ Config) []campaign {
 	accountAge := now.Sub(c.CreatedAt)
 	campaigns := make([]campaign, 0, 2)
 

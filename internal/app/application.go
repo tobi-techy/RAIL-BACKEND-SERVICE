@@ -40,6 +40,7 @@ import (
 	deposit_autosweep "github.com/rail-service/rail_service/internal/workers/deposit_autosweep"
 	"github.com/rail-service/rail_service/internal/workers/funding_webhook"
 	gameplay_workers "github.com/rail-service/rail_service/internal/workers/gameplay"
+	growth_engine "github.com/rail-service/rail_service/internal/workers/growth_engine"
 	growth_mail "github.com/rail-service/rail_service/internal/workers/growth_mail"
 	kyc_autoinvest "github.com/rail-service/rail_service/internal/workers/kyc_autoinvest"
 	"github.com/rail-service/rail_service/internal/workers/kyc_sync"
@@ -94,6 +95,8 @@ type Application struct {
 	automationWorker             *automation_worker.Worker
 	memoryWorker                 *memory_worker.Worker
 	dailyPulseWorker             *daily_pulse.Worker
+	growthEngineWorker           *growth_engine.Worker
+	growthEngineCancel           context.CancelFunc
 	growthMailWorker             *growth_mail.Worker
 	growthMailCancel             context.CancelFunc
 	opportunitySyncWorker        *opportunity_sync.Worker
@@ -466,6 +469,14 @@ func (app *Application) initializeWorkers() error {
 		app.growthMailCancel = cancel
 		go app.growthMailWorker.Start(ctx)
 		app.log.Info("Growth mail worker started")
+	}
+
+	if app.container.GrowthEngineService != nil {
+		app.growthEngineWorker = growth_engine.NewWorker(app.container.GrowthEngineService, app.log.Zap())
+		ctx, cancel := context.WithCancel(context.Background())
+		app.growthEngineCancel = cancel
+		go app.growthEngineWorker.Start(ctx)
+		app.log.Info("Growth engine worker started")
 	}
 
 	return nil
@@ -955,6 +966,9 @@ func (app *Application) stopWorkers() {
 	}
 	if app.growthMailCancel != nil {
 		app.growthMailCancel()
+	}
+	if app.growthEngineCancel != nil {
+		app.growthEngineCancel()
 	}
 }
 

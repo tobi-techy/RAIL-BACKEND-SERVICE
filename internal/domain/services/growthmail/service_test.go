@@ -48,6 +48,7 @@ func TestSendDueSkipsPreviouslySentCampaignAndFallsThroughToWeekly(t *testing.T)
 		candidates: []entities.GrowthMailCandidate{{
 			UserID:       userID,
 			Email:        "funded@example.com",
+			FirstName:    "Tobi",
 			KYCStatus:    "approved",
 			CreatedAt:    now.Add(-14 * 24 * time.Hour),
 			LastLoginAt:  &lastLogin,
@@ -112,19 +113,38 @@ func (r *fakeGrowthRepo) RecordSend(ctx context.Context, event *entities.GrowthM
 
 type fakeGrowthEmail struct {
 	sent []struct {
-		to      string
-		subject string
-		html    string
-		text    string
+		to        string
+		subject   string
+		html      string
+		text      string
+		fromEmail string
+		fromName  string
+		replyTo   string
 	}
 }
 
 func (e *fakeGrowthEmail) SendCustomEmail(ctx context.Context, to, subject, htmlContent, textContent string) error {
 	e.sent = append(e.sent, struct {
-		to      string
-		subject string
-		html    string
-		text    string
+		to        string
+		subject   string
+		html      string
+		text      string
+		fromEmail string
+		fromName  string
+		replyTo   string
 	}{to: to, subject: subject, html: htmlContent, text: textContent})
+	return nil
+}
+
+func (e *fakeGrowthEmail) SendCustomEmailFrom(ctx context.Context, to, subject, htmlContent, textContent, fromEmail, fromName, replyTo string) error {
+	e.sent = append(e.sent, struct {
+		to        string
+		subject   string
+		html      string
+		text      string
+		fromEmail string
+		fromName  string
+		replyTo   string
+	}{to: to, subject: subject, html: htmlContent, text: textContent, fromEmail: fromEmail, fromName: fromName, replyTo: replyTo})
 	return nil
 }
