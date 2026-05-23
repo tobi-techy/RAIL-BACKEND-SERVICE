@@ -14,7 +14,7 @@ func TestNormalizeClientVoiceEventConvertsOpenAIAudioAppend(t *testing.T) {
 	event, audioBytes, ok := normalizeClientVoiceEvent(websocket.TextMessage, []byte(`{"type":"input_audio_buffer.append","audio":"abc123"}`))
 
 	require.True(t, ok)
-	require.Positive(t, audioBytes)
+	require.Equal(t, 3, audioBytes)
 	audio, ok := event.(infraai.InputAudio)
 	require.True(t, ok)
 	require.Equal(t, "input.audio", audio.Type)
@@ -37,7 +37,7 @@ func TestNormalizeClientVoiceEventPreservesAssemblyAIEvent(t *testing.T) {
 	event, audioBytes, ok := normalizeClientVoiceEvent(websocket.TextMessage, raw)
 
 	require.True(t, ok)
-	require.Positive(t, audioBytes)
+	require.Equal(t, 3, audioBytes)
 	msg, ok := event.(json.RawMessage)
 	require.True(t, ok)
 	require.JSONEq(t, string(raw), string(msg))

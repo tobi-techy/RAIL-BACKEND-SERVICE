@@ -123,7 +123,9 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 	agentConn, err := infraai.DialRealtime(h.apiKey, h.logger)
 	if err != nil {
 		h.logger.Error("assemblyai voice agent dial failed", zap.Error(err))
-		_ = clientConn.WriteJSON(map[string]string{"type": "error", "message": "voice service unavailable"})
+		if wErr := clientConn.WriteJSON(map[string]string{"type": "error", "message": "voice service unavailable"}); wErr != nil {
+			h.logger.Error("failed to send error to voice client", zap.Error(wErr), zap.String("user_id", userID.String()))
+		}
 		return
 	}
 	defer agentConn.Close()
