@@ -2,6 +2,7 @@ package auth
 
 import (
 	"testing"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -47,6 +48,29 @@ func TestGenerateAccessTokenCreatesUniqueTokensWithinSameSecond(t *testing.T) {
 	}
 
 	assertTokenID(t, first, "test-secret")
+}
+
+func TestVoiceSessionTokenValidatesOnlyAsVoiceSession(t *testing.T) {
+	userID := uuid.New()
+
+	token, expiresAt, err := GenerateVoiceSessionToken(userID, "test-secret", time.Minute)
+	if err != nil {
+		t.Fatalf("GenerateVoiceSessionToken failed: %v", err)
+	}
+	if time.Until(expiresAt) <= 0 {
+		t.Fatal("voice session token should expire in the future")
+	}
+
+	got, err := ValidateVoiceSessionToken(token, "test-secret")
+	if err != nil {
+		t.Fatalf("ValidateVoiceSessionToken failed: %v", err)
+	}
+	if got != userID {
+		t.Fatalf("expected user ID %s, got %s", userID, got)
+	}
+	if _, err := ValidateToken(token, "test-secret"); err == nil {
+		t.Fatal("voice session token must not validate as an access token")
+	}
 }
 
 func assertTokenID(t *testing.T, tokenString string, secret string) {

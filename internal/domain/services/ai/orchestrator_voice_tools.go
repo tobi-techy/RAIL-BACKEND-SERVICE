@@ -126,7 +126,6 @@ func voiceLookupToolNames() []string {
 func voiceActionToolNames() []string {
 	return []string{
 		ToolTransferFunds,
-		ToolInitiateWithdrawal,
 		ToolSetBudget,
 		ToolSetSavingsGoal,
 		ToolCreateAutomation,

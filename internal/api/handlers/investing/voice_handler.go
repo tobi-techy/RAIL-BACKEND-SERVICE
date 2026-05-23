@@ -18,6 +18,7 @@ import (
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"github.com/rail-service/rail_service/pkg/auth"
 	"go.uber.org/zap"
 )
 
@@ -33,6 +34,12 @@ const (
 	voiceToolDrainWait = 100 * time.Millisecond
 	voiceSampleRateHz  = 24000
 	maxSilentRetries   = 1
+
+	voiceSessionTicketTTL        = 60 * time.Second
+	maxVoiceFrameBytes           = 256 * 1024
+	maxVoiceAudioFrameBytes      = 128 * 1024
+	maxVoiceAudioBytesPerSecond  = 128 * 1024
+	maxVoiceAudioBytesPerSession = 25 * 1024 * 1024
 )
 
 // VoiceUsageTracker tracks billable voice usage.
@@ -43,6 +50,7 @@ type VoiceUsageTracker interface {
 // VoiceHandler handles real-time voice sessions via AssemblyAI Voice Agent API.
 type VoiceHandler struct {
 	apiKey              string
+	tokenSecret         string
 	voice               string
 	orchestrator        *aiservice.Orchestrator
 	usage               VoiceUsageTracker
@@ -53,9 +61,10 @@ type VoiceHandler struct {
 	logger              *zap.Logger
 }
 
-func NewVoiceHandler(apiKey, voice string, orchestrator *aiservice.Orchestrator, usage VoiceUsageTracker, allowedOrigins []string, logger *zap.Logger) *VoiceHandler {
+func NewVoiceHandler(apiKey, tokenSecret, voice string, orchestrator *aiservice.Orchestrator, usage VoiceUsageTracker, allowedOrigins []string, logger *zap.Logger) *VoiceHandler {
 	h := &VoiceHandler{
 		apiKey:           apiKey,
+		tokenSecret:      tokenSecret,
 		voice:            voice,
 		orchestrator:     orchestrator,
 		usage:            usage,
@@ -67,9 +76,27 @@ func NewVoiceHandler(apiKey, voice string, orchestrator *aiservice.Orchestrator,
 	return h
 }
 
+func (h *VoiceHandler) IssueSessionToken(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	token, expiresAt, err := auth.GenerateVoiceSessionToken(userID, h.tokenSecret, voiceSessionTicketTTL)
+	if err != nil {
+		h.logger.Error("voice session token issue failed", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "voice session unavailable"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"token":      token,
+		"expires_at": expiresAt.UTC().Format(time.RFC3339),
+	})
+}
+
 // HandleSession upgrades to WebSocket and proxies audio between client and AssemblyAI Voice Agent API.
 func (h *VoiceHandler) HandleSession(c *gin.Context) {
-	userID, err := common.GetUserIDFromContext(c)
+	userID, err := h.authenticateVoiceSession(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
@@ -81,19 +108,21 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 	}
 
 	upgrader := wsUpgrader
-	upgrader.CheckOrigin = func(r *http.Request) bool { return true } // JWT-authenticated; origin check unnecessary
+	upgrader.CheckOrigin = h.isAllowedOrigin
 	clientConn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		h.logger.Error("websocket upgrade failed", zap.Error(err))
 		return
 	}
 	defer clientConn.Close()
+	clientConn.SetReadLimit(maxVoiceFrameBytes)
+	var clientMu sync.Mutex
 
 	// Connect to AssemblyAI Voice Agent API
 	agentConn, err := infraai.DialRealtime(h.apiKey, h.logger)
 	if err != nil {
 		h.logger.Error("assemblyai voice agent dial failed", zap.Error(err))
-		clientConn.WriteJSON(map[string]string{"type": "error", "message": "voice service unavailable"})
+		_ = clientConn.WriteJSON(map[string]string{"type": "error", "message": "voice service unavailable"})
 		return
 	}
 	defer agentConn.Close()
@@ -133,15 +162,39 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 		case <-ctx.Done():
 			return
 		}
+		windowStart := time.Now()
+		windowAudioBytes := 0
+		totalAudioBytes := 0
 		for {
 			messageType, msg, err := clientConn.ReadMessage()
 			if err != nil {
 				return
 			}
 			lastActivity.Store(time.Now())
-			event, ok := normalizeClientVoiceEvent(messageType, msg)
+			event, audioBytes, ok := normalizeClientVoiceEvent(messageType, msg)
 			if !ok {
 				continue
+			}
+			if audioBytes > maxVoiceAudioFrameBytes {
+				h.writeClientControlEvent(clientConn, &clientMu, "rail.voice.limit_exceeded", map[string]string{"message": "Audio frame too large"}, cancel)
+				return
+			}
+			if audioBytes > 0 {
+				now := time.Now()
+				if now.Sub(windowStart) >= time.Second {
+					windowStart = now
+					windowAudioBytes = 0
+				}
+				windowAudioBytes += audioBytes
+				totalAudioBytes += audioBytes
+				if windowAudioBytes > maxVoiceAudioBytesPerSecond {
+					h.writeClientControlEvent(clientConn, &clientMu, "rail.voice.limit_exceeded", map[string]string{"message": "Audio input is too fast"}, cancel)
+					return
+				}
+				if totalAudioBytes > maxVoiceAudioBytesPerSession {
+					h.writeClientControlEvent(clientConn, &clientMu, "rail.voice.limit_exceeded", map[string]string{"message": "Voice session audio limit reached"}, cancel)
+					return
+				}
 			}
 			if err := agentConn.Send(event); err != nil {
 				return
@@ -168,14 +221,14 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 				elapsed := time.Since(startTime)
 				if !sessionWarned && elapsed >= maxSessionDuration-1*time.Minute {
 					sessionWarned = true
-					h.writeClientControlEvent(clientConn, "rail.session.timeout_warning", map[string]string{"message": "Session ending in 1 minute"}, cancel)
+					h.writeClientControlEvent(clientConn, &clientMu, "rail.session.timeout_warning", map[string]string{"message": "Session ending in 1 minute"}, cancel)
 				}
 				// Warn 1 minute before idle timeout
 				if last, ok := lastActivity.Load().(time.Time); ok {
 					idle := time.Since(last)
 					if !idleWarned && idle >= idleTimeout-1*time.Minute {
 						idleWarned = true
-						h.writeClientControlEvent(clientConn, "rail.session.timeout_warning", map[string]string{"message": "Disconnecting due to inactivity in 1 minute"}, cancel)
+						h.writeClientControlEvent(clientConn, &clientMu, "rail.session.timeout_warning", map[string]string{"message": "Disconnecting due to inactivity in 1 minute"}, cancel)
 					}
 					if idle > idleTimeout {
 						cancel()
@@ -276,7 +329,7 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 				zap.String("user_id", userID.String()),
 				zap.String("session_id", readyEvent.SessionID))
 			readyOnce.Do(func() { close(ready) })
-			if !h.writeClientEvent(clientConn, raw, cancel) {
+			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
 				return
 			}
 
@@ -286,7 +339,7 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 			replyAudioChunks = 0
 			replyAudioBytes = 0
 			silentReplyText = ""
-			if !h.writeClientEvent(clientConn, raw, cancel) {
+			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
 				return
 			}
 
@@ -295,7 +348,7 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 				replyAudioChunks++
 				replyAudioBytes += decodedBase64Len(event.Data)
 			}
-			if !h.writeClientEvent(clientConn, raw, cancel) {
+			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
 				return
 			}
 
@@ -303,10 +356,10 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 			setLastAgentEvent(event.Type)
 			lastActivity.Store(time.Now())
 			dropPendingTools()
-			if !h.writeClientControlEvent(clientConn, "rail.playback.flush", map[string]string{"reason": "input_speech_started"}, cancel) {
+			if !h.writeClientControlEvent(clientConn, &clientMu, "rail.playback.flush", map[string]string{"reason": "input_speech_started"}, cancel) {
 				return
 			}
-			if !h.writeClientEvent(clientConn, raw, cancel) {
+			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
 				return
 			}
 
@@ -318,7 +371,7 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 					h.logger.Warn("failed to restore voice turn detection", zap.Error(err))
 				}
 			}
-			if !h.writeClientEvent(clientConn, raw, cancel) {
+			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
 				return
 			}
 
@@ -330,7 +383,7 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 			_ = json.Unmarshal(raw, &transcriptEvent)
 			if transcriptEvent.Interrupted {
 				dropPendingTools()
-				if !h.writeClientControlEvent(clientConn, "rail.playback.flush", map[string]string{"reason": "agent_interrupted"}, cancel) {
+				if !h.writeClientControlEvent(clientConn, &clientMu, "rail.playback.flush", map[string]string{"reason": "agent_interrupted"}, cancel) {
 					return
 				}
 			} else if strings.HasSuffix(strings.TrimSpace(transcriptEvent.Text), "?") && !waitingForAnswer {
@@ -339,12 +392,12 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 					h.logger.Warn("failed to extend voice turn detection", zap.Error(err))
 				}
 			}
-			if !h.writeClientEvent(clientConn, raw, cancel) {
+			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
 				return
 			}
 			if !transcriptEvent.Interrupted && strings.TrimSpace(transcriptEvent.Text) != "" {
 				durationMs := pcm16DurationMS(replyAudioBytes, voiceSampleRateHz)
-				if !h.writeClientControlEvent(clientConn, "rail.transcript.agent.sync", map[string]string{
+				if !h.writeClientControlEvent(clientConn, &clientMu, "rail.transcript.agent.sync", map[string]string{
 					"reply_id":              firstNonEmpty(replyID, event.ReplyID),
 					"text":                  transcriptEvent.Text,
 					"estimated_duration_ms": durationMsString(durationMs),
@@ -411,21 +464,21 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 				// User barged in — discard pending tool results
 				setLastAgentEvent("reply.interrupted")
 				dropPendingTools()
-				if !h.writeClientControlEvent(clientConn, "rail.playback.flush", map[string]string{"reason": "reply_interrupted"}, cancel) {
+				if !h.writeClientControlEvent(clientConn, &clientMu, "rail.playback.flush", map[string]string{"reason": "reply_interrupted"}, cancel) {
 					return
 				}
 			} else {
 				setLastAgentEvent(event.Type)
 			}
 
-			if !h.writeClientEvent(clientConn, raw, cancel) {
+			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
 				return
 			}
 			if event.Status != "interrupted" && silentReplyText != "" && silentReplyRetries < maxSilentRetries {
 				repairText := silentReplyText
 				silentReplyText = ""
 				silentReplyRetries++
-				if !h.writeClientControlEvent(clientConn, "rail.voice.audio_missing", map[string]string{
+				if !h.writeClientControlEvent(clientConn, &clientMu, "rail.voice.audio_missing", map[string]string{
 					"reply_id": firstNonEmpty(replyID, event.ReplyID),
 				}, cancel) {
 					return
@@ -452,17 +505,28 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 				zap.String("user_id", userID.String()),
 				zap.String("code", errEvent.Code),
 				zap.String("message", errEvent.Message))
-			if !h.writeClientEvent(clientConn, raw, cancel) {
+			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
 				return
 			}
 
 		default:
 			// Forward everything else to client (reply.audio, transcript.*, session.ready, etc.)
-			if !h.writeClientEvent(clientConn, raw, cancel) {
+			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
 				return
 			}
 		}
 	}
+}
+
+func (h *VoiceHandler) authenticateVoiceSession(c *gin.Context) (uuid.UUID, error) {
+	ticket := strings.TrimSpace(c.Query("voice_session_token"))
+	if ticket == "" {
+		ticket = strings.TrimSpace(c.Query("ticket"))
+	}
+	if ticket == "" {
+		return uuid.Nil, http.ErrNoCookie
+	}
+	return auth.ValidateVoiceSessionToken(ticket, h.tokenSecret)
 }
 
 type pendingTool struct {
@@ -475,8 +539,9 @@ type completedTool struct {
 	result string
 }
 
-func (h *VoiceHandler) writeClientEvent(conn *websocket.Conn, raw json.RawMessage, cancel context.CancelFunc) bool {
-	// Note: caller must not hold clientMu — this is the only writer path
+func (h *VoiceHandler) writeClientEvent(conn *websocket.Conn, mu *sync.Mutex, raw json.RawMessage, cancel context.CancelFunc) bool {
+	mu.Lock()
+	defer mu.Unlock()
 	if err := conn.WriteMessage(websocket.TextMessage, raw); err != nil {
 		h.logger.Debug("voice client write failed", zap.Error(err))
 		cancel()
@@ -485,7 +550,7 @@ func (h *VoiceHandler) writeClientEvent(conn *websocket.Conn, raw json.RawMessag
 	return true
 }
 
-func (h *VoiceHandler) writeClientControlEvent(conn *websocket.Conn, eventType string, fields map[string]string, cancel context.CancelFunc) bool {
+func (h *VoiceHandler) writeClientControlEvent(conn *websocket.Conn, mu *sync.Mutex, eventType string, fields map[string]string, cancel context.CancelFunc) bool {
 	payload := map[string]string{"type": eventType}
 	for k, v := range fields {
 		payload[k] = v
@@ -495,12 +560,12 @@ func (h *VoiceHandler) writeClientControlEvent(conn *websocket.Conn, eventType s
 		h.logger.Warn("voice control event marshal failed", zap.Error(err))
 		return true
 	}
-	return h.writeClientEvent(conn, raw, cancel)
+	return h.writeClientEvent(conn, mu, raw, cancel)
 }
 
-func normalizeClientVoiceEvent(messageType int, msg []byte) (interface{}, bool) {
+func normalizeClientVoiceEvent(messageType int, msg []byte) (interface{}, int, bool) {
 	if messageType == websocket.BinaryMessage {
-		return infraai.NewAudioInput(base64.StdEncoding.EncodeToString(msg)), true
+		return infraai.NewAudioInput(base64.StdEncoding.EncodeToString(msg)), len(msg), true
 	}
 
 	var event struct {
@@ -508,17 +573,20 @@ func normalizeClientVoiceEvent(messageType int, msg []byte) (interface{}, bool) 
 		Audio string `json:"audio"`
 	}
 	if err := json.Unmarshal(msg, &event); err == nil && event.Type == "input_audio_buffer.append" && event.Audio != "" {
-		return infraai.NewAudioInput(event.Audio), true
+		return infraai.NewAudioInput(event.Audio), decodedBase64Len(event.Audio), true
+	}
+	if err := json.Unmarshal(msg, &event); err == nil && event.Type == "input.audio" && event.Audio != "" {
+		return json.RawMessage(msg), decodedBase64Len(event.Audio), true
 	}
 	switch event.Type {
 	case "input_audio_buffer.commit", "input_audio_buffer.clear", "response.create":
 		// OpenAI Realtime clients send these control events. AssemblyAI handles
 		// turn commits and response creation server-side, so forwarding them
 		// would produce invalid_format session errors.
-		return nil, false
+		return nil, 0, false
 	}
 
-	return json.RawMessage(msg), true
+	return json.RawMessage(msg), 0, true
 }
 
 func decodedBase64Len(s string) int {
@@ -602,7 +670,6 @@ func voiceToolDescriptions() map[string]string {
 		aiservice.ToolGetBudget:                "Call when the user asks about their budget, monthly limit, remaining budget, daily allowance, budget status, or how much they can still spend.",
 		aiservice.ToolSetBudget:                "Call when the user wants to set or change their monthly spending budget. Never say the budget changed unless this succeeds.",
 		aiservice.ToolTransferFunds:            "Call when the user asks to move money between Spend and Stash. Never say money moved unless this succeeds.",
-		aiservice.ToolInitiateWithdrawal:       "Call when the user asks to withdraw or cash out to a linked bank. Ask for missing amount or currency first.",
 		aiservice.ToolGetLinkedBanks:           "Call before a withdrawal if the user asks which bank is linked or does not specify a destination.",
 		aiservice.ToolSetSavingsGoal:           "Call when the user wants to save for a named target, like rent, travel, emergency fund, or school fees.",
 		aiservice.ToolCreateAutomation:         "Call when the user wants an automatic rule. Never claim it is active until the tool succeeds; if authorization is required, say that clearly.",

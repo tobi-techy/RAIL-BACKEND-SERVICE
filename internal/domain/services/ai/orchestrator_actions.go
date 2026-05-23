@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -687,7 +688,7 @@ func (o *Orchestrator) executeActionToolDirect(ctx context.Context, userID uuid.
 	o.logger.Info("executeActionToolDirect called",
 		zap.String("user_id", userID.String()),
 		zap.String("tool", tc.Name),
-		zap.Any("args", tc.Arguments))
+		zap.Strings("arg_keys", toolArgumentKeys(tc.Arguments)))
 	switch tc.Name {
 	case ToolTransferFunds:
 		if o.fundsTransferer == nil {
@@ -725,34 +726,8 @@ func (o *Orchestrator) executeActionToolDirect(ctx context.Context, userID uuid.
 		}, nil
 
 	case ToolInitiateWithdrawal:
-		if o.withdrawalInitiator == nil {
-			return map[string]interface{}{"error": "Withdrawal service unavailable"}, nil
-		}
-		amountF, _ := tc.Arguments["amount"].(float64)
-		currency, _ := tc.Arguments["currency"].(string)
-		if amountF <= 0 {
-			return map[string]interface{}{"error": "Amount must be positive"}, nil
-		}
-		if currency == "" {
-			currency = "NGN"
-		}
-		amount := decimal.NewFromFloat(amountF)
-		req := &entities.InitiateFiatWithdrawalRequest{
-			UserID:        userID,
-			Amount:        amount,
-			Currency:      entities.WithdrawalCurrency(currency),
-			SourceAccount: entities.WithdrawalSourceSpendingBalance,
-			Narration:     "Miriam voice withdrawal",
-		}
-		resp, err := o.withdrawalInitiator.InitiateFiatWithdrawal(ctx, req)
-		if err != nil {
-			return map[string]interface{}{"error": err.Error()}, nil
-		}
 		return map[string]interface{}{
-			"success":       true,
-			"withdrawal_id": resp.WithdrawalID.String(),
-			"status":        string(resp.Status),
-			"message":       fmt.Sprintf("Withdrawal of %s %s initiated", amount.StringFixed(0), currency),
+			"error": "Withdrawals from voice need app confirmation with a verified bank destination. Open Withdraw to continue.",
 		}, nil
 
 	case ToolSetSavingsGoal:
@@ -871,6 +846,15 @@ func (o *Orchestrator) executeActionToolDirect(ctx context.Context, userID uuid.
 	default:
 		return map[string]interface{}{"message": "This action needs to be completed in the app."}, nil
 	}
+}
+
+func toolArgumentKeys(args map[string]interface{}) []string {
+	keys := make([]string, 0, len(args))
+	for key := range args {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // isActionTool returns true if the tool name is an action tool.
