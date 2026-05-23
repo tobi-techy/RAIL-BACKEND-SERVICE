@@ -19,11 +19,11 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/rail-service/rail_service/internal/api/handlers"
+	admin_handlers "github.com/rail-service/rail_service/internal/api/handlers/admin"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	kychandlers "github.com/rail-service/rail_service/internal/api/handlers/kyc"
 	securityHandlersV2 "github.com/rail-service/rail_service/internal/api/handlers/security"
 	waitlisthandlers "github.com/rail-service/rail_service/internal/api/handlers/waitlist"
-	admin_handlers "github.com/rail-service/rail_service/internal/api/handlers/admin"
 	"github.com/rail-service/rail_service/internal/api/middleware"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
@@ -148,6 +148,13 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	{
 		internal.GET("/users/lookup", internalHandlers.LookupUser)
 		internal.DELETE("/users/:id", internalHandlers.DeleteUser)
+	}
+
+	if container.GrowthEngineService != nil {
+		growthHandlers := handlers.NewGrowthEngineHandlers(container.GrowthEngineService, container.ZapLog)
+		internal.POST("/growth/events", growthHandlers.TrackEvent)
+		internal.POST("/growth/run", growthHandlers.RunSegmentation)
+		internal.GET("/growth/whatsapp-export", growthHandlers.ManualWhatsAppExport)
 	}
 
 	// Internal knowledge ingestion — auth handled by group middleware
@@ -1373,7 +1380,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 			// Analytics admin routes
 			// Analytics routes moved to /api/v1/dashboard/analytics (JWT-only auth)
-
 
 			// Security admin routes
 			adminMFAHandlers := handlers.NewMFAHandlers(

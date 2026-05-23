@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -40,6 +41,7 @@ import (
 	deposit_autosweep "github.com/rail-service/rail_service/internal/workers/deposit_autosweep"
 	"github.com/rail-service/rail_service/internal/workers/funding_webhook"
 	gameplay_workers "github.com/rail-service/rail_service/internal/workers/gameplay"
+	growth_engine "github.com/rail-service/rail_service/internal/workers/growth_engine"
 	growth_mail "github.com/rail-service/rail_service/internal/workers/growth_mail"
 	kyc_autoinvest "github.com/rail-service/rail_service/internal/workers/kyc_autoinvest"
 	"github.com/rail-service/rail_service/internal/workers/kyc_sync"
@@ -94,6 +96,9 @@ type Application struct {
 	automationWorker             *automation_worker.Worker
 	memoryWorker                 *memory_worker.Worker
 	dailyPulseWorker             *daily_pulse.Worker
+	growthEngineWorker           *growth_engine.Worker
+	growthEngineCancel           context.CancelFunc
+	workerMu                     sync.Mutex
 	growthMailWorker             *growth_mail.Worker
 	growthMailCancel             context.CancelFunc
 	opportunitySyncWorker        *opportunity_sync.Worker
@@ -466,6 +471,37 @@ func (app *Application) initializeWorkers() error {
 		app.growthMailCancel = cancel
 		go app.growthMailWorker.Start(ctx)
 		app.log.Info("Growth mail worker started")
+	}
+
+	if app.container.GrowthEngineService != nil {
+		w := growth_engine.NewWorker(app.container.GrowthEngineService, app.log.Zap())
+		app.workerMu.Lock()
+		app.growthEngineWorker = w
+		app.workerMu.Unlock()
+		ctx, cancel := context.WithCancel(context.Background())
+		app.growthEngineCancel = cancel
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					app.log.Error("growth engine worker panicked", "panic", r)
+					app.workerMu.Lock()
+					app.growthEngineWorker = nil
+					app.workerMu.Unlock()
+					// TODO: implement automatic restart with exponential backoff
+					// TODO: alert monitoring systems on worker panic
+				}
+			}()
+			app.log.Info("Growth engine worker started")
+			app.workerMu.Lock()
+			worker := app.growthEngineWorker
+			if worker == nil {
+				app.workerMu.Unlock()
+				return
+			}
+			app.workerMu.Unlock()
+			worker.Start(ctx)
+			app.log.Info("Growth engine worker stopped")
+		}()
 	}
 
 	return nil
@@ -955,6 +991,9 @@ func (app *Application) stopWorkers() {
 	}
 	if app.growthMailCancel != nil {
 		app.growthMailCancel()
+	}
+	if app.growthEngineCancel != nil {
+		app.growthEngineCancel()
 	}
 }
 

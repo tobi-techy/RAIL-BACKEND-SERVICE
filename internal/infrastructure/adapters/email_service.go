@@ -452,6 +452,33 @@ func (e *EmailService) SendCustomEmail(ctx context.Context, to, subject, htmlCon
 	return e.sendEmail(ctx, to, subject, htmlContent, textContent)
 }
 
+// SendCustomEmailFrom delivers an email with a campaign-specific sender and reply-to.
+func (e *EmailService) SendCustomEmailFrom(ctx context.Context, to, subject, htmlContent, textContent, fromEmail, fromName, replyTo string) error {
+	cfg := e.config
+	if strings.TrimSpace(fromEmail) != "" {
+		if strings.ContainsAny(fromEmail, "\r\n") {
+			return fmt.Errorf("invalid fromEmail: contains newline characters")
+		}
+		cfg.FromEmail = strings.TrimSpace(fromEmail)
+	}
+	if strings.TrimSpace(fromName) != "" {
+		if strings.ContainsAny(fromName, "\r\n") {
+			return fmt.Errorf("invalid fromName: contains newline characters")
+		}
+		cfg.FromName = strings.TrimSpace(fromName)
+	}
+	if strings.TrimSpace(replyTo) != "" {
+		if strings.ContainsAny(replyTo, "\r\n") {
+			return fmt.Errorf("invalid replyTo: contains newline characters")
+		}
+		cfg.ReplyTo = strings.TrimSpace(replyTo)
+	}
+
+	scoped := *e
+	scoped.config = cfg
+	return scoped.sendEmail(ctx, to, subject, htmlContent, textContent)
+}
+
 // SendLoginAlertEmail notifies the user about a successful login attempt
 func (e *EmailService) SendLoginAlertEmail(ctx context.Context, email string, details LoginAlertDetails) error {
 	if details.LoginAt.IsZero() {
@@ -530,7 +557,6 @@ If this wasn't you, please reset your password immediately and contact support.
 }
 
 // KYC Email Templates are now handled inline by SendKYCStatusEmail
-
 
 // SendP2PInviteEmail sends an invite to a non-Rail user to claim money
 func (e *EmailService) SendP2PInviteEmail(ctx context.Context, toEmail, senderName string, amount string, claimURL string) error {
