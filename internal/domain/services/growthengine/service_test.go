@@ -209,11 +209,13 @@ func TestSanitizeErrorMessage(t *testing.T) {
 		{"plain error preserved", "connection refused", "connection refused"},
 		{"path at start redacted", "/etc/config.yaml not found", "[PATH] not found"},
 		{"path in middle redacted", "failed to open /app/service.go:42", "failed to open [PATH]"},
+		{"deep unix path with line", "error at /var/log/app.log:123", "error at [PATH]"},
+		{"windows path redacted", `error at C:\Program Files\app\file.go:456`, "error at [PATH]"},
 		{"connection string redacted", "dial tcp://user:password@host:5432", "internal error"},
 		{"password keyword redacted", "invalid password for user admin", "internal error"},
 		{"goroutine trace redacted", "goroutine 1 [running]:", "internal error"},
-		{"windows path redacted", `error at C:\Users\app\main.go:10`, "error at [PATH]"},
 		{"url-like data not over-redacted", "status 404", "status 404"},
+		{"hybrid path not matched as single", "mixed /unix and C:\\win", "mixed [PATH] and [PATH]"},
 		{"truncated at 256", string(make([]byte, 300)), string(make([]byte, 256))},
 	}
 	for _, tt := range tests {

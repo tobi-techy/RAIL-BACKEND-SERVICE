@@ -474,7 +474,10 @@ func (app *Application) initializeWorkers() error {
 	}
 
 	if app.container.GrowthEngineService != nil {
-		app.growthEngineWorker = growth_engine.NewWorker(app.container.GrowthEngineService, app.log.Zap())
+		w := growth_engine.NewWorker(app.container.GrowthEngineService, app.log.Zap())
+		app.workerMu.Lock()
+		app.growthEngineWorker = w
+		app.workerMu.Unlock()
 		ctx, cancel := context.WithCancel(context.Background())
 		app.growthEngineCancel = cancel
 		go func() {
@@ -489,7 +492,12 @@ func (app *Application) initializeWorkers() error {
 				}
 			}()
 			app.log.Info("Growth engine worker started")
-			app.growthEngineWorker.Start(ctx)
+			app.workerMu.Lock()
+			worker := app.growthEngineWorker
+			app.workerMu.Unlock()
+			if worker != nil {
+				worker.Start(ctx)
+			}
 			app.log.Info("Growth engine worker stopped")
 		}()
 	}
