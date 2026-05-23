@@ -13,7 +13,7 @@ import (
 	"go.uber.org/zap"
 )
 
-var filePathRegex = regexp.MustCompile(`(?:/[\w\-.]+(?:/[\w\-.]+)*(?::\d+)?)|(?:[A-Z]:\\[\w\-. ]+(?:\\[\w\-. ]+)*(?::\d+)?)`)
+var filePathRegex = regexp.MustCompile(`(?:/(?:[\w\-.]+/)*[\w\-.]+(?::\d+)?)|(?:[A-Z]:\\(?:[\w\-. ]+\\)*[\w\-. ]+(?::\d+)?)`)
 
 type Repository interface {
 	TrackEvent(ctx context.Context, event *entities.UserEvent) error

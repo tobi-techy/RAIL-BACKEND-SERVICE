@@ -494,10 +494,12 @@ func (app *Application) initializeWorkers() error {
 			app.log.Info("Growth engine worker started")
 			app.workerMu.Lock()
 			worker := app.growthEngineWorker
-			app.workerMu.Unlock()
-			if worker != nil {
-				worker.Start(ctx)
+			if worker == nil {
+				app.workerMu.Unlock()
+				return
 			}
+			app.workerMu.Unlock()
+			worker.Start(ctx)
 			app.log.Info("Growth engine worker stopped")
 		}()
 	}

@@ -2,6 +2,7 @@ package growthengine
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -223,5 +224,36 @@ func TestSanitizeErrorMessage(t *testing.T) {
 			got := sanitizeErrorMessage(tt.input)
 			require.Equal(t, tt.expect, got)
 		})
+	}
+}
+
+func TestSanitizeErrorMessage_ReDoSProtection(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"deep path with trailing junk", "/path/to/deep/dir/structure/that/almost/matches!!!!!!"},
+		{"many repeated segments", strings.Repeat("/dir", 50) + "!"},
+		{"malformed with special chars", "/a/b/c/d/e/f/g/h/" + strings.Repeat("@#$", 20)},
+		{"near-miss windows path", `C:\a\b\c\d\e\f\g\` + strings.Repeat("???", 20)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Should complete without hanging
+			_ = sanitizeErrorMessage(tt.input)
+		})
+	}
+}
+
+func BenchmarkSanitizeErrorMessage_Adversarial(b *testing.B) {
+	inputs := []string{
+		strings.Repeat("/dir", 100) + "!",
+		"/a/b/c/d/e/f/g/h/" + strings.Repeat("@#$", 50),
+		`C:\a\b\c\d\e\f\g\` + strings.Repeat("???", 50),
+	}
+	for b.Loop() {
+		for _, input := range inputs {
+			sanitizeErrorMessage(input)
+		}
 	}
 }
