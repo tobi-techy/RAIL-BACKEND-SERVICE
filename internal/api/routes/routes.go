@@ -1132,6 +1132,21 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// AI Chat endpoints (AI Financial Manager)
 			if container.GetAIOrchestrator() != nil {
 				aiChatHandlers := handlers.NewAIChatHandlers(container.GetAIOrchestrator(), container.GetConversationService(), container.Logger)
+				var voiceHandler interface {
+					HandleSession(*gin.Context)
+					IssueSessionToken(*gin.Context)
+				}
+				if container.Config.AI.AssemblyAI.APIKey != "" {
+					voiceHandler = handlers.NewVoiceHandler(
+						container.Config.AI.AssemblyAI.APIKey,
+						container.Config.JWT.Secret,
+						container.Config.AI.AssemblyAI.Voice,
+						container.GetAIOrchestrator(),
+						container.GetUsageService(),
+						container.Config.Server.AllowedOrigins,
+						container.ZapLog,
+					)
+				}
 				aiGroup := protected.Group("/ai")
 				{
 					aiGroup.POST("/chat", middleware.AuthRateLimit(20), middleware.PerUserRateLimit(20), aiChatHandlers.Chat)
@@ -1230,16 +1245,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						aiGroup.GET("/goals/progress", middleware.AuthRateLimit(10), premiumHandlers.GoalProgress)
 					}
 
-					// Voice session (WebSocket)
-					if container.Config.AI.AssemblyAI.APIKey != "" {
-						voiceHandler := handlers.NewVoiceHandler(
-							container.Config.AI.AssemblyAI.APIKey,
-							container.Config.AI.AssemblyAI.Voice,
-							container.GetAIOrchestrator(),
-							container.GetUsageService(),
-							container.Config.Server.AllowedOrigins,
-							container.ZapLog,
-						)
+					// Voice session ticket (protected); WebSocket uses the short-lived ticket.
+					if voiceHandler != nil {
+						aiGroup.POST("/voice/session-token", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), voiceHandler.IssueSessionToken)
 						aiGroup.GET("/voice/session", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), voiceHandler.HandleSession)
 					}
 				}

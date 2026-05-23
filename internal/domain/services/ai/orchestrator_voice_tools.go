@@ -126,7 +126,6 @@ func voiceLookupToolNames() []string {
 func voiceActionToolNames() []string {
 	return []string{
 		ToolTransferFunds,
-		ToolInitiateWithdrawal,
 		ToolSetBudget,
 		ToolSetSavingsGoal,
 		ToolCreateAutomation,
@@ -165,6 +164,11 @@ func (o *Orchestrator) executeVoiceMoneyAction(ctx context.Context, userID uuid.
 	}
 	if !isVoiceActionTool(action) {
 		return map[string]interface{}{"error": fmt.Sprintf("%s is not available through voice action", action)}, nil
+	}
+	if action == ToolInitiateWithdrawal {
+		return map[string]interface{}{
+			"error": "Withdrawals from voice need app confirmation with a verified bank destination. Open Withdraw to continue.",
+		}, nil
 	}
 	if !o.canCreateActionTool(action) {
 		return map[string]interface{}{"error": fmt.Sprintf("%s is not configured for this user", action)}, nil

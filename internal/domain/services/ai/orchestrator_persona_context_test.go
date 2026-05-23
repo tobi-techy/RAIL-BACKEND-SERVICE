@@ -32,7 +32,7 @@ func (f realtimeUserProfileFake) GetProfile(_ context.Context, _ uuid.UUID) (*en
 	return f.profile, nil
 }
 
-func TestBuildRealtimeGreetingUsesNameAndBalanceContext(t *testing.T) {
+func TestBuildRealtimeGreetingUsesNameWithoutBalanceContext(t *testing.T) {
 	firstName := "Tobi"
 	userID := uuid.New()
 	o := &Orchestrator{
@@ -44,9 +44,8 @@ func TestBuildRealtimeGreetingUsesNameAndBalanceContext(t *testing.T) {
 
 	require.Contains(t, greeting, "Tobi")
 	require.Contains(t, greeting, "Miriam")
-	// Balance insight should be appended
-	require.Contains(t, greeting, "Spend is")
-	require.Contains(t, greeting, "stash is")
+	require.NotContains(t, greeting, "Spend is")
+	require.NotContains(t, greeting, "stash is")
 }
 
 func TestBuildRealtimeGreetingDoesNotClaimNumbersWithoutBalanceContext(t *testing.T) {
@@ -69,4 +68,6 @@ func TestBuildRealtimeInstructionsIncludesPremiumVoiceMode(t *testing.T) {
 	require.Contains(t, instructions, "Default to 1-2 spoken sentences")
 	require.Contains(t, instructions, "Never guess account data")
 	require.Contains(t, instructions, "Never end with \"Is there anything else I can help with?\"")
+	require.NotContains(t, instructions, "[RECENT CONVERSATIONS")
+	require.NotContains(t, instructions, "[App profile context")
 }

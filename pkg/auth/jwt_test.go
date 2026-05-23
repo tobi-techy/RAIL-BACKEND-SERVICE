@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -47,6 +49,48 @@ func TestGenerateAccessTokenCreatesUniqueTokensWithinSameSecond(t *testing.T) {
 	}
 
 	assertTokenID(t, first, "test-secret")
+}
+
+func TestVoiceSessionTokenValidatesOnlyAsVoiceSession(t *testing.T) {
+	userID := uuid.New()
+
+	token, expiresAt, err := GenerateVoiceSessionToken(userID, "test-secret", time.Minute)
+	if err != nil {
+		t.Fatalf("GenerateVoiceSessionToken failed: %v", err)
+	}
+	if time.Until(expiresAt) <= 0 {
+		t.Fatal("voice session token should expire in the future")
+	}
+
+	got, err := ValidateVoiceSessionToken(token, "test-secret")
+	if err != nil {
+		t.Fatalf("ValidateVoiceSessionToken failed: %v", err)
+	}
+	if got != userID {
+		t.Fatalf("expected user ID %s, got %s", userID, got)
+	}
+	if _, err := ValidateToken(token, "test-secret"); err == nil {
+		t.Fatal("voice session token must not validate as an access token")
+	}
+}
+
+// TestVoiceSessionTokenRejectsExpiredTokens verifies the JWT library's built-in
+// expiration validation rejects tokens past their exp claim.
+func TestVoiceSessionTokenRejectsExpiredTokens(t *testing.T) {
+	userID := uuid.New()
+	token, _, err := GenerateVoiceSessionToken(userID, "test-secret", 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("GenerateVoiceSessionToken failed: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	_, err = ValidateVoiceSessionToken(token, "test-secret")
+	if err == nil {
+		t.Fatal("expected error for expired token")
+	}
+	errLower := strings.ToLower(err.Error())
+	if !strings.Contains(errLower, "expired") && !strings.Contains(errLower, "exp") {
+		t.Fatalf("expected error containing 'expired' or 'exp', got: %v", err)
+	}
 }
 
 func assertTokenID(t *testing.T, tokenString string, secret string) {
