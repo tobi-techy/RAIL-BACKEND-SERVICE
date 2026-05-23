@@ -253,7 +253,7 @@ resource "aws_iam_instance_profile" "ec2" {
 
 resource "aws_instance" "app" {
   ami                         = data.aws_ami.ecs_optimized.id
-  instance_type               = "t3.micro"
+  instance_type               = "t3.small"
   subnet_id                   = module.vpc.private_subnets[0]
   vpc_security_group_ids      = [aws_security_group.app.id]
   iam_instance_profile        = aws_iam_instance_profile.ec2.name
