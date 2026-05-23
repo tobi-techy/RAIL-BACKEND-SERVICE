@@ -489,6 +489,32 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			}
 		}
 
+		// Dashboard auth (email-only for super_admins)
+		v1.POST("/dashboard/auth", middleware.RateLimit(5), func(c *gin.Context) {
+			var req struct {
+				Email string `json:"email" binding:"required"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(400, gin.H{"error": "email required"})
+				return
+			}
+			email := strings.ToLower(strings.TrimSpace(req.Email))
+			var userID, role string
+			err := container.DB.QueryRowContext(c.Request.Context(),
+				"SELECT id, role FROM users WHERE LOWER(email) = $1", email).Scan(&userID, &role)
+			if err != nil || (role != "admin" && role != "super_admin") {
+				c.JSON(401, gin.H{"error": "unauthorized"})
+				return
+			}
+			uid, _ := uuid.Parse(userID)
+			tokenPair, err := container.JWTService.GenerateTokenPairEnhanced(uid, email, role)
+			if err != nil {
+				c.JSON(500, gin.H{"error": "token generation failed"})
+				return
+			}
+			c.JSON(200, gin.H{"token": tokenPair.AccessToken, "role": role, "email": email})
+		})
+
 		// Onboarding routes
 		onboarding := v1.Group("/onboarding")
 		{
@@ -1318,6 +1344,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					ag.GET("/chains", ah.Chains)
 				}
 			}
+
 
 			// Security admin routes
 			adminMFAHandlers := handlers.NewMFAHandlers(
