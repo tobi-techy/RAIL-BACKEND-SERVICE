@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"regexp"
 	"strings"
 	"time"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"go.uber.org/zap"
 )
+
+var filePathRegex = regexp.MustCompile(`/[a-zA-Z0-9_\-./]+`)
 
 type Repository interface {
 	TrackEvent(ctx context.Context, event *entities.UserEvent) error
@@ -347,19 +350,14 @@ func firstNonNilTime(values ...*time.Time) *time.Time {
 }
 
 func sanitizeErrorMessage(msg string) string {
-	// Strip sensitive patterns: file paths, connection strings, stack traces, API keys
-	for _, prefix := range []string{"/"} {
-		if strings.HasPrefix(msg, prefix) {
-			msg = "internal error"
-			break
-		}
-	}
 	if strings.Contains(msg, "://") || strings.Contains(msg, "password") {
-		msg = "internal error"
+		return "internal error"
 	}
-	if strings.Contains(msg, "goroutine") || strings.Contains(msg, "at ") {
-		msg = "internal error"
+	if strings.Contains(msg, "goroutine") {
+		return "internal error"
 	}
+	// Redact file paths (e.g., /app/service.go:42, /etc/config.yaml)
+	msg = filePathRegex.ReplaceAllString(msg, "[PATH]")
 	if len(msg) > 256 {
 		msg = msg[:256]
 	}

@@ -479,11 +479,15 @@ func (app *Application) initializeWorkers() error {
 			defer func() {
 				if r := recover(); r != nil {
 					app.log.Error("growth engine worker panicked", "panic", r)
+					app.growthEngineWorker = nil
+					// TODO: implement automatic restart with exponential backoff
+					// TODO: alert monitoring systems on worker panic
 				}
 			}()
+			app.log.Info("Growth engine worker started")
 			app.growthEngineWorker.Start(ctx)
+			app.log.Info("Growth engine worker stopped")
 		}()
-		app.log.Info("Growth engine worker started")
 	}
 
 	return nil
