@@ -18,6 +18,35 @@ func NewAnalyticsRepository(db *sql.DB, logger *zap.Logger) *AnalyticsRepository
 	return &AnalyticsRepository{db: db, logger: logger}
 }
 
+// Unified deposit sum across all sources (deposits, bridge, paj onramp, funding events)
+const allDepositsSum = `SELECT COALESCE(
+	(SELECT SUM(amount) FROM deposits WHERE status = 'confirmed'), 0) +
+	COALESCE((SELECT SUM(amount) FROM bridge_transactions WHERE status = 'completed'), 0) +
+	COALESCE((SELECT SUM(token_amount) FROM paj_orders WHERE order_type = 'onramp' AND status = 'completed'), 0) +
+	COALESCE((SELECT SUM(amount) FROM funding_event_jobs WHERE status = 'completed'), 0)`
+
+const allDepositsSumBefore30d = `SELECT COALESCE(
+	(SELECT SUM(amount) FROM deposits WHERE status = 'confirmed' AND created_at < NOW() - INTERVAL '30 days'), 0) +
+	COALESCE((SELECT SUM(amount) FROM bridge_transactions WHERE status = 'completed' AND created_at < NOW() - INTERVAL '30 days'), 0) +
+	COALESCE((SELECT SUM(token_amount) FROM paj_orders WHERE order_type = 'onramp' AND status = 'completed' AND created_at < NOW() - INTERVAL '30 days'), 0) +
+	COALESCE((SELECT SUM(amount) FROM funding_event_jobs WHERE status = 'completed' AND first_seen_at < NOW() - INTERVAL '30 days'), 0)`
+
+const allWithdrawalsSum = `SELECT COALESCE(
+	(SELECT SUM(amount) FROM withdrawals WHERE status = 'completed'), 0) +
+	COALESCE((SELECT SUM(token_amount) FROM paj_orders WHERE order_type = 'offramp' AND status = 'completed'), 0)`
+
+// Monthly deposits from all sources
+const monthlyDepositsQuery = `
+	SELECT TO_CHAR(date_trunc('month', m), 'Mon'),
+		COALESCE((SELECT SUM(amount) FROM deposits WHERE status='confirmed' AND date_trunc('month', created_at) = date_trunc('month', m)), 0) +
+		COALESCE((SELECT SUM(amount) FROM bridge_transactions WHERE status='completed' AND date_trunc('month', created_at) = date_trunc('month', m)), 0) +
+		COALESCE((SELECT SUM(token_amount) FROM paj_orders WHERE order_type='onramp' AND status='completed' AND date_trunc('month', created_at) = date_trunc('month', m)), 0) +
+		COALESCE((SELECT SUM(amount) FROM funding_event_jobs WHERE status='completed' AND date_trunc('month', first_seen_at) = date_trunc('month', m)), 0),
+		COALESCE((SELECT SUM(amount) FROM withdrawals WHERE status='completed' AND date_trunc('month', created_at) = date_trunc('month', m)), 0) +
+		COALESCE((SELECT SUM(token_amount) FROM paj_orders WHERE order_type='offramp' AND status='completed' AND date_trunc('month', created_at) = date_trunc('month', m)), 0)
+	FROM generate_series(NOW() - INTERVAL '5 months', NOW(), '1 month') AS m
+	ORDER BY m`
+
 type TimeSeriesPoint struct {
 	Label string  `json:"label"`
 	Value float64 `json:"value"`
@@ -56,9 +85,9 @@ func (r *AnalyticsRepository) GetOverview(ctx context.Context) (*OverviewData, e
 	r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&d.TotalUsers.Value)
 	r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE created_at < NOW() - INTERVAL '30 days'`).Scan(&d.TotalUsers.Prev)
 
-	// Net deposits (confirmed)
-	r.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(amount), 0) FROM deposits WHERE status = 'confirmed'`).Scan(&d.NetDeposits.Value)
-	r.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(amount), 0) FROM deposits WHERE status = 'confirmed' AND created_at < NOW() - INTERVAL '30 days'`).Scan(&d.NetDeposits.Prev)
+	// Net deposits (all sources: deposits, bridge, paj, funding events)
+	r.db.QueryRowContext(ctx, allDepositsSum).Scan(&d.NetDeposits.Value)
+	r.db.QueryRowContext(ctx, allDepositsSumBefore30d).Scan(&d.NetDeposits.Prev)
 
 	// KYC completion rate
 	var totalUsers, kycDone float64
@@ -76,13 +105,8 @@ func (r *AnalyticsRepository) GetOverview(ctx context.Context) (*OverviewData, e
 		d.ChurnRate.Value = (churned / (active + churned)) * 100
 	}
 
-	// Deposit vs withdrawal trend (last 6 months)
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT TO_CHAR(date_trunc('month', m), 'Mon') AS label,
-			COALESCE((SELECT SUM(amount) FROM deposits WHERE status='confirmed' AND date_trunc('month', created_at) = date_trunc('month', m)), 0),
-			COALESCE((SELECT SUM(amount) FROM withdrawals WHERE status='completed' AND date_trunc('month', created_at) = date_trunc('month', m)), 0)
-		FROM generate_series(NOW() - INTERVAL '5 months', NOW(), '1 month') AS m
-		ORDER BY m`)
+	// Deposit vs withdrawal trend (last 6 months, all sources)
+	rows, err := r.db.QueryContext(ctx, monthlyDepositsQuery)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -288,17 +312,12 @@ func (r *AnalyticsRepository) GetMoneyMovement(ctx context.Context) (*MoneyMovem
 	defer cancel()
 	d := &MoneyMovementData{}
 
-	r.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(amount), 0) FROM deposits WHERE status = 'confirmed'`).Scan(&d.TotalDeposits.Value)
-	r.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(amount), 0) FROM withdrawals WHERE status = 'completed'`).Scan(&d.TotalWithdrawals.Value)
+	r.db.QueryRowContext(ctx, allDepositsSum).Scan(&d.TotalDeposits.Value)
+	r.db.QueryRowContext(ctx, allWithdrawalsSum).Scan(&d.TotalWithdrawals.Value)
 	d.NetFlow.Value = d.TotalDeposits.Value - d.TotalWithdrawals.Value
 
-	// Monthly flow (last 6 months)
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT TO_CHAR(date_trunc('month', m), 'Mon'),
-			COALESCE((SELECT SUM(amount) FROM deposits WHERE status='confirmed' AND date_trunc('month', created_at) = date_trunc('month', m)), 0),
-			COALESCE((SELECT SUM(amount) FROM withdrawals WHERE status='completed' AND date_trunc('month', created_at) = date_trunc('month', m)), 0)
-		FROM generate_series(NOW() - INTERVAL '5 months', NOW(), '1 month') AS m
-		ORDER BY m`)
+	// Monthly flow (last 6 months, all sources)
+	rows, err := r.db.QueryContext(ctx, monthlyDepositsQuery)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -433,8 +452,7 @@ func (r *AnalyticsRepository) GetChains(ctx context.Context) (*ChainsData, error
 	defer cancel()
 	d := &ChainsData{}
 
-	r.db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(amount), 0) FROM deposits WHERE status = 'confirmed'`).Scan(&d.TotalTVL.Value)
+	r.db.QueryRowContext(ctx, allDepositsSum).Scan(&d.TotalTVL.Value)
 
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT chain,
