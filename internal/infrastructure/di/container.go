@@ -2253,6 +2253,9 @@ func (c *Container) initializeDomainServices() error {
 		} else if c.ExpoPushService != nil {
 			growthPush = c.ExpoPushService
 		}
+		if growthPush == nil {
+			c.ZapLog.Warn("growth engine initialized without push sender; push campaigns will fail gracefully")
+		}
 		c.GrowthEngineService = growthengine.NewService(
 			c.GrowthEngineRepo,
 			c.EmailService,

@@ -456,12 +456,21 @@ func (e *EmailService) SendCustomEmail(ctx context.Context, to, subject, htmlCon
 func (e *EmailService) SendCustomEmailFrom(ctx context.Context, to, subject, htmlContent, textContent, fromEmail, fromName, replyTo string) error {
 	cfg := e.config
 	if strings.TrimSpace(fromEmail) != "" {
+		if strings.ContainsAny(fromEmail, "\r\n") {
+			return fmt.Errorf("invalid fromEmail: contains newline characters")
+		}
 		cfg.FromEmail = strings.TrimSpace(fromEmail)
 	}
 	if strings.TrimSpace(fromName) != "" {
+		if strings.ContainsAny(fromName, "\r\n") {
+			return fmt.Errorf("invalid fromName: contains newline characters")
+		}
 		cfg.FromName = strings.TrimSpace(fromName)
 	}
 	if strings.TrimSpace(replyTo) != "" {
+		if strings.ContainsAny(replyTo, "\r\n") {
+			return fmt.Errorf("invalid replyTo: contains newline characters")
+		}
 		cfg.ReplyTo = strings.TrimSpace(replyTo)
 	}
 

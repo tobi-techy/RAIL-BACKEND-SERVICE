@@ -49,7 +49,7 @@ func (r *GrowthEngineRepository) ApplyEventToLifecycle(ctx context.Context, even
 			allocation_enabled, created_at, updated_at
 		)
 		VALUES (
-			$1, $2,
+			$1, CASE WHEN $2 = '' THEN 'signed_up' ELSE $2 END,
 			CASE WHEN $3 THEN $4::timestamptz ELSE NULL END,
 			CASE WHEN $5 THEN $4::timestamptz ELSE NULL END,
 			CASE WHEN $6 THEN $4::timestamptz ELSE NULL END,
@@ -60,7 +60,7 @@ func (r *GrowthEngineRepository) ApplyEventToLifecycle(ctx context.Context, even
 			$10, $4, $4
 		)
 		ON CONFLICT (user_id) DO UPDATE SET
-			lifecycle_stage = EXCLUDED.lifecycle_stage,
+			lifecycle_stage = CASE WHEN EXCLUDED.lifecycle_stage = '' THEN user_lifecycle.lifecycle_stage ELSE EXCLUDED.lifecycle_stage END,
 			last_active_at = CASE WHEN $3 THEN GREATEST(COALESCE(user_lifecycle.last_active_at, $4), $4) ELSE user_lifecycle.last_active_at END,
 			kyc_started_at = CASE WHEN $5 THEN COALESCE(user_lifecycle.kyc_started_at, $4) ELSE user_lifecycle.kyc_started_at END,
 			kyc_completed_at = CASE WHEN $6 THEN COALESCE(user_lifecycle.kyc_completed_at, $4) ELSE user_lifecycle.kyc_completed_at END,
@@ -359,7 +359,7 @@ func lifecycleStageForEvent(eventName entities.GrowthEventName) entities.UserLif
 	case entities.GrowthEventInactive14DaysDetected:
 		return entities.StageChurned
 	default:
-		return entities.StageSignedUp
+		return ""
 	}
 }
 

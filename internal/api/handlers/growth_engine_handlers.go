@@ -74,6 +74,9 @@ func (h *GrowthEngineHandlers) ManualWhatsAppExport(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "limit must be a positive integer"})
 			return
 		}
+		if parsed > 1000 {
+			parsed = 1000
+		}
 		limit = parsed
 	}
 

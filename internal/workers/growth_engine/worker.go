@@ -15,6 +15,9 @@ type Worker struct {
 }
 
 func NewWorker(service *growthengine.Service, logger *zap.Logger) *Worker {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	return &Worker{
 		service:  service,
 		logger:   logger,

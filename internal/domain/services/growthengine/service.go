@@ -100,7 +100,8 @@ func (s *Service) RunSegmentation(ctx context.Context) (int, int, error) {
 
 		segment, stage, score := SegmentUser(user, now)
 		if err := s.repo.UpsertSegment(ctx, user.UserID, stage, segment, score, now); err != nil {
-			return segmented, queued, err
+			s.logger.Error("UpsertSegment failed, skipping user", zap.String("user_id", user.UserID.String()), zap.Error(err))
+			continue
 		}
 		segmented++
 		if segment == entities.SegmentActive {
@@ -235,7 +236,9 @@ func (s *Service) deliver(ctx context.Context, user entities.GrowthUserSnapshot,
 	}
 
 	if sendErr != nil {
-		_ = s.repo.UpdateDeliveryStatus(ctx, delivery.ID, entities.GrowthDeliveryFailed, sendErr.Error(), nil)
+		if updateErr := s.repo.UpdateDeliveryStatus(ctx, delivery.ID, entities.GrowthDeliveryFailed, sanitizeErrorMessage(sendErr.Error()), nil); updateErr != nil {
+			s.logger.Error("failed to update delivery status", zap.String("delivery_id", delivery.ID.String()), zap.Error(updateErr))
+		}
 		return sendErr
 	}
 	sentAt := s.cfg.Now()
@@ -341,4 +344,24 @@ func firstNonNilTime(values ...*time.Time) *time.Time {
 		}
 	}
 	return nil
+}
+
+func sanitizeErrorMessage(msg string) string {
+	// Strip sensitive patterns: file paths, connection strings, stack traces, API keys
+	for _, prefix := range []string{"/"} {
+		if strings.HasPrefix(msg, prefix) {
+			msg = "internal error"
+			break
+		}
+	}
+	if strings.Contains(msg, "://") || strings.Contains(msg, "password") {
+		msg = "internal error"
+	}
+	if strings.Contains(msg, "goroutine") || strings.Contains(msg, "at ") {
+		msg = "internal error"
+	}
+	if len(msg) > 256 {
+		msg = msg[:256]
+	}
+	return msg
 }

@@ -475,7 +475,14 @@ func (app *Application) initializeWorkers() error {
 		app.growthEngineWorker = growth_engine.NewWorker(app.container.GrowthEngineService, app.log.Zap())
 		ctx, cancel := context.WithCancel(context.Background())
 		app.growthEngineCancel = cancel
-		go app.growthEngineWorker.Start(ctx)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					app.log.Error("growth engine worker panicked", "panic", r)
+				}
+			}()
+			app.growthEngineWorker.Start(ctx)
+		}()
 		app.log.Info("Growth engine worker started")
 	}
 

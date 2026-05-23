@@ -41,6 +41,9 @@ func (w *Worker) Start(ctx context.Context) {
 
 func (w *Worker) run(ctx context.Context) {
 	now := time.Now().UTC()
+	if now.Hour() != 11 {
+		return
+	}
 	sent, failed, err := w.service.SendDue(ctx, now)
 	if err != nil {
 		w.logger.Error("Growth mail run failed", zap.Error(err))

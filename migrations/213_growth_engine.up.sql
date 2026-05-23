@@ -153,7 +153,7 @@ BEGIN
         WHEN 'deposit_completed' THEN 'first_deposit_done'
         WHEN 'inactive_7_days_detected' THEN 'dormant'
         WHEN 'inactive_14_days_detected' THEN 'churned'
-        ELSE 'signed_up'
+        ELSE NULL
     END;
 
     v_is_active := p_event_name IN (
@@ -176,7 +176,7 @@ BEGIN
         allocation_enabled, created_at, updated_at
     )
     VALUES (
-        p_user_id, v_stage,
+        p_user_id, COALESCE(v_stage, 'signed_up'),
         CASE WHEN v_is_active THEN COALESCE(p_event_at, NOW()) ELSE NULL END,
         CASE WHEN v_is_kyc_started THEN COALESCE(p_event_at, NOW()) ELSE NULL END,
         CASE WHEN v_is_kyc_completed THEN COALESCE(p_event_at, NOW()) ELSE NULL END,
@@ -189,7 +189,7 @@ BEGIN
         COALESCE(p_event_at, NOW())
     )
     ON CONFLICT (user_id) DO UPDATE SET
-        lifecycle_stage = EXCLUDED.lifecycle_stage,
+        lifecycle_stage = CASE WHEN v_stage IS NOT NULL THEN v_stage ELSE user_lifecycle.lifecycle_stage END,
         last_active_at = CASE WHEN v_is_active THEN GREATEST(COALESCE(user_lifecycle.last_active_at, COALESCE(p_event_at, NOW())), COALESCE(p_event_at, NOW())) ELSE user_lifecycle.last_active_at END,
         kyc_started_at = CASE WHEN v_is_kyc_started THEN COALESCE(user_lifecycle.kyc_started_at, COALESCE(p_event_at, NOW())) ELSE user_lifecycle.kyc_started_at END,
         kyc_completed_at = CASE WHEN v_is_kyc_completed THEN COALESCE(user_lifecycle.kyc_completed_at, COALESCE(p_event_at, NOW())) ELSE user_lifecycle.kyc_completed_at END,
