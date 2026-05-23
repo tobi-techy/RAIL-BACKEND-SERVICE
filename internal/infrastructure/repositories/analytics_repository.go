@@ -197,6 +197,7 @@ type UserRow struct {
 	KYC        string  `json:"kyc"`
 	Deposit    float64 `json:"deposit"`
 	LastActive string  `json:"last_active"`
+	CreatedAt  string  `json:"created_at"`
 	Chats      int     `json:"chats"`
 }
 
@@ -236,15 +237,17 @@ func (r *AnalyticsRepository) GetUsers(ctx context.Context, limit, offset int) (
 			COALESCE((SELECT SUM(amount) FROM bridge_transactions WHERE user_id = u.id AND status='completed'), 0) +
 			COALESCE((SELECT SUM(token_amount) FROM paj_orders WHERE user_id = u.id AND order_type='onramp' AND status='completed'), 0),
 			u.updated_at,
+			u.created_at,
 			COALESCE((SELECT SUM(message_count) FROM ai_conversations WHERE user_id = u.id), 0)
 		FROM users u ORDER BY u.updated_at DESC LIMIT $1 OFFSET $2`, limit, offset)
 	if err == nil {
 		defer userRows.Close()
 		for userRows.Next() {
 			var row UserRow
-			var lastActive time.Time
-			userRows.Scan(&row.ID, &row.Name, &row.Email, &row.Status, &row.KYC, &row.Deposit, &lastActive, &row.Chats)
+			var lastActive, createdAt time.Time
+			userRows.Scan(&row.ID, &row.Name, &row.Email, &row.Status, &row.KYC, &row.Deposit, &lastActive, &createdAt, &row.Chats)
 			row.LastActive = timeAgo(lastActive)
+			row.CreatedAt = createdAt.Format("Jan 2, 2006")
 			d.UserList = append(d.UserList, row)
 		}
 	}
