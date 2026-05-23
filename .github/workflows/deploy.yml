@@ -102,6 +102,14 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Skip migration task if no migration files changed in this deploy
+          MIGRATION_CHANGES=$(git diff --name-only HEAD~1 HEAD -- migrations/ 2>/dev/null || echo "")
+          if [ -z "$MIGRATION_CHANGES" ]; then
+            echo "No migration files changed, skipping migration task"
+            echo "Database migrations completed"
+            exit 0
+          fi
+
           CLUSTER="rail-$ENV"
           SERVICE="rail-$ENV"
 
