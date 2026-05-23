@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -97,6 +98,7 @@ type Application struct {
 	dailyPulseWorker             *daily_pulse.Worker
 	growthEngineWorker           *growth_engine.Worker
 	growthEngineCancel           context.CancelFunc
+	workerMu                     sync.Mutex
 	growthMailWorker             *growth_mail.Worker
 	growthMailCancel             context.CancelFunc
 	opportunitySyncWorker        *opportunity_sync.Worker
@@ -479,7 +481,9 @@ func (app *Application) initializeWorkers() error {
 			defer func() {
 				if r := recover(); r != nil {
 					app.log.Error("growth engine worker panicked", "panic", r)
+					app.workerMu.Lock()
 					app.growthEngineWorker = nil
+					app.workerMu.Unlock()
 					// TODO: implement automatic restart with exponential backoff
 					// TODO: alert monitoring systems on worker panic
 				}

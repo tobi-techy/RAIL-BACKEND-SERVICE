@@ -199,3 +199,27 @@ func (e *fakeGrowthEngineEmail) SendCustomEmailFrom(ctx context.Context, to, sub
 	}{to: to, subject: subject, html: htmlContent, text: textContent, fromEmail: fromEmail, fromName: fromName, replyTo: replyTo})
 	return nil
 }
+
+func TestSanitizeErrorMessage(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		expect string
+	}{
+		{"plain error preserved", "connection refused", "connection refused"},
+		{"path at start redacted", "/etc/config.yaml not found", "[PATH] not found"},
+		{"path in middle redacted", "failed to open /app/service.go:42", "failed to open [PATH]"},
+		{"connection string redacted", "dial tcp://user:password@host:5432", "internal error"},
+		{"password keyword redacted", "invalid password for user admin", "internal error"},
+		{"goroutine trace redacted", "goroutine 1 [running]:", "internal error"},
+		{"windows path redacted", `error at C:\Users\app\main.go:10`, "error at [PATH]"},
+		{"url-like data not over-redacted", "status 404", "status 404"},
+		{"truncated at 256", string(make([]byte, 300)), string(make([]byte, 256))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeErrorMessage(tt.input)
+			require.Equal(t, tt.expect, got)
+		})
+	}
+}
