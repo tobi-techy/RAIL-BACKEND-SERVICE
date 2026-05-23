@@ -37,9 +37,17 @@ type SignupResponse struct {
 
 func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResponse, error) {
 	email := strings.ToLower(strings.TrimSpace(req.Email))
-	if email == "" || !strings.Contains(email, "@") || req.FullName == "" {
+	fullName := strings.TrimSpace(req.FullName)
+	if email == "" || !strings.Contains(email, "@") || fullName == "" {
 		return nil, fmt.Errorf("valid email and full_name are required")
 	}
+	if len(email) > 254 {
+		return nil, fmt.Errorf("email too long")
+	}
+	if len(fullName) > 200 {
+		return nil, fmt.Errorf("full_name too long")
+	}
+	req.FullName = fullName
 
 	existing, err := s.repo.GetByEmail(ctx, email)
 	if err != nil {

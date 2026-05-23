@@ -31,6 +31,12 @@ func (h *AnalyticsHandlers) Overview(c *gin.Context) {
 func (h *AnalyticsHandlers) Users(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
 	data, err := h.svc.GetUsers(c.Request.Context(), limit, offset)
 	if err != nil {
 		h.logger.Error("analytics users failed", zap.Error(err))
