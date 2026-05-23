@@ -179,17 +179,19 @@ func (r *AnalyticsRepository) GetUsers(ctx context.Context, limit, offset int) (
 		}
 	}
 
-	// User list
+	// User list - ordered by most recent activity, includes all deposit sources
 	userRows, err := r.db.QueryContext(ctx, `
 		SELECT u.id, COALESCE(u.first_name || ' ' || u.last_name, u.first_name, ''), u.email,
 			CASE WHEN u.updated_at > NOW() - INTERVAL '30 days' THEN 'Active'
 				 WHEN u.updated_at > NOW() - INTERVAL '90 days' THEN 'Inactive'
 				 ELSE 'Churned' END,
 			u.kyc_status,
-			COALESCE((SELECT SUM(amount) FROM deposits WHERE user_id = u.id AND status='confirmed'), 0),
+			COALESCE((SELECT SUM(amount) FROM deposits WHERE user_id = u.id AND status='confirmed'), 0) +
+			COALESCE((SELECT SUM(amount) FROM bridge_transactions WHERE user_id = u.id AND status='completed'), 0) +
+			COALESCE((SELECT SUM(token_amount) FROM paj_orders WHERE user_id = u.id AND order_type='onramp' AND status='completed'), 0),
 			u.updated_at,
 			COALESCE((SELECT SUM(message_count) FROM ai_conversations WHERE user_id = u.id), 0)
-		FROM users u ORDER BY u.created_at DESC LIMIT $1 OFFSET $2`, limit, offset)
+		FROM users u ORDER BY u.updated_at DESC LIMIT $1 OFFSET $2`, limit, offset)
 	if err == nil {
 		defer userRows.Close()
 		for userRows.Next() {
@@ -264,10 +266,19 @@ func (r *AnalyticsRepository) GetWaitlist(ctx context.Context) (*WaitlistData, e
 // ---- MIRIAM ----
 
 type MiriamData struct {
-	TotalMessages  KPI              `json:"total_messages"`
-	AvgSession     KPI              `json:"avg_session"`
-	DailyMessages  []TwoSeriesPoint `json:"daily_messages"`
-	TopicBreakdown []TimeSeriesPoint `json:"topics"`
+	TotalMessages  KPI               `json:"total_messages"`
+	AvgSession     KPI               `json:"avg_session"`
+	TotalSessions  KPI               `json:"total_sessions"`
+	ActiveUsers    KPI               `json:"active_users"`
+	DailyMessages  []TwoSeriesPoint  `json:"daily_messages"`
+	TopUsers       []MiriamUserRow   `json:"top_users"`
+}
+
+type MiriamUserRow struct {
+	Name     string `json:"name"`
+	Email    string `json:"email"`
+	Messages int    `json:"messages"`
+	Sessions int    `json:"sessions"`
 }
 
 func (r *AnalyticsRepository) GetMiriam(ctx context.Context) (*MiriamData, error) {
@@ -276,7 +287,9 @@ func (r *AnalyticsRepository) GetMiriam(ctx context.Context) (*MiriamData, error
 	d := &MiriamData{}
 
 	r.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(message_count), 0) FROM ai_conversations`).Scan(&d.TotalMessages.Value)
-	r.db.QueryRowContext(ctx, `SELECT COALESCE(AVG(message_count), 0) FROM ai_conversations`).Scan(&d.AvgSession.Value)
+	r.db.QueryRowContext(ctx, `SELECT COALESCE(AVG(message_count), 0) FROM ai_conversations WHERE message_count > 0`).Scan(&d.AvgSession.Value)
+	r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ai_conversations`).Scan(&d.TotalSessions.Value)
+	r.db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT user_id) FROM ai_conversations`).Scan(&d.ActiveUsers.Value)
 
 	// Daily messages (last 7 days)
 	rows, err := r.db.QueryContext(ctx, `
@@ -291,6 +304,22 @@ func (r *AnalyticsRepository) GetMiriam(ctx context.Context) (*MiriamData, error
 			var p TwoSeriesPoint
 			rows.Scan(&p.Label, &p.Value1, &p.Value2)
 			d.DailyMessages = append(d.DailyMessages, p)
+		}
+	}
+
+	// Top users by messages
+	topRows, err := r.db.QueryContext(ctx, `
+		SELECT COALESCE(u.first_name || ' ' || u.last_name, u.first_name, u.email),
+			u.email, COALESCE(SUM(c.message_count), 0), COUNT(c.id)
+		FROM ai_conversations c JOIN users u ON u.id = c.user_id
+		GROUP BY u.id, u.first_name, u.last_name, u.email
+		ORDER BY SUM(c.message_count) DESC LIMIT 15`)
+	if err == nil {
+		defer topRows.Close()
+		for topRows.Next() {
+			var row MiriamUserRow
+			topRows.Scan(&row.Name, &row.Email, &row.Messages, &row.Sessions)
+			d.TopUsers = append(d.TopUsers, row)
 		}
 	}
 
@@ -372,6 +401,7 @@ func (r *AnalyticsRepository) GetRetention(ctx context.Context) (*RetentionData,
 	r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE created_at < NOW() - INTERVAL '90 days' AND updated_at > NOW() - INTERVAL '30 days'`).Scan(&d90)
 	if total > 0 {
 		d.D30Retention.Value = (d30 / total) * 100
+		d.ChurnRate.Value = ((total - d30) / total) * 100
 	}
 	var total90 float64
 	r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE created_at < NOW() - INTERVAL '90 days'`).Scan(&total90)
