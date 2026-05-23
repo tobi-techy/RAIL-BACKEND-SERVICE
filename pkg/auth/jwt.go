@@ -164,11 +164,7 @@ func ValidateVoiceSessionToken(tokenString, secret string) (uuid.UUID, error) {
 	if claims.UserID == uuid.Nil {
 		return uuid.Nil, fmt.Errorf("voice session token missing user ID")
 	}
-	now := time.Now()
-	if claims.ExpiresAt != nil && claims.ExpiresAt.Time.Before(now) {
-		return uuid.Nil, fmt.Errorf("voice session token expired")
-	}
-	if claims.NotBefore != nil && claims.NotBefore.Time.After(now) {
+	if claims.NotBefore != nil && claims.NotBefore.Time.After(time.Now()) {
 		return uuid.Nil, fmt.Errorf("voice session token not yet valid")
 	}
 	if claims.Issuer != "rail_service" {

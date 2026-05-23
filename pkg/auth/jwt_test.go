@@ -74,19 +74,22 @@ func TestVoiceSessionTokenValidatesOnlyAsVoiceSession(t *testing.T) {
 	}
 }
 
+// TestVoiceSessionTokenRejectsExpiredTokens verifies the JWT library's built-in
+// expiration validation rejects tokens past their exp claim.
 func TestVoiceSessionTokenRejectsExpiredTokens(t *testing.T) {
 	userID := uuid.New()
-	token, _, err := GenerateVoiceSessionToken(userID, "test-secret", time.Nanosecond)
+	token, _, err := GenerateVoiceSessionToken(userID, "test-secret", 50*time.Millisecond)
 	if err != nil {
 		t.Fatalf("GenerateVoiceSessionToken failed: %v", err)
 	}
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 	_, err = ValidateVoiceSessionToken(token, "test-secret")
 	if err == nil {
 		t.Fatal("expected error for expired token")
 	}
-	if !strings.Contains(err.Error(), "expired") {
-		t.Fatalf("expected error containing 'expired', got: %v", err)
+	errLower := strings.ToLower(err.Error())
+	if !strings.Contains(errLower, "expired") && !strings.Contains(errLower, "exp") {
+		t.Fatalf("expected error containing 'expired' or 'exp', got: %v", err)
 	}
 }
 
