@@ -146,6 +146,8 @@ security:
 workers:
   count: 10
   job_timeout: 300
+  miriam_intelligence_local: true
+  miriam_intelligence_batch_size: 500
 
 # Legacy Circle configuration (deprecated; Bridge is primary)
 circle:

@@ -259,6 +259,75 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		c.JSON(200, gin.H{"status": "completed", "user_id": req.UserID, "amount": req.Amount})
 	})
 
+	// Internal Miriam evaluation trigger. Cloudflare Cron calls this endpoint;
+	// Rail keeps the financial execution, DB state, and audit trail in the backend.
+	if container.MiriamIntelligenceService != nil && container.UserRepo != nil {
+		internal.POST("/miriam/evaluate", func(c *gin.Context) {
+			var req struct {
+				UserID    string `json:"user_id"`
+				EventType string `json:"event_type"`
+				Limit     int    `json:"limit"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil && err != io.EOF {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			eventType := normalizeMiriamInternalEvent(req.EventType)
+			limit := req.Limit
+			if limit <= 0 {
+				limit = container.Config.Workers.MiriamIntelligenceBatchSize
+			}
+			if limit <= 0 || limit > 5000 {
+				limit = 500
+			}
+
+			var userIDs []uuid.UUID
+			if strings.TrimSpace(req.UserID) != "" {
+				userID, err := uuid.Parse(req.UserID)
+				if err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user_id"})
+					return
+				}
+				userIDs = []uuid.UUID{userID}
+			} else {
+				ids, err := container.UserRepo.ListMiriamWorkerUserIDs(c.Request.Context(), limit)
+				if err != nil {
+					container.ZapLog.Error("internal miriam evaluation: list users failed", zap.Error(err))
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list Miriam users"})
+					return
+				}
+				userIDs = ids
+			}
+
+			evaluated := 0
+			failed := 0
+			failedUsers := make([]string, 0)
+			for _, userID := range userIDs {
+				evalCtx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+				err := container.MiriamIntelligenceService.EvaluateUser(evalCtx, userID, eventType)
+				cancel()
+				if err != nil {
+					failed++
+					if len(failedUsers) < 20 {
+						failedUsers = append(failedUsers, userID.String())
+					}
+					container.ZapLog.Warn("internal miriam evaluation: user failed", zap.String("user_id", userID.String()), zap.Error(err))
+					continue
+				}
+				evaluated++
+			}
+
+			c.JSON(http.StatusOK, gin.H{
+				"status":       "completed",
+				"event_type":   eventType,
+				"requested":    len(userIDs),
+				"evaluated":    evaluated,
+				"failed":       failed,
+				"failed_users": failedUsers,
+			})
+		})
+	}
+
 	// Apple App Site Association — required for passkey Associated Domains
 	router.GET("/.well-known/apple-app-site-association", func(c *gin.Context) {
 		c.Header("Content-Type", "application/json")
@@ -1085,6 +1154,19 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					aiGroup.GET("/financial-advice", middleware.AuthRateLimit(20), aiChatHandlers.FinancialAdvice)
 					aiGroup.GET("/financial-timeline", middleware.AuthRateLimit(20), aiChatHandlers.FinancialTimeline)
 					aiGroup.GET("/miriam-brief", middleware.AuthRateLimit(20), aiChatHandlers.MiriamBrief)
+					if container.MiriamIntelligenceService != nil {
+						miriamHandler := handlers.NewMiriamIntelligenceHandler(container.MiriamIntelligenceService, container.ZapLog)
+						miriam := aiGroup.Group("/miriam")
+						{
+							miriam.GET("/state", middleware.AuthRateLimit(20), miriamHandler.GetState)
+							miriam.POST("/state/refresh", middleware.AuthRateLimit(10), miriamHandler.RefreshState)
+							miriam.GET("/mandates", middleware.AuthRateLimit(20), miriamHandler.ListMandates)
+							miriam.POST("/mandates", middleware.AuthRateLimit(10), miriamHandler.CreateMandate)
+							miriam.PATCH("/mandates/:id/status", middleware.AuthRateLimit(10), miriamHandler.UpdateMandateStatus)
+							miriam.GET("/receipts", middleware.AuthRateLimit(20), miriamHandler.ListReceipts)
+							miriam.POST("/receipts/:id/feedback", middleware.AuthRateLimit(20), miriamHandler.RecordFeedback)
+						}
+					}
 					aiGroup.GET("/suggestions", aiChatHandlers.GetSuggestedQuestions)
 					aiGroup.GET("/starters", middleware.AuthRateLimit(10), aiChatHandlers.GetConversationStarters)
 					aiGroup.POST("/nudge", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), aiChatHandlers.Nudge)
@@ -1515,4 +1597,13 @@ func createDistributedRateLimiter(container *di.Container) *ratelimit.Distribute
 func createRateLimitMiddleware(container *di.Container) gin.HandlerFunc {
 	distributedRL := createDistributedRateLimiter(container)
 	return distributedRL.Middleware()
+}
+
+func normalizeMiriamInternalEvent(eventType string) string {
+	switch strings.TrimSpace(eventType) {
+	case "idle_spend", "spending_spike", "bill_pressure", "income_lower_than_usual":
+		return strings.TrimSpace(eventType)
+	default:
+		return "worker_sweep"
+	}
 }

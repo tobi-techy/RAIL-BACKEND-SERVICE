@@ -44,6 +44,7 @@ import (
 	kyc_autoinvest "github.com/rail-service/rail_service/internal/workers/kyc_autoinvest"
 	"github.com/rail-service/rail_service/internal/workers/kyc_sync"
 	memory_worker "github.com/rail-service/rail_service/internal/workers/memory_worker"
+	miriam_worker "github.com/rail-service/rail_service/internal/workers/miriam_worker"
 	opportunity_sync "github.com/rail-service/rail_service/internal/workers/opportunity_sync"
 	paj_offramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_offramp_recovery"
 	paj_onramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_onramp_recovery"
@@ -93,6 +94,7 @@ type Application struct {
 	aiInsightsWorker             *ai_insights.Worker
 	automationWorker             *automation_worker.Worker
 	memoryWorker                 *memory_worker.Worker
+	miriamWorker                 *miriam_worker.Worker
 	dailyPulseWorker             *daily_pulse.Worker
 	growthMailWorker             *growth_mail.Worker
 	growthMailCancel             context.CancelFunc
@@ -397,6 +399,14 @@ func (app *Application) initializeWorkers() error {
 		app.automationWorker = automation_worker.NewWorker(app.container.AutomationService, app.log.Zap())
 		go app.automationWorker.Start(context.Background())
 		app.log.Info("Miriam automation worker started")
+	}
+
+	if app.cfg.Workers.MiriamIntelligenceLocal && app.container.MiriamIntelligenceService != nil && app.container.UserRepo != nil {
+		app.miriamWorker = miriam_worker.NewWorker(app.container.UserRepo, app.container.MiriamIntelligenceService, app.log.Zap())
+		go app.miriamWorker.Start(context.Background())
+		app.log.Info("Miriam intelligence worker started")
+	} else if !app.cfg.Workers.MiriamIntelligenceLocal {
+		app.log.Info("Miriam intelligence local worker disabled; expecting external scheduler")
 	}
 
 	// Opportunity sync worker — ingests Superteam Earn listings and generates weekly picks

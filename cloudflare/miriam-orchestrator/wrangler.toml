@@ -1,0 +1,10 @@
+name = "rail-miriam-orchestrator"
+main = "src/index.js"
+compatibility_date = "2026-05-23"
+
+[triggers]
+crons = ["*/15 * * * *"]
+
+[vars]
+RAIL_API_BASE_URL = "https://api.userail.money"
+BATCH_LIMIT = "500"
