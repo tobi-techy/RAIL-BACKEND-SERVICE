@@ -48,6 +48,8 @@ type OverviewData struct {
 }
 
 func (r *AnalyticsRepository) GetOverview(ctx context.Context) (*OverviewData, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	d := &OverviewData{}
 
 	// Total users
@@ -129,6 +131,8 @@ type UserRow struct {
 }
 
 func (r *AnalyticsRepository) GetUsers(ctx context.Context, limit, offset int) (*UsersData, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	d := &UsersData{}
 
 	r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&d.TotalUsers.Value)
@@ -186,6 +190,8 @@ type WaitlistData struct {
 }
 
 func (r *AnalyticsRepository) GetWaitlist(ctx context.Context) (*WaitlistData, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	d := &WaitlistData{}
 
 	r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM waitlist_users`).Scan(&d.Total.Value)
@@ -241,6 +247,8 @@ type MiriamData struct {
 }
 
 func (r *AnalyticsRepository) GetMiriam(ctx context.Context) (*MiriamData, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	d := &MiriamData{}
 
 	r.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(message_count), 0) FROM ai_conversations`).Scan(&d.TotalMessages.Value)
@@ -276,6 +284,8 @@ type MoneyMovementData struct {
 }
 
 func (r *AnalyticsRepository) GetMoneyMovement(ctx context.Context) (*MoneyMovementData, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	d := &MoneyMovementData{}
 
 	r.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(amount), 0) FROM deposits WHERE status = 'confirmed'`).Scan(&d.TotalDeposits.Value)
@@ -333,6 +343,8 @@ type CohortRow struct {
 }
 
 func (r *AnalyticsRepository) GetRetention(ctx context.Context) (*RetentionData, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	d := &RetentionData{}
 
 	var total, d30, d90 float64
@@ -376,6 +388,8 @@ type TrustData struct {
 }
 
 func (r *AnalyticsRepository) GetTrust(ctx context.Context) (*TrustData, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	d := &TrustData{}
 
 	r.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(amount), 0) FROM fraud_alerts WHERE status != 'dismissed'`).Scan(&d.FraudPrevented.Value)
@@ -415,6 +429,8 @@ type ChainStat struct {
 }
 
 func (r *AnalyticsRepository) GetChains(ctx context.Context) (*ChainsData, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	d := &ChainsData{}
 
 	r.db.QueryRowContext(ctx, `
