@@ -67,13 +67,23 @@ type KPI struct {
 
 // ---- OVERVIEW ----
 
+type ActivityEvent struct {
+	Type      string  `json:"type"`
+	UserName  string  `json:"user_name"`
+	Amount    float64 `json:"amount,omitempty"`
+	CreatedAt string  `json:"created_at"`
+}
+
 type OverviewData struct {
-	TotalUsers    KPI              `json:"total_users"`
-	NetDeposits   KPI              `json:"net_deposits"`
-	KYCCompletion KPI              `json:"kyc_completion"`
-	ChurnRate     KPI              `json:"churn_rate"`
-	DepositTrend  []TwoSeriesPoint `json:"deposit_trend"`
-	Funnel        []TimeSeriesPoint `json:"funnel"`
+	TotalUsers         KPI               `json:"total_users"`
+	NetDeposits        KPI               `json:"net_deposits"`
+	KYCCompletion      KPI               `json:"kyc_completion"`
+	ChurnRate          KPI               `json:"churn_rate"`
+	DepositTrend       []TwoSeriesPoint  `json:"deposit_trend"`
+	Funnel             []TimeSeriesPoint `json:"funnel"`
+	RecentActivity     []ActivityEvent   `json:"recent_activity"`
+	ActivationFunnel   []TimeSeriesPoint `json:"activation_funnel"`
+	WaitlistConversion KPI               `json:"waitlist_conversion"`
 }
 
 func (r *AnalyticsRepository) GetOverview(ctx context.Context) (*OverviewData, error) {
@@ -127,6 +137,42 @@ func (r *AnalyticsRepository) GetOverview(ctx context.Context) (*OverviewData, e
 		{Label: "Signups", Value: signupCount},
 		{Label: "KYC Done", Value: kycCount},
 		{Label: "Deposited", Value: depositedCount},
+	}
+
+	// Recent activity feed
+	actRows, err := r.db.QueryContext(ctx, `
+		(SELECT 'signup' as type, COALESCE(first_name, email) as user_name, 0::float as amount, created_at FROM users ORDER BY created_at DESC LIMIT 5)
+		UNION ALL
+		(SELECT 'deposit', COALESCE(u.first_name, u.email), d.amount, d.created_at FROM deposits d JOIN users u ON u.id = d.user_id WHERE d.status='confirmed' ORDER BY d.created_at DESC LIMIT 5)
+		ORDER BY created_at DESC LIMIT 10`)
+	if err == nil {
+		defer actRows.Close()
+		for actRows.Next() {
+			var ev ActivityEvent
+			var createdAt time.Time
+			actRows.Scan(&ev.Type, &ev.UserName, &ev.Amount, &createdAt)
+			ev.CreatedAt = timeAgo(createdAt)
+			d.RecentActivity = append(d.RecentActivity, ev)
+		}
+	}
+
+	// Activation funnel
+	var kycStarted, allocated float64
+	r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE kyc_status != 'pending'`).Scan(&kycStarted)
+	r.db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT user_id) FROM ledger_entries`).Scan(&allocated)
+	d.ActivationFunnel = []TimeSeriesPoint{
+		{Label: "Signups", Value: signupCount},
+		{Label: "KYC Started", Value: kycStarted},
+		{Label: "KYC Approved", Value: kycDone},
+		{Label: "First Deposit", Value: depositedCount},
+		{Label: "Allocated", Value: allocated},
+	}
+
+	// Waitlist conversion
+	var converted float64
+	r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM waitlist_users WHERE status = 'converted'`).Scan(&converted)
+	if waitlistCount > 0 {
+		d.WaitlistConversion.Value = (converted / waitlistCount) * 100
 	}
 
 	return d, nil
