@@ -28,6 +28,11 @@ func (h *Handlers) Signup(c *gin.Context) {
 		return
 	}
 
+	req.Email = strings.TrimSpace(req.Email)
+	req.FullName = strings.TrimSpace(req.FullName)
+	req.ReferralCode = strings.TrimSpace(req.ReferralCode)
+	req.Source = strings.TrimSpace(req.Source)
+
 	resp, err := h.svc.Signup(c.Request.Context(), req)
 	if err != nil {
 		errMsg := err.Error()
