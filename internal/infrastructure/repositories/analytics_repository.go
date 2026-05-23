@@ -255,10 +255,20 @@ func (r *AnalyticsRepository) GetUsers(ctx context.Context, limit, offset int) (
 // ---- WAITLIST ----
 
 type WaitlistData struct {
-	Total        KPI              `json:"total"`
-	ReferralRate KPI              `json:"referral_rate"`
-	Growth       []TimeSeriesPoint `json:"growth"`
-	Daily        []TwoSeriesPoint `json:"daily"`
+	Total        KPI               `json:"total"`
+	ReferralRate KPI               `json:"referral_rate"`
+	Growth       []TimeSeriesPoint  `json:"growth"`
+	Daily        []TwoSeriesPoint   `json:"daily"`
+	Users        []WaitlistUserRow  `json:"users"`
+}
+
+type WaitlistUserRow struct {
+	Name         string `json:"name"`
+	Email        string `json:"email"`
+	Status       string `json:"status"`
+	ReferralCode string `json:"referral_code"`
+	Position     int    `json:"position"`
+	CreatedAt    string `json:"created_at"`
 }
 
 func (r *AnalyticsRepository) GetWaitlist(ctx context.Context) (*WaitlistData, error) {
@@ -303,6 +313,21 @@ func (r *AnalyticsRepository) GetWaitlist(ctx context.Context) (*WaitlistData, e
 			var p TwoSeriesPoint
 			dRows.Scan(&p.Label, &p.Value1, &p.Value2)
 			d.Daily = append(d.Daily, p)
+		}
+	}
+
+	// All waitlist users
+	uRows, err := r.db.QueryContext(ctx, `
+		SELECT full_name, email, status, referral_code, position, created_at
+		FROM waitlist_users ORDER BY position ASC`)
+	if err == nil {
+		defer uRows.Close()
+		for uRows.Next() {
+			var row WaitlistUserRow
+			var createdAt time.Time
+			uRows.Scan(&row.Name, &row.Email, &row.Status, &row.ReferralCode, &row.Position, &createdAt)
+			row.CreatedAt = createdAt.Format("Jan 2, 2006")
+			d.Users = append(d.Users, row)
 		}
 	}
 
