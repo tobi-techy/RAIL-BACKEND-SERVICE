@@ -35,6 +35,7 @@ type IntelligenceOrchestrator struct {
 	dispatcher  *NotificationDispatcher
 	memory      MemoryReader
 	notifier    Notifier
+	healthScore *HealthScoreTracker
 	logger      *zap.Logger
 }
 
@@ -50,13 +51,14 @@ func NewIntelligenceOrchestrator(
 	dispatcher *NotificationDispatcher,
 	memory MemoryReader,
 	notifier Notifier,
+	healthScore *HealthScoreTracker,
 	logger *zap.Logger,
 ) *IntelligenceOrchestrator {
 	return &IntelligenceOrchestrator{
 		service: service, decisions: decisions, nudges: nudges,
 		predictions: predictions, signals: signals, suggestions: suggestions,
 		obDetector: obDetector, dispatcher: dispatcher, memory: memory,
-		notifier: notifier, logger: logger,
+		notifier: notifier, healthScore: healthScore, logger: logger,
 	}
 }
 
@@ -95,6 +97,28 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 		return nil, fmt.Errorf("refresh money state: %w", err)
 	}
 	result.MoneyState = state
+
+	// 1b. Compute and record financial health score
+	if o.healthScore != nil {
+		runway := state.LiquidityRunwayDays
+		o.healthScore.RecordScore(ctx, userID,
+			computeOverall(state),
+			computeBudgetScore(state),
+			computeSavingsScore(state),
+			computeDebtScore(state),
+			computeRunwayScore(runway),
+			computeStabilityScore(state),
+			generateHealthReasoning(state),
+			map[string]interface{}{
+				"income_cadence":  state.IncomeCadence,
+				"confidence":      state.ConfidenceLevel,
+				"anomaly_count":   state.AnomalyCount,
+				"runway_days":     state.LiquidityRunwayDays,
+				"monthly_income":  state.AvgMonthlyIncome.StringFixed(2),
+				"upcoming_bills":  state.UpcomingObligations.StringFixed(2),
+				"recurring_spend": state.RecurringSpendMonthly.StringFixed(2),
+			})
+	}
 
 	// 2. Generate predictions
 	predictions, err := o.predictions.GeneratePredictions(ctx, userID, state)
@@ -167,7 +191,7 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 
 	// 6. Generate proactive nudges
 	if predictions != nil && predictions.RiskScore > 20 {
-		nudges, err := o.nudges.GenerateProactiveNudges(ctx, userID, state)
+		nudges, err := o.nudges.GenerateProactiveNudgesWithPredictions(ctx, userID, state, predictions)
 		if err == nil {
 			result.NudgesGenerated = len(nudges)
 		}
@@ -239,12 +263,22 @@ func (o *IntelligenceOrchestrator) executeTransferToStash(ctx context.Context, u
 }
 
 func (o *IntelligenceOrchestrator) executeTransferToSpend(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, mandateID uuid.UUID) error {
-	// This would need a TransferStashToSpending method on the TransferExecutor.
-	// For now, we skip and record a receipt.
+	windowSec := int64(1440) * 60 // 24-hour window
+	idempotencyKey := fmt.Sprintf("miriam-autopilot-spend-%s-%d", mandateID.String(), time.Now().UTC().Unix()/windowSec)
+	if err := o.service.transfer.TransferStashToSpending(ctx, userID, amount, idempotencyKey); err != nil {
+		return fmt.Errorf("execute stash-to-spend transfer: %w", err)
+	}
+
 	if o.logger != nil {
-		o.logger.Info("stash-to-spend transfer not yet supported",
+		o.logger.Info("transferred stash to spend for bills",
 			zap.String("user_id", userID.String()),
-			zap.String("amount", amount.StringFixed(2)))
+			zap.String("amount", amount.StringFixed(2)),
+			zap.String("mandate_id", mandateID.String()))
+	}
+
+	if o.notifier != nil {
+		_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam moved money from Stash",
+			fmt.Sprintf("Moved $%s from Stash to Spending for upcoming bills.", amount.StringFixed(2)))
 	}
 	return nil
 }
@@ -282,4 +316,125 @@ func filterActionRelevantFacts(facts []*entities.MiriamUserFact) []entities.Miri
 		}
 	}
 	return relevant
+}
+
+// computeOverall derives an overall health score from money state (0–100).
+func computeOverall(state *entities.MiriamMoneyState) int {
+	runway := state.LiquidityRunwayDays
+	budgetScore := computeBudgetScore(state)
+	savingsScore := computeSavingsScore(state)
+	debtScore := computeDebtScore(state)
+	runwayScore := computeRunwayScore(runway)
+	stabilityScore := computeStabilityScore(state)
+	return int(
+		float64(savingsScore)*0.25 +
+			float64(budgetScore)*0.20 +
+			float64(runwayScore)*0.25 +
+			float64(debtScore)*0.15 +
+			float64(stabilityScore)*0.15,
+	)
+}
+
+func computeBudgetScore(state *entities.MiriamMoneyState) int {
+	if state.RecurringSpendMonthly.IsZero() || state.AvgMonthlyIncome.IsZero() {
+		return 60
+	}
+	ratio := state.RecurringSpendMonthly.Div(state.AvgMonthlyIncome).InexactFloat64()
+	switch {
+	case ratio <= 0.5:
+		return 100
+	case ratio <= 0.7:
+		return 80
+	case ratio <= 0.9:
+		return 60
+	default:
+		return 30
+	}
+}
+
+func computeSavingsScore(state *entities.MiriamMoneyState) int {
+	if state.AvgMonthlyIncome.IsZero() {
+		return 40
+	}
+	savingsRate := state.SafeToSpendDaily.Mul(decimal.NewFromInt(30)).Div(state.AvgMonthlyIncome).InexactFloat64()
+	switch {
+	case savingsRate >= 0.3:
+		return 100
+	case savingsRate >= 0.2:
+		return 80
+	case savingsRate >= 0.1:
+		return 60
+	case savingsRate >= 0.05:
+		return 40
+	default:
+		return 20
+	}
+}
+
+func computeDebtScore(state *entities.MiriamMoneyState) int {
+	if state.UpcomingObligations.IsZero() {
+		return 100
+	}
+	spend, _ := decimal.NewFromString("0")
+	spendBalance := state.SafeToSpendDaily.Mul(decimal.NewFromInt(30))
+	if spendBalance.IsPositive() {
+		spend = spendBalance
+	}
+	ratio := state.UpcomingObligations.Div(spend).InexactFloat64()
+	switch {
+	case ratio <= 0.3:
+		return 100
+	case ratio <= 0.5:
+		return 80
+	case ratio <= 0.75:
+		return 60
+	case ratio <= 1.0:
+		return 40
+	default:
+		return 20
+	}
+}
+
+func computeRunwayScore(runwayDays int) int {
+	switch {
+	case runwayDays >= 90:
+		return 100
+	case runwayDays >= 60:
+		return 80
+	case runwayDays >= 30:
+		return 60
+	case runwayDays >= 14:
+		return 40
+	default:
+		return 20
+	}
+}
+
+func computeStabilityScore(state *entities.MiriamMoneyState) int {
+	if state.RecurringSpendMonthly.IsZero() {
+		return 60
+	}
+	ratio := state.SafeToSpendDaily.Mul(decimal.NewFromInt(90)).Div(state.RecurringSpendMonthly).InexactFloat64()
+	switch {
+	case ratio >= 6.0:
+		return 100
+	case ratio >= 3.0:
+		return 80
+	case ratio >= 1.0:
+		return 60
+	case ratio >= 0.5:
+		return 40
+	default:
+		return 20
+	}
+}
+
+func generateHealthReasoning(state *entities.MiriamMoneyState) string {
+	runway := state.LiquidityRunwayDays
+	budgetScore := computeBudgetScore(state)
+	debtScore := computeDebtScore(state)
+	return fmt.Sprintf(
+		"Runway: %d days. Budget score: %d/100. Debt score: %d/100. Confidence: %s.",
+		runway, budgetScore, debtScore, state.ConfidenceLevel,
+	)
 }

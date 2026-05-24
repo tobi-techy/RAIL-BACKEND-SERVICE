@@ -1932,6 +1932,7 @@ func (c *Container) initializeDomainServices() error {
 	)
 	c.MiriamMandateSuggestionEngine = miriamservice.NewMandateSuggestionEngine(
 		suggestionRepo,
+		c.MiriamIntelligenceService, // MandateProvider
 		c.LedgerService,
 		moneyGuardSpendingSvc,
 		c.FinancialObligationService,
@@ -1965,6 +1966,7 @@ func (c *Container) initializeDomainServices() error {
 		c.MiriamNotificationDispatcher,
 		nil, // MemoryReader — deferred via SetMemory after memory service init
 		c.NotificationService,
+		c.MiriamHealthScoreTracker,
 		c.ZapLog,
 	)
 

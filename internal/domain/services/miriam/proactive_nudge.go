@@ -60,6 +60,16 @@ func (e *ProactiveNudgeEngine) GenerateProactiveNudges(ctx context.Context, user
 	if err != nil {
 		return nil, err
 	}
+	return e.generateFromSummary(ctx, userID, state, summary)
+}
+
+// GenerateProactiveNudgesWithPredictions generates nudges using pre-computed predictions,
+// avoiding duplicate prediction generation.
+func (e *ProactiveNudgeEngine) GenerateProactiveNudgesWithPredictions(ctx context.Context, userID uuid.UUID, state *entities.MiriamMoneyState, predictions *entities.PredictionSummary) ([]entities.ProactiveNudge, error) {
+	return e.generateFromSummary(ctx, userID, state, predictions)
+}
+
+func (e *ProactiveNudgeEngine) generateFromSummary(ctx context.Context, userID uuid.UUID, state *entities.MiriamMoneyState, summary *entities.PredictionSummary) ([]entities.ProactiveNudge, error) {
 
 	var nudges []entities.ProactiveNudge
 

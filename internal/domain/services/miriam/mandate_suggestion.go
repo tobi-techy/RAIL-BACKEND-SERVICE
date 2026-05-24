@@ -19,9 +19,15 @@ type MandateSuggestionRepository interface {
 	AcceptSuggestion(ctx context.Context, suggestionID uuid.UUID) (*entities.MiriamAutopilotMandate, error)
 }
 
+// MandateProvider checks whether a user already has an active mandate of a given type.
+type MandateProvider interface {
+	HasActiveMandate(ctx context.Context, userID uuid.UUID, actionType string) (bool, error)
+}
+
 // MandateSuggestionEngine analyzes user state and memory to propose new mandates.
 type MandateSuggestionEngine struct {
 	repo        MandateSuggestionRepository
+	mandaes     MandateProvider
 	balances    BalanceProvider
 	spending    SpendingProvider
 	obligations ObligationProvider
@@ -32,6 +38,7 @@ type MandateSuggestionEngine struct {
 // NewMandateSuggestionEngine creates a suggestion engine.
 func NewMandateSuggestionEngine(
 	repo MandateSuggestionRepository,
+	mandates MandateProvider,
 	balances BalanceProvider,
 	spending SpendingProvider,
 	obligations ObligationProvider,
@@ -39,7 +46,7 @@ func NewMandateSuggestionEngine(
 	logger *zap.Logger,
 ) *MandateSuggestionEngine {
 	return &MandateSuggestionEngine{
-		repo: repo, balances: balances, spending: spending,
+		repo: repo, mandaes: mandates, balances: balances, spending: spending,
 		obligations: obligations, profiles: profiles, logger: logger,
 	}
 }
@@ -229,8 +236,14 @@ func (e *MandateSuggestionEngine) suggestGoalContribution(userID uuid.UUID, stat
 }
 
 func (e *MandateSuggestionEngine) hasActiveMandate(ctx context.Context, userID uuid.UUID, actionType string) bool {
-	// This would check the service's repo. For now, always return false to allow suggestions.
-	return false
+	if e.mandaes == nil {
+		return false
+	}
+	exists, err := e.mandaes.HasActiveMandate(ctx, userID, actionType)
+	if err != nil {
+		return false
+	}
+	return exists
 }
 
 func truncateString(s string, maxLen int) string {

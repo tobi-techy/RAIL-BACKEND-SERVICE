@@ -60,6 +60,7 @@ type SafeToSpendProvider interface {
 
 type TransferExecutor interface {
 	TransferSpendingToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error
+	TransferStashToSpending(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error
 }
 
 type Notifier interface {
@@ -425,6 +426,20 @@ func (s *Service) recordDerivedEvents(ctx context.Context, state *entities.Miria
 		"anomaly_count": state.AnomalyCount,
 		"confidence":    state.ConfidenceLevel,
 	})
+}
+
+// HasActiveMandate checks if the user has any active mandate of the given action type.
+func (s *Service) HasActiveMandate(ctx context.Context, userID uuid.UUID, actionType string) (bool, error) {
+	mandates, err := s.repo.ListActiveMandates(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	for _, m := range mandates {
+		if m.ActionType == actionType {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *Service) moneyFlow(ctx context.Context, userID uuid.UUID, start, end time.Time) *entities.MoneyFlowSummary {

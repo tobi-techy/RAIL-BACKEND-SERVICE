@@ -332,17 +332,22 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					if reqCtx.Err() != nil {
 						return
 					}
-					evalCtx, cancel := context.WithTimeout(reqCtx, 10*time.Second)
-					err := container.MiriamIntelligenceService.EvaluateUser(evalCtx, userID, eventType)
-					cancel()
-					mu.Lock()
-					if err != nil {
-						failed++
-						if len(failedUsers) < 20 {
-							failedUsers = append(failedUsers, userID.String())
-						}
-						container.ZapLog.Warn("internal miriam evaluation: user failed", zap.String("user_id", userID.String()), zap.Error(err))
-					} else {
+				evalCtx, cancel := context.WithTimeout(reqCtx, 10*time.Second)
+				var evalErr error
+				if container.MiriamIntelligenceOrchestrator != nil {
+					_, evalErr = container.MiriamIntelligenceOrchestrator.Evaluate(evalCtx, userID, eventType)
+				} else {
+					evalErr = container.MiriamIntelligenceService.EvaluateUser(evalCtx, userID, eventType)
+				}
+				cancel()
+				mu.Lock()
+				if evalErr != nil {
+					failed++
+					if len(failedUsers) < 20 {
+						failedUsers = append(failedUsers, userID.String())
+					}
+					container.ZapLog.Warn("internal miriam evaluation: user failed", zap.String("user_id", userID.String()), zap.Error(evalErr))
+				} else {
 						evaluated++
 					}
 					mu.Unlock()
