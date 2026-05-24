@@ -78,17 +78,20 @@ const (
 
 // Mandate suggestion from the autonomous suggestion engine.
 type MiriamMandateSuggestion struct {
-	ID                  uuid.UUID       `json:"id"`
-	UserID              uuid.UUID       `json:"user_id"`
-	Name                string          `json:"name"`
-	ActionType          string          `json:"action_type"`
-	Reasoning           string          `json:"reasoning"`
-	SuggestedMaxAmount  decimal.Decimal `json:"suggested_max_amount"`
-	SuggestedMaxDay     decimal.Decimal `json:"suggested_max_day"`
-	SuggestedMinBalance decimal.Decimal `json:"suggested_min_balance"`
-	SuggestedCooldown   int             `json:"suggested_cooldown_minutes"`
-	Confidence          int             `json:"confidence"` // 0-100
-	CreatedAt           time.Time       `json:"created_at"`
+	ID                  uuid.UUID       `json:"id" db:"id"`
+	UserID              uuid.UUID       `json:"user_id" db:"user_id"`
+	Name                string          `json:"name" db:"name"`
+	ActionType          string          `json:"action_type" db:"action_type"`
+	Reasoning           string          `json:"reasoning" db:"reasoning"`
+	SuggestedMaxAmount  decimal.Decimal `json:"suggested_max_amount" db:"suggested_max_amount"`
+	SuggestedMaxDay     decimal.Decimal `json:"suggested_max_day" db:"suggested_max_day"`
+	SuggestedMinBalance decimal.Decimal `json:"suggested_min_balance" db:"suggested_min_balance"`
+	SuggestedCooldown   int             `json:"suggested_cooldown_minutes" db:"suggested_cooldown"`
+	Confidence          int             `json:"confidence" db:"confidence"` // 0-100
+	Status              string          `json:"status" db:"status"`         // pending, accepted, dismissed
+	CreatedAt           time.Time       `json:"created_at" db:"created_at"`
+	DismissedAt         *time.Time      `json:"dismissed_at,omitempty" db:"dismissed_at"`
+	AcceptedAt          *time.Time      `json:"accepted_at,omitempty" db:"accepted_at"`
 }
 
 // Financial health score tracked over time.

@@ -1896,6 +1896,11 @@ func (c *Container) initializeDomainServices() error {
 	predictionRepo := repositories.NewMiriamPredictionRepository(sqlxDB)
 	nudgeRepo := repositories.NewProactiveNudgeRepository(sqlxDB)
 	healthRepo := repositories.NewHealthScoreRepository(sqlxDB)
+	suggestionRepo := repositories.NewMandateSuggestionRepository(sqlxDB)
+	transactionRepo := repositories.NewTransactionRepository(sqlxDB)
+	transactionProvider := repositories.NewTransactionProviderAdapter(transactionRepo)
+	notifPrefRepo := repositories.NewNotificationPreferenceRepository(sqlxDB)
+	notifDigestRepo := repositories.NewNotificationDigestRepository(sqlxDB)
 
 	c.MiriamSignalDetector = miriamservice.NewSignalDetector(
 		contextSignalRepo,
@@ -1926,7 +1931,7 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog,
 	)
 	c.MiriamMandateSuggestionEngine = miriamservice.NewMandateSuggestionEngine(
-		nil, // MandateSuggestionRepository — pending migration
+		suggestionRepo,
 		c.LedgerService,
 		moneyGuardSpendingSvc,
 		c.FinancialObligationService,
@@ -1934,14 +1939,14 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog,
 	)
 	c.MiriamObligationDetector = miriamservice.NewObligationAutoDetector(
-		nil, // TransactionProvider — spending repo uses different interface
+		transactionProvider,
 		c.FinancialObligationService,
 		c.LedgerService,
 		c.ZapLog,
 	)
 	c.MiriamNotificationDispatcher = miriamservice.NewNotificationDispatcher(
-		nil, // NotificationPrefStore — pending migration
-		nil, // NotificationDigestStore — pending migration
+		notifPrefRepo,
+		notifDigestRepo,
 		c.NotificationService,
 		c.ZapLog,
 	)
