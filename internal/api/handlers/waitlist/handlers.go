@@ -28,10 +28,16 @@ func (h *Handlers) Signup(c *gin.Context) {
 		return
 	}
 
+	req.Email = strings.TrimSpace(req.Email)
+	req.FullName = strings.TrimSpace(req.FullName)
+	req.ReferralCode = strings.TrimSpace(req.ReferralCode)
+	req.Source = strings.TrimSpace(req.Source)
+
 	resp, err := h.svc.Signup(c.Request.Context(), req)
 	if err != nil {
-		if strings.Contains(err.Error(), "required") {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "required") || strings.Contains(errMsg, "too long") {
+			c.JSON(http.StatusBadRequest, gin.H{"error": errMsg})
 			return
 		}
 		h.logger.Error("waitlist signup failed", zap.Error(err))

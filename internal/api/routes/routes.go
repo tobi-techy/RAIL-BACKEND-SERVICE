@@ -20,6 +20,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/rail-service/rail_service/internal/api/handlers"
+	admin_handlers "github.com/rail-service/rail_service/internal/api/handlers/admin"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	kychandlers "github.com/rail-service/rail_service/internal/api/handlers/kyc"
 	securityHandlersV2 "github.com/rail-service/rail_service/internal/api/handlers/security"
@@ -148,6 +149,13 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	{
 		internal.GET("/users/lookup", internalHandlers.LookupUser)
 		internal.DELETE("/users/:id", internalHandlers.DeleteUser)
+	}
+
+	if container.GrowthEngineService != nil {
+		growthHandlers := handlers.NewGrowthEngineHandlers(container.GrowthEngineService, container.ZapLog)
+		internal.POST("/growth/events", growthHandlers.TrackEvent)
+		internal.POST("/growth/run", growthHandlers.RunSegmentation)
+		internal.GET("/growth/whatsapp-export", growthHandlers.ManualWhatsAppExport)
 	}
 
 	// Internal knowledge ingestion — auth handled by group middleware
@@ -573,6 +581,66 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			{
 				waitlist.POST("", middleware.RateLimit(10), wlHandlers.Signup)
 				waitlist.GET("/count", wlHandlers.Count)
+			}
+		}
+
+		// Dashboard auth (email-only for super_admins)
+		v1.POST("/dashboard/auth", middleware.RateLimit(5), func(c *gin.Context) {
+			var req struct {
+				Email string `json:"email" binding:"required"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(400, gin.H{"error": "email required"})
+				return
+			}
+			email := strings.ToLower(strings.TrimSpace(req.Email))
+			var userID, role string
+			err := container.DB.QueryRowContext(c.Request.Context(),
+				"SELECT id, role FROM users WHERE LOWER(email) = $1", email).Scan(&userID, &role)
+			if err != nil || (role != "admin" && role != "super_admin") {
+				c.JSON(401, gin.H{"error": "unauthorized"})
+				return
+			}
+			uid, _ := uuid.Parse(userID)
+			tokenPair, err := container.JWTService.GenerateTokenPairEnhanced(uid, email, role)
+			if err != nil {
+				c.JSON(500, gin.H{"error": "token generation failed"})
+				return
+			}
+			c.JSON(200, gin.H{"token": tokenPair.AccessToken, "role": role, "email": email})
+		})
+
+		// Dashboard analytics (JWT-only auth, no session required)
+		if container.AdminAnalyticsService != nil {
+			dashAnalytics := v1.Group("/dashboard/analytics")
+			dashAnalytics.Use(func(c *gin.Context) {
+				authHeader := c.GetHeader("Authorization")
+				if len(authHeader) < 8 || authHeader[:7] != "Bearer " {
+					c.JSON(401, gin.H{"error": "unauthorized"})
+					c.Abort()
+					return
+				}
+				claims, err := container.JWTService.ValidateEnhancedToken(authHeader[7:])
+				if err != nil {
+					c.JSON(401, gin.H{"error": "invalid token"})
+					c.Abort()
+					return
+				}
+				c.Set("user_id", claims.UserID.String())
+				c.Set("user_role", claims.Role)
+				c.Next()
+			})
+			dashAnalytics.Use(middleware.AdminAuth(container.DB, container.Logger))
+			{
+				ah := admin_handlers.NewAnalyticsHandlers(container.AdminAnalyticsService, container.ZapLog)
+				dashAnalytics.GET("/overview", ah.Overview)
+				dashAnalytics.GET("/users", ah.Users)
+				dashAnalytics.GET("/waitlist", ah.Waitlist)
+				dashAnalytics.GET("/miriam", ah.Miriam)
+				dashAnalytics.GET("/money-movement", ah.MoneyMovement)
+				dashAnalytics.GET("/retention", ah.Retention)
+				dashAnalytics.GET("/trust", ah.Trust)
+				dashAnalytics.GET("/chains", ah.Chains)
 			}
 		}
 
@@ -1159,6 +1227,21 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// AI Chat endpoints (AI Financial Manager)
 			if container.GetAIOrchestrator() != nil {
 				aiChatHandlers := handlers.NewAIChatHandlers(container.GetAIOrchestrator(), container.GetConversationService(), container.Logger)
+				var voiceHandler interface {
+					HandleSession(*gin.Context)
+					IssueSessionToken(*gin.Context)
+				}
+				if container.Config.AI.AssemblyAI.APIKey != "" {
+					voiceHandler = handlers.NewVoiceHandler(
+						container.Config.AI.AssemblyAI.APIKey,
+						container.Config.JWT.Secret,
+						container.Config.AI.AssemblyAI.Voice,
+						container.GetAIOrchestrator(),
+						container.GetUsageService(),
+						container.Config.Server.AllowedOrigins,
+						container.ZapLog,
+					)
+				}
 				aiGroup := protected.Group("/ai")
 				{
 					aiGroup.POST("/chat", middleware.AuthRateLimit(20), middleware.PerUserRateLimit(20), aiChatHandlers.Chat)
@@ -1270,16 +1353,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						aiGroup.GET("/goals/progress", middleware.AuthRateLimit(10), premiumHandlers.GoalProgress)
 					}
 
-					// Voice session (WebSocket)
-					if container.Config.AI.AssemblyAI.APIKey != "" {
-						voiceHandler := handlers.NewVoiceHandler(
-							container.Config.AI.AssemblyAI.APIKey,
-							container.Config.AI.AssemblyAI.Voice,
-							container.GetAIOrchestrator(),
-							container.GetUsageService(),
-							container.Config.Server.AllowedOrigins,
-							container.ZapLog,
-						)
+					// Voice session ticket (protected); WebSocket uses the short-lived ticket.
+					if voiceHandler != nil {
+						aiGroup.POST("/voice/session-token", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), voiceHandler.IssueSessionToken)
 						aiGroup.GET("/voice/session", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), voiceHandler.HandleSession)
 					}
 				}
@@ -1402,6 +1478,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				wlHandlers := waitlisthandlers.NewHandlers(container.WaitlistService, container.ZapLog)
 				admin.GET("/waitlist", wlHandlers.List)
 			}
+
+			// Analytics admin routes
+			// Analytics routes moved to /api/v1/dashboard/analytics (JWT-only auth)
 
 			// Security admin routes
 			adminMFAHandlers := handlers.NewMFAHandlers(

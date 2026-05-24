@@ -37,6 +37,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/copytrading"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/domain/services/gameplay"
+	"github.com/rail-service/rail_service/internal/domain/services/growthengine"
 	"github.com/rail-service/rail_service/internal/domain/services/growthmail"
 	"github.com/rail-service/rail_service/internal/domain/services/integration"
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
@@ -1221,6 +1222,7 @@ type Container struct {
 	LedgerRepo                *repositories.LedgerRepository
 	ReconciliationRepo        repositories.ReconciliationRepository
 	GrowthMailRepo            *repositories.GrowthMailRepository
+	GrowthEngineRepo          *repositories.GrowthEngineRepository
 
 	// External Services
 	AlpacaClient       *alpaca.Client
@@ -1284,6 +1286,7 @@ type Container struct {
 	MiriamIntelligenceService  *miriamservice.Service
 	AutomationService          *automation.Service
 	GrowthMailService          *growthmail.Service
+	GrowthEngineService        *growthengine.Service
 	NotificationService        *services.NotificationService
 	SocialAuthService          *socialauth.Service
 	WebAuthnService            *webauthn.Service
@@ -1467,6 +1470,10 @@ type Container struct {
 	// Waitlist
 	WaitlistRepo    *repositories.WaitlistRepository
 	WaitlistService *waitlistsvc.Service
+
+	// Admin Analytics
+	AdminAnalyticsRepo    *repositories.AnalyticsRepository
+	AdminAnalyticsService *analyticsservice.Service
 }
 
 // NewContainer creates a new dependency injection container
@@ -1500,6 +1507,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	reconciliationRepo := repositories.NewPostgresReconciliationRepository(db)
 	onboardingJobRepo := repositories.NewOnboardingJobRepository(db, zapLog)
 	growthMailRepo := repositories.NewGrowthMailRepository(db)
+	growthEngineRepo := repositories.NewGrowthEngineRepository(db)
 
 	// Initialize premium feature repositories
 	familySupportRepo := repositories.NewFamilySupportRepository(sqlxDB)
@@ -1653,6 +1661,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		ReconciliationRepo:        reconciliationRepo,
 		OnboardingJobRepo:         onboardingJobRepo,
 		GrowthMailRepo:            growthMailRepo,
+		GrowthEngineRepo:          growthEngineRepo,
 		FamilySupportRepo:         familySupportRepo,
 		ScamRepo:                  scamRepo,
 		TaxResidencyRepo:          taxResidencyRepo,
@@ -1718,6 +1727,10 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	// Initialize waitlist
 	container.WaitlistRepo = repositories.NewWaitlistRepository(db, zapLog)
 	container.WaitlistService = waitlistsvc.NewService(container.WaitlistRepo, zapLog)
+
+	// Initialize admin analytics
+	container.AdminAnalyticsRepo = repositories.NewAnalyticsRepository(db, zapLog)
+	container.AdminAnalyticsService = analyticsservice.NewService(container.AdminAnalyticsRepo, container.RedisClient, zapLog)
 
 	return container, nil
 }
@@ -2247,6 +2260,25 @@ func (c *Container) initializeDomainServices() error {
 		c.NotificationService.SetEmailSender(adapters.NewEmailSenderAdapter(c.EmailService))
 	}
 	c.NotificationService.SetUserEmailLookup(adapters.NewUserEmailLookup(c.UserRepo))
+
+	if c.GrowthEngineRepo != nil {
+		var growthPush growthengine.PushSender
+		if c.SNSPushService != nil {
+			growthPush = c.SNSPushService
+		} else if c.ExpoPushService != nil {
+			growthPush = c.ExpoPushService
+		}
+		if growthPush == nil {
+			c.ZapLog.Warn("growth engine initialized without push sender; push campaigns will fail gracefully")
+		}
+		c.GrowthEngineService = growthengine.NewService(
+			c.GrowthEngineRepo,
+			c.EmailService,
+			growthPush,
+			growthengine.Config{Limit: 1000},
+			c.ZapLog,
+		)
+	}
 
 	// Wire push notifier into gameplay services (now that push provider is resolved)
 	// Use SNS if available, otherwise Expo

@@ -1,0 +1,1 @@
+-- no-op: cannot restore deleted test entries

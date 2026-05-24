@@ -72,7 +72,6 @@ func (o *Orchestrator) buildUserProfileContext(ctx context.Context, userID uuid.
 // the voice session starts. Keep it calm, contextual, and privacy-aware.
 func (o *Orchestrator) BuildRealtimeGreeting(ctx context.Context, userID uuid.UUID) string {
 	name := o.realtimeFirstName(ctx, userID)
-	insight := o.realtimeProactiveInsight(ctx, userID)
 
 	loc, _, _ := o.resolveMiriamLocation(ctx, userID, nil)
 	if loc == nil {
@@ -107,9 +106,6 @@ func (o *Orchestrator) BuildRealtimeGreeting(ctx context.Context, userID uuid.UU
 		}
 	}
 
-	if insight != "" {
-		return fmt.Sprintf("%s %s", greeting, insight)
-	}
 	return greeting
 }
 
@@ -223,27 +219,6 @@ func (o *Orchestrator) realtimeHasBalanceContext(ctx context.Context, userID uui
 // used by text chat. It is best-effort: missing context is skipped.
 func (o *Orchestrator) BuildRealtimeInstructions(ctx context.Context, userID uuid.UUID) string {
 	parts := []string{SystemPrompt}
-	if balanceCtx := o.buildBalanceContext(ctx, userID); balanceCtx != "" {
-		parts = append(parts, balanceCtx)
-	}
-	if profileCtx := o.buildFinancialProfileContext(ctx, userID); profileCtx != "" {
-		parts = append(parts, profileCtx)
-	}
-	if userProfileCtx := o.buildUserProfileContext(ctx, userID); userProfileCtx != "" {
-		parts = append(parts, userProfileCtx)
-	}
-	if o.memory != nil {
-		if memCtx := o.memory.BuildMemoryContextWithSummary(ctx, userID); memCtx != "" {
-			parts = append(parts, memCtx)
-		}
-		if toneCtx := o.memory.BuildToneContext(ctx, userID); toneCtx != "" {
-			parts = append(parts, toneCtx)
-		}
-	}
-	// Inject recent conversation summaries for continuity
-	if convCtx := o.buildRecentConversationContext(ctx, userID); convCtx != "" {
-		parts = append(parts, convCtx)
-	}
 	if timeCtx := o.buildUserTimeContext(ctx, userID); timeCtx != "" {
 		parts = append(parts, timeCtx)
 	}
@@ -320,11 +295,10 @@ Things you CAN do by calling tools:
 - Check deposits, withdrawals, income trend, yield, receipts, tax summaries, goals, obligations, automations, profile, memory, subscriptions, runway, audit, health, advice, timeline, and knowledge-base topics (voice_money_lookup)
 - Set or update the user's monthly spending budget (set_budget or voice_money_action action=set_budget) — MUST call the tool
 - Move money between spend and stash (transfer_funds) — MUST call this tool
-- Withdraw to bank (initiate_withdrawal) — MUST call this tool
-- Create automations (create_automation) — MUST call this tool
+	- Create automations (create_automation) — MUST call this tool
 - Set savings goals (set_savings_goal) — MUST call this tool
 - Create bill reminders (create_obligation_reminder) — MUST call this tool
-- Get bank accounts (get_linked_banks)
+	- Get bank accounts (get_linked_banks). Voice can explain linked banks, but withdrawals must continue in the app for verified destination confirmation.
 
 Things you CANNOT do:
 - Anything not listed above
