@@ -80,6 +80,20 @@ func (r *ProactiveNudgeRepository) ExpireOldNudges(ctx context.Context, before t
 	return result.RowsAffected()
 }
 
+func (r *ProactiveNudgeRepository) HasRecentNudgeByType(ctx context.Context, userID uuid.UUID, triggerType string, since time.Time) (bool, error) {
+	var count int
+	err := r.db.GetContext(ctx, &count, `
+		SELECT COUNT(*)
+		FROM proactive_nudges
+		WHERE user_id = $1
+		  AND trigger_type = $2
+		  AND created_at >= $3`, userID, triggerType, since)
+	if err != nil {
+		return false, fmt.Errorf("has recent nudge by type: %w", err)
+	}
+	return count > 0, nil
+}
+
 func (r *ProactiveNudgeRepository) GetNudge(ctx context.Context, nudgeID uuid.UUID) (*entities.ProactiveNudge, error) {
 	var n entities.ProactiveNudge
 	err := r.db.GetContext(ctx, &n, `

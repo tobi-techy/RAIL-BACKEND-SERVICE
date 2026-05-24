@@ -20,6 +20,7 @@ type ProactiveNudgeStore interface {
 	MarkDelivered(ctx context.Context, nudgeID uuid.UUID) error
 	MarkDismissed(ctx context.Context, nudgeID uuid.UUID) error
 	ExpireOldNudges(ctx context.Context, before time.Time) (int64, error)
+	HasRecentNudgeByType(ctx context.Context, userID uuid.UUID, triggerType string, since time.Time) (bool, error)
 }
 
 // ProactiveNudgeEngine generates context-aware push notifications.
@@ -102,9 +103,14 @@ func (e *ProactiveNudgeEngine) generateFromSummary(ctx context.Context, userID u
 	// Select top 3 by priority, deduplicate by trigger type
 	nudges = selectTopNudges(nudges, 3)
 
-	// Persist and deliver
+	dedupWindow := 12 * time.Hour
+
 	for i := range nudges {
 		if e.store != nil {
+			same, err := e.store.HasRecentNudgeByType(ctx, userID, nudges[i].TriggerType, time.Now().UTC().Add(-dedupWindow))
+			if err == nil && same {
+				continue
+			}
 			if err := e.store.CreateNudge(ctx, &nudges[i]); err != nil && e.logger != nil {
 				e.logger.Warn("nudge creation failed", zap.Error(err))
 				continue
