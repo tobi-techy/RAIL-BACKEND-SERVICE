@@ -552,7 +552,22 @@ func (s *Service) CreateOnrampOrder(ctx context.Context, userID uuid.UUID, fiatA
 // --- Offramp (USDC → NGN) ---
 
 // RailNGNWithdrawalFeeNGN is Rail's flat fee for NGN withdrawals (in Naira).
+// NIP payout cost from Anchor.
 const RailNGNWithdrawalFeeNGN float64 = 50.0
+
+// StampDutyNGN is the CBN-mandated stamp duty on transfers over ₦10,000.
+const StampDutyNGN float64 = 50.0
+
+// StampDutyThresholdNGN is the amount above which stamp duty applies.
+const StampDutyThresholdNGN float64 = 10000.0
+
+// GetNGNWithdrawalFee returns the total fee in NGN for a given withdrawal amount.
+func GetNGNWithdrawalFee(fiatAmount float64) float64 {
+	if fiatAmount > StampDutyThresholdNGN {
+		return RailNGNWithdrawalFeeNGN + StampDutyNGN
+	}
+	return RailNGNWithdrawalFeeNGN
+}
 
 func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bankID, accountNumber string, fiatAmount float64, currency string) (*OfframpResult, error) {
 	// Quick sanity check before any API calls.
@@ -599,8 +614,9 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 	estimatedUSDC := decimal.NewFromFloat(fiatAmount).Div(decimal.NewFromFloat(rates.OffRampRate.Rate))
 	estimatedUSDC = estimatedUSDC.Mul(decimal.NewFromFloat(1.01)).Round(2)
 
-	// Rail's flat fee for NGN withdrawals: ₦50 converted to USDC at current rate.
-	railFee := decimal.NewFromFloat(RailNGNWithdrawalFeeNGN).Div(decimal.NewFromFloat(rates.OffRampRate.Rate)).Round(4)
+	// Rail's fee for NGN withdrawals: ₦50 NIP + ₦50 stamp duty if >₦10k, converted to USDC.
+	feeNGN := GetNGNWithdrawalFee(fiatAmount)
+	railFee := decimal.NewFromFloat(feeNGN).Div(decimal.NewFromFloat(rates.OffRampRate.Rate)).Round(4)
 
 	// Total hold = estimated USDC (with slippage buffer) + Rail fee.
 	// Paj's fee is included in order.Amount (Paj deducts it from the token amount).
@@ -710,7 +726,7 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 
 	return &OfframpResult{
 		Order:   order,
-		RailFee: RailNGNWithdrawalFeeNGN,
+		RailFee: feeNGN,
 	}, nil
 }
 
