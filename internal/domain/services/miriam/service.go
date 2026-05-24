@@ -379,7 +379,13 @@ func (s *Service) evaluateTransferToStash(ctx context.Context, state *entities.M
 	amount = amount.RoundBank(2)
 	reason := fmt.Sprintf("Moved $%s to Stash because Spend was $%s above the approved floor and safe-to-spend was $%s/day.",
 		amount.StringFixed(2), availableAboveFloor.StringFixed(2), state.SafeToSpendDaily.StringFixed(2))
-	idempotencyKey := fmt.Sprintf("miriam-autopilot-%s-%s-%s", mandate.ID.String(), now.Format("20060102"), state.UserID.String())
+	// Idempotency key uses cooldown-window granularity to dedupe concurrent/retried
+	// evaluations while allowing multiple transfers per day (capped by MaxAmountPerDay).
+	windowSec := int64(mandate.CooldownMinutes) * 60
+	if windowSec <= 0 {
+		windowSec = 300 // 5-minute default window
+	}
+	idempotencyKey := fmt.Sprintf("miriam-autopilot-%s-%d", mandate.ID.String(), now.Unix()/windowSec)
 	if err := s.transfer.TransferSpendingToStash(ctx, state.UserID, amount, idempotencyKey); err != nil {
 		errMsg := err.Error()
 		return s.createReceipt(ctx, state.UserID, &mandate, eventType, entities.MiriamReceiptStatusFailed, amount, reason, &errMsg)
