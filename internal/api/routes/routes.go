@@ -321,11 +321,17 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			)
 
 			for _, uid := range userIDs {
+				if reqCtx.Err() != nil {
+					break
+				}
 				wg.Add(1)
 				sem <- struct{}{}
 				go func(userID uuid.UUID) {
 					defer wg.Done()
 					defer func() { <-sem }()
+					if reqCtx.Err() != nil {
+						return
+					}
 					evalCtx, cancel := context.WithTimeout(reqCtx, 10*time.Second)
 					err := container.MiriamIntelligenceService.EvaluateUser(evalCtx, userID, eventType)
 					cancel()

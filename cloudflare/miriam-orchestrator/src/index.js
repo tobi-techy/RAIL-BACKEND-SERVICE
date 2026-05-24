@@ -16,7 +16,7 @@ export default {
     if (request.method === "POST" && url.pathname === "/evaluate") {
       const authHeader = request.headers.get("Authorization");
       const expectedKey = env.ORCHESTRATOR_API_KEY;
-      if (!expectedKey || !authHeader || authHeader !== `Bearer ${expectedKey}`) {
+      if (!expectedKey || !authHeader || !timingSafeEqual(authHeader, `Bearer ${expectedKey}`)) {
         return json({ error: "unauthorized" }, 401);
       }
       const result = await runMiriamEvaluation(env, "manual");
@@ -42,13 +42,22 @@ async function runMiriamEvaluation(env, source) {
     return { ok: false, status: 0, source, error: response.error };
   }
 
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({
+      error: "upstream_error",
+      message: `Upstream returned status ${response.status}`,
+      status: response.status,
+    }));
+    return { ok: false, status: response.status, source, result: payload };
+  }
+
   const payload = await response.json().catch(() => ({
     error: "json_parse_failed",
     message: "Failed to parse response body as JSON",
     status: response.status,
   }));
   return {
-    ok: response.ok,
+    ok: true,
     status: response.status,
     source,
     result: payload,
@@ -108,4 +117,16 @@ function json(payload, status = 200) {
       "Cache-Control": "no-store",
     },
   });
+}
+
+function timingSafeEqual(a, b) {
+  const encoder = new TextEncoder();
+  const aBuf = encoder.encode(a);
+  const bBuf = encoder.encode(b);
+  if (aBuf.byteLength !== bBuf.byteLength) {
+    // Compare against self to keep constant time, then return false
+    crypto.subtle.timingSafeEqual(aBuf, aBuf);
+    return false;
+  }
+  return crypto.subtle.timingSafeEqual(aBuf, bBuf);
 }
