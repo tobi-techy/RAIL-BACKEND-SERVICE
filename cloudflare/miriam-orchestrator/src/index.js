@@ -123,11 +123,12 @@ function timingSafeEqual(a, b) {
   const encoder = new TextEncoder();
   const aBuf = encoder.encode(a);
   const bBuf = encoder.encode(b);
+  const lengthsEqual = aBuf.byteLength === bBuf.byteLength;
   const maxLen = Math.max(aBuf.byteLength, bBuf.byteLength);
   const aPadded = new Uint8Array(maxLen);
   const bPadded = new Uint8Array(maxLen);
   aPadded.set(aBuf);
   bPadded.set(bBuf);
   const equal = crypto.subtle.timingSafeEqual(aPadded, bPadded);
-  return equal && aBuf.byteLength === bBuf.byteLength;
+  return lengthsEqual && equal;
 }
