@@ -61,8 +61,7 @@ CREATE TABLE IF NOT EXISTS miriam_predictions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_predictions_user_active
-    ON miriam_predictions(user_id, expires_at)
-    WHERE expires_at > NOW();
+    ON miriam_predictions(user_id, expires_at);
 
 CREATE INDEX IF NOT EXISTS idx_predictions_type
     ON miriam_predictions(prediction_type, severity);

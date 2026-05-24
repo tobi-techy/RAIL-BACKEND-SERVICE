@@ -58,6 +58,9 @@ type DetectedObligation struct {
 // DetectRecurringPayments analyzes the last 90 days of transactions to
 // find recurring payment patterns and returns suggested obligations.
 func (d *ObligationAutoDetector) DetectRecurringPayments(ctx context.Context, userID uuid.UUID) ([]DetectedObligation, error) {
+	if d.transactions == nil {
+		return nil, nil
+	}
 	// Get last 120 days of transactions (enough to detect monthly patterns)
 	transactions, err := d.transactions.GetUserTransactions(ctx, userID, 200, 0)
 	if err != nil {
