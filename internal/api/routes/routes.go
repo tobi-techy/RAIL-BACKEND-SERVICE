@@ -469,8 +469,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	// Initialize integration handlers (Alpaca only)
 	integrationHandlers := handlers.NewIntegrationHandlers(
 		container.AlpacaClient,
-		nil, // Deprecated: Due service removed
-		"",  // Deprecated: Due webhook secret removed
 		services.NewNotificationService(container.ZapLog),
 		container.Logger,
 	)
@@ -1249,6 +1247,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						container.Config.AI.AssemblyAI.Voice,
 						container.GetAIOrchestrator(),
 						container.GetUsageService(),
+						container.GetConversationService(),
 						container.Config.Server.AllowedOrigins,
 						container.ZapLog,
 					)
@@ -1282,6 +1281,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					}
 					aiGroup.GET("/suggestions", aiChatHandlers.GetSuggestedQuestions)
 					aiGroup.GET("/starters", middleware.AuthRateLimit(10), aiChatHandlers.GetConversationStarters)
+					aiGroup.GET("/proactive-opener", middleware.AuthRateLimit(10), aiChatHandlers.GetProactiveOpener)
 					aiGroup.POST("/nudge", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), aiChatHandlers.Nudge)
 					enhancedNudgeHandler := handlers.NewEnhancedNudgeHandler(container.GetAIOrchestrator(), container.ZapLog)
 					aiGroup.POST("/nudge/enhanced", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), enhancedNudgeHandler.HandleEnhancedNudge)

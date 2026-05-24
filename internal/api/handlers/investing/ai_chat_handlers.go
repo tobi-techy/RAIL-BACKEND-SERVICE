@@ -676,6 +676,20 @@ func (h *AIChatHandlers) GetSuggestedQuestions(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"suggestions": suggestions})
 }
 
+// GetProactiveOpener handles GET /api/v1/ai/proactive-opener
+// Returns a personalized greeting, suggestions, and action chips
+// based on the user's financial state, replacing the static empty-state greeting.
+func (h *AIChatHandlers) GetProactiveOpener(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	opener := h.orchestrator.GetProactiveOpener(c.Request.Context(), userID)
+	c.JSON(http.StatusOK, opener)
+}
+
 // GetConversationStarters handles GET /api/v1/ai/starters
 // Returns AI-generated contextual conversation starters based on the user's financial state.
 func (h *AIChatHandlers) GetConversationStarters(c *gin.Context) {

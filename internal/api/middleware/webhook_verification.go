@@ -17,7 +17,6 @@ import (
 type WebhookProviderConfig struct {
 	BridgeSecret string
 	AlpacaSecret string
-	DueSecret    string
 }
 
 // HardenedWebhookVerification creates middleware for per-provider webhook signature + timestamp validation
@@ -32,11 +31,6 @@ func HardenedWebhookVerification(config WebhookProviderConfig, logger *zap.Logge
 	if config.AlpacaSecret != "" {
 		validators["alpaca"] = webhook.NewWebhookValidator(webhook.WebhookSecurityConfig{
 			Secret: config.AlpacaSecret, MaxTimestampAge: 300, RequireSignature: true,
-		})
-	}
-	if config.DueSecret != "" {
-		validators["due"] = webhook.NewWebhookValidator(webhook.WebhookSecurityConfig{
-			Secret: config.DueSecret, MaxTimestampAge: 300, RequireSignature: true,
 		})
 	}
 

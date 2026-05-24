@@ -1,0 +1,174 @@
+package ai
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"github.com/shopspring/decimal"
+	"go.uber.org/zap"
+)
+
+// ProactiveOpener is returned by the proactive opener endpoint.
+type ProactiveOpener struct {
+	Greeting      string       `json:"greeting"`
+	BubbleMessage string       `json:"bubble_message"`
+	Subtitle      string       `json:"subtitle,omitempty"`
+	Severity      string       `json:"severity"`
+	Suggestions   []Suggestion `json:"suggestions"`
+	ActionChips   []ActionChip `json:"action_chips,omitempty"`
+}
+
+// Suggestion is a prompt suggestion shown to the user.
+type Suggestion struct {
+	Text     string `json:"text"`
+	Category string `json:"category,omitempty"`
+}
+
+// ActionChip is a one-tap action button shown below a chat response.
+type ActionChip struct {
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Type        string `json:"type"`
+	Description string `json:"description,omitempty"`
+}
+
+// GetProactiveOpener returns a personalized greeting and suggestions
+// based on the user's current financial state and active predictions.
+// Used to replace the static empty-state greeting with something reactive.
+func (o *Orchestrator) GetProactiveOpener(ctx context.Context, userID uuid.UUID) *ProactiveOpener {
+	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+
+	bubble, greeting, suggestions, chips := o.generateProactiveContent(ctx, userID)
+	if greeting == "" {
+		return o.fallbackProactiveOpener()
+	}
+	if len(suggestions) == 0 {
+		suggestions = o.fallbackSuggestions()
+	}
+	if bubble == "" {
+		bubble = greeting
+	}
+
+	return &ProactiveOpener{
+		BubbleMessage: bubble,
+		Greeting:      greeting,
+		Severity:      "info",
+		Suggestions:   suggestions,
+		ActionChips:   chips,
+	}
+}
+
+func (o *Orchestrator) generateProactiveContent(ctx context.Context, userID uuid.UUID) (string, string, []Suggestion, []ActionChip) {
+	snapshot := o.buildStarterContext(ctx, userID)
+	if snapshot == "" {
+		return "", "", nil, nil
+	}
+
+	now := time.Now().UTC()
+	timeContext := fmt.Sprintf("Day: %s, time: %s", now.Format("Monday"), now.Format("3pm"))
+
+	prompt := fmt.Sprintf(`Based on this user's financial snapshot, generate a short teaser message and a greeting.
+
+1. "bubble_message": ONE very short teaser (max 8 words) that appears in a chat bubble above Miriam's head on the home screen. It should be intriguing enough to make someone tap. Examples: "You spent 40 percent more on dining" or "Your savings hit a milestone" or "Overspent on groceries again" or "This month is looking tight".
+
+2. "greeting": ONE short, punchy greeting (max 12 words) that makes them want to tap and chat. Lead with the most interesting or urgent thing — a spending pattern, a balance insight, a saving opportunity. Never generic like "How can I help?" or "What's up?"
+
+3. "suggestions": exactly 4 short follow-up prompts (max 8 words each) specific to their numbers.
+
+Return JSON only, no markdown:
+{"bubble_message":"...","greeting":"...","suggestions":[{"text":"...","category":"spending|saving|insight|action"}...]}
+
+User snapshot:
+%s
+%s`, snapshot, timeContext)
+
+	resp, err := o.aiProvider.ChatCompletion(ctx, &ai.ChatRequest{
+		Messages:     []ai.Message{{Role: "user", Content: prompt}},
+		SystemPrompt: "You generate punchy, personalized conversation openers for a money app. Be specific with numbers. No emojis. Never generic. Return only valid JSON.",
+		MaxTokens:    400,
+		Temperature:  ai.Float64(0.7),
+		ModelHint:    "fast",
+	})
+	if err != nil {
+		o.logger.Debug("proactive opener: AI failed", zap.Error(err))
+		return "", "", nil, nil
+	}
+
+	type openerResponse struct {
+		BubbleMessage string       `json:"bubble_message"`
+		Greeting      string       `json:"greeting"`
+		Suggestions   []Suggestion `json:"suggestions"`
+	}
+
+	var parsed openerResponse
+	content := strings.TrimSpace(resp.Content)
+	content = strings.TrimPrefix(content, "```json")
+	content = strings.TrimPrefix(content, "```")
+	content = strings.TrimSuffix(content, "```")
+	content = strings.TrimSpace(content)
+
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		o.logger.Debug("proactive opener: parse failed", zap.Error(err), zap.String("raw", content))
+		return "", "", nil, nil
+	}
+
+	if parsed.Greeting == "" {
+		return "", "", nil, nil
+	}
+
+	if len(parsed.Suggestions) > 4 {
+		parsed.Suggestions = parsed.Suggestions[:4]
+	}
+
+	chips := o.generateActionChipsFromContext(ctx, userID)
+
+	return parsed.BubbleMessage, parsed.Greeting, parsed.Suggestions, chips
+}
+
+func (o *Orchestrator) generateActionChipsFromContext(ctx context.Context, userID uuid.UUID) []ActionChip {
+	var chips []ActionChip
+
+	spend, stash, _ := o.currentBalances(ctx, userID)
+
+	// If there's idle surplus in Spend, suggest a transfer
+	if spend.GreaterThan(decimal.NewFromInt(200)) && stash.LessThan(decimal.NewFromInt(10000)) {
+		chips = append(chips, ActionChip{
+			ID:    "transfer_to_stash",
+			Label: "Transfer to Stash",
+			Type:  "transfer_to_stash",
+		})
+	}
+
+	// If there are no automations set up, suggest creating one
+	chips = append(chips, ActionChip{
+		ID:    "set_up_auto_transfer",
+		Label: "Set up auto-transfer",
+		Type:  "set_up_auto_transfer",
+	})
+
+	return chips
+}
+
+func (o *Orchestrator) fallbackProactiveOpener() *ProactiveOpener {
+	return &ProactiveOpener{
+		BubbleMessage: "Let's check your finances",
+		Greeting:      "Hey, I'm Miriam. I can audit your spending, plan the month, or catch the leaks.",
+		Severity:      "info",
+		Suggestions:   o.fallbackSuggestions(),
+	}
+}
+
+func (o *Orchestrator) fallbackSuggestions() []Suggestion {
+	return []Suggestion{
+		{Text: "Audit my money in hard mode", Category: "insight"},
+		{Text: "Build my monthly plan", Category: "action"},
+		{Text: "Find my biggest spending leak", Category: "spending"},
+		{Text: "How is my stash doing?", Category: "saving"},
+	}
+}

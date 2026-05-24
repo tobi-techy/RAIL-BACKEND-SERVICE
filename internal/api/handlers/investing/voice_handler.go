@@ -17,9 +17,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/pkg/auth"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -48,6 +50,14 @@ type VoiceUsageTracker interface {
 	TrackVoice(ctx context.Context, userID uuid.UUID, seconds int) error
 }
 
+// VoiceConversationPersister creates and records voice conversations.
+type VoiceConversationPersister interface {
+	CreateConversation(ctx context.Context, userID uuid.UUID, title string) (*entities.AIConversation, error)
+	RecordExchange(ctx context.Context, convID uuid.UUID, userMsg, assistantMsg string, tokens int, cost decimal.Decimal, model string, cards []entities.InsightCard) error
+	UpdateTitle(ctx context.Context, convID uuid.UUID, title string) error
+	DeleteConversation(ctx context.Context, userID, convID uuid.UUID) error
+}
+
 // VoiceHandler handles real-time voice sessions via AssemblyAI Voice Agent API.
 type VoiceHandler struct {
 	apiKey              string
@@ -55,6 +65,7 @@ type VoiceHandler struct {
 	voice               string
 	orchestrator        *aiservice.Orchestrator
 	usage               VoiceUsageTracker
+	convService         VoiceConversationPersister
 	allowAnyOrigin      bool
 	allowedOriginSet    map[string]struct{}
 	allowedHostSet      map[string]struct{}
@@ -62,13 +73,14 @@ type VoiceHandler struct {
 	logger              *zap.Logger
 }
 
-func NewVoiceHandler(apiKey, tokenSecret, voice string, orchestrator *aiservice.Orchestrator, usage VoiceUsageTracker, allowedOrigins []string, logger *zap.Logger) *VoiceHandler {
+func NewVoiceHandler(apiKey, tokenSecret, voice string, orchestrator *aiservice.Orchestrator, usage VoiceUsageTracker, convService VoiceConversationPersister, allowedOrigins []string, logger *zap.Logger) *VoiceHandler {
 	h := &VoiceHandler{
 		apiKey:           apiKey,
 		tokenSecret:      tokenSecret,
 		voice:            voice,
 		orchestrator:     orchestrator,
 		usage:            usage,
+		convService:      convService,
 		allowedOriginSet: make(map[string]struct{}),
 		allowedHostSet:   make(map[string]struct{}),
 		logger:           logger,
@@ -140,6 +152,21 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 	startTime := time.Now()
 	var lastActivity atomic.Value
 	lastActivity.Store(time.Now())
+
+	// Create a persisted conversation for this voice session
+	var convID uuid.UUID
+	if h.convService != nil {
+		conv, convErr := h.convService.CreateConversation(c.Request.Context(), userID, "Voice conversation")
+		if convErr != nil {
+			h.logger.Warn("failed to create voice conversation", zap.Error(convErr))
+		} else {
+			convID = conv.ID
+		}
+	}
+
+	// Transcript accumulator for persistence
+	var transcriptMu sync.Mutex
+	var transcripts []transcriptEntry
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), maxSessionDuration)
 	defer cancel()
@@ -298,6 +325,7 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 		select {
 		case <-ctx.Done():
 			h.trackUsage(c.Request.Context(), userID, startTime)
+			h.persistVoiceTranscripts(userID, convID, &transcriptMu, transcripts)
 			h.logger.Info("voice session ended",
 				zap.String("user_id", userID.String()),
 				zap.Duration("duration", time.Since(startTime)))
@@ -308,6 +336,7 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 		raw, err := agentConn.ReadEvent()
 		if err != nil {
 			h.trackUsage(c.Request.Context(), userID, startTime)
+			h.persistVoiceTranscripts(userID, convID, &transcriptMu, transcripts)
 			return
 		}
 
@@ -334,6 +363,12 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 			readyOnce.Do(func() { close(ready) })
 			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
 				return
+			}
+			// Notify client of the conversation_id for this voice session
+			if convID != uuid.Nil {
+				if !h.writeClientControlEvent(clientConn, &clientMu, "rail.voice.conversation", map[string]string{"conversation_id": convID.String()}, cancel) {
+					return
+				}
 			}
 
 		case "reply.started":
@@ -374,6 +409,16 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 					h.logger.Warn("failed to restore voice turn detection", zap.Error(err))
 				}
 			}
+			// Capture user transcript for conversation persistence
+			var userTranscript struct {
+				Text string `json:"text"`
+			}
+			_ = json.Unmarshal(raw, &userTranscript)
+			if text := strings.TrimSpace(userTranscript.Text); text != "" {
+				transcriptMu.Lock()
+				transcripts = append(transcripts, transcriptEntry{role: "user", text: text})
+				transcriptMu.Unlock()
+			}
 			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
 				return
 			}
@@ -393,6 +438,14 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 				waitingForAnswer = true
 				if err := agentConn.Send(infraai.NewQuestionTurnDetectionUpdate()); err != nil {
 					h.logger.Warn("failed to extend voice turn detection", zap.Error(err))
+				}
+			}
+			// Capture non-interrupted agent transcript for conversation persistence
+			if !transcriptEvent.Interrupted {
+				if text := strings.TrimSpace(transcriptEvent.Text); text != "" {
+					transcriptMu.Lock()
+					transcripts = append(transcripts, transcriptEntry{role: "assistant", text: text})
+					transcriptMu.Unlock()
 				}
 			}
 			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
@@ -545,6 +598,11 @@ type pendingTool struct {
 type completedTool struct {
 	callID string
 	result string
+}
+
+type transcriptEntry struct {
+	role string
+	text string
 }
 
 func (h *VoiceHandler) writeClientEvent(conn *websocket.Conn, mu *sync.Mutex, raw json.RawMessage, cancel context.CancelFunc) bool {
@@ -727,6 +785,93 @@ func (h *VoiceHandler) trackUsage(ctx context.Context, userID uuid.UUID, startTi
 			h.logger.Warn("failed to track voice usage", zap.Error(err))
 		}
 	}
+}
+
+// persistVoiceTranscripts saves accumulated voice transcripts as conversation messages.
+// Pairs consecutive user→assistant turns into exchanges. Runs in background.
+// Deletes the conversation if no meaningful transcripts were captured.
+func (h *VoiceHandler) persistVoiceTranscripts(userID uuid.UUID, convID uuid.UUID, mu *sync.Mutex, transcripts []transcriptEntry) {
+	if h.convService == nil || convID == uuid.Nil {
+		return
+	}
+	mu.Lock()
+	entries := make([]transcriptEntry, len(transcripts))
+	copy(entries, transcripts)
+	mu.Unlock()
+
+	if len(entries) == 0 {
+		// No transcripts — clean up the empty conversation
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = h.convService.DeleteConversation(ctx, userID, convID)
+		}()
+		return
+	}
+
+	go func() {
+		// Scale timeout: 5s base + 1s per exchange pair
+		timeout := 5*time.Second + time.Duration(len(entries)/2)*time.Second
+		if timeout > 30*time.Second {
+			timeout = 30 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+
+		// Pair user/assistant turns into exchanges
+		var userBuf strings.Builder
+		var firstUserMsg string
+		for _, e := range entries {
+			if e.role == "user" {
+				if userBuf.Len() > 0 {
+					userBuf.WriteString(" ")
+				}
+				userBuf.WriteString(e.text)
+				if firstUserMsg == "" {
+					firstUserMsg = e.text
+				}
+			} else if e.role == "assistant" {
+				userMsg := strings.TrimSpace(userBuf.String())
+				if userMsg == "" {
+					userMsg = "(voice input)"
+				}
+				if err := h.convService.RecordExchange(ctx, convID, userMsg, e.text, 0, decimal.Zero, "voice-assemblyai", nil); err != nil {
+					h.logger.Warn("failed to persist voice transcript", zap.Error(err))
+					return
+				}
+				userBuf.Reset()
+			}
+		}
+		// Trailing user message with no response
+		if trailing := strings.TrimSpace(userBuf.String()); trailing != "" {
+			_ = h.convService.RecordExchange(ctx, convID, trailing, "", 0, decimal.Zero, "voice-assemblyai", nil)
+			if firstUserMsg == "" {
+				firstUserMsg = trailing
+			}
+		}
+
+		// Auto-generate title from first user utterance
+		if firstUserMsg != "" {
+			title := "🎙 " + generateVoiceTitle(firstUserMsg)
+			_ = h.convService.UpdateTitle(ctx, convID, title)
+		}
+	}()
+}
+
+// generateVoiceTitle creates a short title from the first voice utterance.
+func generateVoiceTitle(msg string) string {
+	title := strings.TrimSpace(msg)
+	if title == "" {
+		return "Voice conversation"
+	}
+	if len(title) <= 40 {
+		return title
+	}
+	truncated := title[:40]
+	if idx := strings.LastIndexByte(truncated, ' '); idx > 15 {
+		truncated = truncated[:idx]
+	}
+	return truncated + "..."
 }
 
 func (h *VoiceHandler) configureAllowedOrigins(allowedOrigins []string) {

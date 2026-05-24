@@ -9,7 +9,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
-	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -22,11 +23,11 @@ type StreamEvent struct {
 
 // ChatStream streams a chat response via SSE. Tool calls are executed
 // non-streaming (up to 3 rounds), then the final answer is streamed.
-func (o *Orchestrator) ChatStream(ctx context.Context, userID uuid.UUID, message string, history []infraai.Message, emit func(StreamEvent)) error {
+func (o *Orchestrator) ChatStream(ctx context.Context, userID uuid.UUID, message string, history []ai.Message, emit func(StreamEvent)) error {
 	return o.ChatStreamWithOptions(ctx, userID, message, history, ChatOptions{}, emit)
 }
 
-func (o *Orchestrator) ChatStreamWithOptions(ctx context.Context, userID uuid.UUID, message string, history []infraai.Message, opts ChatOptions, emit func(StreamEvent)) error {
+func (o *Orchestrator) ChatStreamWithOptions(ctx context.Context, userID uuid.UUID, message string, history []ai.Message, opts ChatOptions, emit func(StreamEvent)) error {
 	return o.chatStreamInternal(ctx, userID, uuid.Nil, message, history, opts, emit)
 }
 
@@ -36,7 +37,7 @@ func (o *Orchestrator) ChatStreamInConversation(ctx context.Context, userID uuid
 }
 
 func (o *Orchestrator) ChatStreamInConversationWithOptions(ctx context.Context, userID uuid.UUID, conv *entities.AIConversation, message string, opts ChatOptions, emit func(StreamEvent)) error {
-	var history []infraai.Message
+	var history []ai.Message
 	if o.conversations != nil {
 		var err error
 		history, err = o.conversations.BuildContext(ctx, conv)
@@ -111,10 +112,10 @@ func (o *Orchestrator) ChatStreamInConversationWithOptions(ctx context.Context, 
 	return err
 }
 
-func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uuid.UUID, message string, history []infraai.Message, opts ChatOptions, emit func(StreamEvent)) error {
+func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uuid.UUID, message string, history []ai.Message, opts ChatOptions, emit func(StreamEvent)) error {
 	start := time.Now()
 
-	streamer, ok := o.aiProvider.(infraai.StreamProvider)
+	streamer, ok := o.aiProvider.(ai.StreamProvider)
 	if !ok {
 		// Fallback: non-streaming
 		resp, err := o.ChatInContextWithOptions(ctx, userID, convID, message, history, opts)
@@ -132,41 +133,41 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 		return nil
 	}
 
-	messages := make([]infraai.Message, len(history), len(history)+10)
+	messages := make([]ai.Message, len(history), len(history)+10)
 	copy(messages, history)
 
 	// Inject current balance snapshot so the LLM always knows the user's financial position
 	if balanceCtx := o.buildBalanceContext(ctx, userID); balanceCtx != "" {
-		messages = append(messages, infraai.Message{Role: "system", Content: balanceCtx})
+		messages = append(messages, ai.Message{Role: "system", Content: balanceCtx})
 	}
 	if profileCtx := o.buildFinancialProfileContext(ctx, userID); profileCtx != "" {
-		messages = append(messages, infraai.Message{Role: "system", Content: profileCtx})
+		messages = append(messages, ai.Message{Role: "system", Content: profileCtx})
 	}
 	if userProfileCtx := o.buildUserProfileContext(ctx, userID); userProfileCtx != "" {
-		messages = append(messages, infraai.Message{Role: "system", Content: userProfileCtx})
+		messages = append(messages, ai.Message{Role: "system", Content: userProfileCtx})
 	}
 	if o.memory != nil {
 		if memCtx := o.memory.BuildMemoryContextWithSummary(ctx, userID); memCtx != "" {
-			messages = append(messages, infraai.Message{Role: "system", Content: memCtx})
+			messages = append(messages, ai.Message{Role: "system", Content: memCtx})
 		}
 		if toneCtx := o.memory.BuildToneContext(ctx, userID); toneCtx != "" {
-			messages = append(messages, infraai.Message{Role: "system", Content: toneCtx})
+			messages = append(messages, ai.Message{Role: "system", Content: toneCtx})
 		}
 	}
 	if toneModeCtx := buildToneModeContext(opts.ToneMode); toneModeCtx != "" {
-		messages = append(messages, infraai.Message{Role: "system", Content: toneModeCtx})
+		messages = append(messages, ai.Message{Role: "system", Content: toneModeCtx})
 	}
 	if timeCtx := o.buildUserTimeContext(ctx, userID); timeCtx != "" {
-		messages = append(messages, infraai.Message{Role: "system", Content: timeCtx})
+		messages = append(messages, ai.Message{Role: "system", Content: timeCtx})
 	}
 
-	messages = append(messages, infraai.Message{Role: "user", Content: message})
+	messages = append(messages, ai.Message{Role: "user", Content: message})
 
-	req := &infraai.ChatRequest{
+	req := &ai.ChatRequest{
 		Messages:     messages,
 		SystemPrompt: SystemPrompt,
 		MaxTokens:    2048,
-		Temperature:  infraai.Float64(0.4),
+		Temperature:  ai.Float64(0.4),
 		ModelHint:    classifyQueryComplexity(message),
 	}
 
@@ -228,7 +229,7 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 		if assistantContent == "" {
 			assistantContent = "Calling tools..."
 		}
-		assistantMsg := infraai.Message{
+		assistantMsg := ai.Message{
 			Role:             "assistant",
 			Content:          assistantContent,
 			ToolCalls:        resp.ToolCalls,
@@ -244,7 +245,7 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 			if i < len(resp.ToolCalls) {
 				toolCallID = resp.ToolCalls[i].ID
 			}
-			messages = append(messages, infraai.Message{
+			messages = append(messages, ai.Message{
 				Role:       "tool",
 				Content:    string(resultJSON),
 				Name:       tr.Name,
@@ -275,6 +276,11 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 		emit(StreamEvent{Type: "cards", Data: cards})
 	}
 
+	// Emit action chips from tool results
+	if chips := buildActionChipsFromToolResults(allToolResults); len(chips) > 0 {
+		emit(StreamEvent{Type: "action_chips", Data: chips})
+	}
+
 	// If no more tool calls, stream the final answer
 	if len(resp.ToolCalls) == 0 {
 		if resp.Content != "" {
@@ -291,7 +297,7 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 	}
 
 	// Stream follow-up — collect full content for safety filter
-	ch := make(chan infraai.StreamChunk, 32)
+	ch := make(chan ai.StreamChunk, 32)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- streamer.ChatCompletionStream(ctx, req, nil, ch)
@@ -332,6 +338,54 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 	observeChat(provider, time.Since(start), cumulativeTokens, nil)
 	emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": cumulativeTokens, "provider": provider, "model": model}})
 	return nil
+}
+
+// buildActionChipsFromToolResults generates action chips based on tool result data.
+func buildActionChipsFromToolResults(results []ToolResult) []ActionChip {
+	var chips []ActionChip
+	for _, r := range results {
+		switch r.Name {
+		case ToolGetAccountSummary:
+			if spend, ok := r.Result["spend_balance"].(string); ok {
+				if stash, ok := r.Result["stash_balance"].(string); ok {
+					spendDec, _ := decimal.NewFromString(spend)
+					stashDec, _ := decimal.NewFromString(stash)
+					if spendDec.GreaterThan(decimal.NewFromInt(200)) && stashDec.LessThan(decimal.NewFromInt(10000)) {
+						chips = append(chips, ActionChip{
+							ID:    "transfer_to_stash",
+							Label: "Transfer to Stash",
+							Type:  "transfer_to_stash",
+						})
+					}
+				}
+			}
+		case ToolGetBudget:
+			if remaining, ok := r.Result["budget_remaining"].(string); ok {
+				if limit, ok := r.Result["budget_limit"].(string); ok {
+					remDec, _ := decimal.NewFromString(remaining)
+					limDec, _ := decimal.NewFromString(limit)
+					if limDec.IsPositive() && remDec.LessThan(limDec.Mul(decimal.NewFromFloat(0.2))) {
+						chips = append(chips, ActionChip{
+							ID:    "review_spending",
+							Label: "Review spending",
+							Type:  "review_spending",
+						})
+					}
+				}
+			}
+		}
+	}
+	if len(chips) > 0 {
+		chips = append(chips, ActionChip{
+			ID:    "set_up_auto_transfer",
+			Label: "Set up auto-transfer",
+			Type:  "set_up_auto_transfer",
+		})
+	}
+	if len(chips) > 3 {
+		chips = chips[:3]
+	}
+	return chips
 }
 
 // thinkingMessage returns a user-facing thinking indicator for a tool execution.
