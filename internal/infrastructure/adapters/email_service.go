@@ -193,6 +193,51 @@ func (e *EmailService) sendViaResend(ctx context.Context, to, subject, htmlConte
 	return nil
 }
 
+// BatchEmail represents a single email in a batch send request.
+type BatchEmail struct {
+	From    string   `json:"from"`
+	To      []string `json:"to"`
+	Subject string   `json:"subject"`
+	HTML    string   `json:"html"`
+	Text    string   `json:"text,omitempty"`
+	ReplyTo string   `json:"reply_to,omitempty"`
+}
+
+// SendBatchEmails sends up to 100 emails in a single Resend batch API call.
+// Satisfies growthengine.BatchEmailSender interface.
+func (e *EmailService) SendBatchEmails(ctx context.Context, emails []BatchEmail) error {
+	if len(emails) == 0 {
+		return nil
+	}
+	if len(emails) > 100 {
+		return fmt.Errorf("resend batch: max 100 emails per batch, got %d", len(emails))
+	}
+
+	body, _ := json.Marshal(emails)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, resendAPIBaseURL+"/emails/batch", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("resend batch: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+e.config.APIKey)
+
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("resend batch: send failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode >= 400 {
+		e.logger.Error("Resend batch returned error",
+			zap.Int("count", len(emails)), zap.Int("status", resp.StatusCode), zap.String("body", string(respBody)))
+		return fmt.Errorf("resend batch: status %d", resp.StatusCode)
+	}
+
+	e.logger.Info("Batch email sent", zap.String("provider", "resend"), zap.Int("count", len(emails)))
+	return nil
+}
+
 func (e *EmailService) sendViaUnosend(ctx context.Context, to, subject, htmlContent, textContent string) error {
 	if e.httpClient == nil {
 		return fmt.Errorf("unosend client not configured")

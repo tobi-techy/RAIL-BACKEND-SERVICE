@@ -2278,6 +2278,9 @@ func (c *Container) initializeDomainServices() error {
 			growthengine.Config{Limit: 1000},
 			c.ZapLog,
 		)
+		if c.EmailService != nil {
+			c.GrowthEngineService.SetBatchEmailSender(&growthBatchEmailAdapter{email: c.EmailService})
+		}
 	}
 
 	// Wire push notifier into gameplay services (now that push provider is resolved)
@@ -4898,4 +4901,24 @@ func (c *Container) GetOpportunityHandlers() *opportunityhandlers.Handlers {
 		return nil
 	}
 	return opportunityhandlers.NewHandlers(c.OpportunityService, c.ZapLog)
+}
+
+// growthBatchEmailAdapter bridges adapters.EmailService to growthengine.BatchEmailSender.
+type growthBatchEmailAdapter struct {
+	email *adapters.EmailService
+}
+
+func (a *growthBatchEmailAdapter) SendBatchEmails(ctx context.Context, emails []growthengine.BatchEmailItem) error {
+	batch := make([]adapters.BatchEmail, len(emails))
+	for i, e := range emails {
+		batch[i] = adapters.BatchEmail{
+			From:    e.From,
+			To:      e.To,
+			Subject: e.Subject,
+			HTML:    e.HTML,
+			Text:    e.Text,
+			ReplyTo: e.ReplyTo,
+		}
+	}
+	return a.email.SendBatchEmails(ctx, batch)
 }
