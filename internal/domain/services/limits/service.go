@@ -73,12 +73,30 @@ func (s *Service) ValidateDepositWithCurrency(ctx context.Context, userID uuid.U
 
 	config := entities.GetLimitConfigForTierAndCurrency(tier, currency)
 
-	// Check minimum
+	// Check minimum (in native currency)
 	if amount.LessThan(config.MinDeposit) {
 		return &entities.LimitCheckResult{
 			Allowed: false,
 			Reason:  fmt.Sprintf("amount %s is below minimum deposit of %s", amount.String(), config.MinDeposit.String()),
 		}, entities.ErrBelowMinimumDeposit
+	}
+
+	// Normalize amount to USD for unified usage tracking
+	usageAmount := amount
+	usdConfig := entities.GetLimitConfigForTierAndCurrency(tier, "USD")
+	dailyLimit := usdConfig.DailyDepositLimit
+	monthlyLimit := usdConfig.MonthlyDepositLimit
+	if currency == "NGN" {
+		rate := s.getNGNRate(ctx)
+		if rate.IsPositive() {
+			usageAmount = amount.Div(rate).Round(2)
+		} else {
+			dailyLimit = config.DailyDepositLimit
+			monthlyLimit = config.MonthlyDepositLimit
+		}
+	} else {
+		dailyLimit = config.DailyDepositLimit
+		monthlyLimit = config.MonthlyDepositLimit
 	}
 
 	// Reset expired periods and get current usage
@@ -91,10 +109,10 @@ func (s *Service) ValidateDepositWithCurrency(ctx context.Context, userID uuid.U
 		return nil, fmt.Errorf("failed to get usage: %w", err)
 	}
 
-	// Check daily limit
-	newDailyUsage := usage.DailyDepositUsed.Add(amount)
-	if newDailyUsage.GreaterThan(config.DailyDepositLimit) {
-		remaining := config.DailyDepositLimit.Sub(usage.DailyDepositUsed)
+	// Check daily limit (usage stored in USD-equivalent)
+	newDailyUsage := usage.DailyDepositUsed.Add(usageAmount)
+	if newDailyUsage.GreaterThan(dailyLimit) {
+		remaining := dailyLimit.Sub(usage.DailyDepositUsed)
 		if remaining.LessThan(decimal.Zero) {
 			remaining = decimal.Zero
 		}
@@ -102,7 +120,7 @@ func (s *Service) ValidateDepositWithCurrency(ctx context.Context, userID uuid.U
 			Allowed:           false,
 			Reason:            "daily deposit limit exceeded",
 			CurrentUsage:      usage.DailyDepositUsed,
-			Limit:             config.DailyDepositLimit,
+			Limit:             dailyLimit,
 			RemainingCapacity: remaining,
 			ResetsAt:          usage.DailyDepositResetAt,
 			LimitType:         "daily",
@@ -110,9 +128,9 @@ func (s *Service) ValidateDepositWithCurrency(ctx context.Context, userID uuid.U
 	}
 
 	// Check monthly limit
-	newMonthlyUsage := usage.MonthlyDepositUsed.Add(amount)
-	if newMonthlyUsage.GreaterThan(config.MonthlyDepositLimit) {
-		remaining := config.MonthlyDepositLimit.Sub(usage.MonthlyDepositUsed)
+	newMonthlyUsage := usage.MonthlyDepositUsed.Add(usageAmount)
+	if newMonthlyUsage.GreaterThan(monthlyLimit) {
+		remaining := monthlyLimit.Sub(usage.MonthlyDepositUsed)
 		if remaining.LessThan(decimal.Zero) {
 			remaining = decimal.Zero
 		}
@@ -120,16 +138,16 @@ func (s *Service) ValidateDepositWithCurrency(ctx context.Context, userID uuid.U
 			Allowed:           false,
 			Reason:            "monthly deposit limit exceeded",
 			CurrentUsage:      usage.MonthlyDepositUsed,
-			Limit:             config.MonthlyDepositLimit,
+			Limit:             monthlyLimit,
 			RemainingCapacity: remaining,
 			ResetsAt:          usage.MonthlyDepositResetAt,
 			LimitType:         "monthly",
 		}, entities.ErrMonthlyDepositExceeded
 	}
 
-	// Calculate remaining capacity (minimum of daily and monthly remaining)
-	dailyRemaining := config.DailyDepositLimit.Sub(usage.DailyDepositUsed)
-	monthlyRemaining := config.MonthlyDepositLimit.Sub(usage.MonthlyDepositUsed)
+	// Calculate remaining capacity
+	dailyRemaining := dailyLimit.Sub(usage.DailyDepositUsed)
+	monthlyRemaining := monthlyLimit.Sub(usage.MonthlyDepositUsed)
 	remaining := dailyRemaining
 	resetsAt := usage.DailyDepositResetAt
 	limitType := "daily"
@@ -276,14 +294,30 @@ func (s *Service) RecordDepositWithCurrency(ctx context.Context, userID uuid.UUI
 	if tier == entities.KYCTierUnverified {
 		return entities.ErrUnverifiedUser
 	}
-	config := entities.GetLimitConfigForTierAndCurrency(tier, currency)
+
+	// Normalize to USD-equivalent for unified usage tracking
+	usageAmount := amount
+	usdConfig := entities.GetLimitConfigForTierAndCurrency(tier, "USD")
+	dailyLimit := usdConfig.DailyDepositLimit
+	monthlyLimit := usdConfig.MonthlyDepositLimit
+	if currency == "NGN" {
+		rate := s.getNGNRate(ctx)
+		if rate.IsPositive() {
+			usageAmount = amount.Div(rate).Round(2)
+		} else {
+			ngnConfig := entities.GetLimitConfigForTierAndCurrency(tier, "NGN")
+			dailyLimit = ngnConfig.DailyDepositLimit
+			monthlyLimit = ngnConfig.MonthlyDepositLimit
+		}
+	}
+
 	if err := s.usageRepo.ResetExpiredPeriods(ctx, userID); err != nil {
 		s.logger.Warn("Failed to reset expired periods", "error", err, "user_id", userID.String())
 	}
 	if _, err := s.usageRepo.GetOrCreate(ctx, userID); err != nil {
 		return fmt.Errorf("failed to ensure usage record: %w", err)
 	}
-	return s.usageRepo.AtomicIncrementDeposit(ctx, userID, amount, config.DailyDepositLimit, config.MonthlyDepositLimit)
+	return s.usageRepo.AtomicIncrementDeposit(ctx, userID, usageAmount, dailyLimit, monthlyLimit)
 }
 
 // RecordWithdrawal atomically validates and records a withdrawal against user's limits.
