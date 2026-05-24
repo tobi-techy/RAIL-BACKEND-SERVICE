@@ -33,6 +33,20 @@ type EmailSender interface {
 	SendCustomEmailFrom(ctx context.Context, to, subject, htmlContent, textContent, fromEmail, fromName, replyTo string) error
 }
 
+type BatchEmailSender interface {
+	SendBatchEmails(ctx context.Context, emails []BatchEmailItem) error
+}
+
+// BatchEmailItem represents a single email in a batch.
+type BatchEmailItem struct {
+	From    string   `json:"from"`
+	To      []string `json:"to"`
+	Subject string   `json:"subject"`
+	HTML    string   `json:"html"`
+	Text    string   `json:"text,omitempty"`
+	ReplyTo string   `json:"reply_to,omitempty"`
+}
+
 type PushSender interface {
 	SendToUser(ctx context.Context, userID uuid.UUID, title, body string, data map[string]interface{}) error
 }
@@ -43,11 +57,12 @@ type Config struct {
 }
 
 type Service struct {
-	repo   Repository
-	email  EmailSender
-	push   PushSender
-	cfg    Config
-	logger *zap.Logger
+	repo       Repository
+	email      EmailSender
+	batchEmail BatchEmailSender
+	push       PushSender
+	cfg        Config
+	logger     *zap.Logger
 }
 
 func NewService(repo Repository, email EmailSender, push PushSender, cfg Config, logger *zap.Logger) *Service {
@@ -61,6 +76,11 @@ func NewService(repo Repository, email EmailSender, push PushSender, cfg Config,
 		cfg.Now = func() time.Time { return time.Now().UTC() }
 	}
 	return &Service{repo: repo, email: email, push: push, cfg: cfg, logger: logger}
+}
+
+// SetBatchEmailSender enables batch email sending for growth campaigns.
+func (s *Service) SetBatchEmailSender(b BatchEmailSender) {
+	s.batchEmail = b
 }
 
 func (s *Service) Track(ctx context.Context, userID uuid.UUID, eventName entities.GrowthEventName, metadata map[string]any) error {
@@ -93,10 +113,40 @@ func (s *Service) RunSegmentation(ctx context.Context) (int, int, error) {
 		return 0, 0, err
 	}
 
+	type pendingEmail struct {
+		deliveryID uuid.UUID
+		item       BatchEmailItem
+	}
+
 	segmented, queued := 0, 0
+	var emailBatch []pendingEmail
+
+	flushBatch := func() {
+		if len(emailBatch) == 0 || s.batchEmail == nil {
+			return
+		}
+		items := make([]BatchEmailItem, len(emailBatch))
+		for i, pe := range emailBatch {
+			items[i] = pe.item
+		}
+		if err := s.batchEmail.SendBatchEmails(ctx, items); err != nil {
+			s.logger.Warn("batch email send failed, marking deliveries failed", zap.Int("count", len(items)), zap.Error(err))
+			for _, pe := range emailBatch {
+				_ = s.repo.UpdateDeliveryStatus(ctx, pe.deliveryID, entities.GrowthDeliveryFailed, err.Error(), nil)
+			}
+		} else {
+			sentAt := s.cfg.Now()
+			for _, pe := range emailBatch {
+				_ = s.repo.UpdateDeliveryStatus(ctx, pe.deliveryID, entities.GrowthDeliverySent, "", &sentAt)
+			}
+		}
+		emailBatch = emailBatch[:0]
+	}
+
 	for _, user := range users {
 		select {
 		case <-ctx.Done():
+			flushBatch()
 			return segmented, queued, ctx.Err()
 		default:
 		}
@@ -113,15 +163,55 @@ func (s *Service) RunSegmentation(ctx context.Context) (int, int, error) {
 
 		campaigns, err := s.repo.ListActiveCampaignsBySegment(ctx, segment)
 		if err != nil {
+			flushBatch()
 			return segmented, queued, err
 		}
 		for _, campaign := range campaigns {
 			cooldown := time.Duration(campaign.CooldownDays) * 24 * time.Hour
 			recent, err := s.repo.HasRecentDelivery(ctx, user.UserID, campaign.ID, cooldown)
 			if err != nil {
+				flushBatch()
 				return segmented, queued, err
 			}
 			if recent {
+				continue
+			}
+			// For email campaigns with batch sender available, queue into batch
+			if campaign.Channel == entities.GrowthChannelEmail && s.batchEmail != nil {
+				subject, body := renderCampaign(campaign, user)
+				delivery := &entities.CampaignDelivery{
+					ID:         uuid.New(),
+					UserID:     user.UserID,
+					CampaignID: campaign.ID,
+					Segment:    campaign.Segment,
+					Channel:    campaign.Channel,
+					Status:     entities.GrowthDeliveryQueued,
+					RenderedTo: renderRecipient(user, campaign.Channel),
+					Subject:    subject,
+					Body:       body,
+					CreatedAt:  s.cfg.Now(),
+				}
+				if err := s.repo.CreateDelivery(ctx, delivery); err != nil {
+					s.logger.Warn("growth campaign delivery record failed", zap.String("user_id", user.UserID.String()), zap.Error(err))
+					continue
+				}
+				htmlBody := renderEmailHTML(subject, body)
+				from := formatFrom(campaign)
+				emailBatch = append(emailBatch, pendingEmail{
+					deliveryID: delivery.ID,
+					item: BatchEmailItem{
+						From:    from,
+						To:      []string{user.Email},
+						Subject: subject,
+						HTML:    htmlBody,
+						Text:    body,
+						ReplyTo: campaign.ReplyTo,
+					},
+				})
+				if len(emailBatch) >= 50 {
+					flushBatch()
+				}
+				queued++
 				continue
 			}
 			if err := s.deliver(ctx, user, campaign); err != nil {
@@ -136,6 +226,7 @@ func (s *Service) RunSegmentation(ctx context.Context) (int, int, error) {
 		}
 	}
 
+	flushBatch()
 	return segmented, queued, nil
 }
 
@@ -261,6 +352,18 @@ func (s *Service) sendEmail(ctx context.Context, to string, campaign entities.Gr
 		return s.email.SendCustomEmailFrom(ctx, to, subject, htmlBody, body, campaign.FromEmail, campaign.FromName, campaign.ReplyTo)
 	}
 	return s.email.SendCustomEmail(ctx, to, subject, htmlBody, body)
+}
+
+func formatFrom(campaign entities.GrowthCampaign) string {
+	email := strings.TrimSpace(campaign.FromEmail)
+	if email == "" {
+		email = "miriam@userail.money"
+	}
+	name := strings.TrimSpace(campaign.FromName)
+	if name != "" {
+		return fmt.Sprintf("%s <%s>", name, email)
+	}
+	return email
 }
 
 func renderCampaign(campaign entities.GrowthCampaign, user entities.GrowthUserSnapshot) (string, string) {
