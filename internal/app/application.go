@@ -95,6 +95,7 @@ type Application struct {
 	automationWorker             *automation_worker.Worker
 	memoryWorker                 *memory_worker.Worker
 	miriamWorker                 *miriam_worker.Worker
+	miriamWorkerCancel           context.CancelFunc
 	dailyPulseWorker             *daily_pulse.Worker
 	growthMailWorker             *growth_mail.Worker
 	growthMailCancel             context.CancelFunc
@@ -403,7 +404,9 @@ func (app *Application) initializeWorkers() error {
 
 	if app.cfg.Workers.MiriamIntelligenceLocal && app.container.MiriamIntelligenceService != nil && app.container.UserRepo != nil {
 		app.miriamWorker = miriam_worker.NewWorker(app.container.UserRepo, app.container.MiriamIntelligenceService, app.log.Zap())
-		go app.miriamWorker.Start(context.Background())
+		miriamCtx, miriamCancel := context.WithCancel(context.Background())
+		app.miriamWorkerCancel = miriamCancel
+		go app.miriamWorker.Start(miriamCtx)
 		app.log.Info("Miriam intelligence worker started")
 	} else if !app.cfg.Workers.MiriamIntelligenceLocal {
 		app.log.Info("Miriam intelligence local worker disabled; expecting external scheduler")
@@ -965,6 +968,9 @@ func (app *Application) stopWorkers() {
 	}
 	if app.growthMailCancel != nil {
 		app.growthMailCancel()
+	}
+	if app.miriamWorkerCancel != nil {
+		app.miriamWorkerCancel()
 	}
 }
 

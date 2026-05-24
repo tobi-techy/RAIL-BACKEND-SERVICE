@@ -71,6 +71,30 @@ func (h *MiriamIntelligenceHandler) CreateMandate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if !req.MaxAmountPerAction.IsPositive() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "max_amount_per_action must be positive"})
+		return
+	}
+	if !req.MaxAmountPerDay.IsPositive() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "max_amount_per_day must be positive"})
+		return
+	}
+	if req.MaxAmountPerAction.GreaterThan(*req.MaxAmountPerDay) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "max_amount_per_action cannot exceed max_amount_per_day"})
+		return
+	}
+	if req.MinSpendBalance.IsNegative() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "min_spend_balance must be non-negative"})
+		return
+	}
+	if req.MinSafeToSpend.IsNegative() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "min_safe_to_spend must be non-negative"})
+		return
+	}
+	if req.CooldownMinutes < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cooldown_minutes must be non-negative"})
+		return
+	}
 	mandate, err := h.service.CreateTransferToStashMandate(c.Request.Context(), userID, miriamservice.CreateMandateRequest{
 		Name: req.Name, MaxAmountPerAction: *req.MaxAmountPerAction, MaxAmountPerDay: *req.MaxAmountPerDay,
 		MinSpendBalance: req.MinSpendBalance, MinSafeToSpend: req.MinSafeToSpend, CooldownMinutes: req.CooldownMinutes,
@@ -115,6 +139,10 @@ func (h *MiriamIntelligenceHandler) UpdateMandateStatus(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if req.Status != "active" && req.Status != "paused" && req.Status != "revoked" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status: must be active, paused, or revoked"})
+		return
+	}
 	if err := h.service.UpdateMandateStatus(c.Request.Context(), userID, id, req.Status); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -133,6 +161,12 @@ func (h *MiriamIntelligenceHandler) ListReceipts(c *gin.Context) {
 		if parsed, err := strconv.Atoi(raw); err == nil {
 			limit = parsed
 		}
+	}
+	if limit < 1 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
 	}
 	receipts, err := h.service.ListReceipts(c.Request.Context(), userID, limit)
 	if err != nil {
@@ -159,6 +193,10 @@ func (h *MiriamIntelligenceHandler) RecordFeedback(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Signal != "positive" && req.Signal != "negative" && req.Signal != "neutral" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid signal: must be positive, negative, or neutral"})
 		return
 	}
 	if err := h.service.RecordFeedback(c.Request.Context(), userID, receiptID, req.Signal); err != nil {

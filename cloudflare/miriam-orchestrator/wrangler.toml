@@ -1,6 +1,6 @@
 name = "rail-miriam-orchestrator"
 main = "src/index.js"
-compatibility_date = "2026-05-23"
+compatibility_date = "2024-09-23"
 
 [triggers]
 crons = ["*/15 * * * *"]
@@ -8,3 +8,13 @@ crons = ["*/15 * * * *"]
 [vars]
 RAIL_API_BASE_URL = "https://api.userail.money"
 BATCH_LIMIT = "500"
+
+[limits]
+cpu_ms = 50000
+
+[observability]
+enabled = true
+
+# Secrets (set via `wrangler secret put`):
+# - RAIL_INTERNAL_API_KEY: key for authenticating with the Rail backend
+# - ORCHESTRATOR_API_KEY: key for authenticating inbound /evaluate requests

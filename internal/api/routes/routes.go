@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -263,6 +264,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	// Rail keeps the financial execution, DB state, and audit trail in the backend.
 	if container.MiriamIntelligenceService != nil && container.UserRepo != nil {
 		internal.POST("/miriam/evaluate", func(c *gin.Context) {
+			reqCtx, reqCancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
+			defer reqCancel()
+
 			var req struct {
 				UserID    string `json:"user_id"`
 				EventType string `json:"event_type"`
@@ -277,7 +281,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			if limit <= 0 {
 				limit = container.Config.Workers.MiriamIntelligenceBatchSize
 			}
-			if limit <= 0 || limit > 5000 {
+			if limit <= 0 || limit > 500 {
 				limit = 500
 			}
 
@@ -290,7 +294,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				}
 				userIDs = []uuid.UUID{userID}
 			} else {
-				ids, err := container.UserRepo.ListMiriamWorkerUserIDs(c.Request.Context(), limit)
+				ids, err := container.UserRepo.ListMiriamWorkerUserIDs(reqCtx, limit)
 				if err != nil {
 					container.ZapLog.Error("internal miriam evaluation: list users failed", zap.Error(err))
 					c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list Miriam users"})
@@ -299,23 +303,38 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				userIDs = ids
 			}
 
-			evaluated := 0
-			failed := 0
-			failedUsers := make([]string, 0)
-			for _, userID := range userIDs {
-				evalCtx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
-				err := container.MiriamIntelligenceService.EvaluateUser(evalCtx, userID, eventType)
-				cancel()
-				if err != nil {
-					failed++
-					if len(failedUsers) < 20 {
-						failedUsers = append(failedUsers, userID.String())
+			var (
+				mu          sync.Mutex
+				evaluated   int
+				failed      int
+				failedUsers = make([]string, 0)
+				wg          sync.WaitGroup
+				sem         = make(chan struct{}, 10)
+			)
+
+			for _, uid := range userIDs {
+				wg.Add(1)
+				sem <- struct{}{}
+				go func(userID uuid.UUID) {
+					defer wg.Done()
+					defer func() { <-sem }()
+					evalCtx, cancel := context.WithTimeout(reqCtx, 10*time.Second)
+					err := container.MiriamIntelligenceService.EvaluateUser(evalCtx, userID, eventType)
+					cancel()
+					mu.Lock()
+					if err != nil {
+						failed++
+						if len(failedUsers) < 20 {
+							failedUsers = append(failedUsers, userID.String())
+						}
+						container.ZapLog.Warn("internal miriam evaluation: user failed", zap.String("user_id", userID.String()), zap.Error(err))
+					} else {
+						evaluated++
 					}
-					container.ZapLog.Warn("internal miriam evaluation: user failed", zap.String("user_id", userID.String()), zap.Error(err))
-					continue
-				}
-				evaluated++
+					mu.Unlock()
+				}(uid)
 			}
+			wg.Wait()
 
 			c.JSON(http.StatusOK, gin.H{
 				"status":       "completed",

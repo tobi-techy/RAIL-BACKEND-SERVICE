@@ -101,7 +101,11 @@ func (r *MiriamIntelligenceRepository) CreateMandate(ctx context.Context, mandat
 func (r *MiriamIntelligenceRepository) ListMandates(ctx context.Context, userID uuid.UUID) ([]entities.MiriamAutopilotMandate, error) {
 	var mandates []entities.MiriamAutopilotMandate
 	err := r.db.SelectContext(ctx, &mandates, `
-		SELECT * FROM miriam_autopilot_mandates
+		SELECT id, user_id, name, action_type, status, max_amount_per_action,
+		       max_amount_per_day, min_spend_balance, min_safe_to_spend,
+		       cooldown_minutes, last_executed_at, expires_at, metadata,
+		       created_at, updated_at
+		FROM miriam_autopilot_mandates
 		WHERE user_id = $1
 		ORDER BY created_at DESC`, userID)
 	if err != nil {
@@ -113,7 +117,11 @@ func (r *MiriamIntelligenceRepository) ListMandates(ctx context.Context, userID 
 func (r *MiriamIntelligenceRepository) ListActiveMandates(ctx context.Context, userID uuid.UUID) ([]entities.MiriamAutopilotMandate, error) {
 	var mandates []entities.MiriamAutopilotMandate
 	err := r.db.SelectContext(ctx, &mandates, `
-		SELECT * FROM miriam_autopilot_mandates
+		SELECT id, user_id, name, action_type, status, max_amount_per_action,
+		       max_amount_per_day, min_spend_balance, min_safe_to_spend,
+		       cooldown_minutes, last_executed_at, expires_at, metadata,
+		       created_at, updated_at
+		FROM miriam_autopilot_mandates
 		WHERE user_id = $1
 		  AND status = 'active'
 		  AND (expires_at IS NULL OR expires_at > NOW())

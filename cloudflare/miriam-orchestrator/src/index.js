@@ -1,5 +1,6 @@
 const DEFAULT_BATCH_LIMIT = 500;
 const EVALUATE_PATH = "/internal/miriam/evaluate";
+const FETCH_TIMEOUT_MS = 30000;
 
 export default {
   async scheduled(_event, env, ctx) {
@@ -13,6 +14,11 @@ export default {
     }
 
     if (request.method === "POST" && url.pathname === "/evaluate") {
+      const authHeader = request.headers.get("Authorization");
+      const expectedKey = env.ORCHESTRATOR_API_KEY;
+      if (!expectedKey || !authHeader || authHeader !== `Bearer ${expectedKey}`) {
+        return json({ error: "unauthorized" }, 401);
+      }
       const result = await runMiriamEvaluation(env, "manual");
       return json(result, result.ok ? 200 : 502);
     }
@@ -30,9 +36,17 @@ async function runMiriamEvaluation(env, source) {
     event_type: "worker_sweep",
     limit: batchLimit,
     source,
-  });
+  }).catch((err) => ({ ok: false, status: 0, error: err.message }));
 
-  const payload = await response.json().catch(() => ({}));
+  if (response.error) {
+    return { ok: false, status: 0, source, error: response.error };
+  }
+
+  const payload = await response.json().catch(() => ({
+    error: "json_parse_failed",
+    message: "Failed to parse response body as JSON",
+    status: response.status,
+  }));
   return {
     ok: response.ok,
     status: response.status,
@@ -47,11 +61,13 @@ async function postWithRetry(url, apiKey, body) {
     return response;
   }
 
-  await sleep(750);
+  await sleep(750 + Math.random() * 500);
   return postJSON(url, apiKey, body);
 }
 
 function postJSON(url, apiKey, body) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   return fetch(url, {
     method: "POST",
     headers: {
@@ -60,7 +76,8 @@ function postJSON(url, apiKey, body) {
       "User-Agent": "rail-miriam-orchestrator/1.0",
     },
     body: JSON.stringify(body),
-  });
+    signal: controller.signal,
+  }).finally(() => clearTimeout(timeoutId));
 }
 
 function parseBatchLimit(raw) {
