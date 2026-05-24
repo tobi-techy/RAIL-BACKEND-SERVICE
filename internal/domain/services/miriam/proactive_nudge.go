@@ -49,6 +49,11 @@ func (e *ProactiveNudgeEngine) SetMemory(m MemoryReader) {
 	e.memory = m
 }
 
+// SetNotifier injects a Notifier after construction (deferred wiring).
+func (e *ProactiveNudgeEngine) SetNotifier(n Notifier) {
+	e.notifier = n
+}
+
 // GenerateProactiveNudges evaluates a user's state and produces 0–3 nudges.
 func (e *ProactiveNudgeEngine) GenerateProactiveNudges(ctx context.Context, userID uuid.UUID, state *entities.MiriamMoneyState) ([]entities.ProactiveNudge, error) {
 	summary, err := e.predictions.GeneratePredictions(ctx, userID, state)

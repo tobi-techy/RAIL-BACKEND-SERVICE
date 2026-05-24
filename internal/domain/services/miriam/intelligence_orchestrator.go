@@ -65,6 +65,11 @@ func (o *IntelligenceOrchestrator) SetMemory(m MemoryReader) {
 	o.memory = m
 }
 
+// SetNotifier injects a Notifier after construction (deferred wiring).
+func (o *IntelligenceOrchestrator) SetNotifier(n Notifier) {
+	o.notifier = n
+}
+
 // IntelligenceResult is the output of a single evaluation pass.
 type IntelligenceResult struct {
 	UserID          uuid.UUID                        `json:"user_id"`

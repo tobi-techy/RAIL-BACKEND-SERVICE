@@ -2310,6 +2310,15 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize notification service with persister for in-app notifications
 	c.NotificationService = services.NewNotificationService(c.ZapLog)
 	c.NotificationService.SetPersister(adapters.NewNotificationPersisterAdapter(c.NotificationRepo))
+
+	// Defer-wire Notifier into Miriam intelligence services (initialized before this point).
+	if c.MiriamProactiveNudgeEngine != nil {
+		c.MiriamProactiveNudgeEngine.SetNotifier(c.NotificationService)
+	}
+	if c.MiriamIntelligenceOrchestrator != nil {
+		c.MiriamIntelligenceOrchestrator.SetNotifier(c.NotificationService)
+	}
+
 	// Wire push notification service (SNS preferred, Expo fallback)
 	c.ZapLog.Info("SNS push config check",
 		zap.String("ios_arn", c.Config.SNSPush.IOSPlatformARN),
