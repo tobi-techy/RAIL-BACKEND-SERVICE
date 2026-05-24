@@ -94,7 +94,7 @@ function parseBatchLimit(raw) {
   if (!Number.isFinite(parsed) || parsed <= 0) {
     return DEFAULT_BATCH_LIMIT;
   }
-  return Math.min(parsed, 5000);
+  return Math.min(parsed, 500);
 }
 
 function requiredEnv(env, name) {

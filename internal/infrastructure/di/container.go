@@ -1871,7 +1871,7 @@ func (c *Container) initializeDomainServices() error {
 	c.MiriamIntelligenceRepo = repositories.NewMiriamIntelligenceRepository(sqlxDB)
 	c.MiriamIntelligenceService = miriamservice.NewService(
 		c.MiriamIntelligenceRepo,
-		c.LedgerService,             // BalanceProvider
+		c.LedgerService, // BalanceProvider
 		moneyGuardSpendingSvc,
 		c.FinancialObligationService,
 		c.FinancialProfileRepo,

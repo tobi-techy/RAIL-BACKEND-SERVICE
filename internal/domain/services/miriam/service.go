@@ -221,8 +221,14 @@ func (s *Service) RefreshMoneyState(ctx context.Context, userID uuid.UUID) (*ent
 	lastMonthStart := monthStart.AddDate(0, -1, 0)
 	weekStart := now.AddDate(0, 0, -7)
 
-	spend, _ := s.balances.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
-	stash, _ := s.balances.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
+	spend, err := s.balances.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return nil, fmt.Errorf("refresh miriam state: spend balance: %w", err)
+	}
+	stash, err := s.balances.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		return nil, fmt.Errorf("refresh miriam state: stash balance: %w", err)
+	}
 	monthFlow := s.moneyFlow(ctx, userID, monthStart, now)
 	lastMonthFlow := s.moneyFlow(ctx, userID, lastMonthStart, monthStart)
 	weekFlow := s.moneyFlow(ctx, userID, weekStart, now)
@@ -373,7 +379,7 @@ func (s *Service) evaluateTransferToStash(ctx context.Context, state *entities.M
 	amount = amount.RoundBank(2)
 	reason := fmt.Sprintf("Moved $%s to Stash because Spend was $%s above the approved floor and safe-to-spend was $%s/day.",
 		amount.StringFixed(2), availableAboveFloor.StringFixed(2), state.SafeToSpendDaily.StringFixed(2))
-	idempotencyKey := fmt.Sprintf("miriam-autopilot-%s-%s", mandate.ID.String(), now.Format("20060102-150405"))
+	idempotencyKey := fmt.Sprintf("miriam-autopilot-%s-%s-%s", mandate.ID.String(), now.Format("20060102"), state.UserID.String())
 	if err := s.transfer.TransferSpendingToStash(ctx, state.UserID, amount, idempotencyKey); err != nil {
 		errMsg := err.Error()
 		return s.createReceipt(ctx, state.UserID, &mandate, eventType, entities.MiriamReceiptStatusFailed, amount, reason, &errMsg)

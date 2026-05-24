@@ -202,8 +202,10 @@ func (r *MiriamIntelligenceRepository) CreateReceipt(ctx context.Context, receip
 }
 
 func (r *MiriamIntelligenceRepository) ListReceipts(ctx context.Context, userID uuid.UUID, limit int) ([]entities.MiriamDecisionReceipt, error) {
-	if limit <= 0 || limit > 50 {
+	if limit <= 0 {
 		limit = 20
+	} else if limit > 50 {
+		limit = 50
 	}
 	var receipts []entities.MiriamDecisionReceipt
 	err := r.db.SelectContext(ctx, &receipts, `
