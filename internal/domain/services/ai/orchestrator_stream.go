@@ -180,13 +180,17 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 
 	cumulativeTokens := resp.TokensUsed
 	allToolResults := make([]ToolResult, 0)
+	// Use a detached context for tool execution so side-effects complete
+	// even if the client disconnects mid-stream.
+	toolCtx, toolCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer toolCancel()
 	for round := 0; round < 5 && len(resp.ToolCalls) > 0; round++ {
 		roundResults := make([]ToolResult, 0, len(resp.ToolCalls))
 		for _, tc := range resp.ToolCalls {
 			emit(StreamEvent{Type: "thinking", Content: thinkingMessage(tc.Name)})
 			// Handle action tools (require confirmation)
 			if isActionTool(tc.Name) && convID != uuid.Nil && o.canCreateActionTool(tc.Name) {
-				result, execErr := o.executeActionTool(ctx, userID, convID, tc)
+				result, execErr := o.executeActionTool(toolCtx, userID, convID, tc)
 				observeToolCall(tc.Name, execErr)
 				if execErr != nil {
 					result = o.sanitizeToolError(tc.Name, execErr)
@@ -208,7 +212,7 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 				continue
 			}
 
-			result, execErr := o.executeTool(ctx, userID, tc)
+			result, execErr := o.executeTool(toolCtx, userID, tc)
 			observeToolCall(tc.Name, execErr)
 			if execErr != nil {
 				o.logger.Warn("Tool execution failed", zap.String("tool", tc.Name), zap.Error(execErr))
