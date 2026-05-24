@@ -508,8 +508,10 @@ type PajConfig struct {
 
 // WorkerConfig contains background worker configuration
 type WorkerConfig struct {
-	Count      int `mapstructure:"count"`
-	JobTimeout int `mapstructure:"job_timeout"`
+	Count                       int  `mapstructure:"count"`
+	JobTimeout                  int  `mapstructure:"job_timeout"`
+	MiriamIntelligenceLocal     bool `mapstructure:"miriam_intelligence_local"`
+	MiriamIntelligenceBatchSize int  `mapstructure:"miriam_intelligence_batch_size"`
 }
 
 // AlpacaConfig contains brokerage API configuration
@@ -901,6 +903,8 @@ func setDefaults() {
 	// Worker defaults
 	viper.SetDefault("workers.count", 10)
 	viper.SetDefault("workers.job_timeout", 300)
+	viper.SetDefault("workers.miriam_intelligence_local", true)
+	viper.SetDefault("workers.miriam_intelligence_batch_size", 500)
 
 	// Rate limiting defaults
 	viper.SetDefault("rate_limit.enabled", true)
@@ -1284,6 +1288,8 @@ func overrideFromEnv() {
 	viper.BindEnv("chainrails.settlement_token", "CHAINRAILS_SETTLEMENT_TOKEN")
 
 	viper.BindEnv("security.internal_api_key", "SECURITY_INTERNAL_API_KEY")
+	viper.BindEnv("workers.miriam_intelligence_local", "WORKERS_MIRIAM_INTELLIGENCE_LOCAL")
+	viper.BindEnv("workers.miriam_intelligence_batch_size", "WORKERS_MIRIAM_INTELLIGENCE_BATCH_SIZE")
 
 	if chainrailsAPIKey := os.Getenv("CHAINRAILS_API_KEY"); chainrailsAPIKey != "" {
 		viper.Set("chainrails.api_key", chainrailsAPIKey)

@@ -46,6 +46,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/internal/domain/services/limits"
 	marketservice "github.com/rail-service/rail_service/internal/domain/services/market"
+	miriamservice "github.com/rail-service/rail_service/internal/domain/services/miriam"
 	moneyguardservice "github.com/rail-service/rail_service/internal/domain/services/moneyguard"
 	newsservice "github.com/rail-service/rail_service/internal/domain/services/news"
 	obligationservice "github.com/rail-service/rail_service/internal/domain/services/obligation"
@@ -1282,6 +1283,7 @@ type Container struct {
 	SubscriptionService        *subscriptionsvc.Service
 	FinancialObligationService *obligationservice.Service
 	MoneyGuardService          *moneyguardservice.Service
+	MiriamIntelligenceService  *miriamservice.Service
 	AutomationService          *automation.Service
 	GrowthMailService          *growthmail.Service
 	GrowthEngineService        *growthengine.Service
@@ -1294,22 +1296,23 @@ type Container struct {
 	StashLockService           *stashlock.Service
 
 	// AI Financial Manager Services
-	AIProviderManager     *ai.ProviderManager
-	AIOrchestrator        *aiservice.Orchestrator
-	DiditClient           *didit.Client
-	ComplianceService     *compliancesvc.Service
-	AIRecommender         *aiservice.Recommender
-	NewsService           *newsservice.Service
-	PortfolioDataProvider *aiservice.PortfolioDataProviderImpl
-	ActivityDataProvider  *aiservice.ActivityDataProviderImpl
-	ConversationRepo      *repositories.ConversationRepository
-	ConversationService   *conversationsvc.Service
-	UsageRepo             *repositories.AIUsageRepository
-	UsageService          *usagesvc.Service
-	EmbeddingsClient      *embeddings.Client
-	KnowledgeRepo         *repositories.KnowledgeRepository
-	KnowledgeService      *knowledgesvc.Service
-	MemoryService         *aiservice.MemoryService
+	AIProviderManager      *ai.ProviderManager
+	AIOrchestrator         *aiservice.Orchestrator
+	DiditClient            *didit.Client
+	ComplianceService      *compliancesvc.Service
+	AIRecommender          *aiservice.Recommender
+	NewsService            *newsservice.Service
+	PortfolioDataProvider  *aiservice.PortfolioDataProviderImpl
+	ActivityDataProvider   *aiservice.ActivityDataProviderImpl
+	ConversationRepo       *repositories.ConversationRepository
+	ConversationService    *conversationsvc.Service
+	UsageRepo              *repositories.AIUsageRepository
+	UsageService           *usagesvc.Service
+	EmbeddingsClient       *embeddings.Client
+	KnowledgeRepo          *repositories.KnowledgeRepository
+	KnowledgeService       *knowledgesvc.Service
+	MemoryService          *aiservice.MemoryService
+	MiriamIntelligenceRepo *repositories.MiriamIntelligenceRepository
 
 	// Additional Repositories
 	OnboardingJobRepo *repositories.OnboardingJobRepository
@@ -1865,6 +1868,18 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog,
 	)
 	c.LedgerService.SetStashRaidObserver(c.MoneyGuardService)
+	c.MiriamIntelligenceRepo = repositories.NewMiriamIntelligenceRepository(sqlxDB)
+	c.MiriamIntelligenceService = miriamservice.NewService(
+		c.MiriamIntelligenceRepo,
+		c.LedgerService, // BalanceProvider
+		moneyGuardSpendingSvc,
+		c.FinancialObligationService,
+		c.FinancialProfileRepo,
+		c.MoneyGuardService,
+		c.LedgerService, // TransferExecutor — same service, different interface
+		c.NotificationService,
+		c.ZapLog,
+	)
 
 	// Initialize yield service (Reflect-backed). A private key is only needed for
 	// treasury-owned sweeps; Circle-backed deposit routes use user Circle wallets
@@ -3462,6 +3477,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	c.AIOrchestrator.SetFinancialObligationProvider(c.FinancialObligationService)
 	c.AIOrchestrator.SetAutomationCreator(&automationCreatorAdapter{service: c.AutomationService})
 	c.AIOrchestrator.SetAutomationProvider(&automationProviderAdapter{svc: c.AutomationService})
+	c.AIOrchestrator.SetMiriamIntelligenceProvider(c.MiriamIntelligenceService)
 	c.AIOrchestrator.SetObligationCreator(&obligationCreatorAdapter{service: c.FinancialObligationService})
 	c.AIOrchestrator.SetCurrencyRateProvider(c.ExchangeRateRepo)
 	warrantyRepo := repositories.NewWarrantyRepository(sqlxDB)

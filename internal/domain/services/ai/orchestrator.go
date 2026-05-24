@@ -148,6 +148,7 @@ type Orchestrator struct {
 	automationProvider  AutomationProvider
 	contextSignals      ContextSignalProvider
 	memory              *MemoryService
+	miriamIntelligence  MiriamIntelligenceReader
 	logger              *zap.Logger
 }
 
@@ -190,6 +191,7 @@ type OrchestratorDeps struct {
 	AccountChecker     UserAccountChecker
 	AutomationProvider AutomationProvider
 	Memory             *MemoryService
+	MiriamIntelligence MiriamIntelligenceReader
 }
 
 // NewOrchestratorWithDeps creates a new AI orchestrator with all dependencies provided upfront.
@@ -247,6 +249,7 @@ func NewOrchestratorWithDeps(
 		accountChecker:     deps.AccountChecker,
 		automationProvider: deps.AutomationProvider,
 		memory:             deps.Memory,
+		miriamIntelligence: deps.MiriamIntelligence,
 		logger:             logger,
 	}
 }
@@ -533,6 +536,9 @@ func (o *Orchestrator) GetTools() []ai.Tool {
 	if o.spending != nil && o.aggregateStats != nil {
 		tools = append(tools, FinancialIntelligenceTools(o.actionHistory != nil)...)
 		tools = append(tools, MiriamBriefTool())
+	}
+	if o.miriamIntelligence != nil {
+		tools = append(tools, MiriamIntelligenceTools()...)
 	}
 	// Expanded insight cards (subscriptions, runway, deposits, yield, comparisons)
 	if o.spending != nil || o.recurringDetector != nil {
@@ -1073,6 +1079,24 @@ func (o *Orchestrator) executeToolInner(ctx context.Context, userID uuid.UUID, t
 			return map[string]interface{}{"error": "miriam brief service is unavailable: spending and balance providers are not configured"}, nil
 		}
 		return o.executeMiriamBrief(ctx, userID, tc.Arguments)
+
+	case ToolGetMiriamMoneyState:
+		if o.miriamIntelligence == nil {
+			return map[string]interface{}{"error": "miriam money state is unavailable"}, nil
+		}
+		return o.executeMiriamMoneyState(ctx, userID)
+
+	case ToolListMiriamMandates:
+		if o.miriamIntelligence == nil {
+			return map[string]interface{}{"error": "miriam autopilot mandates are unavailable"}, nil
+		}
+		return o.executeListMiriamMandates(ctx, userID)
+
+	case ToolGetMiriamDecisionReceipts:
+		if o.miriamIntelligence == nil {
+			return map[string]interface{}{"error": "miriam decision receipts are unavailable"}, nil
+		}
+		return o.executeMiriamDecisionReceipts(ctx, userID, tc.Arguments)
 
 	case ToolGetRecurringExpenses:
 		return o.executeRecurringExpenses(ctx, userID)

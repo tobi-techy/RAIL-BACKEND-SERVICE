@@ -59,7 +59,7 @@ func TestVoiceAudioDurationHelpers(t *testing.T) {
 func TestVoiceToolDescriptionsStaySmallAndActionCapable(t *testing.T) {
 	tools := voiceToolDescriptions()
 
-	require.Len(t, tools, 15)
+	require.Len(t, tools, 19)
 	require.Contains(t, tools, "voice_money_lookup")
 	require.Contains(t, tools, "voice_money_action")
 	require.Contains(t, tools, "transfer_funds")
@@ -70,6 +70,9 @@ func TestVoiceToolDescriptionsStaySmallAndActionCapable(t *testing.T) {
 	require.Contains(t, tools, "set_budget")
 	require.Contains(t, tools, "get_financial_health")
 	require.Contains(t, tools, "get_financial_audit")
+	require.Contains(t, tools, "get_miriam_money_state")
+	require.Contains(t, tools, "list_miriam_mandates")
+	require.Contains(t, tools, "get_miriam_decision_receipts")
 	require.NotContains(t, tools, "get_card_transactions")
 	require.NotContains(t, tools, "get_deposit_history")
 }

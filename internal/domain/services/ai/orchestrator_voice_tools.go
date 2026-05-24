@@ -93,6 +93,9 @@ func voiceLookupToolNames() []string {
 		ToolGetFinancialAdvice,
 		ToolGetFinancialTimeline,
 		ToolGetMiriamBrief,
+		ToolGetMiriamMoneyState,
+		ToolListMiriamMandates,
+		ToolGetMiriamDecisionReceipts,
 		ToolGetRecurringExpenses,
 		ToolGetWarrantyItems,
 		ToolGetReceiptChallenges,
@@ -307,6 +310,10 @@ func (o *Orchestrator) voiceLookupUnavailable(tool string) string {
 	case ToolGetActionReceipts:
 		if o.actionHistory == nil {
 			return "action receipts are unavailable"
+		}
+	case ToolGetMiriamMoneyState, ToolListMiriamMandates, ToolGetMiriamDecisionReceipts:
+		if o.miriamIntelligence == nil {
+			return "miriam intelligence state is unavailable"
 		}
 	case ToolGetFinancialTimeline:
 		if !o.hasFinancialTimelineProviders() {
