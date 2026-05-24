@@ -26,11 +26,18 @@ type UsageRepository interface {
 	ResetExpiredPeriods(ctx context.Context, userID uuid.UUID) error
 }
 
+// ExchangeRateProvider returns the current exchange rate for a currency pair.
+// Used to normalize non-USD amounts to USD for unified usage tracking.
+type ExchangeRateProvider interface {
+	GetNGNRate(ctx context.Context) (decimal.Decimal, error)
+}
+
 // Service handles transaction limit validation
 type Service struct {
-	userRepo  UserRepository
-	usageRepo UsageRepository
-	logger    *logger.Logger
+	userRepo     UserRepository
+	usageRepo    UsageRepository
+	rateProvider ExchangeRateProvider
+	logger       *logger.Logger
 }
 
 // NewService creates a new limits service
@@ -40,6 +47,11 @@ func NewService(userRepo UserRepository, usageRepo UsageRepository, logger *logg
 		usageRepo: usageRepo,
 		logger:    logger,
 	}
+}
+
+// SetRateProvider sets an optional exchange rate provider for currency normalization.
+func (s *Service) SetRateProvider(rp ExchangeRateProvider) {
+	s.rateProvider = rp
 }
 
 // ValidateDeposit checks if a deposit amount is within user's limits
@@ -156,12 +168,31 @@ func (s *Service) ValidateWithdrawalWithCurrency(ctx context.Context, userID uui
 
 	config := entities.GetLimitConfigForTierAndCurrency(tier, currency)
 
-	// Check minimum
+	// Check minimum (in native currency)
 	if amount.LessThan(config.MinWithdrawal) {
 		return &entities.LimitCheckResult{
 			Allowed: false,
 			Reason:  fmt.Sprintf("amount %s is below minimum withdrawal of %s", amount.String(), config.MinWithdrawal.String()),
 		}, entities.ErrBelowMinimumWithdrawal
+	}
+
+	// Normalize amount to USD for unified usage tracking
+	usageAmount := amount
+	usdConfig := entities.GetLimitConfigForTierAndCurrency(tier, "USD")
+	dailyLimit := usdConfig.DailyWithdrawalLimit
+	monthlyLimit := usdConfig.MonthlyWithdrawalLimit
+	if currency == "NGN" {
+		rate := s.getNGNRate(ctx)
+		if rate.IsPositive() {
+			usageAmount = amount.Div(rate).Round(2)
+		} else {
+			// Rate unavailable — use NGN-specific limits directly (no normalization)
+			dailyLimit = config.DailyWithdrawalLimit
+			monthlyLimit = config.MonthlyWithdrawalLimit
+		}
+	} else {
+		dailyLimit = config.DailyWithdrawalLimit
+		monthlyLimit = config.MonthlyWithdrawalLimit
 	}
 
 	// Reset expired periods and get current usage
@@ -174,10 +205,10 @@ func (s *Service) ValidateWithdrawalWithCurrency(ctx context.Context, userID uui
 		return nil, fmt.Errorf("failed to get usage: %w", err)
 	}
 
-	// Check daily limit
-	newDailyUsage := usage.DailyWithdrawalUsed.Add(amount)
-	if newDailyUsage.GreaterThan(config.DailyWithdrawalLimit) {
-		remaining := config.DailyWithdrawalLimit.Sub(usage.DailyWithdrawalUsed)
+	// Check daily limit (usage is stored in USD-equivalent)
+	newDailyUsage := usage.DailyWithdrawalUsed.Add(usageAmount)
+	if newDailyUsage.GreaterThan(dailyLimit) {
+		remaining := dailyLimit.Sub(usage.DailyWithdrawalUsed)
 		if remaining.LessThan(decimal.Zero) {
 			remaining = decimal.Zero
 		}
@@ -185,7 +216,7 @@ func (s *Service) ValidateWithdrawalWithCurrency(ctx context.Context, userID uui
 			Allowed:           false,
 			Reason:            "daily withdrawal limit exceeded",
 			CurrentUsage:      usage.DailyWithdrawalUsed,
-			Limit:             config.DailyWithdrawalLimit,
+			Limit:             dailyLimit,
 			RemainingCapacity: remaining,
 			ResetsAt:          usage.DailyWithdrawalResetAt,
 			LimitType:         "daily",
@@ -193,9 +224,9 @@ func (s *Service) ValidateWithdrawalWithCurrency(ctx context.Context, userID uui
 	}
 
 	// Check monthly limit
-	newMonthlyUsage := usage.MonthlyWithdrawalUsed.Add(amount)
-	if newMonthlyUsage.GreaterThan(config.MonthlyWithdrawalLimit) {
-		remaining := config.MonthlyWithdrawalLimit.Sub(usage.MonthlyWithdrawalUsed)
+	newMonthlyUsage := usage.MonthlyWithdrawalUsed.Add(usageAmount)
+	if newMonthlyUsage.GreaterThan(monthlyLimit) {
+		remaining := monthlyLimit.Sub(usage.MonthlyWithdrawalUsed)
 		if remaining.LessThan(decimal.Zero) {
 			remaining = decimal.Zero
 		}
@@ -203,15 +234,15 @@ func (s *Service) ValidateWithdrawalWithCurrency(ctx context.Context, userID uui
 			Allowed:           false,
 			Reason:            "monthly withdrawal limit exceeded",
 			CurrentUsage:      usage.MonthlyWithdrawalUsed,
-			Limit:             config.MonthlyWithdrawalLimit,
+			Limit:             monthlyLimit,
 			RemainingCapacity: remaining,
 			ResetsAt:          usage.MonthlyWithdrawalResetAt,
 			LimitType:         "monthly",
 		}, entities.ErrMonthlyWithdrawalExceeded
 	}
 
-	dailyRemaining := config.DailyWithdrawalLimit.Sub(usage.DailyWithdrawalUsed)
-	monthlyRemaining := config.MonthlyWithdrawalLimit.Sub(usage.MonthlyWithdrawalUsed)
+	dailyRemaining := dailyLimit.Sub(usage.DailyWithdrawalUsed)
+	monthlyRemaining := monthlyLimit.Sub(usage.MonthlyWithdrawalUsed)
 	remaining := dailyRemaining
 	resetsAt := usage.DailyWithdrawalResetAt
 	limitType := "daily"
@@ -269,14 +300,31 @@ func (s *Service) RecordWithdrawalWithCurrency(ctx context.Context, userID uuid.
 	if tier == entities.KYCTierUnverified {
 		return entities.ErrUnverifiedUser
 	}
-	config := entities.GetLimitConfigForTierAndCurrency(tier, currency)
+
+	// Normalize to USD-equivalent for unified usage tracking
+	usageAmount := amount
+	usdConfig := entities.GetLimitConfigForTierAndCurrency(tier, "USD")
+	dailyLimit := usdConfig.DailyWithdrawalLimit
+	monthlyLimit := usdConfig.MonthlyWithdrawalLimit
+	if currency == "NGN" {
+		rate := s.getNGNRate(ctx)
+		if rate.IsPositive() {
+			usageAmount = amount.Div(rate).Round(2)
+		} else {
+			// Rate unavailable — use NGN limits directly
+			ngnConfig := entities.GetLimitConfigForTierAndCurrency(tier, "NGN")
+			dailyLimit = ngnConfig.DailyWithdrawalLimit
+			monthlyLimit = ngnConfig.MonthlyWithdrawalLimit
+		}
+	}
+
 	if err := s.usageRepo.ResetExpiredPeriods(ctx, userID); err != nil {
 		s.logger.Warn("Failed to reset expired periods", "error", err, "user_id", userID.String())
 	}
 	if _, err := s.usageRepo.GetOrCreate(ctx, userID); err != nil {
 		return fmt.Errorf("failed to ensure usage record: %w", err)
 	}
-	return s.usageRepo.AtomicIncrementWithdrawal(ctx, userID, amount, config.DailyWithdrawalLimit, config.MonthlyWithdrawalLimit)
+	return s.usageRepo.AtomicIncrementWithdrawal(ctx, userID, usageAmount, dailyLimit, monthlyLimit)
 }
 
 // GetUserLimits returns the user's current limits and usage for a currency
@@ -361,4 +409,17 @@ func NextDailyReset() time.Time {
 func NextMonthlyReset() time.Time {
 	now := time.Now().UTC()
 	return time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC)
+}
+
+// getNGNRate returns the current NGN/USD rate from the last cached PAJ rate.
+// Returns zero if unavailable (caller should skip normalization).
+func (s *Service) getNGNRate(ctx context.Context) decimal.Decimal {
+	if s.rateProvider != nil {
+		rate, err := s.rateProvider.GetNGNRate(ctx)
+		if err == nil && rate.IsPositive() {
+			return rate
+		}
+		s.logger.Warn("Failed to get NGN rate from cache", "error", err)
+	}
+	return decimal.Zero
 }

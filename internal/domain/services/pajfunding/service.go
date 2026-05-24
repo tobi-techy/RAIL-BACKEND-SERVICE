@@ -78,6 +78,7 @@ type ChainRailsAdapter interface {
 type WithdrawalLimitsChecker interface {
 	ValidateWithdrawal(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error
 	ValidateWithdrawalWithCurrency(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currency string) error
+	RecordWithdrawalWithCurrency(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currency string) error
 }
 
 // DepositLimitsChecker validates deposit amounts against daily/monthly limits.
@@ -550,9 +551,8 @@ func (s *Service) CreateOnrampOrder(ctx context.Context, userID uuid.UUID, fiatA
 
 // --- Offramp (USDC → NGN) ---
 
-// RailNGNWithdrawalFee is Rail's flat fee for NGN withdrawals (in USDC).
-// ₦30 at ~₦1500/USD ≈ $0.02.
-const RailNGNWithdrawalFee = 0.02
+// RailNGNWithdrawalFeeNGN is Rail's flat fee for NGN withdrawals (in Naira).
+const RailNGNWithdrawalFeeNGN float64 = 50.0
 
 func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bankID, accountNumber string, fiatAmount float64, currency string) (*OfframpResult, error) {
 	// Quick sanity check before any API calls.
@@ -599,8 +599,8 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 	estimatedUSDC := decimal.NewFromFloat(fiatAmount).Div(decimal.NewFromFloat(rates.OffRampRate.Rate))
 	estimatedUSDC = estimatedUSDC.Mul(decimal.NewFromFloat(1.01)).Round(2)
 
-	// Rail's flat fee for NGN withdrawals.
-	railFee := decimal.NewFromFloat(RailNGNWithdrawalFee)
+	// Rail's flat fee for NGN withdrawals: ₦50 converted to USDC at current rate.
+	railFee := decimal.NewFromFloat(RailNGNWithdrawalFeeNGN).Div(decimal.NewFromFloat(rates.OffRampRate.Rate)).Round(4)
 
 	// Total hold = estimated USDC (with slippage buffer) + Rail fee.
 	// Paj's fee is included in order.Amount (Paj deducts it from the token amount).
@@ -696,9 +696,21 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 	// Circle is the primary wallet provider.
 	go s.executeCircleTransferToPaj(userID, order, totalHold, railFee)
 
+	// Record usage against daily/monthly limits (in NGN for NGN withdrawals).
+	if s.limitsChecker != nil {
+		limitCurrency := strings.ToUpper(strings.TrimSpace(currency))
+		if limitCurrency == "" {
+			limitCurrency = "NGN"
+		}
+		if recErr := s.limitsChecker.RecordWithdrawalWithCurrency(ctx, userID, decimal.NewFromFloat(fiatAmount), limitCurrency); recErr != nil {
+			s.logger.Warn("Failed to record withdrawal usage (non-blocking)",
+				zap.Error(recErr), zap.String("user_id", userID.String()))
+		}
+	}
+
 	return &OfframpResult{
 		Order:   order,
-		RailFee: RailNGNWithdrawalFee,
+		RailFee: RailNGNWithdrawalFeeNGN,
 	}, nil
 }
 
@@ -1086,7 +1098,7 @@ func (s *Service) reverseOfframpIfFailed(ctx context.Context, userID uuid.UUID, 
 	err = s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
 		"paj-offramp-"+pajOrderID, holdAmount, map[string]interface{}{
 			"provider": "paj", "type": "offramp_failure_reversal", "paj_order_id": pajOrderID,
-			"rail_fee": decimal.NewFromFloat(RailNGNWithdrawalFee).String(), "fee_revenue_posted": true,
+			"rail_fee": decimal.NewFromFloat(RailNGNWithdrawalFeeNGN).String(), "fee_revenue_posted": true,
 		})
 	if err != nil {
 		s.logger.Error("CRITICAL: failed to reverse offramp hold after failure",
@@ -1179,7 +1191,7 @@ func (s *Service) reverseHold(ctx context.Context, userID uuid.UUID, pajOrderID 
 	err := s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
 		"paj_offramp_"+reason+"_"+pajOrderID, amount, map[string]interface{}{
 			"provider": "paj", "type": "offramp_" + reason + "_reversal", "paj_order_id": pajOrderID,
-			"rail_fee": decimal.NewFromFloat(RailNGNWithdrawalFee).String(), "fee_revenue_posted": true,
+			"rail_fee": decimal.NewFromFloat(RailNGNWithdrawalFeeNGN).String(), "fee_revenue_posted": true,
 		})
 	if err != nil {
 		s.logger.Error("CRITICAL: failed to reverse offramp hold",

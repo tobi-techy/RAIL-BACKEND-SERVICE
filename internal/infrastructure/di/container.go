@@ -2364,6 +2364,7 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize limits service for deposit/withdrawal limits
 	usageRepo := repositories.NewUsageRepository(c.DB, c.ZapLog)
 	c.LimitsService = limits.NewService(c.UserRepo, usageRepo, c.Logger)
+	c.LimitsService.SetRateProvider(NewPajRateProvider(c.RedisClient))
 
 	// Initialize domain audit service for compliance logging
 	auditRepo := repositories.NewAuditRepository(sqlxDB)
@@ -4663,6 +4664,34 @@ func (a *PajLimitsAdapter) ValidateWithdrawalWithCurrency(ctx context.Context, u
 		return fmt.Errorf("%s", result.Reason)
 	}
 	return nil
+}
+
+func (a *PajLimitsAdapter) RecordWithdrawalWithCurrency(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currency string) error {
+	return a.limitsService.RecordWithdrawalWithCurrency(ctx, userID, amount, currency)
+}
+
+// PajRateProvider implements limits.ExchangeRateProvider using the cached PAJ rate from Redis.
+type PajRateProvider struct {
+	redis cache.RedisClient
+}
+
+func NewPajRateProvider(redis cache.RedisClient) *PajRateProvider {
+	return &PajRateProvider{redis: redis}
+}
+
+func (p *PajRateProvider) GetNGNRate(ctx context.Context) (decimal.Decimal, error) {
+	var cached struct {
+		OffRampRate struct {
+			Rate float64 `json:"rate"`
+		} `json:"offRampRate"`
+	}
+	if err := p.redis.Get(ctx, "paj:rates", &cached); err != nil {
+		return decimal.Zero, err
+	}
+	if cached.OffRampRate.Rate <= 0 {
+		return decimal.Zero, fmt.Errorf("cached rate is zero")
+	}
+	return decimal.NewFromFloat(cached.OffRampRate.Rate), nil
 }
 
 // PajDepositLedgerAdapter credits USDC balance for PAJ onramp deposits using the
