@@ -60,6 +60,11 @@ func NewIntelligenceOrchestrator(
 	}
 }
 
+// SetMemory injects a MemoryReader after construction (deferred wiring).
+func (o *IntelligenceOrchestrator) SetMemory(m MemoryReader) {
+	o.memory = m
+}
+
 // IntelligenceResult is the output of a single evaluation pass.
 type IntelligenceResult struct {
 	UserID          uuid.UUID                        `json:"user_id"`

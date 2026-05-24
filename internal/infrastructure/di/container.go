@@ -1891,9 +1891,12 @@ func (c *Container) initializeDomainServices() error {
 	)
 
 	// Wire Miriam intelligence subsystem (unified brain).
-	// Repository layers for decisions, predictions, nudges are deferred
-	// (pending DB migrations); services are nil-safe and fall back gracefully.
 	contextSignalRepo := repositories.NewContextSignalRepository(sqlxDB)
+	decisionRepo := repositories.NewMiriamDecisionRepository(sqlxDB)
+	predictionRepo := repositories.NewMiriamPredictionRepository(sqlxDB)
+	nudgeRepo := repositories.NewProactiveNudgeRepository(sqlxDB)
+	healthRepo := repositories.NewHealthScoreRepository(sqlxDB)
+
 	c.MiriamSignalDetector = miriamservice.NewSignalDetector(
 		contextSignalRepo,
 		moneyGuardSpendingSvc,
@@ -1902,7 +1905,7 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog,
 	)
 	c.MiriamPredictiveEngine = miriamservice.NewPredictiveEngine(
-		nil, // PredictionRepository — pending migration
+		predictionRepo,
 		moneyGuardSpendingSvc,
 		c.FinancialObligationService,
 		c.LedgerService,
@@ -1910,15 +1913,15 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog,
 	)
 	c.MiriamDecisionEngine = miriamservice.NewDecisionEngine(
-		nil, // DecisionRepository — pending migration
+		decisionRepo,
 		c.MiriamPredictiveEngine,
-		nil, // MemoryReader — wired after memory repo initialized
+		nil, // MemoryReader — deferred via SetMemory after memory service init
 		c.ZapLog,
 	)
 	c.MiriamProactiveNudgeEngine = miriamservice.NewProactiveNudgeEngine(
-		nil, // ProactiveNudgeStore — pending migration
+		nudgeRepo,
 		c.MiriamPredictiveEngine,
-		nil, // MemoryReader — wired after memory repo initialized
+		nil, // MemoryReader — deferred via SetMemory after memory service init
 		c.NotificationService,
 		c.ZapLog,
 	)
@@ -1943,7 +1946,7 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog,
 	)
 	c.MiriamHealthScoreTracker = miriamservice.NewHealthScoreTracker(
-		nil, // HealthScoreRepository — pending migration
+		healthRepo,
 		c.ZapLog,
 	)
 	c.MiriamIntelligenceOrchestrator = miriamservice.NewIntelligenceOrchestrator(
@@ -1955,7 +1958,7 @@ func (c *Container) initializeDomainServices() error {
 		c.MiriamMandateSuggestionEngine,
 		c.MiriamObligationDetector,
 		c.MiriamNotificationDispatcher,
-		nil, // MemoryReader — wired after memory repo initialized
+		nil, // MemoryReader — deferred via SetMemory after memory service init
 		c.NotificationService,
 		c.ZapLog,
 	)
@@ -3486,6 +3489,17 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	memorySvc := aiservice.NewMemoryService(memoryRepo, c.AIProviderManager, c.ZapLog)
 	c.AIOrchestrator.SetMemory(memorySvc)
 	c.MemoryService = memorySvc
+
+	// Defer-wire MemoryReader into Miriam intelligence services (initialized before memory service).
+	if c.MiriamDecisionEngine != nil {
+		c.MiriamDecisionEngine.SetMemory(memorySvc)
+	}
+	if c.MiriamProactiveNudgeEngine != nil {
+		c.MiriamProactiveNudgeEngine.SetMemory(memorySvc)
+	}
+	if c.MiriamIntelligenceOrchestrator != nil {
+		c.MiriamIntelligenceOrchestrator.SetMemory(memorySvc)
+	}
 
 	// Initialize usage tracking
 	c.UsageRepo = repositories.NewAIUsageRepository(c.DB, c.ZapLog)

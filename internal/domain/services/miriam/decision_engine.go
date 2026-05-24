@@ -44,6 +44,11 @@ func NewDecisionEngine(repo DecisionRepository, predictions *PredictiveEngine, m
 	}
 }
 
+// SetMemory injects a MemoryReader after construction (deferred wiring).
+func (e *DecisionEngine) SetMemory(m MemoryReader) {
+	e.memory = m
+}
+
 // MakeDecision evaluates a mandate in context and returns a decision.
 func (e *DecisionEngine) MakeDecision(ctx context.Context, dc *entities.DecisionContext) (*entities.MiriamDecision, error) {
 	factors := e.serializeFactors(dc)

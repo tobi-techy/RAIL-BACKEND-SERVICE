@@ -492,6 +492,11 @@ func (m *MemoryService) RunDecay(ctx context.Context) error {
 
 // --- User-Facing Memory Controls ---
 
+// GetActiveFacts returns all active facts for a user (satisfies miriam.MemoryReader).
+func (m *MemoryService) GetActiveFacts(ctx context.Context, userID uuid.UUID) ([]*entities.MiriamUserFact, error) {
+	return m.store.GetActiveFacts(ctx, userID)
+}
+
 // ListUserFacts returns all active facts for a user (for "what do you know about me?").
 func (m *MemoryService) ListUserFacts(ctx context.Context, userID uuid.UUID) ([]*entities.MiriamUserFact, error) {
 	return m.store.GetActiveFacts(ctx, userID)
