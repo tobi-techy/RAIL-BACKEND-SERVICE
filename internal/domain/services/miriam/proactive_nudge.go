@@ -3,8 +3,8 @@ package miriam
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,6 +12,8 @@ import (
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
+
+var rng = rand.New(rand.NewSource(time.Now().UnixNano()))
 
 // ProactiveNudgeStore persists proactive nudges.
 type ProactiveNudgeStore interface {
@@ -79,7 +81,7 @@ func (e *ProactiveNudgeEngine) generateFromSummary(ctx context.Context, userID u
 		if p.Probability.LessThan(decimal.NewFromFloat(0.5)) {
 			continue
 		}
-		n := e.nudgeFromPrediction(userID, p)
+		n := e.nudgeFromPrediction(ctx, userID, p, state)
 		if n != nil {
 			nudges = append(nudges, *n)
 		}
@@ -89,14 +91,14 @@ func (e *ProactiveNudgeEngine) generateFromSummary(ctx context.Context, userID u
 	if e.memory != nil {
 		facts, err := e.memory.GetActiveFacts(ctx, userID)
 		if err == nil {
-			if n := e.nudgeFromMemory(userID, facts, state); n != nil {
+			if n := e.nudgeFromMemory(ctx, userID, facts, state); n != nil {
 				nudges = append(nudges, *n)
 			}
 		}
 	}
 
 	// 3. Bill warning nudges
-	if n := e.nudgeFromBills(userID, state); n != nil {
+	if n := e.nudgeFromBills(ctx, userID, state); n != nil {
 		nudges = append(nudges, *n)
 	}
 
@@ -149,13 +151,13 @@ func (e *ProactiveNudgeEngine) GetPendingNudges(ctx context.Context, userID uuid
 	return summary, nil
 }
 
-func (e *ProactiveNudgeEngine) nudgeFromPrediction(userID uuid.UUID, p entities.MiriamPrediction) *entities.ProactiveNudge {
+func (e *ProactiveNudgeEngine) nudgeFromPrediction(ctx context.Context, userID uuid.UUID, p entities.MiriamPrediction, state *entities.MiriamMoneyState) *entities.ProactiveNudge {
 	if p.Severity == entities.SeverityLow && p.Probability.LessThan(decimal.NewFromFloat(0.6)) {
 		return nil
 	}
 
 	priority := predictionPriority(p)
-	message := predictionMessage(p)
+	message := e.buildPredictionMessage(ctx, userID, p, state)
 	action := predictionAction(p)
 
 	return &entities.ProactiveNudge{
@@ -170,54 +172,197 @@ func (e *ProactiveNudgeEngine) nudgeFromPrediction(userID uuid.UUID, p entities.
 	}
 }
 
-func (e *ProactiveNudgeEngine) nudgeFromMemory(userID uuid.UUID, facts []*entities.MiriamUserFact, state *entities.MiriamMoneyState) *entities.ProactiveNudge {
+func (e *ProactiveNudgeEngine) nudgeFromMemory(ctx context.Context, userID uuid.UUID, facts []*entities.MiriamUserFact, state *entities.MiriamMoneyState) *entities.ProactiveNudge {
 	for _, f := range facts {
 		if f.Category == entities.FactCategoryGoal && f.Confidence.GreaterThanOrEqual(decimal.NewFromFloat(0.7)) {
-			// User has a goal — check if stash progress aligns
-			if state.StashTarget.IsPositive() {
-				stash, _ := e.predictions.balances.GetAccountBalance(context.Background(), userID, entities.AccountTypeStashBalance)
-				if stash.LessThan(state.StashTarget.Mul(decimal.NewFromFloat(0.5))) {
-					return &entities.ProactiveNudge{
-						ID:          uuid.New(),
-						UserID:      userID,
-						TriggerType: entities.NudgeTriggerMemory,
-						Priority:    5,
-						Message:     fmt.Sprintf("Your savings goal is halfway there. Want to boost your Stash this week?"),
-						ExpiresAt:   time.Now().UTC().Add(7 * 24 * time.Hour),
-						CreatedAt:   time.Now().UTC(),
-					}
-				}
+			if !state.StashTarget.IsPositive() {
+				continue
+			}
+			stash, err := e.predictions.balances.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
+			if err != nil {
+				continue
+			}
+			spend, _ := e.predictions.balances.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
+			if spend.IsZero() {
+				spend = decimal.Zero
+			}
+
+			remaining := state.StashTarget.Sub(stash)
+			if remaining.LessThan(decimal.NewFromFloat(1)) {
+				continue
+			}
+
+			pct := int(stash.Div(state.StashTarget).Mul(decimal.NewFromFloat(100)).InexactFloat64())
+			target := state.StashTarget.StringFixed(0)
+			s := spend.StringFixed(0)
+			st := stash.StringFixed(0)
+			rem := remaining.StringFixed(0)
+
+			var msg string
+			switch rng.Intn(3) {
+			case 0:
+				msg = fmt.Sprintf("You're %d%% of the way to your $%s goal with $%s in Spend. Add more?", pct, target, s)
+			case 1:
+				msg = fmt.Sprintf("Need $%s more for your $%s savings goal. Spend has $%s — tap to move it.", rem, target, s)
+			default:
+				msg = fmt.Sprintf("Stash goal: $%s total. Saved $%s, need $%s more. Boost from Spend?", target, st, rem)
+			}
+
+			return &entities.ProactiveNudge{
+				ID:          uuid.New(),
+				UserID:      userID,
+				TriggerType: entities.NudgeTriggerMemory,
+				Priority:    5,
+				Message:     msg,
+				ActionSuggestion: mustJSON(map[string]interface{}{
+					"type":   "transfer_to_stash",
+					"label":  "Add to Stash",
+					"amount": remaining.StringFixed(2),
+				}),
+				ExpiresAt: time.Now().UTC().Add(7 * 24 * time.Hour),
+				CreatedAt: time.Now().UTC(),
 			}
 		}
 	}
 	return nil
 }
 
-func (e *ProactiveNudgeEngine) nudgeFromBills(userID uuid.UUID, state *entities.MiriamMoneyState) *entities.ProactiveNudge {
+func (e *ProactiveNudgeEngine) nudgeFromBills(ctx context.Context, userID uuid.UUID, state *entities.MiriamMoneyState) *entities.ProactiveNudge {
 	if !state.UpcomingObligations.IsPositive() {
 		return nil
 	}
 
-	spend, err := e.predictions.balances.GetAccountBalance(context.Background(), userID, entities.AccountTypeSpendingBalance)
+	spend, err := e.predictions.balances.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
 	if err != nil {
 		return nil
 	}
 
 	if spend.LessThan(state.UpcomingObligations.Mul(decimal.NewFromFloat(0.8))) {
 		gap := state.UpcomingObligations.Sub(spend)
+		stash, _ := e.predictions.balances.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
+		ob := state.UpcomingObligations.StringFixed(0)
+		s := spend.StringFixed(0)
+		st := stash.StringFixed(0)
+		g := gap.StringFixed(0)
+
+		var msg string
+		switch rng.Intn(3) {
+		case 0:
+			msg = fmt.Sprintf("Bills ($%s) exceed Spend ($%s). Stash has $%s — tap to cover the $%s gap.", ob, s, st, g)
+		case 1:
+			msg = fmt.Sprintf("⚠️ $%s in bills due. Spend has $%s. I can pull $%s from Stash.", ob, s, g)
+		default:
+			msg = fmt.Sprintf("Upcoming bills of $%s will overdraw Spend ($%s). Stash ($%s) can cover — want me to?", ob, s, st)
+		}
+
 		return &entities.ProactiveNudge{
 			ID:          uuid.New(),
 			UserID:      userID,
 			TriggerType: entities.NudgeTriggerBillWarning,
 			Priority:    9,
-			Message: fmt.Sprintf("Upcoming bills ($%s) may exceed your Spend balance ($%s). $%s gap — want me to cover from Stash?",
-				state.UpcomingObligations.StringFixed(0), spend.StringFixed(0), gap.StringFixed(0)),
+			Message:     msg,
+			ActionSuggestion: mustJSON(map[string]interface{}{
+				"type":   "transfer_from_stash",
+				"label":  "Cover from Stash",
+				"amount": gap.StringFixed(2),
+			}),
 			ExpiresAt: time.Now().UTC().Add(24 * time.Hour),
 			CreatedAt: time.Now().UTC(),
 		}
 	}
 
 	return nil
+}
+
+func (e *ProactiveNudgeEngine) buildPredictionMessage(ctx context.Context, userID uuid.UUID, p entities.MiriamPrediction, state *entities.MiriamMoneyState) string {
+	spend, _ := e.predictions.balances.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
+	stash, _ := e.predictions.balances.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
+
+	s := spend.StringFixed(0)
+	st := stash.StringFixed(0)
+	pa := p.ProjectedAmount.StringFixed(0)
+
+	switch p.PredictionType {
+	case entities.PredictionCashShortfall:
+		ob := state.UpcomingObligations.StringFixed(0)
+		switch rng.Intn(4) {
+		case 0:
+			return fmt.Sprintf("Spend is at $%s with $%s in bills due. You're $%s short — tap to cover from Stash.", s, ob, pa)
+		case 1:
+			return fmt.Sprintf("Heads up: $%s in Spend, $%s in bills. I can move $%s from Stash.", s, ob, pa)
+		case 2:
+			return fmt.Sprintf("$%s in bills coming, Spend at $%s. Want me to pull $%s from Stash?", ob, s, pa)
+		default:
+			return fmt.Sprintf("Paycheck's not here yet. Spend ($%s) won't cover $%s in bills. I can fill the $%s gap.", s, ob, pa)
+		}
+
+	case entities.PredictionBillPressure:
+		ob := state.UpcomingObligations.StringFixed(0)
+		switch rng.Intn(4) {
+		case 0:
+			return fmt.Sprintf("$%s in bills this week vs $%s in Spend. Auto-cover from Stash?", ob, s)
+		case 1:
+			return fmt.Sprintf("Your $%s in obligations are crowding Spend ($%s). Stash has $%s — let me top up.", ob, s, st)
+		case 2:
+			return fmt.Sprintf("$%s due soon, Spend at $%s. Stash has $%s — move enough to cover?", ob, s, st)
+		default:
+			return fmt.Sprintf("Bill cluster: $%s in obligations, $%s in Spend. Stash ($%s) can smooth it out.", ob, s, st)
+		}
+
+	case entities.PredictionIncomeGap:
+		inc := state.AvgMonthlyIncome.StringFixed(0)
+		switch rng.Intn(3) {
+		case 0:
+			return fmt.Sprintf("Income this month ($%s) is $%s short of expenses. Pull from Stash?", inc, pa)
+		case 1:
+			return fmt.Sprintf("Your $%s/mo income won't cover this month. Stash can bridge the $%s gap.", inc, pa)
+		default:
+			return fmt.Sprintf("Spending $%s more than you earn this month. Move from Stash to cover?", pa)
+		}
+
+	case entities.PredictionSpendingAnomaly:
+		safe := state.SafeToSpendDaily.StringFixed(0)
+		runway := state.LiquidityRunwayDays
+		switch rng.Intn(3) {
+		case 0:
+			return fmt.Sprintf("You've spent $%s more this month. Daily safe-to-spend is $%s — try easing up.", pa, safe)
+		case 1:
+			return fmt.Sprintf("Spending is up $%s vs normal. At this pace your runway is %d days.", pa, runway)
+		default:
+			return fmt.Sprintf("Unusual spending this month: $%s above normal. I'm watching it.", pa)
+		}
+
+	case entities.PredictionIdleSurplus:
+		switch rng.Intn(3) {
+		case 0:
+			return fmt.Sprintf("$%s sitting idle in Spend. Move it to Stash and put it to work.", pa)
+		case 1:
+			return fmt.Sprintf("$%s in Spend isn't earning anything. Tap to stash it.", pa)
+		default:
+			return fmt.Sprintf("Your Spend has $%s extra. Want to move it to Stash?", pa)
+		}
+
+	case entities.PredictionStashOpportunity:
+		target := state.StashTarget.StringFixed(0)
+		switch rng.Intn(3) {
+		case 0:
+			return fmt.Sprintf("Stash ($%s) is $%s short of $%s target. Add from Spend?", st, pa, target)
+		case 1:
+			if state.StashTarget.IsPositive() {
+				pct := int(stash.Div(state.StashTarget).Mul(decimal.NewFromFloat(100)).InexactFloat64())
+				return fmt.Sprintf("You're at %d%% of your Stash goal. Add $%s from Spend to stay on track.", pct, pa)
+			}
+			return fmt.Sprintf("Add $%s to your Stash from Spend to stay on target.", pa)
+		default:
+			return fmt.Sprintf("Stash opportunity: move $%s from Spend to keep your savings growing.", pa)
+		}
+
+	default:
+		if p.Reasoning != "" {
+			return p.Reasoning
+		}
+		return "Miriam noticed something about your money — tap to see."
+	}
 }
 
 func predictionPriority(p entities.MiriamPrediction) int {
@@ -245,32 +390,6 @@ func predictionPriority(p entities.MiriamPrediction) int {
 		return 10
 	}
 	return base
-}
-
-func predictionMessage(p entities.MiriamPrediction) string {
-	var b strings.Builder
-	switch p.PredictionType {
-	case entities.PredictionCashShortfall:
-		b.WriteString("Heads up — you might run low before payday. ")
-	case entities.PredictionBillPressure:
-		b.WriteString("Bills coming up that need attention. ")
-	case entities.PredictionIncomeGap:
-		b.WriteString("Income this month may not cover your needs. ")
-	case entities.PredictionSpendingAnomaly:
-		b.WriteString("Unusual spending detected this month. ")
-	case entities.PredictionIdleSurplus:
-		b.WriteString("You've got idle money that could be earning yield. ")
-	case entities.PredictionStashOpportunity:
-		b.WriteString("Your Stash could use a top-up to stay on target. ")
-	default:
-		b.WriteString("Something to know about your money. ")
-	}
-
-	if p.Reasoning != "" {
-		b.WriteString(p.Reasoning)
-	}
-
-	return b.String()
 }
 
 func predictionAction(p entities.MiriamPrediction) map[string]interface{} {
@@ -301,7 +420,6 @@ func selectTopNudges(nudges []entities.ProactiveNudge, max int) []entities.Proac
 		return nudges[i].Priority > nudges[j].Priority
 	})
 
-	// Deduplicate by trigger type
 	seen := make(map[string]bool)
 	result := make([]entities.ProactiveNudge, 0, max)
 	for _, n := range nudges {
