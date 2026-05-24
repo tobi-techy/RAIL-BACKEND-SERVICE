@@ -1359,10 +1359,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						aiGroup.GET("/goals/progress", middleware.AuthRateLimit(10), premiumHandlers.GoalProgress)
 					}
 
-					// Voice session ticket (protected); WebSocket uses the short-lived ticket.
+					// Voice session ticket issuance (protected by standard auth).
+					// WebSocket endpoint uses its own voice session token auth (no Bearer/CSRF).
 					if voiceHandler != nil {
 						aiGroup.POST("/voice/session-token", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), voiceHandler.IssueSessionToken)
-						aiGroup.GET("/voice/session", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), voiceHandler.HandleSession)
+						v1.GET("/ai/voice/session", voiceHandler.HandleSession)
 					}
 				}
 
