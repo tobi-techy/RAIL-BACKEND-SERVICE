@@ -109,7 +109,7 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 	}
 
 	upgrader := wsUpgrader
-	upgrader.CheckOrigin = func(r *http.Request) bool { return true }
+	upgrader.CheckOrigin = h.isAllowedOrigin
 	clientConn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		h.logger.Error("websocket upgrade failed", zap.Error(err))
@@ -672,7 +672,7 @@ func (h *VoiceHandler) configureSession(ctx context.Context, userID uuid.UUID, c
 
 func voiceToolDescriptions() map[string]string {
 	return map[string]string{
-		aiservice.ToolVoiceMoneyLookup:          "Use for any read-only question Miriam can answer in chat: balances, budgets, spending, transactions, deposits, withdrawals, income, yield, taxes, goals, profile, obligations, automations, subscriptions, runway, receipts, audits, financial health, advice, timeline, investing, market/news, knowledge, or memory. Set the tool field to the underlying chat tool name.",
+		aiservice.ToolVoiceMoneyLookup:          "Use for read-only tools that are NOT exposed directly to voice: search_knowledge_base, get_financial_timeline, get_persona_money_context, get_money_operating_plan, get_financial_advice, get_financial_plan, get_cash_flow_forecast, get_financial_audit, get_financial_health. Set the tool field to the underlying chat tool name. For common tools like get_account_summary, get_budget, get_money_flow, get_miriam_brief — call them directly by name instead.",
 		aiservice.ToolVoiceMoneyAction:          "Use for less-common chat actions in voice. Set action to the underlying action tool name and params to that action's arguments. Use after clear user intent or confirmation.",
 		aiservice.ToolGetAccountSummary:         "Call when the user asks for balance, overview, safe spend, or how their money looks. Fast account snapshot.",
 		aiservice.ToolGetBudget:                 "Call when the user asks about their budget, monthly limit, remaining budget, daily allowance, budget status, or how much they can still spend.",

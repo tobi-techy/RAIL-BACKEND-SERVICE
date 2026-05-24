@@ -357,7 +357,7 @@ func (s *Service) sendEmail(ctx context.Context, to string, campaign entities.Gr
 func formatFrom(campaign entities.GrowthCampaign) string {
 	email := strings.TrimSpace(campaign.FromEmail)
 	if email == "" {
-		email = "miriam@userail.money"
+		email = "miriam@mail.userail.money"
 	}
 	name := strings.TrimSpace(campaign.FromName)
 	if name != "" {

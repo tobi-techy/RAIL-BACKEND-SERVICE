@@ -63,7 +63,7 @@ func TestVoiceToolDescriptionsStaySmallAndActionCapable(t *testing.T) {
 	require.Contains(t, tools, "voice_money_lookup")
 	require.Contains(t, tools, "voice_money_action")
 	require.Contains(t, tools, "transfer_funds")
-	require.NotContains(t, tools, "initiate_withdrawal")
+	require.Contains(t, tools, "initiate_withdrawal")
 	require.Contains(t, tools, "create_automation")
 	require.Contains(t, tools, "get_money_flow")
 	require.Contains(t, tools, "get_budget")

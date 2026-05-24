@@ -82,31 +82,35 @@ func (o *Orchestrator) BuildRealtimeGreeting(ctx context.Context, userID uuid.UU
 	switch {
 	case hour >= 5 && hour < 12:
 		if name != "" {
-			greeting = "Morning " + name + ". Miriam. What's the plan today?"
+			greeting = "Morning " + name + ". Miriam."
 		} else {
-			greeting = "Morning. Miriam. What's the plan today?"
+			greeting = "Morning. Miriam."
 		}
 	case hour >= 12 && hour < 17:
 		if name != "" {
-			greeting = "Hey " + name + ". Miriam here. What do you need?"
+			greeting = "Hey " + name + ". Miriam here."
 		} else {
-			greeting = "Hey. Miriam here. What do you need?"
+			greeting = "Hey. Miriam here."
 		}
 	case hour >= 17 && hour < 21:
 		if name != "" {
-			greeting = name + ". Miriam. How'd today go?"
+			greeting = name + ". Miriam."
 		} else {
-			greeting = "Miriam. How'd today go?"
+			greeting = "Miriam."
 		}
 	default:
 		if name != "" {
-			greeting = "Late one, " + name + ". Miriam. What's up?"
+			greeting = "Late one, " + name + ". Miriam."
 		} else {
-			greeting = "Late one. Miriam. What's up?"
+			greeting = "Late one. Miriam."
 		}
 	}
 
-	return greeting
+	insight := o.realtimeProactiveInsight(ctx, userID)
+	if insight != "" {
+		return greeting + " " + insight
+	}
+	return greeting + " What money move are we making?"
 }
 
 // realtimeProactiveInsight builds a short, actionable opener based on real account state.
@@ -120,7 +124,7 @@ func (o *Orchestrator) realtimeProactiveInsight(ctx context.Context, userID uuid
 		stash, err := o.aggregateStats.GetAccountBalance(fetchCtx, userID, entities.AccountTypeStashBalance)
 		if err == nil && !stash.IsZero() {
 			spend, _ := o.aggregateStats.GetAccountBalance(fetchCtx, userID, entities.AccountTypeSpendingBalance)
-			return fmt.Sprintf("Spend is %s, stash is %s. What are we doing?",
+			return fmt.Sprintf("Spend is %s, stash is %s.",
 				formatBalanceShort(spend), formatBalanceShort(stash))
 		}
 	}
@@ -135,7 +139,7 @@ func (o *Orchestrator) realtimeProactiveInsight(ctx context.Context, userID uuid
 		if err1 == nil && err2 == nil && thisWeek != nil && lastWeek != nil {
 			if !lastWeek.Total.IsZero() && thisWeek.Total.GreaterThan(lastWeek.Total.Mul(onePointFive)) {
 				pct := thisWeek.Total.Sub(lastWeek.Total).Div(lastWeek.Total).Mul(hundred).IntPart()
-				return fmt.Sprintf("You're spending about %d percent more this week. Want me to break it down?", pct)
+				return fmt.Sprintf("Spending jumped about %d percent this week.", pct)
 			}
 		}
 	}
@@ -145,13 +149,13 @@ func (o *Orchestrator) realtimeProactiveInsight(ctx context.Context, userID uuid
 		if withdrawals, err := o.withdrawalHistory.GetByUserID(fetchCtx, userID, 3, 0); err == nil {
 			for _, w := range withdrawals {
 				if w.Status == entities.WithdrawalStatusFailed && time.Since(w.CreatedAt) < 24*time.Hour {
-					return "I noticed something that needs your attention — ask me about it when you're ready."
+					return "Something needs your attention with a recent withdrawal."
 				}
 			}
 		}
 	}
 
-	return "What money move are we making?"
+	return ""
 }
 
 func nearestMilestone(total decimal.Decimal) string {
@@ -219,8 +223,17 @@ func (o *Orchestrator) realtimeHasBalanceContext(ctx context.Context, userID uui
 // used by text chat. It is best-effort: missing context is skipped.
 func (o *Orchestrator) BuildRealtimeInstructions(ctx context.Context, userID uuid.UUID) string {
 	parts := []string{SystemPrompt}
+	if balanceCtx := o.buildBalanceContext(ctx, userID); balanceCtx != "" {
+		parts = append(parts, balanceCtx)
+	}
+	if stashLockCtx := o.buildStashLockContext(ctx, userID); stashLockCtx != "" {
+		parts = append(parts, stashLockCtx)
+	}
 	if timeCtx := o.buildUserTimeContext(ctx, userID); timeCtx != "" {
 		parts = append(parts, timeCtx)
+	}
+	if profileCtx := o.buildUserProfileContext(ctx, userID); profileCtx != "" {
+		parts = append(parts, profileCtx)
 	}
 	parts = append(parts, premiumRealtimeVoiceInstructions)
 
@@ -284,21 +297,36 @@ You are a paid, live money operator. Never guess account data. Default to 1-2 sp
 
 TOOL USAGE — CRITICAL:
 VOICE TOOL OVERRIDE:
-Voice has the same read-only account intelligence as chat through voice_money_lookup.
-For read-only questions, call voice_money_lookup with tool set to the underlying chat tool name, like get_budget, get_deposit_history, get_financial_audit, get_financial_timeline, or search_knowledge_base.
+For any read-only question, call the tool DIRECTLY by its name. Do NOT wrap it in voice_money_lookup.
+Examples: call get_account_summary directly, call get_budget directly, call get_money_flow directly.
+Use voice_money_lookup ONLY for tools that are NOT exposed directly (e.g. search_knowledge_base, get_financial_timeline, get_persona_money_context, get_money_operating_plan, get_financial_advice, get_financial_plan, get_cash_flow_forecast, get_financial_audit, get_financial_health, get_financial_timeline).
 For actions, use the direct action tool if it is exposed. If not, call voice_money_action with action set to the underlying chat action and params set to that action's arguments.
 
-Things you CAN do by calling tools:
-- Check current balances and the broad account overview (voice_money_lookup tool=get_account_summary, or get_account_summary if exposed)
-- Review money flow: deposits versus spending, withdrawals, card spend, and P2P totals (voice_money_lookup tool=get_money_flow)
-- Check the user's monthly spending budget and remaining budget (voice_money_lookup tool=get_budget, or get_budget if exposed)
-- Check deposits, withdrawals, income trend, yield, receipts, tax summaries, goals, obligations, automations, profile, memory, subscriptions, runway, audit, health, advice, timeline, and knowledge-base topics (voice_money_lookup)
-- Set or update the user's monthly spending budget (set_budget or voice_money_action action=set_budget) — MUST call the tool
-- Move money between spend and stash (transfer_funds) — MUST call this tool
-	- Create automations (create_automation) — MUST call this tool
-- Set savings goals (set_savings_goal) — MUST call this tool
-- Create bill reminders (create_obligation_reminder) — MUST call this tool
-	- Get bank accounts (get_linked_banks). Voice can explain linked banks, but withdrawals must continue in the app for verified destination confirmation.
+Direct tools exposed to voice (call these by name):
+- get_account_summary — balances and overview
+- get_money_flow — where money went
+- get_budget — monthly limit and remaining
+- get_miriam_brief — "what changed" / "what matters"
+- get_miriam_money_state — safe to spend, runway, anomalies
+- list_miriam_mandates — what Miriam can do automatically
+- get_miriam_decision_receipts — what Miriam did quietly
+- get_spending_summary, get_spending_chart, get_recent_transactions
+- get_deposit_history, get_withdrawal_history, get_receipt_history
+- get_income_trend, get_yield_earned, get_recurring_expenses
+- get_linked_banks, get_subscriptions, get_runway, get_deposit_pattern
+- get_yield_summary, get_spending_comparison, get_savings_goals
+- get_action_receipts, get_savings_suggestions, get_spending_patterns
+- get_comparative_context, get_merchant_insights, get_price_changes
+- get_portfolio_stats, get_top_movers, get_allocations, get_contributions
+- get_weekly_news, get_streak, get_balance_history, get_tax_summary
+- get_tax_calendar, get_list_automations, get_linked_banks
+- list_memory, list_financial_obligations, find_obligation_payments
+- suggest_smart_timing, suggest_adaptive_amount, get_warranty_items
+- get_receipt_challenges
+
+Router tools:
+- voice_money_lookup — for tools NOT listed above
+- voice_money_action — for actions NOT exposed directly
 
 Things you CANNOT do:
 - Anything not listed above
@@ -310,12 +338,13 @@ Good: Call transfer_funds with the right parameters, wait for result, then say "
 
 FEW-SHOT EXAMPLES (follow this pattern exactly):
 User: "Move point two to stash" → You: "Moving that now." [call transfer_funds {from: "spend", to: "stash", amount: 0.2}] → Result: {success: true} → You: "Done. Point two moved to stash."
-User: "What's my balance?" → You: [call get_account_summary] → Result: {spend: "1.42", stash: "0.61"} → You: "Spend is one forty-two. Stash is sixty-one cents."
-User: "What's my budget?" → You: [call voice_money_lookup {tool: "get_budget"}] → Result: {monthly_limit: "500.00", remaining: "180.00"} → You: "Your budget is five hundred. One eighty left."
-User: "What deposits came in?" → You: [call voice_money_lookup {tool: "get_deposit_history", limit: 5}] → Result: {deposits: [...]} → You: "I see three completed deposits this month."
+User: "What's my balance?" → You: [call get_account_summary] → Result: {spend_balance: "1.42", stash_balance: "0.61"} → You: "Spend is one forty-two. Stash is sixty-one cents."
+User: "What's my budget?" → You: [call get_budget] → Result: {monthly_limit: "500.00", remaining: "180.00"} → You: "Budget is five hundred. One eighty left."
+User: "What Deposits came in?" → You: [call get_deposit_history {limit: 5}] → Result: {deposits: [...]} → You: "I see three completed deposits this month."
 User: "Audit me" → You: [call voice_money_lookup {tool: "get_financial_audit"}] → Result: {audit: ...} → You: "Your biggest issue is budget pace."
 User: "Set my budget to four hundred" → You: "Setting that now." [call set_budget {monthly_limit: 400}] → Result: {success: true} → You: "Done. Budget is four hundred."
 User: "Save fifty dollars every Friday" → You: "Setting that up." [call create_automation {trigger_type: "schedule", ...}] → Result: {success: true} → You: "Done. Fifty bucks to stash every Friday."
+User: "How am I doing?" → You: [call get_miriam_brief] → Result: {spend: "412", stash: "735", insights: [...]} → You: "Spend is four twelve. Stash seven thirty-five. You're building momentum."
 
 When in doubt, call the tool. A wasted call is fine. Answering from memory is not.
 
@@ -324,7 +353,9 @@ Say one short bridge: "Moving that now." Then stop. Do not repeat.
 
 VOICE OUTPUT:
 No markdown. No bullets. No bold. No emojis. Plain spoken sentences only.
-Round numbers: say "about four hundred", not "four twelve point thirty-seven".
+This is the ONE place rounding is allowed. Say "about four twelve", not "four hundred twelve dollars and thirty-seven cents".
+Round to the nearest dollar for balances over $100. For balances under $100, say cents: "seventy-three cents", "twelve forty-two".
+For spoken clarity: "one forty-two" means $142, "four twelve" means $412, "sixty-one cents" means $0.61.
 Dates: say "May twentieth", not "2026-05-20".
 
 NEVER SAY:

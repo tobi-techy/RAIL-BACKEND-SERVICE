@@ -1245,55 +1245,64 @@ type Container struct {
 	BridgeCustomerStatusProcessor *webhooks.BridgeCustomerStatusProcessor
 
 	// Domain Services
-	OnboardingService          *onboarding.Service
-	OnboardingJobService       *services.OnboardingJobService
-	VerificationService        services.VerificationService
-	PasscodeService            *passcode.Service
-	SessionService             *session.Service
-	TwoFAService               *twofa.Service
-	APIKeyService              *apikey.Service
-	WalletService              *wallet.Service
-	FundingService             *funding.Service
-	InvestingService           *investing.Service
-	BalanceService             *services.BalanceService
-	LedgerService              *ledger.Service
-	YieldService               *yieldsvc.Service
-	yieldRepo                  *repositories.YieldRepository
-	ReconciliationService      *reconciliation.Service
-	ReconciliationScheduler    *reconciliation.Scheduler
-	StashReconciliation        *recon.Worker
-	TreasurySweepWorker        *treasury_sweep.Worker
-	ReflectDepositRouter       *reflect.CircleDepositRouter
-	YieldDistributionWorker    *yield_distribution.Worker
-	AllocationService          *allocation.Service
-	AutoInvestService          *autoinvest.Service
-	StrategyEngine             *strategy.Engine
-	StationService             *station.Service
-	GameplayXPService          *gameplay.XPService
-	GameplayStreakService      *gameplay.StreakService
-	GameplayChallengeService   *gameplay.ChallengeService
-	GameplayAchievementService *gameplay.AchievementService
-	GameplayRepo               *repositories.GameplayRepository
-	GameplayHooks              *gameplay.Hooks
-	GameplayRingsService       *gameplay.RingsService
-	GameplayBoostService       *gameplay.BoostService
-	GameplayPointsService      *gameplay.PointsService
-	GameplayGraceDayService    *gameplay.GraceDayService
-	GameplayRecapService       *gameplay.RecapService
-	SubscriptionService        *subscriptionsvc.Service
-	FinancialObligationService *obligationservice.Service
-	MoneyGuardService          *moneyguardservice.Service
-	MiriamIntelligenceService  *miriamservice.Service
-	AutomationService          *automation.Service
-	GrowthMailService          *growthmail.Service
-	GrowthEngineService        *growthengine.Service
-	NotificationService        *services.NotificationService
-	SocialAuthService          *socialauth.Service
-	WebAuthnService            *webauthn.Service
-	LimitsService              *limits.Service
-	DomainAuditService         *audit.Service
-	WithdrawalService          *services.WithdrawalService
-	StashLockService           *stashlock.Service
+	OnboardingService              *onboarding.Service
+	OnboardingJobService           *services.OnboardingJobService
+	VerificationService            services.VerificationService
+	PasscodeService                *passcode.Service
+	SessionService                 *session.Service
+	TwoFAService                   *twofa.Service
+	APIKeyService                  *apikey.Service
+	WalletService                  *wallet.Service
+	FundingService                 *funding.Service
+	InvestingService               *investing.Service
+	BalanceService                 *services.BalanceService
+	LedgerService                  *ledger.Service
+	YieldService                   *yieldsvc.Service
+	yieldRepo                      *repositories.YieldRepository
+	ReconciliationService          *reconciliation.Service
+	ReconciliationScheduler        *reconciliation.Scheduler
+	StashReconciliation            *recon.Worker
+	TreasurySweepWorker            *treasury_sweep.Worker
+	ReflectDepositRouter           *reflect.CircleDepositRouter
+	YieldDistributionWorker        *yield_distribution.Worker
+	AllocationService              *allocation.Service
+	AutoInvestService              *autoinvest.Service
+	StrategyEngine                 *strategy.Engine
+	StationService                 *station.Service
+	GameplayXPService              *gameplay.XPService
+	GameplayStreakService          *gameplay.StreakService
+	GameplayChallengeService       *gameplay.ChallengeService
+	GameplayAchievementService     *gameplay.AchievementService
+	GameplayRepo                   *repositories.GameplayRepository
+	GameplayHooks                  *gameplay.Hooks
+	GameplayRingsService           *gameplay.RingsService
+	GameplayBoostService           *gameplay.BoostService
+	GameplayPointsService          *gameplay.PointsService
+	GameplayGraceDayService        *gameplay.GraceDayService
+	GameplayRecapService           *gameplay.RecapService
+	SubscriptionService            *subscriptionsvc.Service
+	FinancialObligationService     *obligationservice.Service
+	MoneyGuardService              *moneyguardservice.Service
+	MiriamIntelligenceService      *miriamservice.Service
+	MiriamIntelligenceOrchestrator *miriamservice.IntelligenceOrchestrator
+	MiriamSignalDetector           *miriamservice.SignalDetector
+	MiriamPredictiveEngine         *miriamservice.PredictiveEngine
+	MiriamDecisionEngine           *miriamservice.DecisionEngine
+	MiriamProactiveNudgeEngine     *miriamservice.ProactiveNudgeEngine
+	MiriamMandateSuggestionEngine  *miriamservice.MandateSuggestionEngine
+	MiriamHealthScoreTracker       *miriamservice.HealthScoreTracker
+	MiriamNotificationDispatcher   *miriamservice.NotificationDispatcher
+	MiriamObligationDetector       *miriamservice.ObligationAutoDetector
+	AutomationService              *automation.Service
+	GrowthMailService              *growthmail.Service
+	GrowthEngineService            *growthengine.Service
+	NotificationService            *services.NotificationService
+	SocialAuthService              *socialauth.Service
+	WebAuthnService                *webauthn.Service
+	LimitsService                  *limits.Service
+	DomainAuditService             *audit.Service
+	WithdrawalService              *services.WithdrawalService
+	StashLockService               *stashlock.Service
 
 	// AI Financial Manager Services
 	AIProviderManager      *ai.ProviderManager
@@ -1877,6 +1886,76 @@ func (c *Container) initializeDomainServices() error {
 		c.FinancialProfileRepo,
 		c.MoneyGuardService,
 		c.LedgerService, // TransferExecutor — same service, different interface
+		c.NotificationService,
+		c.ZapLog,
+	)
+
+	// Wire Miriam intelligence subsystem (unified brain).
+	// Repository layers for decisions, predictions, nudges are deferred
+	// (pending DB migrations); services are nil-safe and fall back gracefully.
+	contextSignalRepo := repositories.NewContextSignalRepository(sqlxDB)
+	c.MiriamSignalDetector = miriamservice.NewSignalDetector(
+		contextSignalRepo,
+		moneyGuardSpendingSvc,
+		c.FinancialObligationService,
+		c.LedgerService,
+		c.ZapLog,
+	)
+	c.MiriamPredictiveEngine = miriamservice.NewPredictiveEngine(
+		nil, // PredictionRepository — pending migration
+		moneyGuardSpendingSvc,
+		c.FinancialObligationService,
+		c.LedgerService,
+		c.FinancialProfileRepo,
+		c.ZapLog,
+	)
+	c.MiriamDecisionEngine = miriamservice.NewDecisionEngine(
+		nil, // DecisionRepository — pending migration
+		c.MiriamPredictiveEngine,
+		nil, // MemoryReader — wired after memory repo initialized
+		c.ZapLog,
+	)
+	c.MiriamProactiveNudgeEngine = miriamservice.NewProactiveNudgeEngine(
+		nil, // ProactiveNudgeStore — pending migration
+		c.MiriamPredictiveEngine,
+		nil, // MemoryReader — wired after memory repo initialized
+		c.NotificationService,
+		c.ZapLog,
+	)
+	c.MiriamMandateSuggestionEngine = miriamservice.NewMandateSuggestionEngine(
+		nil, // MandateSuggestionRepository — pending migration
+		c.LedgerService,
+		moneyGuardSpendingSvc,
+		c.FinancialObligationService,
+		c.FinancialProfileRepo,
+		c.ZapLog,
+	)
+	c.MiriamObligationDetector = miriamservice.NewObligationAutoDetector(
+		nil, // TransactionProvider — spending repo uses different interface
+		c.FinancialObligationService,
+		c.LedgerService,
+		c.ZapLog,
+	)
+	c.MiriamNotificationDispatcher = miriamservice.NewNotificationDispatcher(
+		nil, // NotificationPrefStore — pending migration
+		nil, // NotificationDigestStore — pending migration
+		c.NotificationService,
+		c.ZapLog,
+	)
+	c.MiriamHealthScoreTracker = miriamservice.NewHealthScoreTracker(
+		nil, // HealthScoreRepository — pending migration
+		c.ZapLog,
+	)
+	c.MiriamIntelligenceOrchestrator = miriamservice.NewIntelligenceOrchestrator(
+		c.MiriamIntelligenceService,
+		c.MiriamDecisionEngine,
+		c.MiriamProactiveNudgeEngine,
+		c.MiriamPredictiveEngine,
+		c.MiriamSignalDetector,
+		c.MiriamMandateSuggestionEngine,
+		c.MiriamObligationDetector,
+		c.MiriamNotificationDispatcher,
+		nil, // MemoryReader — wired after memory repo initialized
 		c.NotificationService,
 		c.ZapLog,
 	)
@@ -2655,6 +2734,14 @@ func (c *Container) initializeDomainServices() error {
 	}
 	if c.WithdrawalLimitsService != nil {
 		c.WithdrawalService.SetTieredWithdrawalLimits(&tieredLimitsAdapter{svc: c.WithdrawalLimitsService})
+	}
+
+	// Wire fraud detection and session anomaly enforcement into withdrawal path
+	if c.FraudDetectionService != nil {
+		c.WithdrawalService.SetFraudChecker(c.FraudDetectionService)
+	}
+	if c.SessionAnomalyService != nil {
+		c.WithdrawalService.SetSessionAnomalyChecker(c.SessionAnomalyService)
 	}
 
 	// Initialize P2P transfer services

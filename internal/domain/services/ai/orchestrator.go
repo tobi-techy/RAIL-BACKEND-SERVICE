@@ -1287,11 +1287,23 @@ func (o *Orchestrator) executeAccountSummary(ctx context.Context, userID uuid.UU
 
 	// Balances
 	if o.aggregateStats != nil {
-		spend, _ := o.aggregateStats.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
-		stash, _ := o.aggregateStats.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
-		result["spend_balance"] = spend.StringFixed(2)
-		result["stash_balance"] = stash.StringFixed(2)
-		result["total_balance"] = spend.Add(stash).StringFixed(2)
+		spend, spendErr := o.aggregateStats.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
+		stash, stashErr := o.aggregateStats.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
+		if spendErr != nil || stashErr != nil {
+			result["balances_error"] = "balance fetch failed — try again in a moment"
+			if spendErr != nil {
+				result["spend_error"] = spendErr.Error()
+			}
+			if stashErr != nil {
+				result["stash_error"] = stashErr.Error()
+			}
+		} else {
+			result["spend_balance"] = spend.StringFixed(2)
+			result["stash_balance"] = stash.StringFixed(2)
+			result["total_balance"] = spend.Add(stash).StringFixed(2)
+		}
+	} else {
+		result["balances_error"] = "balance data is unavailable"
 	}
 
 	// This month's money flow

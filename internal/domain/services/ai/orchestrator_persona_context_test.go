@@ -32,7 +32,7 @@ func (f realtimeUserProfileFake) GetProfile(_ context.Context, _ uuid.UUID) (*en
 	return f.profile, nil
 }
 
-func TestBuildRealtimeGreetingUsesNameWithoutBalanceContext(t *testing.T) {
+func TestBuildRealtimeGreetingIncludesProactiveBalance(t *testing.T) {
 	firstName := "Tobi"
 	userID := uuid.New()
 	o := &Orchestrator{
@@ -44,20 +44,24 @@ func TestBuildRealtimeGreetingUsesNameWithoutBalanceContext(t *testing.T) {
 
 	require.Contains(t, greeting, "Tobi")
 	require.Contains(t, greeting, "Miriam")
-	require.NotContains(t, greeting, "Spend is")
-	require.NotContains(t, greeting, "stash is")
+	require.Contains(t, greeting, "Spend is")
+	require.Contains(t, greeting, "stash is")
 }
 
-func TestBuildRealtimeGreetingDoesNotClaimNumbersWithoutBalanceContext(t *testing.T) {
+func TestBuildRealtimeGreetingFallsBackWithoutBalances(t *testing.T) {
+	firstName := "Tobi"
 	userID := uuid.New()
-	o := &Orchestrator{}
+	o := &Orchestrator{
+		userProfile: realtimeUserProfileFake{profile: &entities.UserProfile{FirstName: &firstName, Email: "tobi@example.com"}},
+	}
 
 	greeting := o.BuildRealtimeGreeting(context.Background(), userID)
 
+	require.Contains(t, greeting, "Tobi")
 	require.Contains(t, greeting, "Miriam")
-	// Should NOT mention numbers when no balance provider
 	require.NotContains(t, greeting, "Spend is")
 	require.NotContains(t, greeting, "stash is")
+	require.Contains(t, greeting, "What money move are we making?")
 }
 
 func TestBuildRealtimeInstructionsIncludesPremiumVoiceMode(t *testing.T) {

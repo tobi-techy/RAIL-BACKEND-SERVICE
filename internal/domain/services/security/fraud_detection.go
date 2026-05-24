@@ -639,3 +639,27 @@ func (s *FraudDetectionService) hasRecentHighValueWithdrawal(ctx context.Context
 	}
 	return count > 0, nil
 }
+
+// CheckWithdrawal adapts CheckTransaction to the withdrawal.FraudChecker interface.
+func (s *FraudDetectionService) CheckWithdrawal(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, destination, deviceID, ipAddress, sessionID string) (action string, requiresMFA bool, blockReason string, err error) {
+	txCtx := &TransactionContext{
+		UserID:      userID,
+		Amount:      amount,
+		Type:        "withdrawal",
+		Destination: destination,
+		IPAddress:   ipAddress,
+		DeviceID:    deviceID,
+		SessionID:   sessionID,
+	}
+
+	result, err := s.CheckTransaction(ctx, txCtx)
+	if err != nil {
+		s.logger.Error("Fraud check failed for withdrawal", zap.Error(err))
+		return "", false, "", err
+	}
+
+	action = string(result.Action)
+	requiresMFA = result.RequiresMFA
+	blockReason = result.BlockReason
+	return
+}

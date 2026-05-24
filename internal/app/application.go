@@ -408,11 +408,21 @@ func (app *Application) initializeWorkers() error {
 	}
 
 	if app.cfg.Workers.MiriamIntelligenceLocal && app.container.MiriamIntelligenceService != nil && app.container.UserRepo != nil {
-		app.miriamWorker = miriam_worker.NewWorker(app.container.UserRepo, app.container.MiriamIntelligenceService, app.log.Zap())
+		if app.container.MiriamIntelligenceOrchestrator != nil {
+			app.miriamWorker = miriam_worker.NewWorkerWithIntelligence(
+				app.container.UserRepo,
+				app.container.MiriamIntelligenceService,
+				app.container.MiriamIntelligenceOrchestrator,
+				app.log.Zap(),
+			)
+			app.log.Info("Miriam intelligence worker started (unified brain)")
+		} else {
+			app.miriamWorker = miriam_worker.NewWorker(app.container.UserRepo, app.container.MiriamIntelligenceService, app.log.Zap())
+			app.log.Info("Miriam intelligence worker started (classic mode)")
+		}
 		miriamCtx, miriamCancel := context.WithCancel(context.Background())
 		app.miriamWorkerCancel = miriamCancel
 		go app.miriamWorker.Start(miriamCtx)
-		app.log.Info("Miriam intelligence worker started")
 	} else if !app.cfg.Workers.MiriamIntelligenceLocal {
 		app.log.Info("Miriam intelligence local worker disabled; expecting external scheduler")
 	}

@@ -564,6 +564,13 @@ func minDecimal(values ...decimal.Decimal) decimal.Decimal {
 	return min
 }
 
+func maxDecimal(a, b decimal.Decimal) decimal.Decimal {
+	if a.GreaterThan(b) {
+		return a
+	}
+	return b
+}
+
 func mustJSON(v interface{}) json.RawMessage {
 	if v == nil {
 		return json.RawMessage(`{}`)
