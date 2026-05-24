@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
+	"go.uber.org/zap"
 )
 
 // Tool name for recurring expenses.
@@ -23,7 +24,7 @@ type RecurringExpense struct {
 	Count     int             `json:"count"`
 }
 
-// RecurringExpenseDetector detects recurring expenses from receipts and card transactions.
+// RecurringExpenseDetector detects recurring expenses from all spending sources.
 type RecurringExpenseDetector interface {
 	DetectRecurring(ctx context.Context, userID uuid.UUID) ([]RecurringExpense, error)
 }
@@ -37,7 +38,7 @@ func (o *Orchestrator) SetRecurringDetector(d RecurringExpenseDetector) {
 func RecurringExpenseTool() infraai.Tool {
 	return infraai.Tool{
 		Name:        ToolGetRecurringExpenses,
-		Description: "Analyze receipts and card transactions to detect recurring expenses (subscriptions, regular purchases). Use when user asks about recurring spending, subscriptions, or regular expenses.",
+		Description: "Analyze all spending sources (card transactions, P2P transfers, withdrawals, receipts) to detect recurring expenses and regular outflows. Use when user asks about recurring spending, subscriptions, regular expenses, or repeated transfers.",
 		Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "required": []string{}, "additionalProperties": false},
 	}
 }
@@ -48,7 +49,8 @@ func (o *Orchestrator) executeRecurringExpenses(ctx context.Context, userID uuid
 	}
 	expenses, err := o.recurringDetector.DetectRecurring(ctx, userID)
 	if err != nil {
-		return nil, fmt.Errorf("detect recurring: %w", err)
+		o.logger.Warn("recurring expense detection failed", zap.Error(err))
+		return map[string]interface{}{"available": false, "error": "Could not load recurring expenses right now. Try again shortly."}, nil
 	}
 
 	totalMonthly := decimal.Zero
