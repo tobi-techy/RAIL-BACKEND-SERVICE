@@ -66,12 +66,15 @@ func (o *Orchestrator) GetProactiveOpener(ctx context.Context, userID uuid.UUID)
 
 func (o *Orchestrator) generateProactiveContent(ctx context.Context, userID uuid.UUID) (string, string, []Suggestion, []ActionChip) {
 	snapshot := o.buildStarterContext(ctx, userID)
-	if snapshot == "" {
-		return "", "", nil, nil
-	}
 
 	now := time.Now().UTC()
 	timeContext := fmt.Sprintf("Day: %s, time: %s", now.Format("Monday"), now.Format("3pm"))
+
+	if snapshot == "" {
+		snapshot = timeContext
+	} else {
+		snapshot = fmt.Sprintf("%s\n%s", snapshot, timeContext)
+	}
 
 	prompt := fmt.Sprintf(`Based on this user's financial snapshot, generate these three fields. Every field is REQUIRED.
 
@@ -85,8 +88,7 @@ Return ONLY valid JSON, no markdown, no extra text:
 {"bubble_message":"...","greeting":"...","suggestions":[{"text":"...","category":"spending|saving|insight|action"}...]}
 
 User snapshot:
-%s
-%s`, snapshot, timeContext)
+%s`, snapshot)
 
 	resp, err := o.aiProvider.ChatCompletion(ctx, &ai.ChatRequest{
 		Messages:     []ai.Message{{Role: "user", Content: prompt}},

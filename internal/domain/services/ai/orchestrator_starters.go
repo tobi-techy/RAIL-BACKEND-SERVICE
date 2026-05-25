@@ -105,9 +105,6 @@ func (o *Orchestrator) buildStarterContext(ctx context.Context, userID uuid.UUID
 
 	parts = append(parts, fmt.Sprintf("Day: %s, time: %s", now.Format("Monday"), now.Format("3pm")))
 
-	if len(parts) < 2 {
-		return "" // Only have day/time, not enough context
-	}
 	return strings.Join(parts, "\n")
 }
 
