@@ -115,6 +115,30 @@ func (r *WithdrawalRepository) GetByUserID(ctx context.Context, userID uuid.UUID
 	return withdrawals, nil
 }
 
+// GetByUserIDInRange retrieves withdrawals for a user within a date range, ordered newest first.
+func (r *WithdrawalRepository) GetByUserIDInRange(ctx context.Context, userID uuid.UUID, start, end time.Time, limit int) ([]*entities.Withdrawal, error) {
+	query := `
+		SELECT id, user_id, withdrawal_type, currency, amount, source_account,
+			COALESCE(source_chain, '') AS source_chain, source_wallet_address, COALESCE(provider_wallet_type, '') AS provider_wallet_type,
+			COALESCE(emergency, false) AS emergency,
+			circle_wallet_id AS bridge_wallet_id, destination_type, destination_chain, destination_address, bank_account_id,
+			fee_amount, fee_currency, category, narration, status, bridge_transfer_id, tx_hash, error_message,
+			idempotency_key, created_at, updated_at, completed_at
+		FROM withdrawals
+		WHERE user_id = $1 AND created_at >= $2 AND created_at < $3
+		ORDER BY created_at DESC
+		LIMIT $4
+	`
+
+	var withdrawals []*entities.Withdrawal
+	err := r.db.SelectContext(ctx, &withdrawals, query, userID, start, end, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get withdrawals in range: %w", err)
+	}
+
+	return withdrawals, nil
+}
+
 // GetByIdempotencyKey retrieves a withdrawal by idempotency key
 func (r *WithdrawalRepository) GetByIdempotencyKey(ctx context.Context, key string) (*entities.Withdrawal, error) {
 	query := `

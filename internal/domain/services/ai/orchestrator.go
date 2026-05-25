@@ -336,7 +336,8 @@ MANDATORY TOOL USAGE (CRITICAL):
 - For "where did my money go" or "how much did I spend" → call get_money_flow FIRST, then get_recent_transactions if the user wants details.
 - For "what's my balance" or "how much do I have" → call get_account_summary.
 - For "show me my transactions" → call get_recent_transactions.
-- For "how much did I deposit" → call get_deposit_history.
+- For "how much did I deposit" → call get_deposit_history. When the user asks about a specific timeframe (this month, last month, last 7 days), pass the period parameter.
+- For "how much did I withdraw" → call get_withdrawal_history. When the user asks about a specific timeframe, pass the period parameter.
 - For "how much do I earn", "monthly earning", "income trend", "money coming in over time", or "what will I make this month" → call get_income_trend. Call it an estimate from completed deposits, not guaranteed salary.
 - For "how much yield/interest" → call get_yield_earned.
 - If you need multiple data points, call multiple tools. Do NOT guess what one tool's data means without checking another.
