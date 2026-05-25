@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,6 +13,36 @@ import (
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
+
+// proactiveCache is a short-lived per-user cache to avoid redundant AI calls
+// when the client fires multiple concurrent requests on screen load.
+var proactiveCache = struct {
+	sync.RWMutex
+	entries map[uuid.UUID]proactiveCacheEntry
+}{entries: make(map[uuid.UUID]proactiveCacheEntry)}
+
+type proactiveCacheEntry struct {
+	opener    *ProactiveOpener
+	expiresAt time.Time
+}
+
+const proactiveCacheTTL = 60 * time.Second
+const proactiveCacheMaxSize = 1000
+
+func init() {
+	go func() {
+		for range time.Tick(2 * time.Minute) {
+			now := time.Now()
+			proactiveCache.Lock()
+			for k, v := range proactiveCache.entries {
+				if now.After(v.expiresAt) {
+					delete(proactiveCache.entries, k)
+				}
+			}
+			proactiveCache.Unlock()
+		}
+	}()
+}
 
 // ProactiveOpener is returned by the proactive opener endpoint.
 type ProactiveOpener struct {
@@ -41,6 +72,14 @@ type ActionChip struct {
 // based on the user's current financial state and active predictions.
 // Used to replace the static empty-state greeting with something reactive.
 func (o *Orchestrator) GetProactiveOpener(ctx context.Context, userID uuid.UUID) *ProactiveOpener {
+	// Check cache first to avoid redundant AI calls from concurrent requests.
+	proactiveCache.RLock()
+	if entry, ok := proactiveCache.entries[userID]; ok && time.Now().Before(entry.expiresAt) {
+		proactiveCache.RUnlock()
+		return entry.opener
+	}
+	proactiveCache.RUnlock()
+
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -55,13 +94,22 @@ func (o *Orchestrator) GetProactiveOpener(ctx context.Context, userID uuid.UUID)
 		bubble = greeting
 	}
 
-	return &ProactiveOpener{
+	opener := &ProactiveOpener{
 		BubbleMessage: bubble,
 		Greeting:      greeting,
 		Severity:      "info",
 		Suggestions:   suggestions,
 		ActionChips:   chips,
 	}
+
+	// Cache the result.
+	proactiveCache.Lock()
+	if len(proactiveCache.entries) < proactiveCacheMaxSize {
+		proactiveCache.entries[userID] = proactiveCacheEntry{opener: opener, expiresAt: time.Now().Add(proactiveCacheTTL)}
+	}
+	proactiveCache.Unlock()
+
+	return opener
 }
 
 func (o *Orchestrator) generateProactiveContent(ctx context.Context, userID uuid.UUID) (string, string, []Suggestion, []ActionChip) {

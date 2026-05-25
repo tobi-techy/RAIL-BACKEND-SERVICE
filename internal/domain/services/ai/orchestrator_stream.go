@@ -182,7 +182,10 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 	cumulativeTokens := resp.TokensUsed
 	allToolResults := make([]ToolResult, 0)
 	// Use a detached context for tool execution so side-effects complete
-	// even if the client disconnects mid-stream.
+	// even if the client disconnects mid-stream. This is safe because:
+	// - Action tools are capped at $500 and require account status checks.
+	// - The 30s timeout bounds total execution time.
+	// - Read-only tools are idempotent.
 	toolCtx, toolCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer toolCancel()
 	for round := 0; round < 5 && len(resp.ToolCalls) > 0; round++ {

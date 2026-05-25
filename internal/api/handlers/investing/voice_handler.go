@@ -915,10 +915,15 @@ func (h *VoiceHandler) configureAllowedOrigins(allowedOrigins []string) {
 
 func (h *VoiceHandler) isAllowedOrigin(r *http.Request) bool {
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
-	if origin == "" {
+	if origin == "" || origin == "null" {
 		return true
 	}
 	if h.allowAnyOrigin {
+		return true
+	}
+	// Native mobile apps (iOS CFNetwork) — no meaningful browser-style origin to validate.
+	// The endpoint is already protected by a voice session token.
+	if !strings.HasPrefix(origin, "http://") && !strings.HasPrefix(origin, "https://") {
 		return true
 	}
 

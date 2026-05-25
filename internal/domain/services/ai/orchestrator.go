@@ -598,6 +598,10 @@ func (o *Orchestrator) ChatInContext(ctx context.Context, userID, convID uuid.UU
 }
 
 func (o *Orchestrator) ChatInContextWithOptions(ctx context.Context, userID, convID uuid.UUID, message string, history []ai.Message, opts ChatOptions) (*ChatResponse, error) {
+	// Enforce a total wall-clock timeout to prevent runaway tool loops.
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+
 	start := time.Now()
 
 	// Per-request tool result cache to avoid duplicate DB hits within a single chat call
@@ -830,6 +834,12 @@ func (o *Orchestrator) ExecuteToolPublic(ctx context.Context, userID uuid.UUID, 
 
 // executeTool executes a tool call and returns the result
 func (o *Orchestrator) executeTool(ctx context.Context, userID uuid.UUID, tc ai.ToolCall) (map[string]interface{}, error) {
+	if tc.Name == "" {
+		return map[string]interface{}{"error": "empty tool name"}, nil
+	}
+	if tc.Arguments == nil {
+		tc.Arguments = make(map[string]interface{})
+	}
 	o.logger.Debug("executing tool call",
 		zap.String("tool", tc.Name),
 		zap.Any("args", sanitizeToolArgs(tc.Arguments)),

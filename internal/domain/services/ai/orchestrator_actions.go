@@ -685,6 +685,9 @@ func (o *Orchestrator) auditAction(ctx context.Context, userID, convID uuid.UUID
 // executeActionToolDirect executes action tools immediately without the pending/confirm flow.
 // Used in voice mode where AssemblyAI handles confirmation conversationally.
 func (o *Orchestrator) executeActionToolDirect(ctx context.Context, userID uuid.UUID, tc ai.ToolCall) (map[string]interface{}, error) {
+	if tc.Arguments == nil {
+		tc.Arguments = make(map[string]interface{})
+	}
 	o.logger.Info("executeActionToolDirect called",
 		zap.String("user_id", userID.String()),
 		zap.String("tool", tc.Name),
@@ -695,11 +698,20 @@ func (o *Orchestrator) executeActionToolDirect(ctx context.Context, userID uuid.
 			o.logger.Error("fundsTransferer is nil")
 			return map[string]interface{}{"error": "Transfer service unavailable"}, nil
 		}
+		if blocked, err := o.checkUserCanTransact(ctx, userID); blocked != nil || err != nil {
+			if err != nil {
+				return map[string]interface{}{"error": "Unable to verify account status"}, nil
+			}
+			return blocked, nil
+		}
 		from, _ := tc.Arguments["from"].(string)
 		to, _ := tc.Arguments["to"].(string)
 		amountF, _ := tc.Arguments["amount"].(float64)
 		if from == "" || to == "" || amountF <= 0 {
 			return map[string]interface{}{"error": "Invalid transfer parameters"}, nil
+		}
+		if amountF > 500 {
+			return map[string]interface{}{"error": "Single transfers are capped at $500 for safety. Ask me to transfer $500 or less."}, nil
 		}
 		amount := decimal.NewFromFloat(amountF)
 		key := uuid.New().String()
@@ -712,7 +724,8 @@ func (o *Orchestrator) executeActionToolDirect(ctx context.Context, userID uuid.
 			return map[string]interface{}{"error": "Invalid from/to combination"}, nil
 		}
 		if err != nil {
-			return map[string]interface{}{"error": err.Error()}, nil
+			o.logger.Error("voice direct transfer failed", zap.Error(err), zap.String("user_id", userID.String()))
+			return map[string]interface{}{"error": "Transfer failed. Please try again or use the app."}, nil
 		}
 		spend, _ := o.fundsTransferer.GetSpendBalance(ctx, userID)
 		stash, _ := o.fundsTransferer.GetStashBalance(ctx, userID)
