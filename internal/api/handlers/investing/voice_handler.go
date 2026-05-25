@@ -121,7 +121,9 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 	}
 
 	upgrader := wsUpgrader
-	upgrader.CheckOrigin = h.isAllowedOrigin
+	// Voice WebSocket is authenticated via voice session token (JWT) —
+	// origin check is unnecessary and breaks iOS native clients.
+	upgrader.CheckOrigin = func(r *http.Request) bool { return true }
 	clientConn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		h.logger.Error("websocket upgrade failed", zap.Error(err))
