@@ -229,6 +229,9 @@ func (o *Orchestrator) BuildRealtimeInstructions(ctx context.Context, userID uui
 	if stashLockCtx := o.buildStashLockContext(ctx, userID); stashLockCtx != "" {
 		parts = append(parts, stashLockCtx)
 	}
+	if yearCtx := o.buildYearFinancialContext(ctx, userID); yearCtx != "" {
+		parts = append(parts, yearCtx)
+	}
 	if timeCtx := o.buildUserTimeContext(ctx, userID); timeCtx != "" {
 		parts = append(parts, timeCtx)
 	}
@@ -238,6 +241,68 @@ func (o *Orchestrator) BuildRealtimeInstructions(ctx context.Context, userID uui
 	parts = append(parts, premiumRealtimeVoiceInstructions)
 
 	return strings.Join(parts, "\n\n")
+}
+
+// buildYearFinancialContext fetches the last 12 months of money flow data and returns
+// a grounded financial snapshot string. This prevents Miriam from hallucinating numbers
+// when asked about historical spending, deposits, or totals.
+func (o *Orchestrator) buildYearFinancialContext(ctx context.Context, userID uuid.UUID) string {
+	if o.spending == nil {
+		return ""
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+
+	now := time.Now().UTC()
+	yearStart := now.AddDate(-1, 0, 0)
+
+	flow, err := o.spending.GetMoneyFlow(fetchCtx, userID, yearStart, now)
+	if err != nil || flow == nil {
+		return ""
+	}
+
+	totalOut := flow.TotalWithdrawals.Add(flow.TotalCardSpend).Add(flow.TotalP2P).Add(flow.TotalReceipts)
+	net := flow.TotalDeposits.Sub(totalOut)
+
+	var parts []string
+	parts = append(parts, fmt.Sprintf("period: %s to %s", yearStart.Format("Jan 2006"), now.Format("Jan 2006")))
+	parts = append(parts, fmt.Sprintf("total deposited: $%s (%d deposits)", flow.TotalDeposits.StringFixed(2), flow.DepositCount))
+	parts = append(parts, fmt.Sprintf("total spent: $%s (card: $%s | withdrawals: $%s | p2p: $%s)",
+		totalOut.StringFixed(2),
+		flow.TotalCardSpend.StringFixed(2),
+		flow.TotalWithdrawals.StringFixed(2),
+		flow.TotalP2P.StringFixed(2),
+	))
+	parts = append(parts, fmt.Sprintf("net flow: $%s", net.StringFixed(2)))
+
+	// Per-month breakdown for the last 12 months
+	var monthLines []string
+	for i := 11; i >= 0; i-- {
+		mStart := time.Date(now.Year(), now.Month()-time.Month(i), 1, 0, 0, 0, 0, time.UTC)
+		mEnd := mStart.AddDate(0, 1, 0)
+		if mEnd.After(now) {
+			mEnd = now
+		}
+		mFlow, err := o.spending.GetMoneyFlow(fetchCtx, userID, mStart, mEnd)
+		if err != nil || mFlow == nil {
+			continue
+		}
+		mOut := mFlow.TotalWithdrawals.Add(mFlow.TotalCardSpend).Add(mFlow.TotalP2P).Add(mFlow.TotalReceipts)
+		if mFlow.TotalDeposits.IsZero() && mOut.IsZero() {
+			continue
+		}
+		monthLines = append(monthLines, fmt.Sprintf("%s: in $%s out $%s",
+			mStart.Format("Jan 2006"),
+			mFlow.TotalDeposits.StringFixed(2),
+			mOut.StringFixed(2),
+		))
+	}
+	if len(monthLines) > 0 {
+		parts = append(parts, "monthly breakdown: "+strings.Join(monthLines, " | "))
+	}
+
+	return "[VERIFIED FINANCIAL HISTORY — these are exact figures from the ledger. Use them directly when asked. Do NOT invent or adjust any number here.]\n" +
+		strings.Join(parts, "\n")
 }
 
 // buildRecentConversationContext pulls the last 3 conversation summaries

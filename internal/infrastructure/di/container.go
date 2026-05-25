@@ -3574,11 +3574,15 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	// Wire emergency withdrawer for stash-to-spend transfers during lock period
 	if c.WithdrawalService != nil {
 		c.AIOrchestrator.SetEmergencyWithdrawer(c.WithdrawalService)
+		// WithdrawalService also satisfies WithdrawalInitiator (fiat bank withdrawals via voice)
+		c.AIOrchestrator.SetWithdrawalInitiator(c.WithdrawalService)
 	}
 
 	// Use Redis for pending actions (survives restarts, works across instances)
 	if c.RedisClient != nil {
 		c.AIOrchestrator.SetPendingActions(aiservice.NewRedisPendingActions(c.RedisClient, c.ZapLog))
+		// Redis-backed savings goal store (persists user goals across sessions)
+		c.AIOrchestrator.SetSavingsGoalStore(aiservice.NewRedisSavingsGoalStore(c.RedisClient, c.ZapLog))
 	}
 
 	// Wire read-only data tools
