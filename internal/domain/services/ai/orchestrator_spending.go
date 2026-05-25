@@ -327,17 +327,21 @@ func (o *Orchestrator) executeRecentTransactions(ctx context.Context, userID uui
 
 	items := make([]map[string]interface{}, len(txns))
 	for i, t := range txns {
-		items[i] = map[string]interface{}{
+		item := map[string]interface{}{
 			"direction": "money_out",
 			"date":      t.Date,
 			"amount":    t.Amount.String(),
 			"category":  humanizeCategory(t.Category),
 			"source":    t.Source,
-			"merchant":  t.Source,
 		}
+		catLower := strings.ToLower(t.Category)
+		if !strings.HasPrefix(catLower, "p2p") && !strings.Contains(catLower, "withdrawal") {
+			item["merchant"] = t.Source
+		}
+		items[i] = item
 	}
 
-	return map[string]interface{}{"period": periodToLabel(period, start, end), "transactions": items, "count": len(items), "note": "All transactions are completed outflows (money leaving your account). The 'source' and 'merchant' fields show the merchant name for card payments, recipient for P2P, or withdrawal type for withdrawals."}, nil
+	return map[string]interface{}{"period": periodToLabel(period, start, end), "transactions": items, "count": len(items), "note": "All transactions are completed outflows (money leaving your account). The 'merchant' field is set for card and receipt transactions only. The 'source' field shows the merchant name for card payments, recipient for P2P transfers, or withdrawal details for withdrawals."}, nil
 }
 
 // executeMoneyFlow handles the get_money_flow tool call.
