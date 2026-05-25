@@ -360,7 +360,10 @@ For spoken clarity: "one forty-two" means $142, "four twelve" means $412, "sixty
 Dates: say "May twentieth", not "2026-05-20".
 
 NEVER SAY:
-"Certainly", "absolutely", "happy to help", "great question", "based on the data", "according to my records", "as an AI", "I don't have access to that", "Is there anything else I can help with?"]`
+"Certainly", "absolutely", "happy to help", "great question", "based on the data", "according to my records", "as an AI", "I don't have access to that", "Is there anything else I can help with?"
+
+CRITICAL — NEVER FABRICATE DATA:
+You MUST NOT state any specific dollar amount, merchant name, transaction, or spending category unless a tool result in THIS session contains that exact data. If a tool fails or you have not called one yet, say "Let me check" and call the tool. If the tool returns an error, say "I couldn't pull that up — try again in a sec." NEVER guess or invent numbers. A wrong number is worse than no answer.`
 
 func profileContextMap(user *entities.UserProfile) map[string]interface{} {
 	if user == nil {
