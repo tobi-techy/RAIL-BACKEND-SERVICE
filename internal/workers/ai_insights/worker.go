@@ -339,14 +339,6 @@ func (w *Worker) runWeeklyDigest(ctx context.Context) {
 			return
 		}
 
-		// Weekly report is Pro-only
-		if w.subChecker != nil {
-			isPro, _ := w.subChecker.IsProUser(ctx, u.ID)
-			if !isPro {
-				continue
-			}
-		}
-
 		spent, txCount, err := w.spendingRepo.GetSpendingTotal(ctx, u.ID, weekStart, now)
 		if err != nil {
 			continue

@@ -309,7 +309,15 @@ func filterActionRelevantFacts(facts []*entities.MiriamUserFact) []entities.Miri
 			entities.FactCategoryFear,
 			entities.FactCategoryHabit,
 			entities.FactCategoryFinancialBehavior,
-			entities.FactCategoryLifeEvent:
+			entities.FactCategoryLifeEvent,
+			entities.FactCategoryIncomePattern,
+			entities.FactCategoryDepositCadence,
+			entities.FactCategorySalaryDay,
+			entities.FactCategoryFreelancePattern,
+			entities.FactCategoryFamilySupport,
+			entities.FactCategoryCurrencyContext,
+			entities.FactCategoryRiskPreference,
+			entities.FactCategoryStashBehavior:
 			if f.Confidence.GreaterThanOrEqual(decimal.NewFromFloat(0.5)) {
 				relevant = append(relevant, *f)
 			}
@@ -375,10 +383,13 @@ func computeDebtScore(state *entities.MiriamMoneyState) int {
 	if state.UpcomingObligations.IsZero() {
 		return 100
 	}
-	spend, _ := decimal.NewFromString("0")
+	spend := decimal.Zero
 	spendBalance := state.SafeToSpendDaily.Mul(decimal.NewFromInt(30))
 	if spendBalance.IsPositive() {
 		spend = spendBalance
+	}
+	if spend.IsZero() {
+		return 40
 	}
 	ratio := state.UpcomingObligations.Div(spend).InexactFloat64()
 	switch {

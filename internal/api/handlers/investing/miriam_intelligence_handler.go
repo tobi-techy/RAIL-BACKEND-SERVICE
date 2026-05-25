@@ -139,8 +139,8 @@ func (h *MiriamIntelligenceHandler) UpdateMandateStatus(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if req.Status != "active" && req.Status != "paused" && req.Status != "revoked" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status: must be active, paused, or revoked"})
+	if req.Status != "active" && req.Status != "paused" && req.Status != "expired" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status: must be active, paused, or expired"})
 		return
 	}
 	if err := h.service.UpdateMandateStatus(c.Request.Context(), userID, id, req.Status); err != nil {

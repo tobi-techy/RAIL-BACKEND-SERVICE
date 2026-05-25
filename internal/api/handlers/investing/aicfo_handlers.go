@@ -29,12 +29,12 @@ type GetWeeklySummaryRequest struct {
 
 // GetWeeklySummaryResponse represents the weekly summary response
 type GetWeeklySummaryResponse struct {
-	ID          string    `json:"id"`
-	UserID      string    `json:"userId"`
-	WeekStart   string    `json:"weekStart"`   // ISO date format
-	SummaryMD   string    `json:"summaryMd"`   // Markdown content
-	ArtifactURI string    `json:"artifactUri"` // URI to detailed analysis
-	CreatedAt   string    `json:"createdAt"`   // ISO timestamp
+	ID          string `json:"id"`
+	UserID      string `json:"userId"`
+	WeekStart   string `json:"weekStart"`   // ISO date format
+	SummaryMD   string `json:"summaryMd"`   // Markdown content
+	ArtifactURI string `json:"artifactUri"` // URI to detailed analysis
+	CreatedAt   string `json:"createdAt"`   // ISO timestamp
 }
 
 // GenerateWeeklySummaryRequest represents the request to generate a new summary

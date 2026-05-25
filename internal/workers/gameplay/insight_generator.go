@@ -92,14 +92,6 @@ func (w *InsightGenerator) run(ctx context.Context) {
 
 	sent := 0
 	for _, uid := range userIDs {
-		// Pro users get insights on both days, free users only Monday
-		if w.subChecker != nil {
-			isPro, _ := w.subChecker.IsProUser(ctx, uid)
-			if !isPro && time.Now().UTC().Weekday() != time.Monday {
-				continue
-			}
-		}
-
 		insight := w.generateInsight(ctx, uid)
 		if insight == "" {
 			continue

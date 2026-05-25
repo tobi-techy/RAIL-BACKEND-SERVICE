@@ -18,8 +18,7 @@ The Treasury Engine orchestrates currency conversion operations (USDC ↔ USD) a
    - Graceful start/stop capabilities
 
 3. **Provider Interface** (`provider.go`) - Abstraction for conversion providers
-   - DueProvider implementation
-   - Support for multiple providers (ZeroHash, etc.)
+   - Support for multiple providers (Bridge, ZeroHash, etc.)
    - Provider selection based on health, capacity, priority
 
 ## Key Concepts
@@ -85,12 +84,12 @@ func main() {
     // Create provider factory
     providerFactory := treasury.NewBaseProviderFactory()
     
-    // Register Due provider
-    dueFactory := treasury.NewDueProviderFactory(
-        func() *due.Client { return dueClient },
+    // Register Bridge provider
+    bridgeFactory := treasury.NewBridgeProviderFactory(
+        func() *bridge.Client { return bridgeClient },
         log,
     )
-    providerFactory.Register("due", dueFactory.Create)
+    providerFactory.Register("bridge", bridgeFactory.Create)
     
     // Create engine with custom config
     config := &treasury.EngineConfig{

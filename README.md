@@ -300,7 +300,7 @@ Rail shows direction, not detail.
 |  +---------------------------------------------------------------+|
 |  |                 DATA & INFRASTRUCTURE LAYER                   ||
 |  |  +----------+  +-------+  +--------+  +--------+  +------+   ||
-|  |  |PostgreSQL|  | Redis |  | Bridge |  | Alpaca |  | Due  |   ||
+|  |  |PostgreSQL|  | Redis |  | Bridge |  | Alpaca |  |Anchor|   ||
 |  |  | (Ledger) |  |(Cache)|  |(Wallet)|  |(Broker)|  |(NGN) |   ||
 |  |  +----------+  +-------+  +--------+  +--------+  +------+   ||
 |  +---------------------------------------------------------------+|
@@ -312,7 +312,7 @@ Rail shows direction, not detail.
 | Service | Responsibility | External Dependencies |
 |---------|---------------|----------------------|
 | **Onboarding** | Registration, KYC orchestration, wallet provisioning | Bridge |
-| **Funding** | Virtual accounts, multi-chain USDC deposits, 70/30 split execution | Bridge, Due, Blockchain RPCs |
+| **Funding** | Virtual accounts, multi-chain USDC deposits, 70/30 split execution | Bridge, Blockchain RPCs |
 | **Spending** | Card transactions, round-ups, balance management, ledger | Bridge Cards |
 | **Investing** | Auto-allocation, trade execution, portfolio management | Alpaca |
 | **Wallet** | Multi-chain wallet management, address generation, custody | Bridge |
@@ -405,7 +405,7 @@ rail_service/
 |---------|----------|---------|
 | Custodial wallets | Bridge | USDC custody, multi-chain |
 | Virtual accounts | Bridge | USD, GBP fiat deposit rails |
-| NGN virtual accounts | Due Network | NGN bank transfer rails |
+| NGN virtual accounts | Anchor | NGN bank transfer rails |
 | Yield | Reflect Money | Treasury-backed stablecoin yield |
 | Debit card | Bridge Cards | Visa card issuance and spending |
 | Brokerage | Alpaca | Stock/ETF trade execution |
@@ -479,7 +479,6 @@ ENVIRONMENT="development"     # development, staging, production
 PORT="8080"
 REDIS_URL="localhost:6379"
 SENDGRID_API_KEY="..."
-DUE_API_KEY="..."             # NGN virtual accounts
 ```
 
 ### Database Management

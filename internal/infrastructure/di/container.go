@@ -1926,7 +1926,8 @@ func (c *Container) initializeDomainServices() error {
 	c.MiriamProactiveNudgeEngine = miriamservice.NewProactiveNudgeEngine(
 		nudgeRepo,
 		c.MiriamPredictiveEngine,
-		nil, // MemoryReader — deferred via SetMemory after memory service init
+		c.LedgerService, // BalanceProvider
+		nil,             // MemoryReader — deferred via SetMemory after memory service init
 		c.NotificationService,
 		c.ZapLog,
 	)

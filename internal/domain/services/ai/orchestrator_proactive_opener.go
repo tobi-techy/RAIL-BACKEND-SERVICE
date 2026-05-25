@@ -41,7 +41,7 @@ type ActionChip struct {
 // based on the user's current financial state and active predictions.
 // Used to replace the static empty-state greeting with something reactive.
 func (o *Orchestrator) GetProactiveOpener(ctx context.Context, userID uuid.UUID) *ProactiveOpener {
-	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	bubble, greeting, suggestions, chips := o.generateProactiveContent(ctx, userID)
@@ -73,15 +73,15 @@ func (o *Orchestrator) generateProactiveContent(ctx context.Context, userID uuid
 	now := time.Now().UTC()
 	timeContext := fmt.Sprintf("Day: %s, time: %s", now.Format("Monday"), now.Format("3pm"))
 
-	prompt := fmt.Sprintf(`Based on this user's financial snapshot, generate a short teaser message and a greeting.
+	prompt := fmt.Sprintf(`Based on this user's financial snapshot, generate these three fields. Every field is REQUIRED.
 
-1. "bubble_message": ONE very short teaser (max 8 words) that appears in a chat bubble above Miriam's head on the home screen. It should be intriguing enough to make someone tap. Examples: "You spent 40 percent more on dining" or "Your savings hit a milestone" or "Overspent on groceries again" or "This month is looking tight".
+1. "bubble_message": ONE very short teaser (3-7 words only) that appears in a chat bubble over Miriam on the home screen. Must be a complete, intriguing phrase that makes someone want to tap. Examples: "You spent 40 percent more on dining" or "Your savings hit a milestone" or "Overspent on groceries again". Do NOT use greetings like "Hey" or "Hi".
 
-2. "greeting": ONE short, punchy greeting (max 12 words) that makes them want to tap and chat. Lead with the most interesting or urgent thing — a spending pattern, a balance insight, a saving opportunity. Never generic like "How can I help?" or "What's up?"
+2. "greeting": ONE short, punchy greeting (max 12 words) for inside the chat. Lead with the most interesting or urgent thing — a spending pattern, a balance insight, a saving opportunity. Never generic.
 
 3. "suggestions": exactly 4 short follow-up prompts (max 8 words each) specific to their numbers.
 
-Return JSON only, no markdown:
+Return ONLY valid JSON, no markdown, no extra text:
 {"bubble_message":"...","greeting":"...","suggestions":[{"text":"...","category":"spending|saving|insight|action"}...]}
 
 User snapshot:

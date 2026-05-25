@@ -74,9 +74,27 @@ func (e *MandateSuggestionEngine) GenerateSuggestions(ctx context.Context, userI
 
 	// 4. Memory-driven suggestions
 	for _, f := range facts {
-		if f.Category == entities.FactCategoryGoal && f.Confidence.GreaterThanOrEqual(decimal.NewFromFloat(0.7)) {
+		switch {
+		case f.Category == entities.FactCategoryGoal && f.Confidence.GreaterThanOrEqual(decimal.NewFromFloat(0.7)):
 			if s := e.suggestGoalContribution(userID, state, f.Fact); s != nil {
 				suggestions = append(suggestions, *s)
+			}
+		case f.Category == entities.FactCategoryStashBehavior && f.Confidence.GreaterThanOrEqual(decimal.NewFromFloat(0.7)):
+			// Known stash behavior — tailor stash suggestions to match
+			if containsRiskKeyword(f.Fact, "set-and-forget", "automatic", "regular") {
+				if s := e.suggestTransferToStash(userID, state); s != nil {
+					s.Name = "Automated quiet stash"
+					s.Confidence = 75
+					suggestions = append(suggestions, *s)
+				}
+			}
+		case f.Category == entities.FactCategoryRiskPreference && f.Confidence.GreaterThanOrEqual(decimal.NewFromFloat(0.7)):
+			if containsRiskKeyword(f.Fact, "aggressive", "growth", "maximize") {
+				if s := e.suggestStashTopUp(userID, state); s != nil {
+					s.SuggestedMaxAmount = s.SuggestedMaxAmount.Mul(decimal.NewFromFloat(1.5))
+					s.Confidence = 70
+					suggestions = append(suggestions, *s)
+				}
 			}
 		}
 	}

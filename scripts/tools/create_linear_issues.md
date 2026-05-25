@@ -137,20 +137,20 @@ Technical Notes:
 Estimate: 10 story points
 ```
 
-### Issue 5: Setup USD/GBP Virtual Accounts via Due Network
+### Issue 5: Setup USD/GBP Virtual Accounts via Bridge
 ```
-Title: Setup USD/GBP Virtual Accounts via Due Network
+Title: Setup USD/GBP Virtual Accounts via Bridge
 Priority: Urgent
 Labels: mvp, funding, fiat, p0
 Team: Backend
 Epic: Funding & Deposits
 
 Description:
-Setup dedicated virtual accounts for USD and GBP bank transfers using the existing Due Network integration.
+Setup dedicated virtual accounts for USD and GBP bank transfers using Bridge.
 
 Requirements:
-- USD virtual account creation via Due Network
-- GBP virtual account creation via Due Network
+- USD virtual account creation via Bridge
+- GBP virtual account creation via Bridge
 - Bank transfer routing and processing
 - Deposit confirmation and crediting
 
@@ -162,7 +162,7 @@ Acceptance Criteria:
 - [ ] Virtual account details accessible via API
 
 Technical Notes:
-- Extend Due Network adapter in internal/adapters/due/
+- Use Bridge adapter in internal/infrastructure/adapters/bridge/
 - Add fiat virtual account creation to onboarding flow
 - Update funding handlers to support fiat deposits
 - Ensure fiat deposits trigger automatic split

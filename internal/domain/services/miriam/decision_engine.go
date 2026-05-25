@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -157,11 +158,27 @@ func (e *DecisionEngine) calculateAdjustedAmount(dc *entities.DecisionContext, o
 		}
 	}
 
-	// Memory overrides: if user expressed financial fear, reduce
+	// Memory overrides: adjust based on user's known financial personality
 	for _, f := range dc.MemoryFacts {
-		if f.Category == entities.FactCategoryFear {
+		switch f.Category {
+		case entities.FactCategoryFear:
 			amount = amount.Mul(decimal.NewFromFloat(0.80))
-			break
+		case entities.FactCategoryRiskPreference:
+			if f.Confidence.GreaterThanOrEqual(decimal.NewFromFloat(0.7)) {
+				if containsRiskKeyword(f.Fact, "conservative", "safe", "avoid", "risky", "nervous") {
+					amount = amount.Mul(decimal.NewFromFloat(0.70))
+				}
+			}
+		case entities.FactCategoryIncomePattern, entities.FactCategoryFreelancePattern:
+			if f.Confidence.GreaterThanOrEqual(decimal.NewFromFloat(0.7)) {
+				if containsRiskKeyword(f.Fact, "irregular", "variable", "unpredictable", "freelance") {
+					amount = amount.Mul(decimal.NewFromFloat(0.75))
+				}
+			}
+		case entities.FactCategoryFinancialBehavior:
+			if containsRiskKeyword(f.Fact, "impulsive", "overspend") {
+				amount = amount.Mul(decimal.NewFromFloat(0.85))
+			}
 		}
 	}
 
@@ -245,7 +262,24 @@ func (e *DecisionEngine) serializeFactors(dc *entities.DecisionContext) json.Raw
 
 func (e *DecisionEngine) shouldEscalateFromMemory(facts []entities.MiriamUserFact) bool {
 	for _, f := range facts {
-		if f.Category == entities.FactCategoryFear && f.Confidence.GreaterThanOrEqual(decimal.NewFromFloat(0.7)) {
+		switch f.Category {
+		case entities.FactCategoryFear:
+			if f.Confidence.GreaterThanOrEqual(decimal.NewFromFloat(0.7)) {
+				return true
+			}
+		case entities.FactCategoryRiskPreference:
+			if f.Confidence.GreaterThanOrEqual(decimal.NewFromFloat(0.8)) && containsRiskKeyword(f.Fact, "never", "avoid", "terrified") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func containsRiskKeyword(s string, keywords ...string) bool {
+	lower := strings.ToLower(s)
+	for _, kw := range keywords {
+		if strings.Contains(lower, kw) {
 			return true
 		}
 	}

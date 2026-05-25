@@ -1,16 +1,16 @@
 package investing
 
 import (
-	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"context"
+	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	"github.com/rail-service/rail_service/pkg/logger"
 )
 

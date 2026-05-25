@@ -29,6 +29,7 @@ type ProactiveNudgeStore interface {
 type ProactiveNudgeEngine struct {
 	store       ProactiveNudgeStore
 	predictions *PredictiveEngine
+	balances    BalanceProvider
 	memory      MemoryReader
 	notifier    Notifier
 	logger      *zap.Logger
@@ -38,12 +39,13 @@ type ProactiveNudgeEngine struct {
 func NewProactiveNudgeEngine(
 	store ProactiveNudgeStore,
 	predictions *PredictiveEngine,
+	balances BalanceProvider,
 	memory MemoryReader,
 	notifier Notifier,
 	logger *zap.Logger,
 ) *ProactiveNudgeEngine {
 	return &ProactiveNudgeEngine{
-		store: store, predictions: predictions, memory: memory, notifier: notifier, logger: logger,
+		store: store, predictions: predictions, balances: balances, memory: memory, notifier: notifier, logger: logger,
 	}
 }
 
@@ -178,13 +180,19 @@ func (e *ProactiveNudgeEngine) nudgeFromMemory(ctx context.Context, userID uuid.
 			if !state.StashTarget.IsPositive() {
 				continue
 			}
-			stash, err := e.predictions.balances.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
+			stash, err := e.balances.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
 			if err != nil {
+				if e.logger != nil {
+					e.logger.Warn("nudgeFromMemory: stash balance fetch failed", zap.Error(err))
+				}
 				continue
 			}
-			spend, _ := e.predictions.balances.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
-			if spend.IsZero() {
-				spend = decimal.Zero
+			spend, err := e.balances.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
+			if err != nil {
+				if e.logger != nil {
+					e.logger.Warn("nudgeFromMemory: spend balance fetch failed", zap.Error(err))
+				}
+				continue
 			}
 
 			remaining := state.StashTarget.Sub(stash)
@@ -232,14 +240,23 @@ func (e *ProactiveNudgeEngine) nudgeFromBills(ctx context.Context, userID uuid.U
 		return nil
 	}
 
-	spend, err := e.predictions.balances.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
+	spend, err := e.balances.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
 	if err != nil {
+		if e.logger != nil {
+			e.logger.Warn("nudgeFromBills: spend balance fetch failed", zap.Error(err))
+		}
 		return nil
 	}
 
 	if spend.LessThan(state.UpcomingObligations.Mul(decimal.NewFromFloat(0.8))) {
 		gap := state.UpcomingObligations.Sub(spend)
-		stash, _ := e.predictions.balances.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
+		stash, err := e.balances.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
+		if err != nil {
+			if e.logger != nil {
+				e.logger.Warn("nudgeFromBills: stash balance fetch failed", zap.Error(err))
+			}
+			stash = decimal.Zero
+		}
 		ob := state.UpcomingObligations.StringFixed(0)
 		s := spend.StringFixed(0)
 		st := stash.StringFixed(0)
@@ -275,8 +292,20 @@ func (e *ProactiveNudgeEngine) nudgeFromBills(ctx context.Context, userID uuid.U
 }
 
 func (e *ProactiveNudgeEngine) buildPredictionMessage(ctx context.Context, userID uuid.UUID, p entities.MiriamPrediction, state *entities.MiriamMoneyState) string {
-	spend, _ := e.predictions.balances.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
-	stash, _ := e.predictions.balances.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
+	spend, err := e.balances.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		if e.logger != nil {
+			e.logger.Warn("buildPredictionMessage: spend balance fetch failed", zap.Error(err))
+		}
+		spend = decimal.Zero
+	}
+	stash, err := e.balances.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		if e.logger != nil {
+			e.logger.Warn("buildPredictionMessage: stash balance fetch failed", zap.Error(err))
+		}
+		stash = decimal.Zero
+	}
 
 	s := spend.StringFixed(0)
 	st := stash.StringFixed(0)

@@ -14,22 +14,20 @@ import (
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	"github.com/rail-service/rail_service/internal/domain/services/automation"
 	conversationsvc "github.com/rail-service/rail_service/internal/domain/services/conversation"
-	"github.com/rail-service/rail_service/internal/domain/services/subscription"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"go.uber.org/zap"
 )
 
-// PremiumAIHandlers handles pro-gated AI feature endpoints.
+// PremiumAIHandlers handles AI feature endpoints.
 type PremiumAIHandlers struct {
 	orchestrator      *aiservice.Orchestrator
-	subService        *subscription.Service
 	convService       *conversationsvc.Service
 	passcodeValidator automationPasscodeValidator
 	logger            *zap.Logger
 }
 
-func NewPremiumAIHandlers(orchestrator *aiservice.Orchestrator, subService *subscription.Service, logger *zap.Logger, convService ...*conversationsvc.Service) *PremiumAIHandlers {
-	h := &PremiumAIHandlers{orchestrator: orchestrator, subService: subService, logger: logger}
+func NewPremiumAIHandlers(orchestrator *aiservice.Orchestrator, logger *zap.Logger, convService ...*conversationsvc.Service) *PremiumAIHandlers {
+	h := &PremiumAIHandlers{orchestrator: orchestrator, logger: logger}
 	if len(convService) > 0 {
 		h.convService = convService[0]
 	}
@@ -40,25 +38,8 @@ func (h *PremiumAIHandlers) SetPasscodeValidator(validator automationPasscodeVal
 	h.passcodeValidator = validator
 }
 
-func (h *PremiumAIHandlers) requirePro(c *gin.Context) bool {
-	userID, err := common.GetUserIDFromContext(c)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return false
-	}
-	isPro, _ := h.subService.IsProUser(c.Request.Context(), userID)
-	if !isPro {
-		c.JSON(http.StatusForbidden, gin.H{"error": "pro_required", "message": "This feature requires Rail Pro"})
-		return false
-	}
-	return true
-}
-
-// WeeklyReport generates a rich weekly financial report (pro-only).
+// WeeklyReport generates a rich weekly financial report.
 func (h *PremiumAIHandlers) WeeklyReport(c *gin.Context) {
-	if !h.requirePro(c) {
-		return
-	}
 	userID, _ := common.GetUserIDFromContext(c)
 
 	resp, err := h.orchestrator.Chat(c.Request.Context(), userID,
@@ -79,11 +60,8 @@ func (h *PremiumAIHandlers) WeeklyReport(c *gin.Context) {
 	})
 }
 
-// Simulate runs a what-if savings projection (pro-only).
+// Simulate runs a what-if savings projection.
 func (h *PremiumAIHandlers) Simulate(c *gin.Context) {
-	if !h.requirePro(c) {
-		return
-	}
 	userID, _ := common.GetUserIDFromContext(c)
 
 	var req struct {
@@ -113,11 +91,8 @@ func (h *PremiumAIHandlers) Simulate(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": result})
 }
 
-// TaxSummary generates a tax report (pro-only).
+// TaxSummary generates a tax report.
 func (h *PremiumAIHandlers) TaxSummary(c *gin.Context) {
-	if !h.requirePro(c) {
-		return
-	}
 	userID, _ := common.GetUserIDFromContext(c)
 
 	year := c.DefaultQuery("year", "2026")
@@ -139,11 +114,8 @@ func (h *PremiumAIHandlers) TaxSummary(c *gin.Context) {
 	})
 }
 
-// OperatingPlan returns Miriam's persona-aware monthly operating plan (pro-only).
+// OperatingPlan returns Miriam's persona-aware monthly operating plan.
 func (h *PremiumAIHandlers) OperatingPlan(c *gin.Context) {
-	if !h.requirePro(c) {
-		return
-	}
 	userID, _ := common.GetUserIDFromContext(c)
 
 	result, err := h.orchestrator.ExecuteToolPublic(c.Request.Context(), userID, infraai.ToolCall{
@@ -161,9 +133,6 @@ func (h *PremiumAIHandlers) OperatingPlan(c *gin.Context) {
 
 // StageOperatingPlanAction stages a plan proposal into the pending-action confirmation flow.
 func (h *PremiumAIHandlers) StageOperatingPlanAction(c *gin.Context) {
-	if !h.requirePro(c) {
-		return
-	}
 	if h.convService == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "conversation service unavailable"})
 		return
@@ -257,11 +226,8 @@ func valueString(value interface{}) string {
 	return ""
 }
 
-// MoneyAcrossBordersReport returns a geography and currency report for diaspora/cross-border users (pro-only).
+// MoneyAcrossBordersReport returns a geography and currency report for diaspora/cross-border users.
 func (h *PremiumAIHandlers) MoneyAcrossBordersReport(c *gin.Context) {
-	if !h.requirePro(c) {
-		return
-	}
 	userID, _ := common.GetUserIDFromContext(c)
 
 	persona, err := h.orchestrator.ExecuteToolPublic(c.Request.Context(), userID, infraai.ToolCall{
@@ -294,11 +260,8 @@ func (h *PremiumAIHandlers) MoneyAcrossBordersReport(c *gin.Context) {
 	})
 }
 
-// GenerateChallenge creates a personalized spending challenge (pro-only).
+// GenerateChallenge creates a personalized spending challenge.
 func (h *PremiumAIHandlers) GenerateChallenge(c *gin.Context) {
-	if !h.requirePro(c) {
-		return
-	}
 	userID, _ := common.GetUserIDFromContext(c)
 
 	resp, err := h.orchestrator.Chat(c.Request.Context(), userID,
@@ -318,11 +281,8 @@ func (h *PremiumAIHandlers) GenerateChallenge(c *gin.Context) {
 	})
 }
 
-// GoalProgress returns goal tracking with catch-up suggestions (pro-only).
+// GoalProgress returns goal tracking with catch-up suggestions.
 func (h *PremiumAIHandlers) GoalProgress(c *gin.Context) {
-	if !h.requirePro(c) {
-		return
-	}
 	userID, _ := common.GetUserIDFromContext(c)
 
 	resp, err := h.orchestrator.Chat(c.Request.Context(), userID,

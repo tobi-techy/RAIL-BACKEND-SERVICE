@@ -136,6 +136,7 @@ var (
 	NewUsageHandlers                  = investing.NewUsageHandlers
 	NewKnowledgeHandlers              = investing.NewKnowledgeHandlers
 	NewReceiptSplitHandler            = investing.NewReceiptSplitHandler
+	NewReceiptSplitTrackingHandler    = investing.NewReceiptSplitTrackingHandler
 	NewHouseholdHandler               = investing.NewHouseholdHandler
 	NewAutomationHandler              = investing.NewAutomationHandler
 	NewEnhancedNudgeHandler           = investing.NewEnhancedNudgeHandler

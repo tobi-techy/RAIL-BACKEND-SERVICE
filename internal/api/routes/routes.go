@@ -332,22 +332,22 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					if reqCtx.Err() != nil {
 						return
 					}
-				evalCtx, cancel := context.WithTimeout(reqCtx, 10*time.Second)
-				var evalErr error
-				if container.MiriamIntelligenceOrchestrator != nil {
-					_, evalErr = container.MiriamIntelligenceOrchestrator.Evaluate(evalCtx, userID, eventType)
-				} else {
-					evalErr = container.MiriamIntelligenceService.EvaluateUser(evalCtx, userID, eventType)
-				}
-				cancel()
-				mu.Lock()
-				if evalErr != nil {
-					failed++
-					if len(failedUsers) < 20 {
-						failedUsers = append(failedUsers, userID.String())
+					evalCtx, cancel := context.WithTimeout(reqCtx, 10*time.Second)
+					var evalErr error
+					if container.MiriamIntelligenceOrchestrator != nil {
+						_, evalErr = container.MiriamIntelligenceOrchestrator.Evaluate(evalCtx, userID, eventType)
+					} else {
+						evalErr = container.MiriamIntelligenceService.EvaluateUser(evalCtx, userID, eventType)
 					}
-					container.ZapLog.Warn("internal miriam evaluation: user failed", zap.String("user_id", userID.String()), zap.Error(evalErr))
-				} else {
+					cancel()
+					mu.Lock()
+					if evalErr != nil {
+						failed++
+						if len(failedUsers) < 20 {
+							failedUsers = append(failedUsers, userID.String())
+						}
+						container.ZapLog.Warn("internal miriam evaluation: user failed", zap.String("user_id", userID.String()), zap.Error(evalErr))
+					} else {
 						evaluated++
 					}
 					mu.Unlock()
@@ -1289,9 +1289,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					if container.AutomationService != nil {
 						automationHandler := handlers.NewAutomationHandler(container.AutomationService, container.ZapLog, container.GetPasscodeService())
 						automations := aiGroup.Group("/automations")
-						if container.SubscriptionService != nil {
-							automations.Use(middleware.ProGate(container.SubscriptionService))
-						}
 						{
 							automations.POST("", automationHandler.CreateAutomation)
 							automations.GET("", automationHandler.ListAutomations)
@@ -1343,13 +1340,21 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 							splitHandler := handlers.NewReceiptSplitHandler(container.ReceiptRepo, container.P2PService, container.ZapLog)
 							aiGroup.POST("/receipts/:id/split", splitHandler.SplitReceipt)
 						}
+
+						// Receipt split tracking (list, detail, reminders, mark paid)
+						if container.ReceiptSplitRepo != nil {
+							splitTrackingHandler := handlers.NewReceiptSplitTrackingHandler(container.ReceiptSplitRepo, container.ZapLog)
+							aiGroup.GET("/receipts/splits", splitTrackingHandler.ListSplits)
+							aiGroup.GET("/receipts/splits/:id", splitTrackingHandler.GetSplit)
+							aiGroup.POST("/receipts/splits/:id/remind", splitTrackingHandler.SendReminder)
+							aiGroup.POST("/receipts/splits/:id/participants/:pid/paid", splitTrackingHandler.MarkPaid)
+						}
 					}
 
-					// Premium AI endpoints (pro-gated)
-					if container.SubscriptionService != nil {
+					// Miriam AI endpoints (available to all users)
+					{
 						premiumHandlers := handlers.NewPremiumAIHandlers(
 							container.GetAIOrchestrator(),
-							container.SubscriptionService,
 							container.ZapLog,
 							container.GetConversationService(),
 						)

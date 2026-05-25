@@ -161,6 +161,34 @@ func (w *Worker) detectUserPatterns(ctx context.Context, userID uuid.UUID, month
 		}
 	}
 
+	// Pattern: income increase (deposits significantly higher than previous month)
+	if prevFlow != nil && prevFlow.TotalDeposits.IsPositive() && flow.TotalDeposits.GreaterThan(prevFlow.TotalDeposits.Mul(decimal.NewFromFloat(1.3))) {
+		if err := w.memory.SaveTransactionPattern(fetchCtx, userID, "Income increased significantly this month", entities.FactCategoryIncomePattern, 0.7); err == nil {
+			detected++
+		}
+	}
+
+	// Pattern: irregular income (significant month-over-month deposit variance)
+	if prevFlow != nil && prevFlow.TotalDeposits.IsPositive() && flow.TotalDeposits.IsPositive() {
+		ratio := flow.TotalDeposits.Div(prevFlow.TotalDeposits)
+		if ratio.GreaterThan(decimal.NewFromFloat(1.5)) || ratio.LessThan(decimal.NewFromFloat(0.5)) {
+			if err := w.memory.SaveTransactionPattern(fetchCtx, userID, "Income varies significantly month to month — may be freelance or irregular", entities.FactCategoryFreelancePattern, 0.6); err == nil {
+				detected++
+			}
+		}
+	}
+
+	// Pattern: stash top-ups (user regularly adds to stash)
+	stash, _ = w.balances.GetAccountBalance(fetchCtx, userID, entities.AccountTypeStashBalance)
+	if stash.GreaterThan(decimal.NewFromInt(50)) && totalOut.IsPositive() {
+		stashRatio := stash.Div(totalOut)
+		if stashRatio.GreaterThan(decimal.NewFromFloat(0.15)) {
+			if err := w.memory.SaveTransactionPattern(fetchCtx, userID, "Actively builds savings — regularly contributes to Stash", entities.FactCategoryStashBehavior, 0.7); err == nil {
+				detected++
+			}
+		}
+	}
+
 	return detected
 }
 

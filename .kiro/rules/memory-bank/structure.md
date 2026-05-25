@@ -50,7 +50,6 @@ stack_service/
 
 #### internal/adapters/
 - `alpaca/`: Alpaca brokerage integration for stock/ETF trading
-- `due/`: Due Network integration for virtual accounts and off-ramping
 
 #### internal/workers/
 - `aicfo_scheduler/`: Scheduled AI CFO analysis jobs
@@ -86,8 +85,8 @@ Sequential database migrations with up/down scripts:
 - `004_create_wallet_tables`: Multi-chain wallet tables
 - `005_add_auth_fields_to_users`: Passcode authentication
 - `006_funding_event_jobs`: Webhook processing jobs
-- `015_create_virtual_accounts_table`: Due virtual accounts
-- `016_add_due_account_fields`: Due integration fields
+- `015_create_virtual_accounts_table`: Virtual accounts
+- `016_add_due_account_fields`: Legacy integration fields (migrated to Bridge)
 - `019_add_offramp_fields_to_deposits`: Off-ramp tracking
 - `021_create_transactions_table`: Transaction history
 - `022_create_withdrawals_table`: Withdrawal tracking

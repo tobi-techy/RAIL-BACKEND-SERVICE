@@ -32,14 +32,14 @@ type StreakRecorder interface {
 
 // DailyMetricsWorker runs daily to update no-spend streaks, stash growth challenges, and milestone challenges
 type DailyMetricsWorker struct {
-	userProvider  ActiveUserProvider
-	cardCounter   CardTransactionCounter
-	balances      StashBalanceProvider
-	challenges    ChallengeUpdater
-	streaks       StreakRecorder
-	logger        *zap.Logger
-	stop          chan struct{}
-	lastDate      string
+	userProvider ActiveUserProvider
+	cardCounter  CardTransactionCounter
+	balances     StashBalanceProvider
+	challenges   ChallengeUpdater
+	streaks      StreakRecorder
+	logger       *zap.Logger
+	stop         chan struct{}
+	lastDate     string
 }
 
 func NewDailyMetricsWorker(
