@@ -3601,6 +3601,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	c.AIOrchestrator.SetAutomationProvider(&automationProviderAdapter{svc: c.AutomationService})
 	c.AIOrchestrator.SetMiriamIntelligenceProvider(c.MiriamIntelligenceService)
 	c.AIOrchestrator.SetObligationCreator(&obligationCreatorAdapter{service: c.FinancialObligationService})
+	c.AIOrchestrator.SetFinancialObligationManager(&obligationManagerAdapter{service: c.FinancialObligationService})
 	c.AIOrchestrator.SetCurrencyRateProvider(c.ExchangeRateRepo)
 	warrantyRepo := repositories.NewWarrantyRepository(sqlxDB)
 	c.AIOrchestrator.SetWarrantyTracker(warrantyRepo)
