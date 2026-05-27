@@ -22,25 +22,11 @@ func (a *EmailSenderAdapter) SendGenericEmail(ctx context.Context, to, subject, 
 	safeSubject := html.EscapeString(subject)
 	safeBody := html.EscapeString(body)
 
-	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
-<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:20px 16px;">
-<tr><td align="center">
-<table cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;width:100%%;max-width:480px;">
-<tr><td style="padding:32px 24px 0 24px;">
-  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;color:#1d1d1f;margin:0;letter-spacing:-0.5px;">Rail</p>
-</td></tr>
-<tr><td style="padding:24px 24px;">
-  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:22px;font-weight:600;color:#1d1d1f;margin:0 0 16px 0;letter-spacing:-0.3px;">%s</p>
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;color:#1d1d1f;margin:0;line-height:1.5;">%s</p>
-</td></tr>
-<tr><td style="padding:0 24px 32px 24px;border-top:1px solid #f5f5f7;">
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;color:#86868b;margin:20px 0 0 0;line-height:1.5;">Rail — Your money, working from the moment it arrives.</p>
-</td></tr>
-</table>
-</td></tr></table>
-</body></html>`, safeSubject, safeBody)
+	innerHTML := renderHeader() +
+		renderHeading(safeSubject) +
+		renderBody(safeBody)
+
+	htmlContent := renderBaseTemplate(innerHTML)
 
 	return a.emailService.SendCustomEmail(ctx, to, subject, htmlContent, body)
 }

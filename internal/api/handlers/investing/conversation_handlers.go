@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -171,7 +172,7 @@ func (h *ConversationHandlers) ChatInConversation(c *gin.Context) {
 	if h.orchestrator.IsUserOverCostCeiling(c.Request.Context(), userID) {
 		c.JSON(http.StatusOK, gin.H{
 			"data": gin.H{
-				"content":      "You've been chatting a lot this month! Your AI assistant will be back at full power next month",
+				"content":      "You've hit your monthly AI limit. You can still check balances and transactions in the app tabs — Miriam will be back at full power next month.",
 				"over_ceiling": true,
 				"tokens_used":  0,
 			},
@@ -230,7 +231,17 @@ func (h *ConversationHandlers) ConfirmAction(c *gin.Context) {
 	action, err := h.orchestrator.ConfirmAction(c.Request.Context(), userID, conv.ID)
 	if err != nil {
 		h.logger.Error("confirm action failed", zap.Error(err), zap.String("user_id", userID.String()))
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request. Please check your input."})
+		errMsg := err.Error()
+		switch {
+		case strings.Contains(errMsg, "expired") || strings.Contains(errMsg, "no pending action"):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "action_expired", "message": "That action timed out. Ask me again and I'll set it up fresh."})
+		case strings.Contains(errMsg, "insufficient") || strings.Contains(errMsg, "balance"):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "insufficient_balance", "message": "Not enough funds to complete this. Check your balance and try a smaller amount."})
+		case strings.Contains(errMsg, "not found"):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "action_not_found", "message": "I don't have a pending action for this conversation."})
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "execution_failed", "message": "That didn't go through. Want to try again?"})
+		}
 		return
 	}
 
@@ -258,7 +269,15 @@ func (h *ConversationHandlers) CancelAction(c *gin.Context) {
 
 	if err := h.orchestrator.CancelAction(c.Request.Context(), userID, conv.ID); err != nil {
 		h.logger.Error("cancel action failed", zap.Error(err))
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request. Please check your input."})
+		errMsg := err.Error()
+		switch {
+		case strings.Contains(errMsg, "expired") || strings.Contains(errMsg, "no pending action"):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "action_expired", "message": "That action timed out. Ask me again and I'll set it up fresh."})
+		case strings.Contains(errMsg, "not found"):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "action_not_found", "message": "I don't have a pending action for this conversation."})
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "execution_failed", "message": "That didn't go through. Want to try again?"})
+		}
 		return
 	}
 

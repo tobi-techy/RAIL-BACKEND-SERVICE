@@ -1872,6 +1872,42 @@ func (r *UserRepository) GetAllActiveUsers(ctx context.Context) ([]NotificationU
 	return users, rows.Err()
 }
 
+// ListMiriamWorkerUserIDs returns active, non-anonymized users with any Rail
+// money state worth evaluating. Unlike notification cohorts, this does not
+// require a device token because the worker also creates in-app receipts.
+func (r *UserRepository) ListMiriamWorkerUserIDs(ctx context.Context, limit int) ([]uuid.UUID, error) {
+	if limit <= 0 || limit > 5000 {
+		limit = 500
+	}
+	query := `
+		SELECT DISTINCT u.id
+		FROM users u
+		WHERE u.is_active = true
+		  AND u.anonymized_at IS NULL
+		  AND (
+		      EXISTS (SELECT 1 FROM ledger_accounts la WHERE la.user_id = u.id)
+		      OR EXISTS (SELECT 1 FROM deposits d WHERE d.user_id = u.id)
+		      OR EXISTS (SELECT 1 FROM miriam_autopilot_mandates mam WHERE mam.user_id = u.id AND mam.status = 'active')
+		  )
+		ORDER BY u.id
+		LIMIT $1`
+	rows, err := r.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("ListMiriamWorkerUserIDs: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("ListMiriamWorkerUserIDs scan: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // GetUsersWithNoDeposits returns IDs of active, KYC-approved users who have a device token
 // but have never made a deposit, and signed up more than 24 hours ago.
 func (r *UserRepository) GetUsersWithNoDeposits(ctx context.Context) ([]NotificationUser, error) {

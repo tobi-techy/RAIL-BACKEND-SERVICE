@@ -132,7 +132,9 @@ func (h *PajHandlers) GetRates(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"onRampRate":       rates.OnRampRate,
 		"offRampRate":      rates.OffRampRate,
-		"railFee":          pajfunding.RailNGNWithdrawalFee,
+		"railFee":          pajfunding.RailNGNWithdrawalFeeNGN,
+		"stampDuty":        pajfunding.StampDutyNGN,
+		"stampDutyAbove":   pajfunding.StampDutyThresholdNGN,
 		"minWithdrawalNGN": pajfunding.MinNGNTransactionAmount,
 	})
 }

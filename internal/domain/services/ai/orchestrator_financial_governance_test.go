@@ -79,12 +79,32 @@ func (f govDepositHistoryFake) GetByUserID(_ context.Context, _ uuid.UUID, _ int
 	return f.deposits, nil
 }
 
+func (f govDepositHistoryFake) GetByUserIDInRange(_ context.Context, _ uuid.UUID, start, end time.Time, _ int) ([]*entities.Deposit, error) {
+	var filtered []*entities.Deposit
+	for _, d := range f.deposits {
+		if !d.CreatedAt.Before(start) && d.CreatedAt.Before(end) {
+			filtered = append(filtered, d)
+		}
+	}
+	return filtered, nil
+}
+
 type govWithdrawalHistoryFake struct {
 	withdrawals []*entities.Withdrawal
 }
 
 func (f govWithdrawalHistoryFake) GetByUserID(_ context.Context, _ uuid.UUID, _ int, _ int) ([]*entities.Withdrawal, error) {
 	return f.withdrawals, nil
+}
+
+func (f govWithdrawalHistoryFake) GetByUserIDInRange(_ context.Context, _ uuid.UUID, start, end time.Time, _ int) ([]*entities.Withdrawal, error) {
+	var filtered []*entities.Withdrawal
+	for _, w := range f.withdrawals {
+		if !w.CreatedAt.Before(start) && w.CreatedAt.Before(end) {
+			filtered = append(filtered, w)
+		}
+	}
+	return filtered, nil
 }
 
 func TestExecuteFinancialAdviceReturnsDeterministicChecks(t *testing.T) {

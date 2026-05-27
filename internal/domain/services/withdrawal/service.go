@@ -159,6 +159,16 @@ type ChainRailsTransferAdapter interface {
 	CreateIntent(ctx context.Context, req *chainrailspkg.CreateIntentRequest) (*chainrailspkg.CreateIntentResponse, error)
 }
 
+// FraudChecker screens withdrawals for fraud risk.
+type FraudChecker interface {
+	CheckWithdrawal(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, destination, deviceID, ipAddress, sessionID string) (action string, requiresMFA bool, blockReason string, err error)
+}
+
+// SessionAnomalyChecker detects impossible travel and concurrent country anomalies.
+type SessionAnomalyChecker interface {
+	GetRecentCriticalAnomalies(ctx context.Context, userID uuid.UUID) (hasCritical bool, reason string, err error)
+}
+
 // WithdrawalService handles crypto and fiat withdrawal operations
 type WithdrawalService struct {
 	withdrawalRepo      WithdrawalRepository
@@ -179,6 +189,8 @@ type WithdrawalService struct {
 	complianceScreener  ComplianceScreener
 	addressWhitelist    AddressWhitelistChecker
 	tieredLimits        TieredWithdrawalLimitChecker
+	fraudChecker        FraudChecker
+	sessionAnomaly      SessionAnomalyChecker
 	stashLockMu         sync.RWMutex
 	db                  *sqlx.DB
 	logger              *logger.Logger
@@ -282,6 +294,16 @@ func (s *WithdrawalService) SetTieredWithdrawalLimits(c TieredWithdrawalLimitChe
 // SetEmergencyLedger wires the emergency ledger for stash-to-spending transfers with fee.
 func (s *WithdrawalService) SetEmergencyLedger(l EmergencyLedger) {
 	s.emergencyLedger = l
+}
+
+// SetFraudChecker wires the fraud detection service (optional, graceful degradation).
+func (s *WithdrawalService) SetFraudChecker(f FraudChecker) {
+	s.fraudChecker = f
+}
+
+// SetSessionAnomalyChecker wires the session anomaly detector for impossible travel blocking.
+func (s *WithdrawalService) SetSessionAnomalyChecker(a SessionAnomalyChecker) {
+	s.sessionAnomaly = a
 }
 
 // IsStashLocked returns true if the user has no open withdrawal window.
@@ -590,6 +612,18 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 				s.logger.Warn("Tiered withdrawal limit exceeded", "error", limitErr.Error())
 				return nil, limitErr
 			}
+		}
+	}
+
+	// Step 3.3: Session anomaly check — block withdrawals if impossible travel detected
+	if s.sessionAnomaly != nil {
+		hasCritical, reason, err := s.sessionAnomaly.GetRecentCriticalAnomalies(ctx, req.UserID)
+		if err != nil {
+			s.logger.Warn("Session anomaly check failed, allowing withdrawal", zap.Error(err))
+		} else if hasCritical {
+			s.logger.Warn("Withdrawal blocked due to session anomaly",
+				"user_id", req.UserID.String(), "reason", reason)
+			return nil, fmt.Errorf("withdrawal temporarily blocked: unusual login activity detected. Please contact support if this was you")
 		}
 	}
 
@@ -1101,6 +1135,18 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 		}
 	}
 
+	// Step 4.1: Session anomaly check — block withdrawals if impossible travel detected
+	if s.sessionAnomaly != nil {
+		hasCritical, reason, err := s.sessionAnomaly.GetRecentCriticalAnomalies(ctx, req.UserID)
+		if err != nil {
+			s.logger.Warn("Session anomaly check failed, allowing fiat withdrawal", "error", err)
+		} else if hasCritical {
+			s.logger.Warn("Fiat withdrawal blocked due to session anomaly",
+				"user_id", req.UserID.String(), "reason", reason)
+			return nil, fmt.Errorf("withdrawal temporarily blocked: unusual login activity detected. Please contact support if this was you")
+		}
+	}
+
 	// Step 5: Check balance based on source account
 	balance, err := s.getSourceBalance(ctx, req.UserID, req.SourceAccount)
 	if err != nil {
@@ -1569,9 +1615,11 @@ func (s *WithdrawalService) postWithdrawalLedgerEntries(ctx context.Context, wit
 	}
 
 	metadata := map[string]interface{}{
-		"withdrawal_id":   withdrawal.ID.String(),
-		"withdrawal_type": string(withdrawal.WithdrawalType),
-		"source_account":  string(withdrawal.SourceAccount),
+		"withdrawal_id":    withdrawal.ID.String(),
+		"withdrawal_type":  string(withdrawal.WithdrawalType),
+		"source_account":   string(withdrawal.SourceAccount),
+		"principal_amount": withdrawal.Amount.String(),
+		"fee_amount":       withdrawal.FeeAmount.String(),
 	}
 	if withdrawal.DestinationAddress != nil {
 		metadata["destination_address"] = *withdrawal.DestinationAddress
@@ -1604,6 +1652,7 @@ func (s *WithdrawalService) reverseWithdrawalLedgerEntry(ctx context.Context, wi
 		"withdrawal_id":   withdrawal.ID.String(),
 		"reversal_reason": "transfer_failed",
 		"original_amount": withdrawal.Amount.String(),
+		"fee_amount":      withdrawal.FeeAmount.String(),
 		"source_account":  string(withdrawal.SourceAccount),
 	}
 
@@ -2046,9 +2095,13 @@ func (s *WithdrawalService) executeChainRailsTransfer(ctx context.Context, withd
 		"fees_usd", intent.FeesInUSD)
 
 	// Step 2: Fund the intent by transferring USDC from user's Bridge wallet to the intent address on Base
+	if withdrawal.FeeAmount.IsZero() {
+		return nil, fmt.Errorf("withdrawal fee amount is required for ChainRails transfer")
+	}
 	transfer, err := s.bridgeCryptoAdapter.TransferFunds(ctx, &bridgepkg.CreateTransferRequest{
-		OnBehalfOf: withdrawal.UserID.String(),
-		Amount:     withdrawal.Amount.StringFixed(2),
+		OnBehalfOf:   withdrawal.UserID.String(),
+		Amount:       withdrawal.Amount.Add(withdrawal.FeeAmount).StringFixed(2),
+		DeveloperFee: withdrawal.FeeAmount.StringFixed(2),
 		Source: bridgepkg.TransferSource{
 			PaymentRail:    bridgepkg.PaymentRail("bridge_wallet"),
 			Currency:       bridgepkg.CurrencyUSDC,

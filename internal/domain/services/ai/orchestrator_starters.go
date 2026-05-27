@@ -85,6 +85,12 @@ func (o *Orchestrator) buildStarterContext(ctx context.Context, userID uuid.UUID
 		parts = append(parts, fmt.Sprintf("This month: $%s in, $%s out", flow.TotalDeposits.StringFixed(2), totalOut.StringFixed(2)))
 	}
 
+	if o.patterns != nil {
+		if totalSpend, txCount, err := o.patterns.GetSpendingTotal(ctx, userID, monthStart, now); err == nil && txCount > 0 {
+			parts = append(parts, fmt.Sprintf("Spent $%s across %d transactions this month", totalSpend.StringFixed(2), txCount))
+		}
+	}
+
 	if o.activityProvider != nil {
 		if streak, err := o.activityProvider.GetStreak(ctx, userID); err == nil && streak != nil && streak.CurrentStreak > 0 {
 			parts = append(parts, fmt.Sprintf("Saving streak: %d days", streak.CurrentStreak))
@@ -99,9 +105,6 @@ func (o *Orchestrator) buildStarterContext(ctx context.Context, userID uuid.UUID
 
 	parts = append(parts, fmt.Sprintf("Day: %s, time: %s", now.Format("Monday"), now.Format("3pm")))
 
-	if len(parts) <= 1 {
-		return "" // Only have day/time, not enough context
-	}
 	return strings.Join(parts, "\n")
 }
 

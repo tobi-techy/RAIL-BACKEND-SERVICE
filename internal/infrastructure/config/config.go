@@ -87,14 +87,26 @@ type AIConfig struct {
 	Kimi       KimiConfig       `mapstructure:"kimi"`
 	Groq       GroqConfig       `mapstructure:"groq"`
 	Bedrock    BedrockConfig    `mapstructure:"bedrock"`
-	AssemblyAI AssemblyAIConfig `mapstructure:"assemblyai"`
+	AssemblyAI AssemblyAIConfig `mapstructure:"assemblyai"` // Deprecated: use ElevenLabs
+	ElevenLabs ElevenLabsConfig `mapstructure:"elevenlabs"`
 	Primary    string           `mapstructure:"primary"` // "openai", "gemini", "kimi", "groq", or "bedrock"
 }
 
-// AssemblyAIConfig contains AssemblyAI Voice Agent API configuration
+// AssemblyAIConfig contains AssemblyAI Voice Agent API configuration (deprecated, kept for backward compat)
 type AssemblyAIConfig struct {
 	APIKey string `mapstructure:"api_key"`
 	Voice  string `mapstructure:"voice"`
+}
+
+// ElevenLabsConfig contains ElevenLabs Conversational AI configuration
+type ElevenLabsConfig struct {
+	APIKey         string  `mapstructure:"api_key"`
+	AgentID        string  `mapstructure:"agent_id"`         // ElevenLabs Conversational AI agent ID
+	VoiceID        string  `mapstructure:"voice_id"`         // Optional: override agent's default voice
+	Stability      float64 `mapstructure:"stability"`        // 0-1: lower = more expressive but less stable
+	SimilarityBoost float64 `mapstructure:"similarity_boost"` // 0-1: how closely to match original voice
+	Style          float64 `mapstructure:"style"`            // 0-1: style exaggeration
+	UseSpeakerBoost bool   `mapstructure:"use_speaker_boost"` // enhance speaker clarity
 }
 
 // BedrockConfig contains Amazon Bedrock configuration
@@ -508,8 +520,10 @@ type PajConfig struct {
 
 // WorkerConfig contains background worker configuration
 type WorkerConfig struct {
-	Count      int `mapstructure:"count"`
-	JobTimeout int `mapstructure:"job_timeout"`
+	Count                       int  `mapstructure:"count"`
+	JobTimeout                  int  `mapstructure:"job_timeout"`
+	MiriamIntelligenceLocal     bool `mapstructure:"miriam_intelligence_local"`
+	MiriamIntelligenceBatchSize int  `mapstructure:"miriam_intelligence_batch_size"`
 }
 
 // AlpacaConfig contains brokerage API configuration
@@ -836,8 +850,19 @@ func setDefaults() {
 	viper.SetDefault("ai.kimi.model", "kimi-k2.6")
 
 	// Explicit env bindings for AI keys (task def uses short names)
+	viper.SetDefault("ai.elevenlabs.stability", 0.5)
+	viper.SetDefault("ai.elevenlabs.similarity_boost", 0.75)
+	viper.SetDefault("ai.elevenlabs.style", 0.0)
+	viper.SetDefault("ai.elevenlabs.use_speaker_boost", true)
 	viper.BindEnv("ai.assemblyai.api_key", "ASSEMBLYAI_API_KEY")
 	viper.BindEnv("ai.assemblyai.voice", "ASSEMBLYAI_VOICE")
+	viper.BindEnv("ai.elevenlabs.api_key", "ELEVENLABS_API_KEY")
+	viper.BindEnv("ai.elevenlabs.agent_id", "ELEVENLABS_AGENT_ID")
+	viper.BindEnv("ai.elevenlabs.voice_id", "ELEVENLABS_VOICE_ID")
+	viper.BindEnv("ai.elevenlabs.stability", "ELEVENLABS_STABILITY")
+	viper.BindEnv("ai.elevenlabs.similarity_boost", "ELEVENLABS_SIMILARITY_BOOST")
+	viper.BindEnv("ai.elevenlabs.style", "ELEVENLABS_STYLE")
+	viper.BindEnv("ai.elevenlabs.use_speaker_boost", "ELEVENLABS_USE_SPEAKER_BOOST")
 	viper.BindEnv("ai.openai.api_key", "OPENAI_API_KEY")
 	viper.BindEnv("ai.gemini.api_key", "GEMINI_API_KEY")
 	viper.BindEnv("ai.kimi.api_key", "KIMI_API_KEY")
@@ -848,7 +873,7 @@ func setDefaults() {
 	viper.BindEnv("ai.bedrock.model_id", "BEDROCK_MODEL_ID")
 	viper.BindEnv("ai.bedrock.guardrail_id", "BEDROCK_GUARDRAIL_ID")
 	viper.BindEnv("ai.bedrock.guardrail_version", "BEDROCK_GUARDRAIL_VERSION")
-	viper.SetDefault("ai.bedrock.model_id", "anthropic.claude-sonnet-4-5-20250929-v1:0")
+	viper.SetDefault("ai.bedrock.model_id", "anthropic.claude-3-5-sonnet-20241022-v2:0")
 	viper.SetDefault("ai.bedrock.max_tokens", 4096)
 	viper.SetDefault("ai.bedrock.temperature", 0.7)
 	viper.SetDefault("ai.bedrock.top_p", 0.9)
@@ -901,6 +926,8 @@ func setDefaults() {
 	// Worker defaults
 	viper.SetDefault("workers.count", 10)
 	viper.SetDefault("workers.job_timeout", 300)
+	viper.SetDefault("workers.miriam_intelligence_local", true)
+	viper.SetDefault("workers.miriam_intelligence_batch_size", 500)
 
 	// Rate limiting defaults
 	viper.SetDefault("rate_limit.enabled", true)
@@ -1158,6 +1185,37 @@ func overrideFromEnv() {
 	if assemblyAIVoice := os.Getenv("ASSEMBLYAI_VOICE"); assemblyAIVoice != "" {
 		viper.Set("ai.assemblyai.voice", assemblyAIVoice)
 	}
+	if elevenLabsKey := os.Getenv("ELEVENLABS_API_KEY"); elevenLabsKey != "" {
+		viper.Set("ai.elevenlabs.api_key", elevenLabsKey)
+	} else {
+		viper.Set("ai.elevenlabs.api_key", "")
+	}
+	if elevenLabsAgentID := os.Getenv("ELEVENLABS_AGENT_ID"); elevenLabsAgentID != "" {
+		viper.Set("ai.elevenlabs.agent_id", elevenLabsAgentID)
+	}
+	if elevenLabsVoiceID := os.Getenv("ELEVENLABS_VOICE_ID"); elevenLabsVoiceID != "" {
+		viper.Set("ai.elevenlabs.voice_id", elevenLabsVoiceID)
+	}
+	if elevenLabsStability := os.Getenv("ELEVENLABS_STABILITY"); elevenLabsStability != "" {
+		if v, err := strconv.ParseFloat(elevenLabsStability, 64); err == nil {
+			viper.Set("ai.elevenlabs.stability", v)
+		}
+	}
+	if elevenLabsSimilarity := os.Getenv("ELEVENLABS_SIMILARITY_BOOST"); elevenLabsSimilarity != "" {
+		if v, err := strconv.ParseFloat(elevenLabsSimilarity, 64); err == nil {
+			viper.Set("ai.elevenlabs.similarity_boost", v)
+		}
+	}
+	if elevenLabsStyle := os.Getenv("ELEVENLABS_STYLE"); elevenLabsStyle != "" {
+		if v, err := strconv.ParseFloat(elevenLabsStyle, 64); err == nil {
+			viper.Set("ai.elevenlabs.style", v)
+		}
+	}
+	if elevenLabsSpeakerBoost := os.Getenv("ELEVENLABS_USE_SPEAKER_BOOST"); elevenLabsSpeakerBoost != "" {
+		if v, err := strconv.ParseBool(elevenLabsSpeakerBoost); err == nil {
+			viper.Set("ai.elevenlabs.use_speaker_boost", v)
+		}
+	}
 	if openaiKey := os.Getenv("OPENAI_API_KEY"); openaiKey != "" {
 		viper.Set("ai.openai.api_key", openaiKey)
 	} else {
@@ -1284,6 +1342,8 @@ func overrideFromEnv() {
 	viper.BindEnv("chainrails.settlement_token", "CHAINRAILS_SETTLEMENT_TOKEN")
 
 	viper.BindEnv("security.internal_api_key", "SECURITY_INTERNAL_API_KEY")
+	viper.BindEnv("workers.miriam_intelligence_local", "WORKERS_MIRIAM_INTELLIGENCE_LOCAL")
+	viper.BindEnv("workers.miriam_intelligence_batch_size", "WORKERS_MIRIAM_INTELLIGENCE_BATCH_SIZE")
 
 	if chainrailsAPIKey := os.Getenv("CHAINRAILS_API_KEY"); chainrailsAPIKey != "" {
 		viper.Set("chainrails.api_key", chainrailsAPIKey)

@@ -29,16 +29,16 @@ import (
 
 // ImageAnalysisHandler handles receipt/image analysis via vision-capable LLM.
 type ImageAnalysisHandler struct {
-	apiKey          string
-	visionURL       string    // e.g. https://api.openai.com/v1 or https://api.moonshot.ai/v1
-	visionModel     string    // e.g. gpt-4o or moonshot-v1-8k
-	visionTemp      float64   // temperature for vision calls (Kimi requires 1.0)
-	orchestrator    *aiservice.Orchestrator
-	receiptRepo     *repositories.ReceiptRepository
-	budgetRepo      *repositories.BudgetRepository
-	spendingRepo    *repositories.LedgerSpendingRepository
-	convPersister   ConversationPersister
-	logger          *zap.Logger
+	apiKey        string
+	visionURL     string  // e.g. https://api.openai.com/v1 or https://api.moonshot.ai/v1
+	visionModel   string  // e.g. gpt-4o or moonshot-v1-8k
+	visionTemp    float64 // temperature for vision calls (Kimi requires 1.0)
+	orchestrator  *aiservice.Orchestrator
+	receiptRepo   *repositories.ReceiptRepository
+	budgetRepo    *repositories.BudgetRepository
+	spendingRepo  *repositories.LedgerSpendingRepository
+	convPersister ConversationPersister
+	logger        *zap.Logger
 }
 
 // ConversationPersister saves image messages to conversations.
@@ -129,7 +129,7 @@ func (h *ImageAnalysisHandler) AnalyzeImage(c *gin.Context) {
 
 	if h.orchestrator != nil && h.orchestrator.IsUserOverCostCeiling(c.Request.Context(), userID) {
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{
-			"content":      "You've reached your monthly AI limit",
+			"content":      "You've hit your monthly AI limit. You can still check balances and transactions in the app tabs — Miriam will be back at full power next month.",
 			"over_ceiling": true,
 			"tokens_used":  0,
 		}})
@@ -528,11 +528,7 @@ func generateThumbnail(b64 string) *string {
 }
 
 func truncateBase64(b64 string) *string {
-	const maxLen = 50 * 1024
-	if len(b64) > maxLen {
-		b64 = b64[:maxLen]
-	}
-	return &b64
+	return nil
 }
 
 // GetReceipts handles GET /v1/ai/receipts
@@ -574,12 +570,12 @@ func (h *ImageAnalysisHandler) GetReceipts(c *gin.Context) {
 	safe := make([]safeReceipt, 0, len(scans))
 	for _, s := range scans {
 		r := safeReceipt{
-			ID:       s.ID.String(),
-			Merchant: s.Merchant,
-			Amount:   s.Amount.StringFixed(2),
-			Currency: s.Currency,
-			Category: s.Category,
-			Items:    s.Items,
+			ID:        s.ID.String(),
+			Merchant:  s.Merchant,
+			Amount:    s.Amount.StringFixed(2),
+			Currency:  s.Currency,
+			Category:  s.Category,
+			Items:     s.Items,
 			CreatedAt: s.CreatedAt.Format(time.RFC3339),
 		}
 		if s.ReceiptDate != nil {
@@ -649,12 +645,18 @@ func (h *ImageAnalysisHandler) UpdateReceipt(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update receipt"})
 		return
 	}
+	receiptDateStr := ""
+	if existing.ReceiptDate != nil {
+		receiptDateStr = existing.ReceiptDate.Format("2006-01-02")
+	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{
-		"id":       existing.ID.String(),
-		"merchant": existing.Merchant,
-		"amount":   existing.Amount.StringFixed(2),
-		"currency": existing.Currency,
-		"category": existing.Category,
+		"id":           existing.ID.String(),
+		"merchant":     existing.Merchant,
+		"amount":       existing.Amount.StringFixed(2),
+		"currency":     existing.Currency,
+		"category":     existing.Category,
+		"receipt_date": receiptDateStr,
+		"items":        existing.Items,
 	}})
 }
 
@@ -696,7 +698,7 @@ func (h *ImageAnalysisHandler) BatchAnalyzeImages(c *gin.Context) {
 	}
 
 	if h.orchestrator != nil && h.orchestrator.IsUserOverCostCeiling(c.Request.Context(), userID) {
-		c.JSON(http.StatusTooManyRequests, gin.H{"error": gin.H{"code": "AI_LIMIT_REACHED", "message": "Monthly AI limit reached"}})
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": gin.H{"code": "AI_LIMIT_REACHED", "message": "You've hit your monthly AI limit. You can still check balances and transactions in the app tabs — Miriam will be back at full power next month."}})
 		return
 	}
 
@@ -718,12 +720,12 @@ func (h *ImageAnalysisHandler) BatchAnalyzeImages(c *gin.Context) {
 	}
 
 	type batchResult struct {
-		Index    int    `json:"index"`
+		Index     int    `json:"index"`
 		ReceiptID string `json:"receipt_id,omitempty"`
-		Merchant string `json:"merchant,omitempty"`
-		Amount   string `json:"amount,omitempty"`
-		Saved    bool   `json:"saved"`
-		Error    string `json:"error,omitempty"`
+		Merchant  string `json:"merchant,omitempty"`
+		Amount    string `json:"amount,omitempty"`
+		Saved     bool   `json:"saved"`
+		Error     string `json:"error,omitempty"`
 	}
 
 	var (
@@ -851,7 +853,7 @@ func (h *ImageAnalysisHandler) GetReceiptGallery(c *gin.Context) {
 		item := galleryItem{
 			ID:       s.ID.String(),
 			Merchant: s.Merchant,
-			Amount:   s.Amount.String(),
+			Amount:   s.Amount.StringFixed(2),
 			Category: s.Category,
 		}
 		if s.ReceiptDate != nil {

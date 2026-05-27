@@ -27,6 +27,15 @@ var (
 	NonKYCMinTransferAmount    = decimal.NewFromFloat(1.00)     // $1 minimum
 )
 
+// ── Non-KYC NGN Limits (Naira allowed without KYC) ───────────────
+
+var (
+	NonKYCDailyTransferLimitNGN   = decimal.NewFromFloat(50000.00)   // ₦50,000/day
+	NonKYCMonthlyTransferLimitNGN = decimal.NewFromFloat(200000.00)  // ₦200,000/month
+	NonKYCMaxTransferAmountNGN    = decimal.NewFromFloat(50000.00)   // ₦50,000 per transaction
+	NonKYCMinTransferAmountNGN    = decimal.NewFromFloat(500.00)     // ₦500 minimum
+)
+
 // ── USD Limits ───────────────────────────────────────────────────
 
 var (
@@ -96,7 +105,20 @@ func GetLimitConfigForTierAndCurrency(tier KYCTier, currency string) Transaction
 	}
 
 	if tier == KYCTierNonKYC {
-		// Non-KYC: crypto transfers only, no fiat. Currency-agnostic USD limits.
+		if currency == "NGN" {
+			return TransactionLimitConfig{
+				Tier:                   KYCTierNonKYC,
+				Currency:               "NGN",
+				MinWithdrawal:          NonKYCMinTransferAmountNGN,
+				MaxWithdrawal:          NonKYCMaxTransferAmountNGN,
+				DailyWithdrawalLimit:   NonKYCDailyTransferLimitNGN,
+				MonthlyWithdrawalLimit: NonKYCMonthlyTransferLimitNGN,
+				MinDeposit:             NonKYCMinTransferAmountNGN,
+				DailyDepositLimit:      NonKYCDailyTransferLimitNGN,
+				MonthlyDepositLimit:    NonKYCMonthlyTransferLimitNGN,
+			}
+		}
+		// Non-KYC USD: crypto transfers only
 		return TransactionLimitConfig{
 			Tier:                   KYCTierNonKYC,
 			Currency:               "USD",
@@ -104,10 +126,9 @@ func GetLimitConfigForTierAndCurrency(tier KYCTier, currency string) Transaction
 			MaxWithdrawal:          NonKYCMaxTransferAmount,
 			DailyWithdrawalLimit:   NonKYCDailyTransferLimit,
 			MonthlyWithdrawalLimit: NonKYCMonthlyTransferLimit,
-			// Deposits: same limits as withdrawals for non-KYC
-			MinDeposit:          NonKYCMinTransferAmount,
-			DailyDepositLimit:   NonKYCDailyTransferLimit,
-			MonthlyDepositLimit: NonKYCMonthlyTransferLimit,
+			MinDeposit:             NonKYCMinTransferAmount,
+			DailyDepositLimit:      NonKYCDailyTransferLimit,
+			MonthlyDepositLimit:    NonKYCMonthlyTransferLimit,
 		}
 	}
 

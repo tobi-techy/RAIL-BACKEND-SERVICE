@@ -54,15 +54,13 @@ func NewBedrockProvider(cfg *BedrockConfig, logger *zap.Logger) *BedrockProvider
 	}
 	fallbacks := cfg.FallbackModels
 	if len(fallbacks) == 0 {
-		// Default failover chain: Haiku 4.5 (active) → Haiku 3.5 (legacy fallback)
 		fallbacks = []string{
-			"anthropic.claude-haiku-4-5-20251001-v1:0",
 			"anthropic.claude-3-5-haiku-20241022-v1:0",
 		}
 	}
 	fastModel := cfg.FastModel
 	if fastModel == "" {
-		fastModel = "anthropic.claude-haiku-4-5-20251001-v1:0"
+		fastModel = "anthropic.claude-3-5-haiku-20241022-v1:0"
 	}
 	return &BedrockProvider{
 		client:           client,
@@ -138,10 +136,19 @@ func (p *BedrockProvider) ChatCompletionWithTools(ctx context.Context, req *Chat
 
 		lastErr = err
 
-		// Only failover on throttling or server errors, not on bad requests
+		// Abort Bedrock entirely on auth errors (account-level, affects all models).
+		// For other non-retryable errors (e.g., model-specific access), try fallback models.
 		if pe, ok := err.(*ProviderError); ok && !pe.Retryable {
-			span.RecordError(err)
-			return nil, err
+			if pe.Code == ErrorCodeAuthentication {
+				span.RecordError(err)
+				return nil, err
+			}
+			p.logger.Warn("bedrock: model failed, trying next",
+				zap.String("model", modelID),
+				zap.Error(err),
+				zap.Int("remaining", len(models)-i-1),
+			)
+			continue
 		}
 
 		p.logger.Warn("bedrock: model failed, trying next",

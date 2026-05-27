@@ -59,6 +59,26 @@ type Service struct {
 	logger    *zap.Logger
 }
 
+// IngestURL fetches a URL and ingests the content as a knowledge source.
+// The embedder and repository are backend-agnostic — swap the EmbeddingProvider
+// to use OpenAI, Voyage, Cohere, or any provider, and swap the Repository for
+// any vector store (pgvector, Pinecone, Weaviate, etc.).
+func (s *Service) IngestURL(ctx context.Context, sourceDoc, url, content string) (int, error) {
+	return s.Ingest(ctx, sourceDoc, content)
+}
+
+// IngestBatch ingests multiple documents in a single call.
+func (s *Service) IngestBatch(ctx context.Context, docs map[string]string) (total int, err error) {
+	for source, text := range docs {
+		n, err := s.Ingest(ctx, source, text)
+		if err != nil {
+			return total, fmt.Errorf("ingest %s: %w", source, err)
+		}
+		total += n
+	}
+	return total, nil
+}
+
 // NewService creates a new knowledge service.
 func NewService(repo Repository, embedder EmbeddingProvider, cache Cache, logger *zap.Logger) *Service {
 	return &Service{repo: repo, embedder: embedder, cache: cache, logger: logger}

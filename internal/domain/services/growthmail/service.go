@@ -99,7 +99,7 @@ func (s *Service) SendDue(ctx context.Context, now time.Time) (int, int, error) 
 		}
 
 		htmlBody, textBody := renderCampaign(campaign, c, s.cfg.BaseURL)
-		sendErr := s.email.SendCustomEmail(ctx, c.Email, campaign.subject, htmlBody, textBody)
+		sendErr := s.sendCampaignEmail(ctx, c.Email, campaign, htmlBody, textBody)
 		event.Status = entities.GrowthMailStatusSent
 		if sendErr != nil {
 			failed++
@@ -120,8 +120,12 @@ func (s *Service) SendDue(ctx context.Context, now time.Time) (int, int, error) 
 	return sent, failed, nil
 }
 
+func (s *Service) sendCampaignEmail(ctx context.Context, to string, campaign campaign, htmlBody, textBody string) error {
+	return s.email.SendCustomEmail(ctx, to, campaign.subject, htmlBody, textBody)
+}
+
 func (s *Service) nextUnsentCampaign(ctx context.Context, c entities.GrowthMailCandidate, now time.Time) (campaign, bool, error) {
-	for _, campaign := range campaignsForCandidate(c, now) {
+	for _, campaign := range campaignsForCandidateWithConfig(c, now, s.cfg) {
 		alreadySent, err := s.repo.HasSuccessfulSend(ctx, c.UserID, campaign.key)
 		if err != nil {
 			return campaign, false, err
@@ -146,6 +150,10 @@ type campaign struct {
 }
 
 func campaignsForCandidate(c entities.GrowthMailCandidate, now time.Time) []campaign {
+	return campaignsForCandidateWithConfig(c, now, Config{})
+}
+
+func campaignsForCandidateWithConfig(c entities.GrowthMailCandidate, now time.Time, _ Config) []campaign {
 	accountAge := now.Sub(c.CreatedAt)
 	campaigns := make([]campaign, 0, 2)
 
@@ -230,7 +238,7 @@ func renderCampaign(campaign campaign, candidate entities.GrowthMailCandidate, b
 
 	stepHTML := strings.Builder{}
 	for _, step := range campaign.steps {
-		stepHTML.WriteString(fmt.Sprintf(`<p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:14px;color:#424245;margin:0 0 10px 0;line-height:1.5;">%s</p>`, html.EscapeString(step)))
+		stepHTML.WriteString(fmt.Sprintf(`<p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#343433;margin:0 0 8px 0;line-height:1.5;">%s</p>`, html.EscapeString(step)))
 	}
 
 	textSteps := strings.Builder{}
@@ -239,32 +247,26 @@ func renderCampaign(campaign campaign, candidate entities.GrowthMailCandidate, b
 	}
 
 	htmlBody := fmt.Sprintf(`<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
-<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:20px 16px;">
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#fbfaf9;-webkit-font-smoothing:antialiased;">
+<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#fbfaf9;padding:32px 16px;">
 <tr><td align="center">
-<table cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;width:100%%;max-width:520px;">
-<tr><td style="padding:32px 24px 0 24px;">
-  <p style="font-family:-apple-system,SF Pro Display,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;color:#1d1d1f;margin:0;letter-spacing:-0.5px;">Rail</p>
-</td></tr>
-<tr><td style="padding:24px 24px;">
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;color:#86868b;margin:0 0 12px 0;line-height:1.5;">%s,</p>
-  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:24px;font-weight:650;color:#1d1d1f;margin:0 0 12px 0;letter-spacing:-0.3px;">%s</p>
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;color:#1d1d1f;margin:0 0 24px 0;line-height:1.5;">%s</p>
-  <table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;border-radius:12px;margin:0 0 24px 0;">
+<table cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;width:100%%;max-width:480px;">
+<tr><td style="padding:40px 32px 32px;">
+  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,sans-serif;font-size:20px;font-weight:700;color:#343433;margin:0 0 24px 0;letter-spacing:-0.3px;">Rail</p>
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:15px;color:#848281;margin:0 0 12px 0;line-height:1.5;">%s,</p>
+  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,sans-serif;font-size:20px;font-weight:700;color:#343433;margin:0 0 8px 0;letter-spacing:-0.3px;">%s</p>
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:15px;color:#343433;margin:0 0 20px 0;line-height:1.5;">%s</p>
+  <table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f2f0ed;border-radius:12px;margin:0 0 20px 0;">
     <tr><td style="padding:20px 24px;">%s</td></tr>
   </table>
   <table cellpadding="0" cellspacing="0" style="margin:0 0 20px 0;">
-    <tr><td style="background-color:#1d1d1f;border-radius:12px;padding:14px 24px;">
-      <a href="%s" style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;">%s</a>
+    <tr><td style="background-color:#121212;border-radius:32px;padding:14px 28px;">
+      <a href="%s" style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;">%s</a>
     </td></tr>
   </table>
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:13px;color:#86868b;margin:0;line-height:1.5;">%s</p>
-</td></tr>
-<tr><td style="padding:0 24px 32px 24px;border-top:1px solid #f5f5f7;">
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;color:#86868b;margin:20px 0 0 0;line-height:1.5;">You're receiving this because growth emails are enabled for your Rail account.</p>
-</td></tr>
-</table>
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:13px;color:#848281;margin:0;line-height:1.5;">%s</p>
+</td></tr></table>
 </td></tr></table>
 </body></html>`, html.EscapeString(greeting), html.EscapeString(campaign.heading), html.EscapeString(campaign.body), stepHTML.String(), html.EscapeString(ctaURL), html.EscapeString(campaign.ctaLabel), html.EscapeString(campaign.footerHint))
 

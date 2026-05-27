@@ -19,6 +19,15 @@ const (
 	FactCategoryLocation          = "location"
 	FactCategoryIdentity          = "identity"
 	FactCategoryFinancialBehavior = "financial_behavior"
+
+	FactCategoryIncomePattern   = "income_pattern"
+	FactCategoryDepositCadence  = "deposit_cadence"
+	FactCategorySalaryDay       = "salary_day"
+	FactCategoryFreelancePattern = "freelance_pattern"
+	FactCategoryFamilySupport   = "family_support"
+	FactCategoryCurrencyContext = "currency_context"
+	FactCategoryRiskPreference  = "risk_preference"
+	FactCategoryStashBehavior   = "stash_behavior"
 )
 
 // Fact sources.
@@ -70,6 +79,7 @@ type MiriamToneProfile struct {
 	Brevity       decimal.Decimal `json:"brevity" db:"brevity"`
 	PreferredName string          `json:"preferred_name" db:"preferred_name"`
 	LanguageStyle string          `json:"language_style" db:"language_style"`
+	LocaleStyle   string          `json:"locale_style" db:"locale_style"`
 	SampleCount   int             `json:"sample_count" db:"sample_count"`
 	CreatedAt     time.Time       `json:"created_at" db:"created_at"`
 	UpdatedAt     time.Time       `json:"updated_at" db:"updated_at"`

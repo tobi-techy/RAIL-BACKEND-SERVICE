@@ -30,6 +30,7 @@ type CardTransactionProvider interface {
 // DepositHistoryProvider returns recent deposits.
 type DepositHistoryProvider interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Deposit, error)
+	GetByUserIDInRange(ctx context.Context, userID uuid.UUID, start, end time.Time, limit int) ([]*entities.Deposit, error)
 }
 
 // DepositIncomeProvider optionally returns aggregate deposit trend data.
@@ -45,6 +46,7 @@ type YieldProvider interface {
 // WithdrawalHistoryProvider returns recent withdrawals.
 type WithdrawalHistoryProvider interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error)
+	GetByUserIDInRange(ctx context.Context, userID uuid.UUID, start, end time.Time, limit int) ([]*entities.Withdrawal, error)
 }
 
 // ReceiptHistoryProvider returns stored receipt scans.
@@ -88,6 +90,16 @@ func (o *Orchestrator) SetReceiptSplitter(s ReceiptSplitter) {
 	o.receiptSplitter = s
 }
 
+// SetWithdrawalInitiator sets the withdrawal service for voice-triggered withdrawals.
+func (o *Orchestrator) SetWithdrawalInitiator(w WithdrawalInitiator) {
+	o.withdrawalInitiator = w
+}
+
+// SetBankAccountProvider sets the bank account provider for withdrawal details.
+func (o *Orchestrator) SetBankAccountProvider(b BankAccountProvider) {
+	o.bankAccountProvider = b
+}
+
 // ReadOnlyTools returns tool definitions for read-only data access.
 func ReadOnlyTools(hasCards, hasDeposits, hasIncomeTrend, hasYield, hasWithdrawals, hasReceipts bool) []infraai.Tool {
 	var tools []infraai.Tool
@@ -106,11 +118,12 @@ func ReadOnlyTools(hasCards, hasDeposits, hasIncomeTrend, hasYield, hasWithdrawa
 	if hasDeposits {
 		tools = append(tools, infraai.Tool{
 			Name:        ToolGetDepositHistory,
-			Description: "Get recent deposit history. Use when user asks about their deposits, funding history, or money coming in.",
+			Description: "Get deposit history, optionally filtered by a time period. Use when user asks about their deposits, funding history, or money coming in for a specific period. Supports short (7d), monthly, quarterly (90d), semiannual (6mo), and annual (12mo) ranges.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"limit": map[string]interface{}{"type": "integer", "description": "Number of deposits (max 10)", "default": 5},
+					"limit":  map[string]interface{}{"type": "integer", "description": "Number of deposits (max 10)", "default": 5},
+					"period": map[string]interface{}{"type": "string", "enum": []string{"this_month", "last_month", "last_7_days", "last_30_days", "last_90_days", "last_6_months", "last_12_months"}, "description": "Time period to filter deposits by. REQUIRED when the user asks about a specific timeframe like this month, last month, last quarter, or last year."},
 				},
 			},
 		})
@@ -142,11 +155,12 @@ func ReadOnlyTools(hasCards, hasDeposits, hasIncomeTrend, hasYield, hasWithdrawa
 	if hasWithdrawals {
 		tools = append(tools, infraai.Tool{
 			Name:        ToolGetWithdrawalHistory,
-			Description: "Get recent withdrawal history including naira withdrawals, crypto withdrawals, and fiat offramps. Use when user asks about withdrawals, cash outs, NGN conversions, or money leaving their account.",
+			Description: "Get withdrawal history, optionally filtered by a time period. Includes naira withdrawals, crypto withdrawals, and fiat offramps. Use when user asks about withdrawals, cash outs, NGN conversions, or money leaving their account for a specific period. Supports short (7d), monthly, quarterly (90d), semiannual (6mo), and annual (12mo) ranges.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"limit": map[string]interface{}{"type": "integer", "description": "Number of withdrawals (max 10)", "default": 5},
+					"limit":  map[string]interface{}{"type": "integer", "description": "Number of withdrawals (max 10)", "default": 5},
+					"period": map[string]interface{}{"type": "string", "enum": []string{"this_month", "last_month", "last_7_days", "last_30_days", "last_90_days", "last_6_months", "last_12_months"}, "description": "Time period to filter withdrawals by. REQUIRED when the user asks about a specific timeframe like this month, last month, last quarter, or last year."},
 				},
 			},
 		})
@@ -202,29 +216,29 @@ func (o *Orchestrator) executeDepositHistory(ctx context.Context, userID uuid.UU
 	if l, ok := args["limit"].(float64); ok && l > 0 && l <= 10 {
 		limit = int(l)
 	}
-	// Fetch more than needed so we can filter to completed only
-	deposits, err := o.depositHistory.GetByUserID(ctx, userID, limit*3, 0)
+
+	period, _ := args["period"].(string)
+	hasPeriod := period != ""
+
+	var deposits []*entities.Deposit
+	if hasPeriod {
+		start, end := parsePeriod(period)
+		fetched, err := o.depositHistory.GetByUserIDInRange(ctx, userID, start, end, limit*3)
+		if err != nil {
+			return nil, fmt.Errorf("deposit history: %w", err)
+		}
+		deposits = fetched
+		items := buildDepositItems(deposits, limit)
+		result := map[string]interface{}{"deposits": items, "count": len(items), "note": "Only showing completed deposits", "period": periodToLabel(period, start, end)}
+		return result, nil
+	}
+
+	fetched, err := o.depositHistory.GetByUserID(ctx, userID, limit*3, 0)
 	if err != nil {
 		return nil, fmt.Errorf("deposit history: %w", err)
 	}
-	items := make([]map[string]interface{}, 0, limit)
-	for _, d := range deposits {
-		if len(items) >= limit {
-			break
-		}
-		// Only show confirmed/completed deposits
-		if d.Status != "confirmed" && d.Status != "off_ramp_completed" && d.Status != "broker_funded" {
-			continue
-		}
-		items = append(items, map[string]interface{}{
-			"direction": "money_in",
-			"amount":    d.Amount.String(),
-			"token":     string(d.Token),
-			"chain":     string(d.Chain),
-			"status":    "completed",
-			"date":      d.CreatedAt.Format("Jan 2, 2006"),
-		})
-	}
+	deposits = fetched
+	items := buildDepositItems(deposits, limit)
 	return map[string]interface{}{"deposits": items, "count": len(items), "note": "Only showing completed deposits"}, nil
 }
 
@@ -397,37 +411,29 @@ func (o *Orchestrator) executeWithdrawalHistory(ctx context.Context, userID uuid
 	if l, ok := args["limit"].(float64); ok && l > 0 && l <= 10 {
 		limit = int(l)
 	}
-	// Fetch more than needed so we can filter to completed only
-	withdrawals, err := o.withdrawalHistory.GetByUserID(ctx, userID, limit*3, 0)
+
+	period, _ := args["period"].(string)
+	hasPeriod := period != ""
+
+	var withdrawals []*entities.Withdrawal
+	if hasPeriod {
+		start, end := parsePeriod(period)
+		fetched, err := o.withdrawalHistory.GetByUserIDInRange(ctx, userID, start, end, limit*3)
+		if err != nil {
+			return nil, fmt.Errorf("withdrawal history: %w", err)
+		}
+		withdrawals = fetched
+		items := buildWithdrawalItems(withdrawals, limit)
+		result := map[string]interface{}{"withdrawals": items, "count": len(items), "note": "Only showing completed withdrawals", "period": periodToLabel(period, start, end)}
+		return result, nil
+	}
+
+	fetched, err := o.withdrawalHistory.GetByUserID(ctx, userID, limit*3, 0)
 	if err != nil {
 		return nil, fmt.Errorf("withdrawal history: %w", err)
 	}
-	items := make([]map[string]interface{}, 0, limit)
-	for _, w := range withdrawals {
-		if len(items) >= limit {
-			break
-		}
-		// Only show completed withdrawals
-		if w.Status != entities.WithdrawalStatusCompleted {
-			continue
-		}
-		item := map[string]interface{}{
-			"direction":      "money_out",
-			"amount":         w.Amount.String(),
-			"currency":       string(w.Currency),
-			"type":           string(w.WithdrawalType),
-			"source_account": string(w.SourceAccount),
-			"status":         "completed",
-			"date":           w.CreatedAt.Format("Jan 2, 2006"),
-		}
-		if w.DestinationAddress != nil {
-			item["destination"] = *w.DestinationAddress
-		}
-		if w.FeeAmount.IsPositive() {
-			item["fee"] = w.FeeAmount.String()
-		}
-		items = append(items, item)
-	}
+	withdrawals = fetched
+	items := buildWithdrawalItems(withdrawals, limit)
 	return map[string]interface{}{"withdrawals": items, "count": len(items), "note": "Only showing completed withdrawals"}, nil
 }
 
@@ -510,6 +516,60 @@ func incomeEstimateConfidence(priorMonths, activePriorMonths, currentCount, cade
 	default:
 		return "low"
 	}
+}
+
+// buildDepositItems filters a list of deposits to confirmed/completed statuses only,
+// returning at most limit items formatted for the AI response.
+func buildDepositItems(deposits []*entities.Deposit, limit int) []map[string]interface{} {
+	items := make([]map[string]interface{}, 0, limit)
+	for _, d := range deposits {
+		if len(items) >= limit {
+			break
+		}
+		if d.Status != "confirmed" && d.Status != "off_ramp_completed" && d.Status != "broker_funded" {
+			continue
+		}
+		items = append(items, map[string]interface{}{
+			"direction": "money_in",
+			"amount":    d.Amount.String(),
+			"token":     string(d.Token),
+			"chain":     string(d.Chain),
+			"status":    "completed",
+			"date":      d.CreatedAt.Format("Jan 2, 2006"),
+		})
+	}
+	return items
+}
+
+// buildWithdrawalItems filters a list of withdrawals to completed status only,
+// returning at most limit items formatted for the AI response.
+func buildWithdrawalItems(withdrawals []*entities.Withdrawal, limit int) []map[string]interface{} {
+	items := make([]map[string]interface{}, 0, limit)
+	for _, w := range withdrawals {
+		if len(items) >= limit {
+			break
+		}
+		if w.Status != entities.WithdrawalStatusCompleted {
+			continue
+		}
+		item := map[string]interface{}{
+			"direction":      "money_out",
+			"amount":         w.Amount.String(),
+			"currency":       string(w.Currency),
+			"type":           string(w.WithdrawalType),
+			"source_account": string(w.SourceAccount),
+			"status":         "completed",
+			"date":           w.CreatedAt.Format("Jan 2, 2006"),
+		}
+		if w.DestinationAddress != nil {
+			item["destination"] = *w.DestinationAddress
+		}
+		if w.FeeAmount.IsPositive() {
+			item["fee"] = w.FeeAmount.String()
+		}
+		items = append(items, item)
+	}
+	return items
 }
 
 func (o *Orchestrator) executeReceiptHistory(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {

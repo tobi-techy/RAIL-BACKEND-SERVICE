@@ -307,16 +307,6 @@ For production deployment:
 - [Bridge Support](https://support.bridge.xyz)
 - [Bridge Status Page](https://status.bridge.xyz)
 
-## Migration from Due/Circle
-
-If migrating from Due or Circle:
-
-1. **Customer Data**: Map existing users to Bridge customers
-2. **Wallet Migration**: Create Bridge wallets for existing addresses
-3. **Virtual Account Setup**: Replace Due accounts with Bridge virtual accounts
-4. **Webhook Updates**: Update webhook handlers for Bridge events
-5. **Testing**: Thoroughly test with real user data in sandbox
-
 ## Support
 
 For Bridge-related issues:

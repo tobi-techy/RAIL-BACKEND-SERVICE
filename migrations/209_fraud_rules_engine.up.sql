@@ -1,0 +1,125 @@
+-- Clean up any partially-created tables from prior failed migration runs
+DROP TABLE IF EXISTS fund_through_detections CASCADE;
+DROP TABLE IF EXISTS sanctions_checks CASCADE;
+DROP TABLE IF EXISTS account_freezes CASCADE;
+DROP TABLE IF EXISTS fraud_alerts CASCADE;
+DROP TABLE IF EXISTS fraud_rules CASCADE;
+
+-- fraud_rules: configurable rules that can be toggled without code deploys.
+CREATE TABLE fraud_rules (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(100) NOT NULL,
+    description TEXT,
+    rule_type VARCHAR(50) NOT NULL,
+    conditions JSONB NOT NULL DEFAULT '{}',
+    action VARCHAR(30) NOT NULL DEFAULT 'flag',
+    severity VARCHAR(20) NOT NULL DEFAULT 'medium',
+    score_weight DECIMAL(3,2) NOT NULL DEFAULT 1.0,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    applies_to VARCHAR(30) NOT NULL DEFAULT 'all',
+    created_by VARCHAR(100),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_fraud_rules_active ON fraud_rules(is_active, applies_to);
+
+-- fraud_alerts: real-time alerts generated when rules trigger.
+CREATE TABLE fraud_alerts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id),
+    rule_id UUID REFERENCES fraud_rules(id),
+    alert_type VARCHAR(50) NOT NULL,
+    severity VARCHAR(20) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'open',
+    details JSONB DEFAULT '{}',
+    transaction_id UUID,
+    transaction_type VARCHAR(30),
+    amount DECIMAL(20,8),
+    resolved_by VARCHAR(100),
+    resolved_at TIMESTAMPTZ,
+    resolution_notes TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_fraud_alerts_user ON fraud_alerts(user_id, created_at DESC);
+CREATE INDEX idx_fraud_alerts_status ON fraud_alerts(status, severity);
+CREATE INDEX idx_fraud_alerts_created ON fraud_alerts(created_at DESC);
+
+-- account_freezes: tracks when accounts are frozen and why.
+CREATE TABLE account_freezes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id),
+    freeze_type VARCHAR(30) NOT NULL,
+    reason TEXT NOT NULL,
+    triggered_by VARCHAR(100) NOT NULL,
+    alert_id UUID REFERENCES fraud_alerts(id),
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    unfrozen_by VARCHAR(100),
+    unfrozen_at TIMESTAMPTZ,
+    unfreeze_reason TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_account_freezes_user ON account_freezes(user_id, is_active);
+CREATE INDEX idx_account_freezes_active ON account_freezes(is_active) WHERE is_active = true;
+
+-- sanctions_checks: records of sanctions/watchlist screening.
+CREATE TABLE sanctions_checks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id),
+    check_type VARCHAR(30) NOT NULL,
+    full_name VARCHAR(255) NOT NULL,
+    lists_checked TEXT[] NOT NULL DEFAULT ARRAY['OFAC', 'UN', 'EU'],
+    match_found BOOLEAN NOT NULL DEFAULT false,
+    match_details JSONB,
+    match_score DECIMAL(5,4) DEFAULT 0,
+    status VARCHAR(20) NOT NULL DEFAULT 'clear',
+    reviewed_by VARCHAR(100),
+    reviewed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_sanctions_checks_user ON sanctions_checks(user_id, created_at DESC);
+CREATE INDEX idx_sanctions_checks_match ON sanctions_checks(match_found, status);
+
+-- fund_through_detections: tracks deposit->immediate withdrawal patterns.
+CREATE TABLE fund_through_detections (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id),
+    deposit_id UUID,
+    withdrawal_id UUID,
+    deposit_amount DECIMAL(20,8) NOT NULL,
+    withdrawal_amount DECIMAL(20,8) NOT NULL,
+    time_between_seconds INTEGER NOT NULL,
+    withdrawal_ratio DECIMAL(5,4) NOT NULL,
+    risk_score DECIMAL(5,4) NOT NULL,
+    action_taken VARCHAR(30) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_fund_through_user ON fund_through_detections(user_id, created_at DESC);
+
+-- Add freeze/sanctions columns to users
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'withdrawals_frozen') THEN
+        ALTER TABLE users ADD COLUMN withdrawals_frozen BOOLEAN NOT NULL DEFAULT false;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'deposits_frozen') THEN
+        ALTER TABLE users ADD COLUMN deposits_frozen BOOLEAN NOT NULL DEFAULT false;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'account_frozen_at') THEN
+        ALTER TABLE users ADD COLUMN account_frozen_at TIMESTAMPTZ;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'sanctions_status') THEN
+        ALTER TABLE users ADD COLUMN sanctions_status VARCHAR(20) NOT NULL DEFAULT 'clear';
+    END IF;
+END $$;
+
+-- Seed default fraud rules
+INSERT INTO fraud_rules (name, description, rule_type, conditions, action, severity, score_weight, applies_to) VALUES
+('High velocity deposits', 'More than 5 deposits in 1 hour', 'velocity', '{"event": "deposit", "count_threshold": 5, "window_seconds": 3600}', 'flag', 'medium', 1.0, 'deposit'),
+('Large first deposit', 'First deposit over $5000 on account less than 24h old', 'amount', '{"min_amount": 5000, "max_account_age_hours": 24, "first_transaction": true}', 'manual_review', 'high', 1.5, 'deposit'),
+('Rapid fund-through', 'Withdrawal of >80% balance within 1 hour of deposit', 'pattern', '{"pattern": "fund_through", "withdrawal_ratio": 0.8, "max_delay_seconds": 3600}', 'block', 'critical', 2.0, 'withdrawal'),
+('New device large withdrawal', 'Withdrawal >$1000 from device registered <24h ago', 'device', '{"min_amount": 1000, "max_device_age_hours": 24}', 'manual_review', 'high', 1.5, 'withdrawal'),
+('Multiple accounts same device', 'Device linked to 3+ accounts', 'device', '{"max_accounts_per_device": 3}', 'freeze', 'critical', 2.0, 'all'),
+('Unusual hour large transaction', 'Transaction >$2000 between 1am-5am local time', 'custom', '{"min_amount": 2000, "hour_start": 1, "hour_end": 5}', 'flag', 'medium', 0.8, 'all'),
+('Daily withdrawal limit breach', 'Cumulative withdrawals exceed $50000 in 24h', 'velocity', '{"event": "withdrawal", "sum_threshold": 50000, "window_seconds": 86400}', 'block', 'critical', 2.0, 'withdrawal'),
+('Structuring detection', 'Multiple deposits just under $10000 reporting threshold', 'pattern', '{"pattern": "structuring", "threshold": 10000, "margin": 500, "count": 3, "window_hours": 48}', 'manual_review', 'critical', 2.5, 'deposit')
+ON CONFLICT DO NOTHING;

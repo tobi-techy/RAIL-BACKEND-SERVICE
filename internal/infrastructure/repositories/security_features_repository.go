@@ -125,6 +125,24 @@ func (r *SecurityFeaturesRepository) GetLastSession(ctx context.Context, userID 
 	return
 }
 
+// GetRecentAnomalies returns session anomalies within the given time window.
+func (r *SecurityFeaturesRepository) GetRecentAnomalies(ctx context.Context, userID uuid.UUID, window time.Duration) ([]entities.SessionAnomaly, error) {
+	var anomalies []entities.SessionAnomaly
+	err := r.db.SelectContext(ctx, &anomalies,
+		`SELECT id, user_id, anomaly_type, severity, details, ip_address, country, city, created_at
+		 FROM session_anomalies WHERE user_id = $1 AND created_at > $2 AND anomaly_type != 'session_baseline'
+		 ORDER BY created_at DESC`, userID, time.Now().Add(-window))
+	if err != nil {
+		return nil, err
+	}
+	for i := range anomalies {
+		if anomalies[i].Details == nil {
+			anomalies[i].Details = make(map[string]interface{})
+		}
+	}
+	return anomalies, nil
+}
+
 // === Withdrawal Limit Usage ===
 
 func (r *SecurityFeaturesRepository) RecordWithdrawalUsage(ctx context.Context, u *entities.WithdrawalLimitUsage) error {

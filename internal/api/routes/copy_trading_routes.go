@@ -11,7 +11,7 @@ func SetupCopyTradingRoutes(rg *gin.RouterGroup, copyTradingHandlers *handlers.C
 	{
 		// Public routes - view conductors (requires auth but no special permissions)
 		copy.Use(authMiddleware)
-		
+
 		// Conductor routes
 		conductors := copy.Group("/conductors")
 		{

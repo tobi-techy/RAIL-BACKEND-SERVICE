@@ -28,10 +28,10 @@ func NewReceiptSplitHandler(receiptRepo *repositories.ReceiptRepository, p2pServ
 }
 
 type splitRequest struct {
-	Participants  []string            `json:"participants" binding:"required,min=1"`
-	SplitType     string              `json:"split_type" binding:"required,oneof=equal custom"`
-	CustomAmounts map[string]string   `json:"custom_amounts,omitempty"`
-	Message       string              `json:"message,omitempty"`
+	Participants  []string          `json:"participants" binding:"required,min=1"`
+	SplitType     string            `json:"split_type" binding:"required,oneof=equal custom"`
+	CustomAmounts map[string]string `json:"custom_amounts,omitempty"`
+	Message       string            `json:"message,omitempty"`
 }
 
 type splitEntry struct {
@@ -96,36 +96,41 @@ func (h *ReceiptSplitHandler) SplitReceipt(c *gin.Context) {
 			if note == "" {
 				note = "Receipt split"
 			}
-			resp, err := h.p2pService.Send(c.Request.Context(), userID, &entities.P2PSendRequest{
+			resp, p2pErr := h.p2pService.Send(c.Request.Context(), userID, &entities.P2PSendRequest{
 				Identifier:     tag,
 				Amount:         share.StringFixed(2),
 				Note:           note,
 				IdempotencyKey: fmt.Sprintf("split-%s-%s-%s", receiptID.String(), tag, share.StringFixed(2)),
 			})
 			entry := splitEntry{RailTag: "@" + tag, Amount: share.StringFixed(2), Status: "failed"}
-			if err == nil && resp.Transfer != nil {
+			if p2pErr == nil && resp.Transfer != nil {
 				entry.Status = string(resp.Transfer.Status)
 				entry.TransferID = resp.Transfer.ID.String()
-			} else if err != nil {
-				h.logger.Warn("split P2P send failed", zap.String("tag", tag), zap.Error(err))
+			} else if p2pErr != nil {
+				h.logger.Warn("split P2P send failed", zap.String("tag", tag), zap.Error(p2pErr))
 			}
 			splits = append(splits, entry)
 		}
 	} else {
-		// Custom split — validate total doesn't exceed receipt amount
+		// Custom split — validate all participants have amounts
 		customTotal := decimal.Zero
 		for _, tag := range req.Participants {
 			tag = strings.TrimPrefix(strings.TrimSpace(tag), "@")
+			if tag == "" {
+				continue
+			}
 			amtStr, ok := req.CustomAmounts[tag]
 			if !ok {
 				amtStr, ok = req.CustomAmounts["@"+tag]
 			}
-			if !ok || tag == "" {
-				continue
+			if !ok || amtStr == "" {
+				common.SendBadRequest(c, common.ErrCodeInvalidAmount, "Missing custom amount for participant: @"+tag)
+				return
 			}
 			amt, err := decimal.NewFromString(amtStr)
 			if err != nil || amt.LessThanOrEqual(decimal.Zero) {
-				continue
+				common.SendBadRequest(c, common.ErrCodeInvalidAmount, "Invalid custom amount for participant: @"+tag)
+				return
 			}
 			customTotal = customTotal.Add(amt)
 		}
@@ -137,11 +142,14 @@ func (h *ReceiptSplitHandler) SplitReceipt(c *gin.Context) {
 		yourShare = receipt.Amount.Sub(customTotal)
 		for _, tag := range req.Participants {
 			tag = strings.TrimPrefix(strings.TrimSpace(tag), "@")
+			if tag == "" {
+				continue
+			}
 			amtStr, ok := req.CustomAmounts[tag]
 			if !ok {
 				amtStr, ok = req.CustomAmounts["@"+tag]
 			}
-			if !ok || tag == "" {
+			if !ok || amtStr == "" {
 				continue
 			}
 			amt, err := decimal.NewFromString(amtStr)

@@ -28,11 +28,18 @@ import (
 // Entries are evicted every 10 minutes to prevent unbounded memory growth.
 var aiChatLimiters sync.Map
 
+// nudgeLimiters provides per-user rate limiting for nudge endpoints (2 req/30s, burst 3).
+var nudgeLimiters sync.Map
+
 func init() {
 	go func() {
 		for range time.NewTicker(10 * time.Minute).C {
 			aiChatLimiters.Range(func(key, _ interface{}) bool {
 				aiChatLimiters.Delete(key)
+				return true
+			})
+			nudgeLimiters.Range(func(key, _ interface{}) bool {
+				nudgeLimiters.Delete(key)
 				return true
 			})
 		}
@@ -46,6 +53,16 @@ func getAIChatLimiter(userID string) *rate.Limiter {
 	// 10 requests per minute = 1 every 6 seconds, burst of 10
 	l := rate.NewLimiter(rate.Limit(10.0/60.0), 10)
 	actual, _ := aiChatLimiters.LoadOrStore(userID, l)
+	return actual.(*rate.Limiter)
+}
+
+func getNudgeLimiter(userID string) *rate.Limiter {
+	if v, ok := nudgeLimiters.Load(userID); ok {
+		return v.(*rate.Limiter)
+	}
+	// 2 requests per 30 seconds, burst of 3
+	l := rate.NewLimiter(rate.Limit(2.0/30.0), 3)
+	actual, _ := nudgeLimiters.LoadOrStore(userID, l)
 	return actual.(*rate.Limiter)
 }
 
@@ -183,7 +200,7 @@ func (h *AIChatHandlers) ChatStream(c *gin.Context) {
 
 	if h.orchestrator.IsUserOverCostCeiling(c.Request.Context(), userID) {
 		c.JSON(http.StatusOK, gin.H{
-			"content":      "You've been chatting a lot this month! Your AI assistant will be back at full power next month",
+			"content":      "You've hit your monthly AI limit. You can still check balances and transactions in the app tabs — Miriam will be back at full power next month.",
 			"over_ceiling": true,
 		})
 		return
@@ -231,7 +248,7 @@ func (h *AIChatHandlers) ChatStream(c *gin.Context) {
 			return
 		}
 		h.logger.Error("Stream chat failed", "error", err, "user_id", userID.String())
-		errEvent, _ := json.Marshal(aiservice.StreamEvent{Type: "error", Content: "Something went wrong — try again"})
+		errEvent, _ := json.Marshal(aiservice.StreamEvent{Type: "error_after_partial", Content: "Something went wrong — try again", Data: map[string]interface{}{"partial": true}})
 		fmt.Fprintf(c.Writer, "data: %s\n\n", errEvent)
 		c.Writer.Flush()
 	}
@@ -271,7 +288,7 @@ func (h *AIChatHandlers) Chat(c *gin.Context) {
 	// Cost ceiling check — degrade gracefully instead of blocking
 	if h.orchestrator.IsUserOverCostCeiling(c.Request.Context(), userID) {
 		c.JSON(http.StatusOK, gin.H{
-			"content":      "You've been chatting a lot this month! Your AI assistant will be back at full power next month. In the meantime, check your Station for balances and the spending tab for insights",
+			"content":      "You've hit your monthly AI limit. You can still check balances and transactions in the app tabs — Miriam will be back at full power next month.",
 			"over_ceiling": true,
 			"tokens_used":  0,
 		})
@@ -382,7 +399,7 @@ func (h *AIChatHandlers) QuickInsight(c *gin.Context) {
 	}
 
 	if h.orchestrator.IsUserOverCostCeiling(c.Request.Context(), userID) {
-		c.JSON(http.StatusOK, gin.H{"type": "performance", "insight": "Your AI assistant will be back at full power next month", "over_ceiling": true})
+		c.JSON(http.StatusOK, gin.H{"type": "performance", "insight": "You've hit your monthly AI limit. You can still check balances and transactions in the app tabs — Miriam will be back at full power next month.", "over_ceiling": true})
 		return
 	}
 
@@ -427,10 +444,21 @@ func (h *AIChatHandlers) FinancialHealth(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
+
+	args := map[string]interface{}{}
+	if period := strings.TrimSpace(c.Query("period")); period != "" {
+		if aiservice.IsFinancialAuditPeriod(period) {
+			args["period"] = period
+		} else {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid 'period' query parameter"})
+			return
+		}
+	}
+
 	result, err := h.orchestrator.ExecuteToolPublic(c.Request.Context(), userID, ai.ToolCall{
 		ID:        "financial-health-http",
 		Name:      aiservice.ToolGetFinancialHealth,
-		Arguments: map[string]interface{}{},
+		Arguments: args,
 	})
 	if err != nil {
 		h.logger.Error("financial health failed", "error", err, "user_id", userID.String())
@@ -615,6 +643,27 @@ func (h *AIChatHandlers) FinancialTimeline(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": result})
 }
 
+// MiriamBrief handles GET /api/v1/ai/miriam-brief.
+func (h *AIChatHandlers) MiriamBrief(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	result, err := h.orchestrator.ExecuteToolPublic(c.Request.Context(), userID, ai.ToolCall{
+		ID:        "miriam-brief-http",
+		Name:      aiservice.ToolGetMiriamBrief,
+		Arguments: map[string]interface{}{},
+	})
+	if err != nil {
+		h.logger.Error("miriam brief failed", "error", err, "user_id", userID.String())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get miriam brief"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
 // GetSuggestedQuestions handles GET /api/v1/ai/suggestions
 func (h *AIChatHandlers) GetSuggestedQuestions(c *gin.Context) {
 	userID, err := common.GetUserIDFromContext(c)
@@ -625,6 +674,20 @@ func (h *AIChatHandlers) GetSuggestedQuestions(c *gin.Context) {
 
 	suggestions := h.orchestrator.GetPersonalizedSuggestions(c.Request.Context(), userID)
 	c.JSON(http.StatusOK, gin.H{"suggestions": suggestions})
+}
+
+// GetProactiveOpener handles GET /api/v1/ai/proactive-opener
+// Returns a personalized greeting, suggestions, and action chips
+// based on the user's financial state, replacing the static empty-state greeting.
+func (h *AIChatHandlers) GetProactiveOpener(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	opener := h.orchestrator.GetProactiveOpener(c.Request.Context(), userID)
+	c.JSON(http.StatusOK, opener)
 }
 
 // GetConversationStarters handles GET /api/v1/ai/starters
@@ -653,6 +716,11 @@ func (h *AIChatHandlers) Nudge(c *gin.Context) {
 	userID, err := common.GetUserIDFromContext(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	if !getNudgeLimiter(userID.String()).Allow() {
+		c.JSON(http.StatusTooManyRequests, gin.H{"show": false, "severity": "info"})
 		return
 	}
 

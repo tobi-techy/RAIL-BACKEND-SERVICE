@@ -118,7 +118,7 @@ func (r *MiriamMemoryRepository) GetToneProfile(ctx context.Context, userID uuid
 	var profile entities.MiriamToneProfile
 	err := r.db.GetContext(ctx, &profile, `
 		SELECT user_id, formality, directness, warmth, humor, brevity,
-		       preferred_name, language_style, sample_count, created_at, updated_at
+		       preferred_name, language_style, locale_style, sample_count, created_at, updated_at
 		FROM miriam_tone_profiles
 		WHERE user_id = $1`, userID)
 	if err == sql.ErrNoRows {
@@ -132,12 +132,12 @@ func (r *MiriamMemoryRepository) GetToneProfile(ctx context.Context, userID uuid
 
 // UpsertToneProfile creates or updates the tone profile with exponential moving average.
 // newWeights are the detected dimensions from the latest message; they blend with existing values.
-func (r *MiriamMemoryRepository) UpsertToneProfile(ctx context.Context, userID uuid.UUID, formality, directness, warmth, humor, brevity decimal.Decimal, preferredName, languageStyle string) error {
+func (r *MiriamMemoryRepository) UpsertToneProfile(ctx context.Context, userID uuid.UUID, formality, directness, warmth, humor, brevity decimal.Decimal, preferredName, languageStyle, localeStyle string) error {
 	// EMA alpha: new observations have ~20% weight, decaying over time.
 	// LEAST/GREATEST clamps prevent floating-point drift from violating CHECK constraints.
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO miriam_tone_profiles (user_id, formality, directness, warmth, humor, brevity, preferred_name, language_style, sample_count)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1)
+		INSERT INTO miriam_tone_profiles (user_id, formality, directness, warmth, humor, brevity, preferred_name, language_style, locale_style, sample_count)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1)
 		ON CONFLICT (user_id) DO UPDATE SET
 			formality = LEAST(1, GREATEST(0, miriam_tone_profiles.formality * 0.8 + $2 * 0.2)),
 			directness = LEAST(1, GREATEST(0, miriam_tone_profiles.directness * 0.8 + $3 * 0.2)),
@@ -146,9 +146,10 @@ func (r *MiriamMemoryRepository) UpsertToneProfile(ctx context.Context, userID u
 			brevity = LEAST(1, GREATEST(0, miriam_tone_profiles.brevity * 0.8 + $6 * 0.2)),
 			preferred_name = CASE WHEN $7 = '' THEN miriam_tone_profiles.preferred_name ELSE $7 END,
 			language_style = CASE WHEN $8 = 'standard' THEN miriam_tone_profiles.language_style ELSE $8 END,
+			locale_style = CASE WHEN $9 = 'global' THEN miriam_tone_profiles.locale_style ELSE $9 END,
 			sample_count = miriam_tone_profiles.sample_count + 1,
 			updated_at = NOW()`,
-		userID, formality, directness, warmth, humor, brevity, preferredName, languageStyle)
+		userID, formality, directness, warmth, humor, brevity, preferredName, languageStyle, localeStyle)
 	if err != nil {
 		return fmt.Errorf("upsert tone profile: %w", err)
 	}

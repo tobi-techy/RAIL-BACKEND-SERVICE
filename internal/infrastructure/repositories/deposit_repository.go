@@ -196,6 +196,28 @@ func (r *DepositRepository) GetByUserID(ctx context.Context, userID uuid.UUID, l
 	return deposits, nil
 }
 
+// GetByUserIDInRange retrieves deposits for a user within a date range, ordered newest first.
+func (r *DepositRepository) GetByUserIDInRange(ctx context.Context, userID uuid.UUID, start, end time.Time, limit int) ([]*entities.Deposit, error) {
+	query := `
+		SELECT id, idempotency_key, COALESCE(correlation_id, '') as correlation_id, user_id, virtual_account_id, amount, status,
+			   tx_hash, chain, token, confirmed_at,
+			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
+			   alpaca_funding_tx_id, alpaca_funded_at, created_at
+		FROM deposits
+		WHERE user_id = $1 AND created_at >= $2 AND created_at < $3
+		ORDER BY created_at DESC
+		LIMIT $4
+	`
+
+	var deposits []*entities.Deposit
+	err := r.db.SelectContext(ctx, &deposits, query, userID, start, end, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get deposits in range: %w", err)
+	}
+
+	return deposits, nil
+}
+
 // GetByTxHash retrieves a deposit by transaction hash
 func (r *DepositRepository) GetByTxHash(ctx context.Context, txHash string) (*entities.Deposit, error) {
 	query := `

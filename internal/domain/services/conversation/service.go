@@ -334,6 +334,11 @@ func (s *Service) summarize(convID uuid.UUID) {
 	)
 }
 
+// UpdateTitle updates the title of a conversation.
+func (s *Service) UpdateTitle(ctx context.Context, convID uuid.UUID, title string) error {
+	return s.repo.UpdateTitle(ctx, convID, title)
+}
+
 // RecordImageExchange persists an image-based exchange with the thumbnail stored in metadata.
 func (s *Service) RecordImageExchange(ctx context.Context, convID uuid.UUID, userMsg, assistantMsg string, thumbnail string, tokens int, model string) error {
 	userMeta := map[string]interface{}{}

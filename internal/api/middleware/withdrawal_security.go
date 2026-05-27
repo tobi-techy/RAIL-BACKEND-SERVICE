@@ -110,9 +110,16 @@ func WithdrawalSecurityMiddleware(store WithdrawalSecurityStore, cfg WithdrawalS
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
 
 		var amountReq struct {
-			Amount string `json:"amount"`
+			Amount   string `json:"amount"`
+			Currency string `json:"currency"`
 		}
 		if err := json.Unmarshal(body, &amountReq); err == nil && amountReq.Amount != "" {
+			// Skip USD-denominated security limit for non-USD currencies (e.g. NGN).
+			// Domain-level limits in limits/service.go handle currency-specific caps.
+			if amountReq.Currency != "" && amountReq.Currency != "USD" && amountReq.Currency != "USDC" {
+				c.Next()
+				return
+			}
 			amount, parseErr := decimal.NewFromString(amountReq.Amount)
 			if parseErr == nil {
 				if err := ValidateWithdrawalAmount(ctx, store, cfg, uid, amount); err != nil {

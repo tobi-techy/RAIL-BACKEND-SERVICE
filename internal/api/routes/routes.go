@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -19,9 +20,11 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/rail-service/rail_service/internal/api/handlers"
+	admin_handlers "github.com/rail-service/rail_service/internal/api/handlers/admin"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	kychandlers "github.com/rail-service/rail_service/internal/api/handlers/kyc"
 	securityHandlersV2 "github.com/rail-service/rail_service/internal/api/handlers/security"
+	waitlisthandlers "github.com/rail-service/rail_service/internal/api/handlers/waitlist"
 	"github.com/rail-service/rail_service/internal/api/middleware"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
@@ -30,6 +33,7 @@ import (
 	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	diditadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
+	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/rail-service/rail_service/pkg/alerting"
@@ -148,6 +152,13 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		internal.DELETE("/users/:id", internalHandlers.DeleteUser)
 	}
 
+	if container.GrowthEngineService != nil {
+		growthHandlers := handlers.NewGrowthEngineHandlers(container.GrowthEngineService, container.ZapLog)
+		internal.POST("/growth/events", growthHandlers.TrackEvent)
+		internal.POST("/growth/run", growthHandlers.RunSegmentation)
+		internal.GET("/growth/whatsapp-export", growthHandlers.ManualWhatsAppExport)
+	}
+
 	// Internal knowledge ingestion — auth handled by group middleware
 	if container.GetKnowledgeService() != nil {
 		knowledgeHandlers := handlers.NewKnowledgeHandlers(container.GetKnowledgeService(), container.ZapLog)
@@ -258,6 +269,104 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		c.JSON(200, gin.H{"status": "completed", "user_id": req.UserID, "amount": req.Amount})
 	})
 
+	// Internal Miriam evaluation trigger. Cloudflare Cron calls this endpoint;
+	// Rail keeps the financial execution, DB state, and audit trail in the backend.
+	if container.MiriamIntelligenceService != nil && container.UserRepo != nil {
+		internal.POST("/miriam/evaluate", func(c *gin.Context) {
+			reqCtx, reqCancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
+			defer reqCancel()
+
+			var req struct {
+				UserID    string `json:"user_id"`
+				EventType string `json:"event_type"`
+				Limit     int    `json:"limit"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil && err != io.EOF {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			eventType := normalizeMiriamInternalEvent(req.EventType)
+			limit := req.Limit
+			if limit <= 0 {
+				limit = container.Config.Workers.MiriamIntelligenceBatchSize
+			}
+			if limit <= 0 || limit > 500 {
+				limit = 500
+			}
+
+			var userIDs []uuid.UUID
+			if strings.TrimSpace(req.UserID) != "" {
+				userID, err := uuid.Parse(req.UserID)
+				if err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user_id"})
+					return
+				}
+				userIDs = []uuid.UUID{userID}
+			} else {
+				ids, err := container.UserRepo.ListMiriamWorkerUserIDs(reqCtx, limit)
+				if err != nil {
+					container.ZapLog.Error("internal miriam evaluation: list users failed", zap.Error(err))
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list Miriam users"})
+					return
+				}
+				userIDs = ids
+			}
+
+			var (
+				mu          sync.Mutex
+				evaluated   int
+				failed      int
+				failedUsers = make([]string, 0)
+				wg          sync.WaitGroup
+				sem         = make(chan struct{}, 10)
+			)
+
+			for _, uid := range userIDs {
+				if reqCtx.Err() != nil {
+					break
+				}
+				wg.Add(1)
+				sem <- struct{}{}
+				go func(userID uuid.UUID) {
+					defer wg.Done()
+					defer func() { <-sem }()
+					if reqCtx.Err() != nil {
+						return
+					}
+					evalCtx, cancel := context.WithTimeout(reqCtx, 10*time.Second)
+					var evalErr error
+					if container.MiriamIntelligenceOrchestrator != nil {
+						_, evalErr = container.MiriamIntelligenceOrchestrator.Evaluate(evalCtx, userID, eventType)
+					} else {
+						evalErr = container.MiriamIntelligenceService.EvaluateUser(evalCtx, userID, eventType)
+					}
+					cancel()
+					mu.Lock()
+					if evalErr != nil {
+						failed++
+						if len(failedUsers) < 20 {
+							failedUsers = append(failedUsers, userID.String())
+						}
+						container.ZapLog.Warn("internal miriam evaluation: user failed", zap.String("user_id", userID.String()), zap.Error(evalErr))
+					} else {
+						evaluated++
+					}
+					mu.Unlock()
+				}(uid)
+			}
+			wg.Wait()
+
+			c.JSON(http.StatusOK, gin.H{
+				"status":       "completed",
+				"event_type":   eventType,
+				"requested":    len(userIDs),
+				"evaluated":    evaluated,
+				"failed":       failed,
+				"failed_users": failedUsers,
+			})
+		})
+	}
+
 	// Apple App Site Association — required for passkey Associated Domains
 	router.GET("/.well-known/apple-app-site-association", func(c *gin.Context) {
 		c.Header("Content-Type", "application/json")
@@ -361,8 +470,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	// Initialize integration handlers (Alpaca only)
 	integrationHandlers := handlers.NewIntegrationHandlers(
 		container.AlpacaClient,
-		nil,  // Deprecated: Due service removed
-		"",   // Deprecated: Due webhook secret removed
 		services.NewNotificationService(container.ZapLog),
 		container.Logger,
 	)
@@ -477,6 +584,76 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			authRateLimited.POST("/webauthn/login/finish", socialAuthHandlers.FinishWebAuthnLogin)
 		}
 
+		// Waitlist routes (public, no auth required)
+		if container.WaitlistService != nil {
+			wlHandlers := waitlisthandlers.NewHandlers(container.WaitlistService, container.ZapLog)
+			waitlist := v1.Group("/waitlist")
+			{
+				waitlist.POST("", middleware.RateLimit(10), wlHandlers.Signup)
+				waitlist.GET("/count", wlHandlers.Count)
+			}
+		}
+
+		// Dashboard auth (email-only for super_admins)
+		v1.POST("/dashboard/auth", middleware.RateLimit(5), func(c *gin.Context) {
+			var req struct {
+				Email string `json:"email" binding:"required"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(400, gin.H{"error": "email required"})
+				return
+			}
+			email := strings.ToLower(strings.TrimSpace(req.Email))
+			var userID, role string
+			err := container.DB.QueryRowContext(c.Request.Context(),
+				"SELECT id, role FROM users WHERE LOWER(email) = $1", email).Scan(&userID, &role)
+			if err != nil || (role != "admin" && role != "super_admin") {
+				c.JSON(401, gin.H{"error": "unauthorized"})
+				return
+			}
+			uid, _ := uuid.Parse(userID)
+			tokenPair, err := container.JWTService.GenerateTokenPairEnhanced(uid, email, role)
+			if err != nil {
+				c.JSON(500, gin.H{"error": "token generation failed"})
+				return
+			}
+			c.JSON(200, gin.H{"token": tokenPair.AccessToken, "role": role, "email": email})
+		})
+
+		// Dashboard analytics (JWT-only auth, no session required)
+		if container.AdminAnalyticsService != nil {
+			dashAnalytics := v1.Group("/dashboard/analytics")
+			dashAnalytics.Use(func(c *gin.Context) {
+				authHeader := c.GetHeader("Authorization")
+				if len(authHeader) < 8 || authHeader[:7] != "Bearer " {
+					c.JSON(401, gin.H{"error": "unauthorized"})
+					c.Abort()
+					return
+				}
+				claims, err := container.JWTService.ValidateEnhancedToken(authHeader[7:])
+				if err != nil {
+					c.JSON(401, gin.H{"error": "invalid token"})
+					c.Abort()
+					return
+				}
+				c.Set("user_id", claims.UserID.String())
+				c.Set("user_role", claims.Role)
+				c.Next()
+			})
+			dashAnalytics.Use(middleware.AdminAuth(container.DB, container.Logger))
+			{
+				ah := admin_handlers.NewAnalyticsHandlers(container.AdminAnalyticsService, container.ZapLog)
+				dashAnalytics.GET("/overview", ah.Overview)
+				dashAnalytics.GET("/users", ah.Users)
+				dashAnalytics.GET("/waitlist", ah.Waitlist)
+				dashAnalytics.GET("/miriam", ah.Miriam)
+				dashAnalytics.GET("/money-movement", ah.MoneyMovement)
+				dashAnalytics.GET("/retention", ah.Retention)
+				dashAnalytics.GET("/trust", ah.Trust)
+				dashAnalytics.GET("/chains", ah.Chains)
+			}
+		}
+
 		// Onboarding routes
 		onboarding := v1.Group("/onboarding")
 		{
@@ -484,6 +661,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			authenticatedOnboarding.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator, container.TokenBlacklist))
 			{
 				authenticatedOnboarding.POST("/basic-complete", authHandlers.BasicCompleteOnboarding)
+				authenticatedOnboarding.GET("/kyc/missing-fields", authHandlers.GetMissingKycFields)
 				// Fraud detection: correlate device fingerprint across accounts at onboarding completion.
 				// Catches fraud rings using purchased KYC identities from the same device.
 				if fraudSvc := container.GetOnboardingFraudService(); fraudSvc != nil {
@@ -1059,6 +1237,37 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// AI Chat endpoints (AI Financial Manager)
 			if container.GetAIOrchestrator() != nil {
 				aiChatHandlers := handlers.NewAIChatHandlers(container.GetAIOrchestrator(), container.GetConversationService(), container.Logger)
+			var voiceHandler interface {
+				HandleSession(*gin.Context)
+				IssueSessionToken(*gin.Context)
+				CheckELHealth(*gin.Context)
+				IssueSignedURL(*gin.Context)
+				HandleToolExecution(*gin.Context)
+				GetProactiveInsight(*gin.Context)
+			}
+				if container.Config.AI.ElevenLabs.APIKey != "" && container.Config.AI.ElevenLabs.AgentID != "" {
+					el := container.Config.AI.ElevenLabs
+					ttsCfg := &infraai.ELTTSConfig{
+						Stability:       el.Stability,
+						SimilarityBoost: el.SimilarityBoost,
+						Style:           el.Style,
+						UseSpeakerBoost: el.UseSpeakerBoost,
+					}
+					if el.VoiceID != "" {
+						ttsCfg.VoiceID = el.VoiceID
+					}
+					voiceHandler = handlers.NewVoiceHandler(
+						el.APIKey,
+						el.AgentID,
+						container.Config.JWT.Secret,
+						container.GetAIOrchestrator(),
+						container.GetUsageService(),
+						container.GetConversationService(),
+						container.Config.Server.AllowedOrigins,
+						container.ZapLog,
+						ttsCfg,
+					)
+				}
 				aiGroup := protected.Group("/ai")
 				{
 					aiGroup.POST("/chat", middleware.AuthRateLimit(20), middleware.PerUserRateLimit(20), aiChatHandlers.Chat)
@@ -1072,8 +1281,23 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					aiGroup.GET("/action-receipts", middleware.AuthRateLimit(20), aiChatHandlers.ActionReceipts)
 					aiGroup.GET("/financial-advice", middleware.AuthRateLimit(20), aiChatHandlers.FinancialAdvice)
 					aiGroup.GET("/financial-timeline", middleware.AuthRateLimit(20), aiChatHandlers.FinancialTimeline)
+					aiGroup.GET("/miriam-brief", middleware.AuthRateLimit(20), aiChatHandlers.MiriamBrief)
+					if container.MiriamIntelligenceService != nil {
+						miriamHandler := handlers.NewMiriamIntelligenceHandler(container.MiriamIntelligenceService, container.ZapLog)
+						miriam := aiGroup.Group("/miriam")
+						{
+							miriam.GET("/state", middleware.AuthRateLimit(20), miriamHandler.GetState)
+							miriam.POST("/state/refresh", middleware.AuthRateLimit(10), miriamHandler.RefreshState)
+							miriam.GET("/mandates", middleware.AuthRateLimit(20), miriamHandler.ListMandates)
+							miriam.POST("/mandates", middleware.AuthRateLimit(10), miriamHandler.CreateMandate)
+							miriam.PATCH("/mandates/:id/status", middleware.AuthRateLimit(10), miriamHandler.UpdateMandateStatus)
+							miriam.GET("/receipts", middleware.AuthRateLimit(20), miriamHandler.ListReceipts)
+							miriam.POST("/receipts/:id/feedback", middleware.AuthRateLimit(20), miriamHandler.RecordFeedback)
+						}
+					}
 					aiGroup.GET("/suggestions", aiChatHandlers.GetSuggestedQuestions)
 					aiGroup.GET("/starters", middleware.AuthRateLimit(10), aiChatHandlers.GetConversationStarters)
+					aiGroup.GET("/proactive-opener", middleware.AuthRateLimit(10), aiChatHandlers.GetProactiveOpener)
 					aiGroup.POST("/nudge", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), aiChatHandlers.Nudge)
 					enhancedNudgeHandler := handlers.NewEnhancedNudgeHandler(container.GetAIOrchestrator(), container.ZapLog)
 					aiGroup.POST("/nudge/enhanced", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), enhancedNudgeHandler.HandleEnhancedNudge)
@@ -1081,9 +1305,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					if container.AutomationService != nil {
 						automationHandler := handlers.NewAutomationHandler(container.AutomationService, container.ZapLog, container.GetPasscodeService())
 						automations := aiGroup.Group("/automations")
-						if container.SubscriptionService != nil {
-							automations.Use(middleware.ProGate(container.SubscriptionService))
-						}
 						{
 							automations.POST("", automationHandler.CreateAutomation)
 							automations.GET("", automationHandler.ListAutomations)
@@ -1123,8 +1344,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						if container.GetConversationService() != nil {
 							imageHandler.SetConversationPersister(container.GetConversationService())
 						}
-						aiGroup.POST("/chat/image", middleware.AuthRateLimit(10), imageHandler.AnalyzeImage)
-						aiGroup.POST("/chat/images", middleware.AuthRateLimit(3), imageHandler.BatchAnalyzeImages)
+						aiGroup.POST("/chat/image", middleware.LargeBodyLimit(25*1024*1024), middleware.AuthRateLimit(10), imageHandler.AnalyzeImage)
+						aiGroup.POST("/chat/images", middleware.LargeBodyLimit(25*1024*1024), middleware.AuthRateLimit(3), imageHandler.BatchAnalyzeImages)
 						aiGroup.GET("/receipts", imageHandler.GetReceipts)
 						aiGroup.GET("/receipts/gallery", imageHandler.GetReceiptGallery)
 						aiGroup.PUT("/receipts/:id", imageHandler.UpdateReceipt)
@@ -1135,13 +1356,21 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 							splitHandler := handlers.NewReceiptSplitHandler(container.ReceiptRepo, container.P2PService, container.ZapLog)
 							aiGroup.POST("/receipts/:id/split", splitHandler.SplitReceipt)
 						}
+
+						// Receipt split tracking (list, detail, reminders, mark paid)
+						if container.ReceiptSplitRepo != nil {
+							splitTrackingHandler := handlers.NewReceiptSplitTrackingHandler(container.ReceiptSplitRepo, container.ZapLog)
+							aiGroup.GET("/receipts/splits", splitTrackingHandler.ListSplits)
+							aiGroup.GET("/receipts/splits/:id", splitTrackingHandler.GetSplit)
+							aiGroup.POST("/receipts/splits/:id/remind", splitTrackingHandler.SendReminder)
+							aiGroup.POST("/receipts/splits/:id/participants/:pid/paid", splitTrackingHandler.MarkPaid)
+						}
 					}
 
-					// Premium AI endpoints (pro-gated)
-					if container.SubscriptionService != nil {
+					// Miriam AI endpoints (available to all users)
+					{
 						premiumHandlers := handlers.NewPremiumAIHandlers(
 							container.GetAIOrchestrator(),
-							container.SubscriptionService,
 							container.ZapLog,
 							container.GetConversationService(),
 						)
@@ -1156,17 +1385,15 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						aiGroup.GET("/goals/progress", middleware.AuthRateLimit(10), premiumHandlers.GoalProgress)
 					}
 
-					// Voice session (WebSocket)
-					if container.Config.AI.AssemblyAI.APIKey != "" {
-						voiceHandler := handlers.NewVoiceHandler(
-							container.Config.AI.AssemblyAI.APIKey,
-							container.Config.AI.AssemblyAI.Voice,
-							container.GetAIOrchestrator(),
-							container.GetUsageService(),
-							container.Config.Server.AllowedOrigins,
-							container.ZapLog,
-						)
-						aiGroup.GET("/voice/session", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), voiceHandler.HandleSession)
+					// Voice session ticket issuance (protected by standard auth).
+					// WebSocket endpoint uses its own voice session token auth (no Bearer/CSRF).
+					if voiceHandler != nil {
+						aiGroup.POST("/voice/session-token", middleware.AuthRateLimit(60), middleware.PerUserRateLimit(60), voiceHandler.IssueSessionToken)
+						aiGroup.POST("/voice/signed-url", middleware.AuthRateLimit(60), middleware.PerUserRateLimit(60), voiceHandler.IssueSignedURL)
+						aiGroup.POST("/voice/execute-tool", middleware.AuthRateLimit(30), middleware.PerUserRateLimit(30), voiceHandler.HandleToolExecution)
+						aiGroup.GET("/voice/proactive-insight", middleware.PerUserRateLimit(30), voiceHandler.GetProactiveInsight)
+						v1.GET("/ai/voice/health", voiceHandler.CheckELHealth)
+						v1.GET("/ai/voice/session", voiceHandler.HandleSession)
 					}
 				}
 
@@ -1232,6 +1459,28 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		admin.Use(middleware.AdminAuth(container.DB, container.Logger))
 		admin.Use(middleware.CSRFProtection(csrfStore))
 		{
+			// Complete stuck PAJ orders (internal key auth)
+			admin.POST("/paj/complete/:order_id", func(c *gin.Context) {
+				key := c.GetHeader("X-Internal-Key")
+				if key == "" || key != container.Config.JWT.Secret {
+					c.JSON(401, gin.H{"error": "unauthorized"})
+					return
+				}
+				orderID := c.Param("order_id")
+				if orderID == "" {
+					c.JSON(400, gin.H{"error": "order_id required"})
+					return
+				}
+				result, err := container.DB.ExecContext(c.Request.Context(),
+					`UPDATE paj_orders SET status = 'completed', updated_at = NOW() WHERE paj_order_id = $1 AND status NOT IN ('completed', 'failed')`, orderID)
+				if err != nil {
+					c.JSON(500, gin.H{"error": err.Error()})
+					return
+				}
+				rows, _ := result.RowsAffected()
+				c.JSON(200, gin.H{"updated": rows, "order_id": orderID})
+			})
+
 			// User lookup
 			admin.GET("/users/lookup", handlers.AdminLookupUser(container.DB))
 
@@ -1260,6 +1509,15 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				knowledgeHandlers := handlers.NewKnowledgeHandlers(container.GetKnowledgeService(), container.ZapLog)
 				admin.POST("/knowledge/ingest", knowledgeHandlers.Ingest)
 			}
+
+			// Waitlist admin routes
+			if container.WaitlistService != nil {
+				wlHandlers := waitlisthandlers.NewHandlers(container.WaitlistService, container.ZapLog)
+				admin.GET("/waitlist", wlHandlers.List)
+			}
+
+			// Analytics admin routes
+			// Analytics routes moved to /api/v1/dashboard/analytics (JWT-only auth)
 
 			// Security admin routes
 			adminMFAHandlers := handlers.NewMFAHandlers(
@@ -1474,4 +1732,13 @@ func createDistributedRateLimiter(container *di.Container) *ratelimit.Distribute
 func createRateLimitMiddleware(container *di.Container) gin.HandlerFunc {
 	distributedRL := createDistributedRateLimiter(container)
 	return distributedRL.Middleware()
+}
+
+func normalizeMiriamInternalEvent(eventType string) string {
+	switch strings.TrimSpace(eventType) {
+	case "idle_spend", "spending_spike", "bill_pressure", "income_lower_than_usual":
+		return strings.TrimSpace(eventType)
+	default:
+		return "worker_sweep"
+	}
 }

@@ -6,17 +6,17 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"github.com/shopspring/decimal"
 	alpacaService "github.com/rail-service/rail_service/internal/domain/services/alpaca"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/shopspring/decimal"
 )
 
 // InvestmentHandlers handles investment-related API endpoints
 type InvestmentHandlers struct {
-	accountService   *alpacaService.AccountService
-	fundingBridge    *alpacaService.FundingBridge
-	portfolioSync    *alpacaService.PortfolioSyncService
-	logger           *logger.Logger
+	accountService *alpacaService.AccountService
+	fundingBridge  *alpacaService.FundingBridge
+	portfolioSync  *alpacaService.PortfolioSyncService
+	logger         *logger.Logger
 }
 
 func NewInvestmentHandlers(
@@ -58,15 +58,15 @@ func (h *InvestmentHandlers) GetBrokerageAccount(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"has_account":    true,
-		"account_id":     account.ID,
-		"account_number": account.AlpacaAccountNumber,
-		"status":         account.Status,
-		"buying_power":   account.BuyingPower.String(),
-		"cash":           account.Cash.String(),
+		"has_account":     true,
+		"account_id":      account.ID,
+		"account_number":  account.AlpacaAccountNumber,
+		"status":          account.Status,
+		"buying_power":    account.BuyingPower.String(),
+		"cash":            account.Cash.String(),
 		"portfolio_value": account.PortfolioValue.String(),
 		"trading_blocked": account.TradingBlocked,
-		"last_synced_at": account.LastSyncedAt,
+		"last_synced_at":  account.LastSyncedAt,
 	})
 }
 
@@ -208,24 +208,24 @@ func (h *InvestmentHandlers) GetPositions(c *gin.Context) {
 
 	if summary == nil {
 		c.JSON(http.StatusOK, gin.H{
-			"positions":      []interface{}{},
-			"total_value":    "0",
-			"buying_power":   "0",
-			"unrealized_pl":  "0",
+			"positions":     []interface{}{},
+			"total_value":   "0",
+			"buying_power":  "0",
+			"unrealized_pl": "0",
 		})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"buying_power":     summary.BuyingPower.String(),
-		"cash":             summary.Cash.String(),
-		"portfolio_value":  summary.PortfolioValue.String(),
-		"equity":           summary.Equity.String(),
-		"market_value":     summary.MarketValue.String(),
-		"unrealized_pl":    summary.UnrealizedPL.String(),
-		"cost_basis":       summary.CostBasis.String(),
-		"position_count":   summary.PositionCount,
-		"trading_blocked":  summary.TradingBlocked,
+		"buying_power":    summary.BuyingPower.String(),
+		"cash":            summary.Cash.String(),
+		"portfolio_value": summary.PortfolioValue.String(),
+		"equity":          summary.Equity.String(),
+		"market_value":    summary.MarketValue.String(),
+		"unrealized_pl":   summary.UnrealizedPL.String(),
+		"cost_basis":      summary.CostBasis.String(),
+		"position_count":  summary.PositionCount,
+		"trading_blocked": summary.TradingBlocked,
 	})
 }
 

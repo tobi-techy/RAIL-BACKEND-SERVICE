@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -22,7 +23,7 @@ const (
 	ToolCancelAction             = "cancel_action"
 )
 
-const pendingActionTTL = 2 * time.Minute
+const pendingActionTTL = 5 * time.Minute
 
 // FundsTransferer moves money between spend and stash.
 //
@@ -213,7 +214,7 @@ func ActionTools() []ai.Tool {
 	return []ai.Tool{
 		{
 			Name:        ToolTransferFunds,
-			Description: "Transfer money between the user's Spend and Stash wallets. Requires user confirmation before execution.",
+			Description: "Move money between Spend and Stash wallets. Call this when the user says 'move to stash', 'transfer to spend', 'put in stash', 'send to stash', or any variation. When in doubt, call this. A wasted call is fine; saying 'done' without calling is not.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -226,7 +227,7 @@ func ActionTools() []ai.Tool {
 		},
 		{
 			Name:        ToolSetSavingsGoal,
-			Description: "Set a savings goal with a target amount and optional deadline for the user. Requires user confirmation.",
+			Description: "Set a savings goal. Call this when the user says 'save for', 'I want to save', 'set a goal', 'saving up for', or mentions a target amount for something. When in doubt, call this.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -239,7 +240,7 @@ func ActionTools() []ai.Tool {
 		},
 		{
 			Name:        ToolCreateObligationReminder,
-			Description: "Create a manual financial obligation or reminder for bills, taxes, invoices, payroll, rent, education, insurance, family support, subscriptions, or vendor bills. Requires user confirmation before saving.",
+			Description: "Create a bill reminder or financial obligation. Call this when the user says 'remind me about rent', 'I have a bill due', 'track my subscription', 'I owe', or mentions any recurring payment. When in doubt, call this.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -275,6 +276,8 @@ func (o *Orchestrator) executeActionTool(ctx context.Context, userID, convID uui
 		return o.createAutomationAction(ctx, userID, convID, tc.Arguments)
 	case ToolCreateObligationReminder:
 		return o.createObligationReminderAction(ctx, userID, convID, tc.Arguments)
+	case ToolInitiateWithdrawal:
+		return o.createWithdrawalAction(ctx, userID, convID, tc.Arguments)
 	case ToolMarkObligationPaid:
 		return o.createMarkObligationPaidAction(ctx, userID, convID, tc.Arguments)
 	case ToolProtectSubscription:
@@ -318,12 +321,12 @@ func (o *Orchestrator) createTransferAction(ctx context.Context, userID, convID 
 		return map[string]interface{}{"error": "Destination must be 'spend' or 'stash'"}, nil
 	}
 	if amountF > 500 {
-		return map[string]interface{}{"error": "Transfer amount exceeds maximum ($500). Use the app for larger transfers."}, nil
+		return map[string]interface{}{"error": "For safety, single transfers are capped at $500. Want me to move $500 now and you can do the rest from the app? Or I can split it into multiple moves."}, nil
 	}
 	if amountF > 100 {
 		return map[string]interface{}{
 			"requires_passcode": true,
-			"message":           "Transfers over $100 require passcode verification. Please confirm in the app.",
+			"message":           "Transfers over $100 need extra verification. I can split this into smaller moves, or you can do it in one go from the app with biometric confirmation. What works?",
 		}, nil
 	}
 
@@ -477,7 +480,7 @@ func (o *Orchestrator) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 	action := o.pending.Get(ctx, convID)
 	if action == nil {
 		// Check if it was expired (Get auto-deletes expired)
-		return nil, fmt.Errorf("no pending action or action expired")
+		return nil, fmt.Errorf("action_expired: That action timed out. Just ask me again and I'll set it up fresh — it only takes a sec.")
 	}
 	if action.UserID != userID {
 		return nil, fmt.Errorf("action does not belong to user")
@@ -510,6 +513,8 @@ func (o *Orchestrator) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 		_, execErr = o.executeCreateAutomation(ctx, userID, action.Params)
 	case ToolCreateObligationReminder:
 		_, execErr = o.executeCreateObligationReminder(ctx, userID, action.Params)
+	case ToolInitiateWithdrawal:
+		execErr = o.executeWithdrawal(ctx, userID, action)
 	case ToolMarkObligationPaid:
 		if o.obligationManager == nil {
 			execErr = fmt.Errorf("obligation service unavailable")
@@ -677,9 +682,197 @@ func (o *Orchestrator) auditAction(ctx context.Context, userID, convID uuid.UUID
 	}
 }
 
+// executeActionToolDirect executes action tools immediately without the pending/confirm flow.
+// Used in voice mode where AssemblyAI handles confirmation conversationally.
+func (o *Orchestrator) executeActionToolDirect(ctx context.Context, userID uuid.UUID, tc ai.ToolCall) (map[string]interface{}, error) {
+	if tc.Arguments == nil {
+		tc.Arguments = make(map[string]interface{})
+	}
+	o.logger.Info("executeActionToolDirect called",
+		zap.String("user_id", userID.String()),
+		zap.String("tool", tc.Name),
+		zap.Strings("arg_keys", toolArgumentKeys(tc.Arguments)))
+	switch tc.Name {
+	case ToolTransferFunds:
+		if o.fundsTransferer == nil {
+			o.logger.Error("fundsTransferer is nil")
+			return map[string]interface{}{"error": "Transfer service unavailable"}, nil
+		}
+		if blocked, err := o.checkUserCanTransact(ctx, userID); blocked != nil || err != nil {
+			if err != nil {
+				return map[string]interface{}{"error": "Unable to verify account status"}, nil
+			}
+			return blocked, nil
+		}
+		from, _ := tc.Arguments["from"].(string)
+		to, _ := tc.Arguments["to"].(string)
+		amountF, _ := tc.Arguments["amount"].(float64)
+		if from == "" || to == "" || amountF <= 0 {
+			return map[string]interface{}{"error": "Invalid transfer parameters"}, nil
+		}
+		if amountF > 500 {
+			return map[string]interface{}{"error": "Single transfers are capped at $500 for safety. Ask me to transfer $500 or less."}, nil
+		}
+		amount := decimal.NewFromFloat(amountF)
+		key := uuid.New().String()
+		var err error
+		if from == "spend" && to == "stash" {
+			err = o.fundsTransferer.TransferSpendToStash(ctx, userID, amount, key)
+		} else if from == "stash" && to == "spend" {
+			err = o.fundsTransferer.TransferStashToSpend(ctx, userID, amount, key)
+		} else {
+			return map[string]interface{}{"error": "Invalid from/to combination"}, nil
+		}
+		if err != nil {
+			o.logger.Error("voice direct transfer failed", zap.Error(err), zap.String("user_id", userID.String()))
+			return map[string]interface{}{"error": "Transfer failed. Please try again or use the app."}, nil
+		}
+		spend, _ := o.fundsTransferer.GetSpendBalance(ctx, userID)
+		stash, _ := o.fundsTransferer.GetStashBalance(ctx, userID)
+		return map[string]interface{}{
+			"success":     true,
+			"transferred": amount.StringFixed(2),
+			"from":        from,
+			"to":          to,
+			"new_spend":   spend.StringFixed(2),
+			"new_stash":   stash.StringFixed(2),
+		}, nil
+
+	case ToolInitiateWithdrawal:
+		return map[string]interface{}{
+			"error": "Withdrawals from voice need app confirmation with a verified bank destination. Open Withdraw to continue.",
+		}, nil
+
+	case ToolSetSavingsGoal:
+		name, _ := tc.Arguments["name"].(string)
+		targetF, _ := tc.Arguments["target"].(float64)
+		deadline, _ := tc.Arguments["deadline"].(string)
+		if name == "" || targetF <= 0 {
+			return map[string]interface{}{"error": "Need a goal name and target amount"}, nil
+		}
+		if o.savingsGoalStore != nil {
+			goal := &SavingsGoal{
+				Name:      name,
+				Target:    decimal.NewFromFloat(targetF).StringFixed(2),
+				CreatedAt: time.Now().UTC().Format(time.RFC3339),
+			}
+			if deadline != "" {
+				goal.Deadline = deadline
+			}
+			if err := o.savingsGoalStore.Set(ctx, userID, goal); err != nil {
+				return map[string]interface{}{"error": err.Error()}, nil
+			}
+		}
+		return map[string]interface{}{
+			"success": true,
+			"message": fmt.Sprintf("Savings goal '%s' set for $%.0f", name, targetF),
+		}, nil
+
+	case ToolCreateAutomation:
+		if o.automationProvider == nil {
+			return map[string]interface{}{"error": "Automation service unavailable"}, nil
+		}
+		result, err := o.executeCreateAutomation(ctx, userID, tc.Arguments)
+		if err != nil {
+			return map[string]interface{}{"error": err.Error()}, nil
+		}
+		return result, nil
+
+	case ToolCreateObligationReminder:
+		if o.obligationCreator == nil {
+			return map[string]interface{}{"error": "Obligation service unavailable"}, nil
+		}
+		ob, err := o.executeCreateObligationReminder(ctx, userID, tc.Arguments)
+		if err != nil {
+			return map[string]interface{}{"error": err.Error()}, nil
+		}
+		return map[string]interface{}{
+			"success": true,
+			"message": fmt.Sprintf("Obligation '%s' created", ob.Name),
+		}, nil
+
+	case ToolMarkObligationPaid:
+		if o.obligationManager == nil {
+			return map[string]interface{}{"error": "Obligation service unavailable"}, nil
+		}
+		ob, err := o.executeMarkObligationPaid(ctx, userID, tc.Arguments)
+		if err != nil {
+			return map[string]interface{}{"error": err.Error()}, nil
+		}
+		return map[string]interface{}{
+			"success": true,
+			"message": fmt.Sprintf("'%s' marked as paid", ob.Name),
+		}, nil
+
+	case ToolSetBudget:
+		if o.budgetProvider == nil {
+			return map[string]interface{}{"error": "Budget service unavailable"}, nil
+		}
+		result, err := o.executeSetBudget(ctx, userID, tc.Arguments)
+		if err != nil {
+			return map[string]interface{}{"error": err.Error()}, nil
+		}
+		return result, nil
+
+	case ToolProtectSubscription:
+		if o.obligationCreator == nil {
+			return map[string]interface{}{"error": "Subscription service unavailable"}, nil
+		}
+		ob, err := o.executeProtectSubscription(ctx, userID, tc.Arguments)
+		if err != nil {
+			return map[string]interface{}{"error": err.Error()}, nil
+		}
+		return map[string]interface{}{
+			"success": true,
+			"message": fmt.Sprintf("Subscription '%s' protected", ob.Name),
+		}, nil
+
+	case ToolMarkSubscriptionCancelled:
+		if o.obligationManager == nil && o.obligationCreator == nil {
+			return map[string]interface{}{"error": "Subscription service unavailable"}, nil
+		}
+		ob, err := o.executeMarkSubscriptionCancelled(ctx, userID, tc.Arguments)
+		if err != nil {
+			return map[string]interface{}{"error": err.Error()}, nil
+		}
+		return map[string]interface{}{
+			"success": true,
+			"message": fmt.Sprintf("Subscription '%s' marked as cancelled", ob.Name),
+		}, nil
+
+	case ToolUpdateFinancialProfile:
+		result, err := o.executeUpdateFinancialProfile(ctx, userID, tc.Arguments)
+		if err != nil {
+			return map[string]interface{}{"error": err.Error()}, nil
+		}
+		return result, nil
+
+	case ToolSendReport:
+		return map[string]interface{}{"message": "Report will be sent to your email."}, nil
+
+	case ToolSplitReceipt:
+		return map[string]interface{}{"message": "Receipt splitting needs to be done in the app with the receipt image."}, nil
+
+	case ToolIgnoreSubscription:
+		return map[string]interface{}{"success": true, "message": "Subscription ignored"}, nil
+
+	default:
+		return map[string]interface{}{"message": "This action needs to be completed in the app."}, nil
+	}
+}
+
+func toolArgumentKeys(args map[string]interface{}) []string {
+	keys := make([]string, 0, len(args))
+	for key := range args {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // isActionTool returns true if the tool name is an action tool.
 func isActionTool(name string) bool {
-	return name == ToolTransferFunds || name == ToolSetSavingsGoal || name == ToolSendReport || name == ToolSetBudget || name == ToolCreateAutomation || name == ToolCreateObligationReminder || name == ToolMarkObligationPaid || name == ToolProtectSubscription || name == ToolMarkSubscriptionCancelled || name == ToolIgnoreSubscription || name == ToolSplitReceipt || name == ToolUpdateFinancialProfile
+	return name == ToolTransferFunds || name == ToolSetSavingsGoal || name == ToolSendReport || name == ToolSetBudget || name == ToolCreateAutomation || name == ToolCreateObligationReminder || name == ToolMarkObligationPaid || name == ToolProtectSubscription || name == ToolMarkSubscriptionCancelled || name == ToolIgnoreSubscription || name == ToolSplitReceipt || name == ToolUpdateFinancialProfile || name == ToolInitiateWithdrawal
 }
 
 func (o *Orchestrator) canCreateActionTool(name string) bool {
@@ -704,6 +897,8 @@ func (o *Orchestrator) canCreateActionTool(name string) bool {
 		return true
 	case ToolSplitReceipt:
 		return o.receiptHistory != nil
+	case ToolInitiateWithdrawal:
+		return o.withdrawalInitiator != nil
 	case ToolUpdateFinancialProfile:
 		return o.financialProfile != nil
 	default:

@@ -63,6 +63,14 @@ func (m *ProviderManager) ChatCompletionWithTools(ctx context.Context, req *Chat
 	providers := []AIProvider{m.primary}
 	providers = append(providers, m.fallbacks...)
 
+	// For "fast" hint, prefer fallback providers (typically faster/cheaper models)
+	// over the primary reasoning model which may have a long timeout.
+	if req.ModelHint == "fast" && len(m.fallbacks) > 0 {
+		providers = make([]AIProvider, 0, len(m.fallbacks)+1)
+		providers = append(providers, m.fallbacks...)
+		providers = append(providers, m.primary)
+	}
+
 	var lastErr error
 
 	for i, provider := range providers {

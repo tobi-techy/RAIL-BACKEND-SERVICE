@@ -32,8 +32,6 @@ type IntegrationHandlers struct {
 // NewIntegrationHandlers creates new integration handlers
 func NewIntegrationHandlers(
 	alpacaClient *alpaca.Client,
-	_ interface{}, // Deprecated: Due service removed
-	_ string, // Deprecated: Due webhook secret removed
 	notificationService *services.NotificationService,
 	logger *logger.Logger,
 ) *IntegrationHandlers {
@@ -327,5 +325,4 @@ func cloneAssetLogoPtr(s *string) *string {
 	return &v
 }
 
-// Note: Due handlers have been removed. Virtual accounts are now handled by Bridge.
-// See bridge_webhook_handlers.go for Bridge webhook handling.
+

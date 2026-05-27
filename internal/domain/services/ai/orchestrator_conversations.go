@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -67,6 +68,16 @@ func (o *Orchestrator) ChatWithConversationWithOptions(ctx context.Context, user
 			)
 		}
 
+		// Auto-generate title from first message if conversation has no title
+		if conv.Title == "" || conv.Title == "New conversation" {
+			title := generateTitleFromMessage(message)
+			if title != "" {
+				if titleErr := o.conversations.UpdateTitle(persistCtx, conv.ID, title); titleErr != nil {
+					o.logger.Warn("failed to auto-generate conversation title", zap.Error(titleErr))
+				}
+			}
+		}
+
 		if o.usage != nil {
 			if trackErr := o.usage.TrackInteraction(persistCtx, userID, resp.Provider, resp.TokensUsed); trackErr != nil {
 				o.logger.Error("failed to track usage", zap.Error(trackErr))
@@ -105,6 +116,24 @@ type CostCeilingResponse struct {
 	OverCeiling bool            `json:"over_ceiling"`
 	CurrentCost decimal.Decimal `json:"current_cost_usd"`
 	Ceiling     decimal.Decimal `json:"ceiling_usd"`
+}
+
+// generateTitleFromMessage creates a short title from the user's message,
+// truncated to 50 chars at a word boundary.
+func generateTitleFromMessage(msg string) string {
+	title := strings.TrimSpace(msg)
+	if title == "" {
+		return ""
+	}
+	if len(title) <= 50 {
+		return title
+	}
+	// Truncate at word boundary
+	truncated := title[:50]
+	if idx := strings.LastIndexByte(truncated, ' '); idx > 20 {
+		truncated = truncated[:idx]
+	}
+	return truncated + "..."
 }
 
 // TrackVisionUsage records token usage from a vision API call.

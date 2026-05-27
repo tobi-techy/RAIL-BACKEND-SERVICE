@@ -44,3 +44,21 @@ func (a *obligationCreatorAdapter) CreateObligationFromAI(ctx context.Context, u
 		Metadata:     req.Metadata,
 	})
 }
+
+type obligationManagerAdapter struct {
+	service *obligationservice.Service
+}
+
+func (a *obligationManagerAdapter) List(ctx context.Context, userID uuid.UUID, status, obligationType string) ([]entities.FinancialObligation, error) {
+	return a.service.List(ctx, userID, obligationservice.ListFilter{Status: status, Type: obligationType})
+}
+
+func (a *obligationManagerAdapter) MarkPaid(ctx context.Context, userID, id uuid.UUID) (*entities.FinancialObligation, error) {
+	paid := entities.ObligationStatusPaid
+	return a.service.Update(ctx, userID, id, obligationservice.UpdateRequest{Status: &paid})
+}
+
+func (a *obligationManagerAdapter) MarkCancelled(ctx context.Context, userID, id uuid.UUID) (*entities.FinancialObligation, error) {
+	cancelled := entities.ObligationStatusCancelled
+	return a.service.Update(ctx, userID, id, obligationservice.UpdateRequest{Status: &cancelled})
+}

@@ -37,6 +37,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/copytrading"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/domain/services/gameplay"
+	"github.com/rail-service/rail_service/internal/domain/services/growthengine"
 	"github.com/rail-service/rail_service/internal/domain/services/growthmail"
 	"github.com/rail-service/rail_service/internal/domain/services/integration"
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
@@ -45,6 +46,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/internal/domain/services/limits"
 	marketservice "github.com/rail-service/rail_service/internal/domain/services/market"
+	miriamservice "github.com/rail-service/rail_service/internal/domain/services/miriam"
 	moneyguardservice "github.com/rail-service/rail_service/internal/domain/services/moneyguard"
 	newsservice "github.com/rail-service/rail_service/internal/domain/services/news"
 	obligationservice "github.com/rail-service/rail_service/internal/domain/services/obligation"
@@ -67,6 +69,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/twofa"
 	"github.com/rail-service/rail_service/internal/domain/services/umbrawallet"
 	usagesvc "github.com/rail-service/rail_service/internal/domain/services/usage"
+	waitlistsvc "github.com/rail-service/rail_service/internal/domain/services/waitlist"
 	"github.com/rail-service/rail_service/internal/domain/services/wallet"
 	"github.com/rail-service/rail_service/internal/domain/services/webauthn"
 	yieldsvc "github.com/rail-service/rail_service/internal/domain/services/yield"
@@ -453,6 +456,20 @@ func (a *WithdrawalLedgerAdapter) CreateTransaction(ctx context.Context, userID 
 	if err != nil {
 		return err
 	}
+	feeAmount, err := withdrawalPlatformFeeFromMetadata(metadata, amount)
+	if err != nil {
+		return err
+	}
+	if feeAmount.IsPositive() {
+		if metadata == nil {
+			metadata = make(map[string]interface{})
+		}
+		metadata["fee_revenue_posted"] = true
+	}
+	principalAmount := amount.Sub(feeAmount)
+	if principalAmount.IsNegative() {
+		return fmt.Errorf("withdrawal fee %s exceeds total amount %s", feeAmount.String(), amount.String())
+	}
 
 	desc := "Withdrawal transaction"
 	idempotencyKey := fmt.Sprintf("withdrawal-ledger-%s-%d", userID.String(), time.Now().UnixNano())
@@ -462,28 +479,45 @@ func (a *WithdrawalLedgerAdapter) CreateTransaction(ctx context.Context, userID 
 		}
 	}
 
+	entries := []entities.CreateEntryRequest{
+		{
+			AccountID:   userAccount.ID,
+			EntryType:   entities.EntryTypeCredit,
+			Amount:      amount,
+			Currency:    "USDC",
+			Description: &desc,
+		},
+	}
+	if principalAmount.IsPositive() {
+		entries = append(entries, entities.CreateEntryRequest{
+			AccountID:   systemAccount.ID,
+			EntryType:   entities.EntryTypeDebit,
+			Amount:      principalAmount,
+			Currency:    "USDC",
+			Description: &desc,
+		})
+	}
+	if feeAmount.IsPositive() {
+		revenueAccount, err := a.ledgerService.GetSystemAccount(ctx, entities.AccountTypeWithdrawalFeeRevenue)
+		if err != nil {
+			return fmt.Errorf("get withdrawal fee revenue account: %w", err)
+		}
+		entries = append(entries, entities.CreateEntryRequest{
+			AccountID:   revenueAccount.ID,
+			EntryType:   entities.EntryTypeDebit,
+			Amount:      feeAmount,
+			Currency:    "USDC",
+			Description: &desc,
+		})
+	}
+
 	req := &entities.CreateTransactionRequest{
 		UserID:          &userID,
 		TransactionType: txType,
 		IdempotencyKey:  idempotencyKey,
 		Description:     &desc,
 		Metadata:        metadata,
-		Entries: []entities.CreateEntryRequest{
-			{
-				AccountID:   userAccount.ID,
-				EntryType:   entities.EntryTypeCredit,
-				Amount:      amount,
-				Currency:    "USDC",
-				Description: &desc,
-			},
-			{
-				AccountID:   systemAccount.ID,
-				EntryType:   entities.EntryTypeDebit,
-				Amount:      amount,
-				Currency:    "USDC",
-				Description: &desc,
-			},
-		},
+		Entries:         entries,
 	}
 
 	_, err = a.ledgerService.CreateTransaction(ctx, req)
@@ -499,6 +533,23 @@ func (a *WithdrawalLedgerAdapter) ReverseTransaction(ctx context.Context, userID
 	systemAccount, err := a.ledgerService.GetSystemAccount(ctx, entities.AccountTypeSystemBufferUSDC)
 	if err != nil {
 		return err
+	}
+	feeAmount, err := withdrawalPlatformFeeFromMetadata(metadata, amount)
+	if err != nil {
+		return err
+	}
+	if feeAmount.IsPositive() {
+		posted, err := a.withdrawalFeeRevenueWasPosted(ctx, originalTxID, metadata)
+		if err != nil {
+			return err
+		}
+		if !posted {
+			feeAmount = decimal.Zero
+		}
+	}
+	principalAmount := amount.Sub(feeAmount)
+	if principalAmount.IsNegative() {
+		return fmt.Errorf("withdrawal fee %s exceeds reversal amount %s", feeAmount.String(), amount.String())
 	}
 
 	desc := "Withdrawal reversal"
@@ -521,32 +572,137 @@ func (a *WithdrawalLedgerAdapter) ReverseTransaction(ctx context.Context, userID
 		revMetadata[k] = v
 	}
 
+	entries := []entities.CreateEntryRequest{
+		{
+			AccountID:   userAccount.ID,
+			EntryType:   entities.EntryTypeDebit,
+			Amount:      amount,
+			Currency:    "USDC",
+			Description: &desc,
+		},
+	}
+	if principalAmount.IsPositive() {
+		entries = append(entries, entities.CreateEntryRequest{
+			AccountID:   systemAccount.ID,
+			EntryType:   entities.EntryTypeCredit,
+			Amount:      principalAmount,
+			Currency:    "USDC",
+			Description: &desc,
+		})
+	}
+	if feeAmount.IsPositive() {
+		revenueAccount, err := a.ledgerService.GetSystemAccount(ctx, entities.AccountTypeWithdrawalFeeRevenue)
+		if err != nil {
+			return fmt.Errorf("get withdrawal fee revenue account: %w", err)
+		}
+		entries = append(entries, entities.CreateEntryRequest{
+			AccountID:   revenueAccount.ID,
+			EntryType:   entities.EntryTypeCredit,
+			Amount:      feeAmount,
+			Currency:    "USDC",
+			Description: &desc,
+		})
+	}
+
 	req := &entities.CreateTransactionRequest{
 		UserID:          &userID,
 		TransactionType: entities.TransactionTypeReversal,
 		IdempotencyKey:  revIdempotencyKey,
 		Description:     &desc,
 		Metadata:        revMetadata,
-		Entries: []entities.CreateEntryRequest{
-			{
-				AccountID:   userAccount.ID,
-				EntryType:   entities.EntryTypeDebit,
-				Amount:      amount,
-				Currency:    "USDC",
-				Description: &desc,
-			},
-			{
-				AccountID:   systemAccount.ID,
-				EntryType:   entities.EntryTypeCredit,
-				Amount:      amount,
-				Currency:    "USDC",
-				Description: &desc,
-			},
-		},
+		Entries:         entries,
 	}
 
 	_, err = a.ledgerService.CreateTransaction(ctx, req)
 	return err
+}
+
+func withdrawalPlatformFeeFromMetadata(metadata map[string]interface{}, total decimal.Decimal) (decimal.Decimal, error) {
+	if metadata == nil {
+		return decimal.Zero, nil
+	}
+	for _, key := range []string{"fee_amount", "rail_fee"} {
+		value, ok := metadata[key]
+		if !ok {
+			continue
+		}
+		fee, err := decimalFromMetadataValue(value)
+		if err != nil {
+			return decimal.Zero, fmt.Errorf("invalid %s metadata: %w", key, err)
+		}
+		if fee.IsNegative() {
+			return decimal.Zero, fmt.Errorf("%s cannot be negative", key)
+		}
+		if fee.GreaterThan(total) {
+			return decimal.Zero, fmt.Errorf("%s %s exceeds total %s", key, fee.String(), total.String())
+		}
+		return fee, nil
+	}
+	return decimal.Zero, nil
+}
+
+func (a *WithdrawalLedgerAdapter) withdrawalFeeRevenueWasPosted(ctx context.Context, originalTxID string, metadata map[string]interface{}) (bool, error) {
+	if metadataBool(metadata, "fee_revenue_posted") {
+		return true, nil
+	}
+	originalKey := ""
+	if metadata != nil {
+		if withdrawalID, ok := metadata["withdrawal_id"].(string); ok && strings.TrimSpace(withdrawalID) != "" {
+			originalKey = "withdrawal-ledger-" + strings.TrimSpace(withdrawalID)
+		}
+	}
+	if originalKey == "" && strings.TrimSpace(originalTxID) != "" {
+		originalKey = "withdrawal-ledger-" + strings.TrimSpace(originalTxID)
+	}
+	if originalKey == "" {
+		return false, nil
+	}
+	tx, err := a.ledgerService.GetTransactionByIdempotencyKey(ctx, originalKey)
+	if err != nil {
+		return false, fmt.Errorf("lookup fee revenue posting: %w", err)
+	}
+	if tx == nil {
+		return false, nil
+	}
+	return metadataBool(tx.Metadata, "fee_revenue_posted"), nil
+}
+
+func metadataBool(metadata map[string]interface{}, key string) bool {
+	if metadata == nil {
+		return false
+	}
+	switch v := metadata[key].(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(strings.TrimSpace(v), "true")
+	default:
+		return false
+	}
+}
+
+func decimalFromMetadataValue(value interface{}) (decimal.Decimal, error) {
+	switch v := value.(type) {
+	case decimal.Decimal:
+		return v, nil
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return decimal.Zero, nil
+		}
+		return decimal.NewFromString(strings.TrimSpace(v))
+	case float64:
+		return decimal.NewFromFloat(v), nil
+	case float32:
+		return decimal.NewFromFloat32(v), nil
+	case int:
+		return decimal.NewFromInt(int64(v)), nil
+	case int64:
+		return decimal.NewFromInt(v), nil
+	case int32:
+		return decimal.NewFromInt(int64(v)), nil
+	default:
+		return decimal.Zero, fmt.Errorf("unsupported type %T", value)
+	}
 }
 
 func (a *WithdrawalLedgerAdapter) TransferSpendingToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
@@ -592,7 +748,21 @@ func (a *WithdrawalBridgeAdapter) CreateRecipient(ctx context.Context, req map[s
 }
 
 func (a *WithdrawalBridgeAdapter) InitiateTransfer(ctx context.Context, req map[string]interface{}) (map[string]interface{}, error) {
-	amount, _ := req["amount"].(string)
+	amountDec, err := decimalFromMetadataValue(req["amount"])
+	if err != nil || amountDec.IsZero() {
+		return nil, fmt.Errorf("invalid or missing amount in transfer request")
+	}
+	amount := amountDec.StringFixed(2)
+
+	var developerFee string
+	if raw, ok := req["developer_fee"]; ok && raw != nil {
+		feeDec, err := decimalFromMetadataValue(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid developer_fee in transfer request: %w", err)
+		}
+		developerFee = feeDec.StringFixed(2)
+	}
+
 	currency, _ := req["currency"].(string)
 	recipientID, _ := req["recipient_id"].(string)
 	sourceWalletID, _ := req["source_wallet_id"].(string)
@@ -627,6 +797,7 @@ func (a *WithdrawalBridgeAdapter) InitiateTransfer(ctx context.Context, req map[
 			Currency:          bridgeCurrency,
 			ExternalAccountID: externalAccountID,
 		},
+		DeveloperFee: strings.TrimSpace(developerFee),
 	}
 
 	transfer, err := a.adapter.TransferFunds(ctx, transferReq)
@@ -1051,6 +1222,7 @@ type Container struct {
 	LedgerRepo                *repositories.LedgerRepository
 	ReconciliationRepo        repositories.ReconciliationRepository
 	GrowthMailRepo            *repositories.GrowthMailRepository
+	GrowthEngineRepo          *repositories.GrowthEngineRepository
 
 	// External Services
 	AlpacaClient       *alpaca.Client
@@ -1073,71 +1245,84 @@ type Container struct {
 	BridgeCustomerStatusProcessor *webhooks.BridgeCustomerStatusProcessor
 
 	// Domain Services
-	OnboardingService          *onboarding.Service
-	OnboardingJobService       *services.OnboardingJobService
-	VerificationService        services.VerificationService
-	PasscodeService            *passcode.Service
-	SessionService             *session.Service
-	TwoFAService               *twofa.Service
-	APIKeyService              *apikey.Service
-	WalletService              *wallet.Service
-	FundingService             *funding.Service
-	InvestingService           *investing.Service
-	BalanceService             *services.BalanceService
-	LedgerService              *ledger.Service
-	YieldService               *yieldsvc.Service
-	yieldRepo                  *repositories.YieldRepository
-	ReconciliationService      *reconciliation.Service
-	ReconciliationScheduler    *reconciliation.Scheduler
-	StashReconciliation        *recon.Worker
-	TreasurySweepWorker        *treasury_sweep.Worker
-	ReflectDepositRouter       *reflect.CircleDepositRouter
-	YieldDistributionWorker    *yield_distribution.Worker
-	AllocationService          *allocation.Service
-	AutoInvestService          *autoinvest.Service
-	StrategyEngine             *strategy.Engine
-	StationService             *station.Service
-	GameplayXPService          *gameplay.XPService
-	GameplayStreakService      *gameplay.StreakService
-	GameplayChallengeService   *gameplay.ChallengeService
-	GameplayAchievementService *gameplay.AchievementService
-	GameplayRepo               *repositories.GameplayRepository
-	GameplayHooks              *gameplay.Hooks
-	GameplayRingsService       *gameplay.RingsService
-	GameplayBoostService       *gameplay.BoostService
-	GameplayPointsService      *gameplay.PointsService
-	GameplayGraceDayService    *gameplay.GraceDayService
-	GameplayRecapService       *gameplay.RecapService
-	SubscriptionService        *subscriptionsvc.Service
-	FinancialObligationService *obligationservice.Service
-	MoneyGuardService          *moneyguardservice.Service
-	AutomationService          *automation.Service
-	GrowthMailService          *growthmail.Service
-	NotificationService        *services.NotificationService
-	SocialAuthService          *socialauth.Service
-	WebAuthnService            *webauthn.Service
-	LimitsService              *limits.Service
-	DomainAuditService         *audit.Service
-	WithdrawalService          *services.WithdrawalService
-	StashLockService           *stashlock.Service
+	OnboardingService              *onboarding.Service
+	OnboardingJobService           *services.OnboardingJobService
+	VerificationService            services.VerificationService
+	PasscodeService                *passcode.Service
+	SessionService                 *session.Service
+	TwoFAService                   *twofa.Service
+	APIKeyService                  *apikey.Service
+	WalletService                  *wallet.Service
+	FundingService                 *funding.Service
+	InvestingService               *investing.Service
+	BalanceService                 *services.BalanceService
+	LedgerService                  *ledger.Service
+	YieldService                   *yieldsvc.Service
+	yieldRepo                      *repositories.YieldRepository
+	ReconciliationService          *reconciliation.Service
+	ReconciliationScheduler        *reconciliation.Scheduler
+	StashReconciliation            *recon.Worker
+	TreasurySweepWorker            *treasury_sweep.Worker
+	ReflectDepositRouter           *reflect.CircleDepositRouter
+	YieldDistributionWorker        *yield_distribution.Worker
+	AllocationService              *allocation.Service
+	AutoInvestService              *autoinvest.Service
+	StrategyEngine                 *strategy.Engine
+	StationService                 *station.Service
+	GameplayXPService              *gameplay.XPService
+	GameplayStreakService          *gameplay.StreakService
+	GameplayChallengeService       *gameplay.ChallengeService
+	GameplayAchievementService     *gameplay.AchievementService
+	GameplayRepo                   *repositories.GameplayRepository
+	GameplayHooks                  *gameplay.Hooks
+	GameplayRingsService           *gameplay.RingsService
+	GameplayBoostService           *gameplay.BoostService
+	GameplayPointsService          *gameplay.PointsService
+	GameplayGraceDayService        *gameplay.GraceDayService
+	GameplayRecapService           *gameplay.RecapService
+	SubscriptionService            *subscriptionsvc.Service
+	FinancialObligationService     *obligationservice.Service
+	MoneyGuardService              *moneyguardservice.Service
+	MiriamIntelligenceService      *miriamservice.Service
+	MiriamIntelligenceOrchestrator *miriamservice.IntelligenceOrchestrator
+	MiriamSignalDetector           *miriamservice.SignalDetector
+	MiriamPredictiveEngine         *miriamservice.PredictiveEngine
+	MiriamDecisionEngine           *miriamservice.DecisionEngine
+	MiriamProactiveNudgeEngine     *miriamservice.ProactiveNudgeEngine
+	MiriamMandateSuggestionEngine  *miriamservice.MandateSuggestionEngine
+	MiriamHealthScoreTracker       *miriamservice.HealthScoreTracker
+	MiriamOutcomeTracker           *miriamservice.OutcomeTracker
+	MiriamNotificationDispatcher   *miriamservice.NotificationDispatcher
+	MiriamObligationDetector       *miriamservice.ObligationAutoDetector
+	AutomationService              *automation.Service
+	GrowthMailService              *growthmail.Service
+	GrowthEngineService            *growthengine.Service
+	NotificationService            *services.NotificationService
+	SocialAuthService              *socialauth.Service
+	WebAuthnService                *webauthn.Service
+	LimitsService                  *limits.Service
+	DomainAuditService             *audit.Service
+	WithdrawalService              *services.WithdrawalService
+	StashLockService               *stashlock.Service
 
 	// AI Financial Manager Services
-	AIProviderManager     *ai.ProviderManager
-	AIOrchestrator        *aiservice.Orchestrator
-	DiditClient           *didit.Client
-	ComplianceService     *compliancesvc.Service
-	AIRecommender         *aiservice.Recommender
-	NewsService           *newsservice.Service
-	PortfolioDataProvider *aiservice.PortfolioDataProviderImpl
-	ActivityDataProvider  *aiservice.ActivityDataProviderImpl
-	ConversationRepo      *repositories.ConversationRepository
-	ConversationService   *conversationsvc.Service
-	UsageRepo             *repositories.AIUsageRepository
-	UsageService          *usagesvc.Service
-	EmbeddingsClient      *embeddings.Client
-	KnowledgeRepo         *repositories.KnowledgeRepository
-	KnowledgeService      *knowledgesvc.Service
-	MemoryService         *aiservice.MemoryService
+	AIProviderManager      *ai.ProviderManager
+	AIOrchestrator         *aiservice.Orchestrator
+	DiditClient            *didit.Client
+	ComplianceService      *compliancesvc.Service
+	AIRecommender          *aiservice.Recommender
+	NewsService            *newsservice.Service
+	PortfolioDataProvider  *aiservice.PortfolioDataProviderImpl
+	ActivityDataProvider   *aiservice.ActivityDataProviderImpl
+	ConversationRepo       *repositories.ConversationRepository
+	ConversationService    *conversationsvc.Service
+	UsageRepo              *repositories.AIUsageRepository
+	UsageService           *usagesvc.Service
+	EmbeddingsClient       *embeddings.Client
+	KnowledgeRepo          *repositories.KnowledgeRepository
+	KnowledgeService       *knowledgesvc.Service
+	MemoryService          *aiservice.MemoryService
+	MiriamIntelligenceRepo *repositories.MiriamIntelligenceRepository
 
 	// Additional Repositories
 	OnboardingJobRepo *repositories.OnboardingJobRepository
@@ -1291,6 +1476,14 @@ type Container struct {
 	// Opportunity Intelligence
 	OpportunityRepo    *repositories.OpportunityRepository
 	OpportunityService *opportunitysvc.Service
+
+	// Waitlist
+	WaitlistRepo    *repositories.WaitlistRepository
+	WaitlistService *waitlistsvc.Service
+
+	// Admin Analytics
+	AdminAnalyticsRepo    *repositories.AnalyticsRepository
+	AdminAnalyticsService *analyticsservice.Service
 }
 
 // NewContainer creates a new dependency injection container
@@ -1324,6 +1517,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	reconciliationRepo := repositories.NewPostgresReconciliationRepository(db)
 	onboardingJobRepo := repositories.NewOnboardingJobRepository(db, zapLog)
 	growthMailRepo := repositories.NewGrowthMailRepository(db)
+	growthEngineRepo := repositories.NewGrowthEngineRepository(db)
 
 	// Initialize premium feature repositories
 	familySupportRepo := repositories.NewFamilySupportRepository(sqlxDB)
@@ -1477,6 +1671,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		ReconciliationRepo:        reconciliationRepo,
 		OnboardingJobRepo:         onboardingJobRepo,
 		GrowthMailRepo:            growthMailRepo,
+		GrowthEngineRepo:          growthEngineRepo,
 		FamilySupportRepo:         familySupportRepo,
 		ScamRepo:                  scamRepo,
 		TaxResidencyRepo:          taxResidencyRepo,
@@ -1538,6 +1733,14 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 
 	// Initialize opportunity intelligence
 	container.initializeOpportunityService(sqlxDB)
+
+	// Initialize waitlist
+	container.WaitlistRepo = repositories.NewWaitlistRepository(db, zapLog)
+	container.WaitlistService = waitlistsvc.NewService(container.WaitlistRepo, zapLog)
+
+	// Initialize admin analytics
+	container.AdminAnalyticsRepo = repositories.NewAnalyticsRepository(db, zapLog)
+	container.AdminAnalyticsService = analyticsservice.NewService(container.AdminAnalyticsRepo, container.RedisClient, zapLog)
 
 	return container, nil
 }
@@ -1675,6 +1878,107 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog,
 	)
 	c.LedgerService.SetStashRaidObserver(c.MoneyGuardService)
+	c.MiriamIntelligenceRepo = repositories.NewMiriamIntelligenceRepository(sqlxDB)
+	c.MiriamIntelligenceService = miriamservice.NewService(
+		c.MiriamIntelligenceRepo,
+		c.LedgerService, // BalanceProvider
+		moneyGuardSpendingSvc,
+		c.FinancialObligationService,
+		c.FinancialProfileRepo,
+		c.MoneyGuardService,
+		c.LedgerService, // TransferExecutor — same service, different interface
+		c.NotificationService,
+		c.ZapLog,
+	)
+
+	// Wire Miriam intelligence subsystem (unified brain).
+	contextSignalRepo := repositories.NewContextSignalRepository(sqlxDB)
+	decisionRepo := repositories.NewMiriamDecisionRepository(sqlxDB)
+	predictionRepo := repositories.NewMiriamPredictionRepository(sqlxDB)
+	nudgeRepo := repositories.NewProactiveNudgeRepository(sqlxDB)
+	healthRepo := repositories.NewHealthScoreRepository(sqlxDB)
+	suggestionRepo := repositories.NewMandateSuggestionRepository(sqlxDB)
+	transactionRepo := repositories.NewTransactionRepository(sqlxDB)
+	transactionProvider := repositories.NewTransactionProviderAdapter(transactionRepo)
+	notifPrefRepo := repositories.NewNotificationPreferenceRepository(sqlxDB)
+	notifDigestRepo := repositories.NewNotificationDigestRepository(sqlxDB)
+
+	c.MiriamSignalDetector = miriamservice.NewSignalDetector(
+		contextSignalRepo,
+		moneyGuardSpendingSvc,
+		c.FinancialObligationService,
+		c.LedgerService,
+		c.ZapLog,
+	)
+	c.MiriamPredictiveEngine = miriamservice.NewPredictiveEngine(
+		predictionRepo,
+		moneyGuardSpendingSvc,
+		c.FinancialObligationService,
+		c.LedgerService,
+		c.FinancialProfileRepo,
+		c.ZapLog,
+	)
+	c.MiriamDecisionEngine = miriamservice.NewDecisionEngine(
+		decisionRepo,
+		c.MiriamPredictiveEngine,
+		nil, // MemoryReader — deferred via SetMemory after memory service init
+		c.ZapLog,
+	)
+	c.MiriamProactiveNudgeEngine = miriamservice.NewProactiveNudgeEngine(
+		nudgeRepo,
+		c.MiriamPredictiveEngine,
+		c.LedgerService, // BalanceProvider
+		nil,             // MemoryReader — deferred via SetMemory after memory service init
+		c.NotificationService,
+		c.ZapLog,
+	)
+	c.MiriamMandateSuggestionEngine = miriamservice.NewMandateSuggestionEngine(
+		suggestionRepo,
+		c.MiriamIntelligenceService, // MandateProvider
+		c.LedgerService,
+		moneyGuardSpendingSvc,
+		c.FinancialObligationService,
+		c.FinancialProfileRepo,
+		c.ZapLog,
+	)
+	c.MiriamObligationDetector = miriamservice.NewObligationAutoDetector(
+		transactionProvider,
+		c.FinancialObligationService,
+		c.LedgerService,
+		c.ZapLog,
+	)
+	c.MiriamNotificationDispatcher = miriamservice.NewNotificationDispatcher(
+		notifPrefRepo,
+		notifDigestRepo,
+		c.NotificationService,
+		c.ZapLog,
+	)
+	c.MiriamHealthScoreTracker = miriamservice.NewHealthScoreTracker(
+		healthRepo,
+		c.ZapLog,
+	)
+	c.MiriamOutcomeTracker = miriamservice.NewOutcomeTracker(
+		c.MiriamIntelligenceRepo,
+		moneyGuardSpendingSvc,
+		c.LedgerService,
+		c.FinancialObligationService,
+		c.ZapLog,
+	)
+	c.MiriamIntelligenceOrchestrator = miriamservice.NewIntelligenceOrchestrator(
+		c.MiriamIntelligenceService,
+		c.MiriamDecisionEngine,
+		c.MiriamProactiveNudgeEngine,
+		c.MiriamPredictiveEngine,
+		c.MiriamSignalDetector,
+		c.MiriamMandateSuggestionEngine,
+		c.MiriamObligationDetector,
+		c.MiriamNotificationDispatcher,
+		nil, // MemoryReader — deferred via SetMemory after memory service init
+		c.NotificationService,
+		c.MiriamHealthScoreTracker,
+		c.MiriamOutcomeTracker,
+		c.ZapLog,
+	)
 
 	// Initialize yield service (Reflect-backed). A private key is only needed for
 	// treasury-owned sweeps; Circle-backed deposit routes use user Circle wallets
@@ -2018,6 +2322,15 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize notification service with persister for in-app notifications
 	c.NotificationService = services.NewNotificationService(c.ZapLog)
 	c.NotificationService.SetPersister(adapters.NewNotificationPersisterAdapter(c.NotificationRepo))
+
+	// Defer-wire Notifier into Miriam intelligence services (initialized before this point).
+	if c.MiriamProactiveNudgeEngine != nil {
+		c.MiriamProactiveNudgeEngine.SetNotifier(c.NotificationService)
+	}
+	if c.MiriamIntelligenceOrchestrator != nil {
+		c.MiriamIntelligenceOrchestrator.SetNotifier(c.NotificationService)
+	}
+
 	// Wire push notification service (SNS preferred, Expo fallback)
 	c.ZapLog.Info("SNS push config check",
 		zap.String("ios_arn", c.Config.SNSPush.IOSPlatformARN),
@@ -2055,6 +2368,28 @@ func (c *Container) initializeDomainServices() error {
 		c.NotificationService.SetEmailSender(adapters.NewEmailSenderAdapter(c.EmailService))
 	}
 	c.NotificationService.SetUserEmailLookup(adapters.NewUserEmailLookup(c.UserRepo))
+
+	if c.GrowthEngineRepo != nil {
+		var growthPush growthengine.PushSender
+		if c.SNSPushService != nil {
+			growthPush = c.SNSPushService
+		} else if c.ExpoPushService != nil {
+			growthPush = c.ExpoPushService
+		}
+		if growthPush == nil {
+			c.ZapLog.Warn("growth engine initialized without push sender; push campaigns will fail gracefully")
+		}
+		c.GrowthEngineService = growthengine.NewService(
+			c.GrowthEngineRepo,
+			c.EmailService,
+			growthPush,
+			growthengine.Config{Limit: 1000},
+			c.ZapLog,
+		)
+		if c.EmailService != nil {
+			c.GrowthEngineService.SetBatchEmailSender(&growthBatchEmailAdapter{email: c.EmailService})
+		}
+	}
 
 	// Wire push notifier into gameplay services (now that push provider is resolved)
 	// Use SNS if available, otherwise Expo
@@ -2137,6 +2472,7 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize limits service for deposit/withdrawal limits
 	usageRepo := repositories.NewUsageRepository(c.DB, c.ZapLog)
 	c.LimitsService = limits.NewService(c.UserRepo, usageRepo, c.Logger)
+	c.LimitsService.SetRateProvider(NewPajRateProvider(c.RedisClient))
 
 	// Initialize domain audit service for compliance logging
 	auditRepo := repositories.NewAuditRepository(sqlxDB)
@@ -2427,6 +2763,14 @@ func (c *Container) initializeDomainServices() error {
 	}
 	if c.WithdrawalLimitsService != nil {
 		c.WithdrawalService.SetTieredWithdrawalLimits(&tieredLimitsAdapter{svc: c.WithdrawalLimitsService})
+	}
+
+	// Wire fraud detection and session anomaly enforcement into withdrawal path
+	if c.FraudDetectionService != nil {
+		c.WithdrawalService.SetFraudChecker(c.FraudDetectionService)
+	}
+	if c.SessionAnomalyService != nil {
+		c.WithdrawalService.SetSessionAnomalyChecker(c.SessionAnomalyService)
 	}
 
 	// Initialize P2P transfer services
@@ -3172,6 +3516,17 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	c.AIOrchestrator.SetMemory(memorySvc)
 	c.MemoryService = memorySvc
 
+	// Defer-wire MemoryReader into Miriam intelligence services (initialized before memory service).
+	if c.MiriamDecisionEngine != nil {
+		c.MiriamDecisionEngine.SetMemory(memorySvc)
+	}
+	if c.MiriamProactiveNudgeEngine != nil {
+		c.MiriamProactiveNudgeEngine.SetMemory(memorySvc)
+	}
+	if c.MiriamIntelligenceOrchestrator != nil {
+		c.MiriamIntelligenceOrchestrator.SetMemory(memorySvc)
+	}
+
 	// Initialize usage tracking
 	c.UsageRepo = repositories.NewAIUsageRepository(c.DB, c.ZapLog)
 	c.UsageService = usagesvc.NewService(c.UsageRepo, c.ZapLog)
@@ -3228,11 +3583,15 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	// Wire emergency withdrawer for stash-to-spend transfers during lock period
 	if c.WithdrawalService != nil {
 		c.AIOrchestrator.SetEmergencyWithdrawer(c.WithdrawalService)
+		// WithdrawalService also satisfies WithdrawalInitiator (fiat bank withdrawals via voice)
+		c.AIOrchestrator.SetWithdrawalInitiator(c.WithdrawalService)
 	}
 
 	// Use Redis for pending actions (survives restarts, works across instances)
 	if c.RedisClient != nil {
 		c.AIOrchestrator.SetPendingActions(aiservice.NewRedisPendingActions(c.RedisClient, c.ZapLog))
+		// Redis-backed savings goal store (persists user goals across sessions)
+		c.AIOrchestrator.SetSavingsGoalStore(aiservice.NewRedisSavingsGoalStore(c.RedisClient, c.ZapLog))
 	}
 
 	// Wire read-only data tools
@@ -3253,7 +3612,9 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	c.AIOrchestrator.SetFinancialObligationProvider(c.FinancialObligationService)
 	c.AIOrchestrator.SetAutomationCreator(&automationCreatorAdapter{service: c.AutomationService})
 	c.AIOrchestrator.SetAutomationProvider(&automationProviderAdapter{svc: c.AutomationService})
+	c.AIOrchestrator.SetMiriamIntelligenceProvider(c.MiriamIntelligenceService)
 	c.AIOrchestrator.SetObligationCreator(&obligationCreatorAdapter{service: c.FinancialObligationService})
+	c.AIOrchestrator.SetFinancialObligationManager(&obligationManagerAdapter{service: c.FinancialObligationService})
 	c.AIOrchestrator.SetCurrencyRateProvider(c.ExchangeRateRepo)
 	warrantyRepo := repositories.NewWarrantyRepository(sqlxDB)
 	c.AIOrchestrator.SetWarrantyTracker(warrantyRepo)
@@ -4437,6 +4798,34 @@ func (a *PajLimitsAdapter) ValidateWithdrawalWithCurrency(ctx context.Context, u
 	return nil
 }
 
+func (a *PajLimitsAdapter) RecordWithdrawalWithCurrency(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currency string) error {
+	return a.limitsService.RecordWithdrawalWithCurrency(ctx, userID, amount, currency)
+}
+
+// PajRateProvider implements limits.ExchangeRateProvider using the cached PAJ rate from Redis.
+type PajRateProvider struct {
+	redis cache.RedisClient
+}
+
+func NewPajRateProvider(redis cache.RedisClient) *PajRateProvider {
+	return &PajRateProvider{redis: redis}
+}
+
+func (p *PajRateProvider) GetNGNRate(ctx context.Context) (decimal.Decimal, error) {
+	var cached struct {
+		OffRampRate struct {
+			Rate float64 `json:"rate"`
+		} `json:"offRampRate"`
+	}
+	if err := p.redis.Get(ctx, "paj:rates", &cached); err != nil {
+		return decimal.Zero, err
+	}
+	if cached.OffRampRate.Rate <= 0 {
+		return decimal.Zero, fmt.Errorf("cached rate is zero")
+	}
+	return decimal.NewFromFloat(cached.OffRampRate.Rate), nil
+}
+
 // PajDepositLedgerAdapter credits USDC balance for PAJ onramp deposits using the
 // correct double-entry direction (Debit = increase user balance).
 type PajDepositLedgerAdapter struct {
@@ -4673,4 +5062,24 @@ func (c *Container) GetOpportunityHandlers() *opportunityhandlers.Handlers {
 		return nil
 	}
 	return opportunityhandlers.NewHandlers(c.OpportunityService, c.ZapLog)
+}
+
+// growthBatchEmailAdapter bridges adapters.EmailService to growthengine.BatchEmailSender.
+type growthBatchEmailAdapter struct {
+	email *adapters.EmailService
+}
+
+func (a *growthBatchEmailAdapter) SendBatchEmails(ctx context.Context, emails []growthengine.BatchEmailItem) error {
+	batch := make([]adapters.BatchEmail, len(emails))
+	for i, e := range emails {
+		batch[i] = adapters.BatchEmail{
+			From:    e.From,
+			To:      e.To,
+			Subject: e.Subject,
+			HTML:    e.HTML,
+			Text:    e.Text,
+			ReplyTo: e.ReplyTo,
+		}
+	}
+	return a.email.SendBatchEmails(ctx, batch)
 }

@@ -112,3 +112,31 @@ func (s *SessionAnomalyService) recordBaseline(ctx context.Context, sc SessionCo
 	}
 	s.repo.CreateSessionAnomaly(ctx, baseline)
 }
+
+// GetRecentCriticalAnomalies returns true if the user has critical-severity session anomalies
+// (impossible travel, concurrent sessions from different countries) within the last 24 hours.
+func (s *SessionAnomalyService) GetRecentCriticalAnomalies(ctx context.Context, userID uuid.UUID) (hasCritical bool, reason string, err error) {
+	anomalies, err := s.repo.GetRecentAnomalies(ctx, userID, 24*time.Hour)
+	if err != nil {
+		s.logger.Warn("Failed to get recent session anomalies", zap.Error(err))
+		return false, "", err
+	}
+
+	for _, a := range anomalies {
+		if a.Severity == "critical" || a.AnomalyType == entities.AnomalyImpossibleTravel || a.AnomalyType == entities.AnomalyConcurrentCountry {
+			details := ""
+			if prevCountry, ok := a.Details["prev_country"].(string); ok {
+				details += "prev:" + prevCountry
+			}
+			if currCountry, ok := a.Details["curr_country"].(string); ok {
+				if details != "" {
+					details += "->"
+				}
+				details += "curr:" + currCountry
+			}
+			return true, string(a.AnomalyType) + ":" + details, nil
+		}
+	}
+
+	return false, "", nil
+}

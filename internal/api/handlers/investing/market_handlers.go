@@ -461,11 +461,11 @@ func (h *MarketHandlers) GetMarketStatus(c *gin.Context) {
 	nextOpen := nextMarketOpen(et, loc)
 
 	c.JSON(http.StatusOK, gin.H{
-		"is_open":        isOpen,
-		"next_open":      nextOpen.UTC().Format(time.RFC3339),
-		"next_open_et":   nextOpen.In(loc).Format("Mon Jan 2, 3:04 PM MST"),
-		"current_time":   now.Format(time.RFC3339),
-		"timezone":       "America/New_York",
+		"is_open":      isOpen,
+		"next_open":    nextOpen.UTC().Format(time.RFC3339),
+		"next_open_et": nextOpen.In(loc).Format("Mon Jan 2, 3:04 PM MST"),
+		"current_time": now.Format(time.RFC3339),
+		"timezone":     "America/New_York",
 	})
 }
 

@@ -22,7 +22,7 @@ type MemoryStore interface {
 	ConfirmFact(ctx context.Context, factID, userID uuid.UUID) error
 	DeleteFact(ctx context.Context, factID, userID uuid.UUID) error
 	GetToneProfile(ctx context.Context, userID uuid.UUID) (*entities.MiriamToneProfile, error)
-	UpsertToneProfile(ctx context.Context, userID uuid.UUID, formality, directness, warmth, humor, brevity decimal.Decimal, preferredName, languageStyle string) error
+	UpsertToneProfile(ctx context.Context, userID uuid.UUID, formality, directness, warmth, humor, brevity decimal.Decimal, preferredName, languageStyle, localeStyle string) error
 	// Staleness
 	DecayStaleFacts(ctx context.Context, staleDuration time.Duration, decayAmount decimal.Decimal) (int64, error)
 	ExpireLowConfidenceFacts(ctx context.Context, threshold decimal.Decimal) (int64, error)
@@ -70,6 +70,14 @@ Extract facts in these categories:
 - location: city, country, whether they moved recently
 - identity: name, age, pronouns, cultural background they share
 - financial_behavior: how they relate to money (impulsive, cautious, etc.)
+- income_pattern: irregular income, seasonal work, bonuses, commissions
+- deposit_cadence: how often money hits their account (weekly, biweekly, monthly, irregular)
+- salary_day: specific day of month or day of week they get paid
+- freelance_pattern: project-based income, client payment timelines, invoicing habits
+- family_support: remittances, supporting parents/siblings, child support, alimony
+- currency_context: which currencies they earn, spend, or save in; multi-currency lifestyle
+- risk_preference: conservative vs aggressive with investments, willingness to try new products
+- stash_behavior: how they treat savings (set-and-forget, frequent adjuster, target-saver)
 
 Also detect the user's communication style for tone calibration:
 - formality: 0.0 (very casual, slang, abbreviations) to 1.0 (formal, proper grammar)
@@ -79,6 +87,7 @@ Also detect the user's communication style for tone calibration:
 - brevity: 0.0 (verbose, long messages) to 1.0 (very short messages)
 - language_style: "standard", "casual", "formal", or "pidgin_mix"
 - preferred_name: if the user mentions their name or asks to be called something
+- locale_style: "global", "nigeria", "west_africa", "diaspora_us", "diaspora_uk", "europe", or "formal_global" — infer from their location, currency usage, and cultural references
 
 Return ONLY valid JSON with this structure (no markdown, no explanation):
 {
@@ -92,7 +101,8 @@ Return ONLY valid JSON with this structure (no markdown, no explanation):
     "humor": 0.4,
     "brevity": 0.5,
     "language_style": "casual",
-    "preferred_name": ""
+    "preferred_name": "",
+    "locale_style": "global"
   }
 }
 
@@ -117,6 +127,7 @@ type extractionResult struct {
 		Brevity       float64 `json:"brevity"`
 		LanguageStyle string  `json:"language_style"`
 		PreferredName string  `json:"preferred_name"`
+		LocaleStyle   string  `json:"locale_style"`
 	} `json:"tone"`
 }
 
@@ -183,6 +194,9 @@ func (m *MemoryService) saveFacts(ctx context.Context, userID uuid.UUID, result 
 		"goal": true, "life_event": true, "preference": true, "habit": true,
 		"fear": true, "family": true, "work": true, "location": true,
 		"identity": true, "financial_behavior": true,
+		"income_pattern": true, "deposit_cadence": true, "salary_day": true,
+		"freelance_pattern": true, "family_support": true, "currency_context": true,
+		"risk_preference": true, "stash_behavior": true,
 	}
 
 	for _, f := range result.Facts {
@@ -274,7 +288,7 @@ func (m *MemoryService) saveFacts(ctx context.Context, userID uuid.UUID, result 
 
 func isSingleValueCategory(cat string) bool {
 	switch cat {
-	case "work", "location":
+	case "work", "location", "salary_day", "currency_context", "risk_preference":
 		return true
 	}
 	return false
@@ -288,6 +302,13 @@ func (m *MemoryService) updateTone(ctx context.Context, userID uuid.UUID, result
 	langStyle := t.LanguageStyle
 	if !validStyles[langStyle] {
 		langStyle = "standard"
+	}
+
+	// Validate locale_style against DB CHECK constraint
+	validLocales := map[string]bool{"global": true, "nigeria": true, "west_africa": true, "diaspora_us": true, "diaspora_uk": true, "europe": true, "formal_global": true}
+	localeStyle := t.LocaleStyle
+	if !validLocales[localeStyle] {
+		localeStyle = "global"
 	}
 
 	// Truncate preferred_name to fit VARCHAR(100)
@@ -304,6 +325,7 @@ func (m *MemoryService) updateTone(ctx context.Context, userID uuid.UUID, result
 		clampDecimal(t.Brevity),
 		preferredName,
 		langStyle,
+		localeStyle,
 	)
 	if err != nil {
 		m.logger.Warn("failed to update tone profile", zap.Error(err))
@@ -349,6 +371,14 @@ func (m *MemoryService) BuildMemoryContext(ctx context.Context, userID uuid.UUID
 		"location":           "Location",
 		"identity":           "Identity",
 		"financial_behavior": "Money personality",
+		"income_pattern":     "Income pattern",
+		"deposit_cadence":    "Deposit cadence",
+		"salary_day":         "Salary day",
+		"freelance_pattern":  "Freelance pattern",
+		"family_support":     "Family support",
+		"currency_context":   "Currency context",
+		"risk_preference":    "Risk preference",
+		"stash_behavior":     "Stash behavior",
 	}
 
 	for cat, label := range categoryLabels {
@@ -411,6 +441,21 @@ func (m *MemoryService) BuildToneContext(ctx context.Context, userID uuid.UUID) 
 
 	if profile.LanguageStyle == "pidgin_mix" {
 		parts = append(parts, "Mix in Nigerian Pidgin naturally when it fits")
+	}
+
+	switch profile.LocaleStyle {
+	case "nigeria":
+		parts = append(parts, "Use Naira (NGN) references and Nigerian financial context naturally")
+	case "west_africa":
+		parts = append(parts, "Use West African financial context and references")
+	case "diaspora_us":
+		parts = append(parts, "Reference USD and US financial systems; user is likely in the diaspora")
+	case "diaspora_uk":
+		parts = append(parts, "Reference GBP and UK financial systems; user is likely in the diaspora")
+	case "europe":
+		parts = append(parts, "Reference EUR and European financial context")
+	case "formal_global":
+		parts = append(parts, "Use globally-appropriate formal financial language")
 	}
 
 	if len(parts) == 0 {
@@ -491,6 +536,11 @@ func (m *MemoryService) RunDecay(ctx context.Context) error {
 }
 
 // --- User-Facing Memory Controls ---
+
+// GetActiveFacts returns all active facts for a user (satisfies miriam.MemoryReader).
+func (m *MemoryService) GetActiveFacts(ctx context.Context, userID uuid.UUID) ([]*entities.MiriamUserFact, error) {
+	return m.store.GetActiveFacts(ctx, userID)
+}
 
 // ListUserFacts returns all active facts for a user (for "what do you know about me?").
 func (m *MemoryService) ListUserFacts(ctx context.Context, userID uuid.UUID) ([]*entities.MiriamUserFact, error) {

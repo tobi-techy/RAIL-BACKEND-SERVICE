@@ -72,6 +72,14 @@ func RequestSizeLimit() gin.HandlerFunc {
 	}
 }
 
+// LargeBodyLimit overrides the global RequestSizeLimit for routes that accept large payloads (e.g. image uploads).
+func LargeBodyLimit(maxBytes int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
+		c.Next()
+	}
+}
+
 // InputValidation validates common input patterns
 func InputValidation() gin.HandlerFunc {
 	return func(c *gin.Context) {

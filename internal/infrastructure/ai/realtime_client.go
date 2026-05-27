@@ -13,6 +13,15 @@ import (
 
 const assemblyAIEndpoint = "wss://agents.assemblyai.com/v1/ws"
 
+const (
+	defaultVADThreshold    = 0.5
+	defaultMinSilenceMS    = 1400
+	defaultMaxSilenceMS    = 4000
+	questionMinSilenceMS   = 2200
+	questionMaxSilenceMS   = 6000
+	defaultOutputVolumePct = 100
+)
+
 // RealtimeClient manages a WebSocket connection to the AssemblyAI Voice Agent API.
 type RealtimeClient struct {
 	conn   *websocket.Conn
@@ -103,6 +112,7 @@ type InputConfig struct {
 type OutputConfig struct {
 	Voice  string       `json:"voice,omitempty"`
 	Format *AudioFormat `json:"format,omitempty"`
+	Volume int          `json:"volume,omitempty"` // 0-100, louder output
 }
 
 type AudioFormat struct {
@@ -110,10 +120,12 @@ type AudioFormat struct {
 }
 
 type SessionTool struct {
-	Type        string                 `json:"type"` // "function"
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	Parameters  map[string]interface{} `json:"parameters"`
+	Type           string                 `json:"type"` // "function"
+	Name           string                 `json:"name"`
+	Description    string                 `json:"description"`
+	Parameters     map[string]interface{} `json:"parameters"`
+	ExecutionMode  string                 `json:"execution_mode,omitempty"`  // "interactive" or "hold"
+	TimeoutSeconds int                    `json:"timeout_seconds,omitempty"` // 1-300
 }
 
 type TurnDetection struct {
@@ -136,8 +148,15 @@ type ToolResult struct {
 	Result string `json:"result"` // JSON string
 }
 
+// ReplyCreate asks the Voice Agent API to speak without waiting for user audio.
+type ReplyCreate struct {
+	Type         string `json:"type"`
+	Instructions string `json:"instructions,omitempty"`
+}
+
 // NewSessionUpdate creates a session.update event for Miriam.
 func NewSessionUpdate(instructions string, voice string, greeting string, tools []SessionTool) SessionUpdate {
+	interrupt := true
 	return SessionUpdate{
 		Type: "session.update",
 		Session: SessionConfig{
@@ -147,18 +166,45 @@ func NewSessionUpdate(instructions string, voice string, greeting string, tools 
 			Input: &InputConfig{
 				Format: &AudioFormat{Encoding: "audio/pcm"},
 				Keyterms: []string{
-					"Rail", "stash", "Miriam", "USDC", "naira",
-					"spend wallet", "stash wallet", "automation",
-					"obligation", "round-up", "yield", "deposit",
-					"Rail tag", "operating plan", "stash lock",
+					"Rail", "Rail Money", "RailTag", "Miriam", "USDC",
+					"naira", "GTBank", "Access Bank", "First Bank", "UBA",
 				},
-				// Turn detection: use AssemblyAI's semantic defaults (no overrides).
-				// Semantic turn detection + intelligent interruption handling is superior
-				// to fixed VAD thresholds for conversational voice agents.
+				TurnDetection: &TurnDetection{
+					VadThreshold:      defaultVADThreshold,
+					MinSilence:        defaultMinSilenceMS,
+					MaxSilence:        defaultMaxSilenceMS,
+					InterruptResponse: &interrupt,
+				},
 			},
 			Output: &OutputConfig{
 				Voice:  voice,
 				Format: &AudioFormat{Encoding: "audio/pcm"},
+				Volume: defaultOutputVolumePct,
+			},
+		},
+	}
+}
+
+func NewBaselineTurnDetectionUpdate() SessionUpdate {
+	return newTurnDetectionUpdate(defaultMinSilenceMS, defaultMaxSilenceMS)
+}
+
+func NewQuestionTurnDetectionUpdate() SessionUpdate {
+	return newTurnDetectionUpdate(questionMinSilenceMS, questionMaxSilenceMS)
+}
+
+func newTurnDetectionUpdate(minSilence, maxSilence int) SessionUpdate {
+	interrupt := true
+	return SessionUpdate{
+		Type: "session.update",
+		Session: SessionConfig{
+			Input: &InputConfig{
+				TurnDetection: &TurnDetection{
+					VadThreshold:      defaultVADThreshold,
+					MinSilence:        minSilence,
+					MaxSilence:        maxSilence,
+					InterruptResponse: &interrupt,
+				},
 			},
 		},
 	}
@@ -174,4 +220,8 @@ func NewToolResult(callID, resultJSON string) ToolResult {
 		CallID: callID,
 		Result: resultJSON,
 	}
+}
+
+func NewReplyCreate(instructions string) ReplyCreate {
+	return ReplyCreate{Type: "reply.create", Instructions: instructions}
 }

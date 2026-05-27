@@ -56,6 +56,12 @@ func FinancialAuditTool() infraai.Tool {
 					"enum":        []string{"gentle", "direct", "hard"},
 					"description": "Delivery intensity. hard is opt-in accountability, not humiliation.",
 				},
+				"depth": map[string]interface{}{
+					"type":        "string",
+					"enum":        []string{"summary", "standard", "deep"},
+					"description": "Level of detail. summary = key metrics only, standard = default, deep = everything including monthly trends and merchant detail.",
+					"default":     "standard",
+				},
 			},
 			"required":             []string{},
 			"additionalProperties": false,
@@ -70,6 +76,7 @@ func (o *Orchestrator) executeFinancialAudit(ctx context.Context, userID uuid.UU
 
 	period := normalizeAuditPeriod(auditStringArg(args, "period", "last_90_days"))
 	intensity := normalizeAuditIntensity(auditStringArg(args, "intensity", "direct"))
+	depth := normalizeAuditDepth(auditStringArg(args, "depth", "standard"))
 	start, end := parsePeriod(period)
 	now := time.Now().UTC()
 	if period == "this_month" {
@@ -128,7 +135,7 @@ func (o *Orchestrator) executeFinancialAudit(ctx context.Context, userID uuid.UU
 
 	warnings := append(obligationWarnings, recurringWarnings...)
 
-	return map[string]interface{}{
+	result := map[string]interface{}{
 		"audit_mode": true,
 		"period": map[string]interface{}{
 			"key":   period,
@@ -171,19 +178,7 @@ func (o *Orchestrator) executeFinancialAudit(ctx context.Context, userID uuid.UU
 			"biggest_leak":  biggestLeak,
 			"primary_issue": auditPrimaryIssue(netFlow, totalOut, obligationRequired, spend, budgetData),
 		},
-		"the_pattern":             auditPatterns(flow, totalOut, netFlow, topCategories, recurringMonthly, stashRatio),
-		"data_coverage":           dataCoverage,
-		"monthly_trend":           monthlyTrend,
-		"contradictions":          contradictions,
-		"top_spending_categories": topCategories,
-		"top_merchants":           topMerchants,
-		"budget":                  budgetData,
-		"profile":                 profileData,
-		"obligations":             obligationData,
-		"recurring":               recurringData,
-		"risk_flags":              riskFlags,
-		"do_this_today":           nextActions,
-		"warnings":                warnings,
+		"do_this_today": nextActions,
 		"data_used": []string{
 			"current_balances",
 			"multi_month_money_flow",
@@ -194,7 +189,29 @@ func (o *Orchestrator) executeFinancialAudit(ctx context.Context, userID uuid.UU
 			"manual_obligations_if_present",
 			"recurring_expenses_if_present",
 		},
-	}, nil
+	}
+
+	// For "summary" depth, return only the core fields above
+	if depth != "summary" {
+		result["the_pattern"] = auditPatterns(flow, totalOut, netFlow, topCategories, recurringMonthly, stashRatio)
+		result["budget"] = budgetData
+		result["profile"] = profileData
+		result["warnings"] = warnings
+	}
+
+	// "standard" and "deep" get additional detail
+	if depth == "standard" || depth == "deep" {
+		result["monthly_trend"] = monthlyTrend
+		result["contradictions"] = contradictions
+		result["top_spending_categories"] = topCategories
+		result["top_merchants"] = topMerchants
+		result["obligations"] = obligationData
+		result["recurring"] = recurringData
+		result["risk_flags"] = riskFlags
+		result["data_coverage"] = dataCoverage
+	}
+
+	return result, nil
 }
 
 type auditScore struct {
@@ -232,6 +249,15 @@ func normalizeAuditIntensity(value string) string {
 		return strings.ToLower(strings.TrimSpace(value))
 	default:
 		return "direct"
+	}
+}
+
+func normalizeAuditDepth(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "summary", "deep":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "standard"
 	}
 }
 

@@ -27,6 +27,51 @@ const (
 	emailSendTimeout  = 30 * time.Second
 )
 
+// Shared email template helpers
+func renderBaseTemplate(contentHTML string) string {
+	return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#fbfaf9;-webkit-font-smoothing:antialiased;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background-color:#fbfaf9;padding:32px 16px;">
+<tr><td align="center">
+<table cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;width:100%;max-width:480px;">
+<tr><td style="padding:40px 32px 32px;">
+` + contentHTML + `
+</td></tr>
+</table>
+</td></tr></table>
+</body></html>`
+}
+
+func renderHeader() string {
+	return `<p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,sans-serif;font-size:20px;font-weight:700;color:#343433;margin:0 0 24px 0;letter-spacing:-0.3px;">Rail</p>`
+}
+
+func renderHeading(text string) string {
+	return fmt.Sprintf(`<p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,sans-serif;font-size:20px;font-weight:700;color:#343433;margin:0 0 8px 0;letter-spacing:-0.3px;">%s</p>`, text)
+}
+
+func renderBody(text string) string {
+	return fmt.Sprintf(`<p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:15px;color:#343433;margin:0 0 20px 0;line-height:1.5;">%s</p>`, text)
+}
+
+func renderSmallBody(text string) string {
+	return fmt.Sprintf(`<p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:13px;color:#848281;margin:0 0 0 0;line-height:1.5;">%s</p>`, text)
+}
+
+func renderCodeBox(code string) string {
+	return fmt.Sprintf(`<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f2f0ed;border-radius:12px;"><tr><td style="padding:20px 24px;text-align:center;">
+  <p style="font-family:-apple-system,SF Mono,SF Pro Text,monospace;font-size:32px;font-weight:700;color:#343433;margin:0;letter-spacing:6px;">%s</p>
+</td></tr></table>`, code)
+}
+
+func renderCTAButton(url, label string) string {
+	return fmt.Sprintf(`<table cellpadding="0" cellspacing="0" style="margin:0 0 20px 0;">
+<tr><td style="background-color:#121212;border-radius:32px;padding:14px 28px;">
+  <a href="%s" style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;display:inline-block;">%s</a>
+</td></tr></table>`, url, label)
+}
+
 // LoginAlertDetails represents metadata associated with a login notification email
 type LoginAlertDetails struct {
 	IP           string
@@ -193,6 +238,51 @@ func (e *EmailService) sendViaResend(ctx context.Context, to, subject, htmlConte
 	return nil
 }
 
+// BatchEmail represents a single email in a batch send request.
+type BatchEmail struct {
+	From    string   `json:"from"`
+	To      []string `json:"to"`
+	Subject string   `json:"subject"`
+	HTML    string   `json:"html"`
+	Text    string   `json:"text,omitempty"`
+	ReplyTo string   `json:"reply_to,omitempty"`
+}
+
+// SendBatchEmails sends up to 100 emails in a single Resend batch API call.
+// Satisfies growthengine.BatchEmailSender interface.
+func (e *EmailService) SendBatchEmails(ctx context.Context, emails []BatchEmail) error {
+	if len(emails) == 0 {
+		return nil
+	}
+	if len(emails) > 100 {
+		return fmt.Errorf("resend batch: max 100 emails per batch, got %d", len(emails))
+	}
+
+	body, _ := json.Marshal(emails)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, resendAPIBaseURL+"/emails/batch", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("resend batch: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+e.config.APIKey)
+
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("resend batch: send failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode >= 400 {
+		e.logger.Error("Resend batch returned error",
+			zap.Int("count", len(emails)), zap.Int("status", resp.StatusCode), zap.String("body", string(respBody)))
+		return fmt.Errorf("resend batch: status %d", resp.StatusCode)
+	}
+
+	e.logger.Info("Batch email sent", zap.String("provider", "resend"), zap.Int("count", len(emails)))
+	return nil
+}
+
 func (e *EmailService) sendViaUnosend(ctx context.Context, to, subject, htmlContent, textContent string) error {
 	if e.httpClient == nil {
 		return fmt.Errorf("unosend client not configured")
@@ -286,29 +376,13 @@ func (e *EmailService) SendVerificationEmail(ctx context.Context, email, code st
 
 	subject := "Your Rail verification code"
 
-	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
-<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:20px 16px;">
-<tr><td align="center">
-<table cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;width:100%%;max-width:480px;">
-<tr><td style="padding:32px 24px 0 24px;">
-  <p style="font-family:-apple-system,SF Pro Display,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;color:#1d1d1f;margin:0 0 8px 0;letter-spacing:-0.5px;">Rail</p>
-</td></tr>
-<tr><td style="padding:24px 24px;">
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;color:#1d1d1f;margin:0 0 24px 0;line-height:1.5;">Here's your verification code. Enter it in the app to continue.</p>
-  <table width="100%%" cellpadding="0" cellspacing="0"><tr><td align="center" style="background-color:#f5f5f7;border-radius:12px;padding:24px;">
-    <p style="font-family:-apple-system,SF Pro Display,SF Pro Rounded,Helvetica Neue,monospace;font-size:32px;font-weight:700;color:#1d1d1f;margin:0;letter-spacing:6px;">%s</p>
-  </td></tr></table>
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:13px;color:#86868b;margin:24px 0 0 0;line-height:1.5;">This code expires in 10 minutes. If you didn't request this, you can safely ignore this email.</p>
-</td></tr>
-<tr><td style="padding:0 24px 32px 24px;border-top:1px solid #f5f5f7;">
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;color:#86868b;margin:20px 0 0 0;line-height:1.5;">Rail — Your money, working from the moment it arrives.</p>
-</td></tr>
-</table>
-</td></tr></table>
-</body></html>`, html.EscapeString(code))
+	innerHTML := renderHeader() +
+		renderBody("Here's your verification code. Enter it in the app to continue.") +
+		renderCodeBox(html.EscapeString(code)) +
+		`<p style="margin:20px 0 0 0;"></p>` +
+		renderSmallBody("This code expires in 10 minutes. If you didn't request this, you can safely ignore this email.")
 
+	htmlContent := renderBaseTemplate(innerHTML)
 	textContent := fmt.Sprintf("Your Rail verification code is: %s\n\nThis code expires in 10 minutes.\nIf you didn't request this, ignore this email.\n\n— Rail", code)
 
 	return e.sendEmail(ctx, email, subject, htmlContent, textContent)
@@ -320,30 +394,14 @@ func (e *EmailService) SendPasswordResetEmail(ctx context.Context, email, code s
 
 	subject := "Reset your Rail password"
 
-	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
-<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:20px 16px;">
-<tr><td align="center">
-<table cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;width:100%%;max-width:480px;">
-<tr><td style="padding:32px 24px 0 24px;">
-  <p style="font-family:-apple-system,SF Pro Display,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;color:#1d1d1f;margin:0 0 8px 0;letter-spacing:-0.5px;">Rail</p>
-</td></tr>
-<tr><td style="padding:24px 24px;">
-  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:22px;font-weight:600;color:#1d1d1f;margin:0 0 8px 0;letter-spacing:-0.3px;">Reset your password</p>
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;color:#1d1d1f;margin:0 0 24px 0;line-height:1.5;">Enter this code in the app to reset your password.</p>
-  <table width="100%%" cellpadding="0" cellspacing="0"><tr><td align="center" style="background-color:#f5f5f7;border-radius:12px;padding:24px;">
-    <p style="font-family:-apple-system,SF Pro Display,SF Pro Rounded,Helvetica Neue,monospace;font-size:32px;font-weight:700;color:#1d1d1f;margin:0;letter-spacing:6px;">%s</p>
-  </td></tr></table>
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:13px;color:#86868b;margin:24px 0 0 0;line-height:1.5;">This code expires in 10 minutes. If you didn't request a password reset, you can safely ignore this email.</p>
-</td></tr>
-<tr><td style="padding:0 24px 32px 24px;border-top:1px solid #f5f5f7;">
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;color:#86868b;margin:20px 0 0 0;line-height:1.5;">Rail — Your money, working from the moment it arrives.</p>
-</td></tr>
-</table>
-</td></tr></table>
-</body></html>`, html.EscapeString(code))
+	innerHTML := renderHeader() +
+		renderHeading("Reset your password") +
+		renderBody("Enter this code in the app to reset your password.") +
+		renderCodeBox(html.EscapeString(code)) +
+		`<p style="margin:20px 0 0 0;"></p>` +
+		renderSmallBody("This code expires in 10 minutes. If you didn't request a password reset, you can safely ignore this email.")
 
+	htmlContent := renderBaseTemplate(innerHTML)
 	textContent := fmt.Sprintf("Your Rail password reset code is: %s\n\nThis code expires in 10 minutes.\nIf you didn't request this, ignore this email.\n\n— Rail", code)
 
 	return e.sendEmail(ctx, email, subject, htmlContent, textContent)
@@ -368,10 +426,10 @@ func (e *EmailService) SendKYCStatusEmail(ctx context.Context, email string, sta
 		heading = "We need a bit more."
 		body = "We couldn't complete your verification. Please review the details below and resubmit."
 		for _, reason := range rejectionReasons {
-			extra += fmt.Sprintf(`<p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:14px;color:#424245;margin:0 0 8px 0;line-height:1.5;">%s</p>`, html.EscapeString(reason))
+			extra += fmt.Sprintf(`<p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#343433;margin:0 0 4px 0;line-height:1.5;">%s</p>`, html.EscapeString(reason))
 		}
 		if extra != "" {
-			extra = fmt.Sprintf(`<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;border-radius:12px;"><tr><td style="padding:20px 24px;">%s</td></tr></table>`, extra)
+			extra = fmt.Sprintf(`<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f2f0ed;border-radius:12px;"><tr><td style="padding:20px 24px;">%s</td></tr></table>`, extra)
 		}
 	case entities.KYCStatusProcessing:
 		subject = "Verification in progress"
@@ -383,26 +441,12 @@ func (e *EmailService) SendKYCStatusEmail(ctx context.Context, email string, sta
 		body = fmt.Sprintf("Your verification status has been updated to: %s", string(status))
 	}
 
-	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
-<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:20px 16px;">
-<tr><td align="center">
-<table cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;width:100%%;max-width:480px;">
-<tr><td style="padding:32px 24px 0 24px;">
-  <p style="font-family:-apple-system,SF Pro Display,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;color:#1d1d1f;margin:0;letter-spacing:-0.5px;">Rail</p>
-</td></tr>
-<tr><td style="padding:24px 24px;">
-  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:22px;font-weight:600;color:#1d1d1f;margin:0 0 16px 0;letter-spacing:-0.3px;">%s</p>
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;color:#1d1d1f;margin:0 0 24px 0;line-height:1.5;">%s</p>%s
-</td></tr>
-<tr><td style="padding:0 24px 32px 24px;border-top:1px solid #f5f5f7;">
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;color:#86868b;margin:20px 0 0 0;line-height:1.5;">Rail — Your money, working from the moment it arrives.</p>
-</td></tr>
-</table>
-</td></tr></table>
-</body></html>`, html.EscapeString(heading), html.EscapeString(body), extra)
+	innerHTML := renderHeader() +
+		renderHeading(html.EscapeString(heading)) +
+		renderBody(html.EscapeString(body)) +
+		extra
 
+	htmlContent := renderBaseTemplate(innerHTML)
 	textContent := fmt.Sprintf("%s\n\n%s\n\n— Rail", heading, body)
 
 	return e.sendEmail(ctx, email, subject, htmlContent, textContent)
@@ -414,34 +458,21 @@ func (e *EmailService) SendWelcomeEmail(ctx context.Context, email string) error
 
 	subject := "Welcome to Rail"
 
-	htmlContent := `<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
-<table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:20px 16px;">
-<tr><td align="center">
-<table cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;width:100%;max-width:480px;">
-<tr><td style="padding:32px 24px 0 24px;">
-  <p style="font-family:-apple-system,SF Pro Display,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;color:#1d1d1f;margin:0 0 8px 0;letter-spacing:-0.5px;">Rail</p>
+	stepsHTML := `<table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f2f0ed;border-radius:12px;margin:0 0 4px 0;">
+<tr><td style="padding:20px 24px;">
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;font-weight:600;color:#343433;margin:0 0 12px 0;">What happens next</p>
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#343433;margin:0 0 8px 0;line-height:1.5;">1. Complete identity verification</p>
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#343433;margin:0 0 8px 0;line-height:1.5;">2. Fund your account</p>
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#343433;margin:0;line-height:1.5;">3. Your money starts working</p>
 </td></tr>
-<tr><td style="padding:24px 24px;">
-  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:22px;font-weight:600;color:#1d1d1f;margin:0 0 16px 0;letter-spacing:-0.3px;">You're in.</p>
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;color:#1d1d1f;margin:0 0 24px 0;line-height:1.5;">Your Rail account is set up. From here, every deposit automatically splits 70/30 between spending and investing — no decisions required.</p>
-  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;border-radius:12px;">
-    <tr><td style="padding:20px 24px;">
-      <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:14px;font-weight:600;color:#1d1d1f;margin:0 0 12px 0;">What happens next</p>
-      <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:14px;color:#424245;margin:0 0 8px 0;line-height:1.5;">1. Complete identity verification</p>
-      <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:14px;color:#424245;margin:0 0 8px 0;line-height:1.5;">2. Fund your account</p>
-      <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:14px;color:#424245;margin:0;line-height:1.5;">3. Your money starts working</p>
-    </td></tr>
-  </table>
-</td></tr>
-<tr><td style="padding:0 24px 32px 24px;border-top:1px solid #f5f5f7;">
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;color:#86868b;margin:20px 0 0 0;line-height:1.5;">Rail — Your money, working from the moment it arrives.</p>
-</td></tr>
-</table>
-</td></tr></table>
-</body></html>`
+</table>`
 
+	innerHTML := renderHeader() +
+		renderHeading("You're in.") +
+		renderBody("Your Rail account is set up. From here, every deposit automatically splits 70/30 between spending and investing — no decisions required.") +
+		stepsHTML
+
+	htmlContent := renderBaseTemplate(innerHTML)
 	textContent := "Welcome to Rail.\n\nYour account is set up. Every deposit automatically splits 70/30 between spending and investing.\n\nNext steps:\n1. Complete identity verification\n2. Fund your account\n3. Your money starts working\n\n— Rail"
 
 	return e.sendEmail(ctx, email, subject, htmlContent, textContent)
@@ -450,6 +481,33 @@ func (e *EmailService) SendWelcomeEmail(ctx context.Context, email string) error
 // SendCustomEmail delivers an email composed outside of the predefined templates
 func (e *EmailService) SendCustomEmail(ctx context.Context, to, subject, htmlContent, textContent string) error {
 	return e.sendEmail(ctx, to, subject, htmlContent, textContent)
+}
+
+// SendCustomEmailFrom delivers an email with a campaign-specific sender and reply-to.
+func (e *EmailService) SendCustomEmailFrom(ctx context.Context, to, subject, htmlContent, textContent, fromEmail, fromName, replyTo string) error {
+	cfg := e.config
+	if strings.TrimSpace(fromEmail) != "" {
+		if strings.ContainsAny(fromEmail, "\r\n") {
+			return fmt.Errorf("invalid fromEmail: contains newline characters")
+		}
+		cfg.FromEmail = strings.TrimSpace(fromEmail)
+	}
+	if strings.TrimSpace(fromName) != "" {
+		if strings.ContainsAny(fromName, "\r\n") {
+			return fmt.Errorf("invalid fromName: contains newline characters")
+		}
+		cfg.FromName = strings.TrimSpace(fromName)
+	}
+	if strings.TrimSpace(replyTo) != "" {
+		if strings.ContainsAny(replyTo, "\r\n") {
+			return fmt.Errorf("invalid replyTo: contains newline characters")
+		}
+		cfg.ReplyTo = strings.TrimSpace(replyTo)
+	}
+
+	scoped := *e
+	scoped.config = cfg
+	return scoped.sendEmail(ctx, to, subject, htmlContent, textContent)
 }
 
 // SendLoginAlertEmail notifies the user about a successful login attempt
@@ -461,11 +519,6 @@ func (e *EmailService) SendLoginAlertEmail(ctx context.Context, email string, de
 	location := strings.TrimSpace(details.Location)
 	if location == "" {
 		location = "Unknown"
-	}
-
-	forwarded := strings.TrimSpace(details.ForwardedFor)
-	if forwarded == "" {
-		forwarded = "N/A"
 	}
 
 	userAgent := strings.TrimSpace(details.UserAgent)
@@ -480,47 +533,32 @@ func (e *EmailService) SendLoginAlertEmail(ctx context.Context, email string, de
 
 	subject := "New login to your Rail account"
 
-	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
-<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:20px 16px;">
-<tr><td align="center">
-<table cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;width:100%%;max-width:480px;">
-<tr><td style="padding:32px 24px 0 24px;">
-  <p style="font-family:-apple-system,SF Pro Display,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;color:#1d1d1f;margin:0 0 8px 0;letter-spacing:-0.5px;">Rail</p>
-</td></tr>
-<tr><td style="padding:24px 24px;">
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;color:#1d1d1f;margin:0 0 24px 0;line-height:1.5;">We detected a new login to your account. If this was you, no action is needed.</p>
-  <table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;border-radius:12px;">
-    <tr><td style="padding:20px 24px;">
-      <table width="100%%" cellpadding="0" cellspacing="0">
-        <tr><td style="padding:4px 0;"><p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:13px;color:#86868b;margin:0;">IP Address</p><p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:14px;color:#1d1d1f;margin:2px 0 12px 0;">%s</p></td></tr>
-        <tr><td style="padding:4px 0;"><p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:13px;color:#86868b;margin:0;">Location</p><p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:14px;color:#1d1d1f;margin:2px 0 12px 0;">%s</p></td></tr>
-        <tr><td style="padding:4px 0;"><p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:13px;color:#86868b;margin:0;">Device</p><p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:14px;color:#1d1d1f;margin:2px 0 12px 0;">%s</p></td></tr>
-        <tr><td style="padding:4px 0;"><p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:13px;color:#86868b;margin:0;">Time (UTC)</p><p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:14px;color:#1d1d1f;margin:2px 0 0 0;">%s</p></td></tr>
-      </table>
-    </td></tr>
+	detailsHTML := fmt.Sprintf(`<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f2f0ed;border-radius:12px;margin:0 0 20px 0;">
+<tr><td style="padding:20px 24px;">
+  <table width="100%%" cellpadding="0" cellspacing="0">
+    <tr><td style="padding:4px 0;"><p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:13px;color:#848281;margin:0;">IP Address</p><p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#343433;margin:2px 0 12px 0;">%s</p></td></tr>
+    <tr><td style="padding:4px 0;"><p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:13px;color:#848281;margin:0;">Location</p><p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#343433;margin:2px 0 12px 0;">%s</p></td></tr>
+    <tr><td style="padding:4px 0;"><p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:13px;color:#848281;margin:0;">Device</p><p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#343433;margin:2px 0 12px 0;">%s</p></td></tr>
+    <tr><td style="padding:4px 0;"><p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:13px;color:#848281;margin:0;">Time (UTC)</p><p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#343433;margin:2px 0 0 0;">%s</p></td></tr>
   </table>
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:13px;color:#86868b;margin:24px 0 0 0;line-height:1.5;">If this wasn't you, reset your password immediately and contact support.</p>
-</td></tr>
-<tr><td style="padding:0 24px 32px 24px;border-top:1px solid #f5f5f7;">
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;color:#86868b;margin:20px 0 0 0;line-height:1.5;">Rail — Your money, working from the moment it arrives.</p>
-</td></tr>
-</table>
-</td></tr></table>
-</body></html>`, safeIP, safeLocation, safeUserAgent, loginTime)
+</td></tr></table>`, safeIP, safeLocation, safeUserAgent, loginTime)
 
+	innerHTML := renderHeader() +
+		renderBody("We detected a new login to your account. If this was you, no action is needed.") +
+		detailsHTML +
+		renderSmallBody("If this wasn't you, reset your password immediately and contact support.")
+
+	htmlContent := renderBaseTemplate(innerHTML)
 	textContent := fmt.Sprintf(`
-New login detected on your Stack Service account.
+New login detected on your Rail account.
 
 IP Address: %s
-Forwarded For: %s
 Location: %s
 Device: %s
 Time (UTC): %s
 
 If this wasn't you, please reset your password immediately and contact support.
-`, strings.TrimSpace(details.IP), forwarded, location, userAgent, loginTime)
+`, strings.TrimSpace(details.IP), location, userAgent, loginTime)
 
 	e.logger.Info("Sending login alert email",
 		zap.String("email", email),
@@ -531,37 +569,17 @@ If this wasn't you, please reset your password immediately and contact support.
 
 // KYC Email Templates are now handled inline by SendKYCStatusEmail
 
-
 // SendP2PInviteEmail sends an invite to a non-Rail user to claim money
 func (e *EmailService) SendP2PInviteEmail(ctx context.Context, toEmail, senderName string, amount string, claimURL string) error {
 	subject := fmt.Sprintf("%s sent you money on Rail", senderName)
 
-	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
-<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:20px 16px;">
-<tr><td align="center">
-<table cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;width:100%%;max-width:480px;">
-<tr><td style="padding:32px 24px 0 24px;">
-  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;color:#1d1d1f;margin:0;letter-spacing:-0.5px;">Rail</p>
-</td></tr>
-<tr><td style="padding:24px 24px;">
-  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:22px;font-weight:600;color:#1d1d1f;margin:0 0 16px 0;letter-spacing:-0.3px;">You've got money waiting.</p>
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;color:#1d1d1f;margin:0 0 24px 0;line-height:1.5;">%s sent you <strong>%s</strong>. Download Rail to claim it.</p>
-  <table cellpadding="0" cellspacing="0" style="margin:0 0 24px 0;">
-    <tr><td style="background-color:#1d1d1f;border-radius:12px;padding:14px 28px;">
-      <a href="%s" style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;">Claim Your Money</a>
-    </td></tr>
-  </table>
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:13px;color:#86868b;margin:0;line-height:1.5;">This link expires in 14 days. After that, the money returns to the sender.</p>
-</td></tr>
-<tr><td style="padding:0 24px 32px 24px;border-top:1px solid #f5f5f7;">
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;color:#86868b;margin:20px 0 0 0;line-height:1.5;">Rail — Your money, working from the moment it arrives.</p>
-</td></tr>
-</table>
-</td></tr></table>
-</body></html>`, html.EscapeString(senderName), html.EscapeString(amount), claimURL)
+	innerHTML := renderHeader() +
+		renderHeading("You've got money waiting.") +
+		renderBody(fmt.Sprintf("%s sent you <strong>%s</strong>. Download Rail to claim it.", html.EscapeString(senderName), html.EscapeString(amount))) +
+		renderCTAButton(claimURL, "Claim Your Money") +
+		renderSmallBody("This link expires in 14 days. After that, the money returns to the sender.")
 
+	htmlContent := renderBaseTemplate(innerHTML)
 	textContent := fmt.Sprintf("%s sent you %s on Rail.\n\nClaim it here: %s\n\nThis link expires in 14 days.\n\n— Rail", senderName, amount, claimURL)
 
 	return e.sendEmail(ctx, toEmail, subject, htmlContent, textContent)
@@ -574,30 +592,18 @@ func (e *EmailService) SendP2PReceivedEmail(ctx context.Context, toEmail, sender
 	noteHTML := ""
 	noteText := ""
 	if note != nil && *note != "" {
-		noteHTML = fmt.Sprintf(`<p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:14px;color:#424245;margin:16px 0 0 0;padding:16px;background-color:#f5f5f7;border-radius:8px;line-height:1.5;">"%s"</p>`, html.EscapeString(*note))
+		noteHTML = fmt.Sprintf(`<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f2f0ed;border-radius:8px;margin:0 0 20px 0;"><tr><td style="padding:16px 20px;">
+  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#343433;margin:0;line-height:1.5;font-style:italic;">"%s"</p>
+</td></tr></table>`, html.EscapeString(*note))
 		noteText = fmt.Sprintf("\n\nNote: \"%s\"", *note)
 	}
 
-	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
-<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:20px 16px;">
-<tr><td align="center">
-<table cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;width:100%%;max-width:480px;">
-<tr><td style="padding:32px 24px 0 24px;">
-  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;color:#1d1d1f;margin:0;letter-spacing:-0.5px;">Rail</p>
-</td></tr>
-<tr><td style="padding:24px 24px;">
-  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:22px;font-weight:600;color:#1d1d1f;margin:0 0 16px 0;letter-spacing:-0.3px;">Money received.</p>
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;color:#1d1d1f;margin:0;line-height:1.5;">%s sent you <strong>%s</strong>. It's already in your spending balance.</p>%s
-</td></tr>
-<tr><td style="padding:0 24px 32px 24px;border-top:1px solid #f5f5f7;">
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;color:#86868b;margin:20px 0 0 0;line-height:1.5;">Rail — Your money, working from the moment it arrives.</p>
-</td></tr>
-</table>
-</td></tr></table>
-</body></html>`, html.EscapeString(senderName), html.EscapeString(amount), noteHTML)
+	innerHTML := renderHeader() +
+		renderHeading("Money received.") +
+		renderBody(fmt.Sprintf("%s sent you <strong>%s</strong>. It's already in your spending balance.", html.EscapeString(senderName), html.EscapeString(amount))) +
+		noteHTML
 
+	htmlContent := renderBaseTemplate(innerHTML)
 	textContent := fmt.Sprintf("%s sent you %s. It's in your spending balance.%s\n\n— Rail", senderName, amount, noteText)
 
 	return e.sendEmail(ctx, toEmail, subject, htmlContent, textContent)
@@ -607,26 +613,11 @@ func (e *EmailService) SendP2PReceivedEmail(ctx context.Context, toEmail, sender
 func (e *EmailService) SendP2PClaimedEmail(ctx context.Context, toEmail, recipientName, amount string) error {
 	subject := fmt.Sprintf("%s claimed your %s", recipientName, amount)
 
-	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
-<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:20px 16px;">
-<tr><td align="center">
-<table cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;width:100%%;max-width:480px;">
-<tr><td style="padding:32px 24px 0 24px;">
-  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;color:#1d1d1f;margin:0;letter-spacing:-0.5px;">Rail</p>
-</td></tr>
-<tr><td style="padding:24px 24px;">
-  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:22px;font-weight:600;color:#1d1d1f;margin:0 0 16px 0;letter-spacing:-0.3px;">Transfer complete.</p>
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;color:#1d1d1f;margin:0;line-height:1.5;">%s joined Rail and claimed the <strong>%s</strong> you sent.</p>
-</td></tr>
-<tr><td style="padding:0 24px 32px 24px;border-top:1px solid #f5f5f7;">
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;color:#86868b;margin:20px 0 0 0;line-height:1.5;">Rail — Your money, working from the moment it arrives.</p>
-</td></tr>
-</table>
-</td></tr></table>
-</body></html>`, html.EscapeString(recipientName), html.EscapeString(amount))
+	innerHTML := renderHeader() +
+		renderHeading("Transfer complete.") +
+		renderBody(fmt.Sprintf("%s joined Rail and claimed the <strong>%s</strong> you sent.", html.EscapeString(recipientName), html.EscapeString(amount)))
 
+	htmlContent := renderBaseTemplate(innerHTML)
 	textContent := fmt.Sprintf("%s joined Rail and claimed the %s you sent.\n\n— Rail", recipientName, amount)
 
 	return e.sendEmail(ctx, toEmail, subject, htmlContent, textContent)
@@ -636,26 +627,11 @@ func (e *EmailService) SendP2PClaimedEmail(ctx context.Context, toEmail, recipie
 func (e *EmailService) SendP2PExpiredEmail(ctx context.Context, toEmail, identifier, amount string) error {
 	subject := fmt.Sprintf("Your %s transfer expired", amount)
 
-	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
-<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:20px 16px;">
-<tr><td align="center">
-<table cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:16px;overflow:hidden;width:100%%;max-width:480px;">
-<tr><td style="padding:32px 24px 0 24px;">
-  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:28px;font-weight:700;color:#1d1d1f;margin:0;letter-spacing:-0.5px;">Rail</p>
-</td></tr>
-<tr><td style="padding:24px 24px;">
-  <p style="font-family:-apple-system,SF Pro Display,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:22px;font-weight:600;color:#1d1d1f;margin:0 0 16px 0;letter-spacing:-0.3px;">Transfer expired.</p>
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;color:#1d1d1f;margin:0;line-height:1.5;">Your <strong>%s</strong> transfer to %s wasn't claimed within 14 days. The funds have been returned to your spending balance.</p>
-</td></tr>
-<tr><td style="padding:0 24px 32px 24px;border-top:1px solid #f5f5f7;">
-  <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,Helvetica,Arial,sans-serif;font-size:12px;color:#86868b;margin:20px 0 0 0;line-height:1.5;">Rail — Your money, working from the moment it arrives.</p>
-</td></tr>
-</table>
-</td></tr></table>
-</body></html>`, html.EscapeString(amount), html.EscapeString(identifier))
+	innerHTML := renderHeader() +
+		renderHeading("Transfer expired.") +
+		renderBody(fmt.Sprintf("Your <strong>%s</strong> transfer to %s wasn't claimed within 14 days. The funds have been returned to your spending balance.", html.EscapeString(amount), html.EscapeString(identifier)))
 
+	htmlContent := renderBaseTemplate(innerHTML)
 	textContent := fmt.Sprintf("Your %s transfer to %s wasn't claimed within 14 days. The funds have been returned to your spending balance.\n\n— Rail", amount, identifier)
 
 	return e.sendEmail(ctx, toEmail, subject, htmlContent, textContent)
@@ -672,58 +648,35 @@ type DepositEmailDetails struct {
 
 // SendDepositConfirmationEmail sends a clean deposit confirmation email.
 func (e *EmailService) SendDepositConfirmationEmail(ctx context.Context, toEmail, firstName string, details DepositEmailDetails) error {
-	subject := "Deposit Confirmed"
+	subject := "Deposit confirmed"
 	dateStr := details.Date.Format("01/02/2006 - 03:04 PM UTC")
 
-	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
-<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:40px 20px;">
-<tr><td align="center">
-<table width="100%%" cellpadding="0" cellspacing="0" style="max-width:560px;background-color:#ffffff;border-radius:16px;overflow:hidden;">
-  <tr><td style="background-color:#111111;padding:28px 32px;">
-    <span style="font-family:-apple-system,SF Pro Display,Helvetica Neue,sans-serif;font-size:20px;font-weight:700;color:#ffffff;letter-spacing:0.5px;">RAIL</span>
-  </td></tr>
-  <tr><td style="padding:36px 32px 24px;">
-    <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:15px;color:#1d1d1f;margin:0 0 8px;">Hello %s,</p>
-    <h1 style="font-family:-apple-system,SF Pro Display,Helvetica Neue,sans-serif;font-size:24px;font-weight:700;color:#1d1d1f;margin:0 0 8px;">Your wallet has been funded successfully! 🤑</h1>
-    <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:15px;color:#6e6e73;margin:0;">The details are shown below:</p>
-  </td></tr>
-  <tr><td style="padding:0 32px 32px;">
-    <table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f0f4ff;border-radius:12px;padding:24px;">
-      <tr><td style="padding:16px 20px;border-bottom:1px solid #e0e4ef;">
-        <table width="100%%"><tr>
-          <td style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;font-weight:600;color:#1d1d1f;">Transaction Type:</td>
-          <td align="right" style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;color:#1d1d1f;">%s</td>
-        </tr></table>
-      </td></tr>
-      <tr><td style="padding:16px 20px;border-bottom:1px solid #e0e4ef;">
-        <table width="100%%"><tr>
-          <td style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;font-weight:600;color:#1d1d1f;">Amount received:</td>
-          <td align="right" style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;color:#1d1d1f;">%s%s</td>
-        </tr></table>
-      </td></tr>
-      <tr><td style="padding:16px 20px;border-bottom:1px solid #e0e4ef;">
-        <table width="100%%"><tr>
-          <td style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;font-weight:600;color:#1d1d1f;">Reference:</td>
-          <td align="right" style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;color:#1d1d1f;">%s</td>
-        </tr></table>
-      </td></tr>
-      <tr><td style="padding:16px 20px;">
-        <table width="100%%"><tr>
-          <td style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;font-weight:600;color:#1d1d1f;">Date &amp; Time:</td>
-          <td align="right" style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;color:#1d1d1f;">%s</td>
-        </tr></table>
-      </td></tr>
-    </table>
-  </td></tr>
-  <tr><td style="padding:0 32px 36px;">
-    <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:13px;color:#6e6e73;margin:0;line-height:1.5;">If you didn't initiate this transaction, please contact our support team immediately via in-app or email <a href="mailto:support@rail.money" style="color:#0066cc;">support@rail.money</a></p>
-  </td></tr>
-</table>
-</td></tr></table>
-</body></html>`,
-		html.EscapeString(firstName),
+	helloTxt := ""
+	if firstName != "" {
+		helloTxt = "Hello " + html.EscapeString(firstName) + ","
+	}
+
+	detailsHTML := fmt.Sprintf(`<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f2f0ed;border-radius:12px;margin:0 0 4px 0;">
+<tr><td style="padding:4px 24px;">
+  <table width="100%%" cellpadding="0" cellspacing="0">
+    <tr><td style="padding:14px 0;border-bottom:1px solid #e0ddd8;"><table width="100%%"><tr>
+      <td style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#848281;">Method</td>
+      <td align="right" style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;font-weight:600;color:#343433;">%s</td>
+    </tr></table></td></tr>
+    <tr><td style="padding:14px 0;border-bottom:1px solid #e0ddd8;"><table width="100%%"><tr>
+      <td style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#848281;">Amount received</td>
+      <td align="right" style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;font-weight:600;color:#343433;">%s%s</td>
+    </tr></table></td></tr>
+    <tr><td style="padding:14px 0;border-bottom:1px solid #e0ddd8;"><table width="100%%"><tr>
+      <td style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#848281;">Reference</td>
+      <td align="right" style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#343433;">%s</td>
+    </tr></table></td></tr>
+    <tr><td style="padding:14px 0;"><table width="100%%"><tr>
+      <td style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#848281;">Date &amp; time</td>
+      <td align="right" style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#343433;">%s</td>
+    </tr></table></td></tr>
+  </table>
+</td></tr></table>`,
 		html.EscapeString(details.Method),
 		html.EscapeString(details.Currency),
 		html.EscapeString(details.Amount),
@@ -731,7 +684,16 @@ func (e *EmailService) SendDepositConfirmationEmail(ctx context.Context, toEmail
 		html.EscapeString(dateStr),
 	)
 
-	textContent := fmt.Sprintf("Hello %s,\n\nYour wallet has been funded successfully!\n\nAmount: %s%s\nMethod: %s\nReference: %s\nDate: %s\n\n— Rail", firstName, details.Currency, details.Amount, details.Method, details.Reference, dateStr)
+	innerHTML := renderHeader() +
+		renderBody(helloTxt) +
+		renderHeading("Deposit confirmed") +
+		renderBody(fmt.Sprintf("Your deposit of %s%s has been confirmed.", html.EscapeString(details.Currency), html.EscapeString(details.Amount))) +
+		detailsHTML +
+		`<p style="margin:20px 0 0 0;"></p>` +
+		renderSmallBody(`If you didn't initiate this transaction, please contact support immediately at <a href="mailto:support@rail.money" style="color:#ff3e00;text-decoration:underline;">support@rail.money</a>.`)
+
+	htmlContent := renderBaseTemplate(innerHTML)
+	textContent := fmt.Sprintf("Hello %s,\n\nDeposit confirmed\n\nYour deposit of %s%s has been confirmed.\n\nMethod: %s\nAmount: %s%s\nReference: %s\nDate: %s\n\nIf you didn't initiate this, contact support@rail.money\n\n— Rail", firstName, details.Currency, details.Amount, details.Method, details.Currency, details.Amount, details.Reference, dateStr)
 
 	return e.sendEmail(ctx, toEmail, subject, htmlContent, textContent)
 }
@@ -750,76 +712,43 @@ type WithdrawalEmailDetails struct {
 
 // SendWithdrawalConfirmationEmail sends a clean withdrawal confirmation email.
 func (e *EmailService) SendWithdrawalConfirmationEmail(ctx context.Context, toEmail, firstName string, details WithdrawalEmailDetails) error {
-	subject := "Withdrawal Successful"
+	subject := "Withdrawal successful"
 	dateStr := details.Date.Format("01/02/2006 - 03:04 PM UTC")
 
-	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background-color:#f5f5f7;-webkit-font-smoothing:antialiased;">
-<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7;padding:40px 20px;">
-<tr><td align="center">
-<table width="100%%" cellpadding="0" cellspacing="0" style="max-width:560px;background-color:#ffffff;border-radius:16px;overflow:hidden;">
-  <tr><td style="background-color:#111111;padding:28px 32px;">
-    <span style="font-family:-apple-system,SF Pro Display,Helvetica Neue,sans-serif;font-size:20px;font-weight:700;color:#ffffff;letter-spacing:0.5px;">RAIL</span>
-  </td></tr>
-  <tr><td style="padding:36px 32px 24px;">
-    <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:15px;color:#1d1d1f;margin:0 0 8px;">Hello %s,</p>
-    <h1 style="font-family:-apple-system,SF Pro Display,Helvetica Neue,sans-serif;font-size:24px;font-weight:700;color:#1d1d1f;margin:0 0 8px;">Your withdrawal was successful 😀</h1>
-    <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:15px;color:#6e6e73;margin:0;">The details are shown below:</p>
-  </td></tr>
-  <tr><td style="padding:0 32px 32px;">
-    <table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f0f4ff;border-radius:12px;padding:24px;">
-      <tr><td style="padding:16px 20px;border-bottom:1px solid #e0e4ef;">
-        <table width="100%%"><tr>
-          <td style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;font-weight:600;color:#1d1d1f;">Amount tendered:</td>
-          <td align="right" style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;color:#1d1d1f;">%s%s</td>
-        </tr></table>
-      </td></tr>
-      <tr><td style="padding:16px 20px;border-bottom:1px solid #e0e4ef;">
-        <table width="100%%"><tr>
-          <td style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;font-weight:600;color:#1d1d1f;">Amount received:</td>
-          <td align="right" style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;color:#1d1d1f;">%s%s</td>
-        </tr></table>
-      </td></tr>
-      <tr><td style="padding:16px 20px;border-bottom:1px solid #e0e4ef;">
-        <table width="100%%"><tr>
-          <td style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;font-weight:600;color:#1d1d1f;">Bank name:</td>
-          <td align="right" style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;color:#1d1d1f;">%s</td>
-        </tr></table>
-      </td></tr>
-      <tr><td style="padding:16px 20px;border-bottom:1px solid #e0e4ef;">
-        <table width="100%%"><tr>
-          <td style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;font-weight:600;color:#1d1d1f;">Account name:</td>
-          <td align="right" style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;color:#1d1d1f;">%s</td>
-        </tr></table>
-      </td></tr>
-      <tr><td style="padding:16px 20px;border-bottom:1px solid #e0e4ef;">
-        <table width="100%%"><tr>
-          <td style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;font-weight:600;color:#1d1d1f;">Account number:</td>
-          <td align="right" style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;color:#1d1d1f;">%s</td>
-        </tr></table>
-      </td></tr>
-      <tr><td style="padding:16px 20px;border-bottom:1px solid #e0e4ef;">
-        <table width="100%%"><tr>
-          <td style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;font-weight:600;color:#1d1d1f;">Reference:</td>
-          <td align="right" style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;color:#1d1d1f;">%s</td>
-        </tr></table>
-      </td></tr>
-      <tr><td style="padding:16px 20px;">
-        <table width="100%%"><tr>
-          <td style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;font-weight:600;color:#1d1d1f;">Date &amp; Time:</td>
-          <td align="right" style="font-family:-apple-system,SF Pro Text,sans-serif;font-size:14px;color:#1d1d1f;">%s</td>
-        </tr></table>
-      </td></tr>
-    </table>
-  </td></tr>
-  <tr><td style="padding:0 32px 36px;">
-    <p style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:13px;color:#6e6e73;margin:0;line-height:1.5;">If you didn't initiate this transaction, please contact our support team immediately via in-app or email <a href="mailto:support@rail.money" style="color:#0066cc;">support@rail.money</a></p>
-  </td></tr>
-</table>
-</td></tr></table>
-</body></html>`,
-		html.EscapeString(firstName),
+	helloTxt := ""
+	if firstName != "" {
+		helloTxt = "Hello " + html.EscapeString(firstName) + ","
+	}
+
+	detailsHTML := fmt.Sprintf(`<table width="100%%" cellpadding="0" cellspacing="0" style="background-color:#f2f0ed;border-radius:12px;margin:0 0 4px 0;">
+<tr><td style="padding:4px 24px;">
+  <table width="100%%" cellpadding="0" cellspacing="0">
+    <tr><td style="padding:14px 0;border-bottom:1px solid #e0ddd8;"><table width="100%%"><tr>
+      <td style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#848281;">Amount sent</td>
+      <td align="right" style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;font-weight:600;color:#343433;">%s%s</td>
+    </tr></table></td></tr>
+    <tr><td style="padding:14px 0;border-bottom:1px solid #e0ddd8;"><table width="100%%"><tr>
+      <td style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#848281;">Amount received</td>
+      <td align="right" style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;font-weight:600;color:#343433;">%s%s</td>
+    </tr></table></td></tr>
+    <tr><td style="padding:14px 0;border-bottom:1px solid #e0ddd8;"><table width="100%%"><tr>
+      <td style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#848281;">Bank</td>
+      <td align="right" style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#343433;">%s</td>
+    </tr></table></td></tr>
+    <tr><td style="padding:14px 0;border-bottom:1px solid #e0ddd8;"><table width="100%%"><tr>
+      <td style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#848281;">Account</td>
+      <td align="right" style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#343433;">%s • %s</td>
+    </tr></table></td></tr>
+    <tr><td style="padding:14px 0;border-bottom:1px solid #e0ddd8;"><table width="100%%"><tr>
+      <td style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#848281;">Reference</td>
+      <td align="right" style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#343433;">%s</td>
+    </tr></table></td></tr>
+    <tr><td style="padding:14px 0;"><table width="100%%"><tr>
+      <td style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#848281;">Date &amp; time</td>
+      <td align="right" style="font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:14px;color:#343433;">%s</td>
+    </tr></table></td></tr>
+  </table>
+</td></tr></table>`,
 		html.EscapeString(details.Currency),
 		html.EscapeString(details.AmountTendered),
 		html.EscapeString(details.Currency),
@@ -831,7 +760,16 @@ func (e *EmailService) SendWithdrawalConfirmationEmail(ctx context.Context, toEm
 		html.EscapeString(dateStr),
 	)
 
-	textContent := fmt.Sprintf("Hello %s,\n\nYour withdrawal was successful!\n\nAmount tendered: %s%s\nAmount received: %s%s\nBank: %s\nAccount: %s (%s)\nReference: %s\nDate: %s\n\nIf you didn't initiate this, contact support@rail.money\n\n— Rail",
+	innerHTML := renderHeader() +
+		renderBody(helloTxt) +
+		renderHeading("Withdrawal successful") +
+		renderBody("Your withdrawal has been processed. Here are the details:") +
+		detailsHTML +
+		`<p style="margin:20px 0 0 0;"></p>` +
+		renderSmallBody(`If you didn't initiate this transaction, please contact support immediately at <a href="mailto:support@rail.money" style="color:#ff3e00;text-decoration:underline;">support@rail.money</a>.`)
+
+	htmlContent := renderBaseTemplate(innerHTML)
+	textContent := fmt.Sprintf("Hello %s,\n\nWithdrawal successful\n\nYour withdrawal has been processed.\n\nAmount sent: %s%s\nAmount received: %s%s\nBank: %s\nAccount: %s (%s)\nReference: %s\nDate: %s\n\nIf you didn't initiate this, contact support@rail.money\n\n— Rail",
 		firstName, details.Currency, details.AmountTendered, details.Currency, details.AmountReceived, details.BankName, details.AccountName, details.AccountNumber, details.Reference, dateStr)
 
 	return e.sendEmail(ctx, toEmail, subject, htmlContent, textContent)

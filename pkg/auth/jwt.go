@@ -22,6 +22,12 @@ type RefreshClaims struct {
 	jwt.RegisteredClaims
 }
 
+type VoiceSessionClaims struct {
+	UserID    uuid.UUID `json:"user_id"`
+	TokenType string    `json:"token_type,omitempty"` // voice_session
+	jwt.RegisteredClaims
+}
+
 // TokenPair represents access and refresh tokens
 type TokenPair struct {
 	AccessToken  string    `json:"access_token"`
@@ -109,6 +115,65 @@ func ValidateToken(tokenString, secret string) (*Claims, error) {
 	}
 
 	return nil, fmt.Errorf("invalid token")
+}
+
+func GenerateVoiceSessionToken(userID uuid.UUID, secret string, ttl time.Duration) (string, time.Time, error) {
+	if ttl <= 0 {
+		ttl = time.Minute
+	}
+	now := time.Now()
+	expiresAt := now.Add(ttl)
+	claims := VoiceSessionClaims{
+		UserID:    userID,
+		TokenType: "voice_session",
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
+			IssuedAt:  jwt.NewNumericDate(now),
+			NotBefore: jwt.NewNumericDate(now),
+			Issuer:    "rail_service",
+			Subject:   userID.String(),
+			Audience:  []string{"rail_voice_session"},
+			ID:        uuid.NewString(),
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString([]byte(secret))
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("failed to sign voice session token: %w", err)
+	}
+	return tokenString, expiresAt, nil
+}
+
+func ValidateVoiceSessionToken(tokenString, secret string) (uuid.UUID, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &VoiceSessionClaims{}, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(secret), nil
+	}, jwt.WithAudience("rail_voice_session"))
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to parse voice session token: %w", err)
+	}
+	claims, ok := token.Claims.(*VoiceSessionClaims)
+	if !ok || !token.Valid {
+		return uuid.Nil, fmt.Errorf("invalid voice session token")
+	}
+	if claims.TokenType != "voice_session" {
+		return uuid.Nil, fmt.Errorf("invalid token type: expected voice session token")
+	}
+	if claims.UserID == uuid.Nil {
+		return uuid.Nil, fmt.Errorf("voice session token missing user ID")
+	}
+	if claims.NotBefore != nil && claims.NotBefore.Time.After(time.Now()) {
+		return uuid.Nil, fmt.Errorf("voice session token not yet valid")
+	}
+	if claims.Issuer != "rail_service" {
+		return uuid.Nil, fmt.Errorf("voice session token invalid issuer")
+	}
+	if claims.Subject != claims.UserID.String() {
+		return uuid.Nil, fmt.Errorf("voice session token subject mismatch")
+	}
+	return claims.UserID, nil
 }
 
 // ValidateRefreshToken validates a refresh token and returns the user ID

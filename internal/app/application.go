@@ -3,12 +3,14 @@ package app
 import (
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,11 +21,13 @@ import (
 
 	"github.com/rail-service/rail_service/internal/api/routes"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
 	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	bridgeadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	diditadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
+	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/database"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
@@ -37,10 +41,12 @@ import (
 	deposit_autosweep "github.com/rail-service/rail_service/internal/workers/deposit_autosweep"
 	"github.com/rail-service/rail_service/internal/workers/funding_webhook"
 	gameplay_workers "github.com/rail-service/rail_service/internal/workers/gameplay"
+	growth_engine "github.com/rail-service/rail_service/internal/workers/growth_engine"
 	growth_mail "github.com/rail-service/rail_service/internal/workers/growth_mail"
 	kyc_autoinvest "github.com/rail-service/rail_service/internal/workers/kyc_autoinvest"
 	"github.com/rail-service/rail_service/internal/workers/kyc_sync"
 	memory_worker "github.com/rail-service/rail_service/internal/workers/memory_worker"
+	miriam_worker "github.com/rail-service/rail_service/internal/workers/miriam_worker"
 	opportunity_sync "github.com/rail-service/rail_service/internal/workers/opportunity_sync"
 	paj_offramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_offramp_recovery"
 	paj_onramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_onramp_recovery"
@@ -90,7 +96,12 @@ type Application struct {
 	aiInsightsWorker             *ai_insights.Worker
 	automationWorker             *automation_worker.Worker
 	memoryWorker                 *memory_worker.Worker
+	miriamWorker                 *miriam_worker.Worker
+	miriamWorkerCancel           context.CancelFunc
 	dailyPulseWorker             *daily_pulse.Worker
+	growthEngineWorker           *growth_engine.Worker
+	growthEngineCancel           context.CancelFunc
+	workerMu                     sync.Mutex
 	growthMailWorker             *growth_mail.Worker
 	growthMailCancel             context.CancelFunc
 	opportunitySyncWorker        *opportunity_sync.Worker
@@ -396,6 +407,26 @@ func (app *Application) initializeWorkers() error {
 		app.log.Info("Miriam automation worker started")
 	}
 
+	if app.cfg.Workers.MiriamIntelligenceLocal && app.container.MiriamIntelligenceService != nil && app.container.UserRepo != nil {
+		if app.container.MiriamIntelligenceOrchestrator != nil {
+			app.miriamWorker = miriam_worker.NewWorkerWithIntelligence(
+				app.container.UserRepo,
+				app.container.MiriamIntelligenceService,
+				app.container.MiriamIntelligenceOrchestrator,
+				app.log.Zap(),
+			)
+			app.log.Info("Miriam intelligence worker started (unified brain)")
+		} else {
+			app.miriamWorker = miriam_worker.NewWorker(app.container.UserRepo, app.container.MiriamIntelligenceService, app.log.Zap())
+			app.log.Info("Miriam intelligence worker started (classic mode)")
+		}
+		miriamCtx, miriamCancel := context.WithCancel(context.Background())
+		app.miriamWorkerCancel = miriamCancel
+		go app.miriamWorker.Start(miriamCtx)
+	} else if !app.cfg.Workers.MiriamIntelligenceLocal {
+		app.log.Info("Miriam intelligence local worker disabled; expecting external scheduler")
+	}
+
 	// Opportunity sync worker — ingests Superteam Earn listings and generates weekly picks
 	if app.container.OpportunityService != nil && app.container.UserRepo != nil {
 		app.opportunitySyncWorker = opportunity_sync.NewWorker(
@@ -446,6 +477,9 @@ func (app *Application) initializeWorkers() error {
 				pushSender,
 				app.log.Zap(),
 			)
+			if app.container.AIOrchestrator != nil {
+				app.dailyPulseWorker.SetBriefProvider(&dailyPulseBriefProvider{orchestrator: app.container.AIOrchestrator})
+			}
 			if app.container.AIProviderManager != nil {
 				app.dailyPulseWorker.SetNudger(daily_pulse.NewAINudger(app.container.AIProviderManager, app.log.Zap()))
 			}
@@ -460,6 +494,37 @@ func (app *Application) initializeWorkers() error {
 		app.growthMailCancel = cancel
 		go app.growthMailWorker.Start(ctx)
 		app.log.Info("Growth mail worker started")
+	}
+
+	if app.container.GrowthEngineService != nil {
+		w := growth_engine.NewWorker(app.container.GrowthEngineService, app.log.Zap())
+		app.workerMu.Lock()
+		app.growthEngineWorker = w
+		app.workerMu.Unlock()
+		ctx, cancel := context.WithCancel(context.Background())
+		app.growthEngineCancel = cancel
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					app.log.Error("growth engine worker panicked", "panic", r)
+					app.workerMu.Lock()
+					app.growthEngineWorker = nil
+					app.workerMu.Unlock()
+					// TODO: implement automatic restart with exponential backoff
+					// TODO: alert monitoring systems on worker panic
+				}
+			}()
+			app.log.Info("Growth engine worker started")
+			app.workerMu.Lock()
+			worker := app.growthEngineWorker
+			if worker == nil {
+				app.workerMu.Unlock()
+				return
+			}
+			app.workerMu.Unlock()
+			worker.Start(ctx)
+			app.log.Info("Growth engine worker stopped")
+		}()
 	}
 
 	return nil
@@ -950,10 +1015,44 @@ func (app *Application) stopWorkers() {
 	if app.growthMailCancel != nil {
 		app.growthMailCancel()
 	}
+	if app.miriamWorkerCancel != nil {
+		app.miriamWorkerCancel()
+	}
+	if app.growthEngineCancel != nil {
+		app.growthEngineCancel()
+	}
 }
 
 type dailyPulseUserRepoAdapter struct {
 	repo *repositories.UserRepository
+}
+
+type dailyPulseBriefProvider struct {
+	orchestrator *aiservice.Orchestrator
+}
+
+func (p *dailyPulseBriefProvider) GetMiriamBrief(ctx context.Context, userID uuid.UUID, country string) (map[string]interface{}, error) {
+	result, err := p.orchestrator.ExecuteToolPublic(ctx, userID, infraai.ToolCall{
+		ID:   "daily-pulse-miriam-brief",
+		Name: aiservice.ToolGetMiriamBrief,
+		Arguments: map[string]interface{}{
+			"country": country,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Normalize typed internal slices into JSON-like maps for the worker package.
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	var normalized map[string]interface{}
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		return nil, err
+	}
+	return normalized, nil
 }
 
 func (a *dailyPulseUserRepoAdapter) GetAllActiveUsers(ctx context.Context) ([]struct {
