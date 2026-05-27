@@ -285,7 +285,7 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 		}
 	}()
 
-	// ElevenLabs → Client: handle events
+	// ElevenLabs → Client: translate EL events to the AssemblyAI protocol the client expects
 	replyAudioBytes := 0
 
 	for {
@@ -314,18 +314,21 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 
 		switch event.Type {
 		case "conversation_initiation_metadata":
+			// EL ready → translate to session.ready so the client transitions to listening
 			var meta struct {
 				ConversationInitiationMetadataEvent struct {
 					ConversationID string `json:"conversation_id"`
 				} `json:"conversation_initiation_metadata_event"`
 			}
 			_ = json.Unmarshal(raw, &meta)
-			convELID := meta.ConversationInitiationMetadataEvent.ConversationID
+			elConvID := meta.ConversationInitiationMetadataEvent.ConversationID
 			h.logger.Info("elevenlabs voice session ready",
 				zap.String("user_id", userID.String()),
-				zap.String("el_conversation_id", convELID))
+				zap.String("el_conversation_id", elConvID))
 			readyOnce.Do(func() { close(ready) })
-			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
+			// Send session.ready so the client starts listening
+			readyMsg, _ := json.Marshal(map[string]string{"type": "session.ready", "session_id": elConvID})
+			if !h.writeClientEvent(clientConn, &clientMu, readyMsg, cancel) {
 				return
 			}
 			if convID != uuid.Nil {
@@ -335,6 +338,7 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 			}
 
 		case "audio":
+			// EL audio → translate to reply.audio with data field
 			var audioEvent struct {
 				AudioEvent struct {
 					AudioBase64 string `json:"audio_base_64"`
@@ -344,18 +348,24 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 			_ = json.Unmarshal(raw, &audioEvent)
 			if audioEvent.AudioEvent.AudioBase64 != "" {
 				replyAudioBytes += decodedBase64Len(audioEvent.AudioEvent.AudioBase64)
-			}
-			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
-				return
+				translated, _ := json.Marshal(map[string]string{
+					"type": "reply.audio",
+					"data": audioEvent.AudioEvent.AudioBase64,
+				})
+				if !h.writeClientEvent(clientConn, &clientMu, translated, cancel) {
+					return
+				}
 			}
 
 		case "interruption":
+			// EL interruption → flush + input.speech.started
 			lastActivity.Store(time.Now())
 			replyAudioBytes = 0
 			if !h.writeClientControlEvent(clientConn, &clientMu, "rail.playback.flush", map[string]string{"reason": "interruption"}, cancel) {
 				return
 			}
-			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
+			translated, _ := json.Marshal(map[string]string{"type": "input.speech.started"})
+			if !h.writeClientEvent(clientConn, &clientMu, translated, cancel) {
 				return
 			}
 
@@ -367,16 +377,20 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 				} `json:"user_transcription_event"`
 			}
 			_ = json.Unmarshal(raw, &ut)
-			if text := strings.TrimSpace(ut.UserTranscriptionEvent.UserTranscript); text != "" {
+			text := strings.TrimSpace(ut.UserTranscriptionEvent.UserTranscript)
+			if text != "" {
 				transcriptMu.Lock()
 				transcripts = append(transcripts, transcriptEntry{role: "user", text: text})
 				transcriptMu.Unlock()
-			}
-			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
-				return
+				// Translate to transcript.user
+				translated, _ := json.Marshal(map[string]string{"type": "transcript.user", "text": text})
+				if !h.writeClientEvent(clientConn, &clientMu, translated, cancel) {
+					return
+				}
 			}
 
 		case "agent_response":
+			// EL agent_response fires when agent starts speaking — translate to reply.started + transcript.agent
 			lastActivity.Store(time.Now())
 			var ar struct {
 				AgentResponseEvent struct {
@@ -384,10 +398,24 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 				} `json:"agent_response_event"`
 			}
 			_ = json.Unmarshal(raw, &ar)
-			if text := strings.TrimSpace(ar.AgentResponseEvent.AgentResponse); text != "" {
+			text := strings.TrimSpace(ar.AgentResponseEvent.AgentResponse)
+
+			// Send reply.started so client opens jitter buffer
+			replyStarted, _ := json.Marshal(map[string]string{"type": "reply.started"})
+			if !h.writeClientEvent(clientConn, &clientMu, replyStarted, cancel) {
+				return
+			}
+
+			if text != "" {
 				transcriptMu.Lock()
 				transcripts = append(transcripts, transcriptEntry{role: "assistant", text: text})
 				transcriptMu.Unlock()
+				// Send transcript.agent
+				translated, _ := json.Marshal(map[string]interface{}{"type": "transcript.agent", "text": text, "interrupted": false})
+				if !h.writeClientEvent(clientConn, &clientMu, translated, cancel) {
+					return
+				}
+				// Send sync event with duration estimate
 				durationMs := pcm16DurationMS(replyAudioBytes, voiceSampleRateHz)
 				if !h.writeClientControlEvent(clientConn, &clientMu, "rail.transcript.agent.sync", map[string]string{
 					"text":                  text,
@@ -397,7 +425,24 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 				}
 				replyAudioBytes = 0
 			}
-			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
+
+		case "agent_response_correction":
+			// Barge-in correction — send interrupted transcript.agent
+			var arc struct {
+				AgentResponseCorrectionEvent struct {
+					CorrectedAgentResponse string `json:"corrected_agent_response"`
+				} `json:"agent_response_correction_event"`
+			}
+			_ = json.Unmarshal(raw, &arc)
+			if text := strings.TrimSpace(arc.AgentResponseCorrectionEvent.CorrectedAgentResponse); text != "" {
+				translated, _ := json.Marshal(map[string]interface{}{"type": "transcript.agent", "text": text, "interrupted": true})
+				if !h.writeClientEvent(clientConn, &clientMu, translated, cancel) {
+					return
+				}
+			}
+			// Send reply.done interrupted so client flushes
+			doneFlushed, _ := json.Marshal(map[string]string{"type": "reply.done", "status": "interrupted"})
+			if !h.writeClientEvent(clientConn, &clientMu, doneFlushed, cancel) {
 				return
 			}
 
@@ -413,7 +458,6 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 			}
 
 		case "client_tool_call":
-			// ElevenLabs sends tool calls; we execute and respond immediately.
 			lastActivity.Store(time.Now())
 			var toolEvent struct {
 				ClientToolCall struct {
@@ -468,12 +512,13 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 			h.logger.Error("elevenlabs voice agent error",
 				zap.String("user_id", userID.String()),
 				zap.String("message", errEvent.Message))
-			h.writeClientEvent(clientConn, &clientMu, raw, cancel)
+			errMsg, _ := json.Marshal(map[string]string{"type": "session.error", "message": errEvent.Message})
+			h.writeClientEvent(clientConn, &clientMu, errMsg, cancel)
 			h.writeClientControlEvent(clientConn, &clientMu, "rail.session.ended", map[string]string{"reason": "agent_error"}, cancel)
 			return
 
 		default:
-			// Forward everything else to client
+			// Forward unknown events as-is
 			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
 				return
 			}

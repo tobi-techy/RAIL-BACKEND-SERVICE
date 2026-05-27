@@ -22,17 +22,23 @@ type ElevenLabsClient struct {
 }
 
 // DialElevenLabs opens a WebSocket to the ElevenLabs Conversational AI API.
-// Uses a signed URL for private agents (recommended) or direct agent_id for public agents.
+// Connects directly using agent_id (public agent). For private agents, set apiKey
+// and the signed URL path will be used automatically.
 func DialElevenLabs(apiKey, agentID string, logger *zap.Logger) (*ElevenLabsClient, error) {
-	// Get a signed URL so the API key never leaves the server
-	signedURL, err := fetchElevenLabsSignedURL(apiKey, agentID)
-	if err != nil {
-		// Fall back to direct agent_id connection (public agents)
-		logger.Warn("elevenlabs signed URL fetch failed, falling back to direct connection", zap.Error(err))
-		signedURL = elevenLabsEndpoint + "?agent_id=" + agentID
+	var wsURL string
+	if apiKey != "" {
+		signedURL, err := fetchElevenLabsSignedURL(apiKey, agentID)
+		if err != nil {
+			logger.Warn("elevenlabs signed URL fetch failed, falling back to direct connection", zap.Error(err))
+			wsURL = elevenLabsEndpoint + "?agent_id=" + agentID
+		} else {
+			wsURL = signedURL
+		}
+	} else {
+		wsURL = elevenLabsEndpoint + "?agent_id=" + agentID
 	}
 
-	conn, resp, err := websocket.DefaultDialer.Dial(signedURL, nil)
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		if resp != nil {
 			resp.Body.Close()
