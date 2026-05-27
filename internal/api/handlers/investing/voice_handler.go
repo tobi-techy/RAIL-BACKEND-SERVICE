@@ -34,9 +34,7 @@ const (
 	maxSessionDuration = 15 * time.Minute
 	idleTimeout        = 5 * time.Minute
 	voiceToolTimeout   = 12 * time.Second
-	voiceToolDrainWait = 100 * time.Millisecond
 	voiceSampleRateHz  = 24000
-	maxSilentRetries   = 1
 
 	voiceSessionTicketTTL        = 60 * time.Second
 	maxVoiceFrameBytes           = 256 * 1024
@@ -58,11 +56,11 @@ type VoiceConversationPersister interface {
 	DeleteConversation(ctx context.Context, userID, convID uuid.UUID) error
 }
 
-// VoiceHandler handles real-time voice sessions via AssemblyAI Voice Agent API.
+// VoiceHandler handles real-time voice sessions via ElevenLabs Conversational AI API.
 type VoiceHandler struct {
 	apiKey              string
+	agentID             string
 	tokenSecret         string
-	voice               string
 	orchestrator        *aiservice.Orchestrator
 	usage               VoiceUsageTracker
 	convService         VoiceConversationPersister
@@ -73,11 +71,11 @@ type VoiceHandler struct {
 	logger              *zap.Logger
 }
 
-func NewVoiceHandler(apiKey, tokenSecret, voice string, orchestrator *aiservice.Orchestrator, usage VoiceUsageTracker, convService VoiceConversationPersister, allowedOrigins []string, logger *zap.Logger) *VoiceHandler {
+func NewVoiceHandler(apiKey, agentID, tokenSecret string, orchestrator *aiservice.Orchestrator, usage VoiceUsageTracker, convService VoiceConversationPersister, allowedOrigins []string, logger *zap.Logger) *VoiceHandler {
 	h := &VoiceHandler{
 		apiKey:           apiKey,
+		agentID:          agentID,
 		tokenSecret:      tokenSecret,
-		voice:            voice,
 		orchestrator:     orchestrator,
 		usage:            usage,
 		convService:      convService,
@@ -133,10 +131,10 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 	clientConn.SetReadLimit(maxVoiceFrameBytes)
 	var clientMu sync.Mutex
 
-	// Connect to AssemblyAI Voice Agent API
-	agentConn, err := infraai.DialRealtime(h.apiKey, h.logger)
+	// Connect to ElevenLabs Conversational AI API
+	agentConn, err := infraai.DialElevenLabs(h.apiKey, h.agentID, h.logger)
 	if err != nil {
-		h.logger.Error("assemblyai voice agent dial failed", zap.Error(err))
+		h.logger.Error("elevenlabs voice agent dial failed", zap.Error(err))
 		if wErr := clientConn.WriteJSON(map[string]string{"type": "error", "message": "voice service unavailable"}); wErr != nil {
 			h.logger.Error("failed to send error to voice client", zap.Error(wErr), zap.String("user_id", userID.String()))
 		}
@@ -144,9 +142,10 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 	}
 	defer agentConn.Close()
 
-	// Configure session with Miriam's prompt and tools
-	if err := h.configureSession(c.Request.Context(), userID, agentConn); err != nil {
-		h.logger.Error("session configure failed", zap.Error(err))
+	// Send conversation_initiation_client_data with Miriam's prompt override
+	if err := h.initSession(c.Request.Context(), userID, agentConn); err != nil {
+		h.logger.Error("session init failed", zap.Error(err))
+		clientConn.WriteJSON(map[string]string{"type": "session.error", "code": "configuration_error", "message": "Voice session configuration failed"})
 		return
 	}
 
@@ -185,7 +184,7 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 		readyOnce.Do(func() { close(ready) })
 	}()
 
-	// Client → AssemblyAI: forward audio
+	// Client → ElevenLabs: forward audio
 	go func() {
 		defer cancel()
 		windowStart := time.Now()
@@ -203,6 +202,17 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 				return
 			}
 			lastActivity.Store(time.Now())
+
+			if messageType == websocket.TextMessage {
+				var pingEvent struct {
+					Type string `json:"type"`
+				}
+				if json.Unmarshal(msg, &pingEvent) == nil && pingEvent.Type == "ping" {
+					h.writeClientControlEvent(clientConn, &clientMu, "pong", nil, cancel)
+					continue
+				}
+			}
+
 			event, audioBytes, ok := normalizeClientVoiceEvent(messageType, msg)
 			if !ok {
 				continue
@@ -275,53 +285,8 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 		}
 	}()
 
-	// AssemblyAI → Client: handle events
-	var pendingTools []pendingTool
-	var pendingMu sync.Mutex
-	lastAgentEvent := ""
-	waitingForAnswer := false
-	replyAudioChunks := 0
+	// ElevenLabs → Client: handle events
 	replyAudioBytes := 0
-	replyID := ""
-	silentReplyRetries := 0
-	silentReplyText := ""
-
-	setLastAgentEvent := func(eventType string) {
-		pendingMu.Lock()
-		lastAgentEvent = eventType
-		pendingMu.Unlock()
-	}
-
-	dropPendingTools := func() {
-		pendingMu.Lock()
-		pendingTools = nil
-		pendingMu.Unlock()
-	}
-
-	var flushReadyTools func()
-	flushReadyTools = func() {
-		var readyTools []completedTool
-		pendingMu.Lock()
-		if lastAgentEvent == "reply.done" {
-			remaining := pendingTools[:0]
-			for _, pt := range pendingTools {
-				select {
-				case result := <-pt.result:
-					readyTools = append(readyTools, completedTool{callID: pt.callID, result: result})
-				default:
-					remaining = append(remaining, pt)
-				}
-			}
-			pendingTools = remaining
-		}
-		pendingMu.Unlock()
-
-		for _, tool := range readyTools {
-			if err := agentConn.Send(infraai.NewToolResult(tool.callID, tool.result)); err != nil {
-				h.logger.Warn("failed to send tool result", zap.Error(err))
-			}
-		}
-	}
 
 	for {
 		select {
@@ -343,80 +308,66 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 		}
 
 		var event struct {
-			Type      string                 `json:"type"`
-			CallID    string                 `json:"call_id"`
-			Name      string                 `json:"name"`
-			Arguments map[string]interface{} `json:"arguments"`
-			Status    string                 `json:"status"`
-			ReplyID   string                 `json:"reply_id"`
-			Data      string                 `json:"data"`
+			Type string `json:"type"`
 		}
 		json.Unmarshal(raw, &event)
 
 		switch event.Type {
-		case "session.ready":
-			var readyEvent struct {
-				SessionID string `json:"session_id"`
+		case "conversation_initiation_metadata":
+			var meta struct {
+				ConversationInitiationMetadataEvent struct {
+					ConversationID string `json:"conversation_id"`
+				} `json:"conversation_initiation_metadata_event"`
 			}
-			_ = json.Unmarshal(raw, &readyEvent)
-			h.logger.Info("voice session ready",
+			_ = json.Unmarshal(raw, &meta)
+			convELID := meta.ConversationInitiationMetadataEvent.ConversationID
+			h.logger.Info("elevenlabs voice session ready",
 				zap.String("user_id", userID.String()),
-				zap.String("session_id", readyEvent.SessionID))
+				zap.String("el_conversation_id", convELID))
 			readyOnce.Do(func() { close(ready) })
 			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
 				return
 			}
-			// Notify client of the conversation_id for this voice session
 			if convID != uuid.Nil {
 				if !h.writeClientControlEvent(clientConn, &clientMu, "rail.voice.conversation", map[string]string{"conversation_id": convID.String()}, cancel) {
 					return
 				}
 			}
 
-		case "reply.started":
-			setLastAgentEvent(event.Type)
-			replyID = event.ReplyID
-			replyAudioChunks = 0
+		case "audio":
+			var audioEvent struct {
+				AudioEvent struct {
+					AudioBase64 string `json:"audio_base_64"`
+					EventID     int64  `json:"event_id"`
+				} `json:"audio_event"`
+			}
+			_ = json.Unmarshal(raw, &audioEvent)
+			if audioEvent.AudioEvent.AudioBase64 != "" {
+				replyAudioBytes += decodedBase64Len(audioEvent.AudioEvent.AudioBase64)
+			}
+			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
+				return
+			}
+
+		case "interruption":
+			lastActivity.Store(time.Now())
 			replyAudioBytes = 0
-			silentReplyText = ""
-			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
+			if !h.writeClientControlEvent(clientConn, &clientMu, "rail.playback.flush", map[string]string{"reason": "interruption"}, cancel) {
 				return
-			}
-
-		case "reply.audio":
-			if event.Data != "" {
-				replyAudioChunks++
-				replyAudioBytes += decodedBase64Len(event.Data)
 			}
 			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
 				return
 			}
 
-		case "input.speech.started":
-			setLastAgentEvent(event.Type)
+		case "user_transcript":
 			lastActivity.Store(time.Now())
-			dropPendingTools()
-			if !h.writeClientControlEvent(clientConn, &clientMu, "rail.playback.flush", map[string]string{"reason": "input_speech_started"}, cancel) {
-				return
+			var ut struct {
+				UserTranscriptionEvent struct {
+					UserTranscript string `json:"user_transcript"`
+				} `json:"user_transcription_event"`
 			}
-			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
-				return
-			}
-
-		case "transcript.user":
-			lastActivity.Store(time.Now())
-			if waitingForAnswer {
-				waitingForAnswer = false
-				if err := agentConn.Send(infraai.NewBaselineTurnDetectionUpdate()); err != nil {
-					h.logger.Warn("failed to restore voice turn detection", zap.Error(err))
-				}
-			}
-			// Capture user transcript for conversation persistence
-			var userTranscript struct {
-				Text string `json:"text"`
-			}
-			_ = json.Unmarshal(raw, &userTranscript)
-			if text := strings.TrimSpace(userTranscript.Text); text != "" {
+			_ = json.Unmarshal(raw, &ut)
+			if text := strings.TrimSpace(ut.UserTranscriptionEvent.UserTranscript); text != "" {
 				transcriptMu.Lock()
 				transcripts = append(transcripts, transcriptEntry{role: "user", text: text})
 				transcriptMu.Unlock()
@@ -425,78 +376,78 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 				return
 			}
 
-		case "transcript.agent":
-			var transcriptEvent struct {
-				Text        string `json:"text"`
-				Interrupted bool   `json:"interrupted"`
+		case "agent_response":
+			lastActivity.Store(time.Now())
+			var ar struct {
+				AgentResponseEvent struct {
+					AgentResponse string `json:"agent_response"`
+				} `json:"agent_response_event"`
 			}
-			_ = json.Unmarshal(raw, &transcriptEvent)
-			if transcriptEvent.Interrupted {
-				dropPendingTools()
-				if !h.writeClientControlEvent(clientConn, &clientMu, "rail.playback.flush", map[string]string{"reason": "agent_interrupted"}, cancel) {
-					return
-				}
-			} else if strings.HasSuffix(strings.TrimSpace(transcriptEvent.Text), "?") && !waitingForAnswer {
-				waitingForAnswer = true
-				if err := agentConn.Send(infraai.NewQuestionTurnDetectionUpdate()); err != nil {
-					h.logger.Warn("failed to extend voice turn detection", zap.Error(err))
-				}
-			}
-			// Capture non-interrupted agent transcript for conversation persistence
-			if !transcriptEvent.Interrupted {
-				if text := strings.TrimSpace(transcriptEvent.Text); text != "" {
-					transcriptMu.Lock()
-					transcripts = append(transcripts, transcriptEntry{role: "assistant", text: text})
-					transcriptMu.Unlock()
-				}
-			}
-			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
-				return
-			}
-			if !transcriptEvent.Interrupted && strings.TrimSpace(transcriptEvent.Text) != "" {
+			_ = json.Unmarshal(raw, &ar)
+			if text := strings.TrimSpace(ar.AgentResponseEvent.AgentResponse); text != "" {
+				transcriptMu.Lock()
+				transcripts = append(transcripts, transcriptEntry{role: "assistant", text: text})
+				transcriptMu.Unlock()
 				durationMs := pcm16DurationMS(replyAudioBytes, voiceSampleRateHz)
 				if !h.writeClientControlEvent(clientConn, &clientMu, "rail.transcript.agent.sync", map[string]string{
-					"reply_id":              firstNonEmpty(replyID, event.ReplyID),
-					"text":                  transcriptEvent.Text,
+					"text":                  text,
 					"estimated_duration_ms": durationMsString(durationMs),
 				}, cancel) {
 					return
 				}
-				if replyAudioChunks == 0 {
-					silentReplyText = transcriptEvent.Text
-				}
+				replyAudioBytes = 0
+			}
+			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
+				return
 			}
 
-		case "tool.call":
-			// Execute tool and accumulate result. AssemblyAI expects tool.result only after reply.done.
-			lastActivity.Store(time.Now())
-			resultCh := make(chan string, 1)
-			pendingMu.Lock()
-			pendingTools = append(pendingTools, pendingTool{callID: event.CallID, result: resultCh})
-			pendingMu.Unlock()
+		case "ping":
+			var pingEvent struct {
+				PingEvent struct {
+					EventID int64 `json:"event_id"`
+				} `json:"ping_event"`
+			}
+			_ = json.Unmarshal(raw, &pingEvent)
+			if err := agentConn.Send(infraai.NewELPong(pingEvent.PingEvent.EventID)); err != nil {
+				h.logger.Warn("failed to send pong", zap.Error(err))
+			}
 
-			// Acquire semaphore slot (max 5 concurrent tools)
+		case "client_tool_call":
+			// ElevenLabs sends tool calls; we execute and respond immediately.
+			lastActivity.Store(time.Now())
+			var toolEvent struct {
+				ClientToolCall struct {
+					ToolName   string                 `json:"tool_name"`
+					ToolCallID string                 `json:"tool_call_id"`
+					Parameters map[string]interface{} `json:"parameters"`
+				} `json:"client_tool_call"`
+			}
+			_ = json.Unmarshal(raw, &toolEvent)
+			tc := toolEvent.ClientToolCall
+
 			select {
 			case toolSem <- struct{}{}:
 			case <-ctx.Done():
 				continue
 			}
 
-			go func(callID, name string, args map[string]interface{}) {
+			go func(toolCallID, name string, args map[string]interface{}, conn *infraai.ElevenLabsClient) {
 				defer func() { <-toolSem }()
 				toolStart := time.Now()
 				toolCtx, toolCancel := context.WithTimeout(ctx, voiceToolTimeout)
 				defer toolCancel()
 
-				tc := infraai.ToolCall{ID: callID, Name: name, Arguments: args}
-				result, err := h.orchestrator.ExecuteToolPublic(toolCtx, userID, tc)
-				if err != nil {
+				toolTC := infraai.ToolCall{ID: toolCallID, Name: name, Arguments: args}
+				result, execErr := h.orchestrator.ExecuteToolPublic(toolCtx, userID, toolTC)
+				isError := false
+				if execErr != nil {
 					h.logger.Warn("voice tool execution failed",
 						zap.String("user_id", userID.String()),
 						zap.String("tool", name),
 						zap.Duration("duration", time.Since(toolStart)),
-						zap.Error(err))
+						zap.Error(execErr))
 					result = map[string]interface{}{"error": voiceToolErrorMessage(name)}
+					isError = true
 				} else {
 					h.logger.Debug("voice tool execution completed",
 						zap.String("user_id", userID.String()),
@@ -504,71 +455,25 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 						zap.Duration("duration", time.Since(toolStart)))
 				}
 				resultJSON, _ := json.Marshal(result)
-				select {
-				case resultCh <- string(resultJSON):
-				case <-toolCtx.Done():
-					// Context cancelled — bounded wait to avoid leak
-					select {
-					case resultCh <- string(resultJSON):
-					case <-time.After(voiceToolDrainWait):
-					}
+				if err := conn.Send(infraai.NewELToolResult(toolCallID, string(resultJSON), isError)); err != nil {
+					h.logger.Warn("failed to send tool result", zap.Error(err))
 				}
-				flushReadyTools()
-			}(event.CallID, event.Name, event.Arguments)
+			}(tc.ToolCallID, tc.ToolName, tc.Parameters, agentConn)
 
-		case "reply.done":
-			lastActivity.Store(time.Now())
-			if event.Status == "interrupted" {
-				// User barged in — discard pending tool results
-				setLastAgentEvent("reply.interrupted")
-				dropPendingTools()
-				if !h.writeClientControlEvent(clientConn, &clientMu, "rail.playback.flush", map[string]string{"reason": "reply_interrupted"}, cancel) {
-					return
-				}
-			} else {
-				setLastAgentEvent(event.Type)
-			}
-
-			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
-				return
-			}
-			if event.Status != "interrupted" && silentReplyText != "" && silentReplyRetries < maxSilentRetries {
-				repairText := silentReplyText
-				silentReplyText = ""
-				silentReplyRetries++
-				if !h.writeClientControlEvent(clientConn, &clientMu, "rail.voice.audio_missing", map[string]string{
-					"reply_id": firstNonEmpty(replyID, event.ReplyID),
-				}, cancel) {
-					return
-				}
-				if err := agentConn.Send(infraai.NewReplyCreate("Repeat this exact response out loud. The previous audio stream was silent: " + truncateForVoiceRepair(repairText))); err != nil {
-					h.logger.Warn("failed to request silent voice repair", zap.Error(err))
-					silentReplyRetries = 0
-				} else {
-					replyAudioChunks = 0
-					replyAudioBytes = 0
-				}
-			}
-			if event.Status != "interrupted" {
-				flushReadyTools()
-			}
-
-		case "session.error":
+		case "internal_server_error":
 			var errEvent struct {
-				Code    string `json:"code"`
 				Message string `json:"message"`
 			}
 			json.Unmarshal(raw, &errEvent)
-			h.logger.Error("voice agent session error",
+			h.logger.Error("elevenlabs voice agent error",
 				zap.String("user_id", userID.String()),
-				zap.String("code", errEvent.Code),
 				zap.String("message", errEvent.Message))
-			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
-				return
-			}
+			h.writeClientEvent(clientConn, &clientMu, raw, cancel)
+			h.writeClientControlEvent(clientConn, &clientMu, "rail.session.ended", map[string]string{"reason": "agent_error"}, cancel)
+			return
 
 		default:
-			// Forward everything else to client (reply.audio, transcript.*, session.ready, etc.)
+			// Forward everything else to client
 			if !h.writeClientEvent(clientConn, &clientMu, raw, cancel) {
 				return
 			}
@@ -590,16 +495,6 @@ func (h *VoiceHandler) authenticateVoiceSession(c *gin.Context) (uuid.UUID, erro
 		return uuid.Nil, err
 	}
 	return userID, nil
-}
-
-type pendingTool struct {
-	callID string
-	result <-chan string
-}
-
-type completedTool struct {
-	callID string
-	result string
 }
 
 type transcriptEntry struct {
@@ -633,7 +528,7 @@ func (h *VoiceHandler) writeClientControlEvent(conn *websocket.Conn, mu *sync.Mu
 
 func normalizeClientVoiceEvent(messageType int, msg []byte) (interface{}, int, bool) {
 	if messageType == websocket.BinaryMessage {
-		return infraai.NewAudioInput(base64.StdEncoding.EncodeToString(msg)), len(msg), true
+		return infraai.NewELAudioChunk(base64.StdEncoding.EncodeToString(msg)), len(msg), true
 	}
 
 	var event struct {
@@ -641,16 +536,13 @@ func normalizeClientVoiceEvent(messageType int, msg []byte) (interface{}, int, b
 		Audio string `json:"audio"`
 	}
 	if err := json.Unmarshal(msg, &event); err == nil && event.Type == "input_audio_buffer.append" && event.Audio != "" {
-		return infraai.NewAudioInput(event.Audio), decodedBase64Len(event.Audio), true
+		return infraai.NewELAudioChunk(event.Audio), decodedBase64Len(event.Audio), true
 	}
 	if err := json.Unmarshal(msg, &event); err == nil && event.Type == "input.audio" && event.Audio != "" {
-		return json.RawMessage(msg), decodedBase64Len(event.Audio), true
+		return infraai.NewELAudioChunk(event.Audio), decodedBase64Len(event.Audio), true
 	}
 	switch event.Type {
-	case "input_audio_buffer.commit", "input_audio_buffer.clear", "response.create":
-		// OpenAI Realtime clients send these control events. AssemblyAI handles
-		// turn commits and response creation server-side, so forwarding them
-		// would produce invalid_format session errors.
+	case "input_audio_buffer.commit", "input_audio_buffer.clear", "response.create", "ping":
 		return nil, 0, false
 	}
 
@@ -684,75 +576,9 @@ func durationMsString(ms int) string {
 	return strconv.Itoa(ms)
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func truncateForVoiceRepair(text string) string {
-	text = strings.TrimSpace(text)
-	const maxRunes = 240
-	runes := []rune(text)
-	if len(runes) <= maxRunes {
-		return text
-	}
-	return string(runes[:maxRunes]) + "."
-}
-
-func (h *VoiceHandler) configureSession(ctx context.Context, userID uuid.UUID, conn *infraai.RealtimeClient) error {
-	tools := append(h.orchestrator.GetTools(), aiservice.VoiceTools()...)
-	// Voice gets two router tools for chat parity plus a small set of direct
-	// high-frequency actions for better parameter extraction.
-	voiceTools := voiceToolDescriptions()
-	var filteredTools []infraai.SessionTool
-	for _, t := range tools {
-		description, ok := voiceTools[t.Name]
-		if !ok {
-			continue
-		}
-		filteredTools = append(filteredTools, infraai.SessionTool{
-			Type:           "function",
-			Name:           t.Name,
-			Description:    description,
-			Parameters:     t.Parameters,
-			ExecutionMode:  "interactive",
-			TimeoutSeconds: 15,
-		})
-	}
-	sessionTools := filteredTools
-
-	instructions := h.orchestrator.BuildRealtimeInstructions(ctx, userID)
-	greeting := h.orchestrator.BuildRealtimeGreeting(ctx, userID)
-	return conn.Send(infraai.NewSessionUpdate(instructions, h.voice, greeting, sessionTools))
-}
-
-func voiceToolDescriptions() map[string]string {
-	return map[string]string{
-		aiservice.ToolVoiceMoneyLookup:          "Use for read-only tools that are NOT exposed directly to voice: search_knowledge_base, get_financial_timeline, get_persona_money_context, get_money_operating_plan, get_financial_advice, get_financial_plan, get_cash_flow_forecast, get_financial_audit, get_financial_health. Set the tool field to the underlying chat tool name. For common tools like get_account_summary, get_budget, get_money_flow, get_miriam_brief — call them directly by name instead.",
-		aiservice.ToolVoiceMoneyAction:          "Use for less-common chat actions in voice. Set action to the underlying action tool name and params to that action's arguments. Use after clear user intent or confirmation.",
-		aiservice.ToolGetAccountSummary:         "Call when the user asks for balance, overview, safe spend, or how their money looks. Fast account snapshot.",
-		aiservice.ToolGetBudget:                 "Call when the user asks about their budget, monthly limit, remaining budget, daily allowance, budget status, or how much they can still spend.",
-		aiservice.ToolSetBudget:                 "Call when the user wants to set or change their monthly spending budget. Never say the budget changed unless this succeeds.",
-		aiservice.ToolTransferFunds:             "Call when the user asks to move money between Spend and Stash. Never say money moved unless this succeeds.",
-		aiservice.ToolInitiateWithdrawal:        "Call when the user asks to withdraw or cash out to a linked bank. Ask for missing amount or currency first.",
-		aiservice.ToolGetLinkedBanks:            "Call before a withdrawal if the user asks which bank is linked or does not specify a destination.",
-		aiservice.ToolSetSavingsGoal:            "Call when the user wants to save for a named target, like rent, travel, emergency fund, or school fees.",
-		aiservice.ToolCreateAutomation:          "Call when the user wants an automatic rule. Never claim it is active until the tool succeeds; if authorization is required, say that clearly.",
-		aiservice.ToolCreateObligationReminder:  "Call when the user wants Miriam to remember a bill, debt, rent, invoice, subscription, tax, or family support obligation.",
-		aiservice.ToolGetMiriamBrief:            "Call when the user asks what changed, what matters, or what they should do next. Fast canonical Miriam brief.",
-		aiservice.ToolGetMoneyFlow:              "Call when the user asks where money went, how much they spent, or wants spending versus deposits.",
-		aiservice.ToolGetDepositHistory:         "Call when the user asks about recent deposits, funding history, or money coming in. Supports period filtering for this_month, last_month, last_7_days, last_30_days.",
-		aiservice.ToolGetWithdrawalHistory:      "Call when the user asks about recent withdrawals, cash-outs, or money leaving Rail. Supports period filtering for this_month, last_month, last_7_days, last_30_days.",
-		aiservice.ToolGetFinancialHealth:        "Call when the user asks how they are doing financially, their financial health, score, or progress. Supports multi-month analysis.",
-		aiservice.ToolGetFinancialAudit:         "Call when the user says audit me, hard mode, roast my finances, reality check, or wants accountability. Provides detailed financial audit with scores and recommendations.",
-		aiservice.ToolGetMiriamMoneyState:       "Call when the user asks what Miriam sees, whether money is safe to move, safe-to-spend, runway, income cadence, upcoming obligations, recurring spend, anomalies, or confidence.",
-		aiservice.ToolListMiriamMandates:        "Call when the user asks what Miriam is allowed to do automatically, which autopilot rules are active, or whether quiet money moves are enabled.",
-		aiservice.ToolGetMiriamDecisionReceipts: "Call when the user asks what Miriam did quietly, why money moved, recent autopilot actions, skipped actions, or decision receipts.",
-	}
+func (h *VoiceHandler) initSession(ctx context.Context, userID uuid.UUID, conn *infraai.ElevenLabsClient) error {
+	dynamicVars := h.orchestrator.BuildRealtimeDynamicVars(ctx, userID)
+	return conn.Send(infraai.NewELConversationInit(dynamicVars))
 }
 
 // voiceToolErrorMessage returns a user-friendly error message specific to the tool that failed.
@@ -838,7 +664,7 @@ func (h *VoiceHandler) persistVoiceTranscripts(userID uuid.UUID, convID uuid.UUI
 				if userMsg == "" {
 					userMsg = "(voice input)"
 				}
-				if err := h.convService.RecordExchange(ctx, convID, userMsg, e.text, 0, decimal.Zero, "voice-assemblyai", nil); err != nil {
+				if err := h.convService.RecordExchange(ctx, convID, userMsg, e.text, 0, decimal.Zero, "voice-elevenlabs", nil); err != nil {
 					h.logger.Warn("failed to persist voice transcript", zap.Error(err))
 					return
 				}

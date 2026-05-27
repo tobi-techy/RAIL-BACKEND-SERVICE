@@ -87,14 +87,22 @@ type AIConfig struct {
 	Kimi       KimiConfig       `mapstructure:"kimi"`
 	Groq       GroqConfig       `mapstructure:"groq"`
 	Bedrock    BedrockConfig    `mapstructure:"bedrock"`
-	AssemblyAI AssemblyAIConfig `mapstructure:"assemblyai"`
+	AssemblyAI AssemblyAIConfig `mapstructure:"assemblyai"` // Deprecated: use ElevenLabs
+	ElevenLabs ElevenLabsConfig `mapstructure:"elevenlabs"`
 	Primary    string           `mapstructure:"primary"` // "openai", "gemini", "kimi", "groq", or "bedrock"
 }
 
-// AssemblyAIConfig contains AssemblyAI Voice Agent API configuration
+// AssemblyAIConfig contains AssemblyAI Voice Agent API configuration (deprecated, kept for backward compat)
 type AssemblyAIConfig struct {
 	APIKey string `mapstructure:"api_key"`
 	Voice  string `mapstructure:"voice"`
+}
+
+// ElevenLabsConfig contains ElevenLabs Conversational AI configuration
+type ElevenLabsConfig struct {
+	APIKey  string `mapstructure:"api_key"`
+	AgentID string `mapstructure:"agent_id"` // ElevenLabs Conversational AI agent ID
+	VoiceID string `mapstructure:"voice_id"` // Optional: override agent's default voice
 }
 
 // BedrockConfig contains Amazon Bedrock configuration
@@ -840,6 +848,9 @@ func setDefaults() {
 	// Explicit env bindings for AI keys (task def uses short names)
 	viper.BindEnv("ai.assemblyai.api_key", "ASSEMBLYAI_API_KEY")
 	viper.BindEnv("ai.assemblyai.voice", "ASSEMBLYAI_VOICE")
+	viper.BindEnv("ai.elevenlabs.api_key", "ELEVENLABS_API_KEY")
+	viper.BindEnv("ai.elevenlabs.agent_id", "ELEVENLABS_AGENT_ID")
+	viper.BindEnv("ai.elevenlabs.voice_id", "ELEVENLABS_VOICE_ID")
 	viper.BindEnv("ai.openai.api_key", "OPENAI_API_KEY")
 	viper.BindEnv("ai.gemini.api_key", "GEMINI_API_KEY")
 	viper.BindEnv("ai.kimi.api_key", "KIMI_API_KEY")
@@ -1161,6 +1172,17 @@ func overrideFromEnv() {
 	}
 	if assemblyAIVoice := os.Getenv("ASSEMBLYAI_VOICE"); assemblyAIVoice != "" {
 		viper.Set("ai.assemblyai.voice", assemblyAIVoice)
+	}
+	if elevenLabsKey := os.Getenv("ELEVENLABS_API_KEY"); elevenLabsKey != "" {
+		viper.Set("ai.elevenlabs.api_key", elevenLabsKey)
+	} else {
+		viper.Set("ai.elevenlabs.api_key", "")
+	}
+	if elevenLabsAgentID := os.Getenv("ELEVENLABS_AGENT_ID"); elevenLabsAgentID != "" {
+		viper.Set("ai.elevenlabs.agent_id", elevenLabsAgentID)
+	}
+	if elevenLabsVoiceID := os.Getenv("ELEVENLABS_VOICE_ID"); elevenLabsVoiceID != "" {
+		viper.Set("ai.elevenlabs.voice_id", elevenLabsVoiceID)
 	}
 	if openaiKey := os.Getenv("OPENAI_API_KEY"); openaiKey != "" {
 		viper.Set("ai.openai.api_key", openaiKey)

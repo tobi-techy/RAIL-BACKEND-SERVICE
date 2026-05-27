@@ -46,6 +46,14 @@
         {
           "name": "ASSEMBLYAI_VOICE",
           "value": "ivy"
+        },
+        {
+          "name": "ELEVENLABS_AGENT_ID",
+          "value": "agent_7601kskdhzsvf7w86sqhwevwbdxc7"
+        },
+        {
+          "name": "ELEVENLABS_VOICE_ID",
+          "value": "vu4rANpMkmDMEwCAoZ47"
         }
       ],
       "mountPoints": [],
@@ -270,6 +278,10 @@
         {
           "name": "ASSEMBLYAI_API_KEY",
           "valueFrom": "/rail/prod/ASSEMBLYAI_API_KEY"
+        },
+        {
+          "name": "ELEVENLABS_API_KEY",
+          "valueFrom": "/rail/prod/ELEVENLABS_API_KEY"
         }
       ],
       "logConfiguration": {

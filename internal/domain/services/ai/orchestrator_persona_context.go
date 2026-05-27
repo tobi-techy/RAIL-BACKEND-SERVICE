@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -71,13 +72,25 @@ func (o *Orchestrator) buildUserProfileContext(ctx context.Context, userID uuid.
 // BuildRealtimeGreeting returns the short spoken opener AssemblyAI uses when
 // the voice session starts. Keep it calm, contextual, and privacy-aware.
 func (o *Orchestrator) BuildRealtimeGreeting(ctx context.Context, userID uuid.UUID) string {
-	name := o.realtimeFirstName(ctx, userID)
+	nameCh := make(chan string, 1)
+	locCh := make(chan *time.Location, 1)
+	insightCh := make(chan string, 1)
 
-	loc, _, _ := o.resolveMiriamLocation(ctx, userID, nil)
-	if loc == nil {
-		loc = time.Local
-	}
+	go func() { nameCh <- o.realtimeFirstName(ctx, userID) }()
+	go func() {
+		loc, _, _ := o.resolveMiriamLocation(ctx, userID, nil)
+		if loc == nil {
+			locCh <- time.Local
+		} else {
+			locCh <- loc
+		}
+	}()
+	go func() { insightCh <- o.realtimeProactiveInsight(ctx, userID) }()
+
+	name := <-nameCh
+	loc := <-locCh
 	hour := time.Now().In(loc).Hour()
+
 	var greeting string
 	switch {
 	case hour >= 5 && hour < 12:
@@ -106,7 +119,7 @@ func (o *Orchestrator) BuildRealtimeGreeting(ctx context.Context, userID uuid.UU
 		}
 	}
 
-	insight := o.realtimeProactiveInsight(ctx, userID)
+	insight := <-insightCh
 	if insight != "" {
 		return greeting + " " + insight
 	}
@@ -222,21 +235,19 @@ func (o *Orchestrator) realtimeHasBalanceContext(ctx context.Context, userID uui
 // BuildRealtimeInstructions returns Miriam's voice prompt with the same personal context
 // used by text chat. It is best-effort: missing context is skipped.
 func (o *Orchestrator) BuildRealtimeInstructions(ctx context.Context, userID uuid.UUID) string {
+	ch := make(chan string, 5)
+
+	go func() { ch <- o.buildBalanceContext(ctx, userID) }()
+	go func() { ch <- o.buildStashLockContext(ctx, userID) }()
+	go func() { ch <- o.buildYearFinancialContext(ctx, userID) }()
+	go func() { ch <- o.buildUserTimeContext(ctx, userID) }()
+	go func() { ch <- o.buildUserProfileContext(ctx, userID) }()
+
 	parts := []string{SystemPrompt}
-	if balanceCtx := o.buildBalanceContext(ctx, userID); balanceCtx != "" {
-		parts = append(parts, balanceCtx)
-	}
-	if stashLockCtx := o.buildStashLockContext(ctx, userID); stashLockCtx != "" {
-		parts = append(parts, stashLockCtx)
-	}
-	if yearCtx := o.buildYearFinancialContext(ctx, userID); yearCtx != "" {
-		parts = append(parts, yearCtx)
-	}
-	if timeCtx := o.buildUserTimeContext(ctx, userID); timeCtx != "" {
-		parts = append(parts, timeCtx)
-	}
-	if profileCtx := o.buildUserProfileContext(ctx, userID); profileCtx != "" {
-		parts = append(parts, profileCtx)
+	for i := 0; i < 5; i++ {
+		if s := <-ch; s != "" {
+			parts = append(parts, s)
+		}
 	}
 	parts = append(parts, premiumRealtimeVoiceInstructions)
 
@@ -275,27 +286,45 @@ func (o *Orchestrator) buildYearFinancialContext(ctx context.Context, userID uui
 	))
 	parts = append(parts, fmt.Sprintf("net flow: $%s", net.StringFixed(2)))
 
-	// Per-month breakdown for the last 12 months
-	var monthLines []string
+	// Per-month breakdown for the last 12 months (fetched in parallel)
+	type monthResult struct {
+		idx  int
+		line string
+		ok   bool
+	}
+	results := make([]monthResult, 12)
+	var monthWg sync.WaitGroup
 	for i := 11; i >= 0; i-- {
-		mStart := time.Date(now.Year(), now.Month()-time.Month(i), 1, 0, 0, 0, 0, time.UTC)
-		mEnd := mStart.AddDate(0, 1, 0)
-		if mEnd.After(now) {
-			mEnd = now
+		monthWg.Add(1)
+		go func(idx int) {
+			defer monthWg.Done()
+			mStart := time.Date(now.Year(), now.Month()-time.Month(idx), 1, 0, 0, 0, 0, time.UTC)
+			mEnd := mStart.AddDate(0, 1, 0)
+			if mEnd.After(now) {
+				mEnd = now
+			}
+			mFlow, err := o.spending.GetMoneyFlow(fetchCtx, userID, mStart, mEnd)
+			if err != nil || mFlow == nil {
+				return
+			}
+			mOut := mFlow.TotalWithdrawals.Add(mFlow.TotalCardSpend).Add(mFlow.TotalP2P).Add(mFlow.TotalReceipts)
+			if mFlow.TotalDeposits.IsZero() && mOut.IsZero() {
+				return
+			}
+			results[idx] = monthResult{
+				idx:  idx,
+				line: fmt.Sprintf("%s: in $%s out $%s", mStart.Format("Jan 2006"), mFlow.TotalDeposits.StringFixed(2), mOut.StringFixed(2)),
+				ok:   true,
+			}
+		}(i)
+	}
+	monthWg.Wait()
+
+	var monthLines []string
+	for _, r := range results {
+		if r.ok {
+			monthLines = append(monthLines, r.line)
 		}
-		mFlow, err := o.spending.GetMoneyFlow(fetchCtx, userID, mStart, mEnd)
-		if err != nil || mFlow == nil {
-			continue
-		}
-		mOut := mFlow.TotalWithdrawals.Add(mFlow.TotalCardSpend).Add(mFlow.TotalP2P).Add(mFlow.TotalReceipts)
-		if mFlow.TotalDeposits.IsZero() && mOut.IsZero() {
-			continue
-		}
-		monthLines = append(monthLines, fmt.Sprintf("%s: in $%s out $%s",
-			mStart.Format("Jan 2006"),
-			mFlow.TotalDeposits.StringFixed(2),
-			mOut.StringFixed(2),
-		))
 	}
 	if len(monthLines) > 0 {
 		parts = append(parts, "monthly breakdown: "+strings.Join(monthLines, " | "))
@@ -506,4 +535,17 @@ func compactStrings(values ...string) []string {
 		}
 	}
 	return out
+}
+
+// BuildRealtimeDynamicVars returns variables injected into the ElevenLabs agent
+// system prompt via {{variable_name}} placeholders.
+func (o *Orchestrator) BuildRealtimeDynamicVars(ctx context.Context, userID uuid.UUID) map[string]interface{} {
+	vars := map[string]interface{}{
+		"user_name": "there",
+		"currency":  "₦",
+	}
+	if name := o.realtimeFirstName(ctx, userID); name != "" {
+		vars["user_name"] = name
+	}
+	return vars
 }

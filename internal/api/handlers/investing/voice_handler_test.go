@@ -51,28 +51,17 @@ func TestNormalizeClientVoiceEventDropsOpenAIControlEvents(t *testing.T) {
 	require.Zero(t, audioBytes)
 }
 
+func TestNormalizeClientVoiceEventDropsPingAndReturnsNil(t *testing.T) {
+	event, audioBytes, ok := normalizeClientVoiceEvent(websocket.TextMessage, []byte(`{"type":"ping"}`))
+
+	require.False(t, ok)
+	require.Nil(t, event)
+	require.Zero(t, audioBytes)
+}
+
 func TestVoiceAudioDurationHelpers(t *testing.T) {
 	require.Equal(t, 4, decodedBase64Len("AQIDBA=="))
 	require.Equal(t, 1000, pcm16DurationMS(48000, voiceSampleRateHz))
 }
 
-func TestVoiceToolDescriptionsStaySmallAndActionCapable(t *testing.T) {
-	tools := voiceToolDescriptions()
 
-	require.Len(t, tools, 20)
-	require.Contains(t, tools, "voice_money_lookup")
-	require.Contains(t, tools, "voice_money_action")
-	require.Contains(t, tools, "transfer_funds")
-	require.Contains(t, tools, "initiate_withdrawal")
-	require.Contains(t, tools, "create_automation")
-	require.Contains(t, tools, "get_money_flow")
-	require.Contains(t, tools, "get_budget")
-	require.Contains(t, tools, "set_budget")
-	require.Contains(t, tools, "get_deposit_history")
-	require.Contains(t, tools, "get_financial_health")
-	require.Contains(t, tools, "get_financial_audit")
-	require.Contains(t, tools, "get_miriam_money_state")
-	require.Contains(t, tools, "list_miriam_mandates")
-	require.Contains(t, tools, "get_miriam_decision_receipts")
-	require.NotContains(t, tools, "get_card_transactions")
-}

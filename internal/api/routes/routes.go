@@ -1240,11 +1240,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					HandleSession(*gin.Context)
 					IssueSessionToken(*gin.Context)
 				}
-				if container.Config.AI.AssemblyAI.APIKey != "" {
+				if container.Config.AI.ElevenLabs.APIKey != "" && container.Config.AI.ElevenLabs.AgentID != "" {
 					voiceHandler = handlers.NewVoiceHandler(
-						container.Config.AI.AssemblyAI.APIKey,
+						container.Config.AI.ElevenLabs.APIKey,
+						container.Config.AI.ElevenLabs.AgentID,
 						container.Config.JWT.Secret,
-						container.Config.AI.AssemblyAI.Voice,
 						container.GetAIOrchestrator(),
 						container.GetUsageService(),
 						container.GetConversationService(),
