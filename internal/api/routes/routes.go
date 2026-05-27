@@ -1388,8 +1388,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					// Voice session ticket issuance (protected by standard auth).
 					// WebSocket endpoint uses its own voice session token auth (no Bearer/CSRF).
 					if voiceHandler != nil {
-						aiGroup.POST("/voice/session-token", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), voiceHandler.IssueSessionToken)
-						aiGroup.POST("/voice/signed-url", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), voiceHandler.IssueSignedURL)
+						aiGroup.POST("/voice/session-token", middleware.AuthRateLimit(60), middleware.PerUserRateLimit(60), voiceHandler.IssueSessionToken)
+						aiGroup.POST("/voice/signed-url", middleware.AuthRateLimit(60), middleware.PerUserRateLimit(60), voiceHandler.IssueSignedURL)
 						aiGroup.POST("/voice/execute-tool", middleware.AuthRateLimit(30), middleware.PerUserRateLimit(30), voiceHandler.HandleToolExecution)
 						aiGroup.GET("/voice/proactive-insight", middleware.PerUserRateLimit(30), voiceHandler.GetProactiveInsight)
 						v1.GET("/ai/voice/health", voiceHandler.CheckELHealth)
