@@ -56,6 +56,28 @@ type VoiceConversationPersister interface {
 	DeleteConversation(ctx context.Context, userID, convID uuid.UUID) error
 }
 
+type voiceRateLimiter struct {
+	mu       sync.Mutex
+	attempts map[string]int // userID -> count
+	resetAt  time.Time
+}
+
+var globalVoiceRateLimiter = &voiceRateLimiter{
+	attempts: make(map[string]int),
+	resetAt:  time.Now().Add(1 * time.Hour),
+}
+
+func (rl *voiceRateLimiter) allow(userID string, maxPerHour int) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	if time.Now().After(rl.resetAt) {
+		rl.attempts = make(map[string]int)
+		rl.resetAt = time.Now().Add(1 * time.Hour)
+	}
+	rl.attempts[userID]++
+	return rl.attempts[userID] <= maxPerHour
+}
+
 // VoiceHandler handles real-time voice sessions via ElevenLabs Conversational AI API.
 type VoiceHandler struct {
 	apiKey              string
@@ -105,6 +127,22 @@ func (h *VoiceHandler) IssueSessionToken(c *gin.Context) {
 	})
 }
 
+// CheckELHealth validates ElevenLabs connectivity by attempting to fetch a signed URL.
+func (h *VoiceHandler) CheckELHealth(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	healthy, err := infraai.CheckELConnectivity(ctx, h.apiKey, h.agentID)
+	if err != nil || !healthy {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"status": "unhealthy",
+			"error":  "elevenlabs unreachable",
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "healthy"})
+}
+
 // HandleSession upgrades to WebSocket and proxies audio between client and AssemblyAI Voice Agent API.
 func (h *VoiceHandler) HandleSession(c *gin.Context) {
 	userID, err := h.authenticateVoiceSession(c)
@@ -115,6 +153,13 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 
 	if h.orchestrator.IsUserOverCostCeiling(c.Request.Context(), userID) {
 		c.JSON(http.StatusTooManyRequests, gin.H{"error": "monthly AI limit reached"})
+		return
+	}
+
+	const maxVoiceSessionsPerHour = 10
+
+	if !globalVoiceRateLimiter.allow(userID.String(), maxVoiceSessionsPerHour) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "voice session rate limit reached. Try again later."})
 		return
 	}
 
@@ -176,6 +221,16 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 
 	ready := make(chan struct{})
 	var readyOnce sync.Once
+	var endOnce sync.Once
+	endSession := func() {
+		endOnce.Do(func() {
+			h.trackUsage(c.Request.Context(), userID, startTime)
+			h.persistVoiceTranscripts(userID, convID, &transcriptMu, transcripts)
+			h.logger.Info("voice session ended",
+				zap.String("user_id", userID.String()),
+				zap.Duration("duration", time.Since(startTime)))
+		})
+	}
 
 	go func() {
 		<-ctx.Done()
@@ -204,12 +259,18 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 			lastActivity.Store(time.Now())
 
 			if messageType == websocket.TextMessage {
-				var pingEvent struct {
+				var textEvent struct {
 					Type string `json:"type"`
 				}
-				if json.Unmarshal(msg, &pingEvent) == nil && pingEvent.Type == "ping" {
-					h.writeClientControlEvent(clientConn, &clientMu, "pong", nil, cancel)
-					continue
+				if json.Unmarshal(msg, &textEvent) == nil {
+					switch textEvent.Type {
+					case "ping":
+						h.writeClientControlEvent(clientConn, &clientMu, "pong", nil, cancel)
+						continue
+					case "input.interrupt":
+						h.writeClientControlEvent(clientConn, &clientMu, "rail.playback.flush", map[string]string{"reason": "user_interrupt"}, cancel)
+						continue
+					}
 				}
 			}
 
@@ -259,6 +320,10 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 					cancel()
 					return
 				}
+				// Send user_activity to prevent EL's server-side idle timeout
+				if err := agentConn.Send(infraai.NewELUserActivity()); err != nil {
+					h.logger.Warn("failed to send user_activity", zap.Error(err))
+				}
 				// Warn 1 minute before max session duration
 				elapsed := time.Since(startTime)
 				if !sessionWarned && elapsed >= maxSessionDuration-1*time.Minute {
@@ -285,25 +350,51 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 		}
 	}()
 
+	// Proactive insight checker — sends non-interrupting contextual updates to EL every 60s
+	go func() {
+		proactiveTicker := time.NewTicker(60 * time.Second)
+		defer proactiveTicker.Stop()
+		// Send initial insight after a short delay (let greeting play first)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
+		lastInsight := ""
+		for {
+			insight := h.orchestrator.GetProactiveVoiceInsight(ctx, userID)
+			if insight != "" && insight != lastInsight {
+				h.logger.Info("sending proactive context to EL",
+					zap.String("insight", insight),
+					zap.String("user_id", userID.String()),
+				)
+				if err := agentConn.Send(infraai.NewELContextualUpdate(insight)); err != nil {
+					h.logger.Warn("failed to send proactive context", zap.Error(err))
+				}
+				lastInsight = insight
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-proactiveTicker.C:
+			}
+		}
+	}()
+
 	// ElevenLabs → Client: translate EL events to the AssemblyAI protocol the client expects
 	replyAudioBytes := 0
 
 	for {
 		select {
 		case <-ctx.Done():
-			h.trackUsage(c.Request.Context(), userID, startTime)
-			h.persistVoiceTranscripts(userID, convID, &transcriptMu, transcripts)
-			h.logger.Info("voice session ended",
-				zap.String("user_id", userID.String()),
-				zap.Duration("duration", time.Since(startTime)))
+			endSession()
 			return
 		default:
 		}
 
 		raw, err := agentConn.ReadEvent()
 		if err != nil {
-			h.trackUsage(c.Request.Context(), userID, startTime)
-			h.persistVoiceTranscripts(userID, convID, &transcriptMu, transcripts)
+			endSession()
 			return
 		}
 
@@ -379,6 +470,11 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 			_ = json.Unmarshal(raw, &ut)
 			text := strings.TrimSpace(ut.UserTranscriptionEvent.UserTranscript)
 			if text != "" {
+				// Send input.speech.stopped so client transitions to 'thinking' during LLM processing
+				speechStopped, _ := json.Marshal(map[string]string{"type": "input.speech.stopped"})
+				if !h.writeClientEvent(clientConn, &clientMu, speechStopped, cancel) {
+					return
+				}
 				transcriptMu.Lock()
 				transcripts = append(transcripts, transcriptEntry{role: "user", text: text})
 				transcriptMu.Unlock()
@@ -504,6 +600,25 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 				}
 			}(tc.ToolCallID, tc.ToolName, tc.Parameters, agentConn)
 
+		case "vad_score":
+			// EL VAD confidence score → forward as rail.voice.vad_score for faster barge-in
+			var vs struct {
+				VADScoreEvent struct {
+					Score float64 `json:"vad_score"`
+				} `json:"vad_score_event"`
+			}
+			if json.Unmarshal(raw, &vs) == nil {
+				h.writeClientControlEvent(clientConn, &clientMu, "rail.voice.vad_score",
+					map[string]string{"score": strconv.FormatFloat(vs.VADScoreEvent.Score, 'f', 4, 64)}, cancel)
+			}
+
+		case "agent_response_complete":
+			// EL finished agent response → client should settle back to listening
+			translated, _ := json.Marshal(map[string]string{"type": "reply.done"})
+			if !h.writeClientEvent(clientConn, &clientMu, translated, cancel) {
+				return
+			}
+
 		case "internal_server_error":
 			var errEvent struct {
 				Message string `json:"message"`
@@ -587,7 +702,7 @@ func normalizeClientVoiceEvent(messageType int, msg []byte) (interface{}, int, b
 		return infraai.NewELAudioChunk(event.Audio), decodedBase64Len(event.Audio), true
 	}
 	switch event.Type {
-	case "input_audio_buffer.commit", "input_audio_buffer.clear", "response.create", "ping":
+	case "input_audio_buffer.commit", "input_audio_buffer.clear", "response.create", "ping", "input.interrupt":
 		return nil, 0, false
 	}
 

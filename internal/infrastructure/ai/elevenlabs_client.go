@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -208,7 +209,35 @@ func NewELContextualUpdate(text string) ELContextualUpdate {
 	return ELContextualUpdate{Type: "contextual_update", Text: text}
 }
 
+// ELUserActivity signals user presence to prevent server-side idle timeout.
+type ELUserActivity struct {
+	Type string `json:"type"`
+}
+
+// NewELUserActivity creates a user_activity keepalive event.
+func NewELUserActivity() ELUserActivity {
+	return ELUserActivity{Type: "user_activity"}
+}
+
 // NewELPong creates a pong response for a server ping.
 func NewELPong(eventID int64) ELPong {
 	return ELPong{Type: "pong", EventID: eventID}
+}
+
+// CheckELConnectivity validates that the ElevenLabs API is reachable and the agent exists.
+func CheckELConnectivity(ctx context.Context, apiKey, agentID string) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=%s", agentID), nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("xi-api-key", apiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	return resp.StatusCode == http.StatusOK, nil
 }

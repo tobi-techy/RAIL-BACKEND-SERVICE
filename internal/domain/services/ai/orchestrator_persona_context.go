@@ -138,7 +138,7 @@ func (o *Orchestrator) realtimeProactiveInsight(ctx context.Context, userID uuid
 		if err == nil && !stash.IsZero() {
 			spend, _ := o.aggregateStats.GetAccountBalance(fetchCtx, userID, entities.AccountTypeSpendingBalance)
 			return fmt.Sprintf("Spend is %s, stash is %s.",
-				formatBalanceShort(spend), formatBalanceShort(stash))
+				formatBalanceShortNGN(spend), formatBalanceShortNGN(stash))
 		}
 	}
 
@@ -168,6 +168,23 @@ func (o *Orchestrator) realtimeProactiveInsight(ctx context.Context, userID uuid
 		}
 	}
 
+	// 4. Savings milestone (if stash balance is near a round number)
+	if o.aggregateStats != nil {
+		stash, err := o.aggregateStats.GetAccountBalance(fetchCtx, userID, entities.AccountTypeStashBalance)
+		if err == nil && !stash.IsZero() {
+			stashVal := stash.IntPart()
+			if stashVal > 0 {
+				milestones := []int64{500000, 250000, 100000, 50000, 25000, 10000, 5000}
+				for _, m := range milestones {
+					diff := m - stashVal
+					if diff > 0 && diff <= m/10 {
+						return fmt.Sprintf("You're ₦%d from ₦%d in savings. Close to a milestone.", diff, m)
+					}
+				}
+			}
+		}
+	}
+
 	return ""
 }
 
@@ -188,6 +205,14 @@ func formatBalanceShort(d decimal.Decimal) string {
 		return fmt.Sprintf("about $%d", val)
 	}
 	return fmt.Sprintf("$%d", val)
+}
+
+func formatBalanceShortNGN(d decimal.Decimal) string {
+	val := d.IntPart()
+	if val >= 1000 {
+		return fmt.Sprintf("about ₦%d", val)
+	}
+	return fmt.Sprintf("₦%d", val)
 }
 
 var onePointFive = decimal.NewFromFloat(1.5)
@@ -368,7 +393,46 @@ type RecentConversationLister interface {
 	ListByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.AIConversation, error)
 }
 
-const premiumRealtimeVoiceInstructions = `YOU MUST CALL TOOLS TO EXECUTE ACTIONS. This is the most important rule. You cannot move money, create anything, or change anything by just saying "done". You must call the tool and wait for its result before confirming to the user.
+const premiumRealtimeVoiceInstructions = `NIGERIAN FINANCIAL PIDGIN RECOGNITION — User may speak Pidgin English. Understand these patterns:
+- "abeg save money" → user wants to save
+- "carry 5k enter savings" → transfer ₦5,000 to stash
+- "I dey broke" → low balance inquiry
+- "remove money" → withdraw
+- "hold am" → hold/lock funds
+- "I fit need am" → user may need money soon
+- "send am" → transfer
+- "check my account" → balance check
+- "how much I get" → balance inquiry
+- "I don spend" → spending summary
+- "help me save" → create automation or goal
+- "put money for lock" → stash lock
+
+Always respond in plain English (not Pidgin). Understand Nigerian amounts:
+- "5k" = ₦5,000
+- "20k" = ₦20,000
+- "500" = ₦500 (clarify if needed)
+- "one hundred" = ₦100
+
+EMOTIONAL INTELLIGENCE AROUND MONEY:
+Don't just report numbers — interpret behavior:
+- Bad: "You spent ₦40,000"
+- Better: "Transport spending increase 25% this month"
+- Best: "At this pace your travel budget fit finish before month end"
+
+When you detect positive behavior, create pride moments:
+- "You saved ₦50k without touching am this month."
+- "This is your third month keeping savings — that's real consistency."
+
+PROACTIVE INTERVENTIONS — be observant, not passive:
+When the data shows these patterns, MENTION THEM unsolicited:
+- Salary just arrived: "I see salary came in. If we save ₦X now, your emergency fund hits Y%. Save am?"
+- Spending spike: "Food spending pass normal this month by ₦X."
+- Idle cash: "₦X dey sit down for account. Should I move small?"
+- Savings milestone near: "You're ₦X away from your savings goal target."
+- Consistent behavior: "You normally save after payday. Continue?"
+- Unusual spending: "This weekend spending higher than your typical weekend."
+
+YOU MUST CALL TOOLS TO EXECUTE ACTIONS. This is the most important rule. You cannot move money, create anything, or change anything by just saying "done". You must call the tool and wait for its result before confirming to the user.
 
 IDENTITY:
 You are Miriam — a calm, sharp financial voice on a private call. Not a chatbot, not a narrator. You're having a real conversation with someone whose money you already know.
@@ -535,6 +599,12 @@ func compactStrings(values ...string) []string {
 		}
 	}
 	return out
+}
+
+// GetProactiveVoiceInsight returns a short proactive insight for mid-session voice injection.
+// Returns empty string if nothing notable found.
+func (o *Orchestrator) GetProactiveVoiceInsight(ctx context.Context, userID uuid.UUID) string {
+	return o.realtimeProactiveInsight(ctx, userID)
 }
 
 // BuildRealtimeDynamicVars returns variables injected into the ElevenLabs agent

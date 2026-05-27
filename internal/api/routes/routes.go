@@ -1236,10 +1236,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// AI Chat endpoints (AI Financial Manager)
 			if container.GetAIOrchestrator() != nil {
 				aiChatHandlers := handlers.NewAIChatHandlers(container.GetAIOrchestrator(), container.GetConversationService(), container.Logger)
-				var voiceHandler interface {
-					HandleSession(*gin.Context)
-					IssueSessionToken(*gin.Context)
-				}
+			var voiceHandler interface {
+				HandleSession(*gin.Context)
+				IssueSessionToken(*gin.Context)
+				CheckELHealth(*gin.Context)
+			}
 				if container.Config.AI.ElevenLabs.APIKey != "" && container.Config.AI.ElevenLabs.AgentID != "" {
 					voiceHandler = handlers.NewVoiceHandler(
 						container.Config.AI.ElevenLabs.APIKey,
@@ -1373,6 +1374,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					// WebSocket endpoint uses its own voice session token auth (no Bearer/CSRF).
 					if voiceHandler != nil {
 						aiGroup.POST("/voice/session-token", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), voiceHandler.IssueSessionToken)
+						v1.GET("/ai/voice/health", voiceHandler.CheckELHealth)
 						v1.GET("/ai/voice/session", voiceHandler.HandleSession)
 					}
 				}

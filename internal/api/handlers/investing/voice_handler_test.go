@@ -2,7 +2,6 @@ package investing
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"testing"
 
 	"github.com/gorilla/websocket"
@@ -15,10 +14,9 @@ func TestNormalizeClientVoiceEventConvertsOpenAIAudioAppend(t *testing.T) {
 
 	require.True(t, ok)
 	require.Equal(t, 3, audioBytes)
-	audio, ok := event.(infraai.InputAudio)
+	audio, ok := event.(infraai.ELAudioChunk)
 	require.True(t, ok)
-	require.Equal(t, "input.audio", audio.Type)
-	require.Equal(t, "abc123", audio.Audio)
+	require.Equal(t, "abc123", audio.UserAudioChunk)
 }
 
 func TestNormalizeClientVoiceEventWrapsBinaryAudio(t *testing.T) {
@@ -26,21 +24,20 @@ func TestNormalizeClientVoiceEventWrapsBinaryAudio(t *testing.T) {
 
 	require.True(t, ok)
 	require.Equal(t, 3, audioBytes)
-	audio, ok := event.(infraai.InputAudio)
+	audio, ok := event.(infraai.ELAudioChunk)
 	require.True(t, ok)
-	require.Equal(t, "input.audio", audio.Type)
-	require.Equal(t, base64.StdEncoding.EncodeToString([]byte{0x01, 0x02, 0x03}), audio.Audio)
+	require.Equal(t, base64.StdEncoding.EncodeToString([]byte{0x01, 0x02, 0x03}), audio.UserAudioChunk)
 }
 
-func TestNormalizeClientVoiceEventPreservesAssemblyAIEvent(t *testing.T) {
+func TestNormalizeClientVoiceEventPreservesInputAudio(t *testing.T) {
 	raw := []byte(`{"type":"input.audio","audio":"abc123"}`)
 	event, audioBytes, ok := normalizeClientVoiceEvent(websocket.TextMessage, raw)
 
 	require.True(t, ok)
 	require.Equal(t, 3, audioBytes)
-	msg, ok := event.(json.RawMessage)
+	audio, ok := event.(infraai.ELAudioChunk)
 	require.True(t, ok)
-	require.JSONEq(t, string(raw), string(msg))
+	require.Equal(t, "abc123", audio.UserAudioChunk)
 }
 
 func TestNormalizeClientVoiceEventDropsOpenAIControlEvents(t *testing.T) {
