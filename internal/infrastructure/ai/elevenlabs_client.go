@@ -28,7 +28,7 @@ type ElevenLabsClient struct {
 func DialElevenLabs(apiKey, agentID string, logger *zap.Logger) (*ElevenLabsClient, error) {
 	var wsURL string
 	if apiKey != "" {
-		signedURL, err := fetchElevenLabsSignedURL(apiKey, agentID)
+		signedURL, err := FetchElevenLabsSignedURL(apiKey, agentID)
 		if err != nil {
 			logger.Warn("elevenlabs signed URL fetch failed, falling back to direct connection", zap.Error(err))
 			wsURL = elevenLabsEndpoint + "?agent_id=" + agentID
@@ -51,8 +51,8 @@ func DialElevenLabs(apiKey, agentID string, logger *zap.Logger) (*ElevenLabsClie
 	return &ElevenLabsClient{conn: conn, logger: logger}, nil
 }
 
-// fetchElevenLabsSignedURL obtains a signed WebSocket URL from ElevenLabs.
-func fetchElevenLabsSignedURL(apiKey, agentID string) (string, error) {
+// FetchElevenLabsSignedURL obtains a signed WebSocket URL from ElevenLabs.
+func FetchElevenLabsSignedURL(apiKey, agentID string) (string, error) {
 	req, err := http.NewRequest("GET", "https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id="+agentID, nil)
 	if err != nil {
 		return "", err
@@ -148,9 +148,13 @@ type ELPromptConfig struct {
 	Prompt string `json:"prompt"`
 }
 
-// ELTTSConfig overrides the voice for this session.
+// ELTTSConfig overrides the voice and quality settings for this session.
 type ELTTSConfig struct {
-	VoiceID string `json:"voice_id,omitempty"`
+	VoiceID        string  `json:"voice_id,omitempty"`
+	Stability      float64 `json:"stability,omitempty"`
+	SimilarityBoost float64 `json:"similarity_boost,omitempty"`
+	Style          float64 `json:"style,omitempty"`
+	UseSpeakerBoost bool   `json:"use_speaker_boost,omitempty"`
 }
 
 // ELAudioChunk sends a base64-encoded PCM16 audio chunk to the agent.
@@ -178,15 +182,20 @@ type ELPong struct {
 	EventID int64  `json:"event_id"`
 }
 
-// NewELConversationInit creates the initialization event.
-// Only dynamic variables are sent — the system prompt and first message
-// are configured in the ElevenLabs agent dashboard and must not be overridden
-// here, as that would conflict with the agent's {{variable}} substitution.
-func NewELConversationInit(dynamicVars map[string]interface{}) ELConversationInit {
-	return ELConversationInit{
+// NewELConversationInit creates the initialization event with optional TTS overrides.
+// Dynamic variables are sent for {{variable}} substitution in the agent prompt.
+// Pass a non-nil ttsConfig to override voice quality settings for this session.
+func NewELConversationInit(dynamicVars map[string]interface{}, ttsConfig *ELTTSConfig) ELConversationInit {
+	init := ELConversationInit{
 		Type:             "conversation_initiation_client_data",
 		DynamicVariables: dynamicVars,
 	}
+	if ttsConfig != nil {
+		init.ConversationConfigOverride = &ELConversationConfig{
+			TTS: ttsConfig,
+		}
+	}
+	return init
 }
 
 // NewELAudioChunk creates an audio input event.

@@ -33,6 +33,7 @@ import (
 	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	diditadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
+	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/rail-service/rail_service/pkg/alerting"
@@ -1240,17 +1241,31 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				HandleSession(*gin.Context)
 				IssueSessionToken(*gin.Context)
 				CheckELHealth(*gin.Context)
+				IssueSignedURL(*gin.Context)
+				HandleToolExecution(*gin.Context)
+				GetProactiveInsight(*gin.Context)
 			}
 				if container.Config.AI.ElevenLabs.APIKey != "" && container.Config.AI.ElevenLabs.AgentID != "" {
+					el := container.Config.AI.ElevenLabs
+					ttsCfg := &infraai.ELTTSConfig{
+						Stability:       el.Stability,
+						SimilarityBoost: el.SimilarityBoost,
+						Style:           el.Style,
+						UseSpeakerBoost: el.UseSpeakerBoost,
+					}
+					if el.VoiceID != "" {
+						ttsCfg.VoiceID = el.VoiceID
+					}
 					voiceHandler = handlers.NewVoiceHandler(
-						container.Config.AI.ElevenLabs.APIKey,
-						container.Config.AI.ElevenLabs.AgentID,
+						el.APIKey,
+						el.AgentID,
 						container.Config.JWT.Secret,
 						container.GetAIOrchestrator(),
 						container.GetUsageService(),
 						container.GetConversationService(),
 						container.Config.Server.AllowedOrigins,
 						container.ZapLog,
+						ttsCfg,
 					)
 				}
 				aiGroup := protected.Group("/ai")
@@ -1374,6 +1389,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					// WebSocket endpoint uses its own voice session token auth (no Bearer/CSRF).
 					if voiceHandler != nil {
 						aiGroup.POST("/voice/session-token", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), voiceHandler.IssueSessionToken)
+						aiGroup.POST("/voice/signed-url", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), voiceHandler.IssueSignedURL)
+						aiGroup.POST("/voice/execute-tool", middleware.AuthRateLimit(30), middleware.PerUserRateLimit(30), voiceHandler.HandleToolExecution)
+						aiGroup.GET("/voice/proactive-insight", middleware.PerUserRateLimit(30), voiceHandler.GetProactiveInsight)
 						v1.GET("/ai/voice/health", voiceHandler.CheckELHealth)
 						v1.GET("/ai/voice/session", voiceHandler.HandleSession)
 					}

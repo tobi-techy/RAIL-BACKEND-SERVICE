@@ -90,10 +90,11 @@ type VoiceHandler struct {
 	allowedOriginSet    map[string]struct{}
 	allowedHostSet      map[string]struct{}
 	allowedHostSuffixes []string
+	ttsConfig           *infraai.ELTTSConfig
 	logger              *zap.Logger
 }
 
-func NewVoiceHandler(apiKey, agentID, tokenSecret string, orchestrator *aiservice.Orchestrator, usage VoiceUsageTracker, convService VoiceConversationPersister, allowedOrigins []string, logger *zap.Logger) *VoiceHandler {
+func NewVoiceHandler(apiKey, agentID, tokenSecret string, orchestrator *aiservice.Orchestrator, usage VoiceUsageTracker, convService VoiceConversationPersister, allowedOrigins []string, logger *zap.Logger, ttsConfig *infraai.ELTTSConfig) *VoiceHandler {
 	h := &VoiceHandler{
 		apiKey:           apiKey,
 		agentID:          agentID,
@@ -103,6 +104,7 @@ func NewVoiceHandler(apiKey, agentID, tokenSecret string, orchestrator *aiservic
 		convService:      convService,
 		allowedOriginSet: make(map[string]struct{}),
 		allowedHostSet:   make(map[string]struct{}),
+		ttsConfig:        ttsConfig,
 		logger:           logger,
 	}
 	h.configureAllowedOrigins(allowedOrigins)
@@ -141,6 +143,83 @@ func (h *VoiceHandler) CheckELHealth(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "healthy"})
+}
+
+// IssueSignedURL returns an agent ID and dynamic variables for the ElevenLabs Conversational AI agent.
+// Used by the ElevenLabs React Native SDK to establish a direct WebRTC connection.
+func (h *VoiceHandler) IssueSignedURL(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	signedURL, err := infraai.FetchElevenLabsSignedURL(h.apiKey, h.agentID)
+	if err != nil {
+		h.logger.Error("failed to fetch signed URL", zap.Error(err), zap.String("user_id", userID.String()))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "voice service unavailable"})
+		return
+	}
+	dynamicVars := h.orchestrator.BuildRealtimeDynamicVars(c.Request.Context(), userID)
+	c.JSON(http.StatusOK, gin.H{
+		"signed_url":        signedURL,
+		"agent_id":          h.agentID,
+		"dynamic_variables": dynamicVars,
+	})
+}
+
+// GetProactiveInsight returns a contextual insight for the current user to inject into the voice agent.
+// GET /v1/ai/voice/proactive-insight
+func (h *VoiceHandler) GetProactiveInsight(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	insight := h.orchestrator.GetProactiveVoiceInsight(c.Request.Context(), userID)
+	c.JSON(http.StatusOK, gin.H{"insight": insight})
+}
+
+// HandleToolExecution executes a voice tool call from the ElevenLabs client SDK and returns the result.
+// POST /v1/ai/voice/execute-tool
+func (h *VoiceHandler) HandleToolExecution(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	var req struct {
+		ToolName   string                 `json:"tool_name"`
+		ToolCallID string                 `json:"tool_call_id"`
+		Parameters map[string]interface{} `json:"parameters"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+	if req.ToolName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "tool_name required"})
+		return
+	}
+	toolCtx, toolCancel := context.WithTimeout(c.Request.Context(), voiceToolTimeout)
+	defer toolCancel()
+
+	tc := infraai.ToolCall{ID: req.ToolCallID, Name: req.ToolName, Arguments: req.Parameters}
+	result, execErr := h.orchestrator.ExecuteToolPublic(toolCtx, userID, tc)
+	if execErr != nil {
+		h.logger.Warn("voice tool execution failed",
+			zap.String("user_id", userID.String()),
+			zap.String("tool", req.ToolName),
+			zap.Error(execErr))
+		c.JSON(http.StatusOK, gin.H{
+			"result":   map[string]interface{}{"error": voiceToolErrorMessage(req.ToolName)},
+			"is_error": true,
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"result":   result,
+		"is_error": false,
+	})
 }
 
 // HandleSession upgrades to WebSocket and proxies audio between client and AssemblyAI Voice Agent API.
@@ -738,7 +817,7 @@ func durationMsString(ms int) string {
 
 func (h *VoiceHandler) initSession(ctx context.Context, userID uuid.UUID, conn *infraai.ElevenLabsClient) error {
 	dynamicVars := h.orchestrator.BuildRealtimeDynamicVars(ctx, userID)
-	return conn.Send(infraai.NewELConversationInit(dynamicVars))
+	return conn.Send(infraai.NewELConversationInit(dynamicVars, h.ttsConfig))
 }
 
 // voiceToolErrorMessage returns a user-friendly error message specific to the tool that failed.

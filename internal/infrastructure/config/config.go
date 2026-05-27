@@ -100,9 +100,13 @@ type AssemblyAIConfig struct {
 
 // ElevenLabsConfig contains ElevenLabs Conversational AI configuration
 type ElevenLabsConfig struct {
-	APIKey  string `mapstructure:"api_key"`
-	AgentID string `mapstructure:"agent_id"` // ElevenLabs Conversational AI agent ID
-	VoiceID string `mapstructure:"voice_id"` // Optional: override agent's default voice
+	APIKey         string  `mapstructure:"api_key"`
+	AgentID        string  `mapstructure:"agent_id"`         // ElevenLabs Conversational AI agent ID
+	VoiceID        string  `mapstructure:"voice_id"`         // Optional: override agent's default voice
+	Stability      float64 `mapstructure:"stability"`        // 0-1: lower = more expressive but less stable
+	SimilarityBoost float64 `mapstructure:"similarity_boost"` // 0-1: how closely to match original voice
+	Style          float64 `mapstructure:"style"`            // 0-1: style exaggeration
+	UseSpeakerBoost bool   `mapstructure:"use_speaker_boost"` // enhance speaker clarity
 }
 
 // BedrockConfig contains Amazon Bedrock configuration
@@ -846,11 +850,19 @@ func setDefaults() {
 	viper.SetDefault("ai.kimi.model", "kimi-k2.6")
 
 	// Explicit env bindings for AI keys (task def uses short names)
+	viper.SetDefault("ai.elevenlabs.stability", 0.5)
+	viper.SetDefault("ai.elevenlabs.similarity_boost", 0.75)
+	viper.SetDefault("ai.elevenlabs.style", 0.0)
+	viper.SetDefault("ai.elevenlabs.use_speaker_boost", true)
 	viper.BindEnv("ai.assemblyai.api_key", "ASSEMBLYAI_API_KEY")
 	viper.BindEnv("ai.assemblyai.voice", "ASSEMBLYAI_VOICE")
 	viper.BindEnv("ai.elevenlabs.api_key", "ELEVENLABS_API_KEY")
 	viper.BindEnv("ai.elevenlabs.agent_id", "ELEVENLABS_AGENT_ID")
 	viper.BindEnv("ai.elevenlabs.voice_id", "ELEVENLABS_VOICE_ID")
+	viper.BindEnv("ai.elevenlabs.stability", "ELEVENLABS_STABILITY")
+	viper.BindEnv("ai.elevenlabs.similarity_boost", "ELEVENLABS_SIMILARITY_BOOST")
+	viper.BindEnv("ai.elevenlabs.style", "ELEVENLABS_STYLE")
+	viper.BindEnv("ai.elevenlabs.use_speaker_boost", "ELEVENLABS_USE_SPEAKER_BOOST")
 	viper.BindEnv("ai.openai.api_key", "OPENAI_API_KEY")
 	viper.BindEnv("ai.gemini.api_key", "GEMINI_API_KEY")
 	viper.BindEnv("ai.kimi.api_key", "KIMI_API_KEY")
@@ -1183,6 +1195,26 @@ func overrideFromEnv() {
 	}
 	if elevenLabsVoiceID := os.Getenv("ELEVENLABS_VOICE_ID"); elevenLabsVoiceID != "" {
 		viper.Set("ai.elevenlabs.voice_id", elevenLabsVoiceID)
+	}
+	if elevenLabsStability := os.Getenv("ELEVENLABS_STABILITY"); elevenLabsStability != "" {
+		if v, err := strconv.ParseFloat(elevenLabsStability, 64); err == nil {
+			viper.Set("ai.elevenlabs.stability", v)
+		}
+	}
+	if elevenLabsSimilarity := os.Getenv("ELEVENLABS_SIMILARITY_BOOST"); elevenLabsSimilarity != "" {
+		if v, err := strconv.ParseFloat(elevenLabsSimilarity, 64); err == nil {
+			viper.Set("ai.elevenlabs.similarity_boost", v)
+		}
+	}
+	if elevenLabsStyle := os.Getenv("ELEVENLABS_STYLE"); elevenLabsStyle != "" {
+		if v, err := strconv.ParseFloat(elevenLabsStyle, 64); err == nil {
+			viper.Set("ai.elevenlabs.style", v)
+		}
+	}
+	if elevenLabsSpeakerBoost := os.Getenv("ELEVENLABS_USE_SPEAKER_BOOST"); elevenLabsSpeakerBoost != "" {
+		if v, err := strconv.ParseBool(elevenLabsSpeakerBoost); err == nil {
+			viper.Set("ai.elevenlabs.use_speaker_boost", v)
+		}
 	}
 	if openaiKey := os.Getenv("OPENAI_API_KEY"); openaiKey != "" {
 		viper.Set("ai.openai.api_key", openaiKey)
