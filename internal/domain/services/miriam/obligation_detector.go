@@ -190,7 +190,13 @@ func analyzeIntervals(txs []entities.Transaction) *intervalStats {
 		diff := d - avg
 		variance += diff * diff
 	}
-	variance /= float64(len(intervals))
+	// Sample variance (n-1) to avoid underestimating variance for small samples
+	n := float64(len(intervals))
+	if n > 1 {
+		variance /= (n - 1)
+	} else {
+		variance = 0
+	}
 	stdDev := math.Sqrt(variance)
 	cv := stdDev / avg               // coefficient of variation
 	consistency := math.Max(0, 1-cv) // 1 = perfectly consistent, 0 = highly variable

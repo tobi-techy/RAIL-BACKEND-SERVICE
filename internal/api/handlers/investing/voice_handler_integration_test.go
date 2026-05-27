@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1010,12 +1011,15 @@ func TestVoiceIntegration_PersistTranscripts(t *testing.T) {
 
 	t.Run("empty transcripts deletes conversation", func(t *testing.T) {
 		var deleted bool
+		var delMu sync.Mutex
 		convID := uuid.New()
 		userID := uuid.New()
 
 		svc := &mockConvService{
 			deleteFn: func(ctx context.Context, uID, cID uuid.UUID) error {
+				delMu.Lock()
 				deleted = true
+				delMu.Unlock()
 				assert.Equal(t, userID, uID)
 				assert.Equal(t, convID, cID)
 				return nil
@@ -1032,7 +1036,9 @@ func TestVoiceIntegration_PersistTranscripts(t *testing.T) {
 		h.persistVoiceTranscripts(userID, convID, &mu, nil)
 
 		time.Sleep(200 * time.Millisecond)
+		delMu.Lock()
 		assert.True(t, deleted)
+		delMu.Unlock()
 	})
 
 	t.Run("skips persistence when convService is nil", func(t *testing.T) {
@@ -1052,13 +1058,13 @@ func TestVoiceIntegration_PersistTranscripts(t *testing.T) {
 // ---------- Transcript accumulator edge cases ----------
 
 func TestVoiceIntegration_TranscriptPersistence_ConsecutiveUserMessages(t *testing.T) {
-	var recordCallCount int
+	var recordCallCount int32
 	convID := uuid.New()
 	userID := uuid.New()
 
 	svc := &mockConvService{
 		recordFn: func(ctx context.Context, cID uuid.UUID, userMsg, assistantMsg string, tokens int, cost decimal.Decimal, model string, cards []entities.InsightCard) error {
-			recordCallCount++
+			atomic.AddInt32(&recordCallCount, 1)
 			return nil
 		},
 		updateFn: func(ctx context.Context, cID uuid.UUID, title string) error {
@@ -1083,7 +1089,7 @@ func TestVoiceIntegration_TranscriptPersistence_ConsecutiveUserMessages(t *testi
 	h.persistVoiceTranscripts(userID, convID, &mu, transcripts)
 
 	time.Sleep(200 * time.Millisecond)
-	assert.Equal(t, 1, recordCallCount)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&recordCallCount))
 }
 
 // ---------- WebSocket upgrade checks ----------

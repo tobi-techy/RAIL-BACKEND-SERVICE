@@ -36,6 +36,10 @@ type Repository interface {
 	CreateEvent(ctx context.Context, event *entities.MiriamEvent) error
 	CreateLearningSignal(ctx context.Context, signal *entities.MiriamLearningSignal) error
 	RecentLearningBias(ctx context.Context, userID uuid.UUID, since time.Time) (decimal.Decimal, error)
+	SavePredictionOutcomes(ctx context.Context, outcomes []entities.MiriamPredictionOutcome) error
+	GetPendingPredictionOutcomes(ctx context.Context, userID uuid.UUID) ([]entities.MiriamPredictionOutcome, error)
+	MarkPredictionOutcome(ctx context.Context, id uuid.UUID, outcome bool, observedAt time.Time) error
+	GetPredictionHitRate(ctx context.Context, userID uuid.UUID, predictionType string, since time.Time) (float64, error)
 }
 
 type BalanceProvider interface {
@@ -230,22 +234,27 @@ func (s *Service) RefreshMoneyState(ctx context.Context, userID uuid.UUID) (*ent
 	if err != nil {
 		return nil, fmt.Errorf("refresh miriam state: stash balance: %w", err)
 	}
+	trailingStart := monthStart.AddDate(0, -6, 0)
 	monthFlow := s.moneyFlow(ctx, userID, monthStart, now)
 	lastMonthFlow := s.moneyFlow(ctx, userID, lastMonthStart, monthStart)
+	trailingFlow := s.moneyFlow(ctx, userID, trailingStart, monthStart)
 	weekFlow := s.moneyFlow(ctx, userID, weekStart, now)
 
 	monthOut := totalOut(monthFlow)
 	lastMonthOut := totalOut(lastMonthFlow)
+	trailingOut := totalOut(trailingFlow)
 	weekOut := totalOut(weekFlow)
 	dailyOut := decimal.Zero
 	if weekOut.IsPositive() {
 		dailyOut = weekOut.Div(decimal.NewFromInt(7))
 	}
 
-	safeDaily := spend
+	safeDaily := decimal.Zero
 	if s.safeSpend != nil {
 		if safe, err := s.safeSpend.SafeToSpend(ctx, userID); err == nil {
 			safeDaily = safe.DailySafeToSpend
+		} else if s.logger != nil {
+			s.logger.Warn("safe-to-spend fetch failed, falling back to zero", zap.Error(err))
 		}
 	}
 
@@ -257,23 +266,63 @@ func (s *Service) RefreshMoneyState(ctx context.Context, userID uuid.UUID) (*ent
 	}
 
 	profileIncome, profileCadence, stashTarget := s.profileTargets(ctx, userID)
-	avgIncome := profileIncome
-	if avgIncome.IsZero() {
-		avgIncome = lastMonthFlow.TotalDeposits
-		if avgIncome.IsZero() {
-			avgIncome = monthFlow.TotalDeposits
+
+	// Count estimated active months from trailing deposit density.
+	// Conservative: assumes at least 1 deposit per 2 months.
+	trailingMonths := 6
+	activeMonths := trailingMonths
+	if trailingFlow.DepositCount > 0 {
+		if est := (trailingFlow.DepositCount + 1) / 2; est > 0 && est < activeMonths {
+			activeMonths = est
 		}
 	}
+	hasTrailingData := trailingFlow.TotalDeposits.IsPositive() || trailingOut.IsPositive()
+
+	avgIncome := decimal.Zero
+	if trailingFlow.TotalDeposits.IsPositive() && activeMonths > 0 {
+		avgIncome = trailingFlow.TotalDeposits.Div(decimal.NewFromInt(int64(activeMonths)))
+	} else if monthFlow.TotalDeposits.IsPositive() {
+		avgIncome = monthFlow.TotalDeposits
+	} else if profileIncome.IsPositive() {
+		avgIncome = profileIncome
+	}
+
+	// Monthly spend: trailing average of outflow over the 6-month window.
+	monthlySpend := decimal.Zero
+	if hasTrailingData && activeMonths > 0 {
+		monthlySpend = trailingOut.Div(decimal.NewFromInt(int64(activeMonths)))
+	}
+
+	// Monthly savings: trailing average of (deposits − outflow), floored at 0.
+	monthlySavings := decimal.Zero
+	if avgIncome.IsPositive() && monthlySpend.IsPositive() {
+		monthlySavings = avgIncome.Sub(monthlySpend)
+		if monthlySavings.IsNegative() {
+			monthlySavings = decimal.Zero
+		}
+	}
+
 	incomeCadence := profileCadence
 	if incomeCadence == "" || incomeCadence == "unknown" {
-		incomeCadence = inferCadence(monthFlow.DepositCount)
+		// Use last month's deposit count when current month is less than 2 weeks old
+		// to avoid inferring "unknown" from partial-month data
+		depositCount := monthFlow.DepositCount
+		if now.Day() < 14 && lastMonthFlow.DepositCount > 0 {
+			depositCount = lastMonthFlow.DepositCount
+		}
+		incomeCadence = inferCadence(depositCount)
 	}
 	if stashTarget.IsZero() {
 		stashTarget = avgIncome.Mul(decimal.NewFromFloat(0.30)).RoundBank(2)
 	}
 
+	// Anomaly detection: compare against 6-month trailing baseline for robustness.
 	anomalies := 0
-	if lastMonthOut.IsPositive() && monthOut.GreaterThan(lastMonthOut.Mul(decimal.NewFromFloat(1.35))) {
+	trailingAvgOut := decimal.Zero
+	if hasTrailingData && activeMonths > 0 {
+		trailingAvgOut = trailingOut.Div(decimal.NewFromInt(int64(activeMonths)))
+	}
+	if trailingAvgOut.IsPositive() && monthOut.GreaterThan(trailingAvgOut.Mul(decimal.NewFromFloat(1.50))) {
 		anomalies++
 	}
 	if avgIncome.IsPositive() && monthFlow.TotalDeposits.LessThan(avgIncome.Mul(decimal.NewFromFloat(0.50))) && now.Day() >= 15 {
@@ -283,22 +332,70 @@ func (s *Service) RefreshMoneyState(ctx context.Context, userID uuid.UUID) (*ent
 		anomalies++
 	}
 
-	confidenceScore := 35
-	if monthFlow.DepositCount > 0 {
-		confidenceScore += 20
-	}
-	if monthOut.IsPositive() {
-		confidenceScore += 20
-	}
-	if !avgIncome.IsZero() {
-		confidenceScore += 15
-	}
-	if upcoming.IsPositive() || recurring.IsPositive() {
+	// Confidence: data-density-aware score over trailing window (0–100).
+	confidenceScore := 0
+
+	// Income signal (0–35): how much deposit history backs the income estimate.
+	if trailingFlow.TotalDeposits.IsPositive() {
+		switch {
+		case activeMonths >= 6:
+			confidenceScore += 35
+		case activeMonths >= 3:
+			confidenceScore += 25
+		case activeMonths >= 1:
+			confidenceScore += 15
+		}
+	} else if monthFlow.TotalDeposits.IsPositive() {
 		confidenceScore += 10
 	}
+
+	// Spending signal (0–25): consistent outflow data across the window.
+	if trailingOut.IsPositive() {
+		switch {
+		case activeMonths >= 6:
+			confidenceScore += 25
+		case activeMonths >= 3:
+			confidenceScore += 20
+		case activeMonths >= 1:
+			confidenceScore += 10
+		}
+	} else if monthOut.IsPositive() {
+		confidenceScore += 10
+	}
+
+	// Obligation signal (0–20).
+	if recurring.IsPositive() {
+		confidenceScore += 10
+	}
+	if upcoming.IsPositive() {
+		confidenceScore += 10
+	}
+
+	// Balance signal (0–20): we have real account balances.
+	if spend.IsPositive() {
+		confidenceScore += 10
+	}
+	if stash.IsPositive() {
+		confidenceScore += 10
+	}
+
 	if confidenceScore > 100 {
 		confidenceScore = 100
 	}
+
+	// Calibrate confidence by prediction accuracy (hit rate over last 90 days).
+	calibrationScore := 100
+	if s.repo != nil {
+		hitRate, err := s.repo.GetPredictionHitRate(ctx, userID, "", time.Now().UTC().AddDate(0, -3, 0))
+		if err == nil && hitRate > 0 {
+			calibrated := int(float64(confidenceScore) * hitRate)
+			if calibrated < confidenceScore {
+				confidenceScore = calibrated
+			}
+			calibrationScore = int(hitRate * 100)
+		}
+	}
+
 	confidenceLevel := "low"
 	if confidenceScore >= 75 {
 		confidenceLevel = "high"
@@ -306,15 +403,35 @@ func (s *Service) RefreshMoneyState(ctx context.Context, userID uuid.UUID) (*ent
 		confidenceLevel = "medium"
 	}
 
+	obligationVsActual := "aligned"
+	if monthlySpend.IsPositive() && recurring.IsPositive() {
+		ratio := recurring.Div(monthlySpend).InexactFloat64()
+		switch {
+		case ratio > 1.5:
+			obligationVsActual = "obligations_greatly_exceed_actual"
+		case ratio > 1.2:
+			obligationVsActual = "obligations_moderately_exceed_actual"
+		case ratio < 0.5:
+			obligationVsActual = "obligations_greatly_below_actual"
+		case ratio < 0.8:
+			obligationVsActual = "obligations_moderately_below_actual"
+		}
+	}
+
 	snapshot := map[string]interface{}{
-		"spend_balance":         spend.StringFixed(2),
-		"stash_balance":         stash.StringFixed(2),
-		"month_income":          monthFlow.TotalDeposits.StringFixed(2),
-		"month_outflow":         monthOut.StringFixed(2),
-		"last_month_outflow":    lastMonthOut.StringFixed(2),
-		"last_7_days_outflow":   weekOut.StringFixed(2),
-		"daily_outflow_average": dailyOut.StringFixed(2),
-		"data_used":             []string{"balances", "money_flow", "obligations", "financial_profile", "money_guard_safe_to_spend"},
+		"spend_balance":            spend.StringFixed(2),
+		"stash_balance":            stash.StringFixed(2),
+		"month_income":             monthFlow.TotalDeposits.StringFixed(2),
+		"month_outflow":            monthOut.StringFixed(2),
+		"last_month_outflow":       lastMonthOut.StringFixed(2),
+		"last_7_days_outflow":      weekOut.StringFixed(2),
+		"daily_outflow_average":    dailyOut.StringFixed(2),
+		"monthly_spend_trailing":   monthlySpend.StringFixed(2),
+		"monthly_savings_trailing": monthlySavings.StringFixed(2),
+		"trailing_window_months":   trailingMonths,
+		"active_months":            activeMonths,
+		"obligation_vs_actual":     obligationVsActual,
+		"data_used":                []string{"balances", "money_flow", "obligations", "financial_profile", "money_guard_safe_to_spend"},
 	}
 	state := &entities.MiriamMoneyState{
 		UserID: userID, IncomeCadence: incomeCadence, AvgMonthlyIncome: avgIncome.RoundBank(2),
@@ -323,6 +440,9 @@ func (s *Service) RefreshMoneyState(ctx context.Context, userID uuid.UUID) (*ent
 		RecurringSpendMonthly: recurring.RoundBank(2), AnomalyCount: anomalies,
 		ConfidenceLevel: confidenceLevel, ConfidenceScore: confidenceScore,
 		LastEvaluatedAt: now, Snapshot: mustJSON(snapshot),
+		MonthlySpend: monthlySpend.RoundBank(2), MonthlySavings: monthlySavings.RoundBank(2),
+		SpendBalance: spend.RoundBank(2), StashBalance: stash.RoundBank(2),
+		CalibrationScore: calibrationScore,
 	}
 	if err := s.repo.UpsertMoneyState(ctx, state); err != nil {
 		return nil, err
@@ -448,6 +568,9 @@ func (s *Service) moneyFlow(ctx context.Context, userID uuid.UUID, start, end ti
 	}
 	flow, err := s.spending.GetMoneyFlow(ctx, userID, start, end)
 	if err != nil || flow == nil {
+		if err != nil && s.logger != nil {
+			s.logger.Warn("moneyFlow: spending provider returned error, using empty summary", zap.String("user_id", userID.String()), zap.Error(err))
+		}
 		return &entities.MoneyFlowSummary{}
 	}
 	return flow

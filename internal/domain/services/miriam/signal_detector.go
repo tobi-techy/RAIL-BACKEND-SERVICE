@@ -103,7 +103,7 @@ func (d *SignalDetector) detectPayday(ctx context.Context, userID uuid.UUID, now
 		UserID:     userID,
 		SignalType: entities.SignalPaydayDetected,
 		SignalData: mustJSON(data),
-		Confidence: decimal.NewFromFloat(0.7 + float64(flow.DepositCount)*0.05),
+		Confidence: decimal.NewFromFloat(math.Min(1.0, 0.7+float64(flow.DepositCount)*0.05)),
 		IsActive:   true,
 		LastSeenAt: now,
 	})
@@ -161,11 +161,15 @@ func (d *SignalDetector) detectLowBalance(ctx context.Context, userID uuid.UUID,
 	if d.obligations != nil {
 		obligations, err := d.obligations.ListActive(ctx, userID)
 		if err == nil {
+			cutoff := now.AddDate(0, 0, 30)
 			for _, o := range obligations {
 				if !usdLike(o.Currency) {
 					continue
 				}
-				upcoming = upcoming.Add(o.Amount)
+				due := nextDueDate(o, now)
+				if due != nil && !due.After(cutoff) {
+					upcoming = upcoming.Add(o.Amount)
+				}
 			}
 		}
 	}

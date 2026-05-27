@@ -25,18 +25,19 @@ const (
 // IntelligenceOrchestrator is Miriam's unified brain — a single evaluation pass
 // that coordinates predictions, decisions, memory, learning, and actions.
 type IntelligenceOrchestrator struct {
-	service     *Service
-	decisions   *DecisionEngine
-	nudges      *ProactiveNudgeEngine
-	predictions *PredictiveEngine
-	signals     *SignalDetector
-	suggestions *MandateSuggestionEngine
-	obDetector  *ObligationAutoDetector
-	dispatcher  *NotificationDispatcher
-	memory      MemoryReader
-	notifier    Notifier
-	healthScore *HealthScoreTracker
-	logger      *zap.Logger
+	service      *Service
+	decisions    *DecisionEngine
+	nudges       *ProactiveNudgeEngine
+	predictions  *PredictiveEngine
+	signals      *SignalDetector
+	suggestions  *MandateSuggestionEngine
+	obDetector   *ObligationAutoDetector
+	dispatcher   *NotificationDispatcher
+	memory       MemoryReader
+	notifier     Notifier
+	healthScore  *HealthScoreTracker
+	outcomeTrack *OutcomeTracker
+	logger       *zap.Logger
 }
 
 // NewIntelligenceOrchestrator creates the unified brain.
@@ -52,13 +53,15 @@ func NewIntelligenceOrchestrator(
 	memory MemoryReader,
 	notifier Notifier,
 	healthScore *HealthScoreTracker,
+	outcomeTrack *OutcomeTracker,
 	logger *zap.Logger,
 ) *IntelligenceOrchestrator {
 	return &IntelligenceOrchestrator{
 		service: service, decisions: decisions, nudges: nudges,
 		predictions: predictions, signals: signals, suggestions: suggestions,
 		obDetector: obDetector, dispatcher: dispatcher, memory: memory,
-		notifier: notifier, healthScore: healthScore, logger: logger,
+		notifier: notifier, healthScore: healthScore, outcomeTrack: outcomeTrack,
+		logger: logger,
 	}
 }
 
@@ -126,6 +129,14 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 		o.logger.Warn("prediction generation failed", zap.String("user_id", userID.String()), zap.Error(err))
 	}
 	result.Predictions = predictions
+
+	// 2b. Record prediction outcomes (pending) and evaluate expired ones
+	if o.outcomeTrack != nil {
+		if predictions != nil {
+			o.outcomeTrack.RecordPredictions(ctx, userID, predictions.ActivePredictions)
+		}
+		o.outcomeTrack.EvaluateOutcomes(ctx, userID)
+	}
 
 	// 3. Detect and upsert context signals
 	if o.signals != nil {
@@ -364,13 +375,14 @@ func computeSavingsScore(state *entities.MiriamMoneyState) int {
 	if state.AvgMonthlyIncome.IsZero() {
 		return 40
 	}
-	savingsRate := state.SafeToSpendDaily.Mul(decimal.NewFromInt(30)).Div(state.AvgMonthlyIncome).InexactFloat64()
+	// Use actual trailing savings (avg deposits − avg outflow) as the savings rate.
+	savingsRate := state.MonthlySavings.Div(state.AvgMonthlyIncome).InexactFloat64()
 	switch {
-	case savingsRate >= 0.3:
+	case savingsRate >= 0.30:
 		return 100
-	case savingsRate >= 0.2:
+	case savingsRate >= 0.20:
 		return 80
-	case savingsRate >= 0.1:
+	case savingsRate >= 0.10:
 		return 60
 	case savingsRate >= 0.05:
 		return 40
@@ -383,15 +395,10 @@ func computeDebtScore(state *entities.MiriamMoneyState) int {
 	if state.UpcomingObligations.IsZero() {
 		return 100
 	}
-	spend := decimal.Zero
-	spendBalance := state.SafeToSpendDaily.Mul(decimal.NewFromInt(30))
-	if spendBalance.IsPositive() {
-		spend = spendBalance
-	}
-	if spend.IsZero() {
+	if state.SpendBalance.IsZero() {
 		return 40
 	}
-	ratio := state.UpcomingObligations.Div(spend).InexactFloat64()
+	ratio := state.UpcomingObligations.Div(state.SpendBalance).InexactFloat64()
 	switch {
 	case ratio <= 0.3:
 		return 100
@@ -422,18 +429,24 @@ func computeRunwayScore(runwayDays int) int {
 }
 
 func computeStabilityScore(state *entities.MiriamMoneyState) int {
-	if state.RecurringSpendMonthly.IsZero() {
+	monthlySpend := state.MonthlySpend
+	if monthlySpend.IsZero() {
+		monthlySpend = state.RecurringSpendMonthly
+	}
+	if monthlySpend.IsZero() {
 		return 60
 	}
-	ratio := state.SafeToSpendDaily.Mul(decimal.NewFromInt(90)).Div(state.RecurringSpendMonthly).InexactFloat64()
+	// Stash as percentage of actual monthly spend — how many months of expenses
+	// are covered by savings.
+	stabilityRatio := state.StashBalance.Div(monthlySpend).Mul(decimal.NewFromInt(100)).InexactFloat64()
 	switch {
-	case ratio >= 6.0:
+	case stabilityRatio >= 600:
 		return 100
-	case ratio >= 3.0:
+	case stabilityRatio >= 300:
 		return 80
-	case ratio >= 1.0:
+	case stabilityRatio >= 100:
 		return 60
-	case ratio >= 0.5:
+	case stabilityRatio >= 50:
 		return 40
 	default:
 		return 20
@@ -443,9 +456,10 @@ func computeStabilityScore(state *entities.MiriamMoneyState) int {
 func generateHealthReasoning(state *entities.MiriamMoneyState) string {
 	runway := state.LiquidityRunwayDays
 	budgetScore := computeBudgetScore(state)
+	savingScore := computeSavingsScore(state)
 	debtScore := computeDebtScore(state)
 	return fmt.Sprintf(
-		"Runway: %d days. Budget score: %d/100. Debt score: %d/100. Confidence: %s.",
-		runway, budgetScore, debtScore, state.ConfidenceLevel,
+		"Runway: %d days. Savings score: %d/100. Budget score: %d/100. Debt score: %d/100. Confidence: %s.",
+		runway, savingScore, budgetScore, debtScore, state.ConfidenceLevel,
 	)
 }

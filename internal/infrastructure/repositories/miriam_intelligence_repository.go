@@ -281,3 +281,87 @@ func (r *MiriamIntelligenceRepository) RecentLearningBias(ctx context.Context, u
 	}
 	return score, nil
 }
+
+func (r *MiriamIntelligenceRepository) SavePredictionOutcomes(ctx context.Context, outcomes []entities.MiriamPredictionOutcome) error {
+	if len(outcomes) == 0 {
+		return nil
+	}
+	tx, err := r.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, o := range outcomes {
+		if o.ThresholdData == nil {
+			o.ThresholdData = json.RawMessage(`{}`)
+		}
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO miriam_prediction_outcomes
+				(id, user_id, prediction_id, prediction_type, predicted_probability,
+				 horizon_days, threshold_data, actual_outcome, outcome_observed_at, created_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+			ON CONFLICT (id) DO NOTHING`,
+			o.ID, o.UserID, o.PredictionID, o.PredictionType, o.PredictedProbability,
+			o.HorizonDays, o.ThresholdData, o.ActualOutcome, o.OutcomeObservedAt, o.CreatedAt)
+		if err != nil {
+			return fmt.Errorf("insert prediction outcome: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+func (r *MiriamIntelligenceRepository) GetPendingPredictionOutcomes(ctx context.Context, userID uuid.UUID) ([]entities.MiriamPredictionOutcome, error) {
+	var outcomes []entities.MiriamPredictionOutcome
+	err := r.db.SelectContext(ctx, &outcomes, `
+		SELECT id, user_id, prediction_id, prediction_type, predicted_probability,
+		       horizon_days, threshold_data, actual_outcome, outcome_observed_at, created_at
+		FROM miriam_prediction_outcomes
+		WHERE user_id = $1 AND actual_outcome IS NULL
+		ORDER BY created_at ASC`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get pending prediction outcomes: %w", err)
+	}
+	return outcomes, nil
+}
+
+func (r *MiriamIntelligenceRepository) MarkPredictionOutcome(ctx context.Context, id uuid.UUID, outcome bool, observedAt time.Time) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE miriam_prediction_outcomes
+		SET actual_outcome = $2, outcome_observed_at = $3
+		WHERE id = $1`, id, outcome, observedAt)
+	if err != nil {
+		return fmt.Errorf("mark prediction outcome: %w", err)
+	}
+	return nil
+}
+
+func (r *MiriamIntelligenceRepository) GetPredictionHitRate(ctx context.Context, userID uuid.UUID, predictionType string, since time.Time) (float64, error) {
+	var result struct {
+		Total   int     `db:"total"`
+		Correct int     `db:"correct"`
+		Rate    float64 `db:"rate"`
+	}
+	query := `
+		SELECT
+			COUNT(*) AS total,
+			COUNT(*) FILTER (WHERE actual_outcome = TRUE) AS correct,
+			CASE WHEN COUNT(*) > 0
+				THEN COUNT(*) FILTER (WHERE actual_outcome = TRUE)::FLOAT / COUNT(*)::FLOAT
+				ELSE 0
+			END AS rate
+		FROM miriam_prediction_outcomes
+		WHERE user_id = $1
+		  AND actual_outcome IS NOT NULL
+		  AND created_at >= $2`
+	args := []interface{}{userID, since}
+	if predictionType != "" {
+		query += ` AND prediction_type = $3`
+		args = append(args, predictionType)
+	}
+	err := r.db.GetContext(ctx, &result, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("get prediction hit rate: %w", err)
+	}
+	return result.Rate, nil
+}

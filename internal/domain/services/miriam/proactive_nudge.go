@@ -109,26 +109,28 @@ func (e *ProactiveNudgeEngine) generateFromSummary(ctx context.Context, userID u
 
 	dedupWindow := 12 * time.Hour
 
-	for i := range nudges {
+	var delivered []entities.ProactiveNudge
+	for _, n := range nudges {
 		if e.store != nil {
-			same, err := e.store.HasRecentNudgeByType(ctx, userID, nudges[i].TriggerType, time.Now().UTC().Add(-dedupWindow))
+			same, err := e.store.HasRecentNudgeByType(ctx, userID, n.TriggerType, time.Now().UTC().Add(-dedupWindow))
 			if err == nil && same {
 				continue
 			}
-			if err := e.store.CreateNudge(ctx, &nudges[i]); err != nil && e.logger != nil {
+			if err := e.store.CreateNudge(ctx, &n); err != nil && e.logger != nil {
 				e.logger.Warn("nudge creation failed", zap.Error(err))
 				continue
 			}
 		}
 		if e.notifier != nil {
-			_ = e.notifier.SendGenericNotification(ctx, userID, "Miriam", nudges[i].Message)
+			_ = e.notifier.SendGenericNotification(ctx, userID, "Miriam", n.Message)
 			if e.store != nil {
-				_ = e.store.MarkDelivered(ctx, nudges[i].ID)
+				_ = e.store.MarkDelivered(ctx, n.ID)
 			}
 		}
+		delivered = append(delivered, n)
 	}
 
-	return nudges, nil
+	return delivered, nil
 }
 
 // GetPendingNudges returns undelivered nudges for a user.

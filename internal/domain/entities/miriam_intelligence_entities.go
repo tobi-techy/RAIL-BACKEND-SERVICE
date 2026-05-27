@@ -26,6 +26,21 @@ const (
 	MiriamFeedbackDismissed = "dismissed"
 )
 
+// MiriamPredictionOutcome records whether a prediction materialized, enabling
+// accuracy tracking and confidence calibration over time.
+type MiriamPredictionOutcome struct {
+	ID                   uuid.UUID       `json:"id" db:"id"`
+	UserID               uuid.UUID       `json:"user_id" db:"user_id"`
+	PredictionID         uuid.UUID       `json:"prediction_id" db:"prediction_id"`
+	PredictionType       string          `json:"prediction_type" db:"prediction_type"`
+	PredictedProbability decimal.Decimal `json:"predicted_probability" db:"predicted_probability"`
+	HorizonDays          int             `json:"horizon_days" db:"horizon_days"`
+	ThresholdData        json.RawMessage `json:"threshold_data" db:"threshold_data"`
+	ActualOutcome        *bool           `json:"actual_outcome" db:"actual_outcome"`
+	OutcomeObservedAt    *time.Time      `json:"outcome_observed_at" db:"outcome_observed_at"`
+	CreatedAt            time.Time       `json:"created_at" db:"created_at"`
+}
+
 // MiriamMoneyState is the durable, periodically refreshed summary Miriam uses
 // to make deterministic financial decisions without rebuilding context from
 // scratch on every chat request.
@@ -45,6 +60,15 @@ type MiriamMoneyState struct {
 	Snapshot              json.RawMessage `json:"snapshot" db:"snapshot"`
 	CreatedAt             time.Time       `json:"created_at" db:"created_at"`
 	UpdatedAt             time.Time       `json:"updated_at" db:"updated_at"`
+
+	// Transient fields — computed during RefreshMoneyState, not persisted.
+	// These are set from real transaction data and used by health score
+	// computation, replacing the old SafeToSpendDaily proxy.
+	MonthlySpend      decimal.Decimal `json:"-"` // trailing average of total monthly outflow
+	MonthlySavings    decimal.Decimal `json:"-"` // trailing average of (deposits − outflow), floored at 0
+	SpendBalance      decimal.Decimal `json:"-"` // current spend account balance
+	StashBalance      decimal.Decimal `json:"-"` // current stash account balance
+	CalibrationScore  int             `json:"-"` // prediction accuracy (0–100), used to scale confidence
 }
 
 // MiriamAutopilotMandate is a user-approved bounded permission for Miriam to

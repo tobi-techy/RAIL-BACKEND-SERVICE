@@ -2,6 +2,7 @@ package miriam
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sort"
 	"strconv"
@@ -254,7 +255,22 @@ func (e *PredictiveEngine) detectSpendingAnomaly(ctx context.Context, userID uui
 		return nil
 	}
 
-	// Anomaly already detected in money state — convert to prediction
+	// Compute actual anomaly amount from money flows
+	now := time.Now().UTC()
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	lastMonthStart := monthStart.AddDate(0, -1, 0)
+	thisMonth, _ := e.spending.GetMoneyFlow(ctx, userID, monthStart, now)
+	lastMonth, _ := e.spending.GetMoneyFlow(ctx, userID, lastMonthStart, monthStart)
+
+	anomalyAmount := decimal.Zero
+	if thisMonth != nil && lastMonth != nil {
+		thisOut := totalOut(thisMonth)
+		lastOut := totalOut(lastMonth)
+		if lastOut.IsPositive() && thisOut.GreaterThan(lastOut) {
+			anomalyAmount = thisOut.Sub(lastOut)
+		}
+	}
+
 	probability := decimal.NewFromFloat(0.7)
 	if state.ConfidenceLevel == "high" {
 		probability = decimal.NewFromFloat(0.85)
@@ -276,6 +292,7 @@ func (e *PredictiveEngine) detectSpendingAnomaly(ctx context.Context, userID uui
 		"anomaly_count":    state.AnomalyCount,
 		"confidence_level": state.ConfidenceLevel,
 		"spend_balance":    spend.StringFixed(2),
+		"anomaly_amount":   anomalyAmount.StringFixed(2),
 	}
 
 	return &entities.MiriamPrediction{
@@ -284,7 +301,7 @@ func (e *PredictiveEngine) detectSpendingAnomaly(ctx context.Context, userID uui
 		Horizon:         entities.Horizon7Day,
 		Probability:     probability,
 		Severity:        severity,
-		ProjectedAmount: decimal.Zero,
+		ProjectedAmount: anomalyAmount,
 		Reasoning:       reasoning,
 		DataSnapshot:    mustJSON(snapshot),
 	}
@@ -300,8 +317,13 @@ func (e *PredictiveEngine) predictIncomeGap(ctx context.Context, userID uuid.UUI
 	// Projected income for rest of month based on cadence
 	projectedIncome := projectedMonthlyIncome(state, now)
 
-	// Total obligations + recurring spend for the month
-	totalNeeds := state.UpcomingObligations.Add(state.RecurringSpendMonthly)
+	// Monthly obligations — use the larger of recurring or upcoming to avoid
+	// double-counting (obligations with both a DueDay/DueDate and a Cadence
+	// appear in both fields).
+	totalNeeds := state.RecurringSpendMonthly
+	if state.UpcomingObligations.GreaterThan(totalNeeds) {
+		totalNeeds = state.UpcomingObligations
+	}
 
 	gap := decimal.Zero
 	willGap := false
@@ -530,11 +552,7 @@ func cashShortfallReasoning(daysUntilPayday int, spend, dailyOutflow, obligation
 	var b strings.Builder
 	b.WriteString("At current spend rate, you'll run out before payday")
 	if daysUntilPayday > 0 {
-		b.WriteRune(' ')
-		b.WriteString("(")
-		b.WriteRune('0' + rune(daysUntilPayday/10))
-		b.WriteRune('0' + rune(daysUntilPayday%10))
-		b.WriteString(" days).")
+		b.WriteString(fmt.Sprintf(" (%d days).", daysUntilPayday))
 	} else {
 		b.WriteString(".")
 	}

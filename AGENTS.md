@@ -30,3 +30,8 @@ Recent history follows imperative subjects with prefixes such as `feat:`, `fix:`
 ## Security & Configuration Tips
 
 Never commit live secrets or edited `.env` files. Start from `.env.example` and config under `configs/`. Prefer secret managers and environment variables for credentials. If you touch auth, payments, or webhooks, run `make security-scan` before review.
+
+## What we have learned
+
+- Outcome tracking & calibration: `OutcomeTracker` (outcome_tracker.go) records every prediction as a pending outcome, evaluates whether it materialised after the horizon expires, and stores the result in `miriam_prediction_outcomes`. `GetPredictionHitRate` returns accuracy ratio over a lookback period. In `RefreshMoneyState`, the confidence score is multiplied by the hit rate (if > 0) so past prediction accuracy directly scales confidence — a system that's been 60% right can't claim "high confidence". Migration file: `219_miriam_prediction_outcomes`.
+- Confidence score is now data-density-aware: tiers based on `activeMonths` for income (0–35) and spending (0–25) signals instead of flat rule-based points. Anomaly detection compares against 6-month trailing average instead of single prior month.

@@ -1291,6 +1291,7 @@ type Container struct {
 	MiriamProactiveNudgeEngine     *miriamservice.ProactiveNudgeEngine
 	MiriamMandateSuggestionEngine  *miriamservice.MandateSuggestionEngine
 	MiriamHealthScoreTracker       *miriamservice.HealthScoreTracker
+	MiriamOutcomeTracker           *miriamservice.OutcomeTracker
 	MiriamNotificationDispatcher   *miriamservice.NotificationDispatcher
 	MiriamObligationDetector       *miriamservice.ObligationAutoDetector
 	AutomationService              *automation.Service
@@ -1956,6 +1957,13 @@ func (c *Container) initializeDomainServices() error {
 		healthRepo,
 		c.ZapLog,
 	)
+	c.MiriamOutcomeTracker = miriamservice.NewOutcomeTracker(
+		c.MiriamIntelligenceRepo,
+		moneyGuardSpendingSvc,
+		c.LedgerService,
+		c.FinancialObligationService,
+		c.ZapLog,
+	)
 	c.MiriamIntelligenceOrchestrator = miriamservice.NewIntelligenceOrchestrator(
 		c.MiriamIntelligenceService,
 		c.MiriamDecisionEngine,
@@ -1968,6 +1976,7 @@ func (c *Container) initializeDomainServices() error {
 		nil, // MemoryReader — deferred via SetMemory after memory service init
 		c.NotificationService,
 		c.MiriamHealthScoreTracker,
+		c.MiriamOutcomeTracker,
 		c.ZapLog,
 	)
 

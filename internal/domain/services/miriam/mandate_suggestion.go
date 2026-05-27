@@ -128,7 +128,11 @@ func (e *MandateSuggestionEngine) suggestTransferToStash(userID uuid.UUID, state
 		return nil
 	}
 
-	maxAction := minDecimal(surplus.Mul(decimal.NewFromFloat(0.3)), decimal.NewFromInt(100))
+	// 30% of surplus, capped at $500 — proportional to the user's actual surplus
+	maxAction := surplus.Mul(decimal.NewFromFloat(0.3))
+	if maxAction.GreaterThan(decimal.NewFromInt(500)) {
+		maxAction = decimal.NewFromInt(500)
+	}
 	maxDay := maxAction.Mul(decimal.NewFromInt(3)) // Allow 3x per day max
 
 	return &entities.MiriamMandateSuggestion{
