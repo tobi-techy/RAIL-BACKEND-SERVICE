@@ -1,5 +1,4 @@
 {
-  "taskDefinitionArn": "arn:aws:ecs:us-east-1:885160773772:task-definition/rail-prod:204",
   "containerDefinitions": [
     {
       "name": "rail-backend",
@@ -18,6 +17,14 @@
         {
           "name": "REDIS_HOST",
           "value": "rail-prod.q0riyh.0001.use1.cache.amazonaws.com"
+        },
+        {
+          "name": "ASSEMBLYAI_VOICE",
+          "value": "ivy"
+        },
+        {
+          "name": "ELEVENLABS_AGENT_ID",
+          "value": "agent_7601kskdhzsvf7w86sqhwevwbdxc7"
         },
         {
           "name": "PORT",
@@ -42,14 +49,6 @@
         {
           "name": "AI_PRIMARY",
           "value": "kimi"
-        },
-        {
-          "name": "ASSEMBLYAI_VOICE",
-          "value": "ivy"
-        },
-        {
-          "name": "ELEVENLABS_AGENT_ID",
-          "value": "agent_7601kskdhzsvf7w86sqhwevwbdxc7"
         },
         {
           "name": "ELEVENLABS_VOICE_ID",
@@ -299,7 +298,6 @@
   "taskRoleArn": "arn:aws:iam::885160773772:role/rail-prod-ecs-task",
   "executionRoleArn": "arn:aws:iam::885160773772:role/rail-prod-ecs-execution",
   "networkMode": "bridge",
-  "revision": 204,
   "volumes": [],
   "placementConstraints": [],
   "requiresCompatibilities": [
