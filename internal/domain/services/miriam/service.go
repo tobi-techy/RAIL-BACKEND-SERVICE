@@ -254,7 +254,7 @@ func (s *Service) RefreshMoneyState(ctx context.Context, userID uuid.UUID) (*ent
 		if safe, err := s.safeSpend.SafeToSpend(ctx, userID); err == nil {
 			safeDaily = safe.DailySafeToSpend
 		} else if s.logger != nil {
-			s.logger.Warn("safe-to-spend fetch failed, falling back to zero", zap.Error(err))
+			s.logger.Debug("safe-to-spend fetch failed, falling back to zero", zap.Error(err))
 		}
 	}
 
