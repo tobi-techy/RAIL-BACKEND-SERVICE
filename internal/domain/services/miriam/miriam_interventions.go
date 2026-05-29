@@ -117,7 +117,7 @@ func (b *MiriamNudgeBuilder) Overspend(ctx InterventionContext) MiriamInterventi
 		period = "this month"
 	}
 
-	body := fmt.Sprintf("%s spending pass normal %s by %s%s.", strings.Title(category), period, cur, overStr)
+	body := fmt.Sprintf("%s spending pass normal %s by %s%s.", titleCase(category), period, cur, overStr)
 	voiceHook := body
 	if ctx.BudgetPace != "" {
 		voiceHook = ctx.BudgetPace
@@ -259,4 +259,12 @@ func formatAmount(amt decimal.Decimal) string {
 	default:
 		return amt.StringFixed(0)
 	}
+}
+
+// titleCase capitalises the first letter of a string (replaces deprecated strings.Title).
+func titleCase(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
@@ -75,4 +76,14 @@ func (r *HealthScoreRepository) GetLatestScore(ctx context.Context, userID uuid.
 		return nil, fmt.Errorf("get latest health score: %w", err)
 	}
 	return &s, nil
+}
+
+func (r *HealthScoreRepository) DeleteScoresOlderThan(ctx context.Context, before time.Time) (int64, error) {
+	result, err := r.db.ExecContext(ctx, `
+		DELETE FROM miriam_financial_health_scores
+		WHERE created_at < $1`, before)
+	if err != nil {
+		return 0, fmt.Errorf("delete old health scores: %w", err)
+	}
+	return result.RowsAffected()
 }

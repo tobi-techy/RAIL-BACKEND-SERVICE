@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -66,6 +67,7 @@ type NotificationDispatcher struct {
 	prefStore   NotificationPrefStore
 	digestStore NotificationDigestStore
 	notifier    Notifier
+	mu          sync.Mutex
 	batch       map[uuid.UUID][]DigestItem
 	logger      *zap.Logger
 }
@@ -124,13 +126,18 @@ func (d *NotificationDispatcher) Notify(ctx context.Context, userID uuid.UUID, t
 
 // FlushBatches sends all batched notifications for users.
 func (d *NotificationDispatcher) FlushBatches(ctx context.Context) int {
+	d.mu.Lock()
+	items := d.batch
+	d.batch = make(map[uuid.UUID][]DigestItem)
+	d.mu.Unlock()
+
 	sent := 0
-	for userID, items := range d.batch {
-		if len(items) == 0 {
+	for userID, userItems := range items {
+		if len(userItems) == 0 {
 			continue
 		}
 		title := "Miriam summary"
-		message := buildBatchedMessage(items)
+		message := buildBatchedMessage(userItems)
 		if d.notifier != nil {
 			if err := d.notifier.SendGenericNotification(ctx, userID, title, message); err != nil && d.logger != nil {
 				d.logger.Warn("batch notification failed", zap.Error(err))
@@ -139,26 +146,38 @@ func (d *NotificationDispatcher) FlushBatches(ctx context.Context) int {
 			}
 		}
 	}
-	d.batch = make(map[uuid.UUID][]DigestItem)
 	return sent
 }
 
-// FlushDigests generates and sends daily digest notifications.
+// FlushDigests generates and sends daily digest notifications for users whose preferred hour matches.
 func (d *NotificationDispatcher) FlushDigests(ctx context.Context, hour int) int {
+	d.mu.Lock()
+	items := d.batch
+	d.batch = make(map[uuid.UUID][]DigestItem)
+	d.mu.Unlock()
+
 	sent := 0
-	// This would iterate users who have digest at this hour.
-	// For now, flush all queued digests.
-	for userID, items := range d.batch {
-		if len(items) == 0 {
+	for userID, userItems := range items {
+		if len(userItems) == 0 {
 			continue
+		}
+		// Only flush for users whose preferred digest hour matches
+		if prefs, err := d.prefStore.GetPreferences(ctx, userID); err == nil && prefs != nil {
+			if prefs.Mode == ModeDigest && prefs.DigestHour != hour {
+				// Not this user's digest hour — put items back
+				d.mu.Lock()
+				d.batch[userID] = append(d.batch[userID], userItems...)
+				d.mu.Unlock()
+				continue
+			}
 		}
 		digest := &NotificationDigest{
 			UserID:      userID,
 			GeneratedAt: time.Now().UTC(),
 			PeriodStart: time.Now().UTC().Add(-24 * time.Hour),
 			PeriodEnd:   time.Now().UTC(),
-			Items:       items,
-			Summary:     buildDigestSummary(items),
+			Items:       userItems,
+			Summary:     buildDigestSummary(userItems),
 		}
 		if d.digestStore != nil {
 			_ = d.digestStore.SaveDigest(ctx, digest)
@@ -172,7 +191,6 @@ func (d *NotificationDispatcher) FlushDigests(ctx context.Context, hour int) int
 			}
 		}
 	}
-	d.batch = make(map[uuid.UUID][]DigestItem)
 	return sent
 }
 
@@ -193,21 +211,25 @@ func (d *NotificationDispatcher) isInQuietHours(prefs *NotificationPreferences, 
 }
 
 func (d *NotificationDispatcher) queueForBatch(userID uuid.UUID, title, message, triggerType string) {
+	d.mu.Lock()
 	d.batch[userID] = append(d.batch[userID], DigestItem{
 		Type:      triggerType,
 		Title:     title,
 		Message:   message,
 		Timestamp: time.Now().UTC(),
 	})
+	d.mu.Unlock()
 }
 
 func (d *NotificationDispatcher) queueForDigest(userID uuid.UUID, title, message, triggerType string) {
+	d.mu.Lock()
 	d.batch[userID] = append(d.batch[userID], DigestItem{
 		Type:      triggerType,
 		Title:     title,
 		Message:   message,
 		Timestamp: time.Now().UTC(),
 	})
+	d.mu.Unlock()
 }
 
 func buildBatchedMessage(items []DigestItem) string {
