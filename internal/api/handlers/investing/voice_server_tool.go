@@ -31,13 +31,24 @@ func (h *VoiceHandler) HandleServerTool(c *gin.Context) {
 		return
 	}
 
-	var params map[string]interface{}
-	if err := c.ShouldBindJSON(&params); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
-		return
+	// ElevenLabs sends query params (dynamic variables + LLM prompt fields)
+	// and optionally a JSON body for body parameters.
+	params := make(map[string]interface{})
+	// Read body params first (if any)
+	var bodyParams map[string]interface{}
+	if err := c.ShouldBindJSON(&bodyParams); err == nil {
+		for k, v := range bodyParams {
+			params[k] = v
+		}
+	}
+	// Query params override / supplement body (ElevenLabs sends user_id, tool, period, etc. here)
+	for key, values := range c.Request.URL.Query() {
+		if len(values) > 0 && values[0] != "" {
+			params[key] = values[0]
+		}
 	}
 
-	// Extract user_id from params (set as dynamic variable identifier on ElevenLabs dashboard)
+	// Extract user_id (set as dynamic variable on ElevenLabs)
 	userIDStr, _ := params["user_id"].(string)
 	if userIDStr == "" {
 		h.logger.Warn("server tool call missing user_id", zap.String("tool", toolName))

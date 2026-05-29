@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -154,9 +155,11 @@ func (o *Orchestrator) executeVoiceMoneyLookup(ctx context.Context, userID uuid.
 	if unavailable := o.voiceLookupUnavailable(target); unavailable != "" {
 		return map[string]interface{}{"error": unavailable}, nil
 	}
+	fwd := voiceForwardArgs(args, "tool")
+	coerceNumericStrings(fwd)
 	return o.executeToolInner(ctx, userID, infraai.ToolCall{
 		Name:      target,
-		Arguments: voiceForwardArgs(args, "tool"),
+		Arguments: fwd,
 	})
 }
 
@@ -187,6 +190,8 @@ func (o *Orchestrator) executeVoiceMoneyAction(ctx context.Context, userID uuid.
 	} else {
 		params = voiceForwardArgs(args, "action")
 	}
+	coerceNumericStrings(params)
+	voiceAliasParams(action, params)
 	return o.executeActionToolDirect(ctx, userID, infraai.ToolCall{
 		Name:      action,
 		Arguments: params,
@@ -357,4 +362,42 @@ func (o *Orchestrator) voiceLookupUnavailable(tool string) string {
 		}
 	}
 	return ""
+}
+
+// coerceNumericStrings converts string values that look like numbers to float64.
+// ElevenLabs sends all body params as strings; downstream tools expect float64.
+func coerceNumericStrings(m map[string]interface{}) {
+	for k, v := range m {
+		if s, ok := v.(string); ok {
+			if f, err := strconv.ParseFloat(s, 64); err == nil {
+				m[k] = f
+			}
+		}
+	}
+}
+
+// voiceAliasParams maps ElevenLabs field names to what action tools expect.
+func voiceAliasParams(action string, params map[string]interface{}) {
+	switch action {
+	case ToolSetBudget:
+		if _, has := params["monthly_limit"]; !has {
+			if v, ok := params["amount"]; ok {
+				params["monthly_limit"] = v
+				delete(params, "amount")
+			}
+		}
+	case ToolSetSavingsGoal:
+		if _, has := params["target"]; !has {
+			if v, ok := params["amount"]; ok {
+				params["target"] = v
+				delete(params, "amount")
+			}
+		}
+		if _, has := params["deadline"]; !has {
+			if v, ok := params["target_date"]; ok {
+				params["deadline"] = v
+				delete(params, "target_date")
+			}
+		}
+	}
 }
