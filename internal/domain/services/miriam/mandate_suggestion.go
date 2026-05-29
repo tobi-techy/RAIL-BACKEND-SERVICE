@@ -27,7 +27,7 @@ type MandateProvider interface {
 // MandateSuggestionEngine analyzes user state and memory to propose new mandates.
 type MandateSuggestionEngine struct {
 	repo        MandateSuggestionRepository
-	mandaes     MandateProvider
+	mandates    MandateProvider
 	balances    BalanceProvider
 	spending    SpendingProvider
 	obligations ObligationProvider
@@ -46,7 +46,7 @@ func NewMandateSuggestionEngine(
 	logger *zap.Logger,
 ) *MandateSuggestionEngine {
 	return &MandateSuggestionEngine{
-		repo: repo, mandaes: mandates, balances: balances, spending: spending,
+		repo: repo, mandates: mandates, balances: balances, spending: spending,
 		obligations: obligations, profiles: profiles, logger: logger,
 	}
 }
@@ -258,10 +258,10 @@ func (e *MandateSuggestionEngine) suggestGoalContribution(ctx context.Context, u
 }
 
 func (e *MandateSuggestionEngine) hasActiveMandate(ctx context.Context, userID uuid.UUID, actionType string) bool {
-	if e.mandaes == nil {
+	if e.mandates == nil {
 		return false
 	}
-	exists, err := e.mandaes.HasActiveMandate(ctx, userID, actionType)
+	exists, err := e.mandates.HasActiveMandate(ctx, userID, actionType)
 	if err != nil {
 		return false
 	}

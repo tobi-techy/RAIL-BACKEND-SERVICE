@@ -442,7 +442,7 @@ func (s *Service) RefreshMoneyState(ctx context.Context, userID uuid.UUID) (*ent
 		LastEvaluatedAt: now, Snapshot: mustJSON(snapshot),
 		MonthlySpend: monthlySpend.RoundBank(2), MonthlySavings: monthlySavings.RoundBank(2),
 		SpendBalance: spend.RoundBank(2), StashBalance: stash.RoundBank(2),
-		CalibrationScore: calibrationScore,
+		CalibrationScore: decimal.NewFromInt(int64(calibrationScore)),
 	}
 	if err := s.repo.UpsertMoneyState(ctx, state); err != nil {
 		return nil, err

@@ -105,6 +105,11 @@ func (o *IntelligenceOrchestrator) SetNotifier(n Notifier) {
 	o.notifier = n
 }
 
+// HealthScoreTracker returns the health score tracker for maintenance operations.
+func (o *IntelligenceOrchestrator) HealthScoreTracker() *HealthScoreTracker {
+	return o.healthScore
+}
+
 // IntelligenceResult is the output of a single evaluation pass.
 type IntelligenceResult struct {
 	UserID          uuid.UUID                        `json:"user_id"`

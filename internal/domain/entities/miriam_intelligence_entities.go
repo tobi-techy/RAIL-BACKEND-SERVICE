@@ -61,14 +61,12 @@ type MiriamMoneyState struct {
 	CreatedAt             time.Time       `json:"created_at" db:"created_at"`
 	UpdatedAt             time.Time       `json:"updated_at" db:"updated_at"`
 
-	// Transient fields — computed during RefreshMoneyState, not persisted.
-	// These are set from real transaction data and used by health score
-	// computation, replacing the old SafeToSpendDaily proxy.
-	MonthlySpend      decimal.Decimal `json:"-"` // trailing average of total monthly outflow
-	MonthlySavings    decimal.Decimal `json:"-"` // trailing average of (deposits − outflow), floored at 0
-	SpendBalance      decimal.Decimal `json:"-"` // current spend account balance
-	StashBalance      decimal.Decimal `json:"-"` // current stash account balance
-	CalibrationScore  int             `json:"-"` // prediction accuracy (0–100), used to scale confidence
+	// Computed during RefreshMoneyState and persisted for downstream consumers.
+	MonthlySpend      decimal.Decimal `json:"monthly_spend" db:"monthly_spend"`
+	MonthlySavings    decimal.Decimal `json:"monthly_savings" db:"monthly_savings"`
+	SpendBalance      decimal.Decimal `json:"spend_balance" db:"spend_balance"`
+	StashBalance      decimal.Decimal `json:"stash_balance" db:"stash_balance"`
+	CalibrationScore  decimal.Decimal `json:"calibration_score" db:"calibration_score"`
 }
 
 // MiriamAutopilotMandate is a user-approved bounded permission for Miriam to

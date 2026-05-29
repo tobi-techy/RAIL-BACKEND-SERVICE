@@ -22,6 +22,7 @@ type Worker struct {
 	interval    time.Duration
 	limit       int
 	concurrency int
+	lastCleanup time.Time
 	logger      *zap.Logger
 }
 
@@ -92,4 +93,14 @@ func (w *Worker) run(ctx context.Context) {
 	}
 	_ = g.Wait()
 	w.logger.Info("miriam worker: run complete", zap.Int64("evaluated", evaluated), zap.Int64("failed", failed))
+
+	// Run health score cleanup once per day
+	if w.brain != nil && time.Since(w.lastCleanup) > 24*time.Hour {
+		if hs := w.brain.HealthScoreTracker(); hs != nil {
+			if deleted, err := hs.CleanupOldScores(ctx, 90); err == nil && deleted > 0 {
+				w.logger.Info("miriam worker: cleaned old health scores", zap.Int64("deleted", deleted))
+			}
+		}
+		w.lastCleanup = time.Now()
+	}
 }
