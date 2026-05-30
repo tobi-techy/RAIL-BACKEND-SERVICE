@@ -8,10 +8,11 @@ WHERE a.id > b.id
   AND a.type = b.type
   AND a.description = b.description;
 
--- Unique index (with partial condition for non-null balance_after) prevents
--- false-positive dedup while still catching true duplicates.
+-- Unique index using COALESCE on balance_after (sentinel -999999999 for NULL)
+-- ensures all rows are subject to deduplication, including those where the
+-- LLM did not extract a balance_after value. This prevents silent duplicate
+-- insertion on job re-delivery.
 DROP INDEX IF EXISTS uq_bank_stmt_txns_dedup;
 ALTER TABLE bank_statement_transactions DROP CONSTRAINT IF EXISTS uq_bank_stmt_txns_dedup;
 CREATE UNIQUE INDEX uq_bank_stmt_txns_dedup
-    ON bank_statement_transactions(upload_id, transaction_date, amount, type, description, balance_after)
-    WHERE balance_after IS NOT NULL;
+    ON bank_statement_transactions(upload_id, transaction_date, amount, type, description, COALESCE(balance_after, -999999999));
