@@ -612,18 +612,32 @@ func (o *Orchestrator) GetProactiveVoiceInsight(ctx context.Context, userID uuid
 // Also returns locale_style so the voice handler can switch voices per session.
 func (o *Orchestrator) BuildRealtimeDynamicVars(ctx context.Context, userID uuid.UUID) map[string]interface{} {
 	vars := map[string]interface{}{
-		"user_id":        userID.String(),
-		"user_name":      "there",
-		"currency":       "₦",
-		"user_language":  "english",
-		"user_tone":      "neutral",
-		"locale_style":   "global",
+		"user_id":              userID.String(),
+		"user_name":            "there",
+		"currency":             "₦",
+		"user_language":        "english",
+		"user_tone":            "neutral",
+		"locale_style":         "global",
+		"date":                 time.Now().UTC().Format("Monday, 2 January 2006"),
+		"time_of_day":          timeOfDayLabel(time.Now().UTC().Hour()),
+		"timezone":             "UTC",
+		"recent_activity":      "",
+		"spending_trend":       "",
+		"savings_progress":     "",
+		"upcoming_bills":       "",
+		"notifications":        "",
+		"risk_alerts":          "",
+		"conversation_context": "",
+		"financial_goal":       "",
+		"recent_income":        "",
+		"account_type":         "standard",
 	}
 
-	// Fetch name + country from user profile
+	fetchCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+
+	// --- User profile (name, locale, timezone) ---
 	if provider, ok := o.userProfile.(FullUserProfileProvider); ok && provider != nil {
-		fetchCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		defer cancel()
 		if user, err := provider.GetProfile(fetchCtx, userID); err == nil && user != nil {
 			if name := stringPtrValue(user.FirstName); name != "" {
 				if fields := strings.Fields(name); len(fields) > 0 {
@@ -636,16 +650,24 @@ func (o *Orchestrator) BuildRealtimeDynamicVars(ctx context.Context, userID uuid
 			}
 			locale := inferLocaleStyle(country, stringPtrValue(user.AddressCity))
 			vars["locale_style"] = locale
-			if locale == "nigeria" || locale == "west_africa" {
-				vars["currency"] = "₦"
+			if locale != "nigeria" && locale != "west_africa" {
+				vars["currency"] = "$"
 			}
 		}
 	}
 
-	// Fetch language style + tone from memory
+	// --- Timezone + date in user's local time ---
+	loc, timezone, _ := o.resolveMiriamLocation(fetchCtx, userID, nil)
+	if loc == nil {
+		loc = time.UTC
+	}
+	now := time.Now().In(loc)
+	vars["date"] = now.Format("Monday, 2 January 2006")
+	vars["time_of_day"] = timeOfDayLabel(now.Hour())
+	vars["timezone"] = timezone
+
+	// --- Tone profile (language style, tone) ---
 	if o.memory != nil {
-		fetchCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		defer cancel()
 		if profile, err := o.memory.store.GetToneProfile(fetchCtx, userID); err == nil && profile != nil {
 			if profile.LanguageStyle != "" {
 				vars["user_language"] = profile.LanguageStyle
@@ -664,5 +686,161 @@ func (o *Orchestrator) BuildRealtimeDynamicVars(ctx context.Context, userID uuid
 		}
 	}
 
+	// --- Recent activity + spending trend (parallel) ---
+	type balResult struct{ spend, stash decimal.Decimal }
+	balCh := make(chan balResult, 1)
+	spendCh := make(chan string, 1)
+	obligCh := make(chan string, 1)
+	goalCh := make(chan string, 1)
+	convCh := make(chan string, 1)
+
+	go func() {
+		if o.aggregateStats == nil {
+			balCh <- balResult{}
+			return
+		}
+		spend, _ := o.aggregateStats.GetAccountBalance(fetchCtx, userID, entities.AccountTypeSpendingBalance)
+		stash, _ := o.aggregateStats.GetAccountBalance(fetchCtx, userID, entities.AccountTypeStashBalance)
+		balCh <- balResult{spend, stash}
+	}()
+
+	go func() {
+		if o.spending == nil {
+			spendCh <- ""
+			return
+		}
+		now2 := time.Now().UTC()
+		thisWeek, err1 := o.spending.GetSummary(fetchCtx, userID, now2.AddDate(0, 0, -7), now2)
+		lastWeek, err2 := o.spending.GetSummary(fetchCtx, userID, now2.AddDate(0, 0, -14), now2.AddDate(0, 0, -7))
+		if err1 != nil || err2 != nil || thisWeek == nil || lastWeek == nil {
+			spendCh <- ""
+			return
+		}
+		if lastWeek.Total.IsZero() {
+			spendCh <- fmt.Sprintf("spent %s this week", formatBalanceShortNGN(thisWeek.Total))
+			return
+		}
+		diff := thisWeek.Total.Sub(lastWeek.Total).Div(lastWeek.Total).Mul(hundred)
+		switch {
+		case diff.GreaterThan(decimal.NewFromFloat(20)):
+			spendCh <- fmt.Sprintf("spending up %d%% vs last week", diff.IntPart())
+		case diff.LessThan(decimal.NewFromFloat(-20)):
+			spendCh <- fmt.Sprintf("spending down %d%% vs last week", diff.Abs().IntPart())
+		default:
+			spendCh <- "spending steady this week"
+		}
+	}()
+
+	go func() {
+		if o.obligationManager == nil {
+			obligCh <- ""
+			return
+		}
+		obligations, err := o.obligationManager.List(fetchCtx, userID, "active", "")
+		if err != nil || len(obligations) == 0 {
+			obligCh <- ""
+			return
+		}
+		// Find soonest due
+		var soonest *entities.FinancialObligation
+		for i := range obligations {
+			if obligations[i].DueDate == nil {
+				continue
+			}
+			if soonest == nil || obligations[i].DueDate.Before(*soonest.DueDate) {
+				soonest = &obligations[i]
+			}
+		}
+		if soonest != nil && soonest.DueDate != nil {
+			daysUntil := int(time.Until(*soonest.DueDate).Hours() / 24)
+			if daysUntil <= 7 {
+				obligCh <- fmt.Sprintf("%s due in %d days (%s)", soonest.Name, daysUntil, formatBalanceShortNGN(soonest.Amount))
+				return
+			}
+		}
+		obligCh <- fmt.Sprintf("%d active obligations", len(obligations))
+	}()
+
+	go func() {
+		if o.savingsGoalStore == nil {
+			goalCh <- ""
+			return
+		}
+		goal, err := o.savingsGoalStore.Get(fetchCtx, userID)
+		if err != nil || goal == nil || goal.Name == "" {
+			goalCh <- ""
+			return
+		}
+		if goal.Target != "" {
+			goalCh <- fmt.Sprintf("saving for %s (target %s)", goal.Name, goal.Target)
+		} else {
+			goalCh <- fmt.Sprintf("saving for %s", goal.Name)
+		}
+	}()
+
+	go func() {
+		if o.conversations == nil {
+			convCh <- ""
+			return
+		}
+		provider, ok := o.conversations.(interface {
+			ListByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.AIConversation, error)
+		})
+		if !ok {
+			convCh <- ""
+			return
+		}
+		convs, err := provider.ListByUserID(fetchCtx, userID, 1, 0)
+		if err != nil || len(convs) == 0 {
+			convCh <- ""
+			return
+		}
+		last := convs[0]
+		if last.Title != "" && last.Title != "Voice conversation" {
+			convCh <- fmt.Sprintf("Last session: %s", last.Title)
+			return
+		}
+		convCh <- ""
+	}()
+
+	// Collect results
+	bal := <-balCh
+	spendTrend := <-spendCh
+	upcomingBills := <-obligCh
+	savingsProgress := <-goalCh
+	convContext := <-convCh
+
+	if !bal.spend.IsZero() || !bal.stash.IsZero() {
+		vars["recent_activity"] = fmt.Sprintf("Spend %s · Stash %s",
+			formatBalanceShortNGN(bal.spend), formatBalanceShortNGN(bal.stash))
+		vars["recent_income"] = formatBalanceShortNGN(bal.spend.Add(bal.stash))
+	}
+	if spendTrend != "" {
+		vars["spending_trend"] = spendTrend
+	}
+	if upcomingBills != "" {
+		vars["upcoming_bills"] = upcomingBills
+	}
+	if savingsProgress != "" {
+		vars["savings_progress"] = savingsProgress
+		vars["financial_goal"] = savingsProgress
+	}
+	if convContext != "" {
+		vars["conversation_context"] = convContext
+	}
+
 	return vars
+}
+
+func timeOfDayLabel(hour int) string {
+	switch {
+	case hour >= 5 && hour < 12:
+		return "morning"
+	case hour >= 12 && hour < 17:
+		return "afternoon"
+	case hour >= 17 && hour < 21:
+		return "evening"
+	default:
+		return "night"
+	}
 }
