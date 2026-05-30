@@ -1254,15 +1254,21 @@ func (app *Application) reconcileOrphanedStatements(ctx context.Context) {
 	}
 	app.log.Infow("reconciling orphaned statement uploads", "count", len(orphans))
 	for _, u := range orphans {
-		// Reset stuck processing uploads back to pending so AtomicClaim can pick them up
-		if u.Status == entities.StatementStatusProcessing {
-			if err := app.container.BankStatementRepo.ResetToPending(ctx, u.ID); err != nil {
-				app.log.Warnw("failed to reset stuck processing upload",
-					"upload_id", u.ID.String(),
-					"error", err,
-				)
-				continue
-			}
+		// Atomically reset stuck processing uploads back to pending so AtomicClaim can pick them up.
+		// The SQL WHERE status = 'processing' guard ensures we don't race with a worker that already
+		// claimed or completed the upload between the fetch and this update.
+		reset, err := app.container.BankStatementRepo.ResetToPending(ctx, u.ID)
+		if err != nil {
+			app.log.Warnw("failed to reset stuck processing upload",
+				"upload_id", u.ID.String(),
+				"error", err,
+			)
+			continue
+		}
+		if u.Status == entities.StatementStatusProcessing && !reset {
+			// Upload was processing but ResetToPending didn't match — another worker already
+			// completed it. Skip enqueuing a duplicate job.
+			continue
 		}
 
 		job := &jobqueue.Job{

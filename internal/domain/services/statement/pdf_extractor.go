@@ -171,8 +171,11 @@ func reconstructText(raw string) string {
 
 	var lines []string
 	var currentLine strings.Builder
-	lastY := fragments[0].y
-	lastX := fragments[0].x
+	var lastY, lastX float64
+	if len(fragments) > 0 {
+		lastY = fragments[0].y
+		lastX = fragments[0].x
+	}
 
 	for _, f := range fragments {
 		// If Y changed significantly (new line), flush current line

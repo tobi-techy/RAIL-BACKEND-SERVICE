@@ -281,6 +281,11 @@ func (w *Worker) sendCompletionNotification(ctx context.Context, userID uuid.UUI
 
 	sum := computeTxnSummary(txns)
 
+	currencyStr := sum.currency
+	if currencyStr == "" {
+		currencyStr = "NGN"
+	}
+
 	// Build top categories string
 	type sc struct {
 		cat   string
@@ -302,7 +307,7 @@ func (w *Worker) sendCompletionNotification(ctx context.Context, userID uuid.UUI
 		if i > 0 {
 			topCats += ", "
 		}
-		topCats += fmt.Sprintf("%s: %s%s", entry.cat, sum.currency, entry.total.StringFixed(0))
+		topCats += fmt.Sprintf("%s: %s%s", entry.cat, currencyStr, entry.total.StringFixed(0))
 	}
 
 	// Build period string
@@ -317,9 +322,9 @@ func (w *Worker) sendCompletionNotification(ctx context.Context, userID uuid.UUI
 		bankName, periodStr, len(txns),
 	)
 	if sum.totalCredits.IsPositive() {
-		message += fmt.Sprintf("Income: %s%s. ", sum.currency, sum.totalCredits.StringFixed(0))
+		message += fmt.Sprintf("Income: %s%s. ", currencyStr, sum.totalCredits.StringFixed(0))
 	}
-	message += fmt.Sprintf("Spending: %s%s", sum.currency, sum.totalDebits.StringFixed(0))
+	message += fmt.Sprintf("Spending: %s%s", currencyStr, sum.totalDebits.StringFixed(0))
 	if topCats != "" {
 		message += fmt.Sprintf(". Top categories: %s", topCats)
 	}
@@ -472,8 +477,15 @@ func (w *Worker) parseChunked(ctx context.Context, pages []string, bankName stri
 			merged.PeriodEnd = parsed.PeriodEnd
 		}
 		for _, txn := range parsed.Transactions {
-			fingerprint := txn.Date + "|" + fmt.Sprintf("%.2f", txn.Amount) + "|" + txn.Type + "|" + txn.Description
+			balancePart := ""
+			if txn.BalanceAfter != nil {
+				balancePart = fmt.Sprintf("%.2f", *txn.BalanceAfter)
+			}
+			fingerprint := txn.Date + "|" + fmt.Sprintf("%.4f", txn.Amount) + "|" + txn.Type + "|" + txn.Description + "|" + balancePart
 			if seen[fingerprint] {
+				w.logger.Debug("duplicate transaction skipped",
+					zap.String("fingerprint", fingerprint),
+				)
 				continue
 			}
 			seen[fingerprint] = true

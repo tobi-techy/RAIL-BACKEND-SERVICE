@@ -107,9 +107,16 @@ func (r *BankStatementRepository) CountUploadsSince(ctx context.Context, userID 
 	return count, err
 }
 
-func (r *BankStatementRepository) ResetToPending(ctx context.Context, uploadID uuid.UUID) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE bank_statement_uploads SET status = 'pending', updated_at = NOW() WHERE id = $1 AND status = 'processing'`, uploadID)
-	return err
+func (r *BankStatementRepository) ResetToPending(ctx context.Context, uploadID uuid.UUID) (bool, error) {
+	result, err := r.db.ExecContext(ctx, `UPDATE bank_statement_uploads SET status = 'pending', updated_at = NOW() WHERE id = $1 AND status = 'processing'`, uploadID)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
 }
 
 func (r *BankStatementRepository) UpdateBankName(ctx context.Context, uploadID uuid.UUID, bankName string) error {

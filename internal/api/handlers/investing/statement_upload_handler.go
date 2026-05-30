@@ -62,7 +62,12 @@ func (h *StatementUploadHandler) Upload(c *gin.Context) {
 
 	// Per-user throttle: max 10 uploads per rolling 24h
 	dailyCount, err := h.repo.CountUploadsSince(c.Request.Context(), userID, 24*time.Hour)
-	if err == nil && dailyCount >= 10 {
+	if err != nil {
+		h.logger.Error("failed to check daily upload count", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check upload limit. Please try again."})
+		return
+	}
+	if dailyCount >= 10 {
 		c.JSON(http.StatusTooManyRequests, gin.H{"error": "Daily upload limit reached. Please try again tomorrow."})
 		return
 	}

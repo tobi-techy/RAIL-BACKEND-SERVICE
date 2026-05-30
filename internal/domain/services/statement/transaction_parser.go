@@ -124,25 +124,33 @@ func (p *TransactionParser) Parse(ctx context.Context, text string, bankHint str
 		p.logger.Info("circuit breaker reset, retrying Kimi")
 	}
 
-	// Rate limit: wait if we called too recently
+	// Calculate required sleep before next call while holding the lock.
+	// This prevents multiple goroutines from bypassing the rate limit.
+	var sleepDuration time.Duration
 	if !p.lastCall.IsZero() {
 		elapsed := time.Since(p.lastCall)
 		if elapsed < p.minInterval {
-			p.mu.Unlock()
-			select {
-			case <-time.After(p.minInterval - elapsed):
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-			p.mu.Lock()
+			sleepDuration = p.minInterval - elapsed
 		}
 	}
 	p.lastCall = time.Now()
-	p.mu.Unlock()
 
+	// Release lock during sleep to avoid blocking other operations,
+	// then re-acquire for the actual API call to enforce single-flight.
+	if sleepDuration > 0 {
+		p.mu.Unlock()
+		select {
+		case <-time.After(sleepDuration):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		p.mu.Lock()
+	}
+
+	// Keep the lock held during callKimi so only one API call happens at a time,
+	// enforcing the rate limit. The lock is released after updating state below.
 	result, err := p.callKimi(ctx, text, bankHint)
 
-	p.mu.Lock()
 	if err != nil {
 		p.consecutiveFailures++
 		p.lastFailure = time.Now()
