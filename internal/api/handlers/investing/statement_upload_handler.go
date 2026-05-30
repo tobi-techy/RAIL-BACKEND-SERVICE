@@ -2,11 +2,12 @@ package investing
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -15,51 +16,18 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/rail-service/rail_service/pkg/jobqueue"
+	"github.com/rail-service/rail_service/pkg/metrics"
 	"go.uber.org/zap"
 )
 
 type StatementUploadHandler struct {
-	repo     *repositories.BankStatementRepository
-	queue    *jobqueue.JobQueue
-	uploadDir string
-	logger   *zap.Logger
+	repo   *repositories.BankStatementRepository
+	queue  *jobqueue.JobQueue
+	logger *zap.Logger
 }
 
 func NewStatementUploadHandler(repo *repositories.BankStatementRepository, queue *jobqueue.JobQueue, logger *zap.Logger) *StatementUploadHandler {
-	dir := os.TempDir()
-	uploadDir := filepath.Join(dir, "rail-statements")
-	os.MkdirAll(uploadDir, 0755)
-
-	// Clean up stale temp files on startup (older than 1 hour)
-	go cleanStaleTempFiles(uploadDir, logger)
-
-	return &StatementUploadHandler{repo: repo, queue: queue, uploadDir: uploadDir, logger: logger}
-}
-
-// cleanStaleTempFiles removes PDF files older than 1 hour from the upload dir.
-func cleanStaleTempFiles(dir string, logger *zap.Logger) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	cutoff := time.Now().Add(-1 * time.Hour)
-	removed := 0
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		if info.ModTime().Before(cutoff) {
-			os.Remove(filepath.Join(dir, entry.Name()))
-			removed++
-		}
-	}
-	if removed > 0 {
-		logger.Info("cleaned stale statement temp files", zap.Int("removed", removed))
-	}
+	return &StatementUploadHandler{repo: repo, queue: queue, logger: logger}
 }
 
 // Upload handles POST /v1/ai/statement/upload
@@ -71,12 +39,41 @@ func (h *StatementUploadHandler) Upload(c *gin.Context) {
 	}
 
 	bankName := c.PostForm("bank_name")
+	// Sanitize: trim, limit to 100 chars, strip non-printable chars
+	bankName = strings.TrimSpace(bankName)
 	if bankName == "" {
 		bankName = "unknown"
+	} else {
+		// Strip non-printable characters and truncate
+		var clean strings.Builder
+		for _, r := range bankName {
+			if r >= 32 && r <= 126 {
+				clean.WriteRune(r)
+			}
+		}
+		bankName = clean.String()
+		if len(bankName) > 100 {
+			bankName = bankName[:100]
+		}
+		if bankName == "" {
+			bankName = "unknown"
+		}
+	}
+
+	// Per-user throttle: max 10 uploads per rolling 24h
+	dailyCount, err := h.repo.CountUploadsSince(c.Request.Context(), userID, 24*time.Hour)
+	if err != nil {
+		h.logger.Error("failed to check daily upload count", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check upload limit. Please try again."})
+		return
+	}
+	if dailyCount >= 10 {
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "Daily upload limit reached. Please try again tomorrow."})
+		return
 	}
 
 	// Per-user throttle: max 3 pending/processing uploads at a time
-	existing, _ := h.repo.GetByUserID(c.Request.Context(), userID, 10)
+	existing, _ := h.repo.GetByUserID(c.Request.Context(), userID, 10, 0)
 	pendingCount := 0
 	for _, u := range existing {
 		if u.Status == entities.StatementStatusPending || u.Status == entities.StatementStatusProcessing {
@@ -126,48 +123,44 @@ func (h *StatementUploadHandler) Upload(c *gin.Context) {
 		return
 	}
 
-	// Save to temp file
-	tmpPath := filepath.Join(h.uploadDir, fmt.Sprintf("%s_%s.pdf", userID.String(), uuid.New().String()[:8]))
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file"})
-		return
-	}
-
-	// Create upload record
+	// Create upload record with file data stored in DB (survives restarts)
 	upload := &entities.BankStatementUpload{
 		UserID:        userID,
 		BankName:      bankName,
 		FileHash:      hash,
 		FileSizeBytes: len(data),
+		FileData:      data,
 		Status:        entities.StatementStatusPending,
 	}
 	if err := h.repo.Create(c.Request.Context(), upload); err != nil {
-		os.Remove(tmpPath)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create upload record"})
 		return
 	}
 
-	// Enqueue processing job
-	if h.queue != nil {
-		job := &jobqueue.Job{
-			ID:       uuid.New().String(),
-			Type:     "process_statement",
-			Priority: jobqueue.PriorityNormal,
-			Payload: map[string]interface{}{
-				"upload_id": upload.ID.String(),
-				"user_id":   userID.String(),
-				"file_path": tmpPath,
-				"bank_name": bankName,
-			},
-			MaxRetries: 2,
-			CreatedAt:  time.Now(),
-		}
-		if err := h.queue.Enqueue(c.Request.Context(), job); err != nil {
-			h.logger.Error("failed to enqueue statement job", zap.Error(err))
-		}
-	} else {
-		h.logger.Warn("job queue not available, statement will not be processed automatically")
+	// Enqueue processing job (no file_path — worker reads from DB)
+	job := &jobqueue.Job{
+		ID:       uuid.New().String(),
+		Type:     "process_statement",
+		Priority: jobqueue.PriorityNormal,
+		Payload: map[string]interface{}{
+			"upload_id": upload.ID.String(),
+			"user_id":   userID.String(),
+			"bank_name": bankName,
+		},
+		MaxRetries: 2,
+		CreatedAt:  time.Now(),
 	}
+	if err := h.queue.Enqueue(c.Request.Context(), job); err != nil {
+		// Rollback: delete DB record
+		if cleanupErr := h.repo.Delete(c.Request.Context(), userID, upload.ID); cleanupErr != nil {
+			h.logger.Error("failed to clean up after enqueue failure", zap.Error(cleanupErr))
+		}
+		h.logger.Error("failed to enqueue statement job", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to queue statement for processing. Please try again."})
+		return
+	}
+
+	metrics.RecordStatementUploaded()
 
 	c.JSON(http.StatusAccepted, gin.H{"data": gin.H{
 		"upload_id": upload.ID.String(),
@@ -213,11 +206,88 @@ func (h *StatementUploadHandler) GetStatus(c *gin.Context) {
 	if upload.PeriodEnd != nil {
 		resp["period_end"] = upload.PeriodEnd.Format("2006-01-02")
 	}
+	if upload.Summary != nil && *upload.Summary != "" && *upload.Summary != "{}" {
+		var summaryObj interface{}
+		if err := json.Unmarshal([]byte(*upload.Summary), &summaryObj); err == nil {
+			resp["summary"] = summaryObj
+		}
+	}
 
 	c.JSON(http.StatusOK, gin.H{"data": resp})
 }
 
-// List handles GET /v1/ai/statements
+// GetTransactions handles GET /v1/ai/statement/:id/transactions?limit=50&offset=0
+func (h *StatementUploadHandler) GetTransactions(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	uploadID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid upload id"})
+		return
+	}
+
+	// Verify upload belongs to user
+	upload, err := h.repo.GetByID(c.Request.Context(), userID, uploadID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "upload not found"})
+		return
+	}
+	if upload.Status != entities.StatementStatusCompleted {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "statement is not yet completed"})
+		return
+	}
+
+	limit := 50
+	if l, err := parseIntParam(c.Query("limit")); err == nil && l > 0 && l <= 100 {
+		limit = l
+	}
+	offset := 0
+	if o, err := parseIntParam(c.Query("offset")); err == nil && o >= 0 {
+		offset = o
+	}
+
+	// Get total count for pagination
+	totalCount, err := h.repo.CountTransactionsByUploadID(c.Request.Context(), uploadID)
+	if err != nil {
+		totalCount = 0
+	}
+
+	txns, err := h.repo.GetTransactionsByUploadIDPaginated(c.Request.Context(), uploadID, limit, offset)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch transactions"})
+		return
+	}
+
+	items := make([]gin.H, 0, len(txns))
+	for _, t := range txns {
+		item := gin.H{
+			"id":               t.ID.String(),
+			"transaction_date": t.TransactionDate.Format("2006-01-02"),
+			"description":      t.Description,
+			"amount":           t.Amount.StringFixed(2),
+			"currency":         t.Currency,
+			"type":             t.Type,
+			"category":         t.Category,
+		}
+		if t.BalanceAfter != nil {
+			item["balance_after"] = t.BalanceAfter.StringFixed(2)
+		}
+		items = append(items, item)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"transactions": items,
+		"total":        totalCount,
+		"limit":        limit,
+		"offset":       offset,
+	}})
+}
+
+// List handles GET /v1/ai/statements?limit=20&offset=0
 func (h *StatementUploadHandler) List(c *gin.Context) {
 	userID, err := common.GetUserIDFromContext(c)
 	if err != nil {
@@ -225,7 +295,16 @@ func (h *StatementUploadHandler) List(c *gin.Context) {
 		return
 	}
 
-	uploads, err := h.repo.GetByUserID(c.Request.Context(), userID, 20)
+	limit := 20
+	if l, err := parseIntParam(c.Query("limit")); err == nil && l > 0 && l <= 100 {
+		limit = l
+	}
+	offset := 0
+	if o, err := parseIntParam(c.Query("offset")); err == nil && o >= 0 {
+		offset = o
+	}
+
+	uploads, err := h.repo.GetByUserID(c.Request.Context(), userID, limit, offset)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list statements"})
 		return
@@ -249,7 +328,19 @@ func (h *StatementUploadHandler) List(c *gin.Context) {
 		items = append(items, item)
 	}
 
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{"statements": items}})
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"statements": items, "limit": limit, "offset": offset}})
+}
+
+// parseIntParam parses an integer query parameter, returning 0 and error if invalid.
+func parseIntParam(s string) (int, error) {
+	if s == "" {
+		return 0, fmt.Errorf("empty")
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // Delete handles DELETE /v1/ai/statement/:id
@@ -266,8 +357,13 @@ func (h *StatementUploadHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	if _, err := h.repo.GetByID(c.Request.Context(), userID, uploadID); err != nil {
+	upload, err := h.repo.GetByID(c.Request.Context(), userID, uploadID)
+	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "upload not found"})
+		return
+	}
+	if upload.Status == entities.StatementStatusProcessing {
+		c.JSON(http.StatusConflict, gin.H{"error": "Cannot delete a statement that is currently being processed. Please wait and try again."})
 		return
 	}
 

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -29,6 +30,8 @@ type TransactionParser struct {
 	lastFailure         time.Time
 	cbThreshold         int
 	cbCooldown          time.Duration
+
+	mu sync.Mutex
 }
 
 func NewTransactionParser(apiKey string, logger *zap.Logger) *TransactionParser {
@@ -108,9 +111,12 @@ type ParsedTxn struct {
 
 // Parse sends extracted text to the LLM and returns structured transactions.
 func (p *TransactionParser) Parse(ctx context.Context, text string, bankHint string) (*ParseResult, error) {
+	p.mu.Lock()
+
 	// Circuit breaker: if too many consecutive failures, reject immediately
 	if p.consecutiveFailures >= p.cbThreshold {
 		if time.Since(p.lastFailure) < p.cbCooldown {
+			p.mu.Unlock()
 			return nil, fmt.Errorf("circuit breaker open: Kimi API has failed %d times consecutively, cooling down", p.consecutiveFailures)
 		}
 		// Cooldown expired, reset and try again
@@ -118,26 +124,41 @@ func (p *TransactionParser) Parse(ctx context.Context, text string, bankHint str
 		p.logger.Info("circuit breaker reset, retrying Kimi")
 	}
 
-	// Rate limit: wait if we called too recently
+	// Calculate required sleep before next call while holding the lock.
+	// This prevents multiple goroutines from bypassing the rate limit.
+	var sleepDuration time.Duration
 	if !p.lastCall.IsZero() {
 		elapsed := time.Since(p.lastCall)
 		if elapsed < p.minInterval {
-			select {
-			case <-time.After(p.minInterval - elapsed):
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
+			sleepDuration = p.minInterval - elapsed
 		}
 	}
 	p.lastCall = time.Now()
 
+	// Release lock during sleep to avoid blocking other operations,
+	// then re-acquire for the actual API call to enforce single-flight.
+	if sleepDuration > 0 {
+		p.mu.Unlock()
+		select {
+		case <-time.After(sleepDuration):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		p.mu.Lock()
+	}
+
+	// Keep the lock held during callKimi so only one API call happens at a time,
+	// enforcing the rate limit. The lock is released after updating state below.
 	result, err := p.callKimi(ctx, text, bankHint)
+
 	if err != nil {
 		p.consecutiveFailures++
 		p.lastFailure = time.Now()
+		p.mu.Unlock()
 		return nil, err
 	}
 	p.consecutiveFailures = 0
+	p.mu.Unlock()
 	return result, nil
 }
 

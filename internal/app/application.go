@@ -541,6 +541,7 @@ func (app *Application) initializeWorkers() error {
 			stmtWorker := statement_processor.NewWorker(
 				app.container.BankStatementRepo,
 				app.container.MiriamMemoryRepo,
+				app.container.NotificationService,
 				parser,
 				app.log.Zap(),
 			)
@@ -548,6 +549,9 @@ func (app *Application) initializeWorkers() error {
 			jqWorker.RegisterHandler(statement_processor.JobType, stmtWorker.Handler())
 			go jqWorker.Start(context.Background())
 			app.log.Info("Statement processor worker started (Kimi k2.6)")
+
+			// Reconcile orphaned pending uploads (stuck from a prior crash)
+			go app.reconcileOrphanedStatements(context.Background())
 		}
 	}
 
@@ -1234,4 +1238,54 @@ func (a *opportunityUserListerAdapter) GetAllActiveUserIDs(ctx context.Context) 
 		ids = append(ids, u.ID)
 	}
 	return ids, nil
+}
+
+// reconcileOrphanedStatements re-enqueues bank statement uploads that got stuck in "pending"
+// or "processing" status (e.g. after a server crash). Runs once at startup and exits.
+func (app *Application) reconcileOrphanedStatements(ctx context.Context) {
+	const minAge = 20 * time.Minute
+	orphans, err := app.container.BankStatementRepo.GetPendingOlderThan(ctx, minAge)
+	if err != nil {
+		app.log.Warnw("failed to reconcile orphaned statements", "error", err)
+		return
+	}
+	if len(orphans) == 0 {
+		return
+	}
+	app.log.Infow("reconciling orphaned statement uploads", "count", len(orphans))
+	for _, u := range orphans {
+		// Atomically reset stuck processing uploads back to pending so AtomicClaim can pick them up.
+		// The SQL WHERE status = 'processing' guard ensures we don't race with a worker that already
+		// claimed or completed the upload between the fetch and this update.
+		reset, err := app.container.BankStatementRepo.ResetToPending(ctx, u.ID)
+		if err != nil {
+			app.log.Warnw("failed to reset stuck processing upload",
+				"upload_id", u.ID.String(),
+				"error", err,
+			)
+			continue
+		}
+		if u.Status == entities.StatementStatusProcessing && !reset {
+			// Upload was processing but ResetToPending didn't match — another worker already
+			// completed it. Skip enqueuing a duplicate job.
+			continue
+		}
+
+		job := &jobqueue.Job{
+			ID:       uuid.New().String(),
+			Type:     statement_processor.JobType,
+			Priority: jobqueue.PriorityNormal,
+			Payload: map[string]interface{}{
+				"upload_id": u.ID.String(),
+				"user_id":   u.UserID.String(),
+				"bank_name": u.BankName,
+			},
+		}
+		if err := app.container.JobQueueInstance.Enqueue(ctx, job); err != nil {
+			app.log.Warnw("failed to re-enqueue orphaned statement",
+				"upload_id", u.ID.String(),
+				"error", err,
+			)
+		}
+	}
 }

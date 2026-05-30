@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/pdfcpu/pdfcpu/pkg/api"
@@ -130,20 +131,6 @@ func ExtractTextFromBytes(data []byte) (*PDFExtractResult, error) {
 	return ExtractText(bytes.NewReader(data), int64(len(data)))
 }
 
-// reconstructText takes raw PDF content stream text and produces readable lines.
-// PDF content streams contain operators like:
-//   BT /F1 10 Tf 72 700 Td (Hello World) Tj ET
-// We extract text between parentheses and use Td/Tm operators to detect line breaks.
-func reconstructText(raw string) string {
-	// Strategy 1: Extract text from Tj/TJ operators (parenthesized strings)
-	extracted := extractParenthesizedText(raw)
-	if len(extracted) > 0 {
-		return strings.Join(extracted, "\n")
-	}
-	// Strategy 2: If no parenthesized text found, return raw with cleanup
-	return cleanRawContent(raw)
-}
-
 // textFragment holds a piece of text with its approximate Y position for sorting.
 type textFragment struct {
 	text string
@@ -151,54 +138,164 @@ type textFragment struct {
 	x    float64
 }
 
+// PDF content stream operators to filter from raw text.
+var pdfOperators = regexp.MustCompile(`\b(?:BT|ET|Tf|Td|Tm|T\*|Do|cm|w|J|j|M|q|Q|cs|SC|sc|SCN|scn|RG|rg|G|g|ri|gs|n|S|s|f|F|f\*|B|B\*|b|b\*|W|W\*|sh|BX|EX|MP|DP|BMC|BDC|EMC|Tc|Tw|Tz|TL|Ts|Tb|Tr|Ts|\d+\s+scn|cm|d0|d1|SetTextRise|shfill)\b`)
+
 var (
 	// Match text in parentheses: (some text)
 	parenTextRe = regexp.MustCompile(`\(([^)]*)\)`)
+	// Match TJ array: [(text) num (text) ...] TJ
+	tjArrayRe   = regexp.MustCompile(`\[([^\]]*)\]\s*TJ`)
 	// Match Td operator for position: x y Td
 	tdRe = regexp.MustCompile(`([-\d.]+)\s+([-\d.]+)\s+Td`)
-	// Match Tm operator for position matrix
-	tmRe = regexp.MustCompile(`[-\d.]+\s+[-\d.]+\s+[-\d.]+\s+[-\d.]+\s+([-\d.]+)\s+([-\d.]+)\s+Tm`)
+	// Match Tm operator for position matrix — extract Ty and Tx
+	tmRe = regexp.MustCompile(`([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+Tm`)
 )
 
-func extractParenthesizedText(raw string) []string {
-	matches := parenTextRe.FindAllStringSubmatch(raw, -1)
-	if len(matches) == 0 {
-		return nil
+// reconstructText takes raw PDF content stream text and produces readable lines.
+// Handles Tj (single string) and TJ (array of strings with positioning) operators,
+// and uses Td/Tm position data to detect line breaks and column boundaries.
+func reconstructText(raw string) string {
+	fragments := extractTextFragments(raw)
+	if len(fragments) == 0 {
+		return cleanRawContent(raw)
 	}
+
+	// Sort by Y (descending — top to bottom), then X (ascending — left to right)
+	sort.Slice(fragments, func(i, j int) bool {
+		if fragments[i].y != fragments[j].y {
+			return fragments[i].y > fragments[j].y
+		}
+		return fragments[i].x < fragments[j].x
+	})
 
 	var lines []string
 	var currentLine strings.Builder
+	var lastY, lastX float64
+	if len(fragments) > 0 {
+		lastY = fragments[0].y
+		lastX = fragments[0].x
+	}
 
-	for _, m := range matches {
-		text := unescapePDFString(m[1])
-		if text == "" {
+	for _, f := range fragments {
+		// If Y changed significantly (new line), flush current line
+		if f.y < lastY-5 {
+			if currentLine.Len() > 0 {
+				lines = append(lines, strings.TrimSpace(currentLine.String()))
+				currentLine.Reset()
+			}
+			lastX = 0
+		} else if f.x > lastX+20 {
+			// Same line, significant X gap — insert column separator (tab)
+			currentLine.WriteString("\t")
+		}
+		currentLine.WriteString(f.text)
+		currentLine.WriteString(" ")
+		lastY = f.y
+		lastX = f.x
+	}
+
+	if currentLine.Len() > 0 {
+		lines = append(lines, strings.TrimSpace(currentLine.String()))
+	}
+
+	if len(lines) == 0 {
+		return cleanRawContent(raw)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// extractTextFragments extracts text fragments with their positions from PDF content streams.
+// Handles both Tj (single string) and TJ (array of strings with positioning offsets) operators.
+func extractTextFragments(raw string) []textFragment {
+	var fragments []textFragment
+	lastTmX := 0.0
+	lastTmY := 0.0
+
+	// First pass: track position changes from Td/Tm operators
+	lines := strings.Split(raw, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
 			continue
 		}
-		// Heuristic: if text ends with common line-ending patterns, flush
-		currentLine.WriteString(text)
-	}
 
-	// Split accumulated text by common patterns
-	fullText := currentLine.String()
-	if fullText == "" {
-		return nil
-	}
+		// Check for Tm (matrix — absolute positioning)
+		if tmMatch := tmRe.FindStringSubmatch(line); tmMatch != nil {
+			lastTmX, _ = parseFloat64(tmMatch[5])
+			lastTmY, _ = parseFloat64(tmMatch[6])
+			continue
+		}
 
-	// Split on double spaces (common in bank statements for column separation)
-	// and newlines
-	rawLines := strings.Split(fullText, "\n")
-	for _, line := range rawLines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed != "" {
-			lines = append(lines, trimmed)
+		// Check for Td (relative positioning)
+		if tdMatch := tdRe.FindStringSubmatch(line); tdMatch != nil {
+			dx, _ := parseFloat64(tdMatch[1])
+			dy, _ := parseFloat64(tdMatch[2])
+			lastTmX += dx
+			lastTmY += dy
+		}
+
+		// Extract text from Tj operator: (text) Tj
+		if strings.Contains(line, "Tj") && !strings.Contains(line, "TJ") {
+			if m := parenTextRe.FindStringSubmatch(line); m != nil {
+				text := unescapePDFString(m[1])
+				if text != "" {
+					fragments = append(fragments, textFragment{
+						text: text,
+						x:    lastTmX,
+						y:    lastTmY,
+					})
+				}
+			}
+			continue
+		}
+
+		// Extract text from TJ operator: [(text) num (text) ...] TJ
+		if strings.Contains(line, "TJ") {
+			if m := tjArrayRe.FindStringSubmatch(line); m != nil {
+				tjText := extractTJText(m[1])
+				if tjText != "" {
+					fragments = append(fragments, textFragment{
+						text: tjText,
+						x:    lastTmX,
+						y:    lastTmY,
+					})
+				}
+			}
+			continue
+		}
+
+		// Also catch Tj when it's on same line with text (no newline before operator)
+		if m := parenTextRe.FindStringSubmatch(line); m != nil && !strings.Contains(line, "TJ") {
+			text := unescapePDFString(m[1])
+			if text != "" {
+				fragments = append(fragments, textFragment{
+					text: text,
+					x:    lastTmX,
+					y:    lastTmY,
+				})
+			}
 		}
 	}
 
-	if len(lines) == 0 && fullText != "" {
-		lines = append(lines, fullText)
-	}
+	return fragments
+}
 
-	return lines
+// extractTJText parses the content of a TJ array (between the brackets).
+// TJ arrays contain alternating strings and positioning numbers:
+//   (Hello) -20 (World) 30 (!)
+func extractTJText(inner string) string {
+	var parts []string
+	// Find all parenthesized strings inside the TJ array
+	matches := parenTextRe.FindAllStringSubmatch(inner, -1)
+	for _, m := range matches {
+		parts = append(parts, unescapePDFString(m[1]))
+	}
+	return strings.Join(parts, "")
+}
+
+func parseFloat64(s string) (float64, error) {
+	return strconv.ParseFloat(s, 64)
 }
 
 func unescapePDFString(s string) string {
@@ -212,13 +309,15 @@ func unescapePDFString(s string) string {
 }
 
 func cleanRawContent(raw string) string {
-	// Remove PDF operators, keep only readable text
 	lines := strings.Split(raw, "\n")
 	var cleaned []string
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		// Skip lines that are purely PDF operators
-		if line == "" || line == "BT" || line == "ET" || line == "q" || line == "Q" {
+		if line == "" {
+			continue
+		}
+		// Remove lines that are purely PDF operators or coordinates
+		if pdfOperators.MatchString(line) && !containsReadableText(line) {
 			continue
 		}
 		// Skip lines that are just numbers (coordinates)
@@ -237,4 +336,21 @@ func isNumericLine(s string) bool {
 		}
 	}
 	return true
+}
+
+// containsReadableText returns true if the line has printable, non-operator content.
+func containsReadableText(s string) bool {
+	// Check if there's at least one word character outside PDF operators
+	cleaned := pdfOperators.ReplaceAllString(s, "")
+	cleaned = strings.TrimSpace(cleaned)
+	if cleaned == "" {
+		return false
+	}
+	// Must have at least some alphabetic content
+	for _, r := range cleaned {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			return true
+		}
+	}
+	return false
 }

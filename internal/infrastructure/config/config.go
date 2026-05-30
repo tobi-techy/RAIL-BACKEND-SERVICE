@@ -100,14 +100,15 @@ type AssemblyAIConfig struct {
 
 // ElevenLabsConfig contains ElevenLabs Conversational AI configuration
 type ElevenLabsConfig struct {
-	APIKey          string  `mapstructure:"api_key"`
-	AgentID         string  `mapstructure:"agent_id"`          // ElevenLabs Conversational AI agent ID
-	WebhookSecret   string  `mapstructure:"webhook_secret"`    // Secret for authenticating server tool webhook calls
-	VoiceID         string  `mapstructure:"voice_id"`          // Optional: override agent's default voice
-	Stability       float64 `mapstructure:"stability"`         // 0-1: lower = more expressive but less stable
-	SimilarityBoost float64 `mapstructure:"similarity_boost"`  // 0-1: how closely to match original voice
-	Style           float64 `mapstructure:"style"`             // 0-1: style exaggeration
-	UseSpeakerBoost bool    `mapstructure:"use_speaker_boost"` // enhance speaker clarity
+	APIKey           string  `mapstructure:"api_key"`
+	AgentID          string  `mapstructure:"agent_id"`           // ElevenLabs Conversational AI agent ID
+	WebhookSecret    string  `mapstructure:"webhook_secret"`     // Secret for authenticating server tool webhook calls
+	VoiceID          string  `mapstructure:"voice_id"`           // Optional: override agent's default voice
+	PidginVoiceID    string  `mapstructure:"pidgin_voice_id"`    // Voice ID for Nigerian Pidgin speakers
+	Stability        float64 `mapstructure:"stability"`          // 0-1: lower = more expressive but less stable
+	SimilarityBoost  float64 `mapstructure:"similarity_boost"`   // 0-1: how closely to match original voice
+	Style            float64 `mapstructure:"style"`              // 0-1: style exaggeration
+	UseSpeakerBoost  bool    `mapstructure:"use_speaker_boost"`  // enhance speaker clarity
 }
 
 // BedrockConfig contains Amazon Bedrock configuration
@@ -861,6 +862,7 @@ func setDefaults() {
 	viper.BindEnv("ai.elevenlabs.agent_id", "ELEVENLABS_AGENT_ID")
 	viper.BindEnv("ai.elevenlabs.webhook_secret", "ELEVENLABS_WEBHOOK_SECRET")
 	viper.BindEnv("ai.elevenlabs.voice_id", "ELEVENLABS_VOICE_ID")
+	viper.BindEnv("ai.elevenlabs.pidgin_voice_id", "ELEVENLABS_PIDGIN_VOICE_ID")
 	viper.BindEnv("ai.elevenlabs.stability", "ELEVENLABS_STABILITY")
 	viper.BindEnv("ai.elevenlabs.similarity_boost", "ELEVENLABS_SIMILARITY_BOOST")
 	viper.BindEnv("ai.elevenlabs.style", "ELEVENLABS_STYLE")

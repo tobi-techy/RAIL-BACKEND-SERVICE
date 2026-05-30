@@ -84,6 +84,7 @@ type VoiceHandler struct {
 	agentID             string
 	tokenSecret         string
 	webhookSecret       string
+	pidginVoiceID       string
 	orchestrator        *aiservice.Orchestrator
 	usage               VoiceUsageTracker
 	convService         VoiceConversationPersister
@@ -95,12 +96,13 @@ type VoiceHandler struct {
 	logger              *zap.Logger
 }
 
-func NewVoiceHandler(apiKey, agentID, tokenSecret, webhookSecret string, orchestrator *aiservice.Orchestrator, usage VoiceUsageTracker, convService VoiceConversationPersister, allowedOrigins []string, logger *zap.Logger, ttsConfig *infraai.ELTTSConfig) *VoiceHandler {
+func NewVoiceHandler(apiKey, agentID, tokenSecret, webhookSecret, pidginVoiceID string, orchestrator *aiservice.Orchestrator, usage VoiceUsageTracker, convService VoiceConversationPersister, allowedOrigins []string, logger *zap.Logger, ttsConfig *infraai.ELTTSConfig) *VoiceHandler {
 	h := &VoiceHandler{
 		apiKey:           apiKey,
 		agentID:          agentID,
 		tokenSecret:      tokenSecret,
 		webhookSecret:    webhookSecret,
+		pidginVoiceID:    pidginVoiceID,
 		orchestrator:     orchestrator,
 		usage:            usage,
 		convService:      convService,
@@ -819,7 +821,18 @@ func durationMsString(ms int) string {
 
 func (h *VoiceHandler) initSession(ctx context.Context, userID uuid.UUID, conn *infraai.ElevenLabsClient) error {
 	dynamicVars := h.orchestrator.BuildRealtimeDynamicVars(ctx, userID)
-	return conn.Send(infraai.NewELConversationInit(dynamicVars, h.ttsConfig))
+
+	ttsConfig := h.ttsConfig
+	if h.pidginVoiceID != "" {
+		locale, _ := dynamicVars["locale_style"].(string)
+		if locale == "nigeria" || locale == "west_africa" {
+			cfg := *h.ttsConfig // copy
+			cfg.VoiceID = h.pidginVoiceID
+			ttsConfig = &cfg
+		}
+	}
+
+	return conn.Send(infraai.NewELConversationInit(dynamicVars, ttsConfig))
 }
 
 // voiceToolErrorMessage returns a user-friendly error message specific to the tool that failed.

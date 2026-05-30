@@ -609,14 +609,60 @@ func (o *Orchestrator) GetProactiveVoiceInsight(ctx context.Context, userID uuid
 
 // BuildRealtimeDynamicVars returns variables injected into the ElevenLabs agent
 // system prompt via {{variable_name}} placeholders.
+// Also returns locale_style so the voice handler can switch voices per session.
 func (o *Orchestrator) BuildRealtimeDynamicVars(ctx context.Context, userID uuid.UUID) map[string]interface{} {
 	vars := map[string]interface{}{
-		"user_id":   userID.String(),
-		"user_name": "there",
-		"currency":  "₦",
+		"user_id":        userID.String(),
+		"user_name":      "there",
+		"currency":       "₦",
+		"user_language":  "english",
+		"user_tone":      "neutral",
+		"locale_style":   "global",
 	}
-	if name := o.realtimeFirstName(ctx, userID); name != "" {
-		vars["user_name"] = name
+
+	// Fetch name + country from user profile
+	if provider, ok := o.userProfile.(FullUserProfileProvider); ok && provider != nil {
+		fetchCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		if user, err := provider.GetProfile(fetchCtx, userID); err == nil && user != nil {
+			if name := stringPtrValue(user.FirstName); name != "" {
+				if fields := strings.Fields(name); len(fields) > 0 {
+					vars["user_name"] = fields[0]
+				}
+			}
+			country := ""
+			if user.AddressCountry != nil {
+				country = *user.AddressCountry
+			}
+			locale := inferLocaleStyle(country, stringPtrValue(user.AddressCity))
+			vars["locale_style"] = locale
+			if locale == "nigeria" || locale == "west_africa" {
+				vars["currency"] = "₦"
+			}
+		}
 	}
+
+	// Fetch language style + tone from memory
+	if o.memory != nil {
+		fetchCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		if profile, err := o.memory.store.GetToneProfile(fetchCtx, userID); err == nil && profile != nil {
+			if profile.LanguageStyle != "" {
+				vars["user_language"] = profile.LanguageStyle
+			}
+			if profile.LocaleStyle != "" {
+				vars["locale_style"] = profile.LocaleStyle
+			}
+			switch {
+			case profile.Formality.LessThan(decimal.NewFromFloat(0.3)):
+				vars["user_tone"] = "casual"
+			case profile.Formality.GreaterThan(decimal.NewFromFloat(0.7)):
+				vars["user_tone"] = "formal"
+			default:
+				vars["user_tone"] = "neutral"
+			}
+		}
+	}
+
 	return vars
 }

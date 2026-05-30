@@ -27,9 +27,11 @@ type BankStatementUpload struct {
 	BankName         string     `json:"bank_name" db:"bank_name"`
 	FileHash         string     `json:"file_hash" db:"file_hash"`
 	FileSizeBytes    int        `json:"file_size_bytes" db:"file_size_bytes"`
+	FileData         []byte     `json:"-" db:"file_data"`
 	PageCount        *int       `json:"page_count,omitempty" db:"page_count"`
 	Status           string     `json:"status" db:"status"`
 	ErrorMessage     *string    `json:"error_message,omitempty" db:"error_message"`
+	Summary          *string    `json:"summary,omitempty" db:"summary"`
 	PeriodStart      *time.Time `json:"period_start,omitempty" db:"period_start"`
 	PeriodEnd        *time.Time `json:"period_end,omitempty" db:"period_end"`
 	TransactionCount int        `json:"transaction_count" db:"transaction_count"`

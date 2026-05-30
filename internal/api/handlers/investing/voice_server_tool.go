@@ -18,9 +18,10 @@ import (
 //
 // POST /v1/ai/voice/server-tool/:tool_name
 func (h *VoiceHandler) HandleServerTool(c *gin.Context) {
-	// Authenticate via bearer token
+	// Authenticate via bearer token — accept "Bearer <token>" or raw token
 	authHeader := c.GetHeader("Authorization")
-	if !strings.HasPrefix(authHeader, "Bearer ") || strings.TrimPrefix(authHeader, "Bearer ") != h.webhookSecret {
+	token := strings.TrimPrefix(authHeader, "Bearer ")
+	if token == "" || token != h.webhookSecret {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}

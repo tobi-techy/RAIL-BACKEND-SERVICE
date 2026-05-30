@@ -1263,6 +1263,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						el.AgentID,
 						container.Config.JWT.Secret,
 						el.WebhookSecret,
+						el.PidginVoiceID,
 						container.GetAIOrchestrator(),
 						container.GetUsageService(),
 						container.GetConversationService(),

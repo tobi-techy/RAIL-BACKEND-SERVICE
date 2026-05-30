@@ -26,13 +26,28 @@ func (r *BankStatementRepository) Create(ctx context.Context, upload *entities.B
 		upload.Status = entities.StatementStatusPending
 	}
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO bank_statement_uploads (id, user_id, bank_name, file_hash, file_size_bytes, page_count, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		upload.ID, upload.UserID, upload.BankName, upload.FileHash, upload.FileSizeBytes, upload.PageCount, upload.Status, upload.CreatedAt, upload.UpdatedAt)
+		INSERT INTO bank_statement_uploads (id, user_id, bank_name, file_hash, file_size_bytes, file_data, page_count, status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		upload.ID, upload.UserID, upload.BankName, upload.FileHash, upload.FileSizeBytes, upload.FileData, upload.PageCount, upload.Status, upload.CreatedAt, upload.UpdatedAt)
 	return err
 }
 
+// GetByID returns a lightweight upload record (no file_data bytes) for auth checks
+// and metadata lookups that don't need the PDF binary.
 func (r *BankStatementRepository) GetByID(ctx context.Context, userID, uploadID uuid.UUID) (*entities.BankStatementUpload, error) {
+	var u entities.BankStatementUpload
+	err := r.db.GetContext(ctx, &u, `
+		SELECT id, user_id, bank_name, file_hash, file_size_bytes, page_count, status, error_message, summary, period_start, period_end, transaction_count, created_at, updated_at
+		FROM bank_statement_uploads WHERE id = $1 AND user_id = $2`, uploadID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get statement upload: %w", err)
+	}
+	return &u, nil
+}
+
+// GetByIDWithData returns the full upload record including the PDF file_data bytes.
+// Use this only when the worker needs the binary to process the statement.
+func (r *BankStatementRepository) GetByIDWithData(ctx context.Context, userID, uploadID uuid.UUID) (*entities.BankStatementUpload, error) {
 	var u entities.BankStatementUpload
 	err := r.db.GetContext(ctx, &u, `SELECT * FROM bank_statement_uploads WHERE id = $1 AND user_id = $2`, uploadID, userID)
 	if err != nil {
@@ -41,13 +56,17 @@ func (r *BankStatementRepository) GetByID(ctx context.Context, userID, uploadID 
 	return &u, nil
 }
 
-func (r *BankStatementRepository) GetByUserID(ctx context.Context, userID uuid.UUID, limit int) ([]*entities.BankStatementUpload, error) {
+func (r *BankStatementRepository) GetByUserID(ctx context.Context, userID uuid.UUID, limit int, offset int) ([]*entities.BankStatementUpload, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
+	if offset < 0 {
+		offset = 0
+	}
 	var uploads []*entities.BankStatementUpload
 	err := r.db.SelectContext(ctx, &uploads, `
-		SELECT * FROM bank_statement_uploads WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`, userID, limit)
+		SELECT id, user_id, bank_name, file_hash, file_size_bytes, page_count, status, error_message, summary, period_start, period_end, transaction_count, created_at, updated_at
+		FROM bank_statement_uploads WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`, userID, limit, offset)
 	return uploads, err
 }
 
@@ -64,15 +83,51 @@ func (r *BankStatementRepository) UpdateStatus(ctx context.Context, uploadID uui
 	return err
 }
 
+// AtomicClaim atomically claims a pending upload for processing.
+// Returns true if the row was updated (claim succeeded), false if already claimed/completed.
+func (r *BankStatementRepository) AtomicClaim(ctx context.Context, uploadID uuid.UUID) (bool, error) {
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE bank_statement_uploads SET status = 'processing', updated_at = NOW() WHERE id = $1 AND status = 'pending'`,
+		uploadID)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
+
+func (r *BankStatementRepository) CountUploadsSince(ctx context.Context, userID uuid.UUID, since time.Duration) (int, error) {
+	var count int
+	err := r.db.GetContext(ctx, &count, `
+		SELECT COUNT(*) FROM bank_statement_uploads WHERE user_id = $1 AND created_at > NOW() - $2::interval`,
+		userID, fmt.Sprintf("%.0f seconds", since.Seconds()))
+	return count, err
+}
+
+func (r *BankStatementRepository) ResetToPending(ctx context.Context, uploadID uuid.UUID) (bool, error) {
+	result, err := r.db.ExecContext(ctx, `UPDATE bank_statement_uploads SET status = 'pending', updated_at = NOW() WHERE id = $1 AND status = 'processing'`, uploadID)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
+
 func (r *BankStatementRepository) UpdateBankName(ctx context.Context, uploadID uuid.UUID, bankName string) error {
 	_, err := r.db.ExecContext(ctx, `UPDATE bank_statement_uploads SET bank_name = $1, updated_at = NOW() WHERE id = $2`, bankName, uploadID)
 	return err
 }
 
-func (r *BankStatementRepository) UpdateCompleted(ctx context.Context, uploadID uuid.UUID, txnCount int, periodStart, periodEnd *time.Time, pageCount *int) error {
+func (r *BankStatementRepository) UpdateCompleted(ctx context.Context, uploadID uuid.UUID, txnCount int, periodStart, periodEnd *time.Time, pageCount *int, summary *string) error {
 	_, err := r.db.ExecContext(ctx, `
-		UPDATE bank_statement_uploads SET status = 'completed', transaction_count = $1, period_start = $2, period_end = $3, page_count = $4, updated_at = NOW() WHERE id = $5`,
-		txnCount, periodStart, periodEnd, pageCount, uploadID)
+		UPDATE bank_statement_uploads SET status = 'completed', transaction_count = $1, period_start = $2, period_end = $3, page_count = $4, summary = $5, updated_at = NOW() WHERE id = $6`,
+		txnCount, periodStart, periodEnd, pageCount, summary, uploadID)
 	return err
 }
 
@@ -88,7 +143,8 @@ func (r *BankStatementRepository) CreateTransactions(ctx context.Context, txns [
 
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO bank_statement_transactions (id, upload_id, user_id, transaction_date, description, amount, currency, type, category, balance_after, raw_line, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		ON CONFLICT ON CONSTRAINT uq_bank_stmt_txns_dedup DO NOTHING`)
 	if err != nil {
 		return err
 	}
@@ -111,7 +167,23 @@ func (r *BankStatementRepository) CreateTransactions(ctx context.Context, txns [
 func (r *BankStatementRepository) GetTransactionsByUploadID(ctx context.Context, uploadID uuid.UUID) ([]*entities.BankStatementTransaction, error) {
 	var txns []*entities.BankStatementTransaction
 	err := r.db.SelectContext(ctx, &txns, `
-		SELECT * FROM bank_statement_transactions WHERE upload_id = $1 ORDER BY transaction_date DESC`, uploadID)
+		SELECT id, upload_id, user_id, transaction_date, description, amount, currency, type, category, balance_after, raw_line, created_at
+		FROM bank_statement_transactions WHERE upload_id = $1 ORDER BY transaction_date DESC`, uploadID)
+	return txns, err
+}
+
+func (r *BankStatementRepository) GetTransactionsByUploadIDPaginated(ctx context.Context, uploadID uuid.UUID, limit, offset int) ([]*entities.BankStatementTransaction, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	var txns []*entities.BankStatementTransaction
+	err := r.db.SelectContext(ctx, &txns, `
+		SELECT id, upload_id, user_id, transaction_date, description, amount, currency, type, category, balance_after, raw_line, created_at
+		FROM bank_statement_transactions WHERE upload_id = $1 ORDER BY transaction_date DESC LIMIT $2 OFFSET $3`,
+		uploadID, limit, offset)
 	return txns, err
 }
 
@@ -121,7 +193,8 @@ func (r *BankStatementRepository) GetTransactionsByUser(ctx context.Context, use
 	}
 	var txns []*entities.BankStatementTransaction
 	err := r.db.SelectContext(ctx, &txns, `
-		SELECT * FROM bank_statement_transactions WHERE user_id = $1 AND transaction_date >= $2 AND transaction_date < $3
+		SELECT id, upload_id, user_id, transaction_date, description, amount, currency, type, category, balance_after, raw_line, created_at
+		FROM bank_statement_transactions WHERE user_id = $1 AND transaction_date >= $2 AND transaction_date < $3
 		ORDER BY transaction_date DESC LIMIT $4`, userID, start, end, limit)
 	return txns, err
 }
@@ -146,9 +219,24 @@ func (r *BankStatementRepository) GetSpendingSummaryByCategory(ctx context.Conte
 	return result, nil
 }
 
+func (r *BankStatementRepository) CountTransactionsByUploadID(ctx context.Context, uploadID uuid.UUID) (int, error) {
+	var count int
+	err := r.db.GetContext(ctx, &count, `SELECT COUNT(*) FROM bank_statement_transactions WHERE upload_id = $1`, uploadID)
+	return count, err
+}
+
 func (r *BankStatementRepository) Delete(ctx context.Context, userID, uploadID uuid.UUID) error {
 	_, err := r.db.ExecContext(ctx, `DELETE FROM bank_statement_uploads WHERE id = $1 AND user_id = $2`, uploadID, userID)
 	return err
+}
+
+func (r *BankStatementRepository) GetPendingOlderThan(ctx context.Context, since time.Duration) ([]*entities.BankStatementUpload, error) {
+	var uploads []*entities.BankStatementUpload
+	err := r.db.SelectContext(ctx, &uploads, `
+		SELECT id, user_id, bank_name, file_hash, file_size_bytes, page_count, status, error_message, summary, period_start, period_end, transaction_count, created_at, updated_at
+		FROM bank_statement_uploads WHERE status IN ('pending', 'processing') AND created_at < NOW() - $1::interval ORDER BY created_at ASC`,
+		fmt.Sprintf("%.0f seconds", since.Seconds()))
+	return uploads, err
 }
 
 func (r *BankStatementRepository) GetCompletedUploadSummary(ctx context.Context, userID uuid.UUID) (int, []string, error) {

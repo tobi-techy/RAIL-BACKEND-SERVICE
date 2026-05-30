@@ -60,7 +60,7 @@ jobs:
         id: task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
-          task-definition-family: rail-${{ steps.env.outputs.env }}
+          task-definition: current-task-def.json
           container-name: rail-backend
           image: ${{ steps.build.outputs.image }}
 
