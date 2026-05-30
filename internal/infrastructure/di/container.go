@@ -42,6 +42,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/integration"
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
 	knowledgesvc "github.com/rail-service/rail_service/internal/domain/services/knowledge"
+	supermemoryclient "github.com/rail-service/rail_service/internal/infrastructure/supermemory"
 	"github.com/rail-service/rail_service/internal/domain/services/kyc"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/internal/domain/services/limits"
@@ -3554,6 +3555,11 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		c.AIOrchestrator.SetKnowledge(c.KnowledgeService)
 	}
 
+	// Wire Supermemory for long-term personal memory
+	if smKey := strings.TrimSpace(c.Config.AI.Supermemory.APIKey); smKey != "" {
+		c.AIOrchestrator.SetSupermemory(&supermemoryAdapter{client: supermemoryclient.New(smKey)})
+	}
+
 	// Wire embedder to memory service now that EmbeddingsClient is initialized
 	if c.EmbeddingsClient != nil && c.MemoryService != nil {
 		c.MemoryService.SetEmbedder(c.EmbeddingsClient)
@@ -5095,4 +5101,29 @@ func (a *growthBatchEmailAdapter) SendBatchEmails(ctx context.Context, emails []
 		}
 	}
 	return a.email.SendBatchEmails(ctx, batch)
+}
+
+// supermemoryAdapter adapts the supermemory client to the aiservice.SupermemoryClient interface.
+type supermemoryAdapter struct {
+	client *supermemoryclient.Client
+}
+
+func (a *supermemoryAdapter) IngestConversation(ctx context.Context, userID string, messages []aiservice.SupermemoryMessage) error {
+	msgs := make([]supermemoryclient.Message, len(messages))
+	for i, m := range messages {
+		msgs[i] = supermemoryclient.Message{Role: m.Role, Content: m.Content}
+	}
+	return a.client.IngestConversation(ctx, userID, msgs)
+}
+
+func (a *supermemoryAdapter) SearchMemory(ctx context.Context, userID, query string, limit int) ([]aiservice.SupermemoryResult, error) {
+	results, err := a.client.SearchMemory(ctx, userID, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]aiservice.SupermemoryResult, len(results))
+	for i, r := range results {
+		out[i] = aiservice.SupermemoryResult{Memory: r.Memory, Similarity: r.Similarity}
+	}
+	return out, nil
 }

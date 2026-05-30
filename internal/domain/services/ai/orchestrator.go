@@ -83,6 +83,24 @@ type ContributionSummary struct {
 	Total    decimal.Decimal `json:"total"`
 }
 
+// SupermemoryClient is the interface for Supermemory memory operations.
+type SupermemoryClient interface {
+	IngestConversation(ctx context.Context, userID string, messages []SupermemoryMessage) error
+	SearchMemory(ctx context.Context, userID, query string, limit int) ([]SupermemoryResult, error)
+}
+
+// SupermemoryMessage is a single conversation turn for Supermemory ingestion.
+type SupermemoryMessage struct {
+	Role    string
+	Content string
+}
+
+// SupermemoryResult is a single memory search result.
+type SupermemoryResult struct {
+	Memory     string
+	Similarity float64
+}
+
 // ConversationPersister is the subset of conversation.Service the orchestrator needs.
 type ConversationPersister interface {
 	BuildContext(ctx context.Context, conv *entities.AIConversation) ([]ai.Message, error)
@@ -150,6 +168,7 @@ type Orchestrator struct {
 	memory              *MemoryService
 	miriamIntelligence  MiriamIntelligenceReader
 	bankStatementCtx    *BankStatementContextProvider
+	supermemory         SupermemoryClient
 	logger              *zap.Logger
 }
 
@@ -193,6 +212,7 @@ type OrchestratorDeps struct {
 	AutomationProvider AutomationProvider
 	Memory             *MemoryService
 	MiriamIntelligence MiriamIntelligenceReader
+	Supermemory        SupermemoryClient
 }
 
 // NewOrchestratorWithDeps creates a new AI orchestrator with all dependencies provided upfront.
@@ -251,6 +271,7 @@ func NewOrchestratorWithDeps(
 		automationProvider: deps.AutomationProvider,
 		memory:             deps.Memory,
 		miriamIntelligence: deps.MiriamIntelligence,
+		supermemory:        deps.Supermemory,
 		logger:             logger,
 	}
 }
@@ -959,7 +980,7 @@ func (o *Orchestrator) executeToolInner(ctx context.Context, userID uuid.UUID, t
 		}, nil
 
 	case ToolSearchKnowledge:
-		return o.executeKnowledgeSearch(ctx, tc.Arguments)
+		return o.executeKnowledgeSearch(ctx, userID, tc.Arguments)
 
 	case ToolGetSpendingSummary:
 		return o.executeSpendingSummary(ctx, userID, tc.Arguments)

@@ -293,6 +293,10 @@
         {
           "name": "ELEVENLABS_WEBHOOK_SECRET",
           "valueFrom": "/rail/prod/ELEVENLABS_WEBHOOK_SECRET"
+        },
+        {
+          "name": "SUPERMEMORY_API_KEY",
+          "valueFrom": "/rail/prod/SUPERMEMORY_API_KEY"
         }
       ],
       "logConfiguration": {

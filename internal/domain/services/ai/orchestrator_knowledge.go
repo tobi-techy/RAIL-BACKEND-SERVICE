@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 )
@@ -46,58 +48,74 @@ func KnowledgeTool() infraai.Tool {
 const MinKnowledgeSimilarity = 0.70
 
 // executeKnowledgeSearch handles the search_knowledge_base tool call.
-func (o *Orchestrator) executeKnowledgeSearch(ctx context.Context, args map[string]interface{}) (map[string]interface{}, error) {
-	if o.knowledge == nil {
-		return map[string]interface{}{"error": "knowledge base not configured"}, nil
-	}
-
+// It searches both the local knowledge base and Supermemory, merging results.
+func (o *Orchestrator) executeKnowledgeSearch(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	query, _ := args["query"].(string)
 	if query == "" {
 		return nil, fmt.Errorf("query is required")
 	}
-
-	// Truncate overly long queries to prevent abuse
 	if len(query) > 500 {
 		query = query[:500]
 	}
 
-	results, err := o.knowledge.Search(ctx, query, 3)
-	if err != nil {
-		return nil, fmt.Errorf("knowledge search: %w", err)
-	}
+	var kbContext string
+	var kbSources int
 
-	// Filter out low-relevance results
-	filtered := results[:0]
-	for _, r := range results {
-		if r.Similarity >= MinKnowledgeSimilarity {
-			filtered = append(filtered, r)
+	// Local knowledge base search
+	if o.knowledge != nil {
+		results, err := o.knowledge.Search(ctx, query, 3)
+		if err == nil {
+			filtered := results[:0]
+			for _, r := range results {
+				if r.Similarity >= MinKnowledgeSimilarity {
+					filtered = append(filtered, r)
+				}
+			}
+			if len(filtered) > 0 {
+				var sb strings.Builder
+				for i, r := range filtered {
+					fmt.Fprintf(&sb, "[Source: %s] %s", r.SourceDoc, r.ChunkText)
+					if i < len(filtered)-1 {
+						sb.WriteString("\n\n")
+					}
+				}
+				kbContext = sb.String()
+				kbSources = len(filtered)
+			}
 		}
 	}
 
-	if len(filtered) == 0 {
+	// Supermemory personal memory search
+	var memoryContext string
+	if o.supermemory != nil && userID != uuid.Nil {
+		smCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		memories, err := o.supermemory.SearchMemory(smCtx, userID.String(), query, 5)
+		if err == nil && len(memories) > 0 {
+			var sb strings.Builder
+			for i, m := range memories {
+				if m.Similarity < 0.6 {
+					continue
+				}
+				sb.WriteString(m.Memory)
+				if i < len(memories)-1 {
+					sb.WriteString("\n")
+				}
+			}
+			memoryContext = strings.TrimSpace(sb.String())
+		}
+	}
+
+	if kbContext == "" && memoryContext == "" {
 		return map[string]interface{}{"found": false, "message": "No relevant information found"}, nil
 	}
 
-	// Build context from top results
-	var sb strings.Builder
-	sourceDocs := make([]map[string]interface{}, 0, len(filtered))
-	for i, r := range filtered {
-		fmt.Fprintf(&sb, "[Source: %s] %s", r.SourceDoc, r.ChunkText)
-		sourceDocs = append(sourceDocs, map[string]interface{}{
-			"source_doc":  r.SourceDoc,
-			"chunk_index": r.ChunkIndex,
-			"similarity":  r.Similarity,
-			"metadata":    r.Metadata,
-		})
-		if i < len(filtered)-1 {
-			sb.WriteString("\n\n")
-		}
+	result := map[string]interface{}{"found": true, "sources": kbSources}
+	if kbContext != "" {
+		result["context"] = kbContext
 	}
-
-	return map[string]interface{}{
-		"found":       true,
-		"context":     sb.String(),
-		"sources":     len(filtered),
-		"source_docs": sourceDocs,
-	}, nil
+	if memoryContext != "" {
+		result["memory"] = memoryContext
+	}
+	return result, nil
 }

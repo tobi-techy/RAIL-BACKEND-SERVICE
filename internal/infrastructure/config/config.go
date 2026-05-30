@@ -89,7 +89,13 @@ type AIConfig struct {
 	Bedrock    BedrockConfig    `mapstructure:"bedrock"`
 	AssemblyAI AssemblyAIConfig `mapstructure:"assemblyai"` // Deprecated: use ElevenLabs
 	ElevenLabs ElevenLabsConfig `mapstructure:"elevenlabs"`
+	Supermemory SupermemoryConfig `mapstructure:"supermemory"`
 	Primary    string           `mapstructure:"primary"` // "openai", "gemini", "kimi", "groq", or "bedrock"
+}
+
+// SupermemoryConfig contains Supermemory API configuration.
+type SupermemoryConfig struct {
+	APIKey string `mapstructure:"api_key"`
 }
 
 // AssemblyAIConfig contains AssemblyAI Voice Agent API configuration (deprecated, kept for backward compat)
@@ -863,6 +869,7 @@ func setDefaults() {
 	viper.BindEnv("ai.elevenlabs.webhook_secret", "ELEVENLABS_WEBHOOK_SECRET")
 	viper.BindEnv("ai.elevenlabs.voice_id", "ELEVENLABS_VOICE_ID")
 	viper.BindEnv("ai.elevenlabs.pidgin_voice_id", "ELEVENLABS_PIDGIN_VOICE_ID")
+	viper.BindEnv("ai.supermemory.api_key", "SUPERMEMORY_API_KEY")
 	viper.BindEnv("ai.elevenlabs.stability", "ELEVENLABS_STABILITY")
 	viper.BindEnv("ai.elevenlabs.similarity_boost", "ELEVENLABS_SIMILARITY_BOOST")
 	viper.BindEnv("ai.elevenlabs.style", "ELEVENLABS_STYLE")

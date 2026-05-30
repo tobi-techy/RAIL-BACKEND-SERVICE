@@ -22,6 +22,11 @@ func (o *Orchestrator) SetMemory(m *MemoryService) {
 	o.memory = m
 }
 
+// SetSupermemory sets the Supermemory client (optional).
+func (o *Orchestrator) SetSupermemory(s SupermemoryClient) {
+	o.supermemory = s
+}
+
 // SetUsageTracker sets the usage tracking layer (optional).
 // Deprecated: Use NewOrchestratorWithDeps instead.
 func (o *Orchestrator) SetUsageTracker(u UsageTracker) {
@@ -88,6 +93,16 @@ func (o *Orchestrator) ChatWithConversationWithOptions(ctx context.Context, user
 		if o.memory != nil {
 			o.memory.ProcessExchange(userID, message, resp.Content)
 		}
+
+		// Ingest conversation into Supermemory for long-term memory
+		if o.supermemory != nil {
+			smCtx, smCancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer smCancel()
+			_ = o.supermemory.IngestConversation(smCtx, userID.String(), []SupermemoryMessage{
+				{Role: "user", Content: message},
+				{Role: "assistant", Content: resp.Content},
+			})
+		}
 	}()
 
 	return resp, nil
@@ -144,4 +159,28 @@ func (o *Orchestrator) TrackVisionUsage(ctx context.Context, userID uuid.UUID, t
 	if err := o.usage.TrackInteraction(ctx, userID, "gpt-4o-vision", tokens); err != nil {
 		o.logger.Error("failed to track vision usage", zap.Error(err))
 	}
+}
+
+// IngestVoiceTranscripts sends voice session transcripts to Supermemory.
+// Runs async — caller does not wait.
+func (o *Orchestrator) IngestVoiceTranscripts(userID uuid.UUID, pairs [][2]string) {
+	if o.supermemory == nil || len(pairs) == 0 {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		msgs := make([]SupermemoryMessage, 0, len(pairs)*2)
+		for _, p := range pairs {
+			if p[0] != "" {
+				msgs = append(msgs, SupermemoryMessage{Role: "user", Content: p[0]})
+			}
+			if p[1] != "" {
+				msgs = append(msgs, SupermemoryMessage{Role: "assistant", Content: p[1]})
+			}
+		}
+		if len(msgs) > 0 {
+			_ = o.supermemory.IngestConversation(ctx, userID.String(), msgs)
+		}
+	}()
 }
