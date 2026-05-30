@@ -83,6 +83,7 @@ type VoiceHandler struct {
 	apiKey              string
 	agentID             string
 	tokenSecret         string
+	webhookSecret       string
 	orchestrator        *aiservice.Orchestrator
 	usage               VoiceUsageTracker
 	convService         VoiceConversationPersister
@@ -94,11 +95,12 @@ type VoiceHandler struct {
 	logger              *zap.Logger
 }
 
-func NewVoiceHandler(apiKey, agentID, tokenSecret string, orchestrator *aiservice.Orchestrator, usage VoiceUsageTracker, convService VoiceConversationPersister, allowedOrigins []string, logger *zap.Logger, ttsConfig *infraai.ELTTSConfig) *VoiceHandler {
+func NewVoiceHandler(apiKey, agentID, tokenSecret, webhookSecret string, orchestrator *aiservice.Orchestrator, usage VoiceUsageTracker, convService VoiceConversationPersister, allowedOrigins []string, logger *zap.Logger, ttsConfig *infraai.ELTTSConfig) *VoiceHandler {
 	h := &VoiceHandler{
 		apiKey:           apiKey,
 		agentID:          agentID,
 		tokenSecret:      tokenSecret,
+		webhookSecret:    webhookSecret,
 		orchestrator:     orchestrator,
 		usage:            usage,
 		convService:      convService,

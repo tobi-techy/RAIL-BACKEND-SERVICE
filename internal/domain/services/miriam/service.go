@@ -254,7 +254,7 @@ func (s *Service) RefreshMoneyState(ctx context.Context, userID uuid.UUID) (*ent
 		if safe, err := s.safeSpend.SafeToSpend(ctx, userID); err == nil {
 			safeDaily = safe.DailySafeToSpend
 		} else if s.logger != nil {
-			s.logger.Warn("safe-to-spend fetch failed, falling back to zero", zap.Error(err))
+			s.logger.Debug("safe-to-spend fetch failed, falling back to zero", zap.Error(err))
 		}
 	}
 
@@ -442,7 +442,7 @@ func (s *Service) RefreshMoneyState(ctx context.Context, userID uuid.UUID) (*ent
 		LastEvaluatedAt: now, Snapshot: mustJSON(snapshot),
 		MonthlySpend: monthlySpend.RoundBank(2), MonthlySavings: monthlySavings.RoundBank(2),
 		SpendBalance: spend.RoundBank(2), StashBalance: stash.RoundBank(2),
-		CalibrationScore: calibrationScore,
+		CalibrationScore: decimal.NewFromInt(int64(calibrationScore)),
 	}
 	if err := s.repo.UpsertMoneyState(ctx, state); err != nil {
 		return nil, err

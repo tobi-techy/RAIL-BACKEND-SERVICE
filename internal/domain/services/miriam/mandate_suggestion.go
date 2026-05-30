@@ -27,7 +27,7 @@ type MandateProvider interface {
 // MandateSuggestionEngine analyzes user state and memory to propose new mandates.
 type MandateSuggestionEngine struct {
 	repo        MandateSuggestionRepository
-	mandaes     MandateProvider
+	mandates    MandateProvider
 	balances    BalanceProvider
 	spending    SpendingProvider
 	obligations ObligationProvider
@@ -46,7 +46,7 @@ func NewMandateSuggestionEngine(
 	logger *zap.Logger,
 ) *MandateSuggestionEngine {
 	return &MandateSuggestionEngine{
-		repo: repo, mandaes: mandates, balances: balances, spending: spending,
+		repo: repo, mandates: mandates, balances: balances, spending: spending,
 		obligations: obligations, profiles: profiles, logger: logger,
 	}
 }
@@ -57,18 +57,18 @@ func (e *MandateSuggestionEngine) GenerateSuggestions(ctx context.Context, userI
 
 	// 1. Suggest transfer_to_stash if user has regular surplus and no mandate
 	if !e.hasActiveMandate(ctx, userID, entities.MiriamMandateTransferToStash) {
-		if s := e.suggestTransferToStash(userID, state); s != nil {
+		if s := e.suggestTransferToStash(ctx, userID, state); s != nil {
 			suggestions = append(suggestions, *s)
 		}
 	}
 
 	// 2. Suggest stash_top_up if idle surplus detected
-	if s := e.suggestStashTopUp(userID, state); s != nil {
+	if s := e.suggestStashTopUp(ctx, userID, state); s != nil {
 		suggestions = append(suggestions, *s)
 	}
 
 	// 3. Suggest bill_reservation if obligations regularly exceed spend
-	if s := e.suggestBillReservation(userID, state); s != nil {
+	if s := e.suggestBillReservation(ctx, userID, state); s != nil {
 		suggestions = append(suggestions, *s)
 	}
 
@@ -76,13 +76,13 @@ func (e *MandateSuggestionEngine) GenerateSuggestions(ctx context.Context, userI
 	for _, f := range facts {
 		switch {
 		case f.Category == entities.FactCategoryGoal && f.Confidence.GreaterThanOrEqual(decimal.NewFromFloat(0.7)):
-			if s := e.suggestGoalContribution(userID, state, f.Fact); s != nil {
+			if s := e.suggestGoalContribution(ctx, userID, state, f.Fact); s != nil {
 				suggestions = append(suggestions, *s)
 			}
 		case f.Category == entities.FactCategoryStashBehavior && f.Confidence.GreaterThanOrEqual(decimal.NewFromFloat(0.7)):
 			// Known stash behavior — tailor stash suggestions to match
 			if containsRiskKeyword(f.Fact, "set-and-forget", "automatic", "regular") {
-				if s := e.suggestTransferToStash(userID, state); s != nil {
+				if s := e.suggestTransferToStash(ctx, userID, state); s != nil {
 					s.Name = "Automated quiet stash"
 					s.Confidence = 75
 					suggestions = append(suggestions, *s)
@@ -90,7 +90,7 @@ func (e *MandateSuggestionEngine) GenerateSuggestions(ctx context.Context, userI
 			}
 		case f.Category == entities.FactCategoryRiskPreference && f.Confidence.GreaterThanOrEqual(decimal.NewFromFloat(0.7)):
 			if containsRiskKeyword(f.Fact, "aggressive", "growth", "maximize") {
-				if s := e.suggestStashTopUp(userID, state); s != nil {
+				if s := e.suggestStashTopUp(ctx, userID, state); s != nil {
 					s.SuggestedMaxAmount = s.SuggestedMaxAmount.Mul(decimal.NewFromFloat(1.5))
 					s.Confidence = 70
 					suggestions = append(suggestions, *s)
@@ -109,8 +109,8 @@ func (e *MandateSuggestionEngine) GenerateSuggestions(ctx context.Context, userI
 	return suggestions, nil
 }
 
-func (e *MandateSuggestionEngine) suggestTransferToStash(userID uuid.UUID, state *entities.MiriamMoneyState) *entities.MiriamMandateSuggestion {
-	spend, err := e.balances.GetAccountBalance(context.Background(), userID, entities.AccountTypeSpendingBalance)
+func (e *MandateSuggestionEngine) suggestTransferToStash(ctx context.Context, userID uuid.UUID, state *entities.MiriamMoneyState) *entities.MiriamMandateSuggestion {
+	spend, err := e.balances.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
 	if err != nil || !spend.IsPositive() {
 		return nil
 	}
@@ -150,12 +150,12 @@ func (e *MandateSuggestionEngine) suggestTransferToStash(userID uuid.UUID, state
 	}
 }
 
-func (e *MandateSuggestionEngine) suggestStashTopUp(userID uuid.UUID, state *entities.MiriamMoneyState) *entities.MiriamMandateSuggestion {
+func (e *MandateSuggestionEngine) suggestStashTopUp(ctx context.Context, userID uuid.UUID, state *entities.MiriamMoneyState) *entities.MiriamMandateSuggestion {
 	if state.StashTarget.IsZero() {
 		return nil
 	}
 
-	stash, err := e.balances.GetAccountBalance(context.Background(), userID, entities.AccountTypeStashBalance)
+	stash, err := e.balances.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
 	if err != nil {
 		return nil
 	}
@@ -164,7 +164,7 @@ func (e *MandateSuggestionEngine) suggestStashTopUp(userID uuid.UUID, state *ent
 		return nil
 	}
 
-	spend, err := e.balances.GetAccountBalance(context.Background(), userID, entities.AccountTypeSpendingBalance)
+	spend, err := e.balances.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
 	if err != nil {
 		return nil
 	}
@@ -195,12 +195,12 @@ func (e *MandateSuggestionEngine) suggestStashTopUp(userID uuid.UUID, state *ent
 	}
 }
 
-func (e *MandateSuggestionEngine) suggestBillReservation(userID uuid.UUID, state *entities.MiriamMoneyState) *entities.MiriamMandateSuggestion {
+func (e *MandateSuggestionEngine) suggestBillReservation(ctx context.Context, userID uuid.UUID, state *entities.MiriamMoneyState) *entities.MiriamMandateSuggestion {
 	if !state.UpcomingObligations.IsPositive() {
 		return nil
 	}
 
-	spend, err := e.balances.GetAccountBalance(context.Background(), userID, entities.AccountTypeSpendingBalance)
+	spend, err := e.balances.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
 	if err != nil {
 		return nil
 	}
@@ -226,8 +226,8 @@ func (e *MandateSuggestionEngine) suggestBillReservation(userID uuid.UUID, state
 	return nil
 }
 
-func (e *MandateSuggestionEngine) suggestGoalContribution(userID uuid.UUID, state *entities.MiriamMoneyState, goalFact string) *entities.MiriamMandateSuggestion {
-	spend, err := e.balances.GetAccountBalance(context.Background(), userID, entities.AccountTypeSpendingBalance)
+func (e *MandateSuggestionEngine) suggestGoalContribution(ctx context.Context, userID uuid.UUID, state *entities.MiriamMoneyState, goalFact string) *entities.MiriamMandateSuggestion {
+	spend, err := e.balances.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
 	if err != nil || !spend.IsPositive() {
 		return nil
 	}
@@ -258,10 +258,10 @@ func (e *MandateSuggestionEngine) suggestGoalContribution(userID uuid.UUID, stat
 }
 
 func (e *MandateSuggestionEngine) hasActiveMandate(ctx context.Context, userID uuid.UUID, actionType string) bool {
-	if e.mandaes == nil {
+	if e.mandates == nil {
 		return false
 	}
-	exists, err := e.mandaes.HasActiveMandate(ctx, userID, actionType)
+	exists, err := e.mandates.HasActiveMandate(ctx, userID, actionType)
 	if err != nil {
 		return false
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,7 +14,24 @@ import (
 	"go.uber.org/zap"
 )
 
-var rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+var (
+	rng   = rand.New(rand.NewSource(time.Now().UnixNano()))
+	rngMu sync.Mutex
+)
+
+func randIntn(n int) int {
+	rngMu.Lock()
+	v := rng.Intn(n)
+	rngMu.Unlock()
+	return v
+}
+
+func randFloat64() float64 {
+	rngMu.Lock()
+	v := rng.Float64()
+	rngMu.Unlock()
+	return v
+}
 
 // ProactiveNudgeStore persists proactive nudges.
 type ProactiveNudgeStore interface {
@@ -209,7 +227,7 @@ func (e *ProactiveNudgeEngine) nudgeFromMemory(ctx context.Context, userID uuid.
 			rem := remaining.StringFixed(0)
 
 			var msg string
-			switch rng.Intn(3) {
+			switch randIntn(3) {
 			case 0:
 				msg = fmt.Sprintf("You're %d%% of the way to your $%s goal with $%s in Spend. Add more?", pct, target, s)
 			case 1:
@@ -265,7 +283,7 @@ func (e *ProactiveNudgeEngine) nudgeFromBills(ctx context.Context, userID uuid.U
 		g := gap.StringFixed(0)
 
 		var msg string
-		switch rng.Intn(3) {
+		switch randIntn(3) {
 		case 0:
 			msg = fmt.Sprintf("Bills ($%s) exceed Spend ($%s). Stash has $%s — tap to cover the $%s gap.", ob, s, st, g)
 		case 1:
@@ -316,7 +334,7 @@ func (e *ProactiveNudgeEngine) buildPredictionMessage(ctx context.Context, userI
 	switch p.PredictionType {
 	case entities.PredictionCashShortfall:
 		ob := state.UpcomingObligations.StringFixed(0)
-		switch rng.Intn(4) {
+		switch randIntn(4) {
 		case 0:
 			return fmt.Sprintf("Spend is at $%s with $%s in bills due. You're $%s short — tap to cover from Stash.", s, ob, pa)
 		case 1:
@@ -329,7 +347,7 @@ func (e *ProactiveNudgeEngine) buildPredictionMessage(ctx context.Context, userI
 
 	case entities.PredictionBillPressure:
 		ob := state.UpcomingObligations.StringFixed(0)
-		switch rng.Intn(4) {
+		switch randIntn(4) {
 		case 0:
 			return fmt.Sprintf("$%s in bills this week vs $%s in Spend. Auto-cover from Stash?", ob, s)
 		case 1:
@@ -342,7 +360,7 @@ func (e *ProactiveNudgeEngine) buildPredictionMessage(ctx context.Context, userI
 
 	case entities.PredictionIncomeGap:
 		inc := state.AvgMonthlyIncome.StringFixed(0)
-		switch rng.Intn(3) {
+		switch randIntn(3) {
 		case 0:
 			return fmt.Sprintf("Income this month ($%s) is $%s short of expenses. Pull from Stash?", inc, pa)
 		case 1:
@@ -354,7 +372,7 @@ func (e *ProactiveNudgeEngine) buildPredictionMessage(ctx context.Context, userI
 	case entities.PredictionSpendingAnomaly:
 		safe := state.SafeToSpendDaily.StringFixed(0)
 		runway := state.LiquidityRunwayDays
-		switch rng.Intn(3) {
+		switch randIntn(3) {
 		case 0:
 			return fmt.Sprintf("You've spent $%s more this month. Daily safe-to-spend is $%s — try easing up.", pa, safe)
 		case 1:
@@ -364,7 +382,7 @@ func (e *ProactiveNudgeEngine) buildPredictionMessage(ctx context.Context, userI
 		}
 
 	case entities.PredictionIdleSurplus:
-		switch rng.Intn(3) {
+		switch randIntn(3) {
 		case 0:
 			return fmt.Sprintf("$%s sitting idle in Spend. Move it to Stash and put it to work.", pa)
 		case 1:
@@ -375,7 +393,7 @@ func (e *ProactiveNudgeEngine) buildPredictionMessage(ctx context.Context, userI
 
 	case entities.PredictionStashOpportunity:
 		target := state.StashTarget.StringFixed(0)
-		switch rng.Intn(3) {
+		switch randIntn(3) {
 		case 0:
 			return fmt.Sprintf("Stash ($%s) is $%s short of $%s target. Add from Spend?", st, pa, target)
 		case 1:

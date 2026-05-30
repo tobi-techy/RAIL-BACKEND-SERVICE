@@ -299,7 +299,30 @@ func (e *DecisionEngine) RecordOutcome(ctx context.Context, decisionID, userID u
 		FeedbackScore: feedbackScore,
 		CreatedAt:     time.Now().UTC(),
 	}
-	return e.repo.CreateOutcome(ctx, o)
+	if err := e.repo.CreateOutcome(ctx, o); err != nil {
+		return err
+	}
+	// Update learning model bias based on outcome
+	category := "general"
+	model, _ := e.repo.GetLearningModel(ctx, userID, category)
+	if model == nil {
+		model = &entities.MiriamLearningModel{
+			UserID:   userID,
+			Category: category,
+		}
+	}
+	model.TotalDecisions++
+	if feedbackScore.IsPositive() {
+		model.PositiveOutcomes++
+	} else if feedbackScore.IsNegative() {
+		model.NegativeOutcomes++
+	}
+	if model.TotalDecisions > 0 {
+		model.CurrentBias = decimal.NewFromInt(int64(model.PositiveOutcomes - model.NegativeOutcomes)).
+			Div(decimal.NewFromInt(int64(model.TotalDecisions)))
+	}
+	model.LastUpdatedAt = time.Now().UTC()
+	return e.repo.UpsertLearningModel(ctx, model)
 }
 
 func (e *DecisionEngine) GetLearningBias(ctx context.Context, userID uuid.UUID, category string) decimal.Decimal {

@@ -86,9 +86,15 @@ func (r *MandateSuggestionRepository) AcceptSuggestion(ctx context.Context, sugg
 		return nil, fmt.Errorf("get mandate suggestion: %w", err)
 	}
 
+	tx, err := r.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
 	now := time.Now().UTC()
 	mandateID := uuid.New()
-	_, err = r.db.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO miriam_autopilot_mandates (
 			id, user_id, name, action_type, status,
 			max_amount_per_action, max_amount_per_day,
@@ -103,12 +109,16 @@ func (r *MandateSuggestionRepository) AcceptSuggestion(ctx context.Context, sugg
 		return nil, fmt.Errorf("create mandate from suggestion: %w", err)
 	}
 
-	_, err = r.db.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 		UPDATE miriam_mandate_suggestions
 		SET status = 'accepted', accepted_at = $1
 		WHERE id = $2`, now, suggestionID)
 	if err != nil {
 		return nil, fmt.Errorf("update suggestion status to accepted: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit accept suggestion: %w", err)
 	}
 
 	return &entities.MiriamAutopilotMandate{

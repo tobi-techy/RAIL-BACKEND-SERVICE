@@ -192,7 +192,7 @@ func (s *Service) RunSegmentation(ctx context.Context) (int, int, error) {
 					CreatedAt:  s.cfg.Now(),
 				}
 				if err := s.repo.CreateDelivery(ctx, delivery); err != nil {
-					s.logger.Warn("growth campaign delivery record failed", zap.String("user_id", user.UserID.String()), zap.Error(err))
+					s.logger.Debug("growth campaign delivery skipped (duplicate or error)", zap.String("user_id", user.UserID.String()), zap.Error(err))
 					continue
 				}
 				htmlBody := renderEmailHTML(subject, body)
@@ -357,7 +357,7 @@ func (s *Service) sendEmail(ctx context.Context, to string, campaign entities.Gr
 func formatFrom(campaign entities.GrowthCampaign) string {
 	email := strings.TrimSpace(campaign.FromEmail)
 	if email == "" {
-		email = "miriam@mail.userail.money"
+		email = "miriam@userail.money"
 	}
 	name := strings.TrimSpace(campaign.FromName)
 	if name != "" {

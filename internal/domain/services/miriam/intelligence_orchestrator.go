@@ -6,9 +6,39 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/shopspring/decimal"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.uber.org/zap"
+)
+
+var miriamTracer = otel.Tracer("miriam")
+
+var (
+	miriamEvaluations = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "miriam_evaluations_total",
+		Help: "Total Miriam user evaluations",
+	}, []string{"status"})
+	miriamEvalDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "miriam_evaluation_duration_seconds",
+		Help:    "Duration of Miriam evaluation per user",
+		Buckets: prometheus.ExponentialBuckets(0.01, 2, 12),
+	})
+	miriamPredictions = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "miriam_predictions_generated_total",
+		Help: "Total predictions generated",
+	})
+	miriamMandatesExecuted = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "miriam_mandates_executed_total",
+		Help: "Total mandates executed by action type",
+	}, []string{"action_type", "status"})
+	miriamNudgesDelivered = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "miriam_nudges_delivered_total",
+		Help: "Total proactive nudges delivered",
+	})
 )
 
 // New mandate action types for autonomous money intelligence.
@@ -75,6 +105,11 @@ func (o *IntelligenceOrchestrator) SetNotifier(n Notifier) {
 	o.notifier = n
 }
 
+// HealthScoreTracker returns the health score tracker for maintenance operations.
+func (o *IntelligenceOrchestrator) HealthScoreTracker() *HealthScoreTracker {
+	return o.healthScore
+}
+
 // IntelligenceResult is the output of a single evaluation pass.
 type IntelligenceResult struct {
 	UserID          uuid.UUID                        `json:"user_id"`
@@ -91,12 +126,17 @@ type IntelligenceResult struct {
 
 // Evaluate runs the full intelligence pipeline for one user.
 func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUID, eventType string) (*IntelligenceResult, error) {
+	ctx, span := miriamTracer.Start(ctx, "miriam.Evaluate")
+	span.SetAttributes(attribute.String("user_id", userID.String()), attribute.String("event_type", eventType))
+	defer span.End()
+
 	start := time.Now().UTC()
 	result := &IntelligenceResult{UserID: userID}
 
 	// 1. Refresh money state (existing logic)
 	state, err := o.service.RefreshMoneyState(ctx, userID)
 	if err != nil {
+		miriamEvaluations.WithLabelValues("error").Inc()
 		return nil, fmt.Errorf("refresh money state: %w", err)
 	}
 	result.MoneyState = state
@@ -232,6 +272,14 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 	result.EvaluatedAt = time.Now().UTC()
 	result.Duration = time.Since(start)
 
+	// Record metrics
+	miriamEvaluations.WithLabelValues("success").Inc()
+	miriamEvalDuration.Observe(result.Duration.Seconds())
+	if result.Predictions != nil {
+		miriamPredictions.Add(float64(len(result.Predictions.ActivePredictions)))
+	}
+	miriamNudgesDelivered.Add(float64(result.NudgesGenerated))
+
 	return result, nil
 }
 
@@ -262,6 +310,12 @@ func (o *IntelligenceOrchestrator) executeMandateAction(ctx context.Context, use
 	case MiriamMandateBillReservation:
 		// For bill reservation, we just record the intent — actual transfer happens via transfer_to_spend
 		return o.recordBillReservation(ctx, userID, amount, mandate)
+	case MiriamMandateSpendCooldown:
+		// Spend cooldown is advisory — record the receipt, no money movement
+		return o.recordReceipt(ctx, userID, amount, mandate, "spend_cooldown", "Spending cooldown activated per mandate.")
+	case MiriamMandateGoalContribution:
+		// Goal contributions route to stash (goals are stash sub-allocations)
+		return o.executeTransferToStash(ctx, userID, amount, mandate.ID)
 	default:
 		return fmt.Errorf("unknown mandate action type: %s", mandate.ActionType)
 	}
@@ -301,6 +355,23 @@ func (o *IntelligenceOrchestrator) recordBillReservation(ctx context.Context, us
 		UserID:     userID,
 		MandateID:  &mandate.ID,
 		EventType:  "bill_reservation",
+		ActionType: mandate.ActionType,
+		Amount:     amount,
+		Currency:   "USD",
+		Status:     entities.MiriamReceiptStatusExecuted,
+		Reason:     reason,
+		Evidence:   mustJSON(map[string]interface{}{"generated_by": "intelligence_orchestrator"}),
+		CreatedAt:  time.Now().UTC(),
+	}
+	return o.service.repo.CreateReceipt(ctx, receipt)
+}
+
+func (o *IntelligenceOrchestrator) recordReceipt(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, mandate entities.MiriamAutopilotMandate, eventType, reason string) error {
+	receipt := &entities.MiriamDecisionReceipt{
+		ID:         uuid.New(),
+		UserID:     userID,
+		MandateID:  &mandate.ID,
+		EventType:  eventType,
 		ActionType: mandate.ActionType,
 		Amount:     amount,
 		Currency:   "USD",

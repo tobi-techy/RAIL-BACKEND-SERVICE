@@ -30,9 +30,11 @@ func (r *MiriamIntelligenceRepository) UpsertMoneyState(ctx context.Context, sta
 			user_id, income_cadence, avg_monthly_income, upcoming_obligations,
 			safe_to_spend_daily, liquidity_runway_days, stash_target,
 			recurring_spend_monthly, anomaly_count, confidence_level,
-			confidence_score, last_evaluated_at, snapshot, created_at, updated_at
+			confidence_score, last_evaluated_at, snapshot,
+			monthly_spend, monthly_savings, spend_balance, stash_balance, calibration_score,
+			created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW()
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW(), NOW()
 		)
 		ON CONFLICT (user_id) DO UPDATE SET
 			income_cadence = EXCLUDED.income_cadence,
@@ -47,11 +49,17 @@ func (r *MiriamIntelligenceRepository) UpsertMoneyState(ctx context.Context, sta
 			confidence_score = EXCLUDED.confidence_score,
 			last_evaluated_at = EXCLUDED.last_evaluated_at,
 			snapshot = EXCLUDED.snapshot,
+			monthly_spend = EXCLUDED.monthly_spend,
+			monthly_savings = EXCLUDED.monthly_savings,
+			spend_balance = EXCLUDED.spend_balance,
+			stash_balance = EXCLUDED.stash_balance,
+			calibration_score = EXCLUDED.calibration_score,
 			updated_at = NOW()`,
 		state.UserID, state.IncomeCadence, state.AvgMonthlyIncome, state.UpcomingObligations,
 		state.SafeToSpendDaily, state.LiquidityRunwayDays, state.StashTarget,
 		state.RecurringSpendMonthly, state.AnomalyCount, state.ConfidenceLevel,
-		state.ConfidenceScore, state.LastEvaluatedAt, state.Snapshot)
+		state.ConfidenceScore, state.LastEvaluatedAt, state.Snapshot,
+		state.MonthlySpend, state.MonthlySavings, state.SpendBalance, state.StashBalance, state.CalibrationScore)
 	if err != nil {
 		return fmt.Errorf("upsert miriam money state: %w", err)
 	}
@@ -318,7 +326,8 @@ func (r *MiriamIntelligenceRepository) GetPendingPredictionOutcomes(ctx context.
 		       horizon_days, threshold_data, actual_outcome, outcome_observed_at, created_at
 		FROM miriam_prediction_outcomes
 		WHERE user_id = $1 AND actual_outcome IS NULL
-		ORDER BY created_at ASC`, userID)
+		ORDER BY created_at ASC
+		LIMIT 100`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get pending prediction outcomes: %w", err)
 	}

@@ -199,7 +199,13 @@ func (h *MiriamIntelligenceHandler) RecordFeedback(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid signal: must be positive, negative, or neutral"})
 		return
 	}
-	if err := h.service.RecordFeedback(c.Request.Context(), userID, receiptID, req.Signal); err != nil {
+	// Map user-facing signals to internal feedback enum
+	signalMap := map[string]string{
+		"positive": "accepted",
+		"negative": "reversed",
+		"neutral":  "ignored",
+	}
+	if err := h.service.RecordFeedback(c.Request.Context(), userID, receiptID, signalMap[req.Signal]); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

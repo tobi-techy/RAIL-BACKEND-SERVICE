@@ -611,6 +611,7 @@ func (o *Orchestrator) GetProactiveVoiceInsight(ctx context.Context, userID uuid
 // system prompt via {{variable_name}} placeholders.
 func (o *Orchestrator) BuildRealtimeDynamicVars(ctx context.Context, userID uuid.UUID) map[string]interface{} {
 	vars := map[string]interface{}{
+		"user_id":   userID.String(),
 		"user_name": "there",
 		"currency":  "₦",
 	}

@@ -15,6 +15,7 @@ type HealthScoreRepository interface {
 	SaveHealthScore(ctx context.Context, s *entities.MiriamFinancialHealthScore) error
 	GetRecentScores(ctx context.Context, userID uuid.UUID, limit int) ([]entities.MiriamFinancialHealthScore, error)
 	GetLatestScore(ctx context.Context, userID uuid.UUID) (*entities.MiriamFinancialHealthScore, error)
+	DeleteScoresOlderThan(ctx context.Context, before time.Time) (int64, error)
 }
 
 // HealthScoreTracker persists and tracks financial health scores over time,
@@ -228,4 +229,16 @@ func ComputeHealthScore(
 	)
 
 	return
+}
+
+// CleanupOldScores removes health scores older than the retention period (default 90 days).
+func (t *HealthScoreTracker) CleanupOldScores(ctx context.Context, retentionDays int) (int64, error) {
+	if t.repo == nil {
+		return 0, nil
+	}
+	if retentionDays <= 0 {
+		retentionDays = 90
+	}
+	before := time.Now().UTC().AddDate(0, 0, -retentionDays)
+	return t.repo.DeleteScoresOlderThan(ctx, before)
 }

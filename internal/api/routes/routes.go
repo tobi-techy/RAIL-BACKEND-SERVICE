@@ -107,8 +107,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	router.Use(middleware.MetricsMiddleware())
 	router.Use(middleware.RequestSizeLimit())
 	router.Use(middleware.InputValidation())
-	router.Use(middleware.Logger(container.Logger))
 	router.Use(middleware.Recovery(container.Logger))
+	router.Use(middleware.ScannerBlock(container.ZapLog))
+	router.Use(middleware.Logger(container.Logger))
 	router.Use(middleware.ErrorAlerter(alerting.NewTelegramAlerter(
 		container.Config.TelegramAlerts.BotToken,
 		container.Config.TelegramAlerts.ChatID,
@@ -1244,6 +1245,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				IssueSignedURL(*gin.Context)
 				HandleToolExecution(*gin.Context)
 				GetProactiveInsight(*gin.Context)
+				HandleServerTool(*gin.Context)
 			}
 				if container.Config.AI.ElevenLabs.APIKey != "" && container.Config.AI.ElevenLabs.AgentID != "" {
 					el := container.Config.AI.ElevenLabs
@@ -1260,6 +1262,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						el.APIKey,
 						el.AgentID,
 						container.Config.JWT.Secret,
+						el.WebhookSecret,
 						container.GetAIOrchestrator(),
 						container.GetUsageService(),
 						container.GetConversationService(),
@@ -1403,6 +1406,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						aiGroup.GET("/voice/proactive-insight", middleware.PerUserRateLimit(30), voiceHandler.GetProactiveInsight)
 						v1.GET("/ai/voice/health", voiceHandler.CheckELHealth)
 						v1.GET("/ai/voice/session", voiceHandler.HandleSession)
+						// ElevenLabs server tool webhook (public, authenticated by webhook secret)
+						v1.POST("/ai/voice/server-tool/:tool_name", voiceHandler.HandleServerTool)
 					}
 				}
 
@@ -1726,6 +1731,15 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	}
 
 	// ZeroG and dedicated AI-CFO HTTP routes have been removed.
+
+	// Catch-all: unmatched routes get a clean 404 (not 503)
+	router.NoRoute(func(c *gin.Context) {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error":      "NOT_FOUND",
+			"message":    "Route not found",
+			"request_id": c.GetString("request_id"),
+		})
+	})
 
 	return router
 }

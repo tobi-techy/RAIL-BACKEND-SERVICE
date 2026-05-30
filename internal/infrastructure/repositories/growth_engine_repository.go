@@ -277,15 +277,21 @@ func (r *GrowthEngineRepository) CreateDelivery(ctx context.Context, delivery *e
 	if delivery.CreatedAt.IsZero() {
 		delivery.CreatedAt = time.Now().UTC()
 	}
-	_, err := r.db.ExecContext(ctx, `
+	dedupKey := fmt.Sprintf("%s:%s:%s", delivery.UserID, delivery.CampaignID, delivery.CreatedAt.UTC().Format("2006-01-02"))
+	result, err := r.db.ExecContext(ctx, `
 		INSERT INTO campaign_deliveries (
-			id, user_id, campaign_id, segment, channel, status, error, rendered_to, subject, body, sent_at, created_at
+			id, user_id, campaign_id, segment, channel, status, error, rendered_to, subject, body, sent_at, created_at, dedup_key
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, ''), $11, $12)`,
+		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, ''), $11, $12, $13)
+		ON CONFLICT (dedup_key) WHERE status IN ('queued', 'sent') DO NOTHING`,
 		delivery.ID, delivery.UserID, delivery.CampaignID, string(delivery.Segment), string(delivery.Channel),
-		string(delivery.Status), delivery.Error, delivery.RenderedTo, delivery.Subject, delivery.Body, delivery.SentAt, delivery.CreatedAt)
+		string(delivery.Status), delivery.Error, delivery.RenderedTo, delivery.Subject, delivery.Body, delivery.SentAt, delivery.CreatedAt, dedupKey)
 	if err != nil {
 		return fmt.Errorf("create growth delivery: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("duplicate delivery skipped")
 	}
 	return nil
 }
