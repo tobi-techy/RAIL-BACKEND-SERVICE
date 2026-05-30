@@ -1389,7 +1389,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					}
 
 					// Bank statement upload & processing
-					if container.BankStatementRepo != nil && container.JobQueueInstance != nil {
+					if container.BankStatementRepo != nil {
 						stmtHandler := handlers.NewStatementUploadHandler(container.BankStatementRepo, container.JobQueueInstance, container.ZapLog)
 						aiGroup.POST("/statement/upload", middleware.LargeBodyLimit(25*1024*1024), middleware.AuthRateLimit(5), stmtHandler.Upload)
 						aiGroup.GET("/statement/:id/status", middleware.AuthRateLimit(30), stmtHandler.GetStatus)

@@ -148,22 +148,25 @@ func (h *StatementUploadHandler) Upload(c *gin.Context) {
 	}
 
 	// Enqueue processing job
-	job := &jobqueue.Job{
-		ID:       uuid.New().String(),
-		Type:     "process_statement",
-		Priority: jobqueue.PriorityNormal,
-		Payload: map[string]interface{}{
-			"upload_id": upload.ID.String(),
-			"user_id":   userID.String(),
-			"file_path": tmpPath,
-			"bank_name": bankName,
-		},
-		MaxRetries: 2,
-		CreatedAt:  time.Now(),
-	}
-	if err := h.queue.Enqueue(c.Request.Context(), job); err != nil {
-		h.logger.Error("failed to enqueue statement job", zap.Error(err))
-		// Still return success — we can retry later
+	if h.queue != nil {
+		job := &jobqueue.Job{
+			ID:       uuid.New().String(),
+			Type:     "process_statement",
+			Priority: jobqueue.PriorityNormal,
+			Payload: map[string]interface{}{
+				"upload_id": upload.ID.String(),
+				"user_id":   userID.String(),
+				"file_path": tmpPath,
+				"bank_name": bankName,
+			},
+			MaxRetries: 2,
+			CreatedAt:  time.Now(),
+		}
+		if err := h.queue.Enqueue(c.Request.Context(), job); err != nil {
+			h.logger.Error("failed to enqueue statement job", zap.Error(err))
+		}
+	} else {
+		h.logger.Warn("job queue not available, statement will not be processed automatically")
 	}
 
 	c.JSON(http.StatusAccepted, gin.H{"data": gin.H{
