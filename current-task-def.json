@@ -53,6 +53,10 @@
         {
           "name": "ELEVENLABS_VOICE_ID",
           "value": "vu4rANpMkmDMEwCAoZ47"
+        },
+        {
+          "name": "ELEVENLABS_PIDGIN_VOICE_ID",
+          "value": "Y2pSig8e8Yjpj9IXjsZo"
         }
       ],
       "mountPoints": [],
