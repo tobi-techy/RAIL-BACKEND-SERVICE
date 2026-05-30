@@ -146,6 +146,11 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 	if userProfileCtx := o.buildUserProfileContext(ctx, userID); userProfileCtx != "" {
 		messages = append(messages, ai.Message{Role: "system", Content: userProfileCtx})
 	}
+	if o.bankStatementCtx != nil {
+		if stmtCtx := o.bankStatementCtx.BuildContext(ctx, userID); stmtCtx != "" {
+			messages = append(messages, ai.Message{Role: "system", Content: stmtCtx})
+		}
+	}
 	if o.memory != nil {
 		if memCtx := o.memory.BuildMemoryContextWithSummary(ctx, userID); memCtx != "" {
 			messages = append(messages, ai.Message{Role: "system", Content: memCtx})

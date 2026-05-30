@@ -149,6 +149,7 @@ type Orchestrator struct {
 	contextSignals      ContextSignalProvider
 	memory              *MemoryService
 	miriamIntelligence  MiriamIntelligenceReader
+	bankStatementCtx    *BankStatementContextProvider
 	logger              *zap.Logger
 }
 
@@ -624,6 +625,13 @@ func (o *Orchestrator) ChatInContextWithOptions(ctx context.Context, userID, con
 	}
 	if userProfileCtx := o.buildUserProfileContext(ctx, userID); userProfileCtx != "" {
 		messages = append(messages, ai.Message{Role: "system", Content: userProfileCtx})
+	}
+
+	// Inject external bank statement context
+	if o.bankStatementCtx != nil {
+		if stmtCtx := o.bankStatementCtx.BuildContext(ctx, userID); stmtCtx != "" {
+			messages = append(messages, ai.Message{Role: "system", Content: stmtCtx})
+		}
 	}
 
 	// Inject long-term memory (facts Miriam has learned about this user)

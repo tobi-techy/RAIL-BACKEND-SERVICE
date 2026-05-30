@@ -22,6 +22,7 @@ import (
 	"github.com/rail-service/rail_service/internal/api/routes"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
+	statement "github.com/rail-service/rail_service/internal/domain/services/statement"
 	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
 	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	bridgeadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
@@ -54,11 +55,13 @@ import (
 	rebalancing_worker "github.com/rail-service/rail_service/internal/workers/rebalancing_worker"
 	scheduled_investment_worker "github.com/rail-service/rail_service/internal/workers/scheduled_investment_worker"
 	scheduled_notifications "github.com/rail-service/rail_service/internal/workers/scheduled_notifications"
+	statement_processor "github.com/rail-service/rail_service/internal/workers/statement_processor"
 	subscription_billing "github.com/rail-service/rail_service/internal/workers/subscription_billing"
 	walletprovisioning "github.com/rail-service/rail_service/internal/workers/wallet_provisioning"
 	withdrawal_recovery "github.com/rail-service/rail_service/internal/workers/withdrawal_recovery"
 	"github.com/rail-service/rail_service/pkg/alerting"
 	"github.com/rail-service/rail_service/pkg/analytics"
+	"github.com/rail-service/rail_service/pkg/jobqueue"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/metrics"
 	"github.com/rail-service/rail_service/pkg/tracing"
@@ -525,6 +528,31 @@ func (app *Application) initializeWorkers() error {
 			worker.Start(ctx)
 			app.log.Info("Growth engine worker stopped")
 		}()
+	}
+
+
+	// Statement processor worker: processes uploaded bank statement PDFs via Kimi
+	if app.container.BankStatementRepo != nil && app.container.JobQueueInstance != nil {
+		kimiKey := app.container.Config.AI.Kimi.APIKey
+		kimiBase := app.container.Config.AI.Kimi.BaseURL
+		kimiModel := app.container.Config.AI.Kimi.Model
+		if kimiKey != "" {
+			parser := statement.NewTransactionParserWithConfig(kimiKey, kimiBase, kimiModel, app.log.Zap())
+			stmtWorker := statement_processor.NewWorker(
+				app.container.BankStatementRepo,
+				app.container.MiriamMemoryRepo,
+				app.container.NotificationService,
+				parser,
+				app.log.Zap(),
+			)
+			jqWorker := jobqueue.NewWorker(app.container.JobQueueInstance, app.log.Zap(), 5)
+			jqWorker.RegisterHandler(statement_processor.JobType, stmtWorker.Handler())
+			go jqWorker.Start(context.Background())
+			app.log.Info("Statement processor worker started (Kimi k2.6)")
+
+			// Reconcile orphaned pending uploads (stuck from a prior crash)
+			go app.reconcileOrphanedStatements(context.Background())
+		}
 	}
 
 	return nil
@@ -1210,4 +1238,48 @@ func (a *opportunityUserListerAdapter) GetAllActiveUserIDs(ctx context.Context) 
 		ids = append(ids, u.ID)
 	}
 	return ids, nil
+}
+
+// reconcileOrphanedStatements re-enqueues bank statement uploads that got stuck in "pending"
+// or "processing" status (e.g. after a server crash). Runs once at startup and exits.
+func (app *Application) reconcileOrphanedStatements(ctx context.Context) {
+	const minAge = 20 * time.Minute
+	orphans, err := app.container.BankStatementRepo.GetPendingOlderThan(ctx, minAge)
+	if err != nil {
+		app.log.Warnw("failed to reconcile orphaned statements", "error", err)
+		return
+	}
+	if len(orphans) == 0 {
+		return
+	}
+	app.log.Infow("reconciling orphaned statement uploads", "count", len(orphans))
+	for _, u := range orphans {
+		// Reset stuck processing uploads back to pending so AtomicClaim can pick them up
+		if u.Status == entities.StatementStatusProcessing {
+			if err := app.container.BankStatementRepo.ResetToPending(ctx, u.ID); err != nil {
+				app.log.Warnw("failed to reset stuck processing upload",
+					"upload_id", u.ID.String(),
+					"error", err,
+				)
+				continue
+			}
+		}
+
+		job := &jobqueue.Job{
+			ID:       uuid.New().String(),
+			Type:     statement_processor.JobType,
+			Priority: jobqueue.PriorityNormal,
+			Payload: map[string]interface{}{
+				"upload_id": u.ID.String(),
+				"user_id":   u.UserID.String(),
+				"bank_name": u.BankName,
+			},
+		}
+		if err := app.container.JobQueueInstance.Enqueue(ctx, job); err != nil {
+			app.log.Warnw("failed to re-enqueue orphaned statement",
+				"upload_id", u.ID.String(),
+				"error", err,
+			)
+		}
+	}
 }

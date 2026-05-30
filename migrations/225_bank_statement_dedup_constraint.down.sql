@@ -1,0 +1,1 @@
+ALTER TABLE bank_statement_transactions DROP CONSTRAINT IF EXISTS uq_bank_stmt_txns_dedup;
