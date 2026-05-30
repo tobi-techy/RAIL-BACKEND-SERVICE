@@ -191,3 +191,64 @@ func RecordRateLimitHit(tier, endpoint string) {
 func RecordAuditEvent(action, resource, status string) {
 	AuditEventsTotal.WithLabelValues(action, resource, status).Inc()
 }
+
+// --- Statement processing metrics ---
+
+var (
+	StatementsUploadedTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "stack_statements_uploaded_total",
+			Help: "Total number of bank statement uploads",
+		},
+	)
+
+	StatementsProcessedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "stack_statements_processed_total",
+			Help: "Total number of bank statements processed",
+		},
+		[]string{"status"}, // completed, failed
+	)
+
+	StatementsParseDuration = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "stack_statements_parse_duration_seconds",
+			Help:    "Time to parse a bank statement (LLM call)",
+			Buckets: []float64{5, 15, 30, 60, 120, 240, 480},
+		},
+	)
+
+	StatementsValidationPassRate = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "stack_statements_validation_pass_rate",
+			Help: "Rolling validation pass rate (valid/total transactions)",
+		},
+	)
+
+	StatementsTransactionsTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "stack_statements_transactions_total",
+			Help: "Total number of transactions parsed from statements",
+		},
+	)
+)
+
+func RecordStatementUploaded() {
+	StatementsUploadedTotal.Inc()
+}
+
+func RecordStatementProcessed(status string) {
+	StatementsProcessedTotal.WithLabelValues(status).Inc()
+}
+
+func RecordStatementParseDuration(seconds float64) {
+	StatementsParseDuration.Observe(seconds)
+}
+
+func RecordStatementValidationPassRate(rate float64) {
+	StatementsValidationPassRate.Set(rate)
+}
+
+func RecordStatementTransactions(count int) {
+	StatementsTransactionsTotal.Add(float64(count))
+}
