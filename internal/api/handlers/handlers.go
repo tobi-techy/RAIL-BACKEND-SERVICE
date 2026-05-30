@@ -53,6 +53,7 @@ type (
 	FinancialObligationHandler = investing.FinancialObligationHandler
 	MoneyGuardHandler          = investing.MoneyGuardHandler
 	MiriamIntelligenceHandler  = investing.MiriamIntelligenceHandler
+	StatementUploadHandler     = investing.StatementUploadHandler
 
 	// Trading
 	CopyTradingHandlers         = trading.CopyTradingHandlers
@@ -143,6 +144,7 @@ var (
 	NewFinancialObligationHandler     = investing.NewFinancialObligationHandler
 	NewMoneyGuardHandler              = investing.NewMoneyGuardHandler
 	NewMiriamIntelligenceHandler      = investing.NewMiriamIntelligenceHandler
+	NewStatementUploadHandler         = investing.NewStatementUploadHandler
 )
 
 // Trading constructors

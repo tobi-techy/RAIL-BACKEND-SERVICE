@@ -94,6 +94,7 @@ import (
 	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/captcha"
 	commonmetrics "github.com/rail-service/rail_service/pkg/common/metrics"
+	"github.com/rail-service/rail_service/pkg/jobqueue"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/ratelimit"
 	"github.com/shopspring/decimal"
@@ -1208,6 +1209,8 @@ type Container struct {
 	DepositRepo               *repositories.DepositRepository
 	WithdrawalRepo            *repositories.WithdrawalRepository
 	ReceiptRepo               *repositories.ReceiptRepository
+	BankStatementRepo         *repositories.BankStatementRepository
+	MiriamMemoryRepo          *repositories.MiriamMemoryRepository
 	BudgetRepo                *repositories.BudgetRepository
 	FinancialProfileRepo      *repositories.FinancialProfileRepository
 	FinancialObligationRepo   *repositories.FinancialObligationRepository
@@ -1375,6 +1378,7 @@ type Container struct {
 	// Cache & Queue
 	CacheInvalidator *cache.CacheInvalidator
 	JobQueue         interface{} // Job queue for background processing
+	JobQueueInstance *jobqueue.JobQueue
 	JobScheduler     interface{} // Job scheduler for cron jobs
 
 	// Security Services
@@ -1503,6 +1507,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	depositRepo := repositories.NewDepositRepository(sqlxDB)
 	withdrawalRepo := repositories.NewWithdrawalRepository(sqlxDB)
 	receiptRepo := repositories.NewReceiptRepository(sqlxDB)
+	bankStatementRepo := repositories.NewBankStatementRepository(sqlxDB)
 	budgetRepo := repositories.NewBudgetRepository(sqlxDB)
 	financialProfileRepo := repositories.NewFinancialProfileRepository(sqlxDB)
 	financialObligationRepo := repositories.NewFinancialObligationRepository(sqlxDB)
@@ -1657,6 +1662,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		DepositRepo:               depositRepo,
 		WithdrawalRepo:            withdrawalRepo,
 		ReceiptRepo:               receiptRepo,
+		BankStatementRepo:         bankStatementRepo,
 		BudgetRepo:                budgetRepo,
 		FinancialProfileRepo:      financialProfileRepo,
 		FinancialObligationRepo:   financialObligationRepo,
@@ -1701,6 +1707,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 
 		// Cache & Queue
 		CacheInvalidator: cacheInvalidator,
+		JobQueueInstance: jobqueue.NewJobQueue(redisClient.Client(), zapLog),
 	}
 
 	// Initialize Bridge virtual account service and webhook handler
@@ -3512,6 +3519,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 
 	// Initialize Miriam's long-term memory (fact extraction + tone calibration)
 	memoryRepo := repositories.NewMiriamMemoryRepository(sqlxDB)
+	c.MiriamMemoryRepo = memoryRepo
 	memorySvc := aiservice.NewMemoryService(memoryRepo, c.AIProviderManager, c.ZapLog)
 	c.AIOrchestrator.SetMemory(memorySvc)
 	c.MemoryService = memorySvc
@@ -3531,6 +3539,11 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	c.UsageRepo = repositories.NewAIUsageRepository(c.DB, c.ZapLog)
 	c.UsageService = usagesvc.NewService(c.UsageRepo, c.ZapLog)
 	c.AIOrchestrator.SetUsageTracker(c.UsageService)
+
+	// Wire bank statement context into Miriam
+	if c.BankStatementRepo != nil {
+		c.AIOrchestrator.SetBankStatementContext(aiservice.NewBankStatementContextProvider(c.BankStatementRepo))
+	}
 
 	// Initialize knowledge base (RAG)
 	// Embeddings use Gemini regardless of chat provider; gate on Gemini key availability.

@@ -22,6 +22,7 @@ import (
 	"github.com/rail-service/rail_service/internal/api/routes"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
+	statement "github.com/rail-service/rail_service/internal/domain/services/statement"
 	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
 	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	bridgeadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
@@ -54,11 +55,13 @@ import (
 	rebalancing_worker "github.com/rail-service/rail_service/internal/workers/rebalancing_worker"
 	scheduled_investment_worker "github.com/rail-service/rail_service/internal/workers/scheduled_investment_worker"
 	scheduled_notifications "github.com/rail-service/rail_service/internal/workers/scheduled_notifications"
+	statement_processor "github.com/rail-service/rail_service/internal/workers/statement_processor"
 	subscription_billing "github.com/rail-service/rail_service/internal/workers/subscription_billing"
 	walletprovisioning "github.com/rail-service/rail_service/internal/workers/wallet_provisioning"
 	withdrawal_recovery "github.com/rail-service/rail_service/internal/workers/withdrawal_recovery"
 	"github.com/rail-service/rail_service/pkg/alerting"
 	"github.com/rail-service/rail_service/pkg/analytics"
+	"github.com/rail-service/rail_service/pkg/jobqueue"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/metrics"
 	"github.com/rail-service/rail_service/pkg/tracing"
@@ -525,6 +528,27 @@ func (app *Application) initializeWorkers() error {
 			worker.Start(ctx)
 			app.log.Info("Growth engine worker stopped")
 		}()
+	}
+
+
+	// Statement processor worker: processes uploaded bank statement PDFs via Kimi
+	if app.container.BankStatementRepo != nil && app.container.JobQueueInstance != nil {
+		kimiKey := app.container.Config.AI.Kimi.APIKey
+		kimiBase := app.container.Config.AI.Kimi.BaseURL
+		kimiModel := app.container.Config.AI.Kimi.Model
+		if kimiKey != "" {
+			parser := statement.NewTransactionParserWithConfig(kimiKey, kimiBase, kimiModel, app.log.Zap())
+			stmtWorker := statement_processor.NewWorker(
+				app.container.BankStatementRepo,
+				app.container.MiriamMemoryRepo,
+				parser,
+				app.log.Zap(),
+			)
+			jqWorker := jobqueue.NewWorker(app.container.JobQueueInstance, app.log.Zap(), 5)
+			jqWorker.RegisterHandler(statement_processor.JobType, stmtWorker.Handler())
+			go jqWorker.Start(context.Background())
+			app.log.Info("Statement processor worker started (Kimi k2.6)")
+		}
 	}
 
 	return nil

@@ -1315,16 +1315,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						}
 					}
 
-					// Image analysis (receipt scanning) — works with OpenAI or any OpenAI-compatible vision provider (e.g. Kimi moonshot-v1-8k)
+					// Image analysis (receipt scanning) — prefers Kimi k2.6 for vision
 					var imageHandler *handlers.ImageAnalysisHandler
-					if container.Config.AI.OpenAI.APIKey != "" {
-						imageHandler = handlers.NewImageAnalysisHandler(
-							container.Config.AI.OpenAI.APIKey,
-							container.GetAIOrchestrator(),
-							container.ReceiptRepo,
-							container.ZapLog,
-						)
-					} else if container.Config.AI.Kimi.APIKey != "" {
+					if container.Config.AI.Kimi.APIKey != "" {
 						kimiBase := container.Config.AI.Kimi.BaseURL
 						if kimiBase == "" {
 							kimiBase = "https://api.moonshot.ai/v1"
@@ -1332,7 +1325,14 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						imageHandler = handlers.NewImageAnalysisHandlerWithVision(
 							container.Config.AI.Kimi.APIKey,
 							kimiBase,
-							container.Config.AI.Kimi.Model, // kimi-k2.6 supports vision natively
+							container.Config.AI.Kimi.Model,
+							container.GetAIOrchestrator(),
+							container.ReceiptRepo,
+							container.ZapLog,
+						)
+					} else if container.Config.AI.OpenAI.APIKey != "" {
+						imageHandler = handlers.NewImageAnalysisHandler(
+							container.Config.AI.OpenAI.APIKey,
 							container.GetAIOrchestrator(),
 							container.ReceiptRepo,
 							container.ZapLog,
@@ -1383,6 +1383,15 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						aiGroup.GET("/money-across-borders-report", middleware.AuthRateLimit(5), premiumHandlers.MoneyAcrossBordersReport)
 						aiGroup.POST("/challenge/generate", middleware.AuthRateLimit(10), premiumHandlers.GenerateChallenge)
 						aiGroup.GET("/goals/progress", middleware.AuthRateLimit(10), premiumHandlers.GoalProgress)
+					}
+
+					// Bank statement upload & processing
+					if container.BankStatementRepo != nil && container.JobQueueInstance != nil {
+						stmtHandler := handlers.NewStatementUploadHandler(container.BankStatementRepo, container.JobQueueInstance, container.ZapLog)
+						aiGroup.POST("/statement/upload", middleware.LargeBodyLimit(25*1024*1024), middleware.AuthRateLimit(5), stmtHandler.Upload)
+						aiGroup.GET("/statement/:id/status", middleware.AuthRateLimit(30), stmtHandler.GetStatus)
+						aiGroup.GET("/statements", middleware.AuthRateLimit(20), stmtHandler.List)
+						aiGroup.DELETE("/statement/:id", middleware.AuthRateLimit(10), stmtHandler.Delete)
 					}
 
 					// Voice session ticket issuance (protected by standard auth).
