@@ -281,6 +281,10 @@
         {
           "name": "ELEVENLABS_API_KEY",
           "valueFrom": "/rail/prod/ELEVENLABS_API_KEY"
+        },
+        {
+          "name": "ELEVENLABS_WEBHOOK_SECRET",
+          "valueFrom": "/rail/prod/ELEVENLABS_WEBHOOK_SECRET"
         }
       ],
       "logConfiguration": {
