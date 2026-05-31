@@ -88,10 +88,10 @@ func (o *Orchestrator) executeKnowledgeSearch(ctx context.Context, userID uuid.U
 	// Supermemory personal memory search
 	var memoryContext string
 	if o.supermemory != nil && userID != uuid.Nil {
-		smCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-		memories, err := o.supermemory.SearchMemory(smCtx, userID.String(), query, 5)
-		if err == nil && len(memories) > 0 {
+		smCtx, smCancel := context.WithTimeout(ctx, 5*time.Second)
+		memories, smErr := o.supermemory.SearchMemory(smCtx, userID.String(), query, 5)
+		smCancel()
+		if smErr == nil && len(memories) > 0 {
 			var sb strings.Builder
 			for i, m := range memories {
 				if m.Similarity < 0.6 {

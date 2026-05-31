@@ -94,14 +94,16 @@ func (o *Orchestrator) ChatWithConversationWithOptions(ctx context.Context, user
 			o.memory.ProcessExchange(userID, message, resp.Content)
 		}
 
-		// Ingest conversation into Supermemory for long-term memory
+		// Ingest into Supermemory in its own goroutine — don't block the persist goroutine
 		if o.supermemory != nil {
-			smCtx, smCancel := context.WithTimeout(context.Background(), 8*time.Second)
-			defer smCancel()
-			_ = o.supermemory.IngestConversation(smCtx, userID.String(), []SupermemoryMessage{
-				{Role: "user", Content: message},
-				{Role: "assistant", Content: resp.Content},
-			})
+			go func(uid uuid.UUID, userMsg, assistantMsg string) {
+				smCtx, smCancel := context.WithTimeout(context.Background(), 8*time.Second)
+				defer smCancel()
+				_ = o.supermemory.IngestConversation(smCtx, uid.String(), []SupermemoryMessage{
+					{Role: "user", Content: userMsg},
+					{Role: "assistant", Content: assistantMsg},
+				})
+			}(userID, message, resp.Content)
 		}
 	}()
 

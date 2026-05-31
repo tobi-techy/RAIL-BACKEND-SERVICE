@@ -5,11 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
 
-const baseURL = "https://api.supermemory.ai"
+const (
+	baseURL         = "https://api.supermemory.ai"
+	maxResponseBody = 1 << 20 // 1 MB
+)
 
 // Client is a minimal Supermemory API client.
 type Client struct {
@@ -37,7 +41,7 @@ func (c *Client) IngestConversation(ctx context.Context, userID string, messages
 		Role    string `json:"role"`
 		Content string `json:"content"`
 	}
-	type body struct {
+	type payload struct {
 		ConversationID string   `json:"conversationId"`
 		ContainerTag   string   `json:"containerTag"`
 		Messages       []reqMsg `json:"messages"`
@@ -46,7 +50,7 @@ func (c *Client) IngestConversation(ctx context.Context, userID string, messages
 	for i, m := range messages {
 		msgs[i] = reqMsg{Role: m.Role, Content: m.Content}
 	}
-	return c.post(ctx, "/v4/conversations", body{
+	return c.postWithRetry(ctx, "/v4/conversations", payload{
 		ConversationID: fmt.Sprintf("miriam-%s-%d", userID, time.Now().UnixMilli()),
 		ContainerTag:   userID,
 		Messages:       msgs,
@@ -61,7 +65,7 @@ type SearchResult struct {
 
 // SearchMemory searches a user's memory for relevant facts.
 func (c *Client) SearchMemory(ctx context.Context, userID, query string, limit int) ([]SearchResult, error) {
-	type body struct {
+	type payload struct {
 		Q            string `json:"q"`
 		ContainerTag string `json:"containerTag"`
 		Limit        int    `json:"limit,omitempty"`
@@ -70,14 +74,29 @@ func (c *Client) SearchMemory(ctx context.Context, userID, query string, limit i
 		Results []SearchResult `json:"results"`
 	}
 	var resp response
-	if err := c.post(ctx, "/v4/search", body{Q: query, ContainerTag: userID, Limit: limit}, &resp); err != nil {
+	if err := c.postWithRetry(ctx, "/v4/search", payload{Q: query, ContainerTag: userID, Limit: limit}, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Results, nil
 }
 
-func (c *Client) post(ctx context.Context, path string, body, out interface{}) error {
-	b, err := json.Marshal(body)
+// postWithRetry executes a POST with one retry on 429/5xx.
+func (c *Client) postWithRetry(ctx context.Context, path string, reqBody, out interface{}) error {
+	err := c.post(ctx, path, reqBody, out)
+	if err == nil {
+		return nil
+	}
+	// Single retry after brief backoff for transient errors
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(500 * time.Millisecond):
+	}
+	return c.post(ctx, path, reqBody, out)
+}
+
+func (c *Client) post(ctx context.Context, path string, reqBody, out interface{}) error {
+	b, err := json.Marshal(reqBody)
 	if err != nil {
 		return err
 	}
@@ -87,16 +106,22 @@ func (c *Client) post(ctx context.Context, path string, body, out interface{}) e
 	}
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("Content-Type", "application/json")
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// Drain body to allow connection reuse
+		io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBody)) //nolint:errcheck
+		resp.Body.Close()
+	}()
+
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("supermemory: status %d", resp.StatusCode)
+		return fmt.Errorf("supermemory %s: status %d", path, resp.StatusCode)
 	}
 	if out != nil {
-		return json.NewDecoder(resp.Body).Decode(out)
+		return json.NewDecoder(io.LimitReader(resp.Body, maxResponseBody)).Decode(out)
 	}
 	return nil
 }
